@@ -15,9 +15,6 @@ tags: ["development", "tdd", "implementation"]
 #   enforce-verdict bash gate), replacing the legacy bash hollow-success guard.
 #   Verdicts: WORK_VERIFIED→exit 0, INSUFFICIENT_EVIDENCE→warn+exit 0,
 #   HOLLOW_SUCCESS→exit 1. See issue #615 for full design.
-# FIX #624: enforce-verdict normalizes LLM synonym verdicts and fail-safes
-#   unknown strings to INSUFFICIENT_EVIDENCE instead of exit 1.
-
 recursion:
   max_depth: 6
   max_total_steps: 80
@@ -147,22 +144,22 @@ steps:
          `git log --oneline origin/main..HEAD` (fall back to `origin/HEAD`).
          Empty commits and no-op edits do NOT count.
       2. **Already-merged-during-implement** — the agent may have committed,
-         pushed, opened a PR, and auto-merged into `origin/main` all within
-         step-08; in that case `git merge-base HEAD origin/main` equals HEAD.
-         Detect with `git fetch --quiet origin main || true`,
-         `git log --oneline --since='6 hours ago' origin/main -- .`, and
-         `gh pr list --search 'is:merged author:@me' --limit 20 --json number,title,mergedAt,headRefName`
-         (filter to PRs merged within the recipe run window).
-      3. **Sibling branches / worktrees** — `git branch -a --contains HEAD`
-         and `git worktree list`.
+         pushed, opened a scoped PR, and auto-merged into `origin/main` all
+         within step-08; in that case `git merge-base HEAD origin/main` equals
+         HEAD. Detect with `git fetch --quiet origin main || true`,
+         `git log --oneline --since='6 hours ago' origin/main -- .`, and only
+         persisted PR URL/number or `workflow_pr_scope.sh` with explicit repo,
+         headRefName, baseRefName, headRefOid, isCrossRepository=false,
+         expected_pr_title_prefix, created_after, and issue/work-item scope.
+      3. **Sibling branches / worktrees** — `git branch -a --contains HEAD` and `git worktree list`.
       4. **Linked GitHub issue** —
          `gh issue view {{issue_number}} --json state,closedByPullRequestsReferences`
          (skip if `{{issue_number}}` is empty). If the issue is `CLOSED` by a
          merged PR whose diff matches the task, verdict = `WORK_VERIFIED`
          (this is the issue #360 case the legacy guard handled).
-      5. **Recent PRs** —
-         `gh pr list --state all --search 'sort:updated-desc' --limit 20 --json number,title,state,mergedAt,headRefName,url`
-         and look for PRs whose title/branch matches this task.
+      5. **Scoped PR evidence** — use only a persisted PR URL/number or
+         `workflow_pr_scope.sh`; `gh pr view` is acceptable only for that scoped
+         PR. Zero/multiple candidates are ambiguous and do not count.
       6. **Working tree (SECONDARY)** — `git status --porcelain` and
          `git diff --stat HEAD`. Uncommitted edits and untracked files count
          as additional evidence, but a clean tree is NOT evidence of no work.
@@ -254,11 +251,11 @@ steps:
 
       # Extract the last line that looks like a JSON object. Tolerates the
       # verifier mixing prose with the final JSON line.
-      VERDICT_LINE=$(printf '%s\n' "$VERDICT_RAW" | grep -E '^[[:space:]]*\{.*"verdict"' | tail -1 || true)
+      VERDICT_LINE=$(printf '%s\n' "$VERDICT_RAW" | grep -E '^[[:space:]]*\{.*"verdict"' | awk 'NF {line=$0} END {print line}' || true)
       if [ -z "$VERDICT_LINE" ]; then
         # Fall back to scanning the entire blob with jq for the first valid
         # JSON object containing a "verdict" key.
-        VERDICT_LINE=$(printf '%s' "$VERDICT_RAW" | jq -c 'select(type=="object" and has("verdict"))' 2>/dev/null | tail -1 || true)
+        VERDICT_LINE=$(printf '%s' "$VERDICT_RAW" | jq -c 'select(type=="object" and has("verdict"))' 2>/dev/null | awk 'NF {line=$0} END {print line}' || true)
       fi
       if [ -z "$VERDICT_LINE" ]; then
         echo "WARN: step-08c-work-verifier output did not contain a parseable JSON verdict. Treating as INSUFFICIENT_EVIDENCE (issue #615)." >&2
@@ -384,6 +381,18 @@ steps:
       fi
       echo "=== Checkpoint Complete ==="
     output: "impl_checkpoint"
+
+  - id: "implementation-terminal-evidence"
+    type: "bash"
+    condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
+    parse_json: true
+    command: |
+      set -euo pipefail
+      HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_implementation_evidence.sh"
+      [ -f "$HELPER" ] || HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_implementation_evidence.sh"
+      [ -f "$HELPER" ] || { echo "ERROR: workflow implementation evidence helper not found: $HELPER" >&2; exit 2; }
+      bash "$HELPER"
+    output: "implementation_terminal_evidence"
 
   # ==========================================================================
   # STEP 9: REFACTOR AND SIMPLIFY

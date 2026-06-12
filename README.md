@@ -217,7 +217,7 @@ What happens:
 | Term             | Definition                                                                                           |
 | ---------------- | ---------------------------------------------------------------------------------------------------- |
 | **Agent**        | A specialized AI role (e.g., architect, builder, reviewer) with a defined responsibility             |
-| **Workflow**     | A structured step-by-step process that guides task execution (e.g., the 23-step DEFAULT_WORKFLOW)    |
+| **Workflow**     | A structured step-by-step process that guides task execution (e.g., the `default-workflow` recipe)   |
 | **Orchestrator** | Routes tasks to the right workflow and coordinates agents                                            |
 | **Recipe**       | A code-enforced workflow definition (YAML) that models cannot skip or shortcut                       |
 | **Skill**        | A self-contained capability that auto-activates based on context (e.g., PDF processing, Azure admin) |
@@ -243,15 +243,16 @@ execution:
 For most tasks, type `/dev <your task>` — the smart-orchestrator automatically
 selects the right workflow.
 
-- **DEFAULT_WORKFLOW**: 23-step systematic development process, steps 0–22
+- **`default-workflow`**: 23-step systematic development process, steps 0–22
   (features, bugs, refactoring)
 - **INVESTIGATION_WORKFLOW**: 6-phase knowledge excavation (understanding
   existing systems)
 - **Q&A_WORKFLOW**: 3-step minimal workflow (simple questions, quick answers)
 - **OPS_WORKFLOW**: 1-step administrative operations (cleanup, maintenance)
 
-Workflows are customizable - edit
-`amplifier-bundle/workflow/DEFAULT_WORKFLOW.md` to change process.
+The canonical default development workflow is the `default-workflow` skill/recipe.
+Customize the process by updating the bundled skill documentation and executable
+recipe, not by editing legacy `DEFAULT_WORKFLOW.md` files.
 
 Workflow customization:
 [docs/WORKFLOW_COMPLETION.md](https://rysweet.github.io/amplihack-rs/WORKFLOW_COMPLETION/)
@@ -458,8 +459,10 @@ Supports all models available in GitHub Copilot ecosystem.
 
 ### Workflow Customization
 
-Edit `amplifier-bundle/workflow/DEFAULT_WORKFLOW.md` to customize the
-development process. Changes apply immediately to all commands.
+The default development process is defined by the `default-workflow` skill/recipe.
+Update `amplifier-bundle/skills/default-workflow/SKILL.md` for human-facing
+guidance and `amplifier-bundle/recipes/default-workflow.yaml` for executable
+recipe behavior.
 
 Custom workflows:
 [docs/WORKFLOW_COMPLETION.md](https://rysweet.github.io/amplihack-rs/WORKFLOW_COMPLETION/)

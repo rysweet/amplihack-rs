@@ -31,10 +31,12 @@ context:
   pr_number: ""
   pr_url: ""
   goal_already_met: "false"
+  terminal_gate_mode: "probe"
 
 steps:
   - id: "probe-terminal-state"
     type: "bash"
+    condition: "terminal_gate_mode != 'strict'"
     parse_json: true
     command: |
       set -euo pipefail
@@ -171,6 +173,34 @@ steps:
         printf '%s/%s\n' "$owner" "$repo"
       }
 
+      parse_github_pr_url() {
+        local url="$1" path owner repo marker number
+        case "$url" in
+          https://github.com/*/pull/[0-9]*|http://github.com/*/pull/[0-9]*)
+            path="${url#*://github.com/}"
+            ;;
+          https://*@github.com/*/pull/[0-9]*|http://*@github.com/*/pull/[0-9]*)
+            path="${url#*://}"
+            path="${path#*@github.com/}"
+            ;;
+          *)
+            return 1
+            ;;
+        esac
+        path="${path%%\?*}"
+        path="${path%%#*}"
+        owner="${path%%/*}"
+        path="${path#*/}"
+        repo="${path%%/*}"
+        path="${path#*/}"
+        marker="${path%%/*}"
+        number="${path#pull/}"
+        [ "$marker" = "pull" ] || return 1
+        [[ "$number" =~ ^[0-9][0-9]*$ ]] || return 1
+        [ -n "$owner" ] && [ -n "$repo" ] || return 1
+        printf '%s/%s/%s\n' "$owner" "$repo" "$number"
+      }
+
       normalize_base_name() {
         local ref="$1"
         ref="${ref#refs/heads/}"
@@ -249,8 +279,8 @@ steps:
       if [ -n "$PR_NUMBER_INPUT" ] && [ "$PR_NUMBER_INPUT" != "''" ] && ! [[ "$PR_NUMBER_INPUT" =~ ^[0-9][0-9]*$ ]]; then
         fail_terminal_state "FAILED_INVALID_INPUT" "pr_number is malformed: $PR_NUMBER_INPUT"
       fi
-      if [ -n "$PR_URL_INPUT" ] && [ "$PR_URL_INPUT" != "''" ] && ! [[ "$PR_URL_INPUT" =~ ^https://[^[:space:]]+/pull/[0-9]+$ ]]; then
-        fail_terminal_state "FAILED_INVALID_INPUT" "pr_url is malformed or not a pull request URL"
+      if [ -n "$PR_URL_INPUT" ] && [ "$PR_URL_INPUT" != "''" ] && ! [[ "$PR_URL_INPUT" =~ ^https?://[^[:space:]]+$ ]]; then
+        fail_terminal_state "FAILED_INVALID_INPUT" "pr_url is malformed: expected an http(s) URL without whitespace"
       fi
 
       # Dirty worktree is the first trust boundary. No terminal success is
@@ -263,29 +293,62 @@ steps:
       repo_identity="$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null || true)" || true)"
       repo_owner="${repo_identity%%/*}"
       repo_name="${repo_identity#*/}"
+      supports_github_pr_metadata="false"
+      if [ -n "$repo_identity" ]; then
+        supports_github_pr_metadata="true"
+      fi
+      # workflow_pr_scope.sh validates headRefName, baseRefName, headRefOid,
+      # isCrossRepository, expected_pr_title_prefix, and created_after.
+      PR_SCOPE_HELPER="${WORKFLOW_PR_SCOPE_HELPER:-${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_pr_scope.sh}"
+      if [ ! -f "$PR_SCOPE_HELPER" ] && [ -n "${REPO_PATH:-}" ]; then
+        PR_SCOPE_HELPER="$REPO_PATH/amplifier-bundle/tools/workflow_pr_scope.sh"
+      fi
 
       pr_json=""
       pr_target=""
       pr_lookup_failed="false"
       if [ -n "$PR_URL_INPUT" ] && [ "$PR_URL_INPUT" != "''" ]; then
-        pr_target="$PR_URL_INPUT"
-      elif [ -n "$PR_NUMBER_INPUT" ] && [ "$PR_NUMBER_INPUT" != "''" ]; then
+        if parse_github_pr_url "$PR_URL_INPUT" >/dev/null 2>&1; then
+          supports_github_pr_metadata="true"
+          pr_target="$PR_URL_INPUT"
+        else
+          echo "INFO: workflow-terminal-state: non-GitHub PR URL supplied; using local git safety checks only" >&2
+        fi
+      elif [ "$supports_github_pr_metadata" = "true" ] && [ -n "$PR_NUMBER_INPUT" ] && [ "$PR_NUMBER_INPUT" != "''" ]; then
         pr_target="$PR_NUMBER_INPUT"
       fi
 
-      if [ -n "$pr_target" ]; then
+      if [ "$supports_github_pr_metadata" = "true" ] && { [ -n "$pr_target" ] || command -v gh >/dev/null 2>&1; }; then
         command -v gh >/dev/null 2>&1 || fail_terminal_state "FAILED_INVALID_INPUT" "gh is required when pr_number or pr_url is provided"
-        if ! pr_json="$(gh_with_retry "pr view" pr view "$pr_target" --json state,mergedAt,headRefName,baseRefName,headRefOid,headRepositoryOwner,headRepository,isCrossRepository,number,url,statusCheckRollup)"; then
-          fail_terminal_state "FAILED_INVALID_INPUT" "unavailable PR metadata for $pr_target"
+        [ -x "$PR_SCOPE_HELPER" ] || fail_terminal_state "FAILED_INVALID_INPUT" "workflow_pr_scope.sh is required for scoped current-work PR identity"
+        created_after="${WORKFLOW_STARTED_AT:-${RECIPE_STARTED_AT:-${TASK_STARTED_AT:-}}}"
+        scope_args=(
+          --repo "$repo_identity"
+          --head "$BRANCH_INPUT"
+          --base "$(normalize_base_name "$base_ref")"
+          --issue "${ISSUE_NUMBER:-${RECIPE_VAR_issue_number:-}}"
+          --work-item "${ISSUE_NUMBER:-${RECIPE_VAR_issue_number:-}}"
+          --head-sha "$local_head"
+        )
+        title_prefix="${EXPECTED_PR_TITLE_PREFIX:-${PR_EXPECTED_TITLE_PREFIX:-}}"
+        [ -n "$title_prefix" ] && scope_args+=(--expected-pr-title-prefix "$title_prefix")
+        [ -n "$PR_URL_INPUT" ] && scope_args+=(--pr-url "$PR_URL_INPUT")
+        [ -n "$PR_NUMBER_INPUT" ] && scope_args+=(--pr-number "$PR_NUMBER_INPUT")
+        [ -n "$created_after" ] && scope_args+=(--created-after "$created_after")
+        if ! pr_json="$("$PR_SCOPE_HELPER" "${scope_args[@]}")"; then
+          reason="$(printf '%s' "$pr_json" | jq -r '.reason // ""' 2>/dev/null || true)"
+          if [ "$reason" = "no_scoped_pr" ] && [ -z "$pr_target" ]; then
+            pr_json="{}"
+          elif [ -n "$pr_target" ]; then
+            fail_terminal_state "FAILED_INVALID_INPUT" "unavailable or mismatched scoped PR metadata for $pr_target: ${reason:-unknown}"
+          else
+            echo "WARNING: scoped PR lookup failed during terminal-state probe; meaningful diffs will fail closed" >&2
+            pr_json="{}"
+            pr_lookup_failed="true"
+          fi
         fi
-      elif command -v gh >/dev/null 2>&1; then
-        # Same-branch discovery is exact. If it fails, only clean no-diff can
-        # still prove terminal success without PR metadata.
-        if ! pr_json="$(gh_with_retry "pr list" pr list --head "$BRANCH_INPUT" --state all --json state,mergedAt,headRefName,baseRefName,headRefOid,headRepositoryOwner,headRepository,isCrossRepository,number,url,statusCheckRollup --jq '.[0] // {}')"; then
-          echo "WARNING: gh pr list failed during same-branch PR discovery; meaningful diffs will fail closed" >&2
-          pr_json="{}"
-          pr_lookup_failed="true"
-        fi
+      elif [ -n "$PR_NUMBER_INPUT" ] && [ "$PR_NUMBER_INPUT" != "''" ]; then
+        echo "INFO: workflow-terminal-state: pr_number supplied for non-GitHub remote; using local git safety checks only" >&2
       fi
 
       if [ -n "$pr_json" ] && [ "$pr_json" != "{}" ]; then
@@ -371,4 +434,29 @@ steps:
       should_run_ci_wait="true"
       should_merge="true"
       emit_terminal_state
+    output: "terminal_state"
+
+  - id: "strict-terminal-state"
+    type: "bash"
+    condition: "terminal_gate_mode == 'strict'"
+    command: |
+      set -euo pipefail
+      export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
+      if [ "${TERMINAL_GATE_MODE:-${RECIPE_VAR_terminal_gate_mode:-probe}}" != "strict" ]; then
+        exit 0
+      fi
+
+      helper=""
+      if [ -n "${AMPLIHACK_HOME:-}" ] && [ -f "${AMPLIHACK_HOME}/amplifier-bundle/tools/workflow_final_status.sh" ]; then
+        helper="${AMPLIHACK_HOME}/amplifier-bundle/tools/workflow_final_status.sh"
+      elif [ -n "${REPO_PATH:-}" ] && [ -f "${REPO_PATH}/amplifier-bundle/tools/workflow_final_status.sh" ]; then
+        helper="${REPO_PATH}/amplifier-bundle/tools/workflow_final_status.sh"
+      elif [ -f "./amplifier-bundle/tools/workflow_final_status.sh" ]; then
+        helper="./amplifier-bundle/tools/workflow_final_status.sh"
+      fi
+      [ -n "$helper" ] || { echo "ERROR: workflow terminal-state helper not found; set AMPLIHACK_HOME or run from an amplihack checkout" >&2; exit 2; }
+
+      : "${OBSERVED_PHASES:=workflow-prep,workflow-worktree,workflow-design,workflow-tdd,workflow-refactor-review,workflow-precommit-test,workflow-publish,workflow-pr-review,workflow-finalize}"
+      export OBSERVED_PHASES
+      bash "$helper"
     output: "terminal_state"

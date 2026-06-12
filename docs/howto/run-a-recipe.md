@@ -111,9 +111,11 @@ amplihack recipe run ~/.amplihack/.claude/recipes/default-workflow.yaml \
 
 The command emits live progress to stderr while the recipe runs. The output
 shows each step as it starts, heartbeats for long-running steps, and completion
-or failure:
+or failure. It also prints an early correlation pointer before the child runner
+starts:
 
 ```
+amplihack.recipe.log_pointer {"schema_version":1,"event":"early","run_id":"5b60657b-76ef-4f49-8a22-8b89ed75f43e","recipe_name":"default-workflow","worktree":"/home/user/src/myapp","branch":"main","runner_path":"/home/user/.local/bin/recipe-runner-rs"}
 [recipe default-workflow] started (23 steps)
 [step 01/23 requirements-clarification] started agent=prompt-writer
 [step 01/23 requirements-clarification] completed elapsed=24s
@@ -124,6 +126,13 @@ or failure:
 
 The final result is printed to stdout in the requested format. This keeps
 human-readable progress separate from machine-readable output.
+
+At the end of the run, stderr includes a final pointer with the same `run_id` and
+the terminal status:
+
+```text
+amplihack.recipe.log_pointer {"schema_version":1,"event":"final","run_id":"5b60657b-76ef-4f49-8a22-8b89ed75f43e","recipe_name":"default-workflow","status":"success","child_pid":41822,"exit_code":0,"runner_path":"/home/user/.local/bin/recipe-runner-rs"}
+```
 
 ---
 
@@ -280,6 +289,15 @@ amplihack recipe run ~/.amplihack/.claude/recipes/verification.yaml \
 {
   "recipe_name": "verification",
   "success": true,
+  "run_id": "5b60657b-76ef-4f49-8a22-8b89ed75f43e",
+  "log_pointer": {
+    "run_id": "5b60657b-76ef-4f49-8a22-8b89ed75f43e",
+    "recipe_name": "verification",
+    "status": "success",
+    "child_pid": 41822,
+    "exit_code": 0,
+    "runner_path": "/home/user/.local/bin/recipe-runner-rs"
+  },
   "duration_seconds": 42.6,
   "step_results": [
     {
@@ -316,6 +334,13 @@ if [ "$success" != "true" ]; then
   echo "$result" | jq '.step_results[] | select(.status == "failed")'
   exit 1
 fi
+```
+
+Correlate the final result with captured progress logs:
+
+```sh
+run_id=$(jq -r '.run_id' result.json)
+grep "$run_id" recipe-progress.log
 ```
 
 ---

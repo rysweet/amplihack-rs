@@ -299,7 +299,7 @@ tests:
 
 ## Integration with Workflow
 
-This skill integrates with DEFAULT_WORKFLOW.md:
+This skill integrates with the `default-workflow` skill/recipe:
 
 **Step 12: Run Tests and Pre-commit Hooks**
 

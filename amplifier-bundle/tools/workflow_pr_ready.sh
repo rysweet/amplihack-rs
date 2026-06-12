@@ -4,6 +4,10 @@ set -euo pipefail
 export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
 PR_URL="${PR_URL:-${RECIPE_VAR_pr_url:-${PR_PUBLISH_RESULT_PR_URL:-${RECIPE_VAR_pr_publish_result__pr_url:-}}}}"
 PR_NUMBER="${PR_NUMBER:-${RECIPE_VAR_pr_number:-${PR_PUBLISH_RESULT_PR_NUMBER:-${RECIPE_VAR_pr_publish_result__pr_number:-}}}}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PR_SCOPE_HELPER="${WORKFLOW_PR_SCOPE_HELPER:-${SCRIPT_DIR}/workflow_pr_scope.sh}"
+# workflow_pr_scope.sh validates headRefName, baseRefName, headRefOid,
+# isCrossRepository, expected_pr_title_prefix, and created_after.
 
 if ! command -v gh >/dev/null 2>&1; then
   echo "ERROR: gh CLI not found — cannot verify or mutate GitHub PR readiness" >&2
@@ -152,31 +156,55 @@ add_pr_target() {
   pr_targets+=("$target")
 }
 
-[[ "$PR_URL" =~ [^[:space:]] ]] && add_pr_target "$PR_URL"
-if [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
-  add_pr_target "$PR_NUMBER"
-elif [[ "$PR_NUMBER" =~ [^[:space:]] ]]; then
-  echo "WARNING: ignoring invalid PR_NUMBER '$PR_NUMBER' for workflow_pr_ready.sh" >&2
-fi
-if [ "${#pr_targets[@]}" -eq 0 ] && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  current_branch=$(git branch --show-current 2>/dev/null || true)
-  if [[ "$current_branch" =~ [^[:space:]] ]]; then
-    if branch_pr_numbers="$(gh_with_retry "pr list" pr list --head "$current_branch" --state all --json number --jq '.[].number')"; then
-      while IFS= read -r branch_pr_number; do add_pr_target "$branch_pr_number"; done <<< "$branch_pr_numbers"
-    else
-      echo "ERROR: unable to discover PRs for branch '$current_branch'; refusing to treat ambiguous GitHub state as no PR found" >&2
-      exit 1
-    fi
-  fi
-fi
-if [ "${#pr_targets[@]}" -eq 0 ]; then
-  echo "INFO: [skip] not a git repo or no PR_URL, valid PR_NUMBER, or branch PR found — skipping gh pr ready" >&2
+scoped_pr_json=""
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "INFO: [skip] not a git repo — skipping gh pr ready" >&2
   exit 0
 fi
+current_branch=$(git branch --show-current 2>/dev/null || true)
+local_head="$(git rev-parse --verify HEAD 2>/dev/null || true)"
+repo_identity="$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null || true)" || true)"
+expected_base="$(resolve_expected_base_branch || true)"
+[ -n "$repo_identity" ] || { echo "ERROR: unable to determine current GitHub repo identity from origin remote" >&2; exit 1; }
+[ -n "$current_branch" ] || { echo "ERROR: current branch is empty; refusing ambiguous PR readiness mutation" >&2; exit 1; }
+[ -n "$local_head" ] || { echo "ERROR: local HEAD does not resolve; refusing ambiguous PR readiness mutation" >&2; exit 1; }
+[ -n "$expected_base" ] || { echo "ERROR: unable to resolve expected base branch for scoped PR validation" >&2; exit 1; }
+[ -x "$PR_SCOPE_HELPER" ] || { echo "ERROR: workflow_pr_scope.sh missing or not executable at $PR_SCOPE_HELPER" >&2; exit 1; }
+if [[ "$PR_NUMBER" =~ [^[:space:]] ]] && ! [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: invalid PR_NUMBER '$PR_NUMBER' for workflow_pr_ready.sh" >&2
+  exit 1
+fi
+
+scope_args=(
+  --repo "$repo_identity"
+  --head "$current_branch"
+  --base "$expected_base"
+  --issue "${ISSUE_NUMBER:-${RECIPE_VAR_issue_number:-}}"
+  --work-item "${ISSUE_NUMBER:-${RECIPE_VAR_issue_number:-}}"
+  --head-sha "$local_head"
+)
+title_prefix="${EXPECTED_PR_TITLE_PREFIX:-${PR_EXPECTED_TITLE_PREFIX:-}}"
+[ -n "$title_prefix" ] && scope_args+=(--expected-pr-title-prefix "$title_prefix")
+[[ "$PR_URL" =~ [^[:space:]] ]] && scope_args+=(--pr-url "$PR_URL")
+[[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] && scope_args+=(--pr-number "$PR_NUMBER")
+if [[ "${WORKFLOW_STARTED_AT:-${RECIPE_STARTED_AT:-${TASK_STARTED_AT:-}}}" =~ [^[:space:]] ]]; then
+  scope_args+=(--created-after "${WORKFLOW_STARTED_AT:-${RECIPE_STARTED_AT:-${TASK_STARTED_AT:-}}}")
+fi
+if ! scoped_pr_json="$("$PR_SCOPE_HELPER" "${scope_args[@]}")"; then
+  reason="$(printf '%s' "$scoped_pr_json" | jq -r '.reason // ""' 2>/dev/null || true)"
+  if [ "$reason" = "no_scoped_pr" ] && [ -z "$PR_URL" ] && [ -z "$PR_NUMBER" ]; then
+    echo "INFO: [skip] no scoped PR matched current workflow identity — skipping gh pr ready" >&2
+    exit 0
+  fi
+  echo "ERROR: scoped PR validation failed before ready mutation: ${reason:-unknown}" >&2
+  exit 1
+fi
+pr_target="$(printf '%s' "$scoped_pr_json" | jq -r '.url // .number // empty')"
+[ -n "$pr_target" ] || { echo "ERROR: scoped PR validation returned no PR target" >&2; exit 1; }
 
 terminal_status="active-pr"
 closed_unmerged_seen="false"
-for pr_target in "${pr_targets[@]}"; do
+for pr_target in "$pr_target"; do
   if ! pr_json="$(gh_with_retry "pr view" pr view "$pr_target" --json number,state,isDraft,mergedAt,url,headRefName,baseRefName,headRefOid,headRepositoryOwner,headRepository,isCrossRepository)"; then
     echo "ERROR: unable to inspect PR '$pr_target' with gh; refusing to mutate ambiguous PR state" >&2
     exit 1

@@ -8,13 +8,13 @@ model: inherit
 
 # Fix Agent
 
-You are the workflow orchestrator for fix operations. Your role is to execute all 22 steps of DEFAULT_WORKFLOW.md with 100% workflow compliance, using pattern context to select specialized agents within workflow steps.
+You are the workflow orchestrator for fix operations. Your role is to execute the full `default-workflow` skill/recipe with 100% workflow compliance, using pattern context to select specialized agents within workflow steps.
 
 ## Core Responsibility
 
 Orchestrate the complete DEFAULT_WORKFLOW for every fix:
 
-1. Read DEFAULT_WORKFLOW.md
+1. Invoke the `default-workflow` skill/recipe
 2. Execute all 22 steps in order
 3. Use pattern context to select specialized agents
 4. Ensure 100% workflow compliance
@@ -292,7 +292,7 @@ Invoke specialized agents within workflow steps:
 
 The workflow is the single source of truth:
 
-- Read DEFAULT_WORKFLOW.md at start
+- Invoke the `default-workflow` skill/recipe at start
 - Follow all 22 steps in order
 - Use workflow-defined agent invocation points
 - Complete workflow before declaring fix done

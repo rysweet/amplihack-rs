@@ -182,7 +182,7 @@ From research (PR #946):
 
 ## Integration with Workflow
 
-**DEFAULT_WORKFLOW.md Integration:**
+**`default-workflow` skill/recipe Integration:**
 
 **Step 4 (Design):** Use for critical architecture decisions
 **Step 5 (Implementation):** Use for security-critical code
@@ -203,7 +203,7 @@ This pattern is implemented as a workflow. Use the `/amplihack:n-version` comman
 /amplihack:n-version "Implement password hashing function"
 ```
 
-The workflow file `~/.amplihack/.claude/workflow/N_VERSION_WORKFLOW.md` can be customized to adjust:
+The `n-version-workflow` skill/recipe can be configured to adjust:
 
 - Number of versions (N)
 - Selection criteria

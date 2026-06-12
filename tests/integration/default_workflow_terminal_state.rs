@@ -32,6 +32,21 @@ fn recipe_text(name: &str) -> String {
     fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }
 
+fn helper_text(name: &str) -> String {
+    let path = workspace_root()
+        .join("amplifier-bundle")
+        .join("tools")
+        .join(name);
+    fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
+fn workspace_helper_path(name: &str) -> PathBuf {
+    workspace_root()
+        .join("amplifier-bundle")
+        .join("tools")
+        .join(name)
+}
+
 fn load_recipe(name: &str) -> Value {
     let path = recipe_path(name);
     let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
@@ -134,6 +149,10 @@ fn commit_feature_change(worktree: &Path) {
     run_cmd(worktree, "git", &["commit", "-m", "feature"]);
 }
 
+fn set_origin_url(repo: &Path, url: &str) {
+    run_cmd(repo, "git", &["remote", "set-url", "origin", url]);
+}
+
 fn git_head(dir: &Path) -> String {
     let output = Command::new("git")
         .args(["rev-parse", "HEAD"])
@@ -162,6 +181,10 @@ if [ {exit_code} -ne 0 ]; then
   echo "fake gh failure" >&2
   exit {exit_code}
 fi
+if [ "${{1:-}}" = "pr" ] && [ "${{2:-}}" = "list" ]; then
+  printf '[]\n'
+  exit 0
+fi
 cat <<'JSON'
 {body}
 JSON
@@ -174,6 +197,35 @@ JSON
         fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).expect("chmod fake gh");
     }
     bin_dir
+}
+
+fn fake_gh_recorder(tmp: &TempDir, body: &str, exit_code: i32) -> (PathBuf, PathBuf) {
+    let bin_dir = tmp.path().join("bin");
+    fs::create_dir_all(&bin_dir).expect("create fake gh bin");
+    let log = tmp.path().join("gh-invocations.log");
+    let gh = bin_dir.join("gh");
+    let script = format!(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> {log:?}
+if [ {exit_code} -ne 0 ]; then
+  echo "fake gh failure" >&2
+  exit {exit_code}
+fi
+cat <<'JSON'
+{body}
+JSON
+"#,
+        log = log.display().to_string()
+    );
+    fs::write(&gh, script).expect("write fake gh recorder");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755))
+            .expect("chmod fake gh recorder");
+    }
+    (bin_dir, log)
 }
 
 fn matching_pr_json(worktree: &Path, state: &str, merged_at: &str) -> String {
@@ -212,6 +264,10 @@ fn run_terminal_state(
         .env("BASE_REF", "main")
         .env("PR_NUMBER", "")
         .env("PR_URL", pr_url.unwrap_or(""))
+        .env(
+            "WORKFLOW_PR_SCOPE_HELPER",
+            workspace_helper_path("workflow_pr_scope.sh"),
+        )
         .env("GOAL_ALREADY_MET", "false");
     if let Some(worktree_path) = worktree_path {
         cmd.env("RECIPE_VAR_worktree_setup__worktree_path", worktree_path);
@@ -374,7 +430,7 @@ fn terminal_state_probe_validates_inputs_before_git_or_github_trust() {
     let dirty_position = command
         .find("git status --porcelain")
         .expect("dirty worktree check must exist");
-    for trusted_probe in ["gh_with_retry \"pr view\"", "git diff --quiet"] {
+    for trusted_probe in ["workflow_pr_scope.sh", "git diff --quiet"] {
         let probe_position = command
             .find(trusted_probe)
             .unwrap_or_else(|| panic!("trusted probe `{trusted_probe}` must exist"));
@@ -399,8 +455,8 @@ fn terminal_state_probe_wraps_github_metadata_calls_with_bounded_retry() {
             "timeout 60 gh",
             "for attempt in 1 2 3",
             "retrying (${attempt}/3)",
-            "gh_with_retry \"pr view\"",
-            "gh_with_retry \"pr list\"",
+            "workflow_pr_scope.sh",
+            "scoped PR lookup failed",
             "unavailable PR metadata",
         ],
         "terminal-state GitHub adapter resilience",
@@ -409,8 +465,77 @@ fn terminal_state_probe_wraps_github_metadata_calls_with_bounded_retry() {
     assert!(
         !command.contains("gh pr view \"$pr_target\"")
             && !command.contains("gh pr list --head \"$BRANCH_INPUT\""),
-        "terminal-state must not call gh metadata endpoints directly without retry/error handling"
+        "terminal-state must not call gh metadata endpoints directly without scoped helper validation"
     );
+}
+
+#[test]
+fn current_work_pr_identity_delegates_to_scoped_helper() {
+    let terminal_state = recipe_text("workflow-terminal-state");
+    let tdd = recipe_text("workflow-tdd");
+    let publish = helper_text("workflow_publish_pr.sh");
+    let ready = helper_text("workflow_pr_ready.sh");
+    let final_status = helper_text("workflow_final_status.sh");
+
+    for (label, content) in [
+        ("workflow-terminal-state", terminal_state.as_str()),
+        ("workflow-tdd", tdd.as_str()),
+        ("workflow_publish_pr.sh", publish.as_str()),
+        ("workflow_pr_ready.sh", ready.as_str()),
+        ("workflow_final_status.sh", final_status.as_str()),
+    ] {
+        assert!(
+            content.contains("workflow_pr_scope.sh"),
+            "{label} must delegate current-work PR identity to workflow_pr_scope.sh"
+        );
+        for required in [
+            "expected_pr_title_prefix",
+            "created_after",
+            "headRefName",
+            "baseRefName",
+            "headRefOid",
+            "isCrossRepository",
+        ] {
+            assert!(
+                content.contains(required),
+                "{label} must pass/validate scoped PR field `{required}`"
+            );
+        }
+    }
+}
+
+#[test]
+fn current_work_pr_identity_never_uses_recent_author_or_first_result_fallbacks() {
+    let current_work_paths = [
+        "amplifier-bundle/recipes/workflow-terminal-state.yaml",
+        "amplifier-bundle/recipes/workflow-tdd.yaml",
+        "amplifier-bundle/tools/workflow_publish_pr.sh",
+        "amplifier-bundle/tools/workflow_pr_ready.sh",
+        "amplifier-bundle/tools/workflow_final_status.sh",
+    ];
+
+    let forbidden = [
+        "gh pr list --author",
+        "--author @me",
+        "--author=@me",
+        "sort:updated-desc",
+        "sort:created-desc",
+        ".[0] // {}",
+        "head -1",
+        "tail -1",
+        "grep -i",
+    ];
+
+    for rel in current_work_paths {
+        let content = fs::read_to_string(workspace_root().join(rel))
+            .unwrap_or_else(|e| panic!("read {rel}: {e}"));
+        for needle in forbidden {
+            assert!(
+                !content.contains(needle),
+                "{rel} must not infer current-work PR identity via broad/recent fallback `{needle}`"
+            );
+        }
+    }
 }
 
 #[test]
@@ -515,6 +640,128 @@ fn terminal_state_continues_for_dirty_target_worktree_without_terminal_success()
 }
 
 #[test]
+fn terminal_state_skips_github_pr_list_for_https_azure_remote() {
+    let fixture = setup_repo();
+    set_origin_url(
+        &fixture.repo,
+        "https://dev.azure.com/example/project/_git/repo",
+    );
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let (fake_path, gh_log) = fake_gh_recorder(&fake_tmp, "", 1);
+
+    let run = run_terminal_state(&fixture.repo, None, "main", None, &fake_path);
+
+    assert!(
+        run.success,
+        "Azure no-diff branch must rely on local git safety without gh\nstdout:\n{}\nstderr:\n{}",
+        run.stdout, run.stderr
+    );
+    assert_eq!(run.json["terminal_state"], "NO_DIFF_SUCCESS");
+    assert!(
+        !gh_log.exists(),
+        "Azure remotes must not invoke gh pr list; invocations:\n{}",
+        fs::read_to_string(&gh_log).unwrap_or_default()
+    );
+}
+
+#[test]
+fn terminal_state_skips_github_pr_list_for_ssh_azure_remote() {
+    let fixture = setup_repo();
+    set_origin_url(
+        &fixture.repo,
+        "git@ssh.dev.azure.com:v3/example/project/repo",
+    );
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let (fake_path, gh_log) = fake_gh_recorder(&fake_tmp, "", 1);
+
+    let run = run_terminal_state(&fixture.repo, None, "main", None, &fake_path);
+
+    assert!(
+        run.success,
+        "Azure SSH no-diff branch must rely on local git safety without gh\nstdout:\n{}\nstderr:\n{}",
+        run.stdout, run.stderr
+    );
+    assert_eq!(run.json["terminal_state"], "NO_DIFF_SUCCESS");
+    assert!(
+        !gh_log.exists(),
+        "Azure SSH remotes must not invoke gh pr list; invocations:\n{}",
+        fs::read_to_string(&gh_log).unwrap_or_default()
+    );
+}
+
+#[test]
+fn terminal_state_skips_github_pr_list_for_unknown_remote() {
+    let fixture = setup_repo();
+    set_origin_url(&fixture.repo, "ssh://git@example.invalid/project/repo.git");
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let (fake_path, gh_log) = fake_gh_recorder(&fake_tmp, "", 1);
+
+    let run = run_terminal_state(&fixture.repo, None, "main", None, &fake_path);
+
+    assert!(
+        run.success,
+        "unknown no-diff branch must rely on local git safety without gh\nstdout:\n{}\nstderr:\n{}",
+        run.stdout, run.stderr
+    );
+    assert_eq!(run.json["terminal_state"], "NO_DIFF_SUCCESS");
+    assert!(
+        !gh_log.exists(),
+        "unknown remotes must not invoke gh pr list; invocations:\n{}",
+        fs::read_to_string(&gh_log).unwrap_or_default()
+    );
+}
+
+#[test]
+fn terminal_state_keeps_meaningful_diff_active_on_non_github_remote_without_metadata() {
+    let fixture = setup_repo();
+    set_origin_url(
+        &fixture.repo,
+        "https://contoso.visualstudio.com/project/_git/repo",
+    );
+    let worktree = create_feature_worktree(&fixture);
+    commit_feature_change(&worktree);
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let (fake_path, gh_log) = fake_gh_recorder(&fake_tmp, "", 1);
+
+    let run = run_terminal_state(&fixture.repo, Some(&worktree), "feature", None, &fake_path);
+
+    assert!(
+        run.success,
+        "non-GitHub meaningful diffs should continue workflow without requiring GitHub metadata\nstdout:\n{}\nstderr:\n{}",
+        run.stdout, run.stderr
+    );
+    assert_eq!(run.json["terminal_success"], "false");
+    assert_eq!(run.json["terminal_state"], "FOLLOWUP_CREATED");
+    assert_eq!(run.json["branch_diff_status"], "has-diff");
+    assert_eq!(run.json["should_publish"], "true");
+    assert!(
+        !gh_log.exists(),
+        "non-GitHub remotes with meaningful diff must not invoke gh; invocations:\n{}",
+        fs::read_to_string(&gh_log).unwrap_or_default()
+    );
+}
+
+#[test]
+fn terminal_state_still_discovers_branch_prs_for_github_remote() {
+    let fixture = setup_repo();
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let (fake_path, gh_log) = fake_gh_recorder(&fake_tmp, "{}", 0);
+
+    let run = run_terminal_state(&fixture.repo, None, "main", None, &fake_path);
+
+    assert!(
+        run.success,
+        "GitHub no-diff branch should still complete after PR discovery\nstdout:\n{}\nstderr:\n{}",
+        run.stdout, run.stderr
+    );
+    let gh_invocations = fs::read_to_string(&gh_log).unwrap_or_default();
+    assert!(
+        gh_invocations.contains("pr list --repo owner/repo --head main"),
+        "GitHub remotes must retain scoped same-branch PR discovery; invocations:\n{gh_invocations}"
+    );
+}
+
+#[test]
 fn terminal_state_rejects_stale_pr_head_sha() {
     let fixture = setup_repo();
     let worktree = create_feature_worktree(&fixture);
@@ -536,7 +783,7 @@ fn terminal_state_rejects_stale_pr_head_sha() {
     assert!(!run.success, "stale PR head SHA must fail closed");
     assert_eq!(run.json["terminal_state"], "FAILED_INVALID_INPUT");
     assert!(
-        run.stderr.contains("stale PR metadata"),
+        run.stderr.contains("no_scoped_pr"),
         "stderr should explain stale PR metadata: {}",
         run.stderr
     );
@@ -564,7 +811,7 @@ fn terminal_state_rejects_cross_repo_pr_url() {
     assert!(!run.success, "cross-repo PR metadata must fail closed");
     assert_eq!(run.json["terminal_state"], "FAILED_INVALID_INPUT");
     assert!(
-        run.stderr.contains("does not match current repo"),
+        run.stderr.contains("no_scoped_pr"),
         "stderr should explain repo identity mismatch: {}",
         run.stderr
     );
@@ -670,7 +917,7 @@ fn terminal_state_fails_closed_when_required_pr_metadata_is_unavailable() {
     );
     assert_eq!(run.json["terminal_state"], "FAILED_INVALID_INPUT");
     assert!(
-        run.stderr.contains("unavailable PR metadata"),
+        run.stderr.contains("pr_metadata_unavailable"),
         "stderr should explain unavailable metadata: {}",
         run.stderr
     );

@@ -90,6 +90,8 @@ steps:
         ANY code; OR write/add tests; OR open a PR; OR modify files in
         `src/` / `crates/` / `bins/`. Multi-requirement tasks with numbered
         items `(1)`, `(2)`, `(3)` are almost always Development.
+      - Development classification always routes to `default-workflow`; model-provided recipe fields do not override that invariant.
+      - Hybrid decompositions route each workstream by its own normalized classification.
       - When in doubt between Operations and Development, choose Development.
 
       **Decomposition override**: {{force_single_workstream}} — if "true", use exactly 1 workstream regardless of task structure.

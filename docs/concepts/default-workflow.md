@@ -32,78 +32,86 @@ customizable: true
 
 # Default Coding Workflow
 
-This file defines the default workflow for all non-trivial code changes.
+> **Deprecated legacy reference**: the canonical default development workflow is
+> the `default-workflow` skill/recipe. This file remains only for migration and
+> backward-compatibility context.
 
-You can customize this workflow by editing this file.
+This legacy file describes the old markdown workflow for non-trivial code
+changes. Customize active behavior in
+`amplifier-bundle/skills/default-workflow/SKILL.md` and
+`amplifier-bundle/recipes/default-workflow.yaml`, not by editing this file.
 
 ## How This Workflow Works
 
-**This workflow is the single source of truth for:**
+**This legacy reference is not the source of truth.** The canonical
+`default-workflow` skill/recipe defines active behavior for:
 
 - The order of operations (steps must be followed sequentially)
 - Git workflow (branch, commit, push, PR process)
 - CI/CD integration points
 - Review and merge requirements
 
-`default-workflow` is also idempotent around completed or obsolete work. Before
-publish, PR review, CI waiting, or merge can mutate Git or GitHub state, the
-workflow evaluates a terminal-state contract. Finalization remains the
-non-mutating arbiter that records the final decision. A proven terminal success
-stops the remaining mutation path instead of creating duplicate commits,
-duplicate follow-up PRs, or stale post-merge publish attempts.
+The terminal-state closure feature makes `default-workflow` idempotent around
+completed or obsolete work. Before publish, PR review, CI waiting, or merge can
+mutate Git or provider state, the workflow evaluates a terminal-state contract.
+Finalization remains the non-mutating arbiter that records the final decision. A
+proven terminal success stops the remaining mutation path instead of creating
+duplicate commits, duplicate follow-up PRs, or stale post-merge publish
+attempts.
 
-### Terminal-State Contract
+### Terminal-State Target Contract
 
-`workflow-terminal-state` is the evidence gate shared by publish, PR review, and
-finalize. It returns these outputs:
+`workflow-terminal-state` is the target evidence gate shared by publish, PR
+review, and finalize. It returns these outputs:
 
 | Output | Meaning |
 | --- | --- |
 | `terminal_success` | `true` only when the workflow can stop successfully without publishing more work. |
-| `terminal_state` | Stable status such as `MERGED`, `CLOSED_OBSOLETE`, `NO_DIFF_SUCCESS`, `FOLLOWUP_CREATED`, or `BLOCKED_CI`. |
+| `terminal_state` | Stable status such as `MERGED`, `CLOSED_OBSOLETE`, `NO_DIFF_SUCCESS`, `FOLLOWUP_CREATED`, `FAILED_MEANINGFUL_DIFF`, or `BLOCKED_CI`. |
 | `terminal_reason` | Human-readable evidence for the decision. |
 | `publish_status` | Publish-facing status using the same vocabulary as the terminal state. |
-| `should_publish` | `true` only when meaningful unmerged work should be committed, pushed, and represented by a PR. |
-| `should_finalize` | `true` when the workflow should route to finalize so it can emit the non-mutating final decision; `false` when no finalize phase is part of the current path. |
+| `should_publish` | `true` only when meaningful unmerged work should continue through a publish path. |
+| `should_finalize` | `true` when the workflow should route to finalize so it can emit the non-mutating final decision. |
 | `should_run_ci_wait` | `true` only when CI should be waited on for an active publish path. |
 | `should_merge` | `true` only when merge remains valid for green, active work. |
 
-The probe fails closed. It validates these context inputs before trusting shell
-or GitHub CLI output:
+The probe always validates local Git evidence before trusting provider
+metadata:
 
 | Input | Requirement |
 | --- | --- |
 | `repo_path` | Existing Git repository used for all local diff and status checks. |
 | `branch_name` | Current or expected branch ref; malformed refs block terminal success. |
 | `base_ref` | Intended comparison base, usually the resolved remote default branch. |
-| `pr_number` | Numeric PR identifier when recovery is tied to an existing PR. |
-| `pr_url` | Same-repository PR URL when a URL is supplied instead of `pr_number`. |
+| `pr_number` | Numeric GitHub PR identifier used only after a GitHub PR URL or GitHub remote enables metadata. A bare number does not imply GitHub support. |
+| `pr_url` | Provider PR URL. GitHub URLs enable GitHub metadata; non-GitHub URLs are provider signals and otherwise remain opaque. |
 | `goal_already_met` | Optional design evidence; never overrides dirty, diff, PR, or CI blockers. |
 
-Malformed inputs, unavailable PR metadata, missing base refs, and GitHub CLI
-errors fail closed. The workflow reports the specific evidence gap instead of
-converting an untrusted probe into terminal success.
-
-Terminal-state detection uses this order:
+Terminal-state detection is provider-aware:
 
 1. Dirty worktree check. Any uncommitted change blocks terminal success because
    the workflow cannot prove the work is complete or safe to ignore.
-2. Merged PR evidence. A merged PR, including a closed PR with `mergedAt`
-   evidence, returns `MERGED`.
-3. Closed obsolete proof. A closed, unmerged PR returns `CLOSED_OBSOLETE` only
-   when the branch is clean and the intended changes are already represented
-   upstream or there is no meaningful remaining diff.
+2. Provider capability check. Explicit GitHub PR URLs and GitHub `origin`
+   remotes enable GitHub PR metadata. Azure Repos, `visualstudio.com`,
+   `ssh.dev.azure.com`, and unknown remotes do not.
+3. GitHub PR metadata, when enabled. Matching merged PRs return `MERGED`;
+   closed-unmerged PRs require local obsolete/no-diff proof. Metadata failures
+   fail closed only when the decision depends on GitHub PR proof, such as
+   proving a PR is merged, validating a supplied GitHub PR target, or deciding
+   whether meaningful local work is safe to close.
 4. Clean no-diff proof. A clean branch with no meaningful diff or commits
-   against the intended base returns `NO_DIFF_SUCCESS`.
-5. Meaningful remaining diff. The workflow continues to the publish path and
-   may emit `FOLLOWUP_CREATED`, or `BLOCKED_CI` if checks fail.
+   against the intended base returns `NO_DIFF_SUCCESS`, including on GitHub
+   remotes where PR metadata is unavailable.
+5. Meaningful remaining diff. The workflow cannot claim terminal success. On
+   non-GitHub remotes this decision is based on local Git evidence and does not
+   require `gh`.
 
 The successful terminal states are:
 
 | State | Required evidence | Workflow behavior |
 | --- | --- | --- |
-| `MERGED` | PR is merged, or is closed with merge evidence such as `mergedAt`. | Stop before version bump, commit, push, PR creation/update, CI wait, and merge. |
-| `CLOSED_OBSOLETE` | PR is closed without merge evidence, the worktree is clean, and equivalent work is already upstream or no meaningful branch work remains. | Stop successfully and record the obsolete proof. |
+| `MERGED` | GitHub PR is merged, or is closed with merge evidence such as `mergedAt`. Only available for GitHub-backed targets. | Stop before version bump, commit, push, PR creation/update, CI wait, and merge. |
+| `CLOSED_OBSOLETE` | Worktree is clean and equivalent work is already upstream or no meaningful branch work remains. GitHub closed-PR metadata may support this state but is not required on non-GitHub remotes. | Stop successfully and record the obsolete proof. |
 | `NO_DIFF_SUCCESS` | Worktree is clean and there are no meaningful diffs or commits against the intended base. | Stop successfully without creating a no-op commit or follow-up PR. |
 
 The loud blocking states include:
@@ -111,12 +119,20 @@ The loud blocking states include:
 | State | Meaning |
 | --- | --- |
 | `FAILED_DIRTY_WORKTREE` | Uncommitted changes are present. Commit, stash, or remove them through the workflow before claiming terminal success. |
-| `FAILED_CLOSED_UNMERGED` | The PR is closed without merge evidence and obsolete/no-diff proof is missing. |
-| `FAILED_MEANINGFUL_DIFF` | Meaningful branch changes remain but cannot be safely published. |
+| `FAILED_CLOSED_UNMERGED` | A GitHub PR is closed without merge evidence and obsolete/no-diff proof is missing. |
+| `FAILED_MEANINGFUL_DIFF` | Meaningful branch changes remain but cannot be safely treated as terminal success. |
+| `FAILED_PR_METADATA_UNAVAILABLE` | GitHub metadata is required for a GitHub PR proof or meaningful-diff safety decision but cannot be loaded. This is not used merely because an Azure or unknown remote lacks GitHub metadata. |
 | `BLOCKED_CI` | Required checks are failing or a CI policy blocks publish or merge. |
 
-Malformed inputs, unavailable PR metadata, missing base refs, and GitHub CLI
-errors are loud blockers even when they do not share one stable status name.
+`workflow-terminal-state` never invokes `gh pr list`, `gh pr view`, or related
+GitHub metadata commands for Azure Repos, `visualstudio.com`,
+`ssh.dev.azure.com`, or unknown remotes. Those remotes rely on local Git safety
+checks: clean worktree, resolvable base ref, branch/base diff inspection, and
+meaningful-diff blocking. Supplying `pr_number` alone does not change that; the
+remote or `pr_url` must first prove GitHub capability.
+
+For the complete usage, API, configuration, and examples, see
+[Workflow Terminal-State Provider Safety](../reference/workflow-terminal-state-provider-safety.md).
 
 `goal_already_met` remains compatible with older design outputs, but it is not a
 shortcut around evidence. A goal-met claim can support terminal success only
@@ -124,9 +140,27 @@ when the terminal-state probe also proves a clean no-diff, merged, or obsolete
 state. Dirty work, failing CI, closed-unmerged PRs, and meaningful unmerged diffs
 override `goal_already_met`.
 
+The same terminal-state system is the target final closure gate for development
+tasks. A code-change workflow cannot report success after only planning,
+analysis, design, or worktree preparation. Before `default-workflow` or a routed
+`smart-orchestrator` development workstream exits successfully, it must prove one
+of these states:
+
+- implementation and verification completed
+- publish, PR, merge, obsolete, or no-diff state reached
+- explicit terminal no-op such as `allow_no_op`, `MERGED`, `SUPERSEDED`,
+  `CLOSED_OBSOLETE`, or `NO_DIFF_SUCCESS`
+
+If the evidence is missing, malformed, or contradictory, the workflow exits
+nonzero with observed phases, missing evidence, and the next action. See
+[Workflow Terminal-State Reference](../reference/workflow-terminal-state.md) for
+the marker contract and
+[How to Diagnose Workflow Terminal-State Failures](../howto/diagnose-workflow-terminal-state.md)
+for recovery examples.
+
 ## When This Workflow Applies
 
-This workflow should be followed for:
+The canonical `default-workflow` skill/recipe applies to:
 
 - New features
 - Bug fixes
@@ -135,11 +169,11 @@ This workflow should be followed for:
 
 **Execution approach:**
 
-- Start with using the SlashCommand(amplihack:ultrathink) for any non-trivial task
-- The workflow defines the process; agents execute the work
-- Each step below leverages specialized agents whenever possible
-- UltraThink orchestrates parallel agent execution for maximum efficiency
-- When you customize this workflow, UltraThink adapts automatically
+- Route normal DEV, INVESTIGATE, and HYBRID tasks through `dev-orchestrator`
+  and `smart-orchestrator`
+- Use `amplihack recipe run default-workflow -c task_description="..." -c repo_path=.`
+  only for standalone compatibility execution
+- Treat the steps below as migration context for old markdown-workflow installs
 
 ## TodoWrite Best Practices
 
@@ -217,7 +251,7 @@ Agents that skip workflow steps (especially mandatory review steps 10, 16-17) cr
 
 **Checklist:**
 
-- [ ] **Read this entire workflow file** - Understand all 22 steps (0-21) before starting
+- [ ] **Use the `default-workflow` skill/recipe** - Do not treat this legacy markdown file as authoritative
 - [ ] **Create TodoWrite entries for ALL steps (0-21)** using format: `Step N: [Step Name] - [Specific Action]`
 - [ ] **Mark each step complete ONLY when truly done** - No premature completion
 - [ ] **Task is NOT complete until Step 21 is marked complete**
@@ -285,7 +319,7 @@ of falling back to local `HEAD`.
 
 ### Step 5: Research and Design
 
-**⚠️ INVESTIGATION-FIRST PATTERN**: If the existing codebase or system is unfamiliar/complex, consider running the Skills tool Skill(investigation-workflow) or ~.claude/workflow/INVESTIGATION_WORKFLOW.md FIRST, then return here to continue development. This is especially valuable when:
+**⚠️ INVESTIGATION-FIRST PATTERN**: If the existing codebase or system is unfamiliar/complex, route through `dev-orchestrator`/`smart-orchestrator` or use the `investigation-workflow` skill/recipe first, then return to development. This is especially valuable when:
 
 - The codebase area is unfamiliar or poorly documented
 - The feature touches multiple complex subsystems

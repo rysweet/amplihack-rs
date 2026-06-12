@@ -31,10 +31,10 @@ Work autonomously. Follow workflows without asking permission between steps. Onl
 
 ## Workflow Configuration
 
-**Selected**: DEFAULT_WORKFLOW (`@~/.amplihack/.claude/workflows/DEFAULT_WORKFLOW.md`)
+**Selected**: `default-workflow` skill/recipe
 **Consensus Depth**: balanced
 
-Use CONSENSUS_WORKFLOW for: ambiguous requirements, architectural changes, critical/security code, public APIs.
+Use the `consensus-workflow` skill/recipe for: ambiguous requirements, architectural changes, critical/security code, public APIs.
 
 ## Behavioral Rules
 

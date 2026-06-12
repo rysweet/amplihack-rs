@@ -123,6 +123,8 @@ context:
   should_finalize: "true"
   should_run_ci_wait: "true"
   should_merge: "true"
+  implementation_terminal_evidence: ""
+  verification_terminal_evidence: ""
 
 steps:
   # Git precondition is enforced in workflow-prep/step-01 before the first

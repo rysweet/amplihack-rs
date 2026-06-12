@@ -1,9 +1,12 @@
 //! Launcher generation and process spawning for workstreams.
 
-use super::models::Workstream;
+use super::models::{ProcessScope, Workstream, WorkstreamScope};
+use super::process_scope::{normalize_path, process_start_metadata};
 use super::state::persist_state;
 use super::utils::{rand_u32, set_executable, tail_output};
+use amplihack_types::workflow;
 use anyhow::{Context, Result};
+use chrono::Utc;
 use std::collections::HashMap;
 use std::fs;
 use std::process::{Child, Command, Stdio};
@@ -29,6 +32,64 @@ pub(super) fn detect_delegate() -> String {
     }
     // Default to claude
     "amplihack claude".to_string()
+}
+
+pub(super) fn populate_workstream_scope(ws: &mut Workstream, repo_url: &str, base_ref: &str) {
+    let repository = parse_github_repo_identity(repo_url).unwrap_or_else(|| repo_url.to_string());
+    let repo_root = normalize_path(&ws.work_dir);
+    let tree_id =
+        std::env::var("AMPLIHACK_TREE_ID").unwrap_or_else(|_| format!("{:08x}", rand_u32()));
+    let recipe_run_id =
+        std::env::var("AMPLIHACK_RECIPE_RUN_ID").unwrap_or_else(|_| tree_id.clone());
+    let issue_id = ws.issue.to_string();
+    ws.workstream_scope = WorkstreamScope {
+        repository,
+        repo_root: repo_root.clone(),
+        workdir: repo_root,
+        branch: ws.branch.clone(),
+        base_ref: base_ref.to_string(),
+        issue_id: issue_id.clone(),
+        work_item_id: issue_id,
+        recipe: ws.recipe.clone(),
+        recipe_run_id,
+        tree_id,
+        workstream_id: format!("ws-{}", ws.issue),
+        expected_title_prefix: ws.description.clone(),
+        started_at: Utc::now().to_rfc3339(),
+    };
+}
+
+fn parse_github_repo_identity(url: &str) -> Option<String> {
+    let mut path = if let Some(rest) = url.strip_prefix("git@github.com:") {
+        rest.to_string()
+    } else if let Some(rest) = url.strip_prefix("ssh://git@github.com/") {
+        rest.to_string()
+    } else if let Some(rest) = url.strip_prefix("https://github.com/") {
+        rest.to_string()
+    } else if let Some(rest) = url.strip_prefix("http://github.com/") {
+        rest.to_string()
+    } else if (url.starts_with("https://") || url.starts_with("http://"))
+        && url.contains("@github.com/")
+    {
+        url.split("@github.com/").nth(1)?.to_string()
+    } else {
+        return None;
+    };
+    if let Some((before, _)) = path.split_once('?') {
+        path = before.to_string();
+    }
+    if let Some((before, _)) = path.split_once('#') {
+        path = before.to_string();
+    }
+    path = path.trim_end_matches(".git").to_string();
+    let mut parts = path.split('/');
+    let owner = parts.next()?.trim();
+    let repo = parts.next()?.trim();
+    if owner.is_empty() || repo.is_empty() {
+        None
+    } else {
+        Some(format!("{owner}/{repo}"))
+    }
 }
 
 /// Build context map for recipe-based resume.
@@ -57,6 +118,7 @@ pub(super) fn build_resume_context(ws: &Workstream) -> HashMap<String, serde_jso
             serde_json::Value::String(ws.resume_checkpoint.clone()),
         );
     }
+
     if !ws.worktree_path.is_empty() {
         ctx.insert(
             "worktree_setup".to_string(),
@@ -111,8 +173,11 @@ exec amplihack recipe run {recipe} $CONTEXT_FLAGS --verbose
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
-    let tree_id =
-        std::env::var("AMPLIHACK_TREE_ID").unwrap_or_else(|_| format!("{:08x}", rand_u32()));
+    let tree_id = if ws.workstream_scope.tree_id.is_empty() {
+        std::env::var("AMPLIHACK_TREE_ID").unwrap_or_else(|_| format!("{:08x}", rand_u32()))
+    } else {
+        ws.workstream_scope.tree_id.clone()
+    };
     let max_depth = std::env::var("AMPLIHACK_MAX_DEPTH").unwrap_or_else(|_| "3".to_string());
     let max_sessions = std::env::var("AMPLIHACK_MAX_SESSIONS").unwrap_or_else(|_| "10".to_string());
 
@@ -132,7 +197,11 @@ export AMPLIHACK_WORKTREE_PATH='{worktree_path}'
 exec bash launcher.sh
 "#,
         work_dir = ws.work_dir.display(),
+        tree_id = tree_id,
         depth = depth + 1,
+        max_depth = max_depth,
+        max_sessions = max_sessions,
+        delegate = delegate,
         issue = ws.issue,
         progress_file = ws.progress_file.display(),
         state_file = ws.state_file.display(),
@@ -150,9 +219,13 @@ pub(super) fn write_classic_launcher(ws: &Workstream, delegate: &str) -> Result<
     fs::write(
         &task_md,
         format!(
-            "# Issue #{}\n\n{}\n\nFollow DEFAULT_WORKFLOW.md autonomously. \
-             NO QUESTIONS. Work through Steps 0-22. Create PR when complete.",
-            ws.issue, ws.task
+            "# Issue #{}\n\n{}\n\nUse the canonical {} autonomously via {} and {}. \
+             NO QUESTIONS. Work through all required workflow steps. Create PR when complete.",
+            ws.issue,
+            ws.task,
+            workflow::DEFAULT_WORKFLOW_SELECTION,
+            workflow::DEV_ORCHESTRATOR_SKILL,
+            workflow::SMART_ORCHESTRATOR_RECIPE_COMMAND
         ),
     )?;
 
@@ -160,8 +233,11 @@ pub(super) fn write_classic_launcher(ws: &Workstream, delegate: &str) -> Result<
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
-    let tree_id =
-        std::env::var("AMPLIHACK_TREE_ID").unwrap_or_else(|_| format!("{:08x}", rand_u32()));
+    let tree_id = if ws.workstream_scope.tree_id.is_empty() {
+        std::env::var("AMPLIHACK_TREE_ID").unwrap_or_else(|_| format!("{:08x}", rand_u32()))
+    } else {
+        ws.workstream_scope.tree_id.clone()
+    };
     let max_depth = std::env::var("AMPLIHACK_MAX_DEPTH").unwrap_or_else(|_| "3".to_string());
     let max_sessions = std::env::var("AMPLIHACK_MAX_SESSIONS").unwrap_or_else(|_| "10".to_string());
 
@@ -173,10 +249,17 @@ export AMPLIHACK_TREE_ID='{tree_id}'
 export AMPLIHACK_SESSION_DEPTH='{depth}'
 export AMPLIHACK_MAX_DEPTH='{max_depth}'
 export AMPLIHACK_MAX_SESSIONS='{max_sessions}'
-{delegate} --subprocess-safe -- -p "@TASK.md Execute task autonomously following DEFAULT_WORKFLOW.md. NO QUESTIONS. Work through all steps. Create PR when complete."
+{delegate} --subprocess-safe -- -p "@TASK.md Execute task autonomously using the canonical {workflow_selection} via {dev_orchestrator} and {smart_orchestrator}. NO QUESTIONS. Work through all required workflow steps. Create PR when complete."
 "#,
         work_dir = ws.work_dir.display(),
+        tree_id = tree_id,
         depth = depth + 1,
+        max_depth = max_depth,
+        max_sessions = max_sessions,
+        delegate = delegate,
+        workflow_selection = workflow::DEFAULT_WORKFLOW_SELECTION,
+        dev_orchestrator = workflow::DEV_ORCHESTRATOR_SKILL,
+        smart_orchestrator = workflow::SMART_ORCHESTRATOR_RECIPE_COMMAND,
     );
     fs::write(&run_sh, run_content)?;
     set_executable(&run_sh)?;
@@ -213,6 +296,21 @@ pub(super) fn launch_workstream(
     ws.lifecycle_state = "running".to_string();
     ws.cleanup_eligible = false;
     ws.attempt += 1;
+    ws.process_scope = ProcessScope {
+        pid: Some(child.id()),
+        repository: ws.workstream_scope.repository.clone(),
+        repo_root: ws.workstream_scope.repo_root.clone(),
+        workdir: ws.workstream_scope.workdir.clone(),
+        branch: ws.workstream_scope.branch.clone(),
+        issue_id: ws.workstream_scope.issue_id.clone(),
+        work_item_id: ws.workstream_scope.work_item_id.clone(),
+        recipe_run_id: ws.workstream_scope.recipe_run_id.clone(),
+        tree_id: ws.workstream_scope.tree_id.clone(),
+        workstream_id: ws.workstream_scope.workstream_id.clone(),
+        process_started_at: process_start_metadata(child.id())
+            .unwrap_or_else(|| Utc::now().to_rfc3339()),
+        recorded_at: Utc::now().to_rfc3339(),
+    };
 
     println!("[{issue}] Launched PID {} ({mode} mode)", child.id());
 

@@ -218,7 +218,7 @@ Proven methodologies for consistent, high-quality results.
 
 ### Core Workflows
 
-- [Default Workflow](claude/workflow/DEFAULT_WORKFLOW.md) - Standard multi-step development process
+- [Default Workflow](claude/skills/default-workflow/SKILL.md) - Standard multi-step development process
 - [Investigation Workflow](claude/workflow/INVESTIGATION_WORKFLOW.md) - Deep codebase analysis and understanding
 - [PR Recovery Readiness](PR_RECOVERY_READINESS.md) - Entry point for existing-PR recovery docs and the canonical readiness contract
 - [Document-Driven Development (DDD)](document_driven_development/README.md) - Documentation-first approach for large features
@@ -257,6 +257,9 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Recipe Runner Overview](recipes/README.md) - Architecture, YAML format, and creating custom recipes
 - [UltraThink Recipe Runner Integration](recipes/RECIPE_RUNNER_ULTRATHINK_INTEGRATION.md) - How ultrathink uses Recipe Runner for code-enforced workflow execution
 - [Recipe CLI Commands How-To](howto/recipe-cli-commands.md) - Task-oriented guide for using recipe commands
+- [Dev-Orchestrator Routing Contract](reference/dev-orchestrator-routing.md) - Issue #749 target rules for Development and hybrid workstream routing
+- [Verify Dev-Orchestrator Routing](howto/verify-dev-orchestrator-routing.md) - Check deterministic Development-to-default-workflow routing from the CLI
+- [Correlate Recipe Runs with Logs](howto/correlate-recipe-runs.md) - Match terminal output, final JSON, child process IDs, and runner log paths by run ID
 - [Recipe Executor Environment](reference/recipe-executor-environment.md) - Step-level variables plus subprocess environment contract for forced non-interactive recipe execution
 - [Validate Recipe Subprocess and Hook Input Contracts](howto/validate-recipe-subprocess-hook-contract.md) - Validate recipe child env handling and hook JSON compatibility
 - [Workflow Publish Import Validation](features/workflow-publish-import-validation.md) - Scoped publish import validation before commit/push
@@ -267,6 +270,9 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [How to Configure Workflow Execution Guardrails](howto/configure-workflow-execution-guardrails.md) - Supply `expected_gh_account`, inspect `execution_root`, and troubleshoot failures
 - [Tutorial: Workflow Execution Guardrails](tutorials/workflow-execution-guardrails.md) - End-to-end walkthrough of the guarded workflow contract
 - [Workflow Execution Guardrails Reference](reference/workflow-execution-guardrails.md) - Input fields, output schema, signals, and failure semantics
+- [Workflow Terminal-State Reference](reference/workflow-terminal-state.md) - Target contract for development completion evidence, no-op states, failure semantics, and shell helper API
+- [How to Diagnose Workflow Terminal-State Failures](howto/diagnose-workflow-terminal-state.md) - Investigate missing evidence after planning, analysis, design, or worktree-only runs
+- [Tutorial: Workflow Terminal-State Closure](tutorials/workflow-terminal-state-closure.md) - Walk through completion evidence, planning-only failure, and rerun semantics
 - [Workflow-Owned PR Recovery Readiness](features/pr-recovery-readiness.md) - Recover an existing PR through `default-workflow` with branch reuse, hook readiness, additive-copy readiness, and workflow-owned finalization
 - [Existing Branch Finalization Runbook](features/post-v0977-finalization.md) - Finish an already-implemented branch through preservation, validation, PR publication, CI gating, and policy-ready merge
 - [Workflow Artifact Guard (planned)](features/workflow-artifact-guard.md) - Planned `workflow-finalize` guard that will remove deterministic workflow/session artifacts before broad `git add -A` staging
@@ -291,7 +297,13 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Rust Runner Execution Reference](reference/rust-runner-execution.md) - Wrapper contract, stderr/stdout streams, JSONL events, environment variables, and security model
 - [Rust Runner Execution Architecture](concepts/rust-runner-execution-architecture.md) - CLI/runner responsibility split, stream ownership, progress events, and additive JSON preservation
 - [Recipe Runner Logging Reference](reference/recipe-runner-logging.md) - stderr progress, heartbeats, bounded snippets, JSONL events, and additive result fields
+- [Recipe Run Correlation Reference](reference/recipe-run-correlation.md) - Stable run IDs, `AMPLIHACK_RECIPE_RUN_ID`, pointer event schema, and final result fields
 - [Observe Recipe Progress Tutorial](tutorials/recipe-progress-transparency.md) - Watch live workflow progress, capture JSON, and debug failed steps
+- [Trace Recipe Run Correlation Tutorial](tutorials/recipe-run-correlation.md) - Follow one run across stderr pointers, final JSON, child PID, and JSONL logs
+- [Scoped Workflow Closure](concepts/scoped-workflow-closure.md) - Explicit persisted PR and process ownership model for default-workflow closure
+- [How to Configure Scoped Workflow Closure](howto/configure-scoped-workflow-closure.md) - Pass repository, branch, base, PR, tracking item, run, and start-time scope through workflow closure
+- [Tutorial: Scoped Workflow Closure](tutorials/scoped-workflow-closure.md) - Walk through scoped PR validation and stale process rejection
+- [Scoped Workflow Closure Reference](reference/scoped-workflow-closure.md) - Helper arguments, JSON schemas, state fields, Rust validation API, and failure semantics
 
 **Quick Start**:
 

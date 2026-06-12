@@ -146,7 +146,7 @@ ERROR_PATTERNS = {
 **Process**:
 
 1. Integrate with UltraThink workflow
-2. Follow full DEFAULT_WORKFLOW.md process
+2. Follow the full `default-workflow` skill/recipe process
 3. Multi-agent coordination
 4. Complete documentation and testing
 ```
@@ -241,7 +241,7 @@ For comprehensive fixes, automatically integrates with UltraThink:
 
 1. /fix comprehensive [pattern]
 2. → Calls /ultrathink with fix task
-3. → UltraThink reads DEFAULT_WORKFLOW.md
+3. → UltraThink invokes the `default-workflow` skill/recipe
 4. → Follows full multi-step process
 5. → Uses fix-agent and templates as needed
 ```

@@ -25,7 +25,7 @@
 | Agents             | `.claude/agents/amplihack/`         | Markdown Definitions | Specialized agent personas (architect, builder, reviewer, etc.)  |
 | Hooks              | `.claude/tools/amplihack/hooks/`    | Python Scripts       | Session lifecycle hooks (start, stop, pre/post tool use)         |
 | Recipes            | `.claude/recipes/`                  | YAML Files           | Multi-step workflow definitions executed by recipe runner        |
-| Workflows          | `.claude/workflows/`                | Markdown Files       | Development workflow blueprints (DEFAULT_WORKFLOW, etc.)         |
+| Workflows          | `.claude/workflows/`                | Markdown Files       | Deprecated legacy workflow references; canonical workflows are skills/recipes |
 | Commands           | `.claude/commands/`                 | Markdown/YAML        | Slash command definitions (/dev, /analyze, /improve, /fix)       |
 | Context Files      | `.claude/context/`                  | Markdown Files       | Project philosophy, patterns, trust guidelines                   |
 | Scenarios          | `.claude/scenarios/`                | Mixed                | Production-ready user-facing tool implementations                |

@@ -1,14 +1,13 @@
 # Recipe Runner Logging Reference
 
 Reference for live recipe progress, heartbeat events, bounded subprocess output
-snippets, and additive JSON fields emitted by `amplihack recipe run`.
-
-**Status:** Planned finished-state contract for the recipe-runner transparency
-feature.
+snippets, run correlation pointers, and additive JSON fields emitted by
+`amplihack recipe run`.
 
 ## Contents
 
 - [Output contract](#output-contract)
+- [Run identity and log pointers](#run-identity-and-log-pointers)
 - [Live progress lines](#live-progress-lines)
 - [Heartbeat events](#heartbeat-events)
 - [Recent output snippets](#recent-output-snippets)
@@ -40,6 +39,29 @@ amplihack recipe run default-workflow \
 
 The terminal still shows live progress because progress is written to `stderr`,
 while `result.json` contains only the final JSON result from `stdout`.
+
+## Run identity and log pointers
+
+Every run gets a stable UUID before the runner child starts. The wrapper exposes
+that UUID as `AMPLIHACK_RECIPE_RUN_ID` in the child environment and emits two
+correlation pointer lines to `stderr`.
+
+Early pointer:
+
+```text
+amplihack.recipe.log_pointer {"schema_version":1,"event":"early","run_id":"5b60657b-76ef-4f49-8a22-8b89ed75f43e","recipe_name":"default-workflow","cwd":"/home/user/src/myapp","worktree":"/home/user/src/myapp","branch":"main","task_description":"Add cache headers","runner_path":"/home/user/.local/bin/recipe-runner-rs","timestamp":"2026-06-12T03:55:11Z"}
+```
+
+Final pointer:
+
+```text
+amplihack.recipe.log_pointer {"schema_version":1,"event":"final","run_id":"5b60657b-76ef-4f49-8a22-8b89ed75f43e","recipe_name":"default-workflow","status":"success","worktree":"/home/user/src/myapp","branch":"main","child_pid":41822,"exit_code":0,"runner_path":"/home/user/.local/bin/recipe-runner-rs","log_paths":{"jsonl":"/tmp/default-workflow.jsonl"},"timestamp":"2026-06-12T04:21:39Z"}
+```
+
+Pointer events include only explicit known metadata. Missing branch, issue, PR,
+child PID, and log path fields are omitted. See
+[Recipe Run Correlation Reference](./recipe-run-correlation.md) for the complete
+schema.
 
 ## Live progress lines
 
@@ -155,6 +177,8 @@ Top-level result:
 | `duration_seconds` | number | no | Total recipe duration |
 | `progress_summary` | object | no | Last known phase/status, heartbeat count, and log path |
 | `failure_context` | object | no | Failure context for the first failing step |
+| `run_id` | string | no | Stable UUID for this recipe invocation |
+| `log_pointer` | object | no | Concise final pointer summary with status, child PID, runner path, worktree, branch, and log paths |
 
 Step result additive fields:
 
@@ -208,11 +232,16 @@ unknown diagnostic fields is a bug.
 When recipe logging is enabled, the log file contains JSONL events with enough
 context to reconstruct progress.
 
+The runner reads `AMPLIHACK_RECIPE_RUN_ID` from its environment and writes that
+same value to event `run_id` fields. The `amplihack recipe run` wrapper supplies
+the environment value but does not rewrite JSONL files after the child exits.
+
 Lifecycle event:
 
 ```json
 {
   "type": "step_lifecycle",
+  "run_id": "5b60657b-76ef-4f49-8a22-8b89ed75f43e",
   "recipe_name": "default-workflow",
   "step_index": 8,
   "total_steps": 23,
@@ -231,6 +260,7 @@ Heartbeat event:
 ```json
 {
   "type": "heartbeat",
+  "run_id": "5b60657b-76ef-4f49-8a22-8b89ed75f43e",
   "recipe_name": "default-workflow",
   "step_id": "code-implementation",
   "step_name": "Code implementation",
@@ -247,6 +277,7 @@ Output snippet event:
 ```json
 {
   "type": "output_snippet",
+  "run_id": "5b60657b-76ef-4f49-8a22-8b89ed75f43e",
   "recipe_name": "default-workflow",
   "step_id": "code-implementation",
   "source": "agent:builder",
@@ -272,6 +303,7 @@ variables or the matching keys in `~/.amplihack/config`.
 | `AMPLIHACK_RECIPE_SNIPPET_LINES` | `recipe.snippet_lines` | `20` | Maximum recent lines retained per source/stream. |
 | `AMPLIHACK_RECIPE_SNIPPET_BYTES` | `recipe.snippet_bytes` | `8192` | Maximum bytes retained per source/stream. |
 | `AMPLIHACK_RECIPE_LOG_JSONL` | `recipe.log_jsonl` | unset | Optional path for structured JSONL recipe events. |
+| `AMPLIHACK_RECIPE_RUN_ID` | none | generated | Stable run UUID injected by the wrapper into the child environment and copied by the runner into JSONL event `run_id` fields. Treat as read-only. |
 
 Environment variables take precedence over config-file keys.
 
@@ -283,9 +315,9 @@ amplihack recipe run default-workflow \
   --verbose
 ```
 
-`--progress` is not a supported `amplihack recipe run` flag. Passing it should
-fail fast with an actionable message explaining that progress is already emitted
-to `stderr` by default and that `--verbose` only increases diagnostic detail.
+`--progress` is not a supported `amplihack recipe run` flag. Passing it fails
+with an actionable message explaining that progress is already emitted to
+`stderr` by default and that `--verbose` only increases diagnostic detail.
 
 ## Examples
 
@@ -296,6 +328,14 @@ amplihack recipe run default-workflow \
   -c task_description="Add input validation" \
   -c repo_path=. \
   --format json > /tmp/recipe-result.json
+```
+
+Extract pointer events from a captured progress log:
+
+```sh
+grep '^amplihack\.recipe\.log_pointer ' /tmp/progress.log \
+  | sed 's/^amplihack\.recipe\.log_pointer //' \
+  | jq '{event, run_id, status, child_pid, exit_code, log_paths}'
 ```
 
 Write a JSONL event log:
@@ -318,6 +358,8 @@ jq '.step_results[]
 ## Related
 
 - [Run a Recipe End-to-End](../howto/run-a-recipe.md) - Usage guide
+- [Correlate Recipe Runs with Logs](../howto/correlate-recipe-runs.md) - Run ID workflow
+- [Recipe Run Correlation Reference](./recipe-run-correlation.md) - Pointer schema and final result fields
 - [RecipeResult Reference](./recipe-result.md) - Final result schema
 - [amplihack recipe Reference](./recipe-command.md) - Command-line flags
 - [Recipe Runner Architecture](../concepts/recipe-runner-architecture.md) - CLI and runner responsibility split

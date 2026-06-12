@@ -200,9 +200,10 @@ fn publish_helper_discovers_prs_with_exact_identity_validation() {
         "headRepositoryOwner",
         "headRepository",
         "isCrossRepository",
-        "validate_pr_identity",
+        "workflow_pr_scope.sh",
+        "scoped_pr_lookup",
         "parse_github_repo_identity",
-        "does not match current repo",
+        "scoped PR lookup failed",
     ] {
         assert!(
             command.contains(required),

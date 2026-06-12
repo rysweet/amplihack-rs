@@ -251,7 +251,7 @@ From research (PR #946):
 
 ## Integration with Workflow
 
-**DEFAULT_WORKFLOW.md Integration:**
+**`default-workflow` skill/recipe Integration:**
 
 **Step 4 (Design):** Use for architectural decisions
 **Step 5 (Implementation):** Use when multiple approaches viable
@@ -272,7 +272,7 @@ This pattern is implemented as a workflow. Use the `/amplihack:debate` command:
 /amplihack:debate "Should we add Redis for caching?"
 ```
 
-The workflow file `~/.amplihack/.claude/workflow/DEBATE_WORKFLOW.md` can be customized to adjust:
+The `debate-workflow` skill/recipe can be configured to adjust:
 
 - Agent perspectives (security, performance, simplicity, etc.)
 - Number of debate rounds

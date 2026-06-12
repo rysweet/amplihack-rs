@@ -20,6 +20,7 @@ All environment variables read or written by `amplihack` during a launch (`ampli
 - [Variables injected by recipe executor](#variables-injected-by-recipe-executor)
   - [AMPLIHACK_STEP_TIMEOUT](#amplihack_step_timeout)
   - [AMPLIHACK_NONINTERACTIVE (recipe runner subprocess)](#amplihack_noninteractive-recipe-runner-subprocess)
+  - [AMPLIHACK_RECIPE_RUN_ID](#amplihack_recipe_run_id)
   - [CLAUDECODE (recipe runner subprocess)](#claudecode-recipe-runner-subprocess)
   - [AMPLIHACK_RECIPE_HEARTBEAT_INTERVAL_SECONDS](#amplihack_recipe_heartbeat_interval_seconds)
   - [AMPLIHACK_RECIPE_SNIPPET_LINES](#amplihack_recipe_snippet_lines)
@@ -410,6 +411,37 @@ env -u AMPLIHACK_NONINTERACTIVE \
 
 ---
 
+### AMPLIHACK_RECIPE_RUN_ID
+
+**Type:** UUID string
+**Set by:** `amplihack recipe run` centralized subprocess environment
+**Read by:** `recipe-runner-rs`, recipe steps, child tools, and log consumers
+
+Stable correlation identity for one `amplihack recipe run` invocation. The CLI
+generates this UUID before spawning `recipe-runner-rs`, injects it into the child
+environment, writes it to early and final `amplihack.recipe.log_pointer` stderr
+events, and includes it in final JSON/YAML results as `run_id` when a result can
+be produced.
+
+```sh
+amplihack recipe run default-workflow \
+  -c task_description="Fix flaky retry tests" \
+  -c repo_path=. \
+  --format json > result.json 2> progress.log
+
+jq -r '.run_id' result.json
+grep '^amplihack\.recipe\.log_pointer ' progress.log
+```
+
+Treat this variable as read-only. Do not set it manually for normal use; the
+wrapper creates a fresh UUID for each invocation so concurrent runs do not share
+an identity.
+
+See [Recipe Run Correlation Reference](./recipe-run-correlation.md) for the
+pointer event schema and final result fields.
+
+---
+
 ### CLAUDECODE (recipe runner subprocess)
 
 **Type:** removed environment variable
@@ -510,8 +542,8 @@ Equivalent config key: `recipe.snippet_bytes` in `~/.amplihack/config`.
 **Read by:** `recipe-runner-rs`
 
 When set, writes structured JSONL recipe events to the specified file. Events
-include step lifecycle transitions, heartbeats, output snippets, and failure
-context. Human-readable progress still goes to stderr.
+include the recipe `run_id`, step lifecycle transitions, heartbeats, output
+snippets, and failure context. Human-readable progress still goes to stderr.
 
 ```sh
 AMPLIHACK_RECIPE_LOG_JSONL=/tmp/default-workflow.jsonl \

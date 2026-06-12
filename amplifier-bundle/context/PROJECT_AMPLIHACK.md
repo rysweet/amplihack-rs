@@ -29,7 +29,7 @@ amplihack/
 .claude/
 ├── agents/           # 29 specialized agents (6 core + 23 specialized)
 ├── commands/         # Slash commands (/ultrathink, /analyze, /fix)
-├── workflow/         # DEFAULT_WORKFLOW.md (customizable workflow)
+├── skills/           # Workflow skills, including default-workflow
 ├── tools/            # Session hooks (SessionStart, Stop, PostToolUse, PreCompact)
 ├── context/          # Philosophy, patterns, discoveries
 └── runtime/          # Logs, metrics, analysis
@@ -48,7 +48,8 @@ Characteristics: Single responsibility, clear delegation triggers, parallel exec
 
 Multi-step default workflow: Clarify → Issue → Branch → Test → Implement → Simplify → Test → Commit → PR → Review → Feedback → Philosophy → Merge
 
-Customizable via DEFAULT_WORKFLOW.md, orchestrated by UltraThink, integrates with git/CI/CD/hooks
+Canonical default workflow: `default-workflow` skill/recipe, normally routed by
+`dev-orchestrator` through `smart-orchestrator`, integrates with git/CI/CD/hooks
 
 ### Session Hooks
 
@@ -69,7 +70,7 @@ Multi-turn agentic loops (Clarify → Plan → Execute → Evaluate) working wit
 
 **Adding Agents**: Create in `~/.amplihack/.claude/agents/amplihack/specialized/`, define role, add delegation triggers, test, document
 
-**Modifying Workflows**: Edit DEFAULT_WORKFLOW.md, test with `/ultrathink`, document rationale
+**Modifying Workflows**: Update the `default-workflow` skill/recipe, test with `amplihack recipe run smart-orchestrator`, document rationale
 
 **Adding Commands**: Create in `~/.amplihack/.claude/commands/amplihack/`, implement logic, add help text, test execution
 
@@ -162,7 +163,7 @@ Identify need after 2-3 similar requests, design minimal viable implementation, 
 2. Explore `~/.amplihack/.claude/agents/amplihack/` for agent capabilities
 3. Study `~/.amplihack/.claude/context/PATTERNS.md` for proven solutions
 4. Try `/amplihack:*` commands in practice
-5. Examine `~/.amplihack/.claude/workflow/DEFAULT_WORKFLOW.md` for process understanding
+5. Examine the `default-workflow` skill/recipe for process understanding
 
 ---
 

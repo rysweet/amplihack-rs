@@ -8,6 +8,7 @@
 mod launcher;
 mod models;
 mod orchestrator;
+mod process_scope;
 mod state;
 mod utils;
 

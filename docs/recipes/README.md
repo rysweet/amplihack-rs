@@ -68,10 +68,16 @@ Complete documentation for using the Recipe Runner:
 
 - **[Recipe CLI Quick Reference](quick-reference.md)** - One-page cheat sheet (start here for quick lookup)
 - **[Recipe CLI Commands How-To](../howto/recipe-cli-commands.md)** - Task-oriented guide for using recipe commands
+- **[Correlate Recipe Runs with Logs](../howto/correlate-recipe-runs.md)** - Match terminal output, JSON results, child PIDs, and log paths by run ID
 - **[Recipe CLI Reference](../reference/recipe-cli-reference.md)** - Complete command-line reference with all options and exit codes
+- **[Recipe Run Correlation Reference](../reference/recipe-run-correlation.md)** - Stable run IDs, log pointer schema, and result fields
 - **[Recipe CLI Examples](cli-examples.md)** - Real-world usage scenarios (development, testing, CI/CD, team workflows)
 - **[Step 03 Host-Aware Tracking Idempotency](../reference/recipe-step-03-idempotency.md)** - GitHub issue, Azure Boards work-item, and local tracking reuse/create contract
 - **[Workflow Artifact Guard (planned)](../features/workflow-artifact-guard.md)** - planned `workflow-finalize` cleanup guard that will remove deterministic workflow/session artifacts before broad staging
+- **[Workflow Terminal-State Reference](../reference/workflow-terminal-state.md)** - Target contract for development workflow completion evidence, no-op states, routed failure propagation, and `workflow_final_status.sh` API
+- **[How to Diagnose Workflow Terminal-State Failures](../howto/diagnose-workflow-terminal-state.md)** - Recovery guide for missing terminal evidence after planning, analysis, design, or worktree-only execution
+- **[Tutorial: Workflow Terminal-State Closure](../tutorials/workflow-terminal-state-closure.md)** - Walk through successful evidence, planning-only failure, and rerun behavior
+- **[Scoped Workflow Closure](../reference/scoped-workflow-closure.md)** - Persisted PR, process, and workstream ownership contract for default-workflow closure
 
 ## Why It Exists
 
@@ -577,20 +583,23 @@ All bundled recipes pass YAML validation without errors.
 
 ## Integration with Amplihack
 
-### UltraThink
+### Dev Orchestrator
 
-When `/ultrathink` is invoked, it reads `DEFAULT_WORKFLOW.md` and orchestrates agents through each step. The Recipe Runner replaces this orchestration with code-enforced execution. The `default-workflow` recipe encodes the same 22 steps from `DEFAULT_WORKFLOW.md` in YAML, so the process stays identical while enforcement moves from prompts to code.
+When `dev-orchestrator` is invoked, it routes through the `smart-orchestrator`
+recipe. Development work then executes the `default-workflow` skill/recipe with
+code-enforced ordering, checkpoints, recursion guards, and quality gates.
 
 ```bash
-# Before: prompt-based enforcement
-/ultrathink "Add user authentication"
+# Normal: orchestrated execution
+amplihack recipe run smart-orchestrator \
+  --context task_description="Add user authentication"
 
-# After: code-enforced execution (same 22 steps)
+# Direct compatibility: run the default workflow recipe
 amplihack recipe run default-workflow \
   --context task_description="Add user authentication"
 ```
 
-Both approaches produce the same result. The difference is that the recipe version cannot skip steps.
+The recipe version is canonical because it cannot skip steps.
 
 ### Existing Agents
 
@@ -602,11 +611,11 @@ Recipes reference agents by their filename (without `.md`) from `~/.amplihack/.c
 
 ### Workflow Files
 
-The `default-workflow` recipe is a direct translation of `~/.amplihack/.claude/workflow/DEFAULT_WORKFLOW.md` into executable YAML. If you edit the workflow markdown, re-generate the recipe to keep them in sync:
-
-```bash
-amplihack recipe sync default-workflow
-```
+Legacy markdown workflow files are deprecated compatibility references. The
+`default-workflow` skill/recipe is the canonical representation for the default
+development workflow. Update `amplifier-bundle/skills/default-workflow/SKILL.md`
+for user-facing documentation and `amplifier-bundle/recipes/default-workflow.yaml`
+for executable behavior.
 
 ### CLI Integration
 
@@ -616,6 +625,5 @@ Recipe Runner commands are available under the `amplihack recipe` subcommand gro
 amplihack recipe list                    # List available recipes
 amplihack recipe run <name> [options]    # Execute a recipe
 amplihack recipe validate <file>         # Validate recipe YAML
-amplihack recipe sync <name>             # Sync recipe from workflow markdown
 amplihack recipe show <name>             # Print recipe steps and metadata
 ```

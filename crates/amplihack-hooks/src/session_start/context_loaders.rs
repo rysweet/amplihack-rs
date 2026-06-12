@@ -1,7 +1,7 @@
 //! Context loading functions for session start.
 
 use amplihack_cli::memory::{resolve_code_graph_db_path_for_project, summarize_code_graph};
-use amplihack_types::ProjectDirs;
+use amplihack_types::{ProjectDirs, workflow};
 use std::fs;
 
 pub(super) fn load_project_context(dirs: &ProjectDirs) -> Option<String> {
@@ -53,25 +53,7 @@ pub(super) fn load_workflow_context(dirs: &ProjectDirs) -> String {
         return build_suppressed_workflow_rules();
     }
 
-    let mut parts = vec![
-        "## Default Workflow".to_string(),
-        "The multi-step workflow is automatically followed by `/ultrathink`".to_string(),
-    ];
-
-    if let Some(path) = dirs.resolve_workflow_file() {
-        parts.push(format!("• To view the workflow: Read {}", path.display()));
-        parts.push("• To customize: Edit the workflow file directly".to_string());
-    } else {
-        parts.push("• To view the workflow: Read .claude/workflow/DEFAULT_WORKFLOW.md".to_string());
-        parts.push("• To customize: Edit the workflow file directly".to_string());
-    }
-
-    parts.push(
-        "• Steps include: Requirements → Issue → Branch → Design → Implement → Review → Merge"
-            .to_string(),
-    );
-
-    parts.join("\n")
+    workflow::DEFAULT_WORKFLOW_SESSION_CONTEXT.to_string()
 }
 
 pub(super) fn check_version(dirs: &ProjectDirs) -> Option<String> {
@@ -246,7 +228,7 @@ mod tests {
     }
 
     #[test]
-    fn load_workflow_context_uses_amplihack_root_override() {
+    fn load_workflow_context_uses_canonical_default_workflow_guidance() {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -272,16 +254,46 @@ mod tests {
         }
 
         assert!(context.contains("## Default Workflow"));
-        assert!(
-            context.contains(
-                framework
-                    .path()
-                    .join(".claude/workflow/DEFAULT_WORKFLOW.md")
-                    .display()
-                    .to_string()
-                    .as_str()
-            )
-        );
+        assert!(context.contains(workflow::DEFAULT_WORKFLOW_SELECTION));
+        assert!(context.contains(workflow::DEV_ORCHESTRATOR_SKILL));
+        assert!(context.contains(workflow::SMART_ORCHESTRATOR_RECIPE_COMMAND));
+        assert!(!context.contains("DEFAULT_WORKFLOW.md"));
+    }
+
+    #[test]
+    fn load_workflow_context_points_to_default_workflow_skill_recipe() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
+        let project = tempfile::tempdir().unwrap();
+        let framework = tempfile::tempdir().unwrap();
+        fs::create_dir_all(framework.path().join(".claude/workflow")).unwrap();
+        fs::write(
+            framework
+                .path()
+                .join(".claude/workflow/DEFAULT_WORKFLOW.md"),
+            "# Legacy Default Workflow\n",
+        )
+        .unwrap();
+        let previous = std::env::var_os("AMPLIHACK_ROOT");
+        unsafe { std::env::set_var("AMPLIHACK_ROOT", framework.path()) };
+
+        let context = load_workflow_context(&ProjectDirs::new(project.path()));
+
+        match previous {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_ROOT", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_ROOT") },
+        }
+
+        assert!(context.contains("`default-workflow` skill/recipe"));
+        assert!(context.contains("`dev-orchestrator`"));
+        assert!(context.contains("`amplihack recipe run smart-orchestrator`"));
+        assert!(!context.contains("Read "));
+        assert!(!context.contains("Edit the workflow file directly"));
+        assert!(!context.contains("DEFAULT_WORKFLOW.md"));
+        assert!(!context.contains(".claude/workflow/DEFAULT_WORKFLOW.md"));
+        assert!(!context.contains(".claude/workflows/DEFAULT_WORKFLOW.md"));
     }
 
     #[test]

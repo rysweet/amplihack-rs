@@ -92,7 +92,7 @@ Please analyze this session and fill out the following feedback template:
 
 1. **Be specific and actionable** - Reference actual events from the session
 2. **Identify patterns** - What worked well? What could improve?
-3. **Track workflow adherence** - Did Claude follow the DEFAULT_WORKFLOW.md steps?
+3. **Track workflow adherence** - Did Claude follow the `default-workflow` skill/recipe via the recipe runner?
 4. **Note subagent usage** - Which specialized agents were used (architect, builder, reviewer, etc.)?
 5. **Categorize improvements** - Clearly mark each issue as [AMPLIHACK] or [PROJECT]
 6. **Suggest improvements** - What would make future similar sessions better?

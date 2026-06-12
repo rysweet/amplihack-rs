@@ -105,6 +105,7 @@ nav:
           - How-To: howto/recover-existing-pr-with-default-workflow.md
           - Tutorial: tutorials/pr-recovery-readiness.md
           - Reference: reference/pr-recovery-readiness.md
+      - Terminal-State Provider Safety: reference/workflow-terminal-state-provider-safety.md
   - Agents:
       - Overview: claude/agents/README.md
       - Core Agents:

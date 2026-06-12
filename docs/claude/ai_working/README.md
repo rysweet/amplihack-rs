@@ -93,7 +93,7 @@ Move to `archive/` when:
 All experiments should test integration with:
 
 - **Agent System**: Can agents be effectively utilized?
-- **Workflow**: Does it fit with DEFAULT_WORKFLOW.md?
+- **Workflow**: Does it fit with the `default-workflow` skill/recipe?
 - **User Preferences**: Does it respect USER_PREFERENCES.md?
 - **Philosophy**: Does it maintain ruthless simplicity?
 
