@@ -275,6 +275,8 @@ steps:
       ISSUE_TITLE="${TASK_DESC//$'\n'/ }"; ISSUE_TITLE="${ISSUE_TITLE//$'\r'/ }"; ISSUE_TITLE="${ISSUE_TITLE:0:200}"
       ISSUE_REQS="$FINAL_REQUIREMENTS"
       HOST_TYPE="${REMOTE_HOST_TYPE:-other}"; EXISTING_ISSUE_NUMBER="${ISSUE_NUMBER:-}"
+      derive_local_tracking_id() { if [[ "$TASK_DESC" =~ ([Ii]ssue[[:space:]#]*|#)([0-9]+) ]]; then printf 'local-issue-%s' "${BASH_REMATCH[2]}"; elif [[ "$TASK_DESC" =~ AB#([0-9]+) ]]; then printf 'local-ab-%s' "${BASH_REMATCH[1]}"; else printf 'local-%s' "$(printf '%s' "$TASK_DESC" | sha256sum | cut -c1-12)"; fi; }
+      emit_local_metadata() { LOCAL_REF="$(derive_local_tracking_id)"; LOCAL_NUM=""; [[ "$LOCAL_REF" =~ local-(issue|ab)-([0-9]+)$ ]] && LOCAL_NUM="${BASH_REMATCH[2]}"; printf 'tracking_system=local\ntracking_reference=%s\ntracking_issue=%s\nissue_creation=local-tracking\n' "$LOCAL_REF" "$LOCAL_REF"; [ -n "$LOCAL_NUM" ] && printf 'issue_number=%s\n' "$LOCAL_NUM"; }
       case "$HOST_TYPE" in
       azdo|azure-devops)
         [[ "$EXISTING_ISSUE_NUMBER" =~ ^[0-9]+$ ]] && { printf 'ISSUE_REFERENCE=AB#%s\n' "$EXISTING_ISSUE_NUMBER" >> "${GITHUB_OUTPUT:-/dev/null}"; printf 'AB#%s\n' "$EXISTING_ISSUE_NUMBER"; exit 0; }
@@ -282,9 +284,7 @@ steps:
       esac
       if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         echo "[skip] not a git repo — using local tracking" >&2
-        LOCAL_ISSUE=$(($(date +%s) % 1000000))
-        printf 'local-tracking:%s\n' "$LOCAL_ISSUE"
-        exit 0
+        LOCAL_ISSUE=$(($(date +%s) % 1000000)); printf 'local-tracking:%s\n' "$LOCAL_ISSUE"; exit 0
       fi
       REF_ISSUE_NUM=""
       if [[ "$TASK_DESC" =~ AB#([0-9]+) ]]; then REF_ISSUE_NUM="${BASH_REMATCH[1]}"
@@ -304,9 +304,17 @@ steps:
         ISSUE_BODY=$(printf '## Task Description\n%s\n\n## Requirements\n%s\n\n## Acceptance Criteria\n- [ ] All explicit requirements met\n- [ ] Tests passing\n- [ ] Philosophy compliant\n- [ ] Documentation updated\n\n## Classification\nGenerated via default-workflow recipe\n' "$TASK_DESC" "$ISSUE_REQS")
         LABEL_NAME="workflow:default"
         gh label create "$LABEL_NAME" --color "0366d6" --description "Created by default-workflow recipe" 2>/dev/null || true
-        gh issue create --title "$ISSUE_TITLE" --body "$ISSUE_BODY" --label "$LABEL_NAME" 2>&1 || \
-          gh issue create --title "$ISSUE_TITLE" --body "$ISSUE_BODY"
-        exit $?
+        if GH_CREATE_OUTPUT=$(gh issue create --title "$ISSUE_TITLE" --body "$ISSUE_BODY" --label "$LABEL_NAME" 2>&1) || GH_CREATE_OUTPUT=$(gh issue create --title "$ISSUE_TITLE" --body "$ISSUE_BODY" 2>&1); then
+          printf '%s\n' "$GH_CREATE_OUTPUT"; exit 0
+        fi
+        if [[ "$GH_CREATE_OUTPUT" =~ Could\ not\ resolve\ to\ a\ Repository|[Rr]epository\ not\ found|[Rr]epository.*inaccessible|HTTP\ 404 ]]; then
+          echo "WARNING: GitHub issue creation failed; using local tracking metadata instead." >&2
+          echo "WARNING: gh reported repository access/resolution failure." >&2
+          emit_local_metadata; exit 0
+        fi
+        echo "ERROR: GitHub issue creation failed." >&2
+        printf '%s\n' "$GH_CREATE_OUTPUT" >&2
+        exit 1
         ;;
       azdo|azure-devops)
         REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
@@ -364,10 +372,8 @@ steps:
         fi
         ;;
       esac
-      # --- Local tracking fallback (unknown remote or az CLI unavailable) ---
       echo "INFO: Using local tracking for issue management (remote: $HOST_TYPE)" >&2
-      LOCAL_ISSUE=$(($(date +%s) % 1000000))
-      printf 'local-tracking:%s\n' "$LOCAL_ISSUE"
+      LOCAL_ISSUE=$(($(date +%s) % 1000000)); printf 'local-tracking:%s\n' "$LOCAL_ISSUE"
     output: "issue_creation"
     parse_json: false
 
@@ -378,21 +384,16 @@ steps:
       ISSUE_CREATION="$ISSUE_CREATION"; TASK_DESC_RAW="$TASK_DESCRIPTION"
       EXTRACTED=""
       if [[ "$ISSUE_CREATION" =~ issues/([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
-      elif [[ "$ISSUE_CREATION" =~ pull/([0-9]+) ]]; then
-        PR_NUMBER="${BASH_REMATCH[1]}"
-        EXTRACTED=$(timeout 60 gh pr view "$PR_NUMBER" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // ""' 2>/dev/null || echo '')
-        [ -z "$EXTRACTED" ] && EXTRACTED="$PR_NUMBER"
+      elif [[ "$ISSUE_CREATION" =~ pull/([0-9]+) ]]; then PR_NUMBER="${BASH_REMATCH[1]}"; EXTRACTED=$(timeout 60 gh pr view "$PR_NUMBER" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // ""' 2>/dev/null || echo ''); [ -z "$EXTRACTED" ] && EXTRACTED="$PR_NUMBER"
       elif [[ "$ISSUE_CREATION" =~ _workitems/edit/([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
       elif [[ "$ISSUE_CREATION" =~ AB#([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
+      elif [[ "$ISSUE_CREATION" =~ issue_number=([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
+      elif [[ "$ISSUE_CREATION" =~ local-(issue|ab)-([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[2]}"
       elif [[ "$ISSUE_CREATION" =~ local-tracking:([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
       elif [[ "$TASK_DESC_RAW" =~ AB#([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
       elif [[ "$TASK_DESC_RAW" =~ \#([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
       fi
-      if [ -z "$EXTRACTED" ]; then
-        echo "ERROR: step-03b failed to extract issue number from issue_creation output." >&2
-        printf '%s\n' "$ISSUE_CREATION" >&2
-        exit 1
-      fi
+      if [ -z "$EXTRACTED" ]; then echo "ERROR: step-03b failed to extract issue number from issue_creation output." >&2; printf '%s\n' "$ISSUE_CREATION" >&2; exit 1; fi
       printf '%s' "$EXTRACTED"
     output: "issue_number"
 
