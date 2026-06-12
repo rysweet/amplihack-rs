@@ -207,4 +207,27 @@ mod tests {
         let folders = params["workspaceFolders"].as_array().unwrap();
         assert_eq!(folders[0]["name"].as_str().unwrap(), "my-lib");
     }
+
+    #[tokio::test]
+    async fn shutdown_noop_when_not_started() {
+        let mut server = JediServer::new(
+            MultilspyConfig::new(Language::Python),
+            PathBuf::from("/tmp/test"),
+        );
+        assert!(server.shutdown().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn delegation_errors_when_not_started() {
+        let server = JediServer::new(
+            MultilspyConfig::new(Language::Python),
+            PathBuf::from("/tmp/test"),
+        );
+        assert!(server.definitions("main.py", 0, 0).await.is_err());
+        assert!(server.references("main.py", 0, 0).await.is_err());
+        assert!(server.hover("main.py", 0, 0).await.is_err());
+        assert!(server.completions("main.py", 0, 0).await.is_err());
+        assert!(server.diagnostics("main.py").await.is_err());
+        assert!(server.document_symbols("main.py").await.is_err());
+    }
 }
