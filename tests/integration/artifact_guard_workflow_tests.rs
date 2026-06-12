@@ -206,6 +206,50 @@ fn every_recipe_with_git_add_all_invokes_guard_first() {
 }
 
 #[test]
+fn recipe_commands_with_guarded_broad_staging_fail_loudly() {
+    let mut unsafe_commands = Vec::new();
+
+    for path in recipe_files() {
+        let recipe = serde_yaml::from_str::<Value>(&read(&path))
+            .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+        for step in steps(&recipe) {
+            let id = step
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("<unknown>");
+            let Some(command) = step.get("command").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(guard_position) = command.find("amplihack hygiene artifact-guard") else {
+                continue;
+            };
+            let broad_add_after_guard =
+                ["git add -A", "git add --all", "git add ."]
+                    .iter()
+                    .any(|needle| {
+                        command
+                            .match_indices(needle)
+                            .any(|(add_position, _)| guard_position < add_position)
+                    });
+            if broad_add_after_guard && !command.contains("set -euo pipefail") {
+                unsafe_commands.push(format!(
+                    "{}:{id} guards broad staging but lacks `set -euo pipefail`",
+                    path.strip_prefix(workspace_root())
+                        .unwrap_or(&path)
+                        .display()
+                ));
+            }
+        }
+    }
+
+    assert!(
+        unsafe_commands.is_empty(),
+        "guard failures must stop broad staging:\n{}",
+        unsafe_commands.join("\n")
+    );
+}
+
+#[test]
 fn publish_and_finalize_do_not_inline_shell_delete_artifacts_as_remediation() {
     for recipe_name in ["workflow-publish.yaml", "workflow-finalize.yaml"] {
         let text = read(&recipe_path(recipe_name));

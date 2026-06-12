@@ -5,12 +5,10 @@
 //! repository files.
 
 use std::collections::BTreeSet;
-use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
-use std::io::Write;
-use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use thiserror::Error;
 
@@ -265,33 +263,6 @@ const DEFAULT_RULES: &[ArtifactRule] = &[
     },
 ];
 
-const IGNORED_PRESENT_ROOTS: &[&str] = &[
-    "recipe-runner.log",
-    "plan.md",
-    ".copilot/session-state",
-    ".amplihack/session-state",
-    "node_modules",
-    "dist/plugin.js",
-    "dist",
-    ".claude/runtime",
-    "worktrees",
-    ".cache",
-    ".npm",
-    ".pnpm-store",
-    ".yarn/cache",
-    ".turbo",
-    ".parcel-cache",
-    ".pytest_cache",
-    ".next/cache",
-    ".next",
-    "build",
-    "coverage",
-    "out",
-    "logs",
-    "outputs",
-    "index.scip",
-];
-
 pub fn scan_artifacts(
     config: &ArtifactGuardConfig,
 ) -> Result<ArtifactGuardReport, ArtifactGuardError> {
@@ -423,105 +394,45 @@ fn scan_ignored_present(
     violations: &mut Vec<ArtifactViolation>,
     seen: &mut BTreeSet<(ArtifactSource, String)>,
 ) -> Result<(), ArtifactGuardError> {
-    let mut candidates = Vec::new();
-    for root in IGNORED_PRESENT_ROOTS {
-        let candidate = repo.join(root);
-        if !candidate.exists() {
-            continue;
-        }
-        let report_path = first_reportable_path(&candidate).unwrap_or(candidate);
-        candidates.push(repo_relative_path(repo, &report_path)?);
-    }
-
-    let ignored = git_ignored_paths(repo, &candidates)?;
-    for relative in candidates {
-        if ignored.contains(&relative) {
-            add_violation_if_prohibited(
-                &relative,
-                ArtifactSource::IgnoredPresent,
-                allowlist,
-                violations,
-                seen,
-            );
-        }
-    }
-    Ok(())
-}
-
-fn first_reportable_path(path: &Path) -> Option<PathBuf> {
-    if path.is_file() {
-        return Some(path.to_path_buf());
-    }
-    let mut stack = vec![path.to_path_buf()];
-    let mut visited = 0usize;
-    while let Some(current) = stack.pop() {
-        visited += 1;
-        if visited > 256 {
-            return Some(path.to_path_buf());
-        }
-        if current.is_file() {
-            return Some(current);
-        }
-        if !current.is_dir() {
-            continue;
-        }
-        let mut children = fs::read_dir(&current)
-            .ok()?
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|child| child.file_name() != Some(OsStr::new(".git")))
-            .collect::<Vec<_>>();
-        children.sort();
-        for child in children.into_iter().rev() {
-            stack.push(child);
-        }
-    }
-    Some(path.to_path_buf())
-}
-
-fn git_ignored_paths(
-    repo: &Path,
-    relative_paths: &[String],
-) -> Result<BTreeSet<String>, ArtifactGuardError> {
-    if relative_paths.is_empty() {
-        return Ok(BTreeSet::new());
-    }
-
-    let mut child = Command::new("git")
+    let args = [
+        "ls-files",
+        "--others",
+        "--ignored",
+        "--exclude-standard",
+        "-z",
+    ];
+    let output = Command::new("git")
         .args(["-C"])
         .arg(repo)
-        .args(["check-ignore", "-z", "--stdin"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+        .args(args)
+        .output()
         .map_err(|error| ArtifactGuardError::Git {
-            args: "check-ignore -z --stdin".to_string(),
+            args: args.join(" "),
             code: None,
             stderr: error.to_string(),
         })?;
-
-    if let Some(stdin) = child.stdin.as_mut() {
-        for relative in relative_paths {
-            stdin.write_all(relative.as_bytes())?;
-            stdin.write_all(&[0])?;
-        }
-    }
-
-    let output = child.wait_with_output()?;
-    match output.status.code() {
-        Some(0) | Some(1) => Ok(output
-            .stdout
-            .split(|byte| *byte == 0)
-            .filter(|raw| !raw.is_empty())
-            .map(|raw| String::from_utf8_lossy(raw).to_string())
-            .collect()),
-        code => Err(ArtifactGuardError::Git {
-            args: "check-ignore -z --stdin".to_string(),
-            code,
+    if !output.status.success() {
+        return Err(ArtifactGuardError::Git {
+            args: args.join(" "),
+            code: output.status.code(),
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        }),
+        });
     }
+
+    for raw in output.stdout.split(|byte| *byte == 0) {
+        if raw.is_empty() {
+            continue;
+        }
+        let path = String::from_utf8_lossy(raw);
+        add_violation_if_prohibited(
+            &path,
+            ArtifactSource::IgnoredPresent,
+            allowlist,
+            violations,
+            seen,
+        );
+    }
+    Ok(())
 }
 
 fn add_violation_if_prohibited(
@@ -629,32 +540,6 @@ fn is_build_artifact_path(path: &str, source: ArtifactSource) -> bool {
     path == ".next" || path.starts_with(".next/") || path.contains("/.next/")
 }
 
-fn repo_relative_path(repo: &Path, path: &Path) -> Result<String, ArtifactGuardError> {
-    let relative = path
-        .strip_prefix(repo)
-        .map_err(|_| ArtifactGuardError::PathEscape(path.display().to_string()))?;
-    normalize_repo_relative(relative)
-}
-
-fn normalize_repo_relative(path: &Path) -> Result<String, ArtifactGuardError> {
-    let mut parts = Vec::new();
-    for component in path.components() {
-        match component {
-            Component::Normal(part) => {
-                let part = part
-                    .to_str()
-                    .ok_or_else(|| ArtifactGuardError::PathEscape(path.display().to_string()))?;
-                parts.push(part);
-            }
-            Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err(ArtifactGuardError::PathEscape(path.display().to_string()));
-            }
-        }
-    }
-    Ok(parts.join("/"))
-}
-
 fn normalize_slashes(path: &str) -> String {
     path.replace('\\', "/")
 }
@@ -706,6 +591,12 @@ fn is_root_prohibited_exemption(pattern: &str) -> bool {
         pattern,
         "node_modules"
             | "node_modules/**"
+            | "recipe-runner.log"
+            | "plan.md"
+            | ".copilot/session-state"
+            | ".copilot/session-state/**"
+            | ".amplihack/session-state"
+            | ".amplihack/session-state/**"
             | "dist"
             | "dist/**"
             | "build"

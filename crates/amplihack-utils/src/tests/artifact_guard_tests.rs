@@ -179,6 +179,72 @@ fn ignored_present_workflow_session_artifacts_are_blocked() {
 }
 
 #[test]
+fn nested_ignored_present_artifacts_are_blocked() {
+    let tmp = repo();
+    write_file(
+        &tmp.path().join(".gitignore"),
+        "frontend/node_modules/\npackages/app/dist/\n",
+    );
+    run_git(tmp.path(), &["add", ".gitignore"]);
+    run_git(
+        tmp.path(),
+        &["commit", "-qm", "ignore nested generated outputs"],
+    );
+
+    write_file(
+        &tmp.path().join("frontend/node_modules/leak/package.json"),
+        "{}\n",
+    );
+    write_file(
+        &tmp.path().join("packages/app/dist/assets/app.js"),
+        "bundle\n",
+    );
+
+    let report = scan_artifacts(&default_config(tmp.path())).expect("scan artifacts");
+
+    violation_for(
+        &report.violations,
+        "frontend/node_modules/leak/package.json",
+        ArtifactSource::IgnoredPresent,
+    );
+    violation_for(
+        &report.violations,
+        "packages/app/dist/assets/app.js",
+        ArtifactSource::IgnoredPresent,
+    );
+}
+
+#[test]
+fn narrow_allowlist_entry_does_not_hide_sibling_ignored_artifacts() {
+    let tmp = repo();
+    write_file(&tmp.path().join(".gitignore"), "dist/\n");
+    write_file(
+        &tmp.path().join(".amplihack-artifact-allowlist"),
+        "# reviewed generated fixture\ndist/plugin.js\n",
+    );
+    run_git(tmp.path(), &["add", ".gitignore"]);
+    run_git(tmp.path(), &["commit", "-qm", "ignore dist output"]);
+
+    write_file(&tmp.path().join("dist/plugin.js"), "intentional fixture\n");
+    write_file(&tmp.path().join("dist/zz-leak.bin"), "leak\n");
+
+    let report = scan_artifacts(&default_config(tmp.path())).expect("scan artifacts");
+
+    assert!(
+        !report
+            .violations
+            .iter()
+            .any(|violation| violation.path == "dist/plugin.js"),
+        "exact allowlist entry must suppress only dist/plugin.js"
+    );
+    violation_for(
+        &report.violations,
+        "dist/zz-leak.bin",
+        ArtifactSource::IgnoredPresent,
+    );
+}
+
+#[test]
 fn untracked_nested_worktrees_and_build_artifacts_are_blocked() {
     let tmp = repo();
     write_file(
@@ -301,6 +367,10 @@ fn allowlist_rejects_absolute_parent_traversing_empty_or_broad_entries() {
         "node_modules/",
         "node_modules/**",
         "dist/**",
+        "recipe-runner.log",
+        "plan.md",
+        ".copilot/session-state/**",
+        ".amplihack/session-state/**",
         ".claude/runtime/**",
         "worktrees/**",
     ] {

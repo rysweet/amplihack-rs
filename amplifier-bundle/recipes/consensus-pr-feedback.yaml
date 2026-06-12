@@ -25,6 +25,7 @@ steps:
     condition: "pr_review_consensus.final_verdict == 'needs_work'"
     type: "bash"
     command: |
+      set -euo pipefail
       export GIT_PAGER=cat
       export PAGER=cat
       export LESS=FRX
