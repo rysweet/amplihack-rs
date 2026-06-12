@@ -1,167 +1,216 @@
-# How to Configure Dual-Provider Workflow
+# How to Configure Provider-Aware Workflow Tracking
 
-> [Home](../index.md) > How-To > Configure Dual-Provider Workflow
+> [Home](../index.md) > How-To > Configure Provider-Aware Workflow Tracking
 
-This guide shows how to set up and run the `default-workflow` recipe against an Azure DevOps repository.
-
----
-
-## Before You Start
-
-You need:
-
-- Azure CLI installed (`az --version`)
-- `azure-devops` extension installed (`az extension list --query "[?name=='azure-devops']"`)
-- Authenticated Azure session (`az account show`)
-- ADO organization and project defaults configured (`az devops configure --defaults ...`)
-- A git repository whose `origin` remote points to `dev.azure.com` or `visualstudio.com`
-
-The workflow detects the provider automatically from the git remote URL. No additional recipe flags are needed.
+This guide shows how to configure `default-workflow` tracking for GitHub,
+Azure DevOps, and local or unsupported remotes.
 
 ---
 
-## 1. Install and Configure the Azure CLI
+## Prerequisites
+
+All repositories need:
 
 ```bash
-# macOS
-brew install azure-cli
-
-# Linux (Debian/Ubuntu)
-curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
-
-# Windows
-winget install Microsoft.AzureCLI
-```
-
-Install the DevOps extension:
-
-```bash
-az extension add --name azure-devops
-```
-
----
-
-## 2. Authenticate
-
-```bash
-az login
-# or for service principal / CI:
-az login --service-principal \
-  --username "$ARM_CLIENT_ID" \
-  --password "$ARM_CLIENT_SECRET" \
-  --tenant "$ARM_TENANT_ID"
-```
-
-Verify the session:
-
-```bash
-az account show --query "{subscription:name, tenant:tenantId}"
-```
-
----
-
-## 3. Set ADO Defaults
-
-The `az boards` and `az repos` commands used by the workflow read organization and project from the CLI defaults. Set them once per shell or in your environment:
-
-```bash
-az devops configure --defaults \
-  organization=https://dev.azure.com/YOUR_ORG \
-  project=YOUR_PROJECT
-```
-
-Verify:
-
-```bash
-az devops configure --list
-```
-
-Expected output:
-
-```
-organization=https://dev.azure.com/YOUR_ORG
-project=YOUR_PROJECT
-```
-
-If these are not set, `az boards work-item create` and `az repos pr create` will fail with a "no organization/project" error.
-
----
-
-## 4. Verify the git Remote
-
-The workflow reads the `origin` remote URL to determine the provider:
-
-```bash
-cd /path/to/your/ado-repo
+git --version
 git remote get-url origin
-# Expected: https://dev.azure.com/org/project/_git/repo
-#       or: git@ssh.dev.azure.com:v3/org/project/repo
 ```
 
-Both HTTPS and SSH ADO remote formats are detected correctly (the detection checks for `dev.azure.com` or `visualstudio.com` anywhere in the URL).
+For large nested workflow runs, keep the supported Node heap setting:
+
+```bash
+export NODE_OPTIONS=--max-old-space-size=32768
+```
 
 ---
 
-## 5. Run the Workflow
+## 1. Configure GitHub Repositories
 
-No provider-specific flags are needed. Run exactly as you would for a GitHub repository:
+Use a normal GitHub remote:
+
+```bash
+git remote set-url origin https://github.com/acme/service.git
+# or
+git remote set-url origin git@github.com:acme/service.git
+```
+
+Authenticate the GitHub CLI:
+
+```bash
+gh auth login
+gh auth status
+```
+
+Run the workflow:
 
 ```bash
 amplihack recipe run default-workflow \
   -c "task_description=Fix the authentication timeout bug" \
-  -c "repo_path=/home/user/src/my-ado-repo"
+  -c "repo_path=$(pwd)"
 ```
 
-Or with `smart-orchestrator` (recommended for most tasks):
+Expected behavior:
 
-```bash
-amplihack recipe run smart-orchestrator \
-  -c "task_description=Fix the authentication timeout bug" \
-  -c "repo_path=/home/user/src/my-ado-repo"
+```text
+REMOTE_HOST_TYPE=github
+workflow-prep step 03 uses gh issue view/list/create
+GitHub label setup is allowed
 ```
-
-The workflow will:
-
-1. Detect `GIT_PROVIDER=ado`
-2. Create an ADO Task work item (`az boards work-item create`)
-3. Continue through implementation, testing, commit, and push steps
-4. Create a draft ADO pull request (`az repos pr create --draft`)
 
 ---
 
-## 6. Verify the Work Item Was Created
+## 2. Configure Azure DevOps Repositories
 
-After step-03 completes, the recipe context will contain `issue_number`. You can verify the work item independently:
-
-```bash
-az boards work-item show --id <issue_number>
-```
-
-And verify the draft PR after step-16:
+Use one of the supported AzDO remote forms:
 
 ```bash
-az repos pr list --source-branch <branch-name>
+git remote set-url origin https://dev.azure.com/acme/platform/_git/service
+# or
+git remote set-url origin https://acme.visualstudio.com/platform/_git/service
+# or
+git remote set-url origin git@ssh.dev.azure.com:v3/acme/platform/service
 ```
+
+Azure Boards integration is optional. To allow work item reuse or creation,
+install and configure the Azure DevOps CLI extension:
+
+```bash
+az extension add --name azure-devops
+az login
+az devops configure --defaults \
+  organization=https://dev.azure.com/acme \
+  project=platform
+```
+
+Run the workflow:
+
+```bash
+amplihack recipe run default-workflow \
+  -c "task_description=Fix the authentication timeout bug in AB#12345" \
+  -c "repo_path=$(pwd)"
+```
+
+Expected behavior:
+
+```text
+REMOTE_HOST_TYPE=azdo
+workflow-prep step 03 uses Azure Boards or local tracking
+gh issue commands are not invoked
+gh label commands are not invoked
+```
+
+If Azure Boards is unavailable, the workflow emits structured local metadata
+instead of attempting a GitHub issue operation:
+
+```text
+tracking_system=local
+tracking_reference=local-issue-12345
+tracking_issue=local-issue-12345
+issue_creation=local-tracking
+issue_number=12345
+```
+
+---
+
+## 3. Configure Local or Unsupported Repositories
+
+No provider configuration is required for missing, local-only, malformed, or
+unsupported remotes.
+
+```bash
+git remote remove origin
+
+amplihack recipe run default-workflow \
+  -c "task_description=Add config parser #482193" \
+  -c "repo_path=$(pwd)"
+```
+
+Expected behavior:
+
+```text
+REMOTE_HOST_TYPE=other
+workflow-prep step 03 emits structured local metadata
+provider CLIs are not invoked
+```
+
+---
+
+## 4. Override Host Type for Follow-Up Work
+
+Normal runs should rely on automatic detection. Use an override only when an
+external workflow already knows the provider context.
+
+```bash
+amplihack recipe run default-workflow \
+  -c remote_host_type=azdo \
+  -c issue_number=12345 \
+  -c "task_description=Address review feedback for the Azure DevOps PR" \
+  -c "repo_path=$(pwd)"
+```
+
+Expected behavior:
+
+```text
+workflow-prep step 03 emits AB#12345
+no GitHub issue or label command runs
+```
+
+Use `remote_host_type=other` to force local tracking and block provider API
+calls. `remote_host_type=azure-devops` remains accepted as a compatibility
+alias for external callers, but primary examples should use `azdo`.
 
 ---
 
 ## Troubleshooting
 
-### `az boards work-item create` fails with exit 1
+### AzDO remote is detected as `other`
 
-- Check `az account show` — session may have expired. Re-run `az login`.
-- Check `az devops configure --list` — organization and project must be set.
-- Check that the authenticated identity has permission to create work items in the project.
+Check the exact `origin` URL:
 
-### `step-03b-extract-issue-number` fails to extract a number
+```bash
+git remote get-url origin
+```
 
-- Verify that step-03 completed successfully and emitted a line matching `_workitems/edit/NNNN`.
-- The regex matches `_workitems/edit/` followed by one or more digits. Unusual ADO URLs or partial output from `az` may not match.
+Supported AzDO hosts are:
 
-### `az repos pr create` fails with "no commits between main and \<branch\>"
+```text
+dev.azure.com
+visualstudio.com
+ssh.dev.azure.com
+```
 
-This is not ADO-specific. It means step-15 (commit and push) produced no commits on the branch. Check the step-15 output in the recipe run log.
+Unsupported or misspelled hosts intentionally use local tracking.
 
-### Work item is created with wrong type
+### Workflow tries to create a GitHub issue in an AzDO repository
 
-The workflow uses `--type Task`. If your ADO project uses a custom process model (e.g., CMMI), `Task` may map to a different work item type or be unavailable. Adapt the `--type` value in `step-03-create-issue` to match your process template.
+That violates the provider isolation contract. Confirm the `origin` URL is one
+of the supported AzDO forms, then run the workflow from the repository root or
+pass `-c repo_path=/path/to/repo`.
+
+As a temporary workaround for follow-up work, pass:
+
+```bash
+-c remote_host_type=azdo -c issue_number=<work-item-id>
+```
+
+### Azure Boards creation fails
+
+Azure CLI configuration is needed only when you want Azure Boards reuse or
+creation. Check it with:
+
+```bash
+az account show
+az extension list --query "[?name=='azure-devops'].version" -o tsv
+az devops configure --list
+```
+
+If Azure Boards remains unavailable, the workflow uses local tracking for the
+run and still avoids GitHub issue commands.
+
+---
+
+## See Also
+
+- [Provider-aware workflow prep reference](../reference/dual-provider-workflow.md)
+- [How to Use the Default Workflow with Azure DevOps](use-workflow-with-azure-devops.md)
+- [Multi-Provider Workflow Reference](../reference/multi-provider-workflow.md)

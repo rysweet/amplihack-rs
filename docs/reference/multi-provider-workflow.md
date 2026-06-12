@@ -29,15 +29,10 @@ requiring the user to select a provider manually.
 
 ## Overview
 
-Prior to this change, `default-workflow` assumed GitHub as the sole hosting
-provider. Steps 03, 03b, 15, 16, and 21 called `gh` CLI commands
-unconditionally, causing failures when the remote pointed to Azure DevOps or
-when no remote existed at all.
-
-The multi-provider workflow introduces a **detect-once, branch-everywhere**
-pattern: step `02d` runs in `workflow-prep` to detect the remote host type,
-and all downstream steps consult the resulting `remote_host_type` context
-variable to choose the correct code path.
+`default-workflow` uses a **detect-once, branch-everywhere** pattern for
+provider routing. Step `02d` runs in `workflow-prep` to classify the `origin`
+remote, and downstream steps consult the resulting `remote_host_type` context
+variable before running any provider-specific command.
 
 ```
 git remote get-url origin
@@ -45,13 +40,13 @@ git remote get-url origin
         ▼
 ┌──────────────────────────────────┐
 │  Step 02d: Host Type Detection    │
-│  *.github.com*  → "github"        │
-│  *dev.azure.com*│*vscom* → "azdo" │
-│  everything else → "other"        │
+│  github.com host      → "github"  │
+│  Azure DevOps host    → "azdo"    │
+│  everything else      → "other"   │
 └──────────────────────────────────┘
         │
         ▼
-  remote_host_type = "github" | "azdo" | "azure-devops" | "other"
+  remote_host_type = "github" | "azdo" | "other"
         │
         ├─► Step 03:  issue creation (routed)
         ├─► Step 03b: issue extraction (routed)
@@ -68,16 +63,19 @@ git remote get-url origin
 **Location**: `workflow-prep.yaml`, step `step-02d-detect-host-type`, after
 step `02c` (requirements clarification) and before step `03` (issue creation).
 
-**Logic**:
+**Target logic**:
 
 ```bash
-REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
-case "$REMOTE_URL" in
-  https://github.com/*|git@github.com:*|ssh://git@github.com/*|https://*@github.com/*)
-                        REMOTE_HOST_TYPE="github" ;;
-  *dev.azure.com*|*visualstudio.com*|*ssh.dev.azure.com*)
-                        REMOTE_HOST_TYPE="azdo" ;;
-  *)                    REMOTE_HOST_TYPE="other" ;;
+REMOTE_URL=$(git remote get-url origin 2>/dev/null || true)
+NORMALIZED_REMOTE_URL=$(printf '%s' "$REMOTE_URL" | tr '[:upper:]' '[:lower:]')
+
+case "$NORMALIZED_REMOTE_URL" in
+  https://github.com/*|git@github.com:*|ssh://git@github.com/*)
+    REMOTE_HOST_TYPE="github" ;;
+  https://dev.azure.com/*|https://*.visualstudio.com/*|git@ssh.dev.azure.com:v3/*|ssh://git@ssh.dev.azure.com/v3/*)
+    REMOTE_HOST_TYPE="azdo" ;;
+  *)
+    REMOTE_HOST_TYPE="other" ;;
 esac
 ```
 
@@ -91,13 +89,16 @@ Step 02d emits `azdo` for Azure DevOps remotes. Downstream steps also accept
 `azure-devops` as an equivalent explicit override for contexts supplied by
 Azure DevOps PR/work-item follow-up workflows.
 
+The final detector must match complete host shapes. Substring-only matches are
+not sufficient because spoofed hosts such as `github.com.evil.example` must be
+classified as `other`.
+
 **Edge cases**:
 
 - No remote configured → `REMOTE_URL` is empty → `REMOTE_HOST_TYPE="other"`
 - Multiple remotes → only `origin` is checked (convention)
 - SSH URLs → explicit patterns match `git@github.com:`, `ssh://git@github.com/`,
-  and `https://github.com/` forms; AzDO uses substring matching for
-  `dev.azure.com`, `visualstudio.com`, and `ssh.dev.azure.com`
+  `git@ssh.dev.azure.com:v3/`, and `ssh://git@ssh.dev.azure.com/v3/`
 - Not a git repo → step falls back to `"other"` before step 03 runs
 
 ---
@@ -144,7 +145,7 @@ the AzDO organization and project names, then creates a work item.
 `%20` in URLs. Step 03 decodes `%XX` sequences before validation. The
 decoded name is validated against `^[a-zA-Z0-9._ -]+$` (note: spaces are
 permitted in decoded form). Invalid percent sequences (e.g., `%ZZ`) cause
-the step to fall back to local tracking with a warning.
+the step to fall back to local metadata with a warning.
 
 Step 03 creates the work item using the `az boards work-item create`
 CLI command:
@@ -172,17 +173,20 @@ The host-aware idempotency contract is documented in
 
 ### Other/Local (`remote_host_type = "other"`)
 
-Step 03 generates a synthetic issue number for branch naming and commit
-messages, without making any network calls:
+Step 03 emits structured local metadata without making any network calls:
 
-```bash
-SYNTHETIC_ID=$(( $(date +%s) % 1000000 ))
+```text
+tracking_system=local
+tracking_reference=local-issue-482193
+tracking_issue=local-issue-482193
+issue_creation=local-tracking
+issue_number=482193
 ```
 
-The synthetic ID is an opaque local workflow reference, not a durable provider
+The local reference is an opaque workflow reference, not a durable provider
 record and not a global uniqueness guarantee. It is used only for branch naming
-(`feat/issue-<N>-slug`) and commit message references. No tracking system is
-updated.
+(`feat/issue-<N>-slug`) and commit message references when a numeric ID is
+available. No tracking system is updated.
 
 ---
 
@@ -198,7 +202,7 @@ provider output format produced by Step 03:
 | GitHub PR fallback | `https://github.com/owner/repo/pull/N` | `pull/([0-9]+)` plus closing-issue lookup |
 | Azure DevOps | `https://dev.azure.com/org/project/_workitems/edit/N` | `_workitems/edit/([0-9]+)` |
 | Azure DevOps | `AB#N` | `AB#([0-9]+)` |
-| Other/local | `local-tracking:N` | `local-tracking:([0-9]+)` |
+| Other/local | Structured local metadata with `issue_number=N` or `tracking_reference=local-issue-N` / `local-ab-N` | `issue_number=([0-9]+)` or `local-(issue\|ab)-([0-9]+)` |
 
 The `issue_number` output contract remains unchanged: a plain integer.
 Downstream steps never see the provider URL format — they only consume the
@@ -350,18 +354,20 @@ should not be treated as a stable public API.
 | `git remote get-url origin` fails     | `remote_host_type` = `"other"` (safe fallback)     |
 | `remote_host_type=azure-devops`       | Treated exactly like `azdo`                        |
 | Azure DevOps path has `issue_number`  | Reuses `AB#N`; does not call `gh` or create a work item |
-| `az boards` not installed             | Step-03 falls back to local synthetic ID           |
-| `az boards` auth expired              | Warning logged; falls back to local synthetic ID   |
-| AzDO work item creation fails         | Warning logged; synthetic ID used for branch naming |
-| Percent-decode invalid sequence       | Warning logged; falls back to local tracking       |
-| AzDO project name validation fails    | Warning logged; falls back to local tracking       |
-| `gh` not installed (GitHub remote)    | Existing behavior: step-03 fails with clear error  |
+| `az boards` not installed             | Step-03 falls back to structured local metadata    |
+| `az boards` auth expired              | Warning logged; falls back to structured local metadata |
+| AzDO work item creation fails         | Warning logged; structured local metadata is used for branch naming when numeric |
+| Percent-decode invalid sequence       | Warning logged; falls back to structured local metadata |
+| AzDO project name validation fails    | Warning logged; falls back to structured local metadata |
+| `gh` not installed (GitHub remote)    | GitHub creation fails clearly unless the failure is a repository access/resolution failure that triggers local metadata fallback |
 | `REMOTE_HOST_TYPE` unset in step 22b  | `HOST_TYPE` defaults to `"other"` via `${..:-other}` |
 | `PR_URL` empty in step 21            | Step skips `gh pr ready` with info message          |
 
-The principle is: **GitHub steps fail loudly** (because `gh` is a
-prerequisite), while **AzDO and other steps degrade gracefully** (because
-AzDO support is additive and "other" is the universal fallback).
+The principle is: **GitHub provider errors fail loudly except for repository
+access/resolution failures**, which fall back to local metadata so work can
+continue when `gh` cannot resolve the repository. **AzDO and other steps use
+local metadata fallback** because Azure Boards support is additive and "other"
+is the universal provider-safe mode.
 
 ---
 
@@ -370,12 +376,16 @@ AzDO support is additive and "other" is the universal fallback).
 No new configuration is required for GitHub repositories. The feature
 activates automatically based on the remote URL.
 
-For AzDO repositories, ensure:
+For AzDO repositories, Azure CLI is optional. Configure it only when you want
+Azure Boards reuse or creation:
 
 1. Azure CLI is installed: `az --version`
 2. DevOps extension is present: `az extension list | grep devops`
 3. Authentication is current: `az login`
 4. Defaults are configured: `az devops configure --defaults organization=... project=...`
+
+Without Azure CLI configuration, AzDO repositories still avoid GitHub issue
+commands and fall back to structured local metadata.
 
 For local/unknown repositories (no remote or unrecognized host), no
 configuration is needed.
@@ -384,14 +394,15 @@ Override the detected host type:
 
 ```bash
 amplihack recipe run default-workflow \
-  -c remote_host_type=azure-devops \
+  -c remote_host_type=azdo \
   -c issue_number=12345 \
   -c task_description="Continue Azure DevOps PR follow-up work" \
   -c repo_path=.
 ```
 
-Use `remote_host_type=other` to force local tracking without provider API
-calls.
+Use `remote_host_type=other` to force local metadata without provider API
+calls. `remote_host_type=azure-devops` remains a compatibility alias for
+external contexts, but `azdo` is the primary value.
 
 ---
 
@@ -426,13 +437,13 @@ manual PR instructions. Step 22b shows `PR: N/A (manual creation required)`.
 
 ```bash
 amplihack recipe run default-workflow \
-  -c remote_host_type=azure-devops \
+  -c remote_host_type=azdo \
   -c issue_number=12345 \
   -c task_description="Address review feedback for existing ADO PR" \
   -c repo_path=/worktrees/ado-pr-follow-up
 ```
 
-Step 03 treats `azure-devops` as Azure DevOps, emits `AB#12345`, and exits
+Step 03 treats `azdo` as Azure DevOps, emits `AB#12345`, and exits
 without entering GitHub issue reuse/create logic.
 
 ### Example 4: AzDO with percent-encoded project name
@@ -452,11 +463,11 @@ Workflow proceeds as in Example 2.
 ```bash
 cd ~/my-local-project && git init
 amplihack recipe run default-workflow \
-  -c task_description="Add config parser" \
+  -c task_description="Add config parser #482193" \
   -c repo_path=.
 ```
 
-Step 02d detects `other`. Step 03 generates synthetic ID. Step 15 uses
+Step 02d detects `other`. Step 03 emits structured local metadata. Step 15 uses
 `Ref #N`. Step 16 skips PR creation. Step 22b shows
 `PR: N/A (no remote provider)`.
 
@@ -472,7 +483,7 @@ remote is inspected. Rename if needed: `git remote rename <old> origin`.
 **AzDO work item creation fails with auth error**
 
 Run `az login` and `az devops configure --defaults`. The workflow falls back
-to a synthetic ID but logs a warning with remediation steps.
+to structured local metadata but logs a warning with remediation steps.
 
 **`az boards` command not found**
 
@@ -500,9 +511,8 @@ validation regex.
 
 **Metadata**
 
-| Field       | Value                                             |
-| ----------- | ------------------------------------------------- |
-| Status      | Issue #718 target contract                         |
-| Issues      | #684, #718                                        |
-| Recipe file | `amplifier-bundle/recipes/workflow-prep.yaml`      |
-| Parent      | `amplifier-bundle/recipes/default-workflow.yaml`   |
+| Field       | Value                                           |
+| ----------- | ----------------------------------------------- |
+| Contract    | Provider-aware workflow-prep routing            |
+| Recipe file | `amplifier-bundle/recipes/workflow-prep.yaml`   |
+| Parent      | `amplifier-bundle/recipes/default-workflow.yaml` |

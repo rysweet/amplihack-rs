@@ -59,7 +59,9 @@ Supported `issue_creation` formats:
 | `https://github.com/owner/repo/pull/N` | Uses `gh pr view` to read the first closing issue; falls back to PR number `N` if no closing issue resolves |
 | `https://dev.azure.com/org/project/_workitems/edit/N` | Extracts `N` from `/_workitems/edit/N` without a network call |
 | `AB#N` | Extracts `N` without a network call |
-| `local-tracking:N` | Extracts `N` without a network call |
+| Structured local metadata with `issue_number=N` | Extracts `N` without a network call |
+| Structured local metadata with `tracking_reference=local-issue-N` or `tracking_reference=local-ab-N` | Extracts `N` without a network call |
+| Legacy `local-tracking:N` | Extracts `N` without a network call |
 
 ```
 Input:  "https://github.com/rysweet/amplihack-rs/issues/3960"
@@ -124,7 +126,7 @@ compatibility.
 | GitHub PR fallback | `https://github.com/owner/repo/pull/4143` | First closing issue, or `4143` if none resolves |
 | Azure DevOps work item URL | `https://dev.azure.com/org/project/_workitems/edit/12345` | `12345` |
 | Azure Boards shorthand | `AB#12345` | `12345` |
-| Local tracking | `local-tracking:482193` | `482193` |
+| Local metadata | `tracking_system=local` plus `tracking_reference=local-issue-482193`, `tracking_issue=local-issue-482193`, `issue_creation=local-tracking`, and `issue_number=482193` | `482193` |
 | Compatibility Azure Boards reference | `AB#12345` in `task_description` | `12345` |
 | Compatibility bare reference | `#12345` in `task_description` | `12345` |
 
@@ -176,7 +178,7 @@ Step `03b` reads the following values from the workflow context:
 
 | Context key | Required | Description |
 | ----------- | -------- | ----------- |
-| `issue_creation` | Yes | Step 03 output: GitHub URL, Azure Boards URL, `AB#N`, or `local-tracking:N` |
+| `issue_creation` | Yes | Step 03 output: GitHub URL, Azure Boards URL, `AB#N`, structured local metadata, or legacy `local-tracking:N` |
 | `task_description` | Yes | Free-form string used only as a compatibility fallback source for `AB#N` or `#N` references |
 
 No environment variables are specific to step `03b`. GitHub PR closing-issue
@@ -246,11 +248,16 @@ issue_number: 12345
 ### Resolving from local tracking
 
 ```yaml
-issue_creation: "local-tracking:482193"
+issue_creation: |
+  tracking_system=local
+  tracking_reference=local-issue-482193
+  tracking_issue=local-issue-482193
+  issue_creation=local-tracking
+  issue_number=482193
 ```
 
 ```
-local-tracking match: 482193
+issue_number metadata match: 482193
 issue_number: 482193
 ```
 
@@ -275,7 +282,8 @@ stderr includes the unparseable issue_creation value
 
 Install and authenticate the GitHub CLI: `gh auth login`.
 Only GitHub PR closing-issue lookup requires `gh`; direct issue URLs, Azure
-Boards outputs, `AB#N`, and `local-tracking:N` still parse without it.
+Boards outputs, `AB#N`, structured local metadata, and legacy
+`local-tracking:N` still parse without it.
 
 **GitHub PR lookup returns no closing issues**
 
@@ -305,7 +313,9 @@ to GitHub issue and PR patterns:
 | GitHub PR | `https://github.com/owner/repo/pull/N` | `pull/([0-9]+)` plus closing-issue lookup |
 | Azure DevOps | `https://dev.azure.com/org/project/_workitems/edit/N` | `_workitems/edit/([0-9]+)` |
 | Azure DevOps | `AB#N` | `AB#([0-9]+)` |
-| Local | `local-tracking:N` | `local-tracking:([0-9]+)` |
+| Local | Structured metadata with `issue_number=N` | `issue_number=([0-9]+)` |
+| Local | Structured metadata with `tracking_reference=local-issue-N` or `tracking_reference=local-ab-N` | `local-(issue\|ab)-([0-9]+)` |
+| Local legacy | `local-tracking:N` | `local-tracking:([0-9]+)` |
 
 The `issue_number` output contract is unchanged: a plain integer regardless of
 provider. See [Multi-Provider Workflow Reference](multi-provider-workflow.md)

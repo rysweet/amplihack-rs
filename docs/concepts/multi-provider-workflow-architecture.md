@@ -2,8 +2,7 @@
 
 > [Home](../index.md) > Concepts > Multi-Provider Workflow Architecture
 
-Explains the design decisions behind the multi-provider workflow feature
-([Issue #684](https://github.com/rysweet/amplihack-rs/issues/684)). For
+Explains the design decisions behind provider-aware workflow routing. For
 implementation details, see the
 [Multi-Provider Workflow Reference](../reference/multi-provider-workflow.md).
 
@@ -11,10 +10,11 @@ implementation details, see the
 
 ## The Problem
 
-`default-workflow` steps 03, 03b, 15, 16, and 21 call `gh` (GitHub CLI)
-unconditionally. When the repository remote points to Azure DevOps, these
-steps fail with confusing errors. When no remote exists (local-only), they
-fail silently or produce broken output.
+Workflow tracking and publication steps need provider-specific commands.
+GitHub repositories use GitHub Issues and GitHub pull requests. Azure DevOps
+repositories use Azure Boards or local tracking and require manual PR creation.
+Local or unsupported repositories need local tracking without provider network
+calls.
 
 ---
 
@@ -48,7 +48,7 @@ is the contract that downstream steps depend on.
 | ---------- | ------------------------- | --------- |
 | GitHub     | `gh issue create` URL     | `684`     |
 | AzDO       | `az boards` work item ID  | `12345`   |
-| Other/Local | Synthetic (PID + epoch)  | `4821937` |
+| Other/Local | Structured local metadata | `482193` |
 
 By normalizing to an integer at step 03b, no downstream step needs to know
 which provider produced it. Branch names, commit messages, and PR
@@ -72,19 +72,16 @@ exists because:
 3. The AzDO CLI's error messages for misconfigured projects are opaque,
    making automated recovery difficult.
 
-Automated AzDO PR creation is planned as a follow-up once the AzDO CLI
-integration is more robust.
-
 ---
 
-## Other/Local Fallback Rationale
+## Other/Local Metadata Rationale
 
 The `other` host type is not an error state — it is a first-class mode that
 enables the workflow to run in isolated environments (CI containers,
 air-gapped systems, fresh `git init` repos). Other/local mode:
 
-- Generates a synthetic `issue_number` using PID + epoch seconds for
-  collision resistance
+- Emits structured local metadata such as `tracking_system=local`,
+  `tracking_reference=local-issue-N`, and `issue_creation=local-tracking`
 - Skips all network calls (no `gh`, no `az`)
 - Produces valid branch names and commit messages
 - Skips PR creation (no remote to push to)
@@ -108,14 +105,13 @@ air-gapped systems, fresh `git init` repos). Other/local mode:
 
 - [Multi-Provider Workflow Reference](../reference/multi-provider-workflow.md) — full implementation details
 - [How to Use the Workflow with Azure DevOps](../howto/use-workflow-with-azure-devops.md) — task-oriented guide
-- [Step 03 Idempotency Guards](../reference/recipe-step-03-idempotency.md) — GitHub-specific guards
+- [Step 03 Host-Aware Tracking Idempotency](../reference/recipe-step-03-idempotency.md) — GitHub, AzDO, and local tracking guards
 - [Workflow Issue Extraction](../reference/workflow-issue-extraction.md) — three-tier extraction
 
 ---
 
 **Metadata**
 
-| Field  | Value                                                     |
-| ------ | --------------------------------------------------------- |
-| Status | Specification (implementation pending)                      |
-| Issue  | #684                                                      |
+| Field    | Value                              |
+| -------- | ---------------------------------- |
+| Contract | Provider-aware workflow routing    |

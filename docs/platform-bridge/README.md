@@ -44,12 +44,15 @@ The platform bridge solves this by:
 
 ## Core Capabilities
 
-The platform bridge supports five core operations needed by the `default-workflow` skill/recipe:
+The platform bridge supports provider operations used by workflow tooling.
+`default-workflow` currently automates GitHub PR creation only; Azure DevOps
+PR creation remains a manual post-workflow step unless a caller invokes the
+bridge directly.
 
 | Operation       | GitHub Command         | Azure DevOps Command                 | Workflow Step |
 | --------------- | ---------------------- | ------------------------------------ | ------------- |
 | Create Issue    | `gh issue create`      | `az boards work-item create`         | Step 3        |
-| Create Draft PR | `gh pr create --draft` | `az repos pr create --draft`         | Step 15       |
+| Create Draft PR | `gh pr create --draft` | `az repos pr create --draft`         | Direct bridge only for AzDO; not automatic in `default-workflow` |
 | Mark PR Ready   | `gh pr ready`          | `az repos pr update --status Active` | Step 20       |
 | Add PR Comment  | `gh pr comment`        | `az repos pr create-thread`          | Steps 16-17   |
 | Check CI Status | `gh pr checks`         | `az pipelines runs list`             | Step 21       |

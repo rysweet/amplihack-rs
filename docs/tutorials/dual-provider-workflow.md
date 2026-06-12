@@ -1,241 +1,188 @@
-# Tutorial: Running the Default Workflow on an Azure DevOps Repository
+# Tutorial: Run the Default Workflow on an Azure DevOps Repository
 
-**Time to Complete**: 20 minutes
-**Skill Level**: Intermediate
-**Prerequisites**: An ADO repository clone, `az` CLI installed and authenticated, ADO organization and project defaults configured.
+**Time to complete**: 15 minutes
 
-This tutorial walks through a complete `default-workflow` run on an Azure DevOps repository, from the first `detect_git_provider()` call through a committed draft pull request.
-
----
+This tutorial walks through a `default-workflow` run on an Azure DevOps-backed
+repository and shows how `workflow-prep` avoids GitHub issue commands.
 
 ## What You'll Learn
 
-By the end of this tutorial you will:
-
-1. Verify your ADO environment is ready for the workflow
-2. Observe how `detect_git_provider()` routes execution at runtime
-3. See an ADO work item created via `az boards work-item create`
-4. Understand the `_workitems/edit/NNN` URL format and why `step-03b` can parse it
-5. See a draft ADO PR created via `az repos pr create --draft`
-6. Diagnose the two most common ADO-specific failure modes
+1. Verify that an AzDO remote is classified as `azdo`
+2. Run `default-workflow` with an existing Azure Boards work item
+3. Confirm that tracking uses Azure Boards or structured local metadata
+4. Create the Azure DevOps pull request manually after the workflow pushes a branch
 
 ---
 
-## Step 1: Verify the Environment
+## Step 1: Prepare the Environment
 
-Confirm all prerequisites are in place before launching the workflow.
+Use an Azure DevOps repository clone:
 
 ```bash
-# 1. az CLI is present
-az --version | head -1
-
-# 2. DevOps extension is installed
-az extension list --query "[?name=='azure-devops'].version" -o tsv
-
-# 3. Authenticated session exists
-az account show --query "{sub:name, tenant:tenantId}" -o json
-
-# 4. ADO defaults are configured
-az devops configure --list
-
-# 5. The repository remote is ADO
-cd /path/to/your/ado-repo
+cd /path/to/ado-repo
 git remote get-url origin
 ```
 
-Expected output for the remote:
+Expected remote examples:
 
+```text
+https://dev.azure.com/acme/platform/_git/service
+https://acme.visualstudio.com/platform/_git/service
+git@ssh.dev.azure.com:v3/acme/platform/service
 ```
-https://dev.azure.com/myorg/myproject/_git/myrepo
+
+Keep the supported Node heap setting for large workflow runs:
+
+```bash
+export NODE_OPTIONS=--max-old-space-size=32768
 ```
 
 ---
 
-## Step 2: Understand What detect_git_provider() Does
+## Step 2: Configure Azure Boards, If You Want Provider Tracking
 
-Before running the workflow, read the function in `step-03-create-issue`:
-
-```bash
-grep -A8 "detect_git_provider" \
-  amplifier-bundle/recipes/default-workflow.yaml | head -12
-```
-
-You will see:
+If you want the workflow to reuse or create Azure Boards work items, configure
+the Azure DevOps CLI:
 
 ```bash
-detect_git_provider() {
-  local remote_url
-  remote_url=$(git remote get-url origin 2>/dev/null || echo '')
-  if [[ "$remote_url" == *"dev.azure.com"* ]] || \
-     [[ "$remote_url" == *"visualstudio.com"* ]]; then
-    echo "ado"
-  else
-    echo "github"
-  fi
-}
+az extension add --name azure-devops
+az login
+az devops configure --defaults \
+  organization=https://dev.azure.com/acme \
+  project=platform
 ```
 
-This function runs once per provider-aware step, right after `set -euo pipefail`. The result is stored in `GIT_PROVIDER` and used to choose the ADO or GitHub command branch.
+If you skip this step, `workflow-prep` still classifies the repo as `azdo`, but
+step 03 falls back to local tracking instead of trying GitHub.
 
 ---
 
-## Step 3: Run the Workflow
+## Step 3: Run the Workflow with an Existing Work Item
 
-Launch with your ADO repository:
+Run `default-workflow` with an Azure Boards reference in the task description:
 
 ```bash
 amplihack recipe run default-workflow \
-  -c "task_description=Fix the session timeout bug reported in #12345" \
-  -c "repo_path=/path/to/your/ado-repo"
+  -c "task_description=Fix the session timeout bug described in AB#12345" \
+  -c "repo_path=$(pwd)"
 ```
 
-Watch the step-03 output. You will see:
+During `workflow-prep`, the route is:
 
-```
-=== Step 3: Creating Issue/Work Item (provider: ado) ===
-INFO: task_description references work item #12345 — verifying it exists
-INFO: Reusing existing work item #12345 — skipping creation
-```
-
-or, if no existing work item is referenced:
-
-```
-=== Step 3: Creating Issue/Work Item (provider: ado) ===
-INFO: Searching open ADO work items for similar title
-INFO: No matching open work item found — proceeding to create
-INFO: Created ADO work item #98
-_workitems/edit/98
+```text
+step-02d-detect-host-type -> REMOTE_HOST_TYPE=azdo
+step-03-create-issue -> Azure Boards/local tracking path
 ```
 
-The line `_workitems/edit/98` is what step-03b reads to extract `issue_number=98`.
+GitHub issue and label commands are skipped before command construction. The
+AzDO path does not run:
 
----
-
-## Step 4: Verify the Work Item
-
-After step-03 completes, confirm the work item exists in ADO:
-
-```bash
-az boards work-item show --id 98 \
-  --query "{id:id, title:fields.\"System.Title\", state:fields.\"System.State\", type:fields.\"System.WorkItemType\"}" \
-  -o json
-```
-
-Expected output:
-
-```json
-{
-  "id": 98,
-  "title": "Fix the session timeout bug reported in #12345",
-  "state": "Active",
-  "type": "Task"
-}
+```text
+gh issue view
+gh issue list
+gh issue create
+gh label list
+gh label create
 ```
 
 ---
 
-## Step 5: Watch the Workflow Continue
+## Step 4: Read the Tracking Output
 
-Steps 04 through 15 run identically on ADO repos — they operate on the local git clone and do not call any provider-specific API. The workflow:
+When Azure Boards resolves the work item, step 03 emits a parseable Azure
+Boards reference:
 
-- Sets up a worktree (step-04)
-- Runs investigation agents (steps 05–07)
-- Generates a design (step-08)
-- Implements changes (steps 09–13)
-- Runs tests (step-14)
-- Commits and pushes the branch (step-15)
+```text
+AB#12345
+```
 
-The branch pushed is a normal `git push origin <branch>` call. ADO accepts standard git pushes.
+or a full work-item URL:
+
+```text
+https://dev.azure.com/acme/platform/_workitems/edit/12345
+```
+
+If Azure Boards is unavailable, step 03 emits structured local metadata:
+
+```text
+tracking_system=local
+tracking_reference=local-ab-12345
+tracking_issue=local-ab-12345
+issue_creation=local-tracking
+issue_number=12345
+```
+
+Provider URLs, `AB#N`, and local metadata with a numeric local reference
+preserve the downstream `issue_number` contract.
 
 ---
 
-## Step 6: Verify the Draft PR
+## Step 5: Let the Workflow Continue
 
-When step-16 runs, you will see:
+After tracking setup, the normal development steps run against the local git
+checkout:
 
+| Phase | Provider behavior |
+| ----- | ----------------- |
+| Worktree setup | Uses local git only |
+| Design and implementation | Provider-independent |
+| Tests and pre-commit | Provider-independent |
+| Commit and push | Uses normal `git push origin <branch>` |
+| PR creation | Automated only for GitHub; AzDO reports manual PR instructions |
+
+Commit references use Azure Boards syntax when the host type is `azdo`:
+
+```text
+AB#12345
 ```
-=== Step 16: Creating Draft PR ===
-```
-
-followed by the ADO PR URL:
-
-```
-https://dev.azure.com/myorg/myproject/_git/myrepo/pullrequest/7
-```
-
-Verify it:
-
-```bash
-az repos pr show \
-  --id 7 \
-  --query "{id:pullRequestId, title:title, status:status, isDraft:isDraft}" \
-  -o json
-```
-
-Expected output:
-
-```json
-{
-  "id": 7,
-  "title": "Fix the session timeout bug reported in #12345",
-  "status": "active",
-  "isDraft": true
-}
-```
-
-The PR is in draft status, targeting `main`, and contains the task description and design spec in the description body.
 
 ---
 
-## Step 7: Diagnose Common Failure Modes
+## Step 6: Create the Azure DevOps PR Manually
 
-### Failure Mode 1: ADO defaults not set
-
-**Symptom**: step-03 exits 1 with a message from `az` about missing organization or project.
-
-**Diagnosis**:
+After the workflow pushes the branch, create the PR with Azure DevOps:
 
 ```bash
-az devops configure --list
-# If empty or missing, set them:
-az devops configure --defaults \
-  organization=https://dev.azure.com/myorg \
-  project=myproject
+az repos pr create \
+  --source-branch "$(git branch --show-current)" \
+  --target-branch main \
+  --title "Fix the session timeout bug (AB#12345)" \
+  --description "Implements the fix for AB#12345."
 ```
 
-### Failure Mode 2: Authentication expired
+You can also create the PR from the Azure DevOps web UI.
 
-**Symptom**: step-03 or step-16 exits 1 with a 401/403 error from the Azure REST API.
+---
 
-**Diagnosis**:
+## Step 7: Try the Local Fallback Path
+
+To see the provider-safe fallback, run the workflow without Azure Boards
+configuration or with `remote_host_type=other` and a numeric local reference:
 
 ```bash
-az account show
-# If this fails, re-authenticate:
-az login
+amplihack recipe run default-workflow \
+  -c remote_host_type=other \
+  -c "task_description=Add config parser #482193" \
+  -c "repo_path=$(pwd)"
 ```
 
-For CI/CD environments, use a service principal:
+Expected tracking output:
 
-```bash
-az login --service-principal \
-  -u "$ARM_CLIENT_ID" \
-  -p "$ARM_CLIENT_SECRET" \
-  --tenant "$ARM_TENANT_ID"
+```text
+tracking_system=local
+tracking_reference=local-issue-482193
+tracking_issue=local-issue-482193
+issue_creation=local-tracking
+issue_number=482193
 ```
+
+No GitHub or Azure DevOps provider command runs in this mode.
 
 ---
 
 ## Summary
 
-You have seen the complete ADO workflow path:
-
-| Step        | What happened                                                                       |
-| ----------- | ----------------------------------------------------------------------------------- |
-| Pre-flight  | `az account show` and `az devops configure --list` confirmed                        |
-| step-03     | `detect_git_provider()` returned `ado`; `az boards work-item create` created a Task |
-| step-03b    | `_workitems/edit/98` parsed to `issue_number=98`                                    |
-| steps 04–15 | Normal git/implementation flow, provider-agnostic                                   |
-| step-16     | `detect_git_provider()` returned `ado`; `az repos pr create --draft` created the PR |
-
-The workflow is functionally identical on GitHub and ADO. Provider detection is the only branching point.
+You ran the workflow on an Azure DevOps-backed repository. `workflow-prep`
+classified the remote as `azdo`, kept all GitHub issue and label commands out
+of the AzDO path, and preserved the numeric `issue_number` contract through
+Azure Boards or local tracking.

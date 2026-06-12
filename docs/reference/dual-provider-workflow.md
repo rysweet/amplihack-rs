@@ -1,210 +1,299 @@
-# Dual-Provider Workflow Reference
+# Provider-Aware Workflow Prep Reference
 
-> [Home](../index.md) > Reference > Dual-Provider Workflow
+> [Home](../index.md) > Reference > Provider-Aware Workflow Prep
 
-Field-level contract for provider detection, ADO work item creation, ADO PR creation, and the updated issue-number extraction regex.
+Technical contract for host detection and tracking-item dispatch in
+`workflow-prep.yaml`.
 
 ## Contents
 
-- [Provider Detection Contract](#provider-detection-contract)
-- [Affected Workflow Steps](#affected-workflow-steps)
-- [step-03 ADO Path: Work Item Creation](#step-03-ado-path-work-item-creation)
-- [step-03b Regex Contract](#step-03b-regex-contract)
-- [step-16 ADO Path: PR Creation](#step-16-ado-path-pr-creation)
-- [Security Invariants](#security-invariants)
-- [Known Limitations](#known-limitations)
-- [Environment Requirements](#environment-requirements)
+- [Overview](#overview)
+- [Host Detection API](#host-detection-api)
+- [Step 03 Tracking Dispatch](#step-03-tracking-dispatch)
+- [Command Isolation Contract](#command-isolation-contract)
+- [Configuration](#configuration)
+- [Outputs](#outputs)
+- [Local Metadata Contract](#local-metadata-contract)
+- [Examples](#examples)
+- [Regression Contract](#regression-contract)
 
 ---
 
-## Provider Detection Contract
+## Overview
 
-### Function: `detect_git_provider()`
+`workflow-prep` detects the repository host once, before tracking setup. The
+detected host type determines whether step 03 may call GitHub, Azure Boards, or
+only local tracking.
 
-Defined inline in each provider-aware bash step. Returns one of two string values.
+The public contract is the `remote_host_type` recipe context value and its shell
+counterpart `REMOTE_HOST_TYPE`.
 
-| Return Value | Condition                                                                  |
-| ------------ | -------------------------------------------------------------------------- |
-| `ado`        | `git remote get-url origin` contains `dev.azure.com` or `visualstudio.com` |
-| `github`     | All other cases, including empty remote, SSH remotes, GitHub Enterprise    |
+| Value | Meaning | Provider commands allowed |
+| ----- | ------- | ------------------------- |
+| `github` | The `origin` remote is hosted by GitHub | `gh issue`, `gh label`, later GitHub PR commands |
+| `azdo` | The `origin` remote is hosted by Azure DevOps | `az boards` in the Azure Boards branch only |
+| `other` | Missing, unsupported, malformed, or non-GitHub/non-AzDO remote | None |
 
-#### Guarantees
-
-- Never exits non-zero. If `git remote get-url origin` fails, the remote URL is treated as empty, and the function returns `github`.
-- The check is substring-based, not regex. Both HTTPS (`https://dev.azure.com/org/...`) and SSH (`git@ssh.dev.azure.com:v3/...`) ADO remote formats are matched by the `dev.azure.com` pattern.
-- The result is stored in `GIT_PROVIDER` and treated as read-only for the rest of the step.
-
----
-
-## Affected Workflow Steps
-
-| Step ID                         | Provider-Aware   | Change                                |
-| ------------------------------- | ---------------- | ------------------------------------- |
-| `step-03-create-issue`          | Yes              | ADO branch added                      |
-| `step-03b-extract-issue-number` | Yes (regex only) | Regex extended to match ADO URL shape |
-| `step-16-create-draft-pr`       | Yes              | ADO branch added                      |
-| All other steps                 | No               | Unchanged                             |
+The classifier emits only `github`, `azdo`, or `other`. Downstream code may
+accept `azure-devops` as a compatibility alias from external recipe context,
+but step `02d` itself emits `azdo`.
 
 ---
 
-## step-03 ADO Path: Work Item Creation
+## Host Detection API
 
-### Input Variables
+### Step
 
-| Variable             | Source                                    | Usage                                                  |
-| -------------------- | ----------------------------------------- | ------------------------------------------------------ |
-| `task_description`   | Recipe context (`{{task_description}}`)   | Work item title (first 200 chars) and description body |
-| `final_requirements` | Recipe context (`{{final_requirements}}`) | Appended to description body                           |
+`workflow-prep.yaml::step-02d-detect-host-type`
 
-### Idempotency Guards (evaluated in order)
+### Input
 
-#### Guard 1: Reference in task_description
-
-If `task_description` matches `#[0-9]+`, the captured number is treated as an existing ADO work item ID.
-
-- Calls `az boards work-item show --id <NUM> --query id -o tsv`
-- If the work item exists: emits `_workitems/edit/<NUM>` and exits 0
-- If not found: logs a warning and falls through to Guard 2
-
-#### Guard 2: Title search (WIQL)
-
-Searches for an open ADO work item with a title matching the first 100 characters of `ISSUE_TITLE`.
-
-- Calls `az boards query --wiql "SELECT [System.Id] FROM WorkItems WHERE [System.Title] = '...' AND [System.State] <> 'Closed'"`
-- Single quotes in the title are escaped to `''`
-- If a match is found: emits `_workitems/edit/<ID>` and exits 0
-- If no match: falls through to creation
-
-### Creation
-
-```bash
-az boards work-item create \
-  --type "Task" \
-  --title "$ISSUE_TITLE" \
-  --description "$ISSUE_BODY" \
-  --query id \
-  -o tsv
-```
-
-Uses the ADO defaults configured via `az devops configure --defaults`.
+| Input | Source | Description |
+| ----- | ------ | ----------- |
+| `repo_path` | Recipe context | Repository path where `origin` is inspected |
+| `origin` URL | `git remote get-url origin` | Remote URL to classify |
 
 ### Output
 
-Emits one line to stdout: `_workitems/edit/<numeric-ID>`
+| Output | Values | Description |
+| ------ | ------ | ----------- |
+| `remote_host_type` | `github`, `azdo`, `other` | Host classifier result propagated by `default-workflow` |
 
-### Exit Codes
+### Classification Rules
 
-| Code | Meaning                                                           |
-| ---- | ----------------------------------------------------------------- |
-| 0    | Work item created or idempotency guard matched; ID emitted        |
-| 1    | `az boards work-item create` returned empty or non-numeric output |
-| 1    | `az` exited non-zero                                              |
+The finished classifier lowercases and normalizes the remote URL before
+matching known host shapes.
 
----
+| Remote shape | Host type |
+| ------------ | --------- |
+| `https://github.com/OWNER/REPO.git` | `github` |
+| `git@github.com:OWNER/REPO.git` | `github` |
+| `ssh://git@github.com/OWNER/REPO.git` | `github` |
+| `https://dev.azure.com/ORG/PROJECT/_git/REPO` | `azdo` |
+| `https://ORG.visualstudio.com/PROJECT/_git/REPO` | `azdo` |
+| `git@ssh.dev.azure.com:v3/ORG/PROJECT/REPO` | `azdo` |
+| `ssh://git@ssh.dev.azure.com/v3/ORG/PROJECT/REPO` | `azdo` |
+| Empty, missing, unsupported, malformed, or local-only remote | `other` |
 
-## step-03b Regex Contract
-
-The regex used to extract a numeric issue number from the step-03 output:
-
-```
-(issues|_workitems/edit)/[0-9]+
-```
-
-| URL Shape                               | Matched Segment      | Extracted Number |
-| --------------------------------------- | -------------------- | ---------------- |
-| `https://github.com/org/repo/issues/42` | `issues/42`          | `42`             |
-| `_workitems/edit/42`                    | `_workitems/edit/42` | `42`             |
-
-The extracted number is the sequence of digits after the last `/`.
+The feature contract is host-aware matching. A URL such as
+`https://github.com.evil.example/OWNER/REPO.git` is classified as `other`, not
+`github`.
 
 ---
 
-## step-16 ADO Path: PR Creation
+## Step 03 Tracking Dispatch
 
-### Input Variables
+### Step
 
-| Variable                       | Source          | Usage                                 |
-| ------------------------------ | --------------- | ------------------------------------- |
-| `worktree_setup.worktree_path` | step-04 output  | Working directory; branch name source |
-| `task_description`             | Recipe context  | PR title (first 200 chars)            |
-| `design_spec`                  | Recipe context  | PR description body                   |
-| `issue_number`                 | step-03b output | Included as `Closes #<N>` in PR body  |
+`workflow-prep.yaml::step-03-create-issue`
 
-### Idempotency Guard
+### Inputs
 
-Before creating a PR, calls:
+| Context key | Required | Description |
+| ----------- | -------- | ----------- |
+| `repo_path` | Yes | Repository path used for local git and provider commands |
+| `task_description` | Yes | Task text used for title creation and existing reference extraction |
+| `final_requirements` | No | Requirements text included in new provider records when a provider record is created |
+| `remote_host_type` | No | Host routing value from step 02d; empty or unknown values are treated as `other` |
+| `issue_number` | No | Existing tracking ID; reused before provider create paths |
+
+### Dispatch Matrix
+
+| `REMOTE_HOST_TYPE` | Existing ID behavior | Create behavior | Fallback behavior |
+| ------------------ | -------------------- | --------------- | ----------------- |
+| `github` | Reuse `#N` after `gh issue view` validates it | `gh issue create`; label setup stays in this branch | Most GitHub creation errors fail; repository access/resolution failures fall back to local metadata |
+| `azdo` | Reuse `issue_number=N`, `AB#N`, or host-scoped `#N` as an Azure Boards candidate | `az boards work-item create` when Azure Boards is available | Structured local metadata |
+| `azure-devops` | Compatibility alias for `azdo` when supplied by callers | Same as `azdo` | Same as `azdo` |
+| `other`, empty, unknown | Reuse numeric `issue_number=N` only as local context | No provider creation | Structured local metadata |
+
+The Azure DevOps branch does not call GitHub first and then recover from the
+failure. It bypasses GitHub issue and label commands before those commands are
+constructed.
+
+---
+
+## Command Isolation Contract
+
+Provider-specific commands are physically scoped to their provider branch.
+
+| Command family | Allowed host type | Forbidden host types |
+| -------------- | ----------------- | -------------------- |
+| `gh issue view` | `github` | `azdo`, `azure-devops`, `other`, empty, unknown |
+| `gh issue list` | `github` | `azdo`, `azure-devops`, `other`, empty, unknown |
+| `gh issue create` | `github` | `azdo`, `azure-devops`, `other`, empty, unknown |
+| `gh label list/create` | `github` | `azdo`, `azure-devops`, `other`, empty, unknown |
+| `az boards work-item show/create` | `azdo`, `azure-devops` | `github`, `other`, empty, unknown |
+
+This prevents task descriptions, branch names, local paths, and provider
+metadata from being sent to the wrong service.
+
+---
+
+## Configuration
+
+### GitHub
 
 ```bash
-az repos pr list \
-  --source-branch "$CURRENT_BRANCH" \
-  --query '[0].url' \
-  -o tsv
+gh auth status
+git remote get-url origin
+# https://github.com/OWNER/REPO.git
 ```
 
-If a non-empty, non-`None` result is returned, the existing PR URL is emitted and the step exits 0.
+No recipe flags are required.
 
-### Creation
+### Azure DevOps
+
+Azure Boards integration is optional. If it is configured, the AzDO branch can
+reuse or create work items:
 
 ```bash
-az repos pr create --draft \
-  --title "$PR_TITLE" \
-  --description "$PR_BODY" \
-  --source-branch "$CURRENT_BRANCH" \
-  --target-branch "main" \
-  --query url \
-  -o tsv
+az extension add --name azure-devops
+az login
+az devops configure --defaults \
+  organization=https://dev.azure.com/ORG \
+  project=PROJECT
 ```
 
-Timeout: 120 seconds (ADO REST API; slower than GitHub API).
+If Azure Boards is unavailable, the AzDO branch emits local metadata and
+continues without invoking GitHub issue logic.
 
-### Output
+### Local or unsupported remotes
 
-Emits the ADO PR URL to stdout:
+No provider configuration is required.
 
+### Runtime preference
+
+For large nested workflow runs:
+
+```bash
+export NODE_OPTIONS=--max-old-space-size=32768
 ```
-https://dev.azure.com/org/project/_git/repo/pullrequest/NNN
-```
-
-### Exit Codes
-
-| Code   | Meaning                                                                                                |
-| ------ | ------------------------------------------------------------------------------------------------------ |
-| 0      | PR created or idempotency guard matched; URL emitted                                                   |
-| 1      | `az repos pr create` returned empty or `None`                                                          |
-| N (≠0) | `az repos pr create` exited non-zero; exit code propagated directly via `AZ_STATUS` (not clamped to 1) |
-| 1      | `COMMITS_AHEAD` is 0 (pre-condition guard, not ADO-specific)                                           |
-| 1      | `ISSUE_NUM` is not numeric (pre-condition guard, not ADO-specific)                                     |
 
 ---
 
-## Security Invariants
+## Outputs
 
-| Invariant                                | Implementation                                                                                                                                 |
-| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| Heredoc delimiters are quoted            | `<<'EOFTASKDESC'` and `<<'EOFDESIGN'` prevent bash from expanding `$()` and backticks in recipe-substituted content                            |
-| ADO work item ID is validated as numeric | `case "$NEW_ITEM_ID" in ''`\|`*[!0-9]*)` exits 1 before any downstream interpolation; rejects empty, `None`, or non-numeric `az boards` output |
-| `issue_number` is validated as numeric   | `case "$ISSUE_NUM" in ''`\|`*[!0-9]*)` exits 1 at the start of step-16 (pre-existing guard, not ADO-specific)                                  |
+Step 03 writes provider output to stdout. For GitHub and Azure Boards success
+paths, that output is a single URL or `AB#N` reference. For local fallback, the
+output is multiline key/value metadata.
 
----
+| Host path | Step 03 output | Step 03b numeric ID |
+| --------- | -------------- | ------------------- |
+| GitHub | `https://github.com/OWNER/REPO/issues/123` | `123` |
+| Azure DevOps existing work item | `AB#12345` | `12345` |
+| Azure DevOps work item URL | `https://dev.azure.com/ORG/PROJECT/_workitems/edit/12345` | `12345` |
+| Local metadata | `tracking_system=local` plus `tracking_reference=local-issue-482193`, `tracking_issue=local-issue-482193`, `issue_creation=local-tracking`, and usually `issue_number=482193` | `482193` when a numeric local reference is present |
 
-## Known Limitations
-
-| Limitation                                                  | Impact                                                                                        | Workaround                                                                         |
-| ----------------------------------------------------------- | --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| ADO org/project not inferred from remote URL                | Wrong project used if `az devops configure` defaults point to a different project             | Set `az devops configure --defaults` explicitly per repository or per session      |
-| WIQL title search escapes only single quotes                | Titles containing `[`, `]`, `CONTAINS`, semicolons may produce unexpected WIQL query behavior | Use `task_description` with simple alphanumeric titles on ADO                      |
-| `CURRENT_BRANCH` not validated against a safe character set | Branches with unusual characters could produce unexpected `--source-branch` arguments         | Use standard branch names (`feat/`, `fix/`, `docs/`)                               |
-| No pre-flight `az` auth check                               | Auth failures propagate as `exit 1` from `az` commands without a specific diagnostic message  | Run `az account show` before invoking the workflow                                 |
-| `--work-items` flag not used in PR creation                 | ADO PR is not formally API-linked to the work item (prose `Closes #N` in description only)    | Future: add `--work-items "$ISSUE_NUM"` to `az repos pr create` for formal linkage |
+Downstream workflow steps consume only the numeric `issue_number` plus
+`REMOTE_HOST_TYPE`.
 
 ---
 
-## Environment Requirements
+## Local Metadata Contract
 
-| Requirement              | Minimum Version | Check Command                                                        |
-| ------------------------ | --------------- | -------------------------------------------------------------------- |
-| Azure CLI                | 2.50.0          | `az --version`                                                       |
-| azure-devops extension   | 0.26.0          | `az extension list --query "[?name=='azure-devops'].version" -o tsv` |
-| Authenticated session    | —               | `az account show`                                                    |
-| ADO organization default | —               | `az devops configure --list`                                         |
-| ADO project default      | —               | `az devops configure --list`                                         |
+Local fallback output is structured metadata:
+
+```text
+tracking_system=local
+tracking_reference=local-issue-482193
+tracking_issue=local-issue-482193
+issue_creation=local-tracking
+issue_number=482193
+```
+
+`tracking_reference` is the durable local identifier for the run. It may use
+`local-issue-N`, `local-ab-N`, or another `local-*` value when no numeric
+provider-style reference is available. `issue_number=N` is emitted when step 03
+can derive a numeric value from explicit `issue_number`, `AB#N`, `#N`, or a
+numeric local reference. Step 03b must fail visibly if local metadata contains
+no extractable numeric ID and no compatibility task-text fallback can supply one.
+
+`local-tracking:N` is accepted only as a legacy compatibility format. New docs
+and tests should use the structured metadata above.
+
+---
+
+## Examples
+
+### GitHub issue reuse
+
+```bash
+amplihack recipe run default-workflow \
+  -c task_description="Fix login timeout #684" \
+  -c repo_path=.
+```
+
+With a GitHub `origin`, step 03 may run:
+
+```text
+gh issue view 684
+gh issue list --state open --search ...
+gh issue create ...
+```
+
+### Azure DevOps work item reuse
+
+```bash
+amplihack recipe run default-workflow \
+  -c task_description="Fix login timeout in AB#12345" \
+  -c repo_path=.
+```
+
+With an AzDO `origin`, step 03 emits an Azure Boards reference or local
+tracking reference. It does not run any `gh issue` or `gh label` command.
+
+### Explicit AzDO context from a follow-up workflow
+
+```bash
+amplihack recipe run default-workflow \
+  -c remote_host_type=azdo \
+  -c issue_number=12345 \
+  -c task_description="Address review feedback for the Azure DevOps PR" \
+  -c repo_path=.
+```
+
+Step 03 emits:
+
+```text
+AB#12345
+```
+
+### Unsupported remote
+
+```bash
+git remote set-url origin https://gitlab.com/acme/service.git
+
+amplihack recipe run default-workflow \
+  -c task_description="Add config parser #482193" \
+  -c repo_path=.
+```
+
+Step 03 emits:
+
+```text
+tracking_system=local
+tracking_reference=local-issue-482193
+tracking_issue=local-issue-482193
+issue_creation=local-tracking
+issue_number=482193
+```
+
+---
+
+## Regression Contract
+
+Host-aware regression coverage exercises the `workflow-prep` path with shimmed
+remotes and provider CLIs.
+
+Required scenarios:
+
+| Scenario | Expected result |
+| -------- | --------------- |
+| GitHub HTTPS remote | GitHub issue idempotency/create path remains available |
+| AzDO `https://dev.azure.com/...` remote | No `gh issue` or `gh label` command is invoked |
+| AzDO `https://ORG.visualstudio.com/...` remote | No `gh issue` or `gh label` command is invoked |
+| AzDO `git@ssh.dev.azure.com:v3/...` remote | No `gh issue` or `gh label` command is invoked |
+| Unsupported remote | Local tracking is used without provider CLI calls |
+
+The AzDO tests use a `gh` sentinel that fails the test if any GitHub issue or
+label command is invoked.
