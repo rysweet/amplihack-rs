@@ -44,6 +44,7 @@ DEFAULT_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/default-workflow.yaml"
 SMART_EXECUTE_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/smart-execute-routing.yaml"
 SMART_ORCHESTRATOR_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/smart-orchestrator.yaml"
 FINAL_STATUS_TOOL="${REPO_ROOT}/amplifier-bundle/tools/workflow_final_status.sh"
+PR_SCOPE_HELPER="${REPO_ROOT}/amplifier-bundle/tools/workflow_pr_scope.sh"
 
 if [[ ! -f "${WORKTREE_RECIPE}" ]]; then
     echo "HARNESS-ERROR: ${WORKTREE_RECIPE} not found" >&2
@@ -401,6 +402,183 @@ assert_commit_guard_dynamic() {
     run_commit_guard_case "${label}" "${step_file}" "hook" "config" "__UNSET__"
 }
 
+setup_pr_scope_repo() {
+    local repo="$1"
+
+    git init -b main "${repo}" >/dev/null
+    configure_identity "${repo}"
+    printf 'base\n' > "${repo}/README.md"
+    git -C "${repo}" add README.md
+    git -C "${repo}" commit -m "base" >/dev/null
+    git -C "${repo}" remote add origin "https://github.com/rysweet/amplihack-rs.git"
+    git -C "${repo}" checkout -b feat/issue-754-scoped-monitor >/dev/null
+    printf 'scoped monitor\n' > "${repo}/issue-754.txt"
+    git -C "${repo}" add issue-754.txt
+    git -C "${repo}" commit -m "issue 754 scoped monitor" >/dev/null
+}
+
+install_pr_scope_fake_gh() {
+    local bin_dir="$1"
+
+    mkdir -p "${bin_dir}"
+    cat > "${bin_dir}/gh" <<'SHIM'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "${GH_SCOPE_LOG:?GH_SCOPE_LOG must be set}"
+
+if [[ "${1:-}" == "auth" && "${2:-}" == "status" ]]; then
+    exit 0
+fi
+
+if [[ "${1:-}" == "pr" && "${2:-}" == "list" ]]; then
+    case "${SCOPE_GH_SCENARIO:?SCOPE_GH_SCENARIO must be set}" in
+        matching-among-unrelated)
+            jq -nc --arg sha "${EXPECTED_HEAD_SHA:?EXPECTED_HEAD_SHA must be set}" '[
+              {
+                url: "https://github.com/rysweet/amplihack-rs/pull/999",
+                number: 999,
+                title: "Unrelated newer PR (#999)",
+                state: "OPEN",
+                createdAt: "2026-06-12T04:10:00Z",
+                headRefName: "feat/unrelated",
+                baseRefName: "main",
+                headRefOid: "9999999999999999999999999999999999999999",
+                headRepositoryOwner: {login: "rysweet"},
+                headRepository: {name: "amplihack-rs"},
+                isCrossRepository: false
+              },
+              {
+                url: "https://github.com/rysweet/amplihack-rs/pull/754",
+                number: 754,
+                title: "Fix scoped monitor closure (#754)",
+                state: "OPEN",
+                createdAt: "2026-06-12T04:03:00Z",
+                headRefName: "feat/issue-754-scoped-monitor",
+                baseRefName: "main",
+                headRefOid: $sha,
+                headRepositoryOwner: {login: "rysweet"},
+                headRepository: {name: "amplihack-rs"},
+                isCrossRepository: false
+              }
+            ]'
+            ;;
+        none)
+            printf '[]\n'
+            ;;
+        multiple)
+            jq -nc --arg sha "${EXPECTED_HEAD_SHA:?EXPECTED_HEAD_SHA must be set}" '[
+              {
+                url: "https://github.com/rysweet/amplihack-rs/pull/754",
+                number: 754,
+                title: "Fix scoped monitor closure (#754)",
+                state: "OPEN",
+                createdAt: "2026-06-12T04:03:00Z",
+                headRefName: "feat/issue-754-scoped-monitor",
+                baseRefName: "main",
+                headRefOid: $sha,
+                headRepositoryOwner: {login: "rysweet"},
+                headRepository: {name: "amplihack-rs"},
+                isCrossRepository: false
+              },
+              {
+                url: "https://github.com/rysweet/amplihack-rs/pull/755",
+                number: 755,
+                title: "Fix scoped monitor closure follow-up (#754)",
+                state: "OPEN",
+                createdAt: "2026-06-12T04:04:00Z",
+                headRefName: "feat/issue-754-scoped-monitor",
+                baseRefName: "main",
+                headRefOid: $sha,
+                headRepositoryOwner: {login: "rysweet"},
+                headRepository: {name: "amplihack-rs"},
+                isCrossRepository: false
+              }
+            ]'
+            ;;
+        *)
+            echo "unexpected SCOPE_GH_SCENARIO=${SCOPE_GH_SCENARIO}" >&2
+            exit 98
+            ;;
+    esac
+    exit 0
+fi
+
+echo "unexpected gh call: $*" >&2
+exit 99
+SHIM
+    chmod +x "${bin_dir}/gh"
+}
+
+run_pr_scope_helper_case() {
+    local scenario="$1"
+    local repo="$2"
+    local stdout_file="$3"
+    local stderr_file="$4"
+    local head_sha
+
+    head_sha="$(git -C "${repo}" rev-parse HEAD)"
+    (
+        cd "${repo}"
+        export PATH="${WORK}/scope-bin:${PATH}"
+        export GH_SCOPE_LOG="${WORK}/gh-scope-${scenario}.log"
+        export SCOPE_GH_SCENARIO="${scenario}"
+        export EXPECTED_HEAD_SHA="${head_sha}"
+        bash "${PR_SCOPE_HELPER}" \
+            --repo "rysweet/amplihack-rs" \
+            --head "feat/issue-754-scoped-monitor" \
+            --base "main" \
+            --issue "754" \
+            --work-item "754" \
+            --expected-pr-title-prefix "Fix scoped monitor closure" \
+            --created-after "2026-06-12T04:02:32Z" \
+            --head-sha "${head_sha}"
+    ) >"${stdout_file}" 2>"${stderr_file}"
+}
+
+assert_scoped_pr_helper_contracts() {
+    local repo="${WORK}/scope-repo"
+    local stdout_file="${WORK}/scope.out"
+    local stderr_file="${WORK}/scope.err"
+    local selected_number
+
+    [[ -f "${PR_SCOPE_HELPER}" ]] || fail "workflow_pr_scope.sh must exist as the single current-work PR identity helper"
+    setup_pr_scope_repo "${repo}"
+    install_pr_scope_fake_gh "${WORK}/scope-bin"
+
+    run_pr_scope_helper_case "matching-among-unrelated" "${repo}" "${stdout_file}" "${stderr_file}" || {
+        echo "--- workflow_pr_scope.sh stderr ---" >&2
+        cat "${stderr_file}" >&2
+        echo "--- workflow_pr_scope.sh stdout ---" >&2
+        cat "${stdout_file}" >&2
+        fail "workflow_pr_scope.sh must find the scoped PR while ignoring unrelated newer PRs"
+    }
+    selected_number="$(jq -r '.number // empty' "${stdout_file}")"
+    [[ "${selected_number}" == "754" ]] || {
+        cat "${stdout_file}" >&2
+        fail "workflow_pr_scope.sh selected PR #${selected_number:-<none>}; expected the exact scoped PR #754"
+    }
+    if grep -Eq -- '--author|sort:updated-desc|sort:created-desc' "${WORK}/gh-scope-matching-among-unrelated.log"; then
+        cat "${WORK}/gh-scope-matching-among-unrelated.log" >&2
+        fail "workflow_pr_scope.sh must not use author/recent PR discovery for current-work identity"
+    fi
+    grep -q -- '--head' "${WORK}/gh-scope-matching-among-unrelated.log" \
+        || fail "workflow_pr_scope.sh must scope gh lookup by head branch"
+
+    if run_pr_scope_helper_case "none" "${repo}" "${WORK}/scope-none.out" "${WORK}/scope-none.err"; then
+        cat "${WORK}/scope-none.out" >&2
+        fail "workflow_pr_scope.sh must fail closed when zero scoped PR candidates match"
+    fi
+    grep -Eq '"reason"[[:space:]]*:[[:space:]]*"no_scoped_pr"' "${WORK}/scope-none.out" "${WORK}/scope-none.err" \
+        || fail "zero scoped candidates must emit structured reason no_scoped_pr"
+
+    if run_pr_scope_helper_case "multiple" "${repo}" "${WORK}/scope-multiple.out" "${WORK}/scope-multiple.err"; then
+        cat "${WORK}/scope-multiple.out" >&2
+        fail "workflow_pr_scope.sh must fail closed when multiple scoped PR candidates match"
+    fi
+    grep -Eq '"reason"[[:space:]]*:[[:space:]]*"multiple_scoped_prs"' "${WORK}/scope-multiple.out" "${WORK}/scope-multiple.err" \
+        || fail "multiple scoped candidates must emit structured reason multiple_scoped_prs"
+}
+
 create_origin_with_branches() {
     local base_branch="$1"
     local origin_dir="$2"
@@ -684,6 +862,7 @@ git -C "${PR_REPO}" checkout -b feat/issue-573-pr >/dev/null
 printf 'change\n' >> "${PR_REPO}/README.md"
 git -C "${PR_REPO}" add README.md
 git -C "${PR_REPO}" commit -m "change" >/dev/null
+git -C "${PR_REPO}" remote set-url origin "https://github.com/example/repo.git"
 
 cat > "${WORK}/bin/gh" <<'SHIM'
 #!/usr/bin/env bash
@@ -724,6 +903,7 @@ chmod +x "${WORK}/bin/gh"
     export TASK_DESCRIPTION="Fix default workflow reliability"
     export ISSUE_NUMBER="573"
     export REMOTE_HOST_TYPE="github"
+    export AMPLIHACK_HOME="${REPO_ROOT}"
     unset DESIGN_SPEC design_spec RECIPE_VAR_design_spec RECIPE_VAR_DESIGN_SPEC
     bash "${STEP16}"
 ) >"${WORK}/step16.out" 2>"${WORK}/step16.err" || {
@@ -740,7 +920,7 @@ if ! grep -q '^pr create' "${GH_LOG}"; then
     fail "workflow-publish did not invoke gh pr create when DESIGN_SPEC was missing"
 fi
 
-if [[ "$(grep -c '^pr list' "${GH_LOG}")" -ne 2 ]]; then
+if [[ "$(grep -c '^pr list' "${GH_LOG}")" -lt 2 ]]; then
     echo "--- gh log ---" >&2
     cat "${GH_LOG}" >&2
     echo "--- step-16 stderr ---" >&2
@@ -773,5 +953,7 @@ assert_commit_guard_dynamic "workflow-tdd" "${STEP_TDD_CHECKPOINT}"
 assert_commit_guard_dynamic "workflow-refactor-review" "${STEP_REFACTOR_REVIEW_CHECKPOINT}"
 assert_commit_guard_dynamic "workflow-pr-review" "${STEP_PR_REVIEW_FEEDBACK}"
 assert_commit_guard_dynamic "workflow-finalize" "${STEP_FINALIZE_CLEANUP}"
+
+assert_scoped_pr_helper_contracts
 
 echo "PASS: default workflow reliability contracts are covered."

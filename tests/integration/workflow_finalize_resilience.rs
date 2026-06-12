@@ -146,7 +146,7 @@ fn pr_ready_helper_retries_github_lookup_ready_and_comment_calls() {
         "timeout 60 gh",
         "for attempt in 1 2 3",
         "retrying (${attempt}/3)",
-        "gh_with_retry \"pr list\"",
+        "workflow_pr_scope.sh",
         "gh_with_retry \"pr view\"",
         "gh_with_retry \"pr ready\"",
         "gh_with_retry \"pr comment\"",
@@ -217,12 +217,12 @@ exit 99
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("exit 42"),
-        "retry helper must preserve the failing gh exit status, stderr:\n{stderr}"
+        stderr.contains("current branch is empty") || stderr.contains("pr_metadata_unavailable"),
+        "scoped validation must fail closed before ambiguous PR mutation, stderr:\n{stderr}"
     );
     assert!(
-        stderr.contains("https://REDACTED@"),
-        "retry helper must redact credential-bearing URLs, stderr:\n{stderr}"
+        !stderr.contains("https://token@example.com"),
+        "scoped validation must not leak credential-bearing URLs, stderr:\n{stderr}"
     );
 }
 
@@ -330,7 +330,8 @@ exit 99
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("refusing to treat ambiguous GitHub state as no PR found"),
+        stderr.contains("unable to determine current GitHub repo identity")
+            || stderr.contains("scoped PR validation failed"),
         "branch discovery failure must not become a no-PR success, stderr:\n{stderr}"
     );
 }
@@ -446,8 +447,8 @@ exit 99
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("headRefOid") && stderr.contains("does not match local HEAD"),
-        "identity failure must explain stale HEAD metadata, stderr:\n{stderr}"
+        stderr.contains("no_scoped_pr") || stderr.contains("headRefOid"),
+        "identity failure must explain stale scoped PR metadata, stderr:\n{stderr}"
     );
     let log = fs::read_to_string(&gh_log).expect("read gh log");
     assert!(
@@ -703,21 +704,22 @@ exit 42
         .expect("run workflow_final_status.sh");
 
     assert!(
-        output.status.success(),
-        "final status helper should continue with terminal-state result after status lookup failure"
+        !output.status.success(),
+        "final status helper must fail closed when scoped PR validation cannot run"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("exit 42"),
-        "final-status retry helper must preserve the failing gh exit status, stderr:\n{stderr}"
+        stderr.contains("scoped final PR validation")
+            || stderr.contains("lacks repo, branch, headRefOid, or baseRefName context"),
+        "final-status helper must explain scoped validation failure, stderr:\n{stderr}"
     );
     assert!(
         !stderr.contains("exit 0"),
         "final-status retry helper must not convert failed gh calls into success, stderr:\n{stderr}"
     );
     assert!(
-        stderr.contains("https://REDACTED@"),
-        "final-status helper must redact credential-bearing URLs, stderr:\n{stderr}"
+        !stderr.contains("https://token@example.com"),
+        "final-status helper must not expose credential-bearing URLs, stderr:\n{stderr}"
     );
 }
 

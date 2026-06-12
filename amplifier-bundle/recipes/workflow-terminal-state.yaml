@@ -297,6 +297,12 @@ steps:
       if [ -n "$repo_identity" ]; then
         supports_github_pr_metadata="true"
       fi
+      # workflow_pr_scope.sh validates headRefName, baseRefName, headRefOid,
+      # isCrossRepository, expected_pr_title_prefix, and created_after.
+      PR_SCOPE_HELPER="${WORKFLOW_PR_SCOPE_HELPER:-${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_pr_scope.sh}"
+      if [ ! -f "$PR_SCOPE_HELPER" ] && [ -n "${REPO_PATH:-}" ]; then
+        PR_SCOPE_HELPER="$REPO_PATH/amplifier-bundle/tools/workflow_pr_scope.sh"
+      fi
 
       pr_json=""
       pr_target=""
@@ -312,21 +318,34 @@ steps:
         pr_target="$PR_NUMBER_INPUT"
       fi
 
-      if [ "$supports_github_pr_metadata" = "true" ] && [ -n "$pr_target" ]; then
+      if [ "$supports_github_pr_metadata" = "true" ] && { [ -n "$pr_target" ] || command -v gh >/dev/null 2>&1; }; then
         command -v gh >/dev/null 2>&1 || fail_terminal_state "FAILED_INVALID_INPUT" "gh is required when pr_number or pr_url is provided"
-        if ! pr_json="$(gh_with_retry "pr view" pr view "$pr_target" --json state,mergedAt,headRefName,baseRefName,headRefOid,headRepositoryOwner,headRepository,isCrossRepository,number,url,statusCheckRollup)"; then
-          fail_terminal_state "FAILED_INVALID_INPUT" "unavailable PR metadata for $pr_target"
-        fi
-      elif [ "$supports_github_pr_metadata" = "true" ]; then
-        # Same-branch discovery is exact. If it fails, only clean no-diff can
-        # still prove terminal success without PR metadata.
-        if ! command -v gh >/dev/null 2>&1; then
-          echo "WARNING: gh is unavailable during same-branch PR discovery; meaningful diffs will fail closed" >&2
-          pr_lookup_failed="true"
-        elif ! pr_json="$(gh_with_retry "pr list" pr list --head "$BRANCH_INPUT" --state all --json state,mergedAt,headRefName,baseRefName,headRefOid,headRepositoryOwner,headRepository,isCrossRepository,number,url,statusCheckRollup --jq '.[0] // {}')"; then
-          echo "WARNING: gh pr list failed during same-branch PR discovery; meaningful diffs will fail closed" >&2
-          pr_json="{}"
-          pr_lookup_failed="true"
+        [ -x "$PR_SCOPE_HELPER" ] || fail_terminal_state "FAILED_INVALID_INPUT" "workflow_pr_scope.sh is required for scoped current-work PR identity"
+        created_after="${WORKFLOW_STARTED_AT:-${RECIPE_STARTED_AT:-${TASK_STARTED_AT:-}}}"
+        scope_args=(
+          --repo "$repo_identity"
+          --head "$BRANCH_INPUT"
+          --base "$(normalize_base_name "$base_ref")"
+          --issue "${ISSUE_NUMBER:-${RECIPE_VAR_issue_number:-}}"
+          --work-item "${ISSUE_NUMBER:-${RECIPE_VAR_issue_number:-}}"
+          --head-sha "$local_head"
+        )
+        title_prefix="${EXPECTED_PR_TITLE_PREFIX:-${PR_EXPECTED_TITLE_PREFIX:-}}"
+        [ -n "$title_prefix" ] && scope_args+=(--expected-pr-title-prefix "$title_prefix")
+        [ -n "$PR_URL_INPUT" ] && scope_args+=(--pr-url "$PR_URL_INPUT")
+        [ -n "$PR_NUMBER_INPUT" ] && scope_args+=(--pr-number "$PR_NUMBER_INPUT")
+        [ -n "$created_after" ] && scope_args+=(--created-after "$created_after")
+        if ! pr_json="$("$PR_SCOPE_HELPER" "${scope_args[@]}")"; then
+          reason="$(printf '%s' "$pr_json" | jq -r '.reason // ""' 2>/dev/null || true)"
+          if [ "$reason" = "no_scoped_pr" ] && [ -z "$pr_target" ]; then
+            pr_json="{}"
+          elif [ -n "$pr_target" ]; then
+            fail_terminal_state "FAILED_INVALID_INPUT" "unavailable or mismatched scoped PR metadata for $pr_target: ${reason:-unknown}"
+          else
+            echo "WARNING: scoped PR lookup failed during terminal-state probe; meaningful diffs will fail closed" >&2
+            pr_json="{}"
+            pr_lookup_failed="true"
+          fi
         fi
       elif [ -n "$PR_NUMBER_INPUT" ] && [ "$PR_NUMBER_INPUT" != "''" ]; then
         echo "INFO: workflow-terminal-state: pr_number supplied for non-GitHub remote; using local git safety checks only" >&2
