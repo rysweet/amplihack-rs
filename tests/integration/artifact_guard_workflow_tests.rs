@@ -96,24 +96,79 @@ fn publish_runs_artifact_guard_before_commit_push_and_pr_publication_paths() {
 #[test]
 fn finalize_runs_artifact_guard_before_cleanup_commit_or_final_push() {
     let recipe = load_recipe("workflow-finalize.yaml");
+    let final_cleanup_index = step_index(&recipe, "step-20-final-cleanup");
+    let guard_index = step_index(&recipe, "step-20a-artifact-guard");
     let push_cleanup_index = step_index(&recipe, "step-20b-push-cleanup");
-
-    let guard_index = steps(&recipe)
-        .iter()
-        .position(|step| {
-            step.get("command")
-                .and_then(Value::as_str)
-                .is_some_and(|command| {
-                    command.contains("amplihack hygiene artifact-guard")
-                        && command.contains("--mode pre-publish")
-                })
-        })
-        .expect("workflow-finalize must include an artifact guard command step");
+    let guard_command = step_text(&recipe, "step-20a-artifact-guard", "command");
 
     assert!(
-        guard_index < push_cleanup_index,
-        "artifact guard must run before workflow-finalize cleanup commit/push"
+        guard_command.contains("amplihack hygiene artifact-guard")
+            && guard_command.contains("--mode pre-publish"),
+        "workflow-finalize step-20a must invoke Artifact Guard in pre-publish mode"
     );
+    assert!(
+        final_cleanup_index < guard_index && guard_index < push_cleanup_index,
+        "artifact guard must run after agent cleanup and before workflow-finalize cleanup commit/push"
+    );
+}
+
+#[test]
+fn finalize_push_cleanup_guards_immediately_before_broad_staging() {
+    let recipe = load_recipe("workflow-finalize.yaml");
+    let command = step_text(&recipe, "step-20b-push-cleanup", "command");
+    let guard = command
+        .find("amplihack hygiene artifact-guard --repo . --mode pre-publish")
+        .expect("step-20b must guard the exact repo before broad staging");
+    let add = command
+        .find("git add -A")
+        .expect("step-20b currently performs broad staging");
+    let between = &command[guard..add];
+
+    assert!(
+        guard < add,
+        "step-20b must invoke Artifact Guard before git add -A"
+    );
+    assert!(
+        between
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim();
+                !trimmed.is_empty()
+                    && !trimmed.starts_with("amplihack hygiene artifact-guard")
+                    && !trimmed.starts_with("git add -A")
+            })
+            .count()
+            == 0,
+        "Artifact Guard must be the deterministic final gate immediately before git add -A; intervening lines:\n{between}"
+    );
+}
+
+#[test]
+fn finalize_artifact_guard_failures_are_not_silenced() {
+    let recipe = load_recipe("workflow-finalize.yaml");
+    let guard_commands: Vec<&str> = steps(&recipe)
+        .iter()
+        .filter_map(|step| step.get("command").and_then(Value::as_str))
+        .filter(|command| command.contains("amplihack hygiene artifact-guard"))
+        .collect();
+
+    assert!(
+        !guard_commands.is_empty(),
+        "workflow-finalize must invoke Artifact Guard"
+    );
+    for command in guard_commands {
+        for line in command
+            .lines()
+            .filter(|line| line.contains("amplihack hygiene artifact-guard"))
+        {
+            assert!(
+                !line.contains("|| true")
+                    && !line.contains("|| :")
+                    && !line.contains("2>/dev/null"),
+                "Artifact Guard failures must fail loudly, not be hidden: `{line}`"
+            );
+        }
+    }
 }
 
 #[test]

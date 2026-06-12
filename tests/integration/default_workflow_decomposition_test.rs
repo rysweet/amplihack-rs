@@ -132,6 +132,7 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     // Phase 6: workflow-publish (terminal gate + steps 14-16b)
     "publish-terminal-state",
     "step-14-bump-version",
+    "step-14g-artifact-guard",
     "step-15-commit-push",
     "step-16-create-draft-pr",
     "step-16b-outside-in-fix-loop",
@@ -154,6 +155,7 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     // Phase 8: workflow-finalize (terminal gate + steps 20-22b + complete)
     "finalize-terminal-state",
     "step-20-final-cleanup",
+    "step-20a-artifact-guard",
     "step-20b-push-cleanup",
     "step-20c-quality-audit",
     "step-21-pr-ready",

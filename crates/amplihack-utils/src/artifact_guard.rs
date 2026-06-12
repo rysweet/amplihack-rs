@@ -257,9 +257,18 @@ const DEFAULT_RULES: &[ArtifactRule] = &[
         description: "Build output artifact",
         remediation: REMEDIATION,
     },
+    ArtifactRule {
+        id: "workflow-session-artifact",
+        description: "Workflow/session runtime artifact",
+        remediation: REMEDIATION,
+    },
 ];
 
 const IGNORED_PRESENT_ROOTS: &[&str] = &[
+    "recipe-runner.log",
+    "plan.md",
+    ".copilot/session-state",
+    ".amplihack/session-state",
     "node_modules",
     "dist/plugin.js",
     "dist",
@@ -524,6 +533,9 @@ fn rule_for_path(path: &str, source: ArtifactSource) -> Option<&'static Artifact
     if path == "worktrees" || path.starts_with("worktrees/") {
         return rule("nested-worktree");
     }
+    if is_workflow_session_artifact_path(path) {
+        return rule("workflow-session-artifact");
+    }
     if is_cache_path(path, &parts) {
         return rule("cache-artifact");
     }
@@ -531,6 +543,15 @@ fn rule_for_path(path: &str, source: ArtifactSource) -> Option<&'static Artifact
         return rule("build-artifact");
     }
     None
+}
+
+fn is_workflow_session_artifact_path(path: &str) -> bool {
+    path == "recipe-runner.log"
+        || path == "plan.md"
+        || path == ".copilot/session-state"
+        || path.starts_with(".copilot/session-state/")
+        || path == ".amplihack/session-state"
+        || path.starts_with(".amplihack/session-state/")
 }
 
 fn rule(id: &str) -> Option<&'static ArtifactRule> {

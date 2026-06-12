@@ -134,6 +134,51 @@ fn ignored_present_dist_plugin_runtime_and_cache_artifacts_are_blocked() {
 }
 
 #[test]
+fn ignored_present_workflow_session_artifacts_are_blocked() {
+    let tmp = repo();
+    write_file(
+        &tmp.path().join(".gitignore"),
+        "recipe-runner.log\nplan.md\n.copilot/session-state/\n.amplihack/session-state/\n",
+    );
+    run_git(tmp.path(), &["add", ".gitignore"]);
+    run_git(
+        tmp.path(),
+        &["commit", "-qm", "ignore workflow runtime outputs"],
+    );
+
+    write_file(&tmp.path().join("recipe-runner.log"), "recipe output\n");
+    write_file(&tmp.path().join("plan.md"), "temporary plan\n");
+    write_file(
+        &tmp.path()
+            .join(".copilot/session-state/session-123/files/output.json"),
+        "{}\n",
+    );
+    write_file(
+        &tmp.path()
+            .join(".amplihack/session-state/session-123/workflow.json"),
+        "{}\n",
+    );
+
+    let report = scan_artifacts(
+        &ArtifactGuardConfig::new(tmp.path()).with_mode(ArtifactGuardMode::PrePublish),
+    )
+    .expect("scan artifacts");
+
+    for path in [
+        "recipe-runner.log",
+        "plan.md",
+        ".copilot/session-state/session-123/files/output.json",
+        ".amplihack/session-state/session-123/workflow.json",
+    ] {
+        let violation = violation_for(&report.violations, path, ArtifactSource::IgnoredPresent);
+        assert_eq!(
+            violation.rule_id, "workflow-session-artifact",
+            "{path} must be classified as a workflow/session artifact"
+        );
+    }
+}
+
+#[test]
 fn untracked_nested_worktrees_and_build_artifacts_are_blocked() {
     let tmp = repo();
     write_file(
