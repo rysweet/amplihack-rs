@@ -8,8 +8,9 @@ use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use thiserror::Error;
 
@@ -422,14 +423,19 @@ fn scan_ignored_present(
     violations: &mut Vec<ArtifactViolation>,
     seen: &mut BTreeSet<(ArtifactSource, String)>,
 ) -> Result<(), ArtifactGuardError> {
+    let mut candidates = Vec::new();
     for root in IGNORED_PRESENT_ROOTS {
         let candidate = repo.join(root);
         if !candidate.exists() {
             continue;
         }
         let report_path = first_reportable_path(&candidate).unwrap_or(candidate);
-        let relative = repo_relative_path(repo, &report_path)?;
-        if is_git_ignored(repo, &relative)? {
+        candidates.push(repo_relative_path(repo, &report_path)?);
+    }
+
+    let ignored = git_ignored_paths(repo, &candidates)?;
+    for relative in candidates {
+        if ignored.contains(&relative) {
             add_violation_if_prohibited(
                 &relative,
                 ArtifactSource::IgnoredPresent,
@@ -473,22 +479,45 @@ fn first_reportable_path(path: &Path) -> Option<PathBuf> {
     Some(path.to_path_buf())
 }
 
-fn is_git_ignored(repo: &Path, relative: &str) -> Result<bool, ArtifactGuardError> {
-    let output = Command::new("git")
+fn git_ignored_paths(
+    repo: &Path,
+    relative_paths: &[String],
+) -> Result<BTreeSet<String>, ArtifactGuardError> {
+    if relative_paths.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+
+    let mut child = Command::new("git")
         .args(["-C"])
         .arg(repo)
-        .args(["check-ignore", "-q", "--", relative])
-        .output()
+        .args(["check-ignore", "-z", "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|error| ArtifactGuardError::Git {
-            args: format!("check-ignore -q -- {relative}"),
+            args: "check-ignore -z --stdin".to_string(),
             code: None,
             stderr: error.to_string(),
         })?;
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        for relative in relative_paths {
+            stdin.write_all(relative.as_bytes())?;
+            stdin.write_all(&[0])?;
+        }
+    }
+
+    let output = child.wait_with_output()?;
     match output.status.code() {
-        Some(0) => Ok(true),
-        Some(1) => Ok(false),
+        Some(0) | Some(1) => Ok(output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|raw| !raw.is_empty())
+            .map(|raw| String::from_utf8_lossy(raw).to_string())
+            .collect()),
         code => Err(ArtifactGuardError::Git {
-            args: format!("check-ignore -q -- {relative}"),
+            args: "check-ignore -z --stdin".to_string(),
             code,
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
         }),
@@ -520,8 +549,7 @@ fn add_violation_if_prohibited(
 }
 
 fn rule_for_path(path: &str, source: ArtifactSource) -> Option<&'static ArtifactRule> {
-    let parts: Vec<&str> = path.split('/').collect();
-    if parts.contains(&"node_modules") {
+    if path_has_component(path, "node_modules") {
         return rule("node-modules");
     }
     if path == "dist/plugin.js" || path.ends_with("/dist/plugin.js") {
@@ -536,10 +564,10 @@ fn rule_for_path(path: &str, source: ArtifactSource) -> Option<&'static Artifact
     if is_workflow_session_artifact_path(path) {
         return rule("workflow-session-artifact");
     }
-    if is_cache_path(path, &parts) {
+    if is_cache_path(path) {
         return rule("cache-artifact");
     }
-    if is_build_artifact_path(path, &parts, source) {
+    if is_build_artifact_path(path, source) {
         return rule("build-artifact");
     }
     None
@@ -558,13 +586,26 @@ fn rule(id: &str) -> Option<&'static ArtifactRule> {
     DEFAULT_RULES.iter().find(|rule| rule.id == id)
 }
 
-fn is_cache_path(path: &str, parts: &[&str]) -> bool {
-    parts.iter().any(|part| {
-        matches!(
-            *part,
-            ".cache" | ".npm" | ".pnpm-store" | ".turbo" | ".parcel-cache" | ".pytest_cache"
-        )
-    }) || path == ".yarn/cache"
+fn path_has_component(path: &str, component: &str) -> bool {
+    path.split('/').any(|part| part == component)
+}
+
+fn path_has_any_component(path: &str, components: &[&str]) -> bool {
+    path.split('/').any(|part| components.contains(&part))
+}
+
+fn is_cache_path(path: &str) -> bool {
+    path_has_any_component(
+        path,
+        &[
+            ".cache",
+            ".npm",
+            ".pnpm-store",
+            ".turbo",
+            ".parcel-cache",
+            ".pytest_cache",
+        ],
+    ) || path == ".yarn/cache"
         || path.starts_with(".yarn/cache/")
         || path.contains("/.yarn/cache/")
         || path == ".next/cache"
@@ -572,19 +613,17 @@ fn is_cache_path(path: &str, parts: &[&str]) -> bool {
         || path.contains("/.next/cache/")
 }
 
-fn is_build_artifact_path(path: &str, parts: &[&str], source: ArtifactSource) -> bool {
-    if parts.contains(&"target") {
+fn is_build_artifact_path(path: &str, source: ArtifactSource) -> bool {
+    if path_has_component(path, "target") {
         return source != ArtifactSource::IgnoredPresent;
     }
     if path == "index.scip" || path.ends_with("/index.scip") {
         return true;
     }
-    if parts.iter().any(|part| {
-        matches!(
-            *part,
-            "dist" | "build" | "coverage" | "out" | "logs" | "outputs"
-        )
-    }) {
+    if path_has_any_component(
+        path,
+        &["dist", "build", "coverage", "out", "logs", "outputs"],
+    ) {
         return true;
     }
     path == ".next" || path.starts_with(".next/") || path.contains("/.next/")
