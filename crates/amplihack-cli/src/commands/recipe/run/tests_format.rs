@@ -134,6 +134,110 @@ fn test_format_recipe_run_result_table_step_symbols() {
 }
 
 // -------------------------------------------------------------------------
+// recipe run correlation formatting — TDD tests for issue #753
+// -------------------------------------------------------------------------
+
+fn make_correlated_result() -> RecipeRunResult {
+    serde_json::from_value(serde_json::json!({
+        "recipe_name": "default-workflow",
+        "success": true,
+        "run_id": "5b60657b-76ef-4f49-8a22-8b89ed75f43e",
+        "log_pointer": {
+            "run_id": "5b60657b-76ef-4f49-8a22-8b89ed75f43e",
+            "recipe_name": "default-workflow",
+            "status": "success",
+            "worktree": "/tmp/amplihack-worktree",
+            "branch": "feat/issue-753",
+            "child_pid": 41822,
+            "exit_code": 0,
+            "runner_path": "/tmp/bin/recipe-runner-rs",
+            "log_paths": {
+                "jsonl": "/tmp/default-workflow.jsonl"
+            }
+        },
+        "step_results": []
+    }))
+    .expect("correlated result fixture must deserialize")
+}
+
+#[test]
+fn test_format_recipe_run_result_table_shows_run_id_and_log_pointer_summary() {
+    let result = make_correlated_result();
+    let table = format::format_recipe_run_result(&result, OutputFormat::Table, false)
+        .expect("format failed");
+
+    assert!(
+        table.contains("Run ID: 5b60657b-76ef-4f49-8a22-8b89ed75f43e"),
+        "table output must show stable recipe run id. Got:\n{table}"
+    );
+    assert!(
+        table.contains("Log pointer:"),
+        "table output must include a concise final pointer summary. Got:\n{table}"
+    );
+    assert!(
+        table.contains("status=success"),
+        "log pointer summary must include final status. Got:\n{table}"
+    );
+    assert!(
+        table.contains("branch=feat/issue-753"),
+        "log pointer summary must include branch when known. Got:\n{table}"
+    );
+    assert!(
+        table.contains("worktree=/tmp/amplihack-worktree"),
+        "log pointer summary must include worktree when known. Got:\n{table}"
+    );
+    assert!(
+        table.contains("child_pid=41822"),
+        "log pointer summary must include child PID when known. Got:\n{table}"
+    );
+}
+
+#[test]
+fn test_format_recipe_run_result_json_preserves_run_id_and_log_pointer_fields() {
+    let result = make_correlated_result();
+    let json_str = format::format_recipe_run_result(&result, OutputFormat::Json, false)
+        .expect("format failed");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&json_str).expect("output must be valid JSON");
+
+    assert_eq!(
+        parsed["run_id"].as_str(),
+        Some("5b60657b-76ef-4f49-8a22-8b89ed75f43e"),
+        "JSON output must preserve additive run_id field"
+    );
+    assert_eq!(
+        parsed["log_pointer"]["status"].as_str(),
+        Some("success"),
+        "JSON output must preserve additive log_pointer status"
+    );
+    assert_eq!(
+        parsed["log_pointer"]["runner_path"].as_str(),
+        Some("/tmp/bin/recipe-runner-rs"),
+        "JSON output must preserve additive log_pointer runner path"
+    );
+}
+
+#[test]
+fn test_format_recipe_run_result_yaml_preserves_run_id_and_log_pointer_fields() {
+    let result = make_correlated_result();
+    let yaml_str = format::format_recipe_run_result(&result, OutputFormat::Yaml, false)
+        .expect("format failed");
+    let parsed: serde_yaml::Value =
+        serde_yaml::from_str(&yaml_str).expect("output must be valid YAML");
+
+    assert_eq!(
+        parsed["run_id"].as_str(),
+        Some("5b60657b-76ef-4f49-8a22-8b89ed75f43e"),
+        "YAML output must preserve additive run_id field"
+    );
+    assert_eq!(
+        parsed["log_pointer"]["status"].as_str(),
+        Some("success"),
+        "YAML output must preserve additive log_pointer status"
+    );
+}
+
+// -------------------------------------------------------------------------
 // find_recipe_runner_binary — error message quality
 // -------------------------------------------------------------------------
 

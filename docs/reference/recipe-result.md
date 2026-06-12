@@ -32,6 +32,8 @@
 | `error`            | `str \| None`      | Human-readable error message if `status` is `FAILURE`. `None` on success. |
 | `progress_summary` | `dict \| None`     | Optional live-progress summary: last phase/status, heartbeat count, and log path. |
 | `failure_context`  | `dict \| None`     | Optional actionable context for the first failing step.                    |
+| `run_id`           | `str \| None`      | Stable UUID generated for this `amplihack recipe run` invocation.          |
+| `log_pointer`      | `dict \| None`     | Concise final pointer summary with status, worktree, child PID, runner path, and log paths. |
 
 ---
 
@@ -99,7 +101,7 @@ for step in result.step_results:
 
 ---
 
-## Progress and Failure Context
+## Progress, Failure, and Correlation Context
 
 The JSON schema is backward-compatible. Existing fields remain unchanged; newer
 runner versions add optional progress and diagnostic fields.
@@ -147,6 +149,53 @@ details at the top level.
   ]
 }
 ```
+
+### `run_id`
+
+`run_id` is the stable UUID for the whole recipe invocation. It matches:
+
+- `AMPLIHACK_RECIPE_RUN_ID` in the runner child environment
+- the `run_id` in early and final stderr pointer events
+- the `run_id` in JSONL events when recipe logging is enabled and the runner
+  copies `AMPLIHACK_RECIPE_RUN_ID` into those events
+
+```json
+{
+  "run_id": "5b60657b-76ef-4f49-8a22-8b89ed75f43e"
+}
+```
+
+### `log_pointer`
+
+`log_pointer` is the final pointer summary included in JSON/YAML results when a
+result can be produced.
+
+```json
+{
+  "log_pointer": {
+    "run_id": "5b60657b-76ef-4f49-8a22-8b89ed75f43e",
+    "recipe_name": "default-workflow",
+    "status": "success",
+    "worktree": "/home/user/src/myapp",
+    "branch": "main",
+    "child_pid": 41822,
+    "exit_code": 0,
+    "runner_path": "/home/user/.local/bin/recipe-runner-rs",
+    "log_paths": {
+      "jsonl": "/tmp/default-workflow.jsonl"
+    }
+  }
+}
+```
+
+The full stderr pointer event can include additional display-only context such as
+`task_description`, issue fields, and PR fields. The result summary stays
+concise so scripts can consume it safely.
+
+Pointer `status` values are lowercase wrapper statuses such as `success`,
+`failure`, `spawn_failure`, and `parse_failure`. Top-level result statuses keep
+their existing schema casing, commonly `SUCCESS`, `FAILURE`, or `PARTIAL`, or
+the boolean `success` field.
 
 ### `recent_output`
 
@@ -245,5 +294,6 @@ Existing result producers may expose either `success` (boolean) or `status`
 ## See Also
 
 - [Recipe CLI Reference](./recipe-cli-reference.md) — `amplihack recipe run` and `--format json`
+- [Recipe Run Correlation Reference](./recipe-run-correlation.md) — `run_id` and `log_pointer` fields
 - [Recipe CLI Examples](../howto/recipe-cli-examples.md) — real-world workflow scenarios
 - [Recipe Resilience](../concepts/recipe-resilience.md) — how partial failures and retries are handled

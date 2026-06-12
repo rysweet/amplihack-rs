@@ -68,7 +68,9 @@ Complete documentation for using the Recipe Runner:
 
 - **[Recipe CLI Quick Reference](quick-reference.md)** - One-page cheat sheet (start here for quick lookup)
 - **[Recipe CLI Commands How-To](../howto/recipe-cli-commands.md)** - Task-oriented guide for using recipe commands
+- **[Correlate Recipe Runs with Logs](../howto/correlate-recipe-runs.md)** - Match terminal output, JSON results, child PIDs, and log paths by run ID
 - **[Recipe CLI Reference](../reference/recipe-cli-reference.md)** - Complete command-line reference with all options and exit codes
+- **[Recipe Run Correlation Reference](../reference/recipe-run-correlation.md)** - Stable run IDs, log pointer schema, and result fields
 - **[Recipe CLI Examples](cli-examples.md)** - Real-world usage scenarios (development, testing, CI/CD, team workflows)
 - **[Step 03 Host-Aware Tracking Idempotency](../reference/recipe-step-03-idempotency.md)** - GitHub issue, Azure Boards work-item, and local tracking reuse/create contract
 

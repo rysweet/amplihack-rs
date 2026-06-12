@@ -117,6 +117,14 @@ pub(crate) struct RecipeInfo {
 pub(crate) struct RecipeRunResult {
     pub(crate) recipe_name: String,
     pub(crate) success: bool,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_string",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) log_pointer: Option<RecipeLogPointerSummary>,
     #[serde(default)]
     pub(crate) step_results: Vec<RecipeRunStepResult>,
     #[serde(default)]
@@ -133,6 +141,44 @@ pub(crate) struct RecipeRunResult {
     pub(crate) progress_summary: Option<JsonValue>,
     #[serde(default, flatten)]
     pub(crate) extra: JsonMap<String, JsonValue>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct RecipeLogPointerSummary {
+    #[serde(default)]
+    pub(crate) run_id: String,
+    #[serde(default)]
+    pub(crate) recipe_name: String,
+    #[serde(default)]
+    pub(crate) status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) worktree: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) child_pid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) runner_path: Option<String>,
+    #[serde(default, skip_serializing_if = "is_json_map_empty")]
+    pub(crate) log_paths: JsonMap<String, JsonValue>,
+}
+
+fn deserialize_optional_string<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(match Option::<JsonValue>::deserialize(deserializer)? {
+        Some(JsonValue::String(value)) if !value.is_empty() => Some(value),
+        _ => None,
+    })
+}
+
+fn is_json_map_empty(value: &JsonMap<String, JsonValue>) -> bool {
+    value.is_empty()
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
