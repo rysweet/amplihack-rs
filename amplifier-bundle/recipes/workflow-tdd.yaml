@@ -348,6 +348,7 @@ steps:
       if [ -f Cargo.toml ] && command -v cargo >/dev/null 2>&1; then
         cargo fmt --all
       fi
+      amplihack hygiene artifact-guard --repo . --mode pre-publish
       git add -A
       STAGED=$(git diff --cached --name-only)
       if [ -n "$STAGED" ]; then

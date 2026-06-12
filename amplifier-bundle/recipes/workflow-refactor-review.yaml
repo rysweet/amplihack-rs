@@ -216,6 +216,7 @@ steps:
         exit 1
       fi
       echo "=== Checkpoint: Staging Review Feedback ==="
+      amplihack hygiene artifact-guard --repo . --mode pre-publish
       git add -A
       STAGED=$(git diff --cached --name-only)
       if [ -n "$STAGED" ]; then

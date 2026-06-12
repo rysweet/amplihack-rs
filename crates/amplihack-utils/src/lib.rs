@@ -26,6 +26,7 @@
 
 /// Single source of truth for resolving the active agent binary identifier.
 pub mod agent_binary;
+pub mod artifact_guard;
 pub mod bundle_generator;
 pub mod claude_cli;
 pub mod claude_md;

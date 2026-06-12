@@ -83,9 +83,10 @@ pub const VERSION: &str = match option_env!("AMPLIHACK_RELEASE_VERSION") {
 
 pub use cli_commands::Commands;
 pub use cli_subcommands::{
-    BuilderCommands, HygieneCleanupArgs, HygieneCommands, MIN_CLEANUP_APPLY_OLDER_THAN_HOURS,
-    MIN_CLEANUP_APPLY_OLDER_THAN_SECS, MemoryCommands, ModeCommands, MultitaskCommands,
-    PluginCommands, QueryCodeCommands, RecipeCommands, ReflectCommands, RemoteCommands,
+    BuilderCommands, HygieneArtifactGuardArgs, HygieneCleanupArgs, HygieneCommands,
+    MIN_CLEANUP_APPLY_OLDER_THAN_HOURS, MIN_CLEANUP_APPLY_OLDER_THAN_SECS, MemoryCommands,
+    ModeCommands, MultitaskCommands, PluginCommands, QueryCodeCommands, RecipeCommands,
+    ReflectCommands, RemoteCommands,
 };
 
 fn graph_db_backend_value_parser() -> PossibleValuesParser {

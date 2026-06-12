@@ -75,6 +75,15 @@ steps:
     output: "version_bump"
     parse_json: true
 
+  - id: "step-14g-artifact-guard"
+    type: "bash"
+    condition: "goal_already_met != 'true' && terminal_state.terminal_success != 'true' && terminal_state.should_publish == 'true'"
+    command: |
+      set -euo pipefail
+      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-${REPO_PATH:-}}}"
+      cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-14g requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
+      amplihack hygiene artifact-guard --repo . --mode pre-publish
+
   - id: "step-15-commit-push"
     type: "bash"
     condition: "goal_already_met != 'true' && terminal_state.terminal_success != 'true' && terminal_state.should_publish == 'true'"
@@ -111,6 +120,7 @@ steps:
       trap _emit_commit_result EXIT
       branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
       echo "--- Staging Changes ---" >&2
+      amplihack hygiene artifact-guard --repo . --mode pre-publish
       git add -A
       echo "--- Creating Commit ---" >&2
       # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
@@ -246,6 +256,7 @@ steps:
        ```
        4. If a test fails, diagnose, fix, commit, push, and retry up to 3 times:
           ```bash
+          amplihack hygiene artifact-guard --repo . --mode pre-publish
           git add -A && git commit -m "fix: <describe the fix found during outside-in testing>"
           git pull --rebase && git push
           ```

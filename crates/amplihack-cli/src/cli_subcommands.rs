@@ -12,6 +12,26 @@ pub const MIN_CLEANUP_APPLY_OLDER_THAN_HOURS: u64 = MIN_CLEANUP_APPLY_OLDER_THAN
 pub enum HygieneCommands {
     /// Conservative local cleanup for stale worktrees, detached Cargo targets, and session artifacts
     Cleanup(HygieneCleanupArgs),
+    /// Block generated/runtime artifacts before broad staging, commit, or publication
+    ArtifactGuard(HygieneArtifactGuardArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+#[command(
+    after_help = "Modes: pre-commit and pre-publish scan staged, tracked, untracked, and ignored-present artifact paths. staged scans staged paths only. worktree scans tracked, untracked, and ignored-present paths. exit code 0 = clean, exit code 1 = prohibited artifacts found, exit code 2 = configuration, mode, allowlist, Git, or path error. The guard reports clear remediation and does not delete, move, unstage, or rewrite artifacts. Use a narrow repo-controlled allowlist only for intentional generated artifacts."
+)]
+pub struct HygieneArtifactGuardArgs {
+    /// Repository worktree to scan.
+    #[arg(long)]
+    pub repo: Option<PathBuf>,
+
+    /// Scan mode.
+    #[arg(long, default_value = "pre-commit", value_parser = ["pre-commit", "pre-publish", "all", "staged", "worktree"])]
+    pub mode: String,
+
+    /// Optional repo-controlled allowlist file.
+    #[arg(long)]
+    pub allowlist: Option<PathBuf>,
 }
 
 #[derive(Args, Debug, Clone)]

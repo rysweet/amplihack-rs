@@ -31,6 +31,7 @@ steps:
       fi
 
       # Stage all changes
+      amplihack hygiene artifact-guard --repo . --mode pre-publish
       git add -A
 
       # FIX (#469/#311): Use env vars — safe against injection and word-splitting.

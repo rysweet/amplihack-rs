@@ -33,6 +33,7 @@ steps:
         echo "ERROR: step12-push-updates requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2
         exit 1
       fi
+      amplihack hygiene artifact-guard --repo . --mode pre-publish
       git add -A
       git commit -m "Address PR review feedback" || echo "Nothing to commit (working tree clean)" >&2
       if git remote get-url origin >/dev/null 2>&1; then

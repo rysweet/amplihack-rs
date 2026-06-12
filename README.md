@@ -535,6 +535,9 @@ Custom workflows:
   validation and troubleshooting
 - **[Workflow Customization](https://rysweet.github.io/amplihack-rs/WORKFLOW_COMPLETION/)** -
   Modify development process
+- **[Artifact Guard](docs/artifact-guard.md)** - Guard for blocking
+  generated/runtime artifacts before broad staging, pre-commit, and workflow
+  publication
 - **[Hooks Comparison](docs/HOOKS_COMPARISON.md)** - Adaptive hook system
   details
 

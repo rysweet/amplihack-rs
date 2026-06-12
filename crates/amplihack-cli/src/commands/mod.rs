@@ -390,6 +390,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
 fn dispatch_hygiene(command: HygieneCommands) -> Result<()> {
     match command {
         HygieneCommands::Cleanup(args) => hygiene::cleanup::run(args),
+        HygieneCommands::ArtifactGuard(args) => hygiene::artifact_guard::run(args),
     }
 }
 
