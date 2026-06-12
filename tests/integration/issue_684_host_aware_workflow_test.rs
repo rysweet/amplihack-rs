@@ -36,6 +36,7 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
+use std::sync::OnceLock;
 
 use serde_yaml::Value;
 
@@ -66,10 +67,25 @@ fn recipe_text(name: &str) -> String {
 // Recipe parsing helpers (same pattern as issue_655_656 tests)
 // ---------------------------------------------------------------------------
 
-fn load_recipe(name: &str) -> Value {
+fn parse_recipe(name: &str) -> Value {
     let path = recipe_path(name);
     let text = recipe_text(name);
     serde_yaml::from_str(&text).unwrap_or_else(|e| panic!("parse {} as YAML: {e}", path.display()))
+}
+
+fn load_recipe(name: &str) -> &'static Value {
+    static DEFAULT_WORKFLOW: OnceLock<Value> = OnceLock::new();
+    static WORKFLOW_PREP: OnceLock<Value> = OnceLock::new();
+    static WORKFLOW_PUBLISH: OnceLock<Value> = OnceLock::new();
+    static WORKFLOW_FINALIZE: OnceLock<Value> = OnceLock::new();
+
+    match name {
+        "default-workflow" => DEFAULT_WORKFLOW.get_or_init(|| parse_recipe(name)),
+        "workflow-prep" => WORKFLOW_PREP.get_or_init(|| parse_recipe(name)),
+        "workflow-publish" => WORKFLOW_PUBLISH.get_or_init(|| parse_recipe(name)),
+        "workflow-finalize" => WORKFLOW_FINALIZE.get_or_init(|| parse_recipe(name)),
+        _ => panic!("uncached test recipe: {name}"),
+    }
 }
 
 /// Extract the `command:` body of a bash step by its `id:` field.
@@ -136,7 +152,12 @@ struct Step03Run {
     az_log: String,
 }
 
-fn run_step_03(host_type: &str, issue_number: &str, task_description: &str) -> Step03Run {
+fn run_step_03_with_env(
+    host_type: &str,
+    issue_number: &str,
+    task_description: &str,
+    extra_env: &[(&str, &str)],
+) -> Step03Run {
     let temp = tempfile::tempdir().expect("tempdir");
     let repo_dir = temp.path().join("repo");
     let bin_dir = temp.path().join("bin");
@@ -153,7 +174,7 @@ fn run_step_03(host_type: &str, issue_number: &str, task_description: &str) -> S
 printf '%s\n' "$*" >> "$GIT_LOG"
 case "$1:$2" in
   rev-parse:--is-inside-work-tree) exit 0 ;;
-  remote:get-url) printf '%s\n' 'https://dev.azure.com/example-org/My%20Project/_git/example-repo'; exit 0 ;;
+  remote:get-url) printf '%s\n' "${GIT_REMOTE_URL:-https://dev.azure.com/example-org/My%20Project/_git/example-repo}"; exit 0 ;;
   *) echo "unexpected git invocation: $*" >&2; exit 2 ;;
 esac
 "#,
@@ -163,10 +184,24 @@ esac
         &bin_dir.join("gh"),
         r#"#!/bin/sh
 printf '%s\n' "$*" >> "$GH_LOG"
-if [ "$1:$2:$3" = "issue:view:718" ]; then
-  printf '%s\n' 'https://github.com/example-org/example-repo/issues/718'
-  exit 0
-fi
+case "$1:$2" in
+  issue:view)
+    if [ "${GH_VIEW_ISSUE:-718}" = "$3" ] && [ -n "${GH_VIEW_URL:-https://github.com/example-org/example-repo/issues/718}" ]; then
+      printf '%s\n' "${GH_VIEW_URL:-https://github.com/example-org/example-repo/issues/718}"
+      exit 0
+    fi
+    exit "${GH_VIEW_STATUS:-1}"
+    ;;
+  issue:list)
+    [ -n "${GH_LIST_URL:-}" ] && printf '%s\n' "$GH_LIST_URL"
+    exit "${GH_LIST_STATUS:-0}"
+    ;;
+  label:create) exit 0 ;;
+  issue:create)
+    [ -n "${GH_CREATE_OUTPUT:-}" ] && printf '%s\n' "$GH_CREATE_OUTPUT"
+    exit "${GH_CREATE_STATUS:-7}"
+    ;;
+esac
 echo "unexpected gh invocation: $*" >&2
 exit 7
 "#,
@@ -188,7 +223,8 @@ exit 7
     );
     let command = extract_step_body(&load_recipe("workflow-prep"), "step-03-create-issue");
 
-    let output = Command::new("bash")
+    let mut command_builder = Command::new("bash");
+    command_builder
         .arg("-c")
         .arg(command)
         .env_clear()
@@ -200,7 +236,11 @@ exit 7
         .env("ISSUE_NUMBER", issue_number)
         .env("GIT_LOG", &git_log)
         .env("GH_LOG", &gh_log)
-        .env("AZ_LOG", &az_log)
+        .env("AZ_LOG", &az_log);
+    for (key, value) in extra_env {
+        command_builder.env(key, value);
+    }
+    let output = command_builder
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -213,6 +253,30 @@ exit 7
         gh_log: fs::read_to_string(&gh_log).unwrap_or_default(),
         az_log: fs::read_to_string(&az_log).unwrap_or_default(),
     }
+}
+
+fn run_step_03(host_type: &str, issue_number: &str, task_description: &str) -> Step03Run {
+    run_step_03_with_env(host_type, issue_number, task_description, &[])
+}
+
+fn run_step_03b(issue_creation: &str, task_description: &str) -> Output {
+    let command = extract_step_body(
+        &load_recipe("workflow-prep"),
+        "step-03b-extract-issue-number",
+    );
+
+    Command::new("bash")
+        .arg("-c")
+        .arg(command)
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("ISSUE_CREATION", issue_creation)
+        .env("TASK_DESCRIPTION", task_description)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run step-03b-extract-issue-number")
 }
 
 /// Get the context block from default-workflow.yaml.
@@ -725,6 +789,220 @@ fn step_03_preserves_github_existing_issue_reuse_path() {
 }
 
 #[test]
+fn step_03_preserves_github_issue_create_success_path() {
+    let run = run_step_03_with_env(
+        "github",
+        "",
+        "GitHub follow-up without existing issue",
+        &[
+            (
+                "GH_CREATE_OUTPUT",
+                "https://github.com/example-org/example-repo/issues/901",
+            ),
+            ("GH_CREATE_STATUS", "0"),
+        ],
+    );
+
+    let stdout = String::from_utf8_lossy(&run.output.stdout);
+    let stderr = String::from_utf8_lossy(&run.output.stderr);
+    assert!(
+        run.output.status.success(),
+        "github issue create success must remain successful; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("https://github.com/example-org/example-repo/issues/901"),
+        "github issue create success must emit GitHub issue metadata; stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("local-tracking"),
+        "github issue create success must not degrade to local tracking; stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn step_03_github_issue_create_external_calls_are_timeout_wrapped_without_transient_retry() {
+    let recipe = load_recipe("workflow-prep");
+    let body = extract_step_body(&recipe, "step-03-create-issue");
+
+    assert!(
+        body.contains("timeout 30 gh label create") && body.contains("timeout 60 gh issue create"),
+        "GitHub label/create calls must be bounded external-service calls"
+    );
+    assert!(
+        !body.contains("retrying once") && !body.contains("GH_RETRY_DELAY_SECONDS"),
+        "GitHub issue create must not add broad transient retry logic; only repo access/resolution failures may fall back locally"
+    );
+}
+
+#[test]
+fn step_03_github_repo_resolution_failure_falls_back_to_local_tracking() {
+    let secret_remote = "https://token:ghp_secret123@github.com/cloud-ecosystem-security/hyenas";
+    let run = run_step_03_with_env(
+        "github",
+        "",
+        "Please see issue #763; create tracking for the workflow",
+        &[
+            ("GIT_REMOTE_URL", secret_remote),
+            (
+                "GH_CREATE_OUTPUT",
+                "GraphQL: Could not resolve to a Repository with the name 'cloud-ecosystem-security/hyenas'.",
+            ),
+            ("GH_CREATE_STATUS", "1"),
+        ],
+    );
+
+    let stdout = String::from_utf8_lossy(&run.output.stdout);
+    let stderr = String::from_utf8_lossy(&run.output.stderr);
+    let combined = format!("{stdout}\n{stderr}");
+    assert!(
+        run.output.status.success(),
+        "repo-resolution failure must fall back locally instead of aborting; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        combined.contains("WARNING: GitHub issue creation failed because the repository could not be resolved or accessed; using local tracking metadata instead."),
+        "fallback must be visible; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("issue_creation=local-tracking")
+            && stdout.contains("tracking_system=local")
+            && stdout.contains("tracking_reference=local-issue-763")
+            && stdout.contains("issue_number=763"),
+        "fallback must emit deterministic local tracking metadata; stdout:\n{stdout}"
+    );
+    assert!(
+        !combined.contains(secret_remote) && !combined.contains("ghp_secret123"),
+        "fallback logs must not leak credential-bearing remote URLs; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        !combined.contains("Created GitHub issue"),
+        "fallback must not look like GitHub issue creation success; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn step_03_github_repo_resolution_failure_uses_issue_number_for_local_tracking() {
+    let run = run_step_03_with_env(
+        "github",
+        "763",
+        "Create tracking for a workflow without an inline issue reference",
+        &[
+            (
+                "GH_CREATE_OUTPUT",
+                "GraphQL: Could not resolve to a Repository with the name 'cloud-ecosystem-security/hyenas'.",
+            ),
+            ("GH_CREATE_STATUS", "1"),
+        ],
+    );
+
+    let stdout = String::from_utf8_lossy(&run.output.stdout);
+    let stderr = String::from_utf8_lossy(&run.output.stderr);
+    assert!(
+        run.output.status.success(),
+        "repo-resolution failure with ISSUE_NUMBER must fall back locally; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("tracking_reference=local-issue-763")
+            && stdout.contains("issue_number=763"),
+        "fallback must preserve ISSUE_NUMBER as deterministic local metadata; stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn step_03_github_unexpected_create_failure_remains_error() {
+    let run = run_step_03_with_env(
+        "github",
+        "",
+        "Create tracking for an unexpected GitHub failure",
+        &[
+            (
+                "GH_CREATE_OUTPUT",
+                "GraphQL: rate limit exceeded for https://token:ghp_secret123@github.com/example-org/example-repo",
+            ),
+            ("GH_CREATE_STATUS", "1"),
+        ],
+    );
+
+    let stdout = String::from_utf8_lossy(&run.output.stdout);
+    let stderr = String::from_utf8_lossy(&run.output.stderr);
+    assert!(
+        !run.output.status.success(),
+        "unexpected GitHub failures must not fall back locally; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("ERROR: GitHub issue creation failed.")
+            && stderr.contains("GraphQL: rate limit exceeded")
+            && stderr.contains("https://<redacted>@github.com/example-org/example-repo"),
+        "unexpected GitHub failures must remain visible; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("ghp_secret123")
+            && !stderr.contains("https://token:ghp_secret123@github.com"),
+        "unexpected GitHub failures must sanitize credential-bearing CLI output; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        !stdout.contains("issue_creation=local-tracking")
+            && !stdout.contains("tracking_system=local"),
+        "unexpected GitHub failures must not emit local tracking metadata; stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn step_03b_has_local_tracking_metadata_extraction_contract() {
+    let recipe = load_recipe("workflow-prep");
+    let body = extract_step_body(&recipe, "step-03b-extract-issue-number");
+
+    assert!(
+        body.contains("issue_number=([0-9]+)") && body.contains("local-(issue|ab)-([0-9]+)"),
+        "step-03b must extract numeric IDs from explicit local tracking metadata"
+    );
+}
+
+#[test]
+fn step_03b_extracts_issue_number_from_local_tracking_metadata() {
+    let output = run_step_03b(
+        "tracking_system=local\ntracking_reference=local-issue-763\ntracking_issue=local-issue-763\nissue_creation=local-tracking\nissue_number=763\n",
+        "Create tracking for local fallback",
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "step-03b must accept local tracking metadata; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert_eq!(
+        stdout.trim(),
+        "763",
+        "step-03b must return the numeric local tracking ID"
+    );
+}
+
+#[test]
+fn step_03b_sanitizes_unparseable_issue_creation_output() {
+    let output = run_step_03b(
+        "GraphQL: rate limit exceeded for https://token:ghp_secret123@github.com/example-org/example-repo",
+        "Create tracking for local fallback",
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "unparseable issue_creation must fail; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("ERROR: step-03b failed to extract issue number")
+            && stderr.contains("https://<redacted>@github.com/example-org/example-repo"),
+        "step-03b must keep useful context while sanitizing; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("ghp_secret123")
+            && !stderr.contains("https://token:ghp_secret123@github.com"),
+        "step-03b must not leak credential-bearing issue_creation output; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+#[test]
 fn step_03_preserves_generic_local_tracking_fallback() {
     let run = run_step_03(
         "other",
@@ -739,8 +1017,16 @@ fn step_03_preserves_generic_local_tracking_fallback() {
         "generic host must succeed via local tracking fallback; stdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
-        stdout.trim().starts_with("local-tracking:"),
-        "generic host must preserve local tracking fallback; stdout:\n{stdout}"
+        stdout.contains("issue_creation=local-tracking")
+            && stdout.contains("tracking_system=local")
+            && stdout.contains("tracking_reference=local-issue-718")
+            && stdout.contains("issue_number=718"),
+        "generic host must preserve visible local tracking metadata; stdout:\n{stdout}"
+    );
+    assert!(
+        run.git_log.is_empty(),
+        "generic host must not probe git before local tracking fallback; git log:\n{}",
+        run.git_log
     );
     assert!(
         run.gh_log.is_empty(),
@@ -750,6 +1036,40 @@ fn step_03_preserves_generic_local_tracking_fallback() {
     assert!(
         run.az_log.is_empty(),
         "generic host must not call Azure CLI; az log:\n{}",
+        run.az_log
+    );
+}
+
+#[test]
+fn step_03_unexpected_host_type_falls_back_without_log_injection() {
+    let run = run_step_03(
+        "github\ntracking_system=github-forged",
+        "763",
+        "Generic host follow-up with malicious host context",
+    );
+
+    let stdout = String::from_utf8_lossy(&run.output.stdout);
+    let stderr = String::from_utf8_lossy(&run.output.stderr);
+    assert!(
+        run.output.status.success(),
+        "unexpected host type must fall back locally; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("WARN: Unexpected REMOTE_HOST_TYPE")
+            && !stderr.contains("github\ntracking_system=github-forged"),
+        "unexpected host type warning must not echo untrusted host text; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("tracking_system=local")
+            && stdout.contains("issue_creation=local-tracking")
+            && stdout.contains("tracking_reference=local-issue-763"),
+        "unexpected host type must emit local tracking metadata; stdout:\n{stdout}"
+    );
+    assert!(
+        run.git_log.is_empty() && run.gh_log.is_empty() && run.az_log.is_empty(),
+        "unexpected host type must not call git/gh/az; git:\n{}\ngh:\n{}\naz:\n{}",
+        run.git_log,
+        run.gh_log,
         run.az_log
     );
 }

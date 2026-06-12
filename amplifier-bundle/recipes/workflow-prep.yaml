@@ -3,22 +3,17 @@ description: "Phase 1a: requirements + issue creation (steps 00-03b)"
 version: "1.0.0"
 author: "Amplihack Team"
 tags: ["development", "prep", "requirements"]
-
 # workflow-prep: extracted from default-workflow.yaml as a composable phase brick.
-#
 # Preserves every original step verbatim — the layered review steps the LLM
 # converges through must remain intact. Context flows in from the parent
 # workflow via recipe-runner's automatic context-merging in
 # `_execute_sub_recipe()`; outputs declared by these steps propagate back to
 # the parent and are visible to subsequent phase recipes.
 # Pager safety: recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
-
 recursion:
   max_depth: 6
   max_total_steps: 80
-
 context: {}
-
 steps:
   # STEP 0: WORKFLOW PREPARATION (MANDATORY - DO NOT SKIP)
   # Creates tracking structure. Must complete before ANY implementation work.
@@ -136,18 +131,14 @@ steps:
     agent: "amplihack:prompt-writer"
     prompt: |
       # Step 2: Rewrite and Clarify Requirements
-
       **Task Description:** {{task_description}}
       **Initial Requirements:** {{requirements}}
-
       Your role is to clarify and structure the task requirements.
-
       **Actions Required:**
       1. Identify explicit user requirements that CANNOT be optimized away
       2. Remove ambiguity from the task description
       3. Define clear success criteria
       4. Document acceptance criteria
-
       **Output Format:**
       ```json
       {
@@ -161,7 +152,6 @@ steps:
         "classification": "feature/bugfix/refactor/other"
       }
       ```
-
       Use your best judgment to work autonomously. Pass explicit requirements to ALL subsequent agents.
     output: "clarified_requirements"
     parse_json: true
@@ -170,13 +160,10 @@ steps:
     agent: "amplihack:architect"
     prompt: |
       # Step 2b: Analyze Existing Codebase Context
-
       **Task:** {{task_description}}
       **Clarified Requirements:** {{clarified_requirements}}
       **Repository:** {{repo_path}}
-
       ## IMPORTANT: Emit progress markers throughout this analysis
-
       This step runs under a watchdog that times out if no output is seen for
       60+ seconds. You MUST emit a progress line before each major exploration
       phase so the recipe runner can see activity. Use this format:
@@ -186,36 +173,28 @@ steps:
       ```
 
       ## Exploration Phases
-
       Work through these phases in order, emitting a progress marker before each:
-
       **Phase 1 — Project structure**
       Print: `## Progress: Phase 1/4 — Scanning project structure`
       Use Glob to identify top-level layout, key config files (Cargo.toml,
       package.json, etc.), and source directory organization.
-
       **Phase 2 — Relevant code paths**
       Print: `## Progress: Phase 2/4 — Searching for task-relevant code`
       Use Grep to find code related to the task: relevant class/function names,
       imports, config keys, and patterns mentioned in the requirements.
-
       **Phase 3 — Dependencies and integration points**
       Print: `## Progress: Phase 3/4 — Analyzing dependencies and interfaces`
       Read key files (imports, interfaces, config) to understand how components
       connect. Identify external dependencies relevant to the task.
-
       **Phase 4 — Synthesis**
       Print: `## Progress: Phase 4/4 — Synthesizing findings`
       Compile findings into a structured summary.
-
       ## Output
-
       Provide a codebase context summary covering:
       1. Relevant existing code and patterns
       2. Files that will likely need modification
       3. Dependencies and integration points
       4. Potential conflicts or considerations
-
       Use glob and grep to explore the codebase. Avoid web searches.
     output: "codebase_analysis"
 
@@ -223,22 +202,17 @@ steps:
     agent: "amplihack:ambiguity"
     prompt: |
       # Step 2c: Resolve Any Remaining Ambiguity
-
       **Task:** {{task_description}}
       **Clarified Requirements:** {{clarified_requirements}}
       **Codebase Analysis:** {{codebase_analysis}}
-
       Review for any remaining ambiguity in the requirements.
-
       If ambiguity exists:
       - Resolve it using best judgment
       - Document the decisions made
       - Explain rationale
-
       If no ambiguity:
       - Confirm requirements are clear
       - Proceed with confidence
-
       Output final, unambiguous requirements ready for design phase.
     output: "final_requirements"
 
@@ -264,7 +238,6 @@ steps:
       printf '%s' "$HT"
     output: "remote_host_type"
 
-  # STEP 3: CREATE TRACKING ISSUE (GitHub / AzDO / local fallback)
   - id: "step-03-create-issue"
     type: "bash"
     command: |
@@ -276,15 +249,39 @@ steps:
       ISSUE_REQS="$FINAL_REQUIREMENTS"
       HOST_TYPE="${REMOTE_HOST_TYPE:-other}"; EXISTING_ISSUE_NUMBER="${ISSUE_NUMBER:-}"
       case "$HOST_TYPE" in
+        github|azdo|other) ;;
+        azure-devops) HOST_TYPE="azdo" ;;
+        *) echo "WARN: Unexpected REMOTE_HOST_TYPE — using local tracking" >&2; HOST_TYPE="other" ;;
+      esac
+      derive_local_tracking_id() {
+        if [[ "$EXISTING_ISSUE_NUMBER" =~ ^#?([0-9]+)$ ]]; then
+          printf 'local-issue-%s' "${BASH_REMATCH[1]}"
+        elif [[ "$EXISTING_ISSUE_NUMBER" =~ AB#([0-9]+)|_workitems/edit/([0-9]+) ]]; then
+          printf 'local-ab-%s' "${BASH_REMATCH[1]:-${BASH_REMATCH[2]}}"
+        elif [[ "$EXISTING_ISSUE_NUMBER" =~ local-(issue|ab)-([0-9]+)$ ]]; then
+          printf '%s' "$EXISTING_ISSUE_NUMBER"
+        elif [[ "$TASK_DESC" =~ ([Ii]ssue[[:space:]#]*|#)([0-9]+) ]]; then
+          printf 'local-issue-%s' "${BASH_REMATCH[2]}"
+        elif [[ "$TASK_DESC" =~ AB#([0-9]+) ]]; then
+          printf 'local-ab-%s' "${BASH_REMATCH[1]}"
+        else
+          printf 'local-%s' "$(printf '%s' "$TASK_DESC" | sha256sum | cut -c1-12)"
+        fi
+      }
+      emit_local_metadata() { LOCAL_REF="$(derive_local_tracking_id)"; LOCAL_NUM=""; [[ "$LOCAL_REF" =~ local-(issue|ab)-([0-9]+)$ ]] && LOCAL_NUM="${BASH_REMATCH[2]}"; printf 'tracking_system=local\ntracking_reference=%s\ntracking_issue=%s\nissue_creation=local-tracking\n' "$LOCAL_REF" "$LOCAL_REF"; [ -n "$LOCAL_NUM" ] && printf 'issue_number=%s\n' "$LOCAL_NUM"; }
+      sanitize_cli_output() { printf '%s\n' "$1" | head -c 4000 | sed -E 's#https?://[^[:space:]]*@#https://<redacted>@#g; s#gh[pousr]_[A-Za-z0-9_]{8,}#<redacted-token>#g; s#github_pat_[A-Za-z0-9_]+#<redacted-token>#g'; }
+      case "$HOST_TYPE" in
       azdo|azure-devops)
         [[ "$EXISTING_ISSUE_NUMBER" =~ ^[0-9]+$ ]] && { printf 'ISSUE_REFERENCE=AB#%s\n' "$EXISTING_ISSUE_NUMBER" >> "${GITHUB_OUTPUT:-/dev/null}"; printf 'AB#%s\n' "$EXISTING_ISSUE_NUMBER"; exit 0; }
         ;;
       esac
+      case "$HOST_TYPE" in
+      github|azdo|azure-devops) ;;
+      *) echo "INFO: Using local tracking for issue management (remote: other)" >&2; emit_local_metadata; exit 0 ;;
+      esac
       if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         echo "[skip] not a git repo — using local tracking" >&2
-        LOCAL_ISSUE=$(($(date +%s) % 1000000))
-        printf 'local-tracking:%s\n' "$LOCAL_ISSUE"
-        exit 0
+        emit_local_metadata; exit 0
       fi
       REF_ISSUE_NUM=""
       if [[ "$TASK_DESC" =~ AB#([0-9]+) ]]; then REF_ISSUE_NUM="${BASH_REMATCH[1]}"
@@ -303,10 +300,18 @@ steps:
         fi
         ISSUE_BODY=$(printf '## Task Description\n%s\n\n## Requirements\n%s\n\n## Acceptance Criteria\n- [ ] All explicit requirements met\n- [ ] Tests passing\n- [ ] Philosophy compliant\n- [ ] Documentation updated\n\n## Classification\nGenerated via default-workflow recipe\n' "$TASK_DESC" "$ISSUE_REQS")
         LABEL_NAME="workflow:default"
-        gh label create "$LABEL_NAME" --color "0366d6" --description "Created by default-workflow recipe" 2>/dev/null || true
-        gh issue create --title "$ISSUE_TITLE" --body "$ISSUE_BODY" --label "$LABEL_NAME" 2>&1 || \
-          gh issue create --title "$ISSUE_TITLE" --body "$ISSUE_BODY"
-        exit $?
+        timeout 30 gh label create "$LABEL_NAME" --color "0366d6" --description "Created by default-workflow recipe" 2>/dev/null || true
+        gh_create_issue() { timeout 60 gh issue create --title "$ISSUE_TITLE" --body "$ISSUE_BODY" "$@" 2>&1; }
+        try_gh_create() { GH_ISSUE_RC=0; GH_ISSUE_OUTPUT=$(gh_create_issue --label "$LABEL_NAME") || GH_ISSUE_OUTPUT=$(gh_create_issue) || GH_ISSUE_RC=$?; }
+        try_gh_create; [ "$GH_ISSUE_RC" -eq 0 ] && { printf '%s\n' "$GH_ISSUE_OUTPUT"; exit 0; }
+        if [[ "$GH_ISSUE_OUTPUT" =~ Could\ not\ resolve\ to\ a\ Repository|[Rr]epository\ not\ found|[Rr]epository.*inaccessible|HTTP\ 404 ]]; then
+          echo "WARNING: GitHub issue creation failed because the repository could not be resolved or accessed; using local tracking metadata instead." >&2
+          echo "WARNING: gh reported repository access/resolution failure." >&2
+          emit_local_metadata; exit 0
+        fi
+        echo "ERROR: GitHub issue creation failed." >&2
+        sanitize_cli_output "$GH_ISSUE_OUTPUT" >&2
+        exit 1
         ;;
       azdo|azure-devops)
         REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
@@ -364,13 +369,10 @@ steps:
         fi
         ;;
       esac
-      # --- Local tracking fallback (unknown remote or az CLI unavailable) ---
       echo "INFO: Using local tracking for issue management (remote: $HOST_TYPE)" >&2
-      LOCAL_ISSUE=$(($(date +%s) % 1000000))
-      printf 'local-tracking:%s\n' "$LOCAL_ISSUE"
+      emit_local_metadata
     output: "issue_creation"
     parse_json: false
-
   - id: "step-03b-extract-issue-number"
     type: "bash"
     command: |
@@ -378,22 +380,20 @@ steps:
       ISSUE_CREATION="$ISSUE_CREATION"; TASK_DESC_RAW="$TASK_DESCRIPTION"
       EXTRACTED=""
       if [[ "$ISSUE_CREATION" =~ issues/([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
-      elif [[ "$ISSUE_CREATION" =~ pull/([0-9]+) ]]; then
-        PR_NUMBER="${BASH_REMATCH[1]}"
-        EXTRACTED=$(timeout 60 gh pr view "$PR_NUMBER" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // ""' 2>/dev/null || echo '')
-        [ -z "$EXTRACTED" ] && EXTRACTED="$PR_NUMBER"
+      elif [[ "$ISSUE_CREATION" =~ pull/([0-9]+) ]]; then PR_NUMBER="${BASH_REMATCH[1]}"; EXTRACTED=$(timeout 60 gh pr view "$PR_NUMBER" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // ""' 2>/dev/null || echo ''); [ -z "$EXTRACTED" ] && EXTRACTED="$PR_NUMBER"
       elif [[ "$ISSUE_CREATION" =~ _workitems/edit/([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
       elif [[ "$ISSUE_CREATION" =~ AB#([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
+      elif [[ "$ISSUE_CREATION" =~ issue_number=([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
+      elif [[ "$ISSUE_CREATION" =~ local-(issue|ab)-([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[2]}"
       elif [[ "$ISSUE_CREATION" =~ local-tracking:([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
       elif [[ "$TASK_DESC_RAW" =~ AB#([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
       elif [[ "$TASK_DESC_RAW" =~ \#([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
       fi
       if [ -z "$EXTRACTED" ]; then
         echo "ERROR: step-03b failed to extract issue number from issue_creation output." >&2
-        printf '%s\n' "$ISSUE_CREATION" >&2
+        printf '%s\n' "$ISSUE_CREATION" | head -c 4000 | sed -E 's#https?://[^[:space:]]*@#https://<redacted>@#g; s#gh[pousr]_[A-Za-z0-9_]{8,}#<redacted-token>#g; s#github_pat_[A-Za-z0-9_]+#<redacted-token>#g' >&2
         exit 1
       fi
       printf '%s' "$EXTRACTED"
     output: "issue_number"
-
   # STEP 4: SETUP WORKTREE AND BRANCH
