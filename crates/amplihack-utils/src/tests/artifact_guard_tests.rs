@@ -389,9 +389,13 @@ fn allowlist_rejects_absolute_parent_traversing_empty_or_broad_entries() {
         "../dist/plugin.js",
         "node_modules/",
         "node_modules/**",
+        "dist/*",
         "dist/**",
+        "build/*",
         "recipe-runner.log",
         "plan.md",
+        "*.log",
+        ".copilot/session-state/*",
         ".copilot/session-state/**",
         ".amplihack/session-state/**",
         ".claude/runtime/**",
@@ -406,6 +410,23 @@ fn allowlist_rejects_absolute_parent_traversing_empty_or_broad_entries() {
             "unsafe entry `{entry}` must produce a clear allowlist error; got: {message}"
         );
     }
+}
+
+#[test]
+fn explicit_allowlist_path_must_stay_inside_repo() {
+    let tmp = repo();
+    let outside = TempDir::new().expect("outside tempdir");
+    let outside_allowlist = outside.path().join("artifact-allowlist");
+    write_file(&outside_allowlist, "dist/plugin.js\n");
+
+    let error = scan_artifacts(&default_config(tmp.path()).with_allowlist(outside_allowlist))
+        .expect_err("allowlists outside the repository must fail closed");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("allowlist") && message.contains("outside repository root"),
+        "outside-repo allowlist must be rejected clearly; got: {message}"
+    );
 }
 
 #[test]

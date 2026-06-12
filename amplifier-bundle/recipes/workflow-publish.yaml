@@ -257,8 +257,7 @@ steps:
        ```
        4. If a test fails, diagnose, fix, commit, push, and retry up to 3 times:
           ```bash
-          amplihack hygiene artifact-guard --repo . --mode pre-publish
-          git add -A && git commit -m "fix: <describe the fix found during outside-in testing>"
+          amplihack hygiene artifact-guard --repo . --mode pre-publish && git add -A && git commit -m "fix: <describe the fix found during outside-in testing>"
           git pull --rebase && git push
           ```
        5. If failures persist after 3 iterations, document them honestly.

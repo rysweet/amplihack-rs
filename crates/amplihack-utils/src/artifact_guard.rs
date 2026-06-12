@@ -351,12 +351,30 @@ fn load_effective_allowlist(
         return Ok(ArtifactAllowlist::default());
     };
 
-    let allowlist_path = if path.is_absolute() {
-        path
+    let allowlist_path = resolve_allowlist_path(&path, repo)?;
+    ArtifactAllowlist::load(&allowlist_path)
+}
+
+fn resolve_allowlist_path(path: &Path, repo: &Path) -> Result<PathBuf, ArtifactGuardError> {
+    let candidate = if path.is_absolute() {
+        path.to_path_buf()
     } else {
         repo.join(path)
     };
-    ArtifactAllowlist::load(&allowlist_path)
+    let canonical = candidate.canonicalize().map_err(|error| {
+        ArtifactGuardError::Allowlist(format!(
+            "resolve allowlist {}: {error}",
+            candidate.display()
+        ))
+    })?;
+    if !canonical.starts_with(repo) {
+        return Err(ArtifactGuardError::PathEscape(format!(
+            "allowlist {} resolved outside repository root {}",
+            canonical.display(),
+            repo.display()
+        )));
+    }
+    Ok(canonical)
 }
 
 fn scan_git_paths(
@@ -576,7 +594,9 @@ fn validate_allowlist_entry(
     if parts.contains(&"..") {
         return Err(unsafe_reason("parent traversal is not allowed"));
     }
-    if matches!(normalized.as_str(), "*" | "**" | "**/*" | "*/**") {
+    if matches!(normalized.as_str(), "*" | "**" | "**/*" | "*/**")
+        || (!normalized.contains('/') && contains_glob_wildcard(&normalized))
+    {
         return Err(unsafe_reason("repository-wide patterns are not allowed"));
     }
     if is_root_prohibited_exemption(&normalized) {
@@ -593,37 +613,40 @@ fn validate_allowlist_entry(
 }
 
 fn is_root_prohibited_exemption(pattern: &str) -> bool {
-    matches!(
-        pattern,
-        "node_modules"
-            | "node_modules/**"
-            | "recipe-runner.log"
-            | "plan.md"
-            | ".copilot/session-state"
-            | ".copilot/session-state/**"
-            | ".amplihack/session-state"
-            | ".amplihack/session-state/**"
-            | "dist"
-            | "dist/**"
-            | "build"
-            | "build/**"
-            | "coverage"
-            | "coverage/**"
-            | ".claude/runtime"
-            | ".claude/runtime/**"
-            | "worktrees"
-            | "worktrees/**"
-            | ".cache"
-            | ".cache/**"
-            | ".next"
-            | ".next/**"
-            | "out"
-            | "out/**"
-            | "logs"
-            | "logs/**"
-            | "outputs"
-            | "outputs/**"
-    )
+    const ROOT_ARTIFACTS: &[&str] = &[
+        "node_modules",
+        "recipe-runner.log",
+        "plan.md",
+        ".copilot/session-state",
+        ".amplihack/session-state",
+        "dist",
+        "build",
+        "coverage",
+        ".claude/runtime",
+        "worktrees",
+        ".cache",
+        ".next",
+        "out",
+        "logs",
+        "outputs",
+    ];
+
+    ROOT_ARTIFACTS.iter().any(|root| {
+        root_artifact_suffix(pattern, root).is_some_and(|suffix| {
+            suffix.is_empty() || suffix == "**" || contains_glob_wildcard(suffix)
+        })
+    })
+}
+
+fn root_artifact_suffix<'a>(pattern: &'a str, root: &str) -> Option<&'a str> {
+    if pattern == root {
+        return Some("");
+    }
+    pattern.strip_prefix(root)?.strip_prefix('/')
+}
+
+fn contains_glob_wildcard(value: &str) -> bool {
+    value.contains('*') || value.contains('?')
 }
 
 fn glob_matches(pattern: &str, path: &str) -> bool {

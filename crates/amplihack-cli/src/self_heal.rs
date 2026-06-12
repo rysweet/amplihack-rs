@@ -253,6 +253,17 @@ fn args_should_skip(args: &[OsString]) -> bool {
         }
     }
 
+    let positionals: Vec<&str> = args
+        .iter()
+        .skip(1)
+        .filter_map(|arg| arg.to_str())
+        .filter(|arg| !arg.starts_with('-'))
+        .collect();
+
+    if matches!(positionals.as_slice(), ["hygiene", "artifact-guard", ..]) {
+        return true;
+    }
+
     // First non-flag positional is the subcommand candidate.
     for arg in args.iter().skip(1) {
         let Some(s) = arg.to_str() else { continue };
@@ -492,6 +503,56 @@ mod tests {
         )
         .expect("ok");
         assert_eq!(calls.get(), 0);
+    }
+
+    #[test]
+    fn hygiene_artifact_guard_skips_startup_self_heal() {
+        let tmp = TempDir::new().unwrap();
+        let _g = EnvGuard::new(tmp.path(), None);
+
+        let calls = Cell::new(0u32);
+        let mut buf = Vec::new();
+        ensure_assets_match_binary_version_with(
+            &args(&[
+                "amplihack",
+                "hygiene",
+                "artifact-guard",
+                "--repo",
+                ".",
+                "--mode",
+                "pre-publish",
+            ]),
+            &mut buf,
+            counting_installer(&calls, crate::VERSION),
+        )
+        .expect("ok");
+
+        assert_eq!(
+            calls.get(),
+            0,
+            "artifact guard is a read-only safety gate and must not self-heal before scanning"
+        );
+    }
+
+    #[test]
+    fn other_hygiene_commands_still_use_startup_self_heal() {
+        let tmp = TempDir::new().unwrap();
+        let _g = EnvGuard::new(tmp.path(), None);
+
+        let calls = Cell::new(0u32);
+        let mut buf = Vec::new();
+        ensure_assets_match_binary_version_with(
+            &args(&["amplihack", "hygiene", "cleanup", "--all"]),
+            &mut buf,
+            counting_installer(&calls, crate::VERSION),
+        )
+        .expect("ok");
+
+        assert_eq!(
+            calls.get(),
+            1,
+            "only hygiene artifact-guard should bypass startup self-heal"
+        );
     }
 
     #[test]

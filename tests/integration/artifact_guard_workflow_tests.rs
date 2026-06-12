@@ -309,9 +309,17 @@ fn workflow_publish_outside_in_fix_loop_guards_its_inline_git_add_all() {
     let add = prompt
         .find("git add -A")
         .expect("outside-in fix loop currently contains broad staging");
+    let guarded_line = prompt[guard..]
+        .lines()
+        .next()
+        .expect("guard snippet must be line-oriented");
 
     assert!(
         guard < add,
         "outside-in fix loop must invoke artifact guard immediately before broad staging"
+    );
+    assert!(
+        guarded_line.contains("&& git add -A"),
+        "outside-in fix loop snippet must hard-chain guard success to broad staging; line was `{guarded_line}`"
     );
 }

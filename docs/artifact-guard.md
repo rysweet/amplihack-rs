@@ -157,7 +157,7 @@ Matching semantics:
 | Separators | `/` only; Windows-style `\` separators are rejected |
 | Case | Case-sensitive matching |
 | Exact paths | `tests/fixtures/dist/plugin.js` matches only that path |
-| `*`, `?`, `[]` | Supported within a path segment |
+| `*`, `?` | Supported within a path segment |
 | `**` | Supported across path segments |
 | Directory entries | Must use an explicit suffix such as `tests/fixtures/output/**`; a bare directory does not imply recursive matching |
 | Duplicates | Duplicate entries are allowed but normalized to one effective rule |
@@ -179,8 +179,10 @@ Invalid entries fail closed with exit code `2`:
 node_modules/
 node_modules/**
 **/node_modules/**
+dist/*
 dist/
 dist/**
+*.log
 build/**
 *
 **/*
