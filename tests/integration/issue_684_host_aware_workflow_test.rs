@@ -828,9 +828,7 @@ fn step_03_github_repo_resolution_failure_falls_back_to_local_tracking() {
         "repo-resolution failure must fall back locally instead of aborting; stdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
-        combined.contains(
-            "WARNING: GitHub issue creation failed; using local tracking metadata instead."
-        ),
+        combined.contains("WARNING: GitHub issue creation failed because the repository could not be resolved or accessed; using local tracking metadata instead."),
         "fallback must be visible; stdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
@@ -875,6 +873,36 @@ fn step_03_github_repo_resolution_failure_uses_issue_number_for_local_tracking()
         stdout.contains("tracking_reference=local-issue-763")
             && stdout.contains("issue_number=763"),
         "fallback must preserve ISSUE_NUMBER as deterministic local metadata; stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn step_03_github_unexpected_create_failure_remains_error() {
+    let run = run_step_03_with_env(
+        "github",
+        "",
+        "Create tracking for an unexpected GitHub failure",
+        &[
+            ("GH_CREATE_OUTPUT", "GraphQL: rate limit exceeded"),
+            ("GH_CREATE_STATUS", "1"),
+        ],
+    );
+
+    let stdout = String::from_utf8_lossy(&run.output.stdout);
+    let stderr = String::from_utf8_lossy(&run.output.stderr);
+    assert!(
+        !run.output.status.success(),
+        "unexpected GitHub failures must not fall back locally; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("ERROR: GitHub issue creation failed.")
+            && stderr.contains("GraphQL: rate limit exceeded"),
+        "unexpected GitHub failures must remain visible; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        !stdout.contains("issue_creation=local-tracking")
+            && !stdout.contains("tracking_system=local"),
+        "unexpected GitHub failures must not emit local tracking metadata; stdout:\n{stdout}"
     );
 }
 

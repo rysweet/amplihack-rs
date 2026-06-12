@@ -308,7 +308,7 @@ steps:
           printf '%s\n' "$GH_CREATE_OUTPUT"; exit 0
         fi
         if [[ "$GH_CREATE_OUTPUT" =~ Could\ not\ resolve\ to\ a\ Repository|[Rr]epository\ not\ found|[Rr]epository.*inaccessible|HTTP\ 404 ]]; then
-          echo "WARNING: GitHub issue creation failed; using local tracking metadata instead." >&2
+          echo "WARNING: GitHub issue creation failed because the repository could not be resolved or accessed; using local tracking metadata instead." >&2
           echo "WARNING: gh reported repository access/resolution failure." >&2
           emit_local_metadata; exit 0
         fi
