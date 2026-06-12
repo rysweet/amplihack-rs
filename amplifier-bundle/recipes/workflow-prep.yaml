@@ -4,7 +4,6 @@ version: "1.0.0"
 author: "Amplihack Team"
 tags: ["development", "prep", "requirements"]
 # workflow-prep: extracted from default-workflow.yaml as a composable phase brick.
-#
 # Preserves every original step verbatim — the layered review steps the LLM
 # converges through must remain intact. Context flows in from the parent
 # workflow via recipe-runner's automatic context-merging in
@@ -270,9 +269,10 @@ steps:
       TASK_DESC="$TASK_DESCRIPTION"
       ISSUE_TITLE="${TASK_DESC//$'\n'/ }"; ISSUE_TITLE="${ISSUE_TITLE//$'\r'/ }"; ISSUE_TITLE="${ISSUE_TITLE:0:200}"
       ISSUE_REQS="$FINAL_REQUIREMENTS"
-      HOST_TYPE="${REMOTE_HOST_TYPE:-other}"; EXISTING_ISSUE_NUMBER="${ISSUE_NUMBER:-}"
+      HOST_TYPE="${REMOTE_HOST_TYPE:-other}"; EXISTING_ISSUE_NUMBER="${ISSUE_NUMBER:-}"; case "$HOST_TYPE" in github|azdo|other) ;; azure-devops) HOST_TYPE="azdo" ;; *) echo "WARN: Unexpected REMOTE_HOST_TYPE — using local tracking" >&2; HOST_TYPE="other" ;; esac
       derive_local_tracking_id() { if [[ "$EXISTING_ISSUE_NUMBER" =~ ^#?([0-9]+)$ ]]; then printf 'local-issue-%s' "${BASH_REMATCH[1]}"; elif [[ "$EXISTING_ISSUE_NUMBER" =~ AB#([0-9]+)|_workitems/edit/([0-9]+) ]]; then printf 'local-ab-%s' "${BASH_REMATCH[1]:-${BASH_REMATCH[2]}}"; elif [[ "$EXISTING_ISSUE_NUMBER" =~ local-(issue|ab)-([0-9]+)$ ]]; then printf '%s' "$EXISTING_ISSUE_NUMBER"; elif [[ "$TASK_DESC" =~ ([Ii]ssue[[:space:]#]*|#)([0-9]+) ]]; then printf 'local-issue-%s' "${BASH_REMATCH[2]}"; elif [[ "$TASK_DESC" =~ AB#([0-9]+) ]]; then printf 'local-ab-%s' "${BASH_REMATCH[1]}"; else printf 'local-%s' "$(printf '%s' "$TASK_DESC" | sha256sum | cut -c1-12)"; fi; }
       emit_local_metadata() { LOCAL_REF="$(derive_local_tracking_id)"; LOCAL_NUM=""; [[ "$LOCAL_REF" =~ local-(issue|ab)-([0-9]+)$ ]] && LOCAL_NUM="${BASH_REMATCH[2]}"; printf 'tracking_system=local\ntracking_reference=%s\ntracking_issue=%s\nissue_creation=local-tracking\n' "$LOCAL_REF" "$LOCAL_REF"; [ -n "$LOCAL_NUM" ] && printf 'issue_number=%s\n' "$LOCAL_NUM"; }
+      sanitize_cli_output() { printf '%s\n' "$1" | head -c 4000 | sed -E 's#https?://[^[:space:]]*@#https://<redacted>@#g; s#gh[pousr]_[A-Za-z0-9_]{8,}#<redacted-token>#g; s#github_pat_[A-Za-z0-9_]+#<redacted-token>#g'; }
       case "$HOST_TYPE" in
       azdo|azure-devops)
         [[ "$EXISTING_ISSUE_NUMBER" =~ ^[0-9]+$ ]] && { printf 'ISSUE_REFERENCE=AB#%s\n' "$EXISTING_ISSUE_NUMBER" >> "${GITHUB_OUTPUT:-/dev/null}"; printf 'AB#%s\n' "$EXISTING_ISSUE_NUMBER"; exit 0; }
@@ -280,11 +280,11 @@ steps:
       esac
       case "$HOST_TYPE" in
       github|azdo|azure-devops) ;;
-      *) echo "INFO: Using local tracking for issue management (remote: $HOST_TYPE)" >&2; LOCAL_ISSUE=$(($(date +%s) % 1000000)); printf 'local-tracking:%s\n' "$LOCAL_ISSUE"; exit 0 ;;
+      *) echo "INFO: Using local tracking for issue management (remote: other)" >&2; emit_local_metadata; exit 0 ;;
       esac
       if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         echo "[skip] not a git repo — using local tracking" >&2
-        LOCAL_ISSUE=$(($(date +%s) % 1000000)); printf 'local-tracking:%s\n' "$LOCAL_ISSUE"; exit 0
+        emit_local_metadata; exit 0
       fi
       REF_ISSUE_NUM=""
       if [[ "$TASK_DESC" =~ AB#([0-9]+) ]]; then REF_ISSUE_NUM="${BASH_REMATCH[1]}"
@@ -313,7 +313,7 @@ steps:
           emit_local_metadata; exit 0
         fi
         echo "ERROR: GitHub issue creation failed." >&2
-        printf '%s\n' "$GH_ISSUE_OUTPUT" >&2
+        sanitize_cli_output "$GH_ISSUE_OUTPUT" >&2
         exit 1
         ;;
       azdo|azure-devops)
@@ -373,7 +373,7 @@ steps:
         ;;
       esac
       echo "INFO: Using local tracking for issue management (remote: $HOST_TYPE)" >&2
-      LOCAL_ISSUE=$(($(date +%s) % 1000000)); printf 'local-tracking:%s\n' "$LOCAL_ISSUE"
+      emit_local_metadata
     output: "issue_creation"
     parse_json: false
 
@@ -393,7 +393,7 @@ steps:
       elif [[ "$TASK_DESC_RAW" =~ AB#([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
       elif [[ "$TASK_DESC_RAW" =~ \#([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
       fi
-      if [ -z "$EXTRACTED" ]; then echo "ERROR: step-03b failed to extract issue number from issue_creation output." >&2; printf '%s\n' "$ISSUE_CREATION" >&2; exit 1; fi
+      if [ -z "$EXTRACTED" ]; then echo "ERROR: step-03b failed to extract issue number from issue_creation output." >&2; printf '%s\n' "$ISSUE_CREATION" | head -c 4000 | sed -E 's#https?://[^[:space:]]*@#https://<redacted>@#g; s#gh[pousr]_[A-Za-z0-9_]{8,}#<redacted-token>#g; s#github_pat_[A-Za-z0-9_]+#<redacted-token>#g' >&2; exit 1; fi
       printf '%s' "$EXTRACTED"
     output: "issue_number"
   # STEP 4: SETUP WORKTREE AND BRANCH

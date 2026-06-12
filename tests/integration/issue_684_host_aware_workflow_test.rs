@@ -914,7 +914,10 @@ fn step_03_github_unexpected_create_failure_remains_error() {
         "",
         "Create tracking for an unexpected GitHub failure",
         &[
-            ("GH_CREATE_OUTPUT", "GraphQL: rate limit exceeded"),
+            (
+                "GH_CREATE_OUTPUT",
+                "GraphQL: rate limit exceeded for https://token:ghp_secret123@github.com/example-org/example-repo",
+            ),
             ("GH_CREATE_STATUS", "1"),
         ],
     );
@@ -927,8 +930,14 @@ fn step_03_github_unexpected_create_failure_remains_error() {
     );
     assert!(
         stderr.contains("ERROR: GitHub issue creation failed.")
-            && stderr.contains("GraphQL: rate limit exceeded"),
+            && stderr.contains("GraphQL: rate limit exceeded")
+            && stderr.contains("https://<redacted>@github.com/example-org/example-repo"),
         "unexpected GitHub failures must remain visible; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("ghp_secret123")
+            && !stderr.contains("https://token:ghp_secret123@github.com"),
+        "unexpected GitHub failures must sanitize credential-bearing CLI output; stdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
         !stdout.contains("issue_creation=local-tracking")
@@ -969,6 +978,31 @@ fn step_03b_extracts_issue_number_from_local_tracking_metadata() {
 }
 
 #[test]
+fn step_03b_sanitizes_unparseable_issue_creation_output() {
+    let output = run_step_03b(
+        "GraphQL: rate limit exceeded for https://token:ghp_secret123@github.com/example-org/example-repo",
+        "Create tracking for local fallback",
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "unparseable issue_creation must fail; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("ERROR: step-03b failed to extract issue number")
+            && stderr.contains("https://<redacted>@github.com/example-org/example-repo"),
+        "step-03b must keep useful context while sanitizing; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("ghp_secret123")
+            && !stderr.contains("https://token:ghp_secret123@github.com"),
+        "step-03b must not leak credential-bearing issue_creation output; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+#[test]
 fn step_03_preserves_generic_local_tracking_fallback() {
     let run = run_step_03(
         "other",
@@ -983,8 +1017,11 @@ fn step_03_preserves_generic_local_tracking_fallback() {
         "generic host must succeed via local tracking fallback; stdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
-        stdout.trim().starts_with("local-tracking:"),
-        "generic host must preserve local tracking fallback; stdout:\n{stdout}"
+        stdout.contains("issue_creation=local-tracking")
+            && stdout.contains("tracking_system=local")
+            && stdout.contains("tracking_reference=local-issue-718")
+            && stdout.contains("issue_number=718"),
+        "generic host must preserve visible local tracking metadata; stdout:\n{stdout}"
     );
     assert!(
         run.git_log.is_empty(),
@@ -999,6 +1036,40 @@ fn step_03_preserves_generic_local_tracking_fallback() {
     assert!(
         run.az_log.is_empty(),
         "generic host must not call Azure CLI; az log:\n{}",
+        run.az_log
+    );
+}
+
+#[test]
+fn step_03_unexpected_host_type_falls_back_without_log_injection() {
+    let run = run_step_03(
+        "github\ntracking_system=github-forged",
+        "763",
+        "Generic host follow-up with malicious host context",
+    );
+
+    let stdout = String::from_utf8_lossy(&run.output.stdout);
+    let stderr = String::from_utf8_lossy(&run.output.stderr);
+    assert!(
+        run.output.status.success(),
+        "unexpected host type must fall back locally; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("WARN: Unexpected REMOTE_HOST_TYPE")
+            && !stderr.contains("github\ntracking_system=github-forged"),
+        "unexpected host type warning must not echo untrusted host text; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("tracking_system=local")
+            && stdout.contains("issue_creation=local-tracking")
+            && stdout.contains("tracking_reference=local-issue-763"),
+        "unexpected host type must emit local tracking metadata; stdout:\n{stdout}"
+    );
+    assert!(
+        run.git_log.is_empty() && run.gh_log.is_empty() && run.az_log.is_empty(),
+        "unexpected host type must not call git/gh/az; git:\n{}\ngh:\n{}\naz:\n{}",
+        run.git_log,
+        run.gh_log,
         run.az_log
     );
 }
