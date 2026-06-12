@@ -219,7 +219,7 @@ workflow:
   adherence_level: "strict"
 
   # Default workflow
-  default_workflow: ".claude/workflow/DEFAULT_WORKFLOW.md"
+  default_workflow: "default-workflow"
 
   # Workflow deviation handling
   deviation_handling:

@@ -68,7 +68,7 @@ Problems during development?
 ### Code Quality
 
 - [Code Review Guide](../CODE_REVIEW.md) - Review process and standards
-- [Default Workflow](../claude/workflow/DEFAULT_WORKFLOW.md) - End-to-end checklist for finishing work
+- [Default Workflow](../claude/skills/default-workflow/SKILL.md) - End-to-end checklist for finishing work
 - [CS Validator](../cs-validator/README.md) - Code style validation
 
 ---
@@ -110,7 +110,7 @@ Learn how to avoid common issues:
 
 - [Development Philosophy](../PHILOSOPHY.md) - Principles that prevent problems
 - [This Is The Way](../THIS_IS_THE_WAY.md) - Best practices and patterns
-- [Default Workflow](../claude/workflow/DEFAULT_WORKFLOW.md) - Ensure process compliance
+- [Default Workflow](../claude/skills/default-workflow/SKILL.md) - Ensure process compliance
 
 ---
 

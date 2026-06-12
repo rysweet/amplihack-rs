@@ -266,7 +266,7 @@ After configuring merge preferences:
 
 1. **Test the workflow**: Create a test PR to verify behavior
 2. **Customize other preferences**: See [Power-Steering Configuration](../features/power-steering/configuration.md)
-3. **Review workflow compliance**: Check [DEFAULT_WORKFLOW.md](../concepts/default-workflow.md)
+3. **Review workflow compliance**: Check the [`default-workflow` skill/recipe](../claude/skills/default-workflow/SKILL.md)
 
 ---
 

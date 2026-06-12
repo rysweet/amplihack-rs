@@ -304,7 +304,7 @@ graph TD
     B -->|Delegates| D[Builder Agent<br/>Implementation]
     B -->|Delegates| E[Reviewer Agent<br/>Quality Check]
 
-    A -->|Reads| F[Workflow Files<br/>.claude/workflow/]
+    A -->|Reads| F[Skills and Recipes<br/>.claude/skills + .claude/recipes]
     A -->|Reads| G[Agent Definitions<br/>.claude/agents/]
     A -->|Executes| H[Hooks<br/>.claude/tools/hooks/]
 

@@ -66,9 +66,9 @@ When this command is invoked, you MUST:
    - Report session_id for traceability
    - Link to logs: `~/.amplihack/.claude/runtime/logs/cascade_<timestamp>/`
 
-4. **Manual fallback** (if orchestrator unavailable):
-   - Read workflow: `~/.amplihack/.claude/workflow/CASCADE_WORKFLOW.md`
-   - Execute steps manually with TodoWrite tracking
+4. **Standalone fallback** (if orchestrator unavailable):
+   - Run or invoke the `cascade-workflow` skill/recipe directly
+   - Use TodoWrite tracking only for manual compatibility execution
 
 ## When to Use
 
@@ -95,7 +95,7 @@ Execute the following task with fallback cascade:
 
 ## Configuration
 
-The workflow can be customized by editing `~/.amplihack/.claude/workflow/CASCADE_WORKFLOW.md`:
+The `cascade-workflow` skill/recipe can be configured to adjust:
 
 - Timeout strategy: Aggressive (5/2/1s), Balanced (30/10/5s), Patient (120/30/10s)
 - Fallback types: Service, Quality, Freshness

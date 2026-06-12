@@ -68,9 +68,9 @@ When this command is invoked, you MUST:
    - Report session_id for traceability
    - Link to logs: `~/.amplihack/.claude/runtime/logs/debate_<timestamp>/`
 
-4. **Manual fallback** (if orchestrator unavailable):
-   - Read workflow: `~/.amplihack/.claude/workflow/DEBATE_WORKFLOW.md`
-   - Execute steps manually with TodoWrite tracking
+4. **Standalone fallback** (if orchestrator unavailable):
+   - Run or invoke the `debate-workflow` skill/recipe directly
+   - Use TodoWrite tracking only for manual compatibility execution
 
 ## When to Use
 
@@ -97,7 +97,7 @@ Execute debate for the following decision:
 
 ## Configuration
 
-The workflow can be customized by editing `~/.amplihack/.claude/workflow/DEBATE_WORKFLOW.md`:
+The `debate-workflow` skill/recipe can be configured to adjust:
 
 - Agent perspectives: 3 (default), 5 (extended), custom profiles
 - Debate rounds: 2-3 (standard), 4-5 (deep analysis)

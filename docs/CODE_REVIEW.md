@@ -6,7 +6,7 @@
 
 ## Reviewer
 
-Self-review following DEFAULT_WORKFLOW.md Step 11
+Self-review following the `default-workflow` skill/recipe review step
 
 ## Summary
 

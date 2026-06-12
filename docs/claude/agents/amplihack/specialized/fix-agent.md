@@ -100,7 +100,7 @@ Time: [Execution time]
 
 ## Workflow Integration
 
-Following DEFAULT_WORKFLOW.md steps:
+Following `default-workflow` skill/recipe steps:
 
 1. [Requirements clarification]
 2. [Issue creation]
@@ -317,7 +317,7 @@ Regardless of mode:
 
 ### With Workflow
 
-- Seamlessly integrate with DEFAULT_WORKFLOW.md
+- Seamlessly integrate with the `default-workflow` skill/recipe
 - Respect user requirement priorities
 - Maintain philosophy compliance
 - Support parallel execution where possible

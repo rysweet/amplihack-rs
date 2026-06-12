@@ -64,9 +64,9 @@ When this command is invoked, you MUST:
    - Report session_id for traceability
    - Link to logs: `~/.amplihack/.claude/runtime/logs/n_version_<timestamp>/`
 
-4. **Manual fallback** (if orchestrator unavailable):
-   - Read workflow: `~/.amplihack/.claude/workflow/N_VERSION_WORKFLOW.md`
-   - Execute steps manually with TodoWrite tracking
+4. **Standalone fallback** (if orchestrator unavailable):
+   - Run or invoke the `n-version-workflow` skill/recipe directly
+   - Use TodoWrite tracking only for manual compatibility execution
 
 ## When to Use
 
@@ -92,7 +92,7 @@ Execute the following task using N-version programming:
 
 ## Configuration
 
-The workflow can be customized by editing `~/.amplihack/.claude/workflow/N_VERSION_WORKFLOW.md`:
+The `n-version-workflow` skill/recipe can be configured to adjust:
 
 - Number of versions (N): 3 (default), 4-6 (critical tasks)
 - Selection criteria: Correctness, Security, Performance, Simplicity

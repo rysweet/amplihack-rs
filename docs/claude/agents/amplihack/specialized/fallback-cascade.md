@@ -287,7 +287,7 @@ From research (PR #946):
 
 ## Integration with Workflow
 
-**DEFAULT_WORKFLOW.md Integration:**
+**`default-workflow` skill/recipe Integration:**
 
 **Step 5 (Implementation):** Use for external dependencies
 **Step 6 (Testing):** Use for unreliable test operations
@@ -308,7 +308,7 @@ This pattern is implemented as a workflow. Use the `/amplihack:cascade` command:
 /amplihack:cascade "Generate API documentation from codebase"
 ```
 
-The workflow file `~/.amplihack/.claude/workflow/CASCADE_WORKFLOW.md` can be customized to adjust:
+The `cascade-workflow` skill/recipe can be configured to adjust:
 
 - Timeout strategy (aggressive, balanced, patient)
 - Fallback types (service, quality, freshness)

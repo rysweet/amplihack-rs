@@ -1432,8 +1432,8 @@ uvx --from git+https://github.com/rysweet/amplihack-rs amplihack
 │   ├── PROJECT.md
 │   ├── USER_PREFERENCES.md
 │   └── DISCOVERIES.md
-├── workflow/                  # Development workflows
-│   └── DEFAULT_WORKFLOW.md
+├── skills/                    # Workflow skills
+│   └── default-workflow/
 ├── hooks/                     # Git-style hooks
 ├── runtime/                   # Runtime data
 │   ├── logs/                  # Session logs
@@ -2987,7 +2987,7 @@ python launch_claude.py
 | `~/.amplihack/.claude/agents/amplihack/workflows/`   | Workflow agents       | 5+    |
 | `~/.amplihack/.claude/commands/amplihack/`           | Slash commands        | 10+   |
 | `~/.amplihack/.claude/context/`                      | Philosophy & patterns | 7     |
-| `~/.amplihack/.claude/workflow/`                     | Development workflows | 1+    |
+| `~/.amplihack/.claude/workflow/`                     | Deprecated legacy workflow references | 1+    |
 
 ---
 

@@ -6,11 +6,11 @@ Guides Claude to complete all workflow steps by providing tracking patterns and 
 
 ## Problem Statement
 
-In PR #1606, the agent skipped mandatory code review steps (Steps 10, 16-17 of DEFAULT_WORKFLOW.md), completing implementation and creating a PR without executing review. This skill was created in response to Issue #1607.
+In PR #1606, the agent skipped mandatory code review steps from the legacy `DEFAULT_WORKFLOW.md`, completing implementation and creating a PR without executing review. This skill was created in response to Issue #1607.
 
 ## Quick Start
 
-The skill auto-activates when you begin a DEFAULT_WORKFLOW. To invoke explicitly:
+The skill auto-activates when you begin the `default-workflow` skill/recipe. To invoke explicitly:
 
 ```
 User: "Invoke the workflow-enforcement skill"
@@ -120,7 +120,7 @@ Mandatory gates: 0[X] 10[>] 16[ ] 17[ ]
 
 ## Related Files
 
-- `~/.amplihack/.claude/workflow/DEFAULT_WORKFLOW.md` - Canonical workflow definition
+- `default-workflow` skill/recipe - Canonical workflow definition
 - `~/.amplihack/.claude/templates/workflow_state.yaml.template` - State file template
 - `~/.amplihack/.claude/tools/amplihack/considerations.yaml` - Power steering checks
 

@@ -27,7 +27,7 @@ philosophy_alignment:
     application: Metrics drive timeout and fallback optimization
 references:
   workflows:
-    - DEFAULT_WORKFLOW.md
+    - legacy DEFAULT_WORKFLOW.md
 customizable: true
 ---
 
