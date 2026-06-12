@@ -102,6 +102,9 @@ steps:
 
   - id: "execute-single-round-1-development"
     type: "recipe"
+    # Issue #752: this step must remain fatal-by-default. default-workflow now
+    # performs strict terminal-state validation, and any nonzero result must
+    # propagate through smart-orchestrator instead of becoming hollow success.
     # NOTE: force_single_workstream may be Value::Bool(true) when set via CLI
     # --set (parse_context_value coerces "true" -> Bool). The condition evaluator
     # handles Bool/String cross-type coercion (fix #3069 in recipe-runner-rs).
@@ -220,6 +223,8 @@ steps:
 
   - id: "execute-single-fallback-blocked-development"
     type: "recipe"
+    # Issue #752: preserve default-workflow's strict terminal-state failure
+    # through adaptive single-session execution as well.
     # Fires when blocked from spawning subworkstreams — adapts to single session
     # workstream_count may be Number or String (fix #3606, supersedes #3570).
     condition: |
@@ -357,6 +362,9 @@ steps:
 
   - id: "adaptive-execute-development"
     type: "recipe"
+    # Issue #752: adaptive recovery is still development execution; do not mark
+    # this non-fatal or smart-orchestrator can report success after a failed
+    # default-workflow terminal gate.
     condition: |
       adaptive_recipe == 'default-workflow'
     recipe: "default-workflow"

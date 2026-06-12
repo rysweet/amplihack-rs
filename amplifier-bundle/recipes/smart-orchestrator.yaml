@@ -17,6 +17,10 @@ tags: ["smart-orchestrator","orchestrator","composable","classify","route","refl
 # Context flows automatically between sub-recipes via recipe-runner's
 # _execute_sub_recipe() merging. task_type, workstream_count, recursion_guard,
 # round_N_result, and other intermediate outputs propagate forward.
+#
+# Issue #752 invariant: Development routing must preserve default-workflow's
+# strict terminal-state gate. Do not mark smart-execute-routing fatal:false or
+# convert its nonzero result into a successful orchestration summary.
 
 context:
   task_description: ""

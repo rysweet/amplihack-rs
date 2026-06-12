@@ -73,6 +73,9 @@ Complete documentation for using the Recipe Runner:
 - **[Recipe Run Correlation Reference](../reference/recipe-run-correlation.md)** - Stable run IDs, log pointer schema, and result fields
 - **[Recipe CLI Examples](cli-examples.md)** - Real-world usage scenarios (development, testing, CI/CD, team workflows)
 - **[Step 03 Host-Aware Tracking Idempotency](../reference/recipe-step-03-idempotency.md)** - GitHub issue, Azure Boards work-item, and local tracking reuse/create contract
+- **[Workflow Terminal-State Reference](../reference/workflow-terminal-state.md)** - Target contract for development workflow completion evidence, no-op states, routed failure propagation, and `workflow_final_status.sh` API
+- **[How to Diagnose Workflow Terminal-State Failures](../howto/diagnose-workflow-terminal-state.md)** - Recovery guide for missing terminal evidence after planning, analysis, design, or worktree-only execution
+- **[Tutorial: Workflow Terminal-State Closure](../tutorials/workflow-terminal-state-closure.md)** - Walk through successful evidence, planning-only failure, and rerun behavior
 
 ## Why It Exists
 
