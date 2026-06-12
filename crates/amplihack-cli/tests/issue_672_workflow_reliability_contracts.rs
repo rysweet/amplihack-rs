@@ -4,6 +4,7 @@
 //! implementation. They cover YAML/docs/version contracts that do not have a
 //! narrow Rust API surface.
 
+use amplihack_cli::commands::orch::build_workstreams_config_to_tempfile;
 use serde_yaml::Value;
 use std::path::{Path, PathBuf};
 
@@ -33,6 +34,28 @@ fn find_step<'a>(recipe: &'a Value, step_id: &str) -> &'a Value {
         .iter()
         .find(|step| step.get("id").and_then(Value::as_str) == Some(step_id))
         .unwrap_or_else(|| panic!("step `{step_id}` not found"))
+}
+
+fn build_workstream_entries(decomposition: serde_json::Value) -> Vec<serde_json::Value> {
+    let path = build_workstreams_config_to_tempfile(&decomposition.to_string())
+        .expect("workstreams config must build");
+    let path = PathBuf::from(path);
+    let body =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    std::fs::remove_file(&path).unwrap_or_else(|e| panic!("remove {}: {e}", path.display()));
+    serde_json::from_str(&body).expect("workstreams config must be JSON array")
+}
+
+fn recipes(entries: &[serde_json::Value]) -> Vec<&str> {
+    entries
+        .iter()
+        .map(|entry| {
+            entry
+                .get("recipe")
+                .and_then(serde_json::Value::as_str)
+                .expect("each workstream entry must have a string recipe")
+        })
+        .collect()
 }
 
 fn collect_files(root: &Path, extensions: &[&str]) -> Vec<PathBuf> {
@@ -245,5 +268,239 @@ fn recipe_files_with_git_commands_disable_interactive_pagers() {
             .cloned()
             .collect::<Vec<_>>()
             .join("\n")
+    );
+}
+
+#[test]
+fn issue_749_prompts_and_dev_orchestrator_docs_state_development_routing_invariant() {
+    let required = "Development classification always routes to `default-workflow`; model-provided recipe fields do not override that invariant.";
+
+    for rel in [
+        "amplifier-bundle/recipes/smart-classify-route.yaml",
+        "amplifier-bundle/recipes/smart-execute-routing.yaml",
+        "amplifier-bundle/skills/dev-orchestrator/SKILL.md",
+        "amplifier-bundle/skills/dev-orchestrator/reference.md",
+    ] {
+        let content = read_repo_file(rel);
+        assert!(
+            content.contains(required),
+            "{rel} must explicitly state the Development routing invariant"
+        );
+    }
+}
+
+#[test]
+fn issue_749_prompts_and_dev_orchestrator_docs_state_per_workstream_hybrid_routing() {
+    let required =
+        "Hybrid decompositions route each workstream by its own normalized classification.";
+
+    for rel in [
+        "amplifier-bundle/recipes/smart-classify-route.yaml",
+        "amplifier-bundle/recipes/smart-execute-routing.yaml",
+        "amplifier-bundle/skills/dev-orchestrator/SKILL.md",
+        "amplifier-bundle/skills/dev-orchestrator/reference.md",
+    ] {
+        let content = read_repo_file(rel);
+        assert!(
+            content.contains(required),
+            "{rel} must document per-workstream routing for hybrid decompositions"
+        );
+    }
+}
+
+#[test]
+fn issue_749_routing_hook_prompt_reinforces_development_invariant() {
+    let content = read_repo_file("crates/amplihack-hooks/src/routing_prompt.txt");
+
+    assert!(
+        content.contains(
+            "Development classification always routes to `default-workflow`; model-provided recipe fields do not override that invariant."
+        ),
+        "routing hook prompt must reinforce the Development routing invariant"
+    );
+}
+
+#[test]
+fn issue_672_workflow_reliability_normalizes_development_recipes() {
+    let entries = build_workstream_entries(serde_json::json!({
+        "task_type": "Development",
+        "workstreams": [
+            {
+                "name": "missing-recipe",
+                "classification": "Development",
+                "description": "Add tests for the routing normalizer."
+            },
+            {
+                "name": "empty-recipe",
+                "classification": "Development",
+                "description": "Fix blank generated recipe output.",
+                "recipe": ""
+            },
+            {
+                "name": "wrong-recipe",
+                "classification": "Development",
+                "description": "Implement Development behavior misrouted by the LLM.",
+                "recipe": "investigation-workflow"
+            },
+            {
+                "name": "correct-recipe",
+                "classification": "Development",
+                "description": "Keep already-correct Development routes stable.",
+                "recipe": "default-workflow"
+            }
+        ]
+    }));
+
+    assert_eq!(
+        recipes(&entries),
+        vec![
+            "default-workflow",
+            "default-workflow",
+            "default-workflow",
+            "default-workflow",
+        ],
+        "Development-classified workstreams must route to default-workflow for missing, empty, wrong, and already-correct recipe values"
+    );
+}
+
+#[test]
+fn issue_672_workflow_reliability_normalizes_parallel_development_workstreams() {
+    let entries = build_workstream_entries(serde_json::json!({
+        "task_type": "Development",
+        "workstreams": [
+            {
+                "name": "rust-routing",
+                "classification": "Development",
+                "description": "Implement deterministic Rust routing normalization.",
+                "recipe": "investigation-workflow"
+            },
+            {
+                "name": "recipe-coverage",
+                "classification": "Development",
+                "description": "Update recipe contract coverage.",
+                "recipe": "consensus-workflow"
+            },
+            {
+                "name": "prompt-guidance",
+                "classification": "Development",
+                "description": "Align routing prompt guidance.",
+                "recipe": "qa-workflow"
+            }
+        ]
+    }));
+
+    assert_eq!(
+        recipes(&entries),
+        vec!["default-workflow", "default-workflow", "default-workflow"],
+        "parallel Development decompositions must not leak non-Development recipes into orch run configs"
+    );
+}
+
+#[test]
+fn issue_672_workflow_reliability_preserves_non_development_routes() {
+    let entries = build_workstream_entries(serde_json::json!({
+        "task_type": "Development",
+        "workstreams": [
+            {
+                "name": "investigation-route",
+                "classification": "Investigation",
+                "description": "Preserve the investigation route.",
+                "recipe": "investigation-workflow"
+            },
+            {
+                "name": "qa-route",
+                "classification": "Q&A",
+                "description": "Preserve the Q&A route.",
+                "recipe": "qa-workflow"
+            },
+            {
+                "name": "consensus-route",
+                "classification": "Consensus",
+                "description": "Preserve the consensus route.",
+                "recipe": "consensus-workflow"
+            }
+        ]
+    }));
+
+    assert_eq!(
+        recipes(&entries),
+        vec![
+            "investigation-workflow",
+            "qa-workflow",
+            "consensus-workflow",
+        ],
+        "non-Development workstreams with explicit recipes must not be coerced to default-workflow"
+    );
+}
+
+#[test]
+fn issue_672_workflow_reliability_development_paths_use_default_workflow() {
+    let routing = load_recipe("amplifier-bundle/recipes/smart-execute-routing.yaml");
+
+    for step_id in [
+        "execute-single-round-1-development",
+        "execute-single-fallback-blocked-development",
+        "adaptive-execute-development",
+    ] {
+        let step = find_step(&routing, step_id);
+        assert_eq!(
+            step.get("type").and_then(Value::as_str),
+            Some("recipe"),
+            "{step_id} must be a recipe step"
+        );
+        assert_eq!(
+            step.get("recipe").and_then(Value::as_str),
+            Some("default-workflow"),
+            "{step_id} must execute default-workflow for Development routing"
+        );
+    }
+}
+
+#[test]
+fn issue_672_workflow_reliability_adaptive_gap_selects_default_workflow_for_development() {
+    let routing = load_recipe("amplifier-bundle/recipes/smart-execute-routing.yaml");
+    let step = find_step(&routing, "detect-execution-gap");
+    let command = step
+        .get("command")
+        .and_then(Value::as_str)
+        .expect("detect-execution-gap must have command text");
+
+    assert!(
+        command.contains("default-workflow"),
+        "adaptive recovery must have a default-workflow route for Development gaps"
+    );
+    assert!(
+        command.contains("investigation-workflow"),
+        "adaptive recovery must preserve the Investigation route"
+    );
+    assert!(
+        command.contains("grep -qi \"investigation\"")
+            || command.contains("grep -qi 'investigation'"),
+        "adaptive recovery must choose investigation-workflow only for Investigation task types"
+    );
+}
+
+#[test]
+fn issue_672_workflow_reliability_parallel_path_runs_normalized_workstreams_config() {
+    let routing = load_recipe("amplifier-bundle/recipes/smart-execute-routing.yaml");
+    let create_step = find_step(&routing, "create-workstreams-config");
+    let launch_step = find_step(&routing, "launch-parallel-round-1");
+
+    let create_command = create_step
+        .get("command")
+        .and_then(Value::as_str)
+        .expect("create-workstreams-config must have command text");
+    assert!(
+        create_command.contains("amplihack orch helper build-workstreams-config"),
+        "parallel routing must build workstream configs through the Rust helper that enforces recipe normalization"
+    );
+
+    let launch_command = launch_step
+        .get("command")
+        .and_then(Value::as_str)
+        .expect("launch-parallel-round-1 must have command text");
+    assert!(
+        launch_command.contains("orch run -- \"$WS_FILE\""),
+        "parallel routing must execute the normalized workstreams file, not reconstruct recipes inline"
     );
 }

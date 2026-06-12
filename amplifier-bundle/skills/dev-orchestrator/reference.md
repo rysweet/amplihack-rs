@@ -51,6 +51,14 @@ same session name.
 **The recipe runner is the required execution path for Development and
 Investigation tasks.** Always try `smart-orchestrator` first.
 
+### Development routing invariant
+
+Development classification always routes to `default-workflow`; model-provided recipe fields do not override that invariant.
+
+Hybrid decompositions route each workstream by its own normalized classification.
+
+The invariant is enforced in the native orchestration helper when workstream configuration is materialized. This makes routing deterministic even when an agent omits `recipe`, emits an empty recipe, or incorrectly suggests another recipe for a Development workstream.
+
 **Required environment variables** for the recipe runner:
 
 - `AMPLIHACK_HOME` — Auto-detected from the current working directory by

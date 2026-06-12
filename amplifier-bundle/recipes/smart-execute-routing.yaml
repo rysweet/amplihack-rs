@@ -93,6 +93,8 @@ steps:
 
   # ─────────────────────────────────────────────────────────────────────────
   # Phase 2c: Single dev/investigation workstream -- round 1
+  # Development classification always routes to `default-workflow`; model-provided recipe fields do not override that invariant.
+  # Hybrid decompositions route each workstream by its own normalized classification.
   # NOTE: workstream_count may be stored as a Number (int) by the Rust
   # recipe runner's parse_context_value (which auto-detects "1" → Number).
   # Conditions compare against both int (1) and string ('1') to avoid
