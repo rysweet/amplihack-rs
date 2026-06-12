@@ -132,6 +132,26 @@ if [ "$probe_success" = "true" ]; then
 fi
 
 case "$PUBLISH_STATE" in
+  no-diff|NO_DIFF_SUCCESS|CLOSED_OBSOLETE)
+    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      base_ref="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+      [ -n "$base_ref" ] || base_ref="origin/main"
+      if git rev-parse --verify --quiet "${base_ref}^{commit}" >/dev/null && [ -z "$(git status --porcelain)" ] && git diff --quiet "${base_ref}..HEAD"; then
+        if [ "$PUBLISH_STATE" = "no-diff" ]; then
+          PUBLISH_STATE="NO_DIFF_SUCCESS"
+        fi
+      else
+        echo "ERROR: publish reported terminal no-diff/obsolete state but final clean-worktree diff could not confirm that state" >&2
+        exit 1
+      fi
+    else
+      echo "ERROR: publish reported terminal no-diff/obsolete state but final clean-worktree diff could not confirm that state" >&2
+      exit 1
+    fi
+    ;;
+esac
+
+case "$PUBLISH_STATE" in
   FOLLOWUP_CREATED|MERGED|CLOSED_OBSOLETE|NO_DIFF_SUCCESS)
     publish_state_reached="true"
     ;;
