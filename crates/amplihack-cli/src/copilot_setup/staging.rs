@@ -201,7 +201,10 @@ mod tests {
     fn legacy_cli_skill_cleanup_rejects_unsupported_file_type() {
         use std::os::unix::net::UnixListener;
 
-        let temp = tempfile::tempdir().unwrap();
+        let temp = tempfile::Builder::new()
+            .prefix("ah")
+            .tempdir_in("/tmp")
+            .unwrap();
         let copilot_home = temp.path().join(".copilot");
         let legacy_parent = copilot_home.join("skills");
         fs::create_dir_all(&legacy_parent).unwrap();
