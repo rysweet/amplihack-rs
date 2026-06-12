@@ -151,7 +151,6 @@ fn run_step_03_with_env(
     let gh_log = temp.path().join("gh.log");
     let az_log = temp.path().join("az.log");
     let git_log = temp.path().join("git.log");
-    let gh_create_attempts = temp.path().join("gh-create-attempts");
 
     write_executable(
         &bin_dir.join("git"),
@@ -183,15 +182,6 @@ case "$1:$2" in
     ;;
   label:create) exit 0 ;;
   issue:create)
-    if [ -n "${GH_CREATE_FAILS_BEFORE_SUCCESS:-}" ]; then
-      count=$(cat "$GH_CREATE_ATTEMPT_FILE" 2>/dev/null || printf '0')
-      count=$((count + 1))
-      printf '%s\n' "$count" > "$GH_CREATE_ATTEMPT_FILE"
-      if [ "$count" -le "$GH_CREATE_FAILS_BEFORE_SUCCESS" ]; then
-        printf '%s\n' "${GH_CREATE_TRANSIENT_OUTPUT:-GraphQL: rate limit exceeded}"
-        exit 1
-      fi
-    fi
     [ -n "${GH_CREATE_OUTPUT:-}" ] && printf '%s\n' "$GH_CREATE_OUTPUT"
     exit "${GH_CREATE_STATUS:-7}"
     ;;
@@ -231,7 +221,6 @@ exit 7
         .env("GIT_LOG", &git_log)
         .env("GH_LOG", &gh_log)
         .env("AZ_LOG", &az_log);
-    command_builder.env("GH_CREATE_ATTEMPT_FILE", &gh_create_attempts);
     for (key, value) in extra_env {
         command_builder.env(key, value);
     }
@@ -815,7 +804,7 @@ fn step_03_preserves_github_issue_create_success_path() {
 }
 
 #[test]
-fn step_03_github_issue_create_external_calls_are_timeout_wrapped_and_retried() {
+fn step_03_github_issue_create_external_calls_are_timeout_wrapped_without_transient_retry() {
     let recipe = load_recipe("workflow-prep");
     let body = extract_step_body(&recipe, "step-03-create-issue");
 
@@ -824,55 +813,8 @@ fn step_03_github_issue_create_external_calls_are_timeout_wrapped_and_retried() 
         "GitHub label/create calls must be bounded external-service calls"
     );
     assert!(
-        body.contains("try_gh_create") && body.contains("retrying once"),
-        "GitHub issue create must have bounded retry handling for transient failures"
-    );
-}
-
-#[test]
-fn step_03_github_transient_create_failure_retries_once_then_succeeds() {
-    let run = run_step_03_with_env(
-        "github",
-        "",
-        "GitHub follow-up with transient issue create failure",
-        &[
-            ("GH_CREATE_FAILS_BEFORE_SUCCESS", "2"),
-            (
-                "GH_CREATE_TRANSIENT_OUTPUT",
-                "HTTP 503 temporarily unavailable",
-            ),
-            (
-                "GH_CREATE_OUTPUT",
-                "https://github.com/example-org/example-repo/issues/902",
-            ),
-            ("GH_CREATE_STATUS", "0"),
-            ("GH_RETRY_DELAY_SECONDS", "0"),
-        ],
-    );
-
-    let stdout = String::from_utf8_lossy(&run.output.stdout);
-    let stderr = String::from_utf8_lossy(&run.output.stderr);
-    let issue_create_calls = run
-        .gh_log
-        .lines()
-        .filter(|line| line.starts_with("issue create "))
-        .count();
-    assert!(
-        run.output.status.success(),
-        "transient GitHub create failure must retry and then succeed; stdout:\n{stdout}\nstderr:\n{stderr}"
-    );
-    assert!(
-        stdout.contains("https://github.com/example-org/example-repo/issues/902"),
-        "retry success must emit the GitHub issue URL; stdout:\n{stdout}"
-    );
-    assert!(
-        stderr.contains("transient GitHub issue creation failure; retrying once"),
-        "retry must be visible; stderr:\n{stderr}"
-    );
-    assert_eq!(
-        issue_create_calls, 3,
-        "retry path should make the two initial create attempts plus one retry; gh log:\n{}",
-        run.gh_log
+        !body.contains("retrying once") && !body.contains("GH_RETRY_DELAY_SECONDS"),
+        "GitHub issue create must not add broad transient retry logic; only repo access/resolution failures may fall back locally"
     );
 }
 
@@ -958,7 +900,6 @@ fn step_03_github_unexpected_create_failure_remains_error() {
         &[
             ("GH_CREATE_OUTPUT", "GraphQL: rate limit exceeded"),
             ("GH_CREATE_STATUS", "1"),
-            ("GH_RETRY_DELAY_SECONDS", "0"),
         ],
     );
 

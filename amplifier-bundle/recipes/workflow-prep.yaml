@@ -306,7 +306,6 @@ steps:
         gh_create_issue() { timeout 60 gh issue create --title "$ISSUE_TITLE" --body "$ISSUE_BODY" "$@" 2>&1; }
         try_gh_create() { GH_ISSUE_RC=0; GH_ISSUE_OUTPUT=$(gh_create_issue --label "$LABEL_NAME") || GH_ISSUE_OUTPUT=$(gh_create_issue) || GH_ISSUE_RC=$?; }
         try_gh_create; [ "$GH_ISSUE_RC" -eq 0 ] && { printf '%s\n' "$GH_ISSUE_OUTPUT"; exit 0; }
-        if [ "$GH_ISSUE_RC" -eq 124 ] || [[ "$GH_ISSUE_OUTPUT" =~ [Rr]ate\ limit|timed\ out|HTTP\ 50[234]|temporar|connection\ reset ]]; then echo "WARN: transient GitHub issue creation failure; retrying once." >&2; sleep "${GH_RETRY_DELAY_SECONDS:-1}"; try_gh_create; [ "$GH_ISSUE_RC" -eq 0 ] && { printf '%s\n' "$GH_ISSUE_OUTPUT"; exit 0; }; fi
         if [[ "$GH_ISSUE_OUTPUT" =~ Could\ not\ resolve\ to\ a\ Repository|[Rr]epository\ not\ found|[Rr]epository.*inaccessible|HTTP\ 404 ]]; then
           echo "WARNING: GitHub issue creation failed because the repository could not be resolved or accessed; using local tracking metadata instead." >&2
           echo "WARNING: gh reported repository access/resolution failure." >&2
