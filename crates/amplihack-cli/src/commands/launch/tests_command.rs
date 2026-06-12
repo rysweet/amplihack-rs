@@ -41,6 +41,25 @@ fn with_uvx_detection_disabled<T>(f: impl FnOnce() -> T) -> T {
     result
 }
 
+fn with_default_model_env<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
+    let _guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let previous = std::env::var_os("AMPLIHACK_DEFAULT_MODEL");
+    match value {
+        Some(value) => unsafe { std::env::set_var("AMPLIHACK_DEFAULT_MODEL", value) },
+        None => unsafe { std::env::remove_var("AMPLIHACK_DEFAULT_MODEL") },
+    }
+
+    let result = f();
+
+    match previous {
+        Some(value) => unsafe { std::env::set_var("AMPLIHACK_DEFAULT_MODEL", value) },
+        None => unsafe { std::env::remove_var("AMPLIHACK_DEFAULT_MODEL") },
+    }
+    result
+}
+
 /// When skip_permissions=true, --dangerously-skip-permissions MUST be the
 /// first argument injected before any other flags.
 ///
@@ -77,27 +96,25 @@ fn render_launcher_command_quotes_prompt_args() {
 /// Fails if no --model flag is injected by default.
 #[test]
 fn test_build_command_injects_default_model() {
-    // Ensure AMPLIHACK_DEFAULT_MODEL is not set so we get the hard-coded default
-    // SAFETY: single-threaded test context.
-    unsafe { std::env::remove_var("AMPLIHACK_DEFAULT_MODEL") };
-    let binary = make_binary("/usr/bin/claude");
-    let cmd = build_command(&binary, false, false, false, &[]);
-    let args: Vec<_> = cmd
-        .get_args()
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect();
-    assert!(
-        args.contains(&"--model".to_string()),
-        "Expected '--model' to be injected when no --model in extra_args, got: {args:?}"
-    );
-    // Verify the default model value follows --model
-    let model_pos = args.iter().position(|a| a == "--model").unwrap();
-    assert_eq!(
-        args[model_pos + 1],
-        "opus[1m]",
-        "Expected default model 'opus[1m]' after '--model', got: {:?}",
-        args[model_pos + 1]
-    );
+    with_default_model_env(None, || {
+        let binary = make_binary("/usr/bin/claude");
+        let cmd = build_command(&binary, false, false, false, &[]);
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            args.contains(&"--model".to_string()),
+            "Expected '--model' to be injected when no --model in extra_args, got: {args:?}"
+        );
+        let model_pos = args.iter().position(|a| a == "--model").unwrap();
+        assert_eq!(
+            args[model_pos + 1],
+            "opus[1m]",
+            "Expected default model 'opus[1m]' after '--model', got: {:?}",
+            args[model_pos + 1]
+        );
+    });
 }
 
 /// When AMPLIHACK_DEFAULT_MODEL env var is set, build_command MUST use that
@@ -106,23 +123,22 @@ fn test_build_command_injects_default_model() {
 /// Fails if the env var override is not respected.
 #[test]
 fn test_build_command_respects_custom_model_env() {
-    // SAFETY: single-threaded test context.
-    unsafe { std::env::set_var("AMPLIHACK_DEFAULT_MODEL", "claude-3-5-sonnet") };
-    let binary = make_binary("/usr/bin/claude");
-    let cmd = build_command(&binary, false, false, false, &[]);
-    let args: Vec<_> = cmd
-        .get_args()
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect();
-    unsafe { std::env::remove_var("AMPLIHACK_DEFAULT_MODEL") };
-    let model_pos = args.iter().position(|a| a == "--model").unwrap();
-    assert_eq!(
-        args[model_pos + 1],
-        "claude-3-5-sonnet",
-        "Expected AMPLIHACK_DEFAULT_MODEL value 'claude-3-5-sonnet' after '--model', \
-         got: {:?}",
-        args[model_pos + 1]
-    );
+    with_default_model_env(Some("claude-3-5-sonnet"), || {
+        let binary = make_binary("/usr/bin/claude");
+        let cmd = build_command(&binary, false, false, false, &[]);
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let model_pos = args.iter().position(|a| a == "--model").unwrap();
+        assert_eq!(
+            args[model_pos + 1],
+            "claude-3-5-sonnet",
+            "Expected AMPLIHACK_DEFAULT_MODEL value 'claude-3-5-sonnet' after '--model', \
+             got: {:?}",
+            args[model_pos + 1]
+        );
+    });
 }
 
 /// When the user already supplies --model in extra_args, build_command MUST
