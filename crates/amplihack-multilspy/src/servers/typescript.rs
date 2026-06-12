@@ -201,4 +201,27 @@ mod tests {
         let snippet = &params["capabilities"]["textDocument"]["completion"]["completionItem"]["snippetSupport"];
         assert_eq!(snippet.as_bool(), Some(false));
     }
+
+    #[tokio::test]
+    async fn shutdown_noop_when_not_started() {
+        let mut server = TypeScriptServer::new(
+            MultilspyConfig::new(Language::TypeScript),
+            PathBuf::from("/tmp/test"),
+        );
+        assert!(server.shutdown().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn delegation_errors_when_not_started() {
+        let server = TypeScriptServer::new(
+            MultilspyConfig::new(Language::TypeScript),
+            PathBuf::from("/tmp/test"),
+        );
+        assert!(server.definitions("test.ts", 0, 0).await.is_err());
+        assert!(server.references("test.ts", 0, 0).await.is_err());
+        assert!(server.hover("test.ts", 0, 0).await.is_err());
+        assert!(server.completions("test.ts", 0, 0).await.is_err());
+        assert!(server.diagnostics("test.ts").await.is_err());
+        assert!(server.document_symbols("test.ts").await.is_err());
+    }
 }

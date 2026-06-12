@@ -184,4 +184,27 @@ mod tests {
             "file:///projects/dotnet-app"
         );
     }
+
+    #[tokio::test]
+    async fn shutdown_noop_when_not_started() {
+        let mut server = OmniSharpServer::new(
+            MultilspyConfig::new(Language::CSharp),
+            PathBuf::from("/tmp/test"),
+        );
+        assert!(server.shutdown().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn delegation_errors_when_not_started() {
+        let server = OmniSharpServer::new(
+            MultilspyConfig::new(Language::CSharp),
+            PathBuf::from("/tmp/test"),
+        );
+        assert!(server.definitions("Program.cs", 0, 0).await.is_err());
+        assert!(server.references("Program.cs", 0, 0).await.is_err());
+        assert!(server.hover("Program.cs", 0, 0).await.is_err());
+        assert!(server.completions("Program.cs", 0, 0).await.is_err());
+        assert!(server.diagnostics("Program.cs").await.is_err());
+        assert!(server.document_symbols("Program.cs").await.is_err());
+    }
 }

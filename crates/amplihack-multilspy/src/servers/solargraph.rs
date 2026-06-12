@@ -184,4 +184,27 @@ mod tests {
             "file:///projects/ruby-app"
         );
     }
+
+    #[tokio::test]
+    async fn shutdown_noop_when_not_started() {
+        let mut server = SolargraphServer::new(
+            MultilspyConfig::new(Language::Ruby),
+            PathBuf::from("/tmp/test"),
+        );
+        assert!(server.shutdown().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn delegation_errors_when_not_started() {
+        let server = SolargraphServer::new(
+            MultilspyConfig::new(Language::Ruby),
+            PathBuf::from("/tmp/test"),
+        );
+        assert!(server.definitions("app.rb", 0, 0).await.is_err());
+        assert!(server.references("app.rb", 0, 0).await.is_err());
+        assert!(server.hover("app.rb", 0, 0).await.is_err());
+        assert!(server.completions("app.rb", 0, 0).await.is_err());
+        assert!(server.diagnostics("app.rb").await.is_err());
+        assert!(server.document_symbols("app.rb").await.is_err());
+    }
 }
