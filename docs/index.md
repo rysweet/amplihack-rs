@@ -269,9 +269,13 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Workflow Execution Guardrails Reference](reference/workflow-execution-guardrails.md) - Input fields, output schema, signals, and failure semantics
 - [Workflow-Owned PR Recovery Readiness](features/pr-recovery-readiness.md) - Recover an existing PR through `default-workflow` with branch reuse, hook readiness, additive-copy readiness, and workflow-owned finalization
 - [Existing Branch Finalization Runbook](features/post-v0977-finalization.md) - Finish an already-implemented branch through preservation, validation, PR publication, CI gating, and policy-ready merge
+- [Workflow Artifact Guard (planned)](features/workflow-artifact-guard.md) - Planned `workflow-finalize` guard that will remove deterministic workflow/session artifacts before broad `git add -A` staging
 - [How to Recover an Existing PR with `default-workflow`](howto/recover-existing-pr-with-default-workflow.md) - Supply `pr_number`, `existing_branch`, and issue requirements without manually merging
+- [How to Verify Workflow Artifact Guarding (planned)](howto/verify-workflow-artifact-guard.md) - Inspect the planned guard ordering, artifact scope, and fail-closed cleanup behavior
 - [Tutorial: Recover PR 579 Readiness](tutorials/pr-recovery-readiness.md) - Walk through hook and additive-copy readiness evidence for an interrupted PR recovery
+- [Tutorial: Workflow Artifact Guard (planned)](tutorials/workflow-artifact-guard.md) - Walk through planned repo-local artifact cleanup before broad staging
 - [PR Recovery Readiness Reference](reference/pr-recovery-readiness.md) - Context fields, readiness evidence schema, publish contract, and finalization states
+- [Workflow Artifact Guard Reference (planned)](reference/workflow-artifact-guard.md) - Recipe surface, artifact allowlist, ordering, and failure semantics
 - [Step 03 Host-Aware Tracking Idempotency](reference/recipe-step-03-idempotency.md) - GitHub issue, Azure Boards work-item, and local tracking reuse/create behavior
 - [Workflow Issue Extraction Reference](reference/workflow-issue-extraction.md) - Three-tier issue-number resolution (direct URL → PR closing-refs → `#N` verify) in step 03b
 - [Multi-Provider Workflow Reference](reference/multi-provider-workflow.md) - Provider detection, issue tracking, and PR routing for GitHub, AzDO, and local repos

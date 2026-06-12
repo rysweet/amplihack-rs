@@ -71,6 +71,7 @@ Complete documentation for using the Recipe Runner:
 - **[Recipe CLI Reference](../reference/recipe-cli-reference.md)** - Complete command-line reference with all options and exit codes
 - **[Recipe CLI Examples](cli-examples.md)** - Real-world usage scenarios (development, testing, CI/CD, team workflows)
 - **[Step 03 Host-Aware Tracking Idempotency](../reference/recipe-step-03-idempotency.md)** - GitHub issue, Azure Boards work-item, and local tracking reuse/create contract
+- **[Workflow Artifact Guard (planned)](../features/workflow-artifact-guard.md)** - planned `workflow-finalize` cleanup guard that will remove deterministic workflow/session artifacts before broad staging
 
 ## Why It Exists
 
