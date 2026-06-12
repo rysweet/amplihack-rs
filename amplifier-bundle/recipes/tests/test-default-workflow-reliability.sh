@@ -629,7 +629,7 @@ assert_terminal_status_case \
     "TERMINAL_REASON=required checks failed"
 
 assert_terminal_recipe_uses_final_status_tool
-assert_yaml_recipe_step_present "default-workflow terminal closure" "${DEFAULT_RECIPE}" "workflow-terminal-state" "workflow-terminal-state"
+assert_yaml_step_not_fatal_false "workflow-finalize final status" "${FINALIZE_RECIPE}" "step-22b-final-status"
 assert_yaml_recipe_step_present "smart-orchestrator routing" "${SMART_ORCHESTRATOR_RECIPE}" "smart-execute-routing" "smart-execute-routing"
 assert_yaml_step_not_fatal_false "smart-execute-routing development path" "${SMART_EXECUTE_RECIPE}" "execute-single-round-1-development"
 assert_yaml_step_not_fatal_false "smart-execute-routing adaptive development path" "${SMART_EXECUTE_RECIPE}" "adaptive-execute-development"

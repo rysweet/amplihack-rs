@@ -165,10 +165,3 @@ steps:
   - id: "workflow-finalize"
     type: "recipe"
     recipe: "workflow-finalize"
-
-  - id: "workflow-terminal-state"
-    type: "recipe"
-    recipe: "workflow-terminal-state"
-    context:
-      terminal_gate_mode: "strict"
-    output: "terminal_state_final"
