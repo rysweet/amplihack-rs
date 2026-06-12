@@ -9,6 +9,7 @@
 - [String Representation](#string-representation)
 - [Step Results](#step-results)
 - [Progress and Failure Context](#progress-and-failure-context)
+- [Terminal-state failures](#terminal-state-failures)
 - [Usage Examples](#usage-examples)
 - [Integration with Recipe Runner](#integration-with-recipe-runner)
 
@@ -219,6 +220,33 @@ logging contract.
 
 ---
 
+## Terminal-state failures
+
+Development workflows include terminal-state evidence in the failing step output
+when completion cannot be proven. These fields are additive and must be
+preserved by JSON/YAML consumers. The target terminal-state feature emits
+boolean markers as canonical lowercase strings (`"true"` or `"false"`) because
+the shell helper output is key/value text; consumers should accept either those
+strings or native booleans:
+
+```json
+{
+  "terminal_success": "false",
+  "terminal_state": "FAILED_MISSING_TERMINAL_EVIDENCE",
+  "terminal_reason": "development workflow stopped after workflow-worktree; implementation, verification, publish, or explicit no-op evidence is required",
+  "observed_phases": "workflow-prep,workflow-worktree",
+  "missing_evidence": "implementation_completed,verification_completed,publish_state_reached,terminal_no_op"
+}
+```
+
+When `workflow-terminal-state` fails, the overall `RecipeResult.status` is
+`FAILURE` and the process exits nonzero. Callers must not reinterpret missing
+terminal evidence as a successful planning run. See
+[Workflow Terminal-State Reference](./workflow-terminal-state.md) for the full
+field contract.
+
+---
+
 ## Usage Examples
 
 ### Check overall status
@@ -297,3 +325,4 @@ Existing result producers may expose either `success` (boolean) or `status`
 - [Recipe Run Correlation Reference](./recipe-run-correlation.md) — `run_id` and `log_pointer` fields
 - [Recipe CLI Examples](../howto/recipe-cli-examples.md) — real-world workflow scenarios
 - [Recipe Resilience](../concepts/recipe-resilience.md) — how partial failures and retries are handled
+- [Workflow Terminal-State Reference](./workflow-terminal-state.md) — development completion evidence and failure semantics
