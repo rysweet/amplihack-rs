@@ -188,4 +188,27 @@ mod tests {
             "file:///home/user/java-app"
         );
     }
+
+    #[tokio::test]
+    async fn shutdown_noop_when_not_started() {
+        let mut server = EclipseJdtlsServer::new(
+            MultilspyConfig::new(Language::Java),
+            PathBuf::from("/tmp/test"),
+        );
+        assert!(server.shutdown().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn delegation_errors_when_not_started() {
+        let server = EclipseJdtlsServer::new(
+            MultilspyConfig::new(Language::Java),
+            PathBuf::from("/tmp/test"),
+        );
+        assert!(server.definitions("Main.java", 0, 0).await.is_err());
+        assert!(server.references("Main.java", 0, 0).await.is_err());
+        assert!(server.hover("Main.java", 0, 0).await.is_err());
+        assert!(server.completions("Main.java", 0, 0).await.is_err());
+        assert!(server.diagnostics("Main.java").await.is_err());
+        assert!(server.document_symbols("Main.java").await.is_err());
+    }
 }

@@ -184,4 +184,27 @@ mod tests {
             "file:///projects/php-app"
         );
     }
+
+    #[tokio::test]
+    async fn shutdown_noop_when_not_started() {
+        let mut server = IntelephenseServer::new(
+            MultilspyConfig::new(Language::Php),
+            PathBuf::from("/tmp/test"),
+        );
+        assert!(server.shutdown().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn delegation_errors_when_not_started() {
+        let server = IntelephenseServer::new(
+            MultilspyConfig::new(Language::Php),
+            PathBuf::from("/tmp/test"),
+        );
+        assert!(server.definitions("index.php", 0, 0).await.is_err());
+        assert!(server.references("index.php", 0, 0).await.is_err());
+        assert!(server.hover("index.php", 0, 0).await.is_err());
+        assert!(server.completions("index.php", 0, 0).await.is_err());
+        assert!(server.diagnostics("index.php").await.is_err());
+        assert!(server.document_symbols("index.php").await.is_err());
+    }
 }

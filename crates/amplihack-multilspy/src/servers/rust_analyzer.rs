@@ -234,4 +234,50 @@ mod tests {
         assert!(caps["textDocument"].get("hover").is_some());
         assert!(caps["textDocument"].get("definition").is_some());
     }
+
+    #[test]
+    fn initialize_params_workspace_name_fallback() {
+        let server = RustAnalyzerServer::new(
+            MultilspyConfig::new(crate::config::Language::Rust),
+            PathBuf::from("/"),
+        );
+        let params = server.build_initialize_params();
+        let folders = params["workspaceFolders"].as_array().unwrap();
+        // Root path "/" has no file_name, so it falls back to "workspace"
+        assert!(!folders.is_empty());
+    }
+
+    #[test]
+    fn initialize_params_label_details_support() {
+        let server = RustAnalyzerServer::new(
+            MultilspyConfig::new(crate::config::Language::Rust),
+            PathBuf::from("/project"),
+        );
+        let params = server.build_initialize_params();
+        let label = &params["capabilities"]["textDocument"]["completion"]["completionItem"]["labelDetailsSupport"];
+        assert_eq!(label.as_bool(), Some(true));
+    }
+
+    #[tokio::test]
+    async fn shutdown_noop_when_not_started() {
+        let mut server = RustAnalyzerServer::new(
+            MultilspyConfig::new(crate::config::Language::Rust),
+            PathBuf::from("/tmp/test"),
+        );
+        assert!(server.shutdown().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn delegation_errors_when_not_started() {
+        let server = RustAnalyzerServer::new(
+            MultilspyConfig::new(crate::config::Language::Rust),
+            PathBuf::from("/tmp/test"),
+        );
+        assert!(server.definitions("test.rs", 0, 0).await.is_err());
+        assert!(server.references("test.rs", 0, 0).await.is_err());
+        assert!(server.hover("test.rs", 0, 0).await.is_err());
+        assert!(server.completions("test.rs", 0, 0).await.is_err());
+        assert!(server.diagnostics("test.rs").await.is_err());
+        assert!(server.document_symbols("test.rs").await.is_err());
+    }
 }
