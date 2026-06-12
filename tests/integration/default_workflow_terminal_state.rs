@@ -134,6 +134,10 @@ fn commit_feature_change(worktree: &Path) {
     run_cmd(worktree, "git", &["commit", "-m", "feature"]);
 }
 
+fn set_origin_url(repo: &Path, url: &str) {
+    run_cmd(repo, "git", &["remote", "set-url", "origin", url]);
+}
+
 fn git_head(dir: &Path) -> String {
     let output = Command::new("git")
         .args(["rev-parse", "HEAD"])
@@ -174,6 +178,35 @@ JSON
         fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).expect("chmod fake gh");
     }
     bin_dir
+}
+
+fn fake_gh_recorder(tmp: &TempDir, body: &str, exit_code: i32) -> (PathBuf, PathBuf) {
+    let bin_dir = tmp.path().join("bin");
+    fs::create_dir_all(&bin_dir).expect("create fake gh bin");
+    let log = tmp.path().join("gh-invocations.log");
+    let gh = bin_dir.join("gh");
+    let script = format!(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> {log:?}
+if [ {exit_code} -ne 0 ]; then
+  echo "fake gh failure" >&2
+  exit {exit_code}
+fi
+cat <<'JSON'
+{body}
+JSON
+"#,
+        log = log.display().to_string()
+    );
+    fs::write(&gh, script).expect("write fake gh recorder");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755))
+            .expect("chmod fake gh recorder");
+    }
+    (bin_dir, log)
 }
 
 fn matching_pr_json(worktree: &Path, state: &str, merged_at: &str) -> String {
@@ -512,6 +545,128 @@ fn terminal_state_continues_for_dirty_target_worktree_without_terminal_success()
     assert_eq!(run.json["terminal_state"], "FOLLOWUP_CREATED");
     assert_eq!(run.json["should_publish"], "true");
     assert_eq!(run.json["should_finalize"], "true");
+}
+
+#[test]
+fn terminal_state_skips_github_pr_list_for_https_azure_remote() {
+    let fixture = setup_repo();
+    set_origin_url(
+        &fixture.repo,
+        "https://dev.azure.com/example/project/_git/repo",
+    );
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let (fake_path, gh_log) = fake_gh_recorder(&fake_tmp, "", 1);
+
+    let run = run_terminal_state(&fixture.repo, None, "main", None, &fake_path);
+
+    assert!(
+        run.success,
+        "Azure no-diff branch must rely on local git safety without gh\nstdout:\n{}\nstderr:\n{}",
+        run.stdout, run.stderr
+    );
+    assert_eq!(run.json["terminal_state"], "NO_DIFF_SUCCESS");
+    assert!(
+        !gh_log.exists(),
+        "Azure remotes must not invoke gh pr list; invocations:\n{}",
+        fs::read_to_string(&gh_log).unwrap_or_default()
+    );
+}
+
+#[test]
+fn terminal_state_skips_github_pr_list_for_ssh_azure_remote() {
+    let fixture = setup_repo();
+    set_origin_url(
+        &fixture.repo,
+        "git@ssh.dev.azure.com:v3/example/project/repo",
+    );
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let (fake_path, gh_log) = fake_gh_recorder(&fake_tmp, "", 1);
+
+    let run = run_terminal_state(&fixture.repo, None, "main", None, &fake_path);
+
+    assert!(
+        run.success,
+        "Azure SSH no-diff branch must rely on local git safety without gh\nstdout:\n{}\nstderr:\n{}",
+        run.stdout, run.stderr
+    );
+    assert_eq!(run.json["terminal_state"], "NO_DIFF_SUCCESS");
+    assert!(
+        !gh_log.exists(),
+        "Azure SSH remotes must not invoke gh pr list; invocations:\n{}",
+        fs::read_to_string(&gh_log).unwrap_or_default()
+    );
+}
+
+#[test]
+fn terminal_state_skips_github_pr_list_for_unknown_remote() {
+    let fixture = setup_repo();
+    set_origin_url(&fixture.repo, "ssh://git@example.invalid/project/repo.git");
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let (fake_path, gh_log) = fake_gh_recorder(&fake_tmp, "", 1);
+
+    let run = run_terminal_state(&fixture.repo, None, "main", None, &fake_path);
+
+    assert!(
+        run.success,
+        "unknown no-diff branch must rely on local git safety without gh\nstdout:\n{}\nstderr:\n{}",
+        run.stdout, run.stderr
+    );
+    assert_eq!(run.json["terminal_state"], "NO_DIFF_SUCCESS");
+    assert!(
+        !gh_log.exists(),
+        "unknown remotes must not invoke gh pr list; invocations:\n{}",
+        fs::read_to_string(&gh_log).unwrap_or_default()
+    );
+}
+
+#[test]
+fn terminal_state_keeps_meaningful_diff_active_on_non_github_remote_without_metadata() {
+    let fixture = setup_repo();
+    set_origin_url(
+        &fixture.repo,
+        "https://contoso.visualstudio.com/project/_git/repo",
+    );
+    let worktree = create_feature_worktree(&fixture);
+    commit_feature_change(&worktree);
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let (fake_path, gh_log) = fake_gh_recorder(&fake_tmp, "", 1);
+
+    let run = run_terminal_state(&fixture.repo, Some(&worktree), "feature", None, &fake_path);
+
+    assert!(
+        run.success,
+        "non-GitHub meaningful diffs should continue workflow without requiring GitHub metadata\nstdout:\n{}\nstderr:\n{}",
+        run.stdout, run.stderr
+    );
+    assert_eq!(run.json["terminal_success"], "false");
+    assert_eq!(run.json["terminal_state"], "FOLLOWUP_CREATED");
+    assert_eq!(run.json["branch_diff_status"], "has-diff");
+    assert_eq!(run.json["should_publish"], "true");
+    assert!(
+        !gh_log.exists(),
+        "non-GitHub remotes with meaningful diff must not invoke gh; invocations:\n{}",
+        fs::read_to_string(&gh_log).unwrap_or_default()
+    );
+}
+
+#[test]
+fn terminal_state_still_discovers_branch_prs_for_github_remote() {
+    let fixture = setup_repo();
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let (fake_path, gh_log) = fake_gh_recorder(&fake_tmp, "{}", 0);
+
+    let run = run_terminal_state(&fixture.repo, None, "main", None, &fake_path);
+
+    assert!(
+        run.success,
+        "GitHub no-diff branch should still complete after PR discovery\nstdout:\n{}\nstderr:\n{}",
+        run.stdout, run.stderr
+    );
+    let gh_invocations = fs::read_to_string(&gh_log).unwrap_or_default();
+    assert!(
+        gh_invocations.contains("pr list --head main"),
+        "GitHub remotes must retain same-branch PR discovery; invocations:\n{gh_invocations}"
+    );
 }
 
 #[test]

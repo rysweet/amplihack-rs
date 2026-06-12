@@ -46,7 +46,7 @@ You can customize this workflow by editing this file.
 - Review and merge requirements
 
 `default-workflow` is also idempotent around completed or obsolete work. Before
-publish, PR review, CI waiting, or merge can mutate Git or GitHub state, the
+publish, PR review, CI waiting, or merge can mutate Git or provider state, the
 workflow evaluates a terminal-state contract. Finalization remains the
 non-mutating arbiter that records the final decision. A proven terminal success
 stops the remaining mutation path instead of creating duplicate commits,
@@ -60,50 +60,51 @@ finalize. It returns these outputs:
 | Output | Meaning |
 | --- | --- |
 | `terminal_success` | `true` only when the workflow can stop successfully without publishing more work. |
-| `terminal_state` | Stable status such as `MERGED`, `CLOSED_OBSOLETE`, `NO_DIFF_SUCCESS`, `FOLLOWUP_CREATED`, or `BLOCKED_CI`. |
+| `terminal_state` | Stable status such as `MERGED`, `CLOSED_OBSOLETE`, `NO_DIFF_SUCCESS`, `FOLLOWUP_CREATED`, `FAILED_MEANINGFUL_DIFF`, or `BLOCKED_CI`. |
 | `terminal_reason` | Human-readable evidence for the decision. |
 | `publish_status` | Publish-facing status using the same vocabulary as the terminal state. |
-| `should_publish` | `true` only when meaningful unmerged work should be committed, pushed, and represented by a PR. |
-| `should_finalize` | `true` when the workflow should route to finalize so it can emit the non-mutating final decision; `false` when no finalize phase is part of the current path. |
+| `should_publish` | `true` only when meaningful unmerged work should continue through a publish path. |
+| `should_finalize` | `true` when the workflow should route to finalize so it can emit the non-mutating final decision. |
 | `should_run_ci_wait` | `true` only when CI should be waited on for an active publish path. |
 | `should_merge` | `true` only when merge remains valid for green, active work. |
 
-The probe fails closed. It validates these context inputs before trusting shell
-or GitHub CLI output:
+The probe always validates local Git evidence before trusting provider
+metadata:
 
 | Input | Requirement |
 | --- | --- |
 | `repo_path` | Existing Git repository used for all local diff and status checks. |
 | `branch_name` | Current or expected branch ref; malformed refs block terminal success. |
 | `base_ref` | Intended comparison base, usually the resolved remote default branch. |
-| `pr_number` | Numeric PR identifier when recovery is tied to an existing PR. |
-| `pr_url` | Same-repository PR URL when a URL is supplied instead of `pr_number`. |
+| `pr_number` | Numeric GitHub PR identifier used only after a GitHub PR URL or GitHub remote enables metadata. A bare number does not imply GitHub support. |
+| `pr_url` | Provider PR URL. GitHub URLs enable GitHub metadata; non-GitHub URLs are provider signals and otherwise remain opaque. |
 | `goal_already_met` | Optional design evidence; never overrides dirty, diff, PR, or CI blockers. |
 
-Malformed inputs, unavailable PR metadata, missing base refs, and GitHub CLI
-errors fail closed. The workflow reports the specific evidence gap instead of
-converting an untrusted probe into terminal success.
-
-Terminal-state detection uses this order:
+Terminal-state detection is provider-aware:
 
 1. Dirty worktree check. Any uncommitted change blocks terminal success because
    the workflow cannot prove the work is complete or safe to ignore.
-2. Merged PR evidence. A merged PR, including a closed PR with `mergedAt`
-   evidence, returns `MERGED`.
-3. Closed obsolete proof. A closed, unmerged PR returns `CLOSED_OBSOLETE` only
-   when the branch is clean and the intended changes are already represented
-   upstream or there is no meaningful remaining diff.
+2. Provider capability check. Explicit GitHub PR URLs and GitHub `origin`
+   remotes enable GitHub PR metadata. Azure Repos, `visualstudio.com`,
+   `ssh.dev.azure.com`, and unknown remotes do not.
+3. GitHub PR metadata, when enabled. Matching merged PRs return `MERGED`;
+   closed-unmerged PRs require local obsolete/no-diff proof. Metadata failures
+   fail closed only when the decision depends on GitHub PR proof, such as
+   proving a PR is merged, validating a supplied GitHub PR target, or deciding
+   whether meaningful local work is safe to close.
 4. Clean no-diff proof. A clean branch with no meaningful diff or commits
-   against the intended base returns `NO_DIFF_SUCCESS`.
-5. Meaningful remaining diff. The workflow continues to the publish path and
-   may emit `FOLLOWUP_CREATED`, or `BLOCKED_CI` if checks fail.
+   against the intended base returns `NO_DIFF_SUCCESS`, including on GitHub
+   remotes where PR metadata is unavailable.
+5. Meaningful remaining diff. The workflow cannot claim terminal success. On
+   non-GitHub remotes this decision is based on local Git evidence and does not
+   require `gh`.
 
 The successful terminal states are:
 
 | State | Required evidence | Workflow behavior |
 | --- | --- | --- |
-| `MERGED` | PR is merged, or is closed with merge evidence such as `mergedAt`. | Stop before version bump, commit, push, PR creation/update, CI wait, and merge. |
-| `CLOSED_OBSOLETE` | PR is closed without merge evidence, the worktree is clean, and equivalent work is already upstream or no meaningful branch work remains. | Stop successfully and record the obsolete proof. |
+| `MERGED` | GitHub PR is merged, or is closed with merge evidence such as `mergedAt`. Only available for GitHub-backed targets. | Stop before version bump, commit, push, PR creation/update, CI wait, and merge. |
+| `CLOSED_OBSOLETE` | Worktree is clean and equivalent work is already upstream or no meaningful branch work remains. GitHub closed-PR metadata may support this state but is not required on non-GitHub remotes. | Stop successfully and record the obsolete proof. |
 | `NO_DIFF_SUCCESS` | Worktree is clean and there are no meaningful diffs or commits against the intended base. | Stop successfully without creating a no-op commit or follow-up PR. |
 
 The loud blocking states include:
@@ -111,12 +112,20 @@ The loud blocking states include:
 | State | Meaning |
 | --- | --- |
 | `FAILED_DIRTY_WORKTREE` | Uncommitted changes are present. Commit, stash, or remove them through the workflow before claiming terminal success. |
-| `FAILED_CLOSED_UNMERGED` | The PR is closed without merge evidence and obsolete/no-diff proof is missing. |
-| `FAILED_MEANINGFUL_DIFF` | Meaningful branch changes remain but cannot be safely published. |
+| `FAILED_CLOSED_UNMERGED` | A GitHub PR is closed without merge evidence and obsolete/no-diff proof is missing. |
+| `FAILED_MEANINGFUL_DIFF` | Meaningful branch changes remain but cannot be safely treated as terminal success. |
+| `FAILED_PR_METADATA_UNAVAILABLE` | GitHub metadata is required for a GitHub PR proof or meaningful-diff safety decision but cannot be loaded. This is not used merely because an Azure or unknown remote lacks GitHub metadata. |
 | `BLOCKED_CI` | Required checks are failing or a CI policy blocks publish or merge. |
 
-Malformed inputs, unavailable PR metadata, missing base refs, and GitHub CLI
-errors are loud blockers even when they do not share one stable status name.
+`workflow-terminal-state` never invokes `gh pr list`, `gh pr view`, or related
+GitHub metadata commands for Azure Repos, `visualstudio.com`,
+`ssh.dev.azure.com`, or unknown remotes. Those remotes rely on local Git safety
+checks: clean worktree, resolvable base ref, branch/base diff inspection, and
+meaningful-diff blocking. Supplying `pr_number` alone does not change that; the
+remote or `pr_url` must first prove GitHub capability.
+
+For the complete usage, API, configuration, and examples, see
+[Workflow Terminal-State Provider Safety](../reference/workflow-terminal-state-provider-safety.md).
 
 `goal_already_met` remains compatible with older design outputs, but it is not a
 shortcut around evidence. A goal-met claim can support terminal success only

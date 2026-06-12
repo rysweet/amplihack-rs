@@ -12,7 +12,7 @@
 git clone https://github.com/rysweet/amplihack-rs.git
 cd amplihack-rs
 cargo build
-cargo test --workspace --skip fleet_probe --skip kuzu --skip fleet::fleet_local --skip memory::kuzu
+cargo test --workspace -- --skip fleet_probe --skip kuzu --skip fleet::fleet_local --skip memory::kuzu
 ```
 
 ## Pre-commit checks
@@ -28,7 +28,7 @@ Before opening a PR, run:
 
 ```bash
 # Fast: skip LadybugDB (formerly Kuzu) C++ build and fleet probes
-cargo test --workspace --skip fleet_probe --skip kuzu --skip fleet::fleet_local --skip memory::kuzu
+cargo test --workspace -- --skip fleet_probe --skip kuzu --skip fleet::fleet_local --skip memory::kuzu
 
 # Single crate
 cargo test -p amplihack-cli

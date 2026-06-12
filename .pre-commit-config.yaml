@@ -28,7 +28,7 @@ repos:
 
       - id: cargo-test
         name: cargo test (workspace, skip heavy)
-        entry: bash -c 'cargo test --workspace --skip fleet_probe --skip kuzu --skip fleet::fleet_local --skip memory::kuzu'
+        entry: bash -c 'cargo test --workspace -- --skip fleet_probe --skip kuzu --skip fleet::fleet_local --skip memory::kuzu'
         language: system
         pass_filenames: false
         stages: [pre-push]
