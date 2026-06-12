@@ -35,18 +35,25 @@ pub(super) fn format_recipe_run_result(
 }
 
 fn format_recipe_run_table(result: &RecipeRunResult, show_context: bool) -> String {
-    let mut lines = vec![
-        format!("Recipe: {}", result.recipe_name),
-        format!(
-            "Status: {}",
-            if result.success {
-                "✓ Success"
-            } else {
-                "✗ Failed"
-            }
-        ),
-        String::new(),
-    ];
+    let mut lines = vec![format!("Recipe: {}", result.recipe_name)];
+    if let Some(run_id) = &result.run_id {
+        lines.push(format!("Run ID: {run_id}"));
+    }
+    lines.push(format!(
+        "Status: {}",
+        if result.success {
+            "✓ Success"
+        } else {
+            "✗ Failed"
+        }
+    ));
+    if let Some(log_pointer) = &result.log_pointer {
+        lines.push(format!(
+            "Log pointer: {}",
+            format_log_pointer_summary(log_pointer)
+        ));
+    }
+    lines.push(String::new());
 
     if result.step_results.is_empty() {
         lines.push("No steps executed (0 steps)".to_string());
@@ -136,6 +143,39 @@ fn format_elapsed(elapsed_ms: u64) -> String {
     } else {
         format!("{elapsed_ms}ms")
     }
+}
+
+fn format_log_pointer_summary(log_pointer: &RecipeLogPointerSummary) -> String {
+    let mut parts = vec![format!("status={}", log_pointer.status)];
+    if let Some(branch) = &log_pointer.branch
+        && !branch.is_empty()
+    {
+        parts.push(format!("branch={branch}"));
+    }
+    if let Some(worktree) = &log_pointer.worktree
+        && !worktree.is_empty()
+    {
+        parts.push(format!("worktree={worktree}"));
+    }
+    if let Some(child_pid) = log_pointer.child_pid {
+        parts.push(format!("child_pid={child_pid}"));
+    }
+    if let Some(exit_code) = log_pointer.exit_code {
+        parts.push(format!("exit_code={exit_code}"));
+    }
+    if let Some(runner_path) = &log_pointer.runner_path
+        && !runner_path.is_empty()
+    {
+        parts.push(format!("runner_path={runner_path}"));
+    }
+    for (name, path) in &log_pointer.log_paths {
+        if let Some(path) = path.as_str()
+            && !path.is_empty()
+        {
+            parts.push(format!("log_paths.{name}={path}"));
+        }
+    }
+    parts.join(" ")
 }
 
 fn format_child(child: &JsonValue) -> Option<String> {

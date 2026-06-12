@@ -310,8 +310,6 @@ progress, heartbeats, and failure diagnostics are written to stderr.
 
 ## Progress and stream contract
 
-This section describes the planned finished-state transparency contract.
-
 `amplihack recipe run` forwards `recipe-runner-rs` progress to stderr by
 default. This makes normal runs observable while keeping stdout safe for
 structured output.
@@ -333,18 +331,41 @@ Progress includes:
 - rate-limited heartbeat lines for long-running recipe, agent, subprocess, and
   nested-recipe steps
 - bounded recent stdout/stderr snippets in failure diagnostics
+- early and final `amplihack.recipe.log_pointer` correlation events
 
 `--verbose` adds detail such as child launch metadata and extra snippet context.
-`--progress` is not a supported `amplihack recipe run` flag. Passing it should
-fail fast with an actionable message explaining that progress is already emitted
-to `stderr` by default and `--verbose` only increases diagnostic detail.
+`--progress` is not a supported `amplihack recipe run` flag. Passing it fails
+with an actionable message explaining that progress is already emitted to
+`stderr` by default and `--verbose` only increases diagnostic detail.
+
+Every run receives one UUID `run_id` before the runner child starts. The wrapper
+injects the same value into the child environment as
+`AMPLIHACK_RECIPE_RUN_ID`, writes it to early and final stderr pointer events,
+and includes it in final JSON/YAML results when a result can be produced.
+
+Pointer lines use the stable prefix `amplihack.recipe.log_pointer ` followed by
+one JSON object:
+
+```text
+amplihack.recipe.log_pointer {"schema_version":1,"event":"early","run_id":"5b60657b-76ef-4f49-8a22-8b89ed75f43e","recipe_name":"default-workflow","cwd":"/home/user/src/myapp","worktree":"/home/user/src/myapp","branch":"main","runner_path":"/home/user/.local/bin/recipe-runner-rs","timestamp":"2026-06-12T03:55:11Z"}
+amplihack.recipe.log_pointer {"schema_version":1,"event":"final","run_id":"5b60657b-76ef-4f49-8a22-8b89ed75f43e","recipe_name":"default-workflow","status":"success","cwd":"/home/user/src/myapp","worktree":"/home/user/src/myapp","branch":"main","child_pid":41822,"exit_code":0,"runner_path":"/home/user/.local/bin/recipe-runner-rs","log_paths":{"jsonl":"/tmp/default-workflow.jsonl"},"timestamp":"2026-06-12T04:21:39Z"}
+```
+
+Final pointer `status` values are lowercase wrapper statuses: `success`,
+`failure`, `spawn_failure`, or `parse_failure`. Top-level recipe result statuses
+remain whatever the result schema emits, commonly uppercase values such as
+`SUCCESS`, `FAILURE`, or `PARTIAL`, or the boolean `success` field in older
+results. Do not compare pointer status values with top-level result status
+values without normalizing them.
 
 The final JSON result may include optional additive fields such as
-`duration_seconds`, `progress_summary`, `failure_context`, `step_name`, `phase`,
-`child`, `last_heartbeat_at`, and `recent_output`. Consumers must ignore unknown
-fields. The CLI must preserve these fields when formatting JSON or YAML instead
-of parsing and dropping unknown runner fields. See [RecipeResult Reference](./recipe-result.md)
-for schema details.
+`duration_seconds`, `progress_summary`, `failure_context`, `run_id`,
+`log_pointer`, `step_name`, `phase`, `child`, `last_heartbeat_at`, and
+`recent_output`. Consumers must ignore unknown fields. The CLI must preserve
+these fields when formatting JSON or YAML instead of parsing and dropping
+unknown runner fields. See [RecipeResult Reference](./recipe-result.md) and
+[Recipe Run Correlation Reference](./recipe-run-correlation.md) for schema
+details.
 
 ---
 
