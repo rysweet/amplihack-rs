@@ -20,10 +20,46 @@
 //! YAML content, fast, and have no external dependencies.
 
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
 const BRICK_LIMIT: usize = 400;
+
+const EXTRA_RECIPE_NAMES: &[&str] = &["default-workflow", "smart-validate-summarize"];
+
+static RECIPE_TEXTS: LazyLock<HashMap<&'static str, String>> = LazyLock::new(|| {
+    PHASE_RECIPES
+        .iter()
+        .chain(EXTRA_RECIPE_NAMES)
+        .map(|&name| {
+            let path = recipe_path(name);
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+            (name, text)
+        })
+        .collect()
+});
+
+static RECIPES: LazyLock<HashMap<&'static str, Recipe>> = LazyLock::new(|| {
+    RECIPE_TEXTS
+        .iter()
+        .filter(|&(name, _)| *name != "smart-validate-summarize")
+        .map(|(&name, text)| {
+            let path = recipe_path(name);
+            let recipe = serde_yaml::from_str(text)
+                .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+            (name, recipe)
+        })
+        .collect()
+});
+
+static WORKFLOW_PR_REVIEW_YAML: LazyLock<serde_yaml::Value> = LazyLock::new(|| {
+    let name = "workflow-pr-review";
+    let path = recipe_path(name);
+    serde_yaml::from_str(recipe_text(name))
+        .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
+});
 
 #[derive(Debug, Deserialize)]
 struct Recipe {
@@ -57,40 +93,44 @@ fn recipe_path(name: &str) -> PathBuf {
     recipes_dir().join(format!("{name}.yaml"))
 }
 
-fn recipe_text(name: &str) -> String {
-    let path = recipe_path(name);
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+fn recipe_text(name: &str) -> &'static str {
+    RECIPE_TEXTS
+        .get(name)
+        .unwrap_or_else(|| panic!("uncached test recipe: {name}"))
 }
 
-fn load(name: &str) -> Recipe {
-    let path = recipe_path(name);
-    let text = recipe_text(name);
-    serde_yaml::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
+fn load(name: &str) -> &'static Recipe {
+    RECIPES
+        .get(name)
+        .unwrap_or_else(|| panic!("uncached test recipe: {name}"))
 }
 
-fn load_yaml(name: &str) -> serde_yaml::Value {
-    let path = recipe_path(name);
-    let text = recipe_text(name);
-    serde_yaml::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
+fn load_yaml(name: &str) -> &'static serde_yaml::Value {
+    match name {
+        "workflow-pr-review" => &WORKFLOW_PR_REVIEW_YAML,
+        _ => panic!("uncached test YAML recipe: {name}"),
+    }
 }
 
-fn step_command(recipe: &str, step_id: &str) -> String {
+fn step_command(recipe: &str, step_id: &str) -> &'static str {
     load(recipe)
         .steps
-        .into_iter()
+        .iter()
         .find(|step| step.id == step_id)
         .unwrap_or_else(|| panic!("{recipe}.yaml missing step {step_id}"))
         .command
+        .as_deref()
         .unwrap_or_else(|| panic!("{recipe}.yaml step {step_id} must be a bash step"))
 }
 
-fn step_prompt(recipe: &str, step_id: &str) -> String {
+fn step_prompt(recipe: &str, step_id: &str) -> &'static str {
     load(recipe)
         .steps
-        .into_iter()
+        .iter()
         .find(|step| step.id == step_id)
         .unwrap_or_else(|| panic!("{recipe}.yaml missing step {step_id}"))
         .prompt
+        .as_deref()
         .unwrap_or_else(|| panic!("{recipe}.yaml step {step_id} must have a prompt"))
 }
 
@@ -279,9 +319,9 @@ fn no_duplicate_step_ids_across_subrecipes() {
     let mut seen: HashSet<String> = HashSet::new();
     let mut dups: Vec<String> = Vec::new();
     for name in PHASE_RECIPES {
-        for step in load(name).steps {
+        for step in &load(name).steps {
             if !seen.insert(step.id.clone()) {
-                dups.push(step.id);
+                dups.push(step.id.clone());
             }
         }
     }
@@ -415,8 +455,8 @@ fn workflow_pr_review_phase_contract_is_strict_and_ordered() {
 
     let step_ids: Vec<String> = load("workflow-pr-review")
         .steps
-        .into_iter()
-        .map(|step| step.id)
+        .iter()
+        .map(|step| step.id.clone())
         .collect();
     assert_eq!(
         step_ids, PR_REVIEW_STEP_INVENTORY,
@@ -520,8 +560,8 @@ fn workflow_finalize_late_steps_are_resilient_to_missing_worktree() {
     let pr_ready = step_command("workflow-finalize", "step-21-pr-ready");
 
     for (step, command) in [
-        ("step-20b-push-cleanup", push_cleanup.as_str()),
-        ("step-21-pr-ready", pr_ready.as_str()),
+        ("step-20b-push-cleanup", push_cleanup),
+        ("step-21-pr-ready", pr_ready),
     ] {
         assert!(
             command.contains("set -euo pipefail"),
@@ -689,7 +729,7 @@ fn base_branch_detection_remains_explicit_and_fail_loud() {
 fn mandatory_steps_still_present() {
     let composed: HashSet<String> = PHASE_RECIPES
         .iter()
-        .flat_map(|name| load(name).steps.into_iter().map(|s| s.id))
+        .flat_map(|name| load(name).steps.iter().map(|s| s.id.clone()))
         .collect();
     for required in [
         "step-00-workflow-preparation",
