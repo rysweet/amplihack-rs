@@ -215,6 +215,7 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "step-21-pr-ready",
     "step-22-ensure-mergeable",
     "step-22b-final-status",
+    "step-22c-agentic-finalization",
     "workflow-complete",
 ];
 
@@ -278,6 +279,55 @@ fn composer_calls_nine_phase_subrecipes_in_order() {
             "composer step id should match recipe name for traceability"
         );
     }
+}
+
+#[test]
+fn workflow_finalize_subrecipe_includes_agentic_finalization_gate() {
+    let finalize = load("workflow-finalize");
+    let agentic_steps: Vec<_> = finalize
+        .steps
+        .iter()
+        .filter(|step| {
+            step.id.contains("agentic-finalization")
+                || step
+                    .command
+                    .as_deref()
+                    .is_some_and(|command| command.contains("workflow_agentic_finalization.sh"))
+        })
+        .collect();
+
+    assert_eq!(
+        agentic_steps.len(),
+        1,
+        "workflow-finalize must own exactly one agentic finalization gate"
+    );
+
+    let final_status_index = finalize
+        .steps
+        .iter()
+        .position(|step| step.id == "step-22b-final-status")
+        .expect("workflow-finalize missing deterministic final status step");
+    let agentic_index = finalize
+        .steps
+        .iter()
+        .position(|step| {
+            step.id.contains("agentic-finalization")
+                || step
+                    .command
+                    .as_deref()
+                    .is_some_and(|command| command.contains("workflow_agentic_finalization.sh"))
+        })
+        .expect("workflow-finalize missing agentic finalization gate");
+    let complete_index = finalize
+        .steps
+        .iter()
+        .position(|step| step.id == "workflow-complete")
+        .expect("workflow-finalize missing workflow-complete step");
+
+    assert!(
+        final_status_index < agentic_index && agentic_index < complete_index,
+        "agentic finalization gate must run after deterministic final status and before workflow-complete"
+    );
 }
 
 /// Every phase sub-recipe must parse and have a non-empty step list.

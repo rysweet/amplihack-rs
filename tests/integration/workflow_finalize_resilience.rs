@@ -179,6 +179,50 @@ fn workflow_complete_json_reports_terminal_outcome_instead_of_unconditional_merg
 }
 
 #[test]
+fn agentic_finalization_helper_fails_closed_on_malformed_or_hollow_output() {
+    let command = helper_text("workflow_agentic_finalization.sh");
+
+    for required in [
+        "jq -e",
+        "malformed_agentic_finalization",
+        "hollow_success",
+        "unknown decision",
+        "exit 1",
+        "decision",
+        "blocking_reasons",
+    ] {
+        assert!(
+            command.contains(required),
+            "agentic finalizer must fail closed on invalid output; missing `{required}`"
+        );
+    }
+}
+
+#[test]
+fn agentic_finalization_helper_uses_bounded_visible_agent_invocation() {
+    let command = helper_text("workflow_agentic_finalization.sh");
+
+    for required in [
+        "AMPLIHACK_AGENT_BINARY",
+        "timeout",
+        "agentic finalization",
+        "finalizer_output",
+        "stderr",
+        "exit",
+    ] {
+        assert!(
+            command.contains(required),
+            "agentic finalizer invocation must be bounded and visible; missing `{required}`"
+        );
+    }
+
+    assert!(
+        !command.contains("|| true") && !command.contains("2>/dev/null"),
+        "agentic finalizer failures must not be hidden"
+    );
+}
+
+#[test]
 fn pr_ready_helper_fails_closed_when_pr_view_metadata_is_unavailable() {
     let tmp = TempDir::new().expect("tempdir");
     let bin_dir = tmp.path().join("bin");

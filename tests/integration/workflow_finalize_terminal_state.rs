@@ -148,3 +148,46 @@ fn final_status_reports_terminal_success_and_blocked_semantics_structurally() {
         "workflow-complete must not unconditionally report complete without terminal_success evidence"
     );
 }
+
+#[test]
+fn finalize_places_agentic_assessment_between_terminal_evidence_and_completion() {
+    let recipe = load_finalize_recipe();
+    let final_status_index = step_index(&recipe, "step-22b-final-status");
+    let agentic_index = steps(&recipe)
+        .iter()
+        .position(|step| {
+            step.get("command")
+                .and_then(Value::as_str)
+                .is_some_and(|command| command.contains("workflow_agentic_finalization.sh"))
+        })
+        .expect("workflow-finalize must invoke workflow_agentic_finalization.sh");
+    let complete_index = step_index(&recipe, "workflow-complete");
+
+    assert!(
+        final_status_index < agentic_index && agentic_index < complete_index,
+        "agentic finalization must run after deterministic terminal evidence and before final reporting"
+    );
+}
+
+#[test]
+fn workflow_complete_surfaces_agentic_finalizer_contract() {
+    let recipe = load_finalize_recipe();
+    let command = step_command(&recipe, "workflow-complete");
+
+    for required in [
+        "agentic_decision",
+        "agentic_confidence",
+        "agentic_blocking_reasons",
+        "agentic_evidence_summary",
+    ] {
+        assert!(
+            command.contains(required),
+            "workflow-complete JSON must expose `{required}` from agentic finalization"
+        );
+    }
+
+    assert!(
+        command.contains("terminal_state") && command.contains("terminal_success"),
+        "agentic finalization must augment, not replace, machine-checkable terminal state"
+    );
+}
