@@ -285,35 +285,16 @@ steps:
       ## Observed failure modes to preserve
 
       Recent finalization failures came from brittle parsing, missing metadata,
-      stale PR metadata, dirty worktree misclassification, closed-unmerged PR handling,
-      missing tooling, failed CI, and hollow success where setup/planning or
-      inaccessible-codebase output looked successful.
+      stale PR metadata, dirty worktree misclassification, generated runtime artifacts
+      left in the worktree, broad staging attempted before artifact cleanup,
+      closed-unmerged PR handling, missing tooling, failed CI, and hollow success
+      where setup/planning or inaccessible-codebase output looked successful.
 
       ## Output schema
 
-      Return one single JSON object and no prose. The object must use this exact
-      schema:
-
-      ```json
-      {
-        "schema_version": 1,
-        "terminal_state": "BLOCKED_CI",
-        "terminal_success": false,
-        "confidence": "high",
-        "reason": "PR #123 exists and matches this branch, but required CI checks are failing.",
-        "required_next_action": "Fix failing CI checks before merge.",
-        "hollow_success_detected": false,
-        "evidence_used": [
-          "pr.state=OPEN",
-          "pr.head_branch_matches=true",
-          "ci.state=FAILURE"
-        ]
-      }
-      ```
-
-      Required fields: schema_version, terminal_state, terminal_success,
-      confidence, reason, required_next_action, hollow_success_detected,
-      evidence_used.
+      Return one single JSON object and no prose. Required fields:
+      schema_version, terminal_state, terminal_success, confidence, reason,
+      required_next_action, hollow_success_detected, evidence_used.
 
       `confidence` must be high, medium, or low. Only confidence=high may claim
       terminal_success=true. Medium or low confidence must choose a non-success
@@ -346,6 +327,16 @@ steps:
       ## Classification rules
 
       - Dirty worktree evidence cannot produce terminal_success=true.
+      - Generated runtime artifacts such as `.claude/runtime`, nested `worktrees/`,
+        build caches, logs, or session files are not source evidence. Classify
+        them as dirty worktree evidence and require cleanup before commit,
+        checkpoint, broad staging, publish, or merge.
+      - Artifact Guard failures are actionable cleanup evidence, not a reason
+        to weaken guards or mark the workflow successful. The required next
+        action must name the artifact cleanup needed before retrying.
+      - Broad staging (`git add -A`, `git add --all`, or equivalent) is unsafe
+        until generated artifacts are absent and Artifact Guard has passed for
+        the current worktree.
       - Missing deterministic tooling required for the selected path maps to
         FAILED_MISSING_TOOLING.
       - Stale or unavailable PR metadata maps to FAILED_PR_METADATA_UNAVAILABLE
@@ -368,11 +359,10 @@ steps:
     parse_json: true
     command: |
       set -euo pipefail
-      # Contract enforced by helper: AGENTIC_FINALIZER_OUTPUT, FAILED_FINALIZER_OUTPUT,
-      # schema_version, terminal_state, terminal_success, confidence, reason,
-      # required_next_action, hollow_success_detected, evidence_used,
-      # finalizer_output_valid, finalizer_confidence, jq -e, exit 1.
-      # Deterministic invariants: confidence=high, terminal_success=true,
+      # Contract: AGENTIC_FINALIZER_OUTPUT, FAILED_FINALIZER_OUTPUT, schema_version,
+      # terminal_state, terminal_success, confidence, reason, required_next_action,
+      # hollow_success_detected, evidence_used, finalizer_output_valid,
+      # finalizer_confidence, jq -e, exit 1, confidence=high, terminal_success=true,
       # hollow_success_detected=true, FAILED_DIRTY_WORKTREE,
       # FAILED_PR_METADATA_UNAVAILABLE, BLOCKED_CI, FAILED_MEANINGFUL_DIFF.
       FINALIZER_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_agentic_finalization.sh"
