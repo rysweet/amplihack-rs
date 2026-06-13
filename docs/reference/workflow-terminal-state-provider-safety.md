@@ -170,7 +170,7 @@ export NODE_OPTIONS=--max-old-space-size=32768
 | Output | Meaning |
 | --- | --- |
 | `terminal_success` | `true` only when the workflow can safely stop without publishing or merging more work. |
-| `terminal_state` | Stable state such as `MERGED`, `CLOSED_OBSOLETE`, `NO_DIFF_SUCCESS`, `FOLLOWUP_CREATED`, `FAILED_MEANINGFUL_DIFF`, or `BLOCKED_CI`. |
+| `terminal_state` | Stable state such as `MERGED`, `CLOSED_OBSOLETE`, `NO_DIFF_SUCCESS`, `FOLLOWUP_CREATED`, `SUPERSEDED`, `FAILED_MEANINGFUL_DIFF`, `FAILED_FINALIZER_OUTPUT`, or `BLOCKED_CI`. |
 | `terminal_reason` | Human-readable evidence for the decision. |
 | `publish_status` | Publish-facing status using the same vocabulary as `terminal_state`. |
 | `should_publish` | `true` only when the workflow should continue through a publish path for meaningful work. |

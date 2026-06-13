@@ -108,6 +108,23 @@ python .claude/skills/multitask/orchestrator.py workstreams.json \
   --timeout-policy interrupt-preserve
 ```
 
+### [Workflow Terminal-State Closure](workflow-terminal-state-closure.md)
+
+Walkthrough of how `default-workflow` proves terminal completion, how the
+agentic finalizer reports states such as `BLOCKED_CI` and `HOLLOW_SUCCESS`, and
+how to rerun when finalization fails closed.
+
+**Topics Covered**:
+
+- Inspecting terminal evidence in recipe JSON
+- Reading structured agentic finalizer output
+- Diagnosing planning-only and hollow-success failures
+- Confirming exit-code behavior
+
+**Prerequisites**: amplihack installed, writable Git checkout, `jq`
+
+**Duration**: ~15 minutes
+
 ---
 
 ## Platform-Specific Quick Starts

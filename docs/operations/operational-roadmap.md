@@ -26,7 +26,7 @@ DevOps, and workflow observability.
 | Establish Azure DevOps validation checkout | Azure DevOps E2E coverage | High | A stable checkout or fixture is available for default-workflow validation; absence is explicitly recorded when blocked. |
 | Expand Azure DevOps workflow fixtures | Azure DevOps E2E coverage | Medium | Local tests cover Azure DevOps remote detection, work item reuse, publish skip/routing, and finalize no-op behavior. |
 | Monitor release contract drift | Release/version contract monitoring | High | CI or release automation checks version strings, install target behavior, update behavior, and docs references before release. |
-| Archive publish/finalize JSON summaries | Workflow observability | Medium | Fleet or CI jobs collect `pr_publish_result` and `workflow_result.terminal_outcome` without requiring recipe log scraping. |
+| Archive publish/finalize JSON summaries | Workflow observability | Medium | Fleet or CI jobs collect `pr_publish_result` and `workflow_result.terminal_state` without requiring recipe log scraping. |
 | Surface cleanup dry-run metrics | Workflow observability | Medium | `amplihack hygiene cleanup --format json` output can be archived by fleet jobs without exposing private paths beyond configured redaction. |
 
 ## Triage rules

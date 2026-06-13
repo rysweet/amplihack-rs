@@ -67,7 +67,7 @@ review, and finalize. It returns these outputs:
 | Output | Meaning |
 | --- | --- |
 | `terminal_success` | `true` only when the workflow can stop successfully without publishing more work. |
-| `terminal_state` | Stable status such as `MERGED`, `CLOSED_OBSOLETE`, `NO_DIFF_SUCCESS`, `FOLLOWUP_CREATED`, `FAILED_MEANINGFUL_DIFF`, or `BLOCKED_CI`. |
+| `terminal_state` | Stable status such as `MERGED`, `CLOSED_OBSOLETE`, `NO_DIFF_SUCCESS`, `FOLLOWUP_CREATED`, `SUPERSEDED`, `FAILED_MEANINGFUL_DIFF`, `FAILED_FINALIZER_OUTPUT`, or `BLOCKED_CI`. |
 | `terminal_reason` | Human-readable evidence for the decision. |
 | `publish_status` | Publish-facing status using the same vocabulary as the terminal state. |
 | `should_publish` | `true` only when meaningful unmerged work should continue through a publish path. |
@@ -113,6 +113,10 @@ The successful terminal states are:
 | `MERGED` | GitHub PR is merged, or is closed with merge evidence such as `mergedAt`. Only available for GitHub-backed targets. | Stop before version bump, commit, push, PR creation/update, CI wait, and merge. |
 | `CLOSED_OBSOLETE` | Worktree is clean and equivalent work is already upstream or no meaningful branch work remains. GitHub closed-PR metadata may support this state but is not required on non-GitHub remotes. | Stop successfully and record the obsolete proof. |
 | `NO_DIFF_SUCCESS` | Worktree is clean and there are no meaningful diffs or commits against the intended base. | Stop successfully without creating a no-op commit or follow-up PR. |
+| `FOLLOWUP_CREATED` | Meaningful remaining work is represented by a durable workflow-owned follow-up PR or issue. | Stop successfully and record the follow-up identifier. |
+| `SUPERSEDED` | A newer workflow-owned PR or issue explicitly replaces this run and includes a durable identifier plus reason. | Stop successfully and route future work to the replacement. |
+| `IMPLEMENTED_VERIFIED` | Implementation and required verification completed on a path that does not require publish or merge evidence. | Stop successfully after recording implementation and verification proof. |
+| `ALLOW_NO_OP` | `allow_no_op=true` was set for an eligible path and includes reason text. | Stop successfully without pretending skipped work was implemented. |
 
 The loud blocking states include:
 
@@ -122,6 +126,8 @@ The loud blocking states include:
 | `FAILED_CLOSED_UNMERGED` | A GitHub PR is closed without merge evidence and obsolete/no-diff proof is missing. |
 | `FAILED_MEANINGFUL_DIFF` | Meaningful branch changes remain but cannot be safely treated as terminal success. |
 | `FAILED_PR_METADATA_UNAVAILABLE` | GitHub metadata is required for a GitHub PR proof or meaningful-diff safety decision but cannot be loaded. This is not used merely because an Azure or unknown remote lacks GitHub metadata. |
+| `FAILED_FINALIZER_OUTPUT` | The agentic finalizer returned missing, malformed, non-JSON, or schema-invalid output. |
+| `HOLLOW_SUCCESS` | The run appeared successful but lacked implementation, verification, publish, or valid no-op evidence. |
 | `BLOCKED_CI` | Required checks are failing or a CI policy blocks publish or merge. |
 
 `workflow-terminal-state` never invokes `gh pr list`, `gh pr view`, or related
