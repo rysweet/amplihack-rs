@@ -19,17 +19,22 @@ fn install_command_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-fn workspace_root() -> PathBuf {
-    let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let mut cur: &Path = &crate_dir;
-    loop {
-        if cur.join("amplifier-bundle").is_dir() && cur.join("Cargo.toml").is_file() {
-            return cur.to_path_buf();
+fn workspace_root() -> &'static Path {
+    static ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+    ROOT.get_or_init(|| {
+        let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let mut cur: &Path = &crate_dir;
+        loop {
+            if cur.join("amplifier-bundle").is_dir() && cur.join("Cargo.toml").is_file() {
+                return cur.to_path_buf();
+            }
+            cur = cur
+                .parent()
+                .expect("walked above filesystem root looking for workspace root");
         }
-        cur = cur
-            .parent()
-            .expect("walked above filesystem root looking for workspace root");
-    }
+    })
+    .as_path()
 }
 
 fn valid_existing_binary(path: &Path) -> bool {
@@ -394,7 +399,7 @@ fn install_stages_every_source_skill_agent_and_command_directory() {
     let hooks_bin = write_install_tooling(home.path());
     let workspace = workspace_root();
 
-    amplihack_install_command(home.path(), &hooks_bin, &workspace)
+    amplihack_install_command(home.path(), &hooks_bin, workspace)
         .assert()
         .success();
 
@@ -402,13 +407,17 @@ fn install_stages_every_source_skill_agent_and_command_directory() {
     let staged_claude = home.path().join(".amplihack/.claude");
     let staged_bundle = home.path().join(".amplihack/amplifier-bundle");
 
-    for (source_category, staged_category) in [
-        ("skills", "skills"),
-        ("agents", "agents"),
-        ("commands", "commands"),
+    let source_skills = immediate_child_dirs(&source_bundle.join("skills"));
+    let source_agents = immediate_child_dirs(&source_bundle.join("agents"));
+    let source_commands = immediate_child_dirs(&source_bundle.join("commands"));
+
+    for (source_category, staged_category, children) in [
+        ("skills", "skills", &source_skills),
+        ("agents", "agents", &source_agents),
+        ("commands", "commands", &source_commands),
     ] {
-        for child in immediate_child_dirs(&source_bundle.join(source_category)) {
-            let staged = staged_claude.join(staged_category).join(&child);
+        for child in children {
+            let staged = staged_claude.join(staged_category).join(child);
             assert!(
                 staged.is_dir(),
                 "source amplifier-bundle/{source_category}/{child} must be staged at {}",
@@ -417,8 +426,8 @@ fn install_stages_every_source_skill_agent_and_command_directory() {
         }
     }
 
-    for child in immediate_child_dirs(&source_bundle.join("skills")) {
-        let staged = staged_bundle.join("skills").join(&child);
+    for child in &source_skills {
+        let staged = staged_bundle.join("skills").join(child);
         assert!(
             staged.is_dir(),
             "source skill {child} must also be present in the staged full amplifier-bundle at {}",
@@ -426,7 +435,7 @@ fn install_stages_every_source_skill_agent_and_command_directory() {
         );
     }
 
-    let source_skill_count = immediate_child_dirs(&source_bundle.join("skills")).len();
+    let source_skill_count = source_skills.len();
     let staged_skill_count = immediate_child_dirs(&staged_claude.join("skills")).len();
     assert!(
         staged_skill_count >= source_skill_count,
