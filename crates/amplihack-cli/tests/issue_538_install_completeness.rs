@@ -7,6 +7,7 @@
 //! - install must fail loudly when a required bundle category is missing.
 //! - a successful install must stage every source skill/agent/command child dir.
 
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -18,45 +19,132 @@ fn install_command_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-fn workspace_root() -> PathBuf {
-    let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let mut cur: &Path = &crate_dir;
-    loop {
-        if cur.join("amplifier-bundle").is_dir() && cur.join("Cargo.toml").is_file() {
-            return cur.to_path_buf();
+fn workspace_root() -> &'static Path {
+    static ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+    ROOT.get_or_init(|| {
+        let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let mut cur: &Path = &crate_dir;
+        loop {
+            if cur.join("amplifier-bundle").is_dir() && cur.join("Cargo.toml").is_file() {
+                return cur.to_path_buf();
+            }
+            cur = cur
+                .parent()
+                .expect("walked above filesystem root looking for workspace root");
         }
-        cur = cur
-            .parent()
-            .expect("walked above filesystem root looking for workspace root");
-    }
+    })
+    .as_path()
 }
 
-fn write_stub_binary(dir: &Path, name: &str) -> PathBuf {
-    fs::create_dir_all(dir).expect("create stub binary dir");
+fn valid_existing_binary(path: &Path) -> bool {
+    path.is_file() && is_executable(path)
+}
+
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::metadata(path)
+        .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.is_file()
+}
+
+fn workspace_debug_amplihack() -> PathBuf {
+    workspace_root()
+        .join("target")
+        .join("debug")
+        .join(format!("amplihack{}", std::env::consts::EXE_SUFFIX))
+}
+
+fn resolve_amplihack_binary() -> PathBuf {
+    resolve_amplihack_binary_from(
+        std::env::var_os("AMPLIHACK_PROBE_BIN"),
+        std::env::var_os("CARGO_BIN_EXE_amplihack"),
+        &workspace_debug_amplihack(),
+    )
+    .unwrap_or_else(|message| panic!("{message}"))
+}
+
+fn resolve_amplihack_binary_from(
+    probe_bin: Option<OsString>,
+    cargo_bin: Option<OsString>,
+    fallback: &Path,
+) -> Result<PathBuf, String> {
+    if let Some(path) = probe_bin {
+        let path = PathBuf::from(path);
+        if valid_existing_binary(&path) {
+            return Ok(path);
+        }
+        return Err(format!(
+            "AMPLIHACK_PROBE_BIN is set to {}, but that path is not an existing executable file",
+            path.display()
+        ));
+    }
+
+    if let Some(path) = cargo_bin {
+        let path = PathBuf::from(path);
+        if valid_existing_binary(&path) {
+            return Ok(path);
+        }
+        return Err(format!(
+            "CARGO_BIN_EXE_amplihack is set to {}, but that path is not an existing executable file",
+            path.display()
+        ));
+    }
+
+    if valid_existing_binary(&fallback) {
+        return Ok(fallback.to_path_buf());
+    }
+
+    Err(format!(
+        "no prebuilt amplihack binary found; set AMPLIHACK_PROBE_BIN or build the workspace binary before running this test (checked {})",
+        fallback.display()
+    ))
+}
+
+fn write_success_executable(dir: &Path, name: &str) -> PathBuf {
+    fs::create_dir_all(dir).expect("create test executable dir");
     let path = dir.join(name);
     let content = format!("#!/bin/sh\nexit 0\n{}\n", "x".repeat(1100));
-    fs::write(&path, content).expect("write stub binary");
+    fs::write(&path, content).expect("write test executable");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755))
-            .expect("chmod stub hooks binary");
+            .expect("chmod test executable");
     }
     path
 }
 
-fn cargo_amplihack_install(home: &Path, hooks_bin: &Path, source: &Path) -> Command {
-    let mut cmd = Command::new(env!("CARGO"));
+fn write_install_tooling(home: &Path) -> PathBuf {
+    let bin_dir = home.join("test-bin");
+    let hooks_bin = write_success_executable(&bin_dir, "amplihack-hooks");
+    write_success_executable(&bin_dir, "recipe-runner-rs");
+    hooks_bin
+}
+
+fn amplihack_install_command(home: &Path, hooks_bin: &Path, source: &Path) -> Command {
+    amplihack_install_command_with_binary(resolve_amplihack_binary(), home, hooks_bin, source)
+}
+
+fn amplihack_install_command_with_binary(
+    binary: impl AsRef<Path>,
+    home: &Path,
+    hooks_bin: &Path,
+    source: &Path,
+) -> Command {
+    let mut cmd = Command::new(binary.as_ref());
     let recipe_runner = hooks_bin
         .parent()
-        .expect("stub binary has parent")
+        .expect("hooks binary has parent")
         .join("recipe-runner-rs");
     cmd.current_dir(workspace_root())
-        .arg("run")
-        .arg("--quiet")
-        .arg("--package")
-        .arg("amplihack")
-        .arg("--")
         .arg("install")
         .arg("--local")
         .arg(source)
@@ -157,6 +245,108 @@ steps:
 }
 
 #[test]
+fn install_command_launcher_is_not_cargo() {
+    let temp = tempfile::tempdir().expect("create temp dir");
+    let binary = write_success_executable(temp.path(), "amplihack");
+    let cmd = amplihack_install_command_with_binary(
+        &binary,
+        Path::new("/tmp/amplihack-test-home"),
+        Path::new("/tmp/amplihack-hooks"),
+        Path::new("/tmp/amplihack-source"),
+    );
+    let program = Path::new(cmd.get_program());
+    assert_ne!(
+        program.file_name(),
+        Some(OsStr::new("cargo")),
+        "install completeness tests must launch a prebuilt amplihack binary, not Cargo"
+    );
+
+    let args = cmd
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert!(
+        !args.iter().any(|arg| arg == "run" || arg == "build"),
+        "install completeness tests must not request nested builds; args: {args:?}"
+    );
+}
+
+#[test]
+fn binary_resolver_prefers_probe_bin_over_cargo_bin_and_fallback() {
+    let temp = tempfile::tempdir().expect("create temp dir");
+    let probe_bin = write_success_executable(temp.path(), "probe-amplihack");
+    let cargo_bin = write_success_executable(temp.path(), "cargo-amplihack");
+    let fallback = write_success_executable(temp.path(), "fallback-amplihack");
+
+    let resolved = resolve_amplihack_binary_from(
+        Some(OsString::from(&probe_bin)),
+        Some(OsString::from(&cargo_bin)),
+        &fallback,
+    )
+    .expect("resolve probe binary");
+
+    assert_eq!(resolved, probe_bin);
+}
+
+#[test]
+fn binary_resolver_uses_cargo_bin_when_probe_bin_is_unset() {
+    let temp = tempfile::tempdir().expect("create temp dir");
+    let cargo_bin = write_success_executable(temp.path(), "cargo-amplihack");
+    let fallback = write_success_executable(temp.path(), "fallback-amplihack");
+
+    let resolved = resolve_amplihack_binary_from(None, Some(OsString::from(&cargo_bin)), &fallback)
+        .expect("resolve Cargo-provided binary");
+
+    assert_eq!(resolved, cargo_bin);
+}
+
+#[test]
+fn binary_resolver_uses_existing_fallback_without_env_paths() {
+    let temp = tempfile::tempdir().expect("create temp dir");
+    let fallback = write_success_executable(temp.path(), "fallback-amplihack");
+
+    let resolved = resolve_amplihack_binary_from(None, None, &fallback).expect("resolve fallback");
+
+    assert_eq!(resolved, fallback);
+}
+
+#[test]
+fn binary_resolver_rejects_invalid_probe_bin_instead_of_falling_back() {
+    let temp = tempfile::tempdir().expect("create temp dir");
+    let missing_probe = temp.path().join("missing-probe-amplihack");
+    let cargo_bin = write_success_executable(temp.path(), "cargo-amplihack");
+    let fallback = write_success_executable(temp.path(), "fallback-amplihack");
+
+    let error = resolve_amplihack_binary_from(
+        Some(OsString::from(&missing_probe)),
+        Some(OsString::from(&cargo_bin)),
+        &fallback,
+    )
+    .expect_err("invalid AMPLIHACK_PROBE_BIN must fail");
+
+    assert!(
+        error.contains("AMPLIHACK_PROBE_BIN") && error.contains("existing executable file"),
+        "unexpected resolver error: {error}"
+    );
+}
+
+#[test]
+fn binary_resolver_fails_clearly_when_no_prebuilt_binary_is_available() {
+    let temp = tempfile::tempdir().expect("create temp dir");
+    let fallback = temp.path().join("missing-fallback-amplihack");
+
+    let error = resolve_amplihack_binary_from(None, None, &fallback)
+        .expect_err("missing prebuilt binary must fail");
+
+    assert!(
+        error.contains("no prebuilt amplihack binary found")
+            && error.contains("AMPLIHACK_PROBE_BIN")
+            && error.contains(&fallback.display().to_string()),
+        "unexpected resolver error: {error}"
+    );
+}
+
+#[test]
 fn npm_package_manifest_includes_amplifier_bundle_assets() {
     let package_json =
         fs::read_to_string(workspace_root().join("package.json")).expect("read package.json");
@@ -176,12 +366,10 @@ fn install_fails_loudly_when_required_source_skills_are_missing() {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let home = tempfile::tempdir().expect("create temp home");
     let source = tempfile::tempdir().expect("create incomplete source");
-    let stub_dir = home.path().join("stub-bin");
-    let hooks_bin = write_stub_binary(&stub_dir, "amplihack-hooks");
-    write_stub_binary(&stub_dir, "recipe-runner-rs");
+    let hooks_bin = write_install_tooling(home.path());
     create_bundle_missing_skills(source.path());
 
-    let output = cargo_amplihack_install(home.path(), &hooks_bin, source.path())
+    let output = amplihack_install_command(home.path(), &hooks_bin, source.path())
         .output()
         .expect("run amplihack install");
     let combined_output = format!(
@@ -208,12 +396,10 @@ fn install_stages_every_source_skill_agent_and_command_directory() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let home = tempfile::tempdir().expect("create temp home");
-    let stub_dir = home.path().join("stub-bin");
-    let hooks_bin = write_stub_binary(&stub_dir, "amplihack-hooks");
-    write_stub_binary(&stub_dir, "recipe-runner-rs");
+    let hooks_bin = write_install_tooling(home.path());
     let workspace = workspace_root();
 
-    cargo_amplihack_install(home.path(), &hooks_bin, &workspace)
+    amplihack_install_command(home.path(), &hooks_bin, workspace)
         .assert()
         .success();
 
@@ -221,13 +407,17 @@ fn install_stages_every_source_skill_agent_and_command_directory() {
     let staged_claude = home.path().join(".amplihack/.claude");
     let staged_bundle = home.path().join(".amplihack/amplifier-bundle");
 
-    for (source_category, staged_category) in [
-        ("skills", "skills"),
-        ("agents", "agents"),
-        ("commands", "commands"),
+    let source_skills = immediate_child_dirs(&source_bundle.join("skills"));
+    let source_agents = immediate_child_dirs(&source_bundle.join("agents"));
+    let source_commands = immediate_child_dirs(&source_bundle.join("commands"));
+
+    for (source_category, staged_category, children) in [
+        ("skills", "skills", &source_skills),
+        ("agents", "agents", &source_agents),
+        ("commands", "commands", &source_commands),
     ] {
-        for child in immediate_child_dirs(&source_bundle.join(source_category)) {
-            let staged = staged_claude.join(staged_category).join(&child);
+        for child in children {
+            let staged = staged_claude.join(staged_category).join(child);
             assert!(
                 staged.is_dir(),
                 "source amplifier-bundle/{source_category}/{child} must be staged at {}",
@@ -236,8 +426,8 @@ fn install_stages_every_source_skill_agent_and_command_directory() {
         }
     }
 
-    for child in immediate_child_dirs(&source_bundle.join("skills")) {
-        let staged = staged_bundle.join("skills").join(&child);
+    for child in &source_skills {
+        let staged = staged_bundle.join("skills").join(child);
         assert!(
             staged.is_dir(),
             "source skill {child} must also be present in the staged full amplifier-bundle at {}",
@@ -245,7 +435,7 @@ fn install_stages_every_source_skill_agent_and_command_directory() {
         );
     }
 
-    let source_skill_count = immediate_child_dirs(&source_bundle.join("skills")).len();
+    let source_skill_count = source_skills.len();
     let staged_skill_count = immediate_child_dirs(&staged_claude.join("skills")).len();
     assert!(
         staged_skill_count >= source_skill_count,
