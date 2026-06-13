@@ -7,6 +7,7 @@
 //! - install must fail loudly when a required bundle category is missing.
 //! - a successful install must stage every source skill/agent/command child dir.
 
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -31,6 +32,51 @@ fn workspace_root() -> PathBuf {
     }
 }
 
+fn valid_existing_binary(path: &Path) -> bool {
+    path.is_file()
+}
+
+fn workspace_debug_amplihack() -> PathBuf {
+    workspace_root()
+        .join("target")
+        .join("debug")
+        .join(format!("amplihack{}", std::env::consts::EXE_SUFFIX))
+}
+
+fn resolve_amplihack_binary() -> PathBuf {
+    if let Some(path) = std::env::var_os("AMPLIHACK_PROBE_BIN") {
+        let path = PathBuf::from(path);
+        if valid_existing_binary(&path) {
+            return path;
+        }
+        panic!(
+            "AMPLIHACK_PROBE_BIN is set to {}, but that path is not an existing file",
+            path.display()
+        );
+    }
+
+    if let Some(path) = std::env::var_os("CARGO_BIN_EXE_amplihack") {
+        let path = PathBuf::from(path);
+        if valid_existing_binary(&path) {
+            return path;
+        }
+        panic!(
+            "CARGO_BIN_EXE_amplihack is set to {}, but that path is not an existing file",
+            path.display()
+        );
+    }
+
+    let fallback = workspace_debug_amplihack();
+    if valid_existing_binary(&fallback) {
+        return fallback;
+    }
+
+    panic!(
+        "no prebuilt amplihack binary found; set AMPLIHACK_PROBE_BIN or build the workspace binary before running this test (checked {})",
+        fallback.display()
+    );
+}
+
 fn write_stub_binary(dir: &Path, name: &str) -> PathBuf {
     fs::create_dir_all(dir).expect("create stub binary dir");
     let path = dir.join(name);
@@ -45,18 +91,13 @@ fn write_stub_binary(dir: &Path, name: &str) -> PathBuf {
     path
 }
 
-fn cargo_amplihack_install(home: &Path, hooks_bin: &Path, source: &Path) -> Command {
-    let mut cmd = Command::new(env!("CARGO"));
+fn amplihack_install_command(home: &Path, hooks_bin: &Path, source: &Path) -> Command {
+    let mut cmd = Command::new(resolve_amplihack_binary());
     let recipe_runner = hooks_bin
         .parent()
         .expect("stub binary has parent")
         .join("recipe-runner-rs");
     cmd.current_dir(workspace_root())
-        .arg("run")
-        .arg("--quiet")
-        .arg("--package")
-        .arg("amplihack")
-        .arg("--")
         .arg("install")
         .arg("--local")
         .arg(source)
@@ -157,6 +198,30 @@ steps:
 }
 
 #[test]
+fn install_command_launcher_is_not_cargo() {
+    let cmd = amplihack_install_command(
+        Path::new("/tmp/amplihack-test-home"),
+        Path::new("/tmp/amplihack-hooks"),
+        Path::new("/tmp/amplihack-source"),
+    );
+    let program = Path::new(cmd.get_program());
+    assert_ne!(
+        program.file_name(),
+        Some(OsStr::new("cargo")),
+        "install completeness tests must launch a prebuilt amplihack binary, not Cargo"
+    );
+
+    let args = cmd
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert!(
+        !args.iter().any(|arg| arg == "run" || arg == "build"),
+        "install completeness tests must not request nested builds; args: {args:?}"
+    );
+}
+
+#[test]
 fn npm_package_manifest_includes_amplifier_bundle_assets() {
     let package_json =
         fs::read_to_string(workspace_root().join("package.json")).expect("read package.json");
@@ -181,7 +246,7 @@ fn install_fails_loudly_when_required_source_skills_are_missing() {
     write_stub_binary(&stub_dir, "recipe-runner-rs");
     create_bundle_missing_skills(source.path());
 
-    let output = cargo_amplihack_install(home.path(), &hooks_bin, source.path())
+    let output = amplihack_install_command(home.path(), &hooks_bin, source.path())
         .output()
         .expect("run amplihack install");
     let combined_output = format!(
@@ -213,7 +278,7 @@ fn install_stages_every_source_skill_agent_and_command_directory() {
     write_stub_binary(&stub_dir, "recipe-runner-rs");
     let workspace = workspace_root();
 
-    cargo_amplihack_install(home.path(), &hooks_bin, &workspace)
+    amplihack_install_command(home.path(), &hooks_bin, &workspace)
         .assert()
         .success();
 
