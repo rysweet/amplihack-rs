@@ -323,3 +323,38 @@ fn workflow_publish_outside_in_fix_loop_guards_its_inline_git_add_all() {
         "outside-in fix loop snippet must hard-chain guard success to broad staging; line was `{guarded_line}`"
     );
 }
+
+#[test]
+fn agentic_finalization_keeps_generated_runtime_artifacts_out_of_commit_scope() {
+    let gitignore = read(&workspace_root().join(".gitignore"));
+    assert!(
+        gitignore
+            .lines()
+            .any(|line| line.trim() == ".claude/runtime/"),
+        ".gitignore must exclude generated .claude/runtime artifacts"
+    );
+
+    let helper_path = workspace_root()
+        .join("amplifier-bundle")
+        .join("tools")
+        .join("workflow_agentic_finalization.sh");
+    assert!(
+        helper_path.exists(),
+        "agentic finalization helper must inspect artifact scope before final reporting"
+    );
+    let helper = read(&helper_path);
+
+    for required in [
+        ".claude/runtime",
+        "git status --porcelain",
+        "git diff --cached --name-only",
+        "generated_runtime_artifacts",
+        "artifact_scope",
+        "exit 1",
+    ] {
+        assert!(
+            helper.contains(required),
+            "agentic finalization helper must keep runtime artifacts out of commit evidence; missing `{required}`"
+        );
+    }
+}

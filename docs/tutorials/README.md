@@ -108,6 +108,35 @@ python .claude/skills/multitask/orchestrator.py workstreams.json \
   --timeout-policy interrupt-preserve
 ```
 
+### [Workflow Agentic Finalization](workflow-agentic-finalization.md)
+
+Walkthrough for the issue #769 agentic finalization flow: finalize an
+already-implemented issue branch while excluding generated runtime artifacts
+from commit scope.
+
+**Topics Covered**:
+
+- Cleaning `.claude/runtime/` from staged and untracked state
+- Running Artifact Guard before broad staging
+- Inspecting `ready`, `blocked`, and `finalized` finalizer decisions
+- Running finalization-focused validation
+- Preparing a PR that references the issue and records validation
+
+**Prerequisites**: Writable clone of `amplihack`, `jq`, `gh`, and an existing issue branch
+
+**Duration**: ~20 minutes
+
+**Start Learning**:
+
+```bash
+export NODE_OPTIONS=--max-old-space-size=32768
+amplihack recipe run workflow-finalize \
+  -c repo_path="$PWD" \
+  -c branch_name="$(git branch --show-current)" \
+  -c issue_number=769 \
+  --format json
+```
+
 ---
 
 ## Platform-Specific Quick Starts

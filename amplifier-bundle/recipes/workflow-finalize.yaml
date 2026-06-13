@@ -254,6 +254,20 @@ steps:
       bash "$FINAL_STATUS_HELPER"
     output: "final_status"
 
+  - id: "step-22c-agentic-finalization"
+    type: "bash"
+    condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true'"
+    parse_json: true
+    command: |
+      set -euo pipefail
+      cd "${REPO_PATH:?step-22c-agentic-finalization requires repo_path; ensure parent recipe propagated repo_path context}"
+      export GH_PAGER=cat PAGER=cat LESS=FRX
+      AGENTIC_FINALIZATION_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_agentic_finalization.sh"
+      if [ ! -f "$AGENTIC_FINALIZATION_HELPER" ] && [ -n "${REPO_PATH:-}" ]; then AGENTIC_FINALIZATION_HELPER="$REPO_PATH/amplifier-bundle/tools/workflow_agentic_finalization.sh"; fi
+      [ -x "$AGENTIC_FINALIZATION_HELPER" ] || { echo "ERROR: workflow agentic-finalization helper not found or not executable: $AGENTIC_FINALIZATION_HELPER" >&2; exit 1; }
+      bash "$AGENTIC_FINALIZATION_HELPER"
+    output: "agentic_finalization"
+
   - id: "workflow-complete"
     type: "bash"
     parse_json: true
@@ -268,6 +282,10 @@ steps:
       TERMINAL_SUCCESS_VALUE="${TERMINAL_STATE_TERMINAL_SUCCESS:-${RECIPE_VAR_terminal_state__terminal_success:-false}}"
       PUBLISH_STATUS_VALUE="${TERMINAL_STATE_PUBLISH_STATUS:-${RECIPE_VAR_terminal_state__publish_status:-${PR_PUBLISH_RESULT_STATE:-${RECIPE_VAR_pr_publish_result__state:-active-pr}}}}"
       TERMINAL_REASON_VALUE="${TERMINAL_STATE_TERMINAL_REASON:-${RECIPE_VAR_terminal_state__terminal_reason:-}}"
+      AGENTIC_DECISION_VALUE="${AGENTIC_FINALIZATION_DECISION:-${RECIPE_VAR_agentic_finalization__decision:-not_run}}"
+      AGENTIC_CONFIDENCE_VALUE="${AGENTIC_FINALIZATION_CONFIDENCE:-${RECIPE_VAR_agentic_finalization__confidence:-0}}"
+      AGENTIC_BLOCKING_REASONS_VALUE="${AGENTIC_FINALIZATION_BLOCKING_REASONS_TEXT:-${RECIPE_VAR_agentic_finalization__blocking_reasons_text:-}}"
+      AGENTIC_EVIDENCE_SUMMARY_VALUE="${AGENTIC_FINALIZATION_EVIDENCE_SUMMARY:-${RECIPE_VAR_agentic_finalization__evidence_summary:-}}"
       TERMINAL_OUTCOME="$TERMINAL_STATE_VALUE"
       export TERMINAL_OUTCOME
       jq -n \
@@ -279,6 +297,10 @@ steps:
         --arg terminal_success "${TERMINAL_SUCCESS_VALUE}" \
         --arg terminal_reason "${TERMINAL_REASON_VALUE}" \
         --arg publish_status "${PUBLISH_STATUS_VALUE}" \
+        --arg agentic_decision "${AGENTIC_DECISION_VALUE}" \
+        --arg agentic_confidence "${AGENTIC_CONFIDENCE_VALUE}" \
+        --arg agentic_blocking_reasons "${AGENTIC_BLOCKING_REASONS_VALUE}" \
+        --arg agentic_evidence_summary "${AGENTIC_EVIDENCE_SUMMARY_VALUE}" \
         '{
           workflow: "default-workflow",
           version: "2.0.0",
@@ -290,9 +312,19 @@ steps:
           terminal_success: $terminal_success,
           terminal_reason: $terminal_reason,
           publish_status: $publish_status,
+          agentic_finalization: {
+            decision: $agentic_decision,
+            confidence: $agentic_confidence,
+            blocking_reasons: (if $agentic_blocking_reasons == "" then [] else ($agentic_blocking_reasons | split("\n")) end),
+            evidence_summary: $agentic_evidence_summary
+          },
+          agentic_decision: $agentic_decision,
+          agentic_confidence: $agentic_confidence,
+          agentic_blocking_reasons: (if $agentic_blocking_reasons == "" then [] else ($agentic_blocking_reasons | split("\n")) end),
+          agentic_evidence_summary: $agentic_evidence_summary,
           terminal_vocabulary: ["MERGED", "CLOSED_OBSOLETE", "NO_DIFF_SUCCESS", "FOLLOWUP_CREATED", "BLOCKED_CI"],
           status: "complete",
-          steps_completed: 23,
+          steps_completed: 24,
           phases_completed: [
             "requirements-clarification", "design", "implementation",
             "testing", "review", "merge"

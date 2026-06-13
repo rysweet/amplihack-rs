@@ -275,6 +275,9 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Workflow Terminal-State Reference](reference/workflow-terminal-state.md) - Target contract for development completion evidence, no-op states, failure semantics, and shell helper API
 - [How to Diagnose Workflow Terminal-State Failures](howto/diagnose-workflow-terminal-state.md) - Investigate missing evidence after planning, analysis, design, or worktree-only runs
 - [Tutorial: Workflow Terminal-State Closure](tutorials/workflow-terminal-state-closure.md) - Walk through completion evidence, planning-only failure, and rerun semantics
+- [Workflow Agentic Finalization Reference](reference/workflow-agentic-finalization.md) - Issue #769 contract for bounded finalizer assessment on top of deterministic terminal-state and final-status gates
+- [How to Finalize an Existing Workflow Branch](howto/finalize-existing-workflow-branch.md) - Target flow for cleaning generated artifacts, validating finalization evidence, staging issue-relevant files, and preparing a PR
+- [Tutorial: Workflow Agentic Finalization](tutorials/workflow-agentic-finalization.md) - Target walkthrough for `.claude/runtime` cleanup, Artifact Guard, finalizer decisions, validation, and PR publication
 - [Workflow-Owned PR Recovery Readiness](features/pr-recovery-readiness.md) - Recover an existing PR through `default-workflow` with branch reuse, hook readiness, additive-copy readiness, and workflow-owned finalization
 - [Existing Branch Finalization Runbook](features/post-v0977-finalization.md) - Finish an already-implemented branch through preservation, validation, PR publication, CI gating, and policy-ready merge
 - [How to Recover an Existing PR with `default-workflow`](howto/recover-existing-pr-with-default-workflow.md) - Supply `pr_number`, `existing_branch`, and issue requirements without manually merging
