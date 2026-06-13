@@ -271,6 +271,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [How to Configure Workflow Execution Guardrails](howto/configure-workflow-execution-guardrails.md) - Supply `expected_gh_account`, inspect `execution_root`, and troubleshoot failures
 - [Tutorial: Workflow Execution Guardrails](tutorials/workflow-execution-guardrails.md) - End-to-end walkthrough of the guarded workflow contract
 - [Workflow Execution Guardrails Reference](reference/workflow-execution-guardrails.md) - Input fields, output schema, signals, and failure semantics
+- [Default Workflow Step 13 Validation Reference](reference/default-workflow-step-13-validation.md) - Toolchain-aware outside-in local validation contract for Step 13
 - [Workflow Terminal-State Reference](reference/workflow-terminal-state.md) - Target contract for development completion evidence, no-op states, failure semantics, and shell helper API
 - [How to Diagnose Workflow Terminal-State Failures](howto/diagnose-workflow-terminal-state.md) - Investigate missing evidence after planning, analysis, design, or worktree-only runs
 - [Tutorial: Workflow Terminal-State Closure](tutorials/workflow-terminal-state-closure.md) - Walk through completion evidence, planning-only failure, and rerun semantics

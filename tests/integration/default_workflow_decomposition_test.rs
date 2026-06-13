@@ -41,6 +41,8 @@ struct Step {
     recipe: Option<String>,
     #[serde(default)]
     command: Option<String>,
+    #[serde(default)]
+    prompt: Option<String>,
 }
 
 fn recipes_dir() -> PathBuf {
@@ -80,6 +82,16 @@ fn step_command(recipe: &str, step_id: &str) -> String {
         .unwrap_or_else(|| panic!("{recipe}.yaml missing step {step_id}"))
         .command
         .unwrap_or_else(|| panic!("{recipe}.yaml step {step_id} must be a bash step"))
+}
+
+fn step_prompt(recipe: &str, step_id: &str) -> String {
+    load(recipe)
+        .steps
+        .into_iter()
+        .find(|step| step.id == step_id)
+        .unwrap_or_else(|| panic!("{recipe}.yaml missing step {step_id}"))
+        .prompt
+        .unwrap_or_else(|| panic!("{recipe}.yaml step {step_id} must have a prompt"))
 }
 
 /// The expected step inventory of `default-workflow`, in execution order, as
@@ -274,6 +286,103 @@ fn no_duplicate_step_ids_across_subrecipes() {
         }
     }
     assert!(dups.is_empty(), "duplicate step IDs found: {dups:?}");
+}
+
+#[test]
+fn step_13_does_not_mandate_uvx_or_remote_git_install_flow() {
+    let prompt = step_prompt("workflow-precommit-test", "step-13-local-testing");
+    let forbidden_phrases = [
+        "Get the remote URL (for uvx testing)",
+        "git remote get-url origin",
+        "Pass the PR branch name and repository URL so tests run against the actual branch",
+        "uvx --from git+<remote-url>@<branch-name>",
+        "uvx --from git+...@<branch>",
+        "via `uvx --from git+...`",
+    ];
+
+    for phrase in forbidden_phrases {
+        assert!(
+            !prompt.contains(phrase),
+            "Step 13 must not present `{phrase}` as the universal outside-in validation path"
+        );
+    }
+}
+
+#[test]
+fn step_13_requires_agentic_toolchain_detection_before_validation_selection() {
+    let prompt = step_prompt("workflow-precommit-test", "step-13-local-testing");
+    let lower = prompt.to_ascii_lowercase();
+
+    for required in ["outside-in", "detect", "toolchain", "validation strategy"] {
+        assert!(
+            lower.contains(required),
+            "Step 13 must preserve outside-in validation while requiring agents to detect project languages/toolchains and select a validation strategy; missing `{required}`"
+        );
+    }
+
+    assert!(
+        lower.contains("choose") || lower.contains("select"),
+        "Step 13 must delegate validation pattern selection to the acting agent"
+    );
+    assert!(
+        lower.contains("record") && lower.contains("chosen"),
+        "Step 13 must require evidence of the chosen validation strategy, not just raw command output"
+    );
+}
+
+#[test]
+fn step_13_covers_major_toolchain_examples_without_making_uvx_global() {
+    let prompt = step_prompt("workflow-precommit-test", "step-13-local-testing");
+    let lower = prompt.to_ascii_lowercase();
+    let toolchain_examples = [
+        ("Rust/Cargo", lower.contains("cargo")),
+        ("Node/npm", lower.contains("npm")),
+        (
+            "Python/uv/uvx",
+            lower.contains("python") && lower.contains("uv") && lower.contains("uvx"),
+        ),
+        (
+            "Go",
+            lower.contains("go test")
+                || lower.contains("go run")
+                || lower.contains("golang")
+                || prompt.contains("Go/"),
+        ),
+        (".NET", lower.contains("dotnet") || prompt.contains(".NET")),
+    ];
+
+    for (toolchain, present) in toolchain_examples {
+        assert!(
+            present,
+            "Step 13 must include a generalized outside-in validation example for {toolchain}"
+        );
+    }
+
+    assert!(
+        lower.contains("python") && lower.find("python") < lower.rfind("uvx"),
+        "Step 13 may mention uvx only as a Python/uv-specific validation option"
+    );
+}
+
+#[test]
+fn outside_in_validation_gates_require_strategy_evidence_without_uvx_specific_commands() {
+    for recipe in [
+        "smart-validate-summarize",
+        "workflow-pr-review",
+        "workflow-publish",
+    ] {
+        let text = recipe_text(recipe);
+        let lower = text.to_ascii_lowercase();
+
+        assert!(
+            !lower.contains("uvx --from git+"),
+            "{recipe}.yaml must not validate Step 13 by requiring uvx remote Git execution"
+        );
+        assert!(
+            lower.contains("chosen") && lower.contains("strategy"),
+            "{recipe}.yaml must ask for the chosen outside-in validation strategy so reviewers can verify toolchain-aware selection"
+        );
+    }
 }
 
 /// Brick rule: every phase sub-recipe must be ≤ 400 lines. The composer is

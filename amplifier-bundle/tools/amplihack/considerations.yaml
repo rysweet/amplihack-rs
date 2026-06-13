@@ -380,7 +380,7 @@
     SATISFIED when:
     - Agent ran pytest/npm test/cargo test and output shows passing results
     - Agent ran a validation script and confirmed it passed
-    - Agent used "uvx --from git+..." to test the installed package (outside-in)
+    - Agent ran toolchain-appropriate outside-in validation through the user-facing boundary
     - YAML/config-only changes where agent verified syntax (e.g., `yq`, `yamllint`, or shell parse check)
 
     NOT SATISFIED when:
@@ -410,7 +410,7 @@
 
     SATISFIED when:
     - Agent ran the CLI tool with real arguments and checked output
-    - Agent used "uvx --from git+..." to test the installed package
+    - Agent ran a toolchain-appropriate outside-in command against the actual user workflow
     - Agent imported a module and called functions interactively
     - Agent tested with edge case inputs (empty, large, malformed)
     - Automated test count is substantial (10+ tests passing)

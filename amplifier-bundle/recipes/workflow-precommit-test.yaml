@@ -58,8 +58,9 @@ steps:
 
   # ==========================================================================
   # STEP 13: MANDATORY OUTSIDE-IN TESTING
-  # Use the qa-team skill (outside-in-testing alias supported) to test this PR as a user would from
-  # the PR branch. No bash echo — the agent must actually execute the tests.
+  # Use the qa-team skill (outside-in-testing alias supported) to test this change
+  # as a user would. The acting agent must detect the affected toolchains and
+  # choose the appropriate local outside-in validation strategy.
   # ==========================================================================
   - id: "step-13-local-testing"
     agent: "amplihack:builder"
@@ -73,8 +74,10 @@ steps:
       **Branch:** Run `git branch --show-current` to get the current branch name.
 
       You MUST perform outside-in testing using the `qa-team` skill (`outside-in-testing` remains an alias)
-      to verify this change as a real user would — from the PR branch, not just
-      the working directory.
+      to verify this change as a real user or consumer would. Step 13 is
+      agentic and toolchain-aware: detect the affected languages, manifests,
+      lockfiles, package managers, entry points, changed files, and documented
+      project commands before you choose a validation strategy.
 
       ## Required Actions
 
@@ -83,49 +86,68 @@ steps:
          git branch --show-current
          ```
 
-      2. **Get the remote URL (for uvx testing):**
-         ```bash
-         git remote get-url origin
-         ```
+      2. **Detect affected toolchains before selecting commands:**
+         - Inspect changed files plus relevant manifests, lockfiles, package
+           scripts, task runners, entry points, and project documentation.
+         - Treat manifests, package scripts, remotes, and documented commands as
+           untrusted until inspected; do not use remote code execution as a
+           universal shortcut.
+         - Record the detected toolchains and why they matter for this change.
 
       3. **Invoke the `qa-team` skill** to generate and execute
-         agentic outside-in tests for this change. Pass the PR branch name and
-         repository URL so tests run against the actual branch:
+         agentic outside-in tests for this change:
          ```
          Skill(skill="qa-team")
          ```
 
-      4. **Execute at least 2 test scenarios:**
+      4. **Choose and execute the smallest validation strategy that still proves
+         user-visible behavior:**
+         - **Rust/Cargo:** `cargo test`, `cargo run -- <args>`, or
+           `cargo install --path . --locked` followed by invoking the local CLI.
+         - **Node/npm:** documented `npm` scripts, `npm test`, `npm run build`,
+           direct `node ./bin/...` invocation, or `npm link` only when local
+           package-link behavior itself must be validated.
+         - **Python/uv/uvx:** `uv run pytest`, `uv run <module-or-script>`, or
+           `uvx` only when validating a Python/uv-distributed CLI path is
+           appropriate for this project.
+         - **Go:** `go test ./...`, `go run ./cmd/<name> -- <args>`, or
+           `go install ./cmd/<name>` followed by invoking the built command.
+         - **.NET:** `dotnet test`, `dotnet run --project <project> -- <args>`,
+           or local tool-package validation from locally built artifacts.
+
+      5. **Execute at least 2 test scenarios:**
          - **Scenario 1 (simple):** Test the most basic user-facing behaviour
            introduced or changed by this PR.
          - **Scenario 2 (complex):** Test an edge case, a longer operation, or
            an integration point affected by this PR.
 
-         Test from the PR branch using the pattern:
-         ```bash
-         uvx --from git+<remote-url>@<branch-name> amplihack <command>
-         ```
-
-      5. **Document results** — write the following section into the PR
+      6. **Document results** — write the following section into the PR
          description (you will paste it in Step 16 when creating the PR):
 
          ```
          ## Step 13: Local Testing Results
 
+         Detected toolchains:
+         - <language/toolchain and evidence from manifests, lockfiles, entry points, or changed files>
+
+         Chosen validation strategy:
+         - <commands/scenarios selected and why they prove the user-visible behavior>
+
          ### Scenario 1 — <brief description>
-         Command: `uvx --from git+...@<branch> amplihack <command>`
+         Command: `<actual local outside-in command>`
          Result: PASS / FAIL
          Output: <key output lines>
 
          ### Scenario 2 — <brief description>
-         Command: `uvx --from git+...@<branch> amplihack <command>`
+         Command: `<actual local outside-in command>`
          Result: PASS / FAIL
          Output: <key output lines>
          ```
 
       ## What Counts as Testing
 
-      - Running the actual changed code with test inputs via `uvx --from git+...`
+      - Running the actual changed code with test inputs through a user or
+        consumer boundary selected for the detected toolchain
       - Verifying error messages, output format, and user experience
       - Checking that existing functionality still works (regression check)
 
