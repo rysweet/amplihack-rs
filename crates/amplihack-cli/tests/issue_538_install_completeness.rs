@@ -103,18 +103,25 @@ fn resolve_amplihack_binary_from(
     ))
 }
 
-fn write_stub_binary(dir: &Path, name: &str) -> PathBuf {
-    fs::create_dir_all(dir).expect("create stub binary dir");
+fn write_success_executable(dir: &Path, name: &str) -> PathBuf {
+    fs::create_dir_all(dir).expect("create test executable dir");
     let path = dir.join(name);
     let content = format!("#!/bin/sh\nexit 0\n{}\n", "x".repeat(1100));
-    fs::write(&path, content).expect("write stub binary");
+    fs::write(&path, content).expect("write test executable");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755))
-            .expect("chmod stub hooks binary");
+            .expect("chmod test executable");
     }
     path
+}
+
+fn write_install_tooling(home: &Path) -> PathBuf {
+    let bin_dir = home.join("test-bin");
+    let hooks_bin = write_success_executable(&bin_dir, "amplihack-hooks");
+    write_success_executable(&bin_dir, "recipe-runner-rs");
+    hooks_bin
 }
 
 fn amplihack_install_command(home: &Path, hooks_bin: &Path, source: &Path) -> Command {
@@ -130,7 +137,7 @@ fn amplihack_install_command_with_binary(
     let mut cmd = Command::new(binary.as_ref());
     let recipe_runner = hooks_bin
         .parent()
-        .expect("stub binary has parent")
+        .expect("hooks binary has parent")
         .join("recipe-runner-rs");
     cmd.current_dir(workspace_root())
         .arg("install")
@@ -235,7 +242,7 @@ steps:
 #[test]
 fn install_command_launcher_is_not_cargo() {
     let temp = tempfile::tempdir().expect("create temp dir");
-    let binary = write_stub_binary(temp.path(), "amplihack");
+    let binary = write_success_executable(temp.path(), "amplihack");
     let cmd = amplihack_install_command_with_binary(
         &binary,
         Path::new("/tmp/amplihack-test-home"),
@@ -262,9 +269,9 @@ fn install_command_launcher_is_not_cargo() {
 #[test]
 fn binary_resolver_prefers_probe_bin_over_cargo_bin_and_fallback() {
     let temp = tempfile::tempdir().expect("create temp dir");
-    let probe_bin = write_stub_binary(temp.path(), "probe-amplihack");
-    let cargo_bin = write_stub_binary(temp.path(), "cargo-amplihack");
-    let fallback = write_stub_binary(temp.path(), "fallback-amplihack");
+    let probe_bin = write_success_executable(temp.path(), "probe-amplihack");
+    let cargo_bin = write_success_executable(temp.path(), "cargo-amplihack");
+    let fallback = write_success_executable(temp.path(), "fallback-amplihack");
 
     let resolved = resolve_amplihack_binary_from(
         Some(OsString::from(&probe_bin)),
@@ -279,8 +286,8 @@ fn binary_resolver_prefers_probe_bin_over_cargo_bin_and_fallback() {
 #[test]
 fn binary_resolver_uses_cargo_bin_when_probe_bin_is_unset() {
     let temp = tempfile::tempdir().expect("create temp dir");
-    let cargo_bin = write_stub_binary(temp.path(), "cargo-amplihack");
-    let fallback = write_stub_binary(temp.path(), "fallback-amplihack");
+    let cargo_bin = write_success_executable(temp.path(), "cargo-amplihack");
+    let fallback = write_success_executable(temp.path(), "fallback-amplihack");
 
     let resolved = resolve_amplihack_binary_from(None, Some(OsString::from(&cargo_bin)), &fallback)
         .expect("resolve Cargo-provided binary");
@@ -291,7 +298,7 @@ fn binary_resolver_uses_cargo_bin_when_probe_bin_is_unset() {
 #[test]
 fn binary_resolver_uses_existing_fallback_without_env_paths() {
     let temp = tempfile::tempdir().expect("create temp dir");
-    let fallback = write_stub_binary(temp.path(), "fallback-amplihack");
+    let fallback = write_success_executable(temp.path(), "fallback-amplihack");
 
     let resolved = resolve_amplihack_binary_from(None, None, &fallback).expect("resolve fallback");
 
@@ -302,8 +309,8 @@ fn binary_resolver_uses_existing_fallback_without_env_paths() {
 fn binary_resolver_rejects_invalid_probe_bin_instead_of_falling_back() {
     let temp = tempfile::tempdir().expect("create temp dir");
     let missing_probe = temp.path().join("missing-probe-amplihack");
-    let cargo_bin = write_stub_binary(temp.path(), "cargo-amplihack");
-    let fallback = write_stub_binary(temp.path(), "fallback-amplihack");
+    let cargo_bin = write_success_executable(temp.path(), "cargo-amplihack");
+    let fallback = write_success_executable(temp.path(), "fallback-amplihack");
 
     let error = resolve_amplihack_binary_from(
         Some(OsString::from(&missing_probe)),
@@ -354,9 +361,7 @@ fn install_fails_loudly_when_required_source_skills_are_missing() {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let home = tempfile::tempdir().expect("create temp home");
     let source = tempfile::tempdir().expect("create incomplete source");
-    let stub_dir = home.path().join("stub-bin");
-    let hooks_bin = write_stub_binary(&stub_dir, "amplihack-hooks");
-    write_stub_binary(&stub_dir, "recipe-runner-rs");
+    let hooks_bin = write_install_tooling(home.path());
     create_bundle_missing_skills(source.path());
 
     let output = amplihack_install_command(home.path(), &hooks_bin, source.path())
@@ -386,9 +391,7 @@ fn install_stages_every_source_skill_agent_and_command_directory() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let home = tempfile::tempdir().expect("create temp home");
-    let stub_dir = home.path().join("stub-bin");
-    let hooks_bin = write_stub_binary(&stub_dir, "amplihack-hooks");
-    write_stub_binary(&stub_dir, "recipe-runner-rs");
+    let hooks_bin = write_install_tooling(home.path());
     let workspace = workspace_root();
 
     amplihack_install_command(home.path(), &hooks_bin, &workspace)
