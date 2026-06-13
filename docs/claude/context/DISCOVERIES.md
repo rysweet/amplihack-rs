@@ -1603,13 +1603,21 @@ Code committed after unit tests and reviews but missing real user experience val
 
 ### Solution
 
-**ALWAYS test with `uvx --from <branch>` before committing**:
+**ALWAYS run toolchain-aware outside-in validation before committing**:
 
 ```bash
-uvx --from git+https://github.com/org/repo@branch package command
+# Examples: choose based on the detected project/toolchain.
+cargo run -- <user-command>
+npm run <documented-script>
+uv run <module-or-script>
+go run ./cmd/<name> -- <user-command>
+dotnet run --project <project> -- <user-command>
 ```
 
-This verifies: package installation, dependency resolution, actual user workflow, error messages, config updates.
+Use `uvx` only when validating a Python/uv-distributed CLI path is appropriate.
+The goal is to verify package or binary execution, dependency resolution, actual
+user workflow, error messages, and config updates without mandating one global
+installer.
 
 ### Key Learnings
 

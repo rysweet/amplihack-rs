@@ -203,6 +203,21 @@ Agent runtimes that support skills should enter through
 `Skill(skill="default-workflow")` activation is for explicit standalone use or
 orchestrator-unavailable compatibility.
 
+## Step 13 Local Validation Contract
+
+Step 13 is a mandatory outside-in local validation gate. It is agentic and
+toolchain-aware: the acting agent detects affected languages, manifests,
+lockfiles, package managers, entry points, changed files, and documented project
+commands before selecting validation commands.
+
+The step must not require one global validation mechanism across all projects.
+Rust/Cargo, Node/npm, Python/uv, Go, .NET, and other detected toolchains each use
+their own local consumer-facing validation pattern. Python `uvx` is only a
+Python/uv-specific option when that project shape warrants it.
+
+For the full evidence contract and examples, see
+[`docs/reference/default-workflow-step-13-validation.md`](../../../reference/default-workflow-step-13-validation.md).
+
 ## Configuration
 
 Generated preferences and session context name the canonical skill/recipe, not a

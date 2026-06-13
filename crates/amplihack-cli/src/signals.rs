@@ -32,10 +32,14 @@ pub fn register_handlers() -> Result<Arc<AtomicBool>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use std::sync::atomic::Ordering;
+
+    static SIGNAL_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn register_handlers_creates_false_flag() {
+        let _guard = SIGNAL_TEST_LOCK.lock().expect("signal test lock poisoned");
         let shutdown = register_handlers().unwrap();
         assert!(!shutdown.load(Ordering::Relaxed));
     }
@@ -43,6 +47,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn signal_sets_flag() {
+        let _guard = SIGNAL_TEST_LOCK.lock().expect("signal test lock poisoned");
         let shutdown = register_handlers().unwrap();
         assert!(!shutdown.load(Ordering::Relaxed));
 

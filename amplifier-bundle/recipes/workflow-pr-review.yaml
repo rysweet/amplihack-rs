@@ -26,14 +26,15 @@ steps:
         echo "The outside-in testing step (step-13-local-testing) must be completed" && \
         echo "before the PR review phase can begin." && \
         echo "" && \
-        echo "Required: Invoke the qa-team skill (outside-in-testing alias also works) and document at least" && \
-        echo "2 test scenarios in the PR description under 'Step 13: Local Testing Results'." && \
+        echo "Required: Invoke the qa-team skill (outside-in-testing alias also works), document the" && \
+        echo "detected toolchains, chosen validation strategy, and at least 2 test scenarios in the" && \
+        echo "PR description under 'Step 13: Local Testing Results'." && \
         exit 1 ; \
       fi && \
       echo "Compliance check: local_testing_gate is populated." && \
       echo "" && \
       echo "Verify PR description contains 'Step 13: Local Testing Results' section" && \
-      echo "with actual test execution evidence (not just planning)." && \
+      echo "with detected toolchains, chosen strategy, and actual test execution evidence (not just planning)." && \
       echo "" && \
       echo "=== Compliance Check PASSED ==="
     output: "step_13_compliance_check"

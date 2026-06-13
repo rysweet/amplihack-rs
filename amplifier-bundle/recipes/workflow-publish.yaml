@@ -249,19 +249,24 @@ steps:
        **PR URL:** {{pr_publish_result.pr_url}}
 
        Required:
-       1. Get branch and remote with `git branch --show-current` and `git remote get-url origin`.
-       2. Invoke `Skill(skill="qa-team")`.
-       3. Run at least one simple and one edge/integration scenario via:
-       ```bash
-       uvx --from git+<remote-url>@<branch-name> amplihack <command>
-       ```
-       4. If a test fails, diagnose, fix, commit, push, and retry up to 3 times:
+       1. Get the current branch with `git branch --show-current`.
+       2. Detect affected languages, manifests, lockfiles, package managers,
+          entry points, changed files, and documented project commands before
+          choosing a validation strategy.
+       3. Invoke `Skill(skill="qa-team")`.
+       4. Run at least one simple and one edge/integration scenario through the
+          appropriate outside-in user or consumer boundary for the detected
+          toolchain. Examples include local `cargo`, `npm`, `uv`/Python, `go`,
+          or `dotnet` commands; `uvx` is only appropriate for Python/uv CLI
+          distribution validation when that project shape warrants it.
+       5. If a test fails, diagnose, fix, commit, push, and retry up to 3 times:
           ```bash
           amplihack hygiene artifact-guard --repo . --mode pre-publish && git add -A && git commit -m "fix: <describe the fix found during outside-in testing>"
           git pull --rebase && git push
           ```
-       5. If failures persist after 3 iterations, document them honestly.
+       6. If failures persist after 3 iterations, document them honestly.
 
        Update the PR description with a "Step 16b: Outside-In Testing Results"
-       section listing each scenario, command, result, key output, and fix count.
+       section listing detected toolchains, chosen strategy, each scenario,
+       command, result, key output, and fix count.
     output: "outside_in_fix_loop_results"

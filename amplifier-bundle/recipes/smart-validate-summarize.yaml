@@ -68,6 +68,7 @@ steps:
       2. For each workstream, determine whether outside-in testing was performed:
          - Look for "Step 13: Local Testing Results" evidence
          - Look for `qa-team` or `outside-in-testing` skill invocation
+         - Look for detected toolchains and a chosen outside-in validation strategy
          - Look for at least 2 test scenario results (PASS/FAIL)
 
       3. Report your findings in this format:
@@ -82,6 +83,7 @@ steps:
            - Workstream: <name or PR URL>
            - qa-team / outside-in-testing skill invoked: YES / NO / UNKNOWN
            - Step 13 results documented: YES / NO / UNKNOWN
+           - Chosen validation strategy documented: YES / NO / UNKNOWN
            - Test scenarios executed: <count or UNKNOWN>
            - VERDICT: PASS / FAIL / CANNOT_VERIFY
          ```
@@ -94,7 +96,8 @@ steps:
          `OUTSIDE_IN_VALIDATION: FAILED -- <describe which workstreams are missing outside-in testing>`
 
          When FAILED, state clearly what outside-in testing is missing and the
-         command the developer should run to complete it.
+         toolchain-aware validation strategy the developer should choose or run
+         to complete it.
 
       6. If no Development work was done (e.g., task was purely informational
          and produced no code changes or PRs), end with:

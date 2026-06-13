@@ -373,21 +373,31 @@ After investigation completes, continue with these tasks:
 ### Step 13: Mandatory Local Testing (NOT in CI)
 
 **CRITICAL: Test all changes locally in realistic scenarios BEFORE committing.**
-Test like a user would use the feature - outside-in - not just unit tests.
+Test like a user would use the feature - outside-in - not just unit tests. The
+acting agent detects the affected languages, manifests, lockfiles, entry points,
+and documented project commands before selecting validation commands. Step 13 is
+toolchain-aware; it does not mandate one global installer, package manager, or
+remote execution flow.
 
-- [ ] **Test simple use cases** - Basic functionality verification
-- [ ] **Test complex use cases** - Edge cases and longer operations
-- [ ] **Test integration points** - External dependencies and APIs
+- [ ] **Detect affected toolchains** - Identify relevant language and package-manager signals before choosing commands
+- [ ] **Select outside-in scenarios** - Validate through user or consumer boundaries such as CLI, API, service, package, or library usage
+- [ ] **Test simple use cases** - Basic functionality verification with the selected toolchain strategy
+- [ ] **Test complex use cases** - Edge cases and longer operations when the change has branching behavior
+- [ ] **Test integration points** - External dependencies, APIs, package entry points, and cross-language boundaries
 - [ ] **Verify no regressions** - Ensure existing functionality still works
-- [ ] **Document test results** - What was tested and results for the PR description (to be used in a moment) not in the repo
+- [ ] **Document validation evidence** - Record detected toolchains, chosen strategy, commands, and results for the PR description (not in the repo)
 - [ ] **RULE: Never commit without local testing**
 
-**Examples of required tests:**
+**Examples of toolchain-aware outside-in validation:**
 
-- If proxy changes: Test simple and long requests locally
-- If API changes: Test with real client requests
-- If CLI changes: Run actual commands with various options
-- If database changes: Test with actual data operations
+- If Rust/Cargo changes: run relevant `cargo test` coverage and invoke the CLI or binary locally with realistic arguments
+- If Node/npm changes: use documented `npm` scripts and exercise exported commands, package entry points, or browser/API behavior
+- If Python/uv changes: use `uv run` for tests or scripts; use `uvx` only when validating a Python/uv-distributed CLI path is appropriate
+- If Go changes: run `go test ./...` and exercise `go run` or the built command from the user boundary
+- If .NET changes: run `dotnet test` and exercise `dotnet run`, local tool packages, or service/API behavior
+
+See [Default Workflow Step 13 Validation](../../reference/default-workflow-step-13-validation.md)
+for the full selection contract and evidence format.
 
 **Why this matters:**
 
