@@ -158,8 +158,8 @@ pub fn run_output_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Ou
     }
 
     terminate_timed_out_child(&mut child)?;
-    let _ = join_pipe_reader(stdout_reader, "stdout")?;
-    let _ = join_pipe_reader(stderr_reader, "stderr")?;
+    // Do not join pipe readers after timeout: descendants may keep inherited
+    // pipe fds open, and this helper must preserve a hard wall-clock timeout.
     bail!(
         "subprocess timed out after {} seconds (pid {})",
         timeout.as_secs(),
