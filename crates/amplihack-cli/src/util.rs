@@ -8,13 +8,12 @@
 //! * SEC-WS2-02: All externally-sourced strings must pass through [`strip_ansi`]
 //!   before display to prevent terminal injection via crafted external output.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use std::io::IsTerminal;
-use std::io::{self, Write};
-use std::process::{Command, ExitStatus, Output, Stdio};
-use std::sync::mpsc;
+use std::io::{self, Read, Write};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 // ── Non-interactive mode detection ────────────────────────────────────────────
 
@@ -104,72 +103,147 @@ pub fn strip_ansi(s: &str) -> String {
 
 // ── Subprocess with timeout ────────────────────────────────────────────────────
 
+const CHILD_WAIT_INITIAL_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const CHILD_WAIT_MAX_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const SUBPROCESS_SPAWN_RETRY_TIMEOUT: Duration = Duration::from_millis(250);
+const SUBPROCESS_SPAWN_RETRY_INTERVAL: Duration = Duration::from_millis(10);
+
 /// Run a pre-built `Command` with a hard wall-clock timeout.
 ///
-/// Uses a background thread and `mpsc::recv_timeout` — no async runtime needed.
-/// On timeout, sends SIGTERM to the child (Unix only, best-effort) and returns
-/// an error.  Returns the `ExitStatus` on success.
+/// On timeout, terminates the child through the process handle, waits for
+/// cleanup to finish, and returns an error. Returns the `ExitStatus` on success.
 pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<ExitStatus> {
-    let mut child = cmd.spawn().context("failed to spawn subprocess")?;
+    let mut child = spawn_subprocess(&mut cmd).context("failed to spawn subprocess")?;
     let pid = child.id();
 
-    let (tx, rx) = mpsc::channel::<std::io::Result<ExitStatus>>();
-    thread::spawn(move || {
-        let _ = tx.send(child.wait());
-    });
-
-    match rx.recv_timeout(timeout) {
-        Ok(result) => result.context("failed to wait for subprocess"),
-        Err(_elapsed) => {
-            #[cfg(unix)]
-            {
-                let kill_result = Command::new("kill")
-                    .args(["-TERM", &pid.to_string()])
-                    .status();
-                if let Err(e) = kill_result {
-                    tracing::warn!(pid, error = %e, "failed to terminate timed-out subprocess");
-                }
-            }
-            bail!(
-                "subprocess timed out after {} seconds (pid {})",
-                timeout.as_secs(),
-                pid
-            )
-        }
+    if let Some(status) =
+        wait_for_child_exit(&mut child, timeout).context("failed to wait for subprocess")?
+    {
+        return Ok(status);
     }
+
+    terminate_timed_out_child(&mut child)?;
+    bail!(
+        "subprocess timed out after {} seconds (pid {})",
+        timeout.as_secs(),
+        pid
+    )
 }
 
 /// Run a pre-built `Command` with stdout/stderr capture and a hard timeout.
 pub fn run_output_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Output> {
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
-    let child = cmd.spawn().context("failed to spawn subprocess")?;
+    let mut child = spawn_subprocess(&mut cmd).context("failed to spawn subprocess")?;
     let pid = child.id();
-    let (tx, rx) = mpsc::channel::<std::io::Result<Output>>();
+    let stdout = child
+        .stdout
+        .take()
+        .context("failed to capture subprocess stdout")?;
+    let stderr = child
+        .stderr
+        .take()
+        .context("failed to capture subprocess stderr")?;
+    let stdout_reader = spawn_pipe_reader(stdout);
+    let stderr_reader = spawn_pipe_reader(stderr);
 
-    thread::spawn(move || {
-        let _ = tx.send(child.wait_with_output());
-    });
+    if let Some(status) =
+        wait_for_child_exit(&mut child, timeout).context("failed to wait for subprocess output")?
+    {
+        let stdout = join_pipe_reader(stdout_reader, "stdout")?;
+        let stderr = join_pipe_reader(stderr_reader, "stderr")?;
+        return Ok(Output {
+            status,
+            stdout,
+            stderr,
+        });
+    }
 
-    match rx.recv_timeout(timeout) {
-        Ok(result) => result.context("failed to wait for subprocess output"),
-        Err(_elapsed) => {
-            #[cfg(unix)]
-            {
-                let kill_result = Command::new("kill")
-                    .args(["-TERM", &pid.to_string()])
-                    .status();
-                if let Err(e) = kill_result {
-                    tracing::warn!(pid, error = %e, "failed to terminate timed-out subprocess");
+    terminate_timed_out_child(&mut child)?;
+    // Do not join pipe readers after timeout: descendants may keep inherited
+    // pipe fds open, and this helper must preserve a hard wall-clock timeout.
+    bail!(
+        "subprocess timed out after {} seconds (pid {})",
+        timeout.as_secs(),
+        pid
+    )
+}
+
+fn spawn_subprocess(cmd: &mut Command) -> io::Result<Child> {
+    let started = Instant::now();
+    loop {
+        match cmd.spawn() {
+            Ok(child) => return Ok(child),
+            Err(error) if error.kind() == io::ErrorKind::ExecutableFileBusy => {
+                if started.elapsed() >= SUBPROCESS_SPAWN_RETRY_TIMEOUT {
+                    return Err(error);
                 }
+                thread::sleep(SUBPROCESS_SPAWN_RETRY_INTERVAL);
             }
-            bail!(
-                "subprocess timed out after {} seconds (pid {})",
-                timeout.as_secs(),
-                pid
-            )
+            Err(error) => return Err(error),
         }
     }
+}
+
+fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> io::Result<Option<ExitStatus>> {
+    let started = Instant::now();
+    let mut poll_interval = CHILD_WAIT_INITIAL_POLL_INTERVAL;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        let elapsed = started.elapsed();
+        if elapsed >= timeout {
+            return Ok(None);
+        }
+        thread::sleep(poll_interval.min(timeout.saturating_sub(elapsed)));
+        poll_interval = (poll_interval + poll_interval).min(CHILD_WAIT_MAX_POLL_INTERVAL);
+    }
+}
+
+fn terminate_timed_out_child(child: &mut Child) -> Result<()> {
+    let pid = child.id();
+    match child.kill() {
+        Ok(()) => {}
+        Err(kill_error) => match child.try_wait() {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return Err(kill_error).with_context(|| {
+                    format!("failed to terminate timed-out subprocess pid {pid}")
+                });
+            }
+            Err(wait_error) => {
+                return Err(wait_error).with_context(|| {
+                    format!("failed to inspect timed-out subprocess pid {pid} after kill failure")
+                });
+            }
+        },
+    }
+    child
+        .wait()
+        .with_context(|| format!("failed to wait for timed-out subprocess pid {pid}"))?;
+    Ok(())
+}
+
+fn spawn_pipe_reader<R>(mut pipe: R) -> thread::JoinHandle<io::Result<Vec<u8>>>
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut buffer = Vec::new();
+        pipe.read_to_end(&mut buffer)?;
+        Ok(buffer)
+    })
+}
+
+fn join_pipe_reader(
+    reader: thread::JoinHandle<io::Result<Vec<u8>>>,
+    stream_name: &str,
+) -> Result<Vec<u8>> {
+    reader
+        .join()
+        .map_err(|_| anyhow!("subprocess {stream_name} reader thread panicked"))?
+        .with_context(|| format!("failed to read subprocess {stream_name}"))
 }
 
 /// Read a single line of terminal input with a wall-clock timeout.
@@ -308,5 +382,70 @@ mod tests {
     fn strip_ansi_removes_multiple_sequences() {
         let input = "\x1b[32m\x1b[1mgreen bold\x1b[0m";
         assert_eq!(strip_ansi(input), "green bold");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn run_output_with_timeout_terminates_child_without_path() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let empty_path = temp.path().join("empty-path");
+        std::fs::create_dir(&empty_path).unwrap();
+        let script = temp.path().join("hang");
+        let pid_file = temp.path().join("pid");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf '%s' \"$$\" > \"$1\"\nexec /bin/sleep 5\n",
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        let previous_path = std::env::var_os("PATH");
+        unsafe { std::env::set_var("PATH", &empty_path) };
+
+        let mut cmd = std::process::Command::new(&script);
+        cmd.arg(&pid_file);
+        let result = run_output_with_timeout(cmd, Duration::from_millis(50));
+
+        match previous_path {
+            Some(value) => unsafe { std::env::set_var("PATH", value) },
+            None => unsafe { std::env::remove_var("PATH") },
+        }
+
+        let pid: i32 = std::fs::read_to_string(&pid_file).unwrap().parse().unwrap();
+        let exited = wait_for_pid_to_exit(pid, Duration::from_millis(500));
+        if !exited {
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+            let _ = wait_for_pid_to_exit(pid, Duration::from_millis(500));
+        }
+
+        let error = result.expect_err("hanging subprocess should time out");
+        assert!(
+            error.to_string().contains("timed out after"),
+            "timeout error must stay explicit; got {error:#}"
+        );
+        assert!(
+            exited,
+            "timed-out subprocess must be terminated even when PATH cannot resolve kill"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    fn wait_for_pid_to_exit(pid: i32, timeout: Duration) -> bool {
+        let started = std::time::Instant::now();
+        let proc_path = std::path::PathBuf::from(format!("/proc/{pid}"));
+        while proc_path.exists() {
+            if started.elapsed() >= timeout {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        true
     }
 }
