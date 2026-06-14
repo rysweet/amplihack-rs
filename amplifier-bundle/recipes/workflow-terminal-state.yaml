@@ -23,6 +23,8 @@ inputs:
     description: "Optional PR URL to validate and inspect."
   - name: goal_already_met
     description: "Legacy design signal; used only as supporting evidence and never as an override."
+  - name: terminal_fail_mode
+    description: "Failure behavior for terminal probe blockers. `exit` preserves standalone fail-closed behavior; `report` emits blocker JSON with exit 0 so workflow-finalize can classify and validate it agentically."
 
 context:
   repo_path: "."
@@ -32,6 +34,7 @@ context:
   pr_url: ""
   goal_already_met: "false"
   terminal_gate_mode: "probe"
+  terminal_fail_mode: "exit"
 
 steps:
   - id: "probe-terminal-state"
@@ -88,6 +91,12 @@ steps:
         should_merge="false"
         emit_terminal_state
         echo "ERROR: workflow-terminal-state: $terminal_state: $terminal_reason" >&2
+        fail_mode="${TERMINAL_FAIL_MODE:-${RECIPE_VAR_terminal_fail_mode:-}}"
+        [ -n "$fail_mode" ] || fail_mode="{{terminal_fail_mode}}"
+        case "$fail_mode" in "{{terminal_fail_mode}}"|"") fail_mode="exit" ;; esac
+        if [ "$fail_mode" = "report" ]; then
+          exit 0
+        fi
         exit 1
       }
 

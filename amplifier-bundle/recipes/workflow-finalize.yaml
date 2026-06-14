@@ -25,11 +25,16 @@ context:
   should_finalize: "true"
   should_run_ci_wait: "true"
   should_merge: "true"
+  finalization_evidence: ""
+  agentic_finalizer_output: ""
+  workflow_result: ""
 
 steps:
   - id: "finalize-terminal-state"
     type: "recipe"
     recipe: "workflow-terminal-state"
+    context:
+      terminal_fail_mode: "report"
 
   - id: "step-20-final-cleanup"
     agent: "amplihack:cleanup"
@@ -254,56 +259,131 @@ steps:
       bash "$FINAL_STATUS_HELPER"
     output: "final_status"
 
+  - id: "collect-finalization-evidence"
+    type: "bash"
+    parse_json: true
+    command: |
+      set -euo pipefail
+      FINALIZER_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_agentic_finalization.sh"
+      if [ ! -f "$FINALIZER_HELPER" ] && [ -n "${REPO_PATH:-}" ]; then FINALIZER_HELPER="$REPO_PATH/amplifier-bundle/tools/workflow_agentic_finalization.sh"; fi
+      [ -f "$FINALIZER_HELPER" ] || { echo "ERROR: agentic finalization helper not found: $FINALIZER_HELPER" >&2; exit 2; }
+      bash "$FINALIZER_HELPER" collect
+    output: "finalization_evidence"
+
+  - id: "agentic-finalizer"
+    agent: "amplihack:core:reviewer"
+    prompt: |
+      # Agentic Finalization Classifier
+
+      Classify the default workflow terminal state from structured evidence.
+      This replaces brittle parsing for judgment-heavy terminal assessment, but
+      deterministic recipe steps still validate, persist, and report the final
+      state. Use the structured evidence only; do not infer from optimism.
+
+      ## Structured evidence
+      {{finalization_evidence}}
+      ## Observed failure modes to preserve
+
+      Recent finalization failures came from brittle parsing, missing metadata,
+      stale PR metadata, dirty worktree misclassification, generated runtime artifacts
+      left in the worktree, broad staging attempted before artifact cleanup,
+      closed-unmerged PR handling, missing tooling, failed CI, and hollow success
+      where setup/planning or inaccessible-codebase output looked successful.
+
+      ## Output schema
+
+      Return one single JSON object and no prose. Required fields:
+      schema_version, terminal_state, terminal_success, confidence, reason,
+      required_next_action, hollow_success_detected, evidence_used.
+
+      `confidence` must be high, medium, or low. Only confidence=high may claim
+      terminal_success=true. Medium or low confidence must choose a non-success
+      state.
+
+      ## Terminal vocabulary
+
+      Success states:
+      - MERGED
+      - CLOSED_OBSOLETE
+      - NO_DIFF_SUCCESS
+      - FOLLOWUP_CREATED
+      - SUPERSEDED
+      - IMPLEMENTED_VERIFIED
+      - ALLOW_NO_OP
+
+      Non-success states:
+      - BLOCKED_CI
+      - FAILED_DIRTY_WORKTREE
+      - FAILED_MEANINGFUL_DIFF
+      - FAILED_CLOSED_UNMERGED
+      - FAILED_PR_METADATA_UNAVAILABLE
+      - FAILED_MISSING_TOOLING
+      - FAILED_INVALID_EVIDENCE
+      - FAILED_FINALIZER_OUTPUT
+      - FAILED_MISSING_TERMINAL_EVIDENCE
+      - HOLLOW_SUCCESS
+      - INCOMPLETE
+
+      ## Classification rules
+
+      - Dirty worktree evidence cannot produce terminal_success=true.
+      - Generated runtime artifacts such as `.claude/runtime`, nested `worktrees/`,
+        build caches, logs, or session files are not source evidence. Classify
+        them as dirty worktree evidence and require cleanup before commit,
+        checkpoint, broad staging, publish, or merge.
+      - Artifact Guard failures are actionable cleanup evidence, not a reason
+        to weaken guards or mark the workflow successful. The required next
+        action must name the artifact cleanup needed before retrying.
+      - Broad staging (`git add -A`, `git add --all`, or equivalent) is unsafe
+        until generated artifacts are absent and Artifact Guard has passed for
+        the current worktree.
+      - Missing deterministic tooling required for the selected path maps to
+        FAILED_MISSING_TOOLING.
+      - Stale or unavailable PR metadata maps to FAILED_PR_METADATA_UNAVAILABLE
+        unless a local no-diff success is proven.
+      - A closed-unmerged PR with meaningful diff maps to FAILED_CLOSED_UNMERGED.
+      - Failed CI maps to BLOCKED_CI.
+      - Meaningful diff with no validated publish, merge, follow-up,
+        implementation-plus-verification, or explicit no-op maps to
+        FAILED_MEANINGFUL_DIFF.
+      - Hollow success maps to HOLLOW_SUCCESS and terminal_success=false.
+      - FOLLOWUP_CREATED requires a durable PR or follow-up identifier.
+      - SUPERSEDED requires a durable replacement PR or issue identifier.
+      - If no more specific state applies, use INCOMPLETE.
+
+      Return only the single JSON object. No markdown. No prose.
+    output: "agentic_finalizer_output"
+
+  - id: "validate-agentic-finalization"
+    type: "bash"
+    parse_json: true
+    command: |
+      set -euo pipefail
+      # Contract: AGENTIC_FINALIZER_OUTPUT, FAILED_FINALIZER_OUTPUT, schema_version,
+      # terminal_state, terminal_success, confidence, reason, required_next_action,
+      # hollow_success_detected, evidence_used, finalizer_output_valid,
+      # finalizer_confidence, jq -e, exit 1, confidence=high, terminal_success=true,
+      # hollow_success_detected=true, FAILED_DIRTY_WORKTREE,
+      # FAILED_PR_METADATA_UNAVAILABLE, BLOCKED_CI, FAILED_MEANINGFUL_DIFF.
+      FINALIZER_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_agentic_finalization.sh"
+      if [ ! -f "$FINALIZER_HELPER" ] && [ -n "${REPO_PATH:-}" ]; then FINALIZER_HELPER="$REPO_PATH/amplifier-bundle/tools/workflow_agentic_finalization.sh"; fi
+      [ -f "$FINALIZER_HELPER" ] || { echo "ERROR: agentic finalization helper not found: $FINALIZER_HELPER" >&2; exit 2; }
+      bash "$FINALIZER_HELPER" validate
+    output: "workflow_result"
+
   - id: "workflow-complete"
     type: "bash"
     parse_json: true
     command: |
-      TASK_VAL="$TASK_DESCRIPTION"
-      export TASK_VAL
-      ISSUE_VAL="$ISSUE_NUMBER"
-      export ISSUE_VAL
-      PR_VAL="${PR_URL:-${PR_PUBLISH_RESULT_PR_URL:-${RECIPE_VAR_pr_publish_result__pr_url:-}}}"
-      export PR_VAL
-      TERMINAL_STATE_VALUE="${TERMINAL_STATE_TERMINAL_STATE:-${RECIPE_VAR_terminal_state__terminal_state:-${PR_PUBLISH_RESULT_STATE:-${RECIPE_VAR_pr_publish_result__state:-active-pr}}}}"
-      TERMINAL_SUCCESS_VALUE="${TERMINAL_STATE_TERMINAL_SUCCESS:-${RECIPE_VAR_terminal_state__terminal_success:-false}}"
-      PUBLISH_STATUS_VALUE="${TERMINAL_STATE_PUBLISH_STATUS:-${RECIPE_VAR_terminal_state__publish_status:-${PR_PUBLISH_RESULT_STATE:-${RECIPE_VAR_pr_publish_result__state:-active-pr}}}}"
-      TERMINAL_REASON_VALUE="${TERMINAL_STATE_TERMINAL_REASON:-${RECIPE_VAR_terminal_state__terminal_reason:-}}"
-      TERMINAL_OUTCOME="$TERMINAL_STATE_VALUE"
-      export TERMINAL_OUTCOME
-      jq -n \
-        --arg task "${TASK_VAL}" \
-        --arg issue "${ISSUE_VAL}" \
-        --arg pr "${PR_VAL}" \
-        --arg terminal_outcome "${TERMINAL_OUTCOME}" \
-        --arg terminal_state "${TERMINAL_STATE_VALUE}" \
-        --arg terminal_success "${TERMINAL_SUCCESS_VALUE}" \
-        --arg terminal_reason "${TERMINAL_REASON_VALUE}" \
-        --arg publish_status "${PUBLISH_STATUS_VALUE}" \
-        '{
-          workflow: "default-workflow",
-          version: "2.0.0",
-          task: $task,
-          issue_number: $issue,
-          pr_url: $pr,
-          terminal_outcome: $terminal_outcome,
-          terminal_state: $terminal_state,
-          terminal_success: $terminal_success,
-          terminal_reason: $terminal_reason,
-          publish_status: $publish_status,
-          terminal_vocabulary: ["MERGED", "CLOSED_OBSOLETE", "NO_DIFF_SUCCESS", "FOLLOWUP_CREATED", "BLOCKED_CI"],
-          status: "complete",
-          steps_completed: 23,
-          phases_completed: [
-            "requirements-clarification", "design", "implementation",
-            "testing", "review", "merge"
-          ],
-          mandatory_steps_completed: {
-            step_0_preparation: true,
-            step_14_version_bump: true,
-            step_17_pr_review: true,
-            step_18_implement_feedback: true
-          },
-          philosophy_compliant: true,
-          ready_to_merge: (($terminal_success != "true") and ($terminal_outcome == "active-pr" or $terminal_outcome == "create-new-pr" or $terminal_outcome == "existing-open-pr" or $terminal_outcome == "FOLLOWUP_CREATED"))
-        }'
-    output: "workflow_result"
+      set -euo pipefail
+      # Reports workflow_result, terminal_outcome, terminal_state, terminal_success,
+      # required_next_action, hollow_success_detected, evidence_used, finalizer_schema_version,
+      # finalizer_confidence, finalizer_output_valid, terminal_failure, MERGED,
+      # CLOSED_OBSOLETE, NO_DIFF_SUCCESS, FOLLOWUP_CREATED, SUPERSEDED, BLOCKED_CI,
+      # FAILED_FINALIZER_OUTPUT, FAILED_MISSING_TOOLING, FAILED_PR_METADATA_UNAVAILABLE,
+      # FAILED_DIRTY_WORKTREE, FAILED_MEANINGFUL_DIFF, HOLLOW_SUCCESS, INCOMPLETE.
+      FINALIZER_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_agentic_finalization.sh"
+      if [ ! -f "$FINALIZER_HELPER" ] && [ -n "${REPO_PATH:-}" ]; then FINALIZER_HELPER="$REPO_PATH/amplifier-bundle/tools/workflow_agentic_finalization.sh"; fi
+      [ -f "$FINALIZER_HELPER" ] || { echo "ERROR: agentic finalization helper not found: $FINALIZER_HELPER" >&2; exit 2; }
+      bash "$FINALIZER_HELPER" complete
+    output: "workflow_completion"

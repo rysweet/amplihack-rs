@@ -8,6 +8,7 @@ planning-only run fails visibly instead of reporting success.
 - Run `smart-orchestrator` for a code-change task.
 - Recognize missing terminal evidence.
 - Inspect the evidence fields in the recipe result.
+- Read the structured agentic finalizer decision.
 - Rerun the workflow so it reaches implementation, verification, publish, or an
   explicit no-op state.
 
@@ -48,6 +49,10 @@ jq '.. | objects | select(has("terminal_state")) | {
   terminal_success,
   terminal_state,
   terminal_reason,
+  required_next_action,
+  hollow_success_detected,
+  evidence_used,
+  finalizer_output_valid,
   observed_phases,
   missing_evidence
 }' recipe-result.json
@@ -60,6 +65,10 @@ A completed implementation and verification path looks like this:
   "terminal_success": "true",
   "terminal_state": "IMPLEMENTED_VERIFIED",
   "terminal_reason": "implementation and targeted tests completed",
+  "required_next_action": "No further action is required.",
+  "hollow_success_detected": "false",
+  "evidence_used": "implementation.completed=true,verification.completed=true",
+  "finalizer_output_valid": "true",
   "observed_phases": "workflow-prep,workflow-worktree,workflow-design,workflow-tdd,workflow-precommit-test",
   "missing_evidence": ""
 }
@@ -70,7 +79,37 @@ workflow proves one of the valid terminal states.
 
 ---
 
-## 3. Understand a Planning-Only Failure
+## 3. Read the Agentic Finalizer Decision
+
+The finalizer explains the terminal state from structured evidence. For example,
+an open PR with failing required checks returns a failure state even though the
+PR exists and matches the branch:
+
+```json
+{
+  "schema_version": 1,
+  "terminal_state": "BLOCKED_CI",
+  "terminal_success": false,
+  "confidence": "high",
+  "reason": "PR #123 exists and matches this branch, but required CI checks are failing.",
+  "required_next_action": "Fix failing CI checks before merge.",
+  "hollow_success_detected": false,
+  "evidence_used": [
+    "pr.state=OPEN",
+    "pr.head_branch_matches=true",
+    "ci.state=FAILURE"
+  ]
+}
+```
+
+The deterministic gate validates that JSON before reporting the final workflow
+result. If the finalizer emits prose, omits required fields, invents an unknown
+state, or claims success with weak evidence, finalization fails with
+`FAILED_FINALIZER_OUTPUT`.
+
+---
+
+## 4. Understand a Planning-Only Failure
 
 If a development workflow stops after worktree setup or design, the command
 exits nonzero. The result includes missing evidence:
@@ -90,7 +129,27 @@ it is not a completed code-change task.
 
 ---
 
-## 4. Continue the Workflow
+## 5. Understand Hollow Success
+
+If earlier phases exit `0` after empty agent output, inaccessible-codebase
+messages, or setup-only progress, finalization makes the overall recipe fail:
+
+```json
+{
+  "terminal_success": "false",
+  "terminal_state": "HOLLOW_SUCCESS",
+  "terminal_reason": "The run produced planning output but no implementation, verification, publish, or valid no-op evidence.",
+  "required_next_action": "Resume default-workflow from implementation or emit a valid no-op state with evidence.",
+  "hollow_success_detected": "true"
+}
+```
+
+Hollow success is a failure state. Resume the missing workflow phase instead of
+post-processing the recipe result into success.
+
+---
+
+## 6. Continue the Workflow
 
 Resume or rerun the development workflow with the existing branch/worktree
 context:
@@ -112,11 +171,11 @@ The rerun must reach one of these outcomes:
 - `CLOSED_OBSOLETE`
 - `SUPERSEDED`
 - `ALLOW_NO_OP`
-- a visible terminal failure such as `BLOCKED_CI`
+- a visible terminal failure such as `BLOCKED_CI` or `FAILED_MEANINGFUL_DIFF`
 
 ---
 
-## 5. Confirm the Exit Code
+## 7. Confirm the Exit Code
 
 Use the shell exit code as the source of truth:
 
@@ -153,3 +212,4 @@ reported as recipe failure and the CLI exits nonzero, currently `1`.
 
 - Use [How to Diagnose Workflow Terminal-State Failures](../howto/diagnose-workflow-terminal-state.md) for recovery patterns.
 - Use [Workflow Terminal-State Reference](../reference/workflow-terminal-state.md) for the field and helper API.
+- Use [Default Workflow Agentic Finalization](../reference/default-workflow-agentic-finalization.md) for the finalizer schema and examples.
