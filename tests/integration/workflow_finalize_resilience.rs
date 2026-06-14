@@ -9,6 +9,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
+use serde_json::Value as JsonValue;
 use serde_yaml::Value;
 use tempfile::TempDir;
 
@@ -57,6 +58,19 @@ fn make_executable(path: &Path) {
         fs::set_permissions(path, fs::Permissions::from_mode(0o755))
             .unwrap_or_else(|e| panic!("chmod {}: {e}", path.display()));
     }
+}
+
+fn run_agentic_finalization(mode: &str, envs: &[(&str, &str)]) -> std::process::Output {
+    let mut command = Command::new("bash");
+    command
+        .arg(workspace_helper_path("workflow_agentic_finalization.sh"))
+        .arg(mode);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    command
+        .output()
+        .expect("run workflow_agentic_finalization.sh")
 }
 
 fn step_command(recipe: &Value, id: &str) -> String {
@@ -849,6 +863,181 @@ fn final_status_does_not_confirm_closed_obsolete_with_dirty_worktree() {
         stderr.contains("clean-worktree diff could not confirm"),
         "dirty obsolete claim must produce a visible error, stderr:\n{stderr}"
     );
+}
+
+#[test]
+fn agentic_finalization_validate_fails_closed_for_malformed_output() {
+    let output = run_agentic_finalization("validate", &[("AGENTIC_FINALIZER_OUTPUT", "not json")]);
+
+    assert!(
+        !output.status.success(),
+        "malformed finalizer output must fail closed"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stdout.contains("FAILED_FINALIZER_OUTPUT"),
+        "failure JSON must preserve FAILED_FINALIZER_OUTPUT, stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("not a single JSON object"),
+        "stderr must explain malformed finalizer output, stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn agentic_finalization_rejects_low_confidence_success() {
+    let output = run_agentic_finalization(
+        "validate",
+        &[(
+            "AGENTIC_FINALIZER_OUTPUT",
+            r#"{"schema_version":1,"terminal_state":"IMPLEMENTED_VERIFIED","terminal_success":true,"confidence":"medium","reason":"implementation and verification evidence exists","required_next_action":"No action required.","hollow_success_detected":false,"evidence_used":["implementation_completed=true","verification_completed=true"]}"#,
+        )],
+    );
+
+    assert!(
+        !output.status.success(),
+        "terminal_success=true with medium confidence must fail closed"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("terminal_success=true requires confidence=high"),
+        "failure output must explain confidence invariant, stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn agentic_finalization_rejects_success_when_collected_evidence_is_dirty() {
+    let output = run_agentic_finalization(
+        "validate",
+        &[
+            (
+                "AGENTIC_FINALIZER_OUTPUT",
+                r#"{"schema_version":1,"terminal_state":"IMPLEMENTED_VERIFIED","terminal_success":true,"confidence":"high","reason":"implementation and verification evidence exists","required_next_action":"No action required.","hollow_success_detected":false,"evidence_used":["implementation_completed=true","verification_completed=true"]}"#,
+            ),
+            (
+                "FINALIZATION_EVIDENCE",
+                r#"{"git":{"dirty_worktree":"true"},"tooling":{"missing":"","gh_required":"false"},"prior_terminal_state":{"terminal_state":""}}"#,
+            ),
+        ],
+    );
+
+    assert!(
+        !output.status.success(),
+        "dirty collected evidence must override an optimistic agent success"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("FAILED_DIRTY_WORKTREE"),
+        "dirty evidence must produce FAILED_DIRTY_WORKTREE, stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn agentic_finalization_rejects_success_when_required_github_tooling_is_missing() {
+    let output = run_agentic_finalization(
+        "validate",
+        &[
+            (
+                "AGENTIC_FINALIZER_OUTPUT",
+                r#"{"schema_version":1,"terminal_state":"FOLLOWUP_CREATED","terminal_success":true,"confidence":"high","reason":"PR publication evidence exists","required_next_action":"No action required.","hollow_success_detected":false,"evidence_used":["pr.present=true"]}"#,
+            ),
+            (
+                "FINALIZATION_EVIDENCE",
+                r#"{"git":{"dirty_worktree":"false"},"tooling":{"missing":"gh","gh_required":"true"},"prior_terminal_state":{"terminal_state":""}}"#,
+            ),
+        ],
+    );
+
+    assert!(
+        !output.status.success(),
+        "missing required gh tooling must override an optimistic agent success"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("FAILED_MISSING_TOOLING"),
+        "missing gh evidence must produce FAILED_MISSING_TOOLING, stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn agentic_finalization_validate_and_complete_emit_canonical_success_json() {
+    let tmp = TempDir::new().expect("tempdir");
+    let repo_path = tmp.path().to_string_lossy().to_string();
+    let validate = run_agentic_finalization(
+        "validate",
+        &[
+            (
+                "AGENTIC_FINALIZER_OUTPUT",
+                r#"{"schema_version":1,"terminal_state":"IMPLEMENTED_VERIFIED","terminal_success":true,"confidence":"high","reason":"implementation and verification evidence exists","required_next_action":"No action required.","hollow_success_detected":false,"evidence_used":["implementation_completed=true","verification_completed=true"]}"#,
+            ),
+            ("IMPLEMENTATION_COMPLETED", "true"),
+            ("VERIFICATION_COMPLETED", "true"),
+            ("REPO_PATH", &repo_path),
+        ],
+    );
+
+    assert!(
+        validate.status.success(),
+        "valid high-confidence implementation/verification success should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&validate.stdout),
+        String::from_utf8_lossy(&validate.stderr)
+    );
+    let workflow_result: JsonValue =
+        serde_json::from_slice(&validate.stdout).expect("validate emits JSON");
+    assert_eq!(workflow_result["terminal_state"], "IMPLEMENTED_VERIFIED");
+    assert_eq!(workflow_result["terminal_success"], "true");
+    assert_eq!(workflow_result["finalizer_output_valid"], "true");
+
+    let complete = run_agentic_finalization(
+        "complete",
+        &[
+            ("TASK_DESCRIPTION", "test task"),
+            ("ISSUE_NUMBER", "7"),
+            (
+                "RECIPE_VAR_workflow_result__terminal_state",
+                "IMPLEMENTED_VERIFIED",
+            ),
+            ("RECIPE_VAR_workflow_result__terminal_success", "true"),
+            (
+                "RECIPE_VAR_workflow_result__terminal_reason",
+                "implementation and verification evidence exists",
+            ),
+            (
+                "RECIPE_VAR_workflow_result__required_next_action",
+                "No action required.",
+            ),
+            (
+                "RECIPE_VAR_workflow_result__hollow_success_detected",
+                "false",
+            ),
+            (
+                "RECIPE_VAR_workflow_result__evidence_used",
+                "implementation_completed=true,verification_completed=true",
+            ),
+            ("RECIPE_VAR_workflow_result__finalizer_schema_version", "1"),
+            ("RECIPE_VAR_workflow_result__finalizer_confidence", "high"),
+            ("RECIPE_VAR_workflow_result__finalizer_output_valid", "true"),
+            ("RECIPE_VAR_workflow_result__terminal_failure", "false"),
+        ],
+    );
+
+    assert!(
+        complete.status.success(),
+        "workflow-complete helper should emit canonical completion JSON\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&complete.stdout),
+        String::from_utf8_lossy(&complete.stderr)
+    );
+    let completion: JsonValue = serde_json::from_slice(&complete.stdout).expect("complete JSON");
+    assert_eq!(
+        completion["workflow_result"]["terminal_state"],
+        "IMPLEMENTED_VERIFIED"
+    );
+    assert_eq!(
+        completion["workflow_result"]["finalizer_confidence"],
+        "high"
+    );
+    assert_eq!(completion["terminal_vocabulary"][5], "IMPLEMENTED_VERIFIED");
 }
 
 #[test]

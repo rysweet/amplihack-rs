@@ -13,6 +13,7 @@ code-change completion.
 
 - [What the Gate Protects](#what-the-gate-protects)
 - [Valid Success Evidence](#valid-success-evidence)
+- [Default Workflow Agentic Finalization](#default-workflow-agentic-finalization)
 - [Evidence Precedence](#evidence-precedence)
 - [Evidence Marker API](#evidence-marker-api)
 - [Recipe Output Contract](#recipe-output-contract)
@@ -61,7 +62,7 @@ A protected workflow exits `0` only when one of these evidence groups is present
 | Evidence group | Required proof | Typical producer |
 | --- | --- | --- |
 | Implementation and verification complete | `implementation_completed=true` and `verification_completed=true` with non-empty reason text or structured detail | `workflow-tdd`, `workflow-precommit-test`, review/feedback phases |
-| Publish or PR state reached | `publish_state_reached=true` with a known publish state such as `FOLLOWUP_CREATED`, `MERGED`, `NO_DIFF_SUCCESS`, or `CLOSED_OBSOLETE` | `workflow-publish`, `workflow-finalize` |
+| Publish or PR state reached | `publish_state_reached=true` with a known publish state such as `FOLLOWUP_CREATED`, `SUPERSEDED`, `MERGED`, `NO_DIFF_SUCCESS`, or `CLOSED_OBSOLETE` | `workflow-publish`, `workflow-finalize` |
 | Explicit terminal no-op | `terminal_no_op=true`, a known no-op state, and a non-empty reason | no-diff, merged, obsolete, superseded, or `allow_no_op` paths |
 
 `terminal_failure=true` is valid terminal evidence, but it is never success
@@ -69,6 +70,29 @@ evidence. It proves the workflow reached a known failing terminal state and must
 exit nonzero.
 
 Unknown, empty, malformed, or contradictory evidence is failure evidence.
+
+---
+
+## Default Workflow Agentic Finalization
+
+`default-workflow` finalization uses the terminal-state gate as its deterministic
+validator, not as a brittle text parser. Deterministic shell/JSON steps collect
+Git, PR, CI, implementation, verification, publish, and observed-phase evidence.
+A structured agentic finalizer then classifies one terminal state from that
+evidence and explains the required next action. The deterministic gate validates
+the finalizer JSON, persists normalized fields, and chooses the recipe exit
+status.
+
+The finalizer may exercise judgment when evidence is nuanced, such as
+distinguishing `CLOSED_OBSOLETE` from a closed-unmerged PR with remaining diff,
+identifying stale PR metadata, or detecting hollow success after empty agent
+output. It cannot create success from unsupported prose. Missing, malformed,
+contradictory, non-JSON finalizer output fails closed as
+`FAILED_FINALIZER_OUTPUT`. Medium- or low-confidence output cannot prove
+terminal success and must resolve to a non-success state.
+
+See [Default Workflow Agentic Finalization](default-workflow-agentic-finalization.md)
+for the evidence document, finalizer output schema, configuration, and examples.
 
 ---
 
@@ -128,6 +152,11 @@ canonical strings.
 | `pr_url` | URL string | Publish/PR states | Pull request that represents the completed work. |
 | `pr_number` | positive integer string | Publish/PR states | Pull request number when available. |
 | `verification_summary` | string/object | Verification completed | Commands or checks that satisfied verification. |
+| `required_next_action` | string | Finalization output | Operator or agent action needed after the terminal decision. |
+| `hollow_success_detected` | boolean | Finalization output | Whether finalization detected a success-looking run without meaningful completion evidence. |
+| `evidence_used` | list/string | Finalization output | Stable evidence keys used by the agentic finalizer. |
+| `finalizer_output_valid` | boolean | Finalization output | Whether the structured finalizer JSON passed deterministic schema validation. |
+| `finalizer_confidence` | enum string | Finalization output | `high`, `medium`, or `low`; only `high` can prove terminal success. |
 
 ### Terminal State Vocabulary
 
@@ -142,10 +171,17 @@ canonical strings.
 | `ALLOW_NO_OP` | Yes | `allow_no_op=true` was set for an eligible non-code-change path and includes a reason. |
 | `FAILED_MISSING_TERMINAL_EVIDENCE` | No | The workflow stopped before implementation, verification, publish, or valid no-op evidence. |
 | `FAILED_INVALID_EVIDENCE` | No | Evidence is malformed, unknown, empty, or contradictory. |
+| `FAILED_FINALIZER_OUTPUT` | No | The agentic finalizer returned missing, malformed, non-JSON, or schema-invalid output. |
 | `FAILED_DIRTY_WORKTREE` | No | Uncommitted work exists and terminal success cannot be proven. |
+| `FAILED_MEANINGFUL_DIFF` | No | Meaningful branch changes remain but no validated publish, merge, follow-up, no-op, or implementation-plus-verification path proves closure. |
 | `FAILED_WRONG_BRANCH` | No | The target checkout is not on the expected branch. |
 | `FAILED_INVALID_INPUT` | No | Required context such as repository path, branch, or PR identity is invalid. |
+| `FAILED_MISSING_TOOLING` | No | Required deterministic tooling is unavailable for the selected finalization path. |
+| `FAILED_PR_METADATA_UNAVAILABLE` | No | GitHub PR proof is required but metadata, auth, or provider output is unavailable or ambiguous. |
+| `FAILED_CLOSED_UNMERGED` | No | A PR is closed without merge evidence and meaningful local branch diff remains. |
 | `BLOCKED_CI` | No | Required checks are failing or unavailable. |
+| `HOLLOW_SUCCESS` | No | The recipe appeared successful but lacked implementation, verification, publish, or valid no-op evidence. |
+| `INCOMPLETE` | No | Work remains and no more specific terminal failure state applies. |
 
 ---
 
@@ -155,13 +191,23 @@ canonical strings.
 shell evaluator and preserves terminal success or failure as recipe success or
 failure.
 
-Successful output includes:
+The canonical finalization result is a `workflow_result` object in full recipe
+JSON. Shell helpers and individual recipe steps may expose the same fields as
+flattened key/value output; those flattened fields must have the same names and
+semantics.
+
+Successful `workflow_result` content includes:
 
 ```json
 {
   "terminal_success": "true",
   "terminal_state": "IMPLEMENTED_VERIFIED",
   "terminal_reason": "implementation and verification evidence present",
+  "required_next_action": "No further action is required.",
+  "hollow_success_detected": "false",
+  "evidence_used": "implementation.completed=true,verification.completed=true",
+  "finalizer_output_valid": "true",
+  "finalizer_confidence": "high",
   "implementation_completed": "true",
   "verification_completed": "true",
   "publish_state_reached": "false",
@@ -172,13 +218,18 @@ Successful output includes:
 }
 ```
 
-Failure output includes:
+Failure `workflow_result` content includes:
 
 ```json
 {
   "terminal_success": "false",
   "terminal_state": "FAILED_MISSING_TERMINAL_EVIDENCE",
   "terminal_reason": "development workflow stopped after workflow-worktree; implementation, verification, publish, or explicit no-op evidence is required",
+  "required_next_action": "Continue into implementation and verification, publish a meaningful diff, or emit a valid no-op state.",
+  "hollow_success_detected": "false",
+  "evidence_used": "observed_phases=workflow-prep,workflow-worktree",
+  "finalizer_output_valid": "true",
+  "finalizer_confidence": "high",
   "implementation_completed": "false",
   "verification_completed": "false",
   "publish_state_reached": "false",
@@ -192,6 +243,11 @@ Failure output includes:
 The recipe runner treats a nonzero terminal-state step as recipe failure.
 `smart-execute-routing.yaml` and `smart-orchestrator.yaml` must propagate that
 failure instead of converting it into orchestration success.
+
+`workflow-finalize` emits the same normalized fields after validating the
+agentic finalizer output. If the finalizer output is missing or malformed, the
+normalized result uses `terminal_state=FAILED_FINALIZER_OUTPUT`,
+`terminal_success=false`, and `finalizer_output_valid=false`.
 
 ---
 
@@ -282,6 +338,17 @@ state, and a non-empty `terminal_reason`.
 There is no configuration flag that makes development terminal validation
 advisory. CI, local recipe runs, and nested `smart-orchestrator` routing all use
 the same fail-closed behavior.
+
+### Agentic Finalizer
+
+No separate feature flag enables the agentic finalizer. It is part of the
+`default-workflow` finalization path. The active agent runtime is inherited from
+the workflow environment, including `AMPLIHACK_AGENT_BINARY` when nested
+workflows are launched by Copilot, Claude Code, Amplifier, or Codex wrappers.
+
+If the finalizer cannot run or cannot return valid schema-compliant JSON, the
+deterministic gate reports `FAILED_FINALIZER_OUTPUT` rather than falling back to
+a success-shaped shell guess.
 
 ### Node Memory Preference
 
@@ -411,6 +478,7 @@ missing_evidence=verification_completed,publish_state_reached,terminal_no_op
 
 ## See Also
 
+- [Default Workflow Agentic Finalization](./default-workflow-agentic-finalization.md)
 - [RecipeResult Reference](./recipe-result.md)
 - [Recipe CLI Reference](./recipe-cli-reference.md)
 - [Workflow Execution Guardrails Reference](./workflow-execution-guardrails.md)

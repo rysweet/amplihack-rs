@@ -41,6 +41,10 @@ Look for these fields:
 | --- | --- |
 | `terminal_state` | Stable failure state such as `FAILED_MISSING_TERMINAL_EVIDENCE`. |
 | `terminal_reason` | Human-readable explanation and next action. |
+| `required_next_action` | The action the finalizer expects before the workflow can close. |
+| `hollow_success_detected` | Whether the run appeared successful but lacked real completion evidence. |
+| `evidence_used` | Structured evidence keys used by the finalizer. |
+| `finalizer_output_valid` | Whether the agentic finalizer returned valid schema-compliant JSON. |
 | `observed_phases` | Last workflow phases that produced evidence. |
 | `missing_evidence` | Required proof that was absent. |
 
@@ -87,6 +91,7 @@ Check for:
 - `terminal_no_op=true` without a no-op state
 - `implementation_completed=true` and `terminal_failure=true` in the same result
 - PR URL or PR number that does not match the repository
+- `terminal_success=true` with `finalizer_confidence=medium` or `low`
 
 Correct the producing recipe step so it emits one coherent state:
 
@@ -107,6 +112,121 @@ terminal_state=BLOCKED_CI
 terminal_reason=required status check unit-tests failed
 terminal_failure=true
 ```
+
+---
+
+## Fix Agentic Finalizer Output Failures
+
+`FAILED_FINALIZER_OUTPUT` means the judgment-heavy finalizer did not return the
+required JSON object. The deterministic gate treats this as failure even if the
+free-form text sounds successful.
+
+Valid finalizer output is a single JSON object:
+
+```json
+{
+  "schema_version": 1,
+  "terminal_state": "BLOCKED_CI",
+  "terminal_success": false,
+  "confidence": "high",
+  "reason": "PR #123 exists and matches this branch, but required CI checks are failing.",
+  "required_next_action": "Fix failing CI checks before merge.",
+  "hollow_success_detected": false,
+  "evidence_used": [
+    "pr.state=OPEN",
+    "pr.head_branch_matches=true",
+    "ci.state=FAILURE"
+  ]
+}
+```
+
+Check for these causes:
+
+| Cause | Fix |
+| --- | --- |
+| Non-JSON prose before or after the object | Update the finalizer prompt or wrapper so only JSON is emitted. |
+| Missing required field | Emit all required fields from the schema. |
+| Unknown `terminal_state` | Use the terminal-state vocabulary from the reference docs. |
+| `terminal_success=true` with a failure state | Correct the state or success flag; state semantics are deterministic. |
+| `confidence=medium` or `confidence=low` on a success state | Gather stronger evidence or return a non-success state. Only high confidence plus deterministic proof can close successfully. |
+| `hollow_success_detected=true` with success | Return `HOLLOW_SUCCESS` or another failure state. |
+
+Do not patch CI scripts to ignore this state. It means finalization could not
+prove closure.
+
+---
+
+## Fix `HOLLOW_SUCCESS`
+
+`HOLLOW_SUCCESS` means a workflow path looked complete at the process level but
+did not produce meaningful terminal evidence. This often follows setup-only,
+design-only, inaccessible-codebase, or empty/generic agent output.
+
+Inspect the evidence:
+
+```bash
+jq '.. | objects | select(.terminal_state? == "HOLLOW_SUCCESS") | {
+  terminal_reason,
+  required_next_action,
+  observed_phases,
+  implementation_completed,
+  verification_completed,
+  publish_state_reached,
+  evidence_used
+}' result.json
+```
+
+Recovery is one of:
+
+| Missing evidence | Recovery |
+| --- | --- |
+| Implementation | Resume `default-workflow` from implementation on the existing branch/worktree. |
+| Verification | Run the selected validation, tests, or pre-commit phase and rerun finalization. |
+| Publish or follow-up | Publish the meaningful diff or create a durable follow-up PR/issue. |
+| Valid no-op | Emit `NO_DIFF_SUCCESS`, `MERGED`, `CLOSED_OBSOLETE`, `SUPERSEDED`, or `ALLOW_NO_OP` with deterministic proof. |
+
+---
+
+## Fix `BLOCKED_CI`
+
+`BLOCKED_CI` is a terminal failure state, not an incomplete finalizer run. It
+means the finalizer found a matching PR or publish target, but required checks
+are failing, pending beyond policy, or unavailable when required.
+
+For GitHub PRs:
+
+```bash
+gh pr view "$PR_NUMBER" \
+  --json number,state,headRefName,baseRefName,headRefOid,statusCheckRollup
+```
+
+Then fix or rerun the failing checks. Do not convert `BLOCKED_CI` into success
+unless the CI evidence changes and finalization is rerun.
+
+---
+
+## Fix `FAILED_MEANINGFUL_DIFF`
+
+`FAILED_MEANINGFUL_DIFF` means local branch changes still exist, but
+finalization could not prove that the diff is represented by a valid PR,
+follow-up, merge, no-op, or completed implementation-plus-verification path.
+
+Inspect the branch against the intended base:
+
+```bash
+git status --short
+git diff --stat origin/main...HEAD
+git rev-list --count origin/main..HEAD
+```
+
+Recovery is one of:
+
+| Situation | Recovery |
+| --- | --- |
+| Diff is intended work | Publish or update the workflow-owned PR, then rerun finalization. |
+| Diff should be handled later | Create a durable follow-up PR or issue and return `FOLLOWUP_CREATED` or `SUPERSEDED` with its identifier. |
+| Diff is already upstream or obsolete | Prove `NO_DIFF_SUCCESS` or `CLOSED_OBSOLETE` with local no-diff/obsolete evidence. |
+| Diff is accidental | Remove or commit the intended changes before rerunning finalization. |
 
 ---
 
@@ -244,6 +364,7 @@ a valid terminal no-op.
 ## See Also
 
 - [Workflow Terminal-State Reference](../reference/workflow-terminal-state.md)
+- [Default Workflow Agentic Finalization](../reference/default-workflow-agentic-finalization.md)
 - [RecipeResult Reference](../reference/recipe-result.md)
 - [Run a Recipe End-to-End](run-a-recipe.md)
 - [How to Troubleshoot Recipe Execution Failures](troubleshoot-recipe-execution.md)
