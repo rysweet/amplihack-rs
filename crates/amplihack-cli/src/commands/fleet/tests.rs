@@ -4593,39 +4593,22 @@ fn run_watch_failure_is_nonfatal() {
 
 #[test]
 fn run_watch_timeout_is_nonfatal() {
-    let _guard = home_env_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
-    let home = tempfile::tempdir().unwrap();
     let azlin = dir.path().join("azlin");
-    write_executable(&azlin, "#!/bin/sh\nsleep 1\n");
+    write_executable(&azlin, "#!/bin/sh\nexec /bin/sleep 5\n");
 
-    let previous_azlin = env::var_os("AZLIN_PATH");
-    let previous_path = env::var_os("PATH");
-    let previous_home = env::var_os("HOME");
-    unsafe {
-        env::set_var("AZLIN_PATH", &azlin);
-        env::set_var("PATH", dir.path());
-        env::set_var("HOME", home.path());
-    }
+    let result = run_watch_with_azlin_and_timeout(
+        &azlin,
+        "test-vm",
+        "session-1",
+        30,
+        Duration::from_millis(100),
+    );
 
-    let result = run_watch_with_timeout("test-vm", "session-1", 30, Duration::from_secs(0));
-
-    match previous_azlin {
-        Some(value) => unsafe { env::set_var("AZLIN_PATH", value) },
-        None => unsafe { env::remove_var("AZLIN_PATH") },
-    }
-    match previous_path {
-        Some(value) => unsafe { env::set_var("PATH", value) },
-        None => unsafe { env::remove_var("PATH") },
-    }
-    match previous_home {
-        Some(value) => unsafe { env::set_var("HOME", value) },
-        None => unsafe { env::remove_var("HOME") },
-    }
-
-    assert!(result.is_ok());
+    assert!(
+        result.is_ok(),
+        "watch timeout should be nonfatal, got {result:#?}"
+    );
 }
 
 #[test]
