@@ -118,7 +118,18 @@ pub(super) fn run_watch_with_timeout(
             return Err(exit_error(1));
         }
     };
-    let output = capture_tmux_output_with_timeout(&azlin, vm_name, session_name, lines, timeout)?;
+    run_watch_with_azlin_and_timeout(&azlin, vm_name, session_name, lines, timeout)
+}
+
+pub(super) fn run_watch_with_azlin_and_timeout(
+    azlin_path: &Path,
+    vm_name: &str,
+    session_name: &str,
+    lines: u32,
+    timeout: Duration,
+) -> Result<()> {
+    let output =
+        capture_tmux_output_with_timeout(azlin_path, vm_name, session_name, lines, timeout)?;
     println!("--- {vm_name}/{session_name} ---");
     print!("{output}");
     if !output.ends_with('\n') {
