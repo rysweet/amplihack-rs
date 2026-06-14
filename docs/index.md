@@ -330,6 +330,9 @@ amplihack recipe show default-workflow
 ### GitHub Actions Workflows
 
 - [Configure Issue Classifier](howto/configure-issue-classifier-workflow.md) - Permissions, timeout, label extension, lock file recompilation, and troubleshooting
+- [Investigate Automated Action Failures](howto/investigate-automated-action-failures.md) - Evidence-first workflow for failing scheduled or automated GitHub Actions runs, root-cause classification, fixes, regression coverage, and PR closure
+- [Automated Action Failure Investigation Reference](reference/automated-action-failure-investigation.md) - Inputs, configuration, evidence schema, classification values, PR contract, and closure semantics
+- [Tutorial: Automated Action Failure Investigation](tutorials/automated-action-failure-investigation.md) - End-to-end example from user report to merge-ready PR
 
 ---
 

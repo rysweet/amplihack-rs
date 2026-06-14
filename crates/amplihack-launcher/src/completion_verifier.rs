@@ -58,6 +58,15 @@ impl CompletionVerifier {
         let signals_complete = signals.completion_score >= self.completion_threshold;
         let discrepancies = self.detect_discrepancies(evaluation_result, signals, claimed_complete);
 
+        if claimed_complete && Self::has_incomplete_investigation_evidence(&discrepancies) {
+            return VerificationResult {
+                status: VerificationStatus::Incomplete,
+                verified: false,
+                explanation: "Automated GitHub Actions failure investigation is missing required evidence for completion".to_string(),
+                discrepancies,
+            };
+        }
+
         match (claimed_complete, signals_complete) {
             (true, true) if discrepancies.is_empty() => VerificationResult {
                 status: VerificationStatus::Verified,
@@ -242,7 +251,138 @@ impl CompletionVerifier {
                 .push("Claims ready to merge but PR has conflicts or is not mergeable".into());
         }
 
+        self.detect_automated_actions_investigation_gaps(
+            &lower,
+            claimed_complete,
+            &mut discrepancies,
+        );
+
         discrepancies
+    }
+
+    fn has_incomplete_investigation_evidence(discrepancies: &[String]) -> bool {
+        discrepancies.iter().any(|d| {
+            d.contains("schedule-event finding")
+                || d.contains("failed-run evidence field")
+                || d.contains("repo-caused automated Actions investigation")
+                || d.contains("generated-template-caused automated Actions investigation")
+        })
+    }
+
+    fn detect_automated_actions_investigation_gaps(
+        &self,
+        lower: &str,
+        claimed_complete: bool,
+        discrepancies: &mut Vec<String>,
+    ) {
+        if !claimed_complete || !Self::is_automated_actions_investigation(lower) {
+            return;
+        }
+
+        if !Self::has_schedule_event_finding(lower) {
+            discrepancies.push(
+                "Automated GitHub Actions investigation missing schedule-event finding from `gh run list --event schedule --limit 50`".into(),
+            );
+        }
+
+        for (field, present) in [
+            (
+                "workflow",
+                lower.contains("workflow:")
+                    || lower.contains("workflow name")
+                    || lower.contains("workflow=")
+                    || lower.contains("| workflow"),
+            ),
+            (
+                "run URL",
+                lower.contains("run url")
+                    || lower.contains("run:")
+                    || lower.contains("actions/runs/"),
+            ),
+            ("event", lower.contains("event")),
+            (
+                "branch/SHA",
+                lower.contains("branch/sha") || (lower.contains("branch") && lower.contains("sha")),
+            ),
+            ("failing job", lower.contains("failing job")),
+            ("failing step", lower.contains("failing step")),
+            ("root-cause excerpt", lower.contains("root-cause excerpt")),
+            ("classification", lower.contains("classification")),
+        ] {
+            if !present {
+                discrepancies.push(format!("Automated GitHub Actions investigation missing failed-run evidence field: {field}"));
+            }
+        }
+
+        let fixable_classification = lower.contains("repo-caused")
+            || lower.contains("repo caused")
+            || lower.contains("generated-template-caused")
+            || lower.contains("generated template caused");
+        if !fixable_classification {
+            return;
+        }
+
+        for (evidence, present) in [
+            (
+                "narrow fix",
+                lower.contains("narrow fix") || lower.contains("narrowest fix"),
+            ),
+            (
+                "regression coverage",
+                lower.contains("regression coverage") || lower.contains("regression test"),
+            ),
+            (
+                "pre-commit run --all-files",
+                lower.contains("pre-commit run --all-files"),
+            ),
+            ("targeted tests", lower.contains("targeted test")),
+            (
+                "pull request",
+                lower.contains("pull request")
+                    || lower.contains("pr #")
+                    || lower.contains("/pull/"),
+            ),
+            (
+                "PR CI",
+                lower.contains("pr ci")
+                    || lower.contains("gh pr checks")
+                    || lower.contains("pr checks"),
+            ),
+        ] {
+            if !present {
+                discrepancies.push(format!(
+                    "repo-caused automated Actions investigation missing {evidence} closure evidence"
+                ));
+            }
+        }
+    }
+
+    fn is_automated_actions_investigation(lower: &str) -> bool {
+        let automation_context = lower.contains("scheduled action")
+            || lower.contains("scheduled workflow")
+            || lower.contains("automated action")
+            || lower.contains("github actions")
+            || lower.contains("schedule-event finding")
+            || lower.contains("action failures")
+            || lower.contains("workflow failures")
+            || lower.contains("failing automation");
+
+        let failure_context = lower.contains("fail")
+            || lower.contains("root-cause")
+            || lower.contains("classification")
+            || lower.contains("repo-caused")
+            || lower.contains("generated-template-caused");
+
+        automation_context && failure_context
+    }
+
+    fn has_schedule_event_finding(lower: &str) -> bool {
+        lower.contains("schedule-event finding")
+            || lower.contains("gh run list --event schedule")
+            || lower.contains("no true schedule")
+            || lower.contains("no recent schedule")
+            || lower.contains("schedule event failures")
+            || lower.contains("schedule-event failures")
     }
 
     /// Format verification result as a human-readable report.

@@ -40,6 +40,45 @@ steps:
 
       Consider the INVESTIGATION-FIRST PATTERN if the codebase is unfamiliar.
 
+      ## Automated GitHub Actions failure investigation contract
+
+      If the task reports scheduled action runs, automated action failures, or
+      GitHub Actions workflow failures, prove the failing runs from GitHub
+      Actions evidence before proposing code changes:
+
+      1. Confirm the GitHub CLI service adapter is usable with
+         `gh auth status`; use the existing authenticated session only and do
+         not create, print, or persist tokens.
+      2. Check true schedule-event runs first:
+         `gh run list --event schedule --limit 50`.
+      3. If there are no true schedule-event failures, state exactly:
+         `No recent `schedule` event failures found; treating the report as
+         user-reported automated GitHub Actions failures.`
+      4. Then inspect recent failed automation:
+         `gh run list --status failure --limit 50`.
+      5. For each relevant failed run, inspect metadata and failed logs:
+         `gh run view RUN_ID --json name,url,event,headBranch,headSha,status,conclusion`
+         and `gh run view RUN_ID --log-failed`.
+      6. For GitHub service errors, fail visibly: record the command,
+         permission/authentication failure, rate limit, network failure, or
+         missing log access. Retry once only for transient rate limit or
+         network errors; if the retry still fails, classify the run as
+         external-transient or inaccessible and do not infer a repo root cause.
+      7. Produce an evidence table with: workflow, run URL, event,
+         branch/SHA, failing job, failing step, root-cause excerpt, and
+         classification.
+      8. Classify each failure as one of: repo-caused,
+         generated-template-caused, external-transient, stale, unrelated, or
+         inaccessible.
+      9. Select code/config changes only for repo-caused or
+         generated-template-caused failures; do not patch external-transient,
+         stale, unrelated, or inaccessible failures.
+      10. Implement the narrowest fix and add regression coverage or equivalent
+         static validation for the proven failure mode.
+      11. Closure must include `pre-commit run --all-files`, targeted tests,
+         `gh pr create`, `gh pr checks --watch`, and evidence that the PR is
+         merge-ready.
+
       Output a comprehensive design specification.
     output: "architecture_design"
 
