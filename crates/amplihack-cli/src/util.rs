@@ -117,7 +117,7 @@ pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<ExitStatu
         return Ok(status);
     }
 
-    terminate_timed_out_child(&mut child, pid)?;
+    terminate_timed_out_child(&mut child)?;
     bail!(
         "subprocess timed out after {} seconds (pid {})",
         timeout.as_secs(),
@@ -154,7 +154,7 @@ pub fn run_output_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Ou
         });
     }
 
-    terminate_timed_out_child(&mut child, pid)?;
+    terminate_timed_out_child(&mut child)?;
     let _ = join_pipe_reader(stdout_reader, "stdout")?;
     let _ = join_pipe_reader(stderr_reader, "stderr")?;
     bail!(
@@ -177,7 +177,8 @@ fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> io::Result<Optio
     }
 }
 
-fn terminate_timed_out_child(child: &mut Child, pid: u32) -> Result<()> {
+fn terminate_timed_out_child(child: &mut Child) -> Result<()> {
+    let pid = child.id();
     match child.kill() {
         Ok(()) => {}
         Err(kill_error) => match child.try_wait() {
