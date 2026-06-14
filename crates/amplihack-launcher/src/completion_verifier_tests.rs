@@ -165,3 +165,108 @@ fn discrepancy_ci_claim_mismatch() {
             .any(|d| d.contains("CI passing but CI status is not SUCCESS"))
     );
 }
+
+#[test]
+fn automated_actions_investigation_requires_schedule_event_finding() {
+    let verifier = CompletionVerifier::default();
+    let signals = make_signals(true, true, true, true, true, true, 1.0, Some(776));
+
+    let result = verifier.verify(
+        "Evaluation: complete. Investigated many scheduled action failures. \
+         Fixed the repo-caused issue, pushed a PR, and CI is passing.",
+        &signals,
+    );
+
+    assert_eq!(
+        result.status,
+        VerificationStatus::Incomplete,
+        "scheduled action investigations must remain incomplete until the report \
+         explicitly records whether `gh run list --event schedule --limit 50` \
+         found true schedule-event failures; got {result:?}"
+    );
+    assert!(!result.verified);
+    assert!(
+        result
+            .discrepancies
+            .iter()
+            .any(|d| d.contains("schedule-event finding")),
+        "missing schedule-event finding must be an explicit discrepancy: {:?}",
+        result.discrepancies
+    );
+}
+
+#[test]
+fn automated_actions_investigation_requires_failed_run_evidence_before_completion() {
+    let verifier = CompletionVerifier::default();
+    let signals = make_signals(true, true, true, true, true, true, 1.0, Some(776));
+
+    let result = verifier.verify(
+        "Evaluation: complete. No true scheduled workflow failures existed. \
+         The failing automation was fixed and the PR is ready to merge.",
+        &signals,
+    );
+
+    assert_eq!(
+        result.status,
+        VerificationStatus::Incomplete,
+        "automated GitHub Actions investigations must include a failed-run \
+         evidence table before completion; got {result:?}"
+    );
+    assert!(!result.verified);
+    for required in [
+        "workflow",
+        "run url",
+        "event",
+        "branch/sha",
+        "failing job",
+        "failing step",
+        "root-cause excerpt",
+        "classification",
+    ] {
+        assert!(
+            result
+                .discrepancies
+                .iter()
+                .any(|d| d.to_lowercase().contains(required)),
+            "missing `{required}` evidence field must be reported: {:?}",
+            result.discrepancies
+        );
+    }
+}
+
+#[test]
+fn automated_actions_investigation_requires_fix_validation_and_pr_closure_evidence() {
+    let verifier = CompletionVerifier::default();
+    let signals = make_signals(true, true, true, true, true, true, 1.0, Some(776));
+
+    let result = verifier.verify(
+        "Evaluation: complete. Schedule-event finding: no recent schedule runs. \
+         Evidence: CI run https://github.com/rysweet/amplihack-rs/actions/runs/123 \
+         event push main@0123456 failed job test failed step Run cargo test \
+         root-cause excerpt assertion failed classification repo-caused.",
+        &signals,
+    );
+
+    assert_eq!(
+        result.status,
+        VerificationStatus::Incomplete,
+        "repo-caused automated Actions investigations must not close without \
+         narrow fix, regression coverage, pre-commit, targeted tests, PR URL, \
+         and PR CI closure evidence; got {result:?}"
+    );
+    assert!(!result.verified);
+    for required in [
+        "narrow fix",
+        "regression coverage",
+        "pre-commit run --all-files",
+        "targeted tests",
+        "pull request",
+        "PR CI",
+    ] {
+        assert!(
+            result.discrepancies.iter().any(|d| d.contains(required)),
+            "missing `{required}` closure evidence must be reported: {:?}",
+            result.discrepancies
+        );
+    }
+}
