@@ -4599,7 +4599,7 @@ fn run_watch_timeout_is_nonfatal() {
     let dir = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
     let azlin = dir.path().join("azlin");
-    write_executable(&azlin, "#!/bin/sh\nsleep 1\n");
+    write_executable(&azlin, "#!/bin/sh\nexec /bin/sleep 5\n");
 
     let previous_azlin = env::var_os("AZLIN_PATH");
     let previous_path = env::var_os("PATH");
@@ -4610,7 +4610,7 @@ fn run_watch_timeout_is_nonfatal() {
         env::set_var("HOME", home.path());
     }
 
-    let result = run_watch_with_timeout("test-vm", "session-1", 30, Duration::from_secs(0));
+    let result = run_watch_with_timeout("test-vm", "session-1", 30, Duration::from_millis(100));
 
     match previous_azlin {
         Some(value) => unsafe { env::set_var("AZLIN_PATH", value) },
