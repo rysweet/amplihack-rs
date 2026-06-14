@@ -103,6 +103,9 @@ pub fn strip_ansi(s: &str) -> String {
 
 // ── Subprocess with timeout ────────────────────────────────────────────────────
 
+const CHILD_WAIT_INITIAL_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const CHILD_WAIT_MAX_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
 /// Run a pre-built `Command` with a hard wall-clock timeout.
 ///
 /// On timeout, terminates the child through the process handle, waits for
@@ -166,14 +169,17 @@ pub fn run_output_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Ou
 
 fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> io::Result<Option<ExitStatus>> {
     let started = Instant::now();
+    let mut poll_interval = CHILD_WAIT_INITIAL_POLL_INTERVAL;
     loop {
         if let Some(status) = child.try_wait()? {
             return Ok(Some(status));
         }
-        if started.elapsed() >= timeout {
+        let elapsed = started.elapsed();
+        if elapsed >= timeout {
             return Ok(None);
         }
-        thread::sleep(Duration::from_millis(10).min(timeout.saturating_sub(started.elapsed())));
+        thread::sleep(poll_interval.min(timeout.saturating_sub(elapsed)));
+        poll_interval = (poll_interval + poll_interval).min(CHILD_WAIT_MAX_POLL_INTERVAL);
     }
 }
 
