@@ -105,13 +105,15 @@ pub fn strip_ansi(s: &str) -> String {
 
 const CHILD_WAIT_INITIAL_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const CHILD_WAIT_MAX_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const SUBPROCESS_SPAWN_RETRY_TIMEOUT: Duration = Duration::from_millis(250);
+const SUBPROCESS_SPAWN_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
 /// Run a pre-built `Command` with a hard wall-clock timeout.
 ///
 /// On timeout, terminates the child through the process handle, waits for
 /// cleanup to finish, and returns an error. Returns the `ExitStatus` on success.
 pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<ExitStatus> {
-    let mut child = cmd.spawn().context("failed to spawn subprocess")?;
+    let mut child = spawn_subprocess(&mut cmd).context("failed to spawn subprocess")?;
     let pid = child.id();
 
     if let Some(status) =
@@ -132,7 +134,7 @@ pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<ExitStatu
 pub fn run_output_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Output> {
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
-    let mut child = cmd.spawn().context("failed to spawn subprocess")?;
+    let mut child = spawn_subprocess(&mut cmd).context("failed to spawn subprocess")?;
     let pid = child.id();
     let stdout = child
         .stdout
@@ -165,6 +167,22 @@ pub fn run_output_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Ou
         timeout.as_secs(),
         pid
     )
+}
+
+fn spawn_subprocess(cmd: &mut Command) -> io::Result<Child> {
+    let started = Instant::now();
+    loop {
+        match cmd.spawn() {
+            Ok(child) => return Ok(child),
+            Err(error) if error.kind() == io::ErrorKind::ExecutableFileBusy => {
+                if started.elapsed() >= SUBPROCESS_SPAWN_RETRY_TIMEOUT {
+                    return Err(error);
+                }
+                thread::sleep(SUBPROCESS_SPAWN_RETRY_INTERVAL);
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> io::Result<Option<ExitStatus>> {
