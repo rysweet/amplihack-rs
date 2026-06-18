@@ -26,3 +26,10 @@ scenarios:
       - type: command
         command: "bash -lc 'cargo test --test default_workflow_decomposition -- mid_stage_worktree_steps_fall_back_to_repo_path --quiet && cargo test --test default_workflow_decomposition -- workflow_finalize_step_21_guards_pr_url_before_gh_commands --quiet && bash ./issue_682_worktree_resume.sh'"
         expected_exit_code: 0
+
+  - name: merge-ready-skill-platform-contract
+    description: Merge-ready skill stays platform-neutral and covers GitHub plus Azure DevOps/AzDO for every required readiness aspect.
+    steps:
+      - type: command
+        command: "bash -lc 'cargo test --test merge_ready_platform_contract --quiet'"
+        expected_exit_code: 0

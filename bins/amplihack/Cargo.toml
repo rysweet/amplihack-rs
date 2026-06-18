@@ -334,6 +334,12 @@ path = "../../tests/integration/issue_746_default_workflow_guidance_test.rs"
 name = "issue_684_host_aware_workflow"
 path = "../../tests/integration/issue_684_host_aware_workflow_test.rs"
 
+# Issue #778: merge-ready must be platform-neutral, with explicit GitHub and
+# Azure DevOps/AzDO guidance for every merge-readiness aspect.
+[[test]]
+name = "merge_ready_platform_contract"
+path = "../../tests/integration/merge_ready_platform_contract_test.rs"
+
 # code-philosophy-audit recipe structural parity tests.
 [[test]]
 name = "code_philosophy_audit_recipe"
