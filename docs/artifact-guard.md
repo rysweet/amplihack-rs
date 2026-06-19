@@ -10,11 +10,12 @@ moves, unstages, or rewrites files.
 
 ## Contents
 
-- [Planned behavior](#planned-behavior)
+- [Behavior](#behavior)
 - [Command-line interface](#command-line-interface)
 - [Default prohibited rules](#default-prohibited-rules)
 - [Allowlist configuration](#allowlist-configuration)
 - [Workflow and pre-commit coverage](#workflow-and-pre-commit-coverage)
+- [Pre-commit hook contract](#pre-commit-hook-contract)
 - [Output isolation](#output-isolation)
 - [Workflow runtime cleanup preflight](#workflow-runtime-cleanup-preflight)
 - [Intended Rust API](#intended-rust-api)
@@ -41,7 +42,7 @@ cache directories when those paths indicate parent-worktree pollution.
 `target/` directory in the repository, and the guard must not make ordinary
 `cargo test`, `cargo clippy`, or pre-commit usage hostile. By default:
 
-| `target/` source | Planned result |
+| `target/` source | Result |
 | --- | --- |
 | Staged | Violation |
 | Tracked | Violation |
@@ -152,7 +153,7 @@ examples/minimal-node-project/node_modules/.package-lock.json
 
 Matching semantics:
 
-| Rule | Planned behavior |
+| Rule | Behavior |
 | --- | --- |
 | Path root | Entries are relative to the repository root |
 | Separators | `/` only; Windows-style `\` separators are rejected |
@@ -222,31 +223,125 @@ repository layout conflict and must fail closed rather than be deleted.
 Artifact Guard itself remains non-mutating and still fails on every unexpected
 artifact.
 
-The planned pre-commit hook is a full repository scan:
+The checked-in pre-commit hook is a full repository scan. It is defined in
+`.pre-commit-config.yaml`, and that file is the source of truth for the hook
+contract:
 
 ```yaml
-- id: artifact-guard
-  name: amplihack artifact guard
-entry: amplihack hygiene artifact-guard --repo . --mode pre-commit
-  language: system
-  pass_filenames: false
-always_run: true
+- repo: local
+  hooks:
+    - id: artifact-guard
+      name: amplihack artifact guard
+      entry: bash -c 'CARGO_TARGET_DIR="${TMPDIR:-/tmp}/amplihack-precommit-target" cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit'
+      language: system
+      pass_filenames: false
+      always_run: true
 ```
 
 `pass_filenames: false` is required. Git normally passes only staged filenames to
 pre-commit hooks, which would miss ignored and untracked artifact leftovers.
 Artifact Guard must inspect repository state itself.
 
-For local source checkouts where `amplihack` is not on `PATH`, use the workspace
-binary:
+Run the hook through pre-commit:
 
 ```bash
-cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode all
+pre-commit run artifact-guard --all-files
 ```
 
-The checked-in pre-commit Cargo hooks set `CARGO_TARGET_DIR` under
-`${TMPDIR:-/tmp}` so running the guard, clippy, or tests from hooks does not
-recreate Cargo build output inside the parent worktree.
+Or run the same guard command directly from a source checkout:
+
+```bash
+CARGO_TARGET_DIR="${TMPDIR:-/tmp}/amplihack-precommit-target" \
+  cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit
+```
+
+## Pre-commit hook contract
+
+The Artifact Guard pre-commit hook is intentionally strict about what it runs
+and intentionally tolerant about legal Cargo option ordering. Contract tests
+parse `.pre-commit-config.yaml` semantically instead of matching one fixed
+argument sequence.
+
+The hook id is `artifact-guard`. `pre_commit_artifact_guard` is the Rust
+integration test target name, not the pre-commit hook id.
+
+The hook must satisfy all of these requirements:
+
+| Contract element | Required value |
+| --- | --- |
+| Repository source | A `repo: local` hook entry in `.pre-commit-config.yaml` |
+| Hook identity | The local Artifact Guard hook, currently `id: artifact-guard` |
+| Runtime | `language: system` |
+| Filename handling | `pass_filenames: false` |
+| Execution policy | `always_run: true` |
+| Cargo command | `cargo run` |
+| Repo-local binary | `--bin amplihack` before the `--` argument separator |
+| Build isolation | `CARGO_TARGET_DIR` set before `cargo run`; the checked-in hook uses the accepted shell-expanded temp path `${TMPDIR:-/tmp}/amplihack-precommit-target`; missing, empty, relative, bare `target`, `./target`, or paths inside the repository worktree are invalid |
+| Guard command | `hygiene artifact-guard` after the `--` separator |
+| Repository argument | `--repo .` |
+| Mode argument | `--mode pre-commit` |
+
+Cargo options may appear anywhere Cargo accepts them before the `--` separator.
+These entries are equivalent for the contract:
+
+```bash
+CARGO_TARGET_DIR="${TMPDIR:-/tmp}/amplihack-precommit-target" \
+  cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit
+
+CARGO_TARGET_DIR="${TMPDIR:-/tmp}/amplihack-precommit-target" \
+  cargo run --locked --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit
+
+CARGO_TARGET_DIR="${TMPDIR:-/tmp}/amplihack-precommit-target" \
+  cargo run --bin amplihack --locked -- hygiene artifact-guard --repo . --mode pre-commit
+```
+
+The second form is valid and must remain accepted: `--locked` is a Cargo option,
+not an Artifact Guard argument, even when it appears between `cargo run` and
+`--bin`.
+
+`CARGO_TARGET_DIR` must isolate build output outside the repository. Accepted
+values are absolute paths outside the repo and the checked-in shell-expanded
+temp-path form `${TMPDIR:-/tmp}/amplihack-precommit-target`. The validator must
+not reject that shell expression just because the literal string does not start
+with `/`; it expands to `/tmp/amplihack-precommit-target` when `TMPDIR` is unset.
+Invalid values include an empty assignment, a relative path such as
+`amplihack-precommit-target`, bare `target`, `./target`, or any path inside the
+repository worktree.
+
+These examples fail the contract:
+
+```bash
+# Uses an installed binary instead of the repo-local source checkout.
+amplihack hygiene artifact-guard --repo . --mode pre-commit
+
+# Omits build-output isolation.
+cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit
+
+# Pollutes the repository's normal Cargo build directory.
+CARGO_TARGET_DIR=target cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit
+
+# Runs the wrong binary.
+CARGO_TARGET_DIR="${TMPDIR:-/tmp}/amplihack-precommit-target" \
+  cargo run --bin other-tool -- hygiene artifact-guard --repo . --mode pre-commit
+
+# Runs the guard against the wrong repository path.
+CARGO_TARGET_DIR="${TMPDIR:-/tmp}/amplihack-precommit-target" \
+  cargo run --bin amplihack -- hygiene artifact-guard --repo /tmp/repo --mode pre-commit
+
+# Runs the guard in the wrong mode.
+CARGO_TARGET_DIR="${TMPDIR:-/tmp}/amplihack-precommit-target" \
+  cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode all
+```
+
+The contract validator used by tests unwraps the allowed
+`bash -c '<inner command>'` hook entry form, tokenizes the inner command,
+extracts leading environment assignments, splits Cargo arguments from
+amplihack arguments at `--`, and validates the fields above. It never executes
+the hook command.
+
+These contract tests live in `tests/integration/pre_commit_artifact_guard_tests.rs`
+and are registered by `bins/amplihack/Cargo.toml` as the
+`pre_commit_artifact_guard` integration test target.
 
 ## Output isolation
 
@@ -318,6 +413,8 @@ pub struct ArtifactGuardConfig {
 }
 
 pub enum ArtifactGuardMode {
+    PreCommit,
+    PrePublish,
     All,
     Staged,
     Worktree,
