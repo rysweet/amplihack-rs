@@ -120,6 +120,10 @@ name = "workflow_publish_resilience"
 path = "../../tests/integration/workflow_publish_resilience.rs"
 
 [[test]]
+name = "workflow_publish_azdo_contract"
+path = "../../tests/integration/workflow_publish_azdo_contract_test.rs"
+
+[[test]]
 name = "default_workflow_terminal_state"
 path = "../../tests/integration/default_workflow_terminal_state.rs"
 

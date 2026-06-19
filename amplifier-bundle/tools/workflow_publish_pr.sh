@@ -165,6 +165,85 @@ gh_pr_create_with_retry() {
   done
 }
 
+sanitize_provider_stderr() {
+  sed -E 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' "$1" | tr '\n' ' ' | head -c 500
+}
+
+azdo_common_args=()
+configure_azdo_args() {
+  local org_url project_name
+  org_url="${AZDO_ORG_URL:-${SYSTEM_COLLECTIONURI:-}}"
+  project_name="${AZDO_PROJECT:-${SYSTEM_TEAMPROJECT:-}}"
+  azdo_common_args=()
+  [ -n "$org_url" ] && azdo_common_args+=(--org "$org_url")
+  [ -n "$project_name" ] && azdo_common_args+=(--project "$project_name")
+}
+
+az_repos_pr_list_with_retry() {
+  local stderr_file output status attempt delay=1
+  configure_azdo_args
+  for attempt in 1 2 3; do
+    stderr_file=$(mktemp -t step16-az-pr-list-XXXXXX)
+    if output=$(timeout 60 az repos pr list "${azdo_common_args[@]}" --status active --source-branch "$CURRENT_BRANCH" --target-branch "$BASE_BRANCH" --output json 2>"$stderr_file"); then
+      rm -f "$stderr_file"; printf '%s\n' "$output"; return 0
+    else
+      status=$?
+    fi
+    if [ "$attempt" -lt 3 ] && is_transient_gh_error "$stderr_file"; then
+      echo "WARNING: az repos pr list failed transiently (exit ${status}); retrying (${attempt}/3): $(sanitize_provider_stderr "$stderr_file")" >&2
+      rm -f "$stderr_file"; sleep "$delay"; delay=$((delay * 2)); continue
+    fi
+    echo "ERROR: az repos pr list failed (exit ${status}); refusing to risk duplicate PR creation." >&2
+    [ ! -s "$stderr_file" ] || echo "az repos pr list stderr: $(sanitize_provider_stderr "$stderr_file")" >&2
+    rm -f "$stderr_file"
+    return "$status"
+  done
+}
+
+az_repos_pr_create_with_retry() {
+  local stderr_file output status attempt delay=1
+  configure_azdo_args
+  for attempt in 1 2 3; do
+    stderr_file=$(mktemp -t step16-az-pr-create-XXXXXX)
+    if output=$(timeout 60 az repos pr create "${azdo_common_args[@]}" --source-branch "$CURRENT_BRANCH" --target-branch "$BASE_BRANCH" --title "$PR_TITLE" --description "$PR_BODY" --output json 2>"$stderr_file"); then
+      rm -f "$stderr_file"; printf '%s\n' "$output"; return 0
+    else
+      status=$?
+    fi
+    if [ "$attempt" -lt 3 ] && is_transient_gh_error "$stderr_file"; then
+      echo "WARNING: az repos pr create failed transiently (exit ${status}); retrying (${attempt}/3): $(sanitize_provider_stderr "$stderr_file")" >&2
+      rm -f "$stderr_file"; sleep "$delay"; delay=$((delay * 2)); continue
+    fi
+    echo "ERROR: az repos pr create failed (exit ${status}); provider state is ambiguous." >&2
+    [ ! -s "$stderr_file" ] || echo "az repos pr create stderr: $(sanitize_provider_stderr "$stderr_file")" >&2
+    rm -f "$stderr_file"
+    return "$status"
+  done
+}
+
+select_matching_azdo_pr() {
+  local pr_list_json="$1"
+  printf '%s' "$pr_list_json" | jq -c \
+    --arg src "$CURRENT_BRANCH" \
+    --arg src_ref "refs/heads/$CURRENT_BRANCH" \
+    --arg tgt "$BASE_BRANCH" \
+    --arg tgt_ref "refs/heads/$BASE_BRANCH" \
+    'map(select(
+      ((.sourceRefName // "") == $src or (.sourceRefName // "") == $src_ref) and
+      ((.targetRefName // "") == $tgt or (.targetRefName // "") == $tgt_ref) and
+      (((.status // "") | ascii_downcase) == "active")
+    )) | .[0] // empty'
+}
+
+load_azdo_pr_fields() {
+  local pr_json="$1"
+  mapfile -t AZDO_PR_FIELDS < <(
+    printf '%s' "$pr_json" | jq -r '.url // "", ((.pullRequestId // "") | tostring), .status // "", .sourceRefName // "", .targetRefName // ""'
+  )
+  PR_URL_RESULT="${AZDO_PR_FIELDS[0]:-}"
+  PR_NUMBER_RESULT="${AZDO_PR_FIELDS[1]:-}"
+}
+
 scoped_pr_lookup() {
   local scope_output reason created_after expected_pr_title_prefix
   [ -x "$PR_SCOPE_HELPER" ] || finish_publish "FAILED_INVALID_INPUT" "invalid-input" "failure" "workflow_pr_scope.sh is missing or not executable at $PR_SCOPE_HELPER" 1
@@ -193,18 +272,11 @@ scoped_pr_lookup() {
 }
 
 HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
-if [ "$HOST_TYPE" != "github" ]; then
-  finish_publish "non-github" "non-github" "success" "non-GitHub host does not use gh pr create"
-fi
-
 CURRENT_BRANCH=$(git branch --show-current)
 ISSUE_NUM="$ISSUE_NUMBER"
 if ! [[ "$ISSUE_NUM" =~ ^[0-9]+$ ]]; then echo "ERROR: issue_number is not numeric: $ISSUE_NUM" >&2; exit 1; fi
-if ! command -v gh >/dev/null 2>&1; then echo "ERROR: workflow_publish_pr.sh requires the GitHub CLI ('gh') on PATH." >&2; exit 127; fi
 [ -n "$CURRENT_BRANCH" ] || finish_publish "FAILED_INVALID_INPUT" "invalid-input" "failure" "current branch is empty; cannot publish from detached HEAD" 1
 LOCAL_HEAD="$(git rev-parse --verify HEAD 2>/dev/null)" || finish_publish "FAILED_INVALID_INPUT" "invalid-input" "failure" "local HEAD does not resolve" 1
-REPO_IDENTITY="$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null || true)" || true)"
-[ -n "$REPO_IDENTITY" ] || finish_publish "FAILED_PR_IDENTITY" "invalid-pr-identity" "failure" "unable to determine current GitHub repo identity from origin remote" 1
 
 BASE_REF="$(resolve_pr_base_ref)"
 BASE_BRANCH="${BASE_REF#origin/}"
@@ -217,6 +289,55 @@ if [ -n "$(git status --porcelain)" ]; then
   finish_publish "FAILED_DIRTY_WORKTREE" "dirty-worktree" "failure" "dirty worktree blocks no-diff or obsolete terminal success; commit or discard changes explicitly" 1
 fi
 if git diff --quiet "${BASE_REF}..HEAD"; then BRANCH_DIFF_STATUS="no-diff"; else BRANCH_DIFF_STATUS="has-diff"; fi
+
+if [ "$HOST_TYPE" = "azdo" ]; then
+  if [ "$BRANCH_DIFF_STATUS" = "no-diff" ]; then
+    finish_publish "NO_DIFF_SUCCESS" "no-diff" "success" "branch has no diff against base; no PR created"
+  fi
+  COMMITS_AHEAD=$(git rev-list --count "${BASE_REF}..HEAD" 2>/dev/null || echo "0")
+  if [ "$COMMITS_AHEAD" -eq 0 ]; then
+    BRANCH_DIFF_STATUS="no-diff"
+    finish_publish "NO_DIFF_SUCCESS" "no-diff" "success" "0 commits ahead of ${BASE_BRANCH}; no PR created"
+  fi
+  if ! command -v az >/dev/null 2>&1; then
+    finish_publish "BLOCKED_PROVIDER" "azdo-cli-missing" "failure" "Azure DevOps CLI ('az') is required to publish AzDO pull requests" 1
+  fi
+  if ! AZDO_PR_LIST_JSON="$(az_repos_pr_list_with_retry)"; then
+    finish_publish "BLOCKED_PROVIDER" "azdo-pr-list-failed" "failure" "AzDO active PR lookup failed; provider/auth state is ambiguous" 1
+  fi
+  if AZDO_PR_JSON="$(select_matching_azdo_pr "$AZDO_PR_LIST_JSON")" && [ -n "$AZDO_PR_JSON" ]; then
+    load_azdo_pr_fields "$AZDO_PR_JSON"
+    finish_publish "EXISTING_OPEN_PR" "existing-open-pr" "success" "existing active AzDO PR found for branch"
+  fi
+
+  CHANGED_FILES=$(git diff --name-only "${BASE_REF}..HEAD" 2>/dev/null | head -40 || true)
+  CHANGED_FILES_BODY=$(printf '%s\n' "$CHANGED_FILES" | sed '/^$/d; s/^/- /')
+  [ -n "$CHANGED_FILES_BODY" ] || CHANGED_FILES_BODY="- No changed files detected by git diff"
+  DIFF_STAT=$(git diff --stat "${BASE_REF}..HEAD" 2>/dev/null | tail -20 || true)
+  DIFF_STAT_BODY="${DIFF_STAT:-No diff stat available}"
+  PR_TITLE="Update ${CURRENT_BRANCH} (AB#${ISSUE_NUM})"
+  PR_TITLE="${PR_TITLE:0:200}"
+  PR_BODY=$(printf '## Summary\nWorkflow-generated Azure DevOps PR for AB#%s.\n\n## Changed files\n%s\n\n## Diff stat\n```text\n%s\n```\n' "$ISSUE_NUM" "$CHANGED_FILES_BODY" "$DIFF_STAT_BODY")
+  if ! AZDO_CREATED_JSON="$(az_repos_pr_create_with_retry)"; then
+    finish_publish "BLOCKED_PROVIDER" "azdo-pr-create-failed" "failure" "AzDO PR creation failed; provider state is ambiguous" 1
+  fi
+  load_azdo_pr_fields "$AZDO_CREATED_JSON"
+  [ -n "$PR_NUMBER_RESULT" ] || finish_publish "BLOCKED_PROVIDER" "azdo-pr-create-invalid" "failure" "AzDO PR creation returned no pullRequestId" 1
+  PUBLISH_STATE="FOLLOWUP_CREATED"
+  LEGACY_PUBLISH_STATE="create-new-pr"
+  TERMINAL_STATUS="success"
+  MESSAGE="AzDO PR created"
+  emit_publish_result
+  exit 0
+fi
+
+if [ "$HOST_TYPE" != "github" ]; then
+  finish_publish "non-github" "non-github" "success" "non-GitHub host does not use provider PR creation"
+fi
+
+if ! command -v gh >/dev/null 2>&1; then echo "ERROR: workflow_publish_pr.sh requires the GitHub CLI ('gh') on PATH." >&2; exit 127; fi
+REPO_IDENTITY="$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null || true)" || true)"
+[ -n "$REPO_IDENTITY" ] || finish_publish "FAILED_PR_IDENTITY" "invalid-pr-identity" "failure" "unable to determine current GitHub repo identity from origin remote" 1
 
 PR_JSON="$(scoped_pr_lookup)"
 load_pr_fields "$PR_JSON"

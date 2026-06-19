@@ -139,6 +139,15 @@ if [ "$probe_success" = "true" ]; then
 fi
 
 case "$PUBLISH_STATE" in
+  BLOCKED_PROVIDER)
+    terminal_success="false"
+    terminal_state_out="BLOCKED_PROVIDER"
+    terminal_reason_out="${PR_PUBLISH_RESULT_MESSAGE:-${RECIPE_VAR_pr_publish_result__message:-provider publication failed or was ambiguous}}"
+    terminal_failure="true"
+    emit_terminal_evidence
+    echo "ERROR: workflow publish provider is blocked: $terminal_reason_out" >&2
+    exit 1
+    ;;
   no-diff|NO_DIFF_SUCCESS|CLOSED_OBSOLETE)
     if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
       RUNTIME_ARTIFACT_HELPER="${WORKFLOW_RUNTIME_ARTIFACT_HELPER:-${SCRIPT_DIR}/workflow_runtime_artifacts.sh}"
@@ -231,7 +240,7 @@ validate_final_pr_scope() {
 }
 
 case "$PUBLISH_STATE" in
-  FOLLOWUP_CREATED|MERGED|CLOSED_OBSOLETE|NO_DIFF_SUCCESS)
+  FOLLOWUP_CREATED|EXISTING_OPEN_PR|MERGED|CLOSED_OBSOLETE|NO_DIFF_SUCCESS)
     publish_state_reached="true"
     ;;
 esac
@@ -286,7 +295,7 @@ emit_terminal_evidence
 
 echo ""
 case "$terminal_state_out" in
-  MERGED|CLOSED_OBSOLETE|NO_DIFF_SUCCESS|FOLLOWUP_CREATED|IMPLEMENTED_VERIFIED|ALLOW_NO_OP|closed-after-merge|already-merged|no-diff)
+  MERGED|CLOSED_OBSOLETE|NO_DIFF_SUCCESS|FOLLOWUP_CREATED|EXISTING_OPEN_PR|IMPLEMENTED_VERIFIED|ALLOW_NO_OP|closed-after-merge|already-merged|no-diff)
     echo "terminal_status=$terminal_state_out"
     ;;
 esac
