@@ -88,8 +88,8 @@ gh call: closingIssuesReferences → [3960, 3983]
 Output: issue_number=3960   (first reference)
 ```
 
-**Timeout**: 60 seconds. If `gh` does not respond within the timeout, the PR
-number is used as the fallback tracking ID.
+**Timeout**: 60 seconds. If `gh` is unavailable or does not respond within the
+timeout, the PR number is used as the fallback tracking ID.
 
 ---
 

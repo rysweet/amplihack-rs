@@ -25,10 +25,8 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus};
-use std::sync::{
-    LazyLock,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::sync::LazyLock;
+use tempfile::TempDir;
 
 const BRICK_LIMIT: usize = 400;
 
@@ -66,8 +64,6 @@ static WORKFLOW_PR_REVIEW_YAML: LazyLock<serde_yaml::Value> = LazyLock::new(|| {
     serde_yaml::from_str(recipe_text(name))
         .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
 });
-
-static STEP_COMMAND_RUN_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Deserialize)]
 struct Recipe {
@@ -137,47 +133,55 @@ struct StepRun {
     stderr: String,
 }
 
-fn run_step_03b_extract_issue_number(issue_creation: &str, task_description: &str) -> StepRun {
-    let shim_dir = std::env::temp_dir().join(format!(
-        "amplihack-step-03b-test-{}-{}",
-        std::process::id(),
-        STEP_COMMAND_RUN_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    fs::create_dir_all(&shim_dir).unwrap_or_else(|e| panic!("create {}: {e}", shim_dir.display()));
+struct Step03bRunner {
+    _shim_dir: TempDir,
+    path: String,
+}
 
-    let gh_shim = shim_dir.join("gh");
-    fs::write(&gh_shim, "#!/usr/bin/env bash\nexit 0\n")
-        .unwrap_or_else(|e| panic!("write {}: {e}", gh_shim.display()));
-    let mut permissions = fs::metadata(&gh_shim)
-        .unwrap_or_else(|e| panic!("stat {}: {e}", gh_shim.display()))
-        .permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&gh_shim, permissions)
-        .unwrap_or_else(|e| panic!("chmod {}: {e}", gh_shim.display()));
+impl Step03bRunner {
+    fn new() -> Self {
+        let shim_dir = TempDir::new().expect("create step-03b gh shim tempdir");
+        let gh_shim = shim_dir.path().join("gh");
+        fs::write(&gh_shim, "#!/usr/bin/env bash\nexit 0\n")
+            .unwrap_or_else(|e| panic!("write {}: {e}", gh_shim.display()));
+        let mut permissions = fs::metadata(&gh_shim)
+            .unwrap_or_else(|e| panic!("stat {}: {e}", gh_shim.display()))
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&gh_shim, permissions)
+            .unwrap_or_else(|e| panic!("chmod {}: {e}", gh_shim.display()));
 
-    let path = match std::env::var("PATH") {
-        Ok(existing) if !existing.is_empty() => format!("{}:{existing}", shim_dir.display()),
-        _ => shim_dir.display().to_string(),
-    };
+        let path = match std::env::var("PATH") {
+            Ok(existing) if !existing.is_empty() => {
+                format!("{}:{existing}", shim_dir.path().display())
+            }
+            _ => shim_dir.path().display().to_string(),
+        };
 
-    let output = Command::new("bash")
-        .arg("-c")
-        .arg(step_command(
-            "workflow-prep",
-            "step-03b-extract-issue-number",
-        ))
-        .env("ISSUE_CREATION", issue_creation)
-        .env("TASK_DESCRIPTION", task_description)
-        .env("PATH", path)
-        .output()
-        .expect("run step-03b-extract-issue-number command");
+        Self {
+            _shim_dir: shim_dir,
+            path,
+        }
+    }
 
-    let _ = fs::remove_dir_all(&shim_dir);
+    fn run_extract_issue_number(&self, issue_creation: &str, task_description: &str) -> StepRun {
+        let output = Command::new("bash")
+            .arg("-c")
+            .arg(step_command(
+                "workflow-prep",
+                "step-03b-extract-issue-number",
+            ))
+            .env("ISSUE_CREATION", issue_creation)
+            .env("TASK_DESCRIPTION", task_description)
+            .env("PATH", &self.path)
+            .output()
+            .expect("run step-03b-extract-issue-number command");
 
-    StepRun {
-        status: output.status,
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        StepRun {
+            status: output.status,
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        }
     }
 }
 
@@ -1025,8 +1029,9 @@ fn workflow_prep_step_03b_local_tracking_succeeds_without_numeric_issue_number()
         ),
     ];
 
+    let runner = Step03bRunner::new();
     for (name, issue_creation) in cases {
-        let run = run_step_03b_extract_issue_number(issue_creation, "");
+        let run = runner.run_extract_issue_number(issue_creation, "");
         assert!(
             run.status.success(),
             "{name} must skip numeric extraction and exit successfully; stderr:\n{}",
@@ -1060,8 +1065,9 @@ fn workflow_prep_step_03b_remote_references_keep_numeric_extraction_behavior() {
         ("azure boards shorthand", "AB#654", "654"),
     ];
 
+    let runner = Step03bRunner::new();
     for (name, issue_creation, expected) in cases {
-        let run = run_step_03b_extract_issue_number(issue_creation, "");
+        let run = runner.run_extract_issue_number(issue_creation, "");
         assert!(
             run.status.success(),
             "{name} must still extract a numeric issue/work-item id; stderr:\n{}",
