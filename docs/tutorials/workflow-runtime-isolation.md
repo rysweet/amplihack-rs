@@ -3,8 +3,7 @@
 This tutorial shows how a workflow keeps generated runtime output out of a task
 worktree while preserving strict Artifact Guard behavior.
 
-Status: Planned implementation contract.
-Updated: 2026-06-18
+Updated: 2026-06-19
 
 ## What you will learn
 

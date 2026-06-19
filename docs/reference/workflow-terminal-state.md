@@ -62,7 +62,7 @@ A protected workflow exits `0` only when one of these evidence groups is present
 | Evidence group | Required proof | Typical producer |
 | --- | --- | --- |
 | Implementation and verification complete | `implementation_completed=true` and `verification_completed=true` with non-empty reason text or structured detail | `workflow-tdd`, `workflow-precommit-test`, review/feedback phases |
-| Publish or PR state reached | `publish_state_reached=true` with a known publish state such as `FOLLOWUP_CREATED`, `SUPERSEDED`, `MERGED`, `NO_DIFF_SUCCESS`, or `CLOSED_OBSOLETE` | `workflow-publish`, `workflow-finalize` |
+| Publish or change-request state reached | `publish_state_reached=true` with a known publish state such as `FOLLOWUP_CREATED`, `SUPERSEDED`, `MERGED`, `NO_DIFF_SUCCESS`, or `CLOSED_OBSOLETE` | `workflow-publish`, `workflow-finalize` |
 | Explicit terminal no-op | `terminal_no_op=true`, a known no-op state, and a non-empty reason | no-diff, merged, obsolete, superseded, or `allow_no_op` paths |
 
 `terminal_failure=true` is valid terminal evidence, but it is never success
@@ -149,8 +149,10 @@ canonical strings.
 | `terminal_reason` | string | Always | Actionable human-readable explanation. |
 | `observed_phases` | list/string | Failure diagnostics | Phases that produced evidence before the gate ran. |
 | `missing_evidence` | list/string | Failure diagnostics | Evidence required for success but not observed. |
-| `pr_url` | URL string | Publish/PR states | Pull request that represents the completed work. |
-| `pr_number` | positive integer string | Publish/PR states | Pull request number when available. |
+| `change_request_url` | URL string | Publish/change-request states | Provider change request that represents the completed work. |
+| `change_request_id` | string | Publish/change-request states | Provider change-request identifier when available. |
+| `pr_url` | URL string | GitHub compatibility output | GitHub pull request that represents the completed work. |
+| `pr_number` | positive integer string | GitHub compatibility output | GitHub pull request number when available. |
 | `verification_summary` | string/object | Verification completed | Commands or checks that satisfied verification. |
 | `required_next_action` | string | Finalization output | Operator or agent action needed after the terminal decision. |
 | `hollow_success_detected` | boolean | Finalization output | Whether finalization detected a success-looking run without meaningful completion evidence. |
@@ -169,6 +171,8 @@ canonical strings.
 | `CLOSED_OBSOLETE` | Yes | The PR or branch is obsolete and equivalent work is already upstream or no meaningful work remains. |
 | `SUPERSEDED` | Yes | A newer workflow-owned PR or issue explicitly supersedes this run. |
 | `ALLOW_NO_OP` | Yes | `allow_no_op=true` was set for an eligible non-code-change path and includes a reason. |
+| `MANUAL_REQUIRED` | No | A provider action is intentionally manual; `required_next_action` names the action. |
+| `BLOCKED_MANUAL_PROVIDER` | No | Required provider tooling, credentials, permissions, or APIs are unavailable. |
 | `FAILED_MISSING_TERMINAL_EVIDENCE` | No | The workflow stopped before implementation, verification, publish, or valid no-op evidence. |
 | `FAILED_INVALID_EVIDENCE` | No | Evidence is malformed, unknown, empty, or contradictory. |
 | `FAILED_FINALIZER_OUTPUT` | No | The agentic finalizer returned missing, malformed, non-JSON, or schema-invalid output. |
@@ -177,7 +181,7 @@ canonical strings.
 | `FAILED_WRONG_BRANCH` | No | The target checkout is not on the expected branch. |
 | `FAILED_INVALID_INPUT` | No | Required context such as repository path, branch, or PR identity is invalid. |
 | `FAILED_MISSING_TOOLING` | No | Required deterministic tooling is unavailable for the selected finalization path. |
-| `FAILED_PR_METADATA_UNAVAILABLE` | No | GitHub PR proof is required but metadata, auth, or provider output is unavailable or ambiguous. |
+| `FAILED_PR_METADATA_UNAVAILABLE` | No | Provider change-request proof is required but metadata, auth, or provider output is unavailable or ambiguous. |
 | `FAILED_CLOSED_UNMERGED` | No | A PR is closed without merge evidence and meaningful local branch diff remains. |
 | `BLOCKED_CI` | No | Required checks are failing or unavailable. |
 | `HOLLOW_SUCCESS` | No | The recipe appeared successful but lacked implementation, verification, publish, or valid no-op evidence. |

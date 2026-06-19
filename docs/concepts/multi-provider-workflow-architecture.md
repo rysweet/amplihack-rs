@@ -1,120 +1,167 @@
-# Multi-Provider Workflow Architecture
+# Provider-Neutral Workflow Architecture
 
-> [Home](../index.md) > Concepts > Multi-Provider Workflow Architecture
+> [Home](../index.md) > Concepts > Provider-Neutral Workflow Architecture
 
-Explains the design decisions behind provider-aware workflow routing. For
-implementation details, see the
-[Multi-Provider Workflow Reference](../reference/multi-provider-workflow.md).
+> [PLANNED - Implementation Pending]
+>
+> This concept page explains the target architecture for the provider-neutral
+> workflow feature. Helper commands named here are planned implementation
+> surfaces.
 
----
+Amplihack workflows use a provider-neutral domain contract for tracking items,
+change requests, publication, stale cleanup, and terminal state. Recipes do not
+hard-code GitHub or Azure DevOps command logic. They call typed helper commands,
+consume structured JSON, and let provider adapters translate the domain contract
+to the active repository host.
 
-## The Problem
+## Contents
 
-Workflow tracking and publication steps need provider-specific commands.
-GitHub repositories use GitHub Issues and GitHub pull requests. Azure DevOps
-repositories use Azure Boards or local tracking and require manual PR creation.
-Local or unsupported repositories need local tracking without provider network
-calls.
+- [The model](#the-model)
+- [Provider boundary](#provider-boundary)
+- [Deterministic helpers](#deterministic-helpers)
+- [Agentic judgment with validation](#agentic-judgment-with-validation)
+- [Provider states](#provider-states)
+- [Why this shape](#why-this-shape)
+- [Related documentation](#related-documentation)
 
----
+## The model
 
-## Detect-Once, Branch-Everywhere
+The pure `amplihack-workflows` domain layer owns provider-neutral concepts:
 
-The core pattern: **one detection step** early in the workflow writes a
-`remote_host_type` context variable. Every downstream step reads it and
-branches to the correct code path.
+| Concept | Meaning |
+| --- | --- |
+| `RepositoryProvider` | The classified host for the repository: GitHub, Azure DevOps, local, or unsupported. |
+| `TrackingItem` | A provider issue, Azure Boards work item, or local workflow reference. |
+| `ChangeRequest` | A reviewable change such as a GitHub pull request, Azure Repos pull request, or manual change request. |
+| `ProviderOperation` | A deterministic action such as detect provider, create tracking item, publish change request, query status, or clean stale work. |
+| `TerminalState` | The explicit final workflow state, including success, blocked, manual, and failure states. |
 
+The CLI owns adapters because adapters depend on host tools and credentials:
+
+```text
+recipe YAML
+  -> amplihack workflow <helper> --format json
+  -> amplihack-cli provider adapter
+  -> amplihack-workflows domain model
+  -> structured JSON result
+  -> deterministic recipe validation
 ```
-Step 02d (once) → remote_host_type = "github" | "azdo" | "other"
-    ↓
-Steps 03, 03b, 15, 16, 21 → case $REMOTE_HOST_TYPE in ...
+
+## Provider boundary
+
+The provider boundary is narrow. Recipes pass repository context and task data to
+helper commands; helpers return JSON with stable field names.
+
+| Provider | Automated behavior | Manual or blocked behavior |
+| --- | --- | --- |
+| GitHub | Issues, pull requests, PR status, merge status, and stale/superseded cleanup through `gh` when authenticated. | Missing `gh` or auth returns `BlockedManualProvider` with `next_action`. |
+| Azure DevOps | Azure Boards work item reuse/create when `az` is configured. | Azure Repos PR publication and cleanup return `ManualRequired`; `default-workflow` does not automate `az repos pr create` or Azure Repos cleanup mutation. Missing Boards support returns local tracking or `BlockedManualProvider`, depending on the requested operation. |
+| Local or unsupported | Local tracking references and local Git evidence only. | Publication and remote cleanup return `ManualRequired` with a provider-neutral next action. |
+
+Adapters never pretend a provider action succeeded. When live automation is not
+available, the serialized result is explicit:
+
+```json
+{
+  "schema_version": 1,
+  "status": "ManualRequired",
+  "provider": "AzureDevOps",
+  "operation": "CreateChangeRequest",
+  "next_action": "Create an Azure Repos pull request from feat/auth-timeout to main and include AB#12345 in the description.",
+  "warnings": [],
+  "data": {
+    "change_request": null,
+    "manual_action": {
+      "kind": "CreateChangeRequest",
+      "source_branch": "feat/auth-timeout",
+      "base_branch": "main",
+      "tracking_item_ref": "AB#12345"
+    }
+  }
+}
 ```
 
-**Why not adapters?** An adapter/strategy pattern would add a layer of
-indirection (provider interface, factory, registration) for three simple
-`case` branches. The bash `case` statement is self-documenting, testable in
-isolation, and avoids the indirection that would make recipe YAML harder to
-read. If a fourth provider is added in the future, the cost of adding
-another `case` branch is lower than maintaining an adapter registry.
+## Deterministic helpers
 
----
+Stable parsing and decision logic lives in typed Rust helpers instead of inline
+shell snippets. Recipes call these helpers and validate their JSON.
 
-## The Tracking Identifier Contract
+| Helper | Deterministic responsibility |
+| --- | --- |
+| `amplihack workflow detect-provider` | Normalize the Git remote and classify the provider. |
+| `amplihack workflow tracking-item ensure` | Reuse or create a tracking item, or return local/manual state. |
+| `amplihack workflow change-request publish` | Publish or describe the required manual publication action. |
+| `amplihack workflow change-request status` | Query provider status and normalize it into `ChangeRequestStatus`. |
+| `amplihack workflow terminal-state` | Validate final workflow evidence and emit one terminal state. |
+| `amplihack workflow cleanup-stale` | Dry-run or apply stale/superseded cleanup through the provider abstraction. |
+| `amplihack workflow validate-agent-contract` | Validate structured agentic step output against a named contract. |
+| `amplihack workflow simulate-recipe` | Run deterministic recipe simulations with fake providers, tools, and agents. |
 
-Remote providers produce the same output shape: a plain integer `issue_number`.
-Local tracking produces an opaque local reference instead. This keeps GitHub and
-Azure DevOps behavior stable while avoiding the false claim that a local ID is a
-remote issue number.
+Shell remains useful for orchestration glue, but not for durable parsing rules,
+provider classification, terminal-state decisions, stale cleanup decisions, or
+agent-output validation.
 
-| Provider | Source | Workflow identifier |
-| -------- | ------ | ------------------- |
-| GitHub | `gh issue create` URL | `issue_number=684` |
-| AzDO | `az boards` work item ID | `issue_number=12345` |
-| Other/Local | Structured local metadata | `tracking_reference=local-482193`, `issue_number=` |
+## Agentic judgment with validation
 
-Step 03b applies numeric extraction only after it has found no local-prefixed
-tracking reference. Branch names, commit messages, and PR descriptions use
-provider-specific formatting at the point of use: `Closes #684` for GitHub,
-`AB#12345` for AzDO, and `Ref local-482193` for local tracking.
+Judgment-heavy work stays agentic. Examples include finalization assessment,
+review-readiness interpretation, stale/superseded classification, and choosing a
+next action when provider metadata is incomplete.
 
----
+Those steps must return a deterministic validation contract:
 
-## PR Creation Asymmetry
+```json
+{
+  "schema_version": 1,
+  "decision": "Superseded",
+  "confidence": "high",
+  "reason": "PR #812 has the same workflow scope and newer head SHA.",
+  "required_next_action": "Close PR #791 as superseded by PR #812.",
+  "evidence_used": [
+    "scope.repository",
+    "scope.head_branch",
+    "candidate_pr.head_sha",
+    "candidate_pr.created_at"
+  ]
+}
+```
 
-GitHub PR creation is fully automated via `gh pr create`. AzDO PR creation
-is logged as manual instructions rather than automated. This asymmetry
-exists because:
+The recipe succeeds only after deterministic validation accepts the JSON schema,
+known enum values, confidence rules, required evidence, and provider-safe next
+action. Free-form prose is diagnostic text; it cannot prove success.
 
-1. `gh pr create` handles draft PRs, labels, reviewers, and closing
-   keywords in a single command. `az repos pr create` requires separate
-   calls for reviewers and labels.
-2. AzDO repository IDs must be resolved separately — they are not
-   derivable from the remote URL alone.
-3. The AzDO CLI's error messages for misconfigured projects are opaque,
-   making automated recovery difficult.
+## Provider states
 
----
+Provider helpers use these stable state values:
 
-## Other/Local Metadata Rationale
+| State | Meaning |
+| --- | --- |
+| `Succeeded` | The provider operation completed and returned durable evidence. |
+| `NoOp` | Nothing needed to change, and the reason is explicit. |
+| `ManualRequired` | Automation is intentionally unavailable; `next_action` tells the operator what to do. |
+| `BlockedManualProvider` | The provider path is blocked by missing credentials, permissions, tooling, or unsupported API behavior. |
+| `Failed` | The operation failed and cannot be treated as terminal success. |
 
-The `other` host type is not an error state — it is a first-class mode that
-enables the workflow to run in isolated environments (CI containers,
-air-gapped systems, fresh `git init` repos). Other/local mode:
+`ManualRequired` and `BlockedManualProvider` are not success-shaped fallbacks.
+They are auditable terminal or intermediate states that downstream recipes must
+surface in final output.
 
-- Emits structured local metadata such as `tracking_system=local`,
-  `tracking_reference=local-*`, and `issue_creation=local-tracking`; the
-  local-prefixed reference is required for successful local extraction
-- Skips all network calls (no `gh`, no `az`)
-- Produces valid branch names and commit messages without numeric issue
-  extraction
-- Skips PR creation (no remote to push to)
+## Why this shape
 
----
+The architecture keeps the simple parts simple and the judgment-heavy parts
+adaptable:
 
-## Trade-offs
+| Decision | Benefit |
+| --- | --- |
+| Pure domain layer | Provider concepts are tested without live GitHub or Azure DevOps calls. |
+| CLI-owned adapters | Host tools, auth, and filesystem access stay at the edge. |
+| Typed JSON helpers | Recipes consume stable contracts instead of parsing fragile command text. |
+| Agentic steps with schemas | Reasoning remains available without letting prose drive workflow state. |
+| Simulation tests | Success, failure, manual, and blocked paths are reproducible without external services. |
 
-| Decision                     | Benefit                            | Cost                                  |
-| ---------------------------- | ---------------------------------- | ------------------------------------- |
-| Detect-once pattern          | Single detection, no repeated work | One step to maintain                  |
-| `case` over adapters         | Simpler, no indirection            | Adding providers requires editing steps |
-| Remote issue_number contract | GitHub/AzDO steps stay unchanged | Local steps also need `tracking_reference` |
-| Other as fallback            | Works everywhere                   | No tracking system updated             |
-| Manual AzDO PR creation      | Avoids brittle automation          | Extra manual step for AzDO users       |
-| Context propagation required | Explicit data flow                 | Must declare vars in parent recipe     |
+## Related documentation
 
----
-
-## Related
-
-- [Multi-Provider Workflow Reference](../reference/multi-provider-workflow.md) — full implementation details
-- [How to Use the Workflow with Azure DevOps](../howto/use-workflow-with-azure-devops.md) — task-oriented guide
-- [Step 03 Host-Aware Tracking Idempotency](../reference/recipe-step-03-idempotency.md) — GitHub, AzDO, and local tracking guards
-- [Workflow Issue Extraction](../reference/workflow-issue-extraction.md) — three-tier extraction
-
----
-
-**Metadata**
-
-| Field    | Value                              |
-| -------- | ---------------------------------- |
-| Contract | Provider-aware workflow routing    |
+- [Provider-Neutral Workflow Reference](../reference/workflow-provider-contract.md)
+- [Multi-Provider Workflow Reference](../reference/multi-provider-workflow.md)
+- [Configure Provider-Neutral Workflows](../howto/configure-provider-neutral-workflows.md)
+- [Recipe Simulation Reference](../reference/workflow-simulation.md)
+- [Workflow Terminal-State Reference](../reference/workflow-terminal-state.md)

@@ -8,6 +8,10 @@ permissions:
   contents: read
   pull-requests: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   scan:
     # Skip for maintainers and bots
@@ -20,6 +24,7 @@ jobs:
       github.actor != 'copilot[bot]'
     runs-on: ubuntu-latest
     environment: external-pr-scan
+    timeout-minutes: 15
     steps:
       - name: Checkout base (safe — not PR head)
         uses: actions/checkout@v4
@@ -33,6 +38,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
 
       - name: Scan diff for invisible characters
         run: |

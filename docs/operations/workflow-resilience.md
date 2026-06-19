@@ -1,5 +1,10 @@
 # Workflow Publish and Finalize Resilience
 
+> Compatibility note: this page now uses the provider-neutral workflow contract.
+> GitHub PR publication can be automated. Azure DevOps, local, and unsupported
+> change-request publication return explicit manual or blocked provider states
+> instead of success-shaped `non-github` output.
+
 `workflow-publish` and `workflow-finalize` classify already-terminal states
 before taking PR actions. Re-running a workflow after a merge, after an
 already-created PR, or on a branch with no diff produces a successful terminal
@@ -23,7 +28,7 @@ exposed these concrete failure modes:
 | Dirty worktree misclassification | Generated artifacts or unstaged edits are treated as harmless no-diff work. | Dirty worktree blocks success with `FAILED_DIRTY_WORKTREE`. |
 | Closed-unmerged PR handling | A closed PR without merge evidence is treated as completed while branch diff remains. | Finalization returns `FAILED_CLOSED_UNMERGED` unless local obsolete/no-diff proof supports `CLOSED_OBSOLETE`. |
 | Remaining meaningful diff | Branch changes remain but no valid PR, merge, follow-up, or verified implementation path proves closure. | Finalization returns `FAILED_MEANINGFUL_DIFF` rather than treating the branch as a no-op success. |
-| Missing tooling | Required `git`, `jq`, `gh`, or GitHub auth is unavailable on a path that depends on it. | Finalization returns `FAILED_MISSING_TOOLING` or `FAILED_PR_METADATA_UNAVAILABLE`; it does not silently skip required proof. |
+| Missing tooling | Required `git`, `jq`, provider CLI, or provider auth is unavailable on a path that depends on it. | Finalization returns `FAILED_MISSING_TOOLING`, `FAILED_PR_METADATA_UNAVAILABLE`, or `BLOCKED_MANUAL_PROVIDER`; it does not silently skip required proof. |
 | Failed CI | Open PR has failing required checks but final output looks complete. | Finalization returns `BLOCKED_CI` with failing check evidence and nonzero exit. |
 | Hollow success | Workflow exits after setup, design, empty agent output, or inaccessible-codebase messages. | Finalization returns `HOLLOW_SUCCESS` or `FAILED_MISSING_TERMINAL_EVIDENCE`. |
 
@@ -34,7 +39,8 @@ branch state.
 
 | State | Publish result |
 | --- | --- |
-| Non-GitHub host | Success with `state=non-github`; no `gh pr create` call. |
+| Azure DevOps host | `ManualRequired` with an Azure Repos pull-request action; no `gh pr create` or `az repos pr create` call. |
+| Local or unsupported host | `ManualRequired` with provider-neutral next action; no remote provider command. |
 | No branch diff against base | Success with `state=no-diff`; no PR is created. |
 | Existing open PR for the same head branch | Success with `state=existing-open-pr`; existing PR URL is returned. |
 | Existing merged PR for the same head branch | Success with `state=already-merged`; merged PR URL is returned. |
@@ -82,7 +88,8 @@ These context keys influence publish/finalize behavior:
 | Context key | Used by | Meaning |
 | --- | --- | --- |
 | `repo_path` | publish, finalize | Repository root to inspect. Defaults to the recipe working directory. |
-| `remote_host_type` | publish | Host classification. `github` enables GitHub PR handling; `azure-devops` and `local` skip GitHub publishing. `azure-devops` is the public value; implementations may accept `azdo` as a legacy alias but should normalize outputs to `azure-devops`. |
+| `provider_context` | publish, finalize | Structured provider helper result. `GitHub` enables GitHub PR handling; `AzureDevOps`, `Local`, and `Unsupported` use manual or blocked publication states. |
+| `remote_host_type` | publish | Legacy compatibility input. Implementations may accept `github`, `azure-devops`, `azdo`, or `local`, but must normalize to `provider_context` before provider operations. |
 | `branch_name` | publish, finalize | Current workflow branch or explicit branch to inspect. |
 | `base_branch` | publish, finalize | Base branch for diff checks. Defaults to the detected remote default branch. |
 | `pr_number` | finalize | Existing PR to finalize when known. |
@@ -170,7 +177,8 @@ or finalizer validation.
 | `FAILED_CLOSED_UNMERGED` | Agentic finalization found a closed PR without merge evidence and local meaningful diff remains. | Reopen, supersede with a follow-up branch, or remove/merge the diff before rerunning. |
 | `FAILED_MEANINGFUL_DIFF` | Local branch diff remains without accepted terminal publication, follow-up, no-op, or implementation-plus-verification evidence. | Publish the diff, create a durable follow-up, complete verification, or remove the unintended changes. |
 | `branch_diff_status=unknown` | Git could not determine a safe base/head diff. | Check remotes, fetch state, and branch name. |
-| `non_github_host` | The repository is Azure DevOps or local-only. | Use the provider-specific workflow path; GitHub PR creation is intentionally skipped. |
+| `MANUAL_REQUIRED` | The repository needs a provider action that this workflow does not automate, such as creating an Azure Repos pull request. | Perform the named manual action, then rerun status/finalization with the durable change-request URL. |
+| `BLOCKED_MANUAL_PROVIDER` | Required provider tooling, auth, permissions, or metadata is unavailable. | Fix the named blocker, then rerun the provider helper. |
 | `BLOCKED_CI` | Required checks are pending, failed, or unavailable when required. | Fix CI or wait for checks; terminal-state resilience does not bypass CI. |
 | `FAILED_FINALIZER_OUTPUT` | The agentic finalizer returned malformed, missing, or schema-invalid JSON. | Inspect the finalizer step output and rerun after fixing the prompt/schema/tooling path. |
 | `HOLLOW_SUCCESS` | The run looked successful but produced no implementation, verification, publish, or valid no-op evidence. | Resume `default-workflow` from the missing phase or emit a supported no-op state with evidence. |

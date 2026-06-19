@@ -1,195 +1,133 @@
-# How to Use the Default Workflow with Azure DevOps
+# Use Default Workflow with Azure DevOps
 
-> [Home](../index.md) > How-To > Use Workflow with Azure DevOps
+> [Home](../index.md) > How-To > Use Default Workflow with Azure DevOps
 
-Task-oriented guide for running `default-workflow` against an Azure DevOps
-repository. For design rationale, see
-[Multi-Provider Workflow Architecture](../concepts/multi-provider-workflow-architecture.md).
-For full reference, see
-[Multi-Provider Workflow Reference](../reference/multi-provider-workflow.md).
+Use this guide to run `default-workflow` in an Azure DevOps repository. The
+workflow uses the provider-neutral abstraction, so Azure DevOps behavior is
+explicit and GitHub commands are never invoked for Azure DevOps remotes.
 
----
+> [PLANNED - Implementation Pending]
+>
+> The `amplihack workflow ...` helper commands shown here are the target
+> provider-neutral interface.
 
 ## Prerequisites
 
-1. **Git remote** named `origin` pointing to your AzDO repo:
+Set the project heap preference for nested workflow runs:
 
-   ```bash
-   git remote -v
-   # origin  https://dev.azure.com/myorg/myproject/_git/myrepo (fetch)
-   ```
+```bash
+export NODE_OPTIONS=--max-old-space-size=32768
+```
 
-2. **Azure CLI** is optional. Install and configure it only when you want
-   Azure Boards work-item reuse or creation:
+Use an Azure DevOps remote:
 
-   ```bash
-   az --version
-   az extension add --name azure-devops
-   az login
-   az devops configure --defaults \
-     organization=https://dev.azure.com/YOUR_ORG \
-     project=YOUR_PROJECT
-   ```
+```bash
+git remote set-url origin https://dev.azure.com/acme/platform/_git/service
+```
 
-Without Azure CLI configuration, the workflow still detects `azdo`, skips all
-GitHub issue/label commands, and emits structured local metadata when step 03
-needs a tracking record.
+Configure Azure Boards only when you want automated work item reuse or creation:
 
----
+```bash
+az extension add --name azure-devops
+az login
+az devops configure --defaults \
+  organization=https://dev.azure.com/acme \
+  project=platform
+```
 
-## Run the Workflow with a New Work Item
+## Run with an existing work item
 
 ```bash
 amplihack recipe run default-workflow \
-  -c task_description="Add retry logic to API client" \
-  -c repo_path=.
+  -c task_description="Fix authentication timeout in AB#12345" \
+  -c repo_path=. \
+  --format json
 ```
 
-The workflow automatically:
+Expected provider result:
 
-1. Detects `azdo` as the remote host type (step 02d)
-2. Creates an AzDO work item of type `Task`, or emits local metadata if Azure Boards is unavailable (step 03)
-3. Uses `AB#N` commit references (step 15)
-4. Skips automated PR creation (step 16)
-5. Produces a host-aware summary (step 22b)
+```text
+provider=AzureDevOps
+tracking_item.display_ref=AB#12345
+change_request.status=ManualRequired
+```
 
-### Override the work item type
-
-By default, step 03 creates a `Task`. To use a different work item type,
-create the work item manually and pass its ID with `issue_number=N` or
-reference it via `AB#N` in the task description.
-
----
-
-## Run the Workflow with an Existing Work Item
-
-Use either an explicit `issue_number` context value or an `AB#N` reference in
-`task_description`. Step 03 keeps both forms inside the Azure DevOps branch and
-does not create a GitHub issue.
-
-### Explicit work item context
-
-Use this form for Azure DevOps PR follow-up work where the recipe context
-already contains a work item ID:
+## Run with a new work item
 
 ```bash
-amplihack recipe run default-workflow \
-  -c remote_host_type=azdo \
-  -c issue_number=12345 \
-  -c task_description="Address review feedback for the Azure DevOps PR" \
-  -c repo_path=.
+amplihack workflow tracking-item ensure \
+  --repo . \
+  --title "Fix authentication timeout" \
+  --body-file workflow-body.md \
+  --format json
 ```
 
-`remote_host_type=azdo` is the primary Azure DevOps value. `azure-devops` is
-accepted as a compatibility alias for external contexts. Step 03
-emits `AB#12345`, step 03b extracts `12345`, and downstream steps use
-Azure Boards references such as `AB#12345`. This explicit context form is
-trusted and does not require Azure CLI lookup before reuse.
+When Azure Boards is configured, the result contains an Azure Boards work item.
+When Azure Boards is unavailable, the helper returns local/manual or blocked
+state with `next_action`.
 
-### Work item reference in task text
+## Publish the change request
 
-Reference the work item number in `task_description`:
+The default Azure DevOps configuration reports manual PR creation:
+
+```json
+{
+  "schema_version": 1,
+  "provider": "AzureDevOps",
+  "operation": "PublishChangeRequest",
+  "status": "ManualRequired",
+  "next_action": "Create an Azure Repos pull request from feat/auth-timeout to main and include AB#12345 in the description.",
+  "warnings": [],
+  "data": {
+    "change_request": null,
+    "manual_action": {
+      "kind": "CreateChangeRequest",
+      "source_branch": "feat/auth-timeout",
+      "base_branch": "main",
+      "tracking_item_ref": "AB#12345"
+    }
+  }
+}
+```
+
+Create the Azure Repos PR using the command or web UI named in `next_action`.
+After the PR exists, run terminal-state validation with the PR URL when needed:
 
 ```bash
-amplihack recipe run default-workflow \
-  -c task_description="Fix the auth bug described in AB#12345" \
-  -c repo_path=.
+amplihack workflow terminal-state \
+  --repo . \
+  --branch "$(git branch --show-current)" \
+  --base main \
+  --change-request-url "https://dev.azure.com/acme/platform/_git/service/pullrequest/456" \
+  --format json
 ```
-
-Because host dispatch has already selected Azure DevOps, a bare `#12345`
-inside the task description is also treated as an Azure Boards candidate rather
-than a GitHub issue. Task-text candidates may still require Azure CLI,
-organization, project, and work-item resolution before they are reused.
-
----
-
-## Percent-Encoded Project Names
-
-AzDO project names containing spaces (e.g., `My Project`) appear
-percent-encoded in remote URLs as `My%20Project`. Step 03 decodes `%XX`
-sequences before validation, so project names with spaces work correctly.
-
----
-
-## Differences from GitHub Workflow
-
-| Aspect              | GitHub                         | Azure DevOps                         |
-| ------------------- | ------------------------------ | ------------------------------------ |
-| Host detection      | step 02d → `github`            | step 02d → `azdo`                    |
-| Issue creation      | `gh issue create`              | `az boards work-item create`         |
-| Commit reference    | `Closes #N`                    | `AB#N`                               |
-| PR creation         | Automated (`gh pr create`)     | Skipped (create manually after)      |
-| Auth prerequisite   | `gh auth login`                | None for local metadata; `az login` + DevOps extension for Azure Boards |
-| Idempotency Guard 1 | `gh issue view`               | Explicit `issue_number` emits `AB#N`; task-text candidates may use `az boards work-item show` |
-| Existing `issue_number` | Reuses the supplied issue ID | Emits `AB#N`; no GitHub or Azure CLI lookup required |
-| Idempotency Guard 2 | `gh issue list --search`      | Host-isolated; no GitHub title search |
-| Summary (step 22b)  | `PR: <url>`                   | `PR: N/A (manual creation required)` |
-
----
-
-## Create a PR Manually
-
-After the workflow completes steps 1–15 (commit and push), create a PR
-using the Azure DevOps CLI:
-
-```bash
-az repos pr create \
-  --source-branch "$(git branch --show-current)" \
-  --target-branch main \
-  --title "feat: add retry logic (AB#12345)" \
-  --description "Implements retry logic per work item AB#12345"
-```
-
-Or use the Azure DevOps web UI to create the PR from the pushed branch.
-
----
 
 ## Troubleshooting
 
-**Host detected as `other` instead of `azdo`**
+### Provider is not Azure DevOps
 
-Verify the remote URL contains `dev.azure.com`, `visualstudio.com`, or
-`ssh.dev.azure.com`: `git remote get-url origin`. All three URL forms are
-detected:
+Run:
 
-- HTTPS: `https://dev.azure.com/org/project/_git/repo`
-- Legacy: `https://org.visualstudio.com/project/_git/repo`
-- SSH: `git@ssh.dev.azure.com:v3/org/project/repo`
+```bash
+amplihack workflow detect-provider --repo . --format json
+```
 
-If the workflow is launched from an external Azure DevOps context that already
-knows the host, pass `-c remote_host_type=azdo`. The `azure-devops` alias also
-routes to the same Azure Boards path for compatibility.
+Supported Azure DevOps hosts are `dev.azure.com`, `visualstudio.com`, and
+`ssh.dev.azure.com`.
 
-**Workflow tries to create or inspect a GitHub issue**
+### The workflow reports `BlockedManualProvider`
 
-That violates the provider isolation contract. Confirm that `origin` uses one
-of the supported Azure DevOps URL forms and that the workflow is running with
-the intended `repo_path`. For guaranteed reuse without Azure CLI lookup, pass
-the existing work item as `issue_number=N` with
-`remote_host_type=azdo`.
+Read `next_action`. Common causes are missing Azure CLI auth, missing Azure
+DevOps extension, missing project defaults, or insufficient permissions. Fix the
+provider setup and rerun the helper.
 
-Unknown or misspelled host values use local tracking rather than GitHub.
+### The workflow reports `ManualRequired`
 
-**`az boards` fails with authentication error**
+This is expected when the current provider path is intentionally manual. Perform
+the action in `next_action`, then rerun status or terminal-state validation.
 
-Run `az login` to refresh credentials. For PAT-based auth:
-`az devops login --organization https://dev.azure.com/YOUR_ORG`.
+## See also
 
-**Work item type not valid**
-
-List available types: `az boards work-item type list --project YOUR_PROJECT`.
-Type names are case-sensitive and vary by process template.
-
-**Project name with spaces not recognized**
-
-Ensure the remote URL uses standard percent-encoding (`%20` for spaces).
-Step 03 decodes these automatically. Invalid sequences like `%ZZ` are
-rejected and the workflow falls back to local tracking.
-
----
-
-**Metadata**
-
-| Field    | Value                                |
-| -------- | ------------------------------------ |
-| Contract | Azure DevOps workflow-prep routing   |
+- [Configure Provider-Neutral Workflows](configure-provider-neutral-workflows.md)
+- [Provider-Neutral Workflow API](../reference/workflow-provider-contract.md)
+- [Multi-Provider Workflow Reference](../reference/multi-provider-workflow.md)

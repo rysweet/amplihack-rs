@@ -15,6 +15,8 @@ pub mod auto_stager;
 pub mod auto_update;
 pub mod binary_finder;
 pub mod bootstrap;
+#[cfg(test)]
+mod ci_resource_discipline_tests;
 pub mod claude_plugin;
 mod cli_commands;
 pub mod cli_extensions;

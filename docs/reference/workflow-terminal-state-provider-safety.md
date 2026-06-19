@@ -1,10 +1,10 @@
 # Workflow Terminal-State Provider Safety
 
-`workflow-terminal-state` is provider-aware. The provider-safe implementation
-uses GitHub pull-request metadata only for GitHub-backed remotes or explicit
-GitHub pull-request URLs. Azure Repos, `visualstudio.com`,
-`ssh.dev.azure.com`, and unknown remotes use local Git evidence instead and do
-not require the GitHub CLI.
+`workflow-terminal-state` is provider-neutral. It uses provider adapters for
+change-request metadata and falls back to local Git evidence only when that is
+safe for the requested terminal state. GitHub pull-request metadata is used only
+by the GitHub adapter. Azure Repos, `visualstudio.com`, `ssh.dev.azure.com`, and
+unknown remotes never trigger GitHub CLI calls.
 
 > [Home](../index.md) > [Workflows](../claude/workflow/DEFAULT_WORKFLOW.md) > Workflow Terminal-State Provider Safety
 
@@ -19,9 +19,9 @@ The feature has three guarantees:
 
 | Guarantee | Behavior |
 | --- | --- |
-| Provider-aware metadata | `gh pr view`, `gh pr list`, and related GitHub metadata commands run only when the explicit PR URL or `origin` remote is GitHub-backed. A bare `pr_number` never enables GitHub support by itself. |
+| Provider-aware metadata | Provider metadata commands run only through the detected provider adapter. A bare provider-specific number never enables a different provider by itself. |
 | Local safety everywhere | Clean worktree, resolvable base ref, branch/base diff, and commits-ahead checks run for every provider. |
-| GitHub fail-closed semantics | GitHub remotes and GitHub PR URLs still require trustworthy GitHub PR metadata when metadata is needed to prove a GitHub PR state or to decide whether meaningful local work is safe to close. |
+| Provider fail-closed semantics | Provider remotes and provider change-request URLs require trustworthy matching metadata when metadata is needed to prove a change-request state or to decide whether meaningful local work is safe to close. |
 
 `gh` is optional for Azure Repos and unknown remotes. Missing GitHub PR
 metadata is not a terminal-state failure merely because a probe is running in a
@@ -38,10 +38,10 @@ Provider detection starts with the most explicit signal and falls back to
 
 1. If `pr_url` is present, classify that URL.
 2. Otherwise classify `git config --get remote.origin.url`.
-3. Enable GitHub PR metadata only after a positive GitHub match.
-4. Treat every other remote as non-GitHub/unknown.
-5. Use `pr_number` only after GitHub metadata is enabled; a bare number is not
-   provider evidence.
+3. Enable provider metadata only after a positive provider match.
+4. Treat every unsupported remote as local/unknown.
+5. Use provider-specific IDs only after provider metadata is enabled; a bare
+   number is not provider evidence.
 
 | Input example | Provider classification | GitHub PR metadata |
 | --- | --- | --- |
@@ -56,9 +56,8 @@ Provider detection starts with the most explicit signal and falls back to
 | `https://gitlab.com/OWNER/REPO.git` | Unknown/non-GitHub | Disabled |
 | No `origin` remote | Unknown/non-GitHub | Disabled |
 
-Non-GitHub PR URLs are recognized as non-GitHub provider signals and otherwise
-treated as opaque. They are not parsed as provider-native PRs, are not parsed as
-GitHub owner/repo/PR identifiers, and never trigger `gh`.
+Non-GitHub change-request URLs are recognized as non-GitHub provider signals and
+never trigger `gh`.
 
 ## Safety Model
 
@@ -113,8 +112,9 @@ current decision depends on that metadata. Clean no-diff proof can still return
 
 ### Non-GitHub fallback
 
-For Azure Repos and unknown remotes, terminal-state validation intentionally
-does not inspect provider PR metadata. It does not call:
+For Azure Repos and unknown remotes without configured change-request automation,
+terminal-state validation intentionally does not inspect provider PR metadata. It
+does not call:
 
 ```bash
 gh pr list
@@ -130,7 +130,7 @@ The local Git gates remain authoritative:
 | Missing or unresolved base ref | Terminal-state validation fails with an actionable base-ref error. |
 | Clean no-diff branch | `NO_DIFF_SUCCESS` is allowed without GitHub metadata. |
 | Clean branch with no meaningful diff but commits ahead | `CLOSED_OBSOLETE` is allowed as superseded/no-diff evidence. |
-| Meaningful branch/base diff | Terminal success is denied; the workflow must publish, remove, merge, or supersede the diff. |
+| Meaningful branch/base diff | Terminal success is denied; the workflow must publish, remove, merge, supersede the diff, or return `ManualRequired` with a next action. |
 
 ## Usage
 
@@ -177,8 +177,10 @@ export NODE_OPTIONS=--max-old-space-size=32768
 | `should_finalize` | `true` when finalization should emit a non-mutating final decision. |
 | `should_run_ci_wait` | `true` only when CI waiting remains valid for the active provider path. |
 | `should_merge` | `true` only when merge remains valid for green, active work. |
-| `pr_url` | GitHub PR URL when GitHub metadata identified one; empty for non-GitHub local-only probes. |
-| `pr_number` | GitHub PR number when GitHub metadata identified one; empty for non-GitHub local-only probes. |
+| `change_request_url` | Provider change-request URL when metadata identified one; empty for local-only probes. |
+| `change_request_id` | Provider change-request identifier when metadata identified one. |
+| `pr_url` | GitHub compatibility URL when GitHub metadata identified one; empty for non-GitHub local-only probes. |
+| `pr_number` | GitHub compatibility number when GitHub metadata identified one; empty for non-GitHub local-only probes. |
 | `branch_diff_status` | `no-diff`, `has-diff`, or `unknown`. |
 | `commits_ahead` | Number of commits ahead of `base_ref`, when countable. |
 

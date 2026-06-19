@@ -1,10 +1,20 @@
-# Platform Bridge - Multi-Platform Support for Git Workflows
+# Platform Bridge - Legacy Multi-Platform Support
 
-Automatic platform detection and unified interface fer GitHub and Azure DevOps operations in the `default-workflow` skill/recipe.
+> Compatibility note: this page documents the legacy platform bridge. New
+> `default-workflow` provider behavior is specified by the
+> [provider-neutral workflow API](../reference/workflow-provider-contract.md).
+> Recipes should call `amplihack workflow ... --format json` helpers, not this
+> bridge directly. Azure Repos pull-request publication is manual in the
+> provider-neutral workflow contract.
+
+Legacy automatic platform detection and unified interface fer selected GitHub
+and Azure DevOps operations.
 
 ## Quick Start
 
-The platform bridge automatically detects whether yer repository be hosted on GitHub or Azure DevOps and uses the appropriate CLI tools. No configuration needed, matey!
+The legacy bridge can detect whether yer repository be hosted on GitHub or Azure
+DevOps and use matching CLI tools. New workflow code should use the
+provider-neutral helpers instead.
 
 ```rust
 from claude.tools.platform_bridge import PlatformBridge
@@ -18,7 +28,8 @@ issue = bridge.create_issue(
     body="Implement JWT authentication"
 )
 
-# Create a draft pull request
+# Create a draft pull request through the legacy bridge only.
+# default-workflow does not automate Azure Repos PR creation.
 pr = bridge.create_draft_pr(
     title="feat: Add JWT auth",
     body="Implementation of authentication system",
@@ -35,7 +46,7 @@ Before the platform bridge, the legacy `DEFAULT_WORKFLOW.md` hardcoded GitHub-sp
 - Every workflow step required platform-specific instructions
 - Switching between GitHub and Azure DevOps projects required different workflows
 
-The platform bridge solves this by:
+The legacy platform bridge solved this by:
 
 - **Automatic Detection**: Examines `git remote` URLs to determine platform
 - **Unified Interface**: Single API that works fer both GitHub and Azure DevOps
@@ -44,18 +55,17 @@ The platform bridge solves this by:
 
 ## Core Capabilities
 
-The platform bridge supports provider operations used by workflow tooling.
-`default-workflow` currently automates GitHub PR creation only; Azure DevOps
-PR creation remains a manual post-workflow step unless a caller invokes the
-bridge directly.
+The platform bridge supports provider operations used by older workflow tooling.
+Provider-neutral workflow helpers supersede this direct bridge for
+`default-workflow`.
 
 | Operation       | GitHub Command         | Azure DevOps Command                 | Workflow Step |
 | --------------- | ---------------------- | ------------------------------------ | ------------- |
 | Create Issue    | `gh issue create`      | `az boards work-item create`         | Step 3        |
-| Create Draft PR | `gh pr create --draft` | `az repos pr create --draft`         | Direct bridge only for AzDO; not automatic in `default-workflow` |
-| Mark PR Ready   | `gh pr ready`          | `az repos pr update --status Active` | Step 20       |
-| Add PR Comment  | `gh pr comment`        | `az repos pr create-thread`          | Steps 16-17   |
-| Check CI Status | `gh pr checks`         | `az pipelines runs list`             | Step 21       |
+| Create Draft PR | `gh pr create --draft` | Legacy bridge only; not part of provider-neutral `default-workflow` | GitHub adapter only for automated workflow publication; AzDO manual action |
+| Mark PR Ready   | `gh pr ready`          | Legacy bridge only                   | GitHub adapter only for automated workflow paths |
+| Add PR Comment  | `gh pr comment`        | Legacy bridge only                   | GitHub adapter only for automated workflow paths |
+| Check CI Status | `gh pr checks`         | Legacy bridge only                   | GitHub adapter only for automated workflow paths |
 
 ## How Platform Detection Works
 

@@ -264,6 +264,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: RecipeCommands,
     },
+    /// Provider-neutral workflow helper utilities.
+    Workflow {
+        #[command(subcommand)]
+        command: crate::commands::workflow::WorkflowCommands,
+    },
     /// Mode management
     Mode {
         #[command(subcommand)]

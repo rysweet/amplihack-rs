@@ -10,10 +10,12 @@ use std::fs::{self, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use tracing::warn;
 
 /// Maximum characters of the user prompt to include in the log entry.
 const PROMPT_PREVIEW_MAX_CHARS: usize = 200;
+static PROVENANCE_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 /// A structured provenance log entry written as one JSON line.
 #[derive(Debug, Clone, Serialize)]
@@ -120,6 +122,9 @@ fn try_log_provenance(
     let mut line = serde_json::to_string(entry)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     line.push('\n');
+    let _guard = PROVENANCE_WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     file.write_all(line.as_bytes())
 }
@@ -187,14 +192,12 @@ mod tests {
     fn appends_multiple_entries() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = expected_log_path(dir.path(), CLASSIFIER_LOG_SUBDIR, CLASSIFIER_LOG_FILE);
-        let initial_lines = fs::read_to_string(&log_path)
-            .map(|content| content.lines().count())
-            .unwrap_or(0);
+        let token = format!("append-test-{}", std::process::id());
         for i in 0..3 {
             let entry = ProvenanceEntry::new(
                 "classification",
                 "DEFAULT_WORKFLOW",
-                format!("reason {i}"),
+                format!("{token}-reason-{i}"),
                 0.7 + (i as f64) * 0.1,
                 vec![],
                 &format!("request {i}"),
@@ -204,13 +207,14 @@ mod tests {
 
         let content = fs::read_to_string(&log_path).unwrap();
         let lines: Vec<&str> = content.lines().collect();
-        assert_eq!(
-            lines.len(),
-            initial_lines + 3,
-            "should append 3 JSONL lines"
-        );
+        let matching_lines = lines
+            .iter()
+            .copied()
+            .filter(|line| line.contains(&token))
+            .collect::<Vec<_>>();
+        assert_eq!(matching_lines.len(), 3, "should append 3 JSONL lines");
 
-        for line in &lines[initial_lines..] {
+        for line in matching_lines {
             let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
             assert!(parsed.get("timestamp").is_some());
             assert!(parsed.get("event").is_some());

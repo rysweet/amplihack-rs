@@ -64,7 +64,7 @@ Finalization has three phases.
 
 | Phase | Owner | Responsibility |
 | --- | --- | --- |
-| Evidence collection | Deterministic shell/JSON steps | Read Git status, branch/base diff, PR metadata when provider-safe, CI state, implementation and verification markers, publish result, prior recipe output, and observed phases. |
+| Evidence collection | Deterministic shell/JSON steps | Read Git status, branch/base diff, provider-safe change-request metadata, CI state, implementation and verification markers, publish result, prior recipe output, and observed phases. |
 | Terminal assessment | Structured agentic finalizer | Classify one terminal state from the evidence document, explain the reason, identify hollow success, and name the required next action. |
 | Validation and persistence | Deterministic shell/JSON steps | Validate the finalizer schema, reject missing or malformed output, enforce terminal-state evidence rules, persist normalized fields, and return the recipe exit status. |
 
@@ -80,7 +80,7 @@ failures. The agentic finalizer is designed around these concrete cases:
 | Failure mode | Observed cause | Required finalization behavior |
 | --- | --- | --- |
 | Brittle parsing | Shell snippets inferred completion from text fragments such as publish status strings, PR URLs, or partial command output. | Parse only structured JSON/key-value evidence. Free-form text may appear in `reason`, but cannot prove success. |
-| Missing or stale PR metadata | A stale `pr_number`, missing `pr_url`, mismatched head branch, stale head SHA, or unavailable `gh` metadata caused the wrong PR state to be trusted. | Validate PR identity against repo, branch, base, and head SHA. If the needed metadata is unavailable or mismatched, fail closed. |
+| Missing or stale change-request metadata | A stale provider ID, missing change-request URL, mismatched head branch, stale head SHA, or unavailable provider metadata caused the wrong state to be trusted. | Validate change-request identity against repo, branch, base, provider, and head SHA. If the needed metadata is unavailable or mismatched, fail closed. |
 | Dirty worktree misclassification | Generated files, unstaged edits, or leftover workflow artifacts were treated as harmless no-diff states. | Dirty worktree evidence blocks terminal success unless the workflow explicitly commits, removes, or accounts for the changes before finalization. |
 | Closed-unmerged PR handling | Closed PRs without merge evidence were sometimes treated like completed work even when branch diffs remained. | Return `CLOSED_OBSOLETE` only when local no-diff/obsolete proof exists; otherwise return a failing closed-unmerged state. |
 | Remaining meaningful diff | Branch changes remain but no valid publish, merge, follow-up, or implementation-plus-verification path proves closure. | Return `FAILED_MEANINGFUL_DIFF` unless the diff is intentionally represented by a validated PR/follow-up or another success state with deterministic proof. |
@@ -103,7 +103,7 @@ metadata, but the finalizer sees a single JSON object.
 | `branch_name` | string | Expected branch for the workflow-owned work. |
 | `base_ref` | string | Intended comparison base. |
 | `git` | object | Clean/dirty status, branch match, diff status, commits ahead, and base resolution details. |
-| `pr` | object | Provider, URL, number, state, merge evidence, head branch, base branch, head SHA, and identity-match booleans. Empty when no PR exists. |
+| `change_request` | object | Provider, URL, ID, state, merge evidence, source branch, base branch, head SHA, and identity-match booleans. Empty when no change request exists. |
 | `ci` | object | Required check state, failing checks, pending checks, and CI metadata availability. |
 | `implementation` | object | Whether code/docs/config work was applied and where that evidence came from. |
 | `verification` | object | Whether required tests, pre-commit, or validation completed and summaries of those checks. |
@@ -162,11 +162,13 @@ contradictory values, or unsupported success claims produce
 | `SUPERSEDED` | Yes | A newer workflow-owned PR or issue explicitly supersedes this run and durable metadata links the old run to the replacement. |
 | `IMPLEMENTED_VERIFIED` | Yes | Implementation and required verification completed on a path that does not require publish/merge evidence. |
 | `ALLOW_NO_OP` | Yes | Explicit no-op path was allowed and includes evidence-backed reason text. |
+| `MANUAL_REQUIRED` | No | A provider action is intentionally manual and the final output names the required next action. |
+| `BLOCKED_MANUAL_PROVIDER` | No | Provider tooling, credentials, permissions, or APIs block required automation. |
 | `BLOCKED_CI` | No | Required checks are failing, pending beyond policy, or unavailable when required. |
 | `FAILED_DIRTY_WORKTREE` | No | Uncommitted or untracked work prevents terminal success. |
 | `FAILED_MEANINGFUL_DIFF` | No | Meaningful branch changes remain but no validated publish, merge, follow-up, no-op, or implementation-plus-verification path proves closure. |
 | `FAILED_CLOSED_UNMERGED` | No | PR is closed without merge evidence and meaningful branch diff remains. |
-| `FAILED_PR_METADATA_UNAVAILABLE` | No | GitHub PR proof is required but metadata or auth is missing, stale, or ambiguous. |
+| `FAILED_PR_METADATA_UNAVAILABLE` | No | Provider change-request proof is required but metadata or auth is missing, stale, or ambiguous. |
 | `FAILED_MISSING_TOOLING` | No | Required deterministic tooling such as `git`, `jq`, or provider CLI support is missing for the selected path. |
 | `FAILED_INVALID_EVIDENCE` | No | Evidence is malformed, contradictory, unknown, or incomplete. |
 | `FAILED_FINALIZER_OUTPUT` | No | The agentic finalizer returned missing, malformed, non-JSON, or schema-invalid output. |
@@ -196,6 +198,8 @@ persisting or reporting the result.
    a durable replacement PR or issue identifier plus a supersession reason,
    `IMPLEMENTED_VERIFIED` needs implementation and verification evidence, and
    `ALLOW_NO_OP` needs explicit no-op authorization plus reason text.
+   `MANUAL_REQUIRED` and `BLOCKED_MANUAL_PROVIDER` require provider, operation,
+   and actionable next-action evidence and are never terminal success.
 8. Dirty worktree, invalid PR identity, failed CI, malformed evidence, and
    missing required tooling override success-looking output.
 9. The normalized result is persisted even for failure states so operators can
@@ -224,8 +228,10 @@ key/value outputs, but the field names and meanings are identical.
 | `publish_state_reached` | Normalized publish/PR/follow-up evidence. |
 | `terminal_no_op` | Whether the final state is an explicit no-op success. |
 | `terminal_failure` | `true` for all non-success terminal states. |
-| `pr_url` | PR URL when a validated PR or follow-up exists. |
-| `pr_number` | PR number when a validated GitHub PR exists. |
+| `change_request_url` | Provider change-request URL when a validated change request or follow-up exists. |
+| `change_request_id` | Provider change-request identifier when available. |
+| `pr_url` | GitHub compatibility URL when a validated GitHub PR or follow-up exists. |
+| `pr_number` | GitHub compatibility number when a validated GitHub PR exists. |
 
 ## Configuration
 

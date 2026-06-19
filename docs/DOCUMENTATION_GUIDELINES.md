@@ -73,6 +73,36 @@ Sprint progress: 80% complete
 
 ---
 
+### Rule 2b: Shared Workflow Docs Are Provider-Neutral
+
+**Principle**: General workflow documentation describes workflow concepts, not a
+single provider's implementation details.
+
+**Requirements**:
+
+- Use provider-neutral terms such as "tracking item" and "change request" in
+  shared workflow docs
+- Put GitHub issue, GitHub pull request, Azure Boards, and Azure Repos details in
+  provider-specific sections
+- Document manual and blocked provider states explicitly with `next_action`
+- Do not present Azure DevOps or unsupported-provider manual paths as completed
+  automation
+
+**Example - Good**:
+
+```markdown
+The workflow publishes a change request. GitHub uses a pull request through
+`gh`; Azure DevOps returns `ManualRequired` with an Azure Repos manual action.
+```
+
+**Example - Bad**:
+
+```markdown
+The workflow creates a PR with `gh pr create`.
+```
+
+---
+
 ### Rule 3: Ruthless Simplicity - Say More with Less
 
 **Principle**: The best documentation is the simplest that achieves understanding.

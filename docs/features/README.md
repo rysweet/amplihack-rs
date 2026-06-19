@@ -33,7 +33,8 @@ Intelligent guidance system that prevents common mistakes and ensures work compl
   preserve, validate, publish, and merge an already-implemented branch; includes
   the post-v0.9.77 issue-658 branch as the concrete example.
 - [Recipe Subprocess and Hook Input Contracts](../howto/validate-recipe-subprocess-hook-contract.md) — recipe-runner child environment and hook input compatibility contract; see the [recipe environment reference](../reference/recipe-executor-environment.md#recipe-runner-subprocess-launch) and [hook input contract](../reference/hook-specifications.md#hook-input-json-contract).
-- [Provider-Aware Workflow Tracking](dual-provider-workflow.md) — route workflow-prep tracking by GitHub, Azure DevOps, or local/unsupported remotes before provider issue commands run.
+- [Workflow Provider Abstraction](workflow-provider-abstraction.md) — provider-neutral tracking, change-request publication, terminal state, and stale cleanup through typed helpers and provider adapters.
+- [Provider-Aware Workflow Tracking](dual-provider-workflow.md) — compatibility entry point for the provider-neutral workflow contract.
 
 ## GitHub Distribution
 
