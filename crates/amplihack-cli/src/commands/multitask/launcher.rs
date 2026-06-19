@@ -4,6 +4,7 @@ use super::models::{ProcessScope, Workstream, WorkstreamScope};
 use super::process_scope::{normalize_path, process_start_metadata};
 use super::state::persist_state;
 use super::utils::{rand_u32, set_executable, tail_output};
+use amplihack_types::hook_io::normalize_executable_script_line_endings;
 use amplihack_types::workflow;
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -166,7 +167,7 @@ exec amplihack recipe run {recipe} $CONTEXT_FLAGS --verbose
 "#,
         recipe = safe_recipe,
     );
-    fs::write(&launcher_sh, launcher_content)?;
+    write_executable_script(&launcher_sh, &launcher_content)?;
     set_executable(&launcher_sh)?;
 
     let depth: u32 = std::env::var("AMPLIHACK_SESSION_DEPTH")
@@ -207,7 +208,7 @@ exec bash launcher.sh
         state_file = ws.state_file.display(),
         worktree_path = ws.worktree_path,
     );
-    fs::write(&run_sh, run_content)?;
+    write_executable_script(&run_sh, &run_content)?;
     set_executable(&run_sh)?;
 
     Ok(())
@@ -261,10 +262,16 @@ export AMPLIHACK_MAX_SESSIONS='{max_sessions}'
         dev_orchestrator = workflow::DEV_ORCHESTRATOR_SKILL,
         smart_orchestrator = workflow::SMART_ORCHESTRATOR_RECIPE_COMMAND,
     );
-    fs::write(&run_sh, run_content)?;
+    write_executable_script(&run_sh, &run_content)?;
     set_executable(&run_sh)?;
 
     Ok(())
+}
+
+fn write_executable_script(path: &std::path::Path, content: &str) -> Result<()> {
+    let normalized = normalize_executable_script_line_endings(content);
+    fs::write(path, normalized)
+        .with_context(|| format!("write executable launcher script {}", path.display()))
 }
 
 /// Launch a single workstream subprocess.
@@ -341,6 +348,8 @@ pub(super) fn launch_workstream(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+    use std::process::Command;
 
     #[test]
     fn test_valid_delegates() {
@@ -348,5 +357,87 @@ mod tests {
         assert!(VALID_DELEGATES.contains(&"amplihack copilot"));
         assert!(VALID_DELEGATES.contains(&"amplihack amplifier"));
         assert!(!VALID_DELEGATES.contains(&"rm -rf /"));
+    }
+
+    #[test]
+    fn executable_script_writer_normalizes_crlf_and_lone_cr_inputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let crlf_script = dir.path().join("crlf-run.sh");
+        let lone_cr_script = dir.path().join("lone-cr-run.sh");
+
+        write_executable_script(
+            &crlf_script,
+            "#!/usr/bin/env bash\r\nset -euo pipefail\r\necho crlf\r\n",
+        )
+        .unwrap();
+        write_executable_script(
+            &lone_cr_script,
+            "#!/usr/bin/env bash\rset -euo pipefail\recho lone-cr\r",
+        )
+        .unwrap();
+
+        for script in [&crlf_script, &lone_cr_script] {
+            assert_script_is_lf_only_and_bash_valid(script);
+        }
+    }
+
+    #[test]
+    fn recipe_launcher_scripts_are_lf_only_and_bash_valid() {
+        let base = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let ws = test_workstream(base.path(), state.path());
+        fs::create_dir_all(&ws.work_dir).unwrap();
+
+        write_recipe_launcher(&ws, "amplihack copilot").unwrap();
+
+        assert_script_is_lf_only_and_bash_valid(&ws.work_dir.join("launcher.sh"));
+        assert_script_is_lf_only_and_bash_valid(&ws.work_dir.join("run.sh"));
+    }
+
+    #[test]
+    fn classic_launcher_script_is_lf_only_and_bash_valid() {
+        let base = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let ws = test_workstream(base.path(), state.path());
+        fs::create_dir_all(&ws.work_dir).unwrap();
+
+        write_classic_launcher(&ws, "amplihack copilot").unwrap();
+
+        assert_script_is_lf_only_and_bash_valid(&ws.work_dir.join("run.sh"));
+    }
+
+    fn test_workstream(base_dir: &Path, state_dir: &Path) -> Workstream {
+        Workstream::new(
+            792,
+            "feature/line-endings".to_string(),
+            "Fix line endings".to_string(),
+            "Normalize generated executable scripts".to_string(),
+            "default-workflow".to_string(),
+            base_dir,
+            state_dir,
+        )
+    }
+
+    fn assert_script_is_lf_only_and_bash_valid(script: &Path) {
+        let bytes = fs::read(script).unwrap();
+        assert!(
+            !bytes.contains(&b'\r'),
+            "{} contains carriage returns and will fail under bash",
+            script.display()
+        );
+
+        let output = Command::new("bash")
+            .arg("-n")
+            .arg(script)
+            .output()
+            .unwrap_or_else(|err| panic!("failed to run bash -n for {}: {err}", script.display()));
+
+        assert!(
+            output.status.success(),
+            "bash -n rejected {}:\nstdout:\n{}\nstderr:\n{}",
+            script.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

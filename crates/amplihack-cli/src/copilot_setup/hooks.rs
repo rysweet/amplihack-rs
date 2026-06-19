@@ -366,6 +366,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn executable_script_writer_normalizes_crlf_and_lone_cr_inputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let crlf_script = dir.path().join("crlf-hook");
+        let lone_cr_script = dir.path().join("lone-cr-hook");
+
+        write_executable_script(
+            &crlf_script,
+            "#!/usr/bin/env bash\r\nset -euo pipefail\r\necho crlf\r\n",
+        )
+        .unwrap();
+        write_executable_script(
+            &lone_cr_script,
+            "#!/usr/bin/env bash\rset -euo pipefail\recho lone-cr\r",
+        )
+        .unwrap();
+
+        for script in [&crlf_script, &lone_cr_script] {
+            let bytes = fs::read(script).unwrap();
+            assert!(
+                !bytes.contains(&b'\r'),
+                "{} contains carriage returns and will fail under bash",
+                script.display()
+            );
+            assert_bash_accepts_script(script);
+        }
+    }
+
     fn assert_generated_hook_scripts_are_lf_only(hooks_dir: &Path) {
         let mut scripts = fs::read_dir(hooks_dir)
             .unwrap()
