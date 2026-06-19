@@ -16,6 +16,7 @@ moves, unstages, or rewrites files.
 - [Allowlist configuration](#allowlist-configuration)
 - [Workflow and pre-commit coverage](#workflow-and-pre-commit-coverage)
 - [Output isolation](#output-isolation)
+- [Workflow runtime cleanup preflight](#workflow-runtime-cleanup-preflight)
 - [Intended Rust API](#intended-rust-api)
 - [Fixing violations](#fixing-violations)
 
@@ -211,6 +212,16 @@ recipe that currently invokes `git add -A`:
 Future recipe changes must preserve the rule: any new `git add -A` or equivalent
 broad-staging step needs an Artifact Guard gate immediately before it.
 
+Before those gates run, bundled workflows also run the narrow workflow runtime
+preflight documented in [Workflow Runtime Artifacts Reference](reference/workflow-runtime-artifacts.md).
+That preflight removes only known workflow-owned `.claude/runtime` and
+root-level `worktrees/` leftovers from the active task worktree. In
+amplihack-managed task worktrees, root-level `worktrees/` is reserved for
+workflow-owned nested scratch worktrees; tracked source under that path is a
+repository layout conflict and must fail closed rather than be deleted.
+Artifact Guard itself remains non-mutating and still fails on every unexpected
+artifact.
+
 The planned pre-commit hook is a full repository scan:
 
 ```yaml
@@ -269,6 +280,28 @@ Avoid writing generated output directly to:
 <repo>/worktrees/
 <repo>/build/
 ```
+
+## Workflow runtime cleanup preflight
+
+`default-workflow` and recovery flows use external runtime roots for generated
+agent state, provenance, logs, metrics, and reflection output. The runtime root
+contract is documented in [Workflow Runtime Isolation](features/workflow-runtime-isolation.md).
+
+As defense-in-depth, workflow lifecycle steps run
+`preflight_known_workflow_runtime_artifacts "$worktree"` before checkpoint,
+broad staging, publish, pre-commit-related staging, and finalization/status
+gates. The preflight is intentionally narrower than Artifact Guard:
+
+| Path | Preflight behavior | Artifact Guard behavior if still present |
+| --- | --- | --- |
+| `.claude/runtime` | Remove when it is exactly under the active task worktree. | Block as `claude-runtime`. |
+| `worktrees/` | Remove when it is exactly under the active task worktree and not tracked source. | Block as `nested-worktrees`. |
+| `.claude/settings.json` | Preserve. | Not blocked by the runtime rule. |
+| Unrelated untracked files | Preserve. | Block when they match prohibited artifact rules or dirty-worktree gates. |
+
+The preflight is not an allowlist. It is a cleanup step for workflow-owned
+runtime paths that should have been isolated outside the worktree. If cleanup
+fails or the paths remain afterward, the lifecycle gate fails visibly.
 
 ## Intended Rust API
 

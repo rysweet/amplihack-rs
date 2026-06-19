@@ -21,6 +21,7 @@ All environment variables read or written by `amplihack` during a launch (`ampli
   - [AMPLIHACK_STEP_TIMEOUT](#amplihack_step_timeout)
   - [AMPLIHACK_NONINTERACTIVE (recipe runner subprocess)](#amplihack_noninteractive-recipe-runner-subprocess)
   - [AMPLIHACK_RECIPE_RUN_ID](#amplihack_recipe_run_id)
+  - [AMPLIHACK_RUNTIME_ROOT](#amplihack_runtime_root)
   - [CLAUDECODE (recipe runner subprocess)](#claudecode-recipe-runner-subprocess)
   - [AMPLIHACK_RECIPE_HEARTBEAT_INTERVAL_SECONDS](#amplihack_recipe_heartbeat_interval_seconds)
   - [AMPLIHACK_RECIPE_SNIPPET_LINES](#amplihack_recipe_snippet_lines)
@@ -58,11 +59,12 @@ These variables are injected into every child process launched by `amplihack`. T
 **Set by:** `EnvBuilder::with_agent_binary()` (as a back-compat read-through cache)
 **Read by:** `amplihack_utils::agent_binary::resolve()` (precedence step 1)
 
-Identifies which CLI binary the current session should use when spawning new AI sessions. As of the agent-binary-resolver refactor, this variable is **no longer the source of truth** — it is one of three precedence sources consulted by the shared resolver:
+Identifies which CLI binary the current session should use when spawning new AI sessions. As of the workflow runtime-isolation contract, this variable is an explicit override and read-through cache, not the only routing source. The shared resolver consults:
 
 1. `AMPLIHACK_AGENT_BINARY` env var (explicit override; CI/testing/back-compat)
-2. `<repo>/.claude/runtime/launcher_context.json` `launcher` field (canonical persisted state)
-3. Built-in default: **`copilot`**
+2. `$AMPLIHACK_RUNTIME_ROOT/launcher_context.json` `launcher` field (canonical workflow runtime state)
+3. `<repo>/.claude/runtime/launcher_context.json` `launcher` field (legacy fallback only)
+4. Built-in default: **`copilot`**
 
 The launcher continues to write this variable to subprocess environments so that external consumers (notably `rysweet/amplihack-recipe-runner`) that have not yet migrated to the file-based resolver continue to work. New code inside `amplihack-rs` should call `amplihack_utils::agent_binary::resolve(&cwd)` instead of reading the env var directly.
 
@@ -83,20 +85,21 @@ AMPLIHACK_AGENT_BINARY=claude amplihack recipe run smart-orchestrator -c task_de
 
 # Invalid values are rejected and the resolver falls through
 AMPLIHACK_AGENT_BINARY="../bin/evil" amplihack copilot
-# warn: rejected AMPLIHACK_AGENT_BINARY (failed allowlist); falling back to launcher_context.json
+# warn: rejected AMPLIHACK_AGENT_BINARY (failed allowlist); falling back to runtime launcher context
 ```
 
 #### Why the precedence order
 
 - **Env var first** preserves the established escape hatch for CI/testing and lets external recipe-runner builds keep working unchanged.
-- **`launcher_context.json` second** ensures that once a user runs `amplihack copilot` in a repo, every subsequent subprocess — even ones launched many hops away through `tmux`, sub-recipes, or detached hooks — picks up `copilot` without depending on env passthrough.
+- **Runtime-root launcher context second** keeps durable workflow state outside the task worktree while preserving routing for descendants that inherit `AMPLIHACK_RUNTIME_ROOT`.
+- **Legacy `.claude/runtime` fallback third** preserves older repositories long enough to migrate without treating task-worktree runtime state as canonical.
 - **`copilot` default last** matches the project's current preferred runtime and removes the prior implicit `claude` assumption.
 
 **Why it exists:** Recipe runner, hooks, and sub-agents are agent-agnostic and must call back into whatever tool the user actually launched. See [Active Agent Binary](./active-agent-binary.md) for the full algorithm and [Agent Binary Routing](../concepts/agent-binary-routing.md) for the architectural rationale.
 
-**Python parity:** Python skill scripts (`amplifier-bundle/skills/pm-architect/scripts/agent_query.py`, `delegate_response.py`) implement the **same** three-step precedence and **same** allowlist; `agent_query.py::detect_runtime()` is the canonical Python entry point and is reused by `delegate_response.py`. The shell helper at `amplifier-bundle/skills/migrate/scripts/migrate.sh` re-implements the same algorithm with a `case` statement allowlist. The active binary is therefore consistent across Rust, Python, and shell code paths.
+**Python parity:** Python skill scripts (`amplifier-bundle/skills/pm-architect/scripts/agent_query.py`, `delegate_response.py`) implement the **same** precedence and **same** allowlist; `agent_query.py::detect_runtime()` is the canonical Python entry point and is reused by `delegate_response.py`. The shell helper at `amplifier-bundle/skills/migrate/scripts/migrate.sh` re-implements the same algorithm with a `case` statement allowlist. The active binary is therefore consistent across Rust, Python, and shell code paths.
 
-**Existing `claude` users:** repos that already have `.claude/runtime/launcher_context.json` with `"launcher": "claude"` continue to resolve to `claude` automatically — the file (precedence step 2) wins over the new `copilot` default. No migration action is required.
+**Existing `claude` users:** repos that already have `.claude/runtime/launcher_context.json` with `"launcher": "claude"` continue to resolve to `claude` during migration — the legacy fallback wins over the new `copilot` default when runtime-root state and the env override are absent. New workflow code must write launcher context under `AMPLIHACK_RUNTIME_ROOT`, not under the task worktree.
 
 **Effect on startup self-update prompt:** A non-empty `AMPLIHACK_AGENT_BINARY` is also recognised by the startup self-update prompt as a subprocess-safe signal — when the variable is set, the prompt is skipped and the skip-line `amplihack: skipping update check (subprocess-safe / no TTY)` is emitted to stderr. This means delegated agent invocations never block on the prompt, even at an interactive TTY. See [Startup Self-Update Prompt — Subprocess-Safe Skip](../features/startup-update-prompt-subprocess-safe.md).
 
@@ -439,6 +442,55 @@ an identity.
 
 See [Recipe Run Correlation Reference](./recipe-run-correlation.md) for the
 pointer event schema and final result fields.
+
+---
+
+### AMPLIHACK_RUNTIME_ROOT
+
+**Type:** absolute path
+**Set by:** `amplihack recipe run` runtime-root resolver when absent; preserved
+when explicitly supplied by the caller
+**Read by:** launchers, recipe steps, workflow provenance logging, publish
+helpers, finalization helpers, and nested agents
+
+Directory where workflow-generated runtime files are written. The runtime root
+keeps generated launcher state, provenance, logs, metrics, reflection output,
+locks, and child-agent runtime files outside the commit worktree. The top-level
+workflow establishes this value once and child workflows inherit it unchanged.
+
+Resolution order:
+
+| Priority | Source |
+| --- | --- |
+| 1 | Existing `AMPLIHACK_RUNTIME_ROOT` value |
+| 2 | `$XDG_RUNTIME_DIR/amplihack/runtime/<AMPLIHACK_RECIPE_RUN_ID>` |
+| 3 | `/tmp/amplihack-runtime/<user>/<AMPLIHACK_RECIPE_RUN_ID>` |
+
+The resolver creates these subdirectories with restrictive owner-only
+permissions where the platform supports them:
+
+```text
+locks/
+logs/
+metrics/
+provenance/
+reflection/
+```
+
+```sh
+# Override the runtime root for one recipe run.
+AMPLIHACK_RUNTIME_ROOT=/var/tmp/amplihack-runtime/login-fix \
+  amplihack recipe run default-workflow \
+  -c task_description="Fix login flake" \
+  -c repo_path=.
+```
+
+Use a private path outside the repository worktree. Do not point this variable
+at `.claude/runtime`, `worktrees/`, `target/`, or another generated directory
+inside the active task worktree.
+
+See [Workflow Runtime Artifacts Reference](./workflow-runtime-artifacts.md) for
+the full runtime-root, cleanup, and lifecycle preflight contract.
 
 ---
 

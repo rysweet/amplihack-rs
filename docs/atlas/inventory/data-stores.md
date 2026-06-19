@@ -13,7 +13,8 @@
 | Store             | Path                                               | Format         | Used By                                                      | Description                                          |
 | ----------------- | -------------------------------------------------- | -------------- | ------------------------------------------------------------ | ---------------------------------------------------- |
 | Runtime Context   | `.claude/runtime/hook_context.json`                | JSON           | `context/adaptive/strategies.py`                             | Hook-injected context for Claude discovery           |
-| Launcher Context  | `.claude/runtime/launcher_context.json`            | JSON           | `context/adaptive/detector.py`, `hooks/launcher_detector.py` | Launcher environment context                         |
+| Launcher Context  | `$AMPLIHACK_RUNTIME_ROOT/launcher_context.json`    | JSON           | `context/adaptive/detector.py`, `hooks/launcher_detector.py` | Canonical workflow launcher environment context      |
+| Legacy Launcher Context | `.claude/runtime/launcher_context.json`       | JSON           | `context/adaptive/detector.py`, `hooks/launcher_detector.py` | Migration fallback only; new workflow code must not write here |
 | Session Logs      | `.claude/runtime/logs/<session_id>/`               | Mixed          | `session.py`, hooks                                          | Per-session decision records and logs                |
 | Trace Log         | `~/.amplihack/trace.jsonl`                         | JSONL          | `tracing/trace_logger.py`                                    | LLM call traces for observability                    |
 | Discoveries       | `~/.amplihack/.claude/context/DISCOVERIES.md`      | Markdown       | `memory.discoveries`                                         | Cross-session learning store                         |

@@ -208,6 +208,11 @@ REPO_IDENTITY="$(parse_github_repo_identity "$(git config --get remote.origin.ur
 
 BASE_REF="$(resolve_pr_base_ref)"
 BASE_BRANCH="${BASE_REF#origin/}"
+RUNTIME_ARTIFACT_HELPER="${WORKFLOW_RUNTIME_ARTIFACT_HELPER:-${SCRIPT_DIR}/workflow_runtime_artifacts.sh}"
+[ -f "$RUNTIME_ARTIFACT_HELPER" ] || { echo "ERROR: workflow runtime artifact helper not found: $RUNTIME_ARTIFACT_HELPER" >&2; exit 2; }
+# shellcheck source=/dev/null
+. "$RUNTIME_ARTIFACT_HELPER"
+preflight_known_workflow_runtime_artifacts .
 if [ -n "$(git status --porcelain)" ]; then
   finish_publish "FAILED_DIRTY_WORKTREE" "dirty-worktree" "failure" "dirty worktree blocks no-diff or obsolete terminal success; commit or discard changes explicitly" 1
 fi

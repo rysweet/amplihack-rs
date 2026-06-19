@@ -1,6 +1,6 @@
 # Agent Binary Routing
 
-`amplihack` supports four AI backends — `claude`, `copilot`, `codex`, and `amplifier` — each launched via the same `amplihack <tool>` pattern. This document explains how downstream components (recipe runner, hooks, sub-agents, Python skills) know which backend is active, why this matters, and how the system survives `tmux`/subprocess boundaries without depending on env-var passthrough.
+`amplihack` supports four AI backends — `claude`, `copilot`, `codex`, and `amplifier` — each launched via the same `amplihack <tool>` pattern. This document explains how downstream components (recipe runner, hooks, sub-agents, Python skills) know which backend is active, why this matters, and how workflow runtime isolation keeps generated launcher state out of task worktrees.
 
 ## Contents
 
@@ -31,15 +31,19 @@ Earlier iterations of `amplihack-rs` solved this by writing `AMPLIHACK_AGENT_BIN
 
 The result: a session started as `copilot` could end up running `claude` for late-arriving hooks or sub-recipes, and `SessionEnd` hooks would fail-silent looking for a `claude`-shaped file that did not exist.
 
-## The solution: a config-driven resolver
+## The solution: a runtime-root resolver
 
-A single shared resolver (`amplihack_utils::agent_binary::resolve`) is now the only sanctioned way to determine the active binary. It consults three sources in order, falling through on missing or invalid input:
+A single shared resolver (`amplihack_utils::agent_binary::resolve`) is now the only sanctioned way to determine the active binary. It consults four sources in order, falling through on missing or invalid input:
 
 1. `AMPLIHACK_AGENT_BINARY` environment variable (explicit override)
-2. `<repo>/.claude/runtime/launcher_context.json` `launcher` field
-3. Built-in default `"copilot"`
+2. `$AMPLIHACK_RUNTIME_ROOT/launcher_context.json` `launcher` field
+3. `<repo>/.claude/runtime/launcher_context.json` `launcher` field (legacy fallback only)
+4. Built-in default `"copilot"`
 
-The persisted file is the **canonical** state — once `amplihack copilot` runs in a repo, every descendant process can rediscover `copilot` by reading that file, regardless of what env vars survived the journey.
+The runtime-root file is the **canonical workflow state**. It keeps generated
+launcher state outside task worktrees while giving child workflows that inherit
+`AMPLIHACK_RUNTIME_ROOT` the same active-binary value. The old
+`.claude/runtime` location is read only as a migration fallback.
 
 ## Resolution algorithm
 
@@ -50,47 +54,73 @@ flowchart TD
     V1 -- ok --> R1[Return env value]
     V1 -- reject --> W1[warn! and fall through]
     B -- no --> W1
-    W1 --> C[Walk up cwd looking for<br/>.claude/runtime/launcher_context.json]
-    C -- found, fresh, ≤64 KiB --> P[Parse launcher field]
+    W1 --> C{AMPLIHACK_RUNTIME_ROOT set?}
+    C -- yes --> F1[Read runtime-root<br/>launcher_context.json]
+    C -- no --> L1[Check legacy fallback]
+    F1 -- found, fresh, ≤64 KiB --> P[Parse launcher field]
     P --> V2[Validate against allowlist]
     V2 -- ok --> R2[Return file value]
     V2 -- reject --> W2[warn! and fall through]
-    C -- not found / stale / too big --> W2
+    F1 -- not found / stale / too big --> L1[Check legacy fallback]
+    L1 -- found, fresh, ≤64 KiB --> P2[Parse legacy launcher field]
+    P2 --> V3[Validate against allowlist]
+    V3 -- ok --> R3[Return legacy value]
+    V3 -- reject --> W2[warn! and fall through]
+    L1 -- not found / stale / too big --> W2
     W2 --> D[Return built-in default 'copilot']
 ```
 
-Walk-up rules:
+Runtime-root rules:
 
-- Stop at the first `.claude/runtime/launcher_context.json` found
-- Stop at the first `.git` boundary (do not cross into a parent repo)
-- Cap at 32 ancestors
+- Use `AMPLIHACK_RUNTIME_ROOT` exactly as a filesystem path after validation.
+- Read only `$AMPLIHACK_RUNTIME_ROOT/launcher_context.json` for canonical
+  workflow state.
+- Create runtime-root launcher context with owner-only permissions where the
+  platform supports them.
 
-The **anchor** for symlink-escape checks is the directory containing the discovered `launcher_context.json`. The discovered file is canonicalized; if the canonical path does not start with the canonical anchor, the file is rejected.
+Legacy fallback walk-up rules:
 
-If walk-up exhausts all 32 ancestors (or hits a `.git` boundary) without finding a `launcher_context.json`, the resolver returns the built-in default with no anchor check — there is nothing to escape from.
+- Stop at the first `.claude/runtime/launcher_context.json` found.
+- Stop at the first `.git` boundary; do not cross into a parent repo.
+- Cap at 32 ancestors.
+- Treat the file as migration compatibility only, never as the write target for
+  new workflow code.
+
+The **anchor** for symlink-escape checks is the directory containing the
+discovered `launcher_context.json`. The discovered file is canonicalized; if the
+canonical path does not start with the canonical anchor, the file is rejected.
+
+If runtime-root lookup and legacy walk-up both fail, the resolver returns the
+built-in default with no anchor check because there is nothing to escape from.
 
 ## How it propagates across processes
 
-The launcher writes the resolved value into **two** places at start time:
+The launcher writes the resolved value into runtime-owned state and a
+back-compat env cache at start time:
 
-1. `<repo>/.claude/runtime/launcher_context.json` — durable, survives all subprocess boundaries
-2. `AMPLIHACK_AGENT_BINARY` in the subprocess `Command` env — read-through cache for back-compat with external consumers (notably `rysweet/amplihack-recipe-runner`) that have not migrated
+1. `$AMPLIHACK_RUNTIME_ROOT/launcher_context.json` — canonical generated
+   launcher state outside the task worktree
+2. `AMPLIHACK_AGENT_BINARY` in the subprocess `Command` env — read-through cache
+   for back-compat with external consumers that have not migrated
 
-Inside `amplihack-rs`, every read site calls `resolve(&cwd)` rather than reading the env var directly. This means the env var is no longer load-bearing — a stripped or missing variable always recovers the correct value from the file.
+Inside `amplihack-rs`, every read site calls `resolve(&cwd)` rather than reading
+the env var directly. Child workflows inherit `AMPLIHACK_RUNTIME_ROOT`
+unchanged; they must not compute separate runtime roots. The legacy
+`.claude/runtime` file is read only when runtime-root state is absent.
 
 ```mermaid
 sequenceDiagram
     participant U as User
     participant L as amplihack launcher
-    participant F as launcher_context.json
+    participant F as runtime-root launcher_context.json
     participant T as tmux session
     participant R as recipe runner
     participant H as SessionEnd hook
 
     U->>L: amplihack copilot
     L->>F: write {"launcher":"copilot",...}
-    L->>T: spawn (env may be stripped)
-    Note over T: tmux/setsid strips most<br/>env vars including<br/>AMPLIHACK_AGENT_BINARY
+    L->>T: spawn with AMPLIHACK_RUNTIME_ROOT
+    Note over T: Child workflow inherits<br/>the same runtime root
     T->>R: amplihack recipe run smart-orchestrator
     R->>F: resolve(cwd) → read file → "copilot"
     R->>H: invoke SessionEnd
@@ -103,12 +133,16 @@ sequenceDiagram
 The implicit default changed from `"claude"` to `"copilot"`. This affects only sessions where:
 
 - `AMPLIHACK_AGENT_BINARY` is unset, AND
-- No `launcher_context.json` is found within the walk-up window, AND
+- No runtime-root `launcher_context.json` is available, AND
+- No legacy `launcher_context.json` is found within the walk-up window, AND
 - Nothing else in the precedence chain produced a valid value
 
-For typical use the default never matters — `amplihack <tool>` writes the file. The default only governs cold-start cases like running `amplihack recipe run` from a directory that has never hosted a launch.
+For typical workflow use the default never matters — the top-level workflow
+writes runtime-root launcher context. The default only governs cold-start cases
+where no env override, runtime-root context, or legacy context exists.
 
-To make `claude` the default for a repo, run `amplihack claude` once. To force `claude` for a single command, prefix with `AMPLIHACK_AGENT_BINARY=claude`.
+To force `claude` for a single command, prefix with
+`AMPLIHACK_AGENT_BINARY=claude`.
 
 ## Consumers
 

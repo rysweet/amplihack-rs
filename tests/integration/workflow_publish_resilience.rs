@@ -364,6 +364,10 @@ fn commit_push_marks_already_pushed_branch_as_publishable() {
         .arg(command)
         .current_dir(&repo)
         .env("WORKTREE_SETUP_WORKTREE_PATH", &repo)
+        .env(
+            "WORKFLOW_RUNTIME_ARTIFACT_HELPER",
+            workspace_helper_path("workflow_runtime_artifacts.sh"),
+        )
         .env("TASK_DESCRIPTION", "publish existing feature branch")
         .env("ISSUE_NUMBER", "7")
         .env("REMOTE_HOST_TYPE", "github")

@@ -319,16 +319,32 @@ steps:
       git -C "${WORKTREE_PATH}" push origin "${BRANCH_NAME}" > /dev/null 2>&1 || true
       git -C "${WORKTREE_PATH}" branch --set-upstream-to="origin/${BRANCH_NAME}" "${BRANCH_NAME}" > /dev/null 2>&1 || true
 
+      if [ -z "${AMPLIHACK_RUNTIME_ROOT:-}" ]; then
+        if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+          AMPLIHACK_RUNTIME_ROOT="${XDG_RUNTIME_DIR}/amplihack-runtime/${BRANCH_NAME}"
+        else
+          AMPLIHACK_RUNTIME_ROOT="/tmp/amplihack-runtime/${BRANCH_NAME}"
+        fi
+        export AMPLIHACK_RUNTIME_ROOT
+      fi
+      mkdir -p \
+        "${AMPLIHACK_RUNTIME_ROOT}/locks" \
+        "${AMPLIHACK_RUNTIME_ROOT}/reflection" \
+        "${AMPLIHACK_RUNTIME_ROOT}/logs" \
+        "${AMPLIHACK_RUNTIME_ROOT}/metrics" \
+        "${AMPLIHACK_RUNTIME_ROOT}/provenance"
+
       echo "" >&2
       echo "=== Worktree Setup Complete ===" >&2
 
       # Output structured JSON for subsequent steps.
       # created=false signals that an existing worktree was reused (diagnostic for re-runs).
-      printf '{"worktree_path": "%s", "branch_name": "%s", "base_ref": "%s", "base_branch": "%s", "created": %s}\n' \
+      printf '{"worktree_path": "%s", "branch_name": "%s", "base_ref": "%s", "base_branch": "%s", "runtime_root": "%s", "created": %s}\n' \
         "$(json_escape "$WORKTREE_PATH")" \
         "$(json_escape "$BRANCH_NAME")" \
         "$(json_escape "$BASE_REF")" \
         "$(json_escape "$BASE_BRANCH")" \
+        "$(json_escape "$AMPLIHACK_RUNTIME_ROOT")" \
         "$CREATED"
     output: "worktree_setup"
     parse_json: true

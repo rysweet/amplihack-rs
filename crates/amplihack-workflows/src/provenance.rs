@@ -1,11 +1,13 @@
 //! Structured JSONL provenance logging for classification and routing decisions.
 //!
-//! Writes append-only JSONL records to `.claude/runtime/logs/` subdirectories.
+//! Writes append-only JSONL records to the shared amplihack runtime root.
 //! Fail-open: logging errors are warned but never propagate to callers.
 
 use chrono::Utc;
 use serde::Serialize;
+use std::collections::hash_map::DefaultHasher;
 use std::fs::{self, OpenOptions};
+use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tracing::warn;
@@ -55,19 +57,34 @@ impl ProvenanceEntry {
     }
 }
 
-/// Resolve the JSONL log path under `base_dir`.
+fn shared_runtime_root(_base_dir: &Path) -> PathBuf {
+    if let Ok(root) = std::env::var("AMPLIHACK_RUNTIME_ROOT")
+        && !root.trim().is_empty()
+    {
+        return PathBuf::from(root);
+    }
+    if let Ok(root) = std::env::var("XDG_RUNTIME_DIR")
+        && !root.trim().is_empty()
+    {
+        return PathBuf::from(root).join("amplihack-runtime");
+    }
+    let mut hasher = DefaultHasher::new();
+    _base_dir.hash(&mut hasher);
+    PathBuf::from("/tmp/amplihack-runtime").join(format!("{:016x}", hasher.finish()))
+}
+
+/// Resolve the JSONL log path under the shared runtime root.
 ///
-/// Returns `<base_dir>/.claude/runtime/logs/<subdirectory>/<filename>`.
+/// Returns `<runtime-root>/logs/provenance/<subdirectory>/<filename>`.
 /// Creates parent directories if they don't exist.
 fn resolve_log_path(
     base_dir: &Path,
     subdirectory: &str,
     filename: &str,
 ) -> std::io::Result<PathBuf> {
-    let dir = base_dir
-        .join(".claude")
-        .join("runtime")
+    let dir = shared_runtime_root(base_dir)
         .join("logs")
+        .join("provenance")
         .join(subdirectory);
     fs::create_dir_all(&dir)?;
     Ok(dir.join(filename))
@@ -134,6 +151,18 @@ mod tests {
     use super::*;
     use std::fs;
 
+    fn expected_log_path(base: &Path, subdirectory: &str, filename: &str) -> PathBuf {
+        shared_runtime_root(base)
+            .join("logs")
+            .join("provenance")
+            .join(subdirectory)
+            .join(filename)
+    }
+
+    fn clear_log_path(path: &Path) {
+        let _ = fs::remove_file(path);
+    }
+
     #[test]
     fn log_creates_directories_and_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -145,11 +174,10 @@ mod tests {
             vec!["implement".into()],
             "implement a new feature",
         );
+        let log_path = expected_log_path(dir.path(), CLASSIFIER_LOG_SUBDIR, CLASSIFIER_LOG_FILE);
+        clear_log_path(&log_path);
         log_classification(dir.path(), &entry);
 
-        let log_path = dir
-            .path()
-            .join(".claude/runtime/logs/workflow_classifier/classification_decisions.jsonl");
         assert!(log_path.exists(), "log file should be created");
         let content = fs::read_to_string(&log_path).unwrap();
         assert!(!content.is_empty());
@@ -158,6 +186,10 @@ mod tests {
     #[test]
     fn appends_multiple_entries() {
         let dir = tempfile::tempdir().unwrap();
+        let log_path = expected_log_path(dir.path(), CLASSIFIER_LOG_SUBDIR, CLASSIFIER_LOG_FILE);
+        let initial_lines = fs::read_to_string(&log_path)
+            .map(|content| content.lines().count())
+            .unwrap_or(0);
         for i in 0..3 {
             let entry = ProvenanceEntry::new(
                 "classification",
@@ -170,14 +202,15 @@ mod tests {
             log_classification(dir.path(), &entry);
         }
 
-        let log_path = dir
-            .path()
-            .join(".claude/runtime/logs/workflow_classifier/classification_decisions.jsonl");
         let content = fs::read_to_string(&log_path).unwrap();
         let lines: Vec<&str> = content.lines().collect();
-        assert_eq!(lines.len(), 3, "should have 3 JSONL lines");
+        assert_eq!(
+            lines.len(),
+            initial_lines + 3,
+            "should append 3 JSONL lines"
+        );
 
-        for line in &lines {
+        for line in &lines[initial_lines..] {
             let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
             assert!(parsed.get("timestamp").is_some());
             assert!(parsed.get("event").is_some());
@@ -248,11 +281,10 @@ mod tests {
             vec!["vulnerability".into()],
             "check for vulnerability",
         );
+        let log_path = expected_log_path(dir.path(), ROUTER_LOG_SUBDIR, ROUTER_LOG_FILE);
+        clear_log_path(&log_path);
         log_routing_decision(dir.path(), &entry);
 
-        let log_path = dir
-            .path()
-            .join(".claude/runtime/logs/intent_router/routing_decisions.jsonl");
         assert!(log_path.exists(), "routing log file should be created");
         let content = fs::read_to_string(&log_path).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(content.trim()).unwrap();

@@ -5,7 +5,9 @@
 //! merging it, bypassing merge protection, launching nested `default-workflow`
 //! instances, or claiming a no-op against the wrong head.
 
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use amplihack_cli::pr_recovery_readiness::{
     AdditiveCopyEntry, AdditiveCopyPlan, CheckConclusion, CheckRollup, CheckStatus,
@@ -15,6 +17,55 @@ use amplihack_cli::pr_recovery_readiness::{
 };
 
 const PR_579_HEAD: &str = "8fb46865fb4412038b9313a62c02cc5aa0693132";
+
+fn workspace_root() -> PathBuf {
+    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    path.pop();
+    path.pop();
+    path
+}
+
+fn amplihack_bin() -> &'static str {
+    env!("CARGO_BIN_EXE_amplihack")
+}
+
+fn run_git(repo: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .unwrap_or_else(|e| panic!("run git {args:?} in {}: {e}", repo.display()));
+    assert!(
+        output.status.success(),
+        "git {args:?} failed in {}\nstdout:\n{}\nstderr:\n{}",
+        repo.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn write_file(path: &Path, content: &str) {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).unwrap_or_else(|e| panic!("create {}: {e}", parent.display()));
+    }
+    fs::write(path, content).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+}
+
+fn init_repo(repo: &Path) {
+    run_git(repo, &["init", "-q", "-b", "main"]);
+    run_git(
+        repo,
+        &["config", "user.email", "runtime-artifacts@example.invalid"],
+    );
+    run_git(repo, &["config", "user.name", "Runtime Artifact Test"]);
+    write_file(&repo.join("README.md"), "# fixture\n");
+    write_file(
+        &repo.join(".claude/settings.json"),
+        "{\"user\":\"owned\"}\n",
+    );
+    run_git(repo, &["add", "README.md", ".claude/settings.json"]);
+    run_git(repo, &["commit", "-qm", "initial"]);
+}
 
 #[test]
 fn head_verifier_accepts_only_exact_expected_local_and_pr_head_match() {
@@ -272,6 +323,132 @@ fn noop_report_rejects_manual_merge_bypass_or_nested_default_workflow() {
                 || message.contains("merge bypass")
                 || message.contains("nested default-workflow"),
             "error must name the prohibited recovery path: {message}"
+        );
+    }
+}
+
+#[test]
+fn recovery_runtime_artifact_preflight_removes_known_self_violations_but_guard_stays_strict() {
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let repo = tmp.path().join("repo");
+    fs::create_dir_all(&repo).expect("create repo dir");
+    init_repo(&repo);
+
+    write_file(
+        &repo.join(".claude/runtime/logs/recovery-session.log"),
+        "workflow-generated runtime log\n",
+    );
+    write_file(
+        &repo.join("worktrees/nested-default-workflow/trace.log"),
+        "workflow-generated nested worktree output\n",
+    );
+    write_file(
+        &repo.join("dist/plugin.js"),
+        "unrelated generated artifact\n",
+    );
+
+    let helper = workspace_root().join("amplifier-bundle/tools/workflow_runtime_artifacts.sh");
+    let script = format!(
+        r#"set -euo pipefail
+source "{}"
+preflight_known_workflow_runtime_artifacts "{}"
+"#,
+        helper.display(),
+        repo.display()
+    );
+    let preflight = Command::new("bash")
+        .arg("-c")
+        .arg(script)
+        .output()
+        .expect("run runtime artifact preflight");
+
+    assert!(
+        preflight.status.success(),
+        "preflight must remove only known workflow runtime artifacts\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&preflight.stdout),
+        String::from_utf8_lossy(&preflight.stderr)
+    );
+    assert!(
+        !repo.join(".claude/runtime").exists(),
+        "known workflow-generated .claude/runtime must be removed before recovery guard points"
+    );
+    assert!(
+        !repo.join("worktrees").exists(),
+        "workflow-created nested worktrees must be removed before recovery guard points"
+    );
+    assert!(
+        repo.join(".claude/settings.json").exists(),
+        "user-authored .claude configuration must survive runtime cleanup"
+    );
+    assert!(
+        repo.join("dist/plugin.js").exists(),
+        "unrelated untracked artifacts must not be hidden by runtime cleanup"
+    );
+
+    let guard = Command::new(amplihack_bin())
+        .args([
+            "hygiene",
+            "artifact-guard",
+            "--repo",
+            repo.to_str().expect("utf-8 repo path"),
+            "--mode",
+            "pre-publish",
+        ])
+        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
+        .output()
+        .expect("run Artifact Guard after runtime preflight");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&guard.stdout),
+        String::from_utf8_lossy(&guard.stderr)
+    );
+
+    assert_eq!(
+        guard.status.code(),
+        Some(1),
+        "Artifact Guard must remain strict for unrelated generated artifacts\n{combined}"
+    );
+    assert!(
+        combined.contains("dist/plugin.js"),
+        "strict guard failure must name the unrelated artifact that cleanup intentionally preserved: {combined}"
+    );
+    assert!(
+        !combined.contains(".claude/runtime")
+            && !combined.contains("worktrees/nested-default-workflow"),
+        "known workflow runtime artifacts should be removed before Artifact Guard runs: {combined}"
+    );
+}
+
+#[test]
+fn recovery_publish_and_final_status_helpers_preflight_before_dirty_checks() {
+    for helper_name in ["workflow_publish_pr.sh", "workflow_final_status.sh"] {
+        let helper_path = workspace_root()
+            .join("amplifier-bundle")
+            .join("tools")
+            .join(helper_name);
+        let content = fs::read_to_string(&helper_path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", helper_path.display()));
+        let preflight = content
+            .find("preflight_known_workflow_runtime_artifacts")
+            .unwrap_or_else(|| {
+                panic!("{helper_name} must preflight known workflow runtime artifacts")
+            });
+        let dirty_check = content
+            .find("git status --porcelain")
+            .or_else(|| content.find("git diff --quiet"))
+            .unwrap_or_else(|| panic!("{helper_name} must contain a dirty-worktree check"));
+
+        assert!(
+            content.contains("workflow_runtime_artifacts.sh"),
+            "{helper_name} must source the narrow runtime-artifact helper"
+        );
+        assert!(
+            preflight < dirty_check,
+            "{helper_name} must preflight known runtime artifacts before dirty-worktree checks"
+        );
+        assert!(
+            !content.contains("rm -rf .claude/runtime") && !content.contains("rm -rf worktrees"),
+            "{helper_name} must not inline broad deletion; cleanup belongs in workflow_runtime_artifacts.sh"
         );
     }
 }
