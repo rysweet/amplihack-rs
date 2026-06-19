@@ -87,15 +87,19 @@ Local metadata is multiline step output, not a provider URL:
 
 ```text
 tracking_system=local
-tracking_reference=local-issue-482193
-tracking_issue=local-issue-482193
+tracking_reference=local-482193
+tracking_issue=local-482193
 issue_creation=local-tracking
-issue_number=482193
+issue_number=
 ```
 
-`issue_number=N` is present when step 03 can derive a numeric local reference
-from explicit context or task text. Downstream extraction also accepts numeric
-suffixes in `tracking_reference=local-issue-N` and `tracking_reference=local-ab-N`.
+For local tracking, `tracking_reference` and `tracking_issue` are the
+authoritative identifiers. `tracking_system=local` marks local mode, but Step
+03b succeeds only when a local-prefixed `tracking_reference` /
+`tracking_issue` or legacy `local-tracking:*` reference is present. Step 03b
+checks those references before numeric extraction, preserves the local
+reference, and leaves `issue_number` empty. Local IDs are never coerced into
+GitHub-style issue numbers.
 
 ---
 
@@ -163,7 +167,7 @@ gh label commands -> not invoked
 git remote set-url origin https://gitlab.com/acme/service.git
 
 amplihack recipe run default-workflow \
-  -c task_description="Add config parser #482193" \
+  -c task_description="Add config parser" \
   -c repo_path=.
 ```
 

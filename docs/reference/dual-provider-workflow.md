@@ -104,7 +104,7 @@ The feature contract is host-aware matching. A URL such as
 | `github` | Reuse `#N` after `gh issue view` validates it | `gh issue create`; label setup stays in this branch | Most GitHub creation errors fail; repository access/resolution failures fall back to local metadata |
 | `azdo` | Reuse `issue_number=N`, `AB#N`, or host-scoped `#N` as an Azure Boards candidate | `az boards work-item create` when Azure Boards is available | Structured local metadata |
 | `azure-devops` | Compatibility alias for `azdo` when supplied by callers | Same as `azdo` | Same as `azdo` |
-| `other`, empty, unknown | Reuse numeric `issue_number=N` only as local context | No provider creation | Structured local metadata |
+| `other`, empty, unknown | Preserve local tracking metadata when supplied | No provider creation | Structured local metadata |
 
 The Azure DevOps branch does not call GitHub first and then recover from the
 failure. It bypasses GitHub issue and label commands before those commands are
@@ -182,10 +182,11 @@ output is multiline key/value metadata.
 | GitHub | `https://github.com/OWNER/REPO/issues/123` | `123` |
 | Azure DevOps existing work item | `AB#12345` | `12345` |
 | Azure DevOps work item URL | `https://dev.azure.com/ORG/PROJECT/_workitems/edit/12345` | `12345` |
-| Local metadata | `tracking_system=local` plus `tracking_reference=local-issue-482193`, `tracking_issue=local-issue-482193`, `issue_creation=local-tracking`, and usually `issue_number=482193` | `482193` when a numeric local reference is present |
+| Local metadata | `tracking_system=local` plus `tracking_reference=local-482193`, `tracking_issue=local-482193`, `issue_creation=local-tracking`, and `issue_number=` | Empty; local reference is preserved instead |
 
-Downstream workflow steps consume only the numeric `issue_number` plus
-`REMOTE_HOST_TYPE`.
+Downstream workflow steps consume numeric `issue_number` for GitHub and Azure
+DevOps. For local tracking, they consume `tracking_reference` /
+`tracking_issue`; `issue_number` is empty.
 
 ---
 
@@ -195,21 +196,24 @@ Local fallback output is structured metadata:
 
 ```text
 tracking_system=local
-tracking_reference=local-issue-482193
-tracking_issue=local-issue-482193
+tracking_reference=local-482193
+tracking_issue=local-482193
 issue_creation=local-tracking
-issue_number=482193
+issue_number=
 ```
 
 `tracking_reference` is the durable local identifier for the run. It may use
-`local-issue-N`, `local-ab-N`, or another `local-*` value when no numeric
-provider-style reference is available. `issue_number=N` is emitted when step 03
-can derive a numeric value from explicit `issue_number`, `AB#N`, `#N`, or a
-numeric local reference. Step 03b must fail visibly if local metadata contains
-no extractable numeric ID and no compatibility task-text fallback can supply one.
+`local-N`, `local-issue-N`, `local-ab-N`, or another `local-*` value.
+`tracking_system=local` is a mode marker, not a complete local reference by
+itself. Step 03b checks for a local-prefixed `tracking_reference` /
+`tracking_issue` before numeric extraction; when one is present, it preserves
+the local reference, emits an empty `issue_number`, and exits successfully.
+Numeric-looking local IDs are not GitHub issues and are not Azure Boards work
+item IDs.
 
-`local-tracking:N` is accepted only as a legacy compatibility format. New docs
-and tests should use the structured metadata above.
+`local-tracking:N` is accepted as a legacy local reference format and is
+preserved as local tracking. Its numeric suffix is not copied to
+`issue_number`.
 
 ---
 
@@ -264,7 +268,7 @@ AB#12345
 git remote set-url origin https://gitlab.com/acme/service.git
 
 amplihack recipe run default-workflow \
-  -c task_description="Add config parser #482193" \
+  -c task_description="Add config parser" \
   -c repo_path=.
 ```
 
@@ -272,10 +276,10 @@ Step 03 emits:
 
 ```text
 tracking_system=local
-tracking_reference=local-issue-482193
-tracking_issue=local-issue-482193
+tracking_reference=local-482193
+tracking_issue=local-482193
 issue_creation=local-tracking
-issue_number=482193
+issue_number=
 ```
 
 ---
@@ -293,7 +297,7 @@ Required scenarios:
 | AzDO `https://dev.azure.com/...` remote | No `gh issue` or `gh label` command is invoked |
 | AzDO `https://ORG.visualstudio.com/...` remote | No `gh issue` or `gh label` command is invoked |
 | AzDO `git@ssh.dev.azure.com:v3/...` remote | No `gh issue` or `gh label` command is invoked |
-| Unsupported remote | Local tracking is used without provider CLI calls |
+| Unsupported remote | Local tracking is used without provider CLI calls; `tracking_reference` / `tracking_issue` propagate to downstream branch, commit, and status steps; local IDs are not coerced into `issue_number` |
 
 The AzDO tests use a `gh` sentinel that fails the test if any GitHub issue or
 label command is invoked.

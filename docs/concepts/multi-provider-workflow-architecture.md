@@ -39,22 +39,23 @@ another `case` branch is lower than maintaining an adapter registry.
 
 ---
 
-## The Issue Number Contract
+## The Tracking Identifier Contract
 
-All providers produce the same output: a plain integer `issue_number`. This
-is the contract that downstream steps depend on.
+Remote providers produce the same output shape: a plain integer `issue_number`.
+Local tracking produces an opaque local reference instead. This keeps GitHub and
+Azure DevOps behavior stable while avoiding the false claim that a local ID is a
+remote issue number.
 
-| Provider   | Source                    | Example   |
-| ---------- | ------------------------- | --------- |
-| GitHub     | `gh issue create` URL     | `684`     |
-| AzDO       | `az boards` work item ID  | `12345`   |
-| Other/Local | Structured local metadata | `482193` |
+| Provider | Source | Workflow identifier |
+| -------- | ------ | ------------------- |
+| GitHub | `gh issue create` URL | `issue_number=684` |
+| AzDO | `az boards` work item ID | `issue_number=12345` |
+| Other/Local | Structured local metadata | `tracking_reference=local-482193`, `issue_number=` |
 
-By normalizing to an integer at step 03b, no downstream step needs to know
-which provider produced it. Branch names, commit messages, and PR
-descriptions all use `issue_number` as a plain number with provider-specific
-formatting applied only at the point of use (e.g., `Closes #684` for GitHub,
-`AB#12345` for AzDO, `Ref #4821937` for other).
+Step 03b applies numeric extraction only after it has found no local-prefixed
+tracking reference. Branch names, commit messages, and PR descriptions use
+provider-specific formatting at the point of use: `Closes #684` for GitHub,
+`AB#12345` for AzDO, and `Ref local-482193` for local tracking.
 
 ---
 
@@ -81,9 +82,11 @@ enables the workflow to run in isolated environments (CI containers,
 air-gapped systems, fresh `git init` repos). Other/local mode:
 
 - Emits structured local metadata such as `tracking_system=local`,
-  `tracking_reference=local-issue-N`, and `issue_creation=local-tracking`
+  `tracking_reference=local-*`, and `issue_creation=local-tracking`; the
+  local-prefixed reference is required for successful local extraction
 - Skips all network calls (no `gh`, no `az`)
-- Produces valid branch names and commit messages
+- Produces valid branch names and commit messages without numeric issue
+  extraction
 - Skips PR creation (no remote to push to)
 
 ---
@@ -94,7 +97,7 @@ air-gapped systems, fresh `git init` repos). Other/local mode:
 | ---------------------------- | ---------------------------------- | ------------------------------------- |
 | Detect-once pattern          | Single detection, no repeated work | One step to maintain                  |
 | `case` over adapters         | Simpler, no indirection            | Adding providers requires editing steps |
-| Numeric issue_number contract | Downstream steps stay unchanged   | Provider URL information is lost       |
+| Remote issue_number contract | GitHub/AzDO steps stay unchanged | Local steps also need `tracking_reference` |
 | Other as fallback            | Works everywhere                   | No tracking system updated             |
 | Manual AzDO PR creation      | Avoids brittle automation          | Extra manual step for AzDO users       |
 | Context propagation required | Explicit data flow                 | Must declare vars in parent recipe     |

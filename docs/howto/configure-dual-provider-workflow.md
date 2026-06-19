@@ -104,11 +104,15 @@ instead of attempting a GitHub issue operation:
 
 ```text
 tracking_system=local
-tracking_reference=local-issue-12345
-tracking_issue=local-issue-12345
+tracking_reference=local-12345
+tracking_issue=local-12345
 issue_creation=local-tracking
-issue_number=12345
+issue_number=
 ```
+
+The local reference is the durable identifier for that run. Step 03b preserves
+it only because the reference is local-prefixed, then leaves `issue_number`
+empty instead of converting `12345` into a GitHub issue number.
 
 ---
 
@@ -156,8 +160,10 @@ no GitHub issue or label command runs
 ```
 
 Use `remote_host_type=other` to force local tracking and block provider API
-calls. `remote_host_type=azure-devops` remains accepted as a compatibility
-alias for external callers, but primary examples should use `azdo`.
+calls. Local tracking uses `tracking_reference` / `tracking_issue`, not a
+numeric `issue_number`. `remote_host_type=azure-devops` remains accepted as a
+compatibility alias for external callers, but primary examples should use
+`azdo`.
 
 ---
 

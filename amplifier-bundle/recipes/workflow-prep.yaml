@@ -376,13 +376,13 @@ steps:
       # Extract issue number — handles GitHub, AzDO, and local tracking.
       ISSUE_CREATION="$ISSUE_CREATION"; TASK_DESC_RAW="$TASK_DESCRIPTION"
       EXTRACTED=""
+      LOCAL_TRACKING_RE='(^|[[:space:]])(tracking_system=local|tracking_reference=(local-[^[:space:]]+|local-tracking:[^[:space:]]+)|tracking_issue=(local-[^[:space:]]+|local-tracking:[^[:space:]]+)|issue_creation=local-tracking)($|[[:space:]])'
+      if [[ "$ISSUE_CREATION" =~ $LOCAL_TRACKING_RE ]]; then printf ''; exit 0; fi
       if [[ "$ISSUE_CREATION" =~ issues/([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
       elif [[ "$ISSUE_CREATION" =~ pull/([0-9]+) ]]; then PR_NUMBER="${BASH_REMATCH[1]}"; EXTRACTED=$(timeout 60 gh pr view "$PR_NUMBER" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // ""' 2>/dev/null || echo ''); [ -z "$EXTRACTED" ] && EXTRACTED="$PR_NUMBER"
       elif [[ "$ISSUE_CREATION" =~ _workitems/edit/([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
       elif [[ "$ISSUE_CREATION" =~ AB#([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
       elif [[ "$ISSUE_CREATION" =~ issue_number=([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
-      elif [[ "$ISSUE_CREATION" =~ local-(issue|ab)-([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[2]}"
-      elif [[ "$ISSUE_CREATION" =~ local-tracking:([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
       elif [[ "$TASK_DESC_RAW" =~ AB#([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
       elif [[ "$TASK_DESC_RAW" =~ \#([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
       fi

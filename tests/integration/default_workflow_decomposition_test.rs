@@ -21,8 +21,14 @@
 
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::sync::LazyLock;
+use std::process::{Command, ExitStatus};
+use std::sync::{
+    LazyLock,
+    atomic::{AtomicUsize, Ordering},
+};
 
 const BRICK_LIMIT: usize = 400;
 
@@ -60,6 +66,8 @@ static WORKFLOW_PR_REVIEW_YAML: LazyLock<serde_yaml::Value> = LazyLock::new(|| {
     serde_yaml::from_str(recipe_text(name))
         .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
 });
+
+static STEP_COMMAND_RUN_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Deserialize)]
 struct Recipe {
@@ -121,6 +129,56 @@ fn step_command(recipe: &str, step_id: &str) -> &'static str {
         .command
         .as_deref()
         .unwrap_or_else(|| panic!("{recipe}.yaml step {step_id} must be a bash step"))
+}
+
+struct StepRun {
+    status: ExitStatus,
+    stdout: String,
+    stderr: String,
+}
+
+fn run_step_03b_extract_issue_number(issue_creation: &str, task_description: &str) -> StepRun {
+    let stub_dir = std::env::temp_dir().join(format!(
+        "amplihack-step-03b-test-{}-{}",
+        std::process::id(),
+        STEP_COMMAND_RUN_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&stub_dir).unwrap_or_else(|e| panic!("create {}: {e}", stub_dir.display()));
+
+    let gh_stub = stub_dir.join("gh");
+    fs::write(&gh_stub, "#!/usr/bin/env bash\nexit 0\n")
+        .unwrap_or_else(|e| panic!("write {}: {e}", gh_stub.display()));
+    let mut permissions = fs::metadata(&gh_stub)
+        .unwrap_or_else(|e| panic!("stat {}: {e}", gh_stub.display()))
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&gh_stub, permissions)
+        .unwrap_or_else(|e| panic!("chmod {}: {e}", gh_stub.display()));
+
+    let path = match std::env::var("PATH") {
+        Ok(existing) if !existing.is_empty() => format!("{}:{existing}", stub_dir.display()),
+        _ => stub_dir.display().to_string(),
+    };
+
+    let output = Command::new("bash")
+        .arg("-c")
+        .arg(step_command(
+            "workflow-prep",
+            "step-03b-extract-issue-number",
+        ))
+        .env("ISSUE_CREATION", issue_creation)
+        .env("TASK_DESCRIPTION", task_description)
+        .env("PATH", path)
+        .output()
+        .expect("run step-03b-extract-issue-number command");
+
+    let _ = fs::remove_dir_all(&stub_dir);
+
+    StepRun {
+        status: output.status,
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    }
 }
 
 fn step_prompt(recipe: &str, step_id: &str) -> &'static str {
@@ -948,6 +1006,95 @@ fn workflow_prep_step_03b_handles_azdo_work_item_urls() {
         local_pos < task_ab_pos,
         "step-03b must check ISSUE_CREATION local-tracking before falling back to TASK_DESC_RAW"
     );
+}
+
+#[test]
+fn workflow_prep_step_03b_local_tracking_system_succeeds_without_numeric_issue_number() {
+    let run = run_step_03b_extract_issue_number(
+        "tracking_system=local\ntracking_reference=local-123\ntracking_issue=local-123\nissue_creation=local-tracking\n",
+        "",
+    );
+
+    assert!(
+        run.status.success(),
+        "local tracking must skip numeric extraction and exit successfully; stderr:\n{}",
+        run.stderr
+    );
+    assert_eq!(
+        run.stdout, "",
+        "local tracking must leave issue_number empty instead of coercing local-123 to 123"
+    );
+}
+
+#[test]
+fn workflow_prep_step_03b_local_reference_prefix_succeeds_without_numeric_issue_number() {
+    let run = run_step_03b_extract_issue_number(
+        "tracking_reference=local-123\ntracking_issue=local-123\nissue_creation=local-tracking\n",
+        "",
+    );
+
+    assert!(
+        run.status.success(),
+        "local-* references must be treated as local tracking, not remote issue numbers; stderr:\n{}",
+        run.stderr
+    );
+    assert_eq!(
+        run.stdout, "",
+        "local-* references must preserve the local identifier without emitting issue_number=123"
+    );
+}
+
+#[test]
+fn workflow_prep_step_03b_legacy_local_tracking_reference_is_not_coerced_to_issue_number() {
+    let run = run_step_03b_extract_issue_number(
+        "tracking_reference=local-tracking:123\ntracking_issue=local-tracking:123\n",
+        "",
+    );
+
+    assert!(
+        run.status.success(),
+        "legacy local-tracking:* references must skip numeric extraction; stderr:\n{}",
+        run.stderr
+    );
+    assert_eq!(
+        run.stdout, "",
+        "local-tracking:123 is a local identifier and must not emit issue_number=123"
+    );
+}
+
+#[test]
+fn workflow_prep_step_03b_remote_references_keep_numeric_extraction_behavior() {
+    let cases = [
+        (
+            "github issue URL",
+            "https://github.com/owner/repo/issues/456",
+            "456",
+        ),
+        (
+            "github pull request URL",
+            "https://github.com/owner/repo/pull/789",
+            "789",
+        ),
+        (
+            "azure devops work item URL",
+            "https://dev.azure.com/org/project/_workitems/edit/321",
+            "321",
+        ),
+        ("azure boards shorthand", "AB#654", "654"),
+    ];
+
+    for (name, issue_creation, expected) in cases {
+        let run = run_step_03b_extract_issue_number(issue_creation, "");
+        assert!(
+            run.status.success(),
+            "{name} must still extract a numeric issue/work-item id; stderr:\n{}",
+            run.stderr
+        );
+        assert_eq!(
+            run.stdout, expected,
+            "{name} must preserve existing numeric extraction behavior"
+        );
+    }
 }
 
 // ==========================================================================

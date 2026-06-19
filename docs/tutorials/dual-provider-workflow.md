@@ -106,14 +106,16 @@ If Azure Boards is unavailable, step 03 emits structured local metadata:
 
 ```text
 tracking_system=local
-tracking_reference=local-ab-12345
-tracking_issue=local-ab-12345
+tracking_reference=local-12345
+tracking_issue=local-12345
 issue_creation=local-tracking
-issue_number=12345
+issue_number=
 ```
 
-Provider URLs, `AB#N`, and local metadata with a numeric local reference
-preserve the downstream `issue_number` contract.
+Provider URLs and `AB#N` preserve the downstream numeric `issue_number`
+contract. Local metadata uses a local-prefixed `tracking_reference` /
+`tracking_issue`, preserves that reference downstream, and leaves
+`issue_number` empty.
 
 ---
 
@@ -157,12 +159,12 @@ You can also create the PR from the Azure DevOps web UI.
 ## Step 7: Try the Local Fallback Path
 
 To see the provider-safe fallback, run the workflow without Azure Boards
-configuration or with `remote_host_type=other` and a numeric local reference:
+configuration or with `remote_host_type=other`:
 
 ```bash
 amplihack recipe run default-workflow \
   -c remote_host_type=other \
-  -c "task_description=Add config parser #482193" \
+  -c "task_description=Add config parser" \
   -c "repo_path=$(pwd)"
 ```
 
@@ -170,10 +172,10 @@ Expected tracking output:
 
 ```text
 tracking_system=local
-tracking_reference=local-issue-482193
-tracking_issue=local-issue-482193
+tracking_reference=local-482193
+tracking_issue=local-482193
 issue_creation=local-tracking
-issue_number=482193
+issue_number=
 ```
 
 No GitHub or Azure DevOps provider command runs in this mode.
@@ -184,5 +186,5 @@ No GitHub or Azure DevOps provider command runs in this mode.
 
 You ran the workflow on an Azure DevOps-backed repository. `workflow-prep`
 classified the remote as `azdo`, kept all GitHub issue and label commands out
-of the AzDO path, and preserved the numeric `issue_number` contract through
-Azure Boards or local tracking.
+of the AzDO path, preserved numeric `issue_number` for Azure Boards, and
+preserved local references without numeric coercion for local tracking.
