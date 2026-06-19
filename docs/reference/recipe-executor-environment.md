@@ -5,6 +5,7 @@ Complete reference for the environment variables, prerequisite checks, and conte
 ## Contents
 
 - [Recipe runner subprocess launch](#recipe-runner-subprocess-launch)
+- [Recipe context environment export](#recipe-context-environment-export)
 - [Shell step environment injection](#shell-step-environment-injection)
 - [Agent step context augmentation](#agent-step-context-augmentation)
 - [Prerequisite validation](#prerequisite-validation)
@@ -46,6 +47,47 @@ The `recipe-runner-rs` child sees `AMPLIHACK_NONINTERACTIVE=1` and
 `AMPLIHACK_RECIPE_RUN_ID=<uuid>`, and it does not see `CLAUDECODE`. Nested agent
 launches therefore use the active agent routing contract instead of inheriting
 Claude-specific session behavior from the parent environment.
+
+---
+
+## Recipe context environment export
+
+In addition to the fixed subprocess variables above, `amplihack recipe run`
+exports **every recipe context variable** to the `recipe-runner-rs` subprocess
+as an environment variable. This lets bash steps read context directly — for
+example `$TASK_DESCRIPTION` and `$REPO_PATH` — instead of only through
+`{{placeholder}}` substitution. Because the export is inherited by every nested
+shell and sub-recipe step, the values work under `set -u` and deep inside
+composed workflows.
+
+| Aspect | Behavior |
+|--------|----------|
+| Source | The merged recipe context (`context` block + `-c/--context` flags + inferred values) |
+| Name | Context key, ASCII-uppercased (`task_description` → `TASK_DESCRIPTION`) |
+| Value | Context value, unchanged |
+| Validity | Names must match `^[A-Z_][A-Z0-9_]*$`; invalid keys are skipped (name-only `WARN`) |
+| Safety | Reserved/dangerous names (`PATH`, `LD_PRELOAD`, `BASH_ENV`, `IFS`, `AMPLIHACK_*`, …) are never exported |
+| Precedence | Lowest — applied before the subprocess builder and `AMPLIHACK_RECIPE_RUN_ID`, so builder-managed and correlation variables always win |
+
+### Example
+
+```bash
+amplihack recipe run env-aware-recipe \
+  -c task_description="Add validation for empty display names" \
+  -c repo_path=.
+```
+
+A bash step of `env-aware-recipe` can then run:
+
+```bash
+set -euo pipefail
+echo "task: $TASK_DESCRIPTION"   # Add validation for empty display names
+echo "repo: $REPO_PATH"          # .
+```
+
+The full contract — transform rules, the reserved-name denylist, the
+`context_env_pairs` API, precedence guarantees, and the security model — is in
+[Recipe Context Environment Export](./recipe-context-environment.md).
 
 ---
 
@@ -138,6 +180,7 @@ must never prompt for input.
 ## Related
 
 - [amplihack recipe](./recipe-command.md) — Full CLI reference for the recipe subcommand
+- [Recipe Context Environment Export](./recipe-context-environment.md) — Exporting recipe context variables to bash steps (uppercased, denylist, precedence)
 - [Environment Variables](./environment-variables.md) — All variables read or injected by amplihack
 - [Recipe Run Correlation Reference](./recipe-run-correlation.md) — Stable recipe run IDs and pointer events
 - [Recipe Execution Flow](../concepts/recipe-execution-flow.md) — Step execution architecture

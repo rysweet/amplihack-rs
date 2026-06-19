@@ -71,6 +71,8 @@ Complete documentation for using the Recipe Runner:
 - **[Correlate Recipe Runs with Logs](../howto/correlate-recipe-runs.md)** - Match terminal output, JSON results, child PIDs, and log paths by run ID
 - **[Recipe CLI Reference](../reference/recipe-cli-reference.md)** - Complete command-line reference with all options and exit codes
 - **[Recipe Run Correlation Reference](../reference/recipe-run-correlation.md)** - Stable run IDs, log pointer schema, and result fields
+- **[Recipe Context Environment Export](../reference/recipe-context-environment.md)** - How context variables reach bash steps as environment variables (`$TASK_DESCRIPTION`, `$REPO_PATH`), the reserved-name denylist, and precedence
+- **[Tutorial: Propagate Recipe Context to Bash Steps](../tutorials/recipe-context-env-propagation.md)** - Hands-on walkthrough for top-level, nested, and skipped keys
 - **[Recipe CLI Examples](cli-examples.md)** - Real-world usage scenarios (development, testing, CI/CD, team workflows)
 - **[Step 03 Host-Aware Tracking Idempotency](../reference/recipe-step-03-idempotency.md)** - GitHub issue, Azure Boards work-item, and local tracking reuse/create contract
 - **[Default Workflow Step 13 Validation](../reference/default-workflow-step-13-validation.md)** - Toolchain-aware outside-in local validation contract for the pre-commit gate
@@ -271,6 +273,13 @@ Use `{{variable}}` to inject context values or previous step outputs into prompt
 - `{{repo_path}}` -- from context
 - `{{clarified_requirements}}` -- output from a prior step stored via `output` field
 - `{{nested.key}}` -- dot notation for nested dict values (from `parse_json` steps)
+
+**Bash steps also receive context as environment variables.** Every context key
+is exported (ASCII-uppercased) to bash steps and nested sub-recipes, so a `bash`
+step can read `$TASK_DESCRIPTION` or `$REPO_PATH` directly — including under
+`set -u`. Reserved names (`PATH`, `LD_PRELOAD`, `BASH_ENV`, `IFS`, `AMPLIHACK_*`,
+…) are never exported. See
+[Recipe Context Environment Export](../reference/recipe-context-environment.md).
 
 ## SDK Adapters
 
