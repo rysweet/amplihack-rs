@@ -177,16 +177,17 @@ Step 03 emits structured local metadata without making any network calls:
 
 ```text
 tracking_system=local
-tracking_reference=local-issue-482193
-tracking_issue=local-issue-482193
+tracking_reference=local-482193
+tracking_issue=local-482193
 issue_creation=local-tracking
-issue_number=482193
+issue_number=
 ```
 
 The local reference is an opaque workflow reference, not a durable provider
-record and not a global uniqueness guarantee. It is used only for branch naming
-(`feat/issue-<N>-slug`) and commit message references when a numeric ID is
-available. No tracking system is updated.
+record and not a global uniqueness guarantee. It is preserved as
+`tracking_reference` / `tracking_issue` for branch naming and local commit
+references. It is not coerced into a numeric `issue_number`. No tracking system
+is updated.
 
 ---
 
@@ -202,11 +203,11 @@ provider output format produced by Step 03:
 | GitHub PR fallback | `https://github.com/owner/repo/pull/N` | `pull/([0-9]+)` plus closing-issue lookup |
 | Azure DevOps | `https://dev.azure.com/org/project/_workitems/edit/N` | `_workitems/edit/([0-9]+)` |
 | Azure DevOps | `AB#N` | `AB#([0-9]+)` |
-| Other/local | Structured local metadata with `issue_number=N` or `tracking_reference=local-issue-N` / `local-ab-N` | `issue_number=([0-9]+)` or `local-(issue\|ab)-([0-9]+)` |
+| Other/local | Structured local metadata with `tracking_system=local` plus `tracking_reference=local-*` / `tracking_issue=local-*`, or legacy `local-tracking:*` | Preserve local reference; leave `issue_number` empty |
 
-The `issue_number` output contract remains unchanged: a plain integer.
-Downstream steps never see the provider URL format — they only consume the
-numeric ID.
+The remote `issue_number` output contract remains unchanged: GitHub and Azure
+DevOps produce a plain integer. Local tracking intentionally leaves
+`issue_number` empty and passes the local reference forward.
 
 ---
 
@@ -221,11 +222,11 @@ step 02d, declared in the parent recipe's context block):
 | `github`  | `Closes #N`      | `feat: add auth (Closes #684)`    |
 | `azdo`    | `AB#N`           | `feat: add auth (AB#12345)`       |
 | `azure-devops` | `AB#N`      | `feat: add auth (AB#12345)`       |
-| `other`   | `Ref #N`         | `feat: add auth (Ref #4821937)`   |
+| `other`   | `Ref <local-ref>` | `feat: add auth (Ref local-482193)` |
 
 The `Closes #N` format triggers GitHub's auto-close behavior. The `AB#N`
-format triggers Azure Boards work item linking. The `Ref #N` format is a
-neutral reference that does not trigger automation on any platform.
+format triggers Azure Boards work item linking. The local `Ref <local-ref>`
+format is a neutral reference that does not trigger automation on any platform.
 
 ---
 
@@ -256,9 +257,10 @@ message on stderr. After the workflow completes, create a PR manually using
 
 The worktree setup step (`step-04-setup-worktree`) previously derived the
 working directory from the issue URL, which was always a GitHub URL. With
-multi-provider support, the worktree path derivation uses only the
-`issue_number` integer (provider-agnostic) and the slugified task
-description.
+multi-provider support, the worktree path derivation uses the provider tracking
+key and the slugified task description: numeric `issue_number` for GitHub/Azure
+DevOps, or `tracking_reference` / `tracking_issue` for local tracking. Local
+mode must not derive paths from an empty `issue_number`.
 
 See [recipe-step-04-worktree-reattach-prune.md](recipe-step-04-worktree-reattach-prune.md)
 for the full worktree lifecycle documentation.
@@ -294,7 +296,7 @@ commands.
 | `github`  | `PR: <url>` (with `gh pr view` details)   | `Issue: #N`          |
 | `azdo`    | `PR: N/A (manual creation required)`      | `Issue: AB#N`        |
 | `azure-devops` | `PR: N/A (manual creation required)` | `Issue: AB#N` |
-| `other`   | `PR: N/A (no remote provider)`            | `Issue: Ref #N`      |
+| `other`   | `PR: N/A (no remote provider)`            | `Issue: Ref <local-ref>` |
 
 The `HOST_TYPE=${REMOTE_HOST_TYPE:-other}` local variable pattern is used
 for `set -u` safety — if the context variable is unset for any reason, the
@@ -306,23 +308,27 @@ step degrades to "other" behavior rather than failing.
 
 Variables added or modified by the multi-provider feature:
 
-| Variable           | Set by    | Type   | Description                                  |
-| ------------------ | --------- | ------ | -------------------------------------------- |
-| `remote_host_type` | step-02d or caller | string | `"github"`, `"azdo"`, `"azure-devops"`, or `"other"` |
-| `azdo_org_url`     | step-03   | string | Full AzDO org URL (local to step-03; empty if not AzDO) |
-| `azdo_org`         | step-03   | string | AzDO organization name (local to step-03; empty if not AzDO) |
-| `azdo_project`     | step-03   | string | AzDO project name, percent-decoded (local to step-03; empty if not AzDO) |
-| `work_item_type`   | user/step-02 | string | AzDO work item type; default `"Task"`       |
-| `issue_number`     | step-03b  | int    | Numeric ID (unchanged contract)               |
+| Variable             | Set by    | Type   | Description                                  |
+| -------------------- | --------- | ------ | -------------------------------------------- |
+| `remote_host_type`   | step-02d or caller | string | `"github"`, `"azdo"`, `"azure-devops"`, or `"other"` |
+| `azdo_org_url`       | step-03   | string | Full AzDO org URL (local to step-03; empty if not AzDO) |
+| `azdo_org`           | step-03   | string | AzDO organization name (local to step-03; empty if not AzDO) |
+| `azdo_project`       | step-03   | string | AzDO project name, percent-decoded (local to step-03; empty if not AzDO) |
+| `work_item_type`     | user/step-02 | string | AzDO work item type; default `"Task"`       |
+| `issue_number`       | step-03b  | int or empty string | Numeric GitHub/Azure DevOps ID; empty for local tracking |
+| `tracking_system`    | step-03/step-03b | string | `local` when the workflow is using local tracking |
+| `tracking_reference` | step-03/step-03b | string | Local-prefixed reference consumed by branch, commit, publish, and status steps |
+| `tracking_issue`     | step-03/step-03b | string | Local tracking alias preserved for compatibility with existing step naming |
 
-**Parent recipe declaration**: The `remote_host_type` context variable must
-be declared with an empty-string default in `default-workflow.yaml`'s
-`context:` block. This is required for propagation to work across sub-recipe
-boundaries — without this declaration, the recipe-runner's
-`_execute_sub_recipe()` context-merging will not thread the value through to
-phases like `workflow-publish` or `workflow-finalize`. The AzDO-specific
-variables (`azdo_org`, `azdo_project`, `azdo_org_url`) do NOT require parent
-declaration because they are local to step-03 within `workflow-prep`.
+**Parent recipe declaration**: `remote_host_type`, `issue_number`,
+`tracking_system`, `tracking_reference`, and `tracking_issue` must be declared
+with empty-string defaults in `default-workflow.yaml`'s `context:` block. This
+is required for propagation to work across sub-recipe boundaries — without these
+declarations, the recipe-runner's `_execute_sub_recipe()` context-merging will
+not thread the values through to phases like `workflow-worktree`,
+`workflow-publish`, or `workflow-finalize`. The AzDO-specific variables
+(`azdo_org`, `azdo_project`, `azdo_org_url`) do NOT require parent declaration
+because they are local to step-03 within `workflow-prep`.
 
 ---
 
@@ -356,7 +362,7 @@ should not be treated as a stable public API.
 | Azure DevOps path has `issue_number`  | Reuses `AB#N`; does not call `gh` or create a work item |
 | `az boards` not installed             | Step-03 falls back to structured local metadata    |
 | `az boards` auth expired              | Warning logged; falls back to structured local metadata |
-| AzDO work item creation fails         | Warning logged; structured local metadata is used for branch naming when numeric |
+| AzDO work item creation fails         | Warning logged; structured local metadata is used; downstream steps use `tracking_reference` instead of empty `issue_number` |
 | Percent-decode invalid sequence       | Warning logged; falls back to structured local metadata |
 | AzDO project name validation fails    | Warning logged; falls back to structured local metadata |
 | `gh` not installed (GitHub remote)    | GitHub creation fails clearly unless the failure is a repository access/resolution failure that triggers local metadata fallback |
@@ -463,13 +469,14 @@ Workflow proceeds as in Example 2.
 ```bash
 cd ~/my-local-project && git init
 amplihack recipe run default-workflow \
-  -c task_description="Add config parser #482193" \
+  -c task_description="Add config parser" \
   -c repo_path=.
 ```
 
-Step 02d detects `other`. Step 03 emits structured local metadata. Step 15 uses
-`Ref #N`. Step 16 skips PR creation. Step 22b shows
-`PR: N/A (no remote provider)`.
+Step 02d detects `other`. Step 03 emits structured local metadata. Step 04 uses
+the local reference in the branch/worktree name. Step 15 uses `Ref
+<local-ref>`. Step 16 skips PR creation. Step 22b shows `PR: N/A (no remote
+provider)` and `Issue: Ref <local-ref>`.
 
 ---
 

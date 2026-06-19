@@ -21,8 +21,12 @@
 
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+use std::process::{Command, ExitStatus};
 use std::sync::LazyLock;
+use tempfile::TempDir;
 
 const BRICK_LIMIT: usize = 400;
 
@@ -121,6 +125,64 @@ fn step_command(recipe: &str, step_id: &str) -> &'static str {
         .command
         .as_deref()
         .unwrap_or_else(|| panic!("{recipe}.yaml step {step_id} must be a bash step"))
+}
+
+struct StepRun {
+    status: ExitStatus,
+    stdout: String,
+    stderr: String,
+}
+
+struct Step03bRunner {
+    _shim_dir: TempDir,
+    path: String,
+}
+
+impl Step03bRunner {
+    fn new() -> Self {
+        let shim_dir = TempDir::new().expect("create step-03b gh shim tempdir");
+        let gh_shim = shim_dir.path().join("gh");
+        fs::write(&gh_shim, "#!/usr/bin/env bash\nexit 0\n")
+            .unwrap_or_else(|e| panic!("write {}: {e}", gh_shim.display()));
+        let mut permissions = fs::metadata(&gh_shim)
+            .unwrap_or_else(|e| panic!("stat {}: {e}", gh_shim.display()))
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&gh_shim, permissions)
+            .unwrap_or_else(|e| panic!("chmod {}: {e}", gh_shim.display()));
+
+        let path = match std::env::var("PATH") {
+            Ok(existing) if !existing.is_empty() => {
+                format!("{}:{existing}", shim_dir.path().display())
+            }
+            _ => shim_dir.path().display().to_string(),
+        };
+
+        Self {
+            _shim_dir: shim_dir,
+            path,
+        }
+    }
+
+    fn run_extract_issue_number(&self, issue_creation: &str, task_description: &str) -> StepRun {
+        let output = Command::new("bash")
+            .arg("-c")
+            .arg(step_command(
+                "workflow-prep",
+                "step-03b-extract-issue-number",
+            ))
+            .env("ISSUE_CREATION", issue_creation)
+            .env("TASK_DESCRIPTION", task_description)
+            .env("PATH", &self.path)
+            .output()
+            .expect("run step-03b-extract-issue-number command");
+
+        StepRun {
+            status: output.status,
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        }
+    }
 }
 
 fn step_prompt(recipe: &str, step_id: &str) -> &'static str {
@@ -948,6 +1010,109 @@ fn workflow_prep_step_03b_handles_azdo_work_item_urls() {
         local_pos < task_ab_pos,
         "step-03b must check ISSUE_CREATION local-tracking before falling back to TASK_DESC_RAW"
     );
+}
+
+#[test]
+fn workflow_prep_step_03b_local_tracking_succeeds_without_numeric_issue_number() {
+    let cases = [
+        (
+            "local tracking system",
+            "tracking_system=local\ntracking_reference=local-123\ntracking_issue=local-123\nissue_creation=local-tracking\n",
+        ),
+        (
+            "local-* reference",
+            "tracking_reference=local-123\ntracking_issue=local-123\nissue_creation=local-tracking\n",
+        ),
+        (
+            "legacy local-tracking reference",
+            "tracking_reference=local-tracking:123\ntracking_issue=local-tracking:123\n",
+        ),
+    ];
+
+    let runner = Step03bRunner::new();
+    for (name, issue_creation) in cases {
+        let run = runner.run_extract_issue_number(issue_creation, "");
+        assert!(
+            run.status.success(),
+            "{name} must skip numeric extraction and exit successfully; stderr:\n{}",
+            run.stderr
+        );
+        assert_eq!(
+            run.stdout, "",
+            "{name} must leave issue_number empty instead of coercing local IDs to numbers"
+        );
+    }
+}
+
+#[test]
+fn workflow_prep_step_03b_rejects_malformed_local_tracking_metadata() {
+    let cases = [
+        (
+            "local markers without a reference",
+            "tracking_system=local\nissue_creation=local-tracking\nissue_number=763\n",
+        ),
+        (
+            "local reference with shell metacharacter",
+            "tracking_reference=local-123;rm\ntracking_issue=local-123;rm\nissue_number=763\n",
+        ),
+    ];
+
+    let runner = Step03bRunner::new();
+    for (name, issue_creation) in cases {
+        let run = runner.run_extract_issue_number(issue_creation, "Fallback #999");
+        assert!(
+            !run.status.success(),
+            "{name} must fail instead of coercing malformed local metadata; stdout:\n{}\nstderr:\n{}",
+            run.stdout,
+            run.stderr
+        );
+        assert_eq!(
+            run.stdout, "",
+            "{name} must not emit a numeric issue number from malformed local metadata"
+        );
+        assert!(
+            run.stderr
+                .contains("local tracking metadata missing valid local reference"),
+            "{name} must explain the malformed local metadata; stderr:\n{}",
+            run.stderr
+        );
+    }
+}
+
+#[test]
+fn workflow_prep_step_03b_remote_references_keep_numeric_extraction_behavior() {
+    let cases = [
+        (
+            "github issue URL",
+            "https://github.com/owner/repo/issues/456",
+            "456",
+        ),
+        (
+            "github pull request URL",
+            "https://github.com/owner/repo/pull/789",
+            "789",
+        ),
+        (
+            "azure devops work item URL",
+            "https://dev.azure.com/org/project/_workitems/edit/321",
+            "321",
+        ),
+        ("azure boards shorthand", "AB#654", "654"),
+    ];
+
+    let runner = Step03bRunner::new();
+    for (name, issue_creation, expected) in cases {
+        let run = runner.run_extract_issue_number(issue_creation, "");
+        assert!(
+            run.status.success(),
+            "{name} must still extract a numeric issue/work-item id; stderr:\n{}",
+            run.stderr
+        );
+        assert_eq!(
+            run.stdout, expected,
+            "{name} must preserve existing numeric extraction behavior"
+        );
+    }
 }
 
 // ==========================================================================

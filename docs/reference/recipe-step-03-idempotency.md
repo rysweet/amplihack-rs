@@ -42,8 +42,9 @@ amplihack recipe run default-workflow \
   -c repo_path="$(pwd)"
 ```
 
-Step 03 emits a parseable tracking reference, and step 03b extracts the same
-numeric ID for downstream branch, commit, and PR logic.
+Step 03 emits a parseable tracking reference. Step 03b extracts numeric IDs for
+GitHub and Azure DevOps outputs, and preserves local tracking references without
+coercing them into issue numbers.
 
 ```
 AB#12345
@@ -191,16 +192,19 @@ metadata, or unavailable Azure CLI support produce structured local metadata:
 
 ```text
 tracking_system=local
-tracking_reference=local-issue-482193
-tracking_issue=local-issue-482193
+tracking_reference=local-482193
+tracking_issue=local-482193
 issue_creation=local-tracking
-issue_number=482193
+issue_number=
 ```
 
-Local metadata preserves the workflow's numeric `issue_number` contract when a
-numeric local reference can be derived from explicit `issue_number`, `AB#N`,
-`#N`, or `local-issue-N` / `local-ab-N`. If no numeric local reference is
-available, step 03b must fail visibly instead of inventing an ID silently.
+Local metadata preserves the workflow's local tracking contract. The
+`tracking_reference` / `tracking_issue` value is authoritative, and
+`issue_number` is empty. `tracking_system=local` marks local mode, but Step 03b
+requires a local-prefixed `tracking_reference` / `tracking_issue` or legacy
+`local-tracking:*` reference before it treats the output as local. Step 03b
+detects that local reference before numeric extraction so values such as
+`local-123` and `local-tracking:123` are not treated as provider issue numbers.
 
 ---
 
@@ -223,11 +227,10 @@ It extracts the numeric ID from:
 - GitHub PR URLs containing `/pull/N` with closing-issue lookup fallback
 - Azure DevOps work-item URLs containing `/_workitems/edit/N`
 - Azure Boards references in the form `AB#N`
-- Local metadata containing `issue_number=N`
-- Local metadata references in the form `tracking_reference=local-issue-N` or `tracking_reference=local-ab-N`
-- Legacy local tracking references in the form `local-tracking:N`
 
-This keeps the downstream `issue_number` output provider-agnostic.
+For local metadata, step 03b preserves the local-prefixed `tracking_reference` /
+`tracking_issue` and leaves `issue_number` empty. This keeps the remote `issue_number` output
+provider-agnostic without pretending local IDs are remote issue numbers.
 
 ---
 
@@ -268,6 +271,7 @@ public API.
 | `remote_host_type=azdo` or `azure-devops` with existing `issue_number` | Emits `AB#N` and exits 0 without calling `gh` or creating a work item |
 | Azure CLI missing on Azure DevOps create path | Falls back to structured local metadata with a warning |
 | Azure DevOps org/project cannot be parsed | Falls back to structured local metadata with a warning |
+| Local tracking reference contains digits | Preserves the local reference and emits empty `issue_number`; digits are not extracted |
 | Non-numeric issue reference extracted | Explicit `^[0-9]+$` validation rejects it before any provider CLI receives it |
 
 The step uses `set -euo pipefail`. All expected-failure exit paths use
@@ -451,10 +455,10 @@ amplihack recipe run default-workflow \
 
 ```text
 tracking_system=local
-tracking_reference=local-issue-482193
-tracking_issue=local-issue-482193
+tracking_reference=local-482193
+tracking_issue=local-482193
 issue_creation=local-tracking
-issue_number=482193
+issue_number=
 ```
 
 Unknown host values never enter GitHub or Azure DevOps provider logic.
@@ -501,7 +505,7 @@ gadugi-test validate tests/gadugi/step-03-issue-creation-idempotency.yaml
 | Azure DevOps existing context reuse | `issue_number=N` emits `AB#N` without calling `gh` |
 | Azure DevOps task text candidates | `AB#N` and host-scoped `#N` references stay in Azure Boards logic and never trigger GitHub issue commands |
 | Generic fallback | Unknown, empty, and non-git hosts emit structured local metadata |
-| Output compatibility with step-03b | GitHub URL, Azure Boards URL, `AB#N`, structured local metadata, and legacy `local-tracking:N` parse to numeric IDs |
+| Output compatibility with step-03b | GitHub URL, Azure Boards URL, and `AB#N` parse to numeric IDs; structured local metadata with local-prefixed references and `local-tracking:*` preserve local references with empty `issue_number` |
 | Host isolation | Azure DevOps and generic paths never execute `gh issue` commands |
 | `set -euo pipefail` and quoted host dispatch | Shell syntax remains safe for empty or malformed context |
 

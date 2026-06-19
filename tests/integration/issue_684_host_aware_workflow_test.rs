@@ -1173,15 +1173,21 @@ fn step_03_github_unexpected_create_failure_remains_error() {
 fn step_03b_has_local_tracking_metadata_extraction_contract() {
     let recipe = load_recipe("workflow-prep");
     let body = extract_step_body(&recipe, "step-03b-extract-issue-number");
+    let local_pos = body
+        .find("LOCAL_TRACKING_RE")
+        .expect("step-03b must define the local tracking guard");
+    let issue_number_pos = body
+        .find("issue_number=([0-9]+)")
+        .expect("step-03b must still support provider numeric extraction");
 
     assert!(
-        body.contains("issue_number=([0-9]+)") && body.contains("local-(issue|ab)-([0-9]+)"),
-        "step-03b must extract numeric IDs from explicit local tracking metadata"
+        local_pos < issue_number_pos,
+        "step-03b must skip numeric extraction before provider issue_number parsing for local metadata"
     );
 }
 
 #[test]
-fn step_03b_extracts_issue_number_from_local_tracking_metadata() {
+fn step_03b_skips_issue_number_for_local_tracking_metadata() {
     let output = run_step_03b(
         "tracking_system=local\ntracking_reference=local-issue-763\ntracking_issue=local-issue-763\nissue_creation=local-tracking\nissue_number=763\n",
         "Create tracking for local fallback",
@@ -1195,8 +1201,8 @@ fn step_03b_extracts_issue_number_from_local_tracking_metadata() {
     );
     assert_eq!(
         stdout.trim(),
-        "763",
-        "step-03b must return the numeric local tracking ID"
+        "",
+        "step-03b must leave issue_number empty for local tracking metadata"
     );
 }
 

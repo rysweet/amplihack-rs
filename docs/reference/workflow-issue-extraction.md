@@ -2,11 +2,9 @@
 
 > [Home](../index.md) > Reference > Workflow Issue Extraction
 
-Reference for the issue-number extraction logic in `default-workflow` step
-`03b`. This step resolves a provider-neutral tracking number from the workflow
-context so downstream steps can link the working branch, commit, and pull
-request to the correct GitHub issue, Azure Boards work item, or local tracking
-ID.
+Reference for the tracking extraction logic in `default-workflow` step `03b`.
+This step resolves a numeric `issue_number` for GitHub and Azure DevOps, or
+preserves a local-prefixed tracking reference for local/unsupported repositories.
 
 ## Contents
 
@@ -27,17 +25,20 @@ ID.
 ## Overview
 
 Step `03b` accepts the `issue_creation` output from step 03 plus the original
-`task_description`, then produces a canonical `issue_number` integer that the
-rest of the workflow uses.
+`task_description`. For GitHub and Azure DevOps outputs, it produces a
+canonical `issue_number` integer. For local tracking outputs, it preserves
+`tracking_reference` / `tracking_issue` and leaves `issue_number` empty.
 
 ```
-issue_creation + task_description ──► 03b extraction ──► issue_number (int)
+issue_creation + task_description ──► 03b extraction ──► issue_number or local reference
 ```
 
-Step 03 is responsible for emitting a parseable tracking reference. If neither
-Step 03 output nor the compatibility task-text fallback is parseable, Step 03b
-fails loudly instead of silently continuing with the wrong branch or commit
-reference.
+Step 03 is responsible for emitting a parseable tracking reference. Local
+tracking is recognized before any numeric extraction runs, so values such as
+`local-123` and `local-tracking:123` remain local identifiers instead of
+becoming issue number `123`. If neither Step 03 output nor the compatibility
+task-text fallback is parseable, Step 03b fails loudly instead of silently
+continuing with the wrong branch or commit reference.
 
 ---
 
@@ -59,9 +60,9 @@ Supported `issue_creation` formats:
 | `https://github.com/owner/repo/pull/N` | Uses `gh pr view` to read the first closing issue; falls back to PR number `N` if no closing issue resolves |
 | `https://dev.azure.com/org/project/_workitems/edit/N` | Extracts `N` from `/_workitems/edit/N` without a network call |
 | `AB#N` | Extracts `N` without a network call |
-| Structured local metadata with `issue_number=N` | Extracts `N` without a network call |
-| Structured local metadata with `tracking_reference=local-issue-N` or `tracking_reference=local-ab-N` | Extracts `N` without a network call |
-| Legacy `local-tracking:N` | Extracts `N` without a network call |
+| Structured local metadata with `tracking_system=local` plus a valid local-prefixed `tracking_reference` or `tracking_issue` | Preserves local tracking metadata; leaves `issue_number` empty |
+| Local reference `tracking_reference=local-*` or `tracking_issue=local-*` | Preserves the local reference; leaves `issue_number` empty |
+| Legacy reference `tracking_reference=local-tracking:*` or `tracking_issue=local-tracking:*` | Preserves the local reference; leaves `issue_number` empty |
 
 ```
 Input:  "https://github.com/rysweet/amplihack-rs/issues/3960"
@@ -87,8 +88,8 @@ gh call: closingIssuesReferences → [3960, 3983]
 Output: issue_number=3960   (first reference)
 ```
 
-**Timeout**: 60 seconds. If `gh` does not respond within the timeout, the PR
-number is used as the fallback tracking ID.
+**Timeout**: 60 seconds. If `gh` is unavailable or does not respond within the
+timeout, the PR number is used as the fallback tracking ID.
 
 ---
 
@@ -108,9 +109,11 @@ task_description: "Continue work on AB#12345"
 Output:           issue_number=12345
 ```
 
-This fallback is intentionally regex-only. Step 03 is responsible for deciding
-whether `#N` means a GitHub issue, Azure Boards work item, or local reference;
-Step 03b only preserves the numeric workflow contract.
+This fallback is intentionally regex-only and runs only after local tracking has
+been ruled out. Step 03 is responsible for deciding whether `#N` means a GitHub
+issue or Azure Boards work item; Step 03b preserves the remote numeric workflow
+contract without converting local tracking IDs. If Step 03 marks the output as local, Step 03b must skip numeric extraction
+instead of falling through to bare `#N` extraction.
 
 ---
 
@@ -126,7 +129,7 @@ compatibility.
 | GitHub PR fallback | `https://github.com/owner/repo/pull/4143` | First closing issue, or `4143` if none resolves |
 | Azure DevOps work item URL | `https://dev.azure.com/org/project/_workitems/edit/12345` | `12345` |
 | Azure Boards shorthand | `AB#12345` | `12345` |
-| Local metadata | `tracking_system=local` plus `tracking_reference=local-issue-482193`, `tracking_issue=local-issue-482193`, `issue_creation=local-tracking`, and `issue_number=482193` | `482193` |
+| Local metadata | `tracking_system=local` plus `tracking_reference=local-482193`, `tracking_issue=local-482193`, `issue_creation=local-tracking`, and `issue_number=` | Preserved local tracking metadata; empty `issue_number` |
 | Compatibility Azure Boards reference | `AB#12345` in `task_description` | `12345` |
 | Compatibility bare reference | `#12345` in `task_description` | `12345` |
 
@@ -140,9 +143,12 @@ known work item without requiring a live Azure CLI lookup.
 
 After step `03b` completes, the workflow context contains:
 
-| Field          | Type          | Description                                             |
-| -------------- | ------------- | ------------------------------------------------------- |
-| `issue_number` | `int` | Provider-neutral tracking number extracted from step 03 output |
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `issue_number` | `int` or empty string | Numeric provider ID for GitHub/AzDO, empty for local tracking |
+| `tracking_reference` | `string`, optional | Authoritative local tracking reference when Step 03 emits one |
+| `tracking_issue` | `string`, optional | Local tracking issue/reference alias preserved from step 03 |
+| `tracking_system` | `string`, optional | `local` when step 03 selected local tracking |
 
 ### Example output
 
@@ -152,8 +158,39 @@ After step `03b` completes, the workflow context contains:
 }
 ```
 
+For local tracking:
+
+```json
+{
+  "tracking_system": "local",
+  "tracking_reference": "local-482193",
+  "tracking_issue": "local-482193",
+  "issue_number": ""
+}
+```
+
 If extraction fails, step 03b exits non-zero and prints the unparseable
 `issue_creation` value to stderr.
+
+These fields must be declared in the parent workflow context so they propagate
+past `workflow-prep`. Downstream steps use `issue_number` for GitHub/Azure
+DevOps, and `tracking_reference` / `tracking_issue` for local branch names,
+commit messages, publish output, and final status.
+
+### Local detection contract
+
+Local extraction succeeds only when Step 03 emits a local-prefixed tracking
+reference:
+
+- `tracking_reference=local-*`
+- `tracking_issue=local-*`
+- `tracking_reference=local-tracking:*`
+- `tracking_issue=local-tracking:*`
+
+The `local-*` prefix is intentional. `tracking_system=local` and
+`issue_creation=local-tracking` are mode markers, not sufficient identifiers.
+This prevents unrelated numeric text in malformed local metadata from being
+treated as a GitHub issue or Azure Boards work item.
 
 ---
 
@@ -168,6 +205,7 @@ workflow:
 | **Regex-only numeric capture** | Every accepted identifier is captured with `[0-9]+`; no provider CLI receives an unvalidated ID |
 | **60-second timeout** | GitHub PR closing-issue lookup uses `timeout 60`; hung subprocesses do not stall the workflow |
 | **No provider crossover** | Azure Boards formats (`AB#N`, `_workitems/edit/N`) are parsed locally and do not require GitHub CLI calls |
+| **Local before numeric** | Local metadata is detected before numeric regex extraction so `local-123` and `local-tracking:123` are not coerced into issue `123` |
 | **Visible failure** | If no supported pattern matches, the step exits non-zero and prints the unparseable `issue_creation` value to stderr |
 
 ---
@@ -178,12 +216,13 @@ Step `03b` reads the following values from the workflow context:
 
 | Context key | Required | Description |
 | ----------- | -------- | ----------- |
-| `issue_creation` | Yes | Step 03 output: GitHub URL, Azure Boards URL, `AB#N`, structured local metadata, or legacy `local-tracking:N` |
+| `issue_creation` | Yes | Step 03 output: GitHub URL, Azure Boards URL, `AB#N`, structured local metadata with `tracking_system=local`, or local-prefixed tracking metadata |
 | `task_description` | Yes | Free-form string used only as a compatibility fallback source for `AB#N` or `#N` references |
 
 No environment variables are specific to step `03b`. GitHub PR closing-issue
 lookup relies on the authenticated `gh` CLI configured in the user's shell.
-Azure Boards and local tracking extraction are regex-only.
+Azure Boards extraction is regex-only. Local tracking preservation is prefix and
+metadata based.
 
 ---
 
@@ -250,16 +289,35 @@ issue_number: 12345
 ```yaml
 issue_creation: |
   tracking_system=local
-  tracking_reference=local-issue-482193
-  tracking_issue=local-issue-482193
+  tracking_reference=local-482193
+  tracking_issue=local-482193
   issue_creation=local-tracking
-  issue_number=482193
+  issue_number=
 ```
 
 ```
-issue_number metadata match: 482193
-issue_number: 482193
+local tracking match: tracking_reference=local-482193
+tracking_reference: local-482193
+issue_number: ""
 ```
+
+---
+
+### Resolving from legacy local tracking
+
+```yaml
+issue_creation: "tracking_reference=local-tracking:123"
+task_description: "Add config parser"
+```
+
+```
+legacy local tracking match: tracking_reference=local-tracking:123
+tracking_reference: local-tracking:123
+issue_number: ""
+```
+
+The numeric suffix is preserved as part of the local reference. It is not copied
+to `issue_number`.
 
 ---
 
@@ -282,8 +340,7 @@ stderr includes the unparseable issue_creation value
 
 Install and authenticate the GitHub CLI: `gh auth login`.
 Only GitHub PR closing-issue lookup requires `gh`; direct issue URLs, Azure
-Boards outputs, `AB#N`, structured local metadata, and legacy
-`local-tracking:N` still parse without it.
+Boards outputs, `AB#N`, and structured local metadata still resolve without it.
 
 **GitHub PR lookup returns no closing issues**
 
@@ -313,13 +370,14 @@ to GitHub issue and PR patterns:
 | GitHub PR | `https://github.com/owner/repo/pull/N` | `pull/([0-9]+)` plus closing-issue lookup |
 | Azure DevOps | `https://dev.azure.com/org/project/_workitems/edit/N` | `_workitems/edit/([0-9]+)` |
 | Azure DevOps | `AB#N` | `AB#([0-9]+)` |
-| Local | Structured metadata with `issue_number=N` | `issue_number=([0-9]+)` |
-| Local | Structured metadata with `tracking_reference=local-issue-N` or `tracking_reference=local-ab-N` | `local-(issue\|ab)-([0-9]+)` |
-| Local legacy | `local-tracking:N` | `local-tracking:([0-9]+)` |
+| Local | Structured metadata with `tracking_system=local` plus `tracking_reference=local-*` or `tracking_issue=local-*` | Preserve the local reference; leave `issue_number` empty |
+| Local | `tracking_reference=local-*` or `tracking_issue=local-*` | Preserve the local reference; leave `issue_number` empty |
+| Local legacy | `local-tracking:*` | Preserve the local reference; leave `issue_number` empty |
 
-The `issue_number` output contract is unchanged: a plain integer regardless of
-provider. See [Multi-Provider Workflow Reference](multi-provider-workflow.md)
-for full details.
+The remote `issue_number` output contract is unchanged: GitHub and Azure DevOps
+produce plain integers. Local tracking intentionally does not. See
+[Multi-Provider Workflow Reference](multi-provider-workflow.md) for full
+details.
 
 ---
 
