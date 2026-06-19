@@ -152,6 +152,13 @@ fn blarify_stale_marker_not_written_for_non_code_file() {
 
 #[test]
 fn allows_all_tools() {
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let original = std::env::current_dir().ok();
+    let _ = std::env::set_current_dir(dir.path());
+
     let hook = PostToolUseHook;
     let input = HookInput::PostToolUse {
         tool_name: "Bash".to_string(),
@@ -160,6 +167,11 @@ fn allows_all_tools() {
         session_id: None,
     };
     let result = hook.process(input).unwrap();
+
+    if let Some(orig) = original {
+        let _ = std::env::set_current_dir(orig);
+    }
+
     assert!(result.as_object().unwrap().is_empty());
 }
 

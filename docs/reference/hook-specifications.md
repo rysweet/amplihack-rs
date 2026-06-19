@@ -201,3 +201,12 @@ Runs before Claude Code compacts the context window. Exports the current transcr
 ## Hook Runtime Location
 
 Fresh installs register hooks through the native `amplihack-hooks` binary deployed at `~/.local/bin/amplihack-hooks`. The installer writes command strings such as `amplihack-hooks session-start` and `amplihack-hooks user-prompt-submit` into `~/.claude/settings.json`.
+
+## Generated script line endings
+
+Generated Bash-facing hook scripts are written with LF-only line endings. This
+includes Copilot `.github/hooks/*` wrappers, generated `_error_handler` content,
+and legacy launcher-staged hook scripts. The hook staging boundary normalizes
+CRLF and lone CR input before writing executable script bytes, so generated
+hooks do not fail with `$'\r': command not found` or bad-interpreter `\r`
+errors on Windows-native checkouts.

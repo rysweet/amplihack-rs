@@ -17,6 +17,31 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+struct TempProjectRoot {
+    path: PathBuf,
+}
+
+impl TempProjectRoot {
+    fn new() -> Self {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .expect("unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "amplihack-hook-dispatch-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&path).expect("hook dispatch temp project root");
+        Self { path }
+    }
+}
+
+impl Drop for TempProjectRoot {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
 /// Path to the compiled amplihack-hooks binary.
 fn hooks_bin() -> PathBuf {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -37,9 +62,11 @@ fn run_hook(subcommand: &str, input_json: &str) -> (String, String, bool) {
             true,
         );
     }
+    let project_root = TempProjectRoot::new();
 
     let mut child = Command::new(&bin)
         .arg(subcommand)
+        .current_dir(&project_root.path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
