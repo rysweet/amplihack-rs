@@ -204,7 +204,12 @@ pub(super) fn generate_copilot_instructions(copilot_home: &Path) -> Result<()> {
     }
 
     let instructions_path = copilot_home.join("instructions.md");
-    let existing = fs::read_to_string(&instructions_path).unwrap_or_default();
+    let existing = if instructions_path.exists() {
+        fs::read_to_string(&instructions_path)
+            .with_context(|| format!("read {}", instructions_path.display()))?
+    } else {
+        String::new()
+    };
 
     let mut section = String::new();
     section.push_str(INSTRUCTIONS_MARKER_START);
@@ -225,7 +230,8 @@ pub(super) fn generate_copilot_instructions(copilot_home: &Path) -> Result<()> {
     section.push('\n');
 
     let updated = replace_or_append_section(&existing, &section);
-    fs::write(&instructions_path, updated)?;
+    fs::write(&instructions_path, updated)
+        .with_context(|| format!("write {}", instructions_path.display()))?;
 
     Ok(())
 }
