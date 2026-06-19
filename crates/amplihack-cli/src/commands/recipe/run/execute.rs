@@ -15,6 +15,141 @@ const CAPTURED_STDERR_LINES: usize = 200;
 /// ARG_MAX (~2MB) to leave room for env vars and other args.
 const CONTEXT_ARG_SIZE_THRESHOLD: usize = 128 * 1024;
 
+/// Maximum byte length of a context value that we export as a single
+/// environment variable. The kernel rejects any individual argv/envp
+/// string longer than `MAX_ARG_STRLEN` (PAGE_SIZE * 32 = 131072 on Linux)
+/// with `E2BIG`. We cap conservatively below that so a pathologically large
+/// value cannot make the spawn fail. Over-limit values are still delivered
+/// to the runner via `--set` / `--context-file` for `{{placeholder}}`
+/// substitution; only the env mirror is skipped (issue #784, regression
+/// guard for the E2BIG / `--context-file` path).
+const CONTEXT_ENV_VALUE_MAX_BYTES: usize = 96 * 1024;
+
+/// Reserved / dangerous environment-variable names that must never be set
+/// from untrusted recipe context (issue bodies, task descriptions and
+/// third-party recipes all flow into the context map). These names are
+/// NOT managed by `EnvBuilder`, so without this denylist a pathological
+/// context key could clobber a process-critical variable or inject code
+/// into a child shell/interpreter. The `AMPLIHACK_` namespace is handled
+/// separately (prefix check) because it is owned by `EnvBuilder`.
+///
+/// Names are compared after uppercasing the context key (see
+/// [`context_env_pairs`]). Covers: path/identity, the dynamic linker,
+/// shell-startup remote-code-execution vectors, word-splitting and
+/// interpreter option-injection vectors.
+const RESERVED_ENV_DENYLIST: &[&str] = &[
+    // path / identity
+    "PATH",
+    "HOME",
+    "SHELL",
+    "PWD",
+    "USER",
+    "LOGNAME",
+    // dynamic linker
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH",
+    "GLIBC_TUNABLES",
+    // shell-startup remote-code-execution vectors
+    "BASH_ENV",
+    "ENV",
+    "PS4",
+    "PROMPT_COMMAND",
+    "SHELLOPTS",
+    "BASHOPTS",
+    // word splitting
+    "IFS",
+    // interpreter option injection
+    "PYTHONPATH",
+    "NODE_OPTIONS",
+    "PERL5OPT",
+    "RUBYOPT",
+];
+
+/// `true` when `name` is a valid POSIX environment-variable identifier,
+/// i.e. it matches `^[A-Z_][A-Z0-9_]*$`. The transform in
+/// [`context_env_pairs`] uppercases the key first, so only uppercase
+/// ASCII letters, digits and underscores are expected here; anything else
+/// (hyphens, dots, spaces, a leading digit, non-ASCII, empty) is rejected.
+fn is_valid_env_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_uppercase() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// Deterministically map recipe context entries to environment variables for
+/// the spawned recipe runner (and, by OS inheritance, every bash step and
+/// nested sub-recipe it runs). This is the fix for issue #784 / #4583: bash
+/// steps under `set -u` reference `$TASK_DESCRIPTION` / `$REPO_PATH`, which
+/// must exist in the environment rather than only being substituted into
+/// `{{placeholder}}` text.
+///
+/// Transform (pure, total — invalid entries are skipped, never fatal):
+/// 1. Uppercase the key (`task_description` → `TASK_DESCRIPTION`).
+/// 2. Drop keys that are not valid env identifiers after uppercasing
+///    (empty, leading digit, hyphen/dot/space, non-ASCII).
+/// 3. Drop keys in the `AMPLIHACK_` namespace (owned by `EnvBuilder`).
+/// 4. Drop reserved/dangerous names ([`RESERVED_ENV_DENYLIST`]).
+/// 5. Drop values containing a NUL byte (rejected by the OS for env vars;
+///    would otherwise panic at spawn time).
+/// 6. Drop values larger than [`CONTEXT_ENV_VALUE_MAX_BYTES`] (would risk
+///    `E2BIG`); they remain available via the recipe context file.
+///
+/// Skipped entries are logged name-only at `warn` level — values may carry
+/// sensitive data and are never logged.
+pub(super) fn context_env_pairs(context: &BTreeMap<String, String>) -> Vec<(String, String)> {
+    let mut pairs = Vec::with_capacity(context.len());
+    for (key, value) in context {
+        let name = key.to_ascii_uppercase();
+        if !is_valid_env_identifier(&name) {
+            tracing::warn!(
+                name = %key,
+                reason = %"invalid_identifier",
+                "recipe context key skipped for env export"
+            );
+            continue;
+        }
+        if name.starts_with("AMPLIHACK_") {
+            tracing::warn!(
+                name = %key,
+                reason = %"reserved_name",
+                "recipe context key skipped for env export"
+            );
+            continue;
+        }
+        if RESERVED_ENV_DENYLIST.contains(&name.as_str()) {
+            tracing::warn!(
+                name = %key,
+                reason = %"reserved_name",
+                "recipe context key skipped for env export"
+            );
+            continue;
+        }
+        if value.contains('\0') {
+            tracing::warn!(
+                name = %key,
+                reason = %"value_contains_nul",
+                "recipe context key skipped for env export"
+            );
+            continue;
+        }
+        if value.len() > CONTEXT_ENV_VALUE_MAX_BYTES {
+            tracing::warn!(
+                name = %key,
+                reason = %"value_too_large",
+                "recipe context key skipped for env export"
+            );
+            continue;
+        }
+        pairs.push((name, value.clone()));
+    }
+    pairs
+}
+
 pub(super) fn execute_recipe_via_rust(
     recipe_path: &Path,
     context: &BTreeMap<String, String>,
@@ -54,6 +189,15 @@ pub(super) fn execute_recipe_via_rust(
     // Pass context as a file when the total size would risk E2BIG (os error 7).
     // The temp file is kept alive until command.output() completes.
     let _context_file = pass_context(&mut command, context)?;
+
+    // Issue #784 / #4583: export recipe context as environment variables so
+    // bash steps (and nested sub-recipes, via OS inheritance) can read
+    // $TASK_DESCRIPTION / $REPO_PATH under `set -u`. Applied at the LOWEST
+    // precedence — written BEFORE EnvBuilder and the run-id below — so every
+    // amplihack-managed/protective variable deterministically wins over any
+    // colliding context key. Reserved/dangerous names are dropped upstream in
+    // `context_env_pairs` (they are not EnvBuilder-managed).
+    command.envs(context_env_pairs(context));
 
     let env_builder = EnvBuilder::new()
         .with_agent_binary(active_agent_binary())

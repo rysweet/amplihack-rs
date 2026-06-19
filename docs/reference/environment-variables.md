@@ -30,6 +30,7 @@ All environment variables read or written by `amplihack` during a launch (`ampli
   - [NONINTERACTIVE](#noninteractive)
   - [DEBIAN_FRONTEND](#debian_frontend)
   - [CI (recipe context)](#ci-recipe-context)
+  - [Context-derived recipe variables](#context-derived-recipe-variables)
 - [Variables read by amplihack](#variables-read-by-amplihack)
   - [AMPLIHACK_MEMORY_BACKEND](#amplihack_memory_backend)
   - [HOME](#home)
@@ -636,6 +637,41 @@ Suppresses interactive prompts from `dpkg` and `apt`. Standard Debian/Ubuntu con
 **Set by:** Recipe executor, `execute_shell_step()`
 
 Signals CI-like behavior to npm, yarn, pip, and other tools that check this variable before prompting. Note: this is set by the recipe executor for all recipe steps, independent of whether the top-level process is actually running in a CI system.
+
+---
+
+### Context-derived recipe variables
+
+**Type:** string (one variable per recipe context key)
+**Examples:** `TASK_DESCRIPTION`, `REPO_PATH`, `ISSUE_NUMBER`, `BRANCH_NAME`
+**Set by:** `amplihack recipe run`, context environment export (lowest precedence)
+
+Every recipe context variable is exported to the `recipe-runner-rs` subprocess —
+and therefore to every shell and nested sub-recipe step — as an environment
+variable whose name is the ASCII-uppercased context key. For example,
+`task_description` becomes `TASK_DESCRIPTION` and `repo_path` becomes
+`REPO_PATH`. Bash steps can read these directly, including under `set -u`.
+
+```bash
+amplihack recipe run env-aware-recipe \
+  -c task_description="Add validation" \
+  -c repo_path=.
+# A bash step sees: TASK_DESCRIPTION=Add validation, REPO_PATH=.
+```
+
+The exact set of names depends entirely on the recipe context. Rules:
+
+- Names must be valid shell identifiers (`^[A-Z_][A-Z0-9_]*$`); keys that do not
+  qualify after uppercasing are skipped with a name-only `WARN`.
+- Reserved and dangerous names are never exported — including `PATH`, `HOME`,
+  `SHELL`, `IFS`, the `LD_*`/`DYLD_*` loader variables, `BASH_ENV`, `ENV`, `PS4`,
+  `PROMPT_COMMAND`, `SHELLOPTS`, `BASHOPTS`, `PYTHONPATH`, `NODE_OPTIONS`,
+  `PERL5OPT`, `RUBYOPT`, and any name beginning with `AMPLIHACK_`.
+- Context export is applied at the lowest precedence, so it can never override
+  the `AMPLIHACK_*` variables or `AMPLIHACK_RECIPE_RUN_ID` documented above.
+
+See [Recipe Context Environment Export](./recipe-context-environment.md) for the
+full contract, denylist, and security model.
 
 ---
 

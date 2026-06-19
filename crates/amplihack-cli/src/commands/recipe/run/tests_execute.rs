@@ -2166,3 +2166,450 @@ fn test_run_recipe_forwards_recipe_parent_as_dash_r() {
         "run_recipe must forward recipe-parent dir as -R; got r_values={r_values:?}\nargv:\n{logged}"
     );
 }
+
+// =========================================================================
+// Issue #784 / #4583 — recipe context variables must be exported as
+// environment variables for bash steps (TASK_DESCRIPTION, REPO_PATH, ...).
+//
+// TDD (RED first): these tests specify the contract for the not-yet-existing
+// `execute::context_env_pairs` pure transform and the env-export wired into
+// `execute_recipe_via_rust`. They fail until the fix is implemented:
+//   * the unit/security tests reference `execute::context_env_pairs`, which
+//     does not exist yet (compile-time RED);
+//   * the integration tests reproduce the runtime symptom — a bash step under
+//     `set -u` that reads $TASK_DESCRIPTION / $REPO_PATH aborts with
+//     "unbound variable" because the context is never exported.
+// =========================================================================
+
+// -------------------------------------------------------------------------
+// Pure transform: context_env_pairs — uppercasing, validation, denylist
+// -------------------------------------------------------------------------
+
+/// Collect `context_env_pairs` output into a map for order-independent
+/// assertions. Last-writer-wins on collision (deterministic BTreeMap order).
+fn context_env_map(context: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    execute::context_env_pairs(context).into_iter().collect()
+}
+
+fn ctx(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+    pairs
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+        .collect()
+}
+
+#[test]
+fn test_context_env_pairs_uppercases_known_keys() {
+    let env = context_env_map(&ctx(&[
+        ("task_description", "Fix the bug"),
+        ("repo_path", "/work/repo"),
+    ]));
+    assert_eq!(
+        env.get("TASK_DESCRIPTION"),
+        Some(&"Fix the bug".to_string()),
+        "context key `task_description` must be exported as TASK_DESCRIPTION"
+    );
+    assert_eq!(
+        env.get("REPO_PATH"),
+        Some(&"/work/repo".to_string()),
+        "context key `repo_path` must be exported as REPO_PATH"
+    );
+    // Lowercased originals must NOT appear — only the uppercased name is exported.
+    assert!(env.get("task_description").is_none());
+    assert!(env.get("repo_path").is_none());
+}
+
+#[test]
+fn test_context_env_pairs_preserves_values_verbatim() {
+    // Keys are transformed; values must pass through unchanged (spaces,
+    // punctuation, unicode, leading/trailing whitespace are all preserved).
+    let value = "  Multi word: résumé, 50% done (a=b)  ";
+    let env = context_env_map(&ctx(&[("task_description", value)]));
+    assert_eq!(env.get("TASK_DESCRIPTION"), Some(&value.to_string()));
+}
+
+#[test]
+fn test_context_env_pairs_accepts_mixed_case_and_leading_underscore() {
+    let env = context_env_map(&ctx(&[
+        ("MyVar", "1"),
+        ("ALREADY_UPPER", "2"),
+        ("_private", "3"),
+    ]));
+    assert_eq!(env.get("MYVAR"), Some(&"1".to_string()));
+    assert_eq!(env.get("ALREADY_UPPER"), Some(&"2".to_string()));
+    assert_eq!(
+        env.get("_PRIVATE"),
+        Some(&"3".to_string()),
+        "a leading underscore is a valid env identifier start"
+    );
+}
+
+#[test]
+fn test_context_env_pairs_drops_invalid_identifier_keys() {
+    // Keys that do not match ^[A-Z_][A-Z0-9_]*$ after uppercasing are dropped,
+    // not sanitized — exporting a bogus name is worse than skipping it.
+    let env = context_env_map(&ctx(&[
+        ("my-var", "hyphen"),      // hyphen is illegal -> dropped
+        ("my.var", "dot"),         // dot is illegal -> dropped
+        ("1bad", "leading digit"), // leading digit -> dropped
+        ("with space", "space"),   // space is illegal -> dropped
+        ("", "empty key"),         // empty -> dropped
+        ("ok_key", "kept"),        // control: valid -> kept
+    ]));
+    assert_eq!(env.get("OK_KEY"), Some(&"kept".to_string()));
+    assert!(env.get("MY-VAR").is_none());
+    assert!(env.get("MY.VAR").is_none());
+    assert!(env.get("1BAD").is_none());
+    assert!(env.get("WITH SPACE").is_none());
+    assert!(env.get("").is_none());
+    assert_eq!(
+        env.len(),
+        1,
+        "only the single valid key should survive; got {env:?}"
+    );
+}
+
+#[test]
+fn test_context_env_pairs_drops_values_containing_nul() {
+    // A NUL byte in a value is rejected by the OS for env vars; drop the pair
+    // rather than letting Command::env panic at spawn time.
+    let env = context_env_map(&ctx(&[
+        ("task_description", "bad\0value"),
+        ("repo_path", "/clean"),
+    ]));
+    assert!(
+        env.get("TASK_DESCRIPTION").is_none(),
+        "values containing NUL must be dropped"
+    );
+    assert_eq!(env.get("REPO_PATH"), Some(&"/clean".to_string()));
+}
+
+#[test]
+fn test_context_env_pairs_drops_oversized_values() {
+    // A single env string longer than the kernel's MAX_ARG_STRLEN causes
+    // execve to fail with E2BIG. Oversized values must be skipped from the
+    // env mirror (they remain available via the context file), while
+    // normal-sized values in the same context are still exported. This guards
+    // the regression on `test_large_context_does_not_hit_e2big`.
+    let huge = "x".repeat(256 * 1024);
+    let env = context_env_map(&ctx(&[
+        ("task_description", huge.as_str()),
+        ("repo_path", "/work/repo"),
+    ]));
+    assert!(
+        env.get("TASK_DESCRIPTION").is_none(),
+        "an oversized value must not be exported as an environment variable"
+    );
+    assert_eq!(
+        env.get("REPO_PATH"),
+        Some(&"/work/repo".to_string()),
+        "normal-sized values are still exported alongside a skipped oversized one"
+    );
+}
+
+// -------------------------------------------------------------------------
+// Security: reserved / dangerous env names must never be settable from
+// untrusted recipe context (issue bodies, task descriptions, 3rd-party
+// recipes flow into context). The denylist is the PRIMARY control.
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_context_env_pairs_drops_reserved_and_dangerous_names() {
+    // Each of these context keys uppercases to a name that must be dropped.
+    // Coverage spans: path/identity, dynamic-linker, shell-startup RCE
+    // vectors, word-splitting, and interpreter option injection.
+    let dangerous = [
+        // path / identity
+        "path",
+        "home",
+        "shell",
+        "pwd",
+        "user",
+        "logname",
+        // dynamic linker
+        "ld_preload",
+        "ld_library_path",
+        "dyld_insert_libraries",
+        "dyld_library_path",
+        "glibc_tunables",
+        // shell-startup remote-code-execution vectors
+        "bash_env",
+        "env",
+        "ps4",
+        "prompt_command",
+        "shellopts",
+        "bashopts",
+        // word splitting
+        "ifs",
+        // interpreter option injection
+        "pythonpath",
+        "node_options",
+        "perl5opt",
+        "rubyopt",
+    ];
+    for key in dangerous {
+        let env = context_env_map(&ctx(&[(key, "attacker-controlled")]));
+        assert!(
+            env.is_empty(),
+            "reserved/dangerous context key `{key}` must be dropped, got {env:?}"
+        );
+    }
+}
+
+#[test]
+fn test_context_env_pairs_drops_amplihack_prefixed_keys() {
+    // The AMPLIHACK_ namespace is owned by EnvBuilder; context must never be
+    // able to collide with or override builder-managed correlation/config vars.
+    let env = context_env_map(&ctx(&[
+        ("amplihack_home", "/evil/home"),
+        ("amplihack_recipe_run_id", "spoofed"),
+        ("AMPLIHACK_ASSET_RESOLVER", "/evil/resolver"),
+        ("task_description", "kept"),
+    ]));
+    assert_eq!(
+        env.get("TASK_DESCRIPTION"),
+        Some(&"kept".to_string()),
+        "ordinary keys still pass through"
+    );
+    assert!(env.get("AMPLIHACK_HOME").is_none());
+    assert!(env.get("AMPLIHACK_RECIPE_RUN_ID").is_none());
+    assert!(env.get("AMPLIHACK_ASSET_RESOLVER").is_none());
+}
+
+// -------------------------------------------------------------------------
+// Integration (T1): top-level recipe — a bash step under `set -u` reads
+// $TASK_DESCRIPTION and $REPO_PATH from the environment.
+// -------------------------------------------------------------------------
+
+/// RED reproduction of the reported bug: the stub runner runs `set -u` and
+/// dereferences $TASK_DESCRIPTION / $REPO_PATH (exactly what a real bash step
+/// does). Without the env-export fix, `set -u` aborts with
+/// "TASK_DESCRIPTION: unbound variable", the stub prints nothing, and
+/// `execute_recipe_via_rust` returns Err. With the fix, the stub echoes the
+/// values back through `context` and the run succeeds.
+#[test]
+#[cfg(unix)]
+fn test_execute_recipe_via_rust_exports_context_as_env_under_set_u() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let runner = temp.path().join("recipe-runner-rs");
+    let amplihack_home = temp.path().join("amplihack-home");
+    std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
+
+    std::fs::write(
+        &runner,
+        "#!/bin/sh\nset -u\nprintf '{\"recipe_name\":\"ctx-env-probe\",\"success\":true,\"step_results\":[],\"context\":{\"task\":\"%s\",\"repo\":\"%s\"}}' \"$TASK_DESCRIPTION\" \"$REPO_PATH\"\n",
+    )
+    .expect("failed to write runner stub");
+    make_executable(&runner);
+
+    let recipe = temp.path().join("recipe.yaml");
+    std::fs::write(&recipe, "name: ctx-env-probe\nsteps: []\n").expect("failed to write recipe");
+
+    let context = ctx(&[
+        ("task_description", "Fix the bug"),
+        ("repo_path", "/work/repo"),
+    ]);
+
+    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+    let prev_home = std::env::var_os("AMPLIHACK_HOME");
+    let prev_task = std::env::var_os("TASK_DESCRIPTION");
+    let prev_repo = std::env::var_os("REPO_PATH");
+    unsafe {
+        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
+        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
+        // Ensure no inherited values mask the bug.
+        std::env::remove_var("TASK_DESCRIPTION");
+        std::env::remove_var("REPO_PATH");
+    }
+
+    let result =
+        execute::execute_recipe_via_rust(&recipe, &context, true, false, temp.path(), &[], None);
+
+    restore_env_var("RECIPE_RUNNER_RS_PATH", prev_runner);
+    restore_env_var("AMPLIHACK_HOME", prev_home);
+    restore_env_var("TASK_DESCRIPTION", prev_task);
+    restore_env_var("REPO_PATH", prev_repo);
+
+    let result = result.expect(
+        "recipe run must succeed: recipe context must be exported as env so a \
+         bash step under `set -u` can read $TASK_DESCRIPTION / $REPO_PATH \
+         (issue #784 / #4583)",
+    );
+    assert_eq!(
+        result.context.get("task"),
+        Some(&JsonValue::String("Fix the bug".to_string())),
+        "TASK_DESCRIPTION must be exported to the child env from context key `task_description`"
+    );
+    assert_eq!(
+        result.context.get("repo"),
+        Some(&JsonValue::String("/work/repo".to_string())),
+        "REPO_PATH must be exported to the child env from context key `repo_path`"
+    );
+}
+
+// -------------------------------------------------------------------------
+// Integration (T2): nested / sub-recipe — the env must propagate to
+// grandchild processes (a sub-recipe's bash step) via OS inheritance.
+// This is the canary for "parent context propagated to child sub-recipes".
+// -------------------------------------------------------------------------
+
+/// The stub runner spawns a GRANDCHILD `sh -c 'set -u; ...'`, mirroring a
+/// sub-recipe whose bash step reads $TASK_DESCRIPTION / $REPO_PATH. The
+/// grandchild inherits env from the runner, which inherits from amplihack-cli.
+/// Before the fix the grandchild's `set -u` aborts and the captured values are
+/// empty (assertion RED); after the fix the values propagate through both hops.
+#[test]
+#[cfg(unix)]
+fn test_execute_recipe_via_rust_exports_context_to_nested_subprocess() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let runner = temp.path().join("recipe-runner-rs");
+    let amplihack_home = temp.path().join("amplihack-home");
+    std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
+
+    std::fs::write(
+        &runner,
+        "#!/bin/sh\nset -u\nNESTED_TASK=$(sh -c 'set -u; printf %s \"$TASK_DESCRIPTION\"')\nNESTED_REPO=$(sh -c 'set -u; printf %s \"$REPO_PATH\"')\nprintf '{\"recipe_name\":\"nested-ctx-probe\",\"success\":true,\"step_results\":[],\"context\":{\"nested_task\":\"%s\",\"nested_repo\":\"%s\"}}' \"$NESTED_TASK\" \"$NESTED_REPO\"\n",
+    )
+    .expect("failed to write runner stub");
+    make_executable(&runner);
+
+    let recipe = temp.path().join("recipe.yaml");
+    std::fs::write(&recipe, "name: nested-ctx-probe\nsteps: []\n").expect("failed to write recipe");
+
+    let context = ctx(&[
+        ("task_description", "Nested task value"),
+        ("repo_path", "/work/nested/repo"),
+    ]);
+
+    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+    let prev_home = std::env::var_os("AMPLIHACK_HOME");
+    let prev_task = std::env::var_os("TASK_DESCRIPTION");
+    let prev_repo = std::env::var_os("REPO_PATH");
+    unsafe {
+        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
+        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
+        std::env::remove_var("TASK_DESCRIPTION");
+        std::env::remove_var("REPO_PATH");
+    }
+
+    let result =
+        execute::execute_recipe_via_rust(&recipe, &context, true, false, temp.path(), &[], None);
+
+    restore_env_var("RECIPE_RUNNER_RS_PATH", prev_runner);
+    restore_env_var("AMPLIHACK_HOME", prev_home);
+    restore_env_var("TASK_DESCRIPTION", prev_task);
+    restore_env_var("REPO_PATH", prev_repo);
+
+    let result = result.expect(
+        "nested recipe run must succeed: context env must propagate to a \
+         grandchild sub-recipe bash step under `set -u`",
+    );
+    assert_eq!(
+        result.context.get("nested_task"),
+        Some(&JsonValue::String("Nested task value".to_string())),
+        "TASK_DESCRIPTION must propagate to a grandchild (sub-recipe) process"
+    );
+    assert_eq!(
+        result.context.get("nested_repo"),
+        Some(&JsonValue::String("/work/nested/repo".to_string())),
+        "REPO_PATH must propagate to a grandchild (sub-recipe) process"
+    );
+}
+
+// -------------------------------------------------------------------------
+// Integration (T4): no-regression + security/precedence at the spawn seam.
+// Context is applied at LOWEST precedence: EnvBuilder-managed and reserved
+// names must win, and untrusted context must never clobber PATH/AMPLIHACK_*.
+// -------------------------------------------------------------------------
+
+/// Even when an attacker-controlled recipe supplies `path`, `ld_preload`, and
+/// `amplihack_home` keys, the child must NOT see those values: PATH is left as
+/// inherited, LD_PRELOAD stays empty, and AMPLIHACK_HOME keeps the
+/// builder-managed value. Meanwhile an ordinary key (`task_description`) is
+/// still exported — proving the export works without opening a clobber hole.
+#[test]
+#[cfg(unix)]
+fn test_execute_recipe_via_rust_context_cannot_clobber_reserved_or_builder_env() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let runner = temp.path().join("recipe-runner-rs");
+    let amplihack_home = temp.path().join("amplihack-home");
+    std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
+
+    // No `set -u` here: LD_PRELOAD is legitimately unset, so we read it with a
+    // `:-` default to distinguish "unset" (safe) from "attacker value" (bug).
+    std::fs::write(
+        &runner,
+        "#!/bin/sh\nprintf '{\"recipe_name\":\"sec-probe\",\"success\":true,\"step_results\":[],\"context\":{\"task\":\"%s\",\"path\":\"%s\",\"preload\":\"%s\",\"ahome\":\"%s\"}}' \"${TASK_DESCRIPTION:-MISSING}\" \"$PATH\" \"${LD_PRELOAD:-}\" \"${AMPLIHACK_HOME:-}\"\n",
+    )
+    .expect("failed to write runner stub");
+    make_executable(&runner);
+
+    let recipe = temp.path().join("recipe.yaml");
+    std::fs::write(&recipe, "name: sec-probe\nsteps: []\n").expect("failed to write recipe");
+
+    let context = ctx(&[
+        ("task_description", "ok"),
+        ("path", "/nonexistent/evil"),
+        ("ld_preload", "/evil.so"),
+        ("amplihack_home", "/evil/home"),
+    ]);
+
+    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+    let prev_home = std::env::var_os("AMPLIHACK_HOME");
+    let prev_task = std::env::var_os("TASK_DESCRIPTION");
+    let prev_preload = std::env::var_os("LD_PRELOAD");
+    unsafe {
+        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
+        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
+        std::env::remove_var("TASK_DESCRIPTION");
+        std::env::remove_var("LD_PRELOAD");
+    }
+
+    let result =
+        execute::execute_recipe_via_rust(&recipe, &context, true, false, temp.path(), &[], None);
+
+    restore_env_var("RECIPE_RUNNER_RS_PATH", prev_runner);
+    restore_env_var("AMPLIHACK_HOME", prev_home);
+    restore_env_var("TASK_DESCRIPTION", prev_task);
+    restore_env_var("LD_PRELOAD", prev_preload);
+
+    let result = result.expect("recipe run must succeed");
+
+    assert_eq!(
+        result.context.get("task"),
+        Some(&JsonValue::String("ok".to_string())),
+        "ordinary context keys must still be exported"
+    );
+    let child_path = result
+        .context
+        .get("path")
+        .and_then(JsonValue::as_str)
+        .expect("stub must report PATH");
+    assert_ne!(
+        child_path, "/nonexistent/evil",
+        "context key `path` must NOT clobber the child's PATH"
+    );
+    assert_eq!(
+        result.context.get("preload"),
+        Some(&JsonValue::String(String::new())),
+        "context key `ld_preload` must be dropped (LD_PRELOAD stays unset)"
+    );
+    let child_ahome = result
+        .context
+        .get("ahome")
+        .and_then(JsonValue::as_str)
+        .expect("stub must report AMPLIHACK_HOME");
+    assert_ne!(
+        child_ahome, "/evil/home",
+        "context key `amplihack_home` must NOT override builder-managed AMPLIHACK_HOME"
+    );
+}

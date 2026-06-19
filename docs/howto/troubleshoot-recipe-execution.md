@@ -5,6 +5,7 @@ Use this guide when a recipe step fails unexpectedly — a shell step hangs, an 
 ## Contents
 
 - [Shell step hangs waiting for input](#shell-step-hangs-waiting-for-input)
+- [Shell step fails with "TASK_DESCRIPTION: unbound variable"](#shell-step-fails-with-task_description-unbound-variable)
 - [Agent step completes but changes nothing](#agent-step-completes-but-changes-nothing)
 - [Shell step fails with "python3 not found"](#shell-step-fails-with-python3-not-found)
 - [Workflow classification routes to the wrong type](#workflow-classification-routes-to-the-wrong-type)
@@ -55,6 +56,80 @@ amplihack recipe run /tmp/env-check.yaml
 #   NONINTERACTIVE=1
 #   DEBIAN_FRONTEND=noninteractive
 ```
+
+---
+
+## Shell step fails with "TASK_DESCRIPTION: unbound variable"
+
+**Symptom:** A bash step that reads a context value from the environment aborts
+immediately, often inside a nested sub-recipe such as `step-03-create-issue`:
+
+```
+TASK_DESCRIPTION: unbound variable
+REPO_PATH: unbound variable
+```
+
+The step uses `set -u` (or `set -euo pipefail`) and references
+`$TASK_DESCRIPTION`, `$REPO_PATH`, or another context value directly rather than
+through a `{{placeholder}}`.
+
+**Cause:** Before context environment export existed, recipe context fed only
+`{{placeholder}}` substitution in step text — it was **not** present in the shell
+step's process environment. Under `set -u`, referencing an unset variable is a
+hard error, so the step failed before doing any work. This blocked
+multi-workstream campaigns at `step-03-create-issue`.
+
+**Fix:** `amplihack recipe run` now exports every recipe context variable to the
+`recipe-runner-rs` subprocess as an environment variable whose name is the
+ASCII-uppercased context key (`task_description` → `TASK_DESCRIPTION`). The
+export is inherited by every shell step and every nested sub-recipe, so the same
+value is available at any depth. No recipe YAML changes are required.
+
+**Verify the fix is active:**
+
+```sh
+cat > /tmp/unbound-check.yaml << 'EOF'
+name: unbound-check
+context:
+  task_description: ""
+  repo_path: "."
+steps:
+  - id: read-env
+    type: bash
+    command: |
+      set -euo pipefail
+      echo "TASK_DESCRIPTION=$TASK_DESCRIPTION"
+      echo "REPO_PATH=$REPO_PATH"
+EOF
+
+amplihack recipe run /tmp/unbound-check.yaml \
+  -c task_description="probe" -c repo_path=.
+# Expected output:
+#   TASK_DESCRIPTION=probe
+#   REPO_PATH=.
+```
+
+**If the variable is still unbound:**
+
+- **The key cannot become a valid identifier.** Only keys whose uppercased form
+  matches `^[A-Z_][A-Z0-9_]*$` are exported. A key with spaces, dots, or a
+  leading digit is skipped — look for a `WARN recipe context key skipped for env
+  export name=… reason=invalid_identifier` line on stderr. These warnings are
+  hidden by the CLI's default log filter (errors only), so re-run with
+  `RUST_LOG=warn` to surface them. Rename the context key (for example
+  `issue-title` → `issue_title`).
+- **The name is reserved.** Names such as `PATH`, `HOME`, `IFS`, `BASH_ENV`,
+  `LD_PRELOAD`, `PYTHONPATH`, and anything beginning with `AMPLIHACK_` are never
+  exported from context (a `reason=reserved_name` warning is logged). Read those
+  values from their canonical source instead of from context.
+- **The context key is genuinely absent.** Confirm the value is supplied via the
+  recipe's `context:` block or a `-c/--context` flag; an unset, un-inferred key
+  produces no environment variable.
+
+See [Recipe Context Environment Export](../reference/recipe-context-environment.md)
+for the full transform rules and denylist, and
+[Propagate Recipe Context to Bash Steps](../tutorials/recipe-context-env-propagation.md)
+for a hands-on walkthrough.
 
 ---
 
