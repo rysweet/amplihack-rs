@@ -15,25 +15,33 @@ The Copilot parity control plane gives GitHub Copilot CLI the same staged amplih
 
 ## Components
 
-| Component                          | Path                                               | Responsibility                                                                                                       |
-| ---------------------------------- | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| Copilot launcher                   | `src/amplihack/launcher/copilot.py`                | Stages agents, hooks, commands, recipes, and generated wrappers before launching Copilot CLI                         |
-| Rust recipe runner bridge          | `src/amplihack/recipes/rust_runner.py`             | Discovers `recipe-runner-rs`, enforces version compatibility, builds subprocess environment, and parses JSON results |
-| Nested Copilot compatibility layer | `src/amplihack/recipes/rust_runner_copilot.py`     | Merges prompt fragments and injects permissive defaults only when explicit Copilot permission flags are absent       |
-| Smart-orchestrator classify step   | `amplifier-bundle/recipes/smart-orchestrator.yaml` | Case-switches on `AMPLIHACK_AGENT_BINARY` to omit Claude-only flags for Copilot/codex binaries                       |
-| Canonical XPIA hook                | `.claude/tools/xpia/hooks/pre_tool_use.py`         | Fail-closed Bash policy evaluation backed by `xpia-defend`                                                           |
-| XPIA compatibility shim            | `.claude/tools/xpia/hooks/pre_tool_use_rust.py`    | Delegates to `pre_tool_use.py` so both historical entrypoints behave identically                                     |
-| Generated wrapper                  | `.github/hooks/pre-tool-use`                       | Emits the single Copilot-facing permission payload after evaluating amplihack and XPIA outputs                       |
+| Component                          | Path                                               | Responsibility                                                                                                 |
+| ---------------------------------- | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| Copilot launcher                   | `crates/amplihack-launcher/src/copilot_launcher.rs` | Stages agents, hooks, commands, recipes, and generated wrappers before launching Copilot CLI                   |
+| Copilot hook staging               | `crates/amplihack-launcher/src/copilot_staging.rs` | Writes repo-level `.github/hooks/*` wrappers before Copilot launch                                             |
+| CLI Copilot setup                  | `crates/amplihack-cli/src/copilot_setup/`          | Writes user-level and repo-level generated Copilot hook scripts                                                |
+| Hook script I/O helper             | `crates/amplihack-types/src/hook_io.rs`            | Normalizes generated Bash-executable script content at write boundaries                                        |
+| Rust recipe runner bridge          | `src/amplihack/recipes/rust_runner.py`             | Legacy Python bridge that discovers `recipe-runner-rs`, builds subprocess environment, and parses JSON results |
+| Nested Copilot compatibility layer | `src/amplihack/recipes/rust_runner_copilot.py`     | Legacy Python normalizer for nested Copilot launches from the recipe runner                                    |
+| Smart-orchestrator classify step   | `amplifier-bundle/recipes/smart-orchestrator.yaml` | Case-switches on `AMPLIHACK_AGENT_BINARY` to omit Claude-only flags for Copilot/codex binaries                 |
+| Canonical XPIA hook                | `.claude/tools/xpia/hooks/pre_tool_use.py`         | Fail-closed Bash policy evaluation backed by `xpia-defend`                                                     |
+| XPIA compatibility shim            | `.claude/tools/xpia/hooks/pre_tool_use_rust.py`    | Delegates to `pre_tool_use.py` so both historical entrypoints behave identically                               |
+| Generated wrapper                  | `.github/hooks/pre-tool-use`                       | Emits the single Copilot-facing permission payload after evaluating amplihack and XPIA outputs                 |
 
 ## Generated Copilot Hook Wrappers
 
 | Wrapper                            | Generated scripts                                              | Notes                                                                |
 | ---------------------------------- | -------------------------------------------------------------- | -------------------------------------------------------------------- |
-| `.github/hooks/session-start`      | `session_start.py`                                             | Single-script wrapper                                                |
-| `.github/hooks/session-stop`       | `stop.py`, `session_stop.py`                                   | Multi-script wrapper; captures stdin once and pipes it to both hooks |
-| `.github/hooks/pre-tool-use`       | `pre_tool_use.py` plus XPIA `pre_tool_use.py`                  | Special wrapper with JSON aggregation                                |
-| `.github/hooks/post-tool-use`      | `post_tool_use.py`                                             | Single-script wrapper                                                |
-| `.github/hooks/user-prompt-submit` | `user_prompt_submit.py`, `workflow_classification_reminder.py` | Multi-script wrapper                                                 |
+| `.github/hooks/session-start`      | `session-start`                                                | Single-subcommand wrapper                                            |
+| `.github/hooks/stop`               | `stop`                                                         | Single-subcommand wrapper for Copilot `agentStop`                    |
+| `.github/hooks/pre-tool-use`       | `pre-tool-use`                                                 | Permission wrapper with amplihack and XPIA-compatible decisions      |
+| `.github/hooks/post-tool-use`      | `post-tool-use`                                                | Single-subcommand wrapper                                            |
+| `.github/hooks/user-prompt-submit` | `workflow-classification-reminder`, `user-prompt-submit`       | Multi-subcommand wrapper                                             |
+| `.github/hooks/pre-compact`        | `pre-compact`                                                  | Single-subcommand wrapper                                            |
+
+Generated Copilot hook wrappers are LF-only even when the source checkout or
+generated input uses CRLF. See [Generated Hook Line Endings](generated-hook-line-endings.md)
+for the script write-boundary contract and verification commands.
 
 ## Pre-Tool-Use Decision Precedence
 

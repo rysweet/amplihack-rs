@@ -1,5 +1,6 @@
 //! Hook wiring, instructions generation, and related helpers.
 
+use amplihack_types::hook_io::normalize_executable_script_line_endings;
 use anyhow::{Context, Result};
 use std::fs;
 #[cfg(unix)]
@@ -66,13 +67,13 @@ pub(super) fn stage_repo_hooks(repo_root: &Path) -> Result<usize> {
             continue;
         }
         let script = build_wrapper_script(spec);
-        fs::write(&dest, &script)?;
+        write_executable_script(&dest, &script)?;
         set_executable(&dest)?;
         count += 1;
     }
 
     let error_dest = hooks_dir.join("_error_handler");
-    fs::write(&error_dest, error_wrapper_script())?;
+    write_executable_script(&error_dest, error_wrapper_script())?;
     set_executable(&error_dest)?;
     count += 1;
 
@@ -113,7 +114,7 @@ pub(super) fn write_user_level_hooks(copilot_home: &Path) -> Result<()> {
     for spec in COPILOT_HOOK_WRAPPERS {
         let dest = hooks_dir.join(spec.hook_name);
         let script = build_wrapper_script(spec);
-        fs::write(&dest, &script)?;
+        write_executable_script(&dest, &script)?;
         set_executable(&dest)?;
     }
 
@@ -253,6 +254,12 @@ fn should_preserve_user_hook(path: &Path) -> Result<bool> {
     Ok(!content.contains("amplihack") && !content.contains("AMPLIHACK"))
 }
 
+fn write_executable_script(path: &Path, content: &str) -> Result<()> {
+    let normalized = normalize_executable_script_line_endings(content);
+    fs::write(path, normalized)
+        .with_context(|| format!("write executable script {}", path.display()))
+}
+
 pub(super) fn build_wrapper_script(spec: &HookWrapperSpec) -> String {
     let mut script = String::from("#!/usr/bin/env bash\nset -euo pipefail\n\n");
 
@@ -283,7 +290,7 @@ pub(super) fn build_wrapper_script(spec: &HookWrapperSpec) -> String {
         }
     }
 
-    script
+    normalize_executable_script_line_endings(&script)
 }
 
 pub(super) fn error_wrapper_script() -> &'static str {
@@ -309,4 +316,91 @@ pub(super) fn set_executable(path: &Path) -> Result<()> {
     }
     let _ = path; // suppress unused warning on non-Unix
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+
+    #[test]
+    fn wrapper_script_generation_uses_lf_only_line_endings() {
+        let script = build_wrapper_script(&HookWrapperSpec {
+            hook_name: "pre-tool-use",
+            copilot_event: "preToolUse",
+            subcommands: &["pre-tool-use", "post-tool-use"],
+        });
+
+        assert!(
+            !script.as_bytes().contains(&b'\r'),
+            "generated bash wrapper must be LF-only before it is written"
+        );
+        assert!(script.contains("\"$HOOKS_BIN\" pre-tool-use \"$@\" || true\n"));
+        assert!(script.contains("\"$HOOKS_BIN\" post-tool-use \"$@\" || true\n"));
+    }
+
+    #[test]
+    fn repo_hook_staging_writes_lf_only_executable_scripts() {
+        let repo = tempfile::tempdir().unwrap();
+
+        stage_repo_hooks(repo.path()).unwrap();
+
+        assert_generated_hook_scripts_are_lf_only(repo.path().join(".github/hooks").as_path());
+    }
+
+    #[test]
+    fn user_level_hook_staging_writes_lf_only_executable_scripts() {
+        let copilot_home = tempfile::tempdir().unwrap();
+
+        write_user_level_hooks(copilot_home.path()).unwrap();
+
+        assert_generated_hook_scripts_are_lf_only(
+            copilot_home.path().join(".github/hooks").as_path(),
+        );
+    }
+
+    fn assert_generated_hook_scripts_are_lf_only(hooks_dir: &Path) {
+        let mut scripts = fs::read_dir(hooks_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.is_file())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name != "amplihack-hooks.json")
+            })
+            .collect::<Vec<_>>();
+        scripts.sort();
+
+        assert!(
+            !scripts.is_empty(),
+            "expected generated hook scripts in {}",
+            hooks_dir.display()
+        );
+        for script in scripts {
+            let bytes = fs::read(&script).unwrap();
+            assert!(
+                !bytes.contains(&b'\r'),
+                "{} contains carriage returns and will fail under bash",
+                script.display()
+            );
+            assert_bash_accepts_script(&script);
+        }
+    }
+
+    fn assert_bash_accepts_script(script: &Path) {
+        let output = Command::new("bash")
+            .arg("-n")
+            .arg(script)
+            .output()
+            .unwrap_or_else(|err| panic!("failed to run bash -n for {}: {err}", script.display()));
+
+        assert!(
+            output.status.success(),
+            "bash -n rejected {}:\nstdout:\n{}\nstderr:\n{}",
+            script.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }

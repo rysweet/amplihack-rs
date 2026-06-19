@@ -39,6 +39,11 @@ Intelligent guidance system that prevents common mistakes and ensures work compl
 
 - [GitHub Distribution](github-distribution.md) — publish agent bundles to GitHub repositories via the `gh` CLI, with idempotent uploads, visibility control, and tagged releases.
 
+## Hook Staging
+
+- [Generated Hook Line Endings](../reference/generated-hook-line-endings.md) — LF-only write-boundary contract for generated `.github/hooks/*`, `_error_handler`, and legacy launcher hook scripts.
+- [Verify Generated Hook Line Endings](../howto/verify-generated-hook-line-endings.md) — raw-byte and `bash -n` checks for CRLF and lone-CR regression coverage.
+
 ## Additional Features
 
 - [amplihack-rs Parity Reference](../amplihack-rs-parity.md) - subprocess prompt delivery configuration, binary capability matrix, doctor diagnostics, and Rust API.
