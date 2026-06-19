@@ -60,7 +60,7 @@ Supported `issue_creation` formats:
 | `https://github.com/owner/repo/pull/N` | Uses `gh pr view` to read the first closing issue; falls back to PR number `N` if no closing issue resolves |
 | `https://dev.azure.com/org/project/_workitems/edit/N` | Extracts `N` from `/_workitems/edit/N` without a network call |
 | `AB#N` | Extracts `N` without a network call |
-| Structured local metadata with `tracking_system=local` | Preserves local tracking metadata; leaves `issue_number` empty |
+| Structured local metadata with `tracking_system=local` plus a valid local-prefixed `tracking_reference` or `tracking_issue` | Preserves local tracking metadata; leaves `issue_number` empty |
 | Local reference `tracking_reference=local-*` or `tracking_issue=local-*` | Preserves the local reference; leaves `issue_number` empty |
 | Legacy reference `tracking_reference=local-tracking:*` or `tracking_issue=local-tracking:*` | Preserves the local reference; leaves `issue_number` empty |
 
@@ -179,16 +179,18 @@ commit messages, publish output, and final status.
 
 ### Local detection contract
 
-Local extraction succeeds when Step 03 emits local mode or a local reference:
+Local extraction succeeds only when Step 03 emits a local-prefixed tracking
+reference:
 
-- `tracking_system=local`
 - `tracking_reference=local-*`
 - `tracking_issue=local-*`
 - `tracking_reference=local-tracking:*`
 - `tracking_issue=local-tracking:*`
 
-The `local-*` prefix is intentional. It prevents unrelated numeric text in local
-metadata from being treated as a GitHub issue or Azure Boards work item.
+The `local-*` prefix is intentional. `tracking_system=local` and
+`issue_creation=local-tracking` are mode markers, not sufficient identifiers.
+This prevents unrelated numeric text in malformed local metadata from being
+treated as a GitHub issue or Azure Boards work item.
 
 ---
 

@@ -1045,6 +1045,41 @@ fn workflow_prep_step_03b_local_tracking_succeeds_without_numeric_issue_number()
 }
 
 #[test]
+fn workflow_prep_step_03b_rejects_malformed_local_tracking_metadata() {
+    let cases = [
+        (
+            "local markers without a reference",
+            "tracking_system=local\nissue_creation=local-tracking\nissue_number=763\n",
+        ),
+        (
+            "local reference with shell metacharacter",
+            "tracking_reference=local-123;rm\ntracking_issue=local-123;rm\nissue_number=763\n",
+        ),
+    ];
+
+    let runner = Step03bRunner::new();
+    for (name, issue_creation) in cases {
+        let run = runner.run_extract_issue_number(issue_creation, "Fallback #999");
+        assert!(
+            !run.status.success(),
+            "{name} must fail instead of coercing malformed local metadata; stdout:\n{}\nstderr:\n{}",
+            run.stdout,
+            run.stderr
+        );
+        assert_eq!(
+            run.stdout, "",
+            "{name} must not emit a numeric issue number from malformed local metadata"
+        );
+        assert!(
+            run.stderr
+                .contains("local tracking metadata missing valid local reference"),
+            "{name} must explain the malformed local metadata; stderr:\n{}",
+            run.stderr
+        );
+    }
+}
+
+#[test]
 fn workflow_prep_step_03b_remote_references_keep_numeric_extraction_behavior() {
     let cases = [
         (

@@ -376,8 +376,9 @@ steps:
       # Extract issue number — handles GitHub, AzDO, and local tracking.
       ISSUE_CREATION="$ISSUE_CREATION"; TASK_DESC_RAW="$TASK_DESCRIPTION"
       EXTRACTED=""
-      LOCAL_TRACKING_RE='(^|[[:space:]])(tracking_system=local|issue_creation=local-tracking|(tracking_reference|tracking_issue)=(local-|local-tracking:)[^[:space:]]+)($|[[:space:]])'
-      if [[ "$ISSUE_CREATION" =~ $LOCAL_TRACKING_RE ]]; then printf ''; exit 0; fi
+      LOCAL_TRACKING_RE='(^|[[:space:]])(tracking_reference|tracking_issue)=(local-[a-zA-Z0-9._:-]+|local-tracking:[a-zA-Z0-9._:-]+)($|[[:space:]])'
+      LOCAL_MARKER_RE='(^|[[:space:]])(tracking_system=local|issue_creation=local-tracking|(tracking_reference|tracking_issue)=local[^[:space:]]*)($|[[:space:]])'
+      if [[ "$ISSUE_CREATION" =~ $LOCAL_TRACKING_RE ]]; then printf ''; exit 0; elif [[ "$ISSUE_CREATION" =~ $LOCAL_MARKER_RE ]]; then echo "ERROR: local tracking metadata missing valid local reference." >&2; exit 1; fi
       if [[ "$ISSUE_CREATION" =~ issues/([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
       elif [[ "$ISSUE_CREATION" =~ pull/([0-9]+) ]]; then PR_NUMBER="${BASH_REMATCH[1]}"
         command -v gh >/dev/null 2>&1 && EXTRACTED=$(timeout 60 gh pr view "$PR_NUMBER" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // ""' 2>/dev/null || echo '')
