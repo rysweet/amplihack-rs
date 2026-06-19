@@ -2,12 +2,6 @@
 
 > [Home](../index.md) > Tutorials > Simulate Provider-Neutral Workflows
 
-> [PLANNED - Implementation Pending]
->
-> This tutorial describes the deterministic simulation feature to build. The
-> `amplihack workflow simulate-recipe` command is planned until implementation
-> lands.
-
 This tutorial shows how to validate a workflow path without live provider calls.
 
 ## What you will do

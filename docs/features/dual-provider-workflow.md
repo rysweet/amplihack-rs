@@ -18,8 +18,8 @@ structured JSON.
 
 | Concern | Current contract |
 | --- | --- |
-| Host detection | `amplihack workflow detect-provider` returns `GitHub`, `AzureDevOps`, `Local`, or `Unsupported`. |
-| Tracking items | `amplihack workflow tracking-item ensure` returns a provider-neutral `TrackingItem`. |
+| Host detection | `amplihack workflow detect-provider` returns `GitHub`, `AzureDevOps`, or `Manual`. |
+| Tracking items | Provider context exposes provider-neutral tracking capability state. |
 | Change requests | `amplihack workflow change-request publish/status` returns `ChangeRequest`, `ManualRequired`, or `BlockedManualProvider`. |
 | Terminal state | `amplihack workflow terminal-state` emits explicit final states and next actions. |
 | Stale cleanup | `amplihack workflow cleanup-stale` dry-runs and applies through the provider abstraction. |
@@ -28,11 +28,10 @@ structured JSON.
 
 | Provider | Tracking behavior | Publication behavior |
 | --- | --- | --- |
-| GitHub | GitHub issues through the GitHub adapter. | GitHub pull requests through the GitHub adapter. |
+| GitHub | GitHub issues through the GitHub adapter when configured. | GitHub pull requests through the GitHub adapter when configured; otherwise `ManualRequired`. |
 | Azure DevOps | Azure Boards when configured; local/manual/blocked state otherwise. | `ManualRequired`; Azure Repos PR creation is a manual action in the provider-neutral contract. |
-| Local | Local workflow reference. | `ManualRequired`. |
-| Unsupported | Manual or local state with provider-neutral next action. | `ManualRequired` or `BlockedManualProvider`. |
+| Manual | Manual or local workflow reference. | `ManualRequired` with provider-neutral next action. |
 
 GitHub commands run only inside the GitHub adapter. Azure DevOps commands run
-only inside the Azure DevOps adapter. Local and unsupported providers do not call
-remote provider CLIs.
+only inside the Azure DevOps adapter. Manual providers do not call remote
+provider CLIs.

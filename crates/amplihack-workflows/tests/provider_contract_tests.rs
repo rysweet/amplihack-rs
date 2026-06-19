@@ -7,6 +7,7 @@ use amplihack_workflows::workflow_contract::{
     ChangeRequest, ChangeRequestKind, ChangeRequestStatus, HelperEnvelope, HelperOperation,
     ManualAction, ProviderCapabilities, ProviderCapabilityState, ProviderContext,
     ProviderOperationStatus, RepositoryIdentity, RepositoryProvider, TerminalState,
+    provider_capabilities, provider_default_next_action, provider_from_remote_url,
     validate_terminal_transition,
 };
 use serde_json::{Value, json};
@@ -134,6 +135,52 @@ fn provider_context_exposes_explicit_capability_states() {
     assert_eq!(value["capabilities"]["tracking_items"], "Automated");
     assert_eq!(value["capabilities"]["change_requests"], "ManualRequired");
     assert_eq!(value["status"], "ManualRequired");
+}
+
+#[test]
+fn provider_capability_defaults_are_provider_neutral_and_explicit() {
+    let github = provider_capabilities(RepositoryProvider::GitHub);
+    assert_eq!(github.change_requests, ProviderCapabilityState::Automated);
+    assert_eq!(github.stale_cleanup, ProviderCapabilityState::Automated);
+
+    let azdo = provider_capabilities(RepositoryProvider::AzureDevOps);
+    assert_eq!(azdo.tracking_items, ProviderCapabilityState::Automated);
+    assert_eq!(
+        azdo.change_requests,
+        ProviderCapabilityState::ManualRequired
+    );
+    assert!(
+        provider_default_next_action(RepositoryProvider::AzureDevOps).contains("manually"),
+        "Azure DevOps change-request automation must not be implied where unavailable"
+    );
+
+    let manual = provider_capabilities(RepositoryProvider::Manual);
+    assert_eq!(
+        manual.tracking_items,
+        ProviderCapabilityState::ManualRequired
+    );
+    assert_eq!(
+        manual.change_requests,
+        ProviderCapabilityState::ManualRequired
+    );
+}
+
+#[test]
+fn provider_detection_from_remote_urls_falls_back_to_manual_for_unknowns() {
+    assert_eq!(
+        provider_from_remote_url(Some("https://github.com/acme/service.git")),
+        RepositoryProvider::GitHub
+    );
+    assert_eq!(
+        provider_from_remote_url(Some("https://dev.azure.com/acme/project/_git/service")),
+        RepositoryProvider::AzureDevOps
+    );
+    assert_eq!(provider_from_remote_url(None), RepositoryProvider::Manual);
+    assert_eq!(
+        provider_from_remote_url(Some("ssh://git.example.invalid/acme/service")),
+        RepositoryProvider::Manual,
+        "unknown remotes must require manual provider handling instead of pretending GitHub automation exists"
+    );
 }
 
 #[test]

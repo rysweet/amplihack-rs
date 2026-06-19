@@ -2,11 +2,6 @@
 
 > [Home](../index.md) > How-To > Clean Up Stale Workflow Change Requests
 
-> [PLANNED - Implementation Pending]
->
-> This guide describes the target stale-cleanup helper behavior. `amplihack
-> workflow cleanup-stale` is planned until implementation lands.
-
 Use stale cleanup to close or mark superseded workflow-owned change requests
 through the provider abstraction. Always run dry-run first.
 
@@ -21,7 +16,7 @@ Provider behavior:
 
 | Provider | Cleanup behavior |
 | --- | --- |
-| GitHub | Dry-run and apply can close superseded pull requests through `gh`. |
+| GitHub | Dry-run reports eligible superseded pull requests; apply requires a wired GitHub adapter or manual close action. |
 | Azure DevOps | Dry-run reports candidates; apply returns `ManualRequired` with an Azure Repos manual action. |
 | Local or unsupported | Reports local/manual next actions and does not mutate remote state. |
 

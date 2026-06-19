@@ -18,7 +18,8 @@ Amplihack separates workflow concepts from provider commands:
 
 The result is provider-aware behavior without GitHub-only assumptions:
 
-- GitHub issue and pull-request operations use GitHub adapters.
+- GitHub issue and pull-request operations use GitHub adapters when configured;
+  otherwise helpers return `ManualRequired` instead of fake success.
 - Azure Boards operations use Azure DevOps adapters when configured.
 - Azure Repos pull-request publication returns `ManualRequired`; this design does
   not automate `az repos pr create`.
@@ -85,7 +86,7 @@ Recipes consume these commands instead of parsing provider CLI text directly.
 
 | Repository | Tracking item | Change request | Cleanup | Terminal output |
 | --- | --- | --- | --- | --- |
-| GitHub | Automated issue reuse/create | Automated pull request | Automated dry-run/apply through GitHub adapter | `Succeeded`, `BlockedManualProvider`, or a terminal failure state |
+| GitHub | Automated issue reuse/create when configured | Automated pull request when configured; otherwise `ManualRequired` | Dry-run plan; apply requires a wired provider adapter or manual close action | `Succeeded`, `ManualRequired`, `BlockedManualProvider`, or a terminal failure state |
 | Azure DevOps | Azure Boards when configured; local/manual when unavailable | `ManualRequired`; no Azure Repos PR mutation in `default-workflow` | Dry-run/manual; no Azure Repos cleanup mutation in this design | `MANUAL_REQUIRED` or `BLOCKED_MANUAL_PROVIDER` with `next_action` |
 | Manual | Manual action | Manual publication action (`status=ManualRequired`) | No remote cleanup | Provider-neutral next action |
 

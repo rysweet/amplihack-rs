@@ -170,10 +170,10 @@ What happens:
 
 - Classifies as: `Development` | `1 workstream`
 - Builder agent follows the full 23-step DEFAULT_WORKFLOW
-- Creates a branch, implements the fix, creates a PR
+- Creates a branch, implements the fix, publishes a provider-specific change request
 - Reviewer evaluates the result — if incomplete, automatically runs another
   round
-- Final output: `# Dev Orchestrator -- Execution Complete` with PR link
+- Final output: `# Dev Orchestrator -- Execution Complete` with change-request link or explicit manual next action
 
 **2. Parallel task** — two independent features at once:
 
@@ -186,7 +186,7 @@ What happens:
 - Classifies as: `Development` | `2 workstreams`
 - Both workstreams launch in parallel (separate `/tmp` clones)
 - Each follows the full workflow independently
-- Both PRs created simultaneously
+- Both change requests are created or reported with explicit manual next actions
 
 **3. Investigation** — understand existing code before changing it:
 

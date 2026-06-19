@@ -25,6 +25,50 @@ pub struct ProviderCapabilities {
     pub stale_cleanup: ProviderCapabilityState,
 }
 
+pub fn provider_capabilities(provider: RepositoryProvider) -> ProviderCapabilities {
+    match provider {
+        RepositoryProvider::GitHub => ProviderCapabilities {
+            tracking_items: ProviderCapabilityState::Automated,
+            change_requests: ProviderCapabilityState::Automated,
+            stale_cleanup: ProviderCapabilityState::Automated,
+        },
+        RepositoryProvider::AzureDevOps => ProviderCapabilities {
+            tracking_items: ProviderCapabilityState::Automated,
+            change_requests: ProviderCapabilityState::ManualRequired,
+            stale_cleanup: ProviderCapabilityState::ManualRequired,
+        },
+        RepositoryProvider::Manual => ProviderCapabilities {
+            tracking_items: ProviderCapabilityState::ManualRequired,
+            change_requests: ProviderCapabilityState::ManualRequired,
+            stale_cleanup: ProviderCapabilityState::ManualRequired,
+        },
+    }
+}
+
+pub fn provider_default_next_action(provider: RepositoryProvider) -> &'static str {
+    match provider {
+        RepositoryProvider::GitHub => "No further provider setup is required.",
+        RepositoryProvider::AzureDevOps => {
+            "Use Azure Boards automation where configured; create Azure Repos PRs manually."
+        }
+        RepositoryProvider::Manual => "Run provider-specific change request steps manually.",
+    }
+}
+
+pub fn provider_from_remote_url(remote_url: Option<&str>) -> RepositoryProvider {
+    let Some(remote_url) = remote_url else {
+        return RepositoryProvider::Manual;
+    };
+    let normalized = remote_url.to_ascii_lowercase();
+    if normalized.contains("dev.azure.com") || normalized.contains("visualstudio.com") {
+        RepositoryProvider::AzureDevOps
+    } else if normalized.contains("github.com") {
+        RepositoryProvider::GitHub
+    } else {
+        RepositoryProvider::Manual
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepositoryIdentity {
     pub remote_url: Option<String>,

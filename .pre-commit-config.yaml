@@ -14,7 +14,7 @@ repos:
     hooks:
       - id: artifact-guard
         name: amplihack artifact guard
-        entry: bash -c 'CARGO_TARGET_DIR="${TMPDIR:-/tmp}/amplihack-precommit-target" cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit'
+        entry: bash -c 'CARGO_TARGET_DIR="${TMPDIR:-/tmp}/amplihack-precommit-target" cargo run --locked --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit'
         language: system
         pass_filenames: false
         always_run: true
@@ -28,14 +28,14 @@ repos:
 
       - id: cargo-clippy
         name: cargo clippy -- -D warnings
-        entry: bash -c 'CARGO_TARGET_DIR="${TMPDIR:-/tmp}/amplihack-precommit-target" cargo clippy -- -D warnings'
+        entry: bash -c 'CARGO_TARGET_DIR="${TMPDIR:-/tmp}/amplihack-precommit-target" cargo clippy --locked -- -D warnings'
         language: system
         pass_filenames: false
         files: '(\.rs|Cargo\.toml|Cargo\.lock)$'
 
       - id: cargo-test
         name: cargo test (workspace, skip heavy)
-        entry: bash -c 'CARGO_TARGET_DIR="${TMPDIR:-/tmp}/amplihack-precommit-target" cargo test --workspace -- --skip fleet_probe --skip kuzu --skip fleet::fleet_local --skip memory::kuzu'
+        entry: bash -c 'CARGO_TARGET_DIR="${TMPDIR:-/tmp}/amplihack-precommit-target" cargo test --workspace --locked -- --skip fleet_probe --skip kuzu --skip fleet::fleet_local --skip memory::kuzu'
         language: system
         pass_filenames: false
         stages: [pre-push]
