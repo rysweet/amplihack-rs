@@ -87,7 +87,21 @@ fn now_epoch_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::env_lock;
     use serde_json::json;
+    use std::path::Path;
+
+    fn with_temp_cwd<T>(f: impl FnOnce(&Path) -> T) -> T {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = f(tmp.path());
+        let _ = std::env::set_current_dir(original);
+        result
+    }
 
     #[test]
     fn error_response_format() {
@@ -111,44 +125,52 @@ mod tests {
 
     #[test]
     fn export_transcript_missing_file() {
-        let result = export_transcript(Path::new("/nonexistent/transcript.jsonl"), "test-session");
-        // Should return Ok(None) when file doesn't exist
-        assert!(result.unwrap().is_none());
+        with_temp_cwd(|_| {
+            let result =
+                export_transcript(Path::new("/nonexistent/transcript.jsonl"), "test-session");
+            // Should return Ok(None) when file doesn't exist
+            assert!(result.unwrap().is_none());
+        });
     }
 
     #[test]
     fn export_transcript_with_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let src = tmp.path().join("transcript.jsonl");
-        fs::write(&src, r#"{"role":"user","content":"hello"}"#).unwrap();
+        with_temp_cwd(|tmp| {
+            let src = tmp.join("transcript.jsonl");
+            fs::write(&src, r#"{"role":"user","content":"hello"}"#).unwrap();
 
-        let result = export_transcript(&src, "export-test");
-        let exported = result.unwrap().unwrap();
-        assert!(exported.exists());
-        assert!(
-            exported
-                .to_string_lossy()
-                .contains("transcript_pre_compact.jsonl")
-        );
+            let result = export_transcript(&src, "export-test");
+            let exported = result.unwrap().unwrap();
+            assert!(exported.exists());
+            assert!(
+                exported
+                    .to_string_lossy()
+                    .contains("transcript_pre_compact.jsonl")
+            );
+        });
     }
 
     #[test]
     fn save_compaction_metadata_basic() {
-        let extra = json!({"trigger": "auto"});
-        let result = save_compaction_metadata("meta-test", None, &extra, true);
-        let metadata = result.unwrap();
-        assert_eq!(metadata["session_id"], "meta-test");
-        assert_eq!(metadata["original_request_preserved"], true);
-        assert_eq!(metadata["compaction_trigger"], "auto");
-        assert!(metadata["timestamp"].as_u64().unwrap() > 0);
+        with_temp_cwd(|_| {
+            let extra = json!({"trigger": "auto"});
+            let result = save_compaction_metadata("meta-test", None, &extra, true);
+            let metadata = result.unwrap();
+            assert_eq!(metadata["session_id"], "meta-test");
+            assert_eq!(metadata["original_request_preserved"], true);
+            assert_eq!(metadata["compaction_trigger"], "auto");
+            assert!(metadata["timestamp"].as_u64().unwrap() > 0);
+        });
     }
 
     #[test]
     fn save_compaction_metadata_no_trigger() {
-        let extra = json!({});
-        let result = save_compaction_metadata("no-trigger", None, &extra, false);
-        let metadata = result.unwrap();
-        assert_eq!(metadata["original_request_preserved"], false);
-        assert!(metadata.get("compaction_trigger").is_none());
+        with_temp_cwd(|_| {
+            let extra = json!({});
+            let result = save_compaction_metadata("no-trigger", None, &extra, false);
+            let metadata = result.unwrap();
+            assert_eq!(metadata["original_request_preserved"], false);
+            assert!(metadata.get("compaction_trigger").is_none());
+        });
     }
 }

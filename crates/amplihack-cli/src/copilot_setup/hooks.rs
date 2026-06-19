@@ -80,20 +80,23 @@ pub(super) fn stage_repo_hooks(repo_root: &Path) -> Result<usize> {
     Ok(count)
 }
 
-/// Detect the amplihack-rs workspace root.
+/// Detect the amplihack-rs workspace root or any path inside it.
 ///
-/// Returns true only when **all three** marker paths exist: `Cargo.toml`,
-/// `amplifier-bundle/`, and `crates/amplihack-cli/`. User project repos that
-/// happen to ship a `Cargo.toml` will not also have those amplihack-specific
-/// directories, so this guard never blocks legitimate user staging.
+/// Returns true when `path` or one of its ancestors has **all three** marker
+/// paths: `Cargo.toml`, `amplifier-bundle/`, and `crates/amplihack-cli/`. User
+/// project repos that happen to ship a `Cargo.toml` will not also have those
+/// amplihack-specific directories, so this guard never blocks legitimate user
+/// staging.
 ///
 /// Used by `stage_repo_hooks` to refuse writing into the amplihack-rs
-/// workspace itself, satisfying the `github_hooks_scope_creep_is_absent`
+/// workspace tree, satisfying the `github_hooks_scope_creep_is_absent`
 /// contract (issue #536).
 fn is_amplihack_workspace_root(path: &Path) -> bool {
-    path.join("Cargo.toml").is_file()
-        && path.join("amplifier-bundle").is_dir()
-        && path.join("crates").join("amplihack-cli").is_dir()
+    path.ancestors().any(|candidate| {
+        candidate.join("Cargo.toml").is_file()
+            && candidate.join("amplifier-bundle").is_dir()
+            && candidate.join("crates").join("amplihack-cli").is_dir()
+    })
 }
 
 /// Merge an amplihack hooks block into `~/.copilot/config.json` so that hooks
