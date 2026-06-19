@@ -35,17 +35,20 @@ the precedence. The shell helper in `amplifier-bundle/skills/migrate/scripts/mig
 re-implements the same precedence using a `case` statement allowlist (shell
 scripts cannot import Python).
 
-All implementations follow the **same precedence**, the **same allowlist**, and produce the **same default** so behavior is consistent across language boundaries and across `tmux` / subprocess hops.
+All implementations follow the **same precedence**, the **same allowlist**, and
+produce the **same default** so behavior is consistent across Rust, Python, and
+shell consumers that inherit the workflow environment.
 
 ## Resolution Precedence
 
 The resolver evaluates sources in order and returns the first valid value. A value is "valid" only if it survives normalization (trim, lowercase) and matches the allowlist.
 
-| # | Source                                                                  | Notes                                                                                                                                  |
-| - | ----------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| 1 | `AMPLIHACK_AGENT_BINARY` env var                                        | Explicit override. Used by CI, tests, and external consumers (e.g. `rysweet/amplihack-recipe-runner`) that have not migrated yet.       |
-| 2 | `<repo>/.claude/runtime/launcher_context.json` `launcher` field          | Canonical persisted state. Written by `amplihack <tool>` on every launch via `LauncherContext::persist`. Survives `tmux`/subprocess hops without env passthrough. |
-| 3 | Built-in default                                                        | `"copilot"`                                                                                                                            |
+| # | Source | Notes |
+| - | --- | --- |
+| 1 | `AMPLIHACK_AGENT_BINARY` env var | Explicit override. Used by CI, tests, and external consumers that have not migrated yet. |
+| 2 | `$AMPLIHACK_RUNTIME_ROOT/launcher_context.json` `launcher` field | Canonical workflow runtime state. Written outside the task worktree and inherited by child workflows through `AMPLIHACK_RUNTIME_ROOT`. |
+| 3 | `<repo>/.claude/runtime/launcher_context.json` `launcher` field | Legacy fallback only. Read for migration compatibility, but new workflow code must not write canonical state here. |
+| 4 | Built-in default | `"copilot"` |
 
 If a source produces a value that fails validation (allowlist, length, character class), the resolver emits `tracing::warn!` with structured fields and falls through to the next source. **No source ever silently coerces an invalid value.**
 
@@ -58,7 +61,15 @@ Environment variables do not survive every subprocess boundary in the launcher's
 - Sub-recipes spawned by `amplihack recipe run` invoke fresh `amplihack` binaries that may be reading env from the user's shell rather than the parent recipe runner.
 - Python hooks shell out to subcommands using `subprocess.run` which inherits the calling Python's env, not the Rust launcher's.
 
-`launcher_context.json` is written once per launch under `<repo>/.claude/runtime/` with `0o600` permissions and an atomic rename. Any descendant process can re-derive the path by walking up from its `cwd`, so the active binary is recoverable without any env coordination.
+Workflow runtime isolation moves generated launcher context out of the task
+worktree. New workflow code writes `launcher_context.json` under
+`$AMPLIHACK_RUNTIME_ROOT` with owner-only permissions where supported and an
+atomic rename. Descendant workflows inherit `AMPLIHACK_RUNTIME_ROOT` unchanged
+and read the same runtime-root context.
+
+The old `<repo>/.claude/runtime/launcher_context.json` path remains a
+backward-compatible fallback only. It is not canonical durable state for new
+workflow runs.
 
 ## Allowlist & Validation
 
@@ -85,13 +96,16 @@ Prior to this refactor, the implicit default was `"claude"`. The default is now 
 AMPLIHACK_AGENT_BINARY=claude amplihack recipe run smart-orchestrator -c task_description="..."
 ```
 
-To make `"claude"` permanent for a repo, run `amplihack claude` once — this writes `claude` into `launcher_context.json` and every subsequent process in that repo resolves to `claude`.
+To force `"claude"` for a single command, set `AMPLIHACK_AGENT_BINARY=claude`.
+For workflow-managed runs, persistent launcher context belongs under
+`AMPLIHACK_RUNTIME_ROOT`.
 
-**Existing `claude` users:** if your repo already has `.claude/runtime/launcher_context.json` with `"launcher": "claude"` from a prior `amplihack claude` invocation, no action is required. The file-based source (precedence step 2) wins over the new `copilot` default, so existing sessions keep resolving to `claude` until you explicitly run a different `amplihack <tool>` command.
+**Existing `claude` users:** if your repo already has `.claude/runtime/launcher_context.json` with `"launcher": "claude"` from a prior `amplihack claude` invocation, it continues to work as a legacy fallback when the env override and runtime-root context are absent. New workflow runs should rely on runtime-root context instead.
 
 ## File Format: `launcher_context.json`
 
-Path: `<repo>/.claude/runtime/launcher_context.json`
+Canonical workflow path: `$AMPLIHACK_RUNTIME_ROOT/launcher_context.json`
+Legacy fallback path: `<repo>/.claude/runtime/launcher_context.json`
 Permissions: `0o600` (owner read/write only)
 Read cap: 64 KiB (oversized files are rejected with a warning)
 Staleness window: 24 hours (older files fall through as if unset)
@@ -166,16 +180,19 @@ The path is **always** validated:
 
 ### From a recipe step (bash)
 
-The active binary is read from the same `launcher_context.json` the launcher writes. From a shell step, source the file directly (no dedicated subcommand exists — and one is unnecessary because the file is the canonical source):
+Do not parse `<repo>/.claude/runtime/launcher_context.json` from shell. That
+path is legacy fallback state. Prefer invoking nested work through `amplihack`
+so the shared resolver handles `AMPLIHACK_AGENT_BINARY`,
+`AMPLIHACK_RUNTIME_ROOT`, legacy fallback, and the default consistently:
 
 ```sh
-# Active binary: read launcher_context.json by walking up from cwd
-launcher_ctx="$(git rev-parse --show-toplevel)/.claude/runtime/launcher_context.json"
-binary=$(jq -r .launcher "$launcher_ctx" 2>/dev/null || echo copilot)
-echo "spawning sub-task with: $binary"
+amplihack recipe run investigation-workflow \
+  -c task_description="Inspect the failing workflow" \
+  -c repo_path=.
 ```
 
-For Rust callers inside `amplihack-rs`, always prefer `agent_binary::resolve(&cwd)` over re-implementing the walk-up.
+For Rust callers inside `amplihack-rs`, always prefer
+`agent_binary::resolve(&cwd)` over re-implementing the precedence.
 
 ### From Rust code
 

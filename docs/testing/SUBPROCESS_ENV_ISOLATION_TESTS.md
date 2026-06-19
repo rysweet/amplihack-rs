@@ -125,8 +125,9 @@ following resolution precedence and is the subject under test:
 | Priority | Source | Notes |
 |----------|--------|-------|
 | 1 | `AMPLIHACK_AGENT_BINARY` env var | Allowlist-validated; invalid values are silently discarded |
-| 2 | `<repo>/.claude/runtime/launcher_context.json` `launcher` field | Present in nested agent sessions |
-| 3 | Built-in default | Always `"copilot"` |
+| 2 | `$AMPLIHACK_RUNTIME_ROOT/launcher_context.json` `launcher` field | Canonical workflow runtime state for nested agent sessions |
+| 3 | `<repo>/.claude/runtime/launcher_context.json` `launcher` field | Legacy fallback only |
+| 4 | Built-in default | Always `"copilot"` |
 
 ### Allowlisted binary names
 

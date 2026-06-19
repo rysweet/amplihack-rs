@@ -58,6 +58,13 @@ fn recipes(entries: &[serde_json::Value]) -> Vec<&str> {
         .collect()
 }
 
+fn step_command<'a>(recipe: &'a Value, step_id: &str) -> &'a str {
+    find_step(recipe, step_id)
+        .get("command")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("step `{step_id}` must contain a command"))
+}
+
 fn collect_files(root: &Path, extensions: &[&str]) -> Vec<PathBuf> {
     fn walk(dir: &Path, extensions: &[&str], files: &mut Vec<PathBuf>) {
         for entry in
@@ -80,6 +87,12 @@ fn collect_files(root: &Path, extensions: &[&str]) -> Vec<PathBuf> {
     let mut files = Vec::new();
     walk(root, extensions, &mut files);
     files
+}
+
+fn assert_contains_all(label: &str, content: &str, required: &[&str]) {
+    for needle in required {
+        assert!(content.contains(needle), "{label} must contain `{needle}`");
+    }
 }
 
 #[test]
@@ -503,4 +516,124 @@ fn issue_672_workflow_reliability_parallel_path_runs_normalized_workstreams_conf
         launch_command.contains("orch run -- \"$WS_FILE\""),
         "parallel routing must execute the normalized workstreams file, not reconstruct recipes inline"
     );
+}
+
+#[test]
+fn issue_780_launcher_and_provenance_use_external_runtime_root_contract() {
+    let launcher = read_repo_file("crates/amplihack-launcher/src/launcher_core.rs");
+    let provenance = read_repo_file("crates/amplihack-workflows/src/provenance.rs");
+    let combined = format!("{launcher}\n{provenance}");
+
+    assert_contains_all(
+        "shared runtime-root resolver",
+        &combined,
+        &[
+            "AMPLIHACK_RUNTIME_ROOT",
+            "XDG_RUNTIME_DIR",
+            "/tmp/amplihack-runtime",
+            "locks",
+            "reflection",
+            "logs",
+            "metrics",
+            "provenance",
+        ],
+    );
+    assert!(
+        !launcher.contains(".join(\".claude\").join(\"runtime\")"),
+        "launcher must not create generated runtime state under the target worktree .claude/runtime"
+    );
+    assert!(
+        !provenance.contains(".join(\".claude\").join(\"runtime\")"),
+        "provenance must write under the shared runtime root, not under base_dir/.claude/runtime"
+    );
+}
+
+#[test]
+fn issue_780_workflow_worktree_exports_one_runtime_root_to_child_flows() {
+    let recipe = load_recipe("amplifier-bundle/recipes/workflow-worktree.yaml");
+    let command = step_command(&recipe, "step-04-setup-worktree");
+
+    assert_contains_all(
+        "workflow-worktree runtime root setup",
+        command,
+        &[
+            "AMPLIHACK_RUNTIME_ROOT",
+            "export AMPLIHACK_RUNTIME_ROOT",
+            "XDG_RUNTIME_DIR",
+            "/tmp/amplihack-runtime",
+        ],
+    );
+    assert!(
+        !command.contains("$WORKTREE_PATH/.claude/runtime")
+            && !command.contains("${WORKTREE_PATH}/.claude/runtime"),
+        "workflow-worktree must not seed runtime output inside the task worktree"
+    );
+}
+
+#[test]
+fn issue_780_lifecycle_recipes_preflight_runtime_artifacts_before_sensitive_operations() {
+    for (recipe_rel, step_id, sensitive_operation) in [
+        (
+            "amplifier-bundle/recipes/workflow-tdd.yaml",
+            "checkpoint-after-implementation",
+            "git add",
+        ),
+        (
+            "amplifier-bundle/recipes/workflow-refactor-review.yaml",
+            "checkpoint-after-review-feedback",
+            "git add",
+        ),
+        (
+            "amplifier-bundle/recipes/workflow-pr-review.yaml",
+            "step-18c-push-feedback-changes",
+            "git add",
+        ),
+        (
+            "amplifier-bundle/recipes/workflow-publish.yaml",
+            "step-15-commit-push",
+            "git add",
+        ),
+        (
+            "amplifier-bundle/recipes/workflow-publish.yaml",
+            "step-16-create-draft-pr",
+            "workflow_publish_pr.sh",
+        ),
+        (
+            "amplifier-bundle/recipes/workflow-finalize.yaml",
+            "step-20a-artifact-guard",
+            "amplihack hygiene artifact-guard",
+        ),
+        (
+            "amplifier-bundle/recipes/workflow-finalize.yaml",
+            "step-20b-push-cleanup",
+            "git add",
+        ),
+        (
+            "amplifier-bundle/recipes/workflow-finalize.yaml",
+            "step-22b-final-status",
+            "workflow_final_status.sh",
+        ),
+    ] {
+        let recipe = load_recipe(recipe_rel);
+        let command = step_command(&recipe, step_id);
+        let preflight = command
+            .find("preflight_known_workflow_runtime_artifacts")
+            .unwrap_or_else(|| {
+                panic!("{recipe_rel}:{step_id} must preflight known workflow runtime artifacts")
+            });
+        let sensitive = command.find(sensitive_operation).unwrap_or_else(|| {
+            panic!(
+                "{recipe_rel}:{step_id} must contain sensitive operation `{sensitive_operation}`"
+            )
+        });
+
+        assert!(
+            command.contains("workflow_runtime_artifacts.sh"),
+            "{recipe_rel}:{step_id} must source the narrow runtime-artifact helper"
+        );
+        assert!(
+            preflight < sensitive,
+            "{recipe_rel}:{step_id} must preflight known runtime artifacts before `{sensitive_operation}`"
+        );
+    }
 }

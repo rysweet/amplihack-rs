@@ -35,6 +35,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 WORKTREE_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-worktree.yaml"
 PUBLISH_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-publish.yaml"
 PUBLISH_HELPER="${REPO_ROOT}/amplifier-bundle/tools/workflow_publish_pr.sh"
+RUNTIME_ARTIFACT_HELPER="${REPO_ROOT}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
 TDD_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-tdd.yaml"
 REFACTOR_REVIEW_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-refactor-review.yaml"
 PR_REVIEW_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-pr-review.yaml"
@@ -174,6 +175,67 @@ assert_yaml_step_not_fatal_false() {
         }
         END { exit fatal_false ? 1 : 0 }
     ' "${recipe}" || fail "${label} must not mark '${step_id}' as fatal: false"
+}
+
+assert_runtime_artifact_helper_contracts() {
+    [[ -f "${RUNTIME_ARTIFACT_HELPER}" ]] \
+        || fail "workflow_runtime_artifacts.sh must exist for narrow runtime artifact cleanup"
+
+    # shellcheck source=/dev/null
+    source "${RUNTIME_ARTIFACT_HELPER}"
+
+    command -v cleanup_known_workflow_runtime_artifacts >/dev/null 2>&1 \
+        || fail "workflow_runtime_artifacts.sh must define cleanup_known_workflow_runtime_artifacts"
+    command -v preflight_known_workflow_runtime_artifacts >/dev/null 2>&1 \
+        || fail "workflow_runtime_artifacts.sh must define preflight_known_workflow_runtime_artifacts"
+
+    local case_dir="${WORK}/runtime-artifacts"
+    local repo="${case_dir}/repo"
+    local nongit="${case_dir}/not-a-git-worktree"
+
+    mkdir -p "${case_dir}"
+    git init -b main "${repo}" >/dev/null
+    configure_identity "${repo}"
+    printf 'base\n' > "${repo}/README.md"
+    mkdir -p "${repo}/.claude"
+    printf '{"user":"owned"}\n' > "${repo}/.claude/settings.json"
+    git -C "${repo}" add README.md .claude/settings.json
+    git -C "${repo}" commit -m "base" >/dev/null
+
+    mkdir -p "${repo}/.claude/runtime/logs" "${repo}/worktrees/generated-agent"
+    printf 'generated runtime\n' > "${repo}/.claude/runtime/logs/session.log"
+    printf 'generated nested worktree\n' > "${repo}/worktrees/generated-agent/trace.log"
+    printf 'user-authored untracked file\n' > "${repo}/notes.txt"
+
+    preflight_known_workflow_runtime_artifacts "${repo}" \
+        || fail "preflight must remove known workflow runtime artifacts from a git worktree"
+
+    [[ ! -e "${repo}/.claude/runtime" ]] \
+        || fail "preflight must remove exactly the generated .claude/runtime directory"
+    [[ ! -e "${repo}/worktrees" ]] \
+        || fail "preflight must remove workflow-created nested worktrees under the task worktree"
+    [[ -f "${repo}/.claude/settings.json" ]] \
+        || fail "preflight must preserve user-authored .claude configuration"
+    [[ -f "${repo}/notes.txt" ]] \
+        || fail "preflight must preserve unrelated untracked user files"
+
+    mkdir -p "${repo}/worktrees/tracked-source"
+    printf 'tracked source\n' > "${repo}/worktrees/tracked-source/source.txt"
+    git -C "${repo}" add worktrees/tracked-source/source.txt
+    git -C "${repo}" commit -m "tracked worktrees source" >/dev/null
+
+    if cleanup_known_workflow_runtime_artifacts "${repo}"; then
+        fail "cleanup must fail closed instead of deleting tracked source under worktrees/"
+    fi
+    [[ -f "${repo}/worktrees/tracked-source/source.txt" ]] \
+        || fail "cleanup must not delete tracked worktrees/ source"
+
+    mkdir -p "${nongit}/.claude/runtime"
+    if cleanup_known_workflow_runtime_artifacts "${nongit}"; then
+        fail "cleanup must reject non-git directories instead of deleting by path shape alone"
+    fi
+    [[ -d "${nongit}/.claude/runtime" ]] \
+        || fail "cleanup must not delete anything when the target is not a git worktree"
 }
 
 assert_terminal_recipe_uses_final_status_tool() {
@@ -811,6 +873,7 @@ assert_yaml_step_not_fatal_false "workflow-finalize final status" "${FINALIZE_RE
 assert_yaml_recipe_step_present "smart-orchestrator routing" "${SMART_ORCHESTRATOR_RECIPE}" "smart-execute-routing" "smart-execute-routing"
 assert_yaml_step_not_fatal_false "smart-execute-routing development path" "${SMART_EXECUTE_RECIPE}" "execute-single-round-1-development"
 assert_yaml_step_not_fatal_false "smart-execute-routing adaptive development path" "${SMART_EXECUTE_RECIPE}" "adaptive-execute-development"
+assert_runtime_artifact_helper_contracts
 
 # Integration coverage: non-main base branches and fallback behavior.
 extract_step_command "${WORKTREE_RECIPE}" "step-04-setup-worktree" "${STEP04}"

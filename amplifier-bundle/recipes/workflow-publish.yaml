@@ -120,6 +120,12 @@ steps:
       trap _emit_commit_result EXIT
       branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
       echo "--- Staging Changes ---" >&2
+      RUNTIME_ARTIFACT_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
+      [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
+      [ -f "$RUNTIME_ARTIFACT_HELPER" ] || { echo "ERROR: workflow runtime artifact helper not found: $RUNTIME_ARTIFACT_HELPER" >&2; exit 2; }
+      # shellcheck source=/dev/null
+      . "$RUNTIME_ARTIFACT_HELPER"
+      preflight_known_workflow_runtime_artifacts .
       amplihack hygiene artifact-guard --repo . --mode pre-publish
       git add -A
       echo "--- Creating Commit ---" >&2
@@ -222,6 +228,12 @@ steps:
       if [ "$_CURRENT_BRANCH" = "main" ] || [ "$_CURRENT_BRANCH" = "master" ]; then echo "ERROR: step-16 landed on protected branch '$_CURRENT_BRANCH' — refusing to create PR. Worktree setup likely failed." >&2; exit 1; fi
       HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
       if [ "$HOST_TYPE" != "github" ]; then :; fi
+      RUNTIME_ARTIFACT_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
+      [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
+      [ -f "$RUNTIME_ARTIFACT_HELPER" ] || { echo "ERROR: workflow runtime artifact helper not found: $RUNTIME_ARTIFACT_HELPER" >&2; exit 2; }
+      # shellcheck source=/dev/null
+      . "$RUNTIME_ARTIFACT_HELPER"
+      preflight_known_workflow_runtime_artifacts .
       # Contract implemented by workflow_publish_pr.sh: --state all; gh pr view; headRefName; headRefOid; mergedAt; git diff --quiet; terminal_status; non-github.
       # Base-ref contract: resolve_pr_base_ref checks refs/remotes/origin/HEAD, runs git remote set-head origin -a, falls back through origin/master origin/develop, and fails with ERROR: no supported remote base ref found.
       # Metadata contract: ISSUE_NUM, git diff, git log, git diff --name-only, Changed files, Validation, Behavior, Risk, and step-13 shape PR title/body context.

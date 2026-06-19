@@ -141,6 +141,11 @@ fi
 case "$PUBLISH_STATE" in
   no-diff|NO_DIFF_SUCCESS|CLOSED_OBSOLETE)
     if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      RUNTIME_ARTIFACT_HELPER="${WORKFLOW_RUNTIME_ARTIFACT_HELPER:-${SCRIPT_DIR}/workflow_runtime_artifacts.sh}"
+      [ -f "$RUNTIME_ARTIFACT_HELPER" ] || { echo "ERROR: workflow runtime artifact helper not found: $RUNTIME_ARTIFACT_HELPER" >&2; exit 2; }
+      # shellcheck source=/dev/null
+      . "$RUNTIME_ARTIFACT_HELPER"
+      preflight_known_workflow_runtime_artifacts .
       base_ref="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
       [ -n "$base_ref" ] || base_ref="origin/main"
       if git rev-parse --verify --quiet "${base_ref}^{commit}" >/dev/null && [ -z "$(git status --porcelain)" ] && git diff --quiet "${base_ref}..HEAD"; then

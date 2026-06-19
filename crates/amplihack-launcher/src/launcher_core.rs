@@ -27,8 +27,22 @@ pub struct LauncherConfig {
     pub target_directory: Option<PathBuf>,
 }
 
-const RUNTIME_DIRS: &[&str] = &["locks", "reflection", "logs", "metrics"];
+const RUNTIME_DIRS: &[&str] = &["locks", "reflection", "logs", "metrics", "provenance"];
 const PROJECT_DIR_PLACEHOLDER: &str = "$CLAUDE_PROJECT_DIR";
+
+fn shared_runtime_root() -> PathBuf {
+    if let Ok(root) = std::env::var("AMPLIHACK_RUNTIME_ROOT")
+        && !root.trim().is_empty()
+    {
+        return PathBuf::from(root);
+    }
+    if let Ok(root) = std::env::var("XDG_RUNTIME_DIR")
+        && !root.trim().is_empty()
+    {
+        return PathBuf::from(root).join("amplihack-runtime");
+    }
+    PathBuf::from("/tmp/amplihack-runtime")
+}
 
 /// Core launcher orchestrator.
 pub struct ClaudeLauncher {
@@ -174,7 +188,8 @@ impl ClaudeLauncher {
     }
 
     fn ensure_runtime_directories(&self, target_dir: &Path) -> Result<()> {
-        let base = target_dir.join(".claude").join("runtime");
+        let _ = target_dir;
+        let base = shared_runtime_root();
         for name in RUNTIME_DIRS {
             let path = base.join(name);
             if !path.exists() {
@@ -339,11 +354,9 @@ mod tests {
         ClaudeLauncher::new(LauncherConfig::default())
             .ensure_runtime_directories(dir.path())
             .unwrap();
+        let runtime_root = shared_runtime_root();
         for n in RUNTIME_DIRS {
-            assert!(
-                dir.path().join(".claude/runtime").join(n).exists(),
-                "Missing: {n}"
-            );
+            assert!(runtime_root.join(n).exists(), "Missing: {n}");
         }
     }
     #[test]

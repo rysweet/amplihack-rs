@@ -13,8 +13,9 @@ Shared dual-SDK query abstraction used by all AI-powered scripts below.
 **Auto-detection priority:**
 
 1. `AMPLIHACK_AGENT_BINARY` env var (`copilot` or `claude`) — set by the CLI launcher
-2. `LauncherDetector` — reads `.claude/runtime/launcher_context.json`
-3. Fallback to whichever SDK is importable
+2. `LauncherDetector` — reads `$AMPLIHACK_RUNTIME_ROOT/launcher_context.json`
+3. Legacy `LauncherDetector` fallback — reads `.claude/runtime/launcher_context.json` only for migration compatibility
+4. Fallback to whichever SDK is importable
 
 **Explicit failure:** Raises `AgentQueryError` if neither SDK is available or if the SDK query fails. Callers should surface the error and exit non-zero.
 
