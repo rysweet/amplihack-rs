@@ -138,26 +138,26 @@ struct StepRun {
 }
 
 fn run_step_03b_extract_issue_number(issue_creation: &str, task_description: &str) -> StepRun {
-    let stub_dir = std::env::temp_dir().join(format!(
+    let shim_dir = std::env::temp_dir().join(format!(
         "amplihack-step-03b-test-{}-{}",
         std::process::id(),
         STEP_COMMAND_RUN_COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
-    fs::create_dir_all(&stub_dir).unwrap_or_else(|e| panic!("create {}: {e}", stub_dir.display()));
+    fs::create_dir_all(&shim_dir).unwrap_or_else(|e| panic!("create {}: {e}", shim_dir.display()));
 
-    let gh_stub = stub_dir.join("gh");
-    fs::write(&gh_stub, "#!/usr/bin/env bash\nexit 0\n")
-        .unwrap_or_else(|e| panic!("write {}: {e}", gh_stub.display()));
-    let mut permissions = fs::metadata(&gh_stub)
-        .unwrap_or_else(|e| panic!("stat {}: {e}", gh_stub.display()))
+    let gh_shim = shim_dir.join("gh");
+    fs::write(&gh_shim, "#!/usr/bin/env bash\nexit 0\n")
+        .unwrap_or_else(|e| panic!("write {}: {e}", gh_shim.display()));
+    let mut permissions = fs::metadata(&gh_shim)
+        .unwrap_or_else(|e| panic!("stat {}: {e}", gh_shim.display()))
         .permissions();
     permissions.set_mode(0o755);
-    fs::set_permissions(&gh_stub, permissions)
-        .unwrap_or_else(|e| panic!("chmod {}: {e}", gh_stub.display()));
+    fs::set_permissions(&gh_shim, permissions)
+        .unwrap_or_else(|e| panic!("chmod {}: {e}", gh_shim.display()));
 
     let path = match std::env::var("PATH") {
-        Ok(existing) if !existing.is_empty() => format!("{}:{existing}", stub_dir.display()),
-        _ => stub_dir.display().to_string(),
+        Ok(existing) if !existing.is_empty() => format!("{}:{existing}", shim_dir.display()),
+        _ => shim_dir.display().to_string(),
     };
 
     let output = Command::new("bash")
@@ -172,7 +172,7 @@ fn run_step_03b_extract_issue_number(issue_creation: &str, task_description: &st
         .output()
         .expect("run step-03b-extract-issue-number command");
 
-    let _ = fs::remove_dir_all(&stub_dir);
+    let _ = fs::remove_dir_all(&shim_dir);
 
     StepRun {
         status: output.status,
@@ -1009,57 +1009,34 @@ fn workflow_prep_step_03b_handles_azdo_work_item_urls() {
 }
 
 #[test]
-fn workflow_prep_step_03b_local_tracking_system_succeeds_without_numeric_issue_number() {
-    let run = run_step_03b_extract_issue_number(
-        "tracking_system=local\ntracking_reference=local-123\ntracking_issue=local-123\nissue_creation=local-tracking\n",
-        "",
-    );
+fn workflow_prep_step_03b_local_tracking_succeeds_without_numeric_issue_number() {
+    let cases = [
+        (
+            "local tracking system",
+            "tracking_system=local\ntracking_reference=local-123\ntracking_issue=local-123\nissue_creation=local-tracking\n",
+        ),
+        (
+            "local-* reference",
+            "tracking_reference=local-123\ntracking_issue=local-123\nissue_creation=local-tracking\n",
+        ),
+        (
+            "legacy local-tracking reference",
+            "tracking_reference=local-tracking:123\ntracking_issue=local-tracking:123\n",
+        ),
+    ];
 
-    assert!(
-        run.status.success(),
-        "local tracking must skip numeric extraction and exit successfully; stderr:\n{}",
-        run.stderr
-    );
-    assert_eq!(
-        run.stdout, "",
-        "local tracking must leave issue_number empty instead of coercing local-123 to 123"
-    );
-}
-
-#[test]
-fn workflow_prep_step_03b_local_reference_prefix_succeeds_without_numeric_issue_number() {
-    let run = run_step_03b_extract_issue_number(
-        "tracking_reference=local-123\ntracking_issue=local-123\nissue_creation=local-tracking\n",
-        "",
-    );
-
-    assert!(
-        run.status.success(),
-        "local-* references must be treated as local tracking, not remote issue numbers; stderr:\n{}",
-        run.stderr
-    );
-    assert_eq!(
-        run.stdout, "",
-        "local-* references must preserve the local identifier without emitting issue_number=123"
-    );
-}
-
-#[test]
-fn workflow_prep_step_03b_legacy_local_tracking_reference_is_not_coerced_to_issue_number() {
-    let run = run_step_03b_extract_issue_number(
-        "tracking_reference=local-tracking:123\ntracking_issue=local-tracking:123\n",
-        "",
-    );
-
-    assert!(
-        run.status.success(),
-        "legacy local-tracking:* references must skip numeric extraction; stderr:\n{}",
-        run.stderr
-    );
-    assert_eq!(
-        run.stdout, "",
-        "local-tracking:123 is a local identifier and must not emit issue_number=123"
-    );
+    for (name, issue_creation) in cases {
+        let run = run_step_03b_extract_issue_number(issue_creation, "");
+        assert!(
+            run.status.success(),
+            "{name} must skip numeric extraction and exit successfully; stderr:\n{}",
+            run.stderr
+        );
+        assert_eq!(
+            run.stdout, "",
+            "{name} must leave issue_number empty instead of coercing local IDs to numbers"
+        );
+    }
 }
 
 #[test]
