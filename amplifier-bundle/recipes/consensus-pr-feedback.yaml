@@ -35,8 +35,19 @@ steps:
         exit 1
       fi
       amplihack hygiene artifact-guard --repo . --mode pre-publish
+      GIT_IDENTITY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(git rev-parse --show-toplevel)}}/amplifier-bundle/tools/git-identity.sh"
+      [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(git rev-parse --show-toplevel)/amplifier-bundle/tools/git-identity.sh"
+      [ -f "$GIT_IDENTITY_HELPER" ] || { echo "ERROR: git identity helper not found: $GIT_IDENTITY_HELPER" >&2; exit 2; }
+      # shellcheck source=/dev/null
+      . "$GIT_IDENTITY_HELPER"
       git add -A
-      git commit -m "Address PR review feedback" || echo "Nothing to commit (working tree clean)" >&2
+      STAGED=$(git diff --cached --name-only)
+      if [ -n "$STAGED" ]; then
+        amplihack_prepare_git_commit_identity
+        git commit -m "Address PR review feedback"
+      else
+        echo "Nothing to commit (working tree clean)" >&2
+      fi
       if git remote get-url origin >/dev/null 2>&1; then
         git pull --rebase || echo "WARNING: rebase failed, pushing anyway" >&2
         git push || echo "WARNING: push failed — may need manual push" >&2
