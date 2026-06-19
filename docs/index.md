@@ -140,6 +140,7 @@ amplihack copilot
 - [Profile Management](PROFILE_MANAGEMENT.md) - Multiple environment configurations
 - [Hook Configuration](HOOK_CONFIGURATION_GUIDE.md) - Customize framework behavior
 - [Artifact Guard](artifact-guard.md) - Guard for broad staging, pre-commit, and workflow publication artifacts
+- [Workflow Runtime Artifacts](reference/workflow-runtime-artifacts.md) - Cleanup and preflight contract for workflow-generated `.claude/runtime` and marked nested worktrees
 - [Memory Configuration Consent](features/memory-consent-prompt.md) - Intelligent memory settings with timeout protection
 - [Verify .claude/ Staging](howto/verify-claude-staging.md) - Check that framework files are properly staged
 - [Verify Runtime Asset Resolution](howto/verify-runtime-asset-resolution.md) - Check helper, session, hooks, and multitask asset parity
@@ -267,6 +268,9 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [How to Configure Workflow Publish Import Validation](howto/configure-workflow-publish-import-validation.md) - Review the manifest, root-boundary, and scoped-validator behavior
 - [Tutorial: Workflow Publish Import Validation](tutorials/workflow-publish-import-validation.md) - Walk through the scoped publish-validation flow
 - [Workflow Publish Import Validation Reference](reference/workflow-publish-import-validation.md) - Manifest format, root-resolution rules, and `--files-from` semantics
+- [Workflow Runtime Artifacts Reference](reference/workflow-runtime-artifacts.md) - Shared helper API, safety contract, and lifecycle placement for generated workflow artifacts
+- [Preflight Workflow Runtime Artifacts](howto/preflight-workflow-runtime-artifacts.md) - Use cleanup/preflight before Artifact Guard, broad staging, pre-commit, publish, and finalization
+- [Tutorial: Workflow Runtime Artifact Isolation](tutorials/workflow-runtime-artifact-isolation.md) - Practice cleanup of `.claude/runtime` and marked nested worktrees while preserving strict Artifact Guard failures
 - [Workflow Execution Guardrails](features/workflow-execution-guardrails.md) - Canonical execution roots, exact GitHub identity checks, and observer-only stall detection
 - [How to Configure Workflow Execution Guardrails](howto/configure-workflow-execution-guardrails.md) - Supply `expected_gh_account`, inspect `execution_root`, and troubleshoot failures
 - [Tutorial: Workflow Execution Guardrails](tutorials/workflow-execution-guardrails.md) - End-to-end walkthrough of the guarded workflow contract

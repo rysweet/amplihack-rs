@@ -125,6 +125,22 @@ how to rerun when finalization fails closed.
 
 **Duration**: ~15 minutes
 
+### [Workflow Runtime Artifact Isolation](workflow-runtime-artifact-isolation.md)
+
+Practice the lifecycle that removes workflow-generated `.claude/runtime/` and
+marked nested workflow worktrees before strict Artifact Guard gates.
+
+**Topics Covered**:
+
+- Cleaning known workflow runtime output before guard-sensitive phases
+- Preserving `.claude/settings.json`
+- Using `.amplihack-workflow-worktree` ownership markers
+- Confirming unknown artifacts still fail Artifact Guard
+
+**Prerequisites**: amplihack installed, writable Git checkout, `git`
+
+**Duration**: ~10 minutes
+
 ---
 
 ## Platform-Specific Quick Starts

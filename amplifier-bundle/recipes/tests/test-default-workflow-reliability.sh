@@ -19,6 +19,11 @@
 #      evidence proves implementation+verification, publish/PR state, explicit
 #      no-op, or an explicit failure. Planning, analysis, design, and worktree
 #      prep are not success evidence by themselves.
+#   6. Issue #780: generated workflow runtime artifacts are lifecycle-managed
+#      before Artifact Guard and broad staging. Artifact Guard stays strict; the
+#      workflow must clean only known `.claude/runtime` and owned nested
+#      `worktrees/` artifacts, fail closed on unsafe cleanup targets, and leave
+#      unrelated artifacts for Artifact Guard to reject.
 #
 # This test SHOULD FAIL before the issue #573 reliability fixes land. It MUST
 # PASS once workflow-worktree resolves local/remote origin/HEAD before
@@ -36,6 +41,7 @@ WORKTREE_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-worktree.yaml"
 PUBLISH_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-publish.yaml"
 PUBLISH_HELPER="${REPO_ROOT}/amplifier-bundle/tools/workflow_publish_pr.sh"
 TDD_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-tdd.yaml"
+PRECOMMIT_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-precommit-test.yaml"
 REFACTOR_REVIEW_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-refactor-review.yaml"
 PR_REVIEW_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-pr-review.yaml"
 FINALIZE_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-finalize.yaml"
@@ -45,6 +51,7 @@ SMART_EXECUTE_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/smart-execute-routin
 SMART_ORCHESTRATOR_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/smart-orchestrator.yaml"
 FINAL_STATUS_TOOL="${REPO_ROOT}/amplifier-bundle/tools/workflow_final_status.sh"
 PR_SCOPE_HELPER="${REPO_ROOT}/amplifier-bundle/tools/workflow_pr_scope.sh"
+RUNTIME_ARTIFACT_HELPER="${REPO_ROOT}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
 
 if [[ ! -f "${WORKTREE_RECIPE}" ]]; then
     echo "HARNESS-ERROR: ${WORKTREE_RECIPE} not found" >&2
@@ -58,7 +65,7 @@ if [[ ! -f "${PUBLISH_HELPER}" ]]; then
     echo "HARNESS-ERROR: ${PUBLISH_HELPER} not found" >&2
     exit 2
 fi
-for recipe in "${TDD_RECIPE}" "${REFACTOR_REVIEW_RECIPE}" "${PR_REVIEW_RECIPE}" "${FINALIZE_RECIPE}"; do
+for recipe in "${TDD_RECIPE}" "${PRECOMMIT_RECIPE}" "${REFACTOR_REVIEW_RECIPE}" "${PR_REVIEW_RECIPE}" "${FINALIZE_RECIPE}"; do
     if [[ ! -f "${recipe}" ]]; then
         echo "HARNESS-ERROR: ${recipe} not found" >&2
         exit 2
@@ -370,6 +377,7 @@ run_commit_guard_case() {
         export PATH="${bin_dir}:${PATH}"
         export REAL_GIT="${real_git}"
         export COMMIT_ENV_LOG="${commit_env_log}"
+        export WORKFLOW_RUNTIME_ARTIFACT_HELPER="${RUNTIME_ARTIFACT_HELPER}"
         export WORKTREE_SETUP_WORKTREE_PATH="${repo}"
         export RECIPE_VAR_worktree_setup__worktree_path="${repo}"
         export EXPECTED_PRE_COMMIT_ALLOW_NO_CONFIG="${expected_env}"
@@ -579,6 +587,325 @@ assert_scoped_pr_helper_contracts() {
         || fail "multiple scoped candidates must emit structured reason multiple_scoped_prs"
 }
 
+assert_file_contains() {
+    local label="$1"
+    local file="$2"
+    local needle="$3"
+
+    grep -qF -- "${needle}" "${file}" \
+        || fail "${label} must contain '${needle}'"
+}
+
+first_line_containing() {
+    local file="$1"
+    local needle="$2"
+
+    awk -v needle="${needle}" 'index($0, needle) { print NR; exit }' "${file}"
+}
+
+assert_order_in_file() {
+    local label="$1"
+    local file="$2"
+    local before="$3"
+    local after="$4"
+    local before_line
+    local after_line
+
+    before_line="$(first_line_containing "${file}" "${before}")"
+    after_line="$(first_line_containing "${file}" "${after}")"
+    [[ -n "${before_line}" ]] || fail "${label} must contain '${before}'"
+    [[ -n "${after_line}" ]] || fail "${label} must contain '${after}'"
+    if [[ "${before_line}" -ge "${after_line}" ]]; then
+        local start_line
+        local end_line
+        if [[ "${before_line}" -lt "${after_line}" ]]; then
+            start_line="${before_line}"
+            end_line="${after_line}"
+        else
+            start_line="${after_line}"
+            end_line="${before_line}"
+        fi
+        start_line=$((start_line > 5 ? start_line - 5 : 1))
+        end_line=$((end_line + 5))
+        echo "--- ${label} inspected file: ${file} ---" >&2
+        sed -n "${start_line},${end_line}p" "${file}" >&2
+        fail "${label} must run '${before}' before '${after}'"
+    fi
+}
+
+assert_runtime_preflight_is_not_silenced() {
+    local label="$1"
+    local file="$2"
+
+    if grep -nF 'preflight_known_workflow_runtime_artifacts' "${file}" | grep -E '\|\|[[:space:]]*(true|:)|2>/dev/null' >&2; then
+        fail "${label} must fail closed when workflow runtime artifact preflight fails"
+    fi
+}
+
+assert_step_sources_runtime_helper_and_preflights_before() {
+    local label="$1"
+    local step_file="$2"
+    local needle="$3"
+
+    assert_file_contains "${label}" "${step_file}" 'workflow_runtime_artifacts.sh'
+    assert_file_contains "${label}" "${step_file}" 'preflight_known_workflow_runtime_artifacts'
+    assert_order_in_file "${label}" "${step_file}" 'preflight_known_workflow_runtime_artifacts' "${needle}"
+    assert_runtime_preflight_is_not_silenced "${label}" "${step_file}"
+}
+
+assert_recipe_text_preflights_before() {
+    local label="$1"
+    local recipe="$2"
+    local needle="$3"
+
+    assert_file_contains "${label}" "${recipe}" 'workflow_runtime_artifacts.sh'
+    assert_file_contains "${label}" "${recipe}" 'preflight_known_workflow_runtime_artifacts'
+    assert_order_in_file "${label}" "${recipe}" 'preflight_known_workflow_runtime_artifacts' "${needle}"
+    assert_runtime_preflight_is_not_silenced "${label}" "${recipe}"
+}
+
+assert_runtime_artifact_lifecycle_wiring() {
+    local step_tdd="${WORK}/issue-780-tdd-checkpoint.sh"
+    local step_refactor_review="${WORK}/issue-780-refactor-review-checkpoint.sh"
+    local step_publish_guard="${WORK}/issue-780-publish-guard.sh"
+    local step_publish_commit="${WORK}/issue-780-publish-commit.sh"
+    local step_pr_review_feedback="${WORK}/issue-780-pr-review-feedback.sh"
+    local step_finalize_guard="${WORK}/issue-780-finalize-guard.sh"
+    local step_finalize_cleanup="${WORK}/issue-780-finalize-cleanup.sh"
+
+    extract_step_command "${TDD_RECIPE}" "checkpoint-after-implementation" "${step_tdd}"
+    extract_step_command "${REFACTOR_REVIEW_RECIPE}" "checkpoint-after-review-feedback" "${step_refactor_review}"
+    extract_step_command "${PUBLISH_RECIPE}" "step-14g-artifact-guard" "${step_publish_guard}"
+    extract_step_command "${PUBLISH_RECIPE}" "step-15-commit-push" "${step_publish_commit}"
+    extract_step_command "${PR_REVIEW_RECIPE}" "step-18c-push-feedback-changes" "${step_pr_review_feedback}"
+    extract_step_command "${FINALIZE_RECIPE}" "step-20a-artifact-guard" "${step_finalize_guard}"
+    extract_step_command "${FINALIZE_RECIPE}" "step-20b-push-cleanup" "${step_finalize_cleanup}"
+
+    assert_step_sources_runtime_helper_and_preflights_before \
+        "workflow-tdd checkpoint runtime preflight" \
+        "${step_tdd}" \
+        'amplihack hygiene artifact-guard --repo . --mode pre-publish'
+    assert_step_sources_runtime_helper_and_preflights_before \
+        "workflow-tdd checkpoint broad staging runtime preflight" \
+        "${step_tdd}" \
+        'git add -A'
+    assert_step_sources_runtime_helper_and_preflights_before \
+        "workflow-refactor-review checkpoint runtime preflight" \
+        "${step_refactor_review}" \
+        'amplihack hygiene artifact-guard --repo . --mode pre-publish'
+    assert_step_sources_runtime_helper_and_preflights_before \
+        "workflow-refactor-review broad staging runtime preflight" \
+        "${step_refactor_review}" \
+        'git add -A'
+
+    assert_recipe_text_preflights_before \
+        "workflow-precommit-test runtime preflight before pre-commit" \
+        "${PRECOMMIT_RECIPE}" \
+        'pre-commit run --all-files'
+
+    assert_step_sources_runtime_helper_and_preflights_before \
+        "workflow-publish publish guard runtime preflight" \
+        "${step_publish_guard}" \
+        'amplihack hygiene artifact-guard --repo . --mode pre-publish'
+    assert_step_sources_runtime_helper_and_preflights_before \
+        "workflow-publish commit/push runtime preflight" \
+        "${step_publish_commit}" \
+        'amplihack hygiene artifact-guard --repo . --mode pre-publish'
+    assert_step_sources_runtime_helper_and_preflights_before \
+        "workflow-publish broad staging runtime preflight" \
+        "${step_publish_commit}" \
+        'git add -A'
+    assert_recipe_text_preflights_before \
+        "workflow-publish outside-in fix-loop runtime preflight" \
+        "${PUBLISH_RECIPE}" \
+        'git add -A && git commit -m "fix: <describe the fix found during outside-in testing>"'
+    assert_step_sources_runtime_helper_and_preflights_before \
+        "workflow-pr-review feedback runtime preflight" \
+        "${step_pr_review_feedback}" \
+        'amplihack hygiene artifact-guard --repo . --mode pre-publish'
+    assert_step_sources_runtime_helper_and_preflights_before \
+        "workflow-pr-review broad staging runtime preflight" \
+        "${step_pr_review_feedback}" \
+        'git add -A'
+
+    assert_step_sources_runtime_helper_and_preflights_before \
+        "workflow-finalize final guard runtime preflight" \
+        "${step_finalize_guard}" \
+        'amplihack hygiene artifact-guard --repo . --mode pre-publish'
+    assert_step_sources_runtime_helper_and_preflights_before \
+        "workflow-finalize push cleanup runtime preflight" \
+        "${step_finalize_cleanup}" \
+        'amplihack hygiene artifact-guard --repo . --mode pre-publish'
+    assert_step_sources_runtime_helper_and_preflights_before \
+        "workflow-finalize broad staging runtime preflight" \
+        "${step_finalize_cleanup}" \
+        'git add -A'
+
+    assert_file_contains \
+        "workflow-worktree external placement contract" \
+        "${WORKTREE_RECIPE}" \
+        'AMPLIHACK_WORKTREE_PARENT'
+    assert_file_contains \
+        "workflow-worktree nested worktree ownership marker contract" \
+        "${WORKTREE_RECIPE}" \
+        '.amplihack-workflow-worktree'
+}
+
+create_runtime_artifact_repo() {
+    local repo="$1"
+
+    git init -b main "${repo}" >/dev/null
+    configure_identity "${repo}"
+    mkdir -p "${repo}/.claude"
+    printf 'base\n' > "${repo}/README.md"
+    printf '{"permissions":{"allow":[],"deny":[]}}\n' > "${repo}/.claude/settings.json"
+    git -C "${repo}" add README.md .claude/settings.json
+    git -C "${repo}" commit -m "base" >/dev/null
+    git -C "${repo}" checkout -b feat/issue-780-runtime-artifacts >/dev/null
+}
+
+assert_runtime_helper_exports_contract() {
+    [[ -f "${RUNTIME_ARTIFACT_HELPER}" ]] \
+        || fail "workflow_runtime_artifacts.sh must exist as the shared lifecycle helper"
+
+    (
+        # shellcheck disable=SC1090
+        source "${RUNTIME_ARTIFACT_HELPER}"
+        declare -F cleanup_known_workflow_runtime_artifacts >/dev/null
+        declare -F preflight_known_workflow_runtime_artifacts >/dev/null
+    ) || fail "workflow_runtime_artifacts.sh must export cleanup_known_workflow_runtime_artifacts and preflight_known_workflow_runtime_artifacts"
+}
+
+run_runtime_artifact_helper() {
+    local function_name="$1"
+    local repo="$2"
+
+    (
+        # shellcheck disable=SC1090
+        source "${RUNTIME_ARTIFACT_HELPER}"
+        "${function_name}" "${repo}"
+    )
+}
+
+assert_runtime_preflight_cleans_runtime_dir_and_preserves_settings() {
+    local repo="${WORK}/issue-780-runtime-cleanup-repo"
+
+    create_runtime_artifact_repo "${repo}"
+    mkdir -p "${repo}/.claude/runtime/session-123"
+    printf 'generated session state\n' > "${repo}/.claude/runtime/session-123/state.json"
+
+    run_runtime_artifact_helper preflight_known_workflow_runtime_artifacts "${repo}" \
+        || fail "preflight must clean generated .claude/runtime content"
+
+    [[ ! -e "${repo}/.claude/runtime" ]] \
+        || fail "preflight must remove empty .claude/runtime after cleaning generated runtime content"
+    [[ -f "${repo}/.claude/settings.json" ]] \
+        || fail "preflight must preserve .claude/settings.json"
+    [[ "$(git -C "${repo}" status --short .claude/settings.json)" == "" ]] \
+        || fail "preflight must not modify tracked .claude/settings.json"
+}
+
+assert_runtime_preflight_cleans_owned_nested_worktree() {
+    local repo="${WORK}/issue-780-owned-worktree-cleanup-repo"
+    local nested
+
+    create_runtime_artifact_repo "${repo}"
+    nested="${repo}/worktrees/feat-owned-runtime-artifact"
+    mkdir -p "${nested}"
+    printf 'workflow-created\n' > "${nested}/.amplihack-workflow-worktree"
+    printf 'generated nested worktree artifact\n' > "${nested}/state.txt"
+
+    run_runtime_artifact_helper preflight_known_workflow_runtime_artifacts "${repo}" \
+        || fail "preflight must clean workflow-owned nested worktrees"
+
+    [[ ! -e "${nested}" ]] \
+        || fail "preflight must remove nested worktrees only when the ownership marker is present"
+}
+
+assert_runtime_cleanup_preserves_tracked_files_by_failing_closed() {
+    local repo="${WORK}/issue-780-tracked-runtime-repo"
+
+    create_runtime_artifact_repo "${repo}"
+    mkdir -p "${repo}/.claude/runtime"
+    printf 'tracked runtime state\n' > "${repo}/.claude/runtime/tracked.txt"
+    git -C "${repo}" add .claude/runtime/tracked.txt
+    git -C "${repo}" commit -m "track runtime fixture" >/dev/null
+
+    if run_runtime_artifact_helper cleanup_known_workflow_runtime_artifacts "${repo}" >"${WORK}/tracked-runtime.out" 2>"${WORK}/tracked-runtime.err"; then
+        fail "cleanup must fail closed instead of deleting tracked files under .claude/runtime"
+    fi
+    [[ -f "${repo}/.claude/runtime/tracked.txt" ]] \
+        || fail "cleanup must preserve tracked files under .claude/runtime"
+}
+
+assert_runtime_cleanup_rejects_unmarked_nested_worktrees() {
+    local repo="${WORK}/issue-780-unmarked-worktree-repo"
+    local nested
+
+    create_runtime_artifact_repo "${repo}"
+    nested="${repo}/worktrees/unmarked-user-dir"
+    mkdir -p "${nested}"
+    printf 'user-owned untracked content\n' > "${nested}/notes.txt"
+
+    if run_runtime_artifact_helper cleanup_known_workflow_runtime_artifacts "${repo}" >"${WORK}/unmarked-worktree.out" 2>"${WORK}/unmarked-worktree.err"; then
+        fail "cleanup must fail closed on unmarked nested worktrees instead of deleting or ignoring ambiguous user content"
+    fi
+    [[ -f "${nested}/notes.txt" ]] \
+        || fail "cleanup must preserve unmarked nested worktree content"
+}
+
+assert_runtime_cleanup_rejects_non_git_targets() {
+    local not_repo="${WORK}/issue-780-not-a-git-repo"
+
+    mkdir -p "${not_repo}/.claude/runtime"
+    printf 'generated state\n' > "${not_repo}/.claude/runtime/state.json"
+
+    if run_runtime_artifact_helper cleanup_known_workflow_runtime_artifacts "${not_repo}" >"${WORK}/not-git.out" 2>"${WORK}/not-git.err"; then
+        fail "cleanup must fail closed when the target is not a real git worktree"
+    fi
+    [[ -f "${not_repo}/.claude/runtime/state.json" ]] \
+        || fail "cleanup must not delete files when repo validation fails"
+}
+
+assert_runtime_preflight_leaves_unknown_artifacts_for_artifact_guard() {
+    local repo="${WORK}/issue-780-unknown-artifact-repo"
+
+    create_runtime_artifact_repo "${repo}"
+    mkdir -p "${repo}/.claude/runtime/session-456" "${repo}/node_modules/example"
+    printf 'generated session state\n' > "${repo}/.claude/runtime/session-456/state.json"
+    printf 'unexpected dependency artifact\n' > "${repo}/node_modules/example/index.js"
+
+    run_runtime_artifact_helper preflight_known_workflow_runtime_artifacts "${repo}" \
+        || fail "preflight must clean known workflow runtime artifacts even when unknown artifacts remain"
+    [[ ! -e "${repo}/.claude/runtime" ]] \
+        || fail "preflight must remove known runtime artifacts before Artifact Guard"
+    [[ -f "${repo}/node_modules/example/index.js" ]] \
+        || fail "preflight must not remove unknown artifacts such as node_modules"
+
+    command -v amplihack >/dev/null 2>&1 \
+        || fail "amplihack CLI is required to prove unknown artifacts still fail Artifact Guard"
+    if AMPLIHACK_SKIP_AUTO_INSTALL=1 amplihack hygiene artifact-guard --repo "${repo}" --mode pre-publish >"${WORK}/unknown-artifact.out" 2>"${WORK}/unknown-artifact.err"; then
+        fail "Artifact Guard must still fail for unknown artifacts after workflow runtime preflight"
+    fi
+    if ! grep -qF 'node_modules' "${WORK}/unknown-artifact.out" "${WORK}/unknown-artifact.err"; then
+        echo "--- Artifact Guard stdout ---" >&2
+        cat "${WORK}/unknown-artifact.out" >&2
+        echo "--- Artifact Guard stderr ---" >&2
+        cat "${WORK}/unknown-artifact.err" >&2
+        fail "Artifact Guard failure must identify the remaining unknown artifact"
+    fi
+}
+
+assert_runtime_artifact_helper_dynamic_contracts() {
+    assert_runtime_helper_exports_contract
+    assert_runtime_preflight_cleans_runtime_dir_and_preserves_settings
+    assert_runtime_preflight_cleans_owned_nested_worktree
+    assert_runtime_cleanup_preserves_tracked_files_by_failing_closed
+    assert_runtime_cleanup_rejects_unmarked_nested_worktrees
+    assert_runtime_cleanup_rejects_non_git_targets
+    assert_runtime_preflight_leaves_unknown_artifacts_for_artifact_guard
+}
+
 create_origin_with_branches() {
     local base_branch="$1"
     local origin_dir="$2"
@@ -635,6 +962,8 @@ run_worktree_case() {
     local branch_name
     local worktree_path
     local worktree_sha
+    local repo_root_real
+    local worktree_real
 
     clone_case_repo "${expected_ref#origin/}" "${case_dir}" "${remove_origin_head}" "${add_master}"
 
@@ -658,8 +987,16 @@ run_worktree_case() {
     branch_name="$(grep -o '"branch_name": "[^"]*"' "${stdout_file}" | sed 's/.*": "\(.*\)"/\1/' | tail -1)"
     [[ -n "${branch_name}" ]] || fail "workflow-worktree did not emit branch_name for ${label}"
 
-    worktree_path="${case_dir}/worktrees/${branch_name}"
+    worktree_path="$(grep -o '"worktree_path": "[^"]*"' "${stdout_file}" | sed 's/.*": "\(.*\)"/\1/' | tail -1)"
+    [[ -n "${worktree_path}" ]] || fail "workflow-worktree did not emit worktree_path for ${label}"
     [[ -d "${worktree_path}" ]] || fail "workflow-worktree did not create ${worktree_path}"
+    repo_root_real="$(cd "${case_dir}" && pwd -P)"
+    worktree_real="$(cd "${worktree_path}" && pwd -P)"
+    case "${worktree_real}" in
+        "${repo_root_real}"|"${repo_root_real}"/*)
+            fail "workflow-worktree created nested worktree ${worktree_real}; expected external placement outside ${repo_root_real}"
+            ;;
+    esac
 
     worktree_sha="$(git -C "${worktree_path}" rev-parse HEAD)"
     if [[ "${worktree_sha}" != "${expected_sha}" ]]; then
@@ -811,6 +1148,12 @@ assert_yaml_step_not_fatal_false "workflow-finalize final status" "${FINALIZE_RE
 assert_yaml_recipe_step_present "smart-orchestrator routing" "${SMART_ORCHESTRATOR_RECIPE}" "smart-execute-routing" "smart-execute-routing"
 assert_yaml_step_not_fatal_false "smart-execute-routing development path" "${SMART_EXECUTE_RECIPE}" "execute-single-round-1-development"
 assert_yaml_step_not_fatal_false "smart-execute-routing adaptive development path" "${SMART_EXECUTE_RECIPE}" "adaptive-execute-development"
+
+# Issue #780 lifecycle contract: known workflow runtime artifacts are cleaned or
+# rejected before Artifact Guard and broad staging, while unknown artifacts still
+# remain Artifact Guard violations.
+assert_runtime_artifact_lifecycle_wiring
+assert_runtime_artifact_helper_dynamic_contracts
 
 # Integration coverage: non-main base branches and fallback behavior.
 extract_step_command "${WORKTREE_RECIPE}" "step-04-setup-worktree" "${STEP04}"

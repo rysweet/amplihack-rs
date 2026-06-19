@@ -50,6 +50,95 @@ steps:
         printf '%s' "$s"
       }
 
+      canonical_dir() {
+        local path="$1"
+        mkdir -p "$path"
+        (cd "$path" && pwd -P)
+      }
+
+      branch_path_slug() {
+        local branch="$1"
+        local slug
+        local hash
+        slug="$(printf '%s' "$branch" | tr -c 'A-Za-z0-9._-' '-' | sed 's/-\{2,\}/-/g; s/^-//; s/-$//')"
+        [ -n "$slug" ] || slug="worktree"
+        hash="$(printf '%s' "$branch" | git hash-object --stdin | cut -c1-8)"
+        printf '%s-%s\n' "$slug" "$hash"
+      }
+
+      resolve_worktree_path() {
+        local branch="$1"
+        local slug="$2"
+        local repo_root
+        local repo_parent
+        local repo_parent_name
+        local parent
+        local parent_real
+        local git_dir
+
+        repo_root="$(git rev-parse --show-toplevel)"
+        repo_root="$(cd "$repo_root" && pwd -P)"
+        repo_parent="$(dirname "$repo_root")"
+        repo_parent_name="$(basename "$repo_parent")"
+
+        if [ -n "${AMPLIHACK_WORKTREE_PARENT:-}" ]; then
+          case "$AMPLIHACK_WORKTREE_PARENT" in
+            /*) parent="$AMPLIHACK_WORKTREE_PARENT" ;;
+            *) parent="$repo_root/$AMPLIHACK_WORKTREE_PARENT" ;;
+          esac
+        elif [ "$repo_parent_name" = "worktrees" ]; then
+          parent="$repo_parent"
+        else
+          parent="$repo_parent/worktrees"
+        fi
+
+        if parent_real="$(canonical_dir "$parent")"; then
+          case "$parent_real" in
+            "$repo_root"|"$repo_root"/*)
+              if [ "${AMPLIHACK_ALLOW_NESTED_WORKTREE:-}" != "1" ]; then
+                echo "ERROR: resolved workflow worktree parent '$parent_real' is inside repository '$repo_root'; set AMPLIHACK_WORKTREE_PARENT to an external directory or AMPLIHACK_ALLOW_NESTED_WORKTREE=1 for explicit compatibility fallback." >&2
+                return 1
+              fi
+              ;;
+          esac
+          git_dir="$(git rev-parse --absolute-git-dir)"
+          git_dir="$(cd "$git_dir" && pwd -P)"
+          case "$parent_real" in
+            "$git_dir"|"$git_dir"/*)
+              echo "ERROR: resolved workflow worktree parent '$parent_real' is inside git dir '$git_dir'; refusing unsafe placement." >&2
+              return 1
+              ;;
+          esac
+          if [ ! -w "$parent_real" ]; then
+            echo "ERROR: resolved workflow worktree parent '$parent_real' is not writable." >&2
+            return 1
+          fi
+          if [ "${AMPLIHACK_ALLOW_NESTED_WORKTREE:-}" != "1" ]; then
+            printf '%s/%s\n' "$parent_real" "$slug"
+            return 0
+          fi
+        elif [ "${AMPLIHACK_ALLOW_NESTED_WORKTREE:-}" != "1" ]; then
+          echo "ERROR: could not create external workflow worktree parent '$parent'." >&2
+          return 1
+        fi
+
+        echo "WARNING: AMPLIHACK_ALLOW_NESTED_WORKTREE=1 set; using nested compatibility worktree for '$branch'." >&2
+        printf '%s/worktrees/%s\n' "$repo_root" "$slug"
+      }
+
+      mark_nested_workflow_worktree_if_needed() {
+        local path="$1"
+        local repo_root
+
+        repo_root="$(git rev-parse --show-toplevel)"
+        repo_root="$(cd "$repo_root" && pwd -P)"
+        case "$(cd "$path" && pwd -P)" in
+          "$repo_root"/worktrees/*)
+            touch "$path/.amplihack-workflow-worktree"
+            ;;
+        esac
+      }
+
       # ========================================================================
       # NEW (#342): Existing-branch / PR targeting path.
       # When EXISTING_BRANCH or PR_NUMBER is set, reuse an existing branch
@@ -125,9 +214,7 @@ steps:
             WORKTREE_PATH="$REPO_PATH"
             echo "INFO: Caller already on branch '$BRANCH_NAME'; using REPO_PATH as worktree." >&2
           else
-            # SECURITY: WORKTREE_PATH construction is safe because BRANCH_NAME
-            # has passed git check-ref-format above (rejects .., leading -, etc.).
-            WORKTREE_PATH="${REPO_PATH}/worktrees/${BRANCH_NAME}"
+            WORKTREE_PATH="$(resolve_worktree_path "$BRANCH_NAME" "$(branch_path_slug "$BRANCH_NAME")")"
             if [ -d "$WORKTREE_PATH" ]; then
               # Issue #642: worktree dir exists from a prior run. If it's a
               # valid git worktree on the right branch, reuse it. Otherwise
@@ -136,20 +223,24 @@ steps:
               if [ "$WT_BRANCH" = "$BRANCH_NAME" ]; then
                 echo "INFO: Reusing existing worktree directory at '$WORKTREE_PATH' (branch matches)." >&2
               else
-                echo "INFO: Removing stale worktree at '$WORKTREE_PATH' (was '$WT_BRANCH', need '$BRANCH_NAME')." >&2
-                git worktree remove --force "$WORKTREE_PATH" >&2 2>/dev/null || rm -rf "$WORKTREE_PATH"
+                echo "INFO: Removing stale git worktree at '$WORKTREE_PATH' (was '$WT_BRANCH', need '$BRANCH_NAME')." >&2
+                git worktree remove --force "$WORKTREE_PATH" >&2 2>/dev/null || { echo "ERROR: refusing to remove non-worktree directory at '$WORKTREE_PATH'; inspect it manually." >&2; exit 1; }
                 if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
                   git worktree add -- "$WORKTREE_PATH" "$BRANCH_NAME" >&2
+                  mark_nested_workflow_worktree_if_needed "$WORKTREE_PATH"
                 elif git show-ref --verify --quiet "refs/remotes/origin/$BRANCH_NAME"; then
                   git worktree add --track -b "$BRANCH_NAME" -- "$WORKTREE_PATH" "origin/$BRANCH_NAME" >&2
+                  mark_nested_workflow_worktree_if_needed "$WORKTREE_PATH"
                 fi
               fi
             elif git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
               # Local branch exists: attach without -b (safe re-attach).
               git worktree add -- "$WORKTREE_PATH" "$BRANCH_NAME" >&2
+              mark_nested_workflow_worktree_if_needed "$WORKTREE_PATH"
             elif git show-ref --verify --quiet "refs/remotes/origin/$BRANCH_NAME"; then
               # Remote-only: create local tracking branch on attach.
               git worktree add --track -b "$BRANCH_NAME" -- "$WORKTREE_PATH" "origin/$BRANCH_NAME" >&2
+              mark_nested_workflow_worktree_if_needed "$WORKTREE_PATH"
             else
               echo "ERROR: branch '$BRANCH_NAME' not found locally or on origin." >&2
               exit 1
@@ -258,7 +349,7 @@ steps:
           BRANCH_NAME="feat/task-unnamed-$(date +%s)"
         fi
       fi
-      WORKTREE_PATH="${REPO_PATH}/worktrees/${BRANCH_NAME}"
+      WORKTREE_PATH="$(resolve_worktree_path "$BRANCH_NAME" "$(branch_path_slug "$BRANCH_NAME")")"
 
       echo "Branch: ${BRANCH_NAME}" >&2
       echo "Worktree: ${WORKTREE_PATH}" >&2
@@ -305,11 +396,13 @@ steps:
         else
           echo "INFO: Branch '${BRANCH_NAME}' exists (clean) but worktree is missing — adding worktree without -b." >&2
           git worktree add "${WORKTREE_PATH}" "${BRANCH_NAME}" >&2
+          mark_nested_workflow_worktree_if_needed "$WORKTREE_PATH"
         fi
         CREATED=true
       else
         echo "INFO: Creating new branch and worktree." >&2
         git worktree add "${WORKTREE_PATH}" -b "${BRANCH_NAME}" "${BASE_REF}" >&2
+        mark_nested_workflow_worktree_if_needed "$WORKTREE_PATH"
         CREATED=true
       fi
 

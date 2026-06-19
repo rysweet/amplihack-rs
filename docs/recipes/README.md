@@ -78,6 +78,8 @@ Complete documentation for using the Recipe Runner:
 - **[How to Diagnose Workflow Terminal-State Failures](../howto/diagnose-workflow-terminal-state.md)** - Recovery guide for missing terminal evidence after planning, analysis, design, or worktree-only execution
 - **[Tutorial: Workflow Terminal-State Closure](../tutorials/workflow-terminal-state-closure.md)** - Walk through successful evidence, planning-only failure, and rerun behavior
 - **[Scoped Workflow Closure](../reference/scoped-workflow-closure.md)** - Persisted PR, process, and workstream ownership contract for default-workflow closure
+- **[Workflow Runtime Artifacts Reference](../reference/workflow-runtime-artifacts.md)** - Shared cleanup/preflight helper contract for generated `.claude/runtime` and marked nested workflow worktrees
+- **[Preflight Workflow Runtime Artifacts](../howto/preflight-workflow-runtime-artifacts.md)** - How to place preflight before Artifact Guard, broad staging, pre-commit, publish, and finalization
 
 ## Why It Exists
 

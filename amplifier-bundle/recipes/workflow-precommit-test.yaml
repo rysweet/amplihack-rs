@@ -42,13 +42,19 @@ steps:
 
       2. **Install if needed:** `pre-commit install`
 
-      3. **Run all checks:**
+      3. **Preflight workflow runtime artifacts immediately before pre-commit:**
+         ```bash
+         . "${WORKFLOW_RUNTIME_ARTIFACT_HELPER:-${AMPLIHACK_HOME:-$(pwd)}/amplifier-bundle/tools/workflow_runtime_artifacts.sh}"
+         preflight_known_workflow_runtime_artifacts "${WORKTREE_SETUP_WORKTREE_PATH:-.}"
+         ```
+
+      4. **Run all checks:**
          ```bash
          pre-commit run --all-files
          cargo test --workspace --locked
          ```
 
-      4. **Fix any issues:**
+      5. **Fix any issues:**
          - Linting issues
          - Formatting issues
          - Type checking errors

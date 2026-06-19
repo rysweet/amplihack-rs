@@ -10,7 +10,7 @@ moves, unstages, or rewrites files.
 
 ## Contents
 
-- [Planned behavior](#planned-behavior)
+- [Behavior](#behavior)
 - [Command-line interface](#command-line-interface)
 - [Default prohibited rules](#default-prohibited-rules)
 - [Allowlist configuration](#allowlist-configuration)
@@ -40,7 +40,7 @@ cache directories when those paths indicate parent-worktree pollution.
 `target/` directory in the repository, and the guard must not make ordinary
 `cargo test`, `cargo clippy`, or pre-commit usage hostile. By default:
 
-| `target/` source | Planned result |
+| `target/` source | Result |
 | --- | --- |
 | Staged | Violation |
 | Tracked | Violation |
@@ -151,7 +151,7 @@ examples/minimal-node-project/node_modules/.package-lock.json
 
 Matching semantics:
 
-| Rule | Planned behavior |
+| Rule | Behavior |
 | --- | --- |
 | Path root | Entries are relative to the repository root |
 | Separators | `/` only; Windows-style `\` separators are rejected |
@@ -194,7 +194,7 @@ across the whole repository.
 
 ## Workflow and pre-commit coverage
 
-Artifact Guard will run before every broad staging operation in the bundled
+Artifact Guard runs before every broad staging operation in the bundled
 recipes, not just publish and finalize. The initial guarded recipe set is every
 recipe that currently invokes `git add -A`:
 
@@ -211,7 +211,7 @@ recipe that currently invokes `git add -A`:
 Future recipe changes must preserve the rule: any new `git add -A` or equivalent
 broad-staging step needs an Artifact Guard gate immediately before it.
 
-The planned pre-commit hook is a full repository scan:
+The pre-commit hook is a full repository scan:
 
 ```yaml
 - id: artifact-guard
@@ -237,6 +237,20 @@ The checked-in pre-commit Cargo hooks set `CARGO_TARGET_DIR` under
 `${TMPDIR:-/tmp}` so running the guard, clippy, or tests from hooks does not
 recreate Cargo build output inside the parent worktree.
 
+Bundled workflows run
+[`preflight_known_workflow_runtime_artifacts`](reference/workflow-runtime-artifacts.md)
+immediately before guard-sensitive phases. That preflight removes only known
+workflow-owned `.claude/runtime/` output and marked nested workflow worktrees.
+Artifact Guard still blocks unexpected artifacts and remains read-only.
+
+`workflow-worktree.yaml` should create new workflow worktrees outside the active
+repository root, normally in a sibling `worktrees` directory. Nested
+`<repo>/worktrees/...` placement is a compatibility path only; if it is used,
+it must be explicitly enabled with `AMPLIHACK_ALLOW_NESTED_WORKTREE=1`, the
+nested worktree must carry `.amplihack-workflow-worktree`, and cleanup must
+still fail closed on symlinks, tracked markers, tracked content, or unmarked
+sibling directories.
+
 ## Output isolation
 
 The preferred fix for a violation is output isolation, not allowlisting.
@@ -251,6 +265,7 @@ These locations are intentionally not prohibited by default:
 <repo>/.amplihack/generated/
 <git-common-dir>/.claude/runtime/
 /tmp/amplihack-<purpose>-<id>/
+<repo-parent>/worktrees/<branch-path-slug>/
 ```
 
 Use `CARGO_TARGET_DIR` for workflow-owned Rust builds that need to avoid the
@@ -350,6 +365,20 @@ If the guard reports `node_modules/`, `.claude/runtime/`, or another
 ignored-present artifact, relocate or remove the local output. Do not treat
 `.gitignore` as approval to keep parent-worktree pollution.
 
+For workflow-generated `.claude/runtime/` or marked nested workflow worktrees,
+use the workflow runtime artifact preflight helper before rerunning the guarded
+phase:
+
+```bash
+. ./amplifier-bundle/tools/workflow_runtime_artifacts.sh
+preflight_known_workflow_runtime_artifacts .
+amplihack hygiene artifact-guard --repo . --mode all
+```
+
+If preflight refuses to clean a path, inspect the reported reason instead of
+adding an allowlist entry. Tracked files, symlinks, and unmarked nested
+worktrees require explicit human cleanup.
+
 For an intentional fixture, add the narrowest allowlist entry that preserves the
 test:
 
@@ -377,6 +406,8 @@ proper output placement.
 
 ## Related documentation
 
+- [Workflow Runtime Artifacts Reference](reference/workflow-runtime-artifacts.md)
+- [Preflight Workflow Runtime Artifacts](howto/preflight-workflow-runtime-artifacts.md)
 - [Recipe CLI Reference](reference/recipe-cli-reference.md)
 - [Pre-Commit Diagnostics](claude/agents/amplihack/specialized/pre-commit-diagnostic.md)
 - [Developing amplihack](DEVELOPING_AMPLIHACK.md)

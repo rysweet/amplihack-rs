@@ -82,6 +82,13 @@ steps:
       set -euo pipefail
       : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-${REPO_PATH:-}}}"
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-14g requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
+      RUNTIME_ARTIFACT_HELPER="${WORKFLOW_RUNTIME_ARTIFACT_HELPER:-${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_runtime_artifacts.sh}"
+      if [ ! -f "$RUNTIME_ARTIFACT_HELPER" ] && [ -n "${REPO_PATH:-}" ]; then RUNTIME_ARTIFACT_HELPER="$REPO_PATH/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; fi
+      if [ ! -f "$RUNTIME_ARTIFACT_HELPER" ]; then RUNTIME_ARTIFACT_HELPER="$(git rev-parse --show-toplevel)/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; fi
+      [ -f "$RUNTIME_ARTIFACT_HELPER" ] || { echo "ERROR: workflow runtime artifact helper not found: $RUNTIME_ARTIFACT_HELPER" >&2; exit 1; }
+      # shellcheck disable=SC1090
+      source "$RUNTIME_ARTIFACT_HELPER"
+      preflight_known_workflow_runtime_artifacts .
       amplihack hygiene artifact-guard --repo . --mode pre-publish
 
   - id: "step-15-commit-push"
@@ -120,6 +127,13 @@ steps:
       trap _emit_commit_result EXIT
       branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
       echo "--- Staging Changes ---" >&2
+      RUNTIME_ARTIFACT_HELPER="${WORKFLOW_RUNTIME_ARTIFACT_HELPER:-${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_runtime_artifacts.sh}"
+      if [ ! -f "$RUNTIME_ARTIFACT_HELPER" ] && [ -n "${REPO_PATH:-}" ]; then RUNTIME_ARTIFACT_HELPER="$REPO_PATH/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; fi
+      if [ ! -f "$RUNTIME_ARTIFACT_HELPER" ]; then RUNTIME_ARTIFACT_HELPER="$(git rev-parse --show-toplevel)/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; fi
+      [ -f "$RUNTIME_ARTIFACT_HELPER" ] || { echo "ERROR: workflow runtime artifact helper not found: $RUNTIME_ARTIFACT_HELPER" >&2; exit 1; }
+      # shellcheck disable=SC1090
+      source "$RUNTIME_ARTIFACT_HELPER"
+      preflight_known_workflow_runtime_artifacts .
       amplihack hygiene artifact-guard --repo . --mode pre-publish
       git add -A
       echo "--- Creating Commit ---" >&2
@@ -261,6 +275,8 @@ steps:
           distribution validation when that project shape warrants it.
        5. If a test fails, diagnose, fix, commit, push, and retry up to 3 times:
           ```bash
+          . "${WORKFLOW_RUNTIME_ARTIFACT_HELPER:-${AMPLIHACK_HOME:-$(pwd)}/amplifier-bundle/tools/workflow_runtime_artifacts.sh}"
+          preflight_known_workflow_runtime_artifacts .
           amplihack hygiene artifact-guard --repo . --mode pre-publish && git add -A && git commit -m "fix: <describe the fix found during outside-in testing>"
           git pull --rebase && git push
           ```

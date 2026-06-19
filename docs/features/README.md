@@ -34,6 +34,7 @@ Intelligent guidance system that prevents common mistakes and ensures work compl
   the post-v0.9.77 issue-658 branch as the concrete example.
 - [Recipe Subprocess and Hook Input Contracts](../howto/validate-recipe-subprocess-hook-contract.md) — recipe-runner child environment and hook input compatibility contract; see the [recipe environment reference](../reference/recipe-executor-environment.md#recipe-runner-subprocess-launch) and [hook input contract](../reference/hook-specifications.md#hook-input-json-contract).
 - [Provider-Aware Workflow Tracking](dual-provider-workflow.md) — route workflow-prep tracking by GitHub, Azure DevOps, or local/unsupported remotes before provider issue commands run.
+- [Workflow Runtime Artifacts](../reference/workflow-runtime-artifacts.md) — isolate or clean workflow-generated `.claude/runtime` and marked nested worktrees before strict Artifact Guard gates.
 
 ## GitHub Distribution
 
