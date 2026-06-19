@@ -6,6 +6,8 @@
 //! persistence for resumption, and automatic cleanup of completed workstreams.
 
 mod launcher;
+#[cfg(test)]
+mod launcher_tests;
 mod models;
 mod orchestrator;
 mod process_scope;

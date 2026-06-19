@@ -4,6 +4,7 @@ use super::models::{ProcessScope, Workstream, WorkstreamScope};
 use super::process_scope::{normalize_path, process_start_metadata};
 use super::state::persist_state;
 use super::utils::{rand_u32, set_executable, tail_output};
+use amplihack_types::hook_io::normalize_executable_script_line_endings;
 use amplihack_types::workflow;
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -166,7 +167,7 @@ exec amplihack recipe run {recipe} $CONTEXT_FLAGS --verbose
 "#,
         recipe = safe_recipe,
     );
-    fs::write(&launcher_sh, launcher_content)?;
+    write_executable_script(&launcher_sh, &launcher_content)?;
     set_executable(&launcher_sh)?;
 
     let depth: u32 = std::env::var("AMPLIHACK_SESSION_DEPTH")
@@ -207,7 +208,7 @@ exec bash launcher.sh
         state_file = ws.state_file.display(),
         worktree_path = ws.worktree_path,
     );
-    fs::write(&run_sh, run_content)?;
+    write_executable_script(&run_sh, &run_content)?;
     set_executable(&run_sh)?;
 
     Ok(())
@@ -261,10 +262,16 @@ export AMPLIHACK_MAX_SESSIONS='{max_sessions}'
         dev_orchestrator = workflow::DEV_ORCHESTRATOR_SKILL,
         smart_orchestrator = workflow::SMART_ORCHESTRATOR_RECIPE_COMMAND,
     );
-    fs::write(&run_sh, run_content)?;
+    write_executable_script(&run_sh, &run_content)?;
     set_executable(&run_sh)?;
 
     Ok(())
+}
+
+pub(super) fn write_executable_script(path: &std::path::Path, content: &str) -> Result<()> {
+    let normalized = normalize_executable_script_line_endings(content);
+    fs::write(path, normalized)
+        .with_context(|| format!("write executable launcher script {}", path.display()))
 }
 
 /// Launch a single workstream subprocess.
@@ -336,17 +343,4 @@ pub(super) fn launch_workstream(
 
     persist_state(ws)?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_valid_delegates() {
-        assert!(VALID_DELEGATES.contains(&"amplihack claude"));
-        assert!(VALID_DELEGATES.contains(&"amplihack copilot"));
-        assert!(VALID_DELEGATES.contains(&"amplihack amplifier"));
-        assert!(!VALID_DELEGATES.contains(&"rm -rf /"));
-    }
 }

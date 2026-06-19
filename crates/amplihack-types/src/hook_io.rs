@@ -223,6 +223,16 @@ fn extra_fields(map: &JsonMap) -> Value {
     Value::Object(extra)
 }
 
+/// Normalize generated executable shell or hook script content to LF-only.
+///
+/// Windows-native checkouts or CRLF-tainted templates can introduce carriage
+/// returns that bash treats as part of the interpreter or command token. This
+/// helper is intentionally narrow: apply it only to generated executable script
+/// content at the write/staging boundary, not arbitrary repository files.
+pub fn normalize_executable_script_line_endings(content: &str) -> String {
+    content.replace("\r\n", "\n").replace('\r', "\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -372,6 +382,63 @@ mod tests {
         assert!(
             serde_json::from_str::<HookInput>(missing_tool_input).is_err(),
             "tool-like payloads without hookEventName must still require toolInput"
+        );
+    }
+
+    #[test]
+    fn executable_script_line_ending_normalization_converts_crlf_to_lf() {
+        let script = "#!/usr/bin/env bash\r\nset -euo pipefail\r\necho ok\r\n";
+
+        let normalized = normalize_executable_script_line_endings(script);
+
+        assert_eq!(
+            normalized,
+            "#!/usr/bin/env bash\nset -euo pipefail\necho ok\n"
+        );
+        assert!(
+            !normalized.as_bytes().contains(&b'\r'),
+            "normalized executable script content must not contain carriage returns"
+        );
+    }
+
+    #[test]
+    fn executable_script_line_ending_normalization_converts_lone_cr_to_lf() {
+        let script = "#!/usr/bin/env bash\rset -euo pipefail\recho ok\r";
+
+        let normalized = normalize_executable_script_line_endings(script);
+
+        assert_eq!(
+            normalized,
+            "#!/usr/bin/env bash\nset -euo pipefail\necho ok\n"
+        );
+        assert!(
+            !normalized.as_bytes().contains(&b'\r'),
+            "lone carriage returns must be normalized before bash sees generated hooks"
+        );
+    }
+
+    #[test]
+    fn executable_script_line_ending_normalization_preserves_lf_only_content() {
+        let script = "#!/usr/bin/env bash\nset -euo pipefail\necho ok\n";
+
+        let normalized = normalize_executable_script_line_endings(script);
+
+        assert_eq!(normalized, script);
+    }
+
+    #[test]
+    fn executable_script_line_ending_normalization_handles_mixed_inputs() {
+        let script = "#!/usr/bin/env bash\r\nset -euo pipefail\necho before\recho after\r\n";
+
+        let normalized = normalize_executable_script_line_endings(script);
+
+        assert_eq!(
+            normalized,
+            "#!/usr/bin/env bash\nset -euo pipefail\necho before\necho after\n"
+        );
+        assert!(
+            !normalized.as_bytes().contains(&b'\r'),
+            "mixed CRLF, LF, and lone CR input must become LF-only"
         );
     }
 }

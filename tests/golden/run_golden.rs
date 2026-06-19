@@ -37,6 +37,35 @@ impl Drop for EnvVarGuard {
     }
 }
 
+struct TempCwd {
+    original: PathBuf,
+    path: PathBuf,
+}
+
+impl TempCwd {
+    fn new(prefix: &str) -> Self {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .expect("unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "amplihack-golden-{prefix}-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&path).expect("golden temp cwd");
+        let original = std::env::current_dir().expect("current dir");
+        std::env::set_current_dir(&path).expect("set golden temp cwd");
+        Self { original, path }
+    }
+}
+
+impl Drop for TempCwd {
+    fn drop(&mut self) {
+        let _ = std::env::set_current_dir(&self.original);
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
 fn golden_env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -178,6 +207,7 @@ fn run_golden_tests_for_hook(hook_type: &str) {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
+    let _cwd = TempCwd::new(hook_type);
 
     let golden_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")

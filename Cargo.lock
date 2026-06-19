@@ -281,6 +281,7 @@ dependencies = [
 name = "amplihack-launcher"
 version = "0.11.1"
 dependencies = [
+ "amplihack-types",
  "amplihack-utils",
  "anyhow",
  "chrono",

@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Extended launcher support for all agent types (Codex, Amplifier, Copilot)"
 
 [dependencies]
+amplihack-types = { workspace = true }
 amplihack-utils = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
