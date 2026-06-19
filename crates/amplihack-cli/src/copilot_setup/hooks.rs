@@ -250,7 +250,8 @@ fn should_preserve_user_hook(path: &Path) -> Result<bool> {
     if !path.is_file() {
         return Ok(false);
     }
-    let content = fs::read_to_string(path).unwrap_or_default();
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("read existing hook {}", path.display()))?;
     Ok(!content.contains("amplihack") && !content.contains("AMPLIHACK"))
 }
 

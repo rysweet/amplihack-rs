@@ -210,6 +210,3 @@ and legacy launcher-staged hook scripts. The hook staging boundary normalizes
 CRLF and lone CR input before writing executable script bytes, so generated
 hooks do not fail with `$'\r': command not found` or bad-interpreter `\r`
 errors on Windows-native checkouts.
-
-See [Generated Hook Line Endings](generated-hook-line-endings.md) for the full
-normalization contract, Rust helper API, and regression requirements.

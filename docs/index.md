@@ -128,7 +128,6 @@ amplihack copilot
 - Use [How to Configure the Copilot Parity Control Plane](howto/configure-copilot-parity-control-plane.md) to pin the runner, pick the hook engine, and verify XPIA behavior
 - Read [Understanding the Copilot Parity Control Plane](concepts/copilot-parity-control-plane.md) for the architecture and trade-offs
 - Use the [Copilot Parity Control Plane Reference](reference/copilot-parity-control-plane.md) for precedence, hook contracts, and environment variables
-- See [Generated Hook Line Endings](reference/generated-hook-line-endings.md) for the LF-only contract that keeps generated `.github/hooks/*` scripts Bash-executable on Windows-native checkouts
 
 **Codex**
 
@@ -140,7 +139,6 @@ amplihack copilot
 
 - [Profile Management](PROFILE_MANAGEMENT.md) - Multiple environment configurations
 - [Hook Configuration](HOOK_CONFIGURATION_GUIDE.md) - Customize framework behavior
-- [Verify Generated Hook Line Endings](howto/verify-generated-hook-line-endings.md) - Check that generated `.github/hooks/*` scripts contain no CR bytes and pass `bash -n`
 - [Artifact Guard](artifact-guard.md) - Guard for broad staging, pre-commit, and workflow publication artifacts
 - [Configure Workflow Runtime Isolation](howto/configure-workflow-runtime-isolation.md) - Keep generated workflow runtime output outside commit worktrees
 - [Memory Configuration Consent](features/memory-consent-prompt.md) - Intelligent memory settings with timeout protection

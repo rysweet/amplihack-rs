@@ -79,7 +79,8 @@ pub fn stage_hooks(package_dir: &Path, user_dir: &Path) -> Result<u32> {
 
         // Don't overwrite user-managed hooks
         if dest.exists() {
-            let content = std::fs::read_to_string(&dest).unwrap_or_default();
+            let content = std::fs::read_to_string(&dest)
+                .with_context(|| format!("failed to read existing hook {}", dest.display()))?;
             if !content.contains("amplihack") {
                 debug!(hook = ?name, "Skipping user-managed hook");
                 continue;
