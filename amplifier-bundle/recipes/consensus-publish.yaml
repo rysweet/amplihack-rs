@@ -33,11 +33,6 @@ steps:
 
       # Stage all changes
       amplihack hygiene artifact-guard --repo . --mode pre-publish
-      GIT_IDENTITY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(git rev-parse --show-toplevel)}}/amplifier-bundle/tools/git-identity.sh"
-      [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(git rev-parse --show-toplevel)/amplifier-bundle/tools/git-identity.sh"
-      [ -f "$GIT_IDENTITY_HELPER" ] || { echo "ERROR: git identity helper not found: $GIT_IDENTITY_HELPER" >&2; exit 2; }
-      # shellcheck source=/dev/null
-      . "$GIT_IDENTITY_HELPER"
       git add -A
 
       # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
@@ -66,6 +61,7 @@ steps:
 
       COMMITTED=false
       if [ -n "$(git diff --cached --name-only)" ]; then
+        GIT_IDENTITY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(git rev-parse --show-toplevel)}}/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(git rev-parse --show-toplevel)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || { echo "ERROR: git identity helper not found: $GIT_IDENTITY_HELPER" >&2; exit 2; }; . "$GIT_IDENTITY_HELPER"
         amplihack_prepare_git_commit_identity
         if git commit -m "$COMMIT_MSG"; then
           COMMITTED=true
