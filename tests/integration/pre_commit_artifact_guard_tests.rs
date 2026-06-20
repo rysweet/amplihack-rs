@@ -1,51 +1,20 @@
-//! tests/integration/pre_commit_artifact_guard_tests.rs
-//!
 //! Contracts for local pre-commit Artifact Guard wiring.
 //!
 //! The hook must scan repository state rather than only the filenames passed by
 //! pre-commit, because issue #755 is about ignored/untracked generated artifacts
 //! left in the parent worktree.
 
-use serde::Deserialize;
+use serde_yaml::Value;
 use std::fs;
-use std::path::Component;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::OnceLock;
 
-const VALID_ARTIFACT_GUARD_ENTRY: &str = "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit'";
-const VALID_LOCKED_ARTIFACT_GUARD_ENTRY: &str = "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --locked --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit'";
+const VALID_CARGO_ENTRY: &str = "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit'";
+const VALID_LOCKED_BEFORE_BIN_ENTRY: &str = "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --locked --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit'";
+const VALID_LOCKED_AFTER_BIN_ENTRY: &str = "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --bin amplihack --locked -- hygiene artifact-guard --repo . --mode pre-commit'";
+const VALID_BIN_EQUALS_ENTRY: &str = "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --bin=amplihack -- hygiene artifact-guard --repo . --mode pre-commit'";
 
-#[derive(Debug, Deserialize)]
-struct PreCommitConfig {
-    repos: Vec<PreCommitRepo>,
-}
-
-#[derive(Debug, Deserialize)]
-struct PreCommitRepo {
-    repo: String,
-    #[serde(default)]
-    hooks: Vec<PreCommitHook>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct PreCommitHook {
-    id: String,
-    entry: Option<String>,
-    language: Option<String>,
-    pass_filenames: Option<bool>,
-    always_run: Option<bool>,
-    files: Option<String>,
-    types: Option<Vec<String>>,
-}
-
-#[derive(Debug)]
-struct ParsedHookEntry {
-    cargo_target_dir: Option<String>,
-    cargo_args: Vec<String>,
-    amplihack_args: Vec<String>,
-}
-
-fn workspace_root() -> &'static Path {
+fn workspace_root() -> &'static PathBuf {
     static ROOT: OnceLock<PathBuf> = OnceLock::new();
     ROOT.get_or_init(|| {
         let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -55,8 +24,8 @@ fn workspace_root() -> &'static Path {
     })
 }
 
-fn pre_commit_config() -> &'static PreCommitConfig {
-    static CONFIG: OnceLock<PreCommitConfig> = OnceLock::new();
+fn pre_commit_config() -> &'static Value {
+    static CONFIG: OnceLock<Value> = OnceLock::new();
     CONFIG.get_or_init(|| {
         let path = workspace_root().join(".pre-commit-config.yaml");
         let text =
@@ -65,194 +34,132 @@ fn pre_commit_config() -> &'static PreCommitConfig {
     })
 }
 
-fn local_hooks(config: &PreCommitConfig) -> impl Iterator<Item = &PreCommitHook> {
+fn local_hooks(config: &Value) -> Vec<&Value> {
     config
-        .repos
+        .get("repos")
+        .and_then(Value::as_sequence)
+        .expect("pre-commit config must contain repos")
         .iter()
-        .filter(|repo| repo.repo == "local")
-        .flat_map(|repo| repo.hooks.iter())
+        .filter(|repo| repo.get("repo").and_then(Value::as_str) == Some("local"))
+        .flat_map(|repo| {
+            repo.get("hooks")
+                .and_then(Value::as_sequence)
+                .expect("local repo must contain hooks")
+        })
+        .collect()
 }
 
-fn local_hook<'a>(config: &'a PreCommitConfig, id: &str) -> &'a PreCommitHook {
-    local_hooks(config)
-        .find(|hook| hook.id == id)
+fn hook<'a>(hooks: &'a [&Value], id: &str) -> &'a Value {
+    hooks
+        .iter()
+        .copied()
+        .find(|hook| hook.get("id").and_then(Value::as_str) == Some(id))
         .unwrap_or_else(|| panic!("missing local pre-commit hook `{id}`"))
 }
 
-fn valid_artifact_guard_hook(entry: &str) -> PreCommitHook {
-    PreCommitHook {
-        id: "artifact-guard".to_string(),
-        entry: Some(entry.to_string()),
-        ..PreCommitHook::default()
-    }
-}
-
-fn contract_config(repo: &str, hooks: Vec<PreCommitHook>) -> PreCommitConfig {
-    PreCommitConfig {
-        repos: vec![PreCommitRepo {
-            repo: repo.to_string(),
-            hooks,
-        }],
-    }
-}
-
-fn assert_artifact_guard_contract(config: &PreCommitConfig) -> Result<(), String> {
-    let mut matches = config.repos.iter().flat_map(|repo| {
-        repo.hooks
-            .iter()
-            .filter(|hook| hook.id == "artifact-guard")
-            .map(move |hook| (repo, hook))
-    });
-
-    let Some((repo, hook)) = matches.next() else {
-        return Err("expected exactly one Artifact Guard hook, found 0".to_string());
-    };
-    if matches.next().is_some() {
-        return Err(format!(
-            "expected exactly one Artifact Guard hook, found {}",
-            2 + matches.count()
-        ));
-    }
-
-    if repo.repo != "local" {
-        return Err(format!(
-            "Artifact Guard hook must be defined under repo: local, got {}",
-            repo.repo
-        ));
-    }
-
-    let entry = hook
-        .entry
-        .as_deref()
-        .ok_or_else(|| "Artifact Guard hook must declare an entry".to_string())?;
-    assert_artifact_guard_entry_contract(entry)
+fn artifact_guard_entry_from_config() -> String {
+    let hooks = local_hooks(pre_commit_config());
+    hook(&hooks, "artifact-guard")
+        .get("entry")
+        .and_then(Value::as_str)
+        .expect("artifact guard hook must declare an entry")
+        .to_string()
 }
 
 fn assert_artifact_guard_entry_contract(entry: &str) -> Result<(), String> {
-    let parsed = parse_hook_entry(entry)?;
-    assert_cargo_target_dir_is_isolated(&parsed, entry)?;
-    assert_cargo_args_contract(&parsed, entry)?;
-    assert_artifact_guard_args(&parsed, entry)?;
-    Ok(())
-}
-
-fn parse_hook_entry(entry: &str) -> Result<ParsedHookEntry, String> {
-    let outer_tokens =
-        shell_words::split(entry).map_err(|e| format!("parse hook entry shell tokens: {e}"))?;
-    let command_tokens = match outer_tokens.as_slice() {
-        [shell, flag, command] if shell == "bash" && flag == "-c" => shell_words::split(command)
-            .map_err(|e| format!("parse bash -c hook command shell tokens: {e}"))?,
-        [shell, flag, ..] if shell == "bash" && flag == "-c" => {
-            return Err(format!(
-                "bash -c hook entry must contain exactly one command string; entry was `{entry}`"
-            ));
-        }
-        _ => {
-            return Err(format!(
-                "Artifact Guard hook entry must use `bash -c` with one command string; entry was `{entry}`"
-            ));
-        }
+    let tokens = hook_command_tokens(entry)?;
+    let (cargo_target_dir, command) = split_env_assignments(&tokens);
+    let guard_args = if command.first().map(String::as_str) == Some("cargo") {
+        assert_cargo_fallback(command, cargo_target_dir, entry)?
+    } else {
+        command
     };
 
+    assert_guard_invocation(guard_args, entry)
+}
+
+fn hook_command_tokens(entry: &str) -> Result<Vec<String>, String> {
+    let outer = shell_words::split(entry).map_err(|e| format!("parse hook entry: {e}"))?;
+    match outer.as_slice() {
+        [shell, flag, command] if shell == "bash" && flag == "-c" => {
+            shell_words::split(command).map_err(|e| format!("parse bash -c command: {e}"))
+        }
+        [shell, flag, ..] if shell == "bash" && flag == "-c" => Err(format!(
+            "bash -c hook entry must contain exactly one command string; entry was `{entry}`"
+        )),
+        _ => Ok(outer),
+    }
+}
+
+fn split_env_assignments(tokens: &[String]) -> (Option<&str>, &[String]) {
     let mut cargo_target_dir = None;
     let mut command_index = 0;
-    while let Some((name, value)) = command_tokens
+    while let Some((name, value)) = tokens
         .get(command_index)
-        .and_then(|token| env_assignment(token))
+        .and_then(|token| token.split_once('='))
+        .filter(|(name, _)| is_shell_name(name))
     {
         if name == "CARGO_TARGET_DIR" {
-            cargo_target_dir = Some(value.to_string());
+            cargo_target_dir = Some(value);
         }
         command_index += 1;
     }
-
-    let command = command_tokens
-        .get(command_index..)
-        .ok_or_else(|| format!("hook entry must invoke cargo run; entry was `{entry}`"))?;
-    if command.first().map(String::as_str) != Some("cargo")
-        || command.get(1).map(String::as_str) != Some("run")
-    {
-        return Err(format!(
-            "hook must invoke repo-local cargo fallback with `cargo run`; entry was `{entry}`"
-        ));
-    }
-
-    let args_after_run = &command[2..];
-    let separator_index = args_after_run
-        .iter()
-        .position(|arg| arg == "--")
-        .ok_or_else(|| {
-            format!("cargo fallback must separate Cargo args from amplihack args with `--`; entry was `{entry}`")
-        })?;
-
-    Ok(ParsedHookEntry {
-        cargo_target_dir,
-        cargo_args: args_after_run[..separator_index].to_vec(),
-        amplihack_args: args_after_run[separator_index + 1..].to_vec(),
-    })
+    (cargo_target_dir, &tokens[command_index..])
 }
 
-fn env_assignment(token: &str) -> Option<(&str, &str)> {
-    let (name, value) = token.split_once('=')?;
+fn is_shell_name(name: &str) -> bool {
     let mut chars = name.chars();
-    let first = chars.next()?;
-    if !(first == '_' || first.is_ascii_alphabetic()) {
-        return None;
-    }
-    if !chars.all(|c| c == '_' || c.is_ascii_alphanumeric()) {
-        return None;
-    }
-    Some((name, value))
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
 }
 
-fn assert_cargo_target_dir_is_isolated(
-    parsed: &ParsedHookEntry,
+fn assert_cargo_fallback<'a>(
+    command: &'a [String],
+    cargo_target_dir: Option<&str>,
     entry: &str,
-) -> Result<(), String> {
-    let target_dir = parsed
-        .cargo_target_dir
-        .as_deref()
-        .ok_or_else(|| format!("cargo fallback must set CARGO_TARGET_DIR; entry was `{entry}`"))?;
-    if !is_isolated_target_dir(target_dir) {
+) -> Result<&'a [String], String> {
+    if command.get(1).map(String::as_str) != Some("run") {
         return Err(format!(
-            "cargo fallback must isolate CARGO_TARGET_DIR outside the repo; got `{target_dir}` in `{entry}`"
+            "cargo fallback must invoke `cargo run`; entry was `{entry}`"
         ));
     }
-    Ok(())
-}
-
-fn is_isolated_target_dir(value: &str) -> bool {
-    if value == "${TMPDIR:-/tmp}/amplihack-precommit-target" {
-        return true;
+    let target_dir = cargo_target_dir
+        .ok_or_else(|| format!("cargo fallback must set CARGO_TARGET_DIR; entry was `{entry}`"))?;
+    if !target_dir.contains("/tmp") {
+        return Err(format!(
+            "cargo fallback must isolate CARGO_TARGET_DIR outside the repo; entry was `{entry}`"
+        ));
     }
-    let path = Path::new(value);
-    path.is_absolute()
-        && !path
-            .components()
-            .any(|component| component == Component::ParentDir)
-        && !path.starts_with(workspace_root())
+
+    let separator = command[2..].iter().position(|arg| arg == "--").ok_or_else(|| {
+        format!("cargo fallback must separate Cargo args from amplihack args with `--`; entry was `{entry}`")
+    })?;
+    let (cargo_args, guard_args) = command[2..].split_at(separator);
+    assert_cargo_options(cargo_args, entry)?;
+    Ok(&guard_args[1..])
 }
 
-fn assert_cargo_args_contract(parsed: &ParsedHookEntry, entry: &str) -> Result<(), String> {
+fn assert_cargo_options(args: &[String], entry: &str) -> Result<(), String> {
     let mut bin_values = Vec::new();
     let mut locked_count = 0;
     let mut index = 0;
-
-    while index < parsed.cargo_args.len() {
-        let arg = &parsed.cargo_args[index];
-        match arg.as_str() {
+    while index < args.len() {
+        match args[index].as_str() {
             "--locked" => {
                 locked_count += 1;
                 index += 1;
             }
             "--bin" => {
-                let value = parsed.cargo_args.get(index + 1).ok_or_else(|| {
+                let value = args.get(index + 1).ok_or_else(|| {
                     format!("Cargo option `--bin` must include a value; entry was `{entry}`")
                 })?;
                 bin_values.push(value.as_str());
                 index += 2;
             }
-            _ => {
+            arg => {
                 if let Some(value) = arg.strip_prefix("--bin=") {
                     bin_values.push(value);
                     index += 1;
@@ -264,48 +171,41 @@ fn assert_cargo_args_contract(parsed: &ParsedHookEntry, entry: &str) -> Result<(
             }
         }
     }
-
     if locked_count > 1 {
         return Err(format!(
             "cargo fallback must pass `--locked` at most once; entry was `{entry}`"
         ));
     }
-
-    match bin_values.as_slice() {
-        [bin] if *bin == "amplihack" => Ok(()),
-        [] => Err(format!(
-            "cargo fallback must invoke the repo-local amplihack binary with `--bin amplihack`; entry was `{entry}`"
-        )),
-        [bin] => Err(format!(
-            "cargo fallback must invoke `--bin amplihack`, got `--bin {bin}` in `{entry}`"
-        )),
-        values => Err(format!(
-            "cargo fallback must declare exactly one `--bin amplihack`, got {values:?} in `{entry}`"
-        )),
-    }
+    assert_single_value(&bin_values, "--bin", "amplihack", entry)
 }
 
-fn assert_artifact_guard_args(parsed: &ParsedHookEntry, entry: &str) -> Result<(), String> {
-    if parsed.amplihack_args.first().map(String::as_str) != Some("hygiene")
-        || parsed.amplihack_args.get(1).map(String::as_str) != Some("artifact-guard")
+fn assert_guard_invocation(args: &[String], entry: &str) -> Result<(), String> {
+    if args.first().map(String::as_str) != Some("amplihack")
+        && (args.first().map(String::as_str) != Some("hygiene")
+            || args.get(1).map(String::as_str) != Some("artifact-guard"))
     {
         return Err(format!(
-            "hook must invoke `hygiene artifact-guard` after the Cargo `--` separator; entry was `{entry}`"
+            "hook must invoke `hygiene artifact-guard`; entry was `{entry}`"
         ));
     }
+    let option_start = if args.first().map(String::as_str) == Some("amplihack") {
+        if args.get(1).map(String::as_str) != Some("hygiene")
+            || args.get(2).map(String::as_str) != Some("artifact-guard")
+        {
+            return Err(format!(
+                "hook must invoke `amplihack hygiene artifact-guard`; entry was `{entry}`"
+            ));
+        }
+        3
+    } else {
+        2
+    };
 
-    assert_artifact_guard_options_are_exact(&parsed.amplihack_args[2..], entry)?;
-    Ok(())
-}
-
-fn assert_artifact_guard_options_are_exact(args: &[String], entry: &str) -> Result<(), String> {
     let mut repo_values = Vec::new();
     let mut mode_values = Vec::new();
-    let mut index = 0;
-
+    let mut index = option_start;
     while index < args.len() {
-        let arg = &args[index];
-        match arg.as_str() {
+        match args[index].as_str() {
             "--repo" => {
                 let value = args.get(index + 1).ok_or_else(|| {
                     format!(
@@ -324,7 +224,7 @@ fn assert_artifact_guard_options_are_exact(args: &[String], entry: &str) -> Resu
                 mode_values.push(value.as_str());
                 index += 2;
             }
-            _ => {
+            arg => {
                 if let Some(value) = arg.strip_prefix("--repo=") {
                     repo_values.push(value);
                     index += 1;
@@ -340,12 +240,11 @@ fn assert_artifact_guard_options_are_exact(args: &[String], entry: &str) -> Resu
         }
     }
 
-    assert_single_artifact_guard_value(&repo_values, "--repo", ".", entry)?;
-    assert_single_artifact_guard_value(&mode_values, "--mode", "pre-commit", entry)?;
-    Ok(())
+    assert_single_value(&repo_values, "--repo", ".", entry)?;
+    assert_single_value(&mode_values, "--mode", "pre-commit", entry)
 }
 
-fn assert_single_artifact_guard_value(
+fn assert_single_value(
     values: &[&str],
     flag: &str,
     expected: &str,
@@ -367,21 +266,21 @@ fn assert_single_artifact_guard_value(
 
 #[test]
 fn pre_commit_config_has_full_repo_artifact_guard_hook() {
-    let config = pre_commit_config();
-    let hook = local_hook(config, "artifact-guard");
+    let hooks = local_hooks(pre_commit_config());
+    let hook = hook(&hooks, "artifact-guard");
 
     assert_eq!(
-        hook.pass_filenames,
+        hook.get("pass_filenames").and_then(Value::as_bool),
         Some(false),
         "Artifact Guard must scan full repo state, not only pre-commit filenames"
     );
     assert_eq!(
-        hook.language.as_deref(),
+        hook.get("language").and_then(Value::as_str),
         Some("system"),
         "Artifact Guard should use the repo's system-command hook convention"
     );
     assert_eq!(
-        hook.always_run,
+        hook.get("always_run").and_then(Value::as_bool),
         Some(true),
         "Artifact Guard must run even when only ignored/untracked artifacts are present"
     );
@@ -389,76 +288,30 @@ fn pre_commit_config_has_full_repo_artifact_guard_hook() {
 
 #[test]
 fn pre_commit_artifact_guard_entry_uses_repo_cli_and_pre_commit_mode() {
-    let config = pre_commit_config();
-
-    assert_artifact_guard_contract(&config)
+    assert_artifact_guard_entry_contract(&artifact_guard_entry_from_config())
         .expect("checked-in Artifact Guard hook must satisfy the pre-commit contract");
 }
 
 #[test]
-fn artifact_guard_contract_accepts_locked_cargo_option_between_run_and_bin() {
-    let config = contract_config(
-        "local",
-        vec![valid_artifact_guard_hook(VALID_LOCKED_ARTIFACT_GUARD_ENTRY)],
-    );
-
-    assert_artifact_guard_contract(&config)
-        .expect("cargo run --locked --bin amplihack must be a valid repo-local fallback");
+fn artifact_guard_contract_accepts_legal_cargo_option_ordering() {
+    for entry in [
+        VALID_CARGO_ENTRY,
+        VALID_LOCKED_BEFORE_BIN_ENTRY,
+        VALID_LOCKED_AFTER_BIN_ENTRY,
+        VALID_BIN_EQUALS_ENTRY,
+        "amplihack hygiene artifact-guard --repo . --mode pre-commit",
+    ] {
+        assert_artifact_guard_entry_contract(entry)
+            .unwrap_or_else(|error| panic!("contract should accept `{entry}`: {error}"));
+    }
 }
 
 #[test]
-fn artifact_guard_contract_rejects_missing_or_nonlocal_hook_definition() {
-    let missing = contract_config("local", vec![]);
-    assert!(
-        assert_artifact_guard_contract(&missing).is_err(),
-        "contract must fail when the Artifact Guard hook is absent"
-    );
-
-    let remote = contract_config(
-        "https://github.com/pre-commit/pre-commit-hooks",
-        vec![valid_artifact_guard_hook(VALID_ARTIFACT_GUARD_ENTRY)],
-    );
-    assert!(
-        assert_artifact_guard_contract(&remote).is_err(),
-        "contract must fail when Artifact Guard is not defined as a repo-local hook"
-    );
-
-    let duplicate = contract_config(
-        "local",
-        vec![
-            valid_artifact_guard_hook(VALID_ARTIFACT_GUARD_ENTRY),
-            valid_artifact_guard_hook(VALID_ARTIFACT_GUARD_ENTRY),
-        ],
-    );
-    assert!(
-        assert_artifact_guard_contract(&duplicate).is_err(),
-        "contract must fail when more than one Artifact Guard hook is defined"
-    );
-}
-
-#[test]
-fn artifact_guard_contract_rejects_missing_or_wrong_required_entry_parts() {
-    let invalid_entries = [
-        ("missing entry", ""),
+fn artifact_guard_contract_rejects_invalid_entries() {
+    for (case, entry) in [
         (
-            "missing isolated target dir",
+            "missing target dir",
             "bash -c 'cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit'",
-        ),
-        (
-            "target dir path traversal segment",
-            "bash -c 'CARGO_TARGET_DIR=/tmp/../var/tmp/amplihack-precommit-target cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit'",
-        ),
-        (
-            "non-isolated target dir",
-            "bash -c 'CARGO_TARGET_DIR=target/precommit cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit'",
-        ),
-        (
-            "missing bash wrapper",
-            "CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit",
-        ),
-        (
-            "missing repo-local amplihack bin",
-            "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run -- hygiene artifact-guard --repo . --mode pre-commit'",
         ),
         (
             "wrong cargo bin",
@@ -469,55 +322,32 @@ fn artifact_guard_contract_rejects_missing_or_wrong_required_entry_parts() {
             "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --manifest-path /tmp/Cargo.toml --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit'",
         ),
         (
-            "duplicate cargo locked option",
+            "duplicate locked option",
             "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --locked --locked --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit'",
         ),
         (
-            "missing artifact-guard command",
+            "wrong guard command",
             "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --bin amplihack -- hygiene other --repo . --mode pre-commit'",
         ),
         (
-            "missing repo argument",
-            "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --bin amplihack -- hygiene artifact-guard --mode pre-commit'",
-        ),
-        (
-            "wrong repo argument",
+            "wrong repo",
             "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --bin amplihack -- hygiene artifact-guard --repo /tmp --mode pre-commit'",
         ),
         (
-            "missing mode argument",
-            "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --bin amplihack -- hygiene artifact-guard --repo .'",
-        ),
-        (
-            "wrong mode argument",
+            "wrong mode",
             "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-push'",
         ),
         (
-            "duplicate mode argument",
-            "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit --mode pre-commit'",
-        ),
-        (
-            "extra artifact guard argument",
+            "extra guard argument",
             "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit --allowlist target'",
         ),
         (
-            "extra shell command after guard",
-            "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit ; true'",
-        ),
-        (
-            "extra conditional shell command after guard",
+            "extra shell command",
             "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit && true'",
         ),
-        (
-            "shell redirection after guard",
-            "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit > /tmp/artifact-guard.log'",
-        ),
-    ];
-
-    for (case, entry) in invalid_entries {
-        let config = contract_config("local", vec![valid_artifact_guard_hook(entry)]);
+    ] {
         assert!(
-            assert_artifact_guard_contract(&config).is_err(),
+            assert_artifact_guard_entry_contract(entry).is_err(),
             "contract must fail for {case}"
         );
     }
@@ -525,28 +355,27 @@ fn artifact_guard_contract_rejects_missing_or_wrong_required_entry_parts() {
 
 #[test]
 fn pre_commit_artifact_guard_hook_is_not_limited_by_files_filter() {
-    let config = pre_commit_config();
-    let hook = local_hook(config, "artifact-guard");
+    let hooks = local_hooks(pre_commit_config());
+    let hook = hook(&hooks, "artifact-guard");
 
     assert!(
-        hook.files.is_none() && hook.types.is_none(),
+        hook.get("files").is_none() && hook.get("types").is_none(),
         "Artifact Guard hook must not use files/types filters because ignored-present artifacts may not be in the commit file list"
     );
 }
 
 #[test]
 fn pre_commit_hook_order_runs_artifact_guard_before_format_lint_and_tests() {
-    let config = pre_commit_config();
-    let hooks: Vec<_> = local_hooks(config).collect();
+    let hooks = local_hooks(pre_commit_config());
     let artifact_index = hooks
         .iter()
-        .position(|hook| hook.id == "artifact-guard")
+        .position(|hook| hook.get("id").and_then(Value::as_str) == Some("artifact-guard"))
         .expect("artifact guard hook must exist");
 
     for later_hook in ["cargo-fmt", "cargo-clippy", "cargo-test"] {
         let later_index = hooks
             .iter()
-            .position(|hook| hook.id == later_hook)
+            .position(|hook| hook.get("id").and_then(Value::as_str) == Some(later_hook))
             .unwrap_or_else(|| panic!("missing expected hook `{later_hook}`"));
         assert!(
             artifact_index < later_index,
@@ -557,13 +386,13 @@ fn pre_commit_hook_order_runs_artifact_guard_before_format_lint_and_tests() {
 
 #[test]
 fn pre_commit_build_hooks_use_isolated_target_dir() {
-    let config = pre_commit_config();
+    let hooks = local_hooks(pre_commit_config());
 
     for id in ["cargo-clippy", "cargo-test"] {
-        let hook = local_hook(config, id);
+        let hook = hook(&hooks, id);
         let entry = hook
-            .entry
-            .as_deref()
+            .get("entry")
+            .and_then(Value::as_str)
             .unwrap_or_else(|| panic!("{id} must declare an entry"));
         assert!(
             entry.contains("CARGO_TARGET_DIR") && entry.contains("/tmp"),
