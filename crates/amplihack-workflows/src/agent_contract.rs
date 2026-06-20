@@ -49,7 +49,13 @@ impl AgentContractError {
 }
 
 pub fn validate_finalizer_output(value: Value) -> Result<AgentFinalizerOutput, AgentContractError> {
-    let output = AgentFinalizerOutput::deserialize(&value)
+    validate_finalizer_output_ref(&value)
+}
+
+pub fn validate_finalizer_output_ref(
+    value: &Value,
+) -> Result<AgentFinalizerOutput, AgentContractError> {
+    let output = AgentFinalizerOutput::deserialize(value)
         .map_err(|_| AgentContractError::MissingOrInvalidJson)?;
 
     if output.terminal_success && output.confidence != FinalizerConfidence::High {
@@ -59,7 +65,7 @@ pub fn validate_finalizer_output(value: Value) -> Result<AgentFinalizerOutput, A
         return Err(AgentContractError::FailedInvalidEvidence);
     }
 
-    let transition = validate_terminal_transition_ref(&value);
+    let transition = validate_terminal_transition_ref(value);
     if transition.terminal_state == TerminalState::FailedInvalidEvidence {
         return Err(AgentContractError::FailedInvalidEvidence);
     }

@@ -152,7 +152,7 @@ fn run_detect_provider(args: DetectProviderArgs) -> Result<()> {
         schema_version: 1,
         provider,
         repository: repository.clone(),
-        capabilities: capabilities.clone(),
+        capabilities,
         status,
         next_action: provider_default_next_action(provider).into(),
     };

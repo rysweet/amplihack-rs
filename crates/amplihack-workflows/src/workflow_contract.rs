@@ -18,7 +18,7 @@ pub enum ProviderCapabilityState {
     Unsupported,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderCapabilities {
     pub tracking_items: ProviderCapabilityState,
     pub change_requests: ProviderCapabilityState,
@@ -136,29 +136,22 @@ impl<'de> Deserialize<'de> for TerminalState {
 }
 
 pub fn parse_terminal_state(raw: &str) -> Option<TerminalState> {
-    let trimmed = raw.trim();
-    let normalized = if trimmed.contains('_') || trimmed.contains('-') {
-        trimmed.replace('-', "_").to_ascii_uppercase()
+    if matches_identifier(raw, "followupcreated") {
+        Some(TerminalState::FollowupCreated)
+    } else if matches_identifier(raw, "manualrequired") {
+        Some(TerminalState::ManualRequired)
+    } else if matches_identifier(raw, "blockedmanualprovider") {
+        Some(TerminalState::BlockedManualProvider)
+    } else if matches_identifier(raw, "hollowsuccess") {
+        Some(TerminalState::HollowSuccess)
+    } else if matches_identifier(raw, "failedinvalidevidence") {
+        Some(TerminalState::FailedInvalidEvidence)
+    } else if matches_identifier(raw, "failedfinalizeroutput") {
+        Some(TerminalState::FailedFinalizerOutput)
+    } else if matches_identifier(raw, "failed") {
+        Some(TerminalState::Failed)
     } else {
-        let mut out = String::new();
-        for (index, ch) in trimmed.chars().enumerate() {
-            if ch.is_ascii_uppercase() && index > 0 {
-                out.push('_');
-            }
-            out.push(ch.to_ascii_uppercase());
-        }
-        out
-    };
-
-    match normalized.as_str() {
-        "FOLLOWUP_CREATED" => Some(TerminalState::FollowupCreated),
-        "MANUAL_REQUIRED" => Some(TerminalState::ManualRequired),
-        "BLOCKED_MANUAL_PROVIDER" => Some(TerminalState::BlockedManualProvider),
-        "HOLLOW_SUCCESS" => Some(TerminalState::HollowSuccess),
-        "FAILED_INVALID_EVIDENCE" => Some(TerminalState::FailedInvalidEvidence),
-        "FAILED_FINALIZER_OUTPUT" => Some(TerminalState::FailedFinalizerOutput),
-        "FAILED" => Some(TerminalState::Failed),
-        _ => None,
+        None
     }
 }
 
@@ -285,11 +278,13 @@ pub fn validate_terminal_transition_ref(value: &Value) -> TerminalValidationResu
         .get("evidence_used")
         .and_then(Value::as_array)
         .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect()
+            let mut evidence = Vec::with_capacity(items.len());
+            for item in items {
+                if let Some(item) = item.as_str() {
+                    evidence.push(item.to_owned());
+                }
+            }
+            evidence
         })
         .unwrap_or_default();
 
@@ -366,14 +361,54 @@ fn invalid_terminal_transition(
 fn provider_from_value(value: &Value) -> Option<RepositoryProvider> {
     value
         .get("provider")
-        .cloned()
-        .and_then(|provider| serde_json::from_value(provider).ok())
+        .and_then(Value::as_str)
+        .and_then(parse_repository_provider)
 }
 
 fn change_request_capability_from_value(value: &Value) -> Option<ProviderCapabilityState> {
     value
         .get("capabilities")
         .and_then(|capabilities| capabilities.get("change_requests"))
-        .cloned()
-        .and_then(|state| serde_json::from_value(state).ok())
+        .and_then(Value::as_str)
+        .and_then(parse_provider_capability_state)
+}
+
+fn parse_repository_provider(raw: &str) -> Option<RepositoryProvider> {
+    if matches_identifier(raw, "github") {
+        Some(RepositoryProvider::GitHub)
+    } else if matches_identifier(raw, "azuredevops") {
+        Some(RepositoryProvider::AzureDevOps)
+    } else if matches_identifier(raw, "manual") {
+        Some(RepositoryProvider::Manual)
+    } else {
+        None
+    }
+}
+
+fn parse_provider_capability_state(raw: &str) -> Option<ProviderCapabilityState> {
+    if matches_identifier(raw, "automated") {
+        Some(ProviderCapabilityState::Automated)
+    } else if matches_identifier(raw, "manualrequired") {
+        Some(ProviderCapabilityState::ManualRequired)
+    } else if matches_identifier(raw, "blockedmanualprovider") {
+        Some(ProviderCapabilityState::BlockedManualProvider)
+    } else if matches_identifier(raw, "unsupported") {
+        Some(ProviderCapabilityState::Unsupported)
+    } else {
+        None
+    }
+}
+
+fn matches_identifier(raw: &str, expected: &str) -> bool {
+    let mut chars = raw
+        .trim()
+        .chars()
+        .filter(|ch| !matches!(ch, '_' | '-' | ' '));
+    for expected in expected.chars() {
+        match chars.next() {
+            Some(ch) if ch.eq_ignore_ascii_case(&expected) => {}
+            _ => return false,
+        }
+    }
+    chars.next().is_none()
 }

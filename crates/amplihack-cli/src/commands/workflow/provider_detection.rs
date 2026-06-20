@@ -20,8 +20,7 @@ pub(super) fn detect_provider_from_repo(repo: &Path) -> Result<ProviderDetection
         .map(|name| name.to_string_lossy().into_owned())
         .filter(|name| !name.trim().is_empty())
         .unwrap_or_else(|| "repository".into());
-    let (provider, repository) =
-        repository_identity_from_remote_url(remote_url.as_deref(), &fallback_name);
+    let (provider, repository) = repository_identity_from_remote_url(remote_url, &fallback_name);
 
     if config.is_none() {
         warnings.push("No Git config found; provider set to Manual.".into());
@@ -100,7 +99,7 @@ fn git_config_path(repo: &Path) -> Result<Option<PathBuf>> {
     Ok(None)
 }
 
-fn origin_remote_url(config: &str) -> Option<String> {
+fn origin_remote_url(config: &str) -> Option<&str> {
     let mut in_origin = false;
     let mut first_remote_url = None;
     for line in config.lines() {
@@ -118,10 +117,10 @@ fn origin_remote_url(config: &str) -> Option<String> {
             continue;
         };
         if first_remote_url.is_none() {
-            first_remote_url = Some(url.to_string());
+            first_remote_url = Some(url);
         }
         if in_origin {
-            return Some(url.to_string());
+            return Some(url);
         }
     }
     first_remote_url

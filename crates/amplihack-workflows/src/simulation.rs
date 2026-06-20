@@ -1,4 +1,4 @@
-use crate::agent_contract::{AgentFinalizerOutput, validate_finalizer_output};
+use crate::agent_contract::{AgentFinalizerOutput, validate_finalizer_output_ref};
 use crate::workflow_contract::{
     ProviderCapabilities, ProviderCapabilityState, RepositoryProvider, TerminalState,
 };
@@ -191,7 +191,7 @@ fn validate_simulated_finalizer(
         return Ok(None);
     };
     if let Some(output) = &finalizer.output {
-        return validate_finalizer_output(output.clone())
+        return validate_finalizer_output_ref(output)
             .map(Some)
             .map_err(|_| "finalizer".into());
     }

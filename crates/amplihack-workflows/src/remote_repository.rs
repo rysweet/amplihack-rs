@@ -1,11 +1,11 @@
 use crate::workflow_contract::{RepositoryIdentity, RepositoryProvider};
 
 pub fn provider_from_remote_url(remote_url: Option<&str>) -> RepositoryProvider {
-    let Some(remote_url) = remote_url else {
-        return RepositoryProvider::Manual;
-    };
+    provider_from_remote_parts(remote_url.and_then(remote_url_parts))
+}
 
-    match remote_url_parts(remote_url).map(|parts| parts.host) {
+fn provider_from_remote_parts(parts: Option<RemoteUrlParts<'_>>) -> RepositoryProvider {
+    match parts.map(|parts| parts.host) {
         Some(host)
             if host_matches_provider_domain(host, "dev.azure.com")
                 || host_matches_provider_domain(host, "visualstudio.com") =>
@@ -23,8 +23,9 @@ pub fn repository_identity_from_remote_url(
     remote_url: Option<&str>,
     fallback_name: &str,
 ) -> (RepositoryProvider, RepositoryIdentity) {
-    let provider = provider_from_remote_url(remote_url);
-    let (owner, name) = repository_owner_name(provider, remote_url, fallback_name);
+    let parts = remote_url.and_then(remote_url_parts);
+    let provider = provider_from_remote_parts(parts);
+    let (owner, name) = repository_owner_name(provider, parts, fallback_name);
     (
         provider,
         RepositoryIdentity {
@@ -118,10 +119,10 @@ fn host_matches_provider_domain(host: &str, provider_domain: &str) -> bool {
 
 fn repository_owner_name(
     provider: RepositoryProvider,
-    remote_url: Option<&str>,
+    parts: Option<RemoteUrlParts<'_>>,
     fallback_name: &str,
 ) -> (String, String) {
-    let Some(parts) = remote_url.and_then(remote_url_parts) else {
+    let Some(parts) = parts else {
         return ("unknown".into(), fallback_name.into());
     };
 
