@@ -60,6 +60,11 @@ impl ProvenanceEntry {
 }
 
 fn shared_runtime_root(_base_dir: &Path) -> PathBuf {
+    if let Ok(root) = std::env::var("AMPLIHACK_WORKFLOW_RUNTIME_DIR")
+        && !root.trim().is_empty()
+    {
+        return PathBuf::from(root);
+    }
     if let Ok(root) = std::env::var("AMPLIHACK_RUNTIME_ROOT")
         && !root.trim().is_empty()
     {

@@ -534,6 +534,27 @@ mod tests {
     }
 
     #[test]
+    fn workflow_terminal_state_success_accepts_explicit_provider_evidence_args() {
+        Cli::try_parse_from([
+            "amplihack",
+            "workflow",
+            "terminal-state",
+            "--terminal-state",
+            "FOLLOWUP_CREATED",
+            "--terminal-success",
+            "--provider",
+            "github",
+            "--change-requests-capability",
+            "automated",
+            "--evidence",
+            "change_request.id=812",
+            "--format",
+            "json",
+        ])
+        .expect("terminal success validation must accept explicit provider evidence inputs");
+    }
+
+    #[test]
     fn workflow_cleanup_stale_requires_explicit_dry_run_or_apply_mode() {
         let missing_mode = Cli::try_parse_from([
             "amplihack",

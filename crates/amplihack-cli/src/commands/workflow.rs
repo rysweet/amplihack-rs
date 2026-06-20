@@ -3,7 +3,8 @@ use amplihack_workflows::stale_cleanup::{
     CleanupAction, CleanupMode, CleanupPlan, CleanupPolicy, StaleChangeRequest,
 };
 use amplihack_workflows::workflow_contract::{
-    HelperEnvelope, HelperOperation, ManualAction, ProviderCapabilityState, ProviderContext,
+    ChangeRequest, ChangeRequestKind, ChangeRequestStatus, HelperEnvelope, HelperOperation,
+    ManualAction, ProviderCapabilities, ProviderCapabilityState, ProviderContext,
     ProviderOperationStatus, RepositoryProvider, provider_capabilities,
     provider_default_next_action, validate_terminal_transition,
 };
@@ -11,6 +12,7 @@ use anyhow::{Context, Result};
 use clap::{ArgGroup, Args, Subcommand, ValueEnum};
 use serde_json::json;
 use std::path::PathBuf;
+use std::process::{Command, Output};
 
 mod provider_detection;
 
@@ -103,11 +105,21 @@ pub struct TerminalStateArgs {
     terminal_state: String,
     #[arg(long, default_value_t = false)]
     terminal_success: bool,
+    #[arg(long, value_enum)]
+    provider: Option<ProviderArg>,
+    #[arg(long, value_enum)]
+    change_requests_capability: Option<CapabilityArg>,
     #[arg(
         long,
         default_value = "Inspect workflow evidence and rerun finalization."
     )]
     required_next_action: String,
+    #[arg(
+        long = "evidence",
+        value_delimiter = ',',
+        default_value = "workflow-terminal-state-command"
+    )]
+    evidence_used: Vec<String>,
     #[arg(long, default_value = "text", value_parser = ["text", "json"])]
     format: String,
 }
@@ -120,12 +132,31 @@ pub enum ProviderArg {
     Manual,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum CapabilityArg {
+    Automated,
+    ManualRequired,
+    BlockedManualProvider,
+    Unsupported,
+}
+
 impl From<ProviderArg> for RepositoryProvider {
     fn from(value: ProviderArg) -> Self {
         match value {
             ProviderArg::Github => Self::GitHub,
             ProviderArg::AzureDevops => Self::AzureDevOps,
             ProviderArg::Manual => Self::Manual,
+        }
+    }
+}
+
+impl From<CapabilityArg> for ProviderCapabilityState {
+    fn from(value: CapabilityArg) -> Self {
+        match value {
+            CapabilityArg::Automated => Self::Automated,
+            CapabilityArg::ManualRequired => Self::ManualRequired,
+            CapabilityArg::BlockedManualProvider => Self::BlockedManualProvider,
+            CapabilityArg::Unsupported => Self::Unsupported,
         }
     }
 }
@@ -176,16 +207,12 @@ fn run_publish_change_request(args: PublishChangeRequestArgs) -> Result<()> {
     let provider = RepositoryProvider::from(args.provider);
     let capabilities = provider_capabilities(provider);
     if capabilities.change_requests == ProviderCapabilityState::Automated {
-        let envelope = helper_envelope(
+        let envelope = publish_automated_change_request(
             provider,
-            HelperOperation::PublishChangeRequest,
-            ProviderOperationStatus::Failed,
-            "Use the workflow publish provider adapter; this typed CLI command does not create provider pull requests.",
-            json!({
-                "change_request": null,
-                "manual_action": null,
-                "capabilities": capabilities
-            }),
+            capabilities,
+            &args.source_branch,
+            &args.base_branch,
+            &args.title,
         );
         return write_output(&envelope, &args.format);
     }
@@ -281,13 +308,442 @@ fn run_cleanup_stale(args: CleanupStaleArgs) -> Result<()> {
 }
 
 fn run_terminal_state(args: TerminalStateArgs) -> Result<()> {
-    let result = validate_terminal_transition(json!({
+    let mut payload = json!({
         "terminal_state": args.terminal_state,
         "terminal_success": args.terminal_success,
+        "reason": "Terminal state emitted by workflow CLI command.",
         "required_next_action": args.required_next_action,
-        "evidence_used": []
-    }));
+        "evidence_used": args.evidence_used
+    });
+    if let Some(provider) = args.provider {
+        payload["provider"] = serde_json::to_value(RepositoryProvider::from(provider))?;
+    }
+    if let Some(capability) = args.change_requests_capability {
+        payload["capabilities"] = json!({
+            "change_requests": ProviderCapabilityState::from(capability)
+        });
+    }
+    let result = validate_terminal_transition(payload);
     write_output(&result, &args.format)
+}
+
+fn publish_automated_change_request(
+    provider: RepositoryProvider,
+    capabilities: ProviderCapabilities,
+    source_branch: &str,
+    base_branch: &str,
+    title: &str,
+) -> HelperEnvelope {
+    match provider {
+        RepositoryProvider::GitHub => {
+            publish_github_change_request(capabilities, source_branch, base_branch, title)
+        }
+        RepositoryProvider::AzureDevOps => {
+            publish_azdo_change_request(capabilities, source_branch, base_branch, title)
+        }
+        RepositoryProvider::Manual => helper_envelope(
+            provider,
+            HelperOperation::PublishChangeRequest,
+            ProviderOperationStatus::ManualRequired,
+            "Create the provider change request manually, then rerun status detection.",
+            json!({
+                "change_request": null,
+                "manual_action": manual_publish_action(provider, source_branch, base_branch, title),
+                "capabilities": capabilities
+            }),
+        ),
+    }
+}
+
+fn publish_github_change_request(
+    capabilities: ProviderCapabilities,
+    source_branch: &str,
+    base_branch: &str,
+    title: &str,
+) -> HelperEnvelope {
+    let provider = RepositoryProvider::GitHub;
+    let list = match run_provider_command(
+        "gh",
+        &[
+            "pr",
+            "list",
+            "--head",
+            source_branch,
+            "--base",
+            base_branch,
+            "--state",
+            "open",
+            "--json",
+            "number,url,state,headRefName,baseRefName,headRefOid",
+            "--limit",
+            "1",
+        ],
+    ) {
+        Ok(output) if output.status.success() => output,
+        Ok(_) => {
+            return provider_command_failed(provider, capabilities, "GitHub PR lookup failed.");
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return provider_cli_missing(provider, capabilities, "gh");
+        }
+        Err(_) => {
+            return provider_command_failed(provider, capabilities, "GitHub PR lookup failed.");
+        }
+    };
+
+    if let Some(change_request) = parse_github_pr_list(&list.stdout) {
+        return HelperEnvelope::succeeded(
+            provider,
+            HelperOperation::PublishChangeRequest,
+            "Existing GitHub pull request found for this branch.",
+            json!({
+                "change_request": change_request,
+                "manual_action": null,
+                "capabilities": capabilities
+            }),
+        );
+    }
+
+    let body = format!("Workflow-generated pull request from {source_branch} to {base_branch}.");
+    let create = match run_provider_command(
+        "gh",
+        &[
+            "pr",
+            "create",
+            "--head",
+            source_branch,
+            "--base",
+            base_branch,
+            "--title",
+            title,
+            "--body",
+            &body,
+        ],
+    ) {
+        Ok(output) if output.status.success() => output,
+        Ok(_) => {
+            return provider_command_failed(provider, capabilities, "GitHub PR creation failed.");
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return provider_cli_missing(provider, capabilities, "gh");
+        }
+        Err(_) => {
+            return provider_command_failed(provider, capabilities, "GitHub PR creation failed.");
+        }
+    };
+    let url = String::from_utf8_lossy(&create.stdout).trim().to_string();
+    if url.is_empty() {
+        return provider_command_failed(
+            provider,
+            capabilities,
+            "GitHub PR creation returned no URL.",
+        );
+    }
+
+    let view = match run_provider_command(
+        "gh",
+        &[
+            "pr",
+            "view",
+            &url,
+            "--json",
+            "number,url,state,headRefName,baseRefName,headRefOid",
+        ],
+    ) {
+        Ok(output) if output.status.success() => output,
+        Ok(_) => {
+            return provider_command_failed(
+                provider,
+                capabilities,
+                "GitHub PR verification failed.",
+            );
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return provider_cli_missing(provider, capabilities, "gh");
+        }
+        Err(_) => {
+            return provider_command_failed(
+                provider,
+                capabilities,
+                "GitHub PR verification failed.",
+            );
+        }
+    };
+    let Some(change_request) = parse_github_pr(&view.stdout) else {
+        return provider_command_failed(
+            provider,
+            capabilities,
+            "GitHub PR verification returned malformed JSON.",
+        );
+    };
+
+    HelperEnvelope::succeeded(
+        provider,
+        HelperOperation::PublishChangeRequest,
+        "GitHub pull request created and verified.",
+        json!({
+            "change_request": change_request,
+            "manual_action": null,
+            "capabilities": capabilities
+        }),
+    )
+}
+
+fn publish_azdo_change_request(
+    capabilities: ProviderCapabilities,
+    source_branch: &str,
+    base_branch: &str,
+    title: &str,
+) -> HelperEnvelope {
+    let provider = RepositoryProvider::AzureDevOps;
+    let list = match run_provider_command(
+        "az",
+        &[
+            "repos",
+            "pr",
+            "list",
+            "--source-branch",
+            source_branch,
+            "--target-branch",
+            base_branch,
+            "--status",
+            "active",
+            "--output",
+            "json",
+        ],
+    ) {
+        Ok(output) if output.status.success() => output,
+        Ok(_) => {
+            return provider_command_failed(
+                provider,
+                capabilities,
+                "Azure Repos PR lookup failed.",
+            );
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return provider_cli_missing(provider, capabilities, "az");
+        }
+        Err(_) => {
+            return provider_command_failed(
+                provider,
+                capabilities,
+                "Azure Repos PR lookup failed.",
+            );
+        }
+    };
+
+    if let Some(change_request) = parse_azdo_pr_list(&list.stdout) {
+        return HelperEnvelope::succeeded(
+            provider,
+            HelperOperation::PublishChangeRequest,
+            "Existing Azure Repos pull request found for this branch.",
+            json!({
+                "change_request": change_request,
+                "manual_action": null,
+                "capabilities": capabilities
+            }),
+        );
+    }
+
+    let description = format!(
+        "Workflow-generated Azure Repos pull request from {source_branch} to {base_branch}."
+    );
+    let create = match run_provider_command(
+        "az",
+        &[
+            "repos",
+            "pr",
+            "create",
+            "--source-branch",
+            source_branch,
+            "--target-branch",
+            base_branch,
+            "--title",
+            title,
+            "--description",
+            &description,
+            "--output",
+            "json",
+        ],
+    ) {
+        Ok(output) if output.status.success() => output,
+        Ok(_) => {
+            return provider_command_failed(
+                provider,
+                capabilities,
+                "Azure Repos PR creation failed.",
+            );
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return provider_cli_missing(provider, capabilities, "az");
+        }
+        Err(_) => {
+            return provider_command_failed(
+                provider,
+                capabilities,
+                "Azure Repos PR creation failed.",
+            );
+        }
+    };
+    let Some(change_request) = parse_azdo_pr(&create.stdout) else {
+        return provider_command_failed(
+            provider,
+            capabilities,
+            "Azure Repos PR creation returned malformed JSON.",
+        );
+    };
+
+    HelperEnvelope::succeeded(
+        provider,
+        HelperOperation::PublishChangeRequest,
+        "Azure Repos pull request created and verified.",
+        json!({
+            "change_request": change_request,
+            "manual_action": null,
+            "capabilities": capabilities
+        }),
+    )
+}
+
+fn run_provider_command(binary: &str, args: &[&str]) -> std::io::Result<Output> {
+    Command::new(binary).args(args).output()
+}
+
+fn provider_cli_missing(
+    provider: RepositoryProvider,
+    capabilities: ProviderCapabilities,
+    binary: &str,
+) -> HelperEnvelope {
+    helper_envelope(
+        provider,
+        HelperOperation::PublishChangeRequest,
+        ProviderOperationStatus::BlockedManualProvider,
+        format!("Install and authenticate the provider CLI '{binary}', then rerun publication."),
+        json!({
+            "change_request": null,
+            "manual_action": null,
+            "capabilities": capabilities
+        }),
+    )
+}
+
+fn provider_command_failed(
+    provider: RepositoryProvider,
+    capabilities: ProviderCapabilities,
+    message: &str,
+) -> HelperEnvelope {
+    helper_envelope(
+        provider,
+        HelperOperation::PublishChangeRequest,
+        ProviderOperationStatus::Failed,
+        format!("{message} Inspect provider CLI authentication/output and rerun publication."),
+        json!({
+            "change_request": null,
+            "manual_action": null,
+            "capabilities": capabilities
+        }),
+    )
+}
+
+fn parse_github_pr_list(stdout: &[u8]) -> Option<ChangeRequest> {
+    let value: serde_json::Value = serde_json::from_slice(stdout).ok()?;
+    value.as_array()?.first().and_then(github_pr_from_value)
+}
+
+fn parse_github_pr(stdout: &[u8]) -> Option<ChangeRequest> {
+    let value: serde_json::Value = serde_json::from_slice(stdout).ok()?;
+    github_pr_from_value(&value)
+}
+
+fn github_pr_from_value(value: &serde_json::Value) -> Option<ChangeRequest> {
+    let id = value.get("number")?.as_i64()?.to_string();
+    let url = value.get("url")?.as_str()?.to_string();
+    Some(ChangeRequest {
+        kind: ChangeRequestKind::PullRequest,
+        id,
+        url,
+        state: github_pr_state(value.get("state").and_then(serde_json::Value::as_str)),
+        source_branch: value
+            .get("headRefName")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        base_branch: value
+            .get("baseRefName")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        head_sha: value
+            .get("headRefOid")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+    })
+}
+
+fn parse_azdo_pr_list(stdout: &[u8]) -> Option<ChangeRequest> {
+    let value: serde_json::Value = serde_json::from_slice(stdout).ok()?;
+    value.as_array()?.first().and_then(azdo_pr_from_value)
+}
+
+fn parse_azdo_pr(stdout: &[u8]) -> Option<ChangeRequest> {
+    let value: serde_json::Value = serde_json::from_slice(stdout).ok()?;
+    azdo_pr_from_value(&value)
+}
+
+fn azdo_pr_from_value(value: &serde_json::Value) -> Option<ChangeRequest> {
+    let id = value.get("pullRequestId")?.as_i64()?.to_string();
+    let url = value
+        .get("url")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    Some(ChangeRequest {
+        kind: ChangeRequestKind::PullRequest,
+        id,
+        url,
+        state: azdo_pr_state(value.get("status").and_then(serde_json::Value::as_str)),
+        source_branch: trim_refs_heads(
+            value
+                .get("sourceRefName")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default(),
+        ),
+        base_branch: trim_refs_heads(
+            value
+                .get("targetRefName")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default(),
+        ),
+        head_sha: value
+            .get("lastMergeSourceCommit")
+            .and_then(|commit| commit.get("commitId"))
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+    })
+}
+
+fn github_pr_state(state: Option<&str>) -> ChangeRequestStatus {
+    match state.unwrap_or_default().to_ascii_uppercase().as_str() {
+        "CLOSED" => ChangeRequestStatus::Closed,
+        "MERGED" => ChangeRequestStatus::Merged,
+        "DRAFT" => ChangeRequestStatus::Draft,
+        _ => ChangeRequestStatus::Open,
+    }
+}
+
+fn azdo_pr_state(state: Option<&str>) -> ChangeRequestStatus {
+    match state.unwrap_or_default().to_ascii_lowercase().as_str() {
+        "completed" => ChangeRequestStatus::Merged,
+        "abandoned" => ChangeRequestStatus::Closed,
+        _ => ChangeRequestStatus::Open,
+    }
+}
+
+fn trim_refs_heads(value: &str) -> String {
+    value
+        .strip_prefix("refs/heads/")
+        .unwrap_or(value)
+        .to_string()
 }
 
 fn helper_envelope(

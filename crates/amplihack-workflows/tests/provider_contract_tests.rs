@@ -278,6 +278,7 @@ fn terminal_transition_fails_closed_when_manual_provider_path_claims_success() {
         "provider": "Manual",
         "terminal_state": "MANUAL_REQUIRED",
         "terminal_success": true,
+        "reason": "Manual provider cannot create a provider-neutral follow-up automatically.",
         "required_next_action": "Create a provider change request manually.",
         "evidence_used": [
             "provider=Manual",
@@ -300,6 +301,7 @@ fn terminal_transition_rejects_manual_provider_followup_success_claims() {
         "provider": "Manual",
         "terminal_state": "FOLLOWUP_CREATED",
         "terminal_success": true,
+        "reason": "Manual provider claimed automated follow-up creation.",
         "required_next_action": "Create a provider change request manually.",
         "evidence_used": ["provider=Manual"]
     }));
@@ -322,6 +324,7 @@ fn terminal_transition_rejects_success_without_evidence() {
         },
         "terminal_state": "FOLLOWUP_CREATED",
         "terminal_success": true,
+        "reason": "Workflow claims publication succeeded.",
         "required_next_action": "Monitor PR validation.",
         "evidence_used": []
     }));
@@ -344,6 +347,7 @@ fn terminal_transition_rejects_success_when_change_requests_are_manual() {
         },
         "terminal_state": "FOLLOWUP_CREATED",
         "terminal_success": true,
+        "reason": "Azure DevOps PR publication requires manual handling in this scenario.",
         "required_next_action": "Create an Azure Repos PR manually.",
         "evidence_used": ["provider=AzureDevOps", "change_requests=ManualRequired"]
     }));
@@ -354,6 +358,42 @@ fn terminal_transition_rejects_success_when_change_requests_are_manual() {
         result
             .terminal_reason
             .contains("change_requests=ManualRequired cannot be terminal_success=true")
+    );
+}
+
+#[test]
+fn non_success_terminal_transition_requires_loud_actionable_evidence() {
+    let result = validate_terminal_transition(json!({
+        "provider": "Manual",
+        "terminal_state": "MANUAL_REQUIRED",
+        "terminal_success": false,
+        "reason": "",
+        "required_next_action": "",
+        "evidence_used": []
+    }));
+
+    assert_eq!(result.terminal_state, TerminalState::FailedInvalidEvidence);
+    assert!(!result.terminal_success);
+    assert!(result.terminal_reason.contains("requires non-empty reason"));
+    assert!(!result.required_next_action.is_empty());
+}
+
+#[test]
+fn success_terminal_transition_requires_explicit_provider_capability_context() {
+    let result = validate_terminal_transition(json!({
+        "terminal_state": "FOLLOWUP_CREATED",
+        "terminal_success": true,
+        "reason": "Workflow claims a PR was created.",
+        "required_next_action": "Monitor PR validation.",
+        "evidence_used": ["change_request.id=812"]
+    }));
+
+    assert_eq!(result.terminal_state, TerminalState::FailedInvalidEvidence);
+    assert!(!result.terminal_success);
+    assert!(
+        result
+            .terminal_reason
+            .contains("requires explicit provider evidence")
     );
 }
 

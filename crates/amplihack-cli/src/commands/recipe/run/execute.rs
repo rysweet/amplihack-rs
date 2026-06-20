@@ -232,6 +232,7 @@ pub(super) fn execute_recipe_via_rust(
     env_builder.apply_to_command(&mut command);
     command.env("AMPLIHACK_RECIPE_RUN_ID", correlation.run_id());
     command.env("AMPLIHACK_WORKFLOW_RUNTIME_DIR", runtime_dir.path());
+    command.env("AMPLIHACK_RUNTIME_ROOT", runtime_dir.path());
     command.env("AMPLIHACK_WORKFLOW_ARTIFACT_DIR", &artifact_dir);
     command.env("TMPDIR", &tmp_dir);
 

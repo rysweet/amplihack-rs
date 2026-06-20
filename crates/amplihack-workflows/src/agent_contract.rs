@@ -1,4 +1,6 @@
-use crate::workflow_contract::{TerminalState, validate_terminal_transition_ref};
+use crate::workflow_contract::{
+    ProviderCapabilities, RepositoryProvider, TerminalState, validate_terminal_transition_ref,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -13,6 +15,8 @@ pub enum FinalizerConfidence {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentFinalizerOutput {
     pub schema_version: u32,
+    pub provider: RepositoryProvider,
+    pub capabilities: ProviderCapabilities,
     pub terminal_state: TerminalState,
     pub terminal_success: bool,
     pub confidence: FinalizerConfidence,

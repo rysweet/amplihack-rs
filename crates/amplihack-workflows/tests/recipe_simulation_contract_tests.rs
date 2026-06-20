@@ -34,6 +34,11 @@ agents:
   finalizer:
     output:
       schema_version: 1
+      provider: AzureDevOps
+      capabilities:
+        tracking_items: Automated
+        change_requests: Automated
+        stale_cleanup: ManualRequired
       terminal_state: FOLLOWUP_CREATED
       terminal_success: true
       confidence: high

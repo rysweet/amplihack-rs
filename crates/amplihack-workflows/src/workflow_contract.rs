@@ -269,10 +269,17 @@ pub fn validate_terminal_transition_ref(value: &Value) -> TerminalValidationResu
         .get("terminal_success")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let terminal_reason = value
+        .get("reason")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
     let required_next_action = value
         .get("required_next_action")
         .and_then(Value::as_str)
-        .unwrap_or("Inspect workflow evidence and rerun finalization.")
+        .unwrap_or("")
+        .trim()
         .to_string();
     let evidence_used = value
         .get("evidence_used")
@@ -280,13 +287,42 @@ pub fn validate_terminal_transition_ref(value: &Value) -> TerminalValidationResu
         .map(|items| {
             let mut evidence = Vec::with_capacity(items.len());
             for item in items {
-                if let Some(item) = item.as_str() {
+                if let Some(item) = item.as_str().map(str::trim)
+                    && !item.is_empty()
+                {
                     evidence.push(item.to_owned());
                 }
             }
             evidence
         })
         .unwrap_or_default();
+    let invalid_next_action = if required_next_action.is_empty() {
+        "Inspect workflow evidence and rerun finalization.".to_string()
+    } else {
+        required_next_action.clone()
+    };
+
+    if terminal_reason.is_empty() {
+        return invalid_terminal_transition(
+            "terminal transition requires non-empty reason",
+            invalid_next_action,
+            evidence_used,
+        );
+    }
+    if required_next_action.is_empty() {
+        return invalid_terminal_transition(
+            "terminal transition requires non-empty required_next_action",
+            invalid_next_action,
+            evidence_used,
+        );
+    }
+    if evidence_used.is_empty() {
+        return invalid_terminal_transition(
+            "terminal transition requires non-empty evidence_used",
+            required_next_action,
+            evidence_used,
+        );
+    }
 
     if requested_success && !requested_state.is_success() {
         return invalid_terminal_transition(
@@ -298,9 +334,12 @@ pub fn validate_terminal_transition_ref(value: &Value) -> TerminalValidationResu
             evidence_used,
         );
     }
-    if requested_success && evidence_used.is_empty() {
+    if !requested_success && requested_state.is_success() {
         return invalid_terminal_transition(
-            "terminal_success=true requires non-empty evidence_used",
+            format!(
+                "{} requires terminal_success=true",
+                requested_state.as_str()
+            ),
             required_next_action,
             evidence_used,
         );
@@ -317,6 +356,13 @@ pub fn validate_terminal_transition_ref(value: &Value) -> TerminalValidationResu
             evidence_used,
         );
     }
+    if requested_success && provider_from_value(value).is_none() {
+        return invalid_terminal_transition(
+            "terminal_success=true requires explicit provider evidence",
+            required_next_action,
+            evidence_used,
+        );
+    }
     if requested_success && provider_from_value(value) == Some(RepositoryProvider::Manual) {
         return invalid_terminal_transition(
             "Manual provider cannot be terminal_success=true",
@@ -324,21 +370,30 @@ pub fn validate_terminal_transition_ref(value: &Value) -> TerminalValidationResu
             evidence_used,
         );
     }
-    if requested_success
-        && let Some(change_requests) = change_request_capability_from_value(value)
-        && change_requests != ProviderCapabilityState::Automated
-    {
-        return invalid_terminal_transition(
-            format!("change_requests={change_requests:?} cannot be terminal_success=true"),
-            required_next_action,
-            evidence_used,
-        );
+    if requested_success {
+        match change_request_capability_from_value(value) {
+            Some(ProviderCapabilityState::Automated) => {}
+            Some(change_requests) => {
+                return invalid_terminal_transition(
+                    format!("change_requests={change_requests:?} cannot be terminal_success=true"),
+                    required_next_action,
+                    evidence_used,
+                );
+            }
+            None => {
+                return invalid_terminal_transition(
+                    "terminal_success=true requires explicit change_requests capability evidence",
+                    required_next_action,
+                    evidence_used,
+                );
+            }
+        }
     }
 
     TerminalValidationResult {
         terminal_state: requested_state,
         terminal_success: requested_success && requested_state.is_success(),
-        terminal_reason: "terminal transition evidence accepted".into(),
+        terminal_reason,
         required_next_action,
         evidence_used,
     }
