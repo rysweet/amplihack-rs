@@ -59,7 +59,20 @@ steps:
       COMMIT_EOF
       )
 
-      git commit -m "$COMMIT_MSG" 2>/dev/null || echo "Commit prepared"
+      COMMITTED=false
+      if [ -n "$(git diff --cached --name-only)" ]; then
+        GIT_IDENTITY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(git rev-parse --show-toplevel)}}/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(git rev-parse --show-toplevel)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || { echo "ERROR: git identity helper not found: $GIT_IDENTITY_HELPER" >&2; exit 2; }; . "$GIT_IDENTITY_HELPER"
+        amplihack_prepare_git_commit_identity
+        if git commit -m "$COMMIT_MSG"; then
+          COMMITTED=true
+        else
+          commit_rc=$?
+          echo "ERROR: git commit failed during consensus step9-commit (exit $commit_rc)" >&2
+          exit "$commit_rc"
+        fi
+      else
+        echo "No staged changes to commit" >&2
+      fi
       PUSH_RESULT=false
       PUSH_REASON="no_remote"
       if git remote get-url origin >/dev/null 2>&1; then
@@ -73,7 +86,7 @@ steps:
         echo "Skipping push — no remote configured" >&2
       fi
 
-      echo "{\"committed\": true, \"pushed\": $PUSH_RESULT, \"push_reason\": \"$PUSH_REASON\"}"
+      echo "{\"committed\": $COMMITTED, \"pushed\": $PUSH_RESULT, \"push_reason\": \"$PUSH_REASON\"}"
     output: "commit_result"
     parse_json: true
 
