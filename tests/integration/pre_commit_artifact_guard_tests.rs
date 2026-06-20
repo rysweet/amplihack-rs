@@ -8,6 +8,7 @@
 
 use serde::Deserialize;
 use std::fs;
+use std::path::Component;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -130,7 +131,7 @@ fn assert_artifact_guard_contract(config: &PreCommitConfig) -> Result<(), String
 fn assert_artifact_guard_entry_contract(entry: &str) -> Result<(), String> {
     let parsed = parse_hook_entry(entry)?;
     assert_cargo_target_dir_is_isolated(&parsed, entry)?;
-    assert_cargo_bin_is_amplihack(&parsed, entry)?;
+    assert_cargo_args_contract(&parsed, entry)?;
     assert_artifact_guard_args(&parsed, entry)?;
     Ok(())
 }
@@ -146,7 +147,11 @@ fn parse_hook_entry(entry: &str) -> Result<ParsedHookEntry, String> {
                 "bash -c hook entry must contain exactly one command string; entry was `{entry}`"
             ));
         }
-        tokens => tokens.to_vec(),
+        _ => {
+            return Err(format!(
+                "Artifact Guard hook entry must use `bash -c` with one command string; entry was `{entry}`"
+            ));
+        }
     };
 
     let mut cargo_target_dir = None;
@@ -221,11 +226,51 @@ fn is_isolated_target_dir(value: &str) -> bool {
         return true;
     }
     let path = Path::new(value);
-    path.is_absolute() && !path.starts_with(workspace_root())
+    path.is_absolute()
+        && !path
+            .components()
+            .any(|component| component == Component::ParentDir)
+        && !path.starts_with(workspace_root())
 }
 
-fn assert_cargo_bin_is_amplihack(parsed: &ParsedHookEntry, entry: &str) -> Result<(), String> {
-    let bin_values = arg_values(&parsed.cargo_args, "--bin", "Cargo option", entry)?;
+fn assert_cargo_args_contract(parsed: &ParsedHookEntry, entry: &str) -> Result<(), String> {
+    let mut bin_values = Vec::new();
+    let mut locked_count = 0;
+    let mut index = 0;
+
+    while index < parsed.cargo_args.len() {
+        let arg = &parsed.cargo_args[index];
+        match arg.as_str() {
+            "--locked" => {
+                locked_count += 1;
+                index += 1;
+            }
+            "--bin" => {
+                let value = parsed.cargo_args.get(index + 1).ok_or_else(|| {
+                    format!("Cargo option `--bin` must include a value; entry was `{entry}`")
+                })?;
+                bin_values.push(value.as_str());
+                index += 2;
+            }
+            _ => {
+                if let Some(value) = arg.strip_prefix("--bin=") {
+                    bin_values.push(value);
+                    index += 1;
+                } else {
+                    return Err(format!(
+                        "cargo fallback only permits `--locked` and `--bin amplihack` before `--`; got `{arg}` in `{entry}`"
+                    ));
+                }
+            }
+        }
+    }
+
+    if locked_count > 1 {
+        return Err(format!(
+            "cargo fallback must pass `--locked` at most once; entry was `{entry}`"
+        ));
+    }
+
     match bin_values.as_slice() {
         [bin] if *bin == "amplihack" => Ok(()),
         [] => Err(format!(
@@ -249,48 +294,64 @@ fn assert_artifact_guard_args(parsed: &ParsedHookEntry, entry: &str) -> Result<(
         ));
     }
 
-    assert_single_artifact_guard_arg(&parsed.amplihack_args[2..], "--repo", ".", entry)?;
-    assert_single_artifact_guard_arg(&parsed.amplihack_args[2..], "--mode", "pre-commit", entry)?;
+    assert_artifact_guard_options_are_exact(&parsed.amplihack_args[2..], entry)?;
     Ok(())
 }
 
-fn arg_values<'a>(
-    args: &'a [String],
-    flag: &str,
-    description: &str,
-    entry: &str,
-) -> Result<Vec<&'a str>, String> {
-    let mut values = Vec::new();
+fn assert_artifact_guard_options_are_exact(args: &[String], entry: &str) -> Result<(), String> {
+    let mut repo_values = Vec::new();
+    let mut mode_values = Vec::new();
     let mut index = 0;
+
     while index < args.len() {
         let arg = &args[index];
-        if arg == flag {
-            let value = args.get(index + 1).ok_or_else(|| {
-                format!("{description} `{flag}` must include a value; entry was `{entry}`")
-            })?;
-            values.push(value.as_str());
-            index += 2;
-        } else if let Some(value) = arg
-            .strip_prefix(flag)
-            .and_then(|rest| rest.strip_prefix('='))
-        {
-            values.push(value);
-            index += 1;
-        } else {
-            index += 1;
+        match arg.as_str() {
+            "--repo" => {
+                let value = args.get(index + 1).ok_or_else(|| {
+                    format!(
+                        "Artifact Guard argument `--repo` must include a value; entry was `{entry}`"
+                    )
+                })?;
+                repo_values.push(value.as_str());
+                index += 2;
+            }
+            "--mode" => {
+                let value = args.get(index + 1).ok_or_else(|| {
+                    format!(
+                        "Artifact Guard argument `--mode` must include a value; entry was `{entry}`"
+                    )
+                })?;
+                mode_values.push(value.as_str());
+                index += 2;
+            }
+            _ => {
+                if let Some(value) = arg.strip_prefix("--repo=") {
+                    repo_values.push(value);
+                    index += 1;
+                } else if let Some(value) = arg.strip_prefix("--mode=") {
+                    mode_values.push(value);
+                    index += 1;
+                } else {
+                    return Err(format!(
+                        "Artifact Guard pre-commit hook must not pass unexpected argument `{arg}`; entry was `{entry}`"
+                    ));
+                }
+            }
         }
     }
-    Ok(values)
+
+    assert_single_artifact_guard_value(&repo_values, "--repo", ".", entry)?;
+    assert_single_artifact_guard_value(&mode_values, "--mode", "pre-commit", entry)?;
+    Ok(())
 }
 
-fn assert_single_artifact_guard_arg(
-    args: &[String],
+fn assert_single_artifact_guard_value(
+    values: &[&str],
     flag: &str,
     expected: &str,
     entry: &str,
 ) -> Result<(), String> {
-    let values = arg_values(args, flag, "Artifact Guard argument", entry)?;
-    match values.as_slice() {
+    match values {
         [value] if *value == expected => Ok(()),
         [] => Err(format!(
             "Artifact Guard pre-commit hook must pass `{flag} {expected}`; entry was `{entry}`"
@@ -384,8 +445,16 @@ fn artifact_guard_contract_rejects_missing_or_wrong_required_entry_parts() {
             "bash -c 'cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit'",
         ),
         (
+            "target dir path traversal segment",
+            "bash -c 'CARGO_TARGET_DIR=/tmp/../var/tmp/amplihack-precommit-target cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit'",
+        ),
+        (
             "non-isolated target dir",
             "bash -c 'CARGO_TARGET_DIR=target/precommit cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit'",
+        ),
+        (
+            "missing bash wrapper",
+            "CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit",
         ),
         (
             "missing repo-local amplihack bin",
@@ -394,6 +463,14 @@ fn artifact_guard_contract_rejects_missing_or_wrong_required_entry_parts() {
         (
             "wrong cargo bin",
             "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --bin other -- hygiene artifact-guard --repo . --mode pre-commit'",
+        ),
+        (
+            "unexpected cargo option",
+            "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --manifest-path /tmp/Cargo.toml --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit'",
+        ),
+        (
+            "duplicate cargo locked option",
+            "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --locked --locked --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit'",
         ),
         (
             "missing artifact-guard command",
@@ -414,6 +491,26 @@ fn artifact_guard_contract_rejects_missing_or_wrong_required_entry_parts() {
         (
             "wrong mode argument",
             "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-push'",
+        ),
+        (
+            "duplicate mode argument",
+            "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit --mode pre-commit'",
+        ),
+        (
+            "extra artifact guard argument",
+            "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit --allowlist target'",
+        ),
+        (
+            "extra shell command after guard",
+            "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit ; true'",
+        ),
+        (
+            "extra conditional shell command after guard",
+            "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit && true'",
+        ),
+        (
+            "shell redirection after guard",
+            "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit > /tmp/artifact-guard.log'",
         ),
     ];
 
