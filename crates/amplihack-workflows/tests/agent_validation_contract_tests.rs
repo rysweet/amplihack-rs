@@ -72,3 +72,20 @@ fn hollow_success_signal_cannot_be_reported_as_success() {
 
     assert_eq!(error.terminal_state(), TerminalState::FailedInvalidEvidence);
 }
+
+#[test]
+fn successful_finalizer_output_requires_evidence() {
+    let error = validate_finalizer_output(json!({
+        "schema_version": 1,
+        "terminal_state": "FOLLOWUP_CREATED",
+        "terminal_success": true,
+        "confidence": "high",
+        "reason": "Workflow claims publication succeeded.",
+        "required_next_action": "Monitor PR validation.",
+        "hollow_success_detected": false,
+        "evidence_used": []
+    }))
+    .expect_err("terminal success without evidence is a hollow success claim");
+
+    assert_eq!(error.terminal_state(), TerminalState::FailedInvalidEvidence);
+}

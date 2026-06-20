@@ -295,6 +295,69 @@ fn terminal_transition_fails_closed_when_manual_provider_path_claims_success() {
 }
 
 #[test]
+fn terminal_transition_rejects_manual_provider_followup_success_claims() {
+    let result = validate_terminal_transition(json!({
+        "provider": "Manual",
+        "terminal_state": "FOLLOWUP_CREATED",
+        "terminal_success": true,
+        "required_next_action": "Create a provider change request manually.",
+        "evidence_used": ["provider=Manual"]
+    }));
+
+    assert_eq!(result.terminal_state, TerminalState::FailedInvalidEvidence);
+    assert!(!result.terminal_success);
+    assert!(
+        result
+            .terminal_reason
+            .contains("Manual provider cannot be terminal_success=true")
+    );
+}
+
+#[test]
+fn terminal_transition_rejects_success_without_evidence() {
+    let result = validate_terminal_transition(json!({
+        "provider": "GitHub",
+        "capabilities": {
+            "change_requests": "Automated"
+        },
+        "terminal_state": "FOLLOWUP_CREATED",
+        "terminal_success": true,
+        "required_next_action": "Monitor PR validation.",
+        "evidence_used": []
+    }));
+
+    assert_eq!(result.terminal_state, TerminalState::FailedInvalidEvidence);
+    assert!(!result.terminal_success);
+    assert!(
+        result
+            .terminal_reason
+            .contains("requires non-empty evidence_used")
+    );
+}
+
+#[test]
+fn terminal_transition_rejects_success_when_change_requests_are_manual() {
+    let result = validate_terminal_transition(json!({
+        "provider": "AzureDevOps",
+        "capabilities": {
+            "change_requests": "ManualRequired"
+        },
+        "terminal_state": "FOLLOWUP_CREATED",
+        "terminal_success": true,
+        "required_next_action": "Create an Azure Repos PR manually.",
+        "evidence_used": ["provider=AzureDevOps", "change_requests=ManualRequired"]
+    }));
+
+    assert_eq!(result.terminal_state, TerminalState::FailedInvalidEvidence);
+    assert!(!result.terminal_success);
+    assert!(
+        result
+            .terminal_reason
+            .contains("change_requests=ManualRequired cannot be terminal_success=true")
+    );
+}
+
+#[test]
 fn change_request_model_serializes_provider_neutral_pull_request_fields() {
     let change_request = ChangeRequest {
         kind: ChangeRequestKind::PullRequest,

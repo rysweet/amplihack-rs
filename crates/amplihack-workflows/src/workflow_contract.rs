@@ -294,16 +294,50 @@ pub fn validate_terminal_transition_ref(value: &Value) -> TerminalValidationResu
         .unwrap_or_default();
 
     if requested_success && !requested_state.is_success() {
-        return TerminalValidationResult {
-            terminal_state: TerminalState::FailedInvalidEvidence,
-            terminal_success: false,
-            terminal_reason: format!(
+        return invalid_terminal_transition(
+            format!(
                 "{} cannot be terminal_success=true",
                 requested_state.as_str()
             ),
             required_next_action,
             evidence_used,
-        };
+        );
+    }
+    if requested_success && evidence_used.is_empty() {
+        return invalid_terminal_transition(
+            "terminal_success=true requires non-empty evidence_used",
+            required_next_action,
+            evidence_used,
+        );
+    }
+    if requested_success
+        && value
+            .get("hollow_success_detected")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        return invalid_terminal_transition(
+            "hollow_success_detected cannot be terminal_success=true",
+            required_next_action,
+            evidence_used,
+        );
+    }
+    if requested_success && provider_from_value(value) == Some(RepositoryProvider::Manual) {
+        return invalid_terminal_transition(
+            "Manual provider cannot be terminal_success=true",
+            required_next_action,
+            evidence_used,
+        );
+    }
+    if requested_success
+        && let Some(change_requests) = change_request_capability_from_value(value)
+        && change_requests != ProviderCapabilityState::Automated
+    {
+        return invalid_terminal_transition(
+            format!("change_requests={change_requests:?} cannot be terminal_success=true"),
+            required_next_action,
+            evidence_used,
+        );
     }
 
     TerminalValidationResult {
@@ -313,4 +347,33 @@ pub fn validate_terminal_transition_ref(value: &Value) -> TerminalValidationResu
         required_next_action,
         evidence_used,
     }
+}
+
+fn invalid_terminal_transition(
+    terminal_reason: impl Into<String>,
+    required_next_action: String,
+    evidence_used: Vec<String>,
+) -> TerminalValidationResult {
+    TerminalValidationResult {
+        terminal_state: TerminalState::FailedInvalidEvidence,
+        terminal_success: false,
+        terminal_reason: terminal_reason.into(),
+        required_next_action,
+        evidence_used,
+    }
+}
+
+fn provider_from_value(value: &Value) -> Option<RepositoryProvider> {
+    value
+        .get("provider")
+        .cloned()
+        .and_then(|provider| serde_json::from_value(provider).ok())
+}
+
+fn change_request_capability_from_value(value: &Value) -> Option<ProviderCapabilityState> {
+    value
+        .get("capabilities")
+        .and_then(|capabilities| capabilities.get("change_requests"))
+        .cloned()
+        .and_then(|state| serde_json::from_value(state).ok())
 }
