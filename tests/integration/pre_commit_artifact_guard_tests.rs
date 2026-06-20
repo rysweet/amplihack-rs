@@ -9,6 +9,7 @@
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 const VALID_ARTIFACT_GUARD_ENTRY: &str = "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit'";
 const VALID_LOCKED_ARTIFACT_GUARD_ENTRY: &str = "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --locked --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit'";
@@ -43,32 +44,36 @@ struct ParsedHookEntry {
     amplihack_args: Vec<String>,
 }
 
-fn workspace_root() -> PathBuf {
-    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.pop();
-    path.pop();
-    path
+fn workspace_root() -> &'static Path {
+    static ROOT: OnceLock<PathBuf> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.pop();
+        path.pop();
+        path
+    })
 }
 
-fn pre_commit_config() -> PreCommitConfig {
-    let path = workspace_root().join(".pre-commit-config.yaml");
-    let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    serde_yaml::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
+fn pre_commit_config() -> &'static PreCommitConfig {
+    static CONFIG: OnceLock<PreCommitConfig> = OnceLock::new();
+    CONFIG.get_or_init(|| {
+        let path = workspace_root().join(".pre-commit-config.yaml");
+        let text =
+            fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        serde_yaml::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
+    })
 }
 
-fn local_hooks(config: &PreCommitConfig) -> Vec<&PreCommitHook> {
+fn local_hooks(config: &PreCommitConfig) -> impl Iterator<Item = &PreCommitHook> {
     config
         .repos
         .iter()
         .filter(|repo| repo.repo == "local")
         .flat_map(|repo| repo.hooks.iter())
-        .collect()
 }
 
-fn hook<'a>(hooks: &'a [&PreCommitHook], id: &str) -> &'a PreCommitHook {
-    hooks
-        .iter()
-        .copied()
+fn local_hook<'a>(config: &'a PreCommitConfig, id: &str) -> &'a PreCommitHook {
+    local_hooks(config)
         .find(|hook| hook.id == id)
         .unwrap_or_else(|| panic!("missing local pre-commit hook `{id}`"))
 }
@@ -91,25 +96,23 @@ fn contract_config(repo: &str, hooks: Vec<PreCommitHook>) -> PreCommitConfig {
 }
 
 fn assert_artifact_guard_contract(config: &PreCommitConfig) -> Result<(), String> {
-    let matches: Vec<(&PreCommitRepo, &PreCommitHook)> = config
-        .repos
-        .iter()
-        .flat_map(|repo| {
-            repo.hooks
-                .iter()
-                .filter(|hook| hook.id == "artifact-guard")
-                .map(move |hook| (repo, hook))
-        })
-        .collect();
+    let mut matches = config.repos.iter().flat_map(|repo| {
+        repo.hooks
+            .iter()
+            .filter(|hook| hook.id == "artifact-guard")
+            .map(move |hook| (repo, hook))
+    });
 
-    if matches.len() != 1 {
+    let Some((repo, hook)) = matches.next() else {
+        return Err("expected exactly one Artifact Guard hook, found 0".to_string());
+    };
+    if matches.next().is_some() {
         return Err(format!(
             "expected exactly one Artifact Guard hook, found {}",
-            matches.len()
+            2 + matches.count()
         ));
     }
 
-    let (repo, hook) = matches[0];
     if repo.repo != "local" {
         return Err(format!(
             "Artifact Guard hook must be defined under repo: local, got {}",
@@ -224,7 +227,7 @@ fn is_isolated_target_dir(value: &str) -> bool {
 fn assert_cargo_bin_is_amplihack(parsed: &ParsedHookEntry, entry: &str) -> Result<(), String> {
     let bin_values = arg_values(&parsed.cargo_args, "--bin", "Cargo option", entry)?;
     match bin_values.as_slice() {
-        [bin] if bin == "amplihack" => Ok(()),
+        [bin] if *bin == "amplihack" => Ok(()),
         [] => Err(format!(
             "cargo fallback must invoke the repo-local amplihack binary with `--bin amplihack`; entry was `{entry}`"
         )),
@@ -251,14 +254,13 @@ fn assert_artifact_guard_args(parsed: &ParsedHookEntry, entry: &str) -> Result<(
     Ok(())
 }
 
-fn arg_values(
-    args: &[String],
+fn arg_values<'a>(
+    args: &'a [String],
     flag: &str,
     description: &str,
     entry: &str,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<&'a str>, String> {
     let mut values = Vec::new();
-    let equals_prefix = format!("{flag}=");
     let mut index = 0;
     while index < args.len() {
         let arg = &args[index];
@@ -266,10 +268,13 @@ fn arg_values(
             let value = args.get(index + 1).ok_or_else(|| {
                 format!("{description} `{flag}` must include a value; entry was `{entry}`")
             })?;
-            values.push(value.clone());
+            values.push(value.as_str());
             index += 2;
-        } else if let Some(value) = arg.strip_prefix(&equals_prefix) {
-            values.push(value.to_string());
+        } else if let Some(value) = arg
+            .strip_prefix(flag)
+            .and_then(|rest| rest.strip_prefix('='))
+        {
+            values.push(value);
             index += 1;
         } else {
             index += 1;
@@ -286,7 +291,7 @@ fn assert_single_artifact_guard_arg(
 ) -> Result<(), String> {
     let values = arg_values(args, flag, "Artifact Guard argument", entry)?;
     match values.as_slice() {
-        [value] if value == expected => Ok(()),
+        [value] if *value == expected => Ok(()),
         [] => Err(format!(
             "Artifact Guard pre-commit hook must pass `{flag} {expected}`; entry was `{entry}`"
         )),
@@ -302,8 +307,7 @@ fn assert_single_artifact_guard_arg(
 #[test]
 fn pre_commit_config_has_full_repo_artifact_guard_hook() {
     let config = pre_commit_config();
-    let hooks = local_hooks(&config);
-    let hook = hook(&hooks, "artifact-guard");
+    let hook = local_hook(config, "artifact-guard");
 
     assert_eq!(
         hook.pass_filenames,
@@ -425,8 +429,7 @@ fn artifact_guard_contract_rejects_missing_or_wrong_required_entry_parts() {
 #[test]
 fn pre_commit_artifact_guard_hook_is_not_limited_by_files_filter() {
     let config = pre_commit_config();
-    let hooks = local_hooks(&config);
-    let hook = hook(&hooks, "artifact-guard");
+    let hook = local_hook(config, "artifact-guard");
 
     assert!(
         hook.files.is_none() && hook.types.is_none(),
@@ -437,7 +440,7 @@ fn pre_commit_artifact_guard_hook_is_not_limited_by_files_filter() {
 #[test]
 fn pre_commit_hook_order_runs_artifact_guard_before_format_lint_and_tests() {
     let config = pre_commit_config();
-    let hooks = local_hooks(&config);
+    let hooks: Vec<_> = local_hooks(config).collect();
     let artifact_index = hooks
         .iter()
         .position(|hook| hook.id == "artifact-guard")
@@ -458,10 +461,9 @@ fn pre_commit_hook_order_runs_artifact_guard_before_format_lint_and_tests() {
 #[test]
 fn pre_commit_build_hooks_use_isolated_target_dir() {
     let config = pre_commit_config();
-    let hooks = local_hooks(&config);
 
     for id in ["cargo-clippy", "cargo-test"] {
-        let hook = hook(&hooks, id);
+        let hook = local_hook(config, id);
         let entry = hook
             .entry
             .as_deref()
