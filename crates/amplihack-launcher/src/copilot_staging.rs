@@ -5,6 +5,7 @@
 //! - Generate hook bash wrappers with Rust binary support
 //! - Inject amplihack section into copilot-instructions.md
 
+use amplihack_types::hook_io::normalize_executable_script_line_endings;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -78,7 +79,8 @@ pub fn stage_hooks(package_dir: &Path, user_dir: &Path) -> Result<u32> {
 
         // Don't overwrite user-managed hooks
         if dest.exists() {
-            let content = std::fs::read_to_string(&dest).unwrap_or_default();
+            let content = std::fs::read_to_string(&dest)
+                .with_context(|| format!("failed to read existing hook {}", dest.display()))?;
             if !content.contains("amplihack") {
                 debug!(hook = ?name, "Skipping user-managed hook");
                 continue;
@@ -87,7 +89,7 @@ pub fn stage_hooks(package_dir: &Path, user_dir: &Path) -> Result<u32> {
 
         let hook_name = name.to_string_lossy();
         let wrapper = generate_hook_wrapper(&hook_name, &path, rust_binary.as_deref());
-        std::fs::write(&dest, wrapper)?;
+        write_executable_script(&dest, &wrapper)?;
 
         #[cfg(unix)]
         {
@@ -103,6 +105,12 @@ pub fn stage_hooks(package_dir: &Path, user_dir: &Path) -> Result<u32> {
         info!(count, "Staged hook wrappers");
     }
     Ok(count)
+}
+
+fn write_executable_script(path: &Path, content: &str) -> Result<()> {
+    let normalized = normalize_executable_script_line_endings(content);
+    std::fs::write(path, normalized)
+        .with_context(|| format!("failed to write executable script {}", path.display()))
 }
 
 // ---------------------------------------------------------------------------
@@ -180,7 +188,7 @@ fn generate_hook_wrapper(hook_name: &str, py_path: &Path, rust_binary: Option<&P
     } else {
         script.push_str(&format!("exec python3 {} \"$@\"\n", py_path.display()));
     }
-    script
+    normalize_executable_script_line_endings(&script)
 }
 
 fn which_binary(name: &str) -> Option<PathBuf> {
@@ -229,6 +237,7 @@ fn days_to_ymd(days: u64) -> (u64, u64, u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     #[test]
     fn stage_agents_from_dir() {
@@ -324,6 +333,85 @@ mod tests {
             std::fs::read_to_string(user.path().join(".github/hooks/pre-tool-use"))
                 .unwrap()
                 .contains("amplihack")
+        );
+    }
+
+    #[test]
+    fn hook_wrapper_generation_uses_lf_only_line_endings() {
+        let wrapper =
+            generate_hook_wrapper("pre-tool-use", Path::new("/tmp/amplihack-hook.py"), None);
+
+        assert!(
+            !wrapper.as_bytes().contains(&b'\r'),
+            "legacy launcher hook wrapper must be LF-only before it is written"
+        );
+        assert!(wrapper.contains("exec python3 /tmp/amplihack-hook.py \"$@\"\n"));
+    }
+
+    #[test]
+    fn stage_hooks_writes_lf_only_executable_wrappers() {
+        let pkg = tempfile::tempdir().unwrap();
+        let user = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(pkg.path().join("hooks")).unwrap();
+        std::fs::write(
+            pkg.path().join("hooks/pre-tool-use"),
+            "#!/usr/bin/env bash\r\n# amplihack fixture\r\necho hi\r\n",
+        )
+        .unwrap();
+
+        assert_eq!(stage_hooks(pkg.path(), user.path()).unwrap(), 1);
+
+        let staged = user.path().join(".github/hooks/pre-tool-use");
+        let bytes = std::fs::read(&staged).unwrap();
+        assert!(
+            !bytes.contains(&b'\r'),
+            "{} contains carriage returns and will fail under bash",
+            staged.display()
+        );
+        assert_bash_accepts_script(&staged);
+    }
+
+    #[test]
+    fn executable_script_writer_normalizes_crlf_and_lone_cr_inputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let crlf_script = dir.path().join("crlf-hook");
+        let lone_cr_script = dir.path().join("lone-cr-hook");
+
+        write_executable_script(
+            &crlf_script,
+            "#!/usr/bin/env bash\r\nset -euo pipefail\r\necho crlf\r\n",
+        )
+        .unwrap();
+        write_executable_script(
+            &lone_cr_script,
+            "#!/usr/bin/env bash\rset -euo pipefail\recho lone-cr\r",
+        )
+        .unwrap();
+
+        for script in [&crlf_script, &lone_cr_script] {
+            let bytes = std::fs::read(script).unwrap();
+            assert!(
+                !bytes.contains(&b'\r'),
+                "{} contains carriage returns and will fail under bash",
+                script.display()
+            );
+            assert_bash_accepts_script(script);
+        }
+    }
+
+    fn assert_bash_accepts_script(script: &Path) {
+        let output = Command::new("bash")
+            .arg("-n")
+            .arg(script)
+            .output()
+            .unwrap_or_else(|err| panic!("failed to run bash -n for {}: {err}", script.display()));
+
+        assert!(
+            output.status.success(),
+            "bash -n rejected {}:\nstdout:\n{}\nstderr:\n{}",
+            script.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 }

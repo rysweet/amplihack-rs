@@ -168,6 +168,14 @@ mod tests {
         let _ = fs::remove_file(path);
     }
 
+    fn unique_subdirectory(prefix: &str, base: &Path) -> String {
+        let suffix = base
+            .file_name()
+            .map(|name| name.to_string_lossy())
+            .unwrap_or_else(|| "unknown".into());
+        format!("{prefix}-{suffix}")
+    }
+
     #[test]
     fn log_creates_directories_and_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -191,30 +199,26 @@ mod tests {
     #[test]
     fn appends_multiple_entries() {
         let dir = tempfile::tempdir().unwrap();
-        let log_path = expected_log_path(dir.path(), CLASSIFIER_LOG_SUBDIR, CLASSIFIER_LOG_FILE);
-        let token = format!("append-test-{}", std::process::id());
+        let subdirectory = unique_subdirectory("workflow_classifier_append", dir.path());
+        let log_path = expected_log_path(dir.path(), &subdirectory, CLASSIFIER_LOG_FILE);
+        clear_log_path(&log_path);
         for i in 0..3 {
             let entry = ProvenanceEntry::new(
                 "classification",
                 "DEFAULT_WORKFLOW",
-                format!("{token}-reason-{i}"),
+                format!("reason {i}"),
                 0.7 + (i as f64) * 0.1,
                 vec![],
                 &format!("request {i}"),
             );
-            log_classification(dir.path(), &entry);
+            log_provenance(dir.path(), &subdirectory, CLASSIFIER_LOG_FILE, &entry);
         }
 
         let content = fs::read_to_string(&log_path).unwrap();
         let lines: Vec<&str> = content.lines().collect();
-        let matching_lines = lines
-            .iter()
-            .copied()
-            .filter(|line| line.contains(&token))
-            .collect::<Vec<_>>();
-        assert_eq!(matching_lines.len(), 3, "should append 3 JSONL lines");
+        assert_eq!(lines.len(), 3, "should append 3 JSONL lines");
 
-        for line in matching_lines {
+        for line in &lines {
             let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
             assert!(parsed.get("timestamp").is_some());
             assert!(parsed.get("event").is_some());

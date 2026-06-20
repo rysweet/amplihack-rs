@@ -199,6 +199,9 @@ Understand the philosophy and architecture behind amplihack.
 
 Proven methodologies for consistent, high-quality results.
 
+- [Workflow Commit Identity](workflows.md) - Planned safe author and committer
+  attribution for Amplihack-created workflow commits
+
 ### Automatic Workflow Classification ⭐ NEW
 
 **Mandatory at Session Start** (Issue #2353) - amplihack now automatically classifies your request and executes the appropriate workflow when you start a session:
@@ -281,6 +284,9 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [How to Configure Workflow Runtime Isolation](howto/configure-workflow-runtime-isolation.md) - Set `AMPLIHACK_RUNTIME_ROOT`, inspect runtime files, and troubleshoot guard failures
 - [Tutorial: Workflow Runtime Isolation](tutorials/workflow-runtime-isolation.md) - Practice the runtime isolation and strict Artifact Guard contract
 - [Workflow Runtime Artifacts Reference](reference/workflow-runtime-artifacts.md) - Environment variables, shell helper API, lifecycle hooks, and regression contract
+- [Workflow Commit Identity Reference](reference/workflow-commit-identity.md) - Explicit author/committer identity contract for workflow-created commits
+- [How to Configure Workflow Commit Identity](howto/configure-workflow-commit-identity.md) - Setup for `AMPLIHACK_GIT_*`, repo-local Git identity, and provider-safe fallbacks
+- [Tutorial: Verify Workflow Commit Identity](tutorials/workflow-commit-identity.md) - Disposable-repository walkthrough for explicit, repo-local, GitHub, and Azure DevOps commit attribution
 - [Default Workflow Step 13 Validation Reference](reference/default-workflow-step-13-validation.md) - Toolchain-aware outside-in local validation contract for Step 13
 - [Workflow Terminal-State Reference](reference/workflow-terminal-state.md) - Target contract for development completion evidence, no-op states, failure semantics, and shell helper API
 - [Default Workflow Agentic Finalization](reference/default-workflow-agentic-finalization.md) - Structured finalizer schema, terminal-state vocabulary, configuration, and examples for robust workflow closure

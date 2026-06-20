@@ -226,8 +226,10 @@ steps:
       git add -A
       STAGED=$(git diff --cached --name-only)
       if [ -n "$STAGED" ]; then
+        GIT_IDENTITY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(git rev-parse --show-toplevel)}}/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(git rev-parse --show-toplevel)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || { echo "ERROR: git identity helper not found: $GIT_IDENTITY_HELPER" >&2; exit 2; }; . "$GIT_IDENTITY_HELPER"
         commit_with_pre_commit_guard() {
           local pre_commit_hook
+          amplihack_prepare_git_commit_identity
           pre_commit_hook="$(git rev-parse --git-path hooks/pre-commit)"
           if [ -f "$pre_commit_hook" ] && [ ! -f .pre-commit-config.yaml ]; then
             PRE_COMMIT_ALLOW_NO_CONFIG=1 git commit "$@"
