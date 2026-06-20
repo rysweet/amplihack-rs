@@ -64,51 +64,49 @@ impl CleanupPlan {
         }
 
         let mut mutations_executed = 0;
-        let actions = candidates
-            .into_iter()
-            .map(|candidate| {
-                let eligible = candidate.state == ChangeRequestStatus::Open
-                    && candidate.age_hours >= policy.minimum_age_hours
-                    && !candidate.has_unmerged_meaningful_diff
-                    && candidate
-                        .labels
-                        .iter()
-                        .any(|label| label == &policy.workflow_label)
-                    && candidate
-                        .labels
-                        .iter()
-                        .any(|label| label.starts_with(&policy.superseded_by_label_prefix));
-
-                let action = if eligible {
-                    match policy.mode {
-                        CleanupMode::DryRun => CleanupAction::WouldCloseAsSuperseded,
-                        CleanupMode::Apply => {
-                            mutations_executed += 1;
-                            CleanupAction::CloseAsSuperseded
-                        }
-                    }
-                } else {
-                    CleanupAction::Skip
+        let mut actions = Vec::with_capacity(candidates.len());
+        for candidate in candidates {
+            let eligible = candidate.state == ChangeRequestStatus::Open
+                && candidate.age_hours >= policy.minimum_age_hours
+                && !candidate.has_unmerged_meaningful_diff
+                && {
+                    let (has_workflow_label, has_superseded_label) = label_matches(
+                        &candidate.labels,
+                        &policy.workflow_label,
+                        &policy.superseded_by_label_prefix,
+                    );
+                    has_workflow_label && has_superseded_label
                 };
 
-                CleanupPlanAction {
-                    change_request_id: candidate.id,
-                    action,
-                    reason: match action {
-                        CleanupAction::WouldCloseAsSuperseded => {
-                            "dry-run: workflow-owned superseded change request is eligible".into()
-                        }
-                        CleanupAction::CloseAsSuperseded => {
-                            "workflow-owned superseded change request is eligible".into()
-                        }
-                        CleanupAction::Skip => {
-                            "candidate is not workflow-owned, superseded, old enough, or diff-free"
-                                .into()
-                        }
-                    },
+            let action = if eligible {
+                match policy.mode {
+                    CleanupMode::DryRun => CleanupAction::WouldCloseAsSuperseded,
+                    CleanupMode::Apply => {
+                        mutations_executed += 1;
+                        CleanupAction::CloseAsSuperseded
+                    }
                 }
-            })
-            .collect();
+            } else {
+                CleanupAction::Skip
+            };
+
+            actions.push(CleanupPlanAction {
+                change_request_id: candidate.id,
+                action,
+                reason: match action {
+                    CleanupAction::WouldCloseAsSuperseded => {
+                        "dry-run: workflow-owned superseded change request is eligible".into()
+                    }
+                    CleanupAction::CloseAsSuperseded => {
+                        "workflow-owned superseded change request is eligible".into()
+                    }
+                    CleanupAction::Skip => {
+                        "candidate is not workflow-owned, superseded, old enough, or diff-free"
+                            .into()
+                    }
+                },
+            });
+        }
 
         Ok(Self {
             provider: policy.provider,
@@ -117,4 +115,25 @@ impl CleanupPlan {
             mutations_executed,
         })
     }
+}
+
+fn label_matches(
+    labels: &[String],
+    workflow_label: &str,
+    superseded_by_label_prefix: &str,
+) -> (bool, bool) {
+    let mut has_workflow_label = false;
+    let mut has_superseded_label = false;
+    for label in labels {
+        if !has_workflow_label {
+            has_workflow_label = label == workflow_label;
+        }
+        if !has_superseded_label {
+            has_superseded_label = label.starts_with(superseded_by_label_prefix);
+        }
+        if has_workflow_label && has_superseded_label {
+            break;
+        }
+    }
+    (has_workflow_label, has_superseded_label)
 }

@@ -169,15 +169,15 @@ envelope with the simulation result under `data`:
     "agent_contracts": {
       "finalizer": {
         "schema_version": 1,
-        "terminal_state": "MANUAL_REQUIRED",
-        "terminal_success": false,
+        "terminal_state": "FOLLOWUP_CREATED",
+        "terminal_success": true,
         "confidence": "high",
-        "reason": "Azure Boards tracking succeeded and Azure Repos PR creation is manual.",
-        "required_next_action": "Create an Azure Repos pull request from the pushed branch.",
+        "reason": "Azure Boards tracking and Azure Repos PR creation succeeded.",
+        "required_next_action": "Monitor Azure Repos PR validation.",
         "hollow_success_detected": false,
         "evidence_used": [
           "provider=AzureDevOps",
-          "change_requests=ManualRequired"
+          "change_requests=Automated"
         ]
       }
     }

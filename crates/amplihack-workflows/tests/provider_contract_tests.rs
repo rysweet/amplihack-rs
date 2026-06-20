@@ -8,7 +8,7 @@ use amplihack_workflows::workflow_contract::{
     ManualAction, ProviderCapabilities, ProviderCapabilityState, ProviderContext,
     ProviderOperationStatus, RepositoryIdentity, RepositoryProvider, TerminalState,
     provider_capabilities, provider_default_next_action, provider_from_remote_url,
-    validate_terminal_transition,
+    redact_remote_url, repository_identity_from_remote_url, validate_terminal_transition,
 };
 use serde_json::{Value, json};
 
@@ -80,17 +80,17 @@ fn helper_envelope_keeps_operation_data_nested_under_data() {
 }
 
 #[test]
-fn azure_repos_change_request_publication_is_manual_not_fake_success() {
+fn manual_provider_change_request_publication_is_manual_not_fake_success() {
     let manual = ManualAction {
-        action: "CreateAzureReposPullRequest".into(),
-        instructions: "Create an Azure Repos pull request from feat/auth-timeout to main.".into(),
+        action: "CreateProviderChangeRequest".into(),
+        instructions: "Create a provider change request from feat/auth-timeout to main.".into(),
         required_inputs: vec!["source_branch".into(), "base_branch".into()],
     };
 
     let envelope = HelperEnvelope::manual_required(
-        RepositoryProvider::AzureDevOps,
+        RepositoryProvider::Manual,
         HelperOperation::PublishChangeRequest,
-        "Create an Azure Repos pull request manually, then rerun status detection.",
+        "Run provider-specific change request steps manually.",
         json!({
             "change_request": null,
             "manual_action": manual
@@ -98,12 +98,12 @@ fn azure_repos_change_request_publication_is_manual_not_fake_success() {
     );
 
     let value = serde_json::to_value(envelope).unwrap();
-    assert_eq!(value["provider"], "AzureDevOps");
+    assert_eq!(value["provider"], "Manual");
     assert_eq!(value["status"], "ManualRequired");
     assert_eq!(value["data"]["change_request"], Value::Null);
     assert_eq!(
         value["data"]["manual_action"]["action"],
-        "CreateAzureReposPullRequest"
+        "CreateProviderChangeRequest"
     );
     assert!(
         value["next_action"].as_str().unwrap().contains("manually"),
@@ -124,17 +124,17 @@ fn provider_context_exposes_explicit_capability_states() {
         },
         capabilities: ProviderCapabilities {
             tracking_items: ProviderCapabilityState::Automated,
-            change_requests: ProviderCapabilityState::ManualRequired,
+            change_requests: ProviderCapabilityState::Automated,
             stale_cleanup: ProviderCapabilityState::ManualRequired,
         },
-        status: ProviderOperationStatus::ManualRequired,
-        next_action: "Create Azure Repos PRs manually for this provider.".into(),
+        status: ProviderOperationStatus::Succeeded,
+        next_action: "Use Azure Boards and Azure Repos automation where configured.".into(),
     };
 
     let value = serde_json::to_value(context).unwrap();
     assert_eq!(value["capabilities"]["tracking_items"], "Automated");
-    assert_eq!(value["capabilities"]["change_requests"], "ManualRequired");
-    assert_eq!(value["status"], "ManualRequired");
+    assert_eq!(value["capabilities"]["change_requests"], "Automated");
+    assert_eq!(value["status"], "Succeeded");
 }
 
 #[test]
@@ -145,13 +145,10 @@ fn provider_capability_defaults_are_provider_neutral_and_explicit() {
 
     let azdo = provider_capabilities(RepositoryProvider::AzureDevOps);
     assert_eq!(azdo.tracking_items, ProviderCapabilityState::Automated);
-    assert_eq!(
-        azdo.change_requests,
-        ProviderCapabilityState::ManualRequired
-    );
+    assert_eq!(azdo.change_requests, ProviderCapabilityState::Automated);
     assert!(
-        provider_default_next_action(RepositoryProvider::AzureDevOps).contains("manually"),
-        "Azure DevOps change-request automation must not be implied where unavailable"
+        provider_default_next_action(RepositoryProvider::AzureDevOps).contains("Azure Repos"),
+        "Azure DevOps change-request automation must remain an explicit provider capability"
     );
 
     let manual = provider_capabilities(RepositoryProvider::Manual);
@@ -172,7 +169,19 @@ fn provider_detection_from_remote_urls_falls_back_to_manual_for_unknowns() {
         RepositoryProvider::GitHub
     );
     assert_eq!(
+        provider_from_remote_url(Some("git@github.com:acme/service.git")),
+        RepositoryProvider::GitHub
+    );
+    assert_eq!(
         provider_from_remote_url(Some("https://dev.azure.com/acme/project/_git/service")),
+        RepositoryProvider::AzureDevOps
+    );
+    assert_eq!(
+        provider_from_remote_url(Some("ssh://git@ssh.dev.azure.com:v3/acme/project/service")),
+        RepositoryProvider::AzureDevOps
+    );
+    assert_eq!(
+        provider_from_remote_url(Some("ssh://git@SSH.DEV.AZURE.COM:v3/acme/project/service")),
         RepositoryProvider::AzureDevOps
     );
     assert_eq!(provider_from_remote_url(None), RepositoryProvider::Manual);
@@ -184,14 +193,94 @@ fn provider_detection_from_remote_urls_falls_back_to_manual_for_unknowns() {
 }
 
 #[test]
+fn provider_detection_rejects_provider_domain_substring_spoofing() {
+    assert_eq!(
+        provider_from_remote_url(Some("https://evil.example/github.com/acme/service.git")),
+        RepositoryProvider::Manual,
+        "provider detection must match the remote host, not path substrings"
+    );
+    assert_eq!(
+        provider_from_remote_url(Some("https://github.com.evil.example/acme/service.git")),
+        RepositoryProvider::Manual,
+        "provider detection must reject lookalike host suffixes"
+    );
+    assert_eq!(
+        provider_from_remote_url(Some(
+            "https://dev.azure.com.evil.example/acme/project/_git/service"
+        )),
+        RepositoryProvider::Manual,
+        "Azure DevOps detection must reject lookalike host suffixes"
+    );
+}
+
+#[test]
+fn remote_repository_identity_redacts_credentials_and_extracts_github_owner_name() {
+    let (provider, repository) = repository_identity_from_remote_url(
+        Some("https://user:ghp_secret_token@github.com/acme/service.git"),
+        "fallback",
+    );
+
+    assert_eq!(provider, RepositoryProvider::GitHub);
+    assert_eq!(
+        repository.remote_url.as_deref(),
+        Some("https://[redacted]@github.com/acme/service.git")
+    );
+    assert_eq!(repository.owner, "acme");
+    assert_eq!(repository.name, "service");
+}
+
+#[test]
+fn remote_repository_identity_extracts_azure_owner_name_from_https_and_ssh() {
+    let (https_provider, https_repository) = repository_identity_from_remote_url(
+        Some("https://dev.azure.com/acme/project/_git/service"),
+        "fallback",
+    );
+    let (ssh_provider, ssh_repository) = repository_identity_from_remote_url(
+        Some("ssh://git@ssh.dev.azure.com:v3/acme/project/service"),
+        "fallback",
+    );
+
+    assert_eq!(https_provider, RepositoryProvider::AzureDevOps);
+    assert_eq!(https_repository.owner, "acme/project");
+    assert_eq!(https_repository.name, "service");
+    assert_eq!(ssh_provider, RepositoryProvider::AzureDevOps);
+    assert_eq!(ssh_repository.owner, "acme/project");
+    assert_eq!(ssh_repository.name, "service");
+}
+
+#[test]
+fn remote_repository_identity_does_not_extract_owner_from_spoofed_provider_path() {
+    let (provider, repository) = repository_identity_from_remote_url(
+        Some("https://evil.example/github.com/acme/service.git"),
+        "fallback",
+    );
+
+    assert_eq!(provider, RepositoryProvider::Manual);
+    assert_eq!(repository.owner, "unknown");
+    assert_eq!(repository.name, "fallback");
+}
+
+#[test]
+fn redact_remote_url_preserves_non_credential_remote_forms() {
+    assert_eq!(
+        redact_remote_url("git@github.com:acme/service.git"),
+        "git@github.com:acme/service.git"
+    );
+    assert_eq!(
+        redact_remote_url("https://github.com/acme/service.git"),
+        "https://github.com/acme/service.git"
+    );
+}
+
+#[test]
 fn terminal_transition_fails_closed_when_manual_provider_path_claims_success() {
     let result = validate_terminal_transition(json!({
-        "provider": "AzureDevOps",
+        "provider": "Manual",
         "terminal_state": "MANUAL_REQUIRED",
         "terminal_success": true,
-        "required_next_action": "Create an Azure Repos pull request manually.",
+        "required_next_action": "Create a provider change request manually.",
         "evidence_used": [
-            "provider=AzureDevOps",
+            "provider=Manual",
             "change_requests=ManualRequired"
         ]
     }));

@@ -34,7 +34,7 @@ pub fn provider_capabilities(provider: RepositoryProvider) -> ProviderCapabiliti
         },
         RepositoryProvider::AzureDevOps => ProviderCapabilities {
             tracking_items: ProviderCapabilityState::Automated,
-            change_requests: ProviderCapabilityState::ManualRequired,
+            change_requests: ProviderCapabilityState::Automated,
             stale_cleanup: ProviderCapabilityState::ManualRequired,
         },
         RepositoryProvider::Manual => ProviderCapabilities {
@@ -49,25 +49,15 @@ pub fn provider_default_next_action(provider: RepositoryProvider) -> &'static st
     match provider {
         RepositoryProvider::GitHub => "No further provider setup is required.",
         RepositoryProvider::AzureDevOps => {
-            "Use Azure Boards automation where configured; create Azure Repos PRs manually."
+            "Use Azure Boards and Azure Repos automation where configured."
         }
         RepositoryProvider::Manual => "Run provider-specific change request steps manually.",
     }
 }
 
-pub fn provider_from_remote_url(remote_url: Option<&str>) -> RepositoryProvider {
-    let Some(remote_url) = remote_url else {
-        return RepositoryProvider::Manual;
-    };
-    let normalized = remote_url.to_ascii_lowercase();
-    if normalized.contains("dev.azure.com") || normalized.contains("visualstudio.com") {
-        RepositoryProvider::AzureDevOps
-    } else if normalized.contains("github.com") {
-        RepositoryProvider::GitHub
-    } else {
-        RepositoryProvider::Manual
-    }
-}
+pub use crate::remote_repository::{
+    provider_from_remote_url, redact_remote_url, repository_identity_from_remote_url,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepositoryIdentity {
@@ -273,6 +263,10 @@ pub struct TerminalValidationResult {
 }
 
 pub fn validate_terminal_transition(value: Value) -> TerminalValidationResult {
+    validate_terminal_transition_ref(&value)
+}
+
+pub fn validate_terminal_transition_ref(value: &Value) -> TerminalValidationResult {
     let requested_state = value
         .get("terminal_state")
         .and_then(Value::as_str)

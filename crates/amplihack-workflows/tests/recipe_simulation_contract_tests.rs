@@ -11,17 +11,17 @@ use amplihack_workflows::workflow_contract::{RepositoryProvider, TerminalState};
 use serde_json::json;
 
 #[test]
-fn azdo_manual_pr_scenario_returns_manual_required_without_github_or_pr_create_calls() {
+fn azdo_automated_pr_scenario_returns_followup_created_without_github_calls() {
     let scenario: RecipeSimulationScenario = serde_yaml::from_str(
         r#"
-name: azdo-work-item-manual-pr
+name: azdo-work-item-automated-pr
 recipe: default-workflow
 repo_fixture: tests/fixtures/workflows/repos/azdo-repo
 provider:
   kind: AzureDevOps
   capabilities:
     tracking_items: Automated
-    change_requests: ManualRequired
+    change_requests: Automated
     stale_cleanup: ManualRequired
 tools:
   git:
@@ -34,22 +34,22 @@ agents:
   finalizer:
     output:
       schema_version: 1
-      terminal_state: MANUAL_REQUIRED
-      terminal_success: false
+      terminal_state: FOLLOWUP_CREATED
+      terminal_success: true
       confidence: high
-      reason: "Azure Boards tracking succeeded and Azure Repos PR creation is manual."
-      required_next_action: "Create an Azure Repos pull request from the pushed branch."
+      reason: "Azure Boards tracking and Azure Repos PR creation succeeded."
+      required_next_action: "Monitor Azure Repos PR validation."
       hollow_success_detected: false
       evidence_used:
         - "provider=AzureDevOps"
-        - "change_requests=ManualRequired"
+        - "change_requests=Automated"
+        - "az.repos.pr.create"
 expect:
-  terminal_state: MANUAL_REQUIRED
-  terminal_success: false
+  terminal_state: FOLLOWUP_CREATED
+  terminal_success: true
   forbidden_calls:
     - gh.issue.create
     - gh.pr.create
-    - az.repos.pr.create
 "#,
     )
     .expect("scenario fixture should parse");
@@ -58,8 +58,8 @@ expect:
 
     assert_eq!(result.provider, RepositoryProvider::AzureDevOps);
     assert_eq!(result.status, SimulationStatus::Succeeded);
-    assert_eq!(result.terminal_state, TerminalState::ManualRequired);
-    assert!(!result.terminal_success);
+    assert_eq!(result.terminal_state, TerminalState::FollowupCreated);
+    assert!(result.terminal_success);
     assert_eq!(result.assertions.failed, 0);
     assert!(
         result
@@ -67,7 +67,7 @@ expect:
             .contains(&"az.boards.work-item.create".into())
     );
     assert!(!result.provider_calls.contains(&"gh.pr.create".into()));
-    assert!(!result.provider_calls.contains(&"az.repos.pr.create".into()));
+    assert!(result.provider_calls.contains(&"az.repos.pr.create".into()));
 }
 
 #[test]

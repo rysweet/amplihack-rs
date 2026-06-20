@@ -93,28 +93,24 @@ Expected provider behavior:
 ```text
 provider=AzureDevOps
 tracking_items=Automated when Azure Boards is configured
-change_requests=ManualRequired
+change_requests=Automated when Azure Repos is configured
 GitHub commands=not invoked
 ```
 
 When Azure Repos pull-request automation is unavailable, final output includes a
-manual action:
+blocked provider state:
 
 ```json
 {
   "schema_version": 1,
   "operation": "PublishChangeRequest",
-  "status": "ManualRequired",
+  "status": "BlockedManualProvider",
   "provider": "AzureDevOps",
-  "next_action": "Create an Azure Repos pull request from feat/auth-timeout to main and include AB#12345 in the description.",
-  "warnings": [],
+  "next_action": "Install or authenticate the Azure DevOps CLI and rerun publication.",
+  "warnings": ["Azure Repos PR creation failed or was unavailable."],
   "data": {
     "change_request": null,
-    "manual_action": {
-      "action": "CreateAzureReposPullRequest",
-      "instructions": "Create a pull request from feat/auth-timeout to main and include AB#12345 in the description.",
-      "required_inputs": ["source_branch", "base_branch", "title"]
-    }
+    "manual_action": null
   }
 }
 ```

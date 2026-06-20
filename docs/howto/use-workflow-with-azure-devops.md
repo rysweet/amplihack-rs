@@ -68,29 +68,33 @@ state with `next_action`.
 
 ## Publish the change request
 
-The default Azure DevOps configuration reports manual PR creation:
+The default Azure DevOps configuration uses Azure Repos PR automation when the
+`az` CLI and provider context are available:
 
 ```json
 {
   "schema_version": 1,
   "provider": "AzureDevOps",
   "operation": "PublishChangeRequest",
-  "status": "ManualRequired",
-  "next_action": "Create an Azure Repos pull request from feat/auth-timeout to main and include AB#12345 in the description.",
+  "status": "Succeeded",
+  "next_action": "Monitor Azure Repos PR validation.",
   "warnings": [],
   "data": {
-    "change_request": null,
-    "manual_action": {
-      "kind": "CreateChangeRequest",
+    "change_request": {
+      "kind": "PullRequest",
+      "id": "789",
+      "url": "https://dev.azure.com/acme/project/_git/service/pullrequest/789",
+      "state": "Open",
       "source_branch": "feat/auth-timeout",
-      "base_branch": "main",
-      "tracking_item_ref": "AB#12345"
-    }
+      "base_branch": "main"
+    },
+    "manual_action": null
   }
 }
 ```
 
-Create the Azure Repos PR using the command or web UI named in `next_action`.
+If Azure Repos automation is unavailable, the helper returns a blocked provider
+state with an explicit `next_action`; it must not report manual success.
 After the PR exists, run terminal-state validation with the PR URL when needed:
 
 ```bash

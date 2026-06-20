@@ -1,4 +1,4 @@
-use crate::workflow_contract::{TerminalState, validate_terminal_transition};
+use crate::workflow_contract::{TerminalState, validate_terminal_transition_ref};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -49,7 +49,7 @@ impl AgentContractError {
 }
 
 pub fn validate_finalizer_output(value: Value) -> Result<AgentFinalizerOutput, AgentContractError> {
-    let output: AgentFinalizerOutput = serde_json::from_value(value.clone())
+    let output = AgentFinalizerOutput::deserialize(&value)
         .map_err(|_| AgentContractError::MissingOrInvalidJson)?;
 
     if output.terminal_success && output.confidence != FinalizerConfidence::High {
@@ -59,7 +59,7 @@ pub fn validate_finalizer_output(value: Value) -> Result<AgentFinalizerOutput, A
         return Err(AgentContractError::FailedInvalidEvidence);
     }
 
-    let transition = validate_terminal_transition(value);
+    let transition = validate_terminal_transition_ref(&value);
     if transition.terminal_state == TerminalState::FailedInvalidEvidence {
         return Err(AgentContractError::FailedInvalidEvidence);
     }

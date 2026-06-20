@@ -281,7 +281,7 @@ Expected provider behavior:
 ```text
 provider=AzureDevOps
 tracking_items=Automated when Azure Boards is configured
-change_requests=ManualRequired
+change_requests=Automated when Azure Repos is configured
 GitHub commands=not invoked
 ```
 

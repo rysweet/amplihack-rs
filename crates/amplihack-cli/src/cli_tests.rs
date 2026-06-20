@@ -496,7 +496,7 @@ mod tests {
     }
 
     #[test]
-    fn workflow_change_request_publish_supports_azure_manual_path_args() {
+    fn workflow_change_request_publish_supports_azure_provider_args() {
         Cli::try_parse_from([
             "amplihack",
             "workflow",
@@ -513,7 +513,7 @@ mod tests {
             "--format",
             "json",
         ])
-        .expect("Azure DevOps change-request publish helper must parse manual-path inputs");
+        .expect("Azure DevOps change-request publish helper must parse provider inputs");
     }
 
     #[test]
@@ -524,7 +524,7 @@ mod tests {
             "simulate-recipe",
             "default-workflow",
             "--scenario",
-            "azdo-work-item-manual-pr",
+            "azdo-work-item-automated-pr",
             "--repo-fixture",
             "tests/fixtures/workflows/repos/azdo-repo",
             "--format",

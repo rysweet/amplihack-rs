@@ -183,9 +183,11 @@ Status values:
 | `Merged` | Provider reports merge evidence. |
 | `Closed` | Closed without merge evidence. |
 
-Manual results include `data.manual_action` and `data.change_request: null`.
-For this feature, Azure Repos pull-request publication is always manual; the
-implementation must not call `az repos pr create` from `default-workflow`.
+Manual-provider results include `data.manual_action` and `data.change_request:
+null`. Azure Repos pull-request publication is an automated Azure DevOps
+capability when the `az` CLI and provider context are available; provider or
+authentication failures must return blocked-provider evidence instead of manual
+success.
 
 ## Terminal states
 
@@ -195,14 +197,14 @@ Terminal-state JSON appears in recipe results, logs, and
 ```json
 {
   "schema_version": 1,
-  "terminal_success": false,
-  "terminal_state": "MANUAL_REQUIRED",
-  "terminal_reason": "Azure Repos pull-request creation is manual for this provider configuration.",
-  "required_next_action": "Create an Azure Repos pull request from feat/auth-timeout to main and rerun workflow terminal-state with the PR URL.",
+  "terminal_success": true,
+  "terminal_state": "FOLLOWUP_CREATED",
+  "terminal_reason": "Azure Repos pull-request creation succeeded.",
+  "required_next_action": "Monitor Azure Repos PR validation.",
   "provider": "AzureDevOps",
   "evidence_used": [
     "provider=AzureDevOps",
-    "change_requests=ManualRequired",
+    "change_requests=Automated",
     "git.clean=true"
   ]
 }

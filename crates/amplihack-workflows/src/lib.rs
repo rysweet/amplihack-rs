@@ -15,6 +15,7 @@ pub mod classifier;
 pub mod gh_aw_compiler;
 pub mod orchestrator;
 pub mod provenance;
+pub mod remote_repository;
 pub mod session;
 pub mod simulation;
 pub mod stale_cleanup;
