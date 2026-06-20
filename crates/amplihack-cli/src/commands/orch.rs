@@ -21,6 +21,8 @@ use std::path::PathBuf;
 
 use crate::commands::multitask;
 
+mod workflow_log_inventory;
+
 #[derive(Subcommand, Debug)]
 pub enum OrchCommands {
     /// Helper utilities used by smart-orchestrator (formerly orch_helper.py).
@@ -101,6 +103,16 @@ pub enum OrchHelperCommands {
         /// The current task type (e.g. "Operations").
         #[arg(long)]
         current: String,
+    },
+
+    /// List deterministic workflow log artifacts by metadata only.
+    WorkflowLogInventory {
+        /// Repository root to scan.
+        #[arg(long, value_name = "PATH")]
+        root: PathBuf,
+        /// Output format: text or json.
+        #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+        format: String,
     },
 }
 
@@ -265,6 +277,9 @@ pub fn run(command: OrchHelperCommands) -> Result<()> {
             let out = reclassify_task_type(&current, &task);
             println!("{out}");
             Ok(())
+        }
+        OrchHelperCommands::WorkflowLogInventory { root, format } => {
+            workflow_log_inventory::run(root, &format)
         }
     }
 }

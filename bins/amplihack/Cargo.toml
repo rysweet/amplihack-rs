@@ -295,6 +295,16 @@ path = "../../tests/integration/skill_frontmatter_name_test.rs"
 name = "multitask_orchestrator_spec"
 path = "../../tests/integration/multitask_orchestrator_spec_test.rs"
 
+# Issue #799: deterministic metadata-only workflow-log inventory helper.
+[[test]]
+name = "orch_workflow_log_inventory"
+path = "../../tests/integration/orch_workflow_log_inventory_test.rs"
+
+# Issue #801: generated workflow requirements must omit saved preference notices.
+[[test]]
+name = "workflow_prep_requirements_sanitizer"
+path = "../../tests/integration/workflow_prep_requirements_sanitizer_test.rs"
+
 # Issues #599–#608: Repo-sweep regression tests.
 # Guards against re-introduction of stale refs, broken links, missing feature gates.
 [[test]]

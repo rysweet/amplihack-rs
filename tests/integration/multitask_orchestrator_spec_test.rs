@@ -55,6 +55,36 @@ fn multitask_module_has_extracted_submodules() {
     );
 }
 
+#[test]
+fn multitask_launcher_has_extracted_command_builder_and_log_output_bricks() {
+    let dir = multitask_dir();
+    for module in ["command_builder.rs", "log_output.rs"] {
+        let path = dir.join(module);
+        assert!(
+            path.exists(),
+            "#797 regression: multitask launcher responsibilities must be split into {module}"
+        );
+        let lines = fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+            .lines()
+            .count();
+        assert!(
+            lines <= 400,
+            "#797 regression: extracted module {module} must stay within the 400-line brick limit, found {lines}"
+        );
+    }
+
+    let launcher = fs::read_to_string(dir.join("launcher.rs")).expect("read launcher.rs");
+    assert!(
+        launcher.contains("command_builder") || launcher.contains("build_launcher_command"),
+        "#797 regression: launcher.rs must delegate process argument construction to a focused command-builder brick"
+    );
+    assert!(
+        launcher.contains("log_output") || launcher.contains("tail_log_output"),
+        "#797 regression: launcher.rs must delegate log naming/output handling to a focused log-output brick"
+    );
+}
+
 // ========================================================================
 // SPEC 3: LAUNCHER USES RUST CLI — no Python
 // ========================================================================

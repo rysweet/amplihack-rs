@@ -5,9 +5,11 @@
 //! and classic execution modes, per-workstream timeout budgets, state
 //! persistence for resumption, and automatic cleanup of completed workstreams.
 
+mod command_builder;
 mod launcher;
 #[cfg(test)]
 mod launcher_tests;
+mod log_output;
 mod models;
 mod orchestrator;
 mod process_scope;
