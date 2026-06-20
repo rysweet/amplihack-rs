@@ -1343,20 +1343,33 @@ fn only_final_pointer(stderr: &str) -> JsonValue {
 // parse_recipe_output — pure parser unit tests (issue #332)
 // -------------------------------------------------------------------------
 
-/// Empty stdout + exit success: must return a default RecipeRunResult with
-/// success = true, not an error. This resolves issue #332 where
-/// recipe-runner-rs producing no output crashed the launcher.
+/// Empty stdout + exit success is a hollow workflow success and must fail
+/// closed with explicit terminal/finalization state instead of becoming a
+/// success-shaped no-op.
 #[test]
-fn parse_empty_stdout_success_returns_default_with_success_true() {
+fn parse_empty_stdout_success_returns_hollow_success_terminal_failure() {
     let result =
         execute::parse_recipe_output("", "", true).expect("empty stdout on success must not error");
-    assert!(result.success, "success flag must be true on empty+success");
     assert_eq!(
-        result.recipe_name, "",
-        "default recipe_name is empty string"
+        result.success, false,
+        "empty successful runner output must not be reported as workflow success"
     );
-    assert!(result.step_results.is_empty(), "no step results expected");
-    assert!(result.context.is_empty(), "no context expected");
+    assert_eq!(
+        result
+            .extra
+            .get("workflow_result")
+            .and_then(|value| value.get("terminal_state"))
+            .and_then(JsonValue::as_str),
+        Some("HOLLOW_SUCCESS")
+    );
+    assert_eq!(
+        result
+            .extra
+            .get("workflow_result")
+            .and_then(|value| value.get("terminal_success"))
+            .and_then(JsonValue::as_bool),
+        Some(false)
+    );
 }
 
 /// Empty stdout + exit failure: must error with stderr tail surfaced
@@ -1617,10 +1630,91 @@ fn failure_table_bounds_recent_output_snippets() {
 
 /// Whitespace-only stdout (e.g. trailing newline) must be treated as empty.
 #[test]
-fn parse_whitespace_only_stdout_success_returns_default() {
+fn parse_whitespace_only_stdout_success_returns_hollow_success_terminal_failure() {
     let result = execute::parse_recipe_output("   \n\t  \n", "", true)
         .expect("whitespace-only stdout on success must not error");
-    assert!(result.success);
+    assert!(!result.success);
+    assert_eq!(
+        result
+            .extra
+            .get("workflow_result")
+            .and_then(|value| value.get("terminal_state"))
+            .and_then(JsonValue::as_str),
+        Some("HOLLOW_SUCCESS")
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn test_execute_recipe_via_rust_sets_isolated_runtime_directories() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let repo = temp.path().join("repo");
+    let runner = temp.path().join("recipe-runner-rs");
+    let amplihack_home = temp.path().join("amplihack-home");
+    std::fs::create_dir_all(&repo).expect("failed to create repo dir");
+    std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
+
+    std::fs::write(
+        &runner,
+        "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"runtime-isolation-probe\",\"success\":true,\"step_results\":[],\"context\":{\"runtime_dir\":\"$AMPLIHACK_WORKFLOW_RUNTIME_DIR\",\"artifact_dir\":\"$AMPLIHACK_WORKFLOW_ARTIFACT_DIR\",\"tmpdir\":\"$TMPDIR\"}}\nEOF\n",
+    )
+    .expect("failed to write runner stub");
+    make_executable(&runner);
+
+    let recipe = repo.join("recipe.yaml");
+    std::fs::write(&recipe, "name: runtime-isolation-probe\nsteps: []\n")
+        .expect("failed to write recipe");
+
+    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+    let prev_home = std::env::var_os("AMPLIHACK_HOME");
+    unsafe {
+        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
+        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
+    }
+
+    let result =
+        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), false, false, &repo, &[], None)
+            .expect("recipe run must succeed");
+
+    restore_env_var("RECIPE_RUNNER_RS_PATH", prev_runner);
+    restore_env_var("AMPLIHACK_HOME", prev_home);
+
+    let runtime_dir = result
+        .context
+        .get("runtime_dir")
+        .and_then(JsonValue::as_str)
+        .unwrap_or_default();
+    let artifact_dir = result
+        .context
+        .get("artifact_dir")
+        .and_then(JsonValue::as_str)
+        .unwrap_or_default();
+    let tmpdir = result
+        .context
+        .get("tmpdir")
+        .and_then(JsonValue::as_str)
+        .unwrap_or_default();
+    let repo_prefix = repo.to_string_lossy();
+
+    assert!(
+        !runtime_dir.is_empty(),
+        "runtime must expose AMPLIHACK_WORKFLOW_RUNTIME_DIR"
+    );
+    assert!(
+        !runtime_dir.starts_with(repo_prefix.as_ref()),
+        "workflow runtime dir must be outside the commit worktree"
+    );
+    assert!(
+        artifact_dir.starts_with(runtime_dir),
+        "workflow artifact dir should be scoped under the isolated runtime dir"
+    );
+    assert!(
+        tmpdir.starts_with(runtime_dir),
+        "TMPDIR should be scoped under the isolated runtime dir for child steps"
+    );
 }
 
 // Issue #691: recipe-runner-rs owns progress emission. The CLI must not pass

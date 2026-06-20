@@ -28,6 +28,7 @@ pub mod remote;
 pub mod rustyclawd;
 pub mod session_tree;
 pub mod uvx_help;
+pub mod workflow;
 
 use crate::{
     BuilderCommands, Commands, HygieneCommands, MemoryCommands, ModeCommands, MultitaskCommands,
@@ -301,6 +302,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
             limit,
         ),
         Commands::Recipe { command } => dispatch_recipe(command),
+        Commands::Workflow { command } => workflow::dispatch(command),
         Commands::Mode { command } => dispatch_mode(command),
         Commands::Lock { message } => lock::run_lock(message.as_deref()),
         Commands::Unlock => lock::run_unlock(),

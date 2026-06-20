@@ -461,4 +461,125 @@ mod tests {
             other => panic!("expected copilot command, got {other:?}"),
         }
     }
+
+    // ── Provider-neutral workflow helper commands ─────────────────────────────
+
+    #[test]
+    fn workflow_helper_command_is_registered_in_top_level_help() {
+        let mut cmd = Cli::command();
+        let workflow = cmd
+            .find_subcommand_mut("workflow")
+            .expect("amplihack workflow helper command should exist");
+        let mut help = Vec::new();
+        workflow.write_long_help(&mut help).unwrap();
+        let rendered = String::from_utf8(help).unwrap();
+
+        assert!(rendered.contains("detect-provider"));
+        assert!(rendered.contains("change-request"));
+        assert!(rendered.contains("simulate-recipe"));
+        assert!(rendered.contains("cleanup-stale"));
+        assert!(rendered.contains("terminal-state"));
+    }
+
+    #[test]
+    fn workflow_detect_provider_json_command_parses() {
+        Cli::try_parse_from([
+            "amplihack",
+            "workflow",
+            "detect-provider",
+            "--repo",
+            ".",
+            "--format",
+            "json",
+        ])
+        .expect("workflow detect-provider --format json must parse");
+    }
+
+    #[test]
+    fn workflow_change_request_publish_supports_azure_provider_args() {
+        Cli::try_parse_from([
+            "amplihack",
+            "workflow",
+            "change-request",
+            "publish",
+            "--provider",
+            "azure-devops",
+            "--source-branch",
+            "feat/provider-contract",
+            "--base-branch",
+            "main",
+            "--title",
+            "Provider abstraction",
+            "--format",
+            "json",
+        ])
+        .expect("Azure DevOps change-request publish helper must parse provider inputs");
+    }
+
+    #[test]
+    fn workflow_simulate_recipe_command_parses_without_live_provider_args() {
+        Cli::try_parse_from([
+            "amplihack",
+            "workflow",
+            "simulate-recipe",
+            "default-workflow",
+            "--scenario",
+            "azdo-work-item-automated-pr",
+            "--repo-fixture",
+            "tests/fixtures/workflows/repos/azdo-repo",
+            "--format",
+            "json",
+        ])
+        .expect("simulate-recipe helper must parse deterministic local fixture inputs");
+    }
+
+    #[test]
+    fn workflow_terminal_state_success_accepts_explicit_provider_evidence_args() {
+        Cli::try_parse_from([
+            "amplihack",
+            "workflow",
+            "terminal-state",
+            "--terminal-state",
+            "FOLLOWUP_CREATED",
+            "--terminal-success",
+            "--provider",
+            "github",
+            "--change-requests-capability",
+            "automated",
+            "--evidence",
+            "change_request.id=812",
+            "--format",
+            "json",
+        ])
+        .expect("terminal success validation must accept explicit provider evidence inputs");
+    }
+
+    #[test]
+    fn workflow_cleanup_stale_requires_explicit_dry_run_or_apply_mode() {
+        let missing_mode = Cli::try_parse_from([
+            "amplihack",
+            "workflow",
+            "cleanup-stale",
+            "--provider",
+            "github",
+            "--format",
+            "json",
+        ]);
+        assert!(
+            missing_mode.is_err(),
+            "cleanup-stale must not default into mutating or ambiguous behavior"
+        );
+
+        Cli::try_parse_from([
+            "amplihack",
+            "workflow",
+            "cleanup-stale",
+            "--provider",
+            "github",
+            "--dry-run",
+            "--format",
+            "json",
+        ])
+        .expect("cleanup-stale --dry-run must parse");
+    }
 }

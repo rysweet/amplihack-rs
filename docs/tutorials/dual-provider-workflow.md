@@ -1,190 +1,99 @@
-# Tutorial: Run the Default Workflow on an Azure DevOps Repository
+# Tutorial: Provider-Aware Workflow Tracking
 
-**Time to complete**: 15 minutes
+> [Home](../index.md) > Tutorials > Provider-Aware Workflow Tracking
 
-This tutorial walks through a `default-workflow` run on an Azure DevOps-backed
-repository and shows how `workflow-prep` avoids GitHub issue commands.
+This compatibility tutorial uses the provider-neutral workflow helpers. For the
+new simulation tutorial, see
+[Tutorial: Simulate Provider-Neutral Workflows](provider-neutral-workflow-simulation.md).
 
-## What You'll Learn
+> [PLANNED - Implementation Pending]
+>
+> The `amplihack workflow ...` helper commands shown here are the target
+> provider-neutral interface.
 
-1. Verify that an AzDO remote is classified as `azdo`
-2. Run `default-workflow` with an existing Azure Boards work item
-3. Confirm that tracking uses Azure Boards or structured local metadata
-4. Create the Azure DevOps pull request manually after the workflow pushes a branch
-
----
-
-## Step 1: Prepare the Environment
-
-Use an Azure DevOps repository clone:
-
-```bash
-cd /path/to/ado-repo
-git remote get-url origin
-```
-
-Expected remote examples:
-
-```text
-https://dev.azure.com/acme/platform/_git/service
-https://acme.visualstudio.com/platform/_git/service
-git@ssh.dev.azure.com:v3/acme/platform/service
-```
-
-Keep the supported Node heap setting for large workflow runs:
+## 1. Detect the provider
 
 ```bash
 export NODE_OPTIONS=--max-old-space-size=32768
+
+amplihack workflow detect-provider --repo . --format json
 ```
 
----
+Expected output includes:
 
-## Step 2: Configure Azure Boards, If You Want Provider Tracking
+```json
+{
+  "schema_version": 1,
+  "provider": "GitHub",
+  "operation": "DetectProvider",
+  "status": "Succeeded",
+  "next_action": "No further provider setup is required.",
+  "warnings": [],
+  "data": {}
+}
+```
 
-If you want the workflow to reuse or create Azure Boards work items, configure
-the Azure DevOps CLI:
+## 2. Ensure a tracking item
 
 ```bash
-az extension add --name azure-devops
-az login
-az devops configure --defaults \
-  organization=https://dev.azure.com/acme \
-  project=platform
+amplihack workflow tracking-item ensure \
+  --repo . \
+  --title "Fix authentication timeout" \
+  --body-file workflow-body.md \
+  --format json
 ```
 
-If you skip this step, `workflow-prep` still classifies the repo as `azdo`, but
-step 03 falls back to local tracking instead of trying GitHub.
+GitHub returns a GitHub issue. Azure DevOps returns an Azure Boards work item
+when configured. Local and unsupported repositories return local/manual state
+with `next_action`.
 
----
-
-## Step 3: Run the Workflow with an Existing Work Item
-
-Run `default-workflow` with an Azure Boards reference in the task description:
-
-```bash
-amplihack recipe run default-workflow \
-  -c "task_description=Fix the session timeout bug described in AB#12345" \
-  -c "repo_path=$(pwd)"
-```
-
-During `workflow-prep`, the route is:
-
-```text
-step-02d-detect-host-type -> REMOTE_HOST_TYPE=azdo
-step-03-create-issue -> Azure Boards/local tracking path
-```
-
-GitHub issue and label commands are skipped before command construction. The
-AzDO path does not run:
-
-```text
-gh issue view
-gh issue list
-gh issue create
-gh label list
-gh label create
-```
-
----
-
-## Step 4: Read the Tracking Output
-
-When Azure Boards resolves the work item, step 03 emits a parseable Azure
-Boards reference:
-
-```text
-AB#12345
-```
-
-or a full work-item URL:
-
-```text
-https://dev.azure.com/acme/platform/_workitems/edit/12345
-```
-
-If Azure Boards is unavailable, step 03 emits structured local metadata:
-
-```text
-tracking_system=local
-tracking_reference=local-12345
-tracking_issue=local-12345
-issue_creation=local-tracking
-issue_number=
-```
-
-Provider URLs and `AB#N` preserve the downstream numeric `issue_number`
-contract. Local metadata uses a local-prefixed `tracking_reference` /
-`tracking_issue`, preserves that reference downstream, and leaves
-`issue_number` empty.
-
----
-
-## Step 5: Let the Workflow Continue
-
-After tracking setup, the normal development steps run against the local git
-checkout:
-
-| Phase | Provider behavior |
-| ----- | ----------------- |
-| Worktree setup | Uses local git only |
-| Design and implementation | Provider-independent |
-| Tests and pre-commit | Provider-independent |
-| Commit and push | Uses normal `git push origin <branch>` |
-| PR creation | Automated only for GitHub; AzDO reports manual PR instructions |
-
-Commit references use Azure Boards syntax when the host type is `azdo`:
-
-```text
-AB#12345
-```
-
----
-
-## Step 6: Create the Azure DevOps PR Manually
-
-After the workflow pushes the branch, create the PR with Azure DevOps:
-
-```bash
-az repos pr create \
-  --source-branch "$(git branch --show-current)" \
-  --target-branch main \
-  --title "Fix the session timeout bug (AB#12345)" \
-  --description "Implements the fix for AB#12345."
-```
-
-You can also create the PR from the Azure DevOps web UI.
-
----
-
-## Step 7: Try the Local Fallback Path
-
-To see the provider-safe fallback, run the workflow without Azure Boards
-configuration or with `remote_host_type=other`:
+## 3. Run the workflow
 
 ```bash
 amplihack recipe run default-workflow \
-  -c remote_host_type=other \
-  -c "task_description=Add config parser" \
-  -c "repo_path=$(pwd)"
+  -c task_description="Fix authentication timeout" \
+  -c repo_path=. \
+  --format json
 ```
 
-Expected tracking output:
+The final result includes provider, tracking item, change-request state, terminal
+state, and required next action.
 
-```text
-tracking_system=local
-tracking_reference=local-482193
-tracking_issue=local-482193
-issue_creation=local-tracking
-issue_number=
+## 4. Validate manual Azure DevOps publication
+
+For Azure DevOps repositories, publication output uses `ManualRequired`:
+
+```json
+{
+  "schema_version": 1,
+  "provider": "AzureDevOps",
+  "operation": "PublishChangeRequest",
+  "status": "ManualRequired",
+  "next_action": "Create an Azure Repos pull request from the pushed branch.",
+  "warnings": [],
+  "data": {
+    "change_request": null,
+    "manual_action": {
+      "kind": "CreateChangeRequest",
+      "source_branch": "feat/auth-timeout",
+      "base_branch": "main"
+    }
+  }
+}
 ```
 
-No GitHub or Azure DevOps provider command runs in this mode.
+Create the provider PR manually, then rerun terminal-state validation:
 
----
+```bash
+amplihack workflow terminal-state \
+  --repo . \
+  --branch "$(git branch --show-current)" \
+  --base main \
+  --format json
+```
 
-## Summary
+## See also
 
-You ran the workflow on an Azure DevOps-backed repository. `workflow-prep`
-classified the remote as `azdo`, kept all GitHub issue and label commands out
-of the AzDO path, preserved numeric `issue_number` for Azure Boards, and
-preserved local references without numeric coercion for local tracking.
+- [Configure Provider-Neutral Workflows](../howto/configure-provider-neutral-workflows.md)
+- [Provider-Neutral Workflow API](../reference/workflow-provider-contract.md)
+- [Recipe Simulation Reference](../reference/workflow-simulation.md)

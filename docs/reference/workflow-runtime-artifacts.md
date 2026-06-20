@@ -4,8 +4,7 @@ This reference defines the runtime-root, cleanup, and guard-point contracts used
 by `default-workflow`, recovery flows, launchers, provenance logging, publish
 helpers, and finalization helpers.
 
-Status: Planned implementation contract.
-Updated: 2026-06-18
+Updated: 2026-06-19
 
 ## Contents
 
@@ -26,6 +25,8 @@ Updated: 2026-06-18
 | `AMPLIHACK_RECIPE_RUN_ID` | Set by `amplihack recipe run` | Stable per-run ID used in default runtime-root paths and log correlation. |
 | `XDG_RUNTIME_DIR` | Read | Preferred platform runtime base when `AMPLIHACK_RUNTIME_ROOT` is unset. |
 | `TMPDIR` | Read indirectly | Host temporary directory preference for tools that create additional scratch output. |
+| `AMPLIHACK_AGENT_BINARY` | Propagated | Active agent runtime for child agentic steps. |
+| `AMPLIHACK_NONINTERACTIVE` | Propagated | Forces child workflow and helper processes into non-interactive mode. |
 
 `AMPLIHACK_RUNTIME_ROOT` is treated only as a filesystem path. Recipes and shell
 helpers quote it and never evaluate it as shell code.
@@ -71,6 +72,11 @@ write generated runtime output into the task worktree.
 Launcher context files used for active-agent routing belong under the runtime
 root. `<worktree>/.claude/runtime/launcher_context.json` is legacy fallback
 state only and must not be treated as canonical by new workflow code.
+
+Process metadata for nested agents, workstreams, provider helper calls, and
+simulation runs is stored under the runtime root. Recipes use that metadata for
+scoped closure and finalization instead of relying on host-global process lists
+or stale PID-only records.
 
 ## Known worktree-local artifacts
 
@@ -185,3 +191,6 @@ Regression coverage for workflow runtime isolation verifies:
    an external default path.
 6. Launcher state and provenance output are written under the shared runtime
    root contract.
+7. Child workflows inherit `AMPLIHACK_RUNTIME_ROOT`, `AMPLIHACK_AGENT_BINARY`,
+   and non-interactive settings without recomputing or leaking runtime state into
+   the commit worktree.

@@ -4,8 +4,7 @@ Workflow runtime isolation keeps generated agent state, provenance, logs,
 metrics, reflection output, and workflow-owned nested worktrees out of commit
 worktrees.
 
-Status: Planned implementation contract.
-Updated: 2026-06-18
+Updated: 2026-06-19
 
 ## Contents
 
@@ -36,6 +35,11 @@ workflow-owned scratch worktrees
 The workflow isolates that output under a shared runtime root instead of writing
 it into the task worktree. The active Git worktree remains reserved for source
 changes that can be reviewed, staged, committed, pushed, and merged.
+
+Runtime isolation also scopes process state. Child recipes and agents inherit
+the top-level runtime root, run with explicit non-interactive environment
+variables, and record process/workstream identity under the runtime root instead
+of the commit worktree.
 
 ## Runtime root contract
 

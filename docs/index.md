@@ -268,11 +268,14 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Recipe Executor Environment](reference/recipe-executor-environment.md) - Step-level variables plus subprocess environment contract for forced non-interactive recipe execution
 - [Recipe Context Environment Export](reference/recipe-context-environment.md) - Export recipe context variables to bash steps (`$TASK_DESCRIPTION`, `$REPO_PATH`), uppercasing, reserved-name denylist, and precedence
 - [Tutorial: Propagate Recipe Context to Bash Steps](tutorials/recipe-context-env-propagation.md) - Read context from the environment under `set -u`, including nested sub-recipes and skipped keys
+- [Workflow Provider Abstraction](features/workflow-provider-abstraction.md) - Provider-neutral tracking, change-request publication, terminal state, and stale cleanup through typed helpers and adapters
+- [Configure Provider-Neutral Workflows](howto/configure-provider-neutral-workflows.md) - Configure GitHub, Azure DevOps, local, and unsupported workflow provider paths
+- [Provider-Neutral Workflow API](reference/workflow-provider-contract.md) - Rust domain models, helper JSON schemas, manual/blocked states, and validation contracts
+- [Recipe Simulation Reference](reference/workflow-simulation.md) - Deterministic fake-provider, fake-tool, and fake-agent workflow simulation contract
+- [Tutorial: Simulate Provider-Neutral Workflows](tutorials/provider-neutral-workflow-simulation.md) - Run and inspect a provider-neutral recipe simulation
+- [Clean Up Stale Workflow Change Requests](howto/cleanup-stale-workflow-prs.md) - Dry-run and apply stale/superseded cleanup through the provider abstraction
+- [CI Resource Discipline Reference](reference/ci-resource-discipline.md) - Concurrency, timeout, matrix, cache, and coverage boundaries for CI
 - [Validate Recipe Subprocess and Hook Input Contracts](howto/validate-recipe-subprocess-hook-contract.md) - Validate recipe child env handling and hook JSON compatibility
-- [Workflow Publish Import Validation](features/workflow-publish-import-validation.md) - Scoped publish import validation before commit/push
-- [How to Configure Workflow Publish Import Validation](howto/configure-workflow-publish-import-validation.md) - Review the manifest, root-boundary, and scoped-validator behavior
-- [Tutorial: Workflow Publish Import Validation](tutorials/workflow-publish-import-validation.md) - Walk through the scoped publish-validation flow
-- [Workflow Publish Import Validation Reference](reference/workflow-publish-import-validation.md) - Manifest format, root-resolution rules, and `--files-from` semantics
 - [Workflow Execution Guardrails](features/workflow-execution-guardrails.md) - Canonical execution roots, exact GitHub identity checks, and observer-only stall detection
 - [How to Configure Workflow Execution Guardrails](howto/configure-workflow-execution-guardrails.md) - Supply `expected_gh_account`, inspect `execution_root`, and troubleshoot failures
 - [Tutorial: Workflow Execution Guardrails](tutorials/workflow-execution-guardrails.md) - End-to-end walkthrough of the guarded workflow contract
@@ -296,9 +299,9 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [PR Recovery Readiness Reference](reference/pr-recovery-readiness.md) - Context fields, readiness evidence schema, publish contract, and finalization states
 - [Step 03 Host-Aware Tracking Idempotency](reference/recipe-step-03-idempotency.md) - GitHub issue, Azure Boards work-item, and local tracking reuse/create behavior
 - [Workflow Issue Extraction Reference](reference/workflow-issue-extraction.md) - Three-tier issue-number resolution (direct URL → PR closing-refs → `#N` verify) in step 03b
-- [Multi-Provider Workflow Reference](reference/multi-provider-workflow.md) - Provider detection, issue tracking, and PR routing for GitHub, AzDO, and local repos
+- [Multi-Provider Workflow Reference](reference/multi-provider-workflow.md) - Provider-neutral helper routing for GitHub, Azure DevOps, local, and unsupported repositories
 - [How to Use the Workflow with Azure DevOps](howto/use-workflow-with-azure-devops.md) - Run default-workflow against an AzDO repository
-- [Multi-Provider Workflow Architecture](concepts/multi-provider-workflow-architecture.md) - Design decisions: detect-once pattern, issue number contract, PR asymmetry
+- [Provider-Neutral Workflow Architecture](concepts/multi-provider-workflow-architecture.md) - Domain models, CLI-owned adapters, typed helpers, and agentic validation contracts
 - [Run a Quality Audit](howto/run-quality-audit.md) - Invoke quality-audit-cycle recipe, target subdirectories, filter categories
 - [CLI Reference](reference/cli.md) - Top-level `amplihack` command, `--version` flag, global environment variables
 - [Recipe CLI Reference](reference/recipe-cli-reference.md) - Complete command-line documentation

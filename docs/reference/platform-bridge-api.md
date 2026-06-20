@@ -1,5 +1,11 @@
 # Platform Bridge API Reference
 
+> Compatibility note: this is a legacy direct-bridge API reference. New
+> `default-workflow` provider behavior is specified by
+> [Provider-Neutral Workflow API](workflow-provider-contract.md). Recipes should
+> use `amplihack workflow ... --format json` helpers. Azure Repos PR creation and
+> PR comments are manual actions in the provider-neutral workflow contract.
+
 Complete API documentation fer the platform bridge module.
 
 ## Module: `claude.tools.platform_bridge`
@@ -111,7 +117,8 @@ print(f"Created issue #{issue['number']}: {issue['url']}")
 gh issue create --title "..." --body "..." --label "enhancement,security"
 ```
 
-**Azure DevOps Command**:
+**Azure DevOps Command (legacy direct bridge only; not used by
+provider-neutral `default-workflow`)**:
 
 ```bash
 az boards work-item create --type "User Story" --title "..." --description "..."
@@ -180,7 +187,8 @@ print(f"Draft PR #{pr['number']}: {pr['url']}")
 gh pr create --draft --title "..." --body "..." --head feat/auth --base main
 ```
 
-**Azure DevOps Command**:
+**Azure DevOps Command (legacy direct bridge only; not used by
+provider-neutral `default-workflow`)**:
 
 ```bash
 az repos pr create --draft true --title "..." --description "..." --source-branch feat/auth --target-branch main

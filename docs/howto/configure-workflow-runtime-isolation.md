@@ -3,8 +3,7 @@
 Use this guide to inspect, override, and troubleshoot where workflow runtime
 output is written.
 
-Status: Planned implementation contract.
-Updated: 2026-06-18
+Updated: 2026-06-19
 
 ## Contents
 

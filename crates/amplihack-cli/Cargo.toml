@@ -14,6 +14,7 @@ amplihack-launcher = { workspace = true }
 amplihack-types = { workspace = true }
 amplihack-state = { workspace = true }
 amplihack-utils = { workspace = true }
+amplihack-workflows = { workspace = true }
 amplihack-memory = { workspace = true }
 amplihack-reflection = { workspace = true }
 amplihack-builders = { workspace = true }

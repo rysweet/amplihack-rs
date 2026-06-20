@@ -10,10 +10,12 @@ use std::fs::{self, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use tracing::warn;
 
 /// Maximum characters of the user prompt to include in the log entry.
 const PROMPT_PREVIEW_MAX_CHARS: usize = 200;
+static PROVENANCE_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 /// A structured provenance log entry written as one JSON line.
 #[derive(Debug, Clone, Serialize)]
@@ -58,6 +60,11 @@ impl ProvenanceEntry {
 }
 
 fn shared_runtime_root(_base_dir: &Path) -> PathBuf {
+    if let Ok(root) = std::env::var("AMPLIHACK_WORKFLOW_RUNTIME_DIR")
+        && !root.trim().is_empty()
+    {
+        return PathBuf::from(root);
+    }
     if let Ok(root) = std::env::var("AMPLIHACK_RUNTIME_ROOT")
         && !root.trim().is_empty()
     {
@@ -120,6 +127,9 @@ fn try_log_provenance(
     let mut line = serde_json::to_string(entry)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     line.push('\n');
+    let _guard = PROVENANCE_WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     file.write_all(line.as_bytes())
 }

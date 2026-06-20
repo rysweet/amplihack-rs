@@ -199,6 +199,17 @@ pub(super) fn execute_recipe_via_rust(
     // `context_env_pairs` (they are not EnvBuilder-managed).
     command.envs(context_env_pairs(context));
 
+    let runtime_dir = tempfile::Builder::new()
+        .prefix("amplihack-workflow-")
+        .tempdir()
+        .context("failed to create isolated workflow runtime directory")?;
+    let artifact_dir = runtime_dir.path().join("artifacts");
+    let tmp_dir = runtime_dir.path().join("tmp");
+    std::fs::create_dir_all(&artifact_dir)
+        .context("failed to create isolated workflow artifact directory")?;
+    std::fs::create_dir_all(&tmp_dir)
+        .context("failed to create isolated workflow tmp directory")?;
+
     let env_builder = EnvBuilder::new()
         .with_agent_binary(active_agent_binary())
         .with_session_tree_context()
@@ -220,6 +231,10 @@ pub(super) fn execute_recipe_via_rust(
 
     env_builder.apply_to_command(&mut command);
     command.env("AMPLIHACK_RECIPE_RUN_ID", correlation.run_id());
+    command.env("AMPLIHACK_WORKFLOW_RUNTIME_DIR", runtime_dir.path());
+    command.env("AMPLIHACK_RUNTIME_ROOT", runtime_dir.path());
+    command.env("AMPLIHACK_WORKFLOW_ARTIFACT_DIR", &artifact_dir);
+    command.env("TMPDIR", &tmp_dir);
 
     spawn_with_streaming_stderr(command, correlation)
 }
@@ -359,9 +374,10 @@ fn push_bounded_stderr_line(captured: &Arc<Mutex<VecDeque<String>>>, line: Strin
 
 /// Pure parser for recipe-runner-rs subprocess output.
 ///
-/// Behavior (issue #332):
-/// - Empty/whitespace-only stdout + success: returns a default `RecipeRunResult`
-///   with `success = true` (treats "ran but produced no JSON" as a no-op success).
+/// Behavior:
+/// - Empty/whitespace-only stdout + success returns an explicit hollow-success
+///   terminal failure. A runner that produced no structured result must not
+///   become a success-shaped no-op.
 /// - Empty/whitespace-only stdout + failure: errors with the meaningful stderr
 ///   tail surfaced so callers see the upstream cause.
 /// - Non-empty stdout: parses as JSON; on failure, errors with a bounded stdout
@@ -377,8 +393,21 @@ pub(super) fn parse_recipe_output(
     let trimmed = stdout.trim();
     if trimmed.is_empty() {
         if exit_success {
+            let mut extra = JsonMap::new();
+            extra.insert(
+                "workflow_result".into(),
+                serde_json::json!({
+                    "terminal_state": "HOLLOW_SUCCESS",
+                    "terminal_success": false,
+                    "terminal_reason": "recipe-runner-rs exited successfully but produced no structured workflow output",
+                    "required_next_action": "Inspect recipe-runner logs and rerun with structured JSON output."
+                }),
+            );
             return Ok(RecipeRunResult {
-                success: true,
+                success: false,
+                status: Some("HOLLOW_SUCCESS".into()),
+                phase: Some("finalization".into()),
+                extra,
                 ..RecipeRunResult::default()
             });
         }

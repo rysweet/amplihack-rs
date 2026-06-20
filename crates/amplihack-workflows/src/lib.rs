@@ -9,12 +9,17 @@
 //! - [`session`] — Session start detection for triggering classification
 //! - [`orchestrator`] — Integrates classifier, cascade, and session detection
 
+pub mod agent_contract;
 pub mod cascade;
 pub mod classifier;
 pub mod gh_aw_compiler;
 pub mod orchestrator;
 pub mod provenance;
+pub mod remote_repository;
 pub mod session;
+pub mod simulation;
+pub mod stale_cleanup;
+pub mod workflow_contract;
 
 pub use cascade::ExecutionTierCascade;
 pub use classifier::{WorkflowClassifier, WorkflowType};

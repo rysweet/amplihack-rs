@@ -17,10 +17,15 @@ env:
 permissions:
   contents: write
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   cross-compile:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -49,6 +54,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: snapshot-${{ matrix.target }}
+          cache-targets: false
 
       - name: Install GNU cross toolchain
         if: matrix.gnu_cross_toolchain
@@ -118,6 +124,7 @@ jobs:
     name: Publish snapshot release
     needs: cross-compile
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/download-artifact@v4
         with:
