@@ -148,7 +148,7 @@ fn write_copilot_context(dirs: &ProjectDirs, input_data: &Value) -> anyhow::Resu
     } else {
         "# Amplihack Agents\n\n".to_string()
     };
-    content = remove_old_context(&content);
+    content = remove_old_context(&content)?;
 
     let mut lines = content.lines().map(ToString::to_string).collect::<Vec<_>>();
     if lines.is_empty() {
@@ -226,19 +226,37 @@ fn format_context_markdown(input_data: &Value) -> anyhow::Result<String> {
     ))
 }
 
-fn remove_old_context(content: &str) -> String {
-    let Some(start) = content.find(CONTEXT_MARKER_START) else {
-        return content.to_string();
-    };
-    let Some(end) = content.find(CONTEXT_MARKER_END) else {
-        return content.to_string();
-    };
+fn remove_old_context(content: &str) -> anyhow::Result<String> {
+    let start_count = content.matches(CONTEXT_MARKER_START).count();
+    let end_count = content.matches(CONTEXT_MARKER_END).count();
+    if start_count == 0 && end_count == 0 {
+        return Ok(content.to_string());
+    }
+    anyhow::ensure!(
+        start_count == end_count,
+        "AGENTS.md contains a partial Amplihack context marker block"
+    );
+    anyhow::ensure!(
+        start_count == 1,
+        "AGENTS.md contains multiple Amplihack context marker blocks; ownership is ambiguous"
+    );
+
+    let start = content
+        .find(CONTEXT_MARKER_START)
+        .expect("counted start marker");
+    let end = content
+        .find(CONTEXT_MARKER_END)
+        .expect("counted end marker");
+    anyhow::ensure!(
+        start < end,
+        "AGENTS.md contains misordered Amplihack context markers"
+    );
     let before = &content[..start];
     let after = &content[end + CONTEXT_MARKER_END.len()..];
-    format!("{}\n\n{}", before.trim_end(), after.trim_start())
+    Ok(format!("{}\n\n{}", before.trim_end(), after.trim_start())
         .trim()
         .to_string()
-        + "\n"
+        + "\n")
 }
 
 #[cfg(test)]

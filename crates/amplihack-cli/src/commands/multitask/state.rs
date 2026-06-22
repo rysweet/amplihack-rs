@@ -32,6 +32,10 @@ pub(super) fn load_state(state_file: &Path) -> Option<PersistedState> {
 
 pub(super) fn persist_state(ws: &Workstream) -> Result<()> {
     let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let workstream_scope = ws.workstream_scope.clone();
+    if workstream_scope.base_ref.is_empty() && !workstream_scope.repository.is_empty() {
+        warn!("[{}] workstream_scope missing base_ref", ws.issue);
+    }
 
     let existing = load_state(&ws.state_file);
     let created_at = existing
@@ -68,7 +72,7 @@ pub(super) fn persist_state(ws: &Workstream) -> Result<()> {
         progress_sidecar: ws.progress_file.to_string_lossy().to_string(),
         max_runtime: Some(ws.max_runtime),
         timeout_policy: Some(ws.timeout_policy.clone()),
-        workstream_scope: ws.workstream_scope.clone(),
+        workstream_scope,
         process_scope: ws.process_scope.clone(),
         created_at,
         updated_at: now,

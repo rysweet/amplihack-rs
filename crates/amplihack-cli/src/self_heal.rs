@@ -263,6 +263,12 @@ fn args_should_skip(args: &[OsString]) -> bool {
     if matches!(positionals.as_slice(), ["hygiene", "artifact-guard", ..]) {
         return true;
     }
+    if matches!(
+        positionals.as_slice(),
+        ["orch", "helper", "workflow-log-inventory", ..]
+    ) {
+        return true;
+    }
 
     // First non-flag positional is the subcommand candidate.
     for arg in args.iter().skip(1) {
