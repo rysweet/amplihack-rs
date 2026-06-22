@@ -1,10 +1,10 @@
 ---
 name: code-smell-detector
-version: 1.0.0
+version: 1.1.0
 description: |
   Identifies anti-patterns specific to amplihack philosophy.
   Use when reviewing code for quality issues or refactoring.
-  Detects: over-abstraction, complex inheritance, large functions (>50 lines), tight coupling, missing __all__ exports.
+  Detects: over-abstraction, complex inheritance, large functions (>50 lines), tight coupling, missing __all__ exports, premature novelty (net-new dependencies/regex/frameworks).
   Provides specific fixes and explanations for each smell.
 ---
 
@@ -370,6 +370,56 @@ __all__ = ['process_data', 'validate_input']
 
 ---
 
+### 6. Premature Novelty (Net-New Category)
+
+**What It Is**: Introducing the *first* instance of a new kind of thing — a new third-party dependency, a first regular expression, a new cache/queue/concurrency primitive, a new config or serialization format, or a new framework — where the existing toolkit already does the job.
+
+**Why It's Bad**: Violates "ruthless simplicity." A net-new category is not paid for in the lines you write; it is paid for continuously in the expanded mental model every maintainer must carry. It often signals missed reuse (the author did not know what already existed) or a half-finished migration that leaves two idioms for one job.
+
+**Red Flags**:
+
+- The first third-party dependency added for something the standard library already does
+- A regular expression introduced where simple string methods suffice
+- A new cache, queue, or concurrency primitive where none existed
+- A new config format or serialization scheme alongside an existing one
+- An abstraction or framework adopted now because "we might need it later"
+
+**Example - SMELL**:
+
+```python
+# BAD: pulls in a regex (a new category) for a trivial check
+import re
+
+def is_blank(s):
+    return re.match(r"^\s*$", s) is not None
+```
+
+**Example - FIXED**:
+
+```python
+# GOOD: the language already does this
+def is_blank(s):
+    return not s.strip()
+```
+
+**Detection Checklist**:
+
+- [ ] New dependency-manifest entry for a trivial capability
+- [ ] First regex in a module that previously did simple string work
+- [ ] New mechanism (cache, queue, format) with a single call site
+- [ ] Justification is "future-proofing" rather than a present need
+
+**Fix Strategy**:
+
+1. Search for what already exists before adding a new category
+2. Prefer the existing idiom unless the new category buys something concrete now
+3. If a new category is justified, finish the job - do not leave two ways to do one thing
+4. Principle: each new *kind* of thing spends a scarce "innovation token" (the "Choose Boring Technology" rule)
+
+> **Inverse smell**: the opposite case — a structure that should *collapse* back to zero, such as a single-implementation abstraction or a one-function utility holder — is covered by **Smell #1: Over-Abstraction**.
+
+---
+
 ## Analysis Process
 
 ### Step 1: Scan Code Structure
@@ -472,6 +522,21 @@ For each smell found:
 ```
 
 **Fix**: Define explicit `__all__`
+
+---
+
+### Rule 6: Net-New Category
+
+**Check**: Changes that introduce a new dependency, the first regex, or a new mechanism
+
+```python
+# BAD pattern detection
+- New dependency-manifest entry or first regex for a trivial task
+- New cache/queue/format mechanism with a single call site
+- If a simpler existing idiom suffices: FLAG
+```
+
+**Fix**: Reuse the existing idiom; reserve new categories for real present needs
 
 ---
 
@@ -663,6 +728,7 @@ Claude:
 - [ ] Inheritance depth <= 2 levels
 - [ ] Functions < 50 lines
 - [ ] No dead code or stubs
+- [ ] No premature novelty (net-new categories without present need)
 
 ### Code Quality
 
