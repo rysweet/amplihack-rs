@@ -1,5 +1,5 @@
 ---
-name: pr-illustrated-guide
+name: pr-guide
 description: Generates an illustrated, plain-language walkthrough document for a pull request — problem statement, approach overview, step-by-step code tour with mermaid diagrams, deep diff links, key decisions, and testing summary. Use when explaining, documenting, or summarizing a PR, creating a reviewer-friendly illustrated guide, or producing walkthrough notes at the end of default-workflow. Works with GitHub and Azure DevOps.
 ---
 
@@ -145,7 +145,7 @@ No workflow YAML edits are required. After `default-workflow` opens a PR,
 invoke this skill with the new PR number (or let it infer from the branch):
 
 ```text
-Skill(skill="pr-illustrated-guide")   # infers PR from current branch
+Skill(skill="pr-guide")   # infers PR from current branch
 ```
 
 or, with an explicit target:

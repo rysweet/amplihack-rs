@@ -1,6 +1,6 @@
 # PR Illustrated Guide — Reference
 
-Deep implementation logic for the `pr-illustrated-guide` skill. SKILL.md is the
+Deep implementation logic for the `pr-guide` skill. SKILL.md is the
 scannable index; this file is the source of truth for commands, formats, and
 heuristics.
 

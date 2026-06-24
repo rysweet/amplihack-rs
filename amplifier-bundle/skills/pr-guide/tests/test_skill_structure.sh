@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# TDD contract tests for the `pr-illustrated-guide` skill — structural validation.
+# TDD contract tests for the `pr-guide` skill — structural validation.
 #
-# Run: bash amplifier-bundle/skills/pr-illustrated-guide/tests/test_skill_structure.sh
+# Run: bash amplifier-bundle/skills/pr-guide/tests/test_skill_structure.sh
 #
 # These tests are the executable specification for the skill. They encode every
 # requirement from the design (frontmatter scope, triviality filter, the fixed
@@ -38,7 +38,7 @@ grep_both() { grep -qiE "$1" "${BOTH_FILES[@]}" 2>/dev/null; }
 grep_both_cs() { grep -qE "$1" "${BOTH_FILES[@]}" 2>/dev/null; }
 
 echo "═══════════════════════════════════════════════════════"
-echo "  Test Suite: pr-illustrated-guide skill — Structure"
+echo "  Test Suite: pr-guide skill — Structure"
 echo "═══════════════════════════════════════════════════════"
 
 # ─── Test 1: Required files exist ────────────────────────────────────────────
@@ -88,10 +88,10 @@ fi
 # Extract just the frontmatter block (between the first two --- lines).
 FRONTMATTER=$(awk 'NR==1 && $0=="---"{f=1; next} f && $0=="---"{exit} f{print}' "$SKILL_FILE")
 
-if echo "$FRONTMATTER" | grep -qE "^name:[[:space:]]*pr-illustrated-guide[[:space:]]*$"; then
-  pass "frontmatter: name is 'pr-illustrated-guide'"
+if echo "$FRONTMATTER" | grep -qE "^name:[[:space:]]*pr-guide[[:space:]]*$"; then
+  pass "frontmatter: name is 'pr-guide'"
 else
-  fail "frontmatter: name must be exactly 'pr-illustrated-guide'"
+  fail "frontmatter: name must be exactly 'pr-guide'"
 fi
 
 if echo "$FRONTMATTER" | grep -qE "^description:"; then
