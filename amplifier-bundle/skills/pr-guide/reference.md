@@ -386,14 +386,47 @@ The skill should **warn** the user when offering to publish a guide that
 contains local screenshot paths: "Screenshots reference local temp files and
 will appear broken in the published version unless uploaded separately."
 
-### Publishing (confirmation-gated)
+### Publishing (automatic — description-first, comment-fallback)
 
-After writing, **offer** two actions; default to no-op:
+The guide is attached to the PR automatically. No confirmation prompt.
 
-| Action | GitHub | Azure DevOps |
+**Decision logic:**
+
+1. Read the **existing PR description** (GitHub: `body` from metadata; ADO:
+   `description` from `pr show`).
+2. Compute `combined_length = len(existing_description) + len("\n\n---\n\n") + len(guide)`.
+3. If `combined_length` is under the platform's description size limit:
+   - **Append** the guide to the existing description, separated by `\n\n---\n\n`.
+   - Do not replace the existing description — preserve it.
+4. If `combined_length` exceeds the limit, or appending fails:
+   - **Post the guide as a PR comment** instead.
+5. Print which action was taken and the temp-file path.
+
+**Platform size limits:**
+
+| Platform | PR description | PR comment |
 | --- | --- | --- |
-| Set as PR description | `gh pr edit <N> --body-file <path>` | `az repos pr update --id <N> --description <text>` (pass description as a single argv element read from the file, not via shell interpolation) |
-| Post as comment | `gh pr comment <N> --body-file <path>` | No first-class `az repos pr comment` exists across CLI versions; post via the PR Threads REST API: `POST https://dev.azure.com/<org>/<project>/_apis/git/repositories/<repo>/pullRequests/<N>/threads?api-version=7.1` with `{"comments":[{"content":"<text>"}],"status":"active"}` using `az rest --method post --uri <url> --body @<file>` |
+| GitHub | ~65,000 characters | ~65,000 characters |
+| Azure DevOps | **4,000 characters** | 150,000 characters |
+
+ADO's 4,000-char description limit means the guide will almost always fall
+back to a comment on ADO. That's expected behavior, not a failure.
+
+#### GitHub commands
+
+| Action | Command |
+| --- | --- |
+| Read existing description | `gh pr view <N> --json body --jq .body` |
+| Append to description | Build a new body = existing + separator + guide, write to a temp file, then `gh pr edit <N> --body-file <path>` |
+| Post as comment | `gh pr comment <N> --body-file <path>` |
+
+#### Azure DevOps commands
+
+| Action | Command |
+| --- | --- |
+| Read existing description | `az repos pr show --id <N> --query description -o tsv` |
+| Set description | `az repos pr update --id <N> --description <text>` (pass as a single argv element read from the file; no `--description-file` flag exists) |
+| Post as comment | POST via PR Threads REST API: `POST https://dev.azure.com/<org>/<project>/_apis/git/repositories/<repo>/pullRequests/<N>/threads?api-version=7.1` with `{"comments":[{"content":"<text>"}],"status":"active"}` using `az rest --method post --uri <url> --body @<file>` |
 
 **ADO comment body encoding:** The `--body @<file>` form reads JSON from a
 file. The markdown content must be **JSON-string-escaped** before embedding in
@@ -410,12 +443,10 @@ a proper JSON file in the temp dir:
 
 Never construct this JSON via string interpolation in a shell command.
 
-`az repos pr update` has no `--description-file` flag, so the body must be passed
-as text; read the temp file in-process and pass its contents as a **single argv
-element** (never interpolated into a shell string) to preserve the no-injection
-mandate.
-
-Never publish without explicit user confirmation. Never auto-commit the doc.
+**Publish failures:** If the attach/comment call fails, report the error and
+the temp-file path so the user can post manually. Do **not** auto-retry a
+failed publish — a comment POST may have partially succeeded, and a blind
+retry risks duplicates. Never auto-commit the doc.
 
 ---
 

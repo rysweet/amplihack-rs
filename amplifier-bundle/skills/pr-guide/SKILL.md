@@ -133,11 +133,18 @@ resilience*.
 ## Output
 
 - Markdown is written to an **OS temp file** (`$TMPDIR`/`/tmp`) with `0600`
-  permissions — never committed, never auto-uploaded.
-- The **absolute path** is printed.
-- The skill then **offers** (does not force) to post the content as the PR
-  description or as a PR comment. Publishing is **confirmation-gated**; the
-  default action is no-op.
+  permissions — never committed.
+- The skill **automatically attaches** the guide to the PR:
+  1. **Fits in PR description?** If the existing description + a separator +
+     the guide is under the platform's description limit (GitHub ~65,000
+     chars; ADO 4,000 chars), **append** the guide to the PR description
+     below an `---` separator.
+  2. **Too long for description?** Post the guide as a **PR comment** instead
+     (GitHub ~65,000 char limit; ADO 150,000 char limit). ADO's 4,000-char
+     description limit means the guide will almost always go to a comment
+     on that platform.
+- The absolute path of the temp file is always printed so the user has a
+  local copy regardless.
 
 ## Invoking at the End of `default-workflow`
 
