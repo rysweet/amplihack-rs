@@ -24,7 +24,9 @@ Resolve a PR number and the base/head commit SHAs before doing anything else.
    bindings).
 3. Neither provided → infer from the current branch:
    - GitHub: `gh pr view --json number,headRefName,baseRefName`
-   - Azure DevOps: `az repos pr list --source-branch "$(git rev-parse --abbrev-ref HEAD)" --status active`
+   - Azure DevOps: resolve branch first (`git rev-parse --abbrev-ref HEAD`),
+     then pass it: `az repos pr list --source-branch <branch> --status active`
+     (two steps — do not embed the `git` call inside the `az` command string).
 4. No PR resolvable → stop with:
    `No open PR found for the current branch. Pass a PR number explicitly.`
 
@@ -215,6 +217,23 @@ Examples of `<reason>`:
 Treat thresholds as soft guidance. If a sub-threshold change clearly alters
 core behavior (e.g. a one-line fix to an auth check), proceed and note that it
 was borderline. The goal is skipping noise, not suppressing interesting small PRs.
+
+### Large diffs
+
+GitHub's API truncates diffs beyond ~3000 files or ~300 KB of patch text, and
+`gh pr diff` will silently return a truncated result with no warning. For PRs
+with **50+ files changed**:
+
+1. Note the total file count in the Approach Overview so reviewers know the
+   scope.
+2. Focus the Detailed Walkthrough on the most significant modules (by line
+   count or structural impact), not every file.
+3. If the diff appears truncated (patch output ends abruptly, file count from
+   metadata doesn't match patch hunk count), add a warning:
+   `⚠️ This walkthrough covers the most significant changes. The full diff
+   contains <N> files; <M> were analyzed in detail.`
+
+Do not silently produce an incomplete walkthrough — always surface the gap.
 
 ---
 
@@ -460,7 +479,7 @@ flowchart TD
 
 ### The retry wrapper (the core change)
 
-[`src/http/withRetry.ts`](https://github.com/acme/widgets/pull/318/files#diff-<hash>)
+[`src/http/withRetry.ts`](https://github.com/acme/widgets/pull/318/files#diff-62213cd6b80719fbc1a863166f082615f27332908057dcfbb8f70a4e7de527e7)
 
 ```ts
 export async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
