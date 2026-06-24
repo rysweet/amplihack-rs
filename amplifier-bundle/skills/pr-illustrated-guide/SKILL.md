@@ -1,6 +1,6 @@
 ---
 name: pr-illustrated-guide
-description: Generates an illustrated, plain-language walkthrough document for a pull request — problem statement, approach, step-by-step code tour with mermaid diagrams, deep diff links, key decisions, and testing. Use when you want to explain, illustrate, document, or summarize a PR, create a PR walkthrough or illustrated guide, or produce reviewer-friendly notes at the end of a development workflow. Works with GitHub and Azure DevOps. Trigger keywords: PR, pull request, illustrated guide, walkthrough, PR summary, explain this PR.
+description: Generates an illustrated, plain-language walkthrough document for a pull request — problem statement, approach overview, step-by-step code tour with mermaid diagrams, deep diff links, key decisions, and testing summary. Use when explaining, documenting, or summarizing a PR, creating a reviewer-friendly illustrated guide, or producing walkthrough notes at the end of default-workflow. Works with GitHub and Azure DevOps.
 ---
 
 # PR Illustrated Guide
@@ -61,23 +61,24 @@ heuristics, and a full worked example.
 
 ## Triviality Filter
 
-The guide is **skipped** (with a one-line reason) when **any** rule matches:
+The guide is **skipped** (with a one-line reason) when the PR appears trivial.
+These are **soft heuristics**, not hard gates — use judgment:
 
-| Rule | Threshold |
+| Heuristic | Default threshold |
 | --- | --- |
 | Too few files | fewer than **3** files changed |
 | Too little real change | fewer than **~30** meaningful lines (excludes whitespace, comments, lockfiles) |
 | Config/typo only | changes are limited to config files, formatting, or typo fixes |
+
+**Override:** if a sub-threshold PR clearly alters core behavior (e.g. a 2-file
+auth fix), proceed anyway and note that it was borderline. The goal is to skip
+noise, not to suppress interesting small PRs.
 
 Example skip message:
 
 > ⏭️ Skipping illustrated guide for PR #482 — only 1 file changed (12
 > meaningful lines, config-only). Not substantial enough to warrant a
 > walkthrough.
-
-Thresholds are guidance, not hard law: a 2-file change that alters core logic
-may still warrant a guide. The filter errs toward skipping noise, not toward
-suppressing genuinely interesting small PRs.
 
 ## Document Structure (fixed order)
 

@@ -188,7 +188,7 @@ best-effort — its failure never propagates to the data path.
 ## 5. Triviality filter
 
 Compute on the fetched diff. Skip (emit a one-line reason, then stop) when
-**any** rule fires:
+the PR appears trivial per these **soft heuristics**:
 
 1. **Files changed < 3.**
 2. **Meaningful changed lines < 30.** "Meaningful" excludes:
@@ -212,9 +212,9 @@ Examples of `<reason>`:
 - `18 meaningful lines changed (below the ~30 threshold)`
 - `config-only changes (.yaml, .toml)`
 
-Treat thresholds as guidance. If a sub-threshold change clearly alters core
-behavior (e.g. a one-line fix to an auth check), proceed and note that it was
-borderline.
+Treat thresholds as soft guidance. If a sub-threshold change clearly alters
+core behavior (e.g. a one-line fix to an auth check), proceed and note that it
+was borderline. The goal is skipping noise, not suppressing interesting small PRs.
 
 ---
 
@@ -349,6 +349,24 @@ interactions.
 - Screenshots go alongside it in the same temp dir, also `0600`.
 - Print the **absolute path**.
 
+### Screenshot portability
+
+Embedded screenshots use local absolute paths (`/tmp/pr-guide-318-abc.png`).
+These work for **local viewing** but are **dead links** once the markdown is
+posted to a remote PR. Before publishing a guide that contains screenshots:
+
+- **GitHub:** upload each image via the repository's upload endpoint or paste
+  it in the browser to get a `user-images.githubusercontent.com` URL, then
+  rewrite the markdown image reference.
+- **Azure DevOps:** attach via the PR attachments API
+  (`POST …/pullRequests/<N>/attachments`) and rewrite to the attachment URL.
+- **Fallback:** if uploading is not feasible, replace the `![…](…)` with the
+  textual fallback description (the same one used when Playwright is absent).
+
+The skill should **warn** the user when offering to publish a guide that
+contains local screenshot paths: "Screenshots reference local temp files and
+will appear broken in the published version unless uploaded separately."
+
 ### Publishing (confirmation-gated)
 
 After writing, **offer** two actions; default to no-op:
@@ -356,7 +374,22 @@ After writing, **offer** two actions; default to no-op:
 | Action | GitHub | Azure DevOps |
 | --- | --- | --- |
 | Set as PR description | `gh pr edit <N> --body-file <path>` | `az repos pr update --id <N> --description <text>` (pass description as a single argv element read from the file, not via shell interpolation) |
-| Post as comment | `gh pr comment <N> --body-file <path>` | No first-class `az repos pr comment` exists across CLI versions; post via the PR Threads REST API: `POST https://dev.azure.com/<org>/<project>/_apis/git/repositories/<repo>/pullRequests/<N>/threads?api-version=7.1` with `{"comments":[{"content":"<text>"}],"status":"active"}` using `az rest --method post --uri <url> --body <file>` |
+| Post as comment | `gh pr comment <N> --body-file <path>` | No first-class `az repos pr comment` exists across CLI versions; post via the PR Threads REST API: `POST https://dev.azure.com/<org>/<project>/_apis/git/repositories/<repo>/pullRequests/<N>/threads?api-version=7.1` with `{"comments":[{"content":"<text>"}],"status":"active"}` using `az rest --method post --uri <url> --body @<file>` |
+
+**ADO comment body encoding:** The `--body @<file>` form reads JSON from a
+file. The markdown content must be **JSON-string-escaped** before embedding in
+the `"content"` field (escape `\`, `"`, newlines as `\n`, tabs as `\t`). Build
+a proper JSON file in the temp dir:
+
+```text
+1. Read the guide markdown from the temp file.
+2. JSON-escape the string (handle \, ", \n, \t, control chars).
+3. Write the JSON envelope to a second temp file:
+   {"comments":[{"content":"<escaped-markdown>"}],"status":"active"}
+4. Pass that file: az rest --method post --uri <url> --body @<json-file>
+```
+
+Never construct this JSON via string interpolation in a shell command.
 
 `az repos pr update` has no `--description-file` flag, so the body must be passed
 as text; read the temp file in-process and pass its contents as a **single argv
