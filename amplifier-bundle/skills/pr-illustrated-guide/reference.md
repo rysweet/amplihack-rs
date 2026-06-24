@@ -218,22 +218,22 @@ Treat thresholds as soft guidance. If a sub-threshold change clearly alters
 core behavior (e.g. a one-line fix to an auth check), proceed and note that it
 was borderline. The goal is skipping noise, not suppressing interesting small PRs.
 
-### Large diffs
+### Large diffs and API truncation
 
-GitHub's API truncates diffs beyond ~3000 files or ~300 KB of patch text, and
-`gh pr diff` will silently return a truncated result with no warning. For PRs
-with **50+ files changed**:
+Process the full diff methodically — the exemplar pattern (Section 6) already
+compresses repetitive changes naturally, so large PRs do not require artificial
+limits on coverage.
 
-1. Note the total file count in the Approach Overview so reviewers know the
-   scope.
-2. Focus the Detailed Walkthrough on the most significant modules (by line
-   count or structural impact), not every file.
-3. If the diff appears truncated (patch output ends abruptly, file count from
-   metadata doesn't match patch hunk count), add a warning:
-   `⚠️ This walkthrough covers the most significant changes. The full diff
-   contains <N> files; <M> were analyzed in detail.`
+However, GitHub's API truncates diffs beyond ~3000 files or ~300 KB of patch
+text, and `gh pr diff` returns truncated output **silently**. Detect this by
+comparing the file count from PR metadata (`files[].path`) against the number
+of files actually present in the patch output. If they diverge, the diff is
+truncated. In that case:
 
-Do not silently produce an incomplete walkthrough — always surface the gap.
+1. Warn the reader: `⚠️ GitHub's API truncated the diff. This walkthrough
+   covers <M> of <N> changed files; the remainder could not be retrieved.`
+2. For the missing files, list their paths (from metadata) without code
+   snippets so the reviewer at least knows what else changed.
 
 ---
 
