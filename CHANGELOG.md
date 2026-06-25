@@ -9,7 +9,22 @@ Unreleased changes appear at the top under `[Unreleased]`.
 
 ### Fixed
 
-- **`amplihack update` runs OLD binary's install code (#683)** — After
+- **default-workflow leaves stray fallback branches + nested worktrees when
+  force-push is denied (#808)** — `default-workflow` finalization now runs a
+  deterministic, idempotent cleanup. On a denied force-push the run-created
+  fallback branch is deleted from the **shared remote** (`git push origin
+  --delete`) and locally, and nested worktrees left under the task worktree are
+  removed with `git worktree remove --force` + `git worktree prune` (a bare
+  `rm -rf` left dangling worktree registrations — a regression of the #780/#755
+  local-leak fixes) along with their orphaned branch (remote + local). The
+  cleanup runs unconditionally and via an `EXIT` trap in
+  `workflow-finalize.yaml` (`step-22c-finalization-cleanup`), is fail-soft, and
+  always preserves the intended PR branch and protected base branches. New
+  helpers live in `amplifier-bundle/tools/workflow_runtime_artifacts.sh`
+  (`record_run_created_branch`, `cleanup_run_created_branches`,
+  `cleanup_nested_worktrees`, `finalize_workflow_runtime_artifacts`).
+
+
   downloading a new binary, the post-update install step now spawns the
   **new** binary as a subprocess (`amplihack install --force-refresh`)
   instead of calling `run_install` in-process with the old binary's code.

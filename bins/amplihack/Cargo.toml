@@ -141,6 +141,10 @@ name = "workflow_finalize_resilience"
 path = "../../tests/integration/workflow_finalize_resilience.rs"
 
 [[test]]
+name = "issue_808_finalization_cleanup"
+path = "../../tests/integration/issue_808_finalization_cleanup.rs"
+
+[[test]]
 name = "hygiene_cleanup"
 path = "../../tests/integration/hygiene_cleanup.rs"
 

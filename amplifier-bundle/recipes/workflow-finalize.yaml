@@ -267,6 +267,47 @@ steps:
       bash "$FINAL_STATUS_HELPER"
     output: "final_status"
 
+  - id: "step-22c-finalization-cleanup"
+    type: "bash"
+    command: |
+      set -uo pipefail
+      # Issue #808: deterministic finalization cleanup. When a run's push-fallback
+      # path (e.g. a denied force-push) sprays throwaway branches to the shared
+      # remote and leaves nested worktrees behind, finalization must delete those
+      # run-created fallback branches (remote + local) and remove the nested
+      # worktrees, leaving only the intended PR branch. This step is
+      # unconditional and installs an EXIT trap so the cleanup also runs on an
+      # early-exit/failure path; the cleanup library is defensive and idempotent.
+      export GIT_PAGER=cat PAGER=cat LESS=FRX
+      RUNTIME_ARTIFACT_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
+      [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
+      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
+      _worktree_path="${WORKTREE_SETUP_WORKTREE_PATH:-}"
+      _intended_branch="${BRANCH_NAME:-${RECIPE_VAR_branch_name:-${WORKTREE_SETUP_BRANCH_NAME:-${RECIPE_VAR_worktree_setup__branch_name:-}}}}"
+      _run_finalization_cleanup() {
+        if [ ! -f "$RUNTIME_ARTIFACT_HELPER" ]; then
+          echo "WARNING: finalization cleanup helper not found: $RUNTIME_ARTIFACT_HELPER" >&2
+          return 0
+        fi
+        # shellcheck source=/dev/null
+        . "$RUNTIME_ARTIFACT_HELPER" 2>/dev/null || return 0
+        # Nested-worktree cleanup is only safe against a dedicated per-task
+        # worktree (its `worktrees/` children are leaked nested worktrees). When
+        # the task worktree is the repo root itself, its `worktrees/` children are
+        # other runs' task worktrees, so restrict to the manifest-keyed branch
+        # cleanup, which never deletes the intended/checked-out/protected branch.
+        if [ -n "$_worktree_path" ] && [ -d "$_worktree_path" ] && [ "$_worktree_path" != "${REPO_PATH:-}" ]; then
+          finalize_workflow_runtime_artifacts "$_worktree_path" "$_intended_branch" || true
+        else
+          cleanup_run_created_branches "${REPO_PATH:-$(pwd)}" "$_intended_branch" || true
+        fi
+        return 0
+      }
+      # Defensive: ensure cleanup runs even if this step exits early.
+      trap '_run_finalization_cleanup' EXIT
+      echo "=== Finalization cleanup (issue #808): stray fallback branches + nested worktrees ===" >&2
+    output: "finalization_cleanup_result"
+
   - id: "collect-finalization-evidence"
     type: "bash"
     parse_json: true

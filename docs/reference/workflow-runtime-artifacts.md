@@ -4,7 +4,7 @@ This reference defines the runtime-root, cleanup, and guard-point contracts used
 by `default-workflow`, recovery flows, launchers, provenance logging, publish
 helpers, and finalization helpers.
 
-Updated: 2026-06-19
+Updated: 2026-06-25
 
 ## Contents
 
@@ -86,7 +86,7 @@ artifacts:
 | Repo-relative path | Owner | Cleanup behavior |
 | --- | --- | --- |
 | `.claude/runtime` | legacy amplihack launcher and nested agent runtime state | Removed by workflow runtime preflight when present. |
-| `worktrees` | reserved root for amplihack workflow-created nested scratch worktrees under a managed task worktree | Removed by workflow runtime preflight when present and not tracked source. |
+| `worktrees` | reserved root for amplihack workflow-created nested scratch worktrees under a managed task worktree | Nested git worktrees are deregistered (`git worktree remove --force` + `git worktree prune`) and the directory is removed by workflow runtime preflight when present and not tracked source. A bare `rm -rf` is never sufficient: it leaves dangling worktree registrations behind (issue #808 — a regression of the #780/#755 local-leak fixes). |
 
 The cleanup contract does not include `.claude` itself, `.claude/settings.json`,
 source files, build output, dependency directories, logs outside the runtime
@@ -137,6 +137,64 @@ preflight_known_workflow_runtime_artifacts "$worktree"
 Runs cleanup, then verifies that the known runtime artifact paths are absent.
 Use this function before guard-sensitive lifecycle operations.
 
+### Deterministic finalization cleanup (issue #808)
+
+When a `default-workflow` run hits a denied force-push, its push-fallback path
+could spray throwaway branches to the shared remote and leave nested worktrees
+behind, with no finalization cleanup to remove them. The helper exposes a
+deterministic, idempotent, fail-soft cleanup for that leak class. Every function
+returns success even when individual `git` operations fail, so it is safe to
+call from success and failure/early-exit paths (for example an `EXIT` trap). The
+intended PR branch, any branch still checked out in a worktree, and the
+protected base branches (`main`, `master`, `develop`) are never deleted.
+
+#### `record_run_created_branch`
+
+```bash
+record_run_created_branch "$repo" "$fallback_branch"
+```
+
+Tracks a run-created fallback/intermediate branch in a per-run manifest stored
+under the shared git common dir (`$(git rev-parse --git-common-dir)/amplihack/run-created-branches`).
+Deduplicated and idempotent. Whenever the workflow pushes a branch other than
+the intended PR branch, it records it here so finalization can delete it.
+
+#### `cleanup_run_created_branches`
+
+```bash
+cleanup_run_created_branches "$repo" "$intended_branch"
+```
+
+Deletes every manifest-tracked branch from the shared remote
+(`git push origin --delete`) and locally (`git branch -D`), then consumes the
+manifest. Preserves the intended/checked-out/protected branches.
+
+#### `cleanup_nested_worktrees`
+
+```bash
+cleanup_nested_worktrees "$repo"
+```
+
+Removes every registered git worktree that lives under `<repo>/worktrees/` with
+`git worktree remove --force` and prunes dangling registrations with
+`git worktree prune`. Operating on the per-task worktree, this only touches
+worktrees nested **inside** it — never the task worktree itself, a sibling task
+worktree, or the main worktree.
+
+#### `finalize_workflow_runtime_artifacts`
+
+```bash
+finalize_workflow_runtime_artifacts "$task_worktree" "$intended_branch"
+```
+
+Finalization entry point. It captures the branches of nested worktrees, removes
+the nested worktrees, deletes those now-orphaned branches plus any
+manifest-tracked fallback branches from the shared remote and locally, and then
+runs the narrow runtime-artifact sweep. Call it with the **per-task worktree**
+as `<repo>`; when no dedicated task worktree exists, run only
+`cleanup_run_created_branches` against the repo root (its `worktrees/` children
+are other runs' task worktrees and must not be removed).
+
 ## Lifecycle integration
 
 The bundled workflows and helper scripts call
@@ -150,7 +208,7 @@ would otherwise fail on workflow-owned leftovers.
 | `workflow-refactor-review.yaml` | Before checkpoint and broad staging. |
 | `workflow-pr-review.yaml` | Before checkpoint and broad staging. |
 | `workflow-publish.yaml` | Before dirty checks, publish staging, commit, push, and PR creation. |
-| `workflow-finalize.yaml` | Before final status gates and final broad staging. |
+| `workflow-finalize.yaml` | Before final status gates and final broad staging. Runs the deterministic finalization cleanup (`step-22c-finalization-cleanup`) unconditionally and via an `EXIT` trap to delete run-created fallback branches (remote + local) and remove nested worktrees. |
 | `workflow_publish_pr.sh` | Before dirty-worktree checks and broad staging. |
 | `workflow_final_status.sh` | Before final clean-worktree validation. |
 
@@ -194,3 +252,8 @@ Regression coverage for workflow runtime isolation verifies:
 7. Child workflows inherit `AMPLIHACK_RUNTIME_ROOT`, `AMPLIHACK_AGENT_BINARY`,
    and non-interactive settings without recomputing or leaking runtime state into
    the commit worktree.
+8. Finalization deletes run-created fallback branches from the shared remote and
+   locally, removes nested worktrees without leaving dangling worktree
+   registrations, deletes the nested worktree's orphaned branch (remote + local),
+   and always preserves the intended PR branch and protected base branches
+   (issue #808). The cleanup is idempotent and never aborts the caller.
