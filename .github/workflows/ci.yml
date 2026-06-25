@@ -47,6 +47,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-targets: false
+          cache-on-failure: true
       - run: cargo fmt --check
       - run: cargo clippy -- -D warnings
 
@@ -68,6 +69,7 @@ jobs:
           # The full workspace test profile links large native artifacts. Restoring
           # target/ can exhaust GitHub-hosted runner disk before tests start.
           cache-targets: false
+          cache-on-failure: true
       - run: cargo test --workspace --locked
 
   install-smoke:
@@ -85,6 +87,7 @@ jobs:
           # hydrates instead of rebuilding the workspace from scratch.
           key: x86_64-unknown-linux-gnu
           cache-targets: false
+          cache-on-failure: true
       - name: Install from local checkout
         run: cargo install --path bins/amplihack --locked
       - name: Verify binary
@@ -127,6 +130,7 @@ jobs:
         with:
           key: ${{ matrix.target }}
           cache-targets: false
+          cache-on-failure: true
 
       - name: Install GNU cross toolchain
         if: matrix.gnu_cross_toolchain
