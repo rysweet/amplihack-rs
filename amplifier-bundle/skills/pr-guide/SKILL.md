@@ -8,11 +8,14 @@ description: Generates an illustrated, plain-language walkthrough document for a
 ## Purpose
 
 Turns a pull request into a reviewer-friendly **illustrated walkthrough**: what
-problem it solves, how it was solved, a step-by-step tour of the code with
-diagrams and links to the actual diffs, the key decisions and trade-offs, and
-what the tests cover. The output is a single markdown file attached to the PR.
+problem it solves, how it was solved, an exemplar-driven tour of the code with
+mermaid diagrams and deep links to the actual diffs, the key decisions and
+trade-offs, and what the tests cover. The output is a single markdown file
+written to a temp location, ready to paste into the PR description or post as a
+comment.
 
-Small or trivial PRs are skipped automatically.
+It deliberately **skips trivial PRs** so it only spends effort where a narrative
+adds value.
 
 ## When to Use This Skill
 
@@ -36,7 +39,7 @@ Standalone or workflow-invoked — both are supported.
 
 When neither a PR number nor branch is supplied, the skill resolves the PR from
 the current checked-out branch (`gh pr view` / `az repos pr list --source-branch`).
-If no PR can be resolved, it stops with a clear message.
+If no PR can be resolved, it stops with a clear message instead of guessing.
 
 ## The Pipeline (9 steps)
 
@@ -59,7 +62,7 @@ heuristics, and a full worked example.
 ## Triviality Filter
 
 The guide is **skipped** (with a one-line reason) when the PR appears trivial.
-These are **guidelines**, not rigid rules — use judgment:
+These are **soft heuristics**, not hard gates — use judgment:
 
 | Heuristic | Default threshold |
 | --- | --- |
@@ -82,14 +85,14 @@ Example skip message:
 The generated markdown always uses these five sections:
 
 1. **Problem Statement** — what the PR solves, drawn from the PR title, body,
-   and any linked issues / work items. Written in plain language.
+   and any linked issues / work items. Plain language, no jargon.
 2. **Approach Overview** — the high-level strategy, with a mermaid diagram of
-   the architectural approach when it helps.
+   the architectural approach **when it helps** (skip it for linear changes).
 3. **Detailed Walkthrough** — a step-by-step tour of the implementation.
-   Each step should **explain what problem that piece of code solves** before
-   showing the code. Include:
-   - One representative code snippet per repeated pattern (summarize the
-     rest with a count and file list).
+   Each step should **lead with the problem that piece of code solves**
+   before showing the code itself:
+   - **Exemplar** code snippets — one representative snippet per repeated
+     pattern, not every identical instance.
    - Mermaid diagrams for complex flows or architecture changes.
    - **Deep links** to the relevant diffs (GitHub `#diff-<hash>` with `/files`
      fallback; Azure DevOps `?_a=files&path=…`).
@@ -101,10 +104,11 @@ The generated markdown always uses these five sections:
 ## GUI / TUI Changes
 
 If the diff touches `.tsx`, `.jsx`, `.vue`, `.svelte`, Playwright tests, or CSS,
-the skill flags a UI change and tries to capture screenshots with Playwright,
-embedding them in the walkthrough. If Playwright (or the app's dev server) is
-unavailable, it falls back to a textual description of the visual changes.
-See `reference.md` → *GUI/TUI capture*.
+the skill flags a UI change and **attempts** to capture screenshots with
+Playwright, embedding them in the walkthrough. If Playwright (or the app's dev
+server) is unavailable, it **degrades gracefully** to a textual description of
+the visual changes — it never fails the whole guide over a missing screenshot
+tool. See `reference.md` → *GUI/TUI capture*.
 
 ## Platform Support
 
@@ -117,13 +121,16 @@ Exact commands and field mappings are in `reference.md` → *Platform bindings*.
 
 ## Resilience
 
-PR data is fetched through the `gh` / `az` CLIs. Before making any calls, the
-skill checks that the CLI is installed and authenticated, and gives actionable
-instructions if either is missing. Temporary network errors are retried (max 3
-attempts with increasing delays). Publish calls are not retried because a
-partial success could create duplicate comments. If optional data is
-unavailable, the guide is still produced with what's available. See
-`reference.md` → *External service resilience*.
+External PR data comes through the `gh` / `az` CLIs, so the skill treats those
+as a fault-tolerant **service adapter**: it preflight-checks that the CLI is
+installed and authenticated (failing fast with the exact `gh auth login` /
+`az login` remediation), classifies failures as fatal vs transient, and
+**retries transient errors** (network blips, timeouts, `5xx`, rate limits) with
+bounded exponential backoff (max 3 attempts, honoring `Retry-After`). Read calls
+retry; **publish/mutation calls never auto-retry** (they could duplicate a
+comment) and remain confirmation-gated. Missing optional data degrades the guide
+gracefully instead of aborting. See `reference.md` → *External service
+resilience*.
 
 ## Output
 
@@ -159,17 +166,19 @@ Generate an illustrated guide for PR #123
 The skill is fully standalone, so the same invocation works outside any
 workflow.
 
-## Clarity Pass
+## Clarity Pass (on the generated guide)
 
-After assembling the document, re-read it and revise for clarity:
+After assembling the document, re-read the generated guide and revise:
 
 1. **Remove jargon.** Replace technical terms with plain language wherever
-   possible. If a term is necessary (e.g. a function name), explain it briefly.
+   possible. If a term is necessary (e.g. a function name), explain it
+   briefly on first use.
 2. **Each walkthrough step explains "why."** Every step in the Detailed
-   Walkthrough must lead with the problem that piece of code is solving before
-   describing the code itself.
-3. **Keep language neutral.** Describe what the code does directly. Avoid
-   dramatic contrast phrases like "does X, not some inferior Y."
+   Walkthrough must lead with the problem that piece of code is solving
+   before describing what the code does.
+3. **Neutral language.** Describe what the code does directly. Do not use
+   dramatic contrast phrases like "does X, not some inferior Y" — just
+   describe what X is and why.
 
 ## Security Notes
 
