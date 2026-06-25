@@ -167,6 +167,93 @@ fn cli_returns_exit_0_for_clean_repository() {
 }
 
 #[test]
+fn cli_exits_0_when_only_launcher_owned_runtime_files_are_present() {
+    // Regression for issue #807: the launcher's own `.claude/runtime/` files
+    // must not turn the end-of-run guard into a non-zero exit (which hung the
+    // runner). The pre-publish guard over a worktree that only contains launcher
+    // bookkeeping must return a clean exit 0.
+    let tmp = repo();
+    write_file(&tmp.path().join(".gitignore"), ".claude/runtime/\n");
+    run_git(tmp.path(), &["add", ".gitignore"]);
+    run_git(tmp.path(), &["commit", "-qm", "ignore claude runtime"]);
+    write_file(
+        &tmp.path().join(".claude/runtime/launcher_context.json"),
+        "{}\n",
+    );
+    write_file(&tmp.path().join(".claude/runtime/sessions.jsonl"), "{}\n");
+
+    let output = Command::new(bin())
+        .args([
+            "hygiene",
+            "artifact-guard",
+            "--mode",
+            "pre-publish",
+            "--repo",
+        ])
+        .arg(tmp.path())
+        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
+        .output()
+        .expect("run artifact guard");
+
+    assert!(
+        output.status.success(),
+        "launcher-owned runtime files must not block the guard\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn cli_exits_1_cleanly_for_genuine_runtime_pollution_next_to_launcher_files() {
+    // The exemption is narrow: a real leftover under `.claude/runtime/` still
+    // produces a clean non-zero exit (not a hang), even when the launcher's own
+    // exempt files sit beside it.
+    let tmp = repo();
+    write_file(&tmp.path().join(".gitignore"), ".claude/runtime/\n");
+    run_git(tmp.path(), &["add", ".gitignore"]);
+    run_git(tmp.path(), &["commit", "-qm", "ignore claude runtime"]);
+    write_file(
+        &tmp.path().join(".claude/runtime/launcher_context.json"),
+        "{}\n",
+    );
+    write_file(&tmp.path().join(".claude/runtime/session.json"), "{}\n");
+
+    let output = Command::new(bin())
+        .args([
+            "hygiene",
+            "artifact-guard",
+            "--mode",
+            "pre-publish",
+            "--repo",
+        ])
+        .arg(tmp.path())
+        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
+        .output()
+        .expect("run artifact guard");
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "genuine runtime pollution must exit 1\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains(".claude/runtime/session.json"),
+        "must report the genuine runtime leftover; got:\n{combined}"
+    );
+    assert!(
+        !combined.contains("launcher_context.json"),
+        "must not report the exempt launcher file; got:\n{combined}"
+    );
+}
+
+#[test]
 fn cli_returns_exit_2_for_invalid_allowlist() {
     let tmp = repo();
     let allowlist = tmp.path().join(".amplihack-artifact-allowlist");

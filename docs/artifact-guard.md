@@ -121,7 +121,7 @@ repository worktree:
 | --- | --- | --- |
 | Dependency trees | `node_modules/`, `packages/*/node_modules/` | Blocked |
 | Plugin bundles | `dist/plugin.js`, `*/dist/plugin.js` | Blocked |
-| Claude runtime | `.claude/runtime/` | Blocked |
+| Claude runtime | `.claude/runtime/` | Blocked (except launcher-owned bookkeeping — see below) |
 | Nested worktrees | `worktrees/` | Blocked |
 | Cache directories | `.cache/`, `.npm/`, `.pnpm-store/`, `.yarn/cache/`, `.turbo/`, `.parcel-cache/`, `.pytest_cache/` | Blocked |
 | Build output | `dist/`, `build/`, `coverage/`, `.next/`, `out/`, `logs/`, `outputs/`, `index.scip` | Blocked |
@@ -131,6 +131,27 @@ repository worktree:
 Rules match normalized repo-relative paths using `/` separators. The guard does
 not need to read artifact file contents; path-level scanning is the intended
 contract.
+
+### Built-in launcher exemptions
+
+The amplihack launcher and session tracker write a small set of bookkeeping
+files into `<repo>/.claude/runtime/` as a normal, unavoidable part of launching
+an agent. These files are the launcher's own state, not leftover agent
+pollution, so the guard never flags them even though they sit under the
+otherwise-blocked `.claude/runtime/` tree:
+
+| Exempt path | Writer |
+| --- | --- |
+| `.claude/runtime/launcher_context.json` | Launcher / hooks (adaptive launcher detection) |
+| `.claude/runtime/sessions.jsonl` | Session tracker (nesting detection) |
+
+This is a built-in implicit exemption, not a `.amplihack-artifact-allowlist`
+entry, and it is intentionally narrow. Every other path under
+`.claude/runtime/` (session logs, metrics, locks, power-steering state, and any
+stray runtime output) is still blocked. Before this exemption, the launcher's
+own `launcher_context.json` failed the end-of-run `pre-publish` guard, which in
+turn left `recipe-runner-rs` and its child agents hung after the work was
+already committed and pushed (issue #807).
 
 ## Allowlist configuration
 
