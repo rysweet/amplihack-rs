@@ -110,6 +110,28 @@ Source it from recipe shell steps or workflow helper scripts:
 . "$AMPLIHACK_HOME/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
 ```
 
+### Helper path resolution
+
+The helper is not required to live under the target repository. Recipe lifecycle
+steps resolve `workflow_runtime_artifacts.sh` by checking these locations in
+order and using the first that exists:
+
+| Priority | Candidate | Purpose |
+| --- | --- | --- |
+| 1 | `$WORKFLOW_RUNTIME_ARTIFACT_HELPER` | Explicit override (publish/tool steps). |
+| 2 | `$AMPLIHACK_HOME/amplifier-bundle/tools/...` | Honor an explicit Amplihack home. |
+| 3 | `$REPO_PATH/amplifier-bundle/tools/...` | Target repo checkout that bundles the tools. |
+| 4 | `$(pwd)/amplifier-bundle/tools/...` | Active worktree that bundles the tools. |
+| 5 | `$HOME/.copilot/amplifier-bundle/tools/...` | Copilot-installed bundle. |
+| 6 | `$HOME/.amplihack/amplifier-bundle/tools/...` | Default installed Amplihack bundle. |
+
+When `AMPLIHACK_HOME` is unset and the target repository does not vendor an
+`amplifier-bundle/` directory, the helper still resolves from the installed
+`~/.amplihack` (or `~/.copilot`) bundle. The step fails with a clear error only
+when no candidate resolves. This prevents a successful implementation from being
+reported as failed at `checkpoint-after-implementation` (issue #817).
+
+
 ### `cleanup_known_workflow_runtime_artifacts`
 
 ```bash
@@ -194,3 +216,6 @@ Regression coverage for workflow runtime isolation verifies:
 7. Child workflows inherit `AMPLIHACK_RUNTIME_ROOT`, `AMPLIHACK_AGENT_BINARY`,
    and non-interactive settings without recomputing or leaking runtime state into
    the commit worktree.
+8. Lifecycle steps resolve `workflow_runtime_artifacts.sh` from the installed
+   `~/.amplihack` (or `~/.copilot`) bundle when `AMPLIHACK_HOME` is unset and the
+   target repository has no `amplifier-bundle/` directory (issue #817).
