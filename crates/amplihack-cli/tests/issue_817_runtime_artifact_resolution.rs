@@ -39,8 +39,10 @@ fn checkpoint_resolution_snippet() -> String {
         "workflow-tdd.yaml must contain the runtime-artifact resolution chain"
     );
     assert!(
-        lines.iter().any(|line| line
-            .contains(".amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh")),
+        lines
+            .iter()
+            .any(|line| line
+                .contains(".amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh")),
         "resolution chain must include a ~/.amplihack fallback candidate (issue #817)"
     );
 
@@ -141,7 +143,10 @@ fn checkpoint_prefers_amplihack_home_over_installed_fallback() {
         .expect("run helper resolution snippet");
 
     let resolved = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "resolution snippet must execute cleanly");
+    assert!(
+        output.status.success(),
+        "resolution snippet must execute cleanly"
+    );
     assert_eq!(
         resolved.trim(),
         explicit_helper.to_string_lossy(),
