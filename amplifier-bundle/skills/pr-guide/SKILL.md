@@ -137,10 +137,11 @@ data degrades the guide gracefully instead of aborting. See `reference.md` →
 - Markdown is written to an **OS temp file** (`$TMPDIR`/`/tmp`) with `0600`
   permissions — never committed.
 - The skill **automatically attaches** the guide to the PR:
-  1. **Fits in PR description?** If the existing description + a separator +
-     the guide is under the platform's description limit (GitHub ~65,000
-     chars; ADO 4,000 chars), **append** the guide to the PR description
-     below an `---` separator.
+  1. **Fits in PR description?** If the description that will actually be
+     written (the clarity-rewritten text from the PR Description Clarity Pass,
+     otherwise the existing description) + a separator + the guide is under the
+     platform's description limit (GitHub ~65,000 chars; ADO 4,000 chars),
+     **append** the guide to the PR description below an `---` separator.
   2. **Too long for description?** Post the guide as a **PR comment** instead
      (GitHub ~65,000 char limit; ADO 150,000 char limit). ADO's 4,000-char
      description limit means the guide will almost always go to a comment
