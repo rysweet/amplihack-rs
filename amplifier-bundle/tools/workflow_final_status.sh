@@ -216,12 +216,18 @@ validate_final_pr_scope() {
     return 1
   }
   created_after="${WORKFLOW_STARTED_AT:-${RECIPE_STARTED_AT:-${TASK_STARTED_AT:-}}}"
+  scoped_issue_id="${ISSUE_NUMBER:-${RECIPE_VAR_issue_number:-}}"
+  # issue_number can carry a non-numeric local tracking reference (e.g.
+  # local-5d904cff4398) when the workflow fell back to local tracking (#815,
+  # #804). PR-scope matching only understands numeric ids, so coerce a
+  # non-numeric ref to empty: a local ref must not filter out the current-work PR.
+  case "$scoped_issue_id" in ''|*[!0-9]*) scoped_issue_id="" ;; esac
   scope_args=(
     --repo "$repo_identity"
     --head "$current_branch"
     --base "$expected_base"
-    --issue "${ISSUE_NUMBER:-${RECIPE_VAR_issue_number:-}}"
-    --work-item "${ISSUE_NUMBER:-${RECIPE_VAR_issue_number:-}}"
+    --issue "$scoped_issue_id"
+    --work-item "$scoped_issue_id"
     --head-sha "$local_head"
   )
   title_prefix="${EXPECTED_PR_TITLE_PREFIX:-${PR_EXPECTED_TITLE_PREFIX:-}}"
