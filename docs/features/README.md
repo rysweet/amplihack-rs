@@ -36,6 +36,10 @@ Intelligent guidance system that prevents common mistakes and ensures work compl
 - [Workflow Provider Abstraction](workflow-provider-abstraction.md) — provider-neutral tracking, change-request publication, terminal state, and stale cleanup through typed helpers and provider adapters.
 - [Provider-Aware Workflow Tracking](dual-provider-workflow.md) — compatibility entry point for the provider-neutral workflow contract.
 
+## Install Provisioning
+
+- [Best-Effort Mermaid CLI Provisioning](mermaid-cli-best-effort-install.md) — `amplihack install` provisions the Mermaid CLI (`mmdc`, npm `@mermaid-js/mermaid-cli`) on a best-effort basis so the `pr-guide` skill can render mermaid diagrams to images locally for Azure DevOps instead of relying on the third-party `mermaid.ink` service. A failed or skipped install warns and continues (never blocks install); disable entirely with `AMPLIHACK_SKIP_MMDC=1` (issue [#828](https://github.com/rysweet/amplihack-rs/issues/828)).
+
 ## GitHub Distribution
 
 - [GitHub Distribution](github-distribution.md) — publish agent bundles to GitHub repositories via the `gh` CLI, with idempotent uploads, visibility control, and tagged releases.

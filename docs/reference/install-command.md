@@ -71,10 +71,13 @@ amplihack install [--interactive]
 ├── 5. ensure_settings_json()     — backup settings.json, register hooks, set permissions
 ├── 6. verify_framework_assets()  — confirm required staged framework assets exist
 ├── 7. apply_config()             — if wizard ran, write preferences to manifest and settings
-└── 8. write_manifest()           — write amplihack-manifest.json for uninstall
+├── 8. write_manifest()           — write amplihack-manifest.json for uninstall
+└── 9. ensure_mermaid_cli()       — best-effort: provision mmdc (npm @mermaid-js/mermaid-cli); warn-and-continue on failure
 ```
 
 Phase 0 runs only when `--interactive` is passed **and** stdin is a TTY. If `--interactive` is set but no TTY is available, the wizard is skipped with a warning to stderr. Phase 7 applies wizard results (default tool, update-check preference) to the manifest and writes hooks to the selected settings.json scope.
+
+Phase 9 runs **after** the version stamp, manifest, and Copilot-home staging, so an `mmdc` failure can never leave required install state unwritten. It is **optional and best-effort**: it attempts `npm install -g @mermaid-js/mermaid-cli` only when npm is available and `mmdc` is missing, and it always continues — a failed or skipped install emits a warning/info line and never fails the install. See [Best-Effort Mermaid CLI Provisioning](../features/mermaid-cli-best-effort-install.md).
 
 ### Environment Variables
 
@@ -85,6 +88,7 @@ These variables are read during install. All are optional; the installer works w
 | `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` | Override the path used for `amplihack-hooks`. Useful in tests and CI. If set but the path does not exist, resolution falls through to Step 2. See [Binary Resolution](./binary-resolution.md). |
 | `AMPLIHACK_HOME` | Override `~/.amplihack` staging root (default: `$HOME/.amplihack`). |
 | `AMPLIHACK_SKIP_AUTO_INSTALL` | When set to any non-empty value, suppresses the startup-time [self-heal check](../features/self-heal-asset-restage.md) that would otherwise re-run install when `~/.amplihack/.installed-version` is missing or stale. Has no effect on an explicit `amplihack install` invocation. |
+| `AMPLIHACK_SKIP_MMDC` | When set to any non-empty value, skips the best-effort [Mermaid CLI provisioning](../features/mermaid-cli-best-effort-install.md) step (no `mmdc`/`npm` probe, no `npm install -g @mermaid-js/mermaid-cli`). The install proceeds normally; this optional step never gates a successful install. |
 
 ### Version stamp
 
@@ -110,8 +114,25 @@ Successful install prints a phase-by-phase progress summary:
 ✓ Backed up ~/.claude/settings.json → settings.json.backup.1741651200
 ✓ Registered 7 Claude Code hooks
 ✓ XPIA hooks directory found
-✓ Wrote install manifest
-amplihack installed successfully.
+   Manifest written to ~/.claude/install/amplihack-manifest.json
+✅ Amplihack installation completed successfully!
+```
+
+After the success banner, two best-effort post-install steps run (each prints
+one status line and never fails the install): Copilot-home staging and
+[Mermaid CLI provisioning](../features/mermaid-cli-best-effort-install.md). For
+example, on a host with npm and `mmdc` already present:
+
+```
+  ✅ Copilot home staged (~/.copilot/)
+  ✓ mermaid CLI (mmdc) already installed; skipping
+```
+
+When npm is unavailable the mermaid step skips with an informational line
+instead, and install still succeeds:
+
+```
+  ℹ npm not available; skipping mermaid CLI install (pr-guide will fall back to mermaid.ink)
 ```
 
 If `~/.local/bin` is not in `$PATH`, an advisory is printed (install still succeeds):
@@ -305,7 +326,13 @@ Checks whether the wizard should run (`interactive == true` and stdin is a TTY).
 
 Writes wizard results to the install manifest (`default_tool`, `update_check_preference` fields) and, for repo-local hook scope, to the repo-local `settings.json`. Located in `crates/amplihack-cli/src/commands/install/interactive.rs`.
 
+### `ensure_mermaid_cli() -> Result<Outcome>`
+
+Best-effort provisioning of the Mermaid CLI (`mmdc`, npm `@mermaid-js/mermaid-cli`). Invoked from `local_install()` after Copilot-home staging. Runs probe → optional `npm install -g @mermaid-js/mermaid-cli` → re-probe and prints one status line for the resolved `Outcome` (`AlreadyPresent`, `Installed`, `SkippedByEnv`, `SkippedNoNpm`, `Failed`). **Always returns `Ok`** — a failed or skipped install is encoded in the `Outcome` and warned via `tracing::warn!` + a stderr `⚠️` line, never propagated as an install error. Honors `AMPLIHACK_SKIP_MMDC`. Uses `std::process::Command` in argument-vector form (no shell) with a hardcoded package spec; never escalates privileges. Located in `crates/amplihack-cli/src/commands/install/mermaid_cli.rs`. See [Best-Effort Mermaid CLI Provisioning](../features/mermaid-cli-best-effort-install.md).
+
 ## See Also
+
+- [Best-Effort Mermaid CLI Provisioning](../features/mermaid-cli-best-effort-install.md) — optional `mmdc` install for local mermaid rendering in `pr-guide`
 
 - [Interactive Install](../howto/interactive-install.md) — guided setup wizard walkthrough
 - [Repair install/update PATH conflicts](../howto/repair-install-update-path-conflicts.md) — repair stale system binaries that shadow `~/.local/bin`
