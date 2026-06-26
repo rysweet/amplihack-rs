@@ -134,6 +134,93 @@ fn ignored_present_dist_plugin_runtime_and_cache_artifacts_are_blocked() {
 }
 
 #[test]
+fn launcher_owned_runtime_files_are_exempt_while_other_runtime_state_is_blocked() {
+    // Regression for issue #807: the amplihack launcher writes its own
+    // bookkeeping into `<repo>/.claude/runtime/` as part of every launch. The
+    // guard must not flag those launcher-owned files (which turned the
+    // end-of-run guard step into a hang), but must still block genuine runtime
+    // pollution under the same directory.
+    let tmp = repo();
+    write_file(&tmp.path().join(".gitignore"), ".claude/runtime/\n");
+    run_git(tmp.path(), &["add", ".gitignore"]);
+    run_git(tmp.path(), &["commit", "-qm", "ignore claude runtime"]);
+
+    // Launcher-owned bookkeeping (exempt).
+    write_file(
+        &tmp.path().join(".claude/runtime/launcher_context.json"),
+        "{}\n",
+    );
+    write_file(&tmp.path().join(".claude/runtime/sessions.jsonl"), "{}\n");
+    // Genuine runtime pollution under the same directory (still blocked).
+    write_file(&tmp.path().join(".claude/runtime/session.json"), "{}\n");
+    write_file(
+        &tmp.path().join(".claude/runtime/metrics/tool.json"),
+        "{}\n",
+    );
+
+    let report = scan_artifacts(&default_config(tmp.path())).expect("scan artifacts");
+
+    for exempt in [
+        ".claude/runtime/launcher_context.json",
+        ".claude/runtime/sessions.jsonl",
+    ] {
+        assert!(
+            !report.violations.iter().any(|v| v.path == exempt),
+            "launcher-owned runtime file {exempt} must be exempt; got {:#?}",
+            report.violations
+        );
+    }
+    for blocked in [
+        ".claude/runtime/session.json",
+        ".claude/runtime/metrics/tool.json",
+    ] {
+        let violation = violation_for(&report.violations, blocked, ArtifactSource::IgnoredPresent);
+        assert_eq!(
+            violation.rule_id, "claude-runtime",
+            "{blocked} must still be blocked as claude-runtime"
+        );
+    }
+}
+
+#[test]
+fn launcher_context_is_exempt_regardless_of_git_source() {
+    // The exemption is path-based and applies whether the launcher file is
+    // staged, untracked, or ignored-present — the end-of-run guard runs in
+    // `pre-publish` mode and must stay clean in every case.
+    let tmp = repo();
+
+    // Staged (force-added past .gitignore).
+    write_file(
+        &tmp.path().join(".claude/runtime/launcher_context.json"),
+        "{}\n",
+    );
+    run_git(
+        tmp.path(),
+        &["add", "-f", ".claude/runtime/launcher_context.json"],
+    );
+
+    // Untracked sessions log.
+    write_file(&tmp.path().join(".claude/runtime/sessions.jsonl"), "{}\n");
+
+    let report = scan_artifacts(
+        &ArtifactGuardConfig::new(tmp.path()).with_mode(ArtifactGuardMode::PrePublish),
+    )
+    .expect("scan artifacts");
+
+    assert!(
+        report.is_clean(),
+        "launcher-owned runtime files must not be flagged in any source; got {:#?}",
+        report.violations
+    );
+    assert!(
+        tmp.path()
+            .join(".claude/runtime/launcher_context.json")
+            .exists(),
+        "guard must not delete launcher state"
+    );
+}
+
+#[test]
 fn ignored_present_workflow_session_artifacts_are_blocked() {
     let tmp = repo();
     write_file(

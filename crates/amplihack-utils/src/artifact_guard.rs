@@ -483,7 +483,35 @@ fn add_violation_if_prohibited(
     }
 }
 
+/// Runtime bookkeeping files that the amplihack launcher and session tracker
+/// write into `<repo>/.claude/runtime/` as a normal, unavoidable part of
+/// launching an agent. They live under the path the `claude-runtime` rule
+/// otherwise blocks, but they are the launcher's OWN state — not leftover agent
+/// pollution — so the guard must never flag them. Treating them as violations
+/// turned a clean end-of-run guard step into a hard failure (issue #807), which
+/// in turn left `recipe-runner-rs` and its child agents hung after the work was
+/// already committed and pushed.
+///
+/// The exemption is intentionally narrow: only these specific launcher-owned
+/// files are exempt. Everything else under `.claude/runtime/` (session logs,
+/// metrics, locks, power-steering state, stray runtime output) is still blocked
+/// so the guard keeps catching genuine runtime pollution. Paths mirror
+/// `amplihack_types::ProjectDirs::launcher_context_file` and `sessions_log_file`.
+const LAUNCHER_OWNED_RUNTIME_FILES: &[&str] = &[
+    ".claude/runtime/launcher_context.json",
+    ".claude/runtime/sessions.jsonl",
+];
+
+/// Whether `path` is a launcher-owned runtime bookkeeping file that the guard
+/// must never treat as a prohibited artifact. See [`LAUNCHER_OWNED_RUNTIME_FILES`].
+fn is_launcher_owned_runtime_file(path: &str) -> bool {
+    LAUNCHER_OWNED_RUNTIME_FILES.contains(&path)
+}
+
 fn rule_for_path(path: &str, source: ArtifactSource) -> Option<&'static ArtifactRule> {
+    if is_launcher_owned_runtime_file(path) {
+        return None;
+    }
     if path_has_component(path, "node_modules") {
         return rule("node-modules");
     }
