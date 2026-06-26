@@ -383,17 +383,17 @@ else
   fail "must print the absolute path of the generated file"
 fi
 
-# Offer (not force) to post as description or comment.
-if grep_both "offer" && (grep_both "comment" && grep_both "description"); then
-  pass "offers to post as PR description or comment"
+# Attach to PR description or comment.
+if (grep_both "attach" || grep_both "append") && (grep_both "comment" && grep_both "description"); then
+  pass "attaches the guide to the PR description or comment"
 else
-  fail "must offer to post the content as a PR description or comment"
+  fail "must attach the guide to a PR description or comment"
 fi
 
-if grep_both "confirm" || grep_both "opt-in" || grep_both "no-op"; then
-  pass "publishing is confirmation-gated (default no-op)"
+if grep_both "automatic" && (grep_both "attach" || grep_both "append"); then
+  pass "publishing is automatic (description-first, comment-fallback)"
 else
-  fail "publishing must be confirmation-gated, default no-op"
+  fail "publishing must be automatic"
 fi
 
 # Never auto-commit the generated doc.

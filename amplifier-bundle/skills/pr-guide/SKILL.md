@@ -25,7 +25,7 @@ Activate when you (or a workflow) ask to:
 - "Explain / document / summarize PR #N"
 - "Generate reviewer notes for this pull request"
 - Run automatically at the **end of `default-workflow`**, right after a PR is
-  opened, to offer a walkthrough.
+  opened, to attach a walkthrough.
 
 Standalone or workflow-invoked — both are supported.
 
@@ -53,7 +53,7 @@ flowchart TD
     E --> F[6. Detect GUI/TUI<br/>capture screenshots best-effort]
     F --> G[7. Build deep links + mermaid]
     G --> H[8. Assemble 5-section doc]
-    H --> I[9. Write temp file · print path · offer to post]
+    H --> I[9. Write temp file · print path · attach to PR]
 ```
 
 See `reference.md` for the exact commands, field mappings, URL formats,
@@ -128,16 +128,15 @@ installed and authenticated (failing fast with the exact `gh auth login` /
 **retries transient errors** (network blips, timeouts, `5xx`, rate limits) with
 bounded exponential backoff (max 3 attempts, honoring `Retry-After`). Read calls
 retry; **publish/mutation calls never auto-retry** (they could duplicate a
-comment) and remain confirmation-gated. Missing optional data degrades the guide
-gracefully instead of aborting. See `reference.md` → *External service
-resilience*.
+comment) — a failed publish is reported, not silently retried. Missing optional
+data degrades the guide gracefully instead of aborting. See `reference.md` →
+*External service resilience*.
 
 ## Output
 
 - Markdown is written to an **OS temp file** (`$TMPDIR`/`/tmp`) with `0600`
   permissions — never committed.
-- The skill **offers to attach** the guide to the PR (opt-in; default no-op).
-  On explicit user confirmation it:
+- The skill **automatically attaches** the guide to the PR:
   1. **Fits in PR description?** If the existing description + a separator +
      the guide is under the platform's description limit (GitHub ~65,000
      chars; ADO 4,000 chars), **append** the guide to the PR description
@@ -199,9 +198,8 @@ acronyms, expands shorthand, and tightens wording while **preserving the
 original meaning** — it never invents new claims or drops caveats. The rewrite
 is pushed back to the PR via `gh pr edit --body-file` (GitHub) or
 `az repos pr update --description` (ADO) — a PR API write, **never** a git
-commit. It is **not** written on its own: like all publishing, it is opt-in
-(default no-op) and is prepared in memory, then folded into the **single,
-confirmation-gated** description write performed at publish time (see
+commit. It is **not** written on its own: it is prepared in memory, then folded
+into the **single** description write performed at publish time (see
 `reference.md` → §10b and §11). If the description is already clear, it is left
 unchanged. See
 `reference.md` → *Clarity passes → PR Description Clarity Pass*.

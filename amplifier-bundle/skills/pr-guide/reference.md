@@ -172,11 +172,11 @@ for attempt in 1..=3:
 
 ### Write/publish operations are NOT auto-retried
 
-Publishing (set description / post comment) mutates remote state and is already
-**confirmation-gated** (Section 11). Do **not** silently retry a failed publish:
-a comment POST may have partially succeeded, so a blind retry risks duplicates.
-On publish failure, report the error and the temp-file path so the user can act
-deliberately. Only retry a publish on explicit user confirmation.
+Publishing (set description / post comment) mutates remote state. Do **not**
+silently retry a failed publish: a comment POST may have partially succeeded, so
+a blind retry risks duplicates. On publish failure, report the error and the
+temp-file path so the user can act deliberately. Only retry a publish on
+explicit user confirmation.
 
 ### Timeouts
 
@@ -463,14 +463,13 @@ The skill should **warn** the user when offering to publish a guide that
 contains local screenshot paths: "Screenshots reference local temp files and
 will appear broken in the published version unless uploaded separately."
 
-### Publishing (confirmation-gated — description-first, comment-fallback)
+### Publishing (automatic — description-first, comment-fallback)
 
-Publishing is **opt-in** (default no-op): the skill **offers** to attach the
-guide and acts only on **explicit user confirmation**. Once the user confirms,
-it follows the decision logic below to choose between appending to the
-description and posting a comment.
+The guide is attached to the PR automatically — no confirmation prompt. It
+follows the decision logic below to choose between appending to the description
+and posting a comment.
 
-**Decision logic (runs only after the user confirms publishing):**
+**Decision logic:**
 
 1. Read the **existing PR description** (GitHub: `body` from metadata; ADO:
    `description` from `pr show`).
@@ -595,7 +594,7 @@ separate comment to link to.
   sensitive repos; URL-encode the base64 payload.
 - **Numeric ID validation.** Comment/thread IDs used in back-links must match
   `^[0-9]+$` before URL/markdown interpolation.
-- **Publishing is opt-in** and confirmation-gated; default no-op.
+- **Publishing writes** to the PR description/comment only — never a git commit.
 
 ---
 
