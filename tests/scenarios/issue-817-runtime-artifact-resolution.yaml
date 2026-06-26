@@ -1,0 +1,90 @@
+name: issue-817-runtime-artifact-resolution
+description: >-
+  QA scenario for issue #817. Verifies that recipe lifecycle steps resolve
+  workflow_runtime_artifacts.sh from the installed bundle (~/.amplihack or
+  ~/.copilot) when AMPLIHACK_HOME is unset and the target repository does not
+  vendor an amplifier-bundle/ directory. Previously checkpoint-after-implementation
+  used a repo-relative path and failed with exit 2 right after a successful
+  implementation. Each step is exit-code asserted: a non-zero exit fails the
+  step. Written in the canonical agentic-test format (top-level agents + steps
+  with params.command) so `gadugi-test run` actually executes the commands.
+version: "1.0"
+metadata:
+  tags: [cli, recipes, workflow, runtime-artifacts, issue-817]
+  priority: high
+environment:
+  requires: []
+agents:
+  - name: cli-agent
+    type: cli
+    config:
+      workingDirectory: "."
+steps:
+  - name: resolution-behaves-correctly-end-to-end
+    description: >-
+      Executes the real RUNTIME_ARTIFACT_HELPER resolution chain extracted from
+      workflow-tdd.yaml in a controlled environment and asserts both cases:
+      fallback resolution from ~/.amplihack when the repo has no bundle, and
+      AMPLIHACK_HOME taking precedence over the installed fallback. This mirrors
+      the Rust regression test but runs without a cargo build.
+    agent: cli-agent
+    action: execute
+    params:
+      command: "bash tests/issue_817_runtime_artifact_resolution.sh"
+    timeout: 60000
+
+  - name: tdd-recipe-has-installed-bundle-fallback
+    description: workflow-tdd.yaml resolution chain includes ~/.amplihack and ~/.copilot candidates.
+    agent: cli-agent
+    action: execute
+    params:
+      command: "grep -q '.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh' amplifier-bundle/recipes/workflow-tdd.yaml && grep -q '.copilot/amplifier-bundle/tools/workflow_runtime_artifacts.sh' amplifier-bundle/recipes/workflow-tdd.yaml"
+
+  - name: finalize-recipe-has-installed-bundle-fallback
+    description: workflow-finalize.yaml resolution chains include the installed-bundle fallbacks.
+    agent: cli-agent
+    action: execute
+    params:
+      command: "grep -q '.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh' amplifier-bundle/recipes/workflow-finalize.yaml && grep -q '.copilot/amplifier-bundle/tools/workflow_runtime_artifacts.sh' amplifier-bundle/recipes/workflow-finalize.yaml"
+
+  - name: publish-recipe-has-installed-bundle-fallback
+    description: workflow-publish.yaml resolution chains include the installed-bundle fallbacks.
+    agent: cli-agent
+    action: execute
+    params:
+      command: "grep -q '.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh' amplifier-bundle/recipes/workflow-publish.yaml && grep -q '.copilot/amplifier-bundle/tools/workflow_runtime_artifacts.sh' amplifier-bundle/recipes/workflow-publish.yaml"
+
+  - name: refactor-review-recipe-has-installed-bundle-fallback
+    description: workflow-refactor-review.yaml resolution chain includes the installed-bundle fallbacks.
+    agent: cli-agent
+    action: execute
+    params:
+      command: "grep -q '.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh' amplifier-bundle/recipes/workflow-refactor-review.yaml && grep -q '.copilot/amplifier-bundle/tools/workflow_runtime_artifacts.sh' amplifier-bundle/recipes/workflow-refactor-review.yaml"
+
+  - name: pr-review-recipe-has-installed-bundle-fallback
+    description: workflow-pr-review.yaml resolution chain includes the installed-bundle fallbacks.
+    agent: cli-agent
+    action: execute
+    params:
+      command: "grep -q '.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh' amplifier-bundle/recipes/workflow-pr-review.yaml && grep -q '.copilot/amplifier-bundle/tools/workflow_runtime_artifacts.sh' amplifier-bundle/recipes/workflow-pr-review.yaml"
+
+  - name: error-message-lists-searched-locations
+    description: The failure path reports every searched location instead of a single repo-relative path.
+    agent: cli-agent
+    action: execute
+    params:
+      command: "grep -q 'searched AMPLIHACK_HOME, REPO_PATH, worktree, ~/.copilot, ~/.amplihack' amplifier-bundle/recipes/workflow-tdd.yaml"
+
+  - name: docs-document-resolution-precedence
+    description: The reference docs document the helper path resolution precedence and cite issue #817.
+    agent: cli-agent
+    action: execute
+    params:
+      command: "grep -q 'Helper path resolution' docs/reference/workflow-runtime-artifacts.md && grep -q 'issue #817' docs/reference/workflow-runtime-artifacts.md"
+
+assertions:
+  - type: exit_code
+    description: All resolution and documentation assertions exit cleanly.
+    params:
+      target: exit_code
+      expected: "0"
