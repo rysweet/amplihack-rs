@@ -53,7 +53,7 @@ flowchart TD
     E --> F[6. Detect GUI/TUI<br/>capture screenshots best-effort]
     F --> G[7. Build deep links + mermaid]
     G --> H[8. Assemble 5-section doc]
-    H --> I[9. Write temp file · print path · offer to post]
+    H --> I[9. Write temp file · print path · attach to PR]
 ```
 
 See `reference.md` for the exact commands, field mappings, URL formats,
@@ -128,9 +128,9 @@ installed and authenticated (failing fast with the exact `gh auth login` /
 **retries transient errors** (network blips, timeouts, `5xx`, rate limits) with
 bounded exponential backoff (max 3 attempts, honoring `Retry-After`). Read calls
 retry; **publish/mutation calls never auto-retry** (they could duplicate a
-comment) and remain confirmation-gated. Missing optional data degrades the guide
-gracefully instead of aborting. See `reference.md` → *External service
-resilience*.
+comment) — a failed publish is reported, not silently retried. Missing optional
+data degrades the guide gracefully instead of aborting. See `reference.md` →
+*External service resilience*.
 
 ## Output
 
@@ -144,7 +144,11 @@ resilience*.
   2. **Too long for description?** Post the guide as a **PR comment** instead
      (GitHub ~65,000 char limit; ADO 150,000 char limit). ADO's 4,000-char
      description limit means the guide will almost always go to a comment
-     on that platform.
+     on that platform. After posting, the skill reads the new comment's ID
+     from the CLI response and inserts a **back-link** into the (already
+     clarified) PR description — e.g.
+     `See the [Illustrated Guide](#issuecomment-<ID>) for a detailed
+     walkthrough of this PR.` See `reference.md` → *Guide-comment back-link*.
 - The absolute path of the temp file is always printed so the user has a
   local copy regardless.
 
@@ -166,7 +170,12 @@ Generate an illustrated guide for PR #123
 The skill is fully standalone, so the same invocation works outside any
 workflow.
 
-## Clarity Pass (on the generated guide)
+## Clarity Passes
+
+Two **distinct** passes run before publishing. They act on separate text and
+must not be conflated.
+
+### Guide Clarity Pass (on the generated guide)
 
 After assembling the document, re-read the generated guide and revise:
 
@@ -179,6 +188,21 @@ After assembling the document, re-read the generated guide and revise:
 3. **Neutral language.** Describe what the code does directly. Do not use
    dramatic contrast phrases like "does X, not some inferior Y" — just
    describe what X is and why.
+
+### PR Description Clarity Pass (on the existing PR description)
+
+A **separate** action from generating the guide. After the guide is built, the
+skill also rewrites the **PR's existing description in place** so a reviewer
+unfamiliar with the work can read it: it removes jargon and unexplained
+acronyms, expands shorthand, and tightens wording while **preserving the
+original meaning** — it never invents new claims or drops caveats. The rewrite
+is pushed back to the PR via `gh pr edit --body-file` (GitHub) or
+`az repos pr update --description` (ADO) — a PR API write, **never** a git
+commit. It is **not** written on its own: it is prepared in memory, then folded
+into the **single** description write performed at publish time (see
+`reference.md` → §10b and §11). If the description is already clear, it is left
+unchanged. See
+`reference.md` → *Clarity passes → PR Description Clarity Pass*.
 
 ## Security Notes
 
