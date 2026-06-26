@@ -164,6 +164,7 @@ fn install_stages_amplifier_bundle_from_local_checkout_not_stale_source() {
     let prev_home = std::env::var_os("HOME");
     let prev_amplihack_home = std::env::var_os("AMPLIHACK_HOME");
     let prev_hooks = std::env::var_os("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
+    let prev_skip_mmdc = std::env::var_os("AMPLIHACK_SKIP_MMDC");
     let prev_cwd = std::env::current_dir().ok();
 
     // SAFETY: env mutation is gated by `env_lock()` above. Each integration
@@ -172,6 +173,10 @@ fn install_stages_amplifier_bundle_from_local_checkout_not_stale_source() {
         std::env::set_var("HOME", home.path());
         std::env::remove_var("AMPLIHACK_HOME");
         std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
+        // Issue #828: keep the best-effort mermaid CLI step a no-op so this
+        // hermetic test never triggers a real `npm install -g` Chromium
+        // download.
+        std::env::set_var("AMPLIHACK_SKIP_MMDC", "1");
     }
     std::env::set_current_dir(checkout.path()).expect("chdir into checkout");
 
@@ -206,6 +211,10 @@ fn install_stages_amplifier_bundle_from_local_checkout_not_stale_source() {
         match prev_hooks {
             Some(v) => std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", v),
             None => std::env::remove_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH"),
+        }
+        match prev_skip_mmdc {
+            Some(v) => std::env::set_var("AMPLIHACK_SKIP_MMDC", v),
+            None => std::env::remove_var("AMPLIHACK_SKIP_MMDC"),
         }
     }
 

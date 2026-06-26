@@ -1,11 +1,41 @@
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, Once, OnceLock};
+
+/// Establish process-wide hermetic defaults for env-mutating tests, exactly
+/// once per test binary.
+///
+/// Issue #828 added a best-effort `npm install -g @mermaid-js/mermaid-cli`
+/// step at the end of `local_install`. Many install tests drive `local_install`
+/// / `run_install` to completion while preserving the real `PATH` (so `npm` is
+/// reachable) without a pre-existing `mmdc` — which would trigger a real,
+/// network-bound Chromium download during `cargo test`. Defaulting
+/// `AMPLIHACK_SKIP_MMDC` here makes that step a no-op for the whole suite.
+///
+/// This runs the first time any test acquires the env lock, before that test
+/// can call `local_install`. Tests that specifically exercise the mermaid CLI
+/// detection branches override `AMPLIHACK_SKIP_MMDC` themselves while holding
+/// the lock, so this default never masks those assertions. We only set the
+/// default when the var is unset, so an explicit value in the environment still
+/// wins.
+fn ensure_hermetic_env_defaults() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        if std::env::var_os("AMPLIHACK_SKIP_MMDC").is_none() {
+            // SAFETY: runs once, before any env-mutating test proceeds past
+            // `env_lock()`; concurrent env mutation is serialised by that lock.
+            unsafe {
+                std::env::set_var("AMPLIHACK_SKIP_MMDC", "1");
+            }
+        }
+    });
+}
 
 /// Single global lock for all environment-mutating tests.
 ///
 /// Both HOME and CWD mutations must serialize through one lock to prevent
 /// races. Tests that need both HOME and CWD should acquire `env_lock()` once.
 pub(crate) fn env_lock() -> &'static Mutex<()> {
+    ensure_hermetic_env_defaults();
     static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     ENV_LOCK.get_or_init(|| Mutex::new(()))
 }

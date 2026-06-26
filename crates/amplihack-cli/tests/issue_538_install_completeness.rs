@@ -151,6 +151,7 @@ fn amplihack_install_command_with_binary(
         .env("HOME", home)
         .env("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", hooks_bin)
         .env("RECIPE_RUNNER_RS_PATH", recipe_runner)
+        .env("AMPLIHACK_SKIP_MMDC", "1")
         .env_remove("AMPLIHACK_HOME")
         .env_remove("CLAUDECODE");
     cmd

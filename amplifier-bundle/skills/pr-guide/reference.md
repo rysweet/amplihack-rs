@@ -386,6 +386,14 @@ render mermaid natively in PR descriptions/comments, convert each diagram to an
 ADO rendering or local `mmdc`, and reserve `mermaid.ink` for public diagrams.
 Always URL-encode the base64 payload and treat the resulting URL as inert data.
 
+**Provisioning `mmdc`.** `amplihack install` provisions the mermaid CLI
+(`mmdc`, npm package `@mermaid-js/mermaid-cli`) on a **best-effort** basis so the
+preferred local-render path (step 2a) is available out of the box. It is an
+optional component: the install detects an existing `mmdc`, skips when `npm` is
+unavailable, and never aborts the install on failure (it warns and continues,
+leaving the `mermaid.ink` fallback in place). Set `AMPLIHACK_SKIP_MMDC=1` to opt
+out in minimal or offline environments.
+
 ---
 
 ## 10. Clarity passes

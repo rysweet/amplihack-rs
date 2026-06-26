@@ -9,6 +9,7 @@ mod filesystem;
 mod hooks;
 pub(crate) mod interactive;
 mod manifest;
+mod mermaid_cli;
 pub(crate) mod paths;
 mod recipe_runner;
 mod settings;
@@ -477,6 +478,14 @@ fn local_install(
             eprintln!("  ⚠️  Copilot home staging skipped: {err}");
         }
     }
+
+    // Issue #828: best-effort provisioning of the mermaid CLI (mmdc) so the
+    // pr-guide skill can render diagrams locally for Azure DevOps instead of
+    // the third-party mermaid.ink service. Optional component — it warns and
+    // continues on any failure and must never abort the install.
+    println!();
+    println!("🧜 Provisioning mermaid CLI for local diagram rendering:");
+    mermaid_cli::ensure_mermaid_cli();
 
     Ok(())
 }

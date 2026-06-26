@@ -7,6 +7,7 @@ mod hook_specs;
 mod hook_staging_tests;
 mod install_flow;
 mod issue_527_tests;
+mod issue_828_tests;
 mod output_regression_tests;
 mod path_conflict_tests;
 mod same_path_tests;
