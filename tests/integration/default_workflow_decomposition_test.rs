@@ -1013,24 +1013,31 @@ fn workflow_prep_step_03b_handles_azdo_work_item_urls() {
 }
 
 #[test]
-fn workflow_prep_step_03b_local_tracking_succeeds_without_numeric_issue_number() {
+fn workflow_prep_step_03b_local_tracking_propagates_reference_without_coercing_to_number() {
+    // #815/#804: well-formed local tracking has no real GitHub/AzDO issue, so
+    // step-03b must propagate the non-numeric local reference (never the bare
+    // embedded number, which could become a `Closes #123` for an unrelated
+    // issue) and never abort the workflow.
     let cases = [
         (
             "local tracking system",
             "tracking_system=local\ntracking_reference=local-123\ntracking_issue=local-123\nissue_creation=local-tracking\n",
+            "local-123",
         ),
         (
             "local-* reference",
             "tracking_reference=local-123\ntracking_issue=local-123\nissue_creation=local-tracking\n",
+            "local-123",
         ),
         (
             "legacy local-tracking reference",
             "tracking_reference=local-tracking:123\ntracking_issue=local-tracking:123\n",
+            "local-tracking:123",
         ),
     ];
 
     let runner = Step03bRunner::new();
-    for (name, issue_creation) in cases {
+    for (name, issue_creation, expected) in cases {
         let run = runner.run_extract_issue_number(issue_creation, "");
         assert!(
             run.status.success(),
@@ -1038,8 +1045,12 @@ fn workflow_prep_step_03b_local_tracking_succeeds_without_numeric_issue_number()
             run.stderr
         );
         assert_eq!(
-            run.stdout, "",
-            "{name} must leave issue_number empty instead of coercing local IDs to numbers"
+            run.stdout, expected,
+            "{name} must propagate the local tracking reference verbatim"
+        );
+        assert_ne!(
+            run.stdout, "123",
+            "{name} must not coerce a local ID to the bare embedded number"
         );
     }
 }

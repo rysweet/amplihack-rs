@@ -1187,7 +1187,12 @@ fn step_03b_has_local_tracking_metadata_extraction_contract() {
 }
 
 #[test]
-fn step_03b_skips_issue_number_for_local_tracking_metadata() {
+fn step_03b_propagates_local_reference_for_local_tracking_metadata() {
+    // #815/#804: a local fallback has no real GitHub/AzDO issue, so step-03b
+    // must NOT surface the derived bare number (763) — that could later become
+    // a `Closes #763` reference closing an unrelated issue. It must instead
+    // propagate the non-numeric local tracking reference and never abort, so
+    // the workflow proceeds past prep and stays traceable.
     let output = run_step_03b(
         "tracking_system=local\ntracking_reference=local-issue-763\ntracking_issue=local-issue-763\nissue_creation=local-tracking\nissue_number=763\n",
         "Create tracking for local fallback",
@@ -1201,8 +1206,13 @@ fn step_03b_skips_issue_number_for_local_tracking_metadata() {
     );
     assert_eq!(
         stdout.trim(),
-        "",
-        "step-03b must leave issue_number empty for local tracking metadata"
+        "local-issue-763",
+        "step-03b must propagate the non-numeric local tracking reference"
+    );
+    assert_ne!(
+        stdout.trim(),
+        "763",
+        "step-03b must not surface the bare derived number for local tracking"
     );
 }
 

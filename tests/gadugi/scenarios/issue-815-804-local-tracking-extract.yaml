@@ -1,0 +1,43 @@
+name: issue-815-804-local-tracking-extract
+description: >
+  Regression scenario for amplihack issues #815 and #804. When default-workflow
+  falls back to local tracking, step-03b-extract-issue-number must accept the
+  hash-based local reference (local-<hash>), propagate it verbatim, never
+  surface a bare embedded number, still extract real numeric GitHub issues, and
+  fail closed on malformed local metadata. Exercises the SHIPPED recipe bash via
+  tests/gadugi/run-step-03b-scenario.sh.
+version: "1.0"
+config:
+  timeout: 60000
+environment:
+  requires: []
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, regression, workflow-prep]
+  priority: high
+steps:
+  - name: run-step-03b-regression-cases
+    agent: cli-agent
+    action: execute
+    params:
+      command: tests/gadugi/run-step-03b-scenario.sh
+    timeout: 30000
+  - name: all-regression-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+  - name: propagates-local-tracking-reference
+    agent: cli-agent
+    action: validate_output
+    params:
+      expected: "local-5d904cff4398"
+assertions:
+  - name: all-cases-passed
+    type: output_contains
+    params:
+      target: stdout
+      expected: ALL_CASES_PASSED
