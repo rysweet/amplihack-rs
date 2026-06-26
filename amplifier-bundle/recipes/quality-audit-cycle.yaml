@@ -313,8 +313,12 @@ steps:
       _V1_TMPFILE=$(mktemp)
       _V2_TMPFILE=$(mktemp)
       _V3_TMPFILE=$(mktemp)
-      chmod 600 "$_V1_TMPFILE" "$_V2_TMPFILE" "$_V3_TMPFILE"
-      trap 'rm -f "$_V1_TMPFILE" "$_V2_TMPFILE" "$_V3_TMPFILE"' EXIT
+      _V1_NORMFILE=$(mktemp)
+      _V2_NORMFILE=$(mktemp)
+      _V3_NORMFILE=$(mktemp)
+      chmod 600 "$_V1_TMPFILE" "$_V2_TMPFILE" "$_V3_TMPFILE" \
+                "$_V1_NORMFILE" "$_V2_NORMFILE" "$_V3_NORMFILE"
+      trap 'rm -f "$_V1_TMPFILE" "$_V2_TMPFILE" "$_V3_TMPFILE" "$_V1_NORMFILE" "$_V2_NORMFILE" "$_V3_NORMFILE"' EXIT
       # Single-quoted heredoc delimiters prevent shell expansion.
       # Long unique delimiters mitigate delimiter-collision injection risk (#3696).
       cat > "$_V1_TMPFILE" <<'__AMPLIHACK_SAFE_HEREDOC_V1_TMPWRITE__'
@@ -327,11 +331,42 @@ steps:
       {{validation_agent_3}}
       __AMPLIHACK_SAFE_HEREDOC_V3_TMPWRITE__
 
-      export V1_FILE="$_V1_TMPFILE"
-      export V2_FILE="$_V2_TMPFILE"
-      export V3_FILE="$_V3_TMPFILE"
       export THRESHOLD="{{validation_threshold}}"
       export CYCLE="{{cycle_number}}"
+      export OUTPUT_DIR="{{output_dir}}"
+
+      # Normalize validator output before merge (#820): validators emit JSON
+      # inside markdown/prose (often a ```json fence) +/- log preamble, which
+      # crashes `jq --slurpfile` with "Bad JSON". Recover a single JSON object
+      # via the tolerant `extract-json` helper (same normalizer used by
+      # smart-orchestrator). If non-empty output yields no parseable object,
+      # warn (naming the validator + preserving raw output as an artifact) and
+      # fall back to `{}` so the merge degrades to zero votes instead of dying.
+      normalize_validator() {
+        local _raw="$1" _norm="$2" _label="$3"
+        local _norm_stripped _raw_stripped _artifact_dir _artifact
+        if ! amplihack orch helper extract-json < "$_raw" > "$_norm" 2>/dev/null; then
+          printf '{}' > "$_norm"
+        fi
+        # Empty/whitespace-only or unparseable raw output normalizes to `{}`;
+        # only warn when there WAS content to parse but no JSON object survived.
+        _norm_stripped=$(tr -d '[:space:]' < "$_norm")
+        _raw_stripped=$(tr -d '[:space:]' < "$_raw")
+        if [ "$_norm_stripped" = '{}' ] && [ -n "$_raw_stripped" ]; then
+          _artifact_dir="${OUTPUT_DIR:-/tmp}"
+          mkdir -p "$_artifact_dir" 2>/dev/null || _artifact_dir=$(dirname "$_raw")
+          _artifact="$_artifact_dir/merge-validations-${_label}-cycle${CYCLE:-0}-raw.txt"
+          if ! cp "$_raw" "$_artifact" 2>/dev/null; then _artifact="$_raw"; fi
+          echo "[merge-validations] WARNING: ${_label} produced no parseable JSON object; counting zero votes from it. Raw output preserved at: ${_artifact}" >&2
+        fi
+      }
+      normalize_validator "$_V1_TMPFILE" "$_V1_NORMFILE" "validation_agent_1"
+      normalize_validator "$_V2_TMPFILE" "$_V2_NORMFILE" "validation_agent_2"
+      normalize_validator "$_V3_TMPFILE" "$_V3_NORMFILE" "validation_agent_3"
+
+      export V1_FILE="$_V1_NORMFILE"
+      export V2_FILE="$_V2_NORMFILE"
+      export V3_FILE="$_V3_NORMFILE"
 
       jq -n \
         --slurpfile v1 "$V1_FILE" \
