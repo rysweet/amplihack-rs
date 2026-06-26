@@ -252,6 +252,17 @@ fn run_terminal_state(
     pr_url: Option<&str>,
     fake_path: &Path,
 ) -> TerminalRun {
+    run_terminal_state_with_issue(repo_path, worktree_path, branch_name, pr_url, fake_path, "")
+}
+
+fn run_terminal_state_with_issue(
+    repo_path: &Path,
+    worktree_path: Option<&Path>,
+    branch_name: &str,
+    pr_url: Option<&str>,
+    fake_path: &Path,
+    issue_number: &str,
+) -> TerminalRun {
     let command = step_commands(&load_recipe("workflow-terminal-state"));
     let old_path = std::env::var("PATH").unwrap_or_default();
     let path = format!("{}:{old_path}", fake_path.display());
@@ -264,6 +275,7 @@ fn run_terminal_state(
         .env("BASE_REF", "main")
         .env("PR_NUMBER", "")
         .env("PR_URL", pr_url.unwrap_or(""))
+        .env("RECIPE_VAR_issue_number", issue_number)
         .env(
             "WORKFLOW_PR_SCOPE_HELPER",
             workspace_helper_path("workflow_pr_scope.sh"),
@@ -785,6 +797,41 @@ fn terminal_state_rejects_stale_pr_head_sha() {
     assert!(
         run.stderr.contains("no_scoped_pr"),
         "stderr should explain stale PR metadata: {}",
+        run.stderr
+    );
+}
+
+#[test]
+fn terminal_state_scopes_current_work_pr_despite_local_tracking_issue_number() {
+    // #815/#804: when the workflow falls back to local tracking, issue_number
+    // carries a non-numeric reference (e.g. local-5d904cff4398). PR-scope
+    // matching only understands numeric issue/work-item ids, so the local ref
+    // must be coerced away rather than filtering out the legitimate
+    // current-work PR (which would surface as `no_scoped_pr`).
+    let fixture = setup_repo();
+    let worktree = create_feature_worktree(&fixture);
+    commit_feature_change(&worktree);
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let fake_path = fake_gh(&fake_tmp, &matching_pr_json(&worktree, "OPEN", ""), 0);
+
+    let run = run_terminal_state_with_issue(
+        &fixture.repo,
+        Some(&worktree),
+        "feature",
+        Some("https://github.com/owner/repo/pull/7"),
+        &fake_path,
+        "local-5d904cff4398",
+    );
+
+    assert!(
+        !run.stderr.contains("no_scoped_pr"),
+        "local tracking issue_number must not filter out the current-work PR; stderr:\n{}\njson: {}",
+        run.stderr,
+        run.json
+    );
+    assert_ne!(
+        run.json["terminal_state"], "FAILED_INVALID_INPUT",
+        "local tracking issue_number must not cause a scoped-PR input failure; stderr:\n{}",
         run.stderr
     );
 }

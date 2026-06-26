@@ -331,12 +331,19 @@ steps:
         command -v gh >/dev/null 2>&1 || fail_terminal_state "FAILED_INVALID_INPUT" "gh is required when pr_number or pr_url is provided"
         [ -x "$PR_SCOPE_HELPER" ] || fail_terminal_state "FAILED_INVALID_INPUT" "workflow_pr_scope.sh is required for scoped current-work PR identity"
         created_after="${WORKFLOW_STARTED_AT:-${RECIPE_STARTED_AT:-${TASK_STARTED_AT:-}}}"
+        # issue_number can carry a non-numeric local tracking reference (e.g.
+        # local-5d904cff4398) when the workflow fell back to local tracking
+        # (#815, #804). PR-scope matching only understands numeric GitHub issue /
+        # AzDO work-item ids, so coerce a non-numeric ref to empty: a local ref
+        # must never filter out the legitimate current-work PR.
+        scoped_issue_id="${ISSUE_NUMBER:-${RECIPE_VAR_issue_number:-}}"
+        case "$scoped_issue_id" in ''|*[!0-9]*) scoped_issue_id="" ;; esac
         scope_args=(
           --repo "$repo_identity"
           --head "$BRANCH_INPUT"
           --base "$(normalize_base_name "$base_ref")"
-          --issue "${ISSUE_NUMBER:-${RECIPE_VAR_issue_number:-}}"
-          --work-item "${ISSUE_NUMBER:-${RECIPE_VAR_issue_number:-}}"
+          --issue "$scoped_issue_id"
+          --work-item "$scoped_issue_id"
           --head-sha "$local_head"
         )
         title_prefix="${EXPECTED_PR_TITLE_PREFIX:-${PR_EXPECTED_TITLE_PREFIX:-}}"

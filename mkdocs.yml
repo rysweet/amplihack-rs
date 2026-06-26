@@ -106,6 +106,7 @@ nav:
           - Tutorial: tutorials/pr-recovery-readiness.md
           - Reference: reference/pr-recovery-readiness.md
       - Terminal-State Provider Safety: reference/workflow-terminal-state-provider-safety.md
+      - Local Tracking Issue-Number Extraction: recipes/issue-815-804-local-tracking-issue-number.md
   - Agents:
       - Overview: claude/agents/README.md
       - Core Agents:
