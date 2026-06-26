@@ -60,11 +60,22 @@ extract_sites() {
   ' "$RECIPES_DIR/$recipe"
 }
 
+# Write a helper stub that defines the preflight contract function, so any
+# resolved candidate can be sourced (the compact tdd/finalize sites source the
+# helper and call preflight_known_workflow_runtime_artifacts).
+write_stub() {
+  printf '#!/usr/bin/env bash\npreflight_known_workflow_runtime_artifacts() { :; }\n' > "$1"
+}
+
 # Run a resolution snippet under production shell semantics and print the
 # resolved RUNTIME_ARTIFACT_HELPER. Args: snippet repo home [AMPLIHACK_HOME]
 # stderr is suppressed (benign git/probe noise from a throwaway non-git dir).
 run_snippet() {
   local snippet="$1" repo="$2" home="$3" ahome="${4:-}"
+  # The lifecycle steps run inside a git worktree; pr-review's chain resolves a
+  # candidate via `git rev-parse --show-toplevel`, so make the throwaway target
+  # dir a real (empty) git repo to faithfully reproduce production.
+  git -C "$repo" init -q >/dev/null 2>&1 || true
   local script
   script=$(printf 'set -euo pipefail\n%s\nprintf "%%s" "$RUNTIME_ARTIFACT_HELPER"\n' "$snippet")
   if [ -n "$ahome" ]; then
@@ -104,7 +115,7 @@ for entry in "${RECIPE_SITES[@]}"; do
     home="$WORK/$recipe.$n-home"
     installed="$home/.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
     mkdir -p "$repo" "$(dirname "$installed")"
-    printf '#!/usr/bin/env bash\npreflight_known_workflow_runtime_artifacts() { :; }\n' > "$installed"
+    write_stub "$installed"
     resolved="$(run_snippet "$site" "$repo" "$home")"
     if [ "$resolved" != "$installed" ]; then
       echo "FAIL: $recipe site $n expected fallback to '$installed' but resolved '$resolved'" >&2
@@ -144,8 +155,8 @@ for site_file in "${SITE_FILES[@]}"; do
   explicit="$explicit_home/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
   installed="$home/.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
   mkdir -p "$repo" "$(dirname "$explicit")" "$(dirname "$installed")"
-  printf '# explicit\n' > "$explicit"
-  printf '# installed\n' > "$installed"
+  write_stub "$explicit"
+  write_stub "$installed"
   resolved="$(run_snippet "$site" "$repo" "$home" "$explicit_home")"
   if [ "$resolved" != "$explicit" ]; then
     echo "FAIL: $site_file: explicit AMPLIHACK_HOME must win; expected '$explicit' but resolved '$resolved'" >&2
@@ -158,8 +169,8 @@ for site_file in "${SITE_FILES[@]}"; do
   copilot="$home/.copilot/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
   amplihack="$home/.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
   mkdir -p "$repo" "$(dirname "$copilot")" "$(dirname "$amplihack")"
-  printf '# copilot\n' > "$copilot"
-  printf '# amplihack\n' > "$amplihack"
+  write_stub "$copilot"
+  write_stub "$amplihack"
   resolved="$(run_snippet "$site" "$repo" "$home")"
   if [ "$resolved" != "$copilot" ]; then
     echo "FAIL: $site_file: ~/.copilot must win over ~/.amplihack; expected '$copilot' but resolved '$resolved'" >&2
