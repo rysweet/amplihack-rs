@@ -360,7 +360,7 @@ else
   fail "must fall back gracefully to a textual UI description"
 fi
 
-# ─── Test 10: Output — temp file, path, offer to post ───────────────────────
+# ─── Test 10: Output — temp file, path, automatic attach ────────────────────
 
 echo ""
 echo "Test 10: Output handling"
@@ -645,18 +645,19 @@ else
   fail "reference.md must include a 'Mermaid on Azure DevOps' section"
 fi
 
-# ADO has no native mermaid rendering in PR description/comment.
-if grep_both "no native" || grep_both "does not render" || grep_both "not.*natively"; then
-  pass "states ADO does not natively render mermaid in PR descriptions/comments"
+# ADO native mermaid: documents that native PR-description/comment rendering is
+# now available (Sprint 274, 2026) and is the preferred path when supported.
+if grep_both "Sprint 274" && (grep_both "native" || grep_both "natively"); then
+  pass "documents ADO native mermaid rendering (Sprint 274) as the preferred path"
 else
-  fail "must state ADO has no native mermaid rendering in PR descriptions/comments"
+  fail "must document ADO native mermaid rendering (Sprint 274+) as preferred"
 fi
 
-# Note about checking for recent/native support.
-if grep_both "release notes" || grep_both "recent" || grep_both "later" || grep_both "re-check"; then
-  pass "notes checking for recent/native ADO mermaid support"
+# Note about verifying current support against release notes (rollout may vary).
+if grep_both "release notes" || grep_both "rollout" || grep_both "verify"; then
+  pass "notes verifying current ADO support (release notes / rollout)"
 else
-  fail "must note checking whether ADO added native support recently"
+  fail "must note verifying whether the ADO org renders mermaid natively"
 fi
 
 # Fallback option a: local mermaid CLI (mmdc).

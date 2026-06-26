@@ -357,30 +357,34 @@ Use the `mermaid-diagram-generator` skill's conventions for syntax. Prefer
 `flowchart` for architecture/flow and `sequenceDiagram` for request/response
 interactions.
 
-### Mermaid on Azure DevOps (no native PR rendering — image fallback)
+### Mermaid on Azure DevOps (native rendering with image fallback)
 
-Azure DevOps renders mermaid in **markdown file previews, the PR file-diff
-view, and Wiki pages**, but **does not render mermaid in PR descriptions or PR
-comments** — a ` ```mermaid ` fence pasted into a description or comment stays
-as literal code (confirmed against ADO Repos Sprint 246+ / Sprint 259,
-2024–2025). Re-check the current release notes when in doubt; if native
-PR-description/comment support ships later, prefer it and skip the conversion.
+Azure DevOps historically did **not** render mermaid in PR descriptions or PR
+comments — only in markdown file previews, the PR file-diff view, and Wiki pages
+(Sprint 246–259, 2024–2025). As of **Sprint 274 (May 2026)**, ADO added native
+` ```mermaid ` rendering in **PR descriptions, comments, and wikis** (rolling out
+across organizations).
 
-Because the guide is published to the PR **description/comment**, mermaid must
-be converted to an **image** on ADO. When `platform == Azure DevOps`, render
-each diagram and embed it as an image instead of a fenced code block:
+**Preferred (native).** When the target ADO organization renders mermaid
+natively (Sprint 274+), keep the native ` ```mermaid ` fence — exactly like
+GitHub, no conversion. Verify against the organization / current release notes,
+since the rollout may not have reached every tenant.
+
+**Fallback (older / not-yet-enabled tenants).** If the organization does not yet
+render mermaid natively in PR descriptions/comments, convert each diagram to an
+**image** and embed it instead of a fenced code block:
 
 | Step | What |
 | --- | --- |
 | 1 | Take the mermaid source for the diagram. |
 | 2a (preferred) | Render locally with the mermaid CLI: `mmdc -i <diagram>.mmd -o <diagram>.svg` (or `.png`), write to the temp dir (`0600`), publish via the PR attachments API (same flow as screenshots, §11), and rewrite to the attachment URL. |
-| 2b (fallback) | Use the hosted renderer: URL-safe-base64-encode the mermaid source and embed `![diagram](https://mermaid.ink/img/<base64-encoded-diagram>)`. |
+| 2b (last resort) | Use the hosted renderer: URL-safe-base64-encode the mermaid source and embed `![diagram](https://mermaid.ink/img/<base64-encoded-diagram>)`. |
 | 3 | Replace the ` ```mermaid ` fence with `![<caption>](<url>)` **in the ADO output only**. GitHub keeps native ` ```mermaid ` fences and needs no conversion. |
 
 **Privacy / security note:** `mermaid.ink` sends the diagram source to a
-**third-party** service. For internal or sensitive repositories prefer local
-`mmdc` rendering and reserve `mermaid.ink` for public diagrams. Always
-URL-encode the base64 payload and treat the resulting URL as inert data.
+**third-party** service. For internal or sensitive repositories prefer native
+ADO rendering or local `mmdc`, and reserve `mermaid.ink` for public diagrams.
+Always URL-encode the base64 payload and treat the resulting URL as inert data.
 
 ---
 
@@ -550,8 +554,11 @@ description so reviewers can find the walkthrough.
 | Azure DevOps | The PR Threads POST returns JSON containing the new thread `id`. Use that `id` as the `threadId`. |
 
 **2. Validate the ID** against `^[0-9]+$` before interpolating it into any URL
-or markdown. Abort the back-link (and keep the comment) if it does not match —
-this prevents URL/markdown/command injection from an unexpected response.
+or markdown. If it does not match, **drop only the back-link** (keep the posted
+comment) — this prevents URL/markdown/command injection from an unexpected
+response. The PR Description Clarity Pass rewrite still applies to the
+description write; only the back-link line is omitted, and the skill reports that
+the link was skipped.
 
 **3. Build the back-link:**
 
@@ -563,8 +570,12 @@ this prevents URL/markdown/command injection from an unexpected response.
 **4. Single final write.** The PR Description Clarity Pass (§10b) and this
 back-link both edit the description. Combine them: apply the clarity rewrite
 **in memory**, append the back-link line to that text, then perform **one**
-`gh pr edit --body-file` / `az repos pr update --description` write. This avoids
-two separate description updates and the noisy edit history they create.
+`gh pr edit --body-file` / `az repos pr update --description` write. Before
+writing, re-check that the final text is within the platform's description limit
+(notably ADO's hard 4,000 chars); if it would overflow, prefer the compact
+`#issuecomment-<ID>` / `threadId=<ID>` shorthand link, or omit the back-link and
+report it — never write a description that exceeds the limit. This avoids two
+separate description updates and the noisy edit history they create.
 
 Insert the back-link **only** in the comment-overflow case. When the guide fits
 in the description (decision logic step 3), it is already inline and there is no

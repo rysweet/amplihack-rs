@@ -353,6 +353,19 @@ path = "../../tests/integration/issue_746_default_workflow_guidance_test.rs"
 name = "issue_684_host_aware_workflow"
 path = "../../tests/integration/issue_684_host_aware_workflow_test.rs"
 
+# Issues #815/#804: default-workflow local tracking issue-number extraction.
+# step-03b must accept hash-based `local-<hash>` references (propagate them),
+# never surface a bare number for a local fallback, and never abort the workflow.
+[[test]]
+name = "issue_815_804_local_tracking_extract"
+path = "../../tests/integration/issue_815_804_local_tracking_extract_test.rs"
+
+# Issues #815/#804: downstream PR-scope consumers (pr_ready, final_status) must
+# coerce a non-numeric local tracking issue_number to empty before scope matching.
+[[test]]
+name = "issue_815_804_local_tracking_scope_args"
+path = "../../tests/integration/issue_815_804_local_tracking_scope_args_test.rs"
+
 # Issue #778: merge-ready must be platform-neutral, with explicit GitHub and
 # Azure DevOps/AzDO guidance for every merge-readiness aspect.
 [[test]]
