@@ -395,39 +395,27 @@ fn preflight_deregisters_nested_worktree_on_dedicated_task_worktree_without_dang
 }
 
 // ---------------------------------------------------------------------------
-// Sibling-worktree safety: the recipe step must never delete another run's
-// task worktree or its published PR branch from the shared remote.
+// Sibling-worktree safety: the finalization cleanup entry point must never
+// delete another run's task worktree or its published PR branch.
 // ---------------------------------------------------------------------------
 
-/// Extract the executable bash body of `step-22c-finalization-cleanup` from the
-/// finalize recipe, so the tests exercise the *real* wiring guard (not a copy).
-fn step22c_command() -> String {
-    let recipe: serde_yaml::Value =
-        serde_yaml::from_str(&finalize_recipe_text()).expect("parse workflow-finalize.yaml");
-    recipe
-        .get("steps")
-        .and_then(serde_yaml::Value::as_sequence)
-        .expect("recipe has steps")
-        .iter()
-        .find(|s| {
-            s.get("id").and_then(serde_yaml::Value::as_str) == Some("step-22c-finalization-cleanup")
-        })
-        .and_then(|s| s.get("command").and_then(serde_yaml::Value::as_str))
-        .expect("step-22c-finalization-cleanup has a command")
-        .to_owned()
-}
-
-/// Run the extracted recipe step with the given environment, from `cwd`.
-fn run_recipe_step(envs: &[(&str, &str)], cwd: &Path) -> Output {
-    let mut cmd = Command::new("bash");
-    cmd.arg("-c").arg(step22c_command()).current_dir(cwd);
-    // AMPLIHACK_HOME lets the step locate the real runtime-artifact helper.
-    cmd.env("AMPLIHACK_HOME", workspace_root());
-    cmd.env("AMPLIHACK_RECIPE_RUN_ID", "test-run");
-    for (k, v) in envs {
-        cmd.env(k, v);
-    }
-    cmd.output().expect("spawn recipe step")
+/// Run the recipe-facing `finalize_workflow_cleanup_entry` from the helper with
+/// the given (repo_root, worktree_path, intended_branch) and working directory.
+fn run_cleanup_entry(repo_root: &str, worktree_path: &str, intended: &str, cwd: &Path) -> Output {
+    let script = format!(
+        "set -uo pipefail\nsource \"{}\"\nfinalize_workflow_cleanup_entry \"{}\" \"{}\" \"{}\"",
+        runtime_artifact_helper().display(),
+        repo_root,
+        worktree_path,
+        intended,
+    );
+    Command::new("bash")
+        .arg("-c")
+        .arg(script)
+        .current_dir(cwd)
+        .env("AMPLIHACK_RECIPE_RUN_ID", "test-run")
+        .output()
+        .expect("spawn cleanup entry")
 }
 
 /// Add a linked worktree on a new branch and push that branch to origin.
@@ -446,7 +434,7 @@ fn add_linked_worktree_pushed(repo_top: &Path, rel_or_abs: &str, branch: &str) -
 }
 
 #[test]
-fn recipe_step_cleans_dedicated_task_worktree_leak_but_preserves_sibling_worktree() {
+fn cleanup_entry_cleans_dedicated_task_worktree_leak_but_preserves_sibling_worktree() {
     // Topology mirrors production: a shared main repo whose worktrees/ holds
     // multiple runs' task worktrees. THIS run owns `feat/task`; a concurrent run
     // owns `feat/sibling-pr`. THIS run leaked a nested worktree (`feat/leak`).
@@ -473,17 +461,15 @@ fn recipe_step_cleans_dedicated_task_worktree_leak_but_preserves_sibling_worktre
     assert!(remote_branch_exists(&fx.repo, "feat/sibling-pr"));
     assert!(remote_branch_exists(&fx.repo, "feat/leak"));
 
-    let out = run_recipe_step(
-        &[
-            ("REPO_PATH", fx.repo.to_str().unwrap()),
-            ("WORKTREE_SETUP_WORKTREE_PATH", task_wt.to_str().unwrap()),
-            ("BRANCH_NAME", "feat/task"),
-        ],
+    let out = run_cleanup_entry(
+        fx.repo.to_str().unwrap(),
+        task_wt.to_str().unwrap(),
+        "feat/task",
         &fx.repo,
     );
     assert!(
         out.status.success(),
-        "recipe cleanup step must not abort\nstderr:\n{}",
+        "cleanup entry must not abort\nstderr:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
 
@@ -520,7 +506,7 @@ fn recipe_step_cleans_dedicated_task_worktree_leak_but_preserves_sibling_worktre
 }
 
 #[test]
-fn recipe_step_does_not_destroy_siblings_when_worktree_path_is_repo_root_in_another_form() {
+fn cleanup_entry_does_not_destroy_siblings_when_worktree_path_is_repo_root_in_another_form() {
     // Reproduces the fail-open the byte-wise guard allowed: WORKTREE_SETUP path
     // is the absolute repo root while REPO_PATH is "." — the same directory in a
     // different representation. The hardened guard must NOT treat the main repo
@@ -529,15 +515,8 @@ fn recipe_step_does_not_destroy_siblings_when_worktree_path_is_repo_root_in_anot
     git(&fx.repo, &["checkout", "main"]);
     let sibling_wt = add_linked_worktree_pushed(&fx.repo, "worktrees/sibling", "feat/sibling-pr");
 
-    let out = run_recipe_step(
-        &[
-            ("REPO_PATH", "."),
-            ("WORKTREE_SETUP_WORKTREE_PATH", fx.repo.to_str().unwrap()),
-            ("BRANCH_NAME", "main"),
-        ],
-        &fx.repo,
-    );
-    assert!(out.status.success(), "recipe cleanup step must not abort");
+    let out = run_cleanup_entry(".", fx.repo.to_str().unwrap(), "main", &fx.repo);
+    assert!(out.status.success(), "cleanup entry must not abort");
 
     assert!(
         sibling_wt.exists(),
@@ -562,7 +541,9 @@ fn finalize_recipe_text() -> String {
 }
 
 #[test]
-fn finalize_recipe_wires_unconditional_finalization_cleanup_step() {
+fn finalize_recipe_wires_unconditional_finalization_cleanup() {
+    // The cleanup runs via `workflow_agentic_finalization.sh collect`, which the
+    // finalize recipe invokes unconditionally in `collect-finalization-evidence`.
     let recipe: serde_yaml::Value =
         serde_yaml::from_str(&finalize_recipe_text()).expect("parse workflow-finalize.yaml");
     let steps = recipe
@@ -570,30 +551,41 @@ fn finalize_recipe_wires_unconditional_finalization_cleanup_step() {
         .and_then(serde_yaml::Value::as_sequence)
         .expect("recipe has steps");
 
-    let cleanup = steps
+    let collect = steps
         .iter()
         .find(|s| {
-            s.get("id").and_then(serde_yaml::Value::as_str) == Some("step-22c-finalization-cleanup")
+            s.get("id").and_then(serde_yaml::Value::as_str) == Some("collect-finalization-evidence")
         })
-        .expect("workflow-finalize must declare step-22c-finalization-cleanup");
-
+        .expect("workflow-finalize must declare collect-finalization-evidence");
     assert!(
-        cleanup.get("condition").is_none(),
-        "finalization cleanup must run unconditionally (success AND non-success terminal states)"
+        collect.get("condition").is_none(),
+        "collect-finalization-evidence must run unconditionally so cleanup runs for success AND non-success terminal states"
     );
-
-    let command = cleanup
+    let collect_cmd = collect
         .get("command")
         .and_then(serde_yaml::Value::as_str)
-        .expect("cleanup step is a bash command");
+        .expect("collect step is a bash command");
+    assert!(
+        collect_cmd.contains("workflow_agentic_finalization.sh") && collect_cmd.contains("collect"),
+        "collect-finalization-evidence must invoke workflow_agentic_finalization.sh collect"
+    );
+
+    // The collect mode runs the deterministic, fail-soft cleanup before emitting
+    // evidence, sourcing the cleanup library and routing through the guarded
+    // entry point.
+    let finalizer = std::fs::read_to_string(
+        workspace_root().join("amplifier-bundle/tools/workflow_agentic_finalization.sh"),
+    )
+    .expect("read workflow_agentic_finalization.sh");
     for required in [
+        "run_finalization_cleanup",
+        "collect) run_finalization_cleanup; collect_evidence",
         "workflow_runtime_artifacts.sh",
-        "finalize_workflow_runtime_artifacts",
-        "trap '_run_finalization_cleanup' EXIT",
+        "finalize_workflow_cleanup_entry",
     ] {
         assert!(
-            command.contains(required),
-            "finalization cleanup step must use the deterministic, trap-guarded helper; missing `{required}`"
+            finalizer.contains(required),
+            "workflow_agentic_finalization.sh collect mode must run the guarded finalization cleanup; missing `{required}`"
         );
     }
 }
@@ -607,6 +599,7 @@ fn finalize_recipe_helper_defines_deterministic_cleanup_contract() {
         "cleanup_run_created_branches",
         "cleanup_nested_worktrees",
         "finalize_workflow_runtime_artifacts",
+        "finalize_workflow_cleanup_entry",
         "push origin --delete",
         "worktree prune",
     ] {

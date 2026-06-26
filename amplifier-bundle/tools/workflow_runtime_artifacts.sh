@@ -251,9 +251,33 @@ cleanup_run_created_branches() {
   return 0
 }
 
-# finalize_workflow_runtime_artifacts <repo> [intended_branch]
-# Deterministic finalization cleanup entry point. Safe to call from success and
-# failure/early-exit paths (e.g. an EXIT trap); never aborts the caller.
+# finalize_workflow_cleanup_entry <repo_root> <worktree_path> <intended_branch>
+# Recipe-facing entry point. Destructive nested-worktree + branch cleanup runs
+# only against a *dedicated* (linked) per-task worktree whose canonical toplevel
+# differs from the repo root; otherwise it restricts to the manifest-keyed
+# branch cleanup, which never removes a worktree. Fail-soft and idempotent —
+# safe to call from success and failure/early-exit paths.
+finalize_workflow_cleanup_entry() {
+  local repo_root="${1:-}"
+  local worktree_path="${2:-}"
+  local intended="${3:-}"
+  [ -n "$repo_root" ] || repo_root="$(pwd)"
+  if [ -n "$worktree_path" ] && [ -d "$worktree_path" ] && _amplihack_is_linked_worktree "$worktree_path"; then
+    local wt_top repo_top
+    wt_top="$(git -C "$worktree_path" rev-parse --show-toplevel 2>/dev/null || true)"
+    repo_top="$(git -C "$repo_root" rev-parse --show-toplevel 2>/dev/null || true)"
+    if [ -n "$wt_top" ] && [ "$wt_top" != "$repo_top" ]; then
+      finalize_workflow_runtime_artifacts "$worktree_path" "$intended" || true
+      return 0
+    fi
+  fi
+  cleanup_run_created_branches "$repo_root" "$intended" || true
+  return 0
+}
+# finalize_workflow_runtime_artifacts <task_worktree> [intended_branch]
+# Full cleanup against a dedicated per-task worktree: removes nested worktrees,
+# deletes their orphaned branches plus tracked fallback branches (remote+local),
+# and sweeps runtime artifacts. Never aborts the caller.
 finalize_workflow_runtime_artifacts() {
   local repo="${1:-.}"
   local intended="${2:-}"

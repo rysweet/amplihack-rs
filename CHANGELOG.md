@@ -17,12 +17,16 @@ Unreleased changes appear at the top under `[Unreleased]`.
   removed with `git worktree remove --force` + `git worktree prune` (a bare
   `rm -rf` left dangling worktree registrations — a regression of the #780/#755
   local-leak fixes) along with their orphaned branch (remote + local). The
-  cleanup runs unconditionally and via an `EXIT` trap in
-  `workflow-finalize.yaml` (`step-22c-finalization-cleanup`), is fail-soft, and
-  always preserves the intended PR branch and protected base branches. New
-  helpers live in `amplifier-bundle/tools/workflow_runtime_artifacts.sh`
+  cleanup runs unconditionally inside `workflow_agentic_finalization.sh collect`
+  (invoked by the unconditional `collect-finalization-evidence` step in
+  `workflow-finalize.yaml`), is fail-soft, and always preserves the intended PR
+  branch and protected base branches. Destructive nested-worktree + branch
+  cleanup is confined to a dedicated (linked) per-task worktree, so a concurrent
+  run's task worktree and its published PR branch are never touched. New helpers
+  live in `amplifier-bundle/tools/workflow_runtime_artifacts.sh`
   (`record_run_created_branch`, `cleanup_run_created_branches`,
-  `cleanup_nested_worktrees`, `finalize_workflow_runtime_artifacts`).
+  `cleanup_nested_worktrees`, `finalize_workflow_runtime_artifacts`,
+  `finalize_workflow_cleanup_entry`).
 
 
   downloading a new binary, the post-update install step now spawns the

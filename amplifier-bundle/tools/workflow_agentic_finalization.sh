@@ -5,6 +5,25 @@ export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
 
 mode="${1:-}"
 
+# run_finalization_cleanup (issue #808)
+# Deterministic, fail-soft finalization cleanup invoked before evidence
+# collection so the agentic finalizer observes a clean state: no run-created
+# fallback branches left on the shared remote, no leaked nested worktrees. All
+# output is redirected to stderr so the evidence JSON on stdout stays intact;
+# the cleanup never aborts the caller and only ever removes worktrees from a
+# dedicated per-task worktree (sibling task worktrees are never touched).
+run_finalization_cleanup() {
+  local here helper repo_root worktree intended
+  here="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)" || return 0
+  helper="$here/workflow_runtime_artifacts.sh"
+  [ -f "$helper" ] || return 0
+  repo_root="${REPO_PATH:-${RECIPE_VAR_repo_path:-$(pwd)}}"
+  worktree="${WORKTREE_SETUP_WORKTREE_PATH:-${RECIPE_VAR_worktree_setup__worktree_path:-}}"
+  intended="${BRANCH_NAME:-${RECIPE_VAR_branch_name:-${WORKTREE_SETUP_BRANCH_NAME:-${RECIPE_VAR_worktree_setup__branch_name:-}}}}"
+  ( . "$helper" 2>/dev/null && finalize_workflow_cleanup_entry "$repo_root" "$worktree" "$intended" ) >&2 || true
+  return 0
+}
+
 boolish() {
   case "$1" in
     true|1|yes|y) printf 'true' ;;
@@ -442,7 +461,7 @@ complete_workflow() {
 }
 
 case "$mode" in
-  collect) collect_evidence ;;
+  collect) run_finalization_cleanup; collect_evidence ;;
   validate) validate_finalization ;;
   complete) complete_workflow ;;
   *)

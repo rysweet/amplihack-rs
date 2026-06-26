@@ -196,12 +196,20 @@ manifest-tracked fallback branches from the shared remote and locally, and then
 runs the narrow runtime-artifact sweep. **Call it with a dedicated per-task
 worktree** as `<repo>`: nested-worktree removal only touches `worktrees/`
 children of that worktree, never the worktree itself, a sibling task worktree,
-or the main worktree. The finalize recipe enforces this by only invoking it when
-`worktree_setup.worktree_path` is a *linked* worktree whose canonical toplevel
-differs from the repo root; otherwise it runs only the manifest-keyed branch
-cleanup (which never removes a worktree) plus an always-safe `git worktree
-prune`. Deleted branches never include the intended PR branch, a checked-out
-branch, or a protected/default branch.
+or the main worktree.
+
+#### `finalize_workflow_cleanup_entry`
+
+```bash
+finalize_workflow_cleanup_entry "$repo_root" "$worktree_path" "$intended_branch"
+```
+
+Recipe-facing entry point (invoked from `workflow_agentic_finalization.sh
+collect`). It runs `finalize_workflow_runtime_artifacts` only when
+`worktree_path` is a *linked* worktree whose canonical toplevel differs from the
+repo root; otherwise it runs only the manifest-keyed branch cleanup (which never
+removes a worktree). Deleted branches never include the intended PR branch, a
+checked-out branch, or a protected/default branch.
 
 ## Lifecycle integration
 
@@ -216,7 +224,7 @@ would otherwise fail on workflow-owned leftovers.
 | `workflow-refactor-review.yaml` | Before checkpoint and broad staging. |
 | `workflow-pr-review.yaml` | Before checkpoint and broad staging. |
 | `workflow-publish.yaml` | Before dirty checks, publish staging, commit, push, and PR creation. |
-| `workflow-finalize.yaml` | Before final status gates and final broad staging. Runs the deterministic finalization cleanup (`step-22c-finalization-cleanup`) unconditionally and via an `EXIT` trap to delete run-created fallback branches (remote + local) and remove nested worktrees. |
+| `workflow-finalize.yaml` | Before final status gates and final broad staging. The deterministic finalization cleanup runs inside `workflow_agentic_finalization.sh collect` (invoked unconditionally by `collect-finalization-evidence`) via `finalize_workflow_cleanup_entry`, deleting run-created fallback branches (remote + local) and removing nested worktrees before evidence is collected. |
 | `workflow_publish_pr.sh` | Before dirty-worktree checks and broad staging. |
 | `workflow_final_status.sh` | Before final clean-worktree validation. |
 
