@@ -77,6 +77,7 @@ run_snippet() {
 }
 
 total_sites=0
+SITE_FILES=()
 
 for entry in "${RECIPE_SITES[@]}"; do
   recipe="${entry%%:*}"
@@ -89,7 +90,10 @@ for entry in "${RECIPE_SITES[@]}"; do
   total_sites=$((total_sites + found))
 
   for n in $(seq 1 "$found"); do
-    site="$(cat "$SITES_DIR/$recipe.$n")"
+    site_file="$SITES_DIR/$recipe.$n"
+    SITE_FILES+=("$site_file")
+    site="$(cat "$site_file")"
+    site_label="$recipe site $n"
     case "$site" in
       *".amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh"*) : ;;
       *) echo "FAIL: $recipe site $n missing ~/.amplihack fallback candidate" >&2; exit 1 ;;
@@ -123,36 +127,44 @@ for entry in "${RECIPE_SITES[@]}"; do
   done
 done
 
-# Representative single-site chain for ordering assertions.
-TDD_SITE="$(cat "$SITES_DIR/workflow-tdd.yaml.1")"
+# --- Case 2 + Case 3: precedence ordering, asserted for EVERY resolution site ---
+# Case 2: an explicit AMPLIHACK_HOME bundle wins over the installed fallback.
+# Case 3: the ~/.copilot bundle wins over the ~/.amplihack bundle.
+# Running these against every site (not just tdd) catches a candidate reordering
+# in any single recipe, e.g. ~/.amplihack placed before ~/.copilot.
+i=0
+for site_file in "${SITE_FILES[@]}"; do
+  i=$((i + 1))
+  site="$(cat "$site_file")"
 
-# --- Case 2: explicit AMPLIHACK_HOME wins over the installed fallback ---
-repo="$WORK/case2-repo"
-home="$WORK/case2-home"
-explicit_home="$WORK/case2-explicit"
-explicit="$explicit_home/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
-installed="$home/.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
-mkdir -p "$repo" "$(dirname "$explicit")" "$(dirname "$installed")"
-printf '# explicit\n' > "$explicit"
-printf '# installed\n' > "$installed"
-resolved="$(run_snippet "$TDD_SITE" "$repo" "$home" "$explicit_home")"
-if [ "$resolved" != "$explicit" ]; then
-  echo "FAIL: explicit AMPLIHACK_HOME must win; expected '$explicit' but resolved '$resolved'" >&2
-  exit 1
-fi
+  # Case 2
+  repo="$WORK/case2-$i-repo"
+  home="$WORK/case2-$i-home"
+  explicit_home="$WORK/case2-$i-explicit"
+  explicit="$explicit_home/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
+  installed="$home/.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
+  mkdir -p "$repo" "$(dirname "$explicit")" "$(dirname "$installed")"
+  printf '# explicit\n' > "$explicit"
+  printf '# installed\n' > "$installed"
+  resolved="$(run_snippet "$site" "$repo" "$home" "$explicit_home")"
+  if [ "$resolved" != "$explicit" ]; then
+    echo "FAIL: $site_file: explicit AMPLIHACK_HOME must win; expected '$explicit' but resolved '$resolved'" >&2
+    exit 1
+  fi
 
-# --- Case 3: ~/.copilot wins over ~/.amplihack when both exist ---
-repo="$WORK/case3-repo"
-home="$WORK/case3-home"
-copilot="$home/.copilot/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
-amplihack="$home/.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
-mkdir -p "$repo" "$(dirname "$copilot")" "$(dirname "$amplihack")"
-printf '# copilot\n' > "$copilot"
-printf '# amplihack\n' > "$amplihack"
-resolved="$(run_snippet "$TDD_SITE" "$repo" "$home")"
-if [ "$resolved" != "$copilot" ]; then
-  echo "FAIL: ~/.copilot must win over ~/.amplihack; expected '$copilot' but resolved '$resolved'" >&2
-  exit 1
-fi
+  # Case 3
+  repo="$WORK/case3-$i-repo"
+  home="$WORK/case3-$i-home"
+  copilot="$home/.copilot/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
+  amplihack="$home/.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
+  mkdir -p "$repo" "$(dirname "$copilot")" "$(dirname "$amplihack")"
+  printf '# copilot\n' > "$copilot"
+  printf '# amplihack\n' > "$amplihack"
+  resolved="$(run_snippet "$site" "$repo" "$home")"
+  if [ "$resolved" != "$copilot" ]; then
+    echo "FAIL: $site_file: ~/.copilot must win over ~/.amplihack; expected '$copilot' but resolved '$resolved'" >&2
+    exit 1
+  fi
+done
 
 echo "PASS: issue-817 runtime artifact resolution behaves correctly across $total_sites resolution site(s) in all lifecycle recipes"
