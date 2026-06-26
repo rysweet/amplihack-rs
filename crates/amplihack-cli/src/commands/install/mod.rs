@@ -9,6 +9,7 @@ mod filesystem;
 mod hooks;
 pub(crate) mod interactive;
 mod manifest;
+mod mermaid_cli;
 pub(crate) mod paths;
 mod recipe_runner;
 mod settings;
@@ -475,6 +476,43 @@ fn local_install(
         Err(err) => {
             tracing::warn!(%err, "failed to stage copilot home during install");
             eprintln!("  ⚠️  Copilot home staging skipped: {err}");
+        }
+    }
+
+    // Best-effort: provision the mermaid CLI (mmdc) so the pr-guide skill can
+    // render diagrams locally for Azure DevOps instead of relying on the
+    // third-party mermaid.ink service. mmdc is OPTIONAL (it pulls in puppeteer
+    // + a headless Chromium download and needs Node/npm), so per the
+    // install-completeness invariant a failure here must warn-and-continue and
+    // never abort the install. Intentionally AFTER the version stamp + manifest
+    // so this optional step can never leave required state unwritten.
+    println!("Installing mermaid CLI for local diagram rendering...");
+    match mermaid_cli::ensure_mermaid_cli() {
+        Ok(mermaid_cli::Outcome::AlreadyPresent) => {
+            println!("  ✓ mermaid CLI (mmdc) already installed; skipping");
+        }
+        Ok(mermaid_cli::Outcome::Installed) => {
+            println!("  ✅ mermaid CLI (mmdc) installed for local diagram rendering");
+        }
+        Ok(mermaid_cli::Outcome::SkippedByEnv) => {
+            println!("  ℹ AMPLIHACK_SKIP_MMDC set; skipping mermaid CLI install");
+        }
+        Ok(mermaid_cli::Outcome::SkippedNoNpm) => {
+            println!(
+                "  ℹ npm not available; skipping mermaid CLI install \
+                 (pr-guide will fall back to mermaid.ink)"
+            );
+        }
+        Ok(mermaid_cli::Outcome::Failed) => {
+            tracing::warn!("best-effort mermaid CLI install did not complete");
+            eprintln!("{}", mermaid_cli::FALLBACK_NOTICE);
+        }
+        Err(err) => {
+            // ensure_mermaid_cli is contractually always-Ok; this arm exists
+            // for defense-in-depth so a future regression still cannot abort
+            // the install.
+            tracing::warn!(%err, "unexpected error from best-effort mermaid CLI install");
+            eprintln!("{}", mermaid_cli::FALLBACK_NOTICE);
         }
     }
 

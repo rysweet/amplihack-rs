@@ -377,9 +377,17 @@ render mermaid natively in PR descriptions/comments, convert each diagram to an
 | Step | What |
 | --- | --- |
 | 1 | Take the mermaid source for the diagram. |
-| 2a (preferred) | Render locally with the mermaid CLI: `mmdc -i <diagram>.mmd -o <diagram>.svg` (or `.png`), write to the temp dir (`0600`), publish via the PR attachments API (same flow as screenshots, §11), and rewrite to the attachment URL. |
+| 2a (preferred) | Render locally with the mermaid CLI: `mmdc -i <diagram>.mmd -o <diagram>.svg` (or `.png`), write to the temp dir (`0600`), publish via the PR attachments API (same flow as screenshots, §11), and rewrite to the attachment URL. `amplihack install` provisions `mmdc` (npm `@mermaid-js/mermaid-cli`) on a **best-effort** basis, so it is often already on `PATH`; if absent, install it with `npm install -g @mermaid-js/mermaid-cli` or fall through to 2b. |
 | 2b (last resort) | Use the hosted renderer: URL-safe-base64-encode the mermaid source and embed `![diagram](https://mermaid.ink/img/<base64-encoded-diagram>)`. |
 | 3 | Replace the ` ```mermaid ` fence with `![<caption>](<url>)` **in the ADO output only**. GitHub keeps native ` ```mermaid ` fences and needs no conversion. |
+
+**Provisioning note:** `amplihack install` attempts a best-effort
+`npm install -g @mermaid-js/mermaid-cli` so the preferred local `mmdc` path
+(2a) is available without a manual step. The attempt is optional and never
+blocks install — when npm is unavailable, the install fails, or
+`AMPLIHACK_SKIP_MMDC` is set, `mmdc` is simply absent and this skill falls back
+to `mermaid.ink` (2b). See
+[Best-Effort Mermaid CLI Provisioning](../../../docs/features/mermaid-cli-best-effort-install.md).
 
 **Privacy / security note:** `mermaid.ink` sends the diagram source to a
 **third-party** service. For internal or sensitive repositories prefer native

@@ -40,6 +40,7 @@ All environment variables read or written by `amplihack` during a launch (`ampli
   - [AMPLIHACK_NO_UPDATE_CHECK](#amplihack_no_update_check)
   - [AMPLIHACK_PARITY_TEST](#amplihack_parity_test)
   - [AMPLIHACK_SKIP_AUTO_INSTALL](#amplihack_skip_auto_install)
+  - [AMPLIHACK_SKIP_MMDC](#amplihack_skip_mmdc)
   - [AMPLIHACK_TEST_FAKE_LATEST_VERSION](#amplihack_test_fake_latest_version)
   - [CI](#ci)
   - [UV_TOOL_BIN_DIR](#uv_tool_bin_dir)
@@ -970,6 +971,42 @@ Matching versions produce no output.
   the self-heal decision.
 
 See: [Self-Heal: Auto-Restage Framework Assets](../features/self-heal-asset-restage.md).
+
+---
+
+### AMPLIHACK_SKIP_MMDC
+
+**Type:** flag
+**Values:** any non-empty value (skips the attempt) — absence or empty string means the step runs
+**Used by:** `install::mermaid_cli::ensure_mermaid_cli` (during `amplihack install`)
+
+Disables the **best-effort Mermaid CLI provisioning** step in
+`amplihack install`. When set to any non-empty value, the installer does not
+probe for `mmdc`, does not probe for `npm`, and does not run
+`npm install -g @mermaid-js/mermaid-cli`. The step resolves to `SkippedByEnv`
+and prints one informational line. `amplihack install` otherwise proceeds
+normally — this step is optional and never gates a successful install.
+
+**When to set it:**
+
+- **Offline / air-gapped installs** that must not reach npm or download the
+  puppeteer/Chromium payload (hundreds of MB).
+- **Minimal containers or CI** where local mermaid rendering is unnecessary and
+  the `pr-guide` `mermaid.ink` fallback (or native Azure DevOps rendering) is
+  acceptable.
+- **Deterministic test harnesses** that manage tool availability explicitly.
+
+```sh
+# Skip the best-effort mermaid CLI install entirely
+AMPLIHACK_SKIP_MMDC=1 amplihack install
+```
+
+**Truthiness:** any non-empty value triggers the skip (`1`, `true`, `yes`,
+etc.). An empty string (`AMPLIHACK_SKIP_MMDC=""`) is treated as **unset** and
+the step runs. This matches the presence-flag convention used by
+`AMPLIHACK_SKIP_AUTO_INSTALL`.
+
+See: [Best-Effort Mermaid CLI Provisioning](../features/mermaid-cli-best-effort-install.md).
 
 ---
 
