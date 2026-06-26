@@ -91,6 +91,7 @@ static AMPLIHACK_SKILLS: &[&str] = &[
     "poet-analyst",
     "political-scientist-analyst",
     "pptx",
+    "pr-guide",
     "pr-review-assistant",
     "pre-commit-manager",
     "psychologist-analyst",
@@ -168,7 +169,7 @@ mod tests {
 
     #[test]
     fn skill_count_is_reasonable() {
-        assert_eq!(skill_count(), 121);
+        assert_eq!(skill_count(), 122);
     }
 
     #[test]
