@@ -314,12 +314,11 @@ steps:
         else
           # No dedicated task worktree: only the manifest-keyed branch cleanup is
           # safe against the repo root (it never deletes the intended/checked-out/
-          # protected branch, and never removes a worktree).
+          # protected branch, and never removes a worktree). Crucially, do NOT
+          # prune or remove worktrees here — the repo root's worktrees/ children
+          # are other runs' task worktrees.
           cleanup_run_created_branches "$_repo_root" "$_intended_branch" || true
         fi
-        # Always safe: prune only worktree registrations whose directories are
-        # already gone (never removes a present worktree).
-        git -C "$_repo_root" worktree prune >/dev/null 2>&1 || true
         return 0
       }
       # Defensive: ensure cleanup runs even if this step exits early.

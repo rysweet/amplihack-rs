@@ -43,13 +43,16 @@ cleanup_known_workflow_runtime_artifacts() {
         echo "ERROR: refusing to remove tracked path during runtime cleanup: $rel" >&2
         return 1
       fi
-      # On a *dedicated* (linked) task worktree, its `worktrees/` children are
-      # leaked nested scratch worktrees. Record their branches (so finalization
-      # deletes them) and deregister the worktrees properly, because a bare
-      # `rm -rf worktrees/` leaves dangling registrations behind in the parent
-      # repo's $GIT_DIR/worktrees/ (issue #808 — a regression of #780/#755).
-      # On the main checkout this branch is skipped, so sibling task worktrees
-      # are never recorded or removed here.
+      # On a *dedicated* (linked) task worktree, the `worktrees/` children are
+      # leaked nested scratch worktrees created by this run. Record their
+      # branches (so finalization deletes them) and deregister the worktrees
+      # gracefully — a bare `rm -rf worktrees/` would leave dangling
+      # registrations behind in the parent repo's $GIT_DIR/worktrees/ (issue
+      # #808 — a regression of #780/#755). This graceful path is intentionally
+      # skipped on the main checkout, where `worktrees/` children are other
+      # runs' task worktrees: it must never deregister or record those. (The
+      # pre-existing `rm -rf` below is left unchanged; it is only ever pointed
+      # at a per-task worktree by the recipe steps that cd into the worktree.)
       if [ "$rel" = "worktrees" ] && _amplihack_is_linked_worktree "$repo"; then
         _amplihack_record_nested_worktree_branches "$repo"
         cleanup_nested_worktrees "$repo"
@@ -57,10 +60,6 @@ cleanup_known_workflow_runtime_artifacts() {
       rm -rf -- "$repo/$rel"
     fi
   done
-  # Always safe: prune only worktree registrations whose directories are already
-  # gone. Never removes a present worktree, so this is safe even on the main
-  # checkout and finishes the #780/#755 dangling-registration fix.
-  git -C "$repo" worktree prune >/dev/null 2>&1 || true
 }
 
 preflight_known_workflow_runtime_artifacts() {

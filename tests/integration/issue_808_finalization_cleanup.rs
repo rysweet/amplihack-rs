@@ -345,24 +345,41 @@ fn finalization_is_idempotent_and_defensive_when_artifacts_are_already_gone() {
 }
 
 #[test]
-fn preflight_deregisters_nested_worktree_without_dangling_registration() {
-    // The narrow preflight cleanup must remove a real nested git worktree AND
-    // prune its registration (the #780/#755 regression a bare `rm -rf` re-leaks),
-    // while preserving the task worktree itself.
-    let fx = TaskWorktree::new("feat/degradation-events");
-    fx.add_nested_worktree("worktrees/nested-agent", "nested-agent");
+fn preflight_deregisters_nested_worktree_on_dedicated_task_worktree_without_dangling_registration()
+{
+    // On a dedicated (linked) task worktree, the narrow preflight cleanup must
+    // remove a real nested git worktree AND deregister it (the #780/#755
+    // regression a bare `rm -rf` re-leaks), while preserving the task worktree
+    // itself. The graceful deregistration is gated to linked task worktrees so
+    // it can never deregister another run's task worktree from the main checkout.
+    let fx = TaskWorktree::new("main-placeholder");
+    git(&fx.repo, &["checkout", "main"]);
+    let task_wt = add_linked_worktree_pushed(&fx.repo, "worktrees/task", "feat/task");
+    // A nested worktree leaked under THIS run's task worktree.
+    git(
+        &task_wt,
+        &[
+            "worktree",
+            "add",
+            "worktrees/nested-agent",
+            "-b",
+            "nested-agent",
+            "main",
+        ],
+    );
+    assert!(task_wt.join("worktrees/nested-agent").exists());
 
     let out = run_with_helper(&format!(
-        "preflight_known_workflow_runtime_artifacts \"{repo}\"",
-        repo = fx.repo_str(),
+        "preflight_known_workflow_runtime_artifacts \"{wt}\"",
+        wt = task_wt.to_str().unwrap(),
     ));
     assert!(
         out.status.success(),
-        "preflight must succeed on an untracked nested worktree\nstderr:\n{}",
+        "preflight must succeed on a linked task worktree\nstderr:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        !fx.repo.join("worktrees").exists(),
+        !task_wt.join("worktrees").exists(),
         "preflight must remove the nested worktree directory"
     );
     assert!(
@@ -371,10 +388,9 @@ fn preflight_deregisters_nested_worktree_without_dangling_registration() {
             .any(|w| w.contains("nested-agent")),
         "preflight must leave no dangling nested-worktree registration"
     );
-    assert_eq!(
-        registered_worktrees(&fx.repo).len(),
-        1,
-        "the task worktree itself must survive preflight"
+    assert!(
+        task_wt.exists(),
+        "the dedicated task worktree itself must survive preflight"
     );
 }
 
