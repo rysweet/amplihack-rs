@@ -1,0 +1,35 @@
+name: issue-808-finalization-cleanup
+description: |
+  Merge-ready QA coverage for issue #808: default-workflow finalization must
+  deterministically delete run-created fallback branches (shared remote + local)
+  and remove nested worktrees left by a denied force-push, leaving only the
+  intended PR branch — while NEVER deleting another concurrent run's task
+  worktree or its published PR branch from the shared remote. Cleanup must be
+  idempotent, fail-soft, and run in success and failure/early-exit paths.
+type: cli
+tags: [merge-ready, cli, workflow, finalization, worktree, issue-808]
+
+agents:
+  - name: cli-agent
+    type: cli
+    config:
+      workingDirectory: "."
+
+steps:
+  - name: "Run all issue #808 QA checks"
+    description: |
+      Drives the Rust regression suite (deterministic finalization cleanup,
+      nested-worktree removal with no dangling registration, stray remote+local
+      branch deletion, idempotency, intended-branch preservation, and the
+      sibling-worktree safety repro) plus the runtime-artifact helper contract
+      shell tests and the finalize-recipe static guards.
+    agent: cli-agent
+    action: execute
+    params:
+      command: "bash"
+      args: ["tests/scenarios/issue-808-checks.sh"]
+    timeout: 600000
+
+  - name: "Verify all checks exited cleanly"
+    agent: cli-agent
+    action: validate_exit_code
