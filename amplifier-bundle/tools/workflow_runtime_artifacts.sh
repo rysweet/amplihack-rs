@@ -18,6 +18,17 @@ path_is_tracked() {
   git -C "$repo" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1
 }
 
+# _amplihack_is_linked_worktree <repo>
+# True when <repo> is a *linked* git worktree (its `.git` is a gitdir-pointer
+# file), false for the main worktree (its `.git` is a directory). Only a linked
+# worktree's `worktrees/` children are guaranteed to be leaked nested scratch
+# worktrees rather than other concurrent runs' task worktrees, so destructive
+# nested cleanup is gated on this signal.
+_amplihack_is_linked_worktree() {
+  local repo="${1:-.}"
+  [ -f "$repo/.git" ]
+}
+
 cleanup_known_workflow_runtime_artifacts() {
   local repo="${1:-.}"
   if ! is_git_worktree "$repo"; then
@@ -32,19 +43,24 @@ cleanup_known_workflow_runtime_artifacts() {
         echo "ERROR: refusing to remove tracked path during runtime cleanup: $rel" >&2
         return 1
       fi
-      # Deregister real nested git worktrees before deleting the directory.
-      # A bare `rm -rf worktrees/` leaves dangling registrations behind in the
-      # parent repository's $GIT_DIR/worktrees/, which re-leaks the nested
-      # worktree (issue #808 — a regression of the #780/#755 local-leak fixes).
-      # Proper `git worktree remove` + `prune` is idempotent and degrades to a
-      # no-op for plain (non-worktree) directories, so the subsequent rm still
-      # sweeps any leftover generated files.
-      if [ "$rel" = "worktrees" ]; then
+      # On a *dedicated* (linked) task worktree, its `worktrees/` children are
+      # leaked nested scratch worktrees. Record their branches (so finalization
+      # deletes them) and deregister the worktrees properly, because a bare
+      # `rm -rf worktrees/` leaves dangling registrations behind in the parent
+      # repo's $GIT_DIR/worktrees/ (issue #808 — a regression of #780/#755).
+      # On the main checkout this branch is skipped, so sibling task worktrees
+      # are never recorded or removed here.
+      if [ "$rel" = "worktrees" ] && _amplihack_is_linked_worktree "$repo"; then
+        _amplihack_record_nested_worktree_branches "$repo"
         cleanup_nested_worktrees "$repo"
       fi
       rm -rf -- "$repo/$rel"
     fi
   done
+  # Always safe: prune only worktree registrations whose directories are already
+  # gone. Never removes a present worktree, so this is safe even on the main
+  # checkout and finishes the #780/#755 dangling-registration fix.
+  git -C "$repo" worktree prune >/dev/null 2>&1 || true
 }
 
 preflight_known_workflow_runtime_artifacts() {
@@ -69,9 +85,11 @@ preflight_known_workflow_runtime_artifacts() {
 # and the intended PR branch plus protected branches are never deleted.
 # ---------------------------------------------------------------------------
 
-# Path to the shared (cross-worktree) manifest of run-created fallback branches
-# that finalization must delete. Stored under the common git dir so the main
-# repo and all of its worktrees observe the same list.
+# Path to the per-run manifest of run-created fallback branches that
+# finalization must delete. Stored under the common git dir (shared by the main
+# repo and all of its linked worktrees) and scoped by the recipe run id so that
+# concurrent runs never consume each other's entries (each finalize reads and
+# deletes only its own run's manifest).
 _amplihack_run_branch_manifest() {
   local repo="${1:-.}"
   local common
@@ -81,7 +99,11 @@ _amplihack_run_branch_manifest() {
     /*) : ;;
     *) common="$repo/$common" ;;
   esac
-  printf '%s/amplihack/run-created-branches\n' "$common"
+  local scope="${AMPLIHACK_RECIPE_RUN_ID:-default}"
+  # Reduce the scope to filename-safe characters (no path traversal / odd chars).
+  scope="$(printf '%s' "$scope" | tr -c 'A-Za-z0-9._-' '_')"
+  [ -n "$scope" ] || scope="default"
+  printf '%s/amplihack/run-created-branches-%s\n' "$common" "$scope"
 }
 
 # record_run_created_branch <repo> <branch>
@@ -102,6 +124,22 @@ record_run_created_branch() {
     return 0
   fi
   printf '%s\n' "$branch" >> "$manifest" 2>/dev/null || true
+  return 0
+}
+
+# _amplihack_record_nested_worktree_branches <repo>
+# Record the branch of every worktree nested under <repo>/worktrees/ into the
+# run manifest, so finalization can delete those branches even if the nested
+# worktree itself is removed (by preflight) before finalization runs.
+_amplihack_record_nested_worktree_branches() {
+  local repo="${1:-.}"
+  local b
+  while IFS= read -r b; do
+    [ -n "$b" ] || continue
+    record_run_created_branch "$repo" "$b"
+  done <<RUNBRANCHES
+$(_amplihack_list_nested_worktree_branches "$repo")
+RUNBRANCHES
   return 0
 }
 
@@ -129,19 +167,34 @@ cleanup_nested_worktrees() {
   return 0
 }
 
+# _amplihack_default_branch <repo>
+# Best-effort name of the repository's default branch (e.g. resolved from
+# origin/HEAD). Empty when it cannot be determined. Used to widen protection
+# beyond the hard-coded base names so a configured default like `trunk` is never
+# deleted even if it were mistakenly recorded.
+_amplihack_default_branch() {
+  local repo="${1:-.}"
+  local ref
+  ref="$(git -C "$repo" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+  printf '%s' "${ref#origin/}"
+}
+
 # _amplihack_delete_run_branch <repo> <branch> <intended>
 # Delete a single run-created branch from the shared remote and locally, while
-# never touching the intended PR branch, a protected base branch, or a branch
-# still checked out in some worktree. Fail-soft.
+# never touching the intended PR branch, a protected base branch, the resolved
+# default branch, or a branch still checked out in some worktree. Fail-soft.
 _amplihack_delete_run_branch() {
   local repo="$1"
   local branch="$2"
   local intended="$3"
   [ -n "$branch" ] || return 0
   case "$branch" in
-    -*|main|master|develop|HEAD) return 0 ;;
+    -*|main|master|develop|trunk|HEAD) return 0 ;;
   esac
   [ "$branch" != "$intended" ] || return 0
+  local default_branch
+  default_branch="$(_amplihack_default_branch "$repo")"
+  [ -z "$default_branch" ] || [ "$branch" != "$default_branch" ] || return 0
   if git -C "$repo" worktree list --porcelain 2>/dev/null | grep -qxF "branch refs/heads/$branch"; then
     return 0
   fi

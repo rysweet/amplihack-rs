@@ -379,6 +379,165 @@ fn preflight_deregisters_nested_worktree_without_dangling_registration() {
 }
 
 // ---------------------------------------------------------------------------
+// Sibling-worktree safety: the recipe step must never delete another run's
+// task worktree or its published PR branch from the shared remote.
+// ---------------------------------------------------------------------------
+
+/// Extract the executable bash body of `step-22c-finalization-cleanup` from the
+/// finalize recipe, so the tests exercise the *real* wiring guard (not a copy).
+fn step22c_command() -> String {
+    let recipe: serde_yaml::Value =
+        serde_yaml::from_str(&finalize_recipe_text()).expect("parse workflow-finalize.yaml");
+    recipe
+        .get("steps")
+        .and_then(serde_yaml::Value::as_sequence)
+        .expect("recipe has steps")
+        .iter()
+        .find(|s| {
+            s.get("id").and_then(serde_yaml::Value::as_str) == Some("step-22c-finalization-cleanup")
+        })
+        .and_then(|s| s.get("command").and_then(serde_yaml::Value::as_str))
+        .expect("step-22c-finalization-cleanup has a command")
+        .to_owned()
+}
+
+/// Run the extracted recipe step with the given environment, from `cwd`.
+fn run_recipe_step(envs: &[(&str, &str)], cwd: &Path) -> Output {
+    let mut cmd = Command::new("bash");
+    cmd.arg("-c").arg(step22c_command()).current_dir(cwd);
+    // AMPLIHACK_HOME lets the step locate the real runtime-artifact helper.
+    cmd.env("AMPLIHACK_HOME", workspace_root());
+    cmd.env("AMPLIHACK_RECIPE_RUN_ID", "test-run");
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    cmd.output().expect("spawn recipe step")
+}
+
+/// Add a linked worktree on a new branch and push that branch to origin.
+fn add_linked_worktree_pushed(repo_top: &Path, rel_or_abs: &str, branch: &str) -> PathBuf {
+    git(
+        repo_top,
+        &["worktree", "add", rel_or_abs, "-b", branch, "main"],
+    );
+    let wt = if Path::new(rel_or_abs).is_absolute() {
+        PathBuf::from(rel_or_abs)
+    } else {
+        repo_top.join(rel_or_abs)
+    };
+    git(&wt, &["push", "-u", "origin", branch]);
+    wt
+}
+
+#[test]
+fn recipe_step_cleans_dedicated_task_worktree_leak_but_preserves_sibling_worktree() {
+    // Topology mirrors production: a shared main repo whose worktrees/ holds
+    // multiple runs' task worktrees. THIS run owns `feat/task`; a concurrent run
+    // owns `feat/sibling-pr`. THIS run leaked a nested worktree (`feat/leak`).
+    let fx = TaskWorktree::new("main-placeholder");
+    // The fixture left us on `main-placeholder`; move main back onto `main`.
+    git(&fx.repo, &["checkout", "main"]);
+
+    let sibling_wt = add_linked_worktree_pushed(&fx.repo, "worktrees/sibling", "feat/sibling-pr");
+    let task_wt = add_linked_worktree_pushed(&fx.repo, "worktrees/task", "feat/task");
+    // Nested leak inside THIS run's task worktree, branch also pushed to origin.
+    git(
+        &task_wt,
+        &[
+            "worktree",
+            "add",
+            "worktrees/leak",
+            "-b",
+            "feat/leak",
+            "main",
+        ],
+    );
+    git(&task_wt, &["push", "-u", "origin", "feat/leak"]);
+
+    assert!(remote_branch_exists(&fx.repo, "feat/sibling-pr"));
+    assert!(remote_branch_exists(&fx.repo, "feat/leak"));
+
+    let out = run_recipe_step(
+        &[
+            ("REPO_PATH", fx.repo.to_str().unwrap()),
+            ("WORKTREE_SETUP_WORKTREE_PATH", task_wt.to_str().unwrap()),
+            ("BRANCH_NAME", "feat/task"),
+        ],
+        &fx.repo,
+    );
+    assert!(
+        out.status.success(),
+        "recipe cleanup step must not abort\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // THIS run's nested leak is gone (worktree + branch, remote and local).
+    assert!(
+        !task_wt.join("worktrees/leak").exists(),
+        "nested leaked worktree must be removed"
+    );
+    assert!(
+        !remote_branch_exists(&fx.repo, "feat/leak"),
+        "leaked nested branch must be deleted from the shared remote"
+    );
+    assert!(
+        !local_branch_exists(&fx.repo, "feat/leak"),
+        "leaked nested branch must be deleted locally"
+    );
+
+    // The concurrent run's task worktree and its published PR branch survive.
+    assert!(
+        sibling_wt.exists(),
+        "a sibling run's task worktree must NEVER be removed"
+    );
+    assert!(
+        remote_branch_exists(&fx.repo, "feat/sibling-pr"),
+        "a sibling run's published PR branch must NEVER be deleted from the shared remote"
+    );
+    assert!(
+        local_branch_exists(&fx.repo, "feat/sibling-pr"),
+        "a sibling run's branch must NEVER be deleted locally"
+    );
+    // THIS run's own task worktree + branch also survive.
+    assert!(task_wt.exists(), "the active task worktree must survive");
+    assert!(remote_branch_exists(&fx.repo, "feat/task"));
+}
+
+#[test]
+fn recipe_step_does_not_destroy_siblings_when_worktree_path_is_repo_root_in_another_form() {
+    // Reproduces the fail-open the byte-wise guard allowed: WORKTREE_SETUP path
+    // is the absolute repo root while REPO_PATH is "." — the same directory in a
+    // different representation. The hardened guard must NOT treat the main repo
+    // as a dedicated task worktree, so sibling worktrees/branches survive.
+    let fx = TaskWorktree::new("main-placeholder");
+    git(&fx.repo, &["checkout", "main"]);
+    let sibling_wt = add_linked_worktree_pushed(&fx.repo, "worktrees/sibling", "feat/sibling-pr");
+
+    let out = run_recipe_step(
+        &[
+            ("REPO_PATH", "."),
+            ("WORKTREE_SETUP_WORKTREE_PATH", fx.repo.to_str().unwrap()),
+            ("BRANCH_NAME", "main"),
+        ],
+        &fx.repo,
+    );
+    assert!(out.status.success(), "recipe cleanup step must not abort");
+
+    assert!(
+        sibling_wt.exists(),
+        "sibling worktree must survive when the guard sees the repo root in another path form"
+    );
+    assert!(
+        remote_branch_exists(&fx.repo, "feat/sibling-pr"),
+        "sibling published branch must survive the fail-open repro"
+    );
+    assert!(
+        local_branch_exists(&fx.repo, "feat/sibling-pr"),
+        "sibling local branch must survive the fail-open repro"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Recipe-wiring contract tests
 // ---------------------------------------------------------------------------
 

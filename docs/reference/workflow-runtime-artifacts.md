@@ -155,9 +155,12 @@ record_run_created_branch "$repo" "$fallback_branch"
 ```
 
 Tracks a run-created fallback/intermediate branch in a per-run manifest stored
-under the shared git common dir (`$(git rev-parse --git-common-dir)/amplihack/run-created-branches`).
-Deduplicated and idempotent. Whenever the workflow pushes a branch other than
-the intended PR branch, it records it here so finalization can delete it.
+under the shared git common dir
+(`$(git rev-parse --git-common-dir)/amplihack/run-created-branches-<run-id>`,
+scoped by `AMPLIHACK_RECIPE_RUN_ID` so concurrent runs never consume each
+other's entries). Deduplicated and idempotent. Whenever the workflow pushes a
+branch other than the intended PR branch, it records it here so finalization
+can delete it.
 
 #### `cleanup_run_created_branches`
 
@@ -190,10 +193,15 @@ finalize_workflow_runtime_artifacts "$task_worktree" "$intended_branch"
 Finalization entry point. It captures the branches of nested worktrees, removes
 the nested worktrees, deletes those now-orphaned branches plus any
 manifest-tracked fallback branches from the shared remote and locally, and then
-runs the narrow runtime-artifact sweep. Call it with the **per-task worktree**
-as `<repo>`; when no dedicated task worktree exists, run only
-`cleanup_run_created_branches` against the repo root (its `worktrees/` children
-are other runs' task worktrees and must not be removed).
+runs the narrow runtime-artifact sweep. **Call it with a dedicated per-task
+worktree** as `<repo>`: nested-worktree removal only touches `worktrees/`
+children of that worktree, never the worktree itself, a sibling task worktree,
+or the main worktree. The finalize recipe enforces this by only invoking it when
+`worktree_setup.worktree_path` is a *linked* worktree whose canonical toplevel
+differs from the repo root; otherwise it runs only the manifest-keyed branch
+cleanup (which never removes a worktree) plus an always-safe `git worktree
+prune`. Deleted branches never include the intended PR branch, a checked-out
+branch, or a protected/default branch.
 
 ## Lifecycle integration
 

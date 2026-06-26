@@ -291,16 +291,35 @@ steps:
         fi
         # shellcheck source=/dev/null
         . "$RUNTIME_ARTIFACT_HELPER" 2>/dev/null || return 0
-        # Nested-worktree cleanup is only safe against a dedicated per-task
-        # worktree (its `worktrees/` children are leaked nested worktrees). When
-        # the task worktree is the repo root itself, its `worktrees/` children are
-        # other runs' task worktrees, so restrict to the manifest-keyed branch
-        # cleanup, which never deletes the intended/checked-out/protected branch.
-        if [ -n "$_worktree_path" ] && [ -d "$_worktree_path" ] && [ "$_worktree_path" != "${REPO_PATH:-}" ]; then
+        # Destructive nested-worktree + branch cleanup is only safe against a
+        # *dedicated* per-task worktree, whose `worktrees/` children are leaked
+        # nested worktrees. The shared repo root is a main worktree whose
+        # `worktrees/` children are OTHER runs' task worktrees and must never be
+        # removed here. A dedicated task worktree is a *linked* git worktree
+        # (`.git` is a gitdir-pointer file, not a directory) whose canonical
+        # toplevel differs from the repo root's — both checks guard against a
+        # path-representation mismatch (absolute vs '.', symlinks, trailing /).
+        local _repo_root="${REPO_PATH:-$(pwd)}"
+        local _is_dedicated=false
+        if [ -n "$_worktree_path" ] && [ -d "$_worktree_path" ] && [ -f "$_worktree_path/.git" ]; then
+          local _wt_top _repo_top
+          _wt_top="$(git -C "$_worktree_path" rev-parse --show-toplevel 2>/dev/null || true)"
+          _repo_top="$(git -C "$_repo_root" rev-parse --show-toplevel 2>/dev/null || true)"
+          if [ -n "$_wt_top" ] && [ "$_wt_top" != "$_repo_top" ]; then
+            _is_dedicated=true
+          fi
+        fi
+        if [ "$_is_dedicated" = true ]; then
           finalize_workflow_runtime_artifacts "$_worktree_path" "$_intended_branch" || true
         else
-          cleanup_run_created_branches "${REPO_PATH:-$(pwd)}" "$_intended_branch" || true
+          # No dedicated task worktree: only the manifest-keyed branch cleanup is
+          # safe against the repo root (it never deletes the intended/checked-out/
+          # protected branch, and never removes a worktree).
+          cleanup_run_created_branches "$_repo_root" "$_intended_branch" || true
         fi
+        # Always safe: prune only worktree registrations whose directories are
+        # already gone (never removes a present worktree).
+        git -C "$_repo_root" worktree prune >/dev/null 2>&1 || true
         return 0
       }
       # Defensive: ensure cleanup runs even if this step exits early.
