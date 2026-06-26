@@ -153,3 +153,50 @@ fn checkpoint_prefers_amplihack_home_over_installed_fallback() {
         "an explicit AMPLIHACK_HOME bundle must take precedence over the ~/.amplihack fallback"
     );
 }
+
+#[test]
+fn checkpoint_prefers_copilot_bundle_over_amplihack_bundle() {
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+
+    // Target repo / active worktree: no amplifier-bundle/, AMPLIHACK_HOME unset.
+    let repo = tmp.path().join("target-repo");
+    fs::create_dir_all(&repo).expect("create target repo dir");
+
+    // Both installed bundles exist; ~/.copilot is checked before ~/.amplihack.
+    let home = tmp.path().join("home");
+    let copilot_helper = home.join(".copilot/amplifier-bundle/tools/workflow_runtime_artifacts.sh");
+    let amplihack_helper =
+        home.join(".amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh");
+    for helper in [&copilot_helper, &amplihack_helper] {
+        fs::create_dir_all(helper.parent().expect("helper parent"))
+            .expect("create installed helper dir");
+        fs::write(helper, "# bundle\n").expect("write installed helper");
+    }
+
+    let script = format!(
+        "set -uo pipefail\n{}\nprintf '%s' \"$RUNTIME_ARTIFACT_HELPER\"\n",
+        checkpoint_resolution_snippet()
+    );
+
+    let output = Command::new("bash")
+        .arg("-c")
+        .arg(&script)
+        .current_dir(&repo)
+        .env_remove("AMPLIHACK_HOME")
+        .env_remove("WORKFLOW_RUNTIME_ARTIFACT_HELPER")
+        .env("REPO_PATH", &repo)
+        .env("HOME", &home)
+        .output()
+        .expect("run helper resolution snippet");
+
+    let resolved = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "resolution snippet must execute cleanly"
+    );
+    assert_eq!(
+        resolved.trim(),
+        copilot_helper.to_string_lossy(),
+        "the ~/.copilot bundle must take precedence over the ~/.amplihack bundle"
+    );
+}

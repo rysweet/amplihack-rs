@@ -80,7 +80,10 @@ steps:
         cd "$REPO_PATH"
       fi
       RUNTIME_ARTIFACT_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="$(pwd)/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
-      [ -f "$RUNTIME_ARTIFACT_HELPER" ] && . "$RUNTIME_ARTIFACT_HELPER" && preflight_known_workflow_runtime_artifacts . || { echo "ERROR: workflow runtime artifact helper not found: $RUNTIME_ARTIFACT_HELPER" >&2; exit 2; }
+      [ -f "$RUNTIME_ARTIFACT_HELPER" ] || { echo "ERROR: workflow runtime artifact helper not found (searched AMPLIHACK_HOME, REPO_PATH, worktree, ~/.copilot, ~/.amplihack): $RUNTIME_ARTIFACT_HELPER" >&2; exit 2; }
+      # shellcheck source=/dev/null
+      . "$RUNTIME_ARTIFACT_HELPER"
+      preflight_known_workflow_runtime_artifacts .
       amplihack hygiene artifact-guard --repo . --mode pre-publish
 
   - id: "step-20b-push-cleanup"
@@ -114,7 +117,10 @@ steps:
         exit 1
       fi
       RUNTIME_ARTIFACT_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="$(pwd)/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
-      [ -f "$RUNTIME_ARTIFACT_HELPER" ] && . "$RUNTIME_ARTIFACT_HELPER" && preflight_known_workflow_runtime_artifacts . || { echo "ERROR: workflow runtime artifact helper not found: $RUNTIME_ARTIFACT_HELPER" >&2; exit 2; }
+      [ -f "$RUNTIME_ARTIFACT_HELPER" ] || { echo "ERROR: workflow runtime artifact helper not found (searched AMPLIHACK_HOME, REPO_PATH, worktree, ~/.copilot, ~/.amplihack): $RUNTIME_ARTIFACT_HELPER" >&2; exit 2; }
+      # shellcheck source=/dev/null
+      . "$RUNTIME_ARTIFACT_HELPER"
+      preflight_known_workflow_runtime_artifacts .
       amplihack hygiene artifact-guard --repo . --mode pre-publish
       git add -A
       STAGED=$(git diff --cached --name-only)
@@ -258,7 +264,10 @@ steps:
       PR_URL="${PR_URL:-${PR_PUBLISH_RESULT_PR_URL:-${RECIPE_VAR_pr_publish_result__pr_url:-}}}"
       if [ -z "$PR_URL" ]; then : "N/A"; fi
       RUNTIME_ARTIFACT_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="$(pwd)/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
-      [ -f "$RUNTIME_ARTIFACT_HELPER" ] && . "$RUNTIME_ARTIFACT_HELPER" && preflight_known_workflow_runtime_artifacts . || { echo "ERROR: workflow runtime artifact helper not found: $RUNTIME_ARTIFACT_HELPER" >&2; exit 2; }
+      [ -f "$RUNTIME_ARTIFACT_HELPER" ] || { echo "ERROR: workflow runtime artifact helper not found (searched AMPLIHACK_HOME, REPO_PATH, worktree, ~/.copilot, ~/.amplihack): $RUNTIME_ARTIFACT_HELPER" >&2; exit 2; }
+      # shellcheck source=/dev/null
+      . "$RUNTIME_ARTIFACT_HELPER"
+      preflight_known_workflow_runtime_artifacts .
       # Helper contract: git diff --quiet identifies no-diff; terminal_status accepts no-diff, already-merged, and closed-after-merge; GitHub-only status uses gh pr view.
       # Terminal-state contract: FAILED_CLOSED_UNMERGED, FAILED_MEANINGFUL_DIFF, BLOCKED_CI, MERGED, CLOSED_OBSOLETE, NO_DIFF_SUCCESS, FOLLOWUP_CREATED.
       FINAL_STATUS_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_final_status.sh"
