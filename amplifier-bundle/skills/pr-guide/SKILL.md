@@ -199,7 +199,11 @@ acronyms, expands shorthand, and tightens wording while **preserving the
 original meaning** — it never invents new claims or drops caveats. The rewrite
 is pushed back to the PR via `gh pr edit --body-file` (GitHub) or
 `az repos pr update --description` (ADO) — a PR API write, **never** a git
-commit. If the description is already clear, it is left unchanged. See
+commit. It is **not** written on its own: like all publishing, it is opt-in
+(default no-op) and is prepared in memory, then folded into the **single,
+confirmation-gated** description write performed at publish time (see
+`reference.md` → §10b and §11). If the description is already clear, it is left
+unchanged. See
 `reference.md` → *Clarity passes → PR Description Clarity Pass*.
 
 ## Security Notes

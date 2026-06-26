@@ -625,8 +625,7 @@ else
 fi
 
 # Single final description write (avoid double updates with the clarity pass).
-if grep_both "single final write" || (grep_both "single" && grep_both "write") \
-  || (grep_both "one" && grep_both "write"); then
+if grep_both "single final write"; then
   pass "combines clarity rewrite + back-link into a single final write"
 else
   fail "must combine the clarity rewrite and back-link into one final write"

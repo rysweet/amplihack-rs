@@ -474,7 +474,12 @@ description and posting a comment.
 
 1. Read the **existing PR description** (GitHub: `body` from metadata; ADO:
    `description` from `pr show`).
-2. Compute `combined_length = len(existing_description) + len("\n\n---\n\n") + len(guide)`.
+2. Compute `combined_length = len(description) + len("\n\n---\n\n") + len(guide)`,
+   where `description` is the **clarity-rewritten** text when the PR Description
+   Clarity Pass (§10b) ran (it can expand acronyms/shorthand and grow the text),
+   otherwise the existing description. Always measure the text that will actually
+   be written so the fit check matches the write (important on ADO's hard
+   4,000-char limit).
 3. If `combined_length` is under the platform's description size limit:
    - **Append** the guide to the existing description, separated by `\n\n---\n\n`.
    - Do not replace the existing description — preserve it.
