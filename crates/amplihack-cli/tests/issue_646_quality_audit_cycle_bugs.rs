@@ -384,11 +384,13 @@ fn recipe_parses_as_valid_yaml() {
 fn recipe_under_brick_line_limit() {
     let text = recipe_text();
     let lines = text.lines().count();
-    // Original is ~789 lines, net change ~+20 → ~809. Generous ceiling of 850.
+    // #646 bug fixes took the recipe to ~815 lines. #820 added a validator-output
+    // normalization layer to merge-validations (~+35 lines) → ~850. Ceiling of 880
+    // leaves modest headroom while still guarding against unbounded growth.
     assert!(
-        lines <= 850,
-        "quality-audit-cycle.yaml is {lines} lines; expected <= 850 after bug fixes \
-         (original ~789 + ~20 lines of fixes)."
+        lines <= 880,
+        "quality-audit-cycle.yaml is {lines} lines; expected <= 880 \
+         (#646 fixes + #820 merge-validations normalization)."
     );
 }
 

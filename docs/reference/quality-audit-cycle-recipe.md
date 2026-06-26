@@ -55,6 +55,43 @@ Cycle 3+: seek(deepest) → validate(×3) → merge → fix → verify → accum
   emerged in the current cycle.
 - **Stop** at `max_cycles` unconditionally.
 
+### merge-validations: Validator-Output Normalization (#820)
+
+The three validator agents are prompted to emit a JSON verdict object, but
+agent output is free-form text: the JSON usually arrives wrapped in a
+` ```json ` fence and may be preceded by reasoning prose or log preamble.
+Feeding that raw text straight to `jq --slurpfile` aborts the whole audit
+cycle with `jq: Bad JSON ... Invalid numeric literal`, discarding the seek and
+validation work already done (#820).
+
+Before merging, the step normalizes each validator's raw output to a single
+JSON object using the tolerant `amplihack orch helper extract-json` helper —
+the same normalizer `smart-orchestrator` uses. It recovers JSON from, in
+priority order: ` ```json ` fenced blocks, untagged ` ``` ` blocks, then a
+balanced-brace scan over raw prose (correctly handling braces inside string
+values). The normalized objects are what `jq --slurpfile` consumes.
+
+Degradation is explicit, never silent:
+
+- A validator that did not run (empty output) normalizes to `{}` and simply
+  contributes zero votes — no warning.
+- A validator that produced **non-empty** output containing **no parseable
+  JSON object** triggers a targeted diagnostic on stderr that names the
+  validator and preserves its raw output as an artifact under `output_dir`:
+
+  ```
+  [merge-validations] WARNING: validation_agent_2 produced no parseable JSON
+  object; counting zero votes from it. Raw output preserved at:
+  ./eval_results/quality_audit/merge-validations-validation_agent_2-cycle3-raw.txt
+  ```
+
+  The merge then proceeds with the remaining validators instead of crashing,
+  so a single malformed validator can no longer take down the entire cycle.
+
+The deterministic majority-vote merge (`group_by` on `finding_id`, confirm when
+`≥ validation_threshold` validators agree) is unchanged — only the inputs are
+normalized.
+
 ### verify-fixes: Git Diff Cross-Check (#646)
 
 The `verify-fixes` step performs a two-layer verification:
