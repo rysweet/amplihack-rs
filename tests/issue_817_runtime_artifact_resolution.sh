@@ -2,16 +2,21 @@
 # Behavior reproduction for issue #817 used by the QA scenario
 # (tests/scenarios/issue-817-runtime-artifact-resolution.yaml).
 #
-# It extracts the *real* RUNTIME_ARTIFACT_HELPER resolution chains from each
-# lifecycle recipe and executes them in a controlled environment, asserting:
-#   1. For every lifecycle recipe, with AMPLIHACK_HOME unset and a target repo
-#      that has no amplifier-bundle/, the helper resolves from the installed
-#      ~/.amplihack bundle.
+# It extracts the *real* RUNTIME_ARTIFACT_HELPER resolution sites from each
+# lifecycle recipe and executes EACH site independently in a controlled
+# environment, asserting:
+#   1. For every resolution site in every lifecycle recipe, with AMPLIHACK_HOME
+#      unset and a target repo that has no amplifier-bundle/, the helper resolves
+#      from the installed ~/.amplihack bundle.
 #   2. An explicit AMPLIHACK_HOME bundle takes precedence over the fallback.
 #   3. The ~/.copilot bundle takes precedence over the ~/.amplihack bundle
 #      (the documented order: ... -> ~/.copilot -> ~/.amplihack).
-#   4. When no candidate exists anywhere, the recipe guard fails loudly with
-#      exit 2 instead of silently sourcing a missing path.
+#   4. For every resolution site, when no candidate exists anywhere, the site's
+#      guard fails loudly with exit 2 instead of sourcing a missing path.
+#
+# Each site is tested on its own (not concatenated), so a broken site cannot be
+# masked by a later one. Snippets run under the same `set -euo pipefail` the
+# recipes use, so a chain that aborts under production semantics is caught.
 #
 # This mirrors crates/amplihack-cli/tests/issue_817_runtime_artifact_resolution.rs
 # but runs instantly (no cargo build) so it is usable from the agentic-test
@@ -21,50 +26,47 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RECIPES_DIR="$REPO_ROOT/amplifier-bundle/recipes"
 
-# Every lifecycle recipe that resolves workflow_runtime_artifacts.sh.
-RECIPES=(
-  workflow-tdd.yaml
-  workflow-finalize.yaml
-  workflow-publish.yaml
-  workflow-refactor-review.yaml
-  workflow-pr-review.yaml
+# recipe:expected-number-of-resolution-sites
+RECIPE_SITES=(
+  "workflow-tdd.yaml:1"
+  "workflow-finalize.yaml:3"
+  "workflow-publish.yaml:2"
+  "workflow-refactor-review.yaml:1"
+  "workflow-pr-review.yaml:1"
 )
-
-# Extract the RUNTIME_ARTIFACT_HELPER= resolution assignments from a recipe.
-# A recipe may contain more than one identical resolution site; they all encode
-# the same precedence, so concatenating them and reading the final value is
-# sufficient to validate the resolution behavior.
-extract_chain() {
-  local recipe="$1"
-  local chain
-  chain="$(grep 'RUNTIME_ARTIFACT_HELPER=' "$RECIPES_DIR/$recipe" | sed 's/^[[:space:]]*//')"
-  [ -n "$chain" ] || { echo "FAIL: no resolution chain found in $recipe" >&2; exit 1; }
-  case "$chain" in
-    *".amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh"*) : ;;
-    *) echo "FAIL: $recipe chain missing ~/.amplihack fallback candidate" >&2; exit 1 ;;
-  esac
-  printf '%s' "$chain"
-}
-
-# Extract the failure guard line ([ -f ... ] || { echo ...; exit 2; }) for a recipe.
-extract_guard() {
-  local recipe="$1"
-  grep -m1 'workflow runtime artifact helper not found' "$RECIPES_DIR/$recipe" | sed 's/^[[:space:]]*//'
-}
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+SITES_DIR="$WORK/sites"
+mkdir -p "$SITES_DIR"
 
-# Run a resolution snippet (chain plus optional extra lines) under a controlled
-# environment and print the resolved RUNTIME_ARTIFACT_HELPER. Args:
-#   $1 snippet  $2 repo  $3 home  $4 AMPLIHACK_HOME (optional)
+# Split a recipe into its contiguous RUNTIME_ARTIFACT_HELPER resolution sites.
+# A site starts at a bare `RUNTIME_ARTIFACT_HELPER="..."` assignment and runs
+# through the consecutive `[ -f "$RUNTIME_ARTIFACT_HELPER" ] ...` fallback and
+# guard lines. Each site (chain + guard) is written to "$SITES_DIR/<recipe>.<n>".
+# Prints the number of sites found.
+extract_sites() {
+  local recipe="$1"
+  awk -v out="$SITES_DIR/$recipe" '
+    function trim(s){ sub(/^[ \t]+/,"",s); return s }
+    function finish(){ if (blk != "") { n++; print blk > (out "." n) ; close(out "." n) } ; blk=""; inblk=0 }
+    {
+      t=trim($0)
+      if (t ~ /^RUNTIME_ARTIFACT_HELPER="/) { finish(); blk=t; inblk=1; next }
+      if (inblk && t ~ /^\[ -f "\$RUNTIME_ARTIFACT_HELPER" \]/) { blk=blk "\n" t; next }
+      if (inblk) finish()
+    }
+    END { finish(); print n+0 }
+  ' "$RECIPES_DIR/$recipe"
+}
+
+# Run a resolution snippet under production shell semantics and print the
+# resolved RUNTIME_ARTIFACT_HELPER. Args: snippet repo home [AMPLIHACK_HOME]
+# stderr is suppressed (benign git/probe noise from a throwaway non-git dir).
 run_snippet() {
   local snippet="$1" repo="$2" home="$3" ahome="${4:-}"
   local script
-  script=$(printf 'set -uo pipefail\n%s\nprintf "%%s" "$RUNTIME_ARTIFACT_HELPER"\n' "$snippet")
-  # stderr is suppressed: some chains probe `git rev-parse` in the throwaway
-  # target dir (which is intentionally not a git repo) and that benign warning
-  # would otherwise clutter the QA output. Resolution uses stdout + exit code.
+  script=$(printf 'set -euo pipefail\n%s\nprintf "%%s" "$RUNTIME_ARTIFACT_HELPER"\n' "$snippet")
   if [ -n "$ahome" ]; then
     env -u WORKFLOW_RUNTIME_ARTIFACT_HELPER AMPLIHACK_HOME="$ahome" REPO_PATH="$repo" HOME="$home" \
       bash -c "cd '$repo' && $script" 2>/dev/null
@@ -74,24 +76,55 @@ run_snippet() {
   fi
 }
 
-# --- Case 1: every recipe falls back to the installed ~/.amplihack bundle ---
-for recipe in "${RECIPES[@]}"; do
-  chain="$(extract_chain "$recipe")"
-  repo="$WORK/$recipe-repo"            # deliberately has no amplifier-bundle/
-  home="$WORK/$recipe-home"
-  installed="$home/.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
-  mkdir -p "$repo" "$(dirname "$installed")"
-  printf '#!/usr/bin/env bash\npreflight_known_workflow_runtime_artifacts() { :; }\n' > "$installed"
+total_sites=0
 
-  resolved="$(run_snippet "$chain" "$repo" "$home")"
-  if [ "$resolved" != "$installed" ]; then
-    echo "FAIL: $recipe expected fallback to '$installed' but resolved '$resolved'" >&2
+for entry in "${RECIPE_SITES[@]}"; do
+  recipe="${entry%%:*}"
+  expected="${entry##*:}"
+  found="$(extract_sites "$recipe")"
+  if [ "$found" -ne "$expected" ]; then
+    echo "FAIL: $recipe expected $expected resolution site(s) but found $found" >&2
     exit 1
   fi
-  [ -f "$resolved" ] || { echo "FAIL: $recipe resolved helper is not a file: $resolved" >&2; exit 1; }
+  total_sites=$((total_sites + found))
+
+  for n in $(seq 1 "$found"); do
+    site="$(cat "$SITES_DIR/$recipe.$n")"
+    case "$site" in
+      *".amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh"*) : ;;
+      *) echo "FAIL: $recipe site $n missing ~/.amplihack fallback candidate" >&2; exit 1 ;;
+    esac
+
+    # Case 1: site falls back to the installed ~/.amplihack bundle.
+    repo="$WORK/$recipe.$n-repo"          # deliberately has no amplifier-bundle/
+    home="$WORK/$recipe.$n-home"
+    installed="$home/.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
+    mkdir -p "$repo" "$(dirname "$installed")"
+    printf '#!/usr/bin/env bash\npreflight_known_workflow_runtime_artifacts() { :; }\n' > "$installed"
+    resolved="$(run_snippet "$site" "$repo" "$home")"
+    if [ "$resolved" != "$installed" ]; then
+      echo "FAIL: $recipe site $n expected fallback to '$installed' but resolved '$resolved'" >&2
+      exit 1
+    fi
+    [ -f "$resolved" ] || { echo "FAIL: $recipe site $n resolved helper is not a file: $resolved" >&2; exit 1; }
+
+    # Case 4: no candidate anywhere -> this site's guard exits 2.
+    frepo="$WORK/$recipe.$n-frepo"   # no bundle
+    fhome="$WORK/$recipe.$n-fhome"   # no ~/.copilot or ~/.amplihack bundle
+    mkdir -p "$frepo" "$fhome"
+    set +e
+    run_snippet "$site" "$frepo" "$fhome" >/dev/null 2>&1
+    rc=$?
+    set -e
+    if [ "$rc" -ne 2 ]; then
+      echo "FAIL: $recipe site $n must exit 2 when no helper exists, got $rc" >&2
+      exit 1
+    fi
+  done
 done
 
-TDD_CHAIN="$(extract_chain "workflow-tdd.yaml")"
+# Representative single-site chain for ordering assertions.
+TDD_SITE="$(cat "$SITES_DIR/workflow-tdd.yaml.1")"
 
 # --- Case 2: explicit AMPLIHACK_HOME wins over the installed fallback ---
 repo="$WORK/case2-repo"
@@ -102,7 +135,7 @@ installed="$home/.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh
 mkdir -p "$repo" "$(dirname "$explicit")" "$(dirname "$installed")"
 printf '# explicit\n' > "$explicit"
 printf '# installed\n' > "$installed"
-resolved="$(run_snippet "$TDD_CHAIN" "$repo" "$home" "$explicit_home")"
+resolved="$(run_snippet "$TDD_SITE" "$repo" "$home" "$explicit_home")"
 if [ "$resolved" != "$explicit" ]; then
   echo "FAIL: explicit AMPLIHACK_HOME must win; expected '$explicit' but resolved '$resolved'" >&2
   exit 1
@@ -116,25 +149,10 @@ amplihack="$home/.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh
 mkdir -p "$repo" "$(dirname "$copilot")" "$(dirname "$amplihack")"
 printf '# copilot\n' > "$copilot"
 printf '# amplihack\n' > "$amplihack"
-resolved="$(run_snippet "$TDD_CHAIN" "$repo" "$home")"
+resolved="$(run_snippet "$TDD_SITE" "$repo" "$home")"
 if [ "$resolved" != "$copilot" ]; then
   echo "FAIL: ~/.copilot must win over ~/.amplihack; expected '$copilot' but resolved '$resolved'" >&2
   exit 1
 fi
 
-# --- Case 4: no candidate anywhere -> recipe guard exits 2 ---
-GUARD="$(extract_guard "workflow-tdd.yaml")"
-[ -n "$GUARD" ] || { echo "FAIL: could not extract tdd failure guard" >&2; exit 1; }
-repo="$WORK/case4-repo"   # no bundle
-home="$WORK/case4-home"   # no ~/.copilot or ~/.amplihack bundle
-mkdir -p "$repo" "$home"
-set +e
-run_snippet "$(printf '%s\n%s' "$TDD_CHAIN" "$GUARD")" "$repo" "$home" >/dev/null 2>&1
-rc=$?
-set -e
-if [ "$rc" -ne 2 ]; then
-  echo "FAIL: missing helper everywhere must exit 2, got $rc" >&2
-  exit 1
-fi
-
-echo "PASS: issue-817 runtime artifact resolution behaves correctly across all lifecycle recipes"
+echo "PASS: issue-817 runtime artifact resolution behaves correctly across $total_sites resolution site(s) in all lifecycle recipes"
