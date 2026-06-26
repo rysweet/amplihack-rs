@@ -25,7 +25,7 @@ Activate when you (or a workflow) ask to:
 - "Explain / document / summarize PR #N"
 - "Generate reviewer notes for this pull request"
 - Run automatically at the **end of `default-workflow`**, right after a PR is
-  opened, to attach a walkthrough.
+  opened, to offer a walkthrough.
 
 Standalone or workflow-invoked — both are supported.
 
@@ -136,7 +136,8 @@ resilience*.
 
 - Markdown is written to an **OS temp file** (`$TMPDIR`/`/tmp`) with `0600`
   permissions — never committed.
-- The skill **automatically attaches** the guide to the PR:
+- The skill **offers to attach** the guide to the PR (opt-in; default no-op).
+  On explicit user confirmation it:
   1. **Fits in PR description?** If the existing description + a separator +
      the guide is under the platform's description limit (GitHub ~65,000
      chars; ADO 4,000 chars), **append** the guide to the PR description
@@ -144,7 +145,11 @@ resilience*.
   2. **Too long for description?** Post the guide as a **PR comment** instead
      (GitHub ~65,000 char limit; ADO 150,000 char limit). ADO's 4,000-char
      description limit means the guide will almost always go to a comment
-     on that platform.
+     on that platform. After posting, the skill reads the new comment's ID
+     from the CLI response and inserts a **back-link** into the (already
+     clarified) PR description — e.g.
+     `See the [Illustrated Guide](#issuecomment-<ID>) for a detailed
+     walkthrough of this PR.` See `reference.md` → *Guide-comment back-link*.
 - The absolute path of the temp file is always printed so the user has a
   local copy regardless.
 
@@ -166,7 +171,12 @@ Generate an illustrated guide for PR #123
 The skill is fully standalone, so the same invocation works outside any
 workflow.
 
-## Clarity Pass (on the generated guide)
+## Clarity Passes
+
+Two **distinct** passes run before publishing. They act on separate text and
+must not be conflated.
+
+### Guide Clarity Pass (on the generated guide)
 
 After assembling the document, re-read the generated guide and revise:
 
@@ -179,6 +189,18 @@ After assembling the document, re-read the generated guide and revise:
 3. **Neutral language.** Describe what the code does directly. Do not use
    dramatic contrast phrases like "does X, not some inferior Y" — just
    describe what X is and why.
+
+### PR Description Clarity Pass (on the existing PR description)
+
+A **separate** action from generating the guide. After the guide is built, the
+skill also rewrites the **PR's existing description in place** so a reviewer
+unfamiliar with the work can read it: it removes jargon and unexplained
+acronyms, expands shorthand, and tightens wording while **preserving the
+original meaning** — it never invents new claims or drops caveats. The rewrite
+is pushed back to the PR via `gh pr edit --body-file` (GitHub) or
+`az repos pr update --description` (ADO) — a PR API write, **never** a git
+commit. If the description is already clear, it is left unchanged. See
+`reference.md` → *Clarity passes → PR Description Clarity Pass*.
 
 ## Security Notes
 

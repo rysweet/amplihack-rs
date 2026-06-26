@@ -173,7 +173,7 @@ for attempt in 1..=3:
 ### Write/publish operations are NOT auto-retried
 
 Publishing (set description / post comment) mutates remote state and is already
-**confirmation-gated** (Section 10). Do **not** silently retry a failed publish:
+**confirmation-gated** (Section 11). Do **not** silently retry a failed publish:
 a comment POST may have partially succeeded, so a blind retry risks duplicates.
 On publish failure, report the error and the temp-file path so the user can act
 deliberately. Only retry a publish on explicit user confirmation.
@@ -357,9 +357,39 @@ Use the `mermaid-diagram-generator` skill's conventions for syntax. Prefer
 `flowchart` for architecture/flow and `sequenceDiagram` for request/response
 interactions.
 
+### Mermaid on Azure DevOps (no native PR rendering — image fallback)
+
+Azure DevOps renders mermaid in **markdown file previews, the PR file-diff
+view, and Wiki pages**, but **does not render mermaid in PR descriptions or PR
+comments** — a ` ```mermaid ` fence pasted into a description or comment stays
+as literal code (confirmed against ADO Repos Sprint 246+ / Sprint 259,
+2024–2025). Re-check the current release notes when in doubt; if native
+PR-description/comment support ships later, prefer it and skip the conversion.
+
+Because the guide is published to the PR **description/comment**, mermaid must
+be converted to an **image** on ADO. When `platform == Azure DevOps`, render
+each diagram and embed it as an image instead of a fenced code block:
+
+| Step | What |
+| --- | --- |
+| 1 | Take the mermaid source for the diagram. |
+| 2a (preferred) | Render locally with the mermaid CLI: `mmdc -i <diagram>.mmd -o <diagram>.svg` (or `.png`), write to the temp dir (`0600`), publish via the PR attachments API (same flow as screenshots, §11), and rewrite to the attachment URL. |
+| 2b (fallback) | Use the hosted renderer: URL-safe-base64-encode the mermaid source and embed `![diagram](https://mermaid.ink/img/<base64-encoded-diagram>)`. |
+| 3 | Replace the ` ```mermaid ` fence with `![<caption>](<url>)` **in the ADO output only**. GitHub keeps native ` ```mermaid ` fences and needs no conversion. |
+
+**Privacy / security note:** `mermaid.ink` sends the diagram source to a
+**third-party** service. For internal or sensitive repositories prefer local
+`mmdc` rendering and reserve `mermaid.ink` for public diagrams. Always
+URL-encode the base64 payload and treat the resulting URL as inert data.
+
 ---
 
-## 10. Clarity pass (on the generated guide)
+## 10. Clarity passes
+
+Two **separate** passes run after the guide is assembled. They operate on
+**different text** and must not be conflated.
+
+### 10a. Guide Clarity Pass (on the generated guide)
 
 After assembling the 5-section document, re-read the generated guide and revise:
 
@@ -373,6 +403,36 @@ After assembling the 5-section document, re-read the generated guide and revise:
    dramatic contrast phrases like "does X, not some inferior Y" — just say
    what X is and why.
 4. **Short sentences.** If a sentence needs re-reading to understand, split it.
+
+### 10b. PR Description Clarity Pass (on the existing PR description)
+
+A **distinct, additional** action: rewrite the PR's **existing description in
+place** so a reviewer unfamiliar with the work can understand it. This is not
+the guide and not the guide-clarity pass — it edits the PR's description field
+itself.
+
+**Goals:** remove jargon and unexplained acronyms, expand shorthand, and
+tighten wording **while preserving the original meaning**. Do not add new
+claims, drop caveats, or surface secrets, internal hostnames, or private URLs.
+If the description is already clear, leave it unchanged.
+
+**Commands (PR API writes — never a git commit):**
+
+| Platform | Read | Write |
+| --- | --- | --- |
+| GitHub | `gh pr view <N> --json body --jq .body` | `gh pr edit <N> --body-file <path>` |
+| Azure DevOps | `az repos pr show --id <N> --query description -o tsv` | `az repos pr update --id <N> --description <text>` |
+
+**Ordering:** run the **Guide Clarity Pass first** (on the guide), then the
+**PR Description Clarity Pass** (on the description). The description rewrite is
+prepared **before** publishing (§11) so it can be combined into a **single
+final description write** on whichever publish path runs: appended ahead of the
+guide in the *fits-in-description* path, or ahead of the back-link in the
+*comment-overflow* path — see *Guide-comment back-link*.
+
+**Permissions:** both the rewrite and the back-link need PR-write scope. If the
+session is read-only, **skip** the description rewrite, keep the local guide,
+and tell the user — do not escalate privileges.
 
 ---
 
@@ -403,11 +463,14 @@ The skill should **warn** the user when offering to publish a guide that
 contains local screenshot paths: "Screenshots reference local temp files and
 will appear broken in the published version unless uploaded separately."
 
-### Publishing (automatic — description-first, comment-fallback)
+### Publishing (confirmation-gated — description-first, comment-fallback)
 
-The guide is attached to the PR automatically. No confirmation prompt.
+Publishing is **opt-in** (default no-op): the skill **offers** to attach the
+guide and acts only on **explicit user confirmation**. Once the user confirms,
+it follows the decision logic below to choose between appending to the
+description and posting a comment.
 
-**Decision logic:**
+**Decision logic (runs only after the user confirms publishing):**
 
 1. Read the **existing PR description** (GitHub: `body` from metadata; ADO:
    `description` from `pr show`).
@@ -415,6 +478,10 @@ The guide is attached to the PR automatically. No confirmation prompt.
 3. If `combined_length` is under the platform's description size limit:
    - **Append** the guide to the existing description, separated by `\n\n---\n\n`.
    - Do not replace the existing description — preserve it.
+   - If the **PR Description Clarity Pass** (§10b) also ran, apply its rewrite
+     to the existing-description text **in memory first**, then append the
+     guide to the rewritten text, and perform **one** `pr edit` write. As in
+     the comment-overflow path, never issue two separate description updates.
 4. If `combined_length` exceeds the limit, or appending fails:
    - **Post the guide as a PR comment** instead.
 5. Print which action was taken and the temp-file path.
@@ -465,6 +532,40 @@ the temp-file path so the user can post manually. Do **not** auto-retry a
 failed publish — a comment POST may have partially succeeded, and a blind
 retry risks duplicates. Never auto-commit the doc.
 
+#### Guide-comment back-link
+
+When the guide overflows the description and is posted as a **comment**
+(decision logic step 4 above), insert a link to that comment into the PR
+description so reviewers can find the walkthrough.
+
+**1. Retrieve the comment ID from the CLI response.**
+
+| Platform | How |
+| --- | --- |
+| GitHub | `gh pr comment` prints the new comment URL, e.g. `https://github.com/<owner>/<repo>/pull/<N>#issuecomment-1234567890`. Parse the trailing `issuecomment-<ID>`. |
+| Azure DevOps | The PR Threads POST returns JSON containing the new thread `id`. Use that `id` as the `threadId`. |
+
+**2. Validate the ID** against `^[0-9]+$` before interpolating it into any URL
+or markdown. Abort the back-link (and keep the comment) if it does not match —
+this prevents URL/markdown/command injection from an unexpected response.
+
+**3. Build the back-link:**
+
+| Platform | Link |
+| --- | --- |
+| GitHub | Shorthand within the same PR: `See the [Illustrated Guide](#issuecomment-<ID>) for a detailed walkthrough of this PR.` Full form: `https://github.com/<owner>/<repo>/pull/<N>#issuecomment-<ID>`. |
+| Azure DevOps | `https://dev.azure.com/<org>/<project>/_git/<repo>/pullrequest/<N>?_a=overview&threadId=<ID>` |
+
+**4. Single final write.** The PR Description Clarity Pass (§10b) and this
+back-link both edit the description. Combine them: apply the clarity rewrite
+**in memory**, append the back-link line to that text, then perform **one**
+`gh pr edit --body-file` / `az repos pr update --description` write. This avoids
+two separate description updates and the noisy edit history they create.
+
+Insert the back-link **only** in the comment-overflow case. When the guide fits
+in the description (decision logic step 3), it is already inline and there is no
+separate comment to link to.
+
 ---
 
 ## 12. Security
@@ -484,6 +585,11 @@ retry risks duplicates. Never auto-commit the doc.
 - **Screenshot scope.** Only the app under test; never navigate to
   PR-content-derived URLs.
 - **Path encoding** for deep links only; never use PR paths as local FS targets.
+- **Third-party rendering.** `mermaid.ink` (the ADO image fallback) sends
+  diagram source to an external service — prefer local `mmdc` for internal or
+  sensitive repos; URL-encode the base64 payload.
+- **Numeric ID validation.** Comment/thread IDs used in back-links must match
+  `^[0-9]+$` before URL/markdown interpolation.
 - **Publishing is opt-in** and confirmation-gated; default no-op.
 
 ---
