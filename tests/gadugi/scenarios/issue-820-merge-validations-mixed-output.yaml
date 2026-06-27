@@ -1,0 +1,47 @@
+name: issue-820-merge-validations-mixed-output
+description: >
+  Regression scenario for amplihack issue #820. The quality-audit-cycle
+  merge-validations step used to feed each validator agent's RAW output straight
+  to `jq --slurpfile`, so any validator that wrapped its JSON verdict in a
+  ```json fence or emitted log preamble crashed jq with "Bad JSON" and aborted
+  the whole audit cycle before fix/verify/summary. This scenario drives the
+  SHIPPED merge-validations bash (via tests/gadugi/run-merge-validations-scenario.sh)
+  through mixed validator output: a fenced verdict, a bare-JSON verdict, and
+  log-only garbage. It asserts the step never emits "Bad JSON", normalizes the
+  well-formed verdicts (correct vote counting), and emits a targeted diagnostic
+  for the unparseable validator instead of crashing.
+version: "1.0"
+config:
+  timeout: 60000
+environment:
+  requires: []
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, regression, quality-audit, workflow]
+  priority: high
+steps:
+  - name: run-merge-validations-regression-cases
+    agent: cli-agent
+    action: execute
+    params:
+      command: tests/gadugi/run-merge-validations-scenario.sh
+    timeout: 45000
+  - name: all-regression-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+  - name: no-bad-json-crash
+    agent: cli-agent
+    action: validate_output
+    params:
+      expected: "no jq 'Bad JSON' on mixed output"
+assertions:
+  - name: all-cases-passed
+    type: output_contains
+    params:
+      target: stdout
+      expected: ALL_CASES_PASSED
