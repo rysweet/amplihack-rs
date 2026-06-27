@@ -41,6 +41,10 @@ Intelligent guidance system that prevents common mistakes and ensures work compl
 
 - [Best-Effort Mermaid CLI Provisioning](mermaid-cli-best-effort-install.md) — `amplihack install` provisions the Mermaid CLI (`mmdc`, npm `@mermaid-js/mermaid-cli`) on a best-effort basis so the `pr-guide` skill can render mermaid diagrams to images locally for Azure DevOps instead of relying on the third-party `mermaid.ink` service. A failed or skipped install warns and continues (never blocks install); disable entirely with `AMPLIHACK_SKIP_MMDC=1` (issue [#828](https://github.com/rysweet/amplihack-rs/issues/828)).
 
+## Workflow Guardrails
+
+- [Skill-to-Agent Redirect](skill-to-agent-redirect.md) — the `PreToolUse` hook intercepts a `Skill` call naming an agent-only target (for example `prompt-writer`), blocks it with a non-fatal redirect to agent execution, and prevents the copilot runtime's `Skill not found` abort from silently skipping the requirements-clarification phase (issue [#838](https://github.com/rysweet/amplihack-rs/issues/838)). See the [API reference](../reference/skill-agent-redirect-api.md).
+
 ## GitHub Distribution
 
 - [GitHub Distribution](github-distribution.md) — publish agent bundles to GitHub repositories via the `gh` CLI, with idempotent uploads, visibility control, and tagged releases.

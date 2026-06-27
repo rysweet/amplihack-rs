@@ -37,6 +37,8 @@ pub mod issue_dedup;
 pub mod copilot_stop_handler;
 /// Hook file installation verification.
 pub mod hook_verification;
+/// Known amplihack agent name registry.
+pub mod known_agents;
 /// Known amplihack skill name registry.
 pub mod known_skills;
 /// Host-specific hook strategies (Claude, Copilot).
