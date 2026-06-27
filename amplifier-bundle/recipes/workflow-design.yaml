@@ -193,6 +193,13 @@ steps:
   - id: "step-06b-documentation-review"
     agent: "amplihack:architect"
     working_dir: "{{worktree_setup.worktree_path}}"
+    # Documentation review is a QUALITY SIGNAL, not a gate (#834). When this step
+    # runs after durable side effects (pushed commits, opened/merged PRs, posted
+    # review threads), a non-zero exit must NOT hard-fail the whole workflow and
+    # discard the completed work. Mark it non-fatal; the follow-on checkpoint
+    # (step-06b-checkpoint-doc-review) records the degraded state and surfaces
+    # the durable artifacts so the failure is reported, never silently swallowed.
+    continue_on_error: true
     prompt: |
       # Step 6b: Documentation Review
 
@@ -220,6 +227,82 @@ steps:
       Revise the documentation based on the architect's review.
       Ensure it accurately represents the feature we will build.
     output: "final_documentation"
+
+  # ==========================================================================
+  # STEP 6b-CHECKPOINT: NON-FATAL DOCUMENTATION-REVIEW CHECKPOINT (#834)
+  # ==========================================================================
+  # step-06b-documentation-review carries `continue_on_error: true`, so a failed
+  # or empty review no longer hard-fails the workflow and destroys durable work
+  # already produced upstream (pushed commits, opened/merged PRs, posted review
+  # threads). This checkpoint records that degraded-success state: it emits a
+  # visible WARNING on stderr and writes a machine-consumable NEEDS_ATTENTION
+  # summary (the `doc_review_checkpoint` output) listing every durable artifact
+  # reference it can see, so the recipe summary shows what SUCCEEDED plus the
+  # doc-review follow-up item — instead of a generic 'failed'.
+  #
+  # Security: the untrusted agent feedback is consumed strictly as DATA. It is
+  # piped through `printf '%s'` into grep and is NEVER interpolated into the
+  # summary or used to build a command. Only fixed markers + allow-listed,
+  # non-sensitive metadata refs are printed. No eval/source/indirect expansion,
+  # no env/secret dumps. `set -uo pipefail` without `-e`; structurally exits 0.
+  - id: "step-06b-checkpoint-doc-review"
+    type: "bash"
+    command: |
+      set -uo pipefail
+
+      # Untrusted documentation-review feedback, flattened to an env var by the
+      # runner (same convention as ISSUE_NUMBER in step-06d). Consumed as data.
+      DOC_FEEDBACK="${DOC_REVIEW_FEEDBACK:-}"
+
+      # Durable artifact references — each guarded so an absent ref is omitted
+      # rather than raising an unbound-variable error. Allow-list only; these are
+      # non-sensitive metadata (no tokens/secrets), with fallbacks for the
+      # alternate names the runner may flatten depending on the producing step.
+      BRANCH_REF="${BRANCH_NAME:-${WORKTREE_SETUP_BRANCH:-}}"
+      PR_NUMBER_REF="${PR_NUMBER:-${PULL_REQUEST_NUMBER:-}}"
+      PR_URL_REF="${PR_URL:-${PULL_REQUEST_URL:-}}"
+      COMMIT_REF="${COMMIT_SHA:-${HEAD_SHA:-}}"
+      REVIEW_THREAD_REF="${REVIEW_THREAD_ID:-${REVIEW_COMMENT_ID:-}}"
+
+      # Classify the review outcome. Failure/empty is checked first so mixed or
+      # missing feedback is treated conservatively as a follow-up item. Empty
+      # feedback means the review produced no notes (the agent step likely
+      # errored out under continue_on_error) — still flag it for attention.
+      STATUS="OK"
+      REASON="documentation-review passed"
+      if [ -z "$DOC_FEEDBACK" ]; then
+        STATUS="NEEDS_ATTENTION"
+        REASON="documentation-review produced no feedback (step may have failed)"
+      elif printf '%s' "$DOC_FEEDBACK" | grep -qiE 'fail|error|cannot|could not|unable|missing|incomplete|does not|blocker'; then
+        STATUS="NEEDS_ATTENTION"
+        REASON="documentation-review reported issues requiring follow-up"
+      fi
+
+      if [ "$STATUS" = "NEEDS_ATTENTION" ]; then
+        # Visible, non-swallowed diagnostic on stderr.
+        echo "WARNING: step-06b-documentation-review did not cleanly pass: ${REASON}." >&2
+        echo "WARNING: continuing — documentation review is a quality signal, not a gate;" >&2
+        echo "WARNING: durable work (commits/PRs/review threads) is preserved and summarized below." >&2
+      fi
+
+      # Machine-consumable summary on stdout — becomes the step output and lands
+      # in the recipe summary. Only fixed markers + allow-listed refs are emitted.
+      echo "DOC_REVIEW_CHECKPOINT: ${STATUS}"
+      echo "  reason: ${REASON}"
+      if [ "$STATUS" = "NEEDS_ATTENTION" ]; then
+        echo "  marker: NEEDS_ATTENTION"
+        echo "  follow_up: re-run documentation-review or address the noted gaps"
+      fi
+      echo "  durable_artifacts:"
+      [ -n "$BRANCH_REF" ]        && echo "    branch: ${BRANCH_REF}"
+      [ -n "$PR_NUMBER_REF" ]     && echo "    pr_number: ${PR_NUMBER_REF}"
+      [ -n "$PR_URL_REF" ]        && echo "    pr_url: ${PR_URL_REF}"
+      [ -n "$COMMIT_REF" ]        && echo "    commit_sha: ${COMMIT_REF}"
+      [ -n "$REVIEW_THREAD_REF" ] && echo "    review_thread: ${REVIEW_THREAD_REF}"
+
+      # Structurally non-fatal: always succeed so reconciliation/summary runs.
+      exit 0
+    output: "doc_review_checkpoint"
 
   # ==========================================================================
   # STEP 6d: PRE-FLIGHT "GOAL ALREADY MET" PROBE (#368)
