@@ -74,6 +74,56 @@ For true emergencies, ask a human to override this protection.\n\
 \n\
 🔒 This protection cannot be disabled programmatically.";
 
+/// Guidance returned when a `Skill` invocation names an amplihack *agent*
+/// (e.g. `prompt-writer`) rather than a skill. Without this redirect the
+/// copilot runtime hard-fails with "Skill not found: <name>", silently
+/// skipping the step (issue #838). The `{name}` placeholder is replaced with
+/// the requested (sanitized) agent name.
+const SKILL_IS_AGENT_REDIRECT: &str = "\
+🔁 WRONG INTERFACE - '{name}' is an amplihack AGENT, not a skill.\n\
+\n\
+You invoked the Skill tool with name '{name}', but '{name}' is provided as an\n\
+agent, not a skill. Invoking it as a skill fails with \"Skill not found\" and\n\
+silently skips this step.\n\
+\n\
+✅ Instead, run '{name}' through the agent interface (the Task/agent tool),\n\
+e.g. reference it as an agent such as \"amplihack:{name}\".\n\
+\n\
+This redirect prevents the requirements-clarification phase from being skipped.";
+
+/// Detect a `Skill` invocation that names an agent rather than a skill and, if
+/// so, return a non-fatal block instructing the model to use the agent
+/// interface instead. Returns `None` (pass-through) for every other case:
+/// genuine skills, names that are both skill and agent (skills take
+/// precedence), unknown names, and malformed payloads.
+///
+/// Parsing is total and panic-free: a missing/non-string/null name simply
+/// passes through.
+fn check_skill_redirect(tool_name: &str, tool_input: &Value) -> Option<Value> {
+    if tool_name != "Skill" {
+        return None;
+    }
+
+    // Host payloads use either the `skill` key or the `name` key.
+    let name = tool_input
+        .get("skill")
+        .and_then(Value::as_str)
+        .or_else(|| tool_input.get("name").and_then(Value::as_str))?;
+
+    // Skills take precedence: only redirect agent-only names. This keeps
+    // overlapping names (e.g. gherkin-expert) resolving as skills.
+    if crate::known_skills::is_amplihack_skill(name)
+        || !crate::known_agents::is_amplihack_agent(name)
+    {
+        return None;
+    }
+
+    Some(serde_json::json!({
+        "block": true,
+        "message": SKILL_IS_AGENT_REDIRECT.replace("{name}", name)
+    }))
+}
+
 /// Strip leading env-variable assignments (`VAR=value ...`) and an optional
 /// `env` prefix so that `GIT_DIR=/x git commit` is normalized to `git commit`.
 fn normalize_command(command: &str) -> String {
@@ -157,6 +207,14 @@ impl Hook for PreToolUseHook {
 
         // XPIA security validation for all tools.
         if let Some(block) = xpia::check_xpia(&tool_name, &tool_input) {
+            return Ok(block);
+        }
+
+        // Issue #838: a Skill invocation that names an amplihack *agent* (not a
+        // skill) must be redirected to the agent interface rather than letting
+        // the runtime hard-fail with "Skill not found", which silently skips
+        // the step (e.g. the requirements-clarification phase).
+        if let Some(block) = check_skill_redirect(&tool_name, &tool_input) {
             return Ok(block);
         }
 

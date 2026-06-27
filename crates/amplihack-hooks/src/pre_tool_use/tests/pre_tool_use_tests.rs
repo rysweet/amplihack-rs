@@ -186,3 +186,149 @@ fn normalize_strips_multiple_env_vars() {
 fn normalize_passthrough_plain_command() {
     assert_eq!(normalize_command("git commit -m 'x'"), "git commit -m 'x'");
 }
+
+// ---------------------------------------------------------------------------
+// Issue #838: Skill-tool invocation that names an *agent* must be redirected
+// to agent execution rather than letting the copilot runtime hard-fail with
+// "Skill not found: <agent>" (which silently skips the requirements
+// clarification phase of default-workflow).
+//
+// Behavior contract (verified through the public `process()` interface):
+//   * Skill(name) where name is an AGENT but NOT a skill  -> block + redirect.
+//   * Skill(name) where name is a real skill              -> pass-through.
+//   * Skill(name) where name is in BOTH (overlap)         -> pass-through
+//                                                            (skill precedence).
+//   * Skill(name) where name is unknown                   -> pass-through.
+//   * Malformed Skill payloads                            -> pass-through, no panic.
+// ---------------------------------------------------------------------------
+
+/// Build a `Skill` PreToolUse input using the primary `skill` key.
+fn make_skill_input(name: &str) -> HookInput {
+    HookInput::PreToolUse {
+        tool_name: "Skill".to_string(),
+        tool_input: serde_json::json!({"skill": name}),
+        session_id: None,
+    }
+}
+
+/// Build a `Skill` PreToolUse input using the alternate `name` key, which some
+/// host payloads use instead of `skill`.
+fn make_skill_input_name_key(name: &str) -> HookInput {
+    HookInput::PreToolUse {
+        tool_name: "Skill".to_string(),
+        tool_input: serde_json::json!({"name": name}),
+        session_id: None,
+    }
+}
+
+#[test]
+fn redirects_skill_call_naming_prompt_writer_agent() {
+    let hook = PreToolUseHook;
+    let result = hook.process(make_skill_input("prompt-writer")).unwrap();
+
+    // Must be a non-fatal block carrying a redirect message — NOT an empty
+    // pass-through (which would let the runtime emit "Skill not found").
+    assert_eq!(
+        result["block"], true,
+        "Skill(prompt-writer) must be blocked and redirected, got: {result}"
+    );
+    let message = result["message"]
+        .as_str()
+        .expect("redirect block must carry a message");
+    assert!(
+        message.contains("prompt-writer"),
+        "redirect message must name the agent: {message}"
+    );
+    assert!(
+        message.to_lowercase().contains("agent"),
+        "redirect message must point the model at the agent interface: {message}"
+    );
+}
+
+#[test]
+fn redirects_skill_call_using_name_key_payload() {
+    let hook = PreToolUseHook;
+    let result = hook
+        .process(make_skill_input_name_key("prompt-writer"))
+        .unwrap();
+    assert_eq!(
+        result["block"], true,
+        "Skill payload using the `name` key must also redirect: {result}"
+    );
+}
+
+#[test]
+fn redirects_skill_call_naming_guide_agent_only() {
+    // `guide` exists only as an agent (no SKILL.md), so it must redirect.
+    let hook = PreToolUseHook;
+    let result = hook.process(make_skill_input("guide")).unwrap();
+    assert_eq!(
+        result["block"], true,
+        "Skill(guide) must redirect because guide is agent-only: {result}"
+    );
+}
+
+#[test]
+fn does_not_redirect_real_skill() {
+    let hook = PreToolUseHook;
+    let result = hook.process(make_skill_input("default-workflow")).unwrap();
+    assert!(
+        result.as_object().unwrap().is_empty(),
+        "a genuine skill must pass through untouched: {result}"
+    );
+}
+
+#[test]
+fn does_not_redirect_overlapping_skill_and_agent_names() {
+    // gherkin-expert and tla-plus-expert are BOTH a skill and an agent.
+    // Skills take precedence, so these must pass through (resolve as skills).
+    let hook = PreToolUseHook;
+    for name in ["gherkin-expert", "tla-plus-expert"] {
+        let result = hook.process(make_skill_input(name)).unwrap();
+        assert!(
+            result.as_object().unwrap().is_empty(),
+            "overlapping name {name} must resolve as a skill (no redirect): {result}"
+        );
+    }
+}
+
+#[test]
+fn does_not_redirect_unknown_skill_name() {
+    // Unknown names are neither skill nor agent — let the runtime handle them
+    // normally rather than over-blocking.
+    let hook = PreToolUseHook;
+    let result = hook
+        .process(make_skill_input("totally-unknown-thing"))
+        .unwrap();
+    assert!(
+        result.as_object().unwrap().is_empty(),
+        "unknown names must pass through: {result}"
+    );
+}
+
+#[test]
+fn malformed_skill_payloads_pass_through_without_panic() {
+    let hook = PreToolUseHook;
+
+    let malformed = [
+        serde_json::json!({}),                     // missing key
+        serde_json::json!({"skill": 123}),         // non-string
+        serde_json::json!({"skill": null}),        // null
+        serde_json::json!({"name": ["nested"]}),   // array
+        serde_json::json!({"unrelated": "value"}), // wrong key
+        serde_json::json!({"skill": {"x": "y"}}),  // object value
+    ];
+
+    for payload in malformed {
+        let input = HookInput::PreToolUse {
+            tool_name: "Skill".to_string(),
+            tool_input: payload.clone(),
+            session_id: None,
+        };
+        let result = hook.process(input).unwrap();
+        assert!(
+            result.as_object().unwrap().is_empty(),
+            "malformed Skill payload must pass through: {payload}"
+        );
+    }
+}
