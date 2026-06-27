@@ -17,8 +17,8 @@ sweeps orphans left by prior failed runs so re-running always **converges**
 ## Quick Start
 
 No configuration is required. The behavior is transparent — `step-04-setup-worktree`
-sweeps orphaned worktrees before it creates a new one, and a failing run cleans
-up after itself.
+sweeps orphaned worktrees before it creates a new one, so a leftover from a prior
+failed run is reclaimed automatically on the next run.
 
 ```bash
 # Run the default workflow as usual. Setup self-heals before creating the worktree.
@@ -113,17 +113,23 @@ step-04-setup-worktree
 
 | Mechanism | When it runs | What it does |
 | --- | --- | --- |
-| **Orphan sweep** | Start of every `step-04-setup-worktree` | Prunes stale, mergeable orphans left by prior failed runs. This is the durable, self-healing leak cleanup. |
-| **Cleanup-on-failure** | On a run's failure/abort path | Archives any unique commits, then prunes that run's own worktree + branch so it never leaks in the first place. |
+| **Orphan sweep** (wired) | Start of every `step-04-setup-worktree` | Prunes stale, mergeable orphans left by prior failed runs. This is the active, test-anchored, self-healing leak cleanup. |
+| **Cleanup-on-failure** (utility) | Invoked on demand — by an operator, or by a recipe `hooks.on_error` hook | Archives any unique commits, then prunes that run's own worktree + branch. Provided as a reusable helper mode; not auto-invoked by `default-workflow` today. |
 
 The recipe runner executes steps sequentially with abort-on-failure and has no
 native `try`/`finally`, so the **orphan sweep at the next setup is the primary,
-test-anchored guarantee**. `cleanup_on_failure` is the proactive complement: it
-is invoked by an explicit failure-path step in the workflow (not a shell trap),
-so it only runs when the runner reaches that step. Because that reachability is
-not guaranteed on a hard abort, the next-run orphan sweep remains the durable
-backstop — `cleanup_on_failure` reduces, but does not solely guarantee, leak
-cleanup.
+test-anchored guarantee** that worktrees never permanently leak: an immediate
+re-run is absorbed by the existing reuse/reset state machine, and an abandoned
+orphan is pruned by the next sweep once it goes stale.
+
+`cleanup_on_failure` is a complementary helper mode for *proactive* teardown.
+It is **not currently wired into `default-workflow`** — the runner exposes a
+recipe-level `hooks.on_error` mechanism it could be attached to, but auto-tearing
+down a failed run's worktree also removes the ability to inspect that run, so the
+sweep (with its staleness grace period) is preferred as the default. The mode is
+available for operators who want immediate cleanup, and for callers who choose to
+wire it via `hooks.on_error`. Either way the archive-before-destroy guard means no
+unmerged work is ever lost.
 
 ---
 

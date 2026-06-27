@@ -22,9 +22,11 @@
 #       (and best-effort pushing them). Never destroys unmerged meaningful work.
 #
 # This is a self-contained brick: it is safe to `source` (it only defines
-# functions until invoked) and safe to run as a CLI. It depends solely on git
-# and POSIX coreutils. A missing helper is a graceful no-op at the call site,
-# so callers guard the invocation with `-f`/`|| true` (per #829 precedent).
+# functions until invoked — the strict-mode block below is guarded to apply
+# only on direct execution, so sourcing never leaks `set`/`IFS`) and safe to
+# run as a CLI. It depends solely on git and POSIX coreutils. A missing helper
+# is a graceful no-op at the call site, so callers guard the invocation with
+# `-f`/`|| true` (per #829 precedent).
 #
 # Env knobs:
 #   AMPLIHACK_WORKTREE_STALE_SECS   Staleness threshold in seconds (default
@@ -35,8 +37,14 @@
 #                                   origin/HEAD -> origin/main -> origin/master
 #                                   -> main -> master.
 
-set -euo pipefail
-IFS=$'\n\t'
+# Strict mode applies only when this file is executed directly, so `source`-ing
+# it is genuinely side-effect-free (it just defines functions, with no leaking
+# `set`/`IFS` into the caller's shell). When run as a CLI the guard is true and
+# strict mode is in force for the whole run.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    set -euo pipefail
+    IFS=$'\n\t'
+fi
 
 readonly DEFAULT_STALE_SECS=86400
 readonly ARCHIVE_NS="refs/amplihack-archive"
