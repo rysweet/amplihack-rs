@@ -35,6 +35,15 @@ steps:
         exit 1
       fi
 
+      # --- Self-healing orphan sweep (issue #840) ---
+      # Best-effort: prune leaked worktrees/branches from prior FAILED runs so a
+      # re-run converges instead of colliding. Graceful no-op if the helper is
+      # absent (#829 precedent); never aborts setup. Destructive lifecycle logic
+      # lives in tools/workflow_worktree_sweep.sh to keep this recipe < 400 lines.
+      SWEEP_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_worktree_sweep.sh"
+      [ -f "$SWEEP_HELPER" ] || SWEEP_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_worktree_sweep.sh"
+      if [ -f "$SWEEP_HELPER" ]; then bash "$SWEEP_HELPER" sweep "$REPO_PATH" >&2 || true; fi
+
       echo "=== Step 4: Creating Worktree and Branch ===" >&2
       echo "" >&2
 
