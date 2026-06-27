@@ -223,6 +223,7 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "step-06-documentation",
     "step-06b-documentation-review",
     "step-06c-documentation-refinement",
+    "step-06b-checkpoint-doc-review",
     "step-06d-goal-already-met-probe",
     // Phase 3: workflow-tdd (steps 07-08c)
     "step-07-write-tests",
