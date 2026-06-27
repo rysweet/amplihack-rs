@@ -193,12 +193,9 @@ steps:
   - id: "step-06b-documentation-review"
     agent: "amplihack:architect"
     working_dir: "{{worktree_setup.worktree_path}}"
-    # Documentation review is a QUALITY SIGNAL, not a gate (#834). When this step
-    # runs after durable side effects (pushed commits, opened/merged PRs, posted
-    # review threads), a non-zero exit must NOT hard-fail the whole workflow and
-    # discard the completed work. Mark it non-fatal; the follow-on checkpoint
-    # (step-06b-checkpoint-doc-review) records the degraded state and surfaces
-    # the durable artifacts so the failure is reported, never silently swallowed.
+    # Documentation review is a QUALITY SIGNAL, not a gate (#834): non-fatal so a
+    # failed/empty review never discards durable upstream work. The follow-on
+    # step-06b-checkpoint-doc-review reports the degraded state (see its header).
     continue_on_error: true
     prompt: |
       # Step 6b: Documentation Review
