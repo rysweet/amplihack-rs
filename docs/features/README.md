@@ -35,6 +35,7 @@ Intelligent guidance system that prevents common mistakes and ensures work compl
 - [Recipe Subprocess and Hook Input Contracts](../howto/validate-recipe-subprocess-hook-contract.md) — recipe-runner child environment and hook input compatibility contract; see the [recipe environment reference](../reference/recipe-executor-environment.md#recipe-runner-subprocess-launch) and [hook input contract](../reference/hook-specifications.md#hook-input-json-contract).
 - [Workflow Provider Abstraction](workflow-provider-abstraction.md) — provider-neutral tracking, change-request publication, terminal state, and stale cleanup through typed helpers and provider adapters.
 - [Provider-Aware Workflow Tracking](dual-provider-workflow.md) — compatibility entry point for the provider-neutral workflow contract.
+- [Non-Fatal Documentation Review Checkpoint](doc-review-non-fatal-checkpoint.md) — a failed `step-06b-documentation-review` no longer reports a generic FAILURE after durable side effects (pushed commit, opened/merged PR, posted review thread) already landed; the workflow checkpoints partial success, surfaces the artifact references, and ends in a degraded-success state with a `WARNING` + `NEEDS_ATTENTION` follow-up (issue [#834](https://github.com/rysweet/amplihack-rs/issues/834)).
 
 ## Install Provisioning
 

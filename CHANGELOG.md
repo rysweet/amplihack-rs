@@ -60,6 +60,23 @@ Unreleased changes appear at the top under `[Unreleased]`.
   failures. New "Known Failure Points" section in `amplihack-expert/SKILL.md`
   documents rate-limit resilience patterns.
 
+- **Recipes hard-fail at post-side-effect checkpoints when the
+  runtime-artifact helper is missing (#829)** — The path-resolution fix in
+  #818/v0.11.42 corrected helper lookup upstream, but downstream consumers that
+  have not yet run `amplihack update` could still hit a missing
+  `workflow_runtime_artifacts.sh` at four *post-side-effect* bookkeeping
+  checkpoints (one in `workflow-tdd.yaml`, three in `workflow-finalize.yaml`).
+  These sites now **gracefully degrade**: when the helper cannot be resolved
+  they emit a `WARNING` to stderr (fail-visible — the searched roots, resolved
+  path, and `cwd` are reported) and continue, instead of `exit 2`. The
+  unconditional `artifact-guard --mode pre-publish` gate after each block is
+  preserved, and all genuine pre-publish gates (the four runtime-artifact
+  `exit 2` gates in `workflow-publish`/`workflow-refactor-review`/
+  `workflow-pr-review`, git-identity `exit 2`, and final-status `exit 1`) remain
+  hard failures. Covered by `test-bug-829-graceful-degradation.sh` (32
+  assertions across the four softened sites and the retained hard gates), wired
+  into CI.
+
 ### Added
 
 - **Copilot `--remote` by default** — `amplihack copilot` now injects
