@@ -47,6 +47,18 @@ jobs:
       - name: Recipes — doc-review failure is non-fatal-but-reported (issue #834)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-bug-834-doc-review-non-fatal.sh
+      - name: Recipes — leak-proof, self-healing worktree setup (issue #840)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-840-worktree-leak-proof.sh
+      - name: Recipes — shellcheck worktree sweep helper (issue #840)
+        shell: bash
+        run: |
+          if command -v shellcheck >/dev/null 2>&1; then
+            shellcheck -S warning amplifier-bundle/tools/workflow_worktree_sweep.sh
+          else
+            sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+            shellcheck -S warning amplifier-bundle/tools/workflow_worktree_sweep.sh
+          fi
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt

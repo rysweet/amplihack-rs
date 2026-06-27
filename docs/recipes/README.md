@@ -82,6 +82,7 @@ Complete documentation for using the Recipe Runner:
 - **[How to Diagnose Workflow Terminal-State Failures](../howto/diagnose-workflow-terminal-state.md)** - Recovery guide for missing terminal evidence after planning, analysis, design, or worktree-only execution
 - **[Tutorial: Workflow Terminal-State Closure](../tutorials/workflow-terminal-state-closure.md)** - Walk through successful evidence, planning-only failure, and rerun behavior
 - **[Scoped Workflow Closure](../reference/scoped-workflow-closure.md)** - Persisted PR, process, and workstream ownership contract for default-workflow closure
+- **[Leak-Proof, Self-Healing Worktree Setup (#840)](issue-840-leak-proof-worktree.md)** - Orphan-worktree sweep and cleanup-on-failure for `step-04-setup-worktree`, with the `workflow_worktree_sweep.sh` helper API, the data-loss safety gate, and `AMPLIHACK_WORKTREE_STALE_SECS` configuration
 
 ## Why It Exists
 
