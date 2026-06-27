@@ -55,42 +55,148 @@ Cycle 3+: seek(deepest) → validate(×3) → merge → fix → verify → accum
   emerged in the current cycle.
 - **Stop** at `max_cycles` unconditionally.
 
-### merge-validations: Validator-Output Normalization (#820)
+### merge-validations: Validator-Output Normalization (#833)
 
 The three validator agents are prompted to emit a JSON verdict object, but
 agent output is free-form text: the JSON usually arrives wrapped in a
-` ```json ` fence and may be preceded by reasoning prose or log preamble.
-Feeding that raw text straight to `jq --slurpfile` aborts the whole audit
-cycle with `jq: Bad JSON ... Invalid numeric literal`, discarding the seek and
-validation work already done (#820).
+` ```json ` fence and may be preceded by reasoning prose, a log preamble, or
+several concatenated JSON values. Feeding that raw text straight to
+`jq --slurpfile` aborts the whole audit cycle with
+`jq: Bad JSON in --slurpfile ... Invalid numeric literal at line 1, column 4`,
+discarding the seek and validation work already done (#833).
 
 Before merging, the step normalizes each validator's raw output to a single
-JSON object using the tolerant `amplihack orch helper extract-json` helper —
-the same normalizer `smart-orchestrator` uses. It recovers JSON from, in
-priority order: ` ```json ` fenced blocks, untagged ` ``` ` blocks, then a
-balanced-brace scan over raw prose (correctly handling braces inside string
-values). The normalized objects are what `jq --slurpfile` consumes.
+JSON verdict object using a **self-contained** `extract_verdict()` shell
+function. The function depends only on `jq` and `sed` — both already required
+by the step — and on **no external binary**. (The earlier #820 attempt routed
+extraction through `amplihack orch helper extract-json`; when that binary was
+not on `PATH`, all three validators silently degraded to `{}`, masking real
+findings. #833 removes that dependency entirely.)
 
-Degradation is explicit, never silent:
+#### Tiered extraction
 
-- A validator that did not run (empty output) normalizes to `{}` and simply
-  contributes zero votes — no warning.
-- A validator that produced **non-empty** output containing **no parseable
-  JSON object** triggers a targeted diagnostic on stderr that names the
-  validator and preserves its raw output as an artifact under `output_dir`:
+`extract_verdict()` reads one validator's raw output and emits exactly one
+normalized JSON object, trying each tier in order until one succeeds:
 
-  ```
-  [merge-validations] WARNING: validation_agent_2 produced no parseable JSON
-  object; counting zero votes from it. Raw output preserved at:
-  ./eval_results/quality_audit/merge-validations-validation_agent_2-cycle3-raw.txt
-  ```
+| Tier | Strategy                                                                                  | Result on success |
+| ---- | ----------------------------------------------------------------------------------------- | ----------------- |
+| 0    | Empty / whitespace-only input                                                             | `{}` (EMPTY)      |
+| 1    | Strict parse of the whole input (`jq -c .`)                                               | object (PARSED)   |
+| 2    | Strip ` ```json ` / ` ``` ` markdown fences, then re-parse                                 | object (PARSED)   |
+| 3    | Trim to first `{` … last `}` and stream-scan candidates, **preferring the object that contains a `validated` key**; fall back to the last parseable object | object (PARSED)   |
+| 4    | Nothing parseable                                                                          | `{}` (UNPARSEABLE)|
 
-  The merge then proceeds with the remaining validators instead of crashing,
-  so a single malformed validator can no longer take down the entire cycle.
+Tier 3 fixes a weakness in the earlier approach: when a validator prepends a
+log line such as `{"level":"info","msg":"validating"}` before the real verdict,
+the extractor selects the object carrying the `validated` key rather than the
+first object it encounters. Each recovered candidate is re-validated by `jq`
+before acceptance, so a slice that merely looks like JSON (for example, a `}`
+inside a string) is rejected and the scan continues.
+
+#### Per-validator classification
+
+Each validator (`v1`, `v2`, `v3`) is classified independently:
+
+- **PARSED** — a JSON verdict object was recovered. Counts toward the
+  parsed-validator total and contributes its votes to the merge.
+- **EMPTY** — the validator did not run or produced only whitespace. Normalizes
+  to `{}`, contributes zero votes, and emits **no** warning. An all-EMPTY cycle
+  is a clean audit and proceeds normally.
+- **UNPARSEABLE** — the validator produced non-empty output but no JSON verdict
+  object survived extraction. Emits a targeted stderr warning naming the
+  validator, preserves the raw output as an artifact, normalizes to `{}`, and
+  continues.
+
+`EMPTY` and `UNPARSEABLE` are deliberately distinct: only `UNPARSEABLE`
+indicates a malformed validator, and only `UNPARSEABLE` arms the fatal gate
+described below.
+
+#### Partial-failure tolerance
+
+An `UNPARSEABLE` validator never aborts the merge. Instead the step writes a
+warning to stderr and preserves the raw output under the cycle's output
+directory:
+
+```
+[merge-validations] WARNING: validator v2 output unparseable; counting zero
+votes from it. Raw output preserved at:
+./eval_results/quality_audit/cycle_3/validator_v2_raw.txt
+```
+
+The raw artifact is written to
+`${output_dir}/cycle_${cycle_number}/validator_vN_raw.txt`. The cycle directory
+is created with mode `700` and the artifact file with mode `600`; if
+`${output_dir}` is not writable the step falls back to `/tmp` (also `600`) and
+the warning still names the fallback path. Artifact paths are built only from
+trusted context variables (`output_dir`, `cycle_number`) and the fixed labels
+`v1`/`v2`/`v3` — never from validator content — so a validator cannot influence
+where its raw output is written.
+
+The merge then proceeds with the validators that did parse, so a single
+malformed validator can no longer take down the entire cycle.
+
+#### All-unparseable fatal gate
+
+The step tracks how many validators parsed. If **every** validator that
+produced output was `UNPARSEABLE` (parsed count `0` and at least one
+`UNPARSEABLE`), the step fails hard with a clear diagnostic that lists all
+preserved raw artifacts — never a raw `jq` error:
+
+```
+[merge-validations] FATAL: all validators produced unparseable output; cannot
+merge. Raw outputs preserved at:
+  v1: ./eval_results/quality_audit/cycle_3/validator_v1_raw.txt
+  v2: ./eval_results/quality_audit/cycle_3/validator_v2_raw.txt
+  v3: ./eval_results/quality_audit/cycle_3/validator_v3_raw.txt
+```
+
+The diagnostic lists **only** the validators whose raw output was preserved —
+that is, the `UNPARSEABLE` ones. In the mixed `EMPTY + UNPARSEABLE` (zero
+`PARSED`) case the gate still fires, but an `EMPTY` validator produced no output
+and therefore has no artifact, so it is **omitted** from the list; only the
+unparseable validator(s) appear. The all-three example above is the pure
+all-`UNPARSEABLE` case.
+
+The step then exits `1`, halting the cycle before `fix` runs. An all-EMPTY
+cycle (no validator produced output) is **not** fatal — it is treated as a
+clean audit and proceeds.
+
+#### Behavior summary
+
+| v1 / v2 / v3 classification               | Outcome                                                  |
+| ----------------------------------------- | -------------------------------------------------------- |
+| All PARSED                                | Normal majority-vote merge                               |
+| Mix of PARSED + EMPTY                     | Merge proceeds; EMPTY validators contribute zero votes   |
+| Mix of PARSED + UNPARSEABLE               | WARN per unparseable validator + raw artifact; merge proceeds with parsed validators |
+| Mix of PARSED + EMPTY + UNPARSEABLE       | WARN per unparseable validator + raw artifact; merge proceeds with the parsed validator(s) |
+| All EMPTY                                 | Clean audit; merge yields zero confirmed findings; exit `0` |
+| EMPTY + UNPARSEABLE, **no** PARSED        | FATAL diagnostic listing the unparseable artifact(s); exit `1` before `fix` |
+| All UNPARSEABLE                            | FATAL diagnostic listing artifacts; exit `1` before `fix` |
+
+The fatal gate is keyed on the **parsed count**, not on a literal "all three
+unparseable" check: it fires whenever `parsed_count == 0` **and** at least one
+validator is `UNPARSEABLE`. EMPTY validators are excluded from the gate (they
+produced no output to parse), so an EMPTY + UNPARSEABLE mix with zero PARSED is
+fatal, while an all-EMPTY cycle is not.
 
 The deterministic majority-vote merge (`group_by` on `finding_id`, confirm when
-`≥ validation_threshold` validators agree) is unchanged — only the inputs are
-normalized.
+`≥ validation_threshold` validators agree) is unchanged — it already tolerates
+`{}` inputs via `?` — only the inputs are normalized.
+
+#### Preserved security properties
+
+The step retains all hardening introduced for earlier safety fixes:
+
+- Validator content is captured via single-quoted, long-unique-delimiter
+  heredocs (`<<'__AMPLIHACK_SAFE_HEREDOC_V1_TMPWRITE__'`), so it is never
+  expanded, `eval`'d, or used in command substitution.
+- Validator content reaches `jq`/`sed` only as file-path data
+  (`--slurpfile`, `inputs`), never concatenated into a filter program or
+  `--arg`, so it cannot inject `jq` filters.
+- All temp files are created with `mktemp` and `chmod 600`; a `trap … EXIT`
+  removes every temp file, including on the fatal exit path.
+- A defensive input-size cap is applied before the Tier-3 brace scan to avoid
+  pathological CPU/disk use on multi-megabyte blobs.
 
 ### verify-fixes: Git Diff Cross-Check (#646)
 

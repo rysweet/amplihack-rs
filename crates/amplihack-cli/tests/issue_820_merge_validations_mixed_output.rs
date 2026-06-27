@@ -9,20 +9,26 @@
 //! `Bad JSON ... Invalid numeric literal` before the fix/verify/summary phases
 //! could run.
 //!
-//! Fix: normalize each validator's output through the tolerant
-//! `amplihack orch helper extract-json` helper (the same normalizer
-//! smart-orchestrator uses) BEFORE `jq --slurpfile`. If a validator produced
-//! non-empty output with no parseable JSON object, emit a targeted diagnostic
-//! naming the validator + preserving its raw output as an artifact, then fall
-//! back to `{}` so the merge degrades to zero votes instead of crashing.
+//! Original #820 fix: normalize each validator's output through the
+//! `amplihack orch helper extract-json` helper BEFORE `jq --slurpfile`.
+//!
+//! SUPERSEDED BY #833: that approach introduced a silent binary-PATH
+//! dependency — when the `amplihack` binary is not on `PATH`, every validator
+//! degraded to `{}` (silent zero-BS violation) and the original `jq` crash
+//! could still reproduce. #833 replaces it with a SELF-CONTAINED `extract_verdict`
+//! jq/sed normalizer embedded directly in the step (no external binary). The
+//! structural and end-to-end tests below were updated to the #833 contract;
+//! the per-validator diagnostic now says a validator's `output unparseable`
+//! (naming `vN`) instead of "no parseable JSON object". See
+//! `issue_833_merge_validations_json_tolerance.rs` for the full #833 contract.
 //!
 //! These tests cover three layers:
-//!   1. Structural — the recipe wires `extract-json` + diagnostic in correctly.
-//!   2. Behavioral (pure Rust) — `extract_json` recovers the validator JSON
-//!      object from the exact mixed-format inputs that used to crash `jq`.
+//!   1. Structural — the recipe wires the self-contained normalizer + diagnostic.
+//!   2. Behavioral (pure Rust) — the `extract_json` helper (still used by
+//!      smart-orchestrator) recovers a JSON object from mixed-format inputs.
 //!   3. End-to-end (graceful skip) — the real `merge-validations` bash command
 //!      no longer emits `Bad JSON` on mixed output and produces valid merged
-//!      JSON. Skipped when the `amplihack`/`jq` tooling is unavailable.
+//!      JSON. Skipped when `jq` is unavailable.
 
 use amplihack_cli::commands::orch::extract_json;
 use serde_yaml::Value;
@@ -65,17 +71,27 @@ fn merge_validations_command() -> String {
 }
 
 // =========================================================================
-// Layer 1: Structural — the recipe must route validator output through the
-// tolerant extract-json normalizer before jq, with a diagnostic fallback.
+// Layer 1: Structural — the recipe must normalize validator output through a
+// SELF-CONTAINED extractor (no `amplihack` binary dependency, per #833) before
+// jq, with a diagnostic fallback.
 // =========================================================================
 
 #[test]
-fn merge_validations_normalizes_via_extract_json() {
+fn merge_validations_normalizes_without_extract_json_binary() {
     let cmd = merge_validations_command();
+    // #833: the original #820 `orch helper extract-json` dependency was removed
+    // (it degraded silently to `{}` when off PATH). Normalization must be
+    // self-contained.
     assert!(
-        cmd.contains("orch helper extract-json"),
-        "#820: merge-validations must normalize each validator's raw output \
-         through `amplihack orch helper extract-json` before jq.\nCommand:\n{cmd}"
+        !cmd.contains("orch helper extract-json"),
+        "#833 (supersedes #820): merge-validations must NOT depend on the \
+         `amplihack orch helper extract-json` binary.\nCommand:\n{cmd}"
+    );
+    assert!(
+        cmd.contains("extract_verdict"),
+        "#833: merge-validations must normalize each validator's raw output \
+         through the self-contained `extract_verdict` jq/sed function before \
+         jq.\nCommand:\n{cmd}"
     );
 }
 
@@ -103,16 +119,16 @@ fn merge_validations_feeds_normalized_files_to_jq() {
 fn merge_validations_normalization_runs_before_jq() {
     let cmd = merge_validations_command();
     let extract_pos = cmd
-        .find("orch helper extract-json")
-        .expect("must contain extract-json");
+        .find("extract_verdict")
+        .expect("must contain the self-contained extract_verdict normalizer");
     let jq_pos = cmd
         .find("jq -n")
         .or_else(|| cmd.find("jq "))
         .expect("must contain jq invocation");
     assert!(
         extract_pos < jq_pos,
-        "#820: validator output must be normalized BEFORE jq runs.\n\
-         extract-json at {extract_pos}, jq at {jq_pos}."
+        "#833: validator output must be normalized BEFORE jq runs.\n\
+         extract_verdict at {extract_pos}, jq at {jq_pos}."
     );
 }
 
@@ -120,21 +136,21 @@ fn merge_validations_normalization_runs_before_jq() {
 fn merge_validations_emits_diagnostic_and_preserves_artifact() {
     let cmd = merge_validations_command();
     assert!(
-        cmd.contains("WARNING") && cmd.contains("no parseable JSON object"),
-        "#820: when a validator produced non-empty output with no parseable \
-         JSON, merge-validations must emit a targeted diagnostic instead of a \
-         brittle jq crash.\nCommand:\n{cmd}"
+        cmd.contains("WARNING") && cmd.contains("output unparseable"),
+        "#833: when a validator produced non-empty output with no parseable \
+         JSON, merge-validations must emit a targeted `output unparseable` \
+         diagnostic instead of a brittle jq crash.\nCommand:\n{cmd}"
     );
     assert!(
         cmd.contains("Raw output preserved at:"),
-        "#820: the diagnostic must preserve the offending validator's raw \
+        "#833: the diagnostic must preserve the offending validator's raw \
          output as an artifact and report its path.\nCommand:\n{cmd}"
     );
-    // The diagnostic must name which validator failed.
+    // The diagnostic must name which validator failed (vN).
     assert!(
-        cmd.contains("${_label}") || cmd.contains("$_label"),
-        "#820: the diagnostic must name the offending validator (via its \
-         label) so the failing prompt/output can be repaired.\nCommand:\n{cmd}"
+        cmd.contains("[merge-validations] WARNING: validator"),
+        "#833: the diagnostic must name the offending validator (vN) so the \
+         failing prompt/output can be repaired.\nCommand:\n{cmd}"
     );
 }
 
@@ -171,9 +187,10 @@ fn recipe_parses_as_valid_yaml() {
 }
 
 // =========================================================================
-// Layer 2: Behavioral (pure Rust) — the normalizer the recipe now invokes
-// must recover the validator JSON object from exactly the mixed-format
-// inputs that used to crash jq with "Bad JSON".
+// Layer 2: Behavioral (pure Rust) — the `extract_json` helper (still used by
+// smart-orchestrator; the recipe itself is now self-contained per #833) must
+// recover the validator JSON object from exactly the mixed-format inputs that
+// used to crash jq with "Bad JSON".
 // =========================================================================
 
 #[test]
@@ -228,39 +245,10 @@ fn extract_json_returns_none_for_log_only_output() {
 // =========================================================================
 // Layer 3: End-to-end (graceful skip) — run the REAL merge-validations bash
 // command against mixed validator output and assert it no longer emits
-// "Bad JSON" and produces valid merged JSON. Skips when amplihack/jq are
-// unavailable so the suite stays green in minimal environments.
+// "Bad JSON" and produces valid merged JSON. Self-contained per #833 (needs
+// only `jq`, not the amplihack binary). Skips when `jq` is unavailable so the
+// suite stays green in minimal environments.
 // =========================================================================
-
-fn amplihack_binary() -> Option<PathBuf> {
-    // Primary: the `amplihack` binary sits next to the test executable's parent
-    // (`<target>/<profile>/amplihack`), regardless of CARGO_TARGET_DIR. The test
-    // exe lives at `<target>/<profile>/deps/<name>`.
-    if let Ok(exe) = std::env::current_exe() {
-        // exe = <target>/<profile>/deps/<test-bin>
-        if let Some(profile_dir) = exe.parent().and_then(|deps| deps.parent()) {
-            let candidate = profile_dir.join("amplihack");
-            if candidate.exists() {
-                return Some(candidate);
-            }
-        }
-    }
-    // Fallbacks: explicit CARGO_TARGET_DIR, then the default workspace target/.
-    let mut roots: Vec<PathBuf> = Vec::new();
-    if let Ok(dir) = std::env::var("CARGO_TARGET_DIR") {
-        roots.push(PathBuf::from(dir));
-    }
-    roots.push(repo_root().join("target"));
-    for root in roots {
-        for profile in ["debug", "release"] {
-            let p = root.join(profile).join("amplihack");
-            if p.exists() {
-                return Some(p);
-            }
-        }
-    }
-    None
-}
 
 fn tool_on_path(tool: &str) -> bool {
     Command::new(tool)
@@ -272,27 +260,21 @@ fn tool_on_path(tool: &str) -> bool {
 
 #[test]
 fn merge_validations_end_to_end_handles_mixed_output() {
-    let Some(amplihack) = amplihack_binary() else {
-        eprintln!(
-            "skip: target/{{debug,release}}/amplihack not built; run `cargo build` \
-             to exercise the merge-validations end-to-end path"
-        );
-        return;
-    };
     if !tool_on_path("jq") {
         eprintln!("skip: `jq` not available on PATH");
         return;
     }
 
     // v1: prose + ```json fence (confirmed). v2: bare JSON (confirmed).
-    // v3: log-only garbage (no JSON object → diagnostic, zero votes).
+    // v3: prose-only garbage (no JSON object → diagnostic, zero votes).
     let v1 = "Let me validate.\n```json\n{\"validated\":[{\"finding_id\":1,\
         \"verdict\":\"confirmed\",\"new_severity\":\"high\",\"reasoning\":\"swallows error\"}]}\n```";
     let v2 = "{\"validated\":[{\"finding_id\":1,\"verdict\":\"confirmed\",\
         \"new_severity\":\"medium\",\"reasoning\":\"agrees\"}]}";
-    let v3 = "ERROR: agent crashed\n[trace] stray { brace, no object\n";
+    let v3 = "ERROR: agent crashed before producing structured output\n";
 
     let tmp = std::env::temp_dir().join(format!("qac820-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp).expect("mk tmp dir");
 
     let cmd = merge_validations_command()
@@ -303,19 +285,9 @@ fn merge_validations_end_to_end_handles_mixed_output() {
         .replace("{{cycle_number}}", "1")
         .replace("{{output_dir}}", tmp.to_str().unwrap());
 
-    // Prepend the built amplihack dir so `amplihack orch helper extract-json`
-    // resolves to the binary under test.
-    let bin_dir = amplihack.parent().unwrap().to_path_buf();
-    let path = format!(
-        "{}:{}",
-        bin_dir.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
-
     let out = Command::new("bash")
         .arg("-c")
         .arg(&cmd)
-        .env("PATH", path)
         .output()
         .expect("run merge-validations bash");
 
@@ -324,28 +296,29 @@ fn merge_validations_end_to_end_handles_mixed_output() {
 
     assert!(
         out.status.success(),
-        "#820: merge-validations must succeed on mixed validator output.\n\
+        "#833: merge-validations must succeed on mixed validator output.\n\
          exit: {:?}\nstderr:\n{stderr}\nstdout:\n{stdout}",
         out.status.code()
     );
     assert!(
         !stderr.contains("Bad JSON"),
-        "#820: merge-validations must NOT emit a `jq: Bad JSON` error on mixed \
+        "#833: merge-validations must NOT emit a `jq: Bad JSON` error on mixed \
          output.\nstderr:\n{stderr}"
     );
-    // The garbage validator must trigger the targeted diagnostic.
+    // The prose-only validator must trigger the targeted diagnostic.
     assert!(
-        stderr.contains("no parseable JSON object"),
-        "#820: the log-only validator must trigger the diagnostic.\nstderr:\n{stderr}"
+        stderr.contains("unparseable"),
+        "#833: the prose-only validator must trigger the `unparseable` \
+         diagnostic.\nstderr:\n{stderr}"
     );
 
     let merged: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
-        panic!("#820: merged output must be valid JSON: {e}\nstdout:\n{stdout}")
+        panic!("#833: merged output must be valid JSON: {e}\nstdout:\n{stdout}")
     });
     // Two validators confirmed finding 1 (>= threshold 2) → confirmed.
     assert_eq!(
         merged["confirmed_count"], 1,
-        "#820: finding 1 must be confirmed by the two well-formed validators.\n{merged:#}"
+        "#833: finding 1 must be confirmed by the two well-formed validators.\n{merged:#}"
     );
     assert_eq!(merged["validated"][0]["verdict"], "confirmed");
 
