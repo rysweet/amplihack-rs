@@ -83,6 +83,19 @@ amplihack-domain-agents = { path = "crates/amplihack-domain-agents" }
 amplihack-hive = { path = "crates/amplihack-hive" }
 amplihack-agent-generator = { path = "crates/amplihack-agent-generator" }
 
+# Shrink local/dev/CI debug builds. This workspace has 26 crates and ~155
+# integration-test binaries; the default `debug = true` emits full DWARF
+# debuginfo into every rlib and every statically-linked test binary, which
+# balloons `target/` to tens of GB (each worktree gets its own copy).
+# `line-tables-only` keeps file:line in panic backtraces while dropping the
+# bulk of the debuginfo, cutting target size roughly in half with no loss of
+# usable backtraces.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
+
 [profile.release]
 lto = true
 strip = true
