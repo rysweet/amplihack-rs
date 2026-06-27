@@ -108,6 +108,68 @@ commands instead of being interpolated. This is a heredoc safety issue —
 see the [recipe reference](../reference/quality-audit-cycle-recipe.md)
 for details on the fix.
 
+### `merge-validations` warns that a validator's output was unparseable
+
+You may see a warning like:
+
+```
+[merge-validations] WARNING: validator v2 output unparseable; counting zero
+votes from it. Raw output preserved at:
+./eval_results/quality_audit/cycle_3/validator_v2_raw.txt
+```
+
+This means one validator agent produced non-empty output from which no JSON
+verdict object could be recovered (prose-only output, a truncated response, or
+malformed JSON). The cycle is **not** aborted: the merge continues with the
+validators that did parse, and the offending validator simply contributes zero
+votes (#833).
+
+What to do:
+
+1. **Usually nothing.** A single noisy validator is tolerated by design; the
+   remaining validators still drive the majority vote.
+2. **Inspect the raw artifact** at the path in the warning to see what the
+   validator actually emitted. The file is preserved at
+   `${output_dir}/cycle_${cycle_number}/validator_vN_raw.txt` (or under `/tmp`
+   if `output_dir` is not writable).
+3. **If warnings recur across cycles**, the validator agent prompt may be
+   producing prose instead of the requested JSON verdict object — review the
+   `validate-agent-N` step output.
+
+### `merge-validations` FATAL — all validators produced unparseable output
+
+```
+[merge-validations] FATAL: all validators produced unparseable output; cannot
+merge. Raw outputs preserved at:
+  v1: ./eval_results/quality_audit/cycle_3/validator_v1_raw.txt
+  v2: ./eval_results/quality_audit/cycle_3/validator_v2_raw.txt
+  v3: ./eval_results/quality_audit/cycle_3/validator_v3_raw.txt
+```
+
+This means **none** of the three validators produced a recoverable JSON verdict
+object, so there is nothing to merge. The step exits `1` and the cycle halts
+before `fix` runs — by design, so the recipe never fixes against zero validated
+findings (#833).
+
+This is distinct from an **all-empty** cycle: if no validator produces any
+output at all, that is treated as a clean audit and proceeds normally. The fatal
+gate fires only when validators produced output but none of it parsed.
+
+The gate also fires in the mixed case where some validators were **empty** and
+the rest were **unparseable** (zero parsed). In that case the FATAL diagnostic
+lists only the unparseable validators' artifacts — empty validators produced no
+output, so they have no raw file to preserve and are omitted from the list.
+
+Common causes:
+
+1. **The validator agent backend is failing** — e.g., the agent binary errored
+   and emitted only stderr/log text. Inspect the three raw artifacts.
+2. **A systematic prompt or model issue** — all three validators emitting prose
+   instead of JSON points at the `validate-agent-N` prompt or model
+   configuration rather than a one-off glitch.
+3. Re-run the cycle after addressing the validator output; the next SEEK will
+   rediscover the findings.
+
 ### Recipe completes but agents produce empty results
 
 This is a **hollow success**. Check:
