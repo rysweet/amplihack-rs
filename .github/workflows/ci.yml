@@ -41,6 +41,9 @@ jobs:
       - name: Recipes — static guard validation scope (issue #495)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-static-guard-validation-scope.sh
+      - name: Recipes — doc-review failure is non-fatal-but-reported (issue #834)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-bug-834-doc-review-non-fatal.sh
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
