@@ -41,6 +41,9 @@ jobs:
       - name: Recipes — static guard validation scope (issue #495)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-static-guard-validation-scope.sh
+      - name: Recipes — graceful degradation for missing runtime-artifact helper (issue #829)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-bug-829-graceful-degradation.sh
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
