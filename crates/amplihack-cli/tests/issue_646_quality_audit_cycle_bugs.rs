@@ -385,12 +385,15 @@ fn recipe_under_brick_line_limit() {
     let text = recipe_text();
     let lines = text.lines().count();
     // #646 bug fixes took the recipe to ~815 lines. #820 added a validator-output
-    // normalization layer to merge-validations (~+35 lines) → ~850. Ceiling of 880
-    // leaves modest headroom while still guarding against unbounded growth.
+    // normalization layer to merge-validations (~+35 lines) → ~850. #833 replaced
+    // that binary-dependent normalizer with a self-contained jq/sed extractor plus
+    // per-validator classification, WARN/artifact diagnostics, and the
+    // all-unparseable FATAL gate (~+60 lines) → ~910. Ceiling of 940 leaves modest
+    // headroom while still guarding against unbounded growth.
     assert!(
-        lines <= 880,
-        "quality-audit-cycle.yaml is {lines} lines; expected <= 880 \
-         (#646 fixes + #820 merge-validations normalization)."
+        lines <= 940,
+        "quality-audit-cycle.yaml is {lines} lines; expected <= 940 \
+         (#646 fixes + #833 self-contained merge-validations normalization)."
     );
 }
 

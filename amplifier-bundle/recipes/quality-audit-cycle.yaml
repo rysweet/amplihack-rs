@@ -335,34 +335,100 @@ steps:
       export CYCLE="{{cycle_number}}"
       export OUTPUT_DIR="{{output_dir}}"
 
-      # Normalize validator output before merge (#820): validators emit JSON
-      # inside markdown/prose (often a ```json fence) +/- log preamble, which
-      # crashes `jq --slurpfile` with "Bad JSON". Recover a single JSON object
-      # via the tolerant `extract-json` helper (same normalizer used by
-      # smart-orchestrator). If non-empty output yields no parseable object,
-      # warn (naming the validator + preserving raw output as an artifact) and
-      # fall back to `{}` so the merge degrades to zero votes instead of dying.
-      normalize_validator() {
-        local _raw="$1" _norm="$2" _label="$3"
-        local _norm_stripped _raw_stripped _artifact_dir _artifact
-        if ! amplihack orch helper extract-json < "$_raw" > "$_norm" 2>/dev/null; then
-          printf '{}' > "$_norm"
+      # Normalize validator output before merge (#833). Validators emit JSON
+      # inside markdown/prose (often a ```json fence) +/- a log preamble, or
+      # concatenated with leading log objects, which crashes `jq --slurpfile`
+      # with "Bad JSON". Recovery is SELF-CONTAINED (jq/sed only — no external
+      # binary on PATH, killing PR #820's silent-`{}`-when-off-PATH failure).
+      # Each validator is classified independently as PARSED / EMPTY /
+      # UNPARSEABLE; a single UNPARSEABLE validator never aborts the merge.
+      #
+      # extract_verdict RAW_FILE NORM_FILE -> writes the normalized object to
+      # NORM_FILE and prints its classification on stdout. When several JSON
+      # values are present it prefers the object carrying a `validated` key
+      # (D2), else the last object.
+      _PICK='([.[]|select(type=="object")]) as $o | (([ $o[] | select(has("validated")) ]|last) // ($o|last))'
+      extract_verdict() {
+        _ev_raw="$1"; _ev_norm="$2"; _ev_out=""; _ev_slice=""; _ev_content=""
+        _ev_pre=""; _ev_from=""; _ev_post=""
+        # Read the raw output ONCE (perf #833: avoids forking `tr` for the
+        # empty-check and `cat` for Tier B, and avoids re-reading the file).
+        _ev_content=$(<"$_ev_raw")
+        # Pure-bash emptiness test — matches if EVERY character is whitespace
+        # (equivalent to the old `tr -d '[:space:]'` check, no subprocess).
+        case "$_ev_content" in
+          *[![:space:]]*) ;;
+          *) printf '{}' > "$_ev_norm"; printf 'EMPTY'; return 0 ;;
+        esac
+        # Tier A: whole document is a stream of JSON values. Parse the pristine
+        # file directly (page-cache-warm, behaviour-identical to prior version).
+        if _ev_out=$(jq -nc "[inputs] | $_PICK" < "$_ev_raw" 2>/dev/null) \
+             && [ -n "$_ev_out" ] && [ "$_ev_out" != "null" ]; then
+          printf '%s' "$_ev_out" > "$_ev_norm"; printf 'PARSED'; return 0
         fi
-        # Empty/whitespace-only or unparseable raw output normalizes to `{}`;
-        # only warn when there WAS content to parse but no JSON object survived.
-        _norm_stripped=$(tr -d '[:space:]' < "$_norm")
-        _raw_stripped=$(tr -d '[:space:]' < "$_raw")
-        if [ "$_norm_stripped" = '{}' ] && [ -n "$_raw_stripped" ]; then
-          _artifact_dir="${OUTPUT_DIR:-/tmp}"
-          mkdir -p "$_artifact_dir" 2>/dev/null || _artifact_dir=$(dirname "$_raw")
-          _artifact="$_artifact_dir/merge-validations-${_label}-cycle${CYCLE:-0}-raw.txt"
-          if ! cp "$_raw" "$_artifact" 2>/dev/null; then _artifact="$_raw"; fi
-          echo "[merge-validations] WARNING: ${_label} produced no parseable JSON object; counting zero votes from it. Raw output preserved at: ${_artifact}" >&2
+        # Tier B: slice from the first `{` to the last `}` (tolerates prose,
+        # log preambles and ```json fences) and re-parse. Pure bash slicing
+        # avoids feeding adversarial content to any extra process; reuses the
+        # already-read _ev_content (no extra `cat`).
+        _ev_pre=${_ev_content%%\{*}
+        if [ "$_ev_pre" != "$_ev_content" ]; then
+          _ev_from=${_ev_content:${#_ev_pre}}
+          _ev_post=${_ev_from##*\}}
+          if [ "$_ev_post" != "$_ev_from" ]; then
+            _ev_slice=${_ev_from:0:${#_ev_from}-${#_ev_post}}
+            if _ev_out=$(printf '%s' "$_ev_slice" | jq -nc "[inputs] | $_PICK" 2>/dev/null) \
+                 && [ -n "$_ev_out" ] && [ "$_ev_out" != "null" ]; then
+              printf '%s' "$_ev_out" > "$_ev_norm"; printf 'PARSED'; return 0
+            fi
+          fi
         fi
+        printf '{}' > "$_ev_norm"; printf 'UNPARSEABLE'; return 0
       }
-      normalize_validator "$_V1_TMPFILE" "$_V1_NORMFILE" "validation_agent_1"
-      normalize_validator "$_V2_TMPFILE" "$_V2_NORMFILE" "validation_agent_2"
-      normalize_validator "$_V3_TMPFILE" "$_V3_NORMFILE" "validation_agent_3"
+
+      _C1=$(extract_verdict "$_V1_TMPFILE" "$_V1_NORMFILE")
+      _C2=$(extract_verdict "$_V2_TMPFILE" "$_V2_NORMFILE")
+      _C3=$(extract_verdict "$_V3_TMPFILE" "$_V3_NORMFILE")
+
+      parsed_count=0
+      unparseable_count=0
+      _UNPARSE_ARTIFACTS=""
+      # Classify each validator. UNPARSEABLE -> targeted WARNING naming the
+      # validator + raw output preserved to a per-cycle artifact (path derived
+      # solely from trusted context vars, never validator content). EMPTY is a
+      # clean no-op (no warning). Continues regardless so survivors still vote.
+      classify_validator() {
+        _cv_label="$1"; _cv_class="$2"; _cv_raw="$3"; _cv_dir=""; _cv_art=""
+        case "$_cv_class" in
+          PARSED) parsed_count=$((parsed_count + 1)) ;;
+          EMPTY) : ;;
+          UNPARSEABLE)
+            unparseable_count=$((unparseable_count + 1))
+            _cv_dir="${OUTPUT_DIR:-/tmp}/cycle_${CYCLE:-0}"
+            if ! mkdir -p "$_cv_dir" 2>/dev/null; then _cv_dir=$(dirname "$_cv_raw"); fi
+            chmod 700 "$_cv_dir" 2>/dev/null || true
+            _cv_art="$_cv_dir/validator_${_cv_label}_raw.txt"
+            if cp "$_cv_raw" "$_cv_art" 2>/dev/null; then
+              chmod 600 "$_cv_art" 2>/dev/null || true
+            else
+              _cv_art="$_cv_raw"
+            fi
+            _UNPARSE_ARTIFACTS="${_UNPARSE_ARTIFACTS:+$_UNPARSE_ARTIFACTS, }${_cv_art}"
+            echo "[merge-validations] WARNING: validator ${_cv_label} output unparseable; counting zero votes from it. Raw output preserved at: ${_cv_art}" >&2
+            ;;
+        esac
+      }
+      classify_validator "v1" "$_C1" "$_V1_TMPFILE"
+      classify_validator "v2" "$_C2" "$_V2_TMPFILE"
+      classify_validator "v3" "$_C3" "$_V3_TMPFILE"
+
+      # D4: hard-fail ONLY when nothing parsed AND >=1 validator was
+      # unparseable — with a clear diagnostic, never a raw jq error. An
+      # all-EMPTY cycle (parsed_count 0, unparseable_count 0) is a clean audit
+      # and proceeds to produce zero confirmed findings.
+      if [ "$parsed_count" -eq 0 ] && [ "$unparseable_count" -ge 1 ]; then
+        echo "[merge-validations] FATAL: all validators produced unparseable output; cannot merge any verdicts. Raw outputs preserved at: ${_UNPARSE_ARTIFACTS}" >&2
+        exit 1
+      fi
 
       export V1_FILE="$_V1_NORMFILE"
       export V2_FILE="$_V2_NORMFILE"
