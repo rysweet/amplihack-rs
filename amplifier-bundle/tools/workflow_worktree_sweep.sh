@@ -136,7 +136,7 @@ remove_worktree_and_branch() {
     fi
     git -C "$repo" worktree prune >/dev/null 2>&1 || true
     if [ -n "$branch" ] && git -C "$repo" show-ref --verify --quiet "refs/heads/${branch}"; then
-        git -C "$repo" branch -D "$branch" >/dev/null 2>&1 \
+        git -C "$repo" branch -D -- "$branch" >/dev/null 2>&1 \
             || log_warn "Could not delete branch '${branch}'."
     fi
 }
