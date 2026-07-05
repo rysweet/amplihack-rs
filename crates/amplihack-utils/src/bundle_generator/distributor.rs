@@ -108,12 +108,16 @@ impl GitHubDistributor {
                 platform: Some("github".into()),
                 http_status: None,
             })?;
-        std::fs::write(tmp.path(), serde_json::to_vec(&body).unwrap_or_default()).map_err(|e| {
-            BundleGeneratorError::Distribution {
-                message: format!("failed to write temp file: {e}"),
+        let body_bytes =
+            serde_json::to_vec(&body).map_err(|e| BundleGeneratorError::Distribution {
+                message: format!("failed to serialize request body: {e}"),
                 platform: Some("github".into()),
                 http_status: None,
-            }
+            })?;
+        std::fs::write(tmp.path(), body_bytes).map_err(|e| BundleGeneratorError::Distribution {
+            message: format!("failed to write temp file: {e}"),
+            platform: Some("github".into()),
+            http_status: None,
         })?;
 
         let api_path = format!("repos/{repo}/contents/{path}");
