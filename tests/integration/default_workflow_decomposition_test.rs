@@ -254,7 +254,7 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "step-16-create-draft-pr",
     "step-16b-outside-in-fix-loop",
     // Phase 7: workflow-pr-review (steps 17a-19d)
-    "step-17a-compliance-verification",
+    "step-17a-testing-evidence-gate",
     "step-17b-reviewer-agent",
     "step-17c-security-review",
     "step-17d-philosophy-guardian",
@@ -297,7 +297,7 @@ const PHASE_RECIPES: &[&str] = &[
 ];
 
 const PR_REVIEW_STEP_INVENTORY: &[&str] = &[
-    "step-17a-compliance-verification",
+    "step-17a-testing-evidence-gate",
     "step-17b-reviewer-agent",
     "step-17c-security-review",
     "step-17d-philosophy-guardian",
@@ -800,7 +800,7 @@ fn mandatory_steps_still_present() {
     for required in [
         "step-00-workflow-preparation",
         "step-14-bump-version",
-        "step-17a-compliance-verification",
+        "step-17a-testing-evidence-gate",
         "step-18a-analyze-feedback",
     ] {
         assert!(

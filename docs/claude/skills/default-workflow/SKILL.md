@@ -86,7 +86,7 @@ flowchart TD
     end
 
     subgraph P6["Phase 6: PR Review - MANDATORY"]
-        S17a[Step 17a: Compliance Verification] --> S17b[Step 17b: Reviewer Agent]
+        S17a[Step 17a: Testing-Evidence Gate] --> S17b[Step 17b: Reviewer Agent]
         S17b --> S17c[Step 17c: Security Review]
         S17c --> S17d[Step 17d: Philosophy Guardian]
         S17d --> S17e{Blocking issues?}
