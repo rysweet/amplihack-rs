@@ -85,14 +85,32 @@ pub fn inject_sink_env(command: &mut std::process::Command, sink: &Path) {
 /// Returns:
 /// * `Some(contents)` when the file exists, is a regular file within the size
 ///   cap, and holds valid UTF-8.
-/// * `None` when the file is missing, empty, larger than [`MAX_SINK_BYTES`], not
-///   a regular file, or not valid UTF-8.
+/// * `None` when the file is missing, a symlink, empty, larger than
+///   [`MAX_SINK_BYTES`], not a regular file, or not valid UTF-8.
 ///
 /// Empty and unwritten collapse to the same `None` signal so a consumer never
 /// observes `Some("")` and a child that "opts out" by not writing behaves
 /// identically to one that never touched the file.
+///
+/// A symlinked sink is refused (SEC-13): `File::open` follows symlinks, so a
+/// sink swapped for a symlink could otherwise redirect the runner into reading
+/// an arbitrary file and hand it to a consumer as the "clean" answer.
 pub fn read_sink_verbatim(path: &Path) -> Option<String> {
     use std::io::Read;
+
+    // Refuse a symlinked sink before opening it (SEC-13). The read runs after
+    // the child has exited, so the only actor that could swap the file for a
+    // symlink is another process with write access to the sink's directory —
+    // which the owner-only runtime dir (SEC-6) already denies. This lstat
+    // closes the gap for a caller-supplied directory whose permissions the
+    // runner does not control, at no cost on the common (regular-file) path.
+    if std::fs::symlink_metadata(path)
+        .ok()?
+        .file_type()
+        .is_symlink()
+    {
+        return None;
+    }
 
     // Open once and stat the handle (one syscall fewer than stat-then-read,
     // which stats the path a second time internally to size its buffer).

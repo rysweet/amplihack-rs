@@ -183,6 +183,32 @@ fn read_sink_verbatim_oversize_is_none() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn read_sink_verbatim_refuses_symlinked_sink() {
+    // SEC-13: a sink swapped for a symlink must never be followed. Otherwise a
+    // symlink pointing at a secret would let the runner read that secret and
+    // hand it to a downstream consumer as the "clean" answer. Refuse before
+    // opening so the target file's bytes are never read.
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::tempdir().unwrap();
+    let secret = dir.path().join("secret.txt");
+    fs::write(
+        &secret,
+        b"TOP SECRET: the runner must not read this via a symlinked sink",
+    )
+    .unwrap();
+
+    let sink = dir.path().join("evil.sink");
+    symlink(&secret, &sink).unwrap();
+
+    assert!(
+        result_sink::read_sink_verbatim(&sink).is_none(),
+        "a symlinked sink must yield None; its target must never be read"
+    );
+}
+
 // ── Additive struct fields default off ────────────────────────────────
 
 #[test]

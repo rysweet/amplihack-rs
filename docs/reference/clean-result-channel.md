@@ -189,7 +189,7 @@ adds `result` explicitly — see [Implementation notes](#implementation-notes).
 | `RESULT_SINK_ENV`                       | const | The env-var name the runner exports to the child. Value: `"AMPLIHACK_RESULT_SINK"`.                     |
 | `allocate_sink_path(runtime_dir)`       | fn    | Allocate a fresh, unique, runner-owned sink path under `runtime_dir`. Creates the dir `0700` if needed. |
 | `inject_sink_env(cmd, path)`            | fn    | Export `AMPLIHACK_RESULT_SINK=<path>` onto a `Command`'s environment.                                    |
-| `read_sink_verbatim(path)`              | fn    | Read the sink file's bytes and return `Some(String)` verbatim, or `None` (unwritten / oversize / non-UTF-8). |
+| `read_sink_verbatim(path)`              | fn    | Read the sink file's bytes and return `Some(String)` verbatim, or `None` (unwritten / symlink / oversize / non-UTF-8). |
 
 ```rust
 /// The environment variable name the runner exports to the child process.
@@ -205,8 +205,10 @@ pub fn inject_sink_env(cmd: &mut Command, path: &Path);
 
 /// Read the sink verbatim. Returns:
 ///   - `Some(contents)` when the file exists and is valid UTF-8 within the cap,
-///   - `None` when the file is absent, empty-unwritten, oversize, or not UTF-8.
+///   - `None` when the file is absent, a symlink, empty-unwritten, oversize, or
+///     not UTF-8.
 /// Performs NO ANSI stripping, trimming, newline normalization, or JSON parsing.
+/// A symlinked sink is refused rather than followed (SEC-13).
 pub fn read_sink_verbatim(path: &Path) -> Option<String>;
 ```
 
@@ -438,6 +440,7 @@ The clean channel is designed so that opting in never widens the trust boundary.
 | SEC-6  | The runner creates the run's runtime directory owner-only (`0700` on Unix), keeping every sink inside it private to the owner. The child writes the sink file itself; the runner sets no mode on the file, relying on the owner-only directory to keep it private. |
 | SEC-10 | When the caller does not opt in, the runner `env_remove`s any inherited `AMPLIHACK_RESULT_SINK` so a stale ancestor value can never redirect capture. |
 | SEC-12 | The capability is additive and opt-in; the default path (no sink) is byte-identical to prior behaviour.     |
+| SEC-13 | The reader **refuses a symlinked sink**: `read_sink_verbatim` `lstat`s the path and returns `None` for a symlink rather than following it, so a sink swapped for a symlink can never redirect the runner into reading an arbitrary file (e.g. a secret) and handing it back as the "clean" answer. |
 
 The sink carries a *free-text answer*, not code or a command. It is data, and
 consumers must handle it as data.
