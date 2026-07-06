@@ -123,9 +123,12 @@ fn scan_docs_for(needles: &[&str]) -> Vec<String> {
 
 /// Extract the F-ERR-2 finding section (heading up to the next `####`/`###`).
 fn ferr2_section(content: &str) -> &str {
+    // Anchor on the heading form so the extraction stays correct even if a
+    // table-of-contents or summary row that also mentions `F-ERR-2` is ever
+    // added *above* the finding section.
     let start = content
-        .find("F-ERR-2")
-        .expect("audit must contain the F-ERR-2 finding");
+        .find("#### F-ERR-2")
+        .expect("audit must contain the `#### F-ERR-2` finding heading");
     // Back up to the start of the heading line so the whole finding is captured.
     let heading_start = content[..start].rfind('\n').map_or(0, |nl| nl + 1);
     let tail = &content[heading_start..];
@@ -137,6 +140,28 @@ fn ferr2_section(content: &str) -> &str {
         .find("\n#")
         .map_or(tail.len(), |rel| after_heading + rel);
     &tail[..end]
+}
+
+/// True if `line` contains a markdown link whose target uses a `..` parent
+/// traversal — the depth-fragile form that resolves from one mirror location
+/// but not the other. Catches both `](../x)` and `](./../x)` (and `](.././x)`)
+/// while ignoring same-directory `](./x)` or plain `](path/x)` links.
+fn has_fragile_relative_link(line: &str) -> bool {
+    let mut rest = line;
+    while let Some(idx) = rest.find("](") {
+        let after = &rest[idx + 2..];
+        // The link target runs up to the closing paren.
+        let mut target = after.split(')').next().unwrap_or(after);
+        // Skip any leading `./` segments, then a leading `..` is a parent hop.
+        while let Some(stripped) = target.strip_prefix("./") {
+            target = stripped;
+        }
+        if target.starts_with("..") {
+            return true;
+        }
+        rest = after;
+    }
+    false
 }
 
 // ── (1) SKILL.md mirror reconciliation ───────────────────────────────────────
@@ -198,7 +223,7 @@ fn tc_848_4_skill_mirrors_use_no_fragile_relative_markdown_links() {
         let offenders: Vec<(usize, &str)> = content
             .lines()
             .enumerate()
-            .filter(|(_, line)| line.contains("](.."))
+            .filter(|(_, line)| has_fragile_relative_link(line))
             .map(|(i, line)| (i + 1, line.trim()))
             .collect();
         assert!(
