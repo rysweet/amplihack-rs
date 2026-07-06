@@ -134,6 +134,12 @@ compliance throughout.
 The skill and recipe are the authoritative representation. Legacy
 `DEFAULT_WORKFLOW.md` files are deprecated compatibility references only.
 
+This file is mirrored byte-for-byte at
+`docs/claude/skills/default-workflow/SKILL.md`. Because the two copies live at
+different directory depths, cross-references to other repository docs must use a
+repo-relative inline-code path (for example `docs/reference/foo.md`) rather than
+a relative `../` markdown link, so the reference stays valid from both locations.
+
 ## Execution Instructions
 
 ### Normal path (via dev-orchestrator)
@@ -216,7 +222,7 @@ their own local consumer-facing validation pattern. Python `uvx` is only a
 Python/uv-specific option when that project shape warrants it.
 
 For the full evidence contract and examples, see
-[`docs/reference/default-workflow-step-13-validation.md`](../../../reference/default-workflow-step-13-validation.md).
+`docs/reference/default-workflow-step-13-validation.md`.
 
 ## Configuration
 

@@ -376,3 +376,10 @@ path = "../../tests/integration/merge_ready_platform_contract_test.rs"
 [[test]]
 name = "code_philosophy_audit_recipe"
 path = "../../tests/integration/code_philosophy_audit_recipe_test.rs"
+
+# Issue #848: documentation-refinement contract for the step-17a
+# compliance -> testing-evidence gate rename. Locks in SKILL.md mirror
+# byte-equality + path convention and the corrected F-ERR-2 audit citation.
+[[test]]
+name = "issue_848_docs_refinement"
+path = "../../tests/integration/issue_848_docs_refinement_test.rs"
