@@ -92,7 +92,12 @@ pub fn inject_sink_env(command: &mut std::process::Command, sink: &Path) {
 /// observes `Some("")` and a child that "opts out" by not writing behaves
 /// identically to one that never touched the file.
 pub fn read_sink_verbatim(path: &Path) -> Option<String> {
-    let meta = std::fs::metadata(path).ok()?;
+    use std::io::Read;
+
+    // Open once and stat the handle (one syscall fewer than stat-then-read,
+    // which stats the path a second time internally to size its buffer).
+    let file = std::fs::File::open(path).ok()?;
+    let meta = file.metadata().ok()?;
     if !meta.is_file() {
         return None;
     }
@@ -101,11 +106,18 @@ pub fn read_sink_verbatim(path: &Path) -> Option<String> {
         return None;
     }
 
-    let bytes = std::fs::read(path).ok()?;
-    // Re-check on the bytes actually read: the file may have changed between the
-    // metadata probe and the read (TOCTOU). Reject if it grew past the cap or
-    // shrank to empty, so both the size bound and the empty-is-None invariant
-    // hold regardless of a concurrent write.
+    // Read through a byte-capped reader rather than slurping the whole file:
+    // this bounds the allocation to the cap even if the child grows the file
+    // between the size probe and the read (TOCTOU), so a hostile or runaway
+    // child can never force an unbounded read (SEC-3). Pre-size to the probed
+    // length for a single right-sized allocation in the common case; the extra
+    // `+ 1` byte is what lets us detect — and reject — a file that raced past
+    // the cap.
+    let mut bytes = Vec::with_capacity(len as usize);
+    file.take(MAX_SINK_BYTES + 1).read_to_end(&mut bytes).ok()?;
+    // Re-check the bytes actually read: under a concurrent write the file may
+    // have grown past the cap or shrunk to empty, so re-assert both the size
+    // bound and the empty-is-None invariant.
     if bytes.is_empty() || bytes.len() as u64 > MAX_SINK_BYTES {
         return None;
     }
