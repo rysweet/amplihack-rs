@@ -376,3 +376,11 @@ path = "../../tests/integration/merge_ready_platform_contract_test.rs"
 [[test]]
 name = "code_philosophy_audit_recipe"
 path = "../../tests/integration/code_philosophy_audit_recipe_test.rs"
+
+# Issue #849: default-workflow SKILL mirror parity + F-ERR-2 stale-citation guard.
+# Pins byte-for-byte mirror equality, the extracted Step 17a gate node, absence of
+# the stale `default-workflow.yaml:961` reference, and that the audit citations
+# resolve to a live `step-17a-testing-evidence-gate` step in workflow-pr-review.yaml.
+[[test]]
+name = "issue_849_skill_mirror_citation"
+path = "../../tests/integration/issue_849_skill_mirror_citation_test.rs"

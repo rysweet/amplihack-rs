@@ -182,7 +182,8 @@ The default-workflow has exactly **3 git-based checkpoints** across 23 steps:
 
 #### F-ERR-2: Step 13 "CANNOT BE SKIPPED" label has no enforcement mechanism (High)
 
-- **File**: `amplifier-bundle/recipes/default-workflow.yaml:961`
+- **File**: `amplifier-bundle/recipes/workflow-pr-review.yaml` — step `step-17a-testing-evidence-gate` (~L16–40; the gate `echo`/`exit 1` block emitting `step_13_testing_evidence_check`)
+- **Note**: This file/line reference is a point-in-time snapshot. The Step 17a testing-evidence gate was extracted from `default-workflow.yaml` into `workflow-pr-review.yaml`; locate it by step id (`step-17a-testing-evidence-gate`) rather than a fixed line number.
 - **Issue**: Step 13 (outside-in testing) is labeled "CANNOT BE SKIPPED" in the prompt text, but has no `condition` or `depends_on` field enforcing this. The label is advisory only. Step 17a (testing-evidence gate) validates `local_testing_gate` output and fails if step 13 produced no output — creating an implicit but fragile coupling.
 - **Fix**: Add explicit `required: true` metadata or a validation step that halts the workflow if step 13 is skipped.
 
