@@ -203,6 +203,21 @@ Agent runtimes that support skills should enter through
 `Skill(skill="default-workflow")` activation is for explicit standalone use or
 orchestrator-unavailable compatibility.
 
+## Step 13 Local Validation Contract
+
+Step 13 is a mandatory outside-in local validation gate. It is agentic and
+toolchain-aware: the acting agent detects affected languages, manifests,
+lockfiles, package managers, entry points, changed files, and documented project
+commands before selecting validation commands.
+
+The step must not require one global validation mechanism across all projects.
+Rust/Cargo, Node/npm, Python/uv, Go, .NET, and other detected toolchains each use
+their own local consumer-facing validation pattern. Python `uvx` is only a
+Python/uv-specific option when that project shape warrants it.
+
+For the full evidence contract and examples, see
+[`docs/reference/default-workflow-step-13-validation.md`](../../../reference/default-workflow-step-13-validation.md).
+
 ## Configuration
 
 Generated preferences and session context name the canonical skill/recipe, not a
@@ -238,15 +253,33 @@ In most cases, it will activate first and invoke this workflow as a sub-recipe.
 Steps that commonly fail during workflow execution. Agents executing this workflow
 MUST apply the documented resilience patterns when encountering these steps.
 
+### Step 1 — Git Fetch (credential failure)
+
+**Failure**: `git fetch --all` fails with exit 128 when the remote requires credentials
+that are not configured — most commonly Azure DevOps remotes where only the GitHub
+credential helper (`gh auth git-credential`) is wired up.
+**Resilience**: Fetch failure is caught and downgraded to a WARNING. The step continues
+with local branch state. ADO remotes (`dev.azure.com`, `visualstudio.com`) receive
+specific remediation guidance (`az login`, GCM install, PAT setup). The remote URL is
+never echoed to avoid leaking embedded credentials. See
+`docs/recipes/issue-655-656-skill-invocation-and-fetch-resilience.md` for details.
+
 ### Step 3 — Issue Creation (label missing)
 
 **Failure**: `gh label create` fails silently when labels cannot be created (permission denied, API timeout).
 **Resilience**: Label attachment is best-effort. If `gh issue create --label` fails, retry without `--label`. The issue itself is the critical artifact, not its labels.
 
-### Step 4 — Worktree Setup (no remote / no origin/main)
+### Step 4 — Worktree Setup (non-main default branch)
 
-**Failure**: `git fetch origin main` aborts when the repo has no remotes or `origin/main` does not exist.
-**Resilience**: Topology detection runs first. If no remote exists, use `HEAD` as base ref and skip push/upstream setup. The `bootstrap` flag in worktree output signals downstream steps to skip remote operations.
+**Failure**: Worktree setup aborts when a repository does not have `origin/main`,
+even though its remote default branch is `master` or `develop`.
+**Resilience**: Remote base detection runs before worktree creation. Prefer
+Git-verified `origin/HEAD`, then fall back to `origin/master`, then
+`origin/develop`. `origin/HEAD` may target `origin/main`, `origin/master`,
+`origin/develop`, or another remote default branch as long as Git verifies it as
+a remote-tracking ref under `refs/remotes/origin/`. If no supported remote base
+source exists, fail closed with a clear error; do not bootstrap from local
+`HEAD` or silently skip push/upstream setup.
 
 ### Step 4 — Initial Push (network transient)
 
