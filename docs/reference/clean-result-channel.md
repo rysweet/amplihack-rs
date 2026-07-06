@@ -68,7 +68,7 @@ consumer.
 flowchart LR
     subgraph Runner
         A["run_delivered_command"]
-        A -->|"1. allocate sink path"| SINK["result-sink file<br/>(runtime dir, 0600)"]
+        A -->|"1. allocate sink path"| SINK["result-sink file<br/>(owner-only 0700 runtime dir)"]
         A -->|"2. export AMPLIHACK_RESULT_SINK=path"| ENV["child env"]
     end
     subgraph Child["Spawned agent / step"]
@@ -389,60 +389,40 @@ plus stray ANSI-looking bytes to `AMPLIHACK_RESULT_SINK`. The test asserts:
 
 ## Implementation notes
 
-This section records the wiring the implementation adds, written against the
-current shape of `crates/amplihack-orchestration/src/claude_process.rs`. It is
-the load-bearing plumbing behind the API above.
-
-**Thread the sink through `run_delivered_command`.** Every execution path funnels
-through one shared executor, today shaped as:
+The plumbing lives in `crates/amplihack-orchestration/src/claude_process.rs`.
+Every execution path funnels through one shared executor,
+`run_delivered_command`, which receives the opted-in sink alongside the
+delivered command:
 
 ```rust
 async fn run_delivered_command(
     delivered: DeliveredProcessCommand,
     timeout: Option<Duration>,
+    result_sink: Option<PathBuf>,
     process_id: String,
     start: Instant,
 ) -> ProcessResult
 ```
 
-It must also receive the opted-in sink (e.g. an added
-`result_sink: Option<PathBuf>` parameter). Both call sites —
-`TokioProcessRunner::run` and the `run_with_prompt_delivery_for_test` helper —
-currently pass only `(delivered, opts.timeout, opts.process_id, start)` and thus
-**drop `opts.result_sink`**. Each must forward it. This is the single biggest
-wiring change; nothing else in the feature works until the sink reaches the
-executor.
-
-**Inject before spawn.** Inside `run_delivered_command`, call
-`result_sink::inject_sink_env(&mut command, &path)` on the
-`std::process::Command` *before* it is converted via `TokioCommand::from(command)`
-and spawned. When no sink is requested, `env_remove(RESULT_SINK_ENV)` on that same
-command so an inherited ancestor value cannot leak to the child (SEC-10).
-
-**Read on the normal-exit path only.** Read the sink verbatim exactly where the
-success `ProcessResult` is constructed (the `Ok(s) => ProcessResult { .. }` arm),
-setting `result: read_sink_verbatim(&path)`. Every early return in
-`run_delivered_command` uses `ProcessResult::err`, which leaves `result = None` —
-so spawn, stdin-write, and timeout failures never touch the sink, matching the
-[error-path semantics](#how-it-works) above.
-
-**Additive struct changes.** `ProcessResult` gains `result: Option<String>` and
-`RunOptions` gains `result_sink: Option<PathBuf>`, both defaulting to `None` in
-`ProcessResult::ok`/`ProcessResult::err` and `RunOptions::new`. Existing
-constructors and pattern-matching call sites that build these structs must be
-updated to the new field, but their observable behaviour is unchanged.
-
-**Test-helper parity.** `run_delivered_command_for_test` funnels through the same
-executor and must thread the sink too, so the proving test (see
-[Migration example](#migration-example-dropping-stdout-scraping)) can point a
-child at `AMPLIHACK_RESULT_SINK` and assert verbatim recovery under a stdout
-noise storm.
-
-**Concurrency falls out naturally.** Because the sink is per invocation of
-`run_delivered_command`, each parallel `run()` in `debate` / `n_version` /
-`expert_panel` gets its own channel as long as callers allocate a distinct path
-per run (see the concurrency note under
-[`result_sink` module](#result_sink-module)).
+- **Inject before spawn.** When a sink is requested, the executor calls
+  `result_sink::inject_sink_env` on the `std::process::Command` before it is
+  converted via `TokioCommand::from(command)` and spawned. When none is
+  requested it `env_remove`s `RESULT_SINK_ENV` so an inherited ancestor value
+  cannot leak to the child (SEC-10).
+- **Read on the normal-exit path only.** The sink is read verbatim exactly where
+  the success `ProcessResult` is built. Every early return (spawn, stdin-write,
+  or timeout failure) uses `ProcessResult::err`, which leaves `result = None`, so
+  a failed run never touches the sink — matching the
+  [error-path semantics](#how-it-works) above.
+- **Additive fields.** `ProcessResult.result` and `RunOptions.result_sink` both
+  default to `None` in `ProcessResult::ok` / `ProcessResult::err` and
+  `RunOptions::new`, so existing constructors and call sites compile and behave
+  unchanged.
+- **Concurrency falls out naturally.** The sink is per invocation of
+  `run_delivered_command`, so each parallel `run()` in `debate` / `n_version` /
+  `expert_panel` gets its own channel as long as callers allocate a distinct
+  path per run (see the concurrency note under
+  [`result_sink` module](#result_sink-module)).
 
 ---
 
@@ -455,7 +435,7 @@ The clean channel is designed so that opting in never widens the trust boundary.
 | SEC-1  | The sink path is **runner-owned** — allocated by `allocate_sink_path`, never taken from untrusted recipe context. Recipe-context injection drops `AMPLIHACK_`-prefixed keys, so a recipe cannot set the sink path itself. |
 | SEC-3  | Reads are **bounded** by a size cap; an oversize sink yields `None`, never an unbounded allocation.         |
 | SEC-5  | `result` is treated as **untrusted** child output — same trust level as `output`. Consumers must not `eval`/execute it. |
-| SEC-6  | The sink lives under the run's runtime directory, created with owner-only (`0700` dir / `0600` file) permissions where the platform supports them. |
+| SEC-6  | The runner creates the run's runtime directory owner-only (`0700` on Unix), keeping every sink inside it private to the owner. The child writes the sink file itself; the runner sets no mode on the file, relying on the owner-only directory to keep it private. |
 | SEC-10 | When the caller does not opt in, the runner `env_remove`s any inherited `AMPLIHACK_RESULT_SINK` so a stale ancestor value can never redirect capture. |
 | SEC-12 | The capability is additive and opt-in; the default path (no sink) is byte-identical to prior behaviour.     |
 

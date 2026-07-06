@@ -102,8 +102,10 @@ pub fn read_sink_verbatim(path: &Path) -> Option<String> {
     }
 
     let bytes = std::fs::read(path).ok()?;
-    // Re-check the actual read size to guard against a file that grew between
-    // the metadata probe and the read (TOCTOU): stay bounded regardless.
+    // Re-check on the bytes actually read: the file may have changed between the
+    // metadata probe and the read (TOCTOU). Reject if it grew past the cap or
+    // shrank to empty, so both the size bound and the empty-is-None invariant
+    // hold regardless of a concurrent write.
     if bytes.is_empty() || bytes.len() as u64 > MAX_SINK_BYTES {
         return None;
     }
