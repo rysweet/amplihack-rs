@@ -58,9 +58,12 @@ fn workspace_root() -> PathBuf {
     path
 }
 
+fn read_abs(path: &Path) -> String {
+    fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
 fn read_rel(relative: &str) -> String {
-    let path = workspace_root().join(relative);
-    fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+    read_abs(&workspace_root().join(relative))
 }
 
 /// Recursively collect every `.md` file under `dir` (skips hidden/`target`).
@@ -85,6 +88,25 @@ fn all_docs_md_files() -> Vec<PathBuf> {
     let mut out = Vec::new();
     collect_md_files(&workspace_root().join("docs"), &mut out);
     out
+}
+
+/// Scan every docs/ markdown file for any of `needles`, returning a
+/// `rel/path:line: [needle] content` report line for each offending match.
+fn scan_docs_for(needles: &[&str]) -> Vec<String> {
+    let root = workspace_root();
+    let mut offenders = Vec::new();
+    for path in all_docs_md_files() {
+        let content = read_abs(&path);
+        let rel = path.strip_prefix(&root).unwrap_or(&path).display();
+        for (i, line) in content.lines().enumerate() {
+            for needle in needles {
+                if line.contains(needle) {
+                    offenders.push(format!("{rel}:{}: [{needle}] {}", i + 1, line.trim()));
+                }
+            }
+        }
+    }
+    offenders
 }
 
 /// Extract the F-ERR-2 finding section (heading up to the next `####`/`###`).
@@ -187,22 +209,7 @@ fn tc_848_5_no_stale_default_workflow_yaml_961_citation_in_docs() {
     // The `default-workflow.yaml:961` pointer no longer resolves — the file is
     // now a ~167-line orchestrator. It must not appear anywhere under docs/.
     const STALE: &str = "default-workflow.yaml:961";
-    let mut offenders = Vec::new();
-    for path in all_docs_md_files() {
-        let content = fs::read_to_string(&path).unwrap_or_default();
-        for (i, line) in content.lines().enumerate() {
-            if line.contains(STALE) {
-                offenders.push(format!(
-                    "{}:{}: {}",
-                    path.strip_prefix(workspace_root())
-                        .unwrap_or(&path)
-                        .display(),
-                    i + 1,
-                    line.trim()
-                ));
-            }
-        }
-    }
+    let offenders = scan_docs_for(&[STALE]);
     assert!(
         offenders.is_empty(),
         "The dangling `{STALE}` citation must not appear in any docs/ file; \
@@ -302,24 +309,7 @@ fn tc_848_9_no_stale_pre_rename_gate_identifiers_remain_in_docs() {
         "Step 17a: Step 13 Compliance",
         "Step 17a (compliance gate)",
     ];
-    let mut offenders = Vec::new();
-    for path in all_docs_md_files() {
-        let content = fs::read_to_string(&path).unwrap_or_default();
-        for (i, line) in content.lines().enumerate() {
-            for stale in STALE_IDENTIFIERS {
-                if line.contains(stale) {
-                    offenders.push(format!(
-                        "{}:{}: [{stale}] {}",
-                        path.strip_prefix(workspace_root())
-                            .unwrap_or(&path)
-                            .display(),
-                        i + 1,
-                        line.trim()
-                    ));
-                }
-            }
-        }
-    }
+    let offenders = scan_docs_for(STALE_IDENTIFIERS);
     assert!(
         offenders.is_empty(),
         "Pre-rename step-17a gate identifiers must not remain in docs/ after \
