@@ -97,9 +97,21 @@ fn scan_docs_for(needles: &[&str]) -> Vec<String> {
     let mut offenders = Vec::new();
     for path in all_docs_md_files() {
         let content = read_abs(&path);
+        // Whole-file substring search is a single early-exiting `memmem` pass.
+        // The overwhelmingly common no-match file skips the per-line scan
+        // entirely, and matching files only line-scan the needles that are
+        // actually present — output is identical to a full per-line sweep.
+        let hits: Vec<&str> = needles
+            .iter()
+            .copied()
+            .filter(|n| content.contains(n))
+            .collect();
+        if hits.is_empty() {
+            continue;
+        }
         let rel = path.strip_prefix(&root).unwrap_or(&path).display();
         for (i, line) in content.lines().enumerate() {
-            for needle in needles {
+            for needle in &hits {
                 if line.contains(needle) {
                     offenders.push(format!("{rel}:{}: [{needle}] {}", i + 1, line.trim()));
                 }
