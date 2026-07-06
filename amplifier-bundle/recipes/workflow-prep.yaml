@@ -41,7 +41,7 @@ steps:
       echo "  Step 15: Commit and Push"
       echo "  Step 16: Open PR as Draft"
       echo "  Step 17: Review the PR (MANDATORY - 6 sub-steps with verification gate)"
-      echo "    17a: Step 13 Compliance Verification"
+      echo "    17a: Step 13 Testing-Evidence Gate"
       echo "    17b: Comprehensive Code Review (reviewer agent)"
       echo "    17c: Security Review (security agent)"
       echo "    17d: Philosophy Guardian Review (philosophy-guardian agent)"
