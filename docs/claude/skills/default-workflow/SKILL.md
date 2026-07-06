@@ -134,11 +134,12 @@ compliance throughout.
 The skill and recipe are the authoritative representation. Legacy
 `DEFAULT_WORKFLOW.md` files are deprecated compatibility references only.
 
-This file is mirrored byte-for-byte at
-`docs/claude/skills/default-workflow/SKILL.md`. Because the two copies live at
-different directory depths, cross-references to other repository docs must use a
-repo-relative inline-code path (for example `docs/reference/foo.md`) rather than
-a relative `../` markdown link, so the reference stays valid from both locations.
+The two copies of this file — `docs/claude/skills/default-workflow/SKILL.md` and
+`amplifier-bundle/skills/default-workflow/SKILL.md` — are mirrored byte-for-byte.
+Because they live at different directory depths, cross-references to other
+repository docs must use a repo-relative inline-code path (for example
+`docs/reference/foo.md`) rather than a relative `../` markdown link, so the
+reference stays valid from both locations.
 
 ## Execution Instructions
 
