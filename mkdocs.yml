@@ -100,6 +100,7 @@ nav:
       - Investigation Workflow: claude/workflow/INVESTIGATION_WORKFLOW.md
       - Recipe CLI Commands: howto/recipe-cli-commands.md
       - Recipe CLI Reference: reference/recipe-cli-reference.md
+      - Clean Result Channel: reference/clean-result-channel.md
       - PR Recovery Readiness:
           - Overview: features/pr-recovery-readiness.md
           - How-To: howto/recover-existing-pr-with-default-workflow.md
@@ -219,3 +220,4 @@ nav:
       - multitask Command: reference/multitask-command.md
       - doctor Command: reference/doctor-command.md
       - Rust Runner Execution: reference/rust-runner-execution.md
+      - Clean Result Channel: reference/clean-result-channel.md

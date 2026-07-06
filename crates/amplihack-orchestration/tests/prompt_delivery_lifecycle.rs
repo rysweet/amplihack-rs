@@ -104,6 +104,7 @@ async fn process_runner_uses_delivery_path_for_large_delegate_prompt() {
                 timeout: Some(Duration::from_secs(5)),
                 model: None,
                 working_dir: Some(Path::new("/tmp").to_path_buf()),
+                result_sink: None,
             },
             PromptDelivery::Auto,
             DeliveryCaps {
