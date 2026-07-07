@@ -355,6 +355,66 @@ fn untracked_nested_worktrees_and_build_artifacts_are_blocked() {
 }
 
 #[test]
+fn ignored_present_inside_registered_sibling_worktree_is_not_flagged() {
+    // Issue #857: concurrent recipe runs create dedicated task worktrees under
+    // `<repo>/worktrees/`. When `worktrees/` is gitignored (as in Simard), each
+    // sibling's ignored files (target/, .pytest_cache, .claude/runtime) surface
+    // via `git ls-files --others --ignored` and were wrongly flagged as
+    // `nested-worktree` leaks, failing every concurrent recipe's finalize.
+    let tmp = repo();
+    write_file(&tmp.path().join(".gitignore"), "worktrees/\n");
+    run_git(tmp.path(), &["add", ".gitignore"]);
+    run_git(tmp.path(), &["commit", "-qm", "ignore worktrees"]);
+
+    // A legitimately-registered sibling task worktree.
+    run_git(
+        tmp.path(),
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "worktrees/sibling",
+            "-b",
+            "sibling",
+        ],
+    );
+    // Ignored-present artifacts INSIDE the registered sibling — must be exempt.
+    write_file(
+        &tmp.path()
+            .join("worktrees/sibling/.pytest_cache/CACHEDIR.TAG"),
+        "x\n",
+    );
+    write_file(
+        &tmp.path().join("worktrees/sibling/target/.rustc_info.json"),
+        "{}\n",
+    );
+    // A genuinely-leaked (UNregistered) directory under worktrees/ — still flagged.
+    write_file(
+        &tmp.path().join("worktrees/leaked/target/.rustc_info.json"),
+        "{}\n",
+    );
+
+    let report = scan_artifacts(&default_config(tmp.path())).expect("scan artifacts");
+
+    assert!(
+        !report
+            .violations
+            .iter()
+            .any(|v| v.path.starts_with("worktrees/sibling")),
+        "registered sibling worktree wrongly flagged (issue #857): {:?}",
+        report.violations
+    );
+    assert!(
+        report
+            .violations
+            .iter()
+            .any(|v| v.path.starts_with("worktrees/leaked")),
+        "leaked unregistered worktree must still be flagged: {:?}",
+        report.violations
+    );
+}
+
+#[test]
 fn normal_source_files_and_ignored_rust_target_do_not_block_local_development() {
     let tmp = repo();
     write_file(&tmp.path().join("src/lib.rs"), "pub fn ok() {}\n");
