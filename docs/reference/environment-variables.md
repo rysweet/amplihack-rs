@@ -22,6 +22,7 @@ All environment variables read or written by `amplihack` during a launch (`ampli
   - [AMPLIHACK_NONINTERACTIVE (recipe runner subprocess)](#amplihack_noninteractive-recipe-runner-subprocess)
   - [AMPLIHACK_RECIPE_RUN_ID](#amplihack_recipe_run_id)
   - [AMPLIHACK_RUNTIME_ROOT](#amplihack_runtime_root)
+  - [AMPLIHACK_RESULT_SINK](#amplihack_result_sink)
   - [CLAUDECODE (recipe runner subprocess)](#claudecode-recipe-runner-subprocess)
   - [AMPLIHACK_RECIPE_HEARTBEAT_INTERVAL_SECONDS](#amplihack_recipe_heartbeat_interval_seconds)
   - [AMPLIHACK_RECIPE_SNIPPET_LINES](#amplihack_recipe_snippet_lines)
@@ -493,6 +494,46 @@ inside the active task worktree.
 
 See [Workflow Runtime Artifacts Reference](./workflow-runtime-artifacts.md) for
 the full runtime-root, cleanup, and lifecycle preflight contract.
+
+---
+
+### AMPLIHACK_RESULT_SINK
+
+**Type:** absolute path
+**Set by:** the orchestration runner (`run_delivered_command`) when a caller opts
+in via `RunOptions.result_sink`
+**Read by:** the spawned agent / recipe step
+
+Names the **clean result channel** file for a step. When present and non-empty,
+the child should write its final semantic answer (free text — JSON not required)
+to this path *in addition to* whatever it prints on stdout. After the child
+exits, the runner reads this file **verbatim** into `ProcessResult.result`,
+giving consumers the answer without scraping ANSI / tracing / banner noise out of
+stdout.
+
+Key behaviours:
+
+- **Opt-in only.** Exported *only* when `RunOptions.result_sink` is `Some`.
+  Absent ⇒ legacy stdout-only capture (`result == None`).
+- **No stale inheritance.** When the caller does not opt in, the runner
+  `env_remove`s any inherited `AMPLIHACK_RESULT_SINK` so an ancestor value can
+  never silently redirect capture.
+- **Runner-owned path.** The path is allocated by the runner under the run's
+  runtime directory with owner-only permissions; it is never taken from
+  untrusted recipe context.
+- **Verbatim.** The runner performs no ANSI-strip, trim, newline-normalize, or
+  JSON parse. Oversize or non-UTF-8 contents yield `result == None` (fallback to
+  stdout).
+
+```sh
+# Child-side idiom: honour the channel when the runner provides it.
+if [ -n "${AMPLIHACK_RESULT_SINK:-}" ]; then
+  printf '%s' "$FINAL_ANSWER" > "$AMPLIHACK_RESULT_SINK"
+fi
+```
+
+See the [Clean Result Channel Reference](./clean-result-channel.md) for the full
+contract, API, verbatim guarantee, and migration example.
 
 ---
 

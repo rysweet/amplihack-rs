@@ -160,8 +160,10 @@ pub async fn run_n_version(
         };
     }
 
-    // Step 4: parse selection.
-    let lower = comparison_result.output.to_lowercase();
+    // Step 4: parse selection. Read the reviewer's clean answer (the result
+    // channel when present, stdout otherwise) — never scrape raw noisy stdout.
+    let answer = comparison_result.answer();
+    let lower = answer.to_lowercase();
     let mut selected: Option<String> = None;
     if lower.contains("hybrid") {
         selected = Some("hybrid".to_string());
@@ -183,8 +185,7 @@ pub async fn run_n_version(
     let rationale = if let Some(idx) = lower.find("## rationale") {
         // `idx` is a valid byte boundary (from `find`), but `idx + 1000`
         // may land mid-codepoint — use UTF-8-safe truncation.
-        crate::text_utils::truncate_at_char_boundary(&comparison_result.output[idx..], 1000)
-            .to_string()
+        crate::text_utils::truncate_at_char_boundary(&answer[idx..], 1000).to_string()
     } else {
         "See comparison output for full rationale".to_string()
     };
@@ -251,7 +252,7 @@ fn build_comparison_prompt(
             p.name,
             status,
             r.duration.as_secs_f32(),
-            r.output.len(),
+            r.answer().len(),
         ));
     }
 
@@ -270,8 +271,9 @@ fn build_comparison_prompt(
     let bar = "=".repeat(80);
     for (i, r) in versions.iter().enumerate() {
         let p = profiles[i % profiles.len()];
-        let body = crate::text_utils::truncate_at_char_boundary(&r.output, 5000);
-        let truncated = if body.len() < r.output.len() {
+        let body_src = r.answer();
+        let body = crate::text_utils::truncate_at_char_boundary(body_src, 5000);
+        let truncated = if body.len() < body_src.len() {
             "...(truncated)"
         } else {
             ""

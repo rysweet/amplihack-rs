@@ -91,7 +91,7 @@ pub async fn run_sequential(
         let result = process.run().await;
         let succeeded = result.is_success();
         if pass_output {
-            accumulated.push_str(&result.output);
+            accumulated.push_str(result.answer());
         }
         results.push(result);
 
@@ -186,7 +186,7 @@ pub async fn run_batched(
                 if !joined.is_empty() {
                     joined.push_str("\n\n");
                 }
-                joined.push_str(&r.output);
+                joined.push_str(r.answer());
             }
             if !joined.is_empty() {
                 if !accumulated.is_empty() {
