@@ -86,12 +86,16 @@ pub fn read_keyed_state<T: DeserializeOwned>(
     path: &Path,
     key: &str,
 ) -> Result<Option<T>, StateReadError> {
-    let Some(data) = read_json_state(path)? else {
+    let Some(mut data) = read_json_state(path)? else {
         return Ok(None);
     };
-    match data.get(key) {
+    // `data` is a freshly parsed tree we own and drop right after, so move the
+    // keyed sub-value out (leaving a `null` behind) instead of deep-cloning it.
+    // Avoids duplicating potentially large state (all sessions / pool entries)
+    // on every load.
+    match data.get_mut(key) {
         None => Ok(None),
-        Some(value) => serde_json::from_value(value.clone())
+        Some(slot) => serde_json::from_value(slot.take())
             .map(Some)
             .map_err(|source| StateReadError::Corrupt {
                 path: path.display().to_string(),

@@ -8,13 +8,22 @@ use std::fmt;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::str::FromStr;
+use std::sync::LazyLock;
 
 use chrono::{DateTime, Utc};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tracing::warn;
 
 use crate::state_io::{merge_key_into_state, read_keyed_state};
+
+/// Validates a tmux session id (`sess-YYYYMMDD-HHMMSS-xxxx`) before it is
+/// interpolated into a shell command. The pattern is constant, so it is
+/// compiled once here rather than on every `capture_output` call.
+static TMUX_SESSION_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^sess-\d{8}-\d{6}-[a-f0-9]{4}$").expect("valid tmux session regex")
+});
 
 /// Session lifecycle states.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -224,8 +233,7 @@ impl SessionManager {
         };
 
         // Validate session ID format
-        let re = regex::Regex::new(r"^sess-\d{8}-\d{6}-[a-f0-9]{4}$").unwrap();
-        if !re.is_match(&session.tmux_session) {
+        if !TMUX_SESSION_RE.is_match(&session.tmux_session) {
             return String::new();
         }
 
