@@ -1,4 +1,4 @@
-use super::paths::ensure_local_bin_on_shell_path;
+use super::paths::{PathPersistenceOutcome, ensure_local_bin_on_shell_path};
 use std::fs;
 
 #[test]
@@ -75,6 +75,7 @@ fn shell_profile_existing_managed_block_is_moved_after_later_path_mutations() {
     unsafe {
         std::env::set_var("SHELL", "/bin/bash");
     }
+
     let bashrc = temp.path().join(".bashrc");
     fs::write(
         &bashrc,
@@ -103,5 +104,38 @@ fn shell_profile_existing_managed_block_is_moved_after_later_path_mutations() {
         content.matches("# >>> amplihack managed PATH >>>").count(),
         1,
         "managed PATH block must still be singular after move:\n{content}"
+    );
+}
+
+#[test]
+fn fish_profile_gets_fish_path_syntax() {
+    let _lock = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let _home = crate::test_support::HomeGuard::set(temp.path());
+    let previous_shell = std::env::var_os("SHELL");
+    unsafe {
+        std::env::set_var("SHELL", "/usr/bin/fish");
+    }
+
+    let outcome = ensure_local_bin_on_shell_path().unwrap();
+
+    let content = fs::read_to_string(temp.path().join(".config/fish/config.fish")).unwrap();
+    match previous_shell {
+        Some(value) => unsafe { std::env::set_var("SHELL", value) },
+        None => unsafe { std::env::remove_var("SHELL") },
+    }
+    assert!(
+        matches!(outcome, PathPersistenceOutcome::Updated(ref path) if path.ends_with(".config/fish/config.fish")),
+        "first fish profile repair should write config.fish, got {outcome:?}"
+    );
+    assert!(
+        content.contains("fish_add_path --prepend $HOME/.local/bin"),
+        "fish profile must use fish-compatible PATH syntax:\n{content}"
+    );
+    assert!(
+        !content.contains("export PATH="),
+        "fish profile must not receive POSIX export syntax:\n{content}"
     );
 }

@@ -89,23 +89,50 @@ pub(super) fn unix_timestamp() -> u64 {
         .unwrap_or(0)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellProfileSyntax {
+    Posix,
+    Fish,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ShellProfile {
+    path: PathBuf,
+    syntax: ShellProfileSyntax,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PathPersistenceOutcome {
+    Updated(PathBuf),
+    AlreadyCurrent(PathBuf),
+    UnsupportedShell { shell: Option<String> },
+}
+
 /// Determine the shell rc file where PATH exports should be appended.
 ///
 /// Checks `$SHELL` for the login shell and returns the corresponding profile
 /// file (e.g. `.bashrc`, `.zshrc`).  Returns `None` when the shell cannot be
 /// detected or is unsupported.
+#[cfg(test)]
 pub(crate) fn shell_profile_path() -> Option<PathBuf> {
+    shell_profile().map(|profile| profile.path)
+}
+
+fn shell_profile() -> Option<ShellProfile> {
     let home = home_dir().ok()?;
     let shell = std::env::var("SHELL").ok()?;
     let name = Path::new(&shell).file_name()?.to_str()?;
-    let rc = match name {
-        "bash" => ".bashrc",
-        "zsh" => ".zshrc",
-        "fish" => ".config/fish/config.fish",
-        "ksh" => ".kshrc",
+    let (rc, syntax) = match name {
+        "bash" => (".bashrc", ShellProfileSyntax::Posix),
+        "zsh" => (".zshrc", ShellProfileSyntax::Posix),
+        "fish" => (".config/fish/config.fish", ShellProfileSyntax::Fish),
+        "ksh" => (".kshrc", ShellProfileSyntax::Posix),
         _ => return None,
     };
-    Some(home.join(rc))
+    Some(ShellProfile {
+        path: home.join(rc),
+        syntax,
+    })
 }
 
 const PATH_BLOCK_START: &str = "# >>> amplihack managed PATH >>>";
@@ -116,35 +143,44 @@ const PATH_BLOCK_END: &str = "# <<< amplihack managed PATH <<<";
 /// A later PATH mention is not sufficient: stale Python/uvx wrappers earlier
 /// on PATH can still win. The managed block is idempotent and always prepends
 /// `$HOME/.local/bin` for future shells.
-pub(crate) fn ensure_local_bin_on_shell_path() -> Result<()> {
-    let profile = match shell_profile_path() {
+pub(crate) fn ensure_local_bin_on_shell_path() -> Result<PathPersistenceOutcome> {
+    let profile = match shell_profile() {
         Some(p) => p,
         None => {
-            tracing::debug!("could not detect shell profile; skipping PATH auto-persist");
-            return Ok(());
+            let shell = std::env::var("SHELL").ok();
+            eprintln!(
+                "  ⚠️  Could not detect a supported shell profile for persistent PATH repair. \
+                 Add ~/.local/bin to the front of PATH manually."
+            );
+            return Ok(PathPersistenceOutcome::UnsupportedShell { shell });
         }
     };
 
-    let existing = std::fs::read_to_string(&profile).unwrap_or_default();
+    let existing = std::fs::read_to_string(&profile.path).unwrap_or_default();
     let without_old_block = remove_managed_path_block(&existing);
-    let next_content = format!("{}{}", without_old_block.trim_end(), managed_path_block());
+    let next_content = format!(
+        "{}{}",
+        without_old_block.trim_end(),
+        managed_path_block(profile.syntax)
+    );
     if existing == next_content {
-        return Ok(());
+        return Ok(PathPersistenceOutcome::AlreadyCurrent(profile.path));
     }
 
-    atomic_write(&profile, next_content.as_bytes())?;
+    atomic_write(&profile.path, next_content.as_bytes())?;
     println!(
         "  ✅ Ensured ~/.local/bin is prepended to PATH in {}",
-        profile.display()
+        profile.path.display()
     );
-    Ok(())
+    Ok(PathPersistenceOutcome::Updated(profile.path))
 }
 
-fn managed_path_block() -> String {
-    format!(
-        "\n{}\n# Added by amplihack install\nexport PATH=\"$HOME/.local/bin:$PATH\"\n{}\n",
-        PATH_BLOCK_START, PATH_BLOCK_END
-    )
+fn managed_path_block(syntax: ShellProfileSyntax) -> String {
+    let command = match syntax {
+        ShellProfileSyntax::Posix => "export PATH=\"$HOME/.local/bin:$PATH\"",
+        ShellProfileSyntax::Fish => "fish_add_path --prepend $HOME/.local/bin",
+    };
+    format!("\n{PATH_BLOCK_START}\n# Added by amplihack install\n{command}\n{PATH_BLOCK_END}\n")
 }
 
 fn remove_managed_path_block(input: &str) -> String {

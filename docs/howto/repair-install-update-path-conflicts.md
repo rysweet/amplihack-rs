@@ -109,7 +109,7 @@ Quarantined wrappers are stored under:
 Each quarantine directory includes a manifest:
 
 ```bash
-find ~/.amplihack/quarantine/stale-wrappers -name manifest.tsv -print
+find ~/.amplihack/quarantine/stale-wrappers -name manifest.json -print
 ```
 
 The manifest records the original path, quarantined path, wrapper kind, file
@@ -142,11 +142,12 @@ for shells that should use the Rust user-level install.
 The managed profile block is idempotent and bounded by markers:
 
 ```bash
-grep -n "amplihack path" ~/.bashrc ~/.zshrc 2>/dev/null || true
+grep -n "amplihack managed PATH" ~/.bashrc ~/.zshrc ~/.kshrc ~/.config/fish/config.fish 2>/dev/null || true
 ```
 
-The block prepends `$HOME/.local/bin` only when it is not already first. It
-does not remove unrelated `PATH` entries.
+The block prepends `$HOME/.local/bin` so the user-local Rust binary wins in
+new shells. It does not remove unrelated `PATH` entries. Bash, zsh, and ksh receive POSIX
+`export PATH=...` syntax; fish receives `fish_add_path --prepend ...`.
 
 Open a new terminal and check:
 

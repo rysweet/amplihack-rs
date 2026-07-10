@@ -149,6 +149,55 @@ fn unknown_shadowing_executable_is_reported_and_not_modified() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn external_symlink_to_safe_stale_wrapper_is_reported_and_not_quarantined() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let preferred_bin = home.join(".local/bin");
+    let safe_uv_bin = home.join(".cache/uv/archive-v0/bin");
+    let external_bin = temp.path().join("external/bin");
+    let preferred_rust = create_exe_stub(&preferred_bin, "amplihack");
+    let safe_stale_wrapper = safe_uv_bin.join("amplihack");
+    let external_symlink = external_bin.join("amplihack");
+    write_executable(
+        &safe_stale_wrapper,
+        "#!/bin/sh\n# uvx generated shim\nexec uvx --from amplihack amplihack \"$@\"\n",
+    );
+    fs::create_dir_all(&external_bin).unwrap();
+    std::os::unix::fs::symlink(&safe_stale_wrapper, &external_symlink).unwrap();
+
+    let err = neutralize_shadowing_stale_wrappers(repair_config(
+        &home,
+        &preferred_rust,
+        &preferred_rust,
+        vec![external_bin, preferred_bin],
+    ))
+    .expect_err("symlinks outside HOME must be reported instead of quarantined");
+
+    match err {
+        StaleWrapperRepairError::UnknownShadowingExecutable { path, .. } => {
+            assert_eq!(path, external_symlink);
+        }
+        other => panic!("expected UnknownShadowingExecutable, got {other:?}"),
+    }
+    assert!(
+        fs::symlink_metadata(&external_symlink)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "repair must not mutate a symlink whose own PATH location is outside HOME"
+    );
+    assert!(
+        safe_stale_wrapper.exists(),
+        "repair must not mutate the safe target when the symlink path is outside the mutation boundary"
+    );
+    assert!(
+        !home.join(".amplihack/quarantine/stale-wrappers").exists(),
+        "unsafe symlink rejection must not create a quarantine run"
+    );
+}
+
 #[test]
 fn quarantines_stale_uvx_wrapper_even_before_local_bin_is_on_current_path() {
     let temp = tempfile::tempdir().unwrap();

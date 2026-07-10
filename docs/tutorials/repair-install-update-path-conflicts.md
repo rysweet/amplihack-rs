@@ -69,12 +69,10 @@ profile so future shells put `$HOME/.local/bin` first:
 
 ```bash
 cat > "$tmpdir/home/.bashrc" <<'SH'
-# >>> amplihack path >>>
-case "$PATH" in
-  "$HOME/.local/bin"|"$HOME/.local/bin":*) ;;
-  *) export PATH="$HOME/.local/bin:$PATH" ;;
-esac
-# <<< amplihack path <<<
+# >>> amplihack managed PATH >>>
+# Added by amplihack install
+export PATH="$HOME/.local/bin:$PATH"
+# <<< amplihack managed PATH <<<
 SH
 ```
 
@@ -92,9 +90,10 @@ Expected output:
 rust-amplihack
 ```
 
-The block checks only whether `$HOME/.local/bin` is already first. If it is not
-first, it prepends it. A later duplicate is harmless because shells resolve the
-first matching executable.
+The block prepends `$HOME/.local/bin` so the Rust binary wins in new shells. A
+later duplicate is harmless because shells resolve the first matching
+executable. Fish profiles use `fish_add_path --prepend $HOME/.local/bin`
+instead of POSIX `export PATH=...`.
 
 ## 3. See how stale wrappers are quarantined
 
@@ -116,9 +115,20 @@ mkdir -p "$quarantine"
 quarantined="$quarantine/stale-bin__amplihack"
 mv "$tmpdir/stale-bin/amplihack" "$quarantined"
 
-cat > "$quarantine/manifest.tsv" <<EOF
-original_path	quarantined_path	kind	size	mtime	action	reason
-$tmpdir/stale-bin/amplihack	$quarantined	StalePythonWrapper	91	2026-07-10T18:34:40Z	quarantined	shadows preferred Rust binary
+cat > "$quarantine/manifest.json" <<EOF
+{
+  "generated_at_unix_secs": 1783737280,
+  "entries": [
+    {
+      "original_path": "$tmpdir/stale-bin/amplihack",
+      "quarantine_path": "$quarantined",
+      "kind": "stale-python-wrapper",
+      "size": 91,
+      "modified_unix_secs": 1783737280,
+      "action": "quarantined"
+    }
+  ]
+}
 EOF
 ```
 

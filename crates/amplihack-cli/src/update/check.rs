@@ -384,11 +384,11 @@ fn repair_subprocess_path(installed_exe: &Path) -> Option<std::ffi::OsString> {
         .or_else(|| installed_exe.parent().map(Path::to_path_buf))?;
     let existing = std::env::var_os("PATH").unwrap_or_default();
     let mut paths = vec![user_bin.clone()];
-    paths.extend(
-        std::env::split_paths(&existing)
-            .filter(|path| !paths_equal(path, &user_bin))
-            .collect::<Vec<_>>(),
-    );
+    for path in std::env::split_paths(&existing) {
+        if !paths_equal(&path, &user_bin) {
+            paths.push(path);
+        }
+    }
     std::env::join_paths(paths).ok()
 }
 

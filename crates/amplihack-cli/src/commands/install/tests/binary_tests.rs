@@ -198,6 +198,50 @@ fn deploy_binaries_succeeds_when_local_bin_not_in_path() {
     );
 }
 
+#[test]
+fn deploy_binaries_surfaces_path_persistence_failure() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let previous = crate::test_support::set_home(temp.path());
+    fs::create_dir_all(temp.path().join(".bashrc.tmp")).unwrap();
+
+    let hooks_stub = create_exe_stub(temp.path(), "amplihack-hooks");
+
+    let prev_hooks = std::env::var_os("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
+    let prev_shell = std::env::var_os("SHELL");
+    unsafe {
+        std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
+        std::env::set_var("SHELL", "/bin/bash");
+    }
+
+    let result = binary::deploy_binaries();
+
+    if let Some(v) = prev_hooks {
+        unsafe { std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", v) };
+    } else {
+        unsafe { std::env::remove_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH") };
+    }
+    if let Some(v) = prev_shell {
+        unsafe { std::env::set_var("SHELL", v) };
+    } else {
+        unsafe { std::env::remove_var("SHELL") };
+    }
+    crate::test_support::restore_home(previous);
+
+    let err = result.expect_err("profile write failures must fail install/update visibly");
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("failed to persist ~/.local/bin PATH profile block"),
+        "PATH persistence failure should include install/update context, got:\n{message}"
+    );
+    assert!(
+        message.contains(".bashrc.tmp"),
+        "underlying profile write path should remain visible, got:\n{message}"
+    );
+}
+
 // ─── TDD: Group 18 — find_hooks_binary lookup order ──────────────────────
 
 #[test]

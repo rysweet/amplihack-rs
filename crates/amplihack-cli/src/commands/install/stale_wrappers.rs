@@ -112,7 +112,7 @@ pub(crate) fn neutralize_shadowing_stale_wrappers(
         .unwrap_or_else(|_| config.current_exe.clone());
     let candidates = executable_path_candidates(&config);
     let preferred_index = candidates.iter().position(|candidate| {
-        same_path(candidate, &config.preferred_rust_binary) || same_path(candidate, &preferred)
+        matches_known_path(candidate, &config.preferred_rust_binary, &preferred)
     });
     let preferred_on_path = preferred_index.is_some();
     let shadowing_candidates = match preferred_index {
@@ -209,7 +209,9 @@ pub(crate) fn neutralize_shadowing_stale_wrappers(
     } else {
         config.preferred_rust_binary.clone()
     };
-    if preferred_on_path && !same_path(&resolved_after, &config.preferred_rust_binary) {
+    if preferred_on_path
+        && !matches_known_path(&resolved_after, &config.preferred_rust_binary, &preferred)
+    {
         let resolved_kind =
             classify_path_candidate(&resolved_after, &preferred, &current, &config.home_dir)
                 .map_err(
@@ -257,16 +259,16 @@ fn classify_path_candidate(
     home: &Path,
 ) -> io::Result<PathCandidateKind> {
     let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    if canonical == *preferred || same_path(path, preferred) {
+    if canonical == *preferred || path == preferred {
         return Ok(PathCandidateKind::PreferredRustBinary);
     }
-    if canonical == *current || same_path(path, current) {
+    if canonical == *current || path == current {
         return Ok(PathCandidateKind::CurrentRustBinary);
     }
 
     let metadata = fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink() {
-        if !is_safe_wrapper_location(&canonical, home) {
+        if !is_safe_wrapper_location(path, home) || !is_safe_wrapper_location(&canonical, home) {
             return Ok(PathCandidateKind::UnknownExecutable);
         }
     } else if !is_safe_wrapper_location(path, home) {
@@ -277,16 +279,16 @@ fn classify_path_candidate(
         Ok(content) => content,
         Err(err) => return Ok(PathCandidateKind::Inaccessible(err.to_string())),
     };
-    if is_stale_uvx_wrapper(&content) {
-        return Ok(PathCandidateKind::StaleUvxWrapper);
-    }
-    if is_stale_python_wrapper(&content) {
-        return Ok(PathCandidateKind::StalePythonWrapper);
+    if let Some(kind) = classify_wrapper_content(&content) {
+        return Ok(kind);
     }
     Ok(PathCandidateKind::UnknownExecutable)
 }
 
 fn is_safe_wrapper_location(path: &Path, home: &Path) -> bool {
+    if is_under_default_denied_system_prefix(path) {
+        return false;
+    }
     let Ok(relative) = path.strip_prefix(home) else {
         return false;
     };
@@ -296,28 +298,50 @@ fn is_safe_wrapper_location(path: &Path, home: &Path) -> bool {
         || rel.starts_with(".amplihack/")
 }
 
+fn is_under_default_denied_system_prefix(path: &Path) -> bool {
+    let canonical_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    crate::path_conflicts::default_denied_system_prefixes()
+        .into_iter()
+        .any(|prefix| {
+            if path.starts_with(&prefix) {
+                return true;
+            }
+            let canonical_prefix = prefix.canonicalize().unwrap_or(prefix);
+            canonical_path.starts_with(canonical_prefix)
+        })
+}
+
 fn read_prefix(path: &Path) -> io::Result<String> {
     let mut file = fs::File::open(path)?;
-    let mut bytes = Vec::new();
+    let mut bytes = Vec::with_capacity(64 * 1024);
     file.by_ref().take(64 * 1024).read_to_end(&mut bytes)?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-fn is_stale_python_wrapper(content: &str) -> bool {
+fn classify_wrapper_content(content: &str) -> Option<PathCandidateKind> {
     let lower = content.to_ascii_lowercase();
+    if is_stale_uvx_wrapper_lowercase(&lower) {
+        return Some(PathCandidateKind::StaleUvxWrapper);
+    }
+    if is_stale_python_wrapper_lowercase(&lower) {
+        return Some(PathCandidateKind::StalePythonWrapper);
+    }
+    None
+}
+
+fn is_stale_python_wrapper_lowercase(lower: &str) -> bool {
     (lower.starts_with("#!")
         && lower
             .lines()
             .next()
             .is_some_and(|line| line.contains("python")))
-        && (content.contains("from amplihack")
-            || content.contains("import amplihack")
-            || content.contains("load_entry_point")
-            || content.contains("amplihack.cli"))
+        && (lower.contains("from amplihack")
+            || lower.contains("import amplihack")
+            || lower.contains("load_entry_point")
+            || lower.contains("amplihack.cli"))
 }
 
-fn is_stale_uvx_wrapper(content: &str) -> bool {
-    let lower = content.to_ascii_lowercase();
+fn is_stale_uvx_wrapper_lowercase(lower: &str) -> bool {
     ((lower.contains("uvx") || lower.contains("uv tool"))
         && lower.contains("amplihack")
         && (lower.starts_with("#!") || lower.contains("generated")))
@@ -380,15 +404,16 @@ fn quarantine_file(source: &Path, destination: &Path) -> io::Result<()> {
 }
 
 fn is_executable_file(path: &Path) -> bool {
-    if !path.is_file() {
+    let Ok(metadata) = path.metadata() else {
+        return false;
+    };
+    if !metadata.is_file() {
         return false;
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        path.metadata()
-            .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
-            .unwrap_or(false)
+        metadata.permissions().mode() & 0o111 != 0
     }
     #[cfg(not(unix))]
     {
@@ -396,14 +421,11 @@ fn is_executable_file(path: &Path) -> bool {
     }
 }
 
-fn same_path(left: &Path, right: &Path) -> bool {
-    if left == right {
+fn matches_known_path(path: &Path, original: &Path, canonical: &Path) -> bool {
+    if path == original || path == canonical {
         return true;
     }
-    match (left.canonicalize(), right.canonicalize()) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => false,
-    }
+    path.canonicalize().is_ok_and(|path| path == canonical)
 }
 
 fn system_time_secs(time: SystemTime) -> Option<u64> {

@@ -38,11 +38,11 @@ delete unrelated binaries.
 Both install and the post-update repair path use the same order:
 
 1. Deploy Rust binaries to `~/.local/bin`.
-2. Analyze ordered `PATH` candidates.
-3. Quarantine stale Python/uvx `amplihack` wrappers only when they shadow the
-   Rust binary, are clearly identified, and are safe to move.
-4. Persist the managed PATH profile block so future shells resolve
+2. Persist the managed PATH profile block so future shells resolve
    `$HOME/.local/bin` first.
+3. Analyze ordered `PATH` candidates.
+4. Quarantine stale Python/uvx `amplihack` wrappers only when they shadow the
+   Rust binary, are clearly identified, and are safe to move.
 5. Refresh `~/.amplihack/amplifier-bundle` from the current Rust distribution.
 6. Verify the selected `amplihack` is the Rust binary.
 
@@ -80,7 +80,8 @@ A stale wrapper is eligible for quarantine only when all conditions hold:
 6. File content contains positive stale-wrapper evidence, such as a Python
    shebang plus old amplihack wrapper markers, uvx/uv launch markers, or known
    package-wrapper boilerplate for the Python amplihack distribution.
-7. Symlinks resolve to a safe target. Ambiguous or escaping symlinks are skipped
+7. Symlink candidates have both a safe symlink path and a safe resolved target.
+   Ambiguous symlinks, external symlink paths, or escaping targets are skipped
    and reported instead of followed destructively.
 
 The neutralizer moves eligible wrappers to:
@@ -89,17 +90,16 @@ The neutralizer moves eligible wrappers to:
 ~/.amplihack/quarantine/stale-wrappers/<timestamp>/
 ```
 
-Each quarantine directory includes `manifest.tsv` with:
+Each quarantine directory includes `manifest.json` with:
 
 | Field | Description |
 | --- | --- |
 | `original_path` | Absolute original path. |
-| `quarantined_path` | Sanitized path below the quarantine directory. |
-| `kind` | `StalePythonWrapper` or `StaleUvxWrapper`. |
+| `quarantine_path` | Sanitized path below the quarantine directory. |
+| `kind` | `stale-python-wrapper` or `stale-uvx-wrapper`. |
 | `size` | File size in bytes. |
-| `mtime` | Source file modification time. |
-| `action` | `quarantined`, `skipped`, or `failed`. |
-| `reason` | Classification or failure reason. |
+| `modified_unix_secs` | Source file modification time, when available. |
+| `action` | Currently `quarantined`. |
 
 The manifest records metadata only. It does not copy full wrapper contents into
 logs.
@@ -135,19 +135,29 @@ administrative process, then run amplihack install again.
 ## PATH persistence
 
 Install writes an idempotent managed block to the detected user shell profile:
-`~/.bashrc` for bash and `~/.zshrc` for zsh. If the shell cannot be detected or
-is not supported, install leaves profiles unchanged and prints manual PATH
-guidance instead.
+`~/.bashrc` for bash, `~/.zshrc` for zsh, `~/.kshrc` for ksh, and
+`~/.config/fish/config.fish` for fish. If the shell cannot be detected or is not
+supported, install leaves profiles unchanged and prints manual PATH guidance
+instead. If the detected profile cannot be written, install/update fails with
+the profile write error instead of silently continuing.
 
-The block prepends `$HOME/.local/bin` when it is not already first:
+The block prepends `$HOME/.local/bin` so the user-local Rust binary wins in
+new shells:
 
 ```bash
-# >>> amplihack path >>>
-case "$PATH" in
-  "$HOME/.local/bin"|"$HOME/.local/bin":*) ;;
-  *) export PATH="$HOME/.local/bin:$PATH" ;;
-esac
-# <<< amplihack path <<<
+# >>> amplihack managed PATH >>>
+# Added by amplihack install
+export PATH="$HOME/.local/bin:$PATH"
+# <<< amplihack managed PATH <<<
+```
+
+Fish receives fish-compatible syntax:
+
+```fish
+# >>> amplihack managed PATH >>>
+# Added by amplihack install
+fish_add_path --prepend $HOME/.local/bin
+# <<< amplihack managed PATH <<<
 ```
 
 The block is bounded by markers so subsequent installs update it in place. It
@@ -164,7 +174,7 @@ No new user configuration is required.
 | `PATH` | Ordered command candidates for conflict analysis. |
 | `AMPLIHACK_HOME` | Install root for bundle staging and stale-wrapper quarantine; defaults to `~/.amplihack`. |
 | `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` | Optional test/CI hint for locating `amplihack-hooks`; does not bypass PATH conflict reporting. |
-| Shell profile file | Installer updates the managed block in `~/.bashrc` for bash or `~/.zshrc` for zsh when the file is writable. |
+| Shell profile file | Installer updates the managed block in `~/.bashrc`, `~/.zshrc`, `~/.kshrc`, or `~/.config/fish/config.fish` when the detected profile is writable. |
 
 ## Contributor API
 
@@ -258,18 +268,21 @@ Automated tests cover:
 1. stale Python wrapper quarantine
 2. stale uvx wrapper quarantine
 3. unknown executable conflict reporting without mutation
-4. safe symlink handling
-5. `$HOME/.local/bin` managed-block prepend idempotence
-6. install selecting the Rust user-level binary after stale wrapper repair
-7. update invoking the new binary's install repair path
-8. no mutation of system-managed paths
+4. external symlink-to-safe-target conflict reporting without mutation
+5. fish-compatible PATH profile syntax
+6. PATH profile write failures surfacing as install/update errors
+7. `$HOME/.local/bin` managed-block prepend idempotence
+8. install selecting the Rust user-level binary after stale wrapper repair
+9. update invoking the new binary's install repair path
+10. no mutation of system-managed paths
 
 Focused validation:
 
 ```bash
 cargo test -p amplihack-cli stale_wrapper
 cargo test -p amplihack-cli path_conflicts
-cargo test -p amplihack-cli update_repair
+cargo test -p amplihack-cli path_precedence_tests
+cargo test -p amplihack-cli build_install_command
 ```
 
 ## See also

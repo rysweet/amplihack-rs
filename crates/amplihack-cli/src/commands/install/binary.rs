@@ -157,9 +157,8 @@ pub(super) fn deploy_binaries() -> Result<Vec<PathBuf>> {
              export PATH=\"$HOME/.local/bin:$PATH\""
         );
     }
-    if let Err(e) = super::paths::ensure_local_bin_on_shell_path() {
-        tracing::warn!("failed to auto-persist PATH: {e}");
-    }
+    super::paths::ensure_local_bin_on_shell_path()
+        .context("failed to persist ~/.local/bin PATH profile block")?;
 
     if let Ok(current_exe) = std::env::current_exe()
         && let Ok(report) =
