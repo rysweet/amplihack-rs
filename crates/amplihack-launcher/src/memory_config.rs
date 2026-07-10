@@ -202,8 +202,18 @@ fn save_preference_to(path: &Path, consent: bool, limit_mb: u64) -> Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let mut config: serde_json::Value = if path.exists() {
-        serde_json::from_str(&std::fs::read_to_string(path)?)
-            .unwrap_or_else(|_| serde_json::json!({}))
+        let content =
+            std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+        if content.trim().is_empty() {
+            // An empty/whitespace file is not corruption: start from a fresh
+            // object. A corrupt (non-empty, unparseable) file must surface an
+            // error so we never overwrite the user's co-resident config keys
+            // (issue #869: silent fallback == silent data loss).
+            serde_json::json!({})
+        } else {
+            serde_json::from_str(&content)
+                .with_context(|| format!("config file is corrupt: {}", path.display()))?
+        }
     } else {
         serde_json::json!({})
     };
@@ -386,6 +396,54 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(c["other_key"], "value");
         assert_eq!(c["memory_config"]["consent"], false);
+    }
+
+    // ---- issue #869: corrupt config must surface, never wipe co-resident keys ----
+
+    #[test]
+    fn corrupt_config_surfaces_error_not_silent_reset() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config");
+        std::fs::write(&path, "{ this is not json").unwrap();
+
+        let err = save_preference_to(&path, true, 8192)
+            .expect_err("corrupt config must fail loudly, not reset to an empty object");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.to_lowercase().contains("corrupt"),
+            "error must mention 'corrupt' to distinguish from a missing file: {msg}"
+        );
+        assert!(
+            msg.contains(&path.display().to_string()),
+            "error must name the offending path: {msg}"
+        );
+    }
+
+    #[test]
+    fn corrupt_config_is_not_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config");
+        let corrupt = r#"{"other_key": "value", BROKEN"#;
+        std::fs::write(&path, corrupt).unwrap();
+
+        let _ = save_preference_to(&path, true, 8192);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            corrupt,
+            "corrupt config must be preserved on disk, never overwritten with a fresh object"
+        );
+    }
+
+    #[test]
+    fn empty_config_file_starts_fresh_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config");
+        std::fs::write(&path, "  \n\t ").unwrap();
+        save_preference_to(&path, true, 4096)
+            .expect("empty/whitespace file is not corruption → start fresh, Ok");
+        let loaded = load_preference_from(&path).unwrap();
+        assert!(loaded.consent);
+        assert_eq!(loaded.limit_mb, 4096);
     }
     #[test]
     fn get_config_returns_result() {
