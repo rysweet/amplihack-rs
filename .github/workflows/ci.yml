@@ -76,7 +76,10 @@ jobs:
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --check
-      - run: cargo clippy -- -D warnings
+      # --locked: fail fast on Cargo.lock drift here in the first job (rather than
+      # only downstream in test/build), closing a dependency-substitution gap so
+      # clippy can never silently resolve unpinned deps (#744 supply-chain).
+      - run: cargo clippy --locked -- -D warnings
 
   test:
     name: Test
