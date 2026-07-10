@@ -485,6 +485,24 @@ fn resolve_recipe_path_fails_loudly_when_all_smart_orchestrator_candidates_are_s
 }
 
 #[test]
+fn resolve_recipe_path_fails_loudly_for_absolute_stale_smart_orchestrator() {
+    let temp = tempdir().unwrap();
+    let stale = temp.path().join("smart-orchestrator.yaml");
+    write_recipe(&stale, stale_smart_orchestrator_recipe());
+
+    let err = resolve_recipe_path(stale.to_str().unwrap(), temp.path())
+        .expect_err("absolute stale smart-orchestrator path must not bypass compatibility checks");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("smart-orchestrator")
+            && msg.contains("stale")
+            && msg.contains("orch_helper")
+            && msg.contains("amplihack install"),
+        "error must identify stale absolute smart-orchestrator and repair guidance, got: {msg}"
+    );
+}
+
+#[test]
 fn amplihack_home_recipe_dir_warns_for_non_directory_root_with_resolved_path() {
     let _home_guard = crate::test_support::home_env_lock()
         .lock()

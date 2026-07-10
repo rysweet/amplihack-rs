@@ -243,6 +243,12 @@ pub(crate) fn resolve_recipe_path(input: &str, working_dir: impl AsRef<Path>) ->
     let candidate = Path::new(input);
 
     if candidate.is_absolute() {
+        if is_smart_orchestrator_input(input)
+            && candidate.is_file()
+            && is_incompatible_smart_orchestrator(candidate)?
+        {
+            fail_if_only_stale_smart_orchestrators(input, &[candidate.to_path_buf()])?;
+        }
         return Ok(candidate.to_path_buf());
     }
 
