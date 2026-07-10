@@ -36,6 +36,10 @@ Ahoy, matey! Hit a snag? This be yer map to fix common issues and get back on co
 
 - [Startup Conflict Prompt](startup-conflict-prompt.md) - Fix "Uncommitted changes detected in .claude/" prompt on every startup
 
+### Skills
+
+- [`pr-guide` Skill Missing](pr-guide-skill-missing.md) - A bundled skill disappears from the Copilot CLI listing (filesystem-driven staging + registry drift, issue #860)
+
 ### Configuration Problems
 
 - [Hook Configuration](../HOOK_CONFIGURATION_GUIDE.md) - Customize framework behavior
