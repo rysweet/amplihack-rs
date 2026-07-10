@@ -1,0 +1,5 @@
+sequenceDiagram
+  actor L as Launcher
+  L->>amplihack-hooks-bin: PreToolUse(tool_input)
+  amplihack-hooks-bin->>checks: xpia / cwd / git / --no-verify
+  checks-->>L: allow or block
