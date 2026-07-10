@@ -1,61 +1,41 @@
-graph TD
-    subgraph "Root"
-        Cargo_toml["Cargo.toml<br/>(workspace)"]
-        mkdocs_yml["mkdocs.yml"]
-        package_json["package.json"]
-    end
-
-    subgraph "bins/"
-        bin_amplihack["bins/amplihack<br/>main.rs"]
-        bin_asset_resolver["bins/amplihack-asset-resolver"]
-        bin_hooks["bins/amplihack-hooks"]
-    end
-
-    subgraph "crates/ (23 crates)"
-        cli["amplihack-cli"]
-        types["amplihack-types"]
-        state["amplihack-state"]
-        security["amplihack-security"]
-        workflows["amplihack-workflows"]
-        hooks["amplihack-hooks"]
-        memory["amplihack-memory"]
-        recipe["amplihack-recipe"]
-        launcher["amplihack-launcher"]
-        fleet["amplihack-fleet"]
-        agent_core["amplihack-agent-core"]
-        agent_eval["amplihack-agent-eval"]
-        agent_gen["amplihack-agent-generator"]
-        domain_agents["amplihack-domain-agents"]
-        hive["amplihack-hive"]
-        blarify["amplihack-blarify"]
-        multilspy["amplihack-multilspy"]
-        context["amplihack-context"]
-        delegation["amplihack-delegation"]
-        recovery["amplihack-recovery"]
-        remote["amplihack-remote"]
-        safety["amplihack-safety"]
-        utils["amplihack-utils"]
-    end
-
-    subgraph "amplifier-bundle/"
-        bundle_recipes["recipes/"]
-        bundle_tools["tools/"]
-        bundle_agents["agents/"]
-        bundle_skills["skills/"]
-        bundle_behaviors["behaviors/"]
-    end
-
-    subgraph "docs/"
-        docs_howto["howto/"]
-        docs_ref["reference/"]
-        docs_concepts["concepts/"]
-    end
-
-    Cargo_toml --> bin_amplihack
-    Cargo_toml --> cli
-    Cargo_toml --> types
-    Cargo_toml --> state
-    Cargo_toml --> memory
-    mkdocs_yml --> docs_howto
-    mkdocs_yml --> docs_ref
-    mkdocs_yml --> docs_concepts
+flowchart TD
+  root["amplihack-rs workspace<br/>Cargo workspace • Rust 2021"]
+  root --> entrypoints["Entry points (bins)<br/>3 crates"]
+  entrypoints --> amplihack["amplihack ⚙"]
+  entrypoints --> amplihack_hooks_bin["amplihack-hooks-bin ⚙"]
+  entrypoints --> amplihack_asset_resolver_bin["amplihack-asset-resolver-bin ⚙"]
+  root --> cli["CLI core<br/>1 crates"]
+  cli --> amplihack_cli["amplihack-cli"]
+  root --> hooks["Hooks<br/>1 crates"]
+  hooks --> amplihack_hooks["amplihack-hooks"]
+  root --> agents["Agents / AI<br/>7 crates"]
+  agents --> amplihack_agent_core["amplihack-agent-core"]
+  agents --> amplihack_agent_eval["amplihack-agent-eval"]
+  agents --> amplihack_agent_generator["amplihack-agent-generator"]
+  agents --> amplihack_domain_agents["amplihack-domain-agents"]
+  agents --> amplihack_hive["amplihack-hive"]
+  agents --> amplihack_delegation["amplihack-delegation"]
+  agents --> amplihack_fleet["amplihack-fleet"]
+  root --> orchestration["Orchestration & workflows<br/>4 crates"]
+  orchestration --> amplihack_orchestration["amplihack-orchestration"]
+  orchestration --> amplihack_workflows["amplihack-workflows"]
+  orchestration --> amplihack_reflection["amplihack-reflection"]
+  orchestration --> amplihack_recovery["amplihack-recovery"]
+  root --> state_memory["State / memory / session<br/>4 crates"]
+  state_memory --> amplihack_memory["amplihack-memory"]
+  state_memory --> amplihack_state["amplihack-state"]
+  state_memory --> amplihack_session["amplihack-session"]
+  state_memory --> amplihack_context["amplihack-context"]
+  root --> launch_remote["Launcher & remote<br/>2 crates"]
+  launch_remote --> amplihack_launcher["amplihack-launcher"]
+  launch_remote --> amplihack_remote["amplihack-remote"]
+  root --> foundation["Foundation<br/>3 crates"]
+  foundation --> amplihack_types["amplihack-types"]
+  foundation --> amplihack_utils["amplihack-utils"]
+  foundation --> amplihack_builders["amplihack-builders"]
+  root --> security["Security & safety<br/>2 crates"]
+  security --> amplihack_security["amplihack-security"]
+  security --> amplihack_safety["amplihack-safety"]
+  root --> code_analysis["Code analysis<br/>2 crates"]
+  code_analysis --> amplihack_blarify["amplihack-blarify"]
+  code_analysis --> amplihack_multilspy["amplihack-multilspy"]

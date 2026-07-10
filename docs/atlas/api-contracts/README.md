@@ -1,42 +1,11 @@
-# Layer 5: API Contracts
+---
+title: API Contracts (CLI surface)
+---
+# Layer: api-contracts
 
-CLI commands, hook protocol, recipe step types, memory API, and fleet API.
+amplihack-rs exposes a **CLI contract** (clap-based), not HTTP/gRPC. The command
+surface under `crates/amplihack-cli/src/commands/` has **31 top-level command groups**.
 
-## Overview
+![api-contracts (mermaid)](api-contracts-mermaid.svg)
 
-### CLI Commands (clap-derived)
-
-| Command | Description |
-|---------|-------------|
-| `amplihack install` | Stage amplifier-bundle and write hooks |
-| `amplihack launch` | Start Claude Code with hooks |
-| `amplihack recipe run` | Execute a YAML recipe |
-| `amplihack memory index` | Index a project into the memory store |
-| `amplihack query-code` | Query the code graph |
-| `amplihack fleet` | Fleet operations (scout, advance, status, dashboard) |
-| `amplihack doctor` | Health diagnostics |
-| `amplihack completions` | Shell completion generation |
-| `amplihack orch` | Orchestrator helper (native Rust) |
-| `amplihack new-agent` | Generate a new agent |
-| `amplihack hive` | Hive swarm operations |
-
-### Hook Protocol (JSON over stdio)
-
-All hooks receive `HookInput` (from `amplihack-types`) as JSON on stdin and
-return JSON on stdout. Hook types: `session_start`, `pre_tool_use`,
-`post_tool_use`, `stop`, `user_prompt`.
-
-### Recipe Step Types
-
-- `type: skill` -- invokes a named skill with a task
-- `type: agent` -- spawns an agent with a description prompt
-- `type: bash` -- runs a shell command
-
-## Diagram (Graphviz)
-
-![API Contracts -- Graphviz](api-contracts-dot.svg)
-
-## Diagram source
-
-- [api-contracts.dot](api-contracts.dot) (Graphviz DOT)
-- [api-contracts.mmd](api-contracts.mmd) (Mermaid)
+![api-contracts (dot)](api-contracts-dot.svg)
