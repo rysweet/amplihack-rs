@@ -4247,7 +4247,9 @@ fn fleet_admiral_reason_emits_lifecycle_and_batch_actions() {
                 working_directory: String::new(),
                 repo_url: String::new(),
                 git_branch: String::new(),
-                pr_url: String::new(),
+                // issue #868: MarkComplete now requires structured corroboration.
+                // A captured PR URL is an authoritative completion signal.
+                pr_url: "https://github.com/org/repo/pull/1".to_string(),
                 task_summary: String::new(),
             }],
         },
@@ -4273,6 +4275,76 @@ fn fleet_admiral_reason_emits_lifecycle_and_batch_actions() {
         actions
             .iter()
             .any(|action| action.action_type == ActionType::StartAgent)
+    );
+}
+
+#[test]
+fn fleet_admiral_textual_only_completion_is_not_marked_complete() {
+    // issue #868 regression: a session whose only "completion" evidence is a
+    // textual marker the agent could merely be quoting ("PR created"), with no
+    // captured PR URL and no machine-emitted marker, must NOT be turned into an
+    // irreversible MarkComplete by the director. It fails toward "keep running".
+    let temp = tempfile::tempdir().unwrap();
+    let mut admiral = FleetAdmiral::new(
+        PathBuf::from("/bin/true"),
+        TaskQueue {
+            tasks: vec![FleetTask {
+                id: "done-task".to_string(),
+                prompt: "Finish feature".to_string(),
+                repo_url: "https://github.com/org/repo.git".to_string(),
+                branch: String::new(),
+                priority: TaskPriority::High,
+                status: TaskStatus::Running,
+                agent_command: "claude".to_string(),
+                agent_mode: "auto".to_string(),
+                max_turns: DEFAULT_MAX_TURNS,
+                protected: false,
+                assigned_vm: Some("vm-1".to_string()),
+                assigned_session: Some("session-1".to_string()),
+                assigned_at: Some(now_isoformat()),
+                created_at: now_isoformat(),
+                started_at: Some(now_isoformat()),
+                completed_at: None,
+                result: None,
+                pr_url: None,
+                error: None,
+            }],
+            persist_path: None,
+        },
+        Some(temp.path().join("logs")),
+    )
+    .unwrap();
+    admiral.coordination_dir = temp.path().join("coordination");
+    admiral.fleet_state.vms = vec![VmInfo {
+        name: "vm-1".to_string(),
+        session_name: "vm-1".to_string(),
+        os: "ubuntu".to_string(),
+        status: "Running".to_string(),
+        ip: "10.0.0.1".to_string(),
+        region: "westus2".to_string(),
+        tmux_sessions: vec![TmuxSessionInfo {
+            session_name: "session-1".to_string(),
+            vm_name: "vm-1".to_string(),
+            windows: 1,
+            attached: false,
+            agent_status: AgentStatus::Completed,
+            // Advisory textual marker only; no structured corroboration.
+            last_output: "the pull request created is ready".to_string(),
+            working_directory: String::new(),
+            repo_url: String::new(),
+            git_branch: String::new(),
+            pr_url: String::new(),
+            task_summary: String::new(),
+        }],
+    }];
+
+    let actions = admiral.reason().unwrap();
+
+    assert!(
+        !actions
+            .iter()
+            .any(|action| action.action_type == ActionType::MarkComplete),
+        "textual-only completion must not drive an irreversible MarkComplete"
     );
 }
 

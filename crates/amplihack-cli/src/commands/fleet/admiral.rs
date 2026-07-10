@@ -164,13 +164,24 @@ impl FleetAdmiral {
                 let key = format!("{vm_name}:{session_name}");
                 self.missing_session_counts.remove(&key);
                 match session.agent_status {
-                    AgentStatus::Completed => actions.push(DirectorAction::new(
-                        ActionType::MarkComplete,
-                        Some(task.clone()),
-                        Some(vm_name),
-                        Some(session_name),
-                        "Agent completed successfully",
-                    )),
+                    AgentStatus::Completed => {
+                        // issue #868: a heuristic `Completed` can come from a
+                        // textual marker the agent merely quoted. Require
+                        // structured corroboration (a captured PR URL or a
+                        // machine-emitted completion marker) before the
+                        // irreversible MarkComplete; otherwise leave the task
+                        // running for a later cycle or the reasoning engine to
+                        // resolve rather than closing it on advisory text alone.
+                        if is_authoritative_completion(&session.pr_url, &session.last_output) {
+                            actions.push(DirectorAction::new(
+                                ActionType::MarkComplete,
+                                Some(task.clone()),
+                                Some(vm_name),
+                                Some(session_name),
+                                "Agent completed successfully (corroborated by structured signal)",
+                            ));
+                        }
+                    }
                     AgentStatus::Error | AgentStatus::Shell | AgentStatus::NoSession => actions
                         .push(DirectorAction::new(
                             ActionType::MarkFailed,

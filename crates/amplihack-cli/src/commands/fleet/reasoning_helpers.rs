@@ -393,16 +393,25 @@ pub(super) fn completion_evidence(text: &str) -> CompletionEvidence {
     }
 }
 
-/// Whether a session has an *authoritative* completion signal.
+/// Whether a captured PR URL or terminal text is an *authoritative* completion
+/// signal.
 ///
 /// issue #868: an advisory `AgentStatus::Completed` (inferred from terminal text
-/// that could be quoting a marker) must never on its own drive an irreversible
-/// `MarkComplete`. Authoritative completion requires structured corroboration: a
-/// concrete PR URL captured from session/git state, or a STRUCTURED
-/// (machine-emitted) marker in the terminal capture.
+/// that could merely be quoting a marker) must never on its own drive an
+/// irreversible `MarkComplete`. Authoritative completion requires structured
+/// corroboration: a concrete PR URL captured from session/git state, or a
+/// STRUCTURED (machine-emitted) marker in the terminal capture. Shared by the
+/// reasoning engine (via [`SessionContext`]) and the admiral director (via
+/// `TmuxSessionInfo`) so every consumer enforces one completion contract.
+pub(super) fn is_authoritative_completion(pr_url: &str, capture: &str) -> bool {
+    !pr_url.trim().is_empty() || completion_evidence(capture) == CompletionEvidence::Structured
+}
+
+/// Whether a session context has an *authoritative* completion signal.
+///
+/// Thin [`SessionContext`] adapter over [`is_authoritative_completion`].
 pub(super) fn has_authoritative_completion(context: &SessionContext) -> bool {
-    !context.pr_url.trim().is_empty()
-        || completion_evidence(&context.tmux_capture) == CompletionEvidence::Structured
+    is_authoritative_completion(&context.pr_url, &context.tmux_capture)
 }
 
 #[cfg(test)]
@@ -748,6 +757,30 @@ mod tests {
         let ctx = completed_ctx("the pull request created by the bot is under review");
         let (decision, _) = reasoner.reason(&ctx);
         assert_ne!(decision.action, SessionAction::MarkComplete);
+    }
+
+    #[test]
+    fn is_authoritative_completion_requires_structured_corroboration() {
+        // issue #868: the shared completion contract enforced by both the
+        // reasoning engine and the admiral director.
+        // A captured PR URL is authoritative regardless of the capture text.
+        assert!(is_authoritative_completion(
+            "https://github.com/org/repo/pull/1",
+            "the pull request created earlier"
+        ));
+        // A machine-emitted (STRUCTURED) marker is authoritative without a URL.
+        assert!(is_authoritative_completion("", "GOAL_STATUS: ACHIEVED"));
+        assert!(is_authoritative_completion(
+            "",
+            "Opened PR #4217 for review"
+        ));
+        // A textual-only marker with no URL is NOT authoritative (the core bug).
+        assert!(!is_authoritative_completion(
+            "",
+            "the pull request created is ready"
+        ));
+        // A whitespace-only URL is treated as absent.
+        assert!(!is_authoritative_completion("   ", "just working on it"));
     }
 
     #[test]
