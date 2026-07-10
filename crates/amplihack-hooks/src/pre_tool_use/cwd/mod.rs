@@ -158,8 +158,17 @@ fn check_glob_cwd_match(pattern: &str, cwd: &Path) -> Option<Value> {
     }
 
     let prefix_path = Path::new(prefix);
-    let glob_dir = prefix_path.parent()?.canonicalize().ok()?;
-    let basename_prefix = prefix_path.file_name()?.to_string_lossy().to_string();
+    let glob_dir = {
+        let d = prefix_path.parent()?;
+        match d.canonicalize() {
+            Ok(c) => c,
+            Err(_) => return None,
+        }
+    };
+    let basename_prefix = {
+        let n = prefix_path.file_name()?;
+        n.to_string_lossy().to_string()
+    };
 
     let mut current = Some(cwd.to_path_buf());
     while let Some(path) = current {
