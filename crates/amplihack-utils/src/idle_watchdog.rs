@@ -118,17 +118,36 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Build the final [`IdleOutcome`], lossily decoding the captured buffers.
+/// Reclaim a drainer's captured bytes as a `String`, lossily decoding.
+///
+/// By the time this runs the drainer task/thread has finished, so its `Arc`
+/// clone is dropped and `buf`'s strong count is 1. That lets us move the
+/// `Vec<u8>` out and hand its allocation directly to `String` — zero-copy for
+/// the common valid-UTF-8 case, and no transient second copy of a
+/// potentially-multi-megabyte buffer. If the buffer is somehow still shared we
+/// fall back to cloning it.
+fn take_string(buf: Buffer) -> String {
+    let bytes = match Arc::try_unwrap(buf) {
+        Ok(m) => m.into_inner().unwrap_or_else(|e| e.into_inner()),
+        Err(shared) => lock(&shared).clone(),
+    };
+    match String::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+    }
+}
+
+/// Build the final [`IdleOutcome`], reclaiming the captured buffers.
 fn outcome(
     status: io::Result<ExitStatus>,
-    out_buf: &Buffer,
-    err_buf: &Buffer,
+    out_buf: Buffer,
+    err_buf: Buffer,
     killed_for_idle: bool,
 ) -> IdleOutcome {
     IdleOutcome {
         status,
-        stdout: String::from_utf8_lossy(&lock(out_buf)).into_owned(),
-        stderr: String::from_utf8_lossy(&lock(err_buf)).into_owned(),
+        stdout: take_string(out_buf),
+        stderr: take_string(err_buf),
         killed_for_idle,
     }
 }
@@ -215,7 +234,7 @@ pub async fn wait_with_idle_watchdog(
         let _ = h.await;
     }
 
-    outcome(status, &out_buf, &err_buf, killed_for_idle)
+    outcome(status, out_buf, err_buf, killed_for_idle)
 }
 
 // ---------------------------------------------------------------------------
@@ -284,7 +303,7 @@ pub fn wait_with_idle_watchdog_sync(
         let _ = h.join();
     }
 
-    outcome(status, &out_buf, &err_buf, killed_for_idle)
+    outcome(status, out_buf, err_buf, killed_for_idle)
 }
 
 // ---------------------------------------------------------------------------
