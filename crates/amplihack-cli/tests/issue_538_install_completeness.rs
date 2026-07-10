@@ -98,7 +98,7 @@ fn resolve_amplihack_binary_from(
         ));
     }
 
-    if valid_existing_binary(&fallback) {
+    if valid_existing_binary(fallback) {
         return Ok(fallback.to_path_buf());
     }
 
