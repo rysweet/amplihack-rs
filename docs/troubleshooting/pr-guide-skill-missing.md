@@ -65,18 +65,26 @@ Then re-run `amplihack install` (or `amplihack update`) to re-stage skills.
 
 ## Regression Guards
 
-To prevent any skill from silently disappearing again, two guard tests were
-added in `tests/integration/skill_frontmatter_name_test.rs` (test binary
+Two layers prevent a skill from silently disappearing again:
+
+**1. Registry ↔ bundle set-equality** — the existing
+`registry_matches_bundled_skill_frontmatter_names` unit test in
+`crates/amplihack-hooks/src/known_skills.rs` asserts the set of bundled
+`SKILL.md` frontmatter names equals the `AMPLIHACK_SKILLS` registry, catching
+any *one-sided* drift (a bundled skill missing from the registry, or a registry
+entry with no matching bundled `SKILL.md`).
+
+**2. `pr-guide` two-sided pin** — a guard test added in
+`tests/integration/skill_frontmatter_name_test.rs` (test binary
 `skill_frontmatter_name`):
 
 | Test | Guards against |
 | --- | --- |
-| `tc_skill_12_registry_matches_bundle` | One-sided drift — a bundled skill missing from the `AMPLIHACK_SKILLS` registry, or a registry entry with no matching bundled `SKILL.md` (count desync). With unique names on both sides this is set-equality between the two sources of truth. |
-| `tc_skill_13_pr_guide_pinned_in_registry_and_bundle` | Wholesale two-sided removal of `pr-guide` (the exact #860 failure). |
+| `tc_skill_13_pr_guide_pinned_in_registry_and_bundle` | Wholesale two-sided removal of `pr-guide` (the exact #860 failure) — a skill dropped from *both* the bundle and the registry at once. |
 
-TC-SKILL-13 pins `pr-guide` concretely on each side so a simultaneous removal
-from *both* the bundle and the registry — which the TC-SKILL-12 drift check
-cannot catch (an empty ⊆ empty comparison stays green) — turns the suite red.
+The set-equality check in layer 1 stays green under a two-sided removal (both
+sets lose the same element), so TC-SKILL-13 pins `pr-guide` concretely on each
+side to turn the suite red for that case.
 
 ## Verifying the Fix
 
