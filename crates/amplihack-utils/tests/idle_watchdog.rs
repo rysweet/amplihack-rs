@@ -271,6 +271,50 @@ async fn async_quick_exit_is_not_idle_killed() {
     assert!(outcome.stdout.contains("done"));
 }
 
+/// Regression (issue #867), async path: a child that exits while a reparented
+/// descendant keeps the stdout pipe open must NOT hang the watchdog. The old
+/// wall-clock backstop was removed, so an unbounded drainer join would block
+/// until the grandchild exits; the bounded join must return well before that.
+#[tokio::test]
+async fn async_lingering_grandchild_does_not_hang_join() {
+    // `bash` echoes then exits, but backgrounds `sleep 30`, which inherits the
+    // stdout fd and holds the pipe open (no EOF for the drainer) for 30 s.
+    let mut child = tokio::process::Command::new("bash")
+        .args(["-c", "echo hello; sleep 30 & exit 0"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn child with lingering grandchild");
+    let (out, err) = (child.stdout.take(), child.stderr.take());
+
+    let start = std::time::Instant::now();
+    let outcome = wait_with_idle_watchdog(
+        &mut child,
+        out,
+        err,
+        cfg(Duration::from_secs(30), Duration::from_millis(100)),
+    )
+    .await;
+
+    assert!(
+        start.elapsed() < Duration::from_secs(20),
+        "watchdog must not block on a pipe held open by a lingering descendant \
+         (elapsed {:?})",
+        start.elapsed()
+    );
+    assert!(
+        !outcome.killed_for_idle,
+        "the child exited normally; it was not idle-killed"
+    );
+    assert_eq!(outcome.status.unwrap().code(), Some(0));
+    assert!(
+        outcome.stdout.contains("hello"),
+        "output buffered before the grace bound must still be captured, got {:?}",
+        outcome.stdout
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Sync watchdog — wait_with_idle_watchdog_sync
 // ---------------------------------------------------------------------------
@@ -331,6 +375,44 @@ fn sync_idle_child_is_killed_after_window() {
     assert!(
         start.elapsed() < Duration::from_secs(15),
         "kill must happen shortly after the idle window, not at process end"
+    );
+}
+
+/// Regression (issue #867), sync path: a lingering descendant holding the pipe
+/// open must not hang the blocking drainer join.
+#[test]
+fn sync_lingering_grandchild_does_not_hang_join() {
+    let mut child = std::process::Command::new("bash")
+        .args(["-c", "echo hello; sleep 30 & exit 0"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn child with lingering grandchild");
+    let (out, err) = (child.stdout.take(), child.stderr.take());
+
+    let start = std::time::Instant::now();
+    let outcome = wait_with_idle_watchdog_sync(
+        &mut child,
+        out,
+        err,
+        cfg(Duration::from_secs(30), Duration::from_millis(100)),
+    );
+
+    assert!(
+        start.elapsed() < Duration::from_secs(20),
+        "sync watchdog must not block on a pipe held open by a lingering \
+         descendant (elapsed {:?})",
+        start.elapsed()
+    );
+    assert!(
+        !outcome.killed_for_idle,
+        "the child exited normally; it was not idle-killed"
+    );
+    assert_eq!(outcome.status.unwrap().code(), Some(0));
+    assert!(
+        outcome.stdout.contains("hello"),
+        "output buffered before the grace bound must still be captured, got {:?}",
+        outcome.stdout
     );
 }
 

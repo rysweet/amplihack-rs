@@ -182,9 +182,10 @@ amplihack claude --{command} --max-turns {turns} -- -p "$PROMPT"
         cmd.args([&self.vm.name, &setup_script]);
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
+        // Issue #867: null stdin so the spawned child can't steal the orchestrator's input.
+        cmd.stdin(Stdio::null());
 
         let start = Instant::now();
-
         // Issue #867: supervise via idle watchdog, not a wall-clock cap. A run
         // producing output is never killed; only a genuinely idle one is reaped.
         let mut child = cmd

@@ -119,6 +119,18 @@ pub fn wait_with_idle_watchdog_sync(
 Same progress semantics as the async variant, implemented with `std::thread`
 drainers and a blocking poll loop.
 
+### Bounded drainer join after the child exits
+
+After the child exits (normally or via idle-kill), both variants drain any
+output buffered just before exit, but the join is bounded by a `DRAIN_GRACE`
+(5 s) window rather than waiting for pipe EOF unconditionally. A reaped child
+may leave a reparented descendant that inherited the stdout/stderr write end;
+that pipe never reaches EOF, so an unbounded drainer would block forever and
+hang the caller. Once the grace elapses the drainer is abandoned (the async
+task is aborted, the sync thread detached) and whatever bytes it already
+buffered are returned. On the normal path the pipes close as soon as the child
+exits, so the bound is never reached.
+
 ### `file_idle_since` (file-mtime probe)
 
 For call sites whose child stdout is already consumed by a logging thread, so no

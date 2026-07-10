@@ -45,6 +45,16 @@ pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 300;
 /// Default poll interval for the supervising loop (milliseconds).
 pub const DEFAULT_POLL_MS: u64 = 1000;
 
+/// Grace period for draining a child's pipes after it exits or is killed.
+///
+/// A reaped child may leave a reparented descendant holding the stdout/stderr
+/// write end open, so the pipe never reaches EOF and a drainer's blocking read
+/// would wait forever. After the child is reaped we wait at most this long for
+/// the drainers to finish, then abandon them and use whatever bytes were
+/// already buffered (issue #867). On the normal path the pipes close as soon as
+/// the child exits, so this bound is not reached.
+const DRAIN_GRACE: Duration = Duration::from_secs(5);
+
 /// Parse a positive `u64` from an environment variable, falling back to
 /// `default` on absent, non-parsable, or zero values.
 fn env_u64(key: &str, default: u64) -> u64 {
@@ -120,12 +130,13 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 /// Reclaim a drainer's captured bytes as a `String`, lossily decoding.
 ///
-/// By the time this runs the drainer task/thread has finished, so its `Arc`
-/// clone is dropped and `buf`'s strong count is 1. That lets us move the
-/// `Vec<u8>` out and hand its allocation directly to `String` — zero-copy for
-/// the common valid-UTF-8 case, and no transient second copy of a
-/// potentially-multi-megabyte buffer. If the buffer is somehow still shared we
-/// fall back to cloning it.
+/// On the normal path the drainer task/thread has finished by the time this
+/// runs, so its `Arc` clone is dropped and `buf`'s strong count is 1. That lets
+/// us move the `Vec<u8>` out and hand its allocation directly to `String` —
+/// zero-copy for the common valid-UTF-8 case, and no transient second copy of a
+/// potentially-multi-megabyte buffer. If a drainer was abandoned after the
+/// [`DRAIN_GRACE`] bound (a descendant still holding the pipe open) the buffer
+/// is still shared, so we fall back to cloning the bytes captured so far.
 fn take_string(buf: Buffer) -> String {
     let bytes = match Arc::try_unwrap(buf) {
         Ok(m) => m.into_inner().unwrap_or_else(|e| e.into_inner()),
@@ -172,6 +183,18 @@ where
                 *lock(&lp) = Instant::now();
             }
         }
+    }
+}
+
+/// Await a drainer task, but never longer than [`DRAIN_GRACE`]. If the task is
+/// still blocked reading a pipe held open by a surviving descendant, abort it;
+/// the bytes it already buffered remain readable via the shared `Arc`.
+async fn join_drainer_async(mut handle: tokio::task::JoinHandle<()>) {
+    if tokio::time::timeout(DRAIN_GRACE, &mut handle)
+        .await
+        .is_err()
+    {
+        handle.abort();
     }
 }
 
@@ -225,13 +248,14 @@ pub async fn wait_with_idle_watchdog(
         }
     };
 
-    // Drain to EOF (the child has exited or been killed, so its pipes close)
-    // to capture any output that streamed just before exit.
+    // Drain any output buffered just before exit, but never block forever: a
+    // reaped child may leave a descendant holding the pipe open, so EOF may
+    // never arrive. Bound the join by `DRAIN_GRACE` (issue #867).
     if let Some(h) = out_handle {
-        let _ = h.await;
+        join_drainer_async(h).await;
     }
     if let Some(h) = err_handle {
-        let _ = h.await;
+        join_drainer_async(h).await;
     }
 
     outcome(status, out_buf, err_buf, killed_for_idle)
@@ -256,6 +280,21 @@ where
             }
         }
     }
+}
+
+/// Join a drainer thread, but never longer than [`DRAIN_GRACE`]. A `std` thread
+/// cannot be force-aborted, so if it is still blocked reading a pipe held open
+/// by a surviving descendant we abandon (detach) it; its already-buffered bytes
+/// stay readable via the shared `Arc`.
+fn join_drainer_sync(handle: std::thread::JoinHandle<()>) {
+    let deadline = Instant::now() + DRAIN_GRACE;
+    while !handle.is_finished() {
+        if Instant::now() >= deadline {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let _ = handle.join();
 }
 
 /// Blocking equivalent of [`wait_with_idle_watchdog`] for a
@@ -296,11 +335,13 @@ pub fn wait_with_idle_watchdog_sync(
         }
     };
 
+    // Bound the drainer join (issue #867): a reaped child may leave a
+    // descendant holding the pipe open, so its blocking read may never see EOF.
     if let Some(h) = out_handle {
-        let _ = h.join();
+        join_drainer_sync(h);
     }
     if let Some(h) = err_handle {
-        let _ = h.join();
+        join_drainer_sync(h);
     }
 
     outcome(status, out_buf, err_buf, killed_for_idle)
