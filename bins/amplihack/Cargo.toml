@@ -294,6 +294,14 @@ path = "tests/issue_537_git_optional_recipes.rs"
 name = "skill_frontmatter_name"
 path = "../../tests/integration/skill_frontmatter_name_test.rs"
 
+# Issue #890: Skill frontmatter TYPE validation.
+# Ensures every SKILL.md encodes name/description/argument-hint as string
+# scalars (not YAML lists/maps). Regression guard for the Copilot CLI
+# "argument-hint must be a string" failure (merge-ready fix, commit e0abfb4).
+[[test]]
+name = "skill_frontmatter_type"
+path = "../../tests/integration/skill_frontmatter_type_test.rs"
+
 # QA-022: Formal specification for multitask orchestrator refactoring.
 [[test]]
 name = "multitask_orchestrator_spec"
