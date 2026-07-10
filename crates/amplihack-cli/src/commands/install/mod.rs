@@ -284,7 +284,9 @@ fn local_install(
     let preferred_amplihack =
         paths::preferred_user_bin_dir()?.join(crate::path_conflicts::binary_filename("amplihack"));
     if preferred_amplihack.is_file() {
-        let path_dirs = std::env::var_os("PATH")
+        let stale_wrapper_path =
+            std::env::var_os("AMPLIHACK_REPAIR_ORIGINAL_PATH").or_else(|| std::env::var_os("PATH"));
+        let path_dirs = stale_wrapper_path
             .map(|value| std::env::split_paths(&value).collect())
             .unwrap_or_default();
         let repair = stale_wrappers::neutralize_shadowing_stale_wrappers(

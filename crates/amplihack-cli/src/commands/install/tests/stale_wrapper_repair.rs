@@ -197,3 +197,31 @@ fn quarantines_uv_cache_shim_that_delegates_to_user_local_amplihack() {
     );
     assert_eq!(report.resolved_after, preferred_rust);
 }
+
+#[test]
+fn update_repair_uses_preserved_parent_path_even_when_runtime_path_is_repaired() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let preferred_bin = home.join(".local/bin");
+    let uvx_bin = home.join(".cache/uv/archive-v0/bin");
+    let preferred_rust = create_exe_stub(&preferred_bin, "amplihack");
+    let stale_wrapper = uvx_bin.join("amplihack");
+    write_executable(
+        &stale_wrapper,
+        "#!/bin/sh\n# uvx generated shim\nexec uvx --from amplihack amplihack \"$@\"\n",
+    );
+
+    let parent_path = std::env::join_paths([uvx_bin.clone(), preferred_bin.clone()]).unwrap();
+    let path_dirs = std::env::split_paths(&parent_path).collect();
+    let report = neutralize_shadowing_stale_wrappers(repair_config(
+        &home,
+        &preferred_rust,
+        &preferred_rust,
+        path_dirs,
+    ))
+    .expect("update repair must inspect the parent PATH that had stale wrappers before PATH was repaired for subprocess execution");
+
+    assert!(!stale_wrapper.exists());
+    assert_eq!(report.neutralized.len(), 1);
+    assert_eq!(report.resolved_after, preferred_rust);
+}

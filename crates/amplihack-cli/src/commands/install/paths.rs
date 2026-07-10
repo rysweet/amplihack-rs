@@ -1,7 +1,6 @@
 //! Common path helpers and binary lookup utilities.
 
 use anyhow::{Context, Result};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -133,14 +132,7 @@ pub(crate) fn ensure_local_bin_on_shell_path() -> Result<()> {
         return Ok(());
     }
 
-    std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(&profile)
-        .with_context(|| format!("failed to open {} for writing", profile.display()))?
-        .write_all(next_content.as_bytes())
-        .with_context(|| format!("failed to write PATH export to {}", profile.display()))?;
+    atomic_write(&profile, next_content.as_bytes())?;
     println!(
         "  ✅ Ensured ~/.local/bin is prepended to PATH in {}",
         profile.display()
@@ -168,4 +160,21 @@ fn remove_managed_path_block(input: &str) -> String {
     output.push('\n');
     output.push_str(input[end..].trim_start_matches(['\r', '\n']));
     output
+}
+
+fn atomic_write(path: &Path, body: &[u8]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let mut tmp_name = path
+        .file_name()
+        .map(|name| name.to_os_string())
+        .unwrap_or_default();
+    tmp_name.push(".tmp");
+    let tmp = path.with_file_name(tmp_name);
+    std::fs::write(&tmp, body).with_context(|| format!("failed to write {}", tmp.display()))?;
+    std::fs::rename(&tmp, path)
+        .with_context(|| format!("failed to rename {} to {}", tmp.display(), path.display()))?;
+    Ok(())
 }

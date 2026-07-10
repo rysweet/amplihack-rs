@@ -366,6 +366,44 @@ fn denied_system_prefix_is_never_selected_even_when_probe_says_writable() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn unwritable_user_bin_requires_manual_repair_for_denied_system_install() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let user_bin = home.join(".local/bin");
+    let usr_local_bin = temp.path().join("usr/local/bin");
+    fs::create_dir_all(&user_bin).unwrap();
+    let system_amplihack = write_executable(&usr_local_bin, "amplihack");
+    write_executable(&usr_local_bin, "amplihack-hooks");
+
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&user_bin, fs::Permissions::from_mode(0o555)).unwrap();
+
+    let report = analyze_path_conflicts(&analysis_input(
+        &home,
+        &system_amplihack,
+        vec![usr_local_bin.clone()],
+    ))
+    .unwrap();
+    let mut probes = BTreeMap::new();
+    probes.insert(system_amplihack, BinaryProbe { writable: false });
+
+    let decision = decide_update_install_target(TargetDecisionInput {
+        report,
+        candidate_probes: probes,
+        denied_system_prefixes: vec![temp.path().join("usr/local")],
+    })
+    .unwrap();
+
+    fs::set_permissions(&user_bin, fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert!(
+        matches!(decision, InstallTargetDecision::ManualRepairRequired { .. }),
+        "update must not target an unwritable user bin dir: {decision:?}"
+    );
+}
+
 #[test]
 fn update_notice_reports_shadowed_user_local_repair_without_permission_noise() {
     let temp = tempfile::tempdir().unwrap();

@@ -365,6 +365,10 @@ pub(super) fn build_install_command(installed_exe: &Path) -> std::process::Comma
         .env("AMPLIHACK_NO_UPDATE_CHECK", "1")
         .env("AMPLIHACK_NONINTERACTIVE", "1")
         .env("AMPLIHACK_POST_UPDATE_INSTALL", "1")
+        .env(
+            "AMPLIHACK_REPAIR_ORIGINAL_PATH",
+            std::env::var_os("PATH").unwrap_or_default(),
+        )
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit());
