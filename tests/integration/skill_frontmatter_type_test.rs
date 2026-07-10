@@ -77,9 +77,15 @@ fn relative_path(path: &Path) -> String {
 
 /// Recursively find every file named `filename` under `dir`.
 ///
-/// Symlinked directories are not followed (`entry.path().is_dir()` on a symlink
-/// to a directory would recurse, but bundled skills contain no symlinks; the
-/// walk is bounded to `skills_dir()`).
+/// Uses `DirEntry::file_type()` — which reuses the `d_type` already returned by
+/// `readdir` — instead of `Path::is_dir()`, avoiding a redundant `stat` syscall
+/// per directory entry. `file_name()` is read straight off the entry so the full
+/// `PathBuf` is only materialized for the paths we actually keep or recurse into.
+///
+/// Symlinked directories are not followed: `file_type()` reports the link itself
+/// rather than its target, so a symlinked directory is treated as a non-matching
+/// entry. Bundled skills contain no symlinks and the walk is bounded to
+/// `skills_dir()`, so this matches the corpus exactly.
 fn find_files_named(dir: &Path, filename: &str) -> Vec<PathBuf> {
     let mut result = Vec::new();
     if !dir.is_dir() {
@@ -87,15 +93,11 @@ fn find_files_named(dir: &Path, filename: &str) -> Vec<PathBuf> {
     }
     for entry in fs::read_dir(dir).expect("read skills dir") {
         let entry = entry.expect("read dir entry");
-        let path = entry.path();
-        if path.is_dir() {
-            result.extend(find_files_named(&path, filename));
-        } else if path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n == filename)
-        {
-            result.push(path);
+        let file_type = entry.file_type().expect("read dir entry file type");
+        if file_type.is_dir() {
+            result.extend(find_files_named(&entry.path(), filename));
+        } else if entry.file_name().to_str() == Some(filename) {
+            result.push(entry.path());
         }
     }
     result
