@@ -13,9 +13,10 @@
 //! TC-SKILL-03 validates that `activation_keywords` also comply.
 //! TC-SKILL-04 verifies the SKILL_CATALOG.md references `amplihack-migrate`.
 //!
-//! TC-SKILL-12..15 are the issue #860 regression guards: they pin the
-//! `pr-guide` skill and enforce registry ↔ bundle consistency so a skill can
-//! never silently disappear from the Copilot CLI listing again (see
+//! TC-SKILL-12..13 are the issue #860 regression guards: TC-SKILL-12 enforces
+//! registry ↔ bundle consistency (no one-sided drift) and TC-SKILL-13 pins the
+//! `pr-guide` skill on both sides, so a skill can never silently disappear from
+//! the Copilot CLI listing again (see
 //! `docs/troubleshooting/pr-guide-skill-missing.md`).
 //!
 //! # Running
@@ -24,7 +25,6 @@
 //! cargo test --test skill_frontmatter_name -- --nocapture
 //! ```
 
-use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
@@ -549,31 +549,35 @@ fn tc_skill_11_frontmatter_is_valid_yaml() {
 // *both* the bundle (`amplifier-bundle/skills/pr-guide/`) and the compile-time
 // registry (`crates/amplihack-hooks/src/known_skills.rs`). Copilot CLI staging
 // is filesystem-driven, so once the bundle directory was gone the skill
-// disappeared from the listing. These guards pin the fix and detect drift:
+// disappeared from the listing. Two guards pin the fix:
 //
-//   * TC-SKILL-12 — every bundled skill is registered. Catches one-sided drift
-//     where a bundle skill is missing from the registry.
-//   * TC-SKILL-13 — the registry count equals the on-disk bundle SKILL.md
-//     count. Catches count desync between the two sources of truth.
-//   * TC-SKILL-14 — `pr-guide` is pinned in *both* the registry and the bundle.
-//     This is the explicit #860 backstop: it goes red on the two-sided
-//     wholesale removal that a plain set-equality check cannot catch (an empty
-//     ⊆ empty comparison stays green).
-//   * TC-SKILL-15 — no bidirectional drift between the bundle frontmatter-name
-//     set and the registry, with per-skill diagnostics.
+//   * TC-SKILL-12 — no one-sided drift: every bundled skill is registered and
+//     the registry count equals the on-disk bundle count. Given unique names on
+//     both sides this is set-equality between the two sources of truth.
+//   * TC-SKILL-13 — `pr-guide` is pinned concretely on *both* sides. This is the
+//     #860 backstop for the wholesale two-sided removal, which TC-SKILL-12
+//     cannot catch (dropping a skill from both sides keeps the counts equal and
+//     leaves no bundled name unregistered).
 //
 // These tests reuse the file's existing helpers (`skills_dir`, `skill_files`,
 // `extract_frontmatter_name`, `relative_path`) plus the public
 // `amplihack_hooks::known_skills` API. No production code change is required on
 // this branch — `pr-guide` is already present in both sources.
 
-/// TC-SKILL-12: Every bundled skill's frontmatter `name:` must appear in the
-/// `AMPLIHACK_SKILLS` registry (`is_amplihack_skill(name) == true`).
+/// TC-SKILL-12: No drift between the bundle and the `AMPLIHACK_SKILLS` registry.
 ///
-/// A bundle skill missing from the registry is the one-sided drift that leaves
-/// the skill on disk but unrecognised by hook/classification code.
+/// Guards both one-sided drift directions that can hide a skill:
+///   * a bundled skill whose frontmatter `name:` is missing from the registry
+///     (on disk but unrecognised by hook/classification code), and
+///   * a registry entry with no matching bundled `SKILL.md` (recognised by name
+///     but never staged for Copilot CLI).
+///
+/// Because bundled names are unique (TC-SKILL-08) and registry entries are
+/// strictly sorted/unique (`skills_are_sorted_for_binary_search`), "every
+/// bundled name is registered" plus "equal counts" is exactly set-equality
+/// between the two sources of truth.
 #[test]
-fn tc_skill_12_every_bundled_skill_is_registered() {
+fn tc_skill_12_registry_matches_bundle() {
     let skills = skills_dir();
     if !skills.is_dir() {
         eprintln!(
@@ -590,6 +594,7 @@ fn tc_skill_12_every_bundled_skill_is_registered() {
         skills.display()
     );
 
+    // Direction 1: every bundled skill's frontmatter name is registered.
     let mut unregistered = Vec::new();
     for path in files {
         let content = fs::read_to_string(path).expect("read SKILL.md");
@@ -607,56 +612,35 @@ fn tc_skill_12_every_bundled_skill_is_registered() {
             ));
         }
     }
-
     assert!(
         unregistered.is_empty(),
         "Every bundled skill must be registered in known_skills.rs \
          (Copilot CLI recognition depends on it):\n{}",
         unregistered.join("\n")
     );
-}
 
-/// TC-SKILL-13: The registry `skill_count()` must equal the number of bundled
-/// `SKILL.md` files on disk.
-///
-/// A mismatch means the registry array and the bundle directory have drifted
-/// out of sync — exactly the class of failure that hid `pr-guide`.
-#[test]
-fn tc_skill_13_registry_count_matches_bundle_count() {
-    let skills = skills_dir();
-    if !skills.is_dir() {
-        eprintln!(
-            "SKIP: amplifier-bundle/skills/ not found at {}",
-            skills.display()
-        );
-        return;
-    }
-
-    let bundle_count = skill_files().len();
-    assert!(
-        bundle_count > 0,
-        "Expected to find bundled SKILL.md files under {}",
-        skills.display()
-    );
-
+    // Direction 2: the registry count equals the on-disk bundle count. With
+    // direction 1 holding and both sides unique, equal cardinality proves the
+    // registry carries no extra (unbundled) entries.
     assert_eq!(
         skill_count(),
-        bundle_count,
+        files.len(),
         "Registry skill_count() ({}) must equal the bundled SKILL.md count ({}); \
          the registry and bundle have drifted",
         skill_count(),
-        bundle_count
+        files.len()
     );
 }
 
-/// TC-SKILL-14: `pr-guide` must be pinned in *both* the registry and the
+/// TC-SKILL-13: `pr-guide` must be pinned in *both* the registry and the
 /// bundle. Direct regression guard for issue #860.
 ///
-/// This is the backstop for the wholesale two-sided removal: unlike a plain
-/// set-equality check (which stays green when a skill vanishes from both
-/// sides), this test asserts the skill's concrete presence on each side.
+/// This is the backstop for the wholesale two-sided removal: unlike the drift
+/// check in TC-SKILL-12 (which stays green when a skill vanishes from *both*
+/// sides — counts still match and no bundled name is left unregistered), this
+/// test asserts the skill's concrete presence on each side.
 #[test]
-fn tc_skill_14_pr_guide_pinned_in_registry_and_bundle() {
+fn tc_skill_13_pr_guide_pinned_in_registry_and_bundle() {
     // Registry side — enforced unconditionally.
     assert!(
         is_amplihack_skill("pr-guide"),
@@ -683,72 +667,5 @@ fn tc_skill_14_pr_guide_pinned_in_registry_and_bundle() {
         "A bundled SKILL.md with frontmatter name \"pr-guide\" must exist under {} \
          (regression guard for issue #860)",
         skills.display()
-    );
-}
-
-/// TC-SKILL-15: No bidirectional drift between the bundle frontmatter-name set
-/// and the registry.
-///
-/// Because bundled skill names are unique (TC-SKILL-08) and registry entries
-/// are strictly sorted/unique (`skills_are_sorted_for_binary_search`), the
-/// conjunction of "every bundled name is registered" and "counts are equal"
-/// is equivalent to set-equality between the two sources of truth.
-#[test]
-fn tc_skill_15_no_registry_bundle_drift() {
-    let skills = skills_dir();
-    if !skills.is_dir() {
-        eprintln!(
-            "SKIP: amplifier-bundle/skills/ not found at {}",
-            skills.display()
-        );
-        return;
-    }
-
-    let files = skill_files();
-    assert!(
-        !files.is_empty(),
-        "Expected to find SKILL.md files under {}",
-        skills.display()
-    );
-
-    let bundled: BTreeSet<String> = files
-        .iter()
-        .map(|path| {
-            let content = fs::read_to_string(path).expect("read SKILL.md");
-            extract_frontmatter_name(&content).unwrap_or_else(|| {
-                panic!(
-                    "SKILL.md must have a frontmatter name: field: {}",
-                    relative_path(path)
-                )
-            })
-        })
-        .collect();
-
-    // Direction 1: every bundled name must be registered.
-    let missing_from_registry: Vec<&String> = bundled
-        .iter()
-        .filter(|name| !is_amplihack_skill(name))
-        .collect();
-    assert!(
-        missing_from_registry.is_empty(),
-        "Bundled skills missing from the known_skills.rs registry:\n{}",
-        missing_from_registry
-            .iter()
-            .map(|name| format!("  {name}"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
-
-    // Direction 2: the registry must not carry entries without a bundle file.
-    // With direction 1 holding and both sides unique, equal cardinality proves
-    // the registry has no extra (unbundled) skill names.
-    assert_eq!(
-        skill_count(),
-        bundled.len(),
-        "Registry has {} entrie(s) with no matching bundled SKILL.md \
-         (registry_count={}, bundle_count={})",
-        skill_count() as i64 - bundled.len() as i64,
-        skill_count(),
-        bundled.len()
     );
 }
