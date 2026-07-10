@@ -118,9 +118,43 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Build the final [`IdleOutcome`], lossily decoding the captured buffers.
+fn outcome(
+    status: io::Result<ExitStatus>,
+    out_buf: &Buffer,
+    err_buf: &Buffer,
+    killed_for_idle: bool,
+) -> IdleOutcome {
+    IdleOutcome {
+        status,
+        stdout: String::from_utf8_lossy(&lock(out_buf)).into_owned(),
+        stderr: String::from_utf8_lossy(&lock(err_buf)).into_owned(),
+        killed_for_idle,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Async watchdog (sites 6 & 4)
 // ---------------------------------------------------------------------------
+
+/// Read `reader` to EOF, appending each chunk to `buf` and stamping `lp` on
+/// every non-empty read so the supervising loop can observe liveness.
+async fn drain_async<R>(mut reader: R, buf: Buffer, lp: Progress)
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncReadExt;
+    let mut chunk = [0u8; 8192];
+    loop {
+        match reader.read(&mut chunk).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                lock(&buf).extend_from_slice(&chunk[..n]);
+                *lock(&lp) = Instant::now();
+            }
+        }
+    }
+}
 
 /// Supervise a `tokio::process::Child`, killing it only after the idle window
 /// elapses with no output on either stream.
@@ -137,43 +171,23 @@ pub async fn wait_with_idle_watchdog(
     stderr: Option<tokio::process::ChildStderr>,
     cfg: IdleConfig,
 ) -> IdleOutcome {
-    use tokio::io::AsyncReadExt;
-
     let last_progress: Progress = Arc::new(Mutex::new(Instant::now()));
     let out_buf: Buffer = Arc::new(Mutex::new(Vec::new()));
     let err_buf: Buffer = Arc::new(Mutex::new(Vec::new()));
 
-    let out_handle = stdout.map(|mut reader| {
-        let lp = Arc::clone(&last_progress);
-        let buf = Arc::clone(&out_buf);
-        tokio::spawn(async move {
-            let mut chunk = [0u8; 8192];
-            loop {
-                match reader.read(&mut chunk).await {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        lock(&buf).extend_from_slice(&chunk[..n]);
-                        *lock(&lp) = Instant::now();
-                    }
-                }
-            }
-        })
+    let out_handle = stdout.map(|r| {
+        tokio::spawn(drain_async(
+            r,
+            Arc::clone(&out_buf),
+            Arc::clone(&last_progress),
+        ))
     });
-    let err_handle = stderr.map(|mut reader| {
-        let lp = Arc::clone(&last_progress);
-        let buf = Arc::clone(&err_buf);
-        tokio::spawn(async move {
-            let mut chunk = [0u8; 8192];
-            loop {
-                match reader.read(&mut chunk).await {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        lock(&buf).extend_from_slice(&chunk[..n]);
-                        *lock(&lp) = Instant::now();
-                    }
-                }
-            }
-        })
+    let err_handle = stderr.map(|r| {
+        tokio::spawn(drain_async(
+            r,
+            Arc::clone(&err_buf),
+            Arc::clone(&last_progress),
+        ))
     });
 
     let mut killed_for_idle = false;
@@ -184,8 +198,7 @@ pub async fn wait_with_idle_watchdog(
             Err(e) => break Err(e),
         }
         tokio::time::sleep(cfg.poll).await;
-        let idle_for = lock(&last_progress).elapsed();
-        if idle_for >= cfg.idle_timeout {
+        if lock(&last_progress).elapsed() >= cfg.idle_timeout {
             let _ = child.start_kill();
             let s = child.wait().await;
             killed_for_idle = true;
@@ -202,17 +215,29 @@ pub async fn wait_with_idle_watchdog(
         let _ = h.await;
     }
 
-    IdleOutcome {
-        status,
-        stdout: String::from_utf8_lossy(&lock(&out_buf)).into_owned(),
-        stderr: String::from_utf8_lossy(&lock(&err_buf)).into_owned(),
-        killed_for_idle,
-    }
+    outcome(status, &out_buf, &err_buf, killed_for_idle)
 }
 
 // ---------------------------------------------------------------------------
 // Sync watchdog (site 3)
 // ---------------------------------------------------------------------------
+
+/// Blocking sibling of [`drain_async`] for a `std::io::Read` source.
+fn drain_sync<R>(mut reader: R, buf: Buffer, lp: Progress)
+where
+    R: std::io::Read,
+{
+    let mut chunk = [0u8; 8192];
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                lock(&buf).extend_from_slice(&chunk[..n]);
+                *lock(&lp) = Instant::now();
+            }
+        }
+    }
+}
 
 /// Blocking equivalent of [`wait_with_idle_watchdog`] for a
 /// `std::process::Child`, implemented with `std::thread` drainers so no tokio
@@ -223,39 +248,18 @@ pub fn wait_with_idle_watchdog_sync(
     stderr: Option<std::process::ChildStderr>,
     cfg: IdleConfig,
 ) -> IdleOutcome {
-    use std::io::Read;
-
     let last_progress: Progress = Arc::new(Mutex::new(Instant::now()));
     let out_buf: Buffer = Arc::new(Mutex::new(Vec::new()));
     let err_buf: Buffer = Arc::new(Mutex::new(Vec::new()));
 
-    let spawn_drainer = |reader: Option<Box<dyn Read + Send>>, buf: Buffer, lp: Progress| {
-        reader.map(|mut reader| {
-            std::thread::spawn(move || {
-                let mut chunk = [0u8; 8192];
-                loop {
-                    match reader.read(&mut chunk) {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => {
-                            lock(&buf).extend_from_slice(&chunk[..n]);
-                            *lock(&lp) = Instant::now();
-                        }
-                    }
-                }
-            })
-        })
-    };
-
-    let out_handle = spawn_drainer(
-        stdout.map(|r| Box::new(r) as Box<dyn Read + Send>),
-        Arc::clone(&out_buf),
-        Arc::clone(&last_progress),
-    );
-    let err_handle = spawn_drainer(
-        stderr.map(|r| Box::new(r) as Box<dyn Read + Send>),
-        Arc::clone(&err_buf),
-        Arc::clone(&last_progress),
-    );
+    let out_handle = stdout.map(|r| {
+        let (buf, lp) = (Arc::clone(&out_buf), Arc::clone(&last_progress));
+        std::thread::spawn(move || drain_sync(r, buf, lp))
+    });
+    let err_handle = stderr.map(|r| {
+        let (buf, lp) = (Arc::clone(&err_buf), Arc::clone(&last_progress));
+        std::thread::spawn(move || drain_sync(r, buf, lp))
+    });
 
     let mut killed_for_idle = false;
     let status: io::Result<ExitStatus> = loop {
@@ -265,8 +269,7 @@ pub fn wait_with_idle_watchdog_sync(
             Err(e) => break Err(e),
         }
         std::thread::sleep(cfg.poll);
-        let idle_for = lock(&last_progress).elapsed();
-        if idle_for >= cfg.idle_timeout {
+        if lock(&last_progress).elapsed() >= cfg.idle_timeout {
             let _ = child.kill();
             let s = child.wait();
             killed_for_idle = true;
@@ -281,12 +284,7 @@ pub fn wait_with_idle_watchdog_sync(
         let _ = h.join();
     }
 
-    IdleOutcome {
-        status,
-        stdout: String::from_utf8_lossy(&lock(&out_buf)).into_owned(),
-        stderr: String::from_utf8_lossy(&lock(&err_buf)).into_owned(),
-        killed_for_idle,
-    }
+    outcome(status, &out_buf, &err_buf, killed_for_idle)
 }
 
 // ---------------------------------------------------------------------------
