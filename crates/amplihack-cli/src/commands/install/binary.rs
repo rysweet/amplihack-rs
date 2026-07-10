@@ -3,7 +3,7 @@
 use super::paths::{find_binary, home_dir, is_executable};
 use anyhow::{Context, Result, bail};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Resolve the amplihack-hooks binary through a 5-step chain.
 ///
@@ -111,40 +111,21 @@ pub(super) fn deploy_binaries() -> Result<Vec<PathBuf>> {
 
     let mut deployed = vec![hooks_dst.clone()];
 
-    // Also copy self (the amplihack binary) if it differs from the destination.
-    // Uses atomic rename-then-replace (issue #304) so it succeeds even when the
-    // destination is the currently-running binary.
-    if let Ok(self_exe) = std::env::current_exe() {
-        let self_dst = local_bin.join("amplihack");
-        if self_exe != self_dst {
-            deploy_binary(&self_exe, &self_dst).with_context(|| {
-                format!(
-                    "failed to deploy amplihack binary to {}",
-                    self_dst.display()
-                )
-            })?;
-            deployed.push(self_dst);
-        }
-
-        let resolver_src = self_exe
-            .parent()
-            .map(|dir| dir.join("amplihack-asset-resolver"))
-            .filter(|candidate| is_executable(candidate))
-            .or_else(|| find_binary("amplihack-asset-resolver"));
-        if let Some(resolver_src) = resolver_src {
-            let resolver_dst = local_bin.join("amplihack-asset-resolver");
-            if resolver_src != resolver_dst {
-                deploy_binary(&resolver_src, &resolver_dst).with_context(|| {
-                    format!(
-                        "failed to deploy {} to {}",
-                        resolver_src.display(),
-                        resolver_dst.display()
-                    )
-                })?;
-                deployed.push(resolver_dst);
-            }
-        }
-    }
+    // Also deploy the amplihack binary itself plus its asset-resolver sidecar.
+    //
+    // Issue #885: `amplihack update` self-updates the on-disk binary and then
+    // re-runs `install` to refresh framework assets. On Linux, replacing the
+    // running binary's file leaves `std::env::current_exe()` pointing at a
+    // now-unlinked inode — the kernel reports the path with a literal
+    // " (deleted)" suffix (e.g. `~/.cargo/bin/amplihack (deleted)`). Copying
+    // from that path fails with ENOENT and used to abort the entire asset
+    // refresh before agents/skills/context were staged.
+    //
+    // `resolve_self_source` recovers the freshly-written binary (or a PATH
+    // copy), and `deploy_self_and_resolver` is tolerant: a self-copy failure is
+    // logged and skipped, never propagated, so the framework-asset staging that
+    // follows in `run_install` always proceeds.
+    deployed.extend(deploy_self_and_resolver(&local_bin, resolve_self_source()));
 
     // PATH advisory + auto-persist
     let path_var = std::env::var_os("PATH").unwrap_or_default();
@@ -168,6 +149,109 @@ pub(super) fn deploy_binaries() -> Result<Vec<PathBuf>> {
     }
 
     Ok(deployed)
+}
+
+/// Deploy the `amplihack` binary and its `amplihack-asset-resolver` sidecar
+/// from `self_source` into `local_bin`.
+///
+/// Tolerant by design (issue #885): a failure to copy either binary is logged
+/// to stderr and skipped, never propagated. The framework-asset refresh that
+/// follows `deploy_binaries` in `run_install` must not be aborted just because
+/// the self-copy could not complete — most notably when `amplihack update`
+/// swapped the running binary out from under us and the source could not be
+/// recovered. Returns the paths that were successfully deployed (for the
+/// uninstall manifest).
+///
+/// When `self_source` is `None` (no real amplihack source could be located)
+/// the self/resolver deploy is skipped entirely and an empty vector is
+/// returned — the running binary is already installed somewhere on PATH, so
+/// this is a safe no-op rather than an error.
+pub(super) fn deploy_self_and_resolver(
+    local_bin: &Path,
+    self_source: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    use super::filesystem::deploy_binary;
+
+    let mut deployed = Vec::new();
+    let Some(self_exe) = self_source else {
+        return deployed;
+    };
+
+    let self_dst = local_bin.join("amplihack");
+    if self_exe != self_dst {
+        match deploy_binary(&self_exe, &self_dst) {
+            Ok(()) => deployed.push(self_dst),
+            Err(err) => eprintln!(
+                "  ⚠️  Skipping amplihack self-copy to {}: {err:#}",
+                self_dst.display()
+            ),
+        }
+    }
+
+    let resolver_src = self_exe
+        .parent()
+        .map(|dir| dir.join("amplihack-asset-resolver"))
+        .filter(|candidate| is_executable(candidate))
+        .or_else(|| find_binary("amplihack-asset-resolver"));
+    if let Some(resolver_src) = resolver_src {
+        let resolver_dst = local_bin.join("amplihack-asset-resolver");
+        if resolver_src != resolver_dst {
+            match deploy_binary(&resolver_src, &resolver_dst) {
+                Ok(()) => deployed.push(resolver_dst),
+                Err(err) => eprintln!(
+                    "  ⚠️  Skipping amplihack-asset-resolver copy to {}: {err:#}",
+                    resolver_dst.display()
+                ),
+            }
+        }
+    }
+
+    deployed
+}
+
+/// Resolve a real, copyable source for the running `amplihack` binary,
+/// starting from `std::env::current_exe()`.
+///
+/// Delegates to [`resolve_self_source_from`]; see it for the resolution order.
+/// Returns `None` when `current_exe()` itself cannot be determined or no real
+/// source can be located.
+fn resolve_self_source() -> Option<PathBuf> {
+    resolve_self_source_from(&std::env::current_exe().ok()?)
+}
+
+/// Resolve a real, copyable `amplihack` source from a possibly-stale
+/// `current_exe()` path.
+///
+/// Resolution order:
+/// 1. `raw_exe` as-is, when it points at an existing file.
+/// 2. `raw_exe` with a trailing " (deleted)" marker stripped, when that path
+///    exists — after an in-place `amplihack update`, the freshly-written
+///    replacement binary lives at the original location while the running
+///    process still reports the unlinked inode (issue #885).
+/// 3. `amplihack` found on `$PATH`.
+///
+/// Returns `None` when none of these locate a real file.
+pub(super) fn resolve_self_source_from(raw_exe: &Path) -> Option<PathBuf> {
+    if raw_exe.exists() {
+        return Some(raw_exe.to_path_buf());
+    }
+    if let Some(stripped) = strip_deleted_suffix(raw_exe)
+        && stripped.exists()
+    {
+        return Some(stripped);
+    }
+    find_binary("amplihack")
+}
+
+/// Strip the literal " (deleted)" marker that Linux appends to
+/// `/proc/self/exe` when the running executable's file has been unlinked
+/// (e.g. by an in-place `amplihack update`). Returns `None` when the path has
+/// no such suffix.
+pub(super) fn strip_deleted_suffix(path: &Path) -> Option<PathBuf> {
+    const DELETED_MARKER: &str = " (deleted)";
+    path.to_str()?
+        .strip_suffix(DELETED_MARKER)
+        .map(PathBuf::from)
 }
 
 pub(super) fn path_conflict_warning_after_install(
