@@ -72,7 +72,13 @@ fn quarantines_shadowing_python_entrypoint_wrapper_and_records_manifest() {
         "quarantine path must remain under ~/.amplihack/quarantine/stale-wrappers, got {}",
         report.neutralized[0].quarantine_path.display()
     );
-    let manifest = fs::read_to_string(&report.manifest_path).unwrap();
+    let manifest = fs::read_to_string(
+        report
+            .manifest_path
+            .as_ref()
+            .expect("quarantining wrappers must write a manifest"),
+    )
+    .unwrap();
     assert!(manifest.contains(&stale_wrapper.display().to_string()));
     assert!(manifest.contains("stale-python-wrapper"));
     assert!(manifest.contains("quarantined"));
@@ -167,6 +173,32 @@ fn quarantines_stale_uvx_wrapper_even_before_local_bin_is_on_current_path() {
     assert!(!stale_wrapper.exists());
     assert_eq!(report.resolved_after, preferred_rust);
     assert_eq!(report.neutralized.len(), 1);
+}
+
+#[test]
+fn no_shadowing_wrapper_does_not_create_empty_quarantine_run() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let preferred_bin = home.join(".local/bin");
+    let preferred_rust = create_exe_stub(&preferred_bin, "amplihack");
+
+    let report = neutralize_shadowing_stale_wrappers(repair_config(
+        &home,
+        &preferred_rust,
+        &preferred_rust,
+        vec![preferred_bin],
+    ))
+    .expect("already Rust-first PATH should need no repair");
+
+    assert!(report.neutralized.is_empty());
+    assert!(
+        report.manifest_path.is_none(),
+        "no-op repair should not leave empty quarantine manifests behind"
+    );
+    assert!(
+        !home.join(".amplihack/quarantine/stale-wrappers").exists(),
+        "no-op repair should not create quarantine directories"
+    );
 }
 
 #[test]
