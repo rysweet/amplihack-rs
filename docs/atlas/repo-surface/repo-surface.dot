@@ -1,76 +1,43 @@
 digraph repo_surface {
-    rankdir=TB;
-    node [shape=box, style=filled, fillcolor="#E8E8E8", fontname="Helvetica"];
-    edge [fontname="Helvetica", fontsize=10];
-
-    subgraph cluster_root {
-        label="Root";
-        style=dashed;
-        Cargo_toml [label="Cargo.toml\n(workspace)", fillcolor="#FFD700"];
-        mkdocs_yml [label="mkdocs.yml"];
-        package_json [label="package.json"];
-    }
-
-    subgraph cluster_bins {
-        label="bins/";
-        style=dashed;
-        bin_amplihack [label="amplihack\nmain.rs", fillcolor="#87CEEB"];
-        bin_asset_resolver [label="amplihack-asset-resolver", fillcolor="#87CEEB"];
-        bin_hooks [label="amplihack-hooks", fillcolor="#87CEEB"];
-    }
-
-    subgraph cluster_crates {
-        label="crates/ (23 crates)";
-        style=dashed;
-        cli [label="amplihack-cli", fillcolor="#98FB98"];
-        types [label="amplihack-types", fillcolor="#98FB98"];
-        state [label="amplihack-state", fillcolor="#98FB98"];
-        security [label="amplihack-security", fillcolor="#98FB98"];
-        workflows [label="amplihack-workflows", fillcolor="#98FB98"];
-        hooks [label="amplihack-hooks", fillcolor="#98FB98"];
-        memory [label="amplihack-memory", fillcolor="#98FB98"];
-        recipe [label="amplihack-recipe", fillcolor="#98FB98"];
-        launcher [label="amplihack-launcher", fillcolor="#98FB98"];
-        fleet [label="amplihack-fleet", fillcolor="#98FB98"];
-        agent_core [label="amplihack-agent-core", fillcolor="#98FB98"];
-        agent_eval [label="amplihack-agent-eval", fillcolor="#98FB98"];
-        agent_gen [label="amplihack-agent-generator", fillcolor="#98FB98"];
-        domain_agents [label="amplihack-domain-agents", fillcolor="#98FB98"];
-        hive [label="amplihack-hive", fillcolor="#98FB98"];
-        blarify [label="amplihack-blarify", fillcolor="#98FB98"];
-        multilspy [label="amplihack-multilspy", fillcolor="#98FB98"];
-        context [label="amplihack-context", fillcolor="#98FB98"];
-        delegation [label="amplihack-delegation", fillcolor="#98FB98"];
-        recovery [label="amplihack-recovery", fillcolor="#98FB98"];
-        remote [label="amplihack-remote", fillcolor="#98FB98"];
-        safety [label="amplihack-safety", fillcolor="#98FB98"];
-        utils [label="amplihack-utils", fillcolor="#98FB98"];
-    }
-
-    subgraph cluster_bundle {
-        label="amplifier-bundle/";
-        style=dashed;
-        bundle_recipes [label="recipes/"];
-        bundle_tools [label="tools/"];
-        bundle_agents [label="agents/"];
-        bundle_skills [label="skills/"];
-        bundle_behaviors [label="behaviors/"];
-    }
-
-    subgraph cluster_docs {
-        label="docs/";
-        style=dashed;
-        docs_howto [label="howto/"];
-        docs_ref [label="reference/"];
-        docs_concepts [label="concepts/"];
-    }
-
-    Cargo_toml -> bin_amplihack [label="workspace member"];
-    Cargo_toml -> cli [label="workspace member"];
-    Cargo_toml -> types [label="workspace member"];
-    Cargo_toml -> state [label="workspace member"];
-    Cargo_toml -> memory [label="workspace member"];
-    mkdocs_yml -> docs_howto;
-    mkdocs_yml -> docs_ref;
-    mkdocs_yml -> docs_concepts;
+  rankdir=TB; node [shape=folder,fontsize=10];
+  root [label="amplihack-rs workspace",shape=box];
+  root -> "Entry points (bins)";
+  "Entry points (bins)" -> "amplihack" [arrowhead=none]; "amplihack" [shape=component];
+  "Entry points (bins)" -> "amplihack-hooks-bin" [arrowhead=none]; "amplihack-hooks-bin" [shape=component];
+  "Entry points (bins)" -> "amplihack-asset-resolver-bin" [arrowhead=none]; "amplihack-asset-resolver-bin" [shape=component];
+  root -> "CLI core";
+  "CLI core" -> "amplihack-cli" [arrowhead=none]; "amplihack-cli" [shape=folder];
+  root -> "Hooks";
+  "Hooks" -> "amplihack-hooks" [arrowhead=none]; "amplihack-hooks" [shape=folder];
+  root -> "Agents / AI";
+  "Agents / AI" -> "amplihack-agent-core" [arrowhead=none]; "amplihack-agent-core" [shape=folder];
+  "Agents / AI" -> "amplihack-agent-eval" [arrowhead=none]; "amplihack-agent-eval" [shape=folder];
+  "Agents / AI" -> "amplihack-agent-generator" [arrowhead=none]; "amplihack-agent-generator" [shape=folder];
+  "Agents / AI" -> "amplihack-domain-agents" [arrowhead=none]; "amplihack-domain-agents" [shape=folder];
+  "Agents / AI" -> "amplihack-hive" [arrowhead=none]; "amplihack-hive" [shape=folder];
+  "Agents / AI" -> "amplihack-delegation" [arrowhead=none]; "amplihack-delegation" [shape=folder];
+  "Agents / AI" -> "amplihack-fleet" [arrowhead=none]; "amplihack-fleet" [shape=folder];
+  root -> "Orchestration & workflows";
+  "Orchestration & workflows" -> "amplihack-orchestration" [arrowhead=none]; "amplihack-orchestration" [shape=folder];
+  "Orchestration & workflows" -> "amplihack-workflows" [arrowhead=none]; "amplihack-workflows" [shape=folder];
+  "Orchestration & workflows" -> "amplihack-reflection" [arrowhead=none]; "amplihack-reflection" [shape=folder];
+  "Orchestration & workflows" -> "amplihack-recovery" [arrowhead=none]; "amplihack-recovery" [shape=folder];
+  root -> "State / memory / session";
+  "State / memory / session" -> "amplihack-memory" [arrowhead=none]; "amplihack-memory" [shape=folder];
+  "State / memory / session" -> "amplihack-state" [arrowhead=none]; "amplihack-state" [shape=folder];
+  "State / memory / session" -> "amplihack-session" [arrowhead=none]; "amplihack-session" [shape=folder];
+  "State / memory / session" -> "amplihack-context" [arrowhead=none]; "amplihack-context" [shape=folder];
+  root -> "Launcher & remote";
+  "Launcher & remote" -> "amplihack-launcher" [arrowhead=none]; "amplihack-launcher" [shape=folder];
+  "Launcher & remote" -> "amplihack-remote" [arrowhead=none]; "amplihack-remote" [shape=folder];
+  root -> "Foundation";
+  "Foundation" -> "amplihack-types" [arrowhead=none]; "amplihack-types" [shape=folder];
+  "Foundation" -> "amplihack-utils" [arrowhead=none]; "amplihack-utils" [shape=folder];
+  "Foundation" -> "amplihack-builders" [arrowhead=none]; "amplihack-builders" [shape=folder];
+  root -> "Security & safety";
+  "Security & safety" -> "amplihack-security" [arrowhead=none]; "amplihack-security" [shape=folder];
+  "Security & safety" -> "amplihack-safety" [arrowhead=none]; "amplihack-safety" [shape=folder];
+  root -> "Code analysis";
+  "Code analysis" -> "amplihack-blarify" [arrowhead=none]; "amplihack-blarify" [shape=folder];
+  "Code analysis" -> "amplihack-multilspy" [arrowhead=none]; "amplihack-multilspy" [shape=folder];
 }
