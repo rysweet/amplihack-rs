@@ -84,8 +84,9 @@ fn relative_path(path: &Path) -> String {
 ///
 /// Symlinked directories are not followed: `file_type()` reports the link itself
 /// rather than its target, so a symlinked directory is treated as a non-matching
-/// entry. Bundled skills contain no symlinks and the walk is bounded to
-/// `skills_dir()`, so this matches the corpus exactly.
+/// entry. The bundled corpus does contain a handful of symlinked directories
+/// (e.g. `docx/ooxml`, `pptx/ooxml`, `outside-in-testing/*`); these are
+/// intentionally not traversed, and the walk stays bounded to `skills_dir()`.
 fn find_files_named(dir: &Path, filename: &str) -> Vec<PathBuf> {
     let mut result = Vec::new();
     if !dir.is_dir() {
