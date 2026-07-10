@@ -6,6 +6,7 @@ use super::process_scope::{
     snapshot_for_pid, validate_process_scope,
 };
 use super::utils::{atomic_write, dir_size_bytes};
+use amplihack_utils::idle_watchdog::{IdleConfig, file_idle_since};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::collections::HashMap;
@@ -192,6 +193,12 @@ pub(super) fn enforce_timeouts(
     workstreams: &mut [Workstream],
     processes: &HashMap<i64, Arc<Mutex<Option<Child>>>>,
 ) {
+    // Idle window used to decide whether a past-max_runtime child is genuinely
+    // hung (issue #867): only a child whose log file has stopped growing for
+    // this long may be interrupted. A child still producing output is left to
+    // run regardless of elapsed wall-clock time.
+    let idle_window = IdleConfig::from_env().idle_timeout;
+
     for ws in workstreams.iter_mut() {
         if ws.lifecycle_state != "running" {
             continue;
@@ -205,10 +212,6 @@ pub(super) fn enforce_timeouts(
         }
 
         let issue = ws.issue;
-        println!(
-            "[{issue}] Timed out after {}s, marking timed_out_resumable",
-            ws.max_runtime
-        );
 
         let mut authoritative_process = true;
         if ws.timeout_policy == INTERRUPT_PRESERVE_TIMEOUT_POLICY
@@ -217,8 +220,31 @@ pub(super) fn enforce_timeouts(
             let mut guard = proc_arc.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(ref mut child) = *guard {
                 if process_scope_is_authoritative(ws, child.id(), "timeout") {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    // Owner rule (issue #867): NEVER kill purely on elapsed
+                    // wall-clock. Interrupt only a genuinely idle child — one
+                    // whose log file has not grown for the idle window.
+                    match file_idle_since(&ws.log_file, idle_window) {
+                        Ok(true) => {
+                            println!(
+                                "[{issue}] Past max_runtime ({}s) and idle {}s — interrupting",
+                                ws.max_runtime,
+                                idle_window.as_secs()
+                            );
+                            let _ = child.kill();
+                            let _ = child.wait();
+                        }
+                        Ok(false) => {
+                            println!(
+                                "[{issue}] Past max_runtime ({}s) but still producing output — not interrupting",
+                                ws.max_runtime
+                            );
+                        }
+                        Err(e) => {
+                            // Can't determine idleness → err toward not killing
+                            // a possibly-live child.
+                            warn!("[{issue}] cannot probe log idleness ({e}); not interrupting");
+                        }
+                    }
                 } else {
                     authoritative_process = false;
                 }
@@ -228,6 +254,13 @@ pub(super) fn enforce_timeouts(
             continue;
         }
 
+        // State is preserved for resume regardless of whether the child was
+        // interrupted, so both policies leave the run resumable once it passes
+        // max_runtime.
+        println!(
+            "[{issue}] Marking timed_out_resumable after {}s",
+            ws.max_runtime
+        );
         ws.lifecycle_state = "timed_out_resumable".to_string();
         ws.end_time = Some(Instant::now());
         let _ = persist_state(ws);

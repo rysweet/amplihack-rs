@@ -11,15 +11,15 @@ use std::process::Command as StdCommand;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use amplihack_utils::idle_watchdog::{IdleConfig, wait_with_idle_watchdog};
 use amplihack_utils::prompt_delivery::{
     DeliveryCaps, DeliveryHandle, DeliveryMode, PromptDelivery, deliver, from_env, select_mode,
 };
 use async_trait::async_trait;
 use once_cell::sync::Lazy;
 use thiserror::Error;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command as TokioCommand;
-use tokio::time::timeout as tokio_timeout;
 
 /// Pre-split command lookup: maps `AMPLIHACK_DELEGATE` value to its binary
 /// command prefix (vectors, never shell strings — prevents injection).
@@ -375,39 +375,31 @@ async fn run_delivered_command(
         }
     }
 
-    let mut stdout_pipe = child.stdout.take();
-    let mut stderr_pipe = child.stderr.take();
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
 
-    let read_streams = async {
-        let mut out = String::new();
-        let mut err = String::new();
-        if let Some(p) = stdout_pipe.as_mut() {
-            let _ = p.read_to_string(&mut out).await;
-        }
-        if let Some(p) = stderr_pipe.as_mut() {
-            let _ = p.read_to_string(&mut err).await;
-        }
-        let status = child.wait().await;
-        (status, out, err)
+    // Idle watchdog (issue #867): supervise by liveness, not a wall-clock
+    // deadline. A per-call `timeout` is reinterpreted as an *idle-window*
+    // override; `None` uses the env default. A child that keeps producing
+    // output is never killed; a genuinely idle one is reaped after the window.
+    let cfg = match timeout {
+        Some(t) => IdleConfig::with_idle(t),
+        None => IdleConfig::from_env(),
     };
-
-    let (status, out, err) = match timeout {
-        Some(t) => match tokio_timeout(t, read_streams).await {
-            Ok(v) => v,
-            Err(_) => {
-                return ProcessResult::err(
-                    format!("Timed out after {t:?}"),
-                    process_id,
-                    start.elapsed(),
-                );
-            }
-        },
-        None => read_streams.await,
-    };
+    let outcome = wait_with_idle_watchdog(&mut child, stdout_pipe, stderr_pipe, cfg).await;
 
     drop(delivery_handle);
     let duration = start.elapsed();
-    match status {
+
+    if outcome.killed_for_idle {
+        return ProcessResult::err(
+            format!("Idle: no output for {:?}", cfg.idle_timeout),
+            process_id,
+            duration,
+        );
+    }
+
+    match outcome.status {
         Ok(s) => {
             // Capture the clean channel verbatim (or None if unwritten /
             // oversize / non-UTF-8). Consumers fall back to `output` on None.
@@ -416,8 +408,8 @@ async fn run_delivered_command(
                 .and_then(crate::result_sink::read_sink_verbatim);
             ProcessResult {
                 exit_code: s.code().unwrap_or(-1),
-                output: out,
-                stderr: err,
+                output: outcome.stdout,
+                stderr: outcome.stderr,
                 duration,
                 process_id,
                 result,

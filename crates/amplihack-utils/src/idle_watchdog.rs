@@ -1,0 +1,307 @@
+//! Idle/liveness watchdog for supervising long-running child processes.
+//!
+//! Tracking issue: GitHub #867.
+//!
+//! ## Why this exists
+//!
+//! Wall-clock, kill-on-expiry timeouts kill healthy agents mid-stream when a
+//! task legitimately runs longer than a fixed budget. This module replaces
+//! those kills with **idle/liveness detection**: any new byte on `stdout` or
+//! `stderr` resets a "last progress" timer, and a child is terminated only
+//! after the idle threshold passes with no output.
+//!
+//! There is **no absolute wall-clock cap** on agentic runs. A live agent that
+//! keeps streaming tokens is never killed, regardless of total elapsed time.
+//!
+//! ## Entry points
+//!
+//! - [`wait_with_idle_watchdog`] — async, for `tokio::process::Child` (sites 6
+//!   and 4: orchestration + remote).
+//! - [`wait_with_idle_watchdog_sync`] — blocking, for `std::process::Child`
+//!   (site 3: the Copilot CLI client, which must not pull in a tokio runtime).
+//! - [`file_idle_since`] — stateless mtime probe for call sites whose child
+//!   stdout is already consumed by a logging thread (site 2: multitask).
+
+use std::io;
+use std::path::Path;
+use std::process::ExitStatus;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime};
+
+// ---------------------------------------------------------------------------
+// Configuration constants
+// ---------------------------------------------------------------------------
+
+/// Env var overriding the idle threshold (seconds).
+pub const ENV_IDLE_TIMEOUT_SECS: &str = "AMPLIHACK_IDLE_TIMEOUT_SECS";
+
+/// Env var overriding the supervising-loop poll interval (milliseconds).
+pub const ENV_IDLE_POLL_MS: &str = "AMPLIHACK_IDLE_POLL_MS";
+
+/// Default idle threshold: a child is killed after this many seconds with no
+/// output on either stdout or stderr.
+pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 300;
+
+/// Default poll interval for the supervising loop (milliseconds).
+pub const DEFAULT_POLL_MS: u64 = 1000;
+
+/// Parse a positive `u64` from an environment variable, falling back to
+/// `default` on absent, non-parsable, or zero values.
+fn env_u64(key: &str, default: u64) -> u64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(default)
+}
+
+// ---------------------------------------------------------------------------
+// IdleConfig
+// ---------------------------------------------------------------------------
+
+/// Configures the idle threshold and poll interval for a supervised wait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IdleConfig {
+    /// No output for this long → the child is considered idle and is killed.
+    pub idle_timeout: Duration,
+    /// How often the supervising loop checks for progress and process exit.
+    pub poll: Duration,
+}
+
+impl IdleConfig {
+    /// Reads [`ENV_IDLE_TIMEOUT_SECS`] (default [`DEFAULT_IDLE_TIMEOUT_SECS`])
+    /// and [`ENV_IDLE_POLL_MS`] (default [`DEFAULT_POLL_MS`]). Non-parsable or
+    /// zero values fall back to the defaults.
+    pub fn from_env() -> Self {
+        Self {
+            idle_timeout: Duration::from_secs(env_u64(
+                ENV_IDLE_TIMEOUT_SECS,
+                DEFAULT_IDLE_TIMEOUT_SECS,
+            )),
+            poll: Duration::from_millis(env_u64(ENV_IDLE_POLL_MS, DEFAULT_POLL_MS)),
+        }
+    }
+
+    /// Override the idle threshold; the poll interval comes from env/default.
+    pub fn with_idle(idle: Duration) -> Self {
+        Self {
+            idle_timeout: idle,
+            poll: Duration::from_millis(env_u64(ENV_IDLE_POLL_MS, DEFAULT_POLL_MS)),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// IdleOutcome
+// ---------------------------------------------------------------------------
+
+/// Result of a supervised wait.
+#[derive(Debug)]
+pub struct IdleOutcome {
+    /// Exit status of the child, or the I/O error from waiting on it.
+    pub status: io::Result<ExitStatus>,
+    /// Full captured stdout.
+    pub stdout: String,
+    /// Full captured stderr.
+    pub stderr: String,
+    /// True only when the child was killed for exceeding the idle window.
+    pub killed_for_idle: bool,
+}
+
+/// Shared "last progress" instant, stamped on every read chunk.
+type Progress = Arc<Mutex<Instant>>;
+/// Shared output buffer accumulated by a drainer.
+type Buffer = Arc<Mutex<Vec<u8>>>;
+
+/// Lock a mutex, recovering the inner value even if a drainer panicked.
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+// ---------------------------------------------------------------------------
+// Async watchdog (sites 6 & 4)
+// ---------------------------------------------------------------------------
+
+/// Supervise a `tokio::process::Child`, killing it only after the idle window
+/// elapses with no output on either stream.
+///
+/// Drainer tasks are launched with `tokio::spawn` (requires tokio features
+/// `process`, `time`, `rt`, `io-util`). Each read chunk appends to a shared
+/// buffer and stamps a shared `Instant`. The supervising loop calls `try_wait`
+/// and `sleep(cfg.poll)`; when `now - last_progress >= cfg.idle_timeout` it
+/// kills the child and sets `killed_for_idle = true`. `select!` is intentionally
+/// not used, so the tokio `macros` feature is not required here.
+pub async fn wait_with_idle_watchdog(
+    child: &mut tokio::process::Child,
+    stdout: Option<tokio::process::ChildStdout>,
+    stderr: Option<tokio::process::ChildStderr>,
+    cfg: IdleConfig,
+) -> IdleOutcome {
+    use tokio::io::AsyncReadExt;
+
+    let last_progress: Progress = Arc::new(Mutex::new(Instant::now()));
+    let out_buf: Buffer = Arc::new(Mutex::new(Vec::new()));
+    let err_buf: Buffer = Arc::new(Mutex::new(Vec::new()));
+
+    let out_handle = stdout.map(|mut reader| {
+        let lp = Arc::clone(&last_progress);
+        let buf = Arc::clone(&out_buf);
+        tokio::spawn(async move {
+            let mut chunk = [0u8; 8192];
+            loop {
+                match reader.read(&mut chunk).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        lock(&buf).extend_from_slice(&chunk[..n]);
+                        *lock(&lp) = Instant::now();
+                    }
+                }
+            }
+        })
+    });
+    let err_handle = stderr.map(|mut reader| {
+        let lp = Arc::clone(&last_progress);
+        let buf = Arc::clone(&err_buf);
+        tokio::spawn(async move {
+            let mut chunk = [0u8; 8192];
+            loop {
+                match reader.read(&mut chunk).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        lock(&buf).extend_from_slice(&chunk[..n]);
+                        *lock(&lp) = Instant::now();
+                    }
+                }
+            }
+        })
+    });
+
+    let mut killed_for_idle = false;
+    let status: io::Result<ExitStatus> = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break Ok(s),
+            Ok(None) => {}
+            Err(e) => break Err(e),
+        }
+        tokio::time::sleep(cfg.poll).await;
+        let idle_for = lock(&last_progress).elapsed();
+        if idle_for >= cfg.idle_timeout {
+            let _ = child.start_kill();
+            let s = child.wait().await;
+            killed_for_idle = true;
+            break s;
+        }
+    };
+
+    // Drain to EOF (the child has exited or been killed, so its pipes close)
+    // to capture any output that streamed just before exit.
+    if let Some(h) = out_handle {
+        let _ = h.await;
+    }
+    if let Some(h) = err_handle {
+        let _ = h.await;
+    }
+
+    IdleOutcome {
+        status,
+        stdout: String::from_utf8_lossy(&lock(&out_buf)).into_owned(),
+        stderr: String::from_utf8_lossy(&lock(&err_buf)).into_owned(),
+        killed_for_idle,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sync watchdog (site 3)
+// ---------------------------------------------------------------------------
+
+/// Blocking equivalent of [`wait_with_idle_watchdog`] for a
+/// `std::process::Child`, implemented with `std::thread` drainers so no tokio
+/// runtime is introduced into the caller.
+pub fn wait_with_idle_watchdog_sync(
+    child: &mut std::process::Child,
+    stdout: Option<std::process::ChildStdout>,
+    stderr: Option<std::process::ChildStderr>,
+    cfg: IdleConfig,
+) -> IdleOutcome {
+    use std::io::Read;
+
+    let last_progress: Progress = Arc::new(Mutex::new(Instant::now()));
+    let out_buf: Buffer = Arc::new(Mutex::new(Vec::new()));
+    let err_buf: Buffer = Arc::new(Mutex::new(Vec::new()));
+
+    let spawn_drainer = |reader: Option<Box<dyn Read + Send>>, buf: Buffer, lp: Progress| {
+        reader.map(|mut reader| {
+            std::thread::spawn(move || {
+                let mut chunk = [0u8; 8192];
+                loop {
+                    match reader.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            lock(&buf).extend_from_slice(&chunk[..n]);
+                            *lock(&lp) = Instant::now();
+                        }
+                    }
+                }
+            })
+        })
+    };
+
+    let out_handle = spawn_drainer(
+        stdout.map(|r| Box::new(r) as Box<dyn Read + Send>),
+        Arc::clone(&out_buf),
+        Arc::clone(&last_progress),
+    );
+    let err_handle = spawn_drainer(
+        stderr.map(|r| Box::new(r) as Box<dyn Read + Send>),
+        Arc::clone(&err_buf),
+        Arc::clone(&last_progress),
+    );
+
+    let mut killed_for_idle = false;
+    let status: io::Result<ExitStatus> = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break Ok(s),
+            Ok(None) => {}
+            Err(e) => break Err(e),
+        }
+        std::thread::sleep(cfg.poll);
+        let idle_for = lock(&last_progress).elapsed();
+        if idle_for >= cfg.idle_timeout {
+            let _ = child.kill();
+            let s = child.wait();
+            killed_for_idle = true;
+            break s;
+        }
+    };
+
+    if let Some(h) = out_handle {
+        let _ = h.join();
+    }
+    if let Some(h) = err_handle {
+        let _ = h.join();
+    }
+
+    IdleOutcome {
+        status,
+        stdout: String::from_utf8_lossy(&lock(&out_buf)).into_owned(),
+        stderr: String::from_utf8_lossy(&lock(&err_buf)).into_owned(),
+        killed_for_idle,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// File-mtime idle probe (site 2)
+// ---------------------------------------------------------------------------
+
+/// Returns `true` when `path`'s mtime is at least `idle_timeout` old — i.e. no
+/// new output has been written to the log file for at least that long.
+///
+/// This is a stateless probe: callers poll it on their own cadence and kill the
+/// child only when it returns `true`.
+pub fn file_idle_since(path: &Path, idle_timeout: Duration) -> io::Result<bool> {
+    let mtime = std::fs::metadata(path)?.modified()?;
+    let age = SystemTime::now()
+        .duration_since(mtime)
+        .unwrap_or(Duration::ZERO);
+    Ok(age >= idle_timeout)
+}

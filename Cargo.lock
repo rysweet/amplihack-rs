@@ -50,6 +50,7 @@ name = "amplihack-agent-core"
 version = "0.11.1"
 dependencies = [
  "amplihack-memory",
+ "amplihack-utils",
  "async-trait",
  "chrono",
  "once_cell",
@@ -377,6 +378,7 @@ dependencies = [
 name = "amplihack-remote"
 version = "0.11.1"
 dependencies = [
+ "amplihack-utils",
  "anyhow",
  "chrono",
  "libc",

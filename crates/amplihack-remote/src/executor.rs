@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Instant;
 
+use amplihack_utils::idle_watchdog::{IdleConfig, wait_with_idle_watchdog};
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tracing::{debug, info, warn};
@@ -184,42 +185,42 @@ amplihack claude --{command} --max-turns {turns} -- -p "$PROMPT"
 
         let start = Instant::now();
 
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(self.timeout_seconds),
-            cmd.output(),
-        )
-        .await
-        {
-            Ok(Ok(output)) => {
-                let duration = start.elapsed().as_secs_f64();
-                Ok(ExecutionResult {
-                    exit_code: output.status.code().unwrap_or(-1),
-                    stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-                    stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-                    duration_seconds: duration,
-                    timed_out: false,
-                })
-            }
-            Ok(Err(e)) => Err(RemoteError::execution(format!(
+        // Issue #867: supervise via idle watchdog, not a wall-clock cap. A run
+        // producing output is never killed; only a genuinely idle one is reaped.
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| RemoteError::execution(format!("Failed to spawn remote command: {e}")))?;
+        let child_stdout = child.stdout.take();
+        let child_stderr = child.stderr.take();
+        let cfg = IdleConfig::with_idle(std::time::Duration::from_secs(self.timeout_seconds));
+        let outcome = wait_with_idle_watchdog(&mut child, child_stdout, child_stderr, cfg).await;
+        let duration = start.elapsed().as_secs_f64();
+
+        if outcome.killed_for_idle {
+            warn!(idle_secs = self.timeout_seconds, "remote run idle-reaped");
+            return Ok(ExecutionResult {
+                exit_code: -1,
+                stdout: outcome.stdout,
+                stderr: format!(
+                    "{}\nReaped after {}s with no output (idle window)",
+                    outcome.stderr, self.timeout_seconds
+                ),
+                duration_seconds: duration,
+                timed_out: true,
+            });
+        }
+
+        match outcome.status {
+            Ok(status) => Ok(ExecutionResult {
+                exit_code: status.code().unwrap_or(-1),
+                stdout: outcome.stdout,
+                stderr: outcome.stderr,
+                duration_seconds: duration,
+                timed_out: false,
+            }),
+            Err(e) => Err(RemoteError::execution(format!(
                 "Remote command failed: {e}"
             ))),
-            Err(_) => {
-                let duration = start.elapsed().as_secs_f64();
-                warn!(
-                    duration_secs = format!("{duration:.1}"),
-                    "execution timed out"
-                );
-                Ok(ExecutionResult {
-                    exit_code: -1,
-                    stdout: String::new(),
-                    stderr: format!(
-                        "Execution timed out after {:.1} minutes",
-                        self.timeout_seconds as f64 / 60.0
-                    ),
-                    duration_seconds: duration,
-                    timed_out: true,
-                })
-            }
         }
     }
 
