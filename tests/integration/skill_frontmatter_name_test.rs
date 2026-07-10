@@ -647,7 +647,11 @@ fn tc_skill_13_pr_guide_pinned_in_registry_and_bundle() {
         "pr-guide must be registered in known_skills.rs (regression guard for issue #860)"
     );
 
-    // Bundle side — a SKILL.md whose frontmatter name is exactly `pr-guide`.
+    // Bundle side — read the canonical `pr-guide/SKILL.md` that Copilot CLI
+    // staging walks by directory. The #860 root cause was this directory being
+    // dropped, so we probe the exact loader-expected path (one file read, no
+    // full-tree scan) rather than searching every SKILL.md for a matching name;
+    // TC-SKILL-09 already pins frontmatter name == directory name.
     let skills = skills_dir();
     if !skills.is_dir() {
         eprintln!(
@@ -657,15 +661,20 @@ fn tc_skill_13_pr_guide_pinned_in_registry_and_bundle() {
         return;
     }
 
-    let bundled_pr_guide = skill_files().iter().find(|path| {
-        let content = fs::read_to_string(path).expect("read SKILL.md");
-        extract_frontmatter_name(&content).as_deref() == Some("pr-guide")
-    });
-
+    let skill_md = skills.join("pr-guide/SKILL.md");
     assert!(
-        bundled_pr_guide.is_some(),
-        "A bundled SKILL.md with frontmatter name \"pr-guide\" must exist under {} \
+        skill_md.is_file(),
+        "The canonical pr-guide SKILL.md must exist at {} \
          (regression guard for issue #860)",
-        skills.display()
+        relative_path(&skill_md)
+    );
+
+    let content = fs::read_to_string(&skill_md).expect("read pr-guide SKILL.md");
+    assert_eq!(
+        extract_frontmatter_name(&content).as_deref(),
+        Some("pr-guide"),
+        "pr-guide SKILL.md frontmatter name must be \"pr-guide\" at {} \
+         (regression guard for issue #860)",
+        relative_path(&skill_md)
     );
 }
