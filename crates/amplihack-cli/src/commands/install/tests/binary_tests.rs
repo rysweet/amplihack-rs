@@ -1,6 +1,7 @@
 use super::helpers::create_exe_stub;
 use super::*;
 use std::fs;
+use std::path::PathBuf;
 
 // ─── TDD: Group 5 — find_hooks_binary resolution ─────────────────────────
 
@@ -195,6 +196,131 @@ fn deploy_binaries_succeeds_when_local_bin_not_in_path() {
     assert!(
         result.is_ok(),
         "deploy_binaries must exit 0 (warning only) even when ~/.local/bin absent from PATH"
+    );
+}
+
+// ─── Issue #885 — resilient self-binary deploy after self-update ─────────
+
+#[test]
+fn resolve_running_binary_source_strips_deleted_marker_when_real_file_exists() {
+    // Simulates the post-self-update state on Linux: current_exe() reports
+    // "<path> (deleted)" while the freshly-installed binary lives at <path>.
+    // The deploy must source from the real file, not the deleted marker path.
+    let tmp = tempfile::tempdir().unwrap();
+    let real = tmp.path().join("amplihack");
+    fs::write(&real, b"freshly-installed").unwrap();
+
+    let deleted = PathBuf::from(format!("{} (deleted)", real.display()));
+    let resolved = binary::resolve_running_binary_source(&deleted);
+
+    assert_eq!(
+        resolved, real,
+        "deleted-marker path must resolve to the real freshly-installed binary"
+    );
+}
+
+#[test]
+fn resolve_running_binary_source_keeps_deleted_path_when_real_file_missing() {
+    // If the un-suffixed path is also gone, keep the original so the caller's
+    // deleted-source short-circuit in deploy_binary decides the outcome.
+    let tmp = tempfile::tempdir().unwrap();
+    let missing = tmp.path().join("amplihack");
+    let deleted = PathBuf::from(format!("{} (deleted)", missing.display()));
+
+    let resolved = binary::resolve_running_binary_source(&deleted);
+    assert_eq!(
+        resolved, deleted,
+        "must fall back to the original path when the real file is missing"
+    );
+}
+
+#[test]
+fn resolve_running_binary_source_passes_through_normal_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let normal = tmp.path().join("amplihack");
+    fs::write(&normal, b"x").unwrap();
+
+    let resolved = binary::resolve_running_binary_source(&normal);
+    assert_eq!(
+        resolved, normal,
+        "a non-deleted path must pass through unchanged"
+    );
+}
+
+#[test]
+fn deploy_self_binary_copies_freshly_installed_binary_when_current_exe_deleted() {
+    // Issue #885 happy path: after `amplihack update` swaps the cargo binary,
+    // current_exe() reports "<cargo>/amplihack (deleted)" but the NEW binary
+    // is at "<cargo>/amplihack". deploy_self_binary must copy THAT into
+    // ~/.local/bin/amplihack rather than erroring on the deleted path.
+    let tmp = tempfile::tempdir().unwrap();
+    let cargo_bin = tmp.path().join(".cargo/bin");
+    fs::create_dir_all(&cargo_bin).unwrap();
+    let real = cargo_bin.join("amplihack");
+    fs::write(&real, b"new binary v2").unwrap();
+
+    let local_bin = tmp.path().join(".local/bin");
+    fs::create_dir_all(&local_bin).unwrap();
+
+    let deleted = PathBuf::from(format!("{} (deleted)", real.display()));
+    let dst = binary::deploy_self_binary(&local_bin, &deleted)
+        .expect("deploy_self_binary must report the deployed destination");
+
+    assert_eq!(dst, local_bin.join("amplihack"));
+    assert_eq!(
+        fs::read(&dst).unwrap(),
+        b"new binary v2",
+        "must copy the freshly-installed binary, not the deleted-marker path"
+    );
+}
+
+#[test]
+fn deploy_self_binary_is_noop_when_source_deleted_and_dst_already_current() {
+    // Issue #885 / #524 interaction: current_exe() is a deleted path AND the
+    // real path is gone, but ~/.local/bin/amplihack already holds the
+    // up-to-date binary. The copy must be a successful no-op (leaving the
+    // destination untouched) rather than an error that aborts asset staging.
+    let tmp = tempfile::tempdir().unwrap();
+    let local_bin = tmp.path().join(".local/bin");
+    fs::create_dir_all(&local_bin).unwrap();
+    let dst = local_bin.join("amplihack");
+    fs::write(&dst, b"already up-to-date").unwrap();
+
+    let deleted = PathBuf::from(format!("{}/gone (deleted)", tmp.path().display()));
+    let result = binary::deploy_self_binary(&local_bin, &deleted);
+
+    assert_eq!(
+        result,
+        Some(dst.clone()),
+        "no-op deploy over an existing destination still reports the dst"
+    );
+    assert_eq!(
+        fs::read(&dst).unwrap(),
+        b"already up-to-date",
+        "destination binary must remain untouched"
+    );
+}
+
+#[test]
+fn deploy_self_binary_swallows_error_when_nothing_to_deploy() {
+    // Belt-and-braces (#885): if the source is truly gone and there is no
+    // existing destination to fall back to, deploy_self_binary must NOT
+    // propagate the error — it returns None so the caller's framework-asset
+    // staging proceeds regardless.
+    let tmp = tempfile::tempdir().unwrap();
+    let local_bin = tmp.path().join(".local/bin");
+    fs::create_dir_all(&local_bin).unwrap();
+
+    let deleted = PathBuf::from(format!("{}/gone (deleted)", tmp.path().display()));
+    let result = binary::deploy_self_binary(&local_bin, &deleted);
+
+    assert!(
+        result.is_none(),
+        "a failed copy with nothing to deploy must be swallowed (return None)"
+    );
+    assert!(
+        !local_bin.join("amplihack").exists(),
+        "no destination binary should have been created"
     );
 }
 
