@@ -1,7 +1,7 @@
 ---
 title: Install/update PATH conflict reference
-description: Reference for amplihack install/update target selection, PATH conflict detection, safe repair behavior, and output regression guarantees.
-last_updated: 2026-06-05
+description: Reference for Rust binary precedence, stale Python/uvx wrapper neutralization, PATH persistence, and install/update repair APIs.
+last_updated: 2026-07-10
 review_schedule: as-needed
 owner: amplihack-maintainers
 doc_type: reference
@@ -9,205 +9,181 @@ doc_type: reference
 
 # Install/update PATH conflict reference
 
-`amplihack install` and `amplihack update` analyze command resolution order
-before reporting binary deployment status or replacing an existing binary. The
-analysis is deterministic, side-effect free, and based on `PATH` order rather
-than only `std::env::current_exe()`.
+`amplihack install` and `amplihack update` make the Rust `amplihack` binary in
+`~/.local/bin` the selected user-level command. They do this by deploying the
+Rust binaries, persistently prepending `$HOME/.local/bin` for future shells,
+neutralizing only positively identified stale Python/uvx wrappers that shadow
+the Rust binary, and failing visibly when an unknown executable would still
+shadow the Rust binary.
+
+The resolver never executes discovered candidates while classifying them.
 
 ## Scope
 
-The conflict detector covers these binary names:
+The repair covers:
 
-| Binary | Purpose |
+| Name | Purpose |
 | --- | --- |
-| `amplihack` | Main CLI and update target |
-| `amplihack-hooks` | Rust-native hook dispatcher used by registered hooks |
+| `amplihack` | Main Rust CLI and update target. |
+| `amplihack-hooks` | Rust hook dispatcher registered in settings files. |
 
-It does not execute discovered binaries. It inspects candidate paths, metadata,
-canonical forms when available, and safe user-level target locations.
+Stale-wrapper neutralization applies only to a file whose basename is exactly
+`amplihack` and that appears before the preferred Rust binary in ordered
+`PATH` resolution. Later stale wrappers are left in place because they do not
+control the command. The installer does not rewrite arbitrary `PATH` entries or
+delete unrelated binaries.
 
-## Preferred install target
+## Install/update order
 
-`~/.local/bin` is the preferred user-local target when it already contains
-current or writable `amplihack` and `amplihack-hooks` binaries.
+Both install and the post-update repair path use the same order:
 
-Target selection uses this priority:
+1. Deploy Rust binaries to `~/.local/bin`.
+2. Analyze ordered `PATH` candidates.
+3. Quarantine stale Python/uvx `amplihack` wrappers only when they shadow the
+   Rust binary, are clearly identified, and are safe to move.
+4. Persist the managed PATH profile block so future shells resolve
+   `$HOME/.local/bin` first.
+5. Refresh `~/.amplihack/amplifier-bundle` from the current Rust distribution.
+6. Verify the selected `amplihack` is the Rust binary.
 
-| Priority | Target | Used when |
+If any required repair cannot be completed and an earlier candidate would still
+shadow the Rust binary, install/update exits non-zero with the conflicting path
+and manual repair guidance.
+
+## Candidate classifications
+
+| Classification | Meaning | Automatic action |
 | --- | --- | --- |
-| 1 | Existing current executable directory | The running binary directory is user-level, user-writable, and not under a denied system prefix. |
-| 2 | `~/.local/bin` | User-local binaries are present or the directory is creatable/writable. |
-| 3 | Manual repair required | The only viable target is under a denied system prefix, system-owned, root-owned, or otherwise unsafe. |
+| `CurrentRustBinary` | The running Rust binary or a binary with the current Rust identity. | Accepted. |
+| `PreferredRustBinary` | The Rust binary deployed to `~/.local/bin/amplihack`. | Accepted and made first for future shells. |
+| `StalePythonWrapper` | A user-controlled wrapper whose content positively identifies old Python amplihack launch behavior. | Quarantined when safe and shadowing Rust. |
+| `StaleUvxWrapper` | A user-controlled wrapper whose content positively identifies uvx/uv wrapper launch behavior for amplihack. | Quarantined when safe and shadowing Rust. |
+| `UnknownExecutable` | An executable named `amplihack` that is not positively identified as Rust or stale wrapper. | Not modified; reported as a conflict if it shadows Rust. |
+| `Inaccessible` | Metadata, ownership, canonicalization, or content could not be inspected. | Not modified; reported with the underlying error. |
 
-A target is **safe for automatic replacement** only when it is under the current
-user's home directory and neither its raw nor canonical path is under a denied
-system prefix. Denied system prefixes include `/usr/local/bin`, `/usr/bin`,
-`/bin`, `/usr/sbin`, `/sbin`, and `/opt`. These prefixes are never written
-automatically, even when filesystem permissions would allow the current user to
-write there.
+## Safe wrapper neutralization
 
-The updater does not invoke `sudo`, change ownership, delete files, or attempt
-privileged temporary-file copies.
+A stale wrapper is eligible for quarantine only when all conditions hold:
 
-## PATH conflict categories
+1. The basename is exactly `amplihack`.
+2. The candidate appears before the preferred Rust `~/.local/bin/amplihack` in
+   the current ordered `PATH`, or is otherwise the command that would be
+   selected before repair.
+3. The path is under a user-controlled or amplihack-managed location, such as
+   `$HOME/.local/bin`, `$HOME/bin`, `$HOME/.cargo/bin`, `$HOME/.local/share`,
+   or `$AMPLIHACK_HOME`.
+4. The file is not under a denied system prefix such as `/usr/bin`,
+   `/usr/local/bin`, `/bin`, `/usr/sbin`, `/sbin`, `/opt`, or a package-manager
+   directory outside `$HOME`.
+5. The file is owned by the current user or otherwise safely movable by the
+   current user.
+6. File content contains positive stale-wrapper evidence, such as a Python
+   shebang plus old amplihack wrapper markers, uvx/uv launch markers, or known
+   package-wrapper boilerplate for the Python amplihack distribution.
+7. Symlinks resolve to a safe target. Ambiguous or escaping symlinks are skipped
+   and reported instead of followed destructively.
 
-| Category | Detection | User-facing behavior |
-| --- | --- | --- |
-| User-local first | `~/.local/bin/<binary>` is the first candidate for both binaries. | No warning. Install/update proceeds normally. |
-| System shadowing user-local | A candidate such as `/usr/local/bin/<binary>` appears before `~/.local/bin/<binary>`. | Warn with the shadowing path and the preferred user-local path. |
-| Duplicate candidates | More than one distinct binary identity exists for a binary after canonical de-duplication. | Warn when the order is ambiguous or could run a stale binary. |
-| System-managed stale candidate | Earlier candidate is under a denied system prefix and a user-local candidate exists. | Prefer safe user-local update when possible; otherwise fail with manual repair guidance. |
-| Mixed binary locations | `amplihack` and `amplihack-hooks` resolve from different install roots. | Warn because hooks may be updated independently from the CLI. |
-
-Canonicalization is best effort. If a path cannot be canonicalized because it
-does not exist or metadata cannot be read, the raw path is still included in the
-report and filesystem errors from later install operations are preserved.
-
-## Duplicate and canonical path handling
-
-The resolver keeps raw `PATH` candidates in shell resolution order for messages,
-then computes a stable identity for duplicate detection:
-
-1. Use the canonical path when both the candidate and its target can be
-   canonicalized.
-2. Otherwise use the normalized raw absolute path.
-
-Candidates with the same canonical identity are treated as aliases of the same
-binary and do not produce duplicate or stale-shadowing warnings by themselves.
-For example, `/usr/local/bin/amplihack` symlinked to
-`/home/alice/.local/bin/amplihack` is not reported as a stale duplicate solely
-because both raw paths appear on `PATH`.
-
-Warnings are emitted when ordered candidates resolve to distinct identities and
-an earlier candidate either creates ambiguous command resolution or is under a
-denied system prefix that shadows a safe user-local target.
-
-## Update behavior
-
-`amplihack update` downloads the new release, verifies it, and replaces only the
-selected safe target.
-
-If the current executable is `/usr/local/bin/amplihack` but
-`~/.local/bin/amplihack` is present and writable, the updater selects the
-user-local target and reports the system conflict instead of trying to write a
-temporary file into `/usr/local/bin`.
-
-Example:
+The neutralizer moves eligible wrappers to:
 
 ```text
-⚠️  PATH conflict: /usr/local/bin/amplihack appears before /home/alice/.local/bin/amplihack
-    Updating user-local target: /home/alice/.local/bin/amplihack
-    To run the updated binary first, move ~/.local/bin earlier in PATH or remove the stale system copy.
+~/.amplihack/quarantine/stale-wrappers/<timestamp>/
 ```
 
-When no safe user-level target exists, update exits non-zero before
-replacement:
+Each quarantine directory includes `manifest.tsv` with:
+
+| Field | Description |
+| --- | --- |
+| `original_path` | Absolute original path. |
+| `quarantined_path` | Sanitized path below the quarantine directory. |
+| `kind` | `StalePythonWrapper` or `StaleUvxWrapper`. |
+| `size` | File size in bytes. |
+| `mtime` | Source file modification time. |
+| `action` | `quarantined`, `skipped`, or `failed`. |
+| `reason` | Classification or failure reason. |
+
+The manifest records metadata only. It does not copy full wrapper contents into
+logs.
+
+## Unknown and system-managed conflicts
+
+Unknown executables are never deleted or quarantined automatically. If an
+unknown executable remains before `~/.local/bin/amplihack` after the managed
+PATH repair, install/update fails with guidance.
+
+System-managed paths are never mutated automatically, even if they are writable:
 
 ```text
-Cannot update amplihack automatically because the resolved target is system-managed:
+/usr/bin
+/usr/local/bin
+/bin
+/usr/sbin
+/sbin
+/opt
+```
+
+Example diagnostic:
+
+```text
+Cannot select Rust amplihack because an unknown executable shadows it:
   /usr/local/bin/amplihack
 
-amplihack does not write system-managed prefixes automatically.
-
-Repair options:
-  1. Move ~/.local/bin before /usr/local/bin in PATH.
-  2. Remove stale system binaries with sudo:
-     sudo rm /usr/local/bin/amplihack /usr/local/bin/amplihack-hooks
-  3. Re-run:
-     hash -r
-     amplihack update
+amplihack did not modify this file. Move ~/.local/bin before /usr/local/bin,
+update the system package, or remove the stale system copy through your normal
+administrative process, then run amplihack install again.
 ```
 
-The error is explicit and actionable. It replaces generic permission-denied
-failures caused by blind temporary-file copies into system-managed directories.
+## PATH persistence
 
-## Install behavior
+Install writes an idempotent managed block to the detected user shell profile:
+`~/.bashrc` for bash and `~/.zshrc` for zsh. If the shell cannot be detected or
+is not supported, install leaves profiles unchanged and prints manual PATH
+guidance instead.
 
-`amplihack install` deploys native binaries to `~/.local/bin` and then analyzes
-`PATH` resolution.
+The block prepends `$HOME/.local/bin` when it is not already first:
 
-When a system binary shadows the deployed user-local binary, install succeeds
-but prints a warning:
-
-```text
-✓ Deployed amplihack → /home/alice/.local/bin/amplihack
-✓ Deployed amplihack-hooks → /home/alice/.local/bin/amplihack-hooks
-⚠️  PATH conflict: /usr/local/bin/amplihack appears before /home/alice/.local/bin/amplihack
-    Your shell may continue to run the stale system binary.
-    Fix: export PATH="$HOME/.local/bin:$PATH" or remove the stale system copy with sudo.
+```bash
+# >>> amplihack path >>>
+case "$PATH" in
+  "$HOME/.local/bin"|"$HOME/.local/bin":*) ;;
+  *) export PATH="$HOME/.local/bin:$PATH" ;;
+esac
+# <<< amplihack path <<<
 ```
 
-This is an advisory because the install completed successfully and the repair
-requires either a shell profile change or administrator action.
-
-## Hook behavior
-
-Hook registrations use Rust-native binary subcommands:
-
-```json
-{
-  "hooks": {
-    "PostToolUse": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/home/alice/.local/bin/amplihack-hooks post-tool-use"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-The installer does not deploy or verify Python hook files. The following missing
-file lines are not valid install/update diagnostics:
-
-```text
-session_start.sh ❌
-post_tool_use.sh ❌
-pre_tool_use.sh ❌
-```
-
-Their presence in install/update output is a regression.
+The block is bounded by markers so subsequent installs update it in place. It
+does not remove unrelated `PATH` entries. A later duplicate of
+`$HOME/.local/bin` is harmless because the first occurrence wins.
 
 ## Configuration
 
-No new configuration file is required.
+No new user configuration is required.
 
 | Input | Role |
 | --- | --- |
-| `PATH` | Source of ordered command candidates. |
-| `HOME` | Used to resolve `~/.local/bin`. |
-| Current executable path | Used as a candidate replacement target, not as the sole source of truth. |
-| Filesystem metadata | Used for existence, file type, ownership, and writability checks. |
-| `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` | Still applies to `amplihack-hooks` lookup during install. It does not override PATH conflict reporting. |
-
-Recommended shell configuration:
-
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-## Implementation surfaces
-
-The feature is intentionally split so install and update share one resolver
-instead of duplicating PATH policy.
-
-| File | Planned role |
-| --- | --- |
-| `crates/amplihack-cli/src/path_conflicts.rs` | Shared side-effect-free resolver, warning formatter, and install target decision API. |
-| `crates/amplihack-cli/src/update/mod.rs` | Exposes update submodules and keeps the resolver available to update orchestration without coupling callers to file layout. |
-| `crates/amplihack-cli/src/update/check.rs` | Calls the resolver before binary replacement, handles `ManualRepairRequired`, and passes the chosen safe target to download/replacement code. |
-| `crates/amplihack-cli/src/update/install.rs` | Replaces only the selected safe target and returns the installed binary path used by post-update install re-exec. |
-| `crates/amplihack-cli/src/commands/install/binary.rs` | Deploys user-local binaries, then invokes PATH analysis for install-time warnings. |
-| `crates/amplihack-cli/src/commands/install/paths.rs` | Owns user-local path construction and safe path helpers reused by the resolver. |
-| `crates/amplihack-cli/src/commands/install/settings.rs` | Ensures hook registrations point at the selected `amplihack-hooks` binary path after install/update repair. |
+| `HOME` | Used to resolve the preferred user bin directory, expected as `~/.local/bin`. |
+| `PATH` | Ordered command candidates for conflict analysis. |
+| `AMPLIHACK_HOME` | Install root for bundle staging and stale-wrapper quarantine; defaults to `~/.amplihack`. |
+| `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` | Optional test/CI hint for locating `amplihack-hooks`; does not bypass PATH conflict reporting. |
+| Shell profile file | Installer updates the managed block in `~/.bashrc` for bash or `~/.zshrc` for zsh when the file is writable. |
 
 ## Contributor API
 
 The shared resolver lives in `crates/amplihack-cli/src/path_conflicts.rs`.
+The stale wrapper neutralizer lives in
+`crates/amplihack-cli/src/commands/install/stale_wrappers.rs`.
+
+### `PathCandidateKind`
+
+Classifies an executable candidate.
+
+| Variant | Meaning |
+| --- | --- |
+| `CurrentRustBinary` | Candidate is the running/current Rust binary. |
+| `PreferredRustBinary` | Candidate is the Rust binary in the preferred user bin directory. |
+| `StalePythonWrapper` | Candidate is a positively identified stale Python wrapper. |
+| `StaleUvxWrapper` | Candidate is a positively identified stale uvx wrapper. |
+| `UnknownExecutable` | Candidate is executable but not safely classifiable. |
+| `Inaccessible` | Candidate could not be inspected. |
 
 ### `PathAnalysisInput`
 
@@ -215,15 +191,12 @@ Inputs supplied by install/update callers and tests.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `path_env` | string | Raw `PATH` value to scan in order. |
-| `home_dir` | `PathBuf` | Home directory used to derive preferred user bin. |
+| `path_env` | `String` | Raw `PATH` value to scan in order. |
+| `home_dir` | `PathBuf` | Home directory used to derive `~/.local/bin`. |
+| `amplihack_home` | `PathBuf` | Install root used for quarantine and bundle paths. |
 | `current_exe` | `PathBuf` | Running executable path. |
-| `binary_names` | list | Fixed set: `amplihack`, `amplihack-hooks`. |
-| `filesystem` | trait-backed adapter | Metadata, canonicalization, and writability checks. |
-
-Tests inject temporary directories and filesystem adapters so transition
-coverage is deterministic and does not depend on host `/usr/local/bin`
-permissions.
+| `binary_names` | `Vec<String>` | Normally `amplihack` and `amplihack-hooks`. |
+| `filesystem` | trait-backed adapter | Metadata, canonicalization, ownership, writability, and content inspection. |
 
 ### `BinaryResolution`
 
@@ -232,21 +205,32 @@ Ordered candidate list for one binary.
 | Field | Description |
 | --- | --- |
 | `name` | Binary name. |
-| `candidates` | Existing executable candidates in PATH order. |
-| `first` | First candidate that the shell resolves. |
-| `preferred_user_bin` | Expected `~/.local/bin/<name>` path. |
+| `candidates` | Existing executable candidates in shell resolution order. |
+| `first` | First executable candidate. |
+| `preferred_user_bin` | Expected user-local target. |
 | `shadowed_user_bin` | User-local candidate when another path appears earlier. |
 
 ### `PathConflictReport`
 
-Side-effect-free analysis result consumed by install and update.
+Side-effect-free analysis consumed by install and update.
 
 | Field | Description |
 | --- | --- |
 | `resolutions` | Per-binary command resolution details. |
-| `warnings` | User-facing advisory messages for shadowing, duplicates, and mixed roots. |
-| `has_shadowing` | True when user-local binaries are shadowed by earlier candidates. |
-| `has_ambiguity` | True when multiple candidates create an ambiguous command resolution. |
+| `warnings` | User-facing advisory messages. |
+| `stale_wrappers` | Eligible shadowing stale wrappers, already classified but not moved. |
+| `unknown_conflicts` | Unknown candidates that would shadow the Rust binary. |
+| `inaccessible_conflicts` | Candidates that could not be inspected. |
+| `rust_first_after_repair` | Whether the Rust binary will resolve first after PATH repair and shadowing wrapper quarantine. |
+
+### `StaleWrapperNeutralizer`
+
+Moves eligible shadowing stale wrappers into quarantine and returns a manifest
+summary.
+
+Callers must pass only candidates already classified by the resolver. The
+neutralizer re-checks safe location, basename, metadata, and symlink boundaries
+before moving a file.
 
 ### `InstallTargetDecision`
 
@@ -254,32 +238,43 @@ Decision used by update replacement logic.
 
 | Variant | Meaning |
 | --- | --- |
-| `CurrentExeDir { target }` | Replace the current executable path only when it is a safe user-level target. |
-| `PreferredUserBin { target, warnings }` | Replace the safe user-local target and report conflicts. |
+| `PreferredUserBin { target, warnings }` | Install or replace `~/.local/bin/amplihack`. |
+| `CurrentExeDir { target }` | Reuse the current executable directory only when it is the safe user-level bin directory. |
 | `ManualRepairRequired { attempted_target, guidance }` | Do not replace anything; return actionable guidance. |
 
 Callers must propagate `ManualRepairRequired` as a user-visible error and must
-not fall back to privileged writes.
+not fall back to privileged writes or broad `PATH` cleanup.
 
-## Regression output contract
+### `PathPrecedenceManager`
 
-Install/update smoke tests assert that normal user-facing output does not
-contain:
+Owns profile-file updates. It writes or updates the managed block in the
+detected shell profile and reports which file changed. It must preserve all
+unrelated profile content.
 
-| Forbidden output | Reason |
-| --- | --- |
-| `session_start.sh ❌` | Obsolete Python/shell hook verification. |
-| `post_tool_use.sh ❌` | Obsolete Python/shell hook verification. |
-| `pre_tool_use.sh ❌` | Obsolete Python/shell hook verification. |
-| `profile_management` warning | Old noisy profile-management staging warning. |
-| `Skipping symlink` | Non-actionable copy noise for known-safe bundled symlinks during normal install/update. |
+## Regression coverage
 
-Diagnostic modes may include explicit file-copy details, but normal
-install/update output must stay free of these known regressions.
+Automated tests cover:
+
+1. stale Python wrapper quarantine
+2. stale uvx wrapper quarantine
+3. unknown executable conflict reporting without mutation
+4. safe symlink handling
+5. `$HOME/.local/bin` managed-block prepend idempotence
+6. install selecting the Rust user-level binary after stale wrapper repair
+7. update invoking the new binary's install repair path
+8. no mutation of system-managed paths
+
+Focused validation:
+
+```bash
+cargo test -p amplihack-cli stale_wrapper
+cargo test -p amplihack-cli path_conflicts
+cargo test -p amplihack-cli update_repair
+```
 
 ## See also
 
-- [Repair install/update PATH conflicts](../howto/repair-install-update-path-conflicts.md)
+- [Repair stale amplihack wrappers and PATH conflicts](../howto/repair-install-update-path-conflicts.md)
+- [Framework bundle compatibility reference](framework-bundle-compatibility.md)
 - [amplihack install reference](install-command.md)
-- [Binary resolution reference](binary-resolution.md)
 - [Post-update install re-exec](../features/update-reexec-new-binary.md)

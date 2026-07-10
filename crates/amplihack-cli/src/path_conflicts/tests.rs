@@ -221,9 +221,8 @@ fn update_prefers_current_writable_user_bin_with_production_probes_over_shadowin
         decision,
         InstallTargetDecision::PreferredUserBin {
             install_dir: user_bin,
-            reason:
-                "writable user-level binaries are preferred over unsafe or shadowed PATH candidates"
-                    .into(),
+            reason: "user-level binaries are preferred over unsafe or shadowed PATH candidates"
+                .into(),
         }
     );
 }
@@ -258,17 +257,17 @@ fn update_prefers_writable_user_bin_not_on_path_when_current_exe_is_denied() {
         decision,
         InstallTargetDecision::PreferredUserBin {
             install_dir: user_bin,
-            reason:
-                "writable user-level binaries are preferred over unsafe or shadowed PATH candidates"
-                    .into(),
+            reason: "user-level binaries are preferred over unsafe or shadowed PATH candidates"
+                .into(),
         }
     );
 }
 
 #[test]
-fn root_owned_system_candidate_requires_manual_repair_without_privileged_copy_attempt() {
+fn denied_system_candidate_repairs_to_user_bin_without_privileged_copy_attempt() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("home");
+    let user_bin = home.join(".local/bin");
     let usr_local_bin = temp.path().join("usr/local/bin");
     let system_amplihack = write_executable(&usr_local_bin, "amplihack");
     write_executable(&usr_local_bin, "amplihack-hooks");
@@ -287,22 +286,21 @@ fn root_owned_system_candidate_requires_manual_repair_without_privileged_copy_at
         candidate_probes: probes,
         denied_system_prefixes: vec![temp.path().join("usr/local")],
     })
-    .expect("manual repair is a valid decision, not an IO error");
+    .expect("target selection should be pure");
 
-    let InstallTargetDecision::ManualRepairRequired { guidance, .. } = decision else {
-        panic!("unwritable denied system install must require manual repair, got {decision:?}");
-    };
-    assert!(guidance.contains("sudo"));
-    assert!(guidance.contains("/usr/local/bin") || guidance.contains("usr/local/bin"));
-    assert!(guidance.contains("~/.local/bin") || guidance.contains(".local/bin"));
-    assert!(
-        !guidance.contains("Permission denied copying"),
-        "guidance must avoid the old misleading temp-copy failure wording: {guidance}"
+    assert_eq!(
+        decision,
+        InstallTargetDecision::PreferredUserBin {
+            install_dir: user_bin,
+            reason: "user-level binaries are preferred over unsafe or shadowed PATH candidates"
+                .into(),
+        },
+        "denied system installs must repair by writing the user-level target, not by copying into /usr/local"
     );
 }
 
 #[test]
-fn writable_empty_user_bin_does_not_silently_repair_denied_system_install() {
+fn empty_user_bin_is_valid_repair_target_for_denied_system_install() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("home");
     let user_bin = home.join(".local/bin");
@@ -327,9 +325,14 @@ fn writable_empty_user_bin_does_not_silently_repair_denied_system_install() {
     })
     .unwrap();
 
-    assert!(
-        matches!(decision, InstallTargetDecision::ManualRepairRequired { .. }),
-        "a writable user-bin directory without existing user-level binaries is not enough to redirect updates away from a denied system install: {decision:?}"
+    assert_eq!(
+        decision,
+        InstallTargetDecision::PreferredUserBin {
+            install_dir: user_bin,
+            reason: "user-level binaries are preferred over unsafe or shadowed PATH candidates"
+                .into(),
+        },
+        "a user-bin directory without existing binaries must be enough to redirect updates away from a denied system install"
     );
 }
 
@@ -358,8 +361,8 @@ fn denied_system_prefix_is_never_selected_even_when_probe_says_writable() {
     .unwrap();
 
     assert!(
-        matches!(decision, InstallTargetDecision::ManualRepairRequired { .. }),
-        "automatic updates must not target denied system prefixes even when the current process can write there: {decision:?}"
+        matches!(decision, InstallTargetDecision::PreferredUserBin { .. }),
+        "automatic updates must target user-level repair, not denied system prefixes, even when the current process can write there: {decision:?}"
     );
 }
 

@@ -370,5 +370,32 @@ pub(super) fn build_install_command(installed_exe: &Path) -> std::process::Comma
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit());
+    if let Some(path) = repair_subprocess_path(installed_exe) {
+        cmd.env("PATH", path);
+    }
     cmd
+}
+
+fn repair_subprocess_path(installed_exe: &Path) -> Option<std::ffi::OsString> {
+    let user_bin = std::env::var_os("HOME")
+        .map(|home| crate::path_conflicts::preferred_user_bin(Path::new(&home)))
+        .or_else(|| installed_exe.parent().map(Path::to_path_buf))?;
+    let existing = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths = vec![user_bin.clone()];
+    paths.extend(
+        std::env::split_paths(&existing)
+            .filter(|path| !paths_equal(path, &user_bin))
+            .collect::<Vec<_>>(),
+    );
+    std::env::join_paths(paths).ok()
+}
+
+fn paths_equal(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
 }
