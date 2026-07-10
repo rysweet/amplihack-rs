@@ -140,6 +140,19 @@ fn check_skill_redirect(tool_name: &str, tool_input: &Value) -> Option<Value> {
 /// cyclic directory trees.
 const MAX_SKILL_SCAN_DEPTH: usize = 8;
 
+/// Maximum number of `SKILL.md` files read during a single scan. The bundle
+/// ships on the order of a hundred skills; this generous cap bounds the
+/// per-tool-call hot path against a pathological or hostile directory tree
+/// (broad, shallow fan-out that the depth cap alone does not bound) without
+/// ever tripping for a legitimate bundle.
+const MAX_SKILL_FILES: usize = 10_000;
+
+/// Maximum accepted length of a frontmatter `name:` value. Skill and agent
+/// identities are short kebab-case names; anything longer cannot match a real
+/// agent and is rejected so a malformed or hostile `SKILL.md` cannot force an
+/// unbounded string into the membership set.
+const MAX_SKILL_NAME_LEN: usize = 256;
+
 /// Derive the set of bundled skill names by scanning the on-disk skills
 /// directory at runtime.
 ///
@@ -159,25 +172,35 @@ const MAX_SKILL_SCAN_DEPTH: usize = 8;
 /// no skills directory is reachable.
 fn bundled_skill_names() -> BTreeSet<String> {
     let mut names = BTreeSet::new();
+    let mut files_scanned = 0usize;
     for root in amplihack_cli::runtime_assets::iter_runtime_roots() {
         for skills_dir in [root.join("amplifier-bundle/skills"), root.join("skills")] {
-            collect_skill_frontmatter_names(&skills_dir, &mut names, 0);
+            collect_skill_frontmatter_names(&skills_dir, &mut names, 0, &mut files_scanned);
         }
     }
     names
 }
 
 /// Recursively collect frontmatter `name:` values from every `SKILL.md` under
-/// `dir`, up to [`MAX_SKILL_SCAN_DEPTH`]. Symlinks are not followed and
-/// unreadable entries are skipped.
-fn collect_skill_frontmatter_names(dir: &Path, names: &mut BTreeSet<String>, depth: usize) {
-    if depth > MAX_SKILL_SCAN_DEPTH {
+/// `dir`, up to [`MAX_SKILL_SCAN_DEPTH`] and [`MAX_SKILL_FILES`]. Symlinks are
+/// not followed and unreadable entries are skipped.
+fn collect_skill_frontmatter_names(
+    dir: &Path,
+    names: &mut BTreeSet<String>,
+    depth: usize,
+    files_scanned: &mut usize,
+) {
+    if depth > MAX_SKILL_SCAN_DEPTH || *files_scanned >= MAX_SKILL_FILES {
         return;
     }
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
+        // Bound the total scan regardless of tree shape (hot-path DoS guard).
+        if *files_scanned >= MAX_SKILL_FILES {
+            return;
+        }
         let Ok(file_type) = entry.file_type() else {
             continue;
         };
@@ -187,11 +210,12 @@ fn collect_skill_frontmatter_names(dir: &Path, names: &mut BTreeSet<String>, dep
         }
         let path = entry.path();
         if file_type.is_dir() {
-            collect_skill_frontmatter_names(&path, names, depth + 1);
-        } else if path.file_name().and_then(|n| n.to_str()) == Some("SKILL.md")
-            && let Some(name) = skill_frontmatter_name(&path)
-        {
-            names.insert(name);
+            collect_skill_frontmatter_names(&path, names, depth + 1, files_scanned);
+        } else if path.file_name().and_then(|n| n.to_str()) == Some("SKILL.md") {
+            *files_scanned += 1;
+            if let Some(name) = skill_frontmatter_name(&path) {
+                names.insert(name);
+            }
         }
     }
 }
@@ -208,7 +232,7 @@ fn skill_frontmatter_name(path: &Path) -> Option<String> {
         .lines()
         .find_map(|line| line.trim().strip_prefix("name:"))
         .map(|name| name.trim().to_string())
-        .filter(|name| !name.is_empty())
+        .filter(|name| !name.is_empty() && name.len() <= MAX_SKILL_NAME_LEN)
 }
 
 /// Strip leading env-variable assignments (`VAR=value ...`) and an optional
