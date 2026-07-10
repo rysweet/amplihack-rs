@@ -102,10 +102,7 @@ pub async fn evaluate_completeness(
 ) -> Result<CompletenessEvaluation, AgentError> {
     let trimmed = answer.trim();
     if trimmed.is_empty() {
-        return Ok(CompletenessEvaluation {
-            is_complete: false,
-            gaps: vec![question.into()],
-        });
+        return Ok(incomplete_needs_refinement(question));
     }
     let lower = trimmed.to_lowercase();
     let no_info = [
@@ -116,10 +113,7 @@ pub async fn evaluate_completeness(
         "not enough context",
     ];
     if no_info.iter().any(|p| lower.starts_with(p)) {
-        return Ok(CompletenessEvaluation {
-            is_complete: false,
-            gaps: vec![question.into()],
-        });
+        return Ok(incomplete_needs_refinement(question));
     }
     let prompt = format!(
         "Evaluate if this answer FULLY addresses the question.\n\n\
@@ -142,11 +136,22 @@ pub async fn evaluate_completeness(
     // accepting a possibly-incomplete answer.
     Ok(parse_completeness_value(&raw).unwrap_or_else(|| {
         warn!("completeness evaluation returned unparseable output; failing closed (not complete)");
-        CompletenessEvaluation {
-            is_complete: false,
-            gaps: vec![question.into()],
-        }
+        incomplete_needs_refinement(question)
     }))
+}
+
+/// A fail-closed completeness result: not complete, with `question` re-queued as
+/// the gap to refine.
+///
+/// issue #868: an empty answer, an explicit "no information" answer, and a parse
+/// failure all fail toward "not complete" and record the question as a gap so
+/// the agentic refinement loop keeps searching instead of silently accepting a
+/// possibly-incomplete answer.
+fn incomplete_needs_refinement(question: &str) -> CompletenessEvaluation {
+    CompletenessEvaluation {
+        is_complete: false,
+        gaps: vec![question.into()],
+    }
 }
 
 /// Parse a completeness-evaluation JSON payload.
@@ -180,11 +185,9 @@ fn parse_completeness_value(raw: &str) -> Option<CompletenessEvaluation> {
 #[cfg(test)]
 fn parse_completeness_response(raw: &str) -> CompletenessEvaluation {
     // issue #868: a parse failure fails CLOSED (not complete), never silently
-    // declares the answer complete.
-    parse_completeness_value(raw).unwrap_or(CompletenessEvaluation {
-        is_complete: false,
-        gaps: Vec::new(),
-    })
+    // declares the answer complete. `Default` for `CompletenessEvaluation` is
+    // exactly `{ is_complete: false, gaps: [] }`.
+    parse_completeness_value(raw).unwrap_or_default()
 }
 
 fn build_trace(
