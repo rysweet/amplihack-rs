@@ -126,7 +126,11 @@ fn check_skill_redirect(tool_name: &str, tool_input: &Value) -> Option<Value> {
 
 /// Strip leading env-variable assignments (`VAR=value ...`) and an optional
 /// `env` prefix so that `GIT_DIR=/x git commit` is normalized to `git commit`.
-fn normalize_command(command: &str) -> String {
+///
+/// Returns a borrowed suffix of `command`: normalization only removes a leading
+/// prefix, never rewrites content, so no allocation is needed on this per-Bash
+/// hot path.
+fn normalize_command(command: &str) -> &str {
     let mut rest = command.trim();
 
     // Strip `VAR=value ` prefixes (no quotes in key, value runs until space).
@@ -175,7 +179,7 @@ fn normalize_command(command: &str) -> String {
         }
     }
 
-    rest.to_string()
+    rest
 }
 
 /// The pre-tool-use hook.
