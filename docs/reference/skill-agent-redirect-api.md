@@ -11,7 +11,7 @@ See the [feature overview](../features/skill-to-agent-redirect.md) for the conce
 | File                                            | Role                                                                                  |
 | ----------------------------------------------- | ------------------------------------------------------------------------------------- |
 | `crates/amplihack-hooks/src/known_agents.rs`    | Compile-time registry of amplihack agent names + membership API.                      |
-| `crates/amplihack-hooks/src/known_skills.rs`    | Existing compile-time registry of skill names (companion; used for precedence).       |
+| `amplifier-bundle/skills/**/SKILL.md`           | Runtime source of truth for skill identity — scanned by `bundled_skill_names()` for precedence (issue #863). No hardcoded skill registry. |
 | `crates/amplihack-hooks/src/pre_tool_use/mod.rs`| `check_skill_redirect()` helper wired into the `PreToolUse` `process()` flow.          |
 | `crates/amplihack-hooks/src/lib.rs`             | Registers `pub mod known_agents;`.                                                     |
 
@@ -19,7 +19,7 @@ See the [feature overview](../features/skill-to-agent-redirect.md) for the conce
 
 ## `known_agents` Module
 
-A filesystem-free, compile-time registry mirroring `known_skills`.
+A filesystem-free, compile-time registry of amplihack agent names.
 
 ### Data
 
@@ -107,7 +107,10 @@ Semantics:
    The copilot `Skill` payload uses the `skill` key; `name` is accepted as a fallback. A missing, non-string, or null value yields `None` (pass through).
 3. Apply the predicate:
    ```rust
-   if !is_amplihack_skill(name) && is_amplihack_agent(name) {
+   // Skill precedence: only redirect agent-only names. The skill set is
+   // scanned from the on-disk skills directory at runtime (issue #863),
+   // so the directory is the single source of truth, not a hardcoded list.
+   if is_amplihack_agent(name) && !bundled_skill_names().contains(name) {
        // build redirect
    }
    ```
@@ -170,7 +173,7 @@ A non-match produces an empty object (`{}`), identical to any other allowed non-
 
 - **Total parsing.** Name extraction uses `Option` accessors only — no `unwrap`, `expect`, or indexing. Missing/non-string/null inputs pass through.
 - **Pure lookup.** `is_amplihack_agent` is a `binary_search` over a static `&[&str]`. No regex, path traversal, format-string, or shell evaluation — no injection vector.
-- **No runtime filesystem access.** Agent names are compile-time constants; filesystem globbing is confined to the `#[cfg(test)]` consistency test.
+- **Bounded, fail-open filesystem scan.** Agent names are compile-time constants. The skill set is derived at runtime by scanning the bundled skills directory (issue #863): the walk does **not** follow symlinks, is depth-bounded (`MAX_SKILL_SCAN_DEPTH`), reads only `SKILL.md` frontmatter as opaque text, and fails open (unreadable roots or files are skipped). The parsed skill name is used solely for set membership — never to build a filesystem path, command, or URL — so a hostile `name` stays inert data.
 - **Non-reflective message.** The redirect emits a static template plus the bare sanitized name (`[A-Za-z0-9-]`), never the full tool input, to avoid leaking surrounding prompt content into logs or transcripts.
 - **No persistence.** The registry holds public agent names only; the hook performs no disk or database writes and adds no new log sinks beyond existing `tracing`.
 
