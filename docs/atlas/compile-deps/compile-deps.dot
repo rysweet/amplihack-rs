@@ -1,79 +1,88 @@
 digraph compile_deps {
-    rankdir=TB;
-    node [shape=box, style=filled, fontname="Helvetica", fontsize=10];
-    edge [fontname="Helvetica", fontsize=9];
-
-    // Foundation Layer
-    subgraph cluster_foundation {
-        label="Foundation Layer";
-        style=dashed; color="#999999";
-        types [label="amplihack-types", fillcolor="#FFDAB9"];
-        state [label="amplihack-state", fillcolor="#FFDAB9"];
-        utils [label="amplihack-utils", fillcolor="#FFDAB9"];
-        security [label="amplihack-security", fillcolor="#FFDAB9"];
-        safety [label="amplihack-safety", fillcolor="#FFDAB9"];
-    }
-
-    // Core Infrastructure
-    subgraph cluster_core {
-        label="Core Infrastructure";
-        style=dashed; color="#999999";
-        memory [label="amplihack-memory", fillcolor="#ADD8E6"];
-        workflows [label="amplihack-workflows", fillcolor="#ADD8E6"];
-        recipe [label="amplihack-recipe", fillcolor="#ADD8E6"];
-        context [label="amplihack-context", fillcolor="#ADD8E6"];
-        delegation [label="amplihack-delegation", fillcolor="#ADD8E6"];
-        recovery [label="amplihack-recovery", fillcolor="#ADD8E6"];
-    }
-
-    // Agent Layer
-    subgraph cluster_agent {
-        label="Agent Layer";
-        style=dashed; color="#999999";
-        agent_core [label="amplihack-agent-core", fillcolor="#98FB98"];
-        agent_eval [label="amplihack-agent-eval", fillcolor="#98FB98"];
-        agent_gen [label="amplihack-agent-generator", fillcolor="#98FB98"];
-        domain_agents [label="amplihack-domain-agents", fillcolor="#98FB98"];
-    }
-
-    // Orchestration Layer
-    subgraph cluster_orch {
-        label="Orchestration Layer";
-        style=dashed; color="#999999";
-        hive [label="amplihack-hive", fillcolor="#DDA0DD"];
-        fleet [label="amplihack-fleet", fillcolor="#DDA0DD"];
-        remote [label="amplihack-remote", fillcolor="#DDA0DD"];
-    }
-
-    // Integration Layer
-    subgraph cluster_integration {
-        label="Integration Layer";
-        style=dashed; color="#999999";
-        cli [label="amplihack-cli", fillcolor="#FFD700"];
-        hooks [label="amplihack-hooks", fillcolor="#FFD700"];
-        launcher [label="amplihack-launcher", fillcolor="#FFD700"];
-        blarify [label="amplihack-blarify", fillcolor="#FFD700"];
-        multilspy [label="amplihack-multilspy", fillcolor="#FFD700"];
-    }
-
-    // Binary
-    bin_amplihack [label="bins/amplihack", fillcolor="#FF6347", shape=doubleoctagon];
-
-    // Dependencies
-    state -> types [label="uses"];
-    agent_core -> memory [label="stores"];
-    domain_agents -> agent_core [label="extends"];
-    domain_agents -> memory [label="uses"];
-    domain_agents -> workflows [label="classifies"];
-    hive -> agent_core [label="orchestrates"];
-    hive -> memory [label="shared state"];
-    cli -> types [label="uses"];
-    cli -> state [label="uses"];
-    cli -> hive [label="optional"];
-    hooks -> types [label="uses"];
-    hooks -> state [label="uses"];
-    hooks -> cli [label="uses"];
-    hooks -> security [label="validates"];
-    hooks -> workflows [label="classifies"];
-    bin_amplihack -> cli [label="dispatches"];
+  rankdir=LR; node [shape=box,style=rounded,fontsize=10];
+  labelloc=t; label="amplihack-rs internal crate dependencies";
+  subgraph cluster_0 { label="Entry points (bins)"; style=filled; color="#eef";
+    "amplihack";
+    "amplihack-hooks-bin";
+    "amplihack-asset-resolver-bin";
+  }
+  subgraph cluster_1 { label="CLI core"; style=filled; color="#eef";
+    "amplihack-cli";
+  }
+  subgraph cluster_2 { label="Hooks"; style=filled; color="#eef";
+    "amplihack-hooks";
+  }
+  subgraph cluster_3 { label="Agents / AI"; style=filled; color="#eef";
+    "amplihack-agent-core";
+    "amplihack-agent-eval";
+    "amplihack-agent-generator";
+    "amplihack-domain-agents";
+    "amplihack-hive";
+    "amplihack-delegation";
+    "amplihack-fleet";
+  }
+  subgraph cluster_4 { label="Orchestration & workflows"; style=filled; color="#eef";
+    "amplihack-orchestration";
+    "amplihack-workflows";
+    "amplihack-reflection";
+    "amplihack-recovery";
+  }
+  subgraph cluster_5 { label="State / memory / session"; style=filled; color="#eef";
+    "amplihack-memory";
+    "amplihack-state";
+    "amplihack-session";
+    "amplihack-context";
+  }
+  subgraph cluster_6 { label="Launcher & remote"; style=filled; color="#eef";
+    "amplihack-launcher";
+    "amplihack-remote";
+  }
+  subgraph cluster_7 { label="Foundation"; style=filled; color="#eef";
+    "amplihack-types";
+    "amplihack-utils";
+    "amplihack-builders";
+  }
+  subgraph cluster_8 { label="Security & safety"; style=filled; color="#eef";
+    "amplihack-security";
+    "amplihack-safety";
+  }
+  subgraph cluster_9 { label="Code analysis"; style=filled; color="#eef";
+    "amplihack-blarify";
+    "amplihack-multilspy";
+  }
+  "amplihack" -> "amplihack-cli";
+  "amplihack" -> "amplihack-hooks";
+  "amplihack" -> "amplihack-state";
+  "amplihack" -> "amplihack-types";
+  "amplihack-agent-core" -> "amplihack-memory";
+  "amplihack-asset-resolver-bin" -> "amplihack-cli";
+  "amplihack-cli" -> "amplihack-builders";
+  "amplihack-cli" -> "amplihack-hive";
+  "amplihack-cli" -> "amplihack-launcher";
+  "amplihack-cli" -> "amplihack-memory";
+  "amplihack-cli" -> "amplihack-reflection";
+  "amplihack-cli" -> "amplihack-remote";
+  "amplihack-cli" -> "amplihack-state";
+  "amplihack-cli" -> "amplihack-types";
+  "amplihack-cli" -> "amplihack-utils";
+  "amplihack-cli" -> "amplihack-workflows";
+  "amplihack-domain-agents" -> "amplihack-agent-core";
+  "amplihack-domain-agents" -> "amplihack-memory";
+  "amplihack-domain-agents" -> "amplihack-workflows";
+  "amplihack-hive" -> "amplihack-agent-core";
+  "amplihack-hive" -> "amplihack-memory";
+  "amplihack-hooks" -> "amplihack-cli";
+  "amplihack-hooks" -> "amplihack-security";
+  "amplihack-hooks" -> "amplihack-state";
+  "amplihack-hooks" -> "amplihack-types";
+  "amplihack-hooks" -> "amplihack-utils";
+  "amplihack-hooks" -> "amplihack-workflows";
+  "amplihack-hooks-bin" -> "amplihack-hooks";
+  "amplihack-hooks-bin" -> "amplihack-state";
+  "amplihack-hooks-bin" -> "amplihack-types";
+  "amplihack-launcher" -> "amplihack-types";
+  "amplihack-launcher" -> "amplihack-utils";
+  "amplihack-orchestration" -> "amplihack-utils";
+  "amplihack-state" -> "amplihack-types";
+  "amplihack-workflows" -> "amplihack-utils";
 }
