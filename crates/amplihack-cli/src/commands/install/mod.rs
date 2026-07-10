@@ -301,10 +301,14 @@ fn local_install(
         )
         .context("failed to neutralize stale Python/uvx amplihack PATH wrappers")?;
         if !repair.neutralized.is_empty() {
+            let manifest_path = repair
+                .manifest_path
+                .as_ref()
+                .context("stale wrapper repair quarantined files without writing a manifest")?;
             println!(
                 "  ✅ Quarantined {} stale amplihack wrapper(s); manifest: {}",
                 repair.neutralized.len(),
-                repair.manifest_path.display()
+                manifest_path.display()
             );
         }
     }

@@ -18,7 +18,7 @@ pub(crate) struct StaleWrapperNeutralizerConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StaleWrapperNeutralizerReport {
     pub(crate) neutralized: Vec<NeutralizedWrapper>,
-    pub(crate) manifest_path: PathBuf,
+    pub(crate) manifest_path: Option<PathBuf>,
     pub(crate) resolved_after: PathBuf,
 }
 
@@ -120,9 +120,9 @@ pub(crate) fn neutralize_shadowing_stale_wrappers(
         None => candidates.as_slice(),
     };
 
-    let run_dir = quarantine_run_dir(&config.home_dir)?;
     let mut neutralized = Vec::new();
     let mut manifest_entries = Vec::new();
+    let mut run_dir = None;
 
     for (counter, candidate) in shadowing_candidates.iter().enumerate() {
         let kind = classify_path_candidate(candidate, &preferred, &current, &config.home_dir)
@@ -143,7 +143,13 @@ pub(crate) fn neutralize_shadowing_stale_wrappers(
                     PathCandidateKind::StaleUvxWrapper => NeutralizedWrapperKind::StaleUvxWrapper,
                     _ => unreachable!("matched stale wrapper kinds only"),
                 };
-                let quarantine_path = quarantine_path_for(&run_dir, candidate, counter);
+                if run_dir.is_none() {
+                    run_dir = Some(quarantine_run_dir(&config.home_dir)?);
+                }
+                let Some(quarantine_root) = run_dir.as_ref() else {
+                    return Err(io::Error::other("quarantine run dir was not initialized").into());
+                };
+                let quarantine_path = quarantine_path_for(quarantine_root, candidate, counter);
                 if let Some(parent) = quarantine_path.parent() {
                     fs::create_dir_all(parent)?;
                 }
@@ -183,14 +189,20 @@ pub(crate) fn neutralize_shadowing_stale_wrappers(
         }
     }
 
-    let manifest_path = run_dir.join("manifest.json");
-    fs::write(
-        &manifest_path,
-        serde_json::to_vec_pretty(&Manifest {
-            generated_at_unix_secs: now_secs(),
-            entries: manifest_entries,
-        })?,
-    )?;
+    let manifest_path = match run_dir {
+        Some(run_dir) => {
+            let manifest_path = run_dir.join("manifest.json");
+            fs::write(
+                &manifest_path,
+                serde_json::to_vec_pretty(&Manifest {
+                    generated_at_unix_secs: now_secs(),
+                    entries: manifest_entries,
+                })?,
+            )?;
+            Some(manifest_path)
+        }
+        None => None,
+    };
 
     let resolved_after = if preferred_on_path {
         resolve_binary_on_path(&config).unwrap_or_else(|| config.preferred_rust_binary.clone())
