@@ -3,7 +3,7 @@
 use super::paths::{find_binary, home_dir, is_executable};
 use anyhow::{Context, Result, bail};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Resolve the amplihack-hooks binary through a 5-step chain.
 ///
@@ -111,22 +111,22 @@ pub(super) fn deploy_binaries() -> Result<Vec<PathBuf>> {
 
     let mut deployed = vec![hooks_dst.clone()];
 
-    // Also copy self (the amplihack binary) if it differs from the destination.
-    // Uses atomic rename-then-replace (issue #304) so it succeeds even when the
-    // destination is the currently-running binary.
+    // Also copy self (the amplihack binary) and the asset-resolver into
+    // ~/.local/bin. These copies are best-effort: a failure here must NOT
+    // abort the framework-asset (agents/skills/context) refresh that follows
+    // (issue #885). During `amplihack update` the amplihack binary was already
+    // swapped in place by the self-update, so a stale/failed ~/.local/bin copy
+    // is recoverable — but aborting before the asset restage leaves the
+    // framework stale, which is the regression we must avoid.
     if let Ok(self_exe) = std::env::current_exe() {
-        let self_dst = local_bin.join("amplihack");
-        if self_exe != self_dst {
-            deploy_binary(&self_exe, &self_dst).with_context(|| {
-                format!(
-                    "failed to deploy amplihack binary to {}",
-                    self_dst.display()
-                )
-            })?;
+        if let Some(self_dst) = deploy_self_binary(&local_bin, &self_exe) {
             deployed.push(self_dst);
         }
 
-        let resolver_src = self_exe
+        // Resolve the real source so the asset-resolver is looked up next to
+        // the freshly-installed binary, not the deleted-marker path.
+        let self_src = resolve_running_binary_source(&self_exe);
+        let resolver_src = self_src
             .parent()
             .map(|dir| dir.join("amplihack-asset-resolver"))
             .filter(|candidate| is_executable(candidate))
@@ -134,14 +134,16 @@ pub(super) fn deploy_binaries() -> Result<Vec<PathBuf>> {
         if let Some(resolver_src) = resolver_src {
             let resolver_dst = local_bin.join("amplihack-asset-resolver");
             if resolver_src != resolver_dst {
-                deploy_binary(&resolver_src, &resolver_dst).with_context(|| {
-                    format!(
-                        "failed to deploy {} to {}",
-                        resolver_src.display(),
-                        resolver_dst.display()
-                    )
-                })?;
-                deployed.push(resolver_dst);
+                match deploy_binary(&resolver_src, &resolver_dst) {
+                    Ok(()) => deployed.push(resolver_dst),
+                    Err(e) => {
+                        println!(
+                            "  ⚠️  Skipped amplihack-asset-resolver copy to {}: {e:#}",
+                            resolver_dst.display()
+                        );
+                        tracing::warn!("amplihack-asset-resolver deploy skipped: {e:#}");
+                    }
+                }
             }
         }
     }
@@ -168,6 +170,65 @@ pub(super) fn deploy_binaries() -> Result<Vec<PathBuf>> {
     }
 
     Ok(deployed)
+}
+
+/// Resolve the on-disk path to copy the running amplihack binary FROM.
+///
+/// On Linux, `amplihack update` atomically replaces the binary underneath the
+/// running process. `std::env::current_exe()` then reports the original path
+/// with a trailing `" (deleted)"` marker (the kernel's tag for an unlinked
+/// inode in `/proc/self/exe`). That literal path does not exist, so using it
+/// as a copy source fails with `ENOENT` and previously aborted the post-update
+/// framework-asset refresh (issue #885).
+///
+/// If `current_exe` carries the `(deleted)` marker and the un-suffixed path is
+/// a real file — the freshly-installed binary the self-update just wrote —
+/// return that path. Otherwise return `current_exe` unchanged so the caller's
+/// deleted-source handling in [`super::filesystem::deploy_binary`] still applies
+/// (it treats a missing source with an already-present destination as a no-op).
+pub(super) fn resolve_running_binary_source(current_exe: &Path) -> PathBuf {
+    const DELETED_MARKER: &str = " (deleted)";
+    let raw = current_exe.to_string_lossy();
+    if let Some(stripped) = raw.strip_suffix(DELETED_MARKER) {
+        let real = PathBuf::from(stripped);
+        if real.is_file() {
+            return real;
+        }
+    }
+    current_exe.to_path_buf()
+}
+
+/// Copy the running amplihack binary into `local_bin`, returning the
+/// destination path when a copy actually occurred.
+///
+/// Resilient by design (issue #885):
+/// - Resolves a Linux `"(deleted)"` `current_exe` to the real freshly-installed
+///   binary via [`resolve_running_binary_source`], so `amplihack update` copies
+///   the NEW binary into `~/.local/bin` rather than failing on a deleted path.
+/// - Returns `None` (a successful no-op) when the resolved source already IS the
+///   destination — the up-to-date binary is in place, nothing to do.
+/// - NEVER propagates an error: a failed `~/.local/bin` copy is logged as a
+///   warning and swallowed so the framework-asset refresh still proceeds.
+pub(super) fn deploy_self_binary(local_bin: &Path, current_exe: &Path) -> Option<PathBuf> {
+    use super::filesystem::deploy_binary;
+
+    let self_src = resolve_running_binary_source(current_exe);
+    let self_dst = local_bin.join("amplihack");
+    // Same-file no-op: the binary is already deployed at the destination.
+    if self_src == self_dst {
+        return None;
+    }
+    match deploy_binary(&self_src, &self_dst) {
+        Ok(()) => Some(self_dst),
+        Err(e) => {
+            println!(
+                "  ⚠️  Skipped amplihack binary copy to {}: {e:#}",
+                self_dst.display()
+            );
+            tracing::warn!("amplihack binary deploy skipped: {e:#}");
+            None
+        }
+    }
 }
 
 pub(super) fn path_conflict_warning_after_install(

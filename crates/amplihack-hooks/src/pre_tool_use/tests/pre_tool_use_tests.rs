@@ -139,6 +139,172 @@ fn handles_unknown_hook_event() {
     assert!(result.as_object().unwrap().is_empty());
 }
 
+// ---------------------------------------------------------------------------
+// SECURITY REGRESSION — prompt-injection channel must stay closed.
+//
+// The pre-tool-use hook used to run a launcher "context injection" step that
+// wrote the RAW tool_input verbatim into AGENTS.md (between the
+// <!-- AMPLIHACK_CONTEXT_START/END --> markers). Under Copilot, the CLI then
+// re-ingests AGENTS.md as agent INSTRUCTIONS on later turns, crossing untrusted
+// tool-input data (e.g. an arbitrary shell command string) into the instruction
+// channel = prompt injection. See issue #862.
+//
+// Contract: PreToolUseHook::process() must have ZERO filesystem side effects.
+// It must never persist AGENTS.md, never persist the .amplihack/.agents_md_hash
+// marker, and never write raw tool_input text to any file.
+//
+// This test reproduces the EXACT pre-fix write condition: the removed sink only
+// wrote when the launcher was detected as Copilot. It therefore forces Copilot
+// detection (GITHUB_COPILOT_AGENT=1) inside a fully sandboxed environment
+// (temp CWD + temp HOME + no AMPLIHACK_ROOT), so it genuinely exercises the
+// former write path rather than being a hollow tripwire. It FAILS against the
+// vulnerable code (AGENTS.md is written) and PASSES once the writer is removed.
+// ---------------------------------------------------------------------------
+
+/// Restores the process working directory on drop, even if an assertion panics.
+struct CwdRestore(std::path::PathBuf);
+
+impl Drop for CwdRestore {
+    fn drop(&mut self) {
+        let _ = std::env::set_current_dir(&self.0);
+    }
+}
+
+/// Saves an env var and restores its original value (or unsets it) on drop.
+struct EnvRestore {
+    key: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl EnvRestore {
+    fn set(key: &'static str, value: &str) -> Self {
+        let previous = std::env::var_os(key);
+        // Safe: every caller holds `env_lock` for the mutation window.
+        unsafe { std::env::set_var(key, value) };
+        Self { key, previous }
+    }
+
+    fn unset(key: &'static str) -> Self {
+        let previous = std::env::var_os(key);
+        // Safe: every caller holds `env_lock` for the mutation window.
+        unsafe { std::env::remove_var(key) };
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvRestore {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => unsafe { std::env::set_var(self.key, value) },
+            None => unsafe { std::env::remove_var(self.key) },
+        }
+    }
+}
+
+/// Recursively reports whether any file under `dir` contains `needle`.
+fn any_file_contains(dir: &std::path::Path, needle: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if any_file_contains(&path, needle) {
+                return true;
+            }
+        } else if std::fs::read_to_string(&path).is_ok_and(|content| content.contains(needle)) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Runs `PreToolUseHook::process(input)` inside a fully hermetic sandbox that
+/// forces Copilot launcher detection (the exact pre-fix write condition), then
+/// asserts the hook persisted NOTHING to the working directory: no AGENTS.md,
+/// no `.amplihack/.agents_md_hash` marker, and no file containing `forbidden`.
+/// Returns the hook result so callers can additionally assert blocking behavior.
+///
+/// The sandbox pins the CWD and every framework-root search anchor
+/// (HOME / AMPLIHACK_ROOT) inside a tempdir, so the pre-fix writer cannot escape
+/// to the real home dir even if a persisted Copilot context exists there.
+fn assert_process_persists_nothing(input: HookInput, forbidden: &str) -> serde_json::Value {
+    // Serialize with every other cwd/env-sensitive test in this binary.
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    // Declare `temp` before the cwd guard so, on unwind, the cwd is restored
+    // (guard drops first) *before* the tempdir is removed.
+    let original_cwd = std::env::current_dir().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _restore_cwd = CwdRestore(original_cwd);
+
+    std::env::set_current_dir(temp.path()).unwrap();
+    let _home = EnvRestore::set("HOME", temp.path().to_str().unwrap());
+    let _amplihack_root = EnvRestore::unset("AMPLIHACK_ROOT");
+
+    // Force the exact pre-fix write path: the removed sink only wrote AGENTS.md
+    // when the launcher was detected as Copilot. Without this the detection
+    // returns Unknown, nothing is written, and the assertions below would pass
+    // even against the vulnerable code (a hollow tripwire).
+    let _copilot = EnvRestore::set("GITHUB_COPILOT_AGENT", "1");
+    let _copilot_alt = EnvRestore::unset("COPILOT_AGENT");
+
+    let result = PreToolUseHook.process(input).unwrap();
+
+    // No instruction-channel artifacts may be persisted, even under Copilot.
+    assert!(
+        !temp.path().join("AGENTS.md").exists(),
+        "process() must not create AGENTS.md (raw tool_input prompt-injection sink)"
+    );
+    assert!(
+        !temp
+            .path()
+            .join(".amplihack")
+            .join(".agents_md_hash")
+            .exists(),
+        "process() must not create the AGENTS.md content-hash marker"
+    );
+    assert!(
+        !any_file_contains(temp.path(), forbidden),
+        "raw tool_input text must never be persisted to any file under the CWD"
+    );
+
+    result
+}
+
+#[test]
+fn process_has_no_filesystem_side_effects() {
+    let command = "git merge --no-verify feature-branch";
+    let result = assert_process_persists_nothing(make_bash_input(command), command);
+
+    // Blocking behavior must be preserved: --no-verify is still rejected.
+    assert_eq!(
+        result["block"], true,
+        "blocking semantics must be preserved after removing the injection sink: {result}"
+    );
+}
+
+#[test]
+fn process_has_no_filesystem_side_effects_for_non_bash_tool() {
+    // The injection sink ran for EVERY tool call, *before* the Bash gate, so a
+    // non-Bash tool (e.g. Read) also persisted its raw tool_input. The fix must
+    // remove the side effect for all tools, and the tool must still pass through.
+    let secret_path = "/tmp/should-never-be-persisted.txt";
+    let input = HookInput::PreToolUse {
+        tool_name: "Read".to_string(),
+        tool_input: serde_json::json!({"path": secret_path}),
+        session_id: None,
+    };
+    let result = assert_process_persists_nothing(input, secret_path);
+
+    assert!(
+        result.as_object().unwrap().is_empty(),
+        "a non-Bash tool must pass through untouched: {result}"
+    );
+}
+
 #[test]
 fn blocks_no_verify_with_git_dir_prefix() {
     let hook = PreToolUseHook;
