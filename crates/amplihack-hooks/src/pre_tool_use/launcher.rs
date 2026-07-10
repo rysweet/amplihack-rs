@@ -1,13 +1,14 @@
-//! Launcher detection and context injection strategy.
+//! Launcher detection.
 //!
-//! Detects whether running under Claude Code, Copilot, or Amplifier.
-//! Each launcher has a different context injection strategy:
-//! - Claude: writes to `.claude/runtime/hook_context.json` (pull model)
-//! - Copilot: appends to `AGENTS.md` with HTML markers (push model)
+//! Detects whether running under Claude Code, Copilot, or Amplifier by
+//! inspecting environment variables, falling back to the launcher-context
+//! file persisted at session start.
 //!
-//! Note: Strategies only affect WHERE context is stored, not WHETHER
-//! operations are blocked. Security checks (CWD, branch, --no-verify)
-//! are independent of the detected launcher.
+//! Detection only: this module has no filesystem side effects. The former
+//! context-injection step (which wrote raw `tool_input` into `AGENTS.md` and
+//! re-ingested it as agent instructions) was removed as a prompt-injection
+//! fix (issue #862). Security checks (CWD, branch, --no-verify) are
+//! independent of the detected launcher.
 
 use amplihack_cli::launcher_context::{
     LauncherKind, is_launcher_context_stale, read_launcher_context,
