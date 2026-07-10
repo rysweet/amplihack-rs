@@ -13,6 +13,7 @@ mod mermaid_cli;
 pub(crate) mod paths;
 mod recipe_runner;
 mod settings;
+mod stale_wrappers;
 mod types;
 mod uninstall;
 mod verification;
@@ -279,6 +280,31 @@ fn local_install(
     let hooks_bin = find_hooks_binary()?;
     for p in &deployed_binaries {
         println!("  ✅ Deployed {}", p.display());
+    }
+    let preferred_amplihack =
+        paths::preferred_user_bin_dir()?.join(crate::path_conflicts::binary_filename("amplihack"));
+    if preferred_amplihack.is_file() {
+        let path_dirs = std::env::var_os("PATH")
+            .map(|value| std::env::split_paths(&value).collect())
+            .unwrap_or_default();
+        let repair = stale_wrappers::neutralize_shadowing_stale_wrappers(
+            stale_wrappers::StaleWrapperNeutralizerConfig {
+                home_dir: paths::home_dir()?,
+                current_exe: std::env::current_exe()
+                    .unwrap_or_else(|_| preferred_amplihack.to_path_buf()),
+                preferred_rust_binary: preferred_amplihack,
+                path_dirs,
+                binary_name: crate::path_conflicts::binary_filename("amplihack"),
+            },
+        )
+        .context("failed to neutralize stale Python/uvx amplihack PATH wrappers")?;
+        if !repair.neutralized.is_empty() {
+            println!(
+                "  ✅ Quarantined {} stale amplihack wrapper(s); manifest: {}",
+                repair.neutralized.len(),
+                repair.manifest_path.display()
+            );
+        }
     }
 
     ensure_dirs(&claude_dir)?;

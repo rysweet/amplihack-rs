@@ -1,6 +1,7 @@
 //! Common path helpers and binary lookup utilities.
 
 use anyhow::{Context, Result};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -108,11 +109,14 @@ pub(crate) fn shell_profile_path() -> Option<PathBuf> {
     Some(home.join(rc))
 }
 
-/// Ensure `~/.local/bin` is exported in the user's shell profile.
+const PATH_BLOCK_START: &str = "# >>> amplihack managed PATH >>>";
+const PATH_BLOCK_END: &str = "# <<< amplihack managed PATH <<<";
+
+/// Ensure `~/.local/bin` is prepended in the user's shell profile.
 ///
-/// If `~/.local/bin` is already mentioned in the rc file (via literal
-/// `.local/bin` substring), this is a no-op.  Otherwise it appends an
-/// `export PATH` line with a timestamped comment.
+/// A later PATH mention is not sufficient: stale Python/uvx wrappers earlier
+/// on PATH can still win. The managed block is idempotent and always prepends
+/// `$HOME/.local/bin` for future shells.
 pub(crate) fn ensure_local_bin_on_shell_path() -> Result<()> {
     let profile = match shell_profile_path() {
         Some(p) => p,
@@ -123,23 +127,45 @@ pub(crate) fn ensure_local_bin_on_shell_path() -> Result<()> {
     };
 
     let existing = std::fs::read_to_string(&profile).unwrap_or_default();
-    if existing.contains(".local/bin") {
+    let without_old_block = remove_managed_path_block(&existing);
+    let next_content = format!("{}{}", without_old_block.trim_end(), managed_path_block());
+    if existing == next_content {
         return Ok(());
     }
 
-    let line = format!(
-        "\n# Added by amplihack install ({})\nexport PATH=\"$HOME/.local/bin:$PATH\"\n",
-        chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"),
-    );
-
-    use std::io::Write;
-    let mut file = std::fs::OpenOptions::new()
+    std::fs::OpenOptions::new()
         .create(true)
-        .append(true)
+        .write(true)
+        .truncate(true)
         .open(&profile)
-        .with_context(|| format!("failed to open {} for appending", profile.display()))?;
-    file.write_all(line.as_bytes())
+        .with_context(|| format!("failed to open {} for writing", profile.display()))?
+        .write_all(next_content.as_bytes())
         .with_context(|| format!("failed to write PATH export to {}", profile.display()))?;
-    println!("  ✅ Added ~/.local/bin to PATH in {}", profile.display());
+    println!(
+        "  ✅ Ensured ~/.local/bin is prepended to PATH in {}",
+        profile.display()
+    );
     Ok(())
+}
+
+fn managed_path_block() -> String {
+    format!(
+        "\n{}\n# Added by amplihack install\nexport PATH=\"$HOME/.local/bin:$PATH\"\n{}\n",
+        PATH_BLOCK_START, PATH_BLOCK_END
+    )
+}
+
+fn remove_managed_path_block(input: &str) -> String {
+    let Some(start) = input.find(PATH_BLOCK_START) else {
+        return input.to_string();
+    };
+    let Some(end_relative) = input[start..].find(PATH_BLOCK_END) else {
+        return input.to_string();
+    };
+    let end = start + end_relative + PATH_BLOCK_END.len();
+    let mut output = String::with_capacity(input.len());
+    output.push_str(input[..start].trim_end());
+    output.push('\n');
+    output.push_str(input[end..].trim_start_matches(['\r', '\n']));
+    output
 }

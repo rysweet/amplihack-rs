@@ -116,18 +116,13 @@ pub(crate) fn decide_update_install_target(
         .map(|probe| probe.writable)
         .unwrap_or_else(|| path_is_writable(&input.report.current_exe));
 
-    if input.report.preferred_user_bin.exists()
-        && user_bin_pair_exists_and_is_writable(
-            &input.report.preferred_user_bin,
-            &input.candidate_probes,
-        )
+    if !is_under_denied_prefix(&input.report.preferred_user_bin, &denied_system_prefixes)
         && (current_exe_denied || report_has_shadowing(&input.report))
     {
         return Ok(InstallTargetDecision::PreferredUserBin {
             install_dir: input.report.preferred_user_bin,
-            reason:
-                "writable user-level binaries are preferred over unsafe or shadowed PATH candidates"
-                    .to_string(),
+            reason: "user-level binaries are preferred over unsafe or shadowed PATH candidates"
+                .to_string(),
         });
     }
 
@@ -195,22 +190,6 @@ pub(crate) fn probe_candidates_without_exec(
             .or_insert_with(|| binary_probe_without_exec(&path));
     }
     probes
-}
-
-fn user_bin_pair_exists_and_is_writable(
-    user_bin: &Path,
-    probes: &BTreeMap<PathBuf, BinaryProbe>,
-) -> bool {
-    ["amplihack", "amplihack-hooks"].into_iter().all(|name| {
-        let path = user_bin.join(binary_filename(name));
-        if !path.is_file() {
-            return false;
-        }
-        probes
-            .get(&path)
-            .map(|probe| probe.writable)
-            .unwrap_or_else(|| path_is_writable(&path))
-    })
 }
 
 fn report_has_shadowing(report: &PathConflictReport) -> bool {

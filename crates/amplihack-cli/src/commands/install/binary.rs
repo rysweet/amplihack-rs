@@ -146,7 +146,9 @@ pub(super) fn deploy_binaries() -> Result<Vec<PathBuf>> {
         }
     }
 
-    // PATH advisory + auto-persist
+    // PATH advisory + auto-persist. Always ensure the managed profile block is
+    // present so future shells prefer the user-level Rust binary, even when the
+    // current PATH already mentions ~/.local/bin later.
     let path_var = std::env::var_os("PATH").unwrap_or_default();
     let in_path = std::env::split_paths(&path_var).any(|dir| dir == local_bin);
     if !in_path {
@@ -154,9 +156,9 @@ pub(super) fn deploy_binaries() -> Result<Vec<PathBuf>> {
             "  ⚠️  ~/.local/bin is not in $PATH. Add it to your shell profile:\n   \
              export PATH=\"$HOME/.local/bin:$PATH\""
         );
-        if let Err(e) = super::paths::ensure_local_bin_on_shell_path() {
-            tracing::warn!("failed to auto-persist PATH: {e}");
-        }
+    }
+    if let Err(e) = super::paths::ensure_local_bin_on_shell_path() {
+        tracing::warn!("failed to auto-persist PATH: {e}");
     }
 
     if let Ok(current_exe) = std::env::current_exe()

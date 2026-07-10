@@ -187,7 +187,7 @@ fn every_recipe_with_git_add_all_invokes_guard_first() {
 
         let guard_position = text.find("amplihack hygiene artifact-guard");
         for add_position in broad_add_positions {
-            if !guard_position.is_some_and(|guard| guard < add_position) {
+            if guard_position.is_none_or(|guard| guard >= add_position) {
                 missing.push(format!(
                     "{}: missing artifact guard before broad staging at byte {add_position}",
                     path.strip_prefix(workspace_root())
