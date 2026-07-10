@@ -4247,8 +4247,9 @@ fn fleet_admiral_reason_emits_lifecycle_and_batch_actions() {
                 working_directory: String::new(),
                 repo_url: String::new(),
                 git_branch: String::new(),
-                // issue #868: MarkComplete now requires structured corroboration.
-                // A captured PR URL is an authoritative completion signal.
+                // issue #868: a captured PR URL is an authoritative completion
+                // signal, so this session takes the structurally-corroborated
+                // MarkComplete path.
                 pr_url: "https://github.com/org/repo/pull/1".to_string(),
                 task_summary: String::new(),
             }],
@@ -4279,11 +4280,15 @@ fn fleet_admiral_reason_emits_lifecycle_and_batch_actions() {
 }
 
 #[test]
-fn fleet_admiral_textual_only_completion_is_not_marked_complete() {
-    // issue #868 regression: a session whose only "completion" evidence is a
-    // textual marker the agent could merely be quoting ("PR created"), with no
-    // captured PR URL and no machine-emitted marker, must NOT be turned into an
-    // irreversible MarkComplete by the director. It fails toward "keep running".
+fn fleet_admiral_advisory_completion_resolves_without_stalling() {
+    // issue #868: a session whose only "completion" evidence is an advisory
+    // textual marker (no captured PR URL, no machine-emitted marker) is NOT
+    // structurally corroborated. The director's MarkComplete is a *recoverable*
+    // bookkeeping action (it does not C-c/restart or kill the agent -- that
+    // irreversible path lives in the reasoning engine and stays gated), so the
+    // admiral must still RESOLVE the completed task rather than silently stall
+    // it forever. It surfaces the weaker evidence in the action reason (and a
+    // warning log) instead of the "corroborated by structured signal" reason.
     let temp = tempfile::tempdir().unwrap();
     let mut admiral = FleetAdmiral::new(
         PathBuf::from("/bin/true"),
@@ -4340,11 +4345,23 @@ fn fleet_admiral_textual_only_completion_is_not_marked_complete() {
 
     let actions = admiral.reason().unwrap();
 
+    // The completed task must be resolved (no permanent stall): a MarkComplete
+    // action is emitted for it.
+    let mark_complete = actions
+        .iter()
+        .find(|action| action.action_type == ActionType::MarkComplete)
+        .expect("advisory completion must still resolve the task, not stall it forever");
+    // ...but it is flagged as advisory-only, not structurally corroborated.
     assert!(
-        !actions
-            .iter()
-            .any(|action| action.action_type == ActionType::MarkComplete),
-        "textual-only completion must not drive an irreversible MarkComplete"
+        !mark_complete
+            .reason
+            .contains("corroborated by structured signal"),
+        "advisory-only completion must not claim structured corroboration"
+    );
+    assert!(
+        mark_complete.reason.contains("advisory"),
+        "advisory-only completion reason must surface the weaker evidence, got: {}",
+        mark_complete.reason
     );
 }
 

@@ -165,22 +165,43 @@ impl FleetAdmiral {
                 self.missing_session_counts.remove(&key);
                 match session.agent_status {
                     AgentStatus::Completed => {
-                        // issue #868: a heuristic `Completed` can come from a
-                        // textual marker the agent merely quoted. Require
-                        // structured corroboration (a captured PR URL or a
-                        // machine-emitted completion marker) before the
-                        // irreversible MarkComplete; otherwise leave the task
-                        // running for a later cycle or the reasoning engine to
-                        // resolve rather than closing it on advisory text alone.
-                        if is_authoritative_completion(&session.pr_url, &session.last_output) {
-                            actions.push(DirectorAction::new(
-                                ActionType::MarkComplete,
-                                Some(task.clone()),
-                                Some(vm_name),
-                                Some(session_name),
-                                "Agent completed successfully (corroborated by structured signal)",
-                            ));
-                        }
+                        // issue #868: the observer can classify `Completed` from an
+                        // advisory textual marker the agent merely quoted. The
+                        // director's MarkComplete is a *recoverable* bookkeeping
+                        // action -- it only updates the task queue; it does not
+                        // C-c/restart or kill the agent (contrast the reasoning
+                        // engine's irreversible restart path, which stays gated on
+                        // `is_authoritative_completion`). A silent fallback is a
+                        // silent failure, so rather than stalling a completed task
+                        // forever when structured corroboration is absent, resolve
+                        // it and *surface* the weaker evidence via a warning. The
+                        // admiral does not populate `pr_url` (it has no reasoner
+                        // PR-gathering step), so corroboration here comes from a
+                        // STRUCTURED marker in the capture.
+                        let reason = if is_authoritative_completion(
+                            &session.pr_url,
+                            &session.last_output,
+                        ) {
+                            "Agent completed successfully (corroborated by structured signal)"
+                                .to_string()
+                        } else {
+                            warn!(
+                                vm = %vm_name,
+                                session = %session_name,
+                                "marking task complete on advisory (textual) completion evidence \
+                                 only; no structured corroboration (PR URL or machine-emitted marker)"
+                            );
+                            "Agent completed on advisory textual evidence only \
+                             (no structured corroboration)"
+                                .to_string()
+                        };
+                        actions.push(DirectorAction::new(
+                            ActionType::MarkComplete,
+                            Some(task.clone()),
+                            Some(vm_name),
+                            Some(session_name),
+                            reason,
+                        ));
                     }
                     AgentStatus::Error | AgentStatus::Shell | AgentStatus::NoSession => actions
                         .push(DirectorAction::new(
