@@ -116,7 +116,15 @@ fn check_skill_redirect(tool_name: &str, tool_input: &Value) -> Option<Value> {
     // overlapping names (e.g. gherkin-expert) resolving as skills. The set of
     // skills is derived from the on-disk skills directory (issue #863) — the
     // directory is the single source of truth, not a hardcoded list.
-    if bundled_skill_names().contains(name) || !crate::known_agents::is_amplihack_agent(name) {
+    //
+    // Order matters for performance: `is_amplihack_agent` is a cheap
+    // `binary_search` over a static array, while `bundled_skill_names` walks the
+    // skills directory and reads every `SKILL.md`. Gating the expensive scan
+    // behind the cheap check means the directory is only scanned when the name
+    // actually collides with a known agent — the common case (genuine skills and
+    // unknown names) pays zero I/O. `&&`/`||` short-circuit and both operands are
+    // side-effect-free, so this is logically identical to the naive order.
+    if !crate::known_agents::is_amplihack_agent(name) || bundled_skill_names().contains(name) {
         return None;
     }
 
