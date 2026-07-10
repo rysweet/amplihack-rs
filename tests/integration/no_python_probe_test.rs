@@ -23,15 +23,12 @@ use std::process::{Child, Command, Stdio};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-/// Returns the path to the compiled debug binary.
+/// Returns the path to the compiled `amplihack` binary.
 fn amplihack_bin() -> PathBuf {
-    if let Some(path) = option_env!("CARGO_BIN_EXE_amplihack") {
-        return PathBuf::from(path);
-    }
-
-    let mut path = workspace_root();
-    path.push("target/debug/amplihack");
-    path
+    // Hard `env!` (not `option_env!` with a fallback): Cargo builds the binary
+    // as a prerequisite of this [[test]] target and exposes its exact path,
+    // eliminating the "binary not found" race and ignoring stale target/ paths.
+    PathBuf::from(env!("CARGO_BIN_EXE_amplihack"))
 }
 
 fn workspace_root() -> PathBuf {

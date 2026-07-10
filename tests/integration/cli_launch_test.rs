@@ -10,13 +10,9 @@ use std::process::Command;
 
 /// Path to the compiled amplihack binary.
 fn amplihack_bin() -> PathBuf {
-    // Use the debug build during tests for speed; CI uses --release separately.
-    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    // Walk up from tests/ to the workspace root, then into target/.
-    path.pop(); // tests/
-    path.pop(); // workspace root
-    path.push("target/debug/amplihack");
-    path
+    // Cargo builds the binary as a prerequisite of this [[test]] target and
+    // exposes its exact path here, honouring the active profile / target dir.
+    PathBuf::from(env!("CARGO_BIN_EXE_amplihack"))
 }
 
 /// Assert that a Command produces the expected exit status.

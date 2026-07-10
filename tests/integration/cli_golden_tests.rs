@@ -7,11 +7,10 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn amplihack_bin() -> PathBuf {
-    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.pop(); // tests/
-    path.pop(); // workspace root
-    path.push("target/debug/amplihack");
-    path
+    // Cargo sets CARGO_BIN_EXE_amplihack for this [[test]] target and builds the
+    // binary as a prerequisite, so the path is always correct (honouring the
+    // active profile / CARGO_TARGET_DIR) and present — no build race.
+    PathBuf::from(env!("CARGO_BIN_EXE_amplihack"))
 }
 
 fn run_cmd(args: &[&str]) -> (String, String, bool) {
