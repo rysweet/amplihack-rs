@@ -1,7 +1,9 @@
 //! Agentic refinement loop: evaluate completeness → gap-fill → re-synthesize.
 
 use std::collections::HashSet;
-use tracing::info;
+
+use amplihack_utils::parse_llm_json;
+use tracing::{info, warn};
 
 use crate::agentic_loop::traits::{LlmClient, MemoryRetriever};
 use crate::agentic_loop::types::{LlmMessage, MemoryFact, ReasoningTrace};
@@ -119,12 +121,6 @@ pub async fn evaluate_completeness(
             gaps: vec![question.into()],
         });
     }
-    if trimmed.len() > 50 {
-        return Ok(CompletenessEvaluation {
-            is_complete: true,
-            gaps: vec![],
-        });
-    }
     let prompt = format!(
         "Evaluate if this answer FULLY addresses the question.\n\n\
          QUESTION: {question}\nANSWER: {answer}\n\n\
@@ -139,41 +135,56 @@ pub async fn evaluate_completeness(
             config.eval_temperature,
         )
         .await?;
-    Ok(parse_completeness_response(&raw))
+    // issue #868: the LLM evaluation ALWAYS runs (there is no `len > 50`
+    // short-circuit that would declare a long answer complete without eval), and
+    // a parse failure fails toward "not complete" while recording the question as
+    // a gap so the agentic refinement loop actually continues instead of silently
+    // accepting a possibly-incomplete answer.
+    Ok(parse_completeness_value(&raw).unwrap_or_else(|| {
+        warn!("completeness evaluation returned unparseable output; failing closed (not complete)");
+        CompletenessEvaluation {
+            is_complete: false,
+            gaps: vec![question.into()],
+        }
+    }))
 }
 
+/// Parse a completeness-evaluation JSON payload.
+///
+/// Returns `None` when no JSON payload could be extracted (missing or corrupt),
+/// which callers treat as a fail-closed signal. When a payload is present but
+/// omits `is_complete`, it defaults to `false` (issue #868: an absent field must
+/// never be read as completion).
+fn parse_completeness_value(raw: &str) -> Option<CompletenessEvaluation> {
+    let value = parse_llm_json(raw)?;
+    Some(CompletenessEvaluation {
+        is_complete: value
+            .get("is_complete")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        gaps: value
+            .get("gaps")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
+    })
+}
+
+/// Test-only helper that encodes the fail-closed contract for a completeness
+/// payload. Production code uses [`parse_completeness_value`] directly so it can
+/// distinguish a parse failure (to inject the question as a gap).
+#[cfg(test)]
 fn parse_completeness_response(raw: &str) -> CompletenessEvaluation {
-    let s = raw.trim();
-    let s = if s.starts_with("```") {
-        s.split_once('\n')
-            .map_or(s, |(_, r)| r)
-            .strip_suffix("```")
-            .unwrap_or(s)
-            .trim()
-    } else {
-        s
-    };
-    match serde_json::from_str::<serde_json::Value>(s) {
-        Ok(val) => CompletenessEvaluation {
-            is_complete: val
-                .get("is_complete")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true),
-            gaps: val
-                .get("gaps")
-                .and_then(|v| v.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default(),
-        },
-        Err(_) => CompletenessEvaluation {
-            is_complete: true,
-            gaps: vec![],
-        },
-    }
+    // issue #868: a parse failure fails CLOSED (not complete), never silently
+    // declares the answer complete.
+    parse_completeness_value(raw).unwrap_or(CompletenessEvaluation {
+        is_complete: false,
+        gaps: Vec::new(),
+    })
 }
 
 fn build_trace(
@@ -247,11 +258,30 @@ mod tests {
         assert!(c.is_complete && c.gaps.is_empty());
         let c = parse_completeness_response(r#"{"is_complete": false, "gaps": ["a","b"]}"#);
         assert!(!c.is_complete && c.gaps.len() == 2);
-        assert!(parse_completeness_response("garbage").is_complete);
+        // issue #868: a parse failure must fail CLOSED (not complete), never
+        // silently declare the answer complete.
+        assert!(!parse_completeness_response("garbage").is_complete);
+        // Fenced JSON still parses.
         let c = parse_completeness_response(
             "```json\n{\"is_complete\": false, \"gaps\": [\"x\"]}\n```",
         );
         assert!(!c.is_complete && c.gaps == vec!["x"]);
+        // Robust extraction: JSON embedded in prose (the inline fence strip could not).
+        let c = parse_completeness_response(
+            "Evaluation: {\"is_complete\": false, \"gaps\": [\"y\"]} done",
+        );
+        assert!(!c.is_complete && c.gaps == vec!["y"]);
+    }
+
+    #[test]
+    fn parse_completeness_fieldless_is_not_complete() {
+        // issue #868: a present-but-fieldless payload must NOT read as success.
+        // The old code used `.unwrap_or(true)`; the default now flips to `false`
+        // so an absent `is_complete` field can no longer be read as completion.
+        assert!(!parse_completeness_response("{}").is_complete);
+        let c = parse_completeness_response(r#"{"gaps": ["missing detail"]}"#);
+        assert!(!c.is_complete);
+        assert_eq!(c.gaps, vec!["missing detail"]);
     }
 
     #[tokio::test]
@@ -304,25 +334,60 @@ mod tests {
     #[tokio::test]
     async fn completeness_cases() {
         let cfg = SynthesisConfig::default();
-        let llm = MockLlm("{}".into());
+        // Empty answer -> not complete (short-circuits before any LLM call).
+        let llm = MockLlm(r#"{"is_complete": true}"#.into());
         assert!(
             !(evaluate_completeness("Q?", "", &llm, &cfg)
                 .await
                 .unwrap()
                 .is_complete)
         );
+        // "no info" answer -> not complete.
         assert!(
             !(evaluate_completeness("Q?", "I don't have enough", &llm, &cfg)
                 .await
                 .unwrap()
                 .is_complete)
         );
+        // issue #868: length alone must NOT short-circuit to complete — the LLM
+        // evaluation always runs. A long answer the model marks incomplete stays
+        // incomplete (the old `len > 50` path declared it complete without eval).
         let long = "A very detailed and comprehensive answer that addresses the question fully.";
+        let incomplete_llm = MockLlm(r#"{"is_complete": false, "gaps": ["pricing"]}"#.into());
+        let e = evaluate_completeness("Q?", long, &incomplete_llm, &cfg)
+            .await
+            .unwrap();
+        assert!(!e.is_complete);
+        assert_eq!(e.gaps, vec!["pricing"]);
+        // A long answer the model confirms complete -> complete.
+        let complete_llm = MockLlm(r#"{"is_complete": true}"#.into());
         assert!(
-            evaluate_completeness("Q?", long, &llm, &cfg)
+            evaluate_completeness("Q?", long, &complete_llm, &cfg)
                 .await
                 .unwrap()
                 .is_complete
+        );
+    }
+
+    #[tokio::test]
+    async fn evaluate_completeness_parse_failure_fails_closed() {
+        // issue #868: on a parse miss the evaluation must fail toward "not
+        // complete" AND record a gap, so the agentic refinement loop actually
+        // continues. An empty gap list is treated as "done" by
+        // `answer_question_agentic`, so failing closed also requires a gap.
+        let cfg = SynthesisConfig::default();
+        let long = "A very detailed and comprehensive answer that addresses the question fully.";
+        let garbage_llm = MockLlm("totally not json".into());
+        let e = evaluate_completeness("What is the price?", long, &garbage_llm, &cfg)
+            .await
+            .unwrap();
+        assert!(
+            !e.is_complete,
+            "parse failure must not declare completeness"
+        );
+        assert!(
+            e.gaps.iter().any(|g| g == "What is the price?"),
+            "parse failure must record the question as a gap so refinement continues"
         );
     }
 

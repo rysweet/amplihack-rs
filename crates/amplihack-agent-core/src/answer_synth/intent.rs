@@ -2,15 +2,14 @@
 //!
 //! Ports `_detect_intent` and enumeration-keyword override logic.
 
-use std::collections::HashMap;
-
 use serde_json::Value;
-use tracing::info;
+use tracing::{info, warn};
 
 use super::types::{DetectedIntent, ENUMERATION_KEYWORDS, IntentType};
 use crate::agentic_loop::traits::LlmClient;
 use crate::agentic_loop::types::LlmMessage;
 use crate::error::AgentError;
+use amplihack_utils::parse_llm_json;
 
 /// Classify the intent of `question` via a single LLM call.
 pub async fn detect_intent(
@@ -57,11 +56,25 @@ fn build_intent_prompt(question: &str) -> String {
 }
 
 /// Parse the raw LLM JSON response into a [`DetectedIntent`].
+///
+/// issue #868: uses the shared robust extractor ([`parse_llm_json`]) so JSON
+/// embedded in prose or fenced blocks still classifies correctly, and *surfaces*
+/// a genuine parse failure (warn log) instead of silently routing to the
+/// lowest-capability [`IntentType::SimpleRecall`]. On parse failure we fail
+/// *forward* to [`IntentType::MultiSourceSynthesis`] so the answer is served by
+/// the thorough retrieval/synthesis path rather than silently degraded.
 pub fn parse_intent_response(raw: &str) -> DetectedIntent {
-    let cleaned = strip_markdown_fences(raw);
-    let parsed: HashMap<String, Value> = match serde_json::from_str(&cleaned) {
-        Ok(m) => m,
-        Err(_) => return DetectedIntent::default(),
+    let Some(parsed) = parse_llm_json(raw) else {
+        let preview: String = raw.chars().take(120).collect();
+        warn!(
+            raw = %preview,
+            "intent classification returned unparseable output; \
+             failing forward to multi_source_synthesis"
+        );
+        return DetectedIntent {
+            intent: IntentType::MultiSourceSynthesis,
+            ..Default::default()
+        };
     };
     let intent = parsed
         .get("intent")
@@ -81,16 +94,6 @@ pub fn parse_intent_response(raw: &str) -> DetectedIntent {
         needs_temporal,
         needs_math,
         ..Default::default()
-    }
-}
-
-fn strip_markdown_fences(s: &str) -> String {
-    let s = s.trim();
-    if let Some(rest) = s.strip_prefix("```") {
-        let rest = rest.split_once('\n').map_or(rest, |(_, after)| after);
-        rest.strip_suffix("```").unwrap_or(rest).trim().to_string()
-    } else {
-        s.to_string()
     }
 }
 
@@ -115,11 +118,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_garbage_returns_default() {
-        assert_eq!(
-            parse_intent_response("not json").intent,
-            IntentType::SimpleRecall
-        );
+    fn parse_garbage_fails_forward_not_to_simple_recall() {
+        // issue #868: a genuine parse failure must NOT silently route to the
+        // lowest-capability SimpleRecall. It fails FORWARD to the thorough
+        // multi-source synthesis path (and logs a warning) instead.
+        let i = parse_intent_response("not json");
+        assert_eq!(i.intent, IntentType::MultiSourceSynthesis);
+        assert_ne!(i.intent, IntentType::SimpleRecall);
     }
 
     #[test]
@@ -130,11 +135,23 @@ mod tests {
     }
 
     #[test]
-    fn strip_fences() {
-        assert_eq!(strip_markdown_fences("hello"), "hello");
+    fn parse_intent_embedded_in_prose() {
+        // issue #868: robust extraction — JSON embedded in surrounding prose must
+        // still classify correctly instead of silently falling back to the
+        // default intent. The bespoke single-fence stripper could not do this.
+        let raw =
+            "The classification is {\"intent\": \"meta_memory\", \"needs_temporal\": false} here.";
+        assert_eq!(parse_intent_response(raw).intent, IntentType::MetaMemory);
+    }
+
+    #[test]
+    fn parse_intent_fenced_with_leading_prose() {
+        // A fenced block preceded by prose must still parse (the old stripper only
+        // fired when the whole string started with a fence).
+        let raw = "Sure, here you go:\n```json\n{\"intent\": \"temporal_comparison\"}\n```";
         assert_eq!(
-            strip_markdown_fences("```json\n{\"a\":1}\n```"),
-            "{\"a\":1}"
+            parse_intent_response(raw).intent,
+            IntentType::TemporalComparison
         );
     }
 

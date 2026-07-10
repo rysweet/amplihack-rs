@@ -111,6 +111,23 @@ pub(crate) const COMPLETION_PATTERNS: &[&str] = &[
     r"All \d+ steps completed",
     r"pushed to.*branch",
 ];
+// issue #868: split completion markers into a trustworthy STRUCTURED set
+// (machine-emitted, unambiguous — an agent cannot plausibly emit these except at
+// genuine completion) and an advisory TEXTUAL set (prose heuristics an agent
+// could merely be quoting). Only STRUCTURED evidence may drive an irreversible
+// MarkComplete; TEXTUAL evidence is advisory only. The two sets are disjoint.
+// `COMPLETION_PATTERNS` (above) remains the observer's advisory status list.
+pub(crate) const STRUCTURED_COMPLETION_PATTERNS: &[&str] = &[
+    r"GOAL_STATUS:\s*ACHIEVED",
+    r"Workflow Complete",
+    r"PR #\d+",
+    r"All \d+ steps completed",
+];
+pub(crate) const TEXTUAL_COMPLETION_PATTERNS: &[&str] = &[
+    r"PR.*created",
+    r"pull request.*created",
+    r"pushed to.*branch",
+];
 pub(crate) const ERROR_PATTERNS: &[&str] = &[
     r"(?:^|\n)\s*(?:ERROR|FATAL|CRITICAL):",
     r"Traceback \(most recent",

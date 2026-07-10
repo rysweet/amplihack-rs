@@ -85,6 +85,110 @@ fn parse_string_with_escaped_quotes() {
     assert_eq!(result["msg"], r#"he said "hello""#);
 }
 
+// -- parse_llm_json_result tests (issue #868: distinguish missing vs corrupt) --
+//
+// A silent fallback is a silent failure. `parse_llm_json_result` reports *why*
+// extraction failed so callers can log and branch, while `parse_llm_json`
+// remains the best-effort `Option` wrapper (`parse_llm_json(x) ==
+// parse_llm_json_result(x).ok()`).
+
+#[test]
+fn result_ok_on_raw_object() {
+    let value = parse_llm_json_result(r#"{"a": 1}"#).expect("raw JSON should parse");
+    assert_eq!(value["a"], 1);
+}
+
+#[test]
+fn result_ok_on_fenced_block() {
+    let input = "Here you go:\n```json\n{\"a\": 2}\n```";
+    let value = parse_llm_json_result(input).expect("fenced JSON should parse");
+    assert_eq!(value["a"], 2);
+}
+
+#[test]
+fn result_ok_on_json_embedded_in_prose() {
+    let value = parse_llm_json_result("The answer is {\"x\": 42} and nothing else.")
+        .expect("embedded JSON should parse");
+    assert_eq!(value["x"], 42);
+}
+
+#[test]
+fn result_missing_on_pure_prose() {
+    // No `{`/`[` delimiter and no fence: the model produced only prose.
+    match parse_llm_json_result("no json payload at all here") {
+        Err(ParseLlmJsonError::Missing) => {}
+        other => panic!("expected Missing, got {other:?}"),
+    }
+}
+
+#[test]
+fn result_missing_on_empty_input() {
+    match parse_llm_json_result("") {
+        Err(ParseLlmJsonError::Missing) => {}
+        other => panic!("expected Missing for empty input, got {other:?}"),
+    }
+}
+
+#[test]
+fn result_missing_on_whitespace_only() {
+    match parse_llm_json_result("   \n\t  ") {
+        Err(ParseLlmJsonError::Missing) => {}
+        other => panic!("expected Missing for whitespace-only input, got {other:?}"),
+    }
+}
+
+#[test]
+fn result_corrupt_on_broken_object() {
+    // A `{` delimiter IS present but the payload is not valid JSON.
+    match parse_llm_json_result(r#"{"a": }"#) {
+        Err(ParseLlmJsonError::Corrupt { detail }) => {
+            assert!(
+                !detail.is_empty(),
+                "corrupt detail should carry the underlying parser message"
+            );
+        }
+        other => panic!("expected Corrupt, got {other:?}"),
+    }
+}
+
+#[test]
+fn result_corrupt_on_unterminated_object() {
+    // A delimiter is present (structured-output attempt) but the object never closes.
+    match parse_llm_json_result(r#"prefix {"a": 1, "b":"#) {
+        Err(ParseLlmJsonError::Corrupt { .. }) => {}
+        other => panic!("expected Corrupt for unterminated object, got {other:?}"),
+    }
+}
+
+#[test]
+fn result_corrupt_on_broken_fenced_block() {
+    // A fence is present but its content is invalid JSON.
+    match parse_llm_json_result("```json\n{not valid json}\n```") {
+        Err(ParseLlmJsonError::Corrupt { .. }) => {}
+        other => panic!("expected Corrupt for broken fenced block, got {other:?}"),
+    }
+}
+
+#[test]
+fn result_ok_equals_option_wrapper() {
+    // `parse_llm_json(x)` must be exactly `parse_llm_json_result(x).ok()`.
+    let cases = [
+        r#"{"a": 1}"#,
+        "```json\n{\"b\": 2}\n```",
+        "prose {\"c\": 3} tail",
+        "no json here",
+        "",
+        r#"{"broken": }"#,
+    ];
+    for input in cases {
+        assert_eq!(
+            parse_llm_json(input),
+            parse_llm_json_result(input).ok(),
+            "Option/Result equivalence broken for {input:?}"
+        );
+    }
+}
+
 // -- retry_with_feedback tests ----------------------------------------------
 
 #[test]

@@ -361,6 +361,50 @@ pub(super) fn infer_agent_status(tmux_text: &str) -> AgentStatus {
     AgentStatus::Unknown
 }
 
+/// Strength of a completion signal scraped from terminal text.
+///
+/// issue #868: terminal-text classification is advisory. Only `Structured`
+/// evidence (machine-emitted, unambiguous markers such as `GOAL_STATUS: ACHIEVED`
+/// or a concrete `PR #<n>`) may drive an irreversible `MarkComplete`. `Textual`
+/// evidence is a prose heuristic (e.g. "pull request created") that an agent
+/// could merely be quoting, so it is advisory only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CompletionEvidence {
+    /// A machine-emitted, unambiguous completion marker is present.
+    Structured,
+    /// Only an advisory prose completion heuristic is present.
+    Textual,
+    /// No completion marker is present.
+    None,
+}
+
+/// Classify the strongest completion evidence present in `text`.
+///
+/// Structured markers take precedence over textual ones when both match (for
+/// example, `PR #123 created` matches the structured `PR #\d+` and the textual
+/// `PR.*created`; the structured signal wins).
+pub(super) fn completion_evidence(text: &str) -> CompletionEvidence {
+    if first_matching_pattern(STRUCTURED_COMPLETION_PATTERNS, text, false).is_some() {
+        CompletionEvidence::Structured
+    } else if first_matching_pattern(TEXTUAL_COMPLETION_PATTERNS, text, false).is_some() {
+        CompletionEvidence::Textual
+    } else {
+        CompletionEvidence::None
+    }
+}
+
+/// Whether a session has an *authoritative* completion signal.
+///
+/// issue #868: an advisory `AgentStatus::Completed` (inferred from terminal text
+/// that could be quoting a marker) must never on its own drive an irreversible
+/// `MarkComplete`. Authoritative completion requires structured corroboration: a
+/// concrete PR URL captured from session/git state, or a STRUCTURED
+/// (machine-emitted) marker in the terminal capture.
+pub(super) fn has_authoritative_completion(context: &SessionContext) -> bool {
+    !context.pr_url.trim().is_empty()
+        || completion_evidence(&context.tmux_capture) == CompletionEvidence::Structured
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -536,5 +580,191 @@ mod tests {
         parse_context_output(output, &mut ctx).unwrap();
         assert!(ctx.transcript_summary.contains("first message"));
         assert!(ctx.transcript_summary.contains("last message"));
+    }
+
+    // -----------------------------------------------------------------------
+    // issue #868: completion patterns are split into a trustworthy structured
+    // set and an advisory textual set; `completion_evidence` keys off which set
+    // matched, and only STRUCTURED evidence may drive an irreversible
+    // MarkComplete.
+    // -----------------------------------------------------------------------
+
+    fn completed_ctx(capture: &str) -> SessionContext {
+        let mut ctx = SessionContext::new("vm1", "sess1", "task", "prio").unwrap();
+        ctx.agent_status = AgentStatus::Completed;
+        ctx.tmux_capture = capture.to_string();
+        ctx
+    }
+
+    fn none_reasoner() -> FleetSessionReasoner {
+        FleetSessionReasoner::new(
+            PathBuf::from("/nonexistent/azlin"),
+            NativeReasonerBackend::None,
+        )
+    }
+
+    #[test]
+    fn completion_pattern_sets_present_and_disjoint() {
+        assert!(
+            !STRUCTURED_COMPLETION_PATTERNS.is_empty(),
+            "structured completion patterns must exist"
+        );
+        assert!(
+            !TEXTUAL_COMPLETION_PATTERNS.is_empty(),
+            "textual completion patterns must exist"
+        );
+        assert!(
+            STRUCTURED_COMPLETION_PATTERNS
+                .iter()
+                .any(|p| p.contains("GOAL_STATUS")),
+            "GOAL_STATUS is a structured (machine-emitted) marker"
+        );
+        assert!(
+            TEXTUAL_COMPLETION_PATTERNS
+                .iter()
+                .any(|p| p.contains("created")),
+            "prose 'created' heuristics belong to the textual set"
+        );
+        for pattern in STRUCTURED_COMPLETION_PATTERNS {
+            assert!(
+                !TEXTUAL_COMPLETION_PATTERNS.contains(pattern),
+                "pattern {pattern:?} must not appear in both sets"
+            );
+        }
+    }
+
+    #[test]
+    fn completion_evidence_structured_goal_status() {
+        assert_eq!(
+            completion_evidence("GOAL_STATUS: ACHIEVED"),
+            CompletionEvidence::Structured
+        );
+    }
+
+    #[test]
+    fn completion_evidence_structured_workflow_complete() {
+        assert_eq!(
+            completion_evidence("Workflow Complete"),
+            CompletionEvidence::Structured
+        );
+    }
+
+    #[test]
+    fn completion_evidence_structured_pr_number() {
+        assert_eq!(
+            completion_evidence("Opened PR #4217 for review"),
+            CompletionEvidence::Structured
+        );
+    }
+
+    #[test]
+    fn completion_evidence_textual_pull_request_created() {
+        assert_eq!(
+            completion_evidence("the pull request created is ready"),
+            CompletionEvidence::Textual
+        );
+    }
+
+    #[test]
+    fn completion_evidence_textual_pushed_branch() {
+        assert_eq!(
+            completion_evidence("Changes pushed to the feature branch"),
+            CompletionEvidence::Textual
+        );
+    }
+
+    #[test]
+    fn completion_evidence_none_for_plain_output() {
+        assert_eq!(
+            completion_evidence("Reading files and analyzing the code"),
+            CompletionEvidence::None
+        );
+    }
+
+    #[test]
+    fn completion_evidence_structured_beats_textual_on_overlap() {
+        // "PR #123 created" matches both structured `PR #\d+` and textual
+        // `PR.*created`; the structured match must win.
+        assert_eq!(
+            completion_evidence("PR #123 created successfully"),
+            CompletionEvidence::Structured
+        );
+    }
+
+    #[test]
+    fn completion_evidence_quoted_prose_marker_is_not_structured() {
+        // An agent merely quoting the instruction must not produce a trusted
+        // (Structured) completion signal — this is the core #868 false-positive.
+        let capture = "Reminder: when done, print 'pull request created' to signal completion.";
+        assert_eq!(completion_evidence(capture), CompletionEvidence::Textual);
+    }
+
+    #[test]
+    fn status_completed_textual_marker_is_advisory_completed() {
+        // Shared pattern source: a textual completion marker is still classified
+        // as "completed" for the *advisory* AgentStatus; authority lives in the
+        // downstream completion guard, not in the status classifier.
+        let text = "the pull request created for this task is open";
+        assert_eq!(infer_agent_status(text).as_str(), "completed");
+    }
+
+    #[test]
+    fn heuristic_decision_structured_completion_marks_complete() {
+        let ctx = completed_ctx("GOAL_STATUS: ACHIEVED\nAll done");
+        assert_eq!(heuristic_decision(&ctx).action, SessionAction::MarkComplete);
+    }
+
+    #[test]
+    fn heuristic_decision_textual_completion_does_not_mark_complete() {
+        // issue #868: textual-only completion must NOT auto-complete; it
+        // downgrades to wait/escalate.
+        let ctx = completed_ctx("Looks like the pull request created earlier is ready");
+        let decision = heuristic_decision(&ctx);
+        assert_ne!(
+            decision.action,
+            SessionAction::MarkComplete,
+            "textual-only completion must not auto-complete"
+        );
+        assert!(matches!(
+            decision.action,
+            SessionAction::Wait | SessionAction::Escalate
+        ));
+    }
+
+    #[test]
+    fn reason_structured_completion_marks_complete() {
+        let reasoner = none_reasoner();
+        let ctx = completed_ctx("PR #123\nGOAL_STATUS: ACHIEVED");
+        let (decision, _) = reasoner.reason(&ctx);
+        assert_eq!(decision.action, SessionAction::MarkComplete);
+    }
+
+    #[test]
+    fn reason_textual_completion_not_marked_complete() {
+        // issue #868: the reasoning-engine short-circuit must require STRUCTURED
+        // evidence before MarkComplete; textual-only falls through to reasoning
+        // (here the None backend yields a guarded heuristic decision).
+        let reasoner = none_reasoner();
+        let ctx = completed_ctx("the pull request created by the bot is under review");
+        let (decision, _) = reasoner.reason(&ctx);
+        assert_ne!(decision.action, SessionAction::MarkComplete);
+    }
+
+    #[test]
+    fn parse_reasoner_response_extracts_json_before_trailing_prose_braces() {
+        // issue #868: the naive first-'{' .. last-'}' slice breaks when prose
+        // after the JSON contains braces. The shared extractor recovers it.
+        let ctx = SessionContext::new("vm1", "sess1", "task", "prio").unwrap();
+        let raw = "{\"action\": \"mark_complete\", \"confidence\": 0.9} note: avoid {curly} text";
+        let decision =
+            parse_reasoner_response(raw, &ctx).expect("decision JSON should be recovered");
+        assert_eq!(decision.action, SessionAction::MarkComplete);
+        assert!((decision.confidence - 0.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn parse_reasoner_response_missing_json_returns_none() {
+        let ctx = SessionContext::new("vm1", "sess1", "task", "prio").unwrap();
+        assert!(parse_reasoner_response("I am not sure what to do here.", &ctx).is_none());
     }
 }

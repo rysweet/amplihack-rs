@@ -67,6 +67,8 @@ pub mod uvx_manager;
 pub mod worktree;
 
 // Re-export the most commonly used items at crate root.
-pub use defensive::{parse_llm_json, validate_json_schema};
+pub use defensive::{
+    ParseLlmJsonError, parse_llm_json, parse_llm_json_result, validate_json_schema,
+};
 pub use process::{CommandResult, ProcessManager};
 pub use slugify::slugify;

@@ -1,15 +1,32 @@
 use super::*;
+use amplihack_utils::{ParseLlmJsonError, parse_llm_json_result};
 
 pub(super) fn parse_reasoner_response(
     response_text: &str,
     context: &SessionContext,
 ) -> Option<SessionDecision> {
-    let json_start = response_text.find('{')?;
-    let json_end = response_text.rfind('}')?;
-    if json_end <= json_start {
-        return None;
-    }
-    let value: Value = serde_json::from_str(&response_text[json_start..=json_end]).ok()?;
+    // issue #868: use the shared robust extractor instead of a naive
+    // first-'{' .. last-'}' slice (which breaks on any prose braces or fences),
+    // and distinguish a missing payload from a corrupt one so the failure is
+    // surfaced (logged) rather than silently swallowed.
+    let value = match parse_llm_json_result(response_text) {
+        Ok(value) => value,
+        Err(ParseLlmJsonError::Missing) => {
+            tracing::debug!(
+                session = %context.session_name,
+                "reasoner response contained no JSON payload; ignoring"
+            );
+            return None;
+        }
+        Err(ParseLlmJsonError::Corrupt { detail }) => {
+            warn!(
+                session = %context.session_name,
+                detail = %detail,
+                "reasoner response JSON payload was corrupt; ignoring decision"
+            );
+            return None;
+        }
+    };
     let action = match value.get("action").and_then(Value::as_str) {
         Some("send_input") => SessionAction::SendInput,
         Some("wait") => SessionAction::Wait,
@@ -43,11 +60,26 @@ pub(super) fn parse_reasoner_response(
 
 pub(super) fn heuristic_decision(context: &SessionContext) -> SessionDecision {
     let (action, reasoning, confidence) = match context.agent_status {
-        AgentStatus::Completed => (
-            SessionAction::MarkComplete,
-            "Session output indicates completion".to_string(),
-            CONFIDENCE_COMPLETION,
-        ),
+        AgentStatus::Completed => {
+            if has_authoritative_completion(context) {
+                (
+                    SessionAction::MarkComplete,
+                    "Session completion corroborated by a structured signal (PR URL or machine-emitted marker)"
+                        .to_string(),
+                    CONFIDENCE_COMPLETION,
+                )
+            } else {
+                // issue #868: a textual-only completion marker is advisory (the
+                // agent could merely be quoting it). Do not silently mark
+                // complete; escalate for human confirmation instead.
+                (
+                    SessionAction::Escalate,
+                    "Completion suggested by advisory text only; needs human confirmation before mark_complete"
+                        .to_string(),
+                    CONFIDENCE_IDLE,
+                )
+            }
+        }
         AgentStatus::Error | AgentStatus::Shell | AgentStatus::Stuck => (
             SessionAction::Escalate,
             "Session needs human attention or restart review".to_string(),
