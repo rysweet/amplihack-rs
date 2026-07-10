@@ -19,6 +19,7 @@ the `DomainAgent` trait and integrate with the evaluation framework.
 | `skill_injector`      | Dynamic capability injection                     |
 | `teaching`            | `TeachingAgent` — Socratic pedagogy              |
 | `code_review`         | `CodeReviewAgent` — security and logic review    |
+| `code_synthesis`      | `CodeSynthesizer` — generation, refactor, analyze |
 | `meeting_synthesizer` | `MeetingSynthesizerAgent` — transcript analysis  |
 
 ## Core Trait
@@ -209,6 +210,82 @@ impl DomainAgent for CodeReviewAgent {
     fn supported_levels(&self) -> &[EvalLevel]; // L1–L4
 }
 ```
+
+## Code Synthesizer
+
+`CodeSynthesizer` provides deterministic code analysis and honest, typed errors
+for code generation and refactoring. It does **not** fabricate placeholder code:
+when no synthesis backend can honestly satisfy a request, it returns an explicit
+`Err` rather than an `Ok` wrapping a stub. See the
+[feature guide](../features/code-synthesis-honest-errors.md) and issue
+[#874](https://github.com/rysweet/amplihack-rs/issues/874).
+
+### Models
+
+```rust
+pub struct CodeSynthesisConfig {
+    pub language: String,      // default: "rust"
+    pub style: String,         // default: "idiomatic"
+    pub max_complexity: u32,   // default: 10
+}
+
+pub struct CodeSpec {
+    pub description: String,
+    pub language: String,
+    pub constraints: Vec<String>,
+}
+
+pub struct GeneratedCode {
+    pub code: String,
+    pub language: String,
+    pub explanation: String,
+}
+
+pub struct CodeAnalysis {
+    pub complexity: u32,
+    pub issues: Vec<String>,
+    pub suggestions: Vec<String>,
+}
+```
+
+### CodeSynthesizer
+
+```rust
+impl CodeSynthesizer {
+    pub fn new(config: CodeSynthesisConfig) -> Self;
+    pub fn with_defaults() -> Self;
+    pub fn config(&self) -> &CodeSynthesisConfig;
+
+    /// Empty/whitespace description or language -> Err(DomainError::InvalidInput).
+    /// Well-formed spec, no backend available   -> Err(DomainError::CodeSynthesis)
+    ///   whose message interpolates the trimmed `spec.language`.
+    /// Never returns Ok with stub/placeholder code.
+    pub fn generate(&self, spec: &CodeSpec) -> Result<GeneratedCode>;
+
+    /// Empty/whitespace code -> Err(DomainError::InvalidInput).
+    /// Non-empty code, no backend available -> Err(DomainError::CodeSynthesis).
+    /// Never returns Ok with stub/placeholder code.
+    pub fn refactor(&self, code: &str) -> Result<GeneratedCode>;
+
+    /// Deterministic heuristic. Returns Ok(CodeAnalysis) for all input.
+    pub fn analyze(&self, code: &str) -> Result<CodeAnalysis>;
+}
+```
+
+### Error contract
+
+| Method     | Condition                                   | Returns |
+| ---------- | ------------------------------------------- | ------- |
+| `generate` | `description` or `language` empty/whitespace | `Err(DomainError::InvalidInput("code spec description and language must not be empty"))` |
+| `generate` | well-formed spec, no backend                 | `Err(DomainError::CodeSynthesis("code synthesis backend not available: cannot synthesize <language>"))` |
+| `refactor` | `code` empty/whitespace                      | `Err(DomainError::InvalidInput("code to refactor must not be empty"))` |
+| `refactor` | non-empty `code`, no backend                 | `Err(DomainError::CodeSynthesis("refactoring backend not available"))` |
+| `analyze`  | any input                                    | `Ok(CodeAnalysis { .. })` |
+
+Error messages never interpolate `spec.description`, `spec.constraints`, or the
+raw `code` body. For `generate`, the only caller-supplied value that appears is
+the trimmed `spec.language` token (surrounding whitespace stripped, case
+preserved).
 
 ## Meeting Synthesizer Agent
 

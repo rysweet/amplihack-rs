@@ -51,4 +51,5 @@ Intelligent guidance system that prevents common mistakes and ensures work compl
 
 ## Additional Features
 
+- [Code Synthesis — Honest Errors](code-synthesis-honest-errors.md) — `CodeSynthesizer::generate` and `refactor` return explicit typed errors (`InvalidInput` for empty/corrupt input, `CodeSynthesis` for a capability gap) instead of an `Ok` wrapping a `todo!()` / `NotImplementedError` / `// TODO` placeholder; callers can no longer mistake a stub for runnable code (issue [#874](https://github.com/rysweet/amplihack-rs/issues/874)). See the [API reference](../reference/domain-agents-api.md#code-synthesizer).
 - [amplihack-rs Parity Reference](../amplihack-rs-parity.md) - subprocess prompt delivery configuration, binary capability matrix, doctor diagnostics, and Rust API.
