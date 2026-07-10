@@ -103,6 +103,39 @@ fn capture_warn_logs<T>(operation: impl FnOnce() -> T) -> (T, Vec<String>) {
     (result, captured)
 }
 
+fn compatible_smart_orchestrator_recipe(label: &str) -> String {
+    format!(
+        r#"name: smart-orchestrator
+description: compatible {label}
+steps:
+  - id: route
+    type: bash
+    command: echo compatible {label}
+"#
+    )
+}
+
+fn stale_smart_orchestrator_recipe() -> &'static str {
+    r#"name: smart-orchestrator
+description: stale v1.5.1 helper-based orchestrator
+steps:
+  - id: parse-decomposition
+    type: shell
+    command: |
+      HELPER="$(amplihack resolve-bundle-asset helper-path)"
+      python3 - <<'PY'
+      import importlib
+      helper = importlib.import_module("orch_helper")
+      helper.parse_decomposition()
+      PY
+"#
+}
+
+fn write_recipe(path: &Path, body: impl AsRef<str>) {
+    fs::create_dir_all(path.parent().expect("recipe path has parent")).unwrap();
+    fs::write(path, body.as_ref()).unwrap();
+}
+
 #[test]
 fn parse_recipe_validates_required_fields() {
     let err = parse_recipe_text("description: nope\nsteps: []").unwrap_err();
@@ -371,6 +404,84 @@ fn resolve_recipe_path_searches_amplihack_home_bundle_dir() {
     }
 
     assert_eq!(resolved, recipe_path);
+}
+
+#[test]
+fn resolve_recipe_path_skips_stale_smart_orchestrator_when_compatible_fallback_exists() {
+    let _env_guard = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempdir().unwrap();
+    let home = temp.path().join("home");
+    let amplihack_home = temp.path().join("amplihack-home");
+    let working_dir = temp.path().join("project");
+    fs::create_dir_all(&working_dir).unwrap();
+
+    let stale = amplihack_home
+        .join("amplifier-bundle")
+        .join("recipes")
+        .join("smart-orchestrator.yaml");
+    write_recipe(&stale, stale_smart_orchestrator_recipe());
+
+    let fallback = home
+        .join(".amplihack")
+        .join(".claude")
+        .join("recipes")
+        .join("smart-orchestrator.yaml");
+    write_recipe(
+        &fallback,
+        compatible_smart_orchestrator_recipe("claude fallback"),
+    );
+
+    let _home = EnvVarGuard::set_path("HOME", &home);
+    let _amplihack_home = EnvVarGuard::set_path("AMPLIHACK_HOME", &amplihack_home);
+
+    let resolved = resolve_recipe_path("smart-orchestrator", &working_dir)
+        .expect("compatible fallback should be selected when the top-level bundle is stale");
+
+    assert_eq!(
+        resolved, fallback,
+        "stale AMPLIHACK_HOME/amplifier-bundle smart-orchestrator must not shadow a compatible .claude/recipes fallback"
+    );
+}
+
+#[test]
+fn resolve_recipe_path_fails_loudly_when_all_smart_orchestrator_candidates_are_stale() {
+    let _env_guard = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempdir().unwrap();
+    let home = temp.path().join("home");
+    let amplihack_home = temp.path().join("amplihack-home");
+    let working_dir = temp.path().join("project");
+    fs::create_dir_all(&working_dir).unwrap();
+
+    let top_level_stale = amplihack_home
+        .join("amplifier-bundle")
+        .join("recipes")
+        .join("smart-orchestrator.yaml");
+    write_recipe(&top_level_stale, stale_smart_orchestrator_recipe());
+
+    let claude_stale = home
+        .join(".amplihack")
+        .join(".claude")
+        .join("recipes")
+        .join("smart-orchestrator.yaml");
+    write_recipe(&claude_stale, stale_smart_orchestrator_recipe());
+
+    let _home = EnvVarGuard::set_path("HOME", &home);
+    let _amplihack_home = EnvVarGuard::set_path("AMPLIHACK_HOME", &amplihack_home);
+
+    let err = resolve_recipe_path("smart-orchestrator", &working_dir)
+        .expect_err("all stale smart-orchestrator candidates must fail, not resolve silently");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("smart-orchestrator")
+            && (msg.contains("stale") || msg.contains("incompatible"))
+            && msg.contains("orch_helper")
+            && (msg.contains("install") || msg.contains("repair")),
+        "error must identify stale candidates and give repair guidance, got: {msg}"
+    );
 }
 
 #[test]

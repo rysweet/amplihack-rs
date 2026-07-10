@@ -1,7 +1,7 @@
 //! Native install and uninstall commands.
 
 mod binary;
-mod bundle_compat;
+pub(crate) mod bundle_compat;
 mod clone;
 mod copilot_plugin;
 mod directories;

@@ -1,4 +1,5 @@
 use super::*;
+use crate::commands::install::bundle_compat::is_incompatible_smart_orchestrator;
 
 pub(super) fn resolve_path_from(base_dir: &Path, path: impl AsRef<Path>) -> Result<PathBuf> {
     let path = path.as_ref();
@@ -163,6 +164,70 @@ pub(crate) fn find_recipe_path(name: &str, search_dirs: &[PathBuf]) -> Option<Pa
     None
 }
 
+fn find_compatible_recipe_path(name: &str, search_dirs: &[PathBuf]) -> Result<Option<PathBuf>> {
+    if !is_smart_orchestrator_input(name) {
+        return Ok(find_recipe_path(name, search_dirs));
+    }
+
+    let mut stale_candidates = Vec::new();
+    for search_dir in search_dirs {
+        for extension in RECIPE_FILE_EXTENSIONS {
+            let candidate = search_dir.join(format!("{name}.{extension}"));
+            if !candidate.is_file() {
+                continue;
+            }
+            if is_incompatible_smart_orchestrator(&candidate)? {
+                stale_candidates.push(candidate);
+                continue;
+            }
+            warn_if_stale_smart_orchestrator_was_bypassed(&stale_candidates);
+            return Ok(Some(candidate));
+        }
+    }
+
+    fail_if_only_stale_smart_orchestrators(name, &stale_candidates)?;
+    Ok(None)
+}
+
+fn is_smart_orchestrator_input(input: &str) -> bool {
+    Path::new(input)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        == Some("smart-orchestrator")
+}
+
+fn warn_if_stale_smart_orchestrator_was_bypassed(stale_candidates: &[PathBuf]) {
+    if stale_candidates.is_empty() {
+        return;
+    }
+
+    tracing::warn!(
+        stale_candidates = %stale_candidates
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+        "skipping stale smart-orchestrator recipe candidates because a compatible fallback exists"
+    );
+}
+
+fn fail_if_only_stale_smart_orchestrators(input: &str, stale_candidates: &[PathBuf]) -> Result<()> {
+    if stale_candidates.is_empty() {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "Recipe {input} resolved only to stale or incompatible smart-orchestrator candidates: {}. \
+         These recipes contain legacy markers such as orch_helper/importlib/parse-decomposition. \
+         Run `amplihack install` to refresh installed assets, or `amplihack update` to install a current bundle.",
+        stale_candidates
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
 fn looks_like_recipe_path(input: &str) -> bool {
     let candidate = Path::new(input);
     candidate.components().count() > 1
@@ -189,13 +254,22 @@ pub(crate) fn resolve_recipe_path(input: &str, working_dir: impl AsRef<Path>) ->
         // repo root rather than the current working directory.
         let roots = relative_recipe_path_search_roots(&cwd, &working_dir);
         let mut tried = Vec::with_capacity(roots.len());
+        let mut stale_candidates = Vec::new();
         for root in &roots {
             let resolved = root.join(candidate);
             if resolved.is_file() {
+                if is_smart_orchestrator_input(input)
+                    && is_incompatible_smart_orchestrator(&resolved)?
+                {
+                    stale_candidates.push(resolved);
+                    continue;
+                }
+                warn_if_stale_smart_orchestrator_was_bypassed(&stale_candidates);
                 return Ok(resolved);
             }
             tried.push(resolved);
         }
+        fail_if_only_stale_smart_orchestrators(input, &stale_candidates)?;
 
         // Preserve prior fallback behavior: if no root contains the file, return
         // the working_dir-relative path so downstream parsing emits the
@@ -211,7 +285,7 @@ pub(crate) fn resolve_recipe_path(input: &str, working_dir: impl AsRef<Path>) ->
     }
 
     let search_dirs = recipe_search_dirs(None, &working_dir)?;
-    if let Some(resolved) = find_recipe_path(input, &search_dirs) {
+    if let Some(resolved) = find_compatible_recipe_path(input, &search_dirs)? {
         return Ok(resolved);
     }
 
