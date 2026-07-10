@@ -22,7 +22,6 @@ pub mod hierarchical_memory_types;
 pub mod input_events;
 pub mod input_source;
 pub mod intent;
-pub mod json_utils;
 pub mod knowledge_utils;
 pub mod learning_agent;
 pub mod learning_ingestion;
@@ -62,7 +61,6 @@ pub use hierarchical_memory_types::{
     StoreKnowledgeParams,
 };
 pub use intent::{COMMAND_WORDS, Intent, IntentDetector, QUESTION_WORDS};
-pub use json_utils::{parse_llm_json, parse_llm_json_list};
 pub use learning_agent::{
     AgentSnapshot, EvalPhaseResult, LearningAgent, LearningAgentConfig, LearningPhase,
     LearningPhaseResult, MemoryBackendKind,
