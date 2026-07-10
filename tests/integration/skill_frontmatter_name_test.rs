@@ -467,22 +467,12 @@ fn tc_skill_10_azure_devops_cli_is_not_registered_as_a_skill() {
     let files = [
         root.join("amplifier-bundle/bundle.md"),
         root.join("docs/skills/SKILL_CATALOG.md"),
-        root.join("crates/amplihack-hooks/src/known_skills.rs"),
     ];
 
     let mut violations = Vec::new();
     for file in files {
         let content = fs::read_to_string(&file).expect("read registry file");
-        let registered_content = if file.ends_with("known_skills.rs") {
-            content
-                .split_once("static AMPLIHACK_SKILLS: &[&str] = &[")
-                .and_then(|(_, rest)| rest.split_once("];"))
-                .map(|(registry, _)| registry)
-                .unwrap_or(&content)
-        } else {
-            content.as_str()
-        };
-        if registered_content.contains("azure-devops-cli") {
+        if content.contains("azure-devops-cli") {
             violations.push(relative_path(&file));
         }
     }

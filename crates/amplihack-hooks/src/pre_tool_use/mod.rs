@@ -16,6 +16,8 @@ mod xpia;
 use crate::protocol::{FailurePolicy, Hook};
 use amplihack_types::{HookInput, ProjectDirs};
 use serde_json::Value;
+use std::collections::BTreeSet;
+use std::path::Path;
 
 /// Error messages for blocked operations.
 const CWD_DELETION_ERROR: &str = "\
@@ -111,10 +113,10 @@ fn check_skill_redirect(tool_name: &str, tool_input: &Value) -> Option<Value> {
         .or_else(|| tool_input.get("name").and_then(Value::as_str))?;
 
     // Skills take precedence: only redirect agent-only names. This keeps
-    // overlapping names (e.g. gherkin-expert) resolving as skills.
-    if crate::known_skills::is_amplihack_skill(name)
-        || !crate::known_agents::is_amplihack_agent(name)
-    {
+    // overlapping names (e.g. gherkin-expert) resolving as skills. The set of
+    // skills is derived from the on-disk skills directory (issue #863) — the
+    // directory is the single source of truth, not a hardcoded list.
+    if bundled_skill_names().contains(name) || !crate::known_agents::is_amplihack_agent(name) {
         return None;
     }
 
@@ -122,6 +124,83 @@ fn check_skill_redirect(tool_name: &str, tool_input: &Value) -> Option<Value> {
         "block": true,
         "message": SKILL_IS_AGENT_REDIRECT.replace("{name}", name)
     }))
+}
+
+/// Maximum directory depth walked when scanning for bundled `SKILL.md` files.
+/// The bundle nests skills at most two levels deep
+/// (`category/skill/SKILL.md`); this bound guards against pathological or
+/// cyclic directory trees.
+const MAX_SKILL_SCAN_DEPTH: usize = 8;
+
+/// Derive the set of bundled skill names by scanning the on-disk skills
+/// directory at runtime.
+///
+/// The skills DIRECTORY is the single source of truth (issue #863): each skill
+/// is a directory containing a `SKILL.md` whose YAML frontmatter `name:` field
+/// is the skill's identity. That name may differ from the directory name (for
+/// example `migrate/` publishes `amplihack-migrate`), so the frontmatter value
+/// — never the directory path — is used as the key.
+///
+/// Roots are resolved via [`iter_runtime_roots`] so the scan matches how every
+/// other bundled asset is located. Both the source-bundle layout
+/// (`<root>/amplifier-bundle/skills/`) and the installed layout
+/// (`<root>/skills/`) are scanned.
+///
+/// Panic-free and fail-open: unreadable roots or files are skipped and
+/// symlinked directories are not traversed. The returned set is empty only when
+/// no skills directory is reachable.
+fn bundled_skill_names() -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for root in amplihack_cli::runtime_assets::iter_runtime_roots() {
+        for skills_dir in [root.join("amplifier-bundle/skills"), root.join("skills")] {
+            collect_skill_frontmatter_names(&skills_dir, &mut names, 0);
+        }
+    }
+    names
+}
+
+/// Recursively collect frontmatter `name:` values from every `SKILL.md` under
+/// `dir`, up to [`MAX_SKILL_SCAN_DEPTH`]. Symlinks are not followed and
+/// unreadable entries are skipped.
+fn collect_skill_frontmatter_names(dir: &Path, names: &mut BTreeSet<String>, depth: usize) {
+    if depth > MAX_SKILL_SCAN_DEPTH {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        // Do not follow symlinks — avoids cycles and out-of-tree escapes.
+        if file_type.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        if file_type.is_dir() {
+            collect_skill_frontmatter_names(&path, names, depth + 1);
+        } else if path.file_name().and_then(|n| n.to_str()) == Some("SKILL.md")
+            && let Some(name) = skill_frontmatter_name(&path)
+        {
+            names.insert(name);
+        }
+    }
+}
+
+/// Extract the frontmatter `name:` value from a `SKILL.md` file, if present and
+/// non-empty. Returns `None` for unreadable files or missing frontmatter.
+fn skill_frontmatter_name(path: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let frontmatter = content
+        .strip_prefix("---\n")
+        .and_then(|rest| rest.split_once("\n---"))
+        .map(|(frontmatter, _)| frontmatter)?;
+    frontmatter
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("name:"))
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
 }
 
 /// Strip leading env-variable assignments (`VAR=value ...`) and an optional

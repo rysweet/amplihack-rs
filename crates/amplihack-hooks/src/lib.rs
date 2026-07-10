@@ -39,8 +39,6 @@ pub mod copilot_stop_handler;
 pub mod hook_verification;
 /// Known amplihack agent name registry.
 pub mod known_agents;
-/// Known amplihack skill name registry.
-pub mod known_skills;
 /// Host-specific hook strategies (Claude, Copilot).
 pub mod strategies;
 
