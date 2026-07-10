@@ -27,6 +27,7 @@ pub mod integrator;
 pub mod orchestrator;
 pub mod packager;
 pub mod session;
+pub mod state_io;
 pub mod state_lock;
 pub mod vm_pool;
 

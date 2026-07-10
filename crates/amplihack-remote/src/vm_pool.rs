@@ -14,6 +14,7 @@ use tracing::{debug, info};
 
 use crate::error::RemoteError;
 use crate::orchestrator::{Orchestrator, VM, VMOptions};
+use crate::state_io::read_json_state;
 use crate::state_lock::file_lock;
 
 /// VM capacity tiers for concurrent sessions.
@@ -249,27 +250,19 @@ impl VMPoolManager {
     // ---- state persistence ----
 
     fn load_state(&mut self) -> Result<(), RemoteError> {
-        if !self.state_file.exists() {
-            self.pool = HashMap::new();
-            return Ok(());
-        }
+        // Missing/empty → start empty; corrupt → surface, never discard.
+        let data =
+            read_json_state(&self.state_file).map_err(|e| RemoteError::packaging(e.to_string()))?;
 
-        let content = std::fs::read_to_string(&self.state_file)
-            .map_err(|e| RemoteError::packaging(format!("Failed to read state: {e}")))?;
-
-        if content.trim().is_empty() {
-            self.pool = HashMap::new();
-            return Ok(());
-        }
-
-        let data: serde_json::Value = serde_json::from_str(&content)
-            .map_err(|e| RemoteError::packaging(format!("State file corrupt: {e}")))?;
-
-        if let Some(pool_data) = data.get("vm_pool") {
-            let entries: HashMap<String, VMPoolEntry> =
-                serde_json::from_value(pool_data.clone()).unwrap_or_default();
-            self.pool = entries;
-        }
+        self.pool = match data.as_ref().and_then(|d| d.get("vm_pool")) {
+            Some(pool_data) => serde_json::from_value(pool_data.clone()).map_err(|e| {
+                RemoteError::packaging(format!(
+                    "State file corrupt (vm_pool schema mismatch) at {}: {e}",
+                    self.state_file.display()
+                ))
+            })?,
+            None => HashMap::new(),
+        };
 
         Ok(())
     }
@@ -284,15 +277,12 @@ impl VMPoolManager {
                 .map_err(|e| RemoteError::packaging(format!("Failed to create state dir: {e}")))?;
         }
 
-        // Load existing state to merge
-        let mut existing: serde_json::Value = if self.state_file.exists() {
-            std::fs::read_to_string(&self.state_file)
-                .ok()
-                .and_then(|c| serde_json::from_str(&c).ok())
-                .unwrap_or_else(|| serde_json::json!({"sessions": {}}))
-        } else {
-            serde_json::json!({"sessions": {}})
-        };
+        // Load existing state to merge. Corrupt existing state must surface an
+        // error rather than being silently replaced, otherwise co-resident
+        // session state would be wiped on every save.
+        let mut existing = read_json_state(&self.state_file)
+            .map_err(|e| RemoteError::packaging(e.to_string()))?
+            .unwrap_or_else(|| serde_json::json!({"sessions": {}}));
 
         let pool_json = serde_json::to_value(&self.pool)
             .map_err(|e| RemoteError::packaging(format!("Failed to serialize pool: {e}")))?;

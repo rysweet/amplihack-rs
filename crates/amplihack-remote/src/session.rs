@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tracing::warn;
 
+use crate::state_io::read_json_state;
 use crate::state_lock::file_lock;
 
 /// Session lifecycle states.
@@ -212,8 +213,9 @@ impl SessionManager {
         session.status = SessionStatus::Killed;
         session.completed_at = Some(Utc::now());
 
-        let _ = self.save_state();
-        true
+        // Surface a persistence failure to the caller instead of reporting a
+        // successful kill that was never durably recorded.
+        self.save_state().is_ok()
     }
 
     /// Capture output from a running tmux session via SSH.
@@ -258,22 +260,16 @@ impl SessionManager {
     }
 
     fn load_state(&mut self) -> Result<(), String> {
-        if !self.state_file.exists() {
-            return Ok(());
-        }
+        // Missing/empty → start empty; corrupt → surface, never discard.
+        let data = read_json_state(&self.state_file).map_err(|e| e.to_string())?;
 
-        let content =
-            std::fs::read_to_string(&self.state_file).map_err(|e| format!("read failed: {e}"))?;
-
-        if content.trim().is_empty() {
-            return Ok(());
-        }
-
-        let data: serde_json::Value =
-            serde_json::from_str(&content).map_err(|e| format!("State file corrupt: {e}"))?;
-
-        if let Some(sessions) = data.get("sessions") {
-            self.sessions = serde_json::from_value(sessions.clone()).unwrap_or_default();
+        if let Some(sessions) = data.as_ref().and_then(|d| d.get("sessions")) {
+            self.sessions = serde_json::from_value(sessions.clone()).map_err(|e| {
+                format!(
+                    "State file corrupt (sessions schema mismatch) at {}: {e}",
+                    self.state_file.display()
+                )
+            })?;
             self.used_ids = self.sessions.keys().cloned().collect();
         }
 
@@ -288,15 +284,12 @@ impl SessionManager {
             std::fs::create_dir_all(parent).map_err(|e| format!("mkdir failed: {e}"))?;
         }
 
-        // Load existing to merge
-        let mut existing: serde_json::Value = if self.state_file.exists() {
-            std::fs::read_to_string(&self.state_file)
-                .ok()
-                .and_then(|c| serde_json::from_str(&c).ok())
-                .unwrap_or_else(|| serde_json::json!({}))
-        } else {
-            serde_json::json!({})
-        };
+        // Load existing to merge. Corrupt existing state must surface an error
+        // rather than being silently replaced, otherwise co-resident vm_pool
+        // state would be wiped on every save.
+        let mut existing = read_json_state(&self.state_file)
+            .map_err(|e| e.to_string())?
+            .unwrap_or_else(|| serde_json::json!({}));
 
         let sessions_json =
             serde_json::to_value(&self.sessions).map_err(|e| format!("serialize failed: {e}"))?;
