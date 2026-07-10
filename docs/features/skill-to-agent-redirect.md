@@ -44,7 +44,7 @@ Skill(name="prompt-writer")
 │  1. Launcher context injection (side effect) │
 │  2. XPIA security check                      │
 │  3. check_skill_redirect()  ◀── this feature │
-│        is_amplihack_skill(name)? ── yes ─▶ pass through (resolve as skill)
+│        bundled skill? (scan skills dir) ─ yes ─▶ pass through (resolve as skill)
 │        is_amplihack_agent(name)? ── yes ─▶ BLOCK + redirect message
 │        otherwise ──────────────────────▶ pass through
 │  4. Bash-only checks (cwd, branch, ...)      │
@@ -56,9 +56,9 @@ Skill(name="prompt-writer")
 
 Key properties:
 
-- **Skill precedence.** The redirect fires only when `!is_amplihack_skill(name) && is_amplihack_agent(name)`. Names that exist as **both** a skill and an agent (for example `gherkin-expert` and `tla-plus-expert`, which ship both a `SKILL.md` and an agent file) keep resolving as skills with no behavior change.
+- **Skill precedence.** The redirect fires only when the name **is** a known agent and is **not** a bundled skill. The skill set is derived at runtime by scanning the on-disk skills directory (`amplifier-bundle/skills/**/SKILL.md`) and reading each frontmatter `name:` — the directory is the single source of truth (issue [#863](https://github.com/rysweet/amplihack-rs/issues/863)), not a hardcoded list. Names that exist as **both** a skill and an agent (for example `gherkin-expert` and `tla-plus-expert`, which ship both a `SKILL.md` and an agent file) keep resolving as skills with no behavior change.
 - **Non-fatal.** The hook returns a `block` with guidance — it never panics, never aborts the run, and never deletes work. The model is told what to do instead.
-- **Compile-time registry.** Agent names are baked into the binary at build time via a sorted static slice; no filesystem access happens at runtime.
+- **Agent registry is compile-time; skill set is directory-derived.** Agent names are baked into the binary at build time via a sorted static slice. The skill set is resolved at runtime by scanning the bundled skills directory (issue [#863](https://github.com/rysweet/amplihack-rs/issues/863)). That scan is gated behind the cheap agent check, so genuine skills and unknown names pay no I/O; only a name that collides with a known agent triggers the directory walk. The walk never follows symlinks and is depth-bounded.
 - **Fail-open.** Consistent with the rest of `PreToolUse`, any parse or lookup failure passes the tool call through unchanged (`FailurePolicy::Open`).
 
 ---

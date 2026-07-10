@@ -498,3 +498,171 @@ fn malformed_skill_payloads_pass_through_without_panic() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Issue #863: the skills DIRECTORY is the single source of truth.
+//
+// The hardcoded skill-name registry is removed. The
+// pre-tool-use hook now answers "is this a skill?" by scanning the bundled
+// `amplifier-bundle/skills/**/SKILL.md` files and reading each frontmatter
+// `name:` value at runtime, via the private `bundled_skill_names()` helper.
+//
+// Contract for `bundled_skill_names() -> std::collections::BTreeSet<String>`:
+//   * Derives a non-empty set from the on-disk skills directory.
+//   * Uses the frontmatter `name:` as the skill identity — NOT the directory
+//     path — so nested-category skills (e.g. migrate/ -> "amplihack-migrate")
+//     are keyed by their published name.
+//   * Never contains directory-path forms (e.g. "development/architecting-...").
+//   * Membership is exact and case-sensitive.
+//   * Contains overlap names (both skill and agent) so skill-precedence in the
+//     redirect logic keeps them from being redirected.
+//
+// These tests fail to compile until `bundled_skill_names()` exists, then pass
+// once the runtime directory scanner is implemented.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn bundled_skill_names_is_non_empty() {
+    // An empty set would mean the scanner failed to locate the bundled skills
+    // directory — which would wrongly redirect every real skill.
+    let skills = bundled_skill_names();
+    assert!(
+        !skills.is_empty(),
+        "bundled_skill_names() must derive a non-empty set from the skills directory"
+    );
+}
+
+#[test]
+fn bundled_skill_names_contains_top_level_skills() {
+    let skills = bundled_skill_names();
+    for name in ["default-workflow", "pdf", "xlsx"] {
+        assert!(
+            skills.contains(name),
+            "bundled_skill_names() must contain top-level skill {name:?}"
+        );
+    }
+}
+
+#[test]
+fn bundled_skill_names_uses_frontmatter_name_for_nested_skills() {
+    // Nested category dirs (migrate/, development/, quality/, meta-cognitive/)
+    // are identified by their frontmatter `name:`, not the directory path.
+    let skills = bundled_skill_names();
+    for name in [
+        "amplihack-migrate",      // dir: migrate/
+        "architecting-solutions", // dir: development/architecting-solutions/
+        "reviewing-code",         // dir: quality/reviewing-code/
+        "analyzing-deeply",       // dir: meta-cognitive/analyzing-deeply/
+    ] {
+        assert!(
+            skills.contains(name),
+            "bundled_skill_names() must contain nested skill by frontmatter name {name:?}"
+        );
+    }
+}
+
+#[test]
+fn bundled_skill_names_excludes_directory_path_forms() {
+    // Identity is the frontmatter name, so category-prefixed path forms and
+    // bare parent-dir names must NOT be members.
+    let skills = bundled_skill_names();
+    for path_form in [
+        "development/architecting-solutions",
+        "quality/reviewing-code",
+        "meta-cognitive/analyzing-deeply",
+        "migrate",
+    ] {
+        assert!(
+            !skills.contains(path_form),
+            "bundled_skill_names() must not contain directory-path form {path_form:?}"
+        );
+    }
+}
+
+#[test]
+fn bundled_skill_names_membership_is_exact_and_case_sensitive() {
+    let skills = bundled_skill_names();
+    assert!(!skills.contains("nonexistent-skill"));
+    assert!(!skills.contains(""));
+    assert!(
+        !skills.contains("DEFAULT-WORKFLOW"),
+        "membership must be case-sensitive"
+    );
+}
+
+#[test]
+fn bundled_skill_names_contains_overlap_names() {
+    // gherkin-expert and tla-plus-expert exist as BOTH a skill and an agent.
+    // They must be present in the skill set so the redirect logic's
+    // skill-precedence keeps them from being redirected.
+    let skills = bundled_skill_names();
+    for name in ["gherkin-expert", "tla-plus-expert"] {
+        assert!(
+            skills.contains(name),
+            "overlap name {name:?} must be present so it resolves as a skill"
+        );
+    }
+}
+
+#[test]
+fn bundled_skill_names_matches_every_bundled_frontmatter_name() {
+    // Directory-as-source-of-truth: every SKILL.md frontmatter `name:` in the
+    // workspace bundle must appear in the runtime-derived set. Asserted as a
+    // subset rather than strict equality because a developer/CI machine may
+    // also stage skills under ~/.amplihack or ~/.copilot, which are legitimately
+    // included by the scanner too.
+    use std::collections::BTreeSet;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    fn collect_skill_files(dir: &Path, files: &mut Vec<PathBuf>) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_skill_files(&path, files);
+            } else if path.file_name().and_then(|n| n.to_str()) == Some("SKILL.md") {
+                files.push(path);
+            }
+        }
+    }
+
+    fn frontmatter_name(content: &str) -> Option<String> {
+        let fm = content
+            .strip_prefix("---\n")
+            .and_then(|rest| rest.split_once("\n---"))
+            .map(|(fm, _)| fm)?;
+        fm.lines()
+            .find_map(|line| line.trim().strip_prefix("name:"))
+            .map(|n| n.trim().to_string())
+    }
+
+    let skills_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("amplifier-bundle/skills");
+    if !skills_dir.is_dir() {
+        eprintln!("SKIP: bundle not found at {}", skills_dir.display());
+        return;
+    }
+
+    let mut files = Vec::new();
+    collect_skill_files(&skills_dir, &mut files);
+    assert!(
+        !files.is_empty(),
+        "expected SKILL.md files under the bundle"
+    );
+
+    let bundled: BTreeSet<String> = files
+        .iter()
+        .filter_map(|p| frontmatter_name(&fs::read_to_string(p).ok()?))
+        .collect();
+
+    let derived = bundled_skill_names();
+    let missing: Vec<_> = bundled.difference(&derived).cloned().collect();
+    assert!(
+        missing.is_empty(),
+        "bundled_skill_names() must include every bundled frontmatter name; missing: {missing:?}"
+    );
+}
