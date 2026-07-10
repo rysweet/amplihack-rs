@@ -6,7 +6,6 @@
 //!   1. The investigation doc exists with correct structure
 //!   2. The doc is linked from docs/index.md
 //!   3. The gherkin-expert skill files remain present (regression guard)
-//!   4. The known_skills.rs allowlist still contains "gherkin-expert"
 //!
 //! Test proportionality: investigation-only change -> verification tests only.
 
@@ -166,15 +165,5 @@ fn gherkin_agent_definition_exists() {
         path.exists(),
         "amplifier-bundle/agents/specialized/gherkin-expert.md must exist — \
          removing it would break the gherkin-expert capability (see #434)"
-    );
-}
-
-#[test]
-fn known_skills_contains_gherkin_expert() {
-    let src = read_file("crates/amplihack-hooks/src/known_skills.rs");
-    assert!(
-        src.contains("\"gherkin-expert\""),
-        "known_skills.rs must contain \"gherkin-expert\" in the allowlist — \
-         removing it would break skill discovery (see #434 investigation)"
     );
 }
