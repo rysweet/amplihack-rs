@@ -15,11 +15,10 @@
 //! tiered `jq`/`sed` extractor (`extract_verdict`) embedded directly in the
 //! step (jq is already required by the merge). Each validator is classified
 //! independently as:
-//!   * `PARSED`      — a JSON verdict object was recovered (contributes votes).
-//!   * `EMPTY`       — no / whitespace-only output → `{}`, zero votes, NO warning.
-//!   * `UNPARSEABLE` — non-empty output, no JSON object survived → loud WARN
-//!                     naming the validator, raw output preserved as an
-//!                     artifact, `{}`, zero votes, merge CONTINUES.
+//!   * `PARSED` — a JSON verdict object was recovered (contributes votes).
+//!   * `EMPTY` — no / whitespace-only output → `{}`, zero votes, NO warning.
+//!   * `UNPARSEABLE` — non-empty output, no JSON object survived → loud WARN naming the validator, raw output preserved as an artifact, `{}`, zero votes, merge CONTINUES.
+//!
 //! A single malformed validator never aborts the merge. The step fails hard
 //! (`exit 1`) with a clear diagnostic ONLY when the parsed count is `0` and at
 //! least one validator was `UNPARSEABLE` — never with a raw `jq` error. An

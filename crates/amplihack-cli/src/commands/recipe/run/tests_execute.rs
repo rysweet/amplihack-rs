@@ -1350,8 +1350,8 @@ fn only_final_pointer(stderr: &str) -> JsonValue {
 fn parse_empty_stdout_success_returns_hollow_success_terminal_failure() {
     let result =
         execute::parse_recipe_output("", "", true).expect("empty stdout on success must not error");
-    assert_eq!(
-        result.success, false,
+    assert!(
+        !result.success,
         "empty successful runner output must not be reported as workflow success"
     );
     assert_eq!(
@@ -2309,8 +2309,8 @@ fn test_context_env_pairs_uppercases_known_keys() {
         "context key `repo_path` must be exported as REPO_PATH"
     );
     // Lowercased originals must NOT appear — only the uppercased name is exported.
-    assert!(env.get("task_description").is_none());
-    assert!(env.get("repo_path").is_none());
+    assert!(!env.contains_key("task_description"));
+    assert!(!env.contains_key("repo_path"));
 }
 
 #[test]
@@ -2351,11 +2351,11 @@ fn test_context_env_pairs_drops_invalid_identifier_keys() {
         ("ok_key", "kept"),        // control: valid -> kept
     ]));
     assert_eq!(env.get("OK_KEY"), Some(&"kept".to_string()));
-    assert!(env.get("MY-VAR").is_none());
-    assert!(env.get("MY.VAR").is_none());
-    assert!(env.get("1BAD").is_none());
-    assert!(env.get("WITH SPACE").is_none());
-    assert!(env.get("").is_none());
+    assert!(!env.contains_key("MY-VAR"));
+    assert!(!env.contains_key("MY.VAR"));
+    assert!(!env.contains_key("1BAD"));
+    assert!(!env.contains_key("WITH SPACE"));
+    assert!(!env.contains_key(""));
     assert_eq!(
         env.len(),
         1,
@@ -2372,7 +2372,7 @@ fn test_context_env_pairs_drops_values_containing_nul() {
         ("repo_path", "/clean"),
     ]));
     assert!(
-        env.get("TASK_DESCRIPTION").is_none(),
+        !env.contains_key("TASK_DESCRIPTION"),
         "values containing NUL must be dropped"
     );
     assert_eq!(env.get("REPO_PATH"), Some(&"/clean".to_string()));
@@ -2391,7 +2391,7 @@ fn test_context_env_pairs_drops_oversized_values() {
         ("repo_path", "/work/repo"),
     ]));
     assert!(
-        env.get("TASK_DESCRIPTION").is_none(),
+        !env.contains_key("TASK_DESCRIPTION"),
         "an oversized value must not be exported as an environment variable"
     );
     assert_eq!(
@@ -2465,9 +2465,9 @@ fn test_context_env_pairs_drops_amplihack_prefixed_keys() {
         Some(&"kept".to_string()),
         "ordinary keys still pass through"
     );
-    assert!(env.get("AMPLIHACK_HOME").is_none());
-    assert!(env.get("AMPLIHACK_RECIPE_RUN_ID").is_none());
-    assert!(env.get("AMPLIHACK_ASSET_RESOLVER").is_none());
+    assert!(!env.contains_key("AMPLIHACK_HOME"));
+    assert!(!env.contains_key("AMPLIHACK_RECIPE_RUN_ID"));
+    assert!(!env.contains_key("AMPLIHACK_ASSET_RESOLVER"));
 }
 
 // -------------------------------------------------------------------------
