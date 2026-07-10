@@ -182,7 +182,7 @@ esac
         bin_dir.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let command = extract_step_body(&load_recipe("workflow-prep"), "step-02d-detect-host-type");
+    let command = extract_step_body(load_recipe("workflow-prep"), "step-02d-detect-host-type");
     let output = Command::new("bash")
         .arg("-c")
         .arg(command)
@@ -272,7 +272,7 @@ exit 7
         bin_dir.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let command = extract_step_body(&load_recipe("workflow-prep"), "step-03-create-issue");
+    let command = extract_step_body(load_recipe("workflow-prep"), "step-03-create-issue");
 
     let mut command_builder = Command::new("bash");
     command_builder
@@ -325,7 +325,7 @@ fn run_detect_then_step_03(remote_url: &str, task_description: &str) -> (Step02d
 
 fn run_step_03b(issue_creation: &str, task_description: &str) -> Output {
     let command = extract_step_body(
-        &load_recipe("workflow-prep"),
+        load_recipe("workflow-prep"),
         "step-03b-extract-issue-number",
     );
 
@@ -358,7 +358,7 @@ fn default_workflow_context(recipe: &Value) -> Value {
 #[test]
 fn default_workflow_declares_remote_host_type_context() {
     let recipe = load_recipe("default-workflow");
-    let context = default_workflow_context(&recipe);
+    let context = default_workflow_context(recipe);
 
     assert!(
         context.get("remote_host_type").is_some(),
@@ -377,7 +377,7 @@ fn workflow_prep_has_step_02d_detect_host_type() {
     let recipe = load_recipe("workflow-prep");
 
     assert!(
-        step_exists(&recipe, "step-02d-detect-host-type"),
+        step_exists(recipe, "step-02d-detect-host-type"),
         "workflow-prep.yaml must contain step 'step-02d-detect-host-type'. \
          This centralized step detects the git remote host type once and \
          exports it for all downstream steps. (Issue #684)"
@@ -388,7 +388,7 @@ fn workflow_prep_has_step_02d_detect_host_type() {
 fn step_02d_has_output_remote_host_type() {
     let recipe = load_recipe("workflow-prep");
 
-    let output = step_output(&recipe, "step-02d-detect-host-type");
+    let output = step_output(recipe, "step-02d-detect-host-type");
     assert_eq!(
         output.as_deref(),
         Some("remote_host_type"),
@@ -401,7 +401,7 @@ fn step_02d_has_output_remote_host_type() {
 #[test]
 fn step_02d_detects_github_azdo_other() {
     let recipe = load_recipe("workflow-prep");
-    let body = extract_step_body(&recipe, "step-02d-detect-host-type");
+    let body = extract_step_body(recipe, "step-02d-detect-host-type");
 
     // Must detect all three host types
     assert!(
@@ -427,7 +427,7 @@ fn step_02d_detects_github_azdo_other() {
 #[test]
 fn step_02d_detects_all_azdo_url_patterns() {
     let recipe = load_recipe("workflow-prep");
-    let body = extract_step_body(&recipe, "step-02d-detect-host-type");
+    let body = extract_step_body(recipe, "step-02d-detect-host-type");
 
     // Must detect all three AzDO URL patterns
     assert!(
@@ -448,7 +448,7 @@ fn step_02d_detects_all_azdo_url_patterns() {
 fn step_02d_does_not_echo_remote_url() {
     // Security: remote URL may contain embedded PATs
     let recipe = load_recipe("workflow-prep");
-    let body = extract_step_body(&recipe, "step-02d-detect-host-type");
+    let body = extract_step_body(recipe, "step-02d-detect-host-type");
 
     let echoes_url = body.contains("echo \"$REMOTE_URL\"")
         || body.contains("echo $REMOTE_URL")
@@ -560,7 +560,7 @@ fn step_15_commit_message_not_hardcoded_closes() {
     // The commit message must NOT use hardcoded "Closes #N" for all hosts.
     // It should be conditional based on REMOTE_HOST_TYPE.
     let recipe = load_recipe("workflow-publish");
-    let body = extract_step_body(&recipe, "step-15-commit-push");
+    let body = extract_step_body(recipe, "step-15-commit-push");
 
     // Count occurrences of literal "Closes #" in commit message construction.
     // After the fix, "Closes #" should only appear inside a GitHub conditional,
@@ -579,7 +579,7 @@ fn step_15_commit_message_not_hardcoded_closes() {
 #[test]
 fn step_15_uses_remote_host_type_for_commit_ref() {
     let recipe = load_recipe("workflow-publish");
-    let body = extract_step_body(&recipe, "step-15-commit-push");
+    let body = extract_step_body(recipe, "step-15-commit-push");
 
     // The step must reference REMOTE_HOST_TYPE to decide the issue ref format
     assert!(
@@ -592,7 +592,7 @@ fn step_15_uses_remote_host_type_for_commit_ref() {
 #[test]
 fn step_15_supports_azdo_ab_ref() {
     let recipe = load_recipe("workflow-publish");
-    let body = extract_step_body(&recipe, "step-15-commit-push");
+    let body = extract_step_body(recipe, "step-15-commit-push");
 
     assert!(
         body.contains("AB#"),
@@ -604,7 +604,7 @@ fn step_15_supports_azdo_ab_ref() {
 #[test]
 fn step_15_supports_neutral_ref() {
     let recipe = load_recipe("workflow-publish");
-    let body = extract_step_body(&recipe, "step-15-commit-push");
+    let body = extract_step_body(recipe, "step-15-commit-push");
 
     assert!(
         body.contains("Ref #"),
@@ -622,7 +622,7 @@ fn step_16_no_inline_remote_host_type_detection() {
     // step-16 should consume $REMOTE_HOST_TYPE from context (step-02d output),
     // not re-detect it inline. Duplicate detection is fragile and violates DRY.
     let recipe = load_recipe("workflow-publish");
-    let body = extract_step_body(&recipe, "step-16-create-draft-pr");
+    let body = extract_step_body(recipe, "step-16-create-draft-pr");
 
     // The inline detection pattern from the current code:
     //   REMOTE_URL=$(git remote get-url origin ...)
@@ -641,7 +641,7 @@ fn step_16_no_inline_remote_host_type_detection() {
 #[test]
 fn step_16_pr_body_not_hardcoded_closes() {
     let recipe = load_recipe("workflow-publish");
-    let body = extract_step_body(&recipe, "step-16-create-draft-pr");
+    let body = extract_step_body(recipe, "step-16-create-draft-pr");
 
     // The PR body must not hardcode "Closes #%s" for all hosts
     let has_unconditional_closes = body.contains("Closes #%s\\n");
@@ -656,7 +656,7 @@ fn step_16_pr_body_not_hardcoded_closes() {
 #[test]
 fn step_16_consumes_remote_host_type() {
     let recipe = load_recipe("workflow-publish");
-    let body = extract_step_body(&recipe, "step-16-create-draft-pr");
+    let body = extract_step_body(recipe, "step-16-create-draft-pr");
 
     assert!(
         body.contains("REMOTE_HOST_TYPE"),
@@ -672,7 +672,7 @@ fn step_16_consumes_remote_host_type() {
 #[test]
 fn step_22b_guards_gh_pr_view_with_host_type() {
     let recipe = load_recipe("workflow-finalize");
-    let body = extract_step_body(&recipe, "step-22b-final-status");
+    let body = extract_step_body(recipe, "step-22b-final-status");
 
     // gh pr view must be guarded by REMOTE_HOST_TYPE check, not just PR_URL
     assert!(
@@ -685,7 +685,7 @@ fn step_22b_guards_gh_pr_view_with_host_type() {
 #[test]
 fn step_22b_issue_line_is_host_aware() {
     let recipe = load_recipe("workflow-finalize");
-    let body = extract_step_body(&recipe, "step-22b-final-status");
+    let body = extract_step_body(recipe, "step-22b-final-status");
 
     // The issue summary should not unconditionally use "Issue: #N"
     // It should adapt based on host type (AB#N for AzDO, #N for GitHub)
@@ -701,7 +701,7 @@ fn step_22b_issue_line_is_host_aware() {
 #[test]
 fn step_22b_pr_line_handles_empty_pr_url() {
     let recipe = load_recipe("workflow-finalize");
-    let body = extract_step_body(&recipe, "step-22b-final-status");
+    let body = extract_step_body(recipe, "step-22b-final-status");
 
     // When PR_URL is empty (non-GitHub host), the summary should say
     // something like "PR: N/A" rather than "PR: " (empty)
@@ -722,7 +722,7 @@ fn step_22b_pr_line_handles_empty_pr_url() {
 fn step_22b_uses_host_type_safe_pattern() {
     // Must use HOST_TYPE=${REMOTE_HOST_TYPE:-other} for set -u safety
     let recipe = load_recipe("workflow-finalize");
-    let body = extract_step_body(&recipe, "step-22b-final-status");
+    let body = extract_step_body(recipe, "step-22b-final-status");
 
     let has_safe_default =
         body.contains("${REMOTE_HOST_TYPE:-") || body.contains("HOST_TYPE=${REMOTE_HOST_TYPE:-");
@@ -742,7 +742,7 @@ fn step_22b_uses_host_type_safe_pattern() {
 #[test]
 fn step_03_decodes_percent_encoding() {
     let recipe = load_recipe("workflow-prep");
-    let body = extract_step_body(&recipe, "step-03-create-issue");
+    let body = extract_step_body(recipe, "step-03-create-issue");
 
     // The step must decode %XX sequences (e.g., %20 → space) before validation.
     // We check for actual decode logic, not incidental mentions of "sed" in comments.
@@ -763,7 +763,7 @@ fn step_03_decodes_percent_encoding() {
 #[test]
 fn step_03_regex_allows_spaces_in_project_names() {
     let recipe = load_recipe("workflow-prep");
-    let body = extract_step_body(&recipe, "step-03-create-issue");
+    let body = extract_step_body(recipe, "step-03-create-issue");
 
     // After percent-decoding, the regex must allow spaces in project names.
     // The current regex is ^[a-zA-Z0-9._-]+$ which rejects spaces.
@@ -782,7 +782,7 @@ fn step_03_regex_allows_spaces_in_project_names() {
 #[test]
 fn step_03_rejects_invalid_percent_sequences() {
     let recipe = load_recipe("workflow-prep");
-    let body = extract_step_body(&recipe, "step-03-create-issue");
+    let body = extract_step_body(recipe, "step-03-create-issue");
 
     // Invalid percent sequences (%ZZ, %G1, etc.) must be caught during decode.
     // This is separate from the existing "unexpected characters" validation —
@@ -1045,7 +1045,7 @@ fn step_03_preserves_github_issue_create_success_path() {
 #[test]
 fn step_03_github_issue_create_external_calls_are_timeout_wrapped_without_transient_retry() {
     let recipe = load_recipe("workflow-prep");
-    let body = extract_step_body(&recipe, "step-03-create-issue");
+    let body = extract_step_body(recipe, "step-03-create-issue");
 
     assert!(
         body.contains("timeout 30 gh label create") && body.contains("timeout 60 gh issue create"),
@@ -1172,7 +1172,7 @@ fn step_03_github_unexpected_create_failure_remains_error() {
 #[test]
 fn step_03b_has_local_tracking_metadata_extraction_contract() {
     let recipe = load_recipe("workflow-prep");
-    let body = extract_step_body(&recipe, "step-03b-extract-issue-number");
+    let body = extract_step_body(recipe, "step-03b-extract-issue-number");
     let local_pos = body
         .find("LOCAL_TRACKING_RE")
         .expect("step-03b must define the local tracking guard");
@@ -1323,7 +1323,7 @@ fn step_03_does_not_redefine_remote_host_type_via_case() {
     // from the environment, not re-detect it with its own case block.
     // Note: step-03 must still USE $REMOTE_HOST_TYPE for branching (github/azdo/other).
     let recipe = load_recipe("workflow-prep");
-    let body = extract_step_body(&recipe, "step-03-create-issue");
+    let body = extract_step_body(recipe, "step-03-create-issue");
 
     // Count how many times REMOTE_HOST_TYPE is assigned via case statement.
     // After the fix, there should be zero case-based assignments — only reads.
@@ -1345,7 +1345,7 @@ fn step_03_does_not_redefine_remote_host_type_via_case() {
 #[test]
 fn step_21_guards_gh_commands_with_host_type() {
     let recipe = load_recipe("workflow-finalize");
-    let body = extract_step_body(&recipe, "step-21-pr-ready");
+    let body = extract_step_body(recipe, "step-21-pr-ready");
 
     // step-21 already has a PR_URL guard. After fix, it should also check
     // REMOTE_HOST_TYPE to prevent gh commands on non-GitHub hosts.
@@ -1387,7 +1387,7 @@ fn all_modified_recipes_under_400_lines() {
 #[test]
 fn step_15_uses_host_type_safe_default() {
     let recipe = load_recipe("workflow-publish");
-    let body = extract_step_body(&recipe, "step-15-commit-push");
+    let body = extract_step_body(recipe, "step-15-commit-push");
 
     let has_safe_default =
         body.contains("${REMOTE_HOST_TYPE:-") || body.contains("HOST_TYPE=${REMOTE_HOST_TYPE:-");
@@ -1402,7 +1402,7 @@ fn step_15_uses_host_type_safe_default() {
 #[test]
 fn step_16_uses_host_type_safe_default() {
     let recipe = load_recipe("workflow-publish");
-    let body = extract_step_body(&recipe, "step-16-create-draft-pr");
+    let body = extract_step_body(recipe, "step-16-create-draft-pr");
 
     let has_safe_default =
         body.contains("${REMOTE_HOST_TYPE:-") || body.contains("HOST_TYPE=${REMOTE_HOST_TYPE:-");
@@ -1421,7 +1421,7 @@ fn step_16_uses_host_type_safe_default() {
 #[test]
 fn step_03_preserves_github_path() {
     let recipe = load_recipe("workflow-prep");
-    let body = extract_step_body(&recipe, "step-03-create-issue");
+    let body = extract_step_body(recipe, "step-03-create-issue");
 
     assert!(
         body.contains("gh issue create"),
@@ -1436,7 +1436,7 @@ fn step_03_preserves_github_path() {
 #[test]
 fn step_03_preserves_azdo_path() {
     let recipe = load_recipe("workflow-prep");
-    let body = extract_step_body(&recipe, "step-03-create-issue");
+    let body = extract_step_body(recipe, "step-03-create-issue");
 
     assert!(
         body.contains("az boards work-item"),
@@ -1447,7 +1447,7 @@ fn step_03_preserves_azdo_path() {
 #[test]
 fn step_03_preserves_local_tracking_fallback() {
     let recipe = load_recipe("workflow-prep");
-    let body = extract_step_body(&recipe, "step-03-create-issue");
+    let body = extract_step_body(recipe, "step-03-create-issue");
 
     assert!(
         body.contains("local-tracking") || body.contains("local tracking"),
@@ -1459,7 +1459,7 @@ fn step_03_preserves_local_tracking_fallback() {
 fn step_22b_preserves_pr_url_guard() {
     // The existing PR_URL empty-check must be preserved
     let recipe = load_recipe("workflow-finalize");
-    let body = extract_step_body(&recipe, "step-22b-final-status");
+    let body = extract_step_body(recipe, "step-22b-final-status");
 
     let has_pr_url_check =
         body.contains("PR_URL") && (body.contains("-z \"$PR_URL\"") || body.contains("PR_URL:-"));
@@ -1473,7 +1473,7 @@ fn step_22b_preserves_pr_url_guard() {
 #[test]
 fn step_15_preserves_set_euo_pipefail() {
     let recipe = load_recipe("workflow-publish");
-    let body = extract_step_body(&recipe, "step-15-commit-push");
+    let body = extract_step_body(recipe, "step-15-commit-push");
 
     assert!(
         body.contains("set -euo pipefail"),
@@ -1484,7 +1484,7 @@ fn step_15_preserves_set_euo_pipefail() {
 #[test]
 fn step_22b_preserves_set_euo_pipefail() {
     let recipe = load_recipe("workflow-finalize");
-    let body = extract_step_body(&recipe, "step-22b-final-status");
+    let body = extract_step_body(recipe, "step-22b-final-status");
 
     assert!(
         body.contains("set -euo pipefail"),
