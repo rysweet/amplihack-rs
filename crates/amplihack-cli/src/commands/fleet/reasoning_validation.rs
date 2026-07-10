@@ -118,33 +118,17 @@ pub(super) fn heuristic_decision(context: &SessionContext) -> SessionDecision {
 }
 
 pub(super) fn is_dangerous_input(text: &str) -> bool {
-    if Regex::new(r"[;|&`]|\$\(")
-        .ok()
-        .is_some_and(|regex| regex.is_match(text))
-    {
+    static SHELL_METACHARS: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"[;|&`]|\$\(").expect("valid shell metachar regex")
+    });
+
+    if SHELL_METACHARS.is_match(text) {
         return true;
     }
-    if SAFE_INPUT_PATTERNS
-        .iter()
-        .filter_map(|pattern| {
-            RegexBuilder::new(pattern)
-                .case_insensitive(true)
-                .build()
-                .ok()
-        })
-        .any(|regex| regex.is_match(text))
-    {
+    if first_matching_pattern(SAFE_INPUT_PATTERNS, text, false).is_some() {
         return false;
     }
-    DANGEROUS_INPUT_PATTERNS
-        .iter()
-        .filter_map(|pattern| {
-            RegexBuilder::new(pattern)
-                .case_insensitive(true)
-                .build()
-                .ok()
-        })
-        .any(|regex| regex.is_match(text))
+    first_matching_pattern(DANGEROUS_INPUT_PATTERNS, text, false).is_some()
 }
 
 pub(super) fn remote_parent_dir(path: &str) -> String {

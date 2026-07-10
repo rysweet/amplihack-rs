@@ -1,6 +1,7 @@
 use super::*;
 
-use std::sync::LazyLock;
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
 
 static TOKEN_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -98,14 +99,36 @@ pub(super) fn first_matching_pattern(
     multiline: bool,
 ) -> Option<String> {
     patterns.iter().find_map(|pattern| {
-        RegexBuilder::new(pattern)
-            .case_insensitive(true)
-            .multi_line(multiline)
-            .build()
-            .ok()
-            .filter(|regex: &Regex| regex.is_match(text))
+        compiled_pattern(pattern, multiline)
+            .filter(|regex| regex.is_match(text))
             .map(|_| (*pattern).to_string())
     })
+}
+
+/// Compile `pattern` (case-insensitive, optional multi-line) once and reuse it.
+///
+/// The fleet observer and reasoner classify terminal output against small,
+/// fixed lists of `&'static str` pattern constants once per session per poll.
+/// Recompiling those regexes on every call dominated the cost, so each unique
+/// `(pattern, multiline)` pair is built once and memoized here. Returns `None`
+/// when a pattern fails to compile, preserving the previous best-effort
+/// behavior of silently skipping invalid patterns.
+fn compiled_pattern(pattern: &str, multiline: bool) -> Option<Regex> {
+    static CACHE: LazyLock<Mutex<HashMap<(String, bool), Regex>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+
+    let key = (pattern.to_string(), multiline);
+    let mut cache = CACHE.lock().expect("pattern regex cache mutex poisoned");
+    if let Some(regex) = cache.get(&key) {
+        return Some(regex.clone());
+    }
+    let regex = RegexBuilder::new(pattern)
+        .case_insensitive(true)
+        .multi_line(multiline)
+        .build()
+        .ok()?;
+    cache.insert(key, regex.clone());
+    Some(regex)
 }
 
 pub(super) fn auth_files_for_service(
