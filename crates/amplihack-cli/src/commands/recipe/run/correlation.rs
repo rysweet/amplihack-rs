@@ -1,17 +1,20 @@
 use super::super::{RecipeLogPointerSummary, RecipeRunResult};
+use crate::util::run_output_with_timeout;
 use chrono::{SecondsFormat, Utc};
 use serde::Serialize;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::time::Duration;
 use uuid::Uuid;
 
 pub(super) const LOG_POINTER_PREFIX: &str = "amplihack.recipe.log_pointer ";
 
 const SCHEMA_VERSION: u8 = 1;
 const MAX_POINTER_VALUE_BYTES: usize = 1024;
+const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone)]
 pub(super) struct RecipeRunCorrelation {
@@ -91,6 +94,10 @@ impl RecipeRunCorrelation {
 
     pub(super) fn run_id(&self) -> &str {
         &self.run_id
+    }
+
+    pub(super) fn cwd(&self) -> &str {
+        &self.cwd
     }
 
     pub(super) fn emit_early(&self) {
@@ -307,14 +314,9 @@ fn path_to_string(path: &Path) -> String {
 }
 
 fn git_output(working_dir: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(working_dir)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
+    let mut command = Command::new("git");
+    command.arg("-C").arg(working_dir).args(args);
+    let output = run_output_with_timeout(command, GIT_COMMAND_TIMEOUT).ok()?;
     if !output.status.success() {
         return None;
     }

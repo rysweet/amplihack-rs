@@ -1,6 +1,6 @@
 //! Smart NODE_OPTIONS memory configuration for launcher startup.
 
-use crate::util::{is_noninteractive, read_user_input_with_timeout};
+use crate::util::{is_noninteractive, read_user_input_with_timeout, run_output_with_timeout};
 use anyhow::Result;
 use serde_json::{Map, Value};
 use std::env;
@@ -12,6 +12,7 @@ use std::time::Duration;
 const MIN_MEMORY_MB: u64 = 8192;
 const MAX_MEMORY_MB: u64 = 32768;
 const MEMORY_PROMPT_TIMEOUT: Duration = Duration::from_secs(30);
+const RAM_DETECTION_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryConfig {
@@ -108,10 +109,9 @@ fn detect_ram_linux() -> Option<u64> {
 }
 
 fn detect_ram_macos() -> Option<u64> {
-    let output = Command::new("sysctl")
-        .args(["-n", "hw.memsize"])
-        .output()
-        .ok()?;
+    let mut command = Command::new("sysctl");
+    command.args(["-n", "hw.memsize"]);
+    let output = run_output_with_timeout(command, RAM_DETECTION_TIMEOUT).ok()?;
     if !output.status.success() {
         return None;
     }
@@ -124,10 +124,9 @@ fn detect_ram_macos() -> Option<u64> {
 }
 
 fn detect_ram_windows() -> Option<u64> {
-    let output = Command::new("wmic")
-        .args(["ComputerSystem", "get", "TotalPhysicalMemory"])
-        .output()
-        .ok()?;
+    let mut command = Command::new("wmic");
+    command.args(["ComputerSystem", "get", "TotalPhysicalMemory"]);
+    let output = run_output_with_timeout(command, RAM_DETECTION_TIMEOUT).ok()?;
     if !output.status.success() {
         return None;
     }

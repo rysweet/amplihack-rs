@@ -246,12 +246,17 @@ fn test_format_recipe_run_result_yaml_preserves_run_id_and_log_pointer_fields() 
 /// error message directing the user to install the binary.
 #[test]
 fn test_find_recipe_runner_binary_error_message_is_actionable() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if which_recipe_runner_available() {
         return;
     }
+    let previous_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
     unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") };
 
     let result = binary::find_recipe_runner_binary();
+    restore_recipe_runner_path(previous_runner);
     assert!(
         result.is_err(),
         "find_recipe_runner_binary must fail when binary is not installed. Got: {:?}",
@@ -272,6 +277,10 @@ fn test_find_recipe_runner_binary_error_message_is_actionable() {
 /// must be ignored and discovery falls through to the standard locations.
 #[test]
 fn test_find_recipe_runner_binary_ignores_nonexistent_env_path() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let previous_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
     unsafe {
         std::env::set_var(
             "RECIPE_RUNNER_RS_PATH",
@@ -281,7 +290,7 @@ fn test_find_recipe_runner_binary_ignores_nonexistent_env_path() {
 
     let result = binary::find_recipe_runner_binary();
 
-    unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") };
+    restore_recipe_runner_path(previous_runner);
 
     match result {
         Ok(path) => {
@@ -304,6 +313,13 @@ fn test_find_recipe_runner_binary_ignores_nonexistent_env_path() {
     }
 }
 
+fn restore_recipe_runner_path(previous_runner: Option<std::ffi::OsString>) {
+    match previous_runner {
+        Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
+        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
+    }
+}
+
 #[test]
 fn test_meaningful_stderr_tail_skips_progress_noise() {
     let tail = execute::meaningful_stderr_tail(
@@ -311,6 +327,35 @@ fn test_meaningful_stderr_tail_skips_progress_noise() {
     );
 
     assert_eq!(tail, "real error one\nreal error two");
+}
+
+#[test]
+fn test_meaningful_stderr_tail_reports_discarded_lines() {
+    let tail = execute::meaningful_stderr_tail(
+        "error one\nerror two\nerror three\nerror four\nerror five\nerror six\n",
+    );
+
+    assert!(
+        tail.contains("error two"),
+        "tail should retain recent lines: {tail}"
+    );
+    assert!(
+        tail.contains("[truncated: discarded 1 stderr lines]"),
+        "tail should report omitted diagnostics: {tail}"
+    );
+}
+
+#[test]
+fn test_meaningful_stderr_tail_includes_prior_buffer_drops() {
+    let tail = execute::meaningful_stderr_tail_with_prior_drops(
+        "error one\nerror two\nerror three\nerror four\nerror five\nerror six\n",
+        300,
+    );
+
+    assert!(
+        tail.contains("[truncated: discarded 301 stderr lines]"),
+        "tail should include lines discarded before bounded tail capture: {tail}"
+    );
 }
 
 /// Returns true if recipe-runner-rs appears to be available on this system.

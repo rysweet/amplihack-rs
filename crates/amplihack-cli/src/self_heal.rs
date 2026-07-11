@@ -31,6 +31,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use fs4::fs_std::FileExt;
 
+use crate::commands::install::bundle_compat::validate_framework_bundle_compatibility;
 use crate::commands::install::version_stamp;
 
 /// Env var that fully disables the auto-restage check.
@@ -164,14 +165,18 @@ where
     // single-line stderr diagnostic so CI logs surface the drift. Both
     // values are constant or regex-validated semver, so plain formatting
     // is safe (no control-char injection surface).
+    let installed_bundle_issue = installed_bundle_compatibility_issue()
+        .context("checking installed framework bundle compatibility")?;
+    let stamp_match = stamp.as_deref() == Some(expected);
+
     if env_bypass_set() {
-        let stamp_match = stamp.as_deref() == Some(expected);
-        if !stamp_match {
+        if !stamp_match || installed_bundle_issue.is_some() {
             let stamp_str = stamp.as_deref().unwrap_or("<missing>");
+            let bundle_status = installed_bundle_issue.as_deref().unwrap_or("compatible");
             writeln!(
                 notice,
                 "amplihack: AMPLIHACK_SKIP_AUTO_INSTALL set; skipping re-stage \
-                 (stamp={stamp_str} current={expected})"
+                 (stamp={stamp_str} current={expected}; installed_bundle={bundle_status:?})"
             )
             .context("emitting bypass diagnostic")?;
         }
@@ -179,19 +184,26 @@ where
         return Ok(());
     }
 
-    if stamp.as_deref() == Some(expected) {
+    if stamp_match && installed_bundle_issue.is_none() {
         tracing::debug!("self_heal: stamp matches binary version {expected}");
         return Ok(());
     }
 
-    match stamp.as_deref() {
-        Some(prior) => {
-            tracing::info!(
-                "self_heal: install stamp {prior} != binary {expected}; re-staging assets"
-            );
-        }
-        None => {
-            tracing::info!("self_heal: install stamp missing; staging assets for {expected}");
+    if let Some(issue) = &installed_bundle_issue {
+        tracing::info!(
+            "self_heal: installed framework bundle incompatible despite stamp={:?}; re-staging assets: {issue}",
+            stamp.as_deref()
+        );
+    } else {
+        match stamp.as_deref() {
+            Some(prior) => {
+                tracing::info!(
+                    "self_heal: install stamp {prior} != binary {expected}; re-staging assets"
+                );
+            }
+            None => {
+                tracing::info!("self_heal: install stamp missing; staging assets for {expected}");
+            }
         }
     }
 
@@ -205,9 +217,11 @@ where
         // have already brought the stamp current.
         let stamp_now = version_stamp::read_installed_version()
             .context("re-reading install stamp under lock")?;
-        if stamp_now.as_deref() == Some(expected) {
+        let installed_bundle_issue_now = installed_bundle_compatibility_issue()
+            .context("re-checking installed framework bundle compatibility under lock")?;
+        if stamp_now.as_deref() == Some(expected) && installed_bundle_issue_now.is_none() {
             tracing::debug!(
-                "self_heal: stamp brought current by concurrent installer; nothing to do"
+                "self_heal: stamp and installed bundle brought current by concurrent installer; nothing to do"
             );
             return Ok(());
         }
@@ -220,6 +234,19 @@ where
         )
         .context("emitting self-heal notice")?;
         Ok(())
+    })
+}
+
+fn installed_bundle_compatibility_issue() -> Result<Option<String>> {
+    let stamp_path = version_stamp::installed_version_path()?;
+    let install_root = stamp_path
+        .parent()
+        .context("install version stamp path has no parent directory")?;
+    let bundle = install_root.join("amplifier-bundle");
+
+    Ok(match validate_framework_bundle_compatibility(&bundle) {
+        Ok(()) => None,
+        Err(err) => Some(err.to_string()),
     })
 }
 
@@ -291,6 +318,8 @@ fn args_should_skip(args: &[OsString]) -> bool {
 mod tests {
     use super::*;
     use std::cell::Cell;
+    use std::fs;
+    use std::path::Path;
     use tempfile::TempDir;
 
     /// Save/restore guard for `HOME` and `AMPLIHACK_SKIP_AUTO_INSTALL`.
@@ -359,6 +388,78 @@ mod tests {
         }
     }
 
+    fn stale_smart_orchestrator() -> &'static str {
+        r#"name: "smart-orchestrator"
+description: "stale v1.5.1 smart task orchestrator"
+steps:
+  - id: "parse-decomposition"
+    type: "shell"
+    command: |
+      HELPER="$(amplihack resolve-bundle-asset helper-path)"
+      python3 - <<'PY'
+      import importlib
+      helper = importlib.import_module("orch_helper")
+      helper.parse_decomposition()
+      PY
+"#
+    }
+
+    fn write_stale_installed_smart_orchestrator(home: &Path) {
+        let recipes = home.join(".amplihack/amplifier-bundle/recipes");
+        fs::create_dir_all(&recipes).unwrap();
+        fs::write(
+            recipes.join("smart-orchestrator.yaml"),
+            stale_smart_orchestrator(),
+        )
+        .unwrap();
+    }
+
+    fn write_compatible_installed_bundle(home: &Path) {
+        let recipes = home.join(".amplihack/amplifier-bundle/recipes");
+        fs::create_dir_all(&recipes).unwrap();
+        fs::write(
+            recipes.join("smart-orchestrator.yaml"),
+            r#"name: "smart-orchestrator"
+description: "Composable smart task orchestrator"
+steps:
+  - id: "smart-classify-route"
+    type: "recipe"
+    recipe: "smart-classify-route"
+  - id: "smart-execute-routing"
+    type: "recipe"
+    recipe: "smart-execute-routing"
+  - id: "smart-reflect-loop"
+    type: "recipe"
+    recipe: "smart-reflect-loop"
+  - id: "smart-validate-summarize"
+    type: "recipe"
+    recipe: "smart-validate-summarize"
+"#,
+        )
+        .unwrap();
+        for recipe in crate::commands::install::bundle_compat::REQUIRED_SMART_RECIPES {
+            fs::write(
+                recipes.join(format!("{recipe}.yaml")),
+                format!(
+                    "name: \"{recipe}\"\nsteps:\n  - id: smoke\n    type: bash\n    command: 'true'\n"
+                ),
+            )
+            .unwrap();
+        }
+        fs::write(
+            recipes.join("_recipe_manifest.json"),
+            r#"{
+  "smart-classify-route": "250c8da0ee348745",
+  "smart-execute-routing": "11612506ae846a47",
+  "smart-orchestrator": "8d55ee4817dbc815",
+  "smart-reflect-loop": "7b8101dfce096480",
+  "smart-validate-summarize": "007548c49e9654fb"
+}
+"#,
+        )
+        .unwrap();
+    }
+
     #[test]
     fn stamp_mismatch_triggers_install() {
         let tmp = TempDir::new().unwrap();
@@ -395,6 +496,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let _g = EnvGuard::new(tmp.path(), None);
         version_stamp::write_installed_version(crate::VERSION).unwrap();
+        write_compatible_installed_bundle(tmp.path());
 
         let calls = Cell::new(0u32);
         let mut buf = Vec::new();
@@ -407,6 +509,34 @@ mod tests {
 
         assert_eq!(calls.get(), 0, "installer must not run when stamp matches");
         assert!(buf.is_empty(), "no notice when stamp matches");
+    }
+
+    #[test]
+    fn stamp_match_with_stale_installed_smart_orchestrator_triggers_repair() {
+        let tmp = TempDir::new().unwrap();
+        let _g = EnvGuard::new(tmp.path(), None);
+        version_stamp::write_installed_version(crate::VERSION).unwrap();
+        write_stale_installed_smart_orchestrator(tmp.path());
+
+        let calls = Cell::new(0u32);
+        let mut buf = Vec::new();
+        ensure_assets_match_binary_version_with(
+            &args(&["amplihack", "launch"]),
+            &mut buf,
+            counting_installer(&calls, crate::VERSION),
+        )
+        .expect("stale installed smart-orchestrator should be repairable");
+
+        assert_eq!(
+            calls.get(),
+            1,
+            "matching .installed-version is not sufficient: stale installed smart-orchestrator assets must trigger install repair"
+        );
+        let notice = String::from_utf8(buf).unwrap();
+        assert!(
+            notice.contains("re-staged"),
+            "repair must emit the normal self-heal notice; got: {notice}"
+        );
     }
 
     #[test]
@@ -681,6 +811,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let _g = EnvGuard::new(tmp.path(), Some("1"));
         version_stamp::write_installed_version(crate::VERSION).unwrap();
+        write_compatible_installed_bundle(tmp.path());
 
         let calls = Cell::new(0u32);
         let mut buf = Vec::new();
