@@ -782,17 +782,14 @@ mod tests {
 
     #[test]
     fn node_checksum_manifest_requires_exact_archive_entry() {
-        let manifest = "\
-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  node-v1-linux-x64.tar.xz\n\
-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  other.tar.xz\n";
+        let expected = "a".repeat(64);
+        let other = "b".repeat(64);
+        let manifest = format!("{expected}  node-v1-linux-x64.tar.xz\n{other}  other.tar.xz\n");
 
-        let digest = find_sha256_for_archive(manifest, "node-v1-linux-x64.tar.xz").unwrap();
+        let digest = find_sha256_for_archive(&manifest, "node-v1-linux-x64.tar.xz").unwrap();
 
-        assert_eq!(
-            digest,
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        );
-        assert!(find_sha256_for_archive(manifest, "missing.tar.xz").is_err());
+        assert_eq!(digest, expected);
+        assert!(find_sha256_for_archive(&manifest, "missing.tar.xz").is_err());
     }
 
     #[test]
@@ -801,11 +798,7 @@ bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  other.tar.xz\n
         let archive = temp.path().join("node-test.tar.xz");
         let checksum = temp.path().join("SHASUMS256.txt");
         fs::write(&archive, b"not the expected archive").unwrap();
-        fs::write(
-            &checksum,
-            "0000000000000000000000000000000000000000000000000000000000000000  node-test.tar.xz\n",
-        )
-        .unwrap();
+        fs::write(&checksum, format!("{}  node-test.tar.xz\n", "0".repeat(64))).unwrap();
 
         let error = verify_node_archive_sha256(&archive, &checksum, "node-test.tar.xz")
             .expect_err("checksum mismatch must fail closed");
