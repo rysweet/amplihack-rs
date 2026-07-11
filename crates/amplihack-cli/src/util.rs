@@ -113,7 +113,6 @@ const SUBPROCESS_SPAWN_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 /// On timeout, terminates the child through the process handle, waits for
 /// cleanup to finish, and returns an error. Returns the `ExitStatus` on success.
 pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<ExitStatus> {
-    let command_context = format!("{cmd:?}");
     let mut child = spawn_subprocess(&mut cmd).context("failed to spawn subprocess")?;
     let pid = child.id();
 
@@ -124,6 +123,7 @@ pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<ExitStatu
     }
 
     terminate_timed_out_child(&mut child)?;
+    let command_context = format!("{cmd:?}");
     bail!(
         "subprocess `{}` timed out after {:?} (pid {})",
         command_context,
@@ -134,10 +134,29 @@ pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<ExitStatu
 
 /// Run a pre-built `Command` with stdout/stderr capture and a hard timeout.
 pub fn run_output_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Output> {
-    let command_context = format!("{cmd:?}");
+    run_output_with_timeout_inner(&mut cmd, timeout, None)
+}
+
+/// Run a pre-built `Command` with stdout/stderr capture capped per stream.
+///
+/// The subprocess pipes are still fully drained so successful commands do not
+/// fail with a broken pipe once the retained bytes reach `max_bytes_per_stream`.
+pub fn run_output_with_timeout_limited(
+    mut cmd: Command,
+    timeout: Duration,
+    max_bytes_per_stream: usize,
+) -> Result<Output> {
+    run_output_with_timeout_inner(&mut cmd, timeout, Some(max_bytes_per_stream))
+}
+
+fn run_output_with_timeout_inner(
+    cmd: &mut Command,
+    timeout: Duration,
+    max_bytes_per_stream: Option<usize>,
+) -> Result<Output> {
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
-    let mut child = spawn_subprocess(&mut cmd).context("failed to spawn subprocess")?;
+    let mut child = spawn_subprocess(cmd).context("failed to spawn subprocess")?;
     let pid = child.id();
     let stdout = child
         .stdout
@@ -147,8 +166,8 @@ pub fn run_output_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Ou
         .stderr
         .take()
         .context("failed to capture subprocess stderr")?;
-    let stdout_reader = spawn_pipe_reader(stdout);
-    let stderr_reader = spawn_pipe_reader(stderr);
+    let stdout_reader = spawn_pipe_reader(stdout, max_bytes_per_stream);
+    let stderr_reader = spawn_pipe_reader(stderr, max_bytes_per_stream);
 
     if let Some(status) =
         wait_for_child_exit(&mut child, timeout).context("failed to wait for subprocess output")?
@@ -165,6 +184,7 @@ pub fn run_output_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Ou
     terminate_timed_out_child(&mut child)?;
     // Do not join pipe readers after timeout: descendants may keep inherited
     // pipe fds open, and this helper must preserve a hard wall-clock timeout.
+    let command_context = format!("{cmd:?}");
     bail!(
         "subprocess `{}` timed out after {:?} (pid {})",
         command_context,
@@ -175,13 +195,25 @@ pub fn run_output_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Ou
 
 /// Truncate UTF-8 text on character boundaries and report discarded characters.
 pub fn truncate_chars_with_notice(value: &str, max_chars: usize) -> String {
-    let total_chars = value.chars().count();
+    if value.len() <= max_chars {
+        return value.to_string();
+    }
+
+    let mut total_chars = 0usize;
+    let mut end_byte = value.len();
+    for (idx, _) in value.char_indices() {
+        if total_chars == max_chars {
+            end_byte = idx;
+        }
+        total_chars += 1;
+    }
+
     if total_chars <= max_chars {
         return value.to_string();
     }
 
-    let prefix: String = value.chars().take(max_chars).collect();
-    let discarded = total_chars.saturating_sub(max_chars);
+    let prefix = &value[..end_byte];
+    let discarded = total_chars - max_chars;
     format!("{prefix}\n[truncated: discarded {discarded} chars]")
 }
 
@@ -262,13 +294,33 @@ fn terminate_timed_out_child(child: &mut Child) -> Result<()> {
     Ok(())
 }
 
-fn spawn_pipe_reader<R>(mut pipe: R) -> thread::JoinHandle<io::Result<Vec<u8>>>
+fn spawn_pipe_reader<R>(
+    mut pipe: R,
+    max_retained_bytes: Option<usize>,
+) -> thread::JoinHandle<io::Result<Vec<u8>>>
 where
     R: Read + Send + 'static,
 {
     thread::spawn(move || {
         let mut buffer = Vec::new();
-        pipe.read_to_end(&mut buffer)?;
+        match max_retained_bytes {
+            Some(max_retained_bytes) => {
+                let mut chunk = [0u8; 8192];
+                loop {
+                    let read = pipe.read(&mut chunk)?;
+                    if read == 0 {
+                        break;
+                    }
+                    let remaining = max_retained_bytes.saturating_sub(buffer.len());
+                    if remaining > 0 {
+                        buffer.extend_from_slice(&chunk[..read.min(remaining)]);
+                    }
+                }
+            }
+            None => {
+                pipe.read_to_end(&mut buffer)?;
+            }
+        }
         Ok(buffer)
     })
 }
@@ -421,6 +473,19 @@ mod tests {
         assert_eq!(strip_ansi(input), "green bold");
     }
 
+    #[test]
+    fn truncate_chars_with_notice_keeps_short_multibyte_text() {
+        assert_eq!(truncate_chars_with_notice("é", 1), "é");
+    }
+
+    #[test]
+    fn truncate_chars_with_notice_truncates_on_character_boundary() {
+        assert_eq!(
+            truncate_chars_with_notice("aébc", 2),
+            "aé\n[truncated: discarded 2 chars]"
+        );
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn run_output_with_timeout_terminates_child_without_path() {
@@ -491,6 +556,18 @@ mod tests {
             rendered.contains("50ms") || rendered.contains("0.05"),
             "timeout error must report the configured timeout precisely; got {rendered:#}"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn run_output_with_timeout_limited_caps_retained_stdout() {
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.args(["-c", "head -c 70000 /dev/zero"]);
+
+        let output = run_output_with_timeout_limited(cmd, Duration::from_secs(2), 1024).unwrap();
+
+        assert!(output.status.success());
+        assert_eq!(output.stdout.len(), 1024);
     }
 
     #[cfg(target_os = "linux")]

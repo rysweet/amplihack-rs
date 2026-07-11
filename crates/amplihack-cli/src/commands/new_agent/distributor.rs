@@ -12,9 +12,10 @@ use std::time::{Duration, Instant};
 use super::error::BundleError;
 use super::models::{DistributionPlatform, DistributionResult, PackagedBundle};
 use super::packager::sha256_file;
-use crate::util::run_output_with_timeout;
+use crate::util::{format_output_diagnostics, run_output_with_timeout};
 
 const GH_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Options for a distribution operation.
 #[derive(Debug, Clone, Default)]
@@ -216,16 +217,20 @@ impl Distributor {
 
         // Git add + commit + push.
         let run_git = |args: &[&str]| -> Result<(), BundleError> {
-            let out = Command::new("git")
-                .args(args)
-                .current_dir(&work)
-                .output()
-                .map_err(|e| BundleError::distribution(format!("git {}: {e}", args[0])))?;
+            let mut cmd = Command::new("git");
+            cmd.args(args).current_dir(&work);
+            let out = run_output_with_timeout(cmd, GIT_COMMAND_TIMEOUT).map_err(|err| {
+                BundleError::distribution(format!(
+                    "git {} failed or timed out after {}s: {err:#}",
+                    args.first().copied().unwrap_or("<no-arg>"),
+                    GIT_COMMAND_TIMEOUT.as_secs()
+                ))
+            })?;
             if !out.status.success() {
-                let stderr = String::from_utf8_lossy(&out.stderr);
                 return Err(BundleError::distribution(format!(
-                    "git {} failed: {stderr}",
-                    args[0]
+                    "git {} failed: {}",
+                    args.first().copied().unwrap_or("<no-arg>"),
+                    format_output_diagnostics(&out, 400)
                 )));
             }
             Ok(())

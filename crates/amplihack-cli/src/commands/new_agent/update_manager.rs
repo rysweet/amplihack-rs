@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::error::BundleError;
+use crate::util::run_output_with_timeout;
+
+const GIT_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Information about an available update.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -239,11 +242,16 @@ impl UpdateManager {
             }
         };
 
-        let output = Command::new("git")
+        let mut command = Command::new("git");
+        command
             .args(["rev-parse", "--short", "HEAD"])
-            .current_dir(&repo)
-            .output()
-            .map_err(|e| BundleError::repo(format!("git rev-parse failed: {e}")))?;
+            .current_dir(&repo);
+        let output = run_output_with_timeout(command, GIT_COMMAND_TIMEOUT).map_err(|err| {
+            BundleError::repo(format!(
+                "git rev-parse failed or timed out after {}s: {err:#}",
+                GIT_COMMAND_TIMEOUT.as_secs()
+            ))
+        })?;
 
         if !output.status.success() {
             return Err(BundleError::repo("failed to get framework version"));
@@ -258,15 +266,16 @@ impl UpdateManager {
             None => return Vec::new(),
         };
 
-        let output = Command::new("git")
+        let mut command = Command::new("git");
+        command
             .args([
                 "log",
                 "--oneline",
                 "--max-count=10",
                 &format!("{old}..{new}"),
             ])
-            .current_dir(repo)
-            .output();
+            .current_dir(repo);
+        let output = run_output_with_timeout(command, GIT_COMMAND_TIMEOUT);
 
         match output {
             Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)

@@ -6,10 +6,7 @@ use super::tmux::{
     capture_local_tmux_pane, is_tmux_available, list_local_tmux_sessions,
     sanitize_tmux_session_name,
 };
-use super::{
-    CAPTURE_CACHE_ENTRY_MAX_BYTES, FleetLocalError, RefreshMsg, collect_observed_fleet_state,
-    strip_osc_sequences,
-};
+use super::{FleetLocalError, RefreshMsg, collect_observed_fleet_state, strip_osc_sequences};
 
 // ── run_fleet_dashboard ───────────────────────────────────────────────────────
 
@@ -96,21 +93,9 @@ pub fn run_fleet_dashboard(bg_tx: Option<Sender<RefreshMsg>>) -> Result<(), Flee
                         // Capture pane output for this session.
                         let raw_output = capture_local_tmux_pane(&session_id);
 
-                        // Strip OSC escape sequences (SEC-06).
-                        let clean = strip_osc_sequences(&raw_output);
-
-                        // Cap at 64 KiB before sending over the channel (SEC-10).
-                        // Truncate at a valid UTF-8 boundary — a naive byte-index
-                        // slice would panic on multi-byte characters (e.g. emoji).
-                        let output = if clean.len() > CAPTURE_CACHE_ENTRY_MAX_BYTES {
-                            let mut boundary = CAPTURE_CACHE_ENTRY_MAX_BYTES;
-                            while !clean.is_char_boundary(boundary) {
-                                boundary -= 1;
-                            }
-                            clean[..boundary].to_string()
-                        } else {
-                            clean
-                        };
+                        // Strip OSC escape sequences (SEC-06). Capture is already
+                        // bounded before allocation grows in the tmux helper.
+                        let output = strip_osc_sequences(&raw_output);
 
                         let msg = RefreshMsg::CaptureUpdate { session_id, output };
                         if tx_slow.send(msg).is_err() {

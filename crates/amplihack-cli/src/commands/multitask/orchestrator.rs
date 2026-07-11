@@ -11,7 +11,7 @@ use chrono::Utc;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use tracing::warn;
 
 const DEFAULT_BRANCH_RESOLUTION_TIMEOUT: Duration = Duration::from_secs(30);
+const GIT_CLONE_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub struct ParallelOrchestrator {
     repo_url: String,
@@ -126,21 +127,24 @@ impl ParallelOrchestrator {
             );
         } else {
             println!("[{issue}] Cloning default branch '{default_branch}' from remote...");
-            let status = Command::new("git")
-                .args([
-                    "clone",
-                    "--depth=1",
-                    &format!("--branch={default_branch}"),
-                    &self.repo_url,
-                    &ws.work_dir.to_string_lossy(),
-                ])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .with_context(|| format!("[{issue}] Failed to spawn git clone"))?;
+            let branch_arg = format!("--branch={default_branch}");
+            let work_dir_arg = ws.work_dir.to_string_lossy();
+            let mut clone_cmd = Command::new("git");
+            clone_cmd.args([
+                "clone",
+                "--depth=1",
+                &branch_arg,
+                &self.repo_url,
+                work_dir_arg.as_ref(),
+            ]);
+            let output = run_output_with_timeout(clone_cmd, GIT_CLONE_TIMEOUT)
+                .with_context(|| format!("[{issue}] git clone timed out or failed to execute"))?;
 
-            if !status.success() {
-                bail!("[{issue}] git clone failed with exit code {status}");
+            if !output.status.success() {
+                bail!(
+                    "[{issue}] git clone failed: {}",
+                    format_output_diagnostics(&output, 400)
+                );
             }
         }
 

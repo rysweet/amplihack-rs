@@ -329,6 +329,35 @@ fn test_meaningful_stderr_tail_skips_progress_noise() {
     assert_eq!(tail, "real error one\nreal error two");
 }
 
+#[test]
+fn test_meaningful_stderr_tail_reports_discarded_lines() {
+    let tail = execute::meaningful_stderr_tail(
+        "error one\nerror two\nerror three\nerror four\nerror five\nerror six\n",
+    );
+
+    assert!(
+        tail.contains("error two"),
+        "tail should retain recent lines: {tail}"
+    );
+    assert!(
+        tail.contains("[truncated: discarded 1 stderr lines]"),
+        "tail should report omitted diagnostics: {tail}"
+    );
+}
+
+#[test]
+fn test_meaningful_stderr_tail_includes_prior_buffer_drops() {
+    let tail = execute::meaningful_stderr_tail_with_prior_drops(
+        "error one\nerror two\nerror three\nerror four\nerror five\nerror six\n",
+        300,
+    );
+
+    assert!(
+        tail.contains("[truncated: discarded 301 stderr lines]"),
+        "tail should include lines discarded before bounded tail capture: {tail}"
+    );
+}
+
 /// Returns true if recipe-runner-rs appears to be available on this system.
 fn which_recipe_runner_available() -> bool {
     if let Ok(p) = std::env::var("RECIPE_RUNNER_RS_PATH")

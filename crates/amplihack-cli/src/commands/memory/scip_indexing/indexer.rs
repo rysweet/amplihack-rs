@@ -1,10 +1,13 @@
 use super::helpers::augmented_path;
 use super::types::ScipIndexResult;
+use crate::util::run_output_with_timeout;
 use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+const SCIP_INDEXER_TIMEOUT: Duration = Duration::from_secs(600);
 
 pub(super) fn run_indexer_for_language(
     language: &str,
@@ -32,11 +35,12 @@ pub(super) fn run_indexer_for_language(
     };
 
     let started = Instant::now();
-    let output = Command::new(&command[0])
+    let mut indexer = Command::new(&command[0]);
+    indexer
         .args(&command[1..])
         .current_dir(project_path)
-        .env("PATH", augmented_path())
-        .output();
+        .env("PATH", augmented_path());
+    let output = run_output_with_timeout(indexer, SCIP_INDEXER_TIMEOUT);
     let elapsed = started.elapsed().as_secs_f64();
 
     if let Some(cleanup) = cleanup {

@@ -1887,6 +1887,123 @@ fn test_execute_recipe_via_rust_verbose_survives_non_utf8_stderr() {
     );
 }
 
+#[test]
+#[cfg(unix)]
+fn test_execute_recipe_via_rust_times_out_hung_runner() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let runner = temp.path().join("recipe-runner-rs");
+    std::fs::write(&runner, "#!/bin/sh\n/bin/sleep 5\n").expect("failed to write runner stub");
+
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
+        .expect("failed to chmod runner");
+
+    let recipe = temp.path().join("recipe.yaml");
+    std::fs::write(&recipe, "name: timeout-probe\nsteps: []\n").expect("failed to write recipe");
+
+    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+    let prev_timeout = std::env::var_os("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS");
+    unsafe {
+        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
+        std::env::set_var("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS", "1");
+    }
+
+    let start = std::time::Instant::now();
+    let result = execute::execute_recipe_via_rust(
+        &recipe,
+        &BTreeMap::new(),
+        false,
+        true,
+        temp.path(),
+        &[],
+        None,
+    );
+    let elapsed = start.elapsed();
+
+    match prev_runner {
+        Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
+        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
+    }
+    match prev_timeout {
+        Some(value) => unsafe { std::env::set_var("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS", value) },
+        None => unsafe { std::env::remove_var("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS") },
+    }
+
+    let err = result.expect_err("hung recipe-runner must time out");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("timed out"),
+        "error should report timeout: {msg}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(3),
+        "parent timeout should bound hung runner, elapsed {elapsed:?}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn test_execute_recipe_via_rust_timeout_kills_runner_process_tree() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let runner = temp.path().join("recipe-runner-rs");
+    let marker = temp.path().join("orphan-marker");
+    std::fs::write(
+        &runner,
+        format!(
+            "#!/bin/sh\n(/bin/sleep 2; echo orphan > '{}') &\n/bin/sleep 5\n",
+            marker.display()
+        ),
+    )
+    .expect("failed to write runner stub");
+
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
+        .expect("failed to chmod runner");
+
+    let recipe = temp.path().join("recipe.yaml");
+    std::fs::write(&recipe, "name: timeout-tree-probe\nsteps: []\n")
+        .expect("failed to write recipe");
+
+    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+    let prev_timeout = std::env::var_os("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS");
+    unsafe {
+        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
+        std::env::set_var("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS", "1");
+    }
+
+    let result = execute::execute_recipe_via_rust(
+        &recipe,
+        &BTreeMap::new(),
+        false,
+        true,
+        temp.path(),
+        &[],
+        None,
+    );
+
+    match prev_runner {
+        Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
+        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
+    }
+    match prev_timeout {
+        Some(value) => unsafe { std::env::set_var("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS", value) },
+        None => unsafe { std::env::remove_var("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS") },
+    }
+
+    result.expect_err("hung recipe-runner must time out");
+    std::thread::sleep(std::time::Duration::from_millis(2_300));
+    assert!(
+        !marker.exists(),
+        "timeout cleanup must terminate recipe-runner descendants"
+    );
+}
+
 // -------------------------------------------------------------------------
 // Issue #494 — sub-recipe discovery: pass -R search dirs to recipe-runner-rs
 // -------------------------------------------------------------------------

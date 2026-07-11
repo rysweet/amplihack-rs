@@ -351,20 +351,13 @@ fn verify_host_version(host: &str, expected: Option<&str>) -> FleetVersionResult
                 message,
             }
         }
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            FleetVersionResult {
-                host: host.to_string(),
-                status: "unreachable".to_string(),
-                version: None,
-                expected: expected.map(str::to_string),
-                message: stderr
-                    .lines()
-                    .next()
-                    .unwrap_or("ssh command failed")
-                    .to_string(),
-            }
-        }
+        Ok(out) => FleetVersionResult {
+            host: host.to_string(),
+            status: "unreachable".to_string(),
+            version: None,
+            expected: expected.map(str::to_string),
+            message: render_diagnostic_bytes(&out.stderr, 400),
+        },
         Err(err) => FleetVersionResult {
             host: host.to_string(),
             status: "error".to_string(),
@@ -458,17 +451,12 @@ pub(super) fn run_update_hosts(
                 }
             }
             Ok(out) => {
-                let stderr = String::from_utf8_lossy(&out.stderr);
                 results.push(FleetVersionResult {
                     host,
                     status: "failed".to_string(),
                     version: None,
                     expected: expected.map(str::to_string),
-                    message: stderr
-                        .lines()
-                        .next()
-                        .unwrap_or("amplihack update failed")
-                        .to_string(),
+                    message: render_diagnostic_bytes(&out.stderr, 400),
                 });
             }
             Err(err) => results.push(FleetVersionResult {

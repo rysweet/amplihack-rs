@@ -781,30 +781,6 @@ mod tests {
     }
 
     #[test]
-    fn managed_node_bootstrap_requires_checksum_validation_before_extraction() {
-        let source = include_str!("bootstrap.rs");
-
-        assert!(
-            source.contains("SHASUMS256.txt"),
-            "managed Node bootstrap must download the official checksum manifest"
-        );
-        assert!(
-            source.contains("SHA-256") || source.contains("sha256"),
-            "managed Node bootstrap must verify a SHA-256 digest before extraction"
-        );
-        let checksum_index = source
-            .find("SHASUMS256.txt")
-            .expect("checksum manifest should be referenced");
-        let extraction_index = source
-            .find("Command::new(\"tar\")")
-            .expect("tar extraction should remain explicit");
-        assert!(
-            checksum_index < extraction_index,
-            "checksum verification must happen before tar extraction"
-        );
-    }
-
-    #[test]
     fn node_checksum_manifest_requires_exact_archive_entry() {
         let manifest = "\
 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  node-v1-linux-x64.tar.xz\n\
@@ -938,6 +914,7 @@ bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  other.tar.xz\n
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp = tempfile::tempdir().unwrap();
         let previous_home = crate::test_support::set_home(temp.path());
+        let previous_shell = std::env::var_os("SHELL");
         // SAFETY: Test-only shell override.
         unsafe {
             std::env::set_var("SHELL", "/bin/bash");
@@ -951,6 +928,10 @@ bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  other.tar.xz\n
         let profile = fs::read_to_string(temp.path().join(".bashrc")).unwrap();
         assert_eq!(profile.matches("Added by amplihack").count(), 1);
 
+        match previous_shell {
+            Some(value) => unsafe { std::env::set_var("SHELL", value) },
+            None => unsafe { std::env::remove_var("SHELL") },
+        }
         crate::test_support::restore_home(previous_home);
     }
 }

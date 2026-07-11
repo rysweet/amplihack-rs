@@ -5,8 +5,13 @@ use std::env;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use super::{DEFAULT_IMAGE_NAME, DockerDetector, helpers::forwarded_env_vars};
+use crate::util::run_with_timeout;
+
+const DOCKER_BUILD_TIMEOUT: Duration = Duration::from_secs(600);
+const DOCKER_RUN_TIMEOUT: Duration = Duration::from_secs(3600);
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -67,9 +72,9 @@ impl DockerManager {
         }
 
         let run_args = self.build_run_args(cwd, amplihack_args, env::vars_os());
-        let status = Command::new("docker")
-            .args(&run_args)
-            .status()
+        let mut command = Command::new("docker");
+        command.args(&run_args);
+        let status = run_with_timeout(command, DOCKER_RUN_TIMEOUT)
             .context("failed to execute docker run")?;
         Ok(status.code().unwrap_or(1))
     }
@@ -86,9 +91,9 @@ impl DockerManager {
         }
 
         println!("Building Docker image: {}", self.image_name);
-        let status = Command::new("docker")
-            .args(self.build_image_args(&dockerfile))
-            .status()
+        let mut command = Command::new("docker");
+        command.args(self.build_image_args(&dockerfile));
+        let status = run_with_timeout(command, DOCKER_BUILD_TIMEOUT)
             .context("failed to execute docker build")?;
         if !status.success() {
             eprintln!("Docker build failed.");
