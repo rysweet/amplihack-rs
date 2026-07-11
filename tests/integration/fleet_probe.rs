@@ -24,13 +24,11 @@ use std::process::{Command, Stdio};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/// Absolute path to the debug `amplihack` binary.
+/// Absolute path to the compiled `amplihack` binary.
 fn amplihack_bin() -> PathBuf {
-    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.pop(); // bins/amplihack  →  workspace root
-    path.pop(); // workspace root  →  workspace root (pop already above manifest dir)
-    path.push("target/debug/amplihack");
-    path
+    // Cargo builds the binary as a prerequisite of this [[test]] target and
+    // exposes its exact path here, honouring the active profile / target dir.
+    PathBuf::from(env!("CARGO_BIN_EXE_amplihack"))
 }
 
 /// Skip test if the binary is not yet compiled.
