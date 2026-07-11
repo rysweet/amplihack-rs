@@ -3,11 +3,9 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn amplihack_bin() -> PathBuf {
-    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.pop();
-    path.pop();
-    path.push("target/debug/amplihack");
-    path
+    // Cargo builds the binary as a prerequisite of this [[test]] target and
+    // exposes its exact path here, so there is no build race or profile drift.
+    PathBuf::from(env!("CARGO_BIN_EXE_amplihack"))
 }
 
 fn require_binary(bin: &std::path::Path) {

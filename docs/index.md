@@ -275,6 +275,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Tutorial: Simulate Provider-Neutral Workflows](tutorials/provider-neutral-workflow-simulation.md) - Run and inspect a provider-neutral recipe simulation
 - [Clean Up Stale Workflow Change Requests](howto/cleanup-stale-workflow-prs.md) - Dry-run and apply stale/superseded cleanup through the provider abstraction
 - [CI Resource Discipline Reference](reference/ci-resource-discipline.md) - Concurrency, timeout, matrix, cache, and coverage boundaries for CI
+- [CI Pipeline Reference](reference/ci-pipeline.md) - Pinned toolchain, cargo-nextest test job, disk freeing, caching, and required checks
 - [Validate Recipe Subprocess and Hook Input Contracts](howto/validate-recipe-subprocess-hook-contract.md) - Validate recipe child env handling and hook JSON compatibility
 - [Workflow Execution Guardrails](features/workflow-execution-guardrails.md) - Canonical execution roots, exact GitHub identity checks, and observer-only stall detection
 - [How to Configure Workflow Execution Guardrails](howto/configure-workflow-execution-guardrails.md) - Supply `expected_gh_account`, inspect `execution_root`, and troubleshoot failures

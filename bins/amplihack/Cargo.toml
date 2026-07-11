@@ -66,6 +66,27 @@ path = "../../tests/integration/cargo_lock_cxx_consistency_test.rs"
 name = "ci_cxx_build_pin"
 path = "../../tests/integration/ci_cxx_build_pin_test.rs"
 
+# Issue #744: CI speed-up + robustness contract (toolchain pin, nextest +
+# doctests, CARGO_PROFILE_TEST_DEBUG=0, SHA-pinned free-disk-space, cache
+# save-if main-only). Structural — reads ci.yml / rust-toolchain.toml only.
+[[test]]
+name = "ci_speedup_optimization"
+path = "../../tests/integration/ci_speedup_optimization_test.rs"
+
+# Issue #744: integration-test binary-path robustness contract. Fragile tests
+# must resolve the binary via env!(CARGO_BIN_EXE_*) instead of hand-rolled
+# target/debug paths, and the orphan skip-update-check test must be wired.
+[[test]]
+name = "test_harness_binary_path_contract"
+path = "../../tests/integration/test_harness_binary_path_contract_test.rs"
+
+# Issue #744: previously an orphan file (never compiled/run in CI). Wiring it
+# as a [[test]] target both runs its assertions and makes CARGO_BIN_EXE_amplihack
+# resolve for it, so it can locate the binary robustly.
+[[test]]
+name = "skip_update_check_flag"
+path = "../../tests/integration/skip_update_check_flag_test.rs"
+
 # WS3: Recipe runner E2E integration tests
 # These tests verify the full recipe delegation chain:
 #   amplihack recipe list / validate / run --dry-run

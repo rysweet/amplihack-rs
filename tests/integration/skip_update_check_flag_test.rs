@@ -31,13 +31,11 @@ use std::process::Command;
 // Test helpers
 // ---------------------------------------------------------------------------
 
-/// Path to the compiled amplihack debug binary.
+/// Path to the compiled amplihack binary.
 fn amplihack_bin() -> PathBuf {
-    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.pop(); // tests/
-    path.pop(); // workspace root
-    path.push("target/debug/amplihack");
-    path
+    // Cargo builds the binary as a prerequisite of this [[test]] target and
+    // exposes its exact path here, honouring the active profile / target dir.
+    PathBuf::from(env!("CARGO_BIN_EXE_amplihack"))
 }
 
 /// Assert the binary exists, panicking with a clear message if not.
