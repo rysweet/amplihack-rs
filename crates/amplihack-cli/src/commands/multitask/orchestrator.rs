@@ -4,7 +4,7 @@
 //! live in sibling modules (`launcher`, `state`, `utils`).
 
 use super::models::*;
-use super::{launcher, state, utils};
+use super::{cleanup, default_branch, launcher, state, utils};
 use crate::util::{format_output_diagnostics, run_output_with_timeout};
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
@@ -20,6 +20,10 @@ use tracing::warn;
 
 const DEFAULT_BRANCH_RESOLUTION_TIMEOUT: Duration = Duration::from_secs(30);
 const GIT_CLONE_TIMEOUT: Duration = Duration::from_secs(300);
+
+#[cfg(test)]
+#[path = "orchestrator_tests.rs"]
+mod orchestrator_tests;
 
 pub struct ParallelOrchestrator {
     repo_url: String,
@@ -333,7 +337,7 @@ impl ParallelOrchestrator {
     }
 
     pub fn cleanup_merged(&self, config_path: &str, dry_run: bool) -> Result<()> {
-        state::cleanup_merged(&self.base_dir, &self.state_dir, config_path, dry_run)
+        cleanup::cleanup_merged(&self.base_dir, &self.state_dir, config_path, dry_run)
     }
 
     fn cleanup_workstream_dir(&self, ws: &Workstream) {
@@ -360,7 +364,7 @@ impl ParallelOrchestrator {
         let branch = match run_output_with_timeout(cmd, DEFAULT_BRANCH_RESOLUTION_TIMEOUT) {
             Ok(output) if output.status.success() => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                parse_default_branch_from_ls_remote(&stdout).unwrap_or_else(|| {
+                default_branch::parse_from_ls_remote(&stdout).unwrap_or_else(|| {
                     eprintln!(
                         "WARNING: git ls-remote did not return a usable HEAD symref for {}; falling back to main. stdout/stderr diagnostic: {}",
                         self.repo_url,
@@ -388,58 +392,5 @@ impl ParallelOrchestrator {
 
         self.default_branch = Some(branch.clone());
         branch
-    }
-}
-
-fn parse_default_branch_from_ls_remote(stdout: &str) -> Option<String> {
-    stdout
-        .lines()
-        .find(|line| line.starts_with("ref: refs/heads/"))
-        .and_then(|line| line.strip_prefix("ref: refs/heads/"))
-        .and_then(|line| line.split('\t').next())
-        .map(str::trim)
-        .filter(|branch| !branch.is_empty())
-        .map(ToOwned::to_owned)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_orchestrator_construction() {
-        let orch = ParallelOrchestrator::new("https://github.com/test/repo", "recipe");
-        assert_eq!(orch.mode, "recipe");
-        assert_eq!(orch.default_max_runtime, DEFAULT_MAX_RUNTIME);
-        assert!(orch.workstreams.is_empty());
-    }
-
-    #[test]
-    fn test_set_timeout_policy() {
-        let mut orch = ParallelOrchestrator::new(".", "recipe");
-        orch.set_default_timeout_policy("continue-preserve");
-        assert_eq!(orch.default_timeout_policy, "continue-preserve");
-
-        // Invalid policy should be rejected
-        orch.set_default_timeout_policy("invalid-policy");
-        assert_eq!(orch.default_timeout_policy, "continue-preserve");
-    }
-
-    #[test]
-    fn default_branch_fallback_is_bounded_and_diagnostic() {
-        let source = include_str!("orchestrator.rs");
-
-        assert!(
-            source.contains("run_output_with_timeout") || source.contains("run_with_timeout"),
-            "git ls-remote default branch resolution must use an explicit timeout helper"
-        );
-        assert!(
-            source.contains("falling back to main") || source.contains("fallback to main"),
-            "fallback to main must be observable in diagnostics"
-        );
-        assert!(
-            source.contains("stderr") || source.contains("stdout") || source.contains("diagnostic"),
-            "default branch fallback diagnostics should include failure context"
-        );
     }
 }
