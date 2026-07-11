@@ -113,6 +113,7 @@ const SUBPROCESS_SPAWN_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 /// On timeout, terminates the child through the process handle, waits for
 /// cleanup to finish, and returns an error. Returns the `ExitStatus` on success.
 pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<ExitStatus> {
+    let command_context = format!("{cmd:?}");
     let mut child = spawn_subprocess(&mut cmd).context("failed to spawn subprocess")?;
     let pid = child.id();
 
@@ -124,14 +125,16 @@ pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<ExitStatu
 
     terminate_timed_out_child(&mut child)?;
     bail!(
-        "subprocess timed out after {} seconds (pid {})",
-        timeout.as_secs(),
+        "subprocess `{}` timed out after {:?} (pid {})",
+        command_context,
+        timeout,
         pid
     )
 }
 
 /// Run a pre-built `Command` with stdout/stderr capture and a hard timeout.
 pub fn run_output_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Output> {
+    let command_context = format!("{cmd:?}");
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     let mut child = spawn_subprocess(&mut cmd).context("failed to spawn subprocess")?;
@@ -163,9 +166,43 @@ pub fn run_output_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Ou
     // Do not join pipe readers after timeout: descendants may keep inherited
     // pipe fds open, and this helper must preserve a hard wall-clock timeout.
     bail!(
-        "subprocess timed out after {} seconds (pid {})",
-        timeout.as_secs(),
+        "subprocess `{}` timed out after {:?} (pid {})",
+        command_context,
+        timeout,
         pid
+    )
+}
+
+/// Truncate UTF-8 text on character boundaries and report discarded characters.
+pub fn truncate_chars_with_notice(value: &str, max_chars: usize) -> String {
+    let total_chars = value.chars().count();
+    if total_chars <= max_chars {
+        return value.to_string();
+    }
+
+    let prefix: String = value.chars().take(max_chars).collect();
+    let discarded = total_chars.saturating_sub(max_chars);
+    format!("{prefix}\n[truncated: discarded {discarded} chars]")
+}
+
+/// Decode bytes lossily, truncate on UTF-8 character boundaries, and report loss.
+pub fn render_diagnostic_bytes(bytes: &[u8], max_chars: usize) -> String {
+    if bytes.is_empty() {
+        return "<empty>".to_string();
+    }
+    truncate_chars_with_notice(&String::from_utf8_lossy(bytes), max_chars)
+}
+
+/// Render bounded stdout/stderr details for a completed subprocess.
+pub fn format_output_diagnostics(output: &Output, max_chars: usize) -> String {
+    format!(
+        "exit={}; stdout={}; stderr={}",
+        output
+            .status
+            .code()
+            .map_or_else(|| "signal".to_string(), |code| code.to_string()),
+        render_diagnostic_bytes(&output.stdout, max_chars),
+        render_diagnostic_bytes(&output.stderr, max_chars)
     )
 }
 
@@ -433,6 +470,26 @@ mod tests {
         assert!(
             exited,
             "timed-out subprocess must be terminated even when PATH cannot resolve kill"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn run_output_with_timeout_reports_command_and_precise_timeout_context() {
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.args(["-c", "sleep 5"]);
+
+        let error = run_output_with_timeout(cmd, Duration::from_millis(50))
+            .expect_err("sleeping subprocess should time out");
+        let rendered = error.to_string();
+
+        assert!(
+            rendered.contains("/bin/sh") || rendered.contains("sleep"),
+            "timeout error must include command context; got {rendered:#}"
+        );
+        assert!(
+            rendered.contains("50ms") || rendered.contains("0.05"),
+            "timeout error must report the configured timeout precisely; got {rendered:#}"
         );
     }
 

@@ -3,12 +3,13 @@
 //! Uses `which`-style lookup with version verification. No fallbacks:
 //! if the binary isn't found, we error out.
 
-use crate::util::strip_ansi;
+use crate::util::{run_output_with_timeout, strip_ansi, truncate_chars_with_notice};
 use anyhow::{Result, bail};
 use std::collections::HashSet;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 /// Metadata about a discovered binary.
 #[derive(Debug, Clone)]
@@ -174,10 +175,13 @@ fn install_fallback_dirs() -> Vec<PathBuf> {
 
 /// Maximum number of characters to retain from a detected version string.
 const MAX_VERSION_LEN: usize = 200;
+const VERSION_DETECTION_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Run `binary --version` and extract a version string.
 fn detect_version(path: &Path) -> Option<String> {
-    let output = Command::new(path).arg("--version").output().ok()?;
+    let mut cmd = Command::new(path);
+    cmd.arg("--version");
+    let output = run_output_with_timeout(cmd, VERSION_DETECTION_TIMEOUT).ok()?;
 
     if !output.status.success() {
         return None;
@@ -188,11 +192,7 @@ fn detect_version(path: &Path) -> Option<String> {
     let first_line = stdout.lines().next()?.trim();
     let version = strip_ansi(first_line);
     // Truncate to avoid unbounded strings from malicious or misbehaving binaries.
-    if version.len() > MAX_VERSION_LEN {
-        Some(version[..MAX_VERSION_LEN].to_string())
-    } else {
-        Some(version)
-    }
+    Some(truncate_chars_with_notice(&version, MAX_VERSION_LEN))
 }
 
 /// Check if a path is executable (Unix: has execute bit).
@@ -335,5 +335,57 @@ mod tests {
         unsafe { env::remove_var("AMPLIHACK_BADTOOL_BINARY_PATH") };
 
         assert!(result.is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn detect_version_truncates_without_panicking_on_utf8_boundary() {
+        let temp = tempfile::tempdir().unwrap();
+        let fake_tool = temp.path().join("version-tool");
+        std::fs::write(
+            &fake_tool,
+            "#!/bin/sh\n\
+             i=0\n\
+             while [ \"$i\" -lt 80 ]; do printf '\\342\\202\\254'; i=$((i + 1)); done\n\
+             printf '\\n'\n",
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&fake_tool).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&fake_tool, perms).unwrap();
+
+        let result = std::panic::catch_unwind(|| detect_version(&fake_tool));
+
+        assert!(
+            result.is_ok(),
+            "detect_version must truncate on UTF-8 boundaries"
+        );
+        assert!(
+            result.unwrap().is_some(),
+            "valid lossy UTF-8 version output should still be detected"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn detect_version_is_bounded_for_hanging_binaries() {
+        let temp = tempfile::tempdir().unwrap();
+        let fake_tool = temp.path().join("hanging-version-tool");
+        std::fs::write(&fake_tool, "#!/bin/sh\n/bin/sleep 2\nprintf 'v9.9.9\\n'\n").unwrap();
+        let mut perms = std::fs::metadata(&fake_tool).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&fake_tool, perms).unwrap();
+
+        let started = std::time::Instant::now();
+        let version = detect_version(&fake_tool);
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "version detection must not wait for an unbounded child process"
+        );
+        assert!(
+            version.is_none(),
+            "timed-out version probes should not report a stale version"
+        );
     }
 }

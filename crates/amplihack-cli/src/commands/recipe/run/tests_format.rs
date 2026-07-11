@@ -246,12 +246,17 @@ fn test_format_recipe_run_result_yaml_preserves_run_id_and_log_pointer_fields() 
 /// error message directing the user to install the binary.
 #[test]
 fn test_find_recipe_runner_binary_error_message_is_actionable() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if which_recipe_runner_available() {
         return;
     }
+    let previous_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
     unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") };
 
     let result = binary::find_recipe_runner_binary();
+    restore_recipe_runner_path(previous_runner);
     assert!(
         result.is_err(),
         "find_recipe_runner_binary must fail when binary is not installed. Got: {:?}",
@@ -272,6 +277,10 @@ fn test_find_recipe_runner_binary_error_message_is_actionable() {
 /// must be ignored and discovery falls through to the standard locations.
 #[test]
 fn test_find_recipe_runner_binary_ignores_nonexistent_env_path() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let previous_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
     unsafe {
         std::env::set_var(
             "RECIPE_RUNNER_RS_PATH",
@@ -281,7 +290,7 @@ fn test_find_recipe_runner_binary_ignores_nonexistent_env_path() {
 
     let result = binary::find_recipe_runner_binary();
 
-    unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") };
+    restore_recipe_runner_path(previous_runner);
 
     match result {
         Ok(path) => {
@@ -301,6 +310,13 @@ fn test_find_recipe_runner_binary_ignores_nonexistent_env_path() {
                 "Error must mention the binary name. Got: {e}"
             );
         }
+    }
+}
+
+fn restore_recipe_runner_path(previous_runner: Option<std::ffi::OsString>) {
+    match previous_runner {
+        Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
+        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
     }
 }
 

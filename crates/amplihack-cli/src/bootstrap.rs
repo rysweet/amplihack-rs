@@ -6,9 +6,12 @@ use crate::commands::install;
 use crate::copilot_setup;
 use crate::freshness;
 use crate::tool_update_check::{get_installed_version, get_latest_version, sanitize_version};
-use crate::util::{is_noninteractive, run_with_timeout};
+use crate::util::{
+    format_output_diagnostics, is_noninteractive, run_output_with_timeout, run_with_timeout,
+};
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -18,6 +21,7 @@ use std::time::Duration;
 /// These involve network downloads and can be legitimately slow, so we allow
 /// 5 minutes before treating them as hung.
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub fn prepare_launcher(tool: &str) -> Result<()> {
     // SEC-WS2-02: Non-interactive mode (CI, pipes, AMPLIHACK_NONINTERACTIVE=1)
@@ -140,6 +144,9 @@ fn ensure_node_for_copilot() -> Result<Option<PathBuf>> {
     let ext = "tar.xz";
     let filename = format!("node-{NODE_AUTO_INSTALL_VERSION}-{os_name}-{arch_name}.{ext}");
     let url = format!("https://nodejs.org/dist/{NODE_AUTO_INSTALL_VERSION}/{filename}");
+    let checksum_filename = "SHASUMS256.txt";
+    let checksum_url =
+        format!("https://nodejs.org/dist/{NODE_AUTO_INSTALL_VERSION}/{checksum_filename}");
 
     println!("  ⬇️  Downloading Node.js {NODE_AUTO_INSTALL_VERSION} ({os_name}-{arch_name})...");
     tracing::info!(%url, "downloading Node.js");
@@ -148,22 +155,24 @@ fn ensure_node_for_copilot() -> Result<Option<PathBuf>> {
         .with_context(|| format!("failed to create {}", runtimes_dir.display()))?;
 
     let tmp_path = runtimes_dir.join(&filename);
+    let checksum_path = runtimes_dir.join(format!("{filename}.{checksum_filename}"));
 
-    let status = Command::new("curl")
-        .args(["-fsSL", "-o"])
-        .arg(&tmp_path)
-        .arg(&url)
-        .status()
-        .context("failed to run curl")?;
-
-    if !status.success() {
+    if let Err(err) = download_with_curl(&url, &tmp_path, "Node.js archive") {
         let _ = fs::remove_file(&tmp_path);
-        bail!(
-            "failed to download Node.js from {url} (exit {})\n\
-             Install Node.js manually: https://nodejs.org/",
-            status.code().unwrap_or(-1)
-        );
+        bail!("{err:#}\nInstall Node.js manually: https://nodejs.org/");
     }
+    if let Err(err) = download_with_curl(&checksum_url, &checksum_path, "Node.js checksum manifest")
+    {
+        let _ = fs::remove_file(&tmp_path);
+        let _ = fs::remove_file(&checksum_path);
+        bail!("{err:#}\nInstall Node.js manually: https://nodejs.org/");
+    }
+    if let Err(err) = verify_node_archive_sha256(&tmp_path, &checksum_path, &filename) {
+        let _ = fs::remove_file(&tmp_path);
+        let _ = fs::remove_file(&checksum_path);
+        bail!("{err:#}\nInstall Node.js manually: https://nodejs.org/");
+    }
+    let _ = fs::remove_file(&checksum_path);
 
     println!("  📦 Installing Node.js {NODE_AUTO_INSTALL_VERSION}...");
 
@@ -177,13 +186,14 @@ fn ensure_node_for_copilot() -> Result<Option<PathBuf>> {
     fs::create_dir_all(&temp_dir)
         .with_context(|| format!("failed to create temp dir {}", temp_dir.display()))?;
 
-    let extract_status = Command::new("tar")
+    let mut extract_cmd = Command::new("tar");
+    extract_cmd
         .args(["--strip-components=1", "-xJf"])
         .arg(&tmp_path)
         .arg("-C")
-        .arg(&temp_dir)
-        .status()
-        .context("failed to run tar")?;
+        .arg(&temp_dir);
+    let extract_status =
+        run_with_timeout(extract_cmd, INSTALL_TIMEOUT).context("failed to run tar")?;
 
     let _ = fs::remove_file(&tmp_path);
 
@@ -217,6 +227,65 @@ fn ensure_node_for_copilot() -> Result<Option<PathBuf>> {
         install_dir.display()
     );
     Ok(Some(bin_dir))
+}
+
+fn download_with_curl(url: &str, destination: &Path, label: &str) -> Result<()> {
+    let mut cmd = Command::new("curl");
+    cmd.args(["-fsSL", "-o"]).arg(destination).arg(url);
+    let output = run_output_with_timeout(cmd, DOWNLOAD_TIMEOUT)
+        .with_context(|| format!("{label} download timed out or failed to execute: {url}"))?;
+    if !output.status.success() {
+        bail!(
+            "{label} download failed from {url}: {}",
+            format_output_diagnostics(&output, 400)
+        );
+    }
+    Ok(())
+}
+
+fn verify_node_archive_sha256(
+    archive_path: &Path,
+    checksum_path: &Path,
+    archive_filename: &str,
+) -> Result<()> {
+    let manifest = fs::read_to_string(checksum_path).with_context(|| {
+        format!(
+            "failed to read Node.js checksum manifest {}",
+            checksum_path.display()
+        )
+    })?;
+    let expected = find_sha256_for_archive(&manifest, archive_filename)?;
+    let mut archive = fs::File::open(archive_path)
+        .with_context(|| format!("failed to read Node.js archive {}", archive_path.display()))?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut archive, &mut hasher)
+        .with_context(|| format!("failed to hash Node.js archive {}", archive_path.display()))?;
+    let actual = format!("{:x}", hasher.finalize());
+    if actual != expected {
+        bail!(
+            "Node.js archive SHA-256 verification failed for {archive_filename}: expected {expected}, got {actual}"
+        );
+    }
+    Ok(())
+}
+
+fn find_sha256_for_archive(manifest: &str, archive_filename: &str) -> Result<String> {
+    let mut matches = manifest.lines().filter_map(|line| {
+        let mut parts = line.split_whitespace();
+        let digest = parts.next()?;
+        let filename = parts.next()?;
+        (filename == archive_filename).then(|| digest.to_ascii_lowercase())
+    });
+    let digest = matches
+        .next()
+        .ok_or_else(|| anyhow!("Node.js checksum manifest does not list {archive_filename}"))?;
+    if matches.next().is_some() {
+        bail!("Node.js checksum manifest lists {archive_filename} more than once");
+    }
+    if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!("Node.js checksum manifest has an invalid SHA-256 digest for {archive_filename}");
+    }
+    Ok(digest)
 }
 
 pub fn ensure_tool_available(tool: &str) -> Result<BinaryInfo> {
@@ -534,15 +603,29 @@ fn configure_codex() -> Result<()> {
         .with_context(|| format!("failed to create {}", config_dir.display()))?;
     let config_path = config_dir.join("config.json");
 
-    // Load existing config, falling back to an empty object for any error
-    // (missing file, parse error, or non-object JSON value).
-    let mut value = config_path
-        .exists()
-        .then(|| fs::read_to_string(&config_path).ok())
-        .flatten()
-        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-        .filter(Value::is_object)
-        .unwrap_or_else(|| json!({}));
+    let mut value = if config_path.exists() {
+        let raw = fs::read_to_string(&config_path).with_context(|| {
+            format!(
+                "refusing to overwrite unreadable existing Codex config {}",
+                config_path.display()
+            )
+        })?;
+        let parsed: Value = serde_json::from_str(&raw).with_context(|| {
+            format!(
+                "refusing to overwrite malformed existing Codex config {}",
+                config_path.display()
+            )
+        })?;
+        if !parsed.is_object() {
+            bail!(
+                "refusing to overwrite existing Codex config {} because it is not an object",
+                config_path.display()
+            );
+        }
+        parsed
+    } else {
+        json!({})
+    };
 
     let object = value
         .as_object_mut()
@@ -645,6 +728,116 @@ mod tests {
         assert_eq!(value["approval_mode"], "auto");
 
         crate::test_support::restore_home(previous_home);
+    }
+
+    #[test]
+    fn configure_codex_refuses_malformed_existing_config_without_overwriting() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let previous_home = crate::test_support::set_home(temp.path());
+        let config_dir = temp.path().join(".openai/codex");
+        fs::create_dir_all(&config_dir).unwrap();
+        let config_path = config_dir.join("config.json");
+        let original = "{ this is not json";
+        fs::write(&config_path, original).unwrap();
+
+        let error = configure_codex().expect_err("malformed config must be preserved");
+
+        assert_eq!(fs::read_to_string(&config_path).unwrap(), original);
+        assert!(
+            error.to_string().contains("malformed")
+                || error.to_string().contains("refusing to overwrite"),
+            "error should clearly explain malformed config preservation; got {error:#}"
+        );
+
+        crate::test_support::restore_home(previous_home);
+    }
+
+    #[test]
+    fn configure_codex_refuses_non_object_existing_config_without_overwriting() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let previous_home = crate::test_support::set_home(temp.path());
+        let config_dir = temp.path().join(".openai/codex");
+        fs::create_dir_all(&config_dir).unwrap();
+        let config_path = config_dir.join("config.json");
+        let original = "[\"not\", \"an\", \"object\"]\n";
+        fs::write(&config_path, original).unwrap();
+
+        let error = configure_codex().expect_err("non-object config must be preserved");
+
+        assert_eq!(fs::read_to_string(&config_path).unwrap(), original);
+        assert!(
+            error.to_string().contains("not an object")
+                || error.to_string().contains("refusing to overwrite"),
+            "error should clearly explain non-object config preservation; got {error:#}"
+        );
+
+        crate::test_support::restore_home(previous_home);
+    }
+
+    #[test]
+    fn managed_node_bootstrap_requires_checksum_validation_before_extraction() {
+        let source = include_str!("bootstrap.rs");
+
+        assert!(
+            source.contains("SHASUMS256.txt"),
+            "managed Node bootstrap must download the official checksum manifest"
+        );
+        assert!(
+            source.contains("SHA-256") || source.contains("sha256"),
+            "managed Node bootstrap must verify a SHA-256 digest before extraction"
+        );
+        let checksum_index = source
+            .find("SHASUMS256.txt")
+            .expect("checksum manifest should be referenced");
+        let extraction_index = source
+            .find("Command::new(\"tar\")")
+            .expect("tar extraction should remain explicit");
+        assert!(
+            checksum_index < extraction_index,
+            "checksum verification must happen before tar extraction"
+        );
+    }
+
+    #[test]
+    fn node_checksum_manifest_requires_exact_archive_entry() {
+        let manifest = "\
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  node-v1-linux-x64.tar.xz\n\
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  other.tar.xz\n";
+
+        let digest = find_sha256_for_archive(manifest, "node-v1-linux-x64.tar.xz").unwrap();
+
+        assert_eq!(
+            digest,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert!(find_sha256_for_archive(manifest, "missing.tar.xz").is_err());
+    }
+
+    #[test]
+    fn node_archive_sha256_mismatch_fails_closed() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("node-test.tar.xz");
+        let checksum = temp.path().join("SHASUMS256.txt");
+        fs::write(&archive, b"not the expected archive").unwrap();
+        fs::write(
+            &checksum,
+            "0000000000000000000000000000000000000000000000000000000000000000  node-test.tar.xz\n",
+        )
+        .unwrap();
+
+        let error = verify_node_archive_sha256(&archive, &checksum, "node-test.tar.xz")
+            .expect_err("checksum mismatch must fail closed");
+
+        assert!(
+            error.to_string().contains("SHA-256 verification failed"),
+            "checksum mismatch should be explicit; got {error:#}"
+        );
     }
 
     // ========================================================================

@@ -6,6 +6,7 @@ use super::process_scope::{
     snapshot_for_pid, validate_process_scope,
 };
 use super::utils::{atomic_write, dir_size_bytes};
+use crate::util::run_output_with_timeout;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::collections::HashMap;
@@ -13,8 +14,11 @@ use std::fs;
 use std::path::Path;
 use std::process::{Child, Command};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use std::time::Instant;
 use tracing::warn;
+
+const GH_PR_VIEW_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Status snapshot for all workstreams.
 #[derive(Default)]
@@ -342,17 +346,17 @@ pub(super) fn cleanup_merged(
         let state_file = state_dir.join(format!("ws-{safe_id}.json"));
 
         // Check if PR is merged via gh CLI
-        let is_merged = Command::new("gh")
-            .args([
-                "pr",
-                "view",
-                &item.branch,
-                "--json",
-                "state",
-                "-q",
-                ".state",
-            ])
-            .output()
+        let mut gh_cmd = Command::new("gh");
+        gh_cmd.args([
+            "pr",
+            "view",
+            &item.branch,
+            "--json",
+            "state",
+            "-q",
+            ".state",
+        ]);
+        let is_merged = run_output_with_timeout(gh_cmd, GH_PR_VIEW_TIMEOUT)
             .ok()
             .filter(|o| o.status.success())
             .and_then(|o| String::from_utf8(o.stdout).ok())
