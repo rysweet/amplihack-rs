@@ -113,27 +113,117 @@ esac
     );
 }
 
+/// Run step-01 in a real directory using the real `git` binary, with the
+/// given extra env vars applied. Used to exercise the issue #900 auto-init
+/// path where an actual repository must be created on disk.
+fn run_prepare_workspace_real_git(repo_dir: &Path, extra_env: &[(&str, &str)]) -> Output {
+    let command = step_command("workflow-prep", "step-01-prepare-workspace");
+    let mut cmd = Command::new("bash");
+    cmd.arg("-c")
+        .arg(command)
+        .env("REPO_PATH", repo_dir)
+        .env("TASK_DESCRIPTION", "issue #900 regression")
+        .env("SKIP_PRE_AGENT_VALIDATION", "true")
+        // Keep git deterministic regardless of the host user's config.
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_AUTHOR_NAME", "test")
+        .env("GIT_AUTHOR_EMAIL", "test@example.com")
+        .env("GIT_COMMITTER_NAME", "test")
+        .env("GIT_COMMITTER_EMAIL", "test@example.com")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (key, value) in extra_env {
+        cmd.env(key, value);
+    }
+    cmd.output().expect("run workflow-prep step")
+}
+
 #[test]
-fn prepare_workspace_still_fails_for_non_git_paths() {
-    let output = run_prepare_workspace(
-        r#"#!/bin/sh
-if [ "$1:$2" = "rev-parse:--is-inside-work-tree" ]; then
-  echo "fatal: not a git repository" >&2
-  exit 128
-fi
-echo "unexpected git invocation: $*" >&2
-exit 2
-"#,
+fn prepare_workspace_auto_inits_repo_in_non_git_dir() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let output = run_prepare_workspace_real_git(temp.path(), &[]);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "issue #900: step-01 must auto-init a repo in a non-git dir instead of failing; stdout:\n{stdout}\nstderr:\n{stderr}"
     );
+    assert!(
+        stdout.contains("[init] no git repo found — initialized a new one for repo-creation task"),
+        "auto-init must emit the informational [init] line; stdout:\n{stdout}"
+    );
+    assert!(
+        temp.path().join(".git").exists(),
+        "auto-init must create a real .git repository in REPO_PATH"
+    );
+
+    // The new repository should be on the `main` branch.
+    let head = Command::new("git")
+        .args(["-C"])
+        .arg(temp.path())
+        .args(["symbolic-ref", "--short", "HEAD"])
+        .output()
+        .expect("read HEAD");
+    let branch = String::from_utf8_lossy(&head.stdout);
+    assert_eq!(
+        branch.trim(),
+        "main",
+        "auto-init must default the initial branch to main; got '{}'",
+        branch.trim()
+    );
+}
+
+#[test]
+fn prepare_workspace_still_fails_for_non_git_paths_when_auto_init_disabled() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let output = run_prepare_workspace_real_git(temp.path(), &[("AUTO_INIT_REPO", "false")]);
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         !output.status.success(),
-        "hard repo validation must still fail for non-git paths"
+        "AUTO_INIT_REPO=false must preserve the hard non-git guard"
     );
     assert!(
         stderr.contains("requires a git repo"),
-        "non-git failure should stay explicit; stderr:\n{stderr}"
+        "disabled auto-init failure should stay explicit; stderr:\n{stderr}"
+    );
+    assert!(
+        !temp.path().join(".git").exists(),
+        "disabled auto-init must not create a repository"
+    );
+}
+
+#[test]
+fn prepare_workspace_succeeds_in_existing_checkout() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    // Create a real existing checkout.
+    let init = Command::new("git")
+        .arg("-C")
+        .arg(temp.path())
+        .args(["init", "-b", "main"])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .output()
+        .expect("git init");
+    assert!(init.status.success(), "test setup: git init must succeed");
+
+    let output = run_prepare_workspace_real_git(temp.path(), &[]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "existing checkout must still succeed; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        !stdout.contains("[init] no git repo found"),
+        "existing checkout must not trigger auto-init; stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("--- Git Status ---") && stdout.contains("--- Current Branch ---"),
+        "existing checkout must still emit full status/branch diagnostics; stdout:\n{stdout}"
     );
 }
 
