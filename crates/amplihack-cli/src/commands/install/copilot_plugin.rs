@@ -532,6 +532,67 @@ mod tests {
     }
 
     #[test]
+    fn hooks_json_never_references_transient_build_path() {
+        // Regression for #911: the generated hooks.json (and every generated
+        // hook command string) must point at the stable deployed binary and
+        // must NEVER embed a transient `target/debug` / `target/release` build
+        // path. Such a path lives in a build/worktree dir that later gets
+        // cleaned, making every hook exit 127; Copilot CLI fails closed on hook
+        // errors, denying every tool call in nested sessions.
+        let td = TempDir::new().unwrap();
+        let copilot_home = fake_copilot_home(&td);
+        let repo = fake_repo(&td, false);
+
+        // Simulate the stable deployed location: ~/.local/bin/amplihack-hooks.
+        let deployed_bin = td.path().join(".local").join("bin").join("amplihack-hooks");
+        fs::create_dir_all(deployed_bin.parent().unwrap()).unwrap();
+        fs::write(&deployed_bin, b"#!/bin/sh\nexit 0\n").unwrap();
+
+        let res = run_with_copilot_home(&copilot_home, &repo, &deployed_bin);
+        assert!(res, "registration should succeed when ~/.copilot exists");
+
+        let hooks_path = copilot_home
+            .join("installed-plugins")
+            .join("amplihack@local")
+            .join("hooks.json");
+        let raw = fs::read_to_string(&hooks_path).unwrap();
+
+        assert!(
+            !raw.contains("target/debug") && !raw.contains("target/release"),
+            "hooks.json must never embed a transient build path, got:\n{raw}"
+        );
+        assert!(
+            raw.contains(&deployed_bin.display().to_string()),
+            "hooks.json should reference the deployed stable binary path {}",
+            deployed_bin.display()
+        );
+
+        // Assert on every individual generated command string too, not just the
+        // raw JSON blob, so a future format change can't hide a bad path.
+        let body: Value = serde_json::from_str(&raw).unwrap();
+        let hooks = body.get("hooks").and_then(|h| h.as_object()).unwrap();
+        let mut command_count = 0;
+        for entries in hooks.values() {
+            for entry in entries.as_array().unwrap() {
+                let cmd = entry.get("bash").and_then(|c| c.as_str()).unwrap();
+                command_count += 1;
+                assert!(
+                    !cmd.contains("target/debug") && !cmd.contains("target/release"),
+                    "hook command must not embed a transient build path: {cmd}"
+                );
+                assert!(
+                    cmd.contains(&deployed_bin.display().to_string()),
+                    "hook command should reference the deployed stable path: {cmd}"
+                );
+            }
+        }
+        assert_eq!(
+            command_count, 6,
+            "expected all 6 hook commands to be generated"
+        );
+    }
+
+    #[test]
     fn rejects_shell_metacharacters_in_hooks_binary_path() {
         let td = TempDir::new().unwrap();
         let copilot_home = fake_copilot_home(&td);
