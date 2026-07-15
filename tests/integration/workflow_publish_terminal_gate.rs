@@ -100,6 +100,46 @@ fn publish_mutation_steps_are_suppressed_when_terminal_success_is_true() {
 }
 
 #[test]
+fn publish_syncs_cargo_lock_after_version_bump_before_locked_gates() {
+    // Issue #915: step-14 bumps the workspace version in Cargo.toml but the
+    // lockfile stayed stale, so every --locked pre-commit gate failed. The
+    // fix inserts step-14b-sync-lockfile between the bump and the guard/commit
+    // steps and syncs the lock offline. Assert ordering and the offline command.
+    let recipe = load_publish_recipe();
+
+    let bump = step_index(&recipe, "step-14-bump-version");
+    let sync = step_index(&recipe, "step-14b-sync-lockfile");
+    let guard = step_index(&recipe, "step-14g-artifact-guard");
+    let commit = step_index(&recipe, "step-15-commit-push");
+
+    assert!(
+        bump < sync,
+        "step-14b-sync-lockfile must run AFTER step-14-bump-version"
+    );
+    assert!(
+        sync < guard,
+        "step-14b-sync-lockfile must run BEFORE step-14g-artifact-guard (which runs --locked)"
+    );
+    assert!(
+        sync < commit,
+        "step-14b-sync-lockfile must run BEFORE step-15-commit-push"
+    );
+
+    let text = recipe_text(&recipe);
+    assert!(
+        text.contains("cargo update --workspace --offline"),
+        "step-14b must sync the lockfile with an offline, network-free command"
+    );
+
+    let condition = step_condition(&recipe, "step-14b-sync-lockfile");
+    assert!(
+        condition.contains("terminal_state.should_publish == 'true'")
+            || condition.contains("should_publish == 'true'"),
+        "step-14b must share the publish gate of its sibling mutation steps; condition was `{condition}`"
+    );
+}
+
+#[test]
 fn publish_uses_required_terminal_and_followup_status_vocabulary() {
     let recipe = load_publish_recipe();
     let text = recipe_text(&recipe);
