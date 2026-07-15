@@ -159,6 +159,12 @@ fn prepare_workspace_auto_inits_repo_in_non_git_dir() {
         temp.path().join(".git").exists(),
         "auto-init must create a real .git repository in REPO_PATH"
     );
+    // Performance: a freshly auto-initialized repo has no remotes, so the
+    // network `git fetch --all` must be skipped instead of spawned pointlessly.
+    assert!(
+        stdout.contains("No remotes configured — skipping fetch"),
+        "auto-init path must skip the network fetch when no remotes exist; stdout:\n{stdout}"
+    );
 
     // The new repository should be on the `main` branch.
     let head = Command::new("git")

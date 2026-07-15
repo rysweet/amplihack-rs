@@ -98,22 +98,29 @@ steps:
       [ "$STATUS_RC" -eq 0 ] || echo "WARNING: git status failed (exit $STATUS_RC) — continuing with degraded workspace diagnostics after repository validation succeeded" >&2
       echo ""
       echo "--- Fetching Latest ---"
-      FETCH_RC=0
-      git fetch --all --no-tags 2>/dev/null || FETCH_RC=$?
-      if [ "$FETCH_RC" -ne 0 ]; then
-        echo "WARNING: git fetch failed (exit $FETCH_RC) — continuing with local branch state" >&2
-        REMOTE_URL=$(git remote get-url origin 2>/dev/null || true)
-        case "$REMOTE_URL" in
-          *dev.azure.com*|*visualstudio.com*)
-            echo "WARNING: ADO remote detected. Remediation steps:" >&2
-            echo "  1. Run 'az login' to refresh Azure credentials" >&2
-            echo "  2. Configure git credential-manager: git config credential.helper manager" >&2
-            echo "  3. Or set a Personal Access Token (PAT) for authentication" >&2
-            ;;
-          *)
-            echo "WARNING: Check remote credentials or network connectivity" >&2
-            ;;
-        esac
+      # Skip the network fetch when no remotes are configured (e.g. a freshly
+      # auto-initialized repo from issue #900, or any local-only checkout).
+      # This avoids spawning an unnecessary network-attempting subprocess.
+      if [ -z "$(git remote 2>/dev/null)" ]; then
+        echo "No remotes configured — skipping fetch"
+      else
+        FETCH_RC=0
+        git fetch --all --no-tags 2>/dev/null || FETCH_RC=$?
+        if [ "$FETCH_RC" -ne 0 ]; then
+          echo "WARNING: git fetch failed (exit $FETCH_RC) — continuing with local branch state" >&2
+          REMOTE_URL=$(git remote get-url origin 2>/dev/null || true)
+          case "$REMOTE_URL" in
+            *dev.azure.com*|*visualstudio.com*)
+              echo "WARNING: ADO remote detected. Remediation steps:" >&2
+              echo "  1. Run 'az login' to refresh Azure credentials" >&2
+              echo "  2. Configure git credential-manager: git config credential.helper manager" >&2
+              echo "  3. Or set a Personal Access Token (PAT) for authentication" >&2
+              ;;
+            *)
+              echo "WARNING: Check remote credentials or network connectivity" >&2
+              ;;
+          esac
+        fi
       fi
       echo ""
       echo "--- Current Branch ---"
