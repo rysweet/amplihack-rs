@@ -120,30 +120,31 @@ steps:
         echo "step-14c: no Cargo.toml present; cannot resolve workspace version; skipping"
         exit 0
       fi
-      # Read [workspace.package].version ROBUSTLY. Prefer `cargo metadata`
-      # (offline, network-free like step-14b): workspace members inherit
-      # version.workspace = true, so the local (source == null) packages share
-      # the workspace version. Fall back to a SCOPED [workspace.package] parse
-      # (awk between the section header and the next table) — never an unscoped
-      # grep of `version`, which the version-contract tests explicitly forbid.
-      WS_VERSION=""
-      if command -v cargo >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+      # Read [workspace.package].version ROBUSTLY, cheapest-first. step-14 bumps
+      # exactly this field, so a SCOPED [workspace.package] parse (awk between the
+      # section header and the next table) reads the authoritative value in a
+      # single ~1ms pass — never an unscoped grep of `version`, which the
+      # version-contract tests explicitly forbid. Only if that scoped parse comes
+      # up empty (e.g. a single-quoted TOML literal) do we fall back to the more
+      # expensive `cargo metadata` (offline, network-free like step-14b), which
+      # spawns cargo and resolves the whole workspace graph: workspace members
+      # inherit version.workspace = true, so the local (source == null) packages
+      # share the workspace version.
+      WS_VERSION=$(awk '
+        /^\[workspace\.package\]/ { in_section = 1; next }
+        /^\[/ { in_section = 0 }
+        in_section && /^[[:space:]]*version[[:space:]]*=/ {
+          line = $0
+          sub(/^[^"]*"/, "", line)
+          sub(/".*$/, "", line)
+          print line
+          exit
+        }
+      ' Cargo.toml)
+      if [ -z "$WS_VERSION" ] && command -v cargo >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
         WS_VERSION=$(cargo metadata --no-deps --format-version=1 --offline 2>/dev/null \
           | jq -r '[.packages[] | select(.source == null) | .version] | unique | .[0] // empty' \
           2>/dev/null || true)
-      fi
-      if [ -z "$WS_VERSION" ]; then
-        WS_VERSION=$(awk '
-          /^\[workspace\.package\]/ { in_section = 1; next }
-          /^\[/ { in_section = 0 }
-          in_section && /^[[:space:]]*version[[:space:]]*=/ {
-            line = $0
-            sub(/^[^"]*"/, "", line)
-            sub(/".*$/, "", line)
-            print line
-            exit
-          }
-        ' Cargo.toml)
       fi
       if [ -z "$WS_VERSION" ]; then
         echo "ERROR: step-14c could not resolve [workspace.package].version from Cargo.toml" >&2
