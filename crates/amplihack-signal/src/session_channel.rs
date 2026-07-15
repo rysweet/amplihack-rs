@@ -33,9 +33,7 @@ pub enum PushOutcome {
 
 /// A bounded, file-backed queue of pending operator instructions.
 pub struct Inbox {
-    #[allow(dead_code)]
     path: PathBuf,
-    #[allow(dead_code)]
     capacity: usize,
 }
 
