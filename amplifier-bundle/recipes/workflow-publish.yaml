@@ -75,6 +75,20 @@ steps:
     output: "version_bump"
     parse_json: true
 
+  - id: "step-14b-sync-lockfile"
+    type: "bash"
+    condition: "goal_already_met != 'true' && terminal_state.terminal_success != 'true' && terminal_state.should_publish == 'true'"
+    command: |
+      set -euo pipefail
+      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-${REPO_PATH:-}}}"
+      cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-14b requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
+      if [ -f Cargo.toml ] && [ -f Cargo.lock ]; then
+        echo "step-14b: syncing Cargo.lock to bumped version (offline)"
+        cargo update --workspace --offline
+      else
+        echo "step-14b: no Cargo.toml/Cargo.lock present; skipping lockfile sync (non-Rust workspace)"
+      fi
+
   - id: "step-14g-artifact-guard"
     type: "bash"
     condition: "goal_already_met != 'true' && terminal_state.terminal_success != 'true' && terminal_state.should_publish == 'true'"

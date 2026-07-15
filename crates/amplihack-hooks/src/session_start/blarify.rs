@@ -261,12 +261,41 @@ mod tests {
 
         let result = setup_blarify_indexing(&dirs).unwrap();
 
-        let mut attempts = 0;
-        while !stub_log.exists() && attempts < 20 {
-            std::thread::sleep(Duration::from_millis(50));
-            attempts += 1;
-        }
-        let logged = fs::read_to_string(&stub_log).unwrap();
+        // The stub writes its log via a shell redirect, which creates/truncates the
+        // file before the content is flushed. Polling for mere existence therefore
+        // races the subprocess's write. Instead, poll for the expected CONTENT using
+        // an adaptive, liveness-based wait: keep waiting as long as the subprocess is
+        // making progress (the file is appearing or growing), and only give up after
+        // the log has been idle for a bounded interval. There is no fixed cap on the
+        // total wait, so a slow-but-alive subprocess is never truncated.
+        let expected = [
+            "index-code",
+            ".amplihack/blarify.json",
+            ".amplihack/graph_db",
+        ];
+        let poll_interval = Duration::from_millis(25);
+        let idle_limit = Duration::from_secs(3);
+        // Liveness signal: file existence + current length (None == not yet created).
+        let mut last_signature: Option<u64> = None;
+        let mut last_progress = std::time::Instant::now();
+        let logged = loop {
+            let contents = fs::read_to_string(&stub_log).unwrap_or_default();
+            if expected.iter().all(|needle| contents.contains(needle)) {
+                break contents;
+            }
+            // Any change to the signature means the subprocess is still working, so
+            // reset the idle timer.
+            let signature = fs::metadata(&stub_log).ok().map(|meta| meta.len());
+            if signature != last_signature {
+                last_signature = signature;
+                last_progress = std::time::Instant::now();
+            } else if last_progress.elapsed() >= idle_limit {
+                // Subprocess appears idle/dead and content is still incomplete; break
+                // and let the assertions below report the actual failure.
+                break contents;
+            }
+            std::thread::sleep(poll_interval);
+        };
         unsafe {
             std::env::remove_var("AMPLIHACK_AMPLIHACK_BINARY_PATH");
             std::env::remove_var("AMPLIHACK_BLARIFY_MODE");
