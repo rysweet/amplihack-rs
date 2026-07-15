@@ -1,0 +1,56 @@
+# Example configuration for the amplihack Signal channel.
+#
+# The Signal channel is compiled only under the `signal` cargo feature
+# (default OFF). This file is the OPTIONAL lower-priority config layer:
+# environment variables always override anything set here. Any required
+# value that is missing from BOTH the environment and this file produces
+# an explicit error at load time — there are no silent defaults.
+#
+# Point amplihack at this file with:
+#   export AMPLIHACK_SIGNAL_CONFIG=/path/to/signal-config.toml
+#
+# Prerequisite: a registered signal-cli running in JSON-RPC daemon mode, e.g.
+#   signal-cli -a "+15551234567" daemon --tcp 127.0.0.1:7583
+
+# --- Required -------------------------------------------------------------
+
+# signal-cli JSON-RPC daemon address, "host:port".
+# Env override: AMPLIHACK_SIGNAL_ENDPOINT
+endpoint = "127.0.0.1:7583"
+
+# Operator's registered Signal account, E.164 format.
+# Env override: AMPLIHACK_SIGNAL_ACCOUNT
+account = "+15551234567"
+
+# Numbers permitted to inject instructions into the session.
+# E.164 only. An EMPTY array is valid and means "nobody" (fail-closed).
+# Env override: AMPLIHACK_SIGNAL_ALLOWLIST (comma-separated)
+allowlist = ["+15551234567"]
+
+# --- Optional -------------------------------------------------------------
+
+# "per-session" (default): create a fresh group per session, leave it on Stop.
+# "rolling": reuse a single existing group; do not create or leave it.
+# Env override: AMPLIHACK_SIGNAL_GROUP_MODE
+group_mode = "per-session"
+
+# Required ONLY when group_mode = "rolling". Explicit error if missing.
+# Env override: AMPLIHACK_SIGNAL_ROLLING_GROUP_ID
+# rolling_group_id = "group.AbCdEf0123456789=="
+
+# Echo-suppression window (seconds). Recently-sent outbound bodies are
+# ignored on inbound within this TTL, preventing the bot from re-ingesting
+# its own synced-back messages and looping. Default: 30.
+# Env override: AMPLIHACK_SIGNAL_ECHO_TTL_SECS
+echo_ttl_secs = 30
+
+# Defence-in-depth loop guard: the bot's own linked device id (must be >= 2).
+# Optional; the primary-device gate (sourceDevice == 1) is the main control.
+# Env override: AMPLIHACK_SIGNAL_OWN_DEVICE_ID
+# own_device_id = 2
+
+# Hard cap on a single inbound JSON-RPC frame (bytes). Frames larger than this
+# are rejected without buffering, bounding subscriber memory against a hostile
+# or runaway daemon. Default: 1048576 (1 MiB).
+# Env override: AMPLIHACK_SIGNAL_MAX_FRAME_BYTES
+# max_frame_bytes = 1048576

@@ -13,13 +13,22 @@ path = "src/main.rs"
 amplihack-types = { workspace = true }
 amplihack-state = { workspace = true }
 amplihack-hooks = { workspace = true }
+amplihack-signal = { workspace = true, optional = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
+[features]
+default = []
+# Forwards to amplihack-hooks/signal so the `signal-subscriber` subcommand and
+# per-session Signal channel are compiled into the multicall binary.
+signal = ["amplihack-hooks/signal", "dep:amplihack-signal", "amplihack-signal/signal"]
+
 [dev-dependencies]
 serde_json = { workspace = true }
+tempfile = { workspace = true }
+amplihack-signal = { workspace = true }
 
 [[test]]
 name = "hook_dispatch"
@@ -28,3 +37,11 @@ path = "../../tests/integration/hook_dispatch_test.rs"
 [[test]]
 name = "hook_aliases"
 path = "../../tests/integration/hook_aliases_test.rs"
+
+# Subscriber integration test: spawns the real `amplihack-hooks signal-subscriber`
+# subcommand (resolved via CARGO_BIN_EXE) against a mock signal-cli daemon and
+# asserts a gate-accepted operator message lands in the file inbox. Gated: the
+# file compiles to nothing without `--features signal`.
+[[test]]
+name = "signal_subscriber_it"
+path = "tests/signal_subscriber_it.rs"

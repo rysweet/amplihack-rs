@@ -12,6 +12,7 @@ amplihack-cli = { workspace = true }
 amplihack-security = { workspace = true }
 amplihack-workflows = { workspace = true }
 amplihack-utils = { workspace = true }
+amplihack-signal = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
@@ -20,6 +21,12 @@ tracing = { workspace = true }
 shell-words = { workspace = true }
 regex = "1"
 sha2 = { workspace = true }
+
+[features]
+default = []
+# Enables the per-session Signal channel wiring (SessionStart create+announce+
+# spawn subscriber, inbox drain into additionalContext, Stop quit+kill).
+signal = ["dep:amplihack-signal", "amplihack-signal/signal"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

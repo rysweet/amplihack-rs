@@ -1,0 +1,32 @@
+[package]
+name = "amplihack-signal"
+description = "Feature-gated per-session Signal channel for amplihack (config, transport, gating, session channel)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+amplihack-types = { workspace = true }
+amplihack-state = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+# tokio is pulled in ONLY under the `signal` feature so default builds add no
+# async runtime and no signal-cli transport dependency.
+tokio = { workspace = true, features = ["net", "io-util", "time", "rt", "rt-multi-thread", "macros"], optional = true }
+
+[features]
+default = []
+signal = ["dep:tokio"]
+
+[dev-dependencies]
+tempfile = { workspace = true }
+serde_json = { workspace = true }
+
+# Integration test exercising the async TCP JSON-RPC client + file inbox against
+# a mock signal-cli server. Only meaningful with the `signal` feature; compiles
+# to an empty binary otherwise (file is guarded by `#![cfg(feature = "signal")]`).
+[[test]]
+name = "session_channel_it"
+path = "tests/session_channel_it.rs"

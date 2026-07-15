@@ -251,6 +251,7 @@ version = "0.11.1"
 dependencies = [
  "amplihack-cli",
  "amplihack-security",
+ "amplihack-signal",
  "amplihack-state",
  "amplihack-types",
  "amplihack-utils",
@@ -271,10 +272,12 @@ name = "amplihack-hooks-bin"
 version = "0.11.1"
 dependencies = [
  "amplihack-hooks",
+ "amplihack-signal",
  "amplihack-state",
  "amplihack-types",
  "anyhow",
  "serde_json",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
 ]
@@ -426,6 +429,20 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "amplihack-signal"
+version = "0.11.1"
+dependencies = [
+ "amplihack-state",
+ "amplihack-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
  "tracing",
 ]
 
@@ -2167,6 +2184,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
+name = "socket2"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "sqlite-wasm-rs"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2352,6 +2379,7 @@ dependencies = [
  "mio",
  "pin-project-lite",
  "signal-hook-registry",
+ "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",
 ]

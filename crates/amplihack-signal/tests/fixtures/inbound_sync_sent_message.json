@@ -1,0 +1,21 @@
+{
+  "jsonrpc": "2.0",
+  "method": "receive",
+  "params": {
+    "envelope": {
+      "source": "+15551239999",
+      "sourceNumber": "+15551239999",
+      "sourceDevice": 1,
+      "timestamp": 1720000000001,
+      "syncMessage": {
+        "sentMessage": {
+          "timestamp": 1720000000001,
+          "message": "run the tests again",
+          "groupInfo": {
+            "groupId": "SESSION_GROUP_ID_AAA=="
+          }
+        }
+      }
+    }
+  }
+}

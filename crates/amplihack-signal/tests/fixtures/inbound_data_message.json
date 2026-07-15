@@ -1,0 +1,19 @@
+{
+  "jsonrpc": "2.0",
+  "method": "receive",
+  "params": {
+    "envelope": {
+      "source": "+15551239999",
+      "sourceNumber": "+15551239999",
+      "sourceDevice": 1,
+      "timestamp": 1720000000000,
+      "dataMessage": {
+        "timestamp": 1720000000000,
+        "message": "deploy the staging branch",
+        "groupInfo": {
+          "groupId": "SESSION_GROUP_ID_AAA=="
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "jsonrpc": "2.0",
+  "method": "receive",
+  "params": {
+    "envelope": {
+      "source": "+15551239999",
+      "sourceDevice": 1,
+      "timestamp": 1720000000002,
+      "receiptMessage": {
+        "when": 1720000000002,
+        "isDelivery": true,
+        "isRead": false,
+        "timestamps": [1720000000000]
+      }
+    }
+  }
+}

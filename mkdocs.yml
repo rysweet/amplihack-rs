@@ -145,6 +145,7 @@ nav:
       - Scenarios Overview: claude/scenarios/README.md
       - Creating Tools: CREATE_YOUR_OWN_TOOLS.md
       - Hooks Configuration: HOOK_CONFIGURATION_GUIDE.md
+      - Signal Channel: signal-channel.md
       - GitHub Copilot CLI:
           - Overview: COPILOT_CLI.md
           - Tutorial: tutorials/copilot-parity-control-plane.md
