@@ -261,12 +261,37 @@ mod tests {
 
         let result = setup_blarify_indexing(&dirs).unwrap();
 
-        let mut attempts = 0;
-        while !stub_log.exists() && attempts < 20 {
-            std::thread::sleep(Duration::from_millis(50));
-            attempts += 1;
+        // Adaptive, liveness-based content poll: the background subprocess writes
+        // the stub log via a shell redirect (`printf ... > log`), which creates the
+        // file before its content is flushed. Polling for mere file existence races
+        // the write under CI load, so instead we poll the file *content* until the
+        // expected markers appear. We keep waiting as long as the log is still making
+        // progress (size grows) and give up only after the log has been idle — no
+        // growth — for a bounded interval, so a slow-but-alive subprocess is never
+        // truncated.
+        let poll_interval = Duration::from_millis(25);
+        let idle_bound = Duration::from_secs(2);
+        let mut logged;
+        let mut last_len: u64 = 0;
+        let mut last_progress = std::time::Instant::now();
+        loop {
+            let current_len = fs::metadata(&stub_log).map(|m| m.len()).unwrap_or(0);
+            if current_len != last_len {
+                last_len = current_len;
+                last_progress = std::time::Instant::now();
+            }
+            logged = fs::read_to_string(&stub_log).unwrap_or_default();
+            if logged.contains("index-code")
+                && logged.contains(".amplihack/blarify.json")
+                && logged.contains(".amplihack/graph_db")
+            {
+                break;
+            }
+            if last_progress.elapsed() >= idle_bound {
+                break;
+            }
+            std::thread::sleep(poll_interval);
         }
-        let logged = fs::read_to_string(&stub_log).unwrap();
         unsafe {
             std::env::remove_var("AMPLIHACK_AMPLIHACK_BINARY_PATH");
             std::env::remove_var("AMPLIHACK_BLARIFY_MODE");
