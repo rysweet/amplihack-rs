@@ -79,8 +79,20 @@ steps:
       echo "Current directory: $(pwd)"
       echo ""
       if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        echo "ERROR: step-01-prepare-workspace requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2
-        exit 1
+        # Non-git workspace. By default (AUTO_INIT_REPO != "false") we initialize
+        # a fresh repository so repo-creation tasks can proceed. Set
+        # AUTO_INIT_REPO="false" to restore the strict hard-fail behavior for
+        # locked-down/CI contexts (fail-closed opt-out).
+        if [ "${AUTO_INIT_REPO:-true}" = "false" ]; then
+          echo "ERROR: step-01-prepare-workspace requires a git repo at $(pwd) and AUTO_INIT_REPO=false; either \`git init\` or rerun from a checkout" >&2
+          exit 1
+        fi
+        echo "[init] no git repo found — initialized a new one for repo-creation task"
+        # `git init -b main` needs git >= 2.28; fall back for older gits.
+        if ! git init -b main >/dev/null 2>&1; then
+          git init >/dev/null 2>&1
+          git checkout -b main >/dev/null 2>&1 || git symbolic-ref HEAD refs/heads/main >/dev/null 2>&1
+        fi
       fi
       echo "--- Git Status ---"; STATUS_RC=0
       git status || STATUS_RC=$?
