@@ -248,4 +248,21 @@ mod tests {
             dir.path()
         );
     }
+
+    #[test]
+    fn at_session_push_creates_fresh_nested_dir() {
+        // Regression: `at_session` derives `<root>/<session>/inbox.json`, whose
+        // per-session directory never pre-exists. The first push must create it
+        // rather than fail opening the lock file. This is the real inbound path
+        // the subscriber uses; a failure here silently disables all inbound.
+        let dir = TempDir::new().unwrap();
+        let inbox = Inbox::at_session("sess-abc-123", dir.path());
+        assert!(!inbox.path().parent().unwrap().exists());
+        assert_eq!(
+            inbox.push("hello from operator").unwrap(),
+            PushOutcome::Queued
+        );
+        assert!(inbox.path().exists());
+        assert_eq!(inbox.drain().unwrap(), vec!["hello from operator"]);
+    }
 }

@@ -291,11 +291,39 @@ fn stop_subscriber(pid: u32) {
     if pid <= 1 {
         return;
     }
+    // Mitigate PID reuse: if the subscriber already exited and the OS recycled
+    // its PID, signaling it would hit an unrelated process. On Linux (the real
+    // deployment target) verify the PID still maps to our subscriber before
+    // signaling. On other platforms fall back to the plain best-effort kill.
+    if !pid_is_our_subscriber(pid) {
+        return;
+    }
     // SAFETY: `kill(2)` with a specific positive PID and a standard signal has
     // no memory-safety implications; a stale PID simply yields ESRCH.
     unsafe {
         libc::kill(pid as libc::pid_t, libc::SIGTERM);
     }
+}
+
+/// Best-effort check that `pid` is still our detached subscriber, to avoid
+/// signaling a recycled PID. Returns `true` when the identity cannot be proven
+/// on the current platform (preserving the prior best-effort behavior).
+#[cfg(target_os = "linux")]
+fn pid_is_our_subscriber(pid: u32) -> bool {
+    // `/proc/<pid>/cmdline` is NUL-separated argv. Our subscriber is launched
+    // as `<exe> signal-subscriber --session-id <id>`, so the marker is present.
+    match std::fs::read(format!("/proc/{pid}/cmdline")) {
+        Ok(bytes) => bytes
+            .split(|b| *b == 0)
+            .any(|arg| arg == b"signal-subscriber"),
+        // No such process (already exited) or unreadable: do not signal.
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn pid_is_our_subscriber(_pid: u32) -> bool {
+    true
 }
 
 // ---------------------------------------------------------------------------
