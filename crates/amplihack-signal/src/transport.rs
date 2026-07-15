@@ -151,6 +151,9 @@ pub struct SignalTransport {
     reader: tokio::io::BufReader<tokio::net::tcp::OwnedReadHalf>,
     writer: tokio::net::tcp::OwnedWriteHalf,
     next_id: u64,
+    /// Reusable line buffer for `read_line`, so the receive hot loop does not
+    /// heap-allocate a fresh `String` for every inbound frame.
+    line_buf: String,
 }
 
 impl SignalTransport {
@@ -165,6 +168,7 @@ impl SignalTransport {
             reader: BufReader::new(read_half),
             writer: write_half,
             next_id: 1,
+            line_buf: String::new(),
         })
     }
 
@@ -179,11 +183,19 @@ impl SignalTransport {
     }
 
     /// Read one newline-delimited line from the socket (`None` on EOF).
-    async fn read_line(&mut self) -> std::io::Result<Option<String>> {
+    ///
+    /// Reads into a reusable internal buffer and returns a borrow of it, so the
+    /// receive loop avoids a per-frame allocation. The returned slice is valid
+    /// until the next `read_line` call.
+    async fn read_line(&mut self) -> std::io::Result<Option<&str>> {
         use tokio::io::AsyncBufReadExt;
-        let mut line = String::new();
-        let n = self.reader.read_line(&mut line).await?;
-        if n == 0 { Ok(None) } else { Ok(Some(line)) }
+        self.line_buf.clear();
+        let n = self.reader.read_line(&mut self.line_buf).await?;
+        if n == 0 {
+            Ok(None)
+        } else {
+            Ok(Some(self.line_buf.as_str()))
+        }
     }
 
     /// Send a request and read frames until the matching `id` response arrives,
