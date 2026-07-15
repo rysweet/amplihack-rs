@@ -141,6 +141,10 @@ steps:
           exit
         }
       ' Cargo.toml)
+      # Force the cargo metadata fallback when the awk yielded a non-bare-version
+      # token (e.g. a single-quoted TOML literal), rather than writing garbage
+      # into package.json.
+      case "$WS_VERSION" in ''|*[!0-9A-Za-z.+-]*) WS_VERSION="" ;; esac
       if [ -z "$WS_VERSION" ] && command -v cargo >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
         WS_VERSION=$(cargo metadata --no-deps --format-version=1 --offline 2>/dev/null \
           | jq -r '[.packages[] | select(.source == null) | .version] | unique | .[0] // empty' \
