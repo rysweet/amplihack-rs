@@ -3,6 +3,10 @@
 **Last Updated**: 2026-01-16 **Testing**: Both platforms tested in production
 **Sources**: Official documentation + empirical testing
 
+> **Payload shapes**: For how amplihack normalizes each host's tool-input JSON
+> (including Copilot CLI's stringified `toolArgs`), see
+> [Hook Payload Compatibility](./HOOK_PAYLOAD_COMPATIBILITY.md).
+
 ## Hook Types Comparison
 
 | Hook Type         | Claude Code          | Copilot CLI            | Notes                           |

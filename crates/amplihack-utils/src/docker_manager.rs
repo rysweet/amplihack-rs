@@ -236,6 +236,7 @@ fn get_env_vars() -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_serial::acquire as serial_acquire;
 
     #[test]
     fn sanitize_removes_control_chars() {
@@ -283,6 +284,8 @@ mod tests {
 
     #[test]
     fn should_use_docker_false_by_default() {
+        // Serialize against sibling docker tests that mutate the same env var.
+        let _serial = serial_acquire();
         // Save and clear the env var to prevent parallel test pollution.
         let prev = std::env::var("AMPLIHACK_USE_DOCKER").ok();
         unsafe {
