@@ -71,6 +71,35 @@ Fix: build the binary first:
   cargo build --release --bin amplihack-hooks
 ```
 
+## Copilot Registration: Selecting the Deployed Path
+
+`find_hooks_binary()` locates a **source** binary to copy during install. When
+installing from a worktree it can legitimately resolve a transient build
+artifact such as `<cwd>/target/debug/amplihack-hooks` (via Step 2,
+sibling-of-exe). That path is fine as a *copy source*, but it must never be
+baked into a persisted hook command string — the `target/` directory is
+worktree- and cwd-relative and disappears on `cargo clean` or when the worktree
+is removed, producing an exit-127 fail-closed outage at hook execution time.
+
+To avoid this, Copilot hook registration does **not** use the raw
+`find_hooks_binary()` result. Instead, `deployed_hooks_binary()` selects the
+stable, already-deployed `~/.local/bin/amplihack-hooks` path from the set
+returned by `deploy_binaries()`:
+
+```
+find_hooks_binary()  →  copy source (may be target/debug)
+deploy_binaries()    →  copies to ~/.local/bin/amplihack-hooks
+deployed_hooks_binary(&deployed)  →  ~/.local/bin/amplihack-hooks  ← registered
+```
+
+Selection keys strictly on the exact `amplihack-hooks` file name, so it is
+independent of ordering in the deployed set and can never pick up a stray build
+path. An absent entry is a **hard error** — the installer refuses to bake a
+guessed path rather than reintroduce the outage.
+
+Note: Claude's `~/.claude/settings.json` continues to use `find_hooks_binary()`
+directly; the deployed-path selection is Copilot-specific (see issue #911).
+
 ## Using in Tests
 
 The parity test scenario for install sets `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` to a stub executable:
