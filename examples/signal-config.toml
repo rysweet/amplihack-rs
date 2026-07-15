@@ -34,6 +34,13 @@ account = "+15551230000"
 # Allowlist of operator numbers permitted to send inbound instructions.
 # E.164, comma-separated when set via env. EMPTY => fail-closed (deny all
 # inbound). Inbound messages from numbers not on this list are dropped.
+#
+# IMPORTANT — single-number linked-device setups: if signal-cli is a linked
+# device on YOUR OWN number (so your phone replies arrive as the account's own
+# synced messages), you must include the `account` number ITSELF here, e.g.
+#     allowlist = ["+15551230000"]
+# For a dedicated-number setup (signal-cli owns a separate number), list the
+# operator's SEPARATE number(s) instead, as shown below.
 # ENV override: AMPLIHACK_SIGNAL_ALLOWLIST  (comma-separated, e.g.
 #     export AMPLIHACK_SIGNAL_ALLOWLIST="+15551230001,+15551230002")
 allowlist = [

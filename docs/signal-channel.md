@@ -149,6 +149,13 @@ environment variable  >  TOML file (AMPLIHACK_SIGNAL_CONFIG)  >  error
 > as "allow everyone." Outbound posting still works; only the inbound path is
 > closed.
 
+> **Single-number setups must allowlist their own number.** If signal-cli is a
+> linked device on your *own* number, your phone replies arrive as the account's
+> own synced messages, so the **`account` number itself must be on the
+> allowlist**. For a dedicated-number setup, allowlist the operator's *separate*
+> number instead. An account number missing from the allowlist means every
+> reply is silently denied (fail-closed).
+
 ### Example TOML file
 
 See [`examples/signal-config.toml`](../examples/signal-config.toml) for a fully
