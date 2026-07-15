@@ -73,7 +73,10 @@ steps:
   - id: "step-01-prepare-workspace"
     type: "bash"
     command: |
-      cd "$REPO_PATH"
+      # Fail closed: a failed `cd` must NOT fall through to the auto-init path
+      # (issue #900), or `git init` would run in the recipe runner's actual cwd
+      # instead of $REPO_PATH.
+      cd "$REPO_PATH" || { echo "ERROR: step-01-prepare-workspace cannot enter REPO_PATH='$REPO_PATH'" >&2; exit 1; }
       echo "=== Step 1: Preparing Workspace ==="
       echo ""
       echo "Current directory: $(pwd)"

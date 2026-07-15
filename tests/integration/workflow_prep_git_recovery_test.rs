@@ -242,6 +242,32 @@ fn prepare_workspace_preserves_existing_checkout_diagnostics() {
     );
 }
 
+#[test]
+fn prepare_workspace_fails_closed_when_repo_path_is_invalid() {
+    // A failed `cd` must fail closed: otherwise the #900 auto-init path would
+    // run `git init` in the recipe runner's actual cwd instead of REPO_PATH.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let missing = temp.path().join("does-not-exist");
+
+    let output = run_prepare_workspace_real_git(&missing, None);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "invalid REPO_PATH must fail closed, not silently continue; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("cannot enter REPO_PATH"),
+        "failed cd must emit an explicit error; stderr:\n{stderr}"
+    );
+    assert!(
+        !missing.join(".git").exists() && !temp.path().join(".git").exists(),
+        "failed cd must not leak a .git into REPO_PATH or its parent; stderr:\n{stderr}"
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Issue #582: recoverable-diagnostic contract (unchanged)
 // ─────────────────────────────────────────────────────────────────────────
