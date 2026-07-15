@@ -692,6 +692,7 @@ Advanced configuration, deployment patterns, and environment management.
 
 - [Profile Management](PROFILE_MANAGEMENT.md) - Multiple environment configurations
 - [Hook Configuration](HOOK_CONFIGURATION_GUIDE.md) - Customize framework behavior
+- [Hook Payload Compatibility](HOOK_PAYLOAD_COMPATIBILITY.md) - Claude Code, Amplifier, and Copilot CLI tool-input payload shapes and normalization
 - [Shell Command Hook](SHELL_COMMAND_HOOK.md) - Custom shell integrations
 
 ### Deployment
