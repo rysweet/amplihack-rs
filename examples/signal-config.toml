@@ -1,0 +1,67 @@
+# ---------------------------------------------------------------------------
+# amplihack Signal channel — example configuration
+# ---------------------------------------------------------------------------
+#
+# This file is loaded ONLY when the `signal` cargo feature is enabled and the
+# environment variable `AMPLIHACK_SIGNAL_CONFIG` points at it. Environment
+# variables always take precedence over values in this file (env > file >
+# explicit error). There are NO silent defaults: if a required setting is
+# missing from BOTH the environment and this file, the loader returns an error
+# and the Signal channel stays OFF (fail-closed).
+#
+# Copy this file somewhere private (it references phone numbers), then:
+#
+#     export AMPLIHACK_SIGNAL_CONFIG=/path/to/signal-config.toml
+#
+# The Signal channel additionally requires the binary to be built with the
+# feature enabled:
+#
+#     cargo build --features signal
+#
+# See docs/signal-channel.md for the full guide.
+# ---------------------------------------------------------------------------
+
+# signal-cli JSON-RPC daemon endpoint, "host:port".
+# Start signal-cli in JSON-RPC mode, e.g.:
+#     signal-cli -a "$AMPLIHACK_SIGNAL_ACCOUNT" daemon --tcp 127.0.0.1:7583
+# ENV override: AMPLIHACK_SIGNAL_ENDPOINT
+endpoint = "127.0.0.1:7583"
+
+# The Signal account amplihack sends AS. Must be E.164 (leading '+', digits).
+# ENV override: AMPLIHACK_SIGNAL_ACCOUNT
+account = "+15551230000"
+
+# Allowlist of operator numbers permitted to send inbound instructions.
+# E.164, comma-separated when set via env. EMPTY => fail-closed (deny all
+# inbound). Inbound messages from numbers not on this list are dropped.
+# ENV override: AMPLIHACK_SIGNAL_ALLOWLIST  (comma-separated, e.g.
+#     export AMPLIHACK_SIGNAL_ALLOWLIST="+15551230001,+15551230002")
+allowlist = [
+    "+15551230001",
+    "+15551230002",
+]
+
+# OPTIONAL. Expected device id for the anti-spoofing gate. Inbound messages
+# are only accepted when they originate from this device id of the operator's
+# account. Defaults to 1 (the primary device) when unset; set it only if your
+# operator consistently sends from a different fixed device id.
+# ENV override: AMPLIHACK_SIGNAL_OWN_DEVICE_ID
+# own_device_id = 1
+
+# ---------------------------------------------------------------------------
+# Group strategy (optional).
+#
+# By default amplihack creates ONE group PER session, named
+# "amplihack-<session-id>-<unix-ts>", and calls quitGroup at Stop.
+#
+# Set `reuse_rolling_group = true` to instead reuse a single long-lived
+# "rolling" group across every session (it is NOT quit at Stop). Useful when
+# you want one persistent operator thread instead of a fresh group each run.
+# ENV override: AMPLIHACK_SIGNAL_REUSE_ROLLING_GROUP=1
+# ---------------------------------------------------------------------------
+# reuse_rolling_group = false
+
+# When `reuse_rolling_group = true`, an existing group id may be supplied so
+# amplihack posts into it instead of creating a new one on first use.
+# ENV override: AMPLIHACK_SIGNAL_ROLLING_GROUP_ID
+# rolling_group_id = "group.aBcDeF0123456789=="
