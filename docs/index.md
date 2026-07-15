@@ -290,6 +290,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Tutorial: Verify Workflow Commit Identity](tutorials/workflow-commit-identity.md) - Disposable-repository walkthrough for explicit, repo-local, GitHub, and Azure DevOps commit attribution
 - [Default Workflow Step 13 Validation Reference](reference/default-workflow-step-13-validation.md) - Toolchain-aware outside-in local validation contract for Step 13
 - [Workflow Publish Lockfile Sync Reference](reference/workflow-publish-lockfile-sync.md) - Offline `Cargo.lock` sync after the version bump so `--locked` pre-commit gates pass (issue #915)
+- [Workflow Publish package.json Sync Reference](reference/workflow-publish-package-json-sync.md) - Offline, atomic root `package.json` version sync after the version bump so the CI version-contract test passes (issue #925)
 - [Workflow Terminal-State Reference](reference/workflow-terminal-state.md) - Target contract for development completion evidence, no-op states, failure semantics, and shell helper API
 - [Default Workflow Agentic Finalization](reference/default-workflow-agentic-finalization.md) - Structured finalizer schema, terminal-state vocabulary, configuration, and examples for robust workflow closure
 - [How to Diagnose Workflow Terminal-State Failures](howto/diagnose-workflow-terminal-state.md) - Investigate missing evidence after planning, analysis, design, or worktree-only runs
