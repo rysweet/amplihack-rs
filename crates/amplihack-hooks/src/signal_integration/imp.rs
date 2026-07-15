@@ -252,7 +252,7 @@ fn stop(session_id: &str) -> anyhow::Result<()> {
 
     // Stop the subscriber first so it stops touching the inbox.
     if let Some(pid) = state.subscriber_pid {
-        stop_subscriber(pid);
+        stop_subscriber(pid, session_id);
     }
 
     let Some(group) = state.group_id else {
@@ -286,16 +286,17 @@ fn stop(session_id: &str) -> anyhow::Result<()> {
 }
 
 /// Send `SIGTERM` to the detached subscriber (best-effort).
-fn stop_subscriber(pid: u32) {
+fn stop_subscriber(pid: u32, session_id: &str) {
     // Guard against pid<=1; never signal init or the whole process group.
     if pid <= 1 {
         return;
     }
     // Mitigate PID reuse: if the subscriber already exited and the OS recycled
-    // its PID, signaling it would hit an unrelated process. On Linux (the real
-    // deployment target) verify the PID still maps to our subscriber before
-    // signaling. On other platforms fall back to the plain best-effort kill.
-    if !pid_is_our_subscriber(pid) {
+    // its PID, signaling it would hit an unrelated process (or a *different*
+    // session's subscriber). On Linux (the real deployment target) verify the
+    // PID still maps to THIS session's subscriber before signaling. On other
+    // platforms fall back to the plain best-effort kill.
+    if !pid_is_our_subscriber(pid, session_id) {
         return;
     }
     // SAFETY: `kill(2)` with a specific positive PID and a standard signal has
@@ -305,24 +306,35 @@ fn stop_subscriber(pid: u32) {
     }
 }
 
-/// Best-effort check that `pid` is still our detached subscriber, to avoid
-/// signaling a recycled PID. Returns `true` when the identity cannot be proven
-/// on the current platform (preserving the prior best-effort behavior).
+/// Best-effort check that `pid` is still *this session's* detached subscriber,
+/// to avoid signaling a recycled PID (whether an unrelated process or another
+/// session's subscriber). Returns `true` when the identity cannot be proven on
+/// the current platform (preserving the prior best-effort behavior).
 #[cfg(target_os = "linux")]
-fn pid_is_our_subscriber(pid: u32) -> bool {
+fn pid_is_our_subscriber(pid: u32, session_id: &str) -> bool {
     // `/proc/<pid>/cmdline` is NUL-separated argv. Our subscriber is launched
-    // as `<exe> signal-subscriber --session-id <id>`, so the marker is present.
+    // as `<exe> signal-subscriber --session-id <session_id>`, so require BOTH
+    // the subcommand marker and this exact session id to be present.
     match std::fs::read(format!("/proc/{pid}/cmdline")) {
-        Ok(bytes) => bytes
-            .split(|b| *b == 0)
-            .any(|arg| arg == b"signal-subscriber"),
+        Ok(bytes) => {
+            let mut has_marker = false;
+            let mut has_session = false;
+            for arg in bytes.split(|b| *b == 0) {
+                if arg == b"signal-subscriber" {
+                    has_marker = true;
+                } else if arg == session_id.as_bytes() {
+                    has_session = true;
+                }
+            }
+            has_marker && has_session
+        }
         // No such process (already exited) or unreadable: do not signal.
         Err(_) => false,
     }
 }
 
 #[cfg(not(target_os = "linux"))]
-fn pid_is_our_subscriber(_pid: u32) -> bool {
+fn pid_is_our_subscriber(_pid: u32, _session_id: &str) -> bool {
     true
 }
 
