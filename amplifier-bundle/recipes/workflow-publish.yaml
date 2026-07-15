@@ -91,7 +91,6 @@ steps:
       if [ -f Cargo.toml ] && [ -f Cargo.lock ]; then
         echo "step-14b: syncing Cargo.lock to bumped version (offline)"
         cargo update --workspace --offline
-        git diff --stat -- Cargo.lock || true
       else
         echo "step-14b: no Cargo.toml/Cargo.lock present; skipping lockfile sync (non-Rust workspace)"
       fi
