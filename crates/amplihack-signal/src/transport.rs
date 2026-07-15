@@ -9,6 +9,15 @@
 
 use serde_json::Value;
 
+/// Maximum size, in bytes, of a single newline-delimited JSON-RPC frame.
+///
+/// Fail-safe input bound: a peer that never emits a newline (hostile or broken)
+/// must not be able to drive unbounded memory growth. Bytes for a single frame
+/// are accumulated only up to this cap; a frame that exceeds it is drained (to
+/// resynchronize the stream) and skipped. Signal messages are ~2 KiB, so this
+/// generous cap never truncates a legitimate frame.
+const MAX_FRAME_BYTES: usize = 256 * 1024;
+
 /// Opaque signal-cli group identifier.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupId(pub String);
@@ -154,6 +163,9 @@ pub struct SignalTransport {
     /// Reusable line buffer for `read_line`, so the receive hot loop does not
     /// heap-allocate a fresh `String` for every inbound frame.
     line_buf: String,
+    /// Reusable raw-byte accumulator for one frame, bounded by
+    /// [`MAX_FRAME_BYTES`]; decoded once into `line_buf` per frame.
+    raw_buf: Vec<u8>,
 }
 
 impl SignalTransport {
@@ -169,6 +181,7 @@ impl SignalTransport {
             writer: write_half,
             next_id: 1,
             line_buf: String::new(),
+            raw_buf: Vec::new(),
         })
     }
 
@@ -187,15 +200,62 @@ impl SignalTransport {
     /// Reads into a reusable internal buffer and returns a borrow of it, so the
     /// receive loop avoids a per-frame allocation. The returned slice is valid
     /// until the next `read_line` call.
+    ///
+    /// The read is **bounded** by [`MAX_FRAME_BYTES`]: a frame larger than the
+    /// cap is drained to the next newline (to resynchronize the stream) and
+    /// reported as an empty line, which callers skip. This prevents a peer that
+    /// never sends a newline from driving unbounded memory growth.
     async fn read_line(&mut self) -> std::io::Result<Option<&str>> {
         use tokio::io::AsyncBufReadExt;
         self.line_buf.clear();
-        let n = self.reader.read_line(&mut self.line_buf).await?;
-        if n == 0 {
-            Ok(None)
-        } else {
-            Ok(Some(self.line_buf.as_str()))
+        self.raw_buf.clear();
+
+        let mut read_any = false;
+        let mut oversized = false;
+        loop {
+            let available = self.reader.fill_buf().await?;
+            if available.is_empty() {
+                break; // EOF
+            }
+            read_any = true;
+
+            let (consumed, done) = match available.iter().position(|&b| b == b'\n') {
+                Some(pos) => {
+                    let end = pos + 1;
+                    if !oversized && self.raw_buf.len() + end <= MAX_FRAME_BYTES {
+                        self.raw_buf.extend_from_slice(&available[..end]);
+                    } else {
+                        oversized = true;
+                    }
+                    (end, true)
+                }
+                None => {
+                    let len = available.len();
+                    if !oversized && self.raw_buf.len() + len <= MAX_FRAME_BYTES {
+                        self.raw_buf.extend_from_slice(available);
+                    } else {
+                        oversized = true;
+                    }
+                    (len, false)
+                }
+            };
+            self.reader.consume(consumed);
+            if done {
+                break;
+            }
         }
+
+        if !read_any {
+            return Ok(None);
+        }
+        if oversized {
+            // Frame exceeded the cap; the stream has been drained to the next
+            // newline. Report an empty line so callers skip it (fail-safe).
+            return Ok(Some(""));
+        }
+        self.line_buf
+            .push_str(&String::from_utf8_lossy(&self.raw_buf));
+        Ok(Some(self.line_buf.as_str()))
     }
 
     /// Send a request and read frames until the matching `id` response arrives,
