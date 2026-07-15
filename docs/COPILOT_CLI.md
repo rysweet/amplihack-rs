@@ -204,6 +204,19 @@ pytest .claude/tools/amplihack/hooks/tests/test_power_steering_copilot_cli.py
    refreshes the `amplihack` plugin entry without duplicating it or removing
    unrelated `~/.copilot/config.json` fields.
 
+   **Stable binary path (important):** Every hook command in the generated
+   `hooks.json` invokes the binary at its **deployed, stable location** —
+   `~/.local/bin/amplihack-hooks` (the value of `preferred_user_bin_dir()`) —
+   never a transient build artifact such as `target/debug/amplihack-hooks` or
+   `target/release/amplihack-hooks` inside the source checkout you happened to
+   run `amplihack install` from. `amplihack install` copies (`deploy_binaries`)
+   the hooks binary into `~/.local/bin/` and registers the plugin against that
+   copy. This means the hooks keep working after the source repository,
+   worktree, or `target/` directory is moved, cleaned (`cargo clean`), or
+   deleted. See [Every tool call denied in Copilot
+   sessions](#every-tool-call-denied-in-copilot-sessions-hooks-survive-source-tree-cleanup)
+   for why this matters under Copilot CLI's fail-closed hook policy.
+
 3. **Verify Integration**:
 
    ```bash
@@ -500,6 +513,57 @@ subcommands:
 
 `PreCompact` remains Claude Code-only because Copilot CLI has no documented
 equivalent lifecycle event.
+
+#### Stable Deployed Binary Path
+
+Every command string in the Copilot `hooks.json` points at the **stable,
+deployed** hooks binary — the path returned as the first element of
+`deploy_binaries()`, which is `preferred_user_bin_dir().join("amplihack-hooks")`
+(normally `~/.local/bin/amplihack-hooks`).
+
+The registration flow guarantees this:
+
+1. `deploy_binaries()` copies the freshly built `amplihack-hooks` from wherever
+   the install is reading it (e.g. `target/debug/amplihack-hooks` in a dev
+   checkout, or the packaged binary in a release) into `~/.local/bin/`.
+2. That deployed path is threaded directly into `register_copilot_plugin()`,
+   which bakes it into each of the six hook command strings in `hooks.json`.
+
+The install **never** writes a build-artifact path (`target/debug/…` or
+`target/release/…`) into `hooks.json`. A regression test
+(`hooks_json_never_references_transient_build_path`) asserts that the generated
+JSON and every generated hook command string contain no `target/debug` or
+`target/release` segment and do reference the deployed `~/.local/bin` location.
+
+Why this matters: Copilot CLI (1.0.71+) **fails closed** on a hook error — if a
+hook command exits non-zero (for example exit `127`, "command not found",
+because the binary path no longer exists), Copilot denies the tool call that
+triggered the hook. Because hooks fire on `preToolUse`, a broken hook path
+denies **every** tool call in a Copilot session, including nested
+`amplihack recipe run` / default-workflow sub-agents. Registering against the
+stable `~/.local/bin/amplihack-hooks` copy — instead of a transient build
+artifact that disappears on `cargo clean` or worktree removal — keeps hooks
+resolvable for the life of the install.
+
+An example generated `~/.copilot/installed-plugins/amplihack@local/hooks.json`
+entry:
+
+```json
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "type": "command",
+        "bash": "'/home/you/.local/bin/amplihack-hooks' pre-tool-use"
+      }
+    ]
+  }
+}
+```
+
+Note the absolute path resolves to `~/.local/bin/`, not into any `target/`
+build directory.
 
 #### Platform Detection
 
@@ -1288,6 +1352,45 @@ file .github/agents/skills/[skill-name]
 # Verify Copilot can read files
 gh copilot explain .github/agents/README.md
 ```
+
+#### Every Tool Call Denied in Copilot Sessions (Hooks Survive Source-Tree Cleanup)
+
+**Problem**: A Copilot CLI session — often a nested `amplihack recipe run` /
+default-workflow sub-agent — denies **every** tool call. Symptoms include a
+hook command exiting `127` ("command not found") and Copilot refusing to run
+any tool because it fails closed on hook errors. This typically appears after
+the source repository, git worktree, or `target/` directory used at install
+time was moved, cleaned (`cargo clean`), or deleted.
+
+**Cause**: A stale `hooks.json` pointing at a transient build artifact
+(`target/debug/amplihack-hooks`) that no longer exists.
+
+**Fix**: Current `amplihack install` always registers hooks against the stable
+deployed path `~/.local/bin/amplihack-hooks`, so a fresh install resolves this
+permanently. To confirm and repair:
+
+```bash
+# 1. Inspect the generated Copilot hooks — commands must point at ~/.local/bin,
+#    NOT at any target/debug or target/release path.
+cat ~/.copilot/installed-plugins/amplihack@local/hooks.json
+
+# Quick check: this should print NOTHING. Any match means a stale hooks.json.
+grep -E 'target/(debug|release)' \
+  ~/.copilot/installed-plugins/amplihack@local/hooks.json && \
+  echo "STALE: re-run 'amplihack install'"
+
+# 2. Confirm the deployed binary exists and is executable.
+ls -l ~/.local/bin/amplihack-hooks
+~/.local/bin/amplihack-hooks --help
+
+# 3. Re-run install to regenerate hooks.json against the stable path.
+amplihack install
+```
+
+After re-installing, every command string in `hooks.json` resolves to
+`~/.local/bin/amplihack-hooks`, which persists independently of any source
+checkout, so hooks — and therefore Copilot tool calls — keep working even after
+`cargo clean` or worktree removal.
 
 ### Debug Mode
 

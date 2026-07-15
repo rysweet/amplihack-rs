@@ -346,3 +346,91 @@ fn is_python_script(path: &std::path::Path) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+mod tests {
+    //! TDD regression tests for issue #911.
+    //!
+    //! Root cause: the Copilot plugin `hooks.json` baked the TRANSIENT source
+    //! build path (`<cwd>/target/debug/amplihack-hooks`, returned by
+    //! [`find_hooks_binary`] via the sibling-of-exe step when installing from a
+    //! worktree) instead of the STABLE deployed path
+    //! (`~/.local/bin/amplihack-hooks`, i.e. the first entry of
+    //! [`deploy_binaries`]). When the build/worktree dir is later cleaned, every
+    //! hook command exits 127 and Copilot CLI 1.0.71 fails CLOSED — denying every
+    //! tool call in nested recipe sub-agents.
+    //!
+    //! The fix threads the DEPLOYED path through to the Copilot plugin
+    //! registration. [`deployed_hooks_binary`] is the pure selection seam that
+    //! encodes the invariant "pick the stable deployed `amplihack-hooks`, never a
+    //! build artifact". These tests define its contract and MUST fail until it
+    //! exists.
+    use super::*;
+
+    #[test]
+    fn deployed_hooks_binary_selects_stable_deployed_amplihack_hooks() {
+        // Mirrors the shape of deploy_binaries()'s return value: the deployed
+        // amplihack-hooks under the user bin dir is the FIRST entry, followed by
+        // the amplihack self-binary and the asset-resolver.
+        let deployed = vec![
+            PathBuf::from("/home/u/.local/bin/amplihack-hooks"),
+            PathBuf::from("/home/u/.local/bin/amplihack"),
+            PathBuf::from("/home/u/.local/bin/amplihack-asset-resolver"),
+        ];
+
+        let selected =
+            deployed_hooks_binary(&deployed).expect("should select the deployed hooks bin");
+
+        assert_eq!(
+            selected,
+            Path::new("/home/u/.local/bin/amplihack-hooks"),
+            "must select the stable deployed amplihack-hooks path"
+        );
+        let s = selected.to_string_lossy();
+        assert!(
+            !s.contains("target/debug") && !s.contains("target/release"),
+            "selected hooks binary must NEVER be a transient build artifact, got: {s}"
+        );
+        assert!(
+            s.ends_with(".local/bin/amplihack-hooks"),
+            "selected hooks binary must be the deployed ~/.local/bin copy, got: {s}"
+        );
+    }
+
+    #[test]
+    fn deployed_hooks_binary_ignores_non_hooks_entries() {
+        // Even if ordering changes, selection must key on the amplihack-hooks
+        // file name — never accidentally return the amplihack self-binary or a
+        // stray transient path that happens to be present.
+        let deployed = vec![
+            PathBuf::from("/home/u/.local/bin/amplihack"),
+            PathBuf::from("/tmp/build/target/debug/amplihack-hooks-scratch"),
+            PathBuf::from("/home/u/.local/bin/amplihack-hooks"),
+        ];
+
+        let selected =
+            deployed_hooks_binary(&deployed).expect("should find the deployed hooks bin");
+
+        assert_eq!(
+            selected,
+            Path::new("/home/u/.local/bin/amplihack-hooks"),
+            "must pick the file named exactly amplihack-hooks under the deployed bin dir"
+        );
+        assert!(
+            !selected.to_string_lossy().contains("target/debug"),
+            "must never select a target/debug build artifact"
+        );
+    }
+
+    #[test]
+    fn deployed_hooks_binary_errs_when_absent() {
+        // A deployment vector with no amplihack-hooks entry is a hard error:
+        // baking a bogus/guessed path would reintroduce the 127 outage.
+        let deployed = vec![PathBuf::from("/home/u/.local/bin/amplihack")];
+
+        assert!(
+            deployed_hooks_binary(&deployed).is_err(),
+            "absent amplihack-hooks in deployed set must be an error, not a silent guess"
+        );
+    }
+}

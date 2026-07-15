@@ -953,4 +953,83 @@ mod tests {
             result.err()
         );
     }
+
+    /// Regression guard for issue #911.
+    ///
+    /// The generated Copilot `hooks.json` — and every individual `bash` hook
+    /// command string inside it — must reference the STABLE deployed hooks
+    /// binary (`.../.local/bin/amplihack-hooks`) and must NEVER contain a
+    /// transient `target/debug` or `target/release` build path. A build-artifact
+    /// path vanishes when the worktree/target dir is cleaned, making every hook
+    /// exit 127; Copilot CLI 1.0.71 then fails CLOSED and denies every tool call
+    /// in nested recipe sub-agents.
+    #[test]
+    fn hooks_json_never_references_transient_build_path() {
+        let td = TempDir::new().unwrap();
+        let copilot_home = fake_copilot_home(&td);
+        let repo = fake_repo(&td, false);
+
+        // Simulate the STABLE deployed location: ~/.local/bin/amplihack-hooks.
+        let deployed_bin_dir = td.path().join(".local").join("bin");
+        fs::create_dir_all(&deployed_bin_dir).unwrap();
+        let deployed_hooks_bin = deployed_bin_dir.join("amplihack-hooks");
+        fs::write(&deployed_hooks_bin, b"#!/bin/sh\nexit 0\n").unwrap();
+
+        let res = run_with_copilot_home(&copilot_home, &repo, &deployed_hooks_bin);
+        assert!(res, "registration should succeed when ~/.copilot exists");
+
+        let hooks_path = copilot_home
+            .join("installed-plugins")
+            .join("amplihack@local")
+            .join("hooks.json");
+        let raw = fs::read_to_string(&hooks_path).expect("hooks.json should be written");
+
+        // Negative: no transient build-artifact path anywhere in the file.
+        assert!(
+            !raw.contains("target/debug"),
+            "hooks.json must never reference a target/debug build artifact:\n{raw}"
+        );
+        assert!(
+            !raw.contains("target/release"),
+            "hooks.json must never reference a target/release build artifact:\n{raw}"
+        );
+
+        // Positive: it points at the deployed stable location.
+        let deployed_str = deployed_hooks_bin.display().to_string();
+        assert!(
+            raw.contains(&deployed_str),
+            "hooks.json must point at the deployed stable binary {deployed_str}:\n{raw}"
+        );
+
+        // Per-command assertions: every one of the 6 bash hook command strings
+        // must reference the deployed binary and contain no build path.
+        let body: Value = serde_json::from_str(&raw).unwrap();
+        let hooks = body.get("hooks").and_then(|h| h.as_object()).unwrap();
+        let mut command_count = 0_usize;
+        for (event, entries) in hooks {
+            for entry in entries.as_array().unwrap() {
+                let cmd = entry
+                    .get("bash")
+                    .and_then(|b| b.as_str())
+                    .unwrap_or_else(|| panic!("event {event} entry missing bash command"));
+                command_count += 1;
+                assert!(
+                    !cmd.contains("target/debug") && !cmd.contains("target/release"),
+                    "hook command for {event} must not reference a build artifact: {cmd}"
+                );
+                assert!(
+                    cmd.contains(&deployed_str),
+                    "hook command for {event} must invoke the deployed binary {deployed_str}: {cmd}"
+                );
+                assert!(
+                    cmd.contains("amplihack-hooks"),
+                    "hook command for {event} must invoke amplihack-hooks: {cmd}"
+                );
+            }
+        }
+        assert_eq!(
+            command_count, 6,
+            "expected 6 Copilot hook command strings, found {command_count}"
+        );
+    }
 }
