@@ -223,9 +223,18 @@ an existing group instead of creating a new one on first use.
    `hookSpecificOutput.additionalContext`. Draining is one-shot: each
    instruction is delivered once.
 
-If the subscriber cannot start or the connection drops, the failure is recorded
-in `warnings[]` and via `tracing`; the session continues normally with no
-inbound channel.
+If the subscriber cannot start, the failure is recorded in `warnings[]` and via
+`tracing`; the session continues normally with no inbound channel.
+
+**Reconnect resilience.** Once a connection has been established at least once, a
+transient drop (daemon restart, stream close, receive error) does **not** end the
+channel: the subscriber reconnects with **bounded exponential backoff** (1s → 2s
+→ … capped at 30s), preserving its echo-suppression/de-dup state and file inbox
+across reconnects so no instruction is lost or re-delivered. Any inbound message
+resets the backoff. To avoid spinning against a permanently-down daemon it gives
+up after a small number of consecutive failures. A **cold-start** connect failure
+(no connection ever established) stays fast and non-fatal — SessionStart spawns
+the subscriber best-effort and is never stalled by an absent daemon.
 
 ---
 

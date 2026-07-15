@@ -15,6 +15,18 @@ use serde::{Deserialize, Serialize};
 /// unreachable daemon can never stall the session lifecycle.
 const NETWORK_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Backoff applied before the first reconnect attempt after an established
+/// connection drops.
+const RECONNECT_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+
+/// Upper bound on reconnect backoff so a persistently-down daemon is retried at
+/// a steady, low rate rather than an ever-growing delay.
+const RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(30);
+
+/// Consecutive reconnect failures tolerated before the subscriber gives up.
+/// Reset to zero whenever an inbound message proves the link healthy.
+const RECONNECT_MAX_CONSECUTIVE_FAILURES: u32 = 5;
+
 /// Persisted per-session Signal state shared across the hook and subscriber
 /// processes (via [`AtomicJsonFile`]).
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -322,23 +334,9 @@ fn subscriber_main(session_id: Option<&str>) -> anyhow::Result<()> {
 
     let rt = runtime()?;
     rt.block_on(async {
-        let mut transport =
-            match tokio::time::timeout(NETWORK_TIMEOUT, SignalTransport::connect(&config.endpoint))
-                .await
-            {
-                Ok(Ok(t)) => t,
-                Ok(Err(err)) => {
-                    tracing::warn!("signal-subscriber: connect failed: {err}");
-                    return;
-                }
-                Err(_) => {
-                    tracing::warn!("signal-subscriber: connect timed out");
-                    return;
-                }
-            };
-
-        // Resolve the session group id (persisted by SessionStart). Absent ⇒
-        // nothing to filter on; exit cleanly.
+        // Resolve the session group id (persisted by SessionStart) up front —
+        // it comes from a local state file, not the daemon. Absent ⇒ nothing to
+        // filter on, so exit cleanly without opening a connection.
         let state_file = AtomicJsonFile::new(state_path(&root, session_id));
         let group_id = match state_file
             .read::<SignalState>()
@@ -353,31 +351,225 @@ fn subscriber_main(session_id: Option<&str>) -> anyhow::Result<()> {
             }
         };
 
+        // Gate (echo-suppression/dedup) and inbox persist across reconnects so a
+        // transient drop never loses de-dup state or re-delivers instructions.
         let mut gate = Gate::new(&config, group_id.as_str());
         let inbox = Inbox::at_session(session_id, &root);
 
+        // Resilience: a long-lived subscriber must survive transient daemon
+        // restarts. We reconnect with bounded exponential backoff, but ONLY
+        // once a connection has been established at least once. A cold-start
+        // connect failure stays fast and non-fatal — SessionStart spawns us
+        // best-effort and must not be stalled by an absent daemon.
+        let mut established = false;
+        let mut backoff = RECONNECT_INITIAL_BACKOFF;
+        let mut consecutive_failures: u32 = 0;
+
         loop {
-            match transport.receive().await {
-                Ok(Some(envelope)) => {
-                    if let Some(instruction) = gate.evaluate(&envelope) {
-                        if let Err(err) = inbox.push(&instruction) {
-                            tracing::warn!("signal-subscriber: inbox push failed: {err}");
-                        } else {
-                            tracing::info!("signal-subscriber: queued operator instruction");
+            let connect =
+                tokio::time::timeout(NETWORK_TIMEOUT, SignalTransport::connect(&config.endpoint))
+                    .await;
+            let mut transport = match connect {
+                Ok(Ok(t)) => t,
+                Ok(Err(err)) => {
+                    if !record_connect_failure(
+                        established,
+                        &mut consecutive_failures,
+                        &mut backoff,
+                        &format!("connect failed: {err}"),
+                    )
+                    .await
+                    {
+                        return;
+                    }
+                    continue;
+                }
+                Err(_) => {
+                    if !record_connect_failure(
+                        established,
+                        &mut consecutive_failures,
+                        &mut backoff,
+                        "connect timed out",
+                    )
+                    .await
+                    {
+                        return;
+                    }
+                    continue;
+                }
+            };
+
+            established = true;
+            tracing::info!("signal-subscriber: connected");
+
+            // Inner receive loop for the lifetime of this connection.
+            loop {
+                match transport.receive().await {
+                    Ok(Some(envelope)) => {
+                        // Real inbound progress proves the link is healthy, so
+                        // reset the reconnect budget.
+                        consecutive_failures = 0;
+                        backoff = RECONNECT_INITIAL_BACKOFF;
+                        if let Some(instruction) = gate.evaluate(&envelope) {
+                            if let Err(err) = inbox.push(&instruction) {
+                                tracing::warn!("signal-subscriber: inbox push failed: {err}");
+                            } else {
+                                tracing::info!("signal-subscriber: queued operator instruction");
+                            }
                         }
                     }
+                    Ok(None) => {
+                        tracing::info!("signal-subscriber: stream closed, will reconnect");
+                        break;
+                    }
+                    Err(err) => {
+                        tracing::warn!("signal-subscriber: receive error, will reconnect: {err}");
+                        break;
+                    }
                 }
-                Ok(None) => {
-                    tracing::info!("signal-subscriber: receive stream closed, exiting");
-                    break;
-                }
-                Err(err) => {
-                    tracing::warn!("signal-subscriber: receive error, exiting: {err}");
-                    break;
-                }
+            }
+
+            // The connection dropped after being established. Count it and back
+            // off before reconnecting so a flapping daemon can't spin us in a
+            // tight loop.
+            if !record_connect_failure(
+                true,
+                &mut consecutive_failures,
+                &mut backoff,
+                "connection dropped",
+            )
+            .await
+            {
+                return;
             }
         }
     });
 
     Ok(())
+}
+
+/// Record a connection failure and decide whether to keep retrying.
+///
+/// Returns `true` if the caller should reconnect (after this call has already
+/// slept for the current backoff), or `false` if it should give up. A failure
+/// before any connection was `established` never retries — this preserves the
+/// fast, non-fatal cold-start path.
+async fn record_connect_failure(
+    established: bool,
+    consecutive_failures: &mut u32,
+    backoff: &mut Duration,
+    reason: &str,
+) -> bool {
+    match next_retry_delay(established, consecutive_failures, backoff) {
+        None => {
+            tracing::warn!(
+                "signal-subscriber: {reason}; giving up ({}/{})",
+                *consecutive_failures,
+                RECONNECT_MAX_CONSECUTIVE_FAILURES
+            );
+            false
+        }
+        Some(delay) => {
+            tracing::warn!(
+                "signal-subscriber: {reason}; reconnect {}/{} after {:?}",
+                *consecutive_failures,
+                RECONNECT_MAX_CONSECUTIVE_FAILURES,
+                delay
+            );
+            tokio::time::sleep(delay).await;
+            true
+        }
+    }
+}
+
+/// Pure reconnect policy (no I/O), so the escalate-then-cap-then-give-up
+/// behavior is unit-testable without real timers or sockets.
+///
+/// Returns `None` to give up, or `Some(delay)` to sleep `delay` then reconnect.
+/// Mutates `consecutive_failures` (incremented) and `backoff` (doubled, capped
+/// at [`RECONNECT_MAX_BACKOFF`]). A failure before a connection was
+/// `established` always gives up, keeping cold-start fast and non-fatal.
+fn next_retry_delay(
+    established: bool,
+    consecutive_failures: &mut u32,
+    backoff: &mut Duration,
+) -> Option<Duration> {
+    if !established {
+        return None;
+    }
+    *consecutive_failures += 1;
+    if *consecutive_failures >= RECONNECT_MAX_CONSECUTIVE_FAILURES {
+        return None;
+    }
+    let delay = *backoff;
+    *backoff = (*backoff * 2).min(RECONNECT_MAX_BACKOFF);
+    Some(delay)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cold_start_failure_never_retries() {
+        let mut failures = 0;
+        let mut backoff = RECONNECT_INITIAL_BACKOFF;
+        // No connection ever established ⇒ give up immediately, fast path.
+        assert_eq!(next_retry_delay(false, &mut failures, &mut backoff), None);
+        assert_eq!(failures, 0, "cold-start must not count against the budget");
+        assert_eq!(backoff, RECONNECT_INITIAL_BACKOFF, "backoff untouched");
+    }
+
+    #[test]
+    fn established_failures_escalate_then_give_up() {
+        let mut failures = 0;
+        let mut backoff = RECONNECT_INITIAL_BACKOFF;
+
+        // First failure retries after the initial backoff.
+        assert_eq!(
+            next_retry_delay(true, &mut failures, &mut backoff),
+            Some(RECONNECT_INITIAL_BACKOFF)
+        );
+        assert_eq!(failures, 1);
+
+        // Subsequent retries escalate until one short of the cap.
+        let mut delays = vec![RECONNECT_INITIAL_BACKOFF];
+        while let Some(d) = next_retry_delay(true, &mut failures, &mut backoff) {
+            delays.push(d);
+        }
+
+        // Exactly MAX-1 retries are granted, then it gives up.
+        assert_eq!(
+            failures, RECONNECT_MAX_CONSECUTIVE_FAILURES,
+            "gives up once the failure count reaches the cap"
+        );
+        assert_eq!(delays.len() as u32, RECONNECT_MAX_CONSECUTIVE_FAILURES - 1);
+
+        // Delays are non-decreasing and never exceed the max backoff.
+        for pair in delays.windows(2) {
+            assert!(
+                pair[1] >= pair[0],
+                "backoff must be monotonic non-decreasing"
+            );
+        }
+        assert!(delays.iter().all(|d| *d <= RECONNECT_MAX_BACKOFF));
+    }
+
+    #[test]
+    fn backoff_doubles_and_caps() {
+        let mut failures = 0;
+        let mut backoff = Duration::from_secs(20);
+        // 20s → grants 20s, advances to min(40, 30) = 30s (capped).
+        assert_eq!(
+            next_retry_delay(true, &mut failures, &mut backoff),
+            Some(Duration::from_secs(20))
+        );
+        assert_eq!(backoff, RECONNECT_MAX_BACKOFF);
+        // Next grant is the capped value; advancing stays capped.
+        assert_eq!(
+            next_retry_delay(true, &mut failures, &mut backoff),
+            Some(RECONNECT_MAX_BACKOFF)
+        );
+        assert_eq!(backoff, RECONNECT_MAX_BACKOFF);
+    }
 }
