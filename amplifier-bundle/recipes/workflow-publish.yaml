@@ -95,6 +95,57 @@ steps:
         echo "step-14b: no Cargo.toml/Cargo.lock present; skipping lockfile sync (non-Rust workspace)"
       fi
 
+  - id: "step-14c-sync-package-json"
+    type: "bash"
+    condition: "goal_already_met != 'true' && terminal_state.terminal_success != 'true' && terminal_state.should_publish == 'true'"
+    command: |
+      set -euo pipefail
+      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-${REPO_PATH:-}}}"
+      cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-14c requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
+      # Issue #925: step-14 bumps [workspace.package].version in Cargo.toml and
+      # step-14b keeps Cargo.lock in sync, but NOTHING syncs the root
+      # package.json "version". The contract test
+      # `package_json_version_matches_root_workspace_version` then fails in CI
+      # (exit 100) because package.json is left stale, and no pre-commit gate
+      # catches it. Sync package.json.version to the workspace version with a
+      # ROBUST read (scoped [workspace.package] parse, offline) and a ROBUST
+      # JSON edit (jq, falling back to python3 json) — never brittle text
+      # munging. Skip gracefully when package.json is absent (non-JS workspace).
+      if [ ! -f package.json ]; then
+        echo "step-14c: no package.json present; skipping npm version sync (non-JS workspace)"
+        exit 0
+      fi
+      if [ ! -f Cargo.toml ]; then
+        echo "step-14c: no Cargo.toml present; cannot determine workspace version; skipping"
+        exit 0
+      fi
+      # Read [workspace.package].version robustly: a SCOPED parse of only the
+      # [workspace.package] table (offline, network-free). This is NOT an
+      # unscoped grep of the first `version =` line, which would pick up an
+      # unrelated table. As a defensive fallback, prefer `cargo metadata
+      # --offline` if the scoped parse yields nothing.
+      WS_VERSION="$(awk -F'"' '
+        /^\[workspace\.package\]/ { in_ws = 1; next }
+        /^\[/ { in_ws = 0 }
+        in_ws && /^[[:space:]]*version[[:space:]]*=/ { print $2; exit }
+      ' Cargo.toml)"
+      if [ -z "${WS_VERSION:-}" ] && command -v cargo >/dev/null 2>&1; then
+        WS_VERSION="$(cargo metadata --no-deps --format-version=1 --offline 2>/dev/null \
+          | jq -r 'first(.packages[] | select(.source == null) | .version) // empty' 2>/dev/null || true)"
+      fi
+      if [ -z "${WS_VERSION:-}" ]; then
+        echo "step-14c: ERROR: could not read [workspace.package].version from Cargo.toml" >&2
+        exit 1
+      fi
+      echo "step-14c: syncing package.json version to workspace version ${WS_VERSION}"
+      if command -v jq >/dev/null 2>&1; then
+        _tmp="$(mktemp)"
+        jq --arg v "$WS_VERSION" '.version = $v' package.json > "$_tmp"
+        mv "$_tmp" package.json
+      else
+        WS_VERSION="$WS_VERSION" python3 -c 'import json, os; p = "package.json"; d = json.load(open(p, encoding="utf-8")); d["version"] = os.environ["WS_VERSION"]; open(p, "w", encoding="utf-8").write(json.dumps(d, indent=2) + "\n")'
+      fi
+
   - id: "step-14g-artifact-guard"
     type: "bash"
     condition: "goal_already_met != 'true' && terminal_state.terminal_success != 'true' && terminal_state.should_publish == 'true'"
