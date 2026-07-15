@@ -88,6 +88,24 @@ pub(super) fn validate_hook_command_string(cmd: &str) -> Result<()> {
     Ok(())
 }
 
+/// Select the STABLE deployed `amplihack-hooks` path from a deployment set.
+///
+/// This is the pure selection seam for issue #911: Copilot hook registration
+/// must bake the deployed `~/.local/bin/amplihack-hooks` path (returned by
+/// [`deploy_binaries`]) rather than the transient source build artifact
+/// (`<cwd>/target/debug/amplihack-hooks`) that [`find_hooks_binary`] can
+/// resolve when installing from a worktree. Selection keys strictly on the
+/// exact `amplihack-hooks` file name so ordering changes or stray build paths
+/// can never be chosen. An absent entry is a hard error — baking a guessed
+/// path would reintroduce the exit-127 outage.
+pub(super) fn deployed_hooks_binary(deployed: &[PathBuf]) -> Result<PathBuf> {
+    deployed
+        .iter()
+        .find(|p| p.file_name().is_some_and(|name| name == "amplihack-hooks"))
+        .cloned()
+        .context("no amplihack-hooks entry found in the deployed binary set")
+}
+
 /// Copy the Rust binaries to `~/.local/bin` with 0o755 perms.
 /// Emits a PATH advisory if `~/.local/bin` is not in `$PATH`.
 /// Returns the list of deployed paths for the manifest.

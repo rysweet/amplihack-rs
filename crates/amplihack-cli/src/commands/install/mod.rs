@@ -21,7 +21,7 @@ pub(crate) mod version_stamp;
 #[cfg(test)]
 mod tests;
 
-use binary::{deploy_binaries, find_hooks_binary};
+use binary::{deploy_binaries, deployed_hooks_binary, find_hooks_binary};
 use bundle_compat::validate_framework_bundle_compatibility;
 use clone::{download_and_extract_framework_repo, find_bundled_framework_root};
 use directories::*;
@@ -362,7 +362,13 @@ fn local_install(
         }
     }
 
-    match copilot_plugin::register_copilot_plugin(repo_root, &hooks_bin)
+    // Issue #911: Copilot hooks must reference the STABLE deployed binary
+    // (~/.local/bin/amplihack-hooks), not the transient source build path that
+    // find_hooks_binary() can resolve from a worktree. Claude's settings.json
+    // (above) keeps hooks_bin because Copilot 1.0.71's fail-closed behavior is
+    // the outage trigger; scope the change to the Copilot call site.
+    let deployed_hooks_bin = deployed_hooks_binary(&deployed_binaries)?;
+    match copilot_plugin::register_copilot_plugin(repo_root, &deployed_hooks_bin)
         .context("failed to register Copilot CLI plugin")?
     {
         true => {
