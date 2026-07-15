@@ -203,6 +203,36 @@ fn prepare_workspace_still_fails_for_non_git_paths_when_auto_init_disabled() {
 }
 
 #[test]
+fn prepare_workspace_fails_closed_when_repo_path_is_invalid() {
+    // Security (#900): a bad REPO_PATH must NOT let step-01 fall through to the
+    // recipe runner's cwd, where auto-init could create .git in the wrong
+    // directory. The guarded `cd` must fail closed with a non-zero exit.
+    let parent = tempfile::tempdir().expect("tempdir");
+    let missing = parent.path().join("does-not-exist");
+    let output = run_prepare_workspace_real_git(&missing, &[]);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "invalid REPO_PATH must fail closed instead of continuing; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("cannot enter REPO_PATH"),
+        "fail-closed cd guard must emit an explicit error; stderr:\n{stderr}"
+    );
+    assert!(
+        !missing.join(".git").exists(),
+        "no repository may be initialized when REPO_PATH is invalid"
+    );
+    // Nothing should have been auto-initialized in the parent dir either.
+    assert!(
+        !parent.path().join(".git").exists(),
+        "auto-init must not leak into the parent directory when cd fails"
+    );
+}
+
+#[test]
 fn prepare_workspace_succeeds_in_existing_checkout() {
     let temp = tempfile::tempdir().expect("tempdir");
     // Create a real existing checkout.

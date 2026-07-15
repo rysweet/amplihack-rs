@@ -73,7 +73,10 @@ steps:
   - id: "step-01-prepare-workspace"
     type: "bash"
     command: |
-      cd "$REPO_PATH"
+      # Fail-closed: a bad/unset REPO_PATH must NOT silently land us in the
+      # recipe runner's cwd, where auto-init (#900) could create .git in the
+      # wrong directory. Refuse to proceed if we cannot enter REPO_PATH.
+      cd "$REPO_PATH" || { echo "ERROR: step-01-prepare-workspace cannot enter REPO_PATH='$REPO_PATH'" >&2; exit 1; }
       echo "=== Step 1: Preparing Workspace ==="
       echo ""
       echo "Current directory: $(pwd)"
