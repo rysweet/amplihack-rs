@@ -171,13 +171,6 @@ fn optional_value_field(map: &JsonMap, names: &[&str]) -> Option<Value> {
     find_field(map, names).cloned()
 }
 
-fn required_value_field<E>(map: &JsonMap, names: &[&str], event: &str) -> Result<Value, E>
-where
-    E: DeError,
-{
-    optional_value_field(map, names).ok_or_else(|| E::custom(missing_field_message(event, names)))
-}
-
 /// Extract the tool-input value, normalizing host-specific encodings.
 ///
 /// Claude Code / Amplifier send `tool_input` as a JSON object. GitHub Copilot
@@ -195,15 +188,20 @@ fn required_tool_input_field<E>(map: &JsonMap, names: &[&str], event: &str) -> R
 where
     E: DeError,
 {
-    let value = required_value_field(map, names, event)?;
+    // Borrow the field instead of cloning eagerly: on the Copilot path the value
+    // is a JSON-encoded string that we parse (not clone), so cloning here would
+    // allocate a string only to discard it. The object pass-through is the only
+    // case that needs an owned clone.
+    let value =
+        find_field(map, names).ok_or_else(|| E::custom(missing_field_message(event, names)))?;
     match value {
-        Value::String(raw) => serde_json::from_str::<Value>(&raw).map_err(|err| {
+        Value::String(raw) => serde_json::from_str::<Value>(raw).map_err(|err| {
             E::custom(format!(
                 "{event} payload field `{}` contained an invalid JSON string: {err}",
                 names.join("`/`")
             ))
         }),
-        other => Ok(other),
+        other => Ok(other.clone()),
     }
 }
 
