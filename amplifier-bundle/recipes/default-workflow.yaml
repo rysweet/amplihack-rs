@@ -94,6 +94,8 @@ context:
   allow_no_op: false
   # Skip pre-agent project validation (npm test, build) — default true to avoid blocking on large codebases (see #453)
   skip_pre_agent_validation: "true"
+  # Auto-initialize a git repo when repo_path is not a work tree — default true so repo-creation tasks proceed; set "false" for a fail-closed opt-out (see #900)
+  auto_init_repo: "true"
   design_spec: ""
   documentation: ""
   test_spec: ""
@@ -127,9 +129,10 @@ context:
   verification_terminal_evidence: ""
 
 steps:
-  # Git precondition is enforced in workflow-prep/step-01 before the first
-  # direct git operation: default-workflow requires a git repo at <cwd>; either
-  # `git init` or rerun from a checkout.
+  # Git precondition handling lives in workflow-prep/step-01: when <cwd> is not
+  # a git work tree it auto-initializes a fresh repo (issue #900) so repo-
+  # creation tasks proceed. Set auto_init_repo="false" for a fail-closed opt-out
+  # that restores the historical hard-fail.
   - id: "workflow-prep"
     type: "recipe"
     recipe: "workflow-prep"
