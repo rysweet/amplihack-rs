@@ -57,6 +57,32 @@ fn runtime() -> std::io::Result<tokio::runtime::Runtime> {
         .build()
 }
 
+/// Run one transport future under the shared [`NETWORK_TIMEOUT`], mapping both a
+/// timeout and the inner I/O error into a single `anyhow` error tagged with
+/// `what`. Keeps the lifecycle steps free of repeated timeout boilerplate.
+async fn with_timeout<F, T>(what: &str, fut: F) -> anyhow::Result<T>
+where
+    F: std::future::Future<Output = std::io::Result<T>>,
+{
+    match tokio::time::timeout(NETWORK_TIMEOUT, fut).await {
+        Ok(inner) => inner.map_err(anyhow::Error::from),
+        Err(_) => Err(anyhow::anyhow!("{what} timed out")),
+    }
+}
+
+/// Load the Signal config, treating an unloadable/absent config as "the channel
+/// is simply not configured" (disabled) rather than an operational failure.
+/// Returns `None` to mean "do nothing, successfully".
+fn load_config_or_disabled() -> Option<SignalConfig> {
+    match SignalConfig::load() {
+        Ok(c) => Some(c),
+        Err(err) => {
+            tracing::debug!("signal channel disabled (config not loaded): {err}");
+            None
+        }
+    }
+}
+
 /// Normalize a session id, treating a missing or blank id as "no session".
 /// (`sanitize_session_id` panics on an empty id, so callers must filter first.)
 fn normalize_session_id(session_id: Option<&str>) -> Option<&str> {
@@ -83,12 +109,8 @@ pub fn on_session_start(session_id: Option<&str>, warnings: &mut Vec<String>) {
 fn start(session_id: &str) -> anyhow::Result<()> {
     // A missing/invalid config simply means the channel is not configured;
     // treat it as "disabled" rather than an operational warning.
-    let config = match SignalConfig::load() {
-        Ok(c) => c,
-        Err(err) => {
-            tracing::debug!("signal channel disabled (config not loaded): {err}");
-            return Ok(());
-        }
+    let Some(config) = load_config_or_disabled() else {
+        return Ok(());
     };
 
     let dirs = ProjectDirs::from_cwd();
@@ -98,29 +120,17 @@ fn start(session_id: &str) -> anyhow::Result<()> {
     let rt = runtime()?;
     let group_id = rt.block_on(async {
         let mut transport =
-            tokio::time::timeout(NETWORK_TIMEOUT, SignalTransport::connect(&config.endpoint))
-                .await
-                .map_err(|_| anyhow::anyhow!("connect timed out"))??;
+            with_timeout("connect", SignalTransport::connect(&config.endpoint)).await?;
 
-        let group_id = if config.reuse_rolling_group {
-            match &config.rolling_group_id {
-                Some(existing) => GroupId(existing.clone()),
-                None => tokio::time::timeout(NETWORK_TIMEOUT, transport.create_group(&group_name))
-                    .await
-                    .map_err(|_| anyhow::anyhow!("create_group timed out"))??,
-            }
-        } else {
-            tokio::time::timeout(NETWORK_TIMEOUT, transport.create_group(&group_name))
-                .await
-                .map_err(|_| anyhow::anyhow!("create_group timed out"))??
+        // Reuse a pinned rolling group when configured; otherwise create a
+        // fresh per-session group (rolling mode without a pinned id also
+        // creates one on first use).
+        let group_id = match (config.reuse_rolling_group, &config.rolling_group_id) {
+            (true, Some(existing)) => GroupId(existing.clone()),
+            _ => with_timeout("create_group", transport.create_group(&group_name)).await?,
         };
 
-        tokio::time::timeout(
-            NETWORK_TIMEOUT,
-            transport.send_group(&group_id, "session started"),
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!("send timed out"))??;
+        with_timeout("send", transport.send_group(&group_id, "session started")).await?;
 
         Ok::<GroupId, anyhow::Error>(group_id)
     })?;
@@ -231,12 +241,8 @@ pub fn on_stop(session_id: &str) {
 }
 
 fn stop(session_id: &str) -> anyhow::Result<()> {
-    let config = match SignalConfig::load() {
-        Ok(c) => c,
-        Err(err) => {
-            tracing::debug!("signal channel disabled (config not loaded): {err}");
-            return Ok(());
-        }
+    let Some(config) = load_config_or_disabled() else {
+        return Ok(());
     };
 
     let dirs = ProjectDirs::from_cwd();
@@ -257,20 +263,15 @@ fn stop(session_id: &str) -> anyhow::Result<()> {
     let rt = runtime()?;
     rt.block_on(async {
         let mut transport =
-            tokio::time::timeout(NETWORK_TIMEOUT, SignalTransport::connect(&config.endpoint))
-                .await
-                .map_err(|_| anyhow::anyhow!("connect timed out"))??;
+            with_timeout("connect", SignalTransport::connect(&config.endpoint)).await?;
 
-        let _ = tokio::time::timeout(
-            NETWORK_TIMEOUT,
-            transport.send_group(&group_id, "session complete"),
-        )
-        .await;
+        // Best-effort: a failed summary post or leave must not block teardown.
+        let _ = with_timeout("send", transport.send_group(&group_id, "session complete")).await;
 
         // A rolling group is intentionally reused across sessions; only leave a
         // per-session group.
         if !config.reuse_rolling_group {
-            let _ = tokio::time::timeout(NETWORK_TIMEOUT, transport.quit_group(&group_id)).await;
+            let _ = with_timeout("quit_group", transport.quit_group(&group_id)).await;
         }
         Ok::<(), anyhow::Error>(())
     })?;
