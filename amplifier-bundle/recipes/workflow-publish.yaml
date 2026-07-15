@@ -159,7 +159,9 @@ steps:
         jq --arg v "$WS_VERSION" '.version = $v' package.json > "$_tmp"
         mv "$_tmp" package.json
       elif command -v python3 >/dev/null 2>&1; then
-        WS_VERSION="$WS_VERSION" python3 -c 'import json, os; p = "package.json"; d = json.load(open(p, encoding="utf-8")); d["version"] = os.environ["WS_VERSION"]; f = open(p, "w", encoding="utf-8"); json.dump(d, f, indent=2); f.write("\n"); f.close()'
+        # Atomic replace (temp + os.replace) to match the jq path: a crash
+        # mid-write must never truncate/corrupt package.json in a publish path.
+        WS_VERSION="$WS_VERSION" python3 -c 'import json, os, tempfile; p = "package.json"; d = json.load(open(p, encoding="utf-8")); d["version"] = os.environ["WS_VERSION"]; fd, tmp = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(p)) or ".", prefix=".package.json."); f = os.fdopen(fd, "w", encoding="utf-8"); json.dump(d, f, indent=2); f.write("\n"); f.close(); os.replace(tmp, p)'
       else
         echo "ERROR: step-14c needs jq or python3 to edit package.json safely (no sed on JSON)" >&2
         exit 2
