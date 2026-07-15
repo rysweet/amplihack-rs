@@ -41,12 +41,13 @@ allowlist = [
     "+15551230002",
 ]
 
-# OPTIONAL. Expected device id for the anti-spoofing gate. Inbound messages
-# are only accepted when they originate from this device id of the operator's
-# account. Defaults to 1 (the primary device) when unset; set it only if your
-# operator consistently sends from a different fixed device id.
+# OPTIONAL. signal-cli's OWN linked-device id (must be >= 2). Used only to
+# reject the bot's own synced-back messages as echoes. The primary-phone
+# (device 1) gate is the main loop guard and needs no configuration, so leave
+# this unset unless you know your signal-cli linked-device id and want the
+# extra explicit echo rejection. A value < 2 is rejected at config load.
 # ENV override: AMPLIHACK_SIGNAL_OWN_DEVICE_ID
-# own_device_id = 1
+# own_device_id = 2
 
 # ---------------------------------------------------------------------------
 # Group strategy (optional).

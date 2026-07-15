@@ -51,7 +51,10 @@ pub struct SignalConfig {
     pub account: String,
     /// Permitted E.164 inbound senders. **Empty ⇒ fail-closed (deny all).**
     pub allowlist: Vec<String>,
-    /// Expected sender device id for the anti-spoof gate (default `1`).
+    /// signal-cli's OWN linked-device id (must be `>= 2`) if configured, used to
+    /// reject the account's own synced-back messages as echoes. Optional: the
+    /// primary-phone (device `1`) gate is the main loop guard and needs no
+    /// configuration.
     pub own_device_id: Option<u32>,
     /// Reuse one rolling group across sessions instead of per-session groups.
     pub reuse_rolling_group: bool,
@@ -60,12 +63,6 @@ pub struct SignalConfig {
 }
 
 impl SignalConfig {
-    /// The effective device id used by the gate: `own_device_id` or `1`.
-    #[must_use]
-    pub fn effective_device_id(&self) -> u32 {
-        self.own_device_id.unwrap_or(1)
-    }
-
     /// Load configuration from the process environment and optional TOML file.
     ///
     /// Reads `std::env`, then (if `AMPLIHACK_SIGNAL_CONFIG` is set) the TOML
@@ -169,6 +166,19 @@ impl SignalConfig {
                 .map(|i| i as u32),
         };
 
+        // signal-cli's own linked-device id, when configured, must be a real
+        // linked device (`>= 2`). Device `1` is the operator's primary phone and
+        // must never be treated as the bot's own echo source.
+        match own_device_id {
+            Some(d) if d < 2 => {
+                return Err(ConfigError::InvalidNumber {
+                    key: ENV_OWN_DEVICE_ID,
+                    value: d.to_string(),
+                });
+            }
+            _ => {}
+        }
+
         let reuse_rolling_group = match env.get(ENV_REUSE_ROLLING_GROUP) {
             Some(v) => is_truthy(v),
             None => toml_table
@@ -265,17 +275,6 @@ mod tests {
     }
 
     #[test]
-    fn effective_device_id_defaults_to_one() {
-        let e = env(&[
-            (ENV_ENDPOINT, "127.0.0.1:7583"),
-            (ENV_ACCOUNT, "+15551230000"),
-            (ENV_ALLOWLIST, "+15551230001"),
-        ]);
-        let cfg = SignalConfig::from_sources(&e, None).unwrap();
-        assert_eq!(cfg.effective_device_id(), 1);
-    }
-
-    #[test]
     fn own_device_id_parsed_from_env() {
         let e = env(&[
             (ENV_ENDPOINT, "127.0.0.1:7583"),
@@ -285,7 +284,21 @@ mod tests {
         ]);
         let cfg = SignalConfig::from_sources(&e, None).unwrap();
         assert_eq!(cfg.own_device_id, Some(3));
-        assert_eq!(cfg.effective_device_id(), 3);
+    }
+
+    #[test]
+    fn own_device_id_below_two_is_error() {
+        let e = env(&[
+            (ENV_ENDPOINT, "127.0.0.1:7583"),
+            (ENV_ACCOUNT, "+15551230000"),
+            (ENV_ALLOWLIST, "+15551230001"),
+            (ENV_OWN_DEVICE_ID, "1"),
+        ]);
+        let err = SignalConfig::from_sources(&e, None).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::InvalidNumber { key, .. } if key == ENV_OWN_DEVICE_ID),
+            "expected InvalidNumber for own_device_id, got {err:?}"
+        );
     }
 
     #[test]

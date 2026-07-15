@@ -49,7 +49,7 @@ instructions back into the running session.
           │                                             ┌────────────────────────┐
           │  file inbox (AtomicJsonFile) ◄───────────── │ signal-subscriber       │
           │        ▲                                    │ (long-lived connection) │
-          │        │ drain                              │ allowlist + own_device  │
+          │        │ drain                              │ allowlist + gate        │
    PostToolUse /   │                                    │ + groupId + echo-suppr. │
    UserPromptSubmit│  additionalContext                 └────────────────────────┘
           │        │
@@ -64,10 +64,9 @@ The channel is wired through amplihack's existing **hooks** pipeline
    state, posts a "session started" message, and spawns a **detached,
    long-lived subscriber process** whose PID is persisted.
 2. The **subscriber** holds a single JSON-RPC connection, filters messages to
-   this session's `groupId`, applies the gate (allowlist + expected device id
-   `own_device_id` (default `1`) + echo
-   suppression), and appends accepted instructions to a **per-session file
-   inbox**.
+   this session's `groupId`, applies the gate (allowlist + setup-aware
+   authorization + echo suppression), and appends accepted instructions to a
+   **per-session file inbox**.
 3. **PostToolUse** and **UserPromptSubmit** hooks drain the file inbox and
    inject any queued operator instructions into the agent as
    `hookSpecificOutput.additionalContext`.
@@ -140,7 +139,7 @@ environment variable  >  TOML file (AMPLIHACK_SIGNAL_CONFIG)  >  error
 | Endpoint | `AMPLIHACK_SIGNAL_ENDPOINT` | `endpoint` | ✅ | `host:port` of the signal-cli JSON-RPC daemon |
 | Account | `AMPLIHACK_SIGNAL_ACCOUNT` | `account` | ✅ | E.164 (`+` then digits) — the number amplihack sends **as** |
 | Allowlist | `AMPLIHACK_SIGNAL_ALLOWLIST` | `allowlist` | ✅ | Operator numbers allowed to send inbound. Env = comma-separated E.164. **Empty ⇒ fail-closed (deny all inbound).** |
-| Own device id | `AMPLIHACK_SIGNAL_OWN_DEVICE_ID` | `own_device_id` | optional | Expected sender device id for the anti-spoof gate. **Defaults to `1`** (primary device) when unset; set it only if your operator sends from a different fixed device id |
+| Own device id | `AMPLIHACK_SIGNAL_OWN_DEVICE_ID` | `own_device_id` | optional | signal-cli's **own** linked-device id (must be `>= 2`). Only used to reject the bot's own synced-back echoes explicitly; the primary-phone (device `1`) gate is the main loop guard and needs no configuration. Leave unset unless you know your signal-cli device id |
 | Reuse rolling group | `AMPLIHACK_SIGNAL_REUSE_ROLLING_GROUP` | `reuse_rolling_group` | optional | `true`/`1` reuses one long-lived group instead of per-session groups |
 | Rolling group id | `AMPLIHACK_SIGNAL_ROLLING_GROUP_ID` | `rolling_group_id` | optional | Existing group id to reuse when rolling mode is on |
 | Config file path | `AMPLIHACK_SIGNAL_CONFIG` | — | optional | Path to the TOML file below |
@@ -163,7 +162,7 @@ export AMPLIHACK_SIGNAL_CONFIG=/path/to/signal-config.toml
 endpoint = "127.0.0.1:7583"
 account  = "+15551230000"
 allowlist = ["+15551230001", "+15551230002"]
-# own_device_id = 1
+# own_device_id = 2
 # reuse_rolling_group = false
 # rolling_group_id = "group.aBcDeF0123456789=="
 ```
@@ -205,11 +204,16 @@ an existing group instead of creating a new one on first use.
    handling both `dataMessage.groupInfo.groupId` and
    `syncMessage.sentMessage.message.groupInfo` — and keeps only messages for
    this session's `groupId`.
-3. It applies the gate: **allowlist** membership, **expected device id**
-   (`own_device_id`, default `1`), `groupId`
-   match, and **echo suppression** (recently-sent outbound bodies are ignored
-   within a bounded TTL window so the bot never re-ingests its own
-   synced-back messages).
+3. It applies the gate: **allowlist** membership, **setup-aware
+   authorization**, `groupId` match, and **echo suppression** (recently-sent
+   outbound bodies are ignored within a bounded TTL window so the bot never
+   re-ingests its own synced-back messages). Setup-aware authorization supports
+   both deployment shapes: on a **single-number linked-device** setup the
+   operator types on their **primary phone**, so the message arrives as the
+   account's own `syncMessage` from `sourceDevice == 1` and is accepted; on a
+   **dedicated-number** setup the operator commands from a separate allowlisted
+   number via a normal `dataMessage`. signal-cli's own sends sync back from a
+   linked device (`>= 2`) and are rejected.
 4. Accepted instruction text is appended to a **per-session file inbox**, a
    JSON document managed by `AtomicJsonFile` (crash-safe, lock-guarded). The
    inbox path is derived through `amplihack_types::paths::sanitize_session_id`
@@ -266,8 +270,11 @@ Concretely:
   file write, or any other mutating action on its own. The agent may choose to
   act on the advice, subject to all normal amplihack safety hooks.
 - **Fail-closed gate.** Inbound requires *all* of: sender on the allowlist,
-  sender device id equal to the expected device (`own_device_id`, default `1`),
-  and matching session `groupId`. An **empty allowlist denies everything**.
+  matching session `groupId`, and setup-appropriate authorization — an account
+  `syncMessage` is accepted only from the **primary phone** (`sourceDevice == 1`)
+  and never from signal-cli's own linked device, while a separate allowlisted
+  number is accepted via a normal `dataMessage`. An **empty allowlist denies
+  everything**.
 - **No self-ingestion.** Echo suppression (bounded TTL window over recent
   outbound bodies) prevents the bot from re-processing its own messages that
   Signal syncs back to the account.
@@ -314,7 +321,7 @@ assert!(cfg.allowlist.iter().all(|n| n.starts_with('+')));
 | `endpoint` | `String` | `host:port` of the daemon |
 | `account` | `String` | E.164 sending account |
 | `allowlist` | `Vec<String>` | Permitted E.164 senders (empty ⇒ deny all inbound) |
-| `own_device_id` | `Option<u32>` | Optional device gate |
+| `own_device_id` | `Option<u32>` | signal-cli's own linked-device id (`>= 2`) for explicit echo rejection |
 | `reuse_rolling_group` | `bool` | Use one rolling group |
 | `rolling_group_id` | `Option<String>` | Bind rolling mode to an existing group |
 
@@ -353,9 +360,10 @@ unit tests over realistic JSON.
 
 ### `gating`
 
-Fail-closed decision function combining allowlist + expected device id
-(`own_device_id`, default `1`) + `groupId` match + bounded-TTL echo
-suppression.
+Fail-closed decision function combining allowlist + `groupId` match +
+setup-aware authorization (accept the account's own `syncMessage` only from the
+primary phone `sourceDevice == 1`; accept a separate allowlisted number via
+`dataMessage`) + bounded-TTL echo suppression.
 
 ```rust
 use amplihack_signal::gating::Gate;
