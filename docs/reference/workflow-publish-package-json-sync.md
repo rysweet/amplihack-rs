@@ -112,18 +112,26 @@ fi
 
 echo "step-14c: syncing package.json version to $VERSION (offline)"
 if command -v jq >/dev/null 2>&1; then
-  tmp=$(mktemp)
+  # Temp file in the SAME directory so `mv` is an atomic same-fs rename;
+  # preserve the original file mode (e.g. 0644) so CI can still read it.
+  tmp=$(mktemp ./package.json.XXXXXX)
+  trap 'rm -f "$tmp"' EXIT
+  chmod --reference=package.json "$tmp" 2>/dev/null || true
   jq --arg v "$VERSION" '.version = $v' package.json > "$tmp"  # jq emits a trailing newline
   mv "$tmp" package.json
+  trap - EXIT
 else
-  python3 - "$VERSION" <<'PY'
-import json, sys
-v = sys.argv[1]
-with open("package.json") as f: data = json.load(f)
-data["version"] = v
-with open("package.json", "w") as f:
-    json.dump(data, f, indent=2); f.write("\n")
-PY
+  # Same atomic contract via os.replace on a same-dir temp file.
+  VERSION="$VERSION" python3 -c 'import json, os, tempfile
+p = "package.json"
+d = json.load(open(p, encoding="utf-8"))
+d["version"] = os.environ["VERSION"]
+_dir = os.path.dirname(os.path.abspath(p))
+_fd, _tmp = tempfile.mkstemp(dir=_dir, prefix="package.json.")
+os.write(_fd, (json.dumps(d, indent=2) + "\n").encode("utf-8"))
+os.close(_fd)
+os.chmod(_tmp, os.stat(p).st_mode & 0o7777)
+os.replace(_tmp, p)'
 fi
 git diff --stat -- package.json || true
 ```
@@ -160,9 +168,13 @@ path produces a version, the step skips cleanly (`exit 0`).
 '.version = $v'` sets the field structurally, treating the version as data
 (never string-interpolated into the document), which is injection-safe. The
 `python3`/`node` fallbacks use the same load-set-dump approach. All paths write
-to a temp file and atomically replace `package.json`, preserving 2-space
-indentation and a trailing newline. `sed`/`grep` on JSON is explicitly
-prohibited because it is brittle against formatting and key ordering.
+to a temp file **in the same directory** and replace `package.json` via a
+same-filesystem rename (`mv`/`os.replace`) — atomic on the same filesystem — so
+a crash mid-write can never leave a truncated file. The original file mode
+(e.g. `0644`) is preserved so CI and downstream tooling can still read it.
+Both paths preserve 2-space indentation and a trailing newline. `sed`/`grep` on
+JSON is explicitly prohibited because it is brittle against formatting and key
+ordering.
 
 ## Configuration
 

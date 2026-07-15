@@ -153,7 +153,10 @@ steps:
         mv "$_tmp" package.json
         trap - EXIT
       else
-        WS_VERSION="$WS_VERSION" python3 -c 'import json, os; p = "package.json"; d = json.load(open(p, encoding="utf-8")); d["version"] = os.environ["WS_VERSION"]; open(p, "w", encoding="utf-8").write(json.dumps(d, indent=2) + "\n")'
+        # Same atomic contract as the jq path: write a temp file IN THE SAME
+        # DIRECTORY (so os.replace is an atomic same-filesystem rename) and copy
+        # the original file mode so permissions (e.g. 0644) are preserved.
+        WS_VERSION="$WS_VERSION" python3 -c 'import json, os, tempfile; p = "package.json"; d = json.load(open(p, encoding="utf-8")); d["version"] = os.environ["WS_VERSION"]; _dir = os.path.dirname(os.path.abspath(p)); _fd, _tmp = tempfile.mkstemp(dir=_dir, prefix="package.json."); os.write(_fd, (json.dumps(d, indent=2) + "\n").encode("utf-8")); os.close(_fd); os.chmod(_tmp, os.stat(p).st_mode & 0o7777); os.replace(_tmp, p)'
       fi
 
   - id: "step-14g-artifact-guard"
