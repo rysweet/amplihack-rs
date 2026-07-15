@@ -155,7 +155,11 @@ steps:
       # trailing newline by default, preserving 2-space indentation); fall back
       # to python3, writing a trailing newline.
       if command -v jq >/dev/null 2>&1; then
-        _tmp=$(mktemp)
+        # Same-directory temp + mv = atomic rename on one filesystem. A bare
+        # mktemp defaults to $TMPDIR, so `mv` could cross filesystems and
+        # degrade to copy+unlink (non-atomic) — matching the python3 fallback's
+        # same-dir guarantee keeps a mid-write crash from corrupting package.json.
+        _tmp=$(mktemp ./.package.json.XXXXXX)
         jq --arg v "$WS_VERSION" '.version = $v' package.json > "$_tmp"
         mv "$_tmp" package.json
       elif command -v python3 >/dev/null 2>&1; then
