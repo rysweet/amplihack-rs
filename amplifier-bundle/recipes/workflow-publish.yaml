@@ -95,6 +95,75 @@ steps:
         echo "step-14b: no Cargo.toml/Cargo.lock present; skipping lockfile sync (non-Rust workspace)"
       fi
 
+  - id: "step-14c-sync-package-json"
+    type: "bash"
+    condition: "goal_already_met != 'true' && terminal_state.terminal_success != 'true' && terminal_state.should_publish == 'true'"
+    command: |
+      set -euo pipefail
+      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-${REPO_PATH:-}}}"
+      cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-14c requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
+      # Issue #925: step-14 bumps [workspace.package].version in Cargo.toml and
+      # step-14b keeps Cargo.lock in sync, but NOTHING synced the root
+      # package.json "version". The contract test
+      # package_json_version_matches_root_workspace_version requires
+      # package.json.version == [workspace.package].version, so any bump left
+      # package.json stale and CI Test failed deterministically (exit 100).
+      # Sync it here in the worktree AFTER the bump, offline (no network, like
+      # step-14b), using a ROBUST version read + ROBUST JSON edit. This step is
+      # idempotent: safe to run even when no bump occurred. Skip gracefully when
+      # package.json is absent (non-JS workspace).
+      if [ ! -f package.json ]; then
+        echo "step-14c: no package.json present; skipping version sync (non-JS workspace)"
+        exit 0
+      fi
+      if [ ! -f Cargo.toml ]; then
+        echo "step-14c: no Cargo.toml present; cannot resolve workspace version; skipping"
+        exit 0
+      fi
+      # Read [workspace.package].version ROBUSTLY. Prefer `cargo metadata`
+      # (offline, network-free like step-14b): workspace members inherit
+      # version.workspace = true, so the local (source == null) packages share
+      # the workspace version. Fall back to a SCOPED [workspace.package] parse
+      # (awk between the section header and the next table) — never an unscoped
+      # grep of `version`, which the version-contract tests explicitly forbid.
+      WS_VERSION=""
+      if command -v cargo >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+        WS_VERSION=$(cargo metadata --no-deps --format-version=1 --offline 2>/dev/null \
+          | jq -r '[.packages[] | select(.source == null) | .version] | unique | .[0] // empty' \
+          2>/dev/null || true)
+      fi
+      if [ -z "$WS_VERSION" ]; then
+        WS_VERSION=$(awk '
+          /^\[workspace\.package\]/ { in_section = 1; next }
+          /^\[/ { in_section = 0 }
+          in_section && /^[[:space:]]*version[[:space:]]*=/ {
+            line = $0
+            sub(/^[^"]*"/, "", line)
+            sub(/".*$/, "", line)
+            print line
+            exit
+          }
+        ' Cargo.toml)
+      fi
+      if [ -z "$WS_VERSION" ]; then
+        echo "ERROR: step-14c could not resolve [workspace.package].version from Cargo.toml" >&2
+        exit 1
+      fi
+      echo "step-14c: syncing package.json version to workspace version ${WS_VERSION} (offline)"
+      # Edit package.json ROBUSTLY (never sed/grep on JSON). Prefer jq (emits a
+      # trailing newline by default, preserving 2-space indentation); fall back
+      # to python3, writing a trailing newline.
+      if command -v jq >/dev/null 2>&1; then
+        _tmp=$(mktemp)
+        jq --arg v "$WS_VERSION" '.version = $v' package.json > "$_tmp"
+        mv "$_tmp" package.json
+      elif command -v python3 >/dev/null 2>&1; then
+        WS_VERSION="$WS_VERSION" python3 -c 'import json, os; p = "package.json"; d = json.load(open(p, encoding="utf-8")); d["version"] = os.environ["WS_VERSION"]; f = open(p, "w", encoding="utf-8"); json.dump(d, f, indent=2); f.write("\n"); f.close()'
+      else
+        echo "ERROR: step-14c needs jq or python3 to edit package.json safely (no sed on JSON)" >&2
+        exit 2
+      fi
+
   - id: "step-14g-artifact-guard"
     type: "bash"
     condition: "goal_already_met != 'true' && terminal_state.terminal_success != 'true' && terminal_state.should_publish == 'true'"
