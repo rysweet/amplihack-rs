@@ -250,6 +250,7 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "publish-terminal-state",
     "step-14-bump-version",
     "step-14b-sync-lockfile",
+    "step-14c-sync-package-json",
     "step-14g-artifact-guard",
     "step-15-commit-push",
     "step-16-create-draft-pr",
