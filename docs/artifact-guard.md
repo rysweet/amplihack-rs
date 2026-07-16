@@ -1,6 +1,13 @@
 # Artifact Guard
 
-**Status:** Implemented.
+**Status:** Implemented. The base guard (staged, tracked, and untracked
+scanning across all modes) is implemented, and the issue #928 *ignored-present
+narrowing* documented here — restricting ignored-present scans to the
+`worktree` and `all` modes via `ArtifactGuardMode::scans_ignored_present()` — is
+now in effect. `pre-commit` and `pre-publish` no longer block on ignored-present
+artifacts. See
+[Worked example](#worked-example-cache-leftovers-do-not-block-a-commit-or-publish)
+for the behavior.
 
 Artifact Guard prevents generated, runtime, cache, and build artifacts from
 leaking into the parent repository worktree during agent and plugin workflows.
@@ -19,6 +26,7 @@ moves, unstages, or rewrites files.
 - [Workflow runtime cleanup preflight](#workflow-runtime-cleanup-preflight)
 - [Intended Rust API](#intended-rust-api)
 - [Fixing violations](#fixing-violations)
+- [Worked example: cache leftovers do not block a commit or publish](#worked-example-cache-leftovers-do-not-block-a-commit-or-publish)
 
 ## Behavior
 
@@ -26,16 +34,51 @@ Artifact Guard:
 
 1. Scan repo-relative paths only.
 2. Check staged paths before commit.
-3. Check tracked, untracked, and selected ignored-present artifact paths before
-   broad staging and workflow publication.
-4. Fail closed on invalid configuration, invalid paths, Git failures, and unsafe
+3. Check tracked and untracked paths before broad staging and workflow
+   publication.
+4. Check ignored-present artifact paths only in the `worktree` and `all` modes,
+   which are local-hygiene scans. The commit- and publication-gate modes
+   (`pre-commit`, `pre-publish`) never block on ignored-present artifacts.
+5. Fail closed on invalid configuration, invalid paths, Git failures, and unsafe
    allowlist entries.
-5. Print actionable remediation before exiting.
-6. Leave the repository unchanged.
+6. Print actionable remediation before exiting.
+7. Leave the repository unchanged.
 
-`.gitignore` reduces Git noise, but it is not an authorization mechanism. The
-guard may still report ignored-present dependency trees, runtime directories, or
-cache directories when those paths indicate parent-worktree pollution.
+### Ignored-present scope
+
+An *ignored-present* artifact is a path that exists in the worktree, is
+untracked, and is excluded by `.gitignore` (for example an untracked
+`.pytest_cache/` or `node_modules/` directory). Because Git will never stage,
+commit, or publish an ignored path, such a path cannot leak through a commit or
+a publication step. The guard therefore treats ignored-present artifacts as a
+**local-hygiene** concern, not a **commit/publish-gate** concern:
+
+| Mode | Purpose | Scans ignored-present? |
+| --- | --- | --- |
+| `pre-commit` | Block a commit | No |
+| `pre-publish` | Block a publication / broad-staging gate | No |
+| `staged` | Inspect the index only | No |
+| `worktree` | Local leftover hygiene | Yes |
+| `all` | Manual full safety scan | Yes |
+
+This is a deliberate fail-*open* narrowing for a class of paths that are outside
+the guard's threat model. Anything that could actually be committed or published
+— staged, tracked, or untracked-but-not-ignored paths — is still blocked
+fail-closed in every gate mode. In particular, an untracked cache directory that
+is **not** covered by `.gitignore` is still a violation under `pre-commit` and
+`pre-publish`, because it could be swept into a `git add -A`.
+
+Before this narrowing, a gitignored, untracked `.pytest_cache/` or
+`node_modules/` directory left behind by a normal test or install run caused
+`amplihack hygiene artifact-guard --mode pre-publish` (and `--mode pre-commit`)
+to fail closed at the end of a workflow, even though those directories could
+never be committed or published. See issue #928.
+
+`.gitignore` reduces Git noise, and it is not a general authorization mechanism:
+the `worktree` and `all` modes still report ignored-present dependency trees,
+runtime directories, or cache directories so you can clean up local
+parent-worktree pollution. The commit and publication gates simply do not treat
+that unreachable pollution as a blocking condition.
 
 `target/` is intentionally special-cased. Normal Rust commands create an ignored
 `target/` directory in the repository, and the guard must not make ordinary
@@ -69,14 +112,19 @@ amplihack hygiene artifact-guard \
 
 | Mode | Sources checked | Typical use |
 | --- | --- | --- |
-| `pre-commit` | Staged, tracked, untracked, and selected ignored-present artifact candidates | Local pre-commit hook |
-| `pre-publish` | Staged, tracked, untracked, and selected ignored-present artifact candidates | Workflow broad-staging and PR/finalize gates |
-| `all` | Staged, tracked, untracked, and selected ignored-present artifact candidates | Manual full safety scan |
+| `pre-commit` | Staged, tracked, and untracked (committable candidates) | Local pre-commit hook |
+| `pre-publish` | Staged, tracked, and untracked (committable candidates) | Workflow broad-staging and PR/finalize gates |
+| `all` | Staged, tracked, untracked, and ignored-present artifact candidates | Manual full safety scan |
 | `staged` | Staged paths only | Diagnose why a commit is blocked |
-| `worktree` | Tracked, untracked, and selected ignored-present artifact candidates | Check local leftovers before cleanup or staging |
+| `worktree` | Tracked, untracked, and ignored-present artifact candidates | Check local leftovers before cleanup or staging |
 
-Use `all` for safety gates. Use `staged` only for focused debugging because it
-does not detect ignored or untracked leftovers.
+`pre-commit` and `pre-publish` are commit/publish gates. They only scan paths
+that could actually reach a commit or publication (staged, tracked, and
+untracked-but-not-ignored), so gitignored cache leftovers such as
+`.pytest_cache/` or `node_modules/` never block them. Use `all` or `worktree`
+when you also want to surface ignored-present local leftovers for cleanup. Use
+`staged` only for focused debugging because it does not detect ignored or
+untracked leftovers.
 
 Exit codes:
 
@@ -86,7 +134,9 @@ Exit codes:
 | `1` | Prohibited artifacts were found |
 | `2` | The guard could not complete because configuration, paths, mode, allowlist, or Git state was invalid |
 
-Violation output:
+Violation output (this example is from a `--mode all` scan, which is the only
+class of mode that reports an `ignored-present` source alongside `staged` and
+`untracked`):
 
 ```text
 Artifact Guard blocked 3 prohibited artifact paths.
@@ -119,14 +169,22 @@ repository worktree:
 
 | Rule | Examples | Ignored-present behavior |
 | --- | --- | --- |
-| Dependency trees | `node_modules/`, `packages/*/node_modules/` | Blocked |
-| Plugin bundles | `dist/plugin.js`, `*/dist/plugin.js` | Blocked |
-| Claude runtime | `.claude/runtime/` | Blocked (except launcher-owned bookkeeping — see below) |
-| Nested worktrees | `worktrees/` | Blocked |
-| Cache directories | `.cache/`, `.npm/`, `.pnpm-store/`, `.yarn/cache/`, `.turbo/`, `.parcel-cache/`, `.pytest_cache/` | Blocked |
-| Build output | `dist/`, `build/`, `coverage/`, `.next/`, `out/`, `logs/`, `outputs/`, `index.scip` | Blocked |
+| Dependency trees | `node_modules/`, `packages/*/node_modules/` | Blocked in `worktree`/`all` only |
+| Plugin bundles | `dist/plugin.js`, `*/dist/plugin.js` | Blocked in `worktree`/`all` only |
+| Claude runtime | `.claude/runtime/` | Blocked in `worktree`/`all` only (except launcher-owned bookkeeping — see below) |
+| Nested worktrees | `worktrees/` | Blocked in `worktree`/`all` only |
+| Cache directories | `.cache/`, `.npm/`, `.pnpm-store/`, `.yarn/cache/`, `.turbo/`, `.parcel-cache/`, `.pytest_cache/` | Blocked in `worktree`/`all` only |
+| Build output | `dist/`, `build/`, `coverage/`, `.next/`, `out/`, `logs/`, `outputs/`, `index.scip` | Blocked in `worktree`/`all` only |
 | Rust build output | `target/` | Blocked only when staged, tracked, or untracked |
-| Generated indexes and logs | `index.scip`, generated runtime logs, generated output directories | Blocked |
+| Generated indexes and logs | `index.scip`, generated runtime logs, generated output directories | Blocked in `worktree`/`all` only |
+
+The **Ignored-present behavior** column describes what happens when a prohibited
+path exists in the worktree but is untracked and gitignored. These paths are
+only blocked in the local-hygiene modes (`worktree`, `all`). In the commit and
+publication gates (`pre-commit`, `pre-publish`), the same path is not blocked as
+ignored-present, because it cannot be committed or published. Every rule still
+blocks fail-closed in **all** modes when the path is staged, tracked, or
+untracked-but-not-ignored.
 
 Rules match normalized repo-relative paths using `/` separators. The guard does
 not need to read artifact file contents; path-level scanning is the intended
@@ -243,9 +301,11 @@ repository layout conflict and must fail closed rather than be deleted.
 Artifact Guard itself remains non-mutating and still fails on every unexpected
 artifact.
 
-The checked-in pre-commit hook is a full repository scan. It is defined in
-`.pre-commit-config.yaml`, and that file is the source of truth for the hook
-contract:
+The checked-in pre-commit hook scans the repository's committable state —
+staged, tracked, and untracked-but-not-ignored paths. It does not block on
+ignored-present leftovers (that is what `--mode worktree`/`all` are for). It is
+defined in `.pre-commit-config.yaml`, and that file is the source of truth for
+the hook contract:
 
 ```yaml
 - repo: local
@@ -259,8 +319,9 @@ contract:
 ```
 
 `pass_filenames: false` is required. Git normally passes only staged filenames to
-pre-commit hooks, which would miss ignored and untracked artifact leftovers.
-Artifact Guard must inspect repository state itself.
+pre-commit hooks, which would miss untracked artifact leftovers that a later
+`git add -A` could sweep into the commit. Artifact Guard must inspect repository
+state itself.
 
 Run the hook through pre-commit:
 
@@ -368,6 +429,27 @@ pub enum ArtifactGuardMode {
     All,
     Staged,
     Worktree,
+    PreCommit,
+    PrePublish,
+}
+
+impl ArtifactGuardMode {
+    /// Whether this mode scans staged (indexed) paths.
+    fn scans_staged(self) -> bool;
+
+    /// Whether this mode scans tracked and untracked worktree paths.
+    fn scans_worktree(self) -> bool;
+
+    /// Whether this mode scans ignored-present artifacts (gitignored,
+    /// untracked paths that exist in the worktree).
+    ///
+    /// Returns `true` only for the local-hygiene modes `All` and `Worktree`.
+    /// The commit/publish gates `PreCommit`, `PrePublish`, and `Staged` return
+    /// `false`, because a gitignored path can never be committed or published
+    /// and is outside the guard's threat model for those gates.
+    ///
+    /// Concretely: `matches!(self, Self::All | Self::Worktree)`.
+    fn scans_ignored_present(self) -> bool;
 }
 
 pub enum ArtifactSource {
@@ -426,9 +508,13 @@ For ignored leftovers before publication:
 amplihack hygiene artifact-guard --repo . --mode all
 ```
 
-If the guard reports `node_modules/`, `.claude/runtime/`, or another
-ignored-present artifact, relocate or remove the local output. Do not treat
-`.gitignore` as approval to keep parent-worktree pollution.
+Use `--mode all` (or `--mode worktree`) to surface ignored-present leftovers.
+The `pre-commit` and `pre-publish` gates deliberately do not report them,
+because gitignored, untracked paths cannot be committed or published. If the
+guard reports `node_modules/`, `.pytest_cache/`, `.claude/runtime/`, or another
+ignored-present artifact under those hygiene modes, relocate or remove the local
+output. Do not treat `.gitignore` as approval to keep parent-worktree pollution
+— clean it up locally even though it will not block a commit or a publish.
 
 For an intentional fixture, add the narrowest allowlist entry that preserves the
 test:
@@ -439,6 +525,66 @@ tests/fixtures/plugin-output/dist/plugin.js
 
 Commit the allowlist change with the fixture. Reviewers should confirm the
 artifact is necessary, deterministic, and safe to keep in the repository.
+
+## Worked example: cache leftovers do not block a commit or publish
+
+This example reproduces the scenario from issue #928. A normal test or install
+run leaves gitignored, untracked cache directories in the worktree. Those
+directories can never be committed or published, so the commit and publication
+gates must pass. The exit codes below assume the #928 narrowing is applied —
+that is, `ArtifactGuardMode::scans_ignored_present()` returns `true` only for
+`All` and `Worktree`.
+
+Set up a repository whose `.gitignore` excludes common cache directories, then
+create those directories as untracked leftovers:
+
+```bash
+cd my-repo
+printf '.pytest_cache/\nnode_modules/\n' >> .gitignore
+mkdir -p .pytest_cache node_modules/some-dep
+touch .pytest_cache/CACHEDIR.TAG node_modules/some-dep/index.js
+```
+
+`git status --ignored` confirms both directories are ignored and untracked. The
+commit and publication gates pass (exit code `0`) because ignored-present paths
+are outside their scope:
+
+```bash
+amplihack hygiene artifact-guard --repo . --mode pre-commit   # exit 0
+amplihack hygiene artifact-guard --repo . --mode pre-publish  # exit 0
+```
+
+The local-hygiene modes still surface the same leftovers (exit code `1`) so you
+can clean them up before they accumulate:
+
+```bash
+amplihack hygiene artifact-guard --repo . --mode worktree     # exit 1
+amplihack hygiene artifact-guard --repo . --mode all          # exit 1
+```
+
+The gates remain fail-closed for anything that *could* reach a commit. A cache
+directory that is not covered by `.gitignore` is untracked-but-committable, so
+it still blocks `pre-commit` and `pre-publish`:
+
+```bash
+git rm -r --cached --ignore-unmatch . >/dev/null 2>&1 || true
+: > .gitignore   # stop ignoring the cache dirs
+amplihack hygiene artifact-guard --repo . --mode pre-publish  # exit 1
+```
+
+Likewise, staging or tracking a prohibited artifact blocks every gate mode:
+
+```bash
+git add -f dist/plugin.js
+amplihack hygiene artifact-guard --repo . --mode pre-commit   # exit 1
+amplihack hygiene artifact-guard --repo . --mode pre-publish  # exit 1
+```
+
+| Scenario | `pre-commit` / `pre-publish` | `worktree` / `all` |
+| --- | --- | --- |
+| Gitignored, untracked `.pytest_cache/`, `node_modules/` | Pass (exit 0) | Flag (exit 1) |
+| Untracked cache dir **not** in `.gitignore` | Flag (exit 1) | Flag (exit 1) |
+| Staged or tracked prohibited artifact | Flag (exit 1) | Flag (exit 1) |
 
 ## Review expectations
 
