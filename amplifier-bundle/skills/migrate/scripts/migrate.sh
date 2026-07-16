@@ -593,6 +593,15 @@ _fetch_branch() { git -C "$1" fetch origin "$branch" >/dev/null 2>&1; }
 _gh_clone()     { gh repo clone "$repository" "$1" >/dev/null 2>&1; }
 _git_clone()    { git clone "https://github.com/$repository.git" "$1" >/dev/null 2>&1; }
 
+# clone_repo <dest>: idempotent clone of $repository into <dest>. Prefers gh
+# (reuses the migrated auth); falls back to https. Each network call is retried.
+clone_repo() {
+  local dest="$1"
+  [ -d "$dest/.git" ] && return 0
+  if command -v gh >/dev/null 2>&1 && with_retry _gh_clone "$dest"; then return 0; fi
+  with_retry _git_clone "$dest"
+}
+
 repo_name="${repository##*/}"
 git_root_dest="$HOME/src/$repo_name"
 if [ "$is_worktree" = "1" ]; then
@@ -620,10 +629,8 @@ mkdir -p "$HOME/src"
 if [ -d "$git_root_dest/.git" ]; then
   echo "[migrate] existing checkout at $git_root_dest; fetching"
   with_retry _fetch_all "$git_root_dest" || true
-elif command -v gh >/dev/null 2>&1 && with_retry _gh_clone "$git_root_dest"; then
-  echo "[migrate] cloned $repository via gh -> $git_root_dest"
-elif with_retry _git_clone "$git_root_dest"; then
-  echo "[migrate] cloned $repository via https -> $git_root_dest"
+elif clone_repo "$git_root_dest"; then
+  echo "[migrate] cloned $repository -> $git_root_dest"
 else
   echo "[migrate] clone failed for $repository after ${retries} attempt(s)" >&2
   exit 13
@@ -643,13 +650,7 @@ if [ "$is_worktree" = "1" ]; then
       with_retry _fetch_branch "$git_root_dest" || true
       if ! git -C "$git_root_dest" worktree add "$cwd_dest" "$branch" >/dev/null 2>&1; then
         echo "[migrate] worktree add failed; falling back to standalone clone at $cwd_dest" >&2
-        if [ ! -d "$cwd_dest/.git" ]; then
-          if command -v gh >/dev/null 2>&1 && with_retry _gh_clone "$cwd_dest"; then
-            :
-          else
-            with_retry _git_clone "$cwd_dest" || true
-          fi
-        fi
+        clone_repo "$cwd_dest" || true
         checkout_branch "$cwd_dest" || true
       fi
     fi
