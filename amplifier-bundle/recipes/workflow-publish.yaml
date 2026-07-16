@@ -47,14 +47,11 @@ steps:
        Required:
        1. Review `git diff main...HEAD`.
        2. Classify as PATCH (fix/docs/refactor), MINOR (backward-compatible feature/API), or MAJOR (breaking).
-       3. Update the `[workspace.package].version` line ONLY when the change type warrants it:
-          - **PATCH (fix/docs/refactor): DO NOT modify the `version = "X.Y.Z"` line.**
-            Leave `[workspace.package].version` exactly as-is and set
-            `new_version` equal to `current_version` in the output JSON.
-            A bugfix/docs/refactor branch MUST NOT bump the workspace version.
-          - **MINOR (backward-compatible feature/API): bump the minor** (X.Y.Z → X.(Y+1).0).
-          - **MAJOR (breaking): bump the major** (X.Y.Z → (X+1).0.0).
-       4. Verify the resulting version matches the classification (unchanged for PATCH).
+       3. Update `[workspace.package].version` ONLY when warranted:
+          - **PATCH (fix/docs/refactor): DO NOT modify the `version` line.** Set
+            `new_version` = `current_version` in the output JSON — no bump.
+          - **MINOR: bump minor** (X.Y.Z → X.(Y+1).0). **MAJOR: bump major** (→ (X+1).0.0).
+       4. Verify the version matches the classification (unchanged for PATCH).
 
        Useful commands:
        ```bash
@@ -62,9 +59,7 @@ steps:
        git diff main...HEAD --stat
        CURRENT_VERSION=$(grep -E '^version = ' Cargo.toml | head -1 | cut -d'"' -f2)
        echo "Current version: $CURRENT_VERSION"
-       # PATCH: leave the version line untouched (no sed).
-       # MINOR/MAJOR only:
-       # sed -i 's/version = "X.Y.Z"/version = "NEW.VERSION"/' Cargo.toml
+       # MINOR/MAJOR only (PATCH: no sed): sed -i 's/version = "X.Y.Z"/version = "NEW.VERSION"/' Cargo.toml
        grep -E '^version = ' Cargo.toml | head -1
        ```
 
@@ -223,23 +218,12 @@ steps:
       amplihack hygiene artifact-guard --repo . --mode pre-publish
       git add -A
       echo "--- Creating Commit ---" >&2
-      # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
-      # nounset-safe reads (${VAR:-}) so an unset value cannot abort the step
-      # before the #944 fallback heuristic (below) can classify from TASK_DESC.
+      # FIX (#469/#311): env vars are injection-safe; ${VAR:-} nounset reads so an unset value can't abort before the #944 fallback below.
       TASK_DESC="${TASK_DESCRIPTION:-}"
       ISSUE_NUMBER="${ISSUE_NUMBER:-}"
-      # FIX (#944): Derive the conventional-commit prefix from the real change
-      # type reported by step-14-bump-version instead of hardcoding 'feat:'. A
-      # hardcoded 'feat:' made pure bugfix branches trip the version-bump gate
-      # (observed on #920/#943, requiring manual reverts).
-      #   PATCH -> fix:   MINOR -> feat:   MAJOR -> feat!:
-      # The classification comes from the step-14 output. The recipe runner
-      # surfaces each dotted output under two names (see the worktree_path reads
-      # above for the same idiom): the uppercased form VERSION_BUMP_CHANGE_
-      # CLASSIFICATION (dot -> single '_') and the RECIPE_VAR_ form
-      # RECIPE_VAR_version_bump__change_classification (dot -> double '__').
-      # When unset/unknown, fall back to a bugfix-intent heuristic on the task
-      # description, defaulting to feat: to preserve legacy behavior.
+      # FIX (#944): commit prefix from step-14's real change type (PATCH->fix:
+      # MINOR->feat: MAJOR->feat!:), not a hardcoded 'feat:' that bumped the
+      # version on bugfix branches (#920/#943). Unknown/unset -> bugfix heuristic.
       CHANGE_CLASS="${VERSION_BUMP_CHANGE_CLASSIFICATION:-${RECIPE_VAR_version_bump__change_classification:-}}"
       case "$(printf '%s' "$CHANGE_CLASS" | tr '[:lower:]' '[:upper:]')" in
         PATCH) COMMIT_PREFIX="fix: " ;;
@@ -249,8 +233,7 @@ steps:
           case "$(printf '%s' "$TASK_DESC" | tr '[:upper:]' '[:lower:]')" in
             *bug*|*bugfix*|*fix*) COMMIT_PREFIX="fix: " ;;
             *)                    COMMIT_PREFIX="feat: " ;;
-          esac
-          ;;
+          esac ;;
       esac
       COMMIT_TITLE=$(printf '%s%.72s' "$COMMIT_PREFIX" "$(printf '%s' "$TASK_DESC" | tr '\n\r' ' ' | head -1)")
       # FIX #684: Host-aware commit references
@@ -261,8 +244,7 @@ steps:
         *)      ISSUE_REF="Ref #${ISSUE_NUMBER}"; ISSUE_IMPL="issue #${ISSUE_NUMBER}" ;;
       esac
       COMMIT_MSG=$(printf '%s\n\nImplements %s\n\nChanges:\n- Implementation as per design specification\n- Tests added for new functionality\n- Documentation updated\n\n%s' "$COMMIT_TITLE" "$ISSUE_IMPL" "$ISSUE_REF")
-      # PERF: --quiet short-circuits on the first staged change and avoids
-      # buffering the full name list into a command substitution.
+      # PERF: --quiet short-circuits on the first staged change.
       if ! git diff --cached --quiet; then
         GIT_IDENTITY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(git rev-parse --show-toplevel)}}/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(git rev-parse --show-toplevel)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || { echo "ERROR: git identity helper not found: $GIT_IDENTITY_HELPER" >&2; exit 2; }; . "$GIT_IDENTITY_HELPER"
         amplihack_prepare_git_commit_identity
