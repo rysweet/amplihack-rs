@@ -1880,8 +1880,14 @@ fn test_execute_recipe_via_rust_verbose_survives_non_utf8_stderr() {
     }
 
     result.expect("non-UTF-8 stderr must NOT abort the pump or hang the child");
+    // This is a hang-detector, not a performance assertion. A healthy run is
+    // sub-second, but the meaningful failure is a *pipe-hang* where the pump
+    // dies and the child blocks on a full ~64KB stderr pipe until the 30s test
+    // harness kills it. The ceiling is deliberately loose (25s, well under the
+    // 30s harness timeout) so CPU contention on a saturated nextest run cannot
+    // flake it, while a genuine hang still trips it.
     assert!(
-        elapsed < std::time::Duration::from_secs(5),
+        elapsed < std::time::Duration::from_secs(25),
         "non-UTF-8 stderr caused suspiciously slow run ({elapsed:?}) — \
          pump likely died and child blocked on full stderr pipe"
     );
@@ -1938,9 +1944,20 @@ fn test_execute_recipe_via_rust_times_out_hung_runner() {
         msg.contains("timed out"),
         "error should report timeout: {msg}"
     );
+    // The parent timeout (1s, set above) firing is proven by the "timed out"
+    // error assertion — that is the real intent of this test. This elapsed
+    // ceiling is a hang-detector, not a performance assertion: it guards against
+    // the pathological case where the timeout path fails to kill the runner and
+    // the child runs until the 30s test harness kills it. The ceiling is
+    // deliberately loose (25s, well under the 30s harness) because process
+    // spawn, timeout polling, the tree-kill, and stderr-pump teardown can add
+    // several seconds of overhead under a saturated nextest run — keying it
+    // tightly to the runner's own sleep flakes because that cleanup overhead is
+    // comparable to the timeout-vs-natural-completion gap.
     assert!(
-        elapsed < std::time::Duration::from_secs(3),
-        "parent timeout should bound hung runner, elapsed {elapsed:?}"
+        elapsed < std::time::Duration::from_secs(25),
+        "parent timeout should bound hung runner well under the harness limit, \
+         elapsed {elapsed:?}"
     );
 }
 
