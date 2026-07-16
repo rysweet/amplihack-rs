@@ -192,12 +192,22 @@ EOF
     }
 
     # Regression guard: a drifted release.yml is now a FAILURE, not an
-    # allowlisted warning.
+    # allowlisted warning. Capture stderr so we can also assert the guard emits
+    # its intended drift diagnostic — not a bash "unbound variable" abort from
+    # expanding an empty ALLOWLIST under `set -u` (would mask the real message
+    # on bash < 4.4).
+    drift_err="$(TOOLCHAIN_TOML="$TMPROOT/rust-toolchain.toml" bash "$GUARD" "$fx/release.yml" 2>&1 >/dev/null)"
     if run_guard "$fx/release.yml"; then
         record_fail "guard fails on a drifted release.yml (no longer allowlisted)" \
             "expected non-zero exit now that ALLOWLIST is empty"
     else
         record_pass "guard fails on a drifted release.yml (no longer allowlisted)"
+    fi
+    if printf '%s\n' "$drift_err" | grep -q 'must pin to @'; then
+        record_pass "guard emits its drift diagnostic on empty-allowlist violation (no unbound-variable abort)"
+    else
+        record_fail "guard emits its drift diagnostic on empty-allowlist violation (no unbound-variable abort)" \
+            "stderr did not contain the expected 'must pin to @' message: $drift_err"
     fi
 
     if run_guard "$fx/release-pinned.yml"; then
@@ -215,7 +225,7 @@ EOF
 
     # Default scan (no args) must be green with zero allowlisted drift, so a
     # WARNING line for a tracked follow-up must NOT appear.
-    scan_out="$(TOOLCHAIN_TOML="$TMPROOT/rust-toolchain.toml"; bash "$GUARD" 2>&1)"
+    scan_out="$(bash "$GUARD" 2>&1)"
     scan_rc=$?
     if [ "$scan_rc" -eq 0 ]; then
         record_pass "guard default scan is green (exit 0, CI-wireable)"

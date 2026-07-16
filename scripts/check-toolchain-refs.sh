@@ -80,6 +80,10 @@ targets_bearing_refs() {
 
 is_allowlisted() {
     local base="$1" entry
+    # Expanding "${ALLOWLIST[@]}" on an empty array under `set -u` is an
+    # "unbound variable" error on bash < 4.4 (e.g. macOS system bash 3.2).
+    # Return early so an empty allowlist stays robust across bash versions.
+    [ "${#ALLOWLIST[@]}" -eq 0 ] && return 1
     for entry in "${ALLOWLIST[@]}"; do
         [ "$base" = "$entry" ] && return 0
     done
