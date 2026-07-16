@@ -16,7 +16,6 @@ steps:
   # STEP 0: WORKFLOW PREPARATION (MANDATORY - DO NOT SKIP)
   # Creates tracking structure. Must complete before ANY implementation work.
   # Prevents "completion bias" - ensures mandatory review steps not skipped.
-  # ==========================================================================
   - id: "step-00-workflow-preparation"
     type: "bash"
     command: |
@@ -40,24 +39,9 @@ steps:
       echo "  Step 14: Bump Version (MANDATORY)"
       echo "  Step 15: Commit and Push"
       echo "  Step 16: Open PR as Draft"
-      echo "  Step 17: Review the PR (MANDATORY - 6 sub-steps with verification gate)"
-      echo "    17a: Step 13 Testing-Evidence Gate"
-      echo "    17b: Comprehensive Code Review (reviewer agent)"
-      echo "    17c: Security Review (security agent)"
-      echo "    17d: Philosophy Guardian Review (philosophy-guardian agent)"
-      echo "    17e: Address Blocking Issues (builder agent)"
-      echo "    17f: Verification Gate"
-      echo "  Step 18: Implement Review Feedback (MANDATORY - 5 sub-steps with verification gate)"
-      echo "    18a: Analyze Feedback"
-      echo "    18b: Implement Feedback (builder agent)"
-      echo "    18c: Push Changes"
-      echo "    18d: Respond to Comments"
-      echo "    18e: Verification Gate"
-      echo "  Step 19: Philosophy Compliance Check (4 sub-steps with verification gate)"
-      echo "    19a: Philosophy Review (reviewer agent)"
-      echo "    19b: Pattern Check (patterns agent)"
-      echo "    19c: Zero-BS Verification"
-      echo "    19d: Verification Gate"
+      echo "  Step 17: Review the PR (MANDATORY - 6 sub-steps 17a-17f with verification gate)"
+      echo "  Step 18: Implement Review Feedback (MANDATORY - 5 sub-steps 18a-18e with verification gate)"
+      echo "  Step 19: Philosophy Compliance Check (4 sub-steps 19a-19d with verification gate)"
       echo "  Step 20: Final Cleanup"
       echo "  Step 20c: Quality Audit Loop (3+ cycles, multi-agent validation)"
       echo "  Step 21: Convert PR to Ready"
@@ -73,18 +57,15 @@ steps:
   - id: "step-01-prepare-workspace"
     type: "bash"
     command: |
-      # Fail-closed: a bad/unset REPO_PATH must NOT silently land us in the
-      # recipe runner's cwd, where auto-init (#900) could create .git in the
-      # wrong directory. Refuse to proceed if we cannot enter REPO_PATH.
+      # Fail-closed: a bad/unset REPO_PATH must NOT land us in the runner's cwd, where auto-init (#900) could create .git in the wrong dir.
       cd "$REPO_PATH" || { echo "ERROR: step-01-prepare-workspace cannot enter REPO_PATH='$REPO_PATH'" >&2; exit 1; }
       echo "=== Step 1: Preparing Workspace ==="
       echo ""
       echo "Current directory: $(pwd)"
       echo ""
       if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        # Issue #900: repo-creation tasks start from an empty/non-git dir.
-        # Instead of hard-failing, auto-initialize a repo so the workflow can
-        # proceed. Gated by AUTO_INIT_REPO which defaults to enabled.
+        # Issue #900: repo-creation tasks start from an empty/non-git dir. Auto-
+        # initialize a repo (gated by AUTO_INIT_REPO, default enabled) vs hard-fail.
         if [ "${AUTO_INIT_REPO:-true}" = "false" ]; then
           echo "ERROR: step-01-prepare-workspace requires a git repo at $(pwd) and AUTO_INIT_REPO=false; either \`git init\` or rerun from a checkout" >&2
           exit 1
@@ -103,7 +84,6 @@ steps:
       echo "--- Fetching Latest ---"
       # Skip the network fetch when no remotes are configured (e.g. a freshly
       # auto-initialized repo from issue #900, or any local-only checkout).
-      # This avoids spawning an unnecessary network-attempting subprocess.
       if [ -z "$(git remote 2>/dev/null)" ]; then
         echo "No remotes configured — skipping fetch"
       else
@@ -131,11 +111,10 @@ steps:
       echo ""
       echo "=== Workspace Prepared ==="
       echo ""
-      # ── Pre-agent validation guard (issue #453) ──────────────────────
-      # Do NOT add project validation commands (npm test, npm run build,
-      # cargo test, etc.) outside this conditional. Validation only runs
-      # when explicitly opted in via SKIP_PRE_AGENT_VALIDATION="false".
-      # Default is "true" (skip) to avoid blocking on large codebases.
+      # Pre-agent validation guard (issue #453): do NOT add project validation
+      # commands (npm test/build, cargo test, etc.) outside this conditional. It
+      # only runs when opted in via SKIP_PRE_AGENT_VALIDATION="false" (default
+      # "true"/skip, to avoid blocking on large codebases).
       if [ "$SKIP_PRE_AGENT_VALIDATION" = "false" ]; then
         echo "--- Pre-agent Validation (opted in) ---"
         echo "Add project-specific validation commands here per repository."
