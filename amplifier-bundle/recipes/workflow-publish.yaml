@@ -224,8 +224,10 @@ steps:
       git add -A
       echo "--- Creating Commit ---" >&2
       # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
-      TASK_DESC="$TASK_DESCRIPTION"
-      ISSUE_NUMBER="$ISSUE_NUMBER"
+      # nounset-safe reads (${VAR:-}) so an unset value cannot abort the step
+      # before the #944 fallback heuristic (below) can classify from TASK_DESC.
+      TASK_DESC="${TASK_DESCRIPTION:-}"
+      ISSUE_NUMBER="${ISSUE_NUMBER:-}"
       # FIX (#944): Derive the conventional-commit prefix from the real change
       # type reported by step-14-bump-version instead of hardcoding 'feat:'. A
       # hardcoded 'feat:' made pure bugfix branches trip the version-bump gate

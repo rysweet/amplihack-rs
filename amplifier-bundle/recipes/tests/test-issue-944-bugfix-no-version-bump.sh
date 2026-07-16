@@ -263,7 +263,7 @@ else
 fi
 
 # R1 safety static — env-var + sanitize + truncate preserved, no eval.
-if grep -qF 'TASK_DESC="$TASK_DESCRIPTION"' "$STEP15_FULL" \
+if grep -qE 'TASK_DESC="\$\{?TASK_DESCRIPTION(:-\})?"?' "$STEP15_FULL" \
    && grep -qE "tr '\\\\n\\\\r'" "$STEP15_FULL" \
    && grep -qE '%\.72s' "$STEP15_FULL"; then
     record_pass "R1-safety-static: env-var + tr sanitize + %.72s truncation preserved"
