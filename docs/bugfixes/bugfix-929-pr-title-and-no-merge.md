@@ -112,9 +112,9 @@ the task description trigger no-merge mode:
 > **Design note.** The `leave ... open` wildcard form is intentionally
 > conservative in span: it should match only a short `leave`→`open` window
 > (e.g. same sentence/clause) so that unrelated prose like *"leave the config
-> open to extension"* does not accidentally suppress merges. Because detection
-> is fail-closed, a false positive only ever suppresses an auto-merge (never
-> enables one), but a too-greedy match still hurts usability.
+> open to extension"* does not accidentally suppress merges. Because a matched
+> directive only ever *suppresses* an auto-merge (never enables one), a false
+> positive is safe for correctness, but a too-greedy match still hurts usability.
 
 An optional explicit context flag is also honored for forward compatibility:
 
@@ -238,8 +238,10 @@ The directive scanner treats the task description as **untrusted data**:
 - **Filename injection.** Changed-file paths are iterated with
   `while IFS= read -r` and their basenames are sanitized to `[A-Za-z0-9._/-]`
   before pattern classification.
-- **Fail-closed merge policy.** On any parse ambiguity or error the policy
-  biases toward `should_merge="false"`. Errors can never enable auto-merge.
+- **Additive merge gate.** Detection can only *suppress* auto-merge. Absent a
+  directive — or if detection cannot match — `should_merge` stays at its prior
+  default (`"true"`), so the change never enables a merge that was not already
+  permitted. A detected directive is the only path that forces `"false"`.
 - **Least privilege.** The directive may only *remove* merge capability, never
   grant it. Merge remains gated solely by `should_merge`.
 - **No leakage.** Only a derived boolean/scope is emitted. The full task

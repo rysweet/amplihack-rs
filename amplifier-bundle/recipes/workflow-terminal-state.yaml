@@ -253,7 +253,9 @@ steps:
       # Issue #929: honor an explicit no-merge directive so the workflow never
       # auto-merges when told not to. Read the task description and optional
       # explicit flag, then detect intent with static, quoted pattern matching.
-      # Fail-closed: any parse trouble biases toward suppressing auto-merge.
+      # Additive gate: a detected directive can only *suppress* auto-merge; when
+      # no directive is found (or detection cannot match) the merge decision
+      # stays at the prior default ("true"), preserving existing behavior.
       TASK_DESCRIPTION_INPUT="${TASK_DESCRIPTION:-}"
       [ -n "$TASK_DESCRIPTION_INPUT" ] || TASK_DESCRIPTION_INPUT="${RECIPE_VAR_task_description:-}"
       [ -n "$TASK_DESCRIPTION_INPUT" ] || TASK_DESCRIPTION_INPUT="{{task_description}}"
