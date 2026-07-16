@@ -188,6 +188,28 @@ else
         "expected 'feat:' prefix from MINOR classification, got: '$minor_title'"
 fi
 
+# R1 behavioural — the uppercased alias VERSION_BUMP_CHANGE_CLASSIFICATION
+# (dot -> single '_') must also drive the prefix. Guards the regression where
+# a double-underscore uppercase name was used and silently never matched.
+upper_title="$(
+    {
+        echo 'set -euo pipefail'
+        printf 'export TASK_DESCRIPTION=%q\n' "$FEAT_TASK"
+        printf 'export ISSUE_NUMBER=%q\n' "944"
+        cat "$STEP15_TITLE_SLICE"
+        echo 'printf "COMMIT_TITLE=%s\\n" "$COMMIT_TITLE"'
+    } > "${WORK}/runner_upper.sh"
+    env -u RECIPE_VAR_version_bump__change_classification \
+        VERSION_BUMP_CHANGE_CLASSIFICATION="PATCH" \
+        bash "${WORK}/runner_upper.sh" 2>/dev/null | sed -n 's/^COMMIT_TITLE=//p'
+)"
+if [[ "$upper_title" == fix:* ]]; then
+    record_pass "R1: uppercase alias VERSION_BUMP_CHANGE_CLASSIFICATION drives prefix"
+else
+    record_fail "R1: uppercase alias VERSION_BUMP_CHANGE_CLASSIFICATION drives prefix" \
+        "expected 'fix:' prefix from uppercase alias, got: '$upper_title'"
+fi
+
 # R1 safety — the `%.72s` truncation of the description is preserved. Assert
 # on the description payload directly (prefix-agnostic): at most 72 of the
 # repeated marker characters survive.

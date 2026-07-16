@@ -72,9 +72,10 @@ The Step 15 commit block resolves the prefix deterministically, in priority
 order:
 
 1. **Classification signal (primary).** The step reads the environment variable
-   `RECIPE_VAR_version_bump__change_classification` (with the uppercase alias
-   `VERSION_BUMP__CHANGE_CLASSIFICATION` as a fallback), produced by
-   `step-14-bump-version`. A whitelist `case` maps it:
+   `VERSION_BUMP_CHANGE_CLASSIFICATION` (uppercased form, dot → single `_`),
+   falling back to the `RECIPE_VAR_version_bump__change_classification` alias
+   (dot → double `__`), produced by `step-14-bump-version`. A whitelist `case`
+   maps it:
    - `PATCH → fix:`
    - `MINOR → feat:`
    - `MAJOR → feat!:`
