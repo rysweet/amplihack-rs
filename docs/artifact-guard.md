@@ -1,14 +1,13 @@
 # Artifact Guard
 
-**Status:** Implemented, with one pending change. The base guard (staged,
-tracked, and untracked scanning across all modes) is implemented. The issue #928
-*ignored-present narrowing* documented here — restricting ignored-present scans
-to the `worktree` and `all` modes via `ArtifactGuardMode::scans_ignored_present()`
-— is **specified and pending implementation**. Until it lands, `pre-commit` and
-`pre-publish` still scan ignored-present artifacts. This document is the
-implementation spec for that change; see
+**Status:** Implemented. The base guard (staged, tracked, and untracked
+scanning across all modes) is implemented, and the issue #928 *ignored-present
+narrowing* documented here — restricting ignored-present scans to the
+`worktree` and `all` modes via `ArtifactGuardMode::scans_ignored_present()` — is
+now in effect. `pre-commit` and `pre-publish` no longer block on ignored-present
+artifacts. See
 [Worked example](#worked-example-cache-leftovers-do-not-block-a-commit-or-publish)
-for the target behavior.
+for the behavior.
 
 Artifact Guard prevents generated, runtime, cache, and build artifacts from
 leaking into the parent repository worktree during agent and plugin workflows.
