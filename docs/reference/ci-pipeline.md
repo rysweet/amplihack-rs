@@ -76,8 +76,8 @@ Bump deliberately, in its own PR:
 
 1. Edit `channel` in `rust-toolchain.toml`.
 2. Update every `dtolnay/rust-toolchain@<version>` ref in the build workflows to
-   match — the four refs in `ci.yml`, the ref in `publish-snapshot.yml`, **and**
-   the cross-build ref in `release.yml` (see the known-drift note below).
+   match —    the four refs in `ci.yml`, the ref in `publish-snapshot.yml`, and the
+   cross-build ref in `release.yml`.
 3. Run `cargo clippy -- -D warnings && cargo fmt --check && cargo nextest run
    --workspace --locked` locally, fix any new lints, and open the PR.
 
@@ -103,18 +103,6 @@ runs on `@stable` by design) do not install per-target `rust-std`, are not
 exposed to the `E0463` drift, and are outside the invariant. Run the guard locally before pushing; it is also wired
 into CI and pre-commit, so a mismatched or floating ref fails fast instead of
 surfacing as an `E0463` in a release build.
-
-> **Known remaining drift — `release.yml` cross-build (tracked follow-up).**
-> The tag-triggered release matrix in `release.yml` builds the shipped binaries
-> with `dtolnay/rust-toolchain@stable` **and** `targets: ${{ matrix.target }}`,
-> including `aarch64-unknown-linux-gnu` on `ubuntu-latest`. That is the exact
-> #935 configuration, still present in release builds: because it supplies
-> `targets:`, it is **in scope** for the invariant and `check-toolchain-refs.sh`
-> flags it. Fixing #935 pinned only the snapshot workflow, so the guard will
-> report `release.yml` as a mismatch until its ref is pinned to the file's
-> channel too. Pin it in a dedicated follow-up PR (same one-line change as the
-> snapshot fix); until then, treat the guard's `release.yml` finding as the
-> expected signal for that tracked work, not a false positive.
 
 ## Test execution
 

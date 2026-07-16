@@ -41,12 +41,11 @@ TOOLCHAIN_TOML="${TOOLCHAIN_TOML:-$REPO_ROOT/rust-toolchain.toml}"
 # an entry once the underlying workflow is pinned so stale allowlist entries are
 # surfaced too.
 #
-# release.yml:137 carries the same `@stable` + `targets:` drift as #935 but the
-# release pipeline (cross-target signing/publish) is out of scope for the #935
-# bugfix and tracked as follow-up. See docs/reference/ci-pipeline.md.
-ALLOWLIST=(
-    "release.yml"
-)
+# The allowlist is currently empty: every targets-bearing toolchain ref
+# (including release.yml, pinned in #939) must match the rust-toolchain.toml
+# channel. Add an entry only to track a genuinely out-of-scope, in-progress
+# pinning follow-up. See docs/reference/ci-pipeline.md.
+ALLOWLIST=()
 
 err() { printf 'ERROR: %s\n' "$1" >&2; }
 warn() { printf 'WARNING: %s\n' "$1" >&2; }
