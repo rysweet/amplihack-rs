@@ -49,8 +49,9 @@ pub fn sanitize_prompt_nul(prompt: &str) -> Cow<'_, str> {
         return Cow::Borrowed(prompt);
     }
 
-    let removed = prompt.bytes().filter(|&b| b == 0).count();
     let sanitized: String = prompt.chars().filter(|&c| c != '\0').collect();
+    // Each stripped NUL is a single byte, so the byte-length delta is the count.
+    let removed = prompt.len() - sanitized.len();
     tracing::warn!(
         removed_nul_bytes = removed,
         "stripped NUL byte(s) from prompt before subprocess delivery (issue #898)"
