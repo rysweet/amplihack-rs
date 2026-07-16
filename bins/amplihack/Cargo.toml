@@ -405,3 +405,10 @@ path = "../../tests/integration/code_philosophy_audit_recipe_test.rs"
 [[test]]
 name = "issue_849_skill_mirror_citation"
 path = "../../tests/integration/issue_849_skill_mirror_citation_test.rs"
+
+# Issue #934: Code Atlas DOT render loop must only render layers that ship a
+# `<layer>.dot` file. Guards against re-introducing the Mermaid-only
+# `user-journeys` layer (which has no .dot and made `dot` exit 2 on every push).
+[[test]]
+name = "issue_934_atlas_dot_render"
+path = "../../tests/integration/issue_934_atlas_dot_render_test.rs"
