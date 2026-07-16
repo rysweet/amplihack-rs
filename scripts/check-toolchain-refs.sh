@@ -121,7 +121,7 @@ main() {
 
     local violations=0
     local allowlisted=0
-    local file base line entry ref lineno
+    local file base entry ref lineno
 
     for file in "${files[@]}"; do
         if [ ! -f "$file" ]; then
