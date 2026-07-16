@@ -129,10 +129,11 @@ context:
   verification_terminal_evidence: ""
 
 steps:
-  # Git precondition handling lives in workflow-prep/step-01: when <cwd> is not
-  # a git work tree it auto-initializes a fresh repo (issue #900) so repo-
-  # creation tasks proceed. Set auto_init_repo="false" for a fail-closed opt-out
-  # that restores the historical hard-fail.
+  # Git precondition handling lives in workflow-prep/step-01: default-workflow
+  # requires a git repo at <cwd>. When <cwd> is not a git work tree it
+  # auto-initializes a fresh repo (issue #900) so repo-creation tasks proceed;
+  # set auto_init_repo="false" for a fail-closed opt-out that restores the
+  # historical hard-fail (`git init` or rerun from a checkout).
   - id: "workflow-prep"
     type: "recipe"
     recipe: "workflow-prep"
