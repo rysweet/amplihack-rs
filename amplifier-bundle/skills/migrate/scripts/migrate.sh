@@ -398,7 +398,15 @@ azlin connect -y "$DEST_HOST" -- bash -s < "$BOOTSTRAP_SCRIPT" \
 # Selective tarball
 # ---------------------------------------------------------------------------
 TIMESTAMP="$(date +%s)"
-TARBALL="/tmp/amplihack-migrate-${SESSION_ID}-${TIMESTAMP}.tar.zst"
+# The tarball carries SSH private keys (~/.ssh) and the gh OAuth token
+# (~/.config/gh/hosts.yml). On a shared source host a world-readable file in
+# /tmp would leak those secrets to other local users for the whole migration
+# window, so it is staged inside a private 0700 directory that mktemp -d
+# creates atomically (no predictable-path pre-plant window).
+TARBALL_DIR="$(mktemp -d "${TMPDIR:-/tmp}/amplihack-migrate.XXXXXX")" \
+  || { log_err "failed to create private staging dir"; exit 6; }
+chmod 700 "$TARBALL_DIR"
+TARBALL="$TARBALL_DIR/session-${SESSION_ID}-${TIMESTAMP}.tar.zst"
 
 log_info "Building selective tarball → $TARBALL"
 
@@ -437,6 +445,8 @@ tar --use-compress-program='zstd -T0' \
     -cf "$TARBALL" \
     "${TAR_INCLUDES[@]}" \
   || { log_err "tar failed"; exit 6; }
+# Defence in depth: restrict the archive itself, not just its parent directory.
+chmod 600 "$TARBALL" 2>/dev/null || true
 
 TARBALL_SIZE=$(du -m "$TARBALL" 2>/dev/null | awk '{print $1}')
 log_info "Tarball size: ${TARBALL_SIZE:-?} MB"
@@ -457,7 +467,10 @@ fi
 # ---------------------------------------------------------------------------
 # Ship tarball → extract
 # ---------------------------------------------------------------------------
-REMOTE_TARBALL="/tmp/amplihack-migrate.tar.zst"
+# Unique per-migration name: a fixed, predictable /tmp path would let another
+# user on the destination pre-plant a symlink (clobber / redirect via azlin cp)
+# or collide with a concurrent migration.
+REMOTE_TARBALL="/tmp/amplihack-migrate-${SESSION_ID}-${TIMESTAMP}.tar.zst"
 log_info "Copying to $DEST_HOST:$REMOTE_TARBALL …"
 azlin cp "$TARBALL" "$DEST_HOST:$REMOTE_TARBALL" \
   || { log_err "azlin cp failed"; exit 8; }
@@ -740,7 +753,7 @@ fi
 # ---------------------------------------------------------------------------
 # Cleanup + summary
 # ---------------------------------------------------------------------------
-rm -f "$TARBALL"
+rm -rf "${TARBALL_DIR:-}"
 log_info "Migration complete."
 cat <<SUMMARY
 ✓ Session resumed on $DEST_HOST in tmux '$TMUX_NAME'.
