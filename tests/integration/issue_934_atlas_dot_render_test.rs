@@ -85,32 +85,27 @@ fn read_atlas_yml() -> String {
 /// `- name:`) or end of file. This lets us inspect exactly which layers the
 /// loop iterates without being confused by other steps.
 fn render_dot_step_body(content: &str) -> String {
-    let marker = "Render DOT diagrams";
-    let start = content.find(marker).unwrap_or_else(|| {
-        panic!(
-            "FAIL: atlas.yml does not contain a step named 'Render DOT diagrams'.\n\
-             The Code Atlas workflow must have this step to render Graphviz DOT layers.\n\
-             \n\
-             atlas.yml contents:\n{content}"
-        )
-    });
+    let lines: Vec<&str> = content.lines().collect();
+    let marker_idx = lines
+        .iter()
+        .position(|line| line.contains("Render DOT diagrams"))
+        .unwrap_or_else(|| {
+            panic!(
+                "FAIL: atlas.yml does not contain a step named 'Render DOT diagrams'.\n\
+                 The Code Atlas workflow must have this step to render Graphviz DOT layers.\n\
+                 \n\
+                 atlas.yml contents:\n{content}"
+            )
+        });
 
-    let rest = &content[start..];
-    // Find the start of the next step after this one.
-    let mut end = rest.len();
-    for (idx, _) in rest.match_indices('\n') {
-        // Skip the marker line itself; look at subsequent lines.
-        if idx == 0 {
-            continue;
-        }
-        let after = &rest[idx + 1..];
-        let next_line = after.lines().next().unwrap_or("");
-        if next_line.trim_start().starts_with("- name:") {
-            end = idx;
-            break;
-        }
-    }
-    rest[..end].to_string()
+    // Collect from the marker line up to (but not including) the next step.
+    lines[marker_idx..]
+        .iter()
+        .enumerate()
+        .take_while(|(offset, line)| *offset == 0 || !line.trim_start().starts_with("- name:"))
+        .map(|(_, line)| *line)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The layers that legitimately have a `<layer>.dot` file and must be rendered.
