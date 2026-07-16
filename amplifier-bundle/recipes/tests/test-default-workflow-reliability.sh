@@ -1019,4 +1019,277 @@ assert_commit_guard_dynamic "workflow-finalize" "${STEP_FINALIZE_CLEANUP}"
 
 assert_scoped_pr_helper_contracts
 
+# ---------------------------------------------------------------------------
+# Issue #929 regression coverage.
+#
+# Bug: default-workflow lockfile-sync opened PRs titled
+# "Update Cargo.lock with N changed files" whose branches actually carried the
+# entire feature diff, and those PRs auto-merged even when the task explicitly
+# said "do NOT merge".
+#
+# Contract under test:
+#   R1  workflow_publish_pr.sh must derive the PR-title scope from the first
+#       *substantive* changed file, ignoring generated/lockfiles (Cargo.lock,
+#       *.lock, package-lock.json, go.sum, ...) whenever any non-generated file
+#       is present. Only a genuinely lockfile-only diff may fall back to the
+#       lockfile scope. CHANGED_COUNT and the PR body still enumerate all files.
+#   R2  workflow-terminal-state.yaml must detect an explicit no-merge directive
+#       in TASK_DESCRIPTION ("do not merge", "don't merge", "no admin merge",
+#       "no-merge", "leave ... open") and force should_merge="false" on the
+#       active emit path, while leaving should_merge="true" when no directive is
+#       present (default behavior unchanged).
+#
+# These assertions SHOULD FAIL before the issue #929 fixes land and MUST PASS
+# afterwards.
+# ---------------------------------------------------------------------------
+
+install_publish_fake_gh() {
+    # Fake gh that answers the calls workflow_publish_pr.sh + workflow_pr_scope.sh
+    # make on the "new draft PR" path, and records the --title of pr create so
+    # the test can assert on the generated PR title.
+    local bin_dir="$1"
+    mkdir -p "${bin_dir}"
+    cat > "${bin_dir}/gh" <<'SHIM'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "${PUBLISH_GH_LOG:?PUBLISH_GH_LOG must be set}"
+
+if [[ "${1:-}" == "auth" ]]; then
+    exit 0
+fi
+
+if [[ "${1:-}" == "pr" && "${2:-}" == "list" ]]; then
+    # No scoped current-work PR exists yet -> new draft PR path.
+    printf '[]\n'
+    exit 0
+fi
+
+if [[ "${1:-}" == "pr" && "${2:-}" == "create" ]]; then
+    shift 2
+    title=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --title) title="${2:-}"; shift 2 ;;
+            --body) shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    printf '%s\n' "${title}" >> "${PUBLISH_PR_TITLE_LOG:?PUBLISH_PR_TITLE_LOG must be set}"
+    printf 'https://github.com/example/repo/pull/929\n'
+    exit 0
+fi
+
+echo "unexpected gh call: $*" >&2
+exit 99
+SHIM
+    chmod +x "${bin_dir}/gh"
+}
+
+setup_publish_title_repo() {
+    # Creates a repo whose feature branch changes both a root lockfile (which
+    # sorts first in `git diff --name-only`) and a substantive recipe file.
+    local repo="$1"
+    shift
+    local origin="${repo}.origin.git"
+
+    git init --bare -b main "${origin}" >/dev/null
+    git init -b main "${repo}" >/dev/null
+    configure_identity "${repo}"
+    printf 'base\n' > "${repo}/README.md"
+    git -C "${repo}" add README.md
+    git -C "${repo}" commit -m "base" >/dev/null
+    git -C "${repo}" remote add origin "${origin}"
+    git -C "${repo}" push -u origin main >/dev/null 2>&1
+    git -C "${repo}" checkout -b feat/issue-929-title >/dev/null
+
+    # Changed files for this feature branch. The caller passes the relative
+    # paths to create/modify; each is committed so the worktree stays clean.
+    local rel
+    for rel in "$@"; do
+        mkdir -p "${repo}/$(dirname "${rel}")"
+        printf 'change for %s\n' "${rel}" > "${repo}/${rel}"
+    done
+    git -C "${repo}" add -A
+    git -C "${repo}" commit -m "feature work plus lockfile churn" >/dev/null
+
+    # Present a GitHub identity to the helper while keeping the local
+    # origin/main tracking ref that resolve_pr_base_ref needs.
+    git -C "${repo}" remote set-url origin "https://github.com/example/repo.git"
+}
+
+run_publish_title_case() {
+    local repo="$1"
+    local title_log="$2"
+    local out="$3"
+    local err="$4"
+
+    (
+        cd "${repo}"
+        export PATH="${WORK}/publish-title-bin:${PATH}"
+        export PUBLISH_GH_LOG="${WORK}/publish-title-gh.log"
+        export PUBLISH_PR_TITLE_LOG="${title_log}"
+        export REMOTE_HOST_TYPE="github"
+        export ISSUE_NUMBER="929"
+        export TASK_DESCRIPTION="Fix issue 929 title selection"
+        export AMPLIHACK_HOME="${REPO_ROOT}"
+        bash "${PUBLISH_HELPER}"
+    ) >"${out}" 2>"${err}"
+}
+
+assert_pr_title_ignores_lockfiles() {
+    install_publish_fake_gh "${WORK}/publish-title-bin"
+    : > "${WORK}/publish-title-gh.log"
+
+    # Case 1 (the bug): a mixed diff where Cargo.lock sorts first but a
+    # substantive recipe file is present. The title must reflect the recipe
+    # scope, never "Cargo.lock".
+    local mixed_repo="${WORK}/publish-title-mixed"
+    local mixed_titles="${WORK}/publish-title-mixed.titles"
+    : > "${mixed_titles}"
+    setup_publish_title_repo "${mixed_repo}" \
+        "Cargo.lock" \
+        "amplifier-bundle/recipes/example-929.yaml"
+    if ! run_publish_title_case "${mixed_repo}" "${mixed_titles}" \
+        "${WORK}/publish-title-mixed.out" "${WORK}/publish-title-mixed.err"; then
+        echo "--- publish-title mixed stdout ---" >&2
+        cat "${WORK}/publish-title-mixed.out" >&2
+        echo "--- publish-title mixed stderr ---" >&2
+        cat "${WORK}/publish-title-mixed.err" >&2
+        fail "workflow_publish_pr.sh must create a draft PR for a mixed lockfile+feature diff"
+    fi
+    local mixed_title
+    mixed_title="$(head -n1 "${mixed_titles}")"
+    [ -n "${mixed_title}" ] || fail "workflow_publish_pr.sh did not record a PR title for the mixed diff"
+    if printf '%s' "${mixed_title}" | grep -qi 'Cargo\.lock'; then
+        echo "PR title was: ${mixed_title}" >&2
+        fail "issue #929: PR title must not label a feature diff as a Cargo.lock change"
+    fi
+    printf '%s' "${mixed_title}" | grep -qF 'workflow recipes' \
+        || { echo "PR title was: ${mixed_title}" >&2; fail "issue #929: mixed diff PR title must reflect the substantive (recipe) scope"; }
+
+    # Case 2 (fallback): a genuinely lockfile-only diff may still use the
+    # lockfile scope. This locks the fallback so the filter never yields an
+    # empty scope.
+    local lock_repo="${WORK}/publish-title-lockonly"
+    local lock_titles="${WORK}/publish-title-lockonly.titles"
+    : > "${lock_titles}"
+    setup_publish_title_repo "${lock_repo}" "Cargo.lock"
+    if ! run_publish_title_case "${lock_repo}" "${lock_titles}" \
+        "${WORK}/publish-title-lockonly.out" "${WORK}/publish-title-lockonly.err"; then
+        echo "--- publish-title lockonly stdout ---" >&2
+        cat "${WORK}/publish-title-lockonly.out" >&2
+        echo "--- publish-title lockonly stderr ---" >&2
+        cat "${WORK}/publish-title-lockonly.err" >&2
+        fail "workflow_publish_pr.sh must create a draft PR for a lockfile-only diff"
+    fi
+    local lock_title
+    lock_title="$(head -n1 "${lock_titles}")"
+    printf '%s' "${lock_title}" | grep -qi 'Cargo\.lock' \
+        || { echo "PR title was: ${lock_title}" >&2; fail "issue #929: a genuinely lockfile-only diff should keep the Cargo.lock scope"; }
+}
+
+setup_nomerge_probe_repo() {
+    local repo="$1"
+    local origin="${repo}.origin.git"
+
+    git init --bare -b main "${origin}" >/dev/null
+    git init -b main "${repo}" >/dev/null
+    configure_identity "${repo}"
+    printf 'base\n' > "${repo}/README.md"
+    git -C "${repo}" add README.md
+    git -C "${repo}" commit -m "base" >/dev/null
+    git -C "${repo}" remote add origin "${origin}"
+    git -C "${repo}" push -u origin main >/dev/null 2>&1
+    git -C "${repo}" checkout -b feat/issue-929-nomerge >/dev/null
+    printf 'feature work\n' > "${repo}/feature-929.txt"
+    git -C "${repo}" add feature-929.txt
+    git -C "${repo}" commit -m "issue 929 feature work" >/dev/null
+    git -C "${repo}" remote set-url origin "https://github.com/example/repo.git"
+}
+
+install_nomerge_probe_fake_gh() {
+    local bin_dir="$1"
+    mkdir -p "${bin_dir}"
+    cat > "${bin_dir}/gh" <<'SHIM'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "auth" ]]; then
+    exit 0
+fi
+if [[ "${1:-}" == "pr" && "${2:-}" == "list" ]]; then
+    printf '[]\n'
+    exit 0
+fi
+echo "unexpected gh call: $*" >&2
+exit 99
+SHIM
+    chmod +x "${bin_dir}/gh"
+}
+
+run_nomerge_probe_case() {
+    local repo="$1"
+    local task_description="$2"
+    local out="$3"
+    local err="$4"
+
+    (
+        cd "${repo}"
+        export PATH="${WORK}/nomerge-probe-bin:${PATH}"
+        export REPO_PATH="${repo}"
+        export WORKTREE_SETUP_WORKTREE_PATH="${repo}"
+        export BRANCH_NAME="feat/issue-929-nomerge"
+        export BASE_REF="main"
+        export ISSUE_NUMBER="929"
+        export AMPLIHACK_HOME="${REPO_ROOT}"
+        export TASK_DESCRIPTION="${task_description}"
+        unset PR_URL PR_NUMBER GOAL_ALREADY_MET
+        bash "${PROBE_TERMINAL_STEP}"
+    ) >"${out}" 2>"${err}"
+}
+
+assert_no_merge_directive_suppresses_auto_merge() {
+    PROBE_TERMINAL_STEP="${WORK}/probe-terminal-state.sh"
+    extract_step_command "${TERMINAL_RECIPE}" "probe-terminal-state" "${PROBE_TERMINAL_STEP}"
+    install_nomerge_probe_fake_gh "${WORK}/nomerge-probe-bin"
+
+    # Control: no directive -> active state must keep should_merge="true"
+    # (default behavior unchanged).
+    local ctrl_repo="${WORK}/nomerge-probe-control"
+    setup_nomerge_probe_repo "${ctrl_repo}"
+    if ! run_nomerge_probe_case "${ctrl_repo}" \
+        "Fix issue 929 without any special directive" \
+        "${WORK}/nomerge-control.out" "${WORK}/nomerge-control.err"; then
+        echo "--- nomerge control stdout ---" >&2
+        cat "${WORK}/nomerge-control.out" >&2
+        echo "--- nomerge control stderr ---" >&2
+        cat "${WORK}/nomerge-control.err" >&2
+        fail "workflow-terminal-state probe must succeed on an active branch with a meaningful diff"
+    fi
+    grep -q '"should_merge":"true"' "${WORK}/nomerge-control.out" \
+        || { cat "${WORK}/nomerge-control.out" >&2; fail "issue #929: default (no directive) active state must keep should_merge=true"; }
+
+    # Directive present -> should_merge must be forced to "false".
+    local directive
+    for directive in \
+        "Fix issue 929. Do NOT merge the PR; leave it open." \
+        "Please don't merge this, no admin merge." \
+        "Implement the change but this is a no-merge task"; do
+        local case_repo="${WORK}/nomerge-probe-$(printf '%s' "${directive}" | tr -c 'A-Za-z0-9' '_' | cut -c1-24)"
+        setup_nomerge_probe_repo "${case_repo}"
+        if ! run_nomerge_probe_case "${case_repo}" "${directive}" \
+            "${WORK}/nomerge-dir.out" "${WORK}/nomerge-dir.err"; then
+            echo "--- nomerge directive stdout ---" >&2
+            cat "${WORK}/nomerge-dir.out" >&2
+            echo "--- nomerge directive stderr ---" >&2
+            cat "${WORK}/nomerge-dir.err" >&2
+            fail "workflow-terminal-state probe must succeed on an active branch when a no-merge directive is present"
+        fi
+        grep -q '"should_merge":"false"' "${WORK}/nomerge-dir.out" \
+            || { echo "directive was: ${directive}" >&2; cat "${WORK}/nomerge-dir.out" >&2; fail "issue #929: no-merge directive must force should_merge=false"; }
+    done
+}
+
+assert_pr_title_ignores_lockfiles
+assert_no_merge_directive_suppresses_auto_merge
+
 echo "PASS: default workflow reliability contracts are covered."
