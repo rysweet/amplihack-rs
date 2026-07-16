@@ -2,10 +2,11 @@
 # same compiler and lint set. This stops `@stable` drift from introducing
 # surprise clippy/fmt failures between deliberate bumps (issue #744; cf. the
 # emergency lint fix in PR #878). Bump this file and the matching
-# `dtolnay/rust-toolchain@<version>` refs in .github/workflows/ci.yml and
-# .github/workflows/publish-snapshot.yml together, in a dedicated PR. Keeping
-# the snapshot workflow pinned (not `@stable`) is what keeps cross-target
-# `rust-std` in the resolved toolchain and prevents E0463 (issue #935).
+# `dtolnay/rust-toolchain@<version>` refs in .github/workflows/ci.yml,
+# .github/workflows/publish-snapshot.yml, and .github/workflows/release.yml
+# together, in a dedicated PR. Keeping the snapshot and release workflows pinned
+# (not `@stable`) is what keeps cross-target `rust-std` in the resolved
+# toolchain and prevents E0463 (issues #935, #939).
 # See docs/reference/ci-pipeline.md.
 [toolchain]
 channel = "1.97.0"
