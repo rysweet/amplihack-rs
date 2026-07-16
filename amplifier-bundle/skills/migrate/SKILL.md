@@ -71,6 +71,9 @@ The destination `<hostname>` must be an azlin-managed VM (reachable via
    - `gh repo clone <repository>` (idempotent fetch+checkout if `.git` exists);
      `git worktree add` for worktree sessions, falling back to a standalone
      clone/checkout at `cwd` so the hard-gate still passes.
+   - All GitHub network calls (clone/fetch) use bounded retry-with-backoff
+     (`AMPLIHACK_MIGRATE_RETRIES` / `AMPLIHACK_MIGRATE_RETRY_DELAY`) so a
+     transient network failure retries before the exit-13 hard failure.
    - Rewrites `cwd` **and** `git_root` in the destination `workspace.yaml`.
    - Hard-gates before resume: aborts if `cwd` is missing or not a git
      checkout on the recorded branch (unless reconstruction was skipped).

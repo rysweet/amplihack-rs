@@ -203,6 +203,12 @@ CLI reads the corrected paths). Steps:
    - `host_type: github` → `gh repo clone <repository> <git_root_dest>`
      (falls back to `git clone https://…` if `gh` clone fails), then
      `git checkout <branch>`.
+   - Every external-service call (`gh repo clone`, `git clone`, `git fetch`)
+     is wrapped in **bounded retry-with-backoff** (default 3 attempts,
+     `2 · 2ⁿ⁻¹`s delay capped at 30s) so a transient network / DNS / TLS /
+     rate-limit failure does not hard-fail reconstruction. Tune via the
+     `AMPLIHACK_MIGRATE_RETRIES` and `AMPLIHACK_MIGRATE_RETRY_DELAY`
+     environment variables; the retry count is exhausted before exit 13.
    - If `<git_root_dest>/.git` already exists, `git fetch` + `git checkout`
      instead of re-cloning.
    - **Worktree** sessions: after the main clone at `git_root_dest`, attempt
@@ -259,7 +265,7 @@ filesystem and prints manual-attach instructions instead of failing.
 | Invalid `workspace.yaml` field (repo/branch present but malformed) | Abort **before** clone with validation error (exit 11)      |
 | Session has no repository / non-github `host_type`   | Skip reconstruction (warn); resume in `$HOME` (no hard-gate)   |
 | Cross-user path not remappable / escapes `$HOME`     | Abort before clone (exit 12)                                  |
-| `gh repo clone` / `git clone` fails                  | Abort; project tree could not be reconstructed (exit 13)     |
+| `gh repo clone` / `git clone` fails                  | Retry with backoff (`AMPLIHACK_MIGRATE_RETRIES`); abort exit 13 only after retries exhausted |
 | `git worktree add` fails (branch pushed)             | Fall back to standalone clone/checkout at `cwd_dest`          |
 | Worktree branch never pushed to remote               | Hard-gate aborts (exit 10) — no silent hollow resume          |
 | Post-clone hard-gate fails (cwd missing / wrong branch) | Abort; refuse hollow resume into `$HOME` (exit 10)         |
@@ -286,7 +292,7 @@ avoid collision with the existing range.
 | `10`   | Reconstruction hard-gate failed — `cwd` missing, not a directory, or not a git checkout on the recorded branch. Migration refuses to resume into a hollow `$HOME`. |
 | `11`   | `workspace.yaml` field validation failed for a session that **claims** a github repository — `repository`/`branch`/`host_type` failed the regex/allowlist, or a *present* field was empty / contained a newline. A cleanly **absent** `repository`/`git_root`, or a non-github `host_type`, is a **skip** (warn + resume in `$HOME`), not exit 11. |
 | `12`   | Cross-user path remap failed — the computed destination path could not be normalized strictly under `$HOME`. |
-| `13`   | Project reconstruction failed — `gh repo clone` / `git clone` of `repository` into the remapped `git_root` did not succeed. |
+| `13`   | Project reconstruction failed — `gh repo clone` / `git clone` of `repository` into the remapped `git_root` did not succeed after the retry budget (`AMPLIHACK_MIGRATE_RETRIES`, default 3) was exhausted. |
 
 ## Manual Recovery
 

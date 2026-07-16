@@ -144,6 +144,39 @@ migrate_rewrite_workspace_yaml() {
   rm -f "$tmp"
 }
 
+# migrate_with_retry <max_attempts> <base_delay_secs> [--] <cmd> [args...]
+# Resilience wrapper for the reconstruction phase's external-service calls
+# (the git/gh clone + fetch operations that reach GitHub over the network).
+# Runs <cmd> up to <max_attempts> times, sleeping base_delay * 2^(n-1) seconds
+# (capped at 30s) between tries, and returns 0 on the first success. If every
+# attempt fails, returns the exit status of the LAST attempt so callers can
+# still distinguish failure modes. A base delay of 0 disables backoff (used by
+# the unit tests so they never actually sleep).
+migrate_with_retry() {
+  local max="$1" base="$2"; shift 2
+  [[ "${1:-}" == "--" ]] && shift
+  # Sanitize numeric inputs (they may originate from env overrides).
+  [[ "$max"  =~ ^[0-9]+$ ]] || max=3
+  [[ "$base" =~ ^[0-9]+$ ]] || base=2
+  (( max < 1 )) && max=1
+  local attempt=1 rc delay
+  while :; do
+    rc=0
+    "$@" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      return 0
+    fi
+    if (( attempt >= max )); then
+      return "$rc"
+    fi
+    delay=$(( base * (1 << (attempt - 1)) ))
+    if (( delay > 30 )); then delay=30; fi
+    log_warn "transient failure (attempt ${attempt}/${max}); retrying in ${delay}s"
+    sleep "$delay"
+    attempt=$(( attempt + 1 ))
+  done
+}
+
 # Library-mode short-circuit: when sourced for unit testing, define the helper
 # functions above and return WITHOUT parsing args or running the migration.
 if [[ -n "${AMPLIHACK_MIGRATE_LIB:-}" ]]; then
@@ -511,13 +544,54 @@ if [[ -n "$SESSION_DIR" ]]; then
 
       log_info "Reconstructing project tree on $DEST_HOST (repo=$ws_repo branch=$ws_branch worktree=$RECON_IS_WORKTREE)…"
 
+      # Resilience budget for the external clone/fetch calls (transient
+      # network / DNS / TLS / rate-limit failures). Overridable via env.
+      RECON_RETRIES="${AMPLIHACK_MIGRATE_RETRIES:-3}"
+      RECON_RETRY_DELAY="${AMPLIHACK_MIGRATE_RETRY_DELAY:-2}"
+      [[ "$RECON_RETRIES"     =~ ^[0-9]+$ ]] || RECON_RETRIES=3
+      [[ "$RECON_RETRY_DELAY" =~ ^[0-9]+$ ]] || RECON_RETRY_DELAY=2
+
       RECON_STATUS=0
       # Values pass as positional args into a single-quoted heredoc so they can
       # never be interpreted as command text (shell / git-option injection).
       azlin connect -y "$DEST_HOST" -- bash -s -- \
-        "$WORKSPACE_YAML" "$ws_repo" "$ws_branch" "$RECON_IS_WORKTREE" <<'RECON' || RECON_STATUS=$?
+        "$WORKSPACE_YAML" "$ws_repo" "$ws_branch" "$RECON_IS_WORKTREE" \
+        "$RECON_RETRIES" "$RECON_RETRY_DELAY" <<'RECON' || RECON_STATUS=$?
 set -euo pipefail
 ws_yaml="$1"; repository="$2"; branch="$3"; is_worktree="$4"
+retries="$5"; retry_delay="$6"
+
+# Bounded retry-with-backoff around the external-service (GitHub) calls so a
+# transient network / DNS / TLS / rate-limit blip does not hard-fail the whole
+# reconstruction. Mirrors migrate_with_retry in the sourceable library (which
+# is unit tested off-host); inlined here because the remote shell cannot source
+# the library. The wrapped command's own output is silenced inside each small
+# adapter below, so with_retry's progress notices stay visible on stderr.
+with_retry() {
+  local attempt=1 rc delay
+  while :; do
+    rc=0
+    "$@" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      return 0
+    fi
+    if [ "$attempt" -ge "$retries" ]; then
+      return "$rc"
+    fi
+    delay=$(( retry_delay * (1 << (attempt - 1)) ))
+    if [ "$delay" -gt 30 ]; then delay=30; fi
+    echo "[migrate] transient failure (attempt ${attempt}/${retries}); retrying in ${delay}s: $*" >&2
+    sleep "$delay"
+    attempt=$(( attempt + 1 ))
+  done
+}
+
+# External-service adapters: each silences its own stdout/stderr so only
+# with_retry's retry notices surface. These are the network boundary.
+_fetch_all()    { git -C "$1" fetch --all --prune >/dev/null 2>&1; }
+_fetch_branch() { git -C "$1" fetch origin "$branch" >/dev/null 2>&1; }
+_gh_clone()     { gh repo clone "$repository" "$1" >/dev/null 2>&1; }
+_git_clone()    { git clone "https://github.com/$repository.git" "$1" >/dev/null 2>&1; }
 
 repo_name="${repository##*/}"
 git_root_dest="$HOME/src/$repo_name"
@@ -545,20 +619,20 @@ mkdir -p "$HOME/src"
 # Idempotent main clone into git_root_dest (exit 13 if it cannot be cloned).
 if [ -d "$git_root_dest/.git" ]; then
   echo "[migrate] existing checkout at $git_root_dest; fetching"
-  git -C "$git_root_dest" fetch --all --prune >/dev/null 2>&1 || true
-elif command -v gh >/dev/null 2>&1 && gh repo clone "$repository" "$git_root_dest" >/dev/null 2>&1; then
+  with_retry _fetch_all "$git_root_dest" || true
+elif command -v gh >/dev/null 2>&1 && with_retry _gh_clone "$git_root_dest"; then
   echo "[migrate] cloned $repository via gh -> $git_root_dest"
-elif git clone "https://github.com/$repository.git" "$git_root_dest" >/dev/null 2>&1; then
+elif with_retry _git_clone "$git_root_dest"; then
   echo "[migrate] cloned $repository via https -> $git_root_dest"
 else
-  echo "[migrate] clone failed for $repository" >&2
+  echo "[migrate] clone failed for $repository after ${retries} attempt(s)" >&2
   exit 13
 fi
 
 checkout_branch() {
   local dir="$1"
   git -C "$dir" checkout "$branch" >/dev/null 2>&1 && return 0
-  git -C "$dir" fetch origin "$branch" >/dev/null 2>&1 || return 1
+  with_retry _fetch_branch "$dir" || return 1
   git -C "$dir" checkout "$branch" >/dev/null 2>&1
 }
 
@@ -566,14 +640,14 @@ if [ "$is_worktree" = "1" ]; then
   if [ ! -e "$cwd_dest/.git" ]; then
     # Best-effort worktree linkage; cwd_dest must still end a real checkout.
     if ! git -C "$git_root_dest" worktree add "$cwd_dest" "$branch" >/dev/null 2>&1; then
-      git -C "$git_root_dest" fetch origin "$branch" >/dev/null 2>&1 || true
+      with_retry _fetch_branch "$git_root_dest" || true
       if ! git -C "$git_root_dest" worktree add "$cwd_dest" "$branch" >/dev/null 2>&1; then
         echo "[migrate] worktree add failed; falling back to standalone clone at $cwd_dest" >&2
         if [ ! -d "$cwd_dest/.git" ]; then
-          if command -v gh >/dev/null 2>&1 && gh repo clone "$repository" "$cwd_dest" >/dev/null 2>&1; then
+          if command -v gh >/dev/null 2>&1 && with_retry _gh_clone "$cwd_dest"; then
             :
           else
-            git clone "https://github.com/$repository.git" "$cwd_dest" >/dev/null 2>&1 || true
+            with_retry _git_clone "$cwd_dest" || true
           fi
         fi
         checkout_branch "$cwd_dest" || true

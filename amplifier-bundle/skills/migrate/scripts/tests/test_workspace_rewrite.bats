@@ -289,6 +289,53 @@ YAML
 }
 
 # ===========================================================================
+# migrate_with_retry  — resilience wrapper for transient external-service
+# (GitHub clone/fetch) calls. base delay 0 => no real sleep in tests.
+# ===========================================================================
+
+@test "migrate_with_retry runs the command exactly once on immediate success" {
+  local n="$TEST_HOME/n"; echo 0 >"$n"
+  _ok() { echo $(( $(cat "$n") + 1 )) >"$n"; return 0; }
+  run migrate_with_retry 4 0 -- _ok
+  [ "$status" -eq 0 ]
+  [ "$(cat "$n")" -eq 1 ]
+}
+
+@test "migrate_with_retry retries a flaky command until it succeeds" {
+  local n="$TEST_HOME/n"; echo 0 >"$n"
+  # Fails on attempts 1 and 2, succeeds on attempt 3.
+  _flaky() {
+    local c; c=$(( $(cat "$n") + 1 )); echo "$c" >"$n"
+    [ "$c" -ge 3 ]
+  }
+  run migrate_with_retry 5 0 -- _flaky
+  [ "$status" -eq 0 ]
+  [ "$(cat "$n")" -eq 3 ]
+}
+
+@test "migrate_with_retry gives up after max attempts and returns the last status" {
+  local n="$TEST_HOME/n"; echo 0 >"$n"
+  _always_fail() { echo $(( $(cat "$n") + 1 )) >"$n"; return 7; }
+  run migrate_with_retry 3 0 -- _always_fail
+  [ "$status" -eq 7 ]          # propagates the wrapped command's exit status
+  [ "$(cat "$n")" -eq 3 ]      # exactly max attempts, not one more
+}
+
+@test "migrate_with_retry forwards arguments and honors the -- separator" {
+  run migrate_with_retry 2 0 -- printf '%s-%s' a b
+  [ "$status" -eq 0 ]
+  [ "$output" = "a-b" ]
+}
+
+@test "migrate_with_retry clamps a zero / non-numeric attempt count to at least one try" {
+  local n="$TEST_HOME/n"; echo 0 >"$n"
+  _ok() { echo $(( $(cat "$n") + 1 )) >"$n"; return 0; }
+  run migrate_with_retry 0 0 -- _ok
+  [ "$status" -eq 0 ]
+  [ "$(cat "$n")" -eq 1 ]
+}
+
+# ===========================================================================
 # Static hygiene
 # ===========================================================================
 
