@@ -421,10 +421,17 @@ steps:
       classify_validator "v2" "$_C2" "$_V2_TMPFILE"
       classify_validator "v3" "$_C3" "$_V3_TMPFILE"
 
-      # D4: hard-fail ONLY when nothing parsed AND >=1 validator was
+      # D4 / #899: hard-fail ONLY when nothing parsed AND >=1 validator was
       # unparseable — with a clear diagnostic, never a raw jq error. An
       # all-EMPTY cycle (parsed_count 0, unparseable_count 0) is a clean audit
       # and proceeds to produce zero confirmed findings.
+      #
+      # #899: an unparseable validator is an ABSTENTION (zero votes), not a
+      # fatal error. As long as at least one validator parsed (parsed_count>=1),
+      # the merge continues and the configured threshold is applied against the
+      # parsed survivors only — the unparseable one contributes no votes. The
+      # gate below fires solely when EVERY validator was unparseable (no parsed
+      # survivor), which is a genuine "cannot merge anything" condition.
       if [ "$parsed_count" -eq 0 ] && [ "$unparseable_count" -ge 1 ]; then
         echo "[merge-validations] FATAL: all validators produced unparseable output; cannot merge any verdicts. Raw outputs preserved at: ${_UNPARSE_ARTIFACTS}" >&2
         exit 1
