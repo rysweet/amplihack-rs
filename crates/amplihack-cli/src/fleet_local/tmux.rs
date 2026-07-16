@@ -1,37 +1,27 @@
 //! Tmux helper functions for the slow refresh thread (T5).
 
+use std::process::{Command, Stdio};
+use std::time::Duration;
+
+use super::{CAPTURE_CACHE_ENTRY_MAX_BYTES, truncate_to_capture_cache_limit};
+use crate::util::{run_output_with_timeout, run_output_with_timeout_limited, run_with_timeout};
+
+const TMUX_COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
+const CAPTURE_PANE_BACKSCROLL_LINES: &str = "-4096";
+
 /// Check whether a local `tmux` binary is available.
 ///
 /// Runs `tmux -V` with a 2-second timeout.  Returns `false` if the binary
 /// cannot be found or returns a non-zero exit code (RISK-07).
 pub(super) fn is_tmux_available() -> bool {
-    use std::process::{Command, Stdio};
-    use std::time::Duration;
-
-    // Use a child process with a timeout so we don't block the slow thread.
-    let mut child = match Command::new("tmux")
+    let mut command = Command::new("tmux");
+    command
         .args(["-V"])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(_) => return false, // binary not found
-    };
-
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return status.success(),
-            Ok(None) if std::time::Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return false;
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
-            Err(_) => return false,
-        }
-    }
+        .stderr(Stdio::null());
+    run_with_timeout(command, TMUX_COMMAND_TIMEOUT)
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 /// List active local tmux session names via `tmux list-sessions -F "#{session_name}"`.
@@ -39,14 +29,12 @@ pub(super) fn is_tmux_available() -> bool {
 /// Returns an empty `Vec` if tmux is absent, returns no sessions, or any
 /// command error occurs (RISK-07: graceful skip when tmux is unavailable).
 pub(super) fn list_local_tmux_sessions() -> Vec<String> {
-    use std::process::{Command, Stdio};
-
-    let output = match Command::new("tmux")
+    let mut command = Command::new("tmux");
+    command
         .args(["list-sessions", "-F", "#{session_name}"])
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-    {
+        .stderr(Stdio::null());
+    let output = match run_output_with_timeout(command, TMUX_COMMAND_TIMEOUT) {
         Ok(o) => o,
         Err(_) => return vec![],
     };
@@ -63,17 +51,14 @@ pub(super) fn list_local_tmux_sessions() -> Vec<String> {
         .collect()
 }
 
-/// Capture the most recent output from a local tmux pane.
+/// Capture recent output from a local tmux pane.
 ///
-/// Runs `tmux capture-pane -t {session_id} -p -S -` and returns the raw
-/// stdout.  Returns an empty string on any error (non-zero exit, binary
-/// absence, timeout, etc.).
+/// Runs `tmux capture-pane` against a bounded recent backscroll window and
+/// returns capped raw stdout.  Returns an empty string on any error (non-zero
+/// exit, binary absence, timeout, etc.).
 ///
-/// The caller is responsible for stripping OSC sequences and capping at
-/// [`CAPTURE_CACHE_ENTRY_MAX_BYTES`].
+/// The caller is responsible for stripping OSC sequences.
 pub(super) fn capture_local_tmux_pane(session_id: &str) -> String {
-    use std::process::{Command, Stdio};
-
     // SEC-01: session_id must already be sanitized before calling this.
     // We additionally reject any session_id containing shell-special characters
     // to prevent command injection.  Only [a-zA-Z0-9_.-] are allowed.
@@ -84,18 +69,29 @@ pub(super) fn capture_local_tmux_pane(session_id: &str) -> String {
         return String::new();
     }
 
-    let output = match Command::new("tmux")
-        .args(["capture-pane", "-t", session_id, "-p", "-S", "-"])
+    let mut command = Command::new("tmux");
+    command
+        .args([
+            "capture-pane",
+            "-t",
+            session_id,
+            "-p",
+            "-S",
+            CAPTURE_PANE_BACKSCROLL_LINES,
+        ])
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-    {
+        .stderr(Stdio::null());
+    let output = match run_output_with_timeout_limited(
+        command,
+        TMUX_COMMAND_TIMEOUT,
+        CAPTURE_CACHE_ENTRY_MAX_BYTES,
+    ) {
         Ok(o) => o,
         Err(_) => return String::new(),
     };
 
     if output.status.success() {
-        String::from_utf8_lossy(&output.stdout).into_owned()
+        truncate_to_capture_cache_limit(String::from_utf8_lossy(&output.stdout).into_owned())
     } else {
         String::new()
     }
@@ -117,8 +113,6 @@ pub(super) fn sanitize_tmux_session_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fleet_local::CAPTURE_CACHE_ENTRY_MAX_BYTES;
-
     #[test]
     fn sanitize_tmux_session_name_keeps_alphanumeric_hyphen_underscore() {
         assert_eq!(sanitize_tmux_session_name("my-session_01"), "my-session_01");
@@ -171,11 +165,7 @@ mod tests {
     #[test]
     fn capture_output_capped_at_64kib_in_slow_thread_logic() {
         let oversized = "x".repeat(CAPTURE_CACHE_ENTRY_MAX_BYTES + 512);
-        let capped = if oversized.len() > CAPTURE_CACHE_ENTRY_MAX_BYTES {
-            oversized[..CAPTURE_CACHE_ENTRY_MAX_BYTES].to_string()
-        } else {
-            oversized.clone()
-        };
+        let capped = truncate_to_capture_cache_limit(oversized);
         assert_eq!(
             capped.len(),
             CAPTURE_CACHE_ENTRY_MAX_BYTES,

@@ -3,7 +3,7 @@
 //! Provides a compile-time set of all built-in agent names and a fast
 //! membership check via `is_amplihack_agent()`.
 //!
-//! This registry mirrors `known_skills.rs` but tracks *agents* — the
+//! This registry tracks amplihack *agent* names — the
 //! `amplifier-bundle/agents/**/*.md` definitions that are invoked via the
 //! agent/Task runtime interface rather than the Skill tool. It exists so the
 //! pre-tool-use hook can detect when a `Skill` invocation names something that

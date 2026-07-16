@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
-pub(super) const REQUIRED_SMART_RECIPES: &[&str] = &[
+pub(crate) const REQUIRED_SMART_RECIPES: &[&str] = &[
     "smart-classify-route",
     "smart-execute-routing",
     "smart-reflect-loop",
@@ -12,16 +12,15 @@ pub(super) const REQUIRED_SMART_RECIPES: &[&str] = &[
 ];
 
 const STALE_SMART_ORCHESTRATOR_MARKERS: &[&str] = &[
-    "resolve-bundle-asset helper-path",
+    "orch_helper.py",
+    "orch_helper",
     "importlib",
     "parse-decomposition",
-    "orch_helper.py",
+    "resolve-bundle-asset helper-path",
 ];
 
-const EXECUTABLE_STEP_FIELDS: &[&str] = &["command", "script", "run"];
-
 #[derive(Debug, Error)]
-pub(super) enum BundleCompatibilityError {
+pub(crate) enum BundleCompatibilityError {
     #[error(
         "framework bundle compatibility check failed: no amplifier-bundle recipes directory found under {0}"
     )]
@@ -92,7 +91,7 @@ pub(super) enum BundleCompatibilityError {
     InvalidManifestEntry { path: PathBuf, recipe: String },
 }
 
-pub(super) fn validate_framework_bundle_compatibility(
+pub(crate) fn validate_framework_bundle_compatibility(
     root_or_bundle: &Path,
 ) -> Result<(), BundleCompatibilityError> {
     let bundle = resolve_bundle_root(root_or_bundle)?;
@@ -104,7 +103,7 @@ pub(super) fn validate_framework_bundle_compatibility(
     require_recipe_file(&recipes, "smart-orchestrator")?;
     let smart = read_file(&smart_path)?;
     let smart_yaml = parse_yaml(&smart_path, &smart)?;
-    reject_stale_smart_orchestrator(&smart_path, &smart_yaml)?;
+    reject_stale_smart_orchestrator(&smart_path, &smart)?;
     let smart_recipe_refs = top_level_recipe_steps(&smart_yaml);
 
     for &recipe in REQUIRED_SMART_RECIPES {
@@ -124,10 +123,33 @@ pub(super) fn validate_framework_bundle_compatibility(
     Ok(())
 }
 
-pub(super) fn validate_staged_framework_bundle(
+pub(crate) fn validate_staged_framework_bundle(
     bundle: &Path,
 ) -> Result<(), BundleCompatibilityError> {
     validate_framework_bundle_compatibility(bundle)
+}
+
+pub(crate) fn validate_recipe_compatibility(path: &Path) -> Result<(), BundleCompatibilityError> {
+    if path.file_stem().and_then(|value| value.to_str()) != Some("smart-orchestrator") {
+        return Ok(());
+    }
+
+    let raw = read_file(path)?;
+    reject_stale_smart_orchestrator(path, &raw)
+}
+
+pub(crate) fn is_incompatible_smart_orchestrator(
+    path: &Path,
+) -> Result<bool, BundleCompatibilityError> {
+    if path.file_stem().and_then(|value| value.to_str()) != Some("smart-orchestrator") {
+        return Ok(false);
+    }
+
+    match validate_recipe_compatibility(path) {
+        Ok(()) => Ok(false),
+        Err(BundleCompatibilityError::StaleSmartOrchestrator { .. }) => Ok(true),
+        Err(err) => Err(err),
+    }
 }
 
 #[cfg(test)]
@@ -192,30 +214,13 @@ fn parse_yaml(path: &Path, raw: &str) -> Result<Value, BundleCompatibilityError>
     })
 }
 
-fn reject_stale_smart_orchestrator(
-    path: &Path,
-    yaml: &Value,
-) -> Result<(), BundleCompatibilityError> {
-    let Some(Value::Sequence(steps)) = mapping_value(yaml, "steps") else {
-        return Ok(());
-    };
-
-    for step in steps {
-        let Value::Mapping(mapping) = step else {
-            continue;
-        };
-        for field in EXECUTABLE_STEP_FIELDS {
-            let Some(executable) = mapping_string(mapping, field) else {
-                continue;
-            };
-            for marker in STALE_SMART_ORCHESTRATOR_MARKERS {
-                if executable.contains(marker) {
-                    return Err(BundleCompatibilityError::StaleSmartOrchestrator {
-                        path: path.to_path_buf(),
-                        marker: (*marker).to_string(),
-                    });
-                }
-            }
+fn reject_stale_smart_orchestrator(path: &Path, raw: &str) -> Result<(), BundleCompatibilityError> {
+    for marker in STALE_SMART_ORCHESTRATOR_MARKERS {
+        if raw.contains(marker) {
+            return Err(BundleCompatibilityError::StaleSmartOrchestrator {
+                path: path.to_path_buf(),
+                marker: (*marker).to_string(),
+            });
         }
     }
     Ok(())
@@ -477,6 +482,32 @@ steps:
     }
 
     #[test]
+    fn rejects_stale_marker_anywhere_in_smart_orchestrator_body() {
+        let temp = tempfile::tempdir().unwrap();
+        let bundle = temp.path().join("amplifier-bundle");
+        write_compatible_bundle(&bundle);
+        fs::write(
+            bundle.join("recipes/smart-orchestrator.yaml"),
+            compatible_smart().replace(
+                "Composable smart task orchestrator",
+                "Composable smart task orchestrator that still mentions orch_helper.py",
+            ),
+        )
+        .unwrap();
+
+        let err = validate_framework_bundle_compatibility(&bundle).expect_err(
+            "any live smart-orchestrator recipe containing stale legacy markers must be rejected",
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("smart-orchestrator")
+                && msg.contains("stale")
+                && msg.contains("orch_helper.py"),
+            "error must identify the stale marker and recipe path, got: {msg}"
+        );
+    }
+
+    #[test]
     fn rejects_missing_required_companion_recipe() {
         let temp = tempfile::tempdir().unwrap();
         let bundle = temp.path().join("amplifier-bundle");
@@ -591,7 +622,7 @@ steps:
     }
 
     #[test]
-    fn accepts_stale_marker_text_in_comments_and_metadata() {
+    fn rejects_stale_marker_text_in_comments_and_metadata() {
         let temp = tempfile::tempdir().unwrap();
         let bundle = temp.path().join("amplifier-bundle");
         write_compatible_bundle(&bundle);
@@ -608,8 +639,13 @@ metadata:
         )
         .unwrap();
 
-        validate_framework_bundle_compatibility(&bundle)
-            .expect("comments and inert metadata must not trip stale executable marker checks");
+        let err = validate_framework_bundle_compatibility(&bundle)
+            .expect_err("live smart-orchestrator recipes must not contain stale markers anywhere");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("smart-orchestrator") && msg.contains("orch_helper.py"),
+            "error must identify the stale marker in the live recipe body, got: {msg}"
+        );
     }
 
     #[test]

@@ -44,11 +44,9 @@ impl Drop for TempProjectRoot {
 
 /// Path to the compiled amplihack-hooks binary.
 fn hooks_bin() -> PathBuf {
-    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.pop(); // tests/
-    path.pop(); // workspace root
-    path.push("target/debug/amplihack-hooks");
-    path
+    // Cargo builds the binary as a prerequisite of this [[test]] target (in the
+    // amplihack-hooks-bin package) and exposes its exact path here.
+    PathBuf::from(env!("CARGO_BIN_EXE_amplihack-hooks"))
 }
 
 /// Invoke the hooks binary with a given subcommand and JSON stdin.

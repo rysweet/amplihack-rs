@@ -4,6 +4,11 @@ use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
+
+use crate::util::{format_output_diagnostics, run_output_with_timeout};
+
+const GIT_CLONE_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub(crate) fn resolve_checkout_repo(repo_uri: Option<&str>) -> Result<Option<PathBuf>> {
     let Some(repo_uri) = repo_uri else {
@@ -30,20 +35,18 @@ pub(super) fn resolve_checkout_repo_in(repo_uri: &str, base_dir: &Path) -> Resul
     }
 
     let clone_url = format!("https://github.com/{owner}/{repo}.git");
-    let output = Command::new("git")
-        .args(["clone", &clone_url, &target_dir.to_string_lossy()])
-        .stdin(Stdio::null())
-        .output()
-        .context("failed to spawn git clone")?;
+    let target_dir_arg = target_dir.to_string_lossy();
+    let mut command = Command::new("git");
+    command
+        .args(["clone", &clone_url, target_dir_arg.as_ref()])
+        .stdin(Stdio::null());
+    let output = run_output_with_timeout(command, GIT_CLONE_TIMEOUT)
+        .context("git clone timed out or failed to execute")?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stderr = stderr.trim();
-        let detail = if stderr.is_empty() {
-            "git clone failed"
-        } else {
-            stderr
-        };
-        bail!("failed to checkout repository {repo_uri}: {detail}");
+        bail!(
+            "failed to checkout repository {repo_uri}: {}",
+            format_output_diagnostics(&output, 400)
+        );
     }
 
     println!("Cloned repository to: {}", target_dir.display());

@@ -331,7 +331,9 @@ pub(super) fn set_executable(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::run_output_with_timeout;
     use std::process::Command;
+    use std::time::Duration;
 
     #[test]
     fn wrapper_script_generation_uses_lf_only_line_endings() {
@@ -427,10 +429,9 @@ mod tests {
     }
 
     fn assert_bash_accepts_script(script: &Path) {
-        let output = Command::new("bash")
-            .arg("-n")
-            .arg(script)
-            .output()
+        let mut command = Command::new("bash");
+        command.arg("-n").arg(script);
+        let output = run_output_with_timeout(command, Duration::from_secs(2))
             .unwrap_or_else(|err| panic!("failed to run bash -n for {}: {err}", script.display()));
 
         assert!(

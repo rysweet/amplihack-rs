@@ -1,3 +1,4 @@
+use crate::util::{format_output_diagnostics, run_output_with_timeout, truncate_chars_with_notice};
 use amplihack_workflows::simulation::{RecipeSimulation, RecipeSimulationScenario};
 use amplihack_workflows::stale_cleanup::{
     CleanupAction, CleanupMode, CleanupPlan, CleanupPolicy, StaleChangeRequest,
@@ -11,12 +12,17 @@ use amplihack_workflows::workflow_contract::{
 use anyhow::{Context, Result};
 use clap::{ArgGroup, Args, Subcommand, ValueEnum};
 use serde_json::json;
+use std::io;
 use std::path::PathBuf;
 use std::process::{Command, Output};
+use std::time::Duration;
 
 mod provider_detection;
 
 use provider_detection::detect_provider_from_repo;
+
+const PROVIDER_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+const PROVIDER_DIAGNOSTIC_CHARS: usize = 600;
 
 #[derive(Subcommand, Debug)]
 pub enum WorkflowCommands {
@@ -380,14 +386,24 @@ fn publish_github_change_request(
         ],
     ) {
         Ok(output) if output.status.success() => output,
-        Ok(_) => {
-            return provider_command_failed(provider, capabilities, "GitHub PR lookup failed.");
+        Ok(output) => {
+            return provider_command_failed_with_output(
+                provider,
+                capabilities,
+                "GitHub PR lookup failed.",
+                &output,
+            );
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return provider_cli_missing(provider, capabilities, "gh");
         }
-        Err(_) => {
-            return provider_command_failed(provider, capabilities, "GitHub PR lookup failed.");
+        Err(error) => {
+            return provider_command_failed_with_error(
+                provider,
+                capabilities,
+                "GitHub PR lookup failed.",
+                &error,
+            );
         }
     };
 
@@ -421,14 +437,24 @@ fn publish_github_change_request(
         ],
     ) {
         Ok(output) if output.status.success() => output,
-        Ok(_) => {
-            return provider_command_failed(provider, capabilities, "GitHub PR creation failed.");
+        Ok(output) => {
+            return provider_command_failed_with_output(
+                provider,
+                capabilities,
+                "GitHub PR creation failed.",
+                &output,
+            );
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return provider_cli_missing(provider, capabilities, "gh");
         }
-        Err(_) => {
-            return provider_command_failed(provider, capabilities, "GitHub PR creation failed.");
+        Err(error) => {
+            return provider_command_failed_with_error(
+                provider,
+                capabilities,
+                "GitHub PR creation failed.",
+                &error,
+            );
         }
     };
     let url = String::from_utf8_lossy(&create.stdout).trim().to_string();
@@ -451,21 +477,26 @@ fn publish_github_change_request(
         ],
     ) {
         Ok(output) if output.status.success() => output,
-        Ok(_) => {
-            return provider_command_failed(
+        Ok(output) => {
+            return provider_command_failed_with_detail(
                 provider,
                 capabilities,
                 "GitHub PR verification failed.",
+                Some(format_output_diagnostics(
+                    &output,
+                    PROVIDER_DIAGNOSTIC_CHARS,
+                )),
             );
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return provider_cli_missing(provider, capabilities, "gh");
         }
-        Err(_) => {
-            return provider_command_failed(
+        Err(error) => {
+            return provider_command_failed_with_detail(
                 provider,
                 capabilities,
                 "GitHub PR verification failed.",
+                Some(provider_error_diagnostic(&error)),
             );
         }
     };
@@ -513,21 +544,26 @@ fn publish_azdo_change_request(
         ],
     ) {
         Ok(output) if output.status.success() => output,
-        Ok(_) => {
-            return provider_command_failed(
+        Ok(output) => {
+            return provider_command_failed_with_detail(
                 provider,
                 capabilities,
                 "Azure Repos PR lookup failed.",
+                Some(format_output_diagnostics(
+                    &output,
+                    PROVIDER_DIAGNOSTIC_CHARS,
+                )),
             );
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return provider_cli_missing(provider, capabilities, "az");
         }
-        Err(_) => {
-            return provider_command_failed(
+        Err(error) => {
+            return provider_command_failed_with_detail(
                 provider,
                 capabilities,
                 "Azure Repos PR lookup failed.",
+                Some(provider_error_diagnostic(&error)),
             );
         }
     };
@@ -567,21 +603,26 @@ fn publish_azdo_change_request(
         ],
     ) {
         Ok(output) if output.status.success() => output,
-        Ok(_) => {
-            return provider_command_failed(
+        Ok(output) => {
+            return provider_command_failed_with_detail(
                 provider,
                 capabilities,
                 "Azure Repos PR creation failed.",
+                Some(format_output_diagnostics(
+                    &output,
+                    PROVIDER_DIAGNOSTIC_CHARS,
+                )),
             );
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return provider_cli_missing(provider, capabilities, "az");
         }
-        Err(_) => {
-            return provider_command_failed(
+        Err(error) => {
+            return provider_command_failed_with_detail(
                 provider,
                 capabilities,
                 "Azure Repos PR creation failed.",
+                Some(provider_error_diagnostic(&error)),
             );
         }
     };
@@ -606,7 +647,31 @@ fn publish_azdo_change_request(
 }
 
 fn run_provider_command(binary: &str, args: &[&str]) -> std::io::Result<Output> {
-    Command::new(binary).args(args).output()
+    let mut cmd = Command::new(binary);
+    cmd.args(args);
+    run_output_with_timeout(cmd, provider_command_timeout()).map_err(|err| {
+        let kind = err
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<io::Error>().map(io::Error::kind))
+            .unwrap_or_else(|| {
+                if err.to_string().contains("timed out") {
+                    io::ErrorKind::TimedOut
+                } else {
+                    io::ErrorKind::Other
+                }
+            });
+        io::Error::new(kind, err.to_string())
+    })
+}
+
+fn provider_command_timeout() -> Duration {
+    #[cfg(test)]
+    if let Ok(ms) = std::env::var("AMPLIHACK_TEST_PROVIDER_TIMEOUT_MS")
+        && let Ok(ms) = ms.parse::<u64>()
+    {
+        return Duration::from_millis(ms);
+    }
+    PROVIDER_COMMAND_TIMEOUT
 }
 
 fn provider_cli_missing(
@@ -632,17 +697,69 @@ fn provider_command_failed(
     capabilities: ProviderCapabilities,
     message: &str,
 ) -> HelperEnvelope {
+    provider_command_failed_with_detail(provider, capabilities, message, None)
+}
+
+fn provider_command_failed_with_output(
+    provider: RepositoryProvider,
+    capabilities: ProviderCapabilities,
+    message: &str,
+    output: &Output,
+) -> HelperEnvelope {
+    provider_command_failed_with_detail(
+        provider,
+        capabilities,
+        message,
+        Some(format_output_diagnostics(output, PROVIDER_DIAGNOSTIC_CHARS)),
+    )
+}
+
+fn provider_command_failed_with_error(
+    provider: RepositoryProvider,
+    capabilities: ProviderCapabilities,
+    message: &str,
+    error: &io::Error,
+) -> HelperEnvelope {
+    provider_command_failed_with_detail(
+        provider,
+        capabilities,
+        message,
+        Some(provider_error_diagnostic(error)),
+    )
+}
+
+fn provider_command_failed_with_detail(
+    provider: RepositoryProvider,
+    capabilities: ProviderCapabilities,
+    message: &str,
+    diagnostic: Option<String>,
+) -> HelperEnvelope {
+    let diagnostic = diagnostic
+        .filter(|detail| !detail.trim().is_empty())
+        .map(|detail| {
+            format!(
+                " Bounded stdout/stderr diagnostic: {}",
+                truncate_chars_with_notice(&detail, PROVIDER_DIAGNOSTIC_CHARS)
+            )
+        })
+        .unwrap_or_else(|| " Bounded stdout/stderr diagnostic unavailable.".to_string());
     helper_envelope(
         provider,
         HelperOperation::PublishChangeRequest,
         ProviderOperationStatus::Failed,
-        format!("{message} Inspect provider CLI authentication/output and rerun publication."),
+        format!(
+            "{message}{diagnostic} Inspect provider CLI authentication/output and rerun publication."
+        ),
         json!({
             "change_request": null,
             "manual_action": null,
             "capabilities": capabilities
         }),
     )
+}
+
+fn provider_error_diagnostic(error: &io::Error) -> String {
+    format!("provider command error ({}): {error}", error.kind())
 }
 
 fn parse_github_pr_list(stdout: &[u8]) -> Option<ChangeRequest> {
@@ -859,6 +976,63 @@ mod tests {
         assert_eq!(
             provider_status(RepositoryProvider::AzureDevOps),
             ProviderOperationStatus::Succeeded
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn provider_command_execution_is_bounded() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let fake_provider = temp.path().join("fake-gh");
+        std::fs::write(
+            &fake_provider,
+            "#!/bin/sh\n/bin/sleep 2\nprintf 'done\\n'\n",
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&fake_provider).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&fake_provider, perms).unwrap();
+
+        let previous_timeout = std::env::var_os("AMPLIHACK_TEST_PROVIDER_TIMEOUT_MS");
+        unsafe {
+            std::env::set_var("AMPLIHACK_TEST_PROVIDER_TIMEOUT_MS", "50");
+        }
+        let started = std::time::Instant::now();
+        let result = run_provider_command(fake_provider.to_str().unwrap(), &[]);
+        match previous_timeout {
+            Some(value) => unsafe {
+                std::env::set_var("AMPLIHACK_TEST_PROVIDER_TIMEOUT_MS", value)
+            },
+            None => unsafe { std::env::remove_var("AMPLIHACK_TEST_PROVIDER_TIMEOUT_MS") },
+        }
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "provider command helper must enforce an explicit timeout"
+        );
+        assert!(
+            result.is_err(),
+            "timed-out provider command should return an error with timeout context"
+        );
+    }
+
+    #[test]
+    fn provider_failure_guidance_mentions_bounded_stdout_stderr_diagnostics() {
+        let envelope = provider_command_failed(
+            RepositoryProvider::GitHub,
+            provider_capabilities(RepositoryProvider::GitHub),
+            "GitHub PR lookup failed.",
+        );
+
+        assert!(
+            envelope.next_action.contains("stderr")
+                || envelope.next_action.contains("stdout")
+                || envelope.next_action.contains("diagnostic"),
+            "provider failures must surface bounded stdout/stderr diagnostics; got {}",
+            envelope.next_action
         );
     }
 }

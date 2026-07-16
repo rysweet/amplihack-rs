@@ -62,6 +62,21 @@ fn main() {
         "workflow-classification-reminder" => run_hook(WorkflowClassificationReminderHook),
         "user-prompt" | "user-prompt-submit" => run_hook(UserPromptSubmitHook),
         "pre-compact" => run_hook(PreCompactHook),
+        // Detached per-session inbound Signal subscriber. Only present under the
+        // `signal` feature; honors the non-fatal contract (always exits 0).
+        #[cfg(feature = "signal")]
+        "signal-subscriber" => {
+            // Parse `--session-id <id>` from the remaining args.
+            let mut session_id: Option<String> = None;
+            let mut it = args.iter().skip(2);
+            while let Some(arg) = it.next() {
+                if arg == "--session-id" {
+                    session_id = it.next().cloned();
+                }
+            }
+            let code = amplihack_hooks::signal_integration::run_subscriber(session_id.as_deref());
+            std::process::exit(code);
+        }
         // No-op pre-commit hook. Drains stdin and exits 0 — see
         // precommit_prefs::run docs for the security contract (no logging, no
         // echoing payload).

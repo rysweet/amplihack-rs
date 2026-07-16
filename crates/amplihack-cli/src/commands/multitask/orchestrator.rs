@@ -4,18 +4,26 @@
 //! live in sibling modules (`launcher`, `state`, `utils`).
 
 use super::models::*;
-use super::{launcher, state, utils};
+use super::{cleanup, default_branch, launcher, state, utils};
+use crate::util::{format_output_diagnostics, run_output_with_timeout};
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use tracing::warn;
+
+const DEFAULT_BRANCH_RESOLUTION_TIMEOUT: Duration = Duration::from_secs(30);
+const GIT_CLONE_TIMEOUT: Duration = Duration::from_secs(300);
+
+#[cfg(test)]
+#[path = "orchestrator_tests.rs"]
+mod orchestrator_tests;
 
 pub struct ParallelOrchestrator {
     repo_url: String,
@@ -123,21 +131,24 @@ impl ParallelOrchestrator {
             );
         } else {
             println!("[{issue}] Cloning default branch '{default_branch}' from remote...");
-            let status = Command::new("git")
-                .args([
-                    "clone",
-                    "--depth=1",
-                    &format!("--branch={default_branch}"),
-                    &self.repo_url,
-                    &ws.work_dir.to_string_lossy(),
-                ])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .with_context(|| format!("[{issue}] Failed to spawn git clone"))?;
+            let branch_arg = format!("--branch={default_branch}");
+            let work_dir_arg = ws.work_dir.to_string_lossy();
+            let mut clone_cmd = Command::new("git");
+            clone_cmd.args([
+                "clone",
+                "--depth=1",
+                &branch_arg,
+                &self.repo_url,
+                work_dir_arg.as_ref(),
+            ]);
+            let output = run_output_with_timeout(clone_cmd, GIT_CLONE_TIMEOUT)
+                .with_context(|| format!("[{issue}] git clone timed out or failed to execute"))?;
 
-            if !status.success() {
-                bail!("[{issue}] git clone failed with exit code {status}");
+            if !output.status.success() {
+                bail!(
+                    "[{issue}] git clone failed: {}",
+                    format_output_diagnostics(&output, 400)
+                );
             }
         }
 
@@ -326,7 +337,7 @@ impl ParallelOrchestrator {
     }
 
     pub fn cleanup_merged(&self, config_path: &str, dry_run: bool) -> Result<()> {
-        state::cleanup_merged(&self.base_dir, &self.state_dir, config_path, dry_run)
+        cleanup::cleanup_merged(&self.base_dir, &self.state_dir, config_path, dry_run)
     }
 
     fn cleanup_workstream_dir(&self, ws: &Workstream) {
@@ -348,46 +359,38 @@ impl ParallelOrchestrator {
             return branch.clone();
         }
 
-        let branch = Command::new("git")
-            .args(["ls-remote", "--symref", &self.repo_url, "HEAD"])
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .and_then(|out| {
-                out.lines()
-                    .find(|l| l.starts_with("ref: refs/heads/"))
-                    .and_then(|l| l.strip_prefix("ref: refs/heads/"))
-                    .and_then(|l| l.split('\t').next())
-                    .map(|s| s.trim().to_string())
-            })
-            .unwrap_or_else(|| "main".to_string());
+        let mut cmd = Command::new("git");
+        cmd.args(["ls-remote", "--symref", &self.repo_url, "HEAD"]);
+        let branch = match run_output_with_timeout(cmd, DEFAULT_BRANCH_RESOLUTION_TIMEOUT) {
+            Ok(output) if output.status.success() => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                default_branch::parse_from_ls_remote(&stdout).unwrap_or_else(|| {
+                    eprintln!(
+                        "WARNING: git ls-remote did not return a usable HEAD symref for {}; falling back to main. stdout/stderr diagnostic: {}",
+                        self.repo_url,
+                        format_output_diagnostics(&output, 400)
+                    );
+                    "main".to_string()
+                })
+            }
+            Ok(output) => {
+                eprintln!(
+                    "WARNING: git ls-remote failed for {}; falling back to main. stdout/stderr diagnostic: {}",
+                    self.repo_url,
+                    format_output_diagnostics(&output, 400)
+                );
+                "main".to_string()
+            }
+            Err(err) => {
+                eprintln!(
+                    "WARNING: git ls-remote timed out or failed for {}; falling back to main. diagnostic: {err:#}",
+                    self.repo_url
+                );
+                "main".to_string()
+            }
+        };
 
         self.default_branch = Some(branch.clone());
         branch
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_orchestrator_construction() {
-        let orch = ParallelOrchestrator::new("https://github.com/test/repo", "recipe");
-        assert_eq!(orch.mode, "recipe");
-        assert_eq!(orch.default_max_runtime, DEFAULT_MAX_RUNTIME);
-        assert!(orch.workstreams.is_empty());
-    }
-
-    #[test]
-    fn test_set_timeout_policy() {
-        let mut orch = ParallelOrchestrator::new(".", "recipe");
-        orch.set_default_timeout_policy("continue-preserve");
-        assert_eq!(orch.default_timeout_policy, "continue-preserve");
-
-        // Invalid policy should be rejected
-        orch.set_default_timeout_policy("invalid-policy");
-        assert_eq!(orch.default_timeout_policy, "continue-preserve");
     }
 }

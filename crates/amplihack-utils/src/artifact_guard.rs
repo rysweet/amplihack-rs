@@ -78,6 +78,16 @@ impl ArtifactGuardMode {
             Self::All | Self::Worktree | Self::PreCommit | Self::PrePublish
         )
     }
+
+    /// Whether this mode should flag `IgnoredPresent` artifacts (gitignored +
+    /// present-on-disk cache dirs such as `.pytest_cache/` or `node_modules/`).
+    ///
+    /// These paths can never be committed or published, so pre-commit and
+    /// pre-publish (fail-closed publish gates) MUST NOT block on them
+    /// (issue #928). Only the auditing modes flag them.
+    fn scans_ignored_present(self) -> bool {
+        matches!(self, Self::All | Self::Worktree)
+    }
 }
 
 impl fmt::Display for ArtifactGuardMode {
@@ -305,7 +315,9 @@ pub fn scan_artifacts(
             &mut violations,
             &mut seen,
         )?;
-        scan_ignored_present(&repo, &allowlist, &mut violations, &mut seen)?;
+        if config.mode.scans_ignored_present() {
+            scan_ignored_present(&repo, &allowlist, &mut violations, &mut seen)?;
+        }
     }
 
     violations.sort_by(|left, right| {

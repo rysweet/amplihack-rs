@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","method":"receive","params":{"envelope":{"source":"+15551230001","sourceNumber":"+15551230001","sourceDevice":1,"timestamp":1700000003000,"dataMessage":{"timestamp":1700000003000,"message":"hello direct","groupInfo":null}},"account":"+15551230000","subscription":0}}

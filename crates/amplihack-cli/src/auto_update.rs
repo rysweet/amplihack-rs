@@ -8,12 +8,16 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 use tracing::{debug, info, warn};
+
+use crate::util::run_with_timeout;
 
 const GITHUB_REPO: &str = "rysweet/amplihack-rs";
 const CACHE_FILE_NAME: &str = "update_cache.json";
 const DEFAULT_CHECK_INTERVAL_HOURS: u64 = 24;
 const DEFAULT_TIMEOUT_SECONDS: u64 = 10;
+const UPGRADE_COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Result of comparing the current version against the latest release.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -220,7 +224,9 @@ fn _save_cache(cache_dir: &Path, cache: &UpdateCache) {
 
 /// Run an upgrade subprocess and return its exit code.
 fn _run_upgrade(binary: &Path, args: &[&str]) -> i32 {
-    match Command::new(binary).args(args).status() {
+    let mut command = Command::new(binary);
+    command.args(args);
+    match run_with_timeout(command, UPGRADE_COMMAND_TIMEOUT) {
         Ok(status) => status.code().unwrap_or(1),
         Err(e) => {
             warn!(error = %e, binary = %binary.display(), "Failed to run upgrade command");
@@ -249,7 +255,7 @@ fn _restart_cli(args: &[String]) {
         }
         #[cfg(not(unix))]
         {
-            let _ = cmd.status();
+            let _ = run_with_timeout(cmd, UPGRADE_COMMAND_TIMEOUT);
         }
     }
 }
