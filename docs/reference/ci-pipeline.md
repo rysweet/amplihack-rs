@@ -40,23 +40,81 @@ channel = "1.97.0"
 components = ["rustfmt", "clippy"]
 ```
 
-Every CI job installs the toolchain with a version-pinned
-`dtolnay/rust-toolchain@1.97.0` action that matches the file; cross-compile legs
-add `targets: ${{ matrix.target }}` on top. `rust-toolchain.toml` is
-authoritative: if the action pin and the file ever disagree, `rustup` uses the
-file's channel, so a mismatch degrades to a slower run — never a broken one.
+Every job in **every** build workflow installs the toolchain with a
+version-pinned `dtolnay/rust-toolchain@1.97.0` action that matches the file.
+This includes `ci.yml` (build, test, clippy, and the cross-compile matrix) and
+the `publish-snapshot.yml` release matrix. Cross-compile legs add
+`targets: ${{ matrix.target }}` on top so the target's `rust-std` is installed
+into the pinned toolchain.
+
+`rust-toolchain.toml` is authoritative: at build time `rustup` always resolves
+to the file's channel, regardless of which channel the action selected. That
+override is exactly why the action ref and the file **must** name the same
+version — a mismatch is not merely slower, it can be fatal on cross-compile
+legs:
+
+> **Why `@stable` breaks cross builds (issue #935).** When a workflow used
+> `dtolnay/rust-toolchain@stable` with `targets: ${{ matrix.target }}`, the
+> action installed the _stable_ toolchain and added the cross target's
+> `rust-std` **to stable**. At build time `rust-toolchain.toml` overrode
+> resolution back to `1.97.0` — a toolchain that never received the cross
+> target's `rust-std` — so `cargo build` failed with
+> `error[E0463]: can't find crate for std`. The `aarch64-unknown-linux-gnu` leg
+> (built on `x86_64` `ubuntu-latest`) failed on every `main` push. Pinning the
+> action to `@1.97.0` installs `rust-std` into the same toolchain that is used
+> at build time, resolving the error. The build matrix in `ci.yml` never hit
+> this because it was already pinned to `@1.97.0`.
+
+The rule: any `dtolnay/rust-toolchain@<ref>` that supplies `targets:` for a
+cross build **must** equal the `rust-toolchain.toml` channel. Prefer keeping
+_all_ build-job refs pinned to the file's channel so target `rust-std` always
+lands in the resolved toolchain.
 
 ### Bumping the pinned toolchain
 
 Bump deliberately, in its own PR:
 
 1. Edit `channel` in `rust-toolchain.toml`.
-2. Update the four `dtolnay/rust-toolchain@<version>` refs in `ci.yml` to match.
+2. Update every `dtolnay/rust-toolchain@<version>` ref in the build workflows to
+   match — the four refs in `ci.yml`, the ref in `publish-snapshot.yml`, **and**
+   the cross-build ref in `release.yml` (see the known-drift note below).
 3. Run `cargo clippy -- -D warnings && cargo fmt --check && cargo nextest run
    --workspace --locked` locally, fix any new lints, and open the PR.
 
-Keep the file and the four action refs in lockstep so the review stays focused
-on lint fallout rather than mixing it with feature work.
+Keep the file and the workflow action refs in lockstep so the review stays
+focused on lint fallout rather than mixing it with feature work.
+
+### Regression guard: toolchain-ref invariant
+
+To stop this drift class from recurring, a static check asserts that every
+build-job `dtolnay/rust-toolchain@<ref>` in `.github/workflows/*.yml` equals the
+`rust-toolchain.toml` channel:
+
+```bash
+scripts/check-toolchain-refs.sh
+```
+
+The script reads the pinned `channel` from `rust-toolchain.toml`, scans the
+workflows for `dtolnay/rust-toolchain@<ref>` occurrences that provide a
+`targets:` input (i.e. build/cross legs), and exits non-zero on any mismatch —
+for example, if a leg reverts to `@stable`. Toolchain steps with **no**
+`targets:` input (such as the lint-only job in `invisible-char-scan.yml`, which
+runs on `@stable` by design) do not install per-target `rust-std`, are not
+exposed to the `E0463` drift, and are outside the invariant. Run the guard locally before pushing; it is also wired
+into CI and pre-commit, so a mismatched or floating ref fails fast instead of
+surfacing as an `E0463` in a release build.
+
+> **Known remaining drift — `release.yml` cross-build (tracked follow-up).**
+> The tag-triggered release matrix in `release.yml` builds the shipped binaries
+> with `dtolnay/rust-toolchain@stable` **and** `targets: ${{ matrix.target }}`,
+> including `aarch64-unknown-linux-gnu` on `ubuntu-latest`. That is the exact
+> #935 configuration, still present in release builds: because it supplies
+> `targets:`, it is **in scope** for the invariant and `check-toolchain-refs.sh`
+> flags it. Fixing #935 pinned only the snapshot workflow, so the guard will
+> report `release.yml` as a mismatch until its ref is pinned to the file's
+> channel too. Pin it in a dedicated follow-up PR (same one-line change as the
+> snapshot fix); until then, treat the guard's `release.yml` finding as the
+> expected signal for that tracked work, not a false positive.
 
 ## Test execution
 
