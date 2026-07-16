@@ -7,6 +7,7 @@ use std::process::Command;
 
 use amplihack_utils::prompt_delivery::{
     DeliveryCaps, DeliveryHandle, DeliveryMode, PromptDelivery, deliver, from_env,
+    sanitize_prompt_nul,
 };
 
 use crate::flag_matrix::{
@@ -114,7 +115,8 @@ fn finish_prompt_delivery(
     let delivery_handle = deliver(&mut command, prompt, requested, &caps)?;
     let selected_mode = delivery_handle.mode();
     let warnings = warnings_for(requested, selected_mode, &caps);
-    let stdin_payload = (selected_mode == DeliveryMode::Stdin).then(|| prompt.as_bytes().to_vec());
+    let stdin_payload = (selected_mode == DeliveryMode::Stdin)
+        .then(|| sanitize_prompt_nul(prompt).as_bytes().to_vec());
     Ok(DeliveredCommand {
         command,
         delivery_handle,
