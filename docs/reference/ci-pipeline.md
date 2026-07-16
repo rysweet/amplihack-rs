@@ -106,7 +106,7 @@ Bump deliberately, in its own PR:
 
 1. Edit `channel` in `rust-toolchain.toml`.
 2. Update every `dtolnay/rust-toolchain@<version>` ref in the build workflows to
-   match —    the four refs in `ci.yml`, the ref in `publish-snapshot.yml`, and the
+   match — the four refs in `ci.yml`, the ref in `publish-snapshot.yml`, and the
    cross-build ref in `release.yml`.
 3. Run `cargo clippy -- -D warnings && cargo fmt --check && cargo nextest run
    --workspace --locked` locally, fix any new lints, and open the PR.
