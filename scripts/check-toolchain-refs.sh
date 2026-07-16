@@ -41,12 +41,11 @@ TOOLCHAIN_TOML="${TOOLCHAIN_TOML:-$REPO_ROOT/rust-toolchain.toml}"
 # an entry once the underlying workflow is pinned so stale allowlist entries are
 # surfaced too.
 #
-# release.yml:137 carries the same `@stable` + `targets:` drift as #935 but the
-# release pipeline (cross-target signing/publish) is out of scope for the #935
-# bugfix and tracked as follow-up. See docs/reference/ci-pipeline.md.
-ALLOWLIST=(
-    "release.yml"
-)
+# The allowlist is currently empty: every targets-bearing toolchain ref
+# (including release.yml, pinned in #939) must match the rust-toolchain.toml
+# channel. Add an entry only to track a genuinely out-of-scope, in-progress
+# pinning follow-up. See docs/reference/ci-pipeline.md.
+ALLOWLIST=()
 
 err() { printf 'ERROR: %s\n' "$1" >&2; }
 warn() { printf 'WARNING: %s\n' "$1" >&2; }
@@ -81,6 +80,10 @@ targets_bearing_refs() {
 
 is_allowlisted() {
     local base="$1" entry
+    # Expanding "${ALLOWLIST[@]}" on an empty array under `set -u` is an
+    # "unbound variable" error on bash < 4.4 (e.g. macOS system bash 3.2).
+    # Return early so an empty allowlist stays robust across bash versions.
+    [ "${#ALLOWLIST[@]}" -eq 0 ] && return 1
     for entry in "${ALLOWLIST[@]}"; do
         [ "$base" = "$entry" ] && return 0
     done
