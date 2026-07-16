@@ -425,7 +425,9 @@ fi
 #   -C / to keep absolute paths predictable (we pass full paths below).
 #   --exclude-caches-under drops ~/.cache-style dirs.
 #   --exclude-vcs-ignores is NOT used — we want config files.
-tar --use-compress-program=zstd \
+#   zstd -T0 uses all available cores for compression (the largest CPU-bound
+#   local step); output is standard zstd, decompressed identically by unzstd.
+tar --use-compress-program='zstd -T0' \
     --exclude='**/target' \
     --exclude='**/node_modules' \
     --exclude='**/.venv' \
