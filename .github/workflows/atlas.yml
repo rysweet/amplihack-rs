@@ -25,7 +25,7 @@ jobs:
       - name: Render DOT diagrams
         run: |
           for layer in repo-surface ast-lsp-bindings compile-deps runtime-topology \
-                       api-contracts data-flow service-components user-journeys; do
+                       api-contracts data-flow service-components; do
             dot -Tsvg "docs/atlas/$layer/$layer.dot" \
                 -o "docs/atlas/$layer/${layer}-dot.svg"
           done
