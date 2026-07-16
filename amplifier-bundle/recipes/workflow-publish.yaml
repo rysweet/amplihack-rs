@@ -47,8 +47,14 @@ steps:
        Required:
        1. Review `git diff main...HEAD`.
        2. Classify as PATCH (fix/docs/refactor), MINOR (backward-compatible feature/API), or MAJOR (breaking).
-       3. Read and update the current `version = "X.Y.Z"` line in the workspace Cargo.toml.
-       4. Verify the new version.
+       3. Update the `[workspace.package].version` line ONLY when the change type warrants it:
+          - **PATCH (fix/docs/refactor): DO NOT modify the `version = "X.Y.Z"` line.**
+            Leave `[workspace.package].version` exactly as-is and set
+            `new_version` equal to `current_version` in the output JSON.
+            A bugfix/docs/refactor branch MUST NOT bump the workspace version.
+          - **MINOR (backward-compatible feature/API): bump the minor** (X.Y.Z → X.(Y+1).0).
+          - **MAJOR (breaking): bump the major** (X.Y.Z → (X+1).0.0).
+       4. Verify the resulting version matches the classification (unchanged for PATCH).
 
        Useful commands:
        ```bash
@@ -56,6 +62,8 @@ steps:
        git diff main...HEAD --stat
        CURRENT_VERSION=$(grep -E '^version = ' Cargo.toml | head -1 | cut -d'"' -f2)
        echo "Current version: $CURRENT_VERSION"
+       # PATCH: leave the version line untouched (no sed).
+       # MINOR/MAJOR only:
        # sed -i 's/version = "X.Y.Z"/version = "NEW.VERSION"/' Cargo.toml
        grep -E '^version = ' Cargo.toml | head -1
        ```
@@ -218,7 +226,29 @@ steps:
       # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
       TASK_DESC="$TASK_DESCRIPTION"
       ISSUE_NUMBER="$ISSUE_NUMBER"
-      COMMIT_TITLE=$(printf 'feat: %.72s' "$(printf '%s' "$TASK_DESC" | tr '\n\r' ' ' | head -1)")
+      # FIX (#944): Derive the conventional-commit prefix from the real change
+      # type reported by step-14-bump-version instead of hardcoding 'feat:'. A
+      # hardcoded 'feat:' made pure bugfix branches trip the version-bump gate
+      # (observed on #920/#943, requiring manual reverts).
+      #   PATCH -> fix:   MINOR -> feat:   MAJOR -> feat!:
+      # The classification is read from the step-14 output (surfaced by the
+      # recipe runner as RECIPE_VAR_version_bump__change_classification; the
+      # VERSION_BUMP__CHANGE_CLASSIFICATION uppercase form is a defensive
+      # fallback). When unset/unknown, fall back to a bugfix-intent heuristic on
+      # the task description, defaulting to feat: to preserve legacy behavior.
+      CHANGE_CLASS="${RECIPE_VAR_version_bump__change_classification:-${VERSION_BUMP__CHANGE_CLASSIFICATION:-}}"
+      case "$(printf '%s' "$CHANGE_CLASS" | tr '[:lower:]' '[:upper:]')" in
+        PATCH) COMMIT_PREFIX="fix: " ;;
+        MINOR) COMMIT_PREFIX="feat: " ;;
+        MAJOR) COMMIT_PREFIX="feat!: " ;;
+        *)
+          case "$(printf '%s' "$TASK_DESC" | tr '[:upper:]' '[:lower:]')" in
+            *bug*|*bugfix*|*fix*) COMMIT_PREFIX="fix: " ;;
+            *)                    COMMIT_PREFIX="feat: " ;;
+          esac
+          ;;
+      esac
+      COMMIT_TITLE=$(printf '%s%.72s' "$COMMIT_PREFIX" "$(printf '%s' "$TASK_DESC" | tr '\n\r' ' ' | head -1)")
       # FIX #684: Host-aware commit references
       HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
       case "$HOST_TYPE" in
