@@ -49,7 +49,11 @@ pub fn sanitize_prompt_nul(prompt: &str) -> Cow<'_, str> {
         return Cow::Borrowed(prompt);
     }
 
-    let sanitized: String = prompt.chars().filter(|&c| c != '\0').collect();
+    // Copy the runs between NULs in bulk (memcpy per chunk) into a single
+    // pre-sized buffer, rather than decoding/re-encoding each char. `split`
+    // drops the NUL separators, so `extend` appends only NUL-free slices.
+    let mut sanitized = String::with_capacity(prompt.len());
+    sanitized.extend(prompt.split('\0'));
     // Each stripped NUL is a single byte, so the byte-length delta is the count.
     let removed = prompt.len() - sanitized.len();
     tracing::warn!(
