@@ -1,0 +1,87 @@
+scenario:
+  name: "Per-Session Signal Channel — Fail-Closed Product Boundary (Issue #904)"
+  description: |
+    Verifies the feature-gated per-session Signal channel from a real
+    operator's perspective at the CLI product boundary, WITHOUT requiring a
+    live signal-cli daemon.
+
+    A real operator expects:
+      * With the `signal` feature built, the `amplihack-hooks signal-subscriber`
+        subcommand exists and never hangs or crashes the session, regardless of
+        configuration state (fail-closed + non-fatal contract).
+      * Missing configuration is treated as "Signal disabled", not an error:
+        the subscriber logs a WARN and exits 0.
+      * A valid configuration pointing at an unreachable daemon must not hang
+        the caller: the subscriber exits 0 promptly.
+      * Configuration loads from a TOML file via AMPLIHACK_SIGNAL_CONFIG
+        (env > file resolution), advancing past the config gate.
+
+    The bidirectional live-daemon path (create a self-only group, post updates,
+    and accept the operator's device-1 phone reply as an advisory instruction)
+    requires a live signal-cli daemon and is validated MANUALLY against the ia2
+    daemon — operator-confirmed that group messages arrive on their phone. That
+    external-infra path is intentionally out of scope for this daemon-independent
+    scenario.
+
+  type: cli
+  tags: [signal, issue-904, fail-closed, non-fatal, security-boundary]
+
+  agents:
+    - name: amplihack-hooks-cli
+      type: cli
+      command: amplihack-hooks
+
+  prerequisites:
+    - "amplihack-hooks built with `--features signal` (debug or release)"
+    - "No live signal-cli daemon required for this scenario"
+
+  environment:
+    variables:
+      RUST_LOG: "warn"
+
+  steps:
+    - action: launch
+      target: "amplihack-hooks"
+      args: ["signal-subscriber", "--session-id", "demo-nocfg"]
+      env_unset: ["AMPLIHACK_SIGNAL_ENDPOINT", "AMPLIHACK_SIGNAL_ACCOUNT", "AMPLIHACK_SIGNAL_ALLOWLIST"]
+      description: "Missing config: operator has not configured Signal at all"
+
+    - action: verify_exit_code
+      expected: 0
+      description: "Missing config is non-fatal — must exit 0, never block the session"
+
+    - action: verify_output
+      contains: "config not loaded"
+      description: "Must WARN that config was not loaded (Signal simply disabled)"
+
+    - action: launch
+      target: "amplihack-hooks"
+      args: ["signal-subscriber", "--session-id", "demo-unreach"]
+      env:
+        AMPLIHACK_SIGNAL_ENDPOINT: "127.0.0.1:1"
+        AMPLIHACK_SIGNAL_ACCOUNT: "+15551230000"
+        AMPLIHACK_SIGNAL_ALLOWLIST: "+15551230001"
+      timeout_seconds: 30
+      description: "Valid config, unreachable daemon: must not hang the caller"
+
+    - action: verify_exit_code
+      expected: 0
+      description: "Unreachable daemon is non-fatal — must exit 0 promptly, no hang"
+
+    - action: launch
+      target: "amplihack-hooks"
+      args: ["signal-subscriber", "--session-id", "demo-file"]
+      env:
+        AMPLIHACK_SIGNAL_CONFIG: "<generated-config.toml>"
+      env_unset: ["AMPLIHACK_SIGNAL_ENDPOINT", "AMPLIHACK_SIGNAL_ACCOUNT", "AMPLIHACK_SIGNAL_ALLOWLIST"]
+      timeout_seconds: 20
+      description: "TOML config via AMPLIHACK_SIGNAL_CONFIG loads (env > file)"
+
+    - action: verify_exit_code
+      expected: 0
+      description: "File-based config loads cleanly and advances past the config gate"
+
+  # Executable form of this scenario:
+  #   bash tests/outside-in/scripts/scenario9-signal-checks.sh
+  # (builds amplihack-hooks --features signal, then runs the three modes above
+  #  plus the fail-closed gate unit tests covering both deployment shapes.)

@@ -223,7 +223,178 @@ mod tests {
     use amplihack_types::ProjectDirs;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
     use std::time::Duration;
+
+    /// Adaptive, liveness-based content poll (issue #908).
+    ///
+    /// The background subprocess writes its stub log via a shell redirect
+    /// (`printf ... > log`), which creates the file *before* its content is
+    /// flushed. Polling for mere file existence therefore races the write under
+    /// CI load. Instead we poll the file *content* until all `markers` appear.
+    ///
+    /// Liveness rather than a fixed cap: any growth in the file's byte length
+    /// resets an idle timer, so a slow-but-alive subprocess is never truncated.
+    /// We give up only once the file has been idle (no growth) for `idle_bound`.
+    ///
+    /// Returns `(all_markers_found, last_content_read)`.
+    fn poll_file_for_content(
+        path: &Path,
+        markers: &[&str],
+        poll_interval: Duration,
+        idle_bound: Duration,
+    ) -> (bool, String) {
+        let mut last_len: u64 = 0;
+        let mut last_progress = std::time::Instant::now();
+        loop {
+            let current_len = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            if current_len != last_len {
+                last_len = current_len;
+                last_progress = std::time::Instant::now();
+            }
+            let content = fs::read_to_string(path).unwrap_or_default();
+            if markers.iter().all(|m| content.contains(m)) {
+                return (true, content);
+            }
+            if last_progress.elapsed() >= idle_bound {
+                return (false, content);
+            }
+            std::thread::sleep(poll_interval);
+        }
+    }
+
+    #[test]
+    fn content_present_immediately_returns_found_fast() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("ready.log");
+        fs::write(
+            &log,
+            "index-code .amplihack/blarify.json .amplihack/graph_db\n",
+        )
+        .unwrap();
+
+        let start = std::time::Instant::now();
+        let (found, content) = poll_file_for_content(
+            &log,
+            &[
+                "index-code",
+                ".amplihack/blarify.json",
+                ".amplihack/graph_db",
+            ],
+            Duration::from_millis(25),
+            Duration::from_secs(2),
+        );
+
+        assert!(found);
+        assert!(content.contains("index-code"));
+        assert!(
+            start.elapsed() < Duration::from_millis(500),
+            "already-present content should return without waiting the idle bound"
+        );
+    }
+
+    #[test]
+    fn content_appended_after_delay_is_detected_via_liveness() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("delayed.log");
+        fs::write(&log, "starting\n").unwrap();
+
+        let log_writer = log.clone();
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            fs::write(&log_writer, "index-code done\n").unwrap();
+        });
+
+        let (found, content) = poll_file_for_content(
+            &log,
+            &["index-code"],
+            Duration::from_millis(25),
+            Duration::from_secs(2),
+        );
+        writer.join().unwrap();
+
+        assert!(found);
+        assert!(content.contains("index-code"));
+    }
+
+    #[test]
+    fn file_idle_without_markers_gives_up_after_idle_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("idle.log");
+        fs::write(&log, "partial-output-only\n").unwrap();
+
+        let idle_bound = Duration::from_millis(300);
+        let start = std::time::Instant::now();
+        let (found, _content) =
+            poll_file_for_content(&log, &["index-code"], Duration::from_millis(25), idle_bound);
+
+        assert!(!found, "should give up when markers never appear");
+        assert!(
+            start.elapsed() >= idle_bound,
+            "must wait at least the idle bound before giving up"
+        );
+        assert!(
+            start.elapsed() < idle_bound + Duration::from_secs(2),
+            "idle give-up must be bounded, not indefinite"
+        );
+    }
+
+    #[test]
+    fn slow_growing_file_is_not_truncated_before_markers_arrive() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("slow.log");
+        fs::write(&log, "").unwrap();
+
+        // Idle bound is shorter than total write time, but each write grows the
+        // file and resets the idle timer, so liveness must keep the poll alive.
+        let idle_bound = Duration::from_millis(200);
+        let log_writer = log.clone();
+        let writer = std::thread::spawn(move || {
+            let mut content = String::new();
+            for chunk in ["a ", "b ", "c ", "d ", "index-code\n"] {
+                std::thread::sleep(Duration::from_millis(120));
+                content.push_str(chunk);
+                fs::write(&log_writer, &content).unwrap();
+            }
+        });
+
+        let (found, content) =
+            poll_file_for_content(&log, &["index-code"], Duration::from_millis(25), idle_bound);
+        writer.join().unwrap();
+
+        assert!(
+            found,
+            "liveness reset on growth must prevent premature truncation of a slow subprocess"
+        );
+        assert!(content.contains("index-code"));
+    }
+
+    #[test]
+    fn missing_file_then_created_is_handled() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("late.log");
+        // Note: file intentionally absent at poll start.
+
+        let log_writer = log.clone();
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            fs::write(&log_writer, "index-code appears\n").unwrap();
+        });
+
+        let (found, content) = poll_file_for_content(
+            &log,
+            &["index-code"],
+            Duration::from_millis(25),
+            Duration::from_secs(2),
+        );
+        writer.join().unwrap();
+
+        assert!(
+            found,
+            "a file created after polling begins must still be detected"
+        );
+        assert!(content.contains("index-code"));
+    }
 
     #[test]
     fn setup_blarify_indexing_background_imports_current_json_when_db_missing() {
@@ -261,12 +432,22 @@ mod tests {
 
         let result = setup_blarify_indexing(&dirs).unwrap();
 
-        let mut attempts = 0;
-        while !stub_log.exists() && attempts < 20 {
-            std::thread::sleep(Duration::from_millis(50));
-            attempts += 1;
-        }
-        let logged = fs::read_to_string(&stub_log).unwrap();
+        // Adaptive, liveness-based content poll (see `poll_file_for_content`).
+        // The background subprocess writes the stub log via a shell redirect
+        // (`printf ... > log`), which creates the file before its content is
+        // flushed. Polling for mere existence races the write under CI load, so
+        // we poll the *content* and keep waiting as long as the log is still
+        // growing, giving up only after a bounded idle interval.
+        let (_found, logged) = poll_file_for_content(
+            &stub_log,
+            &[
+                "index-code",
+                ".amplihack/blarify.json",
+                ".amplihack/graph_db",
+            ],
+            Duration::from_millis(25),
+            Duration::from_secs(2),
+        );
         unsafe {
             std::env::remove_var("AMPLIHACK_AMPLIHACK_BINARY_PATH");
             std::env::remove_var("AMPLIHACK_BLARIFY_MODE");
