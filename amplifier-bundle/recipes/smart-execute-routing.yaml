@@ -121,6 +121,7 @@ steps:
       worktree_setup: "{{worktree_setup}}"
       allow_no_op: "{{allow_no_op}}"
       skip_pre_agent_validation: "{{skip_pre_agent_validation}}"
+      auto_init_repo: "{{auto_init_repo}}"
     output: "round_1_result"
 
   - id: "execute-single-round-1-investigation"
@@ -233,6 +234,7 @@ steps:
       worktree_setup: "{{worktree_setup}}"
       allow_no_op: "{{allow_no_op}}"
       skip_pre_agent_validation: "{{skip_pre_agent_validation}}"
+      auto_init_repo: "{{auto_init_repo}}"
     output: "round_1_result"
 
   - id: "execute-single-fallback-blocked-investigation"
@@ -369,6 +371,7 @@ steps:
       worktree_setup: "{{worktree_setup}}"
       allow_no_op: "{{allow_no_op}}"
       skip_pre_agent_validation: "{{skip_pre_agent_validation}}"
+      auto_init_repo: "{{auto_init_repo}}"
     output: "round_1_result"
 
   - id: "adaptive-execute-investigation"
