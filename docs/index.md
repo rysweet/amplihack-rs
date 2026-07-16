@@ -226,6 +226,7 @@ Proven methodologies for consistent, high-quality results.
 - [Default Workflow](claude/skills/default-workflow/SKILL.md) - Standard multi-step development process
 - [Investigation Workflow](claude/workflow/INVESTIGATION_WORKFLOW.md) - Deep codebase analysis and understanding
 - [PR Recovery Readiness](PR_RECOVERY_READINESS.md) - Entry point for existing-PR recovery docs and the canonical readiness contract
+- [Publish Workflow Versioning](WORKFLOW_PUBLISH_VERSIONING.md) - Classification-driven commit prefix and version bump (bugfix branches stay on `fix:` and do not bump the workspace version)
 - [Document-Driven Development (DDD)](document_driven_development/README.md) - Documentation-first approach for large features
 
 ### DDD Deep Dive
