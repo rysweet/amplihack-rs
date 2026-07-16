@@ -18,6 +18,12 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
+[features]
+# Propagates the Signal channel feature down to the hooks library. Off by
+# default so the standard multicall binary builds with no Signal code.
+default = []
+signal = ["amplihack-hooks/signal"]
+
 [dev-dependencies]
 serde_json = { workspace = true }
 
@@ -28,3 +34,9 @@ path = "../../tests/integration/hook_dispatch_test.rs"
 [[test]]
 name = "hook_aliases"
 path = "../../tests/integration/hook_aliases_test.rs"
+
+# Signal subscriber subcommand integration test (only meaningful under the
+# `signal` feature; compiles to an empty test crate otherwise).
+[[test]]
+name = "signal_subscriber_it"
+path = "tests/signal_subscriber_it.rs"

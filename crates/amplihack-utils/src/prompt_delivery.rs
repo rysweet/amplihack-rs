@@ -23,11 +23,45 @@
 //!   alive until the child has been waited on; dropping it unlinks the
 //!   temp file.
 
+use std::borrow::Cow;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use tempfile::NamedTempFile;
+
+/// Strip all NUL (`0x00`) bytes from `prompt`, preserving every other byte in
+/// order.
+///
+/// A NUL byte cannot be passed through to a child process: argv elements are
+/// C strings terminated by NUL, so [`std::process::Command::arg`] rejects
+/// interior NULs and aborts the spawn (`nul byte found in provided data`).
+/// Issue #898: a single stray NUL in agent/bash step output was killing the
+/// entire recipe-runner workflow. Rather than reject the whole prompt, we
+/// sanitize at this boundary so downstream steps continue.
+///
+/// Fast path: when the prompt contains no NUL byte the input is returned
+/// unchanged as [`Cow::Borrowed`] (zero-copy). Only when a NUL is present do
+/// we allocate an owned, filtered copy and emit a count-only
+/// [`tracing::warn!`] (never the prompt content, which may hold secrets).
+pub fn sanitize_prompt_nul(prompt: &str) -> Cow<'_, str> {
+    if !prompt.as_bytes().contains(&0) {
+        return Cow::Borrowed(prompt);
+    }
+
+    // Copy the runs between NULs in bulk (memcpy per chunk) into a single
+    // pre-sized buffer, rather than decoding/re-encoding each char. `split`
+    // drops the NUL separators, so `extend` appends only NUL-free slices.
+    let mut sanitized = String::with_capacity(prompt.len());
+    sanitized.extend(prompt.split('\0'));
+    // Each stripped NUL is a single byte, so the byte-length delta is the count.
+    let removed = prompt.len() - sanitized.len();
+    tracing::warn!(
+        removed_nul_bytes = removed,
+        "stripped NUL byte(s) from prompt before subprocess delivery (issue #898)"
+    );
+    Cow::Owned(sanitized)
+}
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -276,14 +310,14 @@ pub fn deliver(
     requested: PromptDelivery,
     caps: &DeliveryCaps,
 ) -> std::io::Result<DeliveryHandle> {
-    if prompt.as_bytes().contains(&0) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "prompt contains a NUL byte; refusing to pass invalid prompt data to child process",
-        ));
-    }
-
+    // Issue #898: strip NUL bytes so a single stray NUL in agent/bash step
+    // output cannot abort the whole workflow at child spawn. Mode selection
+    // uses the *original* prompt length (not the sanitized length) to stay
+    // consistent with stdin-path callers that compute select_mode on the raw
+    // prompt. Sanitization affects only the delivered bytes.
     let mode = select_mode(requested, prompt.len(), caps);
+    let prompt = sanitize_prompt_nul(prompt);
+    let prompt = prompt.as_ref();
     match mode {
         DeliveryMode::Argv => {
             cmd.arg(prompt);
