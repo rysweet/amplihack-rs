@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
+use amplihack_utils::idle_watchdog::{IdleConfig, wait_with_idle_watchdog_sync};
 use async_trait::async_trait;
 use serde_json::Value;
 use tracing::{debug, info, warn};
@@ -30,7 +31,9 @@ const DEFAULT_COPILOT_PATH: &str = ".npm-global/bin/copilot";
 /// Environment variable to override the binary path.
 const COPILOT_PATH_ENV: &str = "COPILOT_CLI_PATH";
 
-/// Default timeout for a single CLI invocation.
+/// Default idle window for a single CLI invocation (issue #867). The child is
+/// reaped only after producing no output for this long, never on total elapsed
+/// wall-clock time.
 const DEFAULT_CLI_TIMEOUT: Duration = Duration::from_secs(300);
 
 // ---------------------------------------------------------------------------
@@ -61,7 +64,7 @@ pub struct CopilotCliClient {
     binary_path: PathBuf,
     /// Optional working directory for the subprocess.
     working_dir: Option<PathBuf>,
-    /// Per-invocation timeout.
+    /// Idle window: reap the subprocess after this long with no output.
     timeout: Duration,
     /// Extra environment variables injected into the subprocess.
     extra_env: HashMap<String, String>,
@@ -126,7 +129,8 @@ impl CopilotCliClient {
         self
     }
 
-    /// Override the per-invocation timeout.
+    /// Override the per-invocation idle window (issue #867). Reinterpreted as
+    /// the no-output threshold for the idle watchdog, not a wall-clock deadline.
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
@@ -233,37 +237,32 @@ impl SdkClient for CopilotCliClient {
             // Drop stdin to signal EOF.
         }
 
-        // Wait with timeout using a polling loop.
-        let timeout = self.timeout;
-        let start = std::time::Instant::now();
-        loop {
-            match child.try_wait() {
-                Ok(Some(_status)) => break,
-                Ok(None) => {
-                    if start.elapsed() > timeout {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        return Err(AgentError::TimeoutError(timeout.as_secs()));
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                Err(e) => {
-                    return Err(AgentError::SubprocessError(format!(
-                        "error waiting for copilot process: {e}"
-                    )));
-                }
-            }
+        // Issue #867: supervise the subprocess with an idle watchdog rather than
+        // a wall-clock deadline. A child that keeps streaming output is never
+        // killed; only a genuinely idle one is reaped after the idle window. The
+        // configured `self.timeout` is reinterpreted as the idle window.
+        let stdout_pipe = child.stdout.take();
+        let stderr_pipe = child.stderr.take();
+        let cfg = IdleConfig::with_idle(self.timeout);
+        let outcome = wait_with_idle_watchdog_sync(&mut child, stdout_pipe, stderr_pipe, cfg);
+
+        if outcome.killed_for_idle {
+            warn!(
+                idle_secs = self.timeout.as_secs(),
+                "copilot CLI produced no output for the idle window; reaped"
+            );
+            return Err(AgentError::TimeoutError(self.timeout.as_secs()));
         }
 
-        let output = child
-            .wait_with_output()
-            .map_err(|e| AgentError::SubprocessError(format!("copilot subprocess failed: {e}")))?;
+        let status = outcome.status.map_err(|e| {
+            AgentError::SubprocessError(format!("error waiting for copilot process: {e}"))
+        })?;
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = outcome.stdout;
+        let stderr = outcome.stderr;
 
-        if !output.status.success() {
-            let code = output.status.code().unwrap_or(-1);
+        if !status.success() {
+            let code = status.code().unwrap_or(-1);
             warn!(
                 exit_code = code,
                 stderr = %stderr.chars().take(500).collect::<String>(),
@@ -286,7 +285,7 @@ impl SdkClient for CopilotCliClient {
 
         let mut metadata = HashMap::new();
         if !stderr.is_empty() {
-            metadata.insert("stderr".to_string(), Value::String(stderr.into_owned()));
+            metadata.insert("stderr".to_string(), Value::String(stderr));
         }
 
         Ok(SdkClientResponse {

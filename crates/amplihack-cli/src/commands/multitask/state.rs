@@ -135,14 +135,13 @@ pub(super) fn enforce_timeouts(
         let Some(start) = ws.start_time else {
             continue;
         };
-        let elapsed = start.elapsed().as_secs();
-        if elapsed < ws.max_runtime {
+        if start.elapsed().as_secs() < ws.max_runtime {
             continue;
         }
 
         let issue = ws.issue;
         println!(
-            "[{issue}] Timed out after {}s, marking timed_out_resumable",
+            "[{issue}] Past max_runtime ({}s), marking timed_out_resumable",
             ws.max_runtime
         );
 
@@ -153,8 +152,11 @@ pub(super) fn enforce_timeouts(
             let mut guard = proc_arc.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(ref mut child) = *guard {
                 if process_scope_is_authoritative(ws, child.id(), "timeout") {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    // Issue #867: interrupt only a genuinely idle child, never on elapsed alone.
+                    if super::utils::child_is_idle(&ws.log_file) {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    }
                 } else {
                     authoritative_process = false;
                 }
