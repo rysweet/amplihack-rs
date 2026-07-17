@@ -12,6 +12,7 @@ invoking `git commit`.
 - [Validation rules](#validation-rules)
 - [Provider inference](#provider-inference)
 - [Shell helper API](#shell-helper-api)
+- [Helper script location resolution](#helper-script-location-resolution)
 - [Recipe contract](#recipe-contract)
 - [Failures](#failures)
 
@@ -208,6 +209,109 @@ Classifies the repository remote as `github`, `azdo`, or `unknown`.
 Provider inference uses this value to decide whether `gh` or Azure CLI identity
 lookup is allowed.
 
+## Helper script location resolution
+
+Before a recipe can source `git-identity.sh`, it must first *find* the file on
+disk. The installed bundle layout differs across execution contexts, so every
+commit-producing recipe step resolves the helper path with the same ordered
+fallback chain rather than assuming a single location. This makes commit and
+checkpoint steps robust when `AMPLIHACK_HOME` points at a downstream repository
+checkout that does not itself contain an `amplifier-bundle/` tree (for example,
+a project consuming an installed amplihack), while the helper is present under
+`${HOME}/.amplihack/` or `${HOME}/.copilot/`.
+
+### Resolution order
+
+Each recipe step assigns `GIT_IDENTITY_HELPER` to the first candidate path that
+exists, checked in this exact order. The chain adopts the same home-directory
+fallback tail (`$(pwd)`, then `~/.copilot`, then `~/.amplihack`) and
+last-resort ordering as the sibling `RUNTIME_ARTIFACT_HELPER` chain used for
+`workflow_runtime_artifacts.sh`. The leading candidates differ intentionally:
+git-identity resolution uses `git rev-parse --show-toplevel` for the repository
+top level, whereas the runtime-artifact helper uses `${REPO_PATH:-$(pwd)}`:
+
+| # | Candidate path | Resolves when |
+| --- | --- | --- |
+| 1 | `${AMPLIHACK_HOME:-${REPO_PATH:-$(git rev-parse --show-toplevel)}}/amplifier-bundle/tools/git-identity.sh` | `AMPLIHACK_HOME` (or `REPO_PATH`, or the repo top level) contains the bundle. |
+| 2 | `$(git rev-parse --show-toplevel)/amplifier-bundle/tools/git-identity.sh` | The current repository root contains the bundle. |
+| 3 | `$(pwd)/amplifier-bundle/tools/git-identity.sh` | The working directory contains the bundle (worktrees where `pwd` differs from the top level). |
+| 4 | `${HOME:-/root}/.copilot/amplifier-bundle/tools/git-identity.sh` | The bundle is installed under the Copilot home. |
+| 5 | `${HOME:-/root}/.amplihack/amplifier-bundle/tools/git-identity.sh` | The bundle is installed under the amplihack home. |
+
+Higher-trust, workflow-scoped locations (`AMPLIHACK_HOME`, `REPO_PATH`, repo top
+level) are always tried first. The user-home install locations are tried last so
+they never shadow an explicitly configured bundle path.
+
+Candidate #1 is preserved verbatim per recipe and is not universal:
+`workflow-pr-review.yaml` intentionally uses `${AMPLIHACK_HOME:-$(git rev-parse
+--show-toplevel)}` (no `REPO_PATH`) as its base. Only the three home-based
+fallbacks (#3–#5) are appended identically across every recipe; see
+[Coverage](#coverage).
+
+The single-line form used in the commit steps is:
+
+```bash
+GIT_IDENTITY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(git rev-parse --show-toplevel)}}/amplifier-bundle/tools/git-identity.sh"
+[ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(git rev-parse --show-toplevel)/amplifier-bundle/tools/git-identity.sh"
+[ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(pwd)/amplifier-bundle/tools/git-identity.sh"
+[ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/git-identity.sh"
+[ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/git-identity.sh"
+[ -f "$GIT_IDENTITY_HELPER" ] || { echo "ERROR: git identity helper not found: $GIT_IDENTITY_HELPER" >&2; exit 2; }
+. "$GIT_IDENTITY_HELPER"
+```
+
+All candidate assignments and every `[ -f "$GIT_IDENTITY_HELPER" ]` guard are
+double-quoted to prevent word-splitting and glob expansion. The chain performs
+no `eval`, adds no command substitution beyond the existing `$(pwd)` and
+`$(git rev-parse --show-toplevel)`, and never parses the contents of the helper
+during resolution.
+
+### Fail-visible behavior
+
+Resolution is fail-visible, never silent-degrade. When *every* candidate is
+absent, the step prints
+`ERROR: git identity helper not found: <path>` to stderr and exits `2`. The
+terminal `exit 2` runs only after the full chain is exhausted, so a genuinely
+missing helper still stops the workflow loudly instead of producing an
+unattributed or skipped commit.
+
+`workflow-publish.yaml` additionally documents a multi-line commit example in an
+inline retry block. That block uses the same five candidate paths to locate the
+helper before sourcing it, and by design it does not add an `exit 2` guard — it
+retains its original fail-open-to-source shape and only benefits from the added
+resolution paths.
+
+### Coverage
+
+The five-candidate chain is applied consistently in every recipe step that
+sources `git-identity.sh`:
+
+| Recipe | Step context |
+| --- | --- |
+| `workflow-finalize.yaml` | Finalization and cleanup commit step. |
+| `workflow-refactor-review.yaml` | Review-feedback checkpoint commit step. |
+| `workflow-pr-review.yaml` | PR review remediation commit step (base candidate omits `REPO_PATH` by design). |
+| `workflow-tdd.yaml` | Implementation checkpoint commit step. |
+| `workflow-publish.yaml` | Publish commit step and the multi-line outside-in retry example. |
+| `consensus-publish.yaml` | Consensus result publication commit step. |
+| `consensus-pr-feedback.yaml` | PR feedback publication commit step. |
+
+Leading candidates are preserved verbatim per recipe: `workflow-pr-review.yaml`
+intentionally starts from `${AMPLIHACK_HOME:-$(git rev-parse --show-toplevel)}`
+without `REPO_PATH`, and the three home-based fallbacks are appended without
+rewriting it.
+
+### Regression contract
+
+A regression test asserts that the helper is located via the
+`${HOME}/.amplihack/amplifier-bundle/tools/git-identity.sh` fallback when both
+`AMPLIHACK_HOME` and the repository top level lack an `amplifier-bundle/` tree.
+The test also keeps a negative control proving that a fully missing helper still
+exits `2` (fail-visible), and static assertions that every recipe listed above
+carries the complete five-candidate chain. The test uses a temporary `HOME` and
+a disposable repository with `trap ... EXIT` cleanup and never writes to the
+real `~/.amplihack` or `~/.copilot`.
+
 ## Recipe contract
 
 Every Amplihack recipe path that creates a commit calls
@@ -267,3 +371,16 @@ git config --local user.email "mona@example.com"
 Do not fix this by setting global Git config on a shared VM. Global VM config can
 affect unrelated repositories and does not prove the identity was intended for
 the current workflow commit.
+
+A commit step can also stop earlier, before identity resolution runs, when the
+helper script itself cannot be located on disk:
+
+```text
+ERROR: git identity helper not found: <path>
+```
+
+This is the separate, fail-visible `exit 2` described under
+[Helper script location resolution](#helper-script-location-resolution). It
+means every candidate path was absent, not that the identity was unsafe.
+Remediation for that case is covered in the how-to guide's
+"Fix a 'git identity helper not found' failure" section.

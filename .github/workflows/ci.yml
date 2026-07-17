@@ -54,6 +54,9 @@ jobs:
       - name: Recipes — graceful degradation for missing runtime-artifact helper (issue #829)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-bug-829-graceful-degradation.sh
+      - name: Recipes — git-identity helper fallback resolution (issue #955)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-955-git-identity-fallback.sh
       - name: Recipes — doc-review failure is non-fatal-but-reported (issue #834)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-bug-834-doc-review-non-fatal.sh
