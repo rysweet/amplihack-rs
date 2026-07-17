@@ -119,6 +119,9 @@ impl GitHubDistributor {
     /// List existing agent-bundle distributions.
     pub fn list_distributions(&self) -> Vec<HashMap<String, String>> {
         if !has_gh_cli() {
+            // Cannot enumerate: surface it so an unavailable query is not
+            // mistaken for "no distributions exist".
+            tracing::warn!("gh CLI not available; cannot list distributions");
             return vec![];
         }
         let mut cmd = Command::new("gh");
@@ -129,32 +132,31 @@ impl GitHubDistributor {
         cmd.args(["--json", "name,description,url,updatedAt"]);
 
         let output = match cmd.output() {
-            Ok(o) if o.status.success() => o,
-            _ => return vec![],
+            Ok(o) => o,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to run `gh repo list`; cannot list distributions");
+                return vec![];
+            }
         };
+        if !output.status.success() {
+            // gh writes auth/permission failures to stderr; that is gh's own
+            // diagnostic (not untrusted file content), safe to surface.
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::error!(
+                status = %output.status,
+                stderr = %stderr.trim(),
+                "`gh repo list` failed; a failed query is NOT an empty distribution list"
+            );
+            return vec![];
+        }
 
-        let repos: Vec<serde_json::Value> =
-            serde_json::from_slice(&output.stdout).unwrap_or_default();
-
-        repos
-            .into_iter()
-            .filter(|r| {
-                r["name"]
-                    .as_str()
-                    .map(|n| n.to_lowercase().contains("agent-bundle"))
-                    .unwrap_or(false)
-            })
-            .map(|r| {
-                let mut m = HashMap::new();
-                if let Some(v) = r["name"].as_str() {
-                    m.insert("name".into(), v.into());
-                }
-                if let Some(v) = r["url"].as_str() {
-                    m.insert("url".into(), v.into());
-                }
-                m
-            })
-            .collect()
+        match parse_repo_list(&output.stdout) {
+            Ok(distributions) => distributions,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to parse `gh repo list` output; a parse failure is NOT an empty distribution list");
+                vec![]
+            }
+        }
     }
 
     /// Generate a README for the repository.
@@ -302,6 +304,39 @@ impl Default for DistributionResult {
     }
 }
 
+/// Parse `gh repo list --json name,description,url,updatedAt` output into
+/// agent-bundle distributions.
+///
+/// Pure and I/O-free so the parse path is deterministically testable without a
+/// live `gh`. A malformed payload is an `Err` (which `list_distributions`
+/// surfaces at `error!`) rather than an empty `Vec` indistinguishable from
+/// "no distributions". The error carries only serde's position — never the raw
+/// (untrusted) payload — so nothing sensitive is echoed back.
+fn parse_repo_list(stdout: &[u8]) -> Result<Vec<HashMap<String, String>>> {
+    let repos: Vec<serde_json::Value> = serde_json::from_slice(stdout)
+        .map_err(|e| GeneratorError::DistributionFailed(e.to_string()))?;
+
+    Ok(repos
+        .into_iter()
+        .filter(|r| {
+            r["name"]
+                .as_str()
+                .map(|n| n.to_lowercase().contains("agent-bundle"))
+                .unwrap_or(false)
+        })
+        .map(|r| {
+            let mut m = HashMap::new();
+            if let Some(v) = r["name"].as_str() {
+                m.insert("name".into(), v.into());
+            }
+            if let Some(v) = r["url"].as_str() {
+                m.insert("url".into(), v.into());
+            }
+            m
+        })
+        .collect())
+}
+
 /// Check whether `gh` CLI is available.
 pub fn has_gh_cli() -> bool {
     Command::new("gh")
@@ -377,5 +412,74 @@ mod tests {
     fn repo_url_without_org() {
         let dist = GitHubDistributor::new(None, None);
         assert_eq!(dist.repo_url("test"), "https://github.com/user/test");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #871 — a failed `gh repo list` (auth error, non-zero exit) and a JSON
+// parse error must NOT collapse to the same empty `Vec` as "no distributions".
+//
+// The fix extracts a pure, I/O-free parse seam so the parse path is
+// deterministically testable without a live `gh`, and so a parse failure is an
+// `Err` (surfaced at error!) rather than a silent empty list.
+//
+// NOTE (TDD red): `parse_repo_list` does not exist yet. Until the seam is
+// implemented these tests fail to COMPILE — that is the intended failing state
+// for this step. It returns this crate's `crate::error::Result` (GeneratorError),
+// NOT `anyhow`.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod issue_871_tests {
+    use super::*;
+
+    const FAKE_SECRET: &str = "ghp_FAKE_SECRET_do_not_log_0123456789";
+
+    #[test]
+    fn parse_repo_list_selects_agent_bundles() {
+        let json = br#"[
+            {"name":"agent-bundle-alpha","url":"https://github.com/o/agent-bundle-alpha","description":"x","updatedAt":"t"},
+            {"name":"unrelated-repo","url":"https://github.com/o/unrelated-repo","description":"y","updatedAt":"t"}
+        ]"#;
+        let result = parse_repo_list(json).expect("valid gh json must parse to Ok");
+        assert_eq!(result.len(), 1, "only agent-bundle repositories are listed");
+        assert_eq!(
+            result[0].get("name").map(String::as_str),
+            Some("agent-bundle-alpha")
+        );
+        assert_eq!(
+            result[0].get("url").map(String::as_str),
+            Some("https://github.com/o/agent-bundle-alpha")
+        );
+    }
+
+    #[test]
+    fn parse_repo_list_empty_array_is_ok_empty() {
+        let result = parse_repo_list(b"[]").expect("an empty array is a valid, empty result");
+        assert!(
+            result.is_empty(),
+            "a genuinely empty result set stays empty and is NOT an error"
+        );
+    }
+
+    #[test]
+    fn parse_repo_list_malformed_is_err() {
+        // A malformed payload must be an Err so `list_distributions` can log
+        // error! and never mistake a broken query for "no distributions".
+        let result = parse_repo_list(b"this is not json");
+        assert!(
+            result.is_err(),
+            "malformed gh output must be an Err, not an empty Vec"
+        );
+    }
+
+    #[test]
+    fn parse_repo_list_error_does_not_leak_input() {
+        let payload = format!("{{ not json {FAKE_SECRET}");
+        let err = parse_repo_list(payload.as_bytes()).expect_err("malformed input must error");
+        let rendered = format!("{err} {err:?}");
+        assert!(
+            !rendered.contains(FAKE_SECRET),
+            "a parse error must not echo the raw untrusted payload"
+        );
     }
 }

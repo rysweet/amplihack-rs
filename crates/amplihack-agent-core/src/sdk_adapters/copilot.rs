@@ -17,8 +17,11 @@ pub const NATIVE_TOOLS: &[&str] = &["file_system", "git", "web_requests"];
 /// Default timeout for Copilot agent runs (seconds).
 pub const DEFAULT_TIMEOUT: f64 = 300.0;
 
-/// Maximum allowed timeout (seconds).
-pub const MAX_TIMEOUT: f64 = 600.0;
+// Issue #867: there is no upper `MAX_TIMEOUT` clamp on agentic runs. The
+// adapter's configured timeout is reinterpreted downstream as an idle-window
+// override for the CLI client's idle watchdog, not as a wall-clock kill
+// deadline. Only a lower bound (1.0 s) is enforced so a nonsensical/zero
+// timeout can't disable idle supervision entirely.
 
 // ---------------------------------------------------------------------------
 // CopilotAdapter
@@ -43,7 +46,7 @@ pub struct CopilotAdapter {
 
 impl CopilotAdapter {
     pub fn new(config: SdkAdapterConfig) -> Self {
-        let timeout = config.timeout_secs.clamp(1.0, MAX_TIMEOUT);
+        let timeout = config.timeout_secs.max(1.0);
         Self {
             config,
             client: None,
@@ -67,7 +70,7 @@ impl CopilotAdapter {
     }
 
     pub fn with_timeout(mut self, timeout: f64) -> Self {
-        self.timeout = timeout.clamp(1.0, MAX_TIMEOUT);
+        self.timeout = timeout.max(1.0);
         self
     }
 
@@ -284,23 +287,35 @@ mod tests {
     }
 
     #[test]
-    fn timeout_clamping() {
+    fn timeout_no_upper_clamp() {
+        // Issue #867: agentic runs must NOT be capped by a wall-clock
+        // MAX_TIMEOUT. The lower bound (1.0 s) is preserved; large values pass
+        // through unchanged so the adapter timeout can drive the site-3 idle
+        // window instead of being an unused wall-clock bound.
+
+        // Lower bound still floors to 1.0 s.
         assert!(
             (CopilotAdapter::new(test_config())
                 .with_timeout(0.0)
                 .timeout()
                 - 1.0)
                 .abs()
-                < f64::EPSILON
+                < f64::EPSILON,
+            "timeouts below 1.0 s must floor to 1.0 s"
         );
+
+        // Previously clamped to MAX_TIMEOUT (600 s) — now preserved.
         assert!(
             (CopilotAdapter::new(test_config())
                 .with_timeout(999.0)
                 .timeout()
-                - MAX_TIMEOUT)
+                - 999.0)
                 .abs()
-                < f64::EPSILON
+                < f64::EPSILON,
+            "large timeouts must not be capped at MAX_TIMEOUT"
         );
+
+        // Ordinary values are untouched.
         assert!(
             (CopilotAdapter::new(test_config())
                 .with_timeout(120.0)
@@ -308,6 +323,13 @@ mod tests {
                 - 120.0)
                 .abs()
                 < f64::EPSILON
+        );
+
+        // new() must likewise preserve a large configured timeout.
+        let cfg = test_config().with_timeout(1200.0);
+        assert!(
+            (CopilotAdapter::new(cfg).timeout() - 1200.0).abs() < f64::EPSILON,
+            "new() must not cap large configured timeouts"
         );
     }
 

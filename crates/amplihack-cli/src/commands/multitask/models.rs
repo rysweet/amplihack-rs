@@ -22,8 +22,11 @@ pub const DEFAULT_MAX_RUNTIME: u64 = 7200;
 pub const INTERRUPT_PRESERVE_TIMEOUT_POLICY: &str = "interrupt-preserve";
 /// Timeout policy: mark timed-out but let the subprocess continue.
 pub const CONTINUE_PRESERVE_TIMEOUT_POLICY: &str = "continue-preserve";
-/// Default timeout policy.
-pub const DEFAULT_TIMEOUT_POLICY: &str = INTERRUPT_PRESERVE_TIMEOUT_POLICY;
+/// Default timeout policy. Issue #867: a non-killing default — a run that
+/// passes `max_runtime` is marked resumable but is NOT interrupted while it is
+/// still producing output. Interrupting is opt-in via `interrupt-preserve`,
+/// and even then only a genuinely idle child is killed.
+pub const DEFAULT_TIMEOUT_POLICY: &str = CONTINUE_PRESERVE_TIMEOUT_POLICY;
 
 /// Lifecycle states that can be resumed.
 #[allow(dead_code)]
@@ -350,6 +353,6 @@ mod tests {
     #[test]
     fn test_default_constants() {
         assert_eq!(DEFAULT_MAX_RUNTIME, 7200);
-        assert_eq!(DEFAULT_TIMEOUT_POLICY, "interrupt-preserve");
+        assert_eq!(DEFAULT_TIMEOUT_POLICY, "continue-preserve");
     }
 }

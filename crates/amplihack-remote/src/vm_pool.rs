@@ -14,7 +14,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::error::RemoteError;
 use crate::orchestrator::{Orchestrator, VM, VMOptions};
-use crate::state_lock::file_lock;
+use crate::state_io::{merge_key_into_state, read_keyed_state};
 
 /// VM capacity tiers for concurrent sessions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -296,63 +296,21 @@ impl VMPoolManager {
     // ---- state persistence ----
 
     fn load_state(&mut self) -> Result<(), RemoteError> {
-        if !self.state_file.exists() {
-            self.pool = HashMap::new();
-            return Ok(());
-        }
-
-        let content = std::fs::read_to_string(&self.state_file)
-            .map_err(|e| RemoteError::packaging(format!("Failed to read state: {e}")))?;
-
-        if content.trim().is_empty() {
-            self.pool = HashMap::new();
-            return Ok(());
-        }
-
-        let data: serde_json::Value = serde_json::from_str(&content)
-            .map_err(|e| RemoteError::packaging(format!("State file corrupt: {e}")))?;
-
-        if let Some(pool_data) = data.get("vm_pool") {
-            let entries: HashMap<String, VMPoolEntry> =
-                serde_json::from_value(pool_data.clone()).unwrap_or_default();
-            self.pool = entries;
-        }
-
+        // Missing/empty/absent-key → start empty; corrupt or schema mismatch →
+        // surface, never discard.
+        self.pool = read_keyed_state(&self.state_file, "vm_pool")
+            .map_err(|e| RemoteError::packaging(e.to_string()))?
+            .unwrap_or_default();
         Ok(())
     }
 
     fn save_state(&self) -> Result<(), RemoteError> {
-        let lock_path = self.state_file.with_extension("lock");
-        let _guard = file_lock(&lock_path)
-            .map_err(|e| RemoteError::packaging(format!("Failed to acquire lock: {e}")))?;
-
-        if let Some(parent) = self.state_file.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| RemoteError::packaging(format!("Failed to create state dir: {e}")))?;
-        }
-
-        // Load existing state to merge
-        let mut existing: serde_json::Value = if self.state_file.exists() {
-            std::fs::read_to_string(&self.state_file)
-                .ok()
-                .and_then(|c| serde_json::from_str(&c).ok())
-                .unwrap_or_else(|| serde_json::json!({"sessions": {}}))
-        } else {
-            serde_json::json!({"sessions": {}})
-        };
-
         let pool_json = serde_json::to_value(&self.pool)
             .map_err(|e| RemoteError::packaging(format!("Failed to serialize pool: {e}")))?;
-
-        existing["vm_pool"] = pool_json;
-
-        let content = serde_json::to_string_pretty(&existing)
-            .map_err(|e| RemoteError::packaging(format!("Failed to serialize state: {e}")))?;
-
-        std::fs::write(&self.state_file, content)
-            .map_err(|e| RemoteError::packaging(format!("Failed to write state: {e}")))?;
-
-        Ok(())
+        // Merges under lock and refuses to overwrite a corrupt file, so
+        // co-resident session state is never wiped.
+        merge_key_into_state(&self.state_file, "vm_pool", pool_json)
+            .map_err(|e| RemoteError::packaging(e.to_string()))
     }
 }
 

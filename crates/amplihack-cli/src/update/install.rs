@@ -37,6 +37,12 @@ pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<PathBuf> {
         .amplihack_destination
         .parent()
         .context("selected amplihack destination has no parent directory")?;
+    fs::create_dir_all(install_dir).with_context(|| {
+        format!(
+            "failed to create update install dir {}",
+            install_dir.display()
+        )
+    })?;
     let hooks_dest = plan.hooks_destination.clone();
     let amplihack_dest = plan.amplihack_destination.clone();
 

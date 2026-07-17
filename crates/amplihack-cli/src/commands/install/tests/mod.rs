@@ -10,8 +10,10 @@ mod issue_527_tests;
 mod mermaid_cli_tests;
 mod output_regression_tests;
 mod path_conflict_tests;
+mod path_precedence_tests;
 mod same_path_tests;
 mod settings_tests;
+mod stale_wrapper_repair;
 mod uninstall_tests;
 mod wrapper_tests;
 

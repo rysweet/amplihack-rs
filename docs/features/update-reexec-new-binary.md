@@ -2,20 +2,21 @@
 
 > [Home](../index.md) > [Features](README.md) > Post-Update Install Re-exec
 
-When `amplihack update` downloads a new binary, the post-update install step
-spawns the **new** binary as a subprocess rather than running the old binary's
-compiled-in install code. This ensures that fixes, asset changes, and
-configuration migrations shipped in the new version take effect immediately —
-without requiring the user to manually run `amplihack install` a second time.
+When `amplihack update` installs a new Rust binary, the post-update install
+step spawns the **new** binary as a subprocess rather than running the old
+binary's compiled-in install code. This ensures that binary precedence repair,
+stale wrapper quarantine, asset refresh, and configuration migrations shipped
+in the new version take effect immediately.
 
 ## Problem
 
 Issue [#683](https://github.com/rysweet/amplihack-rs/issues/683).
 
-`amplihack update` performs two steps:
+`amplihack update` performs two major steps:
 
 1. **Binary swap** — downloads and atomically replaces the on-disk binary.
-2. **Post-update install** — re-stages framework assets in `~/.amplihack`.
+2. **Post-update repair install** — runs the new binary's
+   `amplihack install --force-refresh` path.
 
 Prior to this fix, step 2 called `crate::commands::install::run_install`
 **in-process**. Because the old binary was still the running process image,
@@ -26,9 +27,14 @@ hook file verification) would not take effect until the user manually ran
 `amplihack install` with the new binary.
 
 The result was a class of "phantom failures": users ran `amplihack update`,
-saw a success message, but the old install code — with its old bugs — had
+saw a success message, but the pre-update install logic — with its old bugs — had
 just re-staged assets. The new binary's fixes were present on disk but had
 never executed.
+
+The durable repair also prevents stale Python/uvx wrappers and stale installed
+`amplifier-bundle` assets from regaining control after update. Update must end
+with the Rust user-level binary selected and the installed bundle replaced from
+the current Rust distribution.
 
 ### Why `current_exe()` is unreliable after binary replacement
 
@@ -49,9 +55,9 @@ binary as a child process instead of calling `run_install` in-process:
 amplihack update
   │
   ├─ analyze PATH conflicts
-  │    → inspect ordered candidates for amplihack + amplihack-hooks
-  │    → prefer ~/.local/bin when a safe user-level target exists
-  │    → stop with manual repair guidance for system-managed targets
+  │    -> inspect ordered candidates for amplihack + amplihack-hooks
+  │    -> select ~/.local/bin as the preferred user-level target
+  │    -> classify stale wrappers, unknown executables, and inaccessible paths
   │
   ├─ download_and_replace(&release)
   │    → downloads, verifies SHA-256, atomic rename
@@ -61,18 +67,18 @@ amplihack update
   │
   └─ run_post_update_install(skip_install, || { ... })
        │
-       ├─ skip_install = true  → skip, return Ok(())
+       ├─ skip_install = true  → intentional bypass: skip durable repair
        │
        └─ skip_install = false →
             build_install_command(&installed_exe)
-              → Command::new(installed_exe)
-              → args: ["install", "--force-refresh"]
-              → env: AMPLIHACK_NO_UPDATE_CHECK=1
-              → env: AMPLIHACK_NONINTERACTIVE=1
+              -> Command::new(installed_exe)
+              -> args: ["install", "--force-refresh"]
+              -> env: AMPLIHACK_NO_UPDATE_CHECK=1
+              -> env: AMPLIHACK_NONINTERACTIVE=1
             cmd.status()?
-              → spawns NEW binary as subprocess
-              → inherits stdin/stdout/stderr
-              → non-zero exit → bail with path + status
+              -> spawns NEW binary as subprocess
+              -> inherits stdin/stdout/stderr
+              -> non-zero exit -> bail with path + status
 ```
 
 ### Key design decisions
@@ -84,14 +90,13 @@ amplihack update
    `current_exe()` (which would point to a deleted inode on Linux). This path
    is passed directly to `Command::new()`.
 
-2. **`--force-refresh` hidden flag** — The subprocess runs with
-   `amplihack install --force-refresh`, a hidden CLI flag that forces a fresh
-   network download of `amplifier-bundle/` assets instead of reusing stale
-   local copies. This flag is not shown in `--help` output; it exists solely
-   for the update→install subprocess path. The downloaded source and staged
-   destination are still validated by the framework bundle compatibility
-   checker, including the composable smart-orchestrator contract added for
-   issue [#734](https://github.com/rysweet/amplihack-rs/issues/734).
+2. **`--force-refresh` hidden flag** - The subprocess runs with
+   `amplihack install --force-refresh`, a hidden CLI flag that bypasses the
+   installed `~/.amplihack/amplifier-bundle` as a source and refreshes assets
+   from the current Rust distribution. This flag is not shown in `--help`
+   output; it exists for the update-to-install repair path and direct
+   stale-bundle repair. The source and staged destination are validated by the
+   framework bundle compatibility checker.
 
 3. **Recursion prevention** — The subprocess environment includes
    `AMPLIHACK_NO_UPDATE_CHECK=1`, which prevents the child `amplihack install`
@@ -107,27 +112,39 @@ amplihack update
    user sees install progress in real time. The subprocess behaves as if the
    user ran `amplihack install` directly.
 
-6. **Safe target selection** — Before replacing a binary, update analyzes
-   ordered `PATH` candidates for `amplihack` and `amplihack-hooks`. If stale
-   system-managed entries such as `/usr/local/bin`, `/usr/bin`, `/bin`, or
-   `/opt` shadow current user-local binaries, update prefers the writable
-   `~/.local/bin` target when available and prints repair guidance. It never
-   writes automatically into system-managed prefixes, even when those
-   directories are writable.
+6. **Rust-first repair** - Before replacement, update analyzes ordered `PATH`
+   candidates for `amplihack` and `amplihack-hooks`. The repair install then
+   deploys to `~/.local/bin`, quarantines positively identified stale Python/uvx
+  wrappers only when they shadow Rust and are in safe locations, writes the
+  managed PATH profile block, and fails if an unknown or inaccessible
+  executable still shadows the Rust binary.
+
+7. **Staged bundle activation** - The repair install stages and validates
+   `~/.amplihack/amplifier-bundle` from the current Rust distribution, then
+   activates the staged bundle as the installed bundle. It does not merge
+   source files over the old installed bundle.
 
 ### `--skip-install` bypass
 
 The existing `--skip-install` (alias `--no-install`) flag on
-`amplihack update` continues to work. When set, the entire post-update
-install step is skipped — no subprocess is spawned. The binary is updated
-on disk but framework assets are not re-staged:
+`amplihack update` continues to work as an intentional bypass. When set, the
+entire post-update install step is skipped — no subprocess is spawned. The
+binary is updated on disk, but durable repair is not performed: stale wrappers
+are not quarantined, PATH precedence is not persisted, and framework assets are
+not re-staged:
 
 ```sh
 # Update binary only, skip post-update install
 amplihack update --skip-install
 ```
 
-Users can then run `amplihack install` manually at a time of their choosing.
+Use this flag only when you intentionally want a binary-only update. Complete
+the skipped repair later with:
+
+```sh
+amplihack install --force-refresh
+```
+
 The [self-heal](self-heal-asset-restage.md) mechanism will also catch the
 version mismatch on the next launch and trigger an automatic re-install when
 the version stamp still indicates the framework was not staged successfully.
@@ -154,16 +171,25 @@ execute permission, `Command::new().status()` returns an I/O error that
 propagates with full context. This should not happen in practice because
 `download_and_replace()` sets `0o755` permissions and uses atomic rename.
 
-### System binary shadows user-local binary
+### Unknown executable shadows the Rust binary
 
-If `/usr/local/bin/amplihack` appears before `~/.local/bin/amplihack` on
-`PATH`, update reports the conflict. When `~/.local/bin` is writable, the
-user-local binary is updated and the warning explains how to make the shell run
-it first. When no safe user-level target exists, update stops before replacement
-and prints sudo/manual repair guidance.
+If an executable named `amplihack` appears before `~/.local/bin/amplihack` and
+cannot be classified as the current Rust binary, preferred Rust binary, or stale
+Python/uvx wrapper, update reports the conflict. The file is not modified.
+
+When the managed PATH block and wrapper quarantine still cannot make the Rust
+binary resolve first, update exits non-zero with the conflicting path and manual
+repair guidance.
 
 See [Install/update PATH conflict reference](../reference/install-update-path-conflicts.md)
-for the target-selection rules.
+for the candidate classification and neutralization rules.
+
+### Stale wrapper quarantine fails
+
+If a shadowing stale wrapper is positively identified but cannot be moved into
+quarantine, the post-update install fails when that wrapper would continue to
+shadow the Rust binary. The failure includes the source path and quarantine
+destination.
 
 ### Old binary without `--force-refresh`
 
@@ -177,15 +203,16 @@ include the unrecognized flag name.
 
 | File | Role |
 |------|------|
-| `crates/amplihack-cli/src/path_conflicts.rs` | Shared side-effect-free PATH analysis, canonical duplicate handling, warning formatting, and install target decision logic. |
+| `crates/amplihack-cli/src/path_conflicts.rs` | Shared side-effect-free PATH analysis, candidate classification, warning formatting, and install target decision logic. |
 | `crates/amplihack-cli/src/update/mod.rs` | Exposes update submodules so resolver-backed target selection is part of the update flow without leaking file layout. |
 | `crates/amplihack-cli/src/update/install.rs` | `download_and_replace()` returns `Result<PathBuf>` with the installed binary path (captured before atomic rename). |
 | `crates/amplihack-cli/src/update/check.rs` | `run_update()` captures the returned path, passes it to `build_install_command()`. The closure given to `run_post_update_install` spawns the subprocess and checks its exit status. |
 | `crates/amplihack-cli/src/update/check.rs` | `build_install_command(installed_exe: &Path) -> Command` — constructs the subprocess command with args and env vars. Visibility: `pub(super)` for testability. |
-| `crates/amplihack-cli/src/commands/install/binary.rs` | Deploys user-local binaries and invokes PATH conflict analysis for install-time warnings. |
-| `crates/amplihack-cli/src/commands/install/paths.rs` | Owns user-local path construction and safe path helpers reused by install/update target selection. |
+| `crates/amplihack-cli/src/commands/install/binary.rs` | Deploys user-local binaries and invokes PATH conflict analysis. |
+| `crates/amplihack-cli/src/commands/install/stale_wrappers.rs` | Quarantines positively identified shadowing stale Python/uvx wrappers and writes manifests. |
+| `crates/amplihack-cli/src/commands/install/paths.rs` | Owns user-local path construction, safe path helpers, and managed PATH profile blocks. |
 | `crates/amplihack-cli/src/commands/install/settings.rs` | Keeps hook registrations aligned with the selected `amplihack-hooks` binary path. |
-| `crates/amplihack-cli/src/commands/install/bundle_compat.rs` | Validates source and staged framework bundles so stale smart-orchestrator assets cannot be accepted or remain installed. |
+| `crates/amplihack-cli/src/commands/install/bundle_compat.rs` | Validates source and staged framework bundles, rejects active `orch_helper.py` dependencies, and supports staged installed-bundle activation. |
 | `crates/amplihack-cli/src/cli_commands.rs` | `Commands::Install` gains a hidden `--force-refresh` flag (`#[arg(long = "force-refresh", hide = true)]`). |
 | `crates/amplihack-cli/src/commands/mod.rs` | Destructures and passes `force_refresh` through to `run_install`. |
 | `crates/amplihack-cli/src/update/post_install.rs` | Unchanged. The closure injection pattern continues to work — the closure now spawns a subprocess instead of calling `run_install`. |
@@ -201,10 +228,12 @@ No new crate dependencies introduced.
 | `build_install_command_sets_no_update_check_env` | `update/tests/build_install_command.rs` | `AMPLIHACK_NO_UPDATE_CHECK=1` is set |
 | `build_install_command_sets_noninteractive_env` | `update/tests/build_install_command.rs` | `AMPLIHACK_NONINTERACTIVE=1` is set |
 | `update_check_source_includes_framework_restage` | `tests/bugfix_install_tests.rs` | Source-level assertion that `run_update` uses `build_install_command` (not `run_install` in-process) |
-| Existing `run_post_update_install` tests | `update/post_install.rs` | Skip-install bypass, closure invocation, error propagation — all still pass unchanged |
-| PATH conflict resolver tests | `path_conflicts.rs` | User-bin first, system-bin shadowing, duplicate candidates, safe user-bin preference, and manual repair decisions |
+| Existing `run_post_update_install` tests | `update/post_install.rs` | Skip-install intentional bypass, closure invocation, error propagation — all still pass unchanged |
+| PATH conflict resolver tests | `path_conflicts.rs` | User-bin first, candidate classification, unknown conflict reporting, inaccessible path handling, and manual repair decisions |
+| Stale wrapper repair tests | `tests/install_stale_wrapper_repair.rs` | Python wrapper quarantine, uvx wrapper quarantine, safe symlink handling, and no mutation of unknown executables |
+| Update repair flow tests | `tests/update_repair_flow.rs` | Update invokes the new binary's install repair path and ends with Rust-first resolution |
 | Install/update smoke output assertions | install/update tests | Normal output excludes stale hook-file `❌` lines, `profile_management` warnings, and literal `Skipping symlink` noise |
-| Bundle compatibility tests | `commands/install/bundle_compat.rs` and install-flow tests | Stale monolithic smart-orchestrator bundles are rejected; missing companion recipes fail; stale `AMPLIHACK_HOME` is skipped; staged repair cannot leave stale `smart-orchestrator.yaml` behind |
+| Bundle compatibility tests | `commands/install/bundle_compat.rs` and `tests/active_recipe_guard.rs` | Stale monolithic smart-orchestrator bundles are rejected; active `orch_helper.py` dependencies fail; stale installed bundles are atomically replaced |
 
 ## Interaction with related features
 
@@ -222,8 +251,8 @@ scan. When it re-runs install, that install run uses the same source and staged
 bundle compatibility validation as an explicit `amplihack install`.
 
 The post-update install subprocess still passes `--force-refresh`, so update
-continues to bypass local bundle reuse and validate the downloaded source and
-staged destination.
+continues to bypass installed-bundle reuse and validate the current-distribution
+source and staged destination.
 
 ### Startup self-update prompt
 
@@ -237,9 +266,11 @@ own update prompt. The `AMPLIHACK_NO_UPDATE_CHECK=1` env var set by
 - [Install Command Reference](../reference/install-command.md) — the install
   procedure invoked by the subprocess.
 - [Install/update PATH conflict reference](../reference/install-update-path-conflicts.md) —
-  safe target selection, PATH shadowing warnings, and manual repair guidance.
+  shadowing stale wrapper quarantine, PATH precedence, and manual repair guidance.
+- [Framework bundle compatibility reference](../reference/framework-bundle-compatibility.md) -
+  active smart-orchestrator guard and staged bundle activation.
 - [Repair install/update PATH conflicts](../howto/repair-install-update-path-conflicts.md) —
-  user-facing repair steps for stale `/usr/local/bin` binaries.
+  user-facing repair steps for stale Python/uvx wrappers and unknown conflicts.
 - [Self-Heal Asset Re-Stage](self-heal-asset-restage.md) — the startup-time
   safety net that catches missed post-update installs.
 - [Startup Self-Update Prompt — Subprocess-Safe Skip](startup-update-prompt-subprocess-safe.md) —

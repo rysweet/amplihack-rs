@@ -1,5 +1,6 @@
 //! Utility functions for the parallel workstream orchestrator.
 
+use amplihack_utils::idle_watchdog::{IdleConfig, file_idle_since};
 use anyhow::{Result, bail};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -7,6 +8,14 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use tracing::debug;
+
+/// Issue #867: a past-max_runtime child may be interrupted only if its log file
+/// has stopped growing for the idle window (`AMPLIHACK_IDLE_TIMEOUT_SECS`,
+/// default 300 s). A probe error is treated as "still live" — never interrupt.
+pub(super) fn child_is_idle(log_file: &Path) -> bool {
+    let idle = IdleConfig::from_env().idle_timeout;
+    file_idle_since(log_file, idle).unwrap_or(false)
+}
 
 /// Default base directory for workstream artifacts.
 pub(super) fn default_base_dir() -> String {
