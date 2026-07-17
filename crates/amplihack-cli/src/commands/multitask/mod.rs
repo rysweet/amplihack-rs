@@ -14,8 +14,11 @@ mod launcher_tests;
 mod log_output;
 mod models;
 mod orchestrator;
+mod persistence;
 mod process_scope;
 mod state;
+#[cfg(test)]
+mod state_tests;
 mod utils;
 
 use crate::util::run_output_with_timeout;

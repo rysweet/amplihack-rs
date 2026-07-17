@@ -4,7 +4,7 @@
 //! live in sibling modules (`launcher`, `state`, `utils`).
 
 use super::models::*;
-use super::{cleanup, default_branch, launcher, state, utils};
+use super::{cleanup, default_branch, launcher, persistence, state, utils};
 use crate::util::{format_output_diagnostics, run_output_with_timeout};
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
@@ -110,7 +110,7 @@ impl ParallelOrchestrator {
             .clone()
             .unwrap_or_else(|| self.default_timeout_policy.clone());
 
-        let saved = state::load_state(&ws.state_file);
+        let saved = persistence::load_state(&ws.state_file);
         if let Some(ref s) = saved {
             state::apply_saved_state(&mut ws, s);
         }
@@ -163,7 +163,7 @@ impl ParallelOrchestrator {
             launcher::write_classic_launcher(&ws, &delegate)?;
         }
 
-        state::persist_state(&ws)?;
+        persistence::persist_state(&ws)?;
         self.workstreams.push(ws);
         Ok(())
     }

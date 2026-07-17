@@ -134,6 +134,8 @@ fn multitask_state_model_persists_scope_but_keeps_legacy_json_compatible() {
 fn launcher_persists_workstream_and_process_scope_at_launch_time() {
     let launcher = read_crate_file("src/commands/multitask/launcher.rs");
     let state = read_crate_file("src/commands/multitask/state.rs");
+    let persistence = read_crate_file("src/commands/multitask/persistence.rs");
+    let surface = format!("{launcher}\n{state}\n{persistence}");
 
     for required in [
         "workstream_scope",
@@ -150,8 +152,8 @@ fn launcher_persists_workstream_and_process_scope_at_launch_time() {
         "process_started_at",
     ] {
         assert!(
-            launcher.contains(required) || state.contains(required),
-            "launcher/state must persist scoped launch metadata `{required}`"
+            surface.contains(required),
+            "launcher/state/persistence must persist scoped launch metadata `{required}`"
         );
     }
 }
