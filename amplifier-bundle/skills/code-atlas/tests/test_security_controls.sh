@@ -479,27 +479,15 @@ else
     FAIL=$((FAIL + 1))
 fi
 
-# Runtime check (guarded): emitted cypher artifacts must not leak a secret value.
-if [[ -f "$VALIDATE_SCRIPT" ]]; then
-    tmpdir=$(mktemp -d)
-    mkdir -p "$tmpdir/docs/atlas/cypher"
-    secret="sk_live_supersecretstripekey123"
-    # A correctly redacted artifact records the key name, never the value.
-    cat > "$tmpdir/docs/atlas/cypher/atlas-layers.cypher" << EOF
-CREATE (:EnvVar {name: 'STRIPE_KEY', required: true, default_value: ''});
-MATCH (s:Service {name: 'api'}), (e:EnvVar {name: 'STRIPE_KEY'}) CREATE (s)-[:USES_ENV]->(e);
-EOF
-    if grep -q "$secret" "$tmpdir/docs/atlas/cypher/atlas-layers.cypher" 2>/dev/null; then
-        echo "FAIL: SEC-01-C: secret value leaked into cypher artifact"
-        FAIL=$((FAIL + 1))
-    else
-        echo "PASS: SEC-01-C: cypher artifact holds EnvVar key name, not the secret value"
-        PASS=$((PASS + 1))
-    fi
-    rm -rf "$tmpdir"
-else
-    echo "SKIP: SEC-01-C runtime check (validate_atlas_output.sh not present)"
-fi
+# NOTE: the validator's runtime secret-detection guarantee is already exercised
+# by TEST-SEC-01-C above (a leaked `KEY=value` secret in `inventory/env-vars.md`
+# must make the validator exit non-zero). We deliberately do NOT re-assert that
+# here against a `.cypher` artifact: `validate_atlas_output.sh` is not part of
+# this change, so whether it globs `docs/atlas/cypher/*.cypher` is out of scope,
+# and a self-authored clean artifact grepped for its own (absent) secret would
+# be a tautology that always passes. The cypher-artifact secret-safety contract
+# is asserted above as a documentation contract (SECURITY.md must state EnvVar
+# graph nodes carry key names only).
 
 # ============================================================================
 # Summary
