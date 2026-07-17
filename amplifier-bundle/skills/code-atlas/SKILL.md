@@ -88,12 +88,10 @@ code-atlas (this skill)
     reviewer agent              Contradiction hunting (Passes 1, 2, 3)
 ```
 
-The compile-deps / service-components analyzer is **language-pluggable**: no adapter is
-hard-required. The Python `code-visualizer` is used only for Python repositories; Rust repos
-use `cargo metadata` + rust-analyzer/ripgrep static approximation; all other languages fall
-back to the `analyzer` agent. The chosen analyzer is stated via a visible mode label
-(`analyzer: python-ast | rust-cargo-metadata | static-approximation`), mirroring how
-ast-lsp-bindings labels its mode. **Python is never required for non-Python repositories.**
+The compile-deps / service-components analyzer is **language-pluggable** — no adapter is
+hard-required and **Python is never required for non-Python repositories**. The active adapter
+(`python-ast` | `rust-cargo-metadata` | `static-approximation`) is always stated via a visible
+mode label; see **Compile-deps / Service-components Analyzer Modes** below for the full table.
 
 ## When to Use This Skill
 
