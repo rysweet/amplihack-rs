@@ -413,13 +413,16 @@ mod docker_serialization {
 
     const SRC: &str = "crates/amplihack-utils/src/docker_detector.rs";
 
-    /// TC-SWEEP-607-01: The test module must contain a SerialLock definition.
+    /// TC-SWEEP-607-01: The test module must serialize env-mutating tests via
+    /// the crate-wide serial lock (`crate::test_serial`). A crate-wide lock is
+    /// required because tests in sibling modules share the same process-global
+    /// env vars, so a module-private lock is insufficient.
     #[test]
     fn has_serial_lock() {
         let src = read_file(SRC);
         assert!(
-            src.contains("mod serial_lock"),
-            "must define serial_lock submodule"
+            src.contains("crate::test_serial::acquire"),
+            "must use the crate-wide test_serial lock"
         );
     }
 
@@ -429,12 +432,17 @@ mod docker_serialization {
         let src = read_file(SRC);
         let body = extract_test_body(&src, "is_in_docker_env_var");
         assert!(
-            body.contains("SerialLock::acquire()"),
-            "is_in_docker_env_var must acquire SerialLock"
+            body.contains("serial_acquire()"),
+            "is_in_docker_env_var must acquire the serial lock"
         );
     }
 
     /// TC-SWEEP-607-03: All env-var-mutating tests must acquire the lock.
+    ///
+    /// Note: the former `check_image_exists_false_when_no_docker` test mutated
+    /// the process-global `PATH`, which raced with any concurrently spawning
+    /// subprocess. It was replaced by a pure `which_docker_in` test that needs
+    /// no global mutation, so it is intentionally absent from this list.
     #[test]
     fn all_env_mutating_tests_use_serial_lock() {
         let src = read_file(SRC);
@@ -442,14 +450,13 @@ mod docker_serialization {
             "is_in_docker_env_var",
             "is_in_docker_false_when_unset",
             "should_use_docker_false_by_default",
-            "check_image_exists_false_when_no_docker",
             "should_use_docker_true_for_all_truthy_env_values",
             "should_use_docker_false_for_falsy_env_values",
         ] {
             let body = extract_test_body(&src, name);
             assert!(
-                body.contains("SerialLock::acquire()"),
-                "Test {name} must acquire SerialLock"
+                body.contains("serial_acquire()"),
+                "Test {name} must acquire the serial lock"
             );
         }
     }

@@ -19,7 +19,7 @@
 //! - The "Verify cxx-build pin" step is absent from the `check` job
 //! - The step uses a different version constant than "1.0.138"
 //! - The step uses a different grep/sed extraction pattern
-//! - The step does NOT appear before `dtolnay/rust-toolchain@stable`
+//! - The step does NOT appear before the `dtolnay/rust-toolchain@<pin>` setup
 //!
 //! They PASS (green) once the CI step is inserted as specified.
 //!
@@ -195,10 +195,15 @@ fn ci_pin_step_uses_correct_grep_pattern() {
 // ---------------------------------------------------------------------------
 
 /// The "Verify cxx-build pin" step must appear BEFORE the
-/// `dtolnay/rust-toolchain@stable` step in the YAML.
+/// `dtolnay/rust-toolchain@<pin>` setup step in the YAML.
 ///
 /// This ensures maximum fail-fast behaviour: if the pin is broken, CI aborts
 /// before the expensive (~2 min) Rust toolchain download.
+///
+/// The toolchain ref is matched by its version-agnostic `dtolnay/rust-toolchain@`
+/// prefix so this ordering assertion keeps working across deliberate toolchain
+/// bumps (e.g. `@stable` → `@1.97.0`). The concrete pin value is enforced
+/// separately by `ci_speedup_optimization_test.rs`.
 ///
 /// **FAILS** if the pin step appears after the toolchain step.
 #[test]
@@ -206,18 +211,18 @@ fn ci_pin_step_appears_before_rust_toolchain_setup() {
     let content = read_ci_yml();
 
     let pin_pos = content.find("Verify cxx-build pin");
-    let toolchain_pos = content.find("dtolnay/rust-toolchain@stable");
+    let toolchain_pos = content.find("dtolnay/rust-toolchain@");
 
     let pin_pos = pin_pos.unwrap_or_else(|| {
         panic!(
             "FAIL: 'Verify cxx-build pin' step not found in ci.yml.\n\
-             The step must be present and precede dtolnay/rust-toolchain@stable."
+             The step must be present and precede dtolnay/rust-toolchain@<pin>."
         )
     });
 
     let toolchain_pos = toolchain_pos.unwrap_or_else(|| {
         panic!(
-            "FAIL: 'dtolnay/rust-toolchain@stable' not found in ci.yml.\n\
+            "FAIL: 'dtolnay/rust-toolchain@' not found in ci.yml.\n\
              The toolchain step is required for the ordering assertion."
         )
     });
@@ -225,12 +230,12 @@ fn ci_pin_step_appears_before_rust_toolchain_setup() {
     assert!(
         pin_pos < toolchain_pos,
         "FAIL: 'Verify cxx-build pin' step (byte {pin_pos}) must appear BEFORE \
-         'dtolnay/rust-toolchain@stable' (byte {toolchain_pos}) in the `check` job.\n\
+         'dtolnay/rust-toolchain@' (byte {toolchain_pos}) in the `check` job.\n\
          \n\
          Correct ordering:\n\
            1. actions/checkout@v4\n\
            2. Verify cxx-build pin   ← must be here\n\
-           3. dtolnay/rust-toolchain@stable\n\
+           3. dtolnay/rust-toolchain@<pin>\n\
            4. Swatinem/rust-cache@v2\n\
            5. cargo fmt --check\n\
            6. cargo clippy\n\

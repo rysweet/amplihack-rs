@@ -12,6 +12,7 @@ pub enum StartupUpdateOutcome {
 }
 
 const STARTUP_UPDATE_PROMPT_TIMEOUT_SECS: u64 = 5;
+const POST_UPDATE_INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// The literal skip-line emitted to stderr when the version-check prompt is
 /// suppressed by a subprocess-safe signal (env, argv flag, or non-TTY stdin).
@@ -101,13 +102,14 @@ pub fn run_update(skip_install: bool) -> Result<()> {
     // execute the OLD binary's compiled-in code. Instead we spawn the NEW
     // binary as a subprocess so the freshly-installed code runs.
     super::post_install::run_post_update_install(skip_install, || {
-        let mut cmd = build_install_command(&installed_exe);
-        let status = cmd.status().with_context(|| {
-            format!(
-                "failed to spawn post-update install subprocess {}",
-                installed_exe.display()
-            )
-        })?;
+        let cmd = build_install_command(&installed_exe);
+        let status =
+            crate::util::run_with_timeout(cmd, POST_UPDATE_INSTALL_TIMEOUT).with_context(|| {
+                format!(
+                    "failed to spawn post-update install subprocess {}",
+                    installed_exe.display()
+                )
+            })?;
         if !status.success() {
             bail!(
                 "post-update install subprocess {} exited with {status}",

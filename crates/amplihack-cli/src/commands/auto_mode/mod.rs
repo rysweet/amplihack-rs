@@ -18,7 +18,6 @@ use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -181,11 +180,10 @@ fn run_delivered_output_with_timeout(
         Err(_elapsed) => {
             #[cfg(unix)]
             {
-                let kill_result = Command::new("kill")
-                    .args(["-TERM", &pid.to_string()])
-                    .status();
-                if let Err(e) = kill_result {
-                    tracing::warn!(pid, error = %e, "failed to terminate timed-out subprocess");
+                let result = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+                if result != 0 {
+                    let error = std::io::Error::last_os_error();
+                    tracing::warn!(pid, %error, "failed to terminate timed-out subprocess");
                 }
             }
             bail!(

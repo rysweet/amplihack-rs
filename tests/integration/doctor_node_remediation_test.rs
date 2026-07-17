@@ -6,15 +6,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 fn amplihack_bin() -> PathBuf {
-    std::env::var_os("CARGO_BIN_EXE_amplihack")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-            path.pop();
-            path.pop();
-            path.push("target/debug/amplihack");
-            path
-        })
+    // Hard `env!` (not `var_os` with a fallback): Cargo builds the binary as a
+    // prerequisite of this [[test]] target and exposes its exact path, so there
+    // is no build race and no stale `target/debug` fallback to break under
+    // release / cross profiles.
+    PathBuf::from(env!("CARGO_BIN_EXE_amplihack"))
 }
 
 fn write_executable(path: &Path, content: &str) {

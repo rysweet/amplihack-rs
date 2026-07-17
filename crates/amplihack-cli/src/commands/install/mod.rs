@@ -1,7 +1,7 @@
 //! Native install and uninstall commands.
 
 mod binary;
-mod bundle_compat;
+pub(crate) mod bundle_compat;
 mod clone;
 mod copilot_plugin;
 mod directories;
@@ -362,7 +362,17 @@ fn local_install(
         }
     }
 
-    match copilot_plugin::register_copilot_plugin(repo_root, &hooks_bin)
+    // Register the Copilot plugin against the STABLE DEPLOYED hooks binary
+    // (~/.local/bin/amplihack-hooks, the first entry from deploy_binaries()),
+    // NEVER the transient `find_hooks_binary()` source path (e.g.
+    // target/debug/amplihack-hooks). The source path lives in a build/worktree
+    // dir that gets cleaned, making every hook exit 127; Copilot CLI fails
+    // closed on hook errors, denying every tool call in nested sessions (#911).
+    let deployed_hooks_bin = deployed_binaries
+        .first()
+        .cloned()
+        .unwrap_or_else(|| hooks_bin.clone());
+    match copilot_plugin::register_copilot_plugin(repo_root, &deployed_hooks_bin)
         .context("failed to register Copilot CLI plugin")?
     {
         true => {

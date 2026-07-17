@@ -100,6 +100,14 @@ impl Hook for UserPromptSubmitHook {
             );
         }
 
+        // Signal channel: surface any queued operator instructions as advisory
+        // context. They are data, never commands.
+        if let Some(operator_context) =
+            crate::signal_integration::drain_into_context(session_id.as_deref())
+        {
+            context_parts.push(operator_context);
+        }
+
         if context_parts.is_empty() {
             return Ok(Value::Object(serde_json::Map::new()));
         }

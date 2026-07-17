@@ -1,87 +1,50 @@
-graph TD
-    subgraph "amplihack-cli"
-        cli_commands_mod["commands/"]
-        cli_install["commands/install"]
-        cli_launch["commands/launch"]
-        cli_recipe_cmd["commands/recipe"]
-        cli_fleet_cmd["commands/fleet"]
-        cli_doctor_cmd["commands/doctor"]
-        cli_new_agent["commands/new_agent"]
-        cli_orch_cmd["commands/orch"]
-        cli_hive_cmd["commands/hive_haymaker"]
-        cli_auto_mode["auto_mode_*"]
-        cli_update["update/"]
-        cli_signals["signals"]
-        cli_copilot["copilot_setup/"]
-        cli_fleet_local["fleet_local/"]
-    end
-
-    subgraph "amplihack-agent-core"
-        ac_agent["agent"]
-        ac_agentic_loop["agentic_loop/"]
-        ac_sdk["sdk_adapters/"]
-        ac_sub_agents["sub_agents/"]
-        ac_answer_synth["answer_synth/"]
-        ac_cognitive["cognitive_adapter/"]
-        ac_session["session"]
-        ac_memory_retrieval["memory_retrieval"]
-        ac_temporal["temporal_reasoning/"]
-    end
-
-    subgraph "amplihack-hooks"
-        hk_session_start["session_start"]
-        hk_pre_tool["pre_tool_use"]
-        hk_post_tool["post_tool_use"]
-        hk_stop["stop"]
-        hk_user_prompt["user_prompt"]
-        hk_workflow["workflow_classification"]
-        hk_protocol["protocol"]
-    end
-
-    subgraph "amplihack-memory"
-        mem_backend["backend"]
-        mem_database["database"]
-        mem_discoveries["discoveries"]
-        mem_bloom["bloom"]
-        mem_config["config"]
-        mem_coordinator["coordinator"]
-        mem_evaluation["evaluation"]
-    end
-
-    subgraph "amplihack-recipe"
-        rcp_parser["parser"]
-        rcp_executor["executor"]
-        rcp_models["models"]
-        rcp_condition["condition_eval"]
-        rcp_template["template"]
-        rcp_discovery["discovery"]
-        rcp_agent_resolver["agent_resolver"]
-    end
-
-    subgraph "amplihack-hive"
-        hv_controller["controller"]
-        hv_distributed["distributed/"]
-        hv_crdt["crdt"]
-        hv_dht["dht"]
-        hv_embeddings["embeddings"]
-        hv_event_bus["event_bus"]
-        hv_feed["feed"]
-    end
-
-    cli_commands_mod --> cli_install
-    cli_commands_mod --> cli_launch
-    cli_commands_mod --> cli_recipe_cmd
-    cli_commands_mod --> cli_fleet_cmd
-    ac_agent --> ac_agentic_loop
-    ac_agent --> ac_sdk
-    ac_agent --> ac_sub_agents
-    ac_agentic_loop --> ac_answer_synth
-    ac_agentic_loop --> ac_cognitive
-    hk_protocol --> hk_session_start
-    hk_protocol --> hk_pre_tool
-    hk_protocol --> hk_post_tool
-    rcp_executor --> rcp_parser
-    rcp_executor --> rcp_condition
-    rcp_executor --> rcp_template
-    hv_controller --> hv_distributed
-    hv_controller --> hv_event_bus
+flowchart LR
+  subgraph entrypoints["Entry points (bins)"]
+    amplihack["amplihack<br/>1 modules"]
+    amplihack_hooks_bin["amplihack-hooks-bin<br/>0 modules"]
+    amplihack_asset_resolver_bin["amplihack-asset-resolver-bin<br/>0 modules"]
+  end
+  subgraph cli["CLI core"]
+    amplihack_cli["amplihack-cli<br/>46 modules"]
+  end
+  subgraph hooks["Hooks"]
+    amplihack_hooks["amplihack-hooks<br/>20 modules"]
+  end
+  subgraph agents["Agents / AI"]
+    amplihack_agent_core["amplihack-agent-core<br/>33 modules"]
+    amplihack_agent_eval["amplihack-agent-eval<br/>35 modules"]
+    amplihack_agent_generator["amplihack-agent-generator<br/>13 modules"]
+    amplihack_domain_agents["amplihack-domain-agents<br/>12 modules"]
+    amplihack_hive["amplihack-hive<br/>21 modules"]
+    amplihack_delegation["amplihack-delegation<br/>9 modules"]
+    amplihack_fleet["amplihack-fleet<br/>5 modules"]
+  end
+  subgraph orchestration["Orchestration & workflows"]
+    amplihack_orchestration["amplihack-orchestration<br/>8 modules"]
+    amplihack_workflows["amplihack-workflows<br/>11 modules"]
+    amplihack_reflection["amplihack-reflection<br/>8 modules"]
+    amplihack_recovery["amplihack-recovery<br/>7 modules"]
+  end
+  subgraph state_memory["State / memory / session"]
+    amplihack_memory["amplihack-memory<br/>30 modules"]
+    amplihack_state["amplihack-state<br/>5 modules"]
+    amplihack_session["amplihack-session<br/>7 modules"]
+    amplihack_context["amplihack-context<br/>6 modules"]
+  end
+  subgraph launch_remote["Launcher & remote"]
+    amplihack_launcher["amplihack-launcher<br/>34 modules"]
+    amplihack_remote["amplihack-remote<br/>12 modules"]
+  end
+  subgraph foundation["Foundation"]
+    amplihack_types["amplihack-types<br/>4 modules"]
+    amplihack_utils["amplihack-utils<br/>39 modules"]
+    amplihack_builders["amplihack-builders<br/>3 modules"]
+  end
+  subgraph security["Security & safety"]
+    amplihack_security["amplihack-security<br/>6 modules"]
+    amplihack_safety["amplihack-safety<br/>3 modules"]
+  end
+  subgraph code_analysis["Code analysis"]
+    amplihack_blarify["amplihack-blarify<br/>10 modules"]
+    amplihack_multilspy["amplihack-multilspy<br/>6 modules"]
+  end

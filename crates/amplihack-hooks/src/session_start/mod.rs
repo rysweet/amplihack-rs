@@ -141,6 +141,11 @@ impl Hook for SessionStartHook {
 
         let additional_context = context_parts.join("\n\n");
 
+        // Signal channel: create/reuse the session group, persist it, post the
+        // "session started" message, and spawn the detached inbound subscriber.
+        // Non-fatal — failures accumulate into `warnings`.
+        crate::signal_integration::on_session_start(session_id.as_deref(), &mut warnings);
+
         // Always emit hookSpecificOutput so that `indexing_status` is never absent.
         // When there is no additionalContext, we still report the indexing lifecycle.
         let mut hook_specific = serde_json::json!({

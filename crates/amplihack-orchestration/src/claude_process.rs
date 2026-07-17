@@ -13,7 +13,8 @@ use std::time::{Duration, Instant};
 
 use amplihack_utils::idle_watchdog::{IdleConfig, wait_with_idle_watchdog};
 use amplihack_utils::prompt_delivery::{
-    DeliveryCaps, DeliveryHandle, DeliveryMode, PromptDelivery, deliver, from_env, select_mode,
+    DeliveryCaps, DeliveryHandle, DeliveryMode, PromptDelivery, deliver, from_env,
+    sanitize_prompt_nul, select_mode,
 };
 use async_trait::async_trait;
 use once_cell::sync::Lazy;
@@ -101,7 +102,8 @@ where
     command.args(args);
     let selected_mode = select_mode(requested, prompt.len(), &caps);
     let delivery_handle = deliver(&mut command, prompt, requested, &caps)?;
-    let stdin_payload = (selected_mode == DeliveryMode::Stdin).then(|| prompt.as_bytes().to_vec());
+    let stdin_payload = (selected_mode == DeliveryMode::Stdin)
+        .then(|| sanitize_prompt_nul(prompt).as_bytes().to_vec());
     Ok(DeliveredProcessCommand {
         command,
         delivery_handle,
