@@ -18,6 +18,9 @@ pub enum GeneratorError {
     #[error("packaging failed: {0}")]
     PackagingFailed(String),
 
+    #[error("distribution failed: {0}")]
+    DistributionFailed(String),
+
     #[error(transparent)]
     IoError(#[from] std::io::Error),
 }
