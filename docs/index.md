@@ -226,6 +226,7 @@ Proven methodologies for consistent, high-quality results.
 - [Default Workflow](claude/skills/default-workflow/SKILL.md) - Standard multi-step development process
 - [Investigation Workflow](claude/workflow/INVESTIGATION_WORKFLOW.md) - Deep codebase analysis and understanding
 - [PR Recovery Readiness](PR_RECOVERY_READINESS.md) - Entry point for existing-PR recovery docs and the canonical readiness contract
+- [Publish Workflow Versioning](WORKFLOW_PUBLISH_VERSIONING.md) - Classification-driven commit prefix and version bump (bugfix branches stay on `fix:` and do not bump the workspace version)
 - [Document-Driven Development (DDD)](document_driven_development/README.md) - Documentation-first approach for large features
 
 ### DDD Deep Dive
@@ -275,6 +276,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Tutorial: Simulate Provider-Neutral Workflows](tutorials/provider-neutral-workflow-simulation.md) - Run and inspect a provider-neutral recipe simulation
 - [Clean Up Stale Workflow Change Requests](howto/cleanup-stale-workflow-prs.md) - Dry-run and apply stale/superseded cleanup through the provider abstraction
 - [CI Resource Discipline Reference](reference/ci-resource-discipline.md) - Concurrency, timeout, matrix, cache, and coverage boundaries for CI
+- [CI Pipeline Reference](reference/ci-pipeline.md) - Pinned toolchain, cargo-nextest test job, disk freeing, caching, and required checks
 - [Validate Recipe Subprocess and Hook Input Contracts](howto/validate-recipe-subprocess-hook-contract.md) - Validate recipe child env handling and hook JSON compatibility
 - [Workflow Execution Guardrails](features/workflow-execution-guardrails.md) - Canonical execution roots, exact GitHub identity checks, and observer-only stall detection
 - [How to Configure Workflow Execution Guardrails](howto/configure-workflow-execution-guardrails.md) - Supply `expected_gh_account`, inspect `execution_root`, and troubleshoot failures
@@ -288,6 +290,8 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [How to Configure Workflow Commit Identity](howto/configure-workflow-commit-identity.md) - Setup for `AMPLIHACK_GIT_*`, repo-local Git identity, and provider-safe fallbacks
 - [Tutorial: Verify Workflow Commit Identity](tutorials/workflow-commit-identity.md) - Disposable-repository walkthrough for explicit, repo-local, GitHub, and Azure DevOps commit attribution
 - [Default Workflow Step 13 Validation Reference](reference/default-workflow-step-13-validation.md) - Toolchain-aware outside-in local validation contract for Step 13
+- [Workflow Publish Lockfile Sync Reference](reference/workflow-publish-lockfile-sync.md) - Offline `Cargo.lock` sync after the version bump so `--locked` pre-commit gates pass (issue #915)
+- [Workflow Publish package.json Version Sync Reference](reference/workflow-publish-package-json-sync.md) - Offline sync of root `package.json` version to `[workspace.package].version` so the version-contract test and CI Test job pass (issue #925)
 - [Workflow Terminal-State Reference](reference/workflow-terminal-state.md) - Target contract for development completion evidence, no-op states, failure semantics, and shell helper API
 - [Default Workflow Agentic Finalization](reference/default-workflow-agentic-finalization.md) - Structured finalizer schema, terminal-state vocabulary, configuration, and examples for robust workflow closure
 - [How to Diagnose Workflow Terminal-State Failures](howto/diagnose-workflow-terminal-state.md) - Investigate missing evidence after planning, analysis, design, or worktree-only runs
@@ -690,6 +694,7 @@ Advanced configuration, deployment patterns, and environment management.
 
 - [Profile Management](PROFILE_MANAGEMENT.md) - Multiple environment configurations
 - [Hook Configuration](HOOK_CONFIGURATION_GUIDE.md) - Customize framework behavior
+- [Hook Payload Compatibility](HOOK_PAYLOAD_COMPATIBILITY.md) - Claude Code, Amplifier, and Copilot CLI tool-input payload shapes and normalization
 - [Shell Command Hook](SHELL_COMMAND_HOOK.md) - Custom shell integrations
 
 ### Deployment

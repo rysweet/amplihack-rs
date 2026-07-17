@@ -23,6 +23,9 @@ pub mod protocol;
 pub mod session_start;
 /// Session stop hook: finalizes session state and exports data.
 pub mod session_stop;
+/// Feature-gated Signal channel integration (SessionStart/PostToolUse/
+/// UserPromptSubmit/Stop wiring + the `signal-subscriber` subcommand).
+pub mod signal_integration;
 /// Stop hook: decides whether to allow or block session exit.
 pub mod stop;
 /// User prompt submission hook: processes user prompt before the LLM call.
@@ -39,8 +42,6 @@ pub mod copilot_stop_handler;
 pub mod hook_verification;
 /// Known amplihack agent name registry.
 pub mod known_agents;
-/// Known amplihack skill name registry.
-pub mod known_skills;
 /// Host-specific hook strategies (Claude, Copilot).
 pub mod strategies;
 

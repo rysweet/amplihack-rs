@@ -20,6 +20,21 @@ tracing = { workspace = true }
 shell-words = { workspace = true }
 regex = "1"
 sha2 = { workspace = true }
+amplihack-signal = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = [
+    "rt",
+    "net",
+    "io-util",
+    "time",
+    "macros",
+] }
+libc = { version = "0.2", optional = true }
+
+[features]
+# Off by default: pulls in the Signal channel crate (and its tokio-net stack)
+# only when explicitly enabled. With the feature off there is zero cost.
+default = []
+signal = ["dep:amplihack-signal", "amplihack-signal/signal", "dep:tokio", "dep:libc"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

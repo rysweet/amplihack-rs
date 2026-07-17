@@ -35,3 +35,4 @@ outputs/
 # Runtime hook artifacts (issue #536)
 .github/hooks/
 crates/amplihack-cli/.github/hooks/
+docs/atlas/graph.kuzu/

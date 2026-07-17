@@ -2,7 +2,9 @@
 
 use std::collections::VecDeque;
 
-use super::{CAPTURE_CACHE_CAPACITY, CAPTURE_CACHE_ENTRY_MAX_BYTES};
+#[cfg(test)]
+use super::CAPTURE_CACHE_ENTRY_MAX_BYTES;
+use super::{CAPTURE_CACHE_CAPACITY, truncate_to_capture_cache_limit};
 
 // ── FleetCaptureCache ─────────────────────────────────────────────────────────
 
@@ -49,16 +51,7 @@ impl FleetCaptureCache {
     /// - Evicts the **oldest** entry when capacity is reached.
     pub fn insert(&mut self, session_id: String, output: String) {
         // SEC-10: cap at 64 KiB, truncating at a UTF-8 boundary.
-        let output = if output.len() > CAPTURE_CACHE_ENTRY_MAX_BYTES {
-            // Find the last valid UTF-8 boundary at or before the limit.
-            let mut boundary = CAPTURE_CACHE_ENTRY_MAX_BYTES;
-            while !output.is_char_boundary(boundary) {
-                boundary -= 1;
-            }
-            output[..boundary].to_string()
-        } else {
-            output
-        };
+        let output = truncate_to_capture_cache_limit(output);
 
         // Remove any existing entry for this session.
         self.inner.retain(|(k, _)| k != &session_id);
@@ -155,6 +148,17 @@ mod tests {
             "stored entry ({} bytes) must not exceed 64 KiB cap",
             stored.len()
         );
+    }
+
+    #[test]
+    fn fleet_capture_cache_caps_entry_at_utf8_boundary() {
+        let mut cache = FleetCaptureCache::new();
+        let oversized = format!("{}é", "x".repeat(CAPTURE_CACHE_ENTRY_MAX_BYTES - 1));
+        cache.insert("utf8-session".to_string(), oversized);
+
+        let stored = cache.get("utf8-session").expect("entry must be stored");
+        assert_eq!(stored.len(), CAPTURE_CACHE_ENTRY_MAX_BYTES - 1);
+        assert!(stored.ends_with('x'));
     }
 
     #[test]

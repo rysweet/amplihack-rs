@@ -83,7 +83,15 @@ pub(super) fn claude_project_dir() -> PathBuf {
 }
 
 pub(super) fn truncate_chars(value: &str, limit: usize) -> String {
-    value.chars().take(limit).collect()
+    let total = value.chars().count();
+    if total <= limit {
+        return value.to_string();
+    }
+    let prefix: String = value.chars().take(limit).collect();
+    format!(
+        "{prefix}\n[truncated: discarded {} chars]",
+        total.saturating_sub(limit)
+    )
 }
 
 pub(super) fn shell_single_quote(value: &str) -> String {
@@ -322,4 +330,39 @@ pub(super) fn render_advance_report(
     }
 
     lines.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_chars_reports_discarded_diagnostics() {
+        let rendered = truncate_chars("abcdef", 3);
+
+        assert!(
+            rendered.contains("abc"),
+            "truncated output should retain the prefix"
+        );
+        assert!(
+            rendered.contains("truncated") && rendered.contains("discarded"),
+            "truncated output must report discarded diagnostics; got {rendered}"
+        );
+    }
+
+    #[test]
+    fn sanitize_external_error_detail_reports_discarded_diagnostics() {
+        let token = format!("ghp_{}", "A".repeat(36));
+        let detail = format!("failure at /home/alice/project with token {token} extra context");
+        let rendered = sanitize_external_error_detail(&detail, 20);
+
+        assert!(
+            !rendered.contains("ghp_") && !rendered.contains("/home/alice"),
+            "sanitization must still redact tokens and paths"
+        );
+        assert!(
+            rendered.contains("truncated") && rendered.contains("discarded"),
+            "sanitized truncation must report discarded diagnostics; got {rendered}"
+        );
+    }
 }

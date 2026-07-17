@@ -1,9 +1,11 @@
 //! Individual health check implementations for `amplihack doctor`.
 
-use super::{
-    MAX_ERROR_LEN, MAX_VERSION_LEN, json_contains_amplihack, settings_json_path, truncate,
-};
-use crate::util::strip_ansi;
+use super::{MAX_ERROR_LEN, MAX_VERSION_LEN, json_contains_amplihack, settings_json_path};
+use crate::util::{run_output_with_timeout, strip_ansi, truncate_chars_with_notice};
+use std::process::Command;
+use std::time::Duration;
+
+const DOCTOR_COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Check 1 — amplihack hooks installed.
 ///
@@ -24,7 +26,7 @@ pub fn check_hooks_installed() -> (bool, String) {
                 false,
                 format!(
                     "hooks: cannot read settings.json: {}",
-                    truncate(&msg, MAX_ERROR_LEN)
+                    truncate_chars_with_notice(&msg, MAX_ERROR_LEN)
                 ),
             );
         }
@@ -71,7 +73,7 @@ pub fn check_settings_valid_json() -> (bool, String) {
                 false,
                 format!(
                     "settings.json: cannot read: {}",
-                    truncate(&msg, MAX_ERROR_LEN)
+                    truncate_chars_with_notice(&msg, MAX_ERROR_LEN)
                 ),
             );
         }
@@ -92,25 +94,24 @@ pub fn check_settings_valid_json() -> (bool, String) {
 /// no user input is passed to the subprocess.
 pub fn check_recipe_runner_available() -> (bool, String) {
     // SAFETY: all arguments are compile-time literals — no user input.
-    let output = std::process::Command::new("recipe-runner-rs")
-        .arg("--version")
-        .output();
+    let mut command = Command::new("recipe-runner-rs");
+    command.arg("--version");
+    let output = run_output_with_timeout(command, DOCTOR_COMMAND_TIMEOUT);
 
     match output {
         Ok(out) if out.status.success() => {
-            let raw = String::from_utf8_lossy(&out.stdout);
-            let first_line = raw.lines().next().unwrap_or("").trim();
-            let stripped = strip_ansi(first_line);
-            let version = truncate(&stripped, MAX_VERSION_LEN).to_string();
+            let stripped = sanitized_single_line(&out.stdout);
+            let version = truncate_chars_with_notice(&stripped, MAX_VERSION_LEN);
             (true, format!("recipe-runner-rs {version}"))
         }
         Ok(out) => {
-            let err = String::from_utf8_lossy(&out.stderr);
-            let first_line = err.lines().next().unwrap_or("").trim().to_string();
-            let msg = strip_ansi(&first_line);
+            let msg = sanitized_single_line(&out.stderr);
             (
                 false,
-                format!("recipe-runner-rs: {}", truncate(&msg, MAX_ERROR_LEN)),
+                format!(
+                    "recipe-runner-rs: {}",
+                    truncate_chars_with_notice(&msg, MAX_ERROR_LEN)
+                ),
             )
         }
         Err(e) => {
@@ -119,7 +120,7 @@ pub fn check_recipe_runner_available() -> (bool, String) {
                 false,
                 format!(
                     "recipe-runner-rs not found on PATH: {}",
-                    truncate(&msg, MAX_ERROR_LEN)
+                    truncate_chars_with_notice(&msg, MAX_ERROR_LEN)
                 ),
             )
         }
@@ -134,30 +135,39 @@ pub fn check_recipe_runner_available() -> (bool, String) {
 /// SAFETY: `"tmux"` and `"-V"` are compile-time literals.
 pub fn check_tmux_installed() -> (bool, String) {
     // SAFETY: all arguments are compile-time literals — no user input.
-    let output = std::process::Command::new("tmux").arg("-V").output();
+    let mut command = Command::new("tmux");
+    command.arg("-V");
+    let output = run_output_with_timeout(command, DOCTOR_COMMAND_TIMEOUT);
 
     match output {
         Ok(out) if out.status.success() => {
-            let raw = String::from_utf8_lossy(&out.stdout);
-            let first_line = raw.lines().next().unwrap_or("").trim();
-            let stripped = strip_ansi(first_line);
-            let version = truncate(&stripped, MAX_VERSION_LEN).to_string();
+            let stripped = sanitized_single_line(&out.stdout);
+            let version = truncate_chars_with_notice(&stripped, MAX_VERSION_LEN);
             (true, version)
         }
         Ok(out) => {
-            let err = String::from_utf8_lossy(&out.stderr);
-            let first_line = err.lines().next().unwrap_or("").trim().to_string();
-            let msg = strip_ansi(&first_line);
-            (false, format!("tmux: {}", truncate(&msg, MAX_ERROR_LEN)))
+            let msg = sanitized_single_line(&out.stderr);
+            (
+                false,
+                format!("tmux: {}", truncate_chars_with_notice(&msg, MAX_ERROR_LEN)),
+            )
         }
         Err(e) => {
             let msg = e.to_string();
             (
                 false,
-                format!("tmux not found: {}", truncate(&msg, MAX_ERROR_LEN)),
+                format!(
+                    "tmux not found: {}",
+                    truncate_chars_with_notice(&msg, MAX_ERROR_LEN)
+                ),
             )
         }
     }
+}
+
+fn sanitized_single_line(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes).replace(['\r', '\n'], " ");
+    strip_ansi(text.trim())
 }
 
 /// Check 6 — amplihack binary version (compile-time constant).

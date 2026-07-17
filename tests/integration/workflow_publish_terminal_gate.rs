@@ -100,6 +100,135 @@ fn publish_mutation_steps_are_suppressed_when_terminal_success_is_true() {
 }
 
 #[test]
+fn publish_syncs_cargo_lock_after_version_bump_before_locked_gates() {
+    // Issue #915: step-14 bumps the workspace version in Cargo.toml but the
+    // lockfile stayed stale, so every --locked pre-commit gate failed. The
+    // fix inserts step-14b-sync-lockfile between the bump and the guard/commit
+    // steps and syncs the lock offline. Assert ordering and the offline command.
+    let recipe = load_publish_recipe();
+
+    let bump = step_index(&recipe, "step-14-bump-version");
+    let sync = step_index(&recipe, "step-14b-sync-lockfile");
+    let guard = step_index(&recipe, "step-14g-artifact-guard");
+    let commit = step_index(&recipe, "step-15-commit-push");
+
+    assert!(
+        bump < sync,
+        "step-14b-sync-lockfile must run AFTER step-14-bump-version"
+    );
+    assert!(
+        sync < guard,
+        "step-14b-sync-lockfile must run BEFORE step-14g-artifact-guard (which runs --locked)"
+    );
+    assert!(
+        sync < commit,
+        "step-14b-sync-lockfile must run BEFORE step-15-commit-push"
+    );
+
+    let text = recipe_text(&recipe);
+    assert!(
+        text.contains("cargo update --workspace --offline"),
+        "step-14b must sync the lockfile with an offline, network-free command"
+    );
+
+    let condition = step_condition(&recipe, "step-14b-sync-lockfile");
+    assert!(
+        condition.contains("terminal_state.should_publish == 'true'")
+            || condition.contains("should_publish == 'true'"),
+        "step-14b must share the publish gate of its sibling mutation steps; condition was `{condition}`"
+    );
+}
+
+#[test]
+fn publish_syncs_package_json_version_after_bump_before_locked_gates() {
+    // Issue #925: step-14 bumps the workspace [workspace.package].version in
+    // Cargo.toml and step-14b keeps Cargo.lock in sync, but NOTHING syncs the
+    // root package.json "version". The contract test
+    // `package_json_version_matches_root_workspace_version` then fails in CI
+    // (exit 100) because package.json is left stale. The fix inserts
+    // step-14c-sync-package-json AFTER the lockfile sync and BEFORE the
+    // artifact guard / commit steps, reading the version robustly and editing
+    // package.json without brittle sed/grep, offline, skipping gracefully when
+    // package.json is absent. Assert ordering, the robust read/edit, the
+    // offline + graceful-skip contract, and the shared publish gate.
+    let recipe = load_publish_recipe();
+
+    let bump = step_index(&recipe, "step-14-bump-version");
+    let sync_lock = step_index(&recipe, "step-14b-sync-lockfile");
+    let sync_json = step_index(&recipe, "step-14c-sync-package-json");
+    let guard = step_index(&recipe, "step-14g-artifact-guard");
+    let commit = step_index(&recipe, "step-15-commit-push");
+
+    assert!(
+        bump < sync_json,
+        "step-14c-sync-package-json must run AFTER step-14-bump-version"
+    );
+    assert!(
+        sync_lock < sync_json,
+        "step-14c-sync-package-json must run AFTER step-14b-sync-lockfile"
+    );
+    assert!(
+        sync_json < guard,
+        "step-14c-sync-package-json must run BEFORE step-14g-artifact-guard (which runs --locked)"
+    );
+    assert!(
+        sync_json < commit,
+        "step-14c-sync-package-json must run BEFORE step-15-commit-push"
+    );
+
+    let command = steps(&recipe)
+        .iter()
+        .find(|step| step.get("id").and_then(Value::as_str) == Some("step-14c-sync-package-json"))
+        .and_then(|step| step.get("command").and_then(Value::as_str))
+        .expect("step-14c-sync-package-json must declare a bash command");
+
+    // Robust version read: scoped [workspace.package] parse or cargo metadata,
+    // never an unscoped grep of the Cargo.toml version line.
+    assert!(
+        command.contains("[workspace.package]") || command.contains("cargo metadata"),
+        "step-14c must read the version robustly via a scoped [workspace.package] parse or cargo metadata; command was `{command}`"
+    );
+    assert!(
+        !command.contains("grep '^version' Cargo.toml")
+            && !command.contains("grep -E '^version = ' Cargo.toml"),
+        "step-14c must not read the version with a drift-prone unscoped grep of Cargo.toml"
+    );
+
+    // Robust JSON edit: jq (or a python/node loader), never sed/awk on JSON.
+    assert!(
+        command.contains("jq") || command.contains("json.load") || command.contains("JSON.parse"),
+        "step-14c must edit package.json with a real JSON tool (jq/python/node), not brittle text munging; command was `{command}`"
+    );
+    assert!(
+        !command.contains("sed") || !command.contains("package.json"),
+        "step-14c must not edit package.json with sed"
+    );
+
+    // Offline and graceful skip when package.json is absent (non-JS workspace).
+    assert!(
+        command.contains("--offline") || !command.contains("cargo metadata"),
+        "step-14c must read version offline if it uses cargo metadata; command was `{command}`"
+    );
+    assert!(
+        command.contains("package.json"),
+        "step-14c must target the root package.json"
+    );
+    assert!(
+        command.contains("-f package.json")
+            || command.contains("-f \"package.json\"")
+            || command.contains("test -f package.json"),
+        "step-14c must skip gracefully when package.json is absent; command was `{command}`"
+    );
+
+    let condition = step_condition(&recipe, "step-14c-sync-package-json");
+    assert!(
+        condition.contains("terminal_state.should_publish == 'true'")
+            || condition.contains("should_publish == 'true'"),
+        "step-14c must share the publish gate of its sibling mutation steps; condition was `{condition}`"
+    );
+}
+
+#[test]
 fn publish_uses_required_terminal_and_followup_status_vocabulary() {
     let recipe = load_publish_recipe();
     let text = recipe_text(&recipe);

@@ -63,6 +63,10 @@ impl Hook for StopHook {
             return Ok(block);
         }
 
+        // Session is genuinely stopping (not blocked-to-continue): post a
+        // summary, leave the group, and stop the subscriber. Non-fatal.
+        crate::signal_integration::on_stop(&session_id);
+
         Ok(approve())
     }
 }

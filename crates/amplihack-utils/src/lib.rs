@@ -72,3 +72,22 @@ pub use defensive::{
 };
 pub use process::{CommandResult, ProcessManager};
 pub use slugify::slugify;
+
+/// Crate-wide serial lock for tests that mutate process-global state
+/// (environment variables, current directory). Tests across different
+/// modules share process-global state, so a per-module lock is insufficient
+/// to prevent races under `cargo test --jobs N`. All such tests must acquire
+/// this single shared lock.
+#[cfg(test)]
+pub(crate) mod test_serial {
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    /// Acquire the crate-wide test serialization guard. Poisoned locks are
+    /// recovered so a panicking test does not cascade into false failures.
+    pub(crate) fn acquire() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}

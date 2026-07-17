@@ -1,26 +1,12 @@
-# Layer 1: Repo Surface
+---
+title: Repository Surface
+---
+# Layer: repo-surface
 
-Source files, project structure, and build systems.
+The amplihack-rs Cargo workspace: **29 crates** grouped by role, with
+**3 binary targets** (`amplihack`, `amplihack-asset-resolver-bin`, `amplihack-hooks-bin`). Build system: Cargo
+(`Cargo.toml` workspace). Bundled assets under `amplifier-bundle/`.
 
-## Overview
+![repo-surface (mermaid)](repo-surface-mermaid.svg)
 
-The amplihack-rs repository is a Rust workspace with 23 library crates, 3 binary
-targets, a Python-based amplifier-bundle for AI agent tooling, and MkDocs-based
-documentation.
-
-| Component | Count | Description |
-|-----------|-------|-------------|
-| Workspace crates | 23 | Under `crates/` |
-| Binary targets | 3 | Under `bins/` |
-| Rust source files | 811 | ~198k lines |
-| Bundle directories | 5 | recipes, tools, agents, skills, behaviors |
-| Doc sections | 3 | howto, reference, concepts |
-
-## Diagram (Graphviz)
-
-![Repo Surface — Graphviz](repo-surface-dot.svg)
-
-## Diagram source
-
-- [repo-surface.dot](repo-surface.dot) (Graphviz DOT)
-- [repo-surface.mmd](repo-surface.mmd) (Mermaid — render with `mmdc`)
+![repo-surface (dot)](repo-surface-dot.svg)
