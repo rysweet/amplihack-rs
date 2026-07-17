@@ -48,6 +48,7 @@ invocation:
 LayerID: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8
 Fmt: "mermaid" | "dot" | "both"
 Backend: "auto" | "kuzu" | "lbug" | "neo4j" | "portable-cypher-only"
+AnalyzerMode: "python-ast" | "rust-cargo-metadata" | "static-approximation"
 
 Journey:
   name: string        # e.g. "user-checkout"

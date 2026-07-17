@@ -113,8 +113,8 @@ assert_layer_detected "Layer2: nested Cargo.toml"           2 "services/api/Carg
 assert_layer_detected "Layer2: requirements.txt"        2 "requirements.txt"
 assert_layer_detected "Layer2: pyproject.toml"          2 "pyproject.toml"
 
-# Rust source triggers ast-lsp-bindings (native-Rust support; no Python needed)
-assert_layer_detected "Rust: .rs source (ast-lsp-bindings)" 8 "services/api/src/main.rs"
+# Rust source triggers ast-lsp-bindings (Layer 2; native-Rust support, no Python needed)
+assert_layer_detected "Rust: .rs source (ast-lsp-bindings)" 2 "services/api/src/main.rs"
 
 # ---------------------------------------------------------------------------
 # Layer 3: API Contracts triggers (including previously undocumented patterns)
