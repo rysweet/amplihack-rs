@@ -87,16 +87,29 @@ impl AtomicJsonFile {
         self.read().map(|opt| opt.unwrap_or_default())
     }
 
+    /// Ensure the directory holding the target file (and its sibling lock file)
+    /// exists. Must run before acquiring the lock, since opening the lock file
+    /// would otherwise fail with `NotFound` on a fresh nested path.
+    fn ensure_parent_dir(&self) -> Result<(), AtomicJsonError> {
+        let parent = match self.path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p,
+            _ => return Ok(()),
+        };
+        fs::create_dir_all(parent).map_err(|e| AtomicJsonError::Io {
+            path: parent.to_path_buf(),
+            source: e,
+        })
+    }
     /// Write a value atomically (temp file + rename).
     pub fn write<T: Serialize>(&self, value: &T) -> Result<(), AtomicJsonError> {
-        let _lock = FileLock::exclusive(&self.lock_path, self.lock_timeout)?;
+        // Create the parent directory *before* acquiring the lock: the lock
+        // file lives in the same directory, so `FileLock::exclusive` (which
+        // opens `{path}.lock` with `create(true)`) fails with `NotFound` if the
+        // directory does not yet exist. This matters for first writes to a
+        // fresh nested path (e.g. per-session Signal state/inbox dirs).
+        self.ensure_parent_dir()?;
 
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).map_err(|e| AtomicJsonError::Io {
-                path: parent.to_path_buf(),
-                source: e,
-            })?;
-        }
+        let _lock = FileLock::exclusive(&self.lock_path, self.lock_timeout)?;
 
         let dir = self.path.parent().unwrap_or(Path::new("."));
         let temp = NamedTempFile::new_in(dir).map_err(|e| AtomicJsonError::Io {
@@ -129,6 +142,10 @@ impl AtomicJsonFile {
         T: Serialize + DeserializeOwned + Default + Clone,
         F: FnOnce(&mut T),
     {
+        // See `write`: the parent directory must exist before we open the lock
+        // file, otherwise the first write to a fresh nested path fails.
+        self.ensure_parent_dir()?;
+
         let _lock = FileLock::exclusive(&self.lock_path, self.lock_timeout)?;
 
         let mut data: T = match fs::read_to_string(&self.path) {
@@ -146,13 +163,6 @@ impl AtomicJsonFile {
         };
 
         f(&mut data);
-
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).map_err(|e| AtomicJsonError::Io {
-                path: parent.to_path_buf(),
-                source: e,
-            })?;
-        }
 
         let dir = self.path.parent().unwrap_or(Path::new("."));
         let temp = NamedTempFile::new_in(dir).map_err(|e| AtomicJsonError::Io {
@@ -227,6 +237,41 @@ mod tests {
             .unwrap();
         assert_eq!(result.count, 1);
         assert_eq!(result.name, "created");
+    }
+
+    #[test]
+    fn write_creates_missing_nested_dirs() {
+        // Regression: the lock file lives in the target's directory, so a first
+        // write to a not-yet-existing nested path must create the directory
+        // before opening the lock (otherwise `NotFound`). This is exactly the
+        // per-session Signal state/inbox path shape (`<root>/<session>/x.json`).
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("a").join("b").join("state.json");
+        let file = AtomicJsonFile::new(&nested);
+        let data = TestData {
+            count: 7,
+            name: "nested".to_string(),
+        };
+        file.write(&data).unwrap();
+        assert!(nested.exists());
+        let read: TestData = file.read().unwrap().unwrap();
+        assert_eq!(read, data);
+    }
+
+    #[test]
+    fn update_creates_missing_nested_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("x").join("y").join("inbox.json");
+        let file = AtomicJsonFile::new(&nested);
+        let result: TestData = file
+            .update(|d: &mut TestData| {
+                d.count = 3;
+                d.name = "deep".to_string();
+            })
+            .unwrap();
+        assert!(nested.exists());
+        assert_eq!(result.count, 3);
+        assert_eq!(result.name, "deep");
     }
 
     #[test]

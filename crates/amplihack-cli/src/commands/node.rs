@@ -1,12 +1,18 @@
 //! Node.js diagnostics and conservative remediation for Copilot CLI support.
 
 use crate::command_error::exit_error;
+use crate::util::{render_diagnostic_bytes, run_output_with_timeout};
 use amplihack_utils::prerequisites::{NODE_MINIMUM_MAJOR, parse_node_major_version};
 use anyhow::Result;
 use std::process::Command;
+use std::time::Duration;
+
+const NODE_VERSION_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub(crate) fn run_node_diagnostic(ensure: bool) -> Result<()> {
-    let output = Command::new("node").arg("--version").output();
+    let mut command = Command::new("node");
+    command.arg("--version");
+    let output = run_output_with_timeout(command, NODE_VERSION_TIMEOUT);
     match output {
         Ok(out) if out.status.success() => {
             let version = String::from_utf8_lossy(&out.stdout);
@@ -28,19 +34,17 @@ pub(crate) fn run_node_diagnostic(ensure: bool) -> Result<()> {
                 ),
             }
         }
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            fail_with_remediation(
-                ensure,
-                &format!(
-                    "Node.js version check failed: {}",
-                    stderr
-                        .lines()
-                        .next()
-                        .unwrap_or("node --version exited non-zero")
-                ),
-            )
-        }
+        Ok(out) => fail_with_remediation(
+            ensure,
+            &format!(
+                "Node.js version check failed: {}",
+                if out.stderr.is_empty() {
+                    "node --version exited non-zero".to_string()
+                } else {
+                    render_diagnostic_bytes(&out.stderr, 500)
+                }
+            ),
+        ),
         Err(err) => fail_with_remediation(ensure, &format!("Node.js is missing: {err}")),
     }
 }

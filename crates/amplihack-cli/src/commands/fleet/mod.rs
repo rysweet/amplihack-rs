@@ -10,7 +10,7 @@
 use crate::binary_finder::BinaryFinder;
 use crate::command_error::exit_error;
 use crate::env_builder::EnvBuilder;
-use crate::util::run_output_with_timeout;
+use crate::util::{render_diagnostic_bytes, run_output_with_timeout};
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Local};
 use clap::{CommandFactory, Parser};

@@ -14,8 +14,10 @@ pub mod launcher;
 mod xpia;
 
 use crate::protocol::{FailurePolicy, Hook};
-use amplihack_types::{HookInput, ProjectDirs};
+use amplihack_types::HookInput;
 use serde_json::Value;
+use std::collections::BTreeSet;
+use std::path::Path;
 
 /// Error messages for blocked operations.
 const CWD_DELETION_ERROR: &str = "\
@@ -111,10 +113,18 @@ fn check_skill_redirect(tool_name: &str, tool_input: &Value) -> Option<Value> {
         .or_else(|| tool_input.get("name").and_then(Value::as_str))?;
 
     // Skills take precedence: only redirect agent-only names. This keeps
-    // overlapping names (e.g. gherkin-expert) resolving as skills.
-    if crate::known_skills::is_amplihack_skill(name)
-        || !crate::known_agents::is_amplihack_agent(name)
-    {
+    // overlapping names (e.g. gherkin-expert) resolving as skills. The set of
+    // skills is derived from the on-disk skills directory (issue #863) — the
+    // directory is the single source of truth, not a hardcoded list.
+    //
+    // Order matters for performance: `is_amplihack_agent` is a cheap
+    // `binary_search` over a static array, while `bundled_skill_names` walks the
+    // skills directory and reads every `SKILL.md`. Gating the expensive scan
+    // behind the cheap check means the directory is only scanned when the name
+    // actually collides with a known agent — the common case (genuine skills and
+    // unknown names) pays zero I/O. `&&`/`||` short-circuit and both operands are
+    // side-effect-free, so this is logically identical to the naive order.
+    if !crate::known_agents::is_amplihack_agent(name) || bundled_skill_names().contains(name) {
         return None;
     }
 
@@ -124,9 +134,114 @@ fn check_skill_redirect(tool_name: &str, tool_input: &Value) -> Option<Value> {
     }))
 }
 
+/// Maximum directory depth walked when scanning for bundled `SKILL.md` files.
+/// The bundle nests skills at most two levels deep
+/// (`category/skill/SKILL.md`); this bound guards against pathological or
+/// cyclic directory trees.
+const MAX_SKILL_SCAN_DEPTH: usize = 8;
+
+/// Maximum number of `SKILL.md` files read during a single scan. The bundle
+/// ships on the order of a hundred skills; this generous cap bounds the
+/// per-tool-call hot path against a pathological or hostile directory tree
+/// (broad, shallow fan-out that the depth cap alone does not bound) without
+/// ever tripping for a legitimate bundle.
+const MAX_SKILL_FILES: usize = 10_000;
+
+/// Maximum accepted length of a frontmatter `name:` value. Skill and agent
+/// identities are short kebab-case names; anything longer cannot match a real
+/// agent and is rejected so a malformed or hostile `SKILL.md` cannot force an
+/// unbounded string into the membership set.
+const MAX_SKILL_NAME_LEN: usize = 256;
+
+/// Derive the set of bundled skill names by scanning the on-disk skills
+/// directory at runtime.
+///
+/// The skills DIRECTORY is the single source of truth (issue #863): each skill
+/// is a directory containing a `SKILL.md` whose YAML frontmatter `name:` field
+/// is the skill's identity. That name may differ from the directory name (for
+/// example `migrate/` publishes `amplihack-migrate`), so the frontmatter value
+/// — never the directory path — is used as the key.
+///
+/// Roots are resolved via [`iter_runtime_roots`] so the scan matches how every
+/// other bundled asset is located. Both the source-bundle layout
+/// (`<root>/amplifier-bundle/skills/`) and the installed layout
+/// (`<root>/skills/`) are scanned.
+///
+/// Panic-free and fail-open: unreadable roots or files are skipped and
+/// symlinked directories are not traversed. The returned set is empty only when
+/// no skills directory is reachable.
+fn bundled_skill_names() -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    let mut files_scanned = 0usize;
+    for root in amplihack_cli::runtime_assets::iter_runtime_roots() {
+        for skills_dir in [root.join("amplifier-bundle/skills"), root.join("skills")] {
+            collect_skill_frontmatter_names(&skills_dir, &mut names, 0, &mut files_scanned);
+        }
+    }
+    names
+}
+
+/// Recursively collect frontmatter `name:` values from every `SKILL.md` under
+/// `dir`, up to [`MAX_SKILL_SCAN_DEPTH`] and [`MAX_SKILL_FILES`]. Symlinks are
+/// not followed and unreadable entries are skipped.
+fn collect_skill_frontmatter_names(
+    dir: &Path,
+    names: &mut BTreeSet<String>,
+    depth: usize,
+    files_scanned: &mut usize,
+) {
+    if depth > MAX_SKILL_SCAN_DEPTH || *files_scanned >= MAX_SKILL_FILES {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        // Bound the total scan regardless of tree shape (hot-path DoS guard).
+        if *files_scanned >= MAX_SKILL_FILES {
+            return;
+        }
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        // Do not follow symlinks — avoids cycles and out-of-tree escapes.
+        if file_type.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        if file_type.is_dir() {
+            collect_skill_frontmatter_names(&path, names, depth + 1, files_scanned);
+        } else if path.file_name().and_then(|n| n.to_str()) == Some("SKILL.md") {
+            *files_scanned += 1;
+            if let Some(name) = skill_frontmatter_name(&path) {
+                names.insert(name);
+            }
+        }
+    }
+}
+
+/// Extract the frontmatter `name:` value from a `SKILL.md` file, if present and
+/// non-empty. Returns `None` for unreadable files or missing frontmatter.
+fn skill_frontmatter_name(path: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let frontmatter = content
+        .strip_prefix("---\n")
+        .and_then(|rest| rest.split_once("\n---"))
+        .map(|(frontmatter, _)| frontmatter)?;
+    frontmatter
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("name:"))
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty() && name.len() <= MAX_SKILL_NAME_LEN)
+}
+
 /// Strip leading env-variable assignments (`VAR=value ...`) and an optional
 /// `env` prefix so that `GIT_DIR=/x git commit` is normalized to `git commit`.
-fn normalize_command(command: &str) -> String {
+///
+/// Returns a borrowed suffix of `command`: normalization only removes a leading
+/// prefix, never rewrites content, so no allocation is needed on this per-Bash
+/// hot path.
+fn normalize_command(command: &str) -> &str {
     let mut rest = command.trim();
 
     // Strip `VAR=value ` prefixes (no quotes in key, value runs until space).
@@ -175,7 +290,7 @@ fn normalize_command(command: &str) -> String {
         }
     }
 
-    rest.to_string()
+    rest
 }
 
 /// The pre-tool-use hook.
@@ -199,11 +314,6 @@ impl Hook for PreToolUseHook {
             } => (tool_name, tool_input),
             _ => return Ok(Value::Object(serde_json::Map::new())),
         };
-
-        // Run launcher-specific context injection (side-effect only, never blocks).
-        let dirs = ProjectDirs::from_cwd();
-        let input_value = serde_json::json!({"tool_name": &tool_name, "tool_input": &tool_input});
-        launcher::inject_context(&dirs, &input_value);
 
         // XPIA security validation for all tools.
         if let Some(block) = xpia::check_xpia(&tool_name, &tool_input) {

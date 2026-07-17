@@ -34,15 +34,11 @@ use std::process::Command;
 
 /// Path to the compiled amplihack binary.
 ///
-/// Uses `CARGO_MANIFEST_DIR` which for tests registered in
-/// `bins/amplihack/Cargo.toml` resolves to `bins/amplihack/`.
-/// Two `pop()` calls reach the workspace root, then `target/debug/amplihack`.
+/// Cargo sets `CARGO_BIN_EXE_amplihack` for this `[[test]]` target and builds
+/// the binary as a prerequisite, so the path is always correct for the active
+/// profile / `CARGO_TARGET_DIR` and present — no build race.
 fn amplihack_bin() -> PathBuf {
-    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.pop(); // bins/amplihack → bins/
-    path.pop(); // bins/ → workspace root (amplihack-rs/)
-    path.push("target/debug/amplihack");
-    path
+    PathBuf::from(env!("CARGO_BIN_EXE_amplihack"))
 }
 
 /// Assert that a Command exits with the expected success/failure status.

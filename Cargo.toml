@@ -27,6 +27,7 @@ members = [
     "crates/amplihack-remote",
     "crates/amplihack-orchestration",
     "crates/amplihack-session",
+    "crates/amplihack-signal",
     "bins/amplihack",
     "bins/amplihack-asset-resolver",
     "bins/amplihack-hooks",
@@ -82,6 +83,7 @@ amplihack-agent-core = { path = "crates/amplihack-agent-core" }
 amplihack-domain-agents = { path = "crates/amplihack-domain-agents" }
 amplihack-hive = { path = "crates/amplihack-hive" }
 amplihack-agent-generator = { path = "crates/amplihack-agent-generator" }
+amplihack-signal = { path = "crates/amplihack-signal" }
 
 # Shrink local/dev/CI debug builds. This workspace has 26 crates and ~155
 # integration-test binaries; the default `debug = true` emits full DWARF

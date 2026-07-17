@@ -325,11 +325,9 @@ fn extract_amplihack_version(output: &str) -> Option<String> {
 }
 
 fn verify_host_version(host: &str, expected: Option<&str>) -> FleetVersionResult {
-    let output = Command::new("ssh")
-        .arg(host)
-        .arg("amplihack")
-        .arg("--version")
-        .output();
+    let mut command = Command::new("ssh");
+    command.arg(host).arg("amplihack").arg("--version");
+    let output = run_output_with_timeout(command, SUBPROCESS_TIMEOUT);
     match output {
         Ok(out) if out.status.success() => {
             let stdout = String::from_utf8_lossy(&out.stdout);
@@ -353,26 +351,19 @@ fn verify_host_version(host: &str, expected: Option<&str>) -> FleetVersionResult
                 message,
             }
         }
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            FleetVersionResult {
-                host: host.to_string(),
-                status: "unreachable".to_string(),
-                version: None,
-                expected: expected.map(str::to_string),
-                message: stderr
-                    .lines()
-                    .next()
-                    .unwrap_or("ssh command failed")
-                    .to_string(),
-            }
-        }
+        Ok(out) => FleetVersionResult {
+            host: host.to_string(),
+            status: "unreachable".to_string(),
+            version: None,
+            expected: expected.map(str::to_string),
+            message: render_diagnostic_bytes(&out.stderr, 400),
+        },
         Err(err) => FleetVersionResult {
             host: host.to_string(),
             status: "error".to_string(),
             version: None,
             expected: expected.map(str::to_string),
-            message: err.to_string(),
+            message: format!("{err:#}"),
         },
     }
 }
@@ -445,7 +436,7 @@ pub(super) fn run_update_hosts(
         if expected.is_some() {
             command.arg("--skip-install");
         }
-        match command.output() {
+        match run_output_with_timeout(command, SUBPROCESS_TIMEOUT) {
             Ok(out) if out.status.success() => {
                 if verify {
                     results.push(verify_host_version(&host, expected));
@@ -460,17 +451,12 @@ pub(super) fn run_update_hosts(
                 }
             }
             Ok(out) => {
-                let stderr = String::from_utf8_lossy(&out.stderr);
                 results.push(FleetVersionResult {
                     host,
                     status: "failed".to_string(),
                     version: None,
                     expected: expected.map(str::to_string),
-                    message: stderr
-                        .lines()
-                        .next()
-                        .unwrap_or("amplihack update failed")
-                        .to_string(),
+                    message: render_diagnostic_bytes(&out.stderr, 400),
                 });
             }
             Err(err) => results.push(FleetVersionResult {
@@ -478,7 +464,7 @@ pub(super) fn run_update_hosts(
                 status: "error".to_string(),
                 version: None,
                 expected: expected.map(str::to_string),
-                message: err.to_string(),
+                message: format!("{err:#}"),
             }),
         }
     }

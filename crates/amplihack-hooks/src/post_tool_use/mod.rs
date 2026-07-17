@@ -104,6 +104,20 @@ impl Hook for PostToolUseHook {
             );
         }
 
+        // Signal channel: surface queued operator instructions (advisory
+        // context, never commands) via hookSpecificOutput.additionalContext.
+        if let Some(operator_context) =
+            crate::signal_integration::drain_into_context(session_id.as_deref())
+        {
+            output.insert(
+                "hookSpecificOutput".to_string(),
+                serde_json::json!({
+                    "hookEventName": "PostToolUse",
+                    "additionalContext": operator_context,
+                }),
+            );
+        }
+
         Ok(Value::Object(output))
     }
 }

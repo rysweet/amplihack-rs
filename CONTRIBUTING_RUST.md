@@ -125,6 +125,15 @@ cargo build --release --target aarch64-apple-darwin
 
 CI builds all 4 targets: `x86_64-linux`, `aarch64-linux`, `x86_64-darwin`, `aarch64-darwin`.
 
+## Continuous Integration
+
+The Rust toolchain is pinned in `rust-toolchain.toml` (`1.97.0`), so local
+`cargo` commands match CI exactly. The `Test` job runs `cargo nextest run
+--workspace --locked` plus `cargo test --workspace --doc --locked` for doctests.
+See the [CI Pipeline Reference](docs/reference/ci-pipeline.md) for the full
+contract: toolchain bump process, disk freeing, caching, required checks, and
+the `env!("CARGO_BIN_EXE_*")` convention for binary-invoking integration tests.
+
 ## PR Process
 
 1. Create feature branch from `main`

@@ -373,7 +373,33 @@ CHANGED_FILES=$(git diff --name-only "${BASE_REF}..HEAD" 2>/dev/null | head -40 
 CHANGED_COUNT=$(printf '%s\n' "$CHANGED_FILES" | sed '/^$/d' | wc -l | tr -d ' ')
 DIFF_STAT=$(git diff --stat "${BASE_REF}..HEAD" 2>/dev/null | tail -20 || true)
 RECENT_COMMITS=$(git log --oneline --no-decorate "${BASE_REF}..HEAD" -6 2>/dev/null || true)
-FIRST_CHANGED=$(printf '%s\n' "$CHANGED_FILES" | awk 'NF {print; exit}')
+# Issue #929: derive the PR-title scope from the first *substantive* changed
+# file, ignoring generated/lockfiles. The lockfile-sync step (#915) commits
+# Cargo.lock, which sorts first in `git diff --name-only`; without this filter a
+# full feature diff gets mislabeled "Update Cargo.lock". Only a genuinely
+# lockfile-only diff falls back to the lockfile scope. Filenames are treated as
+# data: quoted expansions, basename matched via a static case, never eval'd.
+is_generated_scope_file() {
+  case "$(basename -- "$1")" in
+    Cargo.lock|*.lock|package-lock.json|npm-shrinkwrap.json|yarn.lock|pnpm-lock.yaml|go.sum|Pipfile.lock|poetry.lock|composer.lock|Gemfile.lock|flake.lock) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+SUBSTANTIVE_FIRST=""
+while IFS= read -r changed_path; do
+  [ -n "$changed_path" ] || continue
+  if ! is_generated_scope_file "$changed_path"; then
+    SUBSTANTIVE_FIRST="$changed_path"
+    break
+  fi
+done <<EOF
+$CHANGED_FILES
+EOF
+if [ -n "$SUBSTANTIVE_FIRST" ]; then
+  FIRST_CHANGED="$SUBSTANTIVE_FIRST"
+else
+  FIRST_CHANGED=$(printf '%s\n' "$CHANGED_FILES" | awk 'NF {print; exit}')
+fi
 case "$FIRST_CHANGED" in amplifier-bundle/recipes/*) PR_SCOPE="workflow recipes" ;; crates/amplihack-cli/*) PR_SCOPE="amplihack CLI" ;; crates/*) PR_SCOPE="$(printf '%s' "$FIRST_CHANGED" | cut -d/ -f2)" ;; tests/*) PR_SCOPE="regression coverage" ;; docs/*) PR_SCOPE="documentation" ;; "") PR_SCOPE="workflow changes" ;; *) PR_SCOPE="$(printf '%s' "$FIRST_CHANGED" | cut -d/ -f1)" ;; esac
 if [ "$CHANGED_COUNT" -gt 1 ]; then PR_TITLE="Update ${PR_SCOPE} with ${CHANGED_COUNT} changed files"; else PR_TITLE="Update ${PR_SCOPE}"; fi
 PR_TITLE="${PR_TITLE} (#${ISSUE_NUM})"

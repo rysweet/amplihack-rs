@@ -1,0 +1,45 @@
+[package]
+name = "amplihack-signal"
+description = "Feature-gated, per-session Signal messaging channel for amplihack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# Default OFF: with the feature off the entire crate compiles to an empty
+# lib, pulls in no tokio-net stack, and costs nothing at runtime.
+default = []
+# Enables the whole channel (pure core + gated tokio TCP transport).
+signal = ["dep:tokio", "dep:tokio-stream"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+toml = "0.8"
+amplihack-state = { workspace = true }
+amplihack-types = { workspace = true }
+tokio = { workspace = true, optional = true, features = [
+    "net",
+    "io-util",
+    "rt",
+    "macros",
+    "time",
+    "sync",
+] }
+tokio-stream = { version = "0.1", optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+# Fixture-driven envelope tests (pure wire parsing, no I/O).
+[[test]]
+name = "envelope_fixtures"
+path = "tests/envelope_fixtures.rs"
+
+# File-backed inbox integration tests.
+[[test]]
+name = "session_channel_it"
+path = "tests/session_channel_it.rs"

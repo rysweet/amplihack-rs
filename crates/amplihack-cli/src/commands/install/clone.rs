@@ -28,6 +28,8 @@
 use super::bundle_compat::validate_framework_bundle_compatibility;
 use super::types::{REPO_ARCHIVE_URL, REPO_GIT_URL};
 use crate::update::{extract_archive, http_get_with_retry, validate_download_url};
+#[cfg(windows)]
+use crate::util::run_with_timeout;
 use anyhow::{Context, Result, bail};
 use std::collections::VecDeque;
 use std::fs;
@@ -35,7 +37,7 @@ use std::io::Read;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -44,6 +46,8 @@ const GIT_CLONE_TIMEOUT: Duration = Duration::from_secs(300);
 #[cfg(test)]
 const GIT_CLONE_TIMEOUT: Duration = Duration::from_millis(250);
 const GIT_CLONE_POLL_INTERVAL: Duration = Duration::from_millis(20);
+#[cfg(windows)]
+const TERMINATE_PROCESS_TREE_TIMEOUT: Duration = Duration::from_secs(5);
 const CAPTURE_LIMIT: usize = 8192;
 
 /// Locate the bundled framework source from the amplihack-rs source tree.
@@ -156,28 +160,36 @@ pub(super) fn download_and_extract_framework_repo(destination: &Path) -> Result<
 
 /// Resolve the `git` binary path from PATH.
 fn which_git() -> Result<PathBuf> {
-    let output = std::process::Command::new("which")
-        .arg("git")
-        .output()
-        .or_else(|_| {
-            // `which` may not be available on all platforms; fall back to `command -v git`
-            std::process::Command::new("sh")
-                .args(["-c", "command -v git"])
-                .output()
-        })
-        .context("failed to locate git binary")?;
-    if output.status.success() {
-        let path_str = std::str::from_utf8(&output.stdout)
-            .context("git path is not valid UTF-8")?
-            .trim()
-            .to_string();
-        if path_str.is_empty() {
-            bail!("git not found on PATH");
-        }
-        Ok(PathBuf::from(path_str))
+    let Some(paths) = std::env::var_os("PATH") else {
+        bail!("git not found on PATH");
+    };
+    let candidates: &[&str] = if cfg!(windows) {
+        &["git.exe", "git"]
     } else {
-        bail!("git not found on PATH")
+        &["git"]
+    };
+    for dir in std::env::split_paths(&paths) {
+        for candidate in candidates {
+            let path = dir.join(candidate);
+            if is_executable_file(&path) {
+                return Ok(path);
+            }
+        }
     }
+    bail!("git not found on PATH")
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.metadata()
+        .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
 }
 
 /// Run `git clone --depth 1 <REPO_GIT_URL> <destination>`.
@@ -186,7 +198,7 @@ fn git_clone_framework_repo(git_path: &Path, destination: &Path) -> Result<()> {
         .context("failed to create temporary stdout file for git clone")?;
     let stderr_file = tempfile::NamedTempFile::new()
         .context("failed to create temporary stderr file for git clone")?;
-    let mut command = std::process::Command::new(git_path);
+    let mut command = Command::new(git_path);
     command
         .args([
             "clone",
@@ -271,12 +283,13 @@ fn terminate_git_clone(child: &mut std::process::Child) {
     #[cfg(windows)]
     {
         let pid = child.id().to_string();
-        let _ = std::process::Command::new("taskkill")
+        let mut command = Command::new("taskkill");
+        command
             .args(["/PID", &pid, "/T", "/F"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+            .stderr(Stdio::null());
+        let _ = run_with_timeout(command, TERMINATE_PROCESS_TREE_TIMEOUT);
     }
     let _ = child.kill();
     let _ = child.wait();
@@ -285,16 +298,19 @@ fn terminate_git_clone(child: &mut std::process::Child) {
 fn read_limited(path: &Path) -> Result<String> {
     let mut file = fs::File::open(path)
         .with_context(|| format!("failed to open captured output {}", path.display()))?;
+    let total_bytes = file
+        .metadata()
+        .with_context(|| format!("failed to inspect captured output {}", path.display()))?
+        .len() as usize;
     let mut bytes = Vec::new();
     file.by_ref()
-        .take((CAPTURE_LIMIT + 1) as u64)
+        .take(CAPTURE_LIMIT as u64)
         .read_to_end(&mut bytes)
         .with_context(|| format!("failed to read captured output {}", path.display()))?;
-    let truncated = bytes.len() > CAPTURE_LIMIT;
-    bytes.truncate(CAPTURE_LIMIT);
     let mut text = String::from_utf8_lossy(&bytes).into_owned();
-    if truncated {
-        text.push_str("\n...<truncated>");
+    if total_bytes > CAPTURE_LIMIT {
+        let discarded = total_bytes - CAPTURE_LIMIT;
+        text.push_str(&format!("\n[truncated: discarded {discarded} bytes]"));
     }
     Ok(text)
 }
@@ -375,6 +391,20 @@ mod tests {
         assert!(
             msg.contains("stdout-marker") && msg.contains("stderr-marker"),
             "error must include captured stdout/stderr: {msg}"
+        );
+    }
+
+    #[test]
+    fn read_limited_reports_discarded_bytes() {
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().join("captured.log");
+        fs::write(&output, vec![b'x'; CAPTURE_LIMIT + 7]).unwrap();
+
+        let rendered = read_limited(&output).unwrap();
+
+        assert!(
+            rendered.contains("[truncated: discarded 7 bytes]"),
+            "truncated output must report discarded bytes: {rendered}"
         );
     }
 

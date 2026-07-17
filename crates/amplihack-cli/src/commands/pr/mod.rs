@@ -9,11 +9,14 @@
 #[cfg(test)]
 mod tests;
 
+use crate::util::run_output_with_timeout;
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
 use serde::Deserialize;
 use std::thread;
 use std::time::Duration;
+
+const GH_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 
 // ── Public types ────────────────────────────────────────────────────
 
@@ -68,10 +71,10 @@ pub struct RealGhRunner;
 
 impl GhRunner for RealGhRunner {
     fn run_gh(&self, args: &[&str]) -> Result<GhOutput> {
-        let output = std::process::Command::new("gh")
-            .args(args)
-            .output()
-            .context("failed to execute `gh` — is it installed?")?;
+        let mut cmd = std::process::Command::new("gh");
+        cmd.args(args);
+        let output = run_output_with_timeout(cmd, GH_COMMAND_TIMEOUT)
+            .context("failed to execute `gh` within the 60s timeout — is it installed?")?;
         Ok(GhOutput {
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),

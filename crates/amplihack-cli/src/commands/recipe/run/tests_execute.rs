@@ -1880,10 +1880,144 @@ fn test_execute_recipe_via_rust_verbose_survives_non_utf8_stderr() {
     }
 
     result.expect("non-UTF-8 stderr must NOT abort the pump or hang the child");
+    // This is a hang-detector, not a performance assertion. A healthy run is
+    // sub-second, but the meaningful failure is a *pipe-hang* where the pump
+    // dies and the child blocks on a full ~64KB stderr pipe until the 30s test
+    // harness kills it. The ceiling is deliberately loose (25s, well under the
+    // 30s harness timeout) so CPU contention on a saturated nextest run cannot
+    // flake it, while a genuine hang still trips it.
     assert!(
-        elapsed < std::time::Duration::from_secs(5),
+        elapsed < std::time::Duration::from_secs(25),
         "non-UTF-8 stderr caused suspiciously slow run ({elapsed:?}) — \
          pump likely died and child blocked on full stderr pipe"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn test_execute_recipe_via_rust_times_out_hung_runner() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let runner = temp.path().join("recipe-runner-rs");
+    std::fs::write(&runner, "#!/bin/sh\n/bin/sleep 5\n").expect("failed to write runner stub");
+
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
+        .expect("failed to chmod runner");
+
+    let recipe = temp.path().join("recipe.yaml");
+    std::fs::write(&recipe, "name: timeout-probe\nsteps: []\n").expect("failed to write recipe");
+
+    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+    let prev_timeout = std::env::var_os("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS");
+    unsafe {
+        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
+        std::env::set_var("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS", "1");
+    }
+
+    let start = std::time::Instant::now();
+    let result = execute::execute_recipe_via_rust(
+        &recipe,
+        &BTreeMap::new(),
+        false,
+        true,
+        temp.path(),
+        &[],
+        None,
+    );
+    let elapsed = start.elapsed();
+
+    match prev_runner {
+        Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
+        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
+    }
+    match prev_timeout {
+        Some(value) => unsafe { std::env::set_var("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS", value) },
+        None => unsafe { std::env::remove_var("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS") },
+    }
+
+    let err = result.expect_err("hung recipe-runner must time out");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("timed out"),
+        "error should report timeout: {msg}"
+    );
+    // The parent timeout (1s, set above) firing is proven by the "timed out"
+    // error assertion — that is the real intent of this test. This elapsed
+    // ceiling is a hang-detector, not a performance assertion: it guards against
+    // the pathological case where the timeout path fails to kill the runner and
+    // the child runs until the 30s test harness kills it. The ceiling is
+    // deliberately loose (25s, well under the 30s harness) because process
+    // spawn, timeout polling, the tree-kill, and stderr-pump teardown can add
+    // several seconds of overhead under a saturated nextest run — keying it
+    // tightly to the runner's own sleep flakes because that cleanup overhead is
+    // comparable to the timeout-vs-natural-completion gap.
+    assert!(
+        elapsed < std::time::Duration::from_secs(25),
+        "parent timeout should bound hung runner well under the harness limit, \
+         elapsed {elapsed:?}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn test_execute_recipe_via_rust_timeout_kills_runner_process_tree() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let runner = temp.path().join("recipe-runner-rs");
+    let marker = temp.path().join("orphan-marker");
+    std::fs::write(
+        &runner,
+        format!(
+            "#!/bin/sh\n(/bin/sleep 2; echo orphan > '{}') &\n/bin/sleep 5\n",
+            marker.display()
+        ),
+    )
+    .expect("failed to write runner stub");
+
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
+        .expect("failed to chmod runner");
+
+    let recipe = temp.path().join("recipe.yaml");
+    std::fs::write(&recipe, "name: timeout-tree-probe\nsteps: []\n")
+        .expect("failed to write recipe");
+
+    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+    let prev_timeout = std::env::var_os("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS");
+    unsafe {
+        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
+        std::env::set_var("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS", "1");
+    }
+
+    let result = execute::execute_recipe_via_rust(
+        &recipe,
+        &BTreeMap::new(),
+        false,
+        true,
+        temp.path(),
+        &[],
+        None,
+    );
+
+    match prev_runner {
+        Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
+        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
+    }
+    match prev_timeout {
+        Some(value) => unsafe { std::env::set_var("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS", value) },
+        None => unsafe { std::env::remove_var("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS") },
+    }
+
+    result.expect_err("hung recipe-runner must time out");
+    std::thread::sleep(std::time::Duration::from_millis(2_300));
+    assert!(
+        !marker.exists(),
+        "timeout cleanup must terminate recipe-runner descendants"
     );
 }
 
