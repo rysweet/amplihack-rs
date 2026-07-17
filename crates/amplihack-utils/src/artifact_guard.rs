@@ -78,6 +78,16 @@ impl ArtifactGuardMode {
             Self::All | Self::Worktree | Self::PreCommit | Self::PrePublish
         )
     }
+
+    /// Whether this mode should flag `IgnoredPresent` artifacts (gitignored +
+    /// present-on-disk cache dirs such as `.pytest_cache/` or `node_modules/`).
+    ///
+    /// These paths can never be committed or published, so pre-commit and
+    /// pre-publish (fail-closed publish gates) MUST NOT block on them
+    /// (issue #928). Only the auditing modes flag them.
+    fn scans_ignored_present(self) -> bool {
+        matches!(self, Self::All | Self::Worktree)
+    }
 }
 
 impl fmt::Display for ArtifactGuardMode {
@@ -305,7 +315,9 @@ pub fn scan_artifacts(
             &mut violations,
             &mut seen,
         )?;
-        scan_ignored_present(&repo, &allowlist, &mut violations, &mut seen)?;
+        if config.mode.scans_ignored_present() {
+            scan_ignored_present(&repo, &allowlist, &mut violations, &mut seen)?;
+        }
     }
 
     violations.sort_by(|left, right| {
@@ -443,11 +455,22 @@ fn scan_ignored_present(
         });
     }
 
+    // Files inside legitimately-registered sibling task worktrees (concurrent
+    // recipe runs nested under `<repo>/worktrees/`) are NOT leaked pollution and
+    // must not be flagged as `nested-worktree` violations (issue #857). Genuine
+    // leaked directories under `worktrees/` (not registered git worktrees) are
+    // still flagged. `git ls-files --others --ignored` recurses into these
+    // gitignored nested worktrees, so we filter their paths out explicitly.
+    let registered_nested = registered_nested_worktree_prefixes(repo);
+
     for raw in output.stdout.split(|byte| *byte == 0) {
         if raw.is_empty() {
             continue;
         }
         let path = String::from_utf8_lossy(raw);
+        if is_inside_registered_nested_worktree(&path, &registered_nested) {
+            continue;
+        }
         add_violation_if_prohibited(
             &path,
             ArtifactSource::IgnoredPresent,
@@ -457,6 +480,56 @@ fn scan_ignored_present(
         );
     }
     Ok(())
+}
+
+/// Repo-relative path prefixes (each ending in `/`) of git worktrees that are
+/// registered under `<repo>/worktrees/`. These are legitimate concurrent task
+/// worktrees created by other recipe runs — not leaked scratch — so the artifact
+/// guard must never flag their contents (issue #857). Best-effort: returns empty
+/// on any git error so the guard fails safe (keeps scanning).
+fn registered_nested_worktree_prefixes(repo: &Path) -> Vec<String> {
+    let Ok(output) = Command::new("git")
+        .args(["-C"])
+        .arg(repo)
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    let repo_canon = repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf());
+    let mut prefixes = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let Some(raw) = line.strip_prefix("worktree ") else {
+            continue;
+        };
+        let wt = Path::new(raw);
+        let wt_canon = wt.canonicalize().unwrap_or_else(|_| wt.to_path_buf());
+        let Ok(rel) = wt_canon.strip_prefix(&repo_canon) else {
+            continue;
+        };
+        let rel = normalize_slashes(rel.to_string_lossy().trim_end_matches('/'));
+        // Only worktrees nested under `<repo>/worktrees/` — never the repo root
+        // itself (rel == "") nor unrelated paths.
+        if rel.starts_with("worktrees/") {
+            prefixes.push(format!("{rel}/"));
+        }
+    }
+    prefixes
+}
+
+/// Whether `raw_path` (a repo-relative scan path) lies inside one of the
+/// `registered` nested-worktree prefixes. See [`registered_nested_worktree_prefixes`].
+fn is_inside_registered_nested_worktree(raw_path: &str, registered: &[String]) -> bool {
+    if registered.is_empty() {
+        return false;
+    }
+    let path = normalize_slashes(raw_path.trim_end_matches('/'));
+    registered
+        .iter()
+        .any(|prefix| path == prefix.trim_end_matches('/') || path.starts_with(prefix.as_str()))
 }
 
 fn add_violation_if_prohibited(

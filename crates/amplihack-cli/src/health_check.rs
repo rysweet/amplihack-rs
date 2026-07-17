@@ -6,7 +6,13 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::Duration;
 use tracing::{debug, warn};
+
+use crate::util::run_with_timeout;
+
+const DEPENDENCY_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Overall health status.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,12 +134,12 @@ pub fn check_health() -> HealthReport {
 
 /// Check whether a CLI dependency is available on PATH.
 fn _check_dependency(name: &str, args: &[&str]) -> CheckDetail {
-    match std::process::Command::new(name)
+    let mut command = Command::new(name);
+    command
         .args(args)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .status()
-    {
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    match run_with_timeout(command, DEPENDENCY_CHECK_TIMEOUT) {
         Ok(status) if status.success() => {
             debug!(dep = name, "Dependency available");
             CheckDetail {

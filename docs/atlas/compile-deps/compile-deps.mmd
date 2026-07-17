@@ -1,71 +1,85 @@
-graph TD
-    subgraph "Foundation Layer"
-        types["amplihack-types"]
-        state["amplihack-state"]
-        utils["amplihack-utils"]
-        security["amplihack-security"]
-        safety["amplihack-safety"]
-    end
-
-    subgraph "Core Infrastructure"
-        memory["amplihack-memory"]
-        workflows["amplihack-workflows"]
-        recipe["amplihack-recipe"]
-        context["amplihack-context"]
-        delegation["amplihack-delegation"]
-        recovery["amplihack-recovery"]
-    end
-
-    subgraph "Agent Layer"
-        agent_core["amplihack-agent-core"]
-        agent_eval["amplihack-agent-eval"]
-        agent_gen["amplihack-agent-generator"]
-        domain_agents["amplihack-domain-agents"]
-    end
-
-    subgraph "Orchestration Layer"
-        hive["amplihack-hive"]
-        fleet["amplihack-fleet"]
-        remote["amplihack-remote"]
-    end
-
-    subgraph "Integration Layer"
-        cli["amplihack-cli"]
-        hooks["amplihack-hooks"]
-        launcher["amplihack-launcher"]
-        blarify["amplihack-blarify"]
-        multilspy["amplihack-multilspy"]
-    end
-
-    subgraph "Binary Layer"
-        bin_amplihack["bins/amplihack"]
-    end
-
-    %% Foundation deps
-    state --> types
-
-    %% Core Infrastructure deps
-    %% (memory, workflows, recipe standalone)
-
-    %% Agent Layer deps
-    agent_core --> memory
-    domain_agents --> agent_core
-    domain_agents --> memory
-    domain_agents --> workflows
-
-    %% Orchestration Layer deps
-    hive --> agent_core
-    hive --> memory
-
-    %% Integration Layer deps
-    cli --> types
-    cli --> state
-    cli --> hive
-    hooks --> types
-    hooks --> state
-    hooks --> cli
-    hooks --> security
-    hooks --> workflows
-
-    %% Binary deps
-    bin_amplihack --> cli
+flowchart LR
+  subgraph entrypoints["Entry points (bins)"]
+    amplihack["amplihack"]
+    amplihack_hooks_bin["amplihack-hooks-bin"]
+    amplihack_asset_resolver_bin["amplihack-asset-resolver-bin"]
+  end
+  subgraph cli["CLI core"]
+    amplihack_cli["amplihack-cli"]
+  end
+  subgraph hooks["Hooks"]
+    amplihack_hooks["amplihack-hooks"]
+  end
+  subgraph agents["Agents / AI"]
+    amplihack_agent_core["amplihack-agent-core"]
+    amplihack_agent_eval["amplihack-agent-eval"]
+    amplihack_agent_generator["amplihack-agent-generator"]
+    amplihack_domain_agents["amplihack-domain-agents"]
+    amplihack_hive["amplihack-hive"]
+    amplihack_delegation["amplihack-delegation"]
+    amplihack_fleet["amplihack-fleet"]
+  end
+  subgraph orchestration["Orchestration & workflows"]
+    amplihack_orchestration["amplihack-orchestration"]
+    amplihack_workflows["amplihack-workflows"]
+    amplihack_reflection["amplihack-reflection"]
+    amplihack_recovery["amplihack-recovery"]
+  end
+  subgraph state_memory["State / memory / session"]
+    amplihack_memory["amplihack-memory"]
+    amplihack_state["amplihack-state"]
+    amplihack_session["amplihack-session"]
+    amplihack_context["amplihack-context"]
+  end
+  subgraph launch_remote["Launcher & remote"]
+    amplihack_launcher["amplihack-launcher"]
+    amplihack_remote["amplihack-remote"]
+  end
+  subgraph foundation["Foundation"]
+    amplihack_types["amplihack-types"]
+    amplihack_utils["amplihack-utils"]
+    amplihack_builders["amplihack-builders"]
+  end
+  subgraph security["Security & safety"]
+    amplihack_security["amplihack-security"]
+    amplihack_safety["amplihack-safety"]
+  end
+  subgraph code_analysis["Code analysis"]
+    amplihack_blarify["amplihack-blarify"]
+    amplihack_multilspy["amplihack-multilspy"]
+  end
+  amplihack --> amplihack_cli
+  amplihack --> amplihack_hooks
+  amplihack --> amplihack_state
+  amplihack --> amplihack_types
+  amplihack_agent_core --> amplihack_memory
+  amplihack_asset_resolver_bin --> amplihack_cli
+  amplihack_cli --> amplihack_builders
+  amplihack_cli --> amplihack_hive
+  amplihack_cli --> amplihack_launcher
+  amplihack_cli --> amplihack_memory
+  amplihack_cli --> amplihack_reflection
+  amplihack_cli --> amplihack_remote
+  amplihack_cli --> amplihack_state
+  amplihack_cli --> amplihack_types
+  amplihack_cli --> amplihack_utils
+  amplihack_cli --> amplihack_workflows
+  amplihack_domain_agents --> amplihack_agent_core
+  amplihack_domain_agents --> amplihack_memory
+  amplihack_domain_agents --> amplihack_workflows
+  amplihack_hive --> amplihack_agent_core
+  amplihack_hive --> amplihack_memory
+  amplihack_hooks --> amplihack_cli
+  amplihack_hooks --> amplihack_security
+  amplihack_hooks --> amplihack_state
+  amplihack_hooks --> amplihack_types
+  amplihack_hooks --> amplihack_utils
+  amplihack_hooks --> amplihack_workflows
+  amplihack_hooks_bin --> amplihack_hooks
+  amplihack_hooks_bin --> amplihack_state
+  amplihack_hooks_bin --> amplihack_types
+  amplihack_launcher --> amplihack_types
+  amplihack_launcher --> amplihack_utils
+  amplihack_orchestration --> amplihack_utils
+  amplihack_state --> amplihack_types
+  amplihack_workflows --> amplihack_utils

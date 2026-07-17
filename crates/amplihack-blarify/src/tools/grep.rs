@@ -89,7 +89,7 @@ pub fn grep_code(db_manager: &dyn DbManager, input: &GrepCodeInput) -> Result<se
     let regex_pattern = if input.case_sensitive {
         Regex::new(&input.pattern)?
     } else {
-        Regex::new(&format!("(?i){}", &input.pattern))?
+        Regex::new(&format!("(?i){}", input.pattern))?
     };
 
     let file_regex = input

@@ -136,7 +136,10 @@ pub async fn run_debate(
 
     let mut r1_data = HashMap::new();
     for (name, result) in names_only.iter().zip(r1.iter()) {
-        history.get_mut(name).unwrap().push(result.output.clone());
+        history
+            .get_mut(name)
+            .unwrap()
+            .push(result.answer().to_string());
         r1_data.insert(name.clone(), result.clone());
     }
     all_rounds.push(RoundData {
@@ -180,7 +183,10 @@ pub async fn run_debate(
         let rn = run_parallel(processes.into_iter().map(|(_, p)| p).collect(), None).await;
         let mut rn_data = HashMap::new();
         for (name, result) in names_only.iter().zip(rn.iter()) {
-            history.get_mut(name).unwrap().push(result.output.clone());
+            history
+                .get_mut(name)
+                .unwrap()
+                .push(result.answer().to_string());
             rn_data.insert(name.clone(), result.clone());
         }
         all_rounds.push(RoundData {
@@ -282,9 +288,10 @@ fn build_transcript(all_rounds: &[RoundData], perspective_names: &[String]) -> S
                 && r.is_success()
             {
                 transcript.push_str(&format!("\n## {} PERSPECTIVE:\n", name.to_uppercase()));
-                let truncated = crate::text_utils::truncate_at_char_boundary(&r.output, 3000);
+                let body_src = r.answer();
+                let truncated = crate::text_utils::truncate_at_char_boundary(body_src, 3000);
                 transcript.push_str(truncated);
-                if truncated.len() < r.output.len() {
+                if truncated.len() < body_src.len() {
                     transcript.push_str("\n...(truncated)");
                 }
             }
@@ -320,7 +327,7 @@ fn parse_confidence(
     if !synth.is_success() {
         return Confidence::Low;
     }
-    let lower = synth.output.to_lowercase();
+    let lower = synth.answer().to_lowercase();
     let mut confidence = Confidence::Medium;
     if lower.contains("confidence level") {
         if lower.contains("high") {

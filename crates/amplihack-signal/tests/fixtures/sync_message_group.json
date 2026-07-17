@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","method":"receive","params":{"envelope":{"source":"+15551230000","sourceNumber":"+15551230000","sourceDevice":1,"timestamp":1700000001000,"syncMessage":{"sentMessage":{"timestamp":1700000001000,"message":"session started","destination":null,"groupInfo":{"groupId":"grp-abc123==","type":"DELIVER"}}}},"account":"+15551230000","subscription":0}}

@@ -1,7 +1,7 @@
 ---
 title: Repair a stale framework bundle
 description: Diagnose and repair an install where the binary is current but smart-orchestrator recipes are stale.
-last_updated: 2026-06-10
+last_updated: 2026-07-10
 review_schedule: as-needed
 owner: amplihack-maintainers
 doc_type: howto
@@ -17,6 +17,23 @@ Current installs validate and repair this automatically. A successful
 `amplihack install` or post-update install replaces stale
 `smart-orchestrator.yaml` assets with the canonical composable recipe and its
 four companion recipes.
+
+## Root cause fixed in current builds
+
+The regression came from stale installed assets, not from the current
+`amplihack-rs` source bundle. The stale path was:
+
+```text
+~/.amplihack/amplifier-bundle/recipes/smart-orchestrator.yaml
+```
+
+Older installs could leave that top-level bundle at the old v1.5.1 monolithic
+recipe while `.installed-version` still matched the binary. Startup self-heal
+trusted the version stamp alone, and recipe resolution could prefer
+`AMPLIHACK_HOME/amplifier-bundle/recipes` before a fresh compatible fallback.
+Current builds validate the installed top-level bundle even when the version
+stamp matches, refresh incompatible assets, and refuse stale smart-orchestrator
+resolution when no compatible fallback exists.
 
 ## Symptoms
 
@@ -84,6 +101,20 @@ the source bundle, stages it, then validates the staged destination. If the
 post-update install fails, the binary update has still completed; run
 `amplihack install` manually to retry the asset repair.
 
+## Automatic startup repair
+
+Current binaries also check the installed bundle during normal startup. The
+no-op condition is now:
+
+```text
+.installed-version matches the binary AND ~/.amplihack/amplifier-bundle is compatible
+```
+
+If either side fails, self-heal re-runs the install path and emits the normal
+`framework assets re-staged` notice. Setting `AMPLIHACK_SKIP_AUTO_INSTALL`
+still skips repair, but the diagnostic includes the incompatible bundle status
+instead of silently trusting stale assets.
+
 ## Repair from a local checkout
 
 Use `--local` when you intentionally want to install from a checkout:
@@ -123,6 +154,13 @@ for recipe in smart-classify-route smart-execute-routing smart-reflect-loop smar
   test -f "$HOME/.amplihack/amplifier-bundle/recipes/${recipe}.yaml" \
     && echo "ok: ${recipe}"
 done
+```
+
+Confirm the resolved recipe contains none of the legacy markers:
+
+```sh
+AMPGREP='orch_helper\.py|importlib|parse-decomposition|resolve-bundle-asset helper-path'
+amplihack recipe show smart-orchestrator | grep -E "$AMPGREP" && exit 1 || echo "ok: no stale markers"
 ```
 
 Confirm `helper-path` still resolves to the multitask wrapper:
@@ -177,6 +215,7 @@ the installer is designed to reject.
 ## See also
 
 - [Framework bundle compatibility reference](../reference/framework-bundle-compatibility.md)
+- [Stale smart-orchestrator asset bugfix note](../bugfixes/stale-smart-orchestrator-assets.md)
 - [Install completeness verification](../reference/install-completeness.md)
 - [Post-update install re-exec](../features/update-reexec-new-binary.md)
 - [resolve-bundle-asset command reference](../reference/resolve-bundle-asset-command.md)

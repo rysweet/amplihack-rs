@@ -9,6 +9,16 @@ Unreleased changes appear at the top under `[Unreleased]`.
 
 ### Fixed
 
+- **Stale installed smart-orchestrator assets can shadow fresh bundles (#3698)** —
+  Startup self-heal now validates `~/.amplihack/amplifier-bundle` even when
+  `.installed-version` matches the binary, forcing the normal install repair
+  path when the installed top-level bundle still contains legacy
+  `orch_helper.py` / `importlib` / `parse-decomposition` markers. Recipe
+  resolution also skips stale smart-orchestrator candidates when a compatible
+  fallback exists and fails loudly with repair guidance when every candidate is
+  stale. Install/update compatibility validation remains centralized in
+  `bundle_compat.rs` and validates staged destination assets after copy.
+
 - **default-workflow leaves stray fallback branches + nested worktrees when
   force-push is denied (#808)** — `default-workflow` finalization now runs a
   deterministic, idempotent cleanup. On a denied force-push the run-created

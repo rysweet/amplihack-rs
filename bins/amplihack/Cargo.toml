@@ -66,6 +66,27 @@ path = "../../tests/integration/cargo_lock_cxx_consistency_test.rs"
 name = "ci_cxx_build_pin"
 path = "../../tests/integration/ci_cxx_build_pin_test.rs"
 
+# Issue #744: CI speed-up + robustness contract (toolchain pin, nextest +
+# doctests, CARGO_PROFILE_TEST_DEBUG=0, SHA-pinned free-disk-space, cache
+# save-if main-only). Structural — reads ci.yml / rust-toolchain.toml only.
+[[test]]
+name = "ci_speedup_optimization"
+path = "../../tests/integration/ci_speedup_optimization_test.rs"
+
+# Issue #744: integration-test binary-path robustness contract. Fragile tests
+# must resolve the binary via env!(CARGO_BIN_EXE_*) instead of hand-rolled
+# target/debug paths, and the orphan skip-update-check test must be wired.
+[[test]]
+name = "test_harness_binary_path_contract"
+path = "../../tests/integration/test_harness_binary_path_contract_test.rs"
+
+# Issue #744: previously an orphan file (never compiled/run in CI). Wiring it
+# as a [[test]] target both runs its assertions and makes CARGO_BIN_EXE_amplihack
+# resolve for it, so it can locate the binary robustly.
+[[test]]
+name = "skip_update_check_flag"
+path = "../../tests/integration/skip_update_check_flag_test.rs"
+
 # WS3: Recipe runner E2E integration tests
 # These tests verify the full recipe delegation chain:
 #   amplihack recipe list / validate / run --dry-run
@@ -376,3 +397,11 @@ path = "../../tests/integration/merge_ready_platform_contract_test.rs"
 [[test]]
 name = "code_philosophy_audit_recipe"
 path = "../../tests/integration/code_philosophy_audit_recipe_test.rs"
+
+# Issue #849: default-workflow SKILL mirror parity + F-ERR-2 stale-citation guard.
+# Pins byte-for-byte mirror equality, the extracted Step 17a gate node, absence of
+# the stale `default-workflow.yaml:961` reference, and that the audit citations
+# resolve to a live `step-17a-testing-evidence-gate` step in workflow-pr-review.yaml.
+[[test]]
+name = "issue_849_skill_mirror_citation"
+path = "../../tests/integration/issue_849_skill_mirror_citation_test.rs"

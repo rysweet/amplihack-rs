@@ -12,7 +12,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use amplihack_utils::prompt_delivery::{
-    DeliveryCaps, DeliveryHandle, DeliveryMode, PromptDelivery, deliver, from_env, select_mode,
+    DeliveryCaps, DeliveryHandle, DeliveryMode, PromptDelivery, deliver, from_env,
+    sanitize_prompt_nul, select_mode,
 };
 use async_trait::async_trait;
 use once_cell::sync::Lazy;
@@ -101,7 +102,8 @@ where
     command.args(args);
     let selected_mode = select_mode(requested, prompt.len(), &caps);
     let delivery_handle = deliver(&mut command, prompt, requested, &caps)?;
-    let stdin_payload = (selected_mode == DeliveryMode::Stdin).then(|| prompt.as_bytes().to_vec());
+    let stdin_payload = (selected_mode == DeliveryMode::Stdin)
+        .then(|| sanitize_prompt_nul(prompt).as_bytes().to_vec());
     Ok(DeliveredProcessCommand {
         command,
         delivery_handle,
@@ -118,6 +120,12 @@ pub struct ProcessResult {
     pub stderr: String,
     pub duration: Duration,
     pub process_id: String,
+    /// The **clean result channel** contents, captured verbatim from the
+    /// child's result sink. `None` when the caller did not opt in, the child
+    /// did not write the sink, or the contents were unrecoverable (empty,
+    /// oversize, or non-UTF-8). Agent->agent handoffs should read this via
+    /// [`ProcessResult::answer`] instead of scraping `output`.
+    pub result: Option<String>,
 }
 
 impl ProcessResult {
@@ -129,6 +137,7 @@ impl ProcessResult {
             stderr: String::new(),
             duration,
             process_id,
+            result: None,
         }
     }
 
@@ -141,11 +150,23 @@ impl ProcessResult {
             stderr,
             duration,
             process_id,
+            result: None,
         }
     }
 
     pub fn is_success(&self) -> bool {
         self.exit_code == 0
+    }
+
+    /// The agent's clean semantic answer: the result channel when present,
+    /// falling back to captured stdout otherwise.
+    ///
+    /// Consumers performing agent->agent handoffs should use this instead of
+    /// scraping `output`. When the clean channel is off (the default) this is
+    /// byte-identical to `output`, so callers get zero behaviour change until a
+    /// step opts in.
+    pub fn answer(&self) -> &str {
+        self.result.as_deref().unwrap_or(&self.output)
     }
 }
 
@@ -158,6 +179,11 @@ pub struct RunOptions {
     pub timeout: Option<Duration>,
     pub model: Option<String>,
     pub working_dir: Option<PathBuf>,
+    /// Opt-in **clean result channel**. When `Some(path)`, the runner exports
+    /// `AMPLIHACK_RESULT_SINK=<path>` to the child and captures whatever the
+    /// child writes there verbatim into `ProcessResult.result`. `None` (the
+    /// default) preserves legacy stdout-only capture exactly.
+    pub result_sink: Option<PathBuf>,
 }
 
 impl RunOptions {
@@ -168,7 +194,15 @@ impl RunOptions {
             timeout: None,
             model: None,
             working_dir: None,
+            result_sink: None,
         }
+    }
+
+    /// Enable the clean result channel for this run, capturing the child's
+    /// verbatim answer from `sink` into `ProcessResult.result`.
+    pub fn with_result_sink(mut self, sink: PathBuf) -> Self {
+        self.result_sink = Some(sink);
+        self
     }
 }
 
@@ -221,7 +255,14 @@ impl TokioProcessRunner {
         if let Some(dir) = &opts.working_dir {
             delivered.command.current_dir(dir);
         }
-        run_delivered_command(delivered, opts.timeout, opts.process_id, start).await
+        run_delivered_command(
+            delivered,
+            opts.timeout,
+            opts.result_sink,
+            opts.process_id,
+            start,
+        )
+        .await
     }
 }
 
@@ -262,13 +303,21 @@ impl ProcessRunner for TokioProcessRunner {
             delivered.command.current_dir(dir);
         }
 
-        run_delivered_command(delivered, opts.timeout, opts.process_id, start).await
+        run_delivered_command(
+            delivered,
+            opts.timeout,
+            opts.result_sink,
+            opts.process_id,
+            start,
+        )
+        .await
     }
 }
 
 async fn run_delivered_command(
     delivered: DeliveredProcessCommand,
     timeout: Option<Duration>,
+    result_sink: Option<PathBuf>,
     process_id: String,
     start: Instant,
 ) -> ProcessResult {
@@ -283,6 +332,17 @@ async fn run_delivered_command(
     }
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
+
+    // Clean result channel: expose the sink to the child, or actively strip any
+    // inherited value so a stale ancestor sink can never redirect capture
+    // (SEC-10). Done on the std Command before the tokio conversion/spawn.
+    match &result_sink {
+        Some(sink) => crate::result_sink::inject_sink_env(&mut command, sink),
+        None => {
+            command.env_remove(crate::result_sink::RESULT_SINK_ENV);
+        }
+    }
+
     let program = command.get_program().to_string_lossy().into_owned();
     let mut command = TokioCommand::from(command);
     command.kill_on_drop(true);
@@ -350,13 +410,21 @@ async fn run_delivered_command(
     drop(delivery_handle);
     let duration = start.elapsed();
     match status {
-        Ok(s) => ProcessResult {
-            exit_code: s.code().unwrap_or(-1),
-            output: out,
-            stderr: err,
-            duration,
-            process_id,
-        },
+        Ok(s) => {
+            // Capture the clean channel verbatim (or None if unwritten /
+            // oversize / non-UTF-8). Consumers fall back to `output` on None.
+            let result = result_sink
+                .as_deref()
+                .and_then(crate::result_sink::read_sink_verbatim);
+            ProcessResult {
+                exit_code: s.code().unwrap_or(-1),
+                output: out,
+                stderr: err,
+                duration,
+                process_id,
+                result,
+            }
+        }
         Err(e) => ProcessResult::err(format!("wait failed: {e}"), process_id, duration),
     }
 }
@@ -372,6 +440,7 @@ pub async fn run_delivered_command_for_test(
     Ok(run_delivered_command(
         delivered,
         Some(timeout),
+        None,
         "prompt-delivery-test".to_string(),
         Instant::now(),
     )
@@ -571,6 +640,7 @@ mod tests {
             stderr: String::new(),
             duration: Duration::ZERO,
             process_id: "x".into(),
+            result: None,
         };
         assert!(!r.is_success());
     }
@@ -863,6 +933,7 @@ impl ClaudeProcess {
             timeout: self.timeout,
             model: self.model.clone(),
             working_dir: Some(self.working_dir.clone()),
+            result_sink: None,
         };
         let result = self.runner.run(opts).await;
         self.log(

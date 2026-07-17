@@ -191,7 +191,7 @@ pub async fn run_expert_panel(
             continue;
         }
         reviews.push(parse_review(
-            &result.output,
+            result.answer(),
             &expert,
             expert_id,
             result.duration,

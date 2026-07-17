@@ -53,7 +53,12 @@ fn repo() -> TempDir {
 }
 
 fn default_config(repo: &Path) -> ArtifactGuardConfig {
-    ArtifactGuardConfig::new(repo).with_mode(ArtifactGuardMode::PreCommit)
+    // `All` scans staged + worktree (tracked/untracked) + ignored-present, so it
+    // exercises every source in one pass. The pre-commit/pre-publish narrowing
+    // for issue #928 (ignored-present is intentionally NOT scanned there because
+    // gitignored+present paths can never be committed/published) is asserted by
+    // the dedicated `*_pre_commit` / `*_pre_publish` tests below.
+    ArtifactGuardConfig::new(repo).with_mode(ArtifactGuardMode::All)
 }
 
 fn violation_for<'a>(
@@ -247,7 +252,7 @@ fn ignored_present_workflow_session_artifacts_are_blocked() {
     );
 
     let report = scan_artifacts(
-        &ArtifactGuardConfig::new(tmp.path()).with_mode(ArtifactGuardMode::PrePublish),
+        &ArtifactGuardConfig::new(tmp.path()).with_mode(ArtifactGuardMode::Worktree),
     )
     .expect("scan artifacts");
 
@@ -351,6 +356,66 @@ fn untracked_nested_worktrees_and_build_artifacts_are_blocked() {
         &report.violations,
         "coverage/lcov.info",
         ArtifactSource::Untracked,
+    );
+}
+
+#[test]
+fn ignored_present_inside_registered_sibling_worktree_is_not_flagged() {
+    // Issue #857: concurrent recipe runs create dedicated task worktrees under
+    // `<repo>/worktrees/`. When `worktrees/` is gitignored (as in Simard), each
+    // sibling's ignored files (target/, .pytest_cache, .claude/runtime) surface
+    // via `git ls-files --others --ignored` and were wrongly flagged as
+    // `nested-worktree` leaks, failing every concurrent recipe's finalize.
+    let tmp = repo();
+    write_file(&tmp.path().join(".gitignore"), "worktrees/\n");
+    run_git(tmp.path(), &["add", ".gitignore"]);
+    run_git(tmp.path(), &["commit", "-qm", "ignore worktrees"]);
+
+    // A legitimately-registered sibling task worktree.
+    run_git(
+        tmp.path(),
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "worktrees/sibling",
+            "-b",
+            "sibling",
+        ],
+    );
+    // Ignored-present artifacts INSIDE the registered sibling — must be exempt.
+    write_file(
+        &tmp.path()
+            .join("worktrees/sibling/.pytest_cache/CACHEDIR.TAG"),
+        "x\n",
+    );
+    write_file(
+        &tmp.path().join("worktrees/sibling/target/.rustc_info.json"),
+        "{}\n",
+    );
+    // A genuinely-leaked (UNregistered) directory under worktrees/ — still flagged.
+    write_file(
+        &tmp.path().join("worktrees/leaked/target/.rustc_info.json"),
+        "{}\n",
+    );
+
+    let report = scan_artifacts(&default_config(tmp.path())).expect("scan artifacts");
+
+    assert!(
+        !report
+            .violations
+            .iter()
+            .any(|v| v.path.starts_with("worktrees/sibling")),
+        "registered sibling worktree wrongly flagged (issue #857): {:?}",
+        report.violations
+    );
+    assert!(
+        report
+            .violations
+            .iter()
+            .any(|v| v.path.starts_with("worktrees/leaked")),
+        "leaked unregistered worktree must still be flagged: {:?}",
+        report.violations
     );
 }
 
@@ -541,5 +606,190 @@ fn repo_path_must_resolve_inside_a_git_worktree() {
     assert!(
         message.contains("git") && message.contains("worktree"),
         "non-git repo errors must be explicit; got: {message}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #928: pre-commit / pre-publish must NOT fail-closed on ignored-present
+// cache artifacts.
+//
+// Gitignored + untracked cache directories (e.g. `.pytest_cache/`,
+// `node_modules/` when gitignored) can never be committed or published, so the
+// `pre-commit` and `pre-publish` guard modes must not block on them. Only
+// artifacts that *could* actually be committed/published (staged, tracked, and
+// untracked-but-not-ignored) may fail those modes. The full-worktree audit
+// modes (`worktree`, `all`) must still surface ignored-present artifacts.
+// ---------------------------------------------------------------------------
+
+/// Seed a repo whose `.gitignore` ignores the given cache directories, commit
+/// the ignore rules, then materialise the cache dirs as untracked + present.
+fn repo_with_ignored_present_cache(entries: &[&str]) -> TempDir {
+    let tmp = repo();
+    let gitignore: String = entries.iter().map(|entry| format!("{entry}\n")).collect();
+    write_file(&tmp.path().join(".gitignore"), &gitignore);
+    run_git(tmp.path(), &["add", ".gitignore"]);
+    run_git(tmp.path(), &["commit", "-qm", "ignore cache artifacts"]);
+
+    // `.pytest_cache/` and `node_modules/` materialised as gitignored + present.
+    write_file(
+        &tmp.path().join(".pytest_cache/CACHEDIR.TAG"),
+        "Signature: 8a477f597d28d172789f06886806bc55\n",
+    );
+    write_file(&tmp.path().join(".pytest_cache/v/cache/lastfailed"), "{}\n");
+    write_file(&tmp.path().join("node_modules/.package-lock.json"), "{}\n");
+    write_file(
+        &tmp.path().join("node_modules/leftpad/index.js"),
+        "module.exports = 1;\n",
+    );
+    tmp
+}
+
+#[test]
+fn ignored_present_cache_artifacts_do_not_block_pre_commit() {
+    let tmp = repo_with_ignored_present_cache(&[".pytest_cache/", "node_modules/"]);
+
+    let report = scan_artifacts(
+        &ArtifactGuardConfig::new(tmp.path()).with_mode(ArtifactGuardMode::PreCommit),
+    )
+    .expect("scan artifacts");
+
+    assert!(
+        report.is_clean(),
+        "gitignored+present cache artifacts can never be committed and must not \
+         block pre-commit (issue #928); got {:#?}",
+        report.violations
+    );
+    assert!(
+        tmp.path().join(".pytest_cache/CACHEDIR.TAG").exists()
+            && tmp.path().join("node_modules/leftpad/index.js").exists(),
+        "guard must not delete the ignored cache artifacts"
+    );
+}
+
+#[test]
+fn ignored_present_cache_artifacts_do_not_block_pre_publish() {
+    let tmp = repo_with_ignored_present_cache(&[".pytest_cache/", "node_modules/"]);
+
+    let report = scan_artifacts(
+        &ArtifactGuardConfig::new(tmp.path()).with_mode(ArtifactGuardMode::PrePublish),
+    )
+    .expect("scan artifacts");
+
+    assert!(
+        report.is_clean(),
+        "gitignored+present cache artifacts can never be published and must not \
+         block pre-publish (issue #928); got {:#?}",
+        report.violations
+    );
+}
+
+#[test]
+fn worktree_mode_still_flags_ignored_present_cache_artifacts() {
+    // Regression guard: the #928 narrowing must be scoped to pre-commit/pre-publish
+    // only. The full-worktree audit modes must still surface ignored-present cache.
+    let tmp = repo_with_ignored_present_cache(&[".pytest_cache/", "node_modules/"]);
+
+    let report = scan_artifacts(
+        &ArtifactGuardConfig::new(tmp.path()).with_mode(ArtifactGuardMode::Worktree),
+    )
+    .expect("scan artifacts");
+
+    assert!(
+        report
+            .violations
+            .iter()
+            .any(|v| v.source == ArtifactSource::IgnoredPresent
+                && v.path.starts_with("node_modules/")),
+        "worktree mode must still flag ignored-present cache artifacts; got {:#?}",
+        report.violations
+    );
+}
+
+#[test]
+fn all_mode_still_flags_ignored_present_cache_artifacts() {
+    let tmp = repo_with_ignored_present_cache(&[".pytest_cache/", "node_modules/"]);
+
+    let report =
+        scan_artifacts(&ArtifactGuardConfig::new(tmp.path()).with_mode(ArtifactGuardMode::All))
+            .expect("scan artifacts");
+
+    assert!(
+        report
+            .violations
+            .iter()
+            .any(|v| v.source == ArtifactSource::IgnoredPresent
+                && v.path.starts_with("node_modules/")),
+        "all mode must still flag ignored-present cache artifacts; got {:#?}",
+        report.violations
+    );
+}
+
+#[test]
+fn staged_committable_artifact_still_blocks_under_pre_commit_and_pre_publish() {
+    // Regression guard: the #928 fix must only drop ignored-present blocking. A
+    // *staged* prohibited artifact could actually be committed/published and must
+    // still fail closed under both narrowed modes.
+    for mode in [ArtifactGuardMode::PreCommit, ArtifactGuardMode::PrePublish] {
+        let tmp = repo();
+        write_file(
+            &tmp.path().join("node_modules/leak/index.js"),
+            "module.exports = 1;\n",
+        );
+        run_git(tmp.path(), &["add", "-f", "node_modules/leak/index.js"]);
+
+        let report = scan_artifacts(&ArtifactGuardConfig::new(tmp.path()).with_mode(mode))
+            .expect("scan artifacts");
+
+        assert!(
+            report.has_violations(),
+            "staged committable artifact must still block under {mode}; got clean report"
+        );
+        violation_for(
+            &report.violations,
+            "node_modules/leak/index.js",
+            ArtifactSource::Staged,
+        );
+    }
+}
+
+#[test]
+fn tracked_committable_artifact_still_blocks_under_pre_publish() {
+    let tmp = repo();
+    write_file(
+        &tmp.path().join("dist/plugin.js"),
+        "committed generated bundle\n",
+    );
+    run_git(tmp.path(), &["add", "-f", "dist/plugin.js"]);
+    run_git(tmp.path(), &["commit", "-qm", "accidentally commit bundle"]);
+
+    let report = scan_artifacts(
+        &ArtifactGuardConfig::new(tmp.path()).with_mode(ArtifactGuardMode::PrePublish),
+    )
+    .expect("scan artifacts");
+
+    violation_for(
+        &report.violations,
+        "dist/plugin.js",
+        ArtifactSource::Tracked,
+    );
+}
+
+#[test]
+fn untracked_but_not_ignored_artifact_still_blocks_under_pre_commit() {
+    // A cache-looking artifact that is present and untracked but NOT gitignored
+    // *could* still be `git add`-ed and committed, so it must keep failing the
+    // narrowed modes. Only the ignored-present source is exempted by #928.
+    let tmp = repo();
+    write_file(&tmp.path().join("dist/plugin.js"), "generated bundle\n");
+
+    let report = scan_artifacts(
+        &ArtifactGuardConfig::new(tmp.path()).with_mode(ArtifactGuardMode::PreCommit),
+    )
+    .expect("scan artifacts");
+
+    violation_for(
+        &report.violations,
+        "dist/plugin.js",
+        ArtifactSource::Untracked,
     );
 }

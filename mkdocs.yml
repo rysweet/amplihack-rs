@@ -100,12 +100,14 @@ nav:
       - Investigation Workflow: claude/workflow/INVESTIGATION_WORKFLOW.md
       - Recipe CLI Commands: howto/recipe-cli-commands.md
       - Recipe CLI Reference: reference/recipe-cli-reference.md
+      - Clean Result Channel: reference/clean-result-channel.md
       - PR Recovery Readiness:
           - Overview: features/pr-recovery-readiness.md
           - How-To: howto/recover-existing-pr-with-default-workflow.md
           - Tutorial: tutorials/pr-recovery-readiness.md
           - Reference: reference/pr-recovery-readiness.md
       - Terminal-State Provider Safety: reference/workflow-terminal-state-provider-safety.md
+      - Publish Lockfile Sync: reference/workflow-publish-lockfile-sync.md
       - Local Tracking Issue-Number Extraction: recipes/issue-815-804-local-tracking-issue-number.md
   - Agents:
       - Overview: claude/agents/README.md

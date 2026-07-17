@@ -301,16 +301,13 @@ mod tests {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let saved = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
-        unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") };
+        let _graph_db = EnvVarGuard::unset("AMPLIHACK_GRAPH_DB_PATH");
+        let _kuzu_db = EnvVarGuard::unset("AMPLIHACK_KUZU_DB_PATH");
 
         let dir = tempfile::tempdir().unwrap();
         let dirs = ProjectDirs::new(dir.path());
         let result = load_code_graph_context(&dirs);
 
-        if let Some(val) = saved {
-            unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", val) };
-        }
         assert!(result.unwrap().is_none());
     }
 
@@ -319,6 +316,8 @@ mod tests {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _graph_db = EnvVarGuard::unset("AMPLIHACK_GRAPH_DB_PATH");
+        let _kuzu_db = EnvVarGuard::unset("AMPLIHACK_KUZU_DB_PATH");
         let dir = tempfile::tempdir().unwrap();
         let dirs = ProjectDirs::new(dir.path());
         let input = dir.path().join("blarify.json");
