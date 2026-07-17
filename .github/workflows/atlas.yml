@@ -24,10 +24,14 @@ jobs:
 
       - name: Render DOT diagrams
         run: |
-          for layer in repo-surface ast-lsp-bindings compile-deps runtime-topology \
-                       api-contracts data-flow service-components user-journeys; do
-            dot -Tsvg "docs/atlas/$layer/$layer.dot" \
-                -o "docs/atlas/$layer/${layer}-dot.svg"
+          shopt -s nullglob
+          dot_files=(docs/atlas/*/*.dot)
+          if [ ${#dot_files[@]} -eq 0 ]; then
+            echo "No .dot files found under docs/atlas/" >&2
+            exit 1
+          fi
+          for dot_file in "${dot_files[@]}"; do
+            dot -Tsvg "$dot_file" -o "${dot_file%.dot}-dot.svg"
           done
 
       - name: Upload atlas artifact

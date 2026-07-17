@@ -49,6 +49,19 @@ pub const CAPTURE_CACHE_CAPACITY: usize = 64;
 /// Maximum bytes stored per capture cache entry (64 KiB).
 pub const CAPTURE_CACHE_ENTRY_MAX_BYTES: usize = 64 * 1024;
 
+pub(super) fn truncate_to_capture_cache_limit(mut value: String) -> String {
+    if value.len() <= CAPTURE_CACHE_ENTRY_MAX_BYTES {
+        return value;
+    }
+
+    let mut boundary = CAPTURE_CACHE_ENTRY_MAX_BYTES;
+    while !value.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    value.truncate(boundary);
+    value
+}
+
 /// Maximum number of lines in the multiline editor.
 pub const EDITOR_MAX_LINES: usize = 200;
 

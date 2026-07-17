@@ -1,8 +1,7 @@
 //! Version querying, sanitization, and npm subprocess execution.
 
-use crate::util::strip_ansi;
-use std::sync::mpsc;
-use std::thread;
+use crate::util::{run_output_with_timeout, strip_ansi};
+use std::process::Command;
 use std::time::Duration;
 
 /// Subprocess timeout for each npm command.
@@ -91,9 +90,8 @@ pub fn sanitize_version(s: &str) -> String {
 
 /// Run `npm <args>` with a hard timeout, returning stdout on success.
 ///
-/// Uses a background thread + `mpsc::channel` + `recv_timeout` to enforce
-/// the timeout without requiring an async runtime.  This is a security
-/// control against a hung or malicious npm binary on PATH.
+/// Uses the shared child-killing timeout helper so a hung or malicious npm
+/// binary on PATH cannot keep running after this function returns.
 ///
 /// Returns `None` if:
 /// - `npm` is not found on PATH
@@ -101,26 +99,63 @@ pub fn sanitize_version(s: &str) -> String {
 /// - The process exits with a non-zero status
 /// - stdout is not valid UTF-8
 pub fn run_npm_with_timeout(args: &[&str], timeout: Duration) -> Option<String> {
-    // Convert to owned Strings so the thread can take ownership.
-    let args_owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    let mut cmd = Command::new("npm");
+    cmd.args(args);
+    let output = run_output_with_timeout(cmd, timeout).ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout).ok()
+}
 
-    let (tx, rx) = mpsc::channel::<Option<String>>();
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    thread::spawn(move || {
-        let result = std::process::Command::new("npm")
-            .args(&args_owned)
-            .output()
-            .ok()
-            .and_then(|out| {
-                if out.status.success() {
-                    String::from_utf8(out.stdout).ok()
-                } else {
-                    None
-                }
-            });
-        // Ignore send errors — receiver may have timed out.
-        let _ = tx.send(result);
-    });
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn run_npm_with_timeout_terminates_child_after_timeout() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let sentinel = temp.path().join("npm-still-ran");
+        let fake_npm = temp.path().join("npm");
+        std::fs::write(
+            &fake_npm,
+            "#!/bin/sh\n\
+             /bin/sleep 0.2\n\
+             printf 'late' > \"$AMPLIHACK_NPM_SENTINEL\"\n\
+             printf '1.2.3\\n'\n",
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&fake_npm).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&fake_npm, perms).unwrap();
 
-    rx.recv_timeout(timeout).ok().flatten()
+        let previous_path = std::env::var_os("PATH");
+        let previous_sentinel = std::env::var_os("AMPLIHACK_NPM_SENTINEL");
+        unsafe {
+            std::env::set_var("PATH", temp.path());
+            std::env::set_var("AMPLIHACK_NPM_SENTINEL", &sentinel);
+        }
+
+        let result = run_npm_with_timeout(&["--version"], Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(350));
+
+        match previous_path {
+            Some(value) => unsafe { std::env::set_var("PATH", value) },
+            None => unsafe { std::env::remove_var("PATH") },
+        }
+        match previous_sentinel {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_NPM_SENTINEL", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_NPM_SENTINEL") },
+        }
+
+        assert!(result.is_none(), "timeout should return no npm output");
+        assert!(
+            !sentinel.exists(),
+            "timed-out npm subprocess must be terminated, not left running in a background thread"
+        );
+    }
 }

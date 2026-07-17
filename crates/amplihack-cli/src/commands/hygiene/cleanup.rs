@@ -11,7 +11,10 @@ use serde::Serialize;
 
 use crate::{
     HygieneCleanupArgs, MIN_CLEANUP_APPLY_OLDER_THAN_HOURS, MIN_CLEANUP_APPLY_OLDER_THAN_SECS,
+    util::{run_output_with_timeout, truncate_chars_with_notice},
 };
+
+const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Debug, Serialize)]
 struct CleanupItem {
@@ -573,13 +576,14 @@ fn print_report(report: &CleanupReport, config: &CleanupConfig) -> Result<()> {
 }
 
 fn active_worktrees(repo: &Path) -> Result<BTreeSet<PathBuf>> {
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .arg("-C")
         .arg(repo)
         .arg("worktree")
         .arg("list")
-        .arg("--porcelain")
-        .output()
+        .arg("--porcelain");
+    let output = run_output_with_timeout(command, GIT_COMMAND_TIMEOUT)
         .with_context(|| format!("run git worktree list for {}", repo.display()))?;
     if !output.status.success() {
         bail!(
@@ -615,17 +619,14 @@ fn sanitized_stderr(stderr: &[u8]) -> String {
     if sanitized.is_empty() {
         "no stderr".to_string()
     } else {
-        sanitized.chars().take(500).collect()
+        truncate_chars_with_notice(&sanitized, 500)
     }
 }
 
 fn git_has_dirty_state(path: &Path) -> bool {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .arg("status")
-        .arg("--porcelain")
-        .output();
+    let mut command = Command::new("git");
+    command.arg("-C").arg(path).arg("status").arg("--porcelain");
+    let output = run_output_with_timeout(command, GIT_COMMAND_TIMEOUT);
     match output {
         Ok(output) if output.status.success() => !output.stdout.is_empty(),
         _ => true,
@@ -633,13 +634,14 @@ fn git_has_dirty_state(path: &Path) -> bool {
 }
 
 fn git_has_unpushed_commits(path: &Path) -> bool {
-    let upstream = Command::new("git")
+    let mut upstream_command = Command::new("git");
+    upstream_command
         .arg("-C")
         .arg(path)
         .arg("rev-parse")
         .arg("--abbrev-ref")
-        .arg("@{u}")
-        .output();
+        .arg("@{u}");
+    let upstream = run_output_with_timeout(upstream_command, GIT_COMMAND_TIMEOUT);
     let Ok(upstream) = upstream else {
         return true;
     };
@@ -647,13 +649,14 @@ fn git_has_unpushed_commits(path: &Path) -> bool {
         return true;
     }
 
-    let count = Command::new("git")
+    let mut count_command = Command::new("git");
+    count_command
         .arg("-C")
         .arg(path)
         .arg("rev-list")
         .arg("--count")
-        .arg("@{u}..HEAD")
-        .output();
+        .arg("@{u}..HEAD");
+    let count = run_output_with_timeout(count_command, GIT_COMMAND_TIMEOUT);
     match count {
         Ok(output) if output.status.success() => {
             String::from_utf8_lossy(&output.stdout).trim() != "0"

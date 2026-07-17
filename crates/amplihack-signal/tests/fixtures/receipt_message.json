@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","method":"receive","params":{"envelope":{"source":"+15551230001","sourceNumber":"+15551230001","sourceDevice":1,"timestamp":1700000002000,"receiptMessage":{"when":1700000002000,"isDelivery":true,"isRead":false,"timestamps":[1700000000000]}},"account":"+15551230000","subscription":0}}

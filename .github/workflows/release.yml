@@ -134,7 +134,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.version-bump.outputs.sha }}
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.0
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2

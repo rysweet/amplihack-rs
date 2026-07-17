@@ -72,7 +72,7 @@ type JsonMap = serde_json::Map<String, Value>;
 
 const EVENT_FIELDS: &[&str] = &["hook_event_name", "hookEventName"];
 const TOOL_NAME_FIELDS: &[&str] = &["tool_name", "toolName"];
-const TOOL_INPUT_FIELDS: &[&str] = &["tool_input", "toolInput"];
+const TOOL_INPUT_FIELDS: &[&str] = &["tool_input", "toolInput", "toolArgs"];
 const TOOL_RESULT_FIELDS: &[&str] = &["tool_result", "toolResult"];
 const SESSION_ID_FIELDS: &[&str] = &["session_id", "sessionId"];
 const STOP_HOOK_ACTIVE_FIELDS: &[&str] = &["stop_hook_active", "stopHookActive"];
@@ -98,12 +98,12 @@ impl<'de> Deserialize<'de> for HookInput {
         match event.as_deref() {
             Some("pretooluse") => Ok(HookInput::PreToolUse {
                 tool_name: required_typed_field(map, TOOL_NAME_FIELDS, "PreToolUse")?,
-                tool_input: required_value_field(map, TOOL_INPUT_FIELDS, "PreToolUse")?,
+                tool_input: required_tool_input_field(map, TOOL_INPUT_FIELDS, "PreToolUse")?,
                 session_id: optional_typed_field(map, SESSION_ID_FIELDS)?,
             }),
             Some("posttooluse") => Ok(HookInput::PostToolUse {
                 tool_name: required_typed_field(map, TOOL_NAME_FIELDS, "PostToolUse")?,
-                tool_input: required_value_field(map, TOOL_INPUT_FIELDS, "PostToolUse")?,
+                tool_input: required_tool_input_field(map, TOOL_INPUT_FIELDS, "PostToolUse")?,
                 tool_result: optional_value_field(map, TOOL_RESULT_FIELDS),
                 session_id: optional_typed_field(map, SESSION_ID_FIELDS)?,
             }),
@@ -171,11 +171,38 @@ fn optional_value_field(map: &JsonMap, names: &[&str]) -> Option<Value> {
     find_field(map, names).cloned()
 }
 
-fn required_value_field<E>(map: &JsonMap, names: &[&str], event: &str) -> Result<Value, E>
+/// Extract the tool-input value, normalizing host-specific encodings.
+///
+/// Claude Code / Amplifier send `tool_input` as a JSON object. GitHub Copilot
+/// CLI instead sends the tool input under `toolArgs` as a JSON-ENCODED STRING
+/// (e.g. `"{\"command\":\"echo hi\"}"`). To keep downstream consumers like
+/// `tool_input.get("command")` working across hosts, a string value is parsed
+/// once via `serde_json::from_str` into a `Value`. Object-shaped inputs are
+/// returned unchanged.
+///
+/// Parse failures are surfaced as a deserialization error (never swallowed): a
+/// present-but-malformed `toolArgs` string must not be silently treated as
+/// success. The raw payload is intentionally excluded from the error message to
+/// avoid leaking potentially sensitive tool arguments.
+fn required_tool_input_field<E>(map: &JsonMap, names: &[&str], event: &str) -> Result<Value, E>
 where
     E: DeError,
 {
-    optional_value_field(map, names).ok_or_else(|| E::custom(missing_field_message(event, names)))
+    // Borrow the field instead of cloning eagerly: on the Copilot path the value
+    // is a JSON-encoded string that we parse (not clone), so cloning here would
+    // allocate a string only to discard it. The object pass-through is the only
+    // case that needs an owned clone.
+    let value =
+        find_field(map, names).ok_or_else(|| E::custom(missing_field_message(event, names)))?;
+    match value {
+        Value::String(raw) => serde_json::from_str::<Value>(raw).map_err(|err| {
+            E::custom(format!(
+                "{event} payload field `{}` contained an invalid JSON string: {err}",
+                names.join("`/`")
+            ))
+        }),
+        other => Ok(other.clone()),
+    }
 }
 
 fn missing_field_message(event: &str, names: &[&str]) -> String {
@@ -301,6 +328,146 @@ mod tests {
             } if tool_name == "Bash"
                 && tool_input["command"] == "git commit --no-verify -m test"
                 && session_id == "session-123"
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #912: Copilot CLI sends the tool input under the `toolArgs` key as a
+    // JSON-ENCODED STRING (not an object). The prior deserializer only accepted
+    // `tool_input`/`toolInput` object shapes, so every Copilot PreToolUse payload
+    // failed to deserialize and the hook fail-opened to `{}` — silently disabling
+    // ALL pre-tool-use protections. These tests pin the real Copilot payload
+    // shape and the string→object normalization contract.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn deserialize_pre_tool_use_accepts_copilot_tool_args_string() {
+        // Exact Copilot CLI shape: no hookEventName, `toolName`, and a
+        // JSON-encoded STRING under `toolArgs`.
+        let json = r#"{
+            "sessionId": "abc-123",
+            "timestamp": 1700000000,
+            "cwd": "/repo",
+            "toolName": "bash",
+            "toolArgs": "{\"command\":\"echo hi\",\"description\":\"greet\"}"
+        }"#;
+
+        let input: HookInput = serde_json::from_str(json)
+            .expect("real Copilot PreToolUse payload (stringified toolArgs) must deserialize");
+
+        match input {
+            HookInput::PreToolUse {
+                tool_name,
+                tool_input,
+                session_id,
+            } => {
+                assert_eq!(tool_name, "bash");
+                assert_eq!(
+                    tool_input.get("command").and_then(Value::as_str),
+                    Some("echo hi"),
+                    "stringified toolArgs must be normalized into an object so \
+                     downstream `tool_input.get(\"command\")` works: {tool_input}"
+                );
+                assert_eq!(
+                    tool_input.get("description").and_then(Value::as_str),
+                    Some("greet")
+                );
+                assert_eq!(session_id.as_deref(), Some("abc-123"));
+            }
+            other => panic!("expected PreToolUse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deserialize_post_tool_use_accepts_copilot_tool_args_string() {
+        // Copilot PostToolUse carries a result field alongside stringified
+        // toolArgs; presence of a result triggers posttooluse inference.
+        let json = r#"{
+            "sessionId": "abc-456",
+            "toolName": "bash",
+            "toolArgs": "{\"command\":\"cargo test\"}",
+            "toolResult": {"exit_code": 0}
+        }"#;
+
+        let input: HookInput = serde_json::from_str(json)
+            .expect("real Copilot PostToolUse payload (stringified toolArgs) must deserialize");
+
+        match input {
+            HookInput::PostToolUse {
+                tool_name,
+                tool_input,
+                tool_result,
+                session_id,
+            } => {
+                assert_eq!(tool_name, "bash");
+                assert_eq!(
+                    tool_input.get("command").and_then(Value::as_str),
+                    Some("cargo test"),
+                    "stringified toolArgs must be normalized into an object: {tool_input}"
+                );
+                assert_eq!(tool_result.expect("tool_result present")["exit_code"], 0);
+                assert_eq!(session_id.as_deref(), Some("abc-456"));
+            }
+            other => panic!("expected PostToolUse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deserialize_pre_tool_use_accepts_object_shaped_tool_args() {
+        // Robustness: if a host ever sends `toolArgs` as an object (not a
+        // stringified JSON), it must pass through unchanged.
+        let json = r#"{
+            "toolName": "Bash",
+            "toolArgs": {"command": "ls -la"}
+        }"#;
+
+        let input: HookInput = serde_json::from_str(json)
+            .expect("object-shaped toolArgs must be accepted as a tool-input alias");
+
+        assert!(matches!(
+            input,
+            HookInput::PreToolUse { tool_name, tool_input, .. }
+                if tool_name == "Bash" && tool_input["command"] == "ls -la"
+        ));
+    }
+
+    #[test]
+    fn deserialize_pre_tool_use_rejects_invalid_tool_args_string() {
+        // A `toolArgs` string that is NOT valid JSON must surface as a
+        // deserialize error — never silently swallowed into `{}` or Unknown.
+        let json = r#"{
+            "toolName": "bash",
+            "toolArgs": "{not valid json"
+        }"#;
+
+        let err = serde_json::from_str::<HookInput>(json).expect_err(
+            "a malformed toolArgs string must produce a deserialize error, not a silent success",
+        );
+
+        // The error must reference the field, not the raw payload contents
+        // (avoid leaking potentially secret command text into telemetry).
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("not valid json"),
+            "error message must not echo raw toolArgs payload content: {msg}"
+        );
+    }
+
+    #[test]
+    fn deserialize_claude_object_tool_input_still_works_unchanged() {
+        // Regression guard: the existing Claude object-shaped `tool_input`
+        // schema must keep deserializing identically after the toolArgs change.
+        let json = r#"{
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "git status"}
+        }"#;
+
+        let input: HookInput = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            input,
+            HookInput::PreToolUse { tool_name, tool_input, .. }
+                if tool_name == "Bash" && tool_input["command"] == "git status"
         ));
     }
 

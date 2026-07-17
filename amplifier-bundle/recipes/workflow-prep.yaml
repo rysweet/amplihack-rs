@@ -16,7 +16,6 @@ steps:
   # STEP 0: WORKFLOW PREPARATION (MANDATORY - DO NOT SKIP)
   # Creates tracking structure. Must complete before ANY implementation work.
   # Prevents "completion bias" - ensures mandatory review steps not skipped.
-  # ==========================================================================
   - id: "step-00-workflow-preparation"
     type: "bash"
     command: |
@@ -40,24 +39,9 @@ steps:
       echo "  Step 14: Bump Version (MANDATORY)"
       echo "  Step 15: Commit and Push"
       echo "  Step 16: Open PR as Draft"
-      echo "  Step 17: Review the PR (MANDATORY - 6 sub-steps with verification gate)"
-      echo "    17a: Step 13 Testing-Evidence Gate"
-      echo "    17b: Comprehensive Code Review (reviewer agent)"
-      echo "    17c: Security Review (security agent)"
-      echo "    17d: Philosophy Guardian Review (philosophy-guardian agent)"
-      echo "    17e: Address Blocking Issues (builder agent)"
-      echo "    17f: Verification Gate"
-      echo "  Step 18: Implement Review Feedback (MANDATORY - 5 sub-steps with verification gate)"
-      echo "    18a: Analyze Feedback"
-      echo "    18b: Implement Feedback (builder agent)"
-      echo "    18c: Push Changes"
-      echo "    18d: Respond to Comments"
-      echo "    18e: Verification Gate"
-      echo "  Step 19: Philosophy Compliance Check (4 sub-steps with verification gate)"
-      echo "    19a: Philosophy Review (reviewer agent)"
-      echo "    19b: Pattern Check (patterns agent)"
-      echo "    19c: Zero-BS Verification"
-      echo "    19d: Verification Gate"
+      echo "  Step 17: Review the PR (MANDATORY - 6 sub-steps 17a-17f with verification gate)"
+      echo "  Step 18: Implement Review Feedback (MANDATORY - 5 sub-steps 18a-18e with verification gate)"
+      echo "  Step 19: Philosophy Compliance Check (4 sub-steps 19a-19d with verification gate)"
       echo "  Step 20: Final Cleanup"
       echo "  Step 20c: Quality Audit Loop (3+ cycles, multi-agent validation)"
       echo "  Step 21: Convert PR to Ready"
@@ -73,14 +57,29 @@ steps:
   - id: "step-01-prepare-workspace"
     type: "bash"
     command: |
-      cd "$REPO_PATH"
+      # Fail closed: a failed `cd` must NOT fall through to the auto-init path
+      # (issue #900), or `git init` would run in the recipe runner's actual cwd
+      # instead of $REPO_PATH.
+      cd "$REPO_PATH" || { echo "ERROR: step-01-prepare-workspace cannot enter REPO_PATH='$REPO_PATH'" >&2; exit 1; }
       echo "=== Step 1: Preparing Workspace ==="
       echo ""
       echo "Current directory: $(pwd)"
       echo ""
       if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        echo "ERROR: step-01-prepare-workspace requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2
-        exit 1
+        # Non-git workspace. By default (AUTO_INIT_REPO != "false") we initialize
+        # a fresh repository so repo-creation tasks can proceed. Set
+        # AUTO_INIT_REPO="false" to restore the strict hard-fail behavior for
+        # locked-down/CI contexts (fail-closed opt-out).
+        if [ "${AUTO_INIT_REPO:-true}" = "false" ]; then
+          echo "ERROR: step-01-prepare-workspace requires a git repo at $(pwd) and AUTO_INIT_REPO=false; either \`git init\` or rerun from a checkout" >&2
+          exit 1
+        fi
+        echo "[init] no git repo found — initialized a new one for repo-creation task"
+        # `git init -b main` needs git >= 2.28; fall back for older gits.
+        if ! git init -b main >/dev/null 2>&1; then
+          git init >/dev/null 2>&1
+          git checkout -b main >/dev/null 2>&1 || git symbolic-ref HEAD refs/heads/main >/dev/null 2>&1
+        fi
       fi
       echo "--- Git Status ---"; STATUS_RC=0
       git status || STATUS_RC=$?

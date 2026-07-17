@@ -1,5 +1,5 @@
 use amplihack_domain_agents::{
-    CodeAnalysis, CodeSpec, CodeSynthesisConfig, CodeSynthesizer, GeneratedCode,
+    CodeAnalysis, CodeSpec, CodeSynthesisConfig, CodeSynthesizer, DomainError, GeneratedCode,
 };
 
 // ── Construction & accessors (PASS) ─────────────────────────────────────────
@@ -41,7 +41,7 @@ fn config_accessor_returns_config() {
     assert_eq!(got.max_complexity, 3);
 }
 
-// ── generate (todo → should_panic) ──────────────────────────────────────────
+// ── generate (honest CodeSynthesis error — issue #874) ──────────────────────
 
 #[test]
 fn generate_from_spec() {
@@ -51,10 +51,21 @@ fn generate_from_spec() {
         language: "rust".to_string(),
         constraints: vec!["must be generic".to_string()],
     };
-    let result = synth.generate(&spec).unwrap();
-    assert_eq!(result.language, "rust");
-    assert!(result.code.contains("A function that adds two numbers"));
-    assert!(result.code.contains("must be generic"));
+    let err = synth.generate(&spec).unwrap_err();
+    match err {
+        DomainError::CodeSynthesis(msg) => {
+            assert!(msg.contains("rust"), "should name the language: {msg}");
+            assert!(
+                !msg.contains("adds two numbers"),
+                "must not echo description: {msg}"
+            );
+            assert!(
+                !msg.contains("must be generic"),
+                "must not echo constraints: {msg}"
+            );
+        }
+        other => panic!("expected CodeSynthesis error, got {other:?}"),
+    }
 }
 
 #[test]
@@ -69,32 +80,57 @@ fn generate_complex_spec() {
             "must implement Iterator".to_string(),
         ],
     };
-    let result = synth.generate(&spec).unwrap();
-    assert_eq!(result.language, "rust");
-    assert!(!result.code.is_empty());
-    assert!(!result.explanation.is_empty());
+    let err = synth.generate(&spec).unwrap_err();
+    assert!(
+        matches!(err, DomainError::CodeSynthesis(_)),
+        "expected CodeSynthesis error, got {err:?}"
+    );
 }
 
-// ── refactor (todo → should_panic) ──────────────────────────────────────────
+#[test]
+fn generate_empty_spec_is_invalid_input() {
+    let synth = CodeSynthesizer::with_defaults();
+    let spec = CodeSpec {
+        description: "   ".to_string(),
+        language: "rust".to_string(),
+        constraints: vec![],
+    };
+    let err = synth.generate(&spec).unwrap_err();
+    assert!(
+        matches!(err, DomainError::InvalidInput(_)),
+        "expected InvalidInput error, got {err:?}"
+    );
+}
+
+// ── refactor (honest errors — issue #874) ───────────────────────────────────
 
 #[test]
 fn refactor_basic_code() {
     let synth = CodeSynthesizer::with_defaults();
-    let result = synth
+    let err = synth
         .refactor("fn add(a: i32, b: i32) -> i32 { return a + b; }")
-        .unwrap();
-    assert!(result.code.contains("fn add"));
-    assert!(result.code.contains("TODO"));
+        .unwrap_err();
+    assert!(
+        matches!(err, DomainError::CodeSynthesis(_)),
+        "expected CodeSynthesis error, got {err:?}"
+    );
+    assert!(
+        !err.to_string().contains("fn add"),
+        "must not echo the code body: {err}"
+    );
 }
 
 #[test]
 fn refactor_empty_code() {
     let synth = CodeSynthesizer::with_defaults();
-    let result = synth.refactor("").unwrap();
-    assert!(!result.code.is_empty());
+    let err = synth.refactor("").unwrap_err();
+    assert!(
+        matches!(err, DomainError::InvalidInput(_)),
+        "expected InvalidInput error, got {err:?}"
+    );
 }
 
-// ── analyze (todo → should_panic) ───────────────────────────────────────────
+// ── analyze (real heuristic — unchanged) ────────────────────────────────────
 
 #[test]
 fn analyze_basic_code() {

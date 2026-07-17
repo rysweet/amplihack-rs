@@ -5,7 +5,9 @@
 //! and classic execution modes, per-workstream timeout budgets, state
 //! persistence for resumption, and automatic cleanup of completed workstreams.
 
+mod cleanup;
 mod command_builder;
+mod default_branch;
 mod launcher;
 #[cfg(test)]
 mod launcher_tests;
@@ -16,8 +18,13 @@ mod process_scope;
 mod state;
 mod utils;
 
+use crate::util::run_output_with_timeout;
 use anyhow::{Context, Result};
 use std::path::Path;
+use std::process::Command;
+use std::time::Duration;
+
+const REPO_URL_DETECTION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Run parallel workstreams from a JSON config file.
 pub fn run_multitask(
@@ -143,9 +150,9 @@ pub fn run_status(base_dir: Option<&str>) -> Result<()> {
 }
 
 fn detect_repo_url() -> String {
-    std::process::Command::new("git")
-        .args(["remote", "get-url", "origin"])
-        .output()
+    let mut cmd = Command::new("git");
+    cmd.args(["remote", "get-url", "origin"]);
+    run_output_with_timeout(cmd, REPO_URL_DETECTION_TIMEOUT)
         .ok()
         .filter(|o| o.status.success())
         .and_then(|o| String::from_utf8(o.stdout).ok())

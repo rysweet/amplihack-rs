@@ -208,6 +208,11 @@ fn cli_exits_1_cleanly_for_genuine_runtime_pollution_next_to_launcher_files() {
     // The exemption is narrow: a real leftover under `.claude/runtime/` still
     // produces a clean non-zero exit (not a hang), even when the launcher's own
     // exempt files sit beside it.
+    //
+    // Uses `--mode worktree` because issue #928 narrowed `pre-publish` so that it
+    // no longer scans ignored-present paths (they can never be committed or
+    // published). The narrow-launcher-exemption contract is therefore asserted
+    // against a mode that still audits ignored-present state.
     let tmp = repo();
     write_file(&tmp.path().join(".gitignore"), ".claude/runtime/\n");
     run_git(tmp.path(), &["add", ".gitignore"]);
@@ -219,13 +224,7 @@ fn cli_exits_1_cleanly_for_genuine_runtime_pollution_next_to_launcher_files() {
     write_file(&tmp.path().join(".claude/runtime/session.json"), "{}\n");
 
     let output = Command::new(bin())
-        .args([
-            "hygiene",
-            "artifact-guard",
-            "--mode",
-            "pre-publish",
-            "--repo",
-        ])
+        .args(["hygiene", "artifact-guard", "--mode", "worktree", "--repo"])
         .arg(tmp.path())
         .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .output()
@@ -285,5 +284,124 @@ fn cli_returns_exit_2_for_invalid_allowlist() {
     assert!(
         stderr.contains("allowlist") && stderr.contains("unsafe"),
         "invalid allowlist error must be clear; got:\n{stderr}"
+    );
+}
+
+/// Seed a repo whose gitignored `.pytest_cache/` and `node_modules/` cache
+/// directories are present + untracked. These can never be committed or
+/// published, so pre-commit/pre-publish must not fail-closed on them (#928).
+fn repo_with_ignored_present_cache() -> TempDir {
+    let tmp = repo();
+    write_file(
+        &tmp.path().join(".gitignore"),
+        ".pytest_cache/\nnode_modules/\n",
+    );
+    run_git(tmp.path(), &["add", ".gitignore"]);
+    run_git(tmp.path(), &["commit", "-qm", "ignore cache artifacts"]);
+    write_file(
+        &tmp.path().join(".pytest_cache/CACHEDIR.TAG"),
+        "Signature: 8a477f597d28d172789f06886806bc55\n",
+    );
+    write_file(&tmp.path().join(".pytest_cache/v/cache/lastfailed"), "{}\n");
+    write_file(&tmp.path().join("node_modules/.package-lock.json"), "{}\n");
+    write_file(
+        &tmp.path().join("node_modules/leftpad/index.js"),
+        "module.exports = 1;\n",
+    );
+    tmp
+}
+
+fn run_guard(repo: &Path, mode: &str) -> std::process::Output {
+    Command::new(bin())
+        .args(["hygiene", "artifact-guard", "--mode", mode, "--repo"])
+        .arg(repo)
+        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
+        .output()
+        .expect("run artifact guard")
+}
+
+#[test]
+fn cli_pre_commit_exits_0_for_ignored_present_cache_artifacts() {
+    // Issue #928: gitignored+present cache dirs (.pytest_cache/, node_modules/)
+    // can never be committed, so the pre-commit guard must exit 0.
+    let tmp = repo_with_ignored_present_cache();
+
+    let output = run_guard(tmp.path(), "pre-commit");
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "ignored-present cache must not block pre-commit (#928)\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        tmp.path().join("node_modules/leftpad/index.js").exists(),
+        "guard must not delete ignored cache artifacts"
+    );
+}
+
+#[test]
+fn cli_pre_publish_exits_0_for_ignored_present_cache_artifacts() {
+    // Issue #928: the pre-publish guard is fail-closed for anything that could be
+    // published; gitignored+present cache can never be, so it must exit 0.
+    let tmp = repo_with_ignored_present_cache();
+
+    let output = run_guard(tmp.path(), "pre-publish");
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "ignored-present cache must not block pre-publish (#928)\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn cli_worktree_still_exits_1_for_ignored_present_cache_artifacts() {
+    // Regression guard: the #928 narrowing is scoped to pre-commit/pre-publish.
+    // The full worktree audit must still surface ignored-present cache leaks.
+    let tmp = repo_with_ignored_present_cache();
+
+    let output = run_guard(tmp.path(), "worktree");
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "worktree mode must still flag ignored-present cache\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn cli_pre_commit_still_exits_1_for_staged_committable_artifact() {
+    // Regression guard: a *staged* prohibited artifact could actually be committed
+    // and must still fail closed under the narrowed pre-commit mode.
+    let tmp = repo();
+    write_file(
+        &tmp.path().join("node_modules/leak/index.js"),
+        "module.exports = 1;\n",
+    );
+    run_git(tmp.path(), &["add", "-f", "node_modules/leak/index.js"]);
+
+    let output = run_guard(tmp.path(), "pre-commit");
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "staged committable artifact must still block pre-commit\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("node_modules/leak/index.js"),
+        "must report the staged committable artifact; got:\n{combined}"
     );
 }
