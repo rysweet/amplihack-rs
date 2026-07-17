@@ -1,156 +1,208 @@
 ---
-title: Tutorial: understand install/update PATH conflicts
-description: Learn how stale system-wide amplihack binaries shadow current user-local binaries and how the repair guidance works.
-last_updated: 2026-06-05
+title: Tutorial: repair stale amplihack wrappers and assets
+description: Learn how install/update keeps the Rust amplihack binary first and refreshes stale framework assets.
+last_updated: 2026-07-10
 review_schedule: as-needed
 owner: amplihack-maintainers
 doc_type: tutorial
 ---
 
-# Tutorial: understand install/update PATH conflicts
+# Tutorial: repair stale amplihack wrappers and assets
 
-This tutorial uses temporary fixture binaries to show how `PATH` order affects
-`amplihack install` and `amplihack update`. It does not modify your real
-`/usr/local/bin` or `~/.local/bin`.
+This tutorial shows the finished install/update behavior using temporary files.
+It does not modify your real shell profile, `~/.local/bin`, or
+`~/.amplihack`.
 
-## What you will learn
+You will create:
 
-You will create two fake install roots:
+1. a stale Python-style `amplihack` wrapper
+2. a user-local Rust-style `amplihack` binary
+3. a stale installed `amplifier-bundle`
+4. the shell profile block that makes future shells resolve the Rust binary first
 
-- a stale system-style root that appears first on `PATH`
-- a current user-style root that appears later on `PATH`
+## Prerequisites
 
-Then you will change `PATH` order and see why `amplihack` prefers safe
-user-local repair instead of writing to system-managed directories.
+- A POSIX shell
+- `mktemp`, `mkdir`, `chmod`, `grep`, and `find`
 
-## 1. Create temporary fake binaries
+## 1. Create a fake stale wrapper and Rust binary
 
 ```bash
 tmpdir="$(mktemp -d)"
-mkdir -p "$tmpdir/system-bin" "$tmpdir/user-bin"
+mkdir -p "$tmpdir/stale-bin" "$tmpdir/home/.local/bin" "$tmpdir/home/.amplihack"
 
-printf '#!/bin/sh\necho stale-system-amplihack\n' > "$tmpdir/system-bin/amplihack"
-printf '#!/bin/sh\necho stale-system-hooks\n' > "$tmpdir/system-bin/amplihack-hooks"
+cat > "$tmpdir/stale-bin/amplihack" <<'SH'
+#!/usr/bin/env python3
+# stale amplihack uvx wrapper
+import sys
+print("stale-python-wrapper")
+SH
 
-printf '#!/bin/sh\necho current-user-amplihack\n' > "$tmpdir/user-bin/amplihack"
-printf '#!/bin/sh\necho current-user-hooks\n' > "$tmpdir/user-bin/amplihack-hooks"
+cat > "$tmpdir/home/.local/bin/amplihack" <<'SH'
+#!/bin/sh
+echo "rust-amplihack"
+SH
 
-chmod +x "$tmpdir/system-bin/amplihack" \
-  "$tmpdir/system-bin/amplihack-hooks" \
-  "$tmpdir/user-bin/amplihack" \
-  "$tmpdir/user-bin/amplihack-hooks"
+chmod +x "$tmpdir/stale-bin/amplihack" "$tmpdir/home/.local/bin/amplihack"
 ```
 
-## 2. Put the stale system root first
+Put the stale wrapper first:
 
 ```bash
-PATH="$tmpdir/system-bin:$tmpdir/user-bin:$PATH" which -a amplihack
-PATH="$tmpdir/system-bin:$tmpdir/user-bin:$PATH" which -a amplihack-hooks
-```
-
-You should see the system-style root before the user-style root:
-
-```text
-/tmp/.../system-bin/amplihack
-/tmp/.../user-bin/amplihack
-/tmp/.../system-bin/amplihack-hooks
-/tmp/.../user-bin/amplihack-hooks
-```
-
-That is the same shape as a real machine where `/usr/local/bin/amplihack`
-appears before `/home/alice/.local/bin/amplihack`.
-
-Run the fake command:
-
-```bash
-PATH="$tmpdir/system-bin:$tmpdir/user-bin:$PATH" amplihack
+PATH="$tmpdir/stale-bin:$tmpdir/home/.local/bin:$PATH" amplihack
 ```
 
 Expected output:
 
 ```text
-stale-system-amplihack
+stale-python-wrapper
 ```
 
-The shell ran the first candidate, even though a newer user-local candidate
-also exists.
+That is the failure shape the installer repairs: a Python or uvx wrapper named
+exactly `amplihack` appears earlier on `PATH` than the Rust binary in
+`~/.local/bin`.
 
-## 3. Put the user root first
+## 2. See the persistent PATH repair
+
+`amplihack install` writes an idempotent managed block to the user's shell
+profile so future shells put `$HOME/.local/bin` first:
 
 ```bash
-PATH="$tmpdir/user-bin:$tmpdir/system-bin:$PATH" which -a amplihack
-PATH="$tmpdir/user-bin:$tmpdir/system-bin:$PATH" amplihack
+cat > "$tmpdir/home/.bashrc" <<'SH'
+# >>> amplihack path >>>
+case "$PATH" in
+  "$HOME/.local/bin"|"$HOME/.local/bin":*) ;;
+  *) export PATH="$HOME/.local/bin:$PATH" ;;
+esac
+# <<< amplihack path <<<
+SH
+```
+
+Source the profile with the temporary home:
+
+```bash
+HOME="$tmpdir/home" PATH="$tmpdir/stale-bin:$tmpdir/home/.local/bin:$PATH" \
+  sh -c '. "$HOME/.bashrc"; command -v amplihack; amplihack'
 ```
 
 Expected output:
 
 ```text
-current-user-amplihack
+/tmp/.../home/.local/bin/amplihack
+rust-amplihack
 ```
 
-This is the preferred real configuration:
+The block checks only whether `$HOME/.local/bin` is already first. If it is not
+first, it prepends it. A later duplicate is harmless because shells resolve the
+first matching executable.
+
+## 3. See how stale wrappers are quarantined
+
+When install/update positively identifies a stale Python or uvx wrapper that
+shadows the Rust binary and is in a user-controlled or amplihack-managed
+location, it moves the wrapper under:
+
+```text
+~/.amplihack/quarantine/stale-wrappers/<timestamp>/
+```
+
+The quarantine uses sanitized path names and a manifest instead of deleting the
+file. Simulate the result:
 
 ```bash
-export PATH="$HOME/.local/bin:$PATH"
+stamp="20260710T183440Z"
+quarantine="$tmpdir/home/.amplihack/quarantine/stale-wrappers/$stamp"
+mkdir -p "$quarantine"
+quarantined="$quarantine/stale-bin__amplihack"
+mv "$tmpdir/stale-bin/amplihack" "$quarantined"
+
+cat > "$quarantine/manifest.tsv" <<EOF
+original_path	quarantined_path	kind	size	mtime	action	reason
+$tmpdir/stale-bin/amplihack	$quarantined	StalePythonWrapper	91	2026-07-10T18:34:40Z	quarantined	shadows preferred Rust binary
+EOF
 ```
 
-With that order, `amplihack update` can update the user-local binary and your
-shell will run the updated binary first.
-
-## 4. Map the tutorial to the real repair
-
-In a real conflict, inspect your actual command resolution:
+Check that only the Rust binary remains on the fake `PATH`:
 
 ```bash
-which -a amplihack
-which -a amplihack-hooks
+PATH="$tmpdir/stale-bin:$tmpdir/home/.local/bin:$PATH" command -v amplihack
+PATH="$tmpdir/stale-bin:$tmpdir/home/.local/bin:$PATH" amplihack
 ```
 
-If `/usr/local/bin` appears before `~/.local/bin`, repair it by reordering
-`PATH`:
+Expected output:
+
+```text
+/tmp/.../home/.local/bin/amplihack
+rust-amplihack
+```
+
+Unknown executables are not quarantined. If a file named `amplihack` cannot be
+classified as the current Rust binary, the preferred Rust binary, or a stale
+Python/uvx wrapper, install/update reports it as an unknown conflict and fails
+if it would still shadow the Rust binary.
+
+## 4. See whole-bundle replacement
+
+Create a stale installed bundle:
 
 ```bash
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
-source ~/.bashrc
-hash -r
+mkdir -p "$tmpdir/home/.amplihack/amplifier-bundle/recipes"
+cat > "$tmpdir/home/.amplihack/amplifier-bundle/recipes/smart-orchestrator.yaml" <<'YAML'
+name: smart-orchestrator
+steps:
+  - run: python orch_helper.py
+YAML
 ```
 
-Or remove stale system copies when they are not managed by a package manager:
+Create a current distribution bundle:
 
 ```bash
-sudo rm /usr/local/bin/amplihack /usr/local/bin/amplihack-hooks
-hash -r
+mkdir -p "$tmpdir/current/amplifier-bundle/recipes"
+cat > "$tmpdir/current/amplifier-bundle/recipes/smart-orchestrator.yaml" <<'YAML'
+name: "smart-orchestrator"
+steps:
+  - id: "smart-classify-route"
+    type: "recipe"
+    recipe: "smart-classify-route"
+  - id: "smart-execute-routing"
+    type: "recipe"
+    recipe: "smart-execute-routing"
+  - id: "smart-reflect-loop"
+    type: "recipe"
+    recipe: "smart-reflect-loop"
+  - id: "smart-validate-summarize"
+    type: "recipe"
+    recipe: "smart-validate-summarize"
+YAML
 ```
 
-After repair:
+Install/update validates a staged copy from the current Rust distribution and
+then activates the staged bundle as the installed bundle. The real installer
+uses a same-install-root activation step; the temporary commands below only
+build the expected post-repair tree so you can inspect the result. They are not
+the installer algorithm.
 
 ```bash
-amplihack update
-amplihack install
+cp -R "$tmpdir/current/amplifier-bundle" \
+  "$tmpdir/home/.amplihack/amplifier-bundle.after"
 ```
 
-## 5. Clean up the fixture
+Verify the stale active dependency is gone:
+
+```bash
+grep -R "orch_helper.py" "$tmpdir/home/.amplihack/amplifier-bundle.after" || true
+```
+
+Expected output: no matches.
+
+## 5. Clean up
 
 ```bash
 rm -rf "$tmpdir"
 ```
 
-## What clean output means
-
-Clean install/update output contains phase summaries and actionable warnings. It
-does not contain stale hook-file checks such as:
-
-```text
-session_start.sh ❌
-post_tool_use.sh ❌
-pre_tool_use.sh ❌
-```
-
-Those files are not part of the Rust-native hook path. Hook registrations call
-`amplihack-hooks` binary subcommands.
-
 ## See also
 
 - [Repair install/update PATH conflicts](../howto/repair-install-update-path-conflicts.md)
 - [Install/update PATH conflict reference](../reference/install-update-path-conflicts.md)
-- [amplihack install reference](../reference/install-command.md)
+- [Framework bundle compatibility reference](../reference/framework-bundle-compatibility.md)
