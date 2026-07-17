@@ -748,6 +748,42 @@ fn copy_amplifier_bundle_replaces_existing_atomically() {
     );
 }
 
+#[test]
+fn copy_amplifier_bundle_replaces_stale_installed_assets_instead_of_merging() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo_root = temp.path().join("repo");
+    let claude_dir = temp.path().join(".amplihack/.claude");
+    let staged = temp.path().join(".amplihack/amplifier-bundle");
+    fs::create_dir_all(staged.join("recipes")).unwrap();
+    fs::create_dir_all(staged.join("tools")).unwrap();
+    fs::write(
+        staged.join("recipes/old-smart-orchestrator.yaml"),
+        "stale\n",
+    )
+    .unwrap();
+    fs::write(
+        staged.join("tools/orch_helper.py"),
+        "print('stale helper')\n",
+    )
+    .unwrap();
+
+    issue_734_create_bundle_repo(&repo_root, issue_734_compatible_smart_orchestrator());
+    directories::copy_amplifier_bundle(&repo_root, &claude_dir).unwrap();
+
+    assert!(
+        !staged.join("recipes/old-smart-orchestrator.yaml").exists(),
+        "bundle refresh must replace the installed bundle wholesale; stale recipes must not survive"
+    );
+    assert!(
+        !staged.join("tools/orch_helper.py").exists(),
+        "bundle refresh must not merge over old assets that can resurrect orch_helper.py behavior"
+    );
+    assert!(
+        staged.join("recipes/smart-orchestrator.yaml").is_file(),
+        "current distribution recipes must be activated after replacing stale installed assets"
+    );
+}
+
 fn issue_734_compatible_smart_orchestrator() -> &'static str {
     r#"name: "smart-orchestrator"
 description: "Composable smart task orchestrator"

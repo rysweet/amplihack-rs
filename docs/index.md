@@ -90,9 +90,9 @@ Centralized plugin system that works across all your projects:
 - [Prerequisites](PREREQUISITES.md) - System requirements and dependencies
 - [Interactive Installation](INTERACTIVE_INSTALLATION.md) - Step-by-step setup wizard
 - [Quick Start](../README.md) - Basic usage and first commands
-- [PATH Conflict Tutorial](tutorials/repair-install-update-path-conflicts.md) - Learn why stale system binaries can shadow current user-local installs
-- [Repair Install/Update PATH Conflicts](howto/repair-install-update-path-conflicts.md) - Fix stale `/usr/local/bin` binaries that shadow current `~/.local/bin` installs
-- [Repair a Stale Framework Bundle](howto/repair-stale-framework-bundle.md) - Fix installs where the binary is current but smart-orchestrator recipes are stale
+- [Stale Wrapper Repair Tutorial](tutorials/repair-install-update-path-conflicts.md) - Learn how install/update keeps the Rust binary first and refreshes stale assets
+- [Repair Stale Wrappers and PATH Conflicts](howto/repair-install-update-path-conflicts.md) - Quarantine stale Python/uvx wrappers and make `~/.local/bin/amplihack` resolve first
+- [Repair a Stale Framework Bundle](howto/repair-stale-framework-bundle.md) - Replace stale installed `amplifier-bundle` assets from the current Rust distribution
 
 ### Configuration
 
@@ -151,8 +151,8 @@ amplihack copilot
 
 - [Release Installation](howto/first-install.md) - Install from published binaries or source
 - [Install Manifest](reference/install-manifest.md) - Understand installed files and uninstall state
-- [Install/Update PATH Conflict Reference](reference/install-update-path-conflicts.md) - Target selection, PATH analysis, and output regression guarantees
-- [Framework Bundle Compatibility](reference/framework-bundle-compatibility.md) - Smart-orchestrator compatibility contract and stale bundle repair behavior
+- [Install/Update PATH Conflict Reference](reference/install-update-path-conflicts.md) - Rust binary precedence, stale wrapper neutralization, and PATH profile persistence
+- [Framework Bundle Compatibility](reference/framework-bundle-compatibility.md) - Atomic bundle refresh and active `orch_helper.py` rejection
 - [Azure Integration](AZURE_INTEGRATION.md) - Deploy to Azure cloud
 
 ---
