@@ -272,8 +272,13 @@ pub async fn kill_session(options: KillOptions) -> Result<(), RemoteError> {
         return Err(err);
     }
 
+    // Session was resolved above, so `false` means `save_state` failed to
+    // persist the kill — a persistence error, not a missing session.
     if !sessions.kill_session(&options.session_id) {
-        return Err(RemoteError::session_not_found(options.session_id));
+        return Err(RemoteError::packaging(format!(
+            "killed session '{}' but failed to persist state",
+            options.session_id
+        )));
     }
     release_session_in_state(options.state_file, &session.session_id)?;
     Ok(())

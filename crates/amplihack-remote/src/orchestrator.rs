@@ -81,6 +81,16 @@ impl Orchestrator {
         Ok(this)
     }
 
+    /// Construct an orchestrator bound to `username` **without** probing for the
+    /// `azlin` CLI. Use [`Orchestrator::new`] for real provisioning; this suits
+    /// state/bookkeeping callers (e.g. loading a persisted VM pool). Provisioning
+    /// still fails cleanly if `azlin` is absent.
+    pub fn with_username(username: impl Into<String>) -> Self {
+        Self {
+            username: username.into(),
+        }
+    }
+
     /// Get a VM: reuse existing or provision new.
     pub async fn provision_or_reuse(&self, options: &VMOptions) -> Result<VM, RemoteError> {
         if let Some(ref name) = options.vm_name {
