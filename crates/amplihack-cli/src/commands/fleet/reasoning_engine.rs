@@ -78,19 +78,24 @@ impl FleetSessionReasoner {
                 None,
             );
         }
-        if context.agent_status == AgentStatus::Completed {
+        if context.agent_status == AgentStatus::Completed && has_authoritative_completion(context) {
             return (
                 SessionDecision {
                     session_name: context.session_name.clone(),
                     vm_name: context.vm_name.clone(),
                     action: SessionAction::MarkComplete,
                     input_text: String::new(),
-                    reasoning: "Session output indicates completion".to_string(),
+                    reasoning: "Session completion corroborated by a structured signal (PR URL or machine-emitted marker)"
+                        .to_string(),
                     confidence: CONFIDENCE_COMPLETION,
                 },
                 None,
             );
         }
+        // issue #868: an advisory-only `Completed` status (a textual marker the
+        // agent could merely be quoting, with no structured corroboration) must
+        // NOT auto-complete. Fall through to full reasoning / the guarded
+        // heuristic instead of short-circuiting to MarkComplete.
 
         let prompt = format!(
             "{}\n\n{}\n\nRespond with JSON only.",
