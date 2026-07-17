@@ -1,16 +1,12 @@
 //! State persistence and lifecycle management for workstreams.
 
 use super::models::*;
+use super::persistence::persist_checkpoint;
 use super::process_scope::{
     CurrentWorkflowScope, ProcessScopeConfig, ProcessScopeValidation, normalize_path,
     snapshot_for_pid, validate_process_scope,
 };
-use super::utils::atomic_write;
-use anyhow::Result;
-use chrono::Utc;
 use std::collections::HashMap;
-use std::fs;
-use std::path::Path;
 use std::process::Child;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -24,66 +20,6 @@ pub(super) struct WorkstreamStatus {
     pub failed: Vec<i64>,
 }
 
-pub(super) fn load_state(state_file: &Path) -> Option<PersistedState> {
-    fs::read_to_string(state_file)
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-}
-
-pub(super) fn persist_state(ws: &Workstream) -> Result<()> {
-    let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    let workstream_scope = ws.workstream_scope.clone();
-    if workstream_scope.base_ref.is_empty() && !workstream_scope.repository.is_empty() {
-        warn!("[{}] workstream_scope missing base_ref", ws.issue);
-    }
-
-    let existing = load_state(&ws.state_file);
-    let created_at = existing
-        .as_ref()
-        .and_then(|s| {
-            if s.created_at.is_empty() {
-                None
-            } else {
-                Some(s.created_at.clone())
-            }
-        })
-        .unwrap_or_else(|| now.clone());
-
-    let state = PersistedState {
-        issue: ws.issue,
-        branch: ws.branch.clone(),
-        description: ws.description.clone(),
-        task: ws.task.clone(),
-        recipe: ws.recipe.clone(),
-        lifecycle_state: ws.lifecycle_state.clone(),
-        cleanup_eligible: ws.cleanup_eligible,
-        attempt: ws.attempt,
-        last_pid: ws.pid,
-        last_exit_code: ws.exit_code,
-        current_step: if ws.last_step.is_empty() {
-            "unknown".to_string()
-        } else {
-            ws.last_step.clone()
-        },
-        checkpoint_id: ws.checkpoint_id.clone(),
-        work_dir: ws.work_dir.to_string_lossy().to_string(),
-        worktree_path: ws.worktree_path.clone(),
-        log_file: ws.log_file.to_string_lossy().to_string(),
-        progress_sidecar: ws.progress_file.to_string_lossy().to_string(),
-        max_runtime: Some(ws.max_runtime),
-        timeout_policy: Some(ws.timeout_policy.clone()),
-        workstream_scope,
-        process_scope: ws.process_scope.clone(),
-        created_at,
-        updated_at: now,
-        resume_context: existing.and_then(|s| s.resume_context),
-    };
-
-    let json = serde_json::to_string_pretty(&state)?;
-    atomic_write(&ws.state_file, json.as_bytes())?;
-    Ok(())
-}
-
 pub(super) fn finalize_workstream(ws: &mut Workstream, exit_code: i32) {
     if ws.end_time.is_none() {
         ws.end_time = Some(Instant::now());
@@ -94,7 +30,7 @@ pub(super) fn finalize_workstream(ws: &mut Workstream, exit_code: i32) {
         || (ws.lifecycle_state == "timed_out_resumable"
             && ws.timeout_policy == INTERRUPT_PRESERVE_TIMEOUT_POLICY)
     {
-        let _ = persist_state(ws);
+        persist_checkpoint(ws);
         return;
     }
 
@@ -106,7 +42,7 @@ pub(super) fn finalize_workstream(ws: &mut Workstream, exit_code: i32) {
         ws.lifecycle_state = "failed_terminal".to_string();
     }
     ws.cleanup_eligible = Workstream::derive_cleanup_eligible(&ws.lifecycle_state);
-    let _ = persist_state(ws);
+    persist_checkpoint(ws);
 }
 
 pub(super) fn apply_saved_state(ws: &mut Workstream, state: &PersistedState) {
@@ -232,7 +168,7 @@ pub(super) fn enforce_timeouts(
 
         ws.lifecycle_state = "timed_out_resumable".to_string();
         ws.end_time = Some(Instant::now());
-        let _ = persist_state(ws);
+        persist_checkpoint(ws);
     }
 }
 
@@ -262,7 +198,7 @@ pub(super) fn cleanup_running(
         }
         ws.lifecycle_state = "interrupted_resumable".to_string();
         ws.end_time = Some(Instant::now());
-        let _ = persist_state(ws);
+        persist_checkpoint(ws);
     }
 }
 

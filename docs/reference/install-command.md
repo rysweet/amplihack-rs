@@ -9,13 +9,20 @@ amplihack uninstall
 
 ## amplihack install
 
-Bootstraps the amplihack environment on the current machine. On first run, it performs full setup: locates the bundled framework source (or falls back to network download), deploys native binaries, stages framework assets, and registers Claude Code hooks. Subsequent runs are idempotent — they update existing registrations in place without duplication.
+Bootstraps or repairs the amplihack environment on the current machine. On
+first run, it deploys the Rust binaries to `~/.local/bin`, makes that directory
+resolve first for future shells, refreshes framework assets from the current
+Rust distribution, registers hooks, and finally verifies the selected
+`amplihack` is the Rust binary.
 
-Since issue #254, framework assets are bundled in the amplihack-rs source tree. The installer resolves the framework source in this order: (1) `AMPLIHACK_HOME`, (2) current-working-directory walk-up, (3) executable-path walk-up, (4) compile-time workspace root, (5) `~/.amplihack`, (6) network download from upstream (legacy fallback).
+Subsequent runs are idempotent. They update existing registrations and managed
+profile blocks in place, quarantine newly discovered shadowing stale wrappers,
+and replace the installed `amplifier-bundle` instead of merging over it.
 
-Since issue #675, the post-update installer bypasses local source selection and always downloads a fresh bundle from the network. This prevents stale `amplifier-bundle/` assets at `~/.amplihack/` from being re-staged after a binary update.
-
-Since issue #734, every local framework source candidate is also checked for smart-orchestrator compatibility before it can be selected. Standalone `amplihack install` still uses the resolver order above, but stale or incompatible local bundles are skipped instead of being reused. See [Framework bundle compatibility](./framework-bundle-compatibility.md).
+The installer treats the current Rust distribution as authoritative. The
+installed `~/.amplihack/amplifier-bundle` is not reused by
+`--force-refresh`, and stale smart-orchestrator assets are rejected before they
+can become active. See [Framework bundle compatibility](./framework-bundle-compatibility.md).
 
 You can invoke the same command through the npm wrapper package when desired:
 
@@ -38,9 +45,9 @@ fall back to a source build.
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--interactive` | `bool` | `false` | Launch a guided setup wizard that prompts for default tool, hook scope, and update-check preference. Requires a TTY; falls back to defaults with a warning if stdin is not a terminal. See [Interactive Install](../howto/interactive-install.md). |
-| `--local <PATH>` | `PathBuf` | absent | Install from a specific local directory instead of using the bundled source. The path must exist, be a directory, contain a framework root marker, and pass framework bundle compatibility validation. Without `--local`, the installer uses compatible bundled framework assets from the amplihack-rs source tree or falls back to download. |
+| `--local <PATH>` | `PathBuf` | absent | Install from a specific local directory instead of using the current distribution's default source. The path must exist, be a directory, contain a framework root marker, and pass framework bundle compatibility validation. Without `--local`, the installer uses compatible assets shipped with the current Rust distribution. |
 | `--verbose` | `bool` | `false` | Accepted for diagnostic scripts. The install command already emits phase-level diagnostics by default. |
-| `--force-refresh` | `bool` | `false` | **Hidden.** Forces a fresh network download of `amplifier-bundle/` assets, bypassing local source resolution. Used internally by `amplihack update` when spawning the new binary as a post-update install subprocess. Not shown in `--help` output. See [Post-Update Install — Re-exec New Binary](../features/update-reexec-new-binary.md). |
+| `--force-refresh` | `bool` | `false` | **Hidden.** Refreshes `amplifier-bundle/` from the current Rust distribution while bypassing the installed bundle as a source. Used internally by `amplihack update` when spawning the new binary as a post-update install subprocess. Not shown in `--help` output. See [Post-Update Install - Re-exec New Binary](../features/update-reexec-new-binary.md). |
 
 The `--interactive` and `--local` flags compose: `--interactive` controls configuration preferences while `--local` controls the framework source path.
 
@@ -53,6 +60,8 @@ The `--interactive` and `--local` flags compose: `--interactive` controls config
 | `1` | `--local` path does not exist or is not a directory |
 | `1` | `--local` path does not contain a framework root marker |
 | `1` | selected framework bundle is stale or incompatible |
+| `1` | unknown or inaccessible executable still shadows the Rust `~/.local/bin/amplihack` after repair |
+| `1` | stale wrapper quarantine failed and the wrapper still shadows the Rust binary |
 | `1` | Framework archive download or extraction failed (non-local mode only) |
 
 Note: A Node.js version below v24 does **not** cause a non-zero exit from `amplihack install`. It produces a warning at the Copilot plugin step. By contrast, `amplihack copilot` exits with code 1 if Node.js < v24. See [Node.js Version Checking](./node-version-checking.md).
@@ -63,21 +72,24 @@ Note: A Node.js version below v24 does **not** cause a non-zero exit from `ampli
 amplihack install [--interactive]
 │
 ├── 0. maybe_run_wizard()         — if --interactive, prompt for tool/scope/update prefs (skipped otherwise)
-├── 1. Bundled source, --local path, OR GitHub fallback — obtain compatible framework source
+├── 1. Current distribution or --local path — obtain compatible framework source
 ├── 2. deploy_binaries()          — copy amplihack + amplihack-hooks (+ asset resolver when present) to ~/.local/bin
-├── 2b. analyze PATH conflicts    — warn if stale earlier PATH entries shadow ~/.local/bin
-├── 3. copy framework assets      — validate source, stage mapped framework assets, validate staged bundle
-├── 4. create_runtime_dirs()      — create runtime/ subdirs with 0o755 permissions
-├── 5. ensure_settings_json()     — backup settings.json, register hooks, set permissions
-├── 6. verify_framework_assets()  — confirm required staged framework assets exist
-├── 7. apply_config()             — if wizard ran, write preferences to manifest and settings
-├── 8. write_manifest()           — write amplihack-manifest.json for uninstall
-└── 9. ensure_mermaid_cli()       — best-effort: provision mmdc (npm @mermaid-js/mermaid-cli); warn-and-continue on failure
+├── 2b. analyze PATH candidates   — classify Rust binaries, stale wrappers, unknowns, and inaccessible paths
+├── 2c. neutralize stale wrappers — quarantine only shadowing, positively identified Python/uvx wrappers in safe locations
+├── 2d. persist PATH precedence   — write/update managed shell profile block so ~/.local/bin resolves first
+├── 3. refresh framework assets   — validate source, stage full bundle, atomically activate installed bundle, validate staged bundle
+├── 4. verify Rust selection      — confirm selected amplihack is the Rust binary after PATH and bundle repair
+├── 5. create_runtime_dirs()      — create runtime/ subdirs with 0o755 permissions
+├── 6. ensure_settings_json()     — backup settings.json, register hooks, set permissions
+├── 7. verify_framework_assets()  — confirm required staged framework assets exist
+├── 8. apply_config()             — if wizard ran, write preferences to manifest and settings
+├── 9. write_manifest()           — write amplihack-manifest.json for uninstall
+└── 10. ensure_mermaid_cli()      — best-effort: provision mmdc (npm @mermaid-js/mermaid-cli); warn-and-continue on failure
 ```
 
 Phase 0 runs only when `--interactive` is passed **and** stdin is a TTY. If `--interactive` is set but no TTY is available, the wizard is skipped with a warning to stderr. Phase 7 applies wizard results (default tool, update-check preference) to the manifest and writes hooks to the selected settings.json scope.
 
-Phase 9 runs **after** the version stamp, manifest, and Copilot-home staging, so an `mmdc` failure can never leave required install state unwritten. It is **optional and best-effort**: it attempts `npm install -g @mermaid-js/mermaid-cli` only when npm is available and `mmdc` is missing, and it always continues — a failed or skipped install emits a warning/info line and never fails the install. See [Best-Effort Mermaid CLI Provisioning](../features/mermaid-cli-best-effort-install.md).
+Phase 10 runs **after** the version stamp, manifest, and Copilot-home staging, so an `mmdc` failure can never leave required install state unwritten. It is **optional and best-effort**: it attempts `npm install -g @mermaid-js/mermaid-cli` only when npm is available and `mmdc` is missing, and it always continues — a failed or skipped install emits a warning/info line and never fails the install. See [Best-Effort Mermaid CLI Provisioning](../features/mermaid-cli-best-effort-install.md).
 
 ### Environment Variables
 
@@ -109,7 +121,9 @@ Successful install prints a phase-by-phase progress summary:
 ✓ Deployed amplihack → ~/.local/bin/amplihack
 ✓ Deployed amplihack-hooks → ~/.local/bin/amplihack-hooks
 ✓ Deployed amplihack-asset-resolver → ~/.local/bin/amplihack-asset-resolver
-✓ Staged framework assets (47 files, 12 directories)
+✓ Updated shell PATH profile block
+✓ Refreshed amplifier-bundle from current distribution
+✓ Verified Rust amplihack resolves first
 ✓ Created runtime directories
 ✓ Backed up ~/.claude/settings.json → settings.json.backup.1741651200
 ✓ Registered 7 Claude Code hooks
@@ -135,24 +149,30 @@ instead, and install still succeeds:
   ℹ npm not available; skipping mermaid CLI install (pr-guide will fall back to mermaid.ink)
 ```
 
-If `~/.local/bin` is not in `$PATH`, an advisory is printed (install still succeeds):
-
-```
-⚠️  ~/.local/bin is not in $PATH
-    Add: export PATH="$HOME/.local/bin:$PATH"
-```
-
-If another candidate appears earlier on `$PATH`, install prints an advisory
-after deploying the user-local binaries:
+If `~/.local/bin` is not first on `PATH`, install updates the managed profile
+block:
 
 ```text
-⚠️  PATH conflict: /usr/local/bin/amplihack appears before /home/alice/.local/bin/amplihack
-    Your shell may continue to run the stale system binary.
-    Fix: export PATH="$HOME/.local/bin:$PATH" or remove the stale system copy with sudo.
+Updated shell PATH profile block:
+  /home/alice/.bashrc
 ```
 
-This warning does not mean install failed. It means the shell may still resolve
-`amplihack` or `amplihack-hooks` to an older candidate until `PATH` is repaired.
+If a stale Python or uvx wrapper is safely neutralized:
+
+```text
+Quarantined stale amplihack wrapper:
+  /home/alice/.local/share/uv/tools/amplihack/bin/amplihack
+  -> /home/alice/.amplihack/quarantine/stale-wrappers/20260710T183440Z/...
+```
+
+If an unknown executable still shadows the Rust binary, install fails instead
+of pretending the repair succeeded:
+
+```text
+Cannot select Rust amplihack because an unknown executable shadows it:
+  /home/alice/bin/amplihack
+```
+
 See [Install/update PATH conflict reference](./install-update-path-conflicts.md).
 
 ---
@@ -208,14 +228,14 @@ The functions below are in `crates/amplihack-cli/src/commands/install/mod.rs`.
 
 ### `run_install(local: Option<PathBuf>, interactive: bool, force_refresh: bool) -> Result<()>`
 
-Entry point called by the command dispatcher. When `interactive` is true and stdin is a TTY, runs the interactive wizard before proceeding. Canonicalizes and validates `--local` path when provided.
+Entry point called by the command dispatcher. When `interactive` is true and stdin is a TTY, runs the interactive wizard before proceeding. Canonicalizes and validates `--local` path when provided. The install path deploys user-level Rust binaries, neutralizes eligible shadowing stale wrappers, persists PATH precedence, refreshes the framework bundle, and then verifies Rust-first command resolution.
 
 The `force_refresh` parameter controls framework source resolution:
 
 | `force_refresh` | Behavior |
 |-----------------|----------|
-| `false` | **Default.** Resolves a compatible bundled framework root by checking `AMPLIHACK_HOME`, walking up from the current working directory, walking up from the executable path, checking the compile-time workspace root, then checking `~/.amplihack`. Incompatible local candidates are skipped. Falls back to network download only when no compatible local source is found. This is the behavior for standalone `amplihack install` and install runs triggered by self-heal. |
-| `true` | **Skips local bundle resolution entirely.** Goes directly to `download_and_extract_framework_repo()` to fetch a fresh `amplifier-bundle/` from the upstream archive (`REPO_ARCHIVE_URL`). Used by the post-update installer to ensure that `amplihack update` always refreshes stale framework assets rather than re-staging the old bundle that was already present at `~/.amplihack/amplifier-bundle/`. The downloaded source and staged destination are still validated for compatibility. |
+| `false` | **Default.** Resolves compatible current-distribution framework assets, honoring `--local` when supplied and validating every candidate before staging. |
+| `true` | **Bypasses the installed bundle as a source.** Refreshes from the current Rust distribution so `amplihack update` cannot re-stage stale assets already present at `~/.amplihack/amplifier-bundle/`. The source and staged destination are still validated for compatibility. |
 
 **Priority rule:** When `local` is `Some(path)`, it takes precedence over `force_refresh` for source selection, but not for compatibility. The user-specified path must still pass framework bundle validation. This is correct by design: `--local` is an explicit source override, not permission to stage stale smart-orchestrator assets.
 
@@ -224,7 +244,7 @@ The `force_refresh` parameter controls framework source resolution:
 | Caller | `force_refresh` | Rationale |
 |--------|-----------------|-----------|
 | `amplihack install` (command dispatcher) | `false` | Standalone install prefers compatible local sources |
-| `amplihack update` (post-update closure) | `true` | **Root cause fix for issue #675** — forces fresh download |
+| `amplihack update` (post-update closure) | `true` | Forces current-distribution bundle refresh and repair after binary replacement |
 | Self-heal (startup version-stamp check) | `false` | Re-runs install when the version stamp is stale; it benefits from install compatibility validation but does not perform a separate startup compatibility scan |
 | `ensure_framework_installed()` (bootstrap) | `false` | Bootstrap prefers compatible local sources |
 
@@ -259,9 +279,8 @@ Located in `crates/amplihack-cli/src/commands/install/bundle_compat.rs`.
 
 ### `is_compatible_framework_bundle(root: &Path) -> bool`
 
-Boolean helper for local source discovery. Use it to skip optional stale
-candidates such as `AMPLIHACK_HOME` while continuing to the next candidate or
-network fallback. Final staging verification should use
+Boolean helper for source discovery. Use it to reject optional stale candidates
+while continuing to the next current-distribution candidate. Final staging verification should use
 `validate_staged_framework_bundle()` for actionable diagnostics.
 
 Located in `crates/amplihack-cli/src/commands/install/bundle_compat.rs`.
@@ -290,13 +309,37 @@ Returns an actionable error if none of the five locations yield an executable.
 
 ### `deploy_binaries() -> Result<Vec<PathBuf>>`
 
-Copies `amplihack` (current executable) and `amplihack-hooks` (resolved by `find_hooks_binary`) to `~/.local/bin` with `0o755` permissions. When a sibling `amplihack-asset-resolver` binary is present, it is deployed too so launched tools and recipe runs can resolve bundle assets without falling back to Python. Returns the list of deployed paths for inclusion in the manifest.
+Copies `amplihack` (current executable) and `amplihack-hooks` (resolved by
+`find_hooks_binary`) to `~/.local/bin` with `0o755` permissions. When a sibling
+`amplihack-asset-resolver` binary is present, it is deployed too so launched
+tools and recipe runs can resolve bundle assets without falling back to Python.
+Returns the list of deployed paths for inclusion in the manifest.
 
 After deployment, install analyzes ordered `PATH` candidates for `amplihack` and
-`amplihack-hooks`. It warns when a system-managed candidate such as
-`/usr/local/bin/amplihack` shadows the freshly deployed `~/.local/bin` binary or
-when the two binaries resolve from different install roots. The analysis is
-side-effect free; install never removes or rewrites system-managed binaries.
+`amplihack-hooks`, quarantines eligible stale Python/uvx wrappers that shadow
+Rust, persists `~/.local/bin` precedence, refreshes the framework bundle, and
+then verifies the selected `amplihack` is the Rust binary. Unknown or
+inaccessible shadowing candidates are reported and fail the repair if
+Rust-first resolution cannot be guaranteed.
+
+### `neutralize_stale_wrappers(report: &PathConflictReport) -> Result<NeutralizationReport>`
+
+Moves positively identified shadowing stale Python/uvx `amplihack` wrappers into
+`~/.amplihack/quarantine/stale-wrappers/<timestamp>/`. The function re-checks
+basename, safe location, ownership, metadata, and symlink boundaries before
+moving any file. It never mutates system-managed prefixes or unknown
+executables.
+
+Located in `crates/amplihack-cli/src/commands/install/stale_wrappers.rs`.
+
+### `ensure_user_bin_precedence() -> Result<PathPrecedenceReport>`
+
+Writes or updates the managed shell profile block that prepends
+`$HOME/.local/bin` when it is not already first. The detected profile is
+`~/.bashrc` for bash and `~/.zshrc` for zsh. Preserves unrelated profile
+content and returns the file changed.
+
+Located in `crates/amplihack-cli/src/commands/install/paths.rs`.
 
 > **macOS note:** On macOS with System Integrity Protection (SIP) active, copying the running executable to `~/.local/bin` may produce a quarantined binary. See the [First-time install how-to](../howto/first-install.md#macos-sip-note) for the resolution step.
 
@@ -335,7 +378,7 @@ Best-effort provisioning of the Mermaid CLI (`mmdc`, npm `@mermaid-js/mermaid-cl
 - [Best-Effort Mermaid CLI Provisioning](../features/mermaid-cli-best-effort-install.md) — optional `mmdc` install for local mermaid rendering in `pr-guide`
 
 - [Interactive Install](../howto/interactive-install.md) — guided setup wizard walkthrough
-- [Repair install/update PATH conflicts](../howto/repair-install-update-path-conflicts.md) — repair stale system binaries that shadow `~/.local/bin`
+- [Repair stale amplihack wrappers and PATH conflicts](../howto/repair-install-update-path-conflicts.md) — quarantine shadowing stale Python/uvx wrappers and keep Rust `amplihack` first
 - [Install/update PATH conflict reference](./install-update-path-conflicts.md) — target selection and resolver API
 - [Hook Specifications](./hook-specifications.md) — the 7 hooks registered by amplihack install
 - [Install Manifest](./install-manifest.md) — manifest schema
