@@ -115,19 +115,16 @@ pub(crate) fn decide_update_install_target(
         .get(&input.report.current_exe)
         .map(|probe| probe.writable)
         .unwrap_or_else(|| path_is_writable(&input.report.current_exe));
+    let preferred_user_bin_writable = path_is_writable(&input.report.preferred_user_bin);
 
-    if input.report.preferred_user_bin.exists()
-        && user_bin_pair_exists_and_is_writable(
-            &input.report.preferred_user_bin,
-            &input.candidate_probes,
-        )
+    if !is_under_denied_prefix(&input.report.preferred_user_bin, &denied_system_prefixes)
+        && preferred_user_bin_writable
         && (current_exe_denied || report_has_shadowing(&input.report))
     {
         return Ok(InstallTargetDecision::PreferredUserBin {
             install_dir: input.report.preferred_user_bin,
-            reason:
-                "writable user-level binaries are preferred over unsafe or shadowed PATH candidates"
-                    .to_string(),
+            reason: "user-level binaries are preferred over unsafe or shadowed PATH candidates"
+                .to_string(),
         });
     }
 
@@ -195,22 +192,6 @@ pub(crate) fn probe_candidates_without_exec(
             .or_insert_with(|| binary_probe_without_exec(&path));
     }
     probes
-}
-
-fn user_bin_pair_exists_and_is_writable(
-    user_bin: &Path,
-    probes: &BTreeMap<PathBuf, BinaryProbe>,
-) -> bool {
-    ["amplihack", "amplihack-hooks"].into_iter().all(|name| {
-        let path = user_bin.join(binary_filename(name));
-        if !path.is_file() {
-            return false;
-        }
-        probes
-            .get(&path)
-            .map(|probe| probe.writable)
-            .unwrap_or_else(|| path_is_writable(&path))
-    })
 }
 
 fn report_has_shadowing(report: &PathConflictReport) -> bool {
@@ -287,13 +268,7 @@ fn is_under_denied_prefix(path: &Path, prefixes: &[(PathBuf, PathBuf)]) -> bool 
 fn path_is_writable(path: &Path) -> bool {
     #[cfg(unix)]
     {
-        let target = if path.exists() {
-            path
-        } else if let Some(parent) = path.parent() {
-            parent
-        } else {
-            return false;
-        };
+        let target = nearest_existing_path(path);
         return is_writable_by_current_user(target);
     }
 
@@ -318,5 +293,17 @@ fn path_is_writable(path: &Path) -> bool {
         // SAFETY: libc::access only reads the NUL-terminated path pointer for the
         // duration of the call; `c_path` is alive and immutable for that duration.
         unsafe { libc::access(c_path.as_ptr(), libc::W_OK) == 0 }
+    }
+
+    #[cfg(unix)]
+    fn nearest_existing_path(path: &Path) -> &Path {
+        let mut target = path;
+        while !target.exists() {
+            let Some(parent) = target.parent() else {
+                break;
+            };
+            target = parent;
+        }
+        target
     }
 }
