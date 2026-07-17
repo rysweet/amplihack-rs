@@ -51,6 +51,9 @@ Defaults to both Graphviz DOT and Mermaid formats. User can override to single f
 - **Staleness Detection**: Git diff pattern matching against layer triggers
 - **CI Integration**: Three GitHub Actions patterns (post-merge, PR impact, scheduled rebuild)
 - **Publication**: GitHub Pages-ready structure, mkdocs compatible
+- **Backend-Agnostic Graph**: Always emits a portable OpenCypher graph of all 8 layers with
+  first-class inter-layer links; live ingestion is a pluggable, recorded backend
+  (`kuzu` | `lbug` | `neo4j` | `portable-cypher-only`) — no hard kuzu/Python requirement
 - **Density Management**: Auto-splits dense diagrams by package/service boundary
 
 ## File Structure
@@ -64,7 +67,7 @@ skills/code-atlas/
   bug-hunt-guide.md     # Three-pass bug hunt checklists and templates
   publication-guide.md  # CI, GitHub Pages, mkdocs, SVG rendering
   examples.md           # Per-layer Mermaid/DOT examples and diagram type guidance
-  reference.md          # Staleness triggers, error codes, Kuzu schema, language coverage
+  reference.md          # Staleness triggers, error codes, engine-neutral graph model + backend adapters, language coverage
   README.md             # This file
   tests/                # Test suites
 ```
@@ -73,7 +76,10 @@ skills/code-atlas/
 
 ```
 code-atlas (orchestrator)
-  code-visualizer       Python AST module analysis
+  compile-deps analyzer (language-pluggable, mode always labelled):
+    code-visualizer     Python repos only: Python AST module analysis (optional adapter)
+    cargo metadata      Rust repos: dependency + module static approximation
+    analyzer agent      Other languages: static-approximation mapping
   mermaid-diagram-generator   Mermaid syntax and formatting
   lsp-setup             Symbol queries, dead code (ast-lsp-bindings layer)
   visualization-architect     Complex DOT layouts

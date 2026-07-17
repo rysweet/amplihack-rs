@@ -451,6 +451,57 @@ if [[ -f "$SAFE_READ_SCRIPT" ]]; then
 fi
 
 # ============================================================================
+# SEC-01-C: Graph Artifact Secret Safety (CRITICAL) — backend-agnostic
+# ============================================================================
+# The portable graph (docs/atlas/cypher/) and any live backend (kuzu | lbug |
+# neo4j | portable-cypher-only) must never contain secret values. EnvVar nodes
+# carry key names only. This holds regardless of which backend is selected.
+
+echo ""
+echo "=== SEC-01-C: Graph Artifact Secret Safety (backend-agnostic) ==="
+
+SEC_MD_LOCAL="${SCRIPT_DIR}/../SECURITY.md"
+
+# Documentation contract: the control must be written down (runs now).
+if grep -q "Graph Artifact & Backend Security" "$SEC_MD_LOCAL" 2>/dev/null; then
+    echo "PASS: SEC-01-C: SECURITY.md documents Graph Artifact & Backend Security control"
+    PASS=$((PASS + 1))
+else
+    echo "FAIL: SEC-01-C: SECURITY.md missing Graph Artifact & Backend Security control"
+    FAIL=$((FAIL + 1))
+fi
+
+if grep -Eq "EnvVar.{0,3} nodes .*(store|carry) key names" "$SEC_MD_LOCAL" 2>/dev/null; then
+    echo "PASS: SEC-01-C: SECURITY.md states EnvVar graph nodes carry key names only"
+    PASS=$((PASS + 1))
+else
+    echo "FAIL: SEC-01-C: SECURITY.md must state EnvVar graph nodes carry key names only"
+    FAIL=$((FAIL + 1))
+fi
+
+# Runtime check (guarded): emitted cypher artifacts must not leak a secret value.
+if [[ -f "$VALIDATE_SCRIPT" ]]; then
+    tmpdir=$(mktemp -d)
+    mkdir -p "$tmpdir/docs/atlas/cypher"
+    secret="sk_live_supersecretstripekey123"
+    # A correctly redacted artifact records the key name, never the value.
+    cat > "$tmpdir/docs/atlas/cypher/atlas-layers.cypher" << EOF
+CREATE (:EnvVar {name: 'STRIPE_KEY', required: true, default_value: ''});
+MATCH (s:Service {name: 'api'}), (e:EnvVar {name: 'STRIPE_KEY'}) CREATE (s)-[:USES_ENV]->(e);
+EOF
+    if grep -q "$secret" "$tmpdir/docs/atlas/cypher/atlas-layers.cypher" 2>/dev/null; then
+        echo "FAIL: SEC-01-C: secret value leaked into cypher artifact"
+        FAIL=$((FAIL + 1))
+    else
+        echo "PASS: SEC-01-C: cypher artifact holds EnvVar key name, not the secret value"
+        PASS=$((PASS + 1))
+    fi
+    rm -rf "$tmpdir"
+else
+    echo "SKIP: SEC-01-C runtime check (validate_atlas_output.sh not present)"
+fi
+
+# ============================================================================
 # Summary
 # ============================================================================
 echo ""

@@ -10,6 +10,9 @@
 - `JourneyVerdict` schema for Pass 3 per-journey outputs
 - Three new error codes: `DENSITY_THRESHOLD_EXCEEDED`, `LAYER7_SOURCE_NOT_FOUND`, `LAYER8_LSP_UNAVAILABLE`
 - Density threshold contract (§1b) and `lsp-setup` delegation contract (§2f)
+- Backend-agnostic graph contract (§6b): portable OpenCypher artifacts always emitted; live
+  ingestion is a pluggable, recorded backend (`kuzu` | `lbug` | `neo4j` | `portable-cypher-only`).
+  `graph_backend`/`analyzer_mode` are additive, backward-compatible outputs.
 
 ---
 
@@ -39,10 +42,12 @@ invocation:
   diagram_formats: array<Fmt>  # Default: ["mermaid", "dot"]
   bug_hunt: boolean            # Default: true
   publish: boolean             # Default: false (set true to trigger GitHub Pages push)
+  graph_backend: Backend       # Default: "auto" (auto-detect: kuzu -> lbug -> neo4j -> portable-cypher-only)
 
 # Types
 LayerID: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8
 Fmt: "mermaid" | "dot" | "both"
+Backend: "auto" | "kuzu" | "lbug" | "neo4j" | "portable-cypher-only"
 
 Journey:
   name: string        # e.g. "user-checkout"
@@ -61,6 +66,12 @@ completion_summary:
   inventory_tables: array<FilePath> # Relative paths to .md inventory tables
   bug_reports: array<BugReport> # All findings (see §4)
   staleness_triggers: array<Trigger> # CI/staleness table for this codebase
+  graph_backend: Backend       # Selected live backend, ALWAYS recorded (never "auto"):
+                               #   "kuzu" | "lbug" | "neo4j" | "portable-cypher-only"
+                               #   Also written to index.md and staleness-map.yaml
+  analyzer_mode: AnalyzerMode  # compile-deps/service-components analyzer used (visible label):
+                               #   "python-ast" | "rust-cargo-metadata" | "static-approximation"
+  graph_artifacts: array<FilePath> # docs/atlas/cypher/* — ALWAYS present (portable graph)
   errors: array<SkillError> # Any non-fatal errors (see §5)
 ```
 
@@ -141,9 +152,21 @@ Code-atlas delegates to three components. Each contract defines what is passed I
 
 ---
 
-### 2a. `code-visualizer` Skill
+### 2a. Compile-deps / Service-components Analyzer (language-pluggable)
 
-**When invoked:** Layer 2 build, when `.py` files are detected in the codebase.
+Compile-deps (Layer 2) and service-components (Layer 7) analysis is **language-pluggable**. No
+single analyzer is hard-required; the skill selects an adapter by detected language and always
+emits a visible `analyzer_mode` label. **Python is never required for non-Python repositories.**
+
+| `analyzer_mode`        | Trigger                | Adapter                                                  |
+| ---------------------- | ---------------------- | ------------------------------------------------------- |
+| `python-ast`           | `.py` files detected   | `code-visualizer` skill (optional; Python repos only)   |
+| `rust-cargo-metadata`  | `Cargo.toml` detected  | `cargo metadata` + rust-analyzer/ripgrep approximation  |
+| `static-approximation` | any other / fallback   | `analyzer` agent + ripgrep static mapping               |
+
+#### `code-visualizer` adapter (`python-ast` mode only)
+
+**When invoked:** Layer 2 / Layer 7 build, only when `.py` files are detected in the codebase.
 
 **Input (what code-atlas passes):**
 
@@ -172,7 +195,9 @@ Edge:
   type: "import" | "from-import" | "relative"
 ```
 
-**Fallback:** If `code-visualizer` cannot analyse (non-Python, import errors), code-atlas logs a `SkillError` with `layer: 2` and uses the `analyzer` agent instead (§2d).
+**Fallback:** If `code-visualizer` is unavailable or the repo is non-Python, code-atlas does NOT
+fail. It selects the `rust-cargo-metadata` adapter (Rust repos) or `static-approximation` via the
+`analyzer` agent (§2d), records the resulting `analyzer_mode`, and continues.
 
 ---
 
@@ -405,7 +430,8 @@ The skill produces a deterministic filesystem structure. This is the **filesyste
 ```
 docs/atlas/
 ├── README.md                     # Atlas index; links to all layers
-├── staleness-map.yaml            # Glob → layer mapping for CI (see §6)
+├── index.md                      # Generation metadata; records graph_backend + analyzer_mode
+├── staleness-map.yaml            # Glob → layer mapping for CI (see §6); top-level graph_backend field
 │
 ├── repo-surface/
 │   ├── README.md                 # Layer narrative
@@ -455,6 +481,14 @@ docs/atlas/
 │   ├── {YYYY-MM-DD}-pass1-{slug}.md   # Pass 1 findings
 │   ├── {YYYY-MM-DD}-pass2-{slug}.md   # Pass 2 findings
 │   └── {YYYY-MM-DD}-pass3-{slug}.md   # Pass 3 per-journey verdict (NEW in v1.1.0)
+│
+├── cypher/                            # ALWAYS emitted — portable, engine-neutral graph deliverable
+│   ├── schema.cypher                  # Canonical graph model; backend-specific schema adapter
+│   ├── atlas-layers.cypher            # Per-layer node/rel data (all 8 layers)
+│   ├── atlas-services.cypher
+│   ├── atlas-bugs.cypher
+│   ├── atlas-relationships.cypher     # Inter-layer link relationships (REQUIRED)
+│   └── queries.cypher                 # Ready-to-run example queries
 │
 └── experiments/                       # NEW in v1.1.0 — Appendix A artifacts
     └── {YYYY-MM-DD}-mermaid-vs-graphviz-L{N}.md
@@ -848,6 +882,54 @@ staleness_map:
   - glob: "**/*.go"
     layers_affected: [2, 3, 4, 8]
     rebuild_command: "/code-atlas layers=2,3,4,8"
+```
+
+---
+
+## 6b. Graph Backend Contract
+
+The atlas always produces a queryable graph representation of the code across all 8 layers, with
+first-class inter-layer links. The **portable OpenCypher artifact set** under `docs/atlas/cypher/`
+is the mandatory, engine-neutral deliverable — always emitted. Loading it into a **live database**
+is a pluggable, selectable backend; it is never a hard dependency.
+
+### Backend Selection
+
+```typescript
+type Backend = "auto" | "kuzu" | "lbug" | "neo4j" | "portable-cypher-only";
+```
+
+- `graph_backend` (invocation input, default `"auto"`). When `"auto"`, the skill auto-detects in
+  order: `kuzu` → `lbug` → `neo4j` → `portable-cypher-only`.
+- Absence of kuzu (or Python) MUST NOT hard-fail the build.
+- The **resolved** backend (never `"auto"`) is ALWAYS recorded in `completion_summary.graph_backend`,
+  `docs/atlas/index.md`, and `docs/atlas/staleness-map.yaml`.
+- `portable-cypher-only` is a first-class, recorded outcome — never a silent skip.
+
+| Backend                | Live ingestion | Schema adapter                              | Typical use                              |
+| ---------------------- | -------------- | ------------------------------------------- | ---------------------------------------- |
+| `kuzu`                 | Yes            | `CREATE NODE/REL TABLE ... PRIMARY KEY`     | Python/CLI environments with kuzu        |
+| `lbug`                 | Yes (in-proc)  | OpenCypher-compatible (labelled nodes)      | Simard & native-Rust/amplihack projects  |
+| `neo4j`                | Yes            | Constraints + `MERGE` (OpenCypher server)   | Any OpenCypher-compatible server         |
+| `portable-cypher-only` | No             | Portable artifacts only                     | No engine available                      |
+
+### Mandatory Artifacts (all backends)
+
+`docs/atlas/cypher/` MUST contain: `schema.cypher`, per-layer node/rel data
+(`atlas-layers.cypher`, `atlas-services.cypher`, `atlas-bugs.cypher`), the inter-layer link
+relationships (`atlas-relationships.cypher`), and `queries.cypher`. The inter-layer relationships
+(`DEPENDS_ON`, `CALLS`, `EXPOSES`, `USES_DTO`, `REFERENCES`, `READS_FROM`, `WRITES_TO`, `USES_ENV`,
+`TRAVERSES`) are required in every backend's schema. Full model + adapters: `reference.md`.
+
+### staleness-map.yaml / index.md recording
+
+```yaml
+# Top of docs/atlas/staleness-map.yaml
+graph_backend: portable-cypher-only   # one of: kuzu | lbug | neo4j | portable-cypher-only
+analyzer_mode: rust-cargo-metadata    # one of: python-ast | rust-cargo-metadata | static-approximation
+staleness_map:
+  - glob: "docker-compose*.yml"
+    ...
 ```
 
 ---

@@ -1,6 +1,7 @@
 # Code Atlas Reference
 
-Error codes, staleness trigger table, Kuzu ingestion schema, and other reference material.
+Error codes, staleness trigger table, the canonical engine-neutral graph model + per-backend
+schema adapters, and other reference material.
 
 ## Staleness Trigger Table
 
@@ -55,13 +56,51 @@ done
 | `SEC_16_ABSOLUTE_PATH`        | Absolute path detected in bug report evidence        | Convert to relative path before filing.                                     |
 | `STALENESS_DETECTED`          | One or more atlas layers are stale                   | Run rebuild for affected layers.                                            |
 | `SVG_RENDER_SKIPPED`          | Graphviz or Mermaid CLI not installed                | Install `dot` and/or `mmdc` for SVG rendering.                              |
+| `GRAPH_BACKEND_SELECTED`      | Records the live graph backend chosen for this build | Informational. Value is one of `kuzu`, `lbug`, `neo4j`, `portable-cypher-only`; recorded in `index.md` and `staleness-map.yaml`. |
+| `GRAPH_BACKEND_UNAVAILABLE`   | No live graph engine detected                        | Not an error. Falls back to `portable-cypher-only`; portable artifacts still emitted. |
 
-## Kuzu Ingestion Schema
+## Canonical Graph Model (Engine-Neutral)
 
-When ingesting the atlas into a Kuzu code graph for queryable traversal, use these node and
-relationship types:
+The atlas encodes all 8 layers and the **inter-layer link relationships** as a single graph. This
+model is **engine-neutral**: it is the canonical schema for the portable OpenCypher artifacts under
+`docs/atlas/cypher/` (always emitted), and it is loaded into whichever live backend is selected
+(`kuzu`, `lbug`, or `neo4j`) — or none, when `graph_backend: portable-cypher-only` is recorded.
 
-### Node Types
+The node and relationship types below are the source of truth. Per-backend **schema emission
+adapters** follow; the inter-layer link relationships are **mandatory in every adapter**.
+
+### Node Types (canonical)
+
+| Node       | Layer source        | Key        | Properties                          |
+| ---------- | ------------------- | ---------- | ----------------------------------- |
+| `Service`  | runtime-topology    | `name`     | language, port, path                |
+| `Package`  | compile-deps        | `name`     | version, service                    |
+| `Route`    | api-contracts       | `path`     | method, handler, auth               |
+| `DTO`      | data-flow           | `name`     | file, line                          |
+| `Symbol`   | ast-lsp-bindings    | `name`     | file, line, exported                |
+| `EnvVar`   | inventory           | `name`     | required, default_value             |
+| `DataStore`| data-flow / runtime | `name`     | type, version                       |
+| `Journey`  | user-journeys       | `name`     | verdict                             |
+
+### Relationship Types (canonical — inter-layer links)
+
+These relationships are the **first-class links between layers** and are mandatory in all backends:
+
+| Relationship | From      | To        | Properties          | Links layers                     |
+| ------------ | --------- | --------- | ------------------- | -------------------------------- |
+| `DEPENDS_ON` | Package   | Package   | —                   | compile-deps internal            |
+| `CALLS`      | Service   | Service   | protocol            | runtime-topology                 |
+| `EXPOSES`    | Service   | Route     | —                   | runtime-topology ↔ api-contracts |
+| `USES_DTO`   | Route     | DTO       | direction           | api-contracts ↔ data-flow        |
+| `REFERENCES` | Symbol    | Symbol    | —                   | ast-lsp-bindings                 |
+| `READS_FROM` | Service   | DataStore | —                   | runtime-topology ↔ data-flow     |
+| `WRITES_TO`  | Service   | DataStore | —                   | runtime-topology ↔ data-flow     |
+| `USES_ENV`   | Service   | EnvVar    | —                   | runtime-topology ↔ inventory     |
+| `TRAVERSES`  | Journey   | Route     | step_order          | user-journeys ↔ api-contracts    |
+
+### Schema Emission Adapter — `kuzu`
+
+Kuzu uses typed `CREATE NODE/REL TABLE` DDL with explicit primary keys:
 
 ```cypher
 CREATE NODE TABLE Service(name STRING, language STRING, port INT64, path STRING, PRIMARY KEY(name))
@@ -72,11 +111,7 @@ CREATE NODE TABLE Symbol(name STRING, file STRING, line INT64, exported BOOLEAN,
 CREATE NODE TABLE EnvVar(name STRING, required BOOLEAN, default_value STRING, PRIMARY KEY(name))
 CREATE NODE TABLE DataStore(name STRING, type STRING, version STRING, PRIMARY KEY(name))
 CREATE NODE TABLE Journey(name STRING, verdict STRING, PRIMARY KEY(name))
-```
 
-### Relationship Types
-
-```cypher
 CREATE REL TABLE DEPENDS_ON(FROM Package, TO Package)
 CREATE REL TABLE CALLS(FROM Service, TO Service, protocol STRING)
 CREATE REL TABLE EXPOSES(FROM Service, TO Route)
@@ -88,7 +123,54 @@ CREATE REL TABLE USES_ENV(FROM Service, TO EnvVar)
 CREATE REL TABLE TRAVERSES(FROM Journey, TO Route, step_order INT64)
 ```
 
+### Schema Emission Adapter — `lbug` / ladybug (embedded Rust graph store)
+
+The lbug/ladybug backend is the embedded graph store linked into native-Rust/amplihack binaries
+(e.g. the Simard daemon). It loads the **same portable cypher artifacts** and is expressed in
+OpenCypher-compatible DDL. Nodes carry a `:Label`; the inter-layer relationships are identical:
+
+```cypher
+CREATE (:Service {name, language, port, path})
+CREATE (:Package {name, version, service})
+CREATE (:Route {method, path, handler, auth})
+CREATE (:DTO {name, file, line})
+CREATE (:Symbol {name, file, line, exported})
+CREATE (:EnvVar {name, required, default_value})
+CREATE (:DataStore {name, type, version})
+CREATE (:Journey {name, verdict})
+// Inter-layer links (mandatory): DEPENDS_ON, CALLS, EXPOSES, USES_DTO,
+// REFERENCES, READS_FROM, WRITES_TO, USES_ENV, TRAVERSES
+MATCH (a:Service {name: $from}), (r:Route {path: $to}) CREATE (a)-[:EXPOSES]->(r)
+```
+
+lbug is populated in-process from the artifact set; kuzu and Python are not used on native-Rust
+projects (hard repo policy).
+
+### Schema Emission Adapter — `neo4j` / OpenCypher server
+
+Neo4j and any OpenCypher-compatible server use constraints plus labelled nodes:
+
+```cypher
+CREATE CONSTRAINT service_name IF NOT EXISTS FOR (s:Service) REQUIRE s.name IS UNIQUE;
+CREATE CONSTRAINT route_path   IF NOT EXISTS FOR (r:Route)   REQUIRE r.path IS UNIQUE;
+// ...one uniqueness constraint per node key...
+MERGE (s:Service {name: $name}) SET s.language = $language, s.port = $port, s.path = $path;
+MERGE (r:Route {path: $path})   SET r.method = $method, r.handler = $handler, r.auth = $auth;
+MATCH (s:Service {name: $from}), (r:Route {path: $to}) MERGE (s)-[:EXPOSES]->(r);
+// Inter-layer links (mandatory): DEPENDS_ON, CALLS, EXPOSES, USES_DTO,
+// REFERENCES, READS_FROM, WRITES_TO, USES_ENV, TRAVERSES
+```
+
+### `portable-cypher-only`
+
+When no engine is available, no live ingestion occurs: the portable artifacts under
+`docs/atlas/cypher/` are still fully emitted (canonical model above) and `graph_backend:
+portable-cypher-only` is recorded in `index.md` and `staleness-map.yaml`. This is a first-class,
+recorded outcome — never a silent skip.
+
 ### Example Queries
+
+These portable OpenCypher queries run against any backend (or against the artifacts directly):
 
 ```cypher
 -- Show all paths from login to database write
@@ -114,7 +196,8 @@ ORDER BY t.step_order
 
 | Language Feature         | Coverage | Notes                                                               |
 | ------------------------ | -------- | ------------------------------------------------------------------- |
-| Python modules (AST)     | 95%      | Delegates to code-visualizer; dynamic imports missed                |
+| Python modules (AST)     | 95%      | `python-ast` analyzer via code-visualizer (Python repos only); dynamic imports missed |
+| Rust modules (cargo)     | 85%      | `rust-cargo-metadata` analyzer: `cargo metadata` + rust-analyzer/ripgrep; macro-heavy code harder |
 | TypeScript/JS routes     | 85%      | Static grep-based; decorated routes (NestJS) require extra patterns |
 | Go routes (chi/gin/echo) | 80%      | Most router patterns covered; generated routes may be missed        |
 | .NET (ASP.NET Core)      | 75%      | Controllers and minimal API both covered; Razor Pages partially     |

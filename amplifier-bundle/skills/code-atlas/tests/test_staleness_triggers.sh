@@ -4,6 +4,14 @@
 # Tests that check-atlas-staleness.sh correctly detects stale layers
 # for all documented trigger patterns.
 #
+# NOTE on the backend-agnostic graph: the portable graph artifacts under
+# docs/atlas/cypher/ encode ALL layers, so they are regenerated whenever ANY
+# layer is marked stale by the triggers below (there is no separate graph
+# trigger). The graph is engine-neutral — regeneration and the recorded
+# graph_backend (kuzu | lbug | neo4j | portable-cypher-only) do not depend on
+# kuzu or Python being installed. Rust projects are covered here via the
+# Cargo.toml (Layer 2) and *.rs source triggers.
+#
 # Usage: bash .claude/skills/code-atlas/tests/test_staleness_triggers.sh
 # Exit: 0 = all tests passed, 1 = one or more tests failed
 
@@ -101,8 +109,12 @@ assert_layer_detected "Layer2: package.json"            2 "package.json"
 assert_layer_detected "Layer2: nested package.json"     2 "services/web/package.json"
 assert_layer_detected "Layer2: csproj"                  2 "MyApp.csproj"
 assert_layer_detected "Layer2: Cargo.toml"              2 "Cargo.toml"
+assert_layer_detected "Layer2: nested Cargo.toml"           2 "services/api/Cargo.toml"
 assert_layer_detected "Layer2: requirements.txt"        2 "requirements.txt"
 assert_layer_detected "Layer2: pyproject.toml"          2 "pyproject.toml"
+
+# Rust source triggers ast-lsp-bindings (native-Rust support; no Python needed)
+assert_layer_detected "Rust: .rs source (ast-lsp-bindings)" 8 "services/api/src/main.rs"
 
 # ---------------------------------------------------------------------------
 # Layer 3: API Contracts triggers (including previously undocumented patterns)

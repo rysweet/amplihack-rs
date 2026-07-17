@@ -77,13 +77,23 @@ code-atlas (this skill)
     - Publication workflow (GitHub Pages, mkdocs, SVG)
 
   Delegates to:
-    code-visualizer skill       Python AST module analysis (compile-deps + service-components fallback)
+    compile-deps / service-components analyzer (language-pluggable; mode label always visible):
+      code-visualizer skill     Python repos ONLY: Python AST module analysis (optional adapter)
+      cargo metadata + rust-analyzer/ripgrep   Rust repos: dependency + module static approximation
+      analyzer agent            Any other language: static-approximation dep/module mapping
     mermaid-diagram-generator   Mermaid syntax generation and formatting
     lsp-setup skill             Layer ast-lsp-bindings: LSP-assisted symbol queries (optional)
     visualization-architect     Complex DOT graph rendering and cross-layer layouts
     analyzer agent              Deep codebase investigation and dependency mapping
     reviewer agent              Contradiction hunting (Passes 1, 2, 3)
 ```
+
+The compile-deps / service-components analyzer is **language-pluggable**: no adapter is
+hard-required. The Python `code-visualizer` is used only for Python repositories; Rust repos
+use `cargo metadata` + rust-analyzer/ripgrep static approximation; all other languages fall
+back to the `analyzer` agent. The chosen analyzer is stated via a visible mode label
+(`analyzer: python-ast | rust-cargo-metadata | static-approximation`), mirroring how
+ast-lsp-bindings labels its mode. **Python is never required for non-Python repositories.**
 
 ## When to Use This Skill
 
@@ -146,7 +156,10 @@ A table is only produced as a companion to a diagram, never as a replacement.
 
 The atlas build follows these phases in order:
 
-1. **Validate Prerequisites** -- Check tools (mmdc, dot, kuzu), detect LSP mode
+1. **Validate Prerequisites** -- Check tools (mmdc, dot), select the graph backend
+   (auto-detect order: `kuzu` -> `lbug` -> `neo4j` -> `portable-cypher-only`), select the
+   compile-deps analyzer (`python-ast` | `rust-cargo-metadata` | `static-approximation`),
+   detect LSP mode
 2. **Build Layers 1-4** (structural) -- repo-surface, ast-lsp-bindings, compile-deps, runtime-topology
 3. **Build Layers 5-8** (behavioral) -- api-contracts, data-flow, service-components, user-journeys
 4. **Verify All 8 Layers** -- Hard gate: every slug must have .mmd + .dot + rendered .svg + README with embedded images
@@ -155,7 +168,12 @@ The atlas build follows these phases in order:
 7. **Merge Findings** -- Deduplicate across both arms
 8. **Multi-Agent Validation** -- 3 specialists vote independently; threshold >= 2/3 to confirm
 9. **File Issues** -- Validated bugs filed as GitHub issues (never stored in atlas)
-10. **Kuzu Ingestion + OpenCypher** -- Ingest to graph (REQUIRED) + generate standalone .cypher files
+10. **Emit Portable Graph + Live Ingest (`ingest-to-graph`)** -- ALWAYS emit the portable
+    OpenCypher artifact set (schema + per-layer node/rel data + queries) encoding all 8 layers
+    AND their inter-layer link relationships; then load those same artifacts into the selected
+    live backend (`kuzu` | `lbug` | `neo4j`), or record `portable-cypher-only` when no engine is
+    available. The selected backend is ALWAYS recorded in `index.md` and `staleness-map.yaml`;
+    never a silent skip.
 11. **Publish Atlas** -- Render SVGs, write index, update mkdocs nav
 12. **Final Checklist Review** -- Independent reviewer verifies completeness of all deliverables
 
@@ -191,12 +209,65 @@ Layer ast-lsp-bindings operates in one of two modes, always labelled on line 1 o
 
 The mode label is never absent, never defaulted silently.
 
+## Graph Representation & Backend Selection
+
+The atlas produces a **queryable graph representation of the code across all 8 layers, with
+first-class links between the layers**. This goal is engine-neutral. It is satisfied by two
+things working together:
+
+1. **Portable graph artifacts (mandatory, always emitted).** The artifact set under
+   `docs/atlas/cypher/` is the required, engine-neutral deliverable. It encodes every layer's
+   nodes and relationships PLUS the inter-layer link relationships in portable OpenCypher.
+   This is generated on every build regardless of which live database (if any) is present.
+2. **Live-DB ingestion (pluggable, selectable backend).** Loading the artifacts into a running
+   graph engine is an optional convenience, never a hard dependency. Supported backends:
+
+   | `graph_backend`         | Engine                                                      | Notes                                                              |
+   | ----------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------ |
+   | `kuzu`                  | Kuzu embedded graph DB (Python/CLI)                         | `CREATE NODE/REL TABLE ... PRIMARY KEY` schema adapter             |
+   | `lbug`                  | Embedded lbug/ladybug Rust graph store                      | Native to Simard and other native-Rust/amplihack projects         |
+   | `neo4j`                 | Neo4j or any OpenCypher-compatible server                   | Standard OpenCypher schema adapter                                 |
+   | `portable-cypher-only`  | None — emit portable artifacts only                         | First-class recorded outcome when no engine is available          |
+
+**Selection.** Pass an explicit `graph_backend` option to force a backend; otherwise the skill
+auto-detects in this order: `kuzu` -> `lbug` -> `neo4j` -> `portable-cypher-only`. Absence of
+kuzu (or Python) MUST NOT hard-fail the build.
+
+**Fail-visible, never silent.** `portable-cypher-only` is a **visible, recorded outcome**, never
+a silent skip. Every build records `graph_backend: <kuzu|lbug|neo4j|portable-cypher-only>` in
+both `docs/atlas/index.md` (generation metadata) and `docs/atlas/staleness-map.yaml` (top-level
+field). The portable cypher graph is always emitted.
+
+**Native-Rust / Simard guidance.** For Simard and other native-Rust/amplihack projects the graph
+backend is `lbug` — the embedded graph store already linked into the Rust binary — loaded from the
+same portable cypher artifacts. Under those projects' hard NO-kuzu / NO-Python policy, kuzu and
+Python are NOT used; the analyzer runs in `rust-cargo-metadata` or `static-approximation` mode and
+the backend is `lbug` (or `portable-cypher-only` if the store is not being populated).
+
+The canonical engine-neutral graph model and the per-backend schema emission adapters (kuzu,
+lbug/ladybug, neo4j) are defined in [reference.md](./reference.md). The inter-layer link
+relationships are mandatory in every adapter.
+
+### Compile-deps / Service-components Analyzer Modes
+
+Compile-deps and service-components analysis is **language-pluggable** and its mode is always
+labelled (mirroring ast-lsp-bindings):
+
+| Mode                   | Trigger                       | Mechanism                                            |
+| ---------------------- | ----------------------------- | ---------------------------------------------------- |
+| `python-ast`           | Python repo detected          | Delegates to `code-visualizer` (optional adapter)    |
+| `rust-cargo-metadata`  | Rust repo detected            | `cargo metadata` + rust-analyzer/ripgrep approximation |
+| `static-approximation` | Any other language / fallback | ripgrep + `analyzer` agent static mapping            |
+
+The analyzer mode label is never absent and never defaulted silently. Python is never required
+for non-Python repositories.
+
 ## Output Structure
 
 ```
 docs/atlas/
-  index.md
-  staleness-map.yaml
+  index.md             (records graph_backend: <kuzu|lbug|neo4j|portable-cypher-only>)
+  staleness-map.yaml   (top-level graph_backend: <...> field)
   {slug}/
     README.md          (embeds SVG diagrams inline with ![alt](file.svg))
     *-mermaid.svg      (rendered Mermaid diagrams)
@@ -204,12 +275,13 @@ docs/atlas/
     *.mmd              (Mermaid source)
     *.dot              (Graphviz source)
     inventory.md       (where applicable)
-  cypher/
-    schema.cypher      (CREATE NODE/REL TABLE statements)
-    atlas-layers.cypher
+  cypher/              (ALWAYS emitted — the mandatory, engine-neutral graph deliverable)
+    schema.cypher      (canonical graph model; backend-specific schema adapter selected)
+    atlas-layers.cypher       (per-layer node/rel data for all 8 layers)
     atlas-services.cypher
     atlas-bugs.cypher
-    atlas-relationships.cypher
+    atlas-relationships.cypher (inter-layer link relationships — DEPENDS_ON, CALLS, EXPOSES,
+                                USES_DTO, REFERENCES, READS_FROM, WRITES_TO, USES_ENV, TRAVERSES)
     queries.cypher     (ready-to-run example queries)
 ```
 
@@ -217,10 +289,14 @@ docs/atlas/
 
 1. Bug hunt results are **never stored in the atlas**. All findings are filed as
    GitHub issues with the `code-atlas-bughunt` label.
-2. Kuzu ingestion is **required, not optional**. If Kuzu is unavailable, fail
-   loudly and attempt to fix (install kuzu package). Never silently skip.
-3. OpenCypher `.cypher` files are **always generated** alongside Kuzu ingestion
-   for portability to any graph database.
+2. A graph representation is **required**; the **live backend is pluggable** and the selected
+   backend is **always recorded** (`graph_backend: <kuzu|lbug|neo4j|portable-cypher-only>` in
+   `index.md` and `staleness-map.yaml`). Absence of kuzu (or Python) never hard-fails the build.
+   Never silently drop graph output.
+3. The **portable OpenCypher graph is always emitted** under `docs/atlas/cypher/` — schema,
+   per-layer node/rel data for all 8 layers, and the inter-layer link relationships — regardless
+   of which live backend is selected. This is what satisfies "a graph representation of the code
+   across layers with links between them."
 
 ## Staleness Detection
 
@@ -271,7 +347,7 @@ Typed contracts for all skill delegations and filesystem layout:
 
 ## Reference
 
-Error codes, Kuzu ingestion schema, staleness trigger table:
+Error codes, canonical engine-neutral graph model + per-backend schema adapters, staleness trigger table:
 [reference.md](./reference.md)
 
 ## Success Criteria
@@ -290,7 +366,9 @@ A complete atlas satisfies:
 
 - **Not a static analysis tool**: Uses grep, AST, config parsing -- not a compiler
 - **Staleness is heuristic**: Git diff pattern matching, not semantic analysis
-- **Python AST delegation**: Python module graphs delegate to code-visualizer (Python-only)
+- **Language-pluggable analyzer**: compile-deps/service-components analysis uses a per-language
+  adapter (`python-ast` via code-visualizer, `rust-cargo-metadata`, or `static-approximation`).
+  Python is not required for non-Python repos; the active mode is always labelled.
 - **SVG rendering requires Graphviz/Mermaid CLI**: CI environments need these installed
 - **Bug hunting is probabilistic**: Human review required before filing
 - **Single-repository focus**: Cross-repo deps require manual configuration
@@ -309,6 +387,9 @@ Five rules that are never negotiable:
 2. **Mode is always visible.** ast-lsp-bindings README always states its mode on line 1.
 3. **Three-pass bug hunting.** Pass 1 hunts. Pass 2 validates. Pass 3 verdicts per journey.
 4. **Bugs go to issues, never the atlas.** The atlas is a living architecture doc, not a bug report.
-5. **Kuzu is required, not optional.** Never silently skip graph ingestion. Fail loudly and fix.
+5. **A graph representation is required; the live backend is pluggable.** The portable OpenCypher
+   graph (all 8 layers + inter-layer links) is always emitted; the selected live backend
+   (`kuzu` | `lbug` | `neo4j` | `portable-cypher-only`) is always recorded. Never silently drop
+   graph output; absence of kuzu never hard-fails the build.
 
 **Rebuild from code truth. Hunt contradictions. File evidence-backed bugs. Repeat.**

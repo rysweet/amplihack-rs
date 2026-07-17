@@ -21,6 +21,7 @@
 #   8. test_publication_workflow.sh     — SVG generation and GitHub Pages readiness
 #   9. test_layer7_8.sh                 — Layer 7/8 output contracts + SEC-11/12/15/16
 #  10. test_no_silent_degradation.sh    — Density guard FORBIDDEN_PATTERNS §2 compliance
+#  11. test_graph_backend.sh             — Backend-agnostic graph (portable cypher + pluggable backend)
 
 # Intentionally omits -e: test failures must not abort the suite runner.
 # Individual test scripts use set -euo pipefail.
@@ -178,6 +179,13 @@ run_suite \
 run_suite \
     "No Silent Degradation (density guard + FORBIDDEN_PATTERNS §2)" \
     "${SCRIPT_DIR}/test_no_silent_degradation.sh"
+
+# ---------------------------------------------------------------------------
+# Suite 11: Backend-Agnostic Graph Representation (v2.x)
+# ---------------------------------------------------------------------------
+run_suite \
+    "Backend-Agnostic Graph (portable cypher + pluggable kuzu/lbug/neo4j backend)" \
+    "${SCRIPT_DIR}/test_graph_backend.sh"
 
 # ---------------------------------------------------------------------------
 # Summary

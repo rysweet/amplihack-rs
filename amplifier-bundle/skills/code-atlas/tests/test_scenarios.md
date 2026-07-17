@@ -123,6 +123,11 @@ Expected output: `Layer 3 STALE` (and not Layer 1 or Layer 2).
 - Each directory has at least one `.mmd` or `.dot` file and one `.svg` file
 - `docs/atlas/README.md` exists and links to all 8 layers
 - `docs/atlas/staleness-map.yaml` exists and contains at least 6 glob entries
+- `docs/atlas/staleness-map.yaml` records a top-level `graph_backend:` field
+  (one of `kuzu | lbug | neo4j | portable-cypher-only`)
+- `docs/atlas/cypher/` exists and always contains `schema.cypher`, `atlas-layers.cypher`,
+  `atlas-relationships.cypher`, and `queries.cypher` (portable graph — emitted regardless of backend)
+- `docs/atlas/index.md` records the resolved `graph_backend` and `analyzer_mode`
 
 **CI validation:**
 
@@ -143,7 +148,7 @@ echo "All layer directories present."
 **Fixture:** A repository with:
 
 - No `docker-compose.yml` or Kubernetes manifests (Layer 1 source missing)
-- No Python files (code-visualizer delegation should be skipped)
+- No Python files (`code-visualizer`/`python-ast` adapter NOT selected — must not be required)
 - Valid TypeScript routes (Layer 3 should succeed)
 
 **Command:** `/code-atlas`
@@ -152,13 +157,49 @@ echo "All layer directories present."
 
 - Layer 1: Skipped with `SkillError { code: "LAYER_SOURCE_NOT_FOUND", layer: 1 }`
 - Layers 2, 3, 4, 5, 6: Completed normally
+- compile-deps analyzer runs in `static-approximation` mode (no Python required); mode is recorded
 - `completion_summary.errors` contains exactly one error for Layer 1
 - Build does NOT halt on the Layer 1 error
+- Portable graph still emitted under `docs/atlas/cypher/`; `graph_backend` recorded
+
+---
+
+## Scenario 7: Backend-Agnostic Graph — No Kuzu, No Python (Native Rust)
+
+**Purpose:** Prove the graph representation is backend-agnostic. A build with NO kuzu and NO Python
+available still succeeds, always emits the portable cypher graph with cross-layer links, and records
+the selected backend (fail-visible, never a silent skip).
+
+**Fixture:** A native Rust service (Simard-style, hard NO-kuzu / NO-Python policy):
+
+- `Cargo.toml` + `src/main.rs` (axum), `src/routes.rs`, `src/dto.rs`
+- No `kuzu` binary/package on PATH; no Python interpreter on PATH
+- `lbug`/ladybug embedded store available in-process (optional)
+
+**Command:** `/code-atlas`
+
+**Expected:**
+
+- Build **succeeds** (absence of kuzu/Python does NOT hard-fail)
+- compile-deps analyzer runs in `rust-cargo-metadata` mode; label recorded (never `python-ast`)
+- `graph_backend` resolves to `lbug` (if the embedded store is populated) or `portable-cypher-only`
+  (if not) — and is recorded in BOTH `docs/atlas/index.md` and `docs/atlas/staleness-map.yaml`
+- `docs/atlas/cypher/` is present with `schema.cypher`, `atlas-layers.cypher`,
+  `atlas-relationships.cypher`, and `queries.cypher`
+- `atlas-relationships.cypher` contains the inter-layer link relationships (`EXPOSES`, `USES_DTO`,
+  `USES_ENV`, `TRAVERSES`, etc.) — cross-layer links are present in every backend
+- `schema.cypher` uses the `lbug`/OpenCypher adapter (no `CREATE NODE TABLE` kuzu-only DDL required)
+
+**Pass criteria:**
+
+- No error asserts "Kuzu is required" or halts the build when kuzu is absent
+- `grep graph_backend docs/atlas/staleness-map.yaml` returns a value from the allowed enum
+- The portable graph is never silently dropped
 
 ---
 
 ## Acceptance Criteria
 
-The skill is considered ready to ship when all 6 scenarios produce the described outputs without manual intervention. Automated scenarios (1–5) must be run against fixture codebases in CI.
+The skill is considered ready to ship when all 7 scenarios produce the described outputs without manual intervention. Automated scenarios (1–5, 7) must be run against fixture codebases in CI.
 
-Run order: Scenario 1 → 6 (simpler to more complex). Scenario 4 (`test_staleness_triggers.sh`) must pass before Scenarios 2 and 3.
+Run order: Scenario 1 → 7 (simpler to more complex). Scenario 4 (`test_staleness_triggers.sh`) must pass before Scenarios 2 and 3. Scenario 7 (backend-agnostic graph) must pass with neither kuzu nor Python installed.
