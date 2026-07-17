@@ -2,9 +2,11 @@ use super::launcher::{
     VALID_DELEGATES, write_classic_launcher, write_executable_script, write_recipe_launcher,
 };
 use super::models::Workstream;
+use crate::util::run_output_with_timeout;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 #[test]
 fn test_valid_delegates() {
@@ -81,10 +83,9 @@ fn assert_script_is_lf_only_and_bash_valid(script: &Path) {
         script.display()
     );
 
-    let output = Command::new("bash")
-        .arg("-n")
-        .arg(script)
-        .output()
+    let mut command = Command::new("bash");
+    command.arg("-n").arg(script);
+    let output = run_output_with_timeout(command, Duration::from_secs(2))
         .unwrap_or_else(|err| panic!("failed to run bash -n for {}: {err}", script.display()));
 
     assert!(

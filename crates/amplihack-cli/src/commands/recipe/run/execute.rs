@@ -1,14 +1,24 @@
 use super::correlation::{RecipeRunCorrelation, RecipeRunFinalStatus, known_log_paths};
 use super::*;
 use crate::env_builder::{EnvBuilder, active_agent_binary};
+#[cfg(windows)]
+use crate::util::run_with_timeout;
+use crate::util::truncate_chars_with_notice;
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write as IoWrite};
-use std::process::Stdio;
-use std::sync::{Arc, Mutex};
+use std::process::{Child, ExitStatus, Stdio};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
+use std::time::{Duration, Instant};
 
 const STDERR_TAIL_LINES: usize = 5;
 const CAPTURED_STDERR_LINES: usize = 200;
+const RECIPE_RUNNER_DEFAULT_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
+const RECIPE_RUNNER_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const RECIPE_RUNNER_PIPE_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(windows)]
+const RECIPE_RUNNER_TERMINATE_TIMEOUT: Duration = Duration::from_secs(5);
+const RECIPE_RUNNER_TIMEOUT_ENV: &str = "AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS";
 
 /// Threshold in bytes for total `--set` argument size before we switch
 /// to passing context via a temp file. Well under the typical Linux
@@ -187,7 +197,7 @@ pub(super) fn execute_recipe_via_rust(
     }
 
     // Pass context as a file when the total size would risk E2BIG (os error 7).
-    // The temp file is kept alive until command.output() completes.
+    // The temp file is kept alive until the recipe runner child completes.
     let _context_file = pass_context(&mut command, context)?;
 
     // Issue #784 / #4583: export recipe context as environment variables so
@@ -236,7 +246,7 @@ pub(super) fn execute_recipe_via_rust(
     command.env("AMPLIHACK_WORKFLOW_ARTIFACT_DIR", &artifact_dir);
     command.env("TMPDIR", &tmp_dir);
 
-    spawn_with_streaming_stderr(command, correlation)
+    spawn_with_streaming_stderr(command, correlation, recipe_path, recipe_runner_timeout())
 }
 
 /// Spawn the runner with stdout captured (we need to parse JSON from it)
@@ -246,8 +256,24 @@ pub(super) fn execute_recipe_via_rust(
 fn spawn_with_streaming_stderr(
     mut command: Command,
     correlation: RecipeRunCorrelation,
+    recipe_path: &Path,
+    timeout: Duration,
 ) -> Result<RecipeRunResult> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: `pre_exec` runs after fork and before exec. `setsid` is
+        // async-signal-safe and lets timeout cleanup terminate the recipe tree.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
     correlation.emit_early();
     let mut child = match command.spawn() {
         Ok(child) => child,
@@ -264,9 +290,12 @@ fn spawn_with_streaming_stderr(
     let child_pid = Some(child.id());
 
     let captured_stderr: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
+    let dropped_stderr_lines: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
     let stderr_handle = child.stderr.take().expect("piped stderr");
     let captured_clone = Arc::clone(&captured_stderr);
-    let pump = thread::spawn(move || {
+    let dropped_clone = Arc::clone(&dropped_stderr_lines);
+    let (stderr_done_tx, stderr_done_rx) = mpsc::channel();
+    thread::spawn(move || {
         // Read RAW BYTES, not str-typed lines(): an Err(InvalidData) from
         // non-UTF-8 stderr would otherwise terminate the pump silently and
         // the child can then block on a full pipe (#366 / COE feedback).
@@ -281,7 +310,7 @@ fn spawn_with_streaming_stderr(
                     let line = String::from_utf8_lossy(&buf);
                     let trimmed = line.trim_end_matches(['\r', '\n']);
                     let _ = writeln!(stderr.lock(), "{trimmed}");
-                    push_bounded_stderr_line(&captured_clone, trimmed.to_string());
+                    push_bounded_stderr_line(&captured_clone, &dropped_clone, trimmed.to_string());
                 }
                 // I/O error reading from the pipe: log and stop pumping —
                 // we MUST NOT spin or leak the thread, but the child will
@@ -289,23 +318,65 @@ fn spawn_with_streaming_stderr(
                 Err(_) => break,
             }
         }
+        let _ = stderr_done_tx.send(());
     });
 
-    let mut stdout_buf = String::new();
     let mut stdout_handle = child.stdout.take().expect("piped stdout");
     use std::io::Read;
-    stdout_handle
-        .read_to_string(&mut stdout_buf)
-        .context("failed to read recipe-runner-rs stdout")?;
+    let (stdout_tx, stdout_rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut stdout_buf = String::new();
+        let result = stdout_handle
+            .read_to_string(&mut stdout_buf)
+            .map(|_| stdout_buf);
+        let _ = stdout_tx.send(result);
+    });
 
-    let status = child
-        .wait()
-        .context("failed to wait for recipe-runner-rs")?;
-    pump.join().expect("stderr pump thread panicked");
+    let status = match wait_for_recipe_runner(&mut child, timeout)
+        .context("failed to wait for recipe-runner-rs")?
+    {
+        Some(status) => status,
+        None => {
+            let pid = child.id();
+            terminate_recipe_runner(&mut child)?;
+            let _summary = correlation.emit_final(
+                RecipeRunFinalStatus::Failure,
+                child_pid,
+                None,
+                known_log_paths(None),
+            );
+            anyhow::bail!(
+                "recipe-runner-rs timed out after {:?} (pid {}, recipe {}, working dir {})",
+                timeout,
+                pid,
+                recipe_path.display(),
+                correlation.cwd()
+            );
+        }
+    };
+
+    let stdout_buf = stdout_rx
+        .recv_timeout(RECIPE_RUNNER_PIPE_DRAIN_TIMEOUT)
+        .with_context(|| {
+            format!(
+                "recipe-runner-rs stdout did not close within {:?} after process exit",
+                RECIPE_RUNNER_PIPE_DRAIN_TIMEOUT
+            )
+        })?
+        .context("failed to read recipe-runner-rs stdout")?;
+    let _ = stderr_done_rx.recv_timeout(RECIPE_RUNNER_PIPE_DRAIN_TIMEOUT);
 
     let captured = captured_stderr.lock().expect("stderr mutex");
+    let dropped = *dropped_stderr_lines
+        .lock()
+        .expect("stderr drop-count mutex");
     let stderr_joined = captured.iter().cloned().collect::<Vec<_>>().join("\n");
-    match parse_recipe_output(&stdout_buf, &stderr_joined, status.success()) {
+    match parse_recipe_output_with_stderr_drops(
+        &stdout_buf,
+        &stderr_joined,
+        status.success(),
+        dropped,
+    ) {
         Ok(mut result) => {
             let final_status = if status.success() && result.success {
                 RecipeRunFinalStatus::Success
@@ -364,10 +435,15 @@ fn recipe_name_for_correlation(recipe_path: &Path) -> String {
         .unwrap_or_else(|| recipe_path.display().to_string())
 }
 
-fn push_bounded_stderr_line(captured: &Arc<Mutex<VecDeque<String>>>, line: String) {
+fn push_bounded_stderr_line(
+    captured: &Arc<Mutex<VecDeque<String>>>,
+    dropped: &Arc<Mutex<usize>>,
+    line: String,
+) {
     let mut captured = captured.lock().expect("stderr mutex");
     if captured.len() == CAPTURED_STDERR_LINES {
         captured.pop_front();
+        *dropped.lock().expect("stderr drop-count mutex") += 1;
     }
     captured.push_back(line);
 }
@@ -381,14 +457,24 @@ fn push_bounded_stderr_line(captured: &Arc<Mutex<VecDeque<String>>>, line: Strin
 /// - Empty/whitespace-only stdout + failure: errors with the meaningful stderr
 ///   tail surfaced so callers see the upstream cause.
 /// - Non-empty stdout: parses as JSON; on failure, errors with a bounded stdout
-///   preview (first 200 chars) and stderr tail in the `anyhow::Context`.
+///   preview that reports discarded chars and stderr tail in the `anyhow::Context`.
 ///
 /// `RecipeRunResult` does not use `deny_unknown_fields`, so future
 /// recipe-runner-rs versions may add fields without breaking us.
+#[cfg(test)]
 pub(super) fn parse_recipe_output(
     stdout: &str,
     stderr: &str,
     exit_success: bool,
+) -> Result<RecipeRunResult> {
+    parse_recipe_output_with_stderr_drops(stdout, stderr, exit_success, 0)
+}
+
+fn parse_recipe_output_with_stderr_drops(
+    stdout: &str,
+    stderr: &str,
+    exit_success: bool,
+    prior_discarded_stderr_lines: usize,
 ) -> Result<RecipeRunResult> {
     let trimmed = stdout.trim();
     if trimmed.is_empty() {
@@ -413,16 +499,16 @@ pub(super) fn parse_recipe_output(
         }
         anyhow::bail!(
             "recipe-runner-rs produced no output and exited with failure\nstderr tail:\n{}",
-            meaningful_stderr_tail(stderr)
+            meaningful_stderr_tail_with_prior_drops(stderr, prior_discarded_stderr_lines)
         );
     }
 
     serde_json::from_str::<RecipeRunResult>(trimmed).with_context(|| {
-        let preview: String = trimmed.chars().take(200).collect();
+        let preview = truncate_chars_with_notice(trimmed, 200);
         format!(
-            "recipe-runner-rs produced non-JSON stdout (first 200 chars): {}\nstderr tail:\n{}",
+            "recipe-runner-rs produced non-JSON stdout preview:\n{}\nstderr tail:\n{}",
             preview,
-            meaningful_stderr_tail(stderr)
+            meaningful_stderr_tail_with_prior_drops(stderr, prior_discarded_stderr_lines)
         )
     })
 }
@@ -493,7 +579,15 @@ fn signal_name(signal: i32) -> &'static str {
     }
 }
 
+#[cfg(test)]
 pub(super) fn meaningful_stderr_tail(stderr: &str) -> String {
+    meaningful_stderr_tail_with_prior_drops(stderr, 0)
+}
+
+pub(super) fn meaningful_stderr_tail_with_prior_drops(
+    stderr: &str,
+    prior_discarded_stderr_lines: usize,
+) -> String {
     let lines = stderr
         .lines()
         .map(str::trim)
@@ -508,19 +602,95 @@ pub(super) fn meaningful_stderr_tail(stderr: &str) -> String {
         })
         .collect::<Vec<_>>();
 
-    let selected = if meaningful.is_empty() {
-        lines
-            .into_iter()
-            .rev()
-            .take(STDERR_TAIL_LINES)
-            .collect::<Vec<_>>()
+    let (selected, discarded) = if meaningful.is_empty() {
+        let discarded = lines.len().saturating_sub(STDERR_TAIL_LINES);
+        (
+            lines
+                .into_iter()
+                .rev()
+                .take(STDERR_TAIL_LINES)
+                .collect::<Vec<_>>(),
+            discarded,
+        )
     } else {
-        meaningful
-            .into_iter()
-            .rev()
-            .take(STDERR_TAIL_LINES)
-            .collect::<Vec<_>>()
+        let discarded = meaningful.len().saturating_sub(STDERR_TAIL_LINES);
+        (
+            meaningful
+                .into_iter()
+                .rev()
+                .take(STDERR_TAIL_LINES)
+                .collect::<Vec<_>>(),
+            discarded,
+        )
     };
 
-    selected.into_iter().rev().collect::<Vec<_>>().join("\n")
+    let mut tail = selected.into_iter().rev().collect::<Vec<_>>().join("\n");
+    let discarded = discarded + prior_discarded_stderr_lines;
+    if discarded > 0 {
+        if !tail.is_empty() {
+            tail.push('\n');
+        }
+        tail.push_str(&format!("[truncated: discarded {discarded} stderr lines]"));
+    }
+    tail
+}
+
+fn recipe_runner_timeout() -> Duration {
+    std::env::var(RECIPE_RUNNER_TIMEOUT_ENV)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs)
+        .unwrap_or(RECIPE_RUNNER_DEFAULT_TIMEOUT)
+}
+
+fn wait_for_recipe_runner(
+    child: &mut Child,
+    timeout: Duration,
+) -> std::io::Result<Option<ExitStatus>> {
+    let started = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        if started.elapsed() >= timeout {
+            return Ok(None);
+        }
+        thread::sleep(RECIPE_RUNNER_POLL_INTERVAL.min(timeout.saturating_sub(started.elapsed())));
+    }
+}
+
+fn terminate_recipe_runner(child: &mut Child) -> Result<()> {
+    let pid = child.id();
+    #[cfg(unix)]
+    {
+        let process_group = -(pid as libc::pid_t);
+        let result = unsafe { libc::kill(process_group, libc::SIGKILL) };
+        if result != 0 {
+            let error = std::io::Error::last_os_error();
+            tracing::warn!(pid, %error, "failed to terminate timed-out recipe-runner process group");
+        }
+    }
+    #[cfg(windows)]
+    {
+        let mut command = Command::new("taskkill");
+        command
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let _ = run_with_timeout(command, RECIPE_RUNNER_TERMINATE_TIMEOUT);
+    }
+    child
+        .kill()
+        .or_else(|kill_error| match child.try_wait() {
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => Err(kill_error),
+            Err(wait_error) => Err(wait_error),
+        })
+        .with_context(|| format!("failed to terminate timed-out recipe-runner-rs pid {pid}"))?;
+    child
+        .wait()
+        .with_context(|| format!("failed to wait for timed-out recipe-runner-rs pid {pid}"))?;
+    Ok(())
 }

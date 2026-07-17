@@ -94,7 +94,17 @@ impl DockerDetector {
 
 /// Locate the `docker` binary on `PATH`.
 fn which_docker() -> Option<std::path::PathBuf> {
-    let paths = std::env::var_os("PATH")?;
+    which_docker_in(std::env::var_os("PATH"))
+}
+
+/// Pure `PATH`-search for the `docker` binary.
+///
+/// Split out from [`which_docker`] so tests can exercise the lookup logic
+/// (including the "empty" and "unset" `PATH` cases) without mutating the
+/// process-global `PATH`, which would race with any concurrently spawning
+/// subprocess in other tests.
+fn which_docker_in(path_var: Option<std::ffi::OsString>) -> Option<std::path::PathBuf> {
+    let paths = path_var?;
     std::env::split_paths(&paths).find_map(|dir| {
         let candidate = dir.join("docker");
         if candidate.is_file() {
@@ -141,23 +151,12 @@ fn run_docker_output(args: &[&str]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serial_lock::SerialLock;
+    use crate::test_serial::acquire as serial_acquire;
 
-    // Module-private serial lock — tests mutate `AMPLIHACK_IN_DOCKER`,
-    // `AMPLIHACK_USE_DOCKER`, and `PATH` env vars which race under
-    // `cargo test --jobs N`.
-    mod serial_lock {
-        use std::sync::{Mutex, MutexGuard, OnceLock};
-        pub struct SerialLock;
-        impl SerialLock {
-            pub fn acquire() -> MutexGuard<'static, ()> {
-                static LK: OnceLock<Mutex<()>> = OnceLock::new();
-                LK.get_or_init(|| Mutex::new(()))
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-            }
-        }
-    }
+    // Tests that mutate the process-global `AMPLIHACK_IN_DOCKER` /
+    // `AMPLIHACK_USE_DOCKER` env vars race under `cargo test --jobs N`.
+    // Serialize via the crate-wide lock so they cannot interleave with tests
+    // in sibling modules that read the same vars.
 
     #[test]
     fn is_available_returns_bool() {
@@ -167,7 +166,7 @@ mod tests {
 
     #[test]
     fn is_in_docker_env_var() {
-        let _serial = SerialLock::acquire();
+        let _serial = serial_acquire();
         // Save and restore.
         let prev = std::env::var("AMPLIHACK_IN_DOCKER").ok();
         // SAFETY: Tests run single-threaded per module; env var mutation is contained.
@@ -187,7 +186,7 @@ mod tests {
 
     #[test]
     fn is_in_docker_false_when_unset() {
-        let _serial = SerialLock::acquire();
+        let _serial = serial_acquire();
         let prev = std::env::var("AMPLIHACK_IN_DOCKER").ok();
         // SAFETY: Tests run single-threaded per module; env var mutation is contained.
         unsafe {
@@ -205,7 +204,7 @@ mod tests {
 
     #[test]
     fn should_use_docker_false_by_default() {
-        let _serial = SerialLock::acquire();
+        let _serial = serial_acquire();
         let prev = std::env::var("AMPLIHACK_USE_DOCKER").ok();
         // SAFETY: Tests run single-threaded per module; env var mutation is contained.
         unsafe {
@@ -220,19 +219,28 @@ mod tests {
     }
 
     #[test]
-    fn check_image_exists_false_when_no_docker() {
-        let _serial = SerialLock::acquire();
-        // If docker isn't running, this should return false, not panic.
-        // We don't assume docker is available in tests.
-        let prev_path = std::env::var("PATH").unwrap_or_default();
-        // SAFETY: Tests run single-threaded per module; env var mutation is contained.
-        unsafe {
-            std::env::set_var("PATH", "");
-        }
-        assert!(!DockerDetector::check_image_exists("nonexistent:latest"));
-        unsafe {
-            std::env::set_var("PATH", prev_path);
-        }
+    fn which_docker_in_returns_none_for_empty_or_unset_path() {
+        // Regression: this previously cleared the process-global PATH, which
+        // raced with any concurrently spawning subprocess (e.g. the git-based
+        // artifact-guard tests), causing intermittent ENOENT failures. Testing
+        // the pure lookup keeps the "no docker on PATH" contract without
+        // touching global state.
+        assert!(
+            which_docker_in(Some(std::ffi::OsString::new())).is_none(),
+            "empty PATH must resolve no docker binary"
+        );
+        assert!(
+            which_docker_in(None).is_none(),
+            "unset PATH must resolve no docker binary"
+        );
+    }
+
+    #[test]
+    fn check_image_exists_does_not_panic() {
+        // Host-independent smoke test: whether or not docker is installed,
+        // the query must return a bool without panicking. Does not mutate
+        // global state, so it is safe to run in parallel.
+        let _ = DockerDetector::check_image_exists("nonexistent:latest");
     }
 
     #[test]
@@ -255,7 +263,7 @@ mod tests {
 
     #[test]
     fn should_use_docker_true_for_all_truthy_env_values() {
-        let _serial = SerialLock::acquire();
+        let _serial = serial_acquire();
         // Verify each truthy variant of AMPLIHACK_USE_DOCKER is accepted.
         // We can't easily make Docker run in CI, so we only test the
         // "not in docker + docker not running" path — should return false
@@ -290,7 +298,7 @@ mod tests {
 
     #[test]
     fn should_use_docker_false_for_falsy_env_values() {
-        let _serial = SerialLock::acquire();
+        let _serial = serial_acquire();
         let prev = std::env::var("AMPLIHACK_USE_DOCKER").ok();
         for val in &["0", "false", "no", "off", ""] {
             unsafe {

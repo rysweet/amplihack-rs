@@ -1,23 +1,26 @@
 //! Level 2-4 validation: shell out to `dotnet` for build, analyzers, and format checks.
 
 use super::{CsValidatorConfig, Diagnostic, DiagnosticSeverity, EXIT_MISSING_DEPENDENCY};
+use crate::util::{run_output_with_timeout, run_with_timeout};
 use anyhow::{Result, bail};
 use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Cached result of `dotnet --version` availability check.
 static DOTNET_AVAILABLE: OnceLock<bool> = OnceLock::new();
+const DOTNET_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Check if `dotnet` is available on PATH (cached after first call).
 pub fn dotnet_available() -> bool {
     *DOTNET_AVAILABLE.get_or_init(|| {
-        Command::new("dotnet")
+        let mut command = Command::new("dotnet");
+        command
             .arg("--version")
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
+            .stderr(std::process::Stdio::null());
+        run_with_timeout(command, DOTNET_PROBE_TIMEOUT)
             .map(|s| s.success())
             .unwrap_or(false)
     })
@@ -46,29 +49,9 @@ fn run_dotnet_command(
     }
 
     let timeout = Duration::from_secs(config.timeout_seconds.into());
-    let start = Instant::now();
-
-    let mut child = Command::new("dotnet")
-        .args(args)
-        .current_dir(project_dir(path))
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()?;
-
-    let output = loop {
-        match child.try_wait()? {
-            Some(_status) => break child.wait_with_output()?,
-            None => {
-                if start.elapsed() >= timeout {
-                    // Kill the child on timeout
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    bail!("dotnet command timed out after {}s", config.timeout_seconds);
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-        }
-    };
+    let mut command = Command::new("dotnet");
+    command.args(args).current_dir(project_dir(path));
+    let output = run_output_with_timeout(command, timeout)?;
 
     if output.status.success() {
         return Ok(Vec::new());

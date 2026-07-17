@@ -7,8 +7,12 @@ pub(crate) use manager::DockerManager;
 
 use std::env;
 use std::process::{Command, Stdio};
+use std::time::Duration;
+
+use crate::util::{run_output_with_timeout, run_with_timeout};
 
 pub(crate) const DEFAULT_IMAGE_NAME: &str = "amplihack:latest";
+const DOCKER_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DockerActivation {
@@ -51,12 +55,13 @@ impl DockerDetector {
             return false;
         }
 
-        Command::new("docker")
+        let mut command = Command::new("docker");
+        command
             .arg("info")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
+            .stderr(Stdio::null());
+        run_with_timeout(command, DOCKER_PROBE_TIMEOUT)
             .map(|status| status.success())
             .unwrap_or(false)
     }
@@ -83,10 +88,11 @@ impl DockerDetector {
             return false;
         }
 
-        Command::new("docker")
+        let mut command = Command::new("docker");
+        command
             .args(["images", "-q", image_name])
-            .stdin(Stdio::null())
-            .output()
+            .stdin(Stdio::null());
+        run_output_with_timeout(command, DOCKER_PROBE_TIMEOUT)
             .map(|output| !String::from_utf8_lossy(&output.stdout).trim().is_empty())
             .unwrap_or(false)
     }

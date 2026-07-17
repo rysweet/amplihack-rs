@@ -45,6 +45,10 @@ Intelligent guidance system that prevents common mistakes and ensures work compl
 
 - [Skill-to-Agent Redirect](skill-to-agent-redirect.md) — the `PreToolUse` hook intercepts a `Skill` call naming an agent-only target (for example `prompt-writer`), blocks it with a non-fatal redirect to agent execution, and prevents the copilot runtime's `Skill not found` abort from silently skipping the requirements-clarification phase (issue [#838](https://github.com/rysweet/amplihack-rs/issues/838)). See the [API reference](../reference/skill-agent-redirect-api.md).
 
+## Signal Channel
+
+- [Signal Channel](../signal-channel.md) — feature-gated (`signal`, default OFF) per-session Signal messaging channel. Each session opens a private Signal group, posts throttled progress updates, and lets an allow-listed operator send **advisory** instructions back into the run. Inbound text is surfaced only as `hookSpecificOutput.additionalContext` and is never auto-executed; the gate is fail-closed (allowlist + `device == 1` + `groupId` match + bounded-TTL echo suppression). Wired through `amplihack-hooks` (SessionStart/PostToolUse/UserPromptSubmit/Stop) with a detached `signal-subscriber` process. Config is env-first with no silent defaults; see [`examples/signal-config.toml`](../../examples/signal-config.toml).
+
 ## GitHub Distribution
 
 - [GitHub Distribution](github-distribution.md) — publish agent bundles to GitHub repositories via the `gh` CLI, with idempotent uploads, visibility control, and tagged releases.

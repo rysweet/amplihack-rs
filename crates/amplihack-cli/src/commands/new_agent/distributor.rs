@@ -6,12 +6,16 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::Instant;
+use std::process::{Command, Output};
+use std::time::{Duration, Instant};
 
 use super::error::BundleError;
 use super::models::{DistributionPlatform, DistributionResult, PackagedBundle};
 use super::packager::sha256_file;
+use crate::util::{format_output_diagnostics, run_output_with_timeout};
+
+const GH_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Options for a distribution operation.
 #[derive(Debug, Clone, Default)]
@@ -153,32 +157,24 @@ impl Distributor {
 
     /// Check whether `gh` CLI is available.
     fn has_gh_cli() -> bool {
-        Command::new("gh")
-            .arg("--version")
-            .output()
+        run_gh(&["--version"])
             .map(|o| o.status.success())
             .unwrap_or(false)
     }
 
     /// Ensure the repository exists, create it if not.
     fn ensure_repo(&self, full_repo: &str) -> Result<(), BundleError> {
-        let status = Command::new("gh")
-            .args(["repo", "view", full_repo, "--json", "name"])
-            .output()
-            .map_err(|e| BundleError::distribution(format!("gh repo view failed: {e}")))?;
+        let status = run_gh(&["repo", "view", full_repo, "--json", "name"])?;
 
         if !status.status.success() {
-            let out = Command::new("gh")
-                .args([
-                    "repo",
-                    "create",
-                    full_repo,
-                    "--public",
-                    "--description",
-                    "Amplihack agent bundle",
-                ])
-                .output()
-                .map_err(|e| BundleError::distribution(format!("gh repo create failed: {e}")))?;
+            let out = run_gh(&[
+                "repo",
+                "create",
+                full_repo,
+                "--public",
+                "--description",
+                "Amplihack agent bundle",
+            ])?;
             if !out.status.success() {
                 let stderr = String::from_utf8_lossy(&out.stderr);
                 return Err(BundleError::distribution(format!(
@@ -202,10 +198,8 @@ impl Distributor {
             .join(".dist-work");
         let _ = fs::remove_dir_all(&work);
 
-        let clone_out = Command::new("gh")
-            .args(["repo", "clone", full_repo, work.to_string_lossy().as_ref()])
-            .output()
-            .map_err(|e| BundleError::distribution(format!("clone failed: {e}")))?;
+        let work_arg = work.to_string_lossy();
+        let clone_out = run_gh(&["repo", "clone", full_repo, work_arg.as_ref()])?;
 
         if !clone_out.status.success() {
             let stderr = String::from_utf8_lossy(&clone_out.stderr);
@@ -223,16 +217,20 @@ impl Distributor {
 
         // Git add + commit + push.
         let run_git = |args: &[&str]| -> Result<(), BundleError> {
-            let out = Command::new("git")
-                .args(args)
-                .current_dir(&work)
-                .output()
-                .map_err(|e| BundleError::distribution(format!("git {}: {e}", args[0])))?;
+            let mut cmd = Command::new("git");
+            cmd.args(args).current_dir(&work);
+            let out = run_output_with_timeout(cmd, GIT_COMMAND_TIMEOUT).map_err(|err| {
+                BundleError::distribution(format!(
+                    "git {} failed or timed out after {}s: {err:#}",
+                    args.first().copied().unwrap_or("<no-arg>"),
+                    GIT_COMMAND_TIMEOUT.as_secs()
+                ))
+            })?;
             if !out.status.success() {
-                let stderr = String::from_utf8_lossy(&out.stderr);
                 return Err(BundleError::distribution(format!(
-                    "git {} failed: {stderr}",
-                    args[0]
+                    "git {} failed: {}",
+                    args.first().copied().unwrap_or("<no-arg>"),
+                    format_output_diagnostics(&out, 400)
                 )));
             }
             Ok(())
@@ -256,21 +254,20 @@ impl Distributor {
         notes: &str,
         asset: &Path,
     ) -> Result<String, BundleError> {
-        let out = Command::new("gh")
-            .args([
-                "release",
-                "create",
-                tag,
-                "--repo",
-                full_repo,
-                "--title",
-                &format!("Release {tag}"),
-                "--notes",
-                notes,
-                asset.to_string_lossy().as_ref(),
-            ])
-            .output()
-            .map_err(|e| BundleError::distribution(format!("gh release create: {e}")))?;
+        let title = format!("Release {tag}");
+        let asset_arg = asset.to_string_lossy();
+        let out = run_gh(&[
+            "release",
+            "create",
+            tag,
+            "--repo",
+            full_repo,
+            "--title",
+            &title,
+            "--notes",
+            notes,
+            asset_arg.as_ref(),
+        ])?;
 
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
@@ -346,6 +343,18 @@ impl Distributor {
 
         Ok(dest)
     }
+}
+
+fn run_gh(args: &[&str]) -> Result<Output, BundleError> {
+    let mut cmd = Command::new("gh");
+    cmd.args(args);
+    run_output_with_timeout(cmd, GH_COMMAND_TIMEOUT).map_err(|err| {
+        BundleError::distribution(format!(
+            "gh {} failed or timed out after {}s: {err:#}",
+            args.first().copied().unwrap_or("<no-arg>"),
+            GH_COMMAND_TIMEOUT.as_secs()
+        ))
+    })
 }
 
 /// Verify the integrity of a distributed package against its recorded checksum.

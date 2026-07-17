@@ -73,14 +73,6 @@ fn json_contains_amplihack(v: &serde_json::Value) -> bool {
     }
 }
 
-/// Truncate `s` to at most `max_chars` characters (character boundary safe).
-fn truncate(s: &str, max_chars: usize) -> &str {
-    match s.char_indices().nth(max_chars) {
-        Some((byte_idx, _)) => &s[..byte_idx],
-        None => s,
-    }
-}
-
 // ── Summary printer ───────────────────────────────────────────────────────────
 
 /// Print a formatted summary of `results` to stdout and return `(passed,

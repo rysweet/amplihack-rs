@@ -40,23 +40,112 @@ channel = "1.97.0"
 components = ["rustfmt", "clippy"]
 ```
 
-Every CI job installs the toolchain with a version-pinned
-`dtolnay/rust-toolchain@1.97.0` action that matches the file; cross-compile legs
-add `targets: ${{ matrix.target }}` on top. `rust-toolchain.toml` is
-authoritative: if the action pin and the file ever disagree, `rustup` uses the
-file's channel, so a mismatch degrades to a slower run — never a broken one.
+Every job in **every** build workflow installs the toolchain with a
+version-pinned `dtolnay/rust-toolchain@1.97.0` action that matches the file.
+This includes `ci.yml` (build, test, clippy, and the cross-compile matrix), the
+`publish-snapshot.yml` release matrix, and the **Auto Release**
+(`release.yml`) cross-build matrix. Cross-compile legs add
+`targets: ${{ matrix.target }}` on top so the target's `rust-std` is installed
+into the pinned toolchain.
+
+`rust-toolchain.toml` is authoritative: at build time `rustup` always resolves
+to the file's channel, regardless of which channel the action selected. That
+override is exactly why the action ref and the file **must** name the same
+version — a mismatch is not merely slower, it can be fatal on cross-compile
+legs:
+
+> **Why `@stable` breaks cross builds (issue #935).** When a workflow used
+> `dtolnay/rust-toolchain@stable` with `targets: ${{ matrix.target }}`, the
+> action installed the _stable_ toolchain and added the cross target's
+> `rust-std` **to stable**. At build time `rust-toolchain.toml` overrode
+> resolution back to `1.97.0` — a toolchain that never received the cross
+> target's `rust-std` — so `cargo build` failed with
+> `error[E0463]: can't find crate for std`. The `aarch64-unknown-linux-gnu` leg
+> (built on `x86_64` `ubuntu-latest`) failed on every `main` push. Pinning the
+> action to `@1.97.0` installs `rust-std` into the same toolchain that is used
+> at build time, resolving the error. The build matrix in `ci.yml` never hit
+> this because it was already pinned to `@1.97.0`.
+
+The rule: any `dtolnay/rust-toolchain@<ref>` that supplies `targets:` for a
+cross build **must** equal the `rust-toolchain.toml` channel. Prefer keeping
+_all_ build-job refs pinned to the file's channel so target `rust-std` always
+lands in the resolved toolchain.
+
+### Auto Release cross-build legs (`release.yml`)
+
+The **Auto Release** workflow (`.github/workflows/release.yml`) builds a
+per-target artifact matrix. Its native-arch legs run on a host whose
+architecture already matches the target, but two legs cross-build:
+
+| Target                       | Runner          | Kind        |
+| ---------------------------- | --------------- | ----------- |
+| `aarch64-unknown-linux-gnu`  | `ubuntu-latest` | cross-arch  |
+| `x86_64-apple-darwin`        | `macos-latest`  | cross-arch  |
+
+Both cross legs install the toolchain with `dtolnay/rust-toolchain@1.97.0` and
+`targets: ${{ matrix.target }}`, matching `rust-toolchain.toml`:
+
+```yaml
+# .github/workflows/release.yml (cross-build matrix step)
+- uses: dtolnay/rust-toolchain@1.97.0
+  with:
+    targets: ${{ matrix.target }}
+```
+
+Because the action ref equals the file's channel, the target's `rust-std` is
+added to the **same** `1.97.0` toolchain that `rust-toolchain.toml` resolves to
+at build time. This is exactly what fixed the every-`main`-push failure in which
+both cross legs aborted with `error[E0463]: can't find crate for std` while the
+native legs passed (issue #939). It is the same drift class first resolved for
+`publish-snapshot.yml` in #935/#948; `release.yml` is now pinned and fully
+covered by the regression guard below — there is no remaining tracked drift.
 
 ### Bumping the pinned toolchain
 
 Bump deliberately, in its own PR:
 
 1. Edit `channel` in `rust-toolchain.toml`.
-2. Update the four `dtolnay/rust-toolchain@<version>` refs in `ci.yml` to match.
+2. Update every `dtolnay/rust-toolchain@<version>` ref in the build workflows to
+   match — the four refs in `ci.yml`, the ref in `publish-snapshot.yml`, and the
+   cross-build ref in `release.yml`.
 3. Run `cargo clippy -- -D warnings && cargo fmt --check && cargo nextest run
    --workspace --locked` locally, fix any new lints, and open the PR.
 
-Keep the file and the four action refs in lockstep so the review stays focused
-on lint fallout rather than mixing it with feature work.
+Keep the file and the workflow action refs in lockstep so the review stays
+focused on lint fallout rather than mixing it with feature work.
+
+### Regression guard: toolchain-ref invariant
+
+To stop this drift class from recurring, a static check asserts that every
+build-job `dtolnay/rust-toolchain@<ref>` in `.github/workflows/*.yml` equals the
+`rust-toolchain.toml` channel:
+
+```bash
+scripts/check-toolchain-refs.sh
+```
+
+The script reads the pinned `channel` from `rust-toolchain.toml`, scans the
+workflows for `dtolnay/rust-toolchain@<ref>` occurrences that provide a
+`targets:` input (i.e. build/cross legs), and exits non-zero on any mismatch —
+for example, if a leg reverts to `@stable`. Toolchain steps with **no**
+`targets:` input (such as the lint-only job in `invisible-char-scan.yml`, which
+runs on `@stable` by design) do not install per-target `rust-std`, are not
+exposed to the `E0463` drift, and are outside the invariant. Run the guard locally before pushing; it is also wired
+into CI and pre-commit, so a mismatched or floating ref fails fast instead of
+surfacing as an `E0463` in a release build.
+
+The guard's allowlist (`ALLOWLIST`) is **empty**: every targets-bearing ref —
+across `ci.yml`, `publish-snapshot.yml`, and `release.yml` — must pin to the
+`rust-toolchain.toml` channel, with no tracked exceptions. A clean run reports:
+
+```text
+check-toolchain-refs: OK — all targets-bearing toolchain refs pinned to @1.97.0
+```
+
+and exits `0`. Add an entry to `ALLOWLIST` only to track a genuinely
+out-of-scope, in-progress pinning follow-up; allowlisted drift is surfaced as a
+visible `WARNING` (never silently ignored) and must be removed once the target
+workflow is pinned.
 
 ## Test execution
 

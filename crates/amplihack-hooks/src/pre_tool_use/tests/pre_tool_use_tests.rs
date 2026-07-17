@@ -666,3 +666,92 @@ fn bundled_skill_names_matches_every_bundled_frontmatter_name() {
         "bundled_skill_names() must include every bundled frontmatter name; missing: {missing:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Issue #912: Copilot CLI PreToolUse payloads (stringified `toolArgs`) must
+// deserialize AND drive the real pre-tool-use protections end-to-end. Before
+// the fix, HookInput deserialization errored, run_hook() fail-opened to `{}`,
+// and NONE of the guards (--no-verify block, main-branch guard, etc.) ran under
+// Copilot. These tests exercise the full path: deserialize the real Copilot
+// payload shape, then assert the corresponding protection actually fires.
+// ---------------------------------------------------------------------------
+
+/// Build a HookInput from the real Copilot CLI payload shape: `toolName` plus a
+/// JSON-ENCODED STRING under `toolArgs`, with no `hookEventName`.
+fn copilot_pre_tool_use_payload(command: &str) -> HookInput {
+    let tool_args = serde_json::json!({ "command": command }).to_string();
+    serde_json::from_value(serde_json::json!({
+        "sessionId": "copilot-session",
+        "timestamp": 1_700_000_000u64,
+        "cwd": "/repo",
+        "toolName": "Bash",
+        "toolArgs": tool_args,
+    }))
+    .expect("real Copilot PreToolUse payload (stringified toolArgs) must deserialize")
+}
+
+#[test]
+fn blocks_no_verify_from_copilot_tool_args_payload() {
+    let hook = PreToolUseHook;
+    let input = copilot_pre_tool_use_payload("git commit --no-verify -m 'test'");
+
+    let result = hook.process(input).unwrap();
+
+    assert_eq!(
+        result["block"], true,
+        "--no-verify must be blocked when the command arrives via Copilot's \
+         stringified toolArgs: {result}"
+    );
+    assert!(
+        result["message"].as_str().unwrap().contains("--no-verify"),
+        "block message must reference --no-verify: {result}"
+    );
+}
+
+/// Initialize a git repository whose current branch resolves to `main`, even
+/// with no commits (unborn HEAD pointed at refs/heads/main).
+fn init_git_repo_on_main(dir: &std::path::Path) {
+    let init = std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(dir)
+        .output()
+        .expect("git init must run");
+    assert!(init.status.success(), "git init failed: {init:?}");
+    let sref = std::process::Command::new("git")
+        .args(["symbolic-ref", "HEAD", "refs/heads/main"])
+        .current_dir(dir)
+        .output()
+        .expect("git symbolic-ref must run");
+    assert!(sref.status.success(), "git symbolic-ref failed: {sref:?}");
+}
+
+#[test]
+fn main_branch_guard_fires_from_copilot_tool_args_payload() {
+    // Serialize with every other cwd/env-sensitive test in this binary.
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    // Declare `temp` before the cwd guard so, on unwind, the cwd is restored
+    // (guard drops first) *before* the tempdir is removed.
+    let original_cwd = std::env::current_dir().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _restore_cwd = CwdRestore(original_cwd);
+
+    init_git_repo_on_main(temp.path());
+    std::env::set_current_dir(temp.path()).unwrap();
+
+    let input = copilot_pre_tool_use_payload("git commit -m 'update'");
+    let result = PreToolUseHook.process(input).unwrap();
+
+    assert_eq!(
+        result["block"], true,
+        "a plain `git commit` on main, delivered via Copilot's stringified \
+         toolArgs, must trip the main-branch guard: {result}"
+    );
+    let message = result["message"].as_str().unwrap();
+    assert!(
+        message.contains("main") && message.contains("not allowed"),
+        "block message must be the main-branch protection: {message}"
+    );
+}

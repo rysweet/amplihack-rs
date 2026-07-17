@@ -25,12 +25,16 @@
 //! 5. Re-probe `mmdc`. Present → `Installed`. Still absent (e.g. npm prefix
 //!    not on PATH) → warn-and-continue → `Failed`.
 
+use crate::util::run_with_timeout;
 use anyhow::Result;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 /// The scoped npm package that provides the `mmdc` binary. Hardcoded exactly;
 /// never constructed from env/config/user input (no command-injection surface).
 const MERMAID_CLI_PACKAGE: &str = "@mermaid-js/mermaid-cli";
+const VERSION_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+const NPM_INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// User-facing line shown when mmdc could not be provisioned. Shared by the
 /// `Failed` and the defense-in-depth `Err(_)` arms in `mod.rs` so the message
@@ -62,11 +66,11 @@ pub(super) enum Outcome {
 /// child's stdout/stderr are discarded via `Stdio::null()` — this both keeps
 /// the install console quiet and avoids allocating/reading capture pipes.
 fn version_probe_succeeds(bin: &str) -> bool {
-    Command::new(bin)
-        .arg("--version")
+    let mut cmd = Command::new(bin);
+    cmd.arg("--version")
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+        .stderr(Stdio::null());
+    run_with_timeout(cmd, VERSION_PROBE_TIMEOUT)
         .map(|status| status.success())
         .unwrap_or(false)
 }
@@ -95,11 +99,11 @@ pub(super) fn ensure_mermaid_cli() -> Result<Outcome> {
     }
 
     // (4) Install. Arg-vector form only (no shell): prevents injection. No
-    // sudo / no privilege escalation; no hard timeout (the Chromium download
-    // is legitimately slow and is bounded by npm's own network timeouts).
-    let install_result = Command::new("npm")
-        .args(["install", "-g", MERMAID_CLI_PACKAGE])
-        .status();
+    // sudo / no privilege escalation; bounded so a wedged npm/Chromium download
+    // cannot hang install indefinitely.
+    let mut install_cmd = Command::new("npm");
+    install_cmd.args(["install", "-g", MERMAID_CLI_PACKAGE]);
+    let install_result = run_with_timeout(install_cmd, NPM_INSTALL_TIMEOUT);
 
     match install_result {
         Ok(status) if status.success() => {
@@ -123,8 +127,46 @@ pub(super) fn ensure_mermaid_cli() -> Result<Outcome> {
             Ok(Outcome::Failed)
         }
         Err(err) => {
-            tracing::warn!(%err, "failed to spawn npm install -g {MERMAID_CLI_PACKAGE}");
+            tracing::warn!(%err, "npm install -g {MERMAID_CLI_PACKAGE} failed or timed out");
             Ok(Outcome::Failed)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn version_probe_is_bounded_for_hanging_binaries() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let fake_bin = temp.path().join("mmdc");
+        std::fs::write(&fake_bin, "#!/bin/sh\n/bin/sleep 2\nexit 0\n").unwrap();
+        let mut perms = std::fs::metadata(&fake_bin).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&fake_bin, perms).unwrap();
+
+        let previous_path = std::env::var_os("PATH");
+        unsafe {
+            std::env::set_var("PATH", temp.path());
+        }
+
+        let started = std::time::Instant::now();
+        let result = version_probe_succeeds("mmdc");
+
+        match previous_path {
+            Some(value) => unsafe { std::env::set_var("PATH", value) },
+            None => unsafe { std::env::remove_var("PATH") },
+        }
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "version probes must not hang on a stuck binary"
+        );
+        assert!(!result, "timed-out version probes must fail closed");
     }
 }

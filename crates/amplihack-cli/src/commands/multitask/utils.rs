@@ -25,6 +25,7 @@ pub(super) fn tail_output(
 ) {
     let reader = BufReader::new(stdout);
     let mut log_bytes_written: u64 = 0;
+    let mut discarded_log_bytes: u64 = 0;
 
     // Open log file with 0o600 permissions on Unix, default permissions on Windows.
     let log_fd = {
@@ -47,10 +48,22 @@ pub(super) fn tail_output(
                 let _ = w.flush();
             }
             log_bytes_written += line_bytes;
+        } else {
+            discarded_log_bytes = discarded_log_bytes.saturating_add(line_bytes);
         }
 
         // Prefix output to stdout
         println!("[ws:{issue_id}] {line}");
+    }
+
+    if discarded_log_bytes > 0
+        && let Some(ref mut w) = log_writer
+    {
+        let _ = writeln!(
+            w,
+            "[truncated: discarded {discarded_log_bytes} bytes after log capture limit]"
+        );
+        let _ = w.flush();
     }
 }
 
@@ -157,5 +170,20 @@ mod tests {
         atomic_write(&file, b"hello world").unwrap();
         assert_eq!(fs::read_to_string(&file).unwrap(), "hello world");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tail_output_reports_when_log_bytes_are_discarded() {
+        let temp = tempfile::tempdir().unwrap();
+        let log_file = temp.path().join("workstream.log");
+        let input = std::io::Cursor::new(b"abcdef\nsecond line\n".to_vec());
+
+        tail_output(input, &log_file, 42, 4);
+
+        let log = fs::read_to_string(&log_file).unwrap_or_default();
+        assert!(
+            log.contains("truncated") && log.contains("discarded"),
+            "log truncation must report discarded diagnostics; got {log:?}"
+        );
     }
 }
