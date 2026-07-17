@@ -103,6 +103,14 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::path::Path;
+    use std::sync::{Mutex, OnceLock};
+
+    /// Serialize tests that mutate the shared `PLUGIN_ROOT` env var so they
+    /// don't race under Rust's parallel test runner.
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn resolve_absolute_unchanged() {
@@ -171,6 +179,9 @@ mod tests {
 
     #[test]
     fn get_plugin_root_uses_env() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         unsafe { std::env::set_var("PLUGIN_ROOT", "/custom/root") };
         let root = PathResolver::get_plugin_root();
         unsafe { std::env::remove_var("PLUGIN_ROOT") };
@@ -179,6 +190,9 @@ mod tests {
 
     #[test]
     fn get_plugin_root_fallback() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         unsafe { std::env::remove_var("PLUGIN_ROOT") };
         let root = PathResolver::get_plugin_root();
         // Should contain .amplihack/.claude

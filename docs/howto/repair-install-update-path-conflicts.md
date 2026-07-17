@@ -1,202 +1,217 @@
 ---
-title: Repair install/update PATH conflicts
-description: Diagnose and repair stale system-wide amplihack binaries that shadow current user-local binaries.
-last_updated: 2026-06-05
+title: Repair stale amplihack wrappers and PATH conflicts
+description: Use install/update to quarantine stale Python or uvx wrappers that shadow Rust, put the Rust binary first, and report unknown command conflicts.
+last_updated: 2026-07-10
 review_schedule: as-needed
 owner: amplihack-maintainers
 doc_type: howto
 ---
 
-# Repair install/update PATH conflicts
+# Repair stale amplihack wrappers and PATH conflicts
 
-Use this guide when `amplihack update` or `amplihack install` reports that a
-stale system-wide binary, usually `/usr/local/bin/amplihack` or
-`/usr/local/bin/amplihack-hooks`, is shadowing the current user-local binary in
-`~/.local/bin`.
+Use this guide when `amplihack` resolves to an old Python or uvx wrapper, or
+when `amplihack install` or `amplihack update` reports that an earlier `PATH`
+entry shadows the Rust binary in `~/.local/bin`.
 
-`amplihack` never runs `sudo`, deletes system files, or writes to
-system-managed locations automatically. It repairs only user-level writable
-install targets and gives explicit commands when system files need
-administrator action.
+Current install/update is the repair path. It deploys the Rust binaries to
+`~/.local/bin`, writes a managed profile block that makes future shells resolve
+that directory first, quarantines only positively identified stale wrappers
+that shadow Rust, and
+refreshes framework assets before final verification that the selected
+`amplihack` is the Rust binary.
 
-## Check command resolution order
+## Repair with install
 
-Show every `amplihack` and `amplihack-hooks` candidate on `PATH`:
-
-```bash
-which -a amplihack
-which -a amplihack-hooks
-```
-
-A healthy user-local install resolves `~/.local/bin` first:
-
-```text
-/home/alice/.local/bin/amplihack
-/home/alice/.local/bin/amplihack-hooks
-```
-
-A conflicting install has an earlier system candidate:
-
-```text
-/usr/local/bin/amplihack
-/home/alice/.local/bin/amplihack
-/usr/local/bin/amplihack-hooks
-/home/alice/.local/bin/amplihack-hooks
-```
-
-In that case the shell runs `/usr/local/bin/amplihack` even though the current
-user-level binaries are present.
-
-## Prefer `~/.local/bin`
-
-Put `~/.local/bin` before `/usr/local/bin` in your shell profile:
+Run:
 
 ```bash
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
-source ~/.bashrc
-hash -r
-```
-
-For zsh, use `~/.zshrc`:
-
-```bash
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
-source ~/.zshrc
-hash -r
-```
-
-Verify the result:
-
-```bash
-which -a amplihack
-which -a amplihack-hooks
-amplihack --version
-amplihack-hooks --version
-```
-
-The first result for both binaries should be under `~/.local/bin`.
-
-## Remove stale system binaries
-
-If `/usr/local/bin` still appears first, remove the stale system copies with
-administrator privileges:
-
-```bash
-sudo rm /usr/local/bin/amplihack /usr/local/bin/amplihack-hooks
-hash -r
-```
-
-Then reinstall or update using the user-local binaries:
-
-```bash
-amplihack update
 amplihack install
 ```
 
-Only remove the files when they are stale amplihack binaries. If your team
-intentionally manages `/usr/local/bin/amplihack` through a package manager,
-update that package or change `PATH` order instead.
+Expected successful behavior:
 
-## Run a safe update
+```text
+Deployed amplihack -> /home/alice/.local/bin/amplihack
+Deployed amplihack-hooks -> /home/alice/.local/bin/amplihack-hooks
+Updated shell PATH profile block
+Quarantined stale amplihack wrapper -> /home/alice/.amplihack/quarantine/stale-wrappers/...
+Refreshed amplifier-bundle from current distribution
+Verified Rust amplihack resolves first
+```
 
-When `~/.local/bin/amplihack` and `~/.local/bin/amplihack-hooks` already exist
-and are writable, `amplihack update` uses them as the preferred replacement
-target even if stale copies also exist in system-managed prefixes such as
-`/usr/local/bin`, `/usr/bin`, `/bin`, or `/opt`.
+Open a new shell and verify:
+
+```bash
+command -v amplihack
+amplihack --version
+```
+
+The first command should print:
+
+```text
+/home/alice/.local/bin/amplihack
+```
+
+## Repair with update
+
+Run:
 
 ```bash
 amplihack update
 ```
 
-If a system-managed binary blocks automatic repair, the command fails before
-attempting a temporary copy into that location and prints manual guidance:
+After replacing the binary, update runs the new binary's install repair path:
 
-```text
-Cannot update /usr/local/bin/amplihack automatically.
-
-/usr/local/bin/amplihack appears before /home/alice/.local/bin/amplihack on PATH
-and is not writable by the current user.
-
-Run one of:
-  sudo rm /usr/local/bin/amplihack /usr/local/bin/amplihack-hooks
-  export PATH="$HOME/.local/bin:$PATH"
-
-Then run:
-  hash -r
-  amplihack update
+```bash
+amplihack install --force-refresh
 ```
 
-This is intentional. The updater avoids misleading errors such as:
+`--force-refresh` is an internal flag. It bypasses stale installed bundle
+contents and refreshes `~/.amplihack/amplifier-bundle` from the current Rust
+distribution.
 
-```text
-Permission denied (os error 13)
+## Inspect command resolution
+
+Show every candidate on `PATH`:
+
+```bash
+which -a amplihack
+which -a amplihack-hooks
 ```
 
-from trying to copy temporary replacement files into system-managed prefixes.
-
-## Expected clean install/update output
-
-Successful install and update output should not contain stale hook-file or
-profile warnings. Treat these strings as regressions:
+Healthy output starts with user-local Rust binaries:
 
 ```text
-session_start.sh ❌
-post_tool_use.sh ❌
-pre_tool_use.sh ❌
-profile_management
-Skipping symlink
+/home/alice/.local/bin/amplihack
+/home/alice/.local/bin/amplihack-hooks
 ```
 
-Known-safe bundled symlinks are skipped silently or reported only when
-diagnostic verbosity explicitly asks for file-copy details. Normal user-facing
-install/update output remains focused on actionable results.
+If an earlier candidate exists, install/update classifies it before taking any
+action.
+
+| Candidate | Behavior |
+| --- | --- |
+| Current Rust binary | Accepted. |
+| Preferred Rust binary in `~/.local/bin` | Accepted and made first for future shells. |
+| Stale Python wrapper | Quarantined only when it shadows Rust, is clearly identified, and is in a safe location. |
+| Stale uvx wrapper | Quarantined only when it shadows Rust, is clearly identified, and is in a safe location. |
+| Unknown executable | Not modified; reported as a conflict. |
+| Inaccessible path | Not modified; reported with the filesystem error. |
+
+## Review quarantined wrappers
+
+Quarantined wrappers are stored under:
+
+```text
+~/.amplihack/quarantine/stale-wrappers/<timestamp>/
+```
+
+Each quarantine directory includes a manifest:
+
+```bash
+find ~/.amplihack/quarantine/stale-wrappers -name manifest.tsv -print
+```
+
+The manifest records the original path, quarantined path, wrapper kind, file
+size, modification time, action, and reason. It does not copy full file
+contents into logs.
+
+To restore a quarantined file, move it out manually after confirming that doing
+so will not shadow the Rust binary. Do not restore it to an earlier `PATH`
+directory named `amplihack`.
+
+## Handle unknown conflicts
+
+Install/update does not delete or quarantine unknown executables named
+`amplihack`.
+
+If the unknown executable is yours and obsolete, remove or rename it manually:
+
+```bash
+mv /path/to/old/amplihack /path/to/old/amplihack.disabled
+hash -r
+amplihack install
+```
+
+If the unknown executable is intentionally managed by a package manager, either
+update that package or put `~/.local/bin` before the package-manager directory
+for shells that should use the Rust user-level install.
+
+## Verify future shells
+
+The managed profile block is idempotent and bounded by markers:
+
+```bash
+grep -n "amplihack path" ~/.bashrc ~/.zshrc 2>/dev/null || true
+```
+
+The block prepends `$HOME/.local/bin` only when it is not already first. It
+does not remove unrelated `PATH` entries.
+
+Open a new terminal and check:
+
+```bash
+command -v amplihack
+amplihack --version
+```
 
 ## Troubleshooting
 
-### `amplihack update` still runs the old binary
+### Install reports an unknown executable
 
-Clear your shell's command lookup cache:
+**Symptom**:
+
+```text
+Unknown executable shadows Rust amplihack:
+  /home/alice/bin/amplihack
+```
+
+**Fix**: Inspect that file yourself. If it is not the current Rust binary and
+is not needed, rename or remove it, then run `amplihack install` again.
+
+### A system path shadows the Rust binary
+
+Install/update never mutates system-managed locations such as `/usr/bin`,
+`/usr/local/bin`, `/opt`, or package-manager directories outside `$HOME`.
+
+**No sudo repair:** install/update will not request elevated privileges and
+will not delete system files. Do not fix this with a privileged delete; use your
+normal package-manager or administrative process.
+
+Use your normal administrative process to update or remove the system copy, or
+keep the user-level install first through the managed profile block.
+
+### The shell still runs the old command
+
+Clear the shell command cache:
 
 ```bash
 hash -r
 ```
 
-Open a new terminal and check again:
+Then open a new shell. The persistent repair applies to future shells, not only
+the process that ran install.
+
+### smart-orchestrator still mentions `orch_helper.py`
+
+Run:
 
 ```bash
-which -a amplihack
-amplihack --version
+amplihack install --force-refresh
 ```
 
-### Hooks still point at an old binary
-
-Re-run install after fixing `PATH`:
+Then verify:
 
 ```bash
-amplihack install
+grep -R "orch_helper.py" ~/.amplihack/amplifier-bundle/recipes || true
 ```
 
-Hook registrations use the compiled `amplihack-hooks` binary. They do not call
-Python hook scripts and do not require `session_start.sh`,
-`post_tool_use.sh`, or `pre_tool_use.sh` files.
-
-### You need a system-wide install
-
-Install both binaries consistently in the same system-managed location and keep
-them writable only by the administrator:
-
-```bash
-sudo install -m 0755 amplihack /usr/local/bin/amplihack
-sudo install -m 0755 amplihack-hooks /usr/local/bin/amplihack-hooks
-```
-
-After that, keep `/usr/local/bin` first on `PATH` and update the system copy
-through the same administrative process. Do not mix a system-wide `amplihack`
-with a user-local `amplihack-hooks`.
+Active recipes should not contain an executable `orch_helper.py` dependency.
+Mentions in docs, tests, or compatibility rejection logic are allowed.
 
 ## See also
 
 - [Install/update PATH conflict reference](../reference/install-update-path-conflicts.md)
+- [Framework bundle compatibility reference](../reference/framework-bundle-compatibility.md)
+- [Repair a stale framework bundle](repair-stale-framework-bundle.md)
 - [amplihack install reference](../reference/install-command.md)
-- [Post-update install re-exec](../features/update-reexec-new-binary.md)
-- [First-time install](first-install.md)

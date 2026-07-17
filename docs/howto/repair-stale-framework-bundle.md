@@ -218,4 +218,5 @@ the installer is designed to reject.
 - [Stale smart-orchestrator asset bugfix note](../bugfixes/stale-smart-orchestrator-assets.md)
 - [Install completeness verification](../reference/install-completeness.md)
 - [Post-update install re-exec](../features/update-reexec-new-binary.md)
+- [Install/update PATH conflict reference](../reference/install-update-path-conflicts.md)
 - [resolve-bundle-asset command reference](../reference/resolve-bundle-asset-command.md)

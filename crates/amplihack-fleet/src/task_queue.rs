@@ -97,7 +97,15 @@ impl TaskQueue {
         let tasks = if path.exists() {
             let content = std::fs::read_to_string(&path)
                 .with_context(|| format!("failed to read {}", path.display()))?;
-            serde_json::from_str(&content).unwrap_or_default()
+            if content.trim().is_empty() {
+                // Empty/whitespace file is not corruption: start empty.
+                Vec::new()
+            } else {
+                // A corrupt (non-empty, unparseable) file must surface an error
+                // so the next save() cannot silently erase queued tasks.
+                serde_json::from_str(&content)
+                    .with_context(|| format!("task queue file is corrupt: {}", path.display()))?
+            }
         } else {
             Vec::new()
         };
@@ -315,16 +323,78 @@ mod tests {
         assert!(q.next_pending().is_none());
     }
 
+    // ---- issue #869: corrupt state must surface, never be silently discarded ----
+
     #[test]
-    fn persistence_survives_corruption() {
+    fn corrupt_queue_file_returns_error_not_empty() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tasks.json");
         std::fs::write(&path, "not valid json {{{").unwrap();
+
+        let result = TaskQueue::with_persistence(&path);
+        assert!(
+            result.is_err(),
+            "corrupt queue file must surface an error, not silently start empty"
+        );
+        let msg = format!("{:#}", result.err().unwrap());
+        assert!(
+            msg.to_lowercase().contains("corrupt"),
+            "error must mention 'corrupt' to distinguish from a missing file: {msg}"
+        );
+        assert!(
+            msg.contains(&path.display().to_string()),
+            "error must name the offending path: {msg}"
+        );
+    }
+
+    #[test]
+    fn corrupt_queue_file_is_not_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let corrupt = "not valid json {{{";
+        std::fs::write(&path, corrupt).unwrap();
+
+        // Loading fails; the on-disk file must be left byte-for-byte intact so
+        // the user can recover the queued tasks.
+        let _ = TaskQueue::with_persistence(&path);
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            after, corrupt,
+            "corrupt queue file must be preserved on disk, never overwritten"
+        );
+    }
+
+    #[test]
+    fn empty_queue_file_starts_empty_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        std::fs::write(&path, "   \n  ").unwrap();
         let q = TaskQueue::with_persistence(&path).unwrap();
         assert!(
             q.is_empty(),
-            "corrupted file should fall back to empty queue"
+            "empty/whitespace file is not corruption → empty queue, Ok"
         );
+    }
+
+    #[test]
+    fn missing_queue_file_starts_empty_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("does-not-exist.json");
+        let q = TaskQueue::with_persistence(&path).unwrap();
+        assert!(q.is_empty(), "missing file → empty queue, Ok");
+    }
+
+    #[test]
+    fn valid_queue_file_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        {
+            let mut q = TaskQueue::with_persistence(&path).unwrap();
+            q.enqueue(FleetTask::new("t1", "Keep me")).unwrap();
+        }
+        let q = TaskQueue::with_persistence(&path).unwrap();
+        assert_eq!(q.len(), 1);
+        assert_eq!(q.get("t1").unwrap().description, "Keep me");
     }
 
     #[test]

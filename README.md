@@ -535,6 +535,9 @@ Custom workflows:
   validation and troubleshooting
 - **[Workflow Customization](https://rysweet.github.io/amplihack-rs/WORKFLOW_COMPLETION/)** -
   Modify development process
+- **[Install/Update Repair](docs/howto/repair-install-update-path-conflicts.md)** -
+  Quarantine stale Python/uvx wrappers, keep the Rust user-level binary first,
+  and refresh stale framework assets
 - **[Artifact Guard](docs/artifact-guard.md)** - Guard for blocking
   generated/runtime artifacts before broad staging, pre-commit, and workflow
   publication

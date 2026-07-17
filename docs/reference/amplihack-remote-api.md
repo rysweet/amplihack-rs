@@ -14,6 +14,7 @@ returned values.
 - [Synchronous execution](#synchronous-execution)
 - [Detached sessions](#detached-sessions)
 - [VM pooling](#vm-pooling)
+  - [Idle VM cleanup](#idle-vm-cleanup)
 - [State management](#state-management)
 - [Errors](#errors)
 - [Testing seams](#testing-seams)
@@ -303,6 +304,118 @@ let size = VMSize::L;
 assert_eq!(size.capacity(), 4);
 assert_eq!(size.azure_size(), "Standard_E16s_v5");
 ```
+
+### Idle VM cleanup
+
+`VMPoolManager::cleanup_idle_vms` reclaims VMs that have no active sessions and
+whose grace period has elapsed. It returns the names of the VMs it *actually
+reclaimed* — never the names it merely attempted.
+
+```rust
+pub async fn cleanup_idle_vms(&mut self, grace_period_minutes: i64) -> Vec<String>;
+```
+
+| Parameter | Meaning |
+| --------- | ------- |
+| `grace_period_minutes` | Minimum idle age before a VM with zero active sessions becomes a cleanup candidate. A VM with no recorded `created_at` timestamp is always eligible. |
+
+**Return value:** `Vec<String>` containing only the names of VMs whose cloud
+deallocation was *confirmed*. A VM that was attempted but not confirmed
+deallocated is **not** included, and it remains in the pool.
+
+#### Deallocation is verified, never assumed
+
+Cleanup delegates to `Orchestrator::cleanup(&vm, /* force */ true)`, which
+returns `Result<bool, RemoteError>`. The cleanup helper matches all three
+possible outcomes exhaustively — there is no catch-all fallback that could
+silently treat an un-reclaimed VM as removed:
+
+| `cleanup` outcome | Meaning | Pool action | Included in return `Vec` | Log level |
+| ----------------- | ------- | ----------- | ------------------------ | --------- |
+| `Ok(true)` | Cloud deallocation confirmed | Entry dropped from pool | Yes | `info!` (batch summary) |
+| `Ok(false)` | `cleanup` ran but did **not** confirm deallocation — covers *every* failure mode (`azlin` non-zero exit, command-spawn error, or the 120s timeout) | Entry **retained** in pool for retry | No | `warn!` |
+| `Err(e)` | Defensive arm for a hard error returned by `cleanup` | Entry **retained** in pool for retry | No | `error!` |
+
+> **`force = true` collapses failures into `Ok(false)`.** `cleanup_idle_vms`
+> always calls `cleanup(vm, force = true)`. Under `force`,
+> `Orchestrator::cleanup` intentionally downgrades *every* failure (non-zero
+> exit, spawn error, timeout) to `Ok(false)` and never returns `Err`. So for
+> this call path the operative outcomes are `Ok(true)` (reclaim) and `Ok(false)`
+> (retain); the `Err(e)` arm is handled defensively but is not produced while
+> `force` is `true`. Do **not** rely on an `Ok(false)` vs `Err` split to
+> distinguish "ran-but-unconfirmed" from "could-not-run" — both collapse into
+> `Ok(false)` here.
+
+Whatever the failure mode, a retained VM is picked up again on the next
+`cleanup_idle_vms` pass, so a transient cloud failure self-heals without leaking
+a billable resource. This is the safety property tracked by issue #870: a
+swallowed cleanup failure previously dropped the VM from tracking while it kept
+running (and billing) in Azure.
+
+#### Logging contract
+
+For each retained VM, the cleanup helper emits one structured `tracing` event
+using typed fields (no string interpolation of untrusted output):
+
+```text
+WARN  cleanup did not confirm deallocation; VM retained for retry   vm=<name>
+ERROR cleanup failed; VM retained to avoid orphaning billable resource  vm=<name> error=<RemoteError Display>
+```
+
+The `WARN` event is the only one that fires for this call path: because
+`cleanup_idle_vms` calls with `force = true`, every real failure arrives as
+`Ok(false)` and is logged at `warn!`. The `ERROR` event belongs to the defensive
+`Err(e)` arm, which cannot occur while `force = true`; it exists only to keep the
+match exhaustive should the caller ever switch to `force = false`.
+
+The helper logs only the VM name (`warn!` case) plus the `RemoteError` `Display`
+string (`error!` case), which is a curated cleanup message — never VM tags,
+credentials, or command output.
+
+A pass that reclaims at least one VM also emits a single batch summary,
+`info!(count = <n>, "cleaned up idle VMs")`, where `<n>` is the count of
+*confirmed* reclaims (`Ok(true)`) only — retained VMs are never counted.
+
+> **Layered hygiene caveat.** This "no raw output" guarantee applies to the pool
+> helper only. The underlying `Orchestrator::cleanup` **already** logs its own
+> `warn!("VM cleanup failed: {stderr}")` containing the raw `azlin` stderr on a
+> non-zero exit (`orchestrator.rs`). That pre-existing log is outside issue
+> #870's `vm_pool` scope; if raw `azlin` output must be kept out of logs
+> entirely, redacting that orchestrator `warn!` is a required follow-up. Expect
+> up to two events per unconfirmed cleanup: the orchestrator's stderr `warn!`
+> and the pool helper's retention `warn!`.
+
+#### Operational follow-up
+
+Retention failures surface only at `warn!` and repeat on every subsequent pass
+until the VM is finally reclaimed or removed by hand. Since an un-reclaimed VM
+keeps billing, operators should alert on *repeated* retentions for the same `vm`
+rather than eyeballing logs. Emitting a retained-VM gauge/counter from
+`cleanup_idle_vms` (so dashboards and alerts can watch it) is the recommended
+follow-up tracked alongside issue #870.
+
+#### Example
+
+```rust
+// Reclaim VMs idle for 30+ minutes.
+let reclaimed = pool.cleanup_idle_vms(30).await;
+
+// `reclaimed` lists only VMs that Azure confirmed as deallocated.
+for name in &reclaimed {
+    println!("reclaimed {name}");
+}
+
+// VMs whose cleanup was unconfirmed or failed are still in the pool and
+// will be retried on the next call — inspect them via get_pool_status().
+let status = pool.get_pool_status();
+println!("{} VMs still tracked", status.total_vms);
+```
+
+#### State persistence
+
+State is written (`save_state`) only when at least one VM was truthfully
+reclaimed (`!reclaimed.is_empty()`). When every candidate is retained, the pool
+is unchanged and no write occurs.
 
 ## State management
 
