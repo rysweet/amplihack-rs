@@ -451,6 +451,45 @@ if [[ -f "$SAFE_READ_SCRIPT" ]]; then
 fi
 
 # ============================================================================
+# SEC-01-C: Graph Artifact Secret Safety (CRITICAL) — backend-agnostic
+# ============================================================================
+# The portable graph (docs/atlas/cypher/) and any live backend (kuzu | lbug |
+# neo4j | portable-cypher-only) must never contain secret values. EnvVar nodes
+# carry key names only. This holds regardless of which backend is selected.
+
+echo ""
+echo "=== SEC-01-C: Graph Artifact Secret Safety (backend-agnostic) ==="
+
+SEC_MD_LOCAL="${SCRIPT_DIR}/../SECURITY.md"
+
+# Documentation contract: the control must be written down (runs now).
+if grep -q "Graph Artifact & Backend Security" "$SEC_MD_LOCAL" 2>/dev/null; then
+    echo "PASS: SEC-01-C: SECURITY.md documents Graph Artifact & Backend Security control"
+    PASS=$((PASS + 1))
+else
+    echo "FAIL: SEC-01-C: SECURITY.md missing Graph Artifact & Backend Security control"
+    FAIL=$((FAIL + 1))
+fi
+
+if grep -Eq "EnvVar.{0,3} nodes .*(store|carry) key names" "$SEC_MD_LOCAL" 2>/dev/null; then
+    echo "PASS: SEC-01-C: SECURITY.md states EnvVar graph nodes carry key names only"
+    PASS=$((PASS + 1))
+else
+    echo "FAIL: SEC-01-C: SECURITY.md must state EnvVar graph nodes carry key names only"
+    FAIL=$((FAIL + 1))
+fi
+
+# NOTE: the validator's runtime secret-detection guarantee is already exercised
+# by TEST-SEC-01-C above (a leaked `KEY=value` secret in `inventory/env-vars.md`
+# must make the validator exit non-zero). We deliberately do NOT re-assert that
+# here against a `.cypher` artifact: `validate_atlas_output.sh` is not part of
+# this change, so whether it globs `docs/atlas/cypher/*.cypher` is out of scope,
+# and a self-authored clean artifact grepped for its own (absent) secret would
+# be a tautology that always passes. The cypher-artifact secret-safety contract
+# is asserted above as a documentation contract (SECURITY.md must state EnvVar
+# graph nodes carry key names only).
+
+# ============================================================================
 # Summary
 # ============================================================================
 echo ""

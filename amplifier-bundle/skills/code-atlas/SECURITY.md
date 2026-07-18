@@ -550,7 +550,7 @@ All layer implementations MUST follow this pipeline order:
  2. Discover files (SEC-07: skip symlinks; SEC-08: skip >10MB)
  3. Parse manifests/configs (SEC-04: safe parsers only)
  4. Extract key names for env vars (SEC-01: values never collected)
- 5. Build node/edge data structures (plain Python objects — no shell)
+ 5. Build node/edge data structures (plain in-memory objects — no shell; language-agnostic)
  6. Sanitize all labels (SEC-03: escape HTML specials; SEC-11 for Layer 7 service names)
  7. Check density (ALL layers): if node_count > 50 OR edge_count > 100 → invoke density prompt
     a. Validate threshold override (SEC-13: integer range 1–10,000)
@@ -564,7 +564,31 @@ All layer implementations MUST follow this pipeline order:
     b. Validate all evidence paths are relative (SEC-16: reject absolute paths)
 13. If writing experiments/: validate layer ID from allowlist; use system date (SEC-18)
 14. If git push: sanitise stdout/stderr with CREDENTIAL_URL_PATTERN (SEC-19)
+15. When emitting graph artifacts (docs/atlas/cypher/) or ingesting into any backend
+    (kuzu | lbug | neo4j): emit key names/structure only — EnvVar nodes carry names, never
+    values (SEC-01); all string literals in .cypher are escaped as diagram labels (SEC-10);
+    the recorded `graph_backend` label is non-sensitive metadata. Applies identically to every
+    backend and to the portable-cypher-only outcome.
 ```
+
+---
+
+## Graph Artifact & Backend Security
+
+The portable graph artifacts and any live backend ingestion are subject to the same controls as
+diagram output — they are a serialisation of the same node/edge model, not a new trust boundary:
+
+- **No secret values (SEC-01/SEC-15):** `EnvVar` nodes and `DataStore` nodes store key names,
+  types, and non-sensitive metadata only. Env var values, credentials, and Kubernetes `data:`
+  blocks are never written into `.cypher` files or passed to any backend.
+- **Injection-safe literals (SEC-10):** every string embedded in a `.cypher` statement is escaped
+  the same way diagram labels are, so a crafted route/service/symbol name cannot break query syntax
+  or inject statements.
+- **Backend selection is metadata:** the recorded `graph_backend`
+  (`kuzu | lbug | neo4j | portable-cypher-only`) and `analyzer_mode` labels are non-sensitive and
+  contain no code, paths, or secrets.
+- **No code execution to ingest:** loading artifacts into `lbug` (in-process, native Rust) or an
+  OpenCypher server MUST NOT `eval`/`source` untrusted input; artifacts are parameterised data.
 
 ---
 

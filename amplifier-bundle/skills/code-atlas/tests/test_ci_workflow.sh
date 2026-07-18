@@ -314,6 +314,44 @@ if [[ -f "$STALENESS_SCRIPT" ]]; then
     rm -rf "$tmpdir"
 fi
 
+# ============================================================================
+# Test Group 7: Graph Backend Neutrality (CI runners without kuzu/python)
+# ============================================================================
+# A CI runner may lack kuzu and Python. The atlas build that CI invokes must
+# still succeed and always emit the portable graph, recording the selected
+# backend. These are documentation-contract checks (self-contained).
+
+echo ""
+echo "=== Graph Backend Neutrality (CI without kuzu/python) ==="
+
+SKILL_DIR_CI="$(cd "$SCRIPT_DIR/.." && pwd)"
+SKILL_MD_CI="${SKILL_DIR_CI}/SKILL.md"
+API_MD_CI="${SKILL_DIR_CI}/API-CONTRACTS.md"
+
+assert_file_contains "CI: build never hard-fails without kuzu" \
+    "not hard-fail\|never hard-fails\|MUST NOT hard-fail" "$SKILL_MD_CI"
+
+assert_file_contains "CI: portable cypher graph always emitted" \
+    "portable .*graph is always emitted\|ALWAYS emit the portable\|cypher/.*ALWAYS emitted" "$SKILL_MD_CI"
+
+assert_file_contains "CI: selected backend is always recorded (fail-visible)" \
+    "staleness-map.yaml" "$SKILL_MD_CI"
+
+assert_file_contains "CI: analyzer is language-pluggable (no hard Python)" \
+    "rust-cargo-metadata\|static-approximation" "$SKILL_MD_CI"
+
+# The old mandatory-kuzu contract must not resurface in the CI-facing contract.
+if grep -qi "kuzu is required\|kuzu ingestion is .*required, not optional" "$SKILL_MD_CI" 2>/dev/null; then
+    echo "FAIL: CI: SKILL.md still contains mandatory-kuzu wording"
+    FAIL=$((FAIL + 1))
+else
+    echo "PASS: CI: no mandatory-kuzu wording in SKILL.md"
+    PASS=$((PASS + 1))
+fi
+
+assert_file_contains "CI: API contract exposes graph_backend enum" \
+    "portable-cypher-only" "$API_MD_CI"
+
 # ---------------------------------------------------------------------------
 # Results
 # ---------------------------------------------------------------------------

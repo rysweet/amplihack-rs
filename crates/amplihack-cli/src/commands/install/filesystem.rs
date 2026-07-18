@@ -609,7 +609,9 @@ mod tests {
 
     #[test]
     fn all_rel_dirs_nonexistent_returns_empty() {
-        let dirs = all_rel_dirs(Path::new("/tmp/nonexistent-dir-test-xyz")).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("nonexistent-subdir");
+        let dirs = all_rel_dirs(&missing).unwrap();
         assert!(dirs.is_empty());
     }
 
@@ -680,8 +682,11 @@ mod tests {
     #[test]
     fn clean_broken_symlinks_removes_broken() {
         let tmp = tempfile::tempdir().unwrap();
-        // Create a broken symlink
-        unix_fs::symlink("/tmp/nonexistent-target-xyz", tmp.path().join("broken")).unwrap();
+        // Create a broken symlink. Target a nonexistent path *inside* the unique
+        // tempdir rather than a shared /tmp path, which may collide with real
+        // files in shared environments and make the symlink resolve (non-broken).
+        let missing_target = tmp.path().join("nonexistent-target");
+        unix_fs::symlink(&missing_target, tmp.path().join("broken")).unwrap();
         // Create a valid symlink
         let real = tmp.path().join("real.txt");
         fs::write(&real, "x").unwrap();
@@ -698,7 +703,10 @@ mod tests {
     fn clean_broken_symlinks_recursive() {
         let tmp = tempfile::tempdir().unwrap();
         fs::create_dir_all(tmp.path().join("sub")).unwrap();
-        unix_fs::symlink("/tmp/nonexistent-xyz", tmp.path().join("sub/broken")).unwrap();
+        // Target a nonexistent path *inside* the unique tempdir; a shared /tmp
+        // path may exist in shared environments and make the symlink non-broken.
+        let missing_target = tmp.path().join("nonexistent-target");
+        unix_fs::symlink(&missing_target, tmp.path().join("sub/broken")).unwrap();
 
         let removed_shallow = clean_broken_symlinks(tmp.path(), false).unwrap();
         assert_eq!(removed_shallow, 0); // not recursive, shouldn't find it
@@ -709,7 +717,9 @@ mod tests {
 
     #[test]
     fn clean_broken_symlinks_nonexistent_dir() {
-        let removed = clean_broken_symlinks(Path::new("/tmp/no-such-dir-xyz"), false).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("no-such-dir");
+        let removed = clean_broken_symlinks(&missing, false).unwrap();
         assert_eq!(removed, 0);
     }
 
