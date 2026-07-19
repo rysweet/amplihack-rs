@@ -40,9 +40,9 @@ steps:
       # re-run converges instead of colliding. Graceful no-op if the helper is
       # absent (#829 precedent); never aborts setup. Destructive lifecycle logic
       # lives in tools/workflow_worktree_sweep.sh to keep this recipe < 400 lines.
-      SWEEP_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_worktree_sweep.sh"
-      [ -f "$SWEEP_HELPER" ] || SWEEP_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_worktree_sweep.sh"
-      if [ -f "$SWEEP_HELPER" ]; then bash "$SWEEP_HELPER" sweep "$REPO_PATH" >&2 || true; fi
+      SWEEP_HELPER="$(amplihack resolve-bundle-asset amplifier-bundle/tools/workflow_worktree_sweep.sh 2>/dev/null || true)"
+      if [ -z "$SWEEP_HELPER" ] || [ ! -f "$SWEEP_HELPER" ]; then SWEEP_HELPER=""; for __b in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$__b" ] && [ -f "$__b/amplifier-bundle/tools/workflow_worktree_sweep.sh" ] && { SWEEP_HELPER="$__b/amplifier-bundle/tools/workflow_worktree_sweep.sh"; break; }; done; fi
+      if [ -n "$SWEEP_HELPER" ] && [ -f "$SWEEP_HELPER" ]; then bash "$SWEEP_HELPER" sweep "$REPO_PATH" >&2 || true; fi
 
       echo "=== Step 4: Creating Worktree and Branch ===" >&2
       echo "" >&2

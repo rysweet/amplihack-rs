@@ -249,9 +249,9 @@ steps:
       # Terminal vocabulary: MERGED, CLOSED_OBSOLETE, NO_DIFF_SUCCESS, FOLLOWUP_CREATED, EXISTING_OPEN_PR, BLOCKED_CI, BLOCKED_PROVIDER.
       # gh pr create is called by the helper only after PUBLISH_STATE classification.
       # gh pr create failed is surfaced by workflow_publish_pr.sh as FAILED_PR_CREATE.
-      PUBLISH_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_publish_pr.sh"
-      if [ ! -f "$PUBLISH_HELPER" ] && [ -n "${REPO_PATH:-}" ]; then PUBLISH_HELPER="$REPO_PATH/amplifier-bundle/tools/workflow_publish_pr.sh"; fi
-      [ -f "$PUBLISH_HELPER" ] || { echo "ERROR: workflow publish helper not found: $PUBLISH_HELPER" >&2; exit 1; }
+      PUBLISH_HELPER="$(amplihack resolve-bundle-asset amplifier-bundle/tools/workflow_publish_pr.sh 2>/dev/null || true)"
+      if [ -z "$PUBLISH_HELPER" ] || [ ! -f "$PUBLISH_HELPER" ]; then PUBLISH_HELPER=""; for __b in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$__b" ] && [ -f "$__b/amplifier-bundle/tools/workflow_publish_pr.sh" ] && { PUBLISH_HELPER="$__b/amplifier-bundle/tools/workflow_publish_pr.sh"; break; }; done; fi
+      [ -n "$PUBLISH_HELPER" ] && [ -f "$PUBLISH_HELPER" ] || { echo "ERROR: workflow publish helper not found after robust resolution (searched: amplihack resolve-bundle-asset, AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack). Ensure the amplihack bundle is installed (\`amplihack install\`) or set AMPLIHACK_HOME to a complete bundle root." >&2; exit 1; }
       bash "$PUBLISH_HELPER"
     output: "pr_publish_result"
     parse_json: true

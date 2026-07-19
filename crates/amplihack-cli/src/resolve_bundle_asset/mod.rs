@@ -635,4 +635,90 @@ mod cli_dispatch_tests {
              Remove dead HOOKS_DIR assignments: {offenders:?}"
         );
     }
+
+    fn recipes_dir_or_skip() -> Option<std::path::PathBuf> {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let recipes_dir = manifest
+            .join("..")
+            .join("..")
+            .join("amplifier-bundle")
+            .join("recipes");
+        if !recipes_dir.is_dir() {
+            eprintln!(
+                "skipping: recipes dir not found at {}",
+                recipes_dir.display()
+            );
+            return None;
+        }
+        Some(recipes_dir)
+    }
+
+    /// Regression for the evidence-helper discard bug (Simard run d6061601):
+    /// the `implementation-terminal-evidence` step used to `exit 2` when the
+    /// helper was missing, cascading a whole-recipe failure that DISCARDED
+    /// already-implemented, fully-tested work. It must instead (a) resolve the
+    /// helper via the robust `resolve-bundle-asset` resolver and (b) degrade
+    /// gracefully by emitting non-blocking evidence rather than hard-failing.
+    #[test]
+    fn evidence_step_degrades_instead_of_discarding_work() {
+        let Some(recipes_dir) = recipes_dir_or_skip() else {
+            return;
+        };
+        let tdd = recipes_dir.join("workflow-tdd.yaml");
+        let body = std::fs::read_to_string(&tdd).unwrap();
+
+        assert!(
+            body.contains(
+                "resolve-bundle-asset amplifier-bundle/tools/workflow_implementation_evidence.sh"
+            ),
+            "implementation-terminal-evidence must resolve its helper via \
+             `amplihack resolve-bundle-asset` (robust, skips empty/gitignored bundles)"
+        );
+        assert!(
+            body.contains("IMPLEMENTATION_EVIDENCE_DEGRADED"),
+            "implementation-terminal-evidence must degrade gracefully (emit \
+             non-blocking evidence) when the helper cannot be found, never \
+             discarding validated implementation work"
+        );
+        assert!(
+            !body.contains("workflow implementation evidence helper not found: $HELPER"),
+            "the fragile hard-fail evidence resolution (exit 2 on missing helper) \
+             must be removed — it discards completed, tested work"
+        );
+    }
+
+    /// Regression: the audited workflow helper resolutions (see task brief)
+    /// must locate the bundle robustly via `resolve-bundle-asset` instead of the
+    /// fragile `${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}` chain that fails in
+    /// target-repo worktrees whose `amplifier-bundle/` is gitignored/empty.
+    #[test]
+    fn audited_helpers_use_robust_resolver() {
+        let Some(recipes_dir) = recipes_dir_or_skip() else {
+            return;
+        };
+        // (recipe file, helper relative path) pairs called out in the brief.
+        let cases = [
+            ("workflow-tdd.yaml", "workflow_implementation_evidence.sh"),
+            ("workflow-finalize.yaml", "workflow_pr_ready.sh"),
+            ("workflow-finalize.yaml", "workflow_final_status.sh"),
+            ("workflow-finalize.yaml", "workflow_agentic_finalization.sh"),
+            ("workflow-publish.yaml", "workflow_publish_pr.sh"),
+            ("workflow-worktree.yaml", "workflow_worktree_sweep.sh"),
+            ("workflow-terminal-state.yaml", "workflow_final_status.sh"),
+        ];
+        let mut offenders = Vec::new();
+        for (recipe, helper) in cases {
+            let body = std::fs::read_to_string(recipes_dir.join(recipe)).unwrap();
+            let robust = format!("resolve-bundle-asset amplifier-bundle/tools/{helper}");
+            if !body.contains(&robust) {
+                offenders.push(format!("{recipe} -> {helper}"));
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "these workflow helper resolutions are not using the robust \
+             `resolve-bundle-asset` resolver and remain fragile in gitignored \
+             worktrees: {offenders:?}"
+        );
+    }
 }

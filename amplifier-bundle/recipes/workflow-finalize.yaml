@@ -227,9 +227,9 @@ steps:
       if [ "$HOST_TYPE" != "github" ]; then echo "INFO: non-GitHub host ($HOST_TYPE) — skipping gh pr ready" >&2; exit 0; fi
       if [ -z "$PR_URL" ]; then :; fi
       # Helper contract: command -v gh; command -v jq; gh auth status; timeout; gh pr view; gh pr list; git branch --show-current; PR_NUMBER; isDraft; state; mergedAt; for pr_target in discovered targets; no PR_URL, valid PR_NUMBER, or branch PR found; terminal_status may be already-merged, closed-after-merge, or closed-unmerged; closed-unmerged exits with exit 1.
-      READY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_pr_ready.sh"
-      if [ ! -f "$READY_HELPER" ] && [ -n "${REPO_PATH:-}" ]; then READY_HELPER="$REPO_PATH/amplifier-bundle/tools/workflow_pr_ready.sh"; fi
-      [ -f "$READY_HELPER" ] || { echo "ERROR: workflow PR-ready helper not found: $READY_HELPER" >&2; exit 1; }
+      READY_HELPER="$(amplihack resolve-bundle-asset amplifier-bundle/tools/workflow_pr_ready.sh 2>/dev/null || true)"
+      if [ -z "$READY_HELPER" ] || [ ! -f "$READY_HELPER" ]; then READY_HELPER=""; for __b in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$__b" ] && [ -f "$__b/amplifier-bundle/tools/workflow_pr_ready.sh" ] && { READY_HELPER="$__b/amplifier-bundle/tools/workflow_pr_ready.sh"; break; }; done; fi
+      [ -n "$READY_HELPER" ] && [ -f "$READY_HELPER" ] || { echo "ERROR: workflow PR-ready helper not found after robust resolution (searched: amplihack resolve-bundle-asset, AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack). Ensure the amplihack bundle is installed (\`amplihack install\`) or set AMPLIHACK_HOME to a complete bundle root." >&2; exit 1; }
       bash "$READY_HELPER"
     output: "pr_ready_result"
 
@@ -261,10 +261,9 @@ steps:
       if [ -f "$RUNTIME_ARTIFACT_HELPER" ]; then . "$RUNTIME_ARTIFACT_HELPER"; preflight_known_workflow_runtime_artifacts .; else echo "WARNING: workflow runtime artifact helper not found; skipping artifact preflight enrichment and continuing in degraded mode (searched AMPLIHACK_HOME, REPO_PATH, worktree, ~/.copilot, ~/.amplihack): $RUNTIME_ARTIFACT_HELPER; cwd=$(pwd)" >&2; fi
       # Helper contract: git diff --quiet identifies no-diff; terminal_status accepts no-diff, already-merged, and closed-after-merge; GitHub-only status uses gh pr view.
       # Terminal-state contract: FAILED_CLOSED_UNMERGED, FAILED_MEANINGFUL_DIFF, BLOCKED_CI, MERGED, CLOSED_OBSOLETE, NO_DIFF_SUCCESS, FOLLOWUP_CREATED.
-      FINAL_STATUS_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_final_status.sh"
-      if [ ! -f "$FINAL_STATUS_HELPER" ] && [ -n "${REPO_PATH:-}" ]; then FINAL_STATUS_HELPER="$REPO_PATH/amplifier-bundle/tools/workflow_final_status.sh"; fi
-      [ -f "$FINAL_STATUS_HELPER" ] || { echo "ERROR: workflow final-status helper not found: $FINAL_STATUS_HELPER" >&2; exit 1; }
-      bash "$FINAL_STATUS_HELPER"
+      FINAL_STATUS_HELPER="$(amplihack resolve-bundle-asset amplifier-bundle/tools/workflow_final_status.sh 2>/dev/null || true)"
+      if [ -z "$FINAL_STATUS_HELPER" ] || [ ! -f "$FINAL_STATUS_HELPER" ]; then FINAL_STATUS_HELPER=""; for __b in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$__b" ] && [ -f "$__b/amplifier-bundle/tools/workflow_final_status.sh" ] && { FINAL_STATUS_HELPER="$__b/amplifier-bundle/tools/workflow_final_status.sh"; break; }; done; fi
+      if [ -n "$FINAL_STATUS_HELPER" ] && [ -f "$FINAL_STATUS_HELPER" ]; then bash "$FINAL_STATUS_HELPER"; else echo "WARNING: workflow final-status helper not found (searched: amplihack resolve-bundle-asset, AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack); skipping final-status reporting and continuing in degraded mode. Final-status is bookkeeping only — the published PR and CI remain authoritative. cwd=$(pwd)" >&2; fi
     output: "final_status"
 
   - id: "collect-finalization-evidence"
@@ -272,9 +271,9 @@ steps:
     parse_json: true
     command: |
       set -euo pipefail
-      FINALIZER_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_agentic_finalization.sh"
-      if [ ! -f "$FINALIZER_HELPER" ] && [ -n "${REPO_PATH:-}" ]; then FINALIZER_HELPER="$REPO_PATH/amplifier-bundle/tools/workflow_agentic_finalization.sh"; fi
-      [ -f "$FINALIZER_HELPER" ] || { echo "ERROR: agentic finalization helper not found: $FINALIZER_HELPER" >&2; exit 2; }
+      FINALIZER_HELPER="$(amplihack resolve-bundle-asset amplifier-bundle/tools/workflow_agentic_finalization.sh 2>/dev/null || true)"
+      if [ -z "$FINALIZER_HELPER" ] || [ ! -f "$FINALIZER_HELPER" ]; then FINALIZER_HELPER=""; for __b in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$__b" ] && [ -f "$__b/amplifier-bundle/tools/workflow_agentic_finalization.sh" ] && { FINALIZER_HELPER="$__b/amplifier-bundle/tools/workflow_agentic_finalization.sh"; break; }; done; fi
+      [ -n "$FINALIZER_HELPER" ] && [ -f "$FINALIZER_HELPER" ] || { echo "ERROR: agentic finalization helper not found after robust resolution (searched: amplihack resolve-bundle-asset, AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack). Ensure the amplihack bundle is installed (\`amplihack install\`) or set AMPLIHACK_HOME to a complete bundle root." >&2; exit 2; }
       bash "$FINALIZER_HELPER" collect
     output: "finalization_evidence"
 
@@ -373,9 +372,9 @@ steps:
       # finalizer_confidence, jq -e, exit 1, confidence=high, terminal_success=true,
       # hollow_success_detected=true, FAILED_DIRTY_WORKTREE,
       # FAILED_PR_METADATA_UNAVAILABLE, BLOCKED_CI, FAILED_MEANINGFUL_DIFF.
-      FINALIZER_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_agentic_finalization.sh"
-      if [ ! -f "$FINALIZER_HELPER" ] && [ -n "${REPO_PATH:-}" ]; then FINALIZER_HELPER="$REPO_PATH/amplifier-bundle/tools/workflow_agentic_finalization.sh"; fi
-      [ -f "$FINALIZER_HELPER" ] || { echo "ERROR: agentic finalization helper not found: $FINALIZER_HELPER" >&2; exit 2; }
+      FINALIZER_HELPER="$(amplihack resolve-bundle-asset amplifier-bundle/tools/workflow_agentic_finalization.sh 2>/dev/null || true)"
+      if [ -z "$FINALIZER_HELPER" ] || [ ! -f "$FINALIZER_HELPER" ]; then FINALIZER_HELPER=""; for __b in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$__b" ] && [ -f "$__b/amplifier-bundle/tools/workflow_agentic_finalization.sh" ] && { FINALIZER_HELPER="$__b/amplifier-bundle/tools/workflow_agentic_finalization.sh"; break; }; done; fi
+      [ -n "$FINALIZER_HELPER" ] && [ -f "$FINALIZER_HELPER" ] || { echo "ERROR: agentic finalization helper not found after robust resolution (searched: amplihack resolve-bundle-asset, AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack). Ensure the amplihack bundle is installed (\`amplihack install\`) or set AMPLIHACK_HOME to a complete bundle root." >&2; exit 2; }
       bash "$FINALIZER_HELPER" validate
     output: "workflow_result"
 
@@ -390,8 +389,8 @@ steps:
       # CLOSED_OBSOLETE, NO_DIFF_SUCCESS, FOLLOWUP_CREATED, SUPERSEDED, BLOCKED_CI,
       # FAILED_FINALIZER_OUTPUT, FAILED_MISSING_TOOLING, FAILED_PR_METADATA_UNAVAILABLE,
       # FAILED_DIRTY_WORKTREE, FAILED_MEANINGFUL_DIFF, HOLLOW_SUCCESS, INCOMPLETE.
-      FINALIZER_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_agentic_finalization.sh"
-      if [ ! -f "$FINALIZER_HELPER" ] && [ -n "${REPO_PATH:-}" ]; then FINALIZER_HELPER="$REPO_PATH/amplifier-bundle/tools/workflow_agentic_finalization.sh"; fi
-      [ -f "$FINALIZER_HELPER" ] || { echo "ERROR: agentic finalization helper not found: $FINALIZER_HELPER" >&2; exit 2; }
+      FINALIZER_HELPER="$(amplihack resolve-bundle-asset amplifier-bundle/tools/workflow_agentic_finalization.sh 2>/dev/null || true)"
+      if [ -z "$FINALIZER_HELPER" ] || [ ! -f "$FINALIZER_HELPER" ]; then FINALIZER_HELPER=""; for __b in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$__b" ] && [ -f "$__b/amplifier-bundle/tools/workflow_agentic_finalization.sh" ] && { FINALIZER_HELPER="$__b/amplifier-bundle/tools/workflow_agentic_finalization.sh"; break; }; done; fi
+      [ -n "$FINALIZER_HELPER" ] && [ -f "$FINALIZER_HELPER" ] || { echo "ERROR: agentic finalization helper not found after robust resolution (searched: amplihack resolve-bundle-asset, AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack). Ensure the amplihack bundle is installed (\`amplihack install\`) or set AMPLIHACK_HOME to a complete bundle root." >&2; exit 2; }
       bash "$FINALIZER_HELPER" complete
     output: "workflow_completion"
