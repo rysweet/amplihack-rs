@@ -391,8 +391,23 @@ steps:
     parse_json: true
     command: |
       set -euo pipefail
+      # Canonical 6-tier resolution ladder (mirrors the landed #955 chain) so a
+      # helper installed at the amplihack root is ALWAYS found regardless of
+      # cwd / repo_path / a gitignored downstream-worktree bundle (issue #962).
       HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_implementation_evidence.sh"
       [ -f "$HELPER" ] || HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_implementation_evidence.sh"
-      [ -f "$HELPER" ] || { echo "ERROR: workflow implementation evidence helper not found: $HELPER" >&2; exit 2; }
-      bash "$HELPER"
+      [ -f "$HELPER" ] || HELPER="$(pwd)/amplifier-bundle/tools/workflow_implementation_evidence.sh"
+      [ -f "$HELPER" ] || HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_implementation_evidence.sh"
+      [ -f "$HELPER" ] || HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_implementation_evidence.sh"
+      # NO-DISCARD invariant (#962): this is a bookkeeping/evidence gate, not a
+      # code-verification gate. If the helper is unresolvable it MUST NOT abort
+      # and discard already-implemented, verified, committed work —
+      # it degrades VISIBLY (loud WARNING) and emits a schema-compatible evidence
+      # record so the terminal-state machine keeps the branch/PR.
+      if [ -f "$HELPER" ]; then
+        bash "$HELPER"
+      else
+        echo "WARNING: workflow implementation evidence helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack); this is a bookkeeping/evidence gate, so degrading VISIBLY and continuing to preserve validated implementation work (no-discard invariant, issue #962). searched last: $HELPER; cwd=$(pwd)" >&2
+        printf '%s\n' '{"implementation_completed":"true","terminal_no_op":"false","terminal_state":"EVIDENCE_TOOL_UNAVAILABLE","terminal_reason":"implementation-evidence helper was unresolvable; bookkeeping/evidence gate degraded (no-discard, #962) so prior step-08c-verified work is preserved"}'
+      fi
     output: "implementation_terminal_evidence"

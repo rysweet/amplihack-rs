@@ -42,6 +42,9 @@ steps:
       # lives in tools/workflow_worktree_sweep.sh to keep this recipe < 400 lines.
       SWEEP_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_worktree_sweep.sh"
       [ -f "$SWEEP_HELPER" ] || SWEEP_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_worktree_sweep.sh"
+      [ -f "$SWEEP_HELPER" ] || SWEEP_HELPER="$(pwd)/amplifier-bundle/tools/workflow_worktree_sweep.sh"
+      [ -f "$SWEEP_HELPER" ] || SWEEP_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_worktree_sweep.sh"
+      [ -f "$SWEEP_HELPER" ] || SWEEP_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_worktree_sweep.sh"
       if [ -f "$SWEEP_HELPER" ]; then bash "$SWEEP_HELPER" sweep "$REPO_PATH" >&2 || true; fi
 
       echo "=== Step 4: Creating Worktree and Branch ===" >&2

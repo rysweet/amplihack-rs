@@ -313,6 +313,37 @@ source exists, fail closed with a clear error; do not bootstrap from local
 **Failure**: Shell `&&`-chain breaks when `philosophy_check`, `patterns_check`, or `quality_audit_results` template variables contain shell metacharacters or exceed ARG_MAX.
 **Resilience**: Large template variables are captured via heredoc and truncated to 1KB before use in shell commands. Step 21 avoids echoing raw template content in bash; agent steps handle large text natively.
 
+## Evidence & Bookkeeping Gate Policy (no-discard invariant, issue #962)
+
+Several steps are *bookkeeping / evidence-collection* gates (e.g.
+`implementation-terminal-evidence` in `workflow-tdd`, `step-17a-testing-evidence-gate`
+in `workflow-pr-review`, and the `workflow_runtime_artifacts.sh` artifact preflight).
+These gates exist to *record* evidence — they do **not** themselves verify the code.
+A bookkeeping gate that cannot run, or that finds no applicable work, MUST NEVER abort
+the recipe and discard fully-implemented, tested, and committed work.
+
+The recipe enforces three explicit outcomes at every such gate:
+
+1. **Applicable + evidence present → PASS.** Normal success (`exit 0`).
+2. **Not-applicable OR the evidence tool is unresolvable → visible DEGRADE.** The gate
+   emits a loud `WARNING ... continuing in degraded mode` to stderr and exits `0`
+   (**no-discard**) so the branch/PR is preserved. Degradation is always *visible* —
+   never a silent skip.
+3. **Genuine code-verification failure → FATAL (fail-visible).** A real failing-tests
+   or missing-implementation verdict (e.g. `VERDICT: FAILED`, `HOLLOW_SUCCESS`,
+   zero-BS) stays fatal and aborts loudly. Bookkeeping degradation must never mask a
+   real code failure.
+
+Every bundled-helper resolution site uses the canonical resolution ladder
+(`AMPLIHACK_HOME → REPO_PATH → $(pwd) → ~/.copilot → ~/.amplihack`) so
+a helper installed at the amplihack root is **always** found, even when `cwd`/`repo_path`
+is a downstream product repo whose `amplifier-bundle/tools/` is gitignored. The single
+**fail-visible** terminal action is kept *last* per site. The FATAL allowlist
+(`step-08c-enforce-verdict`, `step-19c-zero-bs-verification`, git-identity resolution)
+is preserved; only bookkeeping/evidence gates are converted to visible-degrade.
+
+See `docs/reference/workflow-implementation-evidence.md` for the full gate inventory.
+
 ## Checkpoint Strategy
 
 The workflow creates automatic checkpoints at these points to prevent work loss:
