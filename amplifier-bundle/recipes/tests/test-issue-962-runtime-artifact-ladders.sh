@@ -55,6 +55,9 @@ SITES=(
     "workflow-worktree.yaml|workflow_worktree_sweep.sh"
     "workflow-tdd.yaml|workflow_runtime_artifacts.sh"
     "workflow-refactor-review.yaml|workflow_runtime_artifacts.sh"
+    "workflow-tdd.yaml|workflow_implementation_evidence.sh"
+    "workflow-terminal-state.yaml|workflow_pr_scope.sh"
+    "workflow-terminal-state.yaml|workflow_final_status.sh"
 )
 
 for entry in "${SITES[@]}"; do

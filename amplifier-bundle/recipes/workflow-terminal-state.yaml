@@ -357,10 +357,14 @@ steps:
       fi
       # workflow_pr_scope.sh validates headRefName, baseRefName, headRefOid,
       # isCrossRepository, expected_pr_title_prefix, and created_after.
+      # Canonical resolution ladder (issue #962) so the scope helper is found at
+      # the install root even for a gitignored downstream-worktree bundle; the
+      # WORKFLOW_PR_SCOPE_HELPER override still wins when it points at a real file.
       PR_SCOPE_HELPER="${WORKFLOW_PR_SCOPE_HELPER:-${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_pr_scope.sh}"
-      if [ ! -f "$PR_SCOPE_HELPER" ] && [ -n "${REPO_PATH:-}" ]; then
-        PR_SCOPE_HELPER="$REPO_PATH/amplifier-bundle/tools/workflow_pr_scope.sh"
-      fi
+      [ -f "$PR_SCOPE_HELPER" ] || PR_SCOPE_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_pr_scope.sh"
+      [ -f "$PR_SCOPE_HELPER" ] || PR_SCOPE_HELPER="$(pwd)/amplifier-bundle/tools/workflow_pr_scope.sh"
+      [ -f "$PR_SCOPE_HELPER" ] || PR_SCOPE_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_pr_scope.sh"
+      [ -f "$PR_SCOPE_HELPER" ] || PR_SCOPE_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_pr_scope.sh"
 
       pr_json=""
       pr_target=""
@@ -511,15 +515,17 @@ steps:
         exit 0
       fi
 
-      helper=""
-      if [ -n "${AMPLIHACK_HOME:-}" ] && [ -f "${AMPLIHACK_HOME}/amplifier-bundle/tools/workflow_final_status.sh" ]; then
-        helper="${AMPLIHACK_HOME}/amplifier-bundle/tools/workflow_final_status.sh"
-      elif [ -n "${REPO_PATH:-}" ] && [ -f "${REPO_PATH}/amplifier-bundle/tools/workflow_final_status.sh" ]; then
-        helper="${REPO_PATH}/amplifier-bundle/tools/workflow_final_status.sh"
-      elif [ -f "./amplifier-bundle/tools/workflow_final_status.sh" ]; then
-        helper="./amplifier-bundle/tools/workflow_final_status.sh"
-      fi
-      [ -n "$helper" ] || { echo "ERROR: workflow terminal-state helper not found; set AMPLIHACK_HOME or run from an amplihack checkout" >&2; exit 2; }
+      # Canonical resolution ladder (issue #962): the strict terminal gate runs at
+      # the very end (post-push), so a genuinely missing helper stays fail-visible
+      # (exit 2) — but the ~/.copilot and ~/.amplihack tiers ensure it resolves at
+      # the install root even for a gitignored downstream-worktree bundle, so the
+      # fatal essentially never fires in a correctly installed amplihack.
+      helper="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_final_status.sh"
+      [ -f "$helper" ] || helper="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_final_status.sh"
+      [ -f "$helper" ] || helper="$(pwd)/amplifier-bundle/tools/workflow_final_status.sh"
+      [ -f "$helper" ] || helper="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_final_status.sh"
+      [ -f "$helper" ] || helper="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_final_status.sh"
+      [ -f "$helper" ] || { echo "ERROR: workflow terminal-state helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack); set AMPLIHACK_HOME or run from an amplihack checkout; cwd=$(pwd)" >&2; exit 2; }
 
       : "${OBSERVED_PHASES:=workflow-prep,workflow-worktree,workflow-design,workflow-tdd,workflow-refactor-review,workflow-precommit-test,workflow-publish,workflow-pr-review,workflow-finalize}"
       export OBSERVED_PHASES

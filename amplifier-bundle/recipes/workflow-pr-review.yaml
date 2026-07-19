@@ -21,9 +21,15 @@ steps:
       echo ""
       GATE_OUTPUT="${LOCAL_TESTING_GATE:-}"
       # Outcome 3 (FATAL — code-verification failure): a genuine test/verification
-      # failure explicitly recorded in the evidence stays fatal. A bookkeeping
-      # degrade must NEVER mask a real failing-tests verdict.
-      if printf '%s' "$GATE_OUTPUT" | grep -qiE 'VERDICT:[[:space:]]*FAILED|TESTS?[[:space:]]+FAILED|FAILED[[:space:]]*[—-][[:space:]]*[0-9]'; then
+      # failure EXPLICITLY recorded as a verdict in the evidence stays fatal. We
+      # match only verdict-style failure tokens (prose "VERDICT: FAILED" or a JSON
+      # "verdict":"...FAILED/NOT_VERIFIED") — NOT a loose "tests failed", which
+      # would false-positive on benign summaries like "0 tests failed, 19 passed"
+      # and re-introduce the very work-discarding abort #962 removes. Actual
+      # failing tests are independently caught fatally by step-08c-enforce-verdict
+      # and step-19c-zero-bs-verification; this presence-gate only needs to honor
+      # an explicit failure verdict. A bookkeeping degrade must NEVER mask one.
+      if printf '%s' "$GATE_OUTPUT" | grep -qiE 'VERDICT:[[:space:]]*FAILED|"verdict"[[:space:]]*:[[:space:]]*"[^"]*(FAILED|NOT_VERIFIED)'; then
         echo "TESTING-EVIDENCE GATE FAILURE: Step 13 evidence records an explicit test/verification FAILURE." >&2
         echo "This is a genuine code-verification failure and stays fatal (not a bookkeeping-absence degrade)." >&2
         exit 1

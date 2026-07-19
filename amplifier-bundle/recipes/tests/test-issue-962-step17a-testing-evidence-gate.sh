@@ -111,6 +111,21 @@ else
     fail "FAIL-VISIBLE" "explicit failure verdict was NOT treated as fatal (rc=0): ${out}"
 fi
 
+# --- POS-benign-failword: a benign summary that merely CONTAINS the word ----
+# "failed" (e.g. "0 tests failed, 19 passed") must NOT be misread as a failure
+# verdict. A loose /tests failed/ match here would re-introduce the exact
+# work-discarding abort #962 removes, so it must PASS, not go fatal.
+BENIGN_GATE="Step 13: Local Testing Results
+Executed: cargo test. Summary: 0 tests failed, 19 passed."
+set +e
+out="$(run_gate "${BENIGN_GATE}" 2>&1)"; rc=$?
+set -e
+if [[ ${rc} -eq 0 ]] && printf '%s\n' "${out}" | grep -qi 'PASSED'; then
+    pass "POS-benign-failword" "benign 'N tests failed, M passed' summary is not misread as fatal (rc=0)"
+else
+    fail "POS-benign-failword" "benign summary containing the word 'failed' was wrongly treated as non-pass (rc=${rc}): ${out}"
+fi
+
 echo ""
 echo "--- Summary: ${PASS_COUNT} passed, ${FAIL_COUNT} failed ---"
 [[ ${FAIL_COUNT} -gt 0 ]] && exit 1

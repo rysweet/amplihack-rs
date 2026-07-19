@@ -228,16 +228,22 @@ canonical five-tier ladder; the terminal action follows the
 | `RUNTIME_ARTIFACT_HELPER` | `workflow-refactor-review.yaml` | `workflow_runtime_artifacts.sh` | canonical ladder + `exit 2` | unchanged — canonical ladder + **FATAL** (#829) |
 | `step-08c-enforce-verdict` | `workflow-tdd.yaml` | — | `exit 1` | **unchanged (FATAL)** |
 | `step-19c-zero-bs-verification` | `workflow-pr-review.yaml` | — | `exit 1` | **unchanged (FATAL)** |
+| `PR_SCOPE_HELPER` | `workflow-terminal-state.yaml` | `workflow_pr_scope.sh` | 2-tier `if`-form + `fail_terminal_state` | 6-tier ladder + **FATAL** (scope/provenance classifier) |
+| `helper` (strict terminal gate) | `workflow-terminal-state.yaml` | `workflow_final_status.sh` | 3-tier `if/elif` + `exit 2` | 6-tier ladder + **FATAL** (post-push terminal gate) |
 | git-identity chains (7 sites) | 7 recipes | `git-identity.sh` | 5-tier + `exit 2` (#955) | **unchanged (FATAL)** |
 
 The pre-publish runtime-artifact provenance gates in `workflow-publish.yaml`,
 `workflow-refactor-review.yaml`, and `workflow-pr-review.yaml` stay **fatal** per
 the landed #829 contract (un-preflighted artifacts must never be pushed); this
 sweep only widens their resolution ladder so the fatal never fires for a
-correctly installed amplihack. `workflow-terminal-state.yaml` already uses an
-explicit multi-tier `if/elif` resolver for `workflow_final_status.sh` /
-`workflow_pr_scope.sh`, aligned to the canonical order and fail-visible where it
-verifies terminal success.
+correctly installed amplihack. The two `workflow-terminal-state.yaml` classifier
+sites (`workflow_pr_scope.sh`, `workflow_final_status.sh`) previously stopped at a
+2–3-tier resolver that could not reach the install root — this sweep extends both
+to the full ladder (adding the `~/.copilot` and `~/.amplihack` tiers) so a
+gitignored-bundle worktree resolves the helper and the terminal-state machine
+does not mis-classify a bookkeeping-tool miss as a `FAILED` state. Their terminal
+action stays **fatal/fail-visible** because they run at or after publish, where a
+loud abort no longer discards un-pushed work.
 
 ---
 
