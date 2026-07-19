@@ -263,7 +263,8 @@ steps:
       # Terminal-state contract: FAILED_CLOSED_UNMERGED, FAILED_MEANINGFUL_DIFF, BLOCKED_CI, MERGED, CLOSED_OBSOLETE, NO_DIFF_SUCCESS, FOLLOWUP_CREATED.
       FINAL_STATUS_HELPER="$(amplihack resolve-bundle-asset amplifier-bundle/tools/workflow_final_status.sh 2>/dev/null || true)"
       if [ -z "$FINAL_STATUS_HELPER" ] || [ ! -f "$FINAL_STATUS_HELPER" ]; then FINAL_STATUS_HELPER=""; for __b in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$__b" ] && [ -f "$__b/amplifier-bundle/tools/workflow_final_status.sh" ] && { FINAL_STATUS_HELPER="$__b/amplifier-bundle/tools/workflow_final_status.sh"; break; }; done; fi
-      if [ -n "$FINAL_STATUS_HELPER" ] && [ -f "$FINAL_STATUS_HELPER" ]; then bash "$FINAL_STATUS_HELPER"; else echo "WARNING: workflow final-status helper not found (searched: amplihack resolve-bundle-asset, AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack); skipping final-status reporting and continuing in degraded mode. Final-status is bookkeeping only — the published PR and CI remain authoritative. cwd=$(pwd)" >&2; fi
+      [ -n "$FINAL_STATUS_HELPER" ] && [ -f "$FINAL_STATUS_HELPER" ] || { echo "ERROR: workflow final-status helper not found after robust resolution (searched: amplihack resolve-bundle-asset, AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack). Ensure the amplihack bundle is installed (\`amplihack install\`) or set AMPLIHACK_HOME to a complete bundle root." >&2; exit 1; }
+      bash "$FINAL_STATUS_HELPER"
     output: "final_status"
 
   - id: "collect-finalization-evidence"

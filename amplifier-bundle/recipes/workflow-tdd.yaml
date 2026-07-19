@@ -391,26 +391,8 @@ steps:
     parse_json: true
     command: |
       set -euo pipefail
-      # Resolve the evidence helper robustly. In target-repo worktrees the
-      # `amplifier-bundle/` may be gitignored (empty tools/), so prefer the
-      # installed resolver (`amplihack resolve-bundle-asset`, which skips empty
-      # bundles and checks the file exists), then fall back across every known
-      # install root. This step is BOOKKEEPING: it must NEVER hard-fail and
-      # discard already-implemented, fully-tested work (steps 7-8). If the
-      # helper cannot be located, degrade gracefully — warn and emit
-      # non-blocking evidence so the workflow proceeds to finalization/CI, which
-      # remain the real correctness gates.
+      # BOOKKEEPING: resolve robustly (resolve-bundle-asset skips empty/gitignored bundles, then fall back across install roots); NEVER hard-fail/discard tested work — degrade gracefully if unresolved (finalization + CI stay the real gates).
       HELPER="$(amplihack resolve-bundle-asset amplifier-bundle/tools/workflow_implementation_evidence.sh 2>/dev/null || true)"
-      if [ -z "$HELPER" ] || [ ! -f "$HELPER" ]; then
-        HELPER=""
-        for __b in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do
-          [ -n "$__b" ] && [ -f "$__b/amplifier-bundle/tools/workflow_implementation_evidence.sh" ] && { HELPER="$__b/amplifier-bundle/tools/workflow_implementation_evidence.sh"; break; }
-        done
-      fi
-      if [ -n "$HELPER" ] && [ -f "$HELPER" ]; then
-        bash "$HELPER"
-      else
-        echo "WARNING: workflow implementation evidence helper not found (searched: amplihack resolve-bundle-asset, AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack); AMPLIHACK_HOME=${AMPLIHACK_HOME:-<unset>} REPO_PATH=${REPO_PATH:-<unset>} cwd=$(pwd). Emitting non-blocking evidence and continuing in degraded mode so validated implementation work is NOT discarded." >&2
-        jq -nc '{implementation_completed:"false",terminal_no_op:"false",terminal_state:"IMPLEMENTATION_EVIDENCE_DEGRADED",terminal_reason:"evidence helper unresolved (bundle tools/ missing/gitignored); implementation preserved, correctness deferred to finalization + CI gates"}'
-      fi
+      if [ -z "$HELPER" ] || [ ! -f "$HELPER" ]; then HELPER=""; for __b in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$__b" ] && [ -f "$__b/amplifier-bundle/tools/workflow_implementation_evidence.sh" ] && { HELPER="$__b/amplifier-bundle/tools/workflow_implementation_evidence.sh"; break; }; done; fi
+      if [ -n "$HELPER" ] && [ -f "$HELPER" ]; then bash "$HELPER"; else echo "WARNING: workflow implementation evidence helper not found (searched: amplihack resolve-bundle-asset, AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack); AMPLIHACK_HOME=${AMPLIHACK_HOME:-<unset>} REPO_PATH=${REPO_PATH:-<unset>} cwd=$(pwd). Emitting non-blocking evidence and continuing in degraded mode so validated implementation work is NOT discarded." >&2; jq -nc '{implementation_completed:"false",terminal_no_op:"false",terminal_state:"IMPLEMENTATION_EVIDENCE_DEGRADED",terminal_reason:"evidence helper unresolved (bundle tools/ missing/gitignored); implementation preserved, correctness deferred to finalization + CI gates"}'; fi
     output: "implementation_terminal_evidence"
