@@ -17,25 +17,42 @@ steps:
     type: "bash"
     condition: "terminal_state.terminal_success != 'true'"
     command: |
-      echo "=== Step 17a: Step 13 Testing-Evidence Gate ===" && \
-      echo "" && \
-      GATE_OUTPUT="$LOCAL_TESTING_GATE" && \
-      if [ -z "$GATE_OUTPUT" ] || [ "$GATE_OUTPUT" = "''" ]; then \
-        echo "TESTING-EVIDENCE GATE FAILURE: Step 13 (outside-in testing) produced no output." && \
-        echo "" && \
-        echo "The outside-in testing step (step-13-local-testing) must be completed" && \
-        echo "before the PR review phase can begin." && \
-        echo "" && \
-        echo "Required: Invoke the qa-team skill (outside-in-testing alias also works), document the" && \
-        echo "detected toolchains, chosen validation strategy, and at least 2 test scenarios in the" && \
-        echo "PR description under 'Step 13: Local Testing Results'." && \
-        exit 1 ; \
-      fi && \
-      echo "Testing-evidence check: local_testing_gate is populated." && \
-      echo "" && \
-      echo "Verify PR description contains 'Step 13: Local Testing Results' section" && \
-      echo "with detected toolchains, chosen strategy, and actual test execution evidence (not just planning)." && \
-      echo "" && \
+      echo "=== Step 17a: Step 13 Testing-Evidence Gate ==="
+      echo ""
+      GATE_OUTPUT="${LOCAL_TESTING_GATE:-}"
+      # Outcome 3 (FATAL — code-verification failure): a genuine test/verification
+      # failure EXPLICITLY recorded as a verdict in the evidence stays fatal. We
+      # match only verdict-style failure tokens (prose "VERDICT: FAILED" or a JSON
+      # "verdict":"...FAILED/NOT_VERIFIED") — NOT a loose "tests failed", which
+      # would false-positive on benign summaries like "0 tests failed, 19 passed"
+      # and re-introduce the very work-discarding abort #962 removes. Actual
+      # failing tests are independently caught fatally by step-08c-enforce-verdict
+      # and step-19c-zero-bs-verification; this presence-gate only needs to honor
+      # an explicit failure verdict. A bookkeeping degrade must NEVER mask one.
+      if printf '%s' "$GATE_OUTPUT" | grep -qiE 'VERDICT:[[:space:]]*FAILED|"verdict"[[:space:]]*:[[:space:]]*"[^"]*(FAILED|NOT_VERIFIED)'; then
+        echo "TESTING-EVIDENCE GATE FAILURE: Step 13 evidence records an explicit test/verification FAILURE." >&2
+        echo "This is a genuine code-verification failure and stays fatal (not a bookkeeping-absence degrade)." >&2
+        exit 1
+      fi
+      # Outcome 2 (VISIBLE DEGRADE / N-A): no local-testing evidence was produced
+      # (e.g. a change with no external-service integration that legitimately
+      # needs none). Per the #962 NO-DISCARD invariant this MUST NOT abort and
+      # cascade (workflow-pr-review -> default-workflow -> whole recipe FAILED),
+      # discarding already-implemented, tested, committed work. It degrades
+      # VISIBLY (loud WARNING) and lets the workflow proceed.
+      if [ -z "$GATE_OUTPUT" ] || [ "$GATE_OUTPUT" = "''" ]; then
+        echo "WARNING: Step 13 testing-evidence gate is empty / not applicable — no local-testing evidence was recorded for this change." >&2
+        echo "WARNING: This is a bookkeeping/evidence gate, not a code-verification gate; degrading VISIBLY and continuing so validated, committed work is NOT discarded (no-discard invariant, issue #962)." >&2
+        echo "WARNING: If this change SHOULD carry local-testing evidence, invoke the qa-team skill (outside-in-testing alias also works) and record detected toolchains, chosen strategy, and >=2 scenarios under 'Step 13: Local Testing Results'." >&2
+        echo "=== Testing-Evidence Gate DEGRADED (non-fatal; validated work preserved) ==="
+        exit 0
+      fi
+      # Outcome 1 (PASS): applicable evidence present.
+      echo "Testing-evidence check: local_testing_gate is populated."
+      echo ""
+      echo "Verify PR description contains 'Step 13: Local Testing Results' section"
+      echo "with detected toolchains, chosen strategy, and actual test execution evidence (not just planning)."
+      echo ""
       echo "=== Testing-Evidence Gate PASSED ==="
     output: "step_13_testing_evidence_check"
   - id: "step-17b-reviewer-agent"
@@ -182,12 +199,14 @@ steps:
         echo "ERROR: current branch is empty; cannot push review feedback changes from detached HEAD" >&2
         exit 1
       fi
-      RUNTIME_ARTIFACT_HELPER="${AMPLIHACK_HOME:-}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
-      [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="$(git rev-parse --show-toplevel)/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
-      [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="$(pwd)/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
-      [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
-      [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
-      [ -f "$RUNTIME_ARTIFACT_HELPER" ] || { echo "ERROR: workflow runtime artifact helper not found (searched AMPLIHACK_HOME, worktree, ~/.copilot, ~/.amplihack): $RUNTIME_ARTIFACT_HELPER" >&2; exit 2; }
+      RUNTIME_ARTIFACT_HELPER="${AMPLIHACK_HOME:-}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="$(git rev-parse --show-toplevel 2>/dev/null)/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="$(pwd)/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
+      # Pre-publish artifact-provenance gate: runs BEFORE pushing review-feedback
+      # commits, so per the landed #829 contract it stays fail-visible (exit 2) if
+      # the helper is unresolvable. Uses the git-toplevel variant (NOT REPO_PATH)
+      # to honor the #684 invariant that step-18c requires the worktree; the
+      # AMPLIHACK_HOME/git-toplevel/cwd/~/.copilot/~/.amplihack ladder (issue #962)
+      # still finds it at the install root even for a gitignored worktree bundle.
+      [ -f "$RUNTIME_ARTIFACT_HELPER" ] || { echo "ERROR: workflow runtime artifact helper not found (searched AMPLIHACK_HOME, worktree, cwd, ~/.copilot, ~/.amplihack): $RUNTIME_ARTIFACT_HELPER" >&2; exit 2; }
       # shellcheck source=/dev/null
       . "$RUNTIME_ARTIFACT_HELPER"
       preflight_known_workflow_runtime_artifacts .
