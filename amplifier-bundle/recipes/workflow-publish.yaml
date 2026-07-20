@@ -351,12 +351,7 @@ steps:
       # Terminal vocabulary: MERGED, CLOSED_OBSOLETE, NO_DIFF_SUCCESS, FOLLOWUP_CREATED, EXISTING_OPEN_PR, BLOCKED_CI, BLOCKED_PROVIDER.
       # gh pr create is called by the helper only after PUBLISH_STATE classification.
       # gh pr create failed is surfaced by workflow_publish_pr.sh as FAILED_PR_CREATE.
-      PUBLISH_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_publish_pr.sh"
-      [ -f "$PUBLISH_HELPER" ] || PUBLISH_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_publish_pr.sh"
-      [ -f "$PUBLISH_HELPER" ] || PUBLISH_HELPER="$(pwd)/amplifier-bundle/tools/workflow_publish_pr.sh"
-      [ -f "$PUBLISH_HELPER" ] || PUBLISH_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_publish_pr.sh"
-      [ -f "$PUBLISH_HELPER" ] || PUBLISH_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_publish_pr.sh"
-      [ -f "$PUBLISH_HELPER" ] || { echo "ERROR: workflow publish helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $PUBLISH_HELPER; cwd=$(pwd)" >&2; exit 1; }
+      PUBLISH_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_publish_pr.sh"; [ -f "$PUBLISH_HELPER" ] || PUBLISH_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_publish_pr.sh"; [ -f "$PUBLISH_HELPER" ] || PUBLISH_HELPER="$(pwd)/amplifier-bundle/tools/workflow_publish_pr.sh"; [ -f "$PUBLISH_HELPER" ] || PUBLISH_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_publish_pr.sh"; [ -f "$PUBLISH_HELPER" ] || PUBLISH_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_publish_pr.sh"; [ -f "$PUBLISH_HELPER" ] || { echo "ERROR: workflow publish helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $PUBLISH_HELPER; cwd=$(pwd)" >&2; exit 1; }
       bash "$PUBLISH_HELPER"
     output: "pr_publish_result"
     parse_json: true

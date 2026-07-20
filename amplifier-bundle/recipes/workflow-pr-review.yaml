@@ -199,19 +199,14 @@ steps:
         echo "ERROR: current branch is empty; cannot push review feedback changes from detached HEAD" >&2
         exit 1
       fi
-      RUNTIME_ARTIFACT_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
-      [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
-      [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="$(pwd)/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
-      [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
-      [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
-      # Pre-publish artifact-provenance gate: this preflight runs BEFORE pushing
-      # review-feedback commits, so per the landed #829 contract it stays
-      # fail-visible (exit 2) if the helper cannot be resolved — un-preflighted
-      # artifacts must never be pushed. The 6-tier ladder above (issue #962)
-      # ensures the helper is found at the install root even for a gitignored
-      # downstream-worktree bundle, so this fatal essentially never fires in a
-      # correctly installed amplihack.
-      [ -f "$RUNTIME_ARTIFACT_HELPER" ] || { echo "ERROR: workflow runtime artifact helper not found (searched AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $RUNTIME_ARTIFACT_HELPER" >&2; exit 2; }
+      RUNTIME_ARTIFACT_HELPER="${AMPLIHACK_HOME:-}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="$(git rev-parse --show-toplevel 2>/dev/null)/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="$(pwd)/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
+      # Pre-publish artifact-provenance gate: runs BEFORE pushing review-feedback
+      # commits, so per the landed #829 contract it stays fail-visible (exit 2) if
+      # the helper is unresolvable. Uses the git-toplevel variant (NOT REPO_PATH)
+      # to honor the #684 invariant that step-18c requires the worktree; the
+      # AMPLIHACK_HOME/git-toplevel/cwd/~/.copilot/~/.amplihack ladder (issue #962)
+      # still finds it at the install root even for a gitignored worktree bundle.
+      [ -f "$RUNTIME_ARTIFACT_HELPER" ] || { echo "ERROR: workflow runtime artifact helper not found (searched AMPLIHACK_HOME, worktree, cwd, ~/.copilot, ~/.amplihack): $RUNTIME_ARTIFACT_HELPER" >&2; exit 2; }
       # shellcheck source=/dev/null
       . "$RUNTIME_ARTIFACT_HELPER"
       preflight_known_workflow_runtime_artifacts .

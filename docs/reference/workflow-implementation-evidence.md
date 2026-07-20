@@ -219,7 +219,7 @@ canonical five-tier ladder; the terminal action follows the
 | `implementation-terminal-evidence` | `workflow-tdd.yaml` | `workflow_implementation_evidence.sh` | 2-tier + `exit 2` | 6-tier ladder + **DEGRADE** |
 | `RUNTIME_ARTIFACT_HELPER` (checkpoint) | `workflow-tdd.yaml` | `workflow_runtime_artifacts.sh` | canonical ladder + DEGRADE (#829) | unchanged — canonical ladder + DEGRADE |
 | `step-17a-testing-evidence-gate` | `workflow-pr-review.yaml` | (evidence check) | single `exit 1` on any gap | 3-outcome: pass / **DEGRADE** (N/A or empty) / **FATAL** (genuine code-fail) |
-| `RUNTIME_ARTIFACT_HELPER` (step-18c) | `workflow-pr-review.yaml` | `workflow_runtime_artifacts.sh` | 4-tier (missing `REPO_PATH`) + `exit 2` | 6-tier ladder + **FATAL** (#829 pre-publish provenance) |
+| `RUNTIME_ARTIFACT_HELPER` (step-18c) | `workflow-pr-review.yaml` | `workflow_runtime_artifacts.sh` | 5-tier git-toplevel form (`AMPLIHACK_HOME`→git-toplevel→cwd→`.copilot`→`.amplihack`) + `exit 2` | same git-toplevel variant, **FATAL** (#829 pre-publish provenance). Deliberately omits the `REPO_PATH` tier to honor the #684 worktree invariant (`step-18c` must require the worktree). |
 | `RUNTIME_ARTIFACT_HELPER` (×3) | `workflow-finalize.yaml` | `workflow_runtime_artifacts.sh` | canonical ladder + DEGRADE (#829) | unchanged — canonical ladder + DEGRADE |
 | `READY_HELPER`, `FINAL_STATUS_HELPER`, `FINALIZER_HELPER` (×3) | `workflow-finalize.yaml` | `workflow_pr_ready.sh`, `workflow_final_status.sh`, `workflow_agentic_finalization.sh` | 2-tier `if`-form + `exit 1`/`2` | 6-tier ladder + **FATAL** (publish/finalize/verdict op) |
 | `RUNTIME_ARTIFACT_HELPER` (×2) | `workflow-publish.yaml` | `workflow_runtime_artifacts.sh` | canonical ladder + `exit 2` | unchanged — canonical ladder + **FATAL** (#829) |
@@ -359,7 +359,7 @@ Test files:
 | --- | --- |
 | `test-issue-962-implementation-evidence-fallback.sh` | Flavor A 6-tier ladder + degrade (no bare `exit 2`) for `implementation-terminal-evidence`. |
 | `test-issue-962-step17a-testing-evidence-gate.sh` | Flavor B three-outcome behavior (pass / degrade / fatal-on-failure-verdict). |
-| `test-issue-962-runtime-artifact-ladders.sh` | Canonical ladder tiers across finalize/publish/worktree/refactor-review/tdd/pr-review + dynamic `REPO_PATH` resolution. |
+| `test-issue-962-runtime-artifact-ladders.sh` | Canonical `REPO_PATH` ladder tiers across finalize/publish/worktree/refactor-review/tdd; the git-toplevel variant (no `REPO_PATH`, #684) for pr-review `step-18c`; and dynamic install-root (`~/.amplihack`) resolution. |
 | `test-issue-962-fatal-allowlist-preserved.sh` | `step-08c`, `step-19c`, 7 git-identity sites still fatal; converted gates degrade; CI wired. |
 | `test-issue-962-skill-mirror-parity.sh` | Both `SKILL.md` mirrors stay byte-identical and document the policy. |
 
