@@ -556,33 +556,63 @@ fn add_violation_if_prohibited(
     }
 }
 
-/// Runtime bookkeeping files that the amplihack launcher and session tracker
-/// write into `<repo>/.claude/runtime/` as a normal, unavoidable part of
-/// launching an agent. They live under the path the `claude-runtime` rule
-/// otherwise blocks, but they are the launcher's OWN state — not leftover agent
-/// pollution — so the guard must never flag them. Treating them as violations
-/// turned a clean end-of-run guard step into a hard failure (issue #807), which
-/// in turn left `recipe-runner-rs` and its child agents hung after the work was
-/// already committed and pushed.
-///
-/// The exemption is intentionally narrow: only these specific launcher-owned
-/// files are exempt. Everything else under `.claude/runtime/` (session logs,
-/// metrics, locks, power-steering state, stray runtime output) is still blocked
-/// so the guard keeps catching genuine runtime pollution. Paths mirror
-/// `amplihack_types::ProjectDirs::launcher_context_file` and `sessions_log_file`.
+/// The two runtime bookkeeping files the amplihack launcher and session tracker
+/// force into `<repo>/.claude/runtime/` as part of every launch. These are the
+/// launcher's OWN state and are exempt in *every* git source (including staged),
+/// because the launcher itself may stage them and flagging them turned the
+/// end-of-run guard into a hang (issue #807). The rest of the runtime tree is
+/// handled by [`is_claude_runtime_path`], which is exempt only for the
+/// untracked/ignored-present output that recipes unavoidably produce.
 const LAUNCHER_OWNED_RUNTIME_FILES: &[&str] = &[
     ".claude/runtime/launcher_context.json",
     ".claude/runtime/sessions.jsonl",
 ];
 
-/// Whether `path` is a launcher-owned runtime bookkeeping file that the guard
-/// must never treat as a prohibited artifact. See [`LAUNCHER_OWNED_RUNTIME_FILES`].
+/// Whether `path` is one of the launcher-owned bookkeeping files exempt in all
+/// git sources. See [`LAUNCHER_OWNED_RUNTIME_FILES`].
 fn is_launcher_owned_runtime_file(path: &str) -> bool {
     LAUNCHER_OWNED_RUNTIME_FILES.contains(&path)
 }
 
+/// Whether `path` is the `.claude/runtime` directory or anything beneath it.
+///
+/// The whole `<repo>/.claude/runtime/` subtree is runtime bookkeeping that the
+/// launcher, session tracker, and *every* agent's PostToolUse metrics hook write
+/// continuously as a normal, unavoidable part of running an agent: session logs,
+/// metrics (`metrics/post_tool_use_metrics.jsonl`, appended on every tool call),
+/// locks, and power-steering state. This tree is `.gitignore`d and tool-generated.
+///
+/// The guard exempts it — but only when it appears as **untracked or
+/// ignored-present** output (see [`rule_for_path`]). Flagging that output turned
+/// the clean end-of-run guard step into a hard failure (issue #807 — and again
+/// when it blocked the metrics file), which left `recipe-runner-rs` and its
+/// child agents hung *after* the work was already committed and pushed,
+/// discarding completed recipe work. Because the subtree is gitignored, an
+/// `.amplihack-artifact-allowlist` entry cannot rescue it either
+/// (`.claude/runtime` is a root-prohibited broad exemption; see
+/// [`is_root_prohibited_exemption`]).
+///
+/// A **staged or tracked** `.claude/runtime/` path is not covered by this
+/// exemption: deliberately committing runtime state into the published tree is
+/// genuine pollution and is still blocked as `claude-runtime`.
+fn is_claude_runtime_path(path: &str) -> bool {
+    path == ".claude/runtime" || path.starts_with(".claude/runtime/")
+}
+
 fn rule_for_path(path: &str, source: ArtifactSource) -> Option<&'static ArtifactRule> {
+    // Launcher-owned bookkeeping is exempt regardless of git source.
     if is_launcher_owned_runtime_file(path) {
+        return None;
+    }
+    // The rest of the runtime tree is exempt only as the untracked/ignored
+    // output every recipe unavoidably produces; staged/tracked runtime state
+    // still falls through to the `claude-runtime` block below.
+    if is_claude_runtime_path(path)
+        && matches!(
+            source,
+            ArtifactSource::Untracked | ArtifactSource::IgnoredPresent
+        )
+    {
         return None;
     }
     if path_has_component(path, "node_modules") {
@@ -591,7 +621,7 @@ fn rule_for_path(path: &str, source: ArtifactSource) -> Option<&'static Artifact
     if path == "dist/plugin.js" || path.ends_with("/dist/plugin.js") {
         return rule("plugin-bundle");
     }
-    if path == ".claude/runtime" || path.starts_with(".claude/runtime/") {
+    if is_claude_runtime_path(path) {
         return rule("claude-runtime");
     }
     if path == "worktrees" || path.starts_with("worktrees/") {
