@@ -148,14 +148,15 @@ fn ignored_present_dist_plugin_runtime_and_cache_artifacts_are_blocked() {
 }
 
 #[test]
-fn entire_claude_runtime_subtree_is_exempt() {
+fn claude_runtime_subtree_is_exempt_when_untracked_or_ignored() {
     // Regression for issue #807 and the recurrence that blocked
     // `.claude/runtime/metrics/post_tool_use_metrics.jsonl`: the amplihack
     // launcher, session tracker, and every agent's PostToolUse metrics hook
     // write bookkeeping into `<repo>/.claude/runtime/` continuously while a
-    // recipe runs. The whole subtree is gitignored, tool-generated, and outside
-    // the author's control, so the guard must never flag any of it — otherwise
-    // the end-of-run guard step hard-fails and discards already-committed work.
+    // recipe runs. That output is unavoidable, gitignored, tool-generated
+    // runtime state, so the guard must never flag it as untracked or
+    // ignored-present — otherwise the end-of-run guard step hard-fails and
+    // discards already-committed work.
     let tmp = repo();
     write_file(&tmp.path().join(".gitignore"), ".claude/runtime/\n");
     run_git(tmp.path(), &["add", ".gitignore"]);
@@ -178,10 +179,69 @@ fn entire_claude_runtime_subtree_is_exempt() {
     for rel in runtime_paths {
         assert!(
             !report.violations.iter().any(|v| v.path == rel),
-            "{rel} under .claude/runtime/ must be exempt; got {:#?}",
+            "{rel} under .claude/runtime/ must be exempt when untracked/ignored; got {:#?}",
             report.violations
         );
     }
+}
+
+#[test]
+fn staged_or_tracked_claude_runtime_state_is_still_blocked() {
+    // The subtree exemption covers only the untracked/ignored output recipes
+    // unavoidably produce. Deliberately committing runtime state into the
+    // published tree is genuine pollution and must still fail the guard — except
+    // the two launcher-owned bookkeeping files, which are exempt in all sources.
+    let tmp = repo();
+    write_file(&tmp.path().join(".gitignore"), ".claude/runtime/\n");
+    run_git(tmp.path(), &["add", ".gitignore"]);
+    run_git(tmp.path(), &["commit", "-qm", "ignore claude runtime"]);
+
+    // Force-stage a non-launcher runtime file past .gitignore.
+    write_file(
+        &tmp.path()
+            .join(".claude/runtime/metrics/post_tool_use_metrics.jsonl"),
+        "{}\n",
+    );
+    run_git(
+        tmp.path(),
+        &[
+            "add",
+            "-f",
+            ".claude/runtime/metrics/post_tool_use_metrics.jsonl",
+        ],
+    );
+    // Launcher-owned file, also force-staged: exempt in all sources.
+    write_file(
+        &tmp.path().join(".claude/runtime/launcher_context.json"),
+        "{}\n",
+    );
+    run_git(
+        tmp.path(),
+        &["add", "-f", ".claude/runtime/launcher_context.json"],
+    );
+
+    let report = scan_artifacts(
+        &ArtifactGuardConfig::new(tmp.path()).with_mode(ArtifactGuardMode::PrePublish),
+    )
+    .expect("scan artifacts");
+
+    let blocked = violation_for(
+        &report.violations,
+        ".claude/runtime/metrics/post_tool_use_metrics.jsonl",
+        ArtifactSource::Staged,
+    );
+    assert_eq!(
+        blocked.rule_id, "claude-runtime",
+        "staged runtime state must still be blocked as claude-runtime"
+    );
+    assert!(
+        !report
+            .violations
+            .iter()
+            .any(|v| v.path == ".claude/runtime/launcher_context.json"),
+        "launcher-owned bookkeeping must stay exempt even when staged; got {:#?}",
+        report.violations
+    );
 }
 
 #[test]
