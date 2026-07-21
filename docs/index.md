@@ -400,6 +400,7 @@ Specialized AI agents and tools for every development task.
 - [Eval System Architecture](EVAL_SYSTEM_ARCHITECTURE.md) - Progressive test suite (L1-L12), grading pipeline, domain agents, long-horizon memory eval, self-improvement runner
 - [Goal Agent Generator Design](agent-bundle-generator-design.md) - Architecture and design patterns
 - [Goal Agent Requirements](agent-bundle-generator-requirements.md) - Technical specifications
+- [Bundle Generator Module Reference](reference/bundle-generator-module.md) - `bundle_generator` module layout, public API, and maintenance guide
 - [Implementation Summary](goal_agent_generator/IMPLEMENTATION_SUMMARY.md) - Current implementation status
 
 **💡 Explanation (Understanding-Oriented)**

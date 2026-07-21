@@ -206,7 +206,7 @@ fn push_bundle_json_includes_sha_when_present() {
 /// GitHubDistributor must NOT be behind a feature gate.
 #[test]
 fn github_distributor_not_feature_gated() {
-    let src = read_file("crates/amplihack-utils/src/bundle_generator.rs");
+    let src = read_file("crates/amplihack-utils/src/bundle_generator/distributor.rs");
     let struct_line = src
         .lines()
         .enumerate()
@@ -231,7 +231,7 @@ fn github_distributor_not_feature_gated() {
 /// `create_repository` must accept a `public` bool parameter.
 #[test]
 fn create_repository_has_public_parameter() {
-    let src = read_file("crates/amplihack-utils/src/bundle_generator.rs");
+    let src = read_file("crates/amplihack-utils/src/bundle_generator/distributor.rs");
     let fn_line = src.lines().find(|l| l.contains("fn create_repository"));
 
     assert!(fn_line.is_some(), "create_repository method must exist");
@@ -252,7 +252,7 @@ fn create_repository_has_public_parameter() {
 /// `push_bundle` must use `--input` (temp file) instead of inline CLI args.
 #[test]
 fn push_bundle_uses_temp_file_not_cli_arg() {
-    let src = read_file("crates/amplihack-utils/src/bundle_generator.rs");
+    let src = read_file("crates/amplihack-utils/src/bundle_generator/distributor.rs");
 
     // Find the push_bundle method body
     let push_bundle_section: String = src
@@ -277,7 +277,7 @@ fn push_bundle_uses_temp_file_not_cli_arg() {
 /// `push_bundle` must handle idempotent updates by fetching existing SHA.
 #[test]
 fn push_bundle_fetches_existing_sha() {
-    let src = read_file("crates/amplihack-utils/src/bundle_generator.rs");
+    let src = read_file("crates/amplihack-utils/src/bundle_generator/distributor.rs");
 
     let push_bundle_section: String = src
         .lines()
@@ -299,7 +299,7 @@ fn push_bundle_fetches_existing_sha() {
 /// The `distribute` method must NOT be a stub returning "not yet implemented".
 #[test]
 fn distribute_is_not_a_stub() {
-    let src = read_file("crates/amplihack-utils/src/bundle_generator.rs");
+    let src = read_file("crates/amplihack-utils/src/bundle_generator/distributor.rs");
 
     let distribute_section: String = src
         .lines()
@@ -322,7 +322,7 @@ fn distribute_is_not_a_stub() {
 /// The implementation must use the `base64` crate, not a hand-rolled encoder.
 #[test]
 fn no_hand_rolled_base64_encoder() {
-    let src = read_file("crates/amplihack-utils/src/bundle_generator.rs");
+    let src = read_file("crates/amplihack-utils/src/bundle_generator/distributor.rs");
 
     // Must not have a custom base64_encode function
     assert!(
@@ -340,7 +340,7 @@ fn no_hand_rolled_base64_encoder() {
 /// The implementation must use char-boundary-safe truncation for descriptions.
 #[test]
 fn uses_char_boundary_safe_truncation() {
-    let src = read_file("crates/amplihack-utils/src/bundle_generator.rs");
+    let src = read_file("crates/amplihack-utils/src/bundle_generator/distributor.rs");
 
     // The old unsafe pattern: &description[..description.len().min(100)]
     assert!(
