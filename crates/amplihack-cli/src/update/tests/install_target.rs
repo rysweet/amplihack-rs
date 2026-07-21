@@ -69,9 +69,10 @@ fn downloaded_update_plan_uses_preferred_user_bin_when_system_binary_shadows_cur
 }
 
 #[test]
-fn downloaded_update_plan_returns_manual_repair_before_copying_into_denied_system_dir() {
+fn downloaded_update_plan_uses_user_bin_instead_of_copying_into_denied_system_dir() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("home");
+    let user_bin = home.join(".local/bin");
     let usr_local_bin = temp.path().join("usr/local/bin");
     let archive = temp.path().join("archive");
 
@@ -95,20 +96,21 @@ fn downloaded_update_plan_returns_manual_repair_before_copying_into_denied_syste
         denied_system_prefixes: vec![temp.path().join("usr/local")],
     });
 
-    let err = plan_downloaded_binary_install(
+    let plan = plan_downloaded_binary_install(
         InstallArchiveLayout {
             amplihack: new_amplihack,
             hooks: new_hooks,
         },
         decision,
     )
-    .expect_err("denied system target must not produce a copy plan");
+    .expect("denied system target must repair into user-level bin");
 
-    let message = err.to_string();
-    assert!(message.contains("manual repair"));
-    assert!(message.contains("sudo"));
-    assert!(
-        !message.contains(".tmp") && !message.contains("Permission denied"),
-        "update must fail before temp-copying into /usr/local/bin, got: {message}"
+    assert_eq!(
+        plan,
+        BinaryInstallPlan {
+            amplihack_destination: user_bin.join("amplihack"),
+            hooks_destination: user_bin.join("amplihack-hooks"),
+        },
+        "update must avoid temp-copying into /usr/local/bin and target ~/.local/bin instead"
     );
 }

@@ -176,3 +176,76 @@ fn sets_post_update_install_env() {
         "post-update installs must set AMPLIHACK_POST_UPDATE_INSTALL=1 so known transitional XPIA asset gaps can be reported as self-healing instead of hard ❌ errors, got envs: {envs:?}"
     );
 }
+
+/// The repair subprocess must execute with the user-level Rust install first
+/// on PATH, so stale uvx/Python wrappers that existed earlier in the parent
+/// process cannot shadow the freshly installed Rust binary during repair.
+#[test]
+fn prepends_user_local_bin_to_repair_subprocess_path() {
+    let _lock = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let _home = crate::test_support::HomeGuard::set(temp.path());
+    let previous_path = std::env::var_os("PATH");
+    unsafe {
+        std::env::set_var("PATH", "/tmp/stale-uvx:/usr/bin");
+    }
+
+    let fake_path = temp.path().join(".local/bin/amplihack");
+    let cmd = build_install_command(&fake_path);
+    let path_env = cmd
+        .get_envs()
+        .find_map(|(key, value)| {
+            (key == std::ffi::OsStr::new("PATH")).then(|| value.map(|v| v.to_os_string()))
+        })
+        .flatten()
+        .expect("post-update repair subprocess must set PATH explicitly");
+
+    match previous_path {
+        Some(value) => unsafe { std::env::set_var("PATH", value) },
+        None => unsafe { std::env::remove_var("PATH") },
+    }
+
+    let path_env = path_env.to_string_lossy();
+    let expected_prefix = temp.path().join(".local/bin").display().to_string();
+    assert!(
+        path_env.starts_with(&expected_prefix),
+        "post-update repair PATH must start with the Rust user-level bin dir {expected_prefix}, got {path_env}"
+    );
+}
+
+#[test]
+fn preserves_parent_path_for_stale_wrapper_discovery() {
+    let _lock = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let _home = crate::test_support::HomeGuard::set(temp.path());
+    let previous_path = std::env::var_os("PATH");
+    unsafe {
+        std::env::set_var("PATH", "/tmp/stale-uvx:/usr/bin");
+    }
+
+    let fake_path = temp.path().join(".local/bin/amplihack");
+    let cmd = build_install_command(&fake_path);
+    let original_path = cmd
+        .get_envs()
+        .find_map(|(key, value)| {
+            (key == std::ffi::OsStr::new("AMPLIHACK_REPAIR_ORIGINAL_PATH"))
+                .then(|| value.map(|v| v.to_os_string()))
+        })
+        .flatten()
+        .expect("post-update install must preserve the parent PATH for stale-wrapper discovery");
+
+    match previous_path {
+        Some(value) => unsafe { std::env::set_var("PATH", value) },
+        None => unsafe { std::env::remove_var("PATH") },
+    }
+
+    assert_eq!(
+        original_path.to_string_lossy(),
+        "/tmp/stale-uvx:/usr/bin",
+        "the install subprocess needs the original shadowing PATH, not only the repaired PATH"
+    );
+}

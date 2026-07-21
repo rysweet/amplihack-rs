@@ -152,7 +152,15 @@ pub fn register_copilot_plugin(source_commands: &Path, copilot_home: &Path) -> R
     let mut config: Value = if config_path.exists() {
         let content =
             std::fs::read_to_string(&config_path).context("failed to read config.json")?;
-        serde_json::from_str(&content).unwrap_or_else(|_| json!({}))
+        if content.trim().is_empty() {
+            // An empty/whitespace file is not corruption: start from a fresh
+            // object. A corrupt (non-empty, unparseable) file must surface an
+            // error so we never overwrite the user's existing plugins/settings.
+            json!({})
+        } else {
+            serde_json::from_str(&content)
+                .with_context(|| format!("config.json is corrupt: {}", config_path.display()))?
+        }
     } else {
         json!({})
     };
@@ -333,5 +341,84 @@ mod tests {
         let j = serde_json::to_value(&e).unwrap();
         assert_eq!(j["name"], "test");
         assert_eq!(j["enabled"], true);
+    }
+
+    // ---- issue #869: corrupt config.json must surface, never destroy user plugins ----
+
+    #[test]
+    fn corrupt_config_is_error_not_silent_default() {
+        let home = tempfile::tempdir().unwrap();
+        let cmds = tempfile::tempdir().unwrap();
+        std::fs::write(home.path().join("config.json"), "{ this is not json").unwrap();
+
+        let result = register_copilot_plugin(cmds.path(), home.path());
+        assert!(
+            result.is_err(),
+            "corrupt config.json must surface an error, not reset to an empty object"
+        );
+        let msg = format!("{:#}", result.err().unwrap());
+        assert!(
+            msg.to_lowercase().contains("corrupt"),
+            "error must mention 'corrupt' to distinguish from a missing file: {msg}"
+        );
+        assert!(
+            msg.contains("config.json"),
+            "error must name the config path: {msg}"
+        );
+    }
+
+    #[test]
+    fn corrupt_config_is_not_overwritten() {
+        let home = tempfile::tempdir().unwrap();
+        let cmds = tempfile::tempdir().unwrap();
+        let corrupt = "{ this is not json";
+        let cfg = home.path().join("config.json");
+        std::fs::write(&cfg, corrupt).unwrap();
+
+        let _ = register_copilot_plugin(cmds.path(), home.path());
+        let after = std::fs::read_to_string(&cfg).unwrap();
+        assert_eq!(
+            after, corrupt,
+            "corrupt config.json must be preserved, never overwritten with a fresh object"
+        );
+    }
+
+    #[test]
+    fn register_preserves_existing_other_plugins_and_settings() {
+        let home = tempfile::tempdir().unwrap();
+        let cmds = tempfile::tempdir().unwrap();
+        std::fs::write(
+            home.path().join("config.json"),
+            r#"{"installed_plugins":[{"name":"other","enabled":true}],"user_setting":"keep-me"}"#,
+        )
+        .unwrap();
+
+        assert!(register_copilot_plugin(cmds.path(), home.path()).unwrap());
+
+        let c: Value = serde_json::from_str(
+            &std::fs::read_to_string(home.path().join("config.json")).unwrap(),
+        )
+        .unwrap();
+        let plugins = c["installed_plugins"].as_array().unwrap();
+        assert_eq!(plugins.len(), 2, "existing plugin must be preserved");
+        let names: Vec<&str> = plugins.iter().filter_map(|p| p["name"].as_str()).collect();
+        assert!(names.contains(&"other"), "pre-existing plugin retained");
+        assert!(names.contains(&"amplihack"), "amplihack plugin added");
+        assert_eq!(
+            c["user_setting"], "keep-me",
+            "unrelated top-level settings must be preserved"
+        );
+    }
+
+    #[test]
+    fn empty_config_file_treated_as_empty_ok() {
+        let home = tempfile::tempdir().unwrap();
+        let cmds = tempfile::tempdir().unwrap();
+        std::fs::write(home.path().join("config.json"), "   \n").unwrap();
+
+        assert!(
+            register_copilot_plugin(cmds.path(), home.path()).unwrap(),
+            "empty/whitespace config is not corruption → treat as empty, registration proceeds"
+        );
     }
 }

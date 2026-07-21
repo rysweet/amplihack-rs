@@ -54,12 +54,30 @@ jobs:
       - name: Recipes — graceful degradation for missing runtime-artifact helper (issue #829)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-bug-829-graceful-degradation.sh
+      - name: Recipes — git-identity helper fallback resolution (issue #955)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-955-git-identity-fallback.sh
       - name: Recipes — doc-review failure is non-fatal-but-reported (issue #834)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-bug-834-doc-review-non-fatal.sh
       - name: Recipes — leak-proof, self-healing worktree setup (issue #840)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-840-worktree-leak-proof.sh
+      - name: Recipes — evidence gate resolves via full ladder + no-discard (issue #962)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-962-implementation-evidence-fallback.sh
+      - name: Recipes — step-17a testing-evidence gate three-outcome contract (issue #962)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-962-step17a-testing-evidence-gate.sh
+      - name: Recipes — canonical helper resolution ladders (issue #962)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-962-runtime-artifact-ladders.sh
+      - name: Recipes — fatal allowlist preserved; bookkeeping gates degraded (issue #962)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-962-fatal-allowlist-preserved.sh
+      - name: Recipes — SKILL mirror parity + gate-policy docs (issue #962)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-962-skill-mirror-parity.sh
       - name: Recipes — shellcheck worktree sweep helper (issue #840)
         shell: bash
         run: |

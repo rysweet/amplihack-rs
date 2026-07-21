@@ -8,13 +8,22 @@ use std::fmt;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::str::FromStr;
+use std::sync::LazyLock;
 
 use chrono::{DateTime, Utc};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tracing::warn;
 
-use crate::state_lock::file_lock;
+use crate::state_io::{merge_key_into_state, read_keyed_state};
+
+/// Validates a tmux session id (`sess-YYYYMMDD-HHMMSS-xxxx`) before it is
+/// interpolated into a shell command. The pattern is constant, so it is
+/// compiled once here rather than on every `capture_output` call.
+static TMUX_SESSION_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^sess-\d{8}-\d{6}-[a-f0-9]{4}$").expect("valid tmux session regex")
+});
 
 /// Session lifecycle states.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -212,8 +221,9 @@ impl SessionManager {
         session.status = SessionStatus::Killed;
         session.completed_at = Some(Utc::now());
 
-        let _ = self.save_state();
-        true
+        // Surface a persistence failure to the caller instead of reporting a
+        // successful kill that was never durably recorded.
+        self.save_state().is_ok()
     }
 
     /// Capture output from a running tmux session via SSH.
@@ -223,8 +233,7 @@ impl SessionManager {
         };
 
         // Validate session ID format
-        let re = regex::Regex::new(r"^sess-\d{8}-\d{6}-[a-f0-9]{4}$").unwrap();
-        if !re.is_match(&session.tmux_session) {
+        if !TMUX_SESSION_RE.is_match(&session.tmux_session) {
             return String::new();
         }
 
@@ -258,57 +267,23 @@ impl SessionManager {
     }
 
     fn load_state(&mut self) -> Result<(), String> {
-        if !self.state_file.exists() {
-            return Ok(());
-        }
-
-        let content =
-            std::fs::read_to_string(&self.state_file).map_err(|e| format!("read failed: {e}"))?;
-
-        if content.trim().is_empty() {
-            return Ok(());
-        }
-
-        let data: serde_json::Value =
-            serde_json::from_str(&content).map_err(|e| format!("State file corrupt: {e}"))?;
-
-        if let Some(sessions) = data.get("sessions") {
-            self.sessions = serde_json::from_value(sessions.clone()).unwrap_or_default();
+        // Missing/empty/absent-key → start empty; corrupt or schema mismatch →
+        // surface, never discard.
+        if let Some(sessions) =
+            read_keyed_state(&self.state_file, "sessions").map_err(|e| e.to_string())?
+        {
+            self.sessions = sessions;
             self.used_ids = self.sessions.keys().cloned().collect();
         }
-
         Ok(())
     }
 
     fn save_state(&self) -> Result<(), String> {
-        let lock_path = self.state_file.with_extension("lock");
-        let _guard = file_lock(&lock_path).map_err(|e| format!("lock failed: {e}"))?;
-
-        if let Some(parent) = self.state_file.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("mkdir failed: {e}"))?;
-        }
-
-        // Load existing to merge
-        let mut existing: serde_json::Value = if self.state_file.exists() {
-            std::fs::read_to_string(&self.state_file)
-                .ok()
-                .and_then(|c| serde_json::from_str(&c).ok())
-                .unwrap_or_else(|| serde_json::json!({}))
-        } else {
-            serde_json::json!({})
-        };
-
         let sessions_json =
             serde_json::to_value(&self.sessions).map_err(|e| format!("serialize failed: {e}"))?;
-
-        existing["sessions"] = sessions_json;
-
-        let content = serde_json::to_string_pretty(&existing)
-            .map_err(|e| format!("serialize failed: {e}"))?;
-
-        std::fs::write(&self.state_file, content).map_err(|e| format!("write failed: {e}"))?;
-
-        Ok(())
+        // Merges under lock and refuses to overwrite a corrupt file, so
+        // co-resident vm_pool state is never wiped.
+        merge_key_into_state(&self.state_file, "sessions", sessions_json).map_err(|e| e.to_string())
     }
 }
 

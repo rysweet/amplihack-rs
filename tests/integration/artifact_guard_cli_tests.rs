@@ -204,15 +204,20 @@ fn cli_exits_0_when_only_launcher_owned_runtime_files_are_present() {
 }
 
 #[test]
-fn cli_exits_1_cleanly_for_genuine_runtime_pollution_next_to_launcher_files() {
-    // The exemption is narrow: a real leftover under `.claude/runtime/` still
-    // produces a clean non-zero exit (not a hang), even when the launcher's own
-    // exempt files sit beside it.
+fn cli_exempts_ignored_present_claude_runtime_but_blocks_when_staged() {
+    // Source-conditional contract for the whole `.claude/runtime/` subtree:
     //
-    // Uses `--mode worktree` because issue #928 narrowed `pre-publish` so that it
-    // no longer scans ignored-present paths (they can never be committed or
-    // published). The narrow-launcher-exemption contract is therefore asserted
-    // against a mode that still audits ignored-present state.
+    //   * Ignored-present (or untracked) runtime output can NEVER enter the
+    //     deliverable, so it must not block a publish — this is the exact
+    //     false-positive that previously hung recipe-runner on gitignored
+    //     runtime metrics/session files.
+    //   * A *staged* `.claude/runtime/` file could actually be committed, so it
+    //     must still fail closed as genuine pollution entering the deliverable.
+    //
+    // Uses `--mode worktree` for the ignored-present half because issue #928
+    // narrowed `pre-publish` so it no longer scans ignored-present paths at all;
+    // worktree is the mode that still audits ignored-present state, so it is the
+    // strongest place to prove the exemption.
     let tmp = repo();
     write_file(&tmp.path().join(".gitignore"), ".claude/runtime/\n");
     run_git(tmp.path(), &["add", ".gitignore"]);
@@ -223,28 +228,39 @@ fn cli_exits_1_cleanly_for_genuine_runtime_pollution_next_to_launcher_files() {
     );
     write_file(&tmp.path().join(".claude/runtime/session.json"), "{}\n");
 
-    let output = Command::new(bin())
-        .args(["hygiene", "artifact-guard", "--mode", "worktree", "--repo"])
-        .arg(tmp.path())
-        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
-        .output()
-        .expect("run artifact guard");
+    let output = run_guard(tmp.path(), "worktree");
 
     assert_eq!(
         output.status.code(),
-        Some(1),
-        "genuine runtime pollution must exit 1\nstdout:\n{}\nstderr:\n{}",
+        Some(0),
+        "ignored-present .claude/runtime/ output must not block (it can never \
+         enter the deliverable)\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Second half: force-stage the same runtime file so it becomes committable.
+    // A staged `.claude/runtime/` path is deliberate pollution entering the
+    // deliverable and must still fail closed under pre-commit.
+    run_git(tmp.path(), &["add", "-f", ".claude/runtime/session.json"]);
+
+    let staged = run_guard(tmp.path(), "pre-commit");
+
+    assert_eq!(
+        staged.status.code(),
+        Some(1),
+        "staged .claude/runtime/ file must still block pre-commit\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&staged.stdout),
+        String::from_utf8_lossy(&staged.stderr)
     );
     let combined = format!(
         "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        String::from_utf8_lossy(&staged.stdout),
+        String::from_utf8_lossy(&staged.stderr)
     );
     assert!(
         combined.contains(".claude/runtime/session.json"),
-        "must report the genuine runtime leftover; got:\n{combined}"
+        "must report the staged runtime pollution; got:\n{combined}"
     );
     assert!(
         !combined.contains("launcher_context.json"),

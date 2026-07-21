@@ -304,7 +304,7 @@ mod github_distributor_gate {
     /// with real implementation).
     #[test]
     fn struct_exists_not_feature_gated() {
-        let src = read_file("crates/amplihack-utils/src/bundle_generator.rs");
+        let src = read_file("crates/amplihack-utils/src/bundle_generator/distributor.rs");
 
         let struct_pos = src
             .find("pub struct GitHubDistributor")
@@ -322,7 +322,7 @@ mod github_distributor_gate {
     /// TC-SWEEP-605-02: The impl block must also NOT be feature-gated.
     #[test]
     fn impl_not_feature_gated() {
-        let src = read_file("crates/amplihack-utils/src/bundle_generator.rs");
+        let src = read_file("crates/amplihack-utils/src/bundle_generator/distributor.rs");
 
         let impl_pos = src
             .find("impl GitHubDistributor")

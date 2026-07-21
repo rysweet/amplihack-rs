@@ -10,11 +10,11 @@ use std::str::FromStr;
 
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info};
+use tracing::{debug, error, info, warn};
 
 use crate::error::RemoteError;
 use crate::orchestrator::{Orchestrator, VM, VMOptions};
-use crate::state_lock::file_lock;
+use crate::state_io::{merge_key_into_state, read_keyed_state};
 
 /// VM capacity tiers for concurrent sessions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -233,8 +233,11 @@ impl VMPoolManager {
 
         for vm_name in idle_vms {
             if let Some(entry) = self.pool.remove(&vm_name) {
-                let _ = self.orchestrator.cleanup(&entry.vm, true).await;
-                removed.push(vm_name);
+                // Take ownership of the entry (ends the &mut self.pool borrow)
+                // and await cleanup borrowing only &self.orchestrator, so the
+                // helper below can re-borrow &mut self.pool without conflict.
+                let result = self.orchestrator.cleanup(&entry.vm, true).await;
+                Self::apply_cleanup_result(&mut self.pool, &mut removed, vm_name, entry, result);
             }
         }
 
@@ -246,66 +249,68 @@ impl VMPoolManager {
         removed
     }
 
+    /// Map one `Orchestrator::cleanup` outcome onto the pool and the `removed`
+    /// list, distinguishing a confirmed reclaim from a failure so a billable
+    /// VM is never silently dropped from tracking (issue #870).
+    ///
+    /// Outcomes are inspected structurally from `Result<bool, RemoteError>` —
+    /// never by parsing tool output:
+    /// - `Ok(true)`  — deallocation confirmed: drop the VM and record it in
+    ///   `removed` (the only truthful "reclaimed" signal).
+    /// - `Ok(false)` — cleanup ran but did not confirm deallocation: re-insert
+    ///   the entry so the next pass retries; do not report it as removed.
+    /// - `Err(e)`    — hard cleanup failure: re-insert the entry to avoid
+    ///   orphaning a billable resource; do not report it as removed.
+    fn apply_cleanup_result(
+        pool: &mut HashMap<String, VMPoolEntry>,
+        removed: &mut Vec<String>,
+        vm_name: String,
+        entry: VMPoolEntry,
+        result: Result<bool, RemoteError>,
+    ) {
+        match result {
+            Ok(true) => {
+                removed.push(vm_name);
+            }
+            Ok(false) => {
+                warn!(
+                    vm = %vm_name,
+                    "cleanup did not confirm deallocation; VM retained for retry"
+                );
+                pool.insert(vm_name, entry);
+            }
+            Err(e) => {
+                // Log only the curated RemoteError Display message (never raw
+                // tool stdout/stderr) plus the VM name — no credentials, tags,
+                // or command output are surfaced here.
+                error!(
+                    vm = %vm_name,
+                    error = %e,
+                    "cleanup failed; VM retained to avoid orphaning billable resource"
+                );
+                pool.insert(vm_name, entry);
+            }
+        }
+    }
+
     // ---- state persistence ----
 
     fn load_state(&mut self) -> Result<(), RemoteError> {
-        if !self.state_file.exists() {
-            self.pool = HashMap::new();
-            return Ok(());
-        }
-
-        let content = std::fs::read_to_string(&self.state_file)
-            .map_err(|e| RemoteError::packaging(format!("Failed to read state: {e}")))?;
-
-        if content.trim().is_empty() {
-            self.pool = HashMap::new();
-            return Ok(());
-        }
-
-        let data: serde_json::Value = serde_json::from_str(&content)
-            .map_err(|e| RemoteError::packaging(format!("State file corrupt: {e}")))?;
-
-        if let Some(pool_data) = data.get("vm_pool") {
-            let entries: HashMap<String, VMPoolEntry> =
-                serde_json::from_value(pool_data.clone()).unwrap_or_default();
-            self.pool = entries;
-        }
-
+        // Missing/empty/absent-key → start empty; corrupt or schema mismatch →
+        // surface, never discard.
+        self.pool = read_keyed_state(&self.state_file, "vm_pool")
+            .map_err(|e| RemoteError::packaging(e.to_string()))?
+            .unwrap_or_default();
         Ok(())
     }
 
     fn save_state(&self) -> Result<(), RemoteError> {
-        let lock_path = self.state_file.with_extension("lock");
-        let _guard = file_lock(&lock_path)
-            .map_err(|e| RemoteError::packaging(format!("Failed to acquire lock: {e}")))?;
-
-        if let Some(parent) = self.state_file.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| RemoteError::packaging(format!("Failed to create state dir: {e}")))?;
-        }
-
-        // Load existing state to merge
-        let mut existing: serde_json::Value = if self.state_file.exists() {
-            std::fs::read_to_string(&self.state_file)
-                .ok()
-                .and_then(|c| serde_json::from_str(&c).ok())
-                .unwrap_or_else(|| serde_json::json!({"sessions": {}}))
-        } else {
-            serde_json::json!({"sessions": {}})
-        };
-
         let pool_json = serde_json::to_value(&self.pool)
             .map_err(|e| RemoteError::packaging(format!("Failed to serialize pool: {e}")))?;
-
-        existing["vm_pool"] = pool_json;
-
-        let content = serde_json::to_string_pretty(&existing)
-            .map_err(|e| RemoteError::packaging(format!("Failed to serialize state: {e}")))?;
-
-        std::fs::write(&self.state_file, content)
-            .map_err(|e| RemoteError::packaging(format!("Failed to write state: {e}")))?;
-
-        Ok(())
+        // Merges under lock and refuses to overwrite a corrupt file, so
+        // co-resident session state is never wiped.
+        merge_key_into_state(&self.state_file, "vm_pool", pool_json)
+            .map_err(|e| RemoteError::packaging(e.to_string()))
     }
 }
 
@@ -325,172 +330,5 @@ fn dirs_home() -> PathBuf {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn vm_size_capacity() {
-        assert_eq!(VMSize::S.capacity(), 1);
-        assert_eq!(VMSize::M.capacity(), 2);
-        assert_eq!(VMSize::L.capacity(), 4);
-        assert_eq!(VMSize::XL.capacity(), 8);
-    }
-
-    #[test]
-    fn vm_size_azure_mapping() {
-        assert_eq!(VMSize::S.azure_size(), "Standard_D8s_v3");
-        assert_eq!(VMSize::XL.azure_size(), "Standard_E32s_v5");
-    }
-
-    #[test]
-    fn pool_entry_available_capacity() {
-        let entry = VMPoolEntry {
-            vm: VM {
-                name: "vm1".into(),
-                size: "s".into(),
-                region: "eastus".into(),
-                created_at: None,
-                tags: None,
-            },
-            capacity: 4,
-            active_sessions: vec!["s1".into(), "s2".into()],
-            region: "eastus".into(),
-        };
-        assert_eq!(entry.available_capacity(), 2);
-    }
-
-    #[test]
-    fn pool_status_serialization() {
-        let status = PoolStatus {
-            total_vms: 2,
-            total_capacity: 8,
-            active_sessions: 3,
-            available_capacity: 5,
-        };
-        let json = serde_json::to_string(&status).unwrap();
-        let s2: PoolStatus = serde_json::from_str(&json).unwrap();
-        assert_eq!(s2.total_vms, 2);
-    }
-
-    #[test]
-    fn vm_size_display() {
-        assert_eq!(VMSize::S.to_string(), "s");
-        assert_eq!(VMSize::M.to_string(), "m");
-        assert_eq!(VMSize::L.to_string(), "l");
-        assert_eq!(VMSize::XL.to_string(), "xl");
-    }
-
-    #[test]
-    fn vm_size_from_str() {
-        assert_eq!("s".parse::<VMSize>().unwrap(), VMSize::S);
-        assert_eq!("S".parse::<VMSize>().unwrap(), VMSize::S);
-        assert_eq!("m".parse::<VMSize>().unwrap(), VMSize::M);
-        assert_eq!("M".parse::<VMSize>().unwrap(), VMSize::M);
-        assert_eq!("l".parse::<VMSize>().unwrap(), VMSize::L);
-        assert_eq!("L".parse::<VMSize>().unwrap(), VMSize::L);
-        assert_eq!("xl".parse::<VMSize>().unwrap(), VMSize::XL);
-        assert_eq!("XL".parse::<VMSize>().unwrap(), VMSize::XL);
-    }
-
-    #[test]
-    fn vm_size_from_str_invalid() {
-        assert!("xxl".parse::<VMSize>().is_err());
-        assert!("".parse::<VMSize>().is_err());
-        assert!("large".parse::<VMSize>().is_err());
-    }
-
-    #[test]
-    fn vm_size_azure_mapping_all() {
-        assert_eq!(VMSize::S.azure_size(), "Standard_D8s_v3");
-        assert_eq!(VMSize::M.azure_size(), "Standard_E8s_v5");
-        assert_eq!(VMSize::L.azure_size(), "Standard_E16s_v5");
-        assert_eq!(VMSize::XL.azure_size(), "Standard_E32s_v5");
-    }
-
-    #[test]
-    fn vm_size_serialization() {
-        let size = VMSize::L;
-        let json = serde_json::to_string(&size).unwrap();
-        let s2: VMSize = serde_json::from_str(&json).unwrap();
-        assert_eq!(s2, VMSize::L);
-    }
-
-    #[test]
-    fn pool_entry_zero_capacity() {
-        let entry = VMPoolEntry {
-            vm: VM {
-                name: "vm1".into(),
-                size: "s".into(),
-                region: "eastus".into(),
-                created_at: None,
-                tags: None,
-            },
-            capacity: 2,
-            active_sessions: vec!["s1".into(), "s2".into()],
-            region: "eastus".into(),
-        };
-        assert_eq!(entry.available_capacity(), 0);
-    }
-
-    #[test]
-    fn pool_entry_overflow_sessions() {
-        let entry = VMPoolEntry {
-            vm: VM {
-                name: "vm1".into(),
-                size: "s".into(),
-                region: "eastus".into(),
-                created_at: None,
-                tags: None,
-            },
-            capacity: 1,
-            active_sessions: vec!["s1".into(), "s2".into(), "s3".into()],
-            region: "eastus".into(),
-        };
-        // saturating_sub prevents underflow
-        assert_eq!(entry.available_capacity(), 0);
-    }
-
-    #[test]
-    fn pool_entry_full_capacity() {
-        let entry = VMPoolEntry {
-            vm: VM {
-                name: "vm1".into(),
-                size: "s".into(),
-                region: "eastus".into(),
-                created_at: None,
-                tags: None,
-            },
-            capacity: 4,
-            active_sessions: vec![],
-            region: "eastus".into(),
-        };
-        assert_eq!(entry.available_capacity(), 4);
-    }
-
-    #[test]
-    fn pool_entry_serialization() {
-        let entry = VMPoolEntry {
-            vm: VM {
-                name: "vm1".into(),
-                size: "Standard_D8s_v3".into(),
-                region: "eastus".into(),
-                created_at: None,
-                tags: None,
-            },
-            capacity: 4,
-            active_sessions: vec!["s1".into()],
-            region: "eastus".into(),
-        };
-        let json = serde_json::to_string(&entry).unwrap();
-        let e2: VMPoolEntry = serde_json::from_str(&json).unwrap();
-        assert_eq!(e2.vm.name, "vm1");
-        assert_eq!(e2.capacity, 4);
-        assert_eq!(e2.active_sessions.len(), 1);
-    }
-
-    #[test]
-    fn dirs_home_returns_path() {
-        let home = dirs_home();
-        assert!(!home.to_str().unwrap_or("").is_empty());
-    }
-}
+#[path = "vm_pool_tests.rs"]
+mod tests;

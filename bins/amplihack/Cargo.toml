@@ -333,6 +333,11 @@ path = "../../tests/integration/multitask_orchestrator_spec_test.rs"
 name = "orch_workflow_log_inventory"
 path = "../../tests/integration/orch_workflow_log_inventory_test.rs"
 
+# Issue #891: smart-orchestrator active execution must not require orch_helper.py.
+[[test]]
+name = "active_recipe_guard"
+path = "../../tests/integration/active_recipe_guard.rs"
+
 # Issue #801: generated workflow requirements must omit saved preference notices.
 [[test]]
 name = "workflow_prep_requirements_sanitizer"

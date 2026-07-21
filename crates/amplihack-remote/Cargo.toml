@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Azure VM remote-execution pipeline for distributed amplihack commands"
 
 [dependencies]
+amplihack-utils.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -210,7 +210,6 @@ steps:
     type: "bash"
     condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
     # Issue #615: maps the work-verifier's JSON verdict onto exit code.
-    #
     # Fast-path opt-outs preserved from the legacy guard (issue #425):
     #   * Orchestration sentinel in implement output -> exit 0.
     #   * ALLOW_NO_OP=true (orchestration / docs-only / audit / meta) -> exit 0.
@@ -222,9 +221,7 @@ steps:
       IMPL="${IMPLEMENTATION:-}"
       VERDICT_RAW="${VERDICT_JSON:-}"
 
-      # ----------------------------------------------------------------------
       # Fast-path opt-outs (issue #425 parity).
-      # ----------------------------------------------------------------------
       _ORCH_SENTINEL='No files modified — orchestration task'
       if [ -n "$IMPL" ] && printf '%s' "$IMPL" | grep -qF -- "$_ORCH_SENTINEL"; then
         echo "INFO: step-08c-enforce-verdict orchestration opt-out — sentinel matched (issue #425)." >&2
@@ -349,7 +346,7 @@ steps:
       git add -A
       STAGED=$(git diff --cached --name-only)
       if [ -n "$STAGED" ]; then
-        GIT_IDENTITY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(git rev-parse --show-toplevel)}}/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(git rev-parse --show-toplevel)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || { echo "ERROR: git identity helper not found: $GIT_IDENTITY_HELPER" >&2; exit 2; }; . "$GIT_IDENTITY_HELPER"
+        GIT_IDENTITY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(git rev-parse --show-toplevel)}}/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(git rev-parse --show-toplevel)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(pwd)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || { echo "ERROR: git identity helper not found: $GIT_IDENTITY_HELPER" >&2; exit 2; }; . "$GIT_IDENTITY_HELPER"
         commit_with_pre_commit_guard() {
           local pre_commit_hook
           amplihack_prepare_git_commit_identity
@@ -391,8 +388,11 @@ steps:
     parse_json: true
     command: |
       set -euo pipefail
+      # issue #962: full resolution ladder + visible no-discard degrade (see docs/reference/workflow-implementation-evidence.md)
       HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_implementation_evidence.sh"
       [ -f "$HELPER" ] || HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_implementation_evidence.sh"
-      [ -f "$HELPER" ] || { echo "ERROR: workflow implementation evidence helper not found: $HELPER" >&2; exit 2; }
-      bash "$HELPER"
+      [ -f "$HELPER" ] || HELPER="$(pwd)/amplifier-bundle/tools/workflow_implementation_evidence.sh"
+      [ -f "$HELPER" ] || HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_implementation_evidence.sh"
+      [ -f "$HELPER" ] || HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_implementation_evidence.sh"
+      if [ -f "$HELPER" ]; then bash "$HELPER"; else echo "WARNING: implementation-evidence helper unresolvable (AMPLIHACK_HOME/REPO_PATH/cwd/~/.copilot/~/.amplihack); bookkeeping gate degrading VISIBLY to preserve step-08c-verified work (no-discard #962). searched: $HELPER cwd=$(pwd)" >&2; printf '%s\n' '{"implementation_completed":"true","terminal_no_op":"false","terminal_state":"EVIDENCE_TOOL_UNAVAILABLE","terminal_reason":"impl-evidence helper unresolvable; bookkeeping gate degraded (no-discard #962); step-08c-verified work preserved"}'; fi
     output: "implementation_terminal_evidence"

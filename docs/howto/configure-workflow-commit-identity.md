@@ -178,6 +178,45 @@ Do not fix the failure by setting `git config --global` on the VM. A global VM
 identity can leak into unrelated repositories and does not prove the intended
 attribution for the current workflow.
 
+## Fix a "git identity helper not found" failure
+
+A commit or checkpoint step can stop with:
+
+```text
+ERROR: git identity helper not found: <path>
+```
+
+This means the recipe step could not locate `git-identity.sh` on disk before
+sourcing it. Commit steps search five locations in order and only fail after all
+of them are absent:
+
+1. `${AMPLIHACK_HOME:-${REPO_PATH:-<repo top level>}}/amplifier-bundle/tools/git-identity.sh`
+2. `<repo top level>/amplifier-bundle/tools/git-identity.sh`
+3. `$(pwd)/amplifier-bundle/tools/git-identity.sh`
+4. `${HOME}/.copilot/amplifier-bundle/tools/git-identity.sh`
+5. `${HOME}/.amplihack/amplifier-bundle/tools/git-identity.sh`
+
+In a downstream project checkout that does not vendor `amplifier-bundle/`, the
+helper resolves automatically from the installed home locations
+(`~/.copilot/...` or `~/.amplihack/...`), so no action is needed. If the failure
+still occurs, the bundle is genuinely missing from every location. Reinstall the
+bundle or point `AMPLIHACK_HOME` at a directory that contains
+`amplifier-bundle/`:
+
+```bash
+export AMPLIHACK_HOME="$HOME/.amplihack"
+ls "$AMPLIHACK_HOME/amplifier-bundle/tools/git-identity.sh"
+
+amplihack recipe run default-workflow \
+  -c repo_path=. \
+  -c task_description="Continue after restoring the amplihack bundle"
+```
+
+The `exit 2` is fail-visible by design: the workflow stops loudly rather than
+silently skipping the commit, so a truly missing bundle is never masked. See the
+[Helper script location resolution](../reference/workflow-commit-identity.md#helper-script-location-resolution)
+reference for the full candidate chain.
+
 ## Check the resulting commit identity
 
 After the workflow creates a commit, inspect the latest commit:

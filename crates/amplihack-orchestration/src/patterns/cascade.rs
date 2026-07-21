@@ -317,11 +317,15 @@ async fn execute_cascade_steps(
                 &step.prompt,
                 Some(&step.pid),
                 step.model.as_deref(),
-                Some(step.timeout),
+                // Issue #867: no wall-clock kill. The child is supervised by the
+                // site-6 idle watchdog; the cascade advances on the child's
+                // actual exit status, not elapsed time. `step.timeout` is now an
+                // advisory budget only (surfaced in the log below).
+                None,
             )
             .expect("create_process");
         session.log_info(&format!(
-            "Attempting {} level (timeout: {:?})",
+            "Attempting {} level (idle-supervised, advisory budget {:?})",
             step.name.to_uppercase(),
             step.timeout
         ));
@@ -348,7 +352,10 @@ async fn execute_cascade_steps(
         }
 
         if result.exit_code == -1 {
-            session.log_warn(&format!("{} level timed out", step.name.to_uppercase()));
+            session.log_warn(&format!(
+                "{} level did not complete (idle-reaped or spawn error)",
+                step.name.to_uppercase()
+            ));
         } else {
             session.log_warn(&format!(
                 "{} level failed with exit code {}",

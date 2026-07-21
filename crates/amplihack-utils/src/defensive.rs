@@ -36,6 +36,28 @@ pub enum DefensiveError {
     },
 }
 
+/// Why JSON could not be extracted from an LLM response.
+///
+/// A silent fallback is a silent failure: [`parse_llm_json_result`] reports
+/// *why* extraction failed so callers can log and branch (for example, retry a
+/// corrupt payload but treat a missing one as "the model produced no JSON").
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ParseLlmJsonError {
+    /// The response contained no JSON payload at all: no `{`/`[` delimiter and
+    /// no fenced code block were present (e.g. the model replied in prose).
+    #[error("no JSON payload found in LLM output")]
+    Missing,
+
+    /// A JSON payload was clearly attempted (a delimiter or fenced block was
+    /// present) but it could not be parsed.
+    #[error("JSON payload present but could not be parsed: {detail}")]
+    Corrupt {
+        /// The underlying parser message (or a description of the structural
+        /// problem when no parser message is available).
+        detail: String,
+    },
+}
+
 // ---------------------------------------------------------------------------
 // JSON parsing
 // ---------------------------------------------------------------------------
@@ -52,7 +74,10 @@ static JSON_FENCE: LazyLock<Regex> = LazyLock::new(|| {
 /// 2. Fenced code blocks (` ```json … ``` `)
 /// 3. First `{…}` or `[…]` substring (greedy brace/bracket matching)
 ///
-/// Returns `None` when no valid JSON can be extracted.
+/// Returns `None` when no valid JSON can be extracted. This is the best-effort
+/// wrapper over [`parse_llm_json_result`]: `parse_llm_json(x)` is exactly
+/// `parse_llm_json_result(x).ok()`. Prefer [`parse_llm_json_result`] when you
+/// need to distinguish a *missing* payload from a *corrupt* one.
 ///
 /// # Examples
 ///
@@ -66,30 +91,81 @@ static JSON_FENCE: LazyLock<Regex> = LazyLock::new(|| {
 /// assert!(parse_llm_json(fenced).is_some());
 /// ```
 pub fn parse_llm_json(text: &str) -> Option<serde_json::Value> {
+    parse_llm_json_result(text).ok()
+}
+
+/// Extract and parse JSON from LLM response text, reporting *why* it failed.
+///
+/// Uses the same extraction strategy as [`parse_llm_json`] (raw parse → fenced
+/// code block → first balanced `{…}`/`[…]` substring), but distinguishes the
+/// two failure modes so callers can surface them instead of silently degrading:
+///
+/// * [`ParseLlmJsonError::Missing`] — no delimiter and no fence were present,
+///   so the model produced no JSON at all.
+/// * [`ParseLlmJsonError::Corrupt`] — a JSON payload was attempted (a delimiter
+///   or fenced block was present) but could not be parsed.
+///
+/// # Errors
+///
+/// Returns [`ParseLlmJsonError`] describing the failure.
+///
+/// # Examples
+///
+/// ```
+/// use amplihack_utils::defensive::{parse_llm_json_result, ParseLlmJsonError};
+///
+/// assert!(parse_llm_json_result(r#"{"a": 1}"#).is_ok());
+/// assert_eq!(parse_llm_json_result("just prose"), Err(ParseLlmJsonError::Missing));
+/// assert!(matches!(
+///     parse_llm_json_result(r#"{"a": }"#),
+///     Err(ParseLlmJsonError::Corrupt { .. })
+/// ));
+/// ```
+pub fn parse_llm_json_result(text: &str) -> Result<serde_json::Value, ParseLlmJsonError> {
     let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err(ParseLlmJsonError::Missing);
+    }
 
     // 1. Try raw parse.
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
-        return Some(v);
+        return Ok(v);
     }
 
+    // Track the most specific parser error so a `Corrupt` result carries a
+    // useful message rather than an empty string.
+    let mut last_error: Option<String> = None;
+
     // 2. Try fenced code blocks.
+    let mut saw_fence = false;
     for cap in JSON_FENCE.captures_iter(text) {
-        if let Some(inner) = cap.get(1)
-            && let Ok(v) = serde_json::from_str::<serde_json::Value>(inner.as_str().trim())
-        {
-            return Some(v);
+        if let Some(inner) = cap.get(1) {
+            saw_fence = true;
+            match serde_json::from_str::<serde_json::Value>(inner.as_str().trim()) {
+                Ok(v) => return Ok(v),
+                Err(e) => last_error = Some(e.to_string()),
+            }
         }
     }
 
     // 3. Try extracting the first top-level JSON object or array.
-    if let Some(extracted) = extract_balanced_json(trimmed)
-        && let Ok(v) = serde_json::from_str::<serde_json::Value>(&extracted)
-    {
-        return Some(v);
+    if let Some(extracted) = extract_balanced_json(trimmed) {
+        match serde_json::from_str::<serde_json::Value>(&extracted) {
+            Ok(v) => return Ok(v),
+            Err(e) => last_error = Some(e.to_string()),
+        }
     }
 
-    None
+    // Nothing parsed. Distinguish a genuine JSON attempt (a delimiter or fence
+    // was present) from output that never contained JSON at all.
+    if saw_fence || find_json_start(trimmed).is_some() {
+        Err(ParseLlmJsonError::Corrupt {
+            detail: last_error
+                .unwrap_or_else(|| "unbalanced or truncated JSON payload".to_string()),
+        })
+    } else {
+        Err(ParseLlmJsonError::Missing)
+    }
 }
 
 /// Walk through `text` and return the first balanced `{…}` or `[…]` substring.

@@ -282,6 +282,57 @@ build entry points, and configuration files. Not every file is shown; group by d
 
 ---
 
+## Graph Artifacts (Portable Cypher + Backend Adapters)
+
+The atlas always emits a portable graph under `docs/atlas/cypher/` encoding all 8 layers and the
+inter-layer links. Below are the same example nodes/links expressed for each backend. The
+inter-layer link relationships (`EXPOSES`, `USES_DTO`, `USES_ENV`, `TRAVERSES`, ...) are mandatory
+in every backend. Full model: [reference.md](./reference.md).
+
+### Portable OpenCypher (always emitted — `atlas-relationships.cypher`)
+
+```cypher
+// Nodes across layers
+CREATE (:Service {name: 'api-service', language: 'rust', port: 8080, path: 'services/api'});
+CREATE (:Route   {method: 'POST', path: '/api/orders', handler: 'OrderController.create', auth: 'JWT'});
+CREATE (:DTO     {name: 'CreateOrderRequest', file: 'services/api/src/dto.rs', line: 12});
+CREATE (:EnvVar  {name: 'DATABASE_URL', required: true, default_value: ''});
+
+// Inter-layer links (first-class)
+MATCH (s:Service {name: 'api-service'}), (r:Route {path: '/api/orders'})   CREATE (s)-[:EXPOSES]->(r);
+MATCH (r:Route {path: '/api/orders'}), (d:DTO {name: 'CreateOrderRequest'}) CREATE (r)-[:USES_DTO {direction: 'in'}]->(d);
+MATCH (s:Service {name: 'api-service'}), (e:EnvVar {name: 'DATABASE_URL'})   CREATE (s)-[:USES_ENV]->(e);
+```
+
+### `kuzu` adapter (typed DDL)
+
+```cypher
+CREATE NODE TABLE Service(name STRING, language STRING, port INT64, path STRING, PRIMARY KEY(name));
+CREATE REL TABLE EXPOSES(FROM Service, TO Route);
+```
+
+### `lbug` / ladybug adapter (embedded Rust store, OpenCypher-compatible)
+
+```cypher
+CREATE (:Service {name: 'api-service', language: 'rust', port: 8080, path: 'services/api'});
+MATCH (s:Service {name: 'api-service'}), (r:Route {path: '/api/orders'}) CREATE (s)-[:EXPOSES]->(r);
+```
+
+### `neo4j` adapter (constraints + MERGE)
+
+```cypher
+CREATE CONSTRAINT service_name IF NOT EXISTS FOR (s:Service) REQUIRE s.name IS UNIQUE;
+MERGE (s:Service {name: 'api-service'}) SET s.language = 'rust', s.port = 8080, s.path = 'services/api';
+MATCH (s:Service {name: 'api-service'}), (r:Route {path: '/api/orders'}) MERGE (s)-[:EXPOSES]->(r);
+```
+
+### `portable-cypher-only` (no live engine)
+
+No live ingestion runs. The portable artifacts above are still emitted in full and the atlas index
+records `graph_backend: portable-cypher-only`. This is a recorded outcome, never a silent skip.
+
+---
+
 ## Language-Agnostic Discovery Commands
 
 These commands are used across layers to explore any codebase:

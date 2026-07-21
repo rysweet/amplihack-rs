@@ -246,7 +246,7 @@ steps:
       COMMIT_MSG=$(printf '%s\n\nImplements %s\n\nChanges:\n- Implementation as per design specification\n- Tests added for new functionality\n- Documentation updated\n\n%s' "$COMMIT_TITLE" "$ISSUE_IMPL" "$ISSUE_REF")
       # PERF: --quiet short-circuits on the first staged change.
       if ! git diff --cached --quiet; then
-        GIT_IDENTITY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(git rev-parse --show-toplevel)}}/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(git rev-parse --show-toplevel)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || { echo "ERROR: git identity helper not found: $GIT_IDENTITY_HELPER" >&2; exit 2; }; . "$GIT_IDENTITY_HELPER"
+        GIT_IDENTITY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(git rev-parse --show-toplevel)}}/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(git rev-parse --show-toplevel)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(pwd)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || { echo "ERROR: git identity helper not found: $GIT_IDENTITY_HELPER" >&2; exit 2; }; . "$GIT_IDENTITY_HELPER"
         amplihack_prepare_git_commit_identity
         git commit -m "$COMMIT_MSG"
       else
@@ -351,9 +351,7 @@ steps:
       # Terminal vocabulary: MERGED, CLOSED_OBSOLETE, NO_DIFF_SUCCESS, FOLLOWUP_CREATED, EXISTING_OPEN_PR, BLOCKED_CI, BLOCKED_PROVIDER.
       # gh pr create is called by the helper only after PUBLISH_STATE classification.
       # gh pr create failed is surfaced by workflow_publish_pr.sh as FAILED_PR_CREATE.
-      PUBLISH_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_publish_pr.sh"
-      if [ ! -f "$PUBLISH_HELPER" ] && [ -n "${REPO_PATH:-}" ]; then PUBLISH_HELPER="$REPO_PATH/amplifier-bundle/tools/workflow_publish_pr.sh"; fi
-      [ -f "$PUBLISH_HELPER" ] || { echo "ERROR: workflow publish helper not found: $PUBLISH_HELPER" >&2; exit 1; }
+      PUBLISH_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_publish_pr.sh"; [ -f "$PUBLISH_HELPER" ] || PUBLISH_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_publish_pr.sh"; [ -f "$PUBLISH_HELPER" ] || PUBLISH_HELPER="$(pwd)/amplifier-bundle/tools/workflow_publish_pr.sh"; [ -f "$PUBLISH_HELPER" ] || PUBLISH_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_publish_pr.sh"; [ -f "$PUBLISH_HELPER" ] || PUBLISH_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_publish_pr.sh"; [ -f "$PUBLISH_HELPER" ] || { echo "ERROR: workflow publish helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $PUBLISH_HELPER; cwd=$(pwd)" >&2; exit 1; }
       bash "$PUBLISH_HELPER"
     output: "pr_publish_result"
     parse_json: true
@@ -383,8 +381,7 @@ steps:
           distribution validation when that project shape warrants it.
        5. If a test fails, diagnose, fix, commit, push, and retry up to 3 times:
           ```bash
-          GIT_IDENTITY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(git rev-parse --show-toplevel)}}/amplifier-bundle/tools/git-identity.sh"
-          [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(git rev-parse --show-toplevel)/amplifier-bundle/tools/git-identity.sh"
+          GIT_IDENTITY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(git rev-parse --show-toplevel)}}/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(git rev-parse --show-toplevel)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(pwd)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/git-identity.sh"
           . "$GIT_IDENTITY_HELPER"
           amplihack hygiene artifact-guard --repo . --mode pre-publish && git add -A
           amplihack_prepare_git_commit_identity

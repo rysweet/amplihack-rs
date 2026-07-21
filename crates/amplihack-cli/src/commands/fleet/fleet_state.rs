@@ -117,19 +117,45 @@ impl FleetState {
     }
 
     pub(super) fn poll_vms(&self) -> Vec<VmInfo> {
+        let azlin = self.azlin_path.display().to_string();
+
+        // Preferred path: structured JSON inventory.
         let mut json_cmd = Command::new(&self.azlin_path);
         json_cmd.args(["list", "--json"]);
-        match run_output_with_timeout(json_cmd, AZLIN_LIST_TIMEOUT) {
-            Ok(output) if output.status.success() => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                if !stdout.trim().is_empty() {
-                    let parsed = Self::parse_vm_json(&stdout);
-                    if !parsed.is_empty() || stdout.trim() == "[]" {
-                        return parsed;
+        let json_fallback_reason: Option<String> =
+            match run_output_with_timeout(json_cmd, AZLIN_LIST_TIMEOUT) {
+                Ok(output) if output.status.success() => {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    if stdout.trim().is_empty() {
+                        Some("`azlin list --json` produced empty output".to_string())
+                    } else {
+                        let parsed = Self::parse_vm_json(&stdout);
+                        if !parsed.is_empty() || stdout.trim() == "[]" {
+                            // Success — including a genuinely empty `[]` fleet,
+                            // which is a real answer and stays silent.
+                            return parsed;
+                        }
+                        Some(
+                            "`azlin list --json` output was not parseable as a VM list".to_string(),
+                        )
                     }
                 }
-            }
-            Ok(_) | Err(_) => {}
+                Ok(output) => Some(format!(
+                    "`azlin list --json` exited with status {}",
+                    output.status
+                )),
+                Err(e) => Some(format!("`azlin list --json` failed to run: {e}")),
+            };
+
+        // We only reach here if JSON did not yield a usable inventory. Surface
+        // the transition so a failed/degraded query is distinguishable from an
+        // empty fleet before we retry with the text parser.
+        if let Some(reason) = &json_fallback_reason {
+            tracing::warn!(
+                azlin = %azlin,
+                reason = %reason,
+                "azlin JSON inventory unavailable; falling back to text parser"
+            );
         }
 
         let mut text_cmd = Command::new(&self.azlin_path);
@@ -139,7 +165,22 @@ impl FleetState {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 Self::parse_vm_text(&stdout)
             }
-            Ok(_) | Err(_) => Vec::new(),
+            Ok(output) => {
+                tracing::error!(
+                    azlin = %azlin,
+                    status = %output.status,
+                    "azlin list failed (non-zero exit); reporting an empty fleet here is unsafe — treat as a query failure, not 'no VMs' (risks double-provisioning / orphans)"
+                );
+                Vec::new()
+            }
+            Err(e) => {
+                tracing::error!(
+                    azlin = %azlin,
+                    error = %e,
+                    "azlin list failed to run (timeout / missing binary / spawn error); reporting an empty fleet here is unsafe — treat as a query failure, not 'no VMs' (risks double-provisioning / orphans)"
+                );
+                Vec::new()
+            }
         }
     }
 
@@ -311,4 +352,139 @@ pub(super) fn is_executable_file(path: &Path) -> bool {
 #[cfg(not(unix))]
 pub(super) fn is_executable_file(path: &Path) -> bool {
     path.is_file()
+}
+
+// ---------------------------------------------------------------------------
+// Issue #871 — a failed `azlin list` (timeout, non-zero exit, missing binary)
+// must NOT be swallowed into an empty VM list treated as "no VMs" (which drives
+// double-provisioning and orphaned VMs).
+//
+// `parse_vm_json`'s contract is intentionally unchanged (empty on parse error,
+// so the caller falls back to the text parser). The observable fix is in
+// `poll_vms`: the json->text fallback transition is logged at warn!, and a
+// terminal empty (both attempts failed) is logged at error!.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod issue_871_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
+    use tracing::field::{Field, Visit};
+    use tracing::span::{Attributes, Id, Record};
+    use tracing::{Event, Metadata, Subscriber};
+
+    #[derive(Default)]
+    struct CaptureSubscriber {
+        lines: Arc<Mutex<Vec<String>>>,
+        next_id: Arc<AtomicU64>,
+    }
+
+    impl Subscriber for CaptureSubscriber {
+        fn enabled(&self, meta: &Metadata<'_>) -> bool {
+            *meta.level() <= tracing::Level::WARN
+        }
+        fn new_span(&self, _: &Attributes<'_>) -> Id {
+            Id::from_u64(self.next_id.fetch_add(1, Ordering::Relaxed) + 1)
+        }
+        fn record(&self, _: &Id, _: &Record<'_>) {}
+        fn record_follows_from(&self, _: &Id, _: &Id) {}
+        fn event(&self, event: &Event<'_>) {
+            let mut grabber = FieldGrabber::default();
+            event.record(&mut grabber);
+            let mut line = event.metadata().level().to_string();
+            line.push(' ');
+            line.push_str(&grabber.fields.join(" "));
+            self.lines
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(line);
+        }
+        fn enter(&self, _: &Id) {}
+        fn exit(&self, _: &Id) {}
+        fn register_callsite(
+            &self,
+            _: &'static Metadata<'static>,
+        ) -> tracing::subscriber::Interest {
+            tracing::subscriber::Interest::always()
+        }
+        fn max_level_hint(&self) -> Option<tracing::metadata::LevelFilter> {
+            Some(tracing::metadata::LevelFilter::WARN)
+        }
+    }
+
+    #[derive(Default)]
+    struct FieldGrabber {
+        fields: Vec<String>,
+    }
+    impl Visit for FieldGrabber {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            self.fields.push(format!("{}={value:?}", field.name()));
+        }
+    }
+
+    fn capture<T>(op: impl FnOnce() -> T) -> (T, Vec<String>) {
+        let sub = CaptureSubscriber::default();
+        let lines = Arc::clone(&sub.lines);
+        let out = tracing::subscriber::with_default(sub, op);
+        let captured = lines.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        (out, captured)
+    }
+
+    fn has_level(lines: &[String], level: &str) -> bool {
+        lines.iter().any(|l| l.starts_with(level))
+    }
+
+    #[test]
+    fn parse_vm_json_valid_returns_vms() {
+        let vms =
+            FleetState::parse_vm_json(r#"[{"name":"vm-a","status":"running","region":"eastus"}]"#);
+        assert_eq!(vms.len(), 1);
+        assert_eq!(vms[0].name, "vm-a");
+    }
+
+    #[test]
+    fn parse_vm_json_malformed_returns_empty() {
+        // Contract intentionally unchanged: empty drives the text fallback.
+        assert!(FleetState::parse_vm_json("}{ not json").is_empty());
+    }
+
+    #[test]
+    fn poll_vms_terminal_failure_is_logged() {
+        // A missing azlin binary makes both the json and text attempts fail.
+        let state = FleetState::new(PathBuf::from("/nonexistent/azlin-binary-xyzzy"));
+        let (vms, logs) = capture(|| state.poll_vms());
+        assert!(vms.is_empty());
+        assert!(
+            has_level(&logs, "ERROR"),
+            "a failed azlin poll must emit error! and never be treated as an \
+             empty fleet; got: {logs:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn poll_vms_json_failure_falls_back_to_text_with_warning() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let azlin = dir.path().join("azlin");
+        // `list --json` exits non-zero; `list` (text) succeeds with one VM row.
+        fs::write(
+            &azlin,
+            "#!/bin/sh\nif [ \"$2\" = \"--json\" ]; then echo boom 1>&2; exit 1; fi\nprintf 'Name Session Tmux Status\\nvmx │ vmx │ linux │ running │ 10.0.0.1 │ eastus\\n'\n",
+        )
+        .unwrap();
+        fs::set_permissions(&azlin, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let state = FleetState::new(azlin);
+        let (vms, logs) = capture(|| state.poll_vms());
+        assert_eq!(vms.len(), 1, "the text fallback must recover the inventory");
+        assert!(
+            has_level(&logs, "WARN"),
+            "the json->text fallback transition must be logged at warn!; got: {logs:?}"
+        );
+        assert!(
+            !has_level(&logs, "ERROR"),
+            "a successful text fallback is not a terminal failure; got: {logs:?}"
+        );
+    }
 }

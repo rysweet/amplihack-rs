@@ -23,6 +23,7 @@
 //! - [`llm_client`] — SDK launcher detection and LLM completion routing
 //! - [`bundle_generator`] — Agent bundle generation, packaging, and distribution
 //! - [`docker_manager`] — Docker container management for isolated execution
+//! - [`idle_watchdog`] — Idle/liveness watchdog supervising child processes (issue #867)
 
 /// Single source of truth for resolving the active agent binary identifier.
 pub mod agent_binary;
@@ -35,6 +36,9 @@ pub mod defensive;
 pub mod docker_detector;
 pub mod docker_manager;
 pub mod hook_merge;
+/// Idle/liveness watchdog for supervising long-running child processes.
+/// See issue #867.
+pub mod idle_watchdog;
 pub mod kb_types;
 pub mod knowledge_builder;
 pub mod litellm_callbacks;
@@ -67,7 +71,9 @@ pub mod uvx_manager;
 pub mod worktree;
 
 // Re-export the most commonly used items at crate root.
-pub use defensive::{parse_llm_json, validate_json_schema};
+pub use defensive::{
+    ParseLlmJsonError, parse_llm_json, parse_llm_json_result, validate_json_schema,
+};
 pub use process::{CommandResult, ProcessManager};
 pub use slugify::slugify;
 

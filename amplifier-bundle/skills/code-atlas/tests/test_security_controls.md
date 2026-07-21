@@ -37,6 +37,28 @@ echo "JWT_SECRET=supersecretjwtkey123" >> /tmp/test.env
 
 ---
 
+### TEST-SEC-01-C [AUTO]: Graph artifacts (docs/atlas/cypher/) never contain secret values
+
+**Setup:**
+
+```bash
+echo "DATABASE_URL=postgres://user:supersecretpw@localhost/db" > /tmp/test.env
+echo "STRIPE_KEY=sk_live_supersecretstripekey123" >> /tmp/test.env
+```
+
+**Action:** Run `/code-atlas` so the portable graph is emitted under `docs/atlas/cypher/`. `EnvVar`
+nodes must carry key names only (SEC-01/SEC-15), independent of the selected `graph_backend`
+(kuzu | lbug | neo4j | portable-cypher-only).
+
+**Expected:**
+
+- `docs/atlas/cypher/*.cypher` contains `EnvVar` nodes with `name: 'DATABASE_URL'`, `'STRIPE_KEY'`
+- No `.cypher` artifact contains the value `supersecretpw` or `sk_live_supersecretstripekey123`
+
+**Pass criteria:** `grep -r "supersecretpw\|sk_live_supersecretstripekey123" docs/atlas/cypher/` returns no output.
+
+---
+
 ## SEC-02: Path Traversal Prevention
 
 ### TEST-SEC-02-A [AUTO]: Relative path escape blocked
@@ -161,6 +183,7 @@ Before considering security controls complete:
 
 - [ ] TEST-SEC-01-A: Env var values not in Layer 6b output
 - [ ] TEST-SEC-01-B: K8s Secret data block not emitted
+- [ ] TEST-SEC-01-C: Graph artifacts (docs/atlas/cypher/) contain no secret values (any backend)
 - [ ] TEST-SEC-02-A: Path traversal returns SkillError
 - [ ] TEST-SEC-03-A: HTML chars in service names escaped in diagrams
 - [ ] TEST-SEC-04-B: No `source .env` in implementation

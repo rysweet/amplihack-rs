@@ -144,7 +144,7 @@ Artifact Guard blocked 3 prohibited artifact paths.
 source           path                  rule
 staged           dist/plugin.js        plugin-bundle
 ignored-present  node_modules/         dependency-tree
-untracked        .claude/runtime/      claude-runtime
+untracked        .cache/               cache-artifact
 
 Remediation:
   - Move generated, plugin, cache, and runtime output into an isolated directory.
@@ -171,7 +171,7 @@ repository worktree:
 | --- | --- | --- |
 | Dependency trees | `node_modules/`, `packages/*/node_modules/` | Blocked in `worktree`/`all` only |
 | Plugin bundles | `dist/plugin.js`, `*/dist/plugin.js` | Blocked in `worktree`/`all` only |
-| Claude runtime | `.claude/runtime/` | Blocked in `worktree`/`all` only (except launcher-owned bookkeeping — see below) |
+| Claude runtime | `.claude/runtime/` | Exempt as untracked/ignored-present; blocked only when **staged or tracked** (except the launcher-owned files — see below) |
 | Nested worktrees | `worktrees/` | Blocked in `worktree`/`all` only |
 | Cache directories | `.cache/`, `.npm/`, `.pnpm-store/`, `.yarn/cache/`, `.turbo/`, `.parcel-cache/`, `.pytest_cache/` | Blocked in `worktree`/`all` only |
 | Build output | `dist/`, `build/`, `coverage/`, `.next/`, `out/`, `logs/`, `outputs/`, `index.scip` | Blocked in `worktree`/`all` only |
@@ -190,26 +190,43 @@ Rules match normalized repo-relative paths using `/` separators. The guard does
 not need to read artifact file contents; path-level scanning is the intended
 contract.
 
-### Built-in launcher exemptions
+### Built-in `.claude/runtime/` exemption
 
-The amplihack launcher and session tracker write a small set of bookkeeping
-files into `<repo>/.claude/runtime/` as a normal, unavoidable part of launching
-an agent. These files are the launcher's own state, not leftover agent
-pollution, so the guard never flags them even though they sit under the
-otherwise-blocked `.claude/runtime/` tree:
+The amplihack launcher, session tracker, and every agent's PostToolUse metrics
+hook write bookkeeping into `<repo>/.claude/runtime/` continuously as a normal,
+unavoidable part of launching and running an agent: launcher context, session
+logs, metrics (`metrics/post_tool_use_metrics.jsonl`, appended on every tool
+call), locks, and power-steering state all land here while a recipe runs. This
+subtree is `.gitignore`d, tool-generated runtime state.
 
-| Exempt path | Writer |
-| --- | --- |
-| `.claude/runtime/launcher_context.json` | Launcher / hooks (adaptive launcher detection) |
-| `.claude/runtime/sessions.jsonl` | Session tracker (nesting detection) |
+The guard exempts the whole `.claude/runtime/` subtree **when it appears as
+untracked or ignored-present output** — the form this unavoidable runtime state
+always takes. This holds in every mode, including the fail-closed `pre-commit`
+and `pre-publish` gates:
 
-This is a built-in implicit exemption, not a `.amplihack-artifact-allowlist`
-entry, and it is intentionally narrow. Every other path under
-`.claude/runtime/` (session logs, metrics, locks, power-steering state, and any
-stray runtime output) is still blocked. Before this exemption, the launcher's
-own `launcher_context.json` failed the end-of-run `pre-publish` guard, which in
-turn left `recipe-runner-rs` and its child agents hung after the work was
-already committed and pushed (issue #807).
+| Path | Untracked / ignored-present | Staged or tracked |
+| --- | --- | --- |
+| `.claude/runtime/` (whole subtree) | Exempt | Blocked as `claude-runtime` |
+| `.claude/runtime/launcher_context.json` | Exempt | Exempt (launcher-owned) |
+| `.claude/runtime/sessions.jsonl` | Exempt | Exempt (launcher-owned) |
+
+Deliberately committing runtime state into the published tree (a *staged* or
+*tracked* `.claude/runtime/` path) is genuine pollution and is still blocked —
+except the two launcher-owned bookkeeping files, which are exempt in all git
+sources because the launcher itself may stage them.
+
+These are built-in implicit exemptions, not `.amplihack-artifact-allowlist`
+entries (and `.claude/runtime` cannot be broadly allowlisted anyway — it is a
+root-prohibited exemption). Because the untracked/ignored exemption lives in
+`rule_for_path`, it also removes that runtime output from the `worktree`/`all`
+audit modes; that is intentional, since always-present regenerated runtime state
+is not actionable pollution.
+
+Before this exemption, files under
+`.claude/runtime/` (originally the launcher's own `launcher_context.json`, and
+later the metrics file that agents append to on every tool call) failed the
+end-of-run `pre-publish` guard, which left `recipe-runner-rs` and its child
+agents hung after the work was already committed and pushed (issue #807).
 
 ## Allowlist configuration
 
@@ -384,7 +401,6 @@ Avoid writing generated output directly to:
 ```text
 <repo>/node_modules/
 <repo>/dist/plugin.js
-<repo>/.claude/runtime/
 <repo>/worktrees/
 <repo>/build/
 ```
@@ -402,7 +418,7 @@ gates. The preflight is intentionally narrower than Artifact Guard:
 
 | Path | Preflight behavior | Artifact Guard behavior if still present |
 | --- | --- | --- |
-| `.claude/runtime` | Remove when it is exactly under the active task worktree. | Block as `claude-runtime`. |
+| `.claude/runtime` | Remove when it is exactly under the active task worktree. | Exempt when untracked/ignored; blocked as `claude-runtime` only if staged or tracked. |
 | `worktrees/` | Remove when it is exactly under the active task worktree and not tracked source. | Block as `nested-worktrees`. |
 | `.claude/settings.json` | Preserve. | Not blocked by the runtime rule. |
 | Unrelated untracked files | Preserve. | Block when they match prohibited artifact rules or dirty-worktree gates. |
@@ -511,7 +527,7 @@ amplihack hygiene artifact-guard --repo . --mode all
 Use `--mode all` (or `--mode worktree`) to surface ignored-present leftovers.
 The `pre-commit` and `pre-publish` gates deliberately do not report them,
 because gitignored, untracked paths cannot be committed or published. If the
-guard reports `node_modules/`, `.pytest_cache/`, `.claude/runtime/`, or another
+guard reports `node_modules/`, `.pytest_cache/`, `.cache/`, or another
 ignored-present artifact under those hygiene modes, relocate or remove the local
 output. Do not treat `.gitignore` as approval to keep parent-worktree pollution
 — clean it up locally even though it will not block a commit or a publish.
