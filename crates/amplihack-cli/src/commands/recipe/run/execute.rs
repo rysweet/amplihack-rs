@@ -276,7 +276,16 @@ pub(super) fn execute_recipe_via_rust(
 
     let result =
         spawn_with_streaming_stderr(command, correlation, recipe_path, recipe_runner_timeout());
-    if result.is_err() {
+    // Issue #964: restore on ANY terminal failure, not just a spawn/parse `Err`.
+    // A runner that completes and emits a structured result reporting failure
+    // (`Ok(RecipeRunResult { success: false, .. })`) is still a terminal failure
+    // and is in fact the more likely path to leave the caller checkout corrupted
+    // (it did real work before failing). Restoring only on `Err` would miss it.
+    let terminal_failure = match &result {
+        Err(_) => true,
+        Ok(run_result) => !run_result.success,
+    };
+    if terminal_failure {
         caller_git.restore_on_failure();
     }
     result

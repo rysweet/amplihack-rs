@@ -687,3 +687,74 @@ fn test_restore_preserves_durable_child_worktree() {
         child_marker.display()
     );
 }
+
+// -------------------------------------------------------------------------
+// Test 11 — caller git state is RESTORED on a STRUCTURED failure result.
+//
+// The more realistic corruption path: the runner does real work, corrupts the
+// caller checkout's `core.bare`, then reports failure by emitting a structured
+// JSON result with `"success": false` (rather than crashing with empty stdout).
+// That surfaces as `Ok(RecipeRunResult { success: false, .. })`, NOT `Err`, yet
+// it is still a terminal failure per issue #964 and must trigger the same
+// caller-checkout restore.
+//
+// RED before the fix: restore fired only on `result.is_err()`, so an
+// `Ok(success:false)` failure left `core.bare=true` and `git status` broken.
+// -------------------------------------------------------------------------
+#[test]
+fn test_caller_git_state_restored_after_structured_failure_result() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let repo = temp.path().join("caller-checkout");
+    std::fs::create_dir_all(&repo).expect("failed to create caller checkout dir");
+    if !init_git_repo(&repo) {
+        eprintln!("skipping: git unavailable for structured-failure restore test");
+        return;
+    }
+    assert!(
+        git_in(&repo, &["status", "--porcelain"]).is_some(),
+        "precondition: caller checkout must be a healthy work tree before the run"
+    );
+
+    let runner = temp.path().join("recipe-runner-rs");
+    // Corrupt the caller checkout, then report failure via STRUCTURED JSON on
+    // stdout and exit 0. Valid JSON stdout makes this parse to
+    // `Ok(RecipeRunResult { success: false })` — the non-`Err` terminal-failure
+    // path. `$5` is the `-C` value in the fixed argv layout.
+    write_stub(
+        &runner,
+        "#!/bin/sh\ngit -C \"$5\" config core.bare true\n\
+         printf '{\"recipe_name\":\"structured-fail\",\"success\":false}\\n'\nexit 0\n",
+    );
+
+    let recipe = temp.path().join("recipe.yaml");
+    std::fs::write(&recipe, "name: structured-fail-probe\nsteps: []\n")
+        .expect("failed to write recipe");
+
+    let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
+    let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
+
+    let result =
+        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), false, true, &repo, &[], None);
+    let run = result.expect("structured failure must surface as Ok(RecipeRunResult)");
+    assert!(
+        !run.success,
+        "precondition: runner reported a structured failure (success == false)"
+    );
+
+    // Same restore guarantee as the `Err` path: caller checkout left usable.
+    let bare_after = git_in(&repo, &["config", "--get", "core.bare"]);
+    assert!(
+        matches!(bare_after.as_deref(), Some("false") | None),
+        "structured-failure cleanup must restore the caller checkout's core.bare \
+         (issue #964): core.bare is still {bare_after:?} after the failed run"
+    );
+    assert!(
+        git_in(&repo, &["status", "--porcelain"]).is_some(),
+        "structured-failure cleanup must leave the caller checkout usable \
+         (`git status` must succeed) after the failed run (issue #964)"
+    );
+}
