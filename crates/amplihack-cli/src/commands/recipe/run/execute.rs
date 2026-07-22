@@ -412,7 +412,11 @@ fn spawn_with_streaming_stderr(
     let dropped = *dropped_stderr_lines
         .lock()
         .expect("stderr drop-count mutex");
-    let stderr_joined = captured.iter().cloned().collect::<Vec<_>>().join("\n");
+    let stderr_joined = captured
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join("\n");
     match parse_recipe_output_with_stderr_drops(
         &stdout_buf,
         &stderr_joined,
@@ -695,10 +699,14 @@ fn wait_for_recipe_runner(
         if let Some(status) = child.try_wait()? {
             return Ok(Some(status));
         }
-        if started.elapsed() >= timeout {
-            return Ok(None);
-        }
-        thread::sleep(RECIPE_RUNNER_POLL_INTERVAL.min(timeout.saturating_sub(started.elapsed())));
+        // Single clock read per poll: derive the remaining budget once and reuse
+        // it for both the deadline check and the sleep cap. A zero (or elapsed)
+        // remaining is the timeout.
+        let remaining = match timeout.checked_sub(started.elapsed()) {
+            Some(remaining) if !remaining.is_zero() => remaining,
+            _ => return Ok(None),
+        };
+        thread::sleep(RECIPE_RUNNER_POLL_INTERVAL.min(remaining));
     }
 }
 
