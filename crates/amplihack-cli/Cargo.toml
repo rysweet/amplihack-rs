@@ -48,16 +48,34 @@ prost = "0.13"
 lru = { workspace = true }
 fs4 = { version = "0.13", features = ["sync"] }
 uuid = { version = "1", features = ["v4"] }
+# Issue #921: Signal onboarding. Both are OPTIONAL and pulled in only by the
+# `signal` feature (see [features]); a default build links neither.
+# amplihack-signal reuses the EXISTING config schema so onboarding output is
+# byte-compatible with the per-session channel. qrcode renders the device-link
+# URI as a terminal QR (default-features off to avoid the image/svg stack).
+amplihack-signal = { path = "../amplihack-signal", features = ["signal"], optional = true }
+qrcode = { version = "0.14", default-features = false, optional = true }
 
 [dev-dependencies]
 assert_cmd = "2"
 tempfile = { workspace = true }
 anyhow = { workspace = true }
+# Issue #921: the config_writer TDD test round-trips generated TOML through the
+# REAL amplihack-signal resolver to prove the onboarding output is consumable by
+# the existing per-session channel without divergence.
+amplihack-signal = { path = "../amplihack-signal", features = ["signal"] }
 # Issue #625: PTY-driven integration test for the interactive update prompt.
 # Linux-only at use site (gated `#[cfg(target_os = "linux")]`); listing here
 # unconditionally is fine because rexpect itself compiles on macOS too — we
 # only gate the test that drives a pseudo-TTY.
 rexpect = "0.6"
+
+[features]
+# Issue #921: first-class Signal onboarding + fleet-distribution. The `signal`
+# subcommand is ALWAYS registered in clap; only its implementation is gated
+# behind this feature. Released binaries (bins/amplihack) build with it enabled.
+# Enabling it pulls in the optional deps that back the implementation.
+signal = ["dep:amplihack-signal", "dep:qrcode"]
 
 [build-dependencies]
 # SEC-WS4-02: Explicit reference forces the Cargo resolver to apply the

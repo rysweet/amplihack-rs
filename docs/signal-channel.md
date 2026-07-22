@@ -21,9 +21,13 @@ instructions back into the running session.
 
 - [How it works](#how-it-works)
 - [Prerequisites](#prerequisites)
+- [Onboarding: `amplihack signal setup`](#onboarding-amplihack-signal-setup)
+- [Fleet distribution: `amplihack signal distribute`](#fleet-distribution-amplihack-signal-distribute)
+- [Exit codes](#exit-codes)
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
 - [Group naming and lifecycle](#group-naming-and-lifecycle)
+- [Per-session wiring](#per-session-wiring)
 - [The inbound path (operator → agent)](#the-inbound-path-operator--agent)
 - [The outbound path (agent → operator)](#the-outbound-path-agent--operator)
 - [Security model / trust boundary](#security-model--trust-boundary)
@@ -92,9 +96,237 @@ or unreachable Signal daemon can never crash or block your session.
 
 - amplihack built with the `signal` feature (see [Building](#building-and-testing)).
 
+> **New in this release — one-command onboarding.** You no longer have to
+> install signal-cli, link a device, start a daemon, and hand-write a config
+> file yourself. The `amplihack signal setup` command does all of it
+> interactively (QR-based device linking), and `amplihack signal distribute`
+> rolls the same onboarding out across an entire fleet of Azure Linux VMs so
+> the per-session channel works **out of the box on any host**. The manual
+> [Quick start](#quick-start) below still works and documents exactly what
+> `setup` automates. See the companion how-to:
+> [Signal onboarding](SIGNAL_ONBOARDING.md).
+
+---
+
+## Onboarding: `amplihack signal setup`
+
+`amplihack signal setup` is a **first-class onboarding command** that turns a
+bare host into a fully working Signal channel host with a single interactive
+run. It performs every step the channel needs and is **idempotent** — re-running
+it repairs only what is missing and never re-links an already-linked device or
+clobbers a valid config.
+
+```bash
+amplihack signal setup
+```
+
+### What it does
+
+1. **Detects signal-cli.** If it is already installed it is reused. If it is
+   missing, `setup` installs it where it safely can, otherwise it prints
+   **clear, actionable install guidance** and exits non-zero. There is **no
+   silent fallback** — an unusable signal-cli is always surfaced as an error.
+2. **Links this host as a Signal device.** It runs `signal-cli link`, captures
+   the device-link URI it emits, and renders it as a **scannable QR code
+   directly in your terminal**, with the raw URI printed underneath as a
+   copy/paste fallback. Open **Signal on your phone → Settings → Linked
+   devices → Link new device** and scan it.
+
+   > **Link-URI scheme.** `setup` encodes **whatever URI signal-cli emits** — it
+   > does not assume a scheme. Recent signal-cli (libsignal-based) emits
+   > `sgnl://linkdevice?uuid=...&pub_key=...`; older builds emit the legacy
+   > `tsdevice:/?uuid=...&pub_key=...`. Both are handled transparently; the QR
+   > renderer is scheme-agnostic.
+
+   ```text
+   Scan this QR code with Signal (Settings → Linked devices → Link new device):
+
+     █▀▀▀▀▀█ ▄▀ ▄▀█ █▀▀▀▀▀█
+     █ ███ █ ▀█▄▀▄  █ ███ █
+     █ ▀▀▀ █ █ ▄▀▀█ █ ▀▀▀ █
+     ▀▀▀▀▀▀▀ █▄▀▄█▀ ▀▀▀▀▀▀▀
+     ... (truncated) ...
+
+   Or paste this link into Signal manually:
+     sgnl://linkdevice?uuid=...&pub_key=...
+
+   Waiting for you to approve the link on your phone…
+   ```
+
+   The wait for approval uses **liveness / idle detection**, not a fixed
+   wall-clock timeout — take as long as you need to reach your phone. `setup`
+   knows linking finished when signal-cli reports the new device is registered.
+3. **Starts a local JSON-RPC daemon.** After linking succeeds it starts
+   signal-cli in daemon mode bound to **loopback only** (`127.0.0.1:<port>`,
+   default `7583`) as a **managed background service** — a **systemd `--user`
+   unit** when systemd is available, otherwise a detached `nohup` process. The
+   daemon **must be local to the session host**; a shared remote daemon reached
+   over a tunnel does not work for the low-latency JSON-RPC this channel
+   requires.
+4. **Writes the config.** It writes `~/.amplihack/signal-config.toml` (mode
+   `0600`) using the **exact existing [`SignalConfig`](#configuration) schema**,
+   with `endpoint`, `account`, and `allowlist = [account]`. See
+   [the single-number rule](#configuration) for why the account's own number is
+   allowlisted. Environment variables and an explicit `AMPLIHACK_SIGNAL_CONFIG`
+   still override this file; onboarding relies on the loader's default-path
+   fallback to `~/.amplihack/signal-config.toml` (see
+   [Configuration](#configuration) and [Per-session wiring](#per-session-wiring)).
+
+That is the whole onboarding. The next amplihack session on this host will pick
+up the config automatically — no further steps (see
+[Per-session wiring](#per-session-wiring)).
+
+### Flags
+
+| Flag | Purpose |
+|---|---|
+| `--port <PORT>` | Daemon bind port on `127.0.0.1` (default `7583`, or `AMPLIHACK_SIGNAL_PORT`). If the port is held by an amplihack-managed daemon it is reused; if held by an unknown process, `setup` fails cleanly with guidance. |
+| `--force` | Repair/overwrite even when probes report an existing setup. Use with care — this can re-link the device. |
+| `--json` | Machine-readable status output. The link URI is **never** emitted in `--json` (it is a secret, stderr-only). |
+| `--all-vms` | Alias for [`amplihack signal distribute`](#fleet-distribution-amplihack-signal-distribute). |
+
+### Idempotency and repair
+
+`setup` reports three independent probes and repairs only the missing pieces:
+
+| Probe | Meaning | If already satisfied |
+|---|---|---|
+| **linked** | signal-cli account data / `listDevices` present | Never re-links |
+| **daemon-running** | JSON-RPC ping to the endpoint succeeds | Reuses the running daemon |
+| **config-written** | `~/.amplihack/signal-config.toml` parses under the schema | Left untouched (unless `--force`) |
+
+Running `amplihack signal setup` a second time on an already-onboarded host is
+safe and fast — it verifies all three probes and exits `0`.
+
+---
+
+## Fleet distribution: `amplihack signal distribute`
+
+`amplihack signal distribute` runs the same onboarding across **every VM in your
+Azure Linux (azlin) fleet**, so each host ends up with its **own local
+signal-cli daemon** and its own `~/.amplihack/signal-config.toml`.
+
+```bash
+# Roll onboarding out to every discovered VM in a resource group.
+amplihack signal distribute --resource-group <rg>
+
+# Or target an explicit VM list.
+amplihack signal distribute --vms vm-a,vm-b,vm-c --resource-group <rg>
+
+# Equivalent alias.
+amplihack signal setup --all-vms --resource-group <rg>
+```
+
+### Identity model — one number, many linked devices
+
+Each VM becomes **its own linked device on your single Signal number**. This is
+Signal-native and preserves **one chat identity** across the whole fleet. The
+consequences are important:
+
+- **Every VM needs its own device-link approval.** This is an unavoidable Signal
+  requirement — you scan one QR code per VM, one at a time. `distribute`
+  orchestrates this: it generates a per-host link URI/QR, presents it, waits
+  (idle detection, no wall-clock cap), and moves on once that VM is linked.
+- **signal-cli account data is never cloned between hosts.** Cloning one host's
+  account store to multiple concurrently-running hosts causes device-identity /
+  ratchet conflicts and is unsafe. Each VM links **independently**.
+- **Signal enforces a linked-device count limit** (a small, fixed number of
+  devices per account). For fleets larger than that limit, use the
+  **dedicated-number mode extension point** (see below).
+
+### How the rollout runs
+
+- **Discovery is generic.** VMs are enumerated via the existing azlin CLI
+  (`azlin list` / `az vm list` within the operator's resource group) or an
+  explicit `--vms` list. **No host is hardcoded.**
+- **Remote execution** uses the existing azlin transport:
+  `azlin connect <vm> --resource-group <rg> --no-tmux -y -- '<cmd>'`.
+- **Interactive linking is sequential** (you have one phone), but the
+  non-interactive phases — daemon start, config write, verification — run with
+  **bounded adaptive concurrency** (default `4`, override with `--concurrency`;
+  there is **no arbitrary hard cap**).
+- **Resumable.** State is persisted to `~/.amplihack/signal-distribute-state.json`
+  keyed by VM name. Re-running `distribute` **skips VMs that already succeeded**
+  and retries only `pending` / `failed` ones.
+- **Failures are isolated and explicit.** A failure on one VM (e.g. signal-cli
+  install failed, device-limit reached, port conflict) **never aborts the
+  run**. It is recorded with a reason and surfaced in the summary — there is
+  **no silent degradation**.
+
+### Per-VM status
+
+Each VM moves through these states, all reported at the end of the run:
+
+| Status | Meaning |
+|---|---|
+| `pending` | Not yet started (or queued for retry) |
+| `linking` | Waiting for you to approve the device link on your phone |
+| `linked` | Device linked, daemon not yet up |
+| `daemon-running` | Local JSON-RPC daemon is up on `127.0.0.1:<port>` |
+| `config-written` | `~/.amplihack/signal-config.toml` written — **terminal success** |
+| `failed` | Onboarding could not complete; a human-readable `reason` is recorded |
+
+Example summary:
+
+```text
+Signal fleet distribution — 5 VMs
+  vm-build-01   config-written
+  vm-build-02   config-written
+  vm-gpu-03     failed          reason: signal-cli install (no JRE; install guidance printed)
+  vm-gpu-04     config-written
+  vm-edge-05    failed          reason: link limit reached (Signal linked-device cap)
+
+3 succeeded, 2 failed. Re-run `amplihack signal distribute` to retry the failed VMs.
+```
+
+### Flags
+
+| Flag | Purpose |
+|---|---|
+| `--resource-group <rg>` | Azure resource group to discover / connect VMs in |
+| `--vms <a,b,c>` | Explicit VM list instead of auto-discovery |
+| `--concurrency <N>` | Bounded concurrency for non-interactive phases (default `4`) |
+| `--identity-mode <mode>` | `linked-device` (default) or `dedicated-number` (see below) |
+| `--json` | Machine-readable per-VM status output |
+| `--force` | Re-run onboarding on VMs already marked successful |
+
+### Dedicated-number mode (extension point)
+
+For fleets larger than Signal's linked-device limit, `distribute` reserves a
+config-selectable `identity_mode = "dedicated-number"` in which each VM would
+register its **own** Signal number instead of linking to a shared one. This mode
+is a **clean, documented extension point**: selecting it today returns an
+explicit "not yet implemented" error rather than a partial or silent behavior.
+The default `linked-device` mode is fully implemented.
+
+---
+
+## Exit codes
+
+Both `signal setup` and `signal distribute` map every failure through a
+**single source-of-truth taxonomy** so results are scriptable (and stable under
+`--json`). Codes are distinct — a caller can branch on *why* onboarding stopped:
+
+| Code | Name | Meaning |
+|---|---|---|
+| `0` | `SUCCESS` | Fully onboarded (or nothing to do — idempotent re-run). |
+| `2` | `USAGE` | Invalid arguments / flag combination (clap-level). |
+| `3` | `UNSUPPORTED` | Built without the `signal` feature. A clean error, **not** a hidden no-op (#921). |
+| `4` | `PRECONDITION` | signal-cli missing/uninstallable, or an invalid/unwritable config — a setup precondition failed. |
+| `5` | `PARTIAL` | Fleet run finished but **one or more VMs failed** (`distribute` only). Re-run to retry pending/failed VMs. |
+| `6` | `DAEMON` | Local daemon could not start — e.g. `127.0.0.1:<port>` held by an unknown process. Never silently rebinds. |
+| `7` | `LINK` | Device linking failed — e.g. approval error or Signal's **linked-device cap** reached. |
+
+`--json` emits the same outcome as a structured object (per-VM for
+`distribute`); the link URI is **never** included (see the security model).
+
 ---
 
 ## Quick start
+
+> The fastest path is `amplihack signal setup` (see
+> [Onboarding](#onboarding-amplihack-signal-setup)), which automates every step
+> below. The manual steps here document exactly what `setup` does for you.
 
 ```bash
 # 1. Start signal-cli in JSON-RPC daemon mode (in its own terminal).
@@ -129,8 +361,18 @@ missing from both sources, the loader fails and the channel stays off.
 Resolution order for each setting:
 
 ```
-environment variable  >  TOML file (AMPLIHACK_SIGNAL_CONFIG)  >  error
+environment variable  >  TOML at AMPLIHACK_SIGNAL_CONFIG  >  ~/.amplihack/signal-config.toml  >  error
 ```
+
+The final `~/.amplihack/signal-config.toml` step is the **onboarding default
+path**: `amplihack signal setup` writes the config there, and the loader
+consults it when neither environment variables nor an explicit
+`AMPLIHACK_SIGNAL_CONFIG` supply a setting. This default-path fallback is added
+by the onboarding feature (a loader change in `SignalConfig::load` /
+`load_config_or_disabled`) so a freshly-onboarded host needs **no** exported
+variables — see [Per-session wiring](#per-session-wiring). Absent onboarding
+(and without env vars or `AMPLIHACK_SIGNAL_CONFIG`) the loader still errors and
+the channel stays off; there are **no other silent defaults**.
 
 ### Settings
 
@@ -142,7 +384,7 @@ environment variable  >  TOML file (AMPLIHACK_SIGNAL_CONFIG)  >  error
 | Own device id | `AMPLIHACK_SIGNAL_OWN_DEVICE_ID` | `own_device_id` | optional | signal-cli's **own** linked-device id (must be `>= 2`). Only used to reject the bot's own synced-back echoes explicitly; the primary-phone (device `1`) gate is the main loop guard and needs no configuration. Leave unset unless you know your signal-cli device id |
 | Reuse rolling group | `AMPLIHACK_SIGNAL_REUSE_ROLLING_GROUP` | `reuse_rolling_group` | optional | `true`/`1` reuses one long-lived group instead of per-session groups |
 | Rolling group id | `AMPLIHACK_SIGNAL_ROLLING_GROUP_ID` | `rolling_group_id` | optional | Existing group id to reuse when rolling mode is on |
-| Config file path | `AMPLIHACK_SIGNAL_CONFIG` | — | optional | Path to the TOML file below |
+| Config file path | `AMPLIHACK_SIGNAL_CONFIG` | — | optional | Explicit path to the TOML file below. When unset, the loader falls back to the onboarding default `~/.amplihack/signal-config.toml` |
 
 > **Fail-closed allowlist.** An **empty** allowlist is a valid, deliberate
 > configuration meaning "accept no inbound instructions." It is *not* treated
@@ -200,6 +442,37 @@ an existing group instead of creating a new one on first use.
 | SessionStart | create group + post "session started" | reuse group + post "session started" |
 | During run | post at meaningful transitions | post at meaningful transitions |
 | Stop | post summary → `quitGroup` | post summary (group kept) |
+
+---
+
+## Per-session wiring
+
+Onboarding output feeds the existing SessionStart integration with **zero
+further steps**. The channel loads its configuration with the standard
+precedence, extended by the onboarding feature with a **default-path fallback**:
+
+```
+environment variables  >  AMPLIHACK_SIGNAL_CONFIG (TOML)  >  ~/.amplihack/signal-config.toml  >  error
+```
+
+> **Implementation note.** Today `SignalConfig::load` reads a TOML file only via
+> `AMPLIHACK_SIGNAL_CONFIG`. The onboarding feature adds the final
+> `~/.amplihack/signal-config.toml` step (in `SignalConfig::load` or the hook's
+> `load_config_or_disabled`). This default-path fallback is the mechanism that
+> makes the "zero further steps" promise hold — it **must ship with onboarding**.
+
+So after `amplihack signal setup` (or `distribute`) has written
+`~/.amplihack/signal-config.toml` on a host, **every new amplihack session on
+that host automatically opens its own dedicated Signal group** — you do not need
+to export any environment variables or set `AMPLIHACK_SIGNAL_CONFIG`. Env vars
+still override the file when present, so nothing about the existing precedence
+changes; the default path is only consulted when neither env vars nor an
+explicit config path supply the settings.
+
+Every Signal operation remains **non-fatal**: any failure is appended to the
+hook's `warnings[]` and logged via `tracing`, and the session proceeds
+normally. Onboarding does not change this contract — a missing, malformed, or
+unreachable configuration can never crash or block a session.
 
 ---
 
@@ -299,6 +572,26 @@ Concretely:
   `warnings[]`) rather than allowing unbounded memory/disk growth.
 - **Non-fatal contract.** Every Signal operation that fails is logged to
   `warnings[]` + `tracing` and the hook still exits `0`.
+
+### Onboarding-specific boundaries
+
+`signal setup` / `signal distribute` add their own hardening on top of the
+runtime channel:
+
+- **Loopback-only daemon.** The JSON-RPC daemon binds `127.0.0.1:<port>` only;
+  non-loopback / wildcard binds are refused and the port is never forwarded.
+- **Link URI is High-sensitivity.** The device-link URI (`sgnl://linkdevice?...`
+  or legacy `tsdevice:/?...`, whichever signal-cli emits) is written to
+  **stderr only** — never logged, persisted, or emitted under `--json`.
+- **Injection-safe fan-out.** VM / resource-group names are **validated and
+  rejected** at the boundary (E.164 account, `1..=65535` port, charset-checked
+  names) *before* shell-escaping; secrets travel via base64-over-stdin, never on
+  `argv`. Validation is fail-closed, not silent stripping.
+- **`0600` on disk.** `signal-config.toml` and `signal-distribute-state.json`
+  are written atomically (temp-then-rename) with `0600` permissions.
+- **Allowlist integrity preserved.** The writer emits **only**
+  `allowlist = [account]` — never empty or wildcard — keeping the fail-closed
+  gate intact. `gating.rs` is untouched.
 
 ---
 
@@ -433,6 +726,10 @@ wire/gating tests run with no network or filesystem I/O.
 | Bot seems to "hear itself" | (Should not happen) echo window too short | Instructions equal to a recent outbound body are suppressed by design |
 | Subscriber not running | Spawn failed | Check `warnings[]`/`tracing`; the persisted PID file records the detached process |
 | Some instructions never arrive | Inbox overflowed under a burst | The inbox is bounded; oldest entries are evicted (see `warnings[]`). Send fewer, more deliberate instructions |
+| `signal setup` can't install signal-cli | No package/JRE available non-interactively | Follow the printed install guidance, install signal-cli manually, then re-run `amplihack signal setup` |
+| `signal setup` fails on port | `127.0.0.1:<port>` held by an unknown process | Free the port or pass `--port <other>` / set `AMPLIHACK_SIGNAL_PORT` |
+| A VM shows `failed: link limit reached` | Signal linked-device cap hit | Unlink an unused device in Signal, or use `--identity-mode dedicated-number` for very large fleets |
+| `distribute` stopped part-way | Interrupted / a VM failed | Re-run `amplihack signal distribute`; it resumes from `~/.amplihack/signal-distribute-state.json` and retries only pending/failed VMs |
 
 Because every Signal operation is non-fatal, none of the above can break your
 amplihack session — worst case the channel is silently unavailable and the run
@@ -465,6 +762,7 @@ flood) and is drained (delivered once) on the next
 
 ## See also
 
+- [Signal onboarding how-to](SIGNAL_ONBOARDING.md) — `setup` and `distribute` walkthrough
 - [`examples/signal-config.toml`](../examples/signal-config.toml) — annotated config
 - [Hook configuration guide](HOOK_CONFIGURATION_GUIDE.md)
 - [Security recommendations](SECURITY_RECOMMENDATIONS.md)
