@@ -11,6 +11,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use super::fsutil::write_private;
 use super::seams::VmLister;
 
 /// Current on-disk schema version. A file claiming a higher version is refused
@@ -139,7 +140,6 @@ impl DistributeState {
             .with_context(|| format!("write state file {}", path.display()))?;
         Ok(())
     }
-
     /// Load state, refusing an unknown (higher) schema version.
     pub fn load(path: &Path) -> Result<Self> {
         let bytes =
@@ -174,30 +174,3 @@ pub fn plan_rollout(
 fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
 }
-
-/// Write bytes to `path` with `0600` permissions on Unix (mode enforced at
-/// create time so it is umask-independent).
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)?;
-        f.write_all(bytes)?;
-        // Enforce mode even if the file pre-existed with looser perms.
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-        Ok(())
-    }
-    #[cfg(not(unix))]
-    {
-        std::fs::write(path, bytes)
-    }
-}
-
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;

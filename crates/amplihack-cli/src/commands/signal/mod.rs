@@ -13,6 +13,7 @@
 //! - [`distribute`] — resumable per-VM rollout state model + planning.
 //! - [`setup`] — 3-probe idempotency planning.
 //! - [`seams`] — injectable [`seams::VmLister`] (real impl shells to `az`).
+//! - `fsutil` — shared `0600` file writer for the secrets-adjacent config/state.
 //! - `run` — the runtime orchestration (signal-cli, daemon, azlin), gated.
 
 #[cfg(feature = "signal")]
@@ -21,6 +22,8 @@ pub mod config_writer;
 pub mod distribute;
 #[cfg(feature = "signal")]
 pub mod error;
+#[cfg(feature = "signal")]
+mod fsutil;
 #[cfg(feature = "signal")]
 pub mod render;
 #[cfg(feature = "signal")]

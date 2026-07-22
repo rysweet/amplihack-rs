@@ -19,8 +19,9 @@ use std::sync::Mutex;
 
 use amplihack_signal::config::{self, SignalConfig};
 
-use super::distribute::{self, DistributeState, VmStatus};
+use super::distribute::{DistributeState, VmStatus};
 use super::error::SignalOpError;
+use super::fsutil::write_private;
 use super::seams::{AzVmLister, VmLister};
 use super::setup::{self, Probes};
 use super::{config_writer, render, validate};
@@ -132,8 +133,7 @@ pub fn run_distribute(args: SignalDistributeArgs) -> OpResult<()> {
     let targets: Vec<String> = if args.force {
         all_vms.clone()
     } else {
-        distribute::plan_rollout(&PreListed(all_vms.clone()), &state, &args.resource_group)
-            .map_err(|e| SignalOpError::Usage(e.to_string()))?
+        state.resumable_targets(&all_vms)
     };
 
     if targets.is_empty() {
@@ -199,15 +199,6 @@ pub fn run_distribute(args: SignalDistributeArgs) -> OpResult<()> {
             total: targets.len(),
             failures,
         })
-    }
-}
-
-/// A [`VmLister`] over an already-materialized list (so planning reuses the
-/// resumable-target logic without a second discovery call).
-struct PreListed(Vec<String>);
-impl VmLister for PreListed {
-    fn list_vms(&self, _rg: &str) -> anyhow::Result<Vec<String>> {
-        Ok(self.0.clone())
     }
 }
 
@@ -539,26 +530,4 @@ fn systemd_user_available() -> bool {
 /// Single-quote a value for safe embedding in the remote shell command.
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
-}
-
-/// Write bytes with `0600` on Unix (create-time mode, umask-independent).
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)?;
-        f.write_all(bytes)?;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-        Ok(())
-    }
-    #[cfg(not(unix))]
-    {
-        std::fs::write(path, bytes)
-    }
 }
