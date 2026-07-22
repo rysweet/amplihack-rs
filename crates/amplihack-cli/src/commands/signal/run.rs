@@ -158,7 +158,12 @@ pub fn run_distribute(args: SignalDistributeArgs) -> OpResult<()> {
         {
             let mut st = state_mtx.lock().unwrap();
             st.upsert(vm, VmStatus::Linking, None);
-            let _ = st.save(&state_path);
+            // Best-effort resumability checkpoint: a transient save failure here
+            // must not abort the rollout, but it is surfaced so it is never silent.
+            // The authoritative save at the end of this function propagates errors.
+            if let Err(e) = st.save(&state_path) {
+                eprintln!("warning: could not checkpoint rollout state for {vm}: {e}");
+            }
         }
         let result = onboard_remote_vm(&azlin, vm, &args.resource_group, &endpoint);
         let mut st = state_mtx.lock().unwrap();
@@ -166,7 +171,10 @@ pub fn run_distribute(args: SignalDistributeArgs) -> OpResult<()> {
             Ok(()) => st.upsert(vm, VmStatus::ConfigWritten, None),
             Err(reason) => st.upsert(vm, VmStatus::Failed, Some(reason.clone())),
         }
-        let _ = st.save(&state_path);
+        // Best-effort per-VM checkpoint; surfaced but non-fatal. See note above.
+        if let Err(e) = st.save(&state_path) {
+            eprintln!("warning: could not checkpoint rollout state for {vm}: {e}");
+        }
         result
     });
 
