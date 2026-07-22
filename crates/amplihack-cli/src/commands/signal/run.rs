@@ -324,8 +324,10 @@ fn detect_signal_cli() -> OpResult<PathBuf> {
 }
 
 /// Run `signal-cli link`, render the emitted URI as a QR (with raw-URI
-/// fallback), and block on **idle detection** — waiting for the link to
-/// complete — with no wall-clock cap. Returns the linked account (E.164).
+/// fallback) **to stderr** (the URI is a linking secret and must not be
+/// captured by stdout redirection), and block on **idle detection** — waiting
+/// for the link to complete — with no wall-clock cap. Returns the linked
+/// account (E.164).
 fn link_device(signal_cli: &Path, device_name: Option<&str>) -> OpResult<String> {
     let name = device_name
         .map(str::to_string)
@@ -350,8 +352,13 @@ fn link_device(signal_cli: &Path, device_name: Option<&str>) -> OpResult<String>
         let line = line.map_err(|e| SignalOpError::Link(format!("reading signal-cli: {e}")))?;
         let trimmed = line.trim();
         if !rendered && (trimmed.starts_with("sgnl://") || trimmed.starts_with("tsdevice:")) {
-            println!("{}", render::render_link(trimmed));
-            println!("Waiting for you to approve the link on your phone…");
+            // The device-link URI is a linking secret (account-takeover within
+            // its validity window). Emit to stderr only so it reaches the
+            // interactive terminal (and streams back over azlin/SSH) but is NOT
+            // captured by stdout redirection (`... > setup.log`) — never persist
+            // the linking secret. See commands/signal SECURITY requirements.
+            eprintln!("{}", render::render_link(trimmed));
+            eprintln!("Waiting for you to approve the link on your phone…");
             rendered = true;
         } else if let Some(rest) = trimmed.strip_prefix("Associated with:") {
             account = Some(rest.trim().to_string());
