@@ -19,6 +19,21 @@ const RECIPE_RUNNER_PIPE_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(windows)]
 const RECIPE_RUNNER_TERMINATE_TIMEOUT: Duration = Duration::from_secs(5);
 const RECIPE_RUNNER_TIMEOUT_ENV: &str = "AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS";
+/// Env var controlling the SIGTERM -> SIGKILL grace window (whole seconds) used
+/// when deterministically tearing down the recipe-runner process tree (#964).
+/// `0` escalates to SIGKILL immediately (no graceful window).
+#[cfg(unix)]
+const RECIPE_RUNNER_TEARDOWN_GRACE_ENV: &str = "AMPLIHACK_TEARDOWN_GRACE_SECS";
+/// Default grace window when `AMPLIHACK_TEARDOWN_GRACE_SECS` is unset/invalid.
+#[cfg(unix)]
+const RECIPE_RUNNER_DEFAULT_TEARDOWN_GRACE: Duration = Duration::from_secs(5);
+/// Env var carrying the current session's recursion depth (root = 0). Shared
+/// with the session-tree convention; consumed by the fail-closed recursion
+/// guard [`enforce_recursion_depth_guard`] (#964).
+const SESSION_DEPTH_ENV: &str = "AMPLIHACK_SESSION_DEPTH";
+/// Env var carrying the maximum permitted recursion depth, clamped to
+/// `MAX_DEPTH_CEILING` before use (#964).
+const MAX_DEPTH_ENV: &str = "AMPLIHACK_MAX_DEPTH";
 
 /// Threshold in bytes for total `--set` argument size before we switch
 /// to passing context via a temp file. Well under the typical Linux
@@ -169,6 +184,13 @@ pub(super) fn execute_recipe_via_rust(
     search_dirs: &[PathBuf],
     step_timeout: Option<u64>,
 ) -> Result<RecipeRunResult> {
+    // Issue #964: fail-closed recursion-depth guard. Refuse to spawn a nested
+    // recipe-runner once the session has reached the configured maximum depth,
+    // so a failing / misbehaving orchestration can never recursively re-enter
+    // the orchestrator and fork-bomb the host. Runs BEFORE any work (binary
+    // lookup, temp dirs, spawn) so no descendant is ever created past the limit.
+    enforce_recursion_depth_guard()?;
+
     let binary = super::binary::find_recipe_runner_binary()?;
     let recipe_name = recipe_name_for_correlation(recipe_path);
     let correlation =
@@ -246,7 +268,18 @@ pub(super) fn execute_recipe_via_rust(
     command.env("AMPLIHACK_WORKFLOW_ARTIFACT_DIR", &artifact_dir);
     command.env("TMPDIR", &tmp_dir);
 
-    spawn_with_streaming_stderr(command, correlation, recipe_path, recipe_runner_timeout())
+    // Issue #964: snapshot the caller checkout's git state BEFORE spawning so a
+    // runner that corrupts it (e.g. flips `core.bare=true`, which breaks
+    // `git status`) can be repaired on a terminal failure — leaving the caller's
+    // checkout usable while preserving any durable child worktrees.
+    let caller_git = CallerGitState::snapshot(working_dir);
+
+    let result =
+        spawn_with_streaming_stderr(command, correlation, recipe_path, recipe_runner_timeout());
+    if result.is_err() {
+        caller_git.restore_on_failure();
+    }
+    result
 }
 
 /// Spawn the runner with stdout captured (we need to parse JSON from it)
@@ -354,6 +387,15 @@ fn spawn_with_streaming_stderr(
             );
         }
     };
+
+    // Issue #964: the session leader has exited (and been reaped by
+    // `wait_for_recipe_runner`), but on any NON-timeout early-exit path
+    // (success OR failure) it may leave orphaned descendants behind in its
+    // process group. Deterministically reap that tree BEFORE draining pipes so
+    // a failed/early-exiting runner cannot leak a recursive subprocess tree and
+    // cannot wedge the drain by holding the inherited stdout pipe open.
+    #[cfg(unix)]
+    reap_recipe_runner_group(child.id(), recipe_runner_teardown_grace());
 
     let stdout_buf = stdout_rx
         .recv_timeout(RECIPE_RUNNER_PIPE_DRAIN_TIMEOUT)
@@ -664,12 +706,22 @@ fn terminate_recipe_runner(child: &mut Child) -> Result<()> {
     let pid = child.id();
     #[cfg(unix)]
     {
-        let process_group = -(pid as libc::pid_t);
-        let result = unsafe { libc::kill(process_group, libc::SIGKILL) };
-        if result != 0 {
-            let error = std::io::Error::last_os_error();
-            tracing::warn!(pid, %error, "failed to terminate timed-out recipe-runner process group");
-        }
+        // Issue #964: reap the recipe-runner tree DETERMINISTICALLY and
+        // GRACEFULLY. The runner is a session leader (see the `setsid` in
+        // `spawn_with_streaming_stderr`), so its PID doubles as the process-group
+        // id shared by every descendant. Three phases:
+        //   1. SIGTERM the whole group so the runner (and children) can run any
+        //      cleanup / trap handlers,
+        //   2. wait up to the configurable grace window for the runner to exit,
+        //   3. SIGKILL the group to guarantee nothing survives — this reaps both
+        //      a runner that ignored SIGTERM and any lingering descendants.
+        // The signal target is `-pgid`, so this is scoped strictly to the
+        // runner's own session and never touches unrelated / parent processes.
+        let grace = recipe_runner_teardown_grace();
+        let pgid = pid as libc::pid_t;
+        signal_process_group(pgid, libc::SIGTERM);
+        wait_for_child_exit(child, grace);
+        signal_process_group(pgid, libc::SIGKILL);
     }
     #[cfg(windows)]
     {
@@ -693,4 +745,248 @@ fn terminate_recipe_runner(child: &mut Child) -> Result<()> {
         .wait()
         .with_context(|| format!("failed to wait for timed-out recipe-runner-rs pid {pid}"))?;
     Ok(())
+}
+
+/// Resolve the SIGTERM -> SIGKILL grace window for recipe-runner teardown.
+///
+/// Honors `AMPLIHACK_TEARDOWN_GRACE_SECS` (whole seconds, `0` allowed to mean
+/// "escalate to SIGKILL immediately"); falls back to
+/// [`RECIPE_RUNNER_DEFAULT_TEARDOWN_GRACE`] when unset or unparsable.
+#[cfg(unix)]
+fn recipe_runner_teardown_grace() -> Duration {
+    std::env::var(RECIPE_RUNNER_TEARDOWN_GRACE_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(RECIPE_RUNNER_DEFAULT_TEARDOWN_GRACE)
+}
+
+/// Poll `child` for exit for up to `grace`, reaping it if it exits. Returns
+/// `true` if the child exited within the window. A zero grace returns almost
+/// immediately so callers can escalate to SIGKILL without delay.
+#[cfg(unix)]
+fn wait_for_child_exit(child: &mut Child, grace: Duration) -> bool {
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) => {}
+            Err(_) => return false,
+        }
+        let elapsed = started.elapsed();
+        if elapsed >= grace {
+            return false;
+        }
+        thread::sleep(RECIPE_RUNNER_POLL_INTERVAL.min(grace.saturating_sub(elapsed)));
+    }
+}
+
+/// Send `signal` to the process group `pgid` (targets `-pgid`). A missing group
+/// (`ESRCH`) is expected and silent; any other failure is logged.
+#[cfg(unix)]
+fn signal_process_group(pgid: libc::pid_t, signal: libc::c_int) {
+    let result = unsafe { libc::kill(-pgid, signal) };
+    if result != 0 {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::ESRCH) {
+            tracing::warn!(pgid, signal, %error, "failed to signal recipe-runner process group");
+        }
+    }
+}
+
+/// Deterministically reap orphaned descendants left in an already-exited
+/// runner's process group (issue #964). The runner itself has already been
+/// reaped by [`wait_for_recipe_runner`]; this sweeps any survivors that
+/// outlived the session leader using the same graceful SIGTERM -> grace ->
+/// SIGKILL contract, scoped strictly to `-pgid`.
+#[cfg(unix)]
+fn reap_recipe_runner_group(pgid_pid: u32, grace: Duration) {
+    let pgid = pgid_pid as libc::pid_t;
+    // Fast path: the group is already empty (well-behaved runner, no orphans).
+    if unsafe { libc::kill(-pgid, 0) } != 0 {
+        return;
+    }
+    signal_process_group(pgid, libc::SIGTERM);
+    let started = Instant::now();
+    while unsafe { libc::kill(-pgid, 0) } == 0 {
+        let elapsed = started.elapsed();
+        if elapsed >= grace {
+            signal_process_group(pgid, libc::SIGKILL);
+            return;
+        }
+        let remaining = grace.saturating_sub(elapsed);
+        thread::sleep(
+            RECIPE_RUNNER_POLL_INTERVAL
+                .min(remaining)
+                .max(Duration::from_millis(1)),
+        );
+    }
+}
+
+/// Fail-closed recursion-depth guard for `amplihack recipe run` (issue #964).
+///
+/// Refuses to spawn a nested recipe-runner once the current session has reached
+/// the configured maximum recursion depth, so a failing / misbehaving
+/// orchestration can never recursively re-enter the orchestrator and fork-bomb
+/// the host. It reuses the existing session-tree depth convention rather than
+/// forking a second source of truth: the same `AMPLIHACK_SESSION_DEPTH` /
+/// `AMPLIHACK_MAX_DEPTH` env vars and the shared `DEFAULT_MAX_DEPTH` (`3`) /
+/// `MAX_DEPTH_CEILING` (`32`) constants from `commands::session_tree::state`.
+///
+/// Contract:
+/// * `AMPLIHACK_SESSION_DEPTH` unset -> treated as the root (depth `0`);
+/// * a malformed / non-numeric / non-UTF-8 `AMPLIHACK_SESSION_DEPTH` is
+///   **fail-closed**: treated as "already at the limit" (bail), never silently
+///   coerced to `0` (which would defeat the guard);
+/// * `AMPLIHACK_MAX_DEPTH` is clamped to `MAX_DEPTH_CEILING` before the
+///   comparison so a forged, over-large value cannot disable the limit; an
+///   unset / malformed value falls back to `DEFAULT_MAX_DEPTH`;
+/// * below the limit the caller spawns normally (no over-blocking).
+///
+/// Logs numeric depth/limit fields only — never env-var *values*, which may
+/// carry session tokens or secrets.
+fn enforce_recursion_depth_guard() -> Result<()> {
+    use crate::commands::session_tree::state::{DEFAULT_MAX_DEPTH, MAX_DEPTH_CEILING};
+
+    let max_depth = std::env::var(MAX_DEPTH_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .unwrap_or(DEFAULT_MAX_DEPTH)
+        .min(MAX_DEPTH_CEILING);
+
+    // Fail-closed: distinguish "unset" (root, depth 0) from "set but unparseable"
+    // (treat as at-the-limit) using `var_os`, so a corrupted / forged value can
+    // never bypass the guard by parsing as 0.
+    let depth = match std::env::var_os(SESSION_DEPTH_ENV) {
+        None => 0,
+        Some(raw) => match raw.to_str().and_then(|s| s.trim().parse::<u32>().ok()) {
+            Some(value) => value,
+            None => {
+                tracing::warn!(
+                    max_depth,
+                    "malformed AMPLIHACK_SESSION_DEPTH; failing closed at the recursion limit (issue #964)"
+                );
+                max_depth
+            }
+        },
+    };
+
+    if depth >= max_depth {
+        tracing::warn!(
+            depth,
+            max_depth,
+            "recipe run blocked by recursion-depth guard; refusing to spawn a nested recipe-runner (issue #964)"
+        );
+        anyhow::bail!(
+            "recipe run recursion depth guard exceeded: depth {depth} reached configured max {max_depth} (issue #964)"
+        );
+    }
+    Ok(())
+}
+
+/// Pre-run snapshot of the caller checkout's git state needed to keep it usable
+/// after a terminal recipe-runner failure (issue #964).
+///
+/// The observed corruption was a runner flipping the caller checkout's
+/// `core.bare` to `true`, which makes `git status` fail with
+/// `this operation must be run in a work tree`. We snapshot `core.bare` before
+/// spawning and, on any terminal failure, restore the pre-run value so the
+/// caller's checkout is left usable. This is intentionally scoped to the single
+/// `core.bare` key on the caller checkout: it never touches the work tree, and
+/// never deletes or unregisters durable child worktrees produced by the run.
+struct CallerGitState {
+    /// The caller checkout (the runner's working directory).
+    dir: PathBuf,
+    /// `true` only if `dir` was a usable git work tree before the run. When
+    /// `false` there is nothing to restore and we must never "fix" a non-repo
+    /// into a repo.
+    was_git_checkout: bool,
+    /// Pre-run value of `core.bare` (`None` == unset). A `None` snapshot is
+    /// never restored as an explicit `false`; absence is preserved as absence.
+    core_bare: Option<String>,
+}
+
+impl CallerGitState {
+    /// Capture the caller checkout's `core.bare` before spawning. Returns a
+    /// snapshot with `was_git_checkout = false` (a no-op restore) when `dir` is
+    /// not a git work tree or git is unavailable.
+    fn snapshot(dir: &Path) -> Self {
+        let was_git_checkout =
+            git_capture(dir, &["rev-parse", "--is-inside-work-tree"]).as_deref() == Some("true");
+        let core_bare = if was_git_checkout {
+            git_capture(dir, &["config", "--local", "--get", "core.bare"])
+        } else {
+            None
+        };
+        Self {
+            dir: dir.to_path_buf(),
+            was_git_checkout,
+            core_bare,
+        }
+    }
+
+    /// Best-effort restore of the caller checkout to the snapshotted `core.bare`,
+    /// run only after a terminal failure. Never bails; a restore failure is
+    /// surfaced via structured `tracing` (issue #964 requirement 5) and never
+    /// masks the original error. Preserves durable child worktrees (config-only).
+    fn restore_on_failure(&self) {
+        if !self.was_git_checkout {
+            return;
+        }
+        let current = git_capture(&self.dir, &["config", "--local", "--get", "core.bare"]);
+        if current == self.core_bare {
+            return; // caller checkout untouched — nothing to restore.
+        }
+
+        let restored = match &self.core_bare {
+            Some(value) => git_run(&self.dir, &["config", "--local", "core.bare", value]),
+            // Was unset before the run: unset whatever the runner left behind.
+            None => git_run(&self.dir, &["config", "--local", "--unset", "core.bare"]),
+        };
+
+        if restored {
+            tracing::warn!(
+                dir = %self.dir.display(),
+                "restored caller checkout core.bare after terminal recipe-runner failure (issue #964)"
+            );
+        } else {
+            tracing::error!(
+                dir = %self.dir.display(),
+                "failed to restore caller checkout git state after terminal recipe-runner failure (issue #964)"
+            );
+        }
+    }
+}
+
+/// Run `git -C dir <args>` and return trimmed stdout, or `None` if git is
+/// unavailable or the command failed (e.g. `--get` of an unset key exits
+/// non-zero, which we map to `None` == "unset").
+fn git_capture(dir: &Path, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Run `git -C dir <args>` for side effects; `true` on success. `--unset` of an
+/// already-absent key exits non-zero (code 5) — treated as a non-fatal no-op so
+/// restoring "was unset, still unset" is not reported as a failure.
+fn git_run(dir: &Path, args: &[&str]) -> bool {
+    match std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .status()
+    {
+        Ok(status) if status.success() => true,
+        // `git config --unset` of a missing key -> exit code 5; benign here.
+        Ok(status) if args.contains(&"--unset") && status.code() == Some(5) => true,
+        _ => false,
+    }
 }

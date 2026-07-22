@@ -73,6 +73,7 @@ Complete documentation for using the Recipe Runner:
 - **[Recipe Run Correlation Reference](../reference/recipe-run-correlation.md)** - Stable run IDs, log pointer schema, and result fields
 - **[Recipe Context Environment Export](../reference/recipe-context-environment.md)** - How context variables reach bash steps as environment variables (`$TASK_DESCRIPTION`, `$REPO_PATH`), the reserved-name denylist, and precedence
 - **[Tutorial: Propagate Recipe Context to Bash Steps](../tutorials/recipe-context-env-propagation.md)** - Hands-on walkthrough for top-level, nested, and skipped keys
+- **[Recipe Run Failure Cleanup](../RECIPE_RUN_FAILURE_CLEANUP.md)** - Deterministic descendant teardown, the fail-closed recursion-depth guard (`AMPLIHACK_SESSION_DEPTH` / `AMPLIHACK_MAX_DEPTH`), and caller git-state (`core.bare`) restoration on terminal failure (issue #964)
 - **[Recipe CLI Examples](cli-examples.md)** - Real-world usage scenarios (development, testing, CI/CD, team workflows)
 - **[Workflow Provider Abstraction](../features/workflow-provider-abstraction.md)** - Provider-neutral tracking, change requests, terminal state, and stale cleanup through typed helpers
 - **[Recipe Simulation Reference](../reference/workflow-simulation.md)** - Deterministic fake-provider, fake-tool, and fake-agent simulation for recipe regression coverage
