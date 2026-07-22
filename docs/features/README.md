@@ -47,6 +47,7 @@ Intelligent guidance system that prevents common mistakes and ensures work compl
 
 ## Signal Channel
 
+- Setup / onboarding: [Signal Onboarding](../SIGNAL_ONBOARDING.md) — the primary how-to for configuring Signal on one host with `amplihack signal setup` and rolling it out across a fleet with `amplihack signal distribute`.
 - [Signal Channel](../signal-channel.md) — feature-gated (`signal`, default OFF) per-session Signal messaging channel. Each session opens a private Signal group, posts throttled progress updates, and lets an allow-listed operator send **advisory** instructions back into the run. Inbound text is surfaced only as `hookSpecificOutput.additionalContext` and is never auto-executed; the gate is fail-closed (allowlist + `device == 1` + `groupId` match + bounded-TTL echo suppression). Wired through `amplihack-hooks` (SessionStart/PostToolUse/UserPromptSubmit/Stop) with a detached `signal-subscriber` process. Config is env-first with no silent defaults; see [`examples/signal-config.toml`](../../examples/signal-config.toml).
 
 ## GitHub Distribution
