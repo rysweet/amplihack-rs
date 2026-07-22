@@ -224,24 +224,47 @@ fn discover_vms(args: &SignalDistributeArgs) -> OpResult<Vec<String>> {
 }
 
 /// Run `f` over `targets` with bounded concurrency, returning `(vm, result)`
-/// pairs. Concurrency of 1 runs sequentially (the sane default for interactive
-/// per-VM linking).
+/// pairs in the original target order. Concurrency of 1 runs sequentially (the
+/// sane default for interactive per-VM linking).
+///
+/// Scheduling uses a **continuous worker pool**: exactly `min(concurrency, N)`
+/// worker threads each pull the next target from a shared atomic cursor and
+/// keep going until the queue drains. This avoids the head-of-line blocking of
+/// a chunk-barrier scheduler, where one slow VM would leave the rest of a batch
+/// idle waiting for it before the next batch could start.
 fn run_bounded<F>(targets: &[String], concurrency: usize, f: F) -> Vec<(String, Result<(), String>)>
 where
     F: Fn(&str) -> Result<(), String> + Sync,
 {
-    let mut out = Vec::with_capacity(targets.len());
-    for chunk in targets.chunks(concurrency.max(1)) {
-        let results: Vec<(String, Result<(), String>)> = std::thread::scope(|scope| {
-            let handles: Vec<_> = chunk
-                .iter()
-                .map(|vm| scope.spawn(|| (vm.clone(), f(vm))))
-                .collect();
-            handles.into_iter().map(|h| h.join().unwrap()).collect()
-        });
-        out.extend(results);
-    }
-    out
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let n = targets.len();
+    let workers = concurrency.max(1).min(n.max(1));
+    let cursor = AtomicUsize::new(0);
+    // Each slot is written exactly once (by whichever worker claims that index),
+    // so completion order does not affect the returned order.
+    let slots: Vec<Mutex<Option<Result<(), String>>>> = (0..n).map(|_| Mutex::new(None)).collect();
+
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                loop {
+                    let i = cursor.fetch_add(1, Ordering::Relaxed);
+                    if i >= n {
+                        break;
+                    }
+                    let r = f(&targets[i]);
+                    *slots[i].lock().unwrap() = Some(r);
+                }
+            });
+        }
+    });
+
+    slots
+        .into_iter()
+        .enumerate()
+        .map(|(i, slot)| (targets[i].clone(), slot.into_inner().unwrap().unwrap()))
+        .collect()
 }
 
 /// Onboard one remote VM by invoking `amplihack signal setup` on it over azlin.
@@ -395,10 +418,15 @@ fn start_daemon(signal_cli: &Path, account: &str, endpoint: &str) -> OpResult<()
 
 /// Poll the daemon endpoint until it accepts a TCP connection. This is a local
 /// readiness check (loopback connect is immediate); it is not an interactive
-/// step, so a short bounded retry loop is appropriate.
+/// step, so a short bounded retry loop is appropriate. The endpoint is resolved
+/// to socket addresses once up front rather than on every poll iteration.
 fn wait_for_daemon(endpoint: &str) -> OpResult<()> {
+    let addrs: Vec<std::net::SocketAddr> = endpoint
+        .to_socket_addrs()
+        .map(|a| a.collect())
+        .unwrap_or_default();
     for _ in 0..50 {
-        if is_daemon_running(endpoint) {
+        if addrs.iter().any(|a| TcpStream::connect(a).is_ok()) {
             return Ok(());
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
