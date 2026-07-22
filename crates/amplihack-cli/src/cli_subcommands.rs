@@ -598,3 +598,82 @@ pub enum MultitaskCommands {
         base_dir: Option<String>,
     },
 }
+
+/// `amplihack signal <...>` — first-class Signal onboarding + fleet distribution
+/// (issue #921). The subcommand is ALWAYS registered; its implementation is
+/// gated behind the `signal` cargo feature (a feature-less build exits with a
+/// clean "rebuild with --features signal" error, never a silent no-op).
+#[derive(Subcommand, Debug)]
+pub enum SignalCommands {
+    /// Onboard THIS host: detect/install signal-cli, link a Signal device,
+    /// start a local JSON-RPC daemon, and write ~/.amplihack/signal-config.toml.
+    Setup(SignalSetupArgs),
+    /// Roll onboarding out across an Azure Linux (azlin) fleet: every VM ends up
+    /// with its OWN local signal-cli daemon + config. Resumable and per-VM
+    /// isolated (one VM failing never aborts the rest).
+    Distribute(SignalDistributeArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct SignalSetupArgs {
+    /// Loopback `host:port` for the local signal-cli JSON-RPC daemon. Must be
+    /// loopback (127.0.0.0/8, ::1, localhost); a routable/wildcard bind is
+    /// refused. Overridable via AMPLIHACK_SIGNAL_ENDPOINT. When omitted the
+    /// default 127.0.0.1:7583 is used (see `--port` for a shorthand).
+    #[arg(long)]
+    pub endpoint: Option<String>,
+
+    /// Loopback port shorthand: binds `127.0.0.1:<port>`. Takes precedence over
+    /// `--endpoint` and the AMPLIHACK_SIGNAL_* environment variables.
+    #[arg(long)]
+    pub port: Option<u16>,
+
+    /// Device name registered with Signal for this host (default: amplihack-<hostname>).
+    #[arg(long = "device-name")]
+    pub device_name: Option<String>,
+
+    /// Re-write the config even if one is present. NEVER re-links an already
+    /// linked device (an unsafe ratchet reset).
+    #[arg(long)]
+    pub force: bool,
+
+    /// After onboarding this host, also distribute to every VM in the resource
+    /// group (equivalent to running `signal distribute` afterwards).
+    #[arg(long = "all-vms")]
+    pub all_vms: bool,
+
+    /// Resource group to use with `--all-vms`.
+    #[arg(long = "resource-group")]
+    pub resource_group: Option<String>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct SignalDistributeArgs {
+    /// Azure resource group whose VMs are enumerated via `az vm list` (unless
+    /// `--vms` is given).
+    #[arg(long = "resource-group")]
+    pub resource_group: String,
+
+    /// Explicit comma-separated VM list, bypassing `az vm list` discovery.
+    #[arg(long)]
+    pub vms: Option<String>,
+
+    /// Loopback `host:port` each VM's local daemon will bind. Defaults to
+    /// 127.0.0.1:7583 (see `--port` for a shorthand).
+    #[arg(long)]
+    pub endpoint: Option<String>,
+
+    /// Loopback port shorthand: each VM binds `127.0.0.1:<port>`. Takes
+    /// precedence over `--endpoint` and the AMPLIHACK_SIGNAL_* env vars.
+    #[arg(long)]
+    pub port: Option<u16>,
+
+    /// Bounded concurrency for the rollout. Defaults to sequential (1) so each
+    /// per-VM QR/link step can be presented one at a time.
+    #[arg(long)]
+    pub concurrency: Option<usize>,
+
+    /// Retry VMs already recorded as terminal-success (otherwise skipped).
+    #[arg(long)]
+    pub force: bool,
+}
