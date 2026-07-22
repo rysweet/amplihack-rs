@@ -8,6 +8,19 @@ license.workspace = true
 [lib]
 doctest = false
 
+[features]
+# Default OFF: the Signal onboarding subcommand is always registered in clap,
+# but its implementation compiles only under this feature. Built without it,
+# `amplihack signal ...` returns a clean UNSUPPORTED error (exit 3). See #921.
+#
+# NOTE: render.rs additionally pulls in the external `qrcode` crate for
+# half-block rendering of the sgnl:// device-link URI; that optional dependency
+# (`qrcode = { version = "0.14", optional = true }`) and `dep:qrcode` are added
+# to this feature list when render.rs is implemented, together with the
+# accompanying Cargo.lock update.
+default = []
+signal = ["dep:amplihack-signal", "dep:qrcode"]
+
 [dependencies]
 amplihack-hive = { path = "../amplihack-hive" }
 amplihack-launcher = { workspace = true }
@@ -69,13 +82,6 @@ amplihack-signal = { path = "../amplihack-signal", features = ["signal"] }
 # unconditionally is fine because rexpect itself compiles on macOS too — we
 # only gate the test that drives a pseudo-TTY.
 rexpect = "0.6"
-
-[features]
-# Issue #921: first-class Signal onboarding + fleet-distribution. The `signal`
-# subcommand is ALWAYS registered in clap; only its implementation is gated
-# behind this feature. Released binaries (bins/amplihack) build with it enabled.
-# Enabling it pulls in the optional deps that back the implementation.
-signal = ["dep:amplihack-signal", "dep:qrcode"]
 
 [build-dependencies]
 # SEC-WS4-02: Explicit reference forces the Cargo resolver to apply the

@@ -24,7 +24,7 @@ use super::error::SignalOpError;
 use super::fsutil::write_private;
 use super::seams::{AzVmLister, VmLister};
 use super::setup::{self, Probes};
-use super::{config_writer, render, validate};
+use super::{config_writer, daemon, endpoint, identity, render, validate};
 use crate::{SignalDistributeArgs, SignalSetupArgs};
 
 type OpResult<T> = Result<T, SignalOpError>;
@@ -36,9 +36,7 @@ type OpResult<T> = Result<T, SignalOpError>;
 /// Onboard the current host. Idempotent: probes what already exists and repairs
 /// only the missing pieces (never re-links an already-linked device).
 pub fn run_setup(args: SignalSetupArgs) -> OpResult<()> {
-    let endpoint = resolve_endpoint(&args.endpoint)?;
-    validate::validate_loopback_endpoint(&endpoint)
-        .map_err(|e| SignalOpError::Daemon(e.to_string()))?;
+    let endpoint = resolve_endpoint(args.port, args.endpoint.as_deref())?;
 
     let signal_cli = detect_signal_cli()?;
     let config_path = default_config_path();
@@ -98,6 +96,7 @@ pub fn run_setup(args: SignalSetupArgs) -> OpResult<()> {
             resource_group: rg,
             vms: None,
             endpoint: args.endpoint,
+            port: args.port,
             concurrency: None,
             force: false,
         });
@@ -113,11 +112,15 @@ pub fn run_setup(args: SignalSetupArgs) -> OpResult<()> {
 /// persisted after every VM, one VM failing never aborts the others, and a
 /// re-run retries only non-terminal hosts.
 pub fn run_distribute(args: SignalDistributeArgs) -> OpResult<()> {
+    // Identity model gate: only the default linked-device mode is implemented;
+    // dedicated-number is a documented extension point that fails fast (exit 3)
+    // rather than silently degrading. Wired here so the fleet path always passes
+    // through the single supported-mode choke-point.
+    identity::ensure_supported(identity::IdentityMode::default())?;
+
     validate::validate_resource_group(&args.resource_group)
         .map_err(|e| SignalOpError::Usage(e.to_string()))?;
-    let endpoint = resolve_endpoint(&args.endpoint)?;
-    validate::validate_loopback_endpoint(&endpoint)
-        .map_err(|e| SignalOpError::Daemon(e.to_string()))?;
+    let endpoint = resolve_endpoint(args.port, args.endpoint.as_deref())?;
 
     let azlin = detect_azlin()?;
     let state_path = distribute_state_path();
@@ -395,7 +398,9 @@ fn link_device(signal_cli: &Path, device_name: Option<&str>) -> OpResult<String>
 /// `systemd --user` transient unit and falling back to a detached process.
 fn start_daemon(signal_cli: &Path, account: &str, endpoint: &str) -> OpResult<()> {
     let cli = signal_cli.to_string_lossy().to_string();
-    if which("systemd-run").is_some() && systemd_user_available() {
+    let systemd_ready = which("systemd-run").is_some() && systemd_user_available();
+    let plan = daemon::plan_daemon(systemd_ready, false, endpoint);
+    if plan.strategy == daemon::DaemonStrategy::SystemdUser {
         let status = Command::new("systemd-run")
             .args([
                 "--user",
@@ -515,9 +520,15 @@ fn distribute_state_path() -> PathBuf {
         .join("signal-distribute-state.json")
 }
 
-/// Resolve the endpoint, letting `AMPLIHACK_SIGNAL_ENDPOINT` override the flag.
-fn resolve_endpoint(flag: &str) -> OpResult<String> {
-    Ok(std::env::var("AMPLIHACK_SIGNAL_ENDPOINT").unwrap_or_else(|_| flag.to_string()))
+/// Resolve the loopback endpoint via the pure [`endpoint::resolve_endpoint`]
+/// precedence, reading the environment here (keeping the core pure). The result
+/// is already validated loopback-only.
+fn resolve_endpoint(port: Option<u16>, endpoint: Option<&str>) -> OpResult<String> {
+    let env_port = std::env::var("AMPLIHACK_SIGNAL_PORT")
+        .ok()
+        .and_then(|s| s.parse::<u16>().ok());
+    let env_endpoint = std::env::var("AMPLIHACK_SIGNAL_ENDPOINT").ok();
+    endpoint::resolve_endpoint(port, env_port, endpoint, env_endpoint.as_deref())
 }
 
 fn default_device_name() -> String {

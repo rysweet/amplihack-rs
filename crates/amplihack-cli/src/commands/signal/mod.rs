@@ -8,22 +8,32 @@
 //! Layout (pure, unit-tested cores + a thin gated runtime shell):
 //! - [`error`] — [`error::SignalOpError`] → stable exit-code taxonomy.
 //! - [`validate`] — boundary validation (VM / RG / account / loopback endpoint).
+//! - [`endpoint`] — pure loopback endpoint resolution precedence (D1).
+//! - [`identity`] — fleet identity-model enum + unsupported-mode gate (D2).
+//! - [`daemon`] — daemon launch strategy + idempotent start plan (D5).
 //! - [`render`] — pure device-link-URI → terminal QR rendering.
 //! - [`config_writer`] — generates the `signal-config.toml` the channel consumes.
 //! - [`distribute`] — resumable per-VM rollout state model + planning.
 //! - [`setup`] — 3-probe idempotency planning.
-//! - [`seams`] — injectable [`seams::VmLister`] (real impl shells to `az`).
+//! - [`seams`] — injectable [`seams::VmLister`] + pure VM-name extractors and
+//!   the azlin-first/`az`-fallback discovery combinator (real impl shells to `az`).
 //! - `fsutil` — shared `0600` file writer for the secrets-adjacent config/state.
 //! - `run` — the runtime orchestration (signal-cli, daemon, azlin), gated.
 
 #[cfg(feature = "signal")]
 pub mod config_writer;
 #[cfg(feature = "signal")]
+pub mod daemon;
+#[cfg(feature = "signal")]
 pub mod distribute;
+#[cfg(feature = "signal")]
+pub mod endpoint;
 #[cfg(feature = "signal")]
 pub mod error;
 #[cfg(feature = "signal")]
 mod fsutil;
+#[cfg(feature = "signal")]
+pub mod identity;
 #[cfg(feature = "signal")]
 pub mod render;
 #[cfg(feature = "signal")]

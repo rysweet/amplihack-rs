@@ -618,9 +618,15 @@ pub enum SignalCommands {
 pub struct SignalSetupArgs {
     /// Loopback `host:port` for the local signal-cli JSON-RPC daemon. Must be
     /// loopback (127.0.0.0/8, ::1, localhost); a routable/wildcard bind is
-    /// refused. Overridable via AMPLIHACK_SIGNAL_ENDPOINT.
-    #[arg(long, default_value = "127.0.0.1:7583")]
-    pub endpoint: String,
+    /// refused. Overridable via AMPLIHACK_SIGNAL_ENDPOINT. When omitted the
+    /// default 127.0.0.1:7583 is used (see `--port` for a shorthand).
+    #[arg(long)]
+    pub endpoint: Option<String>,
+
+    /// Loopback port shorthand: binds `127.0.0.1:<port>`. Takes precedence over
+    /// `--endpoint` and the AMPLIHACK_SIGNAL_* environment variables.
+    #[arg(long)]
+    pub port: Option<u16>,
 
     /// Device name registered with Signal for this host (default: amplihack-<hostname>).
     #[arg(long = "device-name")]
@@ -652,9 +658,15 @@ pub struct SignalDistributeArgs {
     #[arg(long)]
     pub vms: Option<String>,
 
-    /// Loopback `host:port` each VM's local daemon will bind.
-    #[arg(long, default_value = "127.0.0.1:7583")]
-    pub endpoint: String,
+    /// Loopback `host:port` each VM's local daemon will bind. Defaults to
+    /// 127.0.0.1:7583 (see `--port` for a shorthand).
+    #[arg(long)]
+    pub endpoint: Option<String>,
+
+    /// Loopback port shorthand: each VM binds `127.0.0.1:<port>`. Takes
+    /// precedence over `--endpoint` and the AMPLIHACK_SIGNAL_* env vars.
+    #[arg(long)]
+    pub port: Option<u16>,
 
     /// Bounded concurrency for the rollout. Defaults to sequential (1) so each
     /// per-VM QR/link step can be presented one at a time.
