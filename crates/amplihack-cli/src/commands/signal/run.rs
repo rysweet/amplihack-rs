@@ -147,15 +147,29 @@ pub fn run_distribute(args: SignalDistributeArgs) -> OpResult<()> {
         return Ok(());
     }
     eprintln!(
-        "signal distribute: {} target VM(s) of {} in {} (concurrency {})",
+        "signal distribute: {} target VM(s) of {} in {}",
         targets.len(),
         all_vms.len(),
         args.resource_group,
-        args.concurrency.unwrap_or(1).max(1)
     );
 
     let state_mtx = Mutex::new(&mut state);
-    let concurrency = args.concurrency.unwrap_or(1).max(1);
+    // Onboarding is run one VM at a time. Each VM links as its own device and
+    // streams a distinct QR code that a human must scan; concurrent QR emission
+    // onto a single terminal is interleaved and unscannable, and the phone-scan
+    // step is inherently serial anyway. `--concurrency` is therefore intentionally
+    // NOT honored for the interactive device-link fan-out (the flag is retained
+    // for future non-interactive rollout phases). We announce the override rather
+    // than silently ignore the flag.
+    if let Some(req) = args.concurrency
+        && req > 1
+    {
+        eprintln!(
+            "signal distribute: --concurrency {req} ignored for interactive device-linking; \
+             onboarding VMs sequentially so each QR code stays scannable"
+        );
+    }
+    let concurrency = 1;
     let outcomes = run_bounded(&targets, concurrency, |vm| {
         // Mark in-flight and persist so a crash mid-rollout is resumable.
         {
@@ -424,13 +438,40 @@ fn start_daemon(signal_cli: &Path, account: &str, endpoint: &str) -> OpResult<()
         eprintln!("signal setup: systemd-run failed; falling back to a detached process");
     }
 
-    // Detached fallback: setsid + nohup semantics via a double-fork-free spawn.
-    Command::new(signal_cli)
-        .args(["-a", account, "daemon", "--tcp", endpoint])
+    // Detached fallback: start the daemon in its OWN session so it survives the
+    // parent process exiting. This is critical for `distribute`: onboarding runs
+    // over `azlin connect … -- 'amplihack signal setup …'` (a non-interactive SSH
+    // command), and on a VM without `loginctl enable-linger` there is no user
+    // systemd manager, so we land here. If the daemon stayed in the SSH session's
+    // process group, sshd's SIGHUP on channel close would kill it the instant the
+    // setup command returned — leaving the VM with a config that points at a dead
+    // endpoint. `setsid()` puts the child in a new session (new process group, no
+    // controlling terminal) so that teardown SIGHUP never reaches it; null stdio
+    // (below) also ensures it does not hold the SSH channel open.
+    let mut cmd = Command::new(signal_cli);
+    cmd.args(["-a", account, "daemon", "--tcp", endpoint])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: the pre_exec closure runs in the forked child before exec and
+        // only calls async-signal-safe libc functions (setsid, signal). It
+        // allocates nothing and touches no shared parent state.
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // Belt-and-suspenders: ignore SIGHUP in case a group-directed
+                // signal races the detach before setsid completes.
+                libc::signal(libc::SIGHUP, libc::SIG_IGN);
+                Ok(())
+            });
+        }
+    }
+    cmd.spawn()
         .map_err(|e| SignalOpError::Daemon(format!("failed to spawn signal-cli daemon: {e}")))?;
     eprintln!("signal setup: started detached signal-cli daemon on {endpoint}");
     wait_for_daemon(endpoint)

@@ -6,11 +6,13 @@
 //! loopback choke-point ([`super::validate::validate_loopback_endpoint`]) so a
 //! routable/wildcard bind can never slip through by any path.
 //!
-//! Precedence (highest first):
-//!   1. `--port`              → `127.0.0.1:<port>`
-//!   2. `AMPLIHACK_SIGNAL_PORT` → `127.0.0.1:<port>`
-//!   3. `--endpoint`
-//!   4. `AMPLIHACK_SIGNAL_ENDPOINT`
+//! Precedence (highest first) — explicit CLI arguments always outrank ambient
+//! environment variables, so an explicit `--endpoint` is never silently
+//! overridden by an inherited `AMPLIHACK_SIGNAL_PORT`:
+//!   1. `--port`                → `127.0.0.1:<port>`   (CLI)
+//!   2. `--endpoint`                                    (CLI)
+//!   3. `AMPLIHACK_SIGNAL_PORT`  → `127.0.0.1:<port>`   (env)
+//!   4. `AMPLIHACK_SIGNAL_ENDPOINT`                     (env)
 //!   5. [`DEFAULT_ENDPOINT`]
 
 use super::error::SignalOpError;
@@ -35,15 +37,15 @@ pub fn resolve_endpoint(
     env_endpoint: Option<&str>,
 ) -> OpResult<String> {
     let candidate: String = if let Some(p) = port {
-        loopback_port(p)
-    } else if let Some(p) = env_port {
-        loopback_port(p)
+        loopback_port(p) // 1. --port (CLI)
     } else if let Some(e) = endpoint {
-        e.to_string()
+        e.to_string() // 2. --endpoint (CLI) — outranks ambient env
+    } else if let Some(p) = env_port {
+        loopback_port(p) // 3. AMPLIHACK_SIGNAL_PORT (env)
     } else if let Some(e) = env_endpoint {
-        e.to_string()
+        e.to_string() // 4. AMPLIHACK_SIGNAL_ENDPOINT (env)
     } else {
-        DEFAULT_ENDPOINT.to_string()
+        DEFAULT_ENDPOINT.to_string() // 5. default
     };
 
     super::validate::validate_loopback_endpoint(&candidate)

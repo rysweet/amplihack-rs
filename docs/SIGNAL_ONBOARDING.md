@@ -116,9 +116,12 @@ What happens:
 - Each VM is reached with
   `azlin connect <vm> --resource-group <rg> --no-tmux -y -- '<cmd>'`.
 - **You scan one QR code per VM.** Each VM becomes its **own linked device on
-  your single Signal number** (one chat identity across the fleet). Linking is
-  necessarily **sequential** (one phone); the non-interactive phases run with
-  **bounded concurrency** (`--concurrency`, default 4).
+  your single Signal number** (one chat identity across the fleet). Because a
+  human scans one QR at a time and interleaved QR codes on one terminal are
+  unscannable, onboarding runs **one VM at a time**. `--concurrency` is accepted
+  for forward-compatibility with future non-interactive rollout phases but is
+  **not** applied to the interactive device-link step (passing `> 1` prints a
+  notice and proceeds sequentially).
 - The rollout is **resumable** via
   `~/.amplihack/signal-distribute-state.json`. Re-run to retry only
   `pending`/`failed` VMs.

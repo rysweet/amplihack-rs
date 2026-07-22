@@ -241,10 +241,14 @@ consequences are important:
   explicit `--vms` list. **No host is hardcoded.**
 - **Remote execution** uses the existing azlin transport:
   `azlin connect <vm> --resource-group <rg> --no-tmux -y -- '<cmd>'`.
-- **Interactive linking is sequential** (you have one phone), but the
-  non-interactive phases — daemon start, config write, verification — run with
-  **bounded adaptive concurrency** (default `4`, override with `--concurrency`;
-  there is **no arbitrary hard cap**).
+- **Onboarding runs one VM at a time.** Interactive linking is inherently
+  sequential (you have one phone, and interleaved QR codes on a single terminal
+  are unscannable), so the fleet rollout onboards VMs one at a time.
+  `--concurrency` is accepted for forward-compatibility with future
+  non-interactive rollout phases but is **not** applied to the interactive
+  device-link step; passing a value `> 1` prints a notice and proceeds
+  sequentially. (There is **no arbitrary hard cap** — the constraint is the
+  human scan step, not a fixed resource limit.)
 - **Resumable.** State is persisted to `~/.amplihack/signal-distribute-state.json`
   keyed by VM name. Re-running `distribute` **skips VMs that already succeeded**
   and retries only `pending` / `failed` ones.
@@ -285,7 +289,7 @@ Signal fleet distribution — 5 VMs
 |---|---|
 | `--resource-group <rg>` | Azure resource group to discover / connect VMs in |
 | `--vms <a,b,c>` | Explicit VM list instead of auto-discovery |
-| `--concurrency <N>` | Bounded concurrency for non-interactive phases (default `4`) |
+| `--concurrency <N>` | Reserved for future non-interactive phases; interactive linking always runs sequentially (values `> 1` print a notice) |
 | `--identity-mode <mode>` | `linked-device` (default) or `dedicated-number` (see below) |
 | `--json` | Machine-readable per-VM status output |
 | `--force` | Re-run onboarding on VMs already marked successful |

@@ -3,8 +3,9 @@
 //! Contract under test — `amplihack_cli::commands::signal::endpoint`:
 //!
 //! * `resolve_endpoint(port, env_port, endpoint, env_endpoint)` applies the
-//!   precedence `--port > AMPLIHACK_SIGNAL_PORT > --endpoint > env endpoint >
-//!   127.0.0.1:7583` and is a pure function (no process env / no I/O).
+//!   precedence `--port > --endpoint > AMPLIHACK_SIGNAL_PORT > env endpoint >
+//!   127.0.0.1:7583` (explicit CLI args outrank ambient env) and is a pure
+//!   function (no process env / no I/O).
 //! * `--port` / env-port always bind loopback (`127.0.0.1:<port>`).
 //! * `resolve_endpoint` funnels every candidate through the SINGLE canonical
 //!   loopback choke-point (`commands::signal::validate::validate_loopback_endpoint`,
@@ -40,9 +41,19 @@ fn port_flag_wins_over_everything_and_is_loopback() {
 }
 
 #[test]
-fn env_port_wins_when_flag_absent() {
+fn endpoint_flag_wins_over_env_port() {
+    // Explicit CLI --endpoint must outrank the ambient AMPLIHACK_SIGNAL_PORT env,
+    // so a user's inherited env port never silently overrides an explicit flag.
     let got =
         resolve_endpoint(None, Some(9001), Some("127.0.0.1:9002"), None).expect("valid loopback");
+    assert_eq!(got, "127.0.0.1:9002");
+}
+
+#[test]
+fn env_port_wins_over_env_endpoint_and_default() {
+    // With no CLI args, AMPLIHACK_SIGNAL_PORT still outranks the env endpoint.
+    let got =
+        resolve_endpoint(None, Some(9001), None, Some("127.0.0.1:9003")).expect("valid loopback");
     assert_eq!(got, "127.0.0.1:9001");
 }
 
