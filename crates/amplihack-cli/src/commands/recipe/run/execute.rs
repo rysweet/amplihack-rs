@@ -720,7 +720,7 @@ fn terminate_recipe_runner(child: &mut Child) -> Result<()> {
         let grace = recipe_runner_teardown_grace();
         let pgid = pid as libc::pid_t;
         signal_process_group(pgid, libc::SIGTERM);
-        wait_for_child_exit(child, grace);
+        wait_until_exited(grace, || matches!(child.try_wait(), Ok(None)));
         signal_process_group(pgid, libc::SIGKILL);
     }
     #[cfg(windows)]
@@ -761,24 +761,27 @@ fn recipe_runner_teardown_grace() -> Duration {
         .unwrap_or(RECIPE_RUNNER_DEFAULT_TEARDOWN_GRACE)
 }
 
-/// Poll `child` for exit for up to `grace`, reaping it if it exits. Returns
-/// `true` if the child exited within the window. A zero grace returns almost
-/// immediately so callers can escalate to SIGKILL without delay.
+/// Poll `still_running` until it reports the target has exited or `grace`
+/// elapses; returns `true` if it exited within the window. Sleeps in short
+/// `RECIPE_RUNNER_POLL_INTERVAL` steps (floored at 1ms, never past the remaining
+/// grace) so a zero grace escalates almost immediately. Shared by both teardown
+/// paths so the SIGTERM -> grace -> SIGKILL timing policy lives in one place.
 #[cfg(unix)]
-fn wait_for_child_exit(child: &mut Child, grace: Duration) -> bool {
+fn wait_until_exited(grace: Duration, mut still_running: impl FnMut() -> bool) -> bool {
     let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => return true,
-            Ok(None) => {}
-            Err(_) => return false,
-        }
+    while still_running() {
         let elapsed = started.elapsed();
         if elapsed >= grace {
             return false;
         }
-        thread::sleep(RECIPE_RUNNER_POLL_INTERVAL.min(grace.saturating_sub(elapsed)));
+        let remaining = grace.saturating_sub(elapsed);
+        thread::sleep(
+            RECIPE_RUNNER_POLL_INTERVAL
+                .min(remaining)
+                .max(Duration::from_millis(1)),
+        );
     }
+    true
 }
 
 /// Send `signal` to the process group `pgid` (targets `-pgid`). A missing group
@@ -802,24 +805,15 @@ fn signal_process_group(pgid: libc::pid_t, signal: libc::c_int) {
 #[cfg(unix)]
 fn reap_recipe_runner_group(pgid_pid: u32, grace: Duration) {
     let pgid = pgid_pid as libc::pid_t;
+    // `kill(-pgid, 0)` probes group liveness without delivering a signal.
+    let group_alive = || unsafe { libc::kill(-pgid, 0) } == 0;
     // Fast path: the group is already empty (well-behaved runner, no orphans).
-    if unsafe { libc::kill(-pgid, 0) } != 0 {
+    if !group_alive() {
         return;
     }
     signal_process_group(pgid, libc::SIGTERM);
-    let started = Instant::now();
-    while unsafe { libc::kill(-pgid, 0) } == 0 {
-        let elapsed = started.elapsed();
-        if elapsed >= grace {
-            signal_process_group(pgid, libc::SIGKILL);
-            return;
-        }
-        let remaining = grace.saturating_sub(elapsed);
-        thread::sleep(
-            RECIPE_RUNNER_POLL_INTERVAL
-                .min(remaining)
-                .max(Duration::from_millis(1)),
-        );
+    if !wait_until_exited(grace, group_alive) {
+        signal_process_group(pgid, libc::SIGKILL);
     }
 }
 
