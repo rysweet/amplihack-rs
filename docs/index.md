@@ -687,6 +687,7 @@ Robust handling of conversation compaction in long sessions:
 ### Third-Party Integrations
 
 - [MCP Evaluation](mcp_evaluation/README.md) - Model Context Protocol evaluation
+- [Signal Onboarding](SIGNAL_ONBOARDING.md) / [Signal Channel](signal-channel.md) - Per-session Signal notifications with advisory reply-to-agent, configured via `amplihack signal setup`
 
 ---
 

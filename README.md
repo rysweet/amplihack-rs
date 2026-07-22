@@ -270,6 +270,7 @@ These are the features you'll use daily:
 | **Recipe Runner**    | Code-enforced workflows that models cannot skip                              |
 | **`/fix <pattern>`** | Rapid resolution of common errors (imports, CI, tests, config)               |
 | **85+ Skills**       | PDF/Excel/Word processing, Azure admin, pre-commit management, and more      |
+| **[Signal Channel](docs/SIGNAL_ONBOARDING.md)** | Per-session Signal notifications + reply-to-agent, configured via `amplihack signal setup` / distributed with `amplihack signal distribute` |
 
 ### Everything Else
 
