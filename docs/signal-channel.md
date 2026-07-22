@@ -466,5 +466,6 @@ flood) and is drained (delivered once) on the next
 ## See also
 
 - [`examples/signal-config.toml`](../examples/signal-config.toml) — annotated config
+- [Signal onboarding — performance notes](reference/signal-onboarding-performance.md) — hot paths & allocation trims
 - [Hook configuration guide](HOOK_CONFIGURATION_GUIDE.md)
 - [Security recommendations](SECURITY_RECOMMENDATIONS.md)
