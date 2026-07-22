@@ -184,3 +184,5 @@ mod tests_context;
 mod tests_execute;
 #[cfg(test)]
 mod tests_format;
+#[cfg(test)]
+mod tests_teardown;
