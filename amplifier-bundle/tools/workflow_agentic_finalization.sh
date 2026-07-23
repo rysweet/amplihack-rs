@@ -31,6 +31,31 @@ boolish() {
   esac
 }
 
+# Single source of truth for the typed recipe-state fallback precedence. Both
+# collect_evidence() and validate_finalization() read the same durable signals;
+# centralizing the fallback chains here keeps the two call sites from drifting.
+resolve_implementation_completed() {
+  boolish "${IMPLEMENTATION_COMPLETED:-${IMPLEMENTATION_TERMINAL_EVIDENCE_IMPLEMENTATION_COMPLETED:-${RECIPE_VAR_implementation_terminal_evidence__implementation_completed:-false}}}"
+}
+resolve_verification_completed() {
+  boolish "${VERIFICATION_COMPLETED:-${VERIFICATION_TERMINAL_EVIDENCE_VERIFICATION_COMPLETED:-${RECIPE_VAR_verification_terminal_evidence__verification_completed:-false}}}"
+}
+resolve_terminal_no_op() {
+  boolish "${TERMINAL_NO_OP:-${IMPLEMENTATION_TERMINAL_EVIDENCE_TERMINAL_NO_OP:-${RECIPE_VAR_implementation_terminal_evidence__terminal_no_op:-false}}}"
+}
+resolve_allow_no_op() {
+  boolish "${ALLOW_NO_OP:-${RECIPE_VAR_allow_no_op:-false}}"
+}
+resolve_publish_state_reached() {
+  boolish "${PUBLISH_STATE_REACHED:-${PUBLISH_TERMINAL_EVIDENCE_PUBLISH_STATE_REACHED:-false}}"
+}
+resolve_pr_url() {
+  printf '%s' "${TERMINAL_STATE_PR_URL:-${RECIPE_VAR_terminal_state__pr_url:-${PR_URL:-${PR_PUBLISH_RESULT_PR_URL:-${RECIPE_VAR_pr_publish_result__pr_url:-}}}}}"
+}
+resolve_pr_number() {
+  printf '%s' "${TERMINAL_STATE_PR_NUMBER:-${RECIPE_VAR_terminal_state__pr_number:-${PR_NUMBER:-${PR_PUBLISH_RESULT_PR_NUMBER:-${RECIPE_VAR_pr_publish_result__pr_number:-}}}}}"
+}
+
 collect_evidence() {
   if ! command -v jq >/dev/null 2>&1; then
     echo "ERROR: collect-finalization-evidence requires jq for structured JSON evidence" >&2
@@ -92,17 +117,17 @@ collect_evidence() {
     missing_tooling="${missing_tooling}${missing_tooling:+,}gh"
   fi
 
-  implementation_completed="$(boolish "${IMPLEMENTATION_COMPLETED:-${IMPLEMENTATION_TERMINAL_EVIDENCE_IMPLEMENTATION_COMPLETED:-${RECIPE_VAR_implementation_terminal_evidence__implementation_completed:-false}}}")"
-  verification_completed="$(boolish "${VERIFICATION_COMPLETED:-${VERIFICATION_TERMINAL_EVIDENCE_VERIFICATION_COMPLETED:-${RECIPE_VAR_verification_terminal_evidence__verification_completed:-false}}}")"
-  publish_state_reached="$(boolish "${PUBLISH_STATE_REACHED:-${PUBLISH_TERMINAL_EVIDENCE_PUBLISH_STATE_REACHED:-false}}")"
-  terminal_no_op="$(boolish "${TERMINAL_NO_OP:-${IMPLEMENTATION_TERMINAL_EVIDENCE_TERMINAL_NO_OP:-${RECIPE_VAR_implementation_terminal_evidence__terminal_no_op:-false}}}")"
-  allow_no_op="$(boolish "${ALLOW_NO_OP:-${RECIPE_VAR_allow_no_op:-false}}")"
+  implementation_completed="$(resolve_implementation_completed)"
+  verification_completed="$(resolve_verification_completed)"
+  publish_state_reached="$(resolve_publish_state_reached)"
+  terminal_no_op="$(resolve_terminal_no_op)"
+  allow_no_op="$(resolve_allow_no_op)"
   prior_terminal_state="${TERMINAL_STATE_TERMINAL_STATE:-${RECIPE_VAR_terminal_state__terminal_state:-${TERMINAL_STATE:-}}}"
   prior_terminal_success="$(boolish "${TERMINAL_STATE_TERMINAL_SUCCESS:-${RECIPE_VAR_terminal_state__terminal_success:-false}}")"
   prior_terminal_reason="${TERMINAL_STATE_TERMINAL_REASON:-${RECIPE_VAR_terminal_state__terminal_reason:-}}"
   branch_diff_status="${TERMINAL_STATE_BRANCH_DIFF_STATUS:-${RECIPE_VAR_terminal_state__branch_diff_status:-$meaningful_diff}}"
-  pr_url="${TERMINAL_STATE_PR_URL:-${RECIPE_VAR_terminal_state__pr_url:-${PR_URL:-${PR_PUBLISH_RESULT_PR_URL:-${RECIPE_VAR_pr_publish_result__pr_url:-}}}}}"
-  pr_number="${TERMINAL_STATE_PR_NUMBER:-${RECIPE_VAR_terminal_state__pr_number:-${PR_NUMBER:-${PR_PUBLISH_RESULT_PR_NUMBER:-${RECIPE_VAR_pr_publish_result__pr_number:-}}}}}"
+  pr_url="$(resolve_pr_url)"
+  pr_number="$(resolve_pr_number)"
   publish_status="${TERMINAL_STATE_PUBLISH_STATUS:-${RECIPE_VAR_terminal_state__publish_status:-${PR_PUBLISH_RESULT_STATE:-${RECIPE_VAR_pr_publish_result__state:-}}}}"
   if [ "$publish_status" = "FOLLOWUP_CREATED" ] || [ -n "$pr_url" ]; then
     publish_state_reached="true"
@@ -221,10 +246,10 @@ validate_finalization() {
   evidence_prior_terminal_state="${FINALIZATION_EVIDENCE_PRIOR_TERMINAL_STATE_TERMINAL_STATE:-${RECIPE_VAR_finalization_evidence__prior_terminal_state__terminal_state:-}}"
   evidence_hollow_success="${FINALIZATION_EVIDENCE_AGENT_OUTPUTS_HOLLOW_SUCCESS_SIGNALS:-${RECIPE_VAR_finalization_evidence__agent_outputs__hollow_success_signals:-}}"
 
-  implementation_completed="$(boolish "${IMPLEMENTATION_COMPLETED:-${IMPLEMENTATION_TERMINAL_EVIDENCE_IMPLEMENTATION_COMPLETED:-${RECIPE_VAR_implementation_terminal_evidence__implementation_completed:-false}}}")"
-  verification_completed="$(boolish "${VERIFICATION_COMPLETED:-${VERIFICATION_TERMINAL_EVIDENCE_VERIFICATION_COMPLETED:-${RECIPE_VAR_verification_terminal_evidence__verification_completed:-false}}}")"
-  allow_no_op="$(boolish "${ALLOW_NO_OP:-${RECIPE_VAR_allow_no_op:-false}}")"
-  terminal_no_op="$(boolish "${TERMINAL_NO_OP:-${IMPLEMENTATION_TERMINAL_EVIDENCE_TERMINAL_NO_OP:-${RECIPE_VAR_implementation_terminal_evidence__terminal_no_op:-false}}}")"
+  implementation_completed="$(resolve_implementation_completed)"
+  verification_completed="$(resolve_verification_completed)"
+  allow_no_op="$(resolve_allow_no_op)"
+  terminal_no_op="$(resolve_terminal_no_op)"
 
   # Typed status of the reporting/finalization step recorded by the deterministic
   # finalizer-step-status recipe step (never scraped from agent prose).
@@ -234,8 +259,8 @@ validate_finalization() {
     failed|FAILED|error|ERROR) reporting_failure="true" ;;
   esac
 
-  pr_url="${TERMINAL_STATE_PR_URL:-${RECIPE_VAR_terminal_state__pr_url:-${PR_URL:-${PR_PUBLISH_RESULT_PR_URL:-${RECIPE_VAR_pr_publish_result__pr_url:-}}}}}"
-  pr_number="${TERMINAL_STATE_PR_NUMBER:-${RECIPE_VAR_terminal_state__pr_number:-${PR_NUMBER:-${PR_PUBLISH_RESULT_PR_NUMBER:-${RECIPE_VAR_pr_publish_result__pr_number:-}}}}}"
+  pr_url="$(resolve_pr_url)"
+  pr_number="$(resolve_pr_number)"
   prior_terminal_state="${TERMINAL_STATE_TERMINAL_STATE:-${RECIPE_VAR_terminal_state__terminal_state:-}}"
 
   finalizer_output_valid="false"
@@ -263,7 +288,7 @@ validate_finalization() {
       --arg reporting_failure "$reporting_failure" \
       --arg implementation_completed "$implementation_completed" \
       --arg verification_completed "$verification_completed" \
-      --arg publish_state_reached "$(boolish "${PUBLISH_STATE_REACHED:-${PUBLISH_TERMINAL_EVIDENCE_PUBLISH_STATE_REACHED:-false}}")" \
+      --arg publish_state_reached "$(resolve_publish_state_reached)" \
       --arg terminal_no_op "$terminal_no_op" \
       --arg terminal_failure "$terminal_failure" \
       --arg pr_url "$pr_url" \
