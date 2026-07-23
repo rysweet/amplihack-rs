@@ -8,6 +8,19 @@ license.workspace = true
 [lib]
 doctest = false
 
+[features]
+# Default OFF: the Signal onboarding subcommand is always registered in clap,
+# but its implementation compiles only under this feature. Built without it,
+# `amplihack signal ...` returns a clean UNSUPPORTED error (exit 3). See #921.
+#
+# NOTE: render.rs additionally pulls in the external `qrcode` crate for
+# half-block rendering of the sgnl:// device-link URI; that optional dependency
+# (`qrcode = { version = "0.14", optional = true }`) and `dep:qrcode` are added
+# to this feature list when render.rs is implemented, together with the
+# accompanying Cargo.lock update.
+default = []
+signal = ["dep:amplihack-signal", "dep:qrcode"]
+
 [dependencies]
 amplihack-hive = { path = "../amplihack-hive" }
 amplihack-launcher = { workspace = true }
@@ -48,11 +61,22 @@ prost = "0.13"
 lru = { workspace = true }
 fs4 = { version = "0.13", features = ["sync"] }
 uuid = { version = "1", features = ["v4"] }
+# Issue #921: Signal onboarding. Both are OPTIONAL and pulled in only by the
+# `signal` feature (see [features]); a default build links neither.
+# amplihack-signal reuses the EXISTING config schema so onboarding output is
+# byte-compatible with the per-session channel. qrcode renders the device-link
+# URI as a terminal QR (default-features off to avoid the image/svg stack).
+amplihack-signal = { path = "../amplihack-signal", features = ["signal"], optional = true }
+qrcode = { version = "0.14", default-features = false, optional = true }
 
 [dev-dependencies]
 assert_cmd = "2"
 tempfile = { workspace = true }
 anyhow = { workspace = true }
+# Issue #921: the config_writer TDD test round-trips generated TOML through the
+# REAL amplihack-signal resolver to prove the onboarding output is consumable by
+# the existing per-session channel without divergence.
+amplihack-signal = { path = "../amplihack-signal", features = ["signal"] }
 # Issue #625: PTY-driven integration test for the interactive update prompt.
 # Linux-only at use site (gated `#[cfg(target_os = "linux")]`); listing here
 # unconditionally is fine because rexpect itself compiles on macOS too — we

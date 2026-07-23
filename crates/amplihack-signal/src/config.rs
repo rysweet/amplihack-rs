@@ -6,6 +6,7 @@
 //! and the channel stays off.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 /// Environment variable names (single source of truth for env + tests).
 pub const ENV_ENDPOINT: &str = "AMPLIHACK_SIGNAL_ENDPOINT";
@@ -63,23 +64,20 @@ pub struct SignalConfig {
 }
 
 impl SignalConfig {
-    /// Load configuration from the process environment and optional TOML file.
+    /// Load configuration from the process environment and a resolved TOML file.
     ///
-    /// Reads `std::env`, then (if `AMPLIHACK_SIGNAL_CONFIG` is set) the TOML
-    /// file, then delegates to [`SignalConfig::from_sources`].
+    /// Reads `std::env`, resolves the TOML source via
+    /// [`resolve_config_source`] (explicit `AMPLIHACK_SIGNAL_CONFIG` file, then
+    /// the default `~/.amplihack/signal-config.toml` written by
+    /// `amplihack signal setup`), then delegates to [`SignalConfig::from_sources`].
+    ///
+    /// The default-path fallback is what makes onboarding zero-step: once
+    /// `amplihack signal setup` has written the default config, the existing
+    /// per-session SessionStart integration picks it up with no further wiring.
     pub fn load() -> Result<Self, ConfigError> {
         let env: HashMap<String, String> = std::env::vars().collect();
-        let toml_str = match env.get(ENV_CONFIG_PATH) {
-            Some(path) => {
-                Some(
-                    std::fs::read_to_string(path).map_err(|source| ConfigError::Io {
-                        path: path.clone(),
-                        source,
-                    })?,
-                )
-            }
-            None => None,
-        };
+        let default_file = default_config_path_in(&home_dir());
+        let toml_str = resolve_config_source(&env, &default_file)?;
         Self::from_sources(&env, toml_str.as_deref())
     }
 
@@ -198,6 +196,55 @@ impl SignalConfig {
             rolling_group_id,
         })
     }
+}
+
+/// The default on-disk config path, relative to a home directory:
+/// `<home>/.amplihack/signal-config.toml`. This is exactly where
+/// `amplihack signal setup` writes its output, and where [`SignalConfig::load`]
+/// looks when `AMPLIHACK_SIGNAL_CONFIG` is unset.
+pub fn default_config_path_in(home: &Path) -> PathBuf {
+    home.join(".amplihack").join("signal-config.toml")
+}
+
+/// Best-effort home directory for the default config path. Falls back to `.`
+/// when `HOME` is unset; a non-existent default file resolves to `None`
+/// (channel disabled) rather than an error, so the fallback is harmless.
+fn home_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Resolve the TOML config *source* (file contents) honoring the precedence
+/// `AMPLIHACK_SIGNAL_CONFIG` file, then the default
+/// `~/.amplihack/signal-config.toml`, then none. Environment-variable *setting*
+/// overrides still apply later in [`SignalConfig::from_sources`]; this only
+/// decides which file (if any) backs the TOML layer.
+///
+/// * An explicit `AMPLIHACK_SIGNAL_CONFIG` that cannot be read is a hard error
+///   (no silent fallback to the default path — the operator asked for a
+///   specific file).
+/// * A missing default file is **not** an error: it yields `Ok(None)`, meaning
+///   "no TOML layer", so an unconfigured host simply leaves the channel off.
+pub fn resolve_config_source(
+    env: &HashMap<String, String>,
+    default_file: &Path,
+) -> Result<Option<String>, ConfigError> {
+    if let Some(path) = env.get(ENV_CONFIG_PATH) {
+        let contents = std::fs::read_to_string(path).map_err(|source| ConfigError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        return Ok(Some(contents));
+    }
+    if default_file.exists() {
+        let contents = std::fs::read_to_string(default_file).map_err(|source| ConfigError::Io {
+            path: default_file.display().to_string(),
+            source,
+        })?;
+        return Ok(Some(contents));
+    }
+    Ok(None)
 }
 
 /// Parse a comma-separated allowlist, trimming and dropping empty entries and

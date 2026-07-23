@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use super::{
     BuilderCommands, HygieneCommands, MemoryCommands, ModeCommands, MultitaskCommands,
     PluginCommands, QueryCodeCommands, RecipeCommands, ReflectCommands, RemoteCommands,
+    SignalCommands,
 };
 
 #[derive(Subcommand, Debug)]
@@ -467,5 +468,16 @@ pub enum Commands {
         /// Override config file path
         #[arg(long)]
         config: Option<PathBuf>,
+    },
+
+    /// Signal channel onboarding and fleet distribution (issue #921).
+    ///
+    /// `setup` onboards THIS host (detect/install signal-cli, link a device,
+    /// start a local JSON-RPC daemon, write ~/.amplihack/signal-config.toml);
+    /// `distribute` rolls the same onboarding across an azlin fleet. Always
+    /// registered; the implementation requires a `--features signal` build.
+    Signal {
+        #[command(subcommand)]
+        command: SignalCommands,
     },
 }

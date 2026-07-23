@@ -24,7 +24,7 @@ path = "src/bin/scan_invisible_chars.rs"
 amplihack-types = { workspace = true }
 amplihack-state = { workspace = true }
 amplihack-hooks = { workspace = true }
-amplihack-cli = { workspace = true }
+amplihack-cli = { workspace = true, features = ["signal"] }
 anyhow = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }

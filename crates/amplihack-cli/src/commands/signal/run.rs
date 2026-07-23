@@ -1,0 +1,628 @@
+//! Runtime orchestration for `amplihack signal setup` / `distribute` (#921).
+//!
+//! This is the **gated I/O shell** around the pure cores in sibling modules. It
+//! drives signal-cli (detect, link, daemon), writes the config, and — for the
+//! fleet path — fans onboarding out over `azlin` to each VM. All decision logic
+//! lives in the pure modules ([`super::setup::plan_setup`],
+//! [`super::distribute`]); this file only performs the effects.
+//!
+//! Policy: the interactive device-link step uses **idle/liveness detection**
+//! (we wait for the signal-cli process to finish linking) — there is **no
+//! fixed wall-clock timeout** on it. Failures are surfaced explicitly via
+//! [`SignalOpError`]; nothing is silently degraded.
+
+use std::io::{BufRead, BufReader};
+use std::net::{TcpStream, ToSocketAddrs};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::Mutex;
+
+use amplihack_signal::config::{self, SignalConfig};
+
+use super::distribute::{DistributeState, VmStatus};
+use super::error::SignalOpError;
+use super::fsutil::write_private;
+use super::seams::{AzVmLister, VmLister};
+use super::setup::{self, Probes};
+use super::{config_writer, daemon, endpoint, identity, render, validate};
+use crate::{SignalDistributeArgs, SignalSetupArgs};
+
+type OpResult<T> = Result<T, SignalOpError>;
+
+// ---------------------------------------------------------------------------
+// setup (single host)
+// ---------------------------------------------------------------------------
+
+/// Onboard the current host. Idempotent: probes what already exists and repairs
+/// only the missing pieces (never re-links an already-linked device).
+pub fn run_setup(args: SignalSetupArgs) -> OpResult<()> {
+    let endpoint = resolve_endpoint(args.port, args.endpoint.as_deref())?;
+
+    let signal_cli = detect_signal_cli()?;
+    let config_path = default_config_path();
+
+    // --- Probe the three independent facts. -------------------------------
+    let existing_account = read_account_from_config(&config_path);
+    let probes = Probes {
+        linked: existing_account
+            .as_deref()
+            .map(|acct| is_linked(&signal_cli, acct))
+            .unwrap_or(false),
+        daemon_running: is_daemon_running(&endpoint),
+        config_written: existing_account.is_some(),
+    };
+    let plan = setup::plan_setup(probes, args.force);
+    eprintln!(
+        "signal setup: linked={} daemon_running={} config_written={} → plan {plan:?}",
+        probes.linked, probes.daemon_running, probes.config_written
+    );
+
+    // --- Link (only if not already linked). -------------------------------
+    let account = if plan.do_link {
+        link_device(&signal_cli, args.device_name.as_deref())?
+    } else {
+        existing_account.ok_or_else(|| {
+            SignalOpError::Link("host reports linked but no account is recorded".into())
+        })?
+    };
+
+    // --- Start the local daemon. ------------------------------------------
+    if plan.do_start_daemon {
+        start_daemon(&signal_cli, &account, &endpoint)?;
+    } else {
+        eprintln!("signal setup: local daemon already running on {endpoint}");
+    }
+
+    // --- Write the config. ------------------------------------------------
+    if plan.do_write_config {
+        write_config(&config_path, &endpoint, &account)?;
+        eprintln!("signal setup: wrote {}", config_path.display());
+    } else {
+        eprintln!(
+            "signal setup: config already present at {}",
+            config_path.display()
+        );
+    }
+
+    eprintln!("signal setup: done. Account {account} is ready on {endpoint}.");
+
+    // Optional: chain into a fleet rollout.
+    if args.all_vms {
+        let rg = args
+            .resource_group
+            .clone()
+            .ok_or_else(|| SignalOpError::Usage("--all-vms requires --resource-group".into()))?;
+        return run_distribute(SignalDistributeArgs {
+            resource_group: rg,
+            vms: None,
+            endpoint: args.endpoint,
+            port: args.port,
+            concurrency: None,
+            force: false,
+        });
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// distribute (fleet)
+// ---------------------------------------------------------------------------
+
+/// Roll onboarding out across a fleet. Resumable and per-VM isolated: state is
+/// persisted after every VM, one VM failing never aborts the others, and a
+/// re-run retries only non-terminal hosts.
+pub fn run_distribute(args: SignalDistributeArgs) -> OpResult<()> {
+    // Identity model gate: only the default linked-device mode is implemented;
+    // dedicated-number is a documented extension point that fails fast (exit 3)
+    // rather than silently degrading. Wired here so the fleet path always passes
+    // through the single supported-mode choke-point.
+    identity::ensure_supported(identity::IdentityMode::default())?;
+
+    validate::validate_resource_group(&args.resource_group)
+        .map_err(|e| SignalOpError::Usage(e.to_string()))?;
+    let endpoint = resolve_endpoint(args.port, args.endpoint.as_deref())?;
+
+    let azlin = detect_azlin()?;
+    let state_path = distribute_state_path();
+    let mut state = if state_path.exists() {
+        DistributeState::load(&state_path)
+            .map_err(|e| SignalOpError::Usage(format!("cannot load rollout state: {e}")))?
+    } else {
+        DistributeState::new()
+    };
+
+    // Discover the fleet (explicit list or `az vm list`), then choose targets.
+    let all_vms = discover_vms(&args)?;
+    let targets: Vec<String> = if args.force {
+        all_vms.clone()
+    } else {
+        state.resumable_targets(&all_vms)
+    };
+
+    if targets.is_empty() {
+        eprintln!(
+            "signal distribute: nothing to do (all {} VM(s) already onboarded)",
+            all_vms.len()
+        );
+        return Ok(());
+    }
+    eprintln!(
+        "signal distribute: {} target VM(s) of {} in {}",
+        targets.len(),
+        all_vms.len(),
+        args.resource_group,
+    );
+
+    let state_mtx = Mutex::new(&mut state);
+    // Onboarding is run one VM at a time. Each VM links as its own device and
+    // streams a distinct QR code that a human must scan; concurrent QR emission
+    // onto a single terminal is interleaved and unscannable, and the phone-scan
+    // step is inherently serial anyway. `--concurrency` is therefore intentionally
+    // NOT honored for the interactive device-link fan-out (the flag is retained
+    // for future non-interactive rollout phases). We announce the override rather
+    // than silently ignore the flag.
+    if let Some(req) = args.concurrency
+        && req > 1
+    {
+        eprintln!(
+            "signal distribute: --concurrency {req} ignored for interactive device-linking; \
+             onboarding VMs sequentially so each QR code stays scannable"
+        );
+    }
+    let concurrency = 1;
+    let outcomes = run_bounded(&targets, concurrency, |vm| {
+        // Mark in-flight and persist so a crash mid-rollout is resumable.
+        {
+            let mut st = state_mtx.lock().unwrap();
+            st.upsert(vm, VmStatus::Linking, None);
+            // Best-effort resumability checkpoint: a transient save failure here
+            // must not abort the rollout, but it is surfaced so it is never silent.
+            // The authoritative save at the end of this function propagates errors.
+            if let Err(e) = st.save(&state_path) {
+                eprintln!("warning: could not checkpoint rollout state for {vm}: {e}");
+            }
+        }
+        let result = onboard_remote_vm(&azlin, vm, &args.resource_group, &endpoint);
+        let mut st = state_mtx.lock().unwrap();
+        match &result {
+            Ok(()) => st.upsert(vm, VmStatus::ConfigWritten, None),
+            Err(reason) => st.upsert(vm, VmStatus::Failed, Some(reason.clone())),
+        }
+        // Best-effort per-VM checkpoint; surfaced but non-fatal. See note above.
+        if let Err(e) = st.save(&state_path) {
+            eprintln!("warning: could not checkpoint rollout state for {vm}: {e}");
+        }
+        result
+    });
+
+    // Persist final state.
+    state
+        .save(&state_path)
+        .map_err(|e| SignalOpError::Usage(format!("cannot save rollout state: {e}")))?;
+
+    let failures: Vec<(String, String)> = outcomes
+        .into_iter()
+        .filter_map(|(vm, r)| r.err().map(|reason| (vm, reason)))
+        .collect();
+    let succeeded = targets.len() - failures.len();
+
+    eprintln!(
+        "signal distribute: {succeeded}/{} onboarded, {} failed. State: {}",
+        targets.len(),
+        failures.len(),
+        state_path.display()
+    );
+    for (vm, reason) in &failures {
+        eprintln!("  FAILED {vm}: {reason}");
+    }
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(SignalOpError::Partial {
+            succeeded,
+            total: targets.len(),
+            failures,
+        })
+    }
+}
+
+/// Resolve the desired VM set from explicit `--vms` or `az vm list`. Every name
+/// is validated (injection defense) before use.
+fn discover_vms(args: &SignalDistributeArgs) -> OpResult<Vec<String>> {
+    let names = match &args.vms {
+        Some(csv) => csv
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>(),
+        None => AzVmLister
+            .list_vms(&args.resource_group)
+            .map_err(|e| SignalOpError::Usage(format!("VM discovery failed: {e}")))?,
+    };
+    for name in &names {
+        validate::validate_vm_name(name)
+            .map_err(|e| SignalOpError::Usage(format!("invalid VM name from discovery: {e}")))?;
+    }
+    Ok(names)
+}
+
+/// Run `f` over `targets` with bounded concurrency, returning `(vm, result)`
+/// pairs in the original target order. Concurrency of 1 runs sequentially (the
+/// sane default for interactive per-VM linking).
+///
+/// Scheduling uses a **continuous worker pool**: exactly `min(concurrency, N)`
+/// worker threads each pull the next target from a shared atomic cursor and
+/// keep going until the queue drains. This avoids the head-of-line blocking of
+/// a chunk-barrier scheduler, where one slow VM would leave the rest of a batch
+/// idle waiting for it before the next batch could start.
+fn run_bounded<F>(targets: &[String], concurrency: usize, f: F) -> Vec<(String, Result<(), String>)>
+where
+    F: Fn(&str) -> Result<(), String> + Sync,
+{
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let n = targets.len();
+    let workers = concurrency.max(1).min(n.max(1));
+    let cursor = AtomicUsize::new(0);
+    // Each slot is written exactly once (by whichever worker claims that index),
+    // so completion order does not affect the returned order.
+    let slots: Vec<Mutex<Option<Result<(), String>>>> = (0..n).map(|_| Mutex::new(None)).collect();
+
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                loop {
+                    let i = cursor.fetch_add(1, Ordering::Relaxed);
+                    if i >= n {
+                        break;
+                    }
+                    let r = f(&targets[i]);
+                    *slots[i].lock().unwrap() = Some(r);
+                }
+            });
+        }
+    });
+
+    slots
+        .into_iter()
+        .enumerate()
+        .map(|(i, slot)| (targets[i].clone(), slot.into_inner().unwrap().unwrap()))
+        .collect()
+}
+
+/// Onboard one remote VM by invoking `amplihack signal setup` on it over azlin.
+/// Each VM becomes its OWN linked device (Signal-native identity model).
+fn onboard_remote_vm(
+    azlin: &Path,
+    vm: &str,
+    resource_group: &str,
+    endpoint: &str,
+) -> Result<(), String> {
+    validate::validate_vm_name(vm).map_err(|e| e.to_string())?;
+    // The remote host runs the same onboarding; its interactive QR is streamed
+    // back to this terminal so the operator can scan it for that VM.
+    let remote_cmd = format!(
+        "amplihack signal setup --endpoint {} --device-name amplihack-{}",
+        shell_quote(endpoint),
+        shell_quote(vm)
+    );
+    eprintln!("--- onboarding {vm} (scan its QR when prompted) ---");
+    let status = Command::new(azlin)
+        .args([
+            "connect",
+            vm,
+            "--resource-group",
+            resource_group,
+            "--no-tmux",
+            "-y",
+            "--",
+            &remote_cmd,
+        ])
+        .status()
+        .map_err(|e| format!("failed to invoke azlin: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("remote onboarding exited with {status}"))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// signal-cli effects
+// ---------------------------------------------------------------------------
+
+/// Locate signal-cli, or fail with actionable install guidance (exit 4).
+fn detect_signal_cli() -> OpResult<PathBuf> {
+    if let Some(p) = which("signal-cli") {
+        return Ok(p);
+    }
+    Err(SignalOpError::SignalCli(
+        "signal-cli not found on PATH. Install it, then re-run `amplihack signal setup`.\n\
+         Linux (recommended): download the latest release from\n\
+         https://github.com/AsamK/signal-cli/releases and place `signal-cli` on your PATH,\n\
+         or use your package manager (e.g. `brew install signal-cli` on macOS).\n\
+         signal-cli requires a Java 21+ runtime."
+            .into(),
+    ))
+}
+
+/// Run `signal-cli link`, render the emitted URI as a QR (with raw-URI
+/// fallback) **to stderr** (the URI is a linking secret and must not be
+/// captured by stdout redirection), and block on **idle detection** — waiting
+/// for the link to complete — with no wall-clock cap. Returns the linked
+/// account (E.164).
+fn link_device(signal_cli: &Path, device_name: Option<&str>) -> OpResult<String> {
+    let name = device_name
+        .map(str::to_string)
+        .unwrap_or_else(default_device_name);
+    validate::validate_device_name(&name).map_err(|e| SignalOpError::Usage(e.to_string()))?;
+
+    let mut child = Command::new(signal_cli)
+        .args(["link", "-n", &name])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|e| SignalOpError::Link(format!("failed to spawn `signal-cli link`: {e}")))?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| SignalOpError::Link("signal-cli produced no stdout".into()))?;
+
+    let mut account: Option<String> = None;
+    let mut rendered = false;
+    for line in BufReader::new(stdout).lines() {
+        let line = line.map_err(|e| SignalOpError::Link(format!("reading signal-cli: {e}")))?;
+        let trimmed = line.trim();
+        if !rendered && (trimmed.starts_with("sgnl://") || trimmed.starts_with("tsdevice:")) {
+            // The device-link URI is a linking secret (account-takeover within
+            // its validity window). Emit to stderr only so it reaches the
+            // interactive terminal (and streams back over azlin/SSH) but is NOT
+            // captured by stdout redirection (`... > setup.log`) — never persist
+            // the linking secret. See commands/signal SECURITY requirements.
+            eprintln!("{}", render::render_link(trimmed));
+            eprintln!("Waiting for you to approve the link on your phone…");
+            rendered = true;
+        } else if let Some(rest) = trimmed.strip_prefix("Associated with:") {
+            account = Some(rest.trim().to_string());
+        }
+    }
+
+    // Idle detection: the process exits once linking finishes (approved) or is
+    // aborted. No fixed timeout is imposed on the human step.
+    let status = child
+        .wait()
+        .map_err(|e| SignalOpError::Link(format!("waiting for signal-cli: {e}")))?;
+    if !status.success() {
+        return Err(SignalOpError::Link(format!(
+            "`signal-cli link` exited with {status} (linked-device limit reached, or aborted)"
+        )));
+    }
+
+    account.ok_or_else(|| {
+        SignalOpError::Link(
+            "linking finished but signal-cli did not report the associated account".into(),
+        )
+    })
+}
+
+/// Start the signal-cli JSON-RPC daemon bound to `endpoint`, preferring a
+/// `systemd --user` transient unit and falling back to a detached process.
+fn start_daemon(signal_cli: &Path, account: &str, endpoint: &str) -> OpResult<()> {
+    let cli = signal_cli.to_string_lossy().to_string();
+    let systemd_ready = which("systemd-run").is_some() && systemd_user_available();
+    let plan = daemon::plan_daemon(systemd_ready, false, endpoint);
+    if plan.strategy == daemon::DaemonStrategy::SystemdUser {
+        let status = Command::new("systemd-run")
+            .args([
+                "--user",
+                "--unit",
+                "amplihack-signal-daemon",
+                "--collect",
+                "--",
+                &cli,
+                "-a",
+                account,
+                "daemon",
+                "--tcp",
+                endpoint,
+            ])
+            .status()
+            .map_err(|e| SignalOpError::Daemon(format!("systemd-run failed to spawn: {e}")))?;
+        if status.success() {
+            eprintln!("signal setup: started daemon via systemd --user (amplihack-signal-daemon)");
+            return wait_for_daemon(endpoint);
+        }
+        eprintln!("signal setup: systemd-run failed; falling back to a detached process");
+    }
+
+    // Detached fallback: start the daemon in its OWN session so it survives the
+    // parent process exiting. This is critical for `distribute`: onboarding runs
+    // over `azlin connect … -- 'amplihack signal setup …'` (a non-interactive SSH
+    // command), and on a VM without `loginctl enable-linger` there is no user
+    // systemd manager, so we land here. If the daemon stayed in the SSH session's
+    // process group, sshd's SIGHUP on channel close would kill it the instant the
+    // setup command returned — leaving the VM with a config that points at a dead
+    // endpoint. `setsid()` puts the child in a new session (new process group, no
+    // controlling terminal) so that teardown SIGHUP never reaches it; null stdio
+    // (below) also ensures it does not hold the SSH channel open.
+    let mut cmd = Command::new(signal_cli);
+    cmd.args(["-a", account, "daemon", "--tcp", endpoint])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: the pre_exec closure runs in the forked child before exec and
+        // only calls async-signal-safe libc functions (setsid, signal). It
+        // allocates nothing and touches no shared parent state.
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // Belt-and-suspenders: ignore SIGHUP in case a group-directed
+                // signal races the detach before setsid completes.
+                libc::signal(libc::SIGHUP, libc::SIG_IGN);
+                Ok(())
+            });
+        }
+    }
+    cmd.spawn()
+        .map_err(|e| SignalOpError::Daemon(format!("failed to spawn signal-cli daemon: {e}")))?;
+    eprintln!("signal setup: started detached signal-cli daemon on {endpoint}");
+    wait_for_daemon(endpoint)
+}
+
+/// Poll the daemon endpoint until it accepts a TCP connection. This is a local
+/// readiness check (loopback connect is immediate); it is not an interactive
+/// step, so a short bounded retry loop is appropriate. The endpoint is resolved
+/// to socket addresses once up front rather than on every poll iteration.
+fn wait_for_daemon(endpoint: &str) -> OpResult<()> {
+    let addrs: Vec<std::net::SocketAddr> = endpoint
+        .to_socket_addrs()
+        .map(|a| a.collect())
+        .unwrap_or_default();
+    for _ in 0..50 {
+        if addrs.iter().any(|a| TcpStream::connect(a).is_ok()) {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    Err(SignalOpError::Daemon(format!(
+        "daemon did not become reachable on {endpoint}"
+    )))
+}
+
+/// Write the onboarding config atomically, `0600`.
+fn write_config(path: &Path, endpoint: &str, account: &str) -> OpResult<()> {
+    validate::validate_account(account).map_err(|e| SignalOpError::Usage(e.to_string()))?;
+    let toml = config_writer::to_toml(endpoint, account);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| SignalOpError::Usage(format!("create config dir: {e}")))?;
+    }
+    write_private(path, toml.as_bytes())
+        .map_err(|e| SignalOpError::Usage(format!("write config: {e}")))
+}
+
+// ---------------------------------------------------------------------------
+// probes
+// ---------------------------------------------------------------------------
+
+/// Whether signal-cli reports a linked device for `account`.
+fn is_linked(signal_cli: &Path, account: &str) -> bool {
+    Command::new(signal_cli)
+        .args(["-a", account, "listDevices"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Whether the JSON-RPC daemon accepts a TCP connection at `endpoint`.
+fn is_daemon_running(endpoint: &str) -> bool {
+    match endpoint.to_socket_addrs() {
+        Ok(mut addrs) => addrs.any(|a| TcpStream::connect(a).is_ok()),
+        Err(_) => false,
+    }
+}
+
+/// Read the `account` field from an existing config (env-independent).
+fn read_account_from_config(path: &Path) -> Option<String> {
+    let empty = std::collections::HashMap::new();
+    let toml = config::resolve_config_source(&empty, path).ok().flatten()?;
+    SignalConfig::from_sources(&empty, Some(&toml))
+        .ok()
+        .map(|c| c.account)
+}
+
+// ---------------------------------------------------------------------------
+// paths / helpers
+// ---------------------------------------------------------------------------
+
+fn amplihack_home() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn default_config_path() -> PathBuf {
+    config::default_config_path_in(&amplihack_home())
+}
+
+fn distribute_state_path() -> PathBuf {
+    amplihack_home()
+        .join(".amplihack")
+        .join("signal-distribute-state.json")
+}
+
+/// Resolve the loopback endpoint via the pure [`endpoint::resolve_endpoint`]
+/// precedence, reading the environment here (keeping the core pure). The result
+/// is already validated loopback-only.
+fn resolve_endpoint(port: Option<u16>, endpoint: Option<&str>) -> OpResult<String> {
+    let env_port = std::env::var("AMPLIHACK_SIGNAL_PORT")
+        .ok()
+        .and_then(|s| s.parse::<u16>().ok());
+    let env_endpoint = std::env::var("AMPLIHACK_SIGNAL_ENDPOINT").ok();
+    endpoint::resolve_endpoint(port, env_port, endpoint, env_endpoint.as_deref())
+}
+
+fn default_device_name() -> String {
+    let host = std::fs::read_to_string("/etc/hostname")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| std::env::var("HOSTNAME").ok())
+        .unwrap_or_else(|| "host".to_string());
+    let sanitized: String = host
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    format!("amplihack-{sanitized}")
+}
+
+fn which(bin: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path).find_map(|dir| {
+        let candidate = dir.join(bin);
+        candidate.is_file().then_some(candidate)
+    })
+}
+
+fn detect_azlin() -> OpResult<PathBuf> {
+    if let Some(p) = std::env::var_os("AZLIN_PATH") {
+        return Ok(PathBuf::from(p));
+    }
+    which("azlin").ok_or_else(|| {
+        SignalOpError::Usage(
+            "azlin not found. Set AZLIN_PATH or install azlin (https://github.com/rysweet/azlin)."
+                .into(),
+        )
+    })
+}
+
+fn systemd_user_available() -> bool {
+    Command::new("systemctl")
+        .args(["--user", "is-system-running"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Single-quote a value for safe embedding in the remote shell command.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}

@@ -9,6 +9,32 @@ Unreleased changes appear at the top under `[Unreleased]`.
 
 ### Fixed
 
+- **Brittle JSON parsing of agent prose fails successful runs (#969)** —
+  `default-workflow` finalization no longer parses the agentic finalizer's
+  stdout as one exact JSON object. Previously a fully successful run
+  (implementation, tests, push, CI, review resolution, cleanup, and PR gate all
+  DONE) was reported as `FAILED_FINALIZER_OUTPUT` when the finalizer emitted
+  human-readable text instead of parser-compatible JSON, reproduced by run
+  `f1968919-2808-4e80-8272-615ae77388eb` (`jq: parse error: Invalid numeric
+  literal`). Finalization is now modeled as typed recipe steps:
+  `validate-agentic-finalization` classifies the terminal state deterministically
+  from `finalization_evidence` (schema version 1) and typed `RECIPE_VAR_*`
+  markers, and never applies `jq`, regex, or fence stripping to agent narrative.
+  The `agentic-finalizer` step is demoted to a human-readable
+  `agentic_finalizer_narrative` artifact, and a deterministic
+  `finalizer-step-status` step records reporting-step success/failure as typed
+  state. The terminal vocabulary now distinguishes implementation failure from
+  reporting failure: `FAILED_FINALIZER_OUTPUT` is retired in favor of
+  `FAILED_IMPLEMENTATION` (implementation/verification absent or failed) and
+  `FAILED_REPORTING` (implementation succeeded but a reporting step failed, with
+  `pr_url`/`pr_number` and implementation/verification evidence preserved).
+  Guard invariants (dirty worktree, missing tooling, `BLOCKED_CI`, hollow
+  success cannot yield success) are unchanged. A regression test reproduces run
+  `f1968919` — durable steps DONE plus non-JSON finalizer prose now reaches
+  `IMPLEMENTED_VERIFIED` without parsing that prose. See
+  [Default Workflow Agentic Finalization](docs/reference/default-workflow-agentic-finalization.md)
+  and the [Workflow Terminal-State Reference](docs/reference/workflow-terminal-state.md).
+
 - **Stale installed smart-orchestrator assets can shadow fresh bundles (#3698)** —
   Startup self-heal now validates `~/.amplihack/amplifier-bundle` even when
   `.installed-version` matches the binary, forcing the normal install repair

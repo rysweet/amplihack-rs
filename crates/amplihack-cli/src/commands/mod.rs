@@ -27,6 +27,7 @@ pub mod reflect;
 pub mod remote;
 pub mod rustyclawd;
 pub mod session_tree;
+pub mod signal;
 pub mod uvx_help;
 pub mod workflow;
 
@@ -386,6 +387,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
             output,
             config,
         } => mcp_eval::dispatch(adapter, scenario, mock, output, config),
+        Commands::Signal { command } => signal::dispatch(command),
     }
 }
 

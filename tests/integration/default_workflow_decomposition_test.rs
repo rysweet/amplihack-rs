@@ -282,6 +282,7 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "step-22b-final-status",
     "collect-finalization-evidence",
     "agentic-finalizer",
+    "finalizer-step-status",
     "validate-agentic-finalization",
     "workflow-complete",
 ];
