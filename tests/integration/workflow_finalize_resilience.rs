@@ -1154,6 +1154,36 @@ fn agentic_finalization_rejects_success_when_collected_evidence_is_dirty() {
     );
 }
 
+// Regression (issue #969): the single-pass evidence extraction must not let a
+// newline (or any control byte) inside an *earlier* evidence value truncate the
+// record and silently blank a *later* blocker field. A blanked hollow-success
+// signal would fail OPEN — classifying IMPLEMENTED_VERIFIED and authorizing a
+// merge — which is the worst possible failure mode for this gate.
+#[test]
+fn agentic_finalization_blocker_survives_embedded_newline_in_earlier_field() {
+    let output = run_agentic_finalization(
+        "validate",
+        &[
+            ("IMPLEMENTATION_COMPLETED", "true"),
+            ("VERIFICATION_COMPLETED", "true"),
+            (
+                "FINALIZATION_EVIDENCE",
+                r#"{"schema_version":1,"git":{"dirty_worktree":"false\nsmuggled"},"tooling":{"missing":"","gh_required":"false"},"prior_terminal_state":{"terminal_state":""},"agent_outputs":{"hollow_success_signals":"true"}}"#,
+            ),
+        ],
+    );
+
+    assert!(
+        !output.status.success(),
+        "a hollow-success blocker after a newline-bearing earlier field must still fail closed"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("HOLLOW_SUCCESS"),
+        "later hollow_success blocker must not be truncated away by an earlier field newline, stdout:\n{stdout}"
+    );
+}
+
 #[test]
 fn agentic_finalization_rejects_success_when_required_github_tooling_is_missing() {
     let output = run_agentic_finalization(

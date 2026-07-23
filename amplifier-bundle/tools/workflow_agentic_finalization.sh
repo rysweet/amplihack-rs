@@ -349,33 +349,41 @@ validate_finalization() {
   #    provided. Malformed *evidence* (never agent prose) fails closed as
   #    FAILED_INVALID_EVIDENCE.
   if [ -n "$finalization_evidence" ]; then
-    # Perf (issue #969): validate structure and pull every evidence field in a
-    # single jq pass. The prior implementation parsed the same JSON document up
-    # to six times (one type check plus one extraction per field), spawning a
-    # printf+jq process each time. Fields are joined with a unit-separator
-    # (0x1f, non-whitespace) so empty fields stay positional under `read` — a
-    # tab/newline delimiter would collapse empties as IFS whitespace. A
-    # non-object or malformed document makes jq exit non-zero, preserving the
-    # FAILED_INVALID_EVIDENCE fail-close.
-    if evidence_fields="$(printf '%s' "$finalization_evidence" | jq -j '
-        if type == "object" then
-          [ (.git.dirty_worktree // ""),
-            (.tooling.missing // ""),
-            (.tooling.gh_required // ""),
-            (.prior_terminal_state.terminal_state // ""),
-            (.agent_outputs.hollow_success_signals // "") ] | join("\u001f")
-        else
-          error("finalization evidence is not a JSON object")
-        end' 2>/dev/null)"; then
-      IFS=$'\x1f' read -r ev_dirty ev_missing ev_gh ev_prior ev_hollow <<<"$evidence_fields"
-      [ -n "$evidence_dirty_worktree" ] || evidence_dirty_worktree="$ev_dirty"
-      [ -n "$evidence_tooling_missing" ] || evidence_tooling_missing="$ev_missing"
-      [ -n "$evidence_gh_required" ] || evidence_gh_required="$ev_gh"
-      [ -n "$evidence_prior_terminal_state" ] || evidence_prior_terminal_state="$ev_prior"
-      [ -n "$evidence_hollow_success" ] || evidence_hollow_success="$ev_hollow"
-    else
+    # Perf (issue #969): avoid re-parsing the same JSON document once per field
+    # (the pre-#969 code spawned a printf+jq per field). We do one type-check
+    # pass (fail-close on non-object/malformed input) plus one extraction pass.
+    #
+    # Security (issue #969, fail-CLOSED invariant): a terminal success here
+    # authorizes a merge, so the extraction MUST NOT silently drop a later
+    # blocker field. Fields are emitted NUL-delimited and consumed with per-field
+    # `read -rd ''` fed by process substitution. NUL is the one byte that cannot
+    # appear in the collected evidence values, so — unlike a whitespace/0x1f
+    # delimiter with a single space-splitting `read` — an embedded newline or
+    # control byte in an early value can never truncate the record and blank a
+    # trailing blocker (dirty_worktree / tooling.missing / hollow_success).
+    # Empty fields stay positional. Process substitution (not command
+    # substitution) is required so NUL bytes survive to `read`.
+    if ! printf '%s' "$finalization_evidence" | jq -e 'type == "object"' >/dev/null 2>&1; then
       fail_result "FAILED_INVALID_EVIDENCE" "deterministic finalization evidence was not a JSON object" "Rerun collect-finalization-evidence and inspect its structured output." "finalization_evidence=malformed"
     fi
+    {
+      IFS= read -rd '' ev_dirty
+      IFS= read -rd '' ev_missing
+      IFS= read -rd '' ev_gh
+      IFS= read -rd '' ev_prior
+      IFS= read -rd '' ev_hollow
+    } < <(printf '%s' "$finalization_evidence" | jq -j '
+        [ (.git.dirty_worktree // ""),
+          (.tooling.missing // ""),
+          (.tooling.gh_required // ""),
+          (.prior_terminal_state.terminal_state // ""),
+          (.agent_outputs.hollow_success_signals // "") ]
+        | map(tostring + "\u0000") | join("")')
+    [ -n "$evidence_dirty_worktree" ] || evidence_dirty_worktree="$ev_dirty"
+    [ -n "$evidence_tooling_missing" ] || evidence_tooling_missing="$ev_missing"
+    [ -n "$evidence_gh_required" ] || evidence_gh_required="$ev_gh"
+    [ -n "$evidence_prior_terminal_state" ] || evidence_prior_terminal_state="$ev_prior"
+    [ -n "$evidence_hollow_success" ] || evidence_hollow_success="$ev_hollow"
   fi
 
   [ -n "$prior_terminal_state" ] || prior_terminal_state="$evidence_prior_terminal_state"
