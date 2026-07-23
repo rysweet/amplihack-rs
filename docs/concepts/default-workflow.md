@@ -57,7 +57,13 @@ mutate Git or provider state, the workflow evaluates a terminal-state contract.
 Finalization remains the non-mutating arbiter that records the final decision. A
 proven terminal success stops the remaining mutation path instead of creating
 duplicate commits, duplicate follow-up PRs, or stale post-merge publish
-attempts.
+attempts. Finalization classifies the terminal state from typed evidence and
+recipe state; the agentic finalizer contributes a human-readable narrative only
+and is never parsed for control flow. A reporting-step failure after a
+successful implementation is classified as `FAILED_REPORTING` (distinct from
+`FAILED_IMPLEMENTATION`) so completed work and its PR evidence are preserved
+rather than reported as a total failure. See
+[Default Workflow Agentic Finalization](../reference/default-workflow-agentic-finalization.md).
 
 ### Terminal-State Target Contract
 
@@ -67,7 +73,7 @@ review, and finalize. It returns these outputs:
 | Output | Meaning |
 | --- | --- |
 | `terminal_success` | `true` only when the workflow can stop successfully without publishing more work. |
-| `terminal_state` | Stable status such as `MERGED`, `CLOSED_OBSOLETE`, `NO_DIFF_SUCCESS`, `FOLLOWUP_CREATED`, `SUPERSEDED`, `FAILED_MEANINGFUL_DIFF`, `FAILED_FINALIZER_OUTPUT`, or `BLOCKED_CI`. |
+| `terminal_state` | Stable status such as `MERGED`, `CLOSED_OBSOLETE`, `NO_DIFF_SUCCESS`, `FOLLOWUP_CREATED`, `SUPERSEDED`, `FAILED_MEANINGFUL_DIFF`, `FAILED_IMPLEMENTATION`, `FAILED_REPORTING`, or `BLOCKED_CI`. |
 | `terminal_reason` | Human-readable evidence for the decision. |
 | `publish_status` | Publish-facing status using the same vocabulary as the terminal state. |
 | `should_publish` | `true` only when meaningful unmerged work should continue through a publish path. |
@@ -126,7 +132,8 @@ The loud blocking states include:
 | `FAILED_CLOSED_UNMERGED` | A GitHub PR is closed without merge evidence and obsolete/no-diff proof is missing. |
 | `FAILED_MEANINGFUL_DIFF` | Meaningful branch changes remain but cannot be safely treated as terminal success. |
 | `FAILED_PR_METADATA_UNAVAILABLE` | GitHub metadata is required for a GitHub PR proof or meaningful-diff safety decision but cannot be loaded. This is not used merely because an Azure or unknown remote lacks GitHub metadata. |
-| `FAILED_FINALIZER_OUTPUT` | The agentic finalizer returned missing, malformed, non-JSON, or schema-invalid output. |
+| `FAILED_IMPLEMENTATION` | Durable implementation or verification evidence is absent or failed while meaningful work remains. |
+| `FAILED_REPORTING` | Implementation succeeded but a reporting/finalization step failed. Durable evidence (`pr_url`, `pr_number`, implementation/verification markers) is preserved and reported. |
 | `HOLLOW_SUCCESS` | The run appeared successful but lacked implementation, verification, publish, or valid no-op evidence. |
 | `BLOCKED_CI` | Required checks are failing or a CI policy blocks publish or merge. |
 

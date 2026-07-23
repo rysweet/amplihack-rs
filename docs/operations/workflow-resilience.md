@@ -10,11 +10,14 @@ before taking PR actions. Re-running a workflow after a merge, after an
 already-created PR, or on a branch with no diff produces a successful terminal
 outcome instead of creating duplicate PRs or failing on already-finished work.
 
-Finalization is agentic only where judgment is useful. Deterministic steps still
-collect Git/PR/CI evidence, validate the finalizer schema, persist normalized
-terminal fields, and return the process exit code. The agentic finalizer
-classifies and explains the terminal state from structured evidence; malformed or
-missing finalizer output fails closed.
+Finalization is agentic only where judgment is useful, and that judgment never
+drives control flow. Deterministic steps collect Git/PR/CI/implementation/
+verification evidence into typed recipe state, classify the terminal state from
+that typed evidence, persist normalized terminal fields, and return the process
+exit code. The agentic finalizer contributes a human-readable narrative artifact
+only; it is never parsed. A reporting step that fails after a successful
+implementation classifies as `FAILED_REPORTING` with durable evidence preserved,
+and malformed typed evidence fails closed as `FAILED_INVALID_EVIDENCE`.
 
 ## Observed failure modes
 
@@ -74,7 +77,8 @@ agentic finalizer described in
 | Closed unmerged PR with remaining branch diff | Failure with `terminal_state=FAILED_CLOSED_UNMERGED`; user action is required. |
 | Meaningful branch diff without terminal publication or verification proof | Failure with `terminal_state=FAILED_MEANINGFUL_DIFF`. |
 | Missing or ambiguous PR state | Failure; ambiguity is not treated as success. |
-| Missing or malformed finalizer output | Failure with `terminal_state=FAILED_FINALIZER_OUTPUT`. |
+| Implementation or verification evidence absent while work remains | Failure with `terminal_state=FAILED_IMPLEMENTATION`. |
+| Reporting step fails after successful implementation | Failure with `terminal_state=FAILED_REPORTING`; durable `pr_url`/`pr_number` and implementation/verification evidence are preserved. |
 | Success-looking run without completion evidence | Failure with `terminal_state=HOLLOW_SUCCESS` or `FAILED_MISSING_TERMINAL_EVIDENCE`. |
 
 Already-terminal states are success only when verified through Git branch diff,
@@ -112,7 +116,7 @@ key/value output.
 | `workflow_result.terminal_reason` | Validated human-readable reason. |
 | `workflow_result.required_next_action` | Validated action required after finalization, or why no further action is required. |
 | `workflow_result.hollow_success_detected` | Whether the run looked successful but lacked completion evidence. |
-| `workflow_result.finalizer_output_valid` | Whether structured finalizer output passed schema validation. |
+| `workflow_result.reporting_failure` | Whether a reporting step failed after successful implementation (produces `FAILED_REPORTING` with durable evidence preserved). |
 | `branch_diff_status` | `has_diff`, `no_diff`, or `unknown`. |
 
 ## Usage examples
@@ -180,5 +184,6 @@ or finalizer validation.
 | `MANUAL_REQUIRED` | The repository needs a provider action that this workflow does not automate, such as creating an Azure Repos pull request. | Perform the named manual action, then rerun status/finalization with the durable change-request URL. |
 | `BLOCKED_MANUAL_PROVIDER` | Required provider tooling, auth, permissions, or metadata is unavailable. | Fix the named blocker, then rerun the provider helper. |
 | `BLOCKED_CI` | Required checks are pending, failed, or unavailable when required. | Fix CI or wait for checks; terminal-state resilience does not bypass CI. |
-| `FAILED_FINALIZER_OUTPUT` | The agentic finalizer returned malformed, missing, or schema-invalid JSON. | Inspect the finalizer step output and rerun after fixing the prompt/schema/tooling path. |
+| `FAILED_IMPLEMENTATION` | Durable implementation or verification evidence is absent or failed while meaningful work remains. | Resume `default-workflow` from implementation and verification, or choose a more specific failure state. |
+| `FAILED_REPORTING` | Implementation succeeded but a reporting/finalization step failed. Durable `pr_url`/`pr_number` and implementation/verification evidence are preserved. | Re-run the reporting step; the implementation is intact. Do not re-run the implementation. |
 | `HOLLOW_SUCCESS` | The run looked successful but produced no implementation, verification, publish, or valid no-op evidence. | Resume `default-workflow` from the missing phase or emit a supported no-op state with evidence. |
