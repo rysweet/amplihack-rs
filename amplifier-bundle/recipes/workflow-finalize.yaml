@@ -26,7 +26,8 @@ context:
   should_run_ci_wait: "true"
   should_merge: "true"
   finalization_evidence: ""
-  agentic_finalizer_output: ""
+  agentic_finalizer_narrative: ""
+  finalizer_step_status: ""
   workflow_result: ""
 
 steps:
@@ -285,98 +286,75 @@ steps:
   - id: "agentic-finalizer"
     agent: "amplihack:core:reviewer"
     prompt: |
-      # Agentic Finalization Classifier
+      # Agentic Finalization Narrative
 
-      Classify the default workflow terminal state from structured evidence.
-      This replaces brittle parsing for judgment-heavy terminal assessment, but
-      deterministic recipe steps still validate, persist, and report the final
-      state. Use the structured evidence only; do not infer from optimism.
+      Write a concise, human-readable narrative that explains the default
+      workflow's terminal outcome for an operator reading the run log. This is
+      an explanatory ARTIFACT for humans — it is never parsed and never drives
+      control flow. Deterministic recipe steps own the machine-readable terminal
+      classification; do not attempt to encode machine state here.
 
       ## Structured evidence
       {{finalization_evidence}}
-      ## Observed failure modes to preserve
 
-      Recent finalization failures came from brittle parsing, missing metadata,
-      stale PR metadata, dirty worktree misclassification, generated runtime artifacts
-      left in the worktree, broad staging attempted before artifact cleanup,
-      closed-unmerged PR handling, missing tooling, failed CI, and hollow success
-      where setup/planning or inaccessible-codebase output looked successful.
+      ## What to write
 
-      ## Output schema
+      Summarize, from the structured evidence above, what happened and what (if
+      anything) a human should do next. Ground every statement in the structured
+      evidence; do not infer success from optimism. Use plain prose or short
+      bullet points. There is no required schema, no required keys, and no
+      machine contract — write for a human reader.
 
-      Return one single JSON object and no prose. Required fields:
-      schema_version, terminal_state, terminal_success, confidence, reason,
-      required_next_action, hollow_success_detected, evidence_used.
+      ## Observed failure modes worth calling out when the evidence shows them
 
-      `confidence` must be high, medium, or low. Only confidence=high may claim
-      terminal_success=true. Medium or low confidence must choose a non-success
-      state.
+      Recent finalization runs failed for reasons that are useful operator
+      background: a dirty worktree (including generated runtime artifacts left
+      behind), a closed-unmerged PR, missing tooling required for the selected
+      path, failed CI, and hollow success where setup/planning or
+      inaccessible-codebase output merely looked successful. When the structured
+      evidence indicates one of these, name it plainly in your narrative so the
+      operator understands the durable state.
+    output: "agentic_finalizer_narrative"
 
-      ## Terminal vocabulary
-
-      Success states:
-      - MERGED
-      - CLOSED_OBSOLETE
-      - NO_DIFF_SUCCESS
-      - FOLLOWUP_CREATED
-      - SUPERSEDED
-      - IMPLEMENTED_VERIFIED
-      - ALLOW_NO_OP
-
-      Non-success states:
-      - BLOCKED_CI
-      - FAILED_DIRTY_WORKTREE
-      - FAILED_MEANINGFUL_DIFF
-      - FAILED_CLOSED_UNMERGED
-      - FAILED_PR_METADATA_UNAVAILABLE
-      - FAILED_MISSING_TOOLING
-      - FAILED_INVALID_EVIDENCE
-      - FAILED_FINALIZER_OUTPUT
-      - FAILED_MISSING_TERMINAL_EVIDENCE
-      - HOLLOW_SUCCESS
-      - INCOMPLETE
-
-      ## Classification rules
-
-      - Dirty worktree evidence cannot produce terminal_success=true.
-      - Generated runtime artifacts such as `.claude/runtime`, nested `worktrees/`,
-        build caches, logs, or session files are not source evidence. Classify
-        them as dirty worktree evidence and require cleanup before commit,
-        checkpoint, broad staging, publish, or merge.
-      - Artifact Guard failures are actionable cleanup evidence, not a reason
-        to weaken guards or mark the workflow successful. The required next
-        action must name the artifact cleanup needed before retrying.
-      - Broad staging (`git add -A`, `git add --all`, or equivalent) is unsafe
-        until generated artifacts are absent and Artifact Guard has passed for
-        the current worktree.
-      - Missing deterministic tooling required for the selected path maps to
-        FAILED_MISSING_TOOLING.
-      - Stale or unavailable PR metadata maps to FAILED_PR_METADATA_UNAVAILABLE
-        unless a local no-diff success is proven.
-      - A closed-unmerged PR with meaningful diff maps to FAILED_CLOSED_UNMERGED.
-      - Failed CI maps to BLOCKED_CI.
-      - Meaningful diff with no validated publish, merge, follow-up,
-        implementation-plus-verification, or explicit no-op maps to
-        FAILED_MEANINGFUL_DIFF.
-      - Hollow success maps to HOLLOW_SUCCESS and terminal_success=false.
-      - FOLLOWUP_CREATED requires a durable PR or follow-up identifier.
-      - SUPERSEDED requires a durable replacement PR or issue identifier.
-      - If no more specific state applies, use INCOMPLETE.
-
-      Return only the single JSON object. No markdown. No prose.
-    output: "agentic_finalizer_output"
+  - id: "finalizer-step-status"
+    type: "bash"
+    parse_json: true
+    command: |
+      set -euo pipefail
+      # Issue #969: record the reporting/finalization step's typed status as
+      # {status, reporting_failure} so the deterministic classifier can
+      # distinguish an implementation failure from a reporting failure WITHOUT
+      # parsing the agent narrative. The narrative artifact's presence is the
+      # deterministic signal: an empty narrative means the reporting step failed
+      # to produce its human-readable output.
+      narrative="${AGENTIC_FINALIZER_NARRATIVE:-${RECIPE_VAR_agentic_finalizer_narrative:-}}"
+      status="ok"
+      reporting_failure="false"
+      trimmed="$(printf '%s' "$narrative" | tr -d '[:space:]')"
+      if [ -z "$trimmed" ]; then
+        status="failed"
+        reporting_failure="true"
+      fi
+      command -v jq >/dev/null 2>&1 || { echo "ERROR: finalizer-step-status requires jq" >&2; exit 2; }
+      jq -nc --arg status "$status" --arg reporting_failure "$reporting_failure" \
+        '{status: $status, reporting_failure: $reporting_failure}'
+    output: "finalizer_step_status"
 
   - id: "validate-agentic-finalization"
     type: "bash"
     parse_json: true
     command: |
       set -euo pipefail
-      # Contract: AGENTIC_FINALIZER_OUTPUT, FAILED_FINALIZER_OUTPUT, schema_version,
-      # terminal_state, terminal_success, confidence, reason, required_next_action,
-      # hollow_success_detected, evidence_used, finalizer_output_valid,
-      # finalizer_confidence, jq -e, exit 1, confidence=high, terminal_success=true,
-      # hollow_success_detected=true, FAILED_DIRTY_WORKTREE,
-      # FAILED_PR_METADATA_UNAVAILABLE, BLOCKED_CI, FAILED_MEANINGFUL_DIFF.
+      # Issue #969 contract: this step classifies the terminal state from typed
+      # deterministic evidence ONLY. It reads finalization_evidence and the typed
+      # finalizer_step_status/implementation/verification recipe state. It never
+      # reads the agent narrative and never parses agent-generated prose.
+      # Emitted vocabulary includes FAILED_INVALID_EVIDENCE (malformed evidence),
+      # FAILED_REPORTING (reporting step failed but impl/verify durable),
+      # FAILED_IMPLEMENTATION (impl/verify absent), IMPLEMENTED_VERIFIED, plus the
+      # preserved fail-closed invariants FAILED_DIRTY_WORKTREE,
+      # FAILED_PR_METADATA_UNAVAILABLE, BLOCKED_CI, FAILED_MEANINGFUL_DIFF, and
+      # FAILED_MISSING_TOOLING. Non-success classifications exit 1 (fail closed).
       FINALIZER_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="$(pwd)/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || { echo "ERROR: agentic finalization helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $FINALIZER_HELPER; cwd=$(pwd)" >&2; exit 2; }
       bash "$FINALIZER_HELPER" validate
     output: "workflow_result"
@@ -387,10 +365,12 @@ steps:
     command: |
       set -euo pipefail
       # Reports workflow_result, terminal_outcome, terminal_state, terminal_success,
-      # required_next_action, hollow_success_detected, evidence_used, finalizer_schema_version,
-      # finalizer_confidence, finalizer_output_valid, terminal_failure, MERGED,
-      # CLOSED_OBSOLETE, NO_DIFF_SUCCESS, FOLLOWUP_CREATED, SUPERSEDED, BLOCKED_CI,
-      # FAILED_FINALIZER_OUTPUT, FAILED_MISSING_TOOLING, FAILED_PR_METADATA_UNAVAILABLE,
+      # required_next_action, hollow_success_detected, evidence_used, reporting_failure,
+      # finalizer_schema_version, finalizer_confidence, finalizer_output_valid,
+      # terminal_failure, and the terminal vocabulary: MERGED, CLOSED_OBSOLETE,
+      # NO_DIFF_SUCCESS, FOLLOWUP_CREATED, SUPERSEDED, IMPLEMENTED_VERIFIED,
+      # ALLOW_NO_OP, BLOCKED_CI, FAILED_IMPLEMENTATION, FAILED_REPORTING,
+      # FAILED_INVALID_EVIDENCE, FAILED_MISSING_TOOLING, FAILED_PR_METADATA_UNAVAILABLE,
       # FAILED_DIRTY_WORKTREE, FAILED_MEANINGFUL_DIFF, HOLLOW_SUCCESS, INCOMPLETE.
       FINALIZER_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="$(pwd)/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || { echo "ERROR: agentic finalization helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $FINALIZER_HELPER; cwd=$(pwd)" >&2; exit 2; }
       bash "$FINALIZER_HELPER" complete

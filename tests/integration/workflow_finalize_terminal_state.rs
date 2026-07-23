@@ -197,17 +197,34 @@ fn finalize_pipeline_boxes_judgment_in_agentic_finalizer_and_keeps_validation_de
             .get("agent")
             .and_then(Value::as_str)
             .is_some(),
-        "workflow-finalize must use an agentic finalizer for terminal-state assessment"
+        "workflow-finalize must use an agentic finalizer for the human-readable narrative"
     );
     assert_eq!(
         step_output(&recipe, "agentic-finalizer"),
-        "agentic_finalizer_output",
-        "agentic finalizer output must be persisted separately from validated workflow_result"
+        "agentic_finalizer_narrative",
+        "the agentic finalizer output is a human-readable narrative artifact, never machine-control state"
+    );
+    assert_eq!(
+        step_type(&recipe, "finalizer-step-status"),
+        "bash",
+        "a deterministic step must record the reporting step's typed status"
+    );
+    assert_eq!(
+        step_output(&recipe, "finalizer-step-status"),
+        "finalizer_step_status",
+        "finalizer-step-status must persist typed {{status, reporting_failure}} state"
+    );
+    assert_eq!(
+        step_by_id(&recipe, "finalizer-step-status")
+            .get("parse_json")
+            .and_then(Value::as_bool),
+        Some(true),
+        "finalizer-step-status must emit typed JSON parsed into recipe state"
     );
     assert_eq!(
         step_type(&recipe, "validate-agentic-finalization"),
         "bash",
-        "finalizer schema validation and terminal-state enforcement must remain deterministic"
+        "terminal-state classification must remain deterministic"
     );
     assert_eq!(
         step_output(&recipe, "validate-agentic-finalization"),
@@ -219,72 +236,44 @@ fn finalize_pipeline_boxes_judgment_in_agentic_finalizer_and_keeps_validation_de
         step_index(&recipe, "collect-finalization-evidence")
             < step_index(&recipe, "agentic-finalizer")
             && step_index(&recipe, "agentic-finalizer")
+                < step_index(&recipe, "finalizer-step-status")
+            && step_index(&recipe, "finalizer-step-status")
                 < step_index(&recipe, "validate-agentic-finalization")
             && step_index(&recipe, "validate-agentic-finalization")
                 < step_index(&recipe, "workflow-complete"),
-        "finalize pipeline order must be evidence collection -> agentic finalizer -> deterministic validation -> workflow-complete"
+        "finalize pipeline order must be evidence collection -> agentic narrative -> typed step status -> deterministic validation -> workflow-complete"
     );
 }
 
 #[test]
-fn agentic_finalizer_prompt_declares_strict_json_schema_and_terminal_vocabulary() {
+fn agentic_finalizer_prompt_requests_human_narrative_not_machine_json() {
     let recipe = load_finalize_recipe();
     let prompt = step_prompt(&recipe, "agentic-finalizer");
 
-    for required in [
-        "schema_version",
-        "terminal_state",
-        "terminal_success",
-        "confidence",
-        "reason",
-        "required_next_action",
-        "hollow_success_detected",
-        "evidence_used",
+    // Issue #969: the finalizer emits a free-form narrative for humans. The
+    // brittle "one JSON object / no prose" machine contract must be gone.
+    for forbidden in [
         "single JSON object",
         "no prose",
-        "structured evidence",
+        "Return only the single JSON object",
+        "Output schema",
     ] {
+        assert!(
+            !prompt.contains(forbidden),
+            "agentic finalizer prompt must not demand a machine-parseable JSON blob; found `{forbidden}`"
+        );
+    }
+
+    for required in ["narrative", "structured evidence"] {
         assert!(
             prompt.contains(required),
-            "agentic finalizer prompt must define strict output schema; missing `{required}`"
+            "agentic finalizer prompt must request a human-readable narrative from structured evidence; missing `{required}`"
         );
     }
 
-    for state in [
-        "MERGED",
-        "CLOSED_OBSOLETE",
-        "NO_DIFF_SUCCESS",
-        "FOLLOWUP_CREATED",
-        "SUPERSEDED",
-        "IMPLEMENTED_VERIFIED",
-        "ALLOW_NO_OP",
-        "BLOCKED_CI",
-        "FAILED_DIRTY_WORKTREE",
-        "FAILED_MEANINGFUL_DIFF",
-        "FAILED_CLOSED_UNMERGED",
-        "FAILED_PR_METADATA_UNAVAILABLE",
-        "FAILED_MISSING_TOOLING",
-        "FAILED_INVALID_EVIDENCE",
-        "FAILED_FINALIZER_OUTPUT",
-        "FAILED_MISSING_TERMINAL_EVIDENCE",
-        "HOLLOW_SUCCESS",
-        "INCOMPLETE",
-    ] {
-        assert!(
-            prompt.contains(state),
-            "agentic finalizer prompt must expose terminal state `{state}`"
-        );
-    }
-
+    // Observed failure-mode context is still valuable operator background.
     for failure_mode in [
-        "brittle parsing",
-        "stale PR metadata",
         "dirty worktree",
-        "generated runtime artifacts",
-        "broad staging",
-        "Artifact Guard failures",
-        ".claude/runtime",
-        "nested `worktrees/`",
         "closed-unmerged",
         "missing tooling",
         "failed CI",
@@ -292,42 +281,46 @@ fn agentic_finalizer_prompt_declares_strict_json_schema_and_terminal_vocabulary(
     ] {
         assert!(
             prompt.contains(failure_mode),
-            "agentic finalizer prompt must preserve observed failure-mode context `{failure_mode}`"
+            "agentic finalizer prompt should preserve observed failure-mode context `{failure_mode}`"
         );
     }
 }
 
 #[test]
-fn validation_step_fails_closed_for_malformed_or_unsupported_finalizer_output() {
+fn validation_step_classifies_from_typed_evidence_not_agent_prose() {
     let recipe = load_finalize_recipe();
     let command = step_command(&recipe, "validate-agentic-finalization");
 
-    for required in [
+    // The classifier must never touch agent narrative or the retired brittle state.
+    for forbidden in [
         "AGENTIC_FINALIZER_OUTPUT",
+        "agentic_finalizer_output",
         "FAILED_FINALIZER_OUTPUT",
-        "schema_version",
-        "terminal_state",
-        "terminal_success",
-        "confidence",
-        "reason",
-        "required_next_action",
-        "hollow_success_detected",
-        "evidence_used",
-        "finalizer_output_valid",
-        "finalizer_confidence",
-        "jq -e",
+        "single JSON object",
+    ] {
+        assert!(
+            !command.contains(forbidden),
+            "validation step must not consume agent prose via `{forbidden}`"
+        );
+    }
+
+    // It must classify from typed deterministic evidence and typed markers.
+    for required in [
+        "finalization_evidence",
+        "finalizer_step_status",
+        "FAILED_INVALID_EVIDENCE",
+        "FAILED_REPORTING",
+        "FAILED_IMPLEMENTATION",
         "exit 1",
     ] {
         assert!(
             command.contains(required),
-            "validation step must fail closed for malformed finalizer output; missing `{required}`"
+            "validation step must classify from typed evidence; missing `{required}`"
         );
     }
 
+    // Preserved fail-closed invariants.
     for invariant in [
-        "confidence=high",
-        "terminal_success=true",
-        "hollow_success_detected=true",
         "FAILED_DIRTY_WORKTREE",
         "FAILED_PR_METADATA_UNAVAILABLE",
         "BLOCKED_CI",
@@ -341,7 +334,7 @@ fn validation_step_fails_closed_for_malformed_or_unsupported_finalizer_output() 
 
     assert!(
         !command.contains("|| true") && !command.contains("status: \"complete\""),
-        "validation step must not mask malformed finalizer output as successful completion"
+        "validation step must not mask a non-success terminal state as successful completion"
     );
 }
 
@@ -355,11 +348,14 @@ fn workflow_complete_reports_canonical_agentic_workflow_result_fields_and_failur
         "required_next_action",
         "hollow_success_detected",
         "evidence_used",
+        "reporting_failure",
         "finalizer_schema_version",
         "finalizer_confidence",
         "finalizer_output_valid",
         "terminal_failure",
-        "FAILED_FINALIZER_OUTPUT",
+        "FAILED_INVALID_EVIDENCE",
+        "FAILED_REPORTING",
+        "FAILED_IMPLEMENTATION",
         "FAILED_MISSING_TOOLING",
         "FAILED_PR_METADATA_UNAVAILABLE",
         "FAILED_DIRTY_WORKTREE",
@@ -374,6 +370,10 @@ fn workflow_complete_reports_canonical_agentic_workflow_result_fields_and_failur
         );
     }
 
+    assert!(
+        !command.contains("FAILED_FINALIZER_OUTPUT"),
+        "workflow-complete must retire the brittle FAILED_FINALIZER_OUTPUT state"
+    );
     assert!(
         !command.contains("status: \"complete\"") && !command.contains("steps_completed: 23"),
         "workflow-complete must not report legacy unconditional completion once finalizer validation owns terminal status"
