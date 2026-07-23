@@ -4,8 +4,10 @@
 #
 # Contract under test:
 #   1. When WORKFLOW_PR_LABELS is set, the host is GitHub, a numeric PR number
-#      was resolved, and `gh` is present, EACH comma-separated label is applied
-#      via `gh pr edit <number> --add-label <label>` (whitespace trimmed).
+#      was resolved, and `gh` is present, the RAW comma-separated value is passed
+#      verbatim to a SINGLE `gh pr edit <number> --add-label <csv>` call. `gh`
+#      splits comma-separated labels natively, so the bundle no longer parses,
+#      trims, or fans out per label.
 #   2. When WORKFLOW_PR_LABELS is empty/unset, NO `gh pr edit` runs.
 #   3. When the host is not GitHub, NO `gh pr edit` runs.
 #   4. When the PR number is not numeric, NO `gh pr edit` runs.
@@ -90,14 +92,21 @@ run_case() {
 
 edit_calls() { grep -cE '^pr edit ' "${GH_LOG}" 2>/dev/null || true; }
 
-# --- Case 1: happy path, two labels (one padded with whitespace) -----------
-out="$(run_case github 4321 'simard-autonomous, needs-attention ' 1)"
+# --- Case 1: happy path — the raw CSV is passed verbatim to a SINGLE call ----
+# gh splits comma-separated labels natively, so a multi-label CSV must reach gh
+# as one `--add-label <csv>` argv, NOT fanned out into per-label invocations.
+out="$(run_case github 4321 'simard-autonomous,needs-attention' 1)"
 [[ "${out##*rc=}" == "0" ]] || fail 1 "function did not return 0 on happy path (got '${out}')"
+grep -qE '^pr edit 4321 --add-label simard-autonomous,needs-attention$' "${GH_LOG}" \
+    || fail 1 "expected verbatim 'pr edit 4321 --add-label simard-autonomous,needs-attention' not recorded"
+[[ "$(edit_calls)" == "1" ]] || fail 1 "expected exactly 1 pr-edit call (CSV passed verbatim), got $(edit_calls)"
+
+# --- Case 1b: single label is still passed as-is in one call ----------------
+out="$(run_case github 4321 'simard-autonomous' 1)"
+[[ "${out##*rc=}" == "0" ]] || fail 1b "function did not return 0 for single label (got '${out}')"
 grep -qE '^pr edit 4321 --add-label simard-autonomous$' "${GH_LOG}" \
-    || fail 1 "expected 'pr edit 4321 --add-label simard-autonomous' not recorded"
-grep -qE '^pr edit 4321 --add-label needs-attention$' "${GH_LOG}" \
-    || fail 1 "second label not trimmed/applied ('needs-attention' expected)"
-[[ "$(edit_calls)" == "2" ]] || fail 1 "expected exactly 2 pr-edit calls, got $(edit_calls)"
+    || fail 1b "expected 'pr edit 4321 --add-label simard-autonomous' not recorded"
+[[ "$(edit_calls)" == "1" ]] || fail 1b "expected exactly 1 pr-edit call, got $(edit_calls)"
 
 # --- Case 2: no labels configured → no edits -------------------------------
 run_case github 4321 '' 1 >/dev/null

@@ -42,8 +42,7 @@ emit_publish_result() {
 # no-op unless the host is GitHub, a numeric PR number was resolved, and at
 # least one label was requested.
 apply_pr_labels_best_effort() {
-  local labels_csv="${WORKFLOW_PR_LABELS:-}"
-  [ -n "$labels_csv" ] || return 0
+  [ -n "${WORKFLOW_PR_LABELS:-}" ] || return 0
   [ "${HOST_TYPE:-}" = "github" ] || return 0
   case "${PR_NUMBER_RESULT:-}" in '' | *[!0-9]*) return 0 ;; esac
   # Only label PRs that are newly created or currently OPEN. A MERGED/CLOSED
@@ -54,18 +53,13 @@ apply_pr_labels_best_effort() {
   case "${PR_STATE:-}" in MERGED | CLOSED) return 0 ;; esac
   command -v gh >/dev/null 2>&1 || return 0
 
-  local label
-  # Split on commas without word-splitting globs or leaking IFS: read each
-  # comma-separated entry as a line, then trim surrounding whitespace.
-  while IFS= read -r label || [ -n "$label" ]; do
-    label="$(printf '%s' "$label" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-    [ -n "$label" ] || continue
-    # `timeout 60` mirrors every other gh call in this script: a hung
-    # `gh pr edit` must never block finish_publish from emitting its JSON.
-    if ! timeout 60 gh pr edit "$PR_NUMBER_RESULT" --add-label "$label" >/dev/null 2>&1; then
-      echo "WARNING: workflow_publish_pr.sh: best-effort label '${label}' not applied to PR #${PR_NUMBER_RESULT} (label may not exist in this repo, GitHub API unavailable, or timed out)" >&2
-    fi
-  done < <(printf '%s' "$labels_csv" | tr ',' '\n')
+  # `gh pr edit --add-label` splits comma-separated labels natively, so the raw
+  # CSV is passed straight through in a single call — no bespoke parsing needed.
+  # `timeout 60` mirrors every other gh call in this script: a hung `gh pr edit`
+  # must never block finish_publish from emitting its JSON.
+  if ! timeout 60 gh pr edit "$PR_NUMBER_RESULT" --add-label "$WORKFLOW_PR_LABELS" >/dev/null 2>&1; then
+    echo "WARNING: workflow_publish_pr.sh: best-effort labels '${WORKFLOW_PR_LABELS}' not applied to PR #${PR_NUMBER_RESULT} (a label may not exist in this repo, GitHub API unavailable, or timed out)" >&2
+  fi
   return 0
 }
 
