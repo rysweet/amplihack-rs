@@ -42,8 +42,7 @@ emit_publish_result() {
 # no-op unless the host is GitHub, a numeric PR number was resolved, and at
 # least one label was requested.
 apply_pr_labels_best_effort() {
-  local labels_csv="${WORKFLOW_PR_LABELS:-}"
-  [ -n "$labels_csv" ] || return 0
+  [ -n "${WORKFLOW_PR_LABELS:-}" ] || return 0
   [ "${HOST_TYPE:-}" = "github" ] || return 0
   case "${PR_NUMBER_RESULT:-}" in '' | *[!0-9]*) return 0 ;; esac
   # Only label PRs that are newly created or currently OPEN. A MERGED/CLOSED
@@ -58,8 +57,8 @@ apply_pr_labels_best_effort() {
   # CSV is passed straight through in a single call — no bespoke parsing needed.
   # `timeout 60` mirrors every other gh call in this script: a hung `gh pr edit`
   # must never block finish_publish from emitting its JSON.
-  if ! timeout 60 gh pr edit "$PR_NUMBER_RESULT" --add-label "$labels_csv" >/dev/null 2>&1; then
-    echo "WARNING: workflow_publish_pr.sh: best-effort labels '${labels_csv}' not applied to PR #${PR_NUMBER_RESULT} (a label may not exist in this repo, GitHub API unavailable, or timed out)" >&2
+  if ! timeout 60 gh pr edit "$PR_NUMBER_RESULT" --add-label "$WORKFLOW_PR_LABELS" >/dev/null 2>&1; then
+    echo "WARNING: workflow_publish_pr.sh: best-effort labels '${WORKFLOW_PR_LABELS}' not applied to PR #${PR_NUMBER_RESULT} (a label may not exist in this repo, GitHub API unavailable, or timed out)" >&2
   fi
   return 0
 }
