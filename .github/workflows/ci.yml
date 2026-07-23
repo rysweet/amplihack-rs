@@ -48,6 +48,9 @@ jobs:
       - name: Recipes — PR always opens after successful push (issue #495)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-pr-always-opens.sh
+      - name: Recipes — best-effort PR labels from WORKFLOW_PR_LABELS
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-pr-labels-best-effort.sh
       - name: Recipes — static guard validation scope (issue #495)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-static-guard-validation-scope.sh

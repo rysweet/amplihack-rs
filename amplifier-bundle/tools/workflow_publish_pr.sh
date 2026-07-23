@@ -30,6 +30,37 @@ emit_publish_result() {
     '{state:$state,legacy_state:$legacy_state,terminal_status:$terminal_status,pr_url:$pr_url,pr_number:$pr_number,branch_diff_status:$branch_diff_status,message:$message}'
 }
 
+# Best-effort: apply caller-configured labels to the GitHub PR that was just
+# published (created OR matched as an existing open PR for this branch). The
+# labels come from the comma-separated `WORKFLOW_PR_LABELS` env var, so the
+# generic bundle stays policy-free — the caller (e.g. an autonomous agent that
+# needs a durable "eligible for gated self-merge" marker) decides what to apply.
+#
+# This NEVER fails the publish: a label that does not exist in the repo, a
+# transient GitHub API error, or a missing `gh` must not block the PR flow, so
+# every failure is warn-and-continue and the function always returns 0. It is a
+# no-op unless the host is GitHub, a numeric PR number was resolved, and at
+# least one label was requested.
+apply_pr_labels_best_effort() {
+  local labels_csv="${WORKFLOW_PR_LABELS:-}"
+  [ -n "$labels_csv" ] || return 0
+  [ "${HOST_TYPE:-}" = "github" ] || return 0
+  case "${PR_NUMBER_RESULT:-}" in '' | *[!0-9]*) return 0 ;; esac
+  command -v gh >/dev/null 2>&1 || return 0
+
+  local label
+  # Split on commas without word-splitting globs or leaking IFS: read each
+  # comma-separated entry as a line, then trim surrounding whitespace.
+  while IFS= read -r label || [ -n "$label" ]; do
+    label="$(printf '%s' "$label" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    [ -n "$label" ] || continue
+    if ! gh pr edit "$PR_NUMBER_RESULT" --add-label "$label" >/dev/null 2>&1; then
+      echo "WARNING: workflow_publish_pr.sh: best-effort label '${label}' not applied to PR #${PR_NUMBER_RESULT} (label may not exist in this repo, or GitHub API unavailable)" >&2
+    fi
+  done < <(printf '%s' "$labels_csv" | tr ',' '\n')
+  return 0
+}
+
 finish_publish() {
   local state="$1"
   local legacy_state="$2"
@@ -41,6 +72,9 @@ finish_publish() {
   LEGACY_PUBLISH_STATE="$legacy_state"
   TERMINAL_STATUS="$terminal_status"
   MESSAGE="$message"
+  if [ "$terminal_status" = "success" ]; then
+    apply_pr_labels_best_effort
+  fi
   emit_publish_result
   exit "$exit_code"
 }
@@ -270,6 +304,15 @@ scoped_pr_lookup() {
   fi
   finish_publish "FAILED_PR_IDENTITY" "invalid-pr-identity" "failure" "scoped PR lookup failed: ${reason:-unknown}" 1
 }
+
+# Test seam: when sourced with WORKFLOW_PUBLISH_PR_LIB_ONLY set, return after
+# defining the helper functions above so unit tests can exercise pure helpers
+# (e.g. apply_pr_labels_best_effort) without running the full publish flow.
+# Never set in production, so the publish path below always executes normally.
+if [ -n "${WORKFLOW_PUBLISH_PR_LIB_ONLY:-}" ]; then
+  # shellcheck disable=SC2317  # exit 0 is reached only when executed, not sourced
+  return 0 2>/dev/null || exit 0
+fi
 
 HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
 CURRENT_BRANCH=$(git branch --show-current)
