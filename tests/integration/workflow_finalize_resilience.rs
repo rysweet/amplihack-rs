@@ -1184,6 +1184,45 @@ fn agentic_finalization_blocker_survives_embedded_newline_in_earlier_field() {
     );
 }
 
+// Regression (issue #969): a top-level `type == "object"` check is NOT enough.
+// A document whose *nested* value has the wrong type (here `.git` is a string,
+// not an object) passes the top-level check, but extracting `.git.dirty_worktree`
+// makes jq error mid-stream and emit nothing. The previous unguarded read block
+// only avoided a fail-OPEN by luck: `set -euo pipefail` aborted on the first
+// empty read, an ungraceful crash that leaked a raw jq error, emitted no
+// structured terminal_state, and would become a real fail-OPEN if `set -e` were
+// ever relaxed around that block. The single-pass guard must instead treat any
+// incompletely-read evidence as malformed and fail CLOSED with a clean
+// FAILED_INVALID_EVIDENCE classification — never IMPLEMENTED_VERIFIED.
+#[test]
+fn agentic_finalization_fails_closed_when_nested_evidence_value_is_wrong_type() {
+    let output = run_agentic_finalization(
+        "validate",
+        &[
+            ("IMPLEMENTATION_COMPLETED", "true"),
+            ("VERIFICATION_COMPLETED", "true"),
+            (
+                "FINALIZATION_EVIDENCE",
+                r#"{"schema_version":1,"git":"unexpected-string","agent_outputs":{"hollow_success_signals":"true"}}"#,
+            ),
+        ],
+    );
+
+    assert!(
+        !output.status.success(),
+        "nested wrong-type evidence must fail closed, not silently blank every field"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("FAILED_INVALID_EVIDENCE"),
+        "structurally invalid nested evidence must classify FAILED_INVALID_EVIDENCE, stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("IMPLEMENTED_VERIFIED"),
+        "a merge must never be authorized from evidence that could not be fully parsed, stdout:\n{stdout}"
+    );
+}
+
 #[test]
 fn agentic_finalization_rejects_success_when_required_github_tooling_is_missing() {
     let output = run_agentic_finalization(
