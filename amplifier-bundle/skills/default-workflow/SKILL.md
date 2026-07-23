@@ -298,10 +298,15 @@ source exists, fail closed with a clear error; do not bootstrap from local
 **Failure**: Agent output file not written or corrupted, causing downstream steps to fail with empty input.
 **Resilience**: If an agent step produces empty output, the recipe runner should surface the error visibly. Checkpoints after design (step 5e) and after implementation (step 8b) preserve partial work so the workflow can resume from the nearest safe point.
 
-### Step 15 — Push to Remote (upstream tracking)
+### Step 15 — Push to Remote (upstream tracking, ancestry-aware)
 
 **Failure**: `git rev-list --count @{u}..HEAD` fails when upstream is not set (first push scenario).
 **Resilience**: Detect missing upstream explicitly. If `@{u}` fails, push unconditionally instead of silently skipping. Retry push with backoff on transient network errors.
+
+**Failure (#978)**: A temporary workstream branch tracks an unrelated/stale upstream; a blind `git pull --rebase` replays already-integrated historical commits and produces add/add conflicts.
+**Resilience**: Step 15 is ancestry-aware. After fetching, it compares HEAD to `@{u}`:
+- upstream is an ancestor of HEAD (behind == 0) → fast-forward push, preserving the tested commit identities (no history rewrite, no rebase);
+- histories diverged (behind > 0) → **fail closed** with structured `merge-base / ahead / behind` evidence and require an explicit merge/rebase decision. Step 15 never auto-rebases divergent history onto a possibly-unrelated upstream.
 
 ### Step 16 — PR Creation (already exists / no commits)
 

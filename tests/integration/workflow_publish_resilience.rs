@@ -247,8 +247,8 @@ fn publish_commit_push_redacts_pull_and_push_failure_output() {
         "publish commit/push step must use a shared redaction helper"
     );
     assert!(
-        command.contains("git pull --rebase >\"$pull_output_file\" 2>&1"),
-        "publish commit/push step must capture pull output before logging"
+        command.contains("git fetch origin >\"$fetch_output_file\" 2>&1"),
+        "publish commit/push step must capture fetch output before logging (issue #978)"
     );
     assert!(
         !command.contains("cat \"$push_stderr_file\""),

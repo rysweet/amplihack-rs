@@ -275,19 +275,46 @@ steps:
       fi
       COMMITS_AHEAD=$(git rev-list --count @{u}..HEAD)
       if [ "$COMMITS_AHEAD" -ne 0 ]; then
-        pull_output_file=$(mktemp -t step15-pull-XXXXXX)
-        if git pull --rebase >"$pull_output_file" 2>&1; then
-          redact_sensitive_file "$pull_output_file" >&2
-          rm -f "$pull_output_file"
+        # FIX (#978): ancestry-aware integration. Step 15 must NOT blindly
+        # `git pull --rebase` onto the configured upstream. When a temporary
+        # workstream branch tracks an unrelated/stale upstream, rebasing replays
+        # already-integrated commits and produces add/add conflicts. Refresh the
+        # upstream ref, then decide by ancestry:
+        #   • upstream is an ancestor of HEAD (behind==0) -> fast-forward push,
+        #     preserving the tested commit identities (no history rewrite).
+        #   • histories diverged (behind>0) -> fail closed with structured
+        #     merge-base/ahead/behind evidence and require an explicit
+        #     merge/rebase decision. Never auto-replay already-integrated history.
+        UPSTREAM_REF=$(git rev-parse --abbrev-ref '@{u}' 2>/dev/null || echo "unknown")
+        fetch_output_file=$(mktemp -t step15-fetch-XXXXXX)
+        if git fetch origin >"$fetch_output_file" 2>&1; then
+          redact_sensitive_file "$fetch_output_file" >&2
         else
-          pull_rc=$?
-          sanitized=$(redact_sensitive_file "$pull_output_file" | tr '\n' ' ' | head -c 500)
-          reason="pull-failed: ${sanitized}"
-          echo "ERROR: git pull --rebase failed (exit $pull_rc)" >&2
-          redact_sensitive_file "$pull_output_file" >&2
-          rm -f "$pull_output_file"
-          exit "$pull_rc"
+          echo "WARNING: git fetch origin failed before ancestry check; using cached upstream state" >&2
+          redact_sensitive_file "$fetch_output_file" >&2
         fi
+        rm -f "$fetch_output_file"
+        COMMITS_AHEAD=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
+        COMMITS_BEHIND=$(git rev-list --count 'HEAD..@{u}' 2>/dev/null || echo 0)
+        if [ "$COMMITS_AHEAD" -eq 0 ]; then
+          echo "INFO: HEAD no longer ahead of upstream '$UPSTREAM_REF' after fetch — nothing to push" >&2
+          raw_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
+          if printf '%s' "$raw_sha" | grep -qE '^[0-9a-f]{40}$'; then sha="$raw_sha"; fi
+          pushed="true"; reason="already-pushed"
+          echo "=== Commit and Push Complete ===" >&2
+          exit 0
+        fi
+        if [ "$COMMITS_BEHIND" -ne 0 ]; then
+          MERGE_BASE=$(git merge-base HEAD '@{u}' 2>/dev/null || echo "none")
+          HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+          echo "ERROR: step-15 refuses to rebase divergent history onto upstream '$UPSTREAM_REF' (issue #978)." >&2
+          echo "  ancestry: ahead=$COMMITS_AHEAD behind=$COMMITS_BEHIND merge_base=$MERGE_BASE head=$HEAD_SHA upstream=$UPSTREAM_REF" >&2
+          echo "  Auto-rebasing would replay already-integrated commits and create add/add conflicts." >&2
+          echo "  Point the branch at its intended PR base and fast-forward, or make an explicit rebase decision." >&2
+          reason="diverged-upstream: ahead=$COMMITS_AHEAD behind=$COMMITS_BEHIND merge_base=$MERGE_BASE upstream=$UPSTREAM_REF"
+          exit 1
+        fi
+        echo "INFO: upstream '$UPSTREAM_REF' is an ancestor of HEAD — fast-forward push, no rebase (#978)" >&2
         # FIX (#495): capture push stderr, redact tokens before reason emission.
         push_stderr_file=$(mktemp -t step15-push-XXXXXX)
         # shellcheck disable=SC2064
