@@ -349,12 +349,30 @@ validate_finalization() {
   #    provided. Malformed *evidence* (never agent prose) fails closed as
   #    FAILED_INVALID_EVIDENCE.
   if [ -n "$finalization_evidence" ]; then
-    if printf '%s' "$finalization_evidence" | jq -e 'type == "object"' >/dev/null 2>&1; then
-      [ -n "$evidence_dirty_worktree" ] || evidence_dirty_worktree="$(printf '%s' "$finalization_evidence" | jq -r '.git.dirty_worktree // ""')"
-      [ -n "$evidence_tooling_missing" ] || evidence_tooling_missing="$(printf '%s' "$finalization_evidence" | jq -r '.tooling.missing // ""')"
-      [ -n "$evidence_gh_required" ] || evidence_gh_required="$(printf '%s' "$finalization_evidence" | jq -r '.tooling.gh_required // ""')"
-      [ -n "$evidence_prior_terminal_state" ] || evidence_prior_terminal_state="$(printf '%s' "$finalization_evidence" | jq -r '.prior_terminal_state.terminal_state // ""')"
-      [ -n "$evidence_hollow_success" ] || evidence_hollow_success="$(printf '%s' "$finalization_evidence" | jq -r '.agent_outputs.hollow_success_signals // ""')"
+    # Perf (issue #969): validate structure and pull every evidence field in a
+    # single jq pass. The prior implementation parsed the same JSON document up
+    # to six times (one type check plus one extraction per field), spawning a
+    # printf+jq process each time. Fields are joined with a unit-separator
+    # (0x1f, non-whitespace) so empty fields stay positional under `read` — a
+    # tab/newline delimiter would collapse empties as IFS whitespace. A
+    # non-object or malformed document makes jq exit non-zero, preserving the
+    # FAILED_INVALID_EVIDENCE fail-close.
+    if evidence_fields="$(printf '%s' "$finalization_evidence" | jq -j '
+        if type == "object" then
+          [ (.git.dirty_worktree // ""),
+            (.tooling.missing // ""),
+            (.tooling.gh_required // ""),
+            (.prior_terminal_state.terminal_state // ""),
+            (.agent_outputs.hollow_success_signals // "") ] | join("\u001f")
+        else
+          error("finalization evidence is not a JSON object")
+        end' 2>/dev/null)"; then
+      IFS=$'\x1f' read -r ev_dirty ev_missing ev_gh ev_prior ev_hollow <<<"$evidence_fields"
+      [ -n "$evidence_dirty_worktree" ] || evidence_dirty_worktree="$ev_dirty"
+      [ -n "$evidence_tooling_missing" ] || evidence_tooling_missing="$ev_missing"
+      [ -n "$evidence_gh_required" ] || evidence_gh_required="$ev_gh"
+      [ -n "$evidence_prior_terminal_state" ] || evidence_prior_terminal_state="$ev_prior"
+      [ -n "$evidence_hollow_success" ] || evidence_hollow_success="$ev_hollow"
     else
       fail_result "FAILED_INVALID_EVIDENCE" "deterministic finalization evidence was not a JSON object" "Rerun collect-finalization-evidence and inspect its structured output." "finalization_evidence=malformed"
     fi
