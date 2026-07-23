@@ -185,6 +185,62 @@ impl SignalTransport {
         })
     }
 
+    /// Connect to the signal-cli JSON-RPC daemon with **bounded retry**.
+    ///
+    /// External-service resilience: the signal-cli daemon is a separate process
+    /// and may not be accepting connections the instant amplihack starts (a
+    /// startup race), or may briefly refuse while restarting. Rather than let a
+    /// single transient `connect` failure silently disable the whole channel,
+    /// this retries [`connect`](Self::connect) up to `max_attempts` times using
+    /// **capped exponential backoff**: the delay starts at `base_delay`, doubles
+    /// after each failed attempt, and is clamped to `max_delay`.
+    ///
+    /// The first successful connection short-circuits and is returned
+    /// immediately. If every attempt fails, the **last** underlying I/O error is
+    /// returned (so the caller sees the real cause, e.g. `ConnectionRefused`).
+    /// `max_attempts` is treated as at least `1`, so at least one connect is
+    /// always attempted and no backoff sleep occurs on the final attempt.
+    ///
+    /// This is additive: [`connect`](Self::connect) keeps its exact
+    /// single-attempt semantics for callers that want fail-fast behavior.
+    pub async fn connect_with_retry(
+        endpoint: &str,
+        max_attempts: u32,
+        base_delay: std::time::Duration,
+        max_delay: std::time::Duration,
+    ) -> std::io::Result<Self> {
+        let attempts = max_attempts.max(1);
+        let mut delay = base_delay;
+        let mut last_err: Option<std::io::Error> = None;
+
+        for attempt in 1..=attempts {
+            match Self::connect(endpoint).await {
+                Ok(transport) => return Ok(transport),
+                Err(e) => {
+                    // Only sleep/back off when another attempt remains; never
+                    // pause after the final attempt.
+                    if attempt < attempts {
+                        tracing::warn!(
+                            attempt,
+                            max_attempts = attempts,
+                            error = %e,
+                            "signal transport connect failed; retrying after backoff"
+                        );
+                        tokio::time::sleep(delay).await;
+                        delay = delay.saturating_mul(2).min(max_delay);
+                    }
+                    last_err = Some(e);
+                }
+            }
+        }
+
+        // `attempts >= 1` guarantees at least one failed attempt populated
+        // `last_err` before we reach here; the fallback is defensive only.
+        Err(last_err.unwrap_or_else(|| {
+            std::io::Error::other("connect_with_retry: no connection attempts were made")
+        }))
+    }
+
     /// Write one JSON-RPC request frame (newline-terminated) to the socket.
     async fn write_frame(&mut self, frame: &Value) -> std::io::Result<()> {
         use tokio::io::AsyncWriteExt;
@@ -253,8 +309,17 @@ impl SignalTransport {
             // newline. Report an empty line so callers skip it (fail-safe).
             return Ok(Some(""));
         }
-        self.line_buf
-            .push_str(&String::from_utf8_lossy(&self.raw_buf));
+        // Lossy UTF-8 decode directly into `line_buf`, avoiding the
+        // intermediate owned String that `String::from_utf8_lossy` allocates on
+        // the invalid-byte path. Semantics are identical: one U+FFFD per
+        // maximal invalid subsequence (this is exactly how `from_utf8_lossy` is
+        // implemented internally).
+        for chunk in self.raw_buf.utf8_chunks() {
+            self.line_buf.push_str(chunk.valid());
+            if !chunk.invalid().is_empty() {
+                self.line_buf.push('\u{FFFD}');
+            }
+        }
         Ok(Some(self.line_buf.as_str()))
     }
 
