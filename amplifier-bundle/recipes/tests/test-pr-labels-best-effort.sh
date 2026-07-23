@@ -63,9 +63,9 @@ fail() { echo "FAIL[$1]: $2" >&2; echo "--- gh-invocations.log ---" >&2; cat "${
 
 # Reset the invocation log and run apply_pr_labels_best_effort in a subshell
 # with the given environment. Emits the function's return code on stdout.
-# Args: HOST_TYPE PR_NUMBER_RESULT WORKFLOW_PR_LABELS with_gh(1|0)
+# Args: HOST_TYPE PR_NUMBER_RESULT WORKFLOW_PR_LABELS with_gh(1|0) [PR_STATE]
 run_case() {
-    local host="$1" prnum="$2" labels="$3" with_gh="$4"
+    local host="$1" prnum="$2" labels="$3" with_gh="$4" pr_state="${5:-}"
     : > "${GH_LOG}"
     local path_prefix=""
     [ "$with_gh" = "1" ] && path_prefix="${WORK}/bin:"
@@ -81,6 +81,8 @@ run_case() {
         HOST_TYPE="${host}"
         # shellcheck disable=SC2034  # consumed by the sourced apply_pr_labels_best_effort
         PR_NUMBER_RESULT="${prnum}"
+        # shellcheck disable=SC2034  # consumed by the sourced apply_pr_labels_best_effort
+        PR_STATE="${pr_state}"
         apply_pr_labels_best_effort
         echo "rc=$?"
     )
@@ -112,6 +114,16 @@ run_case github 'not-a-number' 'simard-autonomous' 1 >/dev/null
 # --- Case 4b: empty PR number → no edits -----------------------------------
 run_case github '' 'simard-autonomous' 1 >/dev/null
 [[ "$(edit_calls)" == "0" ]] || fail 4b "pr edit invoked with empty PR number"
+
+# --- Case 4c: MERGED / CLOSED PR state → no edits (nothing to gate) ---------
+run_case github 4321 'simard-autonomous' 1 MERGED >/dev/null
+[[ "$(edit_calls)" == "0" ]] || fail 4c "pr edit invoked on a MERGED PR"
+run_case github 4321 'simard-autonomous' 1 CLOSED >/dev/null
+[[ "$(edit_calls)" == "0" ]] || fail 4c "pr edit invoked on a CLOSED PR"
+
+# --- Case 4d: OPEN PR state still labels -----------------------------------
+run_case github 4321 'simard-autonomous' 1 OPEN >/dev/null
+[[ "$(edit_calls)" == "1" ]] || fail 4d "OPEN PR was not labeled (got $(edit_calls) edits)"
 
 # --- Case 5: failing label edit is best-effort (function still returns 0) ---
 out="$(run_case github 4321 'does-not-exist' 1)"
