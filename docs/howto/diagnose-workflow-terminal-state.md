@@ -43,8 +43,8 @@ Look for these fields:
 | `terminal_reason` | Human-readable explanation and next action. |
 | `required_next_action` | The action the finalizer expects before the workflow can close. |
 | `hollow_success_detected` | Whether the run appeared successful but lacked real completion evidence. |
-| `evidence_used` | Structured evidence keys used by the finalizer. |
-| `finalizer_output_valid` | Whether the agentic finalizer returned valid schema-compliant JSON. |
+| `evidence_used` | Typed evidence keys used by the deterministic classifier. |
+| `reporting_failure` | Whether a reporting step failed after successful implementation (produces `FAILED_REPORTING`, durable evidence preserved). |
 | `observed_phases` | Last workflow phases that produced evidence. |
 | `missing_evidence` | Required proof that was absent. |
 
@@ -115,43 +115,48 @@ terminal_failure=true
 
 ---
 
-## Fix Agentic Finalizer Output Failures
+## Distinguish Implementation Failure from Reporting Failure
 
-`FAILED_FINALIZER_OUTPUT` means the judgment-heavy finalizer did not return the
-required JSON object. The deterministic gate treats this as failure even if the
-free-form text sounds successful.
+Finalization classifies two failure families separately so free-form
+explanatory output — or a transient failure in a reporting step — can never
+erase proof that the implementation succeeded.
 
-Valid finalizer output is a single JSON object:
+`FAILED_IMPLEMENTATION` means durable implementation or verification evidence is
+absent or failed while meaningful work remains:
 
-```json
-{
-  "schema_version": 1,
-  "terminal_state": "BLOCKED_CI",
-  "terminal_success": false,
-  "confidence": "high",
-  "reason": "PR #123 exists and matches this branch, but required CI checks are failing.",
-  "required_next_action": "Fix failing CI checks before merge.",
-  "hollow_success_detected": false,
-  "evidence_used": [
-    "pr.state=OPEN",
-    "pr.head_branch_matches=true",
-    "ci.state=FAILURE"
-  ]
-}
+```text
+terminal_success=false
+terminal_state=FAILED_IMPLEMENTATION
+implementation_completed=false
+verification_completed=false
+required_next_action=Resume default-workflow from implementation and verification.
 ```
 
-Check for these causes:
+`FAILED_REPORTING` means the implementation succeeded but a reporting/finalization
+step failed. Durable evidence is preserved:
 
-| Cause | Fix |
-| --- | --- |
-| Non-JSON prose before or after the object | Update the finalizer prompt or wrapper so only JSON is emitted. |
-| Missing required field | Emit all required fields from the schema. |
-| Unknown `terminal_state` | Use the terminal-state vocabulary from the reference docs. |
-| `terminal_success=true` with a failure state | Correct the state or success flag; state semantics are deterministic. |
-| `confidence=medium` or `confidence=low` on a success state | Gather stronger evidence or return a non-success state. Only high confidence plus deterministic proof can close successfully. |
-| `hollow_success_detected=true` with success | Return `HOLLOW_SUCCESS` or another failure state. |
+```text
+terminal_success=false
+terminal_state=FAILED_REPORTING
+reporting_failure=true
+implementation_completed=true
+verification_completed=true
+pr_url=https://github.com/rysweet/amplihack-rs/pull/123
+pr_number=123
+required_next_action=Re-run the reporting step; the implementation is intact.
+```
 
-Do not patch CI scripts to ignore this state. It means finalization could not
+Retry the reporting step for `FAILED_REPORTING`; do not re-run the
+implementation. Resume from implementation only for `FAILED_IMPLEMENTATION`.
+
+The finalizer narrative is never parsed, so its text cannot cause either state.
+Read it as diagnostics only:
+
+```bash
+jq -r '.. | objects | .agentic_finalizer_narrative // empty' recipe-result.json
+```
+
+Do not patch CI scripts to ignore these states. They mean finalization could not
 prove closure.
 
 ---

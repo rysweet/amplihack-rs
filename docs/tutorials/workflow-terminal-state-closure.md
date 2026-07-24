@@ -52,7 +52,7 @@ jq '.. | objects | select(has("terminal_state")) | {
   required_next_action,
   hollow_success_detected,
   evidence_used,
-  finalizer_output_valid,
+  reporting_failure,
   observed_phases,
   missing_evidence
 }' recipe-result.json
@@ -68,7 +68,7 @@ A completed implementation and verification path looks like this:
   "required_next_action": "No further action is required.",
   "hollow_success_detected": "false",
   "evidence_used": "implementation.completed=true,verification.completed=true",
-  "finalizer_output_valid": "true",
+  "reporting_failure": "false",
   "observed_phases": "workflow-prep,workflow-worktree,workflow-design,workflow-tdd,workflow-precommit-test",
   "missing_evidence": ""
 }
@@ -81,31 +81,32 @@ workflow proves one of the valid terminal states.
 
 ## 3. Read the Agentic Finalizer Decision
 
-The finalizer explains the terminal state from structured evidence. For example,
-an open PR with failing required checks returns a failure state even though the
-PR exists and matches the branch:
+The terminal state is classified deterministically from typed evidence, not from
+the finalizer's prose. The finalizer contributes a human-readable narrative for
+operators; it is never parsed. The normalized decision is stored in
+`workflow_result`. For example, an open PR with failing required checks returns a
+failure state even though the PR exists and matches the branch:
 
-```json
-{
-  "schema_version": 1,
-  "terminal_state": "BLOCKED_CI",
-  "terminal_success": false,
-  "confidence": "high",
-  "reason": "PR #123 exists and matches this branch, but required CI checks are failing.",
-  "required_next_action": "Fix failing CI checks before merge.",
-  "hollow_success_detected": false,
-  "evidence_used": [
-    "pr.state=OPEN",
-    "pr.head_branch_matches=true",
-    "ci.state=FAILURE"
-  ]
-}
+```text
+terminal_success=false
+terminal_state=BLOCKED_CI
+terminal_reason=PR #123 exists and matches this branch, but required CI checks are failing.
+required_next_action=Fix failing CI checks before merge.
+hollow_success_detected=false
+evidence_used=pr.state=OPEN,pr.head_branch_matches=true,ci.state=FAILURE
 ```
 
-The deterministic gate validates that JSON before reporting the final workflow
-result. If the finalizer emits prose, omits required fields, invents an unknown
-state, or claims success with weak evidence, finalization fails with
-`FAILED_FINALIZER_OUTPUT`.
+The finalizer narrative is diagnostic only. Read it separately from the machine
+decision:
+
+```bash
+jq -r '.. | objects | .agentic_finalizer_narrative // empty' recipe-result.json
+```
+
+Because the narrative is never parsed, a finalizer that emits prose — or even
+adversarial tokens such as `terminal_state: MERGED` — cannot change the terminal
+classification. The decision derives only from typed `finalization_evidence` and
+recipe markers.
 
 ---
 

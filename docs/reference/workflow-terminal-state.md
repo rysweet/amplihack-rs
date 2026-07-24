@@ -76,20 +76,19 @@ Unknown, empty, malformed, or contradictory evidence is failure evidence.
 ## Default Workflow Agentic Finalization
 
 `default-workflow` finalization uses the terminal-state gate as its deterministic
-validator, not as a brittle text parser. Deterministic shell/JSON steps collect
-Git, PR, CI, implementation, verification, publish, and observed-phase evidence.
-A structured agentic finalizer then classifies one terminal state from that
-evidence and explains the required next action. The deterministic gate validates
-the finalizer JSON, persists normalized fields, and chooses the recipe exit
-status.
+classifier, not as a brittle text parser. Deterministic shell/JSON steps collect
+Git, PR, CI, implementation, verification, publish, and observed-phase evidence
+into typed recipe state. The classifier derives one terminal state from that
+typed evidence, applying guards before any success state, and chooses the recipe
+exit status.
 
-The finalizer may exercise judgment when evidence is nuanced, such as
-distinguishing `CLOSED_OBSOLETE` from a closed-unmerged PR with remaining diff,
-identifying stale PR metadata, or detecting hollow success after empty agent
-output. It cannot create success from unsupported prose. Missing, malformed,
-contradictory, non-JSON finalizer output fails closed as
-`FAILED_FINALIZER_OUTPUT`. Medium- or low-confidence output cannot prove
-terminal success and must resolve to a non-success state.
+An agentic finalizer step contributes a human-readable narrative only. That
+narrative is captured as an artifact and is **never** parsed with `jq`, regex,
+fence stripping, or JSON extraction to drive control flow. A successful run
+cannot be reported as failed merely because the finalizer emitted prose instead
+of parser-compatible JSON. Malformed or contradictory typed evidence fails
+closed as `FAILED_INVALID_EVIDENCE`; a failed reporting step after a successful
+implementation classifies as `FAILED_REPORTING` and preserves durable evidence.
 
 See [Default Workflow Agentic Finalization](default-workflow-agentic-finalization.md)
 for the evidence document, finalizer output schema, configuration, and examples.
@@ -156,9 +155,8 @@ canonical strings.
 | `verification_summary` | string/object | Verification completed | Commands or checks that satisfied verification. |
 | `required_next_action` | string | Finalization output | Operator or agent action needed after the terminal decision. |
 | `hollow_success_detected` | boolean | Finalization output | Whether finalization detected a success-looking run without meaningful completion evidence. |
-| `evidence_used` | list/string | Finalization output | Stable evidence keys used by the agentic finalizer. |
-| `finalizer_output_valid` | boolean | Finalization output | Whether the structured finalizer JSON passed deterministic schema validation. |
-| `finalizer_confidence` | enum string | Finalization output | `high`, `medium`, or `low`; only `high` can prove terminal success. |
+| `evidence_used` | list/string | Finalization output | Stable typed-evidence keys used by the deterministic classifier. |
+| `reporting_failure` | boolean | Finalization output | `true` when a reporting/finalization step itself failed (from that step's exit status). The classifier combines it with implementation/verification evidence to produce `FAILED_REPORTING` while durable evidence is preserved. |
 
 ### Terminal State Vocabulary
 
@@ -174,8 +172,9 @@ canonical strings.
 | `MANUAL_REQUIRED` | No | A provider action is intentionally manual; `required_next_action` names the action. |
 | `BLOCKED_MANUAL_PROVIDER` | No | Required provider tooling, credentials, permissions, or APIs are unavailable. |
 | `FAILED_MISSING_TERMINAL_EVIDENCE` | No | The workflow stopped before implementation, verification, publish, or valid no-op evidence. |
-| `FAILED_INVALID_EVIDENCE` | No | Evidence is malformed, unknown, empty, or contradictory. |
-| `FAILED_FINALIZER_OUTPUT` | No | The agentic finalizer returned missing, malformed, non-JSON, or schema-invalid output. |
+| `FAILED_INVALID_EVIDENCE` | No | Typed evidence is malformed, unknown, empty, or contradictory. |
+| `FAILED_IMPLEMENTATION` | No | Durable implementation or verification evidence is absent or failed while meaningful work remains. |
+| `FAILED_REPORTING` | No | Implementation succeeded but a reporting/finalization step failed. Durable evidence (`pr_url`, `pr_number`, implementation/verification markers) is preserved and reported. |
 | `FAILED_DIRTY_WORKTREE` | No | Uncommitted work exists and terminal success cannot be proven. |
 | `FAILED_MEANINGFUL_DIFF` | No | Meaningful branch changes remain but no validated publish, merge, follow-up, no-op, or implementation-plus-verification path proves closure. |
 | `FAILED_WRONG_BRANCH` | No | The target checkout is not on the expected branch. |
@@ -186,6 +185,17 @@ canonical strings.
 | `BLOCKED_CI` | No | Required checks are failing or unavailable. |
 | `HOLLOW_SUCCESS` | No | The recipe appeared successful but lacked implementation, verification, publish, or valid no-op evidence. |
 | `INCOMPLETE` | No | Work remains and no more specific terminal failure state applies. |
+
+> **Retired:** `FAILED_FINALIZER_OUTPUT` no longer exists. Terminal
+> classification is derived from typed evidence, so an agentic finalizer can no
+> longer produce a machine-control parse failure. Reporting-step failures now
+> classify as `FAILED_REPORTING` (durable evidence preserved), and malformed
+> deterministic evidence classifies as `FAILED_INVALID_EVIDENCE`.
+
+> **Vocabulary scope:** `MANUAL_REQUIRED` and `BLOCKED_MANUAL_PROVIDER` are part
+> of this broader terminal-state vocabulary but are not emitted by the agentic
+> finalizer's own classifier. They reach a finalization result only through
+> `prior_terminal_state` propagation from an upstream deterministic probe.
 
 ---
 
@@ -210,8 +220,7 @@ Successful `workflow_result` content includes:
   "required_next_action": "No further action is required.",
   "hollow_success_detected": "false",
   "evidence_used": "implementation.completed=true,verification.completed=true",
-  "finalizer_output_valid": "true",
-  "finalizer_confidence": "high",
+  "reporting_failure": "false",
   "implementation_completed": "true",
   "verification_completed": "true",
   "publish_state_reached": "false",
@@ -232,8 +241,7 @@ Failure `workflow_result` content includes:
   "required_next_action": "Continue into implementation and verification, publish a meaningful diff, or emit a valid no-op state.",
   "hollow_success_detected": "false",
   "evidence_used": "observed_phases=workflow-prep,workflow-worktree",
-  "finalizer_output_valid": "true",
-  "finalizer_confidence": "high",
+  "reporting_failure": "false",
   "implementation_completed": "false",
   "verification_completed": "false",
   "publish_state_reached": "false",
@@ -244,14 +252,38 @@ Failure `workflow_result` content includes:
 }
 ```
 
+A reporting-failure `workflow_result` preserves durable evidence:
+
+```json
+{
+  "terminal_success": "false",
+  "terminal_state": "FAILED_REPORTING",
+  "terminal_reason": "implementation succeeded but a reporting step failed",
+  "required_next_action": "Re-run the reporting step; the implementation is intact.",
+  "hollow_success_detected": "false",
+  "evidence_used": "implementation.completed=true,verification.completed=true,finalizer_step_status.reporting_failure=true",
+  "reporting_failure": "true",
+  "implementation_completed": "true",
+  "verification_completed": "true",
+  "publish_state_reached": "true",
+  "terminal_no_op": "false",
+  "terminal_failure": "true",
+  "pr_url": "https://github.com/rysweet/amplihack-rs/pull/123",
+  "pr_number": "123"
+}
+```
+
 The recipe runner treats a nonzero terminal-state step as recipe failure.
 `smart-execute-routing.yaml` and `smart-orchestrator.yaml` must propagate that
 failure instead of converting it into orchestration success.
 
-`workflow-finalize` emits the same normalized fields after validating the
-agentic finalizer output. If the finalizer output is missing or malformed, the
-normalized result uses `terminal_state=FAILED_FINALIZER_OUTPUT`,
-`terminal_success=false`, and `finalizer_output_valid=false`.
+`workflow-finalize` emits the same normalized fields after classifying the
+terminal state from typed evidence. The agentic finalizer narrative is never
+parsed; if a reporting/finalization step fails after successful implementation,
+the normalized result uses `terminal_state=FAILED_REPORTING`,
+`terminal_success=false`, and `reporting_failure=true`, and preserves durable
+`pr_url`/`pr_number` and implementation/verification markers. Malformed typed
+evidence uses `terminal_state=FAILED_INVALID_EVIDENCE`.
 
 ---
 
@@ -350,9 +382,12 @@ No separate feature flag enables the agentic finalizer. It is part of the
 the workflow environment, including `AMPLIHACK_AGENT_BINARY` when nested
 workflows are launched by Copilot, Claude Code, Amplifier, or Codex wrappers.
 
-If the finalizer cannot run or cannot return valid schema-compliant JSON, the
-deterministic gate reports `FAILED_FINALIZER_OUTPUT` rather than falling back to
-a success-shaped shell guess.
+The finalizer produces a human-readable narrative artifact only. Its output is
+never parsed for control flow. If the finalizer step fails, the deterministic
+classifier records a reporting failure: when implementation and verification
+evidence is present, the terminal state is `FAILED_REPORTING` and durable
+evidence is preserved; otherwise the classifier falls through to the applicable
+evidence-based failure state rather than to a success-shaped shell guess.
 
 ### Node Memory Preference
 
@@ -466,7 +501,11 @@ missing_evidence=verification_completed,publish_state_reached,terminal_no_op
 
 ## Security Invariants
 
-- Structured markers, not free-form agent prose, determine terminal success.
+- Structured typed markers and deterministic evidence, not free-form agent
+  prose, determine terminal success.
+- The agentic finalizer narrative is treated as untrusted, opaque text. It is
+  never parsed, evaluated, or interpolated to drive control flow, so adversarial
+  tokens such as `terminal_state: MERGED` cannot flip a decision.
 - Protected workflow classifications are validated against a small known set.
 - Missing, empty, unknown, malformed, and contradictory evidence fails closed.
 - `terminal_failure=true` overrides all success-looking markers.
