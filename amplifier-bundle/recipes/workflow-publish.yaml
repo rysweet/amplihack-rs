@@ -4,8 +4,8 @@ version: "1.0.0"
 author: "Amplihack Team"
 tags: ["development", "version", "pr"]
 # workflow-publish: default-workflow phase brick. Parent context is merged by
-# recipe-runner and declared outputs propagate to later phase recipes.
-# Pager safety: recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
+# recipe-runner; declared outputs propagate to later phase recipes. Pager safety:
+# recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
 recursion:
   max_depth: 6
   max_total_steps: 80
@@ -85,12 +85,9 @@ steps:
       set -euo pipefail
       : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-${REPO_PATH:-}}}"
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-14b requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
-      # Issue #915: step-14 bumps the workspace version in Cargo.toml but leaves
-      # Cargo.lock stale. Every pre-commit gate (artifact-guard, cargo-clippy,
-      # cargo-test) runs with --locked, so step-15 fails deterministically with
-      # "cannot update the lock file ... because --locked was passed". Keep the
-      # lock IN SYNC (do NOT weaken --locked) using an offline, network-free
-      # update. Skip gracefully on non-Rust workspaces.
+      # Issue #915: step-14's version bump leaves Cargo.lock stale, so --locked
+      # pre-commit gates fail deterministically. Keep the lock IN SYNC (do NOT
+      # weaken --locked) via an offline update; skip gracefully on non-Rust workspaces.
       if [ -f Cargo.toml ] && [ -f Cargo.lock ]; then
         echo "step-14b: syncing Cargo.lock to bumped version (offline)"
         cargo update --workspace --offline
@@ -105,15 +102,10 @@ steps:
       set -euo pipefail
       : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-${REPO_PATH:-}}}"
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-14c requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
-      # Issue #925: step-14 bumps [workspace.package].version in Cargo.toml and
-      # step-14b keeps Cargo.lock in sync, but NOTHING syncs the root
-      # package.json "version". The contract test
-      # `package_json_version_matches_root_workspace_version` then fails in CI
-      # (exit 100) because package.json is left stale, and no pre-commit gate
-      # catches it. Sync package.json.version to the workspace version with a
-      # ROBUST read (scoped [workspace.package] parse, offline) and a ROBUST
-      # JSON edit (jq, falling back to python3 json) — never brittle text
-      # munging. Skip gracefully when package.json is absent (non-JS workspace).
+      # Issue #925: nothing syncs root package.json "version" after the workspace
+      # bump, so `package_json_version_matches_root_workspace_version` fails in CI.
+      # Sync package.json.version via a ROBUST scoped read + ROBUST JSON edit (jq,
+      # python3 fallback); skip gracefully when package.json is absent (non-JS workspace).
       if [ ! -f package.json ]; then
         echo "step-14c: no package.json present; skipping npm version sync (non-JS workspace)"
         exit 0
@@ -122,33 +114,27 @@ steps:
         echo "step-14c: no Cargo.toml present; cannot determine workspace version; skipping"
         exit 0
       fi
-      # Read [workspace.package].version robustly: a SCOPED parse of only the
-      # [workspace.package] table (offline, network-free). This is NOT an
-      # unscoped grep of the first `version =` line, which would pick up an
-      # unrelated table. As a defensive fallback, prefer `cargo metadata
-      # --offline` if the scoped parse yields nothing.
+      # Read [workspace.package].version via a SCOPED offline parse (NOT an unscoped
+      # grep that could match an unrelated table); fall back to `cargo metadata --offline`.
       WS_VERSION="$(awk -F'"' '
         /^\[workspace\.package\]/ { in_ws = 1; next }
         /^\[/ { in_ws = 0 }
         in_ws && /^[[:space:]]*version[[:space:]]*=/ { print $2; exit }
       ' Cargo.toml)"
-      # Fallback: resolve the workspace ROOT package by its resolved id
-      # (.resolve.root) — NOT `select(.source == null)`, which matches ALL local
-      # members and is nondeterministic when members declare divergent versions.
+      # Fallback: resolve the workspace ROOT package by its resolved id (.resolve.root),
+      # NOT `select(.source == null)` which matches ALL local members nondeterministically.
       if [ -z "${WS_VERSION:-}" ] && command -v cargo >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
         WS_VERSION="$(cargo metadata --no-deps --format-version=1 --offline 2>/dev/null \
           | jq -r '.resolve.root as $r | (.packages[] | select(.id == $r) | .version) // empty' 2>/dev/null || true)"
       fi
       if [ -z "${WS_VERSION:-}" ]; then
-        # Non-standard layout or unreadable version: skip cleanly (mirror-only
-        # step; never a hard failure). Matches requirement R4 and the reference doc.
+        # Non-standard layout or unreadable version: skip cleanly (mirror-only step; never a hard failure).
         echo "step-14c: could not read [workspace.package].version; skipping package.json sync"
         exit 0
       fi
       echo "step-14c: syncing package.json version to workspace version ${WS_VERSION}"
       if command -v jq >/dev/null 2>&1; then
-        # Write to a temp file IN THE SAME DIRECTORY so `mv` is an atomic,
-        # same-filesystem rename, and preserve the original file permissions.
+        # Same-directory temp file so `mv` is an atomic rename; preserve permissions.
         _tmp="$(mktemp ./package.json.XXXXXX)"
         trap 'rm -f "$_tmp"' EXIT
         chmod --reference=package.json "$_tmp" 2>/dev/null || true
@@ -156,9 +142,7 @@ steps:
         mv "$_tmp" package.json
         trap - EXIT
       else
-        # Same atomic contract as the jq path: write a temp file IN THE SAME
-        # DIRECTORY (so os.replace is an atomic same-filesystem rename) and copy
-        # the original file mode so permissions (e.g. 0644) are preserved.
+        # Same atomic contract as the jq path: same-directory temp + os.replace, mode preserved.
         WS_VERSION="$WS_VERSION" python3 -c 'import json, os, tempfile; p = "package.json"; d = json.load(open(p, encoding="utf-8")); d["version"] = os.environ["WS_VERSION"]; _dir = os.path.dirname(os.path.abspath(p)); _fd, _tmp = tempfile.mkstemp(dir=_dir, prefix="package.json."); os.write(_fd, (json.dumps(d, indent=2) + "\n").encode("utf-8")); os.close(_fd); os.chmod(_tmp, os.stat(p).st_mode & 0o7777); os.replace(_tmp, p)'
       fi
 
@@ -221,9 +205,8 @@ steps:
       # FIX (#469/#311): env vars are injection-safe; ${VAR:-} nounset reads so an unset value can't abort before the #944 fallback below.
       TASK_DESC="${TASK_DESCRIPTION:-}"
       ISSUE_NUMBER="${ISSUE_NUMBER:-}"
-      # FIX (#944): commit prefix from step-14's real change type (PATCH->fix:
-      # MINOR->feat: MAJOR->feat!:), not a hardcoded 'feat:' that bumped the
-      # version on bugfix branches (#920/#943). Unknown/unset -> bugfix heuristic.
+      # FIX (#944): commit prefix from step-14's real change type (PATCH->fix:,
+      # MINOR->feat:, MAJOR->feat!:), not a hardcoded 'feat:'. Unknown -> bugfix heuristic.
       CHANGE_CLASS="${VERSION_BUMP_CHANGE_CLASSIFICATION:-${RECIPE_VAR_version_bump__change_classification:-}}"
       case "$(printf '%s' "$CHANGE_CLASS" | tr '[:lower:]' '[:upper:]')" in
         PATCH) COMMIT_PREFIX="fix: " ;;
@@ -250,9 +233,8 @@ steps:
         amplihack_prepare_git_commit_identity
         git commit -m "$COMMIT_MSG"
       else
-        # FIX (#282): hollow-success false-positive when agent worked in an
-        # alternate worktree. Check if the current branch has new commits
-        # in any other worktree before declaring hollow success.
+        # FIX (#282): avoid hollow-success false-positive — check the current branch
+        # for new commits (in any worktree) before declaring nothing was done.
         CURRENT_BRANCH=$(git branch --show-current)
         ALT_WORKTREE_COMMITS=0
         if [ -n "$CURRENT_BRANCH" ] && git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
@@ -275,19 +257,40 @@ steps:
       fi
       COMMITS_AHEAD=$(git rev-list --count @{u}..HEAD)
       if [ "$COMMITS_AHEAD" -ne 0 ]; then
-        pull_output_file=$(mktemp -t step15-pull-XXXXXX)
-        if git pull --rebase >"$pull_output_file" 2>&1; then
-          redact_sensitive_file "$pull_output_file" >&2
-          rm -f "$pull_output_file"
+        # FIX (#978): ancestry-aware integration — never blind `git pull --rebase`.
+        # Refresh upstream, then decide by ancestry: behind==0 -> fast-forward push
+        # (preserve tested commit identities); behind>0 -> fail closed with structured
+        # merge-base/ahead/behind evidence. Never auto-replay already-integrated history.
+        UPSTREAM_REF=$(git rev-parse --abbrev-ref '@{u}' 2>/dev/null || echo "unknown")
+        fetch_output_file=$(mktemp -t step15-fetch-XXXXXX)
+        if git fetch origin >"$fetch_output_file" 2>&1; then
+          redact_sensitive_file "$fetch_output_file" >&2
         else
-          pull_rc=$?
-          sanitized=$(redact_sensitive_file "$pull_output_file" | tr '\n' ' ' | head -c 500)
-          reason="pull-failed: ${sanitized}"
-          echo "ERROR: git pull --rebase failed (exit $pull_rc)" >&2
-          redact_sensitive_file "$pull_output_file" >&2
-          rm -f "$pull_output_file"
-          exit "$pull_rc"
+          echo "WARNING: git fetch origin failed before ancestry check; using cached upstream state" >&2
+          redact_sensitive_file "$fetch_output_file" >&2
         fi
+        rm -f "$fetch_output_file"
+        COMMITS_AHEAD=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
+        COMMITS_BEHIND=$(git rev-list --count 'HEAD..@{u}' 2>/dev/null || echo 0)
+        if [ "$COMMITS_AHEAD" -eq 0 ]; then
+          echo "INFO: HEAD no longer ahead of upstream '$UPSTREAM_REF' after fetch — nothing to push" >&2
+          raw_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
+          if printf '%s' "$raw_sha" | grep -qE '^[0-9a-f]{40}$'; then sha="$raw_sha"; fi
+          pushed="true"; reason="already-pushed"
+          echo "=== Commit and Push Complete ===" >&2
+          exit 0
+        fi
+        if [ "$COMMITS_BEHIND" -ne 0 ]; then
+          MERGE_BASE=$(git merge-base HEAD '@{u}' 2>/dev/null || echo "none")
+          HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+          echo "ERROR: step-15 refuses to rebase divergent history onto upstream '$UPSTREAM_REF' (issue #978)." >&2
+          echo "  ancestry: ahead=$COMMITS_AHEAD behind=$COMMITS_BEHIND merge_base=$MERGE_BASE head=$HEAD_SHA upstream=$UPSTREAM_REF" >&2
+          echo "  Auto-rebasing would replay already-integrated commits and create add/add conflicts." >&2
+          echo "  Point the branch at its intended PR base and fast-forward, or make an explicit rebase decision." >&2
+          reason="diverged-upstream: ahead=$COMMITS_AHEAD behind=$COMMITS_BEHIND merge_base=$MERGE_BASE upstream=$UPSTREAM_REF"
+          exit 1
+        fi
+        echo "INFO: upstream '$UPSTREAM_REF' is an ancestor of HEAD — fast-forward push, no rebase (#978)" >&2
         # FIX (#495): capture push stderr, redact tokens before reason emission.
         push_stderr_file=$(mktemp -t step15-push-XXXXXX)
         # shellcheck disable=SC2064

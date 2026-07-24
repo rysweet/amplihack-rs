@@ -29,6 +29,7 @@ Intelligent guidance system that prevents common mistakes and ensures work compl
 ## Workflow Recovery
 
 - [Workflow-Owned PR Recovery Readiness](pr-recovery-readiness.md) — recover existing pull requests through `default-workflow`, reuse the PR branch, verify hook and additive-copy readiness, and finalize only through workflow-owned steps.
+- [Ancestry-Aware Step 15 Publish](workflow-publish-ancestry-aware-step15.md) — `workflow-publish` step 15 integrates with its upstream by branch ancestry: fast-forward when `behind == 0`, fail closed with structured `ahead=`/`behind=`/`merge_base=` evidence when histories diverge, and never blind-rebase already-integrated commits. Includes the PR #980 brick-rule cleanup that trims `workflow-publish.yaml` back under the 400-line limit (issue [#978](https://github.com/rysweet/amplihack-rs/issues/978)).
 - [Existing Branch Finalization Runbook](post-v0977-finalization.md) — inspect,
   preserve, validate, publish, and merge an already-implemented branch; includes
   the post-v0.9.77 issue-658 branch as the concrete example.

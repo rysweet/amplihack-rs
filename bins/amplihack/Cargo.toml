@@ -142,6 +142,10 @@ name = "workflow_publish_resilience"
 path = "../../tests/integration/workflow_publish_resilience.rs"
 
 [[test]]
+name = "issue_978_step15_rebase_base"
+path = "../../tests/integration/issue_978_step15_rebase_base_test.rs"
+
+[[test]]
 name = "workflow_publish_azdo_contract"
 path = "../../tests/integration/workflow_publish_azdo_contract_test.rs"
 
