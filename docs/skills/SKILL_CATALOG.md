@@ -128,6 +128,7 @@ Those bundled `SKILL.md` files are the install-time source of truth.
 | `transcript-viewer` | `transcript-viewer/SKILL.md` |
 | `ultrathink-orchestrator` | `ultrathink-orchestrator/SKILL.md` |
 | `urban-planner-analyst` | `urban-planner-analyst/SKILL.md` |
+| `verus-expert` | `verus-expert/SKILL.md` |
 | `work-delegator` | `work-delegator/SKILL.md` |
 | `work-iq` | `work-iq/SKILL.md` |
 | `workflow-enforcement` | `workflow-enforcement/SKILL.md` |

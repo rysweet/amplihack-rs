@@ -143,6 +143,9 @@ nav:
       - Code Visualizer: claude/skills/code-visualizer/SKILL.md
       - Gherkin Expert: claude/skills/gherkin-expert/SKILL.md
       - TLA+ Expert: claude/skills/tla-plus-expert/SKILL.md
+      - Verus Expert: claude/skills/verus-expert/SKILL.md
+  - Formal Methods:
+      - Verus vs Lean vs TLA+ for Rust: formal-methods/verus-vs-lean-vs-tla-for-rust.md
   - Tools:
       - Scenarios Overview: claude/scenarios/README.md
       - Creating Tools: CREATE_YOUR_OWN_TOOLS.md
