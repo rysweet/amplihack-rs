@@ -206,6 +206,56 @@ fn toml_supplies_values_when_env_absent() {
 }
 
 #[test]
+fn toml_own_device_id_string_uses_numeric_validation() {
+    let toml = r#"
+        endpoint = "127.0.0.1:7583"
+        account  = "+15551230000"
+        allowlist = ["+15551230001"]
+        own_device_id = "3"
+    "#;
+    let cfg = SignalConfig::from_sources(&HashMap::new(), Some(toml)).expect("valid toml");
+    assert_eq!(cfg.own_device_id, Some(3));
+}
+
+#[test]
+fn string_settings_reject_non_string_toml_scalars() {
+    for (setting, toml) in [
+        (
+            "endpoint",
+            r#"
+            endpoint = 7583
+            account  = "+15551230000"
+            allowlist = ["+15551230001"]
+        "#,
+        ),
+        (
+            "account",
+            r#"
+            endpoint = "127.0.0.1:7583"
+            account  = true
+            allowlist = ["+15551230001"]
+        "#,
+        ),
+        (
+            "rolling_group_id",
+            r#"
+            endpoint = "127.0.0.1:7583"
+            account  = "+15551230000"
+            allowlist = ["+15551230001"]
+            reuse_rolling_group = true
+            rolling_group_id = 123
+        "#,
+        ),
+    ] {
+        let err = SignalConfig::from_sources(&HashMap::new(), Some(toml)).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::Toml(_)),
+            "expected Toml type error for non-string {setting}, got {err:?}"
+        );
+    }
+}
+
+#[test]
 fn toml_allowlist_must_be_an_array() {
     let toml = r#"
         endpoint = "127.0.0.1:7583"
