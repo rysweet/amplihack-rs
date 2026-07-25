@@ -28,6 +28,7 @@ pub mod integrator;
 pub mod orchestrator;
 pub mod packager;
 mod redact;
+mod script;
 pub mod session;
 pub(crate) mod shell_safe;
 pub mod state_io;

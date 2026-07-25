@@ -21,6 +21,10 @@ Ahoy! This be where ye learn to keep yer ship secure from digital pirates.
 
 - [Azlin stderr Redaction](./AZLIN_STDERR_REDACTION.md) - Redact subscription IDs / SAS URLs from Azure CLI stderr during VM cleanup
 
+**New in Issue #997 (P1 hardening):**
+
+- [Executor Secret Transport & Command Validation](./EXECUTOR_SECRET_AND_COMMAND_HARDENING.md) - Keep the API key off argv/disk (stdin transport) and allowlist-validate the executor command before spawn
+
 ---
 
 ## Security Features Overview
