@@ -81,6 +81,9 @@ jobs:
       - name: Recipes — SKILL mirror parity + gate-policy docs (issue #962)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-962-skill-mirror-parity.sh
+      - name: Recipes — ADO work items assigned + typed + fail-loud (issue #983)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-983-azdo-work-item-assignment.sh
       - name: Recipes — shellcheck worktree sweep helper (issue #840)
         shell: bash
         run: |

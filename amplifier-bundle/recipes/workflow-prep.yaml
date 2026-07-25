@@ -3,10 +3,8 @@ description: "Phase 1a: requirements + issue creation (steps 00-03b)"
 version: "1.0.0"
 author: "Amplihack Team"
 tags: ["development", "prep", "requirements"]
-# workflow-prep: extracted from default-workflow.yaml as a composable phase brick.
-# Context flows in from the parent workflow via recipe-runner's automatic context-merging in
-# `_execute_sub_recipe()`; outputs declared by these steps propagate back to
-# the parent and are visible to subsequent phase recipes.
+# workflow-prep: extracted from default-workflow.yaml as a composable phase brick. Context flows in from the
+# parent via recipe-runner's context-merging in `_execute_sub_recipe()`; outputs propagate back to the parent.
 # Pager safety: recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
 recursion:
   max_depth: 6
@@ -110,10 +108,8 @@ steps:
       echo "=== Workspace Prepared ==="
       echo ""
       # ── Pre-agent validation guard (issue #453) ──────────────────────
-      # Do NOT add project validation commands (npm test, npm run build,
-      # cargo test, etc.) outside this conditional. Validation only runs
-      # when explicitly opted in via SKIP_PRE_AGENT_VALIDATION="false".
-      # Default is "true" (skip) to avoid blocking on large codebases.
+      # Do NOT add project validation commands (npm test, cargo test, etc.) outside this conditional. Validation
+      # only runs when opted in via SKIP_PRE_AGENT_VALIDATION="false"; default "true" (skip) avoids blocking large repos.
       if [ "$SKIP_PRE_AGENT_VALIDATION" = "false" ]; then
         echo "--- Pre-agent Validation (opted in) ---"
         echo "Add project-specific validation commands here per repository."
@@ -282,19 +278,14 @@ steps:
       case "$HOST_TYPE" in
       github)
         if [ -n "$REF_ISSUE_NUM" ]; then EXISTING_URL=$(timeout 60 gh issue view "$REF_ISSUE_NUM" --json url --jq '.url // ""' 2>/dev/null || echo ''); [ -n "$EXISTING_URL" ] && { printf '%s\n' "$EXISTING_URL"; exit 0; }; fi
-        SEARCH_Q="${ISSUE_TITLE:0:100}"
-        if [ -n "$SEARCH_Q" ]; then FOUND_URL=$(timeout 60 gh issue list --state open --search "$SEARCH_Q" --json url --jq '.[0].url // ""' 2>/dev/null || echo ''); [ -n "$FOUND_URL" ] && { printf '%s\n' "$FOUND_URL"; exit 0; }; fi
+        SEARCH_Q="${ISSUE_TITLE:0:100}"; if [ -n "$SEARCH_Q" ]; then FOUND_URL=$(timeout 60 gh issue list --state open --search "$SEARCH_Q" --json url --jq '.[0].url // ""' 2>/dev/null || echo ''); [ -n "$FOUND_URL" ] && { printf '%s\n' "$FOUND_URL"; exit 0; }; fi
         ISSUE_BODY=$(printf '## Task Description\n%s\n\n## Requirements\n%s\n\n## Acceptance Criteria\n- [ ] All explicit requirements met\n- [ ] Tests passing\n- [ ] Philosophy compliant\n- [ ] Documentation updated\n\n## Classification\nGenerated via default-workflow recipe\n' "$TASK_DESC" "$SANITIZED_ISSUE_REQS")
         LABEL_NAME="workflow:default"
         timeout 30 gh label create "$LABEL_NAME" --color "0366d6" --description "Created by default-workflow recipe" 2>/dev/null || true
         gh_create_issue() { timeout 60 gh issue create --title "$ISSUE_TITLE" --body "$ISSUE_BODY" "$@" 2>&1; }
         try_gh_create() { GH_ISSUE_RC=0; GH_ISSUE_OUTPUT=$(gh_create_issue --label "$LABEL_NAME") || GH_ISSUE_OUTPUT=$(gh_create_issue) || GH_ISSUE_RC=$?; }
-        # Rate-limit-aware issue creation: a temporarily-exhausted GraphQL quota must not abort the run.
-        # Mirrors the classifier/wait-for-reset policy in tools/workflow_gh_retry.sh but kept inline on
-        # purpose (this embedded step runs before any tool script is sourced; keep the two in sync). On a
-        # rate limit (not a permanent auth error) wait for the AUTHORITATIVE reset read via `gh api
-        # rate_limit` (does not consume the core/graphql budget) — adaptive, bounded by the observed reset
-        # window with no arbitrary fixed cap — then retry. Auth errors (401 / Bad credentials) are never retried.
+        # Rate-limit-aware issue creation: a temporarily-exhausted GraphQL quota must not abort the run. On a
+        # rate limit (not auth error) wait for the AUTHORITATIVE `gh api rate_limit` reset (adaptive, no fixed cap), then retry; 401s never retried.
         _issue_is_rate_limit() { printf '%s' "$1" | grep -Eiq 'api rate limit|rate limit already exceeded|secondary rate limit|abuse detection|(^|[^0-9])429([^0-9]|$)|retry-after|x-ratelimit-reset|rate limit'; }
         _issue_is_auth() { printf '%s' "$1" | grep -Eiq 'bad credentials|HTTP 401|(^|[^0-9])401([^0-9]|$)|requires authentication|not logged in'; }
         _issue_wait_for_reset() { local now epoch waitfor floor=5 buffer=3; now=$(date +%s); epoch=$(timeout 30 gh api rate_limit 2>/dev/null | jq -r '.resources.graphql.reset // empty' 2>/dev/null || true); case "$epoch" in ''|*[!0-9]*) epoch="" ;; esac; if [ -z "$epoch" ]; then waitfor=$floor; else waitfor=$((epoch - now + buffer)); [ "$waitfor" -lt "$floor" ] && waitfor=$floor; fi; echo "WARNING: GitHub GraphQL rate limit hit during issue creation; waiting ${waitfor}s for authoritative reset (adaptive, bounded by reset window)." >&2; sleep "$waitfor"; }
@@ -303,7 +294,6 @@ steps:
         [ "$GH_ISSUE_RC" -eq 0 ] && { printf '%s\n' "$GH_ISSUE_OUTPUT"; exit 0; }
         if [[ "$GH_ISSUE_OUTPUT" =~ Could\ not\ resolve\ to\ a\ Repository|[Rr]epository\ not\ found|[Rr]epository.*inaccessible|HTTP\ 404 ]]; then
           echo "WARNING: GitHub issue creation failed because the repository could not be resolved or accessed; using local tracking metadata instead." >&2
-          echo "WARNING: gh reported repository access/resolution failure." >&2
           emit_local_metadata; exit 0
         fi
         echo "ERROR: GitHub issue creation failed." >&2
@@ -354,13 +344,22 @@ steps:
             WI_URL=$(timeout 60 az boards work-item show --id "$REF_ISSUE_NUM" --org "$AZDO_ORG_URL" --query "url" -o tsv 2>/dev/null || echo "")
             [ -n "$WI_URL" ] && { echo "INFO: Reusing work item AB#$REF_ISSUE_NUM" >&2; printf '%s\n' "$WI_URL"; exit 0; }
           fi
-          WI_RESULT=$(timeout 60 az boards work-item create --title "$ISSUE_TITLE" --type "Task" \
-            --org "$AZDO_ORG_URL" --project "$AZDO_PROJECT" --query "[id,url]" -o tsv 2>/dev/null || echo "")
-          if [ -n "$WI_RESULT" ]; then
+          # #983: type is configurable (some templates lack "Issue"); assignee resolved client-side because `@me` is a WIQL macro `--assigned-to` does not reliably expand, silently orphaning items.
+          AZDO_WI_TYPE="${AZDO_WORK_ITEM_TYPE:-Issue}"; AZDO_WI_ASSIGNEE="${AZDO_ASSIGNED_TO:-}"
+          if [ -z "$AZDO_WI_ASSIGNEE" ]; then
+            AZDO_WI_ASSIGNEE=$(timeout 60 az account show --query "user.name" -o tsv 2>/dev/null || echo "")
+            [ -z "$AZDO_WI_ASSIGNEE" ] && AZDO_WI_ASSIGNEE=$(timeout 60 az ad signed-in-user show --query "userPrincipalName" -o tsv 2>/dev/null || echo "")
+            [ -z "$AZDO_WI_ASSIGNEE" ] && { echo "WARN: could not resolve the caller's identity for work-item assignment ('az account show' and 'az ad signed-in-user show' both failed). Set AZDO_ASSIGNED_TO to a UPN or re-run 'az login'; refusing to create an unassigned work item — using local tracking instead." >&2; emit_local_metadata; exit 0; }
+          fi
+          WI_CREATE_RC=0
+          WI_RESULT=$(timeout 60 az boards work-item create --title "$ISSUE_TITLE" --type "$AZDO_WI_TYPE" --assigned-to "$AZDO_WI_ASSIGNEE" --org "$AZDO_ORG_URL" --project "$AZDO_PROJECT" --query "[id,url]" -o tsv 2>&1) || WI_CREATE_RC=$?
+          if [ "$WI_CREATE_RC" -eq 0 ]; then
             read -r _ WI_URL <<< "$WI_RESULT"
             [ -n "$WI_URL" ] && { printf '%s\n' "$WI_URL"; exit 0; }
+            echo "ERROR: az boards work-item create reported success but no work item URL could be parsed from its output." >&2; sanitize_cli_output "$WI_RESULT" >&2; exit 1
           fi
-          echo "WARN: az boards work-item create failed — using local tracking" >&2
+          # A genuine AzDO API failure (auth, permissions, invalid type) must surface loudly, not silently degrade to local tracking — the silent fallback is what produced orphaned/unassigned work items (#983).
+          echo "ERROR: az boards work-item create failed (type='$AZDO_WI_TYPE', assigned-to='$AZDO_WI_ASSIGNEE'). Resolve the AzDO failure (check az login, project permissions, or set AZDO_WORK_ITEM_TYPE if the type is invalid); not falling back to local tracking." >&2; sanitize_cli_output "$WI_RESULT" >&2; exit 1
         else
           echo "WARN: 'az' CLI not found or org/project empty — using local tracking for AzDO remote" >&2
         fi
