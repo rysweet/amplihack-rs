@@ -39,12 +39,14 @@ sanitize_gh_stderr() {
   sed -E 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' "$1" | tr '\n' ' ' | head -c 500
 }
 
-# Best-effort final PR status read. Rate limits now wait for the authoritative
-# reset (via the shared driver) instead of burning three immediate retries; the
-# caller already tolerates failure (`|| true`) and continues with the
-# terminal-state result. No REST fallback here: this is a display-only read.
+# Best-effort final PR status read. This is a display-only read that the caller
+# already tolerates failing (`|| true`); it must NOT stall the workflow's final
+# reporting step waiting on a rate-limit reset (which can be up to an hour out).
+# Pin GH_RETRY_MAX_RL_WINDOWS=0 so a rate-limit fails fast instead of sleeping
+# through reset windows. Transient errors still get the short bounded retries.
+# No REST fallback here: this is a display-only read.
 gh_pr_view_with_retry() {
-  _gh_retry_core "final PR status pr view" pr view "$@"
+  GH_RETRY_MAX_RL_WINDOWS=0 _gh_retry_core "final PR status pr view" pr view "$@"
 }
 
 normalize_bool() {

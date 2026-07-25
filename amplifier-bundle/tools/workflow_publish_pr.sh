@@ -205,6 +205,25 @@ configure_azdo_args() {
   [ -n "$project_name" ] && azdo_common_args+=(--project "$project_name")
 }
 
+# Azure DevOps rate-limit wait. ADO throttling is unrelated to GitHub's API
+# budget, so we must NOT consult `gh api rate_limit` here. Derive the wait from
+# the provider's own Retry-After / reset header (provider-neutral parse) with a
+# short floor; fall back to a small fixed backoff when no header is present.
+az_wait_for_rate_limit() {
+  local stderr_file="${1:-}" now epoch wait floor=5 buffer=3
+  now="$(date +%s)"
+  epoch="$(gh_reset_epoch_from_stderr "$stderr_file" 2>/dev/null || true)"
+  if [ -z "$epoch" ]; then
+    wait="$floor"
+    echo "WARNING: Azure DevOps rate limit; no reset header present, waiting ${wait}s (floor) before retrying." >&2
+  else
+    wait=$(( epoch - now + buffer ))
+    [ "$wait" -lt "$floor" ] && wait="$floor"
+    echo "WARNING: Azure DevOps rate limit; waiting ${wait}s for the provider reset (header-derived; GitHub API not consulted)." >&2
+  fi
+  sleep "$wait"
+}
+
 az_repos_pr_list_with_retry() {
   local stderr_file output status attempt delay=1 class
   configure_azdo_args
@@ -222,7 +241,7 @@ az_repos_pr_list_with_retry() {
     fi
     if [ "$attempt" -lt 3 ] && [ "$class" = "rate_limit" ]; then
       echo "WARNING: az repos pr list hit a rate limit (exit ${status}); waiting for reset (${attempt}/3): $(sanitize_provider_stderr "$stderr_file")" >&2
-      gh_wait_for_rate_limit "" "$stderr_file"
+      az_wait_for_rate_limit "$stderr_file"
       rm -f "$stderr_file"; continue
     fi
     if [ "$attempt" -lt 3 ] && [ "$class" = "transient" ]; then
@@ -253,7 +272,7 @@ az_repos_pr_create_with_retry() {
     fi
     if [ "$attempt" -lt 3 ] && [ "$class" = "rate_limit" ]; then
       echo "WARNING: az repos pr create hit a rate limit (exit ${status}); waiting for reset (${attempt}/3): $(sanitize_provider_stderr "$stderr_file")" >&2
-      gh_wait_for_rate_limit "" "$stderr_file"
+      az_wait_for_rate_limit "$stderr_file"
       rm -f "$stderr_file"; continue
     fi
     if [ "$attempt" -lt 3 ] && [ "$class" = "transient" ]; then
