@@ -22,10 +22,6 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 127
 fi
 
-sanitize_gh_stderr() {
-  sed -E 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' "$1" | tr '\n' ' ' | head -c 500
-}
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GH_RETRY_HELPER="${WORKFLOW_GH_RETRY_HELPER:-${SCRIPT_DIR}/workflow_gh_retry.sh}"
 if [ ! -f "$GH_RETRY_HELPER" ]; then

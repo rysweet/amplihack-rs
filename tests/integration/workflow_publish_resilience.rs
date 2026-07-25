@@ -165,7 +165,6 @@ fn publish_retries_all_github_pr_metadata_and_mutation_calls() {
     let command = helper_text("workflow_publish_pr.sh");
 
     for required in [
-        "sanitize_gh_stderr",
         "workflow_gh_retry.sh",
         "_gh_retry_core",
         "classify_gh_error",

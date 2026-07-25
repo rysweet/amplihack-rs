@@ -78,10 +78,6 @@ emit_failure() {
   exit 1
 }
 
-sanitize_gh_stderr() {
-  sed -E 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' "$1" | tr '\n' ' ' | awk '{print substr($0, 1, 500)}'
-}
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GH_RETRY_HELPER="${WORKFLOW_GH_RETRY_HELPER:-${SCRIPT_DIR}/workflow_gh_retry.sh}"
 if [ ! -f "$GH_RETRY_HELPER" ]; then

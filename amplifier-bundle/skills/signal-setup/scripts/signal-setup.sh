@@ -154,6 +154,12 @@ esac
 validate "SIGNAL_SETUP_DAEMON_TCP port" "$DAEMON_TCP_PORT" '^[1-9][0-9]{0,4}$'
 [ "$DAEMON_TCP_PORT" -le 65535 ] \
   || die "SIGNAL_SETUP_DAEMON_TCP port out of range (1-65535): $DAEMON_TCP_PORT"
+# Numeric loop/timeout tunables: these flow UNQUOTED into the root-executed
+# remote payload (`seq 1 $DAEMON_WAIT_ATTEMPTS`, `timeout $RPC_TIMEOUT_SECONDS`),
+# so constrain them to a bare positive integer for parity with the port rule
+# and to close the self-injection path (SECURITY.md T4/§5, defense-in-depth).
+validate "SIGNAL_SETUP_DAEMON_WAIT_ATTEMPTS" "$DAEMON_WAIT_ATTEMPTS" '^[1-9][0-9]{0,3}$'
+validate "SIGNAL_SETUP_RPC_TIMEOUT_SECONDS" "$RPC_TIMEOUT_SECONDS" '^[1-9][0-9]{0,3}$'
 # Auto-detect mode if not forced.
 if [ -z "$MODE" ]; then
   if [ "$HOST" = "local" ] || [ "$HOST" = "localhost" ] || [ "$HOST" = "$(hostname)" ]; then
@@ -167,7 +173,12 @@ UNIT="sig-link-$HOST"
 DAEMON_UNIT="sig-daemon-$HOST"
 # Secret paths use an unguessable per-run token; systemd units pin UMask=0077.
 umask 077
-RUN_TOKEN="${EPOCHSECONDS}-$$-${RANDOM}${RANDOM}"
+# Prefer a 128-bit CSPRNG token from /dev/urandom so the /tmp path is not merely
+# hard-to-guess but computationally infeasible to pre-create (defeats the classic
+# symlink pre-plant on BOTH the local and remote paths — SECURITY.md T2). Falls
+# back to the epoch/PID/$RANDOM composite only if /dev/urandom is unreadable.
+RUN_TOKEN="$(LC_ALL=C tr -dc 'a-f0-9' </dev/urandom 2>/dev/null | head -c 32)"
+[ "${#RUN_TOKEN}" -ge 32 ] || RUN_TOKEN="${EPOCHSECONDS}-$$-${RANDOM}${RANDOM}${RANDOM}"
 URI_FILE="/tmp/slink-${HOST}-${RUN_TOKEN}.out"
 LOG_FILE="/tmp/scli-${HOST}-${RUN_TOKEN}.log"
 DAEMON_LOG="/tmp/signal-daemon-${HOST}-${RUN_TOKEN}.log"
@@ -380,6 +391,7 @@ daemon_up() { (exec 3<>/dev/tcp/$DAEMON_TCP_HOST/$DAEMON_TCP_PORT) 2>/dev/null; 
 if ! daemon_up; then
   systemctl reset-failed $DAEMON_UNIT 2>/dev/null
   systemd-run --unit=$DAEMON_UNIT --uid=azureuser --gid=azureuser \
+    --property=UMask=0077 \
     --setenv=HOME=/home/azureuser \
     --setenv=PATH=/home/azureuser/.local/bin:/usr/bin:/bin \
     $sigcli -a '$acct_j' daemon --tcp $DAEMON_TCP_HOST:$DAEMON_TCP_PORT >/dev/null 2>&1
@@ -410,7 +422,22 @@ REMOTE
 local_daemon_group_posttest() {
   local sigcli="$1"
   if ! daemon_up; then
-    "$sigcli" -a "$PHONE" daemon --tcp "$DAEMON_TCP" >"$DAEMON_LOG" 2>&1 &
+    # Parity with the remote daemon path: supervise the daemon under a transient
+    # systemd unit (reset-failed + UMask=0077) instead of a bare `&` background
+    # job, so the local and remote paths get identical lifecycle handling and
+    # owner-only isolation for any state the daemon writes. systemd-run's own
+    # launch output is captured to DAEMON_LOG for the failure diagnostic below;
+    # the daemon's runtime output goes to journald under $DAEMON_UNIT.
+    sudo systemctl reset-failed "$DAEMON_UNIT" 2>/dev/null
+    # SC2024: the redirect is intentionally the caller's, not root's — DAEMON_LOG
+    # captures systemd-run's launch message as an owner-only (umask 077) file;
+    # the daemon's own runtime output is journald-captured under $DAEMON_UNIT.
+    # shellcheck disable=SC2024
+    sudo systemd-run --unit="$DAEMON_UNIT" --uid="$(id -u)" --gid="$(id -g)" \
+      --property=UMask=0077 \
+      --setenv=HOME="$HOME" \
+      --setenv=PATH="$HOME/.local/bin:/usr/bin:/bin" \
+      "$sigcli" -a "$PHONE" daemon --tcp "$DAEMON_TCP" >"$DAEMON_LOG" 2>&1
     local _i
     for ((_i = 1; _i <= DAEMON_WAIT_ATTEMPTS; _i++)); do
       daemon_up && break
@@ -420,8 +447,13 @@ local_daemon_group_posttest() {
   daemon_up \
     || { warn "  Daemon did not come up on $DAEMON_TCP.";
          if [ -s "$DAEMON_LOG" ]; then
-           warn "  Last daemon-log lines ($DAEMON_LOG):"; tail -n 20 "$DAEMON_LOG" >&2
+           warn "  systemd-run launch log ($DAEMON_LOG):"; tail -n 20 "$DAEMON_LOG" >&2
          fi
+         # The daemon runs under a transient systemd unit, so its own runtime
+         # output is journald-captured (not in DAEMON_LOG). Point the operator at
+         # it so a link/daemon failure inside the ~60s window stays debuggable.
+         warn "  Daemon runtime output is journald-captured; inspect with:";
+         warn "    sudo journalctl -u $DAEMON_UNIT -n 50 --no-pager";
          return 1; }
   ok "  Daemon reachable on $DAEMON_TCP"
   command -v nc >/dev/null 2>&1 || { warn "  'nc' not available; cannot run JSON-RPC self-group post-test."; return 1; }

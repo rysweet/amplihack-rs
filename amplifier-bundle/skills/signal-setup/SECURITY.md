@@ -37,7 +37,7 @@ injection** — not authentication or web auth.
 | # | Threat | Vector | Severity | Mitigation (this script) |
 |---|--------|--------|----------|--------------------------|
 | T1 | Command / argument injection | Malicious `--host`, `--resource-group`, `--group`, `--phone` flowing into shell command lines, the root-executed `az run-command` payload, or JSON-RPC strings | **High** | Strict allowlist validation (fail closed) — §3 |
-| T2 | Link-secret disclosure via predictable `/tmp` | Another local user reads or pre-creates `/tmp/slink-*` / `/tmp/scli-*` | **Medium** | Unguessable per-run path, `0600` via `systemd-run --property=UMask=0077`, unlink-after-render — §4 |
+| T2 | Link-secret disclosure via predictable `/tmp` | Another local user reads or pre-creates `/tmp/slink-*` / `/tmp/scli-*` | **Medium** | 128-bit CSPRNG per-run path, `0600` via `systemd-run --property=UMask=0077`, unlink-after-render — §4 |
 | T3 | Root `rm -f` on an attacker-planted symlink | Cleanup deletes/overwrites a file a symlink points at | **Medium** | Unguessable per-run paths so the target name can't be pre-created — §4 |
 | T4 | JSON / argument injection into the daemon | `--phone` / `--group` / `groupId` embedded raw into a JSON-RPC request | **Medium** | `json_escape()` on every interpolated value — §5 |
 | T5 | Unauthenticated daemon reachable off-box | Daemon bound to `0.0.0.0` | **Low** | Bound to `127.0.0.1` only; never `0.0.0.0` — §6. `SIGNAL_SETUP_DAEMON_TCP` is loopback-allowlist validated (fail-closed) |
@@ -59,6 +59,9 @@ downstream command, `az` payload, or JSON-RPC request is built.
 | `--resource-group` | `^[A-Za-z0-9._()-]+$` | Azure resource-group naming charset (allows `()`). Flows into `az vm run-command -g`. |
 | `--group` | `^[A-Za-z0-9._ -]+$` | Self-group display name. Printable, spaces allowed, but no shell/JSON metacharacters. |
 | `--phone` | `^\+[1-9][0-9]{7,14}$` | Strict E.164. Validated only when provided. Flows into `signal-cli -a`, daemon args, and JSON-RPC. |
+| `SIGNAL_SETUP_DAEMON_TCP` | loopback host + `^[1-9][0-9]{0,4}$` port (≤65535) | Loopback-only allowlist; the port flows into `daemon --tcp`, `/dev/tcp` probes, and `nc`. See §6. |
+| `SIGNAL_SETUP_DAEMON_WAIT_ATTEMPTS` | `^[1-9][0-9]{0,3}$` | Positive integer only. Interpolated unquoted into the root-executed remote payload (`seq 1 …`); numeric allowlist closes the self-injection path. |
+| `SIGNAL_SETUP_RPC_TIMEOUT_SECONDS` | `^[1-9][0-9]{0,3}$` | Positive integer only. Interpolated unquoted into the root-executed remote payload (`timeout … nc`); numeric allowlist closes the self-injection path. |
 
 Examples that are **rejected** (fail closed, non-zero exit, no side effects):
 
@@ -107,25 +110,30 @@ secrets and written under a hardened regime:
     the process-level `umask 077` alone cannot reach files written inside the
     unit.
 - **Unguessable, per-run paths.** File names embed a per-invocation
-  `RUN_TOKEN` composed of the epoch seconds, the PID, and two `$RANDOM`
-  draws:
+  `RUN_TOKEN`. It is drawn from `/dev/urandom` as 32 hex characters (**128 bits**
+  of entropy), falling back to an `<epoch>-<pid>-<RANDOM><RANDOM><RANDOM>`
+  composite only if `/dev/urandom` is unreadable:
 
   ```text
-  RUN_TOKEN = "<epoch>-<pid>-<RANDOM><RANDOM>"
+  RUN_TOKEN = "<32 hex chars from /dev/urandom>"   # fallback: "<epoch>-<pid>-<RANDOM>..."
   URI_FILE  = /tmp/slink-<host>-<RUN_TOKEN>.out
   LOG_FILE  = /tmp/scli-<host>-<RUN_TOKEN>.log
   ```
 
-  Because the suffix cannot be predicted, another local user cannot
-  **pre-create** the path as a symlink (defeating the classic `/tmp` symlink
-  attack, T3) nor **poll** a known path to read the secret (T2).
+  Because the suffix cannot be predicted (128-bit CSPRNG space), another local
+  user cannot **pre-create** the path as a symlink (defeating the classic
+  `/tmp` symlink attack, T3) nor **poll** a known path to read the secret (T2).
 - **Trap-based cleanup.** A `trap cleanup_secrets EXIT INT TERM` guarantees the
   URI file is removed on any exit path — normal completion, `Ctrl-C`, or
   termination. The `sgnl://` link secret (`URI_FILE`) is **always** purged. The
-  `-vv` trace log and the local daemon log — which hold identity material but
-  **not** the link secret — are purged on **success** and deliberately
+  `-vv` trace log and the local daemon-launch log — which hold identity material
+  but **not** the link secret — are purged on **success** and deliberately
   **retained (still `0600`) on failure**, with their paths printed, so a
-  hard-to-reproduce link failure inside the ~60s window stays debuggable. For
+  hard-to-reproduce link failure inside the ~60s window stays debuggable. The
+  local daemon itself runs under a transient `systemd-run` unit, so its own
+  runtime output is journald-captured under `$DAEMON_UNIT` (the failure path
+  prints the `journalctl -u` command); `DAEMON_LOG` holds only the launcher
+  message. For
   remote hosts, cleanup also removes the URI (always) and the trace (on success)
   on the VM via `run-command`.
 - **Unlink-after-render.** The URI copy is deleted **immediately after the QR is

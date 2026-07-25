@@ -131,10 +131,6 @@ parse_github_repo_identity() {
   printf '%s/%s\n' "$owner" "$repo"
 }
 
-sanitize_gh_stderr() {
-  sed -E 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' "$1" | tr '\n' ' ' | head -c 500
-}
-
 # Rate-limit-aware retry wrappers. Retry logic is centralised in the shared
 # workflow_gh_retry.sh driver: a genuine rate limit waits for the authoritative
 # reset (adaptive, bounded by the reset window) instead of burning three
