@@ -82,34 +82,25 @@ sanitize_gh_stderr() {
   sed -E 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' "$1" | tr '\n' ' ' | awk '{print substr($0, 1, 500)}'
 }
 
-is_transient_gh_error() {
-  [ -s "$1" ] && grep -Eiq 'HTTP 5[0-9][0-9]|(^|[^0-9])(502|503|504)([^0-9]|$)|rate limit|timed out|timeout|temporar|connection reset|connection refused|TLS handshake|network|server error' "$1"
-}
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GH_RETRY_HELPER="${WORKFLOW_GH_RETRY_HELPER:-${SCRIPT_DIR}/workflow_gh_retry.sh}"
+if [ ! -f "$GH_RETRY_HELPER" ]; then
+  echo '{"ok":false,"reason":"missing_gh_retry_helper"}'
+  echo "ERROR: workflow_pr_scope.sh requires the shared retry helper at $GH_RETRY_HELPER" >&2
+  exit 2
+fi
+# shellcheck source=/dev/null
+. "$GH_RETRY_HELPER"
 
+# Thin wrapper over the shared rate-limit-aware retry driver. A rate-limit is no
+# longer treated as a fast 3x transient: the driver waits for the authoritative
+# reset and, when a REST fallback is provided (read paths), serves the request
+# on the core budget instead of blocking. GH_RETRY_REST_FALLBACK is set by the
+# caller only for READ existence lookups.
 gh_with_retry() {
-  local label="$1" stderr_file output status attempt delay=1
+  local label="$1"
   shift
-  for attempt in 1 2 3; do
-    stderr_file=$(mktemp -t workflow-pr-scope-gh-XXXXXX)
-    if output=$(timeout 60 gh "$@" 2>"$stderr_file"); then
-      rm -f "$stderr_file"
-      printf '%s\n' "$output"
-      return 0
-    else
-      status=$?
-    fi
-    if [ "$attempt" -lt 3 ] && is_transient_gh_error "$stderr_file"; then
-      echo "WARNING: gh $label failed transiently (exit ${status}); retrying (${attempt}/3): $(sanitize_gh_stderr "$stderr_file")" >&2
-      rm -f "$stderr_file"
-      sleep "$delay"
-      delay=$((delay * 2))
-      continue
-    fi
-    echo "ERROR: gh $label failed (exit ${status})" >&2
-    [ ! -s "$stderr_file" ] || echo "gh $label stderr: $(sanitize_gh_stderr "$stderr_file")" >&2
-    rm -f "$stderr_file"
-    return "$status"
-  done
+  _gh_retry_core "$label" "$@"
 }
 
 parse_github_repo_identity() {
@@ -154,16 +145,29 @@ fi
 
 fields="number,title,body,state,createdAt,mergedAt,url,headRefName,baseRefName,headRefOid,headRepositoryOwner,headRepository,isCrossRepository,statusCheckRollup,isDraft,mergeable,reviews"
 raw_json=""
+
+# REST (core-budget) fallbacks for the read paths. When GraphQL is rate-limited
+# but core still has budget, the shared driver serves the existence/inspection
+# lookup via these instead of failing the scope probe closed. Each fallback
+# echoes JSON in the same shape the matching `gh` command would return.
+_scope_rest_list() { gh_pr_exists_rest "$REPO" "$HEAD_REF"; }
+_scope_rest_view_number() { gh_pr_view_rest "$REPO" "$PR_NUMBER"; }
+_scope_rest_view_url() {
+  local n
+  n="$(gh_pr_number_from_url "$PR_URL")" || return 1
+  gh_pr_view_rest "$REPO" "$n"
+}
+
 if [ -n "$PR_URL" ]; then
-  raw_json="$(gh_with_retry "pr view" pr view "$PR_URL" --repo "$REPO" --json "$fields")" \
+  raw_json="$(GH_RETRY_REST_FALLBACK=_scope_rest_view_url gh_with_retry "pr view" pr view "$PR_URL" --repo "$REPO" --json "$fields")" \
     || emit_failure "pr_metadata_unavailable" "unable to inspect explicit PR URL"
   raw_json="$(jq -nc --argjson pr "$raw_json" '[$pr]')"
 elif [ -n "$PR_NUMBER" ]; then
-  raw_json="$(gh_with_retry "pr view" pr view "$PR_NUMBER" --repo "$REPO" --json "$fields")" \
+  raw_json="$(GH_RETRY_REST_FALLBACK=_scope_rest_view_number gh_with_retry "pr view" pr view "$PR_NUMBER" --repo "$REPO" --json "$fields")" \
     || emit_failure "pr_metadata_unavailable" "unable to inspect explicit PR number"
   raw_json="$(jq -nc --argjson pr "$raw_json" '[$pr]')"
 else
-  raw_json="$(gh_with_retry "pr list" pr list --repo "$REPO" --head "$HEAD_REF" --state all --json "$fields")" \
+  raw_json="$(GH_RETRY_REST_FALLBACK=_scope_rest_list gh_with_retry "pr list" pr list --repo "$REPO" --head "$HEAD_REF" --state all --json "$fields")" \
     || emit_failure "pr_metadata_unavailable" "unable to list scoped PR candidates"
   if [ -z "${raw_json//[[:space:]]/}" ]; then
     raw_json="[]"
