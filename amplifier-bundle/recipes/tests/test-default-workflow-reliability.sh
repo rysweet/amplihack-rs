@@ -80,7 +80,9 @@ if ! command -v python3 >/dev/null 2>&1; then
     exit 2
 fi
 
-WORK="$(mktemp -d -t default-workflow-reliability-XXXXXX)"
+WORK="${REPO_ROOT}/../.default-workflow-reliability-test-${$}"
+rm -rf "$WORK"
+mkdir -p "$WORK"
 trap 'rm -rf "${WORK}"' EXIT
 STEP04="${WORK}/step-04-setup-worktree.sh"
 STEP_TDD_CHECKPOINT="${WORK}/checkpoint-after-implementation.sh"
@@ -285,7 +287,7 @@ assert_terminal_status_case() {
         unset IMPLEMENTATION_COMPLETED VERIFICATION_COMPLETED PUBLISH_STATE_REACHED TERMINAL_NO_OP TERMINAL_FAILURE
         unset TERMINAL_STATE TERMINAL_REASON OBSERVED_PHASES ALLOW_NO_OP
         for assignment in "$@"; do
-            export "${assignment}"
+            export "${assignment?}"
         done
         bash "${FINAL_STATUS_TOOL}"
     ) >"${stdout_file}" 2>"${stderr_file}" || status=$?
@@ -1274,7 +1276,8 @@ assert_no_merge_directive_suppresses_auto_merge() {
         "Fix issue 929. Do NOT merge the PR; leave it open." \
         "Please don't merge this, no admin merge." \
         "Implement the change but this is a no-merge task"; do
-        local case_repo="${WORK}/nomerge-probe-$(printf '%s' "${directive}" | tr -c 'A-Za-z0-9' '_' | cut -c1-24)"
+        local case_repo
+        case_repo="${WORK}/nomerge-probe-$(printf '%s' "${directive}" | tr -c 'A-Za-z0-9' '_' | cut -c1-24)"
         setup_nomerge_probe_repo "${case_repo}"
         if ! run_nomerge_probe_case "${case_repo}" "${directive}" \
             "${WORK}/nomerge-dir.out" "${WORK}/nomerge-dir.err"; then

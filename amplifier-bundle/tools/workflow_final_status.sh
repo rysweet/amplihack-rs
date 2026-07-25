@@ -24,7 +24,6 @@ terminal_no_op="false"
 missing_evidence=""
 invalid_evidence=""
 normalized_bool="false"
-terminal_status="${PUBLISH_STATE:-active-pr}"
 final_status_rc=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PR_SCOPE_HELPER="${WORKFLOW_PR_SCOPE_HELPER:-${SCRIPT_DIR}/workflow_pr_scope.sh}"

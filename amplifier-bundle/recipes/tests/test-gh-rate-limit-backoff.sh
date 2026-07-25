@@ -30,7 +30,10 @@ LIB="${REPO_ROOT}/amplifier-bundle/tools/workflow_gh_retry.sh"
 [ -f "$LIB" ] || { echo "HARNESS ERROR: missing $LIB" >&2; exit 2; }
 command -v jq >/dev/null 2>&1 || { echo "HARNESS ERROR: jq is required" >&2; exit 2; }
 
-WORK="$(mktemp -d -t gh-rate-limit-backoff-XXXXXX)"
+WORK="${REPO_ROOT}/.gh-rate-limit-backoff-test-${$}"
+rm -rf "$WORK"
+mkdir -p "$WORK"
+export GH_RETRY_TMPDIR="$WORK"
 cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT
 
@@ -42,7 +45,7 @@ ok() { PASS_COUNT=$((PASS_COUNT + 1)); echo "  PASS: $*"; }
 . "$LIB"
 
 # --- 1. classifier ---------------------------------------------------------
-classify_str() { local f; f="$(mktemp -t classify-XXXXXX)"; printf '%s' "$1" > "$f"; classify_gh_error "$f"; rm -f "$f"; }
+classify_str() { local f="${WORK}/classify-${PASS_COUNT}-${RANDOM}.stderr"; printf '%s' "$1" > "$f"; classify_gh_error "$f"; rm -f "$f"; }
 
 expect_class() {
   local got; got="$(classify_str "$2")"
@@ -64,7 +67,7 @@ expect_class "empty"                ""                                          
 expect_class "unrelated"            "some other unrelated failure"                            "other"
 
 # --- 2. reset epoch from headers ------------------------------------------
-hdr="$(mktemp -t hdr-XXXXXX)"
+hdr="${WORK}/headers.stderr"
 printf 'X-RateLimit-Reset: 2000000000\n' > "$hdr"
 [ "$(gh_reset_epoch_from_stderr "$hdr")" = "2000000000" ] || fail "X-RateLimit-Reset epoch not parsed"
 ok "reset epoch parsed from X-RateLimit-Reset header"

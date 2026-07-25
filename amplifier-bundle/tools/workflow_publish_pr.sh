@@ -88,18 +88,12 @@ finish_publish() {
 load_pr_fields() {
   local pr_json="$1"
   mapfile -t PR_FIELDS < <(
-    printf '%s' "$pr_json" | jq -r '.url // "", ((.number // "") | tostring), .state // "", .mergedAt // "", .headRefName // "", .baseRefName // "", .headRefOid // "", (.headRepositoryOwner.login // .headRepositoryOwner.name // .headRepositoryOwner // ""), (.headRepository.name // ((.headRepository.nameWithOwner // "") | split("/") | .[-1]) // ""), (.isCrossRepository // false | tostring)'
+    printf '%s' "$pr_json" | jq -r '.url // "", ((.number // "") | tostring), .state // "", .mergedAt // ""'
   )
   PR_URL_RESULT="${PR_FIELDS[0]:-}"
   PR_NUMBER_RESULT="${PR_FIELDS[1]:-}"
   PR_STATE="${PR_FIELDS[2]:-}"
   PR_MERGED_AT="${PR_FIELDS[3]:-}"
-  PR_HEAD_REF="${PR_FIELDS[4]:-}"
-  PR_BASE_REF="${PR_FIELDS[5]:-}"
-  PR_HEAD_OID="${PR_FIELDS[6]:-}"
-  PR_HEAD_OWNER="${PR_FIELDS[7]:-}"
-  PR_HEAD_REPO="${PR_FIELDS[8]:-}"
-  PR_IS_CROSS_REPO="${PR_FIELDS[9]:-false}"
 }
 
 resolve_pr_base_ref() {
@@ -195,6 +189,13 @@ sanitize_provider_stderr() {
     "$1" | tr '\n' ' ' | head -c 500
 }
 
+provider_stderr_file() {
+  local prefix="${1:-workflow-provider}"
+  local file="${GH_RETRY_TMPDIR:-.}/.${prefix}-${$}-${RANDOM}.stderr"
+  : >"$file" || return 1
+  printf '%s\n' "$file"
+}
+
 azdo_common_args=()
 configure_azdo_args() {
   local org_url project_name
@@ -228,7 +229,7 @@ az_repos_pr_list_with_retry() {
   local stderr_file output status attempt delay=1 class
   configure_azdo_args
   for attempt in 1 2 3; do
-    stderr_file=$(mktemp -t step16-az-pr-list-XXXXXX)
+    stderr_file="$(provider_stderr_file step16-az-pr-list)" || return 1
     if output=$(timeout 60 az repos pr list "${azdo_common_args[@]}" --status active --source-branch "$CURRENT_BRANCH" --target-branch "$BASE_BRANCH" --output json 2>"$stderr_file"); then
       rm -f "$stderr_file"; printf '%s\n' "$output"; return 0
     else
@@ -259,7 +260,7 @@ az_repos_pr_create_with_retry() {
   local stderr_file output status attempt delay=1 class
   configure_azdo_args
   for attempt in 1 2 3; do
-    stderr_file=$(mktemp -t step16-az-pr-create-XXXXXX)
+    stderr_file="$(provider_stderr_file step16-az-pr-create)" || return 1
     if output=$(timeout 60 az repos pr create "${azdo_common_args[@]}" --source-branch "$CURRENT_BRANCH" --target-branch "$BASE_BRANCH" --title "$PR_TITLE" --description "$PR_BODY" --output json 2>"$stderr_file"); then
       rm -f "$stderr_file"; printf '%s\n' "$output"; return 0
     else
@@ -455,7 +456,7 @@ RECENT_COMMITS=$(git log --oneline --no-decorate "${BASE_REF}..HEAD" -6 2>/dev/n
 # data: quoted expansions, basename matched via a static case, never eval'd.
 is_generated_scope_file() {
   case "$(basename -- "$1")" in
-    Cargo.lock|*.lock|package-lock.json|npm-shrinkwrap.json|yarn.lock|pnpm-lock.yaml|go.sum|Pipfile.lock|poetry.lock|composer.lock|Gemfile.lock|flake.lock) return 0 ;;
+    *.lock|package-lock.json|npm-shrinkwrap.json|pnpm-lock.yaml|go.sum) return 0 ;;
     *) return 1 ;;
   esac
 }

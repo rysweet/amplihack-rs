@@ -1139,7 +1139,7 @@ fn step_03_github_unexpected_create_failure_remains_error() {
         &[
             (
                 "GH_CREATE_OUTPUT",
-                "GraphQL: rate limit exceeded for https://token:ghp_secret123@github.com/example-org/example-repo",
+                "GraphQL: unexpected create failure for https://token:ghp_secret123@github.com/example-org/example-repo",
             ),
             ("GH_CREATE_STATUS", "1"),
         ],
@@ -1153,7 +1153,7 @@ fn step_03_github_unexpected_create_failure_remains_error() {
     );
     assert!(
         stderr.contains("ERROR: GitHub issue creation failed.")
-            && stderr.contains("GraphQL: rate limit exceeded")
+            && stderr.contains("GraphQL: unexpected create failure")
             && stderr.contains("https://<redacted>@github.com/example-org/example-repo"),
         "unexpected GitHub failures must remain visible; stdout:\n{stdout}\nstderr:\n{stderr}"
     );

@@ -237,8 +237,10 @@ gh_pr_number_from_url() {
 #                           consult for reset epoch on a rate-limit.
 #   GH_RETRY_MAX_TRANSIENT  integer            (default: 3) — attempts for the
 #                           generic transient path (preserves legacy behaviour).
-#   GH_RETRY_MAX_RL_WINDOWS integer            (default: 2) — number of reset
-#                           windows to wait through on a persistent rate-limit.
+#   GH_RETRY_MAX_RL_WINDOWS integer            (default: unset) — optional
+#                           safety valve for callers that explicitly want to
+#                           cap reset windows. Unset means no arbitrary cap:
+#                           keep honoring the authoritative reset window.
 #   GH_RETRY_REST_FALLBACK  function name      (default: unset) — when set, a
 #                           READ path: on rate-limit the driver serves the
 #                           request via this REST fallback (core budget) instead
@@ -251,7 +253,7 @@ _gh_retry_core() {
   local label="${1:-gh}"; shift
   local resource="${GH_RETRY_RESOURCE:-graphql}"
   local max_transient="${GH_RETRY_MAX_TRANSIENT:-3}"
-  local max_windows="${GH_RETRY_MAX_RL_WINDOWS:-2}"
+  local max_windows="${GH_RETRY_MAX_RL_WINDOWS:-}"
   local rest_fallback="${GH_RETRY_REST_FALLBACK:-}"
   local attempt=0 rl_windows=0 delay=1
   local stderr_file output status class fb_out
@@ -259,7 +261,8 @@ _gh_retry_core() {
 
   while :; do
     attempt=$((attempt + 1))
-    stderr_file="$(mktemp -t workflow-gh-retry-XXXXXX)"
+    stderr_file="${GH_RETRY_TMPDIR:-.}/.workflow-gh-retry-${$}-${attempt}-${RANDOM}.stderr"
+    : >"$stderr_file" || return 1
     if output="$(timeout 60 gh "$@" 2>"$stderr_file")"; then
       rm -f "$stderr_file"
       printf '%s\n' "$output"
@@ -292,9 +295,13 @@ _gh_retry_core() {
         fi
         # Write path, or core also exhausted: wait for the authoritative reset
         # (bounded by the observed reset window) and retry.
-        if [ "$rl_windows" -lt "$max_windows" ]; then
+        if [ -z "$max_windows" ] || [ "$rl_windows" -lt "$max_windows" ]; then
           rl_windows=$((rl_windows + 1))
-          echo "WARNING: gh ${label} hit a GitHub rate limit (exit ${status}); waiting for reset (window ${rl_windows}/${max_windows}): $(gh_sanitize_stderr "$stderr_file")" >&2
+          if [ -n "$max_windows" ]; then
+            echo "WARNING: gh ${label} hit a GitHub rate limit (exit ${status}); waiting for reset (window ${rl_windows}/${max_windows}): $(gh_sanitize_stderr "$stderr_file")" >&2
+          else
+            echo "WARNING: gh ${label} hit a GitHub rate limit (exit ${status}); waiting for reset (window ${rl_windows}, no arbitrary cap): $(gh_sanitize_stderr "$stderr_file")" >&2
+          fi
           gh_wait_for_rate_limit "$resource" "$stderr_file"
           rm -f "$stderr_file"
           continue
