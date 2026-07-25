@@ -431,3 +431,114 @@ fn malformed_toml_is_error() {
     let err = SignalConfig::from_sources(&HashMap::new(), Some("this = = broken")).unwrap_err();
     assert!(matches!(err, ConfigError::Toml(_)));
 }
+
+#[test]
+fn whitespace_wrapped_endpoint_and_account_are_trimmed() {
+    // File-based secrets / Kubernetes `envFrom` routinely append a trailing
+    // newline. Such values must be trimmed and accepted, not rejected as
+    // malformed.
+    let e = env(&[
+        (ENV_ENDPOINT, "127.0.0.1:7583\n"),
+        (ENV_ACCOUNT, "  +15551230000\t"),
+        (ENV_ALLOWLIST, "+15551230001"),
+    ]);
+    let cfg = SignalConfig::from_sources(&e, None).expect("whitespace-wrapped values are valid");
+    assert_eq!(cfg.endpoint, "127.0.0.1:7583");
+    assert_eq!(cfg.account, "+15551230000");
+}
+
+#[test]
+fn whitespace_wrapped_toml_string_settings_are_trimmed() {
+    let toml = r#"
+        endpoint = "127.0.0.1:7583\n"
+        account  = " +15551230000 "
+        allowlist = ["+15551230001"]
+        reuse_rolling_group = true
+        rolling_group_id = "  grp-rolling==\n"
+    "#;
+    let cfg = SignalConfig::from_sources(&HashMap::new(), Some(toml)).expect("valid toml");
+    assert_eq!(cfg.endpoint, "127.0.0.1:7583");
+    assert_eq!(cfg.account, "+15551230000");
+    assert_eq!(cfg.rolling_group_id.as_deref(), Some("grp-rolling=="));
+}
+
+#[test]
+fn blank_endpoint_env_reports_missing_not_invalid() {
+    // A whitespace-only (effectively empty) required value must surface as a
+    // clear MissingRequired rather than a confusing "invalid endpoint" for a
+    // blank string.
+    for blank in ["", "  ", "\n", "\t"] {
+        let e = env(&[
+            (ENV_ENDPOINT, blank),
+            (ENV_ACCOUNT, "+15551230000"),
+            (ENV_ALLOWLIST, "+15551230001"),
+        ]);
+        let err = SignalConfig::from_sources(&e, None).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::MissingRequired("endpoint")),
+            "blank endpoint {blank:?} should be MissingRequired, got {err:?}"
+        );
+    }
+}
+
+#[test]
+fn blank_account_env_reports_missing_not_invalid() {
+    for blank in ["", "  ", "\n"] {
+        let e = env(&[
+            (ENV_ENDPOINT, "127.0.0.1:7583"),
+            (ENV_ACCOUNT, blank),
+            (ENV_ALLOWLIST, "+15551230001"),
+        ]);
+        let err = SignalConfig::from_sources(&e, None).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::MissingRequired("account")),
+            "blank account {blank:?} should be MissingRequired, got {err:?}"
+        );
+    }
+}
+
+#[test]
+fn empty_own_device_id_env_is_treated_as_unset() {
+    // An empty/whitespace env override must not hard-fail as an unparseable
+    // number; it should be treated as unset (own_device_id is optional).
+    for blank in ["", "  ", "\n"] {
+        let e = env(&[
+            (ENV_ENDPOINT, "127.0.0.1:7583"),
+            (ENV_ACCOUNT, "+15551230000"),
+            (ENV_ALLOWLIST, "+15551230001"),
+            (ENV_OWN_DEVICE_ID, blank),
+        ]);
+        let cfg = SignalConfig::from_sources(&e, None).unwrap_or_else(|err| {
+            panic!("blank own_device_id {blank:?} should be unset, got {err:?}")
+        });
+        assert_eq!(cfg.own_device_id, None, "blank {blank:?} should yield None");
+    }
+}
+
+#[test]
+fn empty_own_device_id_env_falls_through_to_toml() {
+    // An empty env override is "unset", so a valid TOML value still applies.
+    let toml = r#"
+        own_device_id = 3
+    "#;
+    let e = env(&[
+        (ENV_ENDPOINT, "127.0.0.1:7583"),
+        (ENV_ACCOUNT, "+15551230000"),
+        (ENV_ALLOWLIST, "+15551230001"),
+        (ENV_OWN_DEVICE_ID, ""),
+    ]);
+    let cfg = SignalConfig::from_sources(&e, Some(toml)).expect("valid config");
+    assert_eq!(cfg.own_device_id, Some(3));
+}
+
+#[test]
+fn whitespace_wrapped_own_device_id_env_is_parsed() {
+    let e = env(&[
+        (ENV_ENDPOINT, "127.0.0.1:7583"),
+        (ENV_ACCOUNT, "+15551230000"),
+        (ENV_ALLOWLIST, "+15551230001"),
+        (ENV_OWN_DEVICE_ID, "  3\n"),
+    ]);
+    let cfg = SignalConfig::from_sources(&e, None).expect("valid config");
+    assert_eq!(cfg.own_device_id, Some(3));
+}

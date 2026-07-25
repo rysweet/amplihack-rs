@@ -4,7 +4,28 @@ use super::*;
 
 type TomlTable<'a> = Option<&'a toml::value::Table>;
 
-/// Resolve `env > TOML` for a string-valued setting.
+/// Normalize a raw string setting: trim surrounding whitespace and map a blank
+/// result to `None`.
+///
+/// File-based secrets and Kubernetes `envFrom` injection routinely append a
+/// trailing newline, so an operator's `127.0.0.1:7583` can arrive as
+/// `"127.0.0.1:7583\n"`; trimming keeps such values usable. A value that is
+/// *only* whitespace is treated as unset (`None`) rather than a malformed
+/// setting, so it surfaces as a clear `MissingRequired` error instead of a
+/// confusing "invalid endpoint" / "invalid E.164" for an effectively-blank
+/// value. Shared by every string/number resolver so trim + empty handling stay
+/// consistent across settings and cannot drift apart again.
+pub(super) fn normalize(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// Resolve `env > TOML` for a string-valued setting, applying [`normalize`] to
+/// whichever source supplies the value.
 pub(super) fn get_str(
     env: &HashMap<String, String>,
     toml_table: TomlTable<'_>,
@@ -12,11 +33,11 @@ pub(super) fn get_str(
     toml_key: &'static str,
 ) -> Result<Option<String>, ConfigError> {
     if let Some(v) = env.get(env_key) {
-        return Ok(Some(v.clone()));
+        return Ok(normalize(v));
     }
     match toml_table.and_then(|t| t.get(toml_key)) {
         None => Ok(None),
-        Some(toml::Value::String(s)) => Ok(Some(s.clone())),
+        Some(toml::Value::String(s)) => Ok(normalize(s)),
         Some(other) => Err(ConfigError::Toml(format!(
             "invalid setting {toml_key}: expected string, got {other}"
         ))),
@@ -58,9 +79,12 @@ pub(super) fn resolve_own_device_id(
 ) -> Result<Option<u32>, ConfigError> {
     // Track which source supplied the value so any error names the setting the
     // operator actually edited (the env var vs the TOML key) rather than always
-    // blaming the env var.
-    let (source_key, raw) = if let Some(raw) = env.get(ENV_OWN_DEVICE_ID) {
-        (ENV_OWN_DEVICE_ID, raw.clone())
+    // blaming the env var. An empty/whitespace-only env value is treated as
+    // unset (via `normalize`) so it falls through to TOML instead of hard-
+    // failing as an unparseable number.
+    let (source_key, raw) = if let Some(raw) = env.get(ENV_OWN_DEVICE_ID).and_then(|v| normalize(v))
+    {
+        (ENV_OWN_DEVICE_ID, raw)
     } else {
         match toml_table.and_then(|t| t.get("own_device_id")) {
             None => return Ok(None),
@@ -109,9 +133,9 @@ pub(super) fn resolve_rolling_group_id(
     toml_table: TomlTable<'_>,
     reuse_rolling_group: bool,
 ) -> Result<Option<String>, ConfigError> {
-    let id = get_str(env, toml_table, ENV_ROLLING_GROUP_ID, "rolling_group_id")?
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty());
+    // `get_str` already trims and maps blank to `None`, so a whitespace-only id
+    // resolves to `None` here and correctly fails the reuse precondition below.
+    let id = get_str(env, toml_table, ENV_ROLLING_GROUP_ID, "rolling_group_id")?;
     if reuse_rolling_group && id.is_none() {
         return Err(ConfigError::MissingRequired("rolling_group_id"));
     }

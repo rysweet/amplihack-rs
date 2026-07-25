@@ -32,7 +32,7 @@ pub enum ConfigError {
     #[error("missing required Signal setting: {0}")]
     MissingRequired(&'static str),
     /// A phone number was not valid E.164 (`+` then 1..=15 digits).
-    #[error("invalid E.164 number: {0}")]
+    #[error("invalid E.164 number")]
     InvalidE164(String),
     /// The endpoint was not a valid `host:port`.
     #[error("invalid endpoint (want host:port): {0}")]
