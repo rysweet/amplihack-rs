@@ -40,6 +40,9 @@ pub enum ConfigError {
     /// A numeric setting failed to parse.
     #[error("invalid numeric setting {key}: {value}")]
     InvalidNumber { key: &'static str, value: String },
+    /// A boolean setting failed to parse.
+    #[error("invalid boolean setting {key}: {value}")]
+    InvalidBool { key: &'static str, value: String },
     /// The TOML config file could not be parsed.
     #[error("TOML parse error: {0}")]
     Toml(String),

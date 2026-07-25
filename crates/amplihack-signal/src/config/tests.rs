@@ -359,7 +359,10 @@ fn unknown_reuse_rolling_group_env_value_is_error() {
         (ENV_REUSE_ROLLING_GROUP, "treu"),
     ]);
     let err = SignalConfig::from_sources(&e, None).unwrap_err();
-    assert!(matches!(err, ConfigError::Toml(_)));
+    assert!(
+        matches!(err, ConfigError::InvalidBool { key, .. } if key == ENV_REUSE_ROLLING_GROUP),
+        "expected env-keyed InvalidBool, got {err:?}"
+    );
 }
 
 #[test]

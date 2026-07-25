@@ -261,8 +261,9 @@ fn parse_bool_env(key: &'static str, v: &str) -> Result<bool, ConfigError> {
     match v.trim().to_ascii_lowercase().as_str() {
         "1" | "true" | "yes" | "on" => Ok(true),
         "0" | "false" | "no" | "off" | "" => Ok(false),
-        _ => Err(ConfigError::Toml(format!(
-            "invalid boolean setting {key}: {v}"
-        ))),
+        _ => Err(ConfigError::InvalidBool {
+            key,
+            value: v.to_string(),
+        }),
     }
 }
