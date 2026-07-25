@@ -126,10 +126,14 @@ secrets and written under a hardened regime:
 - **Trap-based cleanup.** A `trap cleanup_secrets EXIT INT TERM` guarantees the
   URI file is removed on any exit path — normal completion, `Ctrl-C`, or
   termination. The `sgnl://` link secret (`URI_FILE`) is **always** purged. The
-  `-vv` trace log and the local daemon log — which hold identity material but
-  **not** the link secret — are purged on **success** and deliberately
+  `-vv` trace log and the local daemon-launch log — which hold identity material
+  but **not** the link secret — are purged on **success** and deliberately
   **retained (still `0600`) on failure**, with their paths printed, so a
-  hard-to-reproduce link failure inside the ~60s window stays debuggable. For
+  hard-to-reproduce link failure inside the ~60s window stays debuggable. The
+  local daemon itself runs under a transient `systemd-run` unit, so its own
+  runtime output is journald-captured under `$DAEMON_UNIT` (the failure path
+  prints the `journalctl -u` command); `DAEMON_LOG` holds only the launcher
+  message. For
   remote hosts, cleanup also removes the URI (always) and the trace (on success)
   on the VM via `run-command`.
 - **Unlink-after-render.** The URI copy is deleted **immediately after the QR is

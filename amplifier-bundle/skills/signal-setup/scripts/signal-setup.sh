@@ -428,7 +428,6 @@ local_daemon_group_posttest() {
     # owner-only isolation for any state the daemon writes. systemd-run's own
     # launch output is captured to DAEMON_LOG for the failure diagnostic below;
     # the daemon's runtime output goes to journald under $DAEMON_UNIT.
-    systemctl --user reset-failed "$DAEMON_UNIT" 2>/dev/null
     sudo systemctl reset-failed "$DAEMON_UNIT" 2>/dev/null
     # SC2024: the redirect is intentionally the caller's, not root's — DAEMON_LOG
     # captures systemd-run's launch message as an owner-only (umask 077) file;
@@ -448,8 +447,13 @@ local_daemon_group_posttest() {
   daemon_up \
     || { warn "  Daemon did not come up on $DAEMON_TCP.";
          if [ -s "$DAEMON_LOG" ]; then
-           warn "  Last daemon-log lines ($DAEMON_LOG):"; tail -n 20 "$DAEMON_LOG" >&2
+           warn "  systemd-run launch log ($DAEMON_LOG):"; tail -n 20 "$DAEMON_LOG" >&2
          fi
+         # The daemon runs under a transient systemd unit, so its own runtime
+         # output is journald-captured (not in DAEMON_LOG). Point the operator at
+         # it so a link/daemon failure inside the ~60s window stays debuggable.
+         warn "  Daemon runtime output is journald-captured; inspect with:";
+         warn "    sudo journalctl -u $DAEMON_UNIT -n 50 --no-pager";
          return 1; }
   ok "  Daemon reachable on $DAEMON_TCP"
   command -v nc >/dev/null 2>&1 || { warn "  'nc' not available; cannot run JSON-RPC self-group post-test."; return 1; }
