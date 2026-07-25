@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::process::Stdio;
+use std::time::Instant;
 
 use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
@@ -12,6 +13,7 @@ use tokio::process::Command;
 use tracing::{debug, info, warn};
 
 use crate::azlin_parse::{parse_azlin_list_json, parse_azlin_list_text};
+use crate::backoff::BackoffPolicy;
 use crate::error::{ErrorContext, RemoteError};
 use crate::redact::redact_sensitive;
 
@@ -278,8 +280,10 @@ impl Orchestrator {
             cmd_args.extend(extra.clone());
         }
 
-        let max_retries = 3u32;
-        for attempt in 0..max_retries {
+        let policy = BackoffPolicy::provisioning_default();
+        let start = Instant::now();
+        let mut attempt = 0u32;
+        loop {
             let output = tokio::time::timeout(
                 std::time::Duration::from_secs(600),
                 Command::new("azlin")
@@ -290,7 +294,7 @@ impl Orchestrator {
             )
             .await;
 
-            match output {
+            let retry_reason: String = match output {
                 Ok(Ok(o)) if o.status.success() => {
                     info!(vm = %vm_name, "VM provisioned");
                     let mut tags = HashMap::new();
@@ -309,95 +313,52 @@ impl Orchestrator {
                 Ok(Ok(o)) => {
                     let stderr = String::from_utf8_lossy(&o.stderr);
                     let lower = stderr.to_lowercase();
+                    // Quota/limit failures are not transient — fail loudly now.
                     if lower.contains("quota") || lower.contains("limit") {
                         return Err(RemoteError::provisioning_ctx(
-                            format!(
-                                "Azure quota exceeded: \
-                                     {stderr}"
-                            ),
+                            format!("Azure quota exceeded: {stderr}"),
                             ErrorContext::new().insert("vm_name", &vm_name),
                         ));
                     }
-                    if attempt < max_retries - 1 {
-                        warn!(attempt = attempt + 1, "provisioning failed, retrying");
-                        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                        continue;
-                    }
+                    format!("provisioning failed: {stderr}")
+                }
+                Ok(Err(e)) => format!("provisioning command error: {e}"),
+                Err(_) => "provisioning timed out".to_string(),
+            };
+
+            match policy.next_backoff(attempt, start.elapsed()) {
+                Some(delay) => {
+                    warn!(
+                        attempt = attempt + 1,
+                        delay_ms = delay.as_millis() as u64,
+                        reason = %redact_sensitive(&retry_reason),
+                        "provisioning failed, backing off before retry"
+                    );
+                    // Cancellation-safe: dropping this future aborts the sleep.
+                    tokio::time::sleep(delay).await;
+                    attempt += 1;
+                }
+                None => {
                     return Err(RemoteError::provisioning_ctx(
                         format!(
-                            "Failed to provision VM: \
-                                 {stderr}"
+                            "Failed to provision VM within retry budget \
+                             ({}s, {} attempts): {}",
+                            policy.budget().as_secs(),
+                            attempt + 1,
+                            retry_reason
                         ),
-                        ErrorContext::new().insert("vm_name", &vm_name),
-                    ));
-                }
-                Ok(Err(e)) => {
-                    if attempt < max_retries - 1 {
-                        warn!(
-                            error = %e,
-                            "provisioning error, retrying"
-                        );
-                        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                        continue;
-                    }
-                    return Err(RemoteError::provisioning(format!(
-                        "Provisioning command failed: {e}"
-                    )));
-                }
-                Err(_) => {
-                    if attempt < max_retries - 1 {
-                        warn!("provisioning timeout, retrying");
-                        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                        continue;
-                    }
-                    return Err(RemoteError::provisioning_ctx(
-                        format!(
-                            "VM provisioning timed out \
-                                 after {max_retries} attempts"
-                        ),
-                        ErrorContext::new().insert("vm_name", &vm_name),
+                        ErrorContext::new()
+                            .insert("vm_name", &vm_name)
+                            .insert("retry_budget_secs", policy.budget().as_secs().to_string())
+                            .insert("attempts", (attempt + 1).to_string()),
                     ));
                 }
             }
         }
-
-        Err(RemoteError::provisioning_ctx(
-            format!(
-                "Failed to provision VM after \
-                 {max_retries} attempts"
-            ),
-            ErrorContext::new().insert("vm_name", &vm_name),
-        ))
     }
 
     async fn get_vm_by_name(&self, vm_name: &str) -> Result<VM, RemoteError> {
-        let output = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            Command::new("azlin")
-                .arg("list")
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output(),
-        )
-        .await;
-
-        if let Ok(Ok(o)) = output {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            if stdout.contains(vm_name) {
-                return Ok(VM {
-                    name: vm_name.to_string(),
-                    size: "unknown".into(),
-                    region: "unknown".into(),
-                    created_at: None,
-                    tags: None,
-                });
-            }
-        }
-
-        Err(RemoteError::provisioning_ctx(
-            format!("VM not found: {vm_name}"),
-            ErrorContext::new().insert("vm_name", vm_name),
-        ))
+        crate::vm_lookup::get_vm_by_name(vm_name).await
     }
 }
 
