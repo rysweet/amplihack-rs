@@ -28,12 +28,12 @@ terminal_status="${PUBLISH_STATE:-active-pr}"
 final_status_rc=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PR_SCOPE_HELPER="${WORKFLOW_PR_SCOPE_HELPER:-${SCRIPT_DIR}/workflow_pr_scope.sh}"
+# workflow_pr_scope.sh validates headRefName, baseRefName, headRefOid,
+# isCrossRepository, expected_pr_title_prefix, and created_after.
 GH_RETRY_HELPER="${WORKFLOW_GH_RETRY_HELPER:-${SCRIPT_DIR}/workflow_gh_retry.sh}"
 [ -f "$GH_RETRY_HELPER" ] || { echo "ERROR: workflow_final_status.sh requires the shared retry helper at $GH_RETRY_HELPER" >&2; exit 2; }
 # shellcheck source=/dev/null
 . "$GH_RETRY_HELPER"
-# workflow_pr_scope.sh validates headRefName, baseRefName, headRefOid,
-# isCrossRepository, expected_pr_title_prefix, and created_after.
 
 sanitize_gh_stderr() {
   sed -E 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' "$1" | tr '\n' ' ' | head -c 500
