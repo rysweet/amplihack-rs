@@ -251,11 +251,7 @@ steps:
       ISSUE_TITLE="${TASK_DESC//$'\n'/ }"; ISSUE_TITLE="${ISSUE_TITLE//$'\r'/ }"; ISSUE_TITLE="${ISSUE_TITLE:0:200}"
       SANITIZED_ISSUE_REQS="$(printf '%s\n' "$FINAL_REQUIREMENTS" | awk '/^ℹ NODE_OPTIONS=--max-old-space-size=[0-9]+ \(saved preference\)(\. To change: .+)?$/ { next } { print }')"  # sanitize only launcher "ℹ NODE_OPTIONS=--max-old-space-size=N (saved preference). To change: ~/.amplihack/config" notices; preserve legitimate NODE_OPTIONS task text such as "Ensure the workflow rejects unsafe NODE_OPTIONS values"
       HOST_TYPE="${REMOTE_HOST_TYPE:-other}"; EXISTING_ISSUE_NUMBER="${ISSUE_NUMBER:-}"
-      case "$HOST_TYPE" in
-        github|azdo|other) ;;
-        azure-devops) HOST_TYPE="azdo" ;;
-        *) echo "WARN: Unexpected REMOTE_HOST_TYPE — using local tracking" >&2; HOST_TYPE="other" ;;
-      esac
+      case "$HOST_TYPE" in github|azdo|other) ;; azure-devops) HOST_TYPE="azdo" ;; *) echo "WARN: Unexpected REMOTE_HOST_TYPE — using local tracking" >&2; HOST_TYPE="other" ;; esac
       derive_local_tracking_id() {
         if [[ "$EXISTING_ISSUE_NUMBER" =~ ^#?([0-9]+)$ ]]; then
           printf 'local-issue-%s' "${BASH_REMATCH[1]}"
@@ -285,46 +281,24 @@ steps:
       if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then echo "[skip] not a git repo — using local tracking" >&2; emit_local_metadata; exit 0; fi
       case "$HOST_TYPE" in
       github)
-        if [ -n "$REF_ISSUE_NUM" ]; then
-          EXISTING_URL=$(timeout 60 gh issue view "$REF_ISSUE_NUM" --json url --jq '.url // ""' 2>/dev/null || echo '')
-          [ -n "$EXISTING_URL" ] && { printf '%s\n' "$EXISTING_URL"; exit 0; }
-        fi
+        if [ -n "$REF_ISSUE_NUM" ]; then EXISTING_URL=$(timeout 60 gh issue view "$REF_ISSUE_NUM" --json url --jq '.url // ""' 2>/dev/null || echo ''); [ -n "$EXISTING_URL" ] && { printf '%s\n' "$EXISTING_URL"; exit 0; }; fi
         SEARCH_Q="${ISSUE_TITLE:0:100}"
-        if [ -n "$SEARCH_Q" ]; then
-          FOUND_URL=$(timeout 60 gh issue list --state open --search "$SEARCH_Q" --json url --jq '.[0].url // ""' 2>/dev/null || echo '')
-          [ -n "$FOUND_URL" ] && { printf '%s\n' "$FOUND_URL"; exit 0; }
-        fi
+        if [ -n "$SEARCH_Q" ]; then FOUND_URL=$(timeout 60 gh issue list --state open --search "$SEARCH_Q" --json url --jq '.[0].url // ""' 2>/dev/null || echo ''); [ -n "$FOUND_URL" ] && { printf '%s\n' "$FOUND_URL"; exit 0; }; fi
         ISSUE_BODY=$(printf '## Task Description\n%s\n\n## Requirements\n%s\n\n## Acceptance Criteria\n- [ ] All explicit requirements met\n- [ ] Tests passing\n- [ ] Philosophy compliant\n- [ ] Documentation updated\n\n## Classification\nGenerated via default-workflow recipe\n' "$TASK_DESC" "$SANITIZED_ISSUE_REQS")
         LABEL_NAME="workflow:default"
         timeout 30 gh label create "$LABEL_NAME" --color "0366d6" --description "Created by default-workflow recipe" 2>/dev/null || true
         gh_create_issue() { timeout 60 gh issue create --title "$ISSUE_TITLE" --body "$ISSUE_BODY" "$@" 2>&1; }
         try_gh_create() { GH_ISSUE_RC=0; GH_ISSUE_OUTPUT=$(gh_create_issue --label "$LABEL_NAME") || GH_ISSUE_OUTPUT=$(gh_create_issue) || GH_ISSUE_RC=$?; }
-        # Rate-limit-aware issue creation. A temporarily-exhausted GraphQL quota
-        # ("API rate limit already exceeded") must not abort the whole run. When
-        # the failure is a rate limit (and not a permanent auth error), wait for
-        # the AUTHORITATIVE reset — read via `gh api rate_limit`, which does not
-        # itself consume the core/graphql budget — and retry. The wait is
-        # adaptive (bounded by the observed reset window, not a fixed cap), up to
-        # two reset windows. A clear error is only surfaced if still failing.
+        # Rate-limit-aware issue creation: a temporarily-exhausted GraphQL quota must not abort the run.
+        # On a rate limit (not a permanent auth error) wait for the AUTHORITATIVE reset read via
+        # `gh api rate_limit` (which does not itself consume the core/graphql budget) — adaptive, bounded
+        # by the observed reset window (not a fixed cap), up to two windows — then retry; a clear error is
+        # only surfaced if still failing. Auth errors (401 / Bad credentials) are never retried.
         _issue_is_rate_limit() { printf '%s' "$1" | grep -Eiq 'api rate limit|rate limit already exceeded|secondary rate limit|abuse detection|(^|[^0-9])429([^0-9]|$)|retry-after|x-ratelimit-reset|rate limit'; }
         _issue_is_auth() { printf '%s' "$1" | grep -Eiq 'bad credentials|HTTP 401|(^|[^0-9])401([^0-9]|$)|requires authentication|not logged in'; }
-        _issue_wait_for_reset() {
-          local now epoch waitfor floor=5 buffer=3
-          now=$(date +%s)
-          epoch=$(timeout 30 gh api rate_limit 2>/dev/null | jq -r '.resources.graphql.reset // empty' 2>/dev/null || true)
-          case "$epoch" in ''|*[!0-9]*) epoch="" ;; esac
-          if [ -z "$epoch" ]; then waitfor=$floor; else waitfor=$((epoch - now + buffer)); [ "$waitfor" -lt "$floor" ] && waitfor=$floor; fi
-          echo "WARNING: GitHub GraphQL rate limit hit during issue creation; waiting ${waitfor}s for authoritative reset (adaptive, bounded by reset window)." >&2
-          sleep "$waitfor"
-        }
-        try_gh_create
-        RL_WINDOWS=0
-        while [ "$GH_ISSUE_RC" -ne 0 ] && _issue_is_rate_limit "$GH_ISSUE_OUTPUT" && ! _issue_is_auth "$GH_ISSUE_OUTPUT" && [ "$RL_WINDOWS" -lt 2 ]; do
-          RL_WINDOWS=$((RL_WINDOWS + 1))
-          echo "WARNING: gh issue create hit a GitHub rate limit (reset window ${RL_WINDOWS}/2); waiting for reset before retrying." >&2
-          _issue_wait_for_reset
-          try_gh_create
-        done
+        _issue_wait_for_reset() { local now epoch waitfor floor=5 buffer=3; now=$(date +%s); epoch=$(timeout 30 gh api rate_limit 2>/dev/null | jq -r '.resources.graphql.reset // empty' 2>/dev/null || true); case "$epoch" in ''|*[!0-9]*) epoch="" ;; esac; if [ -z "$epoch" ]; then waitfor=$floor; else waitfor=$((epoch - now + buffer)); [ "$waitfor" -lt "$floor" ] && waitfor=$floor; fi; echo "WARNING: GitHub GraphQL rate limit hit during issue creation; waiting ${waitfor}s for authoritative reset (adaptive, bounded by reset window)." >&2; sleep "$waitfor"; }
+        try_gh_create; RL_WINDOWS=0
+        while [ "$GH_ISSUE_RC" -ne 0 ] && _issue_is_rate_limit "$GH_ISSUE_OUTPUT" && ! _issue_is_auth "$GH_ISSUE_OUTPUT" && [ "$RL_WINDOWS" -lt 2 ]; do RL_WINDOWS=$((RL_WINDOWS + 1)); echo "WARNING: gh issue create hit a GitHub rate limit (reset window ${RL_WINDOWS}/2); waiting for reset before retrying." >&2; _issue_wait_for_reset; try_gh_create; done
         [ "$GH_ISSUE_RC" -eq 0 ] && { printf '%s\n' "$GH_ISSUE_OUTPUT"; exit 0; }
         if [[ "$GH_ISSUE_OUTPUT" =~ Could\ not\ resolve\ to\ a\ Repository|[Rr]epository\ not\ found|[Rr]epository.*inaccessible|HTTP\ 404 ]]; then
           echo "WARNING: GitHub issue creation failed because the repository could not be resolved or accessed; using local tracking metadata instead." >&2
