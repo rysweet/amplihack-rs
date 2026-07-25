@@ -409,6 +409,7 @@ else
 fi
 
 reset_logs
+# shellcheck disable=SC2016  # literal $(...) is the injection payload under test — must NOT expand
 SIGNAL_SETUP_RPC_TIMEOUT_SECONDS='$(touch /tmp/pwn)' MOCK_LINKED_NUMBER="+15551234567" \
   run_ss --host local --phone +15551234567 --no-daemon -y
 if [[ "$RC" -ne 0 ]] && echo "$OUT" | grep -qi "invalid"; then
