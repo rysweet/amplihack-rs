@@ -19,6 +19,12 @@ pub const ENV_REUSE_ROLLING_GROUP: &str = "AMPLIHACK_SIGNAL_REUSE_ROLLING_GROUP"
 pub const ENV_ROLLING_GROUP_ID: &str = "AMPLIHACK_SIGNAL_ROLLING_GROUP_ID";
 pub const ENV_CONFIG_PATH: &str = "AMPLIHACK_SIGNAL_CONFIG";
 
+/// Diagnostic label for `own_device_id` when its value came from the TOML file
+/// rather than the environment variable. Used so an `InvalidNumber` error names
+/// the config key the operator actually edited instead of always blaming the
+/// env var.
+pub(crate) const TOML_OWN_DEVICE_ID: &str = "own_device_id";
+
 /// Errors from configuration resolution.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -77,7 +83,9 @@ impl SignalConfig {
     /// `amplihack signal setup` has written the default config, the existing
     /// per-session SessionStart integration picks it up with no further wiring.
     pub fn load() -> Result<Self, ConfigError> {
-        let env: HashMap<String, String> = std::env::vars().collect();
+        let env: HashMap<String, String> = std::env::vars_os()
+            .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
+            .collect();
         let default_file = default_config_path_in(&home_dir());
         let toml_str = resolve_config_source(&env, &default_file)?;
         Self::from_sources(&env, toml_str.as_deref())
@@ -102,11 +110,11 @@ impl SignalConfig {
         };
         let toml_table = toml_val.as_ref().and_then(toml::Value::as_table);
 
-        let endpoint = resolver::get_str(env, toml_table, ENV_ENDPOINT, "endpoint")
+        let endpoint = resolver::get_str(env, toml_table, ENV_ENDPOINT, "endpoint")?
             .ok_or(ConfigError::MissingRequired("endpoint"))?;
         resolver::validate_endpoint(&endpoint)?;
 
-        let account = resolver::get_str(env, toml_table, ENV_ACCOUNT, "account")
+        let account = resolver::get_str(env, toml_table, ENV_ACCOUNT, "account")?
             .ok_or(ConfigError::MissingRequired("account"))?;
         resolver::validate_e164(&account)?;
 
@@ -165,14 +173,14 @@ pub fn resolve_config_source(
         })?;
         return Ok(Some(contents));
     }
-    if default_file.exists() {
-        let contents = std::fs::read_to_string(default_file).map_err(|source| ConfigError::Io {
+    match std::fs::read_to_string(default_file) {
+        Ok(contents) => Ok(Some(contents)),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(ConfigError::Io {
             path: default_file.display().to_string(),
             source,
-        })?;
-        return Ok(Some(contents));
+        }),
     }
-    Ok(None)
 }
 
 #[cfg(test)]

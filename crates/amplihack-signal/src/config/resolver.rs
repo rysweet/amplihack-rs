@@ -9,14 +9,18 @@ pub(super) fn get_str(
     env: &HashMap<String, String>,
     toml_table: TomlTable<'_>,
     env_key: &str,
-    toml_key: &str,
-) -> Option<String> {
-    env.get(env_key).cloned().or_else(|| {
-        toml_table
-            .and_then(|t| t.get(toml_key))
-            .and_then(toml::Value::as_str)
-            .map(str::to_string)
-    })
+    toml_key: &'static str,
+) -> Result<Option<String>, ConfigError> {
+    if let Some(v) = env.get(env_key) {
+        return Ok(Some(v.clone()));
+    }
+    match toml_table.and_then(|t| t.get(toml_key)) {
+        None => Ok(None),
+        Some(toml::Value::String(s)) => Ok(Some(s.clone())),
+        Some(other) => Err(ConfigError::Toml(format!(
+            "invalid setting {toml_key}: expected string, got {other}"
+        ))),
+    }
 }
 
 pub(super) fn resolve_allowlist(
@@ -52,23 +56,33 @@ pub(super) fn resolve_own_device_id(
     env: &HashMap<String, String>,
     toml_table: TomlTable<'_>,
 ) -> Result<Option<u32>, ConfigError> {
-    let Some(raw) = get_str(env, toml_table, ENV_OWN_DEVICE_ID, "own_device_id").or_else(|| {
-        toml_table
-            .and_then(|t| t.get("own_device_id"))
-            .map(toml::Value::to_string)
-    }) else {
-        return Ok(None);
+    // Track which source supplied the value so any error names the setting the
+    // operator actually edited (the env var vs the TOML key) rather than always
+    // blaming the env var.
+    let (source_key, raw) = if let Some(raw) = env.get(ENV_OWN_DEVICE_ID) {
+        (ENV_OWN_DEVICE_ID, raw.clone())
+    } else {
+        match toml_table.and_then(|t| t.get("own_device_id")) {
+            None => return Ok(None),
+            Some(toml::Value::Integer(value)) => (TOML_OWN_DEVICE_ID, value.to_string()),
+            Some(toml::Value::String(value)) => (TOML_OWN_DEVICE_ID, value.clone()),
+            Some(other) => {
+                return Err(ConfigError::Toml(format!(
+                    "invalid setting own_device_id: expected integer, got {other}"
+                )));
+            }
+        }
     };
     let value = raw
         .trim()
         .parse::<u32>()
         .map_err(|_| ConfigError::InvalidNumber {
-            key: ENV_OWN_DEVICE_ID,
+            key: source_key,
             value: raw.clone(),
         })?;
     if value < 2 {
         return Err(ConfigError::InvalidNumber {
-            key: ENV_OWN_DEVICE_ID,
+            key: source_key,
             value: value.to_string(),
         });
     }
@@ -95,7 +109,7 @@ pub(super) fn resolve_rolling_group_id(
     toml_table: TomlTable<'_>,
     reuse_rolling_group: bool,
 ) -> Result<Option<String>, ConfigError> {
-    let id = get_str(env, toml_table, ENV_ROLLING_GROUP_ID, "rolling_group_id")
+    let id = get_str(env, toml_table, ENV_ROLLING_GROUP_ID, "rolling_group_id")?
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty());
     if reuse_rolling_group && id.is_none() {

@@ -60,8 +60,25 @@ fn toml_own_device_id_below_two_is_error() {
     "#;
     let err = SignalConfig::from_sources(&HashMap::new(), Some(toml)).unwrap_err();
     assert!(
-        matches!(err, ConfigError::InvalidNumber { key, .. } if key == ENV_OWN_DEVICE_ID),
-        "expected InvalidNumber for own_device_id, got {err:?}"
+        matches!(err, ConfigError::InvalidNumber { key, .. } if key == TOML_OWN_DEVICE_ID),
+        "expected InvalidNumber keyed to the TOML source for own_device_id, got {err:?}"
+    );
+}
+
+#[test]
+fn non_integer_toml_own_device_id_is_type_error() {
+    // A present-but-wrong-type own_device_id must report a TOML type error, not
+    // masquerade as a numeric-parse failure.
+    let toml = r#"
+        endpoint = "127.0.0.1:7583"
+        account  = "+15551230000"
+        allowlist = ["+15551230001"]
+        own_device_id = true
+    "#;
+    let err = SignalConfig::from_sources(&HashMap::new(), Some(toml)).unwrap_err();
+    assert!(
+        matches!(err, ConfigError::Toml(_)),
+        "expected Toml type error for non-integer own_device_id, got {err:?}"
     );
 }
 
