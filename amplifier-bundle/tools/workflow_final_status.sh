@@ -34,10 +34,6 @@ GH_RETRY_HELPER="${WORKFLOW_GH_RETRY_HELPER:-${SCRIPT_DIR}/workflow_gh_retry.sh}
 # shellcheck source=/dev/null
 . "$GH_RETRY_HELPER"
 
-sanitize_gh_stderr() {
-  sed -E 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' "$1" | tr '\n' ' ' | head -c 500
-}
-
 # Best-effort final PR status read. This is a display-only read that the caller
 # already tolerates failing (`|| true`); it must NOT stall the workflow's final
 # reporting step waiting on a rate-limit reset (which can be up to an hour out).
