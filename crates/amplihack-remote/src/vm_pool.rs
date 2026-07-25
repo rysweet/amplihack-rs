@@ -187,7 +187,14 @@ impl VMPoolManager {
                     vm = %entry.vm.name,
                     "session released"
                 );
-                let _ = self.save_state();
+                if let Err(e) = self.save_state() {
+                    warn!(
+                        session = session_id,
+                        error = %e,
+                        "failed to persist pool state after releasing session; \
+                         in-memory and on-disk state may diverge"
+                    );
+                }
                 return;
             }
         }
@@ -243,7 +250,14 @@ impl VMPoolManager {
 
         if !removed.is_empty() {
             info!(count = removed.len(), "cleaned up idle VMs");
-            let _ = self.save_state();
+            if let Err(e) = self.save_state() {
+                warn!(
+                    count = removed.len(),
+                    error = %e,
+                    "failed to persist pool state after idle-VM cleanup; \
+                     in-memory and on-disk state may diverge"
+                );
+            }
         }
 
         removed

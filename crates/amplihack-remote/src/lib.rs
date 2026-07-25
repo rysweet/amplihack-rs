@@ -26,6 +26,7 @@ pub mod executor;
 pub mod integrator;
 pub mod orchestrator;
 pub mod packager;
+mod redact;
 pub mod session;
 pub mod state_io;
 pub mod state_lock;

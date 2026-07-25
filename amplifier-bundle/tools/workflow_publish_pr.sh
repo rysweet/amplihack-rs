@@ -17,6 +17,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PR_SCOPE_HELPER="${WORKFLOW_PR_SCOPE_HELPER:-${SCRIPT_DIR}/workflow_pr_scope.sh}"
 # workflow_pr_scope.sh validates headRefName, baseRefName, headRefOid,
 # isCrossRepository, expected_pr_title_prefix, and created_after.
+GH_RETRY_HELPER="${WORKFLOW_GH_RETRY_HELPER:-${SCRIPT_DIR}/workflow_gh_retry.sh}"
+[ -f "$GH_RETRY_HELPER" ] || { echo "ERROR: workflow_publish_pr.sh requires the shared retry helper at $GH_RETRY_HELPER" >&2; exit 2; }
+# shellcheck source=/dev/null
+. "$GH_RETRY_HELPER"
 
 emit_publish_result() {
   jq -nc \
@@ -84,18 +88,12 @@ finish_publish() {
 load_pr_fields() {
   local pr_json="$1"
   mapfile -t PR_FIELDS < <(
-    printf '%s' "$pr_json" | jq -r '.url // "", ((.number // "") | tostring), .state // "", .mergedAt // "", .headRefName // "", .baseRefName // "", .headRefOid // "", (.headRepositoryOwner.login // .headRepositoryOwner.name // .headRepositoryOwner // ""), (.headRepository.name // ((.headRepository.nameWithOwner // "") | split("/") | .[-1]) // ""), (.isCrossRepository // false | tostring)'
+    printf '%s' "$pr_json" | jq -r '.url // "", ((.number // "") | tostring), .state // "", .mergedAt // ""'
   )
   PR_URL_RESULT="${PR_FIELDS[0]:-}"
   PR_NUMBER_RESULT="${PR_FIELDS[1]:-}"
   PR_STATE="${PR_FIELDS[2]:-}"
   PR_MERGED_AT="${PR_FIELDS[3]:-}"
-  PR_HEAD_REF="${PR_FIELDS[4]:-}"
-  PR_BASE_REF="${PR_FIELDS[5]:-}"
-  PR_HEAD_OID="${PR_FIELDS[6]:-}"
-  PR_HEAD_OWNER="${PR_FIELDS[7]:-}"
-  PR_HEAD_REPO="${PR_FIELDS[8]:-}"
-  PR_IS_CROSS_REPO="${PR_FIELDS[9]:-false}"
 }
 
 resolve_pr_base_ref() {
@@ -133,76 +131,65 @@ parse_github_repo_identity() {
   printf '%s/%s\n' "$owner" "$repo"
 }
 
-sanitize_gh_stderr() {
-  sed -E 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' "$1" | tr '\n' ' ' | head -c 500
+# Rate-limit-aware retry wrappers. Retry logic is centralised in the shared
+# workflow_gh_retry.sh driver: a genuine rate limit waits for the authoritative
+# reset (adaptive, bounded by the reset window) instead of burning three
+# immediate retries against a still-exhausted quota, and READ existence lookups
+# fall back to the REST/core budget when GraphQL is exhausted. Auth errors are
+# never retried. Each wrapper keeps its tailored fail-closed message so the
+# duplicate-PR safety and diagnostics are preserved verbatim.
+
+# REST (core-budget) fallback for the existing-PR view read path.
+_publish_rest_view() {
+  local n
+  n="$(gh_pr_number_from_url "${PR_URL_RESULT:-}")" || return 1
+  gh_pr_view_rest "$REPO_IDENTITY" "$n"
 }
 
-is_transient_gh_error() {
-  [ -s "$1" ] && grep -Eiq 'HTTP 5[0-9][0-9]|(^|[^0-9])(502|503|504)([^0-9]|$)|rate limit|timed out|timeout|temporar|connection reset|connection refused|TLS handshake|network|server error' "$1"
-}
+# REST (core-budget) fallback for the branch existence list read path.
+_publish_rest_list() { gh_pr_exists_rest "${REPO_IDENTITY:-}" "${CURRENT_BRANCH:-}"; }
 
 gh_pr_list_with_retry() {
-  local stderr_file output status attempt delay=1
-  for attempt in 1 2 3; do
-    stderr_file=$(mktemp -t step16-gh-pr-list-XXXXXX)
-    if output=$(timeout 60 gh pr list "$@" 2>"$stderr_file"); then
-      rm -f "$stderr_file"; printf '%s\n' "$output"; return 0
-    else
-      status=$?
-    fi
-    if [ "$attempt" -lt 3 ] && is_transient_gh_error "$stderr_file"; then
-      echo "WARNING: gh pr list failed transiently (exit ${status}); retrying (${attempt}/3): $(sanitize_gh_stderr "$stderr_file")" >&2
-      rm -f "$stderr_file"; sleep "$delay"; delay=$((delay * 2)); continue
-    fi
-    echo "ERROR: gh pr list failed (exit ${status}); refusing to risk duplicate PR creation." >&2
-    [ ! -s "$stderr_file" ] || echo "gh pr list stderr: $(sanitize_gh_stderr "$stderr_file")" >&2
-    rm -f "$stderr_file"
-    return "$status"
-  done
+  local status
+  # READ path: existence lookup may fall back to REST on the core budget.
+  GH_RETRY_REST_FALLBACK=_publish_rest_list \
+    _gh_retry_core "pr list" pr list "$@" && return 0
+  status=$?
+  echo "ERROR: gh pr list failed (exit ${status}); refusing to risk duplicate PR creation." >&2
+  return "$status"
 }
 
 gh_pr_view_with_retry() {
-  local stderr_file output status attempt delay=1
-  for attempt in 1 2 3; do
-    stderr_file=$(mktemp -t step16-gh-pr-view-XXXXXX)
-    if output=$(timeout 60 gh pr view "$@" 2>"$stderr_file"); then
-      rm -f "$stderr_file"; printf '%s\n' "$output"; return 0
-    else
-      status=$?
-    fi
-    if [ "$attempt" -lt 3 ] && is_transient_gh_error "$stderr_file"; then
-      echo "WARNING: gh pr view failed transiently (exit ${status}); retrying (${attempt}/3): $(sanitize_gh_stderr "$stderr_file")" >&2
-      rm -f "$stderr_file"; sleep "$delay"; delay=$((delay * 2)); continue
-    fi
-    echo "ERROR: gh pr view failed (exit ${status}); existing PR state is ambiguous." >&2
-    [ ! -s "$stderr_file" ] || echo "gh pr view stderr: $(sanitize_gh_stderr "$stderr_file")" >&2
-    rm -f "$stderr_file"
-    return "$status"
-  done
+  local status
+  GH_RETRY_REST_FALLBACK=_publish_rest_view \
+    _gh_retry_core "pr view" pr view "$@" && return 0
+  status=$?
+  echo "ERROR: gh pr view failed (exit ${status}); existing PR state is ambiguous." >&2
+  return "$status"
 }
 
 gh_pr_create_with_retry() {
-  local stderr_file output status attempt delay=1
-  for attempt in 1 2 3; do
-    stderr_file=$(mktemp -t step16-gh-pr-create-XXXXXX)
-    if output=$(timeout 60 gh pr create --draft --title "$PR_TITLE" --body "$PR_BODY" 2>"$stderr_file"); then
-      rm -f "$stderr_file"; printf '%s\n' "$output"; return 0
-    else
-      status=$?
-    fi
-    if [ "$attempt" -lt 3 ] && is_transient_gh_error "$stderr_file"; then
-      echo "WARNING: gh pr create failed transiently (exit ${status}); retrying (${attempt}/3): $(sanitize_gh_stderr "$stderr_file")" >&2
-      rm -f "$stderr_file"; sleep "$delay"; delay=$((delay * 2)); continue
-    fi
-    echo "ERROR: gh pr create failed (exit $status) — PR may already exist for this branch or GitHub API is unavailable" >&2
-    [ ! -s "$stderr_file" ] || echo "gh pr create stderr: $(sanitize_gh_stderr "$stderr_file")" >&2
-    rm -f "$stderr_file"
-    return "$status"
-  done
+  local status
+  # WRITE path: no REST fallback (never blind-create); rate limits wait for reset.
+  _gh_retry_core "pr create" pr create --draft --title "$PR_TITLE" --body "$PR_BODY" && return 0
+  status=$?
+  echo "ERROR: gh pr create failed (exit $status) — PR may already exist for this branch or GitHub API is unavailable" >&2
+  return "$status"
 }
 
 sanitize_provider_stderr() {
-  sed -E 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' "$1" | tr '\n' ' ' | head -c 500
+  sed -E \
+    -e 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' \
+    -e 's#gh[pousr]_[A-Za-z0-9]{16,}#REDACTED_TOKEN#g' \
+    -e 's#github_pat_[A-Za-z0-9_]{16,}#REDACTED_TOKEN#g' \
+    "$1" | tr '\n' ' ' | head -c 500
+}
+
+provider_stderr_file() {
+  local prefix="${1:-workflow-provider}"
+  local file="${GH_RETRY_TMPDIR:-.}/.${prefix}-${$}-${RANDOM}.stderr"
+  : >"$file" || return 1
+  printf '%s\n' "$file"
 }
 
 azdo_common_args=()
@@ -215,17 +202,46 @@ configure_azdo_args() {
   [ -n "$project_name" ] && azdo_common_args+=(--project "$project_name")
 }
 
+# Azure DevOps rate-limit wait. ADO throttling is unrelated to GitHub's API
+# budget, so we must NOT consult `gh api rate_limit` here. Derive the wait from
+# the provider's own Retry-After / reset header (provider-neutral parse) with a
+# short floor; fall back to a small fixed backoff when no header is present.
+az_wait_for_rate_limit() {
+  local stderr_file="${1:-}" now epoch wait floor=5 buffer=3
+  now="$(date +%s)"
+  epoch="$(gh_reset_epoch_from_stderr "$stderr_file" 2>/dev/null || true)"
+  if [ -z "$epoch" ]; then
+    wait="$floor"
+    echo "WARNING: Azure DevOps rate limit; no reset header present, waiting ${wait}s (floor) before retrying." >&2
+  else
+    wait=$(( epoch - now + buffer ))
+    [ "$wait" -lt "$floor" ] && wait="$floor"
+    echo "WARNING: Azure DevOps rate limit; waiting ${wait}s for the provider reset (header-derived; GitHub API not consulted)." >&2
+  fi
+  sleep "$wait"
+}
+
 az_repos_pr_list_with_retry() {
-  local stderr_file output status attempt delay=1
+  local stderr_file output status attempt delay=1 class
   configure_azdo_args
   for attempt in 1 2 3; do
-    stderr_file=$(mktemp -t step16-az-pr-list-XXXXXX)
+    stderr_file="$(provider_stderr_file step16-az-pr-list)" || return 1
     if output=$(timeout 60 az repos pr list "${azdo_common_args[@]}" --status active --source-branch "$CURRENT_BRANCH" --target-branch "$BASE_BRANCH" --output json 2>"$stderr_file"); then
       rm -f "$stderr_file"; printf '%s\n' "$output"; return 0
     else
       status=$?
     fi
-    if [ "$attempt" -lt 3 ] && is_transient_gh_error "$stderr_file"; then
+    class="$(classify_gh_error "$stderr_file")"
+    if [ "$class" = "auth" ]; then
+      echo "ERROR: az repos pr list failed with an authentication error (exit ${status}); not retrying: $(sanitize_provider_stderr "$stderr_file")" >&2
+      rm -f "$stderr_file"; return "$status"
+    fi
+    if [ "$attempt" -lt 3 ] && [ "$class" = "rate_limit" ]; then
+      echo "WARNING: az repos pr list hit a rate limit (exit ${status}); waiting for reset (${attempt}/3): $(sanitize_provider_stderr "$stderr_file")" >&2
+      az_wait_for_rate_limit "$stderr_file"
+      rm -f "$stderr_file"; continue
+    fi
+    if [ "$attempt" -lt 3 ] && [ "$class" = "transient" ]; then
       echo "WARNING: az repos pr list failed transiently (exit ${status}); retrying (${attempt}/3): $(sanitize_provider_stderr "$stderr_file")" >&2
       rm -f "$stderr_file"; sleep "$delay"; delay=$((delay * 2)); continue
     fi
@@ -237,16 +253,26 @@ az_repos_pr_list_with_retry() {
 }
 
 az_repos_pr_create_with_retry() {
-  local stderr_file output status attempt delay=1
+  local stderr_file output status attempt delay=1 class
   configure_azdo_args
   for attempt in 1 2 3; do
-    stderr_file=$(mktemp -t step16-az-pr-create-XXXXXX)
+    stderr_file="$(provider_stderr_file step16-az-pr-create)" || return 1
     if output=$(timeout 60 az repos pr create "${azdo_common_args[@]}" --source-branch "$CURRENT_BRANCH" --target-branch "$BASE_BRANCH" --title "$PR_TITLE" --description "$PR_BODY" --output json 2>"$stderr_file"); then
       rm -f "$stderr_file"; printf '%s\n' "$output"; return 0
     else
       status=$?
     fi
-    if [ "$attempt" -lt 3 ] && is_transient_gh_error "$stderr_file"; then
+    class="$(classify_gh_error "$stderr_file")"
+    if [ "$class" = "auth" ]; then
+      echo "ERROR: az repos pr create failed with an authentication error (exit ${status}); not retrying: $(sanitize_provider_stderr "$stderr_file")" >&2
+      rm -f "$stderr_file"; return "$status"
+    fi
+    if [ "$attempt" -lt 3 ] && [ "$class" = "rate_limit" ]; then
+      echo "WARNING: az repos pr create hit a rate limit (exit ${status}); waiting for reset (${attempt}/3): $(sanitize_provider_stderr "$stderr_file")" >&2
+      az_wait_for_rate_limit "$stderr_file"
+      rm -f "$stderr_file"; continue
+    fi
+    if [ "$attempt" -lt 3 ] && [ "$class" = "transient" ]; then
       echo "WARNING: az repos pr create failed transiently (exit ${status}); retrying (${attempt}/3): $(sanitize_provider_stderr "$stderr_file")" >&2
       rm -f "$stderr_file"; sleep "$delay"; delay=$((delay * 2)); continue
     fi
@@ -426,7 +452,7 @@ RECENT_COMMITS=$(git log --oneline --no-decorate "${BASE_REF}..HEAD" -6 2>/dev/n
 # data: quoted expansions, basename matched via a static case, never eval'd.
 is_generated_scope_file() {
   case "$(basename -- "$1")" in
-    Cargo.lock|*.lock|package-lock.json|npm-shrinkwrap.json|yarn.lock|pnpm-lock.yaml|go.sum|Pipfile.lock|poetry.lock|composer.lock|Gemfile.lock|flake.lock) return 0 ;;
+    *.lock|package-lock.json|npm-shrinkwrap.json|pnpm-lock.yaml|go.sum) return 0 ;;
     *) return 1 ;;
   esac
 }

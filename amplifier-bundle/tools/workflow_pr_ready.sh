@@ -22,38 +22,23 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 127
 fi
 
-sanitize_gh_stderr() {
-  sed -E 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' "$1" | tr '\n' ' ' | head -c 500
-}
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GH_RETRY_HELPER="${WORKFLOW_GH_RETRY_HELPER:-${SCRIPT_DIR}/workflow_gh_retry.sh}"
+if [ ! -f "$GH_RETRY_HELPER" ]; then
+  echo "ERROR: workflow_pr_ready.sh requires the shared retry helper at $GH_RETRY_HELPER" >&2
+  exit 2
+fi
+# shellcheck source=/dev/null
+. "$GH_RETRY_HELPER"
 
-is_transient_gh_error() {
-  [ -s "$1" ] && grep -Eiq 'HTTP 5[0-9][0-9]|(^|[^0-9])(502|503|504)([^0-9]|$)|rate limit|timed out|timeout|temporar|connection reset|connection refused|TLS handshake|network|server error' "$1"
-}
-
+# Rate-limit-aware retry. This helper both reads (pr view) and MUTATES (pr ready,
+# pr comment); per the workflow contract mutation paths must never fall back to
+# REST, so no REST fallback is configured here — a genuine rate limit waits for
+# the authoritative reset and then retries. Auth errors are never retried.
 gh_with_retry() {
-  local label="$1" stderr_file output status attempt delay=1
+  local label="$1"
   shift
-  for attempt in 1 2 3; do
-    stderr_file=$(mktemp -t step21-gh-XXXXXX)
-    if output=$(timeout 60 gh "$@" 2>"$stderr_file"); then
-      rm -f "$stderr_file"
-      printf '%s\n' "$output"
-      return 0
-    else
-      status=$?
-    fi
-    if [ "$attempt" -lt 3 ] && is_transient_gh_error "$stderr_file"; then
-      echo "WARNING: gh $label failed transiently (exit ${status}); retrying (${attempt}/3): $(sanitize_gh_stderr "$stderr_file")" >&2
-      rm -f "$stderr_file"
-      sleep "$delay"
-      delay=$((delay * 2))
-      continue
-    fi
-    echo "WARNING: gh $label failed (exit ${status})" >&2
-    [ ! -s "$stderr_file" ] || echo "gh $label stderr: $(sanitize_gh_stderr "$stderr_file")" >&2
-    rm -f "$stderr_file"
-    return "$status"
-  done
+  _gh_retry_core "$label" "$@"
 }
 
 parse_github_repo_identity() {
@@ -210,53 +195,56 @@ pr_target="$(printf '%s' "$scoped_pr_json" | jq -r '.url // .number // empty')"
 
 terminal_status="active-pr"
 closed_unmerged_seen="false"
-for pr_target in "$pr_target"; do
-  if ! pr_json="$(gh_with_retry "pr view" pr view "$pr_target" --json number,state,isDraft,mergedAt,url,headRefName,baseRefName,headRefOid,headRepositoryOwner,headRepository,isCrossRepository)"; then
-    echo "ERROR: unable to inspect PR '$pr_target' with gh; refusing to mutate ambiguous PR state" >&2
-    exit 1
-  fi
-  pr_url=$(printf '%s' "$pr_json" | jq -r '.url // ""')
-  pr_state=$(printf '%s' "$pr_json" | jq -r '.state // ""')
-  pr_is_draft=$(printf '%s' "$pr_json" | jq -r '.isDraft // false')
-  pr_merged_at=$(printf '%s' "$pr_json" | jq -r '.mergedAt // ""')
+if ! pr_json="$(gh_with_retry "pr view" pr view "$pr_target" --json number,state,isDraft,mergedAt,url,headRefName,baseRefName,headRefOid,headRepositoryOwner,headRepository,isCrossRepository)"; then
+  echo "ERROR: unable to inspect PR '$pr_target' with gh; refusing to mutate ambiguous PR state" >&2
+  exit 1
+fi
+pr_url=$(printf '%s' "$pr_json" | jq -r '.url // ""')
+pr_state=$(printf '%s' "$pr_json" | jq -r '.state // ""')
+pr_is_draft=$(printf '%s' "$pr_json" | jq -r '.isDraft // false')
+pr_merged_at=$(printf '%s' "$pr_json" | jq -r '.mergedAt // ""')
 
-  if [ "$pr_state" = "MERGED" ] || [ -n "$pr_merged_at" ]; then
-    terminal_status="already-merged"
-    [ "$pr_state" = "CLOSED" ] && terminal_status="closed-after-merge"
-    echo "INFO: terminal_status=$terminal_status; PR is already merged — no ready-for-review action needed"
-    continue
-  fi
-  if [ "$pr_state" = "CLOSED" ]; then
-    terminal_status="closed-unmerged"
-    closed_unmerged_seen="true"
-    echo "ERROR: terminal_status=closed-unmerged; PR is closed without merge — reopen it or create a new branch intentionally" >&2
-    continue
-  fi
+if [ "$pr_state" = "MERGED" ] || [ -n "$pr_merged_at" ]; then
+  terminal_status="already-merged"
+  [ "$pr_state" = "CLOSED" ] && terminal_status="closed-after-merge"
+  echo "INFO: terminal_status=$terminal_status; PR is already merged — no ready-for-review action needed"
+  echo "=== PR Ready Step Complete (terminal_status=$terminal_status) ==="
+  exit 0
+fi
+if [ "$pr_state" = "CLOSED" ]; then
+  terminal_status="closed-unmerged"
+  closed_unmerged_seen="true"
+  echo "ERROR: terminal_status=closed-unmerged; PR is closed without merge — reopen it or create a new branch intentionally" >&2
+fi
 
-  validate_pr_identity_before_mutation "$pr_json" "$pr_url" || exit 1
+if [ "$closed_unmerged_seen" = "true" ]; then
+  exit 1
+fi
 
-  if [ "$pr_is_draft" = "true" ]; then
-    if ready_output="$(gh_with_retry "pr ready" pr ready "$pr_url")"; then
-      printf '%s\n' "$ready_output"
-    else
-      echo "ERROR: gh pr ready failed for '$pr_url'; refusing to report successful finalization after mutation failure" >&2
-      exit 1
-    fi
+validate_pr_identity_before_mutation "$pr_json" "$pr_url" || exit 1
+
+if [ "$pr_is_draft" = "true" ]; then
+  if ready_output="$(gh_with_retry "pr ready" pr ready "$pr_url")"; then
+    printf '%s\n' "$ready_output"
   else
-    echo "INFO: PR is already ready for review"
+    ready_rc=$?
+    echo "ERROR: gh pr ready failed for '$pr_url' (exit ${ready_rc}); refusing to report successful finalization after mutation failure" >&2
+    exit "$ready_rc"
   fi
+else
+  echo "INFO: PR is already ready for review"
+fi
 
-  ready_body="## Ready for Final Review
+ready_body="## Ready for Final Review
 
 Workflow steps completed: requirements, design, implementation, tests, code review, philosophy compliance, cleanup, and quality audit.
 
 Ready for merge approval."
-  if comment_output="$(gh_with_retry "pr comment" pr comment "$pr_url" --body "$ready_body")"; then
-    printf '%s\n' "$comment_output"
-  else
-    echo "WARNING: gh pr comment failed for '$pr_url'; PR ready state was still evaluated" >&2
-  fi
-done
+if comment_output="$(gh_with_retry "pr comment" pr comment "$pr_url" --body "$ready_body")"; then
+  printf '%s\n' "$comment_output"
+else
+  echo "WARNING: gh pr comment failed for '$pr_url'; PR ready state was still evaluated" >&2
+fi
 
 if [ "$closed_unmerged_seen" = "true" ]; then
   exit 1

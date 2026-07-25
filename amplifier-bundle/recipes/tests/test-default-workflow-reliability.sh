@@ -80,7 +80,9 @@ if ! command -v python3 >/dev/null 2>&1; then
     exit 2
 fi
 
-WORK="$(mktemp -d -t default-workflow-reliability-XXXXXX)"
+WORK="${REPO_ROOT}/../.default-workflow-reliability-test-${$}"
+rm -rf "$WORK"
+mkdir -p "$WORK"
 trap 'rm -rf "${WORK}"' EXIT
 STEP04="${WORK}/step-04-setup-worktree.sh"
 STEP_TDD_CHECKPOINT="${WORK}/checkpoint-after-implementation.sh"
@@ -285,7 +287,7 @@ assert_terminal_status_case() {
         unset IMPLEMENTATION_COMPLETED VERIFICATION_COMPLETED PUBLISH_STATE_REACHED TERMINAL_NO_OP TERMINAL_FAILURE
         unset TERMINAL_STATE TERMINAL_REASON OBSERVED_PHASES ALLOW_NO_OP
         for assignment in "$@"; do
-            export "${assignment}"
+            export "${assignment?}"
         done
         bash "${FINAL_STATUS_TOOL}"
     ) >"${stdout_file}" 2>"${stderr_file}" || status=$?
@@ -1274,7 +1276,8 @@ assert_no_merge_directive_suppresses_auto_merge() {
         "Fix issue 929. Do NOT merge the PR; leave it open." \
         "Please don't merge this, no admin merge." \
         "Implement the change but this is a no-merge task"; do
-        local case_repo="${WORK}/nomerge-probe-$(printf '%s' "${directive}" | tr -c 'A-Za-z0-9' '_' | cut -c1-24)"
+        local case_repo
+        case_repo="${WORK}/nomerge-probe-$(printf '%s' "${directive}" | tr -c 'A-Za-z0-9' '_' | cut -c1-24)"
         setup_nomerge_probe_repo "${case_repo}"
         if ! run_nomerge_probe_case "${case_repo}" "${directive}" \
             "${WORK}/nomerge-dir.out" "${WORK}/nomerge-dir.err"; then
@@ -1289,7 +1292,133 @@ assert_no_merge_directive_suppresses_auto_merge() {
     done
 }
 
+assert_gh_rate_limit_backoff_contracts() {
+    # Regression coverage for the shared rate-limit-aware retry driver
+    # (workflow_gh_retry.sh) used by the publish/scope/final/ready helpers.
+    local lib="${REPO_ROOT}/amplifier-bundle/tools/workflow_gh_retry.sh"
+    [ -f "$lib" ] || fail "workflow_gh_retry.sh shared retry helper is missing"
+
+    local base="${WORK}/gh-rate-limit"
+    mkdir -p "$base"
+
+    # --- (a) a rate-limit stderr triggers wait-for-reset (mock gh api rate_limit)
+    local a="${base}/a"; mkdir -p "${a}/bin"
+    cat > "${a}/bin/gh" <<'SHIMA'
+#!/usr/bin/env bash
+set -euo pipefail
+log="${GH_LOG:?}"; printf 'call %s\n' "$*" >> "$log"
+case "${1:-}-${2:-}" in
+  api-rate_limit)
+    now="$(date +%s)"
+    # graphql exhausted, core also exhausted -> forces wait (no REST), reset now.
+    printf '{"resources":{"graphql":{"remaining":0,"reset":%s},"core":{"remaining":0,"reset":%s}}}\n' "$now" "$now" ;;
+  pr-list)
+    n="$(grep -c '^call pr list' "$log")"
+    if [ "$n" -le 1 ]; then echo "GraphQL: API rate limit already exceeded for user ID 1" >&2; exit 1; fi
+    printf '[]\n' ;;
+  *) echo "unexpected $*" >&2; exit 1 ;;
+esac
+SHIMA
+    chmod +x "${a}/bin/gh"
+    (
+        set +e
+        export PATH="${a}/bin:${PATH}" GH_LOG="${a}/log"; : > "$GH_LOG"
+        # shellcheck source=/dev/null
+        . "$lib"
+        rc=0
+        out="$(GH_RETRY_REST_FALLBACK="" GH_RETRY_RESOURCE="graphql" _gh_retry_core "pr list" pr list --repo example/repo --head feat/x)" || rc=$?
+        [ "$rc" -eq 0 ] || { echo "case-a rc=$rc" >&2; cat "$GH_LOG" >&2; exit 1; }
+        grep -q '^call api rate_limit' "$GH_LOG" || { echo "case-a: gh api rate_limit was not consulted for reset" >&2; exit 1; }
+        [ "$(grep -c '^call pr list' "$GH_LOG")" -eq 2 ] || { echo "case-a: expected exactly 2 pr list attempts (fail+retry-after-reset)" >&2; cat "$GH_LOG" >&2; exit 1; }
+    ) || fail "rate-limit stderr must wait for the authoritative reset (gh api rate_limit) then retry"
+    echo "  PASS[gh-retry:a]: rate-limit waits for authoritative reset (gh api rate_limit) then retries"
+
+    # --- (b) REST fallback used for pr-existence when GraphQL fails but core ok
+    local b="${base}/b"; mkdir -p "${b}/bin"
+    cat > "${b}/bin/gh" <<'SHIMB'
+#!/usr/bin/env bash
+set -euo pipefail
+log="${GH_LOG:?}"; printf 'call %s\n' "$*" >> "$log"
+case "${1:-}-${2:-}" in
+  api-rate_limit)
+    now="$(date +%s)"
+    # graphql exhausted (reset far out), but core still has budget -> REST now.
+    printf '{"resources":{"graphql":{"remaining":0,"reset":%s},"core":{"remaining":4000,"reset":%s}}}\n' "$((now+3600))" "$now" ;;
+  api-*)
+    case "$2" in
+      repos/example/repo/pulls\?*)
+        printf '[{"number":77,"title":"Update x","body":"b","state":"open","created_at":"2026-01-01T00:00:00Z","merged_at":null,"html_url":"https://github.com/example/repo/pull/77","head":{"ref":"feat/x","sha":"deadbeef","repo":{"name":"repo","full_name":"example/repo","owner":{"login":"example"}}},"base":{"ref":"main","repo":{"full_name":"example/repo"}}}]\n' ;;
+      *) printf '[]\n' ;;
+    esac ;;
+  pr-list) echo "GraphQL: API rate limit exceeded" >&2; exit 1 ;;
+  *) echo "unexpected $*" >&2; exit 1 ;;
+esac
+SHIMB
+    chmod +x "${b}/bin/gh"
+    (
+        set +e
+        export PATH="${b}/bin:${PATH}" GH_LOG="${b}/log"; : > "$GH_LOG"
+        # shellcheck source=/dev/null
+        . "$lib"
+        _case_b_fallback() { gh_pr_exists_rest example/repo feat/x; }
+        rc=0
+        out="$(GH_RETRY_REST_FALLBACK=_case_b_fallback _gh_retry_core "pr list" pr list --repo example/repo --head feat/x 2>"${b}/err")" || rc=$?
+        [ "$rc" -eq 0 ] || { echo "case-b rc=$rc" >&2; cat "$GH_LOG" "${b}/err" >&2; exit 1; }
+        printf '%s' "$out" | jq -e '.[0].number == 77' >/dev/null 2>&1 || { echo "case-b: REST fallback did not return the existing PR" >&2; echo "$out" >&2; exit 1; }
+        grep -qi 'REST /pulls fallback' "${b}/err" || { echo "case-b: REST fallback must be logged as an explicit WARNING" >&2; cat "${b}/err" >&2; exit 1; }
+        [ "$(grep -c '^call pr list' "$GH_LOG")" -eq 1 ] || { echo "case-b: must not block on GraphQL when core budget serves REST" >&2; cat "$GH_LOG" >&2; exit 1; }
+    ) || fail "GraphQL rate-limit with available core budget must serve PR-existence via REST fallback"
+    echo "  PASS[gh-retry:b]: REST fallback serves PR-existence when GraphQL exhausted but core has budget"
+
+    # --- (c) auth error is NOT retried
+    local c="${base}/c"; mkdir -p "${c}/bin"
+    cat > "${c}/bin/gh" <<'SHIMC'
+#!/usr/bin/env bash
+set -euo pipefail
+log="${GH_LOG:?}"; printf 'call %s\n' "$*" >> "$log"
+echo "HTTP 401: Bad credentials" >&2
+exit 1
+SHIMC
+    chmod +x "${c}/bin/gh"
+    (
+        set +e
+        export PATH="${c}/bin:${PATH}" GH_LOG="${c}/log"; : > "$GH_LOG"
+        # shellcheck source=/dev/null
+        . "$lib"
+        rc=0
+        _gh_retry_core "pr view" pr view 1 >/dev/null 2>&1 || rc=$?
+        [ "$rc" -ne 0 ] || { echo "case-c: auth failure must return non-zero" >&2; exit 1; }
+        [ "$(grep -c '^call ' "$GH_LOG")" -eq 1 ] || { echo "case-c: auth error must NOT be retried" >&2; cat "$GH_LOG" >&2; exit 1; }
+    ) || fail "authentication errors (401 / Bad credentials) must never be retried"
+    echo "  PASS[gh-retry:c]: authentication errors are terminal (no retry)"
+
+    # --- (d) generic 5xx keeps the short-backoff 3-attempt behavior
+    local d="${base}/d"; mkdir -p "${d}/bin"
+    cat > "${d}/bin/gh" <<'SHIMD'
+#!/usr/bin/env bash
+set -euo pipefail
+log="${GH_LOG:?}"; printf 'call %s\n' "$*" >> "$log"
+echo "HTTP 503 temporary GitHub API failure" >&2
+exit 1
+SHIMD
+    chmod +x "${d}/bin/gh"
+    (
+        set +e
+        export PATH="${d}/bin:${PATH}" GH_LOG="${d}/log"; : > "$GH_LOG"
+        # shellcheck source=/dev/null
+        . "$lib"
+        rc=0
+        _gh_retry_core "pr list" pr list --repo example/repo --head feat/x >/dev/null 2>&1 || rc=$?
+        [ "$rc" -ne 0 ] || { echo "case-d: persistent 5xx must fail closed" >&2; exit 1; }
+        [ "$(grep -c '^call pr list' "$GH_LOG")" -eq 3 ] || { echo "case-d: generic transient must keep exactly 3 attempts" >&2; cat "$GH_LOG" >&2; exit 1; }
+        grep -q '^call api rate_limit' "$GH_LOG" && { echo "case-d: transient path must NOT consult rate_limit reset" >&2; exit 1; }
+        true
+    ) || fail "generic 5xx/network errors must keep the short-backoff 3-attempt behavior"
+    echo "  PASS[gh-retry:d]: generic 5xx keeps short-backoff 3-attempt behavior"
+}
+
 assert_pr_title_ignores_lockfiles
 assert_no_merge_directive_suppresses_auto_merge
+assert_gh_rate_limit_backoff_contracts
 
 echo "PASS: default workflow reliability contracts are covered."

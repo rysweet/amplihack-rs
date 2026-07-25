@@ -146,9 +146,16 @@ fn ci_has_no_unpinned_stable_toolchain() {
 #[test]
 fn ci_pins_dtolnay_toolchain_to_1_97_0() {
     let content = read_ci_yml();
+    // Accept either the plain channel ref (`@1.97.0`) or a SHA-pinned ref with a
+    // trailing `# 1.97.0` version comment (issue #951 supply-chain hardening).
+    // In both forms the effective toolchain channel is 1.97.0, matching
+    // rust-toolchain.toml and the last known-good run.
+    let re =
+        Regex::new(r"dtolnay/rust-toolchain@(?:1\.97\.0|[0-9a-f]{40}\s*#\s*1\.97\.0)\b").unwrap();
     assert!(
-        content.contains("dtolnay/rust-toolchain@1.97.0"),
-        "FAIL: ci.yml must pin the toolchain action to `dtolnay/rust-toolchain@1.97.0`.\n\
+        re.is_match(&content),
+        "FAIL: ci.yml must pin the toolchain action to the 1.97.0 channel, either as\n\
+         `dtolnay/rust-toolchain@1.97.0` or a SHA-pin `dtolnay/rust-toolchain@<sha> # 1.97.0`.\n\
          This matches rust-toolchain.toml and the last known-good run."
     );
 }

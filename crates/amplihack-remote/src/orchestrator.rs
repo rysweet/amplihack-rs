@@ -13,6 +13,7 @@ use tracing::{debug, info, warn};
 
 use crate::azlin_parse::{parse_azlin_list_json, parse_azlin_list_text};
 use crate::error::{ErrorContext, RemoteError};
+use crate::redact::redact_sensitive;
 
 /// Represents an Azure VM managed by azlin.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,7 +132,7 @@ impl Orchestrator {
                 Ok(true)
             }
             Ok(Ok(o)) => {
-                let stderr = String::from_utf8_lossy(&o.stderr);
+                let stderr = redact_sensitive(&String::from_utf8_lossy(&o.stderr));
                 let msg = format!("VM cleanup failed: {stderr}");
                 if force {
                     warn!("{msg}");
@@ -144,7 +145,10 @@ impl Orchestrator {
                 }
             }
             Ok(Err(e)) => {
-                let msg = format!("VM cleanup command failed: {e}");
+                let msg = format!(
+                    "VM cleanup command failed: {}",
+                    redact_sensitive(&e.to_string())
+                );
                 if force {
                     warn!("{msg}");
                     Ok(false)

@@ -91,7 +91,16 @@ fn ci_rust_cache_entries_do_not_cache_workspace_targets_by_default() {
                 continue;
             };
             for (index, step) in steps.iter().enumerate() {
-                if step.get("uses").and_then(Value::as_str) != Some("Swatinem/rust-cache@v2") {
+                // Match rust-cache by action prefix so the check keeps working
+                // whether the ref floats (`@v2`) or is SHA-pinned with a
+                // trailing version comment (`@<sha> # v2`, issue #951). YAML
+                // strips the comment, leaving the SHA, so an exact `@v2` match
+                // would silently skip every pinned step and void this test.
+                let is_rust_cache = step
+                    .get("uses")
+                    .and_then(Value::as_str)
+                    .is_some_and(|u| u.starts_with("Swatinem/rust-cache@"));
+                if !is_rust_cache {
                     continue;
                 }
                 let cache_targets = step

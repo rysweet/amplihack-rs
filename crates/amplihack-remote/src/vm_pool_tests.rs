@@ -264,3 +264,124 @@ fn apply_cleanup_result_err_retains() {
         "failed cleanup must not be reported as removed"
     );
 }
+
+// ---- issue #883: save_state() persistence errors must be surfaced, not swallowed ----
+//
+// `release_session` and `cleanup_idle_vms` previously discarded a failed
+// on-disk persistence write via `let _ = self.save_state();`. If the write
+// fails after an in-memory mutation, on-disk state silently diverges from
+// memory. The contract now is log-and-continue: the in-memory mutation still
+// takes effect (the method stays infallible / keeps its return contract) and
+// the persistence failure is surfaced via `warn!` rather than panicking or
+// being swallowed.
+//
+// To drive the shared save_state() error path deterministically without a
+// real cloud/azlin dependency, we point the state file at a location whose
+// parent is a *regular file*. `load_state()` still succeeds (the file does
+// not exist -> Ok(None)), but `save_state()` -> `merge_key_into_state` ->
+// `create_dir_all(parent)` fails because the parent is not a directory.
+//
+// Both sites call the identical `save_state()` with the identical
+// `if let Err(e) => warn!(...)` handling, so the `release_session` test below
+// pins the surfaced-error contract for the shared code path. `cleanup_idle_vms`
+// only reaches its `save_state()` after a *confirmed* VM reclaim (an actual
+// `azlin` deallocation returning `Ok(true)`), which is unavailable in a unit
+// test without a live cloud backend; asserting on it here would require a real
+// azlin and would not exercise anything the shared path does not already cover.
+
+/// A `MakeWriter` that appends every emitted line into a shared buffer so a
+/// test can assert on captured `tracing` output.
+#[derive(Clone, Default)]
+struct BufferWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for BufferWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for BufferWriter {
+    type Writer = BufferWriter;
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// Run `f` with a `tracing` subscriber that captures WARN+ events, returning
+/// the captured log text so callers can assert an error was surfaced.
+fn capture_logs(f: impl FnOnce()) -> String {
+    let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_writer(BufferWriter(buffer.clone()))
+        .without_time()
+        .finish();
+    tracing::subscriber::with_default(subscriber, f);
+    String::from_utf8(buffer.lock().unwrap().clone()).unwrap()
+}
+
+fn manager_with_unwritable_state() -> VMPoolManager {
+    let dir = tempfile::tempdir().unwrap();
+    // A regular file standing where a directory would need to be.
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, b"not a directory").unwrap();
+    // Parent of `state_file` is `blocker` (a file) -> create_dir_all fails on save.
+    let state_file = blocker.join("state.json");
+
+    let mgr = VMPoolManager::new(Some(state_file), Orchestrator::with_username("test"))
+        .expect("load_state succeeds for a missing state file");
+
+    // Keep the tempdir alive for the lifetime of the manager by leaking it;
+    // the process-scoped test tempdir is cleaned up by the OS afterwards.
+    std::mem::forget(dir);
+    mgr
+}
+
+#[test]
+fn release_session_surfaces_save_state_failure_without_losing_mutation() {
+    let mut mgr = manager_with_unwritable_state();
+
+    let mut entry = make_entry("vm-release");
+    entry.active_sessions.push("sess-1".to_string());
+    mgr.pool.insert("vm-release".to_string(), entry);
+
+    // Sanity: the persistence path really does fail with this setup, so the
+    // test is exercising the surfaced-error branch (not a silent success).
+    assert!(
+        mgr.save_state().is_err(),
+        "test setup must make save_state() fail to exercise the error branch"
+    );
+
+    // save_state() will fail here; the method must not panic, must still apply
+    // the in-memory mutation, and must SURFACE the failure via a WARN log
+    // rather than swallowing it (the issue #883 contract). Capturing the log
+    // is what distinguishes the fixed behaviour from the old
+    // `let _ = self.save_state();` which produced no diagnostic at all.
+    let logs = capture_logs(|| mgr.release_session("sess-1"));
+
+    assert!(
+        logs.contains("WARN"),
+        "persistence failure must be surfaced at WARN level, got logs: {logs:?}"
+    );
+    assert!(
+        logs.contains("in-memory and on-disk state may diverge"),
+        "surfaced warning must explain the divergence, got logs: {logs:?}"
+    );
+    assert!(
+        logs.contains("sess-1"),
+        "surfaced warning must include the session id for diagnosis, got logs: {logs:?}"
+    );
+
+    let entry = mgr
+        .pool
+        .get("vm-release")
+        .expect("VM entry must remain in the pool");
+    assert!(
+        !entry.active_sessions.contains(&"sess-1".to_string()),
+        "in-memory mutation must persist even when save_state() fails"
+    );
+}

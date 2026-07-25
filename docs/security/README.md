@@ -17,6 +17,10 @@ Ahoy! This be where ye learn to keep yer ship secure from digital pirates.
 - [Security API Reference](./SECURITY_API_REFERENCE.md) - Complete API documentation
 - [Security Testing Guide](./SECURITY_TESTING_GUIDE.md) - How to test security features
 
+**New in Issue #882 (P2 hardening):**
+
+- [Azlin stderr Redaction](./AZLIN_STDERR_REDACTION.md) - Redact subscription IDs / SAS URLs from Azure CLI stderr during VM cleanup
+
 ---
 
 ## Security Features Overview

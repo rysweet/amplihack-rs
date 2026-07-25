@@ -59,13 +59,31 @@ toolchain_channel() {
 # Emit "lineno:ref" for every dtolnay/rust-toolchain step in $1 that declares a
 # `targets:` key within the few lines following the step (before the next step
 # or toolchain action).
+#
+# SHA-pinned refs (issue #951): a ref may be a 40-hex commit SHA followed by a
+# trailing `# <version>` comment (supply-chain hardening). In that case the
+# EFFECTIVE toolchain channel is the commented version — dtolnay/rust-toolchain
+# bakes the channel into each branch's action.yml — so the comment is what must
+# match rust-toolchain.toml. A SHA with NO version comment cannot be verified,
+# so it is emitted verbatim and treated as drift (fails loudly, never silently
+# assumed correct).
 targets_bearing_refs() {
     local file="$1"
     awk '
         /dtolnay\/rust-toolchain@/ {
-            ref = $0
+            raw = $0
+            ref = raw
             sub(/.*dtolnay\/rust-toolchain@/, "", ref)
             sub(/[[:space:]].*/, "", ref)
+            eff = ref
+            if (ref ~ /^[0-9a-f]{40}$/) {
+                if (raw ~ /#/) {
+                    cmt = raw
+                    sub(/.*#[[:space:]]*/, "", cmt)
+                    sub(/[[:space:]].*/, "", cmt)
+                    eff = cmt
+                }
+            }
             ln = FNR
             hit = 0
             for (i = 1; i <= 6; i++) {
@@ -73,7 +91,7 @@ targets_bearing_refs() {
                 if (line ~ /^[[:space:]]*targets:/) { hit = 1; break }
                 if (line ~ /dtolnay\/rust-toolchain@/) break
             }
-            if (hit) print ln ":" ref
+            if (hit) print ln ":" eff
         }
     ' "$file"
 }
