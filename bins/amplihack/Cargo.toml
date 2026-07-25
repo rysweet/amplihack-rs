@@ -429,3 +429,13 @@ path = "../../tests/integration/code_philosophy_audit_recipe_test.rs"
 [[test]]
 name = "issue_849_skill_mirror_citation"
 path = "../../tests/integration/issue_849_skill_mirror_citation_test.rs"
+
+# Phase-1 of #4610: verus-expert formal-methods skill contract tests. Pins the
+# 4-file layout (bundle skill, agent, docs mirror, durable assessment), skill/
+# agent frontmatter + agent-id resolution, mandated sections/keywords, evidence-
+# grounded Verus vocabulary, primary-source citations, durability (no dated
+# framing), the no-Bridge/no-kuzu/no-Python guards, ASCII cleanliness, and the
+# mkdocs nav + known-agents registration so the skill loads.
+[[test]]
+name = "verus_expert_skill"
+path = "../../tests/integration/verus_expert_skill_test.rs"
