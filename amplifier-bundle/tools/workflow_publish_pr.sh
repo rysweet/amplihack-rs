@@ -188,7 +188,11 @@ gh_pr_create_with_retry() {
 }
 
 sanitize_provider_stderr() {
-  sed -E 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' "$1" | tr '\n' ' ' | head -c 500
+  sed -E \
+    -e 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' \
+    -e 's#gh[pousr]_[A-Za-z0-9]{16,}#REDACTED_TOKEN#g' \
+    -e 's#github_pat_[A-Za-z0-9_]{16,}#REDACTED_TOKEN#g' \
+    "$1" | tr '\n' ' ' | head -c 500
 }
 
 azdo_common_args=()
