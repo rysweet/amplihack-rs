@@ -14,6 +14,11 @@
 #                                 mocked signal-cli/qrencode/systemd-run/az/sudo/nc
 #                                 (help, validation, injection fail-closed,
 #                                 idempotency-renders-no-QR, prereq failures).
+#   3. test_readme_and_catalog.sh — the content absorbed from PR #1001: the
+#                                 README overview (links resolve, hard-won facts
+#                                 preserved) and the docs/skills/SKILL_CATALOG.md
+#                                 registration (correct alphabetical slot,
+#                                 self-consistent counts, no version-bump files).
 #
 # Hollow-pass guard: a suite that silently ran zero assertions (or aborted early
 # before printing its summary) yet still exited 0 must NOT be reported as green.
@@ -37,6 +42,7 @@ MIN_TOTAL_SCENARIOS="${MIN_TOTAL_SCENARIOS:-40}"
 SUITES=(
   "test_skill_structure.sh"
   "test_script_behavior.sh"
+  "test_readme_and_catalog.sh"
 )
 
 TOTAL_FAIL=0
