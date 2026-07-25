@@ -56,6 +56,7 @@ static AMPLIHACK_AGENTS: &[&str] = &[
     "socratic-reviewer",
     "tester",
     "tla-plus-expert",
+    "verus-expert",
     "visualization-architect",
     "worktree-manager",
     "xpia-defense",
@@ -107,19 +108,20 @@ mod tests {
 
     #[test]
     fn dual_skill_and_agent_names_are_present() {
-        // `gherkin-expert` and `tla-plus-expert` exist as BOTH a skill and an
-        // agent. They must still appear in the agent registry; the redirect
-        // guard in `pre_tool_use` resolves the overlap by giving skills
-        // precedence.
+        // `gherkin-expert`, `tla-plus-expert`, and `verus-expert` exist as BOTH
+        // a skill and an agent. They must still appear in the agent registry;
+        // the redirect guard in `pre_tool_use` resolves the overlap by giving
+        // skills precedence.
         assert!(is_amplihack_agent("gherkin-expert"));
         assert!(is_amplihack_agent("tla-plus-expert"));
+        assert!(is_amplihack_agent("verus-expert"));
     }
 
     #[test]
     fn agent_count_matches_unique_bundled_agents() {
-        // 42 agent `.md` files, but `guide` is duplicated across
-        // `agents/` and `agents/core/`, leaving 41 unique names.
-        assert_eq!(agent_count(), 41);
+        // 43 agent `.md` files, but `guide` is duplicated across
+        // `agents/` and `agents/core/`, leaving 42 unique names.
+        assert_eq!(agent_count(), 42);
     }
 
     #[test]
