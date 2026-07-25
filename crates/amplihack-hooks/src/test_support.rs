@@ -45,6 +45,16 @@ impl EnvVarGuard {
         unsafe { std::env::remove_var(key) };
         Self { key, previous }
     }
+
+    /// Set `key` to `value` for the guard's lifetime, restoring the prior value
+    /// (or unsetting it if it was previously absent) on drop. Callers must hold
+    /// [`env_lock`] for the duration.
+    #[allow(dead_code)]
+    pub(crate) fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+        let previous = std::env::var_os(key);
+        unsafe { std::env::set_var(key, value) };
+        Self { key, previous }
+    }
 }
 
 impl Drop for EnvVarGuard {
