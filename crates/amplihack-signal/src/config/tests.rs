@@ -103,6 +103,26 @@ fn missing_account_is_error() {
 }
 
 #[test]
+fn blank_env_allowlist_shadows_populated_toml_fail_closed() {
+    // Precedence lock-in: a set-but-blank env allowlist wins over a populated
+    // TOML allowlist, collapsing to deny-all (fail-closed). This is the
+    // documented behavior; resolve_allowlist emits a warn when it happens.
+    let e = env(&[
+        (ENV_ENDPOINT, "127.0.0.1:7583"),
+        (ENV_ACCOUNT, "+15551230000"),
+        (ENV_ALLOWLIST, "   "),
+    ]);
+    let toml = r#"
+        allowlist = ["+15551230001", "+15551230002"]
+    "#;
+    let cfg = SignalConfig::from_sources(&e, Some(toml)).expect("valid: env wins, deny-all");
+    assert!(
+        cfg.allowlist.is_empty(),
+        "blank env allowlist must shadow TOML and deny all"
+    );
+}
+
+#[test]
 fn absent_allowlist_is_error_no_silent_default() {
     // The allowlist key is required to be *present*. Absence must error —
     // never silently default to "allow everyone".
@@ -161,7 +181,7 @@ fn invalid_endpoint_is_error() {
 
 #[test]
 fn endpoint_rejects_unbracketed_ipv6_and_port_zero() {
-    for endpoint in ["::1", "fe80::1", "127.0.0.1:0"] {
+    for endpoint in ["::1", "fe80::1", "127.0.0.1:0", "127.0.0.1:+7583"] {
         let e = env(&[
             (ENV_ENDPOINT, endpoint),
             (ENV_ACCOUNT, "+15551230000"),
@@ -541,4 +561,21 @@ fn whitespace_wrapped_own_device_id_env_is_parsed() {
     ]);
     let cfg = SignalConfig::from_sources(&e, None).expect("valid config");
     assert_eq!(cfg.own_device_id, Some(3));
+}
+
+#[test]
+fn signed_own_device_id_env_is_invalid() {
+    for value in ["+3", "-3"] {
+        let e = env(&[
+            (ENV_ENDPOINT, "127.0.0.1:7583"),
+            (ENV_ACCOUNT, "+15551230000"),
+            (ENV_ALLOWLIST, "+15551230001"),
+            (ENV_OWN_DEVICE_ID, value),
+        ]);
+        let err = SignalConfig::from_sources(&e, None).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::InvalidNumber { key, .. } if key == ENV_OWN_DEVICE_ID),
+            "signed own_device_id {value:?} should be invalid, got {err:?}"
+        );
+    }
 }

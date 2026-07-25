@@ -13,8 +13,8 @@ type TomlTable<'a> = Option<&'a toml::value::Table>;
 /// *only* whitespace is treated as unset (`None`) rather than a malformed
 /// setting, so it surfaces as a clear `MissingRequired` error instead of a
 /// confusing "invalid endpoint" / "invalid E.164" for an effectively-blank
-/// value. Shared by every string/number resolver so trim + empty handling stay
-/// consistent across settings and cannot drift apart again.
+/// value. Callers decide whether a blank environment value should fall through
+/// to TOML or stop resolution as an explicitly-blank value.
 pub(super) fn normalize(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -44,12 +44,30 @@ pub(super) fn get_str(
     }
 }
 
+/// Resolve the inbound allowlist honoring `env > TOML`. A present
+/// `AMPLIHACK_SIGNAL_ALLOWLIST` env var wins outright (including an
+/// intentionally empty value, which means deliberate deny-all); otherwise the
+/// TOML `allowlist` array is required.
+///
+/// Precedence note: because env *presence* wins, a set-but-blank env value
+/// collapses to deny-all and shadows any populated TOML allowlist. That fails
+/// closed (safe), but is easy to trigger accidentally (e.g. `envFrom` injecting
+/// an empty var), so it emits a `warn` when it shadows a non-empty TOML
+/// allowlist. Unset the env var to fall through to TOML.
 pub(super) fn resolve_allowlist(
     env: &HashMap<String, String>,
     toml_table: TomlTable<'_>,
 ) -> Result<Vec<String>, ConfigError> {
     if let Some(csv) = env.get(ENV_ALLOWLIST) {
-        return parse_allowlist_csv(csv);
+        let list = parse_allowlist_csv(csv)?;
+        if list.is_empty() && toml_has_nonempty_allowlist(toml_table) {
+            tracing::warn!(
+                "empty {ENV_ALLOWLIST} shadows a populated TOML allowlist; all \
+                 inbound Signal senders will be denied (fail-closed). Unset \
+                 {ENV_ALLOWLIST} to use the TOML allowlist."
+            );
+        }
+        return Ok(list);
     }
     let raw = toml_table
         .and_then(|t| t.get("allowlist"))
@@ -73,6 +91,22 @@ pub(super) fn resolve_allowlist(
     Ok(out)
 }
 
+/// True when the TOML `allowlist` is an array containing at least one non-blank
+/// string entry. Used only for the shadowing `warn` in [`resolve_allowlist`];
+/// full validation still happens on the TOML fall-through path.
+fn toml_has_nonempty_allowlist(toml_table: TomlTable<'_>) -> bool {
+    toml_table
+        .and_then(|t| t.get("allowlist"))
+        .and_then(|v| v.as_array())
+        .is_some_and(|arr| {
+            arr.iter()
+                .any(|item| item.as_str().is_some_and(|s| !s.trim().is_empty()))
+        })
+}
+
+/// Resolve `own_device_id` honoring `env > TOML`. Accepts a TOML integer or
+/// numeric string, requires the value to be `>= 2`, and reports the source the
+/// operator actually edited on error.
 pub(super) fn resolve_own_device_id(
     env: &HashMap<String, String>,
     toml_table: TomlTable<'_>,
@@ -99,7 +133,7 @@ pub(super) fn resolve_own_device_id(
     };
     let value = raw
         .trim()
-        .parse::<u32>()
+        .parse_ascii_u32()
         .map_err(|_| ConfigError::InvalidNumber {
             key: source_key,
             value: raw.clone(),
@@ -113,6 +147,34 @@ pub(super) fn resolve_own_device_id(
     Ok(Some(value))
 }
 
+trait ParseAsciiDigits {
+    fn parse_ascii_u32(&self) -> Result<u32, ()>;
+    fn parse_ascii_u16(&self) -> Result<u16, ()>;
+}
+
+impl ParseAsciiDigits for str {
+    fn parse_ascii_u32(&self) -> Result<u32, ()> {
+        parse_ascii_digits(self, str::parse::<u32>)
+    }
+
+    fn parse_ascii_u16(&self) -> Result<u16, ()> {
+        parse_ascii_digits(self, str::parse::<u16>)
+    }
+}
+
+fn parse_ascii_digits<T>(
+    s: &str,
+    parse: impl FnOnce(&str) -> Result<T, std::num::ParseIntError>,
+) -> Result<T, ()> {
+    if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(());
+    }
+    parse(s).map_err(|_| ())
+}
+
+/// Resolve `reuse_rolling_group` honoring `env > TOML`, defaulting to `false`
+/// (per-session groups) when neither source sets it. Env values are parsed via
+/// [`parse_bool_env`]; the TOML value must be a native boolean.
 pub(super) fn resolve_reuse_rolling_group(
     env: &HashMap<String, String>,
     toml_table: TomlTable<'_>,
@@ -187,7 +249,7 @@ pub(super) fn validate_endpoint(s: &str) -> Result<(), ConfigError> {
     } else {
         return Err(ConfigError::InvalidEndpoint(s.to_string()));
     };
-    if !host.is_empty() && port.parse::<u16>().is_ok_and(|p| p != 0) {
+    if !host.is_empty() && port.parse_ascii_u16().is_ok_and(|p| p != 0) {
         return Ok(());
     }
     Err(ConfigError::InvalidEndpoint(s.to_string()))
