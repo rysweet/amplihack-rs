@@ -290,10 +290,11 @@ steps:
         gh_create_issue() { timeout 60 gh issue create --title "$ISSUE_TITLE" --body "$ISSUE_BODY" "$@" 2>&1; }
         try_gh_create() { GH_ISSUE_RC=0; GH_ISSUE_OUTPUT=$(gh_create_issue --label "$LABEL_NAME") || GH_ISSUE_OUTPUT=$(gh_create_issue) || GH_ISSUE_RC=$?; }
         # Rate-limit-aware issue creation: a temporarily-exhausted GraphQL quota must not abort the run.
-        # On a rate limit (not a permanent auth error) wait for the AUTHORITATIVE reset read via
-        # `gh api rate_limit` (which does not itself consume the core/graphql budget) — adaptive, bounded
-        # by the observed reset window (not a fixed cap), up to two windows — then retry; a clear error is
-        # only surfaced if still failing. Auth errors (401 / Bad credentials) are never retried.
+        # Mirrors the classifier/wait-for-reset policy in tools/workflow_gh_retry.sh but kept inline on
+        # purpose (this embedded step runs before any tool script is sourced; keep the two in sync). On a
+        # rate limit (not a permanent auth error) wait for the AUTHORITATIVE reset read via `gh api
+        # rate_limit` (does not consume the core/graphql budget) — adaptive, bounded by the observed reset
+        # window, up to two windows — then retry. Auth errors (401 / Bad credentials) are never retried.
         _issue_is_rate_limit() { printf '%s' "$1" | grep -Eiq 'api rate limit|rate limit already exceeded|secondary rate limit|abuse detection|(^|[^0-9])429([^0-9]|$)|retry-after|x-ratelimit-reset|rate limit'; }
         _issue_is_auth() { printf '%s' "$1" | grep -Eiq 'bad credentials|HTTP 401|(^|[^0-9])401([^0-9]|$)|requires authentication|not logged in'; }
         _issue_wait_for_reset() { local now epoch waitfor floor=5 buffer=3; now=$(date +%s); epoch=$(timeout 30 gh api rate_limit 2>/dev/null | jq -r '.resources.graphql.reset // empty' 2>/dev/null || true); case "$epoch" in ''|*[!0-9]*) epoch="" ;; esac; if [ -z "$epoch" ]; then waitfor=$floor; else waitfor=$((epoch - now + buffer)); [ "$waitfor" -lt "$floor" ] && waitfor=$floor; fi; echo "WARNING: GitHub GraphQL rate limit hit during issue creation; waiting ${waitfor}s for authoritative reset (adaptive, bounded by reset window)." >&2; sleep "$waitfor"; }
