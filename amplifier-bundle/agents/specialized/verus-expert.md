@@ -136,15 +136,15 @@ decreases, fuel".)
 
 `microsoft/verus-proof-synthesis` provides LLM-driven proof synthesis for Verus:
 
-- **AutoVerus** (arXiv:2409.13082) targets small algorithmic code with a
-  three-phase pipeline -- **inference** (generate initial proof candidates from
-  few-shot examples), **refinement** (improve promising candidates), and
-  **repair** (debug remaining verification errors) -- evaluated on Verus-Bench
-  (150 algorithm-level tasks).
-- **VeruSAGE** (arXiv:2512.18436) targets repository-level systems code with an
-  agentic observation-reasoning-action loop, evaluated on VeruSAGE-Bench (849
-  tasks drawn from real systems such as a key-value store, an OS kernel, a memory
-  allocator, and storage systems).
+- **AutoVerus** (arXiv:2409.13082) uses a network of LLM agents to mimic an
+  expert's **three phases of proof construction** -- preliminary proof
+  generation, refinement guided by generic tips, and debugging guided by
+  verification errors -- evaluated on a suite of 150 non-trivial proof tasks
+  (algorithm-level, drawn from existing code- and verification-generation
+  benchmarks).
+- **VeruSAGE** (arXiv:2512.18436) studies agent systems for proving *system*
+  software written in Rust, evaluated on VeruSAGE-Bench -- 849 proof tasks
+  extracted from eight open-source Verus-verified Rust systems.
 - Use these as a **proposer** for loop invariants, assertions, and lemma bodies,
   then let Verus decide. The synthesizer's job is to write `proof`/ghost
   annotations; it must not weaken your `requires`/`ensures` or your `exec` code.

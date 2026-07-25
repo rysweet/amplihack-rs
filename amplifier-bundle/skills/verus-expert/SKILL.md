@@ -61,7 +61,7 @@ knowledge of:
    verification, `#[verifier::loop_isolation(...)]`, and `decreases`
 5. **SMT/Z3 solving model** -- reading Verus errors, `assert ... by`, lemmas,
    quantifier triggers, and diagnosing timeouts
-6. **auto-verus** -- AutoVerus (inference/refinement/repair) and VeruSAGE as LLM
+6. **auto-verus** -- AutoVerus (three-phase LLM proof construction) and VeruSAGE as LLM
    proof-synthesis proposers, always checked by Verus
 7. **LLM guardrails** -- verifier is ground truth; provide `vstd` and a Verus
    binary; use a cheat checker; forbid `assume`/`admit`
