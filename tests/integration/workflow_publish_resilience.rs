@@ -166,13 +166,12 @@ fn publish_retries_all_github_pr_metadata_and_mutation_calls() {
 
     for required in [
         "sanitize_gh_stderr",
-        "is_transient_gh_error",
+        "workflow_gh_retry.sh",
+        "_gh_retry_core",
+        "classify_gh_error",
         "gh_pr_list_with_retry",
         "gh_pr_view_with_retry",
         "gh_pr_create_with_retry",
-        "timeout 60 gh pr list",
-        "timeout 60 gh pr view",
-        "timeout 60 gh pr create",
         "retrying (${attempt}/3)",
         "refusing to risk duplicate PR creation",
     ] {

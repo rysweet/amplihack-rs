@@ -135,12 +135,10 @@ fn final_status_uses_resilient_github_status_lookup() {
 
     for required in [
         "sanitize_gh_stderr",
-        "is_transient_gh_error",
+        "workflow_gh_retry.sh",
+        "_gh_retry_core",
         "gh_pr_view_with_retry",
-        "timeout 60 gh pr view",
-        "for attempt in 1 2 3",
-        "retrying (${attempt}/3)",
-        "final PR status lookup failed",
+        "final PR status",
     ] {
         assert!(
             command.contains(required),
@@ -155,15 +153,14 @@ fn pr_ready_helper_retries_github_lookup_ready_and_comment_calls() {
 
     for required in [
         "sanitize_gh_stderr",
-        "is_transient_gh_error",
+        "workflow_gh_retry.sh",
+        "_gh_retry_core",
         "gh_with_retry",
-        "timeout 60 gh",
-        "for attempt in 1 2 3",
-        "retrying (${attempt}/3)",
         "workflow_pr_scope.sh",
         "gh_with_retry \"pr view\"",
         "gh_with_retry \"pr ready\"",
         "gh_with_retry \"pr comment\"",
+        "refusing to report successful finalization",
         "isCrossRepository",
     ] {
         assert!(

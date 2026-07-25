@@ -228,8 +228,9 @@ for pr_target in "$pr_target"; do
     if ready_output="$(gh_with_retry "pr ready" pr ready "$pr_url")"; then
       printf '%s\n' "$ready_output"
     else
-      echo "ERROR: gh pr ready failed for '$pr_url'; refusing to report successful finalization after mutation failure" >&2
-      exit 1
+      ready_rc=$?
+      echo "ERROR: gh pr ready failed for '$pr_url' (exit ${ready_rc}); refusing to report successful finalization after mutation failure" >&2
+      exit "$ready_rc"
     fi
   else
     echo "INFO: PR is already ready for review"
