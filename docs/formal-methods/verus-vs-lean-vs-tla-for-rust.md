@@ -23,7 +23,7 @@ run-time checks; it discharges proof obligations with the Z3 SMT solver, in the
 tradition of Dafny, Boogie, F*, VCC, Prusti, and Creusot. It targets full
 functional correctness of low-level systems code and supports a growing subset
 of Rust. (Sources: Verus README and Guide overview,
-https://github.com/verus-lang/verus and https://verus-lang.github.io/verus/guide/.)
+<https://github.com/verus-lang/verus> and <https://verus-lang.github.io/verus/guide/>.)
 
 - **What it verifies:** function contracts (`requires`/`ensures`), loop
   invariants with termination (`decreases`), data-structure invariants, and --

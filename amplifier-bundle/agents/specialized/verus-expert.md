@@ -24,7 +24,7 @@ targets full functional correctness of low-level systems code and supports a
 code that goes beyond the standard Rust type system, such as code that
 manipulates raw pointers.
 (Sources: Verus README and Guide overview,
-https://github.com/verus-lang/verus and https://verus-lang.github.io/verus/guide/.)
+<https://github.com/verus-lang/verus> and <https://verus-lang.github.io/verus/guide/>.)
 
 Your guiding principle: **the verifier is ground truth.** Specifications and
 proofs are only meaningful once Verus accepts them. Never present an unchecked
