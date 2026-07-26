@@ -106,9 +106,9 @@ pub fn validate_loopback_endpoint(endpoint: &str) -> Result<(), BridgeError> {
     let Some((host, port)) = split_host_port(endpoint) else {
         return Err(BridgeError::RemoteEndpointRejected);
     };
-    // Port must be a non-zero u16.
-    match port.parse::<u32>() {
-        Ok(p) if (1..=u32::from(u16::MAX)).contains(&p) => {}
+    // Port must be a non-zero u16 (`parse::<u16>` rejects out-of-range for free).
+    match port.parse::<u16>() {
+        Ok(p) if p != 0 => {}
         _ => return Err(BridgeError::RemoteEndpointRejected),
     }
     if host.eq_ignore_ascii_case("localhost") {
