@@ -50,6 +50,10 @@ name = "smart_orchestrator_decomposition"
 path = "../../tests/integration/smart_orchestrator_decomposition_test.rs"
 
 [[test]]
+name = "issue_1025_pr_green_shortcircuit"
+path = "../../tests/integration/issue_1025_pr_green_shortcircuit_test.rs"
+
+[[test]]
 name = "automated_action_failure_investigation_contract"
 path = "../../tests/integration/automated_action_failure_investigation_contract_test.rs"
 
