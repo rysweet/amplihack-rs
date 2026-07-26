@@ -243,30 +243,21 @@ steps:
         exit 0
       fi
 
-      # Extract the last line that looks like a JSON object. Tolerates the
-      # verifier mixing prose with the final JSON line.
-      VERDICT_LINE=$(printf '%s\n' "$VERDICT_RAW" | grep -E '^[[:space:]]*\{.*"verdict"' | awk 'NF {line=$0} END {print line}' || true)
-      if [ -z "$VERDICT_LINE" ]; then
-        # Fall back to scanning the entire blob with jq for the first valid
-        # JSON object containing a "verdict" key.
-        VERDICT_LINE=$(printf '%s' "$VERDICT_RAW" | jq -c 'select(type=="object" and has("verdict"))' 2>/dev/null | awk 'NF {line=$0} END {print line}' || true)
-      fi
-      if [ -z "$VERDICT_LINE" ]; then
-        echo "WARN: step-08c-work-verifier output did not contain a parseable JSON verdict. Treating as INSUFFICIENT_EVIDENCE (issue #615)." >&2
-        echo "--- verifier stdout (truncated to 4000 bytes) ---" >&2
-        printf '%s\n' "${VERDICT_RAW:0:4000}" >&2
-        echo "--- end ---" >&2
-        exit 0
-      fi
-
-      VERDICT=$(printf '%s' "$VERDICT_LINE" | jq -r '.verdict // "INSUFFICIENT_EVIDENCE"' 2>/dev/null || echo "INSUFFICIENT_EVIDENCE")
-
-      # Issue #624: Normalize common LLM synonym verdicts before the case gate.
-      case "$VERDICT" in
-        VERIFIED|SUCCESS|APPROVED|PASS|PASSED) VERDICT="WORK_VERIFIED" ;;
-        FAILED|NO_WORK|EMPTY|NO_ARTIFACTS)     VERDICT="HOLLOW_SUCCESS" ;;
-        INCONCLUSIVE|UNKNOWN|UNCLEAR|PARTIAL)  VERDICT="INSUFFICIENT_EVIDENCE" ;;
-      esac
+      # Issue #1062 (finding A1): route the verifier's JSON verdict through the
+      # tested `orch helper` toolchain instead of grep/awk/jq/case text-scraping.
+      #   extract-json      -> first complete JSON object ({} if none parseable)
+      #   extract-field     -> .verdict, or INSUFFICIENT_EVIDENCE if absent
+      #   normalise-verdict -> collapse LLM synonyms via exact-token equality
+      #                        (preserves the #624 synonym mapping and the #615
+      #                        fail-safe default; UNVERIFIED/NOT_APPROVED never
+      #                        collide with a pass token).
+      # A non-parseable blob yields VERDICT_LINE="{}" and
+      # VERDICT="INSUFFICIENT_EVIDENCE", which the gate below degrades safely
+      # (loud WARNING + exit 0), preserving the prior behaviour.
+      VERDICT_LINE=$(printf '%s' "$VERDICT_RAW" | amplihack orch helper extract-json)
+      VERDICT=$(printf '%s' "$VERDICT_LINE" \
+        | amplihack orch helper extract-field --field verdict --default INSUFFICIENT_EVIDENCE \
+        | amplihack orch helper normalise-verdict)
 
       case "$VERDICT" in
         WORK_VERIFIED)
@@ -275,7 +266,7 @@ steps:
           exit 0
           ;;
         INSUFFICIENT_EVIDENCE)
-          echo "WARN: step-08c work-verifier returned INSUFFICIENT_EVIDENCE — letting workflow continue with a loud warning (issue #615)." >&2
+          echo "WARN: step-08c work-verifier returned INSUFFICIENT_EVIDENCE — fail-safe: letting workflow continue with a loud warning (issue #615/#624). An unknown/novel verdict normalises here too, so a recipe with real artifacts is never hard-failed." >&2
           printf '%s\n' "$VERDICT_LINE" | jq . >&2 || printf '%s\n' "$VERDICT_LINE" >&2
           exit 0
           ;;
@@ -286,10 +277,12 @@ steps:
           exit 1
           ;;
         *)
-          # Issue #624: Unknown verdicts fail-safe to INSUFFICIENT_EVIDENCE.
-          # An LLM producing novel verdict strings should never hard-fail a
-          # recipe that already has real artifacts (e.g. an open PR).
-          echo "WARN: step-08c unknown verdict '$VERDICT' — fail-safe to INSUFFICIENT_EVIDENCE (issue #624)." >&2
+          # Defensive fallback (issue #624/#1062): `normalise-verdict` already
+          # collapses unknown/novel verdict strings to INSUFFICIENT_EVIDENCE
+          # upstream, so this branch is normally unreachable. It stays as a
+          # belt-and-suspenders fail-safe: an unexpected token must never
+          # hard-fail a recipe that already has real artifacts (e.g. an open PR).
+          echo "WARN: step-08c unexpected verdict '$VERDICT' — fail-safe to INSUFFICIENT_EVIDENCE (issue #624)." >&2
           printf '%s\n' "$VERDICT_LINE" | jq . >&2 || printf '%s\n' "$VERDICT_LINE" >&2
           exit 0
           ;;

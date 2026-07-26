@@ -290,10 +290,14 @@ fn args_should_skip(args: &[OsString]) -> bool {
     if matches!(positionals.as_slice(), ["hygiene", "artifact-guard", ..]) {
         return true;
     }
-    if matches!(
-        positionals.as_slice(),
-        ["orch", "helper", "workflow-log-inventory", ..]
-    ) {
+    // `orch helper <sub>` commands are pure stdin->stdout text-transform
+    // primitives (extract-json, extract-field, normalise-type,
+    // normalise-verdict, reclassify-task-type, workflow-log-inventory, ...).
+    // They are invoked *inside* recipe bash pipelines whose output is parsed
+    // downstream (issue #1062). A self-heal install would emit its banner onto
+    // stdout and corrupt the very pipe these helpers exist to make robust, so
+    // none of them may trigger auto-install.
+    if matches!(positionals.as_slice(), ["orch", "helper", ..]) {
         return true;
     }
 
@@ -689,6 +693,38 @@ steps:
             1,
             "only hygiene artifact-guard should bypass startup self-heal"
         );
+    }
+
+    #[test]
+    fn orch_helper_commands_skip_startup_self_heal() {
+        // Every `orch helper <sub>` is a pipe primitive (issue #1062); a
+        // self-heal install banner on stdout would corrupt recipe pipelines.
+        for sub in [
+            "normalise-verdict",
+            "extract-json",
+            "extract-field",
+            "normalise-type",
+            "reclassify-task-type",
+            "workflow-log-inventory",
+        ] {
+            let tmp = TempDir::new().unwrap();
+            let _g = EnvGuard::new(tmp.path(), None);
+
+            let calls = Cell::new(0u32);
+            let mut buf = Vec::new();
+            ensure_assets_match_binary_version_with(
+                &args(&["amplihack", "orch", "helper", sub]),
+                &mut buf,
+                counting_installer(&calls, crate::VERSION),
+            )
+            .expect("ok");
+
+            assert_eq!(
+                calls.get(),
+                0,
+                "`orch helper {sub}` is a pipe primitive and must not self-heal (would pollute stdout)"
+            );
+        }
     }
 
     #[test]

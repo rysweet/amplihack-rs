@@ -112,21 +112,25 @@ fn run_gate(verdict_json: &str, implementation: &str, allow_no_op: &str) -> Gate
 mod ws1_synonym_mapping {
     use super::*;
 
-    /// The enforce-verdict bash command must contain the synonym mapping block.
+    /// The enforce-verdict bash command must route the verifier's verdict through
+    /// the tested `orch helper` parsing toolchain (issue #1062, finding A1),
+    /// rather than an inline grep/awk/jq + `case` synonym block. The synonym
+    /// mapping itself now lives in `normalise-verdict` and is covered by that
+    /// helper's Rust unit tests plus the runtime `synonym_*` tests below.
     #[test]
-    fn enforce_verdict_command_contains_synonym_case_block() {
+    fn enforce_verdict_command_routes_through_orch_helper_toolchain() {
         let cmd = enforce_verdict_command();
         assert!(
-            cmd.contains("VERIFIED") && cmd.contains("WORK_VERIFIED"),
-            "enforce-verdict must contain synonym mapping from VERIFIED to WORK_VERIFIED"
+            cmd.contains("orch helper extract-json"),
+            "enforce-verdict must extract the JSON verdict via `orch helper extract-json`"
         );
         assert!(
-            cmd.contains("NO_WORK") && cmd.contains("HOLLOW_SUCCESS"),
-            "enforce-verdict must map NO_WORK to HOLLOW_SUCCESS"
+            cmd.contains("orch helper extract-field") && cmd.contains("--field verdict"),
+            "enforce-verdict must read the verdict via `orch helper extract-field --field verdict`"
         );
         assert!(
-            cmd.contains("INCONCLUSIVE") && cmd.contains("INSUFFICIENT_EVIDENCE"),
-            "enforce-verdict must map INCONCLUSIVE to INSUFFICIENT_EVIDENCE"
+            cmd.contains("orch helper normalise-verdict"),
+            "enforce-verdict must collapse synonyms via `orch helper normalise-verdict`"
         );
     }
 

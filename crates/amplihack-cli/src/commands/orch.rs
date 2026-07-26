@@ -58,6 +58,18 @@ pub enum OrchHelperCommands {
     /// `Q&A`, `Operations`, `Investigation`, `Development` (the default).
     NormaliseType,
 
+    /// Read one already-extracted verdict token from stdin, print the
+    /// canonical verdict token.
+    ///
+    /// Output is one of `WORK_VERIFIED`, `HOLLOW_SUCCESS`, or
+    /// `INSUFFICIENT_EVIDENCE` (the default for unknown/empty input).
+    /// Unlike `normalise-type`, matching is **exact-token equality**
+    /// (case-insensitive), not substring — so negation-adjacent labels
+    /// (`UNVERIFIED`, `NOT_APPROVED`, `NOT_ACHIEVED`) never collide with a
+    /// pass token and fall through to `INSUFFICIENT_EVIDENCE`. Used by the
+    /// verdict-gate recipes (issue #1062, finding A).
+    NormaliseVerdict,
+
     /// Read decomposition JSON from stdin, print the workstream count.
     ///
     /// Equivalent to `max(1, len(extract_json(stdin)["workstreams"]))`.
@@ -149,11 +161,12 @@ fn scan_fenced_blocks(text: &str, tagged_only: bool) -> Option<serde_json::Value
             // For untagged blocks, skip any block that is actually ```json —
             // those were already considered (and failed) in the tagged pass.
             let after = &text[body_start_search..];
-            let lang = after
-                .chars()
-                .take_while(|c| c.is_alphanumeric())
-                .collect::<String>();
-            if lang.eq_ignore_ascii_case("json") {
+            let lang_len = after
+                .char_indices()
+                .find(|(_, c)| !c.is_alphanumeric())
+                .map(|(i, _)| i)
+                .unwrap_or(after.len());
+            if after[..lang_len].eq_ignore_ascii_case("json") {
                 search_from = body_start_search;
                 continue;
             }
@@ -226,7 +239,52 @@ pub fn normalise_type(raw: &str) -> &'static str {
     "Development"
 }
 
-/// Read all of stdin into a `String`. Errors out cleanly if stdin is
+/// Normalise an already-extracted verdict token to one canonical token:
+/// `WORK_VERIFIED`, `HOLLOW_SUCCESS`, or `INSUFFICIENT_EVIDENCE` (the default
+/// for any unrecognised or empty input).
+///
+/// Matching is **case-insensitive exact-token equality**, deliberately NOT the
+/// substring/`contains` strategy used by [`normalise_type`]. Verdict labels
+/// have negation-adjacent tokens (`UNVERIFIED` vs `VERIFIED`,
+/// `NOT_APPROVED` vs `APPROVED`, `NOT_ACHIEVED` vs `ACHIEVED`); a `contains`
+/// implementation would fail **open** by matching the pass token inside its
+/// own negation. Equality guarantees `PASS ⊄ PASSED` and
+/// `ACHIEVED ⊄ NOT_ACHIEVED` (issue #1062 R2, preserving #615 work-verifier
+/// behaviour).
+///
+/// The input is expected to be one already-extracted token (the output of
+/// `extract-field --field verdict`), not raw agent prose.
+pub fn normalise_verdict(raw: &str) -> &'static str {
+    let t = raw.trim().to_ascii_uppercase();
+    const PASS: &[&str] = &[
+        "VERIFIED",
+        "WORK_VERIFIED",
+        "SUCCESS",
+        "APPROVED",
+        "PASS",
+        "PASSED",
+    ];
+    const HOLLOW: &[&str] = &[
+        "HOLLOW",
+        "HOLLOW_SUCCESS",
+        "FAILED",
+        "FAIL",
+        "NO_WORK",
+        "NO_ARTIFACTS",
+        "EMPTY",
+    ];
+    if PASS.contains(&t.as_str()) {
+        return "WORK_VERIFIED";
+    }
+    if HOLLOW.contains(&t.as_str()) {
+        return "HOLLOW_SUCCESS";
+    }
+    // `INSUFFICIENT`, `INCONCLUSIVE`, `PARTIAL`, `UNKNOWN`, `UNCLEAR`, `NEEDS`,
+    // and everything else (including empty and negation-adjacent labels).
+    "INSUFFICIENT_EVIDENCE"
+}
+
+/// Read all of stdin into a `String`. Errors if reading fails or the input is
 /// not valid UTF-8 (recipe shell pipes always produce UTF-8 in practice).
 fn read_stdin() -> Result<String> {
     let mut buf = String::new();
@@ -248,6 +306,11 @@ pub fn run(command: OrchHelperCommands) -> Result<()> {
         OrchHelperCommands::NormaliseType => {
             let input = read_stdin()?;
             println!("{}", normalise_type(input.trim()));
+            Ok(())
+        }
+        OrchHelperCommands::NormaliseVerdict => {
+            let input = read_stdin()?;
+            println!("{}", normalise_verdict(&input));
             Ok(())
         }
         OrchHelperCommands::CountWorkstreams { force_single } => {
@@ -724,6 +787,87 @@ mod tests {
         // "qa" appears before "command" in keyword order — first match wins,
         // matching the Python's short-circuit `any()` evaluation.
         assert_eq!(normalise_type("qa command"), "Q&A");
+    }
+
+    // --- normalise_verdict ---------------------------------------------------
+
+    #[test]
+    fn normalise_verdict_pass_synonyms() {
+        for s in [
+            "VERIFIED",
+            "WORK_VERIFIED",
+            "SUCCESS",
+            "APPROVED",
+            "PASS",
+            "PASSED",
+            "approved",
+            "  pass  ",
+        ] {
+            assert_eq!(normalise_verdict(s), "WORK_VERIFIED", "{s:?}");
+        }
+    }
+
+    #[test]
+    fn normalise_verdict_hollow_synonyms() {
+        for s in [
+            "HOLLOW",
+            "HOLLOW_SUCCESS",
+            "FAILED",
+            "FAIL",
+            "NO_WORK",
+            "NO_ARTIFACTS",
+            "EMPTY",
+            "failed",
+        ] {
+            assert_eq!(normalise_verdict(s), "HOLLOW_SUCCESS", "{s:?}");
+        }
+    }
+
+    #[test]
+    fn normalise_verdict_canonical_tokens_pass_through() {
+        // The three canonical outputs must be idempotent so a value that has
+        // already been normalised once survives a second pass unchanged.
+        for s in ["WORK_VERIFIED", "HOLLOW_SUCCESS", "INSUFFICIENT_EVIDENCE"] {
+            assert_eq!(normalise_verdict(s), s, "{s:?} must pass through unchanged");
+        }
+    }
+
+    #[test]
+    fn normalise_verdict_insufficient_and_unknown_default() {
+        for s in [
+            "INSUFFICIENT",
+            "INCONCLUSIVE",
+            "PARTIAL",
+            "UNKNOWN",
+            "UNCLEAR",
+            "NEEDS",
+            "",
+            "   ",
+            "banana",
+        ] {
+            assert_eq!(normalise_verdict(s), "INSUFFICIENT_EVIDENCE", "{s:?}");
+        }
+    }
+
+    #[test]
+    fn normalise_verdict_negation_adjacent_never_collides_with_pass() {
+        // R2 regression (issue #1062): exact-token equality, not `contains`.
+        // A substring implementation would match VERIFIED inside UNVERIFIED
+        // (or APPROVED inside NOT_APPROVED) and fail OPEN. These must all
+        // resolve to the fail-safe default, never WORK_VERIFIED.
+        for s in [
+            "UNVERIFIED",
+            "NOT_APPROVED",
+            "NOT_ACHIEVED",
+            "NOT_VERIFIED",
+            "UNSUCCESSFUL",
+        ] {
+            assert_eq!(
+                normalise_verdict(s),
+                "INSUFFICIENT_EVIDENCE",
+                "{s:?} must NOT collide with a pass token"
+            );
+        }
     }
 
     #[test]

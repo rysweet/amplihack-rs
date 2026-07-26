@@ -36,6 +36,12 @@ pub enum SessionTreeCommands {
         session_id: Option<String>,
         /// Optional parent session ID.
         parent_id: Option<String>,
+        /// Emit a single-line JSON object `{"tree_id":..,"depth":..}` instead
+        /// of the default `TREE_ID=.. DEPTH=..` text line. Additive/opt-in;
+        /// lets consumers reuse the `orch helper extract-field` pipeline
+        /// (issue #1062, finding D2).
+        #[arg(long)]
+        json: bool,
     },
     /// Mark a session as completed.
     Complete {
@@ -103,7 +109,8 @@ pub fn run(cmd: SessionTreeCommands) -> Result<()> {
         SessionTreeCommands::Register {
             session_id,
             parent_id,
-        } => run_register(ctx, session_id, parent_id),
+            json,
+        } => run_register(ctx, session_id, parent_id, json),
         SessionTreeCommands::Complete { session_id } => run_complete(ctx, &session_id),
         SessionTreeCommands::Status { tree_id } => run_status(ctx, tree_id),
         SessionTreeCommands::Check => run_check(ctx),
@@ -114,6 +121,7 @@ fn run_register(
     ctx: TreeContext,
     session_id: Option<String>,
     parent_id: Option<String>,
+    as_json: bool,
 ) -> Result<()> {
     let session_id = session_id.unwrap_or_else(random_id);
     validate_tree_id(&session_id).context("invalid session_id")?;
@@ -164,8 +172,13 @@ fn run_register(
 
     match outcome {
         Ok(()) => {
-            // Byte-exact stdout contract consumed by smart-orchestrator.yaml.
-            println!("TREE_ID={tree_id} DEPTH={depth}");
+            if as_json {
+                // Opt-in single-line JSON; reuses the extract-field pipeline.
+                println!("{}", json!({ "tree_id": tree_id, "depth": depth }));
+            } else {
+                // Byte-exact stdout contract consumed by smart-orchestrator.yaml.
+                println!("TREE_ID={tree_id} DEPTH={depth}");
+            }
             Ok(())
         }
         Err(err) => {

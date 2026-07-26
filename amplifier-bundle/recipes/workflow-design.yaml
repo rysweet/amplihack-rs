@@ -197,6 +197,9 @@ steps:
     # failed/empty review never discards durable upstream work. The follow-on
     # step-06b-checkpoint-doc-review reports the degraded state (see its header).
     continue_on_error: true
+    # Issue #1062 (finding A3): emit a structured `status` field so the checkpoint
+    # reads a machine-readable outcome via the tested helper toolchain, not grep.
+    parse_json: true
     prompt: |
       # Step 6b: Documentation Review
 
@@ -209,6 +212,19 @@ steps:
       3. Highlights any changes needed to the design
 
       Provide feedback for documentation refinement.
+
+      Output EXACTLY one JSON object as your final line (issue #1062 finding A3:
+      the checkpoint reads the structured `status` field, not substring-matched
+      prose):
+
+      ```json
+      {"status": "OK", "feedback": "concise review notes / refinement guidance"}
+      ```
+
+      `status` MUST be EXACTLY one of:
+      - `OK` -- documentation aligns and is accurate; no follow-up required
+      - `NEEDS_ATTENTION` -- gaps, inaccuracies, or design mismatches remain;
+        put the specifics in `feedback`
     output: "doc_review_feedback"
 
   - id: "step-06c-documentation-refinement"
@@ -238,10 +254,11 @@ steps:
   # doc-review follow-up item — instead of a generic 'failed'.
   #
   # Security: the untrusted agent feedback is consumed strictly as DATA. It is
-  # piped through `printf '%s'` into grep and is NEVER interpolated into the
-  # summary or used to build a command. Only fixed markers + allow-listed,
-  # non-sensitive metadata refs are printed. No eval/source/indirect expansion,
-  # no env/secret dumps. `set -uo pipefail` without `-e`; structurally exits 0.
+  # piped through `printf '%s'` into the `orch helper` extractor and is NEVER
+  # interpolated into the summary or used to build a command. Only fixed markers
+  # + allow-listed, non-sensitive metadata refs are printed. No eval/source/
+  # indirect expansion, no env/secret dumps. `set -uo pipefail` without `-e`;
+  # structurally exits 0.
   - id: "step-06b-checkpoint-doc-review"
     type: "bash"
     command: |
@@ -261,16 +278,22 @@ steps:
       COMMIT_REF="${COMMIT_SHA:-${HEAD_SHA:-}}"
       REVIEW_THREAD_REF="${REVIEW_THREAD_ID:-${REVIEW_COMMENT_ID:-}}"
 
-      # Classify the review outcome. Failure/empty is checked first so mixed or
-      # missing feedback is treated conservatively as a follow-up item. Empty
-      # feedback means the review produced no notes (the agent step likely
-      # errored out under continue_on_error) — still flag it for attention.
+      # Classify the review outcome. Issue #1062 (finding A3): STATUS comes from
+      # the doc-review agent's structured `status` field (emitted via parse_json)
+      # via the tested `orch helper` pipeline — not English-keyword NLU over
+      # free-text. Untrusted feedback stays DATA: piped through `printf '%s'` into
+      # the helper, never interpolated into a command (issue #834 S2). Empty or
+      # non-OK status is treated conservatively as a follow-up item.
+      DOC_STATUS_RAW=$(printf '%s' "$DOC_FEEDBACK" \
+        | amplihack orch helper extract-json \
+        | amplihack orch helper extract-field --field status --default "")
+      DOC_STATUS_NORM=$(printf '%s' "$DOC_STATUS_RAW" | tr '[:lower:]' '[:upper:]' | tr -d '[:space:]')
       STATUS="OK"
       REASON="documentation-review passed"
       if [ -z "$DOC_FEEDBACK" ]; then
         STATUS="NEEDS_ATTENTION"
         REASON="documentation-review produced no feedback (step may have failed)"
-      elif printf '%s' "$DOC_FEEDBACK" | grep -qiE 'fail|error|cannot|could not|unable|missing|incomplete|does not|blocker'; then
+      elif [ "$DOC_STATUS_NORM" != "OK" ]; then
         STATUS="NEEDS_ATTENTION"
         REASON="documentation-review reported issues requiring follow-up"
       fi

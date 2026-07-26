@@ -99,24 +99,34 @@ steps:
         normally (prefer continuing the loop). Fail toward continuing, never
         toward a premature ACHIEVED.
 
-      End with EXACTLY one of:
-      - `GOAL_STATUS: ACHIEVED` -- all criteria met with verifiable evidence
-      - `GOAL_STATUS: PARTIAL -- [what's missing]` -- needs another round
-      - `GOAL_STATUS: NOT_ACHIEVED -- [reason]` -- needs another round
-      - `GOAL_STATUS: HOLLOW -- [what was empty]` -- agents ran but produced no real work
+      Output EXACTLY one JSON object as your final line (issue #1062 finding C:
+      the loop condition now reads a structured `goal_status` field instead of
+      substring-matching this prose, so a stray "partial" in your narrative can
+      no longer false-trigger a round):
+
+      ```json
+      {"goal_status": "ACHIEVED", "summary": "what was verified or what is missing"}
+      ```
+
+      `goal_status` MUST be EXACTLY one of:
+      - `ACHIEVED` -- all criteria met with verifiable evidence
+      - `PARTIAL` -- some criteria met, needs another round; put the gaps in `summary`
+      - `NOT_ACHIEVED` -- criteria not met, needs another round; reason in `summary`
+      - `HOLLOW` -- agents ran but produced no real work; what was empty in `summary`
     output: "reflection_1"
+    parse_json: true
 
   - id: "execute-round-2"
     type: "agent"
     condition: |
-      reflection_1 and ('PARTIAL' in reflection_1 or 'NOT_ACHIEVED' in reflection_1 or 'HOLLOW' in reflection_1)
+      reflection_1 and (reflection_1.goal_status == 'PARTIAL' or reflection_1.goal_status == 'NOT_ACHIEVED' or reflection_1.goal_status == 'HOLLOW')
     agent: "amplihack:core:builder"
     prompt: |
       Round 1 was incomplete. Continue from where it left off.
 
       **Original Goal**: {{decomposition_json}}
       **Round 1 Result**: {{round_1_result}}
-      **What's Missing**: {{reflection_1}}
+      **What's Missing**: {{reflection_1.summary}}
 
       Address only what's missing. Do not redo completed work.
       Create PRs for new changes. Report PR URLs.
@@ -126,7 +136,7 @@ steps:
   - id: "reflect-round-2"
     type: "agent"
     condition: |
-      round_2_result and ('PARTIAL' in reflection_1 or 'NOT_ACHIEVED' in reflection_1)
+      round_2_result and (reflection_1.goal_status == 'PARTIAL' or reflection_1.goal_status == 'NOT_ACHIEVED')
     agent: "amplihack:core:reviewer"
     prompt: |
       Evaluate goal achievement after round 2.
@@ -148,23 +158,30 @@ steps:
       pending/failing/closed/draft/no-PR/empty-required-check-set or unknown
       states — in those cases evaluate normally and prefer continuing.
 
-      End with:
-      - `GOAL_STATUS: ACHIEVED`
-      - `GOAL_STATUS: PARTIAL -- [gaps]`
-      - `GOAL_STATUS: NOT_ACHIEVED -- [reason]`
+      End with EXACTLY one JSON object as your final line (issue #1062 finding
+      C: the loop reads a structured `goal_status` field, not substring-matched
+      prose):
+
+      ```json
+      {"goal_status": "ACHIEVED", "summary": "gaps or reason, if any"}
+      ```
+
+      `goal_status` MUST be EXACTLY one of `ACHIEVED`, `PARTIAL`, or
+      `NOT_ACHIEVED`.
     output: "reflection_2"
+    parse_json: true
 
   - id: "execute-round-3"
     type: "agent"
     condition: |
-      reflection_2 and ('PARTIAL' in reflection_2 or 'NOT_ACHIEVED' in reflection_2)
+      reflection_2 and (reflection_2.goal_status == 'PARTIAL' or reflection_2.goal_status == 'NOT_ACHIEVED')
     agent: "amplihack:core:builder"
     prompt: |
       Final round. Complete as much remaining work as possible.
 
       **Original Goal**: {{decomposition_json}}
       **Round 2 Result**: {{round_2_result}}
-      **Round 2 Gaps**: {{reflection_2}}
+      **Round 2 Gaps**: {{reflection_2.summary}}
 
       Prioritize the most critical missing items. This is the last round.
       Report what was and was not completed.

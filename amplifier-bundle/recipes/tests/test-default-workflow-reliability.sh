@@ -193,7 +193,6 @@ assert_runtime_artifact_helper_contracts() {
 
     local case_dir="${WORK}/runtime-artifacts"
     local repo="${case_dir}/repo"
-    local nongit="${case_dir}/not-a-git-worktree"
 
     mkdir -p "${case_dir}"
     git init -b main "${repo}" >/dev/null
@@ -232,12 +231,25 @@ assert_runtime_artifact_helper_contracts() {
     [[ -f "${repo}/worktrees/tracked-source/source.txt" ]] \
         || fail "cleanup must not delete tracked worktrees/ source"
 
+    # The non-git fixture MUST live outside every git repository. Placing it
+    # under ${WORK} is unsafe: ${WORK} is rooted at ${REPO_ROOT}/.. and, when
+    # this suite runs from a *linked* worktree (REPO_ROOT = <main>/worktrees/
+    # <branch>/...), that parent still resolves inside the main repository's
+    # work tree. `git rev-parse --is-inside-work-tree` walks upward and reports
+    # true, so is_git_worktree() would pass and the fail-closed guard would
+    # never be exercised. mktemp -d yields a path under $TMPDIR that is
+    # genuinely outside any repo, making this assertion valid regardless of the
+    # checkout layout (plain clone or nested worktree).
+    local nongit
+    nongit="$(mktemp -d)"
     mkdir -p "${nongit}/.claude/runtime"
     if cleanup_known_workflow_runtime_artifacts "${nongit}"; then
+        rm -rf "${nongit}"
         fail "cleanup must reject non-git directories instead of deleting by path shape alone"
     fi
     [[ -d "${nongit}/.claude/runtime" ]] \
-        || fail "cleanup must not delete anything when the target is not a git worktree"
+        || { rm -rf "${nongit}"; fail "cleanup must not delete anything when the target is not a git worktree"; }
+    rm -rf "${nongit}"
 }
 
 assert_terminal_recipe_uses_final_status_tool() {
@@ -1035,11 +1047,14 @@ assert_scoped_pr_helper_contracts
 #       *.lock, package-lock.json, go.sum, ...) whenever any non-generated file
 #       is present. Only a genuinely lockfile-only diff may fall back to the
 #       lockfile scope. CHANGED_COUNT and the PR body still enumerate all files.
-#   R2  workflow-terminal-state.yaml must detect an explicit no-merge directive
-#       in TASK_DESCRIPTION ("do not merge", "don't merge", "no admin merge",
-#       "no-merge", "leave ... open") and force should_merge="false" on the
-#       active emit path, while leaving should_merge="true" when no directive is
-#       present (default behavior unchanged).
+#   R2  workflow-terminal-state.yaml must honor a STRUCTURED no-merge flag
+#       (issue #1062 finding B): the classifier emits `no_merge`, threaded to
+#       the terminal-state probe via the NO_MERGE env / no_merge context var.
+#       A truthy flag forces should_merge="false" on the active emit path, while
+#       its absence leaves should_merge="true" (default behavior unchanged). The
+#       old bash prose-regex over TASK_DESCRIPTION has been removed because
+#       unusual phrasings ("hold off merging", "keep as draft") silently slipped
+#       through it.
 #
 # These assertions SHOULD FAIL before the issue #929 fixes land and MUST PASS
 # afterwards.
@@ -1233,6 +1248,7 @@ run_nomerge_probe_case() {
     local task_description="$2"
     local out="$3"
     local err="$4"
+    local no_merge_flag="${5:-}"
 
     (
         cd "${repo}"
@@ -1244,6 +1260,14 @@ run_nomerge_probe_case() {
         export ISSUE_NUMBER="929"
         export AMPLIHACK_HOME="${REPO_ROOT}"
         export TASK_DESCRIPTION="${task_description}"
+        # Issue #1062 (finding B): no-merge intent is now a STRUCTURED flag
+        # emitted by the classifier, not prose scraped from TASK_DESCRIPTION.
+        # The probe consumes it via the NO_MERGE env / no_merge context var.
+        if [ -n "${no_merge_flag}" ]; then
+            export NO_MERGE="${no_merge_flag}"
+        else
+            unset NO_MERGE
+        fi
         unset PR_URL PR_NUMBER GOAL_ALREADY_MET
         bash "${PROBE_TERMINAL_STEP}"
     ) >"${out}" 2>"${err}"
@@ -1270,25 +1294,27 @@ assert_no_merge_directive_suppresses_auto_merge() {
     grep -q '"should_merge":"true"' "${WORK}/nomerge-control.out" \
         || { cat "${WORK}/nomerge-control.out" >&2; fail "issue #929: default (no directive) active state must keep should_merge=true"; }
 
-    # Directive present -> should_merge must be forced to "false".
-    local directive
-    for directive in \
-        "Fix issue 929. Do NOT merge the PR; leave it open." \
-        "Please don't merge this, no admin merge." \
-        "Implement the change but this is a no-merge task"; do
+    # Directive present -> should_merge must be forced to "false". Issue #1062
+    # (finding B): the directive is now the STRUCTURED `no_merge` flag emitted by
+    # the classifier (truthy tokens), not prose scraped from the task text. The
+    # accompanying task_description prose is intentionally varied to prove the
+    # decision is driven by the flag, NOT by the wording.
+    local directive_flag
+    for directive_flag in "true" "1" "yes"; do
         local case_repo
-        case_repo="${WORK}/nomerge-probe-$(printf '%s' "${directive}" | tr -c 'A-Za-z0-9' '_' | cut -c1-24)"
+        case_repo="${WORK}/nomerge-probe-flag-${directive_flag}"
         setup_nomerge_probe_repo "${case_repo}"
-        if ! run_nomerge_probe_case "${case_repo}" "${directive}" \
-            "${WORK}/nomerge-dir.out" "${WORK}/nomerge-dir.err"; then
+        if ! run_nomerge_probe_case "${case_repo}" \
+            "Implement the change (unusual phrasing: hold off merging, keep as draft)" \
+            "${WORK}/nomerge-dir.out" "${WORK}/nomerge-dir.err" "${directive_flag}"; then
             echo "--- nomerge directive stdout ---" >&2
             cat "${WORK}/nomerge-dir.out" >&2
             echo "--- nomerge directive stderr ---" >&2
             cat "${WORK}/nomerge-dir.err" >&2
-            fail "workflow-terminal-state probe must succeed on an active branch when a no-merge directive is present"
+            fail "workflow-terminal-state probe must succeed on an active branch when a no-merge flag is present"
         fi
         grep -q '"should_merge":"false"' "${WORK}/nomerge-dir.out" \
-            || { echo "directive was: ${directive}" >&2; cat "${WORK}/nomerge-dir.out" >&2; fail "issue #929: no-merge directive must force should_merge=false"; }
+            || { echo "no_merge flag was: ${directive_flag}" >&2; cat "${WORK}/nomerge-dir.out" >&2; fail "issue #929/#1062: structured no_merge flag must force should_merge=false"; }
     done
 }
 

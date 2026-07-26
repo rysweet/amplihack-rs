@@ -21,25 +21,26 @@ steps:
       echo ""
       GATE_OUTPUT="${LOCAL_TESTING_GATE:-}"
       # Outcome 3 (FATAL — code-verification failure): a genuine test/verification
-      # failure EXPLICITLY recorded as a verdict in the evidence stays fatal. We
-      # match only verdict-style failure tokens (prose "VERDICT: FAILED" or a JSON
-      # "verdict":"...FAILED/NOT_VERIFIED") — NOT a loose "tests failed", which
-      # would false-positive on benign summaries like "0 tests failed, 19 passed"
-      # and re-introduce the very work-discarding abort #962 removes. Actual
-      # failing tests are independently caught fatally by step-08c-enforce-verdict
-      # and step-19c-zero-bs-verification; this presence-gate only needs to honor
-      # an explicit failure verdict. A bookkeeping degrade must NEVER mask one.
-      if printf '%s' "$GATE_OUTPUT" | grep -qiE 'VERDICT:[[:space:]]*FAILED|"verdict"[[:space:]]*:[[:space:]]*"[^"]*(FAILED|NOT_VERIFIED)'; then
+      # failure EXPLICITLY recorded as a verdict stays fatal. Issue #1062 (finding
+      # A2): the structured JSON verdict flows through the tested `orch helper`
+      # toolchain (extract-json | extract-field | normalise-verdict, mapping
+      # FAILED/FAIL/EMPTY/... to HOLLOW_SUCCESS); only the prose "VERDICT: FAILED"
+      # fail-safe token (#962) still uses a literal grep. Matching only verdict
+      # tokens avoids false-positives on benign summaries ("0 tests failed, 19
+      # passed"); real failures are caught by step-08c and step-19c.
+      JSON_VERDICT=$(printf '%s' "$GATE_OUTPUT" \
+        | amplihack orch helper extract-json \
+        | amplihack orch helper extract-field --field verdict --default '' \
+        | amplihack orch helper normalise-verdict)
+      if [ "$JSON_VERDICT" = "HOLLOW_SUCCESS" ] \
+         || printf '%s' "$GATE_OUTPUT" | grep -qiE 'VERDICT:[[:space:]]*FAILED'; then
         echo "TESTING-EVIDENCE GATE FAILURE: Step 13 evidence records an explicit test/verification FAILURE." >&2
         echo "This is a genuine code-verification failure and stays fatal (not a bookkeeping-absence degrade)." >&2
         exit 1
       fi
       # Outcome 2 (VISIBLE DEGRADE / N-A): no local-testing evidence was produced
-      # (e.g. a change with no external-service integration that legitimately
-      # needs none). Per the #962 NO-DISCARD invariant this MUST NOT abort and
-      # cascade (workflow-pr-review -> default-workflow -> whole recipe FAILED),
-      # discarding already-implemented, tested, committed work. It degrades
-      # VISIBLY (loud WARNING) and lets the workflow proceed.
+      # (e.g. a change that legitimately needs none). Per the #962 NO-DISCARD
+      # invariant this MUST NOT abort/cascade; it degrades VISIBLY and continues.
       if [ -z "$GATE_OUTPUT" ] || [ "$GATE_OUTPUT" = "''" ]; then
         echo "WARNING: Step 13 testing-evidence gate is empty / not applicable — no local-testing evidence was recorded for this change." >&2
         echo "WARNING: This is a bookkeeping/evidence gate, not a code-verification gate; degrading VISIBLY and continuing so validated, committed work is NOT discarded (no-discard invariant, issue #962)." >&2
@@ -203,9 +204,8 @@ steps:
       # Pre-publish artifact-provenance gate: runs BEFORE pushing review-feedback
       # commits, so per the landed #829 contract it stays fail-visible (exit 2) if
       # the helper is unresolvable. Uses the git-toplevel variant (NOT REPO_PATH)
-      # to honor the #684 invariant that step-18c requires the worktree; the
-      # AMPLIHACK_HOME/git-toplevel/cwd/~/.copilot/~/.amplihack ladder (issue #962)
-      # still finds it at the install root even for a gitignored worktree bundle.
+      # to honor the #684 worktree invariant; the resolution ladder (#962) still
+      # finds it at the install root even for a gitignored worktree bundle.
       [ -f "$RUNTIME_ARTIFACT_HELPER" ] || { echo "ERROR: workflow runtime artifact helper not found (searched AMPLIHACK_HOME, worktree, cwd, ~/.copilot, ~/.amplihack): $RUNTIME_ARTIFACT_HELPER" >&2; exit 2; }
       # shellcheck source=/dev/null
       . "$RUNTIME_ARTIFACT_HELPER"

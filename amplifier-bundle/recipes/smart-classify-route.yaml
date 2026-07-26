@@ -78,6 +78,12 @@ steps:
            e.g. "build webui + api" -> 2 workstreams
                 "investigate X then implement Y" -> 2 workstreams
          - recipe: "default-workflow" (dev) | "investigation-workflow" (research)
+      5. no_merge: true | false — set `true` when the request asks NOT to merge
+         or to keep the PR open (issue #929/#1062). This replaces the old bash
+         prose-regex; you understand intent, so catch ALL phrasings, including
+         unusual ones like "hold off merging", "keep it as a draft", "wait for
+         my review", "leave it open", "don't merge", "no admin merge". Default
+         to `false` when the request says nothing about merging.
 
       **Classification rules — read carefully (#269)**:
       - **Operations** is ONLY for one-shot read-only or trivial mutating
@@ -102,6 +108,7 @@ steps:
         "task_type": "Development",
         "goal": "One sentence goal",
         "success_criteria": ["Criterion 1", "Criterion 2"],
+        "no_merge": false,
         "workstreams": [
           {"name": "slug", "description": "full task", "recipe": "default-workflow"}
         ]
@@ -253,11 +260,19 @@ steps:
       # #283: replace scripted uuid with /proc/sys/kernel/random/uuid (POSIX)
       SESSION_ID=$(tr -d '-' < /proc/sys/kernel/random/uuid | head -c 8)
 
-      # #248: native Rust subcommand for session tree registration
-      if OUTPUT=$(amplihack session-tree register "$SESSION_ID" 2>&1); then
-        # Output: "TREE_ID=abc123 DEPTH=0"
-        TREE_ID=$(echo "$OUTPUT" | grep -oE 'TREE_ID=[A-Za-z0-9_-]+' | head -1 | cut -d= -f2)
-        DEPTH_STR=$(echo "$OUTPUT" | grep -oE 'DEPTH=[0-9]+' | head -1 | cut -d= -f2)
+      # #248: native Rust subcommand for session tree registration.
+      # Issue #1062 (finding D2): request structured JSON via the additive
+      # `--json` flag and read tree_id/depth through the tested
+      # `orch helper extract-field` pipeline instead of grep-scraping the
+      # `TREE_ID=.. DEPTH=..` text line.
+      if OUTPUT=$(amplihack session-tree register "$SESSION_ID" --json 2>&1); then
+        # Output: {"tree_id":"abc123","depth":0}
+        TREE_ID=$(printf '%s' "$OUTPUT" \
+          | amplihack orch helper extract-json \
+          | amplihack orch helper extract-field --field tree_id --default '')
+        DEPTH_STR=$(printf '%s' "$OUTPUT" \
+          | amplihack orch helper extract-json \
+          | amplihack orch helper extract-field --field depth --default 0)
         DEPTH_VAL=${DEPTH_STR:-0}
         # Validate extracted values
         if ! echo "$TREE_ID" | grep -qE '^[A-Za-z0-9_-]+$'; then

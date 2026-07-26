@@ -26,9 +26,9 @@ inputs:
   - name: terminal_fail_mode
     description: "Failure behavior for terminal probe blockers. `exit` preserves standalone fail-closed behavior; `report` emits blocker JSON with exit 0 so workflow-finalize can classify and validate it agentically."
   - name: task_description
-    description: "Original task description. Scanned for an explicit no-merge directive (e.g. 'do not merge', 'no admin merge', 'leave it open') so the workflow never auto-merges when told not to (issue #929)."
+    description: "Original task description. Retained for context/plumbing; no-merge intent is no longer scraped from this prose (issue #1062 finding B) — see the structured `no_merge` flag emitted by the classifier."
   - name: no_merge
-    description: "Optional explicit flag ('true'/'1'/'yes') that forces should_merge='false' regardless of task_description wording."
+    description: "Structured no-merge flag ('true'/'1'/'yes') emitted by the classifier (smart-classify-route `no_merge` field, issue #929/#1062). When truthy it forces should_merge='false'; absent it preserves the auto-merge default."
 
 context:
   repo_path: "."
@@ -250,35 +250,28 @@ steps:
       case "$PR_URL_INPUT" in "{{pr_url}}"|"''") PR_URL_INPUT="" ;; esac
       case "$GOAL_ALREADY_MET_INPUT" in "{{goal_already_met}}"|"''") GOAL_ALREADY_MET_INPUT="false" ;; esac
 
-      # Issue #929: honor an explicit no-merge directive so the workflow never
-      # auto-merges when told not to. Read the task description and optional
-      # explicit flag, then detect intent with static, quoted pattern matching.
-      # Additive gate: a detected directive can only *suppress* auto-merge; when
-      # no directive is found (or detection cannot match) the merge decision
-      # stays at the prior default ("true"), preserving existing behavior.
-      TASK_DESCRIPTION_INPUT="${TASK_DESCRIPTION:-}"
-      [ -n "$TASK_DESCRIPTION_INPUT" ] || TASK_DESCRIPTION_INPUT="${RECIPE_VAR_task_description:-}"
-      [ -n "$TASK_DESCRIPTION_INPUT" ] || TASK_DESCRIPTION_INPUT="{{task_description}}"
-      case "$TASK_DESCRIPTION_INPUT" in "{{task_description}}"|"''") TASK_DESCRIPTION_INPUT="" ;; esac
+      # Issue #929 + #1062 (finding B): honor a no-merge directive so the
+      # workflow never auto-merges when told not to. The intent is now a
+      # *structured* flag emitted by the classifier (smart-classify-route's
+      # `no_merge` parse_json field), NOT a bash regex guessing intent from the
+      # user's prose (unusual phrasings silently auto-merged before). We read
+      # the flag from the explicit `no_merge` context var / `NO_MERGE` env.
+      # Additive gate: a truthy flag can only *suppress* auto-merge; when the
+      # flag is absent the merge decision stays at the prior default ("true"),
+      # preserving existing behavior.
       NO_MERGE_FLAG_INPUT="${NO_MERGE:-}"
       [ -n "$NO_MERGE_FLAG_INPUT" ] || NO_MERGE_FLAG_INPUT="${RECIPE_VAR_no_merge:-}"
       [ -n "$NO_MERGE_FLAG_INPUT" ] || NO_MERGE_FLAG_INPUT="{{no_merge}}"
       case "$NO_MERGE_FLAG_INPUT" in "{{no_merge}}"|"''") NO_MERGE_FLAG_INPUT="" ;; esac
 
-      detect_no_merge_directive() {
-        # $1 explicit flag, $2 free-text task description. User text is only ever
-        # the grep subject, never the pattern, so there is no ReDoS/injection risk.
-        local flag text
+      normalise_no_merge_flag() {
+        # $1 structured flag value. Truthy tokens suppress auto-merge; anything
+        # else (including empty/false) preserves the default merge behavior.
+        local flag
         flag="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
-        case "$flag" in true|1|yes|on) printf 'true\n'; return 0 ;; esac
-        text="$(printf '%s' "${2:-}" | tr '[:upper:]' '[:lower:]')"
-        if printf '%s' "$text" | grep -Eq "do[[:space:]]+not[[:space:]]+merge|don'?t[[:space:]]+merge|no[[:space:]_-]*merge|no[[:space:]]+admin[[:space:]]+merge|leave[[:space:]][^.]*open"; then
-          printf 'true\n'
-          return 0
-        fi
-        printf 'false\n'
+        case "$flag" in true|1|yes|on) printf 'true\n' ;; *) printf 'false\n' ;; esac
       }
-      NO_MERGE_DIRECTIVE="$(detect_no_merge_directive "$NO_MERGE_FLAG_INPUT" "$TASK_DESCRIPTION_INPUT")"
+      NO_MERGE_DIRECTIVE="$(normalise_no_merge_flag "$NO_MERGE_FLAG_INPUT")"
       if [ "$NO_MERGE_DIRECTIVE" = "true" ]; then
         echo "INFO: workflow-terminal-state: explicit no-merge directive detected; auto-merge will be suppressed (should_merge=false)" >&2
       fi

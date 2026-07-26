@@ -77,12 +77,14 @@ steps:
     command: |
       # FIX (#469/#311): Use env var — safe against injection and word-splitting.
       SESSION_JSON="$SESSION_INFO"
-      # Extract status using shell grep — no external subprocess needed
-      if echo "$SESSION_JSON" | grep -qE '"status" *: *"ok"'; then
+      # Issue #1062 (finding D1): read `status` through the tested
+      # extract-json|extract-field pipeline; unknown -> BLOCKED:unknown fail-safe.
+      STATUS=$(printf '%s' "$SESSION_JSON" \
+        | amplihack orch helper extract-json \
+        | amplihack orch helper extract-field --field status --default unknown)
+      if [ "$STATUS" = "ok" ] || [ "$STATUS" = "no_tree_script" ]; then
         echo "ALLOWED"
-      elif echo "$SESSION_JSON" | grep -qE '"status" *: *"no_tree_script"'; then
-        echo "ALLOWED"
-      elif echo "$SESSION_JSON" | grep -qE '"status" *: *"registration_failed"'; then
+      elif [ "$STATUS" = "registration_failed" ]; then
         echo "NOTE: Session tree registration was skipped — depth and capacity limits inactive." >&2
         echo "BLOCKED:registration_failed"
       else

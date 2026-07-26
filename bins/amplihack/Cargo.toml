@@ -140,6 +140,15 @@ path = "../../tests/integration/default_workflow_decomposition_test.rs"
 name = "issue_615_work_verifier"
 path = "../../tests/integration/issue_615_work_verifier_test.rs"
 
+# Issue #1062: brittle-parsing findings from the default-workflow audit. Pins
+# the migration of free-text agent-output scraping to the tested
+# `amplihack orch helper extract-json | extract-field | normalise-verdict`
+# path, plus the additive `session-tree register --json` mode and the
+# structured no_merge/goal_status control signals.
+[[test]]
+name = "issue_1062_brittle_parsing"
+path = "../../tests/integration/issue_1062_brittle_parsing_test.rs"
+
 [[test]]
 name = "workflow_prep_git_recovery"
 path = "../../tests/integration/workflow_prep_git_recovery_test.rs"
