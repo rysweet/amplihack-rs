@@ -19,6 +19,7 @@
 
 pub mod auth;
 pub(crate) mod azlin_parse;
+pub(crate) mod backoff;
 pub mod cli;
 pub mod commands;
 pub mod error;
@@ -28,8 +29,10 @@ pub mod orchestrator;
 pub mod packager;
 mod redact;
 pub mod session;
+pub(crate) mod shell_safe;
 pub mod state_io;
 pub mod state_lock;
+pub(crate) mod vm_lookup;
 pub mod vm_pool;
 
 pub use auth::{AzureAuthenticator, AzureCredentials, get_azure_auth};

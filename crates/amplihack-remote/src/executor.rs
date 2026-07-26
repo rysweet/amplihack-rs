@@ -12,8 +12,10 @@ use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tracing::{debug, info, warn};
 
+use crate::backoff::BackoffPolicy;
 use crate::error::{ErrorContext, RemoteError};
 use crate::orchestrator::VM;
+use crate::shell_safe::validate_session_id;
 
 /// Result of a remote command execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,8 +66,10 @@ impl Executor {
             .unwrap_or("context.tar.gz");
         let remote_path = format!("{}:~/context.tar.gz", self.vm.name);
 
-        let max_retries = 2u32;
-        for attempt in 0..max_retries {
+        let policy = BackoffPolicy::transfer_default();
+        let retry_start = Instant::now();
+        let mut attempt = 0u32;
+        loop {
             let mut cmd = Command::new("azlin");
             cmd.arg("cp");
             self.append_port_args(&mut cmd);
@@ -75,53 +79,50 @@ impl Executor {
             cmd.stderr(Stdio::piped());
 
             let start = Instant::now();
-            match tokio::time::timeout(std::time::Duration::from_secs(600), cmd.output()).await {
-                Ok(Ok(output)) if output.status.success() => {
-                    let dur = start.elapsed().as_secs_f64();
-                    info!(duration_secs = format!("{dur:.1}"), "transfer complete");
-                    return Ok(());
-                }
-                Ok(Ok(output)) => {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    if attempt < max_retries - 1 {
-                        warn!(attempt = attempt + 1, "transfer failed, retrying");
-                        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-                        continue;
+            let retry_reason: String =
+                match tokio::time::timeout(std::time::Duration::from_secs(600), cmd.output()).await
+                {
+                    Ok(Ok(output)) if output.status.success() => {
+                        let dur = start.elapsed().as_secs_f64();
+                        info!(duration_secs = format!("{dur:.1}"), "transfer complete");
+                        return Ok(());
                     }
-                    return Err(RemoteError::transfer_ctx(
-                        format!("Failed to transfer file: {stderr}"),
-                        ErrorContext::new().insert("vm_name", &self.vm.name),
-                    ));
-                }
-                Ok(Err(e)) => {
-                    if attempt < max_retries - 1 {
-                        warn!(
-                            error = %e,
-                            "transfer error, retrying"
-                        );
-                        continue;
+                    Ok(Ok(output)) => {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        format!("transfer failed: {stderr}")
                     }
-                    return Err(RemoteError::transfer(format!(
-                        "Transfer command failed: {e}"
-                    )));
+                    Ok(Err(e)) => format!("transfer command error: {e}"),
+                    Err(_) => "transfer timed out".to_string(),
+                };
+
+            match policy.next_backoff(attempt, retry_start.elapsed()) {
+                Some(delay) => {
+                    warn!(
+                        attempt = attempt + 1,
+                        delay_ms = delay.as_millis() as u64,
+                        "transfer failed, backing off before retry"
+                    );
+                    // Cancellation-safe: dropping this future aborts the sleep.
+                    tokio::time::sleep(delay).await;
+                    attempt += 1;
                 }
-                Err(_) => {
-                    if attempt < max_retries - 1 {
-                        warn!("transfer timeout, retrying");
-                        continue;
-                    }
+                None => {
                     return Err(RemoteError::transfer_ctx(
                         format!(
-                            "Transfer timed out after \
-                             {max_retries} attempts"
+                            "Failed to transfer file within retry budget \
+                             ({}s, {} attempts): {}",
+                            policy.budget().as_secs(),
+                            attempt + 1,
+                            retry_reason
                         ),
-                        ErrorContext::new().insert("vm_name", &self.vm.name),
+                        ErrorContext::new()
+                            .insert("vm_name", &self.vm.name)
+                            .insert("retry_budget_secs", policy.budget().as_secs().to_string())
+                            .insert("attempts", (attempt + 1).to_string()),
                     ));
                 }
             }
         }
-
-        Err(RemoteError::transfer("Transfer failed after all retries"))
     }
 
     /// Execute amplihack command on the remote VM.
@@ -242,6 +243,7 @@ amplihack claude --{command} --max-turns {turns} -- -p "$PROMPT"
 
         let encoded_prompt = b64_encode(prompt.as_bytes());
         let encoded_key = b64_encode(api_key.as_bytes());
+        let safe_session = validate_session_id(session_id)?;
         let script = format!(
             r#"
 set -e
@@ -251,7 +253,7 @@ tmux new-session -d -s {session} "cd ~/workspace && amplihack claude --{command}
 "#,
             key = encoded_key,
             prompt = encoded_prompt,
-            session = shell_escape(session_id),
+            session = safe_session,
             command = command,
             turns = max_turns,
         );
@@ -426,13 +428,6 @@ fn b64_encode(data: &[u8]) -> String {
     result
 }
 
-fn shell_escape(value: &str) -> String {
-    value
-        .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -488,13 +483,5 @@ mod tests {
         assert_eq!(b64_encode(b"Hello, World!"), "SGVsbG8sIFdvcmxkIQ==");
         let data: Vec<u8> = (0..=255).collect();
         assert_eq!(b64_encode(&data).len() % 4, 0);
-    }
-
-    #[test]
-    fn shell_escape_strips_unsafe() {
-        assert_eq!(shell_escape("hello-world_2.0"), "hello-world_2.0");
-        assert_eq!(shell_escape("test;rm -rf /"), "testrm-rf");
-        assert_eq!(shell_escape(""), "");
-        assert_eq!(shell_escape("!@#$%^&*()"), "");
     }
 }
