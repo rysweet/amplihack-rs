@@ -88,6 +88,11 @@ mod autodetect_test;
 mod tests;
 
 /// Hidden integration-test-only graph DB support exports.
+///
+/// Gated behind `cfg(test)`/`feature = "test-support"` so it is never compiled
+/// into normal release builds — it exists only to share test helpers across the
+/// crate boundary (CLI integration tests).
+#[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub mod ffi_test_support {
     pub use super::backend::graph_db::{

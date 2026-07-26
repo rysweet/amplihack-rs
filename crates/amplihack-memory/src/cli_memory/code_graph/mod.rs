@@ -48,6 +48,11 @@ use types::{
 use validation::validate_blarify_json_size;
 
 /// Hidden graph test support used by CLI integration tests after the memory split.
+///
+/// Gated behind `cfg(test)`/`feature = "test-support"` so it is never compiled
+/// into normal release builds — it exists only to share test helpers across the
+/// crate boundary.
+#[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub mod test_support {
     pub use super::backend::with_test_code_graph_conn;

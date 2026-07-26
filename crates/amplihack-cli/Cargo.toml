@@ -20,6 +20,10 @@ doctest = false
 # accompanying Cargo.lock update.
 default = []
 signal = ["dep:amplihack-signal", "dep:qrcode"]
+# Re-exports cross-crate memory test helpers (`memory::ffi_test_support`,
+# `commands::memory::code_graph::test_support`) for integration tests only.
+# Never enabled in release builds; forwards to `amplihack-memory/test-support`.
+test-support = ["amplihack-memory/test-support"]
 
 [dependencies]
 amplihack-hive = { path = "../amplihack-hive" }
@@ -73,6 +77,10 @@ qrcode = { version = "0.14", default-features = false, optional = true }
 assert_cmd = "2"
 tempfile = { workspace = true }
 anyhow = { workspace = true }
+# Enable the memory test-support helpers when building this crate's own tests
+# (e.g. the query_code unit tests use `with_test_code_graph_conn`). Under
+# resolver 2 this dev-only feature does NOT leak into normal binary builds.
+amplihack-memory = { workspace = true, features = ["test-support"] }
 # Issue #921: the config_writer TDD test round-trips generated TOML through the
 # REAL amplihack-signal resolver to prove the onboarding output is consumable by
 # the existing per-session channel without divergence.
@@ -92,6 +100,12 @@ cxx-build = { workspace = true }
 [[test]]
 name = "lbug_ffi"
 path = "../../tests/integration/lbug_ffi_test.rs"
+# Reaches `amplihack_cli::memory::ffi_test_support`, which is gated behind the
+# `test-support` feature so it stays out of release builds. Under the CI
+# workspace test build the feature is enabled (bins/amplihack dev-depends on
+# amplihack-cli with `test-support`), so this target compiles and runs there;
+# an isolated `cargo test -p amplihack-cli` cleanly skips it instead of failing.
+required-features = ["test-support"]
 
 [[test]]
 name = "cargo_cxx_pin_test"

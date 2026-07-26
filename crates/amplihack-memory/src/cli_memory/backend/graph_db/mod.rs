@@ -19,6 +19,9 @@ pub(crate) use lbug::{
 };
 
 pub(crate) use handle::{GraphDbBackend, GraphDbHandle};
+// Only re-exported at this level for the gated `ffi_test_support` surface;
+// production code imports it directly from `queries`.
+#[cfg(any(test, feature = "test-support"))]
 pub use queries::list_graph_sessions_from_conn;
 pub(crate) use resolve::resolve_memory_graph_db_path;
 pub use schema::init_graph_backend_schema;

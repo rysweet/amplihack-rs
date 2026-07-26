@@ -32,6 +32,10 @@ proptest = "1"
 default = ["sqlite"]
 sqlite = ["dep:rusqlite"]
 pyo3-bindings = ["dep:pyo3"]
+# Exposes cross-crate test helpers (`ffi_test_support`, `test_support`,
+# `with_test_code_graph_conn`) to downstream crates' tests without compiling
+# them into normal release builds.
+test-support = []
 
 [lib]
 crate-type = ["lib"]
