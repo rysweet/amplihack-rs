@@ -395,14 +395,19 @@ impl SignalTransport {
                     "connection closed before response",
                 ));
             };
-            let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
+            let Ok(mut value) = serde_json::from_str::<Value>(line.trim()) else {
                 continue;
             };
             if value.get("id").and_then(Value::as_u64) == Some(id) {
                 if let Some(err) = value.get("error").filter(|e| !e.is_null()) {
                     return Err(std::io::Error::other(format!("JSON-RPC error: {err}")));
                 }
-                return Ok(value.get("result").cloned().unwrap_or(Value::Null));
+                // `value` is dropped right after; move the result out instead of
+                // deep-cloning it (a `listGroups` payload can be sizable).
+                return Ok(value
+                    .get_mut("result")
+                    .map(Value::take)
+                    .unwrap_or(Value::Null));
             }
         }
     }
