@@ -96,7 +96,18 @@ fn assert_contains_all(label: &str, content: &str, required: &[&str]) {
 }
 
 #[test]
-fn workspace_version_matches_latest_release_line() {
+fn workspace_version_is_valid_semver() {
+    // Issue #1018: this contract previously pinned the workspace version to a
+    // hardcoded literal ("0.11.1"). workflow-publish step-14-bump-version bumps
+    // the version on feature PRs, so any bumped feature PR tripped this REQUIRED
+    // Test check and rotted to DIRTY, gating the backlog. The version is also
+    // decoupled from release tags (release line != Cargo.toml version), so a
+    // literal has no reliable single source of truth to derive from.
+    //
+    // The workspace `Cargo.toml` version IS the single source of truth. The
+    // meaningful, drift-proof invariant is therefore that it is well-formed
+    // semver (MAJOR.MINOR.PATCH[-pre][+build]) — which stays green across
+    // legitimate bumps while still catching a malformed/empty version.
     let cargo_toml: toml::Value =
         toml::from_str(&read_repo_file("Cargo.toml")).expect("root Cargo.toml must parse");
     let version = cargo_toml
@@ -106,10 +117,45 @@ fn workspace_version_matches_latest_release_line() {
         .and_then(toml::Value::as_str)
         .expect("workspace.package.version must exist");
 
-    assert_eq!(
-        version, "0.11.1",
-        "workspace.package.version must match the latest release line"
+    assert!(
+        is_valid_semver(version),
+        "workspace.package.version `{version}` must be valid semver (MAJOR.MINOR.PATCH)"
     );
+}
+
+/// Minimal semver-core validator (no external dep in this integration test):
+/// requires `MAJOR.MINOR.PATCH`, each core component a non-empty run of ASCII
+/// digits, with an optional `-prerelease` and/or `+build` suffix on PATCH.
+fn is_valid_semver(version: &str) -> bool {
+    // Strip build metadata (`+...`) then prerelease (`-...`) from the tail.
+    let core = version.split('+').next().unwrap_or(version);
+    let core = core.split('-').next().unwrap_or(core);
+
+    let parts: Vec<&str> = core.split('.').collect();
+    if parts.len() != 3 {
+        return false;
+    }
+    parts
+        .iter()
+        .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+}
+
+#[test]
+fn semver_validator_accepts_release_and_bumped_versions_but_rejects_junk() {
+    // Regression guard for the #1018 fix: legitimate bumps stay green.
+    for good in [
+        "0.11.1",
+        "0.12.0",
+        "1.0.0",
+        "0.11.113",
+        "1.2.3-alpha.1",
+        "1.2.3+build.5",
+    ] {
+        assert!(is_valid_semver(good), "`{good}` should be valid semver");
+    }
+    for bad in ["", "0.11", "0.11.x", "v0.11.1", "1..0", "1.2.3.4", "abc"] {
+        assert!(!is_valid_semver(bad), "`{bad}` should be rejected");
+    }
 }
 
 #[test]

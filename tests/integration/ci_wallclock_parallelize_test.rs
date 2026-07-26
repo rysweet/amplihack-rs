@@ -296,10 +296,18 @@ fn release_workflow_has_no_profile_overrides() {
 #[test]
 fn workspace_release_profile_keeps_full_optimization() {
     let content = read_root_cargo_toml();
+    let header = "[profile.release]";
     let start = content
-        .find("[profile.release]")
+        .find(header)
         .unwrap_or_else(|| panic!("FAIL: no [profile.release] in root Cargo.toml"));
-    let section = &content[start..];
+    // Bound the slice to the next TOML section header (`\n[`) instead of EOF so
+    // a future profile/section added after `[profile.release]` cannot satisfy
+    // the assertion on the wrong section's content and mask a regression.
+    let body = &content[start + header.len()..];
+    let end = body
+        .find("\n[")
+        .map_or(content.len(), |off| start + header.len() + off);
+    let section = &content[start..end];
     let lto = Regex::new(r"lto\s*=\s*true").unwrap();
     let cgu = Regex::new(r"codegen-units\s*=\s*1\b").unwrap();
     assert!(
