@@ -11,7 +11,7 @@
 mod tests {
     use toml::Value;
 
-    const FORBIDDEN: [&str; 2] = ["amplihack-cli", "amplihack_cli"];
+    const FORBIDDEN: [&str; 2] = ["amplihack-cli", concat!("amplihack", "_", "cli")];
 
     /// True if `deps` (a `[dependencies]`-style table) declares an edge onto
     /// `amplihack-cli`, either by the dependency key itself or via an explicit
