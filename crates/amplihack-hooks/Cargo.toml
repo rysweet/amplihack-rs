@@ -8,7 +8,7 @@ license.workspace = true
 [dependencies]
 amplihack-types = { workspace = true }
 amplihack-state = { workspace = true }
-amplihack-cli = { workspace = true }
+amplihack-memory = { workspace = true }
 amplihack-security = { workspace = true }
 amplihack-workflows = { workspace = true }
 amplihack-utils = { workspace = true }

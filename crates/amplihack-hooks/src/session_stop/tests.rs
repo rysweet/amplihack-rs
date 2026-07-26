@@ -85,7 +85,7 @@ fn session_stop_stores_learning_in_sqlite_backend() {
         })
         .unwrap();
 
-    let memories = amplihack_cli::memory::retrieve_prompt_context_memories(
+    let memories = amplihack_memory::cli_memory::retrieve_prompt_context_memories(
         "session-stop-test",
         "auth flow",
         2000,

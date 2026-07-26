@@ -1,6 +1,6 @@
 //! Hook migration and compatibility notices.
 
-use amplihack_cli::memory::default_code_graph_db_path_for_project;
+use amplihack_memory::cli_memory::default_code_graph_db_path_for_project;
 use amplihack_state::AtomicJsonFile;
 use amplihack_types::ProjectDirs;
 use serde_json::Value;

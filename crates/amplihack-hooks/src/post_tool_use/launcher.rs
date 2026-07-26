@@ -23,7 +23,7 @@ pub(crate) fn copilot_post_tool_use_message(dirs: &ProjectDirs, tool_name: &str)
 mod tests {
     use super::*;
     use crate::test_support::env_lock;
-    use amplihack_cli::launcher_context::{LauncherKind, write_launcher_context};
+    use amplihack_utils::launcher_context::{LauncherKind, write_launcher_context};
     use std::collections::BTreeMap;
 
     fn set_launcher_env(copilot: Option<&str>, claude_code: Option<&str>) {

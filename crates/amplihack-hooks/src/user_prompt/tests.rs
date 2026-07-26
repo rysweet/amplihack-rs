@@ -6,7 +6,7 @@ use crate::post_tool_use::PostToolUseHook;
 use crate::protocol::Hook;
 use crate::session_start::is_workflow_active;
 use crate::test_support::{EnvVarGuard, env_lock};
-use amplihack_cli::memory::PromptContextMemory;
+use amplihack_memory::cli_memory::PromptContextMemory;
 use amplihack_types::{HookInput, ProjectDirs};
 use serde_json::Value;
 use std::fs;

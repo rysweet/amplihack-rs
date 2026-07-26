@@ -1,6 +1,6 @@
 //! Context loading functions for session start.
 
-use amplihack_cli::memory::{resolve_code_graph_db_path_for_project, summarize_code_graph};
+use amplihack_memory::cli_memory::{resolve_code_graph_db_path_for_project, summarize_code_graph};
 use amplihack_types::{ProjectDirs, workflow};
 use std::fs;
 
@@ -67,7 +67,7 @@ pub(super) fn check_version(dirs: &ProjectDirs) -> Option<String> {
         return None;
     }
 
-    // Mirrors `amplihack_cli::VERSION`: prefer the build-time
+    // Mirrors CLI version resolution: prefer the build-time
     // `AMPLIHACK_RELEASE_VERSION` override, fall back to Cargo.toml.
     const FALLBACK_VERSION: &str = match option_env!("AMPLIHACK_RELEASE_VERSION") {
         Some(v) => v,
@@ -187,8 +187,8 @@ fn build_suppressed_workflow_rules() -> String {
 mod tests {
     use super::*;
     use crate::test_support::{EnvVarGuard, env_lock};
-    use amplihack_cli::commands::memory::code_graph::import_blarify_json;
-    use amplihack_cli::memory::resolve_code_graph_db_path_for_project;
+    use amplihack_memory::cli_memory::code_graph::import_blarify_json;
+    use amplihack_memory::cli_memory::resolve_code_graph_db_path_for_project;
     use std::fs;
 
     #[test]

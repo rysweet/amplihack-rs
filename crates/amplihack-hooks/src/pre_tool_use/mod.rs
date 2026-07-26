@@ -173,7 +173,7 @@ const MAX_SKILL_NAME_LEN: usize = 256;
 fn bundled_skill_names() -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     let mut files_scanned = 0usize;
-    for root in amplihack_cli::runtime_assets::iter_runtime_roots() {
+    for root in amplihack_utils::runtime_assets::iter_runtime_roots() {
         for skills_dir in [root.join("amplifier-bundle/skills"), root.join("skills")] {
             collect_skill_frontmatter_names(&skills_dir, &mut names, 0, &mut files_scanned);
         }

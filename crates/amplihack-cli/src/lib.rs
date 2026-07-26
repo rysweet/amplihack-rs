@@ -205,7 +205,7 @@ pub mod memory {
     /// Hidden integration-test-only Kuzu FFI exports.
     #[doc(hidden)]
     pub mod ffi_test_support {
-        pub use crate::commands::memory::backend::graph_db::{
+        pub use amplihack_memory::cli_memory::ffi_test_support::{
             graph_rows, init_graph_backend_schema, list_graph_sessions_from_conn,
         };
     }

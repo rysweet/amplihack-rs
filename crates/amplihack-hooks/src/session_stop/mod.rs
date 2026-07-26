@@ -13,7 +13,7 @@ mod transcript;
 
 use crate::agent_memory::normalize_agent_name;
 use crate::protocol::{FailurePolicy, Hook};
-use amplihack_cli::memory::store_session_learning;
+use amplihack_memory::cli_memory::store_session_learning;
 use amplihack_types::HookInput;
 use serde_json::Value;
 use std::path::Path;

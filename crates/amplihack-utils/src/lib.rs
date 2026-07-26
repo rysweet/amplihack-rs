@@ -28,6 +28,7 @@
 /// Single source of truth for resolving the active agent binary identifier.
 pub mod agent_binary;
 pub mod artifact_guard;
+pub mod binary_finder;
 pub mod bundle_generator;
 pub mod claude_cli;
 pub mod claude_md;
@@ -41,6 +42,7 @@ pub mod hook_merge;
 pub mod idle_watchdog;
 pub mod kb_types;
 pub mod knowledge_builder;
+pub mod launcher_context;
 pub mod litellm_callbacks;
 pub mod llm_client;
 pub mod observability;
@@ -57,6 +59,8 @@ pub(crate) mod project_init_detect;
 /// Subprocess prompt-delivery helper (argv/tempfile/stdin). See Simard
 /// issue #1897. STUB module in the TDD red phase.
 pub mod prompt_delivery;
+pub mod resolve_bundle_asset;
+pub mod runtime_assets;
 /// Secure file and directory creation with restrictive permissions.
 pub mod secure_files;
 pub mod send_input_allowlist;
@@ -95,3 +99,6 @@ pub(crate) mod test_serial {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
+
+#[cfg(test)]
+mod test_support;

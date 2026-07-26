@@ -1,6 +1,6 @@
 use super::*;
 use crate::test_support::env_lock;
-use amplihack_cli::launcher_context::{LauncherContext, write_launcher_context};
+use amplihack_utils::launcher_context::{LauncherContext, write_launcher_context};
 use std::collections::BTreeMap;
 use std::fs;
 

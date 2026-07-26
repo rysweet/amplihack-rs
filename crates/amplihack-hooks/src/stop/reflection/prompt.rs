@@ -4,8 +4,8 @@ use super::conversation::{
     ReflectionMessage, format_conversation_summary, format_redirects_context,
     load_power_steering_redirects,
 };
-use amplihack_cli::env_builder::active_agent_binary;
 use amplihack_types::ProjectDirs;
+use amplihack_utils::agent_binary::{DEFAULT_BINARY, resolve as resolve_agent_binary};
 use anyhow::{Context, Result};
 use std::fs;
 use std::io::Write;
@@ -188,6 +188,11 @@ fn get_repository_context(project_root: &Path) -> String {
             "\n## Repository Context\n\n**Amplihack Repository**: {AMPLIHACK_REPO_URI}\n**Context**: Repository detection unavailable\n"
         ),
     }
+}
+
+fn active_agent_binary() -> String {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    resolve_agent_binary(&cwd).unwrap_or_else(|_| DEFAULT_BINARY.to_string())
 }
 
 fn normalize_url(url: &str) -> String {

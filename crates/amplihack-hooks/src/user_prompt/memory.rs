@@ -1,7 +1,7 @@
 //! Agent memory injection and framework file detection.
 
 use crate::agent_memory::{detect_agent_references, detect_slash_command_agent};
-use amplihack_cli::memory::{PromptContextMemory, retrieve_prompt_context_memories};
+use amplihack_memory::cli_memory::{PromptContextMemory, retrieve_prompt_context_memories};
 use amplihack_types::ProjectDirs;
 use std::fs;
 use std::path::PathBuf;

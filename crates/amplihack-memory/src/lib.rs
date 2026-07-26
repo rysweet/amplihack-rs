@@ -62,3 +62,10 @@ pub use network_store::{AgentRegistry, NetworkGraphStore};
 pub use retrieval::{Fact, IntentKind, MemorySearch as RetrievalMemorySearch};
 pub use retrieval_pipeline::{RetrievalPipeline, RetrievalResult, ScoredEntry};
 pub use storage_pipeline::{StoragePipeline, StorageResult};
+
+/// CLI-compatible memory command and runtime helper APIs shared with hooks.
+pub mod cli_memory;
+mod util;
+
+#[cfg(test)]
+mod test_support;

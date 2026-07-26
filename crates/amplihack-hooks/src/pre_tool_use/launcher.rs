@@ -10,10 +10,10 @@
 //! fix (issue #862). Security checks (CWD, branch, --no-verify) are
 //! independent of the detected launcher.
 
-use amplihack_cli::launcher_context::{
+use amplihack_types::paths::{ProjectDirs, framework_roots_from};
+use amplihack_utils::launcher_context::{
     LauncherKind, is_launcher_context_stale, read_launcher_context,
 };
-use amplihack_types::paths::{ProjectDirs, framework_roots_from};
 use std::path::{Path, PathBuf};
 
 /// Detected launcher type.
@@ -64,7 +64,7 @@ fn detect_launcher_from_env() -> Option<LauncherType> {
 
 fn read_launcher_context_from_project_or_ancestors(
     root: &Path,
-) -> Option<(PathBuf, amplihack_cli::launcher_context::LauncherContext)> {
+) -> Option<(PathBuf, amplihack_utils::launcher_context::LauncherContext)> {
     for candidate in framework_roots_from(root) {
         if let Some(context) = read_launcher_context(&candidate) {
             return Some((candidate, context));

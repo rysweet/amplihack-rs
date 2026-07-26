@@ -63,13 +63,11 @@ pub fn run_query_code(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::memory::{
-        backend::graph_db::{GraphDbValue, init_graph_backend_schema},
-        code_graph::{
-            CodeGraphContextPayload, CodeGraphImportCounts, CodeGraphSearchEntry, CodeGraphStats,
-            backend::with_test_code_graph_conn, import_blarify_json,
-        },
+    use crate::commands::memory::code_graph::{
+        CodeGraphContextPayload, CodeGraphImportCounts, CodeGraphSearchEntry, CodeGraphStats,
+        import_blarify_json, test_support::with_test_code_graph_conn,
     };
+    use amplihack_memory::cli_memory::ffi_test_support::{GraphDbValue, init_graph_backend_schema};
     use std::fs;
     use std::sync::{Mutex, OnceLock};
     use time::OffsetDateTime;

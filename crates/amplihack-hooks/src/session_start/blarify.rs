@@ -1,10 +1,10 @@
 //! Blarify code-graph setup and indexing.
 
-use amplihack_cli::binary_finder::BinaryFinder;
-use amplihack_cli::memory::{
+use amplihack_memory::cli_memory::{
     background_index_job_active, check_index_status, resolve_code_graph_db_path_for_project,
 };
 use amplihack_types::ProjectDirs;
+use amplihack_utils::binary_finder::BinaryFinder;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -90,7 +90,7 @@ fn run_blarify_indexing(
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()?;
-        amplihack_cli::memory::record_background_index_pid(project_root, child.id())?;
+        amplihack_memory::cli_memory::record_background_index_pid(project_root, child.id())?;
     } else {
         let status = cmd.status()?;
         if !status.success() {
@@ -132,7 +132,7 @@ fn blarify_json_path(project_root: &Path) -> PathBuf {
 }
 
 fn resolve_blarify_index_action(
-    status: &amplihack_cli::memory::IndexStatus,
+    status: &amplihack_memory::cli_memory::IndexStatus,
     json_path: &Path,
 ) -> BlarifyIndexAction {
     if json_path.exists() && !status.needs_indexing {
@@ -191,7 +191,7 @@ impl BlarifySetupResult {
 }
 
 fn describe_blarify_need(
-    status: &amplihack_cli::memory::IndexStatus,
+    status: &amplihack_memory::cli_memory::IndexStatus,
     code_graph_missing: bool,
 ) -> String {
     match (status.needs_indexing, code_graph_missing) {
@@ -523,7 +523,8 @@ mod tests {
         let dirs = ProjectDirs::new(dir.path());
         fs::create_dir_all(dir.path().join("src")).unwrap();
         fs::write(dir.path().join("src/app.py"), "print('hi')\n").unwrap();
-        amplihack_cli::memory::record_background_index_pid(dir.path(), std::process::id()).unwrap();
+        amplihack_memory::cli_memory::record_background_index_pid(dir.path(), std::process::id())
+            .unwrap();
 
         let result = setup_blarify_indexing(&dirs).unwrap();
 

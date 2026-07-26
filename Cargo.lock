@@ -252,7 +252,7 @@ dependencies = [
 name = "amplihack-hooks"
 version = "0.11.1"
 dependencies = [
- "amplihack-cli",
+ "amplihack-memory",
  "amplihack-security",
  "amplihack-signal",
  "amplihack-state",
@@ -308,8 +308,13 @@ version = "0.11.1"
 dependencies = [
  "anyhow",
  "chrono",
+ "fs4",
+ "lbug",
+ "libc",
+ "lru",
  "md-5",
  "proptest",
+ "prost",
  "pyo3",
  "regex",
  "rusqlite",
@@ -318,6 +323,7 @@ dependencies = [
  "sha1",
  "sha2",
  "tempfile",
+ "time",
  "tracing",
  "uuid",
 ]
@@ -480,6 +486,8 @@ dependencies = [
 name = "amplihack-utils"
 version = "0.11.1"
 dependencies = [
+ "amplihack-types",
+ "anyhow",
  "base64",
  "chrono",
  "libc",
