@@ -122,19 +122,26 @@ fn last_assistant_message_from_transcript(transcript_path: &std::path::Path) -> 
 /// [`OUTBOUND_TRANSCRIPT_READ_CAP`] bytes so the last assistant message is still
 /// found without unbounded allocation. Returns `None` on any error so mirroring
 /// never blocks or fails session exit.
+///
+/// The file is opened first and then classified via `fstat` on the **opened
+/// descriptor** (not a separate path-based `metadata()` call), which closes the
+/// TOCTOU window where a regular file could be swapped for a FIFO between the
+/// check and the open. On Unix the open uses `O_NONBLOCK`, so opening a
+/// FIFO/socket/device returns immediately instead of blocking; `O_NONBLOCK` is
+/// ignored for reads on regular files, so real transcripts read normally.
 #[cfg(feature = "signal")]
 fn read_transcript_tail_bounded(transcript_path: &std::path::Path) -> Option<String> {
     use std::io::{Read, Seek, SeekFrom};
 
-    // `metadata` follows symlinks and does not read file contents, so it is
-    // safe (non-blocking) even for a `/proc/self/fd/*` pipe handle.
-    let metadata = std::fs::metadata(transcript_path).ok()?;
+    let mut file = open_transcript_nonblocking(transcript_path)?;
+    // fstat on the opened fd — never blocks, and reflects the actual object we
+    // hold open (no path re-resolution, so no TOCTOU with the open above).
+    let metadata = file.metadata().ok()?;
     if !metadata.file_type().is_file() {
         return None;
     }
 
     let len = metadata.len();
-    let mut file = std::fs::File::open(transcript_path).ok()?;
     if len > OUTBOUND_TRANSCRIPT_READ_CAP {
         file.seek(SeekFrom::Start(len - OUTBOUND_TRANSCRIPT_READ_CAP))
             .ok()?;
@@ -144,6 +151,28 @@ fn read_transcript_tail_bounded(transcript_path: &std::path::Path) -> Option<Str
         .read_to_end(&mut buf)
         .ok()?;
     Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Open a transcript for reading without ever blocking on a non-regular path.
+///
+/// On Unix, `O_NONBLOCK` makes opening a FIFO with no writer (or a slow device)
+/// return immediately rather than hang; the caller then rejects any non-regular
+/// descriptor via `fstat`. Regular files ignore `O_NONBLOCK` for reads.
+#[cfg(all(feature = "signal", unix))]
+fn open_transcript_nonblocking(path: &std::path::Path) -> Option<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .ok()
+}
+
+/// Non-Unix fallback: the FIFO/proc-fd hang classes do not apply the same way,
+/// and the caller still rejects non-regular descriptors via `fstat`.
+#[cfg(all(feature = "signal", not(unix)))]
+fn open_transcript_nonblocking(path: &std::path::Path) -> Option<std::fs::File> {
+    std::fs::File::open(path).ok()
 }
 
 /// Pull assistant text out of a single transcript entry across host shapes.
@@ -290,6 +319,40 @@ mod tests {
             // (e.g. `/proc/self/fd/1`) whose read would block forever.
             let dir = unique_dir("dir");
             assert!(read_transcript_tail_bounded(&dir).is_none());
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        // A real FIFO with no writer: a plain blocking open (or read) would hang
+        // session exit forever. The `O_NONBLOCK`-open + `fstat`-classify path
+        // must return `None` promptly. We run it on a worker thread and require
+        // it to finish well within a generous bound to prove it never blocks.
+        #[cfg(unix)]
+        #[test]
+        fn real_fifo_with_no_writer_returns_none_without_blocking() {
+            use std::ffi::CString;
+            use std::sync::mpsc;
+            use std::time::Duration;
+
+            let dir = unique_dir("fifo");
+            let path = dir.join("t.jsonl");
+            let c_path = CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+            // 0o600 FIFO; if mkfifo is unsupported the assert below is skipped.
+            let rc = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
+            assert_eq!(rc, 0, "mkfifo failed (errno {})", unsafe {
+                *libc::__errno_location()
+            });
+
+            let (tx, rx) = mpsc::channel();
+            let probe_path = path.clone();
+            let handle = std::thread::spawn(move || {
+                let r = read_transcript_tail_bounded(&probe_path);
+                let _ = tx.send(r.is_none());
+            });
+            let got_none = rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("reading a FIFO transcript must not block session exit");
+            assert!(got_none, "a FIFO transcript must be rejected (None)");
+            handle.join().unwrap();
             let _ = fs::remove_dir_all(&dir);
         }
 
