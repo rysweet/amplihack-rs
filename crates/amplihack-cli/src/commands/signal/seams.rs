@@ -16,28 +16,35 @@ use super::error::SignalOpError;
 /// stable exit-code taxonomy (see [`super::error::SignalOpError`]).
 type OpResult<T> = Result<T, SignalOpError>;
 
-/// A single VM record from `azlin list` / `az vm list` JSON. Only `name` is
-/// needed; every other field is ignored so the extractors are tolerant of the
-/// full object shapes both tools emit.
+/// A single VM record from `az vm list` JSON. Only `name` is needed; every
+/// other field is ignored so the extractor is tolerant of the full object
+/// shape `az` emits.
 #[derive(Deserialize)]
 struct VmRecord {
     name: String,
 }
 
-/// Extract VM names from `azlin list --output json` (an array of objects each
-/// with at least a `name`). Malformed or non-array input yields an empty list
-/// (the caller decides whether that triggers the `az` fallback).
+/// Extract VM names from `azlin list --json`.
+///
+/// R4 (#921/#971): this delegates to `amplihack_remote`'s canonical azlin
+/// parser rather than re-implementing the parse locally, so the azlin
+/// discovery JSON shape cannot drift between the remote and CLI crates. We only
+/// need names here, so the full `VM` records are projected to their `name`.
+/// Malformed or non-array input yields an empty list (the caller decides
+/// whether that triggers the `az` fallback).
 pub fn vm_names_from_azlin_json(json: &str) -> Vec<String> {
-    names_from_json(json)
+    amplihack_remote::parse_azlin_list_json(json)
+        .into_iter()
+        .map(|vm| vm.name)
+        .collect()
 }
 
 /// Extract VM names from `az vm list --output json` (an array of objects each
 /// with at least a `name`). Malformed or non-array input yields an empty list.
+///
+/// `az vm list` emits a different object shape than azlin, and the remote crate
+/// only parses the azlin shape, so this extractor stays local.
 pub fn vm_names_from_az_vm_list_json(json: &str) -> Vec<String> {
-    names_from_json(json)
-}
-
-fn names_from_json(json: &str) -> Vec<String> {
     serde_json::from_str::<Vec<VmRecord>>(json)
         .map(|records| records.into_iter().map(|r| r.name).collect())
         .unwrap_or_default()
