@@ -240,7 +240,7 @@ async fn run_bridge_async(args: SignalBridgeArgs) -> Result<(), BridgeError> {
     let mut queue: VecDeque<String> = VecDeque::new();
 
     // 8. First turn: the topic itself is the opening prompt.
-    let (turn_tx, mut turn_rx) = tokio::sync::mpsc::unbounded_channel::<TurnResult>();
+    let (turn_tx, mut turn_rx) = tokio::sync::mpsc::unbounded_channel::<std::io::Result<String>>();
     let mut turn_in_flight = spawn_turn(&driver, &turn_tx, args.topic.clone());
 
     // 9. Subscriber loop.
@@ -250,7 +250,7 @@ async fn run_bridge_async(args: SignalBridgeArgs) -> Result<(), BridgeError> {
             // Post completed turn output promptly, then start the next queued turn.
             Some(result) = turn_rx.recv() => {
                 turn_in_flight = false;
-                match result.output {
+                match result {
                     Ok(body) if !body.trim().is_empty() => {
                         verify_and_post(&mut transport, &group_id, &expected, &mut gate, &body).await;
                     }
@@ -330,23 +330,18 @@ async fn run_bridge_async(args: SignalBridgeArgs) -> Result<(), BridgeError> {
     Ok(())
 }
 
-/// The result of one background turn task.
-struct TurnResult {
-    output: std::io::Result<String>,
-}
-
-/// Spawn one serialized turn on the driver, delivering its result over `tx`.
-/// Returns `true` (a turn is now in flight).
+/// Spawn one serialized turn on the driver, delivering its captured stdout (or
+/// error) over `tx`. Returns `true` (a turn is now in flight).
 fn spawn_turn(
     driver: &Arc<SerialTurnDriver<CopilotTurnRunner>>,
-    tx: &tokio::sync::mpsc::UnboundedSender<TurnResult>,
+    tx: &tokio::sync::mpsc::UnboundedSender<std::io::Result<String>>,
     prompt: String,
 ) -> bool {
     let driver = driver.clone();
     let tx = tx.clone();
     tokio::spawn(async move {
         let output = driver.run_turn(&prompt).await;
-        let _ = tx.send(TurnResult { output });
+        let _ = tx.send(output);
     });
     true
 }
