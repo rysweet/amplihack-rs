@@ -4,8 +4,10 @@ Link a host — local machine or a remote **azlin** Azure VM — to **Signal** a
 linked device, END-TO-END, and wire it into amplihack's Signal channel. The
 whole manual device-linking loop becomes one idempotent command.
 
-See [`SKILL.md`](./SKILL.md) for the full flow and the critical facts. The
-executable lives at [`scripts/signal-setup.sh`](./scripts/signal-setup.sh).
+See [`SKILL.md`](./SKILL.md) for the full flow and the critical facts, and
+[`USAGE.md`](./USAGE.md) for the full CLI reference, configuration, tutorials,
+and troubleshooting. The executable lives at
+[`scripts/signal-setup.sh`](./scripts/signal-setup.sh).
 
 ## Quick start
 

@@ -239,6 +239,8 @@ anchors, and the security invariants that must not regress.
 
 ## See also
 
+- [`USAGE.md`](./USAGE.md) — full CLI reference, configuration, tutorials, and
+  troubleshooting for this skill
 - `docs/SIGNAL_ONBOARDING.md`, `docs/signal-channel.md`
 - [`SECURITY.md`](./SECURITY.md) — security hardening reference for this skill
 - `crates/amplihack-signal/`, `crates/amplihack-cli/src/commands/signal/`
