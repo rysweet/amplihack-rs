@@ -110,7 +110,14 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    needs: check
+    # No `needs: check` — the lint/format job compiles the whole workspace for
+    # clippy (~15 min under the no-artifact-cache policy), and gating the
+    # expensive Test job behind it serialized the critical path to
+    # check(~15m) -> test(~35m) ≈ 50 min. Under strict "up-to-date" branch
+    # protection a fast-moving main then re-queued the branch before it could
+    # merge. Running Test concurrently with Lint & Format drops the critical
+    # path to ~35 min. `concurrency: cancel-in-progress` still supersedes stale
+    # runs; a lint failure only costs redundant Test compute, not correctness.
     timeout-minutes: 45
     env:
       # Drop debug info from the workspace's large test-binary surface (60+
@@ -152,7 +159,7 @@ jobs:
   install-smoke:
     name: Install Smoke Test
     runs-on: ubuntu-latest
-    needs: check
+    # No `needs: check` — parallelize with Lint & Format (see Test job note).
     timeout-minutes: 30
     env:
       # This job only asserts that `cargo install` succeeds and the binary
@@ -188,8 +195,17 @@ jobs:
   cross-compile:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
-    needs: check
+    # No `needs: check` — parallelize with Lint & Format (see Test job note).
     timeout-minutes: 45
+    env:
+      # PR/branch runs only *verify* that each target compiles; the optimized
+      # binaries are shipped exclusively by the `release` job on tag pushes.
+      # Full-optimization release builds (lto = true, codegen-units = 1) are the
+      # slowest configuration to compile, so disable them for non-tag runs to
+      # cut build wall-clock substantially. Tag builds keep full optimization so
+      # shipped artifacts are unchanged.
+      CARGO_PROFILE_RELEASE_LTO: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '16' }}
     strategy:
       fail-fast: false
       matrix:
