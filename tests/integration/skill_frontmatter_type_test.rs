@@ -140,7 +140,7 @@ const MANDATORY_FIELDS: &[&str] = &["name", "description"];
 /// TC-TYPE-01: Sanity — the skill corpus must be discovered and substantial.
 ///
 /// Guards against a broken filesystem walk silently passing every other test
-/// by finding zero files. The bundle currently ships 122 skills; `> 100` is a
+/// by finding zero files. The bundle currently ships 123 skills; `> 100` is a
 /// deliberately loose floor.
 #[test]
 fn tc_type_01_skill_corpus_is_non_empty() {

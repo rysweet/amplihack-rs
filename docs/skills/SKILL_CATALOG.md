@@ -5,8 +5,8 @@ Those bundled `SKILL.md` files are the install-time source of truth.
 
 ## Summary
 
-- **Unique bundled skill names:** 122
-- **Skill definition files:** 122
+- **Unique bundled skill names:** 123
+- **Skill definition files:** 123
 
 ## Bundled Skills
 
