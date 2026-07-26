@@ -543,39 +543,49 @@ fn stop(session_id: &str) -> anyhow::Result<()> {
     };
     let group_id = GroupId(group);
 
-    let rt = runtime()?;
-    rt.block_on(async {
-        let mut transport =
-            with_timeout("connect", SignalTransport::connect(&config.endpoint)).await?;
+    // Perform the network teardown. Runtime creation and the transport connect
+    // are captured rather than early-returned via `?`, so the state-clearing
+    // seam below still runs on those failure paths — otherwise a connect error
+    // would leave a stale group id / subscriber pid behind, contradicting the
+    // "no exit leaves stale state" invariant documented above.
+    let net_result = (|| -> anyhow::Result<()> {
+        let rt = runtime()?;
+        rt.block_on(async {
+            let mut transport =
+                with_timeout("connect", SignalTransport::connect(&config.endpoint)).await?;
 
-        // Best-effort: a failed summary post or leave must not block teardown,
-        // but it must still be observable.
-        if let Err(err) =
-            with_timeout("send", transport.send_group(&group_id, "session complete")).await
-        {
-            tracing::warn!("signal: failed to post session-complete marker: {err}");
-        }
+            // Best-effort: a failed summary post or leave must not block teardown,
+            // but it must still be observable.
+            if let Err(err) =
+                with_timeout("send", transport.send_group(&group_id, "session complete")).await
+            {
+                tracing::warn!("signal: failed to post session-complete marker: {err}");
+            }
 
-        // A rolling group is intentionally reused across sessions; only leave a
-        // per-session group.
-        if !config.reuse_rolling_group
-            && let Err(err) = with_timeout("quit_group", transport.quit_group(&group_id)).await
-        {
-            tracing::warn!("signal: failed to leave session group: {err}");
-        }
-        Ok::<(), anyhow::Error>(())
-    })?;
+            // A rolling group is intentionally reused across sessions; only leave a
+            // per-session group.
+            if !config.reuse_rolling_group
+                && let Err(err) = with_timeout("quit_group", transport.quit_group(&group_id)).await
+            {
+                tracing::warn!("signal: failed to leave session group: {err}");
+            }
+            Ok::<(), anyhow::Error>(())
+        })
+    })();
 
     // Clear the persisted per-session state in a single atomic write (see the
     // `clear_state` seam above) so a stale group id or subscriber pid is never
-    // reused across sessions.
+    // reused across sessions. Runs on EVERY exit path — including network or
+    // runtime failure above — to honor the invariant.
     clear_state();
 
     // Drop the per-session outbound-fingerprint log so it does not outlive the
-    // session (bounded during the session, removed entirely at teardown).
+    // session (bounded during the session, removed entirely at teardown). Also
+    // unconditional, so a failed network teardown cannot leave the log behind.
     super::outbound::clear_outbound_fingerprints(&root, session_id);
 
-    Ok(())
+    // Surface any network/runtime teardown error now that state hygiene is done.
+    net_result
 }
 
 /// Mirror an outbound line (a user prompt or assistant turn) to the session's
