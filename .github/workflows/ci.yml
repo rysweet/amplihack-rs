@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Verify cxx-build pin
         run: |
           version=$(grep -A1 'name = "cxx-build"' Cargo.lock | grep version | head -1 | sed 's/.*"\(.*\)".*/\1/')
@@ -81,6 +81,9 @@ jobs:
       - name: Recipes — SKILL mirror parity + gate-policy docs (issue #962)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-962-skill-mirror-parity.sh
+      - name: Recipes — ADO work items assigned + typed + fail-loud (issue #983)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-983-azdo-work-item-assignment.sh
       - name: Recipes — shellcheck worktree sweep helper (issue #840)
         shell: bash
         run: |
@@ -90,10 +93,10 @@ jobs:
             sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
             shellcheck -S warning amplifier-bundle/tools/workflow_worktree_sweep.sh
           fi
-      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83 # 1.97.0
         with:
           components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           cache-targets: false
           cache-on-failure: true
@@ -115,7 +118,7 @@ jobs:
       # and lower peak disk. The suite asserts behavior, not backtraces (#744).
       CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Free disk space
         # Deterministic reclaim of tens of GB, replacing the fragile hand-rolled
         # `rm -rf`. tool-cache:false keeps the Rust toolchain cache we rely on.
@@ -128,13 +131,13 @@ jobs:
           docker-images: true
           large-packages: false
           swap-storage: false
-      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83 # 1.97.0
       - name: Install cargo-nextest
         # Prebuilt binary (no slow `cargo install`); SHA-pinned for supply chain.
         uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145 # v2.83.1
         with:
           tool: nextest
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           # The full workspace test profile links large native artifacts. Restoring
           # target/ can exhaust GitHub-hosted runner disk before tests start.
@@ -162,9 +165,9 @@ jobs:
       CARGO_PROFILE_RELEASE_LTO: "false"
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.97.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83 # 1.97.0
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           # Reuse the dependency-source cache namespace the native x86_64-linux
           # build in cross-compile populates. With cache-targets disabled only
@@ -208,11 +211,11 @@ jobs:
             cross: false
             gnu_cross_toolchain: false
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83 # 1.97.0
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           key: ${{ matrix.target }}
           cache-targets: false
@@ -250,7 +253,7 @@ jobs:
         run: cross build --release --locked --target ${{ matrix.target }}
 
       - name: Upload binary artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: amplihack-${{ matrix.target }}
           path: |
@@ -267,8 +270,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
 
@@ -285,7 +288,7 @@ jobs:
           done
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: amplihack-*.tar.gz
           generate_release_notes: true

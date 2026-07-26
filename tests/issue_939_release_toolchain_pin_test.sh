@@ -76,15 +76,28 @@ toolchain_channel() {
     sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$TOOLCHAIN_TOML" | head -n1
 }
 
-# Return the @ref for every dtolnay/rust-toolchain step in a file that also
-# declares a `targets:` key within the following few lines of the step.
+# Return the EFFECTIVE channel for every dtolnay/rust-toolchain step in a file
+# that also declares a `targets:` key within the following few lines of the
+# step. SHA-pinned refs (issue #951) carry the effective channel in a trailing
+# `# <version>` comment; a SHA without a comment is returned verbatim so it is
+# treated as drift.
 targets_bearing_refs() {
     local file="$1"
     awk '
         /dtolnay\/rust-toolchain@/ {
-            ref = $0
+            raw = $0
+            ref = raw
             sub(/.*dtolnay\/rust-toolchain@/, "", ref)
             sub(/[[:space:]].*/, "", ref)
+            eff = ref
+            if (ref ~ /^[0-9a-f]{40}$/) {
+                if (raw ~ /#/) {
+                    cmt = raw
+                    sub(/.*#[[:space:]]*/, "", cmt)
+                    sub(/[[:space:]].*/, "", cmt)
+                    eff = cmt
+                }
+            }
             window = 6
             hit = 0
             for (i = 1; i <= window; i++) {
@@ -92,7 +105,7 @@ targets_bearing_refs() {
                 if (line ~ /^[[:space:]]*targets:/) { hit = 1; break }
                 if (line ~ /dtolnay\/rust-toolchain@/) break
             }
-            if (hit) print ref
+            if (hit) print eff
         }
     ' "$file"
 }
@@ -115,7 +128,7 @@ echo
 assert "release.yml exists" "[ -f '$RELEASE' ]"
 
 assert "release.yml pins dtolnay/rust-toolchain to the toml channel ($CHANNEL)" \
-    "grep -q 'dtolnay/rust-toolchain@$CHANNEL' '$RELEASE'"
+    "grep -Eq 'dtolnay/rust-toolchain@($CHANNEL([[:space:]]|\$)|[0-9a-f]{40}[[:space:]]+#[[:space:]]*$CHANNEL([[:space:]]|\$))' '$RELEASE'"
 
 assert "release.yml no longer uses dtolnay/rust-toolchain@stable" \
     "! grep -q 'dtolnay/rust-toolchain@stable' '$RELEASE'"

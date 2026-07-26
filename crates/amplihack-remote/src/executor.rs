@@ -12,8 +12,10 @@ use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tracing::{debug, info, warn};
 
+use crate::backoff::BackoffPolicy;
 use crate::error::{ErrorContext, RemoteError};
 use crate::orchestrator::VM;
+use crate::script::{build_remote_script, build_tmux_script, validate_command};
 
 /// Result of a remote command execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,8 +66,10 @@ impl Executor {
             .unwrap_or("context.tar.gz");
         let remote_path = format!("{}:~/context.tar.gz", self.vm.name);
 
-        let max_retries = 2u32;
-        for attempt in 0..max_retries {
+        let policy = BackoffPolicy::transfer_default();
+        let retry_start = Instant::now();
+        let mut attempt = 0u32;
+        loop {
             let mut cmd = Command::new("azlin");
             cmd.arg("cp");
             self.append_port_args(&mut cmd);
@@ -75,53 +79,50 @@ impl Executor {
             cmd.stderr(Stdio::piped());
 
             let start = Instant::now();
-            match tokio::time::timeout(std::time::Duration::from_secs(600), cmd.output()).await {
-                Ok(Ok(output)) if output.status.success() => {
-                    let dur = start.elapsed().as_secs_f64();
-                    info!(duration_secs = format!("{dur:.1}"), "transfer complete");
-                    return Ok(());
-                }
-                Ok(Ok(output)) => {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    if attempt < max_retries - 1 {
-                        warn!(attempt = attempt + 1, "transfer failed, retrying");
-                        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-                        continue;
+            let retry_reason: String =
+                match tokio::time::timeout(std::time::Duration::from_secs(600), cmd.output()).await
+                {
+                    Ok(Ok(output)) if output.status.success() => {
+                        let dur = start.elapsed().as_secs_f64();
+                        info!(duration_secs = format!("{dur:.1}"), "transfer complete");
+                        return Ok(());
                     }
-                    return Err(RemoteError::transfer_ctx(
-                        format!("Failed to transfer file: {stderr}"),
-                        ErrorContext::new().insert("vm_name", &self.vm.name),
-                    ));
-                }
-                Ok(Err(e)) => {
-                    if attempt < max_retries - 1 {
-                        warn!(
-                            error = %e,
-                            "transfer error, retrying"
-                        );
-                        continue;
+                    Ok(Ok(output)) => {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        format!("transfer failed: {stderr}")
                     }
-                    return Err(RemoteError::transfer(format!(
-                        "Transfer command failed: {e}"
-                    )));
+                    Ok(Err(e)) => format!("transfer command error: {e}"),
+                    Err(_) => "transfer timed out".to_string(),
+                };
+
+            match policy.next_backoff(attempt, retry_start.elapsed()) {
+                Some(delay) => {
+                    warn!(
+                        attempt = attempt + 1,
+                        delay_ms = delay.as_millis() as u64,
+                        "transfer failed, backing off before retry"
+                    );
+                    // Cancellation-safe: dropping this future aborts the sleep.
+                    tokio::time::sleep(delay).await;
+                    attempt += 1;
                 }
-                Err(_) => {
-                    if attempt < max_retries - 1 {
-                        warn!("transfer timeout, retrying");
-                        continue;
-                    }
+                None => {
                     return Err(RemoteError::transfer_ctx(
                         format!(
-                            "Transfer timed out after \
-                             {max_retries} attempts"
+                            "Failed to transfer file within retry budget \
+                             ({}s, {} attempts): {}",
+                            policy.budget().as_secs(),
+                            attempt + 1,
+                            retry_reason
                         ),
-                        ErrorContext::new().insert("vm_name", &self.vm.name),
+                        ErrorContext::new()
+                            .insert("vm_name", &self.vm.name)
+                            .insert("retry_budget_secs", policy.budget().as_secs().to_string())
+                            .insert("attempts", (attempt + 1).to_string()),
                     ));
                 }
             }
         }
-
-        Err(RemoteError::transfer("Transfer failed after all retries"))
     }
 
     /// Execute amplihack command on the remote VM.
@@ -131,6 +132,9 @@ impl Executor {
         prompt: &str,
         max_turns: u32,
     ) -> Result<ExecutionResult, RemoteError> {
+        // Issue #997 (F2): validate at the entry boundary too, so callers get a
+        // clear rejection before an env lookup or delegation occurs.
+        validate_command(command)?;
         let api_key = std::env::var("ANTHROPIC_API_KEY")
             .map_err(|_| RemoteError::execution("ANTHROPIC_API_KEY not found in environment"))?;
         self.execute_remote_with_api_key(command, prompt, max_turns, &api_key)
@@ -145,36 +149,19 @@ impl Executor {
         max_turns: u32,
         api_key: &str,
     ) -> Result<ExecutionResult, RemoteError> {
+        // Issue #997 (F2): reject untrusted command tokens before building any script.
+        validate_command(command)?;
         if api_key.trim().is_empty() {
             return Err(RemoteError::execution(
                 "ANTHROPIC_API_KEY not found in environment",
             ));
         }
-        let encoded_prompt = b64_encode(prompt.as_bytes());
-        let encoded_key = b64_encode(api_key.as_bytes());
 
         info!(command, "executing remote command");
 
-        let setup_script = format!(
-            r#"
-set -e
-cd ~
-tar xzf context.tar.gz
-rm -rf {workspace}
-mkdir -p {workspace}
-cd {workspace}
-git clone ~/repo.bundle .
-rm -rf .claude && cp -r ~/.claude .
-export ANTHROPIC_API_KEY=$(echo '{key}' | base64 -d)
-PROMPT=$(echo '{prompt}' | base64 -d)
-amplihack claude --{command} --max-turns {turns} -- -p "$PROMPT"
-"#,
-            workspace = self.remote_workspace,
-            key = encoded_key,
-            prompt = encoded_prompt,
-            command = command,
-            turns = max_turns,
-        );
+        // Issue #997 (F1): the script is key-free by construction; the secret is
+        // transported over the child's stdin (never argv, disk, or logs).
+        let setup_script = build_remote_script(&self.remote_workspace, command, prompt, max_turns)?;
 
         let mut cmd = Command::new("azlin");
         cmd.arg("connect");
@@ -182,8 +169,10 @@ amplihack claude --{command} --max-turns {turns} -- -p "$PROMPT"
         cmd.args([&self.vm.name, &setup_script]);
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
-        // Issue #867: null stdin so the spawned child can't steal the orchestrator's input.
-        cmd.stdin(Stdio::null());
+        // Issue #997 (F1): pipe stdin so we can hand the API key to the remote
+        // `read`. Issue #867 is preserved: we write the key once, flush, and
+        // close the handle immediately, so the child never holds a live TTY.
+        cmd.stdin(Stdio::piped());
 
         let start = Instant::now();
         // Issue #867: supervise via idle watchdog, not a wall-clock cap. A run
@@ -191,6 +180,26 @@ amplihack claude --{command} --max-turns {turns} -- -p "$PROMPT"
         let mut child = cmd
             .spawn()
             .map_err(|e| RemoteError::execution(format!("Failed to spawn remote command: {e}")))?;
+
+        // Issue #997 (F1): deliver the API key via stdin, then close it (EOF).
+        // Surface any write failure explicitly — no silent fallback.
+        {
+            use tokio::io::AsyncWriteExt;
+            let mut stdin = child.stdin.take().ok_or_else(|| {
+                RemoteError::execution("failed to capture remote command stdin for key transport")
+            })?;
+            stdin
+                .write_all(format!("{api_key}\n").as_bytes())
+                .await
+                .map_err(|e| {
+                    RemoteError::execution(format!("failed to write API key to remote stdin: {e}"))
+                })?;
+            stdin.flush().await.map_err(|e| {
+                RemoteError::execution(format!("failed to flush API key to remote stdin: {e}"))
+            })?;
+            // Drop closes the pipe, signalling EOF to the remote shell.
+        }
+
         let child_stdout = child.stdout.take();
         let child_stderr = child.stderr.take();
         let cfg = IdleConfig::with_idle(std::time::Duration::from_secs(self.timeout_seconds));
@@ -234,39 +243,54 @@ amplihack claude --{command} --max-turns {turns} -- -p "$PROMPT"
         max_turns: u32,
         api_key: &str,
     ) -> Result<(), RemoteError> {
+        // Issue #997 (F2): reject untrusted command tokens before building any script.
+        validate_command(command)?;
         if api_key.trim().is_empty() {
             return Err(RemoteError::execution(
                 "ANTHROPIC_API_KEY not found in environment",
             ));
         }
 
-        let encoded_prompt = b64_encode(prompt.as_bytes());
-        let encoded_key = b64_encode(api_key.as_bytes());
-        let script = format!(
-            r#"
-set -e
-export ANTHROPIC_API_KEY=$(echo '{key}' | base64 -d)
-PROMPT=$(echo '{prompt}' | base64 -d)
-tmux new-session -d -s {session} "cd ~/workspace && amplihack claude --{command} --max-turns {turns} -- -p \"$PROMPT\""
-"#,
-            key = encoded_key,
-            prompt = encoded_prompt,
-            session = shell_escape(session_id),
-            command = command,
-            turns = max_turns,
-        );
+        // Issue #997 (F1): key-free script; the secret arrives over stdin.
+        // Issue #998: build_tmux_script rejects (not strips) invalid session ids.
+        let script = build_tmux_script(session_id, command, prompt, max_turns)?;
 
         let mut cmd = Command::new("azlin");
         cmd.arg("connect");
         self.append_port_args(&mut cmd);
         cmd.args([&self.vm.name, &script]);
+        cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        let output = tokio::time::timeout(std::time::Duration::from_secs(60), cmd.output())
-            .await
-            .map_err(|_| RemoteError::execution("tmux launch timed out"))?
-            .map_err(|e| RemoteError::execution(format!("tmux launch failed: {e}")))?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| RemoteError::execution(format!("tmux launch failed to spawn: {e}")))?;
+
+        // Issue #997 (F1): deliver the API key via stdin, then close it (EOF).
+        // Drop the handle before awaiting output so the remote shell sees EOF
+        // and cannot deadlock waiting for more input.
+        {
+            use tokio::io::AsyncWriteExt;
+            let mut stdin = child.stdin.take().ok_or_else(|| {
+                RemoteError::execution("failed to capture tmux stdin for key transport")
+            })?;
+            stdin
+                .write_all(format!("{api_key}\n").as_bytes())
+                .await
+                .map_err(|e| {
+                    RemoteError::execution(format!("failed to write API key to tmux stdin: {e}"))
+                })?;
+            stdin.flush().await.map_err(|e| {
+                RemoteError::execution(format!("failed to flush API key to tmux stdin: {e}"))
+            })?;
+        }
+
+        let output =
+            tokio::time::timeout(std::time::Duration::from_secs(60), child.wait_with_output())
+                .await
+                .map_err(|_| RemoteError::execution("tmux launch timed out"))?
+                .map_err(|e| RemoteError::execution(format!("tmux launch failed: {e}")))?;
 
         if output.status.success() {
             Ok(())
@@ -401,38 +425,6 @@ fi
     }
 }
 
-/// Simple base64 encoder (standard alphabet, with padding).
-fn b64_encode(data: &[u8]) -> String {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut result = String::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        result.push(ALPHABET[((n >> 18) & 0x3F) as usize] as char);
-        result.push(ALPHABET[((n >> 12) & 0x3F) as usize] as char);
-        if chunk.len() > 1 {
-            result.push(ALPHABET[((n >> 6) & 0x3F) as usize] as char);
-        } else {
-            result.push('=');
-        }
-        if chunk.len() > 2 {
-            result.push(ALPHABET[(n & 0x3F) as usize] as char);
-        } else {
-            result.push('=');
-        }
-    }
-    result
-}
-
-fn shell_escape(value: &str) -> String {
-    value
-        .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -477,24 +469,5 @@ mod tests {
         };
         let exec = Executor::new(vm, 10, None);
         assert!(exec.tunnel_port.is_none());
-    }
-
-    #[test]
-    fn b64_encode_vectors() {
-        assert_eq!(b64_encode(b""), "");
-        assert_eq!(b64_encode(b"A"), "QQ==");
-        assert_eq!(b64_encode(b"AB"), "QUI=");
-        assert_eq!(b64_encode(b"ABC"), "QUJD");
-        assert_eq!(b64_encode(b"Hello, World!"), "SGVsbG8sIFdvcmxkIQ==");
-        let data: Vec<u8> = (0..=255).collect();
-        assert_eq!(b64_encode(&data).len() % 4, 0);
-    }
-
-    #[test]
-    fn shell_escape_strips_unsafe() {
-        assert_eq!(shell_escape("hello-world_2.0"), "hello-world_2.0");
-        assert_eq!(shell_escape("test;rm -rf /"), "testrm-rf");
-        assert_eq!(shell_escape(""), "");
-        assert_eq!(shell_escape("!@#$%^&*()"), "");
     }
 }

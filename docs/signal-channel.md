@@ -439,14 +439,76 @@ Any value present in the environment overrides the same key in the file.
 
 ## Group naming and lifecycle
 
-**Per-session (default).** On SessionStart a fresh group is created named:
+### Only the top-level operator session gets a group
+
+The Signal channel is **operator-facing**: it exists so a human can watch and
+advise the single session they launched. A real amplihack run, however, spawns
+**many** nested sessions — the orchestrator, each recipe step, and every
+sub-agent all start their own session with their own `session_id`. If every one
+of those opened a Signal group, the operator's phone would fill with dozens of
+**empty** groups (each containing only a lone `session started` message) and it
+would be impossible to tell which group belonged to the run they care about.
+
+To prevent this, SessionStart integration applies a **nesting gate**: a Signal
+group is created **only for the top-level operator session**. Nested sessions
+are a **silent no-op** — they create no group, post no `session started`
+message, persist no group state, and spawn no subscriber. This is normal,
+expected behavior, not a warning or an error.
+
+Nesting is detected from the `AMPLIHACK_SESSION_DEPTH` environment variable,
+which amplihack increments for every child session it spawns:
+
+| `AMPLIHACK_SESSION_DEPTH` | Session kind | Signal group created? |
+|---|---|---|
+| unset or `0` | Top-level operator session | ✅ Yes |
+| `1`, `2`, … (any value > 0) | Nested recipe / orchestrator / sub-agent | ❌ No (silent no-op) |
+
+A non-numeric or malformed value is treated as depth `0` (fail toward creating
+the group for the visible operator session).
+
+> **Why this matters.** Before the nesting gate, a single run could create tens
+> of empty groups. With the gate, one run produces exactly **one** group — the
+> operator's — and all meaningful output flows there.
+
+### Group name
+
+**Per-session (default).** On the top-level SessionStart a fresh group is
+created. When the session is running under **tmux** the group name embeds the
+tmux session name so the operator can immediately tell which group maps to which
+terminal/session:
+
+```
+amplihack-<tmux-session-name>-<session-id>-<unix-timestamp>
+```
+
+When **not** running under tmux (or the tmux lookup fails or times out), the
+name gracefully falls back to the previous format:
 
 ```
 amplihack-<session-id>-<unix-timestamp>
 ```
 
+Both the tmux session name and the session id are **sanitized** to the
+allowlist `[A-Za-z0-9_-]` (the same allowlist used by `sanitize_session_id`);
+the tmux portion is truncated to **32 characters**
+to keep names bounded. If the tmux name is empty after sanitization it is
+omitted (fallback form is used).
+
+The tmux name is discovered by running `tmux display-message -p
+'#{session_name}'` **only when the `TMUX` environment variable is set**, with a
+**~2-second timeout** and a graceful fallback: any failure, timeout, or
+absence of tmux simply omits the tmux part. The subprocess is invoked with an
+explicit argument vector (no shell), so the tmux name — which is untrusted
+input — can never trigger shell or argument injection, and it is used **only**
+in the display group name (never in any filesystem path).
+
 The `groupId` returned by signal-cli is persisted in session state. On Stop the
 group is closed with `quitGroup`.
+
+> **Nested / no-group sessions on Stop.** Because nested sessions never create a
+> group or persist a `group_id`, their Stop hook is likewise a clean no-op: no
+> summary is posted and no `quitGroup` is attempted when there is no persisted
+> `group_id` for the session.
 
 **Rolling group (opt-in).** Per-session groups are the default; nothing needs
 to be set to get them. To instead reuse a **single** long-lived group across all
@@ -460,9 +522,11 @@ reuse flag without a group id is rejected.
 
 | Phase | Per-session | Rolling |
 |---|---|---|
-| SessionStart | create group + post "session started" | reuse group + post "session started" |
+| SessionStart (top-level) | create group + post "session started" | reuse group + post "session started" |
+| SessionStart (nested) | **silent no-op** (no group, no post) | **silent no-op** (no group, no post) |
 | During run | post at meaningful transitions | post at meaningful transitions |
-| Stop | post summary → `quitGroup` | post summary (group kept) |
+| Stop (with group) | post summary → `quitGroup` | post summary (group kept) |
+| Stop (no group) | **silent no-op** | **silent no-op** |
 
 ---
 
@@ -758,6 +822,8 @@ wire/gating tests run with no network or filesystem I/O.
 | `signal setup` fails on port | `127.0.0.1:<port>` held by an unknown process | Free the port or pass `--port <other>` / set `AMPLIHACK_SIGNAL_PORT` |
 | A VM shows `failed: link limit reached` | Signal linked-device cap hit | Unlink an unused device in Signal, or use `--identity-mode dedicated-number` for very large fleets |
 | `distribute` stopped part-way | Interrupted / a VM failed | Re-run `amplihack signal distribute`; it resumes from `~/.amplihack/signal-distribute-state.json` and retries only pending/failed VMs |
+| Many **empty** groups piling up (each with only "session started") | Older behavior created a group for every nested session | Fixed: only the **top-level** session (`AMPLIHACK_SESSION_DEPTH` unset/`0`) creates a group; nested sessions are a silent no-op. Delete the stale empty groups; new runs produce exactly one group |
+| Can't tell which group belongs to which session | Group name lacked session context | Group names now embed the tmux session name when running under tmux: `amplihack-<tmux-session>-<session-id>-<ts>` |
 
 Because every Signal operation is non-fatal, none of the above can break your
 amplihack session — worst case the channel is silently unavailable and the run
@@ -788,6 +854,23 @@ In a per-session, atomically-written JSON inbox whose path is derived through
 `sanitize_session_id`. The inbox is bounded (oldest entries evicted under a
 flood) and is drained (delivered once) on the next
 `PostToolUse` / `UserPromptSubmit`.
+
+**Why don't nested sessions (recipes, orchestrator, sub-agents) get their own
+Signal group?**
+By design. A single run spawns many nested sessions; if each opened a group the
+operator would be buried in empty groups with no way to tell them apart. Only
+the top-level operator session (`AMPLIHACK_SESSION_DEPTH` unset or `0`) creates
+a group and posts output. Every nested session (`AMPLIHACK_SESSION_DEPTH > 0`)
+is a silent no-op — no group, no message, no state, no subscriber. All
+meaningful output still flows to the single operator group.
+
+**Why is the tmux session name in the group name? What if I'm not using tmux?**
+It makes each group instantly identifiable — you can match a Signal group to the
+terminal/session it came from. The lookup runs `tmux display-message -p
+'#{session_name}'` only when `TMUX` is set, with a ~2-second timeout. If you are
+not under tmux (or the lookup fails/times out) the name gracefully falls back to
+`amplihack-<session-id>-<ts>`. The tmux name is sanitized to `[A-Za-z0-9_-]`,
+truncated to 32 chars, and never used in any filesystem path.
 
 ---
 

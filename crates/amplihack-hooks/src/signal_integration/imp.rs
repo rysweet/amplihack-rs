@@ -107,7 +107,34 @@ pub fn on_session_start(session_id: Option<&str>, warnings: &mut Vec<String>) {
     }
 }
 
+/// True when this process is a NESTED session (spawned by a recipe, the
+/// orchestrator, or a sub-agent) rather than the top-level operator session.
+///
+/// The session tree increments `AMPLIHACK_SESSION_DEPTH` for every spawned
+/// child (see `session_start::context_loaders::is_nested_recipe_session`). Only
+/// the top-level operator session (depth unset or `0`) owns the Signal channel;
+/// nested sessions must never create their own per-session group, which is what
+/// produced the empty-group flood. A non-numeric/garbage value fails toward
+/// "top level" (`0`) so we never panic and never wrongly suppress the operator
+/// session.
+pub(crate) fn is_nested_session() -> bool {
+    std::env::var("AMPLIHACK_SESSION_DEPTH")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(0)
+        > 0
+}
+
 fn start(session_id: &str) -> anyhow::Result<()> {
+    // Nesting gate: only the TOP-LEVEL operator session gets a Signal group.
+    // Every nested session (recipe/orchestrator/sub-agent) is a silent no-op so
+    // it never creates a group, posts "session started", persists state, or
+    // spawns a subscriber. This is an intended no-op, not a swallowed error.
+    if is_nested_session() {
+        tracing::debug!("signal: nested session, skipping per-session group creation");
+        return Ok(());
+    }
+
     // A missing/invalid config simply means the channel is not configured;
     // treat it as "disabled" rather than an operational warning.
     let Some(config) = load_config_or_disabled() else {
@@ -155,14 +182,107 @@ fn start(session_id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Name a session's group as `amplihack-<session-id>-<unix-ts>`.
+/// Name a session's group, embedding the current tmux session name when
+/// available so an operator can tell which Signal group maps to which session.
+///
+/// With a tmux name: `amplihack-<tmux>-<session-id>-<unix-ts>`.
+/// Without tmux (or on any lookup failure): `amplihack-<session-id>-<unix-ts>`
+/// (the historical form).
 fn group_name(session_id: &str) -> String {
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or_default();
-    let sanitized = amplihack_types::paths::sanitize_session_id(session_id);
-    format!("amplihack-{sanitized}-{ts}")
+    format_group_name(current_tmux_session().as_deref(), session_id, ts)
+}
+
+/// Pure group-name formatter (no I/O) so the tmux-aware naming is unit-testable
+/// without a real tmux. Both the tmux name and the session id are sanitized to
+/// the `[A-Za-z0-9_-]` allowlist (every other char becomes `_`); the tmux
+/// component is truncated to a bounded length so an adversarial/huge tmux name
+/// cannot produce an unbounded group name. An empty (or empty-after-sanitize)
+/// tmux name falls back to the no-tmux form.
+fn format_group_name(tmux: Option<&str>, session_id: &str, ts: u64) -> String {
+    let sanitized_id = amplihack_types::paths::sanitize_session_id(session_id);
+    match tmux.map(sanitize_group_component).filter(|s| !s.is_empty()) {
+        Some(tmux) => format!("amplihack-{tmux}-{sanitized_id}-{ts}"),
+        None => format!("amplihack-{sanitized_id}-{ts}"),
+    }
+}
+
+/// Maximum length of the tmux component embedded in a group name.
+const TMUX_NAME_MAX_LEN: usize = 32;
+
+/// Sanitize an untrusted display component (e.g. a tmux session name) to the
+/// `[A-Za-z0-9_-]` allowlist and bound its length. Never panics on empty input.
+fn sanitize_group_component(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(TMUX_NAME_MAX_LEN)
+        .collect()
+}
+
+/// Look up the current tmux session name, or `None` when not running under tmux
+/// or the lookup fails/times out.
+///
+/// Gated on `TMUX` being set (so we never spawn `tmux` outside a tmux session),
+/// with a short timeout and graceful fallback: any failure yields `None` and
+/// the caller keeps the historical group-name form. Implemented locally with
+/// `std::process` (no `amplihack-cli` dependency) to avoid the layering
+/// inversion tracked in #875.
+fn current_tmux_session() -> Option<String> {
+    std::env::var_os("TMUX")?;
+    run_tmux_display_name(Duration::from_secs(2))
+}
+
+/// Run `tmux display-message -p '#{session_name}'` with an explicit argv (no
+/// shell) under `timeout`, returning the trimmed session name. On timeout the
+/// child is killed and reaped by the reader thread; any failure returns `None`.
+fn run_tmux_display_name(timeout: Duration) -> Option<String> {
+    use std::process::{Command, Stdio};
+
+    let child = Command::new("tmux")
+        .arg("display-message")
+        .arg("-p")
+        .arg("#{session_name}")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let pid = child.id();
+
+    // Read the output on a worker thread so the wall-clock timeout is enforced
+    // by `recv_timeout` rather than a blocking `wait`.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(output)) if output.status.success() => {
+            let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if name.is_empty() { None } else { Some(name) }
+        }
+        // Command ran but failed, or produced an I/O error: no tmux name.
+        Ok(_) => None,
+        // Timed out: kill the child (best-effort). The worker thread's
+        // `wait_with_output` then returns and reaps it, avoiding a zombie.
+        Err(_) => {
+            // SAFETY: `kill(2)` with a specific positive PID and SIGKILL has no
+            // memory-safety implications; a stale PID simply yields ESRCH.
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGKILL);
+            }
+            None
+        }
+    }
 }
 
 /// Spawn `amplihack-hooks signal-subscriber --session-id <id>` detached from
@@ -703,5 +823,218 @@ mod tests {
     fn format_operator_context_single_item() {
         let out = format_operator_context(&["only one".to_string()]);
         assert_eq!(out, format!("{EXPECTED_HEADER}\n1. only one"));
+    }
+
+    // -- FIX 1: nesting gate (empty-group flood) -----------------------------
+    //
+    // Only the TOP-LEVEL operator session (AMPLIHACK_SESSION_DEPTH unset or
+    // "0") may create a Signal group. Every NESTED session (depth > 0, spawned
+    // by recipes/orchestrator/sub-agents) must be a silent no-op so it never
+    // creates a group, posts "session started", persists state, or spawns a
+    // subscriber. `is_nested_session()` is the pure gate predicate.
+
+    use crate::test_support::{EnvVarGuard, env_lock};
+
+    #[test]
+    fn is_nested_session_true_for_positive_depth() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _depth = EnvVarGuard::set("AMPLIHACK_SESSION_DEPTH", "2");
+        assert!(is_nested_session(), "depth=2 is a nested child session");
+
+        let _depth1 = EnvVarGuard::set("AMPLIHACK_SESSION_DEPTH", "1");
+        assert!(is_nested_session(), "depth=1 is a nested child session");
+    }
+
+    #[test]
+    fn is_nested_session_false_for_zero_or_unset_or_garbage() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let _depth0 = EnvVarGuard::set("AMPLIHACK_SESSION_DEPTH", "0");
+        assert!(!is_nested_session(), "depth=0 is the top-level session");
+
+        let _unset = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
+        assert!(!is_nested_session(), "unset depth is the top-level session");
+
+        // Non-numeric depth parses to 0 (fail toward "top level / run"), never
+        // a panic.
+        let _garbage = EnvVarGuard::set("AMPLIHACK_SESSION_DEPTH", "not-a-number");
+        assert!(
+            !is_nested_session(),
+            "non-numeric depth must default to top-level (0), not panic"
+        );
+    }
+
+    /// Compute this session's persisted Signal state file path under the
+    /// current working directory, mirroring `start()`'s own derivation.
+    fn state_file_for(session_id: &str) -> PathBuf {
+        let dirs = ProjectDirs::from_cwd();
+        state_path(&signal_root(&dirs), session_id)
+    }
+
+    /// Env + cwd fixture that makes `SignalConfig::load()` return a *valid*
+    /// (configured) channel pointing at an immediately-refused loopback
+    /// endpoint, so any code path that proceeds past the nesting gate will try
+    /// to connect and fail fast rather than performing real network I/O.
+    struct ConfiguredSignalFixture {
+        _home: EnvVarGuard,
+        _config: EnvVarGuard,
+        _endpoint: EnvVarGuard,
+        _account: EnvVarGuard,
+        _allowlist: EnvVarGuard,
+        _reuse: EnvVarGuard,
+        original_dir: PathBuf,
+        _tmp: tempfile::TempDir,
+    }
+
+    impl ConfiguredSignalFixture {
+        fn new() -> Self {
+            let tmp = tempfile::tempdir().unwrap();
+            let original_dir = std::env::current_dir().unwrap();
+            std::env::set_current_dir(tmp.path()).unwrap();
+            Self {
+                // HOME points at an empty dir so the default TOML config file
+                // is absent (NotFound ⇒ no TOML layer); the env vars below
+                // fully configure the channel.
+                _home: EnvVarGuard::set("HOME", tmp.path()),
+                _config: EnvVarGuard::unset("AMPLIHACK_SIGNAL_CONFIG"),
+                // Port 1 on loopback: nothing listens ⇒ immediate
+                // ECONNREFUSED, never a real/external network call.
+                _endpoint: EnvVarGuard::set("AMPLIHACK_SIGNAL_ENDPOINT", "127.0.0.1:1"),
+                _account: EnvVarGuard::set("AMPLIHACK_SIGNAL_ACCOUNT", "+15555550123"),
+                _allowlist: EnvVarGuard::set("AMPLIHACK_SIGNAL_ALLOWLIST", "+15555550124"),
+                // Force per-session group creation (not rolling reuse).
+                _reuse: EnvVarGuard::set("AMPLIHACK_SIGNAL_REUSE_ROLLING_GROUP", "false"),
+                original_dir,
+                _tmp: tmp,
+            }
+        }
+    }
+
+    impl Drop for ConfiguredSignalFixture {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.original_dir);
+        }
+    }
+
+    #[test]
+    fn start_is_noop_for_nested_session() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let fixture = ConfiguredSignalFixture::new();
+        let _depth = EnvVarGuard::set("AMPLIHACK_SESSION_DEPTH", "2");
+
+        let session_id = "nested-session-abc";
+        // A nested session must short-circuit BEFORE connecting, so despite a
+        // fully-configured channel it returns Ok with no side effects.
+        let result = start(session_id);
+        drop(fixture);
+
+        assert!(
+            result.is_ok(),
+            "nested session must be a clean no-op, got: {result:?}"
+        );
+        assert!(
+            !state_file_for(session_id).exists(),
+            "nested session must NOT persist any Signal group state"
+        );
+    }
+
+    #[test]
+    fn start_proceeds_past_gate_for_top_level_session() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let fixture = ConfiguredSignalFixture::new();
+        // Top-level: depth unset ⇒ NOT gated. With a valid config it must
+        // proceed to connect and fail (loopback refused), proving the gate is
+        // nesting-specific and did not swallow the top-level path.
+        let _depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
+
+        let session_id = "top-level-session-xyz";
+        let result = start(session_id);
+        drop(fixture);
+
+        assert!(
+            result.is_err(),
+            "top-level session must proceed past the gate and surface the \
+             connect failure, not no-op; got Ok"
+        );
+        assert!(
+            !state_file_for(session_id).exists(),
+            "a failed connect must not leave persisted group state behind"
+        );
+    }
+
+    #[test]
+    fn stop_is_noop_when_no_group_persisted() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let fixture = ConfiguredSignalFixture::new();
+        // No state file was ever written (e.g. this was a nested session that
+        // never created a group). stop() must be a clean no-op: no summary
+        // post, no quitGroup, no error.
+        let session_id = "never-started-session";
+        let result = stop(session_id);
+        drop(fixture);
+
+        assert!(
+            result.is_ok(),
+            "stop must no-op cleanly when there is no persisted group id, \
+             got: {result:?}"
+        );
+    }
+
+    // -- FIX 2: tmux-aware group name ----------------------------------------
+    //
+    // `format_group_name` is the pure formatter so the tmux lookup can be
+    // tested without a real tmux. With a tmux name present it is embedded
+    // (sanitized + bounded) between the prefix and the session id; when absent
+    // the name is unchanged from the historical `amplihack-<sid>-<ts>` form.
+
+    #[test]
+    fn format_group_name_includes_tmux_session_when_present() {
+        let name = format_group_name(Some("my-tmux"), "sess-123", 1000);
+        assert_eq!(name, "amplihack-my-tmux-sess-123-1000");
+    }
+
+    #[test]
+    fn format_group_name_falls_back_when_tmux_absent() {
+        let name = format_group_name(None, "sess-123", 1000);
+        assert_eq!(
+            name, "amplihack-sess-123-1000",
+            "no-tmux form must match the historical group name exactly"
+        );
+    }
+
+    #[test]
+    fn format_group_name_sanitizes_tmux_and_session() {
+        // Both the tmux name and the session id are sanitized to the
+        // [A-Za-z0-9_-] allowlist; every other char becomes '_'.
+        let name = format_group_name(Some("weird/name space!"), "sess/id", 5);
+        assert_eq!(name, "amplihack-weird_name_space_-sess_id-5");
+    }
+
+    #[test]
+    fn format_group_name_empty_tmux_falls_back_to_no_tmux_form() {
+        // An empty tmux name (e.g. `tmux` returned nothing / not under tmux)
+        // must behave exactly like `None`, and must never panic.
+        let name = format_group_name(Some(""), "sess-1", 7);
+        assert_eq!(name, "amplihack-sess-1-7");
+    }
+
+    #[test]
+    fn format_group_name_bounds_tmux_length() {
+        // The tmux component is truncated to a bounded length (<=32) so an
+        // adversarial/huge tmux name cannot produce an unbounded group name.
+        let long = "a".repeat(100);
+        let name = format_group_name(Some(&long), "s", 1);
+        let expected_tmux = "a".repeat(32);
+        assert_eq!(name, format!("amplihack-{expected_tmux}-s-1"));
     }
 }

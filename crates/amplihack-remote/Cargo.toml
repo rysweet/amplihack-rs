@@ -19,3 +19,5 @@ tokio = { version = "1", features = ["process", "io-util", "sync", "rt", "macros
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "test-util", "time"] }

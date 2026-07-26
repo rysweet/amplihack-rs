@@ -186,6 +186,8 @@ run_ss() {
     MOCK_LINK_AFTER_MINT_FILE="$SANDBOX/linked-after-mint" \
     SIGNAL_SETUP_TEST_DAEMON_UP="${SIGNAL_SETUP_TEST_DAEMON_UP:-}" \
     SIGNAL_SETUP_DAEMON_TCP="${SIGNAL_SETUP_DAEMON_TCP:-}" \
+    SIGNAL_SETUP_DAEMON_WAIT_ATTEMPTS="${SIGNAL_SETUP_DAEMON_WAIT_ATTEMPTS:-}" \
+    SIGNAL_SETUP_RPC_TIMEOUT_SECONDS="${SIGNAL_SETUP_RPC_TIMEOUT_SECONDS:-}" \
     /bin/bash "$IMPL" "$@" 2>&1)"
   RC=$?
 }
@@ -382,6 +384,50 @@ if [[ "$RC" -eq 0 ]] && echo "$OUT" | grep -qi "already linked"; then
   pass "valid loopback endpoint (localhost:7600) accepted"
 else
   fail "a valid loopback daemon endpoint must be accepted (rc=$RC): $OUT"
+fi
+
+# ─── Test 4c: numeric env tunables fail closed on non-integer values ────────
+# DAEMON_WAIT_ATTEMPTS / RPC_TIMEOUT_SECONDS are interpolated UNQUOTED into the
+# root-executed remote payload (`seq 1 $DAEMON_WAIT_ATTEMPTS`, `timeout
+# $RPC_TIMEOUT_SECONDS nc`). A non-numeric value is an injection vector into that
+# payload, so validation must reject it before any mint/daemon side effect.
+echo ""
+echo "Test 4c: numeric env tunables fail closed (self-injection guard)"
+
+reset_logs
+SIGNAL_SETUP_DAEMON_WAIT_ATTEMPTS='5; reboot' MOCK_LINKED_NUMBER="+15551234567" \
+  run_ss --host local --phone +15551234567 --no-daemon -y
+if [[ "$RC" -ne 0 ]] && echo "$OUT" | grep -qi "invalid"; then
+  pass "non-numeric SIGNAL_SETUP_DAEMON_WAIT_ATTEMPTS rejected"
+else
+  fail "non-numeric DAEMON_WAIT_ATTEMPTS must be rejected (rc=$RC): $OUT"
+fi
+if [[ ! -s "$QR_LOG" ]]; then
+  pass "no QR rendered for a rejected wait-attempts value"
+else
+  fail "a rejected wait-attempts value must not reach QR rendering"
+fi
+
+reset_logs
+# shellcheck disable=SC2016  # literal $(...) is the injection payload under test — must NOT expand
+SIGNAL_SETUP_RPC_TIMEOUT_SECONDS='$(touch /tmp/pwn)' MOCK_LINKED_NUMBER="+15551234567" \
+  run_ss --host local --phone +15551234567 --no-daemon -y
+if [[ "$RC" -ne 0 ]] && echo "$OUT" | grep -qi "invalid"; then
+  pass "non-numeric SIGNAL_SETUP_RPC_TIMEOUT_SECONDS rejected"
+else
+  fail "non-numeric RPC_TIMEOUT_SECONDS must be rejected (rc=$RC): $OUT"
+fi
+
+# POSITIVE: valid integer tunables pass validation (paired with already-linked
+# + --no-daemon so we exit cleanly, proving acceptance not a skipped step).
+reset_logs
+SIGNAL_SETUP_DAEMON_WAIT_ATTEMPTS='30' SIGNAL_SETUP_RPC_TIMEOUT_SECONDS='20' \
+  MOCK_LINKED_NUMBER="+15551234567" \
+  run_ss --host local --phone +15551234567 --no-daemon -y
+if [[ "$RC" -eq 0 ]] && echo "$OUT" | grep -qi "already linked"; then
+  pass "valid integer env tunables accepted"
+else
+  fail "valid integer env tunables must be accepted (rc=$RC): $OUT"
 fi
 
 # ─── Test 5: valid inputs pass validation (reach prereqs/idempotency) ───────

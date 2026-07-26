@@ -24,44 +24,24 @@ terminal_no_op="false"
 missing_evidence=""
 invalid_evidence=""
 normalized_bool="false"
-terminal_status="${PUBLISH_STATE:-active-pr}"
 final_status_rc=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PR_SCOPE_HELPER="${WORKFLOW_PR_SCOPE_HELPER:-${SCRIPT_DIR}/workflow_pr_scope.sh}"
 # workflow_pr_scope.sh validates headRefName, baseRefName, headRefOid,
 # isCrossRepository, expected_pr_title_prefix, and created_after.
+GH_RETRY_HELPER="${WORKFLOW_GH_RETRY_HELPER:-${SCRIPT_DIR}/workflow_gh_retry.sh}"
+[ -f "$GH_RETRY_HELPER" ] || { echo "ERROR: workflow_final_status.sh requires the shared retry helper at $GH_RETRY_HELPER" >&2; exit 2; }
+# shellcheck source=/dev/null
+. "$GH_RETRY_HELPER"
 
-sanitize_gh_stderr() {
-  sed -E 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' "$1" | tr '\n' ' ' | head -c 500
-}
-
-is_transient_gh_error() {
-  [ -s "$1" ] && grep -Eiq 'HTTP 5[0-9][0-9]|(^|[^0-9])(502|503|504)([^0-9]|$)|rate limit|timed out|timeout|temporar|connection reset|connection refused|TLS handshake|network|server error' "$1"
-}
-
+# Best-effort final PR status read. This is a display-only read that the caller
+# already tolerates failing (`|| true`); it must NOT stall the workflow's final
+# reporting step waiting on a rate-limit reset (which can be up to an hour out).
+# Pin GH_RETRY_MAX_RL_WINDOWS=0 so a rate-limit fails fast instead of sleeping
+# through reset windows. Transient errors still get the short bounded retries.
+# No REST fallback here: this is a display-only read.
 gh_pr_view_with_retry() {
-  local stderr_file output status attempt delay=1
-  for attempt in 1 2 3; do
-    stderr_file=$(mktemp -t step22b-gh-pr-view-XXXXXX)
-    if output=$(timeout 60 gh pr view "$@" 2>"$stderr_file"); then
-      rm -f "$stderr_file"
-      printf '%s\n' "$output"
-      return 0
-    else
-      status=$?
-    fi
-    if [ "$attempt" -lt 3 ] && is_transient_gh_error "$stderr_file"; then
-      echo "WARNING: final PR status lookup failed transiently (exit ${status}); retrying (${attempt}/3): $(sanitize_gh_stderr "$stderr_file")" >&2
-      rm -f "$stderr_file"
-      sleep "$delay"
-      delay=$((delay * 2))
-      continue
-    fi
-    echo "WARNING: final PR status lookup failed (exit ${status}); continuing with terminal-state result" >&2
-    [ ! -s "$stderr_file" ] || echo "gh pr view stderr: $(sanitize_gh_stderr "$stderr_file")" >&2
-    rm -f "$stderr_file"
-    return "$status"
-  done
+  GH_RETRY_MAX_RL_WINDOWS=0 _gh_retry_core "final PR status pr view" pr view "$@"
 }
 
 normalize_bool() {

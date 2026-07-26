@@ -449,6 +449,47 @@ record `32768`, matching the 32 GB Node heap set with
 State writes use an advisory lock so concurrent `remote` commands do not corrupt
 the JSON file.
 
+### Pool persistence and error visibility
+
+The VM pool keeps an in-memory view of every VM and its active sessions, and
+persists that view to the [state file](#state-file) after each mutation so the
+on-disk record stays in step with memory. How a failed persistence write is
+handled depends on whether the operation can report an error to its caller:
+
+| Operation | When it writes | On persistence failure |
+| --------- | -------------- | ---------------------- |
+| Acquiring a session (reuse or provision) | After a VM is assigned to a session | Error is **returned** to the caller (the acquire call fails) |
+| Releasing a session | After a session is removed from its VM's `active_sessions` | `WARN` log with `session` id + `error`; call still succeeds |
+| Idle-VM cleanup | After one or more idle VMs are removed from the pool | `WARN` log with `count` of removed VMs + `error`; call still succeeds |
+
+Acquisition is fallible and propagates a write failure up the stack. Releasing a
+session and idle-VM cleanup are infallible by contract, so they cannot return the
+error. Rather than silently discarding it, they emit a `WARN`-level log that names
+the affected operation and the underlying cause, so the divergence between
+in-memory and on-disk state is observable rather than hidden:
+
+```text
+WARN failed to persist pool state after releasing session;
+     in-memory and on-disk state may diverge session="sess-20260502-203014-4f2a" error="..."
+
+WARN failed to persist pool state after idle-VM cleanup;
+     in-memory and on-disk state may diverge count=2 error="..."
+```
+
+These operations remain non-fatal by design: the in-memory mutation is already
+applied and correct, so the release and cleanup calls continue to succeed and
+return their normal result. The `WARN` log is the signal that the persisted
+state file is stale and may need to be rebuilt (see
+[State file is stale after a persistence warning](#state-file-is-stale-after-a-persistence-warning)).
+
+To surface these warnings, run `remote` commands with tracing at `warn` level or
+lower (the default). Increase verbosity with `RUST_LOG` when diagnosing
+persistence problems:
+
+```bash
+RUST_LOG=amplihack_remote=debug amplihack remote kill sess-20260502-203014-4f2a
+```
+
 ## Exit codes
 
 | Code | Meaning |
@@ -518,3 +559,38 @@ amplihack remote status
 
 Detached sessions already running on VMs continue running, but untracked sessions
 will not appear in `amplihack remote list` until recreated in state.
+
+### State file is stale after a persistence warning
+
+When releasing a session or cleaning up idle VMs, the pool persists its updated
+state to disk. If that write fails, the operation still succeeds in memory but
+emits a `WARN` log so the failure is visible instead of silently swallowed:
+
+```text
+WARN failed to persist pool state after releasing session;
+     in-memory and on-disk state may diverge session="sess-..." error="..."
+```
+
+This means the running process has the correct pool state, but the on-disk
+`remote-state.json` is now behind. Resolve it by fixing the underlying write
+problem and forcing a fresh persist:
+
+1. Check that the state directory is writable and has free space:
+
+   ```bash
+   ls -ld ~/.amplihack
+   df -h ~/.amplihack
+   ```
+
+2. Trigger a fresh persist by running a command that mutates pool state (for
+   example, another `kill`, or an idle-VM cleanup cycle). Each `remote`
+   invocation is a separate process, so a read-only command such as
+   `amplihack remote status` reports the current on-disk view but does not by
+   itself rewrite a stale file — a mutating operation is what re-persists:
+
+   ```bash
+   amplihack remote kill <session-id>
+   ```
+
+If the `error` in the warning points to invalid JSON, follow
+[State file is invalid JSON](#state-file-is-invalid-json) to rebuild the file.
