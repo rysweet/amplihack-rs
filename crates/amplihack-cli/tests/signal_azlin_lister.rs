@@ -14,8 +14,16 @@
 #![cfg(feature = "signal")]
 
 use amplihack_cli::commands::signal::seams::{
-    resolve_vm_list, vm_names_from_az_vm_list_json, vm_names_from_azlin_json,
+    AzVmLister, VmLister, resolve_vm_list, vm_names_from_az_vm_list_json, vm_names_from_azlin_json,
 };
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
+use std::sync::Mutex;
+
+#[cfg(unix)]
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn extracts_names_from_azlin_json() {
@@ -75,4 +83,113 @@ fn fallback_error_surfaces_never_a_silent_empty_list() {
         res.is_err(),
         "a total discovery failure must surface as an error"
     );
+}
+
+#[cfg(unix)]
+fn write_executable(path: &std::path::Path, body: &str) {
+    std::fs::write(path, body).unwrap();
+    let mut perms = std::fs::metadata(path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(path, perms).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn production_lister_uses_azlin_before_az_when_azlin_has_names() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let root = std::env::current_dir()
+        .unwrap()
+        .join("target")
+        .join("signal-azlin-first-test");
+    let bin = root.join("bin");
+    let marker = root.join("az-called");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&bin).unwrap();
+    write_executable(
+        &bin.join("azlin"),
+        "#!/usr/bin/env bash\nprintf '[{\"name\":\"vm-from-azlin\"}]\\n'\n",
+    );
+    write_executable(
+        &bin.join("az"),
+        &format!(
+            "#!/usr/bin/env bash\nprintf called > '{}'\nprintf '[{{\"name\":\"vm-from-az\"}}]\\n'\n",
+            marker.display()
+        ),
+    );
+    let old_path = std::env::var_os("PATH");
+    unsafe {
+        std::env::set_var(
+            "PATH",
+            format!(
+                "{}:{}",
+                bin.display(),
+                old_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy())
+                    .unwrap_or_default()
+            ),
+        );
+    }
+
+    let names = AzVmLister.list_vms("rg-test").unwrap();
+    let az_called = marker.exists();
+
+    unsafe {
+        match old_path {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
+        }
+    }
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(names, vec!["vm-from-azlin"]);
+    assert!(!az_called, "`az vm list` must not run when azlin succeeds");
+}
+
+#[cfg(unix)]
+#[test]
+fn production_lister_falls_back_to_az_when_azlin_is_empty() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let root = std::env::current_dir()
+        .unwrap()
+        .join("target")
+        .join("signal-az-fallback-test");
+    let bin = root.join("bin");
+    let marker = root.join("az-called");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&bin).unwrap();
+    write_executable(&bin.join("azlin"), "#!/usr/bin/env bash\nprintf '[]\\n'\n");
+    write_executable(
+        &bin.join("az"),
+        &format!(
+            "#!/usr/bin/env bash\nprintf called > '{}'\nprintf '[{{\"name\":\"vm-from-az\"}}]\\n'\n",
+            marker.display()
+        ),
+    );
+    let old_path = std::env::var_os("PATH");
+    unsafe {
+        std::env::set_var(
+            "PATH",
+            format!(
+                "{}:{}",
+                bin.display(),
+                old_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy())
+                    .unwrap_or_default()
+            ),
+        );
+    }
+
+    let names = AzVmLister.list_vms("rg-test").unwrap();
+    let az_called = marker.exists();
+
+    unsafe {
+        match old_path {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
+        }
+    }
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(names, vec!["vm-from-az"]);
+    assert!(az_called, "`az vm list` must run after empty azlin");
 }

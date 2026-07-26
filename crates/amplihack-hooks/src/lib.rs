@@ -45,6 +45,24 @@ pub mod known_agents;
 /// Host-specific hook strategies (Claude, Copilot).
 pub mod strategies;
 
+/// Classify a hooks-binary subcommand name as a **whole-session teardown**
+/// event (as opposed to a per-turn stop event).
+///
+/// Whole-session teardown events (`session-end`, `session-stop`,
+/// `session-stop-event`, and Copilot's `sessionEnd`) route to the
+/// [`SessionStopHook`] and perform Signal group teardown **once** at the end of
+/// the session. Per-turn events (`stop`, `agentStop`) must **not** be treated as
+/// teardown — doing so would quit the Signal group after the first turn and
+/// kill the whole-session channel. This is the single source of truth for that
+/// distinction, shared by the hooks binary dispatch and the Signal integration.
+#[must_use]
+pub fn is_teardown_subcommand(name: &str) -> bool {
+    matches!(
+        name,
+        "session-end" | "session-stop" | "session-stop-event" | "sessionEnd"
+    )
+}
+
 // Re-export hook structs for ergonomic access.
 /// Post-tool-use hook implementation.
 pub use post_tool_use::PostToolUseHook;

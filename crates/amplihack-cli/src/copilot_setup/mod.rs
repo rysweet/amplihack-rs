@@ -63,6 +63,14 @@ const COPILOT_HOOK_WRAPPERS: &[HookWrapperSpec] = &[
         copilot_event: "agentStop",
         subcommands: &["stop"],
     },
+    HookWrapperSpec {
+        // Whole-session teardown: Copilot fires `sessionEnd` once when the
+        // session ends. Route it to `session-stop-event` (SessionStopHook) so
+        // the Signal group is left exactly once — never per turn.
+        hook_name: "session-end",
+        copilot_event: "sessionEnd",
+        subcommands: &["session-stop-event"],
+    },
 ];
 
 pub fn ensure_copilot_home_staged() -> Result<()> {

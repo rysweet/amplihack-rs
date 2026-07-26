@@ -6,9 +6,10 @@
 //! [`amplihack_state::atomic_json::AtomicJsonFile`] (crash-safe, lock-guarded)
 //! at a path derived through [`amplihack_types::paths::sanitize_session_id`].
 //!
-//! The inbox is **bounded**: it holds at most [`Inbox::DEFAULT_CAPACITY`]
-//! pending instructions. When full, the **oldest** is evicted to admit the
-//! newest (backpressure by bounded queue).
+//! The inbox is **bounded**: it holds at most [`Inbox::default_capacity`]
+//! pending instructions. Operators can tune that with
+//! `AMPLIHACK_SIGNAL_INBOX_CAPACITY`; when full, the **oldest** is evicted to
+//! admit the newest (backpressure by bounded queue).
 
 use amplihack_state::atomic_json::AtomicJsonFile;
 use amplihack_types::paths::sanitize_session_id;
@@ -38,8 +39,24 @@ pub struct Inbox {
 }
 
 impl Inbox {
-    /// Default bounded capacity (flood resistance).
+    /// Default bounded capacity (flood resistance) used when
+    /// `AMPLIHACK_SIGNAL_INBOX_CAPACITY` is absent or invalid.
     pub const DEFAULT_CAPACITY: usize = 32;
+
+    /// Capacity for newly-created session inboxes.
+    ///
+    /// This is configurable because the right pending-message budget depends on
+    /// operator workflow and hook cadence. Invalid, zero, or whitespace-only
+    /// values fall back to [`Self::DEFAULT_CAPACITY`] instead of disabling the
+    /// inbox or creating an unbounded file.
+    #[must_use]
+    pub fn default_capacity() -> usize {
+        std::env::var("AMPLIHACK_SIGNAL_INBOX_CAPACITY")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .filter(|capacity| *capacity > 0)
+            .unwrap_or(Self::DEFAULT_CAPACITY)
+    }
 
     /// Create an inbox at an explicit file `path` with an explicit `capacity`.
     #[must_use]
@@ -56,7 +73,7 @@ impl Inbox {
     pub fn at_session(session_id: &str, root: &Path) -> Self {
         let sanitized = sanitize_session_id(session_id);
         let path = root.join(sanitized).join("inbox.json");
-        Self::new(path, Self::DEFAULT_CAPACITY)
+        Self::new(path, Self::default_capacity())
     }
 
     /// The resolved inbox file path.
@@ -170,9 +187,15 @@ impl SignalSession {
             return Ok(None);
         };
         if let Some(instruction) = self.gate.evaluate(&env) {
-            self.inbox
+            let outcome = self
+                .inbox
                 .push(&instruction)
                 .map_err(|e| std::io::Error::other(e.to_string()))?;
+            if outcome == PushOutcome::EvictedOldest {
+                tracing::warn!(
+                    "signal session inbox reached capacity; evicted oldest pending operator instruction"
+                );
+            }
             return Ok(Some(instruction));
         }
         Ok(Some(String::new()))

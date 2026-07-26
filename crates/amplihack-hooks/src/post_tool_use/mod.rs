@@ -105,17 +105,32 @@ impl Hook for PostToolUseHook {
         }
 
         // Signal channel: surface queued operator instructions (advisory
-        // context, never commands) via hookSpecificOutput.additionalContext.
+        // context, never commands). Host-aware shaping so Copilot (top-level
+        // string) actually receives them, not just Claude (nested).
         if let Some(operator_context) =
             crate::signal_integration::drain_into_context(session_id.as_deref())
         {
-            output.insert(
-                "hookSpecificOutput".to_string(),
-                serde_json::json!({
-                    "hookEventName": "PostToolUse",
-                    "additionalContext": operator_context,
-                }),
-            );
+            #[cfg(feature = "signal")]
+            {
+                let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let host = crate::signal_integration::inject_host(&cwd);
+                crate::signal_integration::merge_additional_context(
+                    &mut output,
+                    &host,
+                    "PostToolUse",
+                    &operator_context,
+                );
+            }
+            #[cfg(not(feature = "signal"))]
+            {
+                output.insert(
+                    "hookSpecificOutput".to_string(),
+                    serde_json::json!({
+                        "hookEventName": "PostToolUse",
+                        "additionalContext": operator_context,
+                    }),
+                );
+            }
         }
 
         Ok(Value::Object(output))

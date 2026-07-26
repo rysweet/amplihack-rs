@@ -23,6 +23,21 @@ fn legacy_hook_script_name_maps_known_binary_subcommands() {
     assert_eq!(hooks::legacy_hook_script_name("unknown"), None);
 }
 
+#[test]
+fn amplihack_hook_specs_session_end_tears_down_signal_channel() {
+    // Regression: per-session Signal teardown moved from the per-turn `Stop`
+    // hook to SessionStop. Claude Code installs MUST register a `SessionEnd`
+    // hook routing to `session-stop-event`, otherwise the detached subscriber
+    // is never terminated (orphaned-process regression).
+    let spec = AMPLIHACK_HOOK_SPECS
+        .iter()
+        .find(|s| s.event == "SessionEnd")
+        .expect("SessionEnd spec must exist so session teardown is registered");
+    let HookCommandKind::BinarySubcmd { subcmd } = &spec.cmd;
+    assert_eq!(*subcmd, "session-stop-event");
+    assert!(spec.matcher.is_none());
+}
+
 // ─── TDD: Group 2 — AMPLIHACK_HOOK_SPECS canonical entries ───────────────
 
 #[test]

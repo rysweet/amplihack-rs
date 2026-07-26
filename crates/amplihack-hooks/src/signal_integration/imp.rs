@@ -2,14 +2,14 @@
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use amplihack_signal::config::SignalConfig;
 use amplihack_signal::gating::Gate;
-use amplihack_signal::session_channel::Inbox;
+use amplihack_signal::session_channel::{Inbox, PushOutcome};
 use amplihack_signal::transport::{GroupId, SignalTransport};
 use amplihack_state::atomic_json::AtomicJsonFile;
-use amplihack_types::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
 /// Wall-clock budget for any single network step during a hook so a slow or
@@ -24,10 +24,6 @@ const RECONNECT_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 /// a steady, low rate rather than an ever-growing delay.
 const RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(30);
 
-/// Consecutive reconnect failures tolerated before the subscriber gives up.
-/// Reset to zero whenever an inbound message proves the link healthy.
-const RECONNECT_MAX_CONSECUTIVE_FAILURES: u32 = 5;
-
 /// Persisted per-session Signal state shared across the hook and subscriber
 /// processes (via [`AtomicJsonFile`]).
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -41,8 +37,26 @@ struct SignalState {
 }
 
 /// Root directory holding per-session Signal state and inboxes.
-fn signal_root(dirs: &ProjectDirs) -> PathBuf {
-    dirs.runtime.join("signal")
+///
+/// This MUST be independent of the current working directory. The SessionStart
+/// hook, the detached subscriber, and the prompt/stop drainers each run with
+/// potentially different cwds (e.g. Copilot CLI invokes hooks from its plugin
+/// directory while the agent's cwd is the project root), so a cwd-derived root
+/// (`ProjectDirs::from_cwd`) splits a single session's state across multiple
+/// locations — breaking idempotent group reuse and inbound delivery. Anchor it
+/// at the stable `~/.amplihack/runtime/signal` base instead (the same
+/// `~/.amplihack` home used for `signal-config.toml`), keyed only by session id
+/// (a globally-unique UUID), so all participants agree regardless of cwd.
+fn signal_root() -> PathBuf {
+    if let Some(dir) = std::env::var_os("AMPLIHACK_SIGNAL_STATE_DIR")
+        && !dir.is_empty()
+    {
+        return PathBuf::from(dir);
+    }
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    home.join(".amplihack").join("runtime").join("signal")
 }
 
 /// Path to a session's state file under `root`.
@@ -71,10 +85,46 @@ where
     }
 }
 
+/// Whether this *process* may perform real Signal I/O (network + spawning the
+/// detached subscriber + creating/leaving groups).
+///
+/// Defaults to `false` so that in-process hook tests (the golden runner and any
+/// unit/integration test that drives a hook's `process()` directly through the
+/// library) never touch the real Signal daemon or the operator's real
+/// `~/.amplihack` state. The real multicall hook binary flips this on once at
+/// startup via [`set_process_enabled`]; a test that specifically exercises the
+/// live channel can opt in the same way.
+static SIGNAL_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Enable (or disable) real Signal I/O for the current process. Called once by
+/// the `amplihack-hooks` binary entrypoint before dispatching a hook.
+pub fn set_process_enabled(enabled: bool) {
+    SIGNAL_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+fn process_enabled() -> bool {
+    SIGNAL_ENABLED.load(Ordering::Relaxed)
+}
+
+/// Whether the Signal channel is actually usable in this process: real I/O has
+/// been enabled (only the hook binary does this) *and* a config loads. Hooks use
+/// this to decide whether to reshape their output for the operator's host —
+/// when the channel is not configured (the default, and every in-process test),
+/// output must stay byte-for-byte identical to the non-signal build so the
+/// golden contract is preserved.
+pub fn is_channel_configured() -> bool {
+    load_config_or_disabled().is_some()
+}
+
 /// Load the Signal config, treating an unloadable/absent config as "the channel
 /// is simply not configured" (disabled) rather than an operational failure.
 /// Returns `None` to mean "do nothing, successfully".
 fn load_config_or_disabled() -> Option<SignalConfig> {
+    // Fail closed in library/test contexts: only the real hook binary enables
+    // Signal I/O, so in-process hook tests never create real groups/subscribers.
+    if !process_enabled() {
+        return None;
+    }
     match SignalConfig::load() {
         Ok(c) => Some(c),
         Err(err) => {
@@ -136,13 +186,51 @@ fn start(session_id: &str) -> anyhow::Result<()> {
     }
 
     // A missing/invalid config simply means the channel is not configured;
-    // treat it as "disabled" rather than an operational warning.
+    // treat it as "disabled" rather than an operational warning. When
+    // unconfigured on an interactive host, surface a one-time onboarding notice.
     let Some(config) = load_config_or_disabled() else {
+        maybe_prompt_onboarding();
         return Ok(());
     };
 
-    let dirs = ProjectDirs::from_cwd();
-    let root = signal_root(&dirs);
+    let root = signal_root();
+    let state_file = AtomicJsonFile::new(state_path(&root, session_id));
+
+    // SessionStart can fire more than once per session (some runtimes, e.g.
+    // Copilot CLI, emit it repeatedly). Make setup idempotent: if this session
+    // already has a group, reuse it instead of creating a duplicate, and only
+    // (re)spawn the subscriber when the recorded one is no longer alive.
+    let existing = state_file
+        .read::<SignalState>()
+        .map_err(|e| anyhow::anyhow!("failed to read existing signal state: {e}"))?;
+    if let Some(existing_gid) = existing
+        .as_ref()
+        .and_then(|s| s.group_id.as_ref())
+        .filter(|g| !g.is_empty())
+        .cloned()
+    {
+        let subscriber_alive = existing
+            .as_ref()
+            .and_then(|s| s.subscriber_pid)
+            .is_some_and(|pid| pid_is_our_subscriber(pid, session_id));
+        if !subscriber_alive {
+            match spawn_subscriber(session_id) {
+                Ok(pid) => {
+                    if let Err(err) =
+                        state_file.update(|s: &mut SignalState| s.subscriber_pid = Some(pid))
+                    {
+                        tracing::warn!("signal: failed to persist respawned subscriber pid: {err}");
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!("signal: failed to respawn subscriber: {err}");
+                }
+            }
+        }
+        tracing::debug!("signal: reusing existing group {existing_gid} for session");
+        return Ok(());
+    }
+
     let group_name = group_name(session_id);
 
     let rt = runtime()?;
@@ -163,7 +251,6 @@ fn start(session_id: &str) -> anyhow::Result<()> {
     })?;
 
     // Persist the group id so the subscriber and drainers can find it.
-    let state_file = AtomicJsonFile::new(state_path(&root, session_id));
     let gid_str = group_id.as_str().to_string();
     state_file
         .update(|s: &mut SignalState| s.group_id = Some(gid_str.clone()))
@@ -172,7 +259,10 @@ fn start(session_id: &str) -> anyhow::Result<()> {
     // Spawn the detached subscriber and persist its PID.
     match spawn_subscriber(session_id) {
         Ok(pid) => {
-            let _ = state_file.update(|s: &mut SignalState| s.subscriber_pid = Some(pid));
+            if let Err(err) = state_file.update(|s: &mut SignalState| s.subscriber_pid = Some(pid))
+            {
+                tracing::warn!("signal: failed to persist subscriber pid: {err}");
+            }
         }
         Err(err) => {
             tracing::warn!("signal: failed to spawn subscriber: {err}");
@@ -182,107 +272,137 @@ fn start(session_id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Name a session's group, embedding the current tmux session name when
-/// available so an operator can tell which Signal group maps to which session.
-///
-/// With a tmux name: `amplihack-<tmux>-<session-id>-<unix-ts>`.
-/// Without tmux (or on any lookup failure): `amplihack-<session-id>-<unix-ts>`
-/// (the historical form).
+/// One-time, **non-blocking** onboarding notice shown when Signal is not yet
+/// configured on an interactive host. Hooks cannot run an interactive prompt
+/// (stdout is parsed as JSON, and the ~30s budget forbids the QR/device-link
+/// flow), so this surfaces guidance on stderr at most once per host and records
+/// a "notified" sentinel so it never nags on subsequent turns/sessions. The
+/// decision is gated by the pure [`super::onboarding::should_prompt`].
+fn maybe_prompt_onboarding() {
+    use super::onboarding::{OnboardingDecision, OnboardingEnv, should_prompt};
+
+    let root = signal_root();
+    let env = OnboardingEnv {
+        config_present: false, // reached only from the unconfigured branch
+        is_tty: is_stderr_tty(),
+        noninteractive: std::env::var_os("AMPLIHACK_NONINTERACTIVE").is_some(),
+        declined_before: super::onboarding::onboarding_declined(&root),
+    };
+    if should_prompt(&env) != OnboardingDecision::Prompt {
+        return;
+    }
+
+    // Show at most once per host (independent of the "declined" sentinel).
+    let notified = root.join("signal-onboarding-notified");
+    if notified.exists() {
+        return;
+    }
+    let _ = std::fs::create_dir_all(&root);
+    let _ = std::fs::write(&notified, b"1\n");
+
+    eprintln!(
+        "\n[amplihack] Signal session mirroring is available but not configured on \
+         this host.\n  Link signal-cli on this device to mirror your whole session \
+         to a private Signal\n  group and send replies back from your phone. See \
+         docs/SIGNAL_ONBOARDING.md to enable,\n  or run onboarding to decline \
+         permanently (suppresses this notice).\n"
+    );
+}
+
+/// Whether stderr is an interactive terminal.
+fn is_stderr_tty() -> bool {
+    // SAFETY: `isatty` on a valid fd has no memory-safety implications.
+    unsafe { libc::isatty(libc::STDERR_FILENO) == 1 }
+}
+
+/// Name a session's group.
+/// Prefers a human-readable `amplihack-<hostname>-<tmux-session>-<session-id>`
+/// when the session runs inside tmux (the common fleet case), so operators can
+/// tell which host/pane a Signal group belongs to at a glance while still
+/// keeping the unique session id so repeated top-level runs in the same
+/// long-lived tmux session never collide on name. Outside tmux it falls back to
+/// `amplihack-<hostname>-<session-id>-<unix-ts>`, which likewise keeps the
+/// unique session id (plus timestamp) so groups never collide.
 fn group_name(session_id: &str) -> String {
+    compose_group_name(
+        &short_hostname(),
+        tmux_session_name().as_deref(),
+        session_id,
+    )
+}
+
+/// Pure name composer (no env/tmux access) so the two branches are testable.
+fn compose_group_name(host: &str, tmux: Option<&str>, session_id: &str) -> String {
+    let sanitized = amplihack_types::paths::sanitize_session_id(session_id);
+    if let Some(tmux) = tmux {
+        // Keep the tmux name for human readability AND the session id for
+        // uniqueness, so two top-level runs in the same tmux session get
+        // distinct group names.
+        return sanitize_label(&format!("amplihack-{host}-{tmux}-{sanitized}"));
+    }
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or_default();
-    format_group_name(current_tmux_session().as_deref(), session_id, ts)
+    sanitize_label(&format!("amplihack-{host}-{sanitized}-{ts}"))
 }
 
-/// Pure group-name formatter (no I/O) so the tmux-aware naming is unit-testable
-/// without a real tmux. Both the tmux name and the session id are sanitized to
-/// the `[A-Za-z0-9_-]` allowlist (every other char becomes `_`); the tmux
-/// component is truncated to a bounded length so an adversarial/huge tmux name
-/// cannot produce an unbounded group name. An empty (or empty-after-sanitize)
-/// tmux name falls back to the no-tmux form.
-fn format_group_name(tmux: Option<&str>, session_id: &str, ts: u64) -> String {
-    let sanitized_id = amplihack_types::paths::sanitize_session_id(session_id);
-    match tmux.map(sanitize_group_component).filter(|s| !s.is_empty()) {
-        Some(tmux) => format!("amplihack-{tmux}-{sanitized_id}-{ts}"),
-        None => format!("amplihack-{sanitized_id}-{ts}"),
+/// Best-effort short hostname (first DNS label), trimmed. Falls back to
+/// `"unknown"` so the group name is always well-formed.
+fn short_hostname() -> String {
+    let raw = std::env::var("HOSTNAME")
+        .ok()
+        .filter(|h| !h.trim().is_empty())
+        .or_else(|| std::fs::read_to_string("/proc/sys/kernel/hostname").ok())
+        .unwrap_or_default();
+    let host = raw.trim();
+    let short = host.split('.').next().unwrap_or(host).trim();
+    if short.is_empty() {
+        "unknown".to_string()
+    } else {
+        short.to_string()
     }
 }
 
-/// Maximum length of the tmux component embedded in a group name.
-const TMUX_NAME_MAX_LEN: usize = 32;
-
-/// Sanitize an untrusted display component (e.g. a tmux session name) to the
-/// `[A-Za-z0-9_-]` allowlist and bound its length. Never panics on empty input.
-fn sanitize_group_component(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .take(TMUX_NAME_MAX_LEN)
-        .collect()
-}
-
-/// Look up the current tmux session name, or `None` when not running under tmux
-/// or the lookup fails/times out.
-///
-/// Gated on `TMUX` being set (so we never spawn `tmux` outside a tmux session),
-/// with a short timeout and graceful fallback: any failure yields `None` and
-/// the caller keeps the historical group-name form. Implemented locally with
-/// `std::process` (no `amplihack-cli` dependency) to avoid the layering
-/// inversion tracked in #875.
-fn current_tmux_session() -> Option<String> {
+/// The current tmux session name when running inside tmux, else `None`.
+/// Queries the tmux server via `$TMUX`/`$TMUX_PANE` inherited from the pane the
+/// session launched in; any failure (no tmux, no server) is treated as "not in
+/// tmux" and yields `None`.
+fn tmux_session_name() -> Option<String> {
     std::env::var_os("TMUX")?;
-    run_tmux_display_name(Duration::from_secs(2))
+    let mut cmd = std::process::Command::new("tmux");
+    cmd.arg("display-message").arg("-p");
+    if let Some(pane) = std::env::var_os("TMUX_PANE") {
+        cmd.arg("-t").arg(pane);
+    }
+    cmd.arg("#S");
+    let out = cmd.output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if name.is_empty() { None } else { Some(name) }
 }
 
-/// Run `tmux display-message -p '#{session_name}'` with an explicit argv (no
-/// shell) under `timeout`, returning the trimmed session name. On timeout the
-/// child is killed and reaped by the reader thread; any failure returns `None`.
-fn run_tmux_display_name(timeout: Duration) -> Option<String> {
-    use std::process::{Command, Stdio};
-
-    let child = Command::new("tmux")
-        .arg("display-message")
-        .arg("-p")
-        .arg("#{session_name}")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let pid = child.id();
-
-    // Read the output on a worker thread so the wall-clock timeout is enforced
-    // by `recv_timeout` rather than a blocking `wait`.
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(child.wait_with_output());
-    });
-
-    match rx.recv_timeout(timeout) {
-        Ok(Ok(output)) if output.status.success() => {
-            let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if name.is_empty() { None } else { Some(name) }
-        }
-        // Command ran but failed, or produced an I/O error: no tmux name.
-        Ok(_) => None,
-        // Timed out: kill the child (best-effort). The worker thread's
-        // `wait_with_output` then returns and reaps it, avoiding a zombie.
-        Err(_) => {
-            // SAFETY: `kill(2)` with a specific positive PID and SIGKILL has no
-            // memory-safety implications; a stale PID simply yields ESRCH.
-            unsafe {
-                libc::kill(pid as libc::pid_t, libc::SIGKILL);
+/// Constrain a Signal group label to a safe charset (alphanumerics plus
+/// `-`, `_`, `.`), collapsing any other run to a single dash and trimming
+/// leading/trailing dashes. Prevents newlines/control chars from a hostname or
+/// tmux name leaking into the group title.
+fn sanitize_label(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut prev_dash = false;
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() || c == '_' || c == '.' {
+            out.push(c);
+            prev_dash = false;
+        } else {
+            if !prev_dash {
+                out.push('-');
             }
-            None
+            prev_dash = true;
         }
     }
+    out.trim_matches('-').to_string()
 }
 
 /// Spawn `amplihack-hooks signal-subscriber --session-id <id>` detached from
@@ -315,13 +435,17 @@ fn spawn_subscriber(session_id: &str) -> std::io::Result<u32> {
 #[must_use]
 pub fn drain_into_context(session_id: Option<&str>) -> Option<String> {
     let session_id = normalize_session_id(session_id)?;
-    let dirs = ProjectDirs::from_cwd();
-    let root = signal_root(&dirs);
+    let root = signal_root();
     let inbox = Inbox::at_session(session_id, &root);
 
     // Cheap existence check first (does not create the file when unused).
-    if inbox.is_empty().unwrap_or(true) {
-        return None;
+    match inbox.is_empty() {
+        Ok(true) => return None,
+        Ok(false) => {}
+        Err(err) => {
+            tracing::warn!("signal: failed to check inbox before drain: {err}");
+            return None;
+        }
     }
     let items = match inbox.drain() {
         Ok(items) => items,
@@ -373,8 +497,7 @@ fn stop(session_id: &str) -> anyhow::Result<()> {
         return Ok(());
     };
 
-    let dirs = ProjectDirs::from_cwd();
-    let root = signal_root(&dirs);
+    let root = signal_root();
     let state_file = AtomicJsonFile::new(state_path(&root, session_id));
     let state: SignalState = match state_file.read() {
         Ok(Some(state)) => state,
@@ -401,22 +524,94 @@ fn stop(session_id: &str) -> anyhow::Result<()> {
         let mut transport =
             with_timeout("connect", SignalTransport::connect(&config.endpoint)).await?;
 
-        // Best-effort: a failed summary post or leave must not block teardown.
-        let _ = with_timeout("send", transport.send_group(&group_id, "session complete")).await;
+        // Best-effort: a failed summary post or leave must not block teardown,
+        // but it must still be observable.
+        if let Err(err) =
+            with_timeout("send", transport.send_group(&group_id, "session complete")).await
+        {
+            tracing::warn!("signal: failed to post session-complete marker: {err}");
+        }
 
         // A rolling group is intentionally reused across sessions; only leave a
         // per-session group.
-        if !config.reuse_rolling_group {
-            let _ = with_timeout("quit_group", transport.quit_group(&group_id)).await;
+        if !config.reuse_rolling_group
+            && let Err(err) = with_timeout("quit_group", transport.quit_group(&group_id)).await
+        {
+            tracing::warn!("signal: failed to leave session group: {err}");
         }
         Ok::<(), anyhow::Error>(())
     })?;
 
     // Clear the persisted group so a stale id is never reused.
-    let _ = state_file.update(|s: &mut SignalState| {
+    if let Err(err) = state_file.update(|s: &mut SignalState| {
         s.group_id = None;
         s.subscriber_pid = None;
-    });
+    }) {
+        tracing::warn!("signal: failed to clear session state at teardown: {err}");
+    }
+
+    // Drop the per-session outbound-fingerprint log so it does not outlive the
+    // session (bounded during the session, removed entirely at teardown).
+    super::outbound::clear_outbound_fingerprints(&root, session_id);
+
+    // Drop the per-session outbound-fingerprint log so it does not outlive the
+    // session (bounded during the session, removed entirely at teardown).
+    super::outbound::clear_outbound_fingerprints(&root, session_id);
+
+    Ok(())
+}
+
+/// Mirror an outbound line (a user prompt or assistant turn) to the session's
+/// Signal group as part of full-conversation mirroring. Non-fatal and bounded:
+/// secrets are scrubbed via [`super::outbound::redact_for_relay`], the body is
+/// truncated to [`super::outbound::RELAY_MAX_BYTES`], and a fingerprint is
+/// persisted so the detached subscriber can suppress the echo.
+pub fn relay_outbound(session_id: Option<&str>, body: &str) {
+    let Some(session_id) = normalize_session_id(session_id) else {
+        return;
+    };
+    if body.trim().is_empty() {
+        return;
+    }
+    if let Err(err) = relay_outbound_inner(session_id, body) {
+        tracing::warn!("signal: outbound relay failed: {err}");
+    }
+}
+
+fn relay_outbound_inner(session_id: &str, body: &str) -> anyhow::Result<()> {
+    let Some(config) = load_config_or_disabled() else {
+        return Ok(());
+    };
+
+    let root = signal_root();
+    let state_file = AtomicJsonFile::new(state_path(&root, session_id));
+    let state = state_file
+        .read::<SignalState>()
+        .map_err(|e| anyhow::anyhow!("failed to read signal state for outbound relay: {e}"))?;
+    let Some(group) = state.and_then(|s| s.group_id).filter(|g| !g.is_empty()) else {
+        // No group yet (SessionStart has not run / channel disabled): nothing
+        // to mirror to.
+        return Ok(());
+    };
+    let group_id = GroupId(group);
+
+    let message = super::outbound::prepare_for_relay(body, super::outbound::RELAY_MAX_BYTES);
+
+    // Record the fingerprint BEFORE sending so the subscriber can recognize the
+    // synced-back echo even if it races ahead of us. The fingerprint is taken
+    // over the redacted+truncated `message` (exactly what is sent), so echo
+    // suppression still matches when Signal syncs the message back.
+    if let Err(err) = super::outbound::record_outbound_fingerprint(&root, session_id, &message) {
+        tracing::warn!("signal: failed to record outbound fingerprint before relay: {err}");
+    }
+
+    let rt = runtime()?;
+    rt.block_on(async {
+        let mut transport =
+            with_timeout("connect", SignalTransport::connect(&config.endpoint)).await?;
+        with_timeout("send", transport.send_group(&group_id, &message)).await?;
+        Ok::<(), anyhow::Error>(())
+    })?;
 
     Ok(())
 }
@@ -506,8 +701,7 @@ fn subscriber_main(session_id: Option<&str>) -> anyhow::Result<()> {
         }
     };
 
-    let dirs = ProjectDirs::from_cwd();
-    let root = signal_root(&dirs);
+    let root = signal_root();
 
     let rt = runtime()?;
     rt.block_on(async {
@@ -540,7 +734,7 @@ fn subscriber_main(session_id: Option<&str>) -> anyhow::Result<()> {
         // best-effort and must not be stalled by an absent daemon.
         let mut established = false;
         let mut backoff = RECONNECT_INITIAL_BACKOFF;
-        let mut consecutive_failures: u32 = 0;
+        let mut reconnect_failures: u64 = 0;
 
         loop {
             let connect =
@@ -551,7 +745,7 @@ fn subscriber_main(session_id: Option<&str>) -> anyhow::Result<()> {
                 Ok(Err(err)) => {
                     if !record_connect_failure(
                         established,
-                        &mut consecutive_failures,
+                        &mut reconnect_failures,
                         &mut backoff,
                         &format!("connect failed: {err}"),
                     )
@@ -564,7 +758,7 @@ fn subscriber_main(session_id: Option<&str>) -> anyhow::Result<()> {
                 Err(_) => {
                     if !record_connect_failure(
                         established,
-                        &mut consecutive_failures,
+                        &mut reconnect_failures,
                         &mut backoff,
                         "connect timed out",
                     )
@@ -584,14 +778,39 @@ fn subscriber_main(session_id: Option<&str>) -> anyhow::Result<()> {
                 match transport.receive().await {
                     Ok(Some(envelope)) => {
                         // Real inbound progress proves the link is healthy, so
-                        // reset the reconnect budget.
-                        consecutive_failures = 0;
+                        // reset the diagnostic failure counter.
+                        reconnect_failures = 0;
                         backoff = RECONNECT_INITIAL_BACKOFF;
                         if let Some(instruction) = gate.evaluate(&envelope) {
-                            if let Err(err) = inbox.push(&instruction) {
-                                tracing::warn!("signal-subscriber: inbox push failed: {err}");
+                            // Cross-process echo suppression: the outbound relay
+                            // runs in the (separate) hook process, so `Gate`'s
+                            // in-memory window cannot see our own mirrored lines.
+                            // Drop any inbound whose body matches a recently
+                            // mirrored outbound fingerprint for this session.
+                            if super::outbound::is_recent_outbound_fingerprint(
+                                &root,
+                                session_id,
+                                &instruction,
+                            ) {
+                                tracing::debug!("signal-subscriber: dropped own mirrored echo");
                             } else {
-                                tracing::info!("signal-subscriber: queued operator instruction");
+                                match inbox.push(&instruction) {
+                                    Ok(PushOutcome::Queued) => {
+                                        tracing::info!(
+                                            "signal-subscriber: queued operator instruction"
+                                        );
+                                    }
+                                    Ok(PushOutcome::EvictedOldest) => {
+                                        tracing::warn!(
+                                            "signal-subscriber: inbox reached capacity; evicted oldest pending operator instruction"
+                                        );
+                                    }
+                                    Err(err) => {
+                                        tracing::warn!(
+                                            "signal-subscriber: inbox push failed: {err}"
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
@@ -611,7 +830,7 @@ fn subscriber_main(session_id: Option<&str>) -> anyhow::Result<()> {
             // tight loop.
             if !record_connect_failure(
                 true,
-                &mut consecutive_failures,
+                &mut reconnect_failures,
                 &mut backoff,
                 "connection dropped",
             )
@@ -633,25 +852,22 @@ fn subscriber_main(session_id: Option<&str>) -> anyhow::Result<()> {
 /// fast, non-fatal cold-start path.
 async fn record_connect_failure(
     established: bool,
-    consecutive_failures: &mut u32,
+    reconnect_failures: &mut u64,
     backoff: &mut Duration,
     reason: &str,
 ) -> bool {
-    match next_retry_delay(established, consecutive_failures, backoff) {
+    match next_retry_delay(established, reconnect_failures, backoff) {
         None => {
             tracing::warn!(
-                "signal-subscriber: {reason}; giving up ({}/{})",
-                *consecutive_failures,
-                RECONNECT_MAX_CONSECUTIVE_FAILURES
+                "signal-subscriber: {reason}; giving up before first successful connect"
             );
             false
         }
         Some(delay) => {
             tracing::warn!(
-                "signal-subscriber: {reason}; reconnect {}/{} after {:?}",
-                *consecutive_failures,
-                RECONNECT_MAX_CONSECUTIVE_FAILURES,
-                delay
+                "signal-subscriber: {reason}; reconnect attempt {} after {:?}",
+                *reconnect_failures,
+                delay,
             );
             tokio::time::sleep(delay).await;
             true
@@ -659,25 +875,24 @@ async fn record_connect_failure(
     }
 }
 
-/// Pure reconnect policy (no I/O), so the escalate-then-cap-then-give-up
+/// Pure reconnect policy (no I/O), so the escalate-then-cap-and-keep-trying
 /// behavior is unit-testable without real timers or sockets.
 ///
 /// Returns `None` to give up, or `Some(delay)` to sleep `delay` then reconnect.
-/// Mutates `consecutive_failures` (incremented) and `backoff` (doubled, capped
-/// at [`RECONNECT_MAX_BACKOFF`]). A failure before a connection was
-/// `established` always gives up, keeping cold-start fast and non-fatal.
+/// Mutates `reconnect_failures` (incremented) and `backoff` (doubled, capped at
+/// [`RECONNECT_MAX_BACKOFF`]). A failure before a connection was `established`
+/// always gives up, keeping cold-start fast and non-fatal. Once the subscriber
+/// has connected successfully, it never gives up on reconnect: inbound Signal
+/// mirroring is a session channel, not a best-effort one-shot notification.
 fn next_retry_delay(
     established: bool,
-    consecutive_failures: &mut u32,
+    reconnect_failures: &mut u64,
     backoff: &mut Duration,
 ) -> Option<Duration> {
     if !established {
         return None;
     }
-    *consecutive_failures += 1;
-    if *consecutive_failures >= RECONNECT_MAX_CONSECUTIVE_FAILURES {
-        return None;
-    }
+    *reconnect_failures = reconnect_failures.saturating_add(1);
     let delay = *backoff;
     *backoff = (*backoff * 2).min(RECONNECT_MAX_BACKOFF);
     Some(delay)
@@ -686,6 +901,59 @@ fn next_retry_delay(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sanitize_label_collapses_unsafe_runs_and_trims() {
+        assert_eq!(
+            sanitize_label("amplihack-host-my sess"),
+            "amplihack-host-my-sess"
+        );
+        assert_eq!(sanitize_label("a//b\n\tc"), "a-b-c");
+        assert_eq!(sanitize_label("--edge--"), "edge");
+        assert_eq!(sanitize_label("keep_.-ok"), "keep_.-ok");
+    }
+
+    #[test]
+    fn short_hostname_is_first_label_and_never_empty() {
+        let h = short_hostname();
+        assert!(!h.is_empty());
+        assert!(!h.contains('.'), "short hostname must drop the domain: {h}");
+    }
+
+    #[test]
+    fn group_name_tmux_branch_is_hostname_tmux_and_session() {
+        // tmux name (readability) + session id (uniqueness) are both retained.
+        assert_eq!(
+            compose_group_name("deva", Some("recipe-runner"), "sess-xyz"),
+            "amplihack-deva-recipe-runner-sess-xyz"
+        );
+        // Spaces / unsafe chars in the tmux name collapse to dashes.
+        assert_eq!(
+            compose_group_name("deva", Some("my sess/2"), "sess-xyz"),
+            "amplihack-deva-my-sess-2-sess-xyz"
+        );
+        // Two runs in the SAME tmux session but different session ids must not
+        // collide on name.
+        assert_ne!(
+            compose_group_name("deva", Some("recipe-runner"), "sess-a"),
+            compose_group_name("deva", Some("recipe-runner"), "sess-b"),
+        );
+    }
+
+    #[test]
+    fn group_name_without_tmux_keeps_session_id_and_timestamp() {
+        let name = compose_group_name("deva", None, "sess-ABC-123");
+        assert!(name.starts_with("amplihack-deva-"), "got {name}");
+        assert!(
+            name.contains("sess-ABC-123"),
+            "must retain session id: {name}"
+        );
+        let last = name.rsplit('-').next().unwrap();
+        assert!(
+            last.chars().all(|c| c.is_ascii_digit()),
+            "expected ts suffix: {name}"
+        );
+    }
 
     #[test]
     fn cold_start_failure_never_retries() {
@@ -698,7 +966,7 @@ mod tests {
     }
 
     #[test]
-    fn established_failures_escalate_then_give_up() {
+    fn established_failures_escalate_then_cap_and_keep_retrying() {
         let mut failures = 0;
         let mut backoff = RECONNECT_INITIAL_BACKOFF;
 
@@ -709,18 +977,16 @@ mod tests {
         );
         assert_eq!(failures, 1);
 
-        // Subsequent retries escalate until one short of the cap.
+        // Subsequent retries escalate until the delay cap.
         let mut delays = vec![RECONNECT_INITIAL_BACKOFF];
-        while let Some(d) = next_retry_delay(true, &mut failures, &mut backoff) {
-            delays.push(d);
+        for _ in 0..20 {
+            delays.push(
+                next_retry_delay(true, &mut failures, &mut backoff)
+                    .expect("established subscriber must retry indefinitely"),
+            );
         }
 
-        // Exactly MAX-1 retries are granted, then it gives up.
-        assert_eq!(
-            failures, RECONNECT_MAX_CONSECUTIVE_FAILURES,
-            "gives up once the failure count reaches the cap"
-        );
-        assert_eq!(delays.len() as u32, RECONNECT_MAX_CONSECUTIVE_FAILURES - 1);
+        assert_eq!(failures, delays.len() as u64);
 
         // Delays are non-decreasing and never exceed the max backoff.
         for pair in delays.windows(2) {
@@ -730,6 +996,11 @@ mod tests {
             );
         }
         assert!(delays.iter().all(|d| *d <= RECONNECT_MAX_BACKOFF));
+        assert_eq!(
+            next_retry_delay(true, &mut failures, &mut backoff),
+            Some(RECONNECT_MAX_BACKOFF),
+            "retrying continues at the capped backoff"
+        );
     }
 
     #[test]
@@ -823,218 +1094,5 @@ mod tests {
     fn format_operator_context_single_item() {
         let out = format_operator_context(&["only one".to_string()]);
         assert_eq!(out, format!("{EXPECTED_HEADER}\n1. only one"));
-    }
-
-    // -- FIX 1: nesting gate (empty-group flood) -----------------------------
-    //
-    // Only the TOP-LEVEL operator session (AMPLIHACK_SESSION_DEPTH unset or
-    // "0") may create a Signal group. Every NESTED session (depth > 0, spawned
-    // by recipes/orchestrator/sub-agents) must be a silent no-op so it never
-    // creates a group, posts "session started", persists state, or spawns a
-    // subscriber. `is_nested_session()` is the pure gate predicate.
-
-    use crate::test_support::{EnvVarGuard, env_lock};
-
-    #[test]
-    fn is_nested_session_true_for_positive_depth() {
-        let _guard = env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _depth = EnvVarGuard::set("AMPLIHACK_SESSION_DEPTH", "2");
-        assert!(is_nested_session(), "depth=2 is a nested child session");
-
-        let _depth1 = EnvVarGuard::set("AMPLIHACK_SESSION_DEPTH", "1");
-        assert!(is_nested_session(), "depth=1 is a nested child session");
-    }
-
-    #[test]
-    fn is_nested_session_false_for_zero_or_unset_or_garbage() {
-        let _guard = env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-
-        let _depth0 = EnvVarGuard::set("AMPLIHACK_SESSION_DEPTH", "0");
-        assert!(!is_nested_session(), "depth=0 is the top-level session");
-
-        let _unset = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
-        assert!(!is_nested_session(), "unset depth is the top-level session");
-
-        // Non-numeric depth parses to 0 (fail toward "top level / run"), never
-        // a panic.
-        let _garbage = EnvVarGuard::set("AMPLIHACK_SESSION_DEPTH", "not-a-number");
-        assert!(
-            !is_nested_session(),
-            "non-numeric depth must default to top-level (0), not panic"
-        );
-    }
-
-    /// Compute this session's persisted Signal state file path under the
-    /// current working directory, mirroring `start()`'s own derivation.
-    fn state_file_for(session_id: &str) -> PathBuf {
-        let dirs = ProjectDirs::from_cwd();
-        state_path(&signal_root(&dirs), session_id)
-    }
-
-    /// Env + cwd fixture that makes `SignalConfig::load()` return a *valid*
-    /// (configured) channel pointing at an immediately-refused loopback
-    /// endpoint, so any code path that proceeds past the nesting gate will try
-    /// to connect and fail fast rather than performing real network I/O.
-    struct ConfiguredSignalFixture {
-        _home: EnvVarGuard,
-        _config: EnvVarGuard,
-        _endpoint: EnvVarGuard,
-        _account: EnvVarGuard,
-        _allowlist: EnvVarGuard,
-        _reuse: EnvVarGuard,
-        original_dir: PathBuf,
-        _tmp: tempfile::TempDir,
-    }
-
-    impl ConfiguredSignalFixture {
-        fn new() -> Self {
-            let tmp = tempfile::tempdir().unwrap();
-            let original_dir = std::env::current_dir().unwrap();
-            std::env::set_current_dir(tmp.path()).unwrap();
-            Self {
-                // HOME points at an empty dir so the default TOML config file
-                // is absent (NotFound ⇒ no TOML layer); the env vars below
-                // fully configure the channel.
-                _home: EnvVarGuard::set("HOME", tmp.path()),
-                _config: EnvVarGuard::unset("AMPLIHACK_SIGNAL_CONFIG"),
-                // Port 1 on loopback: nothing listens ⇒ immediate
-                // ECONNREFUSED, never a real/external network call.
-                _endpoint: EnvVarGuard::set("AMPLIHACK_SIGNAL_ENDPOINT", "127.0.0.1:1"),
-                _account: EnvVarGuard::set("AMPLIHACK_SIGNAL_ACCOUNT", "+15555550123"),
-                _allowlist: EnvVarGuard::set("AMPLIHACK_SIGNAL_ALLOWLIST", "+15555550124"),
-                // Force per-session group creation (not rolling reuse).
-                _reuse: EnvVarGuard::set("AMPLIHACK_SIGNAL_REUSE_ROLLING_GROUP", "false"),
-                original_dir,
-                _tmp: tmp,
-            }
-        }
-    }
-
-    impl Drop for ConfiguredSignalFixture {
-        fn drop(&mut self) {
-            let _ = std::env::set_current_dir(&self.original_dir);
-        }
-    }
-
-    #[test]
-    fn start_is_noop_for_nested_session() {
-        let _guard = env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let fixture = ConfiguredSignalFixture::new();
-        let _depth = EnvVarGuard::set("AMPLIHACK_SESSION_DEPTH", "2");
-
-        let session_id = "nested-session-abc";
-        // A nested session must short-circuit BEFORE connecting, so despite a
-        // fully-configured channel it returns Ok with no side effects.
-        let result = start(session_id);
-        drop(fixture);
-
-        assert!(
-            result.is_ok(),
-            "nested session must be a clean no-op, got: {result:?}"
-        );
-        assert!(
-            !state_file_for(session_id).exists(),
-            "nested session must NOT persist any Signal group state"
-        );
-    }
-
-    #[test]
-    fn start_proceeds_past_gate_for_top_level_session() {
-        let _guard = env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let fixture = ConfiguredSignalFixture::new();
-        // Top-level: depth unset ⇒ NOT gated. With a valid config it must
-        // proceed to connect and fail (loopback refused), proving the gate is
-        // nesting-specific and did not swallow the top-level path.
-        let _depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
-
-        let session_id = "top-level-session-xyz";
-        let result = start(session_id);
-        drop(fixture);
-
-        assert!(
-            result.is_err(),
-            "top-level session must proceed past the gate and surface the \
-             connect failure, not no-op; got Ok"
-        );
-        assert!(
-            !state_file_for(session_id).exists(),
-            "a failed connect must not leave persisted group state behind"
-        );
-    }
-
-    #[test]
-    fn stop_is_noop_when_no_group_persisted() {
-        let _guard = env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let fixture = ConfiguredSignalFixture::new();
-        // No state file was ever written (e.g. this was a nested session that
-        // never created a group). stop() must be a clean no-op: no summary
-        // post, no quitGroup, no error.
-        let session_id = "never-started-session";
-        let result = stop(session_id);
-        drop(fixture);
-
-        assert!(
-            result.is_ok(),
-            "stop must no-op cleanly when there is no persisted group id, \
-             got: {result:?}"
-        );
-    }
-
-    // -- FIX 2: tmux-aware group name ----------------------------------------
-    //
-    // `format_group_name` is the pure formatter so the tmux lookup can be
-    // tested without a real tmux. With a tmux name present it is embedded
-    // (sanitized + bounded) between the prefix and the session id; when absent
-    // the name is unchanged from the historical `amplihack-<sid>-<ts>` form.
-
-    #[test]
-    fn format_group_name_includes_tmux_session_when_present() {
-        let name = format_group_name(Some("my-tmux"), "sess-123", 1000);
-        assert_eq!(name, "amplihack-my-tmux-sess-123-1000");
-    }
-
-    #[test]
-    fn format_group_name_falls_back_when_tmux_absent() {
-        let name = format_group_name(None, "sess-123", 1000);
-        assert_eq!(
-            name, "amplihack-sess-123-1000",
-            "no-tmux form must match the historical group name exactly"
-        );
-    }
-
-    #[test]
-    fn format_group_name_sanitizes_tmux_and_session() {
-        // Both the tmux name and the session id are sanitized to the
-        // [A-Za-z0-9_-] allowlist; every other char becomes '_'.
-        let name = format_group_name(Some("weird/name space!"), "sess/id", 5);
-        assert_eq!(name, "amplihack-weird_name_space_-sess_id-5");
-    }
-
-    #[test]
-    fn format_group_name_empty_tmux_falls_back_to_no_tmux_form() {
-        // An empty tmux name (e.g. `tmux` returned nothing / not under tmux)
-        // must behave exactly like `None`, and must never panic.
-        let name = format_group_name(Some(""), "sess-1", 7);
-        assert_eq!(name, "amplihack-sess-1-7");
-    }
-
-    #[test]
-    fn format_group_name_bounds_tmux_length() {
-        // The tmux component is truncated to a bounded length (<=32) so an
-        // adversarial/huge tmux name cannot produce an unbounded group name.
-        let long = "a".repeat(100);
-        let name = format_group_name(Some(&long), "s", 1);
-        let expected_tmux = "a".repeat(32);
-        assert_eq!(name, format!("amplihack-{expected_tmux}-s-1"));
     }
 }

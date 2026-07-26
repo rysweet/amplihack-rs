@@ -253,6 +253,17 @@ pub(super) const CANONICAL_AMPLIHACK_HOOK_CONTRACT: &[CanonicalHookContractEntry
         timeout: Some(30),
         matcher: None,
     },
+    // SessionEnd fires once when a Claude Code session genuinely terminates.
+    // It drives per-session Signal channel teardown (leave group, stop the
+    // detached subscriber). Unlike the per-turn `Stop` hook, this is the only
+    // safe place to tear the channel down without killing it mid-session.
+    CanonicalHookContractEntry {
+        event: "SessionEnd",
+        hook_file: None,
+        native_subcmd: Some("session-stop-event"),
+        timeout: Some(30),
+        matcher: None,
+    },
 ];
 
 pub(super) const AMPLIHACK_HOOK_SPECS: &[HookSpec] = &[
@@ -308,6 +319,17 @@ pub(super) const AMPLIHACK_HOOK_SPECS: &[HookSpec] = &[
         event: "PreCompact",
         cmd: HookCommandKind::BinarySubcmd {
             subcmd: "pre-compact",
+        },
+        timeout: Some(30),
+        matcher: None,
+    },
+    // Session teardown: fires once at genuine session end (Claude `SessionEnd`).
+    // Routes to SessionStopHook, which performs per-session Signal channel
+    // teardown (leave group + stop the detached subscriber).
+    HookSpec {
+        event: "SessionEnd",
+        cmd: HookCommandKind::BinarySubcmd {
+            subcmd: "session-stop-event",
         },
         timeout: Some(30),
         matcher: None,

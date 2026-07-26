@@ -36,6 +36,21 @@ pub trait Hook {
     fn failure_policy(&self) -> FailurePolicy {
         FailurePolicy::Open
     }
+
+    /// Canonical `hook_event_name` this hook handles (e.g. `"SessionStart"`).
+    ///
+    /// The multicall binary dispatches by subcommand, so the event is known
+    /// from argv even when the host omits it from the payload. Some hosts
+    /// (notably GitHub Copilot CLI) send SessionStart/UserPromptSubmit/Stop
+    /// payloads with **no** `hook_event_name`/`hookEventName` field. Without
+    /// this, such payloads deserialize to [`HookInput::Unknown`] and the hook
+    /// silently no-ops. When this returns `Some(_)`, `run_hook` injects the
+    /// event name into an event-less object payload before deserializing, so
+    /// dispatch is deterministic regardless of host. Returns `None` for hooks
+    /// that should rely solely on payload-based detection.
+    fn hook_event_name(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 /// Run a hook with full protocol handling.
@@ -55,8 +70,8 @@ pub fn run_hook<H: Hook>(hook: H) {
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| -> anyhow::Result<()> {
         let input_json = read_stdin()?;
 
-        let input: HookInput =
-            serde_json::from_str(&input_json).context("failed to deserialize hook input JSON")?;
+        let input: HookInput = deserialize_hook_input(&input_json, hook.hook_event_name())
+            .context("failed to deserialize hook input JSON")?;
 
         // Unknown events get versioned empty output (graceful forward-compat).
         if matches!(input, HookInput::Unknown) {
@@ -105,6 +120,36 @@ pub fn run_hook<H: Hook>(hook: H) {
             let _ = io::stdout().flush();
         }
     }
+}
+
+/// Deserialize the hook payload, injecting a known `hook_event_name` when the
+/// host omitted it.
+///
+/// GitHub Copilot CLI sends SessionStart/UserPromptSubmit/Stop payloads without
+/// any `hook_event_name`/`hookEventName` field. Since the multicall binary
+/// dispatched to a specific hook (via subcommand), we know the intended event
+/// and inject it into an event-less JSON object so the payload deserializes to
+/// the right [`HookInput`] variant instead of [`HookInput::Unknown`]. Payloads
+/// that already carry an event field, non-object payloads, and hooks that
+/// return `None` from [`Hook::hook_event_name`] are passed through unchanged.
+fn deserialize_hook_input(
+    input_json: &str,
+    known_event: Option<&str>,
+) -> anyhow::Result<HookInput> {
+    if let Some(event) = known_event
+        && let Ok(serde_json::Value::Object(mut map)) =
+            serde_json::from_str::<serde_json::Value>(input_json)
+    {
+        let has_event = map.contains_key("hook_event_name") || map.contains_key("hookEventName");
+        if !has_event {
+            map.insert(
+                "hook_event_name".to_string(),
+                serde_json::Value::String(event.to_string()),
+            );
+            return Ok(serde_json::from_value(serde_json::Value::Object(map))?);
+        }
+    }
+    Ok(serde_json::from_str(input_json)?)
 }
 
 /// Read all of stdin as a string.
@@ -189,5 +234,32 @@ mod tests {
     fn test_hook_default_policy() {
         let hook = TestHook;
         assert_eq!(hook.failure_policy(), FailurePolicy::Open);
+    }
+
+    #[test]
+    fn injects_event_name_for_eventless_copilot_session_start() {
+        // Real Copilot CLI SessionStart payload shape: no hook_event_name.
+        let payload = r#"{"sessionId":"abc-123","cwd":"/tmp","source":"new","initialPrompt":"hi"}"#;
+        let input = deserialize_hook_input(payload, Some("SessionStart")).unwrap();
+        match input {
+            HookInput::SessionStart { session_id, .. } => {
+                assert_eq!(session_id.as_deref(), Some("abc-123"));
+            }
+            other => panic!("expected SessionStart, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn does_not_override_present_event_name() {
+        let payload = r#"{"hook_event_name":"Stop","session_id":"z"}"#;
+        let input = deserialize_hook_input(payload, Some("SessionStart")).unwrap();
+        assert!(matches!(input, HookInput::Stop { .. }));
+    }
+
+    #[test]
+    fn eventless_payload_without_known_event_stays_unknown() {
+        let payload = r#"{"sessionId":"abc-123","source":"new"}"#;
+        let input = deserialize_hook_input(payload, None).unwrap();
+        assert!(matches!(input, HookInput::Unknown));
     }
 }

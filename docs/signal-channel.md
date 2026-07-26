@@ -1,13 +1,16 @@
 # Signal Channel
 
-A **feature-gated, per-session Signal messaging channel** for amplihack. When
-enabled, each amplihack session opens a private Signal group, posts meaningful
-progress updates to it, and lets an allow-listed operator send **advisory**
-instructions back into the running session.
+A **feature-gated, per-session Signal messaging channel** for amplihack that
+works for **both GitHub Copilot CLI and Claude Code**. When enabled, each
+amplihack session opens a private Signal group **once for the whole session**,
+**mirrors the entire conversation** to it (every user prompt and every
+assistant turn), and lets an allow-listed operator send messages back into the
+running session — injected **as if typed at the CLI input box**.
 
 - **Crate:** `amplihack-signal`
 - **Cargo feature:** `signal` (default **OFF**)
 - **Wire protocol:** signal-cli JSON-RPC 2.0 over newline-delimited TCP
+- **Hosts:** Copilot CLI **and** Claude Code (host-aware injection & teardown)
 - **Trust model:** inbound text is surfaced to the agent as *context only* and
   is **never auto-executed**
 
@@ -22,17 +25,22 @@ instructions back into the running session.
 - [How it works](#how-it-works)
 - [Prerequisites](#prerequisites)
 - [Onboarding: `amplihack signal setup`](#onboarding-amplihack-signal-setup)
+- [In-session onboarding prompt](#in-session-onboarding-prompt)
 - [Fleet distribution: `amplihack signal distribute`](#fleet-distribution-amplihack-signal-distribute)
 - [Exit codes](#exit-codes)
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
+- [Host awareness (Copilot vs Claude Code)](#host-awareness-copilot-vs-claude-code)
 - [Group naming and lifecycle](#group-naming-and-lifecycle)
 - [Per-session wiring](#per-session-wiring)
+- [Full conversation mirroring](#full-conversation-mirroring)
+- [Host-aware context injection](#host-aware-context-injection)
 - [The inbound path (operator → agent)](#the-inbound-path-operator--agent)
 - [The outbound path (agent → operator)](#the-outbound-path-agent--operator)
 - [Security model / trust boundary](#security-model--trust-boundary)
 - [Crate API reference](#crate-api-reference)
 - [Building and testing](#building-and-testing)
+- [Offline testing (fake JSON-RPC endpoint)](#offline-testing-fake-json-rpc-endpoint)
 - [Troubleshooting](#troubleshooting)
 - [FAQ](#faq)
 
@@ -41,41 +49,57 @@ instructions back into the running session.
 ## How it works
 
 ```
-┌────────────────────┐        JSON-RPC 2.0 (NDJSON/TCP)        ┌──────────────┐
-│  amplihack session │  ───────────────────────────────────►  │  signal-cli   │
-│  (hooks pipeline)  │                                         │  daemon       │
-│                    │  ◄───────────────────────────────────  │ (your number) │
-└─────────┬──────────┘         receive stream                 └──────┬────────┘
-          │                                                          │
-          │ SessionStart: create group, post "session started",       │
-          │               spawn detached subscriber (persist PID)      │
-          │                                                          ▼
-          │                                             ┌────────────────────────┐
-          │  file inbox (AtomicJsonFile) ◄───────────── │ signal-subscriber       │
-          │        ▲                                    │ (long-lived connection) │
-          │        │ drain                              │ allowlist + gate        │
-   PostToolUse /   │                                    │ + groupId + echo-suppr. │
-   UserPromptSubmit│  additionalContext                 └────────────────────────┘
-          │        │
-          ▼        │
-   Stop: post summary → quitGroup → stop subscriber
+┌────────────────────────┐    JSON-RPC 2.0 (NDJSON/TCP)     ┌──────────────┐
+│   amplihack session     │  ──────────────────────────────► │  signal-cli   │
+│   (hooks pipeline)      │   outbound: mirror EVERY user     │  daemon       │
+│   host = copilot|claude │   prompt + EVERY assistant turn   │ (your number) │
+│                         │  ◄────────────────────────────── └──────┬────────┘
+└───────────┬─────────────┘          receive stream                │
+            │                                                       │
+            │ SessionStart: create group ONCE/session,               │
+            │   post "session started", spawn detached subscriber    │
+            │                                                       ▼
+            │                                          ┌────────────────────────┐
+            │  file inbox (AtomicJsonFile) ◄────────── │ signal-subscriber       │
+            │        ▲                                 │ (long-lived connection) │
+            │        │ drain + host-aware inject       │ allowlist + gate        │
+  UserPromptSubmit / │  ───────────────────────────►  │ + groupId + echo-suppr. │
+  PostToolUse        │  copilot: top-level             │ (fingerprint file)      │
+            │        │  additionalContext (string)     └────────────────────────┘
+            │        │  claude:  hookSpecificOutput.additionalContext
+            ▼        │
+  per-turn Stop:  OUTBOUND relay only (post assistant turn, NO teardown)
+  SessionStop:    post summary → quitGroup → stop subscriber  (once/session)
 ```
 
 The channel is wired through amplihack's existing **hooks** pipeline
-(`amplihack-hooks`), not the recipe-runner:
+(`amplihack-hooks`), not the recipe-runner. It is **host-aware**: the same
+channel drives both **GitHub Copilot CLI** and **Claude Code**, detecting the
+active host from `AMPLIHACK_AGENT_BINARY` and emitting the output shape each
+host understands.
 
-1. **SessionStart** creates a Signal group, persists its `groupId` in session
-   state, posts a "session started" message, and spawns a **detached,
-   long-lived subscriber process** whose PID is persisted.
+1. **SessionStart** loads config (or, on an un-onboarded host, offers the
+   [in-session onboarding prompt](#in-session-onboarding-prompt)), creates a
+   Signal group **once per session**, persists its `groupId` in session state,
+   posts a "session started" message, and spawns a **detached, long-lived
+   subscriber process** whose PID is persisted. The group lives for the
+   **entire session**, not per turn.
 2. The **subscriber** holds a single JSON-RPC connection, filters messages to
    this session's `groupId`, applies the gate (allowlist + setup-aware
-   authorization + echo suppression), and appends accepted instructions to a
-   **per-session file inbox**.
-3. **PostToolUse** and **UserPromptSubmit** hooks drain the file inbox and
-   inject any queued operator instructions into the agent as
-   `hookSpecificOutput.additionalContext`.
-4. **Stop** posts a session summary, calls `quitGroup`, and stops the
-   subscriber.
+   authorization + echo suppression), and appends accepted operator messages to
+   a **per-session file inbox**.
+3. **UserPromptSubmit** and **PostToolUse** hooks drain the file inbox and
+   inject any queued operator messages into the agent **as if typed at the CLI
+   input box**, using the [host-aware injection shape](#host-aware-context-injection).
+4. **Full conversation mirroring** relays the whole session both ways: every
+   **user prompt** (from `UserPromptSubmit` / `userPromptSubmitted`) and every
+   **assistant turn** (from the per-turn `Stop` / `agentStop` hook, read from
+   the `transcript_path`) is posted to the group as it happens.
+5. The **per-turn Stop hook is OUTBOUND relay only** — it posts the assistant
+   turn but **never tears down** the channel.
+6. **SessionStop** (Claude `SessionEnd`, Copilot `sessionEnd`) posts a session
+   summary, calls `quitGroup`, and stops the subscriber. Teardown fires
+   **exactly once** at session end.
 
 Every Signal operation is **non-fatal**: failures are appended to the hook's
 `warnings[]` and emitted via `tracing`, and the hook still exits `0`. A broken
@@ -206,6 +230,62 @@ up the config automatically — no further steps (see
 
 Running `amplihack signal setup` a second time on an already-onboarded host is
 safe and fast — it verifies all three probes and exits `0`.
+
+---
+
+## In-session onboarding prompt
+
+You no longer have to remember to run `amplihack signal setup` ahead of time.
+When you launch amplihack (Copilot CLI **or** Claude Code) on a host that is
+**not yet configured for Signal**, the `SessionStart` hook offers a **fast,
+skippable prompt** asking whether you want to add **this host** as a signal-cli
+device and mirror your session to Signal:
+
+```text
+Signal channel is not configured on this host.
+Add this host as a Signal device and mirror your sessions to Signal? [y/N]
+```
+
+### When the prompt appears
+
+The prompt is shown **only** when **all** of these hold:
+
+- `SignalConfig::load()` fails (no valid `~/.amplihack/signal-config.toml` and
+  no env-var config), **and**
+- stdout/stdin is an interactive **TTY**, **and**
+- `AMPLIHACK_NONINTERACTIVE` is **unset** (or not `1`), **and**
+- no **decline sentinel** exists at
+  `~/.amplihack/runtime/signal/.onboarding-declined`.
+
+If any condition fails, the prompt is **silently skipped** and the session
+proceeds normally with the channel off. In particular, CI, scripts, and any run
+with `AMPLIHACK_NONINTERACTIVE=1` never see the prompt.
+
+### What each answer does
+
+| Answer | Behavior |
+|---|---|
+| **Yes** (`y`) | Records onboarding intent and **spawns `amplihack signal setup` detached** (see [why it is detached](#why-onboarding-is-non-blocking)), then returns immediately. Signal stays **off for the current session**; mirroring activates automatically on the **next launch** once `~/.amplihack/signal-config.toml` exists. |
+| **No** / Enter (`N`) | Writes the `.onboarding-declined` sentinel so **you are not asked again** on this host, and continues with the channel off. |
+| **No response / non-TTY** | Skipped; nothing is written; the channel stays off. |
+
+To be asked again after declining, delete the sentinel:
+
+```bash
+rm ~/.amplihack/runtime/signal/.onboarding-declined
+```
+
+Or onboard explicitly at any time with `amplihack signal setup`.
+
+### Why onboarding is non-blocking
+
+Device linking is **user-paced** (you scan a QR code with your phone) and can
+take far longer than a hook is allowed to run — Copilot CLI enforces a ~30s
+hook timeout. The prompt therefore only records your choice and **spawns the
+real linking flow (`run_setup`) as a detached process**; it never blocks the
+`SessionStart` hook on QR scanning. This guarantees the onboarding UX can
+**never break, stall, or slow down a session**, whether you accept, decline, or
+Signal is unreachable.
 
 ---
 
@@ -398,6 +478,7 @@ the channel stays off; there are **no other silent defaults**.
 | Reuse rolling group | `AMPLIHACK_SIGNAL_REUSE_ROLLING_GROUP` | `reuse_rolling_group` | optional | **Default `false` (per-session groups).** Opt-in only: a truthy value (`1`/`true`/`yes`/`on`, case-insensitive) reuses one long-lived shared group across every session instead of creating a fresh per-session group. Absent, empty, or explicit false values (`0`/`false`/`no`/`off`) resolve to per-session isolation; unknown tokens are rejected |
 | Rolling group id | `AMPLIHACK_SIGNAL_ROLLING_GROUP_ID` | `rolling_group_id` | required when rolling reuse is enabled | Existing group id to bind to when — and only when — rolling reuse is opted into. Ignored while the per-session default is in effect |
 | Config file path | `AMPLIHACK_SIGNAL_CONFIG` | — | optional | Explicit path to the TOML file below. When unset, the loader falls back to the onboarding default `~/.amplihack/signal-config.toml` |
+| Pending inbox capacity | `AMPLIHACK_SIGNAL_INBOX_CAPACITY` | — | optional | Positive integer number of queued inbound operator instructions retained before overflow evicts the oldest pending instruction. Defaults to `32`; tune per host/workflow when operators intentionally send bursts |
 
 > **Fail-closed allowlist.** An **empty** allowlist is a valid, deliberate
 > configuration meaning "accept no inbound instructions." It is *not* treated
@@ -437,84 +518,119 @@ Any value present in the environment overrides the same key in the file.
 
 ---
 
+## Host awareness (Copilot vs Claude Code)
+
+The channel drives **both** GitHub Copilot CLI and Claude Code from one code
+path. It resolves the active host from the **`AMPLIHACK_AGENT_BINARY`**
+environment variable (via `amplihack_utils::agent_binary::resolve`), which
+accepts `copilot`, `claude`, `codex`, or `amplifier` (default: `copilot`).
+
+Host detection controls two things that genuinely differ between the two CLIs:
+
+| Concern | Copilot CLI | Claude Code |
+|---|---|---|
+| **Inbound injection shape** | **Top-level** `additionalContext` (string) on the `userPromptSubmitted` hook output | Nested `hookSpecificOutput.additionalContext` (string) |
+| **Session-end event wiring** | `sessionEnd` → `session-stop-event` subcommand | `SessionEnd` → `session-stop-event` subcommand |
+
+Everything else — group creation, mirroring, the subscriber, gating, echo
+suppression, teardown — is host-independent.
+
+> **Why the injection shape matters.** Copilot CLI **ignores** Claude Code's
+> nested `hookSpecificOutput.additionalContext`. Operator messages injected in
+> the Claude shape would silently never reach the Copilot agent. The channel
+> therefore emits the **correct shape per host** so injected operator text
+> reaches the agent's context on **both** CLIs. See
+> [Host-aware context injection](#host-aware-context-injection).
+
+To force a host explicitly (for testing or in wrappers):
+
+```bash
+export AMPLIHACK_AGENT_BINARY=copilot   # or: claude
+```
+
+The installers stage host-appropriate hook wrappers automatically (see
+[Per-session wiring](#per-session-wiring)); you normally do not set this by hand.
+
+---
+
 ## Group naming and lifecycle
 
 ### Only the top-level operator session gets a group
 
 The Signal channel is **operator-facing**: it exists so a human can watch and
-advise the single session they launched. A real amplihack run, however, spawns
-**many** nested sessions — the orchestrator, each recipe step, and every
-sub-agent all start their own session with their own `session_id`. If every one
-of those opened a Signal group, the operator's phone would fill with dozens of
-**empty** groups (each containing only a lone `session started` message) and it
-would be impossible to tell which group belonged to the run they care about.
+advise the single session they launched. A real amplihack run can spawn nested
+sessions — the orchestrator, recipe steps, and sub-agents each have their own
+`session_id`. If every nested session opened Signal, the operator's phone would
+fill with empty groups.
 
-To prevent this, SessionStart integration applies a **nesting gate**: a Signal
-group is created **only for the top-level operator session**. Nested sessions
-are a **silent no-op** — they create no group, post no `session started`
-message, persist no group state, and spawn no subscriber. This is normal,
-expected behavior, not a warning or an error.
+SessionStart therefore applies a **nesting gate**: a Signal group is created
+**only for the top-level operator session**. Nested sessions are an intended
+no-op: they create no group, post no `session started` marker, persist no group
+state, and spawn no subscriber.
 
-Nesting is detected from the `AMPLIHACK_SESSION_DEPTH` environment variable,
-which amplihack increments for every child session it spawns:
+Nesting is detected from `AMPLIHACK_SESSION_DEPTH`, which amplihack increments
+for child sessions:
 
 | `AMPLIHACK_SESSION_DEPTH` | Session kind | Signal group created? |
 |---|---|---|
 | unset or `0` | Top-level operator session | ✅ Yes |
-| `1`, `2`, … (any value > 0) | Nested recipe / orchestrator / sub-agent | ❌ No (silent no-op) |
+| `1`, `2`, … | Nested recipe / orchestrator / sub-agent | ❌ No |
 
-A non-numeric or malformed value is treated as depth `0` (fail toward creating
-the group for the visible operator session).
-
-> **Why this matters.** Before the nesting gate, a single run could create tens
-> of empty groups. With the gate, one run produces exactly **one** group — the
-> operator's — and all meaningful output flows there.
+A non-numeric value is treated as depth `0`, failing toward preserving the
+visible operator session.
 
 ### Group name
 
 **Per-session (default).** On the top-level SessionStart a fresh group is
-created. When the session is running under **tmux** the group name embeds the
-tmux session name so the operator can immediately tell which group maps to which
-terminal/session:
+created **once for the entire session**. When running inside tmux the name is:
 
 ```
-amplihack-<tmux-session-name>-<session-id>-<unix-timestamp>
+amplihack-<hostname>-<tmux-session>
 ```
 
-When **not** running under tmux (or the tmux lookup fails or times out), the
-name gracefully falls back to the previous format:
+Outside tmux it falls back to:
 
 ```
-amplihack-<session-id>-<unix-timestamp>
+amplihack-<hostname>-<session-id>-<unix-timestamp>
 ```
 
-Both the tmux session name and the session id are **sanitized** to the
-allowlist `[A-Za-z0-9_-]` (the same allowlist used by `sanitize_session_id`);
-the tmux portion is truncated to **32 characters**
-to keep names bounded. If the tmux name is empty after sanitization it is
-omitted (fallback form is used).
+Hostname, tmux session name, and session id are sanitized before use in the
+display name. The `groupId` returned by signal-cli is persisted in session
+state and reused for every mirrored message throughout the session. Group
+creation is **idempotent**: if a group already exists for the session it is
+reused, never recreated.
 
-The tmux name is discovered by running `tmux display-message -p
-'#{session_name}'` **only when the `TMUX` environment variable is set**, with a
-**~2-second timeout** and a graceful fallback: any failure, timeout, or
-absence of tmux simply omits the tmux part. The subprocess is invoked with an
-explicit argument vector (no shell), so the tmux name — which is untrusted
-input — can never trigger shell or argument injection, and it is used **only**
-in the display group name (never in any filesystem path).
+**Teardown happens once, at session end — not per turn.** The **per-turn
+`Stop` / `agentStop` hook is outbound relay only** and must **never** close the
+group. The group is closed with `quitGroup` **only** by the `SessionStop`
+handler, which fires on:
 
-The `groupId` returned by signal-cli is persisted in session state. On Stop the
-group is closed with `quitGroup`.
+- Claude Code **`SessionEnd`**, and
+- Copilot CLI **`sessionEnd`** (wired to the `session-stop-event` subcommand —
+  see [Per-session wiring](#per-session-wiring)),
 
-> **Nested / no-group sessions on Stop.** Because nested sessions never create a
-> group or persist a `group_id`, their Stop hook is likewise a clean no-op: no
-> summary is posted and no `quitGroup` is attempted when there is no persisted
-> `group_id` for the session.
+both routed to `SessionStopHook`. This guarantees subscribers and groups do not
+leak on Copilot session end.
+
+> **The bug this fixes.** In the pre-R5 wiring, teardown lived in the **wrong
+> place**: the per-turn `StopHook` (`stop` / `agentStop`) called
+> `signal_integration::on_stop`, which posts "session complete" and runs
+> `quitGroup`. Because Claude Code fires `Stop` **after every assistant turn**
+> (and Copilot's only wired stop event was `agentStop` → `stop`), the group was
+> torn down after the **first** turn, while the real `SessionStopHook`
+> (`session-stop-event`) did **no** Signal teardown at all. The fix is a
+> **migration, not an addition**: move the `on_stop` teardown call **out of**
+> `StopHook` and **into** `SessionStopHook`, leave `StopHook` doing outbound
+> relay only, and add a Copilot **`sessionEnd` → `session-stop-event`** wrapper
+> so Copilot still tears down exactly once. Adding that wrapper is **required**,
+> not optional — without it, a relay-only `StopHook` would leave Copilot with no
+> teardown path and its groups/subscribers would leak.
 
 **Rolling group (opt-in).** Per-session groups are the default; nothing needs
 to be set to get them. To instead reuse a **single** long-lived group across all
 sessions, explicitly opt in by setting `reuse_rolling_group = true` (or
 `AMPLIHACK_SIGNAL_REUSE_ROLLING_GROUP=1`) **and** supplying `rolling_group_id`.
-In this mode the group is **not** quit at Stop, so you keep one persistent
+In this mode the group is **not** quit at SessionStop, so you keep one persistent
 operator thread. Because this trades per-session isolation for a shared thread,
 it must be requested deliberately — any absent, empty, or explicit false reuse
 flag keeps the per-session default, unknown tokens are rejected, and a truthy
@@ -522,11 +638,10 @@ reuse flag without a group id is rejected.
 
 | Phase | Per-session | Rolling |
 |---|---|---|
-| SessionStart (top-level) | create group + post "session started" | reuse group + post "session started" |
-| SessionStart (nested) | **silent no-op** (no group, no post) | **silent no-op** (no group, no post) |
-| During run | post at meaningful transitions | post at meaningful transitions |
-| Stop (with group) | post summary → `quitGroup` | post summary (group kept) |
-| Stop (no group) | **silent no-op** | **silent no-op** |
+| SessionStart | create group **once** + post "session started" | reuse group + post "session started" |
+| Each user prompt | mirror the prompt to the group | mirror the prompt to the group |
+| Each assistant turn (per-turn `Stop`) | mirror the turn to the group — **OUTBOUND relay only, no teardown** | mirror the turn — no teardown |
+| SessionStop (`SessionEnd` / `sessionEnd`) | post summary → `quitGroup` + stop subscriber | post summary (group kept), stop subscriber |
 
 ---
 
@@ -559,6 +674,127 @@ hook's `warnings[]` and logged via `tracing`, and the session proceeds
 normally. Onboarding does not change this contract — a missing, malformed, or
 unreachable configuration can never crash or block a session.
 
+### Host wrapper generation and `sessionEnd`
+
+The installers generate host-appropriate hook wrappers and settings:
+
+- **Claude Code** (`~/.claude/settings.json`): the `SessionStart`,
+  `UserPromptSubmit`, `PostToolUse`, `Stop`, and `SessionEnd` events map to the
+  matching `amplihack-hooks` subcommands. `SessionEnd` → `session-stop-event`.
+- **Copilot CLI** (`~/.copilot` settings / `.github/hooks/`): the
+  `COPILOT_HOOK_WRAPPERS` table maps camelCase events to subcommands, including
+  the **`sessionEnd`** wrapper, which is wired to the **`session-stop-event`**
+  subcommand (`SessionStopHook`). This is what makes Copilot teardown fire so
+  **subscribers and groups do not leak on Copilot session end**.
+
+Dispatch in the hooks binary routes stop-family subcommands to the correct
+handler:
+
+| Subcommand / alias | Handler | Role |
+|---|---|---|
+| `stop`, `agentStop` | `StopHook` | Per-turn **outbound relay only** (mirror assistant turn) — **no teardown** |
+| `session-stop-event`, `session-end`, `session-stop` (Copilot `sessionEnd`, Claude `SessionEnd`) | `SessionStopHook` | **Teardown**: post summary → `quitGroup` → stop subscriber (once/session) |
+
+> **Migration hazard — existing `session-end` / `session-stop` aliases.** Today
+> `bins/amplihack-hooks/src/main.rs` routes `stop | session-end | session-stop`
+> **all** to `StopHook`, and only the distinct `session-stop-event` subcommand
+> reaches `SessionStopHook`. Once `StopHook` becomes relay-only, leaving those
+> aliases on `StopHook` would silently drop teardown for any host still emitting
+> a `session-end` / `session-stop` event name. **R5 resolves this by
+> re-pointing the `session-end` and `session-stop` subcommand aliases at
+> `SessionStopHook`** (the routing shown above), so every session-end event
+> name — `session-stop-event`, `session-end`, `session-stop` — performs
+> teardown, while `stop` / `agentStop` stay per-turn relay-only. The design's
+> own risk list warns this "could change dispatch for other consumers relying on
+> the old StopHook routing," so this is a **required, tested** change: add a
+> dispatch test asserting **no teardown runs on per-turn `stop` / `agentStop`**
+> and **exactly one** teardown runs for each session-end alias.
+
+Wrapper ownership detection (`is_amplihack_owned`) recognizes the
+`session-stop-event` / `sessionEnd` wrappers, so re-running the installer merges
+cleanly and never duplicates amplihack-owned entries in user settings.
+
+---
+
+## Full conversation mirroring
+
+The channel mirrors the **whole session conversation** to the Signal group — not
+just "session started" / "session complete" markers. Both directions of the
+conversation are relayed as they happen:
+
+| Source hook | Copilot event | Claude event | Mirrored to group |
+|---|---|---|---|
+| User prompt | `userPromptSubmitted` | `UserPromptSubmit` | The **user's prompt text** |
+| Assistant turn | `agentStop` | `Stop` | The **assistant's turn output**, read from the run's `transcript_path` |
+
+Key properties:
+
+- **Per-turn Stop is outbound-only.** Relaying the assistant turn happens in the
+  per-turn `Stop` / `agentStop` hook, which **never** tears down the channel.
+  Teardown **moves to** `SessionStop` — the `on_stop`/`quitGroup` call is
+  relocated out of `StopHook` into `SessionStopHook` (see
+  [Group lifecycle](#group-naming-and-lifecycle) for the before/after).
+- **Message size is bounded.** Every mirrored body — user prompts, assistant
+  turns, and injected operator context — is truncated at a UTF-8-safe boundary
+  to **4 KiB**, with a `… [truncated N bytes]` suffix. This keeps individual
+  Signal messages small and well within the transport's 256 KiB frame cap.
+- **No echo loops.** The account's own mirrored messages are **never**
+  re-injected as inbound operator instructions. Suppression uses two guards:
+  1. **Device/`is_sync` gating** — signal-cli's own synced-back sends (from a
+     linked device, `sourceDevice >= 2`) are rejected by the gate.
+  2. **Shared outbound fingerprints** — every mirrored outbound body is
+     fingerprinted (hashed, with a TTL) into an append-only file under
+     `signal_root()` (`~/.amplihack/runtime/signal/<session-id>/`). The detached
+     **subscriber process reads these fingerprints before injecting**, so echo
+     suppression works **across processes** even though outbound relay runs in
+     the hook process and inbound runs in the subscriber process.
+- **Non-fatal.** If a mirror send fails (daemon down, truncation edge case,
+  transcript unreadable), the failure is recorded in `warnings[]` and the turn
+  proceeds normally.
+
+---
+
+## Host-aware context injection
+
+When the inbox is drained (on `UserPromptSubmit` / `userPromptSubmitted` and
+`PostToolUse` / `postToolUse`), queued operator messages are injected into the
+agent **as if typed at the CLI input box**. The **output shape is host-aware**,
+because the two CLIs read `additionalContext` from different places.
+
+**Copilot CLI** — top-level `additionalContext` **string** on the hook output:
+
+```json
+{
+  "additionalContext": "Operator (via Signal): please also update the changelog"
+}
+```
+
+**Claude Code** — nested under `hookSpecificOutput` (unchanged, byte-for-byte
+compatible with prior releases):
+
+```json
+{
+  "hookSpecificOutput": {
+    "hookEventName": "UserPromptSubmit",
+    "additionalContext": "Operator (via Signal): please also update the changelog"
+  }
+}
+```
+
+The host is resolved from `AMPLIHACK_AGENT_BINARY` (see
+[Host awareness](#host-awareness-copilot-vs-claude-code)). Both the
+`user_prompt` and `post_tool_use` drain sites route through the same host-aware
+merge helper, so operator context reaches the agent's context on **both** CLIs.
+
+> **The bug this fixes.** Copilot CLI **ignores** the nested
+> `hookSpecificOutput.additionalContext` and reads a **top-level**
+> `additionalContext` string (per the
+> [Copilot hooks reference](https://docs.github.com/en/copilot/reference/hooks-reference)).
+> Previously the inbound path always emitted the Claude-nested shape, so operator
+> messages drained from the inbox **never reached the Copilot agent**. Host-aware
+> injection makes end-to-end delivery work on Copilot while leaving Claude Code
+> output identical.
+
 ---
 
 ## The inbound path (operator → agent)
@@ -582,15 +818,20 @@ unreachable configuration can never crash or block a session.
 4. Accepted instruction text is appended to a **per-session file inbox**, a
    JSON document managed by `AtomicJsonFile` (crash-safe, lock-guarded). The
    inbox path is derived through `amplihack_types::paths::sanitize_session_id`
-   to prevent path traversal. The inbox is **bounded**: it holds at most a
-   fixed number of pending instructions (a small cap, e.g. 32). When full, the
-   **oldest** queued instruction is dropped to make room for the newest and the
-   drop is recorded in `warnings[]` — a flood of inbound messages can never grow
-   memory or disk without limit (backpressure by bounded queue).
-5. On the next **PostToolUse** or **UserPromptSubmit** hook, the inbox is
-   **drained** and its queued instructions are emitted to the agent via
-   `hookSpecificOutput.additionalContext`. Draining is one-shot: each
-   instruction is delivered once.
+   to prevent path traversal. The inbox is **bounded and tunable**: it holds at
+   most `AMPLIHACK_SIGNAL_INBOX_CAPACITY` pending instructions, defaulting to
+   `32` when unset or invalid. When full, the **oldest** queued instruction is
+   dropped to make room for the newest and the subscriber logs a warning — a
+   flood of inbound messages can never grow memory or disk without limit
+   (backpressure by bounded queue), and the budget is explicit rather than
+   buried in code.
+5. On the next **UserPromptSubmit** or **PostToolUse** hook, the inbox is
+   **drained** and its queued operator messages are emitted to the agent **as if
+   typed at the CLI input box**, using the
+   [host-aware injection shape](#host-aware-context-injection) — a **top-level**
+   `additionalContext` string for Copilot CLI, or the nested
+   `hookSpecificOutput.additionalContext` for Claude Code. Injected bodies are
+   truncated to 4 KiB. Draining is one-shot: each message is delivered once.
 
 If the subscriber cannot start, the failure is recorded in `warnings[]` and via
 `tracing`; the session continues normally with no inbound channel.
@@ -601,24 +842,33 @@ channel: the subscriber reconnects with **bounded exponential backoff** (1s → 
 → … capped at 30s), preserving its echo-suppression/de-dup state and file inbox
 across reconnects so no instruction is lost or re-delivered. Any inbound message
 resets the backoff. To avoid spinning against a permanently-down daemon it gives
-up after a small number of consecutive failures. A **cold-start** connect failure
-(no connection ever established) stays fast and non-fatal — SessionStart spawns
-the subscriber best-effort and is never stalled by an absent daemon.
+keeps retrying at the capped backoff once a connection has succeeded; inbound
+mirroring is not silently abandoned after an arbitrary failure count. A
+**cold-start** connect failure (no connection ever established) stays fast and
+non-fatal — SessionStart spawns the subscriber best-effort and is never stalled
+by an absent daemon.
 
 ---
 
 ## The outbound path (agent → operator)
 
-amplihack posts to the group **only at meaningful transitions** — not on every
-tool call — and posting is **throttled/batched**:
+amplihack mirrors the **whole conversation** to the group (see
+[Full conversation mirroring](#full-conversation-mirroring)) — every user prompt
+and every assistant turn — plus lifecycle markers:
 
 - **SessionStart** — "session started".
-- **Checkpoints / key results** — significant milestones.
-- **Stop** — a session summary.
+- **Each user prompt** — mirrored from `UserPromptSubmit` / `userPromptSubmitted`.
+- **Each assistant turn** — mirrored from the per-turn `Stop` / `agentStop`
+  hook, read from the run's `transcript_path` (outbound relay only, no teardown).
+- **SessionStop** — a session summary, then `quitGroup` (per-session mode).
 
-Outbound bodies are minimized and redacted before sending. Each posted body is
-recorded in the echo-suppression window so the subscriber will not treat the
-synced-back copy as an operator instruction.
+Every outbound body is **truncated to 4 KiB** at a UTF-8-safe boundary,
+minimized, and redacted before sending. Each posted body is **fingerprinted
+(hashed, TTL-bounded) into a shared file under `signal_root()`** so the
+subscriber process will not treat the synced-back copy as an operator
+instruction — echo suppression that works **across processes**. See
+[Full conversation mirroring](#full-conversation-mirroring) for the echo-loop
+guards.
 
 ---
 
@@ -640,28 +890,39 @@ Concretely:
   and never from signal-cli's own linked device, while a separate allowlisted
   number is accepted via a normal `dataMessage`. An **empty allowlist denies
   everything**.
-- **No self-ingestion.** Echo suppression (bounded TTL window over recent
-  outbound bodies) prevents the bot from re-processing its own messages that
-  Signal syncs back to the account.
+- **No self-ingestion.** Echo suppression prevents the bot from re-processing
+  its own mirrored messages that Signal syncs back to the account. It combines
+  **device/`is_sync` gating** (reject the account's own linked-device sends,
+  `sourceDevice >= 2`) with a **shared, TTL-bounded outbound-fingerprint file**
+  under `signal_root()` that the subscriber consults before injecting — so
+  suppression holds **across the hook and subscriber processes**.
+- **Bounded egress (mirroring).** [Full conversation mirroring](#full-conversation-mirroring)
+  relays user prompts and assistant turns outbound. Every mirrored body is
+  **truncated to 4 KiB** (UTF-8-safe), minimized, and redacted before sending;
+  egress is gated by the same loaded config and the `SIGNAL_ENABLED` process
+  gate, so an un-onboarded or feature-off host sends nothing.
 - **Feature default OFF.** No `signal` feature ⇒ no code, no dependencies, no
-  network sockets.
+  network sockets. In-process tests additionally keep the `SIGNAL_ENABLED`
+  process gate **off**, so no test performs real Signal I/O.
 - **No silent config defaults.** Missing required config is an explicit error,
   never a guessed value.
 - **Per-session group isolation by default.** `reuse_rolling_group` defaults to
   `false`, so each session gets its own group that is closed with `quitGroup`
-  at Stop — no operator thread outlives the session that created it. Sharing one
-  long-lived group across sessions is a deliberate opt-in
+  at SessionStop — no operator thread outlives the session that created it. Sharing
+  one long-lived group across sessions is a deliberate opt-in
   (`reuse_rolling_group = true` / `AMPLIHACK_SIGNAL_REUSE_ROLLING_GROUP=1`) plus
   a `rolling_group_id`; only non-empty truthy values enable it, and a missing
   group id is rejected instead of creating an untracked shared thread.
-- **Path safety.** Every per-session file path is run through
-  `sanitize_session_id`; inbox/PID files are written atomically with
-  restrictive permissions.
-- **Least privilege on shutdown.** Stop kills **only the recorded subscriber
-  PID**, never a name-matched sweep.
-- **Bounded inbox (flood resistance).** The file inbox has a fixed capacity;
-  under an inbound flood the oldest instruction is evicted (logged to
-  `warnings[]`) rather than allowing unbounded memory/disk growth.
+- **Path safety.** Every per-session file path (inbox, PID, decline sentinel,
+  outbound-fingerprint file) is run through `sanitize_session_id`; files are
+  written atomically with restrictive permissions.
+- **Least privilege on shutdown.** Teardown runs **only** from `SessionStop` and
+  kills **only the recorded subscriber PID**, never a name-matched sweep. The
+  per-turn `Stop` hook never tears down the channel.
+- **Bounded inbox (flood resistance).** The file inbox has a tunable capacity
+  (`AMPLIHACK_SIGNAL_INBOX_CAPACITY`, default `32`); under an inbound flood the
+  oldest instruction is evicted and the subscriber logs a warning rather than
+  allowing unbounded memory/disk growth.
 - **Non-fatal contract.** Every Signal operation that fails is logged to
   `warnings[]` + `tracing` and the hook still exits `0`.
 
@@ -723,6 +984,7 @@ Newline-delimited JSON-RPC 2.0 client over `tokio` TCP.
 
 | Method | Purpose |
 |---|---|
+| `connect(addr) -> SignalTransport` | Open a JSON-RPC connection. `addr` is the daemon endpoint in production, or a [`FakeSignalEndpoint`](#offline-testing-fake-json-rpc-endpoint) address in tests |
 | `create_group(name) -> GroupId` | Create a group (wraps the `updateGroup` create-by-name RPC) |
 | `send_group(group_id, body)` | Post a message (wraps the `send` RPC) |
 | `quit_group(group_id)` | Leave/close a group (`quitGroup`) |
@@ -732,6 +994,11 @@ Newline-delimited JSON-RPC 2.0 client over `tokio` TCP.
 > is expected to map to `updateGroup` (creating a group by supplying a name and
 > members); if the signal-cli daemon version in use names it differently,
 > update this table to match the actual method invoked.
+
+> **`FakeSignalEndpoint`** (test-only) implements the same newline-delimited
+> JSON-RPC 2.0 surface on a loopback `127.0.0.1:0` listener, so `connect` can be
+> pointed at it for hermetic offline tests. See
+> [Offline testing](#offline-testing-fake-json-rpc-endpoint).
 
 **Pure wire helpers** (no I/O, unit-tested in isolation):
 
@@ -775,13 +1042,28 @@ match gate.evaluate(&envelope) {
 
 | Method | Purpose |
 |---|---|
-| `announce()` | Create/reuse group and post "session started" |
+| `announce()` | Create/reuse the per-session group (idempotent) and post "session started" |
 | `post(update)` | Post a throttled outbound update |
-| `poll()` / `drain()` | Read (and clear) queued inbound instructions from the file inbox |
+| `relay_outbound(kind, body)` | Mirror a user prompt or assistant turn to the group (4 KiB UTF-8-safe truncation + outbound fingerprint) |
+| `poll()` / `drain()` | Read (and clear) queued inbound operator messages from the file inbox |
 
 The inbox is an `AtomicJsonFile` (from `amplihack-state`) at a
 `sanitize_session_id`-derived path, so writes by the subscriber process and
 reads by the hook process are safe across processes.
+
+### Feature modules (host integration)
+
+The `amplihack-hooks` `signal_integration` module ties the crate into the hooks
+pipeline. Key host-aware entry points:
+
+| Item | Role |
+|---|---|
+| `signal_integration::on_session_start` | Create the group once, spawn the subscriber, and offer the [in-session onboarding prompt](#in-session-onboarding-prompt) |
+| `signal_integration::drain_into_context` | Drain the inbox and produce the [host-aware injection](#host-aware-context-injection) output for the current host |
+| `signal_integration::relay_outbound` | [Full conversation mirroring](#full-conversation-mirroring) for user prompts and assistant turns |
+| `signal_integration::on_stop` | `SessionStop` teardown (`quitGroup` + stop subscriber) — **never** called from the per-turn `Stop` hook |
+| `signal_integration::set_process_enabled` | Toggle the `SIGNAL_ENABLED` process gate (ON in the real binary, OFF in tests) |
+| `FakeSignalEndpoint` | Test-only loopback JSON-RPC fake — see [Offline testing](#offline-testing-fake-json-rpc-endpoint) |
 
 ---
 
@@ -795,15 +1077,82 @@ gate:
 cargo build
 cargo test
 
-# Feature ON.
-cargo build --features signal
-cargo test  --features signal
+# Feature ON — build the hooks binary and run the hooks test-suite.
+cargo build --release -p amplihack-hooks-bin --features signal
+cargo test  --release -p amplihack-hooks     --features signal
 ```
 
 Integration tests are registered as explicit `[[test]]` targets and resolve the
 hooks binary via `env!("CARGO_BIN_EXE_amplihack-hooks")`, so they exercise the
 real `signal-subscriber` subcommand rather than an in-process stub. Pure
 wire/gating tests run with no network or filesystem I/O.
+
+**All tests are hermetic and offline.** `cargo test --release -p amplihack-hooks
+--features signal` **creates no real Signal groups and touches no real Signal
+network** — see [Offline testing](#offline-testing-fake-json-rpc-endpoint). The
+existing hook and golden-snapshot suites are **preserved green**, with **two new
+Copilot golden cases** added for the top-level `additionalContext` injection
+shape (Claude Code golden output is unchanged, byte-for-byte). The regression
+bar is "the full pre-existing suite still passes plus the two new Copilot
+goldens" — run `cargo test` for the current counts rather than relying on a
+number pinned in this doc.
+
+---
+
+## Offline testing (fake JSON-RPC endpoint)
+
+Signal channel tests **never hit the real Signal network**. Two independent
+mechanisms guarantee this:
+
+### 1. The `SIGNAL_ENABLED` process gate
+
+In-process hook tests run with Signal **I/O disabled** by default. The hooks
+binary opts in explicitly at startup (`signal_integration::set_process_enabled(true)`),
+while tests leave the gate **off** so exercising `on_session_start`,
+`drain_into_context`, and `on_stop` performs **no real Signal I/O** and creates
+**no groups**.
+
+### 2. `FakeSignalEndpoint` — a local JSON-RPC fake
+
+For tests that must exercise the transport and subscriber loop end-to-end,
+`amplihack-signal` ships a **fake signal-cli JSON-RPC endpoint** modeled on
+signal-cli's own **JSON-RPC daemon (`--tcp`) socket mode**. It is a
+`tokio::net::TcpListener` bound to **`127.0.0.1:0`** (an ephemeral loopback
+port) that speaks **newline-delimited JSON-RPC 2.0**, the same protocol the real
+daemon uses. `SignalTransport::connect` is pointed at the fake's address, so the
+full method surface can be driven deterministically:
+
+| RPC method | Exercised behavior |
+|---|---|
+| `updateGroup` (create) | Returns a synthetic `groupId`; asserts create-group requests |
+| `send` | Records outbound bodies for assertions (mirroring, truncation, fingerprints) |
+| `receive` | Streams scripted inbound envelopes into the subscriber loop |
+| `quitGroup` | Records teardown; asserts `SessionStop` (not per-turn `Stop`) closes the group |
+
+Because the endpoint binds **loopback-only** and returns synthetic ids, tests
+can cover **send / create-group / receive / quit-group** and the **inbound
+subscriber loop** — including gating, echo suppression, host-aware injection,
+reconnect/backoff, and full-conversation mirroring — with **zero** external
+dependencies and **no** real Signal account, group, or network traffic.
+
+```rust
+// Illustrative test wiring (offline, deterministic, no real Signal).
+let fake = FakeSignalEndpoint::start().await;   // binds 127.0.0.1:0
+let transport = SignalTransport::connect(fake.addr()).await?;
+
+let group = transport.create_group("amplihack-test").await?;   // synthetic id
+transport.send_group(&group, "session started").await?;
+fake.push_inbound(/* scripted operator envelope */);           // drive receive()
+// ... assert the message was injected in the host-aware shape ...
+transport.quit_group(&group).await?;
+
+assert_eq!(fake.groups_created(), 1);   // never a REAL group
+```
+
+> **CI guarantee.** The combination of the default-OFF `SIGNAL_ENABLED` gate and
+> the loopback-only `FakeSignalEndpoint` means no test path can reach the real
+> Signal service. CI runs the full `--features signal` suite with no signal-cli
+> installed and no network access.
 
 ---
 
@@ -817,25 +1166,45 @@ wire/gating tests run with no network or filesystem I/O.
 | Nothing ever accepted | Allowlist is empty (fail-closed) | Populate the allowlist |
 | Bot seems to "hear itself" | (Should not happen) echo window too short | Instructions equal to a recent outbound body are suppressed by design |
 | Subscriber not running | Spawn failed | Check `warnings[]`/`tracing`; the persisted PID file records the detached process |
-| Some instructions never arrive | Inbox overflowed under a burst | The inbox is bounded; oldest entries are evicted (see `warnings[]`). Send fewer, more deliberate instructions |
+| Some instructions never arrive | Inbox overflowed under a burst | The inbox is bounded and logs overflow warnings; raise `AMPLIHACK_SIGNAL_INBOX_CAPACITY` or send fewer, more deliberate instructions |
 | `signal setup` can't install signal-cli | No package/JRE available non-interactively | Follow the printed install guidance, install signal-cli manually, then re-run `amplihack signal setup` |
 | `signal setup` fails on port | `127.0.0.1:<port>` held by an unknown process | Free the port or pass `--port <other>` / set `AMPLIHACK_SIGNAL_PORT` |
 | A VM shows `failed: link limit reached` | Signal linked-device cap hit | Unlink an unused device in Signal, or use `--identity-mode dedicated-number` for very large fleets |
 | `distribute` stopped part-way | Interrupted / a VM failed | Re-run `amplihack signal distribute`; it resumes from `~/.amplihack/signal-distribute-state.json` and retries only pending/failed VMs |
-| Many **empty** groups piling up (each with only "session started") | Older behavior created a group for every nested session | Fixed: only the **top-level** session (`AMPLIHACK_SESSION_DEPTH` unset/`0`) creates a group; nested sessions are a silent no-op. Delete the stale empty groups; new runs produce exactly one group |
-| Can't tell which group belongs to which session | Group name lacked session context | Group names now embed the tmux session name when running under tmux: `amplihack-<tmux-session>-<session-id>-<ts>` |
+| Operator messages never reach the Copilot agent | Wrong injection shape (nested instead of top-level) | Fixed by [host-aware injection](#host-aware-context-injection). Confirm `AMPLIHACK_AGENT_BINARY=copilot`; Copilot needs the **top-level** `additionalContext` string |
+| Conversation not mirrored (only start/stop) | Old behavior / feature off | [Full mirroring](#full-conversation-mirroring) relays every user prompt + assistant turn; confirm `--features signal` and that `transcript_path` is readable |
+| Group is torn down after one turn | Teardown wired to per-turn Stop | Per-turn `Stop`/`agentStop` is **outbound-only**; teardown must be on `SessionStop` (`SessionEnd`/`sessionEnd` → `session-stop-event`) |
+| Subscriber/group leaks after Copilot exits | Copilot `sessionEnd` not wired | Re-run the installer so the `sessionEnd` → `session-stop-event` wrapper is generated (see [Host wrapper generation](#host-wrapper-generation-and-sessionend)) |
+| In-session onboarding prompt never appears | Non-TTY, `AMPLIHACK_NONINTERACTIVE=1`, already configured, or previously declined | Expected. Delete `~/.amplihack/runtime/signal/.onboarding-declined` to be asked again, or run `amplihack signal setup` |
+| Bot re-injects its own mirrored messages | Echo suppression gap | Should not happen: device/`is_sync` gating + shared outbound-fingerprint file suppress echoes across processes |
 
 Because every Signal operation is non-fatal, none of the above can break your
-amplihack session — worst case the channel is silently unavailable and the run
-proceeds normally.
+amplihack session — worst case the channel is unavailable, with the failure
+surfaced through hook warnings and/or `tracing`, and the run proceeds normally.
 
 ---
 
 ## FAQ
 
+**Does the Signal channel work with GitHub Copilot CLI, or only Claude Code?**
+Both. The channel is host-aware (`AMPLIHACK_AGENT_BINARY`): it emits a top-level
+`additionalContext` string for Copilot and the nested
+`hookSpecificOutput.additionalContext` for Claude Code, and wires teardown to
+Copilot's `sessionEnd` as well as Claude's `SessionEnd`. See
+[Host awareness](#host-awareness-copilot-vs-claude-code).
+
 **Does enabling Signal add dependencies to the default build?**
 No. With the feature off, `amplihack-signal` and its `tokio`-net dependencies
 are not compiled or linked.
+
+**Is the whole conversation mirrored, or just start/stop?**
+The whole conversation — every user prompt and every assistant turn — bounded to
+4 KiB per message. See [Full conversation mirroring](#full-conversation-mirroring).
+
+**Do the tests hit the real Signal network?**
+Never. The default-OFF `SIGNAL_ENABLED` gate plus the loopback-only
+`FakeSignalEndpoint` guarantee no real groups or network traffic. See
+[Offline testing](#offline-testing-fake-json-rpc-endpoint).
 
 **Can an operator make amplihack run a command by texting it?**
 No. Inbound text is delivered only as `additionalContext`. The agent decides
@@ -855,28 +1224,12 @@ In a per-session, atomically-written JSON inbox whose path is derived through
 flood) and is drained (delivered once) on the next
 `PostToolUse` / `UserPromptSubmit`.
 
-**Why don't nested sessions (recipes, orchestrator, sub-agents) get their own
-Signal group?**
-By design. A single run spawns many nested sessions; if each opened a group the
-operator would be buried in empty groups with no way to tell them apart. Only
-the top-level operator session (`AMPLIHACK_SESSION_DEPTH` unset or `0`) creates
-a group and posts output. Every nested session (`AMPLIHACK_SESSION_DEPTH > 0`)
-is a silent no-op — no group, no message, no state, no subscriber. All
-meaningful output still flows to the single operator group.
-
-**Why is the tmux session name in the group name? What if I'm not using tmux?**
-It makes each group instantly identifiable — you can match a Signal group to the
-terminal/session it came from. The lookup runs `tmux display-message -p
-'#{session_name}'` only when `TMUX` is set, with a ~2-second timeout. If you are
-not under tmux (or the lookup fails/times out) the name gracefully falls back to
-`amplihack-<session-id>-<ts>`. The tmux name is sanitized to `[A-Za-z0-9_-]`,
-truncated to 32 chars, and never used in any filesystem path.
-
 ---
 
 ## See also
 
 - [Signal onboarding how-to](SIGNAL_ONBOARDING.md) — `setup` and `distribute` walkthrough
+- [Signal external service integration](signal-external-integration.md) — seam architecture, resumable fleet state, and `amplihack-remote` re-exports
 - [`examples/signal-config.toml`](../examples/signal-config.toml) — annotated config
 - [Signal onboarding — performance notes](reference/signal-onboarding-performance.md) — hot paths & allocation trims
 - [Hook configuration guide](HOOK_CONFIGURATION_GUIDE.md)

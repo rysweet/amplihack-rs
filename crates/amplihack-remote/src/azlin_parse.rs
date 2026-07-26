@@ -3,7 +3,12 @@ use chrono::{DateTime, NaiveDateTime, Utc};
 use crate::orchestrator::VM;
 
 /// Parse JSON output from `azlin list --json`.
-pub(crate) fn parse_azlin_list_json(output: &str) -> Vec<VM> {
+///
+/// Public API (#921/#971 R4): the Signal fleet path re-uses these azlin
+/// parsers so the discovery JSON shape cannot drift between crates. Malformed
+/// or non-array input yields an empty `Vec` (the caller decides whether an
+/// empty fleet triggers a fallback); parsing never panics on bad input.
+pub fn parse_azlin_list_json(output: &str) -> Vec<VM> {
     let items: Vec<serde_json::Value> = match serde_json::from_str(output) {
         Ok(v) => v,
         Err(_) => return Vec::new(),
@@ -40,7 +45,11 @@ pub(crate) fn parse_azlin_list_json(output: &str) -> Vec<VM> {
 }
 
 /// Parse text output from `azlin list`.
-pub(crate) fn parse_azlin_list_text(output: &str) -> Vec<VM> {
+///
+/// Public API (#921/#971 R4): companion to [`parse_azlin_list_json`] for the
+/// human-readable `azlin list` table. The first line is treated as a header
+/// and skipped; malformed rows are ignored rather than erroring.
+pub fn parse_azlin_list_text(output: &str) -> Vec<VM> {
     let mut vms = Vec::new();
     for line in output.lines().skip(1) {
         let parts: Vec<&str> = line.split_whitespace().collect();

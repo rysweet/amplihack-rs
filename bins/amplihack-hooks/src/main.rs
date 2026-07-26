@@ -31,6 +31,12 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let subcommand = args.get(1).map(String::as_str).unwrap_or("");
 
+    // This is the real hook binary (not an in-process test harness), so allow
+    // the Signal integration to perform live I/O. Library/test contexts leave
+    // this OFF, keeping in-process hook tests free of real Signal side effects.
+    #[cfg(feature = "signal")]
+    amplihack_hooks::signal_integration::set_process_enabled(true);
+
     // Keeps the hooks binary on the same version-override contract as the
     // main `amplihack` binary (see `amplihack_cli::VERSION`). Without the
     // `AMPLIHACK_RELEASE_VERSION` env override here, the hooks binary would
@@ -51,14 +57,16 @@ fn main() {
         }
         "pre-tool-use" => run_hook(PreToolUseHook),
         "post-tool-use" => run_hook(PostToolUseHook),
-        // `session-end` and `session-stop` are aliases for `stop`. Dispatching
-        // to the same StopHook instance keeps behavior identical for hosts that
-        // still use either event name.
-        "stop" | "session-end" | "session-stop" => run_hook(StopHook),
+        // Per-turn stop events: OUTBOUND relay only, never Signal teardown.
+        // Tearing down the group here would kill the whole-session channel
+        // after the first turn (see `is_teardown_subcommand`).
+        "stop" | "agentStop" => run_hook(StopHook),
         "session-start" => run_hook(SessionStartHook),
-        // SessionStop event handler (distinct from the alias above) — kept
-        // for hosts that wire SessionStop separately from Stop.
-        "session-stop-event" => run_hook(SessionStopHook),
+        // Whole-session teardown events (incl. Copilot's `sessionEnd`) → leave
+        // the Signal group exactly once at session end.
+        "session-end" | "session-stop" | "session-stop-event" | "sessionEnd" => {
+            run_hook(SessionStopHook)
+        }
         "workflow-classification-reminder" => run_hook(WorkflowClassificationReminderHook),
         "user-prompt" | "user-prompt-submit" => run_hook(UserPromptSubmitHook),
         "pre-compact" => run_hook(PreCompactHook),

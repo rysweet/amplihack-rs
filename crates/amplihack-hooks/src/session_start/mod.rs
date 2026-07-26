@@ -35,6 +35,10 @@ impl Hook for SessionStartHook {
         "session_start"
     }
 
+    fn hook_event_name(&self) -> Option<&'static str> {
+        Some("SessionStart")
+    }
+
     fn failure_policy(&self) -> FailurePolicy {
         FailurePolicy::Open
     }

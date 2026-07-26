@@ -16,9 +16,13 @@
 //! | user_prompt_submit.py         | `amplihack-hooks user-prompt-submit`|
 //! | _shim.py                      | (no native; helper only)            |
 //!
-//! `session-end` and `session-stop` are clap aliases for `stop` (per design
-//! spec A3) — both must dispatch to the same StopHook handler the legacy
-//! Python shims forwarded to.
+//! `session-end` and `session-stop` dispatch to the whole-session teardown
+//! handler (`SessionStopHook`), alongside `session-stop-event`. They are
+//! deliberately NOT aliases for the per-turn `stop`/`agentStop` StopHook: the
+//! Signal-channel design tears the per-session group down only at genuine
+//! session end, so routing `session-end` to `stop` would either skip teardown
+//! or kill the channel mid-session. All three teardown spellings must dispatch
+//! to the same `SessionStopHook` (no copy-paste handler that could diverge).
 //!
 //! `precommit-prefs` is a no-op: it drains stdin and exits 0. It must NOT
 //! echo, log, or otherwise persist the stdin payload (security: stdin may
@@ -118,26 +122,26 @@ fn precommit_prefs_handles_empty_stdin() {
 }
 
 // ---------------------------------------------------------------------------
-// session-end / session-stop: aliases for stop
+// session-end / session-stop: whole-session teardown (SessionStopHook)
 // ---------------------------------------------------------------------------
 
 #[test]
 fn session_end_alias_dispatches_to_stop_handler() {
-    // Replaces session_end.py which called `delegate("stop")`. The Rust
-    // dispatcher must accept `session-end` as a synonym for `stop` so any
+    // `session-end` routes to the whole-session teardown handler
+    // (SessionStopHook). It must be recognized and fail-open (exit 0) so any
     // settings.json or recipe wiring that uses the SessionEnd event keeps
-    // working without inventing a separate native handler.
+    // working.
     let payload = "{}";
     let (stdout, stderr, success) = invoke("session-end", payload);
     assert!(
         success,
-        "session-end alias must exit 0 (StopHook is fail-open); stderr: {stderr}"
+        "session-end must exit 0 (SessionStopHook is fail-open); stderr: {stderr}"
     );
     assert!(
         !stderr.contains("unknown subcommand"),
-        "session-end must be a recognized alias; stderr: {stderr}"
+        "session-end must be a recognized subcommand; stderr: {stderr}"
     );
-    // Output must be valid JSON — same contract as direct `stop` invocation.
+    // Output must be valid JSON.
     let stdout_json = if stdout.trim().is_empty() {
         "{}"
     } else {
@@ -149,7 +153,8 @@ fn session_end_alias_dispatches_to_stop_handler() {
 
 #[test]
 fn session_stop_alias_dispatches_to_stop_handler() {
-    // Replaces session_stop.py. Same alias-to-stop semantics as session-end.
+    // `session-stop` routes to the SessionStopHook teardown handler, same as
+    // `session-end` and `session-stop-event`.
     let payload = "{}";
     let (stdout, stderr, success) = invoke("session-stop", payload);
     assert!(success, "session-stop alias must exit 0; stderr: {stderr}");
@@ -168,40 +173,48 @@ fn session_stop_alias_dispatches_to_stop_handler() {
 
 #[test]
 fn session_aliases_match_direct_stop_behavior() {
-    // The aliases must dispatch to the EXACT same handler as `stop` (not a
-    // copy-paste handler that could diverge — see security_considerations).
-    // Equality check: both produce the same JSON shape for the same input.
+    // The teardown spellings (`session-end`, `session-stop`) must dispatch to
+    // the EXACT same handler as the canonical `session-stop-event`
+    // (SessionStopHook) — not a copy-paste handler that could diverge, and
+    // NOT the per-turn `stop`/`agentStop` StopHook. Equality check: each alias
+    // produces the same top-level JSON shape as `session-stop-event` for the
+    // same input.
     let payload = "{}";
-    let (stop_out, _, stop_ok) = invoke("stop", payload);
-    let (alias_out, _, alias_ok) = invoke("session-end", payload);
-    assert_eq!(stop_ok, alias_ok, "alias must mirror stop's exit status");
+    let (canonical_out, _, canonical_ok) = invoke("session-stop-event", payload);
+    let canonical_src = if canonical_out.trim().is_empty() {
+        "{}"
+    } else {
+        canonical_out.as_str()
+    };
+    let canonical_json: serde_json::Value =
+        serde_json::from_str(canonical_src).expect("session-stop-event stdout must be JSON");
+    let canonical_keys = canonical_json
+        .as_object()
+        .map(|o| o.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
 
-    // Both should produce valid JSON. We don't assert byte-for-byte equality
-    // because StopHook may include nondeterministic fields (timestamps,
-    // session ids), but the top-level keys must match.
-    let stop_json_src = if stop_out.trim().is_empty() {
-        "{}"
-    } else {
-        stop_out.as_str()
-    };
-    let alias_json_src = if alias_out.trim().is_empty() {
-        "{}"
-    } else {
-        alias_out.as_str()
-    };
-    let stop_json: serde_json::Value =
-        serde_json::from_str(stop_json_src).expect("stop stdout must be JSON");
-    let alias_json: serde_json::Value =
-        serde_json::from_str(alias_json_src).expect("session-end stdout must be JSON");
-    assert_eq!(
-        stop_json
+    for alias in ["session-end", "session-stop"] {
+        let (alias_out, _, alias_ok) = invoke(alias, payload);
+        assert_eq!(
+            canonical_ok, alias_ok,
+            "{alias} must mirror session-stop-event's exit status"
+        );
+        // Top-level keys must match; values may carry nondeterministic fields
+        // (timestamps, session ids) so byte-for-byte equality is not asserted.
+        let alias_src = if alias_out.trim().is_empty() {
+            "{}"
+        } else {
+            alias_out.as_str()
+        };
+        let alias_json: serde_json::Value =
+            serde_json::from_str(alias_src).expect("alias stdout must be JSON");
+        let alias_keys = alias_json
             .as_object()
             .map(|o| o.keys().cloned().collect::<Vec<_>>())
-            .unwrap_or_default(),
-        alias_json
-            .as_object()
-            .map(|o| o.keys().cloned().collect::<Vec<_>>())
-            .unwrap_or_default(),
-        "session-end must produce the same JSON shape as direct stop invocation"
-    );
+            .unwrap_or_default();
+        assert_eq!(
+            canonical_keys, alias_keys,
+            "{alias} must produce the same JSON shape as session-stop-event (shared SessionStopHook)"
+        );
+    }
 }

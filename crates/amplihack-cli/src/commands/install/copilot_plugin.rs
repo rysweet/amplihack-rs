@@ -107,7 +107,7 @@ fn write_plugin_manifest(plugin_dir: &Path, commands_staged: bool) -> Result<()>
 ///
 /// Event-name mapping (Claude Code → Copilot CLI):
 /// - SessionStart      → sessionStart
-/// - Stop              → sessionEnd          (closest analog)
+/// - SessionEnd        → sessionEnd          (per-session teardown)
 /// - UserPromptSubmit  → userPromptSubmitted
 /// - PreToolUse        → preToolUse
 /// - PostToolUse       → postToolUse
@@ -117,7 +117,11 @@ fn write_plugin_manifest(plugin_dir: &Path, commands_staged: bool) -> Result<()>
 fn write_hooks_json(plugin_dir: &Path, hooks_bin: &Path) -> Result<()> {
     let bin = validate_copilot_hooks_bin(hooks_bin)?;
     let session_start = copilot_hook_command(&bin, "session-start")?;
-    let session_end = copilot_hook_command(&bin, "stop")?;
+    // Copilot's `sessionEnd` fires once at genuine session end, so route it to
+    // the session-stop-event subcommand (SessionStopHook) which performs Signal
+    // channel teardown. The per-turn `stop` subcommand must NOT be used here —
+    // it only relays outbound and would never tear the subscriber down.
+    let session_end = copilot_hook_command(&bin, "session-stop-event")?;
     let workflow_classification = copilot_hook_command(&bin, "workflow-classification-reminder")?;
     let user_prompt_submit = copilot_hook_command(&bin, "user-prompt-submit")?;
     let pre_tool_use = copilot_hook_command(&bin, "pre-tool-use")?;
@@ -528,6 +532,38 @@ mod tests {
         assert!(
             raw.contains("amplihack-hooks"),
             "hooks.json should invoke the amplihack-hooks binary"
+        );
+    }
+
+    #[test]
+    fn hooks_json_session_end_routes_to_session_teardown() {
+        // Regression: the Copilot plugin `sessionEnd` event must invoke the
+        // `session-stop-event` subcommand (SessionStopHook → Signal teardown),
+        // NOT the per-turn `stop` subcommand which only relays outbound and
+        // would leave the detached subscriber orphaned.
+        let td = TempDir::new().unwrap();
+        let copilot_home = fake_copilot_home(&td);
+        let repo = fake_repo(&td, false);
+        let hooks_bin = td.path().join("amplihack-hooks");
+        fs::write(&hooks_bin, b"#!/bin/sh\nexit 0\n").unwrap();
+
+        assert!(run_with_copilot_home(&copilot_home, &repo, &hooks_bin));
+
+        let hooks_path = copilot_home
+            .join("installed-plugins")
+            .join("amplihack@local")
+            .join("hooks.json");
+        let body: Value = serde_json::from_str(&fs::read_to_string(&hooks_path).unwrap()).unwrap();
+        let session_end = body["hooks"]["sessionEnd"][0]["bash"]
+            .as_str()
+            .expect("sessionEnd bash command must be present");
+        assert!(
+            session_end.contains("session-stop-event"),
+            "sessionEnd must invoke session-stop-event, got: {session_end}"
+        );
+        assert!(
+            !session_end.contains(" stop"),
+            "sessionEnd must not invoke the per-turn stop subcommand, got: {session_end}"
         );
     }
 

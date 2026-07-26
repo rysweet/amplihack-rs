@@ -33,6 +33,14 @@ tokio-stream = { version = "0.1", optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tokio = { version = "1", features = [
+    "rt",
+    "macros",
+    "net",
+    "io-util",
+    "time",
+    "sync",
+] }
 
 # Fixture-driven envelope tests (pure wire parsing, no I/O).
 [[test]]

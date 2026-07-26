@@ -45,6 +45,9 @@ pub mod setup;
 #[cfg(feature = "signal")]
 pub mod validate;
 
+#[cfg(feature = "signal")]
+pub use run::{run_distribute_with, run_setup_with};
+
 use crate::SignalCommands;
 use anyhow::Result;
 

@@ -18,7 +18,7 @@
 //! - [`error`] — Error types
 
 pub mod auth;
-pub(crate) mod azlin_parse;
+pub mod azlin_parse;
 pub(crate) mod backoff;
 pub mod cli;
 pub mod commands;
@@ -37,6 +37,11 @@ pub(crate) mod vm_lookup;
 pub mod vm_pool;
 
 pub use auth::{AzureAuthenticator, AzureCredentials, get_azure_auth};
+// #921/#971 R4: re-export the azlin discovery parsers and the idle/liveness
+// watchdog so the Signal fleet path (idle-based device-linking) can consume a
+// single, shared implementation instead of forking the parse/idle logic.
+pub use amplihack_utils::idle_watchdog;
+pub use azlin_parse::{parse_azlin_list_json, parse_azlin_list_text};
 pub use cli::{
     WorkflowOptions, WorkflowResult, execute_remote_workflow, execute_remote_workflow_with_api_key,
 };

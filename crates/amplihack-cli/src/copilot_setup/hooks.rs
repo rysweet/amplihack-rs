@@ -198,6 +198,7 @@ fn is_amplihack_owned(entry: &serde_json::Value) -> bool {
         || bash.contains("/.github/hooks/post-tool-use")
         || bash.contains("/.github/hooks/pre-compact")
         || bash.contains("/.github/hooks/stop")
+        || bash.contains("/.github/hooks/session-end")
 }
 
 pub(super) fn generate_copilot_instructions(copilot_home: &Path) -> Result<()> {
@@ -440,6 +441,87 @@ mod tests {
             script.display(),
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    // ----------------------------------------------------------------------
+    // R5 (issue #1002): wire Copilot's `sessionEnd` event so whole-session
+    // teardown fires and subscribers/groups do not leak on Copilot session end.
+    //
+    // Copilot DOES emit `sessionEnd`, but amplihack never wired it, so the
+    // Signal channel was only ever torn down (incorrectly) by the per-turn
+    // `agentStop` path. These tests pin the installer contract:
+    //   * a `sessionEnd` wrapper exists, dispatching the `session-stop-event`
+    //     subcommand (which runs SessionStopHook → teardown),
+    //   * the generated user-level `~/.copilot/config.json` registers it,
+    //   * `is_amplihack_owned` recognizes the new wrapper so re-running setup
+    //     replaces rather than duplicates it.
+    //
+    // RED: these fail until the `sessionEnd` wrapper + ownership matcher land.
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn copilot_wrappers_include_session_end_to_session_stop_event() {
+        let spec = COPILOT_HOOK_WRAPPERS
+            .iter()
+            .find(|s| s.copilot_event == "sessionEnd")
+            .expect("a sessionEnd wrapper must be registered so teardown fires");
+        assert!(
+            spec.subcommands.contains(&"session-stop-event"),
+            "sessionEnd must dispatch the session-stop-event subcommand (teardown), got {:?}",
+            spec.subcommands
+        );
+    }
+
+    #[test]
+    fn per_turn_agent_stop_wrapper_does_not_teardown_the_channel() {
+        // The per-turn `agentStop` wrapper must keep dispatching only `stop`
+        // (outbound relay). If it dispatched a teardown subcommand the group
+        // would be destroyed after every turn.
+        let spec = COPILOT_HOOK_WRAPPERS
+            .iter()
+            .find(|s| s.copilot_event == "agentStop")
+            .expect("agentStop wrapper present");
+        assert!(
+            !spec.subcommands.contains(&"session-stop-event"),
+            "per-turn agentStop must NOT run teardown"
+        );
+        assert!(spec.subcommands.contains(&"stop"));
+    }
+
+    #[test]
+    fn user_level_config_registers_session_end_hook() {
+        let copilot_home = tempfile::tempdir().unwrap();
+        write_user_level_hooks(copilot_home.path()).unwrap();
+
+        let raw = fs::read_to_string(copilot_home.path().join("config.json")).unwrap();
+        let cfg: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let hooks = cfg["hooks"].as_object().expect("hooks object");
+        let arr = hooks
+            .get("sessionEnd")
+            .and_then(|v| v.as_array())
+            .expect("sessionEnd must be registered in ~/.copilot/config.json");
+        assert!(!arr.is_empty(), "sessionEnd must have a wrapper entry");
+        let bash = arr[0]["bash"]
+            .as_str()
+            .or_else(|| arr[0]["command"].as_str())
+            .unwrap_or("");
+        assert!(
+            bash.contains("session-end") || bash.contains("session-stop-event"),
+            "sessionEnd wrapper must point at the session-end teardown hook; got {bash:?}"
+        );
+    }
+
+    #[test]
+    fn is_amplihack_owned_recognizes_session_end_wrapper() {
+        let entry = serde_json::json!({
+            "type": "command",
+            "bash": "/home/user/.copilot/.github/hooks/session-end \"$@\""
+        });
+        assert!(
+            is_amplihack_owned(&entry),
+            "the session-end wrapper must be recognized as amplihack-owned so \
+             re-running setup replaces it instead of leaving a duplicate"
         );
     }
 }

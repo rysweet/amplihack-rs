@@ -20,6 +20,8 @@
 #[cfg(feature = "signal")]
 pub mod config;
 #[cfg(feature = "signal")]
+pub mod fake_endpoint;
+#[cfg(feature = "signal")]
 pub mod gating;
 #[cfg(feature = "signal")]
 pub mod session_channel;

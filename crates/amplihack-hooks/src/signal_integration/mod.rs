@@ -34,10 +34,26 @@
 mod imp;
 
 #[cfg(feature = "signal")]
+mod host_context;
+/// R1 — Signal onboarding prompt gating + declined sentinel.
+#[cfg(feature = "signal")]
+pub mod onboarding;
+/// R4 — full-conversation mirroring helpers (outbound truncation + echo
+/// fingerprints).
+#[cfg(feature = "signal")]
+pub mod outbound;
+
+#[cfg(feature = "signal")]
+pub use host_context::{inject_host, merge_additional_context};
+
+#[cfg(feature = "signal")]
 pub use imp::run_subscriber;
 
 #[cfg(feature = "signal")]
-pub use imp::{drain_into_context, on_session_start, on_stop};
+pub use imp::{
+    drain_into_context, is_channel_configured, on_session_start, on_stop, relay_outbound,
+    set_process_enabled,
+};
 
 // ---------------------------------------------------------------------------
 // No-op shims (feature OFF). Signatures mirror the real implementation so the
@@ -61,3 +77,21 @@ pub fn drain_into_context(_session_id: Option<&str>) -> Option<String> {
 /// when the `signal` feature is disabled.
 #[cfg(not(feature = "signal"))]
 pub fn on_stop(_session_id: &str) {}
+
+/// Mirror an outbound line (user prompt / assistant turn) to the session group.
+/// No-op when the `signal` feature is disabled.
+#[cfg(not(feature = "signal"))]
+pub fn relay_outbound(_session_id: Option<&str>, _body: &str) {}
+
+/// Enable/disable real Signal I/O for this process. No-op when the `signal`
+/// feature is disabled.
+#[cfg(not(feature = "signal"))]
+pub fn set_process_enabled(_enabled: bool) {}
+
+/// Whether the Signal channel is configured/usable. Always `false` when the
+/// `signal` feature is disabled, so hook output keeps its historical shape.
+#[cfg(not(feature = "signal"))]
+#[must_use]
+pub fn is_channel_configured() -> bool {
+    false
+}

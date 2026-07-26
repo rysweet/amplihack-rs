@@ -13,6 +13,7 @@ an entire Azure Linux (azlin) fleet with `amplihack signal distribute`.
 
 - [Before you start](#before-you-start)
 - [Onboard one host: `signal setup`](#onboard-one-host-signal-setup)
+- [Automatic in-session prompt](#automatic-in-session-prompt)
 - [Onboard a fleet: `signal distribute`](#onboard-a-fleet-signal-distribute)
 - [Key constraints](#key-constraints)
 - [Verifying it worked](#verifying-it-worked)
@@ -95,6 +96,43 @@ amplihack signal setup --force         # repair/overwrite existing setup
 ```
 
 ---
+
+## Automatic in-session prompt
+
+You don't have to remember to run `signal setup` in advance. The **first time
+you launch amplihack (Copilot CLI or Claude Code) on an un-onboarded host**, the
+`SessionStart` hook offers a fast, skippable prompt:
+
+```text
+Signal channel is not configured on this host.
+Add this host as a Signal device and mirror your sessions to Signal? [y/N]
+```
+
+- **Yes** records your intent and **spawns `amplihack signal setup` in the
+  background** (device linking is user-paced and cannot run inside the ~30s hook
+  timeout). Signal stays off for the **current** session and turns on
+  automatically on the **next** launch, once `~/.amplihack/signal-config.toml`
+  exists.
+- **No / Enter** writes a decline sentinel
+  (`~/.amplihack/runtime/signal/.onboarding-declined`) so you are **not asked
+  again** on this host.
+
+The prompt is **skipped entirely** — never blocking a session — when any of
+these hold: not a TTY, `AMPLIHACK_NONINTERACTIVE=1`, config already present, or
+the decline sentinel exists. To be asked again after declining:
+
+```bash
+rm ~/.amplihack/runtime/signal/.onboarding-declined
+```
+
+This is the interactive counterpart to `signal setup`; both write the same
+`~/.amplihack/signal-config.toml`. Full behavior:
+[Signal Channel → In-session onboarding prompt](signal-channel.md#in-session-onboarding-prompt).
+
+> **Works on both hosts.** Onboarding, mirroring, and operator injection are
+> **host-aware** and function identically on **GitHub Copilot CLI** and **Claude
+> Code**; the channel detects the host from `AMPLIHACK_AGENT_BINARY`. See
+> [Host awareness](signal-channel.md#host-awareness-copilot-vs-claude-code).
 
 ## Onboard a fleet: `signal distribute`
 
@@ -182,7 +220,10 @@ cat ~/.amplihack/signal-config.toml
 ss -ltnp | grep 127.0.0.1:7583        # or your --port
 
 # 3. Start any amplihack session; you should receive a "session started"
-#    message in a fresh Signal group named amplihack-<session-id>-<timestamp>.
+#    message in a fresh Signal group named amplihack-<session-id>-<timestamp>,
+#    followed by the WHOLE conversation mirrored live — every prompt you type
+#    and every assistant turn. Reply in the Signal chat and your message is
+#    injected into the running agent as if typed at the CLI input box.
 ```
 
 If nothing arrives, check the session's `warnings[]` — every Signal operation is
@@ -195,6 +236,11 @@ non-fatal, so problems are reported there rather than crashing the session. See
 
 - [Signal Channel](signal-channel.md) — full channel documentation, config
   schema, security model, and per-session wiring.
+- [Signal External Service Integration](signal-external-integration.md) — the
+  seam architecture (`signal-cli`, daemon poll, `azlin`/`az` discovery),
+  resumable fleet state, `amplihack-remote` re-exports, and how to test the
+  external boundaries.
 - [`examples/signal-config.toml`](../examples/signal-config.toml) — annotated config.
 - Related issues: **#921** (onboarding command), **#922** (device linking),
-  **#923** (fleet distribution), **#924** (idempotent local daemon + config).
+  **#923** (fleet distribution), **#924** (idempotent local daemon + config),
+  **#971** (external service integration), **#972** (TDD contract tests).

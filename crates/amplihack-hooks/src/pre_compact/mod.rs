@@ -21,6 +21,10 @@ impl Hook for PreCompactHook {
         "pre_compact"
     }
 
+    fn hook_event_name(&self) -> Option<&'static str> {
+        Some("PreCompact")
+    }
+
     fn failure_policy(&self) -> FailurePolicy {
         FailurePolicy::Open
     }

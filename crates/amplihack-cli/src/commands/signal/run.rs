@@ -22,7 +22,10 @@ use amplihack_signal::config::{self, SignalConfig};
 use super::distribute::{DistributeState, VmStatus};
 use super::error::SignalOpError;
 use super::fsutil::write_private;
-use super::seams::{AzVmLister, VmLister};
+use super::seams::{
+    AzVmLister, CliLinkSession, Clock, LinkSession, SignalCliBin, SignalCliInvoker, SystemClock,
+    VmLister,
+};
 use super::setup::{self, Probes};
 use super::{config_writer, daemon, endpoint, identity, render, validate};
 use crate::{SignalDistributeArgs, SignalSetupArgs};
@@ -35,10 +38,27 @@ type OpResult<T> = Result<T, SignalOpError>;
 
 /// Onboard the current host. Idempotent: probes what already exists and repairs
 /// only the missing pieces (never re-links an already-linked device).
+///
+/// This is the production entry point; it wires the real I/O seams
+/// ([`SignalCliBin`], [`CliLinkSession`], [`SystemClock`]) and delegates to
+/// [`run_setup_with`], which contains the orchestration logic so tests can
+/// inject fakes at the same boundary.
 pub fn run_setup(args: SignalSetupArgs) -> OpResult<()> {
+    run_setup_with(&SignalCliBin, &CliLinkSession, &SystemClock, args)
+}
+
+/// Orchestration core for host onboarding, with the external effects supplied
+/// as injectable seams (#921/#971 R3). `cli` locates `signal-cli`, `linker`
+/// runs the device-link handshake, and `clock` paces the daemon-readiness poll.
+pub fn run_setup_with(
+    cli: &dyn SignalCliInvoker,
+    linker: &dyn LinkSession,
+    clock: &dyn Clock,
+    args: SignalSetupArgs,
+) -> OpResult<()> {
     let endpoint = resolve_endpoint(args.port, args.endpoint.as_deref())?;
 
-    let signal_cli = detect_signal_cli()?;
+    let signal_cli = cli.detect()?;
     let config_path = default_config_path();
 
     // --- Probe the three independent facts. -------------------------------
@@ -59,7 +79,7 @@ pub fn run_setup(args: SignalSetupArgs) -> OpResult<()> {
 
     // --- Link (only if not already linked). -------------------------------
     let account = if plan.do_link {
-        link_device(&signal_cli, args.device_name.as_deref())?
+        linker.link(&signal_cli, args.device_name.as_deref())?
     } else {
         existing_account.ok_or_else(|| {
             SignalOpError::Link("host reports linked but no account is recorded".into())
@@ -68,7 +88,7 @@ pub fn run_setup(args: SignalSetupArgs) -> OpResult<()> {
 
     // --- Start the local daemon. ------------------------------------------
     if plan.do_start_daemon {
-        start_daemon(&signal_cli, &account, &endpoint)?;
+        start_daemon(&signal_cli, &account, &endpoint, clock)?;
     } else {
         eprintln!("signal setup: local daemon already running on {endpoint}");
     }
@@ -111,7 +131,17 @@ pub fn run_setup(args: SignalSetupArgs) -> OpResult<()> {
 /// Roll onboarding out across a fleet. Resumable and per-VM isolated: state is
 /// persisted after every VM, one VM failing never aborts the others, and a
 /// re-run retries only non-terminal hosts.
+///
+/// Production entry point: wires the real [`AzVmLister`] discovery seam and
+/// delegates to [`run_distribute_with`].
 pub fn run_distribute(args: SignalDistributeArgs) -> OpResult<()> {
+    run_distribute_with(&AzVmLister, args)
+}
+
+/// Orchestration core for the fleet rollout, with VM discovery supplied as an
+/// injectable [`VmLister`] seam (#921/#971 R3). Discovery-returned names are
+/// re-validated as untrusted input before any fan-out (R11).
+pub fn run_distribute_with(lister: &dyn VmLister, args: SignalDistributeArgs) -> OpResult<()> {
     // Identity model gate: only the default linked-device mode is implemented;
     // dedicated-number is a documented extension point that fails fast (exit 3)
     // rather than silently degrading. Wired here so the fleet path always passes
@@ -132,7 +162,7 @@ pub fn run_distribute(args: SignalDistributeArgs) -> OpResult<()> {
     };
 
     // Discover the fleet (explicit list or `az vm list`), then choose targets.
-    let all_vms = discover_vms(&args)?;
+    let all_vms = discover_vms(lister, &args)?;
     let targets: Vec<String> = if args.force {
         all_vms.clone()
     } else {
@@ -227,9 +257,10 @@ pub fn run_distribute(args: SignalDistributeArgs) -> OpResult<()> {
     }
 }
 
-/// Resolve the desired VM set from explicit `--vms` or `az vm list`. Every name
-/// is validated (injection defense) before use.
-fn discover_vms(args: &SignalDistributeArgs) -> OpResult<Vec<String>> {
+/// Resolve the desired VM set from explicit `--vms` or the injected
+/// [`VmLister`] (real impl: `az vm list`). Every name is validated (injection
+/// defense) before use, including names returned by discovery (R11: untrusted).
+fn discover_vms(lister: &dyn VmLister, args: &SignalDistributeArgs) -> OpResult<Vec<String>> {
     let names = match &args.vms {
         Some(csv) => csv
             .split(',')
@@ -237,7 +268,7 @@ fn discover_vms(args: &SignalDistributeArgs) -> OpResult<Vec<String>> {
             .filter(|s| !s.is_empty())
             .map(str::to_string)
             .collect::<Vec<_>>(),
-        None => AzVmLister
+        None => lister
             .list_vms(&args.resource_group)
             .map_err(|e| SignalOpError::Usage(format!("VM discovery failed: {e}")))?,
     };
@@ -334,7 +365,7 @@ fn onboard_remote_vm(
 // ---------------------------------------------------------------------------
 
 /// Locate signal-cli, or fail with actionable install guidance (exit 4).
-fn detect_signal_cli() -> OpResult<PathBuf> {
+pub(super) fn detect_signal_cli() -> OpResult<PathBuf> {
     if let Some(p) = which("signal-cli") {
         return Ok(p);
     }
@@ -353,7 +384,7 @@ fn detect_signal_cli() -> OpResult<PathBuf> {
 /// captured by stdout redirection), and block on **idle detection** — waiting
 /// for the link to complete — with no wall-clock cap. Returns the linked
 /// account (E.164).
-fn link_device(signal_cli: &Path, device_name: Option<&str>) -> OpResult<String> {
+pub(super) fn link_device(signal_cli: &Path, device_name: Option<&str>) -> OpResult<String> {
     let name = device_name
         .map(str::to_string)
         .unwrap_or_else(default_device_name);
@@ -410,7 +441,12 @@ fn link_device(signal_cli: &Path, device_name: Option<&str>) -> OpResult<String>
 
 /// Start the signal-cli JSON-RPC daemon bound to `endpoint`, preferring a
 /// `systemd --user` transient unit and falling back to a detached process.
-fn start_daemon(signal_cli: &Path, account: &str, endpoint: &str) -> OpResult<()> {
+fn start_daemon(
+    signal_cli: &Path,
+    account: &str,
+    endpoint: &str,
+    clock: &dyn Clock,
+) -> OpResult<()> {
     let cli = signal_cli.to_string_lossy().to_string();
     let systemd_ready = which("systemd-run").is_some() && systemd_user_available();
     let plan = daemon::plan_daemon(systemd_ready, false, endpoint);
@@ -433,7 +469,7 @@ fn start_daemon(signal_cli: &Path, account: &str, endpoint: &str) -> OpResult<()
             .map_err(|e| SignalOpError::Daemon(format!("systemd-run failed to spawn: {e}")))?;
         if status.success() {
             eprintln!("signal setup: started daemon via systemd --user (amplihack-signal-daemon)");
-            return wait_for_daemon(endpoint);
+            return wait_for_daemon(endpoint, clock);
         }
         eprintln!("signal setup: systemd-run failed; falling back to a detached process");
     }
@@ -474,14 +510,14 @@ fn start_daemon(signal_cli: &Path, account: &str, endpoint: &str) -> OpResult<()
     cmd.spawn()
         .map_err(|e| SignalOpError::Daemon(format!("failed to spawn signal-cli daemon: {e}")))?;
     eprintln!("signal setup: started detached signal-cli daemon on {endpoint}");
-    wait_for_daemon(endpoint)
+    wait_for_daemon(endpoint, clock)
 }
 
 /// Poll the daemon endpoint until it accepts a TCP connection. This is a local
 /// readiness check (loopback connect is immediate); it is not an interactive
 /// step, so a short bounded retry loop is appropriate. The endpoint is resolved
 /// to socket addresses once up front rather than on every poll iteration.
-fn wait_for_daemon(endpoint: &str) -> OpResult<()> {
+fn wait_for_daemon(endpoint: &str, clock: &dyn Clock) -> OpResult<()> {
     let addrs: Vec<std::net::SocketAddr> = endpoint
         .to_socket_addrs()
         .map(|a| a.collect())
@@ -490,7 +526,7 @@ fn wait_for_daemon(endpoint: &str) -> OpResult<()> {
         if addrs.iter().any(|a| TcpStream::connect(a).is_ok()) {
             return Ok(());
         }
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        clock.sleep(std::time::Duration::from_millis(200));
     }
     Err(SignalOpError::Daemon(format!(
         "daemon did not become reachable on {endpoint}"

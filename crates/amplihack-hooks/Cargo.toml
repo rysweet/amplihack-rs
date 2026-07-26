@@ -38,6 +38,7 @@ signal = ["dep:amplihack-signal", "amplihack-signal/signal", "dep:tokio", "dep:l
 
 [dev-dependencies]
 tempfile = { workspace = true }
+serde_json = { workspace = true }
 
 [[test]]
 name = "golden"

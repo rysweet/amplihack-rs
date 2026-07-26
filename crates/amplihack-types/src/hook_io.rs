@@ -117,7 +117,11 @@ impl<'de> Deserialize<'de> for HookInput {
                 cwd: optional_typed_field(map, CWD_FIELDS)?,
                 extra: extra(),
             }),
-            Some("sessionstop") => Ok(HookInput::SessionStop {
+            // Claude Code emits `SessionEnd` at genuine session termination;
+            // other hosts use `SessionStop`. Both map to the same variant so
+            // the SessionStopHook (which performs per-session Signal teardown)
+            // runs regardless of host event naming.
+            Some("sessionstop") | Some("sessionend") => Ok(HookInput::SessionStop {
                 session_id: optional_typed_field(map, SESSION_ID_FIELDS)?,
                 transcript_path: optional_typed_field(map, TRANSCRIPT_PATH_FIELDS)?,
                 extra: extra(),
@@ -294,6 +298,22 @@ mod tests {
                 session_id: None,
             }
         ));
+    }
+
+    #[test]
+    fn deserialize_session_end_maps_to_session_stop() {
+        // Claude Code emits `SessionEnd` at genuine session termination; it must
+        // route to the same variant as `SessionStop` so per-session Signal
+        // teardown runs. Without this alias the payload parses to `Unknown` and
+        // the detached subscriber is never torn down (orphaned-process bug).
+        for name in ["SessionEnd", "sessionEnd", "session_end"] {
+            let json = format!(r#"{{"hook_event_name": "{name}", "session_id": "s1"}}"#);
+            let input: HookInput = serde_json::from_str(&json).unwrap();
+            assert!(
+                matches!(&input, HookInput::SessionStop { session_id: Some(id), .. } if id == "s1"),
+                "event name {name} must map to SessionStop, got {input:?}"
+            );
+        }
     }
 
     #[test]
