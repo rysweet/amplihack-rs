@@ -44,6 +44,11 @@ running session — injected **as if typed at the CLI input box**.
 - [Troubleshooting](#troubleshooting)
 - [FAQ](#faq)
 
+> **External-service integration.** For the injectable seams, `amplihack-remote`
+> public re-exports, resumable fleet-distribute state, and how the external
+> boundaries (`signal-cli`, `azlin`/`az`, device linking) are tested, see
+> [Signal External-Service Integration](signal-external-integration.md).
+
 ---
 
 ## How it works

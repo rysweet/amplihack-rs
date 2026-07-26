@@ -70,6 +70,35 @@ steps:
       Factor this into your evaluation — if the task ran via adaptive strategy
       due to a routing failure, note this in your assessment.
 
+      ## Deliverable PR early-exit (issue #1025)
+
+      Before choosing a GOAL_STATUS, determine whether this workstream has
+      already produced its deliverable pull request. If a PR exists for the
+      branch/changes created during the execution rounds, check PR state/draft
+      status separately from required checks:
+
+          gh pr view --json state,isDraft
+          gh pr checks --required
+          # or, for a specific branch: gh pr checks --required <branch>
+
+      Apply this rule UNLESS the environment variable
+      AMPLIHACK_DISABLE_PR_GREEN_SHORTCIRCUIT is set to a truthy value
+      (`1`/`true`), in which case skip this rule entirely and evaluate normally:
+      - If the PR is definitively OPEN (not draft, not closed/merged), the
+        repository reports a concrete required-check set, and EVERY required
+        check has COMPLETED SUCCESSFULLY (green), the deliverable is met: end
+        with `GOAL_STATUS: ACHIEVED` and STOP. Do NOT request another round or
+        any further heavy re-validation (e.g. local full-reactor builds) — CI on
+        the clean checkout is authoritative, and a local-only failure (such as a
+        test scanning sibling `./worktrees/` copies) must not override a green
+        PR.
+      - NEVER short-circuit to ACHIEVED on any other state. If checks are
+        pending/queued/in-progress, any required check is failing, the PR is
+        closed/merged/draft, no PR exists yet, the required-check set is empty,
+        or the status is unknown or ambiguous, IGNORE this rule and evaluate
+        normally (prefer continuing the loop). Fail toward continuing, never
+        toward a premature ACHIEVED.
+
       End with EXACTLY one of:
       - `GOAL_STATUS: ACHIEVED` -- all criteria met with verifiable evidence
       - `GOAL_STATUS: PARTIAL -- [what's missing]` -- needs another round
@@ -105,6 +134,19 @@ steps:
       **Goal**: {{decomposition_json}}
       **Round 1**: {{round_1_result}}
       **Round 2**: {{round_2_result}}
+
+      ## Deliverable PR early-exit (issue #1025)
+
+      If a deliverable pull request now exists for this workstream, check its
+      CI status (`gh pr view --json state,isDraft` plus
+      `gh pr checks --required`, or `gh pr checks --required <branch>`). Unless
+      AMPLIHACK_DISABLE_PR_GREEN_SHORTCIRCUIT is truthy: when the PR is
+      definitively OPEN (not draft), the required-check set is concrete/nonempty,
+      and ALL required checks are green, end with `GOAL_STATUS: ACHIEVED` and
+      STOP — do not trigger another round or heavy re-validation; CI on the
+      clean checkout is authoritative. NEVER short-circuit on
+      pending/failing/closed/draft/no-PR/empty-required-check-set or unknown
+      states — in those cases evaluate normally and prefer continuing.
 
       End with:
       - `GOAL_STATUS: ACHIEVED`
@@ -144,6 +186,19 @@ steps:
       - Round 3 (if any): {{round_3_result}}
 
       Note: empty strings above mean that round was not needed.
+
+      ## Deliverable PR early-exit (issue #1025)
+
+      If a deliverable pull request exists for this workstream, check its CI
+      status (`gh pr view --json state,isDraft` plus `gh pr checks --required`,
+      or `gh pr checks --required <branch>`). Unless
+      AMPLIHACK_DISABLE_PR_GREEN_SHORTCIRCUIT is truthy: when the PR is
+      definitively OPEN (not draft), the required-check set is concrete/nonempty,
+      and ALL required checks are green, conclude `GOAL_STATUS: ACHIEVED` — CI
+      on the clean checkout is authoritative and a local-only failure must not
+      override it. NEVER conclude ACHIEVED via this rule on
+      pending/failing/closed/draft/no-PR/empty-required-check-set or unknown
+      states; evaluate normally in those cases.
 
       Was the overall goal achieved? Summarize what was done.
       End with `GOAL_STATUS: ACHIEVED`, `GOAL_STATUS: PARTIAL -- [gaps]`,

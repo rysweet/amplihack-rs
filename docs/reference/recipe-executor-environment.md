@@ -8,6 +8,7 @@ Complete reference for the environment variables, prerequisite checks, and conte
 - [Recipe context environment export](#recipe-context-environment-export)
 - [Shell step environment injection](#shell-step-environment-injection)
 - [Agent step context augmentation](#agent-step-context-augmentation)
+- [Reviewer reflection early-exit (issue #1025)](#reviewer-reflection-early-exit-issue-1025)
 - [Prerequisite validation](#prerequisite-validation)
 - [Interaction with AMPLIHACK_NONINTERACTIVE](#interaction-with-amplihack_noninteractive)
 
@@ -129,6 +130,36 @@ Every agent step receives an augmented context map before the agent backend is i
 - The `working_directory` value tells the agent where to locate and write files. Without it, agents may operate in an unexpected directory.
 
 **Source:** `crates/amplihack-recipe/src/executor.rs`, `execute_agent_step()`.
+
+---
+
+## Reviewer reflection early-exit (issue #1025)
+
+The goal-seeking reflection loop in `smart-reflect-loop.yaml` instructs the
+reviewer agent (`amplihack:core:reviewer`) to conclude `GOAL_STATUS: ACHIEVED`
+and stop once the workstream's deliverable pull request is definitively **open
+(not draft) and all required checks are green** (verified with `gh pr view` /
+`gh pr checks --required`). The reviewer checks PR state/draft status separately
+from required-check status and must not infer success from broad optional
+rollups or an empty required-check set. This prevents the loop from running
+further heavy re-validation rounds after CI on the clean checkout has already
+proven the deliverable — a local-only failure (for example a test scanning
+sibling `./worktrees/` copies) must not override a green PR. The reviewer
+**never** short-circuits on pending/failing/closed/draft/no-PR/empty-required-
+check-set or unknown states; it fails toward continuing the loop.
+
+| Variable | Default | Behavior |
+|----------|---------|----------|
+| `AMPLIHACK_DISABLE_PR_GREEN_SHORTCIRCUIT` | *(unset)* | When set to a truthy value (`1`/`true`), the reviewer skips the PR-green early-exit rule entirely and evaluates goal status normally. |
+
+**Scope / nature:** This is a **recipe-prompt-level, reviewer-honored** control,
+not an executor-enforced variable — the reviewer agent runs inside the recipe
+subprocess (where the flag is visible) and applies the rule. A **deterministic,
+engine-enforced** bound (and graceful cancellation) is tracked separately in the
+recipe engine repository: `rysweet/amplihack-recipe-runner#132`.
+
+**Source:** `amplifier-bundle/recipes/smart-reflect-loop.yaml`, reviewer steps
+`reflect-round-1`, `reflect-round-2`, `reflect-final`.
 
 ---
 
