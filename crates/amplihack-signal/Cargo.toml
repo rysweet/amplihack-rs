@@ -11,7 +11,7 @@ repository.workspace = true
 # lib, pulls in no tokio-net stack, and costs nothing at runtime.
 default = []
 # Enables the whole channel (pure core + gated tokio TCP transport).
-signal = ["dep:tokio", "dep:tokio-stream"]
+signal = ["dep:tokio", "dep:tokio-stream", "dep:regex"]
 
 [dependencies]
 serde = { workspace = true }
@@ -19,6 +19,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 toml = "0.8"
+regex = { version = "1", optional = true }
 amplihack-state = { workspace = true }
 amplihack-types = { workspace = true }
 tokio = { workspace = true, optional = true, features = [
@@ -28,6 +29,7 @@ tokio = { workspace = true, optional = true, features = [
     "macros",
     "time",
     "sync",
+    "process",
 ] }
 tokio-stream = { version = "0.1", optional = true }
 
@@ -40,6 +42,7 @@ tokio = { version = "1", features = [
     "io-util",
     "time",
     "sync",
+    "process",
 ] }
 
 # Fixture-driven envelope tests (pure wire parsing, no I/O).
@@ -51,3 +54,8 @@ path = "tests/envelope_fixtures.rs"
 [[test]]
 name = "session_channel_it"
 path = "tests/session_channel_it.rs"
+
+# Phase A `/signal` topic bridge contract tests (feature-gated).
+[[test]]
+name = "bridge_it"
+path = "tests/bridge_it.rs"

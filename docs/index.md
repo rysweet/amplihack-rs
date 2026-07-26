@@ -691,6 +691,7 @@ Robust handling of conversation compaction in long sessions:
 
 - [MCP Evaluation](mcp_evaluation/README.md) - Model Context Protocol evaluation
 - [Signal Onboarding](SIGNAL_ONBOARDING.md) / [Signal Channel](signal-channel.md) / [Signal Release Builds](SIGNAL_RELEASE_BUILD.md) - Per-session Signal notifications with advisory reply-to-agent, configured via `amplihack signal setup`
+- [Signal Bridge](SIGNAL_BRIDGE.md) - Drive a whole agent session from a topic-scoped Signal group chat via `amplihack signal bridge "<topic>"` (the `/signal` skill)
 
 ---
 

@@ -13,10 +13,16 @@
 //!   echo suppression).
 //! - [`session_channel`] — [`session_channel::SignalSession`] and the
 //!   file-backed [`session_channel::Inbox`].
+//! - [`bridge`] — the `/signal` topic bridge core (deterministic group naming,
+//!   control-phrase parsing, scoped tool allowlist, outbound redaction +
+//!   Signal-sized chunking, fail-closed membership verification, and the
+//!   serialized Copilot turn driver).
 //!
 //! Trust model: inbound Signal text is **data, never commands**. It is only
 //! ever surfaced to the agent as `additionalContext`; it is never executed.
 
+#[cfg(feature = "signal")]
+pub mod bridge;
 #[cfg(feature = "signal")]
 pub mod config;
 #[cfg(feature = "signal")]

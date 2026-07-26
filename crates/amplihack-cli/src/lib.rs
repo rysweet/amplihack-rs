@@ -88,7 +88,8 @@ pub use cli_subcommands::{
     BuilderCommands, HygieneArtifactGuardArgs, HygieneCleanupArgs, HygieneCommands,
     MIN_CLEANUP_APPLY_OLDER_THAN_HOURS, MIN_CLEANUP_APPLY_OLDER_THAN_SECS, MemoryCommands,
     ModeCommands, MultitaskCommands, PluginCommands, QueryCodeCommands, RecipeCommands,
-    ReflectCommands, RemoteCommands, SignalCommands, SignalDistributeArgs, SignalSetupArgs,
+    ReflectCommands, RemoteCommands, SignalBridgeArgs, SignalCommands, SignalDistributeArgs,
+    SignalSetupArgs,
 };
 
 fn graph_db_backend_value_parser() -> PossibleValuesParser {

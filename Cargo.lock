@@ -450,6 +450,7 @@ version = "0.11.1"
 dependencies = [
  "amplihack-state",
  "amplihack-types",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",

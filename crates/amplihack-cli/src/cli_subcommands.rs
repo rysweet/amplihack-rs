@@ -612,6 +612,12 @@ pub enum SignalCommands {
     /// with its OWN local signal-cli daemon + config. Resumable and per-VM
     /// isolated (one VM failing never aborts the rest).
     Distribute(SignalDistributeArgs),
+    /// Drive an agent session from a fresh, operator-only Signal group for a
+    /// topic. All agent output is posted to the group; every operator message
+    /// becomes the next `copilot --session-id` turn with full session context.
+    /// Least-privilege by default (read-only tools), fail-closed membership
+    /// verification, loopback-only daemon.
+    Bridge(SignalBridgeArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -676,4 +682,51 @@ pub struct SignalDistributeArgs {
     /// Retry VMs already recorded as terminal-success (otherwise skipped).
     #[arg(long)]
     pub force: bool,
+}
+
+/// `amplihack signal bridge <topic>` — drive an agent session from a Signal
+/// group. See `docs/SIGNAL_BRIDGE.md` for the full security and failure
+/// contract. Least-privilege by default: with no `--allow-tool` the driven
+/// agent gets only read-only investigation tools.
+#[derive(Args, Debug, Clone)]
+pub struct SignalBridgeArgs {
+    /// Free-text topic for the session. Used as the first turn's prompt and to
+    /// derive the group name `amplihack-<host>[-<tmux>]-<slug(topic)>`.
+    pub topic: String,
+
+    /// Add one tool to the scoped Copilot allowlist. Repeatable, order-preserving
+    /// (maps to `copilot --allow-tool <TOOL>`). With none given the agent gets
+    /// the read-only default (`view`/`grep`/`glob`).
+    #[arg(long = "allow-tool")]
+    pub allow_tool: Vec<String>,
+
+    /// Explicit opt-in to grant **all** Copilot tools (`--allow-all-tools`, not
+    /// the wider `--allow-all`). Overrides `--allow-tool`. Dangerous: an accepted
+    /// group message can then invoke any tool.
+    #[arg(long = "dangerous-all-tools")]
+    pub dangerous_all_tools: bool,
+
+    /// Override the generated group name entirely.
+    #[arg(long = "group-name")]
+    pub group_name: Option<String>,
+
+    /// Override the `<host>` token used in the generated group name (default:
+    /// system hostname).
+    #[arg(long)]
+    pub host: Option<String>,
+
+    /// Max reconnect attempts (bounded exponential backoff) before a clean
+    /// shutdown when the daemon is down. Defaults to 10.
+    #[arg(long = "retry-budget")]
+    pub retry_budget: Option<u32>,
+
+    /// Bounded turn-queue capacity (also settable via
+    /// `AMPLIHACK_SIGNAL_INBOX_CAPACITY`). Defaults to 32.
+    #[arg(long = "inbox-capacity")]
+    pub inbox_capacity: Option<usize>,
+
+    /// Explicit, documented opt-in to allow a **non-loopback** signal-cli daemon
+    /// endpoint. Without it, a non-`127.0.0.1` endpoint fails closed (exit 2).
+    #[arg(long = "unsafe-remote-endpoint")]
+    pub unsafe_remote_endpoint: bool,
 }

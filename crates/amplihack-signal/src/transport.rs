@@ -69,6 +69,10 @@ pub enum WireError {
     /// The input line was not valid JSON.
     #[error("invalid JSON frame: {0}")]
     Json(String),
+    /// Group membership could not be positively determined from a JSON-RPC
+    /// result (fail-closed: absent / empty / wrong-group / malformed).
+    #[error("group membership unavailable: {0}")]
+    Membership(String),
 }
 
 /// Build a JSON-RPC 2.0 `send` request frame for an outbound group message.
@@ -152,10 +156,50 @@ pub fn parse_incoming(line: &str) -> Result<Envelope, WireError> {
     })
 }
 
+/// Extract the E.164 member numbers of `group_id` from a signal-cli
+/// `listGroups` result, **failing closed**.
+///
+/// The result is expected to be an array of group objects, each with an `id`
+/// and a `members` array of `{ "number": "+E164" }` entries. This returns
+/// [`WireError::Membership`] — never `Ok` of an empty set — whenever membership
+/// cannot be positively determined: a non-array/malformed value, the target
+/// group not being present, an absent `members` field, or an empty member set.
+/// Fail-closed is essential: the caller uses the returned set to decide whether
+/// it is safe to relay agent output to the group.
+pub fn parse_group_members(value: &Value, group_id: &str) -> Result<Vec<String>, WireError> {
+    let groups = value
+        .as_array()
+        .ok_or_else(|| WireError::Membership("listGroups result is not an array".to_string()))?;
+    let group = groups
+        .iter()
+        .find(|g| g.get("id").and_then(Value::as_str) == Some(group_id))
+        .ok_or_else(|| WireError::Membership(format!("group {group_id} not present in result")))?;
+    let members = group
+        .get("members")
+        .and_then(Value::as_array)
+        .ok_or_else(|| WireError::Membership("group has no members field".to_string()))?;
+    if members.is_empty() {
+        return Err(WireError::Membership(
+            "group member set is empty".to_string(),
+        ));
+    }
+    let numbers: Vec<String> = members
+        .iter()
+        .filter_map(|m| m.get("number").and_then(Value::as_str).map(str::to_string))
+        .collect();
+    if numbers.is_empty() {
+        return Err(WireError::Membership(
+            "group members carry no E.164 numbers".to_string(),
+        ));
+    }
+    Ok(numbers)
+}
+
 /// Newline-delimited JSON-RPC 2.0 client over a `tokio` TCP connection.
 ///
 /// Owns the socket; all methods perform network I/O. The pure helpers above
 /// are used internally and are what the unit tests exercise.
+#[derive(Debug)]
 pub struct SignalTransport {
     reader: tokio::io::BufReader<tokio::net::tcp::OwnedReadHalf>,
     writer: tokio::net::tcp::OwnedWriteHalf,
@@ -398,6 +442,16 @@ impl SignalTransport {
         )
         .await
         .map(|_| ())
+    }
+
+    /// Query the current E.164 member set of `group_id` (wraps `listGroups`).
+    ///
+    /// Fails closed via [`parse_group_members`]: any ambiguity (missing group,
+    /// absent/empty members, malformed result) is an error, never an empty set.
+    pub async fn group_members(&mut self, group_id: &GroupId) -> std::io::Result<Vec<String>> {
+        let result = self.request("listGroups", serde_json::json!({})).await?;
+        parse_group_members(&result, group_id.as_str())
+            .map_err(|e| std::io::Error::other(e.to_string()))
     }
 
     /// Read and parse the next inbound envelope from the receive stream.
