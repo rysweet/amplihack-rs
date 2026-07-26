@@ -27,6 +27,15 @@ jobs:
     name: Lint & Format
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      # SPIKE (#1052 follow-up): compiled-artifact caching via sccache with the
+      # GitHub Actions cache backend. Unlike restoring the whole target/ dir
+      # (which exhausted runner disk, hence cache-targets: false), sccache stores
+      # compact per-compilation-unit outputs and fetches on demand, keeping peak
+      # disk low. Goal: cut the ~16 min from-scratch clippy compile on warm runs.
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
+      SCCACHE_CACHE_SIZE: "2G"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Verify cxx-build pin
@@ -96,16 +105,23 @@ jobs:
       - uses: dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83 # 1.97.0
         with:
           components: clippy, rustfmt
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           cache-targets: false
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --check
+      - name: Disk + sccache stats (before)
+        run: df -h / && sccache --show-stats
       # --locked: fail fast on Cargo.lock drift here in the first job (rather than
       # only downstream in test/build), closing a dependency-substitution gap so
       # clippy can never silently resolve unpinned deps (#744 supply-chain).
       - run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Disk + sccache stats (after)
+        if: always()
+        run: df -h / && sccache --show-stats
 
   test:
     name: Test
@@ -124,6 +140,10 @@ jobs:
       # integration [[test]] targets plus per-crate unit tests): smaller links
       # and lower peak disk. The suite asserts behavior, not backtraces (#744).
       CARGO_PROFILE_TEST_DEBUG: "0"
+      # SPIKE: sccache compiled-artifact caching (GHA backend). See check job.
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
+      SCCACHE_CACHE_SIZE: "2G"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Free disk space
@@ -144,6 +164,8 @@ jobs:
         uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145 # v2.83.1
         with:
           tool: nextest
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           # The full workspace test profile links large native artifacts. Restoring
@@ -151,10 +173,15 @@ jobs:
           cache-targets: false
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Disk + sccache stats (before)
+        run: df -h / && sccache --show-stats
       # nextest: better parallelism and lower peak disk than `cargo test`.
       - run: cargo nextest run --workspace --locked
       # nextest does not execute doctests; keep them so coverage is not lost.
       - run: cargo test --workspace --doc --locked
+      - name: Disk + sccache stats (after)
+        if: always()
+        run: df -h / && sccache --show-stats
 
   install-smoke:
     name: Install Smoke Test
