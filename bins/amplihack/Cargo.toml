@@ -40,6 +40,11 @@ libc = { workspace = true }
 regex = { workspace = true }
 shell-words = { workspace = true }
 base64 = "0.22"
+# Integration test tests/integration/lbug_ffi_test.rs reaches into
+# `amplihack_cli::memory::ffi_test_support`, which is gated behind the
+# `test-support` feature. Enable it for tests only (resolver 2 keeps it out of
+# the release binary above).
+amplihack-cli = { workspace = true, features = ["test-support"] }
 
 [[test]]
 name = "investigation_workflow_decomposition"

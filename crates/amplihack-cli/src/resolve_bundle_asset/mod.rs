@@ -1,8 +1,10 @@
 pub use amplihack_utils::resolve_bundle_asset::*;
 
 // Compatibility note for source-drift tests: the canonical NAMED_ASSETS table
-// now lives in amplihack-utils, where helper-path resolves to
-// amplifier-bundle/bin/multitask-orchestrator.sh.
+// now lives in amplihack-utils, where "helper-path" and
+// "multitask-orchestrator" resolve to
+// amplifier-bundle/bin/multitask-orchestrator.sh, and "hooks-dir" resolves to
+// amplifier-bundle/tools/amplihack/hooks.
 
 #[cfg(test)]
 mod cli_dispatch_tests {

@@ -9,6 +9,9 @@ mod prompt_input;
 #[cfg(test)]
 pub(crate) mod test_support;
 
+#[cfg(test)]
+mod layering_guard;
+
 /// Post-tool-use hook: observes tool results for metrics and validation.
 pub mod post_tool_use;
 /// Pre-compact hook: exports conversation transcript before context compaction.

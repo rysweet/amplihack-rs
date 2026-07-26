@@ -197,10 +197,38 @@ fn detect_version(path: &Path) -> Option<String> {
 const CHILD_WAIT_INITIAL_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const CHILD_WAIT_MAX_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
+/// How long to keep retrying a spawn that fails with `ExecutableFileBusy`
+/// (ETXTBSY). This races the window right after a binary is written/installed
+/// while its inode is still being closed by the writer.
+const SUBPROCESS_SPAWN_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
+/// Delay between `ExecutableFileBusy` spawn retries.
+const SUBPROCESS_SPAWN_RETRY_INTERVAL: Duration = Duration::from_millis(20);
+
+/// Spawn a command, retrying briefly on `ExecutableFileBusy` (ETXTBSY).
+///
+/// A freshly written executable can still be held open for writing, so the
+/// first `spawn` may fail with ETXTBSY; retry within a bounded window instead
+/// of surfacing a spurious failure.
+fn spawn_subprocess(cmd: &mut Command) -> std::io::Result<std::process::Child> {
+    let started = Instant::now();
+    loop {
+        match cmd.spawn() {
+            Ok(child) => return Ok(child),
+            Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                if started.elapsed() >= SUBPROCESS_SPAWN_RETRY_TIMEOUT {
+                    return Err(error);
+                }
+                thread::sleep(SUBPROCESS_SPAWN_RETRY_INTERVAL);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 fn run_output_with_timeout(mut cmd: Command, timeout: Duration) -> anyhow::Result<Output> {
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
-    let mut child = cmd.spawn()?;
+    let mut child = spawn_subprocess(&mut cmd)?;
     let pid = child.id();
     let stdout = child
         .stdout

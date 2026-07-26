@@ -27,6 +27,7 @@ pub(super) fn open_graph_db_code_graph_db(path_override: Option<&Path>) -> Resul
     Ok(db)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn with_test_code_graph_conn<T>(
     path_override: Option<&Path>,
     f: impl FnOnce(&GraphDbConnection<'_>) -> Result<T>,
