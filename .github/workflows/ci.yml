@@ -105,7 +105,19 @@ jobs:
       # --locked: fail fast on Cargo.lock drift here in the first job (rather than
       # only downstream in test/build), closing a dependency-substitution gap so
       # clippy can never silently resolve unpinned deps (#744 supply-chain).
-      - run: cargo clippy --locked --all-targets -- -D warnings
+      #
+      # Scope is conditional to keep PR feedback fast without losing coverage:
+      #   - PRs: lint lib+bins only (no --all-targets). This skips compiling the
+      #     60+ integration test binaries, the dominant cost of the ~16 min step.
+      #     Test-code *compile* breakage is still caught on PRs by the Test job.
+      #   - push to main + merge_group: full --all-targets so clippy lints test
+      #     code too before anything actually lands.
+      - name: Clippy (PR — lib/bins only, fast)
+        if: github.event_name == 'pull_request'
+        run: cargo clippy --locked --workspace -- -D warnings
+      - name: Clippy (main/merge_group — all targets, full)
+        if: github.event_name != 'pull_request'
+        run: cargo clippy --locked --all-targets -- -D warnings
 
   test:
     name: Test
