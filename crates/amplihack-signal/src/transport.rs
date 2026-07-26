@@ -163,8 +163,9 @@ pub fn parse_incoming(line: &str) -> Result<Envelope, WireError> {
 /// and a `members` array of `{ "number": "+E164" }` entries. This returns
 /// [`WireError::Membership`] — never `Ok` of an empty set — whenever membership
 /// cannot be positively determined: a non-array/malformed value, the target
-/// group not being present, an absent `members` field, or an empty member set.
-/// Fail-closed is essential: the caller uses the returned set to decide whether
+/// group not being present, an absent `members` field, an empty member set, or
+/// **any member lacking a string E.164 `number`** (such a member is
+/// unaccountable and must never be silently dropped). Fail-closed is essential: the caller uses the returned set to decide whether
 /// it is safe to relay agent output to the group.
 pub fn parse_group_members(value: &Value, group_id: &str) -> Result<Vec<String>, WireError> {
     let groups = value
@@ -183,14 +184,20 @@ pub fn parse_group_members(value: &Value, group_id: &str) -> Result<Vec<String>,
             "group member set is empty".to_string(),
         ));
     }
-    let numbers: Vec<String> = members
-        .iter()
-        .filter_map(|m| m.get("number").and_then(Value::as_str).map(str::to_string))
-        .collect();
-    if numbers.is_empty() {
-        return Err(WireError::Membership(
-            "group members carry no E.164 numbers".to_string(),
-        ));
+    // Fail-closed: every member must carry a string E.164 `number`. A member
+    // whose `number` is absent or non-string is *unaccountable*, so we refuse
+    // the whole parse rather than silently dropping it (dropping would let the
+    // mismatch check spuriously pass and leak agent output to that member). The
+    // error deliberately names the defect only — it never embeds a member
+    // number, to keep PII out of logs/audit.
+    let mut numbers = Vec::with_capacity(members.len());
+    for member in members {
+        let Some(number) = member.get("number").and_then(Value::as_str) else {
+            return Err(WireError::Membership(
+                "group member is missing a string E.164 `number` field".to_string(),
+            ));
+        };
+        numbers.push(number.to_string());
     }
     Ok(numbers)
 }

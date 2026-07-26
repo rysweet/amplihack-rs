@@ -348,6 +348,30 @@ fn spawn_turn(
 
 /// Terminate the currently-tracked child `copilot` PID, if any, pre-empting an
 /// in-flight turn. Best-effort; uses `SIGKILL` via the `kill` syscall.
+///
+/// # PID-reuse (TOCTOU) window and its mitigation
+///
+/// This reads a raw PID from a shared `Arc<Mutex<Option<u32>>>` slot and passes
+/// it to `libc::kill`, so there is an unavoidable time-of-check/time-of-use gap:
+/// between the moment the turn task reaps the child (`wait_with_output` in
+/// `CopilotTurnRunner::run_argv`, which lets the OS free the PID) and the moment
+/// that same task clears the slot back to `None`, the OS could recycle the PID
+/// for an unrelated process. A `preempt_child` firing inside that narrow window
+/// would `SIGKILL` the wrong process.
+///
+/// The window is bounded and best-effort by design:
+///   * the runner clears the slot to `None` immediately after the child is
+///     reaped (`turn.rs`), keeping the window to a few instructions rather than
+///     the lifetime of a turn;
+///   * both the publisher (runner) and this consumer take the same mutex, so a
+///     read here never observes a torn/partial PID.
+///
+/// A fully race-free fix would store the owned `tokio::process::Child` handle
+/// and call `Child::kill()` (which the runtime binds to the specific child,
+/// immune to PID reuse), but that requires restructuring turn ownership so the
+/// spawning task and the pre-empting task can share the `Child`. That is out of
+/// scope for this hardening pass; the slot-clear-to-`None`-on-exit mitigation
+/// above is retained instead.
 fn preempt_child(current_pid: &Arc<Mutex<Option<u32>>>) {
     let pid = *current_pid.lock().expect("pid mutex not poisoned");
     if let Some(pid) = pid {

@@ -64,42 +64,73 @@ impl BridgeError {
     }
 }
 
-/// Whether `host` is a loopback address (or `localhost`).
-fn is_loopback_host(host: &str) -> bool {
-    let host = host.trim();
-    // Strip IPv6 brackets, e.g. `[::1]`.
-    let host = host.strip_prefix('[').unwrap_or(host);
-    let host = host.strip_suffix(']').unwrap_or(host);
+/// Split a `host:port` (supporting bracketed IPv6 `[::1]:7583`) into borrowed
+/// `(host, port)`. Returns `None` on a missing port or empty host/port.
+///
+/// This is the single canonical splitter shared by the runtime and CLI
+/// validators (the CLI's `validate_loopback_endpoint` delegates here), so the
+/// two entry points can never drift on how a `host:port` is parsed.
+fn split_host_port(endpoint: &str) -> Option<(&str, &str)> {
+    if endpoint.is_empty() {
+        return None;
+    }
+    if let Some(rest) = endpoint.strip_prefix('[') {
+        // Bracketed IPv6: `[host]:port`.
+        let (host, port) = rest.split_once("]:")?;
+        if host.is_empty() || port.is_empty() {
+            return None;
+        }
+        return Some((host, port));
+    }
+    // Bare host: split off the port from the right so bracket-less IPv6 hosts
+    // (which themselves contain colons, e.g. `::1`) keep their colons.
+    let (host, port) = endpoint.rsplit_once(':')?;
+    if host.is_empty() || port.is_empty() {
+        return None;
+    }
+    Some((host, port))
+}
+
+/// Validate a signal-cli daemon `endpoint` (`host:port`) is **loopback-only**
+/// and well-formed. Fails closed with [`BridgeError::RemoteEndpointRejected`].
+///
+/// Accepts `127.0.0.0/8`, IPv6 loopback `::1` (both bracketed `[::1]:port` and
+/// bracket-less `::1:port`), and the literal `localhost`, each with a port in
+/// `1..=65535`. Rejects wildcard binds (`0.0.0.0`, `::`), routable addresses,
+/// DNS names, and any malformed / zero / out-of-range port.
+///
+/// This is the crate's single canonical loopback validator; both the runtime
+/// [`validate_endpoint`] and the CLI's `validate_loopback_endpoint` delegate to
+/// it so the two paths cannot diverge.
+pub fn validate_loopback_endpoint(endpoint: &str) -> Result<(), BridgeError> {
+    let Some((host, port)) = split_host_port(endpoint) else {
+        return Err(BridgeError::RemoteEndpointRejected);
+    };
+    // Port must be a non-zero u16.
+    match port.parse::<u32>() {
+        Ok(p) if (1..=u32::from(u16::MAX)).contains(&p) => {}
+        _ => return Err(BridgeError::RemoteEndpointRejected),
+    }
     if host.eq_ignore_ascii_case("localhost") {
-        return true;
+        return Ok(());
     }
     match host.parse::<std::net::IpAddr>() {
-        Ok(ip) => ip.is_loopback(),
-        Err(_) => false,
+        Ok(ip) if ip.is_loopback() => Ok(()),
+        _ => Err(BridgeError::RemoteEndpointRejected),
     }
 }
 
 /// Validate a signal-cli daemon `endpoint` (`host:port`) for loopback safety.
 ///
-/// A loopback endpoint is always accepted. A non-loopback endpoint is accepted
-/// **only** when `unsafe_remote` is `true` (the explicit, documented
-/// opt-in); otherwise it **fails closed** with
+/// A loopback endpoint (see [`validate_loopback_endpoint`]) is always accepted.
+/// A non-loopback endpoint is accepted **only** when `unsafe_remote` is `true`
+/// (the explicit, documented opt-in); otherwise it **fails closed** with
 /// [`BridgeError::RemoteEndpointRejected`].
 pub fn validate_endpoint(endpoint: &str, unsafe_remote: bool) -> Result<(), BridgeError> {
     if unsafe_remote {
         return Ok(());
     }
-    // Split off the port from the right so IPv6 hosts (which contain colons)
-    // are handled: `[::1]:7583` → host `[::1]`.
-    let host = match endpoint.rsplit_once(':') {
-        Some((host, _port)) => host,
-        None => endpoint,
-    };
-    if is_loopback_host(host) {
-        Ok(())
-    } else {
-        Err(BridgeError::RemoteEndpointRejected)
-    }
+    validate_loopback_endpoint(endpoint)
 }
 
 /// Connect to the signal-cli JSON-RPC daemon with a bounded retry budget.

@@ -10,8 +10,6 @@
 //! `127.0.0.0/8` / `::1` / `localhost`; a wildcard or routable bind is refused
 //! so the daemon port is never exposed off-host.
 
-use std::net::IpAddr;
-
 use anyhow::{Result, bail};
 
 /// Validate a VM name: first char ASCII-alphanumeric, remaining chars
@@ -83,51 +81,18 @@ pub fn validate_device_name(name: &str) -> Result<()> {
 
 /// Validate a `host:port` endpoint is **loopback-only** and well-formed.
 ///
-/// Accepts `127.0.0.0/8`, `::1`, and the literal `localhost`, with a port in
-/// `1..=65535`. Rejects wildcard (`0.0.0.0`, `::`), routable addresses, DNS
-/// names, and any malformed form (missing/zero/out-of-range port).
+/// Accepts `127.0.0.0/8`, `::1` (bracketed `[::1]:port` or bracket-less
+/// `::1:port`), and the literal `localhost`, with a port in `1..=65535`.
+/// Rejects wildcard (`0.0.0.0`, `::`), routable addresses, DNS names, and any
+/// malformed form (missing/zero/out-of-range port).
+///
+/// This delegates to the single canonical validator in `amplihack-signal`
+/// ([`amplihack_signal::bridge::validate_loopback_endpoint`]) so the CLI and
+/// runtime loopback checks can never drift.
 pub fn validate_loopback_endpoint(endpoint: &str) -> Result<()> {
-    let (host, port) = split_host_port(endpoint)?;
-
-    // Port must be a non-zero u16.
-    let port: u32 = port
-        .parse()
-        .map_err(|_| anyhow::anyhow!("invalid endpoint port: {port:?}"))?;
-    if port == 0 || port > u16::MAX as u32 {
-        bail!("invalid endpoint port (want 1..=65535): {port}");
-    }
-
-    if host == "localhost" {
-        return Ok(());
-    }
-    match host.parse::<IpAddr>() {
-        Ok(ip) if ip.is_loopback() => Ok(()),
-        Ok(_) => bail!("endpoint host must be loopback (127.0.0.0/8, ::1, localhost): {host:?}"),
-        Err(_) => bail!("endpoint host is not a loopback address or 'localhost': {host:?}"),
-    }
-}
-
-/// Split a `host:port` (supporting bracketed IPv6 `[::1]:7583`) into borrowed
-/// `(host, port)`. Errors on a missing port or empty host.
-fn split_host_port(endpoint: &str) -> Result<(&str, &str)> {
-    if endpoint.is_empty() {
-        bail!("empty endpoint");
-    }
-    if let Some(rest) = endpoint.strip_prefix('[') {
-        // Bracketed IPv6: [host]:port
-        let Some((host, port)) = rest.split_once("]:") else {
-            bail!("malformed IPv6 endpoint (want [host]:port): {endpoint:?}");
-        };
-        if host.is_empty() || port.is_empty() {
-            bail!("malformed IPv6 endpoint: {endpoint:?}");
-        }
-        return Ok((host, port));
-    }
-    let Some((host, port)) = endpoint.rsplit_once(':') else {
-        bail!("endpoint must be host:port: {endpoint:?}");
-    };
-    if host.is_empty() || port.is_empty() {
-        bail!("endpoint must have a non-empty host and port: {endpoint:?}");
-    }
-    Ok((host, port))
+    amplihack_signal::bridge::validate_loopback_endpoint(endpoint).map_err(|_| {
+        anyhow::anyhow!(
+            "endpoint must be loopback host:port (127.0.0.0/8, ::1, localhost) with port 1..=65535: {endpoint:?}"
+        )
+    })
 }
