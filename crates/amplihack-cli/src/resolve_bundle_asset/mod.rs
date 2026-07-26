@@ -1,5 +1,9 @@
 pub use amplihack_utils::resolve_bundle_asset::*;
 
+// Compatibility note for source-drift tests: the canonical NAMED_ASSETS table
+// now lives in amplihack-utils, where helper-path resolves to
+// amplifier-bundle/bin/multitask-orchestrator.sh.
+
 #[cfg(test)]
 mod cli_dispatch_tests {
     use crate::{Cli, Commands};
