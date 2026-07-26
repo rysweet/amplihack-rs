@@ -25,7 +25,7 @@ pub fn chunk(body: &str) -> Vec<String> {
     if body.is_empty() {
         return Vec::new();
     }
-    let mut chunks = Vec::new();
+    let mut chunks = Vec::with_capacity(body.len().div_ceil(SIGNAL_MAX_BYTES));
     let mut start = 0;
     while start < body.len() {
         let mut end = (start + SIGNAL_MAX_BYTES).min(body.len());

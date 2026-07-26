@@ -29,9 +29,15 @@ pub enum Control {
 #[must_use]
 pub fn parse_control(body: &str) -> Control {
     let trimmed = body.trim();
-    match trimmed.to_ascii_lowercase().as_str() {
-        "status" => Control::Status,
-        "stop" | "kill" => Control::Stop,
-        _ => Control::Prompt(trimmed.to_string()),
+    // Compare ASCII-case-insensitively without lowercasing the whole body: the
+    // common `Prompt` case can be a multi-KB agent instruction, and
+    // `eq_ignore_ascii_case` short-circuits on length so it never scans past the
+    // few bytes of a reserved word.
+    if trimmed.eq_ignore_ascii_case("status") {
+        Control::Status
+    } else if trimmed.eq_ignore_ascii_case("stop") || trimmed.eq_ignore_ascii_case("kill") {
+        Control::Stop
+    } else {
+        Control::Prompt(trimmed.to_string())
     }
 }
