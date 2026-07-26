@@ -18,10 +18,10 @@ Built on existing bundle_generator infrastructure with 5 core components followi
 
 **Files Created:**
 
-- `src/amplihack/goal_agent_generator/models.py` - Data models
-- `src/amplihack/goal_agent_generator/prompt_analyzer.py` - Goal extraction
-- `src/amplihack/goal_agent_generator/tests/test_models.py` - Unit tests
-- `src/amplihack/goal_agent_generator/tests/test_prompt_analyzer.py` - Unit tests
+- `crates/amplihack-agent-generator/` - Data models
+- `crates/amplihack-agent-generator/` - Goal extraction
+- `crates/amplihack-agent-generator/` - Unit tests
+- `crates/amplihack-agent-generator/` - Unit tests
 
 **Models Implemented:**
 
@@ -45,10 +45,10 @@ Built on existing bundle_generator infrastructure with 5 core components followi
 
 **Files Created:**
 
-- `src/amplihack/goal_agent_generator/objective_planner.py` - Execution planning
-- `src/amplihack/goal_agent_generator/skill_synthesizer.py` - Skill matching
-- `src/amplihack/goal_agent_generator/tests/test_objective_planner.py` - Unit tests
-- `src/amplihack/goal_agent_generator/tests/test_skill_synthesizer.py` - Unit tests
+- `crates/amplihack-agent-generator/` - Execution planning
+- `crates/amplihack-agent-generator/` - Skill matching
+- `crates/amplihack-agent-generator/` - Unit tests
+- `crates/amplihack-agent-generator/` - Unit tests
 
 **Capabilities:**
 
@@ -68,9 +68,9 @@ Built on existing bundle_generator infrastructure with 5 core components followi
 
 **Files Created:**
 
-- `src/amplihack/goal_agent_generator/agent_assembler.py` - Component assembly
-- `src/amplihack/goal_agent_generator/packager.py` - Standalone packaging
-- `src/amplihack/goal_agent_generator/tests/test_integration.py` - Integration tests
+- `crates/amplihack-agent-generator/` - Component assembly
+- `crates/amplihack-agent-generator/` - Standalone packaging
+- `crates/amplihack-agent-generator/` - Integration tests
 
 **Capabilities:**
 
@@ -104,8 +104,8 @@ agent-name/
 
 **Files Created:**
 
-- `src/amplihack/goal_agent_generator/cli.py` - Click-based CLI
-- Integration with `src/amplihack/cli.py` main CLI
+- `crates/amplihack-agent-generator/` - Click-based CLI
+- Integration with `crates/amplihack-cli/` main CLI
 
 **Command:**
 
@@ -207,7 +207,7 @@ Created `example_goal_prompt.md` demonstrating:
 ## File Structure
 
 ```
-src/amplihack/goal_agent_generator/
+crates/amplihack-agent-generator/
 ├── __init__.py              # Public API
 ├── models.py                # Data models
 ├── prompt_analyzer.py       # Goal extraction
@@ -227,7 +227,7 @@ src/amplihack/goal_agent_generator/
 └── templates/               # (empty for Phase 1, packager generates inline)
 
 Integration:
-├── src/amplihack/cli.py    # Main CLI (added 'new' command)
+├── crates/amplihack-cli/    # Main CLI (added 'new' command)
 └── example_goal_prompt.md  # Example prompt file
 ```
 

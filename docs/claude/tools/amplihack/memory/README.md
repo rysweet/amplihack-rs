@@ -17,7 +17,7 @@ The Agent Memory System is now fully integrated into the Claude tools framework,
 
 ### ✅ Core Implementation Complete
 
-**Location**: `/src/amplihack/memory/`
+**Location**: `crates/amplihack-memory/`
 
 - `MemoryManager` - High-level interface for agent memory operations
 - `MemoryDatabase` - Thread-safe SQLite backend with secure permissions
@@ -224,7 +224,7 @@ if memory:
 ├── INTEGRATION_GUIDE.md    # Comprehensive guide
 └── README.md              # This overview
 
-src/amplihack/memory/
+crates/amplihack-memory/
 ├── __init__.py            # Public API
 ├── manager.py            # MemoryManager interface
 ├── database.py           # SQLite backend

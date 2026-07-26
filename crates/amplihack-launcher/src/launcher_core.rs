@@ -95,10 +95,6 @@ impl ClaudeLauncher {
         for arg in &self.config.claude_args {
             cmd.arg(arg);
         }
-        cmd.env("AMPLIHACK_MANAGED", "1");
-        if self.config.verbose {
-            cmd.env("AMPLIHACK_VERBOSE", "1");
-        }
         debug!(cli = %cli_path.display(), "Built Claude command");
         Ok(cmd)
     }

@@ -222,7 +222,7 @@ Proven methodologies for consistent, high-quality results.
 | "How does X work?" | Investigation | Deep exploration | 6 |
 | "Add feature X" | Development | Full workflow | 23 |
 
-**Implementation**: `src/amplihack/workflows/` - classifier, execution_tier_cascade, session_start modules
+**Implementation**: `crates/amplihack-workflows/` - classifier, execution_tier_cascade, session_start modules
 
 ### Core Workflows
 

@@ -131,7 +131,7 @@ Each level represents a specific cognitive capability:
 
 ### Level Data Structure
 
-Defined in `src/amplihack/eval/test_levels.py`:
+Defined in `crates/amplihack-agent-eval/`:
 
 ```rust
 @dataclass
@@ -375,7 +375,7 @@ report = harness.run()
 print(f"Overall: {report.overall_score:.0%}")
 ```
 
-**5 domain agents** (defined in `src/amplihack/agents/domain_agents/`):
+**5 domain agents** (defined in `crates/amplihack-domain-agents/`):
 
 | Agent                   | Domain                        | Tools                                                                       |
 | ----------------------- | ----------------------------- | --------------------------------------------------------------------------- |
@@ -620,7 +620,7 @@ amplihack eval progressive-test-suite \
 ### 1. Create the agent directory
 
 ```
-src/amplihack/agents/domain_agents/my_domain/
+crates/amplihack-domain-agents/
     __init__.py
     agent.py           # DomainAgent subclass
     tools.py           # Domain-specific tool functions
@@ -707,7 +707,7 @@ print(f"Overall: {report.overall_score:.0%}")
    seeds, enabling meaningful comparison across runs and SDK versions.
 
 9. **Per-SDK Prompt Tuning**: Each SDK has dedicated eval prompt templates
-   in `src/amplihack/agents/goal_seeking/prompts/sdk/`, allowing
+   in `crates/amplihack-agent-core/`, allowing
    SDK-specific instruction tuning without modifying shared agent code.
 
 ## Best Practices for Running Evals
@@ -751,7 +751,7 @@ pip install "amplihack-agent-eval @ git+https://github.com/rysweet/amplihack-rs-
 ```
 amplihack-agent-eval (standalone)     amplihack (this repo)
 ================================     ==========================
-amplihack_eval/                       src/amplihack/eval/
+amplihack_eval/                       crates/amplihack-agent-eval/
   adapters/base.py  <-- AgentAdapter    agent_adapter.py  (amplihack adapters)
   core/runner.py    <-- EvalRunner      compat.py         (re-exports)
   core/grader.py    <-- grade_answer    long_horizon_memory.py (uses package)
@@ -820,7 +820,7 @@ adapter.close()
 ## File Map
 
 ```
-src/amplihack/eval/
+crates/amplihack-agent-eval/
   __init__.py                    # Public API exports
   compat.py                      # Re-exports from amplihack-agent-eval package
   agent_adapter.py               # Amplihack-specific AgentAdapter implementations
@@ -852,7 +852,7 @@ src/amplihack/eval/
     patch_proposer.py            # LLM-generated code patches with hypotheses
     reviewer_voting.py           # 3-perspective review + majority voting
 
-src/amplihack/agents/goal_seeking/
+crates/amplihack-agent-core/
   prompts/sdk/                   # Per-SDK eval prompt templates
     copilot_eval.md
     claude_eval.md
@@ -862,7 +862,7 @@ src/amplihack/agents/goal_seeking/
     synthesis_template.md
     teaching_system.md
 
-src/amplihack/agents/domain_agents/
+crates/amplihack-domain-agents/
   base.py                        # DomainAgent ABC
   code_review/agent.py           # Code Review agent
   meeting_synthesizer/agent.py   # Meeting Synthesizer agent

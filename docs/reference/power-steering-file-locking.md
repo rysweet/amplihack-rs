@@ -1,5 +1,8 @@
 # Power Steering File Locking
 
+> ℹ️ **Historical / legacy document.** This page documents an implementation that lived in the removed Python `src/amplihack/` package (deleted in #637). Paths below reference that former tree and generally have **no direct Rust equivalent**; they are retained for historical context.
+<!-- legacy-src-amplihack-refs:#877 -->
+
 Technical reference for the file locking implementation that prevents race conditions in power-steering counter increments.
 
 ## Problem Solved

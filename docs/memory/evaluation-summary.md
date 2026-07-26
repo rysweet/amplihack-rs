@@ -8,30 +8,30 @@ different memory backends.
 ### Components Created
 
 1. **Quality Evaluator**
-   (`src/amplihack/memory/evaluation/quality_evaluator.py`)
+   (`crates/amplihack-memory/`)
    - Measures relevance, precision, recall, NDCG
    - Creates test sets with ground truth queries
    - Evaluates retrieval quality
 
 2. **Performance Evaluator**
-   (`src/amplihack/memory/evaluation/performance_evaluator.py`)
+   (`crates/amplihack-memory/`)
    - Measures storage/retrieval latency
    - Calculates throughput
    - Tests scalability at multiple scales
    - Checks performance contracts
 
 3. **Reliability Evaluator**
-   (`src/amplihack/memory/evaluation/reliability_evaluator.py`)
+   (`crates/amplihack-memory/`)
    - Tests data integrity
    - Tests concurrent safety
    - Tests error recovery
 
-4. **Backend Comparison** (`src/amplihack/memory/evaluation/comparison.py`)
+4. **Backend Comparison** (`crates/amplihack-memory/`)
    - Compares multiple backends
    - Generates markdown reports
    - Provides use case recommendations
 
-5. **CLI Command** (`src/amplihack/memory/cli_evaluate.py`)
+5. **CLI Command** (`crates/amplihack-memory/`)
    - Easy command-line interface
    - Supports single backend or comparison mode
    - Can save reports to file
@@ -147,14 +147,14 @@ print(report)
 ## Files Created
 
 ```
-src/amplihack/memory/evaluation/
+crates/amplihack-memory/
 ├── __init__.py                    # Public API exports
 ├── quality_evaluator.py          # Quality metrics
 ├── performance_evaluator.py      # Performance metrics
 ├── reliability_evaluator.py      # Reliability metrics
 └── comparison.py                 # Backend comparison
 
-src/amplihack/memory/cli_evaluate.py  # CLI command
+crates/amplihack-memory/  # CLI command
 
 tests/memory/test_evaluation.py        # Tests (11 tests)
 

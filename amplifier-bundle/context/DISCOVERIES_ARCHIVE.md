@@ -584,6 +584,14 @@ Test cases added:
 
 ## Auto Mode Timeout Causing Opus Model Workflow Failures (2025-11-26)
 
+> **⚠️ SUPERSEDED (2026-07):** The per-turn wall-clock timeout system described
+> below was later removed entirely under the no-agent-timeout policy. Agent
+> turns now run to natural completion; there is no `--no-timeout` flag,
+> `resolve_timeout()` function, or per-turn timeout. Session-level safety
+> backstops (max turns, max session duration, max API calls, max output bytes)
+> replace it. This entry is retained only as historical context. See
+> `docs/AUTO_MODE.md` for the current behavior.
+
 ### Problem
 
 Opus model was "skipping" workflow steps during auto mode execution. Investigation revealed the 5-minute per-turn timeout was cutting off Opus execution mid-workflow due to extended thinking requirements.

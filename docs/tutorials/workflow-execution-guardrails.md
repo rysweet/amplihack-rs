@@ -66,8 +66,8 @@ The workflow returns a structured `worktree_setup` object. A normal run looks li
 
 ```json
 {
-  "execution_root": "/home/user/src/amplihack/worktrees/docs/issue-107-retcon-docs",
-  "worktree_path": "/home/user/src/amplihack/worktrees/docs/issue-107-retcon-docs",
+  "execution_root": "/home/user/src/amplihack-rs/worktrees/docs/issue-107-retcon-docs",
+  "worktree_path": "/home/user/src/amplihack-rs/worktrees/docs/issue-107-retcon-docs",
   "branch_name": "docs/issue-107-retcon-docs",
   "created": true,
   "bootstrap": false

@@ -153,7 +153,7 @@ adds the temporal and refinement layers:
 After the refactor, the goal-seeking package contains these primary files:
 
 ```text
-src/amplihack/agents/goal_seeking/
+crates/amplihack-agent-core/
 ├── learning_agent.py
 ├── learning_ingestion.py
 ├── answer_synthesizer.py
@@ -176,8 +176,8 @@ Keep this rule in mind:
 From the repository root:
 
 ```bash
-ruff check src/amplihack/agents/goal_seeking tests/agents/goal_seeking
-pyright src/amplihack/agents/goal_seeking tests/agents/goal_seeking
+ruff check crates/amplihack-agent-core/ tests/agents/goal_seeking
+pyright crates/amplihack-agent-core/ tests/agents/goal_seeking
 python -m pytest tests/agents/goal_seeking/
 ```
 

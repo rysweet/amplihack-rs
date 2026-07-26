@@ -33,7 +33,7 @@ Without a parity control plane, the same amplihack feature would behave differen
 
 ### 1. The launcher stages a Copilot-native surface
 
-`src/amplihack/launcher/copilot.py` generates `.github/hooks/*` wrappers and stages agents into `.github/agents/`. That keeps Copilot on its native discovery path instead of layering a second configuration mechanism on top.
+`crates/amplihack-launcher/` generates `.github/hooks/*` wrappers and stages agents into `.github/agents/`. That keeps Copilot on its native discovery path instead of layering a second configuration mechanism on top.
 
 ### 2. The pre-tool wrapper emits exactly one decision
 

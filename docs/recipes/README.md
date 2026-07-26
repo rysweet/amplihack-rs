@@ -353,7 +353,7 @@ The Recipe Runner automatically discovers recipes from these standard directorie
 2. **Repository Root** — repo-root `amplifier-bundle/recipes/` (resolved via `Path(__file__)`, for editable installs)
 3. **User-Installed** — `~/.amplihack/.claude/recipes/` (custom user recipes)
 4. **CWD Bundle** — `amplifier-bundle/recipes/` (CWD-relative, legacy compatibility)
-5. **CWD Source** — `src/amplihack/amplifier-bundle/recipes/` (CWD-relative, development)
+5. **CWD Source** — `amplifier-bundle/recipes/` (CWD-relative, development)
 6. **Project-Specific** — `.claude/recipes/` (project-local recipes, can override)
 
 Later directories override earlier ones when recipe names collide. All bundled recipes are automatically available after installation without additional configuration.
@@ -494,7 +494,7 @@ amplihack recipe run my-workflow \
 ```bash
 # Check bundled recipe locations
 ls amplifier-bundle/recipes/*.yaml
-ls src/amplihack/amplifier-bundle/recipes/*.yaml
+ls amplifier-bundle/recipes/*.yaml
 
 # Check user-installed recipes
 ls ~/.amplihack/.claude/recipes/*.yaml

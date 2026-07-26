@@ -120,13 +120,13 @@ pub fn execute_update(install_method: &str) -> Result<bool> {
     Ok(status.success())
 }
 
-/// Pre-launch update gate. Respects `AMPLIHACK_SKIP_UPDATE=1`.
+/// Pre-launch update gate. Respects `AMPLIHACK_NO_UPDATE_CHECK=1`.
 pub fn ensure_latest_copilot() -> Result<bool> {
-    if std::env::var("AMPLIHACK_SKIP_UPDATE")
+    if std::env::var("AMPLIHACK_NO_UPDATE_CHECK")
         .map(|v| v == "1")
         .unwrap_or(false)
     {
-        debug!("Skipping update check (AMPLIHACK_SKIP_UPDATE=1)");
+        debug!("Skipping update check (AMPLIHACK_NO_UPDATE_CHECK=1)");
         return Ok(true);
     }
     let method = detect_install_method();

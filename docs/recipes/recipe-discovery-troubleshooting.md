@@ -23,7 +23,7 @@ Recipes are discovered in this priority order:
 Enable verbose output to see exactly which paths are searched:
 
 ```bash
-AMPLIHACK_LOG=debug amplihack recipe list
+amplihack recipe list --verbose
 ```
 
 **Output shows**:

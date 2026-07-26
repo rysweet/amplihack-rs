@@ -107,7 +107,7 @@ Logged when an error occurs during execution.
   "event": "error",
   "turn": 4,
   "error_type": "timeout",
-  "message": "Turn 4 timed out after 600.0s (limit: 600.0s). Try reducing task complexity or increasing --query-timeout-minutes."
+  "message": "Session stopped: max session duration reached (limit: 3600s). Consider breaking the task into smaller runs."
 }
 ```
 

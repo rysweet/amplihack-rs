@@ -351,4 +351,4 @@ except Exception as e:
 
 - [How-To: Exception Handling Best Practices](../howto/exception-handling.md)
 - [Hook System README](../claude/tools/amplihack/hooks/README.md)
-- Source: `src/amplihack/exceptions.py`
+- Source: `crates/amplihack-cli/`

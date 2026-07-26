@@ -228,7 +228,7 @@ Override defaults via recipe context or environment:
 
 ```bash
 amplihack recipe run quality-audit-cycle \
-  -c target_path="src/amplihack/fleet" \
+  -c target_path="crates/amplihack-fleet/" \
   -c repo_path="." \
   -c min_cycles="3" \
   -c max_cycles="6" \

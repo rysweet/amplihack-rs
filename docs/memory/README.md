@@ -22,7 +22,7 @@ This is the landing page for the current memory documentation.
 
 There are three related but distinct memory stories:
 
-1. the top-level CLI graph view under `src/amplihack/memory`, which powers `amplihack memory tree` and stores session data in `~/.amplihack/memory.db`
+1. the top-level CLI graph view under `crates/amplihack-memory/`, which powers `amplihack memory tree` and stores session data in `~/.amplihack/memory.db`
 2. the agent-local hierarchical store used by `amplihack memory export` and `amplihack memory import`
 3. the generated goal-agent scaffold from `amplihack new --enable-memory`, which packages `amplihack_memory` helpers, `memory_config.yaml`, and a local `./memory/` directory
 

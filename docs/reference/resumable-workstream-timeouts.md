@@ -130,7 +130,7 @@ With the default temporary base:
   "current_step": "step-12-run-precommit",
   "checkpoint_id": "checkpoint-after-review-feedback",
   "work_dir": "/tmp/amplihack-workstreams/ws-4032",
-  "worktree_path": "/home/user/src/amplihack/worktrees/fix/issue-4032-resumable-timeouts",
+  "worktree_path": "/home/user/src/amplihack-rs/worktrees/fix/issue-4032-resumable-timeouts",
   "log_file": "/tmp/amplihack-workstreams/log-4032.txt",
   "progress_sidecar": "/tmp/amplihack-workstreams/state/ws-4032.progress.json",
   "created_at": "2026-04-01T06:10:00Z",
@@ -212,7 +212,7 @@ Heartbeat output includes resumable fields directly:
       "lifecycle_state": "timed_out_resumable",
       "step": "step-12-run-precommit",
       "checkpoint_id": "checkpoint-after-review-feedback",
-      "worktree_path": "/home/user/src/amplihack/worktrees/fix/issue-4032-resumable-timeouts",
+      "worktree_path": "/home/user/src/amplihack-rs/worktrees/fix/issue-4032-resumable-timeouts",
       "log_path": "/tmp/amplihack-workstreams/log-4032.txt",
       "elapsed_s": 300
     }

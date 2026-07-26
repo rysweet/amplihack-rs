@@ -8,7 +8,7 @@ There are two memory surfaces in the repo, and they serve different jobs.
 
 ### 1. The in-repo memory backend
 
-The package under `src/amplihack/memory` powers the top-level CLI memory commands and related graph-oriented features.
+The package under `crates/amplihack-memory/` powers the top-level CLI memory commands and related graph-oriented features.
 
 It is centered around a Kuzu-backed graph store by default and supports these primary memory types:
 
@@ -77,7 +77,7 @@ The verified top-level memory surfaces in this checkout are:
 
 ```mermaid
 flowchart LR
-    CLI[amplihack memory tree] --> RepoMemory[src/amplihack/memory]
+    CLI[amplihack memory tree] --> RepoMemory[crates/amplihack-memory/]
     RepoMemory --> SQLite[(~/.amplihack/memory.db)]
 
     Transfer[amplihack memory export/import] --> AgentStore[HierarchicalMemory export/import]

@@ -368,9 +368,9 @@ amplihack mode status
 
 - Plugin Manifest: `~/.amplihack/.claude-plugin/plugin.json`
 - Hook Configuration: `~/.amplihack/.claude/tools/amplihack/hooks/hooks.json`
-- Settings Generator: `src/amplihack/settings_generator/generator.py`
-- Plugin Manager: `src/amplihack/plugin_manager/manager.py`
-- Mode Detector: `src/amplihack/mode_detector/detector.py`
+- Settings Generator: `crates/amplihack-utils/`
+- Plugin Manager: `crates/amplihack-utils/`
+- Mode Detector: `crates/amplihack-context/`
 
 ## Next Steps
 

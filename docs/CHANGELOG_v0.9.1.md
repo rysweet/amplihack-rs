@@ -22,7 +22,7 @@ The problematic flow was:
 
 **Solution:**
 
-Removed SettingsManager from launch_interactive() in src/amplihack/launcher/core.py because:
+Removed SettingsManager from launch_interactive() in crates/amplihack-launcher/ because:
 
 - SettingsManager is for TEMPORARY changes that should be restored
 - amplihack launch makes PERMANENT changes (adding hooks)
@@ -37,7 +37,7 @@ Removed SettingsManager from launch_interactive() in src/amplihack/launcher/core
 
 **Files Modified:**
 
-- src/amplihack/launcher/core.py (removed SettingsManager usage)
+- crates/amplihack-launcher/ (removed SettingsManager usage)
 
 **Testing:**
 

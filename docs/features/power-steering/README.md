@@ -370,7 +370,7 @@ No explicit calls needed - Power-Steering runs automatically when Claude attempt
    ls -la ~/.amplihack/.claude/runtime/power-steering/.disabled
    ```
 2. Check you're using CLI entry point (`cli.py` or `copilot.py`)
-3. Verify module exists: `src/amplihack/power_steering/re_enable_prompt.py`
+3. Verify module exists: `crates/amplihack-utils/`
 4. Check for errors in startup logs
 
 **Problem**: Prompt times out too quickly

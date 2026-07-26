@@ -1520,7 +1520,7 @@ on:
     branches: [main, develop]
   pull_request:
     paths:
-      - "src/amplihack/memory/**"
+      - "crates/amplihack-memory/**"
       - "tests/memory/**"
       - "tests/agents/**"
 

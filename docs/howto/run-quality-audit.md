@@ -53,7 +53,7 @@ Set `target_path` to audit a specific part of the codebase:
 
 ```bash
 amplihack recipe run quality-audit-cycle \
-  -c target_path="src/amplihack/fleet" \
+  -c target_path="crates/amplihack-fleet/" \
   -c repo_path="." \
   -c min_cycles="2" \
   -c max_cycles="4" \

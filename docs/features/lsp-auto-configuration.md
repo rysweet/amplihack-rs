@@ -35,7 +35,7 @@ $ amplihack claude
 
 The feature consists of four main components:
 
-1. **Launcher Integration** (`src/amplihack/launcher/core.py`)
+1. **Launcher Integration** (`crates/amplihack-launcher/`)
    - Calls `_configure_lsp_auto()` during Claude Code launch
    - Executes before Claude Code starts
    - Silently skips if LSP modules unavailable
@@ -60,7 +60,7 @@ The feature consists of four main components:
 ```
 amplihack claude command
     ↓
-Launcher starts (src/amplihack/launcher/core.py)
+Launcher starts (crates/amplihack-launcher/)
     ↓
 _configure_lsp_auto() executes
     ↓
@@ -316,7 +316,7 @@ Updated automatically with plugin configuration:
 
 **Source Code:**
 
-- Launcher Integration: `src/amplihack/launcher/core.py::_configure_lsp_auto()`
+- Launcher Integration: `crates/amplihack-launcher/::_configure_lsp_auto()`
 - Language Detection: `~/.amplihack/.claude/skills/lsp-setup/language_detector.py`
 - LSP Configuration: `~/.amplihack/.claude/skills/lsp-setup/lsp_configurator.py`
 - Plugin Management: `~/.amplihack/.claude/skills/lsp-setup/plugin_manager.py`

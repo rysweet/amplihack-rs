@@ -528,7 +528,7 @@ python main.py
 ### Resources
 
 - **User Guide:** `docs/GOAL_AGENT_GENERATOR_GUIDE.md`
-- **Module README:** `src/amplihack/goal_agent_generator/README.md`
+- **Module README:** `crates/amplihack-agent-generator/`
 - **Example Prompts:** `examples/goal_agent_generator/`
 - **PR #1295:** https://github.com/rysweet/MicrosoftHackathon2025-AgenticCoding/pull/1295
 
@@ -673,7 +673,7 @@ python main.py
 See full documentation at:
 
 - `docs/GOAL_AGENT_GENERATOR_GUIDE.md`
-- `src/amplihack/goal_agent_generator/README.md`
+- `crates/amplihack-agent-generator/`
 
 **Try it yourself:**
 

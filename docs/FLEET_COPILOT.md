@@ -117,10 +117,10 @@ to either summarize completed work or explain why it needs help.
 | `amplifier-bundle/tools/amplihack/hooks/stop.py`                 | Stop hook (delegates to copilot handler) |
 | `amplifier-bundle/tools/amplihack/hooks/copilot_stop_handler.py` | Copilot reasoning + decision logging     |
 | `amplifier-bundle/modules/hook-lock-mode/`                       | Provider:request hook for goal injection |
-| `src/amplihack/fleet/fleet_copilot.py`                           | SessionCopilot engine                    |
-| `src/amplihack/fleet/prompts/copilot_system.prompt`              | LLM system prompt                        |
-| `src/amplihack/fleet/prompts/lock_mode_directive.prompt`         | Goal injection template                  |
-| `src/amplihack/fleet/_constants.py`                              | All configurable thresholds              |
+| `crates/amplihack-fleet/`                           | SessionCopilot engine                    |
+| `crates/amplihack-fleet/`              | LLM system prompt                        |
+| `crates/amplihack-fleet/`         | Goal injection template                  |
+| `crates/amplihack-fleet/`                              | All configurable thresholds              |
 
 ## Examples
 

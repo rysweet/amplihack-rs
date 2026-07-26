@@ -88,7 +88,9 @@ When you use any of these commands, execute the following:
 
 ```bash
 # For health check
-python3 ~/.claude/src/amplihack/security/xpia_health.py --verbose
+# The legacy `xpia_health.py` script was removed with the Python tree (#637).
+# XPIA defense now lives in the Rust crate `crates/amplihack-security/` and runs
+# automatically via the hook pipeline; there is no standalone health-check CLI.
 
 # For status check
 python3 ~/.claude/tools/xpia/xpia_status.py

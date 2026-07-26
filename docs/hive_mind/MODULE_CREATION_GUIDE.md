@@ -242,6 +242,6 @@ If you can't delete the module and recreate it from its interface alone, it's no
 
 | File                                                          | Purpose                     |
 | ------------------------------------------------------------- | --------------------------- |
-| `src/amplihack/agents/goal_seeking/hive_mind/orchestrator.py` | The new module              |
+| `crates/amplihack-hive/` | The new module              |
 | `tests/hive_mind/test_orchestrator.py`                        | Contract tests (29 passing) |
 | `docs/hive_mind/MODULE_CREATION_GUIDE.md`                     | This document               |

@@ -16,7 +16,7 @@ Recipes are discovered in this priority order:
 2. **Repository Root** — repo-root `amplifier-bundle/recipes/` (for editable installs)
 3. **Global Installation** — `~/.amplihack/.claude/recipes/` (user-installed recipes)
 4. **CWD Bundle** — `amplifier-bundle/recipes/` (CWD-relative, legacy compatibility)
-5. **CWD Source** — `src/amplihack/amplifier-bundle/recipes/` (CWD-relative, development)
+5. **CWD Source** — `amplifier-bundle/recipes/` (CWD-relative, development)
 6. **Project-local** — `.claude/recipes/` (project-specific recipes, can override)
 
 !!! note "Rust Port"
@@ -34,7 +34,7 @@ repo directory.
 Enable debug logging to see exactly which paths are searched:
 
 ```bash
-AMPLIHACK_VERBOSE=1 amplihack recipe list
+amplihack recipe list --verbose
 ```
 
 **Output shows**:
@@ -96,7 +96,7 @@ same name.
 **Solution**: Enable verbose logging to see which path won:
 
 ```bash
-AMPLIHACK_VERBOSE=1 amplihack recipe show <recipe-name>
+amplihack recipe list --verbose
 ```
 
 ### Issue: Recipe not found after pip install

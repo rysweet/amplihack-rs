@@ -39,7 +39,7 @@ The system is organized into four composable layers, each with a single responsi
 
 ### Layer 1: Storage (HiveGraph)
 
-**File**: `src/amplihack/agents/goal_seeking/hive_mind/hive_graph.py`
+**File**: `crates/amplihack-hive/`
 
 The foundation. HiveGraph is a **protocol** (interface), not a concrete class. Two implementations exist:
 
@@ -59,7 +59,7 @@ Key operations:
 
 ### Layer 2: Transport (EventBus)
 
-**File**: `src/amplihack/agents/goal_seeking/hive_mind/event_bus.py`
+**File**: `crates/amplihack-hive/`
 
 When a fact is promoted, a `FACT_PROMOTED` event is published. Other agents subscribe and incorporate peer facts (with a 10% confidence discount — peer knowledge is slightly less trusted than self-learned knowledge).
 
@@ -71,7 +71,7 @@ Three backends:
 
 ### Layer 3: Discovery (Gossip Protocol)
 
-**File**: `src/amplihack/agents/goal_seeking/hive_mind/gossip.py`
+**File**: `crates/amplihack-hive/`
 
 Epidemic-style dissemination. Each gossip round:
 
@@ -84,7 +84,7 @@ Convergence: O(log N) rounds for N agents to share all knowledge.
 
 ### Layer 4: Query (Deduplication + Reranking)
 
-**File**: `src/amplihack/agents/goal_seeking/hive_mind/reranker.py`
+**File**: `crates/amplihack-hive/`
 
 When querying, results come from multiple sources (local, peers, federation). Layer 4:
 
@@ -96,7 +96,7 @@ When querying, results come from multiple sources (local, peers, federation). La
 
 ## The HiveMindOrchestrator
 
-**File**: `src/amplihack/agents/goal_seeking/hive_mind/orchestrator.py`
+**File**: `crates/amplihack-hive/`
 
 The orchestrator is the **single entry point** for interacting with all four layers. It follows the philosophy: "one class, one job — coordinate layers, never own them."
 

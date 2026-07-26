@@ -428,4 +428,4 @@ with ThreadPoolExecutor(max_workers=10) as executor:
 
 ---
 
-**Implementation**: See `src/amplihack/tracing/token_sanitizer.py` for complete source code.
+**Implementation**: See `crates/amplihack-utils/` for complete source code.

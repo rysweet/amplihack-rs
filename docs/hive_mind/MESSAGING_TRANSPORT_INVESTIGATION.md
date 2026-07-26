@@ -25,7 +25,7 @@ The distributed hive mind already has a **transport-agnostic event bus** in plac
 
 | Backend                   | File                                                       | Use Case                |
 | ------------------------- | ---------------------------------------------------------- | ----------------------- |
-| `LocalEventBus`           | `src/amplihack/agents/goal_seeking/hive_mind/event_bus.py` | Testing, single-machine |
+| `LocalEventBus`           | `crates/amplihack-hive/` | Testing, single-machine |
 | `AzureServiceBusEventBus` | same                                                       | Production on Azure     |
 | `RedisEventBus`           | same                                                       | Low-latency dev/staging |
 
@@ -104,7 +104,7 @@ AMPLIHACK_MEMORY_BACKEND=cognitive
 ### Transport Layer File Map
 
 ```
-src/amplihack/agents/goal_seeking/hive_mind/
+crates/amplihack-hive/
 ├── event_bus.py              # EventBus protocol + 3 backend implementations
 ├── distributed_hive_graph.py # DHT-sharded hive graph (local bus only)
 ├── hive_graph.py             # HiveGraph protocol (abstract)
@@ -112,7 +112,7 @@ src/amplihack/agents/goal_seeking/hive_mind/
 ├── gossip.py                 # Bloom-filter gossip for convergence
 └── controller.py             # Multi-hive orchestration
 
-src/amplihack/memory/
+crates/amplihack-memory/
 ├── network_store.py          # NetworkGraphStore: wraps GraphStore + event bus
 ├── facade.py                 # Memory: high-level API used by OODA loop
 └── config.py                 # MemoryConfig: transport selection + env vars
@@ -382,6 +382,6 @@ This namespace is provisioned via `deploy/azure_hive/main.bicep` and matches the
 - [CloudEvents v1.0 specification - GitHub](https://github.com/cloudevents/spec)
 - Hive Mind Architecture (see upstream `amplihack` repository)
 - Hive Mind Design (see upstream `amplihack` repository)
-- Transport layer code: `src/amplihack/agents/goal_seeking/hive_mind/event_bus.py`
-- Network store: `src/amplihack/memory/network_store.py`
+- Transport layer code: `crates/amplihack-hive/`
+- Network store: `crates/amplihack-memory/`
 - Azure IaC: `deploy/azure_hive/main.bicep`

@@ -1,5 +1,8 @@
 # Code Context Injection at Memory Retrieval
 
+> ℹ️ **Historical / legacy document.** This page documents an implementation that lived in the removed Python `src/amplihack/` package (deleted in #637). Paths below reference that former tree and generally have **no direct Rust equivalent**; they are retained for historical context.
+<!-- legacy-src-amplihack-refs:#877 -->
+
 **Status**: Implemented (Week 5-6)
 **Feature**: Enrich memory retrieval with related code files and functions
 

@@ -13,7 +13,7 @@ This older guide described an automatic 5-type memory flow with hook behavior an
 
 The current docs separate:
 
-- the in-repo CLI memory backend under `src/amplihack/memory`
+- the in-repo CLI memory backend under `crates/amplihack-memory/`
 - the generated `amplihack new --enable-memory` scaffold for standalone goal-agent packages
 
 The older automatic-hook narrative and backend performance claims from the previous version of this page should not be treated as the current user guide.

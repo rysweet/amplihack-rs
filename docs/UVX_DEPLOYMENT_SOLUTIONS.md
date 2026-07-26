@@ -95,7 +95,7 @@ uvx --from git+... amplihack launch --add-dir /path/from/helper
 
 ### Files Created:
 
-- `src/amplihack/utils/uvx_staging.py` - Main staging logic
+- `crates/amplihack-utils/` - Main staging logic
 - `tests/test_uvx_staging.py` - Comprehensive tests
 - Enhanced `FrameworkPathResolver` - Integration point
 

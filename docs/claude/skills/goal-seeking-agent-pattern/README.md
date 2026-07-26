@@ -372,7 +372,7 @@ When designing goal-seeking agents, verify:
 
 ### Code
 
-- **Module**: `src/amplihack/goal_agent_generator/` (implementation)
+- **Module**: `crates/amplihack-agent-generator/` (implementation)
 - **API**: `PromptAnalyzer`, `ObjectivePlanner`, `SkillSynthesizer`, `AgentAssembler`, `GoalAgentPackager`
 - **CLI**: `amplihack goal-agent-generator` (command-line interface)
 

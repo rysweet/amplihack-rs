@@ -222,7 +222,7 @@ session appeared to start but produced no output, this fix resolves that.
 (nested agents, fleet, multi-task, auto_mode) uses the same agent binary
 consistently.
 
-**Central mechanism**: `get_agent_binary()` in `src/amplihack/utils/__init__.py`
+**Central mechanism**: `get_agent_binary()` in `crates/amplihack-utils/`
 reads the `AMPLIHACK_AGENT_BINARY` environment variable and emits a warning on
 fallback.
 
@@ -543,7 +543,7 @@ steps:
 
 **Problem**: Subprocess orchestration hardcoded `"claude"` as the fallback agent binary in 20+ files, making amplihack incompatible with other agent CLIs (e.g. `copilot`, custom agents).
 
-**Solution**: Introduced `get_agent_binary()` in `src/amplihack/utils/__init__.py` — reads `AMPLIHACK_AGENT_BINARY` env var with warning on fallback. All subprocess calls now use this central helper.
+**Solution**: Introduced `get_agent_binary()` in `crates/amplihack-utils/` — reads `AMPLIHACK_AGENT_BINARY` env var with warning on fallback. All subprocess calls now use this central helper.
 
 **Impact**:
 

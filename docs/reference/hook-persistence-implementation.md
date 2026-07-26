@@ -30,7 +30,7 @@ The problematic execution flow was:
 
 ### File Modified
 
-`src/amplihack/launcher/core.py`
+`crates/amplihack-launcher/`
 
 ### Changes Made
 
@@ -120,7 +120,7 @@ The `ensure_settings_json()` function:
 4. Writes directly to settings.json (no backup)
 5. Returns without cleanup
 
-**Implementation location:** `src/amplihack/config/settings.py`
+**Implementation location:** `crates/amplihack-utils/`
 
 ```rust
 def ensure_settings_json() -> None:
@@ -144,7 +144,7 @@ def ensure_settings_json() -> None:
 
 Additionally, the launcher automatically fixes hook paths to use absolute paths:
 
-**Implementation:** `src/amplihack/launcher/core.py` - `_fix_hook_paths_in_settings()`
+**Implementation:** `crates/amplihack-launcher/` - `_fix_hook_paths_in_settings()`
 
 ```rust
 def _fix_hook_paths_in_settings(self, target_dir: Path) -> bool:
@@ -251,8 +251,8 @@ The fix is fully backward compatible:
 
 ## Related Files
 
-- **Implementation:** `src/amplihack/launcher/core.py`
-- **Hook Creation:** `src/amplihack/config/settings.py`
+- **Implementation:** `crates/amplihack-launcher/`
+- **Hook Creation:** `crates/amplihack-utils/`
 - **Tests:** `tests/test_launcher_core.py`
 - **Issue:** GitHub Issue [#2335](https://github.com/rysweet/amplihack-rs/issues/2335)
 

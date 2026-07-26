@@ -44,7 +44,7 @@ merge_xpia_hooks() {
     print_status "Integrating XPIA security hooks..."
 
     # Use the hook merge utility from the installed amplihack
-    HOOK_MERGE_SCRIPT="$HOME/.claude/tmpamplihack/src/amplihack/utils/hook_merge_utility.py"
+    HOOK_MERGE_SCRIPT="$HOME/.claude/tmpamplihack/src/amplihack/utils/hook_merge_utility.py"  # (legacy Python path, removed in #637; no Rust equivalent)
 
     if [ ! -f "$HOOK_MERGE_SCRIPT" ]; then
         print_error "Hook merge utility not found: $HOOK_MERGE_SCRIPT"
@@ -69,7 +69,7 @@ merge_xpia_hooks() {
 run_xpia_health_check() {
     print_status "Running XPIA security health check..."
 
-    HEALTH_CHECK_SCRIPT="$HOME/.claude/tmpamplihack/src/amplihack/security/xpia_health.py"
+    HEALTH_CHECK_SCRIPT="$HOME/.claude/tmpamplihack/src/amplihack/security/xpia_health.py"  # (legacy Python path, removed in #637; no Rust equivalent)
 
     if [ ! -f "$HEALTH_CHECK_SCRIPT" ]; then
         print_warning "XPIA health check script not found, skipping health validation"

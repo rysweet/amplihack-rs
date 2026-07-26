@@ -526,7 +526,7 @@ later entries overriding earlier ones with the same recipe name:
 1. `<git-repo-root>/amplifier-bundle/recipes/` (detected by walking up from cwd)
 2. `~/.amplihack/.claude/recipes/`
 3. `amplifier-bundle/recipes/` (relative to cwd)
-4. `src/amplihack/amplifier-bundle/recipes/` (relative to cwd)
+4. `amplifier-bundle/recipes/` (relative to cwd)
 5. `.claude/recipes/` (relative to cwd)
 
 When a recipe name appears in multiple directories, the last matching file wins.

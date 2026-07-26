@@ -424,7 +424,7 @@ The real power of TLA+ isn't just as a prompt language — it's that TLC can ver
 - **PATTERNS.md**: The [Formal Specification as Prompt](../concepts/patterns.md) pattern contains the summary evidence table and domain guidance.
 - **TLA+ experiment data**: `experiments/hive_mind/tla_prompt_language/`
 - **Gherkin experiment data**: `experiments/hive_mind/gherkin_v2_recipe_executor/`
-- **Evaluation code**: `src/amplihack/eval/gherkin_agent_evaluator.py` (agent consensus), `src/amplihack/eval/gherkin_prompt_experiment.py` (experiment runner)
+- **Evaluation code**: `src/amplihack/eval/gherkin_agent_evaluator.py` (agent consensus), `src/amplihack/eval/gherkin_prompt_experiment.py` (experiment runner) (legacy Python path, removed in #637; no Rust equivalent)
 
 ### Research
 

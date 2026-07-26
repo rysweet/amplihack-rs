@@ -143,7 +143,7 @@ Example output:
   "cleanup_eligible": false,
   "current_step": "step-12-run-precommit",
   "checkpoint_id": "checkpoint-after-review-feedback",
-  "worktree_path": "/home/user/src/amplihack/worktrees/fix/issue-4032-resumable-timeouts",
+  "worktree_path": "/home/user/src/amplihack-rs/worktrees/fix/issue-4032-resumable-timeouts",
   "log_file": "/tmp/amplihack-workstreams/log-4032.txt"
 }
 ```

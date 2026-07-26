@@ -44,8 +44,8 @@ PYTHONPATH=/path/to/amplihack-agent-eval/src:/path/to/amplihack/src \
 .venv/bin/python -m pytest -q tests/eval/test_long_horizon_memory.py
 
 .venv/bin/ruff check \
-  src/amplihack/eval/long_horizon_memory.py \
-  src/amplihack/eval/long_horizon_multi_seed.py \
+  crates/amplihack-agent-eval/ \
+  crates/amplihack-agent-eval/ \
   tests/eval/test_long_horizon_memory.py
 ```
 

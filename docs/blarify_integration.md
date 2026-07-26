@@ -58,7 +58,7 @@ Code schema extends existing memory schema:
 ### Prerequisites
 
 1. **Kuzu** - Installed automatically with amplihack (embedded database, no setup needed)
-2. **Vendored blarify** - Included in `src/amplihack/vendor/blarify/` (no separate install needed)
+2. **Vendored blarify** - Included in `crates/amplihack-blarify/` (no separate install needed)
 
 **That's it!** No Docker, no Neo4j container, no external database setup required.
 
@@ -104,7 +104,7 @@ This will:
 ### 2. Import Specific Directory
 
 ```bash
-python scripts/import_codebase_to_neo4j.py --path ./src/amplihack/memory
+python scripts/import_codebase_to_neo4j.py --path ./crates/amplihack-memory/
 ```
 
 ### 3. Filter by Languages

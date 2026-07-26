@@ -109,7 +109,7 @@ amplihack claude --checkout-repo owner/repo
 amplihack copilot
 ```
 
-**Implementation**: `/path/to/amplihack/src/amplihack/cli.py:30-150`
+**Implementation**: `/path/to/amplihack/crates/amplihack-cli/`
 
 #### Slash Commands
 
@@ -127,10 +127,10 @@ amplihack copilot
 
 | Module               | Purpose               | Entry Point                                   |
 | -------------------- | --------------------- | --------------------------------------------- |
-| **Launcher**         | Claude Code execution | `src/amplihack/launcher/core.py`              |
-| **Bundle Generator** | Agent creation        | `src/amplihack/bundle_generator/generator.py` |
-| **Security**         | XPIA defense          | `src/amplihack/security/xpia_defender.py`     |
-| **Memory**           | Session persistence   | `src/amplihack/memory/manager.py`             |
+| **Launcher**         | Claude Code execution | `crates/amplihack-launcher/`              |
+| **Bundle Generator** | Agent creation        | `crates/amplihack-utils/src/bundle_generator/` |
+| **Security**         | XPIA defense          | `crates/amplihack-security/`     |
+| **Memory**           | Session persistence   | `crates/amplihack-memory/`             |
 
 #### Configuration Files
 
@@ -160,7 +160,7 @@ Key Directories:
 │   ├── commands/               # Slash commands
 │   ├── context/                # Philosophy and patterns
 │   └── workflow/               # Development workflows
-├── src/amplihack/              # Source code
+├── crates/              # Source code
 │   ├── launcher/               # Launch functionality
 │   ├── bundle_generator/       # Agent generation
 │   ├── security/               # Security features
@@ -245,7 +245,7 @@ amplihack is a **development framework** that enhances Claude Code and GitHub Co
 #### Component: Launcher
 
 **Purpose**: Manages Claude Code execution lifecycle
-**Location**: `/path/to/amplihack/src/amplihack/launcher/`
+**Location**: `/path/to/amplihack/crates/amplihack-launcher/`
 **Key Files**:
 
 - `core.py:20-543` - Main ClaudeLauncher class
@@ -267,7 +267,7 @@ amplihack is a **development framework** that enhances Claude Code and GitHub Co
 #### Component: Bundle Generator
 
 **Purpose**: Creates custom agent bundles from natural language
-**Location**: `/path/to/amplihack/src/amplihack/bundle_generator/`
+**Location**: `/path/to/amplihack/crates/amplihack-utils/src/bundle_generator/`
 **Key Files**:
 
 - `generator.py:1-556` - Agent content generation
@@ -290,7 +290,7 @@ amplihack is a **development framework** that enhances Claude Code and GitHub Co
 #### Component: Security (XPIA Defense)
 
 **Purpose**: Cross-Prompt Injection Attack defense
-**Location**: `/path/to/amplihack/src/amplihack/security/`
+**Location**: `/path/to/amplihack/crates/amplihack-security/`
 **Key Files**:
 
 - `xpia_defender.py:1-673` - Core security validation
@@ -435,7 +435,7 @@ amplihack is a **development framework** that enhances Claude Code and GitHub Co
 
 ### 4.1 Launcher Module
 
-**Location**: `/path/to/amplihack/src/amplihack/launcher/`
+**Location**: `/path/to/amplihack/crates/amplihack-launcher/`
 
 #### 4.1.1 ClaudeLauncher Class
 
@@ -643,7 +643,7 @@ if repo_path:
 
 ### 4.2 Bundle Generator Module
 
-**Location**: `/path/to/amplihack/src/amplihack/bundle_generator/`
+**Location**: `/path/to/amplihack/crates/amplihack-utils/src/bundle_generator/`
 
 **Search Terms**: bundle generator, agent creation, agent bundle, custom agents
 
@@ -888,7 +888,7 @@ bundle-name/
 
 ### 4.4 Security Module
 
-**Location**: `/path/to/amplihack/src/amplihack/security/`
+**Location**: `/path/to/amplihack/crates/amplihack-security/`
 
 **Search Terms**: security, xpia, validation, threat detection, cross-prompt injection
 
@@ -1216,7 +1216,7 @@ class ThreatType(str, Enum):
 
 ### 4.5 Memory Module
 
-**Location**: `/path/to/amplihack/src/amplihack/memory/`
+**Location**: `/path/to/amplihack/crates/amplihack-memory/`
 
 **Search Terms**: memory, session, persistence, database, conversation history
 
@@ -1235,7 +1235,7 @@ class ThreatType(str, Enum):
 
 ### 4.6 Utilities Module
 
-**Location**: `/path/to/amplihack/src/amplihack/utils/`
+**Location**: `/path/to/amplihack/crates/amplihack-utils/`
 
 **Search Terms**: utilities, helpers, tools, claude cli, prerequisites
 
@@ -1642,7 +1642,7 @@ amplihack claude
 ```
 amplihack/
 ├── .claude/                    # Claude configuration (version controlled)
-├── src/amplihack/              # Source code
+├── crates/              # Source code
 │   ├── launcher/
 │   ├── bundle_generator/
 │   ├── security/
@@ -2950,18 +2950,18 @@ python launch_claude.py
 
 | File                                          | Purpose              | Lines | Status |
 | --------------------------------------------- | -------------------- | ----- | ------ |
-| `src/amplihack/__main__.py`                   | Package entry point  | ~50   | Stable |
-| `src/amplihack/cli.py`                        | CLI argument parsing | ~300  | Stable |
-| `src/amplihack/launcher/core.py`              | Claude launcher      | 543   | Stable |
-| `src/amplihack/launcher/detector.py`          | .claude detection    | 150   | Stable |
-| `src/amplihack/launcher/repo_checkout.py`     | Repository checkout  | 100   | Stable |
-| `src/amplihack/launcher/auto_mode.py`         | Autonomous mode      | 200   | Stable |
-| `src/amplihack/bundle_generator/generator.py` | Agent generation     | 556   | Stable |
-| `src/amplihack/bundle_generator/parser.py`    | Intent parsing       | 300   | Stable |
-| `src/amplihack/bundle_generator/packager.py`  | Bundle packaging     | 250   | Stable |
-| `src/amplihack/security/xpia_defender.py`     | XPIA defense         | 673   | Stable |
-| `src/amplihack/security/xpia_patterns.py`     | Attack patterns      | 400   | Stable |
-| `src/amplihack/security/xpia_hooks.py`        | Security hooks       | 250   | Stable |
+| `crates/amplihack-cli/`                   | Package entry point  | ~50   | Stable |
+| `crates/amplihack-cli/`                        | CLI argument parsing | ~300  | Stable |
+| `crates/amplihack-launcher/`              | Claude launcher      | 543   | Stable |
+| `crates/amplihack-launcher/`          | .claude detection    | 150   | Stable |
+| `crates/amplihack-launcher/`     | Repository checkout  | 100   | Stable |
+| `crates/amplihack-launcher/`         | Autonomous mode      | 200   | Stable |
+| `crates/amplihack-utils/src/bundle_generator/` | Agent generation     | 556   | Stable |
+| `crates/amplihack-utils/src/bundle_generator/`    | Intent parsing       | 300   | Stable |
+| `crates/amplihack-utils/src/bundle_generator/`  | Bundle packaging     | 250   | Stable |
+| `crates/amplihack-security/`     | XPIA defense         | 673   | Stable |
+| `crates/amplihack-security/`     | Attack patterns      | 400   | Stable |
+| `crates/amplihack-security/`        | Security hooks       | 250   | Stable |
 
 ---
 

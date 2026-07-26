@@ -3,8 +3,8 @@
 This repo owns the **agent/runtime side** of the distributed eval story.
 
 - `deploy/azure_hive/` contains the Azure Container Apps and Event Hubs deployment assets
-- `src/amplihack/eval/long_horizon_memory.py` is the thin local wrapper used from this repo
-- `src/amplihack/eval/long_horizon_multi_seed.py` is the thin multi-seed wrapper used from this repo
+- `crates/amplihack-agent-eval/` is the thin local wrapper used from this repo
+- `crates/amplihack-agent-eval/` is the thin multi-seed wrapper used from this repo
 
 The authoritative long-horizon dataset generator and Azure distributed runner live in the sibling `amplihack-agent-eval` repo.
 

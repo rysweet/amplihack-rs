@@ -1331,7 +1331,7 @@ class MemoryLifecycle:
 **Code Example**:
 
 ```rust
-# /src/amplihack/memory/graph_store.py
+# crates/amplihack-memory/
 class GraphMemoryStore:
     def __init__(self, neo4j_uri: str, vector_store: VectorStore):
         self.graph = Neo4jDriver(neo4j_uri)
@@ -1394,7 +1394,7 @@ class GraphMemoryStore:
 **Code Example**:
 
 ```rust
-# /src/amplihack/memory/quality.py
+# crates/amplihack-memory/
 class QualityManager:
     def compute_quality(self, memory: Memory) -> float:
         """Compute overall quality score."""
@@ -1534,7 +1534,7 @@ class QualityManager:
 **Approach**: Wrap existing agents with memory-aware decorators.
 
 ```rust
-# /src/amplihack/memory/agent_memory.py
+# crates/amplihack-memory/
 from functools import wraps
 from typing import Callable
 
@@ -1579,7 +1579,7 @@ class MemoryAwareAgent:
         return wrapper
 
 # Usage in existing agents
-# /src/amplihack/agents/amplihack/core/architect.py
+# crates/amplihack-agent-core/
 class ArchitectAgent:
     def __init__(self, memory_store: GraphMemoryStore):
         self.memory_aware = MemoryAwareAgent("architect", memory_store)
@@ -1611,7 +1611,7 @@ class ArchitectAgent:
 Update orchestrator to enable memory for agents:
 
 ```rust
-# /src/amplihack/launcher/orchestrator.py
+# crates/amplihack-launcher/
 class Orchestrator:
     def __init__(self):
         self.memory_store = GraphMemoryStore(...)
@@ -1660,7 +1660,7 @@ class Orchestrator:
 **Monitoring Dashboard**:
 
 ```rust
-# /src/amplihack/memory/monitoring.py
+# crates/amplihack-memory/
 class MemoryMetrics:
     def __init__(self, metrics_backend):
         self.metrics = metrics_backend

@@ -116,8 +116,8 @@ Put the test next to the responsibility you changed.
 Run the goal-seeking checks from the repository root:
 
 ```bash
-uv run ruff check src/amplihack/agents/goal_seeking tests/agents/goal_seeking
-uv run pyright src/amplihack/agents/goal_seeking tests/agents/goal_seeking
+uv run ruff check crates/amplihack-agent-core/ tests/agents/goal_seeking
+uv run pyright crates/amplihack-agent-core/ tests/agents/goal_seeking
 uv run python -m pytest tests/agents/goal_seeking/
 ```
 

@@ -16,7 +16,7 @@ That material is no longer the current source of truth for this repo.
 
 The current docs separate two different memory surfaces:
 
-- the in-repo CLI memory backend under `src/amplihack/memory`
+- the in-repo CLI memory backend under `crates/amplihack-memory/`
 - the generated `amplihack new --enable-memory` scaffold that uses `amplihack_memory` helpers in a standalone package
 
 The older automatic Neo4j injection and extraction flow described in the previous version of this page is not the current repo story.

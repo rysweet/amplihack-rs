@@ -99,7 +99,7 @@ All `GoalSeekingAgent` instances expose:
 **Package:** `github-copilot-sdk`
 **Default model:** `gpt-4.1`
 **Env var override:** `COPILOT_MODEL`
-**Source:** `src/amplihack/agents/goal_seeking/sdk_adapters/copilot_sdk.py`
+**Source:** `crates/amplihack-agent-core/`
 
 ### Installation
 
@@ -172,7 +172,7 @@ Supports async context manager: `async with CopilotGoalSeekingAgent(...) as agen
 **Package:** `claude-agent-sdk`
 **Default model:** `claude-sonnet-4-5-20250929`
 **Env var override:** `CLAUDE_AGENT_MODEL`
-**Source:** `src/amplihack/agents/goal_seeking/sdk_adapters/claude_sdk.py`
+**Source:** `crates/amplihack-agent-core/`
 
 ### Installation
 
@@ -245,7 +245,7 @@ async with client:
 **Package:** `agent-framework`
 **Default model:** `gpt-4o`
 **Env var override:** `MICROSOFT_AGENT_MODEL`
-**Source:** `src/amplihack/agents/goal_seeking/sdk_adapters/microsoft_sdk.py`
+**Source:** `crates/amplihack-agent-core/`
 
 ### Installation
 
@@ -309,7 +309,7 @@ Use `agent.reset_session()` to start a fresh conversation.
 
 **Package:** None (lightweight built-in adapter)
 **Default model:** Configurable via environment
-**Source:** `src/amplihack/agents/goal_seeking/sdk_adapters/factory.py` (`_MiniFrameworkAdapter`)
+**Source:** `crates/amplihack-agent-core/` (`_MiniFrameworkAdapter`)
 
 ### Installation
 
@@ -364,7 +364,7 @@ No additional installation needed. The mini framework wraps the existing `Learni
 
 ## Per-SDK Eval Prompts
 
-Each SDK has dedicated eval prompt templates in `src/amplihack/agents/goal_seeking/prompts/sdk/`:
+Each SDK has dedicated eval prompt templates in `crates/amplihack-agent-core/`:
 
 | File                     | Purpose                                          |
 | ------------------------ | ------------------------------------------------ |
@@ -384,7 +384,7 @@ These templates allow per-SDK instruction tuning without modifying shared agent 
 
 To add support for a new SDK:
 
-1. **Create** `src/amplihack/agents/goal_seeking/sdk_adapters/new_sdk.py`
+1. **Create** `crates/amplihack-agent-core/`
 
 2. **Implement** the four abstract methods:
 
@@ -412,6 +412,6 @@ class NewSDKGoalSeekingAgent(GoalSeekingAgent):
 
 4. **Register** in `factory.py`
 
-5. **Add per-SDK eval prompt** in `src/amplihack/agents/goal_seeking/prompts/sdk/new_sdk_eval.md`
+5. **Add per-SDK eval prompt** in `crates/amplihack-agent-core/`
 
 6. **Test** using the progressive test suite or matrix eval

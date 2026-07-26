@@ -62,7 +62,7 @@ The hook uses a multi-strategy approach to find USER_PREFERENCES.md:
 
 1. **FrameworkPathResolver** (UVX and installed package support)
 2. **Project root** (~/.amplihack/.claude/context/USER_PREFERENCES.md)
-3. **Package location** (src/amplihack/.claude/context/USER_PREFERENCES.md)
+3. **Package location** (amplifier-bundle/context/USER_PREFERENCES.md)
 
 ### 2. Preference Extraction
 
@@ -248,7 +248,7 @@ ls -l .claude/tools/amplihack/hooks/user_prompt_submit.py
 
 - **Base class**: `~/.amplihack/.claude/tools/amplihack/hooks/hook_processor.py`
 - **Session start**: `~/.amplihack/.claude/tools/amplihack/hooks/session_start.py`
-- **Path resolution**: `src/amplihack/utils/paths.py`
+- **Path resolution**: `crates/amplihack-utils/`
 - **Preferences file**: `~/.amplihack/.claude/context/USER_PREFERENCES.md`
 
 ## References

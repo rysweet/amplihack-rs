@@ -234,7 +234,7 @@ Claude Code launches, sees filtered environment
     - `~/.amplihack/.claude/tools/amplihack/profile_management/loader.py` - Profile loading
     - `~/.amplihack/.claude/tools/amplihack/profile_management/parser.py` - YAML parsing
     - `~/.amplihack/.claude/tools/amplihack/profile_management/config.py` - Configuration management
-- **Integration** (upstream Python): `src/amplihack/__init__.py` (install), `src/amplihack/cli.py` (launch)
+- **Integration** (upstream Python): `crates/amplihack-cli/` (install), `crates/amplihack-cli/` (launch)
 
 ### Error Handling
 

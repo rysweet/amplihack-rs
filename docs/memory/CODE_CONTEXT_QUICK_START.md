@@ -45,7 +45,7 @@ Memory: Fixed bug in retrieve() method where token budget was not enforced
 
 Related Code:
 **Related Files:**
-- src/amplihack/memory/coordinator.py (python)
+- crates/amplihack-memory/ (python)
 
 **Related Functions:**
 - `async def retrieve(self, query: RetrievalQuery) -> list[MemoryEntry]`
@@ -115,7 +115,7 @@ async def example():
     await coordinator.store(StorageRequest(
         content="Fixed critical bug in memory retrieval",
         memory_type=MemoryType.EPISODIC,
-        metadata={"file": "src/amplihack/memory/coordinator.py"}
+        metadata={"file": "crates/amplihack-memory/"}
     ))
 
     # Retrieve with code context

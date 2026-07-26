@@ -1,5 +1,8 @@
 # Recipe Runner Infrastructure: Quality & Robustness Audit
 
+> ℹ️ **Historical / legacy document.** This page documents an implementation that lived in the removed Python `src/amplihack/` package (deleted in #637). Paths below reference that former tree and generally have **no direct Rust equivalent**; they are retained for historical context.
+<!-- legacy-src-amplihack-refs:#877 -->
+
 **Date**: 2026-03-27
 **Scope**: Recipe runner observability, condition evaluation, error recovery, YAML quality, smart-orchestrator routing
 **Issues**: #3676, #3677, #3678, #3679

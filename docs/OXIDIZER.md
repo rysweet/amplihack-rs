@@ -30,7 +30,7 @@ recipe-runner-rs amplifier-bundle/recipes/oxidizer-workflow.yaml \
 
 | Variable              | Description                           | Example                   |
 | --------------------- | ------------------------------------- | ------------------------- |
-| `python_package_path` | Path to the Python package to migrate | `src/amplihack/recipes`   |
+| `python_package_path` | Path to the Python package to migrate | `path/to/python_package`   |
 | `rust_target_path`    | Where to create the Rust project      | `rust/recipe-runner`      |
 | `rust_repo_name`      | GitHub repository name for the output | `amplihack-recipe-runner` |
 | `rust_repo_org`       | GitHub org or user                    | `rysweet`                 |

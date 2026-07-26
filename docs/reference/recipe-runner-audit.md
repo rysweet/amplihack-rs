@@ -2,6 +2,9 @@
 
 # Recipe Runner Infrastructure: Quality & Robustness Audit
 
+> ℹ️ **Historical / legacy document.** This page documents an implementation that lived in the removed Python `src/amplihack/` package (deleted in #637). Paths below reference that former tree and generally have **no direct Rust equivalent**; they are retained for historical context.
+<!-- legacy-src-amplihack-refs:#877 -->
+
 !!! info "Upstream Audit Report"
     This is a reference audit of the recipe runner infrastructure. File paths
     reference the upstream Python source. Findings about the Rust binary

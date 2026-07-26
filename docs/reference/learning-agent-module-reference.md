@@ -286,8 +286,8 @@ These files stay private implementation details. Callers should continue to targ
 The refactored LearningAgent is validated with focused checks:
 
 ```bash
-uv run ruff check src/amplihack/agents/goal_seeking tests/agents/goal_seeking
-uv run pyright src/amplihack/agents/goal_seeking tests/agents/goal_seeking
+uv run ruff check crates/amplihack-agent-core/ tests/agents/goal_seeking
+uv run pyright crates/amplihack-agent-core/ tests/agents/goal_seeking
 uv run python -m pytest tests/agents/goal_seeking/
 ```
 

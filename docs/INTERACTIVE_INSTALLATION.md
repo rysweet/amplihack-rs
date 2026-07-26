@@ -416,7 +416,7 @@ Potential improvements for future iterations:
 
 ## Related Files
 
-- **Implementation**: `src/amplihack/utils/prerequisites.py`
+- **Implementation**: `crates/amplihack-utils/`
 - **Tests**: `tests/test_interactive_installer.py`, `tests/test_prerequisites.py`
 - **Example**: `examples/interactive_install_demo.py`
 - **Audit Log**: `~/.claude/runtime/logs/installation_audit.jsonl`

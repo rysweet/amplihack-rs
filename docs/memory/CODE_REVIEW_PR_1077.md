@@ -1,5 +1,8 @@
 # Code Review: PR #1077 - Neo4j Memory System Implementation
 
+> ℹ️ **Historical / legacy document.** This page documents an implementation that lived in the removed Python `src/amplihack/` package (deleted in #637). Paths below reference that former tree and generally have **no direct Rust equivalent**; they are retained for historical context.
+<!-- legacy-src-amplihack-refs:#877 -->
+
 **Reviewer**: Reviewer Agent
 **Date**: 2025-11-03
 **Branch**: feat/neo4j-memory-system

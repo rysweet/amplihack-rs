@@ -9,7 +9,7 @@ path that resolves to the same directory via symlinks), `copytree_manifest()`
 crashes with:
 
 ```
-shutil.SameFileError: '/home/user/src/amplihack/bin' and '/home/user/src/amplihack/bin' are the same file
+shutil.SameFileError: '/home/user/src/amplihack-rs/bin' and '/home/user/src/amplihack-rs/bin' are the same file
 ```
 
 This typically happens during:

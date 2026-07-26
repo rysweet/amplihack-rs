@@ -920,10 +920,10 @@ This is by design. Mini is for prototyping and eval. For real tool usage, use
 ### Getting Help
 
 - Architecture documentation: `docs/GOAL_SEEKING_AGENTS.md`
-- Eval level definitions: `src/amplihack/eval/test_levels.py`
-- Self-improvement loop: `src/amplihack/eval/self_improve/runner.py`
-- CLI source: `src/amplihack/goal_agent_generator/cli.py`
-- SDK adapters: `src/amplihack/agents/goal_seeking/sdk_adapters/`
+- Eval level definitions: `crates/amplihack-agent-eval/`
+- Self-improvement loop: `crates/amplihack-agent-eval/`
+- CLI source: `crates/amplihack-agent-generator/`
+- SDK adapters: `crates/amplihack-agent-core/`
 
 ---
 
@@ -991,21 +991,21 @@ amplihack eval domain_eval_harness \
 
 | Component           | Path                                                      |
 | ------------------- | --------------------------------------------------------- |
-| CLI                 | `src/amplihack/goal_agent_generator/cli.py`               |
-| Models              | `src/amplihack/goal_agent_generator/models.py`            |
-| Prompt Analyzer     | `src/amplihack/goal_agent_generator/prompt_analyzer.py`   |
-| Objective Planner   | `src/amplihack/goal_agent_generator/objective_planner.py` |
-| Skill Synthesizer   | `src/amplihack/goal_agent_generator/skill_synthesizer.py` |
-| Agent Assembler     | `src/amplihack/goal_agent_generator/agent_assembler.py`   |
-| Packager            | `src/amplihack/goal_agent_generator/packager.py`          |
-| Learning Agent      | `src/amplihack/agents/goal_seeking/learning_agent.py`     |
-| Memory Retrieval    | `src/amplihack/agents/goal_seeking/memory_retrieval.py`   |
-| Test Levels         | `src/amplihack/eval/test_levels.py`                       |
-| Progressive Suite   | `src/amplihack/eval/progressive_test_suite.py`            |
-| Grader              | `src/amplihack/eval/grader.py`                            |
-| Self-Improve Runner | `src/amplihack/eval/self_improve/runner.py`               |
-| Error Analyzer      | `src/amplihack/eval/self_improve/error_analyzer.py`       |
-| Patch Proposer      | `src/amplihack/eval/self_improve/patch_proposer.py`       |
-| Reviewer Voting     | `src/amplihack/eval/self_improve/reviewer_voting.py`      |
-| SDK Eval Loop       | `src/amplihack/eval/sdk_eval_loop.py`                     |
-| Teaching Agent      | `src/amplihack/agents/teaching/generator_teacher.py`      |
+| CLI                 | `crates/amplihack-agent-generator/`               |
+| Models              | `crates/amplihack-agent-generator/`            |
+| Prompt Analyzer     | `crates/amplihack-agent-generator/`   |
+| Objective Planner   | `crates/amplihack-agent-generator/` |
+| Skill Synthesizer   | `crates/amplihack-agent-generator/` |
+| Agent Assembler     | `crates/amplihack-agent-generator/`   |
+| Packager            | `crates/amplihack-agent-generator/`          |
+| Learning Agent      | `crates/amplihack-agent-core/`     |
+| Memory Retrieval    | `crates/amplihack-agent-core/`   |
+| Test Levels         | `crates/amplihack-agent-eval/`                       |
+| Progressive Suite   | `crates/amplihack-agent-eval/`            |
+| Grader              | `crates/amplihack-agent-eval/`                            |
+| Self-Improve Runner | `crates/amplihack-agent-eval/`               |
+| Error Analyzer      | `crates/amplihack-agent-eval/`       |
+| Patch Proposer      | `crates/amplihack-agent-eval/`       |
+| Reviewer Voting     | `crates/amplihack-agent-eval/`      |
+| SDK Eval Loop       | `crates/amplihack-agent-eval/`                     |
+| Teaching Agent      | `crates/amplihack-domain-agents/`      |

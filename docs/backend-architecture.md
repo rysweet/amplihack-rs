@@ -239,7 +239,7 @@ This implementation follows amplihack philosophy:
 ## Files Created
 
 ```
-src/amplihack/memory/backends/
+crates/amplihack-memory/
 ├── __init__.py              # Backend selector and factory
 ├── base.py                  # Protocol and capabilities
 ├── sqlite_backend.py        # SQLite implementation

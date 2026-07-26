@@ -17,9 +17,9 @@ The Copilot parity control plane gives GitHub Copilot CLI the same staged amplih
 
 | Component                          | Path                                               | Responsibility                                                                                                       |
 | ---------------------------------- | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| Copilot launcher                   | `src/amplihack/launcher/copilot.py`                | Stages agents, hooks, commands, recipes, and generated wrappers before launching Copilot CLI                         |
-| Rust recipe runner bridge          | `src/amplihack/recipes/rust_runner.py`             | Discovers `recipe-runner-rs`, enforces version compatibility, builds subprocess environment, and parses JSON results |
-| Nested Copilot compatibility layer | `src/amplihack/recipes/rust_runner_copilot.py`     | Merges prompt fragments and injects permissive defaults only when explicit Copilot permission flags are absent       |
+| Copilot launcher                   | `crates/amplihack-launcher/`                | Stages agents, hooks, commands, recipes, and generated wrappers before launching Copilot CLI                         |
+| Rust recipe runner bridge          | `crates/amplihack-cli/src/commands/recipe/`             | Discovers `recipe-runner-rs`, enforces version compatibility, builds subprocess environment, and parses JSON results |
+| Nested Copilot compatibility layer | `crates/amplihack-cli/src/commands/recipe/`     | Merges prompt fragments and injects permissive defaults only when explicit Copilot permission flags are absent       |
 | Smart-orchestrator classify step   | `amplifier-bundle/recipes/smart-orchestrator.yaml` | Case-switches on `AMPLIHACK_AGENT_BINARY` to omit Claude-only flags for Copilot/codex binaries                       |
 | Canonical XPIA hook                | `.claude/tools/xpia/hooks/pre_tool_use.py`         | Fail-closed Bash policy evaluation backed by `xpia-defend`                                                           |
 | XPIA compatibility shim            | `.claude/tools/xpia/hooks/pre_tool_use_rust.py`    | Delegates to `pre_tool_use.py` so both historical entrypoints behave identically                                     |

@@ -24,7 +24,7 @@ coupling without removing meaningful duplication.
 
 ### Classifier A: `WorkflowClassifier`
 
-- **File**: `src/amplihack/workflows/classifier.py`
+- **File**: `crates/amplihack-workflows/`
 - **Class**: `WorkflowClassifier`
 - **Purpose**: Proactive routing — classifies a user's request _before_ work begins
 - **Input**: A single request string (`str`)
@@ -79,8 +79,8 @@ coupling without removing meaningful duplication.
 
 | File                                                        | Role                                                                                                                          |
 | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `src/amplihack/workflows/session_start_skill.py`            | `SessionStartClassifierSkill.process()` calls `classifier.classify()` at session start, then routes to `ExecutionTierCascade` |
-| `src/amplihack/workflows/__init__.py`                       | Public re-export                                                                                                              |
+| `crates/amplihack-workflows/`            | `SessionStartClassifierSkill.process()` calls `classifier.classify()` at session start, then routes to `ExecutionTierCascade` |
+| `crates/amplihack-workflows/`                       | Public re-export                                                                                                              |
 | `tests/workflows/test_classifier.py`                        | 60+ unit tests                                                                                                                |
 | `tests/workflows/test_regression.py`, `test_performance.py` | Regression and performance tests                                                                                              |
 
@@ -111,7 +111,7 @@ approaches are possible:
 Extract overlapping keyword lists into a shared module:
 
 ```
-src/amplihack/workflows/_status.py
+crates/amplihack-workflows/
   INVESTIGATION_KEYWORDS = [...]   # shared
   OPERATIONS_KEYWORDS = [...]      # shared
   SIMPLE_TASK_KEYWORDS = [...]     # SessionDetectionMixin only

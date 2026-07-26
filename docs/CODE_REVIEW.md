@@ -19,7 +19,7 @@ stubs, TODOs, or tech debt remaining).
 ### 1. Code Duplication (CRITICAL)
 
 **Violation**: Ruthless Simplicity principle **Location**:
-`src/amplihack/cli.py` - Three identical auto mode handling blocks **Impact**:
+`crates/amplihack-cli/` - Three identical auto mode handling blocks **Impact**:
 40+ lines of duplicated code across `launch`, `claude`, and `copilot` commands
 
 **Fix**: Extracted `handle_auto_mode()` helper function

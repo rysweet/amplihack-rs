@@ -1,5 +1,8 @@
 # Plugin Directory Structure Fix for UVX Discovery
 
+> ℹ️ **Historical / legacy document.** This page documents an implementation that lived in the removed Python `src/amplihack/` package (deleted in #637). Paths below reference that former tree and generally have **no direct Rust equivalent**; they are retained for historical context.
+<!-- legacy-src-amplihack-refs:#877 -->
+
 **Feature**: Automatic plugin directory inclusion in wheel builds for Claude Code plugin discovery
 
 **Status**: Implemented and working

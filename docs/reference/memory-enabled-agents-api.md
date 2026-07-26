@@ -16,7 +16,7 @@ That is no longer the best starting point for this checkout.
 
 The previous version centered an older standalone SQLite-first API surface and did not reflect the current split between:
 
-- the in-repo CLI memory backend under `src/amplihack/memory`
+- the in-repo CLI memory backend under `crates/amplihack-memory/`
 - the generated `amplihack new --enable-memory` scaffold that packages `amplihack_memory` helpers into a standalone agent bundle
 
 If you still need deep standalone-library details, read the `amplihack-memory-lib` package docs directly. For this repo, start with the replacement docs above.

@@ -48,8 +48,8 @@ After `default-workflow` step 04, downstream code reads `worktree_setup`.
 
 ```json
 {
-  "execution_root": "/home/user/src/amplihack/worktrees/docs/issue-107-retcon-docs",
-  "worktree_path": "/home/user/src/amplihack/worktrees/docs/issue-107-retcon-docs",
+  "execution_root": "/home/user/src/amplihack-rs/worktrees/docs/issue-107-retcon-docs",
+  "worktree_path": "/home/user/src/amplihack-rs/worktrees/docs/issue-107-retcon-docs",
   "branch_name": "docs/issue-107-retcon-docs",
   "created": true,
   "bootstrap": false

@@ -753,7 +753,7 @@ After creating your tool:
 - **Original Tool**: `~/.amplihack/.claude/scenarios/analyze-codebase/`
 - **Template Files**: `~/.amplihack/.claude/scenarios/templates/`
 - **Agent Documentation**: `~/.amplihack/.claude/agents/`
-- **Agent Manager**: `src/amplihack/agents/agent_manager.py`
+- **Agent Manager**: `crates/amplihack-agent-core/`
 - **Philosophy Guide**: `~/.amplihack/.claude/context/PHILOSOPHY.md`
 
 ---

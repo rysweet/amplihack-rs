@@ -33,7 +33,7 @@ The module split keeps the behavior intact while making it obvious where new log
 
 The compatibility rules are strict:
 
-- `src/amplihack/agents/goal_seeking/learning_agent.py` remains the primary import path.
+- `crates/amplihack-agent-core/` remains the primary import path.
 - `LearningAgent` remains directly importable for existing callers.
 - `GoalSeekingAgent` continues to delegate learning and answering work to `LearningAgent`.
 - The public methods stay unchanged:
@@ -43,7 +43,7 @@ The compatibility rules are strict:
   - `get_memory_stats`
   - `flush_memory`
   - `close`
-- `src/amplihack/agents/goal_seeking/__init__.py` continues to import `LearningAgent` for backward compatibility without promoting it into `__all__`.
+- `crates/amplihack-agent-core/` continues to import `LearningAgent` for backward compatibility without promoting it into `__all__`.
 
 ## The eight-module layout
 

@@ -808,7 +808,7 @@ These scores represent the system after iterative prompt tuning and retrieval st
 ### File Layout
 
 ```
-src/amplihack/
+crates/
   goal_agent_generator/
     cli.py                          # `amplihack new` command
     prompt_analyzer.py              # Stage 1: Analyze goal prompt

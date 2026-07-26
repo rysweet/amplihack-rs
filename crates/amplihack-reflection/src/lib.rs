@@ -4,7 +4,6 @@
 //!
 //! Native Rust port of `amplifier-bundle/tools/amplihack/reflection/*.py`.
 
-pub mod display;
 pub mod error_analysis;
 pub mod lightweight_analyzer;
 pub mod reflection;

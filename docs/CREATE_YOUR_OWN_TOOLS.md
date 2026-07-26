@@ -198,7 +198,7 @@ Create executable code for complex processing.
 
 **When to use:** For tasks requiring significant computation or external API calls
 
-**Location:** `src/amplihack/tools/your_tool.py`
+**Location:** `src/amplihack/tools/your_tool.py` (legacy Python path, removed in #637; no Rust equivalent)
 
 **Structure:**
 

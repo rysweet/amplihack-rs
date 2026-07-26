@@ -482,7 +482,7 @@ This is **expected and correct** - tests drive implementation!
   - tests/unit/test_ui_threading.py
   - tests/unit/test_ui_sdk_integration.py
   - tests/integration/test_auto_mode_ui_integration.py
-- **Existing Code**: src/amplihack/launcher/auto_mode.py
+- **Existing Code**: crates/amplihack-launcher/
 
 ## Contact & Support
 

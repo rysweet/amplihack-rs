@@ -186,7 +186,7 @@ All five original "future work" items have been implemented:
 ## CognitiveAdapter Hive Integration
 
 The bridge between LearningAgent and the hive mind is in `CognitiveAdapter`
-(`src/amplihack/agents/goal_seeking/cognitive_adapter.py`).
+(`crates/amplihack-agent-core/`).
 
 ### How Facts Flow
 

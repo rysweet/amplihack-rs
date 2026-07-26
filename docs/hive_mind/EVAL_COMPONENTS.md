@@ -16,7 +16,7 @@ Azure Event Hubs carries the distributed learn and question traffic. Azure Conta
 
 If you need to explain the stack quickly to another engineer, use this mental model:
 
-1. For local runtime changes, start in `amplihack` and run the thin wrappers in `src/amplihack/eval/`. Those wrappers are convenience shims over `amplihack_eval`, not a second eval framework.
+1. For local runtime changes, start in `amplihack` and run the thin wrappers in `crates/amplihack-agent-eval/`. Those wrappers are convenience shims over `amplihack_eval`, not a second eval framework.
 2. For authoritative local eval runs, switch to `amplihack-agent-eval` and use `amplihack-eval run` or `amplihack-eval compare`. That repo owns question generation, grading, and packaged reports.
 3. For distributed Azure evals, the eval repo still owns the run shape and final report, but it calls the Azure deployment assets from `amplihack`. Event Hubs carries the traffic, and the agents themselves run in Azure Container Apps.
 4. For Aspire, stay in `amplihack` and run the AppHost in `deploy/azure_hive/aspire/`. Aspire is the local orchestration shell around the existing deploy, monitor, and eval scripts. It is not a replacement for the Python eval harness.
@@ -167,9 +167,9 @@ That is why the docs prefer `read -rsp ... EH_CONN` plus `export EH_CONN` over t
 | If the problem is in...                     | Start in...                                                                                                                                |
 | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | question generation, grading, report output | `amplihack-agent-eval`                                                                                                                     |
-| local thin wrapper behavior                 | `src/amplihack/eval/` in `amplihack`                                                                                                       |
+| local thin wrapper behavior                 | `crates/amplihack-agent-eval/` in `amplihack`                                                                                                       |
 | Azure deployment topology                   | `deploy/azure_hive/` in `amplihack`                                                                                                        |
-| agent runtime behavior                      | `src/amplihack/agents/` in `amplihack`                                                                                                     |
+| agent runtime behavior                      | `crates/amplihack-agent-core/` in `amplihack`                                                                                                     |
 | distributed answer transport or correlation | `deploy/azure_hive/remote_agent_adapter.py` and `agent_entrypoint.py` in `amplihack` plus the distributed runner in `amplihack-agent-eval` |
 | Aspire dashboard orchestration              | `deploy/azure_hive/aspire/apphost.cs` in `amplihack`                                                                                       |
 

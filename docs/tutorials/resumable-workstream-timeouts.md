@@ -77,7 +77,7 @@ During execution you will see heartbeat output similar to this:
       "lifecycle_state": "running",
       "step": "step-12-run-precommit",
       "checkpoint_id": "checkpoint-after-review-feedback",
-      "worktree_path": "/home/user/src/amplihack/worktrees/fix/issue-4032-resumable-timeouts",
+      "worktree_path": "/home/user/src/amplihack-rs/worktrees/fix/issue-4032-resumable-timeouts",
       "log_path": "/tmp/amplihack-workstreams/log-4032.txt",
       "elapsed_s": 244
     }
@@ -131,7 +131,7 @@ Expected resume-state shape:
   "attempt": 1,
   "current_step": "step-12-run-precommit",
   "checkpoint_id": "checkpoint-after-review-feedback",
-  "worktree_path": "/home/user/src/amplihack/worktrees/fix/issue-4032-resumable-timeouts",
+  "worktree_path": "/home/user/src/amplihack-rs/worktrees/fix/issue-4032-resumable-timeouts",
   "log_file": "/tmp/amplihack-workstreams/log-4032.txt",
   "progress_sidecar": "/tmp/amplihack-workstreams/state/ws-4032.progress.json"
 }

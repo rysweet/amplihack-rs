@@ -162,11 +162,6 @@ impl AutoMode {
         )
         .with_context(|| format!("failed to build {} prompt delivery", binary.env_value()))?;
         delivered.command.current_dir(&self.config.working_dir);
-        if let Some(timeout) = self.config.query_timeout_secs {
-            delivered
-                .command
-                .env("AMPLIHACK_QUERY_TIMEOUT", timeout.to_string());
-        }
         let output = Self::run_delivered_output(delivered)
             .with_context(|| format!("failed to run {}", binary.env_value()))?;
         let code = output.status.code().unwrap_or(1);

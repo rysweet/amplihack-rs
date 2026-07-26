@@ -114,7 +114,7 @@ The Rust and Python launchers agree on SIGINT exit code behavior:
 | Child exits normally (code N)     | N               | N              |
 | Child killed by SIGINT (no code)  | 0               | 0              |
 
-**Python mechanism:** `signal_handler` in `src/amplihack/launcher/core.py` is
+**Python mechanism:** `signal_handler` in `crates/amplihack-launcher/` is
 registered for SIGINT via `signal.signal(signal.SIGINT, signal_handler)`. The
 handler calls `sys.exit(0)`.
 

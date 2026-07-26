@@ -641,7 +641,7 @@ A: Regenerate from prompt. Update commands are deferred pending evidence of need
 
 ## Getting Help
 
-- **Documentation**: See `src/amplihack/goal_agent_generator/README.md`
+- **Documentation**: See `crates/amplihack-agent-generator/`
 - **Examples**: Check `examples/goal_agent_generator/`
 - **Issues**: Report at https://github.com/rysweet/MicrosoftHackathon2025-AgenticCoding/issues
 

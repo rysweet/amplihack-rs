@@ -1,5 +1,8 @@
 # Gherkin v2 Experiment Findings: Recipe Step Executor
 
+> ℹ️ **Historical / legacy document.** This page documents an implementation that lived in the removed Python `src/amplihack/` package (deleted in #637). Paths below reference that former tree and generally have **no direct Rust equivalent**; they are retained for historical context.
+<!-- legacy-src-amplihack-refs:#877 -->
+
 Issue: #3969 | PR: #3975 | Date: 2026-03-31
 
 ## Summary

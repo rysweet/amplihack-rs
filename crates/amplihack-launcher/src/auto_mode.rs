@@ -57,8 +57,6 @@ pub struct AutoModeConfig {
     pub prompt: String,
     pub max_turns: u32,
     pub working_dir: PathBuf,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub query_timeout_secs: Option<u64>,
     pub max_session_secs: u64,
     pub max_api_calls: u32,
     pub max_output_bytes: usize,
@@ -73,7 +71,6 @@ impl Default for AutoModeConfig {
             prompt: String::new(),
             max_turns: DEFAULT_MAX_TURNS,
             working_dir: PathBuf::from("."),
-            query_timeout_secs: None,
             max_session_secs: DEFAULT_MAX_SESSION_SECS,
             max_api_calls: DEFAULT_MAX_API_CALLS,
             max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,

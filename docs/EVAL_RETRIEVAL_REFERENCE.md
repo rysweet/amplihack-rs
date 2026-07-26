@@ -4,8 +4,8 @@
 **Last Updated**: 2026-02-28
 **Source Files**:
 
-- `src/amplihack/agents/goal_seeking/learning_agent.py`
-- `src/amplihack/eval/long_horizon_memory.py`
+- `crates/amplihack-agent-core/`
+- `crates/amplihack-agent-eval/`
 
 ## Overview
 

@@ -38,7 +38,7 @@ graph LR
     L --> OB
 ```
 
-_Source: `src/amplihack/agents/goal_seeking/agentic_loop.py` — methods: `observe`, `orient`, `perceive`, `reason`, `act`, `learn`, `run_iteration`_
+_Source: `crates/amplihack-agent-core/` — methods: `observe`, `orient`, `perceive`, `reason`, `act`, `learn`, `run_iteration`_
 
 ---
 

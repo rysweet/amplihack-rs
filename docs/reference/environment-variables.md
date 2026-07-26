@@ -43,6 +43,8 @@ All environment variables read or written by `amplihack` during a launch (`ampli
   - [AMPLIHACK_SKIP_AUTO_INSTALL](#amplihack_skip_auto_install)
   - [AMPLIHACK_SKIP_MMDC](#amplihack_skip_mmdc)
   - [AMPLIHACK_TEST_FAKE_LATEST_VERSION](#amplihack_test_fake_latest_version)
+  - [AMPLIHACK_TOPIC_NAME](#amplihack_topic_name)
+  - [AMPLIHACK_PROJECT_ID](#amplihack_project_id)
   - [CI](#ci)
   - [UV_TOOL_BIN_DIR](#uv_tool_bin_dir)
 - [Signal channel variables](#signal-channel-variables)
@@ -889,12 +891,14 @@ AMPLIHACK_ENABLE_BLARIFY=1 AMPLIHACK_BLARIFY_MODE=background amplihack claude --
 **Type:** flag
 **Values:** `1` (skip update check) — absence or any other value means check is enabled
 **Used by:** `update::should_skip_update_check()`,
-`update::classify_skip_reason()`
+`update::classify_skip_reason()`,
+`copilot_launcher::ensure_latest_copilot()`
 
 Permanently disables both update-check paths for every `amplihack` invocation:
 
 1. The pre-launch **npm tool update check** (notice for `claude`, `copilot`,
-   `codex` package versions).
+   `codex` package versions). The `amplihack copilot` launcher gate
+   (`ensure_latest_copilot`) honors this same variable.
 2. The **startup self-update prompt** (`Update now? [y/N] (5s timeout):` for
    the `amplihack` binary itself).
 
@@ -1132,6 +1136,41 @@ See: [Startup Self-Update Prompt — Subprocess-Safe Skip](../features/startup-u
 **Used by:** `bootstrap.rs` when installing `amplifier`
 
 Override the directory where `uv tool install` places the `amplifier` binary. Defaults to `~/.local/bin`.
+
+---
+
+### AMPLIHACK_TOPIC_NAME
+
+**Type:** string
+**Values:** any topic name — absence falls back to `hive-graph`
+**Used by:** `commands::hive_haymaker::run_hive_feed`,
+`commands::hive_haymaker::run_hive_eval`
+
+Overrides the default hive event-bus topic name used by the `hive feed` and
+`hive eval` commands. An explicit `--topic` CLI argument takes precedence; when
+no argument is given, `AMPLIHACK_TOPIC_NAME` is consulted, and if it is unset the
+topic defaults to `hive-graph`.
+
+```sh
+export AMPLIHACK_TOPIC_NAME=my-hive
+amplihack hive feed --deployment-id demo
+```
+
+---
+
+### AMPLIHACK_PROJECT_ID
+
+**Type:** string
+**Values:** any project id — absence falls back to `amplihack`
+**Used by:** `amplihack_memory::cli_memory::learning`
+
+Sets the project id recorded on session-learning memory records. When unset, the
+project id defaults to `amplihack`. Use this to segregate learned memories by
+project.
+
+```sh
+export AMPLIHACK_PROJECT_ID=my-project
+```
 
 ---
 

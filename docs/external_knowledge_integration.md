@@ -1,5 +1,8 @@
 # External Knowledge Integration
 
+> ℹ️ **Historical / legacy document.** This page documents an implementation that lived in the removed Python `src/amplihack/` package (deleted in #637). Paths below reference that former tree and generally have **no direct Rust equivalent**; they are retained for historical context.
+<!-- legacy-src-amplihack-refs:#877 -->
+
 Complete implementation of external knowledge integration for the Neo4j memory system, allowing the framework to fetch, cache, and link external documentation sources to code and memories.
 
 ## Overview
