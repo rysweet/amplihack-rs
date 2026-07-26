@@ -14,16 +14,26 @@ For the broader resource contract (concurrency, timeouts, matrix boundaries) see
 ## Job graph
 
 ```
-check (Lint & Format) ── required
+push / pull_request / merge_group
+   ├─ check (Lint & Format) ───── required
    ├─ test (Test) ─────────────── required
    ├─ install-smoke (Install Smoke Test)
    └─ cross-compile (Build <target>) × 4
-         └─ (tag push only) release
+
+release ── (tag push only) needs: [test, cross-compile]
 ```
 
-`check` gates every downstream job. `test`, `install-smoke`, and the four
-`cross-compile` legs fan out from it in parallel. `release` runs only on `v*`
-tags, after `test` and every `cross-compile` leg succeed.
+The validation jobs **fan out from the trigger in parallel** — `check`, `test`,
+`install-smoke`, and the four `cross-compile` legs have no `needs:` dependency on
+each other, so none idles waiting on `check`. Only `release` declares
+`needs: [test, cross-compile]`, and it runs only on `v*` tags after `test` and
+every `cross-compile` leg succeed.
+
+Running `test` concurrently with `check` (rather than behind it) roughly halves
+the required-check critical path; a `check` failure still blocks the merge
+independently, so correctness is unchanged. See
+[CI Wall-Clock Parallelization](ci-wallclock-parallelization.md) for the timing
+rationale and the tag-conditional release-optimization profile.
 
 ## Toolchain pinning
 
@@ -270,6 +280,8 @@ stops a future job from inheriting broad default permissions.
 
 ## Related references
 
+- [CI Wall-Clock Parallelization](ci-wallclock-parallelization.md) — parallel
+  fan-out job graph and tag-conditional release optimization.
 - [CI Resource Discipline](ci-resource-discipline.md) — concurrency, timeout,
   matrix, and cache boundaries.
 - [Contributing (Rust)](../../CONTRIBUTING_RUST.md) — local build, test, and PR

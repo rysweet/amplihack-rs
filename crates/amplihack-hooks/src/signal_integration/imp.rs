@@ -493,10 +493,6 @@ pub fn on_stop(session_id: &str) {
 }
 
 fn stop(session_id: &str) -> anyhow::Result<()> {
-    let Some(config) = load_config_or_disabled() else {
-        return Ok(());
-    };
-
     let root = signal_root();
     let state_file = AtomicJsonFile::new(state_path(&root, session_id));
     let state: SignalState = match state_file.read() {
@@ -509,12 +505,40 @@ fn stop(session_id: &str) -> anyhow::Result<()> {
         }
     };
 
-    // Stop the subscriber first so it stops touching the inbox.
+    // Reap the detached subscriber FIRST and unconditionally (issue #1024).
+    // Reaping is a local process-lifecycle operation, independent of whether the
+    // Signal channel is still configured. If config was present at session start
+    // (so a subscriber was spawned) but is absent/disabled at teardown, gating
+    // the reap behind the config check below would orphan the subscriber —
+    // reparented to init — which is exactly the leak this issue tracks.
     if let Some(pid) = state.subscriber_pid {
         stop_subscriber(pid, session_id);
     }
 
+    // Clear the persisted per-session state (group id + subscriber pid) exactly
+    // once, on whichever exit path we take, so no exit can leave a stale
+    // subscriber PID or group id behind. Consolidating into a single atomic write
+    // keeps state hygiene in one place and avoids a redundant second
+    // read-serialize-fsync-rename cycle on the common configured-teardown path.
+    // Best-effort: a failed clear must not block teardown.
+    let clear_state = || {
+        if let Err(err) = state_file.update(|s: &mut SignalState| {
+            s.group_id = None;
+            s.subscriber_pid = None;
+        }) {
+            tracing::warn!("signal: failed to clear session state at teardown: {err}");
+        }
+    };
+
+    // Without a configured channel there is no group to leave; the subscriber has
+    // already been reaped above, so record the cleared state and finish.
+    let Some(config) = load_config_or_disabled() else {
+        clear_state();
+        return Ok(());
+    };
+
     let Some(group) = state.group_id else {
+        clear_state();
         return Ok(());
     };
     let group_id = GroupId(group);
@@ -542,17 +566,10 @@ fn stop(session_id: &str) -> anyhow::Result<()> {
         Ok::<(), anyhow::Error>(())
     })?;
 
-    // Clear the persisted group so a stale id is never reused.
-    if let Err(err) = state_file.update(|s: &mut SignalState| {
-        s.group_id = None;
-        s.subscriber_pid = None;
-    }) {
-        tracing::warn!("signal: failed to clear session state at teardown: {err}");
-    }
-
-    // Drop the per-session outbound-fingerprint log so it does not outlive the
-    // session (bounded during the session, removed entirely at teardown).
-    super::outbound::clear_outbound_fingerprints(&root, session_id);
+    // Clear the persisted per-session state in a single atomic write (see the
+    // `clear_state` seam above) so a stale group id or subscriber pid is never
+    // reused across sessions.
+    clear_state();
 
     // Drop the per-session outbound-fingerprint log so it does not outlive the
     // session (bounded during the session, removed entirely at teardown).
@@ -655,6 +672,9 @@ fn pid_is_our_subscriber(pid: u32, session_id: &str) -> bool {
                     has_marker = true;
                 } else if arg == session_id.as_bytes() {
                     has_session = true;
+                }
+                if has_marker && has_session {
+                    return true;
                 }
             }
             has_marker && has_session
@@ -1094,5 +1114,97 @@ mod tests {
     fn format_operator_context_single_item() {
         let out = format_operator_context(&["only one".to_string()]);
         assert_eq!(out, format!("{EXPECTED_HEADER}\n1. only one"));
+    }
+
+    // ---------------------------------------------------------------------
+    // Subscriber teardown / leak-prevention lifecycle (issue #1024)
+    // ---------------------------------------------------------------------
+
+    /// Spawn a long-lived helper whose `/proc/<pid>/cmdline` contains both the
+    /// `signal-subscriber` marker and the given session id as distinct argv
+    /// entries, mimicking a real detached subscriber. `sh -c <script> <arg0>
+    /// <args...>` keeps every trailing token as its own argv entry, so the
+    /// identity check in [`pid_is_our_subscriber`] matches it.
+    #[cfg(target_os = "linux")]
+    fn spawn_fake_subscriber(session_id: &str) -> std::process::Child {
+        use std::process::{Command, Stdio};
+        Command::new("sh")
+            .args([
+                "-c",
+                "sleep 5",
+                "signal-subscriber",
+                "--session-id",
+                session_id,
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn fake subscriber")
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stop_subscriber_reaps_matching_live_subscriber() {
+        let session_id = "reap-test-session-abc123";
+        let mut child = spawn_fake_subscriber(session_id);
+        let pid = child.id();
+        // Let the shell surface its cmdline before we assert identity.
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert!(
+            pid_is_our_subscriber(pid, session_id),
+            "fake subscriber pid {pid} must be recognized as ours"
+        );
+
+        stop_subscriber(pid, session_id);
+
+        // SIGTERM terminates the default-disposition shell; poll for exit so no
+        // subscriber is left parented to init after teardown.
+        let mut exited = false;
+        for _ in 0..100 {
+            match child.try_wait() {
+                Ok(Some(_status)) => {
+                    exited = true;
+                    break;
+                }
+                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+                Err(err) => panic!("try_wait failed: {err}"),
+            }
+        }
+        if !exited {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("subscriber pid {pid} was not reaped by stop_subscriber (leak)");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stop_subscriber_is_noop_for_foreign_session() {
+        let session_id = "owner-session-xyz";
+        let mut child = spawn_fake_subscriber(session_id);
+        let pid = child.id();
+        std::thread::sleep(std::time::Duration::from_millis(150));
+
+        // A teardown for a *different* session must never kill this subscriber
+        // (guards against reaping another live session's daemon on PID reuse).
+        stop_subscriber(pid, "some-other-session");
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert!(
+            matches!(child.try_wait(), Ok(None)),
+            "foreign-session teardown must not kill this subscriber"
+        );
+
+        // Clean up: reap it for real so the test leaves no process behind.
+        stop_subscriber(pid, session_id);
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn stop_subscriber_never_signals_pid_le_1() {
+        // Must never signal init (pid 1) or pid 0 (whole process group).
+        // Reaching the end without side effects is the assertion.
+        stop_subscriber(0, "any-session");
+        stop_subscriber(1, "any-session");
     }
 }
