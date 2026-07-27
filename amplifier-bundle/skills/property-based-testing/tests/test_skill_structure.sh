@@ -61,7 +61,7 @@ else
   fail "frontmatter: first line should be '---', got '$FIRST_LINE'"
 fi
 
-DELIM_COUNT=$(grep -c "^---$" "$SKILL_FILE" || true)
+DELIM_COUNT=$(grep -c "^---$" "$SKILL_FILE" || echo 0)
 if [[ "$DELIM_COUNT" -ge 2 ]]; then
   pass "frontmatter has closing --- delimiter ($DELIM_COUNT found)"
 else
@@ -175,7 +175,7 @@ for issue_prop in "redact(redact" "no-secret-leak" "shard_jobs_max" "coverage ta
 done
 
 # Fenced code blocks must exist for examples (need >= 5, one per stack).
-FENCE_COUNT=$(grep -c '^```' "$SKILL_FILE" || true)
+FENCE_COUNT=$(grep -c '^```' "$SKILL_FILE" || echo 0)
 if [[ "$FENCE_COUNT" -ge 10 ]]; then
   pass "has >=5 fenced code blocks ($((FENCE_COUNT/2)) blocks)"
 else
@@ -193,7 +193,7 @@ else
   fail "missing quiz/self-test section"
 fi
 
-QUIZ_QUESTIONS=$(grep -cE "^[0-9]+\." "$SKILL_FILE" || true)
+QUIZ_QUESTIONS=$(grep -cE "^[0-9]+\." "$SKILL_FILE" || echo 0)
 if [[ "$QUIZ_QUESTIONS" -ge 3 ]]; then
   pass "quiz has >=3 numbered questions ($QUIZ_QUESTIONS numbered items)"
 else
