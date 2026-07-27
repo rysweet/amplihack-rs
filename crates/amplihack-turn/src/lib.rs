@@ -184,14 +184,27 @@ pub enum ChannelError {
     Io(#[from] std::io::Error),
 }
 
+/// Backoff applied between `Idle` polls so a channel that repeatedly reports
+/// `Idle` cannot pin a CPU core.
+///
+/// A bare `yield_now()` only re-queues the task at the back of the runtime's
+/// run queue; against a channel that keeps returning `Idle` it is
+/// indistinguishable from a busy spin and burns ~100% of a core. Sleeping for a
+/// short, bounded interval hands the core back to the runtime while keeping
+/// re-poll latency low enough that transient idleness is imperceptible. There
+/// is still **no** wall-clock timeout on the wait itself — only a floor on how
+/// often we re-poll.
+const IDLE_BACKOFF: std::time::Duration = std::time::Duration::from_millis(5);
+
 /// Drive `session` from `channel` until the channel closes.
 ///
 /// * [`NextPrompt::Ready`] → run one turn (`session.run_turn(&p)`), then publish
 ///   its output (`channel.publish_output(&out)`). The turn fully completes
 ///   (run + publish) before the next prompt is requested.
-/// * [`NextPrompt::Idle`] → wait for liveness / inbound activity, then poll
-///   again. There is **no** wall-clock timeout. The wait yields cooperatively to
-///   the runtime rather than busy-spinning the CPU.
+/// * [`NextPrompt::Idle`] → sleep for a short, bounded [`IDLE_BACKOFF`], then
+///   poll again. There is **no** wall-clock timeout on the wait. The backoff
+///   hands the core back to the runtime so a channel that keeps reporting
+///   `Idle` cannot busy-spin the CPU.
 /// * [`NextPrompt::Closed`] → break and return `Ok(())`.
 ///
 /// Any [`TurnError`] or [`ChannelError`] propagates out of the loop unchanged —
@@ -210,9 +223,11 @@ where
                 // REPLAY (default no-op). A publish failure fails fast.
                 channel.publish_output(&out).await?;
             }
-            // Nothing to run yet: yield to the runtime and re-poll. No timeout,
-            // no busy-spin. A correct channel returns Idle only transiently.
-            NextPrompt::Idle => tokio::task::yield_now().await,
+            // Nothing to run yet: sleep for a short bounded interval and re-poll.
+            // No timeout; the backoff hands the core back so a channel stuck on
+            // Idle cannot busy-spin. A correct channel returns Idle only
+            // transiently, so the added latency is imperceptible in practice.
+            NextPrompt::Idle => tokio::time::sleep(IDLE_BACKOFF).await,
             NextPrompt::Closed => break,
         }
     }
