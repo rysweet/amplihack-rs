@@ -560,6 +560,12 @@ Result after implementing:
 - Improved confidence in refactoring
 ```
 
+## Complementary Skills
+
+- **property-based-testing**: Once gaps are found, cover them with generative
+  property/metamorphic tests (invariants, round-trips) rather than only examples.
+- **smart-test**: Runs the resulting tests through the existing test runner.
+
 ## Next Steps
 
 After gap analysis:
