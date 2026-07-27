@@ -368,6 +368,73 @@ EOF
     rm -rf "$tmpdir"
 fi
 
+# TEST-SEC-10-C: Cypher single-quote-delimited literal escaper handles ' and \
+# An identifier containing BOTH a single quote and a backslash must be escaped
+# with the dedicated cypher_string_literal escaper (escape \ FIRST, then ')
+# so it cannot break out of / corrupt the emitted literal, and it round-trips.
+if command -v python3 >/dev/null 2>&1; then
+    sec10c_result=$(python3 - << 'PYEOF'
+def cypher_string_literal(raw: str) -> str:
+    # Order is critical: backslash first, then single quote.
+    escaped = raw.replace('\\', '\\\\').replace("'", "\\'")
+    return "'" + escaped + "'"
+
+# Identifier containing both a single quote and a backslash.
+raw = "O'Brien\\x"
+lit = cypher_string_literal(raw)
+
+# The emitted literal must be delimited by single quotes and every interior
+# quote/backslash must be backslash-escaped (no bare delimiter break-out).
+inner = lit[1:-1]
+
+# 1) Wrapped in single quotes.
+if not (lit.startswith("'") and lit.endswith("'")):
+    print("FAIL_WRAP")
+    raise SystemExit(0)
+
+# 2) Backslash escaped first: raw '\' -> '\\'; raw "'" -> "\'".
+expected_inner = "O\\'Brien\\\\x"
+if inner != expected_inner:
+    print("FAIL_ESCAPE:" + inner)
+    raise SystemExit(0)
+
+# 3) No un-escaped single quote inside (delimiter not broken out of):
+#    every ' must be immediately preceded by a backslash.
+for i, ch in enumerate(inner):
+    if ch == "'" and (i == 0 or inner[i - 1] != "\\"):
+        print("FAIL_BREAKOUT")
+        raise SystemExit(0)
+
+# 4) Round-trip: decode the literal back and confirm it equals the original.
+def cypher_unescape(literal: str) -> str:
+    body = literal[1:-1]
+    out = []
+    i = 0
+    while i < len(body):
+        if body[i] == "\\" and i + 1 < len(body):
+            out.append(body[i + 1])
+            i += 2
+        else:
+            out.append(body[i])
+            i += 1
+    return "".join(out)
+
+if cypher_unescape(lit) != raw:
+    print("FAIL_ROUNDTRIP:" + cypher_unescape(lit))
+    raise SystemExit(0)
+
+print("OK")
+PYEOF
+)
+    if [[ "$sec10c_result" == "OK" ]]; then
+        assert_pass "SEC-10-C: Cypher literal escapes ' and \\ and round-trips safely" "true"
+    else
+        assert_pass "SEC-10-C: Cypher literal escapes ' and \\ and round-trips safely" "false" "$sec10c_result"
+    fi
+else
+    echo "SKIP: SEC-10-C — python3 not available"
+fi
+
 # ============================================================================
 # SEC-04: Safe YAML Parsing (HIGH)
 # ============================================================================

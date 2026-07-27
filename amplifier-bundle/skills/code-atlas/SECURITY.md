@@ -20,7 +20,7 @@ This document defines the security controls that every implementation contributi
 | SEC-07  | MEDIUM   | Symlink attack prevention                         | Required |
 | SEC-08  | MEDIUM   | Large file DoS prevention                         | Required |
 | SEC-09  | CRITICAL | Credential redaction in bug reports + L8 output   | Required |
-| SEC-10  | HIGH     | DOT/Mermaid injection prevention (+ experiments/) | Required |
+| SEC-10  | HIGH     | DOT/Mermaid/Cypher injection prevention (+ exp/)  | Required |
 | SEC-11  | HIGH     | Layer 7 service name sanitization                 | Required |
 | SEC-12  | HIGH     | Layer 8 LSP output sanitization                   | Required |
 | SEC-13  | HIGH     | Density threshold parameter validation            | Required |
@@ -243,11 +243,12 @@ subprocess.run(f"mmdc -i {path}", shell=True)       # shell injection
 
 ### SEC-10: DOT/Mermaid Injection Prevention (HIGH)
 
-**Rule:** Code-derived strings inserted into DOT or Mermaid syntax must not allow diagram structure injection. Specifically:
+**Rule:** Code-derived strings inserted into DOT, Mermaid, **or Cypher** syntax must not allow structure/statement injection. Each target syntax has its own delimiter and therefore its own **dedicated** escaper — the DOT/Mermaid escapers MUST NOT be reused for Cypher literals, and vice versa. Specifically:
 
 - DOT labels: wrap in `"..."` and escape embedded `"` as `\"`
 - Mermaid labels: wrap node labels in `["..."]` syntax; escape `[`, `]`, `(`, `)` in content
 - Route strings (e.g. `/api/users/:id`): replace `:` with `﹕` (U+FE13) or wrap in quotes
+- **Cypher single-quote-delimited string literals** (e.g. `{name: 'STRIPE_KEY'}` in `.cypher` artifacts): escape backslash **first**, then the single quote, using the dedicated `cypher_string_literal` escaper below. The DOT/Mermaid escapers do NOT handle `'` and MUST NOT be used here.
 
 **DOT safe label:**
 
@@ -263,6 +264,22 @@ def mermaid_node(node_id: str, label: str) -> str:
     safe = label.replace('[', '&#91;').replace(']', '&#93;')
     return f'{node_id}["{safe}"]'
 ```
+
+**Cypher safe string literal** (REQUIRED for any string embedded in a `.cypher` statement):
+
+```python
+def cypher_string_literal(raw: str) -> str:
+    # Single-quote-delimited Cypher literal. Order is critical:
+    # escape backslash FIRST, then the single quote, so the
+    # backslash inserted for the quote is not itself re-escaped.
+    escaped = raw.replace('\\', '\\\\').replace("'", "\\'")
+    return "'" + escaped + "'"
+```
+
+`cypher_string_literal` — not `dot_label` / `mermaid_node` — is the control for
+every string written into a single-quote-delimited Cypher literal. An identifier
+containing `'` or `\` (e.g. `O'Brien` or `a\b`) is thereby prevented from breaking
+out of, or corrupting, the emitted literal.
 
 ---
 
@@ -566,7 +583,9 @@ All layer implementations MUST follow this pipeline order:
 14. If git push: sanitise stdout/stderr with CREDENTIAL_URL_PATTERN (SEC-19)
 15. When emitting graph artifacts (docs/atlas/cypher/) or ingesting into any backend
     (kuzu | lbug | neo4j): emit key names/structure only — EnvVar nodes carry names, never
-    values (SEC-01); all string literals in .cypher are escaped as diagram labels (SEC-10);
+    values (SEC-01); all single-quote-delimited string literals in .cypher are escaped with the
+    dedicated `cypher_string_literal` escaper — escaping `\` then `'` — not the DOT/Mermaid
+    label escaper (SEC-10);
     the recorded `graph_backend` label is non-sensitive metadata. Applies identically to every
     backend and to the portable-cypher-only outcome.
 ```
@@ -581,9 +600,11 @@ diagram output — they are a serialisation of the same node/edge model, not a n
 - **No secret values (SEC-01/SEC-15):** `EnvVar` nodes and `DataStore` nodes store key names,
   types, and non-sensitive metadata only. Env var values, credentials, and Kubernetes `data:`
   blocks are never written into `.cypher` files or passed to any backend.
-- **Injection-safe literals (SEC-10):** every string embedded in a `.cypher` statement is escaped
-  the same way diagram labels are, so a crafted route/service/symbol name cannot break query syntax
-  or inject statements.
+- **Injection-safe literals (SEC-10):** every string embedded in a single-quote-delimited `.cypher`
+  literal is escaped with the dedicated `cypher_string_literal` escaper (escape `\` first, then `'`),
+  **not** the DOT/Mermaid label escaper (which does not handle `'`), so a crafted
+  route/service/symbol name containing `'` or `\` cannot break out of the literal, corrupt it, or
+  inject statements.
 - **Backend selection is metadata:** the recorded `graph_backend`
   (`kuzu | lbug | neo4j | portable-cypher-only`) and `analyzer_mode` labels are non-sensitive and
   contain no code, paths, or secrets.
@@ -618,7 +639,8 @@ Before any layer implementation is considered complete:
 - [ ] SEC-07: Symlinks excluded from file discovery
 - [ ] SEC-08: Files >10MB skipped with SkillError logged
 - [ ] SEC-09: Bug report evidence fields (+ Layer 8 outputs + Pass 3 verdicts) scanned for credential patterns
-- [ ] SEC-10: DOT/Mermaid label strings are injection-safe (includes experiments/ output)
+- [ ] SEC-10: DOT/Mermaid label strings are injection-safe (includes experiments/ output); Cypher
+      single-quote-delimited literals escape `'` and `\` via the dedicated `cypher_string_literal` escaper
 - [ ] SEC-11: Layer 7 service names sanitised to `[a-zA-Z0-9_-]{1,64}` before path construction
 - [ ] SEC-12: Layer 8 LSP output validated (schema + SEC-03 + SEC-02 + SEC-09 applied to all fields)
 - [ ] SEC-13: `--density-threshold` values validated as integers in range 1–10,000

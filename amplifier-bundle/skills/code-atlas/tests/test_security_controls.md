@@ -177,6 +177,16 @@ nodes must carry key names only (SEC-01/SEC-15), independent of the selected `gr
 
 ---
 
+### TEST-SEC-10-C [AUTO]: Cypher single-quote literal escapes `'` and `\` and round-trips
+
+**Setup:** An identifier containing BOTH a single quote and a backslash, e.g. `O'Brien\x`, is emitted into a single-quote-delimited `.cypher` string literal (`{name: '...'}`).
+
+**Expected:** The `cypher_string_literal` escaper (escape `\` first → `\\`, then `'` → `\'`) produces `'O\'Brien\\x'`. Every interior `'` is backslash-escaped, so the delimiter is never broken out of, and decoding the literal round-trips back to the original identifier.
+
+**Pass criteria:** Feeding `O'Brien\x` through the escaper yields a literal wrapped in single quotes with no un-escaped interior quote, and unescaping returns exactly `O'Brien\x`. The DOT/Mermaid escaper is NOT used for this context.
+
+---
+
 ## Test Run Checklist
 
 Before considering security controls complete:
@@ -190,3 +200,4 @@ Before considering security controls complete:
 - [ ] TEST-SEC-09-A: Password patterns redacted in bug reports
 - [ ] TEST-SEC-10-A: Mermaid injection chars escaped in route labels
 - [ ] TEST-SEC-10-B: DOT quotes escaped in service labels
+- [ ] TEST-SEC-10-C: Cypher literal escapes `'` and `\` and round-trips without breaking the delimiter
