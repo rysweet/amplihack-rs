@@ -360,4 +360,80 @@ mod tests {
         assert!(!append.join("extra.md").exists());
         assert!(dir.path().join(".amplihack/appended/extra.md").exists());
     }
+
+    // INV-7 (auto-mode continues until a stop condition). Locks the loop's
+    // stop-condition arithmetic without spawning any agent process: the loop
+    // keeps issuing turns while below every limit and terminates on the FIRST
+    // tripped condition (max_turns / max_api_calls / max_output_bytes /
+    // max_session_secs), and `build_execution_prompt` emits the 1-based
+    // `[Turn n/max]` marker (`self.turn + 1`). All limits are exercised
+    // deterministically — `max_session_secs = 0` trips on elapsed >= 0 with no
+    // sleep — via the constructed `AutoModeConfig`, touching no global state.
+    #[test]
+    fn characterization_inv7_automode_continues_until_stop_condition() {
+        // Below every limit ⇒ the loop continues.
+        let mut am = AutoMode::new(AutoModeConfig {
+            max_turns: 5,
+            max_api_calls: 100,
+            max_output_bytes: 10_000,
+            max_session_secs: 3_600,
+            ..Default::default()
+        });
+        assert!(
+            am.should_continue(),
+            "must continue while below every stop condition"
+        );
+        // First stop condition: max turns.
+        am.turn = 5;
+        assert!(!am.should_continue(), "max_turns must terminate the loop");
+
+        // Max API calls terminates.
+        let mut am = AutoMode::new(AutoModeConfig {
+            max_api_calls: 3,
+            ..Default::default()
+        });
+        assert!(am.should_continue());
+        am.total_api_calls = 3;
+        assert!(
+            !am.should_continue(),
+            "max_api_calls must terminate the loop"
+        );
+
+        // Max accumulated output terminates.
+        let mut am = AutoMode::new(AutoModeConfig {
+            max_output_bytes: 64,
+            ..Default::default()
+        });
+        assert!(am.should_continue());
+        am.session_output_bytes = 64;
+        assert!(
+            !am.should_continue(),
+            "max_output_bytes must terminate the loop"
+        );
+
+        // Max session duration terminates (0s ⇒ elapsed >= 0 trips at once).
+        let am = AutoMode::new(AutoModeConfig {
+            max_session_secs: 0,
+            ..Default::default()
+        });
+        assert!(
+            !am.should_continue(),
+            "max_session_secs must terminate the loop"
+        );
+
+        // The per-turn prompt carries the observed 1-based [Turn n/max] marker.
+        let mut am = AutoMode::new(AutoModeConfig {
+            max_turns: 5,
+            ..Default::default()
+        });
+        assert!(
+            am.build_execution_prompt().contains("[Turn 1/5]"),
+            "turn numbering is 1-based (self.turn + 1)"
+        );
+        am.turn = 3;
+        assert!(
+            am.build_execution_prompt().contains("[Turn 4/5]"),
+            "the [Turn n/max] marker tracks self.turn + 1"
+        );
+    }
 }

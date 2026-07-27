@@ -64,3 +64,100 @@ fn at_session_derives_stable_sanitized_path() {
     let c = Inbox::at_session("session-456", dir.path());
     assert_ne!(a.path(), c.path(), "different ids → different paths");
 }
+
+/// Save/restore guard for a single process-global env var so this test never
+/// leaks `AMPLIHACK_SIGNAL_INBOX_CAPACITY` state to its neighbours.
+struct EnvGuard {
+    key: &'static str,
+    prev: Option<String>,
+}
+
+impl EnvGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+        let prev = std::env::var(key).ok();
+        // SAFETY: single-threaded within this test; restored on drop.
+        unsafe { std::env::set_var(key, value) };
+        Self { key, prev }
+    }
+
+    fn unset(key: &'static str) -> Self {
+        let prev = std::env::var(key).ok();
+        // SAFETY: single-threaded within this test; restored on drop.
+        unsafe { std::env::remove_var(key) };
+        Self { key, prev }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        match &self.prev {
+            // SAFETY: restoring the pre-test value on the same thread.
+            Some(v) => unsafe { std::env::set_var(self.key, v) },
+            None => unsafe { std::env::remove_var(self.key) },
+        }
+    }
+}
+
+const CAPACITY_ENV: &str = "AMPLIHACK_SIGNAL_INBOX_CAPACITY";
+
+// INV-4 (bounded turn queue evicts oldest at operator-configurable capacity).
+// Complements the pre-existing fixed-capacity `bounded_capacity_evicts_oldest`
+// by exercising the OPERATOR-CONFIG path: capacity is read from
+// `AMPLIHACK_SIGNAL_INBOX_CAPACITY` via `Inbox::default_capacity()` /
+// `Inbox::at_session`. A valid value is honoured and overflow evicts the oldest
+// (`PushOutcome::EvictedOldest`, bounding on-disk memory); invalid / zero /
+// negative / whitespace / non-numeric values fall back to
+// `Inbox::DEFAULT_CAPACITY` (32) rather than disabling the inbox, panicking, or
+// creating an unbounded file. Env mutation is save/restore-guarded.
+#[test]
+fn characterization_inv4_capacity_from_operator_config_evicts_oldest() {
+    // --- Valid operator value is honoured, and overflow evicts the oldest. ---
+    {
+        let _guard = EnvGuard::set(CAPACITY_ENV, "3");
+        assert_eq!(
+            Inbox::default_capacity(),
+            3,
+            "a valid capacity env value must be honoured"
+        );
+
+        let dir = TempDir::new().unwrap();
+        // `at_session` derives capacity from the env via `default_capacity()`.
+        let inbox = Inbox::at_session("operator-cfg", dir.path());
+        assert_eq!(inbox.push("a").unwrap(), PushOutcome::Queued);
+        assert_eq!(inbox.push("b").unwrap(), PushOutcome::Queued);
+        assert_eq!(inbox.push("c").unwrap(), PushOutcome::Queued);
+        // The 4th push overflows the operator-configured cap of 3.
+        assert_eq!(
+            inbox.push("d").unwrap(),
+            PushOutcome::EvictedOldest,
+            "overflow past the configured capacity evicts the oldest"
+        );
+        // Bounded: the on-disk queue holds at most `capacity` newest entries.
+        assert_eq!(inbox.len().unwrap(), 3, "queue stays bounded at capacity");
+        assert_eq!(
+            inbox.drain().unwrap(),
+            vec!["b", "c", "d"],
+            "the oldest ('a') was evicted; the newest survive"
+        );
+    }
+
+    // --- Invalid / zero / negative / whitespace / non-numeric → default. ---
+    for bad in ["0", "-1", "   ", "not-a-number", "3.5", ""] {
+        let _guard = EnvGuard::set(CAPACITY_ENV, bad);
+        assert_eq!(
+            Inbox::default_capacity(),
+            Inbox::DEFAULT_CAPACITY,
+            "invalid env value {bad:?} must fall back to DEFAULT_CAPACITY, never unbounded/disabled"
+        );
+    }
+
+    // --- Absent env var → default capacity. ---
+    {
+        let _guard = EnvGuard::unset(CAPACITY_ENV);
+        assert_eq!(
+            Inbox::default_capacity(),
+            Inbox::DEFAULT_CAPACITY,
+            "an absent env value must fall back to DEFAULT_CAPACITY"
+        );
+    }
+}

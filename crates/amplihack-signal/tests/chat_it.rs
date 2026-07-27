@@ -540,6 +540,168 @@ mod turn {
             "no stale trigger may linger after the turn completes"
         );
     }
+
+    // A runner that only records the argv of every turn and returns immediately,
+    // so a sequence of turns can be replayed and inspected deterministically.
+    struct RecordingRunner {
+        seen: Arc<Mutex<Vec<Vec<String>>>>,
+    }
+
+    impl TurnRunner for RecordingRunner {
+        fn run_argv(
+            &self,
+            argv: Vec<String>,
+        ) -> Pin<Box<dyn Future<Output = std::io::Result<String>> + Send>> {
+            let seen = self.seen.clone();
+            Box::pin(async move {
+                seen.lock().unwrap().push(argv);
+                Ok(String::from("ok"))
+            })
+        }
+    }
+
+    // INV-5 (resume continuity + injection safety). Successive turns on one
+    // `SerialTurnDriver` all resume the SAME `--session-id`, and every prompt —
+    // including adversarial shell metacharacters and a leading dash — is passed
+    // as EXACTLY ONE `-p` argv element, verbatim, never split or concatenated
+    // into a shell string. A weak assertion here would silently permit a future
+    // command-injection regression, so the prompts are explicitly adversarial.
+    #[tokio::test]
+    async fn characterization_inv5_successive_turns_reuse_same_session_id() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let runner = RecordingRunner { seen: seen.clone() };
+        let driver = SerialTurnDriver::new(runner, SID, ToolAllowlist::read_only_default());
+
+        let prompts = [
+            "first turn",
+            "; rm -rf / #",
+            "$(whoami)",
+            "`id`",
+            "a && b || c",
+            "quote\"and'quote",
+            "line1\nline2",
+            "-p --session-id 99999999-0000-0000-0000-000000000000",
+        ];
+        for p in prompts {
+            driver
+                .run_turn(p)
+                .await
+                .expect("recording runner turn succeeds");
+        }
+
+        let calls = seen.lock().unwrap();
+        assert_eq!(
+            calls.len(),
+            prompts.len(),
+            "every turn must reach the runner"
+        );
+
+        for (argv, expected_prompt) in calls.iter().zip(prompts.iter()) {
+            // Resume continuity: the pinned session id is reused every turn.
+            let sid_pos = argv
+                .iter()
+                .position(|a| a == "--session-id")
+                .expect("every turn pins --session-id");
+            assert_eq!(
+                argv.get(sid_pos + 1).map(String::as_str),
+                Some(SID),
+                "successive turns must resume the SAME session id"
+            );
+
+            // Injection safety: exactly one prompt flag, and the prompt is one
+            // argv element, byte-for-byte, even with shell metacharacters.
+            let prompt_flags = argv
+                .iter()
+                .filter(|a| a.as_str() == "-p" || a.as_str() == "--prompt")
+                .count();
+            assert_eq!(
+                prompt_flags, 1,
+                "argv must carry exactly one prompt flag: {argv:?}"
+            );
+            let p_pos = argv
+                .iter()
+                .position(|a| a == "-p" || a == "--prompt")
+                .expect("argv must carry a prompt flag");
+            assert_eq!(
+                argv.get(p_pos + 1).map(String::as_str),
+                Some(*expected_prompt),
+                "prompt must be exactly one argv element, unmodified: {argv:?}"
+            );
+        }
+
+        assert_eq!(
+            driver.session_id(),
+            SID,
+            "the driver stays bound to its pinned session id across turns"
+        );
+    }
+
+    // A runner whose completion is gated on an out-of-band channel, so a "long"
+    // turn is simulated deterministically with no real sleep. Used to prove the
+    // driver imposes no per-turn wall-clock deadline.
+    struct GatedRunner {
+        rx: Mutex<Option<tokio::sync::oneshot::Receiver<String>>>,
+    }
+
+    impl TurnRunner for GatedRunner {
+        fn run_argv(
+            &self,
+            _argv: Vec<String>,
+        ) -> Pin<Box<dyn Future<Output = std::io::Result<String>> + Send>> {
+            let rx = self
+                .rx
+                .lock()
+                .unwrap()
+                .take()
+                .expect("GatedRunner runs exactly one turn");
+            Box::pin(async move {
+                rx.await
+                    .map_err(|_| std::io::Error::other("runner completion channel dropped"))
+            })
+        }
+    }
+
+    // INV-6 (no per-turn wall-clock timeout). `SerialTurnDriver::run_turn` wraps
+    // the turn in NO `tokio::time::timeout` / elapsed-time cap: while the
+    // runner's work is still outstanding the turn stays alive across many
+    // runtime polls (it is never aborted), and it resolves with the runner's
+    // captured output only on natural completion.
+    #[tokio::test]
+    async fn characterization_inv6_turn_runs_to_completion_no_wallclock_cap() {
+        let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+        let runner = GatedRunner {
+            rx: Mutex::new(Some(rx)),
+        };
+        let driver = Arc::new(SerialTurnDriver::new(
+            runner,
+            SID,
+            ToolAllowlist::read_only_default(),
+        ));
+
+        let d = driver.clone();
+        let handle =
+            tokio::spawn(async move { d.run_turn("a legitimately long-running turn").await });
+
+        // With the turn's work still outstanding, spin the runtime repeatedly:
+        // a per-turn deadline (if one existed) would abort the turn here. It
+        // does not — the turn is still in flight.
+        for _ in 0..64 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !handle.is_finished(),
+            "a turn must not be aborted while its work is outstanding (no per-turn wall-clock cap)"
+        );
+
+        // Natural completion resolves the turn with the runner's captured output.
+        tx.send("captured turn output".to_string())
+            .expect("gated runner still awaiting completion");
+        let out = handle
+            .await
+            .expect("turn task must not panic")
+            .expect("turn resolves Ok on natural completion");
+        assert_eq!(out, "captured turn output");
+    }
 }
 
 // =============================================================================
@@ -671,5 +833,149 @@ mod failure_modes {
             .expect_err("connecting to a closed port must fail");
         assert!(matches!(err, ChatError::DaemonUnavailable));
         assert_eq!(err.exit_code(), 4);
+    }
+}
+
+// =============================================================================
+// Inbound gating fail-closed anchor — chat::gating  (INV-3, consolidated)
+// =============================================================================
+mod gating {
+    use amplihack_signal::config::{
+        ENV_ACCOUNT, ENV_ALLOWLIST, ENV_ENDPOINT, ENV_OWN_DEVICE_ID, SignalConfig,
+    };
+    use amplihack_signal::gating::Gate;
+    use amplihack_signal::transport::Envelope;
+    use std::collections::HashMap;
+    use std::time::{Duration, Instant};
+
+    const GID: &str = "grp-abc123==";
+    const ACCOUNT: &str = "+15551230000";
+    const OPERATOR: &str = "+15551230001";
+
+    fn cfg(allowlist: &[&str], own_device: Option<u32>) -> SignalConfig {
+        let mut env = HashMap::new();
+        env.insert(ENV_ENDPOINT.to_string(), "127.0.0.1:7583".to_string());
+        env.insert(ENV_ACCOUNT.to_string(), ACCOUNT.to_string());
+        env.insert(ENV_ALLOWLIST.to_string(), allowlist.join(","));
+        if let Some(d) = own_device {
+            env.insert(ENV_OWN_DEVICE_ID.to_string(), d.to_string());
+        }
+        SignalConfig::from_sources(&env, None).expect("valid test config")
+    }
+
+    fn data_msg(sender: &str, device: u32, body: &str) -> Envelope {
+        Envelope {
+            source: Some(sender.to_string()),
+            source_device: Some(device),
+            group_id: Some(GID.to_string()),
+            body: Some(body.to_string()),
+            is_sync: false,
+        }
+    }
+
+    fn sync_msg(sender: &str, device: u32, body: &str) -> Envelope {
+        Envelope {
+            source: Some(sender.to_string()),
+            source_device: Some(device),
+            group_id: Some(GID.to_string()),
+            body: Some(body.to_string()),
+            is_sync: true,
+        }
+    }
+
+    // INV-3 (inbound gating fail-closed). Consolidated anchor pinning the
+    // deny-by-default posture: an inbound envelope becomes an instruction ONLY
+    // on the single well-formed happy path, and every non-happy path DENIES.
+    // Time is supplied through the deterministic `evaluate_at` / `record_outbound_at`
+    // seams (fixed `Instant`s), so no wall-clock time enters the assertions. Any
+    // future change that flips one of these denials into an accept — i.e. fails
+    // OPEN — must break this test.
+    #[test]
+    fn characterization_inv3_inbound_gate_failclosed() {
+        let now = Instant::now();
+
+        // The ONLY accept: a well-formed, allowlisted operator dataMessage.
+        let mut gate = Gate::new(&cfg(&[OPERATOR], None), GID);
+        assert_eq!(
+            gate.evaluate_at(&data_msg(OPERATOR, 1, "run the tests"), now),
+            Some("run the tests".to_string()),
+            "a well-formed allowlisted dataMessage is the canonical accept"
+        );
+
+        // Wrong group → deny.
+        let mut gate = Gate::new(&cfg(&[OPERATOR], None), GID);
+        let mut env = data_msg(OPERATOR, 1, "hi");
+        env.group_id = Some("grp-OTHER==".to_string());
+        assert_eq!(gate.evaluate_at(&env, now), None, "wrong group must deny");
+
+        // Non-group frame → deny.
+        let mut gate = Gate::new(&cfg(&[OPERATOR], None), GID);
+        let mut env = data_msg(OPERATOR, 1, "hi");
+        env.group_id = None;
+        assert_eq!(
+            gate.evaluate_at(&env, now),
+            None,
+            "non-group frame must deny"
+        );
+
+        // Empty body → deny.
+        let mut gate = Gate::new(&cfg(&[OPERATOR], None), GID);
+        assert_eq!(
+            gate.evaluate_at(&data_msg(OPERATOR, 1, ""), now),
+            None,
+            "empty body must deny"
+        );
+
+        // Sender not on the allowlist → deny.
+        let mut gate = Gate::new(&cfg(&[OPERATOR], None), GID);
+        assert_eq!(
+            gate.evaluate_at(&data_msg("+15559999999", 1, "hi"), now),
+            None,
+            "non-allowlisted sender must deny"
+        );
+
+        // Empty allowlist denies everything — even a would-be operator.
+        let mut gate = Gate::new(&cfg(&[], None), GID);
+        assert_eq!(
+            gate.evaluate_at(&data_msg(OPERATOR, 1, "hi"), now),
+            None,
+            "fail-closed: an empty allowlist denies everything"
+        );
+
+        // Sync from a non-primary device (>= 2) → deny (device-1-only operator).
+        let mut gate = Gate::new(&cfg(&[ACCOUNT], None), GID);
+        assert_eq!(
+            gate.evaluate_at(&sync_msg(ACCOUNT, 2, "session started"), now),
+            None,
+            "a sync from a non-primary device must deny"
+        );
+
+        // Sync from the bot's own configured linked device → deny (echo guard).
+        let mut gate = Gate::new(&cfg(&[ACCOUNT], Some(3)), GID);
+        assert_eq!(
+            gate.evaluate_at(&sync_msg(ACCOUNT, 3, "session started"), now),
+            None,
+            "the bot's own linked-device sync echo must deny"
+        );
+
+        // Sync claiming device 1 but authored by a non-account number → deny.
+        let mut gate = Gate::new(&cfg(&[ACCOUNT, "+15551230009"], None), GID);
+        assert_eq!(
+            gate.evaluate_at(&sync_msg("+15551230009", 1, "spoofed"), now),
+            None,
+            "a sync not authored by the account must deny"
+        );
+
+        // A body matching a recently-sent outbound, inside the echo TTL → deny.
+        let mut gate = Gate::new(&cfg(&[OPERATOR], None), GID);
+        gate.record_outbound_at("session started", now);
+        assert_eq!(
+            gate.evaluate_at(
+                &data_msg(OPERATOR, 1, "session started"),
+                now + Duration::from_secs(1),
+            ),
+            None,
+            "a recently-sent outbound echo inside the TTL must deny"
+        );
     }
 }
