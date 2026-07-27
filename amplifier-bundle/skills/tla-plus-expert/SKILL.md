@@ -83,3 +83,13 @@ TLA+ specs live in `experiments/hive_mind/tla_prompt_language/specs/`.
 - Experiment runner: `crates/amplihack-eval/src/tla_prompt_experiment.rs`
 - TLC binary: `/usr/local/bin/tlc` (if installed)
 - Issue #3939: TLA+ integration roadmap
+
+## Related Skills
+
+- **property-based-testing**: The executable counterpart in the formal-methods
+  triad. Where TLA+ model-checks an abstract design, property-based-testing
+  exercises the concrete implementation against invariants/round-trip/oracle
+  properties. Use TLA+ to prove the design; use property-based-testing to check
+  the code matches it.
+- **gherkin-expert**: Specifies example-driven behavior; complements the
+  exhaustive design coverage TLA+ provides.

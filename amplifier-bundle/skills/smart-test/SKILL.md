@@ -359,6 +359,7 @@ Works with existing pytest markers from pyproject.toml:
 ## Complementary Skills
 
 - **test-gap-analyzer**: Identifies missing tests
+- **property-based-testing**: Generates property/invariant tests (proptest, Hypothesis, fast-check, jqwik) whose commands plug into the tiers selected here
 - **qa-team**: Creates E2E and parity test scenarios (`outside-in-testing` alias supported)
 - **tester agent**: Writes new tests for gaps
 - **pre-commit-diagnostic**: Fixes pre-commit failures

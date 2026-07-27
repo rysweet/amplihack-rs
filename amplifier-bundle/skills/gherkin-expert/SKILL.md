@@ -65,3 +65,12 @@ Scenario: Login
 4. **Giant Background** — keep shared setup minimal
 5. **Scenario Outline abuse** — use only when examples vary by data
 6. **Inconsistent domain language** — align with ubiquitous language
+
+## Related Skills
+
+- **property-based-testing**: Generalizes concrete Gherkin examples into
+  universally-quantified properties (invariant, round-trip, metamorphic).
+  Reach for it when a `Scenario Outline`'s example table is really trying to
+  express "for all inputs" rather than a handful of cases.
+- **tla-plus-expert**: Formal design-level verification; together these form
+  the specification-and-verification triad.
