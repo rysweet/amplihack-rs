@@ -185,6 +185,7 @@ Understand the philosophy and architecture behind amplihack.
 - [Blarify Architecture](blarify_architecture.md) - Understanding the Blarify integration
 - [Documentation Knowledge Graph](documentation_knowledge_graph.md) - How docs connect
 - [amplihack-rs Parity Reference](amplihack-rs-parity.md) - Subprocess prompt delivery capabilities, configuration, diagnostics, and Rust API
+- [`amplihack-turn` Turn Driver Reference](reference/amplihack-turn-api.md) - Agent-generic turn model: `AgentSession` / `Channel` / `NextPrompt`, the `run_session_loop` driver (run-to-completion, no wall-clock cap), and the relocated `SerialTurnDriver` / `CopilotTurnRunner` / `build_turn_argv` / `ToolAllowlist` primitives
 - [Idle Watchdog Concept](concepts/idle-watchdog.md) - Why agentic child processes use idle detection instead of wall-clock timeouts
 - [Idle Watchdog Reference](reference/idle-watchdog.md) - `amplihack-utils::idle_watchdog` API, configuration, and per-site behavior
 - [Use the Idle Watchdog](howto/use-idle-watchdog.md) - Wrap a subprocess call site with idle detection and write the required tests

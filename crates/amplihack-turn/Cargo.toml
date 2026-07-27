@@ -1,0 +1,33 @@
+[package]
+name = "amplihack-turn"
+description = "Agent-generic turn-driver abstraction: AgentSession/Channel traits + reusable driver loop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Minimal tokio features ONLY — NEVER "net". The relocated SerialTurnDriver /
+# CopilotTurnRunner need process spawning + async primitives, not the net stack.
+# Crusty condition #4: this crate is always-compiled, so pulling in tokio net
+# here would leak it into non-signal builds. It must not.
+tokio = { version = "1", default-features = false, features = [
+    "process",
+    "rt",
+    "macros",
+    "time",
+    "sync",
+    "io-util",
+] }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros", "time"] }
+async-trait = { workspace = true }
+
+# Hermetic mock-session / mock-channel driver-loop contract tests (no network,
+# no real copilot). Registered as an explicit [[test]] target per repo convention.
+[[test]]
+name = "driver_loop_it"
+path = "tests/driver_loop_it.rs"
