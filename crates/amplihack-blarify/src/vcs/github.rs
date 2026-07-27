@@ -15,7 +15,6 @@ pub struct GitHubController {
     owner: String,
     repo: String,
     token: Option<String>,
-    _base_url: String,
 }
 
 impl GitHubController {
@@ -25,28 +24,7 @@ impl GitHubController {
             owner: owner.into(),
             repo: repo.into(),
             token,
-            _base_url: "https://api.github.com".into(),
         }
-    }
-
-    /// Build authorization headers for API requests.
-    #[allow(dead_code)]
-    fn auth_headers(&self) -> HashMap<String, String> {
-        let mut headers = HashMap::new();
-        headers.insert("Accept".into(), "application/vnd.github.v3+json".into());
-        if let Some(ref token) = self.token {
-            headers.insert("Authorization".into(), format!("Bearer {token}"));
-        }
-        headers
-    }
-
-    /// Build the full URL for an API endpoint.
-    #[allow(dead_code)]
-    fn api_url(&self, path: &str) -> String {
-        format!(
-            "{}/repos/{}/{}/{}",
-            self._base_url, self.owner, self.repo, path
-        )
     }
 }
 
@@ -158,20 +136,6 @@ mod tests {
         assert_eq!(c.owner, "owner");
         assert_eq!(c.repo, "repo");
         assert!(c.token.is_some());
-    }
-
-    #[test]
-    fn api_url_format() {
-        let c = make_controller();
-        let url = c.api_url("pulls");
-        assert_eq!(url, "https://api.github.com/repos/owner/repo/pulls");
-    }
-
-    #[test]
-    fn auth_headers_with_token() {
-        let c = make_controller();
-        let headers = c.auth_headers();
-        assert!(headers.get("Authorization").unwrap().starts_with("Bearer "));
     }
 
     #[test]

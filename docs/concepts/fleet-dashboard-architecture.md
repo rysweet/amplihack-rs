@@ -63,7 +63,7 @@ cleanly without panicking.
 ### T5 — slow refresh (5 s)
 
 Calls `tmux capture-pane -t <session-id> -p` for each active session.  Sends
-`SlowRefreshMsg::CaptureUpdate { session_id, content }`.  If `tmux` is absent
+`RefreshMsg::CaptureUpdate { session_id, output }`.  If `tmux` is absent
 the thread immediately exits; the dashboard continues without preview content.
 
 ### Why `std::thread` instead of `tokio`?

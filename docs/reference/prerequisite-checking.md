@@ -229,11 +229,12 @@ def launch():
 Specific copilot check with auto-install:
 
 ```rust
-// use amplihack_launcher::copilot:: check_copilot, install_copilot
+// use amplihack_launcher::copilot::check_copilot;
+// use amplihack_launcher::copilot_auto_install::ensure_copilot_sdk_installed;
 
 if not check_copilot():
     print("Copilot CLI not found. Auto-installing...")
-    if install_copilot():
+    if ensure_copilot_sdk_installed():
         print("✓ Copilot CLI installed")
 ```
 

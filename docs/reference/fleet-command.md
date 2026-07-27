@@ -553,7 +553,7 @@ Two background threads run independently of the render loop:
 | Thread | Interval | Source                       | Message type                    | Shutdown                                       |
 | ------ | -------- | ---------------------------- | ------------------------------- | ---------------------------------------------- |
 | T4     | 500 ms   | `~/.claude/runtime/locks/`   | `RefreshMsg::Sessions`          | Exits when receiver is dropped (`send()` → `Err`) |
-| T5     | 5 s      | `tmux capture-pane`          | `SlowRefreshMsg::CaptureUpdate` | Exits on channel close, or immediately if `tmux` is absent |
+| T5     | 5 s      | `tmux capture-pane`          | `RefreshMsg::CaptureUpdate` | Exits on channel close, or immediately if `tmux` is absent |
 
 Neither thread blocks the keyboard input loop.  Both self-exit without
 panicking when the main thread drops the `mpsc` receiver — the `send()`

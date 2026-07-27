@@ -8,9 +8,8 @@ use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use crate::error::RemoteError;
 use crate::orchestrator::{Orchestrator, VM, VMOptions};
@@ -199,112 +198,6 @@ impl VMPoolManager {
             }
         }
         debug!(session = session_id, "session not found in pool");
-    }
-
-    /// Get pool status summary.
-    pub fn get_pool_status(&self) -> PoolStatus {
-        let total_vms = self.pool.len();
-        let total_capacity: usize = self.pool.values().map(|e| e.capacity).sum();
-        let active_sessions: usize = self.pool.values().map(|e| e.active_sessions.len()).sum();
-        let available_capacity: usize = self.pool.values().map(|e| e.available_capacity()).sum();
-
-        PoolStatus {
-            total_vms,
-            total_capacity,
-            active_sessions,
-            available_capacity,
-        }
-    }
-
-    /// Cleanup idle VMs older than `grace_period_minutes`.
-    pub async fn cleanup_idle_vms(&mut self, grace_period_minutes: i64) -> Vec<String> {
-        let now = Utc::now();
-        let grace = Duration::minutes(grace_period_minutes);
-        let mut removed = Vec::new();
-
-        let idle_vms: Vec<String> = self
-            .pool
-            .iter()
-            .filter(|(_, entry)| {
-                if !entry.active_sessions.is_empty() {
-                    return false;
-                }
-                if let Some(created) = entry.vm.created_at {
-                    now - created >= grace
-                } else {
-                    true
-                }
-            })
-            .map(|(name, _)| name.clone())
-            .collect();
-
-        for vm_name in idle_vms {
-            if let Some(entry) = self.pool.remove(&vm_name) {
-                // Take ownership of the entry (ends the &mut self.pool borrow)
-                // and await cleanup borrowing only &self.orchestrator, so the
-                // helper below can re-borrow &mut self.pool without conflict.
-                let result = self.orchestrator.cleanup(&entry.vm, true).await;
-                Self::apply_cleanup_result(&mut self.pool, &mut removed, vm_name, entry, result);
-            }
-        }
-
-        if !removed.is_empty() {
-            info!(count = removed.len(), "cleaned up idle VMs");
-            if let Err(e) = self.save_state() {
-                warn!(
-                    count = removed.len(),
-                    error = %e,
-                    "failed to persist pool state after idle-VM cleanup; \
-                     in-memory and on-disk state may diverge"
-                );
-            }
-        }
-
-        removed
-    }
-
-    /// Map one `Orchestrator::cleanup` outcome onto the pool and the `removed`
-    /// list, distinguishing a confirmed reclaim from a failure so a billable
-    /// VM is never silently dropped from tracking (issue #870).
-    ///
-    /// Outcomes are inspected structurally from `Result<bool, RemoteError>` —
-    /// never by parsing tool output:
-    /// - `Ok(true)`  — deallocation confirmed: drop the VM and record it in
-    ///   `removed` (the only truthful "reclaimed" signal).
-    /// - `Ok(false)` — cleanup ran but did not confirm deallocation: re-insert
-    ///   the entry so the next pass retries; do not report it as removed.
-    /// - `Err(e)`    — hard cleanup failure: re-insert the entry to avoid
-    ///   orphaning a billable resource; do not report it as removed.
-    fn apply_cleanup_result(
-        pool: &mut HashMap<String, VMPoolEntry>,
-        removed: &mut Vec<String>,
-        vm_name: String,
-        entry: VMPoolEntry,
-        result: Result<bool, RemoteError>,
-    ) {
-        match result {
-            Ok(true) => {
-                removed.push(vm_name);
-            }
-            Ok(false) => {
-                warn!(
-                    vm = %vm_name,
-                    "cleanup did not confirm deallocation; VM retained for retry"
-                );
-                pool.insert(vm_name, entry);
-            }
-            Err(e) => {
-                // Log only the curated RemoteError Display message (never raw
-                // tool stdout/stderr) plus the VM name — no credentials, tags,
-                // or command output are surfaced here.
-                error!(
-                    vm = %vm_name,
-                    error = %e,
-                    "cleanup failed; VM retained to avoid orphaning billable resource"
-                );
-                pool.insert(vm_name, entry);
-            }
-        }
     }
 
     // ---- state persistence ----

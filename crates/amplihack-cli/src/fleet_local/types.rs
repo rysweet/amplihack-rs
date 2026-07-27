@@ -117,18 +117,6 @@ pub enum RefreshMsg {
     },
 }
 
-/// Messages sent from the slow refresh thread (T5, 5 s) to the main loop.
-#[derive(Debug)]
-pub enum SlowRefreshMsg {
-    /// Updated tmux capture output for one session.
-    CaptureUpdate {
-        /// Sanitized session identifier.
-        session_id: String,
-        /// OSC-stripped terminal output (≤ 64 KiB).
-        output: String,
-    },
-}
-
 // Suppress unused import warning — Sender is used by dependents via
 // FleetLocalError and RefreshMsg's containing module.
 const _: () = {

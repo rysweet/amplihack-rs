@@ -2,8 +2,8 @@
 //!
 //! Kept in a sibling file (wired via `#[path]` from `vm_pool.rs`) so the
 //! parent module stays within the issue #536 <=500-line module budget
-//! while remaining a child module with access to private helpers such as
-//! `VMPoolManager::apply_cleanup_result`.
+//! while remaining a child module with access to the parent module's private
+//! helpers and fields.
 
 use super::*;
 
@@ -173,13 +173,7 @@ fn dirs_home_returns_path() {
     assert!(!home.to_str().unwrap_or("").is_empty());
 }
 
-// ---- issue #870: cleanup result must not be silently discarded ----
-//
-// These tests pin the contract for `VMPoolManager::apply_cleanup_result`,
-// the pure helper that maps one `Orchestrator::cleanup` outcome onto the
-// pool + `removed` list. Only a confirmed reclaim (`Ok(true)`) may drop a
-// VM from tracking; every other outcome must retain the VM so a billable
-// cloud resource is never orphaned by a swallowed failure.
+// Shared helper for constructing pool entries in the tests below.
 
 fn make_entry(name: &str) -> VMPoolEntry {
     VMPoolEntry {
@@ -196,84 +190,14 @@ fn make_entry(name: &str) -> VMPoolEntry {
     }
 }
 
-#[test]
-fn apply_cleanup_result_ok_true_removes() {
-    // Ok(true) => deallocation confirmed: VM leaves the pool and is
-    // recorded in `removed` (the only truthful "reclaimed" signal).
-    let mut pool: HashMap<String, VMPoolEntry> = HashMap::new();
-    let mut removed: Vec<String> = Vec::new();
-    let vm_name = "vm-confirmed".to_string();
-    let entry = make_entry(&vm_name);
-
-    VMPoolManager::apply_cleanup_result(&mut pool, &mut removed, vm_name.clone(), entry, Ok(true));
-
-    assert!(
-        !pool.contains_key(&vm_name),
-        "confirmed-reclaimed VM must not be retained in the pool"
-    );
-    assert!(
-        removed.contains(&vm_name),
-        "confirmed-reclaimed VM must be recorded in `removed`"
-    );
-}
-
-#[test]
-fn apply_cleanup_result_ok_false_retains() {
-    // Ok(false) => cleanup ran but did not confirm deallocation: retain the
-    // VM for a later retry and do NOT claim it was removed.
-    let mut pool: HashMap<String, VMPoolEntry> = HashMap::new();
-    let mut removed: Vec<String> = Vec::new();
-    let vm_name = "vm-unconfirmed".to_string();
-    let entry = make_entry(&vm_name);
-
-    VMPoolManager::apply_cleanup_result(&mut pool, &mut removed, vm_name.clone(), entry, Ok(false));
-
-    assert!(
-        pool.contains_key(&vm_name),
-        "unconfirmed cleanup must retain the VM in the pool for retry"
-    );
-    assert!(
-        !removed.contains(&vm_name),
-        "unconfirmed cleanup must not be reported as removed"
-    );
-}
-
-#[test]
-fn apply_cleanup_result_err_retains() {
-    // Err(_) => hard cleanup failure: retain the VM so the billable
-    // resource is never orphaned, and do NOT claim it was removed.
-    let mut pool: HashMap<String, VMPoolEntry> = HashMap::new();
-    let mut removed: Vec<String> = Vec::new();
-    let vm_name = "vm-failed".to_string();
-    let entry = make_entry(&vm_name);
-
-    VMPoolManager::apply_cleanup_result(
-        &mut pool,
-        &mut removed,
-        vm_name.clone(),
-        entry,
-        Err(RemoteError::cleanup("azlin deallocate failed")),
-    );
-
-    assert!(
-        pool.contains_key(&vm_name),
-        "failed cleanup must retain the VM in the pool"
-    );
-    assert!(
-        !removed.contains(&vm_name),
-        "failed cleanup must not be reported as removed"
-    );
-}
-
 // ---- issue #883: save_state() persistence errors must be surfaced, not swallowed ----
 //
-// `release_session` and `cleanup_idle_vms` previously discarded a failed
-// on-disk persistence write via `let _ = self.save_state();`. If the write
-// fails after an in-memory mutation, on-disk state silently diverges from
-// memory. The contract now is log-and-continue: the in-memory mutation still
-// takes effect (the method stays infallible / keeps its return contract) and
-// the persistence failure is surfaced via `warn!` rather than panicking or
-// being swallowed.
+// `release_session` previously discarded a failed on-disk persistence write via
+// `let _ = self.save_state();`. If the write fails after an in-memory mutation,
+// on-disk state silently diverges from memory. The contract now is
+// log-and-continue: the in-memory mutation still takes effect (the method stays
+// infallible / keeps its return contract) and the persistence failure is
+// surfaced via `warn!` rather than panicking or being swallowed.
 //
 // To drive the shared save_state() error path deterministically without a
 // real cloud/azlin dependency, we point the state file at a location whose
@@ -281,13 +205,8 @@ fn apply_cleanup_result_err_retains() {
 // not exist -> Ok(None)), but `save_state()` -> `merge_key_into_state` ->
 // `create_dir_all(parent)` fails because the parent is not a directory.
 //
-// Both sites call the identical `save_state()` with the identical
-// `if let Err(e) => warn!(...)` handling, so the `release_session` test below
-// pins the surfaced-error contract for the shared code path. `cleanup_idle_vms`
-// only reaches its `save_state()` after a *confirmed* VM reclaim (an actual
-// `azlin` deallocation returning `Ok(true)`), which is unavailable in a unit
-// test without a live cloud backend; asserting on it here would require a real
-// azlin and would not exercise anything the shared path does not already cover.
+// The `release_session` test below pins the surfaced-error contract for the
+// shared `save_state()` code path.
 
 /// A `MakeWriter` that appends every emitted line into a shared buffer so a
 /// test can assert on captured `tracing` output.

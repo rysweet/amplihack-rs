@@ -7,12 +7,6 @@
 
 use std::path::Path;
 use std::process::Command;
-use std::time::Duration;
-
-// The blocking Command API does not support timeouts directly; this constant
-// documents the intended value for future async migration.
-#[allow(dead_code)]
-const DOCKER_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Detects Docker availability and configuration.
 ///
@@ -250,15 +244,6 @@ mod tests {
         if let Some(path) = &result {
             assert!(path.to_string_lossy().contains("docker"));
         }
-    }
-
-    // Verify DOCKER_TIMEOUT has the correct architectural value.
-    // This test documents and guards the intent: CLI timeout = 5 seconds.
-    // Once #[allow(dead_code)] replaces the `const _` workaround, this
-    // test also confirms the constant remains accessible and correct.
-    #[test]
-    fn docker_timeout_is_five_seconds() {
-        assert_eq!(DOCKER_TIMEOUT, Duration::from_secs(5));
     }
 
     #[test]

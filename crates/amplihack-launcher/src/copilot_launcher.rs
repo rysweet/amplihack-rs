@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Required fields for installed_plugins entries.
 const REQUIRED_PLUGIN_DEFAULTS: &[(&str, &str)] = &[
@@ -56,35 +56,6 @@ pub fn check_copilot() -> bool {
         .unwrap_or(false)
 }
 
-/// Install Copilot CLI via npm.
-pub fn install_copilot() -> Result<bool> {
-    let npm_prefix = copilot_npm_prefix();
-    info!("Installing Copilot CLI via npm...");
-    let status = Command::new("npm")
-        .args([
-            "install",
-            "-g",
-            "--prefix",
-            &npm_prefix.to_string_lossy(),
-            "@github/copilot",
-        ])
-        .status()
-        .context("failed to run npm install")?;
-    Ok(status.success())
-}
-
-/// Get the current installed Copilot version.
-pub fn get_current_copilot_version() -> Option<String> {
-    let output = Command::new("copilot").arg("--version").output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    text.split_whitespace()
-        .find(|s| s.contains('.'))
-        .map(|s| s.trim_end_matches(" version").to_string())
-}
-
 /// Detect how Copilot was installed ("npm" or "uvx").
 pub fn detect_install_method() -> String {
     if let Ok(output) = Command::new("uvx").args(["list"]).output()
@@ -118,32 +89,6 @@ pub fn execute_update(install_method: &str) -> Result<bool> {
         }
     };
     Ok(status.success())
-}
-
-/// Pre-launch update gate. Respects `AMPLIHACK_NO_UPDATE_CHECK=1`.
-pub fn ensure_latest_copilot() -> Result<bool> {
-    if std::env::var("AMPLIHACK_NO_UPDATE_CHECK")
-        .map(|v| v == "1")
-        .unwrap_or(false)
-    {
-        debug!("Skipping update check (AMPLIHACK_NO_UPDATE_CHECK=1)");
-        return Ok(true);
-    }
-    let method = detect_install_method();
-    match execute_update(&method) {
-        Ok(true) => {
-            info!("Copilot CLI updated successfully");
-            Ok(true)
-        }
-        Ok(false) => {
-            warn!("Copilot CLI update failed, continuing");
-            Ok(true)
-        }
-        Err(e) => {
-            warn!(err = %e, "Update check failed, continuing");
-            Ok(true)
-        }
-    }
 }
 
 /// Register the amplihack plugin in Copilot's `config.json`.

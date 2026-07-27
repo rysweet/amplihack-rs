@@ -31,7 +31,7 @@ _(no top-level modules)_
 
 ## `amplihack-cli` (crates/amplihack-cli)
 
-`auto_mode_append`, `auto_mode_completion_signals`, `auto_mode_completion_verifier`, `auto_mode_state`, `auto_mode_ui/`, `auto_mode_work_summary`, `auto_mode_work_summary_generator`, `auto_stager`, `auto_update`, `binary_finder`, `bootstrap`, `ci_resource_discipline_tests`, `claude_plugin`, `cli_commands`, `cli_extensions`, `cli_subcommands`, `cli_tests`, `command_error`, `commands/`, `copilot_setup/`, `docker/`, `env_builder/`, `fleet_local/`, `freshness`, `health_check`, `install_output_contract`, `launcher`, `launcher_context`, `memory_config`, `nesting/`, `path_conflicts/`, `path_conflicts`, `pr_recovery_readiness`, `remote_cli_tests`, `resolve_bundle_asset/`, `runtime_assets`, `rust_trial`, `self_heal`, `session_tracker`, `settings_manager`, `signals`, `test_support`, `tool_update_check/`, `uninstall`, `update/`, `util`
+`auto_mode_append`, `auto_mode_completion_signals`, `auto_mode_completion_verifier`, `auto_mode_state`, `auto_mode_ui/`, `auto_mode_work_summary`, `auto_mode_work_summary_generator`, `auto_stager`, `auto_update`, `binary_finder`, `bootstrap`, `ci_resource_discipline_tests`, `claude_plugin`, `cli_commands`, `cli_extensions`, `cli_subcommands`, `cli_tests`, `command_error`, `commands/`, `copilot_setup/`, `docker/`, `env_builder/`, `fleet_local/`, `freshness`, `health_check`, `install_output_contract`, `launcher`, `launcher_context`, `memory_config`, `nesting/`, `path_conflicts/`, `path_conflicts`, `remote_cli_tests`, `resolve_bundle_asset/`, `runtime_assets`, `rust_trial`, `self_heal`, `session_tracker`, `settings_manager`, `signals`, `test_support`, `tool_update_check/`, `uninstall`, `update/`, `util`
 
 ## `amplihack-context` (crates/amplihack-context)
 

@@ -80,12 +80,6 @@ pub const HIVE_SEARCH_MULTIPLIER: usize = 3;
 /// Max keywords for building a hive query string.
 pub const QUERY_KEYWORD_LIMIT: usize = 4;
 
-/// Fact limit for contradiction-detection queries.
-pub const CONTRADICTION_CHECK_LIMIT: usize = 50;
-
-/// Overlap threshold for contradiction detection between facts.
-pub const CONTRADICTION_OVERLAP_THRESHOLD: f64 = 0.4;
-
 // ---------------------------------------------------------------------------
 // Graph edge configuration
 // ---------------------------------------------------------------------------

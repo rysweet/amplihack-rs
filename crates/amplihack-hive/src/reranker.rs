@@ -193,13 +193,27 @@ mod tests {
 
     #[test]
     fn hybrid_score_weighted_all_max() {
-        let s = hybrid_score_weighted(1.0, 5, 2.0, 0.5, 0.3, 0.2);
+        let s = hybrid_score_weighted(
+            1.0,
+            5,
+            2.0,
+            DEFAULT_SEMANTIC_WEIGHT,
+            DEFAULT_CONFIRMATION_WEIGHT,
+            DEFAULT_TRUST_WEIGHT,
+        );
         assert!((s - 1.0).abs() < 1e-9);
     }
 
     #[test]
     fn hybrid_score_weighted_zero_confirmations() {
-        let s = hybrid_score_weighted(0.8, 0, 1.0, 0.5, 0.3, 0.2);
+        let s = hybrid_score_weighted(
+            0.8,
+            0,
+            1.0,
+            DEFAULT_SEMANTIC_WEIGHT,
+            DEFAULT_CONFIRMATION_WEIGHT,
+            DEFAULT_TRUST_WEIGHT,
+        );
         let expected = 0.5 * 0.8 + 0.3 * 0.0 + 0.2 * 0.5;
         assert!((s - expected).abs() < 1e-9);
     }
@@ -207,7 +221,14 @@ mod tests {
     #[test]
     fn hybrid_score_weighted_partial_confirmations() {
         // 3 confirmations: 3/5 = 0.6
-        let s = hybrid_score_weighted(0.0, 3, 0.0, 0.5, 0.3, 0.2);
+        let s = hybrid_score_weighted(
+            0.0,
+            3,
+            0.0,
+            DEFAULT_SEMANTIC_WEIGHT,
+            DEFAULT_CONFIRMATION_WEIGHT,
+            DEFAULT_TRUST_WEIGHT,
+        );
         let expected = 0.3 * 0.6;
         assert!((s - expected).abs() < 1e-9);
     }

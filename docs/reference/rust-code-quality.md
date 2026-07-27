@@ -94,29 +94,6 @@ The `only_used_in_recursion` clippy lint will flag methods where `self` is
 passed through recursion but never actually read. Convert these to associated
 functions.
 
-### Architectural constants
-
-Internal constants that exist to document design intent may not be used
-directly in code but still belong in the source as authoritative documentation
-of system behavior. Annotate them with `#[allow(dead_code)]` and a comment
-explaining their purpose:
-
-```rust
-/// Timeout for Docker CLI commands.
-///
-/// Not referenced in call sites because `std::process::Command` does not
-/// support native timeouts; enforced at a higher layer. Kept here as the
-/// authoritative record of the intended limit.
-#[allow(dead_code)]
-const DOCKER_TIMEOUT: Duration = Duration::from_secs(5);
-```
-
-Do **not** remove such constants to silence the warning. The constant documents
-intent; the annotation acknowledges that it is intentionally unused in code.
-
-Do **not** use workarounds like `const _: Type = CONSTANT;` to trick the
-compiler into accepting the constant — this is fragile and confusing.
-
 ---
 
 ## Error Handling

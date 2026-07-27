@@ -28,14 +28,6 @@ pub const CONTINUE_PRESERVE_TIMEOUT_POLICY: &str = "continue-preserve";
 /// and even then only a genuinely idle child is killed.
 pub const DEFAULT_TIMEOUT_POLICY: &str = CONTINUE_PRESERVE_TIMEOUT_POLICY;
 
-/// Lifecycle states that can be resumed.
-#[allow(dead_code)]
-pub const RESUMABLE_STATES: &[&str] = &[
-    "failed_resumable",
-    "timed_out_resumable",
-    "interrupted_resumable",
-];
-
 /// Lifecycle states eligible for cleanup.
 pub const CLEANUP_ELIGIBLE_STATES: &[&str] = &["completed", "failed_terminal", "abandoned"];
 
