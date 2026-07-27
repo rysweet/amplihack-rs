@@ -9,5 +9,7 @@
 //! subcommand) and the PR-1 characterization tests compile and pass unchanged.
 
 pub use amplihack_turn::{
-    CopilotTurnRunner, PreemptSlot, SerialTurnDriver, TurnRunner, build_turn_argv,
+    AgentSession, Channel, ChannelError, ChannelId, ChannelResult, CopilotTurnRunner, NextPrompt,
+    PreemptSlot, SerialTurnDriver, TurnError, TurnOutput, TurnResult, TurnRunner, build_turn_argv,
+    run_session_loop,
 };

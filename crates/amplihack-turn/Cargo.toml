@@ -31,3 +31,8 @@ async-trait = { workspace = true }
 [[test]]
 name = "driver_loop_it"
 path = "tests/driver_loop_it.rs"
+
+# AgentSession adapter contract over the relocated Copilot turn driver (PR-3).
+[[test]]
+name = "agent_session_it"
+path = "tests/agent_session_it.rs"

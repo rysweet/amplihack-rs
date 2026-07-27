@@ -116,6 +116,38 @@ impl<R: TurnRunner> SerialTurnDriver<R> {
     }
 }
 
+/// Present the serialized Copilot turn driver to the generic
+/// [`run_session_loop`](crate::run_session_loop) as an [`AgentSession`](crate::AgentSession).
+///
+/// The inherent [`SerialTurnDriver::run_turn`] is a `&self` method returning
+/// `io::Result<String>`; the trait requires `&mut self` and
+/// [`TurnResult`](crate::TurnResult)`<`[`TurnOutput`](crate::TurnOutput)`>`. This
+/// is the thin adapter that bridges the two, surfacing every failure (never
+/// swallowing it):
+///
+/// * `Ok(stdout)` → `Ok(TurnOutput{ text == stdout })` (captured verbatim);
+/// * `Err(Interrupted)` (a fired [`PreemptSlot`] from `stop`/`kill`) →
+///   `Err(TurnError::Preempted)`, so a pre-emption reads as a clean stop rather
+///   than a failure;
+/// * any other `io::Error` (spawn failure, non-zero exit, I/O) →
+///   `Err(TurnError::Exec(..))` carrying the underlying message so the caller can
+///   report it and keep the same session.
+impl<R: TurnRunner> crate::AgentSession for SerialTurnDriver<R> {
+    async fn run_turn(&mut self, prompt: &str) -> crate::TurnResult<crate::TurnOutput> {
+        // Call the inherent `&self` method explicitly (path form) so this never
+        // resolves back to the trait method and self-recurses.
+        match SerialTurnDriver::run_turn(self, prompt).await {
+            Ok(stdout) => Ok(crate::TurnOutput::from_text(stdout)),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => Err(crate::TurnError::Preempted),
+            Err(e) => Err(crate::TurnError::Exec(e.to_string())),
+        }
+    }
+
+    fn session_id(&self) -> &str {
+        SerialTurnDriver::session_id(self)
+    }
+}
+
 /// Production [`TurnRunner`]: spawns the real `copilot` binary.
 ///
 /// A child-bound pre-empt trigger is published into a shared [`PreemptSlot`] so

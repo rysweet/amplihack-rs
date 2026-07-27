@@ -501,6 +501,8 @@ reliably. Every non-zero exit is also accompanied by a clear terminal message.
 
 - [Signal Channel](signal-channel.md) — the per-session channel this chat
   complements.
+- [Signal on the Generic Turn Loop](signal-channel-turn-loop.md) — how this
+  chat's loop is built on `amplihack_turn::run_session_loop` via `SignalChannel`.
 - [Signal Onboarding](SIGNAL_ONBOARDING.md) — `signal setup` / `distribute`,
   linking, and the local daemon the chat depends on.
 - [Copilot CLI](COPILOT_CLI.md) — the agent the chat drives via

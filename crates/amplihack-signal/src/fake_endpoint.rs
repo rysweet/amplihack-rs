@@ -3,7 +3,7 @@
 //!
 //! The real Signal channel talks newline-delimited JSON-RPC 2.0 to signal-cli's
 //! `daemon --tcp` endpoint. To exercise the real [`crate::transport::SignalTransport`]
-//! (and, above it, [`crate::session_channel::SignalSession`]) end-to-end in CI
+//! (and, above it, [`crate::signal_channel::SignalChannel`]) end-to-end in CI
 //! **without ever touching the Signal network or creating a real group**, this
 //! type stands up a `127.0.0.1:0` (ephemeral loopback) TCP server that speaks
 //! the same wire protocol and records what the transport sent.

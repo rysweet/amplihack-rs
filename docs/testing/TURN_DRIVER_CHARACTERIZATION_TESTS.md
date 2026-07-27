@@ -62,8 +62,8 @@ the naming convention `characterization_inv<N>_<descriptor>`.
 | INV-2 | Pre-existing | `chat_membership_failclosed_it.rs` (parse/classify fail-closed, no member-number leakage) | `crates/amplihack-signal/tests/chat_membership_failclosed_it.rs` |
 | INV-3 | Pre-existing | `gating::tests::{empty_allowlist_denies_everything, rejects_sender_not_on_allowlist, rejects_empty_body, rejects_message_for_other_group, rejects_non_group_message, rejects_non_primary_device_sync_echo, rejects_bot_own_linked_device_sync, rejects_sync_not_authored_by_account, suppresses_*_echo_within_ttl}` | `crates/amplihack-signal/src/gating.rs` |
 | **INV-3** | **Added** | `characterization_inv3_inbound_gate_failclosed` (consolidated `fake_endpoint` anchor asserting deny-on-error/ambiguity, never fail-open, via `Gate::evaluate_at`) | `crates/amplihack-signal/tests/chat_it.rs` (`gating` mod) |
-| INV-4 | Pre-existing | `session_channel::tests::bounded_capacity_evicts_oldest` (fixed cap); `bounded_inbox_survives_a_flood` | `crates/amplihack-signal/src/session_channel.rs`, `crates/amplihack-signal/tests/session_channel_it.rs` |
-| **INV-4** | **Added** | `characterization_inv4_capacity_from_operator_config_evicts_oldest` (exercises the `AMPLIHACK_SIGNAL_INBOX_CAPACITY` env path: valid cap honored; invalid/zero/negative/non-numeric fall back to `DEFAULT_CAPACITY`; `PushOutcome::EvictedOldest` bounds memory) | `crates/amplihack-signal/tests/session_channel_it.rs` |
+| INV-4 | Migrated (PR-3) | INV-4's dead `Inbox`/`session_channel` coverage was re-pointed when `session_channel.rs` was deleted; the capacity/evict-oldest policy now lives on `SignalChannel`. See the `SignalChannel` rows below. | `crates/amplihack-signal/src/signal_channel.rs`, `crates/amplihack-signal/tests/signal_channel_it.rs` |
+| **INV-4** | **Migrated (PR-3)** | `default_capacity_{honours_valid_operator_value,falls_back_when_absent,falls_back_on_invalid_values}` (the `AMPLIHACK_SIGNAL_INBOX_CAPACITY` env path: valid cap honored; invalid/zero/non-numeric/whitespace fall back to `SignalChannel::DEFAULT_CAPACITY`) plus `queue_evicts_oldest_at_capacity` (the bounded turn queue drops the oldest pending prompt at capacity, bounding memory) | `crates/amplihack-signal/tests/signal_channel_it.rs` |
 | **INV-5** | **Added** | `characterization_inv5_successive_turns_reuse_same_session_id` (successive `SerialTurnDriver::run_turn` calls emit the same `--session-id`; prompt is exactly one `-p` argv element even with shell metacharacters) | `crates/amplihack-signal/tests/chat_it.rs` (`turn` mod) |
 | **INV-6** | **Added** | `characterization_inv6_turn_runs_to_completion_no_wallclock_cap` (a turn returns its output on natural completion with no per-turn elapsed-time cap in the driver) | `crates/amplihack-signal/tests/chat_it.rs` (`turn` mod) |
 | INV-7 | Pre-existing | `should_continue_respects_turns`, `should_continue_respects_api_calls` | `crates/amplihack-launcher/src/auto_mode_exec.rs` (`#[cfg(test)] mod tests`) |
@@ -86,24 +86,28 @@ test.
 Placement: `crates/amplihack-signal/tests/chat_it.rs`, in the existing `gating`
 module — no new `[[test]]` binary is registered.
 
-### `characterization_inv4_capacity_from_operator_config_evicts_oldest`
+### `default_capacity_*` and `queue_evicts_oldest_at_capacity` (INV-4, migrated in PR-3)
 
-Exercises the operator-configuration path of the bounded inbox that the
-pre-existing fixed-capacity test does not touch. Reads capacity from
-`AMPLIHACK_SIGNAL_INBOX_CAPACITY` via `Inbox::default_capacity()` /
-`Inbox::at_session`, using a save/restore guard around the env var so the test
-never leaks state to its neighbors. It locks:
+> **PR-3 migration note.** INV-4 originally lived in `session_channel_it.rs` and
+> exercised the file-backed `Inbox` (`Inbox::default_capacity()` / `Inbox::at_session`
+> / `PushOutcome::EvictedOldest`). PR-3 deleted the dead `session_channel` module and
+> relocated the *only* surviving piece — the operator-configurable capacity policy —
+> onto `SignalChannel`. The coverage was re-pointed (not lost) to
+> `crates/amplihack-signal/tests/signal_channel_it.rs`.
 
-- a **valid** value (e.g. `"3"`) is honored — the Nth+1 push returns
-  `PushOutcome::EvictedOldest` and the oldest instruction is gone;
-- **invalid** values (`"0"`, `"-1"`, `"  "`, `"not-a-number"`) fall back to
-  `Inbox::DEFAULT_CAPACITY` (32) rather than disabling the inbox, panicking, or
-  creating an unbounded file;
-- eviction actually **bounds** the on-disk queue (memory/DoS mitigation).
+Exercises the operator-configuration path of the bounded turn queue. Capacity is
+read from `AMPLIHACK_SIGNAL_INBOX_CAPACITY` via `SignalChannel::default_capacity()`,
+using a save/restore guard around the env var so the test never leaks state to its
+neighbors. It locks:
 
-Backed by `tempfile::TempDir` — unique per-test paths, no fixed `/tmp` file, no
-cross-test collision. Placement:
-`crates/amplihack-signal/tests/session_channel_it.rs`.
+- a **valid** value is honored by `default_capacity()`;
+- **invalid** values (`"0"`, `"  "`, `"not-a-number"`) fall back to
+  `SignalChannel::DEFAULT_CAPACITY` (32) rather than disabling the queue,
+  panicking, or going unbounded;
+- at capacity, pushing another accepted prompt **evicts the oldest** pending
+  prompt (with the operator warning log), bounding memory (`queue_evicts_oldest_at_capacity`).
+
+Placement: `crates/amplihack-signal/tests/signal_channel_it.rs`.
 
 ### `characterization_inv5_successive_turns_reuse_same_session_id`
 
@@ -171,8 +175,8 @@ cargo test -p amplihack-signal --features signal --test chat_it \
   characterization_inv5_successive_turns_reuse_same_session_id
 cargo test -p amplihack-signal --features signal --test chat_it \
   characterization_inv6_turn_runs_to_completion_no_wallclock_cap
-cargo test -p amplihack-signal --features signal --test session_channel_it \
-  characterization_inv4_capacity_from_operator_config_evicts_oldest
+cargo test -p amplihack-signal --features signal --test signal_channel_it \
+  default_capacity_honours_valid_operator_value queue_evicts_oldest_at_capacity
 cargo test -p amplihack-launcher \
   characterization_inv7_automode_continues_until_stop_condition
 ```
@@ -181,7 +185,7 @@ cargo test -p amplihack-launcher \
 
 | Env var | Consumed by | Default | Behavior |
 | ------- | ----------- | ------- | -------- |
-| `AMPLIHACK_SIGNAL_INBOX_CAPACITY` | `Inbox::default_capacity()` → INV-4 | `32` (`Inbox::DEFAULT_CAPACITY`) | Positive integer sets the bounded inbox capacity. Zero, negative, non-numeric, or whitespace-only values fall back to the default (never unbounded, never disabled). |
+| `AMPLIHACK_SIGNAL_INBOX_CAPACITY` | `SignalChannel::default_capacity()` → INV-4 | `32` (`SignalChannel::DEFAULT_CAPACITY`) | Positive integer sets the bounded turn-queue capacity. Zero, negative, non-numeric, or whitespace-only values fall back to the default (never unbounded, never disabled). |
 
 The INV-7 stop conditions come from `AutoModeConfig`, not the environment:
 
@@ -194,16 +198,18 @@ The INV-7 stop conditions come from `AutoModeConfig`, not the environment:
 
 ## Design constraints honored
 
-- **No production logic changed.** The only source-file edit outside test files
-  is inside the pre-existing `#[cfg(test)] mod tests` of `auto_mode_exec.rs`,
-  which is excluded from non-test builds. `gating.rs`, `turn.rs`,
-  `session_channel.rs`, and the loop code are untouched.
-- **No new `[[test]]` entries.** INV-3/5/6 live in the already-registered
-  `chat_it.rs`; INV-4 in `session_channel_it.rs`; INV-7 in the in-crate test
-  module.
+- **No production logic changed** (in PR-1, when these characterization tests
+  were added). The only source-file edit outside test files was inside the
+  pre-existing `#[cfg(test)] mod tests` of `auto_mode_exec.rs`, which is excluded
+  from non-test builds. `gating.rs`, `turn.rs`, and the loop code were untouched.
+  (PR-3 later deleted the dead `session_channel.rs` and moved INV-4's capacity
+  policy onto `SignalChannel` — see the INV-4 migration note above.)
+- **No new `[[test]]` entries** were added for INV-3/5/6/7. INV-3/5/6 live in the
+  already-registered `chat_it.rs`; INV-7 in the in-crate test module. INV-4 moved
+  from `session_channel_it.rs` to `signal_channel_it.rs` in PR-3.
 - **Reused seams only:** `fake_endpoint.rs`, the injectable `TurnRunner` /
-  `MockRunner`, `Gate::evaluate_at` / `Gate::record_outbound_at`, `Inbox` env
-  path, and `AutoMode` decision functions.
+  `MockRunner`, `Gate::evaluate_at` / `Gate::record_outbound_at`, the
+  `SignalChannel::default_capacity()` env path, and `AutoMode` decision functions.
 - **Feature gate preserved:** signal test files keep
   `#![cfg(feature = "signal")]`; INV-7 requires no feature.
 - **Hermetic & deterministic:** no real network/process, no `sleep`-as-sync;

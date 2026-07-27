@@ -12,18 +12,19 @@
 //! accepted prompt, and outbound secret redaction before chunking. No silent
 //! fallbacks — every fatal condition maps to a stable [`ChatError`] exit code.
 
-use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use amplihack_signal::chat::allowlist::ToolAllowlist;
-use amplihack_signal::chat::control::{Control, parse_control};
-use amplihack_signal::chat::membership::{Membership, expected_members};
+use amplihack_signal::chat::membership::Membership;
 use amplihack_signal::chat::outbound::redact_and_chunk;
-use amplihack_signal::chat::turn::{CopilotTurnRunner, PreemptSlot, SerialTurnDriver};
+use amplihack_signal::chat::turn::{
+    AgentSession, CopilotTurnRunner, PreemptSlot, SerialTurnDriver, TurnError, TurnOutput,
+    TurnResult, run_session_loop,
+};
 use amplihack_signal::chat::{ChatError, connect_daemon, validate_endpoint, verified_send};
 use amplihack_signal::config::SignalConfig;
 use amplihack_signal::gating::Gate;
-use amplihack_signal::session_channel::Inbox;
+use amplihack_signal::signal_channel::SignalChannel;
 use amplihack_signal::transport::{GroupId, SignalTransport};
 
 use crate::SignalChatArgs;
@@ -124,19 +125,6 @@ pub async fn verify_and_post(
     }
 }
 
-/// Audit-log an accepted prompt (redacted) to the local terminal.
-fn audit_accepted(session_id: &str, sender: &str, device: Option<u32>, prompt: &str) {
-    let redacted = amplihack_signal::chat::outbound::redact_for_relay(prompt);
-    let preview: String = redacted.chars().take(120).collect();
-    tracing::info!(
-        session_id,
-        sender,
-        device = device.unwrap_or(0),
-        "signal chat accepted prompt: {preview}"
-    );
-    eprintln!("signal chat: accepted prompt from {sender} (device {device:?}): {preview}");
-}
-
 async fn run_chat_async(args: SignalChatArgs) -> Result<(), ChatError> {
     // 1. Load config (also our linked/configured check). A missing/invalid
     //    config means the host is not onboarded → guide the operator.
@@ -192,22 +180,36 @@ async fn run_chat_async(args: SignalChatArgs) -> Result<(), ChatError> {
         group_id.as_str()
     );
 
-    // 6. Fresh pinned session id + effective allowlist.
+    // 6. Fresh pinned session id + effective allowlist. The id is pinned for the
+    //    whole chat so every turn resumes the SAME agent session.
     let session_id = uuid::Uuid::new_v4().to_string();
     let allowlist = ToolAllowlist::from_flags(&args.allow_tool, args.dangerous_all_tools);
-    let expected = expected_members(&cfg);
-    let mut gate = Gate::new(&cfg, group_id.as_str());
 
     // Shared child-bound pre-empt trigger so a control `stop`/`kill` can
-    // pre-empt an in-flight turn even mid-execution, immune to PID reuse.
+    // pre-empt an in-flight turn even mid-execution, immune to PID reuse. It is
+    // held by BOTH the turn runner (which owns the child process) and the
+    // SignalChannel actor (which fires it on an inbound `stop`/`kill`).
     let preempt: PreemptSlot = Arc::new(Mutex::new(None));
-    let driver = Arc::new(SerialTurnDriver::new(
+    let driver = SerialTurnDriver::new(
         CopilotTurnRunner::new(COPILOT_BIN, preempt.clone()),
         &session_id,
         allowlist.clone(),
-    ));
+    );
 
-    // 7. Announce topic, blast radius, and control phrases.
+    // 7. Bounded, operator-configurable turn-queue capacity, then move the
+    //    transport into the SignalChannel's background Signal I/O actor. The
+    //    channel re-derives its own Gate from cfg (gating.rs untouched) and
+    //    services BOTH directions, so inbound is still accepted while a turn
+    //    runs — the concurrency the old `tokio::select!` loop provided.
+    let capacity = args
+        .inbox_capacity
+        .unwrap_or_else(SignalChannel::default_capacity);
+    let mut channel = SignalChannel::new(transport, &cfg, group_id.clone(), preempt, capacity);
+    channel.set_session_id(&session_id);
+
+    // 8. Announce topic, blast radius, and control phrases through the channel's
+    //    fail-closed verify → redact → chunk path (recording it in the actor's
+    //    echo window). This is the initial "session started" post before the loop.
     let announcement = format!(
         "amplihack signal chat started.\n\
          topic: {}\n\
@@ -223,135 +225,48 @@ async fn run_chat_async(args: SignalChatArgs) -> Result<(), ChatError> {
         },
         allowlist.describe(),
     );
-    verify_and_post(
-        &mut transport,
-        &group_id,
-        &expected,
-        &mut gate,
-        &announcement,
-    )
-    .await;
+    channel.announce_session_started(&announcement).await;
 
-    // Bounded turn queue (operator-configurable), mirroring the session inbox.
-    let capacity = args.inbox_capacity.unwrap_or_else(Inbox::default_capacity);
-    let mut queue: VecDeque<String> = VecDeque::new();
+    // 9. First turn: the topic itself is the opening prompt (a trusted CLI arg,
+    //    seeded directly into the queue, exactly as the old loop spawned the
+    //    first turn from `args.topic`).
+    channel.seed_first_prompt(args.topic.clone());
 
-    // 8. First turn: the topic itself is the opening prompt.
-    let (turn_tx, mut turn_rx) = tokio::sync::mpsc::unbounded_channel::<std::io::Result<String>>();
-    let mut turn_in_flight = spawn_turn(&driver, &turn_tx, args.topic.clone());
-
-    // 9. Subscriber loop.
-    loop {
-        tokio::select! {
-            biased;
-            // Post completed turn output promptly, then start the next queued turn.
-            Some(result) = turn_rx.recv() => {
-                turn_in_flight = false;
-                match result {
-                    Ok(body) if !body.trim().is_empty() => {
-                        verify_and_post(&mut transport, &group_id, &expected, &mut gate, &body).await;
-                    }
-                    Ok(_) => {
-                        verify_and_post(&mut transport, &group_id, &expected, &mut gate,
-                            "(turn produced no output)").await;
-                    }
-                    Err(e) => {
-                        // Surface the failure but keep the chat alive; the next
-                        // turn resumes the SAME session (context preserved).
-                        verify_and_post(&mut transport, &group_id, &expected, &mut gate,
-                            &format!("turn failed: {e}")).await;
-                    }
-                }
-                if !turn_in_flight {
-                    let next = queue.pop_front();
-                    if let Some(next) = next {
-                        turn_in_flight = spawn_turn(&driver, &turn_tx, next);
-                    }
-                }
-            }
-            // Inbound Signal frames.
-            recv = transport.receive() => {
-                let env = match recv {
-                    Ok(Some(env)) => env,
-                    Ok(None) => {
-                        eprintln!("signal chat: receive stream closed; shutting down.");
-                        break;
-                    }
-                    Err(e) => {
-                        eprintln!("signal chat: receive error: {e}");
-                        continue;
-                    }
-                };
-                let Some(body) = gate.evaluate(&env) else { continue };
-                if body.is_empty() {
-                    continue;
-                }
-                // Control phrases are parsed BEFORE a body becomes a prompt.
-                match parse_control(&body) {
-                    Control::Status => {
-                        let status = format!(
-                            "status: session {} | {} | queue depth {} | membership: verifying before each post",
-                            session_id,
-                            if turn_in_flight { "turn in flight" } else { "idle" },
-                            queue.len(),
-                        );
-                        verify_and_post(&mut transport, &group_id, &expected, &mut gate, &status).await;
-                    }
-                    Control::Stop => {
-                        eprintln!("signal chat: stop received; terminating child and closing group.");
-                        preempt_child(&preempt);
-                        let _ = transport.quit_group(&group_id).await;
-                        break;
-                    }
-                    Control::Prompt(prompt) => {
-                        let sender = env.source.as_deref().unwrap_or_default();
-                        audit_accepted(&session_id, sender, env.source_device, &prompt);
-                        if turn_in_flight {
-                            queue.push_back(prompt);
-                            while queue.len() > capacity {
-                                queue.pop_front();
-                                eprintln!(
-                                    "signal chat: turn queue at capacity ({capacity}); dropped oldest pending prompt."
-                                );
-                            }
-                        } else {
-                            turn_in_flight = spawn_turn(&driver, &turn_tx, prompt);
-                        }
-                    }
-                }
-            }
-        }
+    // 10. Drive the generic sequential turn loop. A failed turn is mapped to
+    //     posted output by `ResilientSession` (never fatal), so the chat stays
+    //     alive on the SAME session — preserving the old loop's resilience where
+    //     a turn error posted `turn failed: {e}` and continued.
+    let mut session = ResilientSession { inner: driver };
+    if let Err(e) = run_session_loop(&mut session, &mut channel).await {
+        eprintln!("signal chat: session loop ended with error: {e}");
     }
 
     Ok(())
 }
 
-/// Spawn one serialized turn on the driver, delivering its captured stdout (or
-/// error) over `tx`. Returns `true` (a turn is now in flight).
-fn spawn_turn(
-    driver: &Arc<SerialTurnDriver<CopilotTurnRunner>>,
-    tx: &tokio::sync::mpsc::UnboundedSender<std::io::Result<String>>,
-    prompt: String,
-) -> bool {
-    let driver = driver.clone();
-    let tx = tx.clone();
-    tokio::spawn(async move {
-        let output = driver.run_turn(&prompt).await;
-        let _ = tx.send(output);
-    });
-    true
+/// Wraps the real [`AgentSession`] so a failed turn never ends the generic loop.
+///
+/// The hand-rolled loop kept the chat alive on a turn error — it posted
+/// `turn failed: {e}` and resumed the SAME session on the next prompt. The
+/// generic [`run_session_loop`] instead propagates any [`TurnError`] out of the
+/// loop (and would terminate the chat). To preserve the old behavior we map
+/// every turn error to a *successful* [`TurnOutput`] carrying the
+/// operator-visible failure text; a pre-emption maps to empty output (the
+/// `stop`/`kill` path has already closed the channel, so the loop ends anyway).
+struct ResilientSession<S: AgentSession> {
+    inner: S,
 }
 
-/// Pre-empt the in-flight turn, if any, by firing its child-bound trigger.
-///
-/// Takes the one-shot sender out of the shared [`PreemptSlot`] and sends `()`.
-/// The turn task selecting on the paired receiver then kills its **owned**
-/// [`tokio::process::Child`] via `Child::start_kill()` — bound by the runtime to
-/// that exact process, so there is no PID-reuse (TOCTOU) window and no raw PID
-/// is ever passed to `kill(2)`. If no turn is in flight the slot is empty and
-/// this is a harmless no-op.
-fn preempt_child(preempt: &PreemptSlot) {
-    if let Some(tx) = preempt.lock().expect("preempt mutex not poisoned").take() {
-        let _ = tx.send(());
+impl<S: AgentSession> AgentSession for ResilientSession<S> {
+    async fn run_turn(&mut self, prompt: &str) -> TurnResult<TurnOutput> {
+        match self.inner.run_turn(prompt).await {
+            Ok(out) => Ok(out),
+            Err(TurnError::Preempted) => Ok(TurnOutput::from_text("")),
+            Err(e) => Ok(TurnOutput::from_text(format!("turn failed: {e}"))),
+        }
+    }
+
+    fn session_id(&self) -> &str {
+        self.inner.session_id()
     }
 }

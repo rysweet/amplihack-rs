@@ -172,7 +172,7 @@ Every optimization in this pass preserves, without exception:
 
 - **Public API surface** — no `pub` item removed or changed. The touched code is
   entirely internal: `SignalTransport::read_line` and the private
-  `format_operator_context` helper; public types such as `SignalSession` are
+  `format_operator_context` helper; public types such as `SignalChannel` are
   unaffected.
 - **All existing tests** — no test modified or deleted; only additive tests are
   introduced (golden-string, non-UTF-8).

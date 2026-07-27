@@ -11,7 +11,7 @@ repository.workspace = true
 # lib, pulls in no tokio-net stack, and costs nothing at runtime.
 default = []
 # Enables the whole channel (pure core + gated tokio TCP transport).
-signal = ["dep:tokio", "dep:tokio-stream", "dep:regex", "dep:amplihack-turn"]
+signal = ["dep:tokio", "dep:tokio-stream", "dep:regex", "dep:amplihack-turn", "dep:async-trait"]
 
 [dependencies]
 serde = { workspace = true }
@@ -20,9 +20,9 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 toml = "0.8"
 regex = { version = "1", optional = true }
-amplihack-state = { workspace = true }
 amplihack-types = { workspace = true }
 amplihack-turn = { workspace = true, optional = true }
+async-trait = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = [
     "net",
     "io-util",
@@ -51,12 +51,12 @@ tokio = { version = "1", features = [
 name = "envelope_fixtures"
 path = "tests/envelope_fixtures.rs"
 
-# File-backed inbox integration tests.
-[[test]]
-name = "session_channel_it"
-path = "tests/session_channel_it.rs"
-
 # `/signal` topic chat contract tests (feature-gated).
 [[test]]
 name = "chat_it"
 path = "tests/chat_it.rs"
+
+# `SignalChannel` (amplihack_turn::Channel) contract tests (feature-gated, PR-3).
+[[test]]
+name = "signal_channel_it"
+path = "tests/signal_channel_it.rs"

@@ -450,9 +450,9 @@ dependencies = [
 name = "amplihack-signal"
 version = "0.13.0"
 dependencies = [
- "amplihack-state",
  "amplihack-turn",
  "amplihack-types",
+ "async-trait",
  "regex",
  "serde",
  "serde_json",

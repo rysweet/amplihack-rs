@@ -67,6 +67,11 @@ A **feature-gated, opt-in Signal integration** for amplihack that works for
 > boundaries (`signal-cli`, `azlin`/`az`, device linking) are tested, see
 > [Signal External-Service Integration](signal-external-integration.md).
 
+> **Generic turn loop.** The `amplihack signal chat` loop is built on the
+> agent-generic `amplihack_turn::run_session_loop` via a `SignalChannel` that
+> implements `amplihack_turn::Channel`. See
+> [Signal on the Generic Turn Loop](signal-channel-turn-loop.md).
+
 ---
 
 ## How it works

@@ -11,8 +11,10 @@
 //!   [`transport::parse_incoming`]) plus the `tokio` TCP JSON-RPC client.
 //! - [`gating`] — fail-closed inbound decision (allowlist + device + group +
 //!   echo suppression).
-//! - [`session_channel`] — [`session_channel::SignalSession`] and the
-//!   file-backed [`session_channel::Inbox`].
+//! - [`signal_channel`] — [`signal_channel::SignalChannel`], the
+//!   [`amplihack_turn::Channel`] that runs `amplihack signal chat` on the
+//!   crate-generic turn loop (fail-closed inbound gate, bounded turn queue,
+//!   control phrases, fail-closed outbound membership re-check).
 //! - [`chat`] — the `/signal` topic chat core (deterministic group naming,
 //!   control-phrase parsing, scoped tool allowlist, outbound redaction +
 //!   Signal-sized chunking, fail-closed membership verification, and the
@@ -38,6 +40,6 @@ pub mod fake_endpoint;
 #[cfg(feature = "signal")]
 pub mod gating;
 #[cfg(feature = "signal")]
-pub mod session_channel;
+pub mod signal_channel;
 #[cfg(feature = "signal")]
 pub mod transport;
