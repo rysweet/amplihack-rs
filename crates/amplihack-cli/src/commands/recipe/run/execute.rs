@@ -50,6 +50,41 @@ const CONTEXT_ARG_SIZE_THRESHOLD: usize = 128 * 1024;
 /// guard for the E2BIG / `--context-file` path).
 const CONTEXT_ENV_VALUE_MAX_BYTES: usize = 96 * 1024;
 
+/// Per-entry byte overhead charged to every environment variable when
+/// accounting for the aggregate env budget (issue #1023). Each `envp` entry
+/// costs the encoded string `NAME=VALUE\0` (the `=` separator + trailing NUL)
+/// **plus** one pointer in the `envp` array (8 bytes on a 64-bit target). We
+/// use a single flat constant of 16 = 8 (pointer) + `=` + NUL + a few bytes of
+/// slack, applied uniformly to both pass-through accounting (`vars_os()`) and
+/// the context mirror so the two sides of the budget stay consistent.
+pub(super) const ENV_ENTRY_OVERHEAD_BYTES: usize = 16;
+
+/// Operator override for the aggregate context-env budget (issue #1023). When
+/// set to a valid `usize` it takes precedence over the runtime-derived budget
+/// (`0` is valid and means "mirror essentials only"). Invalid / non-numeric
+/// values are ignored (a warning is logged) and the derived budget is used.
+pub(super) const CONTEXT_ENV_BUDGET_OVERRIDE_ENV: &str = "AMPLIHACK_CONTEXT_ENV_BUDGET_BYTES";
+
+/// Conservative ARG_MAX fallback (128 KiB) used when `sysconf(_SC_ARG_MAX)` is
+/// unavailable or returns an implausibly small value (issue #1023). POSIX only
+/// guarantees `_POSIX_ARG_MAX` = 4096, which is far too small to reason about;
+/// a real limit below [`ARG_MAX_MIN_PLAUSIBLE_BYTES`] signals a broken /
+/// emulated environment. 128 KiB sits safely below every real platform's true
+/// limit while still leaving room to mirror the small essential context keys.
+const ARG_MAX_FALLBACK_BYTES: usize = 131_072;
+
+/// Any `sysconf(_SC_ARG_MAX)` result `<= 0` or below this threshold (64 KiB) is
+/// treated as implausible and replaced with [`ARG_MAX_FALLBACK_BYTES`].
+const ARG_MAX_MIN_PLAUSIBLE_BYTES: usize = 65_536;
+
+/// Flat reservation (128 KiB) subtracted from ARG_MAX before computing the
+/// aggregate context-env budget (issue #1023). Covers, with a single generous
+/// margin: the process `argv`, the recipe-runner's own re-exported
+/// `RECIPE_VAR_*` variables, the `AMPLIHACK_*` variables added by
+/// [`EnvBuilder`], and general safety slack. A flat reservation is simpler and
+/// safer than modelling each source individually.
+const ENV_BUDGET_RESERVATION_BYTES: usize = 131_072;
+
 /// Reserved / dangerous environment-variable names that must never be set
 /// from untrusted recipe context (issue bodies, task descriptions and
 /// third-party recipes all flow into the context map). These names are
@@ -106,6 +141,113 @@ fn is_valid_env_identifier(name: &str) -> bool {
     chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
 }
 
+/// `true` when `key` (the ORIGINAL, lowercased context key — checked before
+/// uppercasing) names an ESSENTIAL context variable that bash steps reference
+/// under `set -u` and that must therefore always be mirrored into the env,
+/// regardless of the aggregate budget (issue #1023). The set is small and
+/// known-required: `task_description`, `repo_path`, `existing_branch`, and any
+/// `should_*` flag.
+fn is_essential_context_key(key: &str) -> bool {
+    matches!(key, "task_description" | "repo_path" | "existing_branch")
+        || key.starts_with("should_")
+}
+
+/// Byte cost charged to a single exported env entry for budget accounting:
+/// `name.len() + value.len() + ENV_ENTRY_OVERHEAD_BYTES`.
+fn env_entry_bytes(name: &str, value: &str) -> usize {
+    name.len() + value.len() + ENV_ENTRY_OVERHEAD_BYTES
+}
+
+/// Validate a single recipe context entry for env export (issue #784 / #1023),
+/// independent of any budget accounting. Returns the uppercased env name on
+/// success, or a static, name-only skip `reason` on rejection. The filters run
+/// in the fixed order documented on [`context_env_pairs`].
+fn validate_context_entry(key: &str, value: &str) -> Result<String, &'static str> {
+    let name = key.to_ascii_uppercase();
+    if !is_valid_env_identifier(&name) {
+        return Err("invalid_identifier");
+    }
+    if name.starts_with("AMPLIHACK_") || RESERVED_ENV_DENYLIST.contains(&name.as_str()) {
+        return Err("reserved_name");
+    }
+    if value.contains('\0') {
+        return Err("value_contains_nul");
+    }
+    if value.len() > CONTEXT_ENV_VALUE_MAX_BYTES {
+        return Err("value_too_large");
+    }
+    Ok(name)
+}
+
+/// Aggregate byte budget available for the context env mirror (issue #1023).
+///
+/// Pure and injectable so unit tests can supply values without depending on the
+/// host's real ARG_MAX. Returns `arg_max` minus the bytes already consumed by
+/// the inherited (pass-through) environment minus a reservation for argv and
+/// runner-added variables, saturating to `0` so an over-subscribed budget can
+/// never underflow into an enormous bogus value.
+pub(super) fn context_env_budget(
+    arg_max: usize,
+    inherited_env_bytes: usize,
+    reservation: usize,
+) -> usize {
+    arg_max.saturating_sub(inherited_env_bytes.saturating_add(reservation))
+}
+
+/// Best-effort kernel argv+envp limit in bytes. Queries
+/// `sysconf(_SC_ARG_MAX)` on Unix; falls back to [`ARG_MAX_FALLBACK_BYTES`]
+/// when the value is unavailable, non-positive, or implausibly small.
+fn current_arg_max() -> usize {
+    #[cfg(unix)]
+    {
+        // SAFETY: `sysconf` is a pure query with no memory-safety obligations.
+        let raw = unsafe { libc::sysconf(libc::_SC_ARG_MAX) };
+        if raw > 0 && (raw as u64) >= ARG_MAX_MIN_PLAUSIBLE_BYTES as u64 {
+            return raw as usize;
+        }
+    }
+    ARG_MAX_FALLBACK_BYTES
+}
+
+/// Total bytes the current process environment will consume as it passes
+/// THROUGH to the spawned recipe-runner (and is re-exported to every bash
+/// step). Summed with the same per-entry accounting used for the mirror.
+fn inherited_env_bytes() -> usize {
+    std::env::vars_os()
+        .map(|(name, value)| name.len() + value.len() + ENV_ENTRY_OVERHEAD_BYTES)
+        .sum()
+}
+
+/// Resolve the aggregate context-env budget at runtime (issue #1023).
+///
+/// Precedence:
+/// 1. A valid [`CONTEXT_ENV_BUDGET_OVERRIDE_ENV`] override (`usize`; `0` valid)
+///    wins verbatim. Invalid values are logged (name-only) and ignored.
+/// 2. Otherwise derive it from the kernel ARG_MAX minus the inherited env minus
+///    the fixed reservation via [`context_env_budget`].
+pub(super) fn resolve_context_env_budget() -> usize {
+    if let Some(raw) = std::env::var_os(CONTEXT_ENV_BUDGET_OVERRIDE_ENV) {
+        match raw
+            .to_str()
+            .map(str::trim)
+            .and_then(|s| s.parse::<usize>().ok())
+        {
+            Some(value) => return value,
+            None => tracing::warn!(
+                env = %CONTEXT_ENV_BUDGET_OVERRIDE_ENV,
+                reason = %"invalid_env_budget_override",
+                "operator env-budget override is not a valid non-negative integer; \
+                 using derived budget"
+            ),
+        }
+    }
+    context_env_budget(
+        current_arg_max(),
+        inherited_env_bytes(),
+        ENV_BUDGET_RESERVATION_BYTES,
+    )
+}
+
 /// Deterministically map recipe context entries to environment variables for
 /// the spawned recipe runner (and, by OS inheritance, every bash step and
 /// nested sub-recipe it runs). This is the fix for issue #784 / #4583: bash
@@ -113,7 +255,8 @@ fn is_valid_env_identifier(name: &str) -> bool {
 /// must exist in the environment rather than only being substituted into
 /// `{{placeholder}}` text.
 ///
-/// Transform (pure, total — invalid entries are skipped, never fatal):
+/// Per-key filters (pure, total — invalid entries are skipped, never fatal),
+/// applied BEFORE any budget accounting:
 /// 1. Uppercase the key (`task_description` → `TASK_DESCRIPTION`).
 /// 2. Drop keys that are not valid env identifiers after uppercasing
 ///    (empty, leading digit, hyphen/dot/space, non-ASCII).
@@ -124,53 +267,77 @@ fn is_valid_env_identifier(name: &str) -> bool {
 /// 6. Drop values larger than [`CONTEXT_ENV_VALUE_MAX_BYTES`] (would risk
 ///    `E2BIG`); they remain available via the recipe context file.
 ///
+/// Aggregate budget (issue #1023): the total bytes of the exported mirror must
+/// stay within `budget` so the environment inherited by every bash step cannot
+/// cross the kernel's ARG_MAX. Surviving entries are partitioned into ESSENTIAL
+/// keys (see [`is_essential_context_key`]) — always exported, even if that
+/// alone exceeds the budget (a loud warning is logged) — and non-essential
+/// keys, which fill the remaining budget SMALLEST-FIRST so the maximum number
+/// of useful vars survive. A non-essential entry that does not fit is dropped
+/// from the mirror ONLY; it is still delivered to the runner via
+/// `--set` / `--context-file` (see [`pass_context`]) for `{{placeholder}}`
+/// substitution (same contract as the per-value cap at #784).
+///
 /// Skipped entries are logged name-only at `warn` level — values may carry
 /// sensitive data and are never logged.
-pub(super) fn context_env_pairs(context: &BTreeMap<String, String>) -> Vec<(String, String)> {
-    let mut pairs = Vec::with_capacity(context.len());
+pub(super) fn context_env_pairs(
+    context: &BTreeMap<String, String>,
+    budget: usize,
+) -> Vec<(String, String)> {
+    // Borrow values during classification/sorting so entries that never make
+    // the mirror (validation-rejected, or non-essentials that overflow the
+    // budget) are not cloned. Values may be up to `CONTEXT_ENV_VALUE_MAX_BYTES`
+    // (96 KiB), so cloning only the survivors avoids wasted allocation.
+    let mut essential: Vec<(String, &str)> = Vec::new();
+    let mut optional: Vec<(String, &str)> = Vec::new();
     for (key, value) in context {
-        let name = key.to_ascii_uppercase();
-        if !is_valid_env_identifier(&name) {
-            tracing::warn!(
+        match validate_context_entry(key, value) {
+            Ok(name) if is_essential_context_key(key) => essential.push((name, value.as_str())),
+            Ok(name) => optional.push((name, value.as_str())),
+            Err(reason) => tracing::warn!(
                 name = %key,
-                reason = %"invalid_identifier",
+                reason = %reason,
+                "recipe context key skipped for env export"
+            ),
+        }
+    }
+
+    let mut pairs = Vec::with_capacity(essential.len() + optional.len());
+    let mut used: usize = 0;
+
+    // Essential keys are always exported, even if they alone exceed the budget.
+    for (name, value) in essential {
+        used = used.saturating_add(env_entry_bytes(&name, value));
+        pairs.push((name, value.to_owned()));
+    }
+    if used > budget {
+        tracing::warn!(
+            reason = %"essential_env_exceeds_budget",
+            used_bytes = used,
+            budget_bytes = budget,
+            "essential recipe context exceeds the aggregate env budget; \
+             exporting essentials anyway and dropping all non-essential keys"
+        );
+    }
+
+    // Non-essential keys fill the remaining budget smallest-first.
+    optional.sort_by(|a, b| {
+        env_entry_bytes(&a.0, a.1)
+            .cmp(&env_entry_bytes(&b.0, b.1))
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    for (name, value) in optional {
+        let cost = env_entry_bytes(&name, value);
+        if used.saturating_add(cost) <= budget {
+            used = used.saturating_add(cost);
+            pairs.push((name, value.to_owned()));
+        } else {
+            tracing::warn!(
+                name = %name,
+                reason = %"aggregate_env_budget",
                 "recipe context key skipped for env export"
             );
-            continue;
         }
-        if name.starts_with("AMPLIHACK_") {
-            tracing::warn!(
-                name = %key,
-                reason = %"reserved_name",
-                "recipe context key skipped for env export"
-            );
-            continue;
-        }
-        if RESERVED_ENV_DENYLIST.contains(&name.as_str()) {
-            tracing::warn!(
-                name = %key,
-                reason = %"reserved_name",
-                "recipe context key skipped for env export"
-            );
-            continue;
-        }
-        if value.contains('\0') {
-            tracing::warn!(
-                name = %key,
-                reason = %"value_contains_nul",
-                "recipe context key skipped for env export"
-            );
-            continue;
-        }
-        if value.len() > CONTEXT_ENV_VALUE_MAX_BYTES {
-            tracing::warn!(
-                name = %key,
-                reason = %"value_too_large",
-                "recipe context key skipped for env export"
-            );
-            continue;
-        }
-        pairs.push((name, value.clone()));
     }
     pairs
 }
@@ -228,8 +395,10 @@ pub(super) fn execute_recipe_via_rust(
     // precedence — written BEFORE EnvBuilder and the run-id below — so every
     // amplihack-managed/protective variable deterministically wins over any
     // colliding context key. Reserved/dangerous names are dropped upstream in
-    // `context_env_pairs` (they are not EnvBuilder-managed).
-    command.envs(context_env_pairs(context));
+    // `context_env_pairs` (they are not EnvBuilder-managed). The aggregate byte
+    // budget (#1023) keeps the total mirrored env under the kernel's ARG_MAX so
+    // late bash steps cannot fail with "Argument list too long".
+    command.envs(context_env_pairs(context, resolve_context_env_budget()));
 
     let runtime_dir = tempfile::Builder::new()
         .prefix("amplihack-workflow-")

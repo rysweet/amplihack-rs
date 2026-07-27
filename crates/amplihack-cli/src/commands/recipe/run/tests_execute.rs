@@ -2415,8 +2415,17 @@ fn test_run_recipe_forwards_recipe_parent_as_dash_r() {
 
 /// Collect `context_env_pairs` output into a map for order-independent
 /// assertions. Last-writer-wins on collision (deterministic BTreeMap order).
+///
+/// Issue #1023: `context_env_pairs` now takes an aggregate env budget. The
+/// existing filter/uppercase/denylist tests are agnostic to the budget, so
+/// this helper passes `usize::MAX` (effectively unbounded) to keep their
+/// semantics unchanged. The aggregate-budget behavior is exercised directly
+/// through `execute::context_env_pairs(ctx, budget)` in the dedicated tests
+/// further below.
 fn context_env_map(context: &BTreeMap<String, String>) -> BTreeMap<String, String> {
-    execute::context_env_pairs(context).into_iter().collect()
+    execute::context_env_pairs(context, usize::MAX)
+        .into_iter()
+        .collect()
 }
 
 fn ctx(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
@@ -2840,4 +2849,337 @@ fn test_execute_recipe_via_rust_context_cannot_clobber_reserved_or_builder_env()
         child_ahome, "/evil/home",
         "context key `amplihack_home` must NOT override builder-managed AMPLIHACK_HOME"
     );
+}
+
+// =========================================================================
+// Issue #1023: ADAPTIVE AGGREGATE ENV BUDGET for context_env_pairs
+//
+// Problem: context_env_pairs mirrors recipe context into the spawned
+// recipe-runner's environment with only a PER-VALUE cap (96KB) and NO
+// AGGREGATE cap. The runner re-exports the inherited env to every bash step
+// (`.envs(child_env)`), so in a long workflow the cumulative env crosses the
+// kernel's execve argv+envp limit (ARG_MAX) and a late bash step fails with
+// "Argument list too long (os error 7)" — a FALSE recipe failure AFTER all
+// real work is done (see runner issue #130).
+//
+// Fix contract (TDD RED — these tests fail until implemented):
+//   * `context_env_pairs(context, budget)` gains a `budget: usize` param that
+//     caps the AGGREGATE bytes of the exported env mirror.
+//   * A pure helper `context_env_budget(arg_max, inherited_env_bytes,
+//     reservation)` computes the derived budget with saturating arithmetic.
+//   * `resolve_context_env_budget()` derives the budget at runtime (sysconf
+//     ARG_MAX minus inherited env minus a reservation) and honors an explicit
+//     `AMPLIHACK_CONTEXT_ENV_BUDGET_BYTES` operator override.
+//   * Essential keys (task_description, repo_path, existing_branch, should_*)
+//     are ALWAYS exported; non-essential keys fill the remaining budget
+//     smallest-first; dropped mirror values are STILL delivered via the
+//     existing pass_context (`--set` / `--context-file`) escape hatch (#784).
+//   * All existing filters (identifier, AMPLIHACK_ namespace, denylist, NUL,
+//     96KB per-value cap) run BEFORE budget accounting and remain unchanged.
+// =========================================================================
+
+/// Total bytes the exported env mirror will consume, mirroring the accounting
+/// the implementation must use: `name.len() + value.len() + overhead` per
+/// entry. References the production constant so the test stays in sync with
+/// the implementation's per-entry overhead.
+fn exported_env_bytes(pairs: &[(String, String)]) -> usize {
+    pairs
+        .iter()
+        .map(|(n, v)| n.len() + v.len() + execute::ENV_ENTRY_OVERHEAD_BYTES)
+        .sum()
+}
+
+// -------------------------------------------------------------------------
+// context_env_budget — pure, injectable budget arithmetic
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_context_env_budget_subtracts_inherited_and_reservation() {
+    // budget == arg_max - inherited - reservation (no saturation needed here).
+    let budget = execute::context_env_budget(1_000_000, 100_000, 128 * 1024);
+    assert_eq!(
+        budget,
+        1_000_000 - 100_000 - 131_072,
+        "budget must be arg_max minus inherited env minus reservation"
+    );
+}
+
+#[test]
+fn test_context_env_budget_saturates_to_zero() {
+    // When inherited + reservation exceeds arg_max the budget floors at 0,
+    // never wrapping around (which would grant an enormous bogus budget).
+    assert_eq!(
+        execute::context_env_budget(100, 5_000, 5_000),
+        0,
+        "an over-subscribed budget must saturate to 0, not underflow"
+    );
+    assert_eq!(execute::context_env_budget(0, 0, 0), 0);
+    assert_eq!(
+        execute::context_env_budget(usize::MAX, usize::MAX, usize::MAX),
+        0,
+        "saturating_sub must not panic or wrap on extreme inputs"
+    );
+}
+
+// -------------------------------------------------------------------------
+// resolve_context_env_budget — operator override precedence
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_resolve_context_env_budget_honors_operator_override() {
+    // The AMPLIHACK_CONTEXT_ENV_BUDGET_BYTES override, when a valid usize,
+    // takes precedence over the derived budget. `0` is valid ("essentials
+    // only"). Invalid/non-numeric values are ignored (fall back to derived)
+    // and never interpreted as a partial number.
+    let _guard = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let name = execute::CONTEXT_ENV_BUDGET_OVERRIDE_ENV;
+    let previous = std::env::var_os(name);
+
+    // Valid small value wins exactly.
+    unsafe { std::env::set_var(name, "4096") };
+    assert_eq!(
+        execute::resolve_context_env_budget(),
+        4096,
+        "a valid override must be used verbatim"
+    );
+
+    // `0` is a valid override meaning "mirror essentials only".
+    unsafe { std::env::set_var(name, "0") };
+    assert_eq!(
+        execute::resolve_context_env_budget(),
+        0,
+        "an override of 0 is valid and means essentials-only"
+    );
+
+    // A very large override wins even over the (smaller) derived budget,
+    // proving the override — not the derivation — is authoritative.
+    unsafe { std::env::set_var(name, "1073741824") };
+    assert_eq!(
+        execute::resolve_context_env_budget(),
+        1_073_741_824,
+        "a valid override takes precedence over the derived budget"
+    );
+
+    // Invalid overrides are ignored: the result must depend ONLY on the
+    // derived budget, not on the (unparseable) override content. Two
+    // equal-length non-numeric strings inject identical inherited-env bytes,
+    // so a correct fallback yields identical derived budgets.
+    unsafe { std::env::set_var(name, "abc") };
+    let derived_a = execute::resolve_context_env_budget();
+    unsafe { std::env::set_var(name, "xyz") };
+    let derived_b = execute::resolve_context_env_budget();
+    assert_eq!(
+        derived_a, derived_b,
+        "an invalid override must be ignored, falling back to the derived budget"
+    );
+
+    match previous {
+        Some(v) => unsafe { std::env::set_var(name, v) },
+        None => unsafe { std::env::remove_var(name) },
+    }
+}
+
+// -------------------------------------------------------------------------
+// context_env_pairs(context, budget) — aggregate cap enforcement
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_context_env_pairs_enforces_aggregate_budget() {
+    // A context whose aggregate exported size FAR exceeds a small injected
+    // budget must: (a) keep total exported bytes <= budget; (b) still export
+    // the essential keys; (c) drop at least one large non-essential value;
+    // (d) return without panicking.
+    let big = "x".repeat(10_000);
+    let mut context = BTreeMap::new();
+    context.insert("task_description".to_string(), "fix".to_string()); // essential
+    context.insert("repo_path".to_string(), "/r".to_string()); // essential
+    context.insert("big1".to_string(), big.clone()); // non-essential, large
+    context.insert("big2".to_string(), big.clone());
+    context.insert("big3".to_string(), big.clone());
+
+    let budget = 5_000; // fits both tiny essentials, none of the 10KB values
+    let pairs = execute::context_env_pairs(&context, budget);
+    let map: BTreeMap<String, String> = pairs.iter().cloned().collect();
+
+    // (a) aggregate stays within budget
+    assert!(
+        exported_env_bytes(&pairs) <= budget,
+        "aggregate exported env ({}) must not exceed budget ({budget})",
+        exported_env_bytes(&pairs)
+    );
+    // (b) essentials survive
+    assert_eq!(map.get("TASK_DESCRIPTION"), Some(&"fix".to_string()));
+    assert_eq!(map.get("REPO_PATH"), Some(&"/r".to_string()));
+    // (c) at least one large non-essential dropped from the env mirror
+    assert!(
+        !map.contains_key("BIG1") || !map.contains_key("BIG2") || !map.contains_key("BIG3"),
+        "at least one oversized non-essential value must be dropped: {map:?}"
+    );
+}
+
+#[test]
+fn test_context_env_pairs_fills_smallest_first() {
+    // Given several non-essential values and a budget that fits some but not
+    // all, the smaller ones are kept and the largest is dropped (maximizing
+    // the number of surviving useful vars).
+    let mut context = BTreeMap::new();
+    context.insert("small_a".to_string(), "a".repeat(100).to_string());
+    context.insert("small_b".to_string(), "b".repeat(500).to_string());
+    context.insert("big_c".to_string(), "c".repeat(5_000).to_string());
+
+    // Entry sizes with overhead=16: SMALL_A=123, SMALL_B=523, BIG_C=5021.
+    // Budget 700 fits A+B (646) but not C.
+    let overhead = execute::ENV_ENTRY_OVERHEAD_BYTES;
+    let budget = ("SMALL_A".len() + 100 + overhead) + ("SMALL_B".len() + 500 + overhead) + 54;
+
+    let pairs = execute::context_env_pairs(&context, budget);
+    let map: BTreeMap<String, String> = pairs.iter().cloned().collect();
+
+    assert!(map.contains_key("SMALL_A"), "smallest value must be kept");
+    assert!(
+        map.contains_key("SMALL_B"),
+        "second-smallest value must be kept"
+    );
+    assert!(
+        !map.contains_key("BIG_C"),
+        "the largest value must be dropped when it does not fit: {map:?}"
+    );
+    assert!(exported_env_bytes(&pairs) <= budget);
+}
+
+#[test]
+fn test_context_env_pairs_always_exports_essentials_over_budget() {
+    // Essential keys are required by bash steps under `set -u` and must be
+    // exported even when the budget is pathologically small (here 0). Non-
+    // essential keys get zero remaining budget and are dropped.
+    let mut context = BTreeMap::new();
+    context.insert("task_description".to_string(), "do the thing".to_string());
+    context.insert("repo_path".to_string(), "/work/repo".to_string());
+    context.insert("existing_branch".to_string(), "feature/x".to_string());
+    context.insert("should_create_pr".to_string(), "true".to_string());
+    context.insert("extra_notes".to_string(), "non-essential".to_string());
+
+    let pairs = execute::context_env_pairs(&context, 0);
+    let map: BTreeMap<String, String> = pairs.iter().cloned().collect();
+
+    assert_eq!(
+        map.get("TASK_DESCRIPTION"),
+        Some(&"do the thing".to_string())
+    );
+    assert_eq!(map.get("REPO_PATH"), Some(&"/work/repo".to_string()));
+    assert_eq!(map.get("EXISTING_BRANCH"), Some(&"feature/x".to_string()));
+    assert_eq!(map.get("SHOULD_CREATE_PR"), Some(&"true".to_string()));
+    assert!(
+        !map.contains_key("EXTRA_NOTES"),
+        "non-essential keys must be dropped under a zero budget: {map:?}"
+    );
+}
+
+#[test]
+fn test_context_env_pairs_unchanged_when_context_fits() {
+    // When the whole context fits within budget, behavior is identical to the
+    // pre-#1023 unbounded transform: every valid key is exported.
+    let mut context = BTreeMap::new();
+    context.insert("task_description".to_string(), "small".to_string());
+    context.insert("repo_path".to_string(), "/r".to_string());
+    context.insert("existing_branch".to_string(), "main".to_string());
+
+    let pairs = execute::context_env_pairs(&context, usize::MAX);
+    let map: BTreeMap<String, String> = pairs.iter().cloned().collect();
+
+    assert_eq!(map.get("TASK_DESCRIPTION"), Some(&"small".to_string()));
+    assert_eq!(map.get("REPO_PATH"), Some(&"/r".to_string()));
+    assert_eq!(map.get("EXISTING_BRANCH"), Some(&"main".to_string()));
+    assert_eq!(map.len(), 3, "all valid keys survive when the budget fits");
+}
+
+#[test]
+fn test_context_env_pairs_filters_run_before_budget() {
+    // Regression: the existing filters (denylist, AMPLIHACK_ namespace, NUL,
+    // per-value 96KB cap, invalid identifier) run BEFORE budget/essential
+    // classification. A filter-rejected value must NEVER reappear via the
+    // essentials or budget path — even at an unbounded budget, and even when
+    // the key is named to look essential.
+    let oversized = "x".repeat(200 * 1024); // > 96KB per-value cap
+    let mut context = BTreeMap::new();
+    // denylisted name, unbounded budget -> still dropped
+    context.insert("path".to_string(), "/evil".to_string());
+    // AMPLIHACK_ namespace -> still dropped
+    context.insert("amplihack_home".to_string(), "/evil".to_string());
+    // essential-looking name but NUL value -> dropped by NUL filter
+    context.insert("repo_path".to_string(), "/bad\0path".to_string());
+    // essential-looking name but oversized value -> dropped by 96KB cap
+    context.insert("task_description".to_string(), oversized);
+    // a clean essential to prove the transform still runs
+    context.insert("existing_branch".to_string(), "main".to_string());
+
+    let pairs = execute::context_env_pairs(&context, usize::MAX);
+    let map: BTreeMap<String, String> = pairs.iter().cloned().collect();
+
+    assert!(
+        !map.contains_key("PATH"),
+        "denylisted name must stay dropped"
+    );
+    assert!(
+        !map.contains_key("AMPLIHACK_HOME"),
+        "AMPLIHACK_ namespace must stay dropped"
+    );
+    assert!(
+        !map.contains_key("REPO_PATH"),
+        "NUL-containing essential value must be dropped by the NUL filter, \
+         not resurrected by the essentials path"
+    );
+    assert!(
+        !map.contains_key("TASK_DESCRIPTION"),
+        "oversized essential value must be dropped by the per-value cap, \
+         not resurrected by the essentials path"
+    );
+    assert_eq!(
+        map.get("EXISTING_BRANCH"),
+        Some(&"main".to_string()),
+        "clean essential keys still pass through"
+    );
+}
+
+// -------------------------------------------------------------------------
+// Escape hatch (#784): values dropped from the env MIRROR are STILL delivered
+// to the runner via pass_context (`--set` / `--context-file`) for
+// {{placeholder}} substitution. Only the env mirror is skipped.
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_budget_dropped_values_still_delivered_via_context_file() {
+    // Two 80KB non-essential values: each is UNDER the 96KB per-value cap
+    // (so the aggregate budget — not the per-value cap — is what drops them
+    // from the env mirror), but together they exceed the 128KB context-arg
+    // threshold, so pass_context spills the FULL context to a temp file.
+    let medium = "z".repeat(80 * 1024);
+    let mut context = BTreeMap::new();
+    context.insert("task_description".to_string(), "fix".to_string());
+    context.insert("note_a".to_string(), medium.clone());
+    context.insert("note_b".to_string(), medium.clone());
+
+    // Small budget: essentials fit, both 80KB non-essentials are dropped from
+    // the env mirror by the aggregate budget.
+    let pairs = execute::context_env_pairs(&context, 1_000);
+    let map: BTreeMap<String, String> = pairs.iter().cloned().collect();
+    assert_eq!(map.get("TASK_DESCRIPTION"), Some(&"fix".to_string()));
+    assert!(
+        !map.contains_key("NOTE_A") && !map.contains_key("NOTE_B"),
+        "aggregate-budget-dropped values must be absent from the env mirror: {map:?}"
+    );
+
+    // ...but the escape hatch still delivers them: pass_context spills the
+    // full context (all keys, values verbatim) to a temp file.
+    let mut command = Command::new("echo");
+    let tmp = execute::pass_context(&mut command, &context).unwrap();
+    let file = tmp.expect("large aggregate context must spill to a temp file");
+    let content = std::fs::read_to_string(file.path()).unwrap();
+    let parsed: BTreeMap<String, String> = serde_json::from_str(&content).unwrap();
+    assert_eq!(parsed.get("note_a"), Some(&medium));
+    assert_eq!(parsed.get("note_b"), Some(&medium));
+    assert_eq!(parsed.get("task_description"), Some(&"fix".to_string()));
 }

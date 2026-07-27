@@ -6,6 +6,7 @@ Use this guide when a recipe step fails unexpectedly — a shell step hangs, an 
 
 - [Shell step hangs waiting for input](#shell-step-hangs-waiting-for-input)
 - [Shell step fails with "TASK_DESCRIPTION: unbound variable"](#shell-step-fails-with-task_description-unbound-variable)
+- [Late shell step fails with "Argument list too long (os error 7)"](#late-shell-step-fails-with-argument-list-too-long-os-error-7)
 - [Agent step completes but changes nothing](#agent-step-completes-but-changes-nothing)
 - [Shell step fails with "python3 not found"](#shell-step-fails-with-python3-not-found)
 - [Workflow classification routes to the wrong type](#workflow-classification-routes-to-the-wrong-type)
@@ -130,6 +131,68 @@ See [Recipe Context Environment Export](../reference/recipe-context-environment.
 for the full transform rules and denylist, and
 [Propagate Recipe Context to Bash Steps](../tutorials/recipe-context-env-propagation.md)
 for a hands-on walkthrough.
+
+---
+
+## Late shell step fails with "Argument list too long (os error 7)"
+
+**Symptom:** A long workflow runs successfully through most of its steps, then a
+**late** shell step — often a verification gate such as
+`step-19d-verification-gate` — fails at spawn time, *after* the real work is
+already done:
+
+```
+Argument list too long (os error 7)
+```
+
+Earlier, smaller steps in the same run spawned without any problem.
+
+**Cause:** `amplihack recipe run` mirrors recipe context into the
+`recipe-runner-rs` environment, and the runner re-exports that environment to
+every bash step. When the *cumulative* environment grows large enough, the total
+`argv + envp` size for a spawn crosses the kernel's `ARG_MAX` limit and the OS
+refuses the spawn with `E2BIG` / "Argument list too long". Because the limit is
+on the *total*, it is a late, small step that trips it, producing a **false
+recipe failure** even though every meaningful step succeeded (issue #1023).
+
+**Fix:** The context environment mirror is now bounded by an
+[adaptive aggregate budget](../reference/recipe-context-environment.md#aggregate-environment-budget).
+`amplihack recipe run` derives, at spawn time, a byte budget from
+`sysconf(_SC_ARG_MAX)` minus the inherited environment and a reservation, and
+mirrors context only up to that budget. Essential keys
+(`task_description`, `repo_path`, `existing_branch`, `should_*`) are always
+exported; other keys are filled smallest-first and any that do not fit are
+dropped from the *environment mirror only* — they are still delivered to the
+runner via the context file for `{{placeholder}}` substitution. This keeps the
+inherited environment safely under `ARG_MAX`, so late steps no longer fail.
+
+**If a late step still fails with `os error 7`:**
+
+- **A very large context plus a large ambient environment.** The budget protects
+  the *mirror*, but your shell's pre-existing environment also counts toward
+  `ARG_MAX`. Trim large exported variables in the parent shell before invoking
+  `amplihack recipe run`.
+- **Pin a smaller budget explicitly.** Set
+  `AMPLIHACK_CONTEXT_ENV_BUDGET_BYTES` to a smaller value (or `0` for essentials
+  only) to shrink the mirror further:
+
+  ```sh
+  AMPLIHACK_CONTEXT_ENV_BUDGET_BYTES=0 \
+  amplihack recipe run default-workflow -c task_description="…"
+  ```
+
+- **See what was dropped.** Drops are `WARN`-level and hidden by the default
+  error-only log filter; re-run with `RUST_LOG=warn` and look for
+  `reason=aggregate_env_budget` (a non-essential key was trimmed) or
+  `reason=essential_env_exceeds_budget` (the essentials alone exceeded the
+  budget — pathological; investigate an oversized `task_description`).
+- **A bad override is ignored, not fatal.** A non-numeric or negative
+  `AMPLIHACK_CONTEXT_ENV_BUDGET_BYTES` logs
+  `reason=invalid_env_budget_override` and falls back to the derived budget.
+
+See
+[Recipe Context Environment Export → Aggregate environment budget](../reference/recipe-context-environment.md#aggregate-environment-budget)
+and the [`AMPLIHACK_CONTEXT_ENV_BUDGET_BYTES` reference](../reference/environment-variables.md#amplihack_context_env_budget_bytes).
 
 ---
 

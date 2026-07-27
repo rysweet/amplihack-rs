@@ -32,6 +32,7 @@ All environment variables read or written by `amplihack` during a launch (`ampli
   - [DEBIAN_FRONTEND](#debian_frontend)
   - [CI (recipe context)](#ci-recipe-context)
   - [Context-derived recipe variables](#context-derived-recipe-variables)
+  - [AMPLIHACK_CONTEXT_ENV_BUDGET_BYTES](#amplihack_context_env_budget_bytes)
 - [Variables read by amplihack](#variables-read-by-amplihack)
   - [AMPLIHACK_MEMORY_BACKEND](#amplihack_memory_backend)
   - [HOME](#home)
@@ -719,6 +720,51 @@ The exact set of names depends entirely on the recipe context. Rules:
 
 See [Recipe Context Environment Export](./recipe-context-environment.md) for the
 full contract, denylist, and security model.
+
+---
+
+### AMPLIHACK_CONTEXT_ENV_BUDGET_BYTES
+
+**Type:** string (unsigned integer as text)
+**Values:** any non-negative integer (`0` = essentials only) | unset (adaptive default)
+**Read by:** `amplihack recipe run`, context environment export
+
+Overrides the **aggregate byte budget** for mirroring recipe context into the
+`recipe-runner-rs` environment. The context mirror is inherited by every bash
+step, so an unbounded mirror could push the cumulative environment past the
+kernel's `ARG_MAX` and make a late step fail with
+`Argument list too long (os error 7)` (issue #1023). By default the budget is
+**derived adaptively** at spawn time from `sysconf(_SC_ARG_MAX)` minus the
+inherited environment and a reservation; this variable pins it explicitly.
+
+- When **unset**, the budget is derived adaptively (recommended).
+- When set to a valid `usize`, that exact byte budget is used and takes
+  precedence over the derived value.
+- `0` is valid and means "mirror only the essential keys"
+  (`task_description`, `repo_path`, `existing_branch`, `should_*`).
+- An invalid value (non-numeric, negative, overflowing) is **ignored** with a
+  name-only `WARN reason=invalid_env_budget_override`, and the derived budget is
+  used — the run is never aborted for a bad override.
+
+Essential keys are always exported regardless of the budget. Non-essential keys
+are filled smallest-first until the budget is exhausted; any key dropped from the
+mirror is still delivered to the runner via the `--context-file` path for
+`{{placeholder}}` substitution.
+
+```sh
+# Pin the mirror budget to 256 KB
+AMPLIHACK_CONTEXT_ENV_BUDGET_BYTES=262144 \
+amplihack recipe run default-workflow \
+  -c task_description="Large multi-file campaign"
+
+# Mirror only essential keys (drop all non-essential mirroring)
+AMPLIHACK_CONTEXT_ENV_BUDGET_BYTES=0 \
+amplihack recipe run default-workflow \
+  -c task_description="Minimal env footprint"
+```
+
+See [Recipe Context Environment Export → Aggregate environment budget](./recipe-context-environment.md#aggregate-environment-budget)
+for the derivation, essential-key set, and smallest-first fill.
 
 ---
 
