@@ -42,6 +42,13 @@ else
   exit 1
 fi
 
+README_FILE="$SKILL_DIR/README.md"
+if [[ -f "$README_FILE" ]]; then
+  pass "README.md exists"
+else
+  fail "README.md not found at $README_FILE"
+fi
+
 # ─── Test 2: YAML frontmatter — required fields ─────────────────────────────
 
 echo ""
@@ -85,6 +92,12 @@ if echo "$FRONTMATTER" | grep -qE "^auto_activates:"; then
   pass "frontmatter has auto_activates field"
 else
   fail "frontmatter missing auto_activates field"
+fi
+
+if echo "$FRONTMATTER" | grep -qE "^explicit_triggers:"; then
+  pass "frontmatter has explicit_triggers field"
+else
+  fail "frontmatter missing explicit_triggers field (required by convention)"
 fi
 
 # ─── Test 3: Positioning vs the formal-methods triad ────────────────────────
@@ -229,6 +242,40 @@ if grep -q "BEGIN RSA PRIVATE KEY" "$SKILL_FILE"; then
   fail "contains a PEM private key block"
 else
   pass "no PEM private key blocks"
+fi
+
+# ─── Test 11: README consistency with SKILL.md ──────────────────────────────
+
+echo ""
+echo "Test 11: README.md stays consistent with SKILL.md"
+
+if [[ -f "$README_FILE" ]]; then
+  # README must link to the canonical SKILL.md so readers reach runnable snippets.
+  if grep -q "SKILL.md" "$README_FILE"; then
+    pass "README links to SKILL.md"
+  else
+    fail "README should link to SKILL.md"
+  fi
+
+  # README must list every stack's library so its table can't drift from SKILL.md.
+  for lib in "proptest" "quickcheck" "Hypothesis" "FsCheck" "CsCheck" "fast-check" "jqwik"; do
+    if grep -qi -- "$lib" "$README_FILE"; then
+      pass "README mentions library '$lib'"
+    else
+      fail "README missing library '$lib' (drift from SKILL.md)"
+    fi
+  done
+
+  # README must reciprocally reference all four sibling skills, like SKILL.md.
+  for sib in "tla-plus-expert" "gherkin-expert" "smart-test" "test-gap-analyzer"; do
+    if grep -q -- "$sib" "$README_FILE"; then
+      pass "README references sibling '$sib'"
+    else
+      fail "README should reference sibling '$sib'"
+    fi
+  done
+else
+  fail "README.md not found; cannot check consistency"
 fi
 
 # ─── Results ─────────────────────────────────────────────────────────────────
