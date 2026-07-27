@@ -28,13 +28,14 @@ members = [
     "crates/amplihack-orchestration",
     "crates/amplihack-session",
     "crates/amplihack-signal",
+    "crates/amplihack-turn",
     "bins/amplihack",
     "bins/amplihack-asset-resolver",
     "bins/amplihack-hooks",
 ]
 
 [workspace.package]
-version = "0.12.0"
+version = "0.13.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/rysweet/amplihack-rs"
@@ -84,6 +85,7 @@ amplihack-domain-agents = { path = "crates/amplihack-domain-agents" }
 amplihack-hive = { path = "crates/amplihack-hive" }
 amplihack-agent-generator = { path = "crates/amplihack-agent-generator" }
 amplihack-signal = { path = "crates/amplihack-signal" }
+amplihack-turn = { path = "crates/amplihack-turn" }
 amplihack-orchestration = { path = "crates/amplihack-orchestration" }
 
 # Shrink local/dev/CI debug builds. This workspace has 26 crates and ~155
