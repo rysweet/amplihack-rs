@@ -592,6 +592,20 @@ impl Drop for EnvGuard {
 
 const CAPACITY_ENV: &str = "AMPLIHACK_SIGNAL_INBOX_CAPACITY";
 
+/// Serializes the capacity tests below. Cargo runs tests as parallel threads in
+/// a single process and env vars are process-global, so without this lock the
+/// three `default_capacity_*` tests race on `CAPACITY_ENV` and flake. Holding
+/// this guard for a test's whole body makes each env mutation observe-and-read
+/// atomically with respect to its siblings.
+static CAPACITY_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Acquire the capacity-env serialization lock, tolerating poisoning from an
+/// unrelated panicking test (the guarded data is `()`, so a poisoned lock is
+/// still safe to use).
+fn lock_capacity_env() -> std::sync::MutexGuard<'static, ()> {
+    CAPACITY_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 // INV-4 (migrated): the bounded turn-queue capacity is operator-configurable via
 // AMPLIHACK_SIGNAL_INBOX_CAPACITY, resolved through the relocated
 // `SignalChannel::default_capacity()`. A valid value is honoured; invalid / zero
@@ -600,6 +614,7 @@ const CAPACITY_ENV: &str = "AMPLIHACK_SIGNAL_INBOX_CAPACITY";
 // preserves the exact policy previously on `Inbox::default_capacity()`.
 #[test]
 fn default_capacity_honours_valid_operator_value() {
+    let _serial = lock_capacity_env();
     let _guard = EnvGuard::set(CAPACITY_ENV, "3");
     assert_eq!(
         SignalChannel::default_capacity(),
@@ -610,6 +625,7 @@ fn default_capacity_honours_valid_operator_value() {
 
 #[test]
 fn default_capacity_falls_back_on_invalid_values() {
+    let _serial = lock_capacity_env();
     for bad in ["0", "-1", "   ", "not-a-number", "3.5", ""] {
         let _guard = EnvGuard::set(CAPACITY_ENV, bad);
         assert_eq!(
@@ -627,6 +643,7 @@ fn default_capacity_falls_back_on_invalid_values() {
 
 #[test]
 fn default_capacity_falls_back_when_absent() {
+    let _serial = lock_capacity_env();
     let _guard = EnvGuard::unset(CAPACITY_ENV);
     assert_eq!(
         SignalChannel::default_capacity(),

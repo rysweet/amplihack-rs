@@ -221,10 +221,11 @@ impl Channel for SignalChannel {
     }
 
     async fn publish_output(&mut self, out: &TurnOutput) -> ChannelResult<()> {
-        let body = if out.text().trim().is_empty() {
+        let text = out.text();
+        let body = if text.trim().is_empty() {
             "(turn produced no output)".to_string()
         } else {
-            out.text().to_string()
+            text.to_string()
         };
         self.post(body).await;
         Ok(())
@@ -411,6 +412,15 @@ fn audit_accepted(session_label: &str, env: &Envelope, prompt: &str) {
 mod tests {
     use super::*;
 
+    /// Serializes the capacity tests: cargo runs tests as parallel threads in
+    /// one process and env vars are process-global, so without this lock the
+    /// `default_capacity_*` tests race on `CAPACITY_ENV` and flake.
+    static CAPACITY_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock_capacity_env() -> std::sync::MutexGuard<'static, ()> {
+        CAPACITY_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     struct EnvGuard {
         key: &'static str,
         prev: Option<String>,
@@ -443,12 +453,14 @@ mod tests {
 
     #[test]
     fn default_capacity_honours_valid_operator_value() {
+        let _serial = lock_capacity_env();
         let _guard = EnvGuard::set(CAPACITY_ENV, "7");
         assert_eq!(SignalChannel::default_capacity(), 7);
     }
 
     #[test]
     fn default_capacity_falls_back_on_invalid_values() {
+        let _serial = lock_capacity_env();
         for bad in ["0", "-1", "   ", "not-a-number", "3.5", ""] {
             let _guard = EnvGuard::set(CAPACITY_ENV, bad);
             assert_eq!(
@@ -462,6 +474,7 @@ mod tests {
 
     #[test]
     fn default_capacity_falls_back_when_absent() {
+        let _serial = lock_capacity_env();
         let _guard = EnvGuard::unset(CAPACITY_ENV);
         assert_eq!(
             SignalChannel::default_capacity(),
