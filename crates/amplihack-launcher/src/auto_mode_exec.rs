@@ -360,4 +360,65 @@ mod tests {
         assert!(!append.join("extra.md").exists());
         assert!(dir.path().join(".amplihack/appended/extra.md").exists());
     }
+
+    // -------------------------------------------------------------------------
+    // INV-7 — auto-mode continuation: a continuation prompt is produced each
+    // turn until the loop's stop condition, and the stop condition is honored.
+    //
+    // The pre-existing `should_continue_*` tests check individual stop
+    // conditions in isolation. This characterization locks the LOOP behavior:
+    // replaying `AutoMode::run`'s execute-phase decision sequence with the real,
+    // in-crate `should_continue()` and `build_execution_prompt()` (no process is
+    // spawned), it asserts that exactly one continuation prompt is emitted per
+    // turn — each carrying the correct 1-based `[Turn {turn+1}/{max_turns}]`
+    // marker — until `turn >= max_turns`, at which point the loop stops. A later
+    // shared-Session extraction MUST preserve this loop arithmetic.
+    // -------------------------------------------------------------------------
+    #[test]
+    fn characterization_inv7_automode_continues_until_stop_condition() {
+        const MAX_TURNS: u32 = 3;
+        let mut am = AutoMode::new(AutoModeConfig {
+            max_turns: MAX_TURNS,
+            ..Default::default()
+        });
+
+        // Replay the `while self.should_continue()` execute loop from run(),
+        // substituting execute_turn's side effect (turn += 1) for the real
+        // process spawn.
+        let mut prompts = Vec::new();
+        while am.should_continue() {
+            let prompt = am.build_execution_prompt();
+            // Each turn emits its 1-based marker before the turn counter advances.
+            let expected_marker = format!("[Turn {}/{}]", am.turn + 1, MAX_TURNS);
+            assert!(
+                prompt.contains(&expected_marker),
+                "continuation prompt for turn index {} must carry {expected_marker}; got: {prompt}",
+                am.turn
+            );
+            prompts.push(prompt);
+            // execute_turn increments the turn counter.
+            am.turn += 1;
+        }
+
+        // Exactly max_turns continuation prompts were produced.
+        assert_eq!(
+            prompts.len() as u32,
+            MAX_TURNS,
+            "the loop must emit exactly max_turns continuation prompts"
+        );
+        // Markers are the full, ordered 1..=max_turns sequence.
+        for (i, prompt) in prompts.iter().enumerate() {
+            let marker = format!("[Turn {}/{}]", i + 1, MAX_TURNS);
+            assert!(
+                prompt.contains(&marker),
+                "prompt {i} must carry {marker}; got: {prompt}"
+            );
+        }
+        // Stop condition honored: once turn >= max_turns the loop stops.
+        assert_eq!(am.turn, MAX_TURNS, "loop halts exactly at max_turns");
+        assert!(
+            !am.should_continue(),
+            "should_continue() must be false once turn >= max_turns"
+        );
+    }
 }

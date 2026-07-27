@@ -540,6 +540,313 @@ mod turn {
             "no stale trigger may linger after the turn completes"
         );
     }
+
+    // -------------------------------------------------------------------------
+    // INV-5 — Resume continuity + injection safety, across TWO successive turns.
+    //
+    // The pre-existing `argv_*` tests characterize the shape of a SINGLE argv
+    // build. This characterization locks the refactor-critical property that two
+    // SEQUENTIAL turns driven by the SAME `SerialTurnDriver` both resume the
+    // SAME pinned `--session-id` (context continuity), and that the
+    // attacker-influenced prompt is exactly ONE argv element on BOTH turns
+    // (never shell-concatenated). A later shared-Session extraction MUST preserve
+    // both properties or this test fails.
+    // -------------------------------------------------------------------------
+
+    /// Records the exact argv of every `run_turn` so the test can assert
+    /// cross-turn session-id identity and single-element prompts.
+    struct RecordingRunner {
+        seen: Arc<Mutex<Vec<Vec<String>>>>,
+    }
+
+    impl TurnRunner for RecordingRunner {
+        fn run_argv(
+            &self,
+            argv: Vec<String>,
+        ) -> Pin<Box<dyn Future<Output = std::io::Result<String>> + Send>> {
+            let seen = self.seen.clone();
+            Box::pin(async move {
+                seen.lock().unwrap().push(argv);
+                Ok(String::from("ok"))
+            })
+        }
+    }
+
+    fn session_id_of(argv: &[String]) -> &str {
+        let pos = argv
+            .iter()
+            .position(|a| a == "--session-id")
+            .expect("every turn must pin --session-id");
+        argv.get(pos + 1)
+            .map(String::as_str)
+            .expect("--session-id must be followed by the pinned uuid")
+    }
+
+    fn prompt_of(argv: &[String]) -> &str {
+        let pos = argv
+            .iter()
+            .position(|a| a == "-p" || a == "--prompt")
+            .expect("every turn must carry a prompt flag");
+        argv.get(pos + 1)
+            .map(String::as_str)
+            .expect("prompt flag must be followed by exactly one prompt element")
+    }
+
+    #[tokio::test]
+    async fn characterization_inv5_successive_turns_reuse_same_session_id() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let runner = RecordingRunner { seen: seen.clone() };
+        let driver = SerialTurnDriver::new(runner, SID, ToolAllowlist::read_only_default());
+
+        // Two SEQUENTIAL turns with distinct, attacker-shaped prompts.
+        let first = "first turn prompt";
+        // Metacharacters must survive verbatim as a single argv element.
+        let second = "second; rm -rf / # $(whoami) `id`";
+        driver.run_turn(first).await.expect("turn 1 ok");
+        driver.run_turn(second).await.expect("turn 2 ok");
+
+        let calls = seen.lock().unwrap().clone();
+        assert_eq!(calls.len(), 2, "exactly two turns must have run");
+
+        // Continuity: both turns resume the SAME pinned session id.
+        assert_eq!(session_id_of(&calls[0]), SID, "turn 1 resumes pinned SID");
+        assert_eq!(session_id_of(&calls[1]), SID, "turn 2 resumes pinned SID");
+        assert_eq!(
+            session_id_of(&calls[0]),
+            session_id_of(&calls[1]),
+            "successive turns MUST reuse the identical session id (context continuity)"
+        );
+
+        // Injection safety: each prompt is exactly ONE argv element, verbatim,
+        // on BOTH turns — never split or shell-concatenated.
+        assert_eq!(
+            prompt_of(&calls[0]),
+            first,
+            "turn 1 prompt must be one verbatim argv element"
+        );
+        assert_eq!(
+            prompt_of(&calls[1]),
+            second,
+            "turn 2 prompt must be one verbatim argv element (metacharacters intact)"
+        );
+        // The prompt occupies a single slot: the flag's successor equals the
+        // whole prompt, so nothing leaked into an adjacent argv element.
+        for argv in &calls {
+            let p_pos = argv
+                .iter()
+                .position(|a| a == "-p" || a == "--prompt")
+                .unwrap();
+            let count = argv
+                .iter()
+                .filter(|a| *a == "-p" || *a == "--prompt")
+                .count();
+            assert_eq!(count, 1, "exactly one prompt flag per turn: {argv:?}");
+            assert!(p_pos + 1 < argv.len(), "prompt flag must have a value");
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // INV-6 — No per-turn wall-clock timeout: a turn runs to natural completion.
+    //
+    // The driver imposes NO wall-clock cap on a turn; completion is gated ONLY
+    // by the runner finishing. A channel-gated mock blocks inside `run_argv`
+    // until the test explicitly releases it. Fully deterministic (no sleeps as
+    // synchronization): the mock signals entry, the test proves the turn is
+    // still in-flight (not finished) while blocked, then releases and observes
+    // completion. If a future refactor injected a loop-level timeout, the turn
+    // would resolve (to a timeout error) BEFORE release and this test fails.
+    // -------------------------------------------------------------------------
+
+    /// Blocks inside `run_argv` on a test-controlled release channel, signalling
+    /// once it has entered so the test can synchronize without sleeping.
+    struct GatedRunner {
+        entered: Mutex<Option<oneshot_std::Sender<()>>>,
+        release: Mutex<Option<oneshot_std::Receiver<()>>>,
+    }
+
+    // Use std's oneshot analogue via tokio to keep the runner `Send`; alias for
+    // readability.
+    use tokio::sync::oneshot as oneshot_std;
+
+    impl TurnRunner for GatedRunner {
+        fn run_argv(
+            &self,
+            _argv: Vec<String>,
+        ) -> Pin<Box<dyn Future<Output = std::io::Result<String>> + Send>> {
+            let entered = self.entered.lock().unwrap().take();
+            let release = self.release.lock().unwrap().take();
+            Box::pin(async move {
+                if let Some(tx) = entered {
+                    let _ = tx.send(());
+                }
+                if let Some(rx) = release {
+                    // Block until the test releases the turn — no wall-clock cap.
+                    let _ = rx.await;
+                }
+                Ok(String::from("released"))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn characterization_inv6_turn_runs_to_completion_no_wallclock_cap() {
+        let (entered_tx, entered_rx) = oneshot_std::channel::<()>();
+        let (release_tx, release_rx) = oneshot_std::channel::<()>();
+        let runner = GatedRunner {
+            entered: Mutex::new(Some(entered_tx)),
+            release: Mutex::new(Some(release_rx)),
+        };
+        let driver = Arc::new(SerialTurnDriver::new(
+            runner,
+            SID,
+            ToolAllowlist::read_only_default(),
+        ));
+
+        let d = driver.clone();
+        let handle = tokio::spawn(async move { d.run_turn("long-running turn").await });
+
+        // Deterministic sync: the turn is now executing inside the runner and
+        // blocked on `release_rx` — no timer, no cap.
+        entered_rx.await.expect("runner must enter the turn");
+        assert!(
+            !handle.is_finished(),
+            "the turn MUST NOT complete on its own: the loop imposes no wall-clock cap"
+        );
+
+        // Release: only now does the turn complete — proving completion is gated
+        // solely by the runner's natural finish.
+        release_tx.send(()).expect("release the in-flight turn");
+        let out = handle
+            .await
+            .expect("turn task must not panic")
+            .expect("released turn must succeed");
+        assert_eq!(
+            out, "released",
+            "turn ran to natural completion after release"
+        );
+    }
+}
+
+// =============================================================================
+// INV-3 — Inbound gating (fail-closed), consolidated end-to-end anchor.
+//
+// `Gate::evaluate` is exhaustively unit-tested in `src/gating.rs`, and the
+// accept/echo-drop paths are exercised in `session_relay_it.rs`. This anchor
+// consolidates the fail-closed contract through the REAL inbound loop
+// (`SignalSession::pump_once`) over the in-process `FakeSignalEndpoint`, so a
+// future Session/Channel extraction that accidentally fails OPEN on any one
+// rejection reason breaks a single, clearly-named test.
+//
+// Deny-by-default is asserted positively: exactly one accepted operator
+// instruction survives; wrong-group, wrong-sender, empty-body, and
+// echo-within-TTL are each dropped.
+// =============================================================================
+mod gating {
+    use amplihack_signal::config::{ENV_ACCOUNT, ENV_ALLOWLIST, ENV_ENDPOINT, SignalConfig};
+    use amplihack_signal::fake_endpoint::FakeSignalEndpoint;
+    use amplihack_signal::session_channel::{Inbox, SignalSession};
+    use amplihack_signal::transport::{GroupId, SignalTransport};
+    use std::collections::HashMap;
+    use tempfile::TempDir;
+
+    const GID: &str = "grp-inv3==";
+    const ACCOUNT: &str = "+15551230000";
+    const STRANGER: &str = "+15559999999";
+
+    fn config_for(addr: &str) -> SignalConfig {
+        let mut env = HashMap::new();
+        env.insert(ENV_ENDPOINT.to_string(), addr.to_string());
+        env.insert(ENV_ACCOUNT.to_string(), ACCOUNT.to_string());
+        // Operator commands from their own primary phone (device 1) as the
+        // account's synced transcript; allowlist the account number only.
+        env.insert(ENV_ALLOWLIST.to_string(), ACCOUNT.to_string());
+        SignalConfig::from_sources(&env, None).expect("valid config")
+    }
+
+    #[tokio::test]
+    async fn characterization_inv3_inbound_gate_failclosed() {
+        let fake = FakeSignalEndpoint::start()
+            .await
+            .unwrap()
+            .with_group_id(GID)
+            // Operator-only membership so the pre-echo `post` verifies and
+            // records the outbound body into the echo-suppression window.
+            .with_group_members_script(vec![vec![ACCOUNT.to_string()]]);
+        let transport = SignalTransport::connect(fake.addr()).await.unwrap();
+        let dir = TempDir::new().unwrap();
+        let inbox = Inbox::new(dir.path().join("inbox.json"), 16);
+        let cfg = config_for(fake.addr());
+        let mut session = SignalSession::new(transport, &cfg, GroupId(GID.to_string()), inbox);
+
+        // Post an outbound line first so its synced-back copy is a suppressible
+        // echo (records the body into the gate's echo window).
+        let echoed = "session update mirrored";
+        session.post(echoed).await.unwrap();
+
+        // (a) ACCEPTED — allowlisted operator, primary device (1), this group.
+        fake.enqueue_inbound(&format!(
+            r#"{{"jsonrpc":"2.0","method":"receive","params":{{"envelope":{{
+                "source":"{ACCOUNT}","sourceDevice":1,
+                "syncMessage":{{"sentMessage":{{"message":"run the tests again",
+                    "groupInfo":{{"groupId":"{GID}"}}}}}}
+            }}}}}}"#
+        ));
+        // (b) REJECTED — wrong group.
+        fake.enqueue_inbound(&format!(
+            r#"{{"jsonrpc":"2.0","method":"receive","params":{{"envelope":{{
+                "source":"{ACCOUNT}","sourceDevice":1,
+                "syncMessage":{{"sentMessage":{{"message":"for another group",
+                    "groupInfo":{{"groupId":"grp-OTHER=="}}}}}}
+            }}}}}}"#
+        ));
+        // (c) REJECTED — sender not on the allowlist (dataMessage from a stranger).
+        fake.enqueue_inbound(&format!(
+            r#"{{"jsonrpc":"2.0","method":"receive","params":{{"envelope":{{
+                "source":"{STRANGER}","sourceDevice":1,
+                "dataMessage":{{"message":"malicious injection",
+                    "groupInfo":{{"groupId":"{GID}"}}}}
+            }}}}}}"#
+        ));
+        // (d) REJECTED — empty body.
+        fake.enqueue_inbound(&format!(
+            r#"{{"jsonrpc":"2.0","method":"receive","params":{{"envelope":{{
+                "source":"{ACCOUNT}","sourceDevice":1,
+                "syncMessage":{{"sentMessage":{{"message":"",
+                    "groupInfo":{{"groupId":"{GID}"}}}}}}
+            }}}}}}"#
+        ));
+        // (e) REJECTED — echo of our own outbound within the TTL window.
+        fake.enqueue_inbound(&format!(
+            r#"{{"jsonrpc":"2.0","method":"receive","params":{{"envelope":{{
+                "source":"{ACCOUNT}","sourceDevice":1,
+                "syncMessage":{{"sentMessage":{{"message":"{echoed}",
+                    "groupInfo":{{"groupId":"{GID}"}}}}}}
+            }}}}}}"#
+        ));
+
+        // Pump all five envelopes; collect the non-empty accepted instructions.
+        let mut accepted = Vec::new();
+        for _ in 0..5 {
+            if let Some(instr) = session.pump_once().await.expect("pump ok")
+                && !instr.is_empty()
+            {
+                accepted.push(instr);
+            }
+        }
+
+        // Deny-by-default: exactly the one legitimate instruction is accepted.
+        assert_eq!(
+            accepted,
+            vec!["run the tests again".to_string()],
+            "only the allowlisted, correct-group, non-empty, non-echo message may be accepted"
+        );
+        // And only that one instruction is queued for injection into the agent.
+        assert_eq!(
+            session.drain().unwrap(),
+            vec!["run the tests again".to_string()],
+            "fail-closed: wrong-group / wrong-sender / empty / echo must never be queued"
+        );
+    }
 }
 
 // =============================================================================
