@@ -226,6 +226,49 @@ mod tests {
     use std::path::Path;
     use std::time::Duration;
 
+    /// Terminal-or-continue decision for one `poll_file_for_content` iteration.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum LivenessStep {
+        /// All markers observed -- stop and report success.
+        Found,
+        /// File has been idle (no growth) for at least `idle_bound` without all
+        /// markers -- stop and report a give-up (the real loop returns
+        /// `(false, content)`).
+        GiveUp,
+        /// Alive: markers not yet complete but growth is still resetting the
+        /// idle timer, or the idle bound has not elapsed -- keep polling.
+        Alive,
+    }
+
+    /// Pure liveness decision. Contains no clock, no I/O, no sleep, so it is
+    /// fully deterministic and cannot race under load.
+    ///
+    /// * `grew` -- did the file's byte length change since the previous poll?
+    ///   Growth resets the idle timer: whenever `grew` is `true` this function
+    ///   returns `Alive` (unless the markers are already complete), regardless
+    ///   of `idle_elapsed`. The give-up branch is gated by the explicit `!grew`
+    ///   guard, so a growing file is never truncated even if `idle_elapsed` is
+    ///   large.
+    /// * `all_markers_present` -- are all required markers in the content read?
+    /// * `idle_elapsed` -- time since the last observed growth. The real loop
+    ///   passes `last_progress.elapsed()` here; on a growth observation this
+    ///   value is neutralized by the `!grew` guard, not by being zero.
+    /// * `idle_bound` -- how long the file may stay idle before we give up.
+    fn liveness_step(
+        grew: bool,
+        all_markers_present: bool,
+        idle_elapsed: Duration,
+        idle_bound: Duration,
+    ) -> LivenessStep {
+        if all_markers_present {
+            LivenessStep::Found
+        } else if !grew && idle_elapsed >= idle_bound {
+            LivenessStep::GiveUp
+        } else {
+            LivenessStep::Alive
+        }
+    }
+
     /// Adaptive, liveness-based content poll (issue #908).
     ///
     /// The background subprocess writes its stub log via a shell redirect
@@ -248,18 +291,24 @@ mod tests {
         let mut last_progress = std::time::Instant::now();
         loop {
             let current_len = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-            if current_len != last_len {
+            let grew = current_len != last_len;
+            if grew {
                 last_len = current_len;
                 last_progress = std::time::Instant::now();
             }
             let content = fs::read_to_string(path).unwrap_or_default();
-            if markers.iter().all(|m| content.contains(m)) {
-                return (true, content);
+            let all_markers_present = markers.iter().all(|m| content.contains(m));
+
+            match liveness_step(
+                grew,
+                all_markers_present,
+                last_progress.elapsed(),
+                idle_bound,
+            ) {
+                LivenessStep::Found => return (true, content),
+                LivenessStep::GiveUp => return (false, content),
+                LivenessStep::Alive => std::thread::sleep(poll_interval),
             }
-            if last_progress.elapsed() >= idle_bound {
-                return (false, content);
-            }
-            std::thread::sleep(poll_interval);
         }
     }
 
@@ -341,32 +390,60 @@ mod tests {
 
     #[test]
     fn slow_growing_file_is_not_truncated_before_markers_arrive() {
-        let dir = tempfile::tempdir().unwrap();
-        let log = dir.path().join("slow.log");
-        fs::write(&log, "").unwrap();
-
-        // Idle bound is shorter than total write time, but each write grows the
-        // file and resets the idle timer, so liveness must keep the poll alive.
+        // Deterministic replacement for the old thread+sleep race. We script
+        // the exact sequence of observations the real loop would make for a
+        // slow-but-alive subprocess and assert the decision at each step. No
+        // clock, thread, or filesystem is involved, so CI load cannot perturb
+        // the result.
         let idle_bound = Duration::from_millis(200);
-        let log_writer = log.clone();
-        let writer = std::thread::spawn(move || {
-            let mut content = String::new();
-            for chunk in ["a ", "b ", "c ", "d ", "index-code\n"] {
-                std::thread::sleep(Duration::from_millis(120));
-                content.push_str(chunk);
-                fs::write(&log_writer, &content).unwrap();
-            }
-        });
 
-        let (found, content) =
-            poll_file_for_content(&log, &["index-code"], Duration::from_millis(25), idle_bound);
-        writer.join().unwrap();
+        // Four growth observations before the marker arrives. Each one grew, so
+        // the idle timer keeps resetting and the poll must stay Alive -- even
+        // though the total elapsed time (writes + gaps) would exceed idle_bound.
+        for _ in 0..4 {
+            assert_eq!(
+                liveness_step(true, false, Duration::ZERO, idle_bound),
+                LivenessStep::Alive,
+                "growth must reset the idle timer and keep the poll alive"
+            );
+        }
 
-        assert!(
-            found,
-            "liveness reset on growth must prevent premature truncation of a slow subprocess"
+        // Final observation: the last write brought in `index-code`.
+        assert_eq!(
+            liveness_step(true, true, Duration::ZERO, idle_bound),
+            LivenessStep::Found,
+            "markers present on a live file must report Found, never truncate"
         );
-        assert!(content.contains("index-code"));
+    }
+
+    #[test]
+    fn liveness_step_gives_up_only_when_idle_past_bound() {
+        let bound = Duration::from_millis(200);
+
+        // Idle but not yet past the bound -> keep polling.
+        assert_eq!(
+            liveness_step(false, false, Duration::from_millis(199), bound),
+            LivenessStep::Alive,
+            "idle below the bound must keep polling"
+        );
+        // Idle at/over the bound with no markers -> give up.
+        assert_eq!(
+            liveness_step(false, false, bound, bound),
+            LivenessStep::GiveUp,
+            "idle at the bound with no markers must give up"
+        );
+        // A growing file is never truncated, even if idle_elapsed is large.
+        assert_eq!(
+            liveness_step(true, false, bound, bound),
+            LivenessStep::Alive,
+            "growth must override the idle bound and keep polling"
+        );
+        // Markers present wins even if idle past the bound.
+        assert_eq!(
+            liveness_step(false, true, bound, bound),
+            LivenessStep::Found,
+            "markers present must report Found regardless of idle time"
+        );
     }
 
     #[test]
