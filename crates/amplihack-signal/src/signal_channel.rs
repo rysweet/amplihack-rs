@@ -221,6 +221,18 @@ impl Channel for SignalChannel {
     }
 
     async fn publish_output(&mut self, out: &TurnOutput) -> ChannelResult<()> {
+        // If the channel is already closed (e.g. `stop` quit the group and shut
+        // the actor down mid-turn, so the in-flight turn returned preempted),
+        // there is nothing left to post to — skip silently instead of surfacing
+        // a spurious `cannot post — actor shut down` diagnostic.
+        if self
+            .state
+            .lock()
+            .expect("signal channel state mutex poisoned")
+            .closed
+        {
+            return Ok(());
+        }
         let text = out.text();
         let body = if text.trim().is_empty() {
             "(turn produced no output)".to_string()

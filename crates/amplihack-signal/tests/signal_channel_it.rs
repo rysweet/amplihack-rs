@@ -362,6 +362,50 @@ async fn stop_command_quits_group_and_closes_the_channel() {
 }
 
 #[tokio::test]
+async fn publish_output_is_a_silent_noop_after_stop_closes_the_channel() {
+    // After `stop` quits the group and shuts the actor down, an in-flight turn
+    // that was preempted still hands its (empty) output to `publish_output`.
+    // The channel is already closed, so this must be a silent no-op — no post,
+    // no spurious `cannot post — actor shut down` diagnostic.
+    let fake = FakeSignalEndpoint::start()
+        .await
+        .unwrap()
+        .with_group_id("grp-stopnoop==")
+        .with_group_members_script(vec![vec![ACCOUNT.to_string()]]);
+    let transport = SignalTransport::connect(fake.addr()).await.unwrap();
+    let cfg = config_for(fake.addr());
+    let mut channel = SignalChannel::new(
+        transport,
+        &cfg,
+        GroupId("grp-stopnoop==".to_string()),
+        fresh_preempt(),
+        8,
+    );
+
+    fake.enqueue_inbound(&operator_inbound("grp-stopnoop==", "stop"));
+    let np = next_non_idle(&mut channel).await;
+    assert!(
+        matches!(np, NextPrompt::Closed),
+        "`stop` must drive the channel to NextPrompt::Closed, got {np:?}"
+    );
+    settle().await;
+
+    let sent_before = fake.sent().len();
+    channel
+        .publish_output(&TurnOutput::from_text(""))
+        .await
+        .expect("publish_output on a closed channel must return Ok");
+    settle().await;
+
+    assert_eq!(
+        fake.sent().len(),
+        sent_before,
+        "publish_output on a closed channel must not post anything; sent={:?}",
+        fake.sent()
+    );
+}
+
+#[tokio::test]
 async fn status_word_inside_a_sentence_stays_a_prompt() {
     // Control words match only as the entire trimmed body. A prompt that merely
     // *mentions* "status" must be enqueued as a normal turn, not intercepted.
