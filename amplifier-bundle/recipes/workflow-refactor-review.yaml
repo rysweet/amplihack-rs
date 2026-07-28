@@ -50,6 +50,7 @@ steps:
       3. Simplify complex logic (without violating specs)
       4. Ensure single responsibility principle
       5. Verify no placeholders remain
+      6. When refactoring DELETES or RENAMES a test/bin/bench source file, you MUST also remove or update the corresponding `[[test]]` / `[[bin]]` / `[[bench]]` stanza in the owning crate's Cargo.toml in the SAME change, so `cargo build --all-targets` / `cargo fmt --all` still resolve all targets. Leaving a stanza that points at a deleted file is a workflow failure.
 
       **Zero-BS Checklist:**
       - [ ] No stubs
