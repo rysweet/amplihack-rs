@@ -556,6 +556,7 @@ Execute complex tasks with simple slash commands.
 
 - [Auto Mode Guide](AUTO_MODE.md) - Autonomous multi-turn execution
 - [Auto Mode Safety](AUTOMODE_SAFETY.md) - Safety guardrails and best practices
+- [Auto Mode on the Generic Turn Loop](auto-mode-turn-loop.md) - `AutoModeChannel` / `AutoModeRunner` architecture (issue #910 PR-4)
 
 ---
 

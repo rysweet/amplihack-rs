@@ -25,12 +25,16 @@ use std::sync::{
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+mod channel;
 mod helpers;
 mod run;
-mod session;
+mod runner;
 
 pub use helpers::{AutoModePromptDeliveryOptions, build_auto_command_with_prompt_delivery};
 pub use run::run_auto_mode;
+
+use channel::AutoModeChannel;
+use runner::AutoModeRunner;
 
 const QUERY_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 

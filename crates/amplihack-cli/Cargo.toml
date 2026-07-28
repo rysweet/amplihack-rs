@@ -37,7 +37,9 @@ amplihack-reflection = { workspace = true }
 amplihack-builders = { workspace = true }
 amplihack-orchestration = { workspace = true }
 amplihack-remote = { path = "../amplihack-remote" }
+amplihack-turn = { workspace = true }
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 clap = { workspace = true }
 clap_complete = "4"
 dialoguer = "0.11"

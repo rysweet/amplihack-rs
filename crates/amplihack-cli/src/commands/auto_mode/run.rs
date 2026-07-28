@@ -1,6 +1,6 @@
 use super::helpers::{extract_prompt_args, prepare_auto_mode_execution};
-use super::session::AutoModeSession;
 use super::*;
+use amplihack_turn::run_session_loop;
 
 pub fn run_auto_mode(
     tool: AutoModeTool,
@@ -58,33 +58,57 @@ pub fn run_auto_mode(
 
         let ui_active = ui.then(|| Arc::new(AtomicBool::new(true)));
         let prompt = execution.transform_prompt(&parsed.prompt);
-        let mut session = AutoModeSession::new(
+        let execution_dir = execution.execution_dir;
+        let project_dir = execution.project_dir;
+        let mut channel = AutoModeChannel::new(
             tool,
             prompt,
-            parsed.passthrough_args,
             max_turns,
-            execution.execution_dir,
-            execution.project_dir,
+            execution_dir.clone(),
+            project_dir.clone(),
+            ui_active.clone(),
+        )?;
+        let runner_session_id = channel.state().snapshot().session_id;
+        let mut runner = AutoModeRunner::new(
             SystemPromptExecutor {
                 ui_active: ui_active.clone(),
                 node_options: Some(node_options.clone()),
             },
-            ui_active.clone(),
-        )?;
+            tool,
+            execution_dir,
+            project_dir,
+            parsed.passthrough_args,
+            runner_session_id,
+        );
         let ui_handle = if let Some(active) = ui_active {
             Some(AutoModeUiHandle::start(
-                Arc::clone(&session.state),
-                session.prompt.clone(),
+                Arc::clone(channel.state()),
+                channel.prompt().to_string(),
                 active,
             )?)
         } else {
             None
         };
-        let run_result = session.run();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .context("failed to build auto-mode runtime")?;
+        let run_result = runtime.block_on(run_session_loop(&mut runner, &mut channel));
         if let Some(handle) = ui_handle {
             handle.finish();
         }
-        let exit_code = run_result?;
+        // A driver-loop error (executor failure to RUN, or a channel receive /
+        // publish error) propagates unchanged — the outer guard crashes the
+        // session tracker, matching the old `?`-propagation behaviour.
+        run_result.map_err(anyhow::Error::from)?;
+        // A failed *required* turn (Clarify / Plan / Adjust) is a ran-but-
+        // non-zero subprocess, so it is a clean loop close carrying an abort
+        // reason. Reproduce the old `bail!`: propagate the error so the outer
+        // guard crashes the session tracker.
+        if let Some(abort) = channel.abort() {
+            bail!("{abort}");
+        }
+        let exit_code = channel.exit_code();
         tracker.complete_session(&session_id)?;
         if exit_code != 0 {
             std::process::exit(exit_code);

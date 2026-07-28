@@ -133,6 +133,12 @@ Provides comprehensive summary of the auto mode session.
 - Files modified
 - Tests run
 
+> **Implementation note:** the live auto-mode loop runs on the crate-generic
+> `amplihack_turn::run_session_loop`, driving an `AutoModeChannel` (state
+> machine) over an `AutoModeRunner` (subprocess executor). See
+> [Auto Mode on the Generic Turn Loop](auto-mode-turn-loop.md) for the
+> architecture. This is behavior-preserving — nothing in this guide changes.
+
 ## Configuration
 
 ### Max Turns

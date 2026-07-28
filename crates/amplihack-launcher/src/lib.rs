@@ -9,7 +9,6 @@ pub mod amplifier;
 pub mod append_handler;
 pub mod auto_mode;
 pub mod auto_mode_coordinator;
-pub mod auto_mode_exec;
 pub mod auto_mode_state;
 pub mod auto_mode_ui;
 pub mod auto_stager;
@@ -39,7 +38,6 @@ pub mod work_summary;
 
 pub use amplifier::AmplifierInfo;
 pub use auto_mode::{AutoModeConfig, SdkBackend, SessionResult, TurnResult};
-pub use auto_mode_exec::AutoMode;
 pub use codex::CodexInfo;
 pub use copilot_launcher::PluginEntry;
 pub use copilot_mcp::McpServerConfig;

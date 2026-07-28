@@ -114,19 +114,40 @@ pub enum NextPrompt {
 #[derive(Debug, Clone)]
 pub struct TurnOutput {
     text: String,
+    /// The subprocess exit code for a shelled-out turn, or `None` for a turn
+    /// that produced only a response body (via [`TurnOutput::from_text`]).
+    exit_code: Option<i32>,
 }
 
 impl TurnOutput {
-    /// Wrap a response body as a turn output.
+    /// Wrap a response body as a turn output. The exit code is left unset
+    /// (`None`) — a plain response body is not a shelled-out subprocess.
     #[must_use]
     pub fn from_text(text: impl Into<String>) -> Self {
-        Self { text: text.into() }
+        Self {
+            text: text.into(),
+            exit_code: None,
+        }
+    }
+
+    /// Attach a subprocess exit code to this output (builder, last-write-wins).
+    #[must_use]
+    pub fn with_exit_code(mut self, code: i32) -> Self {
+        self.exit_code = Some(code);
+        self
     }
 
     /// The agent's response for this turn, captured verbatim.
     #[must_use]
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    /// The subprocess exit code for this turn, or `None` when the output was
+    /// built from text alone (no shelled-out process).
+    #[must_use]
+    pub fn exit_code(&self) -> Option<i32> {
+        self.exit_code
     }
 }
 
