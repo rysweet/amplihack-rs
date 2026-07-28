@@ -41,7 +41,7 @@ that catches drift until (or unless) such a ruleset exists.
 
 | File | Role |
 | --- | --- |
-| `scripts/check-branch-protection.sh` | Reads `required_status_checks.strict` and exits non-zero unless it is exactly `true`. |
+| `scripts/check-branch-protection.sh` | Reads `required_status_checks.strict` and exits non-zero when it is anything other than `true`; when the admin-read token is absent it warns and passes (skips the check). |
 | `.github/workflows/branch-protection-guard.yml` | Runs the script on a daily schedule, on every push to `main`, and on manual dispatch. |
 | `tests/issue_1095_branch_protection_guard_test.sh` | Offline unit test of the script's logic (runs in CI, needs no secret). |
 
@@ -67,9 +67,12 @@ Create the token once:
    **New repository secret**. Name it exactly `BRANCH_PROTECTION_READ_TOKEN` and
    paste the token as the value.
 
-If the secret is absent, the scheduled guard fails loudly rather than passing
-silently — a silent pass would recreate the exact gap this guard exists to
-close.
+If the secret is absent, the guard cannot read protection at all, so it emits a
+loud `::warning::` annotation and passes neutrally rather than failing red — an
+uninstalled detector is not the same as a detected violation, and a red run on
+every push would be a false positive that trains reviewers to ignore the check.
+It is a loud warning, never a silent pass. Provision the secret to turn the
+warning into real drift detection (a hard failure when strict is off).
 
 ## The script: `scripts/check-branch-protection.sh`
 
@@ -83,15 +86,17 @@ strict="$(gh api "repos/${REPO}/branches/${BRANCH}/protection" \
   --jq '.required_status_checks.strict')"
 ```
 
-It exits `0` only when `strict` is exactly `true`. Every other outcome — strict
-off, a missing token, or a failed API call — exits `1` and prints a GitHub
-Actions `::error::` annotation.
+It exits `0` when `strict` is exactly `true`. If the admin-read token is absent
+the guard cannot read protection, so it emits a GitHub Actions `::warning::`
+annotation and still exits `0` (an uninstalled detector is not a violation).
+When the token IS present, any real problem — strict off or a failed API call —
+exits `1` and prints an `::error::` annotation.
 
 ### Environment variables
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `GH_TOKEN` | Yes | Fine-grained PAT with `administration: read`. If empty/unset, the script fails with a "not configured" error. |
+| `GH_TOKEN` | Recommended | Fine-grained PAT with `administration: read`. If empty/unset, the guard emits a "not configured" `::warning::` and exits `0` (skips the strict check — it cannot read protection without the token). |
 | `GITHUB_REPOSITORY` | No | `owner/repo` slug. Set automatically inside Actions; falls back to `gh repo view --json nameWithOwner -q .nameWithOwner` when unset. |
 | `PROTECTED_BRANCH` | No | Branch to check. Defaults to `main`. |
 
@@ -99,8 +104,8 @@ Actions `::error::` annotation.
 
 | Exit | Condition |
 | --- | --- |
-| `0` | `required_status_checks.strict` is exactly `true`. |
-| `1` | Strict is off, the token is missing, or the `gh api` call failed. |
+| `0` | `required_status_checks.strict` is exactly `true`, **or** the admin-read token is absent (emits a `::warning::` and skips the check). |
+| `1` | The token is configured but strict is off, or the `gh api` call failed. |
 
 ### Example output
 
@@ -116,10 +121,10 @@ Strict turned off (exit 1):
 ::error::branch protection on main: required_status_checks.strict is 'false', expected 'true'. Someone disabled strict up-to-date merges — re-enable immediately.
 ```
 
-Token missing (exit 1):
+Token missing (exit 0, warning only):
 
 ```text
-::error::branch-protection guard not configured: missing BRANCH_PROTECTION_READ_TOKEN (fine-grained PAT, this-repo-only, administration:read)
+::warning::branch-protection guard not configured: missing BRANCH_PROTECTION_READ_TOKEN (fine-grained PAT, this-repo-only, administration:read) — skipping strict-mode check. Provision the secret to enable drift detection.
 ```
 
 ### Running it locally
@@ -156,9 +161,12 @@ GH_TOKEN=<fine-grained PAT> PROTECTED_BRANCH=release scripts/check-branch-protec
 ### Do not make this a required PR status check
 
 The guard depends on the `BRANCH_PROTECTION_READ_TOKEN` secret, which is not
-available to pull requests from forks. As a required check it would fail closed
-and block every such PR. Keep it as a standalone scheduled / push / dispatch
-guard only.
+available to pull requests from forks. When the secret is absent the guard
+degrades to a loud `::warning::` and a neutral pass (it cannot detect drift
+without admin-read access), so it no longer fails closed. Even so, keep it a
+non-required check: a warning-only run carries no real signal, so requiring it
+would add a green check that guarantees nothing. Keep it as a standalone
+scheduled / push / dispatch guard only.
 
 ## The test: `tests/issue_1095_branch_protection_guard_test.sh`
 
@@ -171,7 +179,7 @@ variable, asserting:
 | Guard script present | `check-branch-protection.sh` exists and is executable. |
 | `GH_TOKEN=x FAKE_STRICT=true` | Exit `0`. |
 | `FAKE_STRICT=false` | Exit non-zero; stderr contains "expected 'true'". |
-| `GH_TOKEN` unset/empty | Exit non-zero; stderr contains "not configured". |
+| `GH_TOKEN` unset/empty | Exit `0`; stderr contains a `::warning::` mentioning "not configured". |
 | `FAKE_STRICT=apierror` | Exit non-zero. |
 | `GITHUB_REPOSITORY` unset | Resolves the slug via `gh repo view`, then exits `0` when strict is `true`. |
 

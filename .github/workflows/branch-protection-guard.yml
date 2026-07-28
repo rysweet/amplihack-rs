@@ -12,11 +12,13 @@
 #   enterprise-level ruleset (an org-admin action). This workflow is the
 #   in-repo detection layer.
 #
-# DO NOT MAKE THIS A REQUIRED PR STATUS CHECK
+# KEEP THIS A NON-REQUIRED STATUS CHECK
 #   It depends on the BRANCH_PROTECTION_READ_TOKEN secret, which is not
-#   available to pull requests from forks. As a required check it would fail
-#   closed and block every such PR. Keep it as a standalone scheduled/push
-#   guard only.
+#   available to pull requests from forks. When the secret is absent the guard
+#   degrades to a loud warning and a neutral pass (it cannot read protection
+#   without admin-read access), so it no longer fails closed. Even so, keep it
+#   non-required: a warning-only run carries no real signal. Keep it as a
+#   standalone scheduled/push guard only.
 #
 # SETUP: this needs a repository Actions secret named
 # BRANCH_PROTECTION_READ_TOKEN — a fine-grained PAT scoped to this repo only

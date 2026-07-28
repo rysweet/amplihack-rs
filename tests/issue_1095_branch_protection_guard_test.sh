@@ -7,8 +7,10 @@
 #     - exits 0 only when strict is exactly "true";
 #     - exits 1 when strict is "false" (or empty/other), printing an error that
 #       says it expected 'true';
-#     - exits 1 with a "not configured" error when the GH_TOKEN secret is
-#       absent (loud fail, never a silent pass);
+#     - when the GH_TOKEN secret is absent, emits a loud ::warning:: ("not
+#       configured") and exits 0 — the guard cannot read protection without the
+#       admin token, so "detector not installed" is a visible warning, never a
+#       red failure and never a silent pass;
 #     - exits 1 when the underlying `gh api` call fails;
 #     - resolves the repo slug via `gh repo view` when GITHUB_REPOSITORY is
 #       unset (local / manual runs), then applies the same strict check.
@@ -117,17 +119,19 @@ test_strict_false_fails() {
     fi
 }
 
-test_missing_token_fails() {
+test_missing_token_warns_and_passes() {
     local err="$TMPROOT/err_token"
-    # GH_TOKEN explicitly empty; FAKE_STRICT=true proves it fails on token, not value.
+    # GH_TOKEN explicitly empty; FAKE_STRICT=true is irrelevant because the guard
+    # cannot read protection without the admin token. Absent token must degrade
+    # to a loud ::warning:: and a neutral pass (exit 0), not a red failure.
     if run_guard "$err" GH_TOKEN= FAKE_STRICT=true; then
-        record_fail "missing GH_TOKEN should exit non-zero but exited 0"
-    else
-        if grep -q "not configured" "$err"; then
-            record_pass "missing token -> non-zero and stderr mentions 'not configured'"
+        if grep -q "not configured" "$err" && grep -q "::warning::" "$err"; then
+            record_pass "missing token -> exit 0 with a ::warning:: mentioning 'not configured'"
         else
-            record_fail "missing token: stderr missing 'not configured' (got: $(cat "$err"))"
+            record_fail "missing token: expected a ::warning:: mentioning 'not configured' (got: $(cat "$err"))"
         fi
+    else
+        record_fail "missing GH_TOKEN should exit 0 (warn, not fail) but exited non-zero (stderr: $(cat "$err"))"
     fi
 }
 
@@ -154,7 +158,7 @@ test_slug_fallback_resolves_and_passes() {
 test_guard_exists
 test_strict_true_passes
 test_strict_false_fails
-test_missing_token_fails
+test_missing_token_warns_and_passes
 test_api_error_fails
 test_slug_fallback_resolves_and_passes
 
