@@ -2,9 +2,7 @@
 //!
 //! Written **first**: these FAIL to compile until PR-3 adds
 //! `crates/amplihack-signal/src/signal_channel.rs` with a `SignalChannel` that
-//! implements `amplihack_turn::Channel` and the relocated capacity policy
-//! (`SignalChannel::default_capacity` / `DEFAULT_CAPACITY`, the sole surviving
-//! piece of the deleted `session_channel` module). See
+//! implements `amplihack_turn::Channel`. See
 //! `docs/signal-channel-turn-loop.md`.
 //!
 //! Behaviour these lock (must be identical to today's hand-rolled
@@ -595,103 +593,5 @@ async fn id_is_the_group_id() {
         channel.id().to_string(),
         "grp-id==",
         "the channel id must be the resolved operator-only group id"
-    );
-}
-
-// =============================================================================
-// Relocated capacity policy (migrated INV-4 from the deleted session_channel)
-// =============================================================================
-
-/// Save/restore guard for the single process-global capacity env var so these
-/// tests never leak state to their neighbours.
-struct EnvGuard {
-    key: &'static str,
-    prev: Option<String>,
-}
-
-impl EnvGuard {
-    fn set(key: &'static str, value: &str) -> Self {
-        let prev = std::env::var(key).ok();
-        // SAFETY: single-threaded within this test; restored on drop.
-        unsafe { std::env::set_var(key, value) };
-        Self { key, prev }
-    }
-    fn unset(key: &'static str) -> Self {
-        let prev = std::env::var(key).ok();
-        // SAFETY: single-threaded within this test; restored on drop.
-        unsafe { std::env::remove_var(key) };
-        Self { key, prev }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        match &self.prev {
-            // SAFETY: restoring the pre-test value on the same thread.
-            Some(v) => unsafe { std::env::set_var(self.key, v) },
-            None => unsafe { std::env::remove_var(self.key) },
-        }
-    }
-}
-
-const CAPACITY_ENV: &str = "AMPLIHACK_SIGNAL_INBOX_CAPACITY";
-
-/// Serializes the capacity tests below. Cargo runs tests as parallel threads in
-/// a single process and env vars are process-global, so without this lock the
-/// three `default_capacity_*` tests race on `CAPACITY_ENV` and flake. Holding
-/// this guard for a test's whole body makes each env mutation observe-and-read
-/// atomically with respect to its siblings.
-static CAPACITY_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// Acquire the capacity-env serialization lock, tolerating poisoning from an
-/// unrelated panicking test (the guarded data is `()`, so a poisoned lock is
-/// still safe to use).
-fn lock_capacity_env() -> std::sync::MutexGuard<'static, ()> {
-    CAPACITY_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-// INV-4 (migrated): the bounded turn-queue capacity is operator-configurable via
-// AMPLIHACK_SIGNAL_INBOX_CAPACITY, resolved through the relocated
-// `SignalChannel::default_capacity()`. A valid value is honoured; invalid / zero
-// / negative / whitespace / non-numeric / absent values fall back to
-// `SignalChannel::DEFAULT_CAPACITY` (32) — never unbounded, never disabled. This
-// preserves the exact policy previously on `Inbox::default_capacity()`.
-#[test]
-fn default_capacity_honours_valid_operator_value() {
-    let _serial = lock_capacity_env();
-    let _guard = EnvGuard::set(CAPACITY_ENV, "3");
-    assert_eq!(
-        SignalChannel::default_capacity(),
-        3,
-        "a valid operator capacity must be honoured"
-    );
-}
-
-#[test]
-fn default_capacity_falls_back_on_invalid_values() {
-    let _serial = lock_capacity_env();
-    for bad in ["0", "-1", "   ", "not-a-number", "3.5", ""] {
-        let _guard = EnvGuard::set(CAPACITY_ENV, bad);
-        assert_eq!(
-            SignalChannel::default_capacity(),
-            SignalChannel::DEFAULT_CAPACITY,
-            "invalid env value {bad:?} must fall back to DEFAULT_CAPACITY, never unbounded/disabled"
-        );
-    }
-    assert_eq!(
-        SignalChannel::DEFAULT_CAPACITY,
-        32,
-        "the default fallback capacity must remain 32 (unchanged policy)"
-    );
-}
-
-#[test]
-fn default_capacity_falls_back_when_absent() {
-    let _serial = lock_capacity_env();
-    let _guard = EnvGuard::unset(CAPACITY_ENV);
-    assert_eq!(
-        SignalChannel::default_capacity(),
-        SignalChannel::DEFAULT_CAPACITY,
-        "an absent env value must fall back to DEFAULT_CAPACITY"
     );
 }
