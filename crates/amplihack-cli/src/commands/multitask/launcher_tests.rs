@@ -83,10 +83,17 @@ fn assert_script_is_lf_only_and_bash_valid(script: &Path) {
         script.display()
     );
 
-    let mut command = Command::new("bash");
+    // Resolve `bash` to an absolute path via the filesystem rather than
+    // relying on the ambient `PATH`. Spawning a bare program name makes the
+    // test depend on process-global `PATH`, which is shared mutable state:
+    // any concurrent test that overrides `PATH` could otherwise cause a
+    // spurious `ENOENT` spawn failure here. An absolute program path skips
+    // `PATH` resolution entirely.
+    let bash = bash_program();
+    let mut command = Command::new(&bash);
     command.arg("-n").arg(script);
     let output = run_output_with_timeout(command, Duration::from_secs(2))
-        .unwrap_or_else(|err| panic!("failed to run bash -n for {}: {err}", script.display()));
+        .unwrap_or_else(|err| panic!("failed to run bash -n for {}: {err:#}", script.display()));
 
     assert!(
         output.status.success(),
@@ -95,4 +102,20 @@ fn assert_script_is_lf_only_and_bash_valid(script: &Path) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+/// Resolve an absolute path to `bash` without consulting `PATH`.
+///
+/// Checks the standard system locations directly on the filesystem so the
+/// result is unaffected by concurrent tests that mutate the process-global
+/// `PATH`. Falls back to the bare name only if no known location exists,
+/// preserving the original behavior on unusual systems.
+fn bash_program() -> std::path::PathBuf {
+    for candidate in ["/usr/bin/bash", "/bin/bash"] {
+        let path = Path::new(candidate);
+        if path.exists() {
+            return path.to_path_buf();
+        }
+    }
+    std::path::PathBuf::from("bash")
 }

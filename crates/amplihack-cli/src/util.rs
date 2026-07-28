@@ -489,9 +489,6 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn run_output_with_timeout_terminates_child_without_path() {
-        let _guard = crate::test_support::home_env_lock()
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
         let temp = tempfile::tempdir().unwrap();
         let empty_path = temp.path().join("empty-path");
         std::fs::create_dir(&empty_path).unwrap();
@@ -506,17 +503,17 @@ mod tests {
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
         std::fs::set_permissions(&script, perms).unwrap();
 
-        let previous_path = std::env::var_os("PATH");
-        unsafe { std::env::set_var("PATH", &empty_path) };
-
+        // Scope the empty `PATH` to this child process only. Mutating the
+        // process-global `PATH` via `std::env::set_var` would race every other
+        // concurrently-running test that resolves programs through `PATH`
+        // (e.g. the multitask launcher tests spawning `bash`), causing
+        // spurious `ENOENT` spawn failures. A per-command override reproduces
+        // the "PATH cannot resolve helpers" scenario without touching global
+        // state.
         let mut cmd = std::process::Command::new(&script);
         cmd.arg(&pid_file);
+        cmd.env("PATH", &empty_path);
         let result = run_output_with_timeout(cmd, Duration::from_millis(50));
-
-        match previous_path {
-            Some(value) => unsafe { std::env::set_var("PATH", value) },
-            None => unsafe { std::env::remove_var("PATH") },
-        }
 
         let pid: i32 = std::fs::read_to_string(&pid_file).unwrap().parse().unwrap();
         let exited = wait_for_pid_to_exit(pid, Duration::from_millis(500));
