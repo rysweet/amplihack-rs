@@ -785,6 +785,74 @@ mod outbound {
             assert!(!c.contains(SECRET), "no chunk may contain the raw secret");
         }
     }
+
+    #[test]
+    fn short_values_are_redacted() {
+        let red = redact_for_relay("password: abc");
+        assert_eq!(red, "password=[REDACTED]");
+        assert!(
+            !red.contains("abc"),
+            "short value must not survive: {red:?}"
+        );
+
+        let red = redact_for_relay("token=x");
+        assert_eq!(red, "token=[REDACTED]");
+        assert!(
+            !red.contains("=x"),
+            "single-char value must not survive: {red:?}"
+        );
+    }
+
+    #[test]
+    fn punctuation_heavy_values_are_redacted() {
+        let red = redact_for_relay("api_key: a!b#c$d%e^f&g");
+        assert!(red.contains("[REDACTED]"), "expected marker: {red:?}");
+        assert!(
+            !red.contains("a!b#c$d%e^f&g"),
+            "punctuation value must not survive: {red:?}"
+        );
+
+        let red = redact_for_relay("secret = example!#%notreal");
+        assert!(red.contains("[REDACTED]"), "expected marker: {red:?}");
+        assert!(
+            !red.contains("example!#%notreal"),
+            "punctuation value must not survive: {red:?}"
+        );
+    }
+
+    #[test]
+    fn quoted_odd_char_values_are_redacted() {
+        let red = redact_for_relay(r#"password="example!%""#);
+        assert!(red.contains("[REDACTED]"), "expected marker: {red:?}");
+        assert!(
+            !red.contains("example!%"),
+            "quoted odd-char value must not survive: {red:?}"
+        );
+    }
+
+    #[test]
+    fn redaction_is_idempotent() {
+        let body = "password: abc\napi_key: a!b#c$d%e^f&g\nAuthorization: bearer example-not-a-real-token\ntoken=x";
+        let once = redact_for_relay(body);
+        let twice = redact_for_relay(&once);
+        assert_eq!(once, twice, "redaction must be idempotent");
+    }
+
+    #[test]
+    fn prose_without_keyword_is_unchanged() {
+        let body = "the meeting is at 3pm, see you there";
+        assert_eq!(redact_for_relay(body), body);
+    }
+
+    #[test]
+    fn over_redaction_is_bounded_to_the_adjacent_token() {
+        let red = redact_for_relay("password: is required");
+        assert_eq!(red, "password=[REDACTED] required");
+        assert!(
+            red.contains(" required"),
+            "the tail after the redacted token must survive: {red:?}"
+        );
+    }
 }
 
 // =============================================================================

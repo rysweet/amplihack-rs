@@ -1,0 +1,70 @@
+name: pr-ownership-lease
+description: >
+  QA-team scenario for the PR-ownership lease (issue #1051, shipped in PR #1058).
+  The lease prevents two concurrent orchestrator sessions from co-driving the same
+  pull request into a merge live-lock: a session acquires an advisory, TTL-bounded,
+  filesystem-backed lease before merging, and the CLI merge gate vetoes any merge
+  the session does not own. This scenario drives the SHIPPED lease contract end to
+  end (via tests/gadugi/run-pr-lease-scenario.sh) as a black box and asserts the
+  safety-critical behaviors: a contended second acquirer stands down, expired and
+  corrupt records are reclaimable (a crashed session cannot block a PR forever),
+  the TTL cannot overflow into a permanent lease, drop releases on session end, a
+  concurrent compare-and-set second writer is rejected, lease keys are
+  path-traversal-safe, and the merge gate vetoes a merge unless the lease is owned.
+version: "1.0"
+config:
+  timeout: 180000
+environment:
+  requires: []
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, qa-team, pr-lease, orchestration, concurrency]
+  priority: high
+  issues: ["1051"]
+  pr: "1058"
+steps:
+  - name: run-pr-lease-contract
+    agent: cli-agent
+    action: execute
+    params:
+      command: tests/gadugi/run-pr-lease-scenario.sh
+    timeout: 170000
+  - name: contract-exits-clean
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+  - name: all-lease-behaviors-pass
+    agent: cli-agent
+    action: validate_output
+    params:
+      expected: "shipped lease + merge-gate contract green"
+assertions:
+  - name: all-cases-passed
+    type: output_contains
+    params:
+      target: stdout
+      expected: ALL_CASES_PASSED
+  - name: contended-acquirer-stands-down
+    type: output_contains
+    params:
+      target: stdout
+      expected: "contended_acquire_stands_down"
+  - name: concurrent-cas-rejected
+    type: output_contains
+    params:
+      target: stdout
+      expected: "cas_rejects_concurrent_second_writer"
+  - name: expiry-cannot-overflow
+    type: output_contains
+    params:
+      target: stdout
+      expected: "lease_record_expiry_does_not_overflow"
+  - name: merge-gate-vetoes-unowned
+    type: output_contains
+    params:
+      target: stdout
+      expected: "test_gated_merge_vetoes_when_lease_not_owned"

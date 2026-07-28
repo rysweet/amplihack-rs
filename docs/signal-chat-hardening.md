@@ -57,6 +57,12 @@ Read this document when you need to:
 - [F5 — E.164-validated group membership](#f5--e164-validated-group-membership)
 - [F6 — Per-post membership re-verification](#f6--per-post-membership-re-verification)
 - [F7 — Auto-accept code-created groups](#f7--auto-accept-code-created-groups-reliable-delivery)
+- [F8 — Broadened outbound secret redaction](#f8--broadened-outbound-secret-redaction)
+  - [`redact_for_relay`](#redact_for_relay)
+  - [The broadened credential-assignment rule](#the-broadened-credential-assignment-rule)
+  - [What is caught now (and what is not)](#what-is-caught-now-and-what-is-not)
+  - [Idempotency](#idempotency)
+  - [Bounded over-redaction](#bounded-over-redaction)
 - [Security invariants](#security-invariants)
 - [Exit-code taxonomy](#exit-code-taxonomy)
 - [Testing](#testing)
@@ -525,7 +531,126 @@ group id (the fake records accepted group ids and exposes them via
 
 ---
 
-## Security invariants
+## F8 — Broadened outbound secret redaction
+
+`redact_for_relay` in
+[`crates/amplihack-signal/src/chat/outbound.rs`](../crates/amplihack-signal/src/chat/outbound.rs)
+scrubs high-frequency secret shapes out of an agent reply **before** the body is
+chunked and relayed to Signal (see [F6](#f6--per-post-membership-re-verification)
+for the chunking/re-verification path). It is a **defense-in-depth** control: the
+primary leak gate is the fail-closed group-membership check (F3/F5/F6). The
+redactor is the second line — it assumes a body may still contain a pasted or
+echoed credential and removes the common shapes deterministically.
+
+This pass hardened the **generic credential-assignment rule** — the `name: value`
+/ `name = value` pattern anchored on a secret keyword (`api_key`, `access_key`,
+`secret`, `token`, `password`, `passwd`, `pwd`, `credential`, `authorization`).
+Two gaps were closed:
+
+1. **Short values slipped through.** The value match previously required at least
+   six characters (`{6,}`), so a keyword followed by a short value
+   (`token=x`, `password: abc`) was **not** redacted.
+2. **Unusual charsets slipped through.** The value character class was
+   `[A-Za-z0-9._~+/=:-]`, which does not include punctuation such as
+   `! @ # $ % ^ & * ( )`. A punctuation-heavy secret
+   (`api_key: a!b#c$d%e^f&g`) was therefore left in the clear.
+
+Only this one rule changed. Every other pattern — PEM private-key blocks, Signal
+device-link URIs, GitHub tokens, AWS access-key IDs, Google API keys, URL
+userinfo passwords, Slack tokens, and the standalone HTTP `Bearer` rule — is
+unchanged.
+
+### `redact_for_relay`
+
+```rust
+/// Scrub high-frequency secret shapes out of `body`. Pure, idempotent, and
+/// allocation-light (only adopts a new buffer on a real match).
+pub fn redact_for_relay(body: &str) -> String
+```
+
+- **Pure and deterministic.** Same input ⇒ same output; no I/O, no clock, no
+  randomness.
+- **Allocation-light.** Returns the input unchanged (no new buffer) when nothing
+  matches.
+- **Whole-body first.** The chat always calls `redact_and_chunk`, which runs
+  `redact_for_relay` over the **entire** body and only then splits into
+  Signal-sized chunks, so a secret can never straddle a chunk boundary and
+  survive.
+
+### The broadened credential-assignment rule
+
+The value match now accepts **one or more** non-whitespace, non-quote characters
+(`[^\s'"]+`) instead of six-or-more characters drawn from a narrow class. In
+plain terms: after the keyword and the `:`/`=`, an optional opening quote, and an
+optional HTTP auth-scheme word (`Bearer`/`Basic`/`Token`), everything up to the
+next whitespace or quote is treated as the secret and replaced.
+
+| Aspect | Before | After |
+| --- | --- | --- |
+| Minimum value length | 6 characters | 1 character (never empty) |
+| Value character set | `[A-Za-z0-9._~+/=:-]` | `[^\s'"]` (any non-space, non-quote) |
+| Stops at | end of narrow-class run | first whitespace or quote |
+| Keyword anchor | required | required (unchanged) |
+| Case-insensitive (`(?i)`) | yes | yes (unchanged) |
+| Scheme consumption `(?:(?:bearer\|basic\|token)\s+)?` | yes | yes (unchanged) |
+| Surrounding quotes | optional | optional (unchanged) |
+| Replacement | `$1=[REDACTED]` | `$1=[REDACTED]` (unchanged) |
+
+The keyword anchor is what keeps this safe: the value is only broadened **after**
+a recognized secret keyword and its `:`/`=`. A short or punctuation-heavy token
+sitting immediately after a secret keyword is still a secret, so widening the
+value match moves the control in the fail-safe direction.
+
+### What is caught now (and what is not)
+
+Redacted (each becomes `<keyword>=[REDACTED]`):
+
+```text
+token=x                        →  token=[REDACTED]
+password: abc                  →  password=[REDACTED]
+api_key: a!b#c$d%e^f&g         →  api_key=[REDACTED]
+secret = example!#%notreal            →  secret=[REDACTED]
+password="example!%"               →  password=[REDACTED]
+```
+
+Left unchanged (no secret keyword present):
+
+```text
+the meeting is at 3pm, see you there   →   (returned verbatim)
+```
+
+The value run stops at the first whitespace or quote, so the rule redacts the
+**single** token after the keyword and never swallows the rest of the line.
+
+### Idempotency
+
+`redact_for_relay` is idempotent — running it twice yields the same result as
+running it once:
+
+```text
+redact_for_relay(redact_for_relay(x)) == redact_for_relay(x)   // for all x
+```
+
+This holds for the broadened rule because the placeholder value `[REDACTED]` is
+itself a run of non-whitespace, non-quote characters, so a second pass matches
+`<keyword>=[REDACTED]` and re-emits the identical string. An idempotency test
+mixes several secret shapes in one body and asserts one pass equals two.
+
+### Bounded over-redaction
+
+The broadening admits a small, accepted trade-off: a benign word placed
+immediately after a secret keyword is over-redacted (only that one adjacent
+token, never the rest of the line):
+
+```text
+password: is required   →   password=[REDACTED] required
+```
+
+The ` required` tail is preserved. For a scrubber this over-redaction is
+acceptable — it errs toward removing rather than leaking — and the keyword anchor
+keeps it from touching ordinary prose that has no secret keyword.
+
+---
 
 - **Single source of truth.** After F1 exactly one host/port parser exists in
   the workspace. A reappearing second parser is a security regression
@@ -561,6 +686,15 @@ group id (the fake records accepted group ids and exposes them via
   returned, so no chat can operate on a group whose message request is still
   pending. A failed accept **fails group creation** (propagated, exit `3`) — the
   chat never leaves a group in a pending, silently-undelivered state.
+- **Defense-in-depth redaction, fail-safe.** `redact_for_relay` scrubs common
+  secret shapes from the whole body before chunking. The generic
+  credential-assignment rule matches a secret keyword followed by **any**
+  non-whitespace, non-quote value of length ≥ 1, so short and punctuation-heavy
+  secrets are caught. It is the **secondary** control (membership verification is
+  primary), deterministic, and **idempotent** — applying it twice equals once,
+  because the `[REDACTED]` placeholder re-matches and re-emits unchanged. Minor
+  over-redaction of a single token adjacent to a keyword is accepted; the rule
+  stops at the next whitespace/quote and never rewrites keyword-free prose.
 
 ---
 
@@ -617,6 +751,16 @@ Test coverage:
   endpoint): `create_group` issues a `sendMessageRequestResponse` accept for the
   newly created group id (asserted via the fake's `accepted_groups()`); a group
   is not returned until its message request has been accepted.
+- **F8 broadened redaction** (`amplihack-signal` `chat_it`, `outbound` module):
+  short values (`token=x`, `password: abc`) and punctuation-heavy values
+  (`api_key: a!b#c$d%e^f&g`, `secret = example!#%notreal`, quoted `password="example!%"`)
+  are redacted and the raw value does not survive; `redact_for_relay` applied
+  twice equals once for a body mixing several secret shapes (idempotency);
+  keyword-free prose is returned verbatim; and over-redaction is bounded — the
+  ` required` tail in `password: is required` is preserved. The two pre-existing
+  outbound tests (`redact_for_relay_removes_bearer_secret`,
+  `redaction_happens_before_chunking_so_no_chunk_leaks_a_secret`) continue to
+  pass.
 
 ---
 

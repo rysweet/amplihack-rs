@@ -8,9 +8,32 @@
 //! **whole** body first and a secret can never straddle (and survive in) a
 //! chunk boundary.
 //!
-//! The pattern set mirrors the proven full-conversation mirroring redactor in
-//! `amplihack-hooks::signal_integration::outbound`; it is deliberately
-//! conservative and deterministic (idempotent) so benign prose is preserved.
+//! This is the single relay redactor: there is no other copy of these rules
+//! elsewhere in the workspace. It is deliberately conservative, deterministic,
+//! and idempotent, so applying it twice yields the same result and benign prose
+//! is preserved.
+//!
+//! # Known behavior / limitations
+//!
+//! The redactor is a bounded, defense-in-depth scrubber, **biased to
+//! over-redact** rather than leak. Two consequences follow from that bias and
+//! the anchored, whitespace-delimited design:
+//!
+//! - **Value boundary is the first whitespace or quote.** A credential value is
+//!   matched as `[^\s'"]+`, so it stops at the first space or quote. A keyworded
+//!   secret whose value contains an embedded space or quote (e.g.
+//!   `token="abc def"`) has only its first run redacted and can leak the tail
+//!   (`token=[REDACTED] def"`). Prefer unquoted, whitespace-free secret values.
+//! - **Over-redaction of benign prose near a keyword.** Because a keyword
+//!   followed by `:`/`=` anchors the value match, ordinary prose can be caught:
+//!   `token: was lost` redacts `was`, and a value with an apostrophe such as
+//!   `secret: don't` is split at the quote, leaving a stray fragment. This is
+//!   intentional — losing a benign word is preferred to leaking a credential.
+//!
+//! No-anchor blobs (a raw JWT/base64 string with no keyword and no `Bearer`
+//! prefix that also matches none of the fixed provider shapes) are **not**
+//! redacted; exhaustive entropy-based detection is out of scope for this
+//! bounded scrubber.
 
 use std::borrow::Cow;
 use std::sync::LazyLock;
@@ -38,7 +61,7 @@ static REDACTION_PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(
         // HTTP auth scheme word (Bearer/Basic/Token) is consumed as part of the
         // value so the credential is fully redacted.
         (
-            r#"(?i)\b(api[_-]?key|access[_-]?key|secret|token|password|passwd|pwd|credential|authorization)\b['"]?\s*[:=]\s*['"]?(?:(?:bearer|basic|token)\s+)?[A-Za-z0-9._~+/=:-]{6,}['"]?"#,
+            r#"(?i)\b(api[_-]?key|access[_-]?key|secret|token|password|passwd|pwd|credential|authorization)\b['"]?\s*[:=]\s*['"]?(?:(?:bearer|basic|token)\s+)?[^\s'"]+['"]?"#,
             "$1=[REDACTED]",
         ),
         // GitHub tokens (PAT, OAuth, user-to-server, server-to-server, refresh).
@@ -78,24 +101,33 @@ static REDACTION_PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(
         .collect()
 });
 
-/// Scrub high-frequency secret shapes out of `body`. Pure, idempotent, and
-/// allocation-light (only adopts a new buffer on a real match).
-#[must_use]
-pub fn redact_for_relay(body: &str) -> String {
+/// Scrub high-frequency secret shapes out of `body`, borrowing the input
+/// untouched when it holds no secret (the common case) and adopting a new
+/// buffer only once a real match forces a rewrite. Pure and idempotent.
+fn redact_for_relay_cow(body: &str) -> Cow<'_, str> {
     let mut out = Cow::Borrowed(body);
     for (re, replacement) in REDACTION_PATTERNS.iter() {
         if let Cow::Owned(replaced) = re.replace_all(&out, *replacement) {
             out = Cow::Owned(replaced);
         }
     }
-    out.into_owned()
+    out
+}
+
+/// Scrub high-frequency secret shapes out of `body`. Pure, idempotent, and
+/// allocation-light (only allocates when a real match forces a rewrite).
+#[must_use]
+pub fn redact_for_relay(body: &str) -> String {
+    redact_for_relay_cow(body).into_owned()
 }
 
 /// Redact secrets over the whole body, **then** split into Signal-sized chunks.
 ///
 /// Redacting before chunking guarantees no individual outbound message can leak
-/// a secret that would otherwise straddle a chunk boundary.
+/// a secret that would otherwise straddle a chunk boundary. On the common
+/// no-secret path the body is chunked straight from the borrowed input, so no
+/// intermediate full-body copy is made before splitting.
 #[must_use]
 pub fn redact_and_chunk(body: &str) -> Vec<String> {
-    chunk(&redact_for_relay(body))
+    chunk(&redact_for_relay_cow(body))
 }
