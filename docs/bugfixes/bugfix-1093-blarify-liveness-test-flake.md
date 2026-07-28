@@ -226,8 +226,11 @@ fn liveness_step_gives_up_only_when_idle_past_bound() {
 
 ## Trade-offs
 
-Splitting the loop's decision into `liveness_step` adds one small indirection
-in production code that exists mainly to be unit-testable. This is acceptable:
+Splitting the loop's decision into `liveness_step` adds one small indirection,
+but entirely within `#[cfg(test)]` test code — both the helper and the
+`poll_file_for_content` harness it serves are gated on `#[cfg(test)]`, so they
+compile out of release builds and add zero indirection to production code. This
+is acceptable:
 
 - The extracted rule is a pure, exhaustively-tested function — strictly easier
   to reason about than the previous inline decision.
