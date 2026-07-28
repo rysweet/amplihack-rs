@@ -8,6 +8,15 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
+/// Upper bound for the `bash -n` syntax check on a generated launcher script.
+///
+/// A healthy `bash -n` on a tiny launcher completes in well under a
+/// millisecond. This ceiling exists only to catch a genuinely hung `bash`
+/// (and let `run_output_with_timeout` kill + reap it) -- it must be generous
+/// enough that process-spawn latency on a saturated CI runner can never trip
+/// it, and bounded so a real hang cannot stall the suite.
+const BASH_SYNTAX_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+
 #[test]
 fn test_valid_delegates() {
     assert!(VALID_DELEGATES.contains(&"amplihack claude"));
@@ -92,7 +101,7 @@ fn assert_script_is_lf_only_and_bash_valid(script: &Path) {
     let bash = bash_program();
     let mut command = Command::new(&bash);
     command.arg("-n").arg(script);
-    let output = run_output_with_timeout(command, Duration::from_secs(2))
+    let output = run_output_with_timeout(command, BASH_SYNTAX_CHECK_TIMEOUT)
         .unwrap_or_else(|err| panic!("failed to run bash -n for {}: {err:#}", script.display()));
 
     assert!(
