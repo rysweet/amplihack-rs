@@ -285,7 +285,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [CI Resource Discipline Reference](reference/ci-resource-discipline.md) - Concurrency, timeout, matrix, cache, and coverage boundaries for CI
 - [CI Pipeline Reference](reference/ci-pipeline.md) - Pinned toolchain, cargo-nextest test job, disk freeing, caching, and required checks
 - [CI Wall-Clock Parallelization Reference](reference/ci-wallclock-parallelization.md) - Parallel fan-out job graph (no `needs: check`) and tag-conditional release optimization keeping shipped artifacts fully optimized
-- [Merge Flow Reference](reference/merge-flow.md) - How `main` merges (issue #1050): why GitHub's merge queue is unavailable on a user-owned repo, the strict-off fix that ends the up-to-date live-lock, the `gh pr merge --auto` flow, and the safety trade-off
+- [Merge Flow Reference](reference/merge-flow.md) - How `main` merges: strict up-to-date branch protection with all 7 required checks stays on, why a GitHub merge queue is unavailable on a user-owned repo, and the serial green-and-up-to-date squash-merge flow
 - [Validate Recipe Subprocess and Hook Input Contracts](howto/validate-recipe-subprocess-hook-contract.md) - Validate recipe child env handling and hook JSON compatibility
 - [Workflow Execution Guardrails](features/workflow-execution-guardrails.md) - Canonical execution roots, exact GitHub identity checks, and observer-only stall detection
 - [How to Configure Workflow Execution Guardrails](howto/configure-workflow-execution-guardrails.md) - Supply `expected_gh_account`, inspect `execution_root`, and troubleshoot failures
