@@ -83,6 +83,7 @@ steps:
       6. NO faked APIs or data.
       7. Clear error messages.
       8. Appropriate logging.
+      9. When you DELETE or RENAME a test/bin/bench source file, you MUST also remove or update the corresponding `[[test]]` / `[[bin]]` / `[[bench]]` stanza in the owning crate's Cargo.toml in the SAME change, so `cargo build --all-targets` / `cargo fmt --all` still resolve all targets. Leaving a stanza that points at a deleted file is a workflow failure.
 
       **Self-verification before declaring done:**
       - Run `git status` and `git diff --stat` in your working directory.
@@ -326,6 +327,11 @@ steps:
         exit 1
       fi
       echo "=== Checkpoint: Staging Implementation ==="
+      # NOTE (#1075): if `cargo fmt --all` below fails with
+      # `couldn't read .../tests/*.rs: No such file or directory`, a prior step
+      # almost certainly deleted a test source file but left a
+      # dangling [[test]] stanza in the owning crate's Cargo.toml. Fix = remove
+      # that stanza (see step-08-implement Rule 9). Do NOT auto-parse Cargo.toml here.
       if [ -f Cargo.toml ] && command -v cargo >/dev/null 2>&1; then
         cargo fmt --all
       fi

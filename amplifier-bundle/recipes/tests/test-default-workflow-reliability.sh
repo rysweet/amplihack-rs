@@ -179,6 +179,29 @@ assert_yaml_step_not_fatal_false() {
     ' "${recipe}" || fail "${label} must not mark '${step_id}' as fatal: false"
 }
 
+# Regression guard for issue #1075: deleting a test/bin/bench source file must be
+# paired with removing the corresponding [[test]]/[[bin]]/[[bench]] stanza in the
+# owning crate's Cargo.toml, otherwise the checkpoint-after-implementation gate
+# (`cargo fmt --all`) hard-fails with `couldn't read .../tests/*.rs: No such file`.
+# The fix is prompt guidance in the recipe files; these assertions lock that
+# guidance in so it cannot silently regress.
+assert_stanza_cleanup_guidance() {
+    # Shared anchor phrase that MUST appear verbatim in both recipe prompts.
+    local anchor="[[test]]\` / \`[[bin]]\` / \`[[bench]]\` stanza in the owning crate's Cargo.toml"
+
+    grep -qF "${anchor}" "${TDD_RECIPE}" \
+        || fail "workflow-tdd.yaml step-08-implement must instruct the builder to remove the ${anchor} when a test/bin/bench source file is deleted or renamed (issue #1075)"
+
+    grep -qF "${anchor}" "${REFACTOR_REVIEW_RECIPE}" \
+        || fail "workflow-refactor-review.yaml step-09-refactor must instruct cleanup to remove the ${anchor} when a test/bin/bench source file is deleted or renamed (issue #1075)"
+
+    # Defensive diagnostic comment at the checkpoint gate must explain the failure mode.
+    grep -qF 'dangling [[test]] stanza' "${TDD_RECIPE}" \
+        || fail "workflow-tdd.yaml checkpoint-after-implementation must document that a 'No such file or directory' cargo error means a deleted test file left a dangling [[test]] stanza (issue #1075)"
+
+    echo "  PASS[stanza-cleanup]: recipe prompts require Cargo.toml stanza cleanup on file deletion (issue #1075)"
+}
+
 assert_runtime_artifact_helper_contracts() {
     [[ -f "${RUNTIME_ARTIFACT_HELPER}" ]] \
         || fail "workflow_runtime_artifacts.sh must exist for narrow runtime artifact cleanup"
@@ -1446,5 +1469,6 @@ SHIMD
 assert_pr_title_ignores_lockfiles
 assert_no_merge_directive_suppresses_auto_merge
 assert_gh_rate_limit_backoff_contracts
+assert_stanza_cleanup_guidance
 
 echo "PASS: default workflow reliability contracts are covered."
