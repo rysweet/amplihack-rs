@@ -395,22 +395,26 @@ mod tests {
         // slow-but-alive subprocess and assert the decision at each step. No
         // clock, thread, or filesystem is involved, so CI load cannot perturb
         // the result.
+        //
+        // Each slow write is observed as growth only *after* the idle window
+        // would otherwise have expired (`idle_elapsed >= idle_bound`). That is
+        // precisely the #1093 race: growth must still override the elapsed idle
+        // bound and keep the poll alive, so we feed `idle_bound` -- not zero --
+        // to prove the `!grew` guard, not merely a reset timer, does the work.
         let idle_bound = Duration::from_millis(200);
 
-        // Four growth observations before the marker arrives. Each one grew, so
-        // the idle timer keeps resetting and the poll must stay Alive -- even
-        // though the total elapsed time (writes + gaps) would exceed idle_bound.
+        // Four slow-but-live growth observations before the marker arrives.
         for _ in 0..4 {
             assert_eq!(
-                liveness_step(true, false, Duration::ZERO, idle_bound),
+                liveness_step(true, false, idle_bound, idle_bound),
                 LivenessStep::Alive,
-                "growth must reset the idle timer and keep the poll alive"
+                "growth must override an elapsed idle bound and keep the poll alive"
             );
         }
 
         // Final observation: the last write brought in `index-code`.
         assert_eq!(
-            liveness_step(true, true, Duration::ZERO, idle_bound),
+            liveness_step(true, true, idle_bound, idle_bound),
             LivenessStep::Found,
             "markers present on a live file must report Found, never truncate"
         );

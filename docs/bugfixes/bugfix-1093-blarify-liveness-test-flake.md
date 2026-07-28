@@ -155,20 +155,22 @@ step:
 fn slow_growing_file_is_not_truncated_before_markers_arrive() {
     let idle_bound = Duration::from_millis(200);
 
-    // Four growth observations before the marker arrives. Each one grew, so
-    // the idle timer keeps resetting and the poll must stay Alive — even
-    // though the total elapsed time (writes + gaps) exceeds idle_bound.
+    // Four slow-but-live growth observations before the marker arrives. Each
+    // one is observed as growth only *after* the idle window would otherwise
+    // have expired (idle_elapsed == idle_bound), so we prove the `!grew` guard
+    // -- not merely a reset timer -- keeps the poll Alive. This is exactly the
+    // #1093 race: growth must override an elapsed idle bound.
     for _ in 0..4 {
         assert_eq!(
-            liveness_step(true, false, Duration::ZERO, idle_bound),
+            liveness_step(true, false, idle_bound, idle_bound),
             LivenessStep::Alive,
-            "growth must reset the idle timer and keep the poll alive"
+            "growth must override an elapsed idle bound and keep the poll alive"
         );
     }
 
     // Final observation: the last write brought in `index-code`.
     assert_eq!(
-        liveness_step(true, true, Duration::ZERO, idle_bound),
+        liveness_step(true, true, idle_bound, idle_bound),
         LivenessStep::Found,
         "markers present on a live file must report Found, never truncate"
     );
@@ -177,7 +179,10 @@ fn slow_growing_file_is_not_truncated_before_markers_arrive() {
 
 The intent — *"growth resets the idle timer, so a slow subprocess is never
 truncated before its markers arrive"* — is now asserted directly and cannot be
-perturbed by CPU contention.
+perturbed by CPU contention. Because each growth observation carries an
+`idle_elapsed` already at the bound, the test would fail if the `!grew` guard
+were dropped, so it genuinely regression-guards #1093 rather than merely
+passing on a zeroed timer.
 
 ### 2. The give-up rule is still proven deterministically
 
