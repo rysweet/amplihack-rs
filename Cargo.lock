@@ -377,6 +377,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "amplihack-redact"
+version = "0.15.0"
+dependencies = [
+ "regex",
+]
+
+[[package]]
 name = "amplihack-reflection"
 version = "0.15.0"
 dependencies = [
@@ -453,10 +460,10 @@ dependencies = [
 name = "amplihack-signal"
 version = "0.15.0"
 dependencies = [
+ "amplihack-redact",
  "amplihack-turn",
  "amplihack-types",
  "async-trait",
- "regex",
  "serde",
  "serde_json",
  "tempfile",
@@ -484,6 +491,7 @@ dependencies = [
 name = "amplihack-turn"
 version = "0.15.0"
 dependencies = [
+ "amplihack-redact",
  "async-trait",
  "thiserror 2.0.18",
  "tokio",

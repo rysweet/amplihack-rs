@@ -25,6 +25,10 @@ Ahoy! This be where ye learn to keep yer ship secure from digital pirates.
 
 - [Executor Secret Transport & Command Validation](./EXECUTOR_SECRET_AND_COMMAND_HARDENING.md) - Keep the API key off argv/disk (stdin transport) and allowlist-validate the executor command before spawn
 
+**New in Issues #1096 / #1103 / #1108 (P1 hardening):**
+
+- [Relay Secret-Redaction Hardening](./RELAY_REDACTION_HARDENING.md) - Broaden the Signal relay redactor (Azure DevOps PATs, Bearer/Authorization, short/unusual-charset tokens) and route the bounded turn-failure error tail through `redact_for_relay` at every emit boundary
+
 ---
 
 ## Security Features Overview

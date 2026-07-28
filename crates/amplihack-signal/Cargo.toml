@@ -11,7 +11,7 @@ repository.workspace = true
 # lib, pulls in no tokio-net stack, and costs nothing at runtime.
 default = []
 # Enables the whole channel (pure core + gated tokio TCP transport).
-signal = ["dep:tokio", "dep:tokio-stream", "dep:regex", "dep:amplihack-turn", "dep:async-trait"]
+signal = ["dep:tokio", "dep:tokio-stream", "dep:amplihack-redact", "dep:amplihack-turn", "dep:async-trait"]
 
 [dependencies]
 serde = { workspace = true }
@@ -19,7 +19,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 toml = "0.8"
-regex = { version = "1", optional = true }
+amplihack-redact = { workspace = true, optional = true }
 amplihack-types = { workspace = true }
 amplihack-turn = { workspace = true, optional = true }
 async-trait = { workspace = true, optional = true }

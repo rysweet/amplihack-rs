@@ -1,0 +1,15 @@
+[package]
+name = "amplihack-redact"
+description = "Leaf crate: canonical relay secret-redaction (redact_for_relay). regex-only, no tokio/net/process deps."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+regex = { workspace = true }
+
+# Contract tests for the canonical redactor (issues #1096 / #1103 / #1108).
+[[test]]
+name = "redact_contract_it"
+path = "tests/redact_contract_it.rs"

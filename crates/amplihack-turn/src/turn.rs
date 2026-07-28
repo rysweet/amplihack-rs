@@ -341,6 +341,16 @@ impl TurnRunner for CopilotTurnRunner {
                 combined.push_str(&stdout_lossy);
                 combined.push_str(&stderr_lossy);
 
+                // #1108: the captured child output can carry pasted or echoed
+                // credentials. Scrub secrets through the canonical relay
+                // redactor BEFORE the text reaches ANY emit sink — the DEBUG
+                // trace field below and the bounded `io::Error` tail. Redacting
+                // the whole combined body first (rather than the truncated tail)
+                // also guarantees a secret cannot survive by straddling the
+                // tail boundary. The `stdout_len`/`stderr_len` fields report the
+                // original byte counts (non-secret) and are left unchanged.
+                let combined = amplihack_redact::redact_for_relay(&combined);
+
                 // Full output goes only to debug logging, for operators who
                 // opt in. Report each stream's byte length as structured fields.
                 tracing::debug!(

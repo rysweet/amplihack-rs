@@ -264,7 +264,7 @@ steps:
         fi
       }
       emit_local_metadata() { LOCAL_REF="$(derive_local_tracking_id)"; LOCAL_NUM=""; [[ "$LOCAL_REF" =~ local-(issue|ab)-([0-9]+)$ ]] && LOCAL_NUM="${BASH_REMATCH[2]}"; printf 'tracking_system=local\ntracking_reference=%s\ntracking_issue=%s\nissue_creation=local-tracking\n' "$LOCAL_REF" "$LOCAL_REF"; [ -n "$LOCAL_NUM" ] && printf 'issue_number=%s\n' "$LOCAL_NUM"; return 0; }
-      sanitize_cli_output() { printf '%s\n' "$1" | head -c 4000 | sed -E 's#https?://[^[:space:]]*@#https://<redacted>@#g; s#gh[pousr]_[A-Za-z0-9_]{8,}#<redacted-token>#g; s#github_pat_[A-Za-z0-9_]+#<redacted-token>#g'; }
+      sanitize_cli_output() { printf '%s\n' "$1" | head -c 4000 | sed -E 's#https?://[^[:space:]]*@#https://<redacted>@#g; s#gh[pousr]_[A-Za-z0-9_]{8,}#<redacted-token>#g; s#github_pat_[A-Za-z0-9_]+#<redacted-token>#g; s#([Aa]uthorization[[:space:]]*:[[:space:]]*).*#\1<redacted-token>#g; s#[Bb]earer[[:space:]]+[A-Za-z0-9._~+/=-]+#Bearer <redacted-token>#g; s#[A-Za-z0-9+/=_-]{40,}#<redacted-token>#g'; }
       REF_ISSUE_NUM=""
       if [[ "$TASK_DESC" =~ AB#([0-9]+) ]]; then REF_ISSUE_NUM="${BASH_REMATCH[1]}"
       elif [[ "$TASK_DESC" =~ \#([0-9]+) ]]; then REF_ISSUE_NUM="${BASH_REMATCH[1]}"; fi
@@ -390,7 +390,7 @@ steps:
       fi
       if [ -z "$EXTRACTED" ]; then
         echo "ERROR: step-03b failed to extract issue number from issue_creation output." >&2
-        printf '%s\n' "$ISSUE_CREATION" | head -c 4000 | sed -E 's#https?://[^[:space:]]*@#https://<redacted>@#g; s#gh[pousr]_[A-Za-z0-9_]{8,}#<redacted-token>#g; s#github_pat_[A-Za-z0-9_]+#<redacted-token>#g' >&2
+        printf '%s\n' "$ISSUE_CREATION" | head -c 4000 | sed -E 's#https?://[^[:space:]]*@#https://<redacted>@#g; s#gh[pousr]_[A-Za-z0-9_]{8,}#<redacted-token>#g; s#github_pat_[A-Za-z0-9_]+#<redacted-token>#g; s#([Aa]uthorization[[:space:]]*:[[:space:]]*).*#\1<redacted-token>#g; s#[Bb]earer[[:space:]]+[A-Za-z0-9._~+/=-]+#Bearer <redacted-token>#g; s#[A-Za-z0-9+/=_-]{40,}#<redacted-token>#g' >&2
         exit 1
       fi
       printf '%s' "$EXTRACTED"

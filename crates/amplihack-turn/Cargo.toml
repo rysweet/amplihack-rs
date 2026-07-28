@@ -24,6 +24,9 @@ thiserror = { workspace = true }
 # Lightweight logging facade only (no net, negligible transitive cost). Used to
 # emit failed-turn full output at debug level and warn on bad env config.
 tracing = { workspace = true }
+# Canonical relay secret-redactor (regex-only leaf crate). Used to scrub the
+# bounded turn-failure error tail before it reaches any emit sink (#1108).
+amplihack-redact = { workspace = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros", "time"] }

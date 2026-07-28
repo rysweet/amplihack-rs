@@ -788,6 +788,88 @@ mod outbound {
 }
 
 // =============================================================================
+// Outbound redaction HARDENING — issues #1096 / #1103 / #1108
+//
+// `amplihack_signal::chat::outbound::redact_for_relay` is now a `pub use`
+// re-export of the canonical `amplihack_redact::redact_for_relay` leaf crate.
+// These tests prove (a) the re-export path is unchanged for every existing
+// caller (backward-compatible public API), and (b) the broadened coverage now
+// scrubs Azure DevOps PATs, generic Bearer/Authorization tokens, and
+// short/unusual-charset keyed secrets — WITHOUT over-redacting benign prose.
+// =============================================================================
+mod outbound_hardening {
+    use amplihack_signal::chat::outbound::redact_for_relay;
+
+    // A representative 52-char Azure DevOps PAT.
+    const AZDO_PAT: &str = "abcd1234efgh5678ijkl9012mnop3456qrst7890uvwx1234yzAB";
+
+    fn assert_scrubbed(input: &str, secret: &str) {
+        let out = redact_for_relay(input);
+        assert!(
+            !out.contains(secret),
+            "secret must not survive via the signal re-export\n  in:  {input:?}\n  out: {out:?}"
+        );
+        assert!(
+            out.contains("[REDACTED"),
+            "a redaction placeholder must mark the scrubbed value: {out:?}"
+        );
+    }
+
+    // --- backward compatibility: the re-export is still the same public path ---
+
+    #[test]
+    fn reexport_is_callable_and_scrubs_the_legacy_key_value_shape() {
+        assert_scrubbed("api_key = abcdef123456", "abcdef123456");
+    }
+
+    #[test]
+    fn reexport_preserves_benign_prose() {
+        let prose = "The quick brown fox authorization was granted after review.";
+        assert_eq!(
+            redact_for_relay(prose),
+            prose,
+            "the re-export must not over-redact benign prose"
+        );
+    }
+
+    // --- #1103: Azure DevOps PATs + generic Bearer/Authorization ---
+
+    #[test]
+    fn azure_devops_pat_env_assignment_is_redacted() {
+        assert_scrubbed(&format!("AZURE_DEVOPS_EXT_PAT={AZDO_PAT}"), AZDO_PAT);
+    }
+
+    #[test]
+    fn bearer_token_is_redacted() {
+        let secret = "AbCdEf0123456789GhIjKlMnOpQrSt";
+        assert_scrubbed(&format!("Authorization: Bearer {secret}"), secret);
+    }
+
+    // --- #1096: short / unusual-charset keyed secrets (context-gated) ---
+
+    #[test]
+    fn short_keyed_secret_below_legacy_threshold_is_redacted() {
+        assert_scrubbed("password=\"x9K2\"", "x9K2");
+    }
+
+    #[test]
+    fn unusual_charset_quoted_secret_is_redacted() {
+        let secret = "xK9+7mFq/2Lz=abCD3ef";
+        assert_scrubbed(&format!("secret = \"{secret}\""), secret);
+    }
+
+    // --- idempotency across the re-export ---
+
+    #[test]
+    fn reexport_redaction_is_idempotent() {
+        let input = format!("pat=\"{AZDO_PAT}\"");
+        let once = redact_for_relay(&input);
+        assert_eq!(once, redact_for_relay(&once));
+        assert!(!once.contains(AZDO_PAT));
+    }
+}
+
+// =============================================================================
 // Chat error taxonomy — chat::ChatError  (6-code exit contract) +
 // real daemon-down and loopback failure modes
 // =============================================================================

@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use amplihack_signal::chat::allowlist::ToolAllowlist;
 use amplihack_signal::chat::membership::Membership;
-use amplihack_signal::chat::outbound::redact_and_chunk;
+use amplihack_signal::chat::outbound::{redact_and_chunk, redact_for_relay};
 use amplihack_signal::chat::turn::{
     AgentSession, CopilotTurnRunner, PreemptSlot, SerialTurnDriver, TurnError, TurnOutput,
     TurnResult, run_session_loop,
@@ -238,7 +238,13 @@ async fn run_chat_async(args: SignalChatArgs) -> Result<(), ChatError> {
     //     a turn error posted `turn failed: {e}` and continued.
     let mut session = ResilientSession { inner: driver };
     if let Err(e) = run_session_loop(&mut session, &mut channel).await {
-        eprintln!("signal chat: session loop ended with error: {e}");
+        // #1108: the error value can carry a turn-failure tail; redact before
+        // it reaches the stderr sink (defense-in-depth — the turn already
+        // redacts at source, and redaction is idempotent).
+        eprintln!(
+            "signal chat: session loop ended with error: {}",
+            redact_for_relay(&e.to_string())
+        );
     }
 
     Ok(())
