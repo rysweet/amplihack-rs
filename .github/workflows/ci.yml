@@ -54,6 +54,9 @@ jobs:
         run: scripts/check-skills-no-missing-helpers.sh
       - name: Toolchain refs — cross-target steps pinned to channel (issue #935)
         run: scripts/check-toolchain-refs.sh
+      - name: Branch-protection guard — strict-mode script logic (issue #1095)
+        shell: bash
+        run: bash tests/issue_1095_branch_protection_guard_test.sh
       - name: Recipes — PR always opens after successful push (issue #495)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-pr-always-opens.sh

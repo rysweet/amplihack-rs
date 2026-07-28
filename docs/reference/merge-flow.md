@@ -43,3 +43,12 @@ PR is merged only after it is both green and up to date with `main`:
 
 Do **not** use `gh pr merge --admin`, and do **not** use `--no-verify`. Every PR
 goes through the same required checks with the strict up-to-date policy in place.
+
+## Keeping the strict policy on
+
+The strict up-to-date policy above is enforced automatically by the
+[Branch Protection Guard](branch-protection-guard.md): an in-repo check that
+reads the live `required_status_checks.strict` setting and fails within one CI
+cycle if it is ever turned off. That guard is detection, not prevention — it
+makes the change loud so it can be reverted; only an org- or enterprise-level
+ruleset can prevent the change outright.

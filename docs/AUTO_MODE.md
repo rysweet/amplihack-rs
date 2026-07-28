@@ -145,6 +145,16 @@ Provides comprehensive summary of the auto mode session.
 
 Default: 10 turns
 
+`max_turns` is the single operator-configured policy that bounds a session. It
+can be set two ways, with the precedence **flag > env > default**:
+
+- `--max-turns N` — explicit per-invocation flag (highest precedence).
+- `AMPLIHACK_AUTO_MAX_TURNS=N` — environment fallback for non-interactive and
+  daemon callers, applied when no flag is given.
+
+Both sources are validated as a positive integer (`1..`); invalid values
+(`0`, negative, non-numeric) are rejected at parse time.
+
 Adjust based on task complexity:
 
 - Simple tasks: 5-10 turns
@@ -152,24 +162,45 @@ Adjust based on task complexity:
 - Complex tasks: 15-30 turns
 
 ```bash
+# Per-invocation flag
 amplihack claude --auto --max-turns 25 -- -p "complex multi-module refactoring"
+
+# Environment default for a batch of runs
+export AMPLIHACK_AUTO_MAX_TURNS=25
+amplihack claude --auto -- -p "complex multi-module refactoring"
 ```
 
 ### Execution Limits
 
-Auto mode is bounded by turn count and internal safety backstops. There is **no
-per-turn wall-clock timeout** — a long-running turn runs to natural completion,
-governed by liveness rather than a clock.
+Auto mode is bounded by an explicit, operator-configured **turn budget** and
+nothing else. There is **no per-turn wall-clock timeout**, and there are **no
+arbitrary API-call or captured-output caps** — a long-running turn runs to
+natural completion, and the session is governed by turn count rather than by
+hidden magic numbers.
 
 - **`--max-turns`** (default: 10) is the primary control; the session stops
-  after this many turns.
-- **Session safety backstops** (internal, not user-configurable) also stop a
-  session if it exceeds roughly one hour of wall-clock time, 50 API calls, or
-  50 MB of captured output. These guard against runaway sessions.
+  after this many turns and logs the reason (`Reached max turns without
+  verified completion`) — it never stops silently.
+- **`AMPLIHACK_AUTO_MAX_TURNS`** sets the same turn budget from the
+  environment for non-interactive/daemon callers. Precedence is
+  **flag > env > default(10)**. The value is validated (`1..`); invalid values
+  are rejected at parse time rather than silently defaulting.
+- **Subprocess network timeout** — each turn waits on the agent subprocess
+  with a fixed 1800 s (30 min) receive timeout. This bounds a **single
+  receive** (how long auto mode waits for the subprocess to respond), not the
+  cumulative wall-clock duration of a turn or session. It is an I/O liveness
+  backstop, not a resource cap, and is not configurable.
+- **Injected-content size** — content appended to a running session is
+  bounded to 50 KiB as a security control on untrusted input (see
+  [Concepts › Auto Mode](concepts/auto-mode.md#injected-content-sanitization)).
 
 ```bash
-# Allow more turns for a large task
+# Allow more turns for a large task (flag)
 amplihack claude --auto --max-turns 25 -- -p "comprehensive codebase analysis"
+
+# Or set the budget once for a batch of non-interactive runs (env)
+export AMPLIHACK_AUTO_MAX_TURNS=25
+amplihack claude --auto -- -p "comprehensive codebase analysis"
 ```
 
 ### Session Logging
@@ -424,14 +455,19 @@ Auto mode excels at:
 
 ### Session Stopped Early
 
-**Cause**: The session hit an internal safety backstop (turn count, ~1-hour
-session duration, API-call count, or captured-output size).
+**Cause**: The session reached its turn budget without verifying the objective
+as complete.
 **Solution**:
 
-- Check logs for the stop reason (e.g. `Max session duration reached`,
-  `Max output size reached`).
-- Raise the turn budget with `--max-turns` for large tasks.
+- Check logs for the stop reason (`Reached max turns without verified
+  completion`).
+- Raise the turn budget with `--max-turns`, or set
+  `AMPLIHACK_AUTO_MAX_TURNS`, for large tasks.
 - Break complex tasks into smaller subtasks or separate runs.
+
+> Note: auto mode has **no** wall-clock, API-call, or output-size caps. If a
+> turn appears to hang, the only time bound in play is the 1800 s subprocess
+> receive timeout (an I/O liveness backstop), not a session duration limit.
 
 ### Installation Issues (Copilot)
 

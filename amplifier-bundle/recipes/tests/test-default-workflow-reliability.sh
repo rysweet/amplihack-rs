@@ -44,6 +44,7 @@ TERMINAL_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-terminal-state.y
 DEFAULT_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/default-workflow.yaml"
 SMART_EXECUTE_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/smart-execute-routing.yaml"
 SMART_ORCHESTRATOR_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/smart-orchestrator.yaml"
+PREP_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-prep.yaml"
 FINAL_STATUS_TOOL="${REPO_ROOT}/amplifier-bundle/tools/workflow_final_status.sh"
 PR_SCOPE_HELPER="${REPO_ROOT}/amplifier-bundle/tools/workflow_pr_scope.sh"
 
@@ -1466,9 +1467,27 @@ SHIMD
     echo "  PASS[gh-retry:d]: generic 5xx keeps short-backoff 3-attempt behavior"
 }
 
+assert_azdo_work_item_url_parsing() {
+    # issue #1091: step-03-create-issue must project ONLY the url scalar (single line,
+    # no read-splitting) and must NOT fold create stderr into the parsed value; step-03b
+    # must extract the id from the AzDO REST url form the create/reuse paths actually emit.
+    grep -qF -- '--query "url" -o tsv' "${PREP_RECIPE}" \
+        || fail "issue #1091: step-03 must project the url scalar via --query \"url\" -o tsv"
+    if grep -qF -- '--query "[id,url]" -o tsv' "${PREP_RECIPE}"; then
+        fail "issue #1091: step-03 must not use the brittle --query \"[id,url]\" -o tsv projection"
+    fi
+    if grep -qE 'az boards work-item create .*-o tsv 2>&1' "${PREP_RECIPE}"; then
+        fail "issue #1091: step-03 must not fold create-command stderr with 2>&1 into the parsed result"
+    fi
+    grep -qF -- '_apis/wit/workItems/' "${PREP_RECIPE}" \
+        || fail "issue #1091: step-03b must extract the id from the _apis/wit/workItems/ REST url form"
+    echo "  PASS[azdo-wi]: step-03 url projection + step-03b REST-url extraction contracts hold"
+}
+
 assert_pr_title_ignores_lockfiles
 assert_no_merge_directive_suppresses_auto_merge
 assert_gh_rate_limit_backoff_contracts
 assert_stanza_cleanup_guidance
+assert_azdo_work_item_url_parsing
 
 echo "PASS: default workflow reliability contracts are covered."

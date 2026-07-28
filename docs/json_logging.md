@@ -106,8 +106,8 @@ Logged when an error occurs during execution.
   "level": "ERROR",
   "event": "error",
   "turn": 4,
-  "error_type": "timeout",
-  "message": "Session stopped: max session duration reached (limit: 3600s). Consider breaking the task into smaller runs."
+  "error_type": "execution",
+  "message": "Reached max turns without verified completion (limit: 10). Raise --max-turns or AMPLIHACK_AUTO_MAX_TURNS, or break the task into smaller runs."
 }
 ```
 

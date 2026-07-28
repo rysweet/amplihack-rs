@@ -21,10 +21,15 @@ tokio = { version = "1", default-features = false, features = [
 ] }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
+# Lightweight logging facade only (no net, negligible transitive cost). Used to
+# emit failed-turn full output at debug level and warn on bad env config.
+tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros", "time"] }
 async-trait = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 # Hermetic mock-session / mock-channel driver-loop contract tests (no network,
 # no real copilot). Registered as an explicit [[test]] target per repo convention.
@@ -36,3 +41,9 @@ path = "tests/driver_loop_it.rs"
 [[test]]
 name = "agent_session_it"
 path = "tests/agent_session_it.rs"
+
+# Turn-failure error hygiene (#1092): bounded tail, char-boundary safety,
+# env-configurable budget, debug-gated full output.
+[[test]]
+name = "turn_error_it"
+path = "tests/turn_error_it.rs"

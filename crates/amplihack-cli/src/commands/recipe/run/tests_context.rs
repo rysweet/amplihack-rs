@@ -97,6 +97,13 @@ fn test_resolve_binary_path_returns_none_for_unknown_binary_name() {
 #[test]
 #[cfg(unix)]
 fn test_resolve_binary_path_finds_known_binary_in_path() {
+    // Serialize against tests that temporarily mutate the global PATH env var
+    // (e.g. the blarify git-stub test), which would otherwise race and hide
+    // `true` from this process's PATH view.
+    let _home_guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
     // `true` is guaranteed to exist on any Unix system
     let result = binary::resolve_binary_path("true");
     assert!(

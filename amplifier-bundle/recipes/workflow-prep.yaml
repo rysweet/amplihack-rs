@@ -351,15 +351,14 @@ steps:
             [ -z "$AZDO_WI_ASSIGNEE" ] && AZDO_WI_ASSIGNEE=$(timeout 60 az ad signed-in-user show --query "userPrincipalName" -o tsv 2>/dev/null || echo "")
             [ -z "$AZDO_WI_ASSIGNEE" ] && { echo "WARN: could not resolve the caller's identity for work-item assignment ('az account show' and 'az ad signed-in-user show' both failed). Set AZDO_ASSIGNED_TO to a UPN or re-run 'az login'; refusing to create an unassigned work item — using local tracking instead." >&2; emit_local_metadata; exit 0; }
           fi
-          WI_CREATE_RC=0
-          WI_RESULT=$(timeout 60 az boards work-item create --title "$ISSUE_TITLE" --type "$AZDO_WI_TYPE" --assigned-to "$AZDO_WI_ASSIGNEE" --org "$AZDO_ORG_URL" --project "$AZDO_PROJECT" --query "[id,url]" -o tsv 2>&1) || WI_CREATE_RC=$?
+          WI_CREATE_RC=0; AZ_ERR=$(mktemp)
+          WI_URL=$(timeout 60 az boards work-item create --title "$ISSUE_TITLE" --type "$AZDO_WI_TYPE" --assigned-to "$AZDO_WI_ASSIGNEE" --org "$AZDO_ORG_URL" --project "$AZDO_PROJECT" --query "url" -o tsv 2>"$AZ_ERR") || WI_CREATE_RC=$?
           if [ "$WI_CREATE_RC" -eq 0 ]; then
-            read -r _ WI_URL <<< "$WI_RESULT"
-            [ -n "$WI_URL" ] && { printf '%s\n' "$WI_URL"; exit 0; }
-            echo "ERROR: az boards work-item create reported success but no work item URL could be parsed from its output." >&2; sanitize_cli_output "$WI_RESULT" >&2; exit 1
+            [ -n "$WI_URL" ] && { rm -f "$AZ_ERR"; printf '%s\n' "$WI_URL"; exit 0; }
+            echo "ERROR: az boards work-item create reported success but no work item URL could be parsed from its output." >&2; sanitize_cli_output "$(cat "$AZ_ERR")" >&2; rm -f "$AZ_ERR"; exit 1
           fi
           # A genuine AzDO API failure (auth, permissions, invalid type) must surface loudly, not silently degrade to local tracking — the silent fallback is what produced orphaned/unassigned work items (#983).
-          echo "ERROR: az boards work-item create failed (type='$AZDO_WI_TYPE', assigned-to='$AZDO_WI_ASSIGNEE'). Resolve the AzDO failure (check az login, project permissions, or set AZDO_WORK_ITEM_TYPE if the type is invalid); not falling back to local tracking." >&2; sanitize_cli_output "$WI_RESULT" >&2; exit 1
+          echo "ERROR: az boards work-item create failed (type='$AZDO_WI_TYPE', assigned-to='$AZDO_WI_ASSIGNEE'). Resolve the AzDO failure (check az login, project permissions, or set AZDO_WORK_ITEM_TYPE if the type is invalid); not falling back to local tracking." >&2; sanitize_cli_output "$(cat "$AZ_ERR")" >&2; rm -f "$AZ_ERR"; exit 1
         else
           echo "WARN: 'az' CLI not found or org/project empty — using local tracking for AzDO remote" >&2
         fi
@@ -383,6 +382,7 @@ steps:
         command -v gh >/dev/null 2>&1 && EXTRACTED=$(timeout 60 gh pr view "$PR_NUMBER" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // ""' 2>/dev/null || echo '')
         [ -z "$EXTRACTED" ] && EXTRACTED="$PR_NUMBER"
       elif [[ "$ISSUE_CREATION" =~ _workitems/edit/([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
+      elif [[ "$ISSUE_CREATION" =~ _apis/wit/workItems/([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
       elif [[ "$ISSUE_CREATION" =~ AB#([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
       elif [[ "$ISSUE_CREATION" =~ issue_number=([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
       elif [[ "$TASK_DESC_RAW" =~ AB#([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
