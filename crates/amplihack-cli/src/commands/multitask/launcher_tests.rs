@@ -131,21 +131,14 @@ fn bash_program() -> std::path::PathBuf {
 
 #[test]
 fn bash_syntax_check_timeout_is_generous_but_bounded() {
-    // Contract for the named timeout constant that replaces the flaky 2s
-    // literal: it must be generous enough that process-spawn latency on a
-    // saturated CI runner cannot trip it, yet bounded so a genuinely hung
-    // `bash` is still killed and reaped rather than stalling the suite.
+    // Pin the named timeout that replaces the flaky 2s literal. 30s is chosen
+    // to be generous enough that process-spawn latency on a saturated CI runner
+    // cannot trip it, yet bounded so a genuinely hung `bash` is still killed and
+    // reaped (rather than stalling the suite). Any change to this contract is
+    // deliberate and must update the reasoning above.
     assert_eq!(
         BASH_SYNTAX_CHECK_TIMEOUT,
         Duration::from_secs(30),
         "syntax-check timeout must be the documented 30s ceiling"
-    );
-    assert!(
-        BASH_SYNTAX_CHECK_TIMEOUT >= Duration::from_secs(30),
-        "timeout must be generous enough to survive spawn latency under load"
-    );
-    assert!(
-        BASH_SYNTAX_CHECK_TIMEOUT <= Duration::from_secs(60),
-        "timeout must stay bounded so a real hang cannot stall the suite"
     );
 }
