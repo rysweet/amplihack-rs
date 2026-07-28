@@ -68,7 +68,7 @@ pub enum Commands {
         #[arg(long = "auto")]
         auto: bool,
         /// Max turns for auto mode.
-        #[arg(long = "max-turns", default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..))]
+        #[arg(long = "max-turns", env = "AMPLIHACK_AUTO_MAX_TURNS", default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..))]
         max_turns: u32,
         /// Enable interactive UI mode for auto mode.
         #[arg(long = "ui")]
@@ -98,7 +98,7 @@ pub enum Commands {
         #[arg(long = "auto")]
         auto: bool,
         /// Max turns for auto mode.
-        #[arg(long = "max-turns", default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..))]
+        #[arg(long = "max-turns", env = "AMPLIHACK_AUTO_MAX_TURNS", default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..))]
         max_turns: u32,
         /// Enable interactive UI mode for auto mode.
         #[arg(long = "ui")]
@@ -130,7 +130,7 @@ pub enum Commands {
         #[arg(long = "auto")]
         auto: bool,
         /// Max turns for auto mode.
-        #[arg(long = "max-turns", default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..))]
+        #[arg(long = "max-turns", env = "AMPLIHACK_AUTO_MAX_TURNS", default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..))]
         max_turns: u32,
         /// Enable interactive UI mode for auto mode.
         #[arg(long = "ui")]
@@ -157,7 +157,7 @@ pub enum Commands {
         #[arg(long = "auto")]
         auto: bool,
         /// Max turns for auto mode.
-        #[arg(long = "max-turns", default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..))]
+        #[arg(long = "max-turns", env = "AMPLIHACK_AUTO_MAX_TURNS", default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..))]
         max_turns: u32,
         /// Enable interactive UI mode for auto mode.
         #[arg(long = "ui")]
@@ -184,7 +184,7 @@ pub enum Commands {
         #[arg(long = "auto")]
         auto: bool,
         /// Max turns for auto mode.
-        #[arg(long = "max-turns", default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..))]
+        #[arg(long = "max-turns", env = "AMPLIHACK_AUTO_MAX_TURNS", default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..))]
         max_turns: u32,
         /// Enable interactive UI mode for auto mode.
         #[arg(long = "ui")]
@@ -349,7 +349,7 @@ pub enum Commands {
         #[arg(long = "auto")]
         auto: bool,
         /// Max turns for auto mode.
-        #[arg(long = "max-turns", default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..))]
+        #[arg(long = "max-turns", env = "AMPLIHACK_AUTO_MAX_TURNS", default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..))]
         max_turns: u32,
         /// Enable interactive UI mode for auto mode.
         #[arg(long = "ui")]
@@ -480,4 +480,132 @@ pub enum Commands {
         #[command(subcommand)]
         command: SignalCommands,
     },
+}
+
+#[cfg(test)]
+mod issue_1081_max_turns_env_tests {
+    //! TDD contracts for issue #1081: `max_turns` must honour the
+    //! `AMPLIHACK_AUTO_MAX_TURNS` env var as an operator-configured policy,
+    //! with the explicit `--max-turns` CLI flag taking precedence, the default
+    //! remaining 10, and the `range(1..)` validator rejecting invalid values.
+    //!
+    //! These tests assert the *desired* behaviour and fail until the six
+    //! `#[arg(...)]` declarations gain `env = "AMPLIHACK_AUTO_MAX_TURNS"` and
+    //! clap's `env` feature is enabled workspace-wide.
+    use super::*;
+    use crate::test_support::env_lock;
+
+    const ENV_KEY: &str = "AMPLIHACK_AUTO_MAX_TURNS";
+
+    /// RAII guard that sets/removes `AMPLIHACK_AUTO_MAX_TURNS` and restores the
+    /// prior value on drop. Tests must hold `env_lock()` while it is alive.
+    struct MaxTurnsEnvGuard {
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl MaxTurnsEnvGuard {
+        fn set(value: &str) -> Self {
+            let previous = std::env::var_os(ENV_KEY);
+            // SAFETY: edition 2024 requires unsafe; tests serialise via env_lock().
+            unsafe {
+                std::env::set_var(ENV_KEY, value);
+            }
+            Self { previous }
+        }
+
+        fn clear() -> Self {
+            let previous = std::env::var_os(ENV_KEY);
+            // SAFETY: edition 2024 requires unsafe; tests serialise via env_lock().
+            unsafe {
+                std::env::remove_var(ENV_KEY);
+            }
+            Self { previous }
+        }
+    }
+
+    impl Drop for MaxTurnsEnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: edition 2024 requires unsafe; tests serialise via env_lock().
+            unsafe {
+                match self.previous.take() {
+                    Some(value) => std::env::set_var(ENV_KEY, value),
+                    None => std::env::remove_var(ENV_KEY),
+                }
+            }
+        }
+    }
+
+    fn launch_max_turns(argv: &[&str]) -> u32 {
+        match crate::Cli::try_parse_from(argv)
+            .expect("cli should parse")
+            .command
+        {
+            Commands::Launch { max_turns, .. } => max_turns,
+            other => panic!("expected Launch command, got {other:?}"),
+        }
+    }
+
+    fn rustyclawd_max_turns(argv: &[&str]) -> u32 {
+        match crate::Cli::try_parse_from(argv)
+            .expect("cli should parse")
+            .command
+        {
+            Commands::RustyClawd { max_turns, .. } => max_turns,
+            other => panic!("expected RustyClawd command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn default_max_turns_is_ten_without_env_or_flag() {
+        let _lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = MaxTurnsEnvGuard::clear();
+        assert_eq!(launch_max_turns(&["amplihack", "launch", "--auto"]), 10);
+    }
+
+    #[test]
+    fn env_var_sets_max_turns() {
+        let _lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = MaxTurnsEnvGuard::set("3");
+        assert_eq!(launch_max_turns(&["amplihack", "launch", "--auto"]), 3);
+    }
+
+    #[test]
+    fn cli_flag_overrides_env_var() {
+        let _lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = MaxTurnsEnvGuard::set("3");
+        assert_eq!(
+            launch_max_turns(&["amplihack", "launch", "--auto", "--max-turns", "7"]),
+            7
+        );
+    }
+
+    #[test]
+    fn env_var_applies_to_rustyclawd_variant() {
+        let _lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = MaxTurnsEnvGuard::set("3");
+        assert_eq!(
+            rustyclawd_max_turns(&["amplihack", "RustyClawd", "--auto"]),
+            3
+        );
+    }
+
+    #[test]
+    fn env_var_zero_is_rejected_by_range_validator() {
+        let _lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = MaxTurnsEnvGuard::set("0");
+        assert!(
+            crate::Cli::try_parse_from(["amplihack", "launch", "--auto"]).is_err(),
+            "AMPLIHACK_AUTO_MAX_TURNS=0 must be rejected by range(1..)"
+        );
+    }
+
+    #[test]
+    fn env_var_non_numeric_is_rejected() {
+        let _lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = MaxTurnsEnvGuard::set("abc");
+        assert!(
+            crate::Cli::try_parse_from(["amplihack", "launch", "--auto"]).is_err(),
+            "AMPLIHACK_AUTO_MAX_TURNS=abc must be rejected"
+        );
+    }
 }

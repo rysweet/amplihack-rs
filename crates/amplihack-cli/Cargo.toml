@@ -78,6 +78,7 @@ qrcode = { version = "0.14", default-features = false, optional = true }
 
 [dev-dependencies]
 assert_cmd = "2"
+tracing-subscriber = { workspace = true }
 tempfile = { workspace = true }
 anyhow = { workspace = true }
 # Enable the memory test-support helpers when building this crate's own tests

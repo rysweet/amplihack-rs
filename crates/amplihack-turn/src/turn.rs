@@ -16,6 +16,19 @@
 //! `copilot` process, publishes a child-bound pre-empt trigger into a shared
 //! [`PreemptSlot`] (so an out-of-band `stop` can pre-empt an in-flight turn
 //! without any PID-reuse race), and captures clean stdout.
+//!
+//! # Turn-failure error hygiene
+//!
+//! When a turn's child process exits non-zero, the returned error must NOT
+//! embed the child's full stdout/stderr: that output can contain secrets,
+//! tokens echoed by tools, absolute paths, or many megabytes of log text, and
+//! this error string is surfaced to logs and relayed onward. So by default the
+//! returned error contains only the exit status plus a bounded tail (the last
+//! few bytes) of the combined output. The full output is still emitted at
+//! `tracing::debug!` for operators who opt into debug logging.
+//!
+//! The size of that tail is controlled by the `AMPLIHACK_TURN_ERROR_TAIL_BYTES`
+//! environment variable (see [`DEFAULT_TURN_ERROR_TAIL_BYTES`]).
 
 use std::future::Future;
 use std::io;
@@ -25,6 +38,61 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
 use crate::allowlist::ToolAllowlist;
+
+/// Default number of trailing bytes of a failed turn's combined stdout+stderr
+/// to include in the surfaced error when `AMPLIHACK_TURN_ERROR_TAIL_BYTES` is
+/// unset or cannot be parsed as an unsigned integer.
+///
+/// This is a deliberate, documented default rather than an arbitrary hard cap:
+/// operators can raise or lower it via the environment variable to trade error
+/// verbosity against the risk of leaking sensitive output into logs/relays.
+pub const DEFAULT_TURN_ERROR_TAIL_BYTES: usize = 2048;
+
+/// Environment variable that sets how many trailing bytes of a failed turn's
+/// combined output appear in the surfaced error string.
+const TURN_ERROR_TAIL_BYTES_ENV: &str = "AMPLIHACK_TURN_ERROR_TAIL_BYTES";
+
+/// Resolve the configured tail byte budget for turn-failure errors.
+///
+/// Reads [`TURN_ERROR_TAIL_BYTES_ENV`]. An unset variable uses
+/// [`DEFAULT_TURN_ERROR_TAIL_BYTES`]. A value that cannot be parsed as an
+/// unsigned integer is NOT silently ignored: it falls back to the default and
+/// emits a `tracing::warn!` naming the bad value, so misconfiguration is
+/// visible. A parseable `0` is honoured literally (an empty tail).
+fn turn_error_tail_bytes() -> usize {
+    match std::env::var(TURN_ERROR_TAIL_BYTES_ENV) {
+        Ok(raw) => match raw.parse::<usize>() {
+            Ok(n) => n,
+            Err(_) => {
+                tracing::warn!(
+                    env = TURN_ERROR_TAIL_BYTES_ENV,
+                    value = %raw,
+                    default = DEFAULT_TURN_ERROR_TAIL_BYTES,
+                    "ignoring unparseable turn-error tail byte budget; using default"
+                );
+                DEFAULT_TURN_ERROR_TAIL_BYTES
+            }
+        },
+        Err(_) => DEFAULT_TURN_ERROR_TAIL_BYTES,
+    }
+}
+
+/// Take the last `budget` bytes of `s`, snapping the start index FORWARD to the
+/// nearest UTF-8 char boundary so the slice never splits a multibyte character
+/// (which would panic). Snapping forward means the returned tail is always
+/// `<= budget` bytes. If `s` is already `<= budget` bytes, the whole string is
+/// returned.
+fn char_boundary_tail(s: &str, budget: usize) -> &str {
+    let len = s.len();
+    if len <= budget {
+        return s;
+    }
+    let mut start = len - budget;
+    while start < len && !s.is_char_boundary(start) {
+        start += 1;
+    }
+    &s[start..]
+}
 
 /// Shared pre-emption seam: holds a one-shot trigger bound to the in-flight
 /// child, or `None` when no turn is running.
@@ -155,10 +223,10 @@ impl<R: TurnRunner> crate::AgentSession for SerialTurnDriver<R> {
 /// turn. Pre-emption fires the trigger; this runner reacts by killing its
 /// **owned** [`tokio::process::Child`] handle (via `start_kill`), so the kill is
 /// bound to the exact process and is immune to PID reuse. A pre-empted turn
-/// surfaces as [`io::ErrorKind::Interrupted`]. On a non-zero exit the combined
-/// stderr/stdout is surfaced as an error so the chat can post the failure to
-/// the group and keep going (the next turn resumes the same session, context
-/// intact).
+/// surfaces as [`io::ErrorKind::Interrupted`]. On a non-zero exit the error
+/// carries the exit status plus a bounded tail of the combined output (the full
+/// output is emitted at debug level only); see the crate module docs on
+/// turn-failure error hygiene.
 pub struct CopilotTurnRunner {
     program: String,
     preempt: PreemptSlot,
@@ -261,10 +329,33 @@ impl TurnRunner for CopilotTurnRunner {
                     Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
                 })
             } else {
-                let stderr = String::from_utf8_lossy(&stderr_buf);
-                let stdout = String::from_utf8_lossy(&stdout_buf);
+                // Do NOT embed the full child output in the surfaced error: it
+                // can carry secrets or megabytes of log text (see module docs).
+                // Preserve the historical stdout-then-stderr ordering when
+                // building the combined text. Pre-size the buffer to the exact
+                // final length so the stderr append cannot trigger a realloc +
+                // recopy of the (potentially large) stdout portion.
+                let stdout_lossy = String::from_utf8_lossy(&stdout_buf);
+                let stderr_lossy = String::from_utf8_lossy(&stderr_buf);
+                let mut combined = String::with_capacity(stdout_lossy.len() + stderr_lossy.len());
+                combined.push_str(&stdout_lossy);
+                combined.push_str(&stderr_lossy);
+
+                // Full output goes only to debug logging, for operators who
+                // opt in. Report each stream's byte length as structured fields.
+                tracing::debug!(
+                    status = %status,
+                    stdout_len = stdout_buf.len(),
+                    stderr_len = stderr_buf.len(),
+                    output = %combined,
+                    "copilot turn failed; full combined output at debug"
+                );
+
+                let budget = turn_error_tail_bytes();
+                let tail = char_boundary_tail(&combined, budget);
+                let n = tail.len();
                 Err(io::Error::other(format!(
-                    "copilot turn failed ({status}): {stdout}{stderr}"
+                    "copilot turn failed ({status}); last {n} bytes of output: {tail}"
                 )))
             }
         })

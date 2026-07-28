@@ -1,0 +1,50 @@
+# Branch Protection Guard (issue #1095)
+#
+# WHAT THIS DOES
+#   Runs scripts/check-branch-protection.sh, which fails if strict up-to-date
+#   merges (required_status_checks.strict) on main have been turned off.
+#
+# THIS IS DETECTION, NOT PREVENTION
+#   This workflow catches the setting being turned off within one CI cycle: it
+#   runs once a day on a schedule, on every push to main, and on manual
+#   dispatch. It cannot stop an admin from turning strict off in the first
+#   place. The durable way to PREVENT that is an organization- or
+#   enterprise-level ruleset (an org-admin action). This workflow is the
+#   in-repo detection layer.
+#
+# DO NOT MAKE THIS A REQUIRED PR STATUS CHECK
+#   It depends on the BRANCH_PROTECTION_READ_TOKEN secret, which is not
+#   available to pull requests from forks. As a required check it would fail
+#   closed and block every such PR. Keep it as a standalone scheduled/push
+#   guard only.
+#
+# SETUP: this needs a repository Actions secret named
+# BRANCH_PROTECTION_READ_TOKEN — a fine-grained PAT scoped to this repo only
+# with administration: read. See scripts/check-branch-protection.sh for the
+# step-by-step token creation instructions.
+name: Branch Protection Guard
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  strict-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Check main branch protection strict setting
+        run: scripts/check-branch-protection.sh
+        env:
+          GH_TOKEN: ${{ secrets.BRANCH_PROTECTION_READ_TOKEN }}

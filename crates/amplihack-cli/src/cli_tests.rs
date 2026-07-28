@@ -4,6 +4,19 @@ mod tests {
     use clap::CommandFactory;
     use std::path::PathBuf;
 
+    /// Serialize launcher-command parsing against the
+    /// `#[arg(env = "AMPLIHACK_AUTO_MAX_TURNS")]` tests in `cli_commands.rs`.
+    /// Those tests transiently set that env var to invalid values (`0`, `abc`)
+    /// while holding the same `env_lock()`. Because `--max-turns` reads the env
+    /// var at parse time, any concurrent parse of a launcher command
+    /// (launch/claude/copilot/codex/amplifier/RustyClawd) in this shared test
+    /// process would otherwise flake. Holding the lock closes that race.
+    fn launcher_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[test]
     fn memory_tree_help_hides_kuzu_backend_alias() {
         let mut cmd = Cli::command();
@@ -144,6 +157,7 @@ mod tests {
 
     #[test]
     fn launch_cli_parses_common_sdk_flags() {
+        let _env = launcher_env_lock();
         let cli = Cli::try_parse_from([
             "amplihack",
             "launch",
@@ -184,6 +198,7 @@ mod tests {
 
     #[test]
     fn launcher_surfaces_parse_docker_flag() {
+        let _env = launcher_env_lock();
         let cli = Cli::try_parse_from(["amplihack", "claude", "--docker"])
             .expect("claude should parse --docker");
         match cli.command {
@@ -241,6 +256,7 @@ mod tests {
 
     #[test]
     fn copilot_cli_parses_common_sdk_flags() {
+        let _env = launcher_env_lock();
         let cli = Cli::try_parse_from([
             "amplihack",
             "copilot",
@@ -277,6 +293,7 @@ mod tests {
 
     #[test]
     fn claude_cli_parses_append_flag() {
+        let _env = launcher_env_lock();
         let cli = Cli::try_parse_from([
             "amplihack",
             "claude",
@@ -294,6 +311,7 @@ mod tests {
 
     #[test]
     fn claude_cli_parses_checkout_repo_flag() {
+        let _env = launcher_env_lock();
         let cli = Cli::try_parse_from([
             "amplihack",
             "claude",
@@ -319,6 +337,7 @@ mod tests {
 
     #[test]
     fn rustyclawd_cli_parses_auto_flags() {
+        let _env = launcher_env_lock();
         let cli = Cli::try_parse_from([
             "amplihack",
             "RustyClawd",
@@ -359,6 +378,7 @@ mod tests {
         // The user must be able to write `amplihack copilot --continue`
         // and have `--continue` forwarded to the copilot binary without
         // requiring `amplihack copilot -- --continue`.
+        let _env = launcher_env_lock();
         let cli = Cli::try_parse_from(["amplihack", "copilot", "--continue"])
             .expect("copilot should accept unknown --flags as passthrough args");
         match cli.command {
@@ -373,6 +393,7 @@ mod tests {
     fn all_tool_commands_passthrough_unknown_flags() {
         // Verify every tool subcommand forwards unknown --flags without
         // requiring the explicit `--` separator (Python parity).
+        let _env = launcher_env_lock();
         let cases: Vec<(&[&str], &str)> = vec![
             (&["amplihack", "copilot", "--continue"], "copilot"),
             (&["amplihack", "codex", "--quiet", "--model", "o3"], "codex"),
@@ -406,6 +427,7 @@ mod tests {
     /// and is reachable from the CLI surface.
     #[test]
     fn copilot_cli_parses_explicit_reflection_flag() {
+        let _env = launcher_env_lock();
         let cli = Cli::try_parse_from(["amplihack", "copilot", "--reflection"])
             .expect("copilot --reflection must parse");
         match cli.command {
@@ -433,6 +455,7 @@ mod tests {
     /// being resolved by argument order.
     #[test]
     fn copilot_cli_rejects_reflection_and_no_reflection_together() {
+        let _env = launcher_env_lock();
         let result =
             Cli::try_parse_from(["amplihack", "copilot", "--reflection", "--no-reflection"]);
         assert!(
@@ -447,6 +470,7 @@ mod tests {
     /// but the parsed clap fields themselves remain unchanged.)
     #[test]
     fn copilot_cli_reflection_fields_default_false() {
+        let _env = launcher_env_lock();
         let cli = Cli::try_parse_from(["amplihack", "copilot"])
             .expect("copilot with no flags must parse");
         match cli.command {

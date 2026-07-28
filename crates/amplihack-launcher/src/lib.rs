@@ -7,10 +7,6 @@
 pub mod agent_memory;
 pub mod amplifier;
 pub mod append_handler;
-pub mod auto_mode;
-pub mod auto_mode_coordinator;
-pub mod auto_mode_state;
-pub mod auto_mode_ui;
 pub mod auto_stager;
 pub mod claude_binary_manager;
 pub mod codex;
@@ -37,7 +33,6 @@ pub mod staging_safety;
 pub mod work_summary;
 
 pub use amplifier::AmplifierInfo;
-pub use auto_mode::{AutoModeConfig, SdkBackend, SessionResult, TurnResult};
 pub use codex::CodexInfo;
 pub use copilot_launcher::PluginEntry;
 pub use copilot_mcp::McpServerConfig;
@@ -49,9 +44,6 @@ pub use session_capture::{CapturedMessage, MessageCapture, MessageRole};
 // Re-exports for ported supporting modules
 pub use agent_memory::{AgentMemory, Experience, ExperienceStore, ExperienceType};
 pub use append_handler::{AppendError, AppendResult, append_instructions};
-pub use auto_mode_coordinator::{AutoModeCoordinator, AutoModeRunner};
-pub use auto_mode_state::{AutoModeState, CostInfo, StateSnapshot};
-pub use auto_mode_ui::AutoModeUi;
 pub use completion_signals::{CompletionSignalDetector, CompletionSignals, SignalScore};
 pub use completion_verifier::{CompletionVerifier, VerificationResult, VerificationStatus};
 pub use nesting_detector::{NestingDetector, NestingResult};
