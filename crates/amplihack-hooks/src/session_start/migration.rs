@@ -8,9 +8,6 @@ use std::path::PathBuf;
 
 pub(super) fn migrate_global_hooks(dirs: &ProjectDirs) -> Option<String> {
     let global_settings = ProjectDirs::global_settings()?;
-    if !global_settings.exists() {
-        return None;
-    }
 
     let settings_file = AtomicJsonFile::new(&global_settings);
     let settings: Value = match settings_file.read() {
@@ -68,9 +65,6 @@ pub(super) fn migrate_global_hooks(dirs: &ProjectDirs) -> Option<String> {
 /// whether the global hooks are redundant; it never writes.
 fn repo_local_contains_amplihack_hooks(dirs: &ProjectDirs) -> bool {
     let repo_local = dirs.claude.join("settings.json");
-    if !repo_local.exists() {
-        return false;
-    }
     match AtomicJsonFile::new(&repo_local).read() {
         Ok(Some(value)) => contains_amplihack_hooks(&value),
         Ok(None) => false,
@@ -401,6 +395,34 @@ mod tests {
             updated["hooks"]["SessionStart"][0]["hooks"][0]["command"].as_str(),
             Some("/usr/local/bin/third-party-hook"),
             "third-party global entries must be preserved"
+        );
+    }
+
+    /// Absent-global guard (#1123): with no global `~/.claude/settings.json`,
+    /// the collapsed atomic read must yield `None` (nothing to migrate).
+    #[test]
+    fn migrate_global_hooks_returns_none_when_global_absent() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let home = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", home.path()) };
+
+        // No global settings.json is written under HOME.
+        let dirs = ProjectDirs::new(repo.path());
+        let result = migrate_global_hooks(&dirs);
+
+        match prev_home {
+            Some(value) => unsafe { std::env::set_var("HOME", value) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+
+        assert!(
+            result.is_none(),
+            "must return None when global settings file is absent"
         );
     }
 }
