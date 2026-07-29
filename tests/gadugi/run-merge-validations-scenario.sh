@@ -59,10 +59,10 @@ cc="$(confirmed_count "$out")"
   || fl "confirmed_count expected 1, got '$cc'"
 v="$(first_verdict "$out")"
 [ "$v" = "confirmed" ] && pass "finding verdict is confirmed" || fl "verdict expected confirmed, got '$v'"
-if grep -q "no parseable JSON object" "$WORK/err1.txt"; then
-  pass "log-only validator triggers targeted diagnostic"
+if grep -q "output unparseable; counting zero votes from it" "$WORK/err1.txt"; then
+  pass "log-only validator triggers targeted unparseable diagnostic"
 else
-  fl "log-only validator did not trigger a diagnostic"
+  fl "log-only validator did not trigger the unparseable diagnostic"
 fi
 
 # ---------------------------------------------------------------------------
@@ -79,18 +79,29 @@ cc2="$(confirmed_count "$out2")"
   || fl "confirmed_count expected 1 for finding 7, got '$cc2'"
 
 # ---------------------------------------------------------------------------
-# Case 3: every validator produced unparseable output — degrade, do not crash.
+# Case 3: every validator produced unparseable output — now FATAL (exit 1).
+# When nothing parses and >=1 validator is unparseable the step refuses to
+# "merge" zero verdicts: it prints a FATAL diagnostic, preserves the raw
+# outputs, writes no JSON to stdout, and exits 1.
 # ---------------------------------------------------------------------------
 printf '%s\n' 'no json here, just a log line' > "$WORK/g1.txt"
 printf '%s\n' 'another { stray brace only'    > "$WORK/g2.txt"
 printf '%s\n' 'timed out'                      > "$WORK/g3.txt"
 out3="$("$RUN" "$WORK/g1.txt" "$WORK/g2.txt" "$WORK/g3.txt" 2 1 "$WORK/out3" 2>"$WORK/err3.txt")"
 rc3=$?
-[ "$rc3" = "0" ] && pass "all-garbage output degrades gracefully (exit 0)" || fl "all-garbage output exited $rc3"
-if grep -q "Bad JSON" "$WORK/err3.txt"; then fl "jq 'Bad JSON' leaked on all-garbage output"; else pass "no jq 'Bad JSON' on all-garbage output"; fi
-cc3="$(confirmed_count "$out3")"
-[ "$cc3" = "0" ] && pass "no confirmed findings from garbage (confirmed_count=0)" \
-  || fl "confirmed_count expected 0 for garbage, got '$cc3'"
+[ "$rc3" = "1" ] && pass "all-unparseable output is FATAL (exit 1)" || fl "all-unparseable output exited $rc3, expected 1"
+if grep -q "FATAL: all validators produced unparseable output; cannot merge any verdicts" "$WORK/err3.txt"; then
+  pass "all-unparseable output triggers FATAL diagnostic"
+else
+  fl "all-unparseable output did not trigger the FATAL diagnostic"
+fi
+if grep -q "Bad JSON" "$WORK/err3.txt"; then fl "jq 'Bad JSON' leaked on all-unparseable output"; else pass "no jq 'Bad JSON' on all-unparseable output"; fi
+[ -z "$out3" ] && pass "FATAL path writes no JSON to stdout" || fl "expected empty stdout on FATAL, got '$out3'"
+if [ -f "$WORK/out3/cycle_1/validator_v1_raw.txt" ]; then
+  pass "unparseable validator raw output preserved"
+else
+  fl "expected preserved raw artifact validator_v1_raw.txt under out3/cycle_1"
+fi
 
 if [ "$fail" -eq 0 ]; then
   echo "ALL_CASES_PASSED"
