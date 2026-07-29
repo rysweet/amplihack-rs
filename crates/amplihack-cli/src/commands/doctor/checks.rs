@@ -65,12 +65,9 @@ pub fn check_hooks_installed() -> (bool, String) {
 /// read/parse error whose message is truncated and never includes file
 /// contents.
 fn settings_has_amplihack_hooks(path: &std::path::Path) -> Option<Result<bool, String>> {
-    if !path.exists() {
-        return None;
-    }
-
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
         Err(e) => {
             let msg = e.to_string();
             return Some(Err(format!(
@@ -104,12 +101,11 @@ pub fn check_settings_valid_json() -> (bool, String) {
         Some(p) => p,
     };
 
-    if !path.exists() {
-        return (false, "settings.json: file not found".to_string());
-    }
-
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return (false, "settings.json: file not found".to_string());
+        }
         Err(e) => {
             let msg = e.to_string();
             return (
@@ -222,4 +218,32 @@ fn sanitized_single_line(bytes: &[u8]) -> String {
 pub fn check_amplihack_version() -> (bool, String) {
     let version = crate::VERSION;
     (true, format!("amplihack v{version}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::settings_has_amplihack_hooks;
+
+    /// #1123: after collapsing the `exists()` probe into the read, an absent
+    /// path must still map to `None` (nothing to report for this location).
+    #[test]
+    fn settings_has_amplihack_hooks_absent_path_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("does-not-exist/settings.json");
+        assert!(settings_has_amplihack_hooks(&missing).is_none());
+    }
+
+    /// #1123: a present-but-unreadable path (a directory at the file path) must
+    /// map to `Some(Err(_))`, preserving the absent-vs-error distinction.
+    #[test]
+    fn settings_has_amplihack_hooks_unreadable_present_is_some_err() {
+        let dir = tempfile::tempdir().unwrap();
+        // The path exists but is a directory, so read_to_string fails with a
+        // non-NotFound error.
+        let result = settings_has_amplihack_hooks(dir.path());
+        assert!(
+            matches!(result, Some(Err(_))),
+            "present-but-unreadable path must yield Some(Err(_)), got {result:?}"
+        );
+    }
 }
