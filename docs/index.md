@@ -301,6 +301,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [How to Configure Workflow Commit Identity](howto/configure-workflow-commit-identity.md) - Setup for `AMPLIHACK_GIT_*`, repo-local Git identity, and provider-safe fallbacks
 - [Tutorial: Verify Workflow Commit Identity](tutorials/workflow-commit-identity.md) - Disposable-repository walkthrough for explicit, repo-local, GitHub, and Azure DevOps commit attribution
 - [Default Workflow Step 13 Validation Reference](reference/default-workflow-step-13-validation.md) - Toolchain-aware outside-in local validation contract for Step 13
+- [Step 2b Historical-Context Investigation Scope](reference/step-2b-historical-context-scope.md) - Read-only historical evidence boundaries, questions, and stopping conditions before Phase 3
 - [Workflow Publish Lockfile Sync Reference](reference/workflow-publish-lockfile-sync.md) - Offline `Cargo.lock` sync after the version bump so `--locked` pre-commit gates pass (issue #915)
 - [Workflow Publish package.json Version Sync Reference](reference/workflow-publish-package-json-sync.md) - Offline sync of root `package.json` version to `[workspace.package].version` so the version-contract test and CI Test job pass (issue #925)
 - [Best-Effort PR Labeling Reference](reference/workflow-pr-labels.md) - `WORKFLOW_PR_LABELS` contract and the `apply_pr_labels_best_effort` helper that stamps labels onto the published PR via a single `gh pr edit --add-label` call
