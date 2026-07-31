@@ -87,6 +87,7 @@ Those bundled `SKILL.md` files are the install-time source of truth.
 | `multi-repo` | `multi-repo/SKILL.md` |
 | `multitask` | `multitask/SKILL.md` |
 | `n-version-workflow` | `n-version-workflow/SKILL.md` |
+| `npe-hunting-workflow` | `npe-hunting-workflow/SKILL.md` |
 | `novelist-analyst` | `novelist-analyst/SKILL.md` |
 | `outside-in-testing` | `outside-in-testing/SKILL.md` |
 | `oxidizer-workflow` | `oxidizer-workflow/SKILL.md` |
