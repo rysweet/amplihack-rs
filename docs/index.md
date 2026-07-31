@@ -153,6 +153,7 @@ amplihack copilot
 - [Install Manifest](reference/install-manifest.md) - Understand installed files and uninstall state
 - [Install/Update PATH Conflict Reference](reference/install-update-path-conflicts.md) - Rust binary precedence, stale wrapper neutralization, and PATH profile persistence
 - [Framework Bundle Compatibility](reference/framework-bundle-compatibility.md) - Atomic bundle refresh and active `orch_helper.py` rejection
+- [OOM and Memory-Retention Audit Exploration Scope](reference/oom-memory-retention-audit-exploration-scope.md) - Standard-depth scope and evidence contract for a future reusable audit skill
 - [Azure Integration](AZURE_INTEGRATION.md) - Deploy to Azure cloud
 
 ---
