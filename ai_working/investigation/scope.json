@@ -1,0 +1,57 @@
+{
+  "task_summary": "Define a standard-depth, evidence-bounded investigation scope for reusable knowledge from prior investigations without conducting the investigation.",
+  "explicit_requirements": [
+    "Create only the missing standard-depth investigation-scope artifact at ai_working/investigation/scope.json, preserve all completed investigation-workflow work, and do not conduct any part of the investigation.",
+    "Keep this artifact valid JSON with exactly these top-level fields: task_summary, explicit_requirements, acceptance_criteria, out_of_scope, assumptions, questions_resolved, estimated_complexity, and classification.",
+    "Treat every item in explicit_requirements as non-optimizable and pass all items verbatim or equivalently to every subsequent agent.",
+    "At standard depth, determine which reusable discoveries can be extracted from each eligible source, and require every discovery to include an exact source attribution or an explicit finding that no attributable discovery is available.",
+    "At standard depth, identify recurring patterns and state the evidence count, source attributions, applicability conditions, and non-applicability conditions for each pattern.",
+    "At standard depth, identify applicable prior decisions and record each decision's source attribution, rationale, current applicability, and any evidence that its rationale no longer holds.",
+    "At standard depth, identify contradictions and stale assumptions by citing the conflicting or time-sensitive evidence, describing the conflict, and recording whether it can be resolved from eligible sources.",
+    "At standard depth, identify only bounded architectural implications directly supported by eligible evidence, including the affected boundary, supporting sources, constraints, and unresolved context; do not design or modify an architecture.",
+    "At standard depth, determine whether relevant session history from the preceding seven days is sufficient to answer every measurable question, recording coverage per question and each material gap.",
+    "Restrict all future evidence sources to DISCOVERIES.md, PATTERNS.md, relevant session history from the preceding seven days, and documentation explicitly referenced by those eligible sources or by this scope.",
+    "Widen session history beyond the preceding seven days only when a documented material gap blocks a measurable answer; record the blocked question, the gap, why eligible seven-day evidence is insufficient, the minimum wider interval needed, and the evidence obtained.",
+    "Explicitly forbid every future agent and investigator from locating, listing, searching for, opening, or inferring DIA_TB_SETUP_GUIDE.md, SIQE, or project-helix.",
+    "Prohibit unrestricted filesystem or repository access, all web access, file or repository modifications, dependency or tool installations, service operations, and configuration changes during the future investigation.",
+    "Track these known unknowns explicitly: availability of eligible sources, sufficiency of the preceding seven days of session history, provenance quality, contradictions or stale assumptions, and missing architectural or decision context.",
+    "Assign analyzer to evidence synthesis, patterns to recurring-pattern extraction, architect to bounded architectural implications, and knowledge-archaeologist to provenance and decision-history analysis.",
+    "Define successful future investigation output as a source-attributed inventory of reusable knowledge, recurring patterns with applicability conditions, applicable prior decisions and rationale, contradictions or stale assumptions, material gaps, and bounded follow-up needs.",
+    "Verify completion against all eight acceptance criteria in this artifact and address only this missing scope/output."
+  ],
+  "acceptance_criteria": [
+    "Only the missing scope artifact is created; no completed investigation-workflow artifact is changed and no investigation is conducted.",
+    "The scope includes measurable questions covering source-attributed reusable discoveries, recurring patterns and applicability conditions, applicable prior decisions and rationale, contradictions or stale assumptions, bounded architectural implications, and seven-day session-history sufficiency.",
+    "Future evidence sources are strictly limited to DISCOVERIES.md, PATTERNS.md, relevant session history from the preceding seven days, and explicitly referenced documentation; history widening is conditional on a documented material gap that blocks a measurable answer.",
+    "DIA_TB_SETUP_GUIDE.md, SIQE, and project-helix are explicitly prohibited from being located, listed, searched for, opened, or inferred, and unrestricted filesystem or repository access, web access, modifications, installations, service operations, and configuration changes are prohibited.",
+    "Known unknowns explicitly cover eligible-source availability, seven-day sufficiency, provenance quality, contradictions or stale assumptions, and missing architectural or decision context.",
+    "The scope assigns analyzer to evidence synthesis, patterns to recurring-pattern extraction, architect to bounded architectural implications, and knowledge-archaeologist to provenance and decision-history analysis.",
+    "Success is defined as a source-attributed inventory of reusable knowledge, patterns, decisions, contradictions, material gaps, and bounded follow-up needs.",
+    "The artifact parses as valid JSON and has exactly the required eight top-level fields."
+  ],
+  "out_of_scope": [
+    "Conducting the investigation, collecting evidence, answering the scoped questions, or producing investigation findings.",
+    "Changing, replacing, or redoing any completed investigation-workflow work.",
+    "Using any evidence source other than DISCOVERIES.md, PATTERNS.md, relevant session history from the preceding seven days, and explicitly referenced documentation, except for the narrowly documented history-widening condition.",
+    "Locating, listing, searching for, opening, or inferring DIA_TB_SETUP_GUIDE.md, SIQE, or project-helix.",
+    "Unrestricted filesystem or repository access, web access, modifications, installations, service operations, configuration changes, architecture design, or implementation during the future investigation."
+  ],
+  "assumptions": [
+    "ai_working/investigation is the configured investigation-workflow output directory and scope.json is the missing scope artifact.",
+    "Standard depth means synthesizing all eligible evidence needed for the six measurable question groups without expanding into implementation, unrestricted exploration, or exhaustive history.",
+    "The preceding seven-day window is measured backward from the future investigation's start time.",
+    "Documentation is explicitly referenced only when an eligible source or this scope identifies it directly; transitive references are not automatically eligible.",
+    "A material gap exists only when missing evidence prevents a measurable answer, not merely when additional context could be useful.",
+    "No ambiguities require user input before this scope can be used."
+  ],
+  "questions_resolved": [
+    "The required output is a scope definition only, not an investigation report.",
+    "Each required question is measurable through source attribution, evidence counts or coverage, applicability conditions, rationale, contradiction status, or documented gaps.",
+    "The evidence boundary and the sole conditional history-widening rule are explicit.",
+    "Forbidden targets and prohibited future actions apply to every subsequent agent.",
+    "Agent ownership is fixed: analyzer for synthesis, patterns for recurring patterns, architect for bounded implications, and knowledge-archaeologist for provenance and decision history.",
+    "Successful completion requires one source-attributed inventory containing reusable knowledge, patterns, decisions, contradictions, material gaps, and bounded follow-up needs."
+  ],
+  "estimated_complexity": "low",
+  "classification": "other"
+}
