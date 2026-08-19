@@ -1,10 +1,24 @@
 //! Claude Code plugin registration for amplihack.
 //!
-//! When the user launches `amplihack claude`, we install amplihack as a
-//! first-class Claude Code plugin at `~/.claude/plugins/amplihack/` and
-//! register it in `~/.config/claude-code/plugins.json`. Without this,
-//! Claude Code never sees amplihack's agents, skills, or commands — only
-//! the hooks registered in `~/.claude/settings.json` would fire.
+//! When the user launches `amplihack claude`, we stage amplihack as a
+//! Claude Code "skills-dir" plugin at `~/.claude/skills/amplihack/`. Any
+//! plugin directory dropped under `~/.claude/skills/` auto-loads on the
+//! next session as `<name>@skills-dir` — no separate install/registration
+//! step is required (this is the same mechanism `claude plugin init`
+//! scaffolds into). Without this, Claude Code never sees amplihack's
+//! agents, skills, or commands — only the hooks registered in
+//! `~/.claude/settings.json` would fire.
+//!
+//! Earlier versions of this module staged into `~/.claude/plugins/amplihack/`
+//! and hand-wrote an `enabledPlugins` entry to
+//! `~/.config/claude-code/plugins.json`. Neither of those matched what the
+//! Claude Code binary actually reads (`claude plugin list` reported no
+//! plugins installed despite that file existing, and `claude plugin
+//! validate` separately rejected the manifest's `author` field being a
+//! bare string instead of an object), so the plugin was silently never
+//! discovered. The skills-dir mechanism sidesteps all of that: no
+//! undocumented state file to keep in sync, no network/marketplace
+//! resolution, and it's verified against `claude plugin validate`.
 //!
 //! The plugin directory is built from the staged framework under
 //! `~/.amplihack/.claude/` (populated by `amplihack install`). We use
@@ -12,9 +26,8 @@
 //! automatically, and fall back to copies when symlinks fail (e.g. on
 //! Windows without developer mode, or across filesystem boundaries).
 
-use amplihack_state::AtomicJsonFile;
 use anyhow::{Context, Result};
-use serde_json::{Map, Value, json};
+use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -26,11 +39,11 @@ const PLUGIN_VERSION: &str = crate::VERSION;
 /// be listed here.
 const MIRRORED_ASSETS: &[&str] = &["agents", "skills", "commands", "context", "workflow"];
 
-/// Ensure amplihack is installed as a Claude Code plugin.
+/// Ensure amplihack is staged as a Claude Code skills-dir plugin.
 ///
-/// Idempotent: safe to call on every launcher start. Returns install and
-/// registration errors to the caller; callers should treat failures as
-/// non-fatal so a plugin issue does not block Claude launch.
+/// Idempotent: safe to call on every launcher start. Returns install
+/// errors to the caller; callers should treat failures as non-fatal so a
+/// plugin issue does not block Claude launch.
 pub fn ensure_claude_plugin_installed() -> Result<()> {
     let staged = staged_framework_dir()?;
     if !staged.is_dir() {
@@ -46,7 +59,6 @@ pub fn ensure_claude_plugin_installed() -> Result<()> {
 
     write_plugin_manifest(&plugin_dir)?;
     mirror_assets(&staged, &plugin_dir)?;
-    register_plugin_in_settings()?;
     Ok(())
 }
 
@@ -54,18 +66,11 @@ fn staged_framework_dir() -> Result<PathBuf> {
     Ok(home_dir()?.join(".amplihack").join(".claude"))
 }
 
+/// Claude Code auto-loads any plugin directory dropped under
+/// `~/.claude/skills/` as `<name>@skills-dir` — this is the same location
+/// `claude plugin init <name>` scaffolds into.
 fn plugin_install_dir() -> Result<PathBuf> {
-    Ok(home_dir()?
-        .join(".claude")
-        .join("plugins")
-        .join(PLUGIN_NAME))
-}
-
-fn plugins_json_path() -> Result<PathBuf> {
-    Ok(home_dir()?
-        .join(".config")
-        .join("claude-code")
-        .join("plugins.json"))
+    Ok(home_dir()?.join(".claude").join("skills").join(PLUGIN_NAME))
 }
 
 fn home_dir() -> Result<PathBuf> {
@@ -77,16 +82,26 @@ fn home_dir() -> Result<PathBuf> {
 
 /// Write `.claude-plugin/plugin.json`. Rewritten every launch so the version
 /// stays in sync with the installed amplihack binary.
+///
+/// Field shapes here are load-bearing, not stylistic: `claude plugin
+/// validate` rejects a bare-string `author` (it requires an object), and a
+/// skills-dir plugin needs an explicit `skills` array naming the directory
+/// Claude Code should scan for `SKILL.md` files — confirmed against the
+/// manifests `claude plugin init` itself generates.
 fn write_plugin_manifest(plugin_dir: &Path) -> Result<()> {
     let manifest_dir = plugin_dir.join(".claude-plugin");
     fs::create_dir_all(&manifest_dir)
         .with_context(|| format!("failed to create {}", manifest_dir.display()))?;
     let manifest_path = manifest_dir.join("plugin.json");
     let manifest = json!({
+        "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
         "name": PLUGIN_NAME,
         "version": PLUGIN_VERSION,
         "description": "Amplihack AI development framework — agents, skills, and commands.",
-        "author": "Microsoft",
+        "author": {
+            "name": "Microsoft",
+        },
+        "skills": ["./skills"],
     });
     fs::write(
         &manifest_path,
@@ -102,7 +117,7 @@ fn write_plugin_manifest(plugin_dir: &Path) -> Result<()> {
 /// The agents layout needs a special note: Claude Code expects flat files
 /// under `agents/` (one markdown per agent). The staged framework puts
 /// them under `agents/amplihack/<category>/...`. We mirror the `amplihack`
-/// subdirectory directly so `~/.claude/plugins/amplihack/agents/<...>`
+/// subdirectory directly so `~/.claude/skills/amplihack/agents/<...>`
 /// matches Claude Code's discovery pattern.
 fn mirror_assets(staged: &Path, plugin_dir: &Path) -> Result<()> {
     for asset in MIRRORED_ASSETS {
@@ -178,39 +193,10 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Add `"amplihack"` to `enabledPlugins` in `~/.config/claude-code/plugins.json`.
-/// Uses the shared atomic-JSON writer so concurrent claude launches do not
-/// clobber each other.
-fn register_plugin_in_settings() -> Result<()> {
-    let settings_path = plugins_json_path()?;
-    if let Some(parent) = settings_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    let file = AtomicJsonFile::new(&settings_path);
-    file.update(|settings: &mut Value| {
-        if !settings.is_object() {
-            *settings = Value::Object(Map::new());
-        }
-        let object = settings.as_object_mut().expect("object just created");
-        let plugins = object
-            .entry("enabledPlugins")
-            .or_insert_with(|| Value::Array(vec![]));
-        if !plugins.is_array() {
-            *plugins = Value::Array(vec![]);
-        }
-        let list = plugins.as_array_mut().expect("array just created");
-        if !list.iter().any(|value| value.as_str() == Some(PLUGIN_NAME)) {
-            list.push(Value::String(PLUGIN_NAME.to_string()));
-        }
-    })
-    .with_context(|| format!("failed to update {}", settings_path.display()))?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     #[test]
     fn resolve_asset_source_prefers_scoped_subdir() {
@@ -239,12 +225,12 @@ mod tests {
         let previous_home = crate::test_support::set_home(temp.path());
         ensure_claude_plugin_installed().unwrap();
         // No plugin dir should be created when staging is absent.
-        assert!(!temp.path().join(".claude/plugins/amplihack").exists());
+        assert!(!temp.path().join(".claude/skills/amplihack").exists());
         crate::test_support::restore_home(previous_home);
     }
 
     #[test]
-    fn ensure_claude_plugin_installed_registers_and_mirrors_assets() {
+    fn ensure_claude_plugin_installed_mirrors_assets_into_skills_dir() {
         let _guard = crate::test_support::home_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -259,21 +245,24 @@ mod tests {
 
         ensure_claude_plugin_installed().unwrap();
 
-        let plugin_dir = temp.path().join(".claude/plugins/amplihack");
-        assert!(plugin_dir.join(".claude-plugin/plugin.json").is_file());
+        let plugin_dir = temp.path().join(".claude/skills/amplihack");
+        let manifest_path = plugin_dir.join(".claude-plugin/plugin.json");
+        assert!(manifest_path.is_file());
         // agents mirror the scoped subdir
         assert!(plugin_dir.join("agents/core/architect.md").exists());
         // skills mirror the flat dir
         assert!(plugin_dir.join("skills/dev-orchestrator/SKILL.md").exists());
 
-        let plugins_json = temp.path().join(".config/claude-code/plugins.json");
-        let settings: Value =
-            serde_json::from_str(&fs::read_to_string(&plugins_json).unwrap()).unwrap();
-        let enabled = settings
-            .get("enabledPlugins")
-            .and_then(Value::as_array)
-            .unwrap();
-        assert!(enabled.iter().any(|v| v.as_str() == Some("amplihack")));
+        // Manifest shape matches what `claude plugin validate` requires:
+        // `author` must be an object, and a `skills` array must point at
+        // the directory Claude Code should scan for SKILL.md files.
+        let manifest: Value =
+            serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        assert!(manifest.get("author").unwrap().is_object());
+        assert_eq!(
+            manifest.get("skills").unwrap().as_array().unwrap(),
+            &vec![Value::String("./skills".to_string())]
+        );
 
         crate::test_support::restore_home(previous_home);
     }
