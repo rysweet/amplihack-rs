@@ -71,6 +71,39 @@ uvx amplihack install
 uv tool install amplihack
 ```
 
+### How skill discovery is staged
+
+Claude Code discovers each amplihack skill directly under
+`~/.claude/skills/<skill-name>/SKILL.md`. The canonical source is the installed
+`~/.amplihack/.claude/skills/` tree. Skills nested in source categories are
+flattened by skill name at the discovery root, and their support files and
+nested directories are copied with them. Internal support links are
+materialized only when their resolved targets remain inside the canonical
+skills tree. Known broken support links are skipped.
+
+Amplihack records ownership outside the discovery directory. It replaces or
+prunes only destinations whose complete contents still match that ownership
+record. A user-owned file, directory, symlink, changed managed skill, malformed
+ownership record, duplicate skill name, or path escape causes installation to
+fail closed without overwriting content.
+
+Skill refresh and stale-skill pruning are transactional: new trees are prepared
+before live destinations are replaced, previous trees are backed up, and a
+failed publication is rolled back so the next launch can retry. If rollback
+itself cannot complete, the error reports the retained recovery directory.
+Uninstall removes only unchanged, manifest-owned Claude skills and the
+amplihack wrapper; replaced or unrelated user content is preserved.
+
+Releases before direct skill discovery installed an amplihack wrapper containing
+both `skills/` and `.claude-plugin/plugin.json`. That wrapper is migrated only
+when its exact manifest and every present plugin asset match the legacy
+amplihack-managed layout. Extra or changed content is treated as user-owned and
+is left untouched. The replacement wrapper is prepared before the legacy
+wrapper is moved, and failed replacement restores it for a later retry.
+
+Claude staging does not change Copilot staging. Copilot skills continue to use
+their existing `.copilot` installation and refresh paths.
+
 ## Verify Everything Works
 
 ```bash

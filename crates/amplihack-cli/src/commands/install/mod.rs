@@ -5,7 +5,7 @@ pub(crate) mod bundle_compat;
 mod clone;
 mod copilot_plugin;
 mod directories;
-mod filesystem;
+pub(crate) mod filesystem;
 mod hooks;
 pub(crate) mod interactive;
 mod manifest;

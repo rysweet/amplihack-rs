@@ -355,6 +355,103 @@ fn copy_dir_recursive_skips_symlinks_without_following() {
 }
 
 #[test]
+fn bundle_install_keeps_support_links_out_of_shared_staging() {
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .unwrap()
+        .to_path_buf();
+    let bundle = workspace.join("amplifier-bundle");
+    let temp = tempfile::tempdir().unwrap();
+    let staged = temp.path().join(".amplihack/.claude");
+
+    directories::copytree_manifest(&bundle, SourceLayout::Bundle, &staged).unwrap();
+
+    assert!(!staged.join("skills/docx/ooxml").exists());
+    assert!(!staged.join("skills/pptx/ooxml").exists());
+    assert!(!staged.join("skills/outside-in-testing/README.md").exists());
+    assert!(!staged.join("skills/outside-in-testing/examples").exists());
+    assert!(!staged.join("skills/outside-in-testing/scripts").exists());
+    assert!(!staged.join("skills/outside-in-testing/tests").exists());
+}
+
+#[test]
+fn bundle_install_then_claude_sync_materializes_known_support_links() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .unwrap()
+        .to_path_buf();
+    let bundle = workspace.join("amplifier-bundle");
+    let temp = tempfile::tempdir().unwrap();
+    let previous = crate::test_support::set_home(temp.path());
+    let staged = temp.path().join(".amplihack/.claude");
+
+    directories::copytree_manifest(&bundle, SourceLayout::Bundle, &staged).unwrap();
+    crate::claude_plugin::ensure_claude_plugin_installed().unwrap();
+
+    let claude_skills = temp.path().join(".claude/skills");
+    assert!(claude_skills.join("docx/ooxml/scripts/pack.sh").is_file());
+    assert!(claude_skills.join("pptx/ooxml/scripts/pack.sh").is_file());
+    assert!(claude_skills.join("outside-in-testing/README.md").is_file());
+    assert!(claude_skills.join("outside-in-testing/examples").is_dir());
+    assert!(!claude_skills.join("outside-in-testing/scripts").exists());
+    assert!(!claude_skills.join("outside-in-testing/tests").exists());
+
+    crate::test_support::restore_home(previous);
+}
+
+#[test]
+fn install_then_copilot_stage_preserves_real_bundle_readmes_deterministically() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .unwrap()
+        .to_path_buf();
+    let bundle = workspace.join("amplifier-bundle");
+    let temp = tempfile::tempdir().unwrap();
+    let previous = crate::test_support::set_home(temp.path());
+    let staged = temp.path().join(".amplihack/.claude");
+    directories::copytree_manifest(&bundle, SourceLayout::Bundle, &staged).unwrap();
+
+    let expected_docx = fs::read_to_string(bundle.join("skills/docx/README.md")).unwrap();
+    let expected_pptx = fs::read_to_string(bundle.join("skills/pptx/README.md")).unwrap();
+    crate::copilot_setup::ensure_copilot_home_staged_in(None).unwrap();
+    let copilot_skills = temp.path().join(".copilot/skills");
+    let docx = temp.path().join(".copilot/skills/docx/README.md");
+    let pptx = temp.path().join(".copilot/skills/pptx/README.md");
+    let snapshot = |root: &Path| {
+        let mut files = filesystem::walk_all(root)
+            .unwrap()
+            .into_iter()
+            .filter(|path| path.is_file())
+            .map(|path| {
+                (
+                    path.strip_prefix(root).unwrap().to_path_buf(),
+                    fs::read(path).unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        files.sort_by(|left, right| left.0.cmp(&right.0));
+        files
+    };
+    let first = snapshot(&copilot_skills);
+
+    crate::copilot_setup::ensure_copilot_home_staged_in(None).unwrap();
+
+    assert_eq!(fs::read_to_string(docx).unwrap(), expected_docx);
+    assert_eq!(fs::read_to_string(pptx).unwrap(), expected_pptx);
+    assert_eq!(snapshot(&copilot_skills), first);
+    crate::test_support::restore_home(previous);
+}
+
+#[test]
 fn local_install_writes_manifest_with_all_four_fields() {
     let _guard = crate::test_support::home_env_lock()
         .lock()

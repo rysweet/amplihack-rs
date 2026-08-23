@@ -14,6 +14,9 @@ pub fn run_uninstall() -> Result<()> {
     let manifest_path = manifest_path()?;
     let manifest = read_manifest(&manifest_path)?;
 
+    crate::claude_plugin::remove_managed_claude_plugin()
+        .context("failed to clean verified Claude plugin destinations before ownership state")?;
+
     let mut removed_any = false;
     let mut removed_files = 0usize;
 

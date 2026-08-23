@@ -359,3 +359,167 @@ fn run_uninstall_handles_duplicate_dirs_in_manifest() {
         "tracked directory must be removed during uninstall"
     );
 }
+
+#[test]
+fn claude_plugin_install_uninstall_reinstall_lifecycle() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let previous = crate::test_support::set_home(temp.path());
+    let staged = temp.path().join(".amplihack/.claude");
+    let create_staging = || {
+        fs::create_dir_all(staged.join("skills/lifecycle")).unwrap();
+        fs::create_dir_all(staged.join("install")).unwrap();
+        fs::write(
+            staged.join("skills/lifecycle/SKILL.md"),
+            "---\nname: lifecycle\n---\n",
+        )
+        .unwrap();
+        manifest::write_manifest(
+            &staged.join("install/amplihack-manifest.json"),
+            &InstallManifest::default(),
+        )
+        .unwrap();
+    };
+    create_staging();
+    crate::claude_plugin::ensure_claude_plugin_installed().unwrap();
+    let direct_skill = temp.path().join(".claude/skills/lifecycle");
+    let wrapper = temp.path().join(".claude/skills/amplihack");
+    assert!(direct_skill.is_dir());
+    assert!(wrapper.is_dir());
+
+    run_uninstall().unwrap();
+    assert!(!direct_skill.exists());
+    assert!(!wrapper.exists());
+
+    create_staging();
+    crate::claude_plugin::ensure_claude_plugin_installed().unwrap();
+    crate::test_support::restore_home(previous);
+
+    assert!(direct_skill.join("SKILL.md").is_file());
+    assert!(wrapper.join(".claude-plugin/plugin.json").is_file());
+}
+
+#[test]
+fn uninstall_preserves_replaced_managed_claude_skill() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let previous = crate::test_support::set_home(temp.path());
+    let staged = temp.path().join(".amplihack/.claude");
+    fs::create_dir_all(staged.join("skills/replaced")).unwrap();
+    fs::create_dir_all(staged.join("install")).unwrap();
+    fs::write(staged.join("skills/replaced/SKILL.md"), "canonical").unwrap();
+    manifest::write_manifest(
+        &staged.join("install/amplihack-manifest.json"),
+        &InstallManifest::default(),
+    )
+    .unwrap();
+    crate::claude_plugin::ensure_claude_plugin_installed().unwrap();
+    let installed = temp.path().join(".claude/skills/replaced/SKILL.md");
+    fs::write(&installed, "user replacement").unwrap();
+
+    run_uninstall().unwrap();
+    crate::test_support::restore_home(previous);
+
+    assert_eq!(fs::read_to_string(installed).unwrap(), "user replacement");
+}
+
+#[test]
+fn uninstall_preserves_replaced_claude_plugin_wrapper() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let previous = crate::test_support::set_home(temp.path());
+    let staged = temp.path().join(".amplihack/.claude");
+    fs::create_dir_all(staged.join("skills/managed")).unwrap();
+    fs::create_dir_all(staged.join("install")).unwrap();
+    fs::write(staged.join("skills/managed/SKILL.md"), "canonical").unwrap();
+    manifest::write_manifest(
+        &staged.join("install/amplihack-manifest.json"),
+        &InstallManifest::default(),
+    )
+    .unwrap();
+    crate::claude_plugin::ensure_claude_plugin_installed().unwrap();
+    let replacement = temp.path().join(".claude/skills/amplihack/user.txt");
+    fs::write(&replacement, "user replacement").unwrap();
+
+    run_uninstall().unwrap();
+    crate::test_support::restore_home(previous);
+
+    assert_eq!(fs::read_to_string(replacement).unwrap(), "user replacement");
+}
+
+#[test]
+fn uninstall_preserves_managed_skill_replaced_by_root_file_and_removes_rest() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let previous = crate::test_support::set_home(temp.path());
+    let staged = temp.path().join(".amplihack/.claude");
+    fs::create_dir_all(staged.join("skills/replaced")).unwrap();
+    fs::create_dir_all(staged.join("skills/removed")).unwrap();
+    fs::create_dir_all(staged.join("install")).unwrap();
+    fs::create_dir_all(temp.path().join(".amplihack/amplifier-bundle")).unwrap();
+    fs::write(staged.join("skills/replaced/SKILL.md"), "canonical").unwrap();
+    fs::write(staged.join("skills/removed/SKILL.md"), "canonical").unwrap();
+    manifest::write_manifest(
+        &staged.join("install/amplihack-manifest.json"),
+        &InstallManifest::default(),
+    )
+    .unwrap();
+    crate::claude_plugin::ensure_claude_plugin_installed().unwrap();
+    let replacement = temp.path().join(".claude/skills/replaced");
+    fs::remove_dir_all(&replacement).unwrap();
+    fs::write(&replacement, "user root file").unwrap();
+
+    run_uninstall().unwrap();
+    crate::test_support::restore_home(previous);
+
+    assert_eq!(fs::read_to_string(&replacement).unwrap(), "user root file");
+    assert!(!temp.path().join(".claude/skills/removed").exists());
+    assert!(!temp.path().join(".claude/skills/amplihack").exists());
+    assert!(!temp.path().join(".amplihack/amplifier-bundle").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn uninstall_preserves_plugin_wrapper_replaced_by_root_symlink_and_removes_rest() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let previous = crate::test_support::set_home(temp.path());
+    let staged = temp.path().join(".amplihack/.claude");
+    fs::create_dir_all(staged.join("skills/removed")).unwrap();
+    fs::create_dir_all(staged.join("install")).unwrap();
+    fs::create_dir_all(temp.path().join(".amplihack/amplifier-bundle")).unwrap();
+    fs::write(staged.join("skills/removed/SKILL.md"), "canonical").unwrap();
+    manifest::write_manifest(
+        &staged.join("install/amplihack-manifest.json"),
+        &InstallManifest::default(),
+    )
+    .unwrap();
+    crate::claude_plugin::ensure_claude_plugin_installed().unwrap();
+    let wrapper = temp.path().join(".claude/skills/amplihack");
+    fs::remove_dir_all(&wrapper).unwrap();
+    let user_target = temp.path().join("user-plugin-wrapper");
+    fs::create_dir_all(&user_target).unwrap();
+    fs::write(user_target.join("user.txt"), "preserve").unwrap();
+    std::os::unix::fs::symlink(&user_target, &wrapper).unwrap();
+
+    run_uninstall().unwrap();
+    crate::test_support::restore_home(previous);
+
+    assert!(wrapper.symlink_metadata().unwrap().file_type().is_symlink());
+    assert_eq!(
+        fs::read_to_string(user_target.join("user.txt")).unwrap(),
+        "preserve"
+    );
+    assert!(!temp.path().join(".claude/skills/removed").exists());
+    assert!(!temp.path().join(".amplihack/amplifier-bundle").exists());
+}
