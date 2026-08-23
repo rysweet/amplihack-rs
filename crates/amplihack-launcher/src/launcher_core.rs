@@ -82,7 +82,12 @@ impl ClaudeLauncher {
         let mut cmd = Command::new(&cli_path);
         if let Some(ref pf) = self.config.append_system_prompt {
             if pf.exists() {
-                cmd.args(["--append-system-prompt", &pf.to_string_lossy()]);
+                // `--append-system-prompt` takes a PROMPT STRING. This field is
+                // a PathBuf, so it must go through the path-shaped flag —
+                // passing it to the string form hands claude a filename and
+                // calls it a prompt. The launch path in `amplihack-cli` is the
+                // string-shaped sibling and correspondingly emits the contents.
+                cmd.args(["--append-system-prompt-file", &pf.to_string_lossy()]);
             } else {
                 warn!(path = %pf.display(), "System prompt file not found");
             }
@@ -231,14 +236,35 @@ pub fn is_sandboxed() -> bool {
         || std::env::var("PATH").is_err()
 }
 
+/// Resolve the claude binary through the single repo-wide resolver.
+///
+/// Issue #1266: this used to be a third independent answer to "which claude?",
+/// alongside `bootstrap.rs` and `claude_cli.rs`. Three resolvers is how they
+/// drifted apart in the first place, and it also makes the single-resolver
+/// contract test un-writable.
+///
+/// It also used to short-circuit on a `CLAUDE_CLI_PATH` that merely `exists()`
+/// — which accepts a directory, a file with no executable bit, and a relative
+/// path, and hands it straight to `Command::new`. `CLAUDE_CLI_PATH=claude`
+/// became an `execvp` lookup against the child's `$PATH`; `./claude` became
+/// the current directory. That was the one place in the repo where a candidate
+/// reached exec without passing `cheap_reject`, sitting directly beneath a
+/// comment claiming the opposite. The supported override is
+/// `CLAUDE_BINARY_PATH`, which `candidate_paths` reads as a user-supplied
+/// [`ExplicitOverride`] and the funnel gates: a broken one is a hard error
+/// naming the path, rather than a silent exec of something else.
+///
+/// [`ExplicitOverride`]: amplihack_utils::launch_target::TargetSource::ExplicitOverride
 fn get_claude_cli_path() -> Result<PathBuf> {
-    if let Ok(p) = std::env::var("CLAUDE_CLI_PATH") {
-        let pb = PathBuf::from(p);
-        if pb.exists() {
-            return Ok(pb);
-        }
+    let resolution = amplihack_utils::launch_target::resolve("claude");
+    match &resolution.target {
+        Some(target) => Ok(target.path.clone()),
+        None => Err(anyhow::anyhow!(
+            "{}",
+            resolution
+                .rejection_report("claude", amplihack_utils::claude_native::CLAUDE_NPM_PACKAGE)
+        )),
     }
-    which_binary("claude").ok_or_else(|| anyhow::anyhow!("Claude CLI not found"))
 }
 
 fn paths_are_same(a: &Path, b: &Path) -> bool {
@@ -271,15 +297,6 @@ pub fn detect_repo_root() -> Option<PathBuf> {
             std::env::current_dir().ok()
         }
     }
-}
-
-fn which_binary(name: &str) -> Option<PathBuf> {
-    Command::new("which")
-        .arg(name)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()))
 }
 
 #[cfg(unix)]
@@ -399,5 +416,63 @@ mod tests {
         // Even outside a git repo, detect_repo_root falls back to cwd.
         let result = detect_repo_root();
         assert!(result.is_some(), "detect_repo_root must never return None");
+    }
+
+    // ------------------------------------------------------------------
+    // Issue #1265: the path-shaped sibling of the --append-system-prompt
+    // feature must emit the flag that actually takes a path.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn append_system_prompt_path_uses_the_file_flag() {
+        // `--append-system-prompt` takes a PROMPT STRING. Passing a PathBuf to
+        // it hands claude a filename and calls it a prompt. The path form is
+        // `--append-system-prompt-file`.
+        let src = include_str!("launcher_core.rs");
+        let start = src
+            .find("fn build_claude_command(")
+            .expect("build_claude_command must exist");
+        let body = &src[start..];
+        let mut depth = 0;
+        let mut end = body.len();
+        for (i, ch) in body.char_indices() {
+            if ch == '{' {
+                depth += 1;
+            } else if ch == '}' {
+                depth -= 1;
+                if depth == 0 {
+                    end = i + 1;
+                    break;
+                }
+            }
+        }
+        let body = &body[..end];
+        assert!(
+            body.contains("--append-system-prompt-file"),
+            "a PathBuf must be emitted through the -file form:\n{body}"
+        );
+    }
+
+    #[test]
+    fn missing_system_prompt_file_warns_and_still_builds_a_command() {
+        // Graceful degradation, same contract as the launch-path feature: a
+        // missing fragment never fails the launch.
+        let config = LauncherConfig {
+            append_system_prompt: Some(PathBuf::from("/nonexistent/prompt.md")),
+            ..Default::default()
+        };
+        let launcher = ClaudeLauncher::new(config);
+        if let Ok(cmd) = launcher.build_claude_command() {
+            let args: Vec<String> = cmd
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            assert!(
+                !args.iter().any(|a| a.starts_with("--append-system-prompt")),
+                "a missing file must not be passed through: {args:?}"
+            );
+        }
+        // An Err here means no claude binary on this host, which is not what
+        // this test is about.
     }
 }

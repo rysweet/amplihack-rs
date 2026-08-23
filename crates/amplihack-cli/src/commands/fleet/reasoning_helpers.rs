@@ -1,22 +1,45 @@
 use super::*;
 
+/// An env-var-supplied binary, accepted only if it is absolute and executable.
+///
+/// F-S5, applied to the two branches that reach `Command::new` without passing
+/// `launch_target::cheap_reject`. `is_executable_file` alone stats a relative
+/// value against *amplihack's* current directory and then hands a
+/// separator-free name to `execvp`, which resolves it against the *child's*
+/// `$PATH` — two different files, neither the one named. The result is run
+/// under `--dangerously-skip-permissions`, so `AMPLIHACK_FLEET_REASONER_BINARY_PATH=claude`
+/// standing in a cloned repo is the whole exploit.
+///
+/// Self-inflicted (the user set the variable) and pre-existing, but
+/// `cheap_reject`'s comment claims to be the funnel *every* candidate passes
+/// through, and a bypass makes that comment false rather than aspirational.
+fn absolute_executable_from_env(var: &str) -> Option<PathBuf> {
+    absolute_executable(&env::var(var).ok()?)
+}
+
+/// The rule itself, split from the env read so it is testable without mutating
+/// the environment (which would race the other tests in this binary).
+fn absolute_executable(value: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(value);
+    (path.is_absolute() && is_executable_file(&path)).then_some(path)
+}
+
 pub(super) fn find_reasoner_binary() -> Option<PathBuf> {
-    if let Ok(path) = env::var("AMPLIHACK_FLEET_REASONER_BINARY_PATH") {
-        let path = PathBuf::from(path);
-        if is_executable_file(&path) {
-            return Some(path);
-        }
+    if let Some(path) = absolute_executable_from_env("AMPLIHACK_FLEET_REASONER_BINARY_PATH") {
+        return Some(path);
     }
 
-    if let Ok(info) = BinaryFinder::find("claude") {
-        return Some(info.path);
+    // Issue #1266: this execs whatever it returns, so it is a launch decision
+    // and must go through the one resolver. `BinaryFinder::find` returns the
+    // first binary it FINDS; `launch_target::resolve` returns the first one
+    // that actually works, which on a host carrying the 500-byte placeholder is
+    // not the same file.
+    if let Some(target) = amplihack_utils::launch_target::resolve("claude").target {
+        return Some(target.path);
     }
 
-    if let Ok(path) = env::var("RUSTYCLAWD_PATH") {
-        let path = PathBuf::from(path);
-        if is_executable_file(&path) {
-            return Some(path);
-        }
+    if let Some(path) = absolute_executable_from_env("RUSTYCLAWD_PATH") {
+        return Some(path);
     }
 
     find_binary("claude-code")
@@ -799,5 +822,42 @@ mod tests {
     fn parse_reasoner_response_missing_json_returns_none() {
         let ctx = SessionContext::new("vm1", "sess1", "task", "prio").unwrap();
         assert!(parse_reasoner_response("I am not sure what to do here.", &ctx).is_none());
+    }
+
+    /// F-S5 at the two sites that resolve before consulting `launch_target`.
+    ///
+    /// A relative value is stat'd against amplihack's cwd and then handed to
+    /// `execvp`, which resolves it against the child's `$PATH`. The result runs
+    /// under `--dangerously-skip-permissions`, so a `claude` file in a cloned
+    /// repository is the whole exploit. Pure predicate: no env mutation, so it
+    /// cannot race the other tests in this binary.
+    #[test]
+    fn a_relative_env_supplied_reasoner_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let absolute = dir.path().join("claude");
+        std::fs::write(&absolute, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&absolute).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&absolute, perms).unwrap();
+        }
+
+        // Relative values are refused on the `is_absolute()` arm, before the
+        // filesystem is consulted at all — so this needs no cwd mutation and
+        // cannot race the other tests in this binary.
+        assert_eq!(
+            absolute_executable("claude"),
+            None,
+            "a relative value reaches execvp and re-resolves against the \
+             child's $PATH under --dangerously-skip-permissions"
+        );
+        // Non-vacuity: the absolute form of the same file is accepted, so the
+        // refusal above is about relativeness, not about nothing being runnable.
+        assert_eq!(
+            absolute_executable(&absolute.to_string_lossy()),
+            Some(absolute.clone())
+        );
     }
 }

@@ -21,9 +21,16 @@ fn with_uvx_detection_disabled<T>(f: impl FnOnce() -> T) -> T {
     let original_cwd = set_cwd(cwd.path()).unwrap();
     let previous_uv_python = std::env::var_os("UV_PYTHON");
     let previous_root = std::env::var_os("AMPLIHACK_ROOT");
+    // Issue #1265: these tests assert exact argv positions and lengths, and
+    // `build_command_for_dir` injects `--append-system-prompt` on every claude
+    // launch — the fragment is `include_str!`d into the binary, so it is always
+    // present. Suppress it here or every argv assertion below shifts by two.
+    // The feature has its own suite in `tests_system_prompt_append.rs`.
+    let previous_no_append = std::env::var_os("AMPLIHACK_NO_SYSTEM_PROMPT_APPEND");
     unsafe {
         std::env::remove_var("UV_PYTHON");
         std::env::remove_var("AMPLIHACK_ROOT");
+        std::env::set_var("AMPLIHACK_NO_SYSTEM_PROMPT_APPEND", "1");
     }
 
     let result = f();
@@ -36,6 +43,10 @@ fn with_uvx_detection_disabled<T>(f: impl FnOnce() -> T) -> T {
     match previous_root {
         Some(value) => unsafe { std::env::set_var("AMPLIHACK_ROOT", value) },
         None => unsafe { std::env::remove_var("AMPLIHACK_ROOT") },
+    }
+    match previous_no_append {
+        Some(value) => unsafe { std::env::set_var("AMPLIHACK_NO_SYSTEM_PROMPT_APPEND", value) },
+        None => unsafe { std::env::remove_var("AMPLIHACK_NO_SYSTEM_PROMPT_APPEND") },
     }
 
     result

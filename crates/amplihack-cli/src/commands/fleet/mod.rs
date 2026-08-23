@@ -7,7 +7,6 @@
 //! INVARIANT: All external session name inputs MUST pass `validate_session_name()`
 //! before use in any subprocess or tmux command invocation.
 
-use crate::binary_finder::BinaryFinder;
 use crate::command_error::exit_error;
 use crate::env_builder::EnvBuilder;
 use crate::util::{render_diagnostic_bytes, run_output_with_timeout};

@@ -1,0 +1,146 @@
+name: issue-1266-launch-target-resolution
+description: |
+  Outside-in verification for issue #1266 — "amplihack cannot launch claude at
+  all on a clean Linux x86_64 box" — and for the issue #1265 system-prompt
+  fragment that ships with it.
+
+  Each scenario names the user-visible symptom it covers, not the function that
+  implements it:
+
+    1. amplihack launched a 500-byte placeholder and reported
+       `version="unknown"`, then failed with "Exec format error".
+    2. A working `claude` already on $PATH was discarded because search order
+       returned the first hit rather than the first working one.
+    3. amplihack re-broke the install on every launch, with no backoff, and
+       clobbered a hand-repaired install twice.
+    4. Even after selecting a good binary, the child's $PATH was rewritten so
+       any re-exec inside the agent found the placeholder again.
+    5. The routing fragment must reach the agent, and must never fail a launch.
+
+  The end-to-end scenario runs the built binary against this host, which
+  carries the exact reproduction: a 500-byte placeholder at
+  ~/.npm-global/bin/claude and a working 2.1.238 at ~/.local/bin/claude.
+type: cli
+tags: [launch, install, claude, resolver, security, issue-1266, issue-1265]
+
+scenarios:
+  - name: the-placeholder-is-rejected-and-a-working-binary-wins
+    description: |
+      Symptoms 1 and 2. The health gate probes candidates and returns the first
+      one that actually answers `--version`, so a placeholder never becomes the
+      launch target while a working binary is on the list.
+    steps:
+      - type: command
+        command: >-
+          cargo test -p amplihack-utils --test launch_target_health_gate --locked 2>&1 | grep 'test result' | tail -1
+          | grep -qE 'ok\. [1-9][0-9]* passed' && echo PASS || echo FAIL
+        expected_output: "PASS"
+
+  - name: resolution-is-decided-once-per-launch
+    description: |
+      Symptom 3. Every launch used to ask "which binary?" at least twice and
+      query the npm registry twice, each answer costing a subprocess against a
+      ~339 MB binary. The memo is keyed on the candidate list it was computed
+      from, so an environment change that could change the answer misses it.
+    steps:
+      - type: command
+        command: >-
+          cargo test -p amplihack-utils --test launch_target_memo --locked 2>&1 | grep 'test result' | tail -1
+          | grep -qE 'ok\. [1-9][0-9]* passed' && echo PASS || echo FAIL
+        expected_output: "PASS"
+
+  - name: amplihack-does-not-reinstall-on-every-launch
+    description: |
+      Symptom 3, the decision half. amplihack never upgrades a binary it does
+      not own, never installs because a registry query failed, and never
+      installs on inconclusive evidence — a probe timeout or a resolution that
+      stopped before examining every candidate.
+    steps:
+      - type: command
+        command: >-
+          cargo test -p amplihack-utils --lib --locked -- launch_target::tests::decide_install launch_target::tests::stopping_at_the_probe_cap 2>&1 | grep 'test result' | tail -1
+          | grep -qE 'ok\. [1-9][0-9]* passed' && echo PASS || echo FAIL
+        expected_output: "PASS"
+
+  - name: a-stale-bundle-does-not-restage-on-every-launch
+    description: |
+      Symptom 3 on the install-asset axis, found reviewing this branch. Adding
+      the issue #1265 fragment to `essential_files` made a gap that a source
+      bundle predating the file can never close, and that gap was the trigger
+      for a full restage on every launch.
+    steps:
+      - type: command
+        command: >-
+          cargo test -p amplihack-cli --lib --locked -- commands::install::tests::issue_1266_restage_loop 2>&1 | grep 'test result' | tail -1
+          | grep -qE 'ok\. [1-9][0-9]* passed' && echo PASS || echo FAIL
+        expected_output: "PASS"
+
+  - name: the-child-path-never-gains-the-current-directory
+    description: |
+      Symptom 4. An empty $PATH element is POSIX for the current directory, and
+      a relative candidate's empty parent put cwd at the FRONT of the child's
+      $PATH for the agent, every subagent and every shell-out. Every candidate
+      is absolute, enforced at the funnel rather than at each producer.
+    steps:
+      - type: command
+        command: >-
+          cargo test -p amplihack-utils --test no_global_path_mutation --locked 2>&1 | grep 'test result' | tail -1
+          | grep -qE 'ok\. [1-9][0-9]* passed' && echo PASS || echo FAIL
+        expected_output: "PASS"
+
+  - name: check-install-and-launch-agree-on-one-binary
+    description: |
+      The root cause: three independent resolutions disagreed on a single
+      launch. The contract suite pins that check, install and exec all resolve
+      through `launch_target::resolve`, by shape rather than by filename.
+    steps:
+      - type: command
+        command: >-
+          cargo test -p amplihack-cli --test claude_install_contract --locked 2>&1 | grep 'test result' | tail -1
+          | grep -qE 'ok\. [1-9][0-9]* passed' && echo PASS || echo FAIL
+        expected_output: "PASS"
+
+  - name: the-routing-fragment-ships-and-never-fails-a-launch
+    description: |
+      Issue #1265. The fragment is compiled into the binary with `include_str!`,
+      so it reaches every install in both layouts with no staging step, and the
+      missing/unreadable/oversized cases it used to have to tolerate are no
+      longer reachable states. What remains is that injection never fails a
+      launch, and that the shipped bytes and the bytes quoted in the docs are
+      the same bytes.
+    steps:
+      - type: command
+        command: >-
+          cargo test -p amplihack-cli --test system_prompt_append_fragment --locked 2>&1 | grep 'test result' | tail -1
+          | grep -qE 'ok\. [1-9][0-9]* passed' && echo PASS || echo FAIL
+        expected_output: "PASS"
+
+  - name: the-fragment-source-file-is-in-the-bundle
+    description: |
+      The bundle is still the one editable copy, and now it is a build input:
+      `include_str!` resolves this path at compile time, so losing the file
+      breaks the build rather than silently disabling the feature. The file is
+      no longer listed in `essential_files` — listing it there is what armed the
+      restage that made any ancestor bundle a system-prompt injection vector.
+    steps:
+      - type: command
+        command: test -f amplifier-bundle/context/SYSTEM_PROMPT_APPEND.md && echo PASS || echo FAIL
+        expected_output: "PASS"
+
+  - name: end-to-end-launch-resolves-a-working-claude-twice
+    description: |
+      The bug as the user meets it. Runs the built binary twice against this
+      host's real install, which carries a 500-byte placeholder at
+      ~/.npm-global/bin/claude and a working release at ~/.local/bin/claude.
+      Both runs must reach the real CLI and print a version; the second must not
+      re-download.
+    steps:
+      - type: command
+        command: ./target/release/amplihack claude -- --version 2>&1 | grep -c 'Claude Code'
+        expected_output: "1"
+      - type: command
+        command: ./target/release/amplihack claude -- --version 2>&1 | grep -c 'Claude Code'
+        expected_output: "1"
+      - type: command
+        command: if ./target/release/amplihack claude -- --version 2>&1 | grep -qiE 'exec format error|version="unknown"'; then echo FAIL; else echo PASS; fi
+        expected_output: "PASS"

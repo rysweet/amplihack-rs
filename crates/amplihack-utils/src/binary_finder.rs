@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
@@ -102,33 +103,10 @@ impl BinaryFinder {
             candidates.join(", ")
         );
     }
-
-    /// List all tool binaries found in PATH (for diagnostics).
-    pub fn find_all(tool: &str) -> Vec<BinaryInfo> {
-        let candidates = binary_candidates(tool);
-        let path_dirs = search_path_dirs();
-        let mut results = Vec::new();
-
-        for candidate in &candidates {
-            for dir in &path_dirs {
-                let full_path = dir.join(candidate);
-                if full_path.is_file() && is_executable(&full_path) {
-                    let version = detect_version(&full_path);
-                    results.push(BinaryInfo {
-                        name: tool.to_string(),
-                        path: full_path,
-                        version,
-                    });
-                }
-            }
-        }
-
-        results
-    }
 }
 
 /// Return candidate binary names for a tool.
-fn binary_candidates(tool: &str) -> Vec<String> {
+pub(crate) fn binary_candidates(tool: &str) -> Vec<String> {
     match tool {
         "claude" => vec!["rustyclawd".to_string(), "claude".to_string()],
         "copilot" => vec!["copilot".to_string()],
@@ -139,12 +117,26 @@ fn binary_candidates(tool: &str) -> Vec<String> {
 }
 
 /// Collect PATH directories into a de-duplicated, ordered Vec.
+///
+/// F-S5 — relative entries are dropped, for the same reason
+/// `launch_target::path_dirs` drops them. POSIX reads an **empty** `$PATH`
+/// element as the current directory, and trailing or doubled colons are
+/// ordinary in hand-edited shell profiles: `split_paths("/usr/bin:")` yields
+/// `["/usr/bin", ""]`, and joining `""` with `claude` gives the bare relative
+/// name that `detect_version` then hands to `execvp`, which resolves it from
+/// wherever amplihack happens to be. `git clone <repo> && cd repo && amplihack
+/// claude` is the whole exploit.
+///
+/// This is a second, separate funnel from `launch_target`'s — different module,
+/// different callers (`bootstrap.rs` reaches this one) — so it needs its own
+/// filter. `.` and `..` are the same hazard spelled out, so the test is
+/// absoluteness rather than emptiness.
 fn search_path_dirs() -> Vec<PathBuf> {
     let path_var = env::var("PATH").unwrap_or_default();
     let mut seen = HashSet::new();
     let mut dirs = Vec::new();
 
-    for entry in env::split_paths(&path_var) {
+    for entry in env::split_paths(&path_var).filter(|dir| dir.is_absolute()) {
         if seen.insert(entry.clone()) {
             dirs.push(entry);
         }
@@ -164,8 +156,9 @@ fn install_fallback_dirs() -> Vec<PathBuf> {
     let home = env::var_os("HOME").map(PathBuf::from);
     let mut dirs = Vec::new();
     if let Some(home) = home {
-        // npm global prefix set by `install_npm_package`.
-        dirs.push(home.join(".npm-global").join("bin"));
+        // npm global prefix set by `install_npm_package`. One owner for the
+        // spelling — see `launch_target::amplihack_prefix_bin`.
+        dirs.push(crate::launch_target::amplihack_prefix_bin(&home));
         // `cargo install` default.
         dirs.push(home.join(".cargo").join("bin"));
         // `uv tool install` + legacy Python amplihack install target.
@@ -182,7 +175,19 @@ const VERSION_DETECTION_TIMEOUT: Duration = Duration::from_millis(500);
 fn detect_version(path: &Path) -> Option<String> {
     let mut cmd = Command::new(path);
     cmd.arg("--version");
-    let output = run_output_with_timeout(cmd, VERSION_DETECTION_TIMEOUT).ok()?;
+    // SEC-3 — `path` is an arbitrary candidate from `$PATH` or `$HOME`, so its
+    // stdout is attacker-influenced and its volume is attacker-chosen. This is
+    // the one place in this module that probes untrusted binaries, and it used
+    // to reach for an uncapped wrapper that passed `usize::MAX`, opting out of
+    // `PROBE_CAPTURE_LIMIT` four lines from where that constant is documented
+    // as "a hard cap on how many bytes a probed binary may push into memory".
+    // A `--version` line is never 64 KiB, so the cap is behaviour-neutral in
+    // every real case; the wrapper is gone so there is no uncapped sibling left
+    // to reach for. The error is discarded here as it always was — capped or
+    // timed out, an unreadable probe is not a version.
+    let output =
+        run_capped_output_with_timeout(cmd, VERSION_DETECTION_TIMEOUT, PROBE_CAPTURE_LIMIT)
+            .ok()??;
 
     if !output.status.success() {
         return None;
@@ -225,11 +230,127 @@ fn spawn_subprocess(cmd: &mut Command) -> std::io::Result<std::process::Child> {
     }
 }
 
-fn run_output_with_timeout(mut cmd: Command, timeout: Duration) -> anyhow::Result<Output> {
+/// Wait for `child`, waking early when the drain threads report EOF.
+///
+/// `drained` is held by both drain threads and by nobody else, so it
+/// disconnects when both pipes hit EOF — which is the child closing its
+/// stdio, i.e. exiting. Sleeping on that instead of on the next backoff tick
+/// is worth roughly the poll interval on every probe: a `claude --version`
+/// that takes 110 ms was detected at 150 ms by the backoff schedule
+/// (10/20/40/80 ms), so a quarter of the measured cost of a resolution was
+/// this function sleeping through an exit that had already happened.
+///
+/// Disconnect is a hint, not proof: a child can close its stdio and keep
+/// running, and a grandchild can hold the pipes open past its parent's exit.
+/// Both are handled — the `try_wait` at the top of the loop stays the
+/// authority, and once the hint is spent the loop falls back to the same
+/// bounded backoff it used before.
+fn wait_for_child_exit(
+    child: &mut std::process::Child,
+    timeout: Duration,
+    drained: &std::sync::mpsc::Receiver<std::convert::Infallible>,
+) -> anyhow::Result<Option<std::process::ExitStatus>> {
+    use std::sync::mpsc::RecvTimeoutError;
+
+    let deadline = Instant::now() + timeout;
+    let mut interval = CHILD_WAIT_INITIAL_POLL_INTERVAL;
+    let mut pipes_open = true;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(None);
+        }
+        let nap = interval.min(remaining);
+        if pipes_open {
+            // Nothing is ever sent on this channel; only the disconnect
+            // matters. `Ok` is unreachable — the payload type is uninhabited.
+            match drained.recv_timeout(nap) {
+                Err(RecvTimeoutError::Disconnected) => {
+                    // Exit is imminent. Re-check now rather than sleeping.
+                    pipes_open = false;
+                    continue;
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Ok(never) => match never {},
+            }
+        } else {
+            thread::sleep(nap);
+        }
+        interval = (interval * 2).min(CHILD_WAIT_MAX_POLL_INTERVAL);
+    }
+}
+
+/// SEC-3: hard cap on how many bytes a probed binary may push into memory.
+///
+/// A version probe answers with one short line. Anything past this is either a
+/// confused binary or a hostile one, and neither earns unbounded RAM. The
+/// hardened runner in `amplihack-cli` is unreachable from here (the dependency
+/// runs cli → launcher → utils), so the cap lives here rather than moving the
+/// crate boundary.
+pub(crate) const PROBE_CAPTURE_LIMIT: usize = 64 * 1024;
+
+/// Read from `pipe` until EOF or `limit` bytes, whichever comes first, then
+/// keep draining and discarding so the child never blocks on a full pipe.
+///
+/// Bytes land in `sink` as they arrive rather than in a local buffer the caller
+/// can only see by joining. That is what makes the drain abandonable: when the
+/// budget runs out the caller walks away from this thread and still gets
+/// everything that had been read by then (SEC-4).
+fn drain_pipe_capped(
+    mut pipe: impl std::io::Read,
+    limit: usize,
+    sink: &Mutex<Vec<u8>>,
+) -> std::io::Result<()> {
+    let mut chunk = [0u8; 8192];
+    loop {
+        let read = pipe.read(&mut chunk)?;
+        if read == 0 {
+            return Ok(());
+        }
+        let mut buf = sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if buf.len() < limit {
+            let take = read.min(limit - buf.len());
+            buf.extend_from_slice(&chunk[..take]);
+        }
+        // Past the cap we keep reading and throwing the bytes away: closing the
+        // pipe early would hand the child a SIGPIPE we did not intend.
+    }
+}
+
+/// Run `cmd` with a timeout and a capped capture.
+///
+/// `Ok(None)` means the child exceeded `timeout` and was killed — distinct from
+/// `Err`, which means the spawn itself failed. [`crate::launch_target`] needs
+/// that distinction to tell `ProbeTimedOut` from `ProbeFailed`.
+///
+/// # The bound covers the drain, not just the wait (SEC-4)
+///
+/// Waiting for the child and then joining the reader threads unconditionally is
+/// not a timeout, and measuring proved it: a probe of a shim that exits
+/// immediately after backgrounding `sleep 60` returned in **60.0 s against a
+/// 10 s budget**, because the backgrounded grandchild inherited stdout and the
+/// drain thread never saw EOF. Point that at a daemon instead and it never
+/// returns at all. `launch_target` probes every candidate on `$PATH` in order,
+/// so that is exactly the threat SEC-4 names.
+///
+/// So the joins are bounded by whatever is left of `timeout`, and when it runs
+/// out the readers are abandoned rather than waited on: the child's exit status
+/// is already known and authoritative, and a version probe needs one semver
+/// line, not a complete transcript. The detached threads exit on their own when
+/// the pipe finally closes or when the process does.
+pub(crate) fn run_capped_output_with_timeout(
+    mut cmd: Command,
+    timeout: Duration,
+    limit: usize,
+) -> anyhow::Result<Option<Output>> {
+    cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+    let started = Instant::now();
     let mut child = spawn_subprocess(&mut cmd)?;
-    let pid = child.id();
     let stdout = child
         .stdout
         .take()
@@ -238,70 +359,157 @@ fn run_output_with_timeout(mut cmd: Command, timeout: Duration) -> anyhow::Resul
         .stderr
         .take()
         .ok_or_else(|| anyhow::anyhow!("failed to capture subprocess stderr"))?;
-    let stdout_reader = thread::spawn(move || drain_pipe(stdout));
-    let stderr_reader = thread::spawn(move || drain_pipe(stderr));
+    // Shared with the drain threads so the capture is readable without joining
+    // them — see the timeout branch below.
+    let stdout_buf = Arc::new(Mutex::new(Vec::new()));
+    let stderr_buf = Arc::new(Mutex::new(Vec::new()));
+    // Both drain threads own a clone of `eof_tx` and send nothing on it. The
+    // clones drop when the threads finish, which disconnects `eof_rx` and wakes
+    // the wait below the moment the child's pipes reach EOF.
+    let (eof_tx, eof_rx) = std::sync::mpsc::channel::<std::convert::Infallible>();
+    let stderr_tx = eof_tx.clone();
+    let stdout_reader = {
+        let sink = Arc::clone(&stdout_buf);
+        thread::spawn(move || {
+            let _eof_tx = eof_tx;
+            drain_pipe_capped(stdout, limit, &sink)
+        })
+    };
+    let stderr_reader = {
+        let sink = Arc::clone(&stderr_buf);
+        thread::spawn(move || {
+            let _eof_tx = stderr_tx;
+            drain_pipe_capped(stderr, limit, &sink)
+        })
+    };
 
-    if let Some(status) = wait_for_child_exit(&mut child, timeout)? {
-        let stdout = stdout_reader
-            .join()
-            .map_err(|_| anyhow::anyhow!("stdout reader thread panicked"))??;
-        let stderr = stderr_reader
-            .join()
-            .map_err(|_| anyhow::anyhow!("stderr reader thread panicked"))??;
-        return Ok(Output {
-            status,
-            stdout,
-            stderr,
-        });
+    let Some(status) = wait_for_child_exit(&mut child, timeout, &eof_rx)? else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Ok(None);
+    };
+
+    // `recv_timeout` on an already-disconnected channel returns `Disconnected`
+    // immediately, so reusing `eof_rx` after `wait_for_child_exit` has already
+    // consumed the hint is safe.
+    let remaining = timeout.saturating_sub(started.elapsed());
+    match eof_rx.recv_timeout(remaining) {
+        // Both readers are done, so these joins do not block.
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            stdout_reader
+                .join()
+                .map_err(|_| anyhow::anyhow!("stdout reader thread panicked"))??;
+            stderr_reader
+                .join()
+                .map_err(|_| anyhow::anyhow!("stderr reader thread panicked"))??;
+        }
+        // Out of budget with a pipe still open: something other than the child
+        // is holding it. Take what has been read so far and leave.
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            tracing::debug!(
+                ?timeout,
+                "subprocess exited but its output pipes are still held open; \
+                 returning a truncated capture rather than blocking"
+            );
+        }
+        Ok(never) => match never {},
+    }
+    Ok(Some(Output {
+        status,
+        stdout: take_buffer(&stdout_buf),
+        stderr: take_buffer(&stderr_buf),
+    }))
+}
+
+/// Snapshot a drain buffer, leaving an empty one behind for a thread that may
+/// still be writing to it.
+fn take_buffer(buf: &Mutex<Vec<u8>>) -> Vec<u8> {
+    std::mem::take(&mut *buf.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
+}
+
+/// Strip terminal escape sequences and control characters from `s`.
+///
+/// SEC-3: shared with [`crate::launch_target`], which needs it on both probe
+/// stdout (attacker-controlled output from an arbitrary candidate binary) and
+/// on rejected candidate *paths* (a planted filename can itself carry ESC).
+/// There must not be a third copy of this in the crate.
+///
+/// Removed:
+///
+/// * **CSI** — `ESC [` … final byte in `0x40..=0x7e`.
+/// * **String sequences** — `ESC ]` (OSC), `ESC P` (DCS), `ESC X` (SOS),
+///   `ESC ^` (PM), `ESC _` (APC), each up to a `BEL` or an `ST` (`ESC \`).
+///   OSC 52 writes the user's clipboard and OSC 0 rewrites the window title;
+///   handling CSI alone let both straight through.
+/// * **Two-byte escapes** — `ESC` plus one final byte, which covers `ESC c`
+///   (RIS, a full terminal reset).
+///
+/// Every remaining C0 control (and `DEL`) becomes a **single space**, except
+/// tab, which is kept. A space and not deletion, deliberately: deleting them
+/// splices `"1.2.3\n4.5.6"` into `"1.2.34.5.6"`, which the semver regex in
+/// [`crate::launch_target::extract_version`] happily reads as `1.2.34`. The
+/// practical case is `LF` and `CR` — the rejection report renders
+/// `"\n  {path}\n      {reason}\n"`, so a `$PATH` entry containing a newline
+/// could otherwise forge extra rows and make a rejected candidate read as a
+/// healthy one.
+pub(crate) fn strip_ansi(s: &str) -> String {
+    /// `ESC` introduces a sequence that runs to `BEL` or `ST` rather than to a
+    /// single final byte: OSC, DCS, SOS, PM, APC.
+    fn introduces_string_sequence(b: u8) -> bool {
+        matches!(b, b']' | b'P' | b'X' | b'^' | b'_')
     }
 
-    let _ = child.kill();
-    let _ = child.wait();
-    anyhow::bail!("subprocess `{cmd:?}` timed out after {timeout:?} (pid {pid})")
-}
-
-fn wait_for_child_exit(
-    child: &mut std::process::Child,
-    timeout: Duration,
-) -> anyhow::Result<Option<std::process::ExitStatus>> {
-    let deadline = Instant::now() + timeout;
-    let mut interval = CHILD_WAIT_INITIAL_POLL_INTERVAL;
-    loop {
-        if let Some(status) = child.try_wait()? {
-            return Ok(Some(status));
-        }
-        if Instant::now() >= deadline {
-            return Ok(None);
-        }
-        thread::sleep(interval.min(deadline.saturating_duration_since(Instant::now())));
-        interval = (interval * 2).min(CHILD_WAIT_MAX_POLL_INTERVAL);
-    }
-}
-
-fn drain_pipe(mut pipe: impl std::io::Read) -> std::io::Result<Vec<u8>> {
-    let mut buf = Vec::new();
-    pipe.read_to_end(&mut buf)?;
-    Ok(buf)
-}
-
-fn strip_ansi(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let bytes = s.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
-            i += 2;
-            while i < bytes.len() {
-                let b = bytes[i];
+        match bytes[i] {
+            0x1b => {
                 i += 1;
-                if (0x40..=0x7e).contains(&b) {
-                    break;
+                match bytes.get(i).copied() {
+                    Some(b'[') => {
+                        i += 1;
+                        while i < bytes.len() {
+                            let b = bytes[i];
+                            i += 1;
+                            if (0x40..=0x7e).contains(&b) {
+                                break;
+                            }
+                        }
+                    }
+                    Some(b) if introduces_string_sequence(b) => {
+                        i += 1;
+                        while i < bytes.len() {
+                            if bytes[i] == 0x07 {
+                                i += 1;
+                                break;
+                            }
+                            if bytes[i] == 0x1b && bytes.get(i + 1) == Some(&b'\\') {
+                                i += 2;
+                                break;
+                            }
+                            i += 1;
+                        }
+                    }
+                    // ESC + one final byte, e.g. `ESC c`.
+                    Some(_) => i += 1,
+                    // A trailing ESC with nothing behind it.
+                    None => {}
                 }
             }
-        } else {
-            let ch = s[i..].chars().next().expect("non-empty slice");
-            result.push(ch);
-            i += ch.len_utf8();
+            b'\t' => {
+                result.push('\t');
+                i += 1;
+            }
+            b if b < 0x20 || b == 0x7f => {
+                result.push(' ');
+                i += 1;
+            }
+            _ => {
+                let ch = s[i..].chars().next().expect("non-empty slice");
+                result.push(ch);
+                i += ch.len_utf8();
+            }
         }
     }
     result
@@ -344,11 +552,6 @@ fn is_executable(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn env_lock() -> &'static std::sync::Mutex<()> {
-        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-        LOCK.get_or_init(|| std::sync::Mutex::new(()))
-    }
 
     #[test]
     fn binary_candidates_claude() {
@@ -393,7 +596,7 @@ mod tests {
         // Simulate the hyenas2 scenario: copilot is installed at
         // ~/.npm-global/bin/copilot but the shell's $PATH was captured
         // before .bashrc was updated, so the shell doesn't include it.
-        let _guard = env_lock()
+        let _guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
@@ -409,29 +612,31 @@ mod tests {
             std::fs::set_permissions(&fake_tool, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
 
-        // Strip .npm-global from PATH and point HOME at the temp dir so
-        // install_fallback_dirs() is the only way the binary is found.
+        // Point HOME at the temp dir so install_fallback_dirs() resolves to
+        // `fake_home/.npm-global/bin`, the only directory on this machine that
+        // contains a file named `needle-tool-xyz`. Finding it there IS the
+        // proof that the fallback ran: no $PATH entry can supply that name.
+        //
+        // Deliberately does NOT mutate $PATH. $PATH is process-global, and
+        // libtest runs these tests on parallel threads alongside tests that
+        // spawn `git` by bare name (artifact_guard, worktree). Clobbering it
+        // here made those spawns fail with ENOENT — a real cross-test race,
+        // not flakiness. The `env_lock` above only serialises env *mutators*;
+        // the bare-name spawners are readers and never take it.
         let prev_home = env::var_os("HOME");
-        let prev_path = env::var_os("PATH");
-        // SAFETY: Serialized via home_env_lock above.
+        // SAFETY: Serialized via env_lock above.
         unsafe {
             env::set_var("HOME", fake_home);
-            env::set_var("PATH", "/nonexistent-just-for-this-test");
         }
 
         let result = BinaryFinder::find("needle-tool-xyz");
 
-        // SAFETY: Still inside the home_env_lock critical section.
+        // SAFETY: Still inside the env_lock critical section.
         unsafe {
             if let Some(v) = prev_home {
                 env::set_var("HOME", v);
             } else {
                 env::remove_var("HOME");
-            }
-            if let Some(v) = prev_path {
-                env::set_var("PATH", v);
-            } else {
-                env::remove_var("PATH");
             }
         }
 
@@ -523,6 +728,119 @@ mod tests {
         assert!(
             version.is_none(),
             "timed-out version probes should not report a stale version"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // strip_ansi — SEC-3. Every case below reached the terminal verbatim
+    // when this function recognized CSI and nothing else.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn strip_ansi_removes_csi() {
+        assert_eq!(strip_ansi("\x1b[31mred\x1b[0m"), "red");
+    }
+
+    #[test]
+    fn strip_ansi_removes_osc_terminated_by_bel() {
+        // OSC 52 writes the user's clipboard.
+        assert_eq!(strip_ansi("\x1b]52;c;ZXZpbA==\x07x"), "x");
+        // OSC 0 rewrites the window title.
+        assert_eq!(strip_ansi("\x1b]0;pwned\x07x"), "x");
+    }
+
+    #[test]
+    fn strip_ansi_removes_osc_terminated_by_st() {
+        assert_eq!(strip_ansi("\x1b]0;pwned\x1b\\x"), "x");
+    }
+
+    #[test]
+    fn strip_ansi_removes_a_two_byte_escape() {
+        // RIS (ESC c) resets the whole terminal.
+        assert_eq!(strip_ansi("\x1bcx"), "x");
+    }
+
+    #[test]
+    fn strip_ansi_neutralizes_a_carriage_return_overwrite() {
+        // "a\rSPOOFED" renders as "SPOOFED" on a real terminal: CR returns the
+        // cursor to column 0 and the rest overwrites what was there.
+        assert_eq!(strip_ansi("a\rSPOOFED"), "a SPOOFED");
+    }
+
+    #[test]
+    fn strip_ansi_neutralizes_a_line_injection() {
+        // A candidate path carrying newlines could otherwise forge extra rows
+        // in the rejection report.
+        assert_eq!(
+            strip_ansi("/tmp/a\n  /usr/bin/claude\n      ok"),
+            "/tmp/a   /usr/bin/claude       ok"
+        );
+    }
+
+    #[test]
+    fn strip_ansi_replaces_controls_with_a_space_rather_than_deleting_them() {
+        // Deleting would splice these into "1.2.34.5.6", and the semver regex
+        // in launch_target::extract_version reads that as "1.2.34" — a version
+        // that was never printed, which would drive a spurious "upgrade".
+        assert_eq!(strip_ansi("1.2.3\n4.5.6"), "1.2.3 4.5.6");
+    }
+
+    #[test]
+    fn strip_ansi_keeps_tabs_and_ordinary_text() {
+        assert_eq!(strip_ansi("a\tb"), "a\tb");
+        assert_eq!(strip_ansi("hello world"), "hello world");
+        assert_eq!(strip_ansi("héllo ✓"), "héllo ✓");
+    }
+
+    #[test]
+    fn strip_ansi_survives_a_truncated_escape() {
+        assert_eq!(strip_ansi("x\x1b"), "x");
+        assert_eq!(strip_ansi("x\x1b["), "x");
+        assert_eq!(strip_ansi("x\x1b]0;unterminated"), "x");
+    }
+
+    // ------------------------------------------------------------------
+    // SEC-4: the timeout bounds the drain, not just the wait
+    // ------------------------------------------------------------------
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_grandchild_holding_the_pipe_cannot_outlive_the_timeout() {
+        // Measured before the fix: 60.0 s against a 10 s budget. The shim
+        // exits immediately, but the backgrounded `sleep` inherits its stdout,
+        // so the drain thread never sees EOF and the unconditional join blocked
+        // for as long as the grandchild lived. Point it at a daemon instead and
+        // it never returns at all.
+        let temp = tempfile::tempdir().unwrap();
+        let shim = temp.path().join("lingering");
+        std::fs::write(
+            &shim,
+            "#!/bin/sh\n/bin/sleep 30 &\nprintf '1.2.3\\n'\nexit 0\n",
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&shim).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&shim, perms).unwrap();
+
+        let timeout = Duration::from_secs(2);
+        let started = Instant::now();
+        let output = run_capped_output_with_timeout(Command::new(&shim), timeout, 4096)
+            .expect("the spawn itself must succeed")
+            .expect("the child exited, so this is not a timeout");
+        let elapsed = started.elapsed();
+
+        assert!(
+            output.status.success(),
+            "the child's own exit status stays authoritative"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1.2.3"),
+            "the bytes written before the deadline are kept: {:?}",
+            output.stdout
+        );
+        assert!(
+            elapsed < timeout * 3,
+            "the drain must be bounded by the timeout; took {elapsed:?}"
         );
     }
 }

@@ -124,9 +124,48 @@ pub(super) fn essential_destinations(layout: SourceLayout) -> &'static [&'static
     }
 }
 
-/// Layout-aware essential files. Bundle layout ships only `statusline.sh`;
-/// `AMPLIHACK.md` is absent from the bundle and is not required there.
+/// Layout-aware essential files. `AMPLIHACK.md` is absent from the bundle and
+/// is not required there.
+///
+/// # Why the system-prompt-append fragment is NOT here
+///
+/// It was, briefly, and the listing had to go rather than be guarded.
+///
+/// Adding a file here does not merely describe an install — it *arms* one.
+/// `missing_framework_paths` reports the gap, and because no Bundle install in
+/// the wild carries a newly-added file, the gap is reported for every user on
+/// the first launch after upgrade. `ensure_framework_installed` then resolves a
+/// source with `find_bundled_framework_root`, whose second step walks up from
+/// `current_dir()` and accepts any ancestor with an `amplifier-bundle/` that
+/// passes a *shape* check — and restages `context/`, `agents/`, `skills/` and
+/// `tools/amplihack/*.sh` from it into `$HOME`. For a file whose contents are
+/// then handed to the agent at system-prompt privilege, that made
+/// `git clone <fork> && cd <fork> && amplihack claude` a permanent, host-wide
+/// injection.
+///
+/// The fragment is now `include_str!`d into the binary
+/// (`launch::system_prompt_append::FRAGMENT`), so the feature reaches every
+/// install with no restage at all and this list keeps its pre-existing
+/// contents. Before adding an entry here, check that the file being added is
+/// not also *read* as an instruction to the agent.
 pub(super) fn essential_files(layout: SourceLayout) -> &'static [&'static str] {
+    match layout {
+        SourceLayout::Bundle => &["tools/statusline.sh"],
+        SourceLayout::LegacyClaude => &["tools/statusline.sh", "AMPLIHACK.md"],
+    }
+}
+
+/// The subset of [`essential_files`] that `stage_framework_directories` copies
+/// itself and may hard-fail on when it is absent from the **source**.
+///
+/// Deliberately narrower than [`essential_files`], which is the *destination*
+/// manifest. A file that already lives under an `essential_destinations`
+/// directory is staged by the recursive copy, so demanding it from the source
+/// as well buys nothing and costs a great deal: an install whose source bundle
+/// predates the file would `bail!` instead of installing, leaving the user with
+/// no working amplihack at all. `tools/statusline.sh` and `AMPLIHACK.md` are
+/// listed because nothing else copies them.
+pub(super) fn required_source_files(layout: SourceLayout) -> &'static [&'static str] {
     match layout {
         SourceLayout::Bundle => &["tools/statusline.sh"],
         SourceLayout::LegacyClaude => &["tools/statusline.sh", "AMPLIHACK.md"],

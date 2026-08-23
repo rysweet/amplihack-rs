@@ -30,10 +30,26 @@ use filesystem::{all_rel_dirs, get_all_files_and_dirs};
 use manifest::{manifest_path, write_manifest};
 use paths::*;
 use settings::*;
+#[cfg(test)]
+pub(in crate::commands) use types::SourceLayout as SourceLayoutForTest;
 use types::*;
 #[cfg(test)]
 pub(crate) use uninstall::remove_hook_registrations;
 pub use uninstall::run_uninstall;
+
+/// Test-only view of [`types::essential_files`].
+///
+/// Exists so `launch::tests_system_prompt_append` can assert that the
+/// system-prompt fragment is NOT listed — adding it there is what armed a
+/// cwd-sourced restage on every install (see `types::essential_files`), and a
+/// ratchet in the module that consumes the fragment is the one place a future
+/// edit would actually look.
+#[cfg(test)]
+pub(in crate::commands) fn essential_files_for_test(
+    layout: types::SourceLayout,
+) -> &'static [&'static str] {
+    types::essential_files(layout)
+}
 use verification::verify_install_completeness;
 
 use anyhow::{Context, Result, bail};
@@ -180,14 +196,42 @@ pub(super) fn read_layout_marker(claude_dir: &Path) -> Result<Option<SourceLayou
     }
 }
 
+/// Whether the staged framework assets need a restage.
+///
+/// Pure, so the "restage on every launch" loop it exists to prevent is
+/// testable without performing an install.
+///
+/// The load-bearing invariant is sharper than "every gap
+/// `missing_framework_paths` can emit is one a restage closes": it is that **no
+/// gap `missing_framework_paths` can emit is tolerated**. A tolerated gap
+/// survives `verify_framework_assets`, stays missing on disk, and re-satisfies
+/// `!missing.is_empty()` on the next launch — restaging forever. That is #1266
+/// verbatim, and it is pinned by `settings::tests::
+/// no_emittable_asset_gap_is_ever_tolerated`, which crosses the real producer
+/// against `is_tolerated_asset_gap` on both source layouts.
+///
+/// The gaps that are emitted must also each be closable by a restage. Issue
+/// #1266's loop came from listing an asset the restage source could not supply;
+/// the fix was to stop listing it (the system-prompt fragment is `include_str!`d
+/// into the binary now — see `launch::system_prompt_append`), not to special-
+/// case it here. Before adding an entry to `essential_files`, check that a
+/// restage can actually satisfy it, or this becomes a loop again.
+fn framework_restage_needed(staging_exists: bool, missing: &[String]) -> bool {
+    !staging_exists || !missing.is_empty()
+}
+
 pub(crate) fn ensure_framework_installed() -> Result<()> {
     let staging_dir = staging_claude_dir()?;
-    let presence_bootstrap_needed =
-        !staging_dir.exists() || !missing_framework_paths(&staging_dir)?.is_empty();
+    let staging_exists = staging_dir.exists();
+    let missing = if staging_exists {
+        missing_framework_paths(&staging_dir)?
+    } else {
+        Vec::new()
+    };
     // Issue #254: framework assets are now bundled in the amplihack-rs source
     // tree.  The legacy upstream freshness check is removed;
     // framework updates are delivered via amplihack-rs binary updates instead.
-    if presence_bootstrap_needed {
+    if framework_restage_needed(staging_exists, &missing) {
         println!("🔧 Bootstrapping amplihack framework assets...");
         run_install(None, false, false)?;
     }
@@ -227,12 +271,33 @@ pub(crate) fn ensure_framework_installed() -> Result<()> {
 ///
 /// Returns `true` if the settings file exists and its `hooks` section contains
 /// at least one entry referencing `amplihack-hooks` (the native binary).
+///
+/// The absent case is read off the failed read rather than a preceding
+/// `exists()` probe, matching the four sites collapsed in issue #1123. Two
+/// reasons, and the second is the one that matters: it drops a `stat` from a
+/// path that runs on every `amplihack claude` launch, and it closes the TOCTOU
+/// window where the file is created or removed between the probe and the read
+/// (a probe-then-read reports the state of the file at probe time, which is not
+/// the state it then reads). `NotFound` maps to the same `Ok(false)` the probe
+/// produced; every other error keeps the existing context message, so a
+/// present-but-unreadable settings file is still a hard error and is not
+/// silently reported as "no hooks registered".
+///
+/// One behaviour change is deliberate: `EACCES` while traversing a parent
+/// directory used to reach `exists() == false` and so `Ok(false)`, and now
+/// returns `Err`, which `ensure_framework_installed`'s `?` propagates and which
+/// fails the launch. Fail-closed is the right default for a security-relevant
+/// config we cannot read — "unreadable" is not evidence that no hooks are
+/// registered — but it is a real delta, so it is written down rather than
+/// discovered.
 fn hooks_registered_in_settings(settings_path: &Path) -> Result<bool> {
-    if !settings_path.exists() {
-        return Ok(false);
-    }
-    let raw = fs::read_to_string(settings_path)
-        .with_context(|| format!("failed to read {}", settings_path.display()))?;
+    let raw = match fs::read_to_string(settings_path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => {
+            return Err(e).with_context(|| format!("failed to read {}", settings_path.display()));
+        }
+    };
     let json: serde_json::Value = match serde_json::from_str(&raw) {
         Ok(v) => v,
         Err(_) => return Ok(false),

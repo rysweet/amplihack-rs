@@ -38,7 +38,7 @@ fn install_update_smoke_output_accepts_clean_transition_guidance() {
     let output = "\
 Updated amplihack: 0.9.70 -> 0.9.71
 Restart amplihack to use the new version.
-  ℹ️  Missing transitional XPIA shell assets will self-heal on next invocation
+  ℹ️  Missing assets will self-heal on next invocation
      • tools/xpia/hooks/session_start.sh
 ";
 

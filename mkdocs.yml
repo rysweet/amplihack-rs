@@ -68,6 +68,8 @@ nav:
       - Trust & Anti-Sycophancy: claude/context/TRUST.md
       - Rust Runner Execution Architecture: concepts/rust-runner-execution-architecture.md
       - Agent Binary Routing: concepts/agent-binary-routing.md
+      - Launch Target Resolution: LAUNCH_TARGET_RESOLUTION.md
+      - System Prompt Append: SYSTEM_PROMPT_APPEND.md
       - Memory Architecture: concepts/memory-backend-architecture.md
   - Workflows:
       - Default Workflow: claude/workflow/DEFAULT_WORKFLOW.md

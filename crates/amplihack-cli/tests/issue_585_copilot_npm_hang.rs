@@ -220,6 +220,27 @@ fn ensure_tool_available_error_is_actionable() {
 fn run_npm_install_still_uses_ignore_scripts() {
     // Contract: --ignore-scripts must remain to prevent post-install scripts
     // from running during automated install (security requirement).
+    //
+    // AMENDMENT (issue #1266, 2026-08-21) — recording what #585 was actually
+    // about, so the next reader does not re-derive it:
+    //
+    //   #585 is titled "fix: pass --os/--cpu flags to npm install to prevent
+    //   WSL hangs". Its root cause, verbatim: npm "downloaded optional deps
+    //   for every platform" and stuck in an infinite reify loop on
+    //   @github/copilot-darwin-arm64. The remedy became --omit=optional plus
+    //   an explicit, source-named, single-platform follow-up install.
+    //
+    //   --ignore-scripts appears NOWHERE in #585's diagnosis or its remedy. It
+    //   is asserted here as a generic security requirement that happens to
+    //   share a file with the hang tests — a naming coincidence, not a causal
+    //   link. With respect to #585 specifically, it is cargo-cult.
+    //
+    // The assertion is nevertheless UNCHANGED, and deliberately so: the claude
+    // native-install fix (issue #1266) keeps both protective flags for every
+    // package and installs the platform binary explicitly by name instead, so
+    // there is no relaxation to justify. This test passing against an
+    // unmodified `run_npm_install` is the proof that the copilot path did not
+    // regress. See crates/amplihack-cli/tests/claude_install_contract.rs.
     let bootstrap_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bootstrap.rs"));
     let fn_start = bootstrap_src
         .find("fn run_npm_install(")

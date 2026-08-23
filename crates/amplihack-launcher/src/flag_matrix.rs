@@ -43,7 +43,14 @@ impl std::fmt::Display for AgentBinary {
 pub struct FlagSet {
     /// Binary type this flag set is for.
     pub binary: AgentBinary,
-    /// Supports `--append-system-prompt <path>`.
+    /// Supports `--append-system-prompt <prompt>`.
+    ///
+    /// The argument is prompt TEXT, not a path. That is why the launch path in
+    /// `amplihack-cli` — the argv every user gets — emits the fragment's
+    /// contents rather than its path. `ClaudeLauncher::append_system_prompt` is
+    /// a `PathBuf`, so it emits the path-shaped `--append-system-prompt-file`
+    /// instead; that spelling is accepted but absent from `--help`, which is
+    /// why it stays on that opt-in path and out of the default argv.
     pub supports_append_prompt: bool,
     /// Supports `--add-dir <path>`.
     pub supports_add_dir: bool,

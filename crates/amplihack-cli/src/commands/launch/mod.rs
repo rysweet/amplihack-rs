@@ -8,6 +8,9 @@ mod checkout;
 mod command;
 mod context;
 mod power_steering;
+/// Issue #1265 Option 3 — `--append-system-prompt` delivery of amplihack's
+/// routing contract.
+mod system_prompt_append;
 
 #[cfg(test)]
 mod tests_blarify;
@@ -19,6 +22,8 @@ mod tests_env;
 mod tests_launch;
 #[cfg(test)]
 mod tests_subprocess_safe;
+#[cfg(test)]
+mod tests_system_prompt_append;
 
 // Re-exports — public API of the launch module.
 pub(crate) use checkout::resolve_checkout_repo;
@@ -180,7 +185,7 @@ pub fn run_launch(
             .with_amplihack_home() // WS3: AMPLIHACK_HOME
             .with_asset_resolver(); // Rust-native bundle asset resolver
         env_builder = env_builder.with_project_graph_db(&execution_dir)?;
-        let env_builder = augment_claude_launch_env(env_builder, tool)
+        let env_builder = augment_claude_launch_env(env_builder, tool, Some(binary.path.as_path()))
             .set_if(is_noninteractive(), "AMPLIHACK_NONINTERACTIVE", "1")
             .set_if(no_reflection, "AMPLIHACK_SKIP_REFLECTION", "1"); // WS2: propagate flags
 
@@ -202,8 +207,34 @@ pub fn run_launch(
         // Register signal handlers
         let shutdown = signals::register_handlers()?;
 
-        // Spawn child in its own process group
-        let mut child = ManagedChild::spawn(cmd)?;
+        // Spawn child in its own process group.
+        //
+        // Issue #1266, Defect 3: a raw spawn failure here used to surface as
+        // `failed to spawn child process: Exec format error (os error 8)`,
+        // which named nothing real and sent the user hunting for a CPU
+        // problem that did not exist. Resolution already knows what it tried
+        // and why each candidate was rejected — say that instead.
+        let mut child = match ManagedChild::spawn(cmd) {
+            Ok(child) => child,
+            Err(err) => {
+                let raw_os_error = err
+                    .downcast_ref::<std::io::Error>()
+                    .and_then(std::io::Error::raw_os_error);
+                // The tool and its package, not claude's: this path runs for
+                // copilot and codex too.
+                let package = crate::bootstrap::npm_package_for_install(tool).unwrap_or(tool);
+                anyhow::bail!(
+                    "{}",
+                    crate::launcher::enrich_spawn_error(
+                        raw_os_error,
+                        &binary.path,
+                        package,
+                        &amplihack_utils::launch_target::resolve(tool)
+                            .rejection_report(tool, package),
+                    )
+                );
+            }
+        };
 
         // Wait for child or signal
         let exit_code = wait_for_child_or_signal(&mut child, &shutdown)?;

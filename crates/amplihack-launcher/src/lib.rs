@@ -8,7 +8,6 @@ pub mod agent_memory;
 pub mod amplifier;
 pub mod append_handler;
 pub mod auto_stager;
-pub mod claude_binary_manager;
 pub mod codex;
 pub mod completion_signals;
 pub mod completion_verifier;
@@ -56,6 +55,5 @@ pub use work_summary::{
 
 // Re-exports for newly ported modules
 pub use auto_stager::{AutoStager, StagingResult};
-pub use claude_binary_manager::{BinaryInfo, ClaudeBinaryManager};
 pub use json_logger::JsonLogger;
 pub use platform_check::{PlatformCheckResult, check_platform_compatibility, is_native_windows};

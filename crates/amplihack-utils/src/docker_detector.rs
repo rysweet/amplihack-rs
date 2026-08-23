@@ -97,16 +97,25 @@ fn which_docker() -> Option<std::path::PathBuf> {
 /// (including the "empty" and "unset" `PATH` cases) without mutating the
 /// process-global `PATH`, which would race with any concurrently spawning
 /// subprocess in other tests.
+///
+/// F-S5 — relative entries are dropped, the third instance of the rule
+/// `launch_target::path_dirs` and `binary_finder::search_path_dirs` both
+/// enforce. POSIX reads an empty `$PATH` element as the current directory, so
+/// `split_paths("/usr/bin:")` would make `is_file()` below stat `docker`
+/// against whatever directory amplihack was launched from, and return that as
+/// the docker binary.
 fn which_docker_in(path_var: Option<std::ffi::OsString>) -> Option<std::path::PathBuf> {
     let paths = path_var?;
-    std::env::split_paths(&paths).find_map(|dir| {
-        let candidate = dir.join("docker");
-        if candidate.is_file() {
-            Some(candidate)
-        } else {
-            None
-        }
-    })
+    std::env::split_paths(&paths)
+        .filter(|dir| dir.is_absolute())
+        .find_map(|dir| {
+            let candidate = dir.join("docker");
+            if candidate.is_file() {
+                Some(candidate)
+            } else {
+                None
+            }
+        })
 }
 
 /// Run a docker command silently, returning `Some(true)` if exit code is 0.

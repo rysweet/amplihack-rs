@@ -50,6 +50,23 @@ fn require_binary() -> PathBuf {
     bin
 }
 
+/// A stub `claude` that passes the launch-target health gate (issue #1266).
+///
+/// The gate rejects any candidate whose `--version` does not produce a
+/// parseable semver — that is the whole point of it, since the placeholder
+/// amplihack used to launch was exactly a script that could not report a
+/// version. A stub written as `#!/bin/sh\nexit 0\n` is indistinguishable from
+/// that placeholder, so it is no longer launched and resolution falls through
+/// to a real claude on the host, which is not what these tests are about. This
+/// stub answers `--version`.
+///
+/// It carries no padding. It used to be padded past a 4 KiB size threshold,
+/// which is how a test fixture ends up documenting a production bug instead of
+/// catching it: that threshold also rejected `@github/copilot`'s real loader.
+fn healthy_stub_script() -> Vec<u8> {
+    b"#!/bin/sh\ncase \"$1\" in --version) echo '9.9.9 (stub claude)' ;; esac\nexit 0\n".to_vec()
+}
+
 // ---------------------------------------------------------------------------
 // WS3-INT-1: --skip-update-check is accepted by `amplihack launch --help`
 // ---------------------------------------------------------------------------
@@ -110,7 +127,7 @@ fn launch_with_skip_update_check_exits_zero_with_stub_tool() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::write(&stub_bin, b"#!/bin/sh\nexit 0\n").expect("failed to write stub claude");
+        std::fs::write(&stub_bin, healthy_stub_script()).expect("failed to write stub claude");
         let mut perms = std::fs::metadata(&stub_bin)
             .expect("failed to stat stub")
             .permissions();
@@ -163,7 +180,7 @@ fn launch_without_skip_update_check_is_not_an_error() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::write(&stub_bin, b"#!/bin/sh\nexit 0\n").expect("failed to write stub claude");
+        std::fs::write(&stub_bin, healthy_stub_script()).expect("failed to write stub claude");
         let mut perms = std::fs::metadata(&stub_bin)
             .expect("failed to stat stub")
             .permissions();
@@ -220,7 +237,7 @@ fn launch_with_skip_update_check_completes_without_npm_subprocess_overhead() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::write(&stub_bin, b"#!/bin/sh\nexit 0\n").expect("failed to write stub claude");
+        std::fs::write(&stub_bin, healthy_stub_script()).expect("failed to write stub claude");
         let mut perms = std::fs::metadata(&stub_bin)
             .expect("failed to stat stub")
             .permissions();

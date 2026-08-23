@@ -168,7 +168,7 @@ result = run_meta_delegation(
     success_criteria="...",
     platform="claude-code",
     environment={
-        "CLAUDE_CLI_PATH": "/custom/path/to/claude"
+        "CLAUDE_BINARY_PATH": "/custom/path/to/claude"
     }
 )
 ```

@@ -108,23 +108,12 @@ pub(super) fn ensure_settings_json(
 }
 
 pub(super) fn verify_framework_assets(claude_dir: &Path) -> Result<()> {
-    let missing = missing_framework_paths(claude_dir)?;
-    if missing.is_empty() {
-        println!("  ✅ Required framework assets found");
-    } else if is_post_update_install()
-        && missing
-            .iter()
-            .all(|path| is_transitional_xpia_asset_gap(path))
-    {
-        println!("  ℹ️  Missing transitional XPIA shell assets will self-heal on next invocation");
-        for path in &missing {
-            println!("     • {path}");
-        }
-    } else {
-        println!("  ❌ Missing required framework assets:");
-        for path in &missing {
-            println!("     • {path}");
-        }
+    let (report, missing) = render_framework_asset_verification(
+        missing_framework_paths(claude_dir)?,
+        is_post_update_install(),
+    );
+    print!("{report}");
+    if !missing.is_empty() {
         bail!(
             "required framework assets are missing from {}: {}",
             claude_dir.display(),
@@ -147,50 +136,87 @@ pub(super) fn assert_no_noisy_install_update_regressions(output: &str) -> Result
     crate::install_output_contract::assert_no_noisy_install_update_regressions(output)
 }
 
-#[cfg(test)]
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum FrameworkAssetVerificationMode {
-    NormalInstall,
-    PostUpdateInstall,
-}
-
-#[cfg(test)]
-pub(super) fn render_framework_asset_verification_for_test(
-    missing: &[&str],
-    mode: FrameworkAssetVerificationMode,
-) -> Result<String> {
-    let mut output = String::new();
-    let post_update = mode == FrameworkAssetVerificationMode::PostUpdateInstall;
-    if missing.is_empty() {
-        output.push_str("  ✅ Required framework assets found\n");
-    } else if post_update
-        && missing
-            .iter()
-            .all(|path| is_transitional_xpia_asset_gap(path))
-    {
-        output.push_str(
-            "  ℹ️  Missing transitional XPIA shell assets will self-heal on next invocation\n",
-        );
-        for path in missing {
-            output.push_str(&format!("     • {path}\n"));
-        }
-    } else {
-        output.push_str("  ❌ Missing required framework assets:\n");
-        for path in missing {
-            output.push_str(&format!("     • {path}\n"));
-        }
-    }
-    Ok(output)
-}
-
 fn is_post_update_install() -> bool {
     std::env::var_os("AMPLIHACK_POST_UPDATE_INSTALL").is_some_and(|value| value == "1")
 }
 
+/// Both clauses are load-bearing, and dropping either recreates issue #1266.
+///
+/// `missing_framework_paths` emits the bare directory `tools/xpia` as its own
+/// entry under `LegacyClaude`. A restage does not create an empty directory, so
+/// tolerating that entry means `verify_framework_assets` passes with the gap
+/// still open, `missing_framework_paths` reports it again next launch, and the
+/// bootstrap banner prints forever — the very loop this branch exists to close.
+/// `contains("tools/xpia/hooks/")` excludes the directory entry; `ends_with`
+/// excludes `.py` siblings, which no restage installs either.
+///
+/// Pinned by `transitional_xpia_asset_gap_is_limited_to_legacy_shell_hooks` and,
+/// against the real producer, by `no_emittable_asset_gap_is_ever_tolerated`.
 fn is_transitional_xpia_asset_gap(path: &str) -> bool {
     let normalized = path.replace('\\', "/");
     normalized.contains("tools/xpia/hooks/") && normalized.ends_with(".sh")
+}
+
+/// The relative asset path inside one entry of [`missing_framework_paths`].
+///
+/// Every entry there is rendered as `"{relative} (expected at {absolute})"`.
+/// The tolerance predicate classifies by the relative path, so it has to be
+/// handed the relative path — matched against the whole rendered entry,
+/// `is_transitional_xpia_asset_gap`'s `ends_with(".sh")` is unsatisfiable and
+/// the tolerance silently became fatal. That is not hypothetical: it is how a
+/// stale source bundle turned issue #1265's one new file into
+/// `amplihack: self-heal failed` on a working machine.
+///
+/// Trailing `)` rather than the first `(` is not the split point, because a
+/// path may legitimately contain parentheses.
+fn relative_asset_path(entry: &str) -> &str {
+    entry
+        .split_once(" (expected at ")
+        .map_or(entry, |(relative, _)| relative)
+}
+
+/// A missing asset that must not fail the install.
+///
+/// One class: the XPIA hook shims, which a post-update restage really does
+/// install. The file exists in the bundle, so the next restage closes the gap.
+fn is_tolerated_asset_gap(entry: &str, post_update: bool) -> bool {
+    post_update && is_transitional_xpia_asset_gap(relative_asset_path(entry))
+}
+
+/// Render the framework-asset verification block, and return the gaps that are
+/// still fatal.
+///
+/// Two classes, two lines: fatal, and tolerated-and-self-healing. Every
+/// tolerated gap is a transition the next restage closes — see
+/// [`is_tolerated_asset_gap`].
+///
+/// Pure, and the **only** implementation of this rendering. A `#[cfg(test)]`
+/// copy used to sit alongside it for the output-contract test; the two drifted
+/// apart the first time the tolerated-gap rule changed, and a test asserting
+/// against a private replica of production output tests nothing.
+pub(super) fn render_framework_asset_verification(
+    missing: Vec<String>,
+    post_update: bool,
+) -> (String, Vec<String>) {
+    let (tolerated, missing): (Vec<String>, Vec<String>) = missing
+        .into_iter()
+        .partition(|path| is_tolerated_asset_gap(path, post_update));
+    let mut report = String::new();
+    if !tolerated.is_empty() {
+        report.push_str("  ℹ️  Missing assets will self-heal on next invocation\n");
+        for path in &tolerated {
+            report.push_str(&format!("     • {path}\n"));
+        }
+    }
+    if missing.is_empty() {
+        report.push_str("  ✅ Required framework assets found\n");
+    } else {
+        report.push_str("  ❌ Missing required framework assets:\n");
+        for path in &missing {
+            report.push_str(&format!("     • {path}\n"));
+        }
+    }
+    (report, missing)
 }
 
 pub(super) fn read_settings_json(settings_path: &Path) -> Result<Value> {
@@ -562,6 +588,51 @@ mod tests {
         assert!(!missing.is_empty());
     }
 
+    /// The invariant the whole restage rule rests on: **no gap
+    /// `missing_framework_paths` can emit is ever tolerated**.
+    ///
+    /// This crosses the real producer against the real predicate, which the
+    /// neighbouring tolerance tests cannot do — they hand-build entry strings,
+    /// so they pin the predicate's shape but say nothing about whether anything
+    /// can actually reach it.
+    ///
+    /// Run for both layouts because `missing_framework_paths` branches on the
+    /// `.layout` marker, so each layout is a different producer with a
+    /// different set of `essential_destinations` / `essential_files`.
+    ///
+    /// `post_update = true` is the only argument under which tolerance can fire
+    /// at all, so it is the only one worth asserting under.
+    #[test]
+    fn no_emittable_asset_gap_is_ever_tolerated() {
+        for layout in [SourceLayout::Bundle, SourceLayout::LegacyClaude] {
+            let tmp = tempfile::tempdir().unwrap();
+            let claude_dir = tmp.path().join(".claude");
+            super::super::write_layout_marker(&claude_dir, layout).unwrap();
+
+            let missing = missing_framework_paths(&claude_dir).unwrap();
+            assert!(
+                !missing.is_empty(),
+                "{layout:?}: an empty staging dir must report gaps, or this test \
+                 passes vacuously"
+            );
+
+            for entry in &missing {
+                assert!(
+                    !is_tolerated_asset_gap(entry, true),
+                    "{layout:?}: `{entry}` is a gap the producer can emit AND the \
+                     tolerance predicate accepts. That combination is issue #1266: \
+                     a tolerated gap passes `verify_framework_assets`, so the \
+                     install succeeds with the asset still absent, so \
+                     `missing_framework_paths` reports it again on the next \
+                     launch, so `framework_restage_needed` fires again — \
+                     restaging and printing the bootstrap banner on every launch, \
+                     forever. Tolerance is only ever sound for a gap the very \
+                     next restage closes."
+                );
+            }
+        }
+    }
+
     #[test]
     fn transitional_xpia_asset_gap_is_limited_to_legacy_shell_hooks() {
         assert!(is_transitional_xpia_asset_gap(
@@ -577,5 +648,51 @@ mod tests {
         assert!(!is_transitional_xpia_asset_gap(
             "tools/amplihack/xpia_status.sh"
         ));
+    }
+
+    /// The transitional class keeps the self-heal line — it is true there.
+    #[test]
+    fn a_transitional_xpia_gap_still_reports_that_it_self_heals() {
+        let entry = "tools/xpia/hooks/pre_tool_use.sh (expected at /home/u/x.sh)".to_string();
+        let (report, still_missing) = render_framework_asset_verification(vec![entry], true);
+
+        assert!(still_missing.is_empty());
+        assert!(
+            report.contains("self-heal"),
+            "the file IS in the bundle; the next restage installs it:\n{report}"
+        );
+        assert!(
+            !report.contains("predates the file"),
+            "and it is not a stale bundle:\n{report}"
+        );
+    }
+
+    /// An asset nobody tolerates is fatal, and says so on its own line.
+    ///
+    /// The system-prompt fragment used to be tolerated here, because
+    /// `essential_files(Bundle)` listed it and a source bundle predating it
+    /// could not supply it. It is `include_str!`d into the binary now and is
+    /// not an installed asset, so `missing_framework_paths` cannot emit it —
+    /// and anything else that does turn up missing is a real, fatal gap.
+    #[test]
+    fn an_untolerated_gap_is_fatal_and_kept_off_the_self_heal_line() {
+        let fatal = "context/SYSTEM_PROMPT_APPEND.md (expected at /home/u/s.md)".to_string();
+        let healing = "tools/xpia/hooks/pre_tool_use.sh (expected at /home/u/x.sh)".to_string();
+        let (report, still_missing) =
+            render_framework_asset_verification(vec![healing.clone(), fatal.clone()], true);
+
+        assert_eq!(still_missing, vec![fatal.clone()]);
+        assert!(report.contains("self-heal"), "{report}");
+        assert!(
+            report.contains("Missing required framework assets"),
+            "{report}"
+        );
+        let heal_at = report.find("self-heal").unwrap();
+        let fatal_at = report.find("Missing required framework assets").unwrap();
+        let between = &report[heal_at..fatal_at];
+        assert!(
+            between.contains("pre_tool_use.sh") && !between.contains("SYSTEM_PROMPT_APPEND"),
+            "each line must list only its own class:\n{report}"
+        );
     }
 }

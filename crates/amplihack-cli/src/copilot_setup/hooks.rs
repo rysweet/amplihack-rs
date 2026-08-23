@@ -430,6 +430,18 @@ mod tests {
     }
 
     fn assert_bash_accepts_script(script: &Path) {
+        // `bash` is spawned by bare name, so this resolves through the
+        // process-global $PATH. Sibling tests in this crate (install::binary,
+        // install::hook_staging, recipe_runner) legitimately point $PATH at a
+        // temp dir to exercise install-location logic; they serialise those
+        // mutations on `env_lock`. This spawn is a *reader* of the same global
+        // and must join the same lock, or it intermittently fails to spawn
+        // ("failed to spawn subprocess") whenever libtest overlaps it with a
+        // mutator on another thread.
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
         let mut command = Command::new("bash");
         command.arg("-n").arg(script);
         let output = run_output_with_timeout(command, Duration::from_secs(2))

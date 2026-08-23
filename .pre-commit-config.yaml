@@ -40,9 +40,14 @@ repos:
         pass_filenames: false
         files: '(\.rs|Cargo\.toml|Cargo\.lock)$'
 
+      # `--no-fail-fast` is not optional. Without it the first failing test binary
+      # aborts the run, and one flake in an untouched crate is indistinguishable
+      # from a real regression in your own change: an `amplihack-signal` flake
+      # stopped a workspace run at 7463 of 8647 and reported nothing about the
+      # 1184 tests that never executed. Run everything, then read the list.
       - id: cargo-test
         name: cargo test (workspace, skip heavy)
-        entry: bash -c 'CARGO_TARGET_DIR="${TMPDIR:-/tmp}/amplihack-precommit-target" cargo test --workspace --locked -- --skip fleet_probe --skip kuzu --skip fleet::fleet_local --skip memory::kuzu'
+        entry: bash -c 'CARGO_TARGET_DIR="${TMPDIR:-/tmp}/amplihack-precommit-target" cargo test --workspace --locked --no-fail-fast -- --skip fleet_probe --skip kuzu --skip fleet::fleet_local --skip memory::kuzu'
         language: system
         pass_filenames: false
         stages: [pre-push]

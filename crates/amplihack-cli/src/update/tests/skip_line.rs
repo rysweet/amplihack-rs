@@ -152,10 +152,26 @@ fn wants_startup_update_positive() {
     );
 }
 
+/// Serialise this module's `SHELL` mutations against every other env-mutating
+/// test in this binary.
+///
+/// `test_support::env_lock()` returns the `&'static Mutex` itself, so
+/// `let _lock = env_lock();` binds a reference and locks nothing — which is
+/// what these three tests did. `install::tests::path_precedence_tests` sets
+/// `SHELL=/bin/bash` in the same test binary while holding the real lock, so
+/// `shell_profile_path_unknown` intermittently read that instead of the
+/// `/bin/csh` it had just set, and failed for a reason that had nothing to do
+/// with the code under test.
+fn shell_env_guard() -> std::sync::MutexGuard<'static, ()> {
+    crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[test]
 fn shell_profile_path_bash() {
     use crate::commands::install::paths::shell_profile_path;
-    let _lock = crate::test_support::env_lock();
+    let _lock = shell_env_guard();
     unsafe { std::env::set_var("SHELL", "/bin/bash") };
     let result = shell_profile_path();
     unsafe { std::env::remove_var("SHELL") };
@@ -171,7 +187,7 @@ fn shell_profile_path_bash() {
 #[test]
 fn shell_profile_path_zsh() {
     use crate::commands::install::paths::shell_profile_path;
-    let _lock = crate::test_support::env_lock();
+    let _lock = shell_env_guard();
     unsafe { std::env::set_var("SHELL", "/bin/zsh") };
     let result = shell_profile_path();
     unsafe { std::env::remove_var("SHELL") };
@@ -187,7 +203,7 @@ fn shell_profile_path_zsh() {
 #[test]
 fn shell_profile_path_unknown() {
     use crate::commands::install::paths::shell_profile_path;
-    let _lock = crate::test_support::env_lock();
+    let _lock = shell_env_guard();
     unsafe { std::env::set_var("SHELL", "/bin/csh") };
     let result = shell_profile_path();
     unsafe { std::env::remove_var("SHELL") };

@@ -66,11 +66,16 @@ impl DockerDetector {
             .unwrap_or(false)
     }
 
+    /// Whether this launch should be redirected into a container.
+    ///
+    /// Delegates to [`should_use_docker_lazily`], which is the same rule as
+    /// [`should_use_docker_from_state`] but does not compute an operand until
+    /// the operands before it have failed to decide the answer.
     pub(crate) fn should_use_docker(self) -> bool {
-        should_use_docker_from_state(
+        should_use_docker_lazily(
             env::var("AMPLIHACK_USE_DOCKER").ok().as_deref(),
-            self.is_in_docker(),
-            self.is_running(),
+            || self.is_in_docker(),
+            || self.is_running(),
         )
     }
 
@@ -96,6 +101,53 @@ impl DockerDetector {
             .map(|output| !String::from_utf8_lossy(&output.stdout).trim().is_empty())
             .unwrap_or(false)
     }
+}
+
+/// [`should_use_docker_from_state`], but lazy in its two probes.
+///
+/// # Why this exists
+///
+/// The rule is `env && !in_docker && running`, and expressing it by calling
+/// `should_use_docker_from_state` with the probes as arguments looked
+/// equivalent but was not: Rust evaluates arguments eagerly, so **both** probes
+/// ran before the env gate could reject them. [`DockerDetector::is_running`]
+/// scans `$PATH` for `docker` and then spawns `docker info`, which talks to the
+/// daemon socket — routinely 200 ms-1 s, and up to the full
+/// [`DOCKER_PROBE_TIMEOUT`] of 5 s in the common case where a docker *client*
+/// is installed but no daemon is running.
+///
+/// That ran on every `amplihack claude` launch, so every user with docker on
+/// `$PATH` paid a subprocess, and potentially five seconds of startup latency,
+/// to compute an operand of a conjunction whose first term was already `false`.
+///
+/// Short-circuiting cannot change the answer: each early return reproduces the
+/// conjunct it stands for, so any input that returns early would have produced
+/// `false` from the state function too. `should_use_docker_from_state` remains
+/// the single source of truth for the decision and remains testable against
+/// synthetic state; this adds only the evaluation order.
+///
+/// Taking the probes as closures rather than `bool`s is the point — it is what
+/// makes "the probes are not run" a property the type system enforces at the
+/// call site and `a_falsy_env_never_probes_for_docker` can assert directly.
+/// The ordering is stated in full above and needs no external referent; that
+/// this form and the state function agree is proved by
+/// `the_lazy_form_agrees_with_the_state_function_everywhere`, which crosses all
+/// 20 input combinations.
+fn should_use_docker_lazily(
+    env_value: Option<&str>,
+    in_docker: impl FnOnce() -> bool,
+    docker_running: impl FnOnce() -> bool,
+) -> bool {
+    if !is_truthy_env_value(env_value) {
+        return false;
+    }
+    // Cheapest-first: `is_in_docker` is a small file read, `is_running` is a
+    // subprocess.
+    let in_docker = in_docker();
+    if in_docker {
+        return false;
+    }
+    should_use_docker_from_state(env_value, in_docker, docker_running())
 }
 
 pub(crate) fn should_use_docker_from_state(
@@ -141,6 +193,79 @@ mod tests {
         assert!(!should_use_docker_from_state(Some("true"), true, true));
         assert!(!should_use_docker_from_state(Some("true"), false, false));
         assert!(!should_use_docker_from_state(Some("0"), false, true));
+    }
+
+    /// The probes must not run when the environment has already decided.
+    ///
+    /// This is the regression that motivated [`should_use_docker_lazily`]:
+    /// `is_running()` spawns `docker info` (up to a 5 s daemon timeout) and it
+    /// was being evaluated as an eager argument on every launch, including the
+    /// overwhelmingly common one where `AMPLIHACK_USE_DOCKER` is unset. The
+    /// assertion is on the *call counts*, not on the return value, because the
+    /// return value was already correct — it was the cost of computing it that
+    /// was wrong.
+    #[test]
+    fn a_falsy_env_never_probes_for_docker() {
+        for env_value in [None, Some("0"), Some("false"), Some("")] {
+            let in_docker_calls = std::cell::Cell::new(0);
+            let running_calls = std::cell::Cell::new(0);
+
+            let decision = should_use_docker_lazily(
+                env_value,
+                || {
+                    in_docker_calls.set(in_docker_calls.get() + 1);
+                    false
+                },
+                || {
+                    running_calls.set(running_calls.get() + 1);
+                    true
+                },
+            );
+
+            assert!(!decision, "env {env_value:?} must not select docker");
+            assert_eq!(
+                (in_docker_calls.get(), running_calls.get()),
+                (0, 0),
+                "env {env_value:?} decides the answer alone; neither probe may run"
+            );
+        }
+    }
+
+    /// Being inside a container decides the answer before the subprocess.
+    #[test]
+    fn being_in_docker_short_circuits_the_daemon_probe() {
+        let running_calls = std::cell::Cell::new(0);
+        let decision = should_use_docker_lazily(
+            Some("true"),
+            || true,
+            || {
+                running_calls.set(running_calls.get() + 1);
+                true
+            },
+        );
+        assert!(!decision);
+        assert_eq!(
+            running_calls.get(),
+            0,
+            "already inside docker; `docker info` must not be spawned"
+        );
+    }
+
+    /// Laziness must not have changed the decision itself: the lazy form and
+    /// the state function agree on every combination of inputs.
+    #[test]
+    fn the_lazy_form_agrees_with_the_state_function_everywhere() {
+        for env_value in [None, Some("0"), Some("true"), Some("1"), Some("yes")] {
+            for in_docker in [false, true] {
+                for running in [false, true] {
+                    assert_eq!(
+                        should_use_docker_lazily(env_value, || in_docker, || running),
+                        should_use_docker_from_state(env_value, in_docker, running),
+                        "disagreement at {env_value:?}/{in_docker}/{running}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

@@ -63,7 +63,7 @@ _(no top-level modules)_
 
 ## `amplihack-launcher` (crates/amplihack-launcher)
 
-`agent_memory`, `amplifier`, `append_handler`, `auto_mode`, `auto_mode_coordinator`, `auto_mode_exec`, `auto_mode_state`, `auto_mode_ui`, `auto_stager`, `claude_binary_manager`, `codex`, `completion_signals`, `completion_verifier`, `completion_verifier_tests`, `copilot_auto_install`, `copilot_launcher`, `copilot_mcp`, `copilot_staging`, `flag_matrix`, `fork_manager`, `json_logger`, `launcher_core`, `memory_config`, `nesting_detector`, `platform_check`, `prompt_delivery`, `repo_checkout`, `session_capture`, `session_tracker`, `settings_manager`, `staging_cleanup`, `staging_safety`, `work_summary`, `work_summary_tests`
+`agent_memory`, `amplifier`, `append_handler`, `auto_stager`, `codex`, `completion_signals`, `completion_verifier`, `completion_verifier_tests`, `copilot_auto_install`, `copilot_launcher`, `copilot_mcp`, `copilot_staging`, `flag_matrix`, `fork_manager`, `json_logger`, `launcher_core`, `memory_config`, `nesting_detector`, `platform_check`, `prompt_delivery`, `repo_checkout`, `session_capture`, `session_tracker`, `settings_manager`, `staging_cleanup`, `staging_safety`, `work_summary`, `work_summary_tests`
 
 ## `amplihack-memory` (crates/amplihack-memory)
 
@@ -111,7 +111,7 @@ _(no top-level modules)_
 
 ## `amplihack-utils` (crates/amplihack-utils)
 
-`agent_binary`, `artifact_guard`, `bundle_generator`, `claude_cli`, `claude_md`, `cleanup`, `defensive`, `docker_detector`, `docker_manager`, `hook_merge`, `kb_types`, `knowledge_builder`, `litellm_callbacks`, `llm_client`, `observability`, `plugin_cli`, `plugin_manager`, `plugin_manager_paths`, `plugin_manifest`, `plugin_verifier`, `power_steering`, `prerequisites`, `process`, `project_init`, `project_init_detect`, `prompt_delivery`, `secure_files`, `send_input_allowlist`, `settings_generator`, `settings_helpers`, `simple_tui`, `simple_tui_runner`, `simple_tui_types`, `slugify`, `terminal_launcher`, `tests/`, `trace_logger`, `uvx_manager`, `worktree`
+`agent_binary`, `artifact_guard`, `bundle_generator`, `claude_md`, `cleanup`, `defensive`, `docker_detector`, `docker_manager`, `hook_merge`, `kb_types`, `knowledge_builder`, `litellm_callbacks`, `llm_client`, `observability`, `plugin_cli`, `plugin_manager`, `plugin_manager_paths`, `plugin_manifest`, `plugin_verifier`, `power_steering`, `prerequisites`, `process`, `project_init`, `project_init_detect`, `prompt_delivery`, `secure_files`, `send_input_allowlist`, `settings_generator`, `settings_helpers`, `simple_tui`, `simple_tui_runner`, `simple_tui_types`, `slugify`, `terminal_launcher`, `tests/`, `trace_logger`, `uvx_manager`, `worktree`
 
 ## `amplihack-workflows` (crates/amplihack-workflows)
 

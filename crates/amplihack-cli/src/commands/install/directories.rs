@@ -126,7 +126,7 @@ pub(super) fn copytree_manifest(
         println!("  ✅ Copied settings.json");
     }
 
-    for file in essential_files(layout) {
+    for file in required_source_files(layout) {
         let source_file = source_root.join(file);
         if !source_file.exists() {
             anyhow::bail!(
