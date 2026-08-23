@@ -1,0 +1,22 @@
+{
+  "related_discoveries": {
+    "evidence_status": "Evidence is unavailable because no issue data, repository files, git history, configuration, environment, or external resources were inspected; no discoveries are inferred or fabricated.",
+    "planned_activity": "In a future separately authorized investigation, analyzer and patterns are the primary agents for read-only historical exploration scoped exclusively to Step 5d Security Requirements Review for Claude direct skill synchronization. security-review is focused explicitly on Step 5d security requirements. The investigation must not implement, modify, merge, or otherwise change anything.",
+    "completion_check": "Complete only when the future read-only report records either at least one evidence-cited Step 5d discovery or the exact statement that no related discovery was found, and records zero implementation, modification, or merge actions."
+  },
+  "applicable_patterns": {
+    "evidence_status": "Evidence is unavailable because no issue data, repository files, git history, configuration, environment, or external resources were inspected; no patterns are inferred or fabricated.",
+    "planned_activity": "In a future separately authorized investigation, patterns and analyzer are the primary agents for read-only identification of historically evidenced patterns scoped exclusively to Step 5d Security Requirements Review for Claude direct skill synchronization. security-review is focused explicitly on whether those patterns satisfy Step 5d security requirements. The investigation must not implement, modify, merge, or otherwise change anything.",
+    "completion_check": "Complete only when every reported pattern has at least one cited historical source or the report contains the exact statement that no applicable pattern was found, and records zero implementation, modification, or merge actions."
+  },
+  "suggested_starting_points": {
+    "evidence_status": "Evidence is unavailable because no issue data, repository files, git history, configuration, environment, or external resources were inspected; no starting points are inferred or fabricated.",
+    "planned_activity": "In a future separately authorized investigation, analyzer and patterns are the primary agents and must begin with read-only source discovery limited exclusively to Step 5d Security Requirements Review for Claude direct skill synchronization. security-review is focused explicitly on Step 5d security requirements after relevant historical sources are identified. The investigation must not implement, modify, merge, or otherwise change anything.",
+    "completion_check": "Complete only when the future report lists each starting point with a verifiable source reference and Step 5d relevance statement or contains the exact statement that no supported starting point was found, and records zero implementation, modification, or merge actions."
+  },
+  "warnings": {
+    "evidence_status": "Evidence is unavailable because no issue data, repository files, git history, configuration, environment, or external resources were inspected; no evidence-dependent warnings are inferred or fabricated.",
+    "planned_activity": "In a future separately authorized investigation, analyzer and patterns are the primary agents for read-only identification of evidence-backed limitations and risks scoped exclusively to Step 5d Security Requirements Review for Claude direct skill synchronization. security-review is focused explicitly on Step 5d security requirements. The investigation must not implement, modify, merge, or otherwise change anything; stop and report any scope expansion or unsupported claim rather than performing it.",
+    "completion_check": "Complete only when every warning cites supporting evidence or the report contains the exact statement that no evidence-backed warning was found, explicitly confirms Step 5d-only scope, and records zero implementation, modification, or merge actions."
+  }
+}
