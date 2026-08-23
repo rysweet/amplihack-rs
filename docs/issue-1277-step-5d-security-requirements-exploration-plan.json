@@ -1,0 +1,22 @@
+{
+  "related_discoveries": {
+    "evidence": "Evidence is unavailable because this planning step did not inspect issue data, repository files, git history, configuration, environment, or external resources.",
+    "planned_read_only_activity": "In the future historical investigation, analyzer and patterns will record only discoveries directly supported by read-only historical evidence scoped exclusively to Step 5d Security Requirements Review for Claude direct skill synchronization. This plan does not perform that investigation and excludes implementation, modification, and merge activity.",
+    "completion_check": "Complete only when every recorded discovery cites read-only Step 5d historical evidence, or the field records zero discoveries and explicitly states that evidence remains unavailable; verify the discovery count and citation count are equal."
+  },
+  "applicable_patterns": {
+    "evidence": "Evidence is unavailable because this planning step did not inspect issue data, repository files, git history, configuration, environment, or external resources.",
+    "planned_read_only_activity": "In the future historical investigation, patterns, as a primary agent, will identify patterns only from read-only evidence scoped exclusively to Step 5d Security Requirements Review for Claude direct skill synchronization, with analyzer as the other primary agent. This plan excludes implementation, modification, and merge activity.",
+    "completion_check": "Complete only when every listed pattern has at least one cited item of read-only Step 5d historical evidence, or the field lists zero patterns and explicitly states that evidence remains unavailable; verify no unsupported pattern is present."
+  },
+  "suggested_starting_points": {
+    "evidence": "Evidence is unavailable because this planning step did not inspect issue data, repository files, git history, configuration, environment, or external resources.",
+    "planned_read_only_activity": "For the future historical investigation, analyzer and patterns are the primary agents. security-review is focused explicitly and exclusively on Step 5d security requirements for Claude direct skill synchronization. Their work is limited to read-only review and excludes implementation, modification, and merge activity.",
+    "completion_check": "Complete only when the future investigation assignment names exactly analyzer and patterns as primary agents, assigns security-review explicitly to Step 5d security requirements for Claude direct skill synchronization, and records zero implementation, modification, or merge actions."
+  },
+  "warnings": {
+    "evidence": "Evidence is unavailable because this planning step did not inspect issue data, repository files, git history, configuration, environment, or external resources.",
+    "planned_read_only_activity": "Do not infer or fabricate evidence. Do not broaden scope beyond Step 5d Security Requirements Review for Claude direct skill synchronization. Do not perform the future investigation during this planning step. All future investigation activity must remain read-only and exclude implementation, modification, and merge activity.",
+    "completion_check": "Complete only when a scope audit finds zero evidence claims without citations, zero sources outside Step 5d, zero inferred or fabricated findings, and zero implementation, modification, or merge actions."
+  }
+}
