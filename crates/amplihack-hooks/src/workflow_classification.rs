@@ -50,6 +50,18 @@ impl Hook for WorkflowClassificationReminderHook {
             return Ok(Value::Object(serde_json::Map::new()));
         }
 
+        // Issue #1328: a prompt written by amplihack for one of its own recipe
+        // steps is never a human changing topic, and must never be routed.
+        //
+        // This is the primary gate. The two below it are secondary and both
+        // proved unreliable in the field: `is_nested_recipe_session` reads an env
+        // var nothing seeded at a root until #1326, and `is_workflow_active` reads
+        // a semaphore whose path is derived from the agent's cwd, so a worktree hop
+        // hides it from its own holder.
+        if is_agent_authored_prompt() {
+            return Ok(Value::Object(serde_json::Map::new()));
+        }
+
         // When a workflow is already active, skip classification reminders
         // to prevent recursive workflow invocation (ported from Python PR #3974).
         let dirs = ProjectDirs::from_cwd();
@@ -75,6 +87,27 @@ impl Hook for WorkflowClassificationReminderHook {
             }
         }))
     }
+}
+
+/// Environment marker set by `recipe::run::execute` on every agent it spawns.
+pub(crate) const RECIPE_RUN_ID_ENV: &str = "AMPLIHACK_RECIPE_RUN_ID";
+
+/// Was this prompt authored by amplihack for one of its own recipe steps?
+///
+/// Issue #1328. The router used to be injected into machine-authored step prompts,
+/// and the agent's first emitted token would be
+/// `[auto-routed] INVESTIGATE -> launching dev-orchestrator`, re-orchestrating the
+/// very step it had been handed. On the host that motivated this, 43% of all turns
+/// (5,220 of 12,085) were the same step -- `classify-and-decompose` -- re-classifying
+/// progressively narrower restatements of the orchestrator's own current step.
+///
+/// Provenance is the right discriminator. The previous one, `turn_count <= 1`, cannot
+/// distinguish "first prompt of a human's session" from "the only prompt a
+/// machine-spawned step session will ever receive": of 22,964 sessions on that host,
+/// 10,972 had zero turns and 11,986 had exactly one, so it was `true` in precisely the
+/// case that mattered.
+fn is_agent_authored_prompt() -> bool {
+    std::env::var_os(RECIPE_RUN_ID_ENV).is_some_and(|v| !v.is_empty())
 }
 
 fn extract_turn_count(extra: &Value) -> Option<u64> {
@@ -194,6 +227,81 @@ mod tests {
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    /// Issue #1328: a prompt amplihack wrote for its own recipe step is never a
+    /// human changing topic. This is the case that produced the cascade -- the
+    /// agent's first token was `[auto-routed] ... launching dev-orchestrator`,
+    /// re-orchestrating the step it had just been handed.
+    #[test]
+    fn agent_authored_prompts_are_never_routed() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _run = crate::test_support::EnvVarGuard::set(RECIPE_RUN_ID_ENV, "run-abc");
+        assert!(is_agent_authored_prompt());
+
+        let out = WorkflowClassificationReminderHook
+            .process(HookInput::UserPromptSubmit {
+                user_prompt: Some("Design an exploration strategy for this investigation.".into()),
+                session_id: Some("s-agent".into()),
+                extra: json!({ "turnCount": 0 }),
+            })
+            .expect("hook runs");
+        assert_eq!(
+            out,
+            Value::Object(serde_json::Map::new()),
+            "an agent-authored prompt must receive no routing text at all"
+        );
+    }
+
+    /// The human path must be untouched. A fix that silences routing for everyone
+    /// would satisfy the safety goal and remove the feature.
+    #[test]
+    fn human_prompts_are_still_routed() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _run = crate::test_support::EnvVarGuard::unset(RECIPE_RUN_ID_ENV);
+        let _depth = crate::test_support::EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
+        assert!(!is_agent_authored_prompt());
+    }
+
+    /// An exported-but-empty marker is not a marker. Otherwise a stray
+    /// `export AMPLIHACK_RECIPE_RUN_ID=` would silently disable routing for a human.
+    #[test]
+    fn an_empty_marker_does_not_count_as_agent_authored() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _run = crate::test_support::EnvVarGuard::set(RECIPE_RUN_ID_ENV, "");
+        assert!(!is_agent_authored_prompt());
+    }
+
+    /// The discriminator that failed. Of 22,964 sessions on the affected host,
+    /// 10,972 had zero turns and 11,986 had exactly one -- so `turn_count <= 1` was
+    /// true for essentially every machine-spawned step, which is precisely the case
+    /// it needed to exclude. Provenance must decide regardless of turn count.
+    #[test]
+    fn turn_count_does_not_override_provenance() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _run = crate::test_support::EnvVarGuard::set(RECIPE_RUN_ID_ENV, "run-abc");
+        for turns in [0u64, 1, 2, 50] {
+            let out = WorkflowClassificationReminderHook
+                .process(HookInput::UserPromptSubmit {
+                    user_prompt: Some("Define the scope for this investigation task.".into()),
+                    session_id: Some(format!("s{turns}")),
+                    extra: json!({ "turnCount": turns }),
+                })
+                .expect("hook runs");
+            assert_eq!(
+                out,
+                Value::Object(serde_json::Map::new()),
+                "turnCount={turns} must not resurrect routing for an agent prompt"
+            );
+        }
     }
 
     #[test]
