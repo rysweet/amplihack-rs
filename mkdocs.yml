@@ -48,6 +48,7 @@ exclude_docs: |
   concepts/amplihack-retirement-direction.md
   howto/migrate-from-python.md
   reference/legacy-python-assets.md
+  reference/session-tree-recursion-control.md
   reference/recipe-runner-audit.md
 
 nav:
