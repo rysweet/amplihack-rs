@@ -249,7 +249,7 @@ fn test_teardown_grace_window_is_configurable() {
         std::fs::write(&recipe, "name: grace-probe\nsteps: []\n").expect("failed to write recipe");
 
         let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
-    let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+        let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
         let result = execute::execute_recipe_via_rust(
             &recipe,
             &BTreeMap::new(),

@@ -77,8 +77,14 @@ fn invariant_ledger_sound_tree_dir_is_tmpdir_invariant() {
     let a = sb.root.join("tmp-a");
     let b = sb.root.join("tmp-b");
 
-    assert!(sb.register("t1", "s1", &a, 10), "first register should succeed");
-    assert!(sb.register("t1", "s2", &b, 10), "second register should succeed");
+    assert!(
+        sb.register("t1", "s1", &a, 10),
+        "first register should succeed"
+    );
+    assert!(
+        sb.register("t1", "s2", &b, 10),
+        "second register should succeed"
+    );
 
     let state = sb.tree_dir().join("t1.json");
     assert!(
@@ -183,7 +189,6 @@ fn invariant_ledger_sound_tree_dir_is_under_home() {
     );
 }
 
-
 // ---------------------------------------------------------------------------
 // End-to-end guard behaviour.
 //
@@ -237,7 +242,10 @@ fn invariant_ceiling_monotone_unsealed_nested_run_fails_closed() {
     let sb = Sandbox::new("e2e-unsealed");
     let out = recipe_run(
         &sb.root,
-        &[("AMPLIHACK_SESSION_DEPTH", "2"), ("AMPLIHACK_MAX_DEPTH", "99")],
+        &[
+            ("AMPLIHACK_SESSION_DEPTH", "2"),
+            ("AMPLIHACK_MAX_DEPTH", "99"),
+        ],
     );
     assert!(
         blocked(&out),

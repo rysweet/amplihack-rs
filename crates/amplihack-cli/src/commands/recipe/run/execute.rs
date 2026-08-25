@@ -51,8 +51,6 @@ fn terminal_block(message: String) -> anyhow::Error {
     crate::command_error::exit_error(EXIT_ORCHESTRATION_UNAVAILABLE)
 }
 
-
-
 /// Decide how much to believe an inherited `AMPLIHACK_SESSION_DEPTH` (issue #1326).
 ///
 /// A depth claim is only actionable if something other than the variable itself

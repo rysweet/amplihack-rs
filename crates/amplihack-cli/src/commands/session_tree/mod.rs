@@ -442,13 +442,15 @@ mod tests {
 fn run_gc(older_than_days: u64, dry_run: bool) -> Result<()> {
     let dir = state_dir()?;
     let cutoff = std::time::SystemTime::now()
-        .checked_sub(std::time::Duration::from_secs(older_than_days.saturating_mul(86_400)))
+        .checked_sub(std::time::Duration::from_secs(
+            older_than_days.saturating_mul(86_400),
+        ))
         .unwrap_or(std::time::UNIX_EPOCH);
 
     let mut removed = 0usize;
     let mut bytes = 0u64;
-    for entry in std::fs::read_dir(&dir)
-        .with_context(|| format!("failed to read {}", dir.display()))?
+    for entry in
+        std::fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))?
     {
         let entry = match entry {
             Ok(e) => e,

@@ -115,7 +115,10 @@ fn invariant_depth_bound_nesting_below_ceiling_is_permitted() {
             "depth {depth} must remain spawnable under a ceiling of {ceiling}"
         );
     }
-    assert_eq!(ceiling, 3, "a sealed ceiling of 3 must still permit 3 levels");
+    assert_eq!(
+        ceiling, 3,
+        "a sealed ceiling of 3 must still permit 3 levels"
+    );
 }
 
 // ---------------------------------------------------------------------------
