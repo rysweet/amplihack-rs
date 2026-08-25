@@ -1,6 +1,6 @@
 //! On-disk session-tree state management.
 //!
-//! The session-tree state is kept under `$TMPDIR/amplihack-session-trees/`,
+//! The session-tree state is kept under `$HOME/.amplihack/amplihack-session-trees/`,
 //! one JSON file per tree (`{tree_id}.json`). Concurrent access is serialised
 //! via two layers of locking:
 //!
@@ -30,7 +30,7 @@ use fs4::fs_std::FileExt;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-/// Directory name (under `TMPDIR` or `/tmp`) where tree state files live.
+/// Directory name (under the durable anchor from [`state_dir`]) for tree state files.
 const STATE_DIR_NAME: &str = "amplihack-session-trees";
 
 /// Maximum permitted size of a single tree state file (1 MiB). Protects
@@ -72,18 +72,32 @@ pub fn validate_tree_id(id: &str) -> Result<&str> {
 
 /// Resolve the state directory, creating it with mode 0700 if necessary.
 pub fn state_dir() -> Result<PathBuf> {
-    // `AMPLIHACK_SESSION_TREE_DIR` is an internal override (used by tests and
-    // anyone who wants to relocate state without disturbing the global TMPDIR).
-    // Production callers should leave it unset; the recipe reads/writes via
-    // the same `amplihack session-tree` binary, so the env-var contract stays
-    // self-consistent across parent and child processes.
+    // Issue #1326. This directory MUST resolve identically in a root run and in
+    // every descendant, or the tree-global session cap counts nothing.
+    //
+    // It used to be derived from `TMPDIR`, and `recipe::run::execute` hands every
+    // spawned child a fresh `TMPDIR` (an isolated per-run tempdir). So each nesting
+    // level got its own empty tree store: `max_sessions` was evaluated against a
+    // file that had just been created, the tree_id was regenerated at every level,
+    // and the store was deleted when the run's tempdir was dropped. A host running
+    // this reached ~850 concurrent agent sessions against a configured cap of 10.
+    //
+    // `AMPLIHACK_HOME` is NOT a valid anchor either: `env_builder` resolves it to
+    // the bundle root of the current worktree, so it varies per worktree exactly
+    // like `TMPDIR` did.
+    //
+    // The anchor is therefore the user's home directory, which is stable across
+    // worktrees, tempdirs, and cwd changes. `AMPLIHACK_SESSION_TREE_DIR` remains an
+    // explicit override, and `recipe::run::execute` propagates its resolved value
+    // to children so descendants inherit the decision instead of re-deriving it.
     let dir = if let Some(explicit) = std::env::var_os("AMPLIHACK_SESSION_TREE_DIR") {
         PathBuf::from(explicit)
+    } else if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
+        PathBuf::from(home).join(".amplihack").join(STATE_DIR_NAME)
     } else {
-        let base = std::env::var_os("TMPDIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/tmp"));
-        base.join(STATE_DIR_NAME)
+        // No HOME (unusual: some CI sandboxes). Fall back to a fixed absolute
+        // path rather than TMPDIR, so at least it does not vary per run.
+        PathBuf::from("/tmp").join(STATE_DIR_NAME)
     };
     fs::create_dir_all(&dir)
         .with_context(|| format!("failed to create state dir {}", dir.display()))?;
@@ -143,6 +157,45 @@ pub struct SessionEntry {
 pub struct TreeState {
     #[serde(default)]
     pub sessions: HashMap<String, SessionEntry>,
+    /// The tree's sealed recursion ceiling, written once when the root session
+    /// registers and never raised afterwards (issue #1326).
+    ///
+    /// `None` means a tree written by an older build; such a tree seals its
+    /// ceiling on the next registration, so the upgrade is transparent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ceiling: Option<u32>,
+}
+
+/// Resolve the recursion ceiling that actually applies, given the tree's sealed
+/// value and whatever `AMPLIHACK_MAX_DEPTH` claims (issue #1326).
+///
+/// The environment may **lower** the ceiling but never raise it. On the affected
+/// host, agents responded to a depth refusal by re-running with a larger
+/// `AMPLIHACK_MAX_DEPTH` and descending one level further — the refusal reads as
+/// an infrastructure fault, so routing around it is reasonable behaviour. The
+/// escalation ladder observed in the logs was 5 → 6 → 7 → 8 → 9.
+///
+/// Both inputs are clamped to [`MAX_DEPTH_CEILING`] so a forged value cannot
+/// disable the limit, and an unsealed tree falls back to the environment value
+/// (still clamped) so a first registration can establish the ceiling.
+pub fn effective_max_depth(sealed: Option<u32>, from_env: Option<u32>) -> u32 {
+    let env_value = from_env.unwrap_or(DEFAULT_MAX_DEPTH).min(MAX_DEPTH_CEILING);
+    match sealed {
+        Some(sealed) => sealed.min(MAX_DEPTH_CEILING).min(env_value),
+        None => env_value,
+    }
+}
+
+/// Read the ceiling a tree has already sealed, if any (issue #1326).
+///
+/// Best-effort and lock-free: this is a read of a value that only ever moves
+/// downward, and the authoritative check still happens under the tree lock in
+/// `session-tree register`. A missing or unreadable tree yields `None`, which
+/// leaves the caller on the environment-derived value.
+pub fn sealed_ceiling(tree_id: &str) -> Option<u32> {
+    let dir = state_dir().ok()?;
+    let path = state_path_in(&dir, tree_id).ok()?;
+    load_state(&path).ok()?.ceiling
 }
 
 impl TreeState {

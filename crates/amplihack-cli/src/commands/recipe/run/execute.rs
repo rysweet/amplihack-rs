@@ -34,6 +34,8 @@ const SESSION_DEPTH_ENV: &str = "AMPLIHACK_SESSION_DEPTH";
 /// Env var carrying the maximum permitted recursion depth, clamped to
 /// `MAX_DEPTH_CEILING` before use (#964).
 const MAX_DEPTH_ENV: &str = "AMPLIHACK_MAX_DEPTH";
+const TREE_ID_ENV: &str = "AMPLIHACK_TREE_ID";
+const SESSION_TREE_DIR_ENV: &str = "AMPLIHACK_SESSION_TREE_DIR";
 
 /// Threshold in bytes for total `--set` argument size before we switch
 /// to passing context via a temp file. Well under the typical Linux
@@ -431,6 +433,13 @@ pub(super) fn execute_recipe_via_rust(
     };
 
     env_builder.apply_to_command(&mut command);
+    // Issue #1326: pin the session-tree directory for every descendant. Without
+    // this each level re-derives it, and the previous derivation was based on
+    // TMPDIR -- which we replace below with a fresh per-run tempdir, giving every
+    // level its own empty tree and a session cap that counts nothing.
+    if let Ok(dir) = crate::commands::session_tree::state::state_dir() {
+        command.env(SESSION_TREE_DIR_ENV, dir);
+    }
     command.env("AMPLIHACK_RECIPE_RUN_ID", correlation.run_id());
     command.env("AMPLIHACK_WORKFLOW_RUNTIME_DIR", runtime_dir.path());
     command.env("AMPLIHACK_RUNTIME_ROOT", runtime_dir.path());
@@ -1018,21 +1027,29 @@ fn reap_recipe_runner_group(pgid_pid: u32, grace: Duration) {
 /// * a malformed / non-numeric / non-UTF-8 `AMPLIHACK_SESSION_DEPTH` is
 ///   **fail-closed**: treated as "already at the limit" (bail), never silently
 ///   coerced to `0` (which would defeat the guard);
-/// * `AMPLIHACK_MAX_DEPTH` is clamped to `MAX_DEPTH_CEILING` before the
-///   comparison so a forged, over-large value cannot disable the limit; an
-///   unset / malformed value falls back to `DEFAULT_MAX_DEPTH`;
+/// * `AMPLIHACK_MAX_DEPTH` may only LOWER the ceiling the root sealed into the
+///   tree state, never raise it (issue #1326); it is additionally clamped to
+///   `MAX_DEPTH_CEILING`, and an unset / malformed value falls back to
+///   `DEFAULT_MAX_DEPTH`;
 /// * below the limit the caller spawns normally (no over-blocking).
 ///
 /// Logs numeric depth/limit fields only — never env-var *values*, which may
 /// carry session tokens or secrets.
 fn enforce_recursion_depth_guard() -> Result<()> {
-    use crate::commands::session_tree::state::{DEFAULT_MAX_DEPTH, MAX_DEPTH_CEILING};
+    use crate::commands::session_tree::state::{effective_max_depth, sealed_ceiling};
 
-    let max_depth = std::env::var(MAX_DEPTH_ENV)
+    // Issue #1326: the environment may LOWER this ceiling but never raise it.
+    // `AMPLIHACK_MAX_DEPTH` is inherited by every descendant and is writable by
+    // anything in the tree, so on its own it is a suggestion, not a limit. The
+    // authority is the value the root sealed into the tree state.
+    let env_max_depth = std::env::var(MAX_DEPTH_ENV)
         .ok()
-        .and_then(|value| value.trim().parse::<u32>().ok())
-        .unwrap_or(DEFAULT_MAX_DEPTH)
-        .min(MAX_DEPTH_CEILING);
+        .and_then(|value| value.trim().parse::<u32>().ok());
+    let sealed = std::env::var(TREE_ID_ENV)
+        .ok()
+        .filter(|id| !id.trim().is_empty())
+        .and_then(|id| sealed_ceiling(id.trim()));
+    let max_depth = effective_max_depth(sealed, env_max_depth);
 
     // Fail-closed: distinguish "unset" (root, depth 0) from "set but unparseable"
     // (treat as at-the-limit) using `var_os`, so a corrupted / forged value can
@@ -1057,8 +1074,18 @@ fn enforce_recursion_depth_guard() -> Result<()> {
             max_depth,
             "recipe run blocked by recursion-depth guard; refusing to spawn a nested recipe-runner (issue #964)"
         );
+        // Issue #1326: this refusal must not read as a transient fault. On the
+        // affected host, agents parsed the previous wording as an infrastructure
+        // failure, raised `AMPLIHACK_MAX_DEPTH`, and retried one level deeper
+        // (observed ladder: 5 -> 6 -> 7 -> 8 -> 9). Say plainly that it is policy,
+        // that retrying cannot change it, and what to do instead.
         anyhow::bail!(
-            "recipe run recursion depth guard exceeded: depth {depth} reached configured max {max_depth} (issue #964)"
+            "BLOCKED_TERMINAL orchestration_unavailable: depth {depth} of max {max_depth} \
+             (issue #964/#1326).\n\
+             This is a POLICY decision, not an infrastructure fault. Retrying, switching \
+             recipe, or setting AMPLIHACK_MAX_DEPTH will NOT change it -- the ceiling is \
+             read from the session-tree state and the environment may only lower it.\n\
+             DO: complete this step inline and return your result."
         );
     }
     Ok(())

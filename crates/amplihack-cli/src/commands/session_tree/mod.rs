@@ -24,7 +24,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use state::{
     DEFAULT_MAX_DEPTH, DEFAULT_MAX_SESSIONS, MAX_DEPTH_CEILING, SessionEntry, SessionStatus,
-    load_state, save_state, state_dir, state_path_in, validate_tree_id, with_locked_tree,
+    effective_max_depth, load_state, save_state, state_dir, state_path_in, validate_tree_id,
+    with_locked_tree,
 };
 
 /// `amplihack session-tree <subcommand>`
@@ -149,8 +150,14 @@ fn run_register(
         if active >= max_sessions {
             anyhow::bail!("max_sessions={max_sessions} reached ({active} active)");
         }
-        if depth > max_depth {
-            anyhow::bail!("depth={depth} exceeds max_depth={max_depth}");
+        // Issue #1326: the ceiling is sealed by the root registration and the
+        // environment may only lower it thereafter, never raise it.
+        let effective = effective_max_depth(state.ceiling, Some(max_depth));
+        if state.ceiling.is_none() {
+            state.ceiling = Some(effective);
+        }
+        if depth > effective {
+            anyhow::bail!("depth={depth} exceeds max_depth={effective}");
         }
         let entry = SessionEntry {
             depth,

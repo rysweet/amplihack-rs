@@ -126,6 +126,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83 # 1.97.0
         with:
           components: clippy, rustfmt
+      - name: Spec gate — OrchLedger invariants (issue #1326)
+        env:
+          TLA2TOOLS_VERSION: v1.7.2
+          TLA2TOOLS_SHA256: fa18543e44ed5974a85bd2c60c0dc16620ae117680ea8e693d2691999ed90b22
+        run: |
+          set -euo pipefail
+          curl -sSLo /tmp/tla2tools.jar \
+            "https://github.com/tlaplus/tlaplus/releases/download/${TLA2TOOLS_VERSION}/tla2tools.jar"
+          echo "${TLA2TOOLS_SHA256}  /tmp/tla2tools.jar" | sha256sum -c -
+          TLA2TOOLS_JAR=/tmp/tla2tools.jar ./scripts/check-spec.sh
+
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
