@@ -90,6 +90,16 @@ pub(super) fn resolve_claimed_depth(claimed: u32, sealed: Option<u32>, corrobora
 /// Process ancestry cannot be inherited from a dead run, so it distinguishes "I am
 /// genuinely nested" from "I have a leftover variable". Linux-only; elsewhere the
 /// presence of `AMPLIHACK_TREE_ID` is the only corroboration available.
+///
+/// Known limits, both bounded by `AMPLIHACK_TREE_ID` being the primary signal --
+/// the runner always sets it for children, so a real nested run is corroborated
+/// without needing this at all:
+///
+/// * a broken chain (an ancestor exited, or the process was reparented to init)
+///   reads as "not nested". That is the fail-open direction, and it is why this is
+///   a secondary signal rather than the authority.
+/// * PID reuse could name an unrelated `amplihack` as an ancestor, reading as
+///   "nested" for a genuine root. That fails closed, which is the safe direction.
 #[cfg(target_os = "linux")]
 fn has_orchestrator_ancestor() -> bool {
     const MAX_HOPS: usize = 64;
@@ -1250,7 +1260,7 @@ fn enforce_recursion_depth_guard() -> Result<SpawnGuard> {
 /// stranger filled the tree. Truncating the timestamp to `u32` would wrap roughly
 /// every 4.3 seconds and truncating the pid to `u16` discards most of its range,
 /// which is more collision surface than this needs. Keep both whole.
-fn new_tree_id() -> String {
+pub(crate) fn new_tree_id() -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())

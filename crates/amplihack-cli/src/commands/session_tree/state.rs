@@ -94,15 +94,34 @@ pub fn resolve_state_dir() -> PathBuf {
     // worktrees, tempdirs, and cwd changes. `AMPLIHACK_SESSION_TREE_DIR` remains an
     // explicit override, and `recipe::run::execute` propagates its resolved value
     // to children so descendants inherit the decision instead of re-deriving it.
-    if let Some(explicit) = std::env::var_os("AMPLIHACK_SESSION_TREE_DIR") {
-        PathBuf::from(explicit)
-    } else if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
-        PathBuf::from(home).join(".amplihack").join(STATE_DIR_NAME)
-    } else {
-        // No HOME (unusual: some CI sandboxes). Fall back to a fixed absolute
-        // path rather than TMPDIR, so at least it does not vary per run.
-        PathBuf::from("/tmp").join(STATE_DIR_NAME)
+    resolve_state_dir_from(
+        std::env::var_os("AMPLIHACK_SESSION_TREE_DIR"),
+        std::env::var_os("HOME"),
+    )
+}
+
+/// The precedence decision behind [`resolve_state_dir`], taking its inputs as
+/// arguments so it can be tested without mutating process-global environment.
+/// The env-mutating tests already in this crate race under parallel execution;
+/// adding more would make that worse.
+///
+/// An exported-but-empty value is ignored rather than honoured: `export
+/// AMPLIHACK_SESSION_TREE_DIR=` would otherwise resolve to a relative empty path
+/// and scatter tree state through whatever the cwd happens to be -- reintroducing
+/// the per-run-location bug this whole change exists to remove.
+pub(crate) fn resolve_state_dir_from(
+    explicit: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> PathBuf {
+    if let Some(explicit) = explicit.filter(|v| !v.is_empty()) {
+        return PathBuf::from(explicit);
     }
+    if let Some(home) = home.filter(|h| !h.is_empty()) {
+        return PathBuf::from(home).join(".amplihack").join(STATE_DIR_NAME);
+    }
+    // No HOME (unusual: some CI sandboxes). Fall back to a fixed absolute path
+    // rather than TMPDIR, so at least it does not vary per run.
+    PathBuf::from("/tmp").join(STATE_DIR_NAME)
 }
 
 /// Resolve the state directory, creating it with mode 0700 if necessary.
@@ -252,8 +271,29 @@ pub fn sealed_ceiling(tree_id: &str) -> Option<u32> {
     if !dir.is_dir() {
         return None;
     }
-    let path = state_path_in(&dir, tree_id).ok()?;
-    load_state(&path).ok()?.ceiling
+    let path = match state_path_in(&dir, tree_id) {
+        Ok(path) => path,
+        Err(error) => {
+            tracing::warn!(%tree_id, %error, "invalid tree id while reading sealed ceiling");
+            return None;
+        }
+    };
+    // `None` here means "this tree has sealed nothing", and an unreadable or
+    // corrupt tree file produces the same answer. That is the safe direction --
+    // a nested run with no resolvable ceiling is refused -- but it must not be
+    // silent, or a corrupted store looks exactly like a fresh one.
+    match load_state(&path) {
+        Ok(state) => state.ceiling,
+        Err(error) => {
+            tracing::warn!(
+                %tree_id,
+                %error,
+                path = %path.display(),
+                "cannot read tree state; treating the ceiling as unsealed (issue #1326)"
+            );
+            None
+        }
+    }
 }
 
 impl TreeState {
@@ -634,6 +674,57 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn resolve_state_dir_prefers_the_explicit_override() {
+        assert_eq!(
+            resolve_state_dir_from(Some("/x/trees".into()), Some("/home/u".into())),
+            PathBuf::from("/x/trees")
+        );
+    }
+
+    #[test]
+    fn resolve_state_dir_falls_back_to_home() {
+        assert_eq!(
+            resolve_state_dir_from(None, Some("/home/u".into())),
+            PathBuf::from("/home/u")
+                .join(".amplihack")
+                .join(STATE_DIR_NAME)
+        );
+    }
+
+    #[test]
+    fn resolve_state_dir_ignores_exported_but_empty_values() {
+        assert_eq!(
+            resolve_state_dir_from(Some("".into()), Some("/home/u".into())),
+            PathBuf::from("/home/u")
+                .join(".amplihack")
+                .join(STATE_DIR_NAME),
+            "an empty override must not resolve to a relative path"
+        );
+        assert_eq!(
+            resolve_state_dir_from(None, Some("".into())),
+            PathBuf::from("/tmp").join(STATE_DIR_NAME)
+        );
+    }
+
+    #[test]
+    fn resolve_state_dir_is_always_absolute() {
+        // A relative store would vary with cwd, which is the same class of bug as
+        // deriving it from TMPDIR (issue #1326).
+        for dir in [
+            resolve_state_dir_from(Some("/x".into()), None),
+            resolve_state_dir_from(None, Some("/home/u".into())),
+            resolve_state_dir_from(None, None),
+            resolve_state_dir_from(Some("".into()), Some("".into())),
+        ] {
+            assert!(
+                dir.is_absolute(),
+                "state dir must be absolute: {}",
+                dir.display()
+            );
+        }
+    }
+
     #[test]
     fn state_dir_has_restrictive_permissions() {
         let td = TempDir::new_in("/tmp").unwrap();

@@ -39,7 +39,7 @@ traceability table.
 Honest limits of what the model proves and what the implementation can promise.
 
 **This is bounded model checking, not a general proof.** TLC is exhaustive at
-4 processes / 8 nodes / depth 2. For all *N* an inductive invariant in TLAPS is needed;
+4 processes / 3 nodes / depth 2 (the `B_proposed` config). For all *N* an inductive invariant in TLAPS is needed;
 `CeilingMonotone` and `NodeBudget` both look inductive and that is the natural next step.
 
 **Not a security boundary.** A same-uid process can edit the tree state directly. The

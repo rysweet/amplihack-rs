@@ -812,3 +812,16 @@ fn depth_zero_is_never_rewritten() {
         }
     }
 }
+
+#[test]
+fn generated_tree_ids_are_valid_and_distinct() {
+    // `ensure_sealed` validates the id, and it is only ever generated on the root
+    // path -- the least exercised one -- so a format change that broke
+    // `validate_tree_id` would surface late and only for real users.
+    use crate::commands::session_tree::state::validate_tree_id;
+    let a = execute::new_tree_id();
+    let b = execute::new_tree_id();
+    validate_tree_id(&a).expect("generated tree id must be valid");
+    validate_tree_id(&b).expect("generated tree id must be valid");
+    assert_ne!(a, b, "two ids from one process must differ");
+}

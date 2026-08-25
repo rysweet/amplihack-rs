@@ -220,3 +220,72 @@ fn spec_gate_covers_every_config() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Documentation drift guards.
+//
+// A formal-methods claim is only worth as much as its accuracy. `docs/spec/README.md`
+// previously advertised bounds ("8 nodes") that no config used, which is exactly the
+// kind of detail a reader has no way to check and every reason to trust.
+// ---------------------------------------------------------------------------
+
+fn cfg_constant(cfg: &str, name: &str) -> Option<String> {
+    let text = std::fs::read_to_string(repo_root().join("docs/spec").join(cfg)).ok()?;
+    text.lines().find_map(|l| {
+        l.trim()
+            .strip_prefix(name)?
+            .trim()
+            .strip_prefix('=')
+            .map(str::trim)
+            .map(str::to_string)
+    })
+}
+
+/// The bounds the README advertises must be the bounds the shipped config checks.
+#[test]
+fn spec_readme_states_the_bounds_actually_checked() {
+    let readme = std::fs::read_to_string(repo_root().join("docs/spec/README.md"))
+        .expect("docs/spec/README.md exists");
+    let max_nodes = cfg_constant("B_proposed.cfg", "MaxNodes").expect("MaxNodes in B_proposed.cfg");
+    let max_depth = cfg_constant("B_proposed.cfg", "MaxDepth").expect("MaxDepth in B_proposed.cfg");
+    assert!(
+        readme.contains(&format!("{max_nodes} nodes")),
+        "README must state the checked node bound ({max_nodes}); it currently does not"
+    );
+    assert!(
+        readme.contains(&format!("depth {max_depth}")),
+        "README must state the checked depth bound ({max_depth})"
+    );
+}
+
+/// The refusal text quoted in the user-facing reference must be the text the code
+/// actually emits. A stale example teaches the wrong thing precisely when someone
+/// is stuck and searching for the message they just saw.
+#[test]
+fn documented_refusal_matches_the_emitted_message() {
+    let doc = std::fs::read_to_string(
+        repo_root().join("docs/reference/session-tree-recursion-control.md"),
+    )
+    .expect("reference doc exists");
+    let src = std::fs::read_to_string(
+        repo_root().join("crates/amplihack-cli/src/commands/recipe/run/execute.rs"),
+    )
+    .expect("execute.rs exists");
+
+    let squash = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let src_squashed = squash(&src).replace("\\ ", "").replace("\\n", " ");
+
+    for sentence in [
+        "This is a POLICY decision, not an infrastructure fault.",
+        "DO: complete this step inline and return your result.",
+    ] {
+        assert!(
+            squash(&doc).contains(sentence),
+            "reference doc no longer quotes: {sentence}"
+        );
+        assert!(
+            squash(&src_squashed).contains(sentence),
+            "code no longer emits: {sentence}"
+        );
+    }
+}
