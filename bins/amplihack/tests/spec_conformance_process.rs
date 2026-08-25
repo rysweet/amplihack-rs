@@ -209,11 +209,18 @@ fn invariant_ledger_sound_tree_dir_is_under_home() {
 const EXIT_ORCHESTRATION_UNAVAILABLE: i32 = 79;
 
 fn recipe_run(home: &Path, envs: &[(&str, &str)]) -> Output {
-    let recipe = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("repo root")
-        .join("amplifier-bundle/recipes/smart-orchestrator.yaml");
+    // A recipe whose only step is a no-op shell command. Recipe validation runs
+    // before the recursion guard and rejects an empty `steps`, so the probe needs
+    // one step -- but it must not need an agent: pointing these tests at
+    // smart-orchestrator made CI npm-install copilot and then fail on auth, which
+    // is a slow way to learn nothing about admission control.
+    let recipe = home.join("conformance-probe.yaml");
+    fs::write(
+        &recipe,
+        "name: conformance-probe\nsteps:\n  - id: noop\n    type: bash\n    command: \"true\"\n",
+    )
+    .expect("write probe recipe");
+
     let mut cmd = Command::new(BIN);
     cmd.args([
         "recipe",
@@ -239,22 +246,29 @@ fn blocked(out: &Output) -> bool {
         && String::from_utf8_lossy(&out.stderr).contains("BLOCKED_TERMINAL")
 }
 
-/// A nested run with NO resolvable tree must fail closed. This is the exact
-/// configuration that occurs in production: nothing seeds AMPLIHACK_TREE_ID, so a
-/// guard that trusts the environment here is a guard that never fires.
+/// A nested run naming a tree that has sealed no ceiling must fail closed. The
+/// environment claims we are inside a tree; no tree vouches for the ceiling.
+///
+/// This deliberately supplies a tree id rather than relying on process ancestry.
+/// An earlier revision asserted the no-tree-id case and passed only on a developer
+/// box, where the test binary happens to descend from an `amplihack` process; on CI
+/// it correctly reset to depth 0 and the assertion was simply wrong. The
+/// uncorroborated case is covered deterministically by
+/// `uncorroborated_stale_depth_is_treated_as_a_new_root` instead.
 #[test]
 fn invariant_ceiling_monotone_unsealed_nested_run_fails_closed() {
     let sb = Sandbox::new("e2e-unsealed");
     let out = recipe_run(
         &sb.root,
         &[
+            ("AMPLIHACK_TREE_ID", "ghosttree"),
             ("AMPLIHACK_SESSION_DEPTH", "2"),
             ("AMPLIHACK_MAX_DEPTH", "99"),
         ],
     );
     assert!(
         blocked(&out),
-        "nested run with no sealed ceiling must be refused; got status {:?}\nstderr: {}",
+        "nested run naming a tree with no sealed ceiling must be refused; got status {:?}\nstderr: {}",
         out.status.code(),
         String::from_utf8_lossy(&out.stderr)
     );
