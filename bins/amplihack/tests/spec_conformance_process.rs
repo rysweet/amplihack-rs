@@ -9,7 +9,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 
 const BIN: &str = env!("CARGO_BIN_EXE_amplihack");
 
@@ -180,5 +180,129 @@ fn invariant_ledger_sound_tree_dir_is_under_home() {
     assert!(
         Path::new(&sb.tree_dir().join("t3.json")).exists(),
         "expected tree state under $HOME/.amplihack/amplihack-session-trees/"
+    );
+}
+
+
+// ---------------------------------------------------------------------------
+// End-to-end guard behaviour.
+//
+// The invariants above are checked through `session-tree`, which is NOT the code
+// path that failed. `enforce_recursion_depth_guard` runs inside `recipe run`, and
+// an earlier revision of this fix passed every test above while leaving the
+// escalation wide open, because nothing seeded AMPLIHACK_TREE_ID at a root and the
+// guard therefore had no sealed ceiling to clamp against. These tests exercise the
+// real entry point.
+// ---------------------------------------------------------------------------
+
+/// Exit status for a policy refusal. Mirrors
+/// `commands::recipe::run::execute::EXIT_ORCHESTRATION_UNAVAILABLE`.
+const EXIT_ORCHESTRATION_UNAVAILABLE: i32 = 79;
+
+fn recipe_run(home: &Path, envs: &[(&str, &str)]) -> Output {
+    let recipe = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("repo root")
+        .join("amplifier-bundle/recipes/smart-orchestrator.yaml");
+    let mut cmd = Command::new(BIN);
+    cmd.args([
+        "recipe",
+        "run",
+        recipe.to_str().expect("recipe path"),
+        "-c",
+        "task_description=conformance",
+    ])
+    .env("HOME", home)
+    .env_remove("AMPLIHACK_SESSION_TREE_DIR")
+    .env_remove("AMPLIHACK_TREE_ID")
+    .env_remove("AMPLIHACK_SESSION_DEPTH")
+    .env_remove("AMPLIHACK_MAX_DEPTH");
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    cmd.output().expect("spawn amplihack recipe run")
+}
+
+fn blocked(out: &Output) -> bool {
+    out.status.code() == Some(EXIT_ORCHESTRATION_UNAVAILABLE)
+        && String::from_utf8_lossy(&out.stderr).contains("BLOCKED_TERMINAL")
+}
+
+/// A nested run with NO resolvable tree must fail closed. This is the exact
+/// configuration that occurs in production: nothing seeds AMPLIHACK_TREE_ID, so a
+/// guard that trusts the environment here is a guard that never fires.
+#[test]
+fn invariant_ceiling_monotone_unsealed_nested_run_fails_closed() {
+    let sb = Sandbox::new("e2e-unsealed");
+    let out = recipe_run(
+        &sb.root,
+        &[("AMPLIHACK_SESSION_DEPTH", "2"), ("AMPLIHACK_MAX_DEPTH", "99")],
+    );
+    assert!(
+        blocked(&out),
+        "nested run with no sealed ceiling must be refused; got status {:?}\nstderr: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The observed escalation, end to end: a sealed ceiling must survive a forged
+/// AMPLIHACK_MAX_DEPTH on the real `recipe run` path.
+#[test]
+fn invariant_ceiling_monotone_forged_env_cannot_raise_a_sealed_ceiling() {
+    let sb = Sandbox::new("e2e-forged");
+    assert!(sb.register("tf", "root", &sb.root.join("tmp"), 10));
+    // Seal a ceiling of 1 on tree "tf".
+    let _ = recipe_run(
+        &sb.root,
+        &[("AMPLIHACK_TREE_ID", "tf"), ("AMPLIHACK_MAX_DEPTH", "1")],
+    );
+    for forged in ["5", "6", "7", "8", "9", "99"] {
+        let out = recipe_run(
+            &sb.root,
+            &[
+                ("AMPLIHACK_TREE_ID", "tf"),
+                ("AMPLIHACK_SESSION_DEPTH", "1"),
+                ("AMPLIHACK_MAX_DEPTH", forged),
+            ],
+        );
+        assert!(
+            blocked(&out),
+            "forged AMPLIHACK_MAX_DEPTH={forged} must not raise a sealed ceiling of 1; \
+             got status {:?}",
+            out.status.code()
+        );
+    }
+}
+
+/// The capability this guard exists to protect. A ROOT run must never be refused,
+/// and must seal a tree so its descendants have something to clamp against. A fix
+/// that fails closed everywhere would satisfy every safety test and destroy the
+/// product.
+#[test]
+fn invariant_depth_bound_root_run_is_admitted_and_seals_a_tree() {
+    let sb = Sandbox::new("e2e-root");
+    let out = recipe_run(&sb.root, &[]);
+    assert!(
+        !blocked(&out),
+        "a root run must not be refused; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let sealed: Vec<_> = fs::read_dir(sb.tree_dir())
+        .map(|d| {
+            d.filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("json"))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        !sealed.is_empty(),
+        "a root run must seal a tree so descendants can clamp against it"
+    );
+    let body = fs::read_to_string(sealed[0].path()).expect("readable tree state");
+    assert!(
+        body.contains("\"ceiling\""),
+        "sealed tree must record a ceiling; got: {body}"
     );
 }

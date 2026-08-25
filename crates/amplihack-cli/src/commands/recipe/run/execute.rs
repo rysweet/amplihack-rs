@@ -37,6 +37,27 @@ const MAX_DEPTH_ENV: &str = "AMPLIHACK_MAX_DEPTH";
 const TREE_ID_ENV: &str = "AMPLIHACK_TREE_ID";
 const SESSION_TREE_DIR_ENV: &str = "AMPLIHACK_SESSION_TREE_DIR";
 
+/// Exit status for a policy refusal to spawn a nested orchestration (issue #1326).
+/// Distinct from 1 so a caller -- human or agent -- can tell "the tool broke" from
+/// "the tool declined, and will decline again".
+pub const EXIT_ORCHESTRATION_UNAVAILABLE: i32 = 79;
+
+/// Report a terminal refusal and carry the distinguishing exit code.
+///
+/// The message is printed here because the `CliExitError` path in `main` exits
+/// without reporting; a silent 79 would be worse than the status quo.
+fn terminal_block(message: String) -> anyhow::Error {
+    eprintln!("{message}");
+    crate::command_error::exit_error(EXIT_ORCHESTRATION_UNAVAILABLE)
+}
+
+/// What the guard resolved for the child about to be spawned (issue #1326).
+struct SpawnGuard {
+    tree_id: String,
+    child_depth: u32,
+    max_depth: u32,
+}
+
 /// Threshold in bytes for total `--set` argument size before we switch
 /// to passing context via a temp file. Well under the typical Linux
 /// ARG_MAX (~2MB) to leave room for env vars and other args.
@@ -358,7 +379,7 @@ pub(super) fn execute_recipe_via_rust(
     // so a failing / misbehaving orchestration can never recursively re-enter
     // the orchestrator and fork-bomb the host. Runs BEFORE any work (binary
     // lookup, temp dirs, spawn) so no descendant is ever created past the limit.
-    enforce_recursion_depth_guard()?;
+    let guard = enforce_recursion_depth_guard()?;
 
     let binary = super::binary::find_recipe_runner_binary()?;
     let recipe_name = recipe_name_for_correlation(recipe_path);
@@ -440,6 +461,13 @@ pub(super) fn execute_recipe_via_rust(
     if let Ok(dir) = crate::commands::session_tree::state::state_dir() {
         command.env(SESSION_TREE_DIR_ENV, dir);
     }
+    // Issue #1326: the runner owns tree identity and depth. Handing them to the
+    // child explicitly is what makes the sealed ceiling reachable one level down;
+    // previously nothing seeded AMPLIHACK_TREE_ID at a root, so `sealed` was None
+    // for the whole chain and the environment won by default.
+    command.env(TREE_ID_ENV, &guard.tree_id);
+    command.env(SESSION_DEPTH_ENV, guard.child_depth.to_string());
+    command.env(MAX_DEPTH_ENV, guard.max_depth.to_string());
     command.env("AMPLIHACK_RECIPE_RUN_ID", correlation.run_id());
     command.env("AMPLIHACK_WORKFLOW_RUNTIME_DIR", runtime_dir.path());
     command.env("AMPLIHACK_RUNTIME_ROOT", runtime_dir.path());
@@ -1035,8 +1063,10 @@ fn reap_recipe_runner_group(pgid_pid: u32, grace: Duration) {
 ///
 /// Logs numeric depth/limit fields only — never env-var *values*, which may
 /// carry session tokens or secrets.
-fn enforce_recursion_depth_guard() -> Result<()> {
-    use crate::commands::session_tree::state::{effective_max_depth, sealed_ceiling};
+fn enforce_recursion_depth_guard() -> Result<SpawnGuard> {
+    use crate::commands::session_tree::state::{
+        effective_max_depth, ensure_sealed, sealed_ceiling, validate_tree_id,
+    };
 
     // Issue #1326: the environment may LOWER this ceiling but never raise it.
     // `AMPLIHACK_MAX_DEPTH` is inherited by every descendant and is writable by
@@ -1045,10 +1075,11 @@ fn enforce_recursion_depth_guard() -> Result<()> {
     let env_max_depth = std::env::var(MAX_DEPTH_ENV)
         .ok()
         .and_then(|value| value.trim().parse::<u32>().ok());
-    let sealed = std::env::var(TREE_ID_ENV)
+    let tree_id = std::env::var(TREE_ID_ENV)
         .ok()
-        .filter(|id| !id.trim().is_empty())
-        .and_then(|id| sealed_ceiling(id.trim()));
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty());
+    let sealed = tree_id.as_deref().and_then(sealed_ceiling);
     let max_depth = effective_max_depth(sealed, env_max_depth);
 
     // Fail-closed: distinguish "unset" (root, depth 0) from "set but unparseable"
@@ -1068,6 +1099,29 @@ fn enforce_recursion_depth_guard() -> Result<()> {
         },
     };
 
+    // Issue #1326, fail-closed. A nested run (`depth > 0`) whose ceiling cannot be
+    // resolved from tree state is an incoherent state: the environment claims we
+    // are inside a tree, but no tree vouches for the ceiling. Trusting the
+    // environment here is exactly the bypass that let agents escalate
+    // `AMPLIHACK_MAX_DEPTH` (observed ladder 5 -> 6 -> 7 -> 8 -> 9), because at the
+    // root nothing seeds `AMPLIHACK_TREE_ID` and `sealed` is therefore `None` for
+    // the whole chain. Refuse instead, consistent with how #964 already treats a
+    // malformed `AMPLIHACK_SESSION_DEPTH`.
+    if depth > 0 && sealed.is_none() {
+        tracing::warn!(
+            depth,
+            has_tree_id = tree_id.is_some(),
+            "nested recipe run with no sealed ceiling; failing closed (issue #1326)"
+        );
+        return Err(terminal_block(format!(
+            "BLOCKED_TERMINAL orchestration_unavailable: nested run at depth {depth} has no \
+             sealed recursion ceiling (issue #1326).\n\
+             This is a POLICY decision, not an infrastructure fault. Retrying, switching \
+             recipe, or setting AMPLIHACK_MAX_DEPTH will NOT change it.\n\
+             DO: complete this step inline and return your result."
+        )));
+    }
+
     if depth >= max_depth {
         tracing::warn!(
             depth,
@@ -1079,16 +1133,46 @@ fn enforce_recursion_depth_guard() -> Result<()> {
         // failure, raised `AMPLIHACK_MAX_DEPTH`, and retried one level deeper
         // (observed ladder: 5 -> 6 -> 7 -> 8 -> 9). Say plainly that it is policy,
         // that retrying cannot change it, and what to do instead.
-        anyhow::bail!(
+        return Err(terminal_block(format!(
             "BLOCKED_TERMINAL orchestration_unavailable: depth {depth} of max {max_depth} \
              (issue #964/#1326).\n\
              This is a POLICY decision, not an infrastructure fault. Retrying, switching \
              recipe, or setting AMPLIHACK_MAX_DEPTH will NOT change it -- the ceiling is \
              read from the session-tree state and the environment may only lower it.\n\
              DO: complete this step inline and return your result."
-        );
+        )));
     }
-    Ok(())
+
+    // Root seeding. Fail-closed above is only safe if a root actually establishes
+    // a tree; otherwise the first nested run would be refused and nesting -- the
+    // capability this guard exists to protect -- would be broken. The runner is
+    // the single owner of the increment: it seals the ceiling here and hands the
+    // child its identity and depth explicitly, so no descendant has to re-derive
+    // either one.
+    let tree_id = match tree_id {
+        Some(id) => {
+            validate_tree_id(&id).context("invalid AMPLIHACK_TREE_ID")?;
+            id
+        }
+        None => new_tree_id(),
+    };
+    let max_depth = ensure_sealed(&tree_id, max_depth)
+        .context("failed to seal the recursion ceiling for this tree")?;
+
+    Ok(SpawnGuard {
+        tree_id,
+        child_depth: depth.saturating_add(1),
+        max_depth,
+    })
+}
+
+/// A fresh tree identifier for a root run. Matches `validate_tree_id`'s alphabet.
+fn new_tree_id() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{:08x}{:04x}", nanos as u32, std::process::id() as u16)
 }
 
 /// Pre-run snapshot of the caller checkout's git state needed to keep it usable

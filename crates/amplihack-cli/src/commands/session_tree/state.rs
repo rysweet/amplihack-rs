@@ -70,8 +70,12 @@ pub fn validate_tree_id(id: &str) -> Result<&str> {
     Ok(id)
 }
 
-/// Resolve the state directory, creating it with mode 0700 if necessary.
-pub fn state_dir() -> Result<PathBuf> {
+/// Resolve the state directory path without touching the filesystem.
+///
+/// Split out from [`state_dir`] so read-only callers (e.g. [`sealed_ceiling`],
+/// which runs on every `recipe run`) do not create directories as a side effect
+/// of asking a question.
+pub fn resolve_state_dir() -> PathBuf {
     // Issue #1326. This directory MUST resolve identically in a root run and in
     // every descendant, or the tree-global session cap counts nothing.
     //
@@ -99,6 +103,12 @@ pub fn state_dir() -> Result<PathBuf> {
         // path rather than TMPDIR, so at least it does not vary per run.
         PathBuf::from("/tmp").join(STATE_DIR_NAME)
     };
+    dir
+}
+
+/// Resolve the state directory, creating it with mode 0700 if necessary.
+pub fn state_dir() -> Result<PathBuf> {
+    let dir = resolve_state_dir();
     fs::create_dir_all(&dir)
         .with_context(|| format!("failed to create state dir {}", dir.display()))?;
     #[cfg(unix)]
@@ -164,6 +174,15 @@ pub struct TreeState {
     /// ceiling on the next registration, so the upgrade is transparent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ceiling: Option<u32>,
+    /// Version of the binary that sealed this tree (issue #1326).
+    ///
+    /// A tree written by one build and extended by another is a real hazard: a
+    /// build predating this fix resolves the store from `TMPDIR`, so the two
+    /// binaries hold disjoint views of one tree and both under-count. Recorded so
+    /// the mismatch is visible; deliberately a warning rather than a refusal,
+    /// because refusing would break every rolling upgrade.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub writer_version: Option<String>,
 }
 
 /// Resolve the recursion ceiling that actually applies, given the tree's sealed
@@ -186,6 +205,43 @@ pub fn effective_max_depth(sealed: Option<u32>, from_env: Option<u32>) -> u32 {
     }
 }
 
+/// Seal a tree's recursion ceiling if it has none yet, and return the ceiling
+/// that now applies (issue #1326).
+///
+/// Called by the root `recipe run` so that every descendant has something
+/// authoritative to clamp against. Idempotent: an already-sealed tree keeps its
+/// value, and `proposed` may only lower it. Runs under the tree lock, so two
+/// roots racing on one tree_id cannot seal different values.
+pub fn ensure_sealed(tree_id: &str, proposed: u32) -> Result<u32> {
+    let dir = state_dir()?;
+    let mut resolved = proposed.min(MAX_DEPTH_CEILING);
+    with_locked_tree(&dir, tree_id, |path| {
+        let mut state = load_state(path)?;
+        resolved = effective_max_depth(state.ceiling, Some(proposed));
+        let this_version = env!("CARGO_PKG_VERSION").to_string();
+        if let Some(seen) = state.writer_version.as_ref()
+            && seen != &this_version
+        {
+            tracing::warn!(
+                tree_writer_version = %seen,
+                this_version = %this_version,
+                "session tree was sealed by a different amplihack build; a build predating \
+                 issue #1326 resolves the tree store from TMPDIR and will not share this \
+                 tree, so the session cap may under-count. Upgrade the whole fleet."
+            );
+        }
+        let changed = state.ceiling != Some(resolved)
+            || state.writer_version.as_deref() != Some(this_version.as_str());
+        if changed {
+            state.ceiling = Some(resolved);
+            state.writer_version = Some(this_version);
+            save_state(path, state)?;
+        }
+        Ok(())
+    })?;
+    Ok(resolved)
+}
+
 /// Read the ceiling a tree has already sealed, if any (issue #1326).
 ///
 /// Best-effort and lock-free: this is a read of a value that only ever moves
@@ -193,7 +249,10 @@ pub fn effective_max_depth(sealed: Option<u32>, from_env: Option<u32>) -> u32 {
 /// `session-tree register`. A missing or unreadable tree yields `None`, which
 /// leaves the caller on the environment-derived value.
 pub fn sealed_ceiling(tree_id: &str) -> Option<u32> {
-    let dir = state_dir().ok()?;
+    let dir = resolve_state_dir();
+    if !dir.is_dir() {
+        return None;
+    }
     let path = state_path_in(&dir, tree_id).ok()?;
     load_state(&path).ok()?.ceiling
 }

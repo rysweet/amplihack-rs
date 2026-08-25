@@ -54,6 +54,20 @@ pub enum SessionTreeCommands {
         /// Tree ID (defaults to $AMPLIHACK_TREE_ID).
         tree_id: Option<String>,
     },
+    /// Remove tree state older than the retention window (issue #1326).
+    ///
+    /// The store is durable now (it must be, or the tree-global cap counts
+    /// nothing), so it needs an owner for its lifecycle. Previously it lived in
+    /// TMPDIR and got free cleanup; that free cleanup is what made the cap
+    /// meaningless, so it is not coming back.
+    Gc {
+        /// Delete trees whose last activity is older than this many days.
+        #[arg(long, default_value_t = 7)]
+        older_than_days: u64,
+        /// Report what would be removed without removing it.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Check whether a new child session can be spawned. Exit 0 + stdout
     /// "ALLOWED" if allowed, exit 2 + stdout "BLOCKED:\<reason\>" if not.
     Check,
@@ -115,6 +129,10 @@ pub fn run(cmd: SessionTreeCommands) -> Result<()> {
         SessionTreeCommands::Complete { session_id } => run_complete(ctx, &session_id),
         SessionTreeCommands::Status { tree_id } => run_status(ctx, tree_id),
         SessionTreeCommands::Check => run_check(ctx),
+        SessionTreeCommands::Gc {
+            older_than_days,
+            dry_run,
+        } => run_gc(older_than_days, dry_run),
     }
 }
 
@@ -418,4 +436,53 @@ mod tests {
                 .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
         );
     }
+}
+
+/// `amplihack session-tree gc` — retention for the durable tree store (#1326).
+fn run_gc(older_than_days: u64, dry_run: bool) -> Result<()> {
+    let dir = state_dir()?;
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(older_than_days.saturating_mul(86_400)))
+        .unwrap_or(std::time::UNIX_EPOCH);
+
+    let mut removed = 0usize;
+    let mut bytes = 0u64;
+    for entry in std::fs::read_dir(&dir)
+        .with_context(|| format!("failed to read {}", dir.display()))?
+    {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+        let ext = path.extension().and_then(|e| e.to_str());
+        if !matches!(ext, Some("json") | Some("lock")) {
+            continue;
+        }
+        let meta = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+        if modified >= cutoff {
+            continue;
+        }
+        bytes += meta.len();
+        removed += 1;
+        if dry_run {
+            println!("would remove {}", path.display());
+        } else if std::fs::remove_file(&path).is_ok() {
+            println!("removed {}", path.display());
+        }
+    }
+
+    println!(
+        "{} {} file(s), {} bytes, older than {} day(s), from {}",
+        if dry_run { "would remove" } else { "removed" },
+        removed,
+        bytes,
+        older_than_days,
+        dir.display()
+    );
+    Ok(())
 }

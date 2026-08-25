@@ -81,6 +81,15 @@ pub fn run_recipe(
     ) {
         Ok(result) => result,
         Err(error) => {
+            // Issue #1326: preserve a distinguishing exit status when the failure
+            // carries one (e.g. EXIT_ORCHESTRATION_UNAVAILABLE = 79 for a policy
+            // refusal). Collapsing everything to 1 is what made a terminal refusal
+            // indistinguishable from a transient fault, which is what agents then
+            // retried around. Such errors have already reported themselves, so do
+            // not print them a second time.
+            if let Some(code) = crate::command_error::exit_code(&error) {
+                return Err(exit_error(code));
+            }
             writeln!(io::stderr(), "Error: {error}")?;
             return Err(exit_error(1));
         }

@@ -15,16 +15,19 @@
 (*                  (today: $TMPDIR/amplihack-session-trees with a fresh    *)
 (*                   TMPDIR per run => FALSE)                               *)
 (*   Locked       - flock around the read-modify-write                      *)
-(*   EnvCeiling   - the depth ceiling is read from the child's environment  *)
-(*                  and may be raised by the child (today => TRUE)          *)
+(*   SealAtRoot   - the root writes an authoritative ceiling into the tree  *)
+(*                  state, which the environment may only lower.  Agents    *)
+(*                  can ALWAYS rewrite their own environment (that is       *)
+(*                  reality, not a design choice), so Escalate is always    *)
+(*                  enabled; sealing is what makes it inert.                *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
-CONSTANTS Procs, MaxNodes, MaxDepth, SharedLedger, Locked, EnvCeiling
+CONSTANTS Procs, MaxNodes, MaxDepth, SharedLedger, Locked, SealAtRoot
 
 ASSUME MaxNodes \in Nat /\ MaxNodes > 0
 ASSUME MaxDepth \in Nat
-ASSUME SharedLedger \in BOOLEAN /\ Locked \in BOOLEAN /\ EnvCeiling \in BOOLEAN
+ASSUME SharedLedger \in BOOLEAN /\ Locked \in BOOLEAN /\ SealAtRoot \in BOOLEAN
 
 NoProc  == "none"
 Ledgers == {"shared"} \cup Procs
@@ -37,9 +40,18 @@ VARIABLES
     depth,      \* depth[p]
     ceiling,    \* ceiling[p] : the max-depth p believes applies to it
     parent,
-    child       \* child[p] : the process p is currently admitting, or NoProc
+    child,      \* child[p] : the process p is currently admitting, or NoProc
+    isSealed,   \* has the tree recorded an authoritative ceiling?
+    sealedVal   \* that ceiling, meaningful only when isSealed
 
-vars == <<spawned, lock, pc, rdSpawned, depth, ceiling, parent, child>>
+vars == <<spawned, lock, pc, rdSpawned, depth, ceiling, parent, child,
+          isSealed, sealedVal>>
+
+Min(a, b) == IF a =< b THEN a ELSE b
+
+(* The ceiling that actually applies to p: the sealed value clamps the value p
+   carries in its environment.  Unsealed, the environment is the only source. *)
+EffCeiling(p) == IF isSealed THEN Min(sealedVal, ceiling[p]) ELSE ceiling[p]
 
 Live    == {p \in Procs : pc[p] \in {"live","hold","read","ok","blocked"}}
 Ledger(p) == IF SharedLedger THEN "shared" ELSE p
@@ -60,6 +72,8 @@ Init ==
     /\ ceiling   = [p \in Procs |-> MaxDepth]
     /\ parent    = [p \in Procs |-> NoProc]
     /\ child     = [p \in Procs |-> NoProc]
+    /\ isSealed  = FALSE
+    /\ sealedVal = MaxDepth
 
 (* The root node.  Exactly one, at depth 0, debiting one node. *)
 StartRoot(p) ==
@@ -69,6 +83,9 @@ StartRoot(p) ==
     /\ pc'      = [pc      EXCEPT ![p] = "live"]
     /\ depth'   = [depth   EXCEPT ![p] = 0]
     /\ ceiling' = [ceiling EXCEPT ![p] = MaxDepth]
+    \* The root either seals the tree's ceiling, or leaves it unsealed.
+    /\ isSealed'  = SealAtRoot
+    /\ sealedVal' = MaxDepth
     /\ UNCHANGED <<lock, rdSpawned, parent, child>>
 
 (* ---- the admission protocol, one file operation per step ---- *)
@@ -78,24 +95,24 @@ Acquire(p) ==
     /\ \E c \in Procs : pc[c] = "off" /\ c # p
     /\ IF Locked THEN lock = NoProc /\ lock' = p ELSE lock' = lock
     /\ pc' = [pc EXCEPT ![p] = "hold"]
-    /\ UNCHANGED <<spawned, rdSpawned, depth, ceiling, parent, child>>
+    /\ UNCHANGED <<spawned, rdSpawned, depth, ceiling, parent, child, isSealed, sealedVal>>
 
 ReadLedger(p) ==
     /\ pc[p] = "hold"
     /\ rdSpawned' = [rdSpawned EXCEPT ![p] = spawned[Ledger(p)]]
     /\ pc'        = [pc        EXCEPT ![p] = "read"]
-    /\ UNCHANGED <<spawned, lock, depth, ceiling, parent, child>>
+    /\ UNCHANGED <<spawned, lock, depth, ceiling, parent, child, isSealed, sealedVal>>
 
 (* Decide using the LOCAL copy - this is where TOCTOU lives when unlocked. *)
 Decide(p) ==
     /\ pc[p] = "read"
     /\ \/ /\ rdSpawned[p] + 1 =< MaxNodes
-          /\ depth[p] + 1 =< ceiling[p]
+          /\ depth[p] + 1 =< EffCeiling(p)
           /\ pc' = [pc EXCEPT ![p] = "ok"]
        \/ /\ \/ rdSpawned[p] + 1 > MaxNodes
-             \/ depth[p] + 1 > ceiling[p]
+             \/ depth[p] + 1 > EffCeiling(p)
           /\ pc' = [pc EXCEPT ![p] = "blocked"]
-    /\ UNCHANGED <<spawned, lock, rdSpawned, depth, ceiling, parent, child>>
+    /\ UNCHANGED <<spawned, lock, rdSpawned, depth, ceiling, parent, child, isSealed, sealedVal>>
 
 (* Debit BEFORE the child exists: fail-safe.  A crash here loses capacity
    (reclaimable by a reaper) but can never over-admit. *)
@@ -105,44 +122,49 @@ DebitAndSpawn(p, c) ==
     /\ c # p
     /\ spawned' = [spawned EXCEPT ![Ledger(p)] = rdSpawned[p] + 1]  \* write-back of the LOCAL copy
     /\ depth'   = [depth   EXCEPT ![c] = depth[p] + 1]
-    /\ ceiling' = [ceiling EXCEPT ![c] = ceiling[p]]   \* inherited, never raised
+    /\ ceiling' = [ceiling EXCEPT ![c] = EffCeiling(p)]  \* inherited, never raised
     /\ parent'  = [parent  EXCEPT ![c] = p]
     /\ pc'      = [pc EXCEPT ![p] = "live", ![c] = "live"]
     /\ lock'    = IF Locked /\ lock = p THEN NoProc ELSE lock
-    /\ UNCHANGED <<rdSpawned, child>>
+    /\ UNCHANGED <<rdSpawned, child, isSealed, sealedVal>>
 
 ReleaseBlocked(p) ==
     /\ pc[p] = "blocked"
     /\ pc'   = [pc EXCEPT ![p] = "live"]
     /\ lock' = IF Locked /\ lock = p THEN NoProc ELSE lock
-    /\ UNCHANGED <<spawned, rdSpawned, depth, ceiling, parent, child>>
+    /\ UNCHANGED <<spawned, rdSpawned, depth, ceiling, parent, child, isSealed, sealedVal>>
 
 (***************************************************************************)
 (* THE OBSERVED FAILURE.  A blocked agent raises its own ceiling and        *)
 (* retries one level deeper.  Only reachable when the ceiling is carried    *)
 (* in the child's environment rather than read from the ledger.             *)
 (*   "retrying investigation-workflow with AMPLIHACK_MAX_DEPTH=8"           *)
+(*                                                                          *)
+(* Always enabled: the environment belongs to the agent.  What determines   *)
+(* whether it MATTERS is whether a sealed ceiling clamps it.                *)
 (***************************************************************************)
 Escalate(p) ==
-    /\ EnvCeiling
     /\ pc[p] = "blocked"
-    /\ depth[p] + 1 > ceiling[p]
+    /\ depth[p] + 1 > EffCeiling(p)
+    \* Bound the ladder so the model stays finite. Real agents escalate a few
+    \* times and give up; the observed ladder was 5 -> 6 -> 7 -> 8 -> 9.
+    /\ ceiling[p] < MaxDepth + Cardinality(Procs)
     /\ ceiling' = [ceiling EXCEPT ![p] = @ + 1]
     /\ pc'      = [pc      EXCEPT ![p] = "live"]
     /\ lock'    = IF Locked /\ lock = p THEN NoProc ELSE lock
-    /\ UNCHANGED <<spawned, rdSpawned, depth, parent, child>>
+    /\ UNCHANGED <<spawned, rdSpawned, depth, parent, child, isSealed, sealedVal>>
 
 Complete(p) ==
     /\ pc[p] = "live"
     /\ pc'   = [pc EXCEPT ![p] = "dead"]
-    /\ UNCHANGED <<spawned, lock, rdSpawned, depth, ceiling, parent, child>>
+    /\ UNCHANGED <<spawned, lock, rdSpawned, depth, ceiling, parent, child, isSealed, sealedVal>>
 
 (* SIGKILL at any point.  The kernel releases flock on process death. *)
 Crash(p) ==
     /\ pc[p] \in {"live","hold","read","ok","blocked"}
     /\ pc'   = [pc EXCEPT ![p] = "dead"]
     /\ lock' = IF lock = p THEN NoProc ELSE lock
-    /\ UNCHANGED <<spawned, rdSpawned, depth, ceiling, parent, child>>
+    /\ UNCHANGED <<spawned, rdSpawned, depth, ceiling, parent, child, isSealed, sealedVal>>
 
 Next ==
     \/ \E p \in Procs :
@@ -163,7 +185,7 @@ DepthBound == \A p \in Procs : pc[p] # "off" => depth[p] =< MaxDepth
 
 (* I2 - a child's ceiling never exceeds its parent's. *)
 CeilingMonotone ==
-    \A c \in Procs : parent[c] \in Procs => ceiling[c] =< ceiling[parent[c]]
+    \A c \in Procs : parent[c] \in Procs => EffCeiling(c) =< EffCeiling(parent[c])
 
 (* The ledger never under-counts what exists: no lost update. *)
 LedgerSound ==

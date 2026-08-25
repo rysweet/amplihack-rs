@@ -28,7 +28,7 @@ CASES=(
   "A_today:NodeBudget"
   "B_proposed:PASS"
   "C_no_lock:NodeBudget"
-  "D_env_ceiling:CeilingMonotone"
+  "D_unsealed:CeilingMonotone"
 )
 
 cd "$SPEC_DIR"

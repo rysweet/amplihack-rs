@@ -8,12 +8,12 @@ SIGKILLed between any two steps; and `flock` is released by the kernel on death.
 Three design decisions are constants, so each can be shown *necessary* by ablation
 rather than asserted:
 
-| Config | shared ledger | flock | ceiling from ledger | Expected TLC result |
+| Config | shared ledger | flock | ceiling sealed at root | Expected TLC result |
 |---|:--:|:--:|:--:|---|
 | `A_today` | ✗ | ✓ | ✗ | `NodeBudget` violated |
 | `B_proposed` | ✓ | ✓ | ✓ | **no error** |
 | `C_no_lock` | ✓ | ✗ | ✓ | `NodeBudget` violated |
-| `D_env_ceiling` | ✓ | ✓ | ✗ | `CeilingMonotone` violated |
+| `D_unsealed` | ✓ | ✓ | ✗ | `CeilingMonotone` violated |
 
 `B_proposed` is the configuration this repository implements. The other three are
 regression oracles: if a refactor makes `A`, `C`, or `D` start passing, the spec has
@@ -33,3 +33,38 @@ The spec is not decoration. `crates/amplihack-cli/tests/spec_conformance.rs` enf
 each named invariant against the real implementation, and a drift test fails if an
 invariant is added to a `.cfg` without a corresponding test. See that file for the
 traceability table.
+
+## Operational caveats
+
+Honest limits of what the model proves and what the implementation can promise.
+
+**This is bounded model checking, not a general proof.** TLC is exhaustive at
+4 processes / 8 nodes / depth 2. For all *N* an inductive invariant in TLAPS is needed;
+`CeilingMonotone` and `NodeBudget` both look inductive and that is the natural next step.
+
+**Not a security boundary.** A same-uid process can edit the tree state directly. The
+observed failure was a well-behaved agent routing around what looked like a tooling
+fault, and the design makes the correct path obvious and the incorrect path ineffective.
+It does not defeat an adversary and must not be described as if it does.
+
+**`flock` over NFS.** The tree lock uses `fs4`, i.e. `flock(2)`. On NFS, `flock` has
+historically been unreliable or local-only ([`flock(2)` NOTES](https://man7.org/linux/man-pages/man2/flock.2.html)).
+`NodeBudget` rests entirely on that lock: on an NFS home you are living in the
+`C_no_lock` ablation, which the model says admits far more than the budget. Keep
+`$HOME/.amplihack` on local storage, or set `AMPLIHACK_SESSION_TREE_DIR` to a local path.
+
+**`HOME` unset.** Falls back to `/tmp/amplihack-session-trees` — durable enough within a
+boot, but shared. Containers should set `HOME` or `AMPLIHACK_SESSION_TREE_DIR` explicitly.
+
+**`HOME` rewritten mid-tree** splits the tree exactly as `TMPDIR` did. The runner pins
+`AMPLIHACK_SESSION_TREE_DIR` for descendants to make this hard, but that variable is then
+itself an inheritable override. This is a correctness boundary, not a sandbox.
+
+**Mixed-version fleets.** A build predating this fix resolves the store from `TMPDIR` and
+will not share a tree with a fixed build; both then under-count. `TreeState.writer_version`
+records the sealing build and logs a warning on mismatch. It warns rather than refuses,
+because refusing would break rolling upgrades.
+
+**Retention.** The store is durable, so it needs an owner: `amplihack session-tree gc
+--older-than-days N` (add `--dry-run` first). The old `TMPDIR` location got free cleanup;
+that free cleanup is precisely what made the cap meaningless, so it is not coming back.
