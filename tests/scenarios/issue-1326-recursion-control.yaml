@@ -13,6 +13,11 @@ metadata:
   priority: high
 environment:
   requires: []
+# Step timeouts are deliberately generous (60 min). These steps shell out to
+# `cargo test`, which on a cold runner pays a full workspace compile before a
+# single test runs, and to a TLC model check. A timeout tuned to the warm case
+# turns a slow machine into a red build, and a false failure costs more than a
+# slow one. The real bound is the CI job's own `timeout-minutes`.
 agents:
   - name: cli-agent
     type: cli
@@ -29,7 +34,7 @@ steps:
     action: execute
     params:
       command: "bash tests/issue-1326-cargo-step.sh -p amplihack --test spec_conformance_process --locked -- invariant_ceiling_monotone"
-    timeout: 600000
+    timeout: 3600000
 
   - name: the-session-cap-survives-a-tmpdir-change
     description: >-
@@ -41,7 +46,7 @@ steps:
     action: execute
     params:
       command: "bash tests/issue-1326-cargo-step.sh -p amplihack --test spec_conformance_process --locked -- invariant_node_budget invariant_ledger_sound"
-    timeout: 600000
+    timeout: 3600000
 
   - name: a-policy-refusal-is-terminal-and-says-so
     description: >-
@@ -52,7 +57,7 @@ steps:
     action: execute
     params:
       command: "bash tests/issue-1326-cargo-step.sh -p amplihack --test spec_conformance_process --locked -- unsealed_nested_run_fails_closed"
-    timeout: 600000
+    timeout: 3600000
 
   - name: nesting-below-the-ceiling-still-works
     description: >-
@@ -64,7 +69,7 @@ steps:
     action: execute
     params:
       command: "bash tests/issue-1326-cargo-step.sh -p amplihack --test spec_conformance_process --locked -- root_run_is_admitted_and_seals_a_tree"
-    timeout: 600000
+    timeout: 3600000
 
   - name: a-stale-variable-does-not-wedge-a-user
     description: >-
@@ -77,7 +82,7 @@ steps:
     action: execute
     params:
       command: "bash tests/issue-1326-cargo-step.sh -p amplihack-cli --lib --locked -- uncorroborated_stale_depth corroborated_depth_is_believed a_sealed_tree_always_makes depth_zero_is_never_rewritten"
-    timeout: 600000
+    timeout: 3600000
 
   - name: the-spec-gate-still-distinguishes-the-designs
     description: >-
@@ -89,7 +94,7 @@ steps:
     action: execute
     params:
       command: "bash tests/issue-1326-spec-gate.sh"
-    timeout: 900000
+    timeout: 3600000
 
   - name: the-spec-and-the-tests-have-not-drifted
     description: >-
@@ -100,4 +105,4 @@ steps:
     action: execute
     params:
       command: "bash tests/issue-1326-cargo-step.sh -p amplihack-cli --test spec_conformance --locked -- spec_invariants_all_have_tests spec_gate_covers_every_config"
-    timeout: 600000
+    timeout: 3600000
