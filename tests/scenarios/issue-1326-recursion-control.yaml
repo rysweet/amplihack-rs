@@ -1,0 +1,103 @@
+name: issue-1326-recursion-control
+description: >-
+  QA scenario for issue #1326 — "a single `amplihack recipe run
+  smart-orchestrator` grew to ~850 concurrent agent processes holding ~208 GB and
+  OOM-killed a 251 GiB host four times in two days". Each step names the
+  user-visible symptom it covers, not the function behind it. Steps are
+  exit-code asserted: a non-zero exit fails the step. Written in the canonical
+  agentic-test format (top-level agents + steps with params.command) so
+  `gadugi-test run` actually executes the commands.
+version: "1.0"
+metadata:
+  tags: [cli, recursion, session-tree, orchestration, safety, spec, issue-1326, issue-964]
+  priority: high
+environment:
+  requires: []
+agents:
+  - name: cli-agent
+    type: cli
+    config:
+      workingDirectory: "."
+steps:
+  - name: a-forged-ceiling-cannot-raise-a-sealed-one
+    description: >-
+      The root seals the tree's ceiling; the environment may lower it and never
+      raise it. Exercised end to end against the real binary with the exact
+      escalation ladder from the host logs (5 -> 6 -> 7 -> 8 -> 9), which is how
+      agents routed around the depth refusal.
+    agent: cli-agent
+    action: execute
+    params:
+      command: "bash tests/issue-1326-cargo-step.sh -p amplihack --test spec_conformance_process --locked -- invariant_ceiling_monotone"
+    timeout: 600000
+
+  - name: the-session-cap-survives-a-tmpdir-change
+    description: >-
+      A configured cap of 10 admitted ~850 sessions because tree state came from
+      TMPDIR and every nested run is handed a fresh one, so each level counted
+      against an empty file. State is now anchored durably and pinned for
+      descendants.
+    agent: cli-agent
+    action: execute
+    params:
+      command: "bash tests/issue-1326-cargo-step.sh -p amplihack --test spec_conformance_process --locked -- invariant_node_budget invariant_ledger_sound"
+    timeout: 600000
+
+  - name: a-policy-refusal-is-terminal-and-says-so
+    description: >-
+      A refusal used to be indistinguishable from a transient failure (exit 1),
+      which is what made retrying look reasonable. It now exits 79 and states
+      that retrying, switching recipe, or raising the ceiling will not change it.
+    agent: cli-agent
+    action: execute
+    params:
+      command: "bash tests/issue-1326-cargo-step.sh -p amplihack --test spec_conformance_process --locked -- unsealed_nested_run_fails_closed"
+    timeout: 600000
+
+  - name: nesting-below-the-ceiling-still-works
+    description: >-
+      The capability the controls exist to protect. A root run is admitted and
+      seals a tree; nesting below the ceiling is never refused. A fix that
+      refuses everything would satisfy every safety check and destroy the
+      product, so this is asserted as loudly as the safety properties.
+    agent: cli-agent
+    action: execute
+    params:
+      command: "bash tests/issue-1326-cargo-step.sh -p amplihack --test spec_conformance_process --locked -- root_run_is_admitted_and_seals_a_tree"
+    timeout: 600000
+
+  - name: a-stale-variable-does-not-wedge-a-user
+    description: >-
+      On the affected host 4,583 processes were SIGKILLed at once, so a shell
+      holding a leftover AMPLIHACK_SESSION_DEPTH is routine. A depth claim is
+      only acted on when corroborated by a tree id or a live orchestrator
+      ancestor; uncorroborated it is leftover state and a fresh tree starts at
+      depth 0, rather than the user being refused forever.
+    agent: cli-agent
+    action: execute
+    params:
+      command: "bash tests/issue-1326-cargo-step.sh -p amplihack-cli --lib --locked -- uncorroborated_stale_depth corroborated_depth_is_believed a_sealed_tree_always_makes depth_zero_is_never_rewritten"
+    timeout: 600000
+
+  - name: the-spec-gate-still-distinguishes-the-designs
+    description: >-
+      All four ablations must behave as specified: the shipped design holds, and
+      removing the shared store, the lock, or the seal each still reproduces its
+      hazard. An unexpected PASS fails the gate as loudly as a regression.
+      Skips cleanly when tla2tools is unavailable.
+    agent: cli-agent
+    action: execute
+    params:
+      command: "bash tests/issue-1326-spec-gate.sh"
+    timeout: 900000
+
+  - name: the-spec-and-the-tests-have-not-drifted
+    description: >-
+      Every invariant named in a docs/spec config has a conformance test, and
+      every config is wired into the gate. Adding either without the other fails
+      here rather than silently reducing coverage.
+    agent: cli-agent
+    action: execute
+    params:
+      command: "bash tests/issue-1326-cargo-step.sh -p amplihack-cli --test spec_conformance --locked -- spec_invariants_all_have_tests spec_gate_covers_every_config"
+    timeout: 600000
