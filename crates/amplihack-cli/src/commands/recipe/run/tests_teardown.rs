@@ -39,6 +39,9 @@ use std::time::{Duration, Instant};
 const TEARDOWN_GRACE_ENV: &str = "AMPLIHACK_TEARDOWN_GRACE_SECS";
 const RUNNER_TIMEOUT_ENV: &str = "AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS";
 const RUNNER_PATH_ENV: &str = "RECIPE_RUNNER_RS_PATH";
+/// Issue #1326: the session-tree store is durable now ($HOME/.amplihack). Tests
+/// must redirect it or they write into the developer's real home directory.
+const SESSION_TREE_DIR_ENV: &str = "AMPLIHACK_SESSION_TREE_DIR";
 
 /// Minimal RAII guard that snapshots an env var and restores it on drop so a
 /// two-phase test cannot leak state into sibling tests. Env is process-global;
@@ -119,6 +122,7 @@ fn test_failure_path_reaps_orphaned_descendants() {
     std::fs::write(&recipe, "name: fail-leak-probe\nsteps: []\n").expect("failed to write recipe");
 
     let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
+    let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
     // Ensure a fast failure is not misread as a timeout.
     let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
 
@@ -177,6 +181,7 @@ fn test_timeout_teardown_sends_sigterm_before_sigkill() {
     std::fs::write(&recipe, "name: graceful-probe\nsteps: []\n").expect("failed to write recipe");
 
     let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
+    let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
     let _timeout_env = EnvVarGuard::set(RUNNER_TIMEOUT_ENV, "1");
     // Explicit, generous grace so the trapped child can finish cleanly.
     let _grace_env = EnvVarGuard::set(TEARDOWN_GRACE_ENV, "5");
@@ -244,6 +249,7 @@ fn test_teardown_grace_window_is_configurable() {
         std::fs::write(&recipe, "name: grace-probe\nsteps: []\n").expect("failed to write recipe");
 
         let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
+    let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
         let result = execute::execute_recipe_via_rust(
             &recipe,
             &BTreeMap::new(),
@@ -313,6 +319,7 @@ fn test_teardown_is_scoped_to_runner_process_group() {
     std::fs::write(&recipe, "name: scope-probe\nsteps: []\n").expect("failed to write recipe");
 
     let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
+    let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
     let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
 
     let started = Instant::now();
@@ -414,7 +421,18 @@ fn depth_guard_spawned(session_depth: &str, max_depth: Option<&str>) -> bool {
     std::fs::write(&recipe, "name: depth-probe\nsteps: []\n").expect("failed to write recipe");
 
     let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
+    let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
     let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
+    // Issue #1326: a genuine nested run names a tree that has sealed a ceiling.
+    // Pin both so the probe does not depend on the ambient process ancestry of
+    // whoever runs the suite (a developer inside an `amplihack` session has an
+    // orchestrator ancestor; CI does not).
+    let _tree_id_env = EnvVarGuard::set("AMPLIHACK_TREE_ID", "probe");
+    crate::commands::session_tree::state::ensure_sealed(
+        "probe",
+        max_depth.and_then(|v| v.parse().ok()).unwrap_or(3),
+    )
+    .expect("seal probe tree");
     let _depth_env = EnvVarGuard::set(SESSION_DEPTH_ENV, session_depth);
     let _max_env = match max_depth {
         Some(v) => EnvVarGuard::set(MAX_DEPTH_ENV, v),
@@ -612,6 +630,7 @@ fn test_caller_git_state_restored_after_terminal_failure() {
         .expect("failed to write recipe");
 
     let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
+    let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
     let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
 
     let result =
@@ -674,6 +693,7 @@ fn test_restore_preserves_durable_child_worktree() {
         .expect("failed to write recipe");
 
     let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
+    let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
     let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
 
     let result =
@@ -735,6 +755,7 @@ fn test_caller_git_state_restored_after_structured_failure_result() {
         .expect("failed to write recipe");
 
     let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
+    let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
     let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
 
     let result =
@@ -757,4 +778,37 @@ fn test_caller_git_state_restored_after_structured_failure_result() {
         "structured-failure cleanup must leave the caller checkout usable \
          (`git status` must succeed) after the failed run (issue #964)"
     );
+}
+
+// --- issue #1326: the depth-claim decision, without fabricating a process tree ---
+
+#[test]
+fn uncorroborated_stale_depth_is_treated_as_a_new_root() {
+    // A leftover AMPLIHACK_SESSION_DEPTH in a surviving shell must not wedge the
+    // user. Nothing vouches for it, so it is discarded.
+    assert_eq!(execute::resolve_claimed_depth(4, None, false), 0);
+}
+
+#[test]
+fn corroborated_depth_is_believed_and_left_for_the_ceiling_check() {
+    // A tree id, or a live orchestrator ancestor, makes the claim actionable. The
+    // caller then refuses, because no sealed ceiling can be found for it.
+    assert_eq!(execute::resolve_claimed_depth(4, None, true), 4);
+}
+
+#[test]
+fn a_sealed_tree_always_makes_the_claim_actionable() {
+    // Once a ceiling exists there is something to clamp against, so corroboration
+    // is irrelevant and the depth stands either way.
+    assert_eq!(execute::resolve_claimed_depth(2, Some(3), false), 2);
+    assert_eq!(execute::resolve_claimed_depth(2, Some(3), true), 2);
+}
+
+#[test]
+fn depth_zero_is_never_rewritten() {
+    for corroborated in [false, true] {
+        for sealed in [None, Some(0), Some(3)] {
+            assert_eq!(execute::resolve_claimed_depth(0, sealed, corroborated), 0);
+        }
+    }
 }

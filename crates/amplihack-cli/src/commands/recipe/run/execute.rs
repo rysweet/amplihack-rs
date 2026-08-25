@@ -51,6 +51,83 @@ fn terminal_block(message: String) -> anyhow::Error {
     crate::command_error::exit_error(EXIT_ORCHESTRATION_UNAVAILABLE)
 }
 
+
+
+/// Decide how much to believe an inherited `AMPLIHACK_SESSION_DEPTH` (issue #1326).
+///
+/// A depth claim is only actionable if something other than the variable itself
+/// supports it. `AMPLIHACK_SESSION_DEPTH` is inherited by every descendant and
+/// outlives the run that set it; the host that motivated this work had 4,583
+/// processes SIGKILLed at once, so a surviving shell holding stale orchestration
+/// variables is ordinary. Refusing on the variable alone would wedge that user's
+/// `amplihack recipe run` permanently, with no hint as to why.
+///
+/// * corroborated (a tree id, or a live orchestrator ancestor) -> believe it; a
+///   nested run whose ceiling cannot be verified is then refused by the caller.
+/// * uncorroborated -> treat as leftover state and start a fresh tree at depth 0.
+///
+/// Split out as a pure function so the decision is testable without fabricating
+/// a process tree.
+pub(super) fn resolve_claimed_depth(claimed: u32, sealed: Option<u32>, corroborated: bool) -> u32 {
+    if claimed > 0 && sealed.is_none() && !corroborated {
+        tracing::warn!(
+            claimed,
+            "AMPLIHACK_SESSION_DEPTH is set but nothing corroborates it; treating it as \
+             a stale variable from a previous run and starting a new tree at depth 0 \
+             (issue #1326)"
+        );
+        return 0;
+    }
+    claimed
+}
+
+/// Does this process actually descend from an orchestrator? (issue #1326)
+///
+/// `AMPLIHACK_SESSION_DEPTH` is an inherited string. A shell that outlived a killed
+/// run keeps it -- and on the host that motivated this work, 4,583 processes were
+/// SIGKILLed at once, so stale orchestration variables in a surviving tmux pane are
+/// ordinary, not exotic. Refusing on the env var alone would permanently wedge that
+/// user's `amplihack recipe run` with no indication of why.
+///
+/// Process ancestry cannot be inherited from a dead run, so it distinguishes "I am
+/// genuinely nested" from "I have a leftover variable". Linux-only; elsewhere the
+/// presence of `AMPLIHACK_TREE_ID` is the only corroboration available.
+#[cfg(target_os = "linux")]
+fn has_orchestrator_ancestor() -> bool {
+    const MAX_HOPS: usize = 64;
+    let mut pid = std::process::id();
+    for _ in 0..MAX_HOPS {
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            return false;
+        };
+        // `comm` is parenthesised and may itself contain spaces or parens, so scan
+        // from the last ')': the fields after it are state, then ppid.
+        let Some(close) = stat.rfind(')') else {
+            return false;
+        };
+        let mut fields = stat[close + 1..].split_whitespace();
+        let _state = fields.next();
+        let Some(ppid) = fields.next().and_then(|v| v.parse::<u32>().ok()) else {
+            return false;
+        };
+        if ppid <= 1 {
+            return false;
+        }
+        let comm = std::fs::read_to_string(format!("/proc/{ppid}/comm")).unwrap_or_default();
+        let comm = comm.trim();
+        if comm.starts_with("amplihack") || comm.starts_with("recipe-runner") {
+            return true;
+        }
+        pid = ppid;
+    }
+    false
+}
+
+#[cfg(not(target_os = "linux"))]
+fn has_orchestrator_ancestor() -> bool {
+    false
+}
+
 /// What the guard resolved for the child about to be spawned (issue #1326).
 struct SpawnGuard {
     tree_id: String,
@@ -1107,6 +1184,8 @@ fn enforce_recursion_depth_guard() -> Result<SpawnGuard> {
     // root nothing seeds `AMPLIHACK_TREE_ID` and `sealed` is therefore `None` for
     // the whole chain. Refuse instead, consistent with how #964 already treats a
     // malformed `AMPLIHACK_SESSION_DEPTH`.
+    let corroborated = tree_id.is_some() || has_orchestrator_ancestor();
+    let depth = resolve_claimed_depth(depth, sealed, corroborated);
     if depth > 0 && sealed.is_none() {
         tracing::warn!(
             depth,
@@ -1167,12 +1246,18 @@ fn enforce_recursion_depth_guard() -> Result<SpawnGuard> {
 }
 
 /// A fresh tree identifier for a root run. Matches `validate_tree_id`'s alphabet.
+///
+/// A collision would splice two unrelated trees together: they would share one
+/// ceiling and one session budget, so an innocent root could be refused because a
+/// stranger filled the tree. Truncating the timestamp to `u32` would wrap roughly
+/// every 4.3 seconds and truncating the pid to `u16` discards most of its range,
+/// which is more collision surface than this needs. Keep both whole.
 fn new_tree_id() -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    format!("{:08x}{:04x}", nanos as u32, std::process::id() as u16)
+        .unwrap_or(0) as u64;
+    format!("{:016x}{:08x}", nanos, std::process::id())
 }
 
 /// Pre-run snapshot of the caller checkout's git state needed to keep it usable
