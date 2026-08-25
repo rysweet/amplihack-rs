@@ -94,7 +94,7 @@ pub fn resolve_state_dir() -> PathBuf {
     // worktrees, tempdirs, and cwd changes. `AMPLIHACK_SESSION_TREE_DIR` remains an
     // explicit override, and `recipe::run::execute` propagates its resolved value
     // to children so descendants inherit the decision instead of re-deriving it.
-    let dir = if let Some(explicit) = std::env::var_os("AMPLIHACK_SESSION_TREE_DIR") {
+    if let Some(explicit) = std::env::var_os("AMPLIHACK_SESSION_TREE_DIR") {
         PathBuf::from(explicit)
     } else if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
         PathBuf::from(home).join(".amplihack").join(STATE_DIR_NAME)
@@ -102,8 +102,7 @@ pub fn resolve_state_dir() -> PathBuf {
         // No HOME (unusual: some CI sandboxes). Fall back to a fixed absolute
         // path rather than TMPDIR, so at least it does not vary per run.
         PathBuf::from("/tmp").join(STATE_DIR_NAME)
-    };
-    dir
+    }
 }
 
 /// Resolve the state directory, creating it with mode 0700 if necessary.

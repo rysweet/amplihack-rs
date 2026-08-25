@@ -290,6 +290,57 @@ fn run_check(ctx: TreeContext) -> Result<()> {
     Ok(())
 }
 
+/// `amplihack session-tree gc` — retention for the durable tree store (#1326).
+fn run_gc(older_than_days: u64, dry_run: bool) -> Result<()> {
+    let dir = state_dir()?;
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(
+            older_than_days.saturating_mul(86_400),
+        ))
+        .unwrap_or(std::time::UNIX_EPOCH);
+
+    let mut removed = 0usize;
+    let mut bytes = 0u64;
+    for entry in
+        std::fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))?
+    {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+        let ext = path.extension().and_then(|e| e.to_str());
+        if !matches!(ext, Some("json") | Some("lock")) {
+            continue;
+        }
+        let meta = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+        if modified >= cutoff {
+            continue;
+        }
+        bytes += meta.len();
+        removed += 1;
+        if dry_run {
+            println!("would remove {}", path.display());
+        } else if std::fs::remove_file(&path).is_ok() {
+            println!("removed {}", path.display());
+        }
+    }
+
+    println!(
+        "{} {} file(s), {} bytes, older than {} day(s), from {}",
+        if dry_run { "would remove" } else { "removed" },
+        removed,
+        bytes,
+        older_than_days,
+        dir.display()
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::state::TreeState;
@@ -436,55 +487,4 @@ mod tests {
                 .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
         );
     }
-}
-
-/// `amplihack session-tree gc` — retention for the durable tree store (#1326).
-fn run_gc(older_than_days: u64, dry_run: bool) -> Result<()> {
-    let dir = state_dir()?;
-    let cutoff = std::time::SystemTime::now()
-        .checked_sub(std::time::Duration::from_secs(
-            older_than_days.saturating_mul(86_400),
-        ))
-        .unwrap_or(std::time::UNIX_EPOCH);
-
-    let mut removed = 0usize;
-    let mut bytes = 0u64;
-    for entry in
-        std::fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))?
-    {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        let path = entry.path();
-        let ext = path.extension().and_then(|e| e.to_str());
-        if !matches!(ext, Some("json") | Some("lock")) {
-            continue;
-        }
-        let meta = match entry.metadata() {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
-        if modified >= cutoff {
-            continue;
-        }
-        bytes += meta.len();
-        removed += 1;
-        if dry_run {
-            println!("would remove {}", path.display());
-        } else if std::fs::remove_file(&path).is_ok() {
-            println!("removed {}", path.display());
-        }
-    }
-
-    println!(
-        "{} {} file(s), {} bytes, older than {} day(s), from {}",
-        if dry_run { "would remove" } else { "removed" },
-        removed,
-        bytes,
-        older_than_days,
-        dir.display()
-    );
-    Ok(())
 }

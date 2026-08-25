@@ -46,6 +46,9 @@ impl Sandbox {
             .env("TMPDIR", tmpdir)
             .env("AMPLIHACK_TREE_ID", tree_id)
             .env("AMPLIHACK_MAX_SESSIONS", max_sessions.to_string())
+            // Hermetic: the sandbox HOME has no staged assets, and re-staging
+            // needs network plus an authenticated agent.
+            .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
             .env_remove("AMPLIHACK_SESSION_TREE_DIR")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -137,6 +140,7 @@ fn invariant_node_budget_concurrent_registers_respect_cap() {
                 .env("TMPDIR", &tmp)
                 .env("AMPLIHACK_TREE_ID", "cap")
                 .env("AMPLIHACK_MAX_SESSIONS", CAP.to_string())
+                .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
                 .env_remove("AMPLIHACK_SESSION_TREE_DIR")
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -219,6 +223,7 @@ fn recipe_run(home: &Path, envs: &[(&str, &str)]) -> Output {
         "task_description=conformance",
     ])
     .env("HOME", home)
+    .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
     .env_remove("AMPLIHACK_SESSION_TREE_DIR")
     .env_remove("AMPLIHACK_TREE_ID")
     .env_remove("AMPLIHACK_SESSION_DEPTH")
