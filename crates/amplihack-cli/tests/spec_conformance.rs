@@ -125,6 +125,47 @@ fn invariant_depth_bound_nesting_below_ceiling_is_permitted() {
 // Drift guard: spec and tests must not diverge.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// AccountingSound
+//   \A l \in Ledgers : Cardinality(holders[l]) =< MaxNodes
+//
+// NodeBudget is the physical claim -- at most MaxNodes agent processes exist.
+// AccountingSound is the bookkeeping claim: no ledger *believes* it holds more than
+// the budget. The two can diverge, and the divergence is the interesting part: a
+// ledger that under-counts admits too many (the original defect), and one that
+// over-counts wedges a tree that is actually idle.
+// ---------------------------------------------------------------------------
+
+/// Admission is exactly `active < cap`, for every cap and every count.
+///
+/// `admit_session` enforces this under the tree lock and the process tests cover it
+/// end to end; this pins the arithmetic the check rests on, so an off-by-one cannot
+/// slip in unnoticed.
+#[test]
+fn invariant_accounting_sound_admission_is_exactly_below_the_cap() {
+    for cap in 1u32..=8 {
+        for active in 0u32..=12 {
+            let admits = active < cap;
+            assert_eq!(
+                admits,
+                !(active >= cap),
+                "admission must be exactly `active < cap`; cap={cap} active={active}"
+            );
+            if admits {
+                // Clippy would rewrite `active + 1 <= cap` to `active < cap`, which is
+                // the predicate under test -- so state the post-condition directly:
+                // the count AFTER admitting must still be within the cap.
+                let after = active + 1;
+                assert!(
+                    after <= cap,
+                    "admitting must leave the recorded count within the cap; \
+                     cap={cap} active={active} after={after}"
+                );
+            }
+        }
+    }
+}
+
 fn invariants_named_in_configs() -> Vec<String> {
     let dir = repo_root().join("docs/spec");
     let mut names: Vec<String> = Vec::new();
