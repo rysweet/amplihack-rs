@@ -178,6 +178,36 @@ pub struct SessionEntry {
     pub completed_at: Option<u64>,
     #[serde(default)]
     pub children: Vec<String>,
+    /// PID of the process holding this session (issue #1329).
+    ///
+    /// `Drop` releases capacity on a clean exit, a panic, or an early return -- but
+    /// not on SIGKILL, and SIGKILL is routine here: the OOM killer took 4,583
+    /// processes at once on the host that motivated this work. Without a liveness
+    /// signal, a killed run holds its slot until `prune_stale` sweeps it four hours
+    /// later, and with a cap of 10 a few kills wedge the tree. `None` on entries
+    /// written by an older build.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+}
+
+/// Is a recorded session-holder still running? (issue #1329)
+///
+/// Conservative: a session with no recorded pid, or on a platform where we cannot
+/// check, counts as live. Wrongly reaping a live holder would over-admit, which is
+/// the failure this budget exists to prevent.
+fn holder_is_live(entry: &SessionEntry) -> bool {
+    let Some(pid) = entry.pid else {
+        return true;
+    };
+    #[cfg(target_os = "linux")]
+    {
+        std::path::Path::new(&format!("/proc/{pid}")).exists()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        true
+    }
 }
 
 /// Full on-disk shape of a tree's state file.
@@ -293,6 +323,25 @@ pub fn admit_session(
         if depth > ceiling {
             bail!("depth={depth} exceeds max_depth={ceiling}");
         }
+        // Reap holders that died without releasing (SIGKILL, OOM kill) before
+        // judging capacity. Otherwise a killed run holds its slot for hours and the
+        // refusal looks exactly like the budget working.
+        let mut reaped = 0usize;
+        for entry in state.sessions.values_mut() {
+            if entry.status == SessionStatus::Active && !holder_is_live(entry) {
+                entry.status = SessionStatus::Completed;
+                entry.completed_at = Some(now_secs_state());
+                reaped += 1;
+            }
+        }
+        if reaped > 0 {
+            tracing::info!(
+                reaped,
+                tree_id,
+                "reclaimed capacity from dead session holders"
+            );
+        }
+
         let active = state.active_count();
         if active >= max_sessions {
             bail!("max_sessions={max_sessions} reached ({active} active)");
@@ -314,6 +363,7 @@ pub fn admit_session(
                 started_at: now_secs_state(),
                 completed_at: None,
                 children: vec![],
+                pid: Some(std::process::id()),
             },
         );
         outcome = AdmitOutcome {
@@ -368,12 +418,37 @@ fn now_secs_state() -> u64 {
 /// the problem.
 #[cfg(target_os = "linux")]
 pub fn available_memory_mib() -> Option<u64> {
+    // Prefer the cgroup's own accounting. In a memory-limited container
+    // /proc/meminfo still reports the HOST, so a floor checked against it is most
+    // permissive exactly where a limit was deliberately set (issue #1329).
+    if let Some(mib) = cgroup_available_mib() {
+        return Some(mib);
+    }
     let text = fs::read_to_string("/proc/meminfo").ok()?;
     text.lines()
         .find_map(|line| line.strip_prefix("MemAvailable:"))
         .and_then(|rest| rest.split_whitespace().next())
         .and_then(|kb| kb.parse::<u64>().ok())
         .map(|kb| kb / 1024)
+}
+
+/// Headroom inside this process's cgroup, when one imposes a limit (cgroup v2).
+///
+/// `None` when unlimited or unreadable, so the caller falls back to /proc/meminfo.
+#[cfg(target_os = "linux")]
+fn cgroup_available_mib() -> Option<u64> {
+    let max = fs::read_to_string("/sys/fs/cgroup/memory.max").ok()?;
+    let max = max.trim();
+    if max == "max" {
+        return None;
+    }
+    let max: u64 = max.parse().ok()?;
+    let current: u64 = fs::read_to_string("/sys/fs/cgroup/memory.current")
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    Some(max.saturating_sub(current) / (1024 * 1024))
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -684,6 +759,7 @@ mod tests {
                 started_at: now_secs(),
                 completed_at: None,
                 children: vec![],
+                pid: None,
             },
         );
         save_state(&path, state).unwrap();
@@ -746,6 +822,7 @@ mod tests {
                 started_at: stale_completed_at,
                 completed_at: Some(stale_completed_at),
                 children: vec![],
+                pid: None,
             },
         );
         state.sessions.insert(
@@ -757,6 +834,7 @@ mod tests {
                 started_at: stale_active_at,
                 completed_at: None,
                 children: vec![],
+                pid: None,
             },
         );
         state.sessions.insert(
@@ -768,6 +846,7 @@ mod tests {
                 started_at: now_secs(),
                 completed_at: None,
                 children: vec![],
+                pid: None,
             },
         );
         prune_stale(&mut state);
@@ -796,6 +875,7 @@ mod tests {
                             started_at: now_secs(),
                             completed_at: None,
                             children: vec![],
+                            pid: None,
                         },
                     );
                     save_state(path, state)
@@ -869,6 +949,12 @@ mod tests {
 
     #[test]
     fn state_dir_has_restrictive_permissions() {
+        // Issue #1329: take the crate-wide env lock. This test mutated
+        // AMPLIHACK_SESSION_TREE_DIR unserialised, which races every other test that
+        // reads the session-tree location.
+        let _lock = crate::test_env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let td = TempDir::new_in("/tmp").unwrap();
         // Set the session-tree-specific override; do NOT mutate global TMPDIR
         // because other parallel tests anchor `TempDir::new()` against it.

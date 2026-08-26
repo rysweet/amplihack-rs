@@ -215,6 +215,18 @@ pub mod memory {
     }
 }
 
+/// The one lock serialising every env-mutating test in this crate.
+///
+/// Test-only. Separate locks do not serialise against each other, so a test holding
+/// its own private lock can still have `AMPLIHACK_SESSION_TREE_DIR` yanked mid-run by
+/// a test that takes a different one -- or none. Every env-mutating test here must
+/// take THIS lock.
+#[cfg(test)]
+pub(crate) fn test_env_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
 /// Point the session-tree store at `dir` for the duration of the returned guard.
 ///
 /// Test-only. The store location is read from the environment, and this crate's
@@ -234,11 +246,7 @@ pub(crate) fn test_support_tree_dir(dir: &std::path::Path) -> impl Drop {
             }
         }
     }
-    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-    let lock = LOCK
-        .get_or_init(|| std::sync::Mutex::new(()))
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let lock = test_env_lock().lock().unwrap_or_else(|e| e.into_inner());
     let previous = std::env::var_os("AMPLIHACK_SESSION_TREE_DIR");
     unsafe { std::env::set_var("AMPLIHACK_SESSION_TREE_DIR", dir) };
     Guard {
@@ -254,6 +262,7 @@ pub(crate) fn test_support_env(key: &'static str, value: Option<&str>) -> impl D
     struct Guard {
         key: &'static str,
         previous: Option<std::ffi::OsString>,
+        _lock: std::sync::MutexGuard<'static, ()>,
     }
     impl Drop for Guard {
         fn drop(&mut self) {
@@ -263,10 +272,15 @@ pub(crate) fn test_support_env(key: &'static str, value: Option<&str>) -> impl D
             }
         }
     }
+    let _lock = test_env_lock().lock().unwrap_or_else(|e| e.into_inner());
     let previous = std::env::var_os(key);
     match value {
         Some(v) => unsafe { std::env::set_var(key, v) },
         None => unsafe { std::env::remove_var(key) },
     }
-    Guard { key, previous }
+    Guard {
+        key,
+        previous,
+        _lock,
+    }
 }

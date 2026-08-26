@@ -184,6 +184,7 @@ fn run_register(
             started_at: now_secs(),
             completed_at: None,
             children: vec![],
+            pid: Some(std::process::id()),
         };
         state.sessions.insert(session_id_clone.clone(), entry);
         if let Some(pid) = parent_id_clone.as_ref()
@@ -397,7 +398,6 @@ mod tests {
     use super::state::TreeState;
     use super::*;
     use serial_test_lock::SerialLock;
-    use std::sync::Mutex;
     use tempfile::TempDir;
 
     // Module-private serial lock — TMPDIR mutation must not race other tests.
@@ -415,10 +415,14 @@ mod tests {
         }
     }
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
     fn isolated_env() -> (TempDir, std::sync::MutexGuard<'static, ()>) {
-        let g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // Issue #1329: one lock for the whole crate. This used a module-private
+        // ENV_LOCK, which does not serialise against tests in sibling modules that
+        // read the same variables -- so a tree directory could be swapped out from
+        // under a test that had "isolated" itself.
+        let g = crate::test_env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         // Anchor to /tmp directly; do NOT mutate the global TMPDIR — other
         // crate tests anchor `TempDir::new()` against it concurrently.
         let td = TempDir::new_in("/tmp").unwrap();
@@ -461,6 +465,7 @@ mod tests {
                     started_at: now_secs(),
                     completed_at: None,
                     children: vec![],
+                    pid: None,
                 },
             );
             save_state(path, state)
@@ -514,6 +519,7 @@ mod tests {
                     started_at: now_secs(),
                     completed_at: None,
                     children: vec![],
+                    pid: None,
                 },
             );
             save_state(path, state)
@@ -728,6 +734,6 @@ mod resource_tests {
     /// The default must be a real number, not accidentally zero.
     #[test]
     fn the_default_floor_is_nonzero() {
-        assert!(DEFAULT_MIN_AVAILABLE_MIB > 0);
+        const { assert!(DEFAULT_MIN_AVAILABLE_MIB > 0) };
     }
 }
