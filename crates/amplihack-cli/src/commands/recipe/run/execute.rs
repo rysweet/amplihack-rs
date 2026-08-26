@@ -67,7 +67,7 @@ fn terminal_block(message: String) -> anyhow::Error {
 ///
 /// Split out as a pure function so the decision is testable without fabricating
 /// a process tree.
-pub(super) fn resolve_claimed_depth(claimed: u32, sealed: Option<u32>, corroborated: bool) -> u32 {
+pub(crate) fn resolve_claimed_depth(claimed: u32, sealed: Option<u32>, corroborated: bool) -> u32 {
     if claimed > 0 && sealed.is_none() && !corroborated {
         tracing::warn!(
             claimed,

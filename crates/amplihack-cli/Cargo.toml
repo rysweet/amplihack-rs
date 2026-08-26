@@ -114,3 +114,9 @@ required-features = ["test-support"]
 [[test]]
 name = "cargo_cxx_pin_test"
 path = "tests/cargo_cxx_pin_test.rs"
+
+[lints.rust]
+# `kani` is set by the Kani verifier when it compiles this crate for proof checking
+# (see crates/amplihack-cli/src/commands/session_tree/proofs.rs). Ordinary cargo
+# builds never set it, so rustc would otherwise flag every `#[cfg(kani)]` as unknown.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

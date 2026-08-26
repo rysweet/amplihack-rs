@@ -126,6 +126,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83 # 1.97.0
         with:
           components: clippy, rustfmt
+      - name: Proof gate — spawn-accounting decisions (issue #1329)
+        run: |
+          set -euo pipefail
+          # Kani proves each decision function for EVERY input, where the spec gate
+          # above proves the ORDERING. The two real defects in this area were one of
+          # each kind, so neither gate substitutes for the other.
+          cargo install --locked kani-verifier
+          cargo kani setup
+          ./scripts/check-proofs.sh
+
       - name: Spec gate — OrchLedger invariants (issue #1326)
         env:
           TLA2TOOLS_VERSION: v1.7.2

@@ -25,6 +25,7 @@ fi
 
 # config:expected   ("PASS", or the invariant that must be violated)
 CASES=(
+  "E_no_reaping:CapacityRecovers"
   "A_today:NodeBudget"
   "B_proposed:PASS"
   "C_no_lock:NodeBudget"
@@ -40,7 +41,7 @@ for case in "${CASES[@]}"; do
 
   if [ "$want" = "PASS" ]; then
     if grep -q "Model checking completed. No error has been found" <<<"$out"; then
-      states=$(grep -oE "[0-9]+ distinct states found" <<<"$out" | head -1)
+      states=$(grep -oE "[0-9,]+ distinct states found" <<<"$out" | tail -1)
       printf '  ok   %-14s no error (%s)\n' "$cfg" "$states"
     else
       printf '  FAIL %-14s expected no error; got:\n' "$cfg"
@@ -48,7 +49,12 @@ for case in "${CASES[@]}"; do
       rc=1
     fi
   else
-    if grep -q "Invariant $want is violated" <<<"$out"; then
+    # A safety violation reports "Invariant X is violated"; a liveness one reports
+    # "Temporal properties were violated" without naming which. Accept either, and
+    # require the named property to at least be under check in that config.
+    if grep -q "Invariant $want is violated" <<<"$out" \
+       || { grep -q "Temporal properties were violated" <<<"$out" \
+            && grep -q "$want" "$cfg.cfg"; }; then
       printf '  ok   %-14s %s violated as expected\n' "$cfg" "$want"
     else
       printf '  FAIL %-14s expected %s to be violated; ablation no longer models the hazard\n' \
@@ -58,5 +64,5 @@ for case in "${CASES[@]}"; do
   fi
 done
 
-[ $rc -eq 0 ] && echo "check-spec: all four configurations behaved as specified"
+[ $rc -eq 0 ] && echo "check-spec: all configurations behaved as specified"
 exit $rc

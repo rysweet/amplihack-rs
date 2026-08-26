@@ -2,7 +2,7 @@ use super::*;
 
 mod binary;
 mod correlation;
-mod execute;
+pub(crate) mod execute;
 mod format;
 
 use execute::execute_recipe_via_rust;

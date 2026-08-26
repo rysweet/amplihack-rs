@@ -24,7 +24,7 @@ stopped describing the hazard and the ablation is no longer meaningful.
     scripts/check-spec.sh
 
 Requires `java` and `tla2tools.jar` (set `TLA2TOOLS_JAR`, or place it at
-`~/tla2tools.jar`). The script asserts the expected outcome of **all four** configs,
+`~/tla2tools.jar`). The script asserts the expected outcome of **every** config,
 so a spec that no longer distinguishes the designs fails the gate.
 
 ## Conformance
@@ -68,3 +68,44 @@ because refusing would break rolling upgrades.
 **Retention.** The store is durable, so it needs an owner: `amplihack session-tree gc
 --older-than-days N` (add `--dry-run` first). The old `TMPDIR` location got free cleanup;
 that free cleanup is precisely what made the cap meaningless, so it is not coming back.
+
+## Two gates, two failure shapes
+
+`scripts/check-spec.sh` and `scripts/check-proofs.sh` answer different questions, and
+the two real defects in this area were one of each kind.
+
+**The spec gate (TLA+/TLC) covers ordering.** What happens when processes race, crash
+mid-operation, or interleave badly. It caught the lost update (`C_no_lock`) and the
+ceiling escalation (`D_unsealed`). It cannot say whether a single function computes the
+right answer, because the model is a separate artifact from the Rust — which is exactly
+how `B_proposed` stayed green over an implementation that had no sealed ceiling at all.
+
+**The proof gate (Kani) covers logic.** It takes each decision function and asks a
+solver whether *any* input breaks the stated claim. A pass holds for every input, not
+for the inputs someone thought to test. It cannot reason about concurrency.
+
+| | proves | blind to |
+|---|---|---|
+| `check-spec.sh` | orderings, races, crash points | one function's arithmetic |
+| `check-proofs.sh` | every input to a decision | concurrency, timing |
+
+### What is proved today
+
+Seven harnesses over the pure decisions (`cargo kani -p amplihack-cli`):
+
+- the environment can never raise a sealed ceiling, for any pair of values
+- no input escapes `MAX_DEPTH_CEILING`
+- a *lower* request is honoured — so the safety property cannot be satisfied by a
+  function that always returns 0, which would satisfy safety and destroy nesting
+- an unsealed tree falls back to the environment, still clamped
+- an uncorroborated depth claim is discarded; a corroborated one stands
+- a launch wave never exceeds its limit, and an unconfigured limit is never 0
+- the ceiling function is total: no input panics or overflows
+
+### What is not, and why
+
+Anything touching the filesystem, `/proc`, process spawning, or agent behaviour. Those
+are the environment rather than a function of their inputs, and no solver settles them.
+They are covered by the process tests and by the spec's crash model instead.
+
+Roughly 40% of the decision surface in this area is amenable to proof. The rest is I/O.

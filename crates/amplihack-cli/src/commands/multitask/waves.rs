@@ -42,7 +42,7 @@ fn detected_parallelism() -> usize {
 
 /// The decision behind [`concurrency_limit`], with its inputs as arguments so it is
 /// testable without mutating process-global environment.
-pub(super) fn limit_from(configured: Option<String>, cpus: usize) -> usize {
+pub(crate) fn limit_from(configured: Option<String>, cpus: usize) -> usize {
     if let Some(raw) = configured
         && let Ok(value) = raw.trim().parse::<usize>()
     {
@@ -52,7 +52,7 @@ pub(super) fn limit_from(configured: Option<String>, cpus: usize) -> usize {
 }
 
 /// Split `count` items into launch waves of at most `limit` (0 = one wave).
-pub(super) fn wave_size(count: usize, limit: usize) -> usize {
+pub(crate) fn wave_size(count: usize, limit: usize) -> usize {
     if limit == 0 { count.max(1) } else { limit }
 }
 

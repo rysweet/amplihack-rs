@@ -15,6 +15,7 @@
 //! Diagnostic output goes to stderr via `eprintln!` to keep stdout
 //! parser-friendly.
 
+pub mod proofs;
 pub mod state;
 
 use anyhow::{Context, Result};
