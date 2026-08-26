@@ -1,0 +1,42 @@
+--- crates/amplihack-cli/src/commands/session_tree/mod.rs
++++ replace tree_context -> TreeContext with Default::default()
+@@ -78,38 +78,17 @@
+ struct TreeContext {
+     tree_id: Option<String>,
+     depth: u32,
+     max_depth: u32,
+     max_sessions: u32,
+ }
+ 
+ fn tree_context() -> TreeContext {
+-    let tree_id = std::env::var("AMPLIHACK_TREE_ID")
+-        .ok()
+-        .filter(|s| !s.is_empty());
+-    let depth = std::env::var("AMPLIHACK_SESSION_DEPTH")
+-        .ok()
+-        .and_then(|v| v.parse::<u32>().ok())
+-        .unwrap_or(0);
+-    let max_depth = std::env::var("AMPLIHACK_MAX_DEPTH")
+-        .ok()
+-        .and_then(|v| v.parse::<u32>().ok())
+-        .unwrap_or(DEFAULT_MAX_DEPTH)
+-        .min(MAX_DEPTH_CEILING);
+-    let max_sessions = std::env::var("AMPLIHACK_MAX_SESSIONS")
+-        .ok()
+-        .and_then(|v| v.parse::<u32>().ok())
+-        .unwrap_or(DEFAULT_MAX_SESSIONS);
+-    TreeContext {
+-        tree_id,
+-        depth,
+-        max_depth,
+-        max_sessions,
+-    }
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn now_secs() -> u64 {
+     SystemTime::now()
+         .duration_since(UNIX_EPOCH)
+         .map(|d| d.as_secs())
+         .unwrap_or(0)
+ }

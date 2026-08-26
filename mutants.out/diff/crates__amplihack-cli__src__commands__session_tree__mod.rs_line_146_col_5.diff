@@ -1,0 +1,90 @@
+--- crates/amplihack-cli/src/commands/session_tree/mod.rs
++++ replace run_register -> Result<()> with Ok(())
+@@ -138,86 +138,17 @@
+ }
+ 
+ fn run_register(
+     ctx: TreeContext,
+     session_id: Option<String>,
+     parent_id: Option<String>,
+     as_json: bool,
+ ) -> Result<()> {
+-    let session_id = session_id.unwrap_or_else(random_id);
+-    validate_tree_id(&session_id).context("invalid session_id")?;
+-    if let Some(p) = parent_id.as_deref() {
+-        validate_tree_id(p).context("invalid parent_id")?;
+-    }
+-    let tree_id = match ctx.tree_id.clone() {
+-        Some(id) => {
+-            validate_tree_id(&id).context("invalid AMPLIHACK_TREE_ID")?;
+-            id
+-        }
+-        None => random_id(),
+-    };
+-
+-    let dir = state_dir()?;
+-    let max_sessions = ctx.max_sessions;
+-    let max_depth = ctx.max_depth;
+-    let depth = ctx.depth;
+-    let parent_id_clone = parent_id.clone();
+-    let session_id_clone = session_id.clone();
+-
+-    let outcome: Result<()> = with_locked_tree(&dir, &tree_id, move |path| {
+-        let mut state = load_state(path)?;
+-        let active = state.active_count();
+-        if active >= max_sessions {
+-            anyhow::bail!("max_sessions={max_sessions} reached ({active} active)");
+-        }
+-        // Issue #1326: the ceiling is sealed by the root registration and the
+-        // environment may only lower it thereafter, never raise it.
+-        let effective = effective_max_depth(state.ceiling, Some(max_depth));
+-        if state.ceiling.is_none() {
+-            state.ceiling = Some(effective);
+-        }
+-        if depth > effective {
+-            anyhow::bail!("depth={depth} exceeds max_depth={effective}");
+-        }
+-        let entry = SessionEntry {
+-            depth,
+-            parent: parent_id_clone.clone(),
+-            status: SessionStatus::Active,
+-            started_at: now_secs(),
+-            completed_at: None,
+-            children: vec![],
+-            pid: Some(std::process::id()),
+-        };
+-        state.sessions.insert(session_id_clone.clone(), entry);
+-        if let Some(pid) = parent_id_clone.as_ref()
+-            && let Some(parent_entry) = state.sessions.get_mut(pid)
+-            && !parent_entry.children.contains(&session_id_clone)
+-        {
+-            parent_entry.children.push(session_id_clone.clone());
+-        }
+-        save_state(path, state)
+-    });
+-
+-    match outcome {
+-        Ok(()) => {
+-            if as_json {
+-                // Opt-in single-line JSON; reuses the extract-field pipeline.
+-                println!("{}", json!({ "tree_id": tree_id, "depth": depth }));
+-            } else {
+-                // Byte-exact stdout contract consumed by smart-orchestrator.yaml.
+-                println!("TREE_ID={tree_id} DEPTH={depth}");
+-            }
+-            Ok(())
+-        }
+-        Err(err) => {
+-            eprintln!("ERROR: {err}");
+-            std::process::exit(1);
+-        }
+-    }
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn run_complete(ctx: TreeContext, session_id: &str) -> Result<()> {
+     validate_tree_id(session_id).context("invalid session_id")?;
+     let Some(tree_id) = ctx.tree_id.clone() else {
+         // Nothing to complete without a tree — keep parity with Python (silent no-op).
+         return Ok(());
+     };

@@ -1,0 +1,35 @@
+--- crates/amplihack-cli/src/commands/session_tree/mod.rs
++++ replace run -> Result<()> with Ok(())
+@@ -115,31 +115,17 @@
+ }
+ 
+ fn random_id() -> String {
+     uuid::Uuid::new_v4().simple().to_string()[..8].to_string()
+ }
+ 
+ /// Public entry point dispatched from `commands::dispatch`.
+ pub fn run(cmd: SessionTreeCommands) -> Result<()> {
+-    let ctx = tree_context();
+-    match cmd {
+-        SessionTreeCommands::Register {
+-            session_id,
+-            parent_id,
+-            json,
+-        } => run_register(ctx, session_id, parent_id, json),
+-        SessionTreeCommands::Complete { session_id } => run_complete(ctx, &session_id),
+-        SessionTreeCommands::Status { tree_id } => run_status(ctx, tree_id),
+-        SessionTreeCommands::Check => run_check(ctx),
+-        SessionTreeCommands::Gc {
+-            older_than_days,
+-            dry_run,
+-        } => run_gc(older_than_days, dry_run),
+-    }
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn run_register(
+     ctx: TreeContext,
+     session_id: Option<String>,
+     parent_id: Option<String>,
+     as_json: bool,
+ ) -> Result<()> {

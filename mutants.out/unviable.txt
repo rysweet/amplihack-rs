@@ -1,0 +1,4 @@
+crates/amplihack-cli/src/commands/session_tree/mod.rs:86:5: replace tree_context -> TreeContext with Default::default()
+crates/amplihack-cli/src/commands/session_tree/mod.rs:88:21: delete ! in tree_context
+crates/amplihack-cli/src/commands/session_tree/mod.rs:111:5: replace now_secs -> u64 with 0
+crates/amplihack-cli/src/commands/session_tree/mod.rs:118:5: replace random_id -> String with String::new()

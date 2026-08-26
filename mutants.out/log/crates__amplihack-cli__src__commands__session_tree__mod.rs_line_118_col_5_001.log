@@ -1,0 +1,254 @@
+
+*** crates/amplihack-cli/src/commands/session_tree/mod.rs:118:5: replace random_id -> String with "xyzzy".into()
+
+*** mutation diff:
+--- crates/amplihack-cli/src/commands/session_tree/mod.rs
++++ replace random_id -> String with "xyzzy".into()
+@@ -110,17 +110,17 @@
+ fn now_secs() -> u64 {
+     SystemTime::now()
+         .duration_since(UNIX_EPOCH)
+         .map(|d| d.as_secs())
+         .unwrap_or(0)
+ }
+ 
+ fn random_id() -> String {
+-    uuid::Uuid::new_v4().simple().to_string()[..8].to_string()
++    "xyzzy".into() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Public entry point dispatched from `commands::dispatch`.
+ pub fn run(cmd: SessionTreeCommands) -> Result<()> {
+     let ctx = tree_context();
+     match cmd {
+         SessionTreeCommands::Register {
+             session_id,
+
+
+*** /home/azureuser/.rustup/toolchains/1.97.0-x86_64-unknown-linux-gnu/bin/cargo test --no-run --verbose --package=amplihack-cli@0.18.0
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+       Fresh unicode-ident v1.0.24
+       Fresh proc-macro2 v1.0.106
+       Fresh quote v1.0.45
+       Fresh syn v2.0.117
+       Fresh libc v0.2.186
+       Fresh cfg-if v1.0.4
+       Fresh find-msvc-tools v0.1.9
+       Fresh shlex v1.3.0
+       Fresh cc v1.2.61
+       Fresh once_cell v1.21.4
+       Fresh serde_core v1.0.228
+       Fresh memchr v2.8.0
+       Fresh serde_derive v1.0.228
+       Fresh serde v1.0.228
+       Fresh tracing-core v0.1.36
+       Fresh pin-project-lite v0.2.17
+       Fresh bitflags v2.11.1
+       Fresh aho-corasick v1.1.4
+       Fresh synstructure v0.13.2
+       Fresh version_check v0.9.5
+       Fresh regex-syntax v0.8.10
+       Fresh itoa v1.0.18
+       Fresh regex-automata v0.4.14
+       Fresh zmij v1.0.21
+       Fresh thiserror-impl v2.0.18
+       Fresh tracing-attributes v0.1.31
+       Fresh linux-raw-sys v0.12.1
+       Fresh autocfg v1.5.0
+       Fresh rustix v1.1.4
+       Fresh tracing v0.1.44
+       Fresh thiserror v2.0.18
+       Fresh serde_json v1.0.149
+       Fresh zerofrom-derive v0.1.7
+       Fresh typenum v1.20.0
+       Fresh generic-array v0.14.7
+       Fresh zerofrom v0.1.7
+       Fresh getrandom v0.4.2
+       Fresh yoke-derive v0.8.2
+       Fresh stable_deref_trait v1.2.1
+       Fresh num-traits v0.2.19
+       Fresh errno v0.3.14
+       Fresh bytes v1.11.1
+       Fresh block-buffer v0.10.4
+       Fresh crypto-common v0.1.7
+       Fresh displaydoc v0.2.5
+       Fresh zerovec-derive v0.11.3
+       Fresh equivalent v1.0.2
+       Fresh regex v1.12.3
+       Fresh mio v1.2.0
+       Fresh socket2 v0.6.5
+       Fresh tokio-macros v2.7.0
+       Fresh fastrand v2.4.1
+       Fresh iana-time-zone v0.1.65
+       Fresh termcolor v1.4.1
+       Fresh smallvec v1.15.1
+       Fresh cpufeatures v0.2.17
+       Fresh unicode-width v0.1.14
+       Fresh amplihack-types v0.18.0 (/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/crates/amplihack-types)
+       Fresh base64 v0.22.1
+       Fresh litemap v0.8.2
+       Fresh cxxbridge-flags v1.0.138
+       Fresh writeable v0.6.3
+       Fresh hashbrown v0.17.0
+       Fresh vcpkg v0.2.15
+       Fresh foldhash v0.1.5
+       Fresh pkg-config v0.3.33
+       Fresh utf8_iter v1.0.4
+       Fresh zeroize v1.8.2
+       Fresh cmake v0.1.58
+       Fresh powerfmt v0.2.0
+       Fresh anstyle v1.0.14
+       Fresh either v1.15.0
+       Fresh log v0.4.29
+       Fresh foldhash v0.2.0
+       Fresh async-trait v0.1.89
+       Fresh time-core v0.1.8
+       Fresh arrayvec v0.7.6
+       Fresh yoke v0.8.2
+       Fresh signal-hook-registry v1.4.8
+       Fresh digest v0.10.7
+       Fresh chrono v0.4.44
+       Fresh tempfile v3.27.0
+       Fresh codespan-reporting v0.11.1
+       Fresh indexmap v2.14.0
+       Fresh rustls-pki-types v1.14.1
+       Fresh hashbrown v0.16.1
+       Fresh deranged v0.5.8
+       Fresh itertools v0.14.0
+       Fresh num-conv v0.2.1
+       Fresh simd-adler32 v0.3.9
+       Fresh utf8parse v0.2.2
+       Fresh allocator-api2 v0.2.21
+       Fresh uuid v1.23.1
+       Fresh getrandom v0.2.17
+       Fresh is_terminal_polyfill v1.70.2
+       Fresh untrusted v0.9.0
+       Fresh adler2 v2.0.1
+       Fresh anstyle-query v1.1.5
+       Fresh colorchoice v1.0.5
+       Fresh fallible-iterator v0.3.0
+       Fresh fallible-streaming-iterator v0.1.9
+       Fresh fs4 v0.13.1
+       Fresh toml_datetime v0.6.11
+       Fresh serde_spanned v0.6.9
+       Fresh strsim v0.11.1
+       Fresh cfg_aliases v0.2.1
+       Fresh percent-encoding v2.3.2
+       Fresh winnow v0.7.15
+       Fresh clap_lex v1.1.0
+       Fresh heck v0.5.0
+       Fresh toml_write v0.1.2
+       Fresh thiserror-impl v1.0.69
+       Fresh anyhow v1.0.102
+       Fresh zerovec v0.11.6
+       Fresh tokio v1.52.1
+       Fresh scratch v1.0.9
+       Fresh rustversion v1.0.22
+       Fresh sha2 v0.10.9
+       Fresh zerotrie v0.2.4
+       Fresh icu_properties_data v2.2.0
+       Fresh link-cplusplus v1.0.12
+       Fresh icu_normalizer_data v2.2.0
+       Fresh hashlink v0.11.0
+       Fresh hashbrown v0.15.5
+       Fresh rust_decimal v1.41.0
+       Fresh time v0.3.47
+       Fresh crc32fast v1.5.0
+       Fresh anstyle-parse v1.0.0
+       Fresh md-5 v0.10.6
+       Fresh sha1 v0.10.6
+       Fresh ring v0.17.14
+       Fresh miniz_oxide v0.8.9
+       Fresh form_urlencoded v1.2.2
+       Fresh webpki-roots v1.0.7
+       Fresh clap_derive v4.6.1
+       Fresh toml_edit v0.22.27
+       Fresh subtle v2.6.1
+       Fresh unicode-width v0.2.2
+       Fresh bumpalo v3.20.2
+       Fresh unsafe-libyaml v0.2.11
+       Fresh predicates-core v1.0.10
+       Fresh ryu v1.0.23
+       Fresh amplihack-state v0.18.0 (/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/crates/amplihack-state)
+       Fresh xattr v1.6.1
+       Fresh filetime v0.2.27
+       Fresh lazy_static v1.5.0
+       Fresh difflib v0.4.0
+       Fresh termtree v0.5.1
+       Fresh shell-words v1.1.1
+       Fresh futures-core v0.3.32
+       Fresh tracing-log v0.2.0
+       Fresh matchers v0.2.0
+       Fresh tinystr v0.8.3
+       Fresh cxx-build v1.0.138
+       Fresh potential_utf v0.1.5
+       Fresh amplihack-utils v0.18.0 (/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/crates/amplihack-utils)
+       Fresh cxxbridge-macro v1.0.138
+       Fresh libsqlite3-sys v0.36.0
+       Fresh prost-derive v0.13.5
+       Fresh anstream v1.0.0
+       Fresh lru v0.12.5
+       Fresh rustls-webpki v0.103.13
+       Fresh flate2 v1.1.9
+       Fresh toml v0.8.23
+       Fresh webpki-roots v0.26.11
+       Fresh amplihack-turn v0.18.0 (/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/crates/amplihack-turn)
+       Fresh serde_yaml v0.9.34+deprecated
+       Fresh zopfli v0.8.3
+       Fresh thiserror v1.0.69
+       Fresh console v0.15.11
+       Fresh amplihack-builders v0.18.0 (/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/crates/amplihack-builders)
+       Fresh predicates v3.1.4
+       Fresh sharded-slab v0.1.7
+       Fresh tar v0.4.45
+       Fresh tokio-stream v0.1.18
+       Fresh predicates-tree v1.0.13
+       Fresh amplihack-reflection v0.18.0 (/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/crates/amplihack-reflection)
+       Fresh bstr v1.12.1
+       Fresh tracing-serde v0.2.0
+       Fresh thread_local v1.1.9
+       Fresh wait-timeout v0.2.1
+       Fresh comma v1.0.0
+       Fresh semver v1.0.28
+       Fresh nu-ansi-term v0.50.3
+       Fresh icu_locale_core v2.2.0
+       Fresh icu_collections v2.2.0
+       Fresh cxx v1.0.138
+       Fresh prost v0.13.5
+       Fresh rusqlite v0.38.0
+       Fresh clap_builder v4.6.0
+       Fresh rustls v0.23.40
+       Fresh dialoguer v0.11.0
+       Fresh nix v0.31.3
+   Compiling amplihack-launcher v0.18.0 (/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/crates/amplihack-launcher)
+       Fresh zip v2.4.2
+   Compiling amplihack-remote v0.18.0 (/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/crates/amplihack-remote)
+   Compiling amplihack-workflows v0.18.0 (/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/crates/amplihack-workflows)
+       Fresh signal-hook v0.3.18
+   Compiling amplihack-orchestration v0.18.0 (/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/crates/amplihack-orchestration)
+       Fresh amplihack-signal v0.18.0 (/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/crates/amplihack-signal)
+       Fresh tracing-subscriber v0.3.23
+       Fresh assert_cmd v2.2.1
+       Fresh icu_provider v2.2.0
+   Compiling lbug v0.15.4
+       Fresh clap v4.6.1
+       Dirty amplihack-cli v0.18.0 (/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/crates/amplihack-cli): the precalculated components changed
+   Compiling amplihack-cli v0.18.0 (/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/crates/amplihack-cli)
+       Fresh rexpect v0.6.4
+     Running `/home/azureuser/.rustup/toolchains/1.97.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name amplihack_workflows --edition=2024 crates/amplihack-workflows/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=line-tables-only --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=664128f17b90abf0 -C extra-filename=-15e51595127c129b --out-dir /tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps --extern amplihack_utils=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libamplihack_utils-08a9c706cfc82cac.rmeta --extern chrono=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libchrono-698d0514bedff45c.rmeta --extern serde=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libserde-9862aaefd1081862.rmeta --extern serde_json=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libserde_json-061c00ff3e9853d1.rmeta --extern serde_yaml=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libserde_yaml-32f4debdc5c586ac.rmeta --extern tracing=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libtracing-c155b65c27f48072.rmeta`
+     Running `/home/azureuser/.rustup/toolchains/1.97.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name amplihack_remote --edition=2024 crates/amplihack-remote/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=line-tables-only --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=c682d7c10b357162 -C extra-filename=-bda9eaf1668cac2f --out-dir /tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps --extern amplihack_utils=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libamplihack_utils-08a9c706cfc82cac.rmeta --extern anyhow=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libanyhow-aaead62bc88b9429.rmeta --extern chrono=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libchrono-698d0514bedff45c.rmeta --extern libc=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/liblibc-4d73f44b645ff25b.rmeta --extern regex=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libregex-03ca1be4cec3c16d.rmeta --extern serde=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libserde-9862aaefd1081862.rmeta --extern serde_json=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libserde_json-061c00ff3e9853d1.rmeta --extern tempfile=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libtempfile-5a176b43127bd653.rmeta --extern thiserror=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libthiserror-2e6c1412a455e99c.rmeta --extern tokio=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libtokio-72d59edba91c3e05.rmeta --extern tracing=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libtracing-c155b65c27f48072.rmeta`
+       Fresh icu_properties v2.2.0
+       Fresh icu_normalizer v2.2.0
+       Fresh clap_complete v4.6.3
+     Running `/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/build/amplihack-cli-b35d8d192a75a416/build-script-build`
+       Fresh idna_adapter v1.2.2
+       Fresh idna v1.1.0
+       Fresh url v2.5.8
+   Compiling ureq v2.12.1
+     Running `/home/azureuser/.rustup/toolchains/1.97.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name amplihack_launcher --edition=2024 crates/amplihack-launcher/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=line-tables-only --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=fdc5f7e42fbf014e -C extra-filename=-a0b196619987966a --out-dir /tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps --extern amplihack_types=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libamplihack_types-5aa2c2ee7df7bcf4.rmeta --extern amplihack_utils=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libamplihack_utils-08a9c706cfc82cac.rmeta --extern anyhow=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libanyhow-aaead62bc88b9429.rmeta --extern chrono=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libchrono-698d0514bedff45c.rmeta --extern libc=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/liblibc-4d73f44b645ff25b.rmeta --extern regex=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libregex-03ca1be4cec3c16d.rmeta --extern serde=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libserde-9862aaefd1081862.rmeta --extern serde_json=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libserde_json-061c00ff3e9853d1.rmeta --extern thiserror=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libthiserror-2e6c1412a455e99c.rmeta --extern tracing=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libtracing-c155b65c27f48072.rmeta`
+     Running `/home/azureuser/.rustup/toolchains/1.97.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name ureq --edition=2018 /home/azureuser/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=line-tables-only --cfg 'feature="default"' --cfg 'feature="gzip"' --cfg 'feature="json"' --cfg 'feature="tls"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("brotli", "charset", "cookies", "default", "gzip", "http-crate", "http-interop", "json", "native-certs", "native-tls", "proxy-from-env", "socks-proxy", "testdeps", "tls"))' -C metadata=729936a64a3fbef4 -C extra-filename=-a52054ce8bf46ff7 --out-dir /tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps --extern base64=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libbase64-83ed11c3fb61eb2e.rmeta --extern flate2=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libflate2-c3906d7a8bde7622.rmeta --extern log=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/liblog-3e21fdc548b3a83e.rmeta --extern once_cell=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libonce_cell-9a02c5d8873ff61b.rmeta --extern rustls=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/librustls-bdff651e37186549.rmeta --extern rustls_pki_types=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/librustls_pki_types-1ba39f6b2f03340b.rmeta --extern serde=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libserde-9862aaefd1081862.rmeta --extern serde_json=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libserde_json-061c00ff3e9853d1.rmeta --extern url=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/liburl-1c828be9c7e1d733.rmeta --extern webpki_roots=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libwebpki_roots-620d85e102922d0e.rmeta --cap-lints allow -L native=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/build/ring-439005edc122cf5b/out`
+     Running `/home/azureuser/.rustup/toolchains/1.97.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name amplihack_orchestration --edition=2024 crates/amplihack-orchestration/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=line-tables-only --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=2f33e7d712ad99fb -C extra-filename=-ed20700a2c166be7 --out-dir /tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps --extern amplihack_state=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libamplihack_state-5bfc4593aa3c2735.rmeta --extern amplihack_utils=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libamplihack_utils-08a9c706cfc82cac.rmeta --extern async_trait=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libasync_trait-601d0c3ace375beb.so --extern chrono=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libchrono-698d0514bedff45c.rmeta --extern once_cell=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libonce_cell-9a02c5d8873ff61b.rmeta --extern serde=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libserde-9862aaefd1081862.rmeta --extern serde_json=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libserde_json-061c00ff3e9853d1.rmeta --extern thiserror=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libthiserror-2e6c1412a455e99c.rmeta --extern tokio=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libtokio-72d59edba91c3e05.rmeta --extern tracing=/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/deps/libtracing-c155b65c27f48072.rmeta`
+     Running `/tmp/cargo-mutants-amplihack-pr-c1Eiyl.tmp/target/debug/build/lbug-9d5e01b23f1165ea/build-script-build`

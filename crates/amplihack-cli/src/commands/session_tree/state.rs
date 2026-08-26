@@ -445,16 +445,28 @@ pub fn available_memory_mib() -> Option<u64> {
 #[cfg(target_os = "linux")]
 fn cgroup_available_mib() -> Option<u64> {
     let max = fs::read_to_string("/sys/fs/cgroup/memory.max").ok()?;
-    let max = max.trim();
-    if max == "max" {
+    let current = fs::read_to_string("/sys/fs/cgroup/memory.current").ok()?;
+    cgroup_headroom_mib(&max, &current)
+}
+
+/// Headroom inside a cgroup, from the raw contents of `memory.max` and
+/// `memory.current` (issue #1329).
+///
+/// Split from the file reads so the arithmetic is decidable: on a host without a
+/// cgroup limit the reads return `None` and the branch never executes, so mutation
+/// testing showed it could be deleted -- or compute headroom backwards -- with
+/// nothing noticing. That is the container case, which is the one it exists for.
+///
+/// `"max"` means unlimited, so the caller falls back to `MemAvailable`.
+pub(crate) fn cgroup_headroom_mib(max_raw: &str, current_raw: &str) -> Option<u64> {
+    let max_raw = max_raw.trim();
+    if max_raw == "max" {
         return None;
     }
-    let max: u64 = max.parse().ok()?;
-    let current: u64 = fs::read_to_string("/sys/fs/cgroup/memory.current")
-        .ok()?
-        .trim()
-        .parse()
-        .ok()?;
+    let max: u64 = max_raw.parse().ok()?;
+    let current: u64 = current_raw.trim().parse().ok()?;
+    // Saturating: `current` can momentarily exceed `max` under reclaim pressure, and
+    // that means zero headroom, not an enormous amount of it.
     Some(max.saturating_sub(current) / (1024 * 1024))
 }
 
