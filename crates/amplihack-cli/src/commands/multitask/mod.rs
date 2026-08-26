@@ -20,6 +20,7 @@ mod state;
 #[cfg(test)]
 mod state_tests;
 mod utils;
+mod waves;
 
 use crate::util::run_output_with_timeout;
 use anyhow::{Context, Result};

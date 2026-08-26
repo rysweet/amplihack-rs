@@ -4,7 +4,7 @@
 //! live in sibling modules (`launcher`, `state`, `utils`).
 
 use super::models::*;
-use super::{cleanup, default_branch, launcher, persistence, state, utils};
+use super::{cleanup, default_branch, launcher, persistence, state, utils, waves};
 use crate::util::{format_output_diagnostics, run_output_with_timeout};
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
@@ -168,56 +168,8 @@ impl ParallelOrchestrator {
         Ok(())
     }
 
-    /// Concurrency limit for [`Self::launch_all`] (issue #1329).
-    ///
-    /// Overridable via `AMPLIHACK_MAX_PARALLEL_WORKSTREAMS`; `0` means unlimited,
-    /// which is the old behaviour and is available for anyone who wants it back.
-    fn launch_concurrency_limit() -> usize {
-        std::env::var("AMPLIHACK_MAX_PARALLEL_WORKSTREAMS")
-            .ok()
-            .and_then(|v| v.trim().parse::<usize>().ok())
-            .unwrap_or_else(|| {
-                let cpus = std::thread::available_parallelism()
-                    .map(|n| n.get())
-                    .unwrap_or(4);
-                (cpus / 2).clamp(1, 8)
-            })
-    }
-
     pub fn launch_all(&mut self) -> Result<()> {
-        let delegate = launcher::detect_delegate();
-        let count = self.workstreams.len();
-
-        // Issue #1329: launch in bounded waves rather than all at once. Each
-        // workstream is a whole agent tree, so "launch everything the model
-        // decomposed into" multiplied the tree-global budget by however many
-        // workstreams a decomposition happened to produce.
-        let limit = Self::launch_concurrency_limit();
-        let wave = if limit == 0 { count.max(1) } else { limit };
-        if limit != 0 && count > limit {
-            println!(
-                "Launching {count} workstreams {limit} at a time (AMPLIHACK_MAX_PARALLEL_WORKSTREAMS)"
-            );
-        }
-
-        for start in (0..count).step_by(wave) {
-            let end = (start + wave).min(count);
-            for i in start..end {
-                let ws = &mut self.workstreams[i];
-                launcher::launch_workstream(ws, &self.mode, &delegate, &mut self.processes)?;
-            }
-            if end < count {
-                // Let the wave establish itself before adding to it. The monitor
-                // loop reaps completions; this only stops a thundering herd at t=0.
-                std::thread::sleep(Duration::from_secs(2));
-            }
-        }
-
-        println!(
-            "\n{count} workstreams launched in parallel ({} mode)",
-            self.mode
-        );
-        Ok(())
+        waves::launch_all(&mut self.workstreams, &mut self.processes, &self.mode)
     }
 
     pub fn monitor(&mut self, running: Arc<AtomicBool>) -> Result<()> {
