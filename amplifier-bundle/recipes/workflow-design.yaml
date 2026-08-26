@@ -82,11 +82,53 @@ steps:
       Output a comprehensive design specification.
     output: "architecture_design"
 
+  # Applicability gate for the optional design steps below.
+  #
+  # Steps 5b and 5c used to say "(if applicable)" and "Skip if no API/database
+  # work is required" in prose *inside the prompt*. Prose cannot skip a step:
+  # the agent was always spawned, and only then read that it needn't have run.
+  # The cost is paid at spawn, not at the answer (issue #1334).
+  #
+  # This step makes the decision once, cheaply, and the engine enforces it.
+  # The conditions below test `!= 'false'`, not `== 'true'`, so a missing or
+  # unparseable verdict runs the step exactly as before. Only an explicit
+  # "not needed" can skip one -- this change can never remove design work.
+  - id: "step-05a-design-applicability"
+    agent: "amplihack:architect"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      # Step 5a: Design Applicability
+
+      **Task:** {{task_description}}
+      **Requirements:** {{final_requirements}}
+      **Architecture:** {{architecture_design}}
+
+      Decide whether the dedicated API-design and database-design steps are
+      worth running for THIS task. Do not design anything here; only decide.
+
+      Answer "false" only when you are confident the task involves no such
+      work at all -- for example a CLI flag change, a CI workflow edit, or a
+      pure refactor. When in doubt answer "true": running a step costs time,
+      skipping a needed one costs correctness.
+
+      Output exactly one JSON object:
+
+      ```json
+      {
+        "requires_api_design": "true/false",
+        "requires_database_design": "true/false",
+        "rationale": "one sentence per decision"
+      }
+      ```
+    output: "design_applicability"
+    parse_json: true
+
   - id: "step-05b-api-design"
+    condition: "design_applicability.requires_api_design != 'false'"
     agent: "amplihack:api-designer"
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
-      # Step 5b: API Design (if applicable)
+      # Step 5b: API Design
 
       **Architecture:** {{architecture_design}}
       **Requirements:** {{final_requirements}}
@@ -97,14 +139,15 @@ steps:
       - Error handling patterns
       - Versioning strategy
 
-      Skip if no API work is required.
+      This step runs only when step 5a judged API design applicable.
     output: "api_design"
 
   - id: "step-05c-database-design"
+    condition: "design_applicability.requires_database_design != 'false'"
     agent: "amplihack:database"
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
-      # Step 5c: Database Design (if applicable)
+      # Step 5c: Database Design
 
       **Architecture:** {{architecture_design}}
       **Requirements:** {{final_requirements}}
@@ -115,7 +158,7 @@ steps:
       - Indexes and constraints
       - Data relationships
 
-      Skip if no database work is required.
+      This step runs only when step 5a judged database design applicable.
     output: "database_design"
 
   - id: "step-05d-security-review"
