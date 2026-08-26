@@ -333,3 +333,68 @@ fn invariant_depth_bound_root_run_is_admitted_and_seals_a_tree() {
         "sealed tree must record a ceiling; got: {body}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1329: the node budget must apply to the bare `recipe run` path, which is
+// what an agent invokes from a bash tool. Before this, six concurrent runs were
+// admitted against a configured cap of two, because only `session-tree register`
+// debited the tree.
+// ---------------------------------------------------------------------------
+
+/// Concurrent runs in one tree are capped, and capacity returns afterwards.
+#[test]
+fn invariant_node_budget_caps_concurrent_recipe_runs() {
+    const CAP: u32 = 2;
+    const ATTEMPTS: usize = 6;
+    let sb = Sandbox::new("e2e-width");
+
+    // Seed the tree so the cap has something to count against.
+    assert!(sb.register("wtree", "root", &sb.root.join("tmp"), CAP));
+
+    let recipe = sb.root.join("slow.yaml");
+    fs::write(
+        &recipe,
+        "name: slow\nsteps:\n  - id: s\n    type: bash\n    command: \"sleep 4\"\n",
+    )
+    .expect("write recipe");
+
+    let mut children: Vec<_> = (0..ATTEMPTS)
+        .map(|_| {
+            Command::new(BIN)
+                .args([
+                    "recipe",
+                    "run",
+                    recipe.to_str().expect("path"),
+                    "-c",
+                    "task_description=width",
+                ])
+                .env("HOME", &sb.root)
+                .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
+                .env("AMPLIHACK_TREE_ID", "wtree")
+                .env("AMPLIHACK_SESSION_DEPTH", "1")
+                .env("AMPLIHACK_MAX_DEPTH", "3")
+                .env("AMPLIHACK_MAX_SESSIONS", CAP.to_string())
+                .env_remove("AMPLIHACK_SESSION_TREE_DIR")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn")
+        })
+        .collect();
+
+    let mut refused = 0usize;
+    for child in &mut children {
+        if child.wait().ok().and_then(|s| s.code()) == Some(EXIT_ORCHESTRATION_UNAVAILABLE) {
+            refused += 1;
+        }
+    }
+
+    assert!(
+        refused > 0,
+        "with a cap of {CAP}, {ATTEMPTS} concurrent runs must produce refusals; got none"
+    );
+    assert!(
+        refused < ATTEMPTS,
+        "at least one run must be admitted, or the cap is over-blocking and nesting is broken"
+    );
+}

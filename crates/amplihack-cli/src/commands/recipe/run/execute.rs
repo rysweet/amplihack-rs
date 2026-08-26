@@ -36,6 +36,7 @@ const SESSION_DEPTH_ENV: &str = "AMPLIHACK_SESSION_DEPTH";
 const MAX_DEPTH_ENV: &str = "AMPLIHACK_MAX_DEPTH";
 const TREE_ID_ENV: &str = "AMPLIHACK_TREE_ID";
 const SESSION_TREE_DIR_ENV: &str = "AMPLIHACK_SESSION_TREE_DIR";
+const MAX_SESSIONS_ENV: &str = "AMPLIHACK_MAX_SESSIONS";
 
 /// Exit status for a policy refusal to spawn a nested orchestration (issue #1326).
 /// Distinct from 1 so a caller -- human or agent -- can tell "the tool broke" from
@@ -141,6 +142,20 @@ struct SpawnGuard {
     tree_id: String,
     child_depth: u32,
     max_depth: u32,
+    /// Node admitted for this spawn, released when the child finishes (issue #1329).
+    session_id: String,
+}
+
+impl Drop for SpawnGuard {
+    /// Release the admitted node however this function exits (issue #1329).
+    ///
+    /// RAII rather than a call after the wait: a spawn failure, an early return on
+    /// a terminal error, or a panic would otherwise leak capacity, and leaked
+    /// capacity in a tree-global budget is indistinguishable from real load. Stale
+    /// entries are still swept by `prune_stale`, but only after hours.
+    fn drop(&mut self) {
+        crate::commands::session_tree::state::release_session(&self.tree_id, &self.session_id);
+    }
 }
 
 /// Threshold in bytes for total `--set` argument size before we switch
@@ -1150,7 +1165,8 @@ fn reap_recipe_runner_group(pgid_pid: u32, grace: Duration) {
 /// carry session tokens or secrets.
 fn enforce_recursion_depth_guard() -> Result<SpawnGuard> {
     use crate::commands::session_tree::state::{
-        effective_max_depth, ensure_sealed, sealed_ceiling, validate_tree_id,
+        DEFAULT_MAX_SESSIONS, admit_session, effective_max_depth, memory_shortfall_mib,
+        sealed_ceiling, validate_tree_id,
     };
 
     // Issue #1326: the environment may LOWER this ceiling but never raise it.
@@ -1243,13 +1259,55 @@ fn enforce_recursion_depth_guard() -> Result<SpawnGuard> {
         }
         None => new_tree_id(),
     };
-    let max_depth = ensure_sealed(&tree_id, max_depth)
-        .context("failed to seal the recursion ceiling for this tree")?;
+    // Issue #1329: admit the node we are about to create, so the tree-global
+    // session cap applies to every spawn and not only to callers that happen to go
+    // through `session-tree register`. Debits under the tree lock, before the child
+    // exists.
+    let child_depth = depth.saturating_add(1);
+    let session_id = new_tree_id();
+    let max_sessions = std::env::var(MAX_SESSIONS_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .unwrap_or(DEFAULT_MAX_SESSIONS);
+
+    // Issue #1329: is another agent affordable at all? Nothing in the tree asked
+    // this before; the host reached 247 GB with no component ever checking.
+    if let Some((available, floor)) = memory_shortfall_mib() {
+        tracing::warn!(
+            available,
+            floor,
+            "spawn refused: available memory below floor"
+        );
+        return Err(terminal_block(format!(
+            "BLOCKED_TERMINAL orchestration_unavailable: {available} MiB available, floor is \
+             {floor} MiB (issue #1329).\n\
+             This is a RESOURCE decision, not an infrastructure fault. Retrying will not \
+             free memory.\n\
+             DO: complete this step inline, or raise AMPLIHACK_MIN_AVAILABLE_MIB if you \
+             know the floor is wrong for this host."
+        )));
+    }
+
+    let admitted = match admit_session(&tree_id, &session_id, child_depth, max_depth, max_sessions)
+    {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            tracing::warn!(%error, child_depth, max_sessions, "spawn refused by the tree budget");
+            return Err(terminal_block(format!(
+                "BLOCKED_TERMINAL orchestration_unavailable: {error} (issue #1329).\n\
+                 This is a POLICY decision, not an infrastructure fault. Retrying, switching \
+                 recipe, or changing AMPLIHACK_MAX_DEPTH / AMPLIHACK_MAX_SESSIONS will NOT \
+                 change it -- both are read from the session-tree state.\n\
+                 DO: complete this step inline and return your result."
+            )));
+        }
+    };
 
     Ok(SpawnGuard {
         tree_id,
-        child_depth: depth.saturating_add(1),
-        max_depth,
+        child_depth,
+        max_depth: admitted.ceiling,
+        session_id,
     })
 }
 

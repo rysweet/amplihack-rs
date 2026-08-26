@@ -618,3 +618,116 @@ mod gc_tests {
         assert!(gc_in(&missing, everything_is_expired(), false).is_err());
     }
 }
+
+#[cfg(test)]
+mod admit_tests {
+    use super::state::{admit_session, release_session};
+    use crate::commands::session_tree::state::TreeState;
+
+    /// Issue #1329: the cap must apply to every admission, not only to callers that
+    /// go through `session-tree register`. Six concurrent `recipe run` invocations
+    /// were previously admitted against a configured cap of two.
+    #[test]
+    fn admission_is_capped_by_max_sessions() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let guard = crate::test_support_tree_dir(td.path());
+
+        assert!(admit_session("t", "a", 1, 3, 2).is_ok());
+        assert!(admit_session("t", "b", 1, 3, 2).is_ok());
+        let third = admit_session("t", "c", 1, 3, 2);
+        assert!(
+            third.is_err(),
+            "the third admission must be refused at cap=2"
+        );
+        assert!(
+            third.unwrap_err().to_string().contains("max_sessions"),
+            "the refusal must say why"
+        );
+        drop(guard);
+    }
+
+    /// Capacity must come back, or a long-lived tree wedges itself.
+    #[test]
+    fn releasing_frees_capacity() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let guard = crate::test_support_tree_dir(td.path());
+
+        assert!(admit_session("t", "a", 1, 3, 1).is_ok());
+        assert!(admit_session("t", "b", 1, 3, 1).is_err());
+        release_session("t", "a");
+        assert!(
+            admit_session("t", "b", 1, 3, 1).is_ok(),
+            "capacity must be reusable after release"
+        );
+        drop(guard);
+    }
+
+    /// Depth and capacity are checked together, under one lock.
+    #[test]
+    fn admission_enforces_the_sealed_ceiling() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let guard = crate::test_support_tree_dir(td.path());
+
+        assert!(admit_session("t", "root", 0, 2, 10).is_ok());
+        assert!(
+            admit_session("t", "ok", 2, 99, 10).is_ok(),
+            "at the ceiling is allowed"
+        );
+        let deep = admit_session("t", "deep", 3, 99, 10);
+        assert!(deep.is_err(), "past the sealed ceiling must be refused");
+        assert!(deep.unwrap_err().to_string().contains("max_depth"));
+        drop(guard);
+    }
+
+    /// Admission must not silently start a second tree.
+    #[test]
+    fn admissions_share_one_tree_file() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let guard = crate::test_support_tree_dir(td.path());
+        admit_session("t", "a", 1, 3, 5).expect("a");
+        admit_session("t", "b", 1, 3, 5).expect("b");
+        let body = std::fs::read_to_string(td.path().join("t.json")).expect("tree file");
+        let state: TreeState = serde_json::from_str(&body).expect("parse");
+        assert_eq!(state.sessions.len(), 2);
+        drop(guard);
+    }
+}
+
+#[cfg(test)]
+mod resource_tests {
+    use super::state::{DEFAULT_MIN_AVAILABLE_MIB, available_memory_mib, memory_shortfall_mib};
+
+    /// Reading available memory must work on the platform we actually run on, or
+    /// the precondition silently becomes a no-op.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn available_memory_is_readable() {
+        let mib = available_memory_mib().expect("/proc/meminfo readable on linux");
+        assert!(mib > 0, "MemAvailable should be positive, got {mib}");
+    }
+
+    /// A floor of 0 disables the check. Anyone who needs the old behaviour back
+    /// must have a way to get it that does not involve editing the source.
+    #[test]
+    fn a_zero_floor_disables_the_check() {
+        let _g = crate::test_support_env("AMPLIHACK_MIN_AVAILABLE_MIB", Some("0"));
+        assert!(memory_shortfall_mib().is_none());
+    }
+
+    /// An absurd floor must refuse, proving the comparison is live rather than
+    /// short-circuited.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn an_unreachable_floor_reports_a_shortfall() {
+        let _g = crate::test_support_env("AMPLIHACK_MIN_AVAILABLE_MIB", Some("999999999"));
+        let (available, floor) = memory_shortfall_mib().expect("must report a shortfall");
+        assert_eq!(floor, 999_999_999);
+        assert!(available < floor);
+    }
+
+    /// The default must be a real number, not accidentally zero.
+    #[test]
+    fn the_default_floor_is_nonzero() {
+        assert!(DEFAULT_MIN_AVAILABLE_MIB > 0);
+    }
+}

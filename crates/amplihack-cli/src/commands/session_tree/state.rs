@@ -260,6 +260,148 @@ pub fn ensure_sealed(tree_id: &str, proposed: u32) -> Result<u32> {
     Ok(resolved)
 }
 
+/// Admit one node into a tree: seal the ceiling, enforce depth and capacity, and
+/// record the session -- all under the tree lock (issue #1329).
+///
+/// `ensure_sealed` bounded depth but debited nothing, so the node budget only ever
+/// applied to callers that went through `session-tree register`. A bare
+/// `amplihack recipe run` -- which is exactly what an agent invokes from a bash tool
+/// -- never registered, and six concurrent runs were admitted against a configured
+/// cap of two.
+///
+/// Debits before the child exists, deliberately. A crash between admission and spawn
+/// loses capacity, which `prune_stale` reclaims; the reverse order over-admits and
+/// cannot be undone.
+pub fn admit_session(
+    tree_id: &str,
+    session_id: &str,
+    depth: u32,
+    proposed_ceiling: u32,
+    max_sessions: u32,
+) -> Result<AdmitOutcome> {
+    validate_tree_id(session_id).context("invalid session id")?;
+    let dir = state_dir()?;
+    let mut outcome = AdmitOutcome {
+        ceiling: proposed_ceiling,
+        active: 0,
+    };
+    let session = session_id.to_string();
+    with_locked_tree(&dir, tree_id, |path| {
+        let mut state = load_state(path)?;
+        let ceiling = effective_max_depth(state.ceiling, Some(proposed_ceiling));
+
+        if depth > ceiling {
+            bail!("depth={depth} exceeds max_depth={ceiling}");
+        }
+        let active = state.active_count();
+        if active >= max_sessions {
+            bail!("max_sessions={max_sessions} reached ({active} active)");
+        }
+
+        if state.ceiling != Some(ceiling) {
+            state.ceiling = Some(ceiling);
+        }
+        let this_version = env!("CARGO_PKG_VERSION").to_string();
+        if state.writer_version.as_deref() != Some(this_version.as_str()) {
+            state.writer_version = Some(this_version);
+        }
+        state.sessions.insert(
+            session.clone(),
+            SessionEntry {
+                depth,
+                parent: None,
+                status: SessionStatus::Active,
+                started_at: now_secs_state(),
+                completed_at: None,
+                children: vec![],
+            },
+        );
+        outcome = AdmitOutcome {
+            ceiling,
+            active: active + 1,
+        };
+        save_state(path, state)
+    })?;
+    Ok(outcome)
+}
+
+/// What [`admit_session`] granted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdmitOutcome {
+    /// The ceiling now in force for this tree.
+    pub ceiling: u32,
+    /// Active session count including the one just admitted.
+    pub active: u32,
+}
+
+/// Release a node admitted by [`admit_session`] (issue #1329).
+///
+/// Best-effort: a tree that has vanished is not an error, because the capacity it
+/// held has vanished with it. Failing here would turn a completed run into a failed
+/// one over bookkeeping.
+pub fn release_session(tree_id: &str, session_id: &str) {
+    let Ok(dir) = state_dir() else { return };
+    let session = session_id.to_string();
+    let _ = with_locked_tree(&dir, tree_id, |path| {
+        let mut state = load_state(path)?;
+        if let Some(entry) = state.sessions.get_mut(&session) {
+            entry.status = SessionStatus::Completed;
+            entry.completed_at = Some(now_secs_state());
+        }
+        save_state(path, state)
+    });
+}
+
+fn now_secs_state() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Available memory in MiB, from `/proc/meminfo` (issue #1329).
+///
+/// `MemAvailable` rather than `MemFree`: the kernel's own estimate of what a new
+/// workload can obtain without swapping, which is the question being asked.
+/// `None` when it cannot be read -- callers must treat that as "no opinion" and
+/// admit, because refusing every spawn on an unreadable /proc would be worse than
+/// the problem.
+#[cfg(target_os = "linux")]
+pub fn available_memory_mib() -> Option<u64> {
+    let text = fs::read_to_string("/proc/meminfo").ok()?;
+    text.lines()
+        .find_map(|line| line.strip_prefix("MemAvailable:"))
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|kb| kb.parse::<u64>().ok())
+        .map(|kb| kb / 1024)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn available_memory_mib() -> Option<u64> {
+    None
+}
+
+/// Floor below which a spawn is refused, in MiB. Overridable via
+/// `AMPLIHACK_MIN_AVAILABLE_MIB`; `0` disables the check.
+pub const DEFAULT_MIN_AVAILABLE_MIB: u64 = 4096;
+
+/// Should a spawn be refused for lack of memory? (issue #1329)
+///
+/// Nothing in the tree asked this question before. A host reached 247 GB and was
+/// OOM-killed four times without any component ever checking whether another agent
+/// was affordable. Returns the shortfall when it is not.
+pub fn memory_shortfall_mib() -> Option<(u64, u64)> {
+    let floor = std::env::var("AMPLIHACK_MIN_AVAILABLE_MIB")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_MIN_AVAILABLE_MIB);
+    if floor == 0 {
+        return None;
+    }
+    let available = available_memory_mib()?;
+    (available < floor).then_some((available, floor))
+}
+
 /// Read the ceiling a tree has already sealed, if any (issue #1326).
 ///
 /// Best-effort and lock-free: this is a read of a value that only ever moves
