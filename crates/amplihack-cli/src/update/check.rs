@@ -118,6 +118,12 @@ pub fn run_update(skip_install: bool) -> Result<()> {
         }
         Ok(())
     })?;
+
+    // Issue #1331: `download_and_replace` refreshed the copy it resolved. If another
+    // `amplihack` is still on PATH at an older version, this host is not upgraded --
+    // it is split, and a split host defeats the recursion guards silently, because
+    // they only hold when every participant in a tree is the same build.
+    super::path_verify::verify_all_path_copies(&release.version)?;
     Ok(())
 }
 

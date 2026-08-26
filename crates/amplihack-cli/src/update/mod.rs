@@ -3,6 +3,7 @@ mod check;
 mod checksum;
 mod install;
 mod network;
+mod path_verify;
 mod post_install;
 
 pub(crate) use archive::extract_archive;

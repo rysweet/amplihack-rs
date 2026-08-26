@@ -270,12 +270,19 @@ pub fn ensure_sealed(tree_id: &str, proposed: u32) -> Result<u32> {
         if let Some(seen) = state.writer_version.as_ref()
             && seen != &this_version
         {
-            tracing::warn!(
-                tree_writer_version = %seen,
-                this_version = %this_version,
-                "session tree was sealed by a different amplihack build; a build predating \
-                 issue #1326 resolves the tree store from TMPDIR and will not share this \
-                 tree, so the session cap may under-count. Upgrade the whole fleet."
+            // Issue #1331: refuse, do not warn. A tree is ONE run. Two builds
+            // disagreeing about the rules inside it is not a rolling upgrade, it is a
+            // broken run: on the affected host the fixed binary seeded a tree while an
+            // older `amplihack` on PATH handled `session-tree register`, wrote a
+            // ceiling-less entry, and depth reached 3 against a ceiling of 2.
+            //
+            // Rolling upgrades across SEPARATE trees stay fine -- this only fires when
+            // two versions try to participate in the same one.
+            bail!(
+                "tree {tree_id} was sealed by amplihack {seen}, this is {this_version}. \
+                 A tree is one run; two builds cannot share it, because they may not \
+                 agree on the recursion rules. Run `which -a amplihack` and make every \
+                 copy on PATH the same build (issue #1331)."
             );
         }
         let changed = state.ceiling != Some(resolved)
