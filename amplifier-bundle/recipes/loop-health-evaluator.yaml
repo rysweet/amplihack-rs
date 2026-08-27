@@ -134,6 +134,16 @@ steps:
         the test and CI signals changed at all. Unobserved is NOT progress.
       - `waiting_on_output` — the loop reporting it is waiting on output that
         never arrives.
+      - `infrastructure_fault` / `infrastructure_fault_class` — the last round
+        ended on an infrastructure fault (an overloaded model endpoint, a
+        missing credential), not on the work. `amplihack recipe run` already
+        retried an unambiguously transient transport fault with backoff and
+        exhausted that bounded budget before reporting it (issue #1267). A
+        round that produced nothing FOR THAT REASON is not evidence of a loop
+        failing to converge — say so explicitly, and judge whether the fault is
+        one another round could plausibly get past (`transient_transport`
+        usually is; `environmental` needs something changed first, so it is
+        STUCK with the remedy named).
 
       ## Accumulated round verdicts (oldest first)
 

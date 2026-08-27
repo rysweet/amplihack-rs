@@ -3,7 +3,11 @@ use super::*;
 mod binary;
 mod correlation;
 pub(crate) mod execute;
+/// Issue #1267 — transient vs terminal classification of a failed run.
+mod failure_class;
 mod format;
+/// Issue #1267 — bounded mechanical retry for transient transport faults.
+mod retry;
 
 use execute::execute_recipe_via_rust;
 use format::format_recipe_run_result;
@@ -191,6 +195,8 @@ fn scalar_to_context_value(value: &Value) -> String {
 mod tests_context;
 #[cfg(test)]
 mod tests_execute;
+#[cfg(test)]
+mod tests_failure_class;
 #[cfg(test)]
 mod tests_format;
 #[cfg(test)]

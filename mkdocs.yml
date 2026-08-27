@@ -228,3 +228,4 @@ nav:
       - multitask Command: reference/multitask-command.md
       - doctor Command: reference/doctor-command.md
       - Rust Runner Execution: reference/rust-runner-execution.md
+      - Transient Failure Retry: reference/transient-failure-retry.md

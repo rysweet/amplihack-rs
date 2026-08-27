@@ -22,4 +22,6 @@ base64 = "0.22"
 tempfile = { workspace = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["process", "time", "rt", "macros"] }
+# `test-util` powers `#[tokio::test(start_paused = true)]` in `backoff.rs`,
+# which moved here from amplihack-remote (issue #1267).
+tokio = { version = "1", features = ["process", "time", "rt", "macros", "test-util"] }

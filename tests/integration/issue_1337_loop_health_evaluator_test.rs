@@ -207,6 +207,52 @@ fn evaluator_receives_real_evidence_not_prose_impressions() {
     );
 }
 
+/// Issue #1267 — the mechanical failure classification must reach the agentic
+/// judge as DATA. A round that produced nothing because the model endpoint was
+/// overloaded is not a loop failing to converge, and the evaluator can only say
+/// so if the evidence brick measures it and the prompt surfaces it.
+#[test]
+fn infrastructure_fault_is_measured_and_surfaced_to_the_judge() {
+    let recipe = recipe_yaml();
+    let collect = collect_command();
+    let prompt = field(step(&recipe, "step-02-evaluate-loop-health"), "prompt");
+
+    for computed in ["infrastructure_fault", "infrastructure_fault_class"] {
+        assert!(
+            collect.contains(computed),
+            "step-01 must compute `{computed}` from the run's classification marker"
+        );
+        assert!(
+            prompt.contains(computed),
+            "the evaluator prompt must surface `{computed}` to the judge"
+        );
+    }
+
+    // The marker prefix is a cross-language contract: the recipe greps for the
+    // exact string the Rust runner writes. Pin both ends so a rename to one
+    // side cannot silently make the detector inert.
+    const MARKER: &str = "amplihack.recipe.failure_class";
+    assert!(
+        collect.contains(MARKER),
+        "the evidence brick must grep for the marker the runner actually writes"
+    );
+    let emitter = read(
+        &workspace_root().join("crates/amplihack-cli/src/commands/recipe/run/failure_class.rs"),
+    );
+    assert!(
+        emitter.contains(MARKER),
+        "the Rust classifier must still emit `{MARKER}`; the recipe detector greps for it"
+    );
+
+    // A `work`-class failure is a real work failure and must NOT be excused as
+    // infrastructure — only the two infrastructure classes count.
+    assert!(
+        collect.contains("transient_transport|environmental"),
+        "only transient-transport and environmental classes may count as an \
+         infrastructure fault; a work failure must still read as a work failure"
+    );
+}
+
 #[test]
 fn no_numeric_iteration_cap_anywhere() {
     // The core design decision of #1337: the loop terminator is absence of

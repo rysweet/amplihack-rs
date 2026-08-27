@@ -7,7 +7,8 @@ description: |
   repeated step durations, repeated output, new/recurring/resolved findings,
   whether test and CI signals moved, whether the loop is waiting on output
   that never arrives, and whether a child returned the exit-79 terminal
-  policy refusal.
+  policy refusal, and whether the round died to an infrastructure fault
+  rather than to the work (issue #1267).
 
   Split out of `loop-health-evaluator.yaml` deliberately, not for line count:
   measurement and judgement are different jobs with different failure modes.
@@ -178,13 +179,40 @@ steps:
         WAITING="true"
       fi
 
-      echo "INFO: loop-health evidence for '${LOOP_NAME:-unnamed-loop}' round '${LOOP_ROUND_LABEL:-?}': terminal_refusal=${TERMINAL} commits=${COMMITS} diff_lines=${DIFF_LINES} repeated_durations=${DUR_REPEATS} repeated_output=${REPEATED} findings new/recurring/resolved=${F_NEW}/${F_RECUR}/${F_RESOLVED} tests_moved=${TESTS_MOVED} ci_moved=${CI_MOVED} waiting_on_output=${WAITING}" >&2
+      # --- (h) Did the round die to infrastructure, not to the work? --------
+      # Issue #1267: `amplihack recipe run` classifies every terminal failure
+      # and writes one greppable `amplihack.recipe.failure_class` marker. A
+      # round that ended because the model endpoint was overloaded produced no
+      # diff for a reason that has NOTHING to do with convergence. Reporting
+      # that as plain "no progress" would stop a loop that was fine.
+      #
+      # Only the LAST marker is read: a round that hit a transient fault, was
+      # retried, and then failed on the work is a work failure, and its final
+      # marker says so.
+      INFRA="false"; INFRA_CLASS=""
+      INFRA_LINE=$(grep -F 'amplihack.recipe.failure_class' "$WORK/blob" 2>/dev/null | tail -1)
+      if [ -n "$INFRA_LINE" ]; then
+        # FIRST match, not last: the marker's `evidence` field carries the tail
+        # of the failed step's output, which for a nested run contains that
+        # child's own marker — `"class"` verbatim and all. serde_json sorts keys,
+        # so the top-level `"class"` always precedes `"evidence"`; taking the
+        # first occurrence reads THIS run's verdict rather than a grandchild's.
+        INFRA_CLASS=$(printf '%s' "$INFRA_LINE" \
+          | grep -o '"class":"[a-z_]*"' | head -1 \
+          | sed 's/^"class":"//; s/"$//')
+        case "$INFRA_CLASS" in
+          transient_transport|environmental) INFRA="true" ;;
+        esac
+      fi
 
-      printf '{"terminal_refusal":"%s","terminal_reason":"%s","commits_since_baseline":%s,"diff_lines":%s,"diff_stat":"%s","git_observed":"%s","repeated_duration_count":%s,"repeated_duration_value":"%s","repeated_output":"%s","findings_new":%s,"findings_recurring":%s,"findings_resolved":%s,"tests_observed":"%s","tests_moved":"%s","ci_observed":"%s","ci_moved":"%s","waiting_on_output":"%s"}\n' \
+      echo "INFO: loop-health evidence for '${LOOP_NAME:-unnamed-loop}' round '${LOOP_ROUND_LABEL:-?}': terminal_refusal=${TERMINAL} commits=${COMMITS} diff_lines=${DIFF_LINES} repeated_durations=${DUR_REPEATS} repeated_output=${REPEATED} findings new/recurring/resolved=${F_NEW}/${F_RECUR}/${F_RESOLVED} tests_moved=${TESTS_MOVED} ci_moved=${CI_MOVED} waiting_on_output=${WAITING} infrastructure_fault=${INFRA}(${INFRA_CLASS:-none})" >&2
+
+      printf '{"terminal_refusal":"%s","terminal_reason":"%s","commits_since_baseline":%s,"diff_lines":%s,"diff_stat":"%s","git_observed":"%s","repeated_duration_count":%s,"repeated_duration_value":"%s","repeated_output":"%s","findings_new":%s,"findings_recurring":%s,"findings_resolved":%s,"tests_observed":"%s","tests_moved":"%s","ci_observed":"%s","ci_moved":"%s","waiting_on_output":"%s","infrastructure_fault":"%s","infrastructure_fault_class":"%s"}\n' \
         "$TERMINAL" "$(esc "$TERMINAL_WHY")" "$COMMITS" "$DIFF_LINES" "$(esc "$DIFF_STAT")" \
         "$GIT_OBSERVED" "$DUR_REPEATS" "$(esc "$DUR_VALUE")" "$REPEATED" \
         "$F_NEW" "$F_RECUR" "$F_RESOLVED" \
-        "$TESTS_OBSERVED" "$TESTS_MOVED" "$CI_OBSERVED" "$CI_MOVED" "$WAITING"
+        "$TESTS_OBSERVED" "$TESTS_MOVED" "$CI_OBSERVED" "$CI_MOVED" "$WAITING" \
+        "$INFRA" "$(esc "$INFRA_CLASS")"
     output: "loop_evidence"
     parse_json: true
 

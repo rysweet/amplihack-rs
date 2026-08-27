@@ -27,6 +27,10 @@
 /// Single source of truth for resolving the active agent binary identifier.
 pub mod agent_binary;
 pub mod artifact_guard;
+/// Exponential-with-jitter retry backoff bounded by a wall-clock budget.
+/// Shared by the Azure remote pipeline and the recipe runner's transient
+/// transport retry (issues #1267).
+pub mod backoff;
 pub mod binary_finder;
 pub mod bundle_generator;
 pub mod claude_md;

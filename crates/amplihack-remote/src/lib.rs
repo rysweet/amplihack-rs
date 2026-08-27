@@ -16,10 +16,12 @@
 //! - [`state_lock`] — Advisory file locking
 //! - [`cli`] — Full workflow orchestration
 //! - [`error`] — Error types
+//!
+//! Retry backoff lives in [`amplihack_utils::backoff`] and is re-exported as
+//! `crate::backoff` (issue #1267).
 
 pub mod auth;
 pub mod azlin_parse;
-pub(crate) mod backoff;
 pub mod cli;
 pub mod commands;
 pub mod error;
@@ -40,6 +42,10 @@ pub use auth::{AzureAuthenticator, AzureCredentials, get_azure_auth};
 // #921/#971 R4: re-export the azlin discovery parsers and the idle/liveness
 // watchdog so the Signal fleet path (idle-based device-linking) can consume a
 // single, shared implementation instead of forking the parse/idle logic.
+// Issue #1267: the retry backoff policy moved to `amplihack-utils` so the recipe
+// runner's transient-transport retry reuses it rather than growing a second copy.
+// Re-exported here so `crate::backoff::BackoffPolicy` keeps resolving in-crate.
+pub use amplihack_utils::backoff;
 pub use amplihack_utils::idle_watchdog;
 pub use azlin_parse::{parse_azlin_list_json, parse_azlin_list_text};
 pub use cli::{

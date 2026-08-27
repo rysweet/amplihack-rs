@@ -1,5 +1,10 @@
 //! Adaptive retry backoff.
 //!
+//! Shared by every caller in the workspace that needs a bounded retry
+//! schedule: the Azure remote pipeline (provisioning / file transfer) and the
+//! recipe runner's transient-transport retry (issue #1267). It lives here so
+//! there is exactly one backoff implementation rather than one per call site.
+//!
 //! Provides an exponential-with-jitter backoff policy bounded by an
 //! operator-configurable *time budget* rather than an arbitrary fixed
 //! attempt cap. Retries continue, with growing delays, until the total
@@ -12,7 +17,9 @@
 
 use std::time::Duration;
 
-/// Environment variable that overrides the retry *time budget* (seconds).
+/// Environment variable that overrides the retry *time budget* (seconds) for
+/// the remote-pipeline defaults below. Other callers construct a policy with
+/// [`BackoffPolicy::new`] and own their own configuration knob.
 pub const RETRY_BUDGET_ENV: &str = "AMPLIHACK_REMOTE_RETRY_BUDGET_SECS";
 
 /// Adaptive exponential backoff bounded by a total time budget.
