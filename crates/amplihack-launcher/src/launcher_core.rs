@@ -158,7 +158,7 @@ impl ClaudeLauncher {
             return Ok(false);
         }
         info!(repo = %repo, "Checking out repository...");
-        let status = Command::new("git")
+        let status = amplihack_git::command()
             .args(["clone", "--depth", "1", "--", repo])
             .status()
             .context("failed to run git clone")?;
@@ -285,7 +285,7 @@ fn paths_are_same(a: &Path, b: &Path) -> bool {
 /// Falls back to the current working directory when git is unavailable or when
 /// the working directory is not inside a git repository (PR #3916 parity).
 pub fn detect_repo_root() -> Option<PathBuf> {
-    match Command::new("git")
+    match amplihack_git::command()
         .args(["rev-parse", "--show-toplevel"])
         .output()
     {

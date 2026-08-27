@@ -25,7 +25,6 @@ pub(crate) mod waves;
 use crate::util::run_output_with_timeout;
 use anyhow::{Context, Result};
 use std::path::Path;
-use std::process::Command;
 use std::time::Duration;
 
 const REPO_URL_DETECTION_TIMEOUT: Duration = Duration::from_secs(10);
@@ -154,7 +153,7 @@ pub fn run_status(base_dir: Option<&str>) -> Result<()> {
 }
 
 fn detect_repo_url() -> String {
-    let mut cmd = Command::new("git");
+    let mut cmd = amplihack_git::command();
     cmd.args(["remote", "get-url", "origin"]);
     run_output_with_timeout(cmd, REPO_URL_DETECTION_TIMEOUT)
         .ok()

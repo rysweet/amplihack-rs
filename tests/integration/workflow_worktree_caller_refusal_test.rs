@@ -116,7 +116,7 @@ struct GitFixture {
 }
 
 fn git(cwd: &Path, args: &[&str]) -> Output {
-    let out = Command::new("git")
+    let out = amplihack_git::command()
         .args(["-c", "user.email=test@test", "-c", "user.name=test"])
         .args(args)
         .current_dir(cwd)
@@ -134,7 +134,7 @@ fn git(cwd: &Path, args: &[&str]) -> Output {
 impl GitFixture {
     fn new() -> Self {
         let origin = TempDir::new().expect("origin tempdir");
-        Command::new("git")
+        amplihack_git::command()
             .args(["init", "--bare", "-b", "main"])
             .arg(origin.path())
             .output()
@@ -152,11 +152,11 @@ impl GitFixture {
         git(&rp, &["commit", "-m", "init"]);
         git(&rp, &["push", "-u", "origin", "HEAD:main"]);
         // Establish origin/HEAD so resolve_base_ref() finds a base without network.
-        let _ = Command::new("git")
+        let _ = amplihack_git::command()
             .args(["remote", "set-head", "origin", "-a"])
             .current_dir(&rp)
             .output();
-        let _ = Command::new("git")
+        let _ = amplihack_git::command()
             .args(["branch", "--set-upstream-to=origin/main", "main"])
             .current_dir(&rp)
             .output();
@@ -446,7 +446,7 @@ fn dirty_caller_state_does_not_leak_into_new_worktree() {
     );
 
     // The new branch is based on the resolved remote base, not the caller's HEAD.
-    let ahead = Command::new("git")
+    let ahead = amplihack_git::command()
         .args(["rev-list", "--count", "origin/main..HEAD"])
         .current_dir(wt)
         .output()

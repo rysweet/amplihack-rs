@@ -1,6 +1,5 @@
 //! Git status checking and uncommitted work warnings.
 
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 const GIT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -13,7 +12,7 @@ struct GitStatus {
 
 /// Run a git command with a timeout, returning its stdout on success.
 fn run_git_with_timeout(args: &[&str]) -> Option<String> {
-    let mut child = Command::new("git")
+    let mut child = amplihack_git::command()
         .args(args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())

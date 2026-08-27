@@ -13,11 +13,10 @@ use super::{
 };
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 use tempfile::TempDir;
 
 fn run_git(repo: &Path, args: &[&str]) {
-    let output = Command::new("git")
+    let output = amplihack_git::command()
         .args(args)
         .current_dir(repo)
         .output()

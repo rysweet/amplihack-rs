@@ -11,7 +11,7 @@ use chrono::Utc;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::process::{Child, Command};
+use std::process::Child;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -133,7 +133,7 @@ impl ParallelOrchestrator {
             println!("[{issue}] Cloning default branch '{default_branch}' from remote...");
             let branch_arg = format!("--branch={default_branch}");
             let work_dir_arg = ws.work_dir.to_string_lossy();
-            let mut clone_cmd = Command::new("git");
+            let mut clone_cmd = amplihack_git::command();
             clone_cmd.args([
                 "clone",
                 "--depth=1",
@@ -347,7 +347,7 @@ impl ParallelOrchestrator {
             return branch.clone();
         }
 
-        let mut cmd = Command::new("git");
+        let mut cmd = amplihack_git::command();
         cmd.args(["ls-remote", "--symref", &self.repo_url, "HEAD"]);
         let branch = match run_output_with_timeout(cmd, DEFAULT_BRANCH_RESOLUTION_TIMEOUT) {
             Ok(output) if output.status.success() => {

@@ -6,7 +6,6 @@ use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::Path;
-use std::process::Command;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -314,7 +313,7 @@ fn path_to_string(path: &Path) -> String {
 }
 
 fn git_output(working_dir: &Path, args: &[&str]) -> Option<String> {
-    let mut command = Command::new("git");
+    let mut command = amplihack_git::command();
     command.arg("-C").arg(working_dir).args(args);
     let output = run_output_with_timeout(command, GIT_COMMAND_TIMEOUT).ok()?;
     if !output.status.success() {

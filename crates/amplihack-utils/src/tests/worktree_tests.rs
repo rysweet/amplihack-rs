@@ -83,7 +83,7 @@ fn git_repo_returns_local_runtime_dir() {
     let tmp = TempDir::new().unwrap();
     clear_cache();
     // Initialize a real git repo.
-    let init = std::process::Command::new("git")
+    let init = amplihack_git::command()
         .args(["init"])
         .current_dir(tmp.path())
         .output();

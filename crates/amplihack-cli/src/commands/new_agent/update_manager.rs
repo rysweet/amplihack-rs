@@ -6,7 +6,6 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -242,7 +241,7 @@ impl UpdateManager {
             }
         };
 
-        let mut command = Command::new("git");
+        let mut command = amplihack_git::command();
         command
             .args(["rev-parse", "--short", "HEAD"])
             .current_dir(&repo);
@@ -266,7 +265,7 @@ impl UpdateManager {
             None => return Vec::new(),
         };
 
-        let mut command = Command::new("git");
+        let mut command = amplihack_git::command();
         command
             .args([
                 "log",

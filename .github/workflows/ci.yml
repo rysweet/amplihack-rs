@@ -84,6 +84,25 @@ jobs:
       - name: Docs — launch-target frozen contract matches the code (issue #1274)
         shell: bash
         run: bash tests/issue_1274_launch_target_contract_matches_code.sh
+      - name: Git subprocesses — no unsanitised Command::new("git") (issue #1278)
+        run: scripts/check-git-command-sanitised.sh
+      - name: Git env isolation — hooks scrub GIT_DIR and friends (issue #1278)
+        shell: bash
+        run: |
+          # Twice, deliberately. A clean run is what CI naturally provides, and
+          # it is exactly the run that cannot see an environment-leak bug: this
+          # test's own fixtures were once hijacked by the leak it describes
+          # (`git init <path>` honours an ambient GIT_DIR and ignores its path
+          # argument), and CI stayed green throughout. The second run supplies
+          # the environment git actually hands a hook.
+          bash tests/issue_1278_git_env_isolation.sh
+          decoy="$(mktemp -d)/decoy"
+          git init --quiet "$decoy"
+          GIT_DIR="$decoy/.git" \
+          GIT_WORK_TREE="$decoy" \
+          GIT_INDEX_FILE="$decoy/.git/index" \
+          GIT_PREFIX="" \
+            bash tests/issue_1278_git_env_isolation.sh
       - name: Recipes — PR always opens after successful push (issue #495)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-pr-always-opens.sh
@@ -259,6 +278,29 @@ jobs:
         run: df -h / && sccache --show-stats
       # nextest: better parallelism and lower peak disk than `cargo test`.
       - run: cargo nextest run --workspace --locked
+      # Issue #1278: CI is the only place this suite runs WITHOUT git's hook
+      # variables set, which is exactly why the unpassable pre-push gate stayed
+      # invisible for so long. Re-run the crates that spawn git with GIT_DIR and
+      # friends pointed at a decoy repository, the way a real hook exports them,
+      # so a regression fails here instead of only on a developer's push.
+      - name: Tests under a hook's git environment (issue #1278)
+        shell: bash
+        run: |
+          decoy="$(mktemp -d)/decoy"
+          git init --quiet "$decoy"
+          export GIT_DIR="$decoy/.git"
+          export GIT_WORK_TREE="$decoy"
+          export GIT_INDEX_FILE="$decoy/.git/index"
+          export GIT_PREFIX=""
+          cargo nextest run --locked \
+            -p amplihack-git \
+            -p amplihack-safety \
+            -p amplihack-recovery \
+            -p amplihack-utils
+          # The decoy must be untouched: if a test still reaches through the
+          # environment it lands here, not in the checkout.
+          test -z "$(git --git-dir="$decoy/.git" --work-tree="$decoy" status --porcelain)" \
+            || { echo "ERROR: tests wrote into the ambient GIT_DIR"; exit 1; }
       # nextest does not execute doctests; keep them so coverage is not lost.
       - run: cargo test --workspace --doc --locked
       - name: Disk + sccache stats (after)

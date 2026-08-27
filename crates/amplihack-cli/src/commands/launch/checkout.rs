@@ -3,7 +3,7 @@
 use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::Duration;
 
 use crate::util::{format_output_diagnostics, run_output_with_timeout};
@@ -36,7 +36,7 @@ pub(super) fn resolve_checkout_repo_in(repo_uri: &str, base_dir: &Path) -> Resul
 
     let clone_url = format!("https://github.com/{owner}/{repo}.git");
     let target_dir_arg = target_dir.to_string_lossy();
-    let mut command = Command::new("git");
+    let mut command = amplihack_git::command();
     command
         .args(["clone", &clone_url, target_dir_arg.as_ref()])
         .stdin(Stdio::null());

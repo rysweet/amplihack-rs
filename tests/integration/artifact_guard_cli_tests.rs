@@ -17,7 +17,7 @@ fn bin() -> &'static str {
 }
 
 fn run_git(repo: &Path, args: &[&str]) {
-    let output = Command::new("git")
+    let output = amplihack_git::command()
         .args(args)
         .current_dir(repo)
         .output()
