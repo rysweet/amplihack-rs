@@ -87,6 +87,15 @@ jobs:
       - name: Publish — a push must land the tested commit (issue #1269)
         shell: bash
         run: bash tests/issue_1269_verify_pushed_ref.sh
+      - name: Worktree path — every execution site is fail-loud (issue #413)
+        shell: bash
+        run: bash tests/issue_413_fail_loud_worktree.sh
+      - name: Phase bricks — fail-loud worktree path (issue #414)
+        shell: bash
+        run: bash tests/issue_414_fail_loud_phase_bricks.sh
+      - name: Runtime artifacts — helper resolution never fails silently (issue #817)
+        shell: bash
+        run: bash tests/issue_817_runtime_artifact_resolution.sh
       - name: Identity — the acting account is verified before any work (issue #1290)
         shell: bash
         run: bash tests/issue_1290_identity_preflight.sh

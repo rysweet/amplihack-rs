@@ -48,10 +48,18 @@ silent_count=$(grep -c 'WORKTREE_SETUP_WORKTREE_PATH:-\$REPO_PATH' "$FILE" || tr
 assert "no '\${WORKTREE_SETUP_WORKTREE_PATH:-\$REPO_PATH}' remains (found=$silent_count)" \
     "[ '$silent_count' = '0' ]"
 
-# --- Test 3: fail-loud form present at exactly two execution sites ----------
+# --- Test 3: every execution site is fail-loud ------------------------------
+# This asserted an exact count of two. The recipe has since grown to five
+# fail-loud sites (14b, 14c, 14g, 15, 16), and the guard has been failing ever
+# since -- unnoticed, because it is wired into no workflow.
+#
+# An exact count is the wrong assertion: it makes every CORRECT addition of a
+# fail-loud site a failure. What matters is the property -- at least the two
+# original sites, and no silent fallback (Test 2). The two named sites are
+# still pinned individually by Tests 4 and 5.
 fail_loud_count=$(grep -c 'WORKTREE_SETUP_WORKTREE_PATH:?' "$FILE" || true)
-assert "exactly two '\${WORKTREE_SETUP_WORKTREE_PATH:?...}' execution sites (found=$fail_loud_count)" \
-    "[ '$fail_loud_count' = '2' ]"
+assert "at least two '\${WORKTREE_SETUP_WORKTREE_PATH:?...}' execution sites (found=$fail_loud_count)" \
+    "[ '$fail_loud_count' -ge 2 ]"
 
 # --- Test 4: step-15 diagnostic references step-15 and step-04 source -------
 assert "step-15 diagnostic references step-15 and workflow-worktree" \
