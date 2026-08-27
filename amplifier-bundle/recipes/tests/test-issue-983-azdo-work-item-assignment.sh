@@ -157,6 +157,15 @@ run_env_step() {
     out="$(
         cd "${FAKE_REPO}" || exit 3
         export PATH="${STUB_BIN}:/usr/bin:/bin"
+        # Issue #1361: step-03's provider-metadata helpers (emit_local_metadata,
+        # sanitize_cli_output, _pct_decode) now live in
+        # amplifier-bundle/tools/workflow_issue_tracking.sh, reached through the
+        # AMPLIHACK_HOME / REPO_PATH / cwd / ~/.copilot / ~/.amplihack cascade.
+        # REPO_PATH here is a synthetic AzDO fixture with no bundle in it, so the
+        # step is told where the bundle is. In a real run the recipe runner
+        # always sets AMPLIHACK_HOME (EnvBuilder::with_amplihack_home_from), so
+        # this is a harness detail, not a production one.
+        export AMPLIHACK_HOME="${REPO_ROOT}"
         export AZ_STUB_MODE="${mode}"
         export AZ_ARGS_LOG="${args_log}"
         export REPO_PATH="${FAKE_REPO}"
@@ -252,6 +261,9 @@ else
     ABSENT_OUT="$(
         cd "${FAKE_REPO}" || exit 3
         export PATH="/usr/bin:/bin"
+        # See the note in run_env_step: the fixture has no bundle, so the step is
+        # told where amplifier-bundle/tools/ is (issue #1361).
+        export AMPLIHACK_HOME="${REPO_ROOT}"
         export REPO_PATH="${FAKE_REPO}"
         export REMOTE_HOST_TYPE="azdo"
         export TASK_DESCRIPTION="Local only task with no az"
