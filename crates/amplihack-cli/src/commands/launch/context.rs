@@ -25,13 +25,22 @@ use std::path::Path;
 /// The file that caused issue #1335 was written by `amplihack copilot
 /// --version`. It then decided which agent CLI ran for every workflow under
 /// /tmp for the next five days.
+///
+/// Only the FIRST argument is examined. `extra_args` is declared
+/// `trailing_var_arg` + `allow_hyphen_values`, so it carries prompt text --
+/// scanning all of it would make `amplihack claude help me fix the build`
+/// persist nothing, and the session would then fall through to the built-in
+/// default. That is the very failure this guard exists to prevent, re-entered
+/// through a different door.
+///
+/// `--help` and `-h` are absent deliberately: clap intercepts both at the
+/// subcommand and they never reach here. Listing them would advertise
+/// coverage that cannot be exercised.
 fn is_non_session_invocation(extra_args: &[String]) -> bool {
-    extra_args.iter().any(|a| {
-        matches!(
-            a.as_str(),
-            "--version" | "-V" | "--help" | "-h" | "help" | "--dry-run"
-        )
-    })
+    matches!(
+        extra_args.first().map(String::as_str),
+        Some("--version" | "-V" | "help")
+    )
 }
 
 pub(super) fn persist_launcher_context(

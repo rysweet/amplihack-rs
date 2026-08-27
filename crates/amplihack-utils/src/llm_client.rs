@@ -118,21 +118,21 @@ pub fn completion(prompt: &str) -> Result<String, LlmClientError> {
 
 /// Resolve the binary name for a given launcher type.
 ///
-/// Delegates the AMPLIHACK_AGENT_BINARY → launcher_context.json → "copilot"
-/// precedence to [`amplihack_utils::agent_binary::resolve`]. The launcher
-/// argument only matters when the resolver returns the built-in default and
-/// the caller already knows which session marker it observed.
+/// Delegates the whole precedence to [`amplihack_utils::agent_binary::resolve`],
+/// which now consults live session markers itself.
+///
+/// This used to carry a local patch: if the resolver returned the built-in
+/// default while the caller had observed a Claude marker, prefer claude. That
+/// patch existed because the persisted layer could disagree with the session
+/// reading it, and it only defended one direction -- which was safe only while
+/// the persisted layer could physically say nothing but "copilot" (issue
+/// #1342). Now that it can record either vendor, a one-sided patch would let a
+/// Copilot session spawn `claude` off a claude-written file. The marker check
+/// moved into the resolver so the rule is applied once, symmetrically, for
+/// every caller rather than at this one call site.
 fn resolve_binary(launcher: &LauncherType) -> String {
     let cwd = env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     if let Ok(name) = crate::agent_binary::resolve(&cwd) {
-        // The resolver may return the default ("copilot") even when we
-        // detected a Claude session marker — in that case, prefer the marker.
-        if matches!(launcher, LauncherType::ClaudeCode)
-            && name == crate::agent_binary::DEFAULT_BINARY
-            && env::var("AMPLIHACK_AGENT_BINARY").is_err()
-        {
-            return "claude".to_string();
-        }
         return name;
     }
     match launcher {

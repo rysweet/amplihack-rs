@@ -732,13 +732,18 @@ fn persist_launcher_context_ignores_non_launcher_subcommands() {
     );
 }
 
-/// Issue #1335, the actual field failure: the file that hijacked every
-/// workflow under /tmp for five days recorded
-/// `"command": "amplihack copilot --version"`. A question-and-exit
-/// invocation is not a session and must not claim to be one.
+/// Issue #1342, the actual field failure: the file that hijacked every
+/// workflow under /tmp recorded `"command": "amplihack copilot --version"`. A
+/// question-and-exit invocation is not a session and must not claim to be one.
+///
+/// Only three tokens are listed, and the omissions are deliberate. `--help`
+/// and `-h` are intercepted by clap at the subcommand and never reach
+/// `extra_args`; `--dry-run` is not a flag any amplihack launcher subcommand
+/// defines. Asserting them would advertise coverage for input the CLI cannot
+/// produce.
 #[test]
 fn persist_launcher_context_skips_non_session_invocations() {
-    for flag in ["--version", "-V", "--help", "-h", "help", "--dry-run"] {
+    for flag in ["--version", "-V", "help"] {
         let dir = tempfile::tempdir().unwrap();
         persist_launcher_context("copilot", Some(dir.path()), &[flag.to_string()]).unwrap();
         assert!(
@@ -760,4 +765,91 @@ fn persist_launcher_context_still_persists_a_real_session() {
     .unwrap();
     let context = read_launcher_context(dir.path()).expect("a real session must persist");
     assert_eq!(context.launcher, LauncherKind::Claude);
+}
+
+/// Issue #1342 / crusty B3. `persist_launcher_context` lives in amplihack-cli
+/// and `agent_binary::resolve` lives in amplihack-utils, and until now they had
+/// never met in a test. That gap is exactly how a fixture emitting `created_at`
+/// where the writer emits `timestamp` survived long enough to matter.
+///
+/// This is the claim the PR title actually makes: a session's own file is
+/// honoured by the resolver that reads it.
+#[test]
+fn a_persisted_context_round_trips_through_the_resolver() {
+    let _guard = crate::test_env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    for tool in ["claude", "copilot", "codex", "amplifier"] {
+        let dir = tempfile::tempdir().unwrap();
+        persist_launcher_context(tool, Some(dir.path()), &[]).unwrap();
+
+        // Layers above the file must be silent so the file is what answers.
+        let prev = std::env::var_os("AMPLIHACK_AGENT_BINARY");
+        let markers = [
+            "CLAUDECODE",
+            "CLAUDE_CODE",
+            "CLAUDE_CODE_SESSION_ID",
+            "CLAUDE_PROJECT_DIR",
+            "COPILOT_CLI",
+            "GITHUB_COPILOT",
+            "GITHUB_COPILOT_AGENT",
+            "COPILOT_AGENT",
+        ];
+        let saved: Vec<_> = markers.iter().map(|k| (*k, std::env::var_os(k))).collect();
+        unsafe {
+            std::env::remove_var("AMPLIHACK_AGENT_BINARY");
+            for (k, _) in &saved {
+                std::env::remove_var(k);
+            }
+        }
+
+        let resolved = amplihack_utils::agent_binary::resolve(dir.path()).unwrap();
+
+        unsafe {
+            for (k, v) in saved {
+                match v {
+                    Some(v) => std::env::set_var(k, v),
+                    None => std::env::remove_var(k),
+                }
+            }
+            match prev {
+                Some(v) => std::env::set_var("AMPLIHACK_AGENT_BINARY", v),
+                None => std::env::remove_var("AMPLIHACK_AGENT_BINARY"),
+            }
+        }
+
+        assert_eq!(
+            resolved, tool,
+            "{tool}: the resolver must read back what the writer wrote"
+        );
+    }
+}
+
+/// `extra_args` carries prompt text, so scanning all of it would make an
+/// ordinary request persist nothing and fall through to the built-in default --
+/// the failure this guard exists to prevent, re-entered through another door.
+#[test]
+fn prompt_text_that_merely_mentions_a_flag_still_persists() {
+    for args in [
+        vec![
+            "help".to_string(),
+            "me".into(),
+            "fix".into(),
+            "the".into(),
+            "build".into(),
+        ],
+        vec!["-p".to_string(), "help".into()],
+        vec!["--model".to_string(), "opus".into(), "--version".into()],
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        // `help` in position zero is a real question-and-exit; deeper in the
+        // list it is just a word.
+        let is_query = matches!(args.first().map(String::as_str), Some("help"));
+        persist_launcher_context("claude", Some(dir.path()), &args).unwrap();
+        assert_eq!(
+            read_launcher_context(dir.path()).is_none(),
+            is_query,
+            "args {args:?}: only a leading question-and-exit token may suppress persistence"
+        );
+    }
 }

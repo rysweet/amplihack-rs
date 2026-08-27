@@ -114,12 +114,11 @@ pub fn is_timestamp_stale(timestamp: &str) -> bool {
         > Duration::hours(DEFAULT_STALE_HOURS)
 }
 
-fn is_launcher_context_stale_with(context: &LauncherContext, max_age_hours: i64) -> bool {
-    let Ok(timestamp) = DateTime::parse_from_rfc3339(&context.timestamp) else {
-        return true;
-    };
-    let age = Utc::now().signed_duration_since(timestamp.with_timezone(&Utc));
-    age > Duration::hours(max_age_hours)
+/// One rule, one place. `max_age_hours` had a single caller passing a single
+/// value, and a second copy of the same arithmetic is a drift surface, not
+/// shared code.
+fn is_launcher_context_stale_with(context: &LauncherContext, _max_age_hours: i64) -> bool {
+    is_timestamp_stale(&context.timestamp)
 }
 
 #[cfg(unix)]
