@@ -81,13 +81,28 @@ assert "informational echo with WORKTREE_SETUP_WORKTREE_PATH:-(unset) preserved"
 # --- Test 8: set -euo pipefail present in both step blocks ------------------
 # :? requires errexit to abort the recipe step.
 step15_block=$(awk '/id: "step-15-commit-push"/,/id: "step-16-create-draft-pr"/' "$FILE")
+assert "step-15 block was found" "[ -n \"\$step15_block\" ]"
+# No pipe, for the same reason as step-16 below.
 assert "step-15 block has 'set -euo pipefail'" \
-    "echo \"\$step15_block\" | grep -q 'set -euo pipefail'"
+    "case \"\$step15_block\" in *'set -euo pipefail'*) true ;; *) false ;; esac"
 
-step16_block=$(awk '/id: "step-16-create-draft-pr"/,/^  - id:/' "$FILE" | tail -n +2 | awk 'NR==1{print; next} /^  - id:/{exit} {print}')
-# Fallback simpler check: just grep within a window after step-16 marker.
+# Extract the block with ONE awk and no pipeline. The previous form piped awk
+# into `head -20` into `grep -q` while this script has `set -o pipefail` (line
+# 18): both `head` and `grep -q` exit as soon as they are satisfied, so the
+# upstream awk can be killed by SIGPIPE and pipefail then reports the pipeline
+# as failed even though the text was found. It also threw away the block it had
+# just extracted and re-derived a cruder one -- the comment called it a
+# "fallback".
+#
+# This form has no pipe, so there is nothing to race.
+step16_block=$(awk '
+    /id: "step-16-create-draft-pr"/ { f=1; next }
+    f && /^  - id:/ { exit }
+    f { print }
+' "$FILE")
+assert "step-16 block was found" "[ -n \"\$step16_block\" ]"
 assert "step-16 block has 'set -euo pipefail'" \
-    "awk '/id: \"step-16-create-draft-pr\"/{f=1} f' '$FILE' | head -20 | grep -q 'set -euo pipefail'"
+    "case \"\$step16_block\" in *'set -euo pipefail'*) true ;; *) false ;; esac"
 
 # --- Test 9: YAML parses cleanly --------------------------------------------
 if command -v python3 >/dev/null 2>&1; then
