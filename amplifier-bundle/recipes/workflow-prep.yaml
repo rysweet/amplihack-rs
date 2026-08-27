@@ -17,39 +17,33 @@ steps:
   - id: "step-00-workflow-preparation"
     type: "bash"
     command: |
-      echo "=== WORKFLOW PREPARATION COMPLETE ==="
-      echo ""
-      echo "23-Step Workflow Initialized (with granular sub-steps for Steps 17-19):"
-      echo "  Step 0: Workflow Preparation - CURRENT"
-      echo "  Step 1: Prepare Workspace"
-      echo "  Step 2: Rewrite/Clarify Requirements"
-      echo "  Step 3: Create GitHub Issue"
-      echo "  Step 4: Setup Worktree/Branch"
-      echo "  Step 5: Research and Design"
-      echo "  Step 6: Retcon Documentation"
-      echo "  Step 7: TDD - Write Tests First"
-      echo "  Step 8: Implement Solution"
-      echo "  Step 9: Refactor and Simplify"
-      echo "  Step 10: Review Before Commit"
-      echo "  Step 11: Incorporate Feedback"
-      echo "  Step 12: Run Pre-commit Hooks"
-      echo "  Step 13: Mandatory Local Testing"
-      echo "  Step 14: Bump Version (MANDATORY)"
-      echo "  Step 15: Commit and Push"
-      echo "  Step 16: Open PR as Draft"
-      echo "  Step 17: Review the PR (MANDATORY - 6 sub-steps 17a-17f with verification gate)"
-      echo "  Step 18: Implement Review Feedback (MANDATORY - 5 sub-steps 18a-18e with verification gate)"
-      echo "  Step 19: Philosophy Compliance Check (4 sub-steps 19a-19d with verification gate)"
-      echo "  Step 20: Final Cleanup"
-      echo "  Step 20c: Quality Audit Loop (3+ cycles, multi-agent validation)"
-      echo "  Step 21: Convert PR to Ready"
-      echo "  Step 22: Ensure PR Mergeable"
-      echo ""
+      # The 23-step plan banner lives in amplifier-bundle/tools/workflow_plan_banner.sh.
+      # It was extracted, not trimmed: this brick is at its 400-line budget and the rule's
+      # remedy for a full brick is extraction, never compression (scripts/check-brick-budget.sh).
+      B=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_plan_banner.sh" ] && { B="$c/amplifier-bundle/tools/workflow_plan_banner.sh"; break; }; done
+      if [ -n "$B" ]; then bash "$B"; else echo "WARNING: workflow plan banner helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack) — continuing without the plan listing" >&2; fi
       # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
       TASK_DESC="$TASK_DESCRIPTION"
       printf 'Task: %s\n' "$TASK_DESC"
       printf 'Repository: %s\n' "$REPO_PATH"
     output: "workflow_init"
+
+  # STEP 00a: IDENTITY PREFLIGHT (issue #1290)
+  # Resolve the acting `gh` login once and verify it can write to the repository this
+  # run is about to write to, BEFORE any step does real work. The run that motivated
+  # this got through workflow prep, workspace prep, requirements clarification,
+  # codebase analysis, ambiguity resolution and host detection before a remote refused
+  # `createIssue`, and every one of those steps was thrown away. Advisory by
+  # construction: only a readable "this identity cannot act here" stops the run, while
+  # a check that could not be made warns and continues (the lesson of #1268).
+  - id: "step-00a-identity-preflight"
+    type: "bash"
+    command: |
+      P=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_identity_preflight.sh" ] && { P="$c/amplifier-bundle/tools/workflow_identity_preflight.sh"; break; }; done
+      # A missing helper is not a verdict. Warn and continue rather than gate the run.
+      [ -n "$P" ] || { echo "WARNING: identity preflight helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack) — continuing without an identity check" >&2; printf 'identity_preflight: unknown reason=helper-not-found\n'; exit 0; }
+      bash "$P" "${REPO_PATH:-.}"
+    output: "identity_preflight"
 
   # STEP 1: PREPARE THE WORKSPACE
   - id: "step-01-prepare-workspace"
@@ -396,4 +390,3 @@ steps:
       fi
       printf '%s' "$EXTRACTED"
     output: "issue_number"
-  # STEP 4: SETUP WORKTREE AND BRANCH
