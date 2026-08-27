@@ -205,6 +205,10 @@ fn step_prompt(recipe: &str, step_id: &str) -> &'static str {
 const EXPECTED_STEP_INVENTORY: &[&str] = &[
     // Phase 1a: workflow-prep (steps 00-03b)
     "step-00-workflow-preparation",
+    // Issue #1290: the acting identity is verified before any step does real
+    // work, so an account that cannot write here is caught in one API call
+    // instead of six steps later, at `step-03-create-issue`.
+    "step-00a-identity-preflight",
     "step-01-prepare-workspace",
     "step-02-clarify-requirements",
     "step-02b-analyze-codebase",
@@ -793,6 +797,53 @@ fn base_branch_detection_remains_explicit_and_fail_loud() {
             );
         }
     }
+}
+
+/// Issue #1290: the identity preflight must run before any step that does real
+/// work, must reach its logic through the helper (the brick has no room for it),
+/// and must not become a gate on its own ability to run.
+#[test]
+fn identity_preflight_runs_first_and_is_advisory_when_it_cannot_run() {
+    let ids: Vec<String> = load("workflow-prep")
+        .steps
+        .iter()
+        .map(|s| s.id.clone())
+        .collect();
+    let preflight = ids
+        .iter()
+        .position(|id| id == "step-00a-identity-preflight")
+        .expect("workflow-prep must carry the identity preflight (issue #1290)");
+    let first_real_work = ids
+        .iter()
+        .position(|id| id == "step-02-clarify-requirements")
+        .expect("workflow-prep must still clarify requirements");
+    assert!(
+        preflight < first_real_work,
+        "the identity preflight must run before any step does real work; \
+         a preflight that runs after requirements or analysis saves nothing"
+    );
+
+    let command = step_command("workflow-prep", "step-00a-identity-preflight");
+    assert!(
+        command.contains("workflow_identity_preflight.sh"),
+        "step-00a must reach its logic through amplifier-bundle/tools/workflow_identity_preflight.sh"
+    );
+    assert!(
+        command.contains("AMPLIHACK_HOME")
+            && command.contains(".copilot")
+            && command.contains(".amplihack"),
+        "step-00a must resolve the helper through the AMPLIHACK_HOME / REPO_PATH / cwd / \
+         ~/.copilot / ~/.amplihack cascade so a bundled install finds it"
+    );
+    assert!(
+        command.contains("WARNING") && command.contains("exit 0"),
+        "a missing helper must warn and continue, not fail the run (issue #1268)"
+    );
+    assert!(
+        !command.contains("Enterprise Managed") && !command.contains("policy settings"),
+        "the preflight asks whether the active identity can write here; it must not \
+         special-case one vendor phrasing of that condition (issue #1290)"
+    );
 }
 
 /// MANDATORY steps from the v2 contract (0, 14, 17, 18) must remain present.
