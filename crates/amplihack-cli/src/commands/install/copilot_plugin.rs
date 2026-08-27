@@ -214,14 +214,26 @@ fn stage_commands(repo_root: &Path, plugin_dir: &Path) -> Result<bool> {
     };
 
     let target = plugin_dir.join("commands");
-    let copied =
-        command_staging::stage_command_files(&source, &target, normalize_command_frontmatter_name)?;
-    if copied == 0 {
+    // `<plugin_dir>` is amplihack-private: amplihack creates it, owns every
+    // file in it, and its parent is not a command scan root. So the scratch
+    // dirs may sit beside the target and the swap may replace the directory
+    // wholesale — neither is true of the Claude target (see `claude_commands`).
+    let staged = command_staging::stage_command_files(
+        &command_staging::StageRequest {
+            source: &source,
+            target: &target,
+            scratch_root: plugin_dir,
+            target_is_owned: true,
+        },
+        normalize_command_frontmatter_name,
+    )?;
+    if staged.copied == 0 {
         return Ok(false);
     }
 
     println!(
-        "  ✅ Copilot CLI plugin staged {copied} command(s) at {}",
+        "  ✅ Copilot CLI plugin staged {} command(s) at {}",
+        staged.copied,
         target.display()
     );
     Ok(true)

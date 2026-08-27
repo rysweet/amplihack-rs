@@ -222,6 +222,23 @@ fn framework_restage_needed(staging_exists: bool, missing: &[String]) -> bool {
     !staging_exists || !missing.is_empty()
 }
 
+/// Announce files the command swap carried across because amplihack could not
+/// prove it had staged them.
+///
+/// Loud on purpose: before issue #1344's review these were renamed aside and
+/// deleted while the installer printed a green success line.
+fn report_preserved_commands(preserved: &[String], target: &Path) {
+    if preserved.is_empty() {
+        return;
+    }
+    println!(
+        "  ⚠️  Kept {} file(s) in {} that amplihack did not stage: {}",
+        preserved.len(),
+        target.display(),
+        preserved.join(", ")
+    );
+}
+
 pub(crate) fn ensure_framework_installed() -> Result<()> {
     let staging_dir = staging_claude_dir()?;
     let staging_exists = staging_dir.exists();
@@ -236,6 +253,14 @@ pub(crate) fn ensure_framework_installed() -> Result<()> {
     if framework_restage_needed(staging_exists, &missing) {
         println!("🔧 Bootstrapping amplihack framework assets...");
         run_install(None, false, false)?;
+    }
+
+    // Issue #1344: `~/.claude/commands/amplihack/` lives outside `claude_dir`,
+    // so `missing_framework_paths` never sees it — and must not, per the
+    // restage-loop invariant documented on `framework_restage_needed`. Top it
+    // up directly instead, so a namespace lost after install comes back.
+    if let Err(error) = claude_commands::ensure_claude_commands_staged() {
+        tracing::warn!("could not verify amplihack slash commands: {error:#}");
     }
 
     // Verify hooks are registered in settings.json — even after a fresh install.
@@ -505,19 +530,31 @@ fn local_install(
     // user commands under `~/.claude/commands/<namespace>/`, so the same source
     // directory is staged there too, and the outcome is printed alongside the
     // Copilot line above: the missing line is what made the gap invisible.
-    let staged_claude_commands = claude_commands::stage_claude_commands(repo_root)
-        .context("failed to stage Claude Code slash commands")?;
-    if staged_claude_commands.copied > 0 {
-        println!(
-            "  ✅ Claude Code staged {} command(s) at {}",
-            staged_claude_commands.copied,
-            staged_claude_commands.target.display()
-        );
-    } else {
-        println!(
-            "  ↩️  No slash-command markdown found under {} — skipping",
-            repo_root.display()
-        );
+    //
+    // Deliberately NOT fatal: `ensure_framework_installed` calls this whole
+    // install path on every `amplihack launch`, so a permission problem on
+    // `~/.claude/commands/` — or a source that resolves to the staging target
+    // itself — must cost the user their slash commands, not their session.
+    let mut staged_claude_command_count = 0_usize;
+    match claude_commands::stage_claude_commands(repo_root) {
+        Ok(staged) if staged.copied > 0 => {
+            staged_claude_command_count = staged.copied;
+            println!(
+                "  ✅ Claude Code staged {} command(s) at {}",
+                staged.copied,
+                staged.target.display()
+            );
+            report_preserved_commands(&staged.preserved, &staged.target);
+        }
+        Ok(_) => {
+            println!(
+                "  ↩️  No slash-command markdown found under {} — skipping",
+                repo_root.display()
+            );
+        }
+        Err(error) => {
+            println!("  ⚠️  Could not stage Claude Code slash commands: {error:#}");
+        }
     }
 
     println!();
@@ -598,10 +635,9 @@ fn local_install(
         println!("   • Post-tool-use hook");
         println!("   • Pre-compact hook");
         println!("   • Runtime logging and metrics");
-        if staged_claude_commands.copied > 0 {
+        if staged_claude_command_count > 0 {
             println!(
-                "   • {} Claude Code slash commands (/amplihack:<name>)",
-                staged_claude_commands.copied
+                "   • {staged_claude_command_count} Claude Code slash commands (/amplihack:<name>)"
             );
         }
         println!("   • dev-orchestrator recipe execution");
