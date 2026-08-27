@@ -156,14 +156,29 @@ async fn fragmented_inbound_frame_survives_cancellation_and_interleaved_request(
         "the reassembled body must match the original exactly"
     );
 
-    // Exactly once: a further receive must not re-emit the same frame. The
-    // socket is still open, so a duplicate would arrive promptly; its absence
-    // (a timeout) proves the frame was delivered a single time.
+    // Exactly once: a further receive must not re-emit the same frame.
+    //
+    // Two outcomes both prove that, and the original assertion accepted only
+    // one of them. A timeout means nothing more arrived within the window. An
+    // EOF — `Ok(Ok(None))` — means nothing more *can* arrive, because the
+    // server finished and dropped its socket. EOF is the stronger evidence of
+    // the two, and it was being reported as a duplicate.
+    //
+    // The comment this replaces asserted "the socket is still open", which is
+    // exactly the assumption that does not hold: whether the server task has
+    // finished by now is a race against a 300 ms timer, so under load the test
+    // failed on its own fixture shutting down cleanly (issue #1385).
+    //
+    // Only an actual second envelope is a duplicate.
     let dup = tokio::time::timeout(Duration::from_millis(300), transport.receive()).await;
-    assert!(
-        dup.is_err(),
-        "the fragmented frame must be delivered exactly once (got a duplicate: {dup:?})"
-    );
+    match dup {
+        Err(_elapsed) => {}
+        Ok(Ok(None)) => {}
+        other => panic!(
+            "the fragmented frame must be delivered exactly once, but a second \
+             receive produced {other:?}"
+        ),
+    }
 
     server.await.unwrap();
 }
