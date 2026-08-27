@@ -142,6 +142,10 @@ steps:
     type: "recipe"
     recipe: "workflow-worktree"
 
+  - id: "workflow-design-applicability"
+    type: "recipe"
+    recipe: "workflow-design-applicability"
+
   - id: "workflow-design"
     type: "recipe"
     recipe: "workflow-design"
