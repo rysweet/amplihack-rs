@@ -60,11 +60,11 @@ Introduce users to the 35 available agents:
 
 ### 3. Skills Library
 
-Guide users through the 74 available skills:
+Guide users through the 75 available skills:
 
 **Domain Analysts** (23): Expert perspectives (economist, historian, psychologist, etc.)
 **Workflow Skills** (11): Workflow execution knowledge
-**Technical Skills** (19): Coding patterns, debugging, testing
+**Technical Skills** (20): Coding patterns, debugging, testing
 **Document Processing** (4): PDF, DOCX, XLSX, PPTX handling
 **Meta Skills** (11): PR review, backlog curation, roadmaps
 
