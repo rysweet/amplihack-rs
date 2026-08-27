@@ -31,7 +31,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use fs4::fs_std::FileExt;
 
-use crate::commands::install::bundle_compat::validate_framework_bundle_compatibility;
+use crate::commands::install::bundle_compat_cache;
 use crate::commands::install::version_stamp;
 
 /// Env var that fully disables the auto-restage check.
@@ -165,9 +165,15 @@ where
     // single-line stderr diagnostic so CI logs surface the drift. Both
     // values are constant or regex-validated semver, so plain formatting
     // is safe (no control-char injection surface).
-    let installed_bundle_issue = installed_bundle_compatibility_issue()
-        .context("checking installed framework bundle compatibility")?;
     let stamp_match = stamp.as_deref() == Some(expected);
+    // Issue #1271: this verdict is needed on every code path below — the
+    // bypass diagnostic prints it, and a matching stamp is *not* on its own
+    // sufficient to skip the re-stage (a stale installed bundle with a
+    // current stamp must still repair). So it cannot be reordered away.
+    // Instead it is memoised on a stat fingerprint of the bundle inputs:
+    // ~58 KB of recipe YAML is parsed only when the bundle actually changed.
+    let installed_bundle_issue = installed_bundle_compatibility_issue_cached()
+        .context("checking installed framework bundle compatibility")?;
 
     if env_bypass_set() {
         if !stamp_match || installed_bundle_issue.is_some() {
@@ -217,7 +223,10 @@ where
         // have already brought the stamp current.
         let stamp_now = version_stamp::read_installed_version()
             .context("re-reading install stamp under lock")?;
-        let installed_bundle_issue_now = installed_bundle_compatibility_issue()
+        // Deliberately uncached: a concurrent installer may have rewritten
+        // the bundle moments ago, and this is the decision that guards
+        // against re-running the installer needlessly.
+        let installed_bundle_issue_now = installed_bundle_compatibility_issue_uncached()
             .context("re-checking installed framework bundle compatibility under lock")?;
         if stamp_now.as_deref() == Some(expected) && installed_bundle_issue_now.is_none() {
             tracing::debug!(
@@ -228,6 +237,11 @@ where
         install_fn().context("running install during startup self-heal")?;
         version_stamp::write_installed_version(expected)
             .context("writing install version stamp after self-heal")?;
+        // The bundle just changed under us; drop the memoised verdict so the
+        // next invocation revalidates once and re-primes the cache.
+        if let Ok(path) = bundle_compat_cache_path() {
+            bundle_compat_cache::invalidate(&path);
+        }
         writeln!(
             notice,
             "amplihack: framework assets re-staged for v{expected}"
@@ -237,17 +251,39 @@ where
     })
 }
 
-fn installed_bundle_compatibility_issue() -> Result<Option<String>> {
+/// Absolute path of the installed bundle staged under `~/.amplihack`.
+fn installed_bundle_path() -> Result<PathBuf> {
     let stamp_path = version_stamp::installed_version_path()?;
     let install_root = stamp_path
         .parent()
         .context("install version stamp path has no parent directory")?;
-    let bundle = install_root.join("amplifier-bundle");
+    Ok(install_root.join("amplifier-bundle"))
+}
 
-    Ok(match validate_framework_bundle_compatibility(&bundle) {
-        Ok(()) => None,
-        Err(err) => Some(err.to_string()),
-    })
+/// Absolute path of the bundle-compatibility cache, a sibling of the stamp.
+fn bundle_compat_cache_path() -> Result<PathBuf> {
+    let stamp_path = version_stamp::installed_version_path()?;
+    let install_root = stamp_path
+        .parent()
+        .context("install version stamp path has no parent directory")?;
+    Ok(install_root.join(bundle_compat_cache::CACHE_FILE))
+}
+
+/// Issue #1271: memoised on a stat fingerprint of the bundle inputs, so the
+/// steady-state launch pays a handful of `lstat` calls instead of parsing
+/// ~58 KB of recipe YAML.
+fn installed_bundle_compatibility_issue_cached() -> Result<Option<String>> {
+    let bundle = installed_bundle_path()?;
+    let cache_path = bundle_compat_cache_path()?;
+    Ok(bundle_compat_cache::compatibility_issue_cached(
+        &bundle,
+        &cache_path,
+    ))
+}
+
+fn installed_bundle_compatibility_issue_uncached() -> Result<Option<String>> {
+    let bundle = installed_bundle_path()?;
+    Ok(bundle_compat_cache::compatibility_issue_uncached(&bundle))
 }
 
 /// True when `AMPLIHACK_SKIP_AUTO_INSTALL` is set to any non-empty value.
@@ -514,6 +550,139 @@ steps:
 
         assert_eq!(calls.get(), 0, "installer must not run when stamp matches");
         assert!(buf.is_empty(), "no notice when stamp matches");
+    }
+
+    /// Issue #1271: the steady-state launch — stamp current, bundle healthy,
+    /// bypass unset — must not read or parse a single recipe file. Asserting
+    /// the read count rather than the return value is the point: the verdict
+    /// was already correct before this change; the cost was not.
+    #[test]
+    fn warm_launch_with_matching_stamp_parses_no_recipe_yaml() {
+        use crate::commands::install::bundle_compat::read_counter;
+
+        let tmp = TempDir::new().unwrap();
+        let _g = EnvGuard::new(tmp.path(), None);
+        version_stamp::write_installed_version(crate::VERSION).unwrap();
+        write_compatible_installed_bundle(tmp.path());
+
+        // First launch primes the cache and does pay the parse.
+        let calls = Cell::new(0u32);
+        let mut buf = Vec::new();
+        let (_, cold_reads) = read_counter::count_reads(|| {
+            ensure_assets_match_binary_version_with(
+                &args(&["amplihack", "launch"]),
+                &mut buf,
+                counting_installer(&calls, crate::VERSION),
+            )
+        });
+        assert!(
+            cold_reads > 0,
+            "the first launch after a re-stage must actually validate the bundle"
+        );
+
+        // Every subsequent launch must be free of bundle I/O.
+        let mut buf = Vec::new();
+        let (result, warm_reads) = read_counter::count_reads(|| {
+            ensure_assets_match_binary_version_with(
+                &args(&["amplihack", "launch"]),
+                &mut buf,
+                counting_installer(&calls, crate::VERSION),
+            )
+        });
+        result.expect("warm launch must succeed");
+
+        assert_eq!(
+            warm_reads, 0,
+            "a launch with a current stamp and an unchanged bundle must not read recipe YAML"
+        );
+        assert_eq!(calls.get(), 0, "installer must not run when stamp matches");
+        assert!(buf.is_empty(), "no notice when stamp matches");
+    }
+
+    /// The cache must never mask a bundle that went stale after being cached.
+    #[test]
+    fn cached_healthy_bundle_that_goes_stale_still_triggers_repair() {
+        let tmp = TempDir::new().unwrap();
+        let _g = EnvGuard::new(tmp.path(), None);
+        version_stamp::write_installed_version(crate::VERSION).unwrap();
+        write_compatible_installed_bundle(tmp.path());
+
+        let calls = Cell::new(0u32);
+        let mut buf = Vec::new();
+        ensure_assets_match_binary_version_with(
+            &args(&["amplihack", "launch"]),
+            &mut buf,
+            counting_installer(&calls, crate::VERSION),
+        )
+        .expect("healthy bundle launch must succeed");
+        assert_eq!(calls.get(), 0, "healthy bundle needs no repair");
+
+        // Bundle rots underneath the primed cache.
+        write_stale_installed_smart_orchestrator(tmp.path());
+
+        let mut buf = Vec::new();
+        ensure_assets_match_binary_version_with(
+            &args(&["amplihack", "launch"]),
+            &mut buf,
+            counting_installer(&calls, crate::VERSION),
+        )
+        .expect("stale bundle must be repairable");
+
+        assert_eq!(
+            calls.get(),
+            1,
+            "a stale bundle must trigger repair even when a healthy verdict was cached"
+        );
+        let notice = String::from_utf8(buf).unwrap();
+        assert!(
+            notice.contains("re-staged"),
+            "repair notice missing: {notice}"
+        );
+    }
+
+    /// Issue #1271 acceptance: the bypass diagnostic must keep reporting the
+    /// real bundle status, cached or not.
+    #[test]
+    fn bypass_diagnostic_reports_real_bundle_status_through_the_cache() {
+        let tmp = TempDir::new().unwrap();
+        // Prime the cache on a stale bundle with a *current* stamp.
+        {
+            let _g = EnvGuard::new(tmp.path(), None);
+            version_stamp::write_installed_version(crate::VERSION).unwrap();
+            write_stale_installed_smart_orchestrator(tmp.path());
+            let calls = Cell::new(0u32);
+            let mut buf = Vec::new();
+            let _ = ensure_assets_match_binary_version_with(
+                &args(&["amplihack", "launch"]),
+                &mut buf,
+                counting_installer(&calls, crate::VERSION),
+            );
+        }
+        // Re-stamp: the counting installer above bumped nothing on disk but
+        // the stamp is already current, so the bypass run below exercises the
+        // stamp-match + incompatible-bundle combination.
+        let _g = EnvGuard::new(tmp.path(), Some("1"));
+        version_stamp::write_installed_version(crate::VERSION).unwrap();
+
+        let calls = Cell::new(0u32);
+        let mut buf = Vec::new();
+        ensure_assets_match_binary_version_with(
+            &args(&["amplihack", "launch"]),
+            &mut buf,
+            counting_installer(&calls, crate::VERSION),
+        )
+        .expect("bypass run must succeed");
+
+        assert_eq!(calls.get(), 0, "bypass must never install");
+        let line = String::from_utf8(buf).unwrap();
+        assert!(
+            line.contains("AMPLIHACK_SKIP_AUTO_INSTALL") && line.contains("installed_bundle="),
+            "bypass diagnostic must still carry the bundle status; got: {line}"
+        );
+        assert!(
+            !line.contains("installed_bundle=\"compatible\""),
+            "bypass diagnostic must report the real (incompatible) status; got: {line}"
+        );
     }
 
     #[test]

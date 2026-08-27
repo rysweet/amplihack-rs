@@ -2,6 +2,7 @@
 
 mod binary;
 pub(crate) mod bundle_compat;
+pub(crate) mod bundle_compat_cache;
 mod claude_commands;
 mod clone;
 mod command_staging;

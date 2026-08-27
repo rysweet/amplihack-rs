@@ -49,6 +49,7 @@ pub mod resolve_bundle_asset;
 pub mod runtime_assets;
 pub mod rust_trial;
 pub mod self_heal;
+pub(crate) mod session_log;
 pub mod session_tracker;
 pub mod settings_manager;
 pub mod signals;
