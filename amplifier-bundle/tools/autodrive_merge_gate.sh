@@ -49,7 +49,11 @@ EVIDENCE=()
 note()  { EVIDENCE+=("$1"); echo "  evidence: $1" >&2; }
 block() { BLOCKERS+=("$1"); echo "  BLOCKER: $1" >&2; }
 
-field() { printf '%s' "${1:-}" | "$AMPLIHACK_BIN" orch helper extract-json \
+# `--require-field` selects the LAST JSON object carrying the field rather than
+# the first parseable object of any shape (issue #1337, PR #1347). First-wins is
+# fail-OPEN for a verdict: a quoted example or an early draft object gets read
+# instead of the real one.
+field() { printf '%s' "${1:-}" | "$AMPLIHACK_BIN" orch helper extract-json --require-field "$2" \
           | "$AMPLIHACK_BIN" orch helper extract-field --field "$2" --default "$3"; }
 
 # --- 0. Already merged? A resumed run must never redo merged work. ----------
@@ -97,10 +101,20 @@ note "reviewDecision=${REVIEW_DECISION:-<none>}"
 [ "$REVIEW_DECISION" = "CHANGES_REQUESTED" ] && block "a review requests changes"
 
 # --- 4. Review threads resolved --------------------------------------------
-THREADS="$(gh api graphql -F pr="$PR" -F owner='{owner}' -F name='{repo}' -f query='
-  query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){
-    pullRequest(number:$pr){reviewThreads(first:100){nodes{isResolved isOutdated}}}}}' \
+# PAGINATED. `reviewThreads(first:100)` without a `pageInfo` follow-up silently
+# truncates: a PR with 101 threads whose only unresolved one is the last would
+# report 0 unresolved and pass this gate. `--paginate` walks every page (gh
+# supplies $endCursor), emits one count per page, and the counts are summed. A
+# page that does not come back as a number makes the whole criterion
+# unreadable, which is a blocker.
+THREAD_PAGES="$(gh api graphql --paginate -F pr="$PR" -F owner='{owner}' -F name='{repo}' -f query='
+  query($owner:String!,$name:String!,$pr:Int!,$endCursor:String){repository(owner:$owner,name:$name){
+    pullRequest(number:$pr){reviewThreads(first:100,after:$endCursor){
+      pageInfo{hasNextPage endCursor}
+      nodes{isResolved isOutdated}}}}}' \
   --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved==false and .isOutdated==false)] | length' 2>/dev/null)"
+THREADS="$(printf '%s\n' "$THREAD_PAGES" \
+  | awk 'NF==0{next} /^[0-9]+$/{s+=$1;n++;next} {bad=1} END{if(bad||!n) exit 1; print s}')" || THREADS=""
 if [ -z "$THREADS" ]; then
   block "review-thread state is unreadable; an unreadable criterion is a failure, not a pass"
 elif [ "$THREADS" != "0" ]; then
@@ -136,8 +150,17 @@ if [ -z "$QA_EVIDENCE" ] || [ ! -f "$QA_EVIDENCE" ]; then
 else
   QA_RAW="$(cat "$QA_EVIDENCE")"
   QA_STATUS="$(field "$QA_RAW" qa_status MISSING)"
-  note "qa_status=${QA_STATUS} ($(field "$QA_RAW" qa_command ''))"
+  QA_SHA="$(field "$QA_RAW" head_sha "")"
+  note "qa_status=${QA_STATUS} qa_head_sha=${QA_SHA:-<none>} ($(field "$QA_RAW" qa_command ''))"
   [ "$QA_STATUS" = "PASS" ] || block "qa-team scenarios did not pass in this run (qa_status=${QA_STATUS})"
+  # Existence + PASS is not enough: an evidence file left behind by an earlier
+  # round describes a tree that is no longer what would be merged. Every
+  # criterion binds to ONE head SHA, and this one is no exception.
+  if [ -z "$QA_SHA" ]; then
+    block "the qa-team evidence records no head_sha; evidence that is not bound to a SHA never merges"
+  elif [ -n "$HEAD_SHA" ] && [ "$QA_SHA" != "$HEAD_SHA" ]; then
+    block "the qa-team evidence was captured against ${QA_SHA} but the head is now ${HEAD_SHA}; evidence must bind to the SHA being merged"
+  fi
 fi
 
 # --- 7. The merge-ready round's own structured verdict ---------------------
@@ -188,8 +211,12 @@ if [ "$DRY_RUN" = "true" ]; then
 fi
 
 echo "AUTO_DRIVE_MERGE: merging PR #${PR} at ${HEAD_SHA} — gh ${MERGE_ARGV[*]}" >&2
-if ! gh "${MERGE_ARGV[@]}"; then
-  MERGE_RC=$?
+# Capture the status of `gh` ITSELF. Inside `if ! gh ...; then`, `$?` is the
+# status of the NEGATION, which is always 0 on the failure branch — that would
+# make the exit-79 test below dead code and report every failure as "exit 0".
+gh "${MERGE_ARGV[@]}"
+MERGE_RC=$?
+if [ "$MERGE_RC" -ne 0 ]; then
   if [ "$MERGE_RC" = "$AUTODRIVE_EXIT_POLICY_REFUSAL" ]; then
     echo "ERROR: exit ${AUTODRIVE_EXIT_POLICY_REFUSAL} terminal policy refusal during merge. Final; not retried." >&2
     exit "$AUTODRIVE_EXIT_POLICY_REFUSAL"

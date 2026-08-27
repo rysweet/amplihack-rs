@@ -65,7 +65,20 @@ keeps reappearing — and answers `CONTINUE`, `DONE`, or `STUCK`.
 `autodrive_loop.sh` carries a round **label** (`round-3`) for reports. Nothing
 compares it to a limit and no branch reads it. The guard test
 `no_numeric_iteration_cap_anywhere` fails the build if a cap is ever
-reintroduced.
+reintroduced — it rejects `$ROUND` and `${ROUND}` next to any of `-ge`, `-gt`,
+`-le`, `-lt`, `-eq`, `-ne`, and the arithmetic comparisons, so a cap cannot
+sneak in through the operator that was not on the list.
+
+### The terminator is resolved before round 1
+
+Because the terminator is a separate recipe invoked by name, a bundle where
+`loop-health-evaluator` does not resolve would otherwise cost a **full round**
+— a crusty review and a builder fix pass, with commits pushed — before the
+loop stopped with "returned STUCK (or an unreadable verdict)", which blames the
+loop for a missing dependency. `autodrive_loop.sh` therefore runs
+`amplihack recipe show loop-health-evaluator` before the first round and, if it
+does not resolve, refuses with `loop_result: MISSING_DEPENDENCY` and a message
+naming the recipe. Zero rounds are spent.
 
 Host safety is enforced structurally one layer down and is not this workflow's
 job:
@@ -86,9 +99,42 @@ field through the canonical pipeline documented in
 
 ```bash
 VALUE=$(printf '%s' "$RAW" \
-  | amplihack orch helper extract-json \
+  | amplihack orch helper extract-json --require-field FIELD \
   | amplihack orch helper extract-field --field FIELD --default SAFE_DEFAULT)
 ```
+
+### `--require-field` is not optional here
+
+Plain `extract-json` returns the **first** complete JSON object it finds, and
+prefers a ` ```json ` fenced block over an untagged one, and either over raw
+prose. That is fail-OPEN for a verdict. A reviewer that restates its output
+contract before reviewing — ordinary behaviour, and the `crusty-old-engineer`
+skill documents the shape it must emit — puts an example object ahead of its
+real verdict, and the parser reads the example:
+
+```
+Review.
+
+<a fenced json block containing {"crusty_verdict": "CLEAN", …}>
+
+{"crusty_verdict":"CONCERNS", …}      <- the actual verdict, ignored
+```
+
+Nothing downstream would catch it. `autodrive_loop.sh` takes the recorded
+`crusty_verdict` at face value, and phase 3 has no step that re-measures
+crusty's judgement the way it re-measures CI — an accidental `CLEAN` is an
+unearned advance toward a merge. `merge_ready_verdict` has the same exposure
+but is largely saved by the measurement downgrade below; crusty is not.
+
+`--require-field NAME` (issue #1337, PR #1347) collects every JSON object in
+**document order** and returns the LAST one carrying `NAME`, which is exactly
+what the prompts ask for ("as the very last thing you emit"). When no object
+carries the field it returns nothing, so the blocking `--default` applies
+rather than some unrelated object. Every `extract-json` on the control path
+passes it, and the guard test
+`every_verdict_gate_selects_the_last_object_carrying_its_field` fails the build
+if one does not. The crusty skill's own verdict examples are deliberately
+unfenced for the same reason.
 
 Agent output is untrusted data: it reaches bash steps as an environment
 variable, is fed to the helpers on stdin with `printf '%s'`, and is never
@@ -180,10 +226,24 @@ merges, it re-verifies and records:
 | PR open, not draft | `gh pr view` | any other state; `isDraft: true` |
 | Merge conflicts | `mergeable`, `mergeStateStatus` | not `MERGEABLE`; `BEHIND`, `DIRTY`, `UNKNOWN` |
 | Reviews | `reviewDecision` | `CHANGES_REQUESTED` |
-| Review threads | GraphQL `reviewThreads` | any unresolved, not-outdated thread — **or an unreadable answer** |
+| Review threads | GraphQL `reviewThreads`, **paginated** | any unresolved, not-outdated thread on any page — **or an unreadable answer** |
 | CI | `gh pr checks --json name,state,bucket` | any pending or failing check, zero checks, **or an unreadable rollup** |
-| qa-team scenarios | evidence file from this run | `qa_status` other than `PASS`, or no evidence file |
+| qa-team scenarios | evidence file from this run | `qa_status` other than `PASS`, no evidence file, or evidence whose `head_sha` is missing or is not the SHA being merged |
 | merge-ready verdict | round record from this run | not `MERGE_READY`, or captured against a different head SHA |
+
+The review-thread query pages. `reviewThreads(first:100)` with no `pageInfo`
+follow-up silently truncates: a PR with 101 threads whose only unresolved one
+is the last would report zero unresolved and pass the gate. Both readers —
+`autodrive_merge_gate.sh` and `autodrive-merge-round.yaml` — use
+`gh api graphql --paginate` with `pageInfo { hasNextPage endCursor }` and sum
+the per-page counts; a page that does not come back as a number makes the whole
+criterion unreadable, which is a blocker.
+
+The qa-team evidence binds to a SHA like everything else. Existence plus
+`qa_status: PASS` is not enough: a PASS left behind by an earlier round
+describes a tree that is no longer what would be merged. `autodrive-merge-evidence`
+records the `head_sha` it measured, and the gate refuses evidence that carries
+none or carries a different one.
 
 Every criterion binds to **one** head SHA, the evidence bundle is written to
 disk **before** anything is merged, and the merge passes
@@ -196,7 +256,10 @@ platform must confirm `MERGED`; a `gh` success the platform does not confirm is
 reported as `NOT_MERGED`.
 
 Exit codes: `0` merged (or already merged), `1` not merged with the blocker
-list and the evidence bundle path, `79` terminal policy refusal.
+list and the evidence bundle path, `79` terminal policy refusal. The `gh pr
+merge` status is captured on its own line rather than inside the `then` of an
+`if ! gh …`, where `$?` is the negation's status — always `0` — which would
+make the exit-79 branch dead code and report every failure as "exit 0".
 
 ## Exit code 79 is terminal
 
@@ -225,13 +288,35 @@ resolved concern is reopened.
 
 | Store | Path | Role |
 | --- | --- | --- |
-| Local | `${AMPLIHACK_STATE_DIR:-~/.amplihack/state}/auto-drive/<key>/` | Phase completions, resolved concern ids, round records, evidence bundles. |
-| Ledger | a marked comment on the PR (`<!-- auto-drive-to-merge:ledger -->`) | Durable copy; rehydrates an empty local store on a different host. |
+| Local | `${AMPLIHACK_STATE_DIR:-~/.amplihack/state}/auto-drive/<key>/` | Phase completions, resolved concern ids, round records, evidence bundles. Written only by the host that ran them. |
 | Platform | `gh pr view --json state,mergedAt` | The **authority** on whether the PR is merged. |
 
 Local state is a cache, never a claim: the merge gate re-verifies every
 criterion regardless of what any state file says, and `UNKNOWN` platform state
 is treated as a failure rather than as "not merged".
+
+### There is no pull-request-comment ledger
+
+An earlier revision of this workflow mirrored the local store into a marked PR
+comment and rehydrated an empty local store from it, so a different host could
+resume. That was removed, deliberately and permanently.
+
+A PR comment is writable by **anyone who can comment on the pull request**, and
+the rehydration ran `awk` over the comment body straight into `phases.tsv` and
+`resolved-concerns.txt`. A forged comment carrying the marker and a `phases:`
+block naming `crusty-loop` made the phase-2 preflight decide the crusty loop
+had already completed: the loop was skipped, the phase-completion step never
+ran, and nothing downstream detected it — phase 3 re-measures CI, but nothing
+re-measures crusty's judgement. The same channel seeded `resolved-concerns`,
+which the round prompt tells crusty not to re-raise without new evidence. The
+pull fired only when the local store was empty, i.e. precisely on a fresh
+host — the normal case for a fleet — and the selector took the *last* matching
+comment, so an attacker's comment beat the workflow's own.
+
+Local state plus platform truth cover everything the ledger was for, minus a
+fresh-host optimisation. A fresh host redoes a phase; that is a cheaper mistake
+than an unauthenticated input into an automated merge authority. Do not
+reintroduce it, with or without author authentication.
 
 Resolved concern ids are handed back to crusty on a resumed run. Crusty may
 still re-raise one — but only with new evidence in the current diff, and it is
@@ -260,7 +345,7 @@ or single-digit-minute bound is introduced.
 | `amplifier-bundle/recipes/autodrive-merge-loop.yaml` | phase 3 | Loop driver + merge gate + bookkeeping. |
 | `amplifier-bundle/tools/autodrive_loop.sh` | tool | The uncapped, agentically-terminated loop driver. |
 | `amplifier-bundle/tools/autodrive_merge_gate.sh` | tool | Evidence gate and the fixed merge argv. |
-| `amplifier-bundle/tools/autodrive_state.sh` | tool | Resumable state and the PR ledger. |
+| `amplifier-bundle/tools/autodrive_state.sh` | tool | Resumable local state; platform truth for merged-ness. |
 | `amplifier-bundle/skills/auto-drive-to-merge/SKILL.md` | skill | Invocable entry point. |
 
 Every recipe file stays inside the 400-line brick budget.

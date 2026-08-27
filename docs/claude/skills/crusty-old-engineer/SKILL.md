@@ -178,26 +178,29 @@ structured verdict in the prompt, or by setting `CRUSTY_OUTPUT_CONTRACT=structur
 in the environment.
 
 When it is asked for, emit — as the **very last thing**, after the normal
-review, with no code fence and no trailing prose — a single JSON object:
+review, with no code fence and no trailing prose — a single JSON object.
 
-```json
-{"crusty_verdict": "CLEAN", "concerns": [], "summary": "one line"}
-```
+The two shapes below are deliberately shown WITHOUT a fence, and must never be
+quoted back inside one. A caller reads the verdict out of your output by
+scanning it for JSON; a fenced example sitting anywhere in a review is
+indistinguishable from a verdict, and a restated `CLEAN` example is exactly the
+value that must never be produced by accident. Show the contract by following
+it, not by pasting it back.
 
-```json
-{
-  "crusty_verdict": "CONCERNS",
-  "concerns": [
+    {"crusty_verdict": "CLEAN", "concerns": [], "summary": "one line"}
+
     {
-      "id": "silent-fallback-in-ci-status",
-      "severity": "blocking",
-      "summary": "An unreadable CI status is treated as passing.",
-      "evidence": "tools/ci.sh:212 — `[ -z \"$STATUS\" ] && STATUS=ok`"
+      "crusty_verdict": "CONCERNS",
+      "concerns": [
+        {
+          "id": "silent-fallback-in-ci-status",
+          "severity": "blocking",
+          "summary": "An unreadable CI status is treated as passing.",
+          "evidence": "tools/ci.sh:212 — `[ -z \"$STATUS\" ] && STATUS=ok`"
+        }
+      ],
+      "summary": "one line"
     }
-  ],
-  "summary": "one line"
-}
-```
 
 Field rules, because a caller's control flow depends on them:
 

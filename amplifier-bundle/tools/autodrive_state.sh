@@ -4,17 +4,25 @@
 #
 # A run that dies partway must be re-runnable WITHOUT redoing merged work and
 # WITHOUT reopening concerns a previous run already resolved and had confirmed
-# clean. Two stores, in priority order:
+# clean. Exactly ONE store records what this workflow did:
 #
-#   1. Local  — ${AMPLIHACK_STATE_DIR:-$HOME/.amplihack/state}/auto-drive/<key>/
-#      Fast, always available, survives a crashed run on the same host.
-#   2. Ledger — a single marked comment on the pull request itself.
-#      Survives loss of the whole host. Rehydrates the local store on a
-#      machine that has never seen this PR.
+#   Local — ${AMPLIHACK_STATE_DIR:-$HOME/.amplihack/state}/auto-drive/<key>/
+#   Fast, always available, survives a crashed run on the same host.
 #
-# The authoritative answer to "is this already merged?" is neither store: it is
-# the platform (`gh pr view --json state`). State files record what THIS
+# The authoritative answer to "is this already merged?" is not that store: it
+# is the platform (`gh pr view --json state`). State files record what THIS
 # workflow did; they never assert a merge that GitHub does not confirm.
+#
+# NO PR-COMMENT LEDGER. An earlier revision mirrored this store into a marked
+# pull-request comment and rehydrated an empty local store from it. That made
+# an ATTACKER-WRITABLE input — anyone who can comment on the PR — decide
+# control flow: a forged `phases:` block containing `crusty-loop` skipped the
+# entire crusty review, and a forged `resolved-concerns` list told the reviewer
+# not to re-raise them. It fired precisely on a fresh host, where the local
+# store is empty, which is the normal case for a fleet. Local state plus
+# platform truth already cover everything the ledger was for, minus a
+# fresh-host optimisation that is not worth an unauthenticated input into an
+# automated merge authority. Do not reintroduce it.
 #
 # This file only DEFINES functions; sourcing it has no side effects.
 #
@@ -22,8 +30,6 @@
 # workflow, may pass a hook-skipping commit flag or a branch-protection bypass
 # to git or gh. Those two are NEVER used; see
 # docs/reference/auto-drive-to-merge.md#two-absolute-prohibitions.
-
-AUTODRIVE_LEDGER_MARKER='<!-- auto-drive-to-merge:ledger -->'
 
 # --- paths -----------------------------------------------------------------
 
@@ -71,7 +77,8 @@ autodrive_phase_done() {
 # Concern identifiers that a previous run addressed AND had confirmed clean by
 # a later crusty round. Passed back into crusty so a resumed run does not
 # reopen settled ground. Crusty may still re-raise one with NEW evidence — the
-# ledger informs the reviewer, it does not gag it.
+# record informs the reviewer, it does not gag it. It is written ONLY by this
+# host, from rounds this host actually ran; nothing off-host can seed it.
 
 autodrive_record_resolved() {
   local dir="${1:?state dir}"
@@ -112,49 +119,4 @@ autodrive_pr_state() {
   else
     printf 'UNKNOWN\n'
   fi
-}
-
-# --- ledger (durable copy on the PR) ---------------------------------------
-
-# autodrive_ledger_push <pr> <state_dir> — mirror the local store onto the PR.
-# Best-effort by design: losing the durable copy degrades resumability on a
-# different host, it does not make the run wrong. It is reported, never silent.
-autodrive_ledger_push() {
-  local pr="${1:-}" dir="${2:?state dir}" body id
-  case "$pr" in ''|*[!0-9]*) echo "WARNING: autodrive_ledger_push: no PR number; local state only." >&2; return 0 ;; esac
-  body="$(printf '%s\n\n```\nphases:\n%s\n\nresolved-concerns:\n%s\n```\n' \
-    "$AUTODRIVE_LEDGER_MARKER" \
-    "$( [ -f "$dir/phases.tsv" ] && cat "$dir/phases.tsv" )" \
-    "$(autodrive_resolved_concerns "$dir")")"
-  id="$(autodrive_ledger_comment_id "$pr")"
-  if [ -n "$id" ]; then
-    gh api -X PATCH "repos/{owner}/{repo}/issues/comments/${id}" -f body="$body" >/dev/null 2>&1 \
-      || echo "WARNING: could not update the auto-drive ledger comment on PR #${pr}; local state is still authoritative for this host." >&2
-  else
-    gh pr comment "$pr" --body "$body" >/dev/null 2>&1 \
-      || echo "WARNING: could not write the auto-drive ledger comment on PR #${pr}; local state is still authoritative for this host." >&2
-  fi
-}
-
-autodrive_ledger_comment_id() {
-  local pr="${1:-}"
-  gh api "repos/{owner}/{repo}/issues/${pr}/comments" --paginate \
-      --jq "map(select(.body | contains(\"${AUTODRIVE_LEDGER_MARKER}\"))) | last | .id // empty" 2>/dev/null \
-    || printf ''
-}
-
-# autodrive_ledger_pull <pr> <state_dir> — rehydrate an EMPTY local store from
-# the PR ledger. Never overwrites local state: the local store is the record of
-# what actually ran here.
-autodrive_ledger_pull() {
-  local pr="${1:-}" dir="${2:?state dir}" body
-  case "$pr" in ''|*[!0-9]*) return 0 ;; esac
-  [ -f "$dir/phases.tsv" ] && return 0
-  [ -f "$dir/resolved-concerns.txt" ] && return 0
-  body="$(gh api "repos/{owner}/{repo}/issues/${pr}/comments" --paginate \
-      --jq "map(select(.body | contains(\"${AUTODRIVE_LEDGER_MARKER}\"))) | last | .body // empty" 2>/dev/null)" || return 0
-  [ -n "$body" ] || return 0
-  printf '%s\n' "$body" | awk '/^phases:/{s=1;next} /^resolved-concerns:/{s=0} s && NF' > "$dir/phases.tsv"
-  printf '%s\n' "$body" | awk '/^resolved-concerns:/{s=1;next} /^```/{s=0} s && NF' > "$dir/resolved-concerns.txt"
-  echo "INFO: rehydrated auto-drive state for PR #${pr} from the ledger comment." >&2
 }

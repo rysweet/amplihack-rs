@@ -274,16 +274,34 @@ fn no_numeric_iteration_cap_anywhere() {
         driver.contains("ROUND is a LABEL"),
         "the loop driver must state that its round counter is a label"
     );
-    for line in driver.lines() {
+    // Every way a shell can compare a counter to a limit, not just the three
+    // `test` operators that happen to read as "at least". `-lt` / `-eq` bound
+    // a loop just as well from the other side, `(( ROUND > n ))` and
+    // `[[ ${ROUND} -gt n ]]` are the same cap in different syntax, and
+    // `${ROUND}` is the same variable as `$ROUND`.
+    const COMPARISONS: [&str; 12] = [
+        "-ge", "-gt", "-le", "-lt", "-eq", "-ne", ">=", "<=", "==", "!=", ">", "<",
+    ];
+    for (n, line) in driver.lines().enumerate() {
         let trimmed = line.trim_start();
         if trimmed.starts_with('#') {
             continue;
         }
-        assert!(
-            !(line.contains("$ROUND")
-                && (line.contains("-ge") || line.contains("-gt") || line.contains("-le"))),
-            "the round label is compared against a limit: {line}"
-        );
+        let names_round = line.contains("$ROUND")
+            || line.contains("${ROUND}")
+            || line.contains("((ROUND")
+            || line.contains("(( ROUND");
+        if !names_round {
+            continue;
+        }
+        for op in COMPARISONS {
+            assert!(
+                !line.contains(op),
+                "autodrive_loop.sh:{} compares the round label against a limit with `{op}`. \
+                 ROUND is a LABEL; the terminator is loop-health-evaluator.\n  {line}",
+                n + 1
+            );
+        }
     }
 }
 
@@ -463,13 +481,88 @@ fn an_unreadable_loop_verdict_is_stuck_never_continue() {
 
 // ── The two absolute prohibitions ────────────────────────────────────────────
 
+/// Every prohibited construct, in every spelling that actually works.
+///
+/// A substring list of `--no-verify` / `--admin` / `--bypass` is not the
+/// prohibition — it is three of its spellings. Hooks are equally skipped by
+/// `git commit -nm "x"`, `git commit -m "x" -n`, `git -C . commit -n`,
+/// `git -c core.hooksPath=/dev/null commit`, and `HUSKY=0 git commit`; the
+/// merge gate is equally bypassed by `gh api -X PUT .../merge` and by
+/// `gh pr merge --auto`, neither of which contains `--admin`.
+///
+/// Returns the label of every construct the line matches.
+fn prohibited_constructs(line: &str) -> Vec<&'static str> {
+    let lower = line.to_ascii_lowercase();
+    let tokens: Vec<&str> = lower
+        .split(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+        .filter(|t| !t.is_empty())
+        .collect();
+    let has = |t: &str| tokens.contains(&t);
+    let mut hits = Vec::new();
+
+    if lower.contains("--no-verify") {
+        hits.push("--no-verify");
+    }
+    // A single-dash cluster containing `n` anywhere in the argv of a git
+    // invocation whose SUBCOMMAND is `commit`: `-n`, `-nm`, `-mn`, `-an`.
+    // Resolving the subcommand matters — `git rev-parse "${BASE}^{commit}"` on
+    // a line that also runs `[ -n "$BASE" ]` is not a hook-skipping commit.
+    if let Some(after_git) = tokens.iter().position(|t| *t == "git") {
+        let mut i = after_git + 1;
+        while i < tokens.len() && tokens[i].starts_with('-') {
+            // `git -C <dir>` and `git -c <k=v>` each consume a value (the
+            // line is lower-cased, so both spell `-c` here).
+            i += if tokens[i] == "-c" { 2 } else { 1 };
+        }
+        if tokens.get(i) == Some(&"commit")
+            && tokens[i + 1..].iter().any(|t| {
+                t.len() >= 2
+                    && t.starts_with('-')
+                    && !t.starts_with("--")
+                    && t[1..].chars().all(|c| c.is_ascii_alphabetic())
+                    && t.contains('n')
+            })
+        {
+            hits.push("a short hook-skipping commit flag (-n / -nm / -mn)");
+        }
+    }
+    if lower.contains("core.hookspath") {
+        hits.push("core.hooksPath");
+    }
+    for env in [
+        "husky",
+        "skip_hooks",
+        "no_verify",
+        "pre_commit_allow_no_config",
+    ] {
+        if lower.contains(&format!("{env}=")) {
+            hits.push("a hook-skipping environment variable");
+            break;
+        }
+    }
+    if lower.contains("--admin") {
+        hits.push("--admin");
+    }
+    if lower.contains("--bypass") {
+        hits.push("--bypass");
+    }
+    // `gh api ... /merge` merges outside the gate's fixed argv entirely.
+    if lower.contains("gh api") && lower.contains("/merge") {
+        hits.push("gh api .../merge");
+    }
+    // Auto-merge hands the decision to the platform, unverified.
+    if lower.contains("pr merge") && has("--auto") {
+        hits.push("gh pr merge --auto");
+    }
+    hits
+}
+
 #[test]
 fn forbidden_flags_never_appear_in_an_executable_position() {
-    // Never a hook-skipping commit flag; never a branch-protection bypass.
-    // A line may NAME one only while marking it as prohibited, and no
-    // executable line may name one at all. If a hook or a check fails, the
-    // cause is fixed.
-    let patterns = ["--no-verify", "--admin", "--bypass"];
+    // Never a hook-skipping commit flag; never a branch-protection bypass;
+    // never a merge that goes around the gate. A line may NAME one only while
+    // marking it as prohibited, and no executable line may name one at all. If
+    // a hook or a check fails, the cause is fixed.
     let markers = ["never", "forbidden", "prohibit"];
 
     let mut scanned = control_path_files();
@@ -480,15 +573,17 @@ fn forbidden_flags_never_appear_in_an_executable_position() {
     for path in &scanned {
         let text = read(path);
         for (n, line) in text.lines().enumerate() {
-            let lower = line.to_ascii_lowercase();
-            if !patterns.iter().any(|p| lower.contains(p)) {
+            let hits = prohibited_constructs(line);
+            if hits.is_empty() {
                 continue;
             }
+            let lower = line.to_ascii_lowercase();
             assert!(
                 markers.iter().any(|m| lower.contains(m)),
-                "{}:{} names a prohibited flag without marking it prohibited:\n  {line}",
+                "{}:{} names `{}` without marking it prohibited:\n  {line}",
                 path.display(),
-                n + 1
+                n + 1,
+                hits.join("`, `")
             );
         }
     }
@@ -499,15 +594,14 @@ fn forbidden_flags_never_appear_in_an_executable_position() {
             if line.trim_start().starts_with('#') {
                 continue;
             }
-            let lower = line.to_ascii_lowercase();
-            for p in patterns {
-                assert!(
-                    !lower.contains(p),
-                    "{}:{} uses `{p}` in an executable position:\n  {line}",
-                    path.display(),
-                    n + 1
-                );
-            }
+            let hits = prohibited_constructs(line);
+            assert!(
+                hits.is_empty(),
+                "{}:{} uses `{}` in an executable position:\n  {line}",
+                path.display(),
+                n + 1,
+                hits.join("`, `")
+            );
         }
     }
     for name in AUTODRIVE_RECIPES {
@@ -516,13 +610,12 @@ fn forbidden_flags_never_appear_in_an_executable_position() {
                 if line.trim_start().starts_with('#') {
                     continue;
                 }
-                let lower = line.to_ascii_lowercase();
-                for p in patterns {
-                    assert!(
-                        !lower.contains(p),
-                        "{name}.yaml step `{id}` uses `{p}` in an executable position:\n  {line}"
-                    );
-                }
+                let hits = prohibited_constructs(line);
+                assert!(
+                    hits.is_empty(),
+                    "{name}.yaml step `{id}` uses `{}` in an executable position:\n  {line}",
+                    hits.join("`, `")
+                );
             }
         }
     }
@@ -687,9 +780,12 @@ fn a_dead_run_resumes_without_redoing_merged_work_or_reopening_concerns() {
             && state.contains("autodrive_resolved_concerns"),
         "resolved concern ids must be recorded so a resumed run does not reopen them"
     );
+    // The durable copy used to be a marked PR COMMENT, and that is now
+    // forbidden — see `no_unauthenticated_input_reaches_control_flow`.
     assert!(
-        state.contains("AUTODRIVE_LEDGER_MARKER"),
-        "the durable ledger must be findable by a stable marker"
+        !state.contains("AUTODRIVE_LEDGER_MARKER"),
+        "the PR-comment ledger must stay deleted; it was an attacker-writable \
+         input into the phase-completion decision"
     );
     for phase in [
         "autodrive-build",
@@ -723,6 +819,248 @@ fn a_dead_run_resumes_without_redoing_merged_work_or_reopening_concerns() {
     assert!(
         crusty.contains("only if you have NEW evidence"),
         "crusty may re-raise a resolved concern only with new evidence"
+    );
+}
+
+#[test]
+fn no_unauthenticated_input_reaches_control_flow() {
+    // The resume ledger was a marked comment on the pull request — readable
+    // and WRITABLE by anyone who can comment on it. `autodrive_ledger_pull`
+    // awk-parsed that comment body straight into `phases.tsv` and
+    // `resolved-concerns.txt`, and it ran precisely when the local store was
+    // empty: a fresh host, the normal case for a fleet. A forged comment
+    // carrying the marker and `phases:\ncrusty-loop\t<date>` made the phase-2
+    // preflight decide the crusty loop had already completed — the loop was
+    // skipped, the phase-completion step never ran, and nothing downstream
+    // noticed. Phase 3 re-measures CI; nothing re-measures crusty's judgement.
+    //
+    // Local state plus platform truth (`gh pr view --json state`) cover what
+    // the ledger was for, minus a fresh-host optimisation. A fresh host redoes
+    // a phase; that is the cheaper mistake.
+    let banned = [
+        "autodrive_ledger_pull",
+        "autodrive_ledger_push",
+        "autodrive_ledger_comment_id",
+        "AUTODRIVE_LEDGER_MARKER",
+        "auto-drive-to-merge:ledger",
+    ];
+    for path in control_path_files() {
+        let text = read(&path);
+        for (n, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with('#') {
+                continue; // prose explaining the absence is not the thing
+            }
+            for b in banned {
+                assert!(
+                    !line.contains(b),
+                    "{}:{} reintroduces the PR-comment ledger (`{b}`):\n  {line}",
+                    path.display(),
+                    n + 1
+                );
+            }
+        }
+        // No pull-request comment may be read into this workflow's state at
+        // all, under any function name.
+        for (n, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with('#') {
+                continue;
+            }
+            assert!(
+                !(line.contains("issues/") && line.contains("/comments")),
+                "{}:{} reads pull-request comments into the workflow's state; \
+                 a comment is writable by anyone who can comment:\n  {line}",
+                path.display(),
+                n + 1
+            );
+        }
+    }
+    // What replaced it: local state written by this host, and the platform.
+    let state = read(&tool_path("autodrive_state.sh"));
+    assert!(
+        state.contains("autodrive_pr_state") && state.contains("gh pr view"),
+        "merged-ness must still come from the platform"
+    );
+    assert!(
+        state.contains("NO PR-COMMENT LEDGER"),
+        "autodrive_state.sh must record why the ledger is absent, so it is not \
+         helpfully restored"
+    );
+}
+
+#[test]
+fn every_verdict_gate_selects_the_last_object_carrying_its_field() {
+    // `extract-json` alone is first-parseable-object-wins AND prefers a
+    // ```json fence over raw prose. A reviewer that restates its output
+    // contract — normal behaviour — hands the parser that example instead of
+    // its verdict, and for crusty a quoted `CLEAN` is an unearned advance
+    // toward a merge with no second signal behind it. `--require-field NAME`
+    // (issue #1337, PR #1347) collects every object in document order and
+    // takes the LAST one carrying the field, which is what the prompts ask
+    // for; when none carries it, it returns nothing so the blocking
+    // `--default` applies.
+    let mut offenders = Vec::new();
+    for path in control_path_files() {
+        let text = read(&path);
+        for (n, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with('#') {
+                continue;
+            }
+            if line.contains("orch helper extract-json") && !line.contains("--require-field") {
+                offenders.push(format!("{}:{}  {}", path.display(), n + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "every `extract-json` on the control path must pass `--require-field` so \
+         a quoted example cannot be read as the verdict:\n{}",
+        offenders.join("\n")
+    );
+    // The two gates that matter, named explicitly.
+    let crusty = recipe_text("autodrive-crusty-round");
+    assert!(
+        crusty.contains("extract-json --require-field crusty_verdict"),
+        "the crusty gate must select the LAST object carrying `crusty_verdict`"
+    );
+    let merge = recipe_text("autodrive-merge-round");
+    assert!(
+        merge.contains("extract-json --require-field merge_ready_verdict"),
+        "the merge-ready gate must select the LAST object carrying \
+         `merge_ready_verdict`"
+    );
+    // The verdict shapes the reviewer is shown must not be quotable back into
+    // the parser as a verdict.
+    for skill in [
+        "amplifier-bundle/skills/crusty-old-engineer/SKILL.md",
+        "docs/claude/skills/crusty-old-engineer/SKILL.md",
+    ] {
+        let text = read(&workspace_root().join(skill));
+        assert!(
+            !text.contains("```json"),
+            "{skill} carries a fenced json example of its own verdict; a \
+             reviewer restating it emits that example straight into the parser"
+        );
+    }
+}
+
+#[test]
+fn the_forbidden_flag_scanner_catches_every_spelling() {
+    // The guard is only worth what it detects. These all skip hooks or go
+    // around the merge gate, and none of them contains `--no-verify`,
+    // `--admin`, or `--bypass`.
+    for line in [
+        r#"git commit -nm "x""#,
+        r#"git commit -m "x" -n"#,
+        "git -C . commit -n",
+        "git -c core.hooksPath=/dev/null commit -m x",
+        "HUSKY=0 git commit -m x",
+        "SKIP_HOOKS=1 git commit -m x",
+        "gh api -X PUT repos/{owner}/{repo}/pulls/7/merge",
+        "gh api --method PUT repos/o/r/pulls/7/merge",
+        r#"gh pr merge "$PR" --auto --squash"#,
+        "git commit --no-verify -m x",
+        "gh pr merge 7 --admin",
+        "gh api -X PUT repos/o/r/branches/main/protection --bypass",
+    ] {
+        assert!(
+            !prohibited_constructs(line).is_empty(),
+            "the forbidden-flag guard does not detect: {line}"
+        );
+    }
+    // ...and it does not fire on the commands this workflow actually runs.
+    for line in [
+        r#"git commit -m "address crusty review: <what changed>""#,
+        r#"git commit -m "clear merge-ready blockers: <what changed>""#,
+        "git add -A",
+        "git push",
+        r#"MERGE_ARGV=(pr merge "$PR" --squash --delete-branch --match-head-commit "$HEAD_SHA")"#,
+        "gh pr view \"$PR\" --json state,mergedAt",
+        "amplihack hygiene artifact-guard --repo . --mode pre-commit",
+    ] {
+        assert!(
+            prohibited_constructs(line).is_empty(),
+            "the forbidden-flag guard false-positives on: {line}  ({:?})",
+            prohibited_constructs(line)
+        );
+    }
+}
+
+#[test]
+fn every_criterion_is_read_completely_and_bound_to_the_merged_sha() {
+    let gate = read(&tool_path("autodrive_merge_gate.sh"));
+    let round = recipe_text("autodrive-merge-round");
+
+    // Review threads: `reviewThreads(first:100)` with no pageInfo follow-up
+    // silently truncates. 101 threads with the last one unresolved reports 0
+    // unresolved and passes the gate.
+    for (label, text) in [("merge gate", &gate), ("merge round", &round)] {
+        assert!(
+            text.contains("reviewThreads"),
+            "{label} must read review threads"
+        );
+        assert!(
+            text.contains("--paginate") && text.contains("pageInfo"),
+            "{label} reads reviewThreads without paging; a PR past the first \
+             page would report 0 unresolved threads and pass the gate"
+        );
+    }
+
+    // qa evidence: existence + qa_status=PASS is not enough. The gate binds
+    // the round record to HEAD_SHA; the qa evidence must bind too, or a PASS
+    // from an earlier round stands in for a tree that is no longer merged.
+    let evidence = recipe_text("autodrive-merge-evidence");
+    assert!(
+        evidence.contains(r#""head_sha":"%s""#),
+        "the qa evidence must record the head SHA it was measured on"
+    );
+    assert!(
+        gate.contains("QA_SHA") && gate.contains("qa-team evidence was captured against"),
+        "the merge gate must refuse qa evidence captured against another SHA"
+    );
+    assert!(
+        gate.contains("records no head_sha"),
+        "the merge gate must refuse qa evidence that is not bound to any SHA"
+    );
+
+    // `$?` inside the `then` of an `if ! cmd` is the NEGATION's status, always
+    // 0 — which makes the exit-79 branch dead and reports "exit 0".
+    assert!(
+        !gate.contains("if ! gh \"${MERGE_ARGV[@]}\""),
+        "the merge status must be captured from `gh` itself, not from inside \
+         the `then` of an `if !`, where `$?` is always 0"
+    );
+    assert!(
+        gate.contains("gh \"${MERGE_ARGV[@]}\"\nMERGE_RC=$?"),
+        "`gh` must run on its own line with `MERGE_RC=$?` immediately after"
+    );
+}
+
+#[test]
+fn the_loop_refuses_before_round_one_when_its_terminator_is_missing() {
+    // A missing `loop-health-evaluator` otherwise costs a full round — a
+    // crusty review and a builder fix pass, with commits pushed — before the
+    // loop dies with "returned STUCK (or an unreadable verdict)", which blames
+    // the loop for a missing dependency.
+    let driver = read(&tool_path("autodrive_loop.sh"));
+    let preflight = driver
+        .find("recipe show loop-health-evaluator")
+        .expect("the driver must resolve loop-health-evaluator up front");
+    let first_round = driver
+        .find("recipe run \"$ROUND_RECIPE\"")
+        .expect("the driver must run the round recipe");
+    assert!(
+        preflight < first_round,
+        "the dependency check must run BEFORE the first round, not after it"
+    );
+    assert!(
+        driver.contains("MISSING_DEPENDENCY"),
+        "the refusal must name the missing dependency as the cause"
+    );
+    let while_loop = driver.find("while :;").expect("the driver must loop");
+    assert!(
+        preflight < while_loop,
+        "the dependency check must sit outside the round loop so it costs one \
+         resolution, not one per round"
     );
 }
 

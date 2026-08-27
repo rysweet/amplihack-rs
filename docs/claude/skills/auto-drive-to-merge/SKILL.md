@@ -115,7 +115,7 @@ untouched and is **never** raised; the loop driver aborts if it changes.
 
 No phase advances on a model's prose impression. Every gate reads a structured
 field through the repo's canonical pipeline
-(`extract-json | extract-field --default …`, see
+(`extract-json --require-field … | extract-field --default …`, see
 [Structured Verdict & Intent Parsing](../../../docs/reference/structured-verdict-parsing.md)),
 matched against an exact-token allow-list:
 
@@ -128,6 +128,12 @@ matched against an exact-token allow-list:
 **A missing or unparseable verdict is never the permissive one.** A verdict
 that cannot be read means "we do not know", and "we do not know" does not
 advance a phase and does not merge.
+`--require-field` selects the **last** JSON object carrying the field rather
+than the first parseable object of any shape. Without it a reviewer that quotes
+its own output contract — a ` ```json ` example of a `CLEAN` verdict — hands
+that example to the parser instead of its real verdict, and nothing downstream
+re-measures crusty's judgement the way phase 3 re-measures CI.
+
 
 A `MERGE_READY` verdict is additionally **downgraded by measurement**: if the
 recorded `qa_status` is not `PASS`, `ci_status` is not `GREEN`, a conflict is
@@ -183,8 +189,12 @@ resolved concern is reopened:
   short-circuits every phase.
 - An open PR for the branch makes phase 1 a no-op — it is never rebuilt.
 - Completed phases are recorded in
-  `${AMPLIHACK_STATE_DIR:-~/.amplihack/state}/auto-drive/<key>/`, and mirrored
-  to a marked ledger comment on the PR so a different host can rehydrate.
+  `${AMPLIHACK_STATE_DIR:-~/.amplihack/state}/auto-drive/<key>/`, written only
+  by the host that ran them. There is deliberately **no pull-request-comment
+  ledger**: a PR comment is writable by anyone who can comment, and a forged
+  one could mark the crusty loop complete or seed the resolved-concern list,
+  skipping the review entirely on a fresh host. A fresh host redoes the phase
+  instead — that is the cheaper mistake.
 - Concern ids that a previous run resolved **and** had confirmed clean by a
   later round are handed back to crusty, which may still re-raise one — but
   only with new evidence.
@@ -223,6 +233,6 @@ run to their natural end. A false timeout costs more than a slow run.
 | `amplifier-bundle/recipes/autodrive-merge-loop.yaml` | Phase 3 loop + merge gate. |
 | `amplifier-bundle/tools/autodrive_loop.sh` | The uncapped, agentically-terminated loop driver. |
 | `amplifier-bundle/tools/autodrive_merge_gate.sh` | The evidence gate and the fixed merge argv. |
-| `amplifier-bundle/tools/autodrive_state.sh` | Resumable state and the PR ledger. |
+| `amplifier-bundle/tools/autodrive_state.sh` | Resumable local state; platform truth for merged-ness. |
 
 Full reference: [Auto Drive To Merge](../../../docs/reference/auto-drive-to-merge.md).

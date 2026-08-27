@@ -72,7 +72,6 @@ steps:
       DIR="${AUTODRIVE_STATE_DIR:-}"
       [ -n "$DIR" ] || DIR="$(autodrive_state_dir "${REPO_PATH:-.}" "$IDENT")"
       mkdir -p "$DIR"
-      autodrive_ledger_pull "$PR" "$DIR"
 
       STATE="$(autodrive_pr_state "$PR")"
       RUN="true"; WHY="no pull request exists yet for this work"
@@ -111,7 +110,7 @@ steps:
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || true
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
-      g() { printf '%s' "${BUILD_PREFLIGHT:-}" | amplihack orch helper extract-json \
+      g() { printf '%s' "${BUILD_PREFLIGHT:-}" | amplihack orch helper extract-json --require-field "$1" \
               | amplihack orch helper extract-field --field "$1" --default ''; }
       PR="$(g pr)"; DIR="$(g state_dir)"; BRANCH="$(g branch)"
       if [ -z "$PR" ]; then
@@ -136,7 +135,6 @@ steps:
         if [ -f "$STATE_HELPER" ]; then
           . "$STATE_HELPER"
           autodrive_mark_phase_done "$DIR" "build"
-          autodrive_ledger_push "$PR" "$DIR"
         else
           echo "WARNING: autodrive state helper not found; this run stays correct but a resumed run will re-probe phase 1." >&2
         fi

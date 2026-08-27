@@ -68,7 +68,6 @@ steps:
       DIR="${AUTODRIVE_STATE_DIR:-}"
       [ -n "$DIR" ] || DIR="$(autodrive_state_dir "${REPO_PATH:-.}" "$IDENT")"
       mkdir -p "$DIR"
-      autodrive_ledger_pull "$PR" "$DIR"
       STATE="$(autodrive_pr_state "$PR")"
       RUN="true"; WHY="merge-ready loop not yet completed for this PR"
       if [ "$STATE" = "MERGED" ]; then
@@ -93,7 +92,7 @@ steps:
       [ -f "$LOOP_HELPER" ] || LOOP_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/autodrive_loop.sh"
       [ -f "$LOOP_HELPER" ] || LOOP_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/autodrive_loop.sh"
       [ -f "$LOOP_HELPER" ] || { echo "ERROR: autodrive loop helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): $LOOP_HELPER; cwd=$(pwd)" >&2; exit 1; }
-      g() { printf '%s' "${MERGE_LOOP_PREFLIGHT:-}" | amplihack orch helper extract-json \
+      g() { printf '%s' "${MERGE_LOOP_PREFLIGHT:-}" | amplihack orch helper extract-json --require-field "$1" \
               | amplihack orch helper extract-field --field "$1" --default ''; }
       DIR="$(g state_dir)"; PR="$(g pr)"
       [ -n "$DIR" ] || { echo "ERROR: preflight produced no state_dir; refusing to run an unrecorded loop." >&2; exit 1; }
@@ -130,7 +129,7 @@ steps:
       [ -f "$GATE" ] || GATE="${HOME:-/root}/.copilot/amplifier-bundle/tools/autodrive_merge_gate.sh"
       [ -f "$GATE" ] || GATE="${HOME:-/root}/.amplihack/amplifier-bundle/tools/autodrive_merge_gate.sh"
       [ -f "$GATE" ] || { echo "ERROR: autodrive merge gate not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): $GATE; cwd=$(pwd)" >&2; exit 1; }
-      g() { printf '%s' "${MERGE_LOOP_PREFLIGHT:-}" | amplihack orch helper extract-json \
+      g() { printf '%s' "${MERGE_LOOP_PREFLIGHT:-}" | amplihack orch helper extract-json --require-field "$1" \
               | amplihack orch helper extract-field --field "$1" --default ''; }
       DIR="$(g state_dir)"; PR="$(g pr)"
       ARGS=(--pr "$PR" --repo "${REPO_PATH:-.}" --state-dir "$DIR" \
@@ -159,7 +158,7 @@ steps:
       [ -f "$STATE_HELPER" ] || STATE_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/autodrive_state.sh"
       [ -f "$STATE_HELPER" ] || { echo "WARNING: autodrive state helper not found; this run stays correct but a resumed run will redo the merge-ready loop." >&2; exit 0; }
       . "$STATE_HELPER"
-      g() { printf '%s' "${1:-}" | amplihack orch helper extract-json \
+      g() { printf '%s' "${1:-}" | amplihack orch helper extract-json --require-field "$2" \
               | amplihack orch helper extract-field --field "$2" --default ''; }
       DIR="$(g "${MERGE_LOOP_PREFLIGHT:-}" state_dir)"; PR="$(g "${MERGE_LOOP_PREFLIGHT:-}" pr)"
       [ -n "$DIR" ] || exit 0
@@ -174,7 +173,6 @@ steps:
           echo "INFO: merge gate result '${RESULT:-unknown}'; the merge phase is NOT recorded complete." >&2
           ;;
       esac
-      autodrive_ledger_push "$PR" "$DIR"
     output: "merge_phase_record"
 
 output:

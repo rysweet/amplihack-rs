@@ -55,12 +55,20 @@ steps:
       PR="${PR_NUMBER:-}"
       case "$PR" in ''|*[!0-9]*) PR="$(gh pr view --json number --jq .number 2>/dev/null || printf '')" ;; esac
       J="$(gh pr view "$PR" --json state,isDraft,mergeable,mergeStateStatus,reviewDecision,headRefOid,closingIssuesReferences 2>/dev/null)"
-      f() { printf '%s' "$J" | amplihack orch helper extract-json \
+      f() { printf '%s' "$J" | amplihack orch helper extract-json --require-field "$1" \
               | amplihack orch helper extract-field --field "$1" --default "$2"; }
-      THREADS="$(gh api graphql -F pr="${PR:-0}" -F owner='{owner}' -F name='{repo}' -f query='
-        query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){
-          pullRequest(number:$pr){reviewThreads(first:100){nodes{isResolved isOutdated}}}}}' \
+      # PAGINATED: `first:100` with no pageInfo follow-up silently truncates, so
+      # a PR with 101 threads whose last one is unresolved would report 0.
+      # --paginate emits one count per page; the counts are summed, and a page
+      # that is not a number makes the criterion unreadable.
+      PAGES="$(gh api graphql --paginate -F pr="${PR:-0}" -F owner='{owner}' -F name='{repo}' -f query='
+        query($owner:String!,$name:String!,$pr:Int!,$endCursor:String){repository(owner:$owner,name:$name){
+          pullRequest(number:$pr){reviewThreads(first:100,after:$endCursor){
+            pageInfo{hasNextPage endCursor}
+            nodes{isResolved isOutdated}}}}}' \
         --jq '[.data.repository.pullRequest.reviewThreads.nodes[]|select(.isResolved==false and .isOutdated==false)]|length' 2>/dev/null)"
+      THREADS="$(printf '%s\n' "$PAGES" \
+        | awk 'NF==0{next} /^[0-9]+$/{s+=$1;n++;next} {bad=1} END{if(bad||!n) exit 1; print s}')" || THREADS=""
       [ -n "$THREADS" ] || THREADS="unreadable"
       printf '{"pr":"%s","state":"%s","is_draft":"%s","mergeable":"%s","merge_state":"%s","review_decision":"%s","head_sha":"%s","unresolved_threads":"%s"}\n' \
         "$PR" "$(f state UNKNOWN)" "$(f isDraft unknown)" "$(f mergeable UNKNOWN)" \
@@ -137,10 +145,10 @@ steps:
         VERDICT="NOT_MERGE_READY"; SOURCE="missing_verdict"; BLOCKERS='[]'
       else
         VERDICT="$(printf '%s' "$RAW" \
-          | amplihack orch helper extract-json \
+          | amplihack orch helper extract-json --require-field merge_ready_verdict \
           | amplihack orch helper extract-field --field merge_ready_verdict --default NOT_MERGE_READY)"
         BLOCKERS="$(printf '%s' "$RAW" \
-          | amplihack orch helper extract-json \
+          | amplihack orch helper extract-json --require-field merge_ready_verdict \
           | amplihack orch helper extract-field --field blockers --default '[]')"
         SOURCE="merge_ready"
         case "$VERDICT" in
@@ -154,13 +162,13 @@ steps:
       # A model may not overrule measured evidence. Even a MERGE_READY verdict
       # is downgraded when the numbers say otherwise — this is the "never
       # advance on a prose impression" rule, enforced rather than asked for.
-      QA="$(printf '%s' "${QA_EVIDENCE:-}" | amplihack orch helper extract-json \
+      QA="$(printf '%s' "${QA_EVIDENCE:-}" | amplihack orch helper extract-json --require-field qa_status \
             | amplihack orch helper extract-field --field qa_status --default MISSING)"
-      CI="$(printf '%s' "${CI_EVIDENCE:-}" | amplihack orch helper extract-json \
+      CI="$(printf '%s' "${CI_EVIDENCE:-}" | amplihack orch helper extract-json --require-field ci_status \
             | amplihack orch helper extract-field --field ci_status --default MISSING)"
-      CONFLICT="$(printf '%s' "${MERGE_SYNC:-}" | amplihack orch helper extract-json \
+      CONFLICT="$(printf '%s' "${MERGE_SYNC:-}" | amplihack orch helper extract-json --require-field conflict \
             | amplihack orch helper extract-field --field conflict --default unknown)"
-      THREADS="$(printf '%s' "${PLATFORM_FACTS:-}" | amplihack orch helper extract-json \
+      THREADS="$(printf '%s' "${PLATFORM_FACTS:-}" | amplihack orch helper extract-json --require-field unresolved_threads \
             | amplihack orch helper extract-field --field unresolved_threads --default unreadable)"
       DOWNGRADE=""
       [ "$QA" = "PASS" ] || DOWNGRADE="${DOWNGRADE}qa_status=${QA} "
@@ -251,7 +259,7 @@ steps:
       set -uo pipefail
       RECORD="${AUTODRIVE_ROUND_RECORD:-}"
       [ -n "$RECORD" ] || { echo "ERROR: autodrive_round_record is required; the loop driver reads the round record from a file, never from stdout." >&2; exit 1; }
-      g() { printf '%s' "${1:-}" | amplihack orch helper extract-json \
+      g() { printf '%s' "${1:-}" | amplihack orch helper extract-json --require-field "$2" \
               | amplihack orch helper extract-field --field "$2" --default "$3"; }
       HEAD_SHA=""
       if (cd "${REPO_PATH:-.}" 2>/dev/null && git rev-parse --is-inside-work-tree >/dev/null 2>&1); then

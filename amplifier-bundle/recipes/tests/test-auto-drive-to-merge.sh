@@ -48,7 +48,13 @@ done
 
 # The verdict pipeline runs through `orch helper`. Prefer a binary built from
 # THIS tree over an older installed one that may be first on PATH.
-supports_helper() { printf '{"a":"b"}' | "$1" orch helper extract-field --field a --default X >/dev/null 2>&1; }
+# The gates read verdicts with `extract-json --require-field` (issue #1337,
+# PR #1347). A binary without that flag would silently exercise a different,
+# fail-open pipeline, so it is part of what "supports the helper" means.
+supports_helper() {
+  printf '{"a":"b"}' | "$1" orch helper extract-field --field a --default X >/dev/null 2>&1 \
+    && printf '{"a":"b"}' | "$1" orch helper extract-json --require-field a >/dev/null 2>&1
+}
 REAL_AMPLIHACK=""
 for cand in "${REPO_ROOT}/target/release/amplihack" "${REPO_ROOT}/target/debug/amplihack" \
             "$(command -v amplihack 2>/dev/null || true)"; do
@@ -56,7 +62,7 @@ for cand in "${REPO_ROOT}/target/release/amplihack" "${REPO_ROOT}/target/debug/a
   if supports_helper "${cand}"; then REAL_AMPLIHACK="${cand}"; break; fi
 done
 [[ -n "${REAL_AMPLIHACK}" ]] || {
-  echo "HARNESS-ERROR: no 'amplihack' providing 'orch helper extract-field'." >&2
+  echo "HARNESS-ERROR: no 'amplihack' providing 'orch helper extract-json --require-field'." >&2
   echo "  Build it with: cargo build -p amplihack --bin amplihack" >&2; exit 2; }
 export REAL_AMPLIHACK
 
@@ -77,6 +83,13 @@ STUB_BIN="${WORK}/bin"; mkdir -p "${STUB_BIN}"
 cat > "${STUB_BIN}/amplihack" <<'STUB'
 #!/usr/bin/env bash
 if [ "${1:-}" = "orch" ]; then exec "$REAL_AMPLIHACK" "$@"; fi
+if [ "${1:-}" = "recipe" ] && [ "${2:-}" = "show" ]; then
+  echo "${3:-}" >> "${STUB_SHOW_CALLS:-/dev/null}"
+  case "${3:-}" in
+    loop-health-evaluator) exit "${STUB_HEALTH_RESOLVES:-0}" ;;
+    *) exit 1 ;;
+  esac
+fi
 if [ "${1:-}" = "recipe" ] && [ "${2:-}" = "run" ]; then
   RECIPE="${3:-}"
   echo "$RECIPE" >> "${STUB_CALLS:-/dev/null}"
@@ -110,12 +123,13 @@ set_stub() { # set_stub <round-record-json> <health-rc> <health-stdout> [round-r
   export STUB_ROUND_RECORD="${1:-}" STUB_HEALTH_RC="${2:-0}" STUB_HEALTH_STDOUT="${3:-}"
   export STUB_ROUND_RC="${4:-0}" STUB_ROUND_WRITE_RECORD="${5:-true}"
   export STUB_ROUND_FINDINGS="" STUB_ROUND_STDOUT="round ran"
+  export STUB_HEALTH_RESOLVES="0"
 }
 
 LOOP_DIR=""; LOOP_OUT=""
 run_loop() { # run_loop <state-dir-suffix>
   LOOP_DIR="${WORK}/loop-$1"; mkdir -p "${LOOP_DIR}"
-  export STUB_CALLS="${LOOP_DIR}/calls"
+  export STUB_CALLS="${LOOP_DIR}/calls" STUB_SHOW_CALLS="${LOOP_DIR}/shows"
   PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
     bash "${LOOP}" --loop-name "crusty" --round-recipe "autodrive-crusty-round" \
       --clean-token "CLEAN" --verdict-field "crusty_verdict" \
@@ -198,6 +212,34 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 2b. Dependency preflight — a missing terminator costs ZERO rounds.
+# ---------------------------------------------------------------------------
+# Without this, a missing loop-health-evaluator burns a full round first — a
+# review, a fix pass, commits pushed — and then dies with "returned STUCK (or
+# an unreadable verdict)", which blames the loop for a missing dependency.
+set_stub '{"crusty_verdict":"CLEAN"}' 0 'LOOP_HEALTH: DONE — converged'
+export STUB_HEALTH_RESOLVES="1"
+run_loop nodep; rc=$?
+export STUB_HEALTH_RESOLVES="0"
+if [ "$rc" -ne 0 ]; then
+  pass "PREFLIGHT-refuses" "an unresolvable loop-health-evaluator refuses the loop (rc=${rc})"
+else
+  fail "PREFLIGHT-refuses" "the loop ran without its terminator (rc=${rc}): ${LOOP_OUT}"
+fi
+if ! grep -qF 'autodrive-crusty-round' "${LOOP_DIR}/calls" 2>/dev/null; then
+  pass "PREFLIGHT-no-round" "not a single round is spent before the missing dependency is reported"
+else
+  fail "PREFLIGHT-no-round" "a round ran before the missing dependency was detected"
+fi
+if grep -qF 'loop-health-evaluator' "${LOOP_DIR}/err" \
+   && grep -qF 'loop-health-evaluator' "${LOOP_DIR}/shows" 2>/dev/null \
+   && printf '%s' "${LOOP_OUT}" | grep -qF '"loop_result":"MISSING_DEPENDENCY"'; then
+  pass "PREFLIGHT-names-dependency" "the refusal names the missing dependency instead of misattributing it to the loop"
+else
+  fail "PREFLIGHT-names-dependency" "the refusal does not name loop-health-evaluator: ${LOOP_OUT}"
+fi
+
+# ---------------------------------------------------------------------------
 # 3. Exit 79 is terminal — surfaced, and never retried into.
 # ---------------------------------------------------------------------------
 set_stub '{"crusty_verdict":"CONCERNS"}' 0 'LOOP_HEALTH: CONTINUE — keep going' 79
@@ -221,10 +263,17 @@ fi
 # ---------------------------------------------------------------------------
 # 4. Forbidden flags — never in an executable position.
 # ---------------------------------------------------------------------------
-# `--no-verify` / `-n` on a commit, and `--admin` / `--bypass` on a merge, are
-# prohibited. Any line naming one must be marked as a prohibition; no line in a
-# shell body may name one at all.
-FORBIDDEN_RE='(--no-verify|--admin|--bypass|git commit[[:space:]]+-n([[:space:]]|$))'
+# Hook skipping and branch-protection bypass are prohibited in EVERY spelling,
+# not just the tidy one. `git commit -n` was the only short form matched before;
+# `git commit -nm "x"`, `git commit -m "x" -n`, `git -C . commit -n`,
+# `git -c core.hooksPath=/dev/null commit`, `HUSKY=0 git commit` and friends all
+# skip hooks just as effectively, and `gh api -X PUT .../merge` and
+# `gh pr merge --auto` both merge outside the gate's fixed argv.
+#
+# The short-flag alternative matches any single-dash cluster containing `n` on a
+# line that runs `git ... commit`, so `-n`, `-nm`, `-mn` and `-an` are all
+# caught wherever they sit in the argv.
+FORBIDDEN_RE='(--no-verify|--admin|--bypass|core\.hooksPath|HUSKY=|SKIP_HOOKS|NO_VERIFY=|PRE_COMMIT_ALLOW_NO_CONFIG|git[^|;&]*commit[^|;&]*[[:space:]]-[A-Za-z]*n[A-Za-z]*([[:space:]]|$)|gh[^|;&]*api[^|;&]*/merge|pr[[:space:]]+merge[^|;&]*--auto)'
 MARKER_RE='never|forbidden|prohibit'
 scan_files=()
 for r in "${AUTODRIVE_RECIPES[@]}"; do scan_files+=("${RECIPES}/${r}.yaml"); done
@@ -289,6 +338,21 @@ case "${GH_MODE:-}" in
     [ "${1:-}" = "api" ] && { echo 0; exit 0; }
     [ "${1:-}" = "pr" ] && [ "${2:-}" = "merge" ] && exit 0
     ;;
+  # Two pages of review threads: the FIRST is all-resolved, the second is not.
+  # A query that stops at page one reports 0 unresolved and passes the gate.
+  threads-paged)
+    [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ] && { echo '{"state":"OPEN","mergedAt":null,"isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","reviewDecision":"APPROVED","headRefOid":"abc123def4567890abc123def4567890abc12345","url":"u"}'; exit 0; }
+    [ "${1:-}" = "pr" ] && [ "${2:-}" = "checks" ] && { echo '[{"name":"Test","state":"SUCCESS","bucket":"pass"}]'; exit 0; }
+    [ "${1:-}" = "api" ] && { printf '0\n1\n'; exit 0; }
+    [ "${1:-}" = "pr" ] && [ "${2:-}" = "merge" ] && exit 0
+    ;;
+  # Everything verifies, then `gh pr merge` itself fails with a real exit code.
+  merge-fails)
+    [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ] && { echo '{"state":"OPEN","mergedAt":null,"isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","reviewDecision":"APPROVED","headRefOid":"abc123def4567890abc123def4567890abc12345","url":"u"}'; exit 0; }
+    [ "${1:-}" = "pr" ] && [ "${2:-}" = "checks" ] && { echo '[{"name":"Test","state":"SUCCESS","bucket":"pass"}]'; exit 0; }
+    [ "${1:-}" = "api" ] && { echo 0; exit 0; }
+    [ "${1:-}" = "pr" ] && [ "${2:-}" = "merge" ] && exit "${GH_MERGE_RC:-3}"
+    ;;
 esac
 exit 1
 GH
@@ -301,7 +365,7 @@ gate_run() { # gate_run <mode> <extra-args...>
   local mode="$1"; shift
   GATE_DIR="${WORK}/gate-${mode}-${RANDOM}"; mkdir -p "${GATE_DIR}"
   GH_MODE="$mode" GH_CALLS="${GATE_DIR}/gh-calls" PATH="${STUB_BIN}:${PATH}" \
-    AMPLIHACK_BIN="${REAL_AMPLIHACK}" \
+    GH_MERGE_RC="${GH_MERGE_RC:-3}" AMPLIHACK_BIN="${REAL_AMPLIHACK}" \
     bash "${GATE}" --pr 42 --repo "${WORK}" --state-dir "${GATE_DIR}" "$@" \
     >"${GATE_DIR}/out" 2>"${GATE_DIR}/err"
   local rc=$?
@@ -333,7 +397,8 @@ fi
 # 5c. Unreadable CI is a failure, not a pass — and nothing is merged.
 REC="${WORK}/mr.json"
 printf '{"merge_ready_verdict":"MERGE_READY","head_sha":"abc123def4567890abc123def4567890abc12345"}' > "$REC"
-QA="${WORK}/qa.json"; printf '{"qa_status":"PASS","qa_command":"cargo test"}' > "$QA"
+QA="${WORK}/qa.json"
+printf '{"qa_status":"PASS","qa_command":"cargo test","head_sha":"abc123def4567890abc123def4567890abc12345"}' > "$QA"
 gate_run unreadable-ci --round-record "$REC" --qa-evidence "$QA"; rc=$?
 if [ "$rc" -ne 0 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"NOT_MERGED"'; then
   pass "GATE-unreadable-ci" "an unreadable CI status is a failure, not a pass"
@@ -378,6 +443,26 @@ else
   fail "GATE-sha-binding" "stale evidence was accepted (rc=${rc}): ${GATE_OUT}"
 fi
 
+# 5f2. qa evidence not bound to the SHA being merged never merges. Existence
+# plus qa_status=PASS is not enough — a PASS left behind by an earlier round
+# describes a tree that is no longer what would be merged.
+QA_STALE="${WORK}/qa-stale.json"
+printf '{"qa_status":"PASS","qa_command":"cargo test","head_sha":"0000000000000000000000000000000000000000"}' > "$QA_STALE"
+gate_run green --round-record "$REC" --qa-evidence "$QA_STALE"; rc=$?
+if [ "$rc" -ne 0 ] && grep -qF 'qa-team evidence was captured against' "${GATE_DIR}/err"; then
+  pass "GATE-qa-sha-binding" "qa evidence captured against another SHA never merges"
+else
+  fail "GATE-qa-sha-binding" "stale qa evidence was accepted (rc=${rc}): ${GATE_OUT}"
+fi
+QA_NOSHA="${WORK}/qa-nosha.json"
+printf '{"qa_status":"PASS","qa_command":"cargo test"}' > "$QA_NOSHA"
+gate_run green --round-record "$REC" --qa-evidence "$QA_NOSHA"; rc=$?
+if [ "$rc" -ne 0 ] && grep -qF 'records no head_sha' "${GATE_DIR}/err"; then
+  pass "GATE-qa-sha-required" "qa evidence with no head_sha never merges"
+else
+  fail "GATE-qa-sha-required" "unbound qa evidence was accepted (rc=${rc}): ${GATE_OUT}"
+fi
+
 # 5g. Everything green: dry-run reports the exact fixed argv and merges nothing.
 gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; rc=$?
 if [ "$rc" -eq 0 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"DRY_RUN"'; then
@@ -395,6 +480,43 @@ if ! grep -q '^pr merge' "${GATE_DIR}/gh-calls" 2>/dev/null; then
 else
   fail "GATE-dry-run-merges-nothing" "a dry run merged"
 fi
+
+# 5h. Review threads are counted across EVERY page, not just the first 100.
+gate_run threads-paged --round-record "$REC" --qa-evidence "$QA"; rc=$?
+if [ "$rc" -ne 0 ] && grep -qF '1 unresolved review thread(s)' "${GATE_DIR}/err"; then
+  pass "GATE-threads-paginated" "an unresolved thread on page two still blocks the merge"
+else
+  fail "GATE-threads-paginated" "review threads past page one were not counted (rc=${rc}): ${GATE_OUT}"
+fi
+if grep -qF -- '--paginate' "${GATE_DIR}/gh-calls" 2>/dev/null; then
+  pass "GATE-threads-paginate-flag" "the review-thread query is paginated"
+else
+  fail "GATE-threads-paginate-flag" "the review-thread query does not paginate"
+fi
+for f in "${GATE}" "${RECIPES}/autodrive-merge-round.yaml"; do
+  if grep -qF 'pageInfo' "$f" && grep -qF -- '--paginate' "$f"; then
+    pass "PAGEINFO-$(basename "$f")" "$(basename "$f") pages the reviewThreads query"
+  else
+    fail "PAGEINFO-$(basename "$f")" "$(basename "$f") reads reviewThreads first:100 with no pageInfo"
+  fi
+done
+
+# 5i. When `gh pr merge` fails, the gate reports the REAL exit code. `$?` read
+# inside the `then` of an `if ! gh ...` is the negation's status — always 0 —
+# which makes the terminal-refusal branch dead and prints "exit 0".
+GH_MERGE_RC=3 gate_run merge-fails --round-record "$REC" --qa-evidence "$QA"; rc=$?
+if [ "$rc" -ne 0 ] && grep -qF 'gh pr merge failed (exit 3)' "${GATE_DIR}/err"; then
+  pass "GATE-merge-rc" "a failed merge reports the real exit code, not the negation's 0"
+else
+  fail "GATE-merge-rc" "the failed merge did not report its exit code (rc=${rc})"
+fi
+GH_MERGE_RC=79 gate_run merge-fails --round-record "$REC" --qa-evidence "$QA"; rc=$?
+if [ "$rc" -eq 79 ]; then
+  pass "GATE-merge-79" "exit 79 from the merge is terminal and propagates"
+else
+  fail "GATE-merge-79" "exit 79 from the merge became rc=${rc}"
+fi
+unset GH_MERGE_RC
 
 # ---------------------------------------------------------------------------
 # 6. Verdict extraction — the fail-safe direction, on the REAL step bodies.
@@ -440,6 +562,89 @@ else
   fail "CRUSTY-passthru" "an explicit CLEAN verdict became '${v}'"
 fi
 
+# THE fail-open path this gate had. `extract-json` without `--require-field`
+# returns the FIRST parseable object and PREFERS a ```json fence over raw
+# prose, so a reviewer that restates its output contract — normal behaviour,
+# and the crusty skill carries a `CLEAN` example — hands the parser that
+# example instead of its real verdict. There is no second signal on this gate:
+# nothing downstream re-measures crusty's judgement the way the merge gate
+# re-measures CI, so a fenced `CLEAN` is an unearned advance toward a merge.
+QUOTED_CLEAN_THEN_CONCERNS="$(cat <<'REVIEW'
+# Crusty review
+
+For reference, the shape I am required to emit is:
+
+```json
+{"crusty_verdict": "CLEAN", "concerns": [], "summary": "one line"}
+```
+
+Now the review itself. An unreadable CI status is treated as passing, which is
+the failure mode this workflow exists to prevent.
+
+{"crusty_verdict":"CONCERNS","concerns":[{"id":"silent-fallback-in-ci-status","severity":"blocking","summary":"An unreadable CI status is treated as passing.","evidence":"tools/ci.sh:212"}],"summary":"one blocking concern"}
+REVIEW
+)"
+v="$(crusty_verdict "${QUOTED_CLEAN_THEN_CONCERNS}")"
+if [ "$v" = "CONCERNS" ]; then
+  pass "CRUSTY-quoted-example" "a fenced CLEAN example ahead of a trailing CONCERNS verdict does NOT read as CLEAN"
+else
+  fail "CRUSTY-quoted-example" "a quoted CLEAN example was read as the verdict -> '${v}' (must be CONCERNS)"
+fi
+
+# Same shape with an UNTAGGED fence — `extract-json` prefers those too.
+UNTAGGED_CLEAN_THEN_CONCERNS="$(cat <<'REVIEW'
+Contract, restated:
+
+```
+{"crusty_verdict": "CLEAN", "concerns": [], "summary": "one line"}
+```
+
+{"crusty_verdict":"CONCERNS","concerns":[],"summary":"still not clean"}
+REVIEW
+)"
+v="$(crusty_verdict "${UNTAGGED_CLEAN_THEN_CONCERNS}")"
+if [ "$v" = "CONCERNS" ]; then
+  pass "CRUSTY-untagged-example" "an untagged fenced CLEAN example does NOT read as the verdict"
+else
+  fail "CRUSTY-untagged-example" "an untagged CLEAN example was read as the verdict -> '${v}'"
+fi
+
+# The other direction: the LAST object carrying the field wins, so a quoted
+# CONCERNS example does not permanently block a genuinely clean review either.
+QUOTED_CONCERNS_THEN_CLEAN="$(cat <<'REVIEW'
+Example of a concern block:
+
+```json
+{"crusty_verdict": "CONCERNS", "concerns": [{"id": "x", "severity": "minor", "summary": "s", "evidence": "e"}], "summary": "one line"}
+```
+
+Nothing outstanding on this diff.
+
+{"crusty_verdict":"CLEAN","concerns":[],"summary":"no outstanding concerns"}
+REVIEW
+)"
+v="$(crusty_verdict "${QUOTED_CONCERNS_THEN_CLEAN}")"
+if [ "$v" = "CLEAN" ]; then
+  pass "CRUSTY-last-wins" "the LAST object carrying crusty_verdict is the verdict, in both directions"
+else
+  fail "CRUSTY-last-wins" "a quoted example ahead of a real CLEAN verdict was read instead -> '${v}'"
+fi
+
+# The crusty skill must not ship fenced JSON examples of its own verdict: a
+# reviewer restating them is exactly the input above.
+CRUSTY_SKILL="${REPO_ROOT}/amplifier-bundle/skills/crusty-old-engineer/SKILL.md"
+CRUSTY_MIRROR="${REPO_ROOT}/docs/claude/skills/crusty-old-engineer/SKILL.md"
+if ! grep -qF '```json' "${CRUSTY_SKILL}"; then
+  pass "CRUSTY-skill-unfenced" "the crusty skill carries no fenced json verdict example to be quoted back"
+else
+  fail "CRUSTY-skill-unfenced" 'the crusty skill still carries a fenced json example of its own verdict'
+fi
+if diff -q "${CRUSTY_SKILL}" "${CRUSTY_MIRROR}" >/dev/null 2>&1; then
+  pass "CRUSTY-skill-parity" "the crusty SKILL.md mirrors are byte-identical"
+else
+  fail "CRUSTY-skill-parity" "the crusty SKILL.md mirrors have drifted"
+fi
+
 MR_BODY="$(extract_step_command "${RECIPES}/autodrive-merge-round.yaml" "step-03-extract-merge-ready-verdict")"
 [[ -n "${MR_BODY}" ]] || { echo "HARNESS-ERROR: could not extract the merge-ready verdict step body" >&2; exit 2; }
 mr_verdict() { # mr_verdict <raw> <qa_status> <ci_status>
@@ -467,6 +672,23 @@ The merge-ready check is still running; I'm waiting for its findings.
 {"merge_ready_verdict": "NOT_MERGE_READY"}
 {"verdict": "MERGE_READY"}
 MRBAD
+MR_QUOTED="$(cat <<'REVIEW'
+Contract, restated:
+
+```json
+{"merge_ready_verdict": "MERGE_READY", "blockers": [], "criteria_verified": [], "summary": "one line"}
+```
+
+{"merge_ready_verdict":"NOT_MERGE_READY","blockers":[],"summary":"docs missing"}
+REVIEW
+)"
+v="$(mr_verdict "${MR_QUOTED}")"
+if [ "$v" = "NOT_MERGE_READY" ]; then
+  pass "MERGEREADY-quoted-example" "a fenced MERGE_READY example ahead of the real verdict does NOT read as MERGE_READY"
+else
+  fail "MERGEREADY-quoted-example" "a quoted MERGE_READY example was read as the verdict -> '${v}'"
+fi
+
 v="$(mr_verdict '{"merge_ready_verdict":"MERGE_READY","blockers":[]}')"
 if [ "$v" = "MERGE_READY" ]; then
   pass "MERGEREADY-passthru" "an explicit MERGE_READY verdict passes through when the evidence agrees"
@@ -544,6 +766,36 @@ if grep -qF 'assert_ceiling_untouched' "${LOOP}"; then
   pass "RECURSION-ceiling" "the loop aborts if AMPLIHACK_MAX_DEPTH changes inside the loop"
 else
   fail "RECURSION-ceiling" "nothing guards the inherited depth ceiling"
+fi
+
+# ---------------------------------------------------------------------------
+# 10. No unauthenticated input reaches control flow.
+# ---------------------------------------------------------------------------
+# The resume ledger was a marked PR COMMENT, readable and WRITABLE by anyone
+# who can comment. `autodrive_ledger_pull` awk-parsed it straight into
+# phases.tsv and resolved-concerns.txt, and it fired exactly when the local
+# store was empty — a fresh host. A forged `phases:` block naming `crusty-loop`
+# skipped the entire crusty review, and step-03 never ran, so nothing noticed.
+ledger_hits=0
+for f in "${cap_files[@]}"; do
+  n="$(grep -nE 'autodrive_ledger_(pull|push|comment_id)|AUTODRIVE_LEDGER_MARKER|auto-drive-to-merge:ledger' "$f" 2>/dev/null \
+       | grep -vE '^[0-9]+:[[:space:]]*#' | grep -c . || true)"
+  ledger_hits=$((ledger_hits + n))
+done
+if [ "$ledger_hits" -eq 0 ]; then
+  pass "NO-COMMENT-LEDGER" "no PR-comment ledger is read or written anywhere in the control path"
+else
+  fail "NO-COMMENT-LEDGER" "${ledger_hits} PR-comment ledger reference(s) in the control path"
+fi
+if grep -qE 'issues/[^ ]*/comments' "${TOOLS}"/autodrive_*.sh "${RECIPES}"/auto-drive-to-merge.yaml "${RECIPES}"/autodrive-*.yaml 2>/dev/null; then
+  fail "NO-COMMENT-READ" "a PR comment is read into the workflow's state"
+else
+  pass "NO-COMMENT-READ" "no pull-request comment is read into the workflow's state"
+fi
+if grep -qF 'autodrive_pr_state' "${TOOLS}/autodrive_state.sh"; then
+  pass "PLATFORM-TRUTH" "merged-ness still comes from the platform, not from any comment"
+else
+  fail "PLATFORM-TRUTH" "the platform is no longer consulted for merged-ness"
 fi
 
 echo

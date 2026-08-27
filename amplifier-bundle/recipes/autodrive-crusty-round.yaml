@@ -152,10 +152,10 @@ steps:
         VERDICT="CONCERNS"; SOURCE="missing_verdict"; CONCERNS='[]'
       else
         VERDICT="$(printf '%s' "$RAW" \
-          | amplihack orch helper extract-json \
+          | amplihack orch helper extract-json --require-field crusty_verdict \
           | amplihack orch helper extract-field --field crusty_verdict --default CONCERNS)"
         CONCERNS="$(printf '%s' "$RAW" \
-          | amplihack orch helper extract-json \
+          | amplihack orch helper extract-json --require-field crusty_verdict \
           | amplihack orch helper extract-field --field concerns --default '[]')"
         SOURCE="crusty"
         # Exact-token allow-list. Anything else — including anything that
@@ -248,7 +248,7 @@ steps:
         echo "[skip] not a git repo; commit evidence is reported as unobserved, never as progress" >&2
       fi
       BASE="$(printf '%s' "${CRUSTY_ROUND_CONTEXT:-}" \
-        | amplihack orch helper extract-json \
+        | amplihack orch helper extract-json --require-field head_sha \
         | amplihack orch helper extract-field --field head_sha --default '')"
       NOW=""
       [ "$GIT_OK" = "true" ] && NOW="$(git rev-parse HEAD 2>/dev/null || printf '')"
@@ -272,17 +272,17 @@ steps:
       RECORD="${AUTODRIVE_ROUND_RECORD:-}"
       [ -n "$RECORD" ] || { echo "ERROR: autodrive_round_record is required; the loop driver reads the round record from a file, never from stdout." >&2; exit 1; }
       VERDICT="$(printf '%s' "${CRUSTY_VERDICT:-}" \
-        | amplihack orch helper extract-json \
+        | amplihack orch helper extract-json --require-field crusty_verdict \
         | amplihack orch helper extract-field --field crusty_verdict --default CONCERNS)"
       case "$VERDICT" in CLEAN|CONCERNS) ;; *) VERDICT="CONCERNS" ;; esac
       COUNT="$(printf '%s' "${CRUSTY_VERDICT:-}" \
-        | amplihack orch helper extract-json \
+        | amplihack orch helper extract-json --require-field concern_count \
         | amplihack orch helper extract-field --field concern_count --default 0)"
       COMMITS="$(printf '%s' "${CRUSTY_FIX_EVIDENCE:-}" \
-        | amplihack orch helper extract-json \
+        | amplihack orch helper extract-json --require-field commits \
         | amplihack orch helper extract-field --field commits --default 0)"
       SHA="$(printf '%s' "${CRUSTY_FIX_EVIDENCE:-}" \
-        | amplihack orch helper extract-json \
+        | amplihack orch helper extract-json --require-field head_sha \
         | amplihack orch helper extract-field --field head_sha --default '')"
       [ -f "${RECORD}.findings" ] || : > "${RECORD}.findings"
       printf '{"crusty_verdict":"%s","concern_count":%s,"commits_this_round":%s,"head_sha":"%s","round_label":"%s","test_signal":"","ci_signal":""}\n' \

@@ -72,9 +72,18 @@ assert_ceiling_untouched() {
   fi
 }
 
+# Read one field out of a round record or an agent's output.
+#
+# `--require-field` (issue #1337, PR #1347) is NOT optional here: plain
+# `extract-json` returns the FIRST parseable object and prefers a ```json fence
+# over raw prose, so a model that quotes an example or drafts a verdict before
+# reconsidering has its FIRST object read instead of its last. Requiring the
+# field and taking the LAST object that carries it agrees with the prompt's
+# "as the very last thing you emit", and returns nothing — so the blocking
+# `--default` applies — when no object carries the field at all.
 field() { # field <json> <name> <default>
   printf '%s' "${1:-}" \
-    | "$AMPLIHACK_BIN" orch helper extract-json \
+    | "$AMPLIHACK_BIN" orch helper extract-json --require-field "$2" \
     | "$AMPLIHACK_BIN" orch helper extract-field --field "$2" --default "$3"
 }
 
@@ -92,6 +101,22 @@ escalate() { # escalate <verdict> <why>
   printf '{"loop":"%s","loop_result":"%s","round_label":"%s","reason":"%s"}\n' \
     "$LOOP_NAME" "$1" "${ROUND_LABEL:-?}" "$(printf '%s' "$2" | tr -d '"' | tr '\n' ' ')"
 }
+
+# --- preflight: the terminator must resolve BEFORE round 1 ------------------
+# Both loops delegate termination to `loop-health-evaluator`, invoked by name.
+# When that recipe cannot be resolved, the first round still runs in full — a
+# crusty review, a builder fix pass, commits pushed — and only then dies with
+# "returned STUCK (or an unreadable verdict)", which names the loop as the
+# problem instead of the missing dependency. Resolve it first and refuse by
+# name, before a single round is spent.
+if ! "$AMPLIHACK_BIN" recipe show loop-health-evaluator >/dev/null 2>&1; then
+  echo "ERROR: loop '${LOOP_NAME}' cannot start: the required recipe 'loop-health-evaluator' does not resolve." >&2
+  echo "  It is this loop's ONLY terminator (issue #1337). Without it a full round runs first — a review, a fix pass, commits pushed — and the loop then stops on an unreadable verdict that blames the loop rather than the missing dependency." >&2
+  echo "  Install or update the amplifier bundle so 'loop-health-evaluator' resolves, then re-run. Check with: ${AMPLIHACK_BIN} recipe show loop-health-evaluator" >&2
+  printf '{"loop":"%s","loop_result":"MISSING_DEPENDENCY","round_label":"preflight","reason":"the required recipe loop-health-evaluator does not resolve"}\n' \
+    "$LOOP_NAME"
+  exit 1
+fi
 
 ROUND=0
 ROUND_LABEL=""

@@ -63,6 +63,16 @@ VALUE=$(printf '%s' "$RAW" \
   trying ` ```json ` fenced blocks, untagged ` ``` ` blocks, then a
   balanced-brace scan over raw prose. It prints `{}` when nothing parseable is
   found.
+- `extract-json --require-field FIELD` changes that selection deliberately: it
+  collects **every** JSON object in document order and returns the **last** one
+  carrying `FIELD`, printing `{}` when none does so the `--default` below
+  applies. Use it for anything that decides control flow. First-object-wins is
+  fail-OPEN for a verdict — an agent that quotes an example of its own output
+  contract, or that drafts one object and reconsiders in prose before emitting
+  another, has the wrong object read, and a ` ```json ` fence anywhere in the
+  output outranks the unfenced verdict the prompt asked for. Taking the last
+  object that carries the field is what "emit the verdict as the very last
+  thing" actually means.
 - `extract-field --field FIELD --default SAFE_DEFAULT` reads that JSON object
   and prints the string value of `FIELD`, or `SAFE_DEFAULT` if the field is
   absent or the input is not a JSON object.
@@ -252,6 +262,8 @@ emitted by an agent step as a `parse_json` field and read by an engine
 | D1      | `smart-execute-routing.yaml`                    | `status`              | `extract-json \| extract-field --field status --default unknown`      |
 | D2      | `smart-classify-route.yaml`                     | `tree_id`, `depth`    | `session-tree register --json` → `extract-field`                      |
 | E       | `loop-health-evaluator.yaml`                     | `loop_verdict`        | `extract-json --require-field loop_verdict \| extract-field --field loop_verdict --default STUCK \| normalise-loop-verdict` |
+| F1      | `autodrive-crusty-round.yaml`                    | `crusty_verdict`      | `extract-json --require-field crusty_verdict \| extract-field --field crusty_verdict --default CONCERNS` |
+| F2      | `autodrive-merge-round.yaml`                     | `merge_ready_verdict` | `extract-json --require-field merge_ready_verdict \| extract-field --field merge_ready_verdict --default NOT_MERGE_READY` |
 
 ### A1 — TDD work-verifier gate (`verdict`)
 

@@ -130,7 +130,7 @@ steps:
     parse_json: true
     command: |
       set -uo pipefail
-      g() { printf '%s' "${1:-}" | amplihack orch helper extract-json \
+      g() { printf '%s' "${1:-}" | amplihack orch helper extract-json --require-field "$2" \
               | amplihack orch helper extract-field --field "$2" --default "$3"; }
       PR="$(g "${BUILD_RESULT:-}" pr '')"
       MERGE="$(g "${MERGE_GATE_RESULT:-}" merge_result NOT_MERGED)"

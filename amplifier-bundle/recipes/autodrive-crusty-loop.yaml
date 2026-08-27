@@ -70,7 +70,6 @@ steps:
       DIR="${AUTODRIVE_STATE_DIR:-}"
       [ -n "$DIR" ] || DIR="$(autodrive_state_dir "${REPO_PATH:-.}" "$IDENT")"
       mkdir -p "$DIR"
-      autodrive_ledger_pull "$PR" "$DIR"
 
       # Resume: merged work is never redone, and a phase this workflow already
       # completed is not repeated. Platform state wins over any local record.
@@ -99,10 +98,10 @@ steps:
       [ -f "$LOOP_HELPER" ] || LOOP_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/autodrive_loop.sh"
       [ -f "$LOOP_HELPER" ] || { echo "ERROR: autodrive loop helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): $LOOP_HELPER; cwd=$(pwd)" >&2; exit 1; }
       DIR="$(printf '%s' "${CRUSTY_LOOP_PREFLIGHT:-}" \
-        | amplihack orch helper extract-json \
+        | amplihack orch helper extract-json --require-field state_dir \
         | amplihack orch helper extract-field --field state_dir --default '')"
       PR="$(printf '%s' "${CRUSTY_LOOP_PREFLIGHT:-}" \
-        | amplihack orch helper extract-json \
+        | amplihack orch helper extract-json --require-field pr \
         | amplihack orch helper extract-field --field pr --default '')"
       [ -n "$DIR" ] || { echo "ERROR: preflight produced no state_dir; refusing to run an unrecorded loop." >&2; exit 1; }
 
@@ -139,14 +138,14 @@ steps:
       [ -f "$STATE_HELPER" ] || { echo "WARNING: autodrive state helper not found; this run stays correct but a resumed run will redo the crusty loop." >&2; exit 0; }
       . "$STATE_HELPER"
       DIR="$(printf '%s' "${CRUSTY_LOOP_PREFLIGHT:-}" \
-        | amplihack orch helper extract-json \
+        | amplihack orch helper extract-json --require-field state_dir \
         | amplihack orch helper extract-field --field state_dir --default '')"
       PR="$(printf '%s' "${CRUSTY_LOOP_PREFLIGHT:-}" \
-        | amplihack orch helper extract-json \
+        | amplihack orch helper extract-json --require-field pr \
         | amplihack orch helper extract-field --field pr --default '')"
       [ -n "$DIR" ] || exit 0
       RESULT="$(printf '%s' "${CRUSTY_LOOP_RESULT:-}" \
-        | amplihack orch helper extract-json \
+        | amplihack orch helper extract-json --require-field loop_result \
         | amplihack orch helper extract-field --field loop_result --default '')"
       if [ "$RESULT" != "DONE" ]; then
         echo "INFO: crusty loop result is '${RESULT:-unknown}', not DONE; the phase is NOT recorded complete." >&2
@@ -162,7 +161,6 @@ steps:
         done < "$f"
       done
       autodrive_mark_phase_done "$DIR" "crusty-loop"
-      autodrive_ledger_push "$PR" "$DIR"
       echo "INFO: crusty loop recorded complete for PR #${PR:-<none>}." >&2
     output: "crusty_phase_record"
 

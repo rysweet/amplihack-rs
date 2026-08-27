@@ -92,6 +92,15 @@ steps:
       elif [ -f pyproject.toml ] || [ -f setup.py ]; then
         TYPE="python"; CMD="pytest"
       fi
+      # The evidence binds to the tree it was measured on. The merge gate
+      # refuses evidence whose head_sha is not the SHA being merged, so a
+      # PASS left behind by an earlier round cannot stand in for this one.
+      HEAD_SHA=""
+      if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || printf '')"
+      else
+        echo "[skip] not a git repo; the qa evidence records no head sha, so the merge gate refuses it rather than merging unbound evidence" >&2
+      fi
       STATUS="BLOCKED"; RC=""; SUMMARY=""
       if [ -z "$CMD" ]; then
         SUMMARY="no qa-team scenario runner could be selected for this repository"
@@ -109,8 +118,8 @@ steps:
         tail -n 60 "$LOG" >&2 || true
         rm -f "$LOG"
       fi
-      OUT="$(printf '{"qa_status":"%s","qa_repo_type":"%s","qa_command":"%s","qa_scenarios":"%s","qa_exit_code":"%s","qa_summary":"%s","qa_round":"%s"}\n' \
-        "$STATUS" "$TYPE" "$CMD" "$SCEN" "${RC:-}" "$SUMMARY" "${AUTODRIVE_ROUND_LABEL:-round}")"
+      OUT="$(printf '{"qa_status":"%s","qa_repo_type":"%s","qa_command":"%s","qa_scenarios":"%s","qa_exit_code":"%s","qa_summary":"%s","qa_round":"%s","head_sha":"%s"}\n' \
+        "$STATUS" "$TYPE" "$CMD" "$SCEN" "${RC:-}" "$SUMMARY" "${AUTODRIVE_ROUND_LABEL:-round}" "$HEAD_SHA")"
       [ -n "$EVIDENCE" ] && printf '%s' "$OUT" > "$EVIDENCE"
       printf '%s\n' "$OUT"
     output: "qa_evidence"
