@@ -80,7 +80,24 @@ impl Hook for WorkflowClassificationReminderHook {
             return Ok(Value::Object(serde_json::Map::new()));
         }
 
+        // Two runtimes, two contracts, one gated source.
+        //
+        // Claude Code reads `hookSpecificOutput.additionalContext`. The Copilot
+        // CLI reads a *top-level* `additionalContext` and never looks at
+        // `hookSpecificOutput` -- the string does not appear anywhere in its
+        // binary. So under Copilot this hook's output was discarded in both
+        // directions: it could not route a human, and the provenance gate above
+        // could not suppress anything, because there was nothing to suppress.
+        //
+        // That is why the router still reached recipe steps after #1328: it was
+        // arriving through the repo-root AGENTS.md instead, which is ungated and
+        // is loaded into every leaf agent (issue #1333). Removing that file
+        // without emitting a shape Copilot reads would silently drop human
+        // routing under Copilot altogether.
+        //
+        // Both keys are additive and each runtime ignores the other's.
         Ok(json!({
+            "additionalContext": reminder,
             "hookSpecificOutput": {
                 "hookEventName": "UserPromptSubmit",
                 "additionalContext": reminder
@@ -414,6 +431,65 @@ mod tests {
         assert_eq!(
             reminder,
             "<system-reminder source=\"auto-intent-router\">Framework override</system-reminder>"
+        );
+    }
+
+    /// Issue #1333: the Copilot CLI reads a top-level `additionalContext` and
+    /// never looks at `hookSpecificOutput` -- that key appears zero times in its
+    /// binary. Emitting only the Claude shape meant this hook was inert under
+    /// Copilot, so the router had to arrive through the ungated repo-root
+    /// AGENTS.md instead, which reached every leaf agent step.
+    #[test]
+    fn emits_the_copilot_shape_for_a_human_prompt() {
+        let temp = tempfile::tempdir().unwrap();
+        let _run = crate::test_support::EnvVarGuard::unset(RECIPE_RUN_ID_ENV);
+        let hook = WorkflowClassificationReminderHook;
+        let out = hook
+            .process(HookInput::UserPromptSubmit {
+                user_prompt: Some("Please investigate this issue".to_string()),
+                session_id: Some(format!("s-{}", temp.path().display())),
+                extra: json!({"turnCount": 0}),
+            })
+            .unwrap();
+
+        let top = out
+            .get("additionalContext")
+            .and_then(Value::as_str)
+            .expect("top-level additionalContext is the only key Copilot reads");
+        assert!(
+            top.contains("dev-orchestrator"),
+            "the Copilot-shaped output must carry the routing prompt"
+        );
+        assert_eq!(
+            out.pointer("/hookSpecificOutput/additionalContext")
+                .and_then(Value::as_str),
+            Some(top),
+            "the Claude shape must carry the same text, not diverge from it"
+        );
+    }
+
+    /// The regression lock for #1328: making the hook visible to Copilot must
+    /// not re-open the hole it closed. An agent-authored recipe step gets
+    /// nothing -- in either shape.
+    #[test]
+    fn emits_neither_shape_for_an_agent_authored_prompt() {
+        let _run = crate::test_support::EnvVarGuard::set(RECIPE_RUN_ID_ENV, "run-abc");
+        let hook = WorkflowClassificationReminderHook;
+        let out = hook
+            .process(HookInput::UserPromptSubmit {
+                user_prompt: Some("Please investigate this issue".to_string()),
+                session_id: Some("s-agent".to_string()),
+                extra: json!({"turnCount": 0}),
+            })
+            .unwrap();
+
+        assert!(
+            out.get("additionalContext").is_none(),
+            "a recipe step must not receive the router in the Copilot shape"
+        );
+        assert!(
+            out.get("hookSpecificOutput").is_none(),
+            "nor in the Claude shape"
         );
     }
 }
