@@ -37,25 +37,26 @@ steps:
       # Canonicalize repo_path so WORKTREE_PATH matches git porcelain (issue #1121).
       REPO_PATH="$(pwd -P)"
 
-      # Helper ladder (#829/#840/#962): lifecycle logic lives in tools/ so this
-      # recipe stays < 400 lines. A missing helper is always a graceful no-op.
-      TOOLS_DIR="${AMPLIHACK_HOME:-$REPO_PATH}/amplifier-bundle/tools"
-      for _c in "$REPO_PATH" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do
-        [ -f "$TOOLS_DIR/workflow_worktree_sweep.sh" ] || TOOLS_DIR="$_c/amplifier-bundle/tools"
-      done
+      # Canonical 5-tier helper ladder (#829/#840/#962). Lifecycle logic lives in
+      # tools/ so this recipe stays < 400 lines; a missing helper is a no-op.
+      SWEEP_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_worktree_sweep.sh"
+      [ -f "$SWEEP_HELPER" ] || SWEEP_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_worktree_sweep.sh"
+      [ -f "$SWEEP_HELPER" ] || SWEEP_HELPER="$(pwd)/amplifier-bundle/tools/workflow_worktree_sweep.sh"
+      [ -f "$SWEEP_HELPER" ] || SWEEP_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_worktree_sweep.sh"
+      [ -f "$SWEEP_HELPER" ] || SWEEP_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_worktree_sweep.sh"
+      TOOLS_DIR="$(dirname "$SWEEP_HELPER")"
       # Worktree anchoring (#1134): nested recipe RUNNERS are legitimate, and a
-      # nested run's cwd is normally a LINKED worktree (its `.git` is a FILE pointing
-      # at the main repo). Anchoring `worktrees/<branch>` to `pwd -P` therefore built
-      # worktrees INSIDE worktrees without bound. Anchor at the MAIN repo instead.
+      # nested run's cwd is normally a LINKED worktree (`.git` is a FILE pointing at
+      # the main repo), so anchoring `worktrees/<branch>` at `pwd -P` built worktrees
+      # INSIDE worktrees without bound. Anchor at the MAIN repository instead.
       ROOT_HELPER="$TOOLS_DIR/workflow_worktree_root.sh"
       MAIN_REPO_PATH="$REPO_PATH"
       if [ -f "$ROOT_HELPER" ]; then MAIN_REPO_PATH="$(bash "$ROOT_HELPER" root "$REPO_PATH" || printf '%s' "$REPO_PATH")"; fi
       [ -d "$MAIN_REPO_PATH" ] || MAIN_REPO_PATH="$REPO_PATH"
       [ "$MAIN_REPO_PATH" = "$REPO_PATH" ] || echo "INFO: caller checkout '$REPO_PATH' is a linked worktree — anchoring new worktrees at main repository '$MAIN_REPO_PATH' (issue #1134)." >&2
       # Self-healing orphan sweep (#840): best-effort prune of worktrees/branches
-      # leaked by prior FAILED runs so a re-run converges instead of colliding.
-      # Never aborts setup. Swept at the MAIN repo, where they now all live (#1134).
-      SWEEP_HELPER="$TOOLS_DIR/workflow_worktree_sweep.sh"
+      # leaked by prior FAILED runs so a re-run converges instead of colliding. Never
+      # aborts setup. Swept at the MAIN repo, where they now all live (#1134).
       if [ -f "$SWEEP_HELPER" ]; then bash "$SWEEP_HELPER" sweep "$MAIN_REPO_PATH" >&2 || true; fi
 
       echo "=== Step 4: Creating Worktree and Branch ===" >&2
