@@ -93,11 +93,19 @@ jobs:
 
           echo "Tagging: v${NEW_VERSION} at ${HEAD_SHA}"
 
-          # Create and push a lightweight tag (no commit to main needed)
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "v${NEW_VERSION}" "${HEAD_SHA}"
-          git push origin "v${NEW_VERSION}"
+          # The tag is NOT pushed here. The `release` job creates it once the
+          # artifacts exist (issue #1356).
+          #
+          # This workflow sets `cancel-in-progress: true`, so a push to main cancels
+          # whatever release is running. Pushing the tag before the build meant a
+          # cancelled run left a public tag with nothing behind it -- and the next run
+          # reads `git tag --list` as its source of truth (above), sees that tag, and
+          # bumps past it, so the version is burned and never retried.
+          #
+          # Eleven merges in one night produced eight stranded tags, and left
+          # `amplihack update` reporting "already at the latest version" against a main
+          # it would never fetch. A cancelled run must leave nothing behind: reserving
+          # a number in a job output costs nothing if the run dies, publishing it does.
 
           echo "version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
           echo "sha=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
