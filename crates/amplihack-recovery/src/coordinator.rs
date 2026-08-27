@@ -78,31 +78,30 @@ pub fn run_recovery(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command;
 
     fn init_git_repo(dir: &Path) {
-        Command::new("git")
+        amplihack_git::command()
             .args(["init", "--initial-branch=main"])
             .current_dir(dir)
             .output()
             .unwrap();
-        Command::new("git")
+        amplihack_git::command()
             .args(["config", "user.email", "test@test.com"])
             .current_dir(dir)
             .output()
             .unwrap();
-        Command::new("git")
+        amplihack_git::command()
             .args(["config", "user.name", "Test"])
             .current_dir(dir)
             .output()
             .unwrap();
         std::fs::write(dir.join("README.md"), "init").unwrap();
-        Command::new("git")
+        amplihack_git::command()
             .args(["add", "."])
             .current_dir(dir)
             .output()
             .unwrap();
-        Command::new("git")
+        amplihack_git::command()
             .args([
                 "-c",
                 "user.name=test",

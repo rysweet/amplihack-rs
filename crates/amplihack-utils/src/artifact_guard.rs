@@ -8,7 +8,6 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use thiserror::Error;
 
@@ -335,7 +334,7 @@ pub fn scan_artifacts(
 }
 
 fn resolve_repo_root(repo: &Path) -> Result<PathBuf, ArtifactGuardError> {
-    let output = Command::new("git")
+    let output = amplihack_git::command()
         .args(["-C"])
         .arg(repo)
         .args(["rev-parse", "--show-toplevel"])
@@ -397,7 +396,7 @@ fn scan_git_paths(
     violations: &mut Vec<ArtifactViolation>,
     seen: &mut BTreeSet<(ArtifactSource, String)>,
 ) -> Result<(), ArtifactGuardError> {
-    let output = Command::new("git")
+    let output = amplihack_git::command()
         .args(["-C"])
         .arg(repo)
         .args(args)
@@ -437,7 +436,7 @@ fn scan_ignored_present(
         "--exclude-standard",
         "-z",
     ];
-    let output = Command::new("git")
+    let output = amplihack_git::command()
         .args(["-C"])
         .arg(repo)
         .args(args)
@@ -488,7 +487,7 @@ fn scan_ignored_present(
 /// guard must never flag their contents (issue #857). Best-effort: returns empty
 /// on any git error so the guard fails safe (keeps scanning).
 fn registered_nested_worktree_prefixes(repo: &Path) -> Vec<String> {
-    let Ok(output) = Command::new("git")
+    let Ok(output) = amplihack_git::command()
         .args(["-C"])
         .arg(repo)
         .args(["worktree", "list", "--porcelain"])

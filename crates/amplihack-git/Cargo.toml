@@ -1,0 +1,19 @@
+[package]
+name = "amplihack-git"
+description = "Git subprocesses that ignore the caller's inherited git environment"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# Async twins of `command`/`command_in` for callers already inside a tokio
+# runtime (amplihack-remote). Off by default so sync-only crates do not pull
+# tokio in just to spawn git.
+tokio = ["dep:tokio"]
+
+[dependencies]
+tokio = { workspace = true, features = ["process"], optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

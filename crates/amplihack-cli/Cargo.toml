@@ -26,6 +26,7 @@ signal = ["dep:amplihack-signal", "dep:qrcode"]
 test-support = ["amplihack-memory/test-support"]
 
 [dependencies]
+amplihack-git = { workspace = true }
 amplihack-hive = { path = "../amplihack-hive" }
 amplihack-launcher = { workspace = true }
 amplihack-types = { workspace = true }

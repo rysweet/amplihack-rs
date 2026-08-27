@@ -160,7 +160,7 @@ impl PluginManager {
             let _ = std::fs::remove_dir_all(&clone_target);
         }
 
-        let git_result = std::process::Command::new("git")
+        let git_result = amplihack_git::command()
             .args(["clone", url, &clone_target.to_string_lossy()])
             .output();
 

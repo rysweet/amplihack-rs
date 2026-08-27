@@ -284,7 +284,7 @@ fn pr_ready_helper_fails_closed_when_branch_discovery_fails() {
         vec!["config", "user.email", "test@example.com"],
         vec!["config", "user.name", "Workflow Test"],
     ] {
-        let status = Command::new("git")
+        let status = amplihack_git::command()
             .args(args)
             .current_dir(&repo)
             .status()
@@ -297,7 +297,7 @@ fn pr_ready_helper_fails_closed_when_branch_discovery_fails() {
         vec!["commit", "-m", "base"],
         vec!["switch", "-c", "feature"],
     ] {
-        let status = Command::new("git")
+        let status = amplihack_git::command()
             .args(args)
             .current_dir(&repo)
             .status()
@@ -350,33 +350,33 @@ fn pr_ready_helper_validates_pr_identity_before_mutation() {
     let tmp = TempDir::new().expect("tempdir");
     let repo = tmp.path().join("repo");
     fs::create_dir(&repo).expect("create repo");
-    Command::new("git")
+    amplihack_git::command()
         .args(["init", "-b", "main"])
         .current_dir(&repo)
         .status()
         .expect("git init");
-    Command::new("git")
+    amplihack_git::command()
         .args(["config", "user.email", "test@example.com"])
         .current_dir(&repo)
         .status()
         .expect("git config email");
-    Command::new("git")
+    amplihack_git::command()
         .args(["config", "user.name", "Workflow Test"])
         .current_dir(&repo)
         .status()
         .expect("git config name");
     write_file(&repo.join("README.md"), "base\n");
-    Command::new("git")
+    amplihack_git::command()
         .args(["add", "README.md"])
         .current_dir(&repo)
         .status()
         .expect("git add");
-    Command::new("git")
+    amplihack_git::command()
         .args(["commit", "-m", "base"])
         .current_dir(&repo)
         .status()
         .expect("git commit");
-    Command::new("git")
+    amplihack_git::command()
         .args([
             "remote",
             "add",
@@ -386,23 +386,23 @@ fn pr_ready_helper_validates_pr_identity_before_mutation() {
         .current_dir(&repo)
         .status()
         .expect("git remote add");
-    Command::new("git")
+    amplihack_git::command()
         .args(["switch", "-c", "feature"])
         .current_dir(&repo)
         .status()
         .expect("git switch");
-    Command::new("git")
+    amplihack_git::command()
         .args(["update-ref", "refs/remotes/origin/main", "main"])
         .current_dir(&repo)
         .status()
         .expect("git update remote main");
     write_file(&repo.join("feature.txt"), "feature\n");
-    Command::new("git")
+    amplihack_git::command()
         .args(["add", "feature.txt"])
         .current_dir(&repo)
         .status()
         .expect("git add feature");
-    Command::new("git")
+    amplihack_git::command()
         .args(["commit", "-m", "feature"])
         .current_dir(&repo)
         .status()
@@ -476,7 +476,7 @@ fn pr_ready_helper_fails_closed_when_ready_mutation_fails() {
         vec!["config", "user.email", "test@example.com"],
         vec!["config", "user.name", "Workflow Test"],
     ] {
-        let status = Command::new("git")
+        let status = amplihack_git::command()
             .args(args)
             .current_dir(&repo)
             .status()
@@ -495,14 +495,14 @@ fn pr_ready_helper_fails_closed_when_ready_mutation_fails() {
         ],
         vec!["switch", "-c", "feature"],
     ] {
-        let status = Command::new("git")
+        let status = amplihack_git::command()
             .args(args)
             .current_dir(&repo)
             .status()
             .expect("git setup");
         assert!(status.success(), "git setup command failed");
     }
-    let status = Command::new("git")
+    let status = amplihack_git::command()
         .args(["update-ref", "refs/remotes/origin/main", "main"])
         .current_dir(&repo)
         .status()
@@ -510,7 +510,7 @@ fn pr_ready_helper_fails_closed_when_ready_mutation_fails() {
     assert!(status.success(), "git update remote main failed");
     write_file(&repo.join("feature.txt"), "feature\n");
     for args in [vec!["add", "feature.txt"], vec!["commit", "-m", "feature"]] {
-        let status = Command::new("git")
+        let status = amplihack_git::command()
             .args(args)
             .current_dir(&repo)
             .status()
@@ -592,7 +592,7 @@ fn pr_ready_helper_fails_closed_when_base_branch_cannot_be_proven() {
         vec!["config", "user.email", "test@example.com"],
         vec!["config", "user.name", "Workflow Test"],
     ] {
-        let status = Command::new("git")
+        let status = amplihack_git::command()
             .args(args)
             .current_dir(&repo)
             .status()
@@ -611,7 +611,7 @@ fn pr_ready_helper_fails_closed_when_base_branch_cannot_be_proven() {
         ],
         vec!["switch", "-c", "feature"],
     ] {
-        let status = Command::new("git")
+        let status = amplihack_git::command()
             .args(args)
             .current_dir(&repo)
             .status()
@@ -620,7 +620,7 @@ fn pr_ready_helper_fails_closed_when_base_branch_cannot_be_proven() {
     }
     write_file(&repo.join("feature.txt"), "feature\n");
     for args in [vec!["add", "feature.txt"], vec!["commit", "-m", "feature"]] {
-        let status = Command::new("git")
+        let status = amplihack_git::command()
             .args(args)
             .current_dir(&repo)
             .status()
@@ -742,7 +742,7 @@ fn final_status_does_not_confirm_no_diff_success_with_dirty_worktree() {
         vec!["config", "user.email", "test@example.com"],
         vec!["config", "user.name", "Workflow Test"],
     ] {
-        let status = Command::new("git")
+        let status = amplihack_git::command()
             .args(args)
             .current_dir(&repo)
             .status()
@@ -761,7 +761,7 @@ fn final_status_does_not_confirm_no_diff_success_with_dirty_worktree() {
         ],
         vec!["update-ref", "refs/remotes/origin/main", "main"],
     ] {
-        let status = Command::new("git")
+        let status = amplihack_git::command()
             .args(args)
             .current_dir(&repo)
             .status()
@@ -806,7 +806,7 @@ fn final_status_does_not_confirm_closed_obsolete_with_dirty_worktree() {
         vec!["config", "user.email", "test@example.com"],
         vec!["config", "user.name", "Workflow Test"],
     ] {
-        let status = Command::new("git")
+        let status = amplihack_git::command()
             .args(args)
             .current_dir(&repo)
             .status()
@@ -825,7 +825,7 @@ fn final_status_does_not_confirm_closed_obsolete_with_dirty_worktree() {
         ],
         vec!["update-ref", "refs/remotes/origin/main", "main"],
     ] {
-        let status = Command::new("git")
+        let status = amplihack_git::command()
             .args(args)
             .current_dir(&repo)
             .status()

@@ -711,13 +711,13 @@ fn blocks_no_verify_from_copilot_tool_args_payload() {
 /// Initialize a git repository whose current branch resolves to `main`, even
 /// with no commits (unborn HEAD pointed at refs/heads/main).
 fn init_git_repo_on_main(dir: &std::path::Path) {
-    let init = std::process::Command::new("git")
+    let init = amplihack_git::command()
         .args(["init"])
         .current_dir(dir)
         .output()
         .expect("git init must run");
     assert!(init.status.success(), "git init failed: {init:?}");
-    let sref = std::process::Command::new("git")
+    let sref = amplihack_git::command()
         .args(["symbolic-ref", "HEAD", "refs/heads/main"])
         .current_dir(dir)
         .output()

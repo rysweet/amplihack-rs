@@ -86,6 +86,23 @@ let tokens = shell_words::split(input)?;
 let commands = tokens.split(|t| ["&&", "||", ";", "|"].contains(&t.as_str()));
 ```
 
+### Spawning git
+
+Never `Command::new("git")`. Use `amplihack-git`:
+
+```rust
+amplihack_git::command()               // std, repository chosen by cwd
+amplihack_git::command_in(&repo)       // std, explicit directory
+amplihack_git::tokio_command()         // async callers
+amplihack_git::scrub(&mut cmd)         // non-git child that runs git itself
+```
+
+git exports `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and `GIT_PREFIX` into
+every hook it runs, and those variables outrank `.current_dir()`. A raw command
+therefore operates on the hook's repository, not the one you pointed it at --
+which is how the pre-push `cargo test` gate became unpassable (issue #1278).
+`scripts/check-git-command-sanitised.sh` fails the build on a raw one.
+
 ### IPC versioning
 
 All `HookOutput` includes `version: 1`. Future protocol changes increment this.
@@ -94,6 +111,7 @@ All `HookOutput` includes `version: 1`. Future protocol changes increment this.
 
 ```
 crates/
+├── amplihack-git/      # Git subprocesses that ignore the inherited git env
 ├── amplihack-types/    # IPC boundary types (HookInput, HookOutput, ToolDecision)
 ├── amplihack-state/    # File ops, locking, env config
 ├── amplihack-hooks/    # Hook implementations + protocol

@@ -129,7 +129,7 @@ fn run_prepare_workspace_real_git(repo_path: &Path, auto_init: Option<&str>) -> 
 /// repository for the "preserve existing behavior" contract.
 fn init_real_checkout(dir: &Path) {
     let ok = |args: &[&str]| {
-        let status = Command::new("git")
+        let status = amplihack_git::command()
             .args(args)
             .current_dir(dir)
             .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -150,7 +150,7 @@ fn current_branch(dir: &Path) -> String {
     // Use symbolic-ref so this resolves correctly on an *unborn* branch
     // (freshly `git init`ed repo with no commits yet), where
     // `rev-parse --abbrev-ref HEAD` would report "HEAD".
-    let out = Command::new("git")
+    let out = amplihack_git::command()
         .args(["symbolic-ref", "--short", "HEAD"])
         .current_dir(dir)
         .output()

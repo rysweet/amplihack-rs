@@ -2,7 +2,6 @@ use std::{
     collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
-    process::Command,
     time::{Duration, SystemTime},
 };
 
@@ -576,7 +575,7 @@ fn print_report(report: &CleanupReport, config: &CleanupConfig) -> Result<()> {
 }
 
 fn active_worktrees(repo: &Path) -> Result<BTreeSet<PathBuf>> {
-    let mut command = Command::new("git");
+    let mut command = amplihack_git::command();
     command
         .arg("-C")
         .arg(repo)
@@ -624,7 +623,7 @@ fn sanitized_stderr(stderr: &[u8]) -> String {
 }
 
 fn git_has_dirty_state(path: &Path) -> bool {
-    let mut command = Command::new("git");
+    let mut command = amplihack_git::command();
     command.arg("-C").arg(path).arg("status").arg("--porcelain");
     let output = run_output_with_timeout(command, GIT_COMMAND_TIMEOUT);
     match output {
@@ -634,7 +633,7 @@ fn git_has_dirty_state(path: &Path) -> bool {
 }
 
 fn git_has_unpushed_commits(path: &Path) -> bool {
-    let mut upstream_command = Command::new("git");
+    let mut upstream_command = amplihack_git::command();
     upstream_command
         .arg("-C")
         .arg(path)
@@ -649,7 +648,7 @@ fn git_has_unpushed_commits(path: &Path) -> bool {
         return true;
     }
 
-    let mut count_command = Command::new("git");
+    let mut count_command = amplihack_git::command();
     count_command
         .arg("-C")
         .arg(path)

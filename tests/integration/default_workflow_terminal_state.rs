@@ -154,7 +154,7 @@ fn set_origin_url(repo: &Path, url: &str) {
 }
 
 fn git_head(dir: &Path) -> String {
-    let output = Command::new("git")
+    let output = amplihack_git::command()
         .args(["rev-parse", "HEAD"])
         .current_dir(dir)
         .output()

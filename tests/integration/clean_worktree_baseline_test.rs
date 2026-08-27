@@ -136,7 +136,7 @@ fn consensus_step3_body() -> String {
 // ---------------------------------------------------------------------------
 
 fn git(cwd: &Path, args: &[&str]) -> Output {
-    let out = Command::new("git")
+    let out = amplihack_git::command()
         .args(["-c", "user.email=test@test", "-c", "user.name=test"])
         .args(args)
         .current_dir(cwd)
@@ -162,7 +162,7 @@ fn git_stdout(cwd: &Path, args: &[&str]) -> String {
 /// cannot be evaluated (missing ref) — the caller must ensure the base ref is
 /// available locally.
 fn rev_count(cwd: &Path, range: &str) -> i64 {
-    let out = Command::new("git")
+    let out = amplihack_git::command()
         .args(["rev-list", "--count", range])
         .current_dir(cwd)
         .output()
@@ -224,7 +224,7 @@ impl GitFixture {
     /// uncommitted file — exactly the #858 failure setup.
     fn with_origin(default_branch: &str) -> Self {
         let origin = TempDir::new().expect("origin tempdir");
-        let ok = Command::new("git")
+        let ok = amplihack_git::command()
             .args(["init", "--bare", "-b", default_branch])
             .arg(origin.path())
             .output()
@@ -427,7 +427,7 @@ fn workflow_worktree_clean_baseline_from_dirty_caller() {
         "created worktree working tree must be clean"
     );
     // The caller's unrelated commit must not be reachable from the worktree.
-    let leaked = Command::new("git")
+    let leaked = amplihack_git::command()
         .args([
             "merge-base",
             "--is-ancestor",
@@ -589,7 +589,7 @@ fn consensus_master_only_origin_does_not_inherit_caller_commits() {
         fix.base_ref(),
         r.stderr
     );
-    let leaked = Command::new("git")
+    let leaked = amplihack_git::command()
         .args([
             "merge-base",
             "--is-ancestor",

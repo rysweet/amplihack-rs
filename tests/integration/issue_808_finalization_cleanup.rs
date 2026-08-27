@@ -52,7 +52,7 @@ fn finalize_recipe() -> PathBuf {
 // ---------------------------------------------------------------------------
 
 fn git(cwd: &Path, args: &[&str]) -> Output {
-    let out = Command::new("git")
+    let out = amplihack_git::command()
         .args(["-c", "user.email=test@test", "-c", "user.name=test"])
         .args(args)
         .current_dir(cwd)
@@ -73,7 +73,7 @@ fn git_stdout(cwd: &Path, args: &[&str]) -> String {
 
 /// True if `branch` exists on the bare origin remote.
 fn remote_branch_exists(repo: &Path, branch: &str) -> bool {
-    let out = Command::new("git")
+    let out = amplihack_git::command()
         .args(["ls-remote", "--heads", "origin", branch])
         .current_dir(repo)
         .output()
@@ -112,7 +112,7 @@ impl TaskWorktree {
     fn new(intended: &str) -> Self {
         let origin = TempDir::new().expect("origin tempdir");
         let origin_path = origin.path().to_path_buf();
-        Command::new("git")
+        amplihack_git::command()
             .args(["init", "--bare", "-b", "main"])
             .arg(&origin_path)
             .output()

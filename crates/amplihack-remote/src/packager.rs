@@ -89,7 +89,7 @@ impl ContextPackager {
 
     /// Scan tracked files for hardcoded secrets.
     pub async fn scan_secrets(&self) -> Result<Vec<SecretMatch>, RemoteError> {
-        let output = Command::new("git")
+        let output = amplihack_git::tokio_command()
             .args(["ls-files"])
             .current_dir(&self.repo_path)
             .stdout(Stdio::piped())
@@ -170,7 +170,7 @@ impl ContextPackager {
         let temp_dir = self.ensure_temp_dir()?;
         let bundle_path = temp_dir.join("repo.bundle");
 
-        let output = Command::new("git")
+        let output = amplihack_git::tokio_command()
             .args([
                 "bundle",
                 "create",
@@ -197,7 +197,7 @@ impl ContextPackager {
         }
 
         // Verify bundle
-        let verify = Command::new("git")
+        let verify = amplihack_git::tokio_command()
             .args([
                 "bundle",
                 "verify",

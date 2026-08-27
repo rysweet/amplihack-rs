@@ -173,7 +173,7 @@ impl<R: CommandRunner> WorkSummaryGenerator<R> {
 }
 
 fn git_command(working_dir: &Path, args: &[&str]) -> Command {
-    let mut command = Command::new("git");
+    let mut command = amplihack_git::command();
     command.current_dir(working_dir).args(args);
     command
 }

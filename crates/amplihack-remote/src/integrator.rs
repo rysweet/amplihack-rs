@@ -146,7 +146,7 @@ impl Integrator {
 
         let output = tokio::time::timeout(
             std::time::Duration::from_secs(60),
-            Command::new("git")
+            amplihack_git::tokio_command()
                 .args([
                     "fetch",
                     bundle_path.to_str().unwrap_or("."),
@@ -243,7 +243,7 @@ impl Integrator {
             }
 
             // Check if fast-forward possible
-            let output = Command::new("git")
+            let output = amplihack_git::tokio_command()
                 .args(["merge-base", "--is-ancestor", &local_commit, &branch.commit])
                 .current_dir(&self.repo_path)
                 .stdout(Stdio::piped())
@@ -270,7 +270,7 @@ impl Integrator {
     async fn count_new_commits(&self, branches: &[BranchInfo]) -> usize {
         let mut total = 0usize;
         for branch in branches {
-            let output = Command::new("git")
+            let output = amplihack_git::tokio_command()
                 .args([
                     "rev-list",
                     "--count",
@@ -297,7 +297,7 @@ impl Integrator {
             return 0;
         };
 
-        let output = Command::new("git")
+        let output = amplihack_git::tokio_command()
             .args([
                 "diff",
                 "--name-only",
@@ -320,7 +320,7 @@ impl Integrator {
     }
 
     async fn list_local_branches(&self) -> Vec<String> {
-        let output = Command::new("git")
+        let output = amplihack_git::tokio_command()
             .args(["branch", "--format=%(refname:short)"])
             .current_dir(&self.repo_path)
             .stdout(Stdio::piped())
@@ -338,7 +338,7 @@ impl Integrator {
     }
 
     async fn list_remote_exec_branches(&self) -> Vec<String> {
-        let output = Command::new("git")
+        let output = amplihack_git::tokio_command()
             .args(["branch", "-r", "--format=%(refname:short)"])
             .current_dir(&self.repo_path)
             .stdout(Stdio::piped())
@@ -357,7 +357,7 @@ impl Integrator {
     }
 
     async fn git_rev_parse(&self, refspec: &str) -> Option<String> {
-        let output = Command::new("git")
+        let output = amplihack_git::tokio_command()
             .args(["rev-parse", refspec])
             .current_dir(&self.repo_path)
             .stdout(Stdio::piped())

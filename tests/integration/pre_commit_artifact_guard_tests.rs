@@ -9,6 +9,12 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+/// The wrapper the build hooks run through (issue #1278). It removes git's
+/// inherited repository selection -- GIT_DIR and friends, which git exports
+/// into every hook and which override `.current_dir()` -- and pins
+/// CARGO_TARGET_DIR outside the worktree.
+const HOOK_WRAPPER: &str = "scripts/git-hook-cargo.sh";
+
 const VALID_CARGO_ENTRY: &str = "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit'";
 const VALID_LOCKED_BEFORE_BIN_ENTRY: &str = "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --locked --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit'";
 const VALID_LOCKED_AFTER_BIN_ENTRY: &str = "bash -c 'CARGO_TARGET_DIR=\"${TMPDIR:-/tmp}/amplihack-precommit-target\" cargo run --bin amplihack --locked -- hygiene artifact-guard --repo . --mode pre-commit'";
@@ -66,9 +72,48 @@ fn artifact_guard_entry_from_config() -> String {
         .to_string()
 }
 
+/// Split a leading `scripts/git-hook-cargo.sh` off a hook entry.
+///
+/// Returns whether the wrapper was present along with the command it wraps.
+fn strip_hook_wrapper(tokens: &[String]) -> (bool, &[String]) {
+    match tokens.first().map(String::as_str) {
+        Some(HOOK_WRAPPER) => (true, &tokens[1..]),
+        _ => (false, tokens),
+    }
+}
+
+/// Confirm the wrapper really does isolate CARGO_TARGET_DIR.
+///
+/// Read out of the script rather than assumed, so moving the isolation into
+/// the wrapper cannot quietly become no isolation at all. The returned string
+/// is what the wrapper exports, and stands in for the inline assignment the
+/// entry used to carry.
+fn wrapper_target_dir(entry: &str) -> Result<String, String> {
+    let path = workspace_root().join(HOOK_WRAPPER);
+    let script = fs::read_to_string(&path)
+        .map_err(|e| format!("read {} for `{entry}`: {e}", path.display()))?;
+    script
+        .lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("export CARGO_TARGET_DIR="))
+        .map(str::to_string)
+        .ok_or_else(|| format!("{HOOK_WRAPPER} must export CARGO_TARGET_DIR; entry was `{entry}`"))
+}
+
 fn assert_artifact_guard_entry_contract(entry: &str) -> Result<(), String> {
     let tokens = hook_command_tokens(entry)?;
-    let (cargo_target_dir, command) = split_env_assignments(&tokens);
+    let (wrapped, tokens) = strip_hook_wrapper(&tokens);
+    let (inline_target_dir, command) = split_env_assignments(tokens);
+
+    // The wrapper supplies CARGO_TARGET_DIR for the entries that go through it,
+    // so an entry may carry the assignment inline or inherit it from the script.
+    let from_wrapper = if wrapped {
+        Some(wrapper_target_dir(entry)?)
+    } else {
+        None
+    };
+    let cargo_target_dir = inline_target_dir.or(from_wrapper.as_deref());
+
     let guard_args = if command.first().map(String::as_str) == Some("cargo") {
         assert_cargo_fallback(command, cargo_target_dir, entry)?
     } else {
@@ -394,8 +439,13 @@ fn pre_commit_build_hooks_use_isolated_target_dir() {
             .get("entry")
             .and_then(Value::as_str)
             .unwrap_or_else(|| panic!("{id} must declare an entry"));
+        // Either the entry sets it inline, or it runs through the wrapper --
+        // and the wrapper is checked for the export, not merely named.
+        let inline = entry.contains("CARGO_TARGET_DIR") && entry.contains("/tmp");
+        let via_wrapper = entry.starts_with(HOOK_WRAPPER)
+            && wrapper_target_dir(entry).is_ok_and(|dir| dir.contains("/tmp"));
         assert!(
-            entry.contains("CARGO_TARGET_DIR") && entry.contains("/tmp"),
+            inline || via_wrapper,
             "{id} must isolate Cargo build output outside the parent worktree; entry was `{entry}`"
         );
     }

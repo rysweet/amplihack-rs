@@ -105,7 +105,7 @@ fn remote_rust_modules_stay_under_500_lines() {
 fn github_hooks_scope_creep_is_absent() {
     // Check git-tracked files rather than filesystem: runtime tools (amplihack install,
     // hooks setup) may create .github/hooks/ on disk without committing them.
-    let output = std::process::Command::new("git")
+    let output = amplihack_git::command()
         .args(["ls-tree", "-r", "--name-only", "HEAD", ".github/hooks/"])
         .current_dir(repo_root())
         .output()

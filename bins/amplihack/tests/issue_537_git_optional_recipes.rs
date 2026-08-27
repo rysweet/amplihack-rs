@@ -101,7 +101,7 @@ fn smart_orchestrator_dry_run_from_non_git_dir_succeeds_or_reports_structured_gi
 #[test]
 fn smart_orchestrator_dry_run_from_git_dir_succeeds() {
     let git_dir = tempfile::tempdir().expect("create git tempdir");
-    let init = Command::new("git")
+    let init = amplihack_git::command()
         .arg("init")
         .arg("--quiet")
         .current_dir(git_dir.path())

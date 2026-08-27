@@ -4,7 +4,6 @@
 //! - Runs `git branch --show-current` with a 5-second timeout.
 
 use serde_json::Value;
-use std::process::Command;
 use std::time::Duration;
 
 /// Check if the current branch is main/master and block commits.
@@ -39,7 +38,7 @@ const GIT_TIMEOUT: Duration = Duration::from_secs(5);
 /// - Command times out (5 seconds)
 /// - Any other error
 fn get_current_branch() -> Option<String> {
-    let mut child = Command::new("git")
+    let mut child = amplihack_git::command()
         .args(["--no-pager", "branch", "--show-current"])
         .env("GIT_PAGER", "cat")
         .env("PAGER", "cat")

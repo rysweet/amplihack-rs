@@ -5,7 +5,6 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 
 /// Result of git conflict detection.
@@ -64,7 +63,7 @@ impl GitConflictDetector {
     }
 
     fn is_git_repo(&self) -> bool {
-        Command::new("git")
+        amplihack_git::command()
             .args(["rev-parse", "--git-dir"])
             .current_dir(&self.target_dir)
             .stdout(std::process::Stdio::null())
@@ -75,7 +74,7 @@ impl GitConflictDetector {
     }
 
     fn get_uncommitted_files(&self) -> Vec<String> {
-        let output = Command::new("git")
+        let output = amplihack_git::command()
             .args(["status", "--porcelain"])
             .current_dir(&self.target_dir)
             .stdout(std::process::Stdio::piped())
@@ -164,14 +163,14 @@ mod tests {
 
     fn setup_git_repo() -> TempDir {
         let dir = TempDir::new().unwrap();
-        Command::new("git")
+        amplihack_git::command()
             .args(["init"])
             .current_dir(dir.path())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
             .unwrap();
-        Command::new("git")
+        amplihack_git::command()
             .args([
                 "-c",
                 "user.name=test",
@@ -218,12 +217,12 @@ mod tests {
         fs::write(&file, "original").unwrap();
 
         // Stage and commit
-        Command::new("git")
+        amplihack_git::command()
             .args(["add", "."])
             .current_dir(dir.path())
             .status()
             .unwrap();
-        Command::new("git")
+        amplihack_git::command()
             .args([
                 "-c",
                 "user.name=test",
@@ -257,12 +256,12 @@ mod tests {
         fs::write(claude_dir.join("settings.json"), "{}").unwrap();
         fs::write(claude_dir.join(".version"), "1.0").unwrap();
 
-        Command::new("git")
+        amplihack_git::command()
             .args(["add", "."])
             .current_dir(dir.path())
             .status()
             .unwrap();
-        Command::new("git")
+        amplihack_git::command()
             .args([
                 "-c",
                 "user.name=test",
@@ -294,12 +293,12 @@ mod tests {
         let file = claude_dir.join("old.md");
         fs::write(&file, "content").unwrap();
 
-        Command::new("git")
+        amplihack_git::command()
             .args(["add", "."])
             .current_dir(dir.path())
             .status()
             .unwrap();
-        Command::new("git")
+        amplihack_git::command()
             .args([
                 "-c",
                 "user.name=test",
@@ -344,12 +343,12 @@ mod tests {
         fs::write(cmds.join("a.md"), "a").unwrap();
         fs::write(ctx.join("b.md"), "b").unwrap();
 
-        Command::new("git")
+        amplihack_git::command()
             .args(["add", "."])
             .current_dir(dir.path())
             .status()
             .unwrap();
-        Command::new("git")
+        amplihack_git::command()
             .args([
                 "-c",
                 "user.name=test",

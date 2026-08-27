@@ -28,6 +28,7 @@ name = "amplihack"
 version = "0.18.0"
 dependencies = [
  "amplihack-cli",
+ "amplihack-git",
  "amplihack-hooks",
  "amplihack-state",
  "amplihack-types",
@@ -80,6 +81,7 @@ dependencies = [
 name = "amplihack-agent-generator"
 version = "0.18.0"
 dependencies = [
+ "amplihack-git",
  "chrono",
  "serde",
  "serde_json",
@@ -132,6 +134,7 @@ name = "amplihack-cli"
 version = "0.18.0"
 dependencies = [
  "amplihack-builders",
+ "amplihack-git",
  "amplihack-hive",
  "amplihack-launcher",
  "amplihack-memory",
@@ -237,6 +240,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "amplihack-git"
+version = "0.18.0"
+dependencies = [
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "amplihack-hive"
 version = "0.18.0"
 dependencies = [
@@ -256,6 +267,7 @@ dependencies = [
 name = "amplihack-hooks"
 version = "0.18.0"
 dependencies = [
+ "amplihack-git",
  "amplihack-memory",
  "amplihack-security",
  "amplihack-signal",
@@ -293,6 +305,7 @@ dependencies = [
 name = "amplihack-launcher"
 version = "0.18.0"
 dependencies = [
+ "amplihack-git",
  "amplihack-types",
  "amplihack-utils",
  "anyhow",
@@ -367,6 +380,7 @@ dependencies = [
 name = "amplihack-recovery"
 version = "0.18.0"
 dependencies = [
+ "amplihack-git",
  "anyhow",
  "chrono",
  "serde",
@@ -395,6 +409,7 @@ dependencies = [
 name = "amplihack-remote"
 version = "0.18.0"
 dependencies = [
+ "amplihack-git",
  "amplihack-utils",
  "anyhow",
  "chrono",
@@ -413,6 +428,7 @@ dependencies = [
 name = "amplihack-safety"
 version = "0.18.0"
 dependencies = [
+ "amplihack-git",
  "serde",
  "serde_json",
  "tempfile",
@@ -521,6 +537,7 @@ dependencies = [
 name = "amplihack-utils"
 version = "0.18.0"
 dependencies = [
+ "amplihack-git",
  "amplihack-types",
  "anyhow",
  "base64",
