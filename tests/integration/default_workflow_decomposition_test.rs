@@ -1,10 +1,9 @@
 //! Default-workflow decomposition parity tests.
 //!
 //! `default-workflow.yaml` was decomposed (v3.0.0) from a 3098-line monolith
-//! into a thin composer that calls 10 phase sub-recipes:
+//! into a thin composer that calls 9 phase sub-recipes:
 //!
-//!   workflow-prep, workflow-worktree, workflow-design-applicability,
-//!   workflow-design, workflow-tdd,
+//!   workflow-prep, workflow-worktree, workflow-design, workflow-tdd,
 //!   workflow-refactor-review, workflow-precommit-test, workflow-publish,
 //!   workflow-pr-review, workflow-finalize
 //!
@@ -216,7 +215,6 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     // Phase 1b: workflow-worktree (step 04)
     "step-04-setup-worktree",
     // Phase 2: workflow-design (steps 05-06d)
-    "step-05a-design-applicability",
     "step-05-architecture",
     "step-05b-api-design",
     "step-05c-database-design",
@@ -292,7 +290,6 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
 const PHASE_RECIPES: &[&str] = &[
     "workflow-prep",
     "workflow-worktree",
-    "workflow-design-applicability",
     "workflow-design",
     "workflow-tdd",
     "workflow-refactor-review",

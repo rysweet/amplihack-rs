@@ -83,7 +83,7 @@ steps:
     output: "architecture_design"
 
   - id: "step-05b-api-design"
-    condition: "design_applicability.requires_api_design != 'false'"
+    condition: "clarified_requirements.requires_api_design != 'false'"
     agent: "amplihack:api-designer"
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
@@ -101,7 +101,7 @@ steps:
     output: "api_design"
 
   - id: "step-05c-database-design"
-    condition: "design_applicability.requires_database_design != 'false'"
+    condition: "clarified_requirements.requires_database_design != 'false'"
     agent: "amplihack:database"
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |

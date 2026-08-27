@@ -99,6 +99,10 @@ jobs:
       - name: Recipes — ADO work items assigned + typed + fail-loud (issue #983)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-983-azdo-work-item-assignment.sh
+      - name: Recipes — no prose-only skips (issue #1334)
+        shell: bash
+        run: bash scripts/check-prose-only-skips.sh
+
       - name: Recipes — foreign-worktree branch deconfliction (concurrency)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-foreign-worktree-deconflict.sh
