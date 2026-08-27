@@ -118,6 +118,10 @@ pub fn resolve(cwd: &Path) -> Result<String, ResolveError> {
 #[derive(Deserialize)]
 struct LauncherContextSnippet {
     launcher: String,
+    /// RFC3339, written by `write_launcher_context`. Absent in files written
+    /// before the field existed, which are by definition old -- treated stale.
+    #[serde(default)]
+    timestamp: Option<String>,
 }
 
 /// Walk up from `start` looking for `.claude/runtime/launcher_context.json`.
@@ -174,6 +178,23 @@ fn read_launcher_field(path: &Path, anchor: &Path) -> Option<String> {
     }
     let body = fs::read_to_string(&canonical).ok()?;
     let parsed: LauncherContextSnippet = serde_json::from_str(&body).ok()?;
+    // A launcher context describes a session, and sessions end. The hooks
+    // reader has always applied a staleness bound; this one never did, so a
+    // file written days earlier by an unrelated session kept deciding which
+    // agent CLI ran (issue #1335).
+    let stale = parsed
+        .timestamp
+        .as_deref()
+        .map(crate::launcher_context::is_timestamp_stale)
+        .unwrap_or(true);
+    if stale {
+        debug!(
+            path = %canonical.display(),
+            timestamp = ?parsed.timestamp,
+            "ignoring launcher context older than the staleness bound"
+        );
+        return None;
+    }
     validate_binary_name(&parsed.launcher)
 }
 

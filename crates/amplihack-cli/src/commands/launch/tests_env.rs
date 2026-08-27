@@ -298,17 +298,15 @@ fn persist_launcher_context_writes_copilot_context_file() {
 /// re-launches (recipe runner sub-recipes, agent tasks) inherit the
 /// correct active binary instead of silently falling back to claude.
 ///
-/// Per Decision 2 in the requirements doc the value is hardcoded —
-/// `persist_launcher_context` only runs when `tool == "copilot"`, so
-/// reading from `std::env::var` would be wrong (the env var may be
-/// missing on the parent process even though we know we are launching
-/// copilot). The test is intentionally tight: it asserts the exact key
-/// and value, so any future "lost in translation" change at this
-/// chokepoint surfaces immediately.
+/// The value comes from the launcher being invoked, never from
+/// `std::env::var` — the parent may have no preference set even when we
+/// know exactly which binary we are launching. The test is intentionally
+/// tight: it asserts the exact key and value, so any future "lost in
+/// translation" change at this chokepoint surfaces immediately.
 ///
-/// TDD note: this test is expected to FAIL until the implementation
-/// adds the explicit `environment.insert("AMPLIHACK_AGENT_BINARY", …)`
-/// line in `persist_launcher_context`.
+/// Issue #1335 note: persistence is no longer copilot-only. It records
+/// whichever launcher actually ran, so the persisted layer can answer for
+/// claude as well. See `persist_launcher_context_records_the_launcher_that_ran`.
 #[test]
 fn persist_launcher_context_writes_agent_binary_for_copilot() {
     let dir = tempfile::tempdir().unwrap();
@@ -341,23 +339,35 @@ fn persist_launcher_context_writes_agent_binary_for_copilot() {
     );
 }
 
-/// Issue #506 scope guard: the fix must NOT start persisting a launcher
-/// context for non-copilot tools. The early-return at context.rs:14-16
-/// is load-bearing — sub-launches under claude/codex/amplifier rely on
-/// the absence of a stale context file. Asserting "no file written"
-/// keeps the scope of #506 tight.
+/// Superseded by issue #1335. This used to assert that a context is written
+/// only for copilot, on the reasoning that "sub-launches under
+/// claude/codex/amplifier rely on the absence of a stale context file".
+///
+/// The absence is not what they relied on. With no file, resolution falls
+/// through to `DEFAULT_BINARY`, which is *copilot* — so a claude session that
+/// lost `AMPLIHACK_AGENT_BINARY` landed on copilot either way. The persisted
+/// layer was a one-way voter: it could only ever say copilot, and its absence
+/// also meant copilot. There was no path back to claude.
+///
+/// Downstream was always ready for the symmetric behaviour:
+/// `pre_tool_use::launcher::detect_launcher_for_dirs` already maps
+/// `LauncherKind::Claude` to `LauncherType::ClaudeCode`. That arm was simply
+/// unreachable because nothing wrote it.
+///
+/// What must still hold is the narrower thing #506 actually needed: a
+/// non-launcher subcommand writes nothing.
 #[test]
-fn persist_launcher_context_writes_nothing_for_non_copilot_tools() {
+fn persist_launcher_context_writes_nothing_for_non_launcher_subcommands() {
     let dir = tempfile::tempdir().unwrap();
 
-    persist_launcher_context("claude", Some(dir.path()), &[]).unwrap();
-    persist_launcher_context("codex", Some(dir.path()), &[]).unwrap();
-    persist_launcher_context("amplifier", Some(dir.path()), &[]).unwrap();
+    persist_launcher_context("install", Some(dir.path()), &[]).unwrap();
+    persist_launcher_context("doctor", Some(dir.path()), &[]).unwrap();
+    persist_launcher_context("recipe", Some(dir.path()), &[]).unwrap();
 
     assert!(
         read_launcher_context(dir.path()).is_none(),
-        "issue #506 fix must remain copilot-only — no context file may \
-         be written for claude/codex/amplifier launches"
+        "only agent launchers describe a session; a maintenance subcommand \
+         must not stamp the repository with one"
     );
 }
 
@@ -673,4 +683,81 @@ fn a_dot_relative_resolved_target_does_not_reach_the_child_path() {
         "a `.`-relative resolved target must not contribute a PATH entry, \
          got: {entries:?}"
     );
+}
+
+/// Issue #1335: persistence used to begin `if tool != "copilot" { return }`.
+/// That made the persisted layer a one-way voter — it could only ever say
+/// "copilot" — and `DEFAULT_BINARY` is copilot too, so a claude session that
+/// lost `AMPLIHACK_AGENT_BINARY` could not resolve back to claude by any path.
+#[test]
+fn persist_launcher_context_records_the_launcher_that_ran() {
+    for (tool, expected) in [
+        ("claude", LauncherKind::Claude),
+        ("copilot", LauncherKind::Copilot),
+        ("codex", LauncherKind::Codex),
+        ("amplifier", LauncherKind::Amplifier),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        persist_launcher_context(tool, Some(dir.path()), &[]).unwrap();
+
+        let context = read_launcher_context(dir.path())
+            .unwrap_or_else(|| panic!("{tool}: expected a persisted launcher context"));
+        assert_eq!(context.launcher, expected, "{tool}: wrong launcher kind");
+        assert_eq!(
+            context
+                .environment
+                .get("AMPLIHACK_AGENT_BINARY")
+                .map(String::as_str),
+            Some(tool),
+            "{tool}: persisted context must name the launcher that ran"
+        );
+        assert_eq!(
+            context
+                .environment
+                .get("AMPLIHACK_LAUNCHER")
+                .map(String::as_str),
+            Some(tool)
+        );
+    }
+}
+
+/// A non-launcher subcommand must not stamp the repository at all.
+#[test]
+fn persist_launcher_context_ignores_non_launcher_subcommands() {
+    let dir = tempfile::tempdir().unwrap();
+    persist_launcher_context("install", Some(dir.path()), &[]).unwrap();
+    assert!(
+        read_launcher_context(dir.path()).is_none(),
+        "only agent launchers describe a session"
+    );
+}
+
+/// Issue #1335, the actual field failure: the file that hijacked every
+/// workflow under /tmp for five days recorded
+/// `"command": "amplihack copilot --version"`. A question-and-exit
+/// invocation is not a session and must not claim to be one.
+#[test]
+fn persist_launcher_context_skips_non_session_invocations() {
+    for flag in ["--version", "-V", "--help", "-h", "help", "--dry-run"] {
+        let dir = tempfile::tempdir().unwrap();
+        persist_launcher_context("copilot", Some(dir.path()), &[flag.to_string()]).unwrap();
+        assert!(
+            read_launcher_context(dir.path()).is_none(),
+            "{flag}: must not persist a session identity"
+        );
+    }
+}
+
+/// A real session with ordinary arguments still persists.
+#[test]
+fn persist_launcher_context_still_persists_a_real_session() {
+    let dir = tempfile::tempdir().unwrap();
+    persist_launcher_context(
+        "claude",
+        Some(dir.path()),
+        &["--model".into(), "opus".into()],
+    )
+    .unwrap();
+    let context = read_launcher_context(dir.path()).expect("a real session must persist");
+    assert_eq!(context.launcher, LauncherKind::Claude);
 }

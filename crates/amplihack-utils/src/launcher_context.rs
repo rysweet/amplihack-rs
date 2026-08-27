@@ -98,6 +98,22 @@ pub fn is_launcher_context_stale(context: &LauncherContext) -> bool {
     is_launcher_context_stale_with(context, DEFAULT_STALE_HOURS)
 }
 
+/// Whether an RFC3339 timestamp is older than the launcher-context staleness
+/// bound, or is unparseable.
+///
+/// Exposed so every reader of a launcher context applies the same bound. The
+/// agent-binary resolver has its own hardened parser (size cap, symlink-escape
+/// check, allowlist) and so cannot go through [`read_launcher_context`], but it
+/// must not therefore get its own idea of how old is too old. It previously had
+/// none at all, and honoured a five-day-old file (issue #1335).
+pub fn is_timestamp_stale(timestamp: &str) -> bool {
+    let Ok(parsed) = DateTime::parse_from_rfc3339(timestamp) else {
+        return true;
+    };
+    Utc::now().signed_duration_since(parsed.with_timezone(&Utc))
+        > Duration::hours(DEFAULT_STALE_HOURS)
+}
+
 fn is_launcher_context_stale_with(context: &LauncherContext, max_age_hours: i64) -> bool {
     let Ok(timestamp) = DateTime::parse_from_rfc3339(&context.timestamp) else {
         return true;
