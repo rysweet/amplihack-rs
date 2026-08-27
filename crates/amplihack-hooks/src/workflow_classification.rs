@@ -21,6 +21,14 @@ const DEFAULT_ROUTING_PROMPT: &str = include_str!("routing_prompt.txt");
 struct ClassificationState {
     last_classified_turn: u64,
     session_id: String,
+    /// Prompts seen in this session, counted by us.
+    ///
+    /// Only used when the runtime does not report one. The Copilot CLI's
+    /// `userPromptSubmitted` payload is `{prompt}` and carries no turn number,
+    /// so treating a missing count as turn 0 would make `turn_count <= 1`
+    /// permanently true and route every human prompt forever (issue #1333).
+    #[serde(default)]
+    observed_turns: u64,
 }
 
 impl Hook for WorkflowClassificationReminderHook {
@@ -41,7 +49,7 @@ impl Hook for WorkflowClassificationReminderHook {
             } => (
                 extract_user_prompt(user_prompt.as_deref(), &extra),
                 session_id.unwrap_or_else(|| "unknown-session".to_string()),
-                extract_turn_count(&extra).unwrap_or(0),
+                extract_turn_count(&extra),
             ),
             _ => return Ok(Value::Object(serde_json::Map::new())),
         };
@@ -49,6 +57,15 @@ impl Hook for WorkflowClassificationReminderHook {
         if prompt.trim().is_empty() {
             return Ok(Value::Object(serde_json::Map::new()));
         }
+
+        // A runtime that reports no turn number gets one we keep ourselves, so
+        // both runtimes reach `is_new_topic` with the same meaning. Falling back
+        // to 0 would pin every Copilot prompt at "first turn".
+        let dirs_for_turn = ProjectDirs::from_cwd();
+        let turn_count = match turn_count {
+            Some(reported) => reported,
+            None => next_observed_turn(&dirs_for_turn, &session_id),
+        };
 
         // Issue #1328: a prompt written by amplihack for one of its own recipe
         // steps is never a human changing topic, and must never be routed.
@@ -80,7 +97,24 @@ impl Hook for WorkflowClassificationReminderHook {
             return Ok(Value::Object(serde_json::Map::new()));
         }
 
+        // Two runtimes, two contracts, one gated source.
+        //
+        // Claude Code reads `hookSpecificOutput.additionalContext`. The Copilot
+        // CLI reads a *top-level* `additionalContext` and never looks at
+        // `hookSpecificOutput` -- the string does not appear anywhere in its
+        // binary. So under Copilot this hook's output was discarded in both
+        // directions: it could not route a human, and the provenance gate above
+        // could not suppress anything, because there was nothing to suppress.
+        //
+        // That is why the router still reached recipe steps after #1328: it was
+        // arriving through the repo-root AGENTS.md instead, which is ungated and
+        // is loaded into every leaf agent (issue #1333). Removing that file
+        // without emitting a shape Copilot reads would silently drop human
+        // routing under Copilot altogether.
+        //
+        // Both keys are additive and each runtime ignores the other's.
         Ok(json!({
+            "additionalContext": reminder,
             "hookSpecificOutput": {
                 "hookEventName": "UserPromptSubmit",
                 "additionalContext": reminder
@@ -192,6 +226,35 @@ fn is_new_topic(dirs: &ProjectDirs, session_id: &str, turn_count: u64, user_prom
     true
 }
 
+/// Read, increment and persist this session's own prompt counter.
+///
+/// Returns the turn number for the prompt being handled now: 0 for the first,
+/// 1 for the second, and so on -- matching what a runtime that reports
+/// `turnCount` would send, so downstream logic needs no special case.
+///
+/// A write failure returns the un-incremented count rather than failing the
+/// hook. The cost is one extra reminder, not a broken prompt.
+fn next_observed_turn(dirs: &ProjectDirs, session_id: &str) -> u64 {
+    let path = state_file(dirs, session_id);
+    let mut state = fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<ClassificationState>(&raw).ok())
+        .unwrap_or_else(|| ClassificationState {
+            last_classified_turn: 0,
+            session_id: session_id.to_string(),
+            observed_turns: 0,
+        });
+    let current = state.observed_turns;
+    state.observed_turns = current.saturating_add(1);
+    if let Some(parent) = path.parent()
+        && fs::create_dir_all(parent).is_ok()
+        && let Ok(body) = serde_json::to_vec(&state)
+    {
+        let _ = fs::write(&path, body);
+    }
+    current
+}
+
 fn save_classification_state(
     dirs: &ProjectDirs,
     session_id: &str,
@@ -201,9 +264,15 @@ fn save_classification_state(
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
+    let observed_turns = fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<ClassificationState>(&raw).ok())
+        .map(|prev| prev.observed_turns)
+        .unwrap_or(0);
     let state = ClassificationState {
         last_classified_turn: turn_count,
         session_id: session_id.to_string(),
+        observed_turns,
     };
     fs::write(path, serde_json::to_vec(&state)?)?;
     Ok(())
@@ -414,6 +483,162 @@ mod tests {
         assert_eq!(
             reminder,
             "<system-reminder source=\"auto-intent-router\">Framework override</system-reminder>"
+        );
+    }
+
+    /// Issue #1333: the Copilot CLI reads a top-level `additionalContext` and
+    /// never looks at `hookSpecificOutput` -- that key appears zero times in its
+    /// binary. Emitting only the Claude shape meant this hook was inert under
+    /// Copilot, so the router had to arrive through the ungated repo-root
+    /// AGENTS.md instead, which reached every leaf agent step.
+    #[test]
+    fn emits_the_copilot_shape_for_a_human_prompt() {
+        // Serialise against every other test that mutates this variable --
+        // an unlocked EnvVarGuard races the ones that do.
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let dirs = ProjectDirs::from_root(temp.path());
+        let _run = crate::test_support::EnvVarGuard::unset(RECIPE_RUN_ID_ENV);
+
+        let out = classify(&dirs, "s-copilot", None, "Please investigate this issue");
+
+        let top = out
+            .get("additionalContext")
+            .and_then(Value::as_str)
+            .expect("top-level additionalContext is the only key Copilot reads");
+        assert!(top.contains("dev-orchestrator"));
+        assert_eq!(
+            out.pointer("/hookSpecificOutput/additionalContext")
+                .and_then(Value::as_str),
+            Some(top),
+            "the Claude shape must carry the same text, not diverge from it"
+        );
+    }
+
+    /// The regression the Copilot shape would otherwise have shipped.
+    ///
+    /// Copilot's `userPromptSubmitted` payload is `{prompt}` and carries no turn
+    /// number. Treating that as turn 0 makes `turn_count <= 1` permanently true,
+    /// so once the output is actually delivered every human prompt gets 3 KB of
+    /// mandatory routing -- including "no, undo that". #1328 and #1330 were spent
+    /// learning not to ship an unbounded router; this asserts it is not shipped
+    /// to a second runtime on the way out.
+    #[test]
+    fn a_runtime_that_reports_no_turn_count_is_still_throttled() {
+        // Serialise against every other test that mutates this variable --
+        // an unlocked EnvVarGuard races the ones that do.
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let dirs = ProjectDirs::from_root(temp.path());
+        let _run = crate::test_support::EnvVarGuard::unset(RECIPE_RUN_ID_ENV);
+
+        // Every prompt below omits turnCount, exactly as Copilot sends it.
+        let routed: Vec<bool> = (0..8)
+            .map(|i| {
+                let out = classify(
+                    &dirs,
+                    "s-no-turncount",
+                    None,
+                    &format!("Please investigate issue number {i}"),
+                );
+                out.get("additionalContext").is_some()
+            })
+            .collect();
+
+        let count = routed.iter().filter(|r| **r).count();
+        assert!(
+            count < routed.len(),
+            "eight prompts, all routed: the router is unbounded under a runtime \
+             that reports no turn count -- {routed:?}"
+        );
+        assert!(
+            routed[0],
+            "the first prompt of a session is a genuine new topic and must route"
+        );
+        assert!(
+            !routed[routed.len() - 1],
+            "by the eighth prompt the throttle must have taken hold -- {routed:?}"
+        );
+    }
+
+    /// A runtime that does report a turn count keeps its old behaviour.
+    #[test]
+    fn a_reported_turn_count_is_used_verbatim() {
+        // Serialise against every other test that mutates this variable --
+        // an unlocked EnvVarGuard races the ones that do.
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let dirs = ProjectDirs::from_root(temp.path());
+        let _run = crate::test_support::EnvVarGuard::unset(RECIPE_RUN_ID_ENV);
+
+        let first = classify(&dirs, "s-claude", Some(0), "Please investigate this");
+        assert!(first.get("additionalContext").is_some());
+
+        let follow = classify(&dirs, "s-claude", Some(2), "Please investigate that");
+        assert!(
+            follow.get("additionalContext").is_none(),
+            "turn 2 within three turns of turn 0 must be suppressed"
+        );
+    }
+
+    /// Drive the hook the way a runtime does, with the project dirs pinned to a
+    /// temp root so state never lands in the real one.
+    fn classify(dirs: &ProjectDirs, session: &str, turn: Option<u64>, prompt: &str) -> Value {
+        let extra = match turn {
+            Some(t) => json!({ "turnCount": t }),
+            None => json!({}),
+        };
+        let turn_count = match extract_turn_count(&extra) {
+            Some(reported) => reported,
+            None => next_observed_turn(dirs, session),
+        };
+        if !is_new_topic(dirs, session, turn_count, prompt) {
+            return Value::Object(serde_json::Map::new());
+        }
+        save_classification_state(dirs, session, turn_count).unwrap();
+        let reminder = load_routing_prompt(dirs);
+        json!({
+            "additionalContext": reminder,
+            "hookSpecificOutput": {
+                "hookEventName": "UserPromptSubmit",
+                "additionalContext": reminder
+            }
+        })
+    }
+
+    /// The regression lock for #1328: making the hook visible to Copilot must
+    /// not re-open the hole it closed. An agent-authored recipe step gets
+    /// nothing -- in either shape.
+    #[test]
+    fn emits_neither_shape_for_an_agent_authored_prompt() {
+        // Serialise against every other test that mutates this variable --
+        // an unlocked EnvVarGuard races the ones that do.
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _run = crate::test_support::EnvVarGuard::set(RECIPE_RUN_ID_ENV, "run-abc");
+        let hook = WorkflowClassificationReminderHook;
+        let out = hook
+            .process(HookInput::UserPromptSubmit {
+                user_prompt: Some("Please investigate this issue".to_string()),
+                session_id: Some("s-agent".to_string()),
+                extra: json!({"turnCount": 0}),
+            })
+            .unwrap();
+
+        assert!(
+            out.get("additionalContext").is_none(),
+            "a recipe step must not receive the router in the Copilot shape"
+        );
+        assert!(
+            out.get("hookSpecificOutput").is_none(),
+            "nor in the Claude shape"
         );
     }
 }
