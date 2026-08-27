@@ -296,34 +296,13 @@ steps:
         # shellcheck disable=SC2064
         trap "rm -f \"$push_stderr_file\"; _emit_commit_result" EXIT
         if git push 2>"$push_stderr_file"; then
-          # FIX (#1269): a successful push is not proof the right commit landed.
-          # A run once moved HEAD off its own work between the gates and this
-          # step, then published a branch holding none of its nine commits —
-          # visible only in `git reflog`. Confirm the remote ref before calling
-          # it pushed, so the gate cannot pass on work that was not published.
-          VERIFY_REF="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/verify_pushed_ref.sh"
-          [ -f "$VERIFY_REF" ] || VERIFY_REF="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/verify_pushed_ref.sh"
-          [ -f "$VERIFY_REF" ] || VERIFY_REF="$(pwd)/amplifier-bundle/tools/verify_pushed_ref.sh"
-          [ -f "$VERIFY_REF" ] || VERIFY_REF="${HOME:-/root}/.copilot/amplifier-bundle/tools/verify_pushed_ref.sh"
-          [ -f "$VERIFY_REF" ] || VERIFY_REF="${HOME:-/root}/.amplihack/amplifier-bundle/tools/verify_pushed_ref.sh"
-          if [ ! -f "$VERIFY_REF" ]; then
-            echo "ERROR: push-verification helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): $VERIFY_REF; cwd=$(pwd)" >&2
-            reason="push-verify-unavailable"
-            exit 1
-          fi
-          PUSH_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
-          PUSH_SHA=$(git rev-parse HEAD 2>/dev/null || echo "")
-          if ! bash "$VERIFY_REF" origin "$PUSH_BRANCH" "$PUSH_SHA"; then
-            reason="push-verify-failed: branch=$PUSH_BRANCH expected=$PUSH_SHA"
-            exit 1
-          fi
-          # Mutate `pushed` ONLY after successful push — step-16's gate contract.
-          pushed="true"
+          # FIX (#1269): a push can succeed while origin holds a different commit
+          # than the one tested, if HEAD moved after the gates ran. Verify first.
+          V=$(for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -f "$c/amplifier-bundle/tools/verify_pushed_ref.sh" ] && { echo "$c/amplifier-bundle/tools/verify_pushed_ref.sh"; break; }; done)
           raw_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
-          if printf '%s' "$raw_sha" | grep -qE '^[0-9a-f]{40}$'; then
-            sha="$raw_sha"
-          fi
-          reason="pushed"
+          [ -n "$V" ] && bash "$V" origin "$(git rev-parse --abbrev-ref HEAD)" "$raw_sha" || { reason="push-verify-failed-or-unavailable: helper=${V:-none}"; exit 1; }
+          if printf '%s' "$raw_sha" | grep -qE '^[0-9a-f]{40}$'; then sha="$raw_sha"; fi
+          pushed="true"; reason="pushed"  # step-16 gate: only after verification
         else
           push_rc=$?
           sanitized=$(redact_sensitive_file "$push_stderr_file" | tr '\n' ' ' | head -c 500)
