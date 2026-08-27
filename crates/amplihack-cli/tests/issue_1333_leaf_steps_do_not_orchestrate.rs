@@ -58,9 +58,24 @@ const ROUTING_MARKERS: &[(&str, &str)] = &[
     ),
 ];
 
-/// Files loaded into every agent's context by a CLI, with no provenance gate.
-/// Routing instructions must not live in any of them.
-const UNGATED_INSTRUCTION_FILES: &[&str] = &["AGENTS.md", ".github/agents/AGENTS.md"];
+/// Files a CLI loads into every agent's context automatically, with no
+/// provenance gate. Routing instructions must not live in any of them.
+///
+/// The list is deliberately wider than the one file that actually broke. That
+/// file reached eleven checkouts on the affected host, including two
+/// repositories that are not amplihack clones — it travelled by clone and by
+/// worktree. Guarding only the instance that failed would leave the same class
+/// open in every sibling channel. The rest are clean today, so this costs
+/// nothing to keep green.
+const UNGATED_INSTRUCTION_FILES: &[&str] = &[
+    "AGENTS.md",
+    ".github/agents/AGENTS.md",
+    "CLAUDE.md",
+    ".github/copilot-instructions.md",
+    ".cursorrules",
+    ".windsurfrules",
+    "GEMINI.md",
+];
 
 #[test]
 fn ungated_instruction_files_carry_no_routing_instructions() {
