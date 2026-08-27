@@ -20,6 +20,16 @@ fn run_probe(test_name: &str, env_override: Option<&str>) -> String {
     let mut cmd = Command::new(&exe);
     cmd.args(["--exact", test_name, "--nocapture"]);
     cmd.env_remove("AMPLIHACK_AGENT_BINARY");
+    // These probes assert what the LOWER layers answer, so every layer above
+    // the one under test has to be silent. Session markers are exported by
+    // whichever CLI is running the suite, so a developer running `cargo test`
+    // from inside a Claude Code session would otherwise see layer 2 answer
+    // "claude" and these tests go red — while CI, which has no such session,
+    // stayed green. Sourced from SESSION_MARKERS so adding a marker cannot
+    // silently reopen that gap.
+    for (key, _) in amplihack_utils::agent_binary::SESSION_MARKERS {
+        cmd.env_remove(key);
+    }
     if let Some(val) = env_override {
         cmd.env("AMPLIHACK_AGENT_BINARY", val);
     }
@@ -83,4 +93,35 @@ fn explicit_claude_override_still_works() {
 fn rejected_override_falls_back_to_copilot() {
     let result = run_probe("probe_invalid_override", Some("not-a-real-binary"));
     assert_eq!(result, "copilot");
+}
+
+/// The regression this file exists to catch, stated as a test rather than as a
+/// convention someone has to remember.
+///
+/// A session marker is a legitimate resolution layer (issue #1342): it names
+/// the CLI actually hosting the process, so it must outrank a file on disk.
+/// But it also means "nothing is set" is no longer the same as "no environment
+/// variables about the agent binary" — and a probe that clears only
+/// AMPLIHACK_AGENT_BINARY is testing the marker layer while claiming to test
+/// the default.
+///
+/// This bit twice: once through a /proc ancestry layer that was removed for it,
+/// and again through markers, which fail identically for a different reason. CI
+/// cannot see either, because CI runs in no session at all.
+#[test]
+fn a_session_marker_answers_before_the_default_and_probes_must_clear_it() {
+    let markers = amplihack_utils::agent_binary::SESSION_MARKERS;
+    assert!(
+        markers.iter().any(|(_, b)| *b == "claude") && markers.iter().any(|(_, b)| *b == "copilot"),
+        "both vendors must be representable, or the layer is a one-way voter"
+    );
+
+    // Every marker the resolver consults must be one the probe clears. Reading
+    // the probe's own source keeps the two from drifting apart silently.
+    let probe_src = include_str!("active_agent_binary_default_test.rs");
+    assert!(
+        probe_src.contains("for (key, _) in amplihack_utils::agent_binary::SESSION_MARKERS"),
+        "run_probe must clear the marker list from its single source of truth, \
+         not from a hand-copied list that can fall behind"
+    );
 }
