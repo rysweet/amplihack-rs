@@ -361,6 +361,10 @@ path = "../../tests/integration/skill_frontmatter_name_test.rs"
 name = "skill_frontmatter_type"
 path = "../../tests/integration/skill_frontmatter_type_test.rs"
 
+[[test]]
+name = "npe_hunting_skill"
+path = "../../tests/integration/npe_hunting_skill_test.rs"
+
 # QA-022: Formal specification for multitask orchestrator refactoring.
 [[test]]
 name = "multitask_orchestrator_spec"

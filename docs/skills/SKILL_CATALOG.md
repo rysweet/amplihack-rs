@@ -5,8 +5,8 @@ Those bundled `SKILL.md` files are the install-time source of truth.
 
 ## Summary
 
-- **Unique bundled skill names:** 123
-- **Skill definition files:** 123
+- **Unique bundled skill names:** 124
+- **Skill definition files:** 124
 
 ## Bundled Skills
 
@@ -88,6 +88,7 @@ Those bundled `SKILL.md` files are the install-time source of truth.
 | `multitask` | `multitask/SKILL.md` |
 | `n-version-workflow` | `n-version-workflow/SKILL.md` |
 | `novelist-analyst` | `novelist-analyst/SKILL.md` |
+| `npe-hunting-workflow` | `npe-hunting-workflow/SKILL.md` |
 | `outside-in-testing` | `outside-in-testing/SKILL.md` |
 | `oxidizer-workflow` | `oxidizer-workflow/SKILL.md` |
 | `pdf` | `pdf/SKILL.md` |
