@@ -70,6 +70,21 @@ pub enum OrchHelperCommands {
     /// verdict-gate recipes (issue #1062, finding A).
     NormaliseVerdict,
 
+    /// Read one already-extracted loop-health verdict token from stdin, print
+    /// the canonical loop verdict token.
+    ///
+    /// Output is one of `CONTINUE`, `DONE`, or `STUCK` (the default for
+    /// unknown, malformed, or empty input). Like [`NormaliseVerdict`] the
+    /// matching is **case-insensitive exact-token equality**, never substring
+    /// — `DISCONTINUE` and `CANNOT_CONTINUE` must not collide with
+    /// `CONTINUE`, and `NOT_DONE` must not collide with `DONE`.
+    ///
+    /// The fail-safe direction is deliberately different from
+    /// `normalise-verdict`: an unreadable loop verdict resolves to `STUCK`
+    /// (stop and escalate), never `CONTINUE` (spend another round). Failing
+    /// safe here means stopping, not looping (issue #1337).
+    NormaliseLoopVerdict,
+
     /// Read decomposition JSON from stdin, print the workstream count.
     ///
     /// Equivalent to `max(1, len(extract_json(stdin)["workstreams"]))`.
@@ -284,6 +299,63 @@ pub fn normalise_verdict(raw: &str) -> &'static str {
     "INSUFFICIENT_EVIDENCE"
 }
 
+/// Normalise an already-extracted **loop-health** verdict token to one of
+/// three canonical tokens: `CONTINUE`, `DONE`, or `STUCK`.
+///
+/// This is the control token of the agentic loop-health evaluation contract
+/// (issue #1337): an evaluator step looks at the accumulated evidence of an
+/// iterative loop and decides whether another round is worth spending
+/// (`CONTINUE`), whether the loop has converged (`DONE`), or whether it is no
+/// longer making progress and must stop and escalate (`STUCK`).
+///
+/// Two properties are security- and cost-critical:
+///
+/// 1. **The default is `STUCK`, not `CONTINUE`.** A missing, malformed, or
+///    unrecognised verdict must stop the loop, never authorise another round.
+///    Failing safe here means stopping — a fail-open default would let exactly
+///    the runaway this contract exists to catch keep burning budget. This is
+///    the opposite direction from [`normalise_verdict`], whose
+///    `INSUFFICIENT_EVIDENCE` default is deliberately non-fatal.
+/// 2. **Matching is case-insensitive exact-token equality, never substring.**
+///    `DISCONTINUE`, `CANNOT_CONTINUE` and `DO_NOT_CONTINUE` all contain
+///    `CONTINUE`, and `NOT_DONE` contains `DONE`; a `str::contains`
+///    implementation would fail **open** on every one of them. Under equality
+///    they fall through to the `STUCK` default.
+///
+/// The input is expected to be one already-extracted token (the output of
+/// `extract-field --field loop_verdict --default STUCK`), not raw agent prose.
+pub fn normalise_loop_verdict(raw: &str) -> &'static str {
+    let t = raw.trim().to_ascii_uppercase();
+    // Kept deliberately tight: only unambiguous "spend another round" tokens.
+    // Anything doubtful belongs in the STUCK default, not here.
+    const CONTINUE: &[&str] = &[
+        "CONTINUE",
+        "CONTINUING",
+        "PROCEED",
+        "KEEP_GOING",
+        "ANOTHER_ROUND",
+        "ITERATE",
+    ];
+    const DONE: &[&str] = &[
+        "DONE",
+        "COMPLETE",
+        "COMPLETED",
+        "FINISHED",
+        "CONVERGED",
+        "ADVANCE",
+    ];
+    if CONTINUE.contains(&t.as_str()) {
+        return "CONTINUE";
+    }
+    if DONE.contains(&t.as_str()) {
+        return "DONE";
+    }
+    // `STUCK`, `STOP`, `BLOCKED`, `NO_PROGRESS`, `ESCALATE`, `LOOPING`,
+    // `NOT_CONVERGING`, every negation-adjacent label, and everything else
+    // (including empty input) collapse to the fail-safe stop token.
+    "STUCK"
+}
+
 /// Read all of stdin into a `String`. Errors if reading fails or the input is
 /// not valid UTF-8 (recipe shell pipes always produce UTF-8 in practice).
 fn read_stdin() -> Result<String> {
@@ -311,6 +383,11 @@ pub fn run(command: OrchHelperCommands) -> Result<()> {
         OrchHelperCommands::NormaliseVerdict => {
             let input = read_stdin()?;
             println!("{}", normalise_verdict(&input));
+            Ok(())
+        }
+        OrchHelperCommands::NormaliseLoopVerdict => {
+            let input = read_stdin()?;
+            println!("{}", normalise_loop_verdict(&input));
             Ok(())
         }
         OrchHelperCommands::CountWorkstreams { force_single } => {
@@ -868,6 +945,126 @@ mod tests {
                 "{s:?} must NOT collide with a pass token"
             );
         }
+    }
+
+    // --- normalise_loop_verdict (issue #1337) --------------------------------
+
+    #[test]
+    fn normalise_loop_verdict_continue_synonyms() {
+        for s in [
+            "CONTINUE",
+            "CONTINUING",
+            "PROCEED",
+            "KEEP_GOING",
+            "ANOTHER_ROUND",
+            "ITERATE",
+            "continue",
+            "  Proceed  ",
+        ] {
+            assert_eq!(normalise_loop_verdict(s), "CONTINUE", "{s:?}");
+        }
+    }
+
+    #[test]
+    fn normalise_loop_verdict_done_synonyms() {
+        for s in [
+            "DONE",
+            "COMPLETE",
+            "COMPLETED",
+            "FINISHED",
+            "CONVERGED",
+            "ADVANCE",
+            "done",
+        ] {
+            assert_eq!(normalise_loop_verdict(s), "DONE", "{s:?}");
+        }
+    }
+
+    #[test]
+    fn normalise_loop_verdict_stuck_synonyms() {
+        for s in [
+            "STUCK",
+            "STOP",
+            "BLOCKED",
+            "NO_PROGRESS",
+            "ESCALATE",
+            "LOOPING",
+            "NOT_CONVERGING",
+            "stuck",
+        ] {
+            assert_eq!(normalise_loop_verdict(s), "STUCK", "{s:?}");
+        }
+    }
+
+    #[test]
+    fn normalise_loop_verdict_canonical_tokens_pass_through() {
+        for s in ["CONTINUE", "DONE", "STUCK"] {
+            assert_eq!(
+                normalise_loop_verdict(s),
+                s,
+                "{s:?} must pass through unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn normalise_loop_verdict_malformed_and_empty_default_to_stuck() {
+        // Issue #1337 core guarantee: a missing or unparseable verdict is
+        // treated as STUCK, NEVER as CONTINUE. Failing safe means stopping,
+        // not spending another round of an already-unproductive loop.
+        for s in [
+            "",
+            "   ",
+            "\n",
+            "banana",
+            "The review workflow is still running; I'm waiting for its structured findings.",
+            "{}",
+            "null",
+            "MAYBE",
+            "UNKNOWN",
+            "INSUFFICIENT_EVIDENCE",
+        ] {
+            assert_eq!(
+                normalise_loop_verdict(s),
+                "STUCK",
+                "{s:?} must fail safe to STUCK"
+            );
+        }
+    }
+
+    #[test]
+    fn normalise_loop_verdict_negation_adjacent_never_collides_with_continue_or_done() {
+        // Equality, not containment. Every token here CONTAINS a permissive
+        // token as a substring; a `str::contains` implementation would fail
+        // OPEN and authorise another round of a dead loop.
+        for s in [
+            "DISCONTINUE",
+            "CANNOT_CONTINUE",
+            "DO_NOT_CONTINUE",
+            "SHOULD_NOT_CONTINUE",
+            "NOT_DONE",
+            "NOT_COMPLETE",
+            "NOT_COMPLETED",
+            "UNFINISHED",
+            "NOT_CONVERGED",
+        ] {
+            assert_eq!(
+                normalise_loop_verdict(s),
+                "STUCK",
+                "{s:?} must NOT collide with CONTINUE/DONE"
+            );
+        }
+    }
+
+    #[test]
+    fn normalise_loop_verdict_default_is_stuck_not_the_verdict_default() {
+        // The two normalisers fail in opposite directions on purpose: an
+        // unreadable work verdict is non-fatal (INSUFFICIENT_EVIDENCE), an
+        // unreadable loop verdict stops the loop (STUCK). Guard against a
+        // future refactor collapsing them into one shared default.
+        assert_eq!(normalise_verdict("garbage"), "INSUFFICIENT_EVIDENCE");
+        assert_eq!(normalise_loop_verdict("garbage"), "STUCK");
+        assert_ne!(normalise_loop_verdict("garbage"), "CONTINUE");
     }
 
     #[test]
