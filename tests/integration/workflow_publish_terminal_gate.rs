@@ -182,42 +182,76 @@ fn publish_syncs_package_json_version_after_bump_before_locked_gates() {
         .and_then(|step| step.get("command").and_then(Value::as_str))
         .expect("step-14c-sync-package-json must declare a bash command");
 
+    // Issue #1361: the sync logic moved to
+    // amplifier-bundle/tools/workflow_sync_package_version.sh so the brick had
+    // room for the closing-keyword change in step-15 — extraction is the brick
+    // rule's remedy for a full file, and it makes this logic directly testable
+    // from a shell. The step must still REACH that helper through the standard
+    // resolution cascade, and the helper must still satisfy every #925 contract
+    // this test has always enforced.
+    assert!(
+        command.contains("workflow_sync_package_version.sh"),
+        "step-14c must reach its logic through amplifier-bundle/tools/workflow_sync_package_version.sh; command was `{command}`"
+    );
+    assert!(
+        command.contains("AMPLIHACK_HOME")
+            && command.contains(".copilot")
+            && command.contains(".amplihack"),
+        "step-14c must resolve the helper through the AMPLIHACK_HOME / REPO_PATH / cwd / \
+         ~/.copilot / ~/.amplihack cascade so a bundled install finds it"
+    );
+
+    let helper_path = workspace_root()
+        .join("amplifier-bundle")
+        .join("tools")
+        .join("workflow_sync_package_version.sh");
+    let helper_text = fs::read_to_string(&helper_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", helper_path.display()));
+    // The negative assertions below are about what the script DOES, so they are
+    // applied to executable lines only — the header comment is free to name the
+    // techniques it deliberately avoids.
+    let helper: String = helper_text
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+
     // Robust version read: scoped [workspace.package] parse or cargo metadata,
     // never an unscoped grep of the Cargo.toml version line.
     assert!(
-        command.contains("[workspace.package]") || command.contains("cargo metadata"),
-        "step-14c must read the version robustly via a scoped [workspace.package] parse or cargo metadata; command was `{command}`"
+        helper.contains("[workspace.package]") || helper.contains("cargo metadata"),
+        "the package.json sync must read the version robustly via a scoped [workspace.package] parse or cargo metadata"
     );
     assert!(
-        !command.contains("grep '^version' Cargo.toml")
-            && !command.contains("grep -E '^version = ' Cargo.toml"),
-        "step-14c must not read the version with a drift-prone unscoped grep of Cargo.toml"
+        !helper.contains("grep '^version' Cargo.toml")
+            && !helper.contains("grep -E '^version = ' Cargo.toml"),
+        "the package.json sync must not read the version with a drift-prone unscoped grep of Cargo.toml"
     );
 
     // Robust JSON edit: jq (or a python/node loader), never sed/awk on JSON.
     assert!(
-        command.contains("jq") || command.contains("json.load") || command.contains("JSON.parse"),
-        "step-14c must edit package.json with a real JSON tool (jq/python/node), not brittle text munging; command was `{command}`"
+        helper.contains("jq") || helper.contains("json.load") || helper.contains("JSON.parse"),
+        "the package.json sync must edit package.json with a real JSON tool (jq/python/node), not brittle text munging"
     );
     assert!(
-        !command.contains("sed") || !command.contains("package.json"),
-        "step-14c must not edit package.json with sed"
+        !helper.contains("sed") || !helper.contains("package.json"),
+        "the package.json sync must not edit package.json with sed"
     );
 
     // Offline and graceful skip when package.json is absent (non-JS workspace).
     assert!(
-        command.contains("--offline") || !command.contains("cargo metadata"),
-        "step-14c must read version offline if it uses cargo metadata; command was `{command}`"
+        helper.contains("--offline") || !helper.contains("cargo metadata"),
+        "the package.json sync must read the version offline if it uses cargo metadata"
     );
     assert!(
-        command.contains("package.json"),
-        "step-14c must target the root package.json"
+        helper.contains("package.json"),
+        "the package.json sync must target the root package.json"
     );
     assert!(
-        command.contains("-f package.json")
-            || command.contains("-f \"package.json\"")
-            || command.contains("test -f package.json"),
-        "step-14c must skip gracefully when package.json is absent; command was `{command}`"
+        helper.contains("-f package.json")
+            || helper.contains("-f \"package.json\"")
+            || helper.contains("test -f package.json"),
+        "the package.json sync must skip gracefully when package.json is absent"
     );
 
     let condition = step_condition(&recipe, "step-14c-sync-package-json");

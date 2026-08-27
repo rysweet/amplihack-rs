@@ -17,6 +17,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PR_SCOPE_HELPER="${WORKFLOW_PR_SCOPE_HELPER:-${SCRIPT_DIR}/workflow_pr_scope.sh}"
 # workflow_pr_scope.sh validates headRefName, baseRefName, headRefOid,
 # isCrossRepository, expected_pr_title_prefix, and created_after.
+CLAIM_CHECK_HELPER="${WORKFLOW_ISSUE_CLAIM_CHECK_HELPER:-${SCRIPT_DIR}/workflow_issue_claim_check.sh}"
+# workflow_issue_claim_check.sh answers "is a pull request already working on
+# this ISSUE" (#1361). workflow_pr_scope.sh above answers "is there a PR for this
+# BRANCH" — a different question, and the one a second run trivially defeats by
+# deriving a new branch.
+ISSUE_REFERENCE_HELPER="${WORKFLOW_ISSUE_REFERENCE_HELPER:-${SCRIPT_DIR}/workflow_issue_reference.sh}"
 GH_RETRY_HELPER="${WORKFLOW_GH_RETRY_HELPER:-${SCRIPT_DIR}/workflow_gh_retry.sh}"
 [ -f "$GH_RETRY_HELPER" ] || { echo "ERROR: workflow_publish_pr.sh requires the shared retry helper at $GH_RETRY_HELPER" >&2; exit 2; }
 # shellcheck source=/dev/null
@@ -440,6 +446,29 @@ if [ "$COMMITS_AHEAD" -eq 0 ]; then
   finish_publish "NO_DIFF_SUCCESS" "no-diff" "success" "0 commits ahead of ${BASE_BRANCH}; no PR created"
 fi
 
+# ---------------------------------------------------------------------------
+# Issue claim check (#1361). Everything above this line asked about the BRANCH.
+# This asks about the ISSUE, and it is the last thing checked before a new pull
+# request is opened: the scoped lookup already established that no PR exists for
+# THIS head, which is exactly the state a second run for an already-claimed
+# issue is in. The prep phase runs the same check before any work happens; this
+# one closes the window between the two, which in the recorded cases was the
+# whole race (#1131 opened 01:03, #1132 merged 01:32).
+#
+# Advisory by construction: the helper exits non-zero ONLY when it actually saw
+# a claiming pull request. No `gh` on PATH, a rate limit, an API error or a
+# missing helper all warn and return 0, because an unreadable answer is not
+# evidence that an issue is unclaimed — nor that it is claimed.
+if [ -f "$CLAIM_CHECK_HELPER" ]; then
+  if ! CLAIM_OUTPUT="$(bash "$CLAIM_CHECK_HELPER" --issue "$ISSUE_NUM" --repo "$REPO_IDENTITY" --head "$CURRENT_BRANCH" 2>&1 >/dev/null)"; then
+    printf '%s\n' "$CLAIM_OUTPUT" >&2
+    finish_publish "FAILED_DUPLICATE_CLAIM" "duplicate-issue-claim" "failure" \
+      "a pull request already claims issue #${ISSUE_NUM}; refusing to open a duplicate (issue #1361)" 1
+  fi
+else
+  echo "WARNING: workflow_issue_claim_check.sh not found at ${CLAIM_CHECK_HELPER} — creating this PR without a duplicate-claim check (#1361)" >&2
+fi
+
 CHANGED_FILES=$(git diff --name-only "${BASE_REF}..HEAD" 2>/dev/null | head -40 || true)
 CHANGED_COUNT=$(printf '%s\n' "$CHANGED_FILES" | sed '/^$/d' | wc -l | tr -d ' ')
 DIFF_STAT=$(git diff --stat "${BASE_REF}..HEAD" 2>/dev/null | tail -20 || true)
@@ -482,7 +511,19 @@ if [ -n "$VALIDATION_SOURCE" ]; then VALIDATION_BODY=$(printf '%s\n' "$VALIDATIO
 if [ -n "$RECENT_COMMITS" ]; then BEHAVIOR_BODY=$(printf 'Implemented behavior through these branch commits:\n%s' "$RECENT_COMMITS"); else BEHAVIOR_BODY="Branch is ${COMMITS_AHEAD} commit(s) ahead of ${BASE_BRANCH}; behavior impact is represented by the changed files and diff stat."; fi
 case "$CHANGED_FILES" in *amplifier-bundle/recipes/*) RISK_BODY="Workflow behavior changed; review recipe gates and regression coverage carefully." ;; *crates/amplihack-cli/*) RISK_BODY="CLI behavior changed; verify command help, exit codes, and JSON/table output contracts." ;; *) RISK_BODY="No high-risk subsystem pattern detected from changed paths." ;; esac
 DIFF_STAT_BODY="${DIFF_STAT:-No diff stat available}"
-ISSUE_LINK="Closes #${ISSUE_NUM}"
+# The closing keyword is EARNED BY THE DIFF (#1361). PR #1283's body said
+# `Closes #1277` while its whole change was one added planning document; had it
+# merged, a genuine bug report would have been auto-closed by an artifact
+# describing what somebody intended to do about it. An unreachable helper yields
+# the conservative `Refs`: under-linking costs a manual close, over-linking
+# closes a live bug silently.
+if [ -f "$ISSUE_REFERENCE_HELPER" ]; then
+  ISSUE_KEYWORD="$(printf '%s\n' "$CHANGED_FILES" | bash "$ISSUE_REFERENCE_HELPER" --keyword)"
+else
+  echo "WARNING: workflow_issue_reference.sh not found at ${ISSUE_REFERENCE_HELPER} — using the non-closing 'Refs' keyword (#1361)" >&2
+  ISSUE_KEYWORD="Refs"
+fi
+ISSUE_LINK="${ISSUE_KEYWORD:-Refs} #${ISSUE_NUM}"
 PR_BODY=$(printf '## Summary\nConcise workflow-generated PR for %s.\n\n## Issue\n%s\n\n## Changed files\n%s\n\n## Diff stat\n```text\n%s\n```\n\n## Behavior\n%s\n\n## Validation\n%s\n\n## Risk\n%s\n\n## Checklist\n- [x] Branch has %s commit(s) ahead of %s\n- [ ] Code review completed\n- [ ] Philosophy check passed\n\n---\n*This PR was created as a draft for review before merging.*\n' "$PR_SCOPE" "$ISSUE_LINK" "$CHANGED_FILES_BODY" "$DIFF_STAT_BODY" "$BEHAVIOR_BODY" "$VALIDATION_BODY" "$RISK_BODY" "$COMMITS_AHEAD" "$BASE_BRANCH")
 
 PUBLISH_STATE="FOLLOWUP_CREATED"

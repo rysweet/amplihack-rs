@@ -109,10 +109,12 @@ assert "workflow-pr-review: 1 \${WORKTREE_SETUP_WORKTREE_PATH:?} after #647 (fou
 n=$(grep -c 'WORKTREE_SETUP_WORKTREE_PATH:?' "$REFACTOR" || true)
 assert "workflow-refactor-review: 1 \${WORKTREE_SETUP_WORKTREE_PATH:?} (found=$n)" "[ '$n' = '1' ]"
 
-# workflow-publish.yaml: 2 WORKTREE_SETUP_WORKTREE_PATH:? (unchanged from #413)
+# workflow-publish.yaml: at least the 2 sites #413 hardened. The recipe has
+# since grown to five; an exact count makes every correct addition a failure.
+# See the same correction in tests/issue_413_fail_loud_worktree.sh.
 n=$(grep -c 'WORKTREE_SETUP_WORKTREE_PATH:?' "$PUBLISH" || true)
-assert "workflow-publish: 2 \${WORKTREE_SETUP_WORKTREE_PATH:?} (preserved from #413; found=$n)" \
-    "[ '$n' = '2' ]"
+assert "workflow-publish: >=2 \${WORKTREE_SETUP_WORKTREE_PATH:?} (preserved from #413; found=$n)" \
+    "[ '$n' -ge 2 ]"
 
 # Refactor-review must drop the 2>/dev/null + || cd fallback
 n=$(grep -cE 'WORKTREE_SETUP_WORKTREE_PATH.*2>/dev/null.*cd "\$REPO_PATH"' "$REFACTOR" || true)
@@ -147,9 +149,22 @@ assert "workflow-pr-review: step-19c has WARNING fallback text (issue #647)" \
 assert "workflow-pr-review: step-18c diagnostic mentions 'worktree-setup'" \
     "grep -q 'ensure parent recipe ran worktree-setup' '$PR_REVIEW'"
 
-# workflow-refactor-review.yaml — one hardened step
-assert "workflow-refactor-review: diagnostic mentions step-11b-implement-feedback" \
-    "grep -q 'step-11b-implement-feedback requires worktree_setup.worktree_path' '$REFACTOR'"
+# workflow-refactor-review.yaml — one hardened step.
+#
+# The step that does the `cd` was renamed step-11b-implement-feedback ->
+# checkpoint-after-review-feedback, and the diagnostic was correctly renamed
+# with it. The guard kept asserting the old name and has been failing since,
+# unnoticed, because it is wired into no workflow.
+#
+# Asserting a literal step id is what made this brittle, so assert the property
+# instead: whatever the step is called, the diagnostic must name it. Derive the
+# id from the recipe rather than restating it here, so a future rename cannot
+# desynchronise the two again.
+CD_STEP="$(awk '/^  - id: /{id=$0; sub(/^  - id: "/,"",id); sub(/"$/,"",id)}
+                /WORKTREE_SETUP_WORKTREE_PATH:\?/{print id; exit}' "$REFACTOR")"
+assert "workflow-refactor-review: a step performing the cd was found" "[ -n '$CD_STEP' ]"
+assert "workflow-refactor-review: diagnostic names its own step ($CD_STEP)" \
+    "grep -q '$CD_STEP requires worktree_setup.worktree_path' '$REFACTOR'"
 assert "workflow-refactor-review: diagnostic mentions 'worktree-setup'" \
     "grep -q 'ensure parent recipe ran worktree-setup' '$REFACTOR'"
 

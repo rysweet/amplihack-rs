@@ -53,7 +53,18 @@ extract_sites() {
     {
       t=trim($0)
       if (t ~ /^RUNTIME_ARTIFACT_HELPER="/) { finish(); blk=t; inblk=1; next }
+      # Comments and blank lines do not end a site. workflow-pr-review puts
+      # five explanatory comment lines between its assignment chain and its
+      # guard; treating those as the end silently dropped the guard, and the
+      # test then reported a guard that is plainly there as missing.
+      if (inblk && (t ~ /^#/ || t == "")) { next }
       if (inblk && t ~ /^\[ -f "\$RUNTIME_ARTIFACT_HELPER" \]/) { blk=blk "\n" t; next }
+      # A site may end in either guard shape. The original extractor knew only
+      # the `[ -f ... ] || { ...; exit 2; }` form, so a site using the
+      # `if [ -f ... ]; then ...; else echo WARNING...; fi` form (#829/#836) was
+      # captured WITHOUT its guard -- the test then ran a snippet that had no
+      # guard in it and concluded the guard was missing.
+      if (inblk && t ~ /^if \[ -f "\$RUNTIME_ARTIFACT_HELPER" \]/) { blk=blk "\n" t; finish(); next }
       if (inblk) finish()
     }
     END { finish(); print n+0 }
@@ -70,6 +81,11 @@ write_stub() {
 # Run a resolution snippet under production shell semantics and print the
 # resolved RUNTIME_ARTIFACT_HELPER. Args: snippet repo home [AMPLIHACK_HOME]
 # stderr is suppressed (benign git/probe noise from a throwaway non-git dir).
+# Where a snippet's stderr goes. Discarded by default so the precedence cases
+# do not spam the log; Case 4 points it at a file because the WARNING a
+# degrading site emits IS the thing under test there.
+RUN_SNIPPET_STDERR="/dev/null"
+
 run_snippet() {
   local snippet="$1" repo="$2" home="$3" ahome="${4:-}"
   # The lifecycle steps run inside a git worktree; pr-review's chain resolves a
@@ -80,10 +96,10 @@ run_snippet() {
   script=$(printf 'set -euo pipefail\n%s\nprintf "%%s" "$RUNTIME_ARTIFACT_HELPER"\n' "$snippet")
   if [ -n "$ahome" ]; then
     env -u WORKFLOW_RUNTIME_ARTIFACT_HELPER AMPLIHACK_HOME="$ahome" REPO_PATH="$repo" HOME="$home" \
-      bash -c "cd '$repo' && $script" 2>/dev/null
+      bash -c "cd '$repo' && $script" 2>>"$RUN_SNIPPET_STDERR"
   else
     env -u WORKFLOW_RUNTIME_ARTIFACT_HELPER -u AMPLIHACK_HOME REPO_PATH="$repo" HOME="$home" \
-      bash -c "cd '$repo' && $script" 2>/dev/null
+      bash -c "cd '$repo' && $script" 2>>"$RUN_SNIPPET_STDERR"
   fi
 }
 
@@ -123,16 +139,44 @@ for entry in "${RECIPE_SITES[@]}"; do
     fi
     [ -f "$resolved" ] || { echo "FAIL: $recipe site $n resolved helper is not a file: $resolved" >&2; exit 1; }
 
-    # Case 4: no candidate anywhere -> this site's guard exits 2.
+    # Case 4: no candidate anywhere -> the site must FAIL LOUDLY. Two forms
+    # are acceptable, and which one a site uses is a deliberate decision:
+    #
+    #   exit 2                     -- the helper is required; stop.
+    #   WARNING + continue (rc 0)  -- a post-side-effect checkpoint, where
+    #                                 stopping would abandon work already done.
+    #                                 #829/#836 made this the deliberate
+    #                                 behaviour for those sites.
+    #
+    # This guard originally demanded exit 2 everywhere. #836 landed after it and
+    # superseded that for checkpoints, so the guard has been failing ever since
+    # -- unnoticed, because it is not wired into CI. What actually matters, and
+    # what is asserted here, is that NEITHER form is silent: a degrading site
+    # must say so and must name where it looked, or a missing helper becomes
+    # invisible.
     frepo="$WORK/$recipe.$n-frepo"   # no bundle
     fhome="$WORK/$recipe.$n-fhome"   # no ~/.copilot or ~/.amplihack bundle
     mkdir -p "$frepo" "$fhome"
+    errfile="$WORK/$recipe.$n-stderr"
+    : >"$errfile"
     set +e
-    run_snippet "$site" "$frepo" "$fhome" >/dev/null 2>&1
+    RUN_SNIPPET_STDERR="$errfile" run_snippet "$site" "$frepo" "$fhome" >/dev/null
     rc=$?
     set -e
-    if [ "$rc" -ne 2 ]; then
-      echo "FAIL: $recipe site $n must exit 2 when no helper exists, got $rc" >&2
+    err="$(cat "$errfile")"
+    if [ "$rc" -eq 2 ]; then
+      : # required-helper form: stopped, as intended.
+    elif [ "$rc" -eq 0 ]; then
+      case "$err" in
+        *WARNING*) : ;;
+        *) echo "FAIL: $recipe site $n continued without the helper and said nothing; a degrading site must warn (issue #829/#836)" >&2; exit 1 ;;
+      esac
+      case "$err" in
+        *.copilot*|*.amplihack*) : ;;
+        *) echo "FAIL: $recipe site $n warned but did not name where it searched; the warning must be actionable" >&2; exit 1 ;;
+      esac
+    else
+      echo "FAIL: $recipe site $n must either exit 2 or warn-and-continue when no helper exists, got $rc" >&2
       exit 1
     fi
   done

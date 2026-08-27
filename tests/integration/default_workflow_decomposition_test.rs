@@ -216,6 +216,11 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "step-02d-detect-host-type",
     "step-03-create-issue",
     "step-03b-extract-issue-number",
+    // Issue #1361: before this run does any work on the issue, ask whether a
+    // pull request is already working on it. The workflow's only prior
+    // de-duplication keyed on head+base, which a second run defeats simply by
+    // deriving a new branch.
+    "step-03c-issue-claim-check",
     // Phase 1b: workflow-worktree (step 04)
     "step-04-setup-worktree",
     // Phase 2: workflow-design (steps 05-06d)
