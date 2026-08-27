@@ -519,13 +519,73 @@ fn malformed_skill_payloads_pass_through_without_panic() {
 //
 // These tests fail to compile until `bundled_skill_names()` exists, then pass
 // once the runtime directory scanner is implemented.
+//
+// They exercise the scanner via `bundled_skill_names_under(&[checkout_root()])`
+// rather than `bundled_skill_names()` so the roots come from the checkout under
+// test and not from ambient machine state — see `checkout_root` below and
+// issue #1386.
 // ---------------------------------------------------------------------------
+
+/// The checkout under test — the workspace root two levels above this crate.
+///
+/// Issue #1386: `bundled_skill_names()` resolves its roots through
+/// `iter_runtime_roots()`, which prefers an installed `~/.amplihack` over the
+/// repository it is executing inside. Under the pre-commit hooks that install
+/// is a *different, stale copy of the product*: `CARGO_TARGET_DIR` is
+/// redirected outside the worktree so the walk-up-from-exe finds no bundle,
+/// and a test binary's cwd is the package dir. The tests below therefore
+/// asserted this repository's skills against some other checkout's skills —
+/// failing under the hooks, passing in CI, and telling the developer nothing
+/// about their change either way.
+///
+/// These tests name their root explicitly so the assertion compares this
+/// checkout with itself. Ambient machine state cannot participate.
+fn checkout_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// Skill names scanned from the bundle in the checkout under test.
+fn checkout_skill_names() -> BTreeSet<String> {
+    bundled_skill_names_under(&[checkout_root()])
+}
+
+/// Regression guard for #1386: the scan must be confined to the roots it is
+/// given. A root that holds a bundle contributes exactly its own skills, and
+/// no other copy of the product on the machine can leak in.
+#[test]
+fn bundled_skill_names_under_is_confined_to_the_given_roots() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let skill_dir = temp
+        .path()
+        .join("amplifier-bundle/skills/only-in-this-root");
+    std::fs::create_dir_all(&skill_dir).expect("create synthetic skill dir");
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: only-in-this-root\ndescription: synthetic\n---\n\nbody\n",
+    )
+    .expect("write synthetic SKILL.md");
+
+    let names = bundled_skill_names_under(&[temp.path().to_path_buf()]);
+
+    assert_eq!(
+        names,
+        BTreeSet::from(["only-in-this-root".to_string()]),
+        "the scan must see only the roots it was given, never an installed \
+         copy elsewhere on the machine (issue #1386)"
+    );
+
+    // And the checkout's own bundle must not be reachable from that root.
+    assert!(
+        !names.contains("default-workflow"),
+        "a synthetic root must not pick up the repository bundle"
+    );
+}
 
 #[test]
 fn bundled_skill_names_is_non_empty() {
     // An empty set would mean the scanner failed to locate the bundled skills
     // directory — which would wrongly redirect every real skill.
-    let skills = bundled_skill_names();
+    let skills = checkout_skill_names();
     assert!(
         !skills.is_empty(),
         "bundled_skill_names() must derive a non-empty set from the skills directory"
@@ -534,7 +594,7 @@ fn bundled_skill_names_is_non_empty() {
 
 #[test]
 fn bundled_skill_names_contains_top_level_skills() {
-    let skills = bundled_skill_names();
+    let skills = checkout_skill_names();
     for name in ["default-workflow", "pdf", "xlsx"] {
         assert!(
             skills.contains(name),
@@ -547,7 +607,7 @@ fn bundled_skill_names_contains_top_level_skills() {
 fn bundled_skill_names_uses_frontmatter_name_for_nested_skills() {
     // Nested category dirs (migrate/, development/, quality/, meta-cognitive/)
     // are identified by their frontmatter `name:`, not the directory path.
-    let skills = bundled_skill_names();
+    let skills = checkout_skill_names();
     for name in [
         "amplihack-migrate",      // dir: migrate/
         "architecting-solutions", // dir: development/architecting-solutions/
@@ -565,7 +625,7 @@ fn bundled_skill_names_uses_frontmatter_name_for_nested_skills() {
 fn bundled_skill_names_excludes_directory_path_forms() {
     // Identity is the frontmatter name, so category-prefixed path forms and
     // bare parent-dir names must NOT be members.
-    let skills = bundled_skill_names();
+    let skills = checkout_skill_names();
     for path_form in [
         "development/architecting-solutions",
         "quality/reviewing-code",
@@ -581,7 +641,7 @@ fn bundled_skill_names_excludes_directory_path_forms() {
 
 #[test]
 fn bundled_skill_names_membership_is_exact_and_case_sensitive() {
-    let skills = bundled_skill_names();
+    let skills = checkout_skill_names();
     assert!(!skills.contains("nonexistent-skill"));
     assert!(!skills.contains(""));
     assert!(
@@ -595,7 +655,7 @@ fn bundled_skill_names_contains_overlap_names() {
     // gherkin-expert, tla-plus-expert, and verus-expert exist as BOTH a skill
     // and an agent. They must be present in the skill set so the redirect
     // logic's skill-precedence keeps them from being redirected.
-    let skills = bundled_skill_names();
+    let skills = checkout_skill_names();
     for name in ["gherkin-expert", "tla-plus-expert", "verus-expert"] {
         assert!(
             skills.contains(name),
@@ -607,10 +667,15 @@ fn bundled_skill_names_contains_overlap_names() {
 #[test]
 fn bundled_skill_names_matches_every_bundled_frontmatter_name() {
     // Directory-as-source-of-truth: every SKILL.md frontmatter `name:` in the
-    // workspace bundle must appear in the runtime-derived set. Asserted as a
-    // subset rather than strict equality because a developer/CI machine may
-    // also stage skills under ~/.amplihack or ~/.copilot, which are legitimately
-    // included by the scanner too.
+    // workspace bundle must appear in the set the scanner derives from that
+    // same workspace. Both sides are read from the checkout under test, so a
+    // failure here always means the scanner missed a skill in THIS repository
+    // — never that some other copy of the product on the machine is out of
+    // date (issue #1386).
+    //
+    // Asserted as a subset rather than strict equality because the checkout
+    // root also carries a top-level `skills/` tree, which the scanner
+    // legitimately includes.
     use std::collections::BTreeSet;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -659,7 +724,7 @@ fn bundled_skill_names_matches_every_bundled_frontmatter_name() {
         .filter_map(|p| frontmatter_name(&fs::read_to_string(p).ok()?))
         .collect();
 
-    let derived = bundled_skill_names();
+    let derived = checkout_skill_names();
     let missing: Vec<_> = bundled.difference(&derived).cloned().collect();
     assert!(
         missing.is_empty(),
