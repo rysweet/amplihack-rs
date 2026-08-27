@@ -1,5 +1,12 @@
 {
+  "auto-drive-to-merge": "b122beccd4ce26c9",
   "auto-workflow": "3baaee4ed35b2381",
+  "autodrive-build": "462b670360afb76a",
+  "autodrive-crusty-loop": "d76959cf732c6679",
+  "autodrive-crusty-round": "0cf4e9470d04299e",
+  "autodrive-merge-evidence": "8cc2dfa806522092",
+  "autodrive-merge-loop": "b1afa8c347509c7c",
+  "autodrive-merge-round": "26f40f5de38b291d",
   "cascade-workflow": "ee2ce111ae5d88ef",
   "code-atlas": "086c4299a3fd331d",
   "code-philosophy-audit": "a1b7c3d9e5f24680",

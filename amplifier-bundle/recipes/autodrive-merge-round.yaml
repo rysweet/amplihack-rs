@@ -1,0 +1,285 @@
+name: "autodrive-merge-round"
+description: |
+  One round of the auto-drive-to-merge merge-ready loop: collect measured
+  evidence (base sync, `qa-team` scenarios actually RUN, CI to a terminal
+  state), apply the `merge-ready` skill's criteria to that evidence, read a
+  STRUCTURED verdict, fix whatever is blocking, and record a machine-checkable
+  round record.
+
+  This brick performs exactly ONE round and contains no loop of its own. The
+  loop and its agentic terminator live in autodrive-merge-loop.yaml.
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["auto-drive", "merge-ready", "qa-team", "verdict", "loop"]
+
+# Pager safety: recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
+#
+# NO-TIMEOUT POLICY (issue #439): no step declares `timeout` or
+# `timeout_seconds`; the recipe declares no `default_step_timeout`.
+#
+# PROHIBITIONS: a hook-skipping commit flag and a branch-protection bypass are
+# NEVER used anywhere in this workflow. See
+# docs/reference/auto-drive-to-merge.md#two-absolute-prohibitions.
+
+recursion:
+  max_depth: 6
+  max_total_steps: 40
+
+context:
+  repo_path: "."
+  pr_number: ""
+  pr_url: ""
+  task_description: ""
+  autodrive_round_record: ""
+  autodrive_round_label: "round"
+  autodrive_qa_evidence: ""
+  autodrive_resolved_concerns_file: ""
+
+steps:
+  - id: "merge-evidence"
+    type: "recipe"
+    recipe: "autodrive-merge-evidence"
+    context:
+      repo_path: "{{repo_path}}"
+      pr_number: "{{pr_number}}"
+      autodrive_qa_evidence: "{{autodrive_qa_evidence}}"
+      autodrive_round_label: "{{autodrive_round_label}}"
+
+  - id: "step-01-platform-facts"
+    type: "bash"
+    parse_json: true
+    command: |
+      set -uo pipefail
+      cd "${REPO_PATH:-.}" 2>/dev/null || true
+      export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
+      PR="${PR_NUMBER:-}"
+      case "$PR" in ''|*[!0-9]*) PR="$(gh pr view --json number --jq .number 2>/dev/null || printf '')" ;; esac
+      J="$(gh pr view "$PR" --json state,isDraft,mergeable,mergeStateStatus,reviewDecision,headRefOid,closingIssuesReferences 2>/dev/null)"
+      f() { printf '%s' "$J" | amplihack orch helper extract-json \
+              | amplihack orch helper extract-field --field "$1" --default "$2"; }
+      THREADS="$(gh api graphql -F pr="${PR:-0}" -F owner='{owner}' -F name='{repo}' -f query='
+        query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){
+          pullRequest(number:$pr){reviewThreads(first:100){nodes{isResolved isOutdated}}}}}' \
+        --jq '[.data.repository.pullRequest.reviewThreads.nodes[]|select(.isResolved==false and .isOutdated==false)]|length' 2>/dev/null)"
+      [ -n "$THREADS" ] || THREADS="unreadable"
+      printf '{"pr":"%s","state":"%s","is_draft":"%s","mergeable":"%s","merge_state":"%s","review_decision":"%s","head_sha":"%s","unresolved_threads":"%s"}\n' \
+        "$PR" "$(f state UNKNOWN)" "$(f isDraft unknown)" "$(f mergeable UNKNOWN)" \
+        "$(f mergeStateStatus UNKNOWN)" "$(f reviewDecision '')" "$(f headRefOid '')" "$THREADS"
+    output: "platform_facts"
+
+  - id: "step-02-merge-ready-assessment"
+    agent: "amplihack:core:reviewer"
+    working_dir: "{{repo_path}}"
+    prompt: |
+      # merge-ready assessment — PR #{{platform_facts.pr}} ({{autodrive_round_label}})
+
+      **Invoke the skill:** activate `Skill(skill="merge-ready")` for PR
+      #{{platform_facts.pr}} and apply its criteria. That skill defines the
+      required outcome and the guardrails; this step exists to bind its verdict
+      to the measured evidence below and to emit it in a machine-checkable
+      shape.
+
+      ## Measured evidence from THIS round — use it, do not re-imagine it
+
+      - Platform facts: `{{platform_facts}}`
+      - Base sync: `{{merge_sync}}`
+      - qa-team scenarios: `{{qa_evidence}}`
+      - CI: `{{ci_evidence}}`
+
+      Read those literally. `qa_status` is `PASS` only when the scenarios were
+      actually RUN and passed — a scenario file existing is not evidence, and
+      `BLOCKED` is not a pass. `ci_status` is `GREEN` only when a readable
+      rollup had zero failing and zero pending checks; `UNREADABLE` and
+      `NO_CHECKS` are failures, not passes.
+
+      ## What to do
+
+      Work the merge-ready skill's criteria against this PR: qa-team scenarios
+      run, docs updated for every changed user-facing surface, quality-audit
+      converged on a clean final cycle, checks green, metadata complete,
+      reviews satisfied, no merge conflicts, protection rules satisfied, linked
+      issues present or explicitly not applicable, review threads resolved,
+      scope clean, and the PR description carrying concrete evidence for all of
+      it. Update the PR description with that evidence, as the skill requires.
+
+      Report a criterion you could not verify as **failed**. An inaccessible
+      criterion is a blocker, never an assumption.
+
+      ## Output contract (REQUIRED)
+
+      Keep the skill's own verdict block. Then, as the **very last thing** you
+      emit, output a single JSON object with no code fence and no trailing
+      prose:
+
+      {"merge_ready_verdict": "MERGE_READY" | "NOT_MERGE_READY", "blockers": [{"id": "<stable-kebab-id>", "criterion": "<which merge-ready criterion>", "summary": "<one line>", "evidence": "<what you read>"}], "criteria_verified": ["<criterion>", ...], "summary": "<one line>"}
+
+      - `MERGE_READY` requires **every** criterion verified in this run with
+        evidence. Not "nothing obviously wrong".
+      - `id` must be **stable across rounds** for the same blocker so the loop
+        can tell recurring from new. Derive it from the substance, never from a
+        round number.
+      - A missing or unreadable verdict is read as `NOT_MERGE_READY`, never as
+        `MERGE_READY`. Nothing merges on an unreadable verdict.
+    output: "merge_ready_review"
+
+  - id: "step-03-extract-merge-ready-verdict"
+    type: "bash"
+    parse_json: true
+    command: |
+      set -uo pipefail
+      # Canonical pipeline (docs/reference/structured-verdict-parsing.md):
+      # agent output is untrusted DATA on stdin, never interpolated into a
+      # command position and never branched on as raw prose.
+      RAW="${MERGE_READY_REVIEW:-}"
+      RECORD="${AUTODRIVE_ROUND_RECORD:-}"
+      if [ -z "$RAW" ]; then
+        echo "WARNING: the merge-ready assessment produced no output; a missing verdict is NOT_MERGE_READY, never MERGE_READY." >&2
+        VERDICT="NOT_MERGE_READY"; SOURCE="missing_verdict"; BLOCKERS='[]'
+      else
+        VERDICT="$(printf '%s' "$RAW" \
+          | amplihack orch helper extract-json \
+          | amplihack orch helper extract-field --field merge_ready_verdict --default NOT_MERGE_READY)"
+        BLOCKERS="$(printf '%s' "$RAW" \
+          | amplihack orch helper extract-json \
+          | amplihack orch helper extract-field --field blockers --default '[]')"
+        SOURCE="merge_ready"
+        case "$VERDICT" in
+          MERGE_READY|NOT_MERGE_READY) ;;
+          *) echo "WARNING: unrecognised merge-ready verdict '${VERDICT}'; failing safe to NOT_MERGE_READY." >&2
+             VERDICT="NOT_MERGE_READY"; SOURCE="unparseable_verdict" ;;
+        esac
+      fi
+      case "$BLOCKERS" in \[*\]) ;; *) BLOCKERS='[]' ;; esac
+
+      # A model may not overrule measured evidence. Even a MERGE_READY verdict
+      # is downgraded when the numbers say otherwise — this is the "never
+      # advance on a prose impression" rule, enforced rather than asked for.
+      QA="$(printf '%s' "${QA_EVIDENCE:-}" | amplihack orch helper extract-json \
+            | amplihack orch helper extract-field --field qa_status --default MISSING)"
+      CI="$(printf '%s' "${CI_EVIDENCE:-}" | amplihack orch helper extract-json \
+            | amplihack orch helper extract-field --field ci_status --default MISSING)"
+      CONFLICT="$(printf '%s' "${MERGE_SYNC:-}" | amplihack orch helper extract-json \
+            | amplihack orch helper extract-field --field conflict --default unknown)"
+      THREADS="$(printf '%s' "${PLATFORM_FACTS:-}" | amplihack orch helper extract-json \
+            | amplihack orch helper extract-field --field unresolved_threads --default unreadable)"
+      DOWNGRADE=""
+      [ "$QA" = "PASS" ] || DOWNGRADE="${DOWNGRADE}qa_status=${QA} "
+      [ "$CI" = "GREEN" ] || DOWNGRADE="${DOWNGRADE}ci_status=${CI} "
+      [ "$CONFLICT" = "false" ] || DOWNGRADE="${DOWNGRADE}conflict=${CONFLICT} "
+      [ "$THREADS" = "0" ] || DOWNGRADE="${DOWNGRADE}unresolved_threads=${THREADS} "
+      if [ -n "$DOWNGRADE" ] && [ "$VERDICT" = "MERGE_READY" ]; then
+        echo "WARNING: downgrading MERGE_READY to NOT_MERGE_READY — measured evidence disagrees: ${DOWNGRADE}" >&2
+        VERDICT="NOT_MERGE_READY"; SOURCE="evidence_downgrade"
+      fi
+
+      if [ -n "$RECORD" ]; then
+        if command -v jq >/dev/null 2>&1; then
+          printf '%s' "$BLOCKERS" | jq -r '.[]?.id // empty' 2>/dev/null > "${RECORD}.findings" || : > "${RECORD}.findings"
+        else
+          echo "WARNING: jq unavailable; blocker ids cannot be extracted for the recurring-findings signal." >&2
+          : > "${RECORD}.findings"
+        fi
+        if [ -n "$DOWNGRADE" ]; then
+          printf 'measured-evidence-disagrees\n' >> "${RECORD}.findings"
+        fi
+      fi
+      COUNT=0
+      if [ -n "$RECORD" ] && [ -f "${RECORD}.findings" ]; then
+        COUNT="$(grep -c . "${RECORD}.findings" 2>/dev/null || true)"
+      fi
+      case "$COUNT" in ''|*[!0-9]*) COUNT=0 ;; esac
+      echo "INFO: merge-ready ${AUTODRIVE_ROUND_LABEL:-round}: verdict=${VERDICT} (source=${SOURCE}) blockers=${COUNT}" >&2
+      printf '{"merge_ready_verdict":"%s","verdict_source":"%s","blocker_count":%s,"downgrade_reason":"%s"}\n' \
+        "$VERDICT" "$SOURCE" "${COUNT:-0}" "$(printf '%s' "$DOWNGRADE" | tr -d '"')"
+    output: "merge_ready_verdict"
+
+  - id: "step-04-address-blockers"
+    condition: "merge_ready_verdict.merge_ready_verdict == 'NOT_MERGE_READY'"
+    agent: "amplihack:builder"
+    working_dir: "{{repo_path}}"
+    prompt: |
+      # Clear every merge-ready blocker
+
+      **Round:** {{autodrive_round_label}} — **PR #{{platform_facts.pr}}**
+      **Blockers:** {{merge_ready_verdict.blocker_count}}
+      **Evidence disagreements forced by measurement:** {{merge_ready_verdict.downgrade_reason}}
+
+      ## The assessment to satisfy
+
+      {{merge_ready_review}}
+
+      ## Measured evidence
+
+      - qa-team: `{{qa_evidence}}`
+      - CI: `{{ci_evidence}}`
+      - Platform: `{{platform_facts}}`
+      - Base sync: `{{merge_sync}}`
+
+      ## What to do
+
+      Clear the blockers at their cause.
+
+      - **Failing CI** — read the failing job's log and fix what it found. Do
+        not rerun a red job hoping for green; rerun only a job you have
+        positively identified as flaky, and say why.
+      - **Failing or blocked qa-team scenarios** — make the scenarios run and
+        pass. A scenario that cannot be run is a blocker, not a formality.
+      - **Merge conflicts** — resolve them in the branch.
+      - **Unresolved review threads** — answer them and resolve them.
+      - **Missing docs or evidence** — write them.
+
+      Commit normally so the repository's hooks run, then push:
+
+      ```bash
+      amplihack hygiene artifact-guard --repo . --mode pre-commit
+      git add -A
+      git commit -m "clear merge-ready blockers: <what changed>"
+      git push
+      ```
+
+      The artifact guard runs first so a stray runtime artifact never rides
+      into the PR; if it objects, remove the artifact rather than silencing it.
+
+      If a hook fails, fix the cause. Never reach for a flag that skips hooks,
+      and never reach for a branch-protection bypass at merge time. Both are
+      prohibited here without exception.
+    output: "merge_ready_fixes"
+
+  - id: "step-05-write-round-record"
+    type: "bash"
+    command: |
+      set -uo pipefail
+      RECORD="${AUTODRIVE_ROUND_RECORD:-}"
+      [ -n "$RECORD" ] || { echo "ERROR: autodrive_round_record is required; the loop driver reads the round record from a file, never from stdout." >&2; exit 1; }
+      g() { printf '%s' "${1:-}" | amplihack orch helper extract-json \
+              | amplihack orch helper extract-field --field "$2" --default "$3"; }
+      HEAD_SHA=""
+      if (cd "${REPO_PATH:-.}" 2>/dev/null && git rev-parse --is-inside-work-tree >/dev/null 2>&1); then
+        HEAD_SHA="$(cd "${REPO_PATH:-.}" && git rev-parse HEAD 2>/dev/null || printf '')"
+      else
+        echo "[skip] not a git repo; the head sha is left empty so the merge gate refuses rather than merging unbound evidence" >&2
+      fi
+      VERDICT="$(g "${MERGE_READY_VERDICT:-}" merge_ready_verdict NOT_MERGE_READY)"
+      case "$VERDICT" in MERGE_READY|NOT_MERGE_READY) ;; *) VERDICT="NOT_MERGE_READY" ;; esac
+      [ -f "${RECORD}.findings" ] || : > "${RECORD}.findings"
+      printf '{"merge_ready_verdict":"%s","blocker_count":%s,"head_sha":"%s","round_label":"%s","test_signal":"%s","ci_signal":"%s","qa_status":"%s","ci_status":"%s"}\n' \
+        "$VERDICT" \
+        "$(g "${MERGE_READY_VERDICT:-}" blocker_count 0)" \
+        "$HEAD_SHA" \
+        "${AUTODRIVE_ROUND_LABEL:-round}" \
+        "$(g "${QA_EVIDENCE:-}" qa_status MISSING)" \
+        "$(g "${CI_EVIDENCE:-}" ci_signal unreadable)" \
+        "$(g "${QA_EVIDENCE:-}" qa_status MISSING)" \
+        "$(g "${CI_EVIDENCE:-}" ci_status MISSING)" > "$RECORD"
+      echo "INFO: round record written to ${RECORD}" >&2
+      cat "$RECORD"
+    output: "merge_round_record_written"
+
+output:
+  format: "markdown"
+  template: |
+    # Merge-ready round {{autodrive_round_label}}
+
+    **Verdict:** {{merge_ready_verdict.merge_ready_verdict}} ({{merge_ready_verdict.blocker_count}} blocker(s))
+
+    **Record:** {{autodrive_round_record}}

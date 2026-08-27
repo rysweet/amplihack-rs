@@ -1,0 +1,159 @@
+name: "auto-drive-to-merge"
+description: |
+  Wraps `default-workflow` and drives the resulting pull request all the way to
+  a merge, through two agentically-terminated loops.
+
+    1. BUILD        — run `default-workflow` on the task to produce a PR.
+                      Phase 1 never merges; `no_merge: "true"` takes that
+                      decision away from it.
+    2. CRUSTY LOOP  — put the PR in front of the `crusty-old-engineer` skill
+                      acting as the maintainer's proxy, address every concern,
+                      re-review, and repeat until crusty has ZERO outstanding
+                      concerns.
+    3. MERGE-READY  — iterate until every merge-ready criterion holds: the
+       LOOP           `merge-ready` skill's criteria, all `qa-team` scenarios
+                      passing, CI green, no merge conflicts, review threads
+                      resolved. Then merge behind an evidence gate.
+
+  NO ITERATION CAP terminates either loop. Not a max-rounds integer, not a
+  backstop, not a wall-clock budget. Both loops are terminated by
+  `loop-health-evaluator` (issue #1337), which stops and looks at the data
+  after every round and answers CONTINUE / DONE / STUCK. A cap cuts off work
+  that was about to converge and lets a genuinely stuck loop burn the whole
+  budget first; the signal worth acting on is absence of progress, not number
+  of attempts.
+
+  Host safety is enforced structurally one layer down — #1327 (sealed
+  recursion ceiling) and #1332 (width cap + free-memory floor), both refusing
+  with exit code 79 before a child runs. Rounds here are sequential at CONSTANT
+  session depth, so a long loop never walks toward that ceiling, and the
+  ceiling is never raised.
+
+  NO SILENT MERGE. The merge gate re-verifies every criterion in the same run
+  that merges, binds all of it to ONE head SHA, writes the evidence down before
+  merging, and merges with a fixed argv that accepts no caller-supplied flags.
+  An unreadable criterion is a failure, never a pass.
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["auto-drive", "workflow", "crusty", "merge-ready", "merge", "issue-1337"]
+
+# DEPENDENCY: both loops invoke the `loop-health-evaluator` recipe by name. It
+# ships with PR #1347 (issue #1337) together with
+# `amplihack orch helper normalise-loop-verdict` and
+# docs/reference/loop-health-evaluator.md. It is deliberately NOT reimplemented
+# or copied here — one loop-health contract, used by every loop that needs one.
+#
+# Pager safety: recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
+#
+# NO-TIMEOUT POLICY (issue #439): neither this recipe nor any of its phase
+# bricks declares a per-step `timeout:` / `timeout_seconds:`, and none declares
+# a `default_step_timeout`. CI polling, test suites, builds and model calls run
+# to their natural end; a false timeout costs more than a slow run.
+#
+# TWO ABSOLUTE PROHIBITIONS, in the recipes, in the skill, and enforced by a
+# guard test that fails if the strings ever appear in an executable position:
+# a hook-skipping commit flag is NEVER passed to git, and a branch-protection
+# bypass is NEVER passed to gh. When a hook or a check fails, the cause is
+# fixed. See docs/reference/auto-drive-to-merge.md#two-absolute-prohibitions.
+
+recursion:
+  max_depth: 6
+  max_total_steps: 120
+
+context:
+  # What to build. Passed straight through to default-workflow.
+  task_description: ""
+  requirements: ""
+  repo_path: "."
+  branch_prefix: "feat"
+
+  # Resume / retarget: point the workflow at work that already exists.
+  # `existing_branch` and `pr_number` both make phase 1 a no-op when the PR is
+  # already open, so a re-run picks up at the crusty loop.
+  existing_branch: ""
+  pr_number: ""
+  pr_url: ""
+
+  # Durable state root for resumability. Empty means "derive it from the repo
+  # remote and the PR/branch identity".
+  autodrive_state_dir: ""
+
+  # When "true", the merge gate verifies everything and reports what it WOULD
+  # merge without merging. Every other guarantee is unchanged.
+  autodrive_dry_run: "false"
+
+  # Phase 1 never merges; auto-drive owns the merge decision.
+  no_merge: "true"
+
+  # Populated as the phases run.
+  build_result: ""
+  crusty_loop_result: ""
+  merge_gate_result: ""
+
+steps:
+  - id: "autodrive-build"
+    type: "recipe"
+    recipe: "autodrive-build"
+    context:
+      task_description: "{{task_description}}"
+      requirements: "{{requirements}}"
+      repo_path: "{{repo_path}}"
+      branch_prefix: "{{branch_prefix}}"
+      existing_branch: "{{existing_branch}}"
+      pr_number: "{{pr_number}}"
+      pr_url: "{{pr_url}}"
+      autodrive_state_dir: "{{autodrive_state_dir}}"
+
+  - id: "autodrive-crusty-loop"
+    type: "recipe"
+    recipe: "autodrive-crusty-loop"
+    context:
+      repo_path: "{{repo_path}}"
+      pr_number: "{{build_result.pr}}"
+      pr_url: "{{build_result.pr_url}}"
+      task_description: "{{task_description}}"
+      autodrive_state_dir: "{{build_result.state_dir}}"
+
+  - id: "autodrive-merge-loop"
+    type: "recipe"
+    recipe: "autodrive-merge-loop"
+    context:
+      repo_path: "{{repo_path}}"
+      pr_number: "{{build_result.pr}}"
+      pr_url: "{{build_result.pr_url}}"
+      task_description: "{{task_description}}"
+      autodrive_state_dir: "{{build_result.state_dir}}"
+      autodrive_dry_run: "{{autodrive_dry_run}}"
+
+  - id: "autodrive-report"
+    type: "bash"
+    parse_json: true
+    command: |
+      set -uo pipefail
+      g() { printf '%s' "${1:-}" | amplihack orch helper extract-json \
+              | amplihack orch helper extract-field --field "$2" --default "$3"; }
+      PR="$(g "${BUILD_RESULT:-}" pr '')"
+      MERGE="$(g "${MERGE_GATE_RESULT:-}" merge_result NOT_MERGED)"
+      CRUSTY="$(g "${CRUSTY_LOOP_RESULT:-}" loop_result unknown)"
+      case "$MERGE" in
+        MERGED|ALREADY_MERGED) OUTCOME="MERGED" ;;
+        DRY_RUN) OUTCOME="DRY_RUN" ;;
+        *) OUTCOME="NOT_MERGED" ;;
+      esac
+      echo "AUTO_DRIVE_TO_MERGE: ${OUTCOME} — PR #${PR:-<none>} (crusty loop: ${CRUSTY}, merge gate: ${MERGE})" >&2
+      printf '{"outcome":"%s","pr":"%s","crusty_loop":"%s","merge_result":"%s"}\n' \
+        "$OUTCOME" "$PR" "$CRUSTY" "$MERGE"
+    output: "autodrive_summary"
+
+output:
+  format: "markdown"
+  template: |
+    # auto-drive-to-merge
+
+    **Outcome:** {{autodrive_summary.outcome}} — PR #{{autodrive_summary.pr}}
+
+    | Phase | Result |
+    | --- | --- |
+    | 1. build (default-workflow) | {{build_result}} |
+    | 2. crusty loop | {{autodrive_summary.crusty_loop}} |
+    | 3. merge-ready loop + merge gate | {{autodrive_summary.merge_result}} |

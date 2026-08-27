@@ -1,0 +1,174 @@
+name: "autodrive-merge-evidence"
+description: |
+  Deterministic evidence collection for one round of the auto-drive-to-merge
+  merge-ready loop: bring the branch up to date with its base, run the
+  `qa-team` scenarios for this repository type, and wait for CI on the current
+  head to reach a terminal state.
+
+  Everything here is MEASURED. No step in this brick forms an opinion, and
+  nothing it reports is a model's impression. Unreadable is never reported as
+  passing: a criterion that cannot be read comes back as a failure, because
+  "we do not know" must not merge.
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["auto-drive", "merge-ready", "qa-team", "ci", "evidence"]
+
+# Pager safety: recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
+#
+# NO-TIMEOUT POLICY (issue #439): no step declares `timeout` or
+# `timeout_seconds`. The CI wait below polls on a 60-second interval and stops
+# when CI reaches a terminal state or becomes unreadable — it is bounded by the
+# build finishing, not by a seconds-scale or single-digit-minute stopwatch. A
+# test suite is likewise never cut off mid-run.
+#
+# PROHIBITIONS: a hook-skipping commit flag and a branch-protection bypass are
+# NEVER used anywhere in this workflow. See
+# docs/reference/auto-drive-to-merge.md#two-absolute-prohibitions.
+
+recursion:
+  max_depth: 6
+  max_total_steps: 30
+
+context:
+  repo_path: "."
+  pr_number: ""
+  autodrive_qa_evidence: ""
+  autodrive_round_label: "round"
+
+steps:
+  - id: "step-01-sync-with-base"
+    type: "bash"
+    parse_json: true
+    command: |
+      set -uo pipefail
+      cd "${REPO_PATH:-.}" 2>/dev/null || true
+      export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
+      # `main` requires branches to be up to date before merge (the strict
+      # policy — see docs/reference/merge-flow.md). A BEHIND branch is brought
+      # forward here so CI runs on what will actually be merged.
+      if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "[skip] not a git repo; the branch cannot be brought up to date and is reported unsynced, never as clean" >&2
+        printf '{"base":"","synced":"false","conflict":"unknown","head_sha":"","git_observed":"false"}\n'
+        exit 0
+      fi
+      BASE="$(gh pr view "${PR_NUMBER:-}" --json baseRefName --jq .baseRefName 2>/dev/null || printf '')"
+      [ -n "$BASE" ] || BASE="main"
+      SYNCED="false"; CONFLICT="false"
+      if git fetch origin "$BASE" >/dev/null 2>&1; then
+        BEHIND="$(git rev-list --count "HEAD..origin/${BASE}" 2>/dev/null || printf 0)"
+        if [ "${BEHIND:-0}" != "0" ]; then
+          if git merge --no-edit "origin/${BASE}" >/dev/null 2>&1; then
+            SYNCED="true"
+            git push >/dev/null 2>&1 || echo "WARNING: merged origin/${BASE} but the push failed; CI will still be reading the old head." >&2
+          else
+            CONFLICT="true"
+            git merge --abort >/dev/null 2>&1 || true
+            echo "ERROR: merge conflict against origin/${BASE}. Conflicts are resolved by fixing the branch, never by bypassing the gate." >&2
+          fi
+        fi
+      else
+        echo "WARNING: could not fetch origin/${BASE}; up-to-date state is unknown and will be reported as unverified." >&2
+      fi
+      printf '{"base":"%s","synced":"%s","conflict":"%s","head_sha":"%s","git_observed":"true"}\n' \
+        "$BASE" "$SYNCED" "$CONFLICT" "$(git rev-parse HEAD 2>/dev/null || printf '')"
+    output: "merge_sync"
+
+  - id: "step-02-qa-team-scenarios"
+    type: "bash"
+    parse_json: true
+    command: |
+      set -uo pipefail
+      cd "${REPO_PATH:-.}" 2>/dev/null || true
+      EVIDENCE="${AUTODRIVE_QA_EVIDENCE:-}"
+      # Repo-type detection exactly as the qa-team skill specifies: a Rust CLI
+      # repo runs `cargo test` over tests/parity/scenarios/*.yaml and does NOT
+      # require the gadugi-agentic-test framework.
+      TYPE="unknown"; CMD=""; SCEN=""
+      if [ -f Cargo.toml ]; then
+        TYPE="rust-cli"; CMD="cargo test --workspace --locked --no-fail-fast"
+        SCEN="$(ls tests/parity/scenarios/* 2>/dev/null | tr '\n' ' ')"
+      elif [ -f package.json ]; then
+        TYPE="node"; CMD="gadugi-test run"
+      elif [ -f pyproject.toml ] || [ -f setup.py ]; then
+        TYPE="python"; CMD="pytest"
+      fi
+      STATUS="BLOCKED"; RC=""; SUMMARY=""
+      if [ -z "$CMD" ]; then
+        SUMMARY="no qa-team scenario runner could be selected for this repository"
+      elif ! command -v "${CMD%% *}" >/dev/null 2>&1; then
+        SUMMARY="${CMD%% *} is not installed; qa-team scenarios could not be RUN. Scenario files existing is not evidence."
+      else
+        LOG="$(mktemp -t autodrive-qa-XXXXXX)"
+        # No timeout: a test suite is never cut off mid-run.
+        # shellcheck disable=SC2086
+        $CMD >"$LOG" 2>&1
+        RC=$?
+        SUMMARY="$(tail -n 5 "$LOG" | tr '\n' ' ' | tr -d '"' | cut -c1-300)"
+        if [ "$RC" -eq 0 ]; then STATUS="PASS"; else STATUS="FAIL"; fi
+        echo "INFO: qa-team (${TYPE}) '${CMD}' exited ${RC}" >&2
+        tail -n 60 "$LOG" >&2 || true
+        rm -f "$LOG"
+      fi
+      OUT="$(printf '{"qa_status":"%s","qa_repo_type":"%s","qa_command":"%s","qa_scenarios":"%s","qa_exit_code":"%s","qa_summary":"%s","qa_round":"%s"}\n' \
+        "$STATUS" "$TYPE" "$CMD" "$SCEN" "${RC:-}" "$SUMMARY" "${AUTODRIVE_ROUND_LABEL:-round}")"
+      [ -n "$EVIDENCE" ] && printf '%s' "$OUT" > "$EVIDENCE"
+      printf '%s\n' "$OUT"
+    output: "qa_evidence"
+
+  - id: "step-03-wait-for-ci"
+    type: "bash"
+    parse_json: true
+    command: |
+      set -uo pipefail
+      cd "${REPO_PATH:-.}" 2>/dev/null || true
+      export GH_PAGER=cat PAGER=cat LESS=FRX
+      PR="${PR_NUMBER:-}"
+      case "$PR" in ''|*[!0-9]*) PR="$(gh pr view --json number --jq .number 2>/dev/null || printf '')" ;; esac
+      if [ -z "$PR" ] || ! command -v jq >/dev/null 2>&1; then
+        echo "ERROR: cannot read CI (pr='${PR:-none}', jq present=$(command -v jq >/dev/null 2>&1 && echo yes || echo no)). Unreadable CI is a FAILURE, not a pass." >&2
+        printf '{"ci_status":"UNREADABLE","ci_total":"0","ci_pending":"","ci_failing":"","ci_signal":"unreadable"}\n'
+        exit 0
+      fi
+      # Poll until CI reaches a terminal state. The loop is bounded by the
+      # build finishing or by the status becoming unreadable — never by a
+      # seconds-scale or single-digit-minute stopwatch, and never by a count.
+      while :; do
+        JSON="$(gh pr checks "$PR" --json name,state,bucket 2>/dev/null)"
+        if [ -z "$JSON" ]; then
+          echo "ERROR: CI status for #${PR} became unreadable while waiting. Unreadable is a FAILURE, not a pass." >&2
+          printf '{"ci_status":"UNREADABLE","ci_total":"0","ci_pending":"","ci_failing":"","ci_signal":"unreadable"}\n'
+          exit 0
+        fi
+        TOTAL="$(printf '%s' "$JSON" | jq -r 'length' 2>/dev/null)"
+        PENDING="$(printf '%s' "$JSON" | jq -r '[.[]|select(.bucket=="pending")]|length' 2>/dev/null)"
+        FAILING="$(printf '%s' "$JSON" | jq -r '[.[]|select(.bucket=="fail" or .bucket=="cancel")]|length' 2>/dev/null)"
+        [ -n "${PENDING:-}" ] || PENDING="unreadable"
+        if [ "$PENDING" = "0" ] || [ "$PENDING" = "unreadable" ]; then break; fi
+        echo "INFO: waiting on CI for #${PR}: ${PENDING}/${TOTAL} pending, ${FAILING} failing." >&2
+        sleep 60
+      done
+      if [ "$PENDING" = "unreadable" ]; then
+        STATUS="UNREADABLE"
+      elif [ "${TOTAL:-0}" = "0" ]; then
+        STATUS="NO_CHECKS"
+        echo "ERROR: #${PR} reports zero CI checks. Zero checks is not a green build." >&2
+      elif [ "${FAILING:-1}" = "0" ]; then
+        STATUS="GREEN"
+      else
+        STATUS="RED"
+      fi
+      echo "INFO: CI for #${PR}: ${STATUS} (total=${TOTAL:-?} failing=${FAILING:-?})" >&2
+      printf '{"ci_status":"%s","ci_total":"%s","ci_pending":"%s","ci_failing":"%s","ci_signal":"%s:%s/%s"}\n' \
+        "$STATUS" "${TOTAL:-0}" "$PENDING" "${FAILING:-}" "$STATUS" "${FAILING:-?}" "${TOTAL:-?}"
+    output: "ci_evidence"
+
+output:
+  format: "markdown"
+  template: |
+    # Merge evidence ({{autodrive_round_label}})
+
+    **Sync:** {{merge_sync}}
+
+    **qa-team:** {{qa_evidence}}
+
+    **CI:** {{ci_evidence}}

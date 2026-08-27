@@ -1,0 +1,301 @@
+name: "autodrive-crusty-round"
+description: |
+  One round of the auto-drive-to-merge crusty loop: put the PR in front of the
+  `crusty-old-engineer` skill acting as the maintainer's proxy, read its
+  STRUCTURED verdict, address every concern it raised, and record a
+  machine-checkable round record.
+
+  This brick performs exactly ONE round and contains no loop of its own. The
+  loop — and its agentic terminator — lives in autodrive-crusty-loop.yaml,
+  which invokes this brick over and over at constant session depth until the
+  `loop-health-evaluator` contract (issue #1337) says DONE or STUCK.
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["auto-drive", "crusty", "review", "verdict", "loop"]
+
+# Pager safety: recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
+#
+# NO-TIMEOUT POLICY (issue #439): no step here declares `timeout` or
+# `timeout_seconds`, and the recipe declares no `default_step_timeout`. A
+# reviewer that thinks for twenty minutes is doing its job; a false timeout
+# costs more than a slow run.
+#
+# PROHIBITIONS (see docs/reference/auto-drive-to-merge.md): the commit made by
+# this brick runs the repository's hooks. A hook-skipping commit flag is NEVER
+# passed, and a branch-protection bypass is NEVER used anywhere in this
+# workflow. When a hook fails, the cause is fixed.
+
+recursion:
+  max_depth: 6
+  max_total_steps: 30
+
+context:
+  repo_path: "."
+  pr_number: ""
+  pr_url: ""
+  task_description: ""
+  # Written by step-06. The loop driver reads this file — it never parses this
+  # recipe's stdout, so a chatty agent cannot move the control flow.
+  autodrive_round_record: ""
+  # A LABEL for reports. Nothing in this file compares it to a limit.
+  autodrive_round_label: "round"
+  # Concern ids a previous run resolved AND had confirmed clean by a later
+  # round. Crusty is told about them so a resumed run does not reopen settled
+  # ground; it may still re-raise one with NEW evidence.
+  autodrive_resolved_concerns_file: ""
+
+steps:
+  - id: "step-01-round-context"
+    type: "bash"
+    parse_json: true
+    command: |
+      set -uo pipefail
+      cd "${REPO_PATH:-.}" 2>/dev/null || true
+      export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
+      PR="${PR_NUMBER:-}"
+      if [ -z "$PR" ]; then
+        PR="$(gh pr view --json number --jq .number 2>/dev/null || printf '')"
+      fi
+      case "$PR" in ''|*[!0-9]*) PR="" ;; esac
+      SHA=""
+      if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        SHA="$(git rev-parse HEAD 2>/dev/null || printf '')"
+      else
+        echo "[skip] not a git repo; the round baseline is unobserved, never assumed" >&2
+      fi
+      RESOLVED=""
+      if [ -n "${AUTODRIVE_RESOLVED_CONCERNS_FILE:-}" ] && [ -f "${AUTODRIVE_RESOLVED_CONCERNS_FILE}" ]; then
+        RESOLVED="$(tr '\n' ' ' < "${AUTODRIVE_RESOLVED_CONCERNS_FILE}")"
+      fi
+      if [ -z "$PR" ]; then
+        echo "WARNING: no pull request could be resolved; crusty will review the working diff instead." >&2
+      fi
+      printf '{"pr":"%s","head_sha":"%s","resolved_concerns":"%s","round_label":"%s"}\n' \
+        "$PR" "$SHA" "$RESOLVED" "${AUTODRIVE_ROUND_LABEL:-round}"
+    output: "crusty_round_context"
+
+  - id: "step-02-crusty-review"
+    agent: "amplihack:core:reviewer"
+    working_dir: "{{repo_path}}"
+    prompt: |
+      # Crusty review — the maintainer's proxy on PR #{{crusty_round_context.pr}}
+
+      **Invoke the skill:** activate `Skill(skill="crusty-old-engineer")` and
+      review this pull request with it. You are not summarising the skill; you
+      are running it. Keep its voice and its standards: grounded skepticism,
+      evidence-linked judgement, hidden costs named, no enthusiasm.
+
+      You are standing in for the maintainer. Review it as hard as they would.
+
+      **Round label:** {{autodrive_round_label}}
+      **PR:** {{pr_url}} (#{{crusty_round_context.pr}}) at `{{crusty_round_context.head_sha}}`
+      **Original task:** {{task_description}}
+
+      ## Read the actual change
+
+      Do not speculate about what the code does when you can look at it:
+
+      ```bash
+      gh pr view {{crusty_round_context.pr}} --json title,body,files
+      gh pr diff {{crusty_round_context.pr}}
+      ```
+
+      ## Concerns a previous run already resolved
+
+      `{{crusty_round_context.resolved_concerns}}`
+
+      Those were addressed and confirmed clean in an earlier round. Do not
+      re-raise one merely because you would have raised it fresh. Re-raise it
+      only if you have NEW evidence in the current diff that it is not in fact
+      resolved — and say what that evidence is.
+
+      ## What counts as a concern
+
+      Correctness, hidden operational cost, ownership burden, failure modes
+      this change makes likelier, tests that do not test the thing, docs that
+      describe something else, complexity with no payer. Be specific. A vague
+      warning is not a concern and must not be emitted as one.
+
+      ## Output contract (REQUIRED)
+
+      Write your normal review in the skill's usual structure — framing, sharp
+      edges, recommended approach, references. Then, as the **very last thing**
+      you emit, output a single JSON object on its own, with no code fence and
+      no trailing prose:
+
+      {"crusty_verdict": "CLEAN" | "CONCERNS", "concerns": [{"id": "<stable-kebab-id>", "severity": "blocking" | "major" | "minor", "summary": "<one line>", "evidence": "<file:line or command output>"}], "summary": "<one line>"}
+
+      Rules that decide a phase, so get them right:
+
+      - `CLEAN` means you have **no outstanding concerns at all** on this diff.
+        It is not "nothing blocking". If you would say "one small thing", that
+        is `CONCERNS`.
+      - `id` must be **stable across rounds** for the same concern, so the loop
+        can tell a recurring concern from a new one. Derive it from the
+        substance (`silent-fallback-in-ci-status`), never from a round number.
+      - A missing or unreadable verdict is read as `CONCERNS`, never `CLEAN`.
+        Failing safe here means more review, not an unearned advance.
+    output: "crusty_review"
+
+  - id: "step-03-extract-crusty-verdict"
+    type: "bash"
+    parse_json: true
+    command: |
+      set -uo pipefail
+      # Canonical pipeline (docs/reference/structured-verdict-parsing.md):
+      # agent output is untrusted DATA on stdin, never interpolated into a
+      # command position, never eval'd, never branched on as raw prose.
+      RAW="${CRUSTY_REVIEW:-}"
+      RECORD="${AUTODRIVE_ROUND_RECORD:-}"
+      if [ -z "$RAW" ]; then
+        echo "WARNING: crusty produced no output; a missing verdict is CONCERNS, never CLEAN." >&2
+        VERDICT="CONCERNS"; SOURCE="missing_verdict"; CONCERNS='[]'
+      else
+        VERDICT="$(printf '%s' "$RAW" \
+          | amplihack orch helper extract-json \
+          | amplihack orch helper extract-field --field crusty_verdict --default CONCERNS)"
+        CONCERNS="$(printf '%s' "$RAW" \
+          | amplihack orch helper extract-json \
+          | amplihack orch helper extract-field --field concerns --default '[]')"
+        SOURCE="crusty"
+        # Exact-token allow-list. Anything else — including anything that
+        # merely CONTAINS "CLEAN" — falls to CONCERNS.
+        case "$VERDICT" in
+          CLEAN|CONCERNS) ;;
+          *) echo "WARNING: unrecognised crusty verdict '${VERDICT}'; failing safe to CONCERNS." >&2
+             VERDICT="CONCERNS"; SOURCE="unparseable_verdict" ;;
+        esac
+      fi
+      case "$CONCERNS" in \[*\]) ;; *) CONCERNS='[]' ;; esac
+
+      # Stable concern ids, one per line, for the loop's recurring/resolved set
+      # difference. jq is optional here: without it the loop still runs, it just
+      # sees an empty finding set, which is reported rather than assumed clean.
+      if [ -n "$RECORD" ]; then
+        if command -v jq >/dev/null 2>&1; then
+          printf '%s' "$CONCERNS" | jq -r '.[]?.id // empty' 2>/dev/null > "${RECORD}.findings" || : > "${RECORD}.findings"
+        else
+          echo "WARNING: jq unavailable; concern ids cannot be extracted for the recurring-findings signal." >&2
+          : > "${RECORD}.findings"
+        fi
+      fi
+      COUNT=0
+      if [ -n "$RECORD" ] && [ -f "${RECORD}.findings" ]; then
+        COUNT="$(grep -c . "${RECORD}.findings" 2>/dev/null || true)"
+      fi
+      case "$COUNT" in ''|*[!0-9]*) COUNT=0 ;; esac
+      echo "INFO: crusty ${AUTODRIVE_ROUND_LABEL:-round}: verdict=${VERDICT} (source=${SOURCE}) concerns=${COUNT}" >&2
+      printf '{"crusty_verdict":"%s","verdict_source":"%s","concern_count":%s}\n' \
+        "$VERDICT" "$SOURCE" "${COUNT:-0}"
+    output: "crusty_verdict"
+
+  - id: "step-04-address-concerns"
+    condition: "crusty_verdict.crusty_verdict == 'CONCERNS'"
+    agent: "amplihack:builder"
+    working_dir: "{{repo_path}}"
+    prompt: |
+      # Address every concern crusty raised
+
+      **Round:** {{autodrive_round_label}} — **PR #{{crusty_round_context.pr}}**
+      **Concerns raised:** {{crusty_verdict.concern_count}}
+
+      ## The review to satisfy
+
+      {{crusty_review}}
+
+      ## What to do
+
+      Work through the `concerns` array. For each one, either fix the cause or
+      — where the concern rests on a mistaken reading — make the code or the
+      docs say plainly what crusty misread, so the next round has the evidence.
+      Neither of those is an argument in a comment thread: the change lands in
+      the tree.
+
+      Do not paper over a concern. Do not narrow a test until it passes. Do not
+      leave a TODO in place of a fix.
+
+      ## Committing
+
+      Commit normally so the repository's hooks run, and push:
+
+      ```bash
+      amplihack hygiene artifact-guard --repo . --mode pre-commit
+      git add -A
+      git commit -m "address crusty review: <what changed>"
+      git push
+      ```
+
+      The artifact guard runs first so a stray runtime artifact never rides
+      into the PR; if it objects, remove the artifact rather than silencing it.
+
+      The hooks are the point. If a hook fails, **fix what it is complaining
+      about**. Never reach for a flag that skips them — the pre-tool-use hook
+      blocks it, CI would catch it later, and it is prohibited by this
+      workflow. The same goes for the merge later: no bypass, ever.
+    output: "crusty_fixes"
+
+  - id: "step-05-verify-concerns-addressed"
+    condition: "crusty_verdict.crusty_verdict == 'CONCERNS'"
+    type: "bash"
+    parse_json: true
+    command: |
+      set -uo pipefail
+      cd "${REPO_PATH:-.}" 2>/dev/null || true
+      export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
+      GIT_OK="true"
+      if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        GIT_OK="false"
+        echo "[skip] not a git repo; commit evidence is reported as unobserved, never as progress" >&2
+      fi
+      BASE="$(printf '%s' "${CRUSTY_ROUND_CONTEXT:-}" \
+        | amplihack orch helper extract-json \
+        | amplihack orch helper extract-field --field head_sha --default '')"
+      NOW=""
+      [ "$GIT_OK" = "true" ] && NOW="$(git rev-parse HEAD 2>/dev/null || printf '')"
+      COMMITS=0
+      if [ "$GIT_OK" = "true" ] && [ -n "$BASE" ] && git rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null 2>&1; then
+        COMMITS="$(git rev-list --count "${BASE}..HEAD" 2>/dev/null || printf 0)"
+      fi
+      DIRTY="false"
+      [ "$GIT_OK" = "true" ] && { git diff --quiet 2>/dev/null || DIRTY="true"; }
+      if [ "$COMMITS" = "0" ]; then
+        echo "WARNING: the round addressed concerns but produced NO commit. That is measured evidence of a round that did nothing; the loop evaluator will see it." >&2
+      fi
+      printf '{"base_sha":"%s","head_sha":"%s","commits":%s,"dirty_worktree":"%s","git_observed":"%s"}\n' \
+        "$BASE" "$NOW" "${COMMITS:-0}" "$DIRTY" "$GIT_OK"
+    output: "crusty_fix_evidence"
+
+  - id: "step-06-write-round-record"
+    type: "bash"
+    command: |
+      set -uo pipefail
+      RECORD="${AUTODRIVE_ROUND_RECORD:-}"
+      [ -n "$RECORD" ] || { echo "ERROR: autodrive_round_record is required; the loop driver reads the round record from a file, never from stdout." >&2; exit 1; }
+      VERDICT="$(printf '%s' "${CRUSTY_VERDICT:-}" \
+        | amplihack orch helper extract-json \
+        | amplihack orch helper extract-field --field crusty_verdict --default CONCERNS)"
+      case "$VERDICT" in CLEAN|CONCERNS) ;; *) VERDICT="CONCERNS" ;; esac
+      COUNT="$(printf '%s' "${CRUSTY_VERDICT:-}" \
+        | amplihack orch helper extract-json \
+        | amplihack orch helper extract-field --field concern_count --default 0)"
+      COMMITS="$(printf '%s' "${CRUSTY_FIX_EVIDENCE:-}" \
+        | amplihack orch helper extract-json \
+        | amplihack orch helper extract-field --field commits --default 0)"
+      SHA="$(printf '%s' "${CRUSTY_FIX_EVIDENCE:-}" \
+        | amplihack orch helper extract-json \
+        | amplihack orch helper extract-field --field head_sha --default '')"
+      [ -f "${RECORD}.findings" ] || : > "${RECORD}.findings"
+      printf '{"crusty_verdict":"%s","concern_count":%s,"commits_this_round":%s,"head_sha":"%s","round_label":"%s","test_signal":"","ci_signal":""}\n' \
+        "$VERDICT" "${COUNT:-0}" "${COMMITS:-0}" "$SHA" "${AUTODRIVE_ROUND_LABEL:-round}" > "$RECORD"
+      echo "INFO: round record written to ${RECORD}" >&2
+      cat "$RECORD"
+    output: "crusty_round_record_written"
+
+output:
+  format: "markdown"
+  template: |
+    # Crusty round {{autodrive_round_label}}
+
+    **Verdict:** {{crusty_verdict.crusty_verdict}} ({{crusty_verdict.concern_count}} concern(s))
+
+    **Record:** {{autodrive_round_record}}

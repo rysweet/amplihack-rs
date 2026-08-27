@@ -1,0 +1,155 @@
+name: "autodrive-build"
+description: |
+  Phase 1 of auto-drive-to-merge: run `default-workflow` on the task to produce
+  a pull request.
+
+  The merge decision is deliberately taken away from default-workflow here
+  (`no_merge: "true"`). Phase 1 builds and publishes; nothing merges until the
+  crusty loop and the merge-ready loop have both converged and the merge gate
+  has verified every criterion in the run that merges.
+
+  Resumable: a run that already produced a PR for this branch does NOT rebuild
+  it, and a PR that is already merged short-circuits the whole workflow. The
+  platform is the authority on both — local state is a cache, never a claim.
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["auto-drive", "build", "default-workflow", "pr"]
+
+# Pager safety: recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
+#
+# NO-TIMEOUT POLICY (issue #439): no step declares `timeout` or
+# `timeout_seconds`; the recipe declares no `default_step_timeout`.
+#
+# PROHIBITIONS: a hook-skipping commit flag and a branch-protection bypass are
+# NEVER used anywhere in this workflow. See
+# docs/reference/auto-drive-to-merge.md#two-absolute-prohibitions.
+
+recursion:
+  max_depth: 6
+  max_total_steps: 80
+
+context:
+  task_description: ""
+  requirements: ""
+  repo_path: "."
+  branch_prefix: "feat"
+  existing_branch: ""
+  pr_number: ""
+  pr_url: ""
+  autodrive_state_dir: ""
+  # Phase 1 never merges. auto-drive-to-merge owns that decision.
+  no_merge: "true"
+
+steps:
+  - id: "step-01-build-preflight"
+    type: "bash"
+    parse_json: true
+    command: |
+      set -uo pipefail
+      cd "${REPO_PATH:-.}" 2>/dev/null || true
+      export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
+      STATE_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/autodrive_state.sh"
+      [ -f "$STATE_HELPER" ] || STATE_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/autodrive_state.sh"
+      [ -f "$STATE_HELPER" ] || STATE_HELPER="$(pwd)/amplifier-bundle/tools/autodrive_state.sh"
+      [ -f "$STATE_HELPER" ] || STATE_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/autodrive_state.sh"
+      [ -f "$STATE_HELPER" ] || STATE_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/autodrive_state.sh"
+      [ -f "$STATE_HELPER" ] || { echo "ERROR: autodrive state helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): $STATE_HELPER; cwd=$(pwd)" >&2; exit 1; }
+      . "$STATE_HELPER"
+
+      PR="${PR_NUMBER:-}"
+      case "$PR" in ''|*[!0-9]*) PR="" ;; esac
+      GIT_OK="true"
+      if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        GIT_OK="false"; echo "[skip] not a git repo; branch evidence is unobserved, never assumed" >&2
+      fi
+      BRANCH="${EXISTING_BRANCH:-}"
+      [ -n "$BRANCH" ] || { [ "$GIT_OK" = "true" ] && BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || printf '')"; }
+      if [ -z "$PR" ] && [ -n "$BRANCH" ] && [ "$BRANCH" != "HEAD" ]; then
+        PR="$(gh pr list --head "$BRANCH" --state all --limit 1 --json number --jq '.[0].number // empty' 2>/dev/null || printf '')"
+        case "$PR" in ''|*[!0-9]*) PR="" ;; esac
+      fi
+      IDENT="${PR:-${BRANCH:-detached}}"
+      DIR="${AUTODRIVE_STATE_DIR:-}"
+      [ -n "$DIR" ] || DIR="$(autodrive_state_dir "${REPO_PATH:-.}" "$IDENT")"
+      mkdir -p "$DIR"
+      autodrive_ledger_pull "$PR" "$DIR"
+
+      STATE="$(autodrive_pr_state "$PR")"
+      RUN="true"; WHY="no pull request exists yet for this work"
+      if [ "$STATE" = "MERGED" ]; then
+        RUN="false"; WHY="PR #${PR} is already merged; merged work is never rebuilt"
+      elif [ "$STATE" = "OPEN" ]; then
+        RUN="false"; WHY="PR #${PR} already exists and is open; phase 1 does not rebuild it"
+      fi
+      PR_URL_OUT="${PR_URL:-}"
+      if [ -z "$PR_URL_OUT" ] && [ -n "$PR" ]; then
+        PR_URL_OUT="$(gh pr view "$PR" --json url --jq .url 2>/dev/null || printf '')"
+      fi
+      echo "INFO: build preflight: branch=${BRANCH:-<none>} pr=${PR:-<none>} pr_state=${STATE} run=${RUN} (${WHY})" >&2
+      printf '{"should_run":"%s","pr":"%s","pr_url":"%s","pr_state":"%s","branch":"%s","state_dir":"%s","reason":"%s"}\n' \
+        "$RUN" "$PR" "$PR_URL_OUT" "$STATE" "$BRANCH" "$DIR" "$WHY"
+    output: "build_preflight"
+
+  - id: "step-02-default-workflow"
+    condition: "build_preflight.should_run == 'true'"
+    type: "recipe"
+    recipe: "default-workflow"
+    context:
+      task_description: "{{task_description}}"
+      requirements: "{{requirements}}"
+      repo_path: "{{repo_path}}"
+      branch_prefix: "{{branch_prefix}}"
+      existing_branch: "{{existing_branch}}"
+      # Phase 1 publishes a PR and stops. The merge belongs to phase 3's gate.
+      no_merge: "true"
+      should_merge: "false"
+
+  - id: "step-03-resolve-pr"
+    type: "bash"
+    parse_json: true
+    command: |
+      set -uo pipefail
+      cd "${REPO_PATH:-.}" 2>/dev/null || true
+      export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
+      g() { printf '%s' "${BUILD_PREFLIGHT:-}" | amplihack orch helper extract-json \
+              | amplihack orch helper extract-field --field "$1" --default ''; }
+      PR="$(g pr)"; DIR="$(g state_dir)"; BRANCH="$(g branch)"
+      if [ -z "$PR" ]; then
+        [ -n "$BRANCH" ] && [ "$BRANCH" != "HEAD" ] && \
+          PR="$(gh pr list --head "$BRANCH" --state all --limit 1 --json number --jq '.[0].number // empty' 2>/dev/null || printf '')"
+      fi
+      if [ -z "$PR" ]; then
+        PR="$(gh pr view --json number --jq .number 2>/dev/null || printf '')"
+      fi
+      case "$PR" in ''|*[!0-9]*) PR="" ;; esac
+      if [ -z "$PR" ]; then
+        echo "ERROR: phase 1 finished without a pull request. Phases 2 and 3 have nothing to review or merge, so the workflow stops here rather than reporting progress it did not make." >&2
+        exit 1
+      fi
+      URL="$(gh pr view "$PR" --json url --jq .url 2>/dev/null || printf '')"
+      if [ -n "$DIR" ]; then
+        STATE_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/autodrive_state.sh"
+        [ -f "$STATE_HELPER" ] || STATE_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/autodrive_state.sh"
+        [ -f "$STATE_HELPER" ] || STATE_HELPER="$(pwd)/amplifier-bundle/tools/autodrive_state.sh"
+        [ -f "$STATE_HELPER" ] || STATE_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/autodrive_state.sh"
+        [ -f "$STATE_HELPER" ] || STATE_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/autodrive_state.sh"
+        if [ -f "$STATE_HELPER" ]; then
+          . "$STATE_HELPER"
+          autodrive_mark_phase_done "$DIR" "build"
+          autodrive_ledger_push "$PR" "$DIR"
+        else
+          echo "WARNING: autodrive state helper not found; this run stays correct but a resumed run will re-probe phase 1." >&2
+        fi
+      fi
+      echo "INFO: phase 1 complete: PR #${PR} ${URL}" >&2
+      printf '{"pr":"%s","pr_url":"%s","state_dir":"%s"}\n' "$PR" "$URL" "$DIR"
+    output: "build_result"
+
+output:
+  format: "markdown"
+  template: |
+    # Build phase
+
+    **Preflight:** {{build_preflight}}
+
+    **PR:** {{build_result.pr_url}} (#{{build_result.pr}})

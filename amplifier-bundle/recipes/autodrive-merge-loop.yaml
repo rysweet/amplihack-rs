@@ -1,0 +1,189 @@
+name: "autodrive-merge-loop"
+description: |
+  Phase 3 of auto-drive-to-merge: iterate `autodrive-merge-round` until every
+  merge-ready criterion holds — the `merge-ready` skill's criteria, all
+  `qa-team` scenarios passing, CI green, no merge conflicts, review threads
+  resolved — and then merge behind an evidence gate.
+
+  There is NO iteration cap here. The terminator is `loop-health-evaluator`
+  (issue #1337), which judges absence of progress rather than counting
+  attempts. Host safety stays where it belongs: structurally one layer down in
+  #1327 and #1332, which refuse with exit code 79.
+
+  NO SILENT MERGE. The merge gate re-verifies every criterion in the run that
+  merges, binds all of it to ONE head SHA, writes the evidence down first, and
+  merges with a fixed argv that accepts no caller-supplied flags. An unreadable
+  criterion is a failure, never a pass.
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["auto-drive", "merge-ready", "merge", "loop", "issue-1337"]
+
+# Pager safety: recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
+#
+# NO-TIMEOUT POLICY (issue #439): no step declares `timeout` or
+# `timeout_seconds`; the recipe declares no `default_step_timeout`.
+#
+# PROHIBITIONS: a hook-skipping commit flag and a branch-protection bypass are
+# NEVER used anywhere in this workflow. See
+# docs/reference/auto-drive-to-merge.md#two-absolute-prohibitions.
+
+recursion:
+  max_depth: 6
+  max_total_steps: 30
+
+context:
+  repo_path: "."
+  pr_number: ""
+  pr_url: ""
+  task_description: ""
+  autodrive_state_dir: ""
+  autodrive_dry_run: "false"
+  merge_loop_result: ""
+
+steps:
+  - id: "step-01-merge-loop-preflight"
+    type: "bash"
+    parse_json: true
+    command: |
+      set -uo pipefail
+      cd "${REPO_PATH:-.}" 2>/dev/null || true
+      export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
+      STATE_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/autodrive_state.sh"
+      [ -f "$STATE_HELPER" ] || STATE_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/autodrive_state.sh"
+      [ -f "$STATE_HELPER" ] || STATE_HELPER="$(pwd)/amplifier-bundle/tools/autodrive_state.sh"
+      [ -f "$STATE_HELPER" ] || STATE_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/autodrive_state.sh"
+      [ -f "$STATE_HELPER" ] || STATE_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/autodrive_state.sh"
+      [ -f "$STATE_HELPER" ] || { echo "ERROR: autodrive state helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): $STATE_HELPER; cwd=$(pwd)" >&2; exit 1; }
+      . "$STATE_HELPER"
+      PR="${PR_NUMBER:-}"
+      [ -n "$PR" ] || PR="$(gh pr view --json number --jq .number 2>/dev/null || printf '')"
+      case "$PR" in ''|*[!0-9]*) PR="" ;; esac
+      BRANCH="detached"
+      if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || printf 'detached')"
+      else
+        echo "[skip] not a git repo; the branch identity falls back to 'detached' rather than being assumed" >&2
+      fi
+      IDENT="${PR:-$BRANCH}"
+      DIR="${AUTODRIVE_STATE_DIR:-}"
+      [ -n "$DIR" ] || DIR="$(autodrive_state_dir "${REPO_PATH:-.}" "$IDENT")"
+      mkdir -p "$DIR"
+      autodrive_ledger_pull "$PR" "$DIR"
+      STATE="$(autodrive_pr_state "$PR")"
+      RUN="true"; WHY="merge-ready loop not yet completed for this PR"
+      if [ "$STATE" = "MERGED" ]; then
+        RUN="false"; WHY="PR #${PR} is already merged; merged work is never redone"
+      elif [ -z "$PR" ]; then
+        RUN="false"; WHY="no pull request could be resolved; there is nothing to drive to merge"
+      fi
+      echo "INFO: merge-loop preflight: pr=${PR:-<none>} pr_state=${STATE} run=${RUN} (${WHY}) state_dir=${DIR}" >&2
+      printf '{"should_run":"%s","pr":"%s","pr_state":"%s","state_dir":"%s","reason":"%s"}\n' \
+        "$RUN" "$PR" "$STATE" "$DIR" "$WHY"
+    output: "merge_loop_preflight"
+
+  - id: "step-02-merge-ready-loop"
+    condition: "merge_loop_preflight.should_run == 'true'"
+    type: "bash"
+    command: |
+      set -uo pipefail
+      cd "${REPO_PATH:-.}" 2>/dev/null || true
+      LOOP_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/autodrive_loop.sh"
+      [ -f "$LOOP_HELPER" ] || LOOP_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/autodrive_loop.sh"
+      [ -f "$LOOP_HELPER" ] || LOOP_HELPER="$(pwd)/amplifier-bundle/tools/autodrive_loop.sh"
+      [ -f "$LOOP_HELPER" ] || LOOP_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/autodrive_loop.sh"
+      [ -f "$LOOP_HELPER" ] || LOOP_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/autodrive_loop.sh"
+      [ -f "$LOOP_HELPER" ] || { echo "ERROR: autodrive loop helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): $LOOP_HELPER; cwd=$(pwd)" >&2; exit 1; }
+      g() { printf '%s' "${MERGE_LOOP_PREFLIGHT:-}" | amplihack orch helper extract-json \
+              | amplihack orch helper extract-field --field "$1" --default ''; }
+      DIR="$(g state_dir)"; PR="$(g pr)"
+      [ -n "$DIR" ] || { echo "ERROR: preflight produced no state_dir; refusing to run an unrecorded loop." >&2; exit 1; }
+      bash "$LOOP_HELPER" \
+        --loop-name "merge-ready" \
+        --round-recipe "autodrive-merge-round" \
+        --clean-token "MERGE_READY" \
+        --verdict-field "merge_ready_verdict" \
+        --repo "${REPO_PATH:-.}" \
+        --state-dir "$DIR" \
+        --context "repo_path=${REPO_PATH:-.}" \
+        --context "pr_number=${PR}" \
+        --context "pr_url=${PR_URL:-}" \
+        --context "task_description=${TASK_DESCRIPTION:-}" \
+        --context "autodrive_qa_evidence=${DIR}/qa-evidence.json"
+      RC=$?
+      if [ "$RC" -eq 79 ]; then
+        echo "ERROR: exit 79 terminal policy refusal in the merge-ready loop (#1327/#1332). Final — surfaced and stopped, never retried into the guard." >&2
+        exit 79
+      fi
+      exit "$RC"
+    output: "merge_loop_result"
+
+  - id: "step-03-merge-gate"
+    condition: "merge_loop_preflight.should_run == 'true'"
+    type: "bash"
+    parse_json: true
+    command: |
+      set -uo pipefail
+      cd "${REPO_PATH:-.}" 2>/dev/null || true
+      GATE="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/autodrive_merge_gate.sh"
+      [ -f "$GATE" ] || GATE="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/autodrive_merge_gate.sh"
+      [ -f "$GATE" ] || GATE="$(pwd)/amplifier-bundle/tools/autodrive_merge_gate.sh"
+      [ -f "$GATE" ] || GATE="${HOME:-/root}/.copilot/amplifier-bundle/tools/autodrive_merge_gate.sh"
+      [ -f "$GATE" ] || GATE="${HOME:-/root}/.amplihack/amplifier-bundle/tools/autodrive_merge_gate.sh"
+      [ -f "$GATE" ] || { echo "ERROR: autodrive merge gate not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): $GATE; cwd=$(pwd)" >&2; exit 1; }
+      g() { printf '%s' "${MERGE_LOOP_PREFLIGHT:-}" | amplihack orch helper extract-json \
+              | amplihack orch helper extract-field --field "$1" --default ''; }
+      DIR="$(g state_dir)"; PR="$(g pr)"
+      ARGS=(--pr "$PR" --repo "${REPO_PATH:-.}" --state-dir "$DIR" \
+            --round-record "${DIR}/merge-ready-latest.json" \
+            --qa-evidence "${DIR}/qa-evidence.json")
+      [ "${AUTODRIVE_DRY_RUN:-false}" = "true" ] && ARGS+=(--dry-run)
+      bash "$GATE" "${ARGS[@]}"
+      RC=$?
+      if [ "$RC" -eq 79 ]; then
+        echo "ERROR: exit 79 terminal policy refusal at the merge gate. Final — never retried." >&2
+        exit 79
+      fi
+      exit "$RC"
+    output: "merge_gate_result"
+
+  - id: "step-04-record-merge-phase"
+    condition: "merge_loop_preflight.should_run == 'true'"
+    type: "bash"
+    command: |
+      set -uo pipefail
+      cd "${REPO_PATH:-.}" 2>/dev/null || true
+      STATE_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/autodrive_state.sh"
+      [ -f "$STATE_HELPER" ] || STATE_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/autodrive_state.sh"
+      [ -f "$STATE_HELPER" ] || STATE_HELPER="$(pwd)/amplifier-bundle/tools/autodrive_state.sh"
+      [ -f "$STATE_HELPER" ] || STATE_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/autodrive_state.sh"
+      [ -f "$STATE_HELPER" ] || STATE_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/autodrive_state.sh"
+      [ -f "$STATE_HELPER" ] || { echo "WARNING: autodrive state helper not found; this run stays correct but a resumed run will redo the merge-ready loop." >&2; exit 0; }
+      . "$STATE_HELPER"
+      g() { printf '%s' "${1:-}" | amplihack orch helper extract-json \
+              | amplihack orch helper extract-field --field "$2" --default ''; }
+      DIR="$(g "${MERGE_LOOP_PREFLIGHT:-}" state_dir)"; PR="$(g "${MERGE_LOOP_PREFLIGHT:-}" pr)"
+      [ -n "$DIR" ] || exit 0
+      RESULT="$(g "${MERGE_GATE_RESULT:-}" merge_result)"
+      case "$RESULT" in
+        MERGED|ALREADY_MERGED)
+          autodrive_mark_phase_done "$DIR" "merge-ready-loop"
+          autodrive_mark_phase_done "$DIR" "merged"
+          echo "INFO: PR #${PR} recorded as merged (${RESULT})." >&2
+          ;;
+        *)
+          echo "INFO: merge gate result '${RESULT:-unknown}'; the merge phase is NOT recorded complete." >&2
+          ;;
+      esac
+      autodrive_ledger_push "$PR" "$DIR"
+    output: "merge_phase_record"
+
+output:
+  format: "markdown"
+  template: |
+    # Merge-ready loop
+
+    **Preflight:** {{merge_loop_preflight}}
+
+    **Loop result:** {{merge_loop_result}}
+
+    **Merge gate:** {{merge_gate_result}}
