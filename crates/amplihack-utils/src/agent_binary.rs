@@ -227,30 +227,31 @@ struct LauncherContextSnippet {
 ///
 /// Unlike a process-ancestry walk this needs no `/proc`, so it behaves the
 /// same on every platform.
+/// Environment variables that identify the CLI hosting this process, paired
+/// with the binary each implies.
+///
+/// Exported so there is exactly one list. A test that needs to observe a lower
+/// layer must clear all of these, and a hand-copied list in a fixture is how
+/// that silently stops happening the next time a marker is added.
+pub const SESSION_MARKERS: &[(&str, &str)] = &[
+    // Claude Code exports CLAUDECODE; the others are older spellings that
+    // llm_client already recognised.
+    ("CLAUDECODE", "claude"),
+    ("CLAUDE_CODE", "claude"),
+    ("CLAUDE_CODE_SESSION_ID", "claude"),
+    ("CLAUDE_PROJECT_DIR", "claude"),
+    ("COPILOT_CLI", "copilot"),
+    ("GITHUB_COPILOT", "copilot"),
+    ("GITHUB_COPILOT_AGENT", "copilot"),
+    ("COPILOT_AGENT", "copilot"),
+];
+
 fn session_marker() -> Option<String> {
-    // Claude Code exports CLAUDECODE; CLAUDE_CODE and CLAUDE_PROJECT_DIR are
-    // the older spellings llm_client already recognised.
-    for key in [
-        "CLAUDECODE",
-        "CLAUDE_CODE",
-        "CLAUDE_CODE_SESSION_ID",
-        "CLAUDE_PROJECT_DIR",
-    ] {
-        if std::env::var_os(key).is_some_and(|v| !v.is_empty()) {
-            return Some("claude".to_string());
-        }
-    }
-    for key in [
-        "COPILOT_CLI",
-        "GITHUB_COPILOT",
-        "GITHUB_COPILOT_AGENT",
-        "COPILOT_AGENT",
-    ] {
-        if std::env::var_os(key).is_some_and(|v| !v.is_empty()) {
-            return Some("copilot".to_string());
-        }
-    }
-    None
+    SESSION_MARKERS.iter().find_map(|(key, binary)| {
+        std::env::var_os(key)
+            .is_some_and(|v| !v.is_empty())
+            .then(|| (*binary).to_string())
+    })
 }
 
 /// Returns `true` when a launcher context found in `dir` cannot be trusted.
