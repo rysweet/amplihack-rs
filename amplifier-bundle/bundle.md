@@ -69,7 +69,7 @@ skills:
   quality-audit-workflow: { path: skills/quality-audit-workflow/SKILL.md }
   ultrathink-orchestrator: { path: skills/ultrathink-orchestrator/SKILL.md }
 
-  # Technical skills (19)
+  # Technical skills (20)
   agent-sdk: { path: skills/claude-agent-sdk/SKILL.md }
   azure-admin: { path: skills/azure-admin/SKILL.md }
   azure-devops: { path: skills/azure-devops/SKILL.md }
@@ -84,6 +84,7 @@ skills:
   mermaid-diagram-generator: { path: skills/mermaid-diagram-generator/SKILL.md }
   microsoft-agent-framework: { path: skills/microsoft-agent-framework/SKILL.md }
   module-spec-generator: { path: skills/module-spec-generator/SKILL.md }
+  npe-hunting-workflow: { path: skills/npe-hunting-workflow/SKILL.md }
   outside-in-testing: { path: skills/outside-in-testing/SKILL.md }
   qa-team: { path: skills/qa-team/SKILL.md }
   remote-work: { path: skills/remote-work/SKILL.md }
@@ -288,7 +289,7 @@ agents:
         |----------|-------|----------|
         | Domain Analysts | 23 | economist, historian, psychologist |
         | Workflow Skills | 11 | default-workflow, debate, consensus |
-        | Technical Skills | 19 | design-patterns, debugging, testing |
+        | Technical Skills | 20 | design-patterns, debugging, testing |
         | Document Processing | 4 | PDF, DOCX, XLSX, PPTX |
         | Meta Skills | 11 | PR review, backlog, roadmaps |
 
