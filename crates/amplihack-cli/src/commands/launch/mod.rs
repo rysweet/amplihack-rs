@@ -143,7 +143,7 @@ pub fn run_launch(
 
     // Find binary
     let binary = bootstrap::ensure_tool_available(tool, override_origin)
-        .with_context(|| format!("could not find '{tool}' binary in PATH"))?;
+        .with_context(|| missing_binary_context(tool))?;
 
     tracing::info!(
         binary = %binary.path.display(),
@@ -322,6 +322,217 @@ fn wait_for_child_or_signal(
             }
             None => {
                 std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+    }
+}
+
+/// Error context for "the tool could not be found", with the one explanation
+/// the path-based search cannot give (issue #1317).
+///
+/// A `copilot` process launched from an npm package keeps running after a
+/// reinstall unlinks its executable: the kernel holds the inode open, but the
+/// path is gone. Every candidate then fails the health gate as `Missing`,
+/// including `COPILOT_BINARY_PATH` set to the exact path the live parent
+/// reports — which reads as "amplihack cannot find a binary that is obviously
+/// right there" and sends the reader looking for a `$PATH` problem.
+///
+/// So when the search fails, say whether the calling process is itself running
+/// a deleted executable. That is a fact about the machine that the search
+/// cannot discover by looking at paths, because the file no longer has one.
+fn missing_binary_context(tool: &str) -> String {
+    let base = format!("could not find '{tool}' binary in PATH");
+    match deleted_running_executable(tool) {
+        Some(path) => format!(
+            "{base}\n\
+             A running ancestor process is executing a DELETED '{tool}' \
+             executable ({}). The file was unlinked -- typically by a package \
+             reinstall or upgrade -- while the process kept running, so no path \
+             points at it any more and every candidate correctly fails as \
+             missing. Reinstall '{tool}' so a real path exists, then retry.",
+            path.display()
+        ),
+        None => base,
+    }
+}
+
+/// Does this `/proc/<pid>/exe` link target name a deleted executable for `tool`?
+///
+/// Pure so the two decisions can be tested without a live process tree: that
+/// the " (deleted)" suffix is what marks an unlinked image, and that a path is
+/// only claimed when its file name is actually the tool. Matching loosely here
+/// would put a confident, wrong sentence into an error message — worse than the
+/// bare "not found" it replaces.
+fn deleted_target_for_tool(raw: &str, tool: &str) -> Option<std::path::PathBuf> {
+    let stripped = raw.strip_suffix(" (deleted)")?;
+    let path = std::path::PathBuf::from(stripped);
+    let name = path.file_name()?.to_string_lossy().into_owned();
+    // `copilot` and `copilot.exe`, but never `copilot-shim` or `mycopilot`.
+    if name == tool || name.strip_prefix(tool).is_some_and(|r| r.starts_with('.')) {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+/// Is some ancestor process running a deleted executable whose name matches
+/// `tool`? Returns the stale path as Linux reports it.
+///
+/// Linux appends " (deleted)" to the `/proc/<pid>/exe` link target once the
+/// file is unlinked, which is the only signal available: `stat` on the path
+/// fails, so nothing path-based can tell this case apart from "never installed".
+///
+/// Walks a bounded number of ancestors and stops at pid 1. Best-effort by
+/// construction: it only ever produces a sentence in an error message that is
+/// already being returned, so every failure to read simply yields `None`.
+#[cfg(target_os = "linux")]
+fn deleted_running_executable(tool: &str) -> Option<std::path::PathBuf> {
+    const MAX_ANCESTORS: usize = 8;
+
+    let mut pid = std::process::id();
+    for _ in 0..MAX_ANCESTORS {
+        if pid <= 1 {
+            break;
+        }
+        if let Ok(target) = std::fs::read_link(format!("/proc/{pid}/exe"))
+            && let Some(path) = deleted_target_for_tool(&target.to_string_lossy(), tool)
+        {
+            return Some(path);
+        }
+        pid = parent_pid(pid)?;
+    }
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+fn deleted_running_executable(_tool: &str) -> Option<std::path::PathBuf> {
+    None
+}
+
+/// Parent pid from `/proc/<pid>/stat`, read from the end so a process name
+/// containing spaces or parentheses cannot shift the field index.
+#[cfg(target_os = "linux")]
+fn parent_pid(pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let after_comm = stat.rfind(')')?;
+    let mut fields = stat.get(after_comm + 1..)?.split_whitespace();
+    let _state = fields.next()?;
+    fields.next()?.parse().ok()
+}
+
+#[cfg(test)]
+mod issue_1317_deleted_executable_tests {
+    use super::*;
+
+    #[test]
+    fn a_live_path_is_not_claimed_as_deleted() {
+        // The overwhelmingly common case: nothing was unlinked, so the message
+        // must stay the plain "not found" and not invent an explanation.
+        assert_eq!(deleted_target_for_tool("/usr/bin/copilot", "copilot"), None);
+    }
+
+    #[test]
+    fn a_deleted_target_for_the_tool_is_claimed() {
+        let got = deleted_target_for_tool(
+            "/home/u/.npm/_npx/abc/node_modules/.bin/copilot (deleted)",
+            "copilot",
+        );
+        assert_eq!(
+            got.as_deref(),
+            Some(std::path::Path::new(
+                "/home/u/.npm/_npx/abc/node_modules/.bin/copilot"
+            ))
+        );
+    }
+
+    #[test]
+    fn a_windows_style_suffix_still_matches() {
+        assert!(deleted_target_for_tool("/opt/x/copilot.exe (deleted)", "copilot").is_some());
+    }
+
+    #[test]
+    fn a_different_deleted_binary_is_not_claimed() {
+        // Claiming this would put a confident, wrong sentence in the error --
+        // worse than the bare "not found" it replaces.
+        assert_eq!(
+            deleted_target_for_tool("/usr/bin/node (deleted)", "copilot"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_name_that_merely_contains_the_tool_is_not_claimed() {
+        assert_eq!(
+            deleted_target_for_tool("/usr/bin/copilot-shim (deleted)", "copilot"),
+            None
+        );
+        assert_eq!(
+            deleted_target_for_tool("/usr/bin/mycopilot (deleted)", "copilot"),
+            None
+        );
+    }
+
+    #[test]
+    fn context_always_contains_the_plain_message() {
+        // Whatever the machine looks like, the original sentence survives.
+        let msg = missing_binary_context("copilot");
+        assert!(
+            msg.contains("could not find 'copilot' binary in PATH"),
+            "context lost the base message: {msg}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parent_pid_of_this_process_is_readable_and_nonzero() {
+        let ppid = parent_pid(std::process::id()).expect("this process has a parent");
+        assert!(ppid > 0, "parent pid must be positive, got {ppid}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_really_does_append_deleted_to_an_unlinked_exe() {
+        // The whole diagnostic rests on this kernel behaviour, so assert it
+        // against a real unlinked process image rather than trusting the docs.
+        use std::io::Write;
+
+        let dir = std::env::temp_dir().join(format!("amplihack-1317-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let script = dir.join("copilot");
+        {
+            let Ok(mut f) = std::fs::File::create(&script) else {
+                return; // unwritable temp dir; nothing to assert
+            };
+            let _ = f.write_all(b"#!/bin/sh\nsleep 30\n");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755));
+        }
+
+        let Ok(mut child) = std::process::Command::new(&script).spawn() else {
+            let _ = std::fs::remove_dir_all(&dir);
+            return; // cannot spawn here; skip rather than fail spuriously
+        };
+        let _ = std::fs::remove_file(&script);
+
+        let link = std::fs::read_link(format!("/proc/{}/exe", child.id()));
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // A shell script execs /bin/sh, so /proc/<pid>/exe points at the
+        // interpreter, not the unlinked script. Only assert when the kernel
+        // actually reports a deleted image.
+        if let Ok(target) = link {
+            let raw = target.to_string_lossy().into_owned();
+            if raw.ends_with(" (deleted)") {
+                assert!(
+                    deleted_target_for_tool(&raw, "sh").is_some()
+                        || deleted_target_for_tool(&raw, "copilot").is_some(),
+                    "a deleted image was reported but not recognised: {raw}"
+                );
             }
         }
     }
