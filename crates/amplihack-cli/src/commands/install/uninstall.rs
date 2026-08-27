@@ -2,7 +2,9 @@
 
 use super::hooks::ensure_object;
 use super::manifest::{manifest_path, read_manifest};
-use super::paths::{global_settings_path, staging_amplifier_bundle_dir, staging_claude_dir};
+use super::paths::{
+    global_claude_dir, global_settings_path, staging_amplifier_bundle_dir, staging_claude_dir,
+};
 use super::settings::read_settings_json;
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -74,6 +76,32 @@ pub fn run_uninstall() -> Result<()> {
                 println!(
                     "  ⚠️  Could not remove amplifier-bundle at {}: {}",
                     bundle.display(),
+                    error
+                );
+            }
+        }
+    }
+
+    // Issue #1344: install stages the slash commands into Claude's own
+    // discovery directory, so uninstall has to take them back out — otherwise
+    // `/amplihack:lock` keeps resolving after the framework is gone.
+    if let Ok(claude_commands) =
+        global_claude_dir().map(|dir| dir.join("commands").join("amplihack"))
+        && claude_commands.exists()
+    {
+        match fs::remove_dir_all(&claude_commands) {
+            Ok(()) => {
+                removed_any = true;
+                removed_dirs += 1;
+                println!(
+                    "  🗑️  Removed Claude slash commands at {}",
+                    claude_commands.display()
+                );
+            }
+            Err(error) => {
+                println!(
+                    "  ⚠️  Could not remove Claude slash commands at {}: {}",
+                    claude_commands.display(),
                     error
                 );
             }

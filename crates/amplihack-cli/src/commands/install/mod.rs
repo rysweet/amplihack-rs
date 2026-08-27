@@ -2,7 +2,9 @@
 
 mod binary;
 pub(crate) mod bundle_compat;
+mod claude_commands;
 mod clone;
+mod command_staging;
 mod copilot_plugin;
 mod directories;
 pub(crate) mod filesystem;
@@ -496,6 +498,29 @@ fn local_install(
     }
 
     println!();
+    println!("🤖 Staging Claude Code slash commands:");
+    // Issue #1344: the command markdowns used to be staged into the Copilot
+    // plugin and nowhere else, so a Claude session got none of them — `/lock`,
+    // `/unlock`, `/auto`, `/ultrathink` all silently absent. Claude discovers
+    // user commands under `~/.claude/commands/<namespace>/`, so the same source
+    // directory is staged there too, and the outcome is printed alongside the
+    // Copilot line above: the missing line is what made the gap invisible.
+    let staged_claude_commands = claude_commands::stage_claude_commands(repo_root)
+        .context("failed to stage Claude Code slash commands")?;
+    if staged_claude_commands.copied > 0 {
+        println!(
+            "  ✅ Claude Code staged {} command(s) at {}",
+            staged_claude_commands.copied,
+            staged_claude_commands.target.display()
+        );
+    } else {
+        println!(
+            "  ↩️  No slash-command markdown found under {} — skipping",
+            repo_root.display()
+        );
+    }
+
+    println!();
     println!("🔍 Verifying staged framework assets:");
     verify_framework_assets(&claude_dir)?;
     verify_install_completeness(&source_root, layout, &claude_dir)?;
@@ -573,6 +598,12 @@ fn local_install(
         println!("   • Post-tool-use hook");
         println!("   • Pre-compact hook");
         println!("   • Runtime logging and metrics");
+        if staged_claude_commands.copied > 0 {
+            println!(
+                "   • {} Claude Code slash commands (/amplihack:<name>)",
+                staged_claude_commands.copied
+            );
+        }
         println!("   • dev-orchestrator recipe execution");
         println!();
         println!("💡 To uninstall: amplihack uninstall");
