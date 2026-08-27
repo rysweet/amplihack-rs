@@ -243,23 +243,14 @@ steps:
       SANITIZED_ISSUE_REQS="$(printf '%s\n' "$FINAL_REQUIREMENTS" | awk '/^ℹ NODE_OPTIONS=--max-old-space-size=[0-9]+ \(saved preference\)(\. To change: .+)?$/ { next } { print }')"  # sanitize only launcher "ℹ NODE_OPTIONS=--max-old-space-size=N (saved preference). To change: ~/.amplihack/config" notices; preserve legitimate NODE_OPTIONS task text such as "Ensure the workflow rejects unsafe NODE_OPTIONS values"
       HOST_TYPE="${REMOTE_HOST_TYPE:-other}"; EXISTING_ISSUE_NUMBER="${ISSUE_NUMBER:-}"
       case "$HOST_TYPE" in github|azdo|other) ;; azure-devops) HOST_TYPE="azdo" ;; *) echo "WARN: Unexpected REMOTE_HOST_TYPE — using local tracking" >&2; HOST_TYPE="other" ;; esac
-      derive_local_tracking_id() {
-        if [[ "$EXISTING_ISSUE_NUMBER" =~ ^#?([0-9]+)$ ]]; then
-          printf 'local-issue-%s' "${BASH_REMATCH[1]}"
-        elif [[ "$EXISTING_ISSUE_NUMBER" =~ AB#([0-9]+)|_workitems/edit/([0-9]+) ]]; then
-          printf 'local-ab-%s' "${BASH_REMATCH[1]:-${BASH_REMATCH[2]}}"
-        elif [[ "$EXISTING_ISSUE_NUMBER" =~ local-(issue|ab)-([0-9]+)$ ]]; then
-          printf '%s' "$EXISTING_ISSUE_NUMBER"
-        elif [[ "$TASK_DESC" =~ ([Ii]ssue[[:space:]#]*|#)([0-9]+) ]]; then
-          printf 'local-issue-%s' "${BASH_REMATCH[2]}"
-        elif [[ "$TASK_DESC" =~ AB#([0-9]+) ]]; then
-          printf 'local-ab-%s' "${BASH_REMATCH[1]}"
-        else
-          printf 'local-%s' "$(printf '%s' "$TASK_DESC" | sha256sum | cut -c1-12)"
-        fi
-      }
-      emit_local_metadata() { LOCAL_REF="$(derive_local_tracking_id)"; LOCAL_NUM=""; [[ "$LOCAL_REF" =~ local-(issue|ab)-([0-9]+)$ ]] && LOCAL_NUM="${BASH_REMATCH[2]}"; printf 'tracking_system=local\ntracking_reference=%s\ntracking_issue=%s\nissue_creation=local-tracking\n' "$LOCAL_REF" "$LOCAL_REF"; [ -n "$LOCAL_NUM" ] && printf 'issue_number=%s\n' "$LOCAL_NUM"; return 0; }
-      sanitize_cli_output() { printf '%s\n' "$1" | head -c 4000 | sed -E 's#https?://[^[:space:]]*@#https://<redacted>@#g; s#gh[pousr]_[A-Za-z0-9_]{8,}#<redacted-token>#g; s#github_pat_[A-Za-z0-9_]+#<redacted-token>#g; s#[Bb]earer[[:space:]]+[A-Za-z0-9._~+/=-]{20,}#Bearer <redacted-token>#g; s#[A-Za-z0-9]{52}#<redacted-token>#g'; }
+      # step-03's provider-metadata helpers (derive_local_tracking_id, emit_local_metadata,
+      # sanitize_cli_output, _pct_decode) live in amplifier-bundle/tools/workflow_issue_tracking.sh.
+      # They were extracted, not trimmed: this brick is at its 400-line budget and the rule's
+      # remedy for a full brick is extraction (scripts/check-brick-budget.sh), which is how the
+      # room for the #1361 claim check below was bought.
+      T=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_issue_tracking.sh" ] && { T="$c/amplifier-bundle/tools/workflow_issue_tracking.sh"; break; }; done
+      [ -n "$T" ] || { echo "ERROR: issue tracking helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): amplifier-bundle/tools/workflow_issue_tracking.sh" >&2; exit 2; }
+      . "$T"
       REF_ISSUE_NUM=""
       if [[ "$TASK_DESC" =~ AB#([0-9]+) ]]; then REF_ISSUE_NUM="${BASH_REMATCH[1]}"
       elif [[ "$TASK_DESC" =~ \#([0-9]+) ]]; then REF_ISSUE_NUM="${BASH_REMATCH[1]}"; fi
@@ -305,23 +296,6 @@ steps:
         elif [[ "$REMOTE_URL" =~ ssh\.dev\.azure\.com[:/]v3/([^/]+)/([^/]+)/ ]]; then
           AZDO_ORG="${BASH_REMATCH[1]}"; AZDO_PROJECT="${BASH_REMATCH[2]}"
         fi
-        _pct_decode() {
-          local e="$1" d="" i=0 ch hex
-          while [ "$i" -lt "${#e}" ]; do
-            ch="${e:$i:1}"
-            if [ "$ch" = "%" ] && [ "$((i+2))" -le "${#e}" ]; then
-              hex="${e:$((i+1)):2}"
-              if [[ "$hex" =~ ^[0-9a-fA-F]{2}$ ]]; then
-                [ "$hex" = "00" ] && { echo "WARN: NUL byte in percent-encoding" >&2; echo ""; return 1; }
-                printf -v tmp "\\x$hex"; d+="$tmp"; i=$((i+3)); continue
-              fi
-              echo "WARN: Invalid percent-encoding '%${hex}' — using local tracking" >&2
-              echo ""; return 1
-            fi
-            d+="$ch"; i=$((i+1))
-          done
-          printf '%s' "$d"
-        }
         [ -n "$AZDO_ORG" ] && { AZDO_ORG=$(_pct_decode "$AZDO_ORG") || { AZDO_ORG=""; AZDO_PROJECT=""; }; }
         [ -n "$AZDO_PROJECT" ] && { AZDO_PROJECT=$(_pct_decode "$AZDO_PROJECT") || { AZDO_ORG=""; AZDO_PROJECT=""; }; }
         if [[ -n "$AZDO_ORG" ]] && ! [[ "$AZDO_ORG" =~ ^[a-zA-Z0-9._-]+$ ]]; then
@@ -390,3 +364,22 @@ steps:
       fi
       printf '%s' "$EXTRACTED"
     output: "issue_number"
+
+  # STEP 03c: ISSUE CLAIM CHECK (issue #1361)
+  # Before this run does any work on issue N, ask whether a pull request is
+  # already working on it. The workflow's only de-duplication was per-BRANCH
+  # (workflow_pr_scope.sh keys on head+base), which is precisely the key a second
+  # run defeats: it derives a NEW branch, so the lookup truthfully reports "no PR
+  # for this head" and a duplicate is opened. Five near-identical PRs for #1277
+  # were opened in 103 minutes that way. Advisory by construction: only a pull
+  # request we actually saw stops a run, while a check that could not be made
+  # warns and continues (the lesson of #1268).
+  - id: "step-03c-issue-claim-check"
+    type: "bash"
+    command: |
+      [ -n "${EXISTING_BRANCH:-}${PR_NUMBER:-}" ] && { echo "INFO: issue claim check skipped: the run explicitly targets an existing branch or PR" >&2; printf 'issue_claim_check: skipped reason=explicit-existing-branch-or-pr\n'; exit 0; }
+      C=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_issue_claim_check.sh" ] && { C="$c/amplifier-bundle/tools/workflow_issue_claim_check.sh"; break; }; done
+      # A missing helper is not a verdict. Warn and continue rather than gate the run.
+      [ -n "$C" ] || { echo "WARNING: issue claim check helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack) — continuing without a claim check" >&2; printf 'issue_claim_check: unknown reason=helper-not-found\n'; exit 0; }
+      bash "$C" --issue "${ISSUE_NUMBER:-}" --repo-path "${REPO_PATH:-.}"
+    output: "issue_claim_check"

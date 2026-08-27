@@ -181,6 +181,7 @@ and head repository must both match `REPOSITORY`.
 | `invalid_pr_url` | The provided PR URL is not a GitHub pull request URL. | Correct the persisted PR URL before readiness/final-status steps. |
 | `invalid_pr_number` | The provided PR number is not positive numeric text. | Correct the persisted PR number. |
 | `FAILED_PR_CREATE` on publish | `gh pr create` failed and no OPEN PR exists for the branch. | Inspect the redacted GitHub error; a genuine create failure (auth, protected branch) must be resolved. A create collision with an existing OPEN PR is handled automatically as `existing-open-pr`. |
+| `FAILED_DUPLICATE_CLAIM` on publish | An open or recently-merged PR already claims the issue this run is working on, on a different branch (issue #1361). | Continue the existing PR instead of racing it: re-run with `pr_number=<N>` or `existing_branch=<branch>`, which makes step-04 reuse that branch and makes the claim check step aside. If the existing PR is genuinely abandoned, close it first. `AMPLIHACK_SKIP_ISSUE_CLAIM_CHECK=1` bypasses the check. |
 | `missing_scope` | Persisted multitask state predates scoped fields. | Treat the record as display-only; relaunch the workstream to capture scope. |
 | `pid_reused` | The PID exists but start metadata differs. | Ignore the old record; relaunch the workstream if work is still needed. |
 | `repo_mismatch` or `workdir_mismatch` | State belongs to another checkout or worktree. | Run the monitor from the owning worktree or discard stale state. |
