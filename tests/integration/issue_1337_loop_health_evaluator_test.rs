@@ -37,14 +37,37 @@ fn recipe_path() -> PathBuf {
     workspace_root().join("amplifier-bundle/recipes/loop-health-evaluator.yaml")
 }
 
+/// The deterministic measurement half, split out as its own brick and composed
+/// as step-01. Measurement and judgement are different jobs with different
+/// failure modes, and only one of them needs a model.
+fn collector_path() -> PathBuf {
+    workspace_root().join("amplifier-bundle/recipes/loop-evidence-collector.yaml")
+}
+
+fn read(path: &Path) -> String {
+    fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
+fn parse(path: &Path) -> Value {
+    serde_yaml::from_str(&read(path)).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
+}
+
 fn recipe_text() -> String {
-    let path = recipe_path();
-    fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+    read(&recipe_path())
 }
 
 fn recipe_yaml() -> Value {
-    serde_yaml::from_str(&recipe_text())
-        .unwrap_or_else(|e| panic!("parse {}: {e}", recipe_path().display()))
+    parse(&recipe_path())
+}
+
+fn collector_yaml() -> Value {
+    parse(&collector_path())
+}
+
+/// The bash body of the evidence-collection step, wherever it now lives.
+fn collect_command() -> String {
+    let collector = collector_yaml();
+    field(step(&collector, "step-01-collect-loop-evidence"), "command").to_string()
 }
 
 fn steps(recipe: &Value) -> &[Value] {
@@ -69,11 +92,22 @@ fn field<'a>(step: &'a Value, name: &str) -> &'a str {
 
 #[test]
 fn loop_health_evaluator_recipe_exists_and_fits_the_brick_budget() {
-    let text = recipe_text();
-    let lines = text.lines().count();
-    assert!(
-        lines <= BRICK_LINE_BUDGET,
-        "loop-health-evaluator.yaml is {lines} lines; the brick budget is {BRICK_LINE_BUDGET}"
+    // Both halves are bricks and both are held to the budget. The budget is
+    // what forced the split when the contract needed more code than the
+    // original design assumed — the answer was a second brick, never fewer
+    // comments.
+    for path in [recipe_path(), collector_path()] {
+        let lines = read(&path).lines().count();
+        assert!(
+            lines <= BRICK_LINE_BUDGET,
+            "{} is {lines} lines; the brick budget is {BRICK_LINE_BUDGET}",
+            path.display()
+        );
+    }
+    assert_eq!(
+        collector_yaml().get("name").and_then(Value::as_str),
+        Some("loop-evidence-collector"),
+        "the collector's `name:` must match its filename stem"
     );
     let recipe = recipe_yaml();
     assert_eq!(
@@ -81,6 +115,31 @@ fn loop_health_evaluator_recipe_exists_and_fits_the_brick_budget() {
         Some("loop-health-evaluator"),
         "the recipe's `name:` must match its filename stem — `recipe run` resolves by stem \
          while `recipe list` keys on `name:`"
+    );
+}
+
+/// The measurement half is composed, not inlined. Pinning the seam keeps a
+/// future edit from quietly folding 120 lines of bash back into the evaluator
+/// and blowing the brick budget again.
+#[test]
+fn evidence_collection_is_composed_as_its_own_brick() {
+    let recipe = recipe_yaml();
+    let collect = step(&recipe, "step-01-collect-loop-evidence");
+    assert_eq!(collect.get("type").and_then(Value::as_str), Some("recipe"));
+    assert_eq!(
+        collect.get("recipe").and_then(Value::as_str),
+        Some("loop-evidence-collector")
+    );
+    let collector = collector_yaml();
+    let inner = step(&collector, "step-01-collect-loop-evidence");
+    assert_eq!(
+        inner.get("output").and_then(Value::as_str),
+        Some("loop_evidence")
+    );
+    assert_eq!(
+        inner.get("parse_json").and_then(Value::as_bool),
+        Some(true),
+        "the evidence output is consumed as structured data by step-02's condition"
     );
 }
 
@@ -109,7 +168,8 @@ fn verdict_contract_has_exactly_three_outcomes() {
 #[test]
 fn evaluator_receives_real_evidence_not_prose_impressions() {
     let recipe = recipe_yaml();
-    let collect = field(step(&recipe, "step-01-collect-loop-evidence"), "command");
+    let collect = collect_command();
+    let collect = collect.as_str();
     let prompt = field(step(&recipe, "step-02-evaluate-loop-health"), "prompt");
 
     // Every evidence channel required by issue #1337 must be both computed
@@ -154,7 +214,7 @@ fn no_numeric_iteration_cap_anywhere() {
     // that was about to converge AND lets a genuinely stuck loop burn the
     // whole budget first. Host safety is structural, one layer down
     // (#1327 sealed depth ceiling, #1332 width cap + memory floor).
-    let text = recipe_text();
+    let text = format!("{}\n{}", recipe_text(), read(&collector_path()));
     for banned in [
         "max_iterations",
         "max_iteration",
@@ -191,26 +251,28 @@ fn no_numeric_iteration_cap_anywhere() {
 fn no_per_step_timeout_at_any_scale() {
     // Issue #439 plus the #1337 constraint: nothing here may be bounded at
     // seconds or single-digit-minute scale. The runner owns the ceiling.
-    let recipe = recipe_yaml();
-    for s in steps(&recipe) {
-        let id = s.get("id").and_then(Value::as_str).unwrap_or("<unnamed>");
-        for key in ["timeout", "timeout_seconds"] {
-            assert!(
-                s.get(key).is_none(),
-                "step `{id}` declares `{key}` — no step in this brick may carry a per-step timeout"
-            );
+    for recipe in [recipe_yaml(), collector_yaml()] {
+        for s in steps(&recipe) {
+            let id = s.get("id").and_then(Value::as_str).unwrap_or("<unnamed>");
+            for key in ["timeout", "timeout_seconds"] {
+                assert!(
+                    s.get(key).is_none(),
+                    "step `{id}` declares `{key}` — no step in this brick may carry a \
+                     per-step timeout"
+                );
+            }
         }
+        assert!(
+            recipe.get("default_step_timeout").is_none(),
+            "neither loop-health brick may pin a recipe-level step timeout"
+        );
     }
-    assert!(
-        recipe.get("default_step_timeout").is_none(),
-        "loop-health-evaluator must not pin a recipe-level step timeout"
-    );
 }
 
 #[test]
 fn exit_79_is_terminal_and_never_retried_into() {
     let recipe = recipe_yaml();
-    let collect = field(step(&recipe, "step-01-collect-loop-evidence"), "command");
+    let collect = collect_command();
     assert!(
         collect.contains("BLOCKED_TERMINAL"),
         "step-01 must detect a BLOCKED_TERMINAL child"
@@ -266,6 +328,193 @@ fn verdict_resolution_uses_the_canonical_orch_helper_pipeline() {
             "{id} must not interpolate agent output into the command line"
         );
     }
+}
+
+/// Issue #1337, finding B1 — the defect that made the whole brick inert.
+///
+/// `recipe-runner-rs` exports every step output as `RECIPE_VAR_<name>`, but it
+/// only adds the plain-uppercase alias for SCALARS. `loop_evidence` and
+/// `loop_health` declare `parse_json: true`, and an agent that OBEYS the
+/// "emit only the JSON object" contract makes `loop_health_assessment` an
+/// object too — so `LOOP_EVIDENCE`, `LOOP_HEALTH` and `LOOP_HEALTH_ASSESSMENT`
+/// are simply ABSENT at runtime. Reading them bare made every run resolve to
+/// STUCK and fabricate an exit-79 policy refusal as the reason.
+///
+/// The end-to-end probe in the shell test is what proves this at runtime; this
+/// test is the cheap static guard that keeps a future edit from dropping a
+/// fallback again in a repo where the runner may not be installed.
+#[test]
+fn object_valued_step_outputs_are_read_with_the_recipe_var_fallback() {
+    let recipe = recipe_yaml();
+    // (env name, runner name) for every step output this brick reads back.
+    let object_outputs = [
+        ("LOOP_EVIDENCE", "RECIPE_VAR_loop_evidence"),
+        ("LOOP_HEALTH", "RECIPE_VAR_loop_health"),
+        (
+            "LOOP_HEALTH_ASSESSMENT",
+            "RECIPE_VAR_loop_health_assessment",
+        ),
+    ];
+    for s in steps(&recipe) {
+        let id = s.get("id").and_then(Value::as_str).unwrap_or("<unnamed>");
+        let Some(cmd) = s.get("command").and_then(Value::as_str) else {
+            continue;
+        };
+        for (plain, recipe_var) in object_outputs {
+            let needle = format!("${{{plain}:-");
+            for (n, line) in cmd.lines().enumerate() {
+                if !line.contains(&needle) {
+                    continue;
+                }
+                assert!(
+                    line.contains(recipe_var),
+                    "{id} line {}: `${{{plain}:-...}}` is read without its \
+                     `{recipe_var}` fallback. The runner never sets `{plain}` for a \
+                     JSON-object step output, so this read is silently empty and the \
+                     gate fabricates a STUCK. Use \
+                     `${{{plain}:-${{{recipe_var}:-}}}}`.\n  {line}",
+                    n + 1
+                );
+            }
+        }
+    }
+    // And at least one such dual-name read must actually be present, so the
+    // guard cannot pass vacuously if the reads are renamed away.
+    let all: String = steps(&recipe)
+        .iter()
+        .filter_map(|s| s.get("command").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for (_, recipe_var) in object_outputs {
+        assert!(
+            all.contains(recipe_var),
+            "no step reads `{recipe_var}`; the brick cannot see its own step outputs"
+        );
+    }
+}
+
+/// Issue #1337, finding B3 — first-JSON-wins is fail-open for a verdict.
+///
+/// The extractor and the prompt have to agree on WHICH object is the verdict.
+/// The decision taken here is: the LAST object carrying `loop_verdict`.
+#[test]
+fn verdict_selection_is_last_object_carrying_the_field_and_the_prompt_says_so() {
+    let recipe = recipe_yaml();
+    let resolve = field(step(&recipe, "step-03-resolve-loop-verdict"), "command");
+    assert!(
+        resolve.contains("extract-json --require-field loop_verdict"),
+        "step-03 must select the object that actually carries `loop_verdict`; \
+         first-parseable-object-wins reads a draft verdict over the reconsidered \
+         one, and reads quoted-back evidence over the real verdict"
+    );
+    let prompt = field(step(&recipe, "step-02-evaluate-loop-health"), "prompt");
+    assert!(
+        prompt.contains("LAST JSON object"),
+        "the prompt must tell the model the same selection rule the gate applies"
+    );
+}
+
+/// The `--require-field` selection, exercised through the real binary against
+/// the two cases measured on the shipped extractor.
+#[test]
+fn require_field_selection_is_wired_into_the_cli() {
+    let bin = PathBuf::from(env!("CARGO_BIN_EXE_amplihack"));
+    let cases = [
+        (
+            "reconsidered verdict wins over the draft",
+            "{\"plan\":\"check\",\"loop_verdict\":\"CONTINUE\"}\n\
+             On reflection nothing moved.\n\
+             {\"loop_verdict\":\"STUCK\",\"not_converging\":[\"zero commits\"]}\n",
+            "STUCK",
+        ),
+        (
+            "evidence quoted back in a fence is not the verdict",
+            "Here is the evidence I was given:\n\
+             ```json\n{\"commits_since_baseline\": 3, \"diff_lines\": 120}\n```\n\
+             It moved. Verdict:\n\
+             {\"loop_verdict\": \"CONTINUE\", \"moved\": [\"3 commits\"]}\n",
+            "CONTINUE",
+        ),
+    ];
+    for (name, input, want) in cases {
+        let selected = helper_stdin(
+            &bin,
+            &[
+                "orch",
+                "helper",
+                "extract-json",
+                "--require-field",
+                "loop_verdict",
+            ],
+            input,
+        );
+        let verdict = helper_stdin(
+            &bin,
+            &[
+                "orch",
+                "helper",
+                "extract-field",
+                "--field",
+                "loop_verdict",
+                "--default",
+                "STUCK",
+            ],
+            &selected,
+        );
+        assert_eq!(verdict.trim(), want, "{name}: selected {selected:?}");
+    }
+}
+
+/// Issue #1337: `--default true` is the fail-safe the gate leans on hardest,
+/// and an explicit JSON `null` used to walk straight past it.
+#[test]
+fn explicit_json_null_takes_the_default_through_the_cli() {
+    let bin = PathBuf::from(env!("CARGO_BIN_EXE_amplihack"));
+    let out = helper_stdin(
+        &bin,
+        &[
+            "orch",
+            "helper",
+            "extract-field",
+            "--field",
+            "terminal_refusal",
+            "--default",
+            "true",
+        ],
+        "{\"terminal_refusal\": null}",
+    );
+    assert_eq!(
+        out.trim(),
+        "true",
+        "`{{\"terminal_refusal\": null}}` must take the `--default true` fail-safe, \
+         not read as \"the guard did not fire\""
+    );
+}
+
+/// Run `amplihack <args>` with `stdin`, returning stdout.
+fn helper_stdin(bin: &Path, args: &[&str], stdin: &str) -> String {
+    use std::io::Write;
+    let mut child = Command::new(bin)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn amplihack");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(stdin.as_bytes())
+        .expect("write stdin");
+    let out = child.wait_with_output().expect("wait");
+    assert!(
+        out.status.success(),
+        "amplihack {args:?} exited {:?}: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
 #[test]

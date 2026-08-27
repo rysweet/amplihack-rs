@@ -140,6 +140,14 @@ printf ''             | amplihack orch helper normalise-loop-verdict   # STUCK
 and hands them to the judge as data, alongside the raw round output. The judge
 reasons over observations, not over a prose summary of them.
 
+The measurement half is its own brick,
+`amplifier-bundle/recipes/loop-evidence-collector.yaml`, composed by the
+evaluator as a `type: "recipe"` step. Measurement and judgement are different
+jobs with different failure modes, and only one of them needs a model — a
+caller that wants the numbers alone can invoke the collector directly. Its
+`loop_evidence` output lands in the evaluator's context, so step-02's
+`condition:` sees it exactly as it would a local step's output.
+
 | Field | Signal |
 | ----- | ------ |
 | `terminal_refusal`, `terminal_reason` | A child returned exit `79` / `BLOCKED_TERMINAL`. Terminal — see below. |
@@ -172,7 +180,7 @@ reasons over observations, not over a prose summary of them.
 
 | Output | Shape |
 | ------ | ----- |
-| `loop_evidence` | The measured-evidence JSON object above (`parse_json: true`). |
+| `loop_evidence` | The measured-evidence JSON object above (`parse_json: true`), produced by the `loop-evidence-collector` sub-recipe. |
 | `loop_health_assessment` | The evaluator agent's raw output. |
 | `loop_health` | `{"loop_verdict": …, "verdict_source": …, "loop_name": …, "not_converging": [...]}` (`parse_json: true`). |
 | `loop_health_enforcement` | The enforcement step's report. |
@@ -251,6 +259,49 @@ Every branch fails toward stopping:
 - Unparseable **evidence** → `terminal_refusal` defaults to `true` → `STUCK`.
   An absent evidence object is never read as "the guard did not fire".
 - Enforcement on an empty or malformed `loop_health` → `STUCK`, exit non-zero.
+- An explicit JSON `null` (`{"terminal_refusal": null}`) takes the `--default`
+  too. `extract-field` treats a null exactly like an absent field, so the
+  `--default true` fail-safe cannot be walked past with a null.
+
+### Reading step outputs: the dual-name idiom
+
+`recipe-runner-rs` exports every step output as `RECIPE_VAR_<name>`, but it
+only adds the plain-uppercase alias (`LOOP_EVIDENCE`) for **scalar** outputs.
+`loop_evidence` and `loop_health` declare `parse_json: true`, and an evaluator
+that obeys the "emit only the JSON object" contract makes
+`loop_health_assessment` an object too. All three plain names are therefore
+**absent** at runtime, and a bare `${LOOP_EVIDENCE:-}` read is silently empty.
+
+Every read in these bricks uses the dual-name form, the same idiom as
+`workflow-publish` / `workflow-finalize` / `workflow-terminal-state`:
+
+```bash
+EV="${LOOP_EVIDENCE:-${RECIPE_VAR_loop_evidence:-}}"
+```
+
+Dropping a fallback makes the recipe inert: the reads miss, `--default true`
+fires, and every run reports a `terminal_policy_refusal` that never happened.
+An integration test guards the invariant statically and the contract test
+proves it end to end through the real runner.
+
+### Which JSON object is the verdict
+
+The evaluator's output is selected with
+`extract-json --require-field loop_verdict`: of every JSON object in the
+output, the **last one carrying `loop_verdict`** is the verdict. Plain
+first-parseable-object-wins is fail-open in both directions — it reads a draft
+verdict over the reconsidered one, and it reads evidence the model quoted back
+inside a ```json fence over the real verdict that follows. The prompt states
+the same rule, so prompt and extractor agree.
+
+### The brick does not poison itself
+
+Every line these bricks author is tagged `[loop-health-evaluator]`, and the
+collector drops tagged lines before running its terminal detectors. Without
+that, the brick's own reason string ("child process exited 79 …") re-matches
+its own exit-79 regex, so feeding one escalation report back into
+`loop_history` would make the loop permanently terminal on evidence it
+invented.
 
 Agent output is treated as untrusted **data** throughout, per
 [Structured Verdict & Intent Parsing](structured-verdict-parsing.md#security-agent-output-is-untrusted-data-never-code):
@@ -298,6 +349,7 @@ and reports what is not converging instead of consuming the remaining budget.
 | ---- | -------- |
 | Helper unit tests (synonyms, canonical pass-through, malformed → `STUCK`, negation-adjacent equality regression, opposite-default guard) | `crates/amplihack-cli/src/commands/orch.rs` |
 | Executable contract test (STUCK path, malformed-verdict path, exit-79 terminal path, the 2h47m worked example, no-cap and no-timeout guards) | `amplifier-bundle/recipes/tests/test-issue-1337-loop-health-evaluator.sh` |
+| **End-to-end probe** — the real recipe files run through the real `recipe-runner-rs` with only step-02 stubbed as a bash step: `CONTINUE` → exit 0, `STUCK` → exit 1, verdict selection, exit-79 terminal, self-poisoning | same file, section 7 (skipped with a loud notice when `recipe-runner-rs` is not installed; set `RECIPE_RUNNER_RS_PATH` to force it) |
 | Structural + end-to-end wiring | `tests/integration/issue_1337_loop_health_evaluator_test.rs` |
 
 Run them with:

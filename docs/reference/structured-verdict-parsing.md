@@ -251,7 +251,7 @@ emitted by an agent step as a `parse_json` field and read by an engine
 | C       | `smart-reflect-loop.yaml`                       | `goal_status`         | reviewer `parse_json` field, `reflection_N.goal_status == '…'`        |
 | D1      | `smart-execute-routing.yaml`                    | `status`              | `extract-json \| extract-field --field status --default unknown`      |
 | D2      | `smart-classify-route.yaml`                     | `tree_id`, `depth`    | `session-tree register --json` → `extract-field`                      |
-| E       | `loop-health-evaluator.yaml`                     | `loop_verdict`        | `extract-json \| extract-field --field loop_verdict --default STUCK \| normalise-loop-verdict` |
+| E       | `loop-health-evaluator.yaml`                     | `loop_verdict`        | `extract-json --require-field loop_verdict \| extract-field --field loop_verdict --default STUCK \| normalise-loop-verdict` |
 
 ### A1 — TDD work-verifier gate (`verdict`)
 

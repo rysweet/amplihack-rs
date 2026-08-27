@@ -50,7 +50,18 @@ pub enum OrchHelperCommands {
     /// Mirrors `orch_helper.extract_json`. Tries, in order: ```json blocks,
     /// untagged ``` blocks, then a balanced-brace scan over raw prose.
     /// Prints `{}` if nothing parseable is found (matches the Python).
-    ExtractJson,
+    ///
+    /// With `--require-field NAME`, selection changes deliberately: every JSON
+    /// object in the text is collected in DOCUMENT order and the LAST one
+    /// carrying `NAME` wins (issue #1337). First-object-wins is fail-open for
+    /// a verdict — a model that quotes its input back, or that reconsiders in
+    /// prose after an early draft object, gets the wrong object read.
+    ExtractJson {
+        /// Select the LAST JSON object that carries this field, in document
+        /// order, instead of the first parseable object of any shape.
+        #[arg(long, value_name = "NAME")]
+        require_field: Option<String>,
+    },
 
     /// Read stdin, print the normalised task-type label.
     ///
@@ -226,6 +237,56 @@ fn scan_raw_braces(text: &str) -> Option<serde_json::Value> {
     None
 }
 
+/// Every JSON object in `text`, in DOCUMENT order.
+///
+/// Unlike [`scan_raw_braces`] this does not stop at the first hit, and on a
+/// hit it advances past the object it just consumed rather than by one byte,
+/// so a nested object is never also reported as a top-level candidate.
+/// Fenced blocks need no special case: a ```json body is raw text too, so the
+/// same left-to-right walk sees the objects inside it at their real position.
+fn collect_json_objects(text: &str) -> Vec<serde_json::Value> {
+    let bytes = text.as_bytes();
+    let mut found = Vec::new();
+    let mut pos = 0usize;
+    while let Some(rel) = bytes[pos..].iter().position(|&b| b == b'{') {
+        let start = pos + rel;
+        let mut stream =
+            serde_json::Deserializer::from_str(&text[start..]).into_iter::<serde_json::Value>();
+        match stream.next() {
+            Some(Ok(v @ serde_json::Value::Object(_))) => {
+                let consumed = stream.byte_offset().max(1);
+                found.push(v);
+                pos = start + consumed;
+            }
+            _ => pos = start + 1,
+        }
+    }
+    found
+}
+
+/// Select the LAST JSON object in `text` that carries `field`.
+///
+/// Issue #1337, finding B3. `extract_json` is first-parseable-object-wins,
+/// which is fail-OPEN for a verdict in both directions:
+///
+///   * a draft object followed by a reconsidered one reads the draft
+///     (`{"loop_verdict":"CONTINUE"}` … "on reflection nothing moved" …
+///     `{"loop_verdict":"STUCK"}` resolved to CONTINUE — the sentence that
+///     should stop the loop authorised it);
+///   * an evaluator that quotes its own evidence back inside a ```json fence
+///     reads the EVIDENCE object, whose missing `loop_verdict` then fails
+///     safe to STUCK and kills a converging loop.
+///
+/// Requiring the field removes the first failure mode; taking the LAST match
+/// removes the second and agrees with the prompt's "as the very last thing
+/// you emit". Returns `None` when no object carries the field, so the
+/// caller's `--default` (STUCK) applies rather than some unrelated object.
+pub fn extract_json_with_field(text: &str, field: &str) -> Option<serde_json::Value> {
+    collect_json_objects(text)
+        .into_iter()
+        .rfind(|v| v.get(field).is_some())
+}
+
 /// Normalise an LLM task-type label to one of `Q&A`, `Operations`,
 /// `Investigation`, `Development` (the default for unknowns).
 ///
@@ -369,9 +430,13 @@ fn read_stdin() -> Result<String> {
 /// CLI entry point for `amplihack orch helper <subcommand>`.
 pub fn run(command: OrchHelperCommands) -> Result<()> {
     match command {
-        OrchHelperCommands::ExtractJson => {
+        OrchHelperCommands::ExtractJson { require_field } => {
             let input = read_stdin()?;
-            let value = extract_json(&input).unwrap_or(serde_json::json!({}));
+            let found = match require_field.as_deref() {
+                Some(field) => extract_json_with_field(&input, field),
+                None => extract_json(&input),
+            };
+            let value = found.unwrap_or(serde_json::json!({}));
             println!("{}", serde_json::to_string(&value)?);
             Ok(())
         }
@@ -556,14 +621,23 @@ fn has_strong_dev_signals(task: &str) -> bool {
 
 /// Extract `field` from a top-level JSON object. Returns the string form of
 /// scalars (without quotes) and the compact JSON encoding of objects/arrays.
-/// Returns `None` if the input is not a JSON object or the field is missing.
+/// Returns `None` if the input is not a JSON object, the field is missing, or
+/// the field is an explicit JSON `null`.
+///
+/// Issue #1337: an explicit `null` used to return `Some("")`, which silently
+/// bypassed the caller's `--default`. `{"terminal_refusal": null}` therefore
+/// read as "the guard did not fire" instead of taking the `--default true`
+/// fail-safe. A null carries no value, so it is treated exactly like an
+/// absent field and the default applies.
 pub fn extract_field(json: &str, field: &str) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(json.trim()).ok()?;
     let obj = v.as_object()?;
     let val = obj.get(field)?;
+    if val.is_null() {
+        return None;
+    }
     Some(match val {
         serde_json::Value::String(s) => s.clone(),
-        serde_json::Value::Null => String::new(),
         serde_json::Value::Bool(b) => b.to_string(),
         serde_json::Value::Number(n) => n.to_string(),
         other => serde_json::to_string(other).unwrap_or_default(),
@@ -821,6 +895,82 @@ mod tests {
         let input = "```json\n{\"workstreams\": [{\"name\": \"a\", \"meta\": {\"k\": 1}}]}\n```";
         let v = extract_json(input).expect("should parse");
         assert_eq!(v["workstreams"][0]["meta"]["k"], json!(1));
+    }
+
+    // --- extract_json_with_field (issue #1337, finding B3) --------------------
+    //
+    // The two measured cases the first-JSON-wins extractor got backwards. Both
+    // are recorded here as a table so a future change to the selection rule
+    // has to answer for them.
+
+    #[test]
+    fn require_field_takes_the_reconsidered_verdict_not_the_draft() {
+        // Measured against the shipped binary: first-object-wins resolved this
+        // to CONTINUE — the sentence that should stop the loop authorised it.
+        let input = concat!(
+            "{\"plan\":\"check\",\"loop_verdict\":\"CONTINUE\"}\n",
+            "On reflection nothing moved.\n",
+            "{\"loop_verdict\":\"STUCK\",\"not_converging\":[\"zero commits\"]}\n",
+        );
+        assert_eq!(
+            extract_json(input).expect("first-object-wins picks the draft")["loop_verdict"],
+            json!("CONTINUE"),
+            "guard: this documents the OLD behaviour the fix replaces"
+        );
+        let v = extract_json_with_field(input, "loop_verdict").expect("must find a verdict");
+        assert_eq!(v["loop_verdict"], json!("STUCK"));
+    }
+
+    #[test]
+    fn require_field_ignores_evidence_the_evaluator_quotes_back_in_a_fence() {
+        // The mirror case, which the prompt itself invites by showing the
+        // evidence inside a ```json fence: first-object-wins picked the
+        // EVIDENCE object, whose missing `loop_verdict` failed safe to STUCK
+        // and killed a converging loop.
+        let input = concat!(
+            "Here is the evidence I was given:\n",
+            "```json\n{\"commits_since_baseline\": 3, \"diff_lines\": 120}\n```\n",
+            "It moved. Verdict:\n",
+            "{\"loop_verdict\": \"CONTINUE\", \"moved\": [\"3 commits\"]}\n",
+        );
+        assert!(
+            extract_json(input).expect("first-object-wins picks the evidence")["loop_verdict"]
+                .is_null(),
+            "guard: this documents the OLD behaviour the fix replaces"
+        );
+        let v = extract_json_with_field(input, "loop_verdict").expect("must find a verdict");
+        assert_eq!(v["loop_verdict"], json!("CONTINUE"));
+        assert_eq!(v["moved"], json!(["3 commits"]));
+    }
+
+    #[test]
+    fn require_field_returns_none_when_no_object_carries_it() {
+        // No object carries the field -> None, so the caller's `--default`
+        // (STUCK) applies. Never fall back to an unrelated object.
+        let input = "```json\n{\"commits_since_baseline\": 3}\n```\nI could not decide.";
+        assert!(extract_json_with_field(input, "loop_verdict").is_none());
+        assert!(extract_json_with_field("no json at all", "loop_verdict").is_none());
+        assert!(extract_json_with_field("", "loop_verdict").is_none());
+    }
+
+    #[test]
+    fn require_field_does_not_mistake_a_nested_object_for_the_verdict() {
+        // The verdict object embeds a nested object that also has the key.
+        // Document-order collection must not report the nested one separately,
+        // or "last wins" would read the inner value.
+        let input = "{\"loop_verdict\":\"STUCK\",\"echo\":{\"loop_verdict\":\"CONTINUE\"}}";
+        let v = extract_json_with_field(input, "loop_verdict").expect("must find a verdict");
+        assert_eq!(v["loop_verdict"], json!("STUCK"));
+    }
+
+    #[test]
+    fn require_field_survives_braces_inside_string_values() {
+        let input = concat!(
+            "{\"loop_verdict\":\"CONTINUE\",\"note\":\"a } brace and a { brace\"}\n",
+            "{\"loop_verdict\":\"DONE\",\"note\":\"trailing } brace\"}\n",
+        );
+        let v = extract_json_with_field(input, "loop_verdict").expect("must find a verdict");
+        assert_eq!(v["loop_verdict"], json!("DONE"));
     }
 
     // --- normalise_type ------------------------------------------------------
@@ -1313,7 +1463,24 @@ mod tests {
             extract_field(r#"{"o": {"x": 1}}"#, "o"),
             Some(r#"{"x":1}"#.to_string())
         );
-        assert_eq!(extract_field(r#"{"x": null}"#, "x"), Some(String::new()));
+    }
+
+    #[test]
+    fn extract_field_treats_explicit_null_as_absent_so_the_default_applies() {
+        // Issue #1337: `--default true` is the fail-safe the loop-health gate
+        // leans on hardest. A null that returned Some("") walked straight past
+        // it, so `{"terminal_refusal": null}` read as "the guard did not fire".
+        assert_eq!(extract_field(r#"{"x": null}"#, "x"), None);
+        assert_eq!(
+            extract_field(r#"{"terminal_refusal": null}"#, "terminal_refusal"),
+            None
+        );
+        // An empty STRING is still a value the caller asked for, not an absence.
+        assert_eq!(
+            extract_field(r#"{"x": ""}"#, "x"),
+            Some(String::new()),
+            "an explicit empty string must NOT be swallowed by the default"
+        );
     }
 
     // --- reclassify_task_type (#269) -----------------------------------------

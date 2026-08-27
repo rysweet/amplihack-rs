@@ -32,8 +32,12 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/loop-health-evaluator.yaml"
+# The deterministic measurement half is its own brick, composed as step-01.
+COLLECTOR="${REPO_ROOT}/amplifier-bundle/recipes/loop-evidence-collector.yaml"
 
-[[ -f "${RECIPE}" ]] || { echo "HARNESS-ERROR: recipe not found: ${RECIPE}" >&2; exit 2; }
+for f in "${RECIPE}" "${COLLECTOR}"; do
+    [[ -f "${f}" ]] || { echo "HARNESS-ERROR: recipe not found: ${f}" >&2; exit 2; }
+done
 
 # `amplihack` must be resolvable — the whole verdict pipeline runs through
 # `orch helper`. Prefer a binary built from THIS tree over an older installed
@@ -76,7 +80,7 @@ extract_step_command() {
     ' "${recipe}"
 }
 
-COLLECT="$(extract_step_command "${RECIPE}" "step-01-collect-loop-evidence")"
+COLLECT="$(extract_step_command "${COLLECTOR}" "step-01-collect-loop-evidence")"
 RESOLVE="$(extract_step_command "${RECIPE}" "step-03-resolve-loop-verdict")"
 ENFORCE="$(extract_step_command "${RECIPE}" "step-04-enforce-loop-verdict")"
 for pair in "step-01:${COLLECT}" "step-03:${RESOLVE}" "step-04:${ENFORCE}"; do
@@ -282,14 +286,14 @@ fi
 # ---------------------------------------------------------------------------
 # 6. Design constraints the issue is explicit about.
 # ---------------------------------------------------------------------------
-if grep -nEi '(max_iterations|max_iteration|max_rounds|max_attempts|iteration_limit|MAX_LOOPS)' "${RECIPE}" \
+if grep -nEi '(max_iterations|max_iteration|max_rounds|max_attempts|iteration_limit|MAX_LOOPS)' "${RECIPE}" "${COLLECTOR}" \
    | grep -vi 'not an iteration counter' | grep -q .; then
     fail "NO-CAP" "the recipe introduces a numeric iteration cap — issue #1337 rejects this outright"
 else
     pass "NO-CAP" "no numeric iteration cap: the terminator is absence of progress, not attempt count"
 fi
 
-if grep -nE '^\s*timeout(_seconds)?:' "${RECIPE}" | grep -q .; then
+if grep -nE '^\s*timeout(_seconds)?:' "${RECIPE}" "${COLLECTOR}" | grep -q .; then
     fail "NO-SHORT-TIMEOUT" "the recipe declares a per-step timeout — see issue #439"
 else
     pass "NO-SHORT-TIMEOUT" "no per-step timeout anywhere: nothing is bounded at seconds or single-digit-minute scale"
@@ -303,8 +307,163 @@ for tok in CONTINUE DONE STUCK; do
     fi
 done
 
+
+# ---------------------------------------------------------------------------
+# 7. END-TO-END through the real recipe-runner-rs.
+#
+# Everything above extracts the step bodies faithfully and then supplies the
+# environment BY HAND. That is exactly how issue #1337's first cut shipped a
+# recipe that could never work: `loop_evidence` / `loop_health` declare
+# parse_json, so the runner stores them as JSON objects and creates only
+# `RECIPE_VAR_<name>` — the plain `LOOP_EVIDENCE` / `LOOP_HEALTH` names the
+# steps read did not exist at runtime. Every run returned STUCK and fabricated
+# an exit-79 policy refusal as the reason. 39 green assertions, an inert brick.
+#
+# So: run the ACTUAL recipe files through the ACTUAL runner, with only the
+# agentic step swapped for a bash step that prints a fixed evaluator output.
+# Nothing else is stubbed, and no environment is invented.
+# ---------------------------------------------------------------------------
+RUNNER="${RECIPE_RUNNER_RS_PATH:-$(command -v recipe-runner-rs 2>/dev/null || true)}"
+if [[ -z "${RUNNER}" || ! -x "${RUNNER}" ]]; then
+    echo "  SKIP[E2E]: recipe-runner-rs not found (set RECIPE_RUNNER_RS_PATH to run the" >&2
+    echo "             end-to-end probe; it is the ONLY check that catches an inert recipe)." >&2
+    SKIPPED_E2E=1
+else
+    SKIPPED_E2E=0
+    E2E_DIR="$(mktemp -d)"
+    trap 'rm -rf "${E2E_DIR}"' EXIT
+    cp "${REPO_ROOT}/amplifier-bundle/recipes/loop-evidence-collector.yaml" "${E2E_DIR}/"
+
+    # Replace ONLY the `step-02-evaluate-loop-health` node with a bash step that
+    # cats a fixed evaluator output. Every other byte of the recipe is the
+    # shipped file.
+    make_stubbed_recipe() {
+        local out="$1" payload="$2"
+        awk -v payload="${payload}" '
+            /^  - id: "step-02-evaluate-loop-health"/ {
+                print
+                print "    condition: \"loop_evidence.terminal_refusal == '"'"'false'"'"'\""
+                print "    type: \"bash\""
+                print "    command: |"
+                print "      cat " payload
+                print "    output: \"loop_health_assessment\""
+                skip = 1
+                next
+            }
+            skip && /^  - id: / { skip = 0 }
+            !skip { print }
+        ' "${RECIPE}" > "${out}"
+        grep -q 'step-02-evaluate-loop-health' "${out}" || return 1
+        grep -q 'cat ' "${out}" || return 1
+    }
+
+    # e2e_run <name> <evaluator-output> [extra -c args...] -> sets E2E_RC/E2E_OUT
+    e2e_run() {
+        local name="$1" payload_text="$2"; shift 2
+        local payload="${E2E_DIR}/${name}.out"
+        local stubbed="${E2E_DIR}/${name}-loop-health-evaluator.yaml"
+        printf '%s\n' "${payload_text}" > "${payload}"
+        make_stubbed_recipe "${stubbed}" "${payload}" || {
+            echo "HARNESS-ERROR: could not stub step-02 for ${name}" >&2; exit 2; }
+        E2E_OUT="$("${RUNNER}" "${stubbed}" \
+            -R "${E2E_DIR}" -C "${REPO_ROOT}" \
+            -c loop_name="e2e-${name}" -c loop_repo_path="${REPO_ROOT}" \
+            --output-format json "$@" 2>&1)"
+        E2E_RC=$?
+    }
+
+    # --- 7a. CONTINUE reaches step-04 and exits 0 (the B1 regression) --------
+    e2e_run continue '{"loop_verdict":"CONTINUE","moved":["3 commits"]}'
+    if [[ ${E2E_RC} -eq 0 ]] && printf '%s' "${E2E_OUT}" | grep -qF 'LOOP_HEALTH: CONTINUE'; then
+        pass "E2E-continue" "a CONTINUE verdict survives the real runner and exits 0"
+    else
+        fail "E2E-continue" "CONTINUE did not reach step-04 (rc=${E2E_RC}):
+${E2E_OUT}"
+    fi
+    # The exact signature of the inert-recipe bug: the reads miss, the
+    # `--default true` fail-safe fires, and an exit-79 refusal that never
+    # happened is reported as the reason.
+    if printf '%s' "${E2E_OUT}" | grep -qF 'terminal_policy_refusal'; then
+        fail "E2E-no-fabricated-refusal" "the run fabricated a terminal policy refusal:
+${E2E_OUT}"
+    else
+        pass "E2E-no-fabricated-refusal" "no exit-79 refusal is invented when none occurred"
+    fi
+    if printf '%s' "${E2E_OUT}" | grep -q '"verdict_source": *"evaluator"'; then
+        pass "E2E-verdict-source" "the verdict is attributed to the evaluator, not to a failed read"
+    else
+        fail "E2E-verdict-source" "verdict_source is not 'evaluator':
+${E2E_OUT}"
+    fi
+
+    # --- 7b. STUCK stops the loop, end to end -------------------------------
+    e2e_run stuck '{"loop_verdict":"STUCK","not_converging":["zero commits in 7 rounds"]}'
+    if [[ ${E2E_RC} -ne 0 ]] && printf '%s' "${E2E_OUT}" | grep -qF 'LOOP_HEALTH: STUCK'; then
+        pass "E2E-stuck" "a STUCK verdict fails the recipe end to end (rc=${E2E_RC})"
+    else
+        fail "E2E-stuck" "STUCK did not stop the run (rc=${E2E_RC}):
+${E2E_OUT}"
+    fi
+
+    # --- 7c. The verdict pipeline is last-object-wins, not first-JSON-wins ---
+    # Measured: first-JSON-wins let the sentence that should stop the loop
+    # authorise it.
+    e2e_run reconsidered '{"plan":"check","loop_verdict":"CONTINUE"}
+On reflection nothing moved.
+{"loop_verdict":"STUCK","not_converging":["zero commits"]}'
+    if [[ ${E2E_RC} -ne 0 ]]; then
+        pass "E2E-reconsidered" "a reconsidered STUCK after a draft CONTINUE stops the loop"
+    else
+        fail "E2E-reconsidered" "the draft CONTINUE won over the reconsidered STUCK (rc=0):
+${E2E_OUT}"
+    fi
+
+    # The mirror: evidence quoted back inside a ```json fence must not be read
+    # as the verdict and kill a converging loop.
+    e2e_run quoted 'Here is the evidence I was given:
+```json
+{"commits_since_baseline": 3, "diff_lines": 120}
+```
+It moved. Verdict:
+{"loop_verdict": "CONTINUE", "moved": ["3 commits"]}'
+    if [[ ${E2E_RC} -eq 0 ]] && printf '%s' "${E2E_OUT}" | grep -qF 'LOOP_HEALTH: CONTINUE'; then
+        pass "E2E-quoted-evidence" "evidence quoted back in a fence is ignored; the real verdict wins"
+    else
+        fail "E2E-quoted-evidence" "quoted evidence was read as the verdict (rc=${E2E_RC}):
+${E2E_OUT}"
+    fi
+
+    # --- 7d. A real exit-79 refusal is still terminal, end to end -----------
+    e2e_run terminal '{"loop_verdict":"CONTINUE"}' -c loop_child_exit_code=79
+    if [[ ${E2E_RC} -ne 0 ]] && printf '%s' "${E2E_OUT}" | grep -qF 'terminal_policy_refusal'; then
+        pass "E2E-terminal" "a genuine exit-79 refusal still forces STUCK and stops the run"
+    else
+        fail "E2E-terminal" "exit 79 was not terminal end to end (rc=${E2E_RC}):
+${E2E_OUT}"
+    fi
+
+    # --- 7e. The brick does not poison itself -------------------------------
+    # Feed a previous escalation report back in as loop_history. Its own reason
+    # string says "exited 79" and would re-match the detector, making the loop
+    # permanently terminal on evidence it invented.
+    SELF_REPORT="LOOP_HEALTH: STUCK — 'e2e' is not converging (source=terminal_policy_refusal). [loop-health-evaluator]
+  Evidence: {\"terminal_refusal\":\"true\",\"terminal_reason\":\"child process exited 79 (policy refusal, #1327/#1332) [loop-health-evaluator]\"}"
+    e2e_run selfpoison '{"loop_verdict":"CONTINUE","moved":["3 commits"]}' \
+        -c loop_history="${SELF_REPORT}"
+    if [[ ${E2E_RC} -eq 0 ]] && printf '%s' "${E2E_OUT}" | grep -qF 'LOOP_HEALTH: CONTINUE'; then
+        pass "E2E-self-poison" "this brick's own escalation report does not re-trigger its exit-79 detector"
+    else
+        fail "E2E-self-poison" "the brick poisoned itself from its own report (rc=${E2E_RC}):
+${E2E_OUT}"
+    fi
+fi
+
 echo ""
 echo "--- Summary: ${PASS_COUNT} passed, ${FAIL_COUNT} failed ---"
+if [[ ${SKIPPED_E2E:-0} -eq 1 ]]; then
+    echo "--- NOTE: the end-to-end runner probe was SKIPPED. The contract above is"
+    echo "---       asserted against hand-supplied environment only."
+fi
 if [[ ${FAIL_COUNT} -gt 0 ]]; then exit 1; fi
 echo "PASS: Issue #1337 — loop-health evaluation stops a stuck loop, fails safe to STUCK on malformed input, and never retries into an exit-79 refusal."
 exit 0

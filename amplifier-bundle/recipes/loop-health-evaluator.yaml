@@ -22,12 +22,21 @@ author: "Amplihack Team"
 tags: ["loop", "convergence", "evaluation", "verdict", "agentic", "issue-1337"]
 # Pager safety: recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
 #
+# Composition: the deterministic measurement half lives in
+# `loop-evidence-collector.yaml` and is invoked as step-01. This file owns the
+# judgement, the verdict resolution, and the gate.
+#
 # Consumption contract (see docs/reference/loop-health-evaluator.md):
 #   - type: "recipe" step invoking this brick after each round of your loop
 #   - gate the next round on `loop_health.loop_verdict == 'CONTINUE'`
 #   - gate the advance path on `loop_health.loop_verdict == 'DONE'`
 #   - STUCK needs no condition of its own: step-04 exits non-zero and the
 #     round-N+1 condition is false, so nothing proceeds either way.
+#
+# Step outputs that parse as JSON objects get NO plain-uppercase env alias from
+# recipe-runner-rs — only `RECIPE_VAR_<name>`. Every read of `loop_evidence`,
+# `loop_health_assessment` and `loop_health` below therefore uses the dual-name
+# idiom. Removing a fallback makes this recipe silently inert.
 #
 # No step in this file declares a timeout. Per issue #439 the recipe runner
 # owns the ceiling; there is deliberately no seconds-scale or single-digit-
@@ -65,129 +74,21 @@ steps:
   # ---------------------------------------------------------------------------
   # Step 1 — collect the evidence deterministically.
   #
-  # Everything here is measured, not impressed: git counts, token repetition,
-  # set differences over findings, literal signal comparison. The agent in
-  # step-02 gets this AS DATA alongside the raw material, so its judgement is
-  # anchored to observations rather than to a prose summary of them.
+  # Its own brick (`loop-evidence-collector.yaml`): measurement and judgement
+  # are different jobs with different failure modes, and the measurement half
+  # is testable without a model. Everything it computes is measured, not
+  # impressed — git counts, token repetition, set differences over findings,
+  # literal signal comparison. The agent in step-02 gets that AS DATA alongside
+  # the raw material, so its judgement is anchored to observations rather than
+  # to a prose summary of them.
+  #
+  # The sub-recipe's `loop_evidence` output lands in this recipe's context, so
+  # step-02's `condition:` and the reads below see it exactly as they would a
+  # local step's output.
   # ---------------------------------------------------------------------------
   - id: "step-01-collect-loop-evidence"
-    type: "bash"
-    command: |
-      set -uo pipefail
-      # Only the JSON object goes to stdout; every diagnostic goes to stderr.
-      REPO="${LOOP_REPO_PATH:-.}"
-      LAST="${LOOP_LAST_ROUND_OUTPUT:-}"
-      HIST="${LOOP_HISTORY:-}"
-      WORK="$(mktemp -d)"
-      trap 'rm -rf "$WORK"' EXIT
-
-      esc() { printf '%s' "${1:-}" | tr -d '\000-\010\013\014\016-\037' \
-        | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr '\n\r\t' '   '; }
-
-      # --- (a) Terminal policy refusal: exit 79 / BLOCKED_TERMINAL -----------
-      # Requirement 4: this is TERMINAL. It is surfaced and it stops the loop;
-      # it is never retried into, and step-02 is skipped entirely so not even a
-      # model call is spent deciding whether to re-enter a sealed guard.
-      TERMINAL="false"; TERMINAL_WHY=""
-      if [ "${LOOP_CHILD_EXIT_CODE:-}" = "79" ]; then
-        TERMINAL="true"; TERMINAL_WHY="child process exited 79 (policy refusal, #1327/#1332)"
-      fi
-      printf '%s\n%s\n' "$HIST" "$LAST" > "$WORK/blob"
-      if grep -qF 'BLOCKED_TERMINAL' "$WORK/blob" 2>/dev/null; then
-        TERMINAL="true"
-        TERMINAL_WHY="${TERMINAL_WHY:+$TERMINAL_WHY; }BLOCKED_TERMINAL reported by a child"
-      fi
-      if grep -qE '(exit|status|code)[^0-9]{0,12}79([^0-9]|$)' "$WORK/blob" 2>/dev/null; then
-        TERMINAL="true"
-        TERMINAL_WHY="${TERMINAL_WHY:+$TERMINAL_WHY; }exit code 79 present in round output"
-      fi
-
-      # --- (b) Identical step durations repeating (a cap, not work) ----------
-      # The motivating run showed seven consecutive steps each reporting
-      # exactly `10m 0s`. Identical durations are a ceiling being hit over and
-      # over, not seven units of work.
-      DUR_LINE=$(grep -oE '[0-9]+m [0-9]+s' "$WORK/blob" 2>/dev/null \
-        | sort | uniq -c | sort -rn | head -1)
-      DUR_REPEATS=$(printf '%s' "$DUR_LINE" | awk '{print $1+0}')
-      [ -n "$DUR_REPEATS" ] || DUR_REPEATS=0
-      DUR_VALUE=$(printf '%s' "$DUR_LINE" | awk '{$1=""; sub(/^ */,""); print}')
-
-      # --- (c) Did the last round actually produce a diff / commits? ---------
-      COMMITS=0; DIFF_LINES=0; DIFF_STAT=""; GIT_OBSERVED="false"
-      if git -C "$REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        GIT_OBSERVED="true"
-        BASE="${LOOP_BASELINE_REF:-}"
-        if [ -n "$BASE" ] && git -C "$REPO" rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null 2>&1; then
-          COMMITS=$(git -C "$REPO" rev-list --count "${BASE}..HEAD" 2>/dev/null || echo 0)
-          DIFF_STAT=$(git -C "$REPO" diff --stat "$BASE" 2>/dev/null | tail -1)
-          DIFF_LINES=$(git -C "$REPO" diff --numstat "$BASE" 2>/dev/null \
-            | awk '{a+=$1;d+=$2} END {print a+d+0}')
-        else
-          [ -n "$BASE" ] && echo "WARNING: loop_baseline_ref '${BASE}' is not a resolvable commit; falling back to the working tree diff." >&2
-          DIFF_STAT=$(git -C "$REPO" diff --stat 2>/dev/null | tail -1)
-          DIFF_LINES=$(git -C "$REPO" diff --numstat 2>/dev/null \
-            | awk '{a+=$1;d+=$2} END {print a+d+0}')
-        fi
-      else
-        # The `[skip] not a git repo` token is the marker issue #537 requires:
-        # a git-using step must be both guarded and visibly skipped, and the
-        # guard test looks for this exact string. Absence of evidence is
-        # reported as unobserved, never as progress.
-        echo "[skip] not a git repo: '${REPO}' is not a git work tree; diff/commit evidence is unavailable (reported as unobserved, not as progress)." >&2
-      fi
-      [ -n "$COMMITS" ] || COMMITS=0
-      [ -n "$DIFF_LINES" ] || DIFF_LINES=0
-
-      # --- (d) Findings: new vs recurring vs resolved ------------------------
-      printf '%s\n' "${LOOP_FINDINGS_CURRENT:-}" | sed 's/[[:space:]]*$//' \
-        | grep -v '^[[:space:]]*$' | sort -u > "$WORK/cur" || true
-      printf '%s\n' "${LOOP_FINDINGS_PREVIOUS:-}" | sed 's/[[:space:]]*$//' \
-        | grep -v '^[[:space:]]*$' | sort -u > "$WORK/prev" || true
-      F_NEW=$(comm -23 "$WORK/cur" "$WORK/prev" | grep -c . || true)
-      F_RECUR=$(comm -12 "$WORK/cur" "$WORK/prev" | grep -c . || true)
-      F_RESOLVED=$(comm -13 "$WORK/cur" "$WORK/prev" | grep -c . || true)
-
-      # --- (e) Is the same text simply reappearing? --------------------------
-      # Normalise away digits, punctuation and whitespace so "10m 0s / round 3"
-      # and "10m 0s / round 4" collapse to the same shape.
-      norm() { printf '%s' "${1:-}" | tr 'A-Z' 'a-z' \
-        | tr -cs 'a-z' ' ' | tr -s ' ' | sed -e 's/^ //' -e 's/ $//'; }
-      LAST_NORM=$(norm "$LAST")
-      REPEATED="false"
-      if [ -n "$LAST_NORM" ] && [ "${#LAST_NORM}" -ge 24 ]; then
-        HIST_NORM=$(norm "$HIST")
-        case "$HIST_NORM" in
-          *"$LAST_NORM"*) REPEATED="true" ;;
-        esac
-      fi
-
-      # --- (f) Did tests and CI actually move? -------------------------------
-      TESTS_OBSERVED="false"; TESTS_MOVED="false"
-      if [ -n "${LOOP_TEST_SIGNAL:-}" ] || [ -n "${LOOP_TEST_SIGNAL_PREVIOUS:-}" ]; then
-        TESTS_OBSERVED="true"
-        [ "${LOOP_TEST_SIGNAL:-}" != "${LOOP_TEST_SIGNAL_PREVIOUS:-}" ] && TESTS_MOVED="true"
-      fi
-      CI_OBSERVED="false"; CI_MOVED="false"
-      if [ -n "${LOOP_CI_SIGNAL:-}" ] || [ -n "${LOOP_CI_SIGNAL_PREVIOUS:-}" ]; then
-        CI_OBSERVED="true"
-        [ "${LOOP_CI_SIGNAL:-}" != "${LOOP_CI_SIGNAL_PREVIOUS:-}" ] && CI_MOVED="true"
-      fi
-
-      # --- (g) The agent reporting it is waiting on output that never arrives -
-      WAITING="false"
-      if grep -qiE "(still running|waiting (for|on)|has not (yet )?(returned|completed)|no output yet)" "$WORK/blob" 2>/dev/null; then
-        WAITING="true"
-      fi
-
-      echo "INFO: loop-health evidence for '${LOOP_NAME:-unnamed-loop}' round '${LOOP_ROUND_LABEL:-?}': terminal_refusal=${TERMINAL} commits=${COMMITS} diff_lines=${DIFF_LINES} repeated_durations=${DUR_REPEATS} repeated_output=${REPEATED} findings new/recurring/resolved=${F_NEW}/${F_RECUR}/${F_RESOLVED} tests_moved=${TESTS_MOVED} ci_moved=${CI_MOVED} waiting_on_output=${WAITING}" >&2
-
-      printf '{"terminal_refusal":"%s","terminal_reason":"%s","commits_since_baseline":%s,"diff_lines":%s,"diff_stat":"%s","git_observed":"%s","repeated_duration_count":%s,"repeated_duration_value":"%s","repeated_output":"%s","findings_new":%s,"findings_recurring":%s,"findings_resolved":%s,"tests_observed":"%s","tests_moved":"%s","ci_observed":"%s","ci_moved":"%s","waiting_on_output":"%s"}\n' \
-        "$TERMINAL" "$(esc "$TERMINAL_WHY")" "$COMMITS" "$DIFF_LINES" "$(esc "$DIFF_STAT")" \
-        "$GIT_OBSERVED" "$DUR_REPEATS" "$(esc "$DUR_VALUE")" "$REPEATED" \
-        "$F_NEW" "$F_RECUR" "$F_RESOLVED" \
-        "$TESTS_OBSERVED" "$TESTS_MOVED" "$CI_OBSERVED" "$CI_MOVED" "$WAITING"
-    output: "loop_evidence"
-    parse_json: true
+    type: "recipe"
+    recipe: "loop-evidence-collector"
 
   # ---------------------------------------------------------------------------
   # Step 2 — the agentic judgement.
@@ -272,6 +173,11 @@ steps:
 
       {"loop_verdict": "CONTINUE" | "DONE" | "STUCK", "not_converging": ["<specific evidence>", ...], "moved": ["<what demonstrably changed>", ...], "recommended_action": "<one sentence>"}
 
+      The gate reads the LAST JSON object carrying `loop_verdict`, so quoting
+      the evidence back or drafting a verdict and then reconsidering is safe —
+      your final object is the one that counts, and objects without a
+      `loop_verdict` (the evidence above, for instance) are ignored outright.
+
       A missing, malformed, or unrecognised `loop_verdict` is treated as
       `STUCK` by the gate below — never as `CONTINUE`. Failing safe here means
       stopping, not looping.
@@ -284,23 +190,29 @@ steps:
     type: "bash"
     command: |
       set -uo pipefail
-      RAW="${LOOP_HEALTH_ASSESSMENT:-}"
-      EV="${LOOP_EVIDENCE:-}"
+      # DUAL-NAME READ (required, not defensive): recipe-runner-rs only adds the
+      # plain-uppercase alias for SCALAR step outputs. `loop_evidence` declares
+      # parse_json, and an agent that OBEYS the "emit only the JSON object"
+      # contract makes `loop_health_assessment` an object too — so LOOP_EVIDENCE
+      # and LOOP_HEALTH_ASSESSMENT are both simply absent and a bare read here
+      # silently evaluates a fabricated STUCK. Same idiom as workflow-publish /
+      # workflow-finalize / workflow-terminal-state.
+      RAW="${LOOP_HEALTH_ASSESSMENT:-${RECIPE_VAR_loop_health_assessment:-}}"
+      EV="${LOOP_EVIDENCE:-${RECIPE_VAR_loop_evidence:-}}"
 
       # Fail-safe default is "true": if the evidence step produced nothing
       # parseable we assume the worst and stop, rather than assuming the guard
-      # did not fire.
-      TERMINAL=$(printf '%s' "$EV" \
-        | amplihack orch helper extract-json \
+      # did not fire. An explicit JSON null takes the default too.
+      EV_JSON=$(printf '%s' "$EV" | amplihack orch helper extract-json)
+      TERMINAL=$(printf '%s' "$EV_JSON" \
         | amplihack orch helper extract-field --field terminal_refusal --default true)
-      TERMINAL_WHY=$(printf '%s' "$EV" \
-        | amplihack orch helper extract-json \
+      TERMINAL_WHY=$(printf '%s' "$EV_JSON" \
         | amplihack orch helper extract-field --field terminal_reason --default "evidence unavailable")
 
       if [ "$TERMINAL" = "true" ]; then
         VERDICT="STUCK"; SOURCE="terminal_policy_refusal"
         NOT_CONVERGING="[\"terminal policy refusal: ${TERMINAL_WHY}\"]"
-        echo "ERROR: exit-79 terminal policy refusal — ${TERMINAL_WHY}. This is final (#1327/#1332); the loop stops and is NOT retried into the guard." >&2
+        echo "ERROR: terminal policy refusal — ${TERMINAL_WHY}. This is final (#1327/#1332); the loop stops and is NOT retried into the guard. [loop-health-evaluator]" >&2
       elif [ -z "$RAW" ]; then
         VERDICT="STUCK"; SOURCE="missing_verdict"
         NOT_CONVERGING='["loop-health evaluator produced no output; a missing verdict is STUCK, never CONTINUE"]'
@@ -309,12 +221,19 @@ steps:
         # Canonical pipeline (docs/reference/structured-verdict-parsing.md):
         # agent output is DATA on stdin, never interpolated into a command.
         # Unparseable prose yields `{}` -> the --default -> STUCK.
-        VERDICT=$(printf '%s' "$RAW" \
-          | amplihack orch helper extract-json \
+        #
+        # --require-field selects the LAST object carrying `loop_verdict`, which
+        # is what the prompt asks for ("the very last thing you emit").
+        # First-JSON-wins is fail-open in both directions: it reads a draft
+        # verdict over the reconsidered one, and it reads the evidence object
+        # the evaluator quoted back over the verdict that follows it. Both
+        # fields come from the SAME selected object, so they can never disagree.
+        VJSON=$(printf '%s' "$RAW" \
+          | amplihack orch helper extract-json --require-field loop_verdict)
+        VERDICT=$(printf '%s' "$VJSON" \
           | amplihack orch helper extract-field --field loop_verdict --default STUCK \
           | amplihack orch helper normalise-loop-verdict)
-        NOT_CONVERGING=$(printf '%s' "$RAW" \
-          | amplihack orch helper extract-json \
+        NOT_CONVERGING=$(printf '%s' "$VJSON" \
           | amplihack orch helper extract-field --field not_converging --default "[]")
         SOURCE="evaluator"
         case "$VERDICT" in
@@ -342,15 +261,16 @@ steps:
     type: "bash"
     command: |
       set -uo pipefail
-      VERDICT=$(printf '%s' "${LOOP_HEALTH:-}" \
-        | amplihack orch helper extract-json \
+      # step-03 declares parse_json, so LOOP_HEALTH is an object and the runner
+      # never creates the plain alias — see the dual-name note in step-03.
+      HEALTH_JSON=$(printf '%s' "${LOOP_HEALTH:-${RECIPE_VAR_loop_health:-}}" \
+        | amplihack orch helper extract-json)
+      VERDICT=$(printf '%s' "$HEALTH_JSON" \
         | amplihack orch helper extract-field --field loop_verdict --default STUCK \
         | amplihack orch helper normalise-loop-verdict)
-      DETAIL=$(printf '%s' "${LOOP_HEALTH:-}" \
-        | amplihack orch helper extract-json \
+      DETAIL=$(printf '%s' "$HEALTH_JSON" \
         | amplihack orch helper extract-field --field not_converging --default "[]")
-      SOURCE=$(printf '%s' "${LOOP_HEALTH:-}" \
-        | amplihack orch helper extract-json \
+      SOURCE=$(printf '%s' "$HEALTH_JSON" \
         | amplihack orch helper extract-field --field verdict_source --default unknown)
 
       case "$VERDICT" in
@@ -364,9 +284,9 @@ steps:
           ;;
         *)
           # STUCK, and anything that failed safe into STUCK.
-          echo "LOOP_HEALTH: STUCK — '${LOOP_NAME:-unnamed-loop}' is not converging (source=${SOURCE})." >&2
+          echo "LOOP_HEALTH: STUCK — '${LOOP_NAME:-unnamed-loop}' is not converging (source=${SOURCE}). [loop-health-evaluator]" >&2
           echo "  Round: ${LOOP_ROUND_LABEL:-?}" >&2
-          echo "  Evidence: ${LOOP_EVIDENCE:-<none>}" >&2
+          echo "  Evidence: ${LOOP_EVIDENCE:-${RECIPE_VAR_loop_evidence:-<none>}}" >&2
           echo "  Not converging: ${DETAIL}" >&2
           echo "  No further round is authorised. This is a judgement about absence of progress, not an attempt count." >&2
           if [ "${LOOP_HEALTH_ENFORCE:-true}" = "false" ]; then
