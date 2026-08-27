@@ -78,7 +78,6 @@ amplihack-signal = { path = "../amplihack-signal", features = ["signal"], option
 qrcode = { version = "0.14", default-features = false, optional = true }
 
 [dev-dependencies]
-assert_cmd = "2"
 tracing-subscriber = { workspace = true }
 tempfile = { workspace = true }
 anyhow = { workspace = true }
@@ -90,11 +89,6 @@ amplihack-memory = { workspace = true, features = ["test-support"] }
 # REAL amplihack-signal resolver to prove the onboarding output is consumable by
 # the existing per-session channel without divergence.
 amplihack-signal = { path = "../amplihack-signal", features = ["signal"] }
-# Issue #625: PTY-driven integration test for the interactive update prompt.
-# Linux-only at use site (gated `#[cfg(target_os = "linux")]`); listing here
-# unconditionally is fine because rexpect itself compiles on macOS too — we
-# only gate the test that drives a pseudo-TTY.
-rexpect = "0.6"
 
 [build-dependencies]
 # SEC-WS4-02: Explicit reference forces the Cargo resolver to apply the

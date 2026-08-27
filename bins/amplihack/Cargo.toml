@@ -33,6 +33,18 @@ clap = { workspace = true }
 
 [dev-dependencies]
 amplihack-git = { workspace = true }
+# Issues #538 / #1378: the install-completeness and update-prompt integration
+# tests live in THIS package so `env!("CARGO_BIN_EXE_amplihack")` resolves and
+# Cargo builds the binary as a test prerequisite. They previously sat in
+# `crates/amplihack-cli/tests/`, where that env var does not exist, and had to
+# hand-roll `<workspace>/target/debug/amplihack` — wrong under any redirected
+# CARGO_TARGET_DIR (the pre-commit hooks redirect it).
+assert_cmd = "2"
+# Issue #625: PTY-driven integration test for the interactive update prompt.
+# Linux-only at use site (gated `#[cfg(target_os = "linux")]`); listing here
+# unconditionally is fine because rexpect itself compiles on macOS too — we
+# only gate the test that drives a pseudo-TTY.
+rexpect = "0.6"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
