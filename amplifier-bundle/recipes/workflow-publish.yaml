@@ -102,49 +102,9 @@ steps:
       set -euo pipefail
       : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-${REPO_PATH:-}}}"
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-14c requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
-      # Issue #925: nothing syncs root package.json "version" after the workspace
-      # bump, so `package_json_version_matches_root_workspace_version` fails in CI.
-      # Sync package.json.version via a ROBUST scoped read + ROBUST JSON edit (jq,
-      # python3 fallback); skip gracefully when package.json is absent (non-JS workspace).
-      if [ ! -f package.json ]; then
-        echo "step-14c: no package.json present; skipping npm version sync (non-JS workspace)"
-        exit 0
-      fi
-      if [ ! -f Cargo.toml ]; then
-        echo "step-14c: no Cargo.toml present; cannot determine workspace version; skipping"
-        exit 0
-      fi
-      # Read [workspace.package].version via a SCOPED offline parse (NOT an unscoped
-      # grep that could match an unrelated table); fall back to `cargo metadata --offline`.
-      WS_VERSION="$(awk -F'"' '
-        /^\[workspace\.package\]/ { in_ws = 1; next }
-        /^\[/ { in_ws = 0 }
-        in_ws && /^[[:space:]]*version[[:space:]]*=/ { print $2; exit }
-      ' Cargo.toml)"
-      # Fallback: resolve the workspace ROOT package by its resolved id (.resolve.root),
-      # NOT `select(.source == null)` which matches ALL local members nondeterministically.
-      if [ -z "${WS_VERSION:-}" ] && command -v cargo >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
-        WS_VERSION="$(cargo metadata --no-deps --format-version=1 --offline 2>/dev/null \
-          | jq -r '.resolve.root as $r | (.packages[] | select(.id == $r) | .version) // empty' 2>/dev/null || true)"
-      fi
-      if [ -z "${WS_VERSION:-}" ]; then
-        # Non-standard layout or unreadable version: skip cleanly (mirror-only step; never a hard failure).
-        echo "step-14c: could not read [workspace.package].version; skipping package.json sync"
-        exit 0
-      fi
-      echo "step-14c: syncing package.json version to workspace version ${WS_VERSION}"
-      if command -v jq >/dev/null 2>&1; then
-        # Same-directory temp file so `mv` is an atomic rename; preserve permissions.
-        _tmp="$(mktemp ./package.json.XXXXXX)"
-        trap 'rm -f "$_tmp"' EXIT
-        chmod --reference=package.json "$_tmp" 2>/dev/null || true
-        jq --arg v "$WS_VERSION" '.version = $v' package.json > "$_tmp"
-        mv "$_tmp" package.json
-        trap - EXIT
-      else
-        # Same atomic contract as the jq path: same-directory temp + os.replace, mode preserved.
-        WS_VERSION="$WS_VERSION" python3 -c 'import json, os, tempfile; p = "package.json"; d = json.load(open(p, encoding="utf-8")); d["version"] = os.environ["WS_VERSION"]; _dir = os.path.dirname(os.path.abspath(p)); _fd, _tmp = tempfile.mkstemp(dir=_dir, prefix="package.json."); os.write(_fd, (json.dumps(d, indent=2) + "\n").encode("utf-8")); os.close(_fd); os.chmod(_tmp, os.stat(p).st_mode & 0o7777); os.replace(_tmp, p)'
-      fi
+      SP=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_sync_package_version.sh" ] && { SP="$c/amplifier-bundle/tools/workflow_sync_package_version.sh"; break; }; done
+      # A missing mirror helper must not fail a publish; the version sync is advisory.
+      if [ -n "$SP" ]; then bash "$SP" .; else echo "WARNING: workflow_sync_package_version.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack) — package.json version not synced (#925)" >&2; fi
 
   - id: "step-14g-artifact-guard"
     type: "bash"
@@ -219,10 +179,19 @@ steps:
           esac ;;
       esac
       COMMIT_TITLE=$(printf '%s%.72s' "$COMMIT_PREFIX" "$(printf '%s' "$TASK_DESC" | tr '\n\r' ' ' | head -1)")
-      # FIX #684: Host-aware commit references
+      # FIX #684: Host-aware commit references.
+      # FIX #1361: on GitHub the closing keyword is EARNED BY THE DIFF. PR #1283's
+      # body said `Closes #1277` while its whole change was one added planning
+      # document; had it merged, a genuine bug report would have been auto-closed
+      # by an artifact describing what somebody intended to do about it. A change
+      # that only writes down a plan gets `Refs`, which still links the PR to the
+      # issue but leaves it open for the work itself. Unreachable helper -> `Refs`:
+      # under-linking costs a manual close, over-linking closes a live bug silently.
       HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
+      CLOSE_KW="Refs"; IR=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_issue_reference.sh" ] && { IR="$c/amplifier-bundle/tools/workflow_issue_reference.sh"; break; }; done
+      if [ -n "$IR" ]; then CLOSE_KW="$(git diff --cached --name-only | bash "$IR" --keyword)" || CLOSE_KW="Refs"; else echo "WARNING: workflow_issue_reference.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack) — using the non-closing 'Refs' keyword (#1361)" >&2; fi
       case "$HOST_TYPE" in
-        github) ISSUE_REF="Closes #${ISSUE_NUMBER}"; ISSUE_IMPL="issue #${ISSUE_NUMBER}" ;;
+        github) ISSUE_REF="${CLOSE_KW} #${ISSUE_NUMBER}"; ISSUE_IMPL="issue #${ISSUE_NUMBER}" ;;
         azdo)   ISSUE_REF="AB#${ISSUE_NUMBER}"; ISSUE_IMPL="AB#${ISSUE_NUMBER}" ;;
         *)      ISSUE_REF="Ref #${ISSUE_NUMBER}"; ISSUE_IMPL="issue #${ISSUE_NUMBER}" ;;
       esac

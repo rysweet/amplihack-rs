@@ -44,4 +44,4 @@ jobs:
       - name: Scan diff for invisible characters
         run: |
           git diff ${{ github.event.pull_request.base.sha }}...pr-head \
-            | cargo run --locked -p amplihack --bin scan-invisible-chars --quiet
+            | cargo run --locked -p scan-invisible-chars-bin --bin scan-invisible-chars --quiet

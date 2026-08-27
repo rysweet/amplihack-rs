@@ -1,0 +1,15 @@
+[package]
+name = "scan-invisible-chars-bin"
+description = "Scans a diff on stdin for invisible/bidirectional Unicode characters"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Deliberately dependency-free. This binary reads stdin and writes a verdict;
+# it is run on every external PR, so its build must not pull in the workspace.
+# See issue #1397.
+[[bin]]
+name = "scan-invisible-chars"
+path = "src/main.rs"
+
+[dependencies]

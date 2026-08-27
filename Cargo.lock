@@ -2127,6 +2127,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "scan-invisible-chars-bin"
+version = "0.18.0"
+
+[[package]]
 name = "scratch"
 version = "1.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -78,6 +78,12 @@ jobs:
       - name: Worktree — refuse a repo with no origin remote (issue #1323)
         shell: bash
         run: bash tests/issue_1323_multirepo_origin_precondition.sh
+      - name: Recipes — every committing recipe prepares its identity (issue #1394)
+        shell: bash
+        run: bash tests/recipe_commit_identity_static_test.sh
+      - name: Invisible-char scan — stays dependency-free (issue #1397)
+        shell: bash
+        run: bash tests/issue_1397_invisible_scan_stays_dependency_free.sh
       - name: Skill docs — BLOCKED-path steps exist (issue #1255)
         shell: bash
         run: bash tests/issue_1255_blocked_path_steps_exist.sh
@@ -90,6 +96,9 @@ jobs:
       - name: Docs — launch-target frozen contract matches the code (issue #1274)
         shell: bash
         run: bash tests/issue_1274_launch_target_contract_matches_code.sh
+      - name: Duplicate PRs — an issue already claimed is not started again (issue #1361)
+        shell: bash
+        run: bash tests/issue_1361_duplicate_pr_claim_check.sh
       - name: Git subprocesses — no unsanitised Command::new("git") (issue #1278)
         run: scripts/check-git-command-sanitised.sh
       - name: Git env isolation — hooks scrub GIT_DIR and friends (issue #1278)
