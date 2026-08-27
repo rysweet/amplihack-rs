@@ -37,17 +37,26 @@ steps:
       # Canonicalize repo_path so WORKTREE_PATH matches git porcelain (issue #1121).
       REPO_PATH="$(pwd -P)"
 
-      # --- Self-healing orphan sweep (issue #840) ---
-      # Best-effort: prune leaked worktrees/branches from prior FAILED runs so a
-      # re-run converges instead of colliding. Graceful no-op if the helper is
-      # absent (#829 precedent); never aborts setup. Destructive lifecycle logic
-      # lives in tools/workflow_worktree_sweep.sh to keep this recipe < 400 lines.
-      SWEEP_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_worktree_sweep.sh"
-      [ -f "$SWEEP_HELPER" ] || SWEEP_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_worktree_sweep.sh"
-      [ -f "$SWEEP_HELPER" ] || SWEEP_HELPER="$(pwd)/amplifier-bundle/tools/workflow_worktree_sweep.sh"
-      [ -f "$SWEEP_HELPER" ] || SWEEP_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_worktree_sweep.sh"
-      [ -f "$SWEEP_HELPER" ] || SWEEP_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_worktree_sweep.sh"
-      if [ -f "$SWEEP_HELPER" ]; then bash "$SWEEP_HELPER" sweep "$REPO_PATH" >&2 || true; fi
+      # Helper ladder (#829/#840/#962): lifecycle logic lives in tools/ so this
+      # recipe stays < 400 lines. A missing helper is always a graceful no-op.
+      TOOLS_DIR="${AMPLIHACK_HOME:-$REPO_PATH}/amplifier-bundle/tools"
+      for _c in "$REPO_PATH" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do
+        [ -f "$TOOLS_DIR/workflow_worktree_sweep.sh" ] || TOOLS_DIR="$_c/amplifier-bundle/tools"
+      done
+      # Worktree anchoring (#1134): nested recipe RUNNERS are legitimate, and a
+      # nested run's cwd is normally a LINKED worktree (its `.git` is a FILE pointing
+      # at the main repo). Anchoring `worktrees/<branch>` to `pwd -P` therefore built
+      # worktrees INSIDE worktrees without bound. Anchor at the MAIN repo instead.
+      ROOT_HELPER="$TOOLS_DIR/workflow_worktree_root.sh"
+      MAIN_REPO_PATH="$REPO_PATH"
+      if [ -f "$ROOT_HELPER" ]; then MAIN_REPO_PATH="$(bash "$ROOT_HELPER" root "$REPO_PATH" || printf '%s' "$REPO_PATH")"; fi
+      [ -d "$MAIN_REPO_PATH" ] || MAIN_REPO_PATH="$REPO_PATH"
+      [ "$MAIN_REPO_PATH" = "$REPO_PATH" ] || echo "INFO: caller checkout '$REPO_PATH' is a linked worktree — anchoring new worktrees at main repository '$MAIN_REPO_PATH' (issue #1134)." >&2
+      # Self-healing orphan sweep (#840): best-effort prune of worktrees/branches
+      # leaked by prior FAILED runs so a re-run converges instead of colliding.
+      # Never aborts setup. Swept at the MAIN repo, where they now all live (#1134).
+      SWEEP_HELPER="$TOOLS_DIR/workflow_worktree_sweep.sh"
+      if [ -f "$SWEEP_HELPER" ]; then bash "$SWEEP_HELPER" sweep "$MAIN_REPO_PATH" >&2 || true; fi
 
       echo "=== Step 4: Creating Worktree and Branch ===" >&2
       echo "" >&2
@@ -69,6 +78,8 @@ steps:
       wt_add_idempotent() {
         local mode="$1" wt="$2" branch="$3" ref="${4:-}" cur
         git worktree prune >/dev/null 2>&1 || true
+        # INVARIANT (#1134): never create a worktree under another worktree.
+        if [ -f "$ROOT_HELPER" ] && ! bash "$ROOT_HELPER" assert-not-nested "$wt" "$MAIN_REPO_PATH"; then exit 1; fi
         if [ -d "$wt" ]; then
           cur="$(git -C "$wt" symbolic-ref --short HEAD 2>/dev/null || true)"
           if [ "$cur" = "$branch" ]; then
@@ -85,17 +96,11 @@ steps:
         esac
       }
 
-      # ========================================================================
-      # NEW (#342): Existing-branch / PR targeting path.
-      # When EXISTING_BRANCH or PR_NUMBER is set, reuse an existing branch
-      # instead of deriving a slug from TASK_DESCRIPTION. EXISTING_BRANCH wins
-      # when both are set (a WARNING is emitted to stderr).
-      #
+      # NEW (#342): Existing-branch / PR targeting path. When EXISTING_BRANCH or
+      # PR_NUMBER is set, reuse an existing branch instead of deriving a slug from
+      # TASK_DESCRIPTION; EXISTING_BRANCH wins on tie (a WARNING goes to stderr).
       # MIRROR: consensus-workflow.yaml step3-setup-worktree must keep the same
-      # validation gates and resolution algorithm. Do not patch one without the
-      # other. The parity test in
-      # amplifier-bundle/tools/test_default_workflow_fixes.rs guards drift.
-      # ========================================================================
+      # validation gates and resolution algorithm — patch both in one commit.
       EXISTING_BRANCH="${EXISTING_BRANCH:-}"
       PR_NUMBER="${PR_NUMBER:-}"
 
@@ -145,7 +150,7 @@ steps:
         # Resolve worktree path:
         #   (a) reuse if a worktree already exists for the branch
         #   (b) else use REPO_PATH if it is itself checked out on the branch
-        #   (c) else attach a new worktree at REPO_PATH/worktrees/<branch>
+        #   (c) else attach a new worktree at MAIN_REPO_PATH/worktrees/<branch> (#1134)
         WORKTREE_PATH=""
         EXISTING_WT="$(git worktree list --porcelain | awk -v b="refs/heads/$BRANCH_NAME" '
           $1=="worktree" { wt=$2 }
@@ -179,7 +184,7 @@ steps:
             echo "ERROR: run the recipe from a clean base checkout or detach/switch the caller checkout before targeting this branch." >&2
             exit 1
           else
-            WORKTREE_PATH="${REPO_PATH}/worktrees/${BRANCH_NAME}"
+            WORKTREE_PATH="${MAIN_REPO_PATH}/worktrees/${BRANCH_NAME}"
             if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
               wt_add_idempotent attach "$WORKTREE_PATH" "$BRANCH_NAME"
             elif git show-ref --verify --quiet "refs/remotes/origin/$BRANCH_NAME"; then
@@ -191,8 +196,7 @@ steps:
           fi
         fi
 
-        # When reusing an existing branch, `created=false` reflects that the
-        # branch was not created by this step (its worktree may be new).
+        # `created=false`: the branch pre-existed (its worktree may still be new).
         CREATED=false
 
         # Push/upstream best-effort (idempotent on existing PR branches).
@@ -202,9 +206,8 @@ steps:
         echo "" >&2
         echo "=== Worktree Setup Complete (existing-branch path) ===" >&2
 
-        # Stdout reserved for the JSON contract; all human-readable lines go to stderr.
-        # NOTE: printf (not heredoc) — heredoc terminator must be at column 0 after
-        # YAML strips block indent, which conflicts with the indented if-block here.
+        # Stdout is reserved for the JSON contract. printf (not heredoc): a heredoc
+        # terminator must sit at column 0 once YAML strips the block indent.
         printf '{"worktree_path": "%s", "branch_name": "%s", "base_ref": "", "base_branch": "", "created": %s}\n' \
           "$(json_escape "$WORKTREE_PATH")" "$(json_escape "$BRANCH_NAME")" "$CREATED"
         exit 0
@@ -266,10 +269,9 @@ steps:
       BASE_REF="$(resolve_base_ref)"
       BASE_BRANCH="${BASE_REF#origin/}"
 
-      # NOTE: slug pipeline mirrored in consensus-issue-worktree.yaml step3 (30-char cap
-      # vs 50); update both in the same commit on security patches. See Issue #2952.
-      # FIX (#469/#311): Use env var — safe against injection and word-splitting.
-      # Sanitization pipeline (tr -cd 'a-z0-9-') strips all shell metacharacters.
+      # NOTE: slug pipeline mirrored in consensus-issue-worktree.yaml step3 (30-char
+      # cap vs 50); update both in one commit on security patches. See Issue #2952.
+      # FIX (#469/#311): env var (injection/word-splitting safe) + `tr -cd 'a-z0-9-'`
       TASK_DESC="$TASK_DESCRIPTION"
       TASK_SLUG=$(printf '%s' "$TASK_DESC" | tr '\n\r' '  ' | tr '[:upper:] ' '[:lower:]-' | tr -cd 'a-z0-9-' | sed 's/-\{2,\}/-/g' | sed 's/^-//;s/-$//' | cut -c1-50 | sed 's/-$//')
       # Guard: empty slug (blank/all-symbol input) produces a trailing-hyphen branch that
@@ -287,23 +289,22 @@ steps:
           BRANCH_NAME="feat/task-unnamed-$(date +%s)"
         fi
       fi
-      WORKTREE_PATH="${REPO_PATH}/worktrees/${BRANCH_NAME}"
+      WORKTREE_PATH="${MAIN_REPO_PATH}/worktrees/${BRANCH_NAME}"
       # --- Foreign-worktree deconfliction (#829/#840): if BRANCH_NAME is held by a
       # FOREIGN worktree, get a NEW free name (else unchanged); missing helper = no-op.
-      DECONFLICT_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_worktree_deconflict.sh"
+      DECONFLICT_HELPER="$TOOLS_DIR/workflow_worktree_deconflict.sh"
       [ -f "$DECONFLICT_HELPER" ] || DECONFLICT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_worktree_deconflict.sh"
-      [ -f "$DECONFLICT_HELPER" ] || DECONFLICT_HELPER="$(pwd)/amplifier-bundle/tools/workflow_worktree_deconflict.sh"
       if [ -f "$DECONFLICT_HELPER" ]; then
         # Fail loud on non-zero exit (retries exhausted / misconfig); let stderr surface.
         # Never reuse the conflicting name — that would re-abort at `git branch -D`. #200 S1/S2.
-        if ! RESOLVED_BRANCH="$(bash "$DECONFLICT_HELPER" resolve "$BRANCH_NAME" "$WORKTREE_PATH" "$REPO_PATH")"; then
+        if ! RESOLVED_BRANCH="$(bash "$DECONFLICT_HELPER" resolve "$BRANCH_NAME" "$WORKTREE_PATH" "$MAIN_REPO_PATH")"; then
           echo "ERROR: worktree branch deconfliction failed for '${BRANCH_NAME}' (retries exhausted or helper misconfig; see stderr). Aborting to avoid clobbering a concurrent foreign worktree." >&2
           exit 1
         fi
         if [ -n "$RESOLVED_BRANCH" ] && [ "$RESOLVED_BRANCH" != "$BRANCH_NAME" ]; then
           echo "INFO: branch '${BRANCH_NAME}' is owned by a foreign worktree — deconflicting to '${RESOLVED_BRANCH}'." >&2
           BRANCH_NAME="$RESOLVED_BRANCH"
-          WORKTREE_PATH="${REPO_PATH}/worktrees/${BRANCH_NAME}"
+          WORKTREE_PATH="${MAIN_REPO_PATH}/worktrees/${BRANCH_NAME}"
         fi
       fi
 
@@ -313,11 +314,10 @@ steps:
       echo "" >&2
 
       # --- Idempotency: detect existing branch and/or worktree ---
-      # FIX (issue #3023 / BL-002): Three-state guard makes re-runs safe.
-      # State 1: branch + worktree both exist → reuse; State 2: branch only → add;
-      # State 3: neither → create. grep -Fx: literal exact match. (issue #1121)
-      # WORKTREE_PATH is now canonical/absolute so this matches git porcelain;
-      # every add routes through wt_add_idempotent.
+      # FIX (issue #3023 / BL-002): Three-state guard makes re-runs safe. State 1:
+      # branch + worktree both exist → reuse; State 2: branch only → add; State 3:
+      # neither → create. grep -Fx: literal exact match against git's absolute
+      # porcelain output (#1121); every add routes through wt_add_idempotent.
       BRANCH_EXISTS=$(git branch --list "${BRANCH_NAME}")
       WORKTREE_EXISTS=$(git worktree list --porcelain | grep -Fx "worktree ${WORKTREE_PATH}" || true)
 
@@ -358,9 +358,8 @@ steps:
         CREATED=true
       fi
 
-      # Push branch to remote with tracking (idempotent).
-      # NOTE: Push failures are suppressed here and surface at step-16 PR creation.
-      # This allows idempotent re-runs where the remote branch already exists.
+      # Push branch to remote with tracking (idempotent). Push failures are
+      # suppressed here and surface at step-16 PR creation, so re-runs converge.
       git -C "${WORKTREE_PATH}" push origin "${BRANCH_NAME}" > /dev/null 2>&1 || true
       git -C "${WORKTREE_PATH}" branch --set-upstream-to="origin/${BRANCH_NAME}" "${BRANCH_NAME}" > /dev/null 2>&1 || true
 

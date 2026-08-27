@@ -63,6 +63,9 @@ jobs:
       - name: Recipes — no stale Python tool references (bug #666)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-bug-666-stale-python-refs.sh
+      - name: Recipes — worktrees are never created inside worktrees (issue #1134)
+        shell: bash
+        run: bash tests/issue_1134_nested_worktree_test.sh
       - name: Recipes — PR always opens after successful push (issue #495)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-pr-always-opens.sh
