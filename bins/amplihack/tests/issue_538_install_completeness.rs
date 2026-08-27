@@ -55,26 +55,42 @@ fn is_executable(path: &Path) -> bool {
     path.is_file()
 }
 
-fn workspace_debug_amplihack() -> PathBuf {
-    workspace_root()
-        .join("target")
-        .join("debug")
-        .join(format!("amplihack{}", std::env::consts::EXE_SUFFIX))
-}
+/// The `amplihack` binary Cargo built for this very test run.
+///
+/// This test target lives in the `amplihack` binary package, so Cargo sets
+/// `CARGO_BIN_EXE_amplihack` at compile time and guarantees the binary is
+/// built before the test runs. The path is correct under any
+/// `CARGO_TARGET_DIR`, profile, or worktree.
+///
+/// Issue #1378: this test used to hand-roll `<workspace>/target/debug/amplihack`,
+/// which is wrong whenever the build is redirected — the pre-commit hooks set
+/// `CARGO_TARGET_DIR` outside the worktree, so a fresh clone or worktree failed
+/// with "no prebuilt amplihack binary found" before running a single
+/// assertion. There is deliberately no `<workspace>/target/debug` fallback any
+/// more: a stale binary left there by an old build is exactly the ambient
+/// machine state this test must not resolve against.
+const CARGO_BIN_EXE_AMPLIHACK: &str = env!("CARGO_BIN_EXE_amplihack");
 
 fn resolve_amplihack_binary() -> PathBuf {
     resolve_amplihack_binary_from(
         std::env::var_os("AMPLIHACK_PROBE_BIN"),
-        std::env::var_os("CARGO_BIN_EXE_amplihack"),
-        &workspace_debug_amplihack(),
+        Some(OsString::from(CARGO_BIN_EXE_AMPLIHACK)),
     )
     .unwrap_or_else(|message| panic!("{message}"))
 }
 
+/// Resolve the `amplihack` binary from, in order:
+///
+/// 1. `AMPLIHACK_PROBE_BIN` — an explicit override so an external harness can
+///    point these tests at an already-built binary. If set but invalid this is
+///    an error, never a silent fallback.
+/// 2. `CARGO_BIN_EXE_amplihack` — the path Cargo built for this run.
+///
+/// On failure the error names *every* candidate that was tried, so the reader
+/// sees which locations were checked instead of guessing (issue #1378).
 fn resolve_amplihack_binary_from(
     probe_bin: Option<OsString>,
     cargo_bin: Option<OsString>,
-    fallback: &Path,
 ) -> Result<PathBuf, String> {
     if let Some(path) = probe_bin {
         let path = PathBuf::from(path);
@@ -87,24 +103,24 @@ fn resolve_amplihack_binary_from(
         ));
     }
 
-    if let Some(path) = cargo_bin {
-        let path = PathBuf::from(path);
-        if valid_existing_binary(&path) {
-            return Ok(path);
-        }
-        return Err(format!(
-            "CARGO_BIN_EXE_amplihack is set to {}, but that path is not an existing executable file",
-            path.display()
-        ));
-    }
+    let mut tried: Vec<String> = vec!["AMPLIHACK_PROBE_BIN=<unset>".to_string()];
 
-    if valid_existing_binary(fallback) {
-        return Ok(fallback.to_path_buf());
+    match cargo_bin {
+        Some(path) => {
+            let path = PathBuf::from(path);
+            if valid_existing_binary(&path) {
+                return Ok(path);
+            }
+            tried.push(format!("CARGO_BIN_EXE_amplihack={}", path.display()));
+        }
+        None => tried.push("CARGO_BIN_EXE_amplihack=<unset>".to_string()),
     }
 
     Err(format!(
-        "no prebuilt amplihack binary found; set AMPLIHACK_PROBE_BIN or build the workspace binary before running this test (checked {})",
-        fallback.display()
+        "no prebuilt amplihack binary found; set AMPLIHACK_PROBE_BIN or run this test through \
+         Cargo (`cargo test -p amplihack`), which builds the binary as a test prerequisite. \
+         Checked: {}",
+        tried.join(", ")
     ))
 }
 
@@ -272,16 +288,14 @@ fn install_command_launcher_is_not_cargo() {
 }
 
 #[test]
-fn binary_resolver_prefers_probe_bin_over_cargo_bin_and_fallback() {
+fn binary_resolver_prefers_probe_bin_over_cargo_bin() {
     let temp = tempfile::tempdir().expect("create temp dir");
     let probe_bin = write_success_executable(temp.path(), "probe-amplihack");
     let cargo_bin = write_success_executable(temp.path(), "cargo-amplihack");
-    let fallback = write_success_executable(temp.path(), "fallback-amplihack");
 
     let resolved = resolve_amplihack_binary_from(
         Some(OsString::from(&probe_bin)),
         Some(OsString::from(&cargo_bin)),
-        &fallback,
     )
     .expect("resolve probe binary");
 
@@ -292,22 +306,11 @@ fn binary_resolver_prefers_probe_bin_over_cargo_bin_and_fallback() {
 fn binary_resolver_uses_cargo_bin_when_probe_bin_is_unset() {
     let temp = tempfile::tempdir().expect("create temp dir");
     let cargo_bin = write_success_executable(temp.path(), "cargo-amplihack");
-    let fallback = write_success_executable(temp.path(), "fallback-amplihack");
 
-    let resolved = resolve_amplihack_binary_from(None, Some(OsString::from(&cargo_bin)), &fallback)
+    let resolved = resolve_amplihack_binary_from(None, Some(OsString::from(&cargo_bin)))
         .expect("resolve Cargo-provided binary");
 
     assert_eq!(resolved, cargo_bin);
-}
-
-#[test]
-fn binary_resolver_uses_existing_fallback_without_env_paths() {
-    let temp = tempfile::tempdir().expect("create temp dir");
-    let fallback = write_success_executable(temp.path(), "fallback-amplihack");
-
-    let resolved = resolve_amplihack_binary_from(None, None, &fallback).expect("resolve fallback");
-
-    assert_eq!(resolved, fallback);
 }
 
 #[test]
@@ -315,12 +318,10 @@ fn binary_resolver_rejects_invalid_probe_bin_instead_of_falling_back() {
     let temp = tempfile::tempdir().expect("create temp dir");
     let missing_probe = temp.path().join("missing-probe-amplihack");
     let cargo_bin = write_success_executable(temp.path(), "cargo-amplihack");
-    let fallback = write_success_executable(temp.path(), "fallback-amplihack");
 
     let error = resolve_amplihack_binary_from(
         Some(OsString::from(&missing_probe)),
         Some(OsString::from(&cargo_bin)),
-        &fallback,
     )
     .expect_err("invalid AMPLIHACK_PROBE_BIN must fail");
 
@@ -333,16 +334,64 @@ fn binary_resolver_rejects_invalid_probe_bin_instead_of_falling_back() {
 #[test]
 fn binary_resolver_fails_clearly_when_no_prebuilt_binary_is_available() {
     let temp = tempfile::tempdir().expect("create temp dir");
-    let fallback = temp.path().join("missing-fallback-amplihack");
+    let missing_cargo_bin = temp.path().join("missing-cargo-amplihack");
 
-    let error = resolve_amplihack_binary_from(None, None, &fallback)
+    let error = resolve_amplihack_binary_from(None, Some(OsString::from(&missing_cargo_bin)))
         .expect_err("missing prebuilt binary must fail");
 
     assert!(
         error.contains("no prebuilt amplihack binary found")
             && error.contains("AMPLIHACK_PROBE_BIN")
-            && error.contains(&fallback.display().to_string()),
+            && error.contains(&missing_cargo_bin.display().to_string()),
         "unexpected resolver error: {error}"
+    );
+}
+
+/// Issue #1378: when nothing resolves, the message must name every candidate
+/// that was tried — not just the last one. A failure that reports a single
+/// hardcoded path sends the reader looking in the wrong place.
+#[test]
+fn binary_resolver_failure_lists_every_candidate_tried() {
+    let temp = tempfile::tempdir().expect("create temp dir");
+    let missing_cargo_bin = temp.path().join("missing-cargo-amplihack");
+
+    let error = resolve_amplihack_binary_from(None, Some(OsString::from(&missing_cargo_bin)))
+        .expect_err("missing prebuilt binary must fail");
+
+    assert!(
+        error.contains(&missing_cargo_bin.display().to_string()),
+        "resolver error must list the CARGO_BIN_EXE candidate; got: {error}"
+    );
+    assert!(
+        error.contains("AMPLIHACK_PROBE_BIN=<unset>"),
+        "resolver error must record that AMPLIHACK_PROBE_BIN was consulted and \
+         unset; got: {error}"
+    );
+    assert!(
+        error.contains("CARGO_BIN_EXE_amplihack"),
+        "resolver error must name the Cargo-provided candidate; got: {error}"
+    );
+
+    let both_unset =
+        resolve_amplihack_binary_from(None, None).expect_err("no candidates at all must fail");
+    assert!(
+        both_unset.contains("AMPLIHACK_PROBE_BIN=<unset>")
+            && both_unset.contains("CARGO_BIN_EXE_amplihack=<unset>"),
+        "resolver error must list every candidate tried; got: {both_unset}"
+    );
+}
+
+/// The Cargo-provided path is the one the test suite actually uses, and Cargo
+/// builds it as a prerequisite of this test target. If this fails, the test
+/// package is no longer the one that produces the binary.
+#[test]
+fn cargo_bin_exe_points_at_an_existing_executable() {
+    let bin = PathBuf::from(CARGO_BIN_EXE_AMPLIHACK);
+    assert!(
+        valid_existing_binary(&bin),
+        "CARGO_BIN_EXE_amplihack must point at the binary Cargo built for this \
+         test run, but {} is not an existing executable file",
+        bin.display()
     );
 }
 
