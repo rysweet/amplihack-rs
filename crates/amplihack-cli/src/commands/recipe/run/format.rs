@@ -145,7 +145,7 @@ fn format_elapsed(elapsed_ms: u64) -> String {
     }
 }
 
-fn format_log_pointer_summary(log_pointer: &RecipeLogPointerSummary) -> String {
+pub(super) fn format_log_pointer_summary(log_pointer: &RecipeLogPointerSummary) -> String {
     let mut parts = vec![format!("status={}", log_pointer.status)];
     if let Some(branch) = &log_pointer.branch
         && !branch.is_empty()
