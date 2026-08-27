@@ -3,7 +3,7 @@
 //! Resolution precedence:
 //! 1. `AMPLIHACK_AGENT_BINARY` env var (explicit override; CI/testing).
 //! 2. `<cwd-or-ancestor>/.claude/runtime/launcher_context.json` `launcher` field
-//!    (canonical persisted state written by the launcher on every run).
+//!    (persisted state, possibly written by a different session).
 //! 3. Built-in default: `"copilot"`.
 //!
 //! All inputs are validated against a strict allowlist to prevent the resolved
@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use thiserror::Error;
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Allowlist of valid agent binary names. Keep alphabetical and lowercase.
 pub const ALLOWED_BINARIES: &[&str] = &["amplifier", "claude", "codex", "copilot"];
@@ -44,6 +44,39 @@ const LAUNCHER_CONTEXT_MAX_BYTES: u64 = 64 * 1024;
 
 /// Maximum number of ancestor directories to inspect during walk-up.
 const ANCESTOR_WALK_LIMIT: usize = 32;
+
+/// Where a resolved agent-binary name came from.
+///
+/// Only [`ResolutionSource::Env`] means "the caller told us". The other two are
+/// inferences, and an inference that lands on the wrong vendor is silent and
+/// expensive: agents then run under a different CLI with a different tool
+/// timeout policy than the session the user is actually sitting in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolutionSource {
+    /// `AMPLIHACK_AGENT_BINARY` was set and valid.
+    Env,
+    /// Read from a persisted `launcher_context.json`, possibly written by an
+    /// unrelated earlier session in the same repo.
+    LauncherContext,
+    /// Nothing said anything; [`DEFAULT_BINARY`] was assumed.
+    Default,
+}
+
+impl ResolutionSource {
+    /// `true` when the name was inferred rather than supplied by the caller.
+    pub fn is_inferred(self) -> bool {
+        !matches!(self, ResolutionSource::Env)
+    }
+
+    /// Short stable label for logs and run headers.
+    pub fn label(self) -> &'static str {
+        match self {
+            ResolutionSource::Env => "env",
+            ResolutionSource::LauncherContext => "launcher_context",
+            ResolutionSource::Default => "default",
+        }
+    }
+}
 
 /// Errors returned by the resolver. Resolution is infallible from the caller's
 /// perspective today — this type exists for future-proofing and to give tests a
@@ -92,27 +125,69 @@ pub fn validate_binary_name(name: &str) -> Option<String> {
 /// symlink escape) the function falls through to the next precedence layer and
 /// ultimately to [`DEFAULT_BINARY`].
 pub fn resolve(cwd: &Path) -> Result<String, ResolveError> {
-    // Layer 1: explicit env-var override.
-    if let Ok(raw) = std::env::var("AMPLIHACK_AGENT_BINARY")
-        && let Some(valid) = validate_binary_name(&raw)
-    {
-        debug!(binary = %valid, source = "env", "agent binary resolved");
-        return Ok(valid);
-    }
+    resolve_with_source(cwd).map(|(name, _)| name)
+}
 
-    // Layer 2: persisted launcher_context.json (walk up ancestors).
-    if let Some(name) = lookup_persisted_launcher(cwd) {
-        debug!(binary = %name, source = "launcher_context", "agent binary resolved");
-        return Ok(name);
-    }
+/// Resolve the active agent binary and report which layer supplied it.
+///
+/// Prefer this over [`resolve`] anywhere the answer is about to be shown to a
+/// user or used to launch agents: an inferred result is worth surfacing, and
+/// callers cannot tell the difference from the name alone.
+///
+/// A fallback is logged at WARN, not DEBUG. Issue #1335: a run whose
+/// environment did not survive a `tmux new-session` silently resolved to the
+/// vendor default and executed every step under a different CLI, with a
+/// different tool-timeout policy, for hours. Nothing in the output said so.
+pub fn resolve_with_source(cwd: &Path) -> Result<(String, ResolutionSource), ResolveError> {
+    // Both lookups run unconditionally so the precedence rule lives in exactly
+    // one place, `resolve_layers`. Gating the second on the first being None
+    // would encode the ordering twice -- once here and once there -- and the
+    // two could then drift without any test noticing.
+    let from_env = std::env::var("AMPLIHACK_AGENT_BINARY")
+        .ok()
+        .and_then(|raw| validate_binary_name(&raw));
+    let from_persisted = lookup_persisted_launcher(cwd);
 
-    // Layer 3: built-in default.
-    debug!(
-        binary = DEFAULT_BINARY,
-        source = "default",
-        "agent binary resolved"
-    );
-    Ok(DEFAULT_BINARY.to_string())
+    let (name, source) = resolve_layers(from_env, from_persisted);
+
+    match source {
+        ResolutionSource::Env => {
+            debug!(binary = %name, source = source.label(), "agent binary resolved");
+        }
+        ResolutionSource::LauncherContext => warn!(
+            binary = %name,
+            source = source.label(),
+            "AMPLIHACK_AGENT_BINARY is unset; using the value recorded in \
+             launcher_context.json, which may have been written by a different \
+             session"
+        ),
+        ResolutionSource::Default => warn!(
+            binary = %name,
+            source = source.label(),
+            "AMPLIHACK_AGENT_BINARY is unset and no launcher_context.json was \
+             found; assuming the built-in default, which may not be the CLI you \
+             are running"
+        ),
+    }
+    Ok((name, source))
+}
+
+/// Pure precedence rule, separated from the three lookups that feed it.
+///
+/// Kept free of environment and filesystem access so the ordering can be
+/// tested directly, and so it is the single place the precedence is written
+/// down.
+pub fn resolve_layers(
+    from_env: Option<String>,
+    from_persisted: Option<String>,
+) -> (String, ResolutionSource) {
+    if let Some(name) = from_env {
+        return (name, ResolutionSource::Env);
+    }
+    if let Some(name) = from_persisted {
+        return (name, ResolutionSource::LauncherContext);
+    }
+    (DEFAULT_BINARY.to_string(), ResolutionSource::Default)
 }
 
 #[derive(Deserialize)]
@@ -120,12 +195,62 @@ struct LauncherContextSnippet {
     launcher: String,
 }
 
+/// Returns `true` when a launcher context found in `dir` cannot be trusted.
+///
+/// Two conditions disqualify a directory:
+///
+/// * **World-writable** (`o+w`, e.g. `/tmp` at `1777`) -- any local user can
+///   drop a `.claude/runtime/launcher_context.json` there, and the walk-up
+///   would then pick the agent binary for every working directory beneath it.
+/// * **Owned by another user** -- the context reflects someone else's session.
+///
+/// Group-writable is deliberately *not* disqualifying: a `umask 002` setup
+/// makes a user's own directories `0775`, and treating those as hostile would
+/// break ordinary installs.
+#[cfg(unix)]
+fn is_untrusted_context_dir(dir: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match fs::metadata(dir) {
+        Ok(meta) => meta.mode() & 0o002 != 0 || meta.uid() != nix_getuid(),
+        // Unreadable metadata is not a licence to trust the directory.
+        Err(_) => true,
+    }
+}
+
+#[cfg(unix)]
+fn nix_getuid() -> u32 {
+    // SAFETY: `getuid` is always safe; it takes no arguments, reads process
+    // credentials, and cannot fail.
+    unsafe { libc::getuid() }
+}
+
+#[cfg(not(unix))]
+fn is_untrusted_context_dir(_dir: &Path) -> bool {
+    false
+}
+
 /// Walk up from `start` looking for `.claude/runtime/launcher_context.json`.
-/// Stops at any `.git` directory boundary or after [`ANCESTOR_WALK_LIMIT`] hops.
+///
+/// Stops at any `.git` directory boundary, at the first world-writable or
+/// foreign-owned directory, or after [`ANCESTOR_WALK_LIMIT`] hops.
+///
+/// The shared-directory boundary matters (issue #1335). Workflow worktrees are
+/// created under the system temp directory, which has no `.git` anywhere above
+/// it, so the walk used to continue into `/tmp` and `/`. A stale
+/// `/tmp/.claude/runtime/launcher_context.json` -- days old, written by an
+/// unrelated session -- then decided which agent CLI every step ran under, for
+/// any working directory beneath `/tmp`.
 fn lookup_persisted_launcher(start: &Path) -> Option<String> {
     let anchor = start.canonicalize().ok()?;
     let mut current: PathBuf = anchor.clone();
     for _ in 0..ANCESTOR_WALK_LIMIT {
+        if is_untrusted_context_dir(&current) {
+            debug!(
+                dir = %current.display(),
+                "stopping launcher_context walk-up at an untrusted directory"
+            );
+            return None;
+        }
         // Stop at git boundary (but still inspect this dir on this iteration).
         let runtime_file = current
             .join(".claude")
@@ -241,5 +366,102 @@ mod tests {
     #[test]
     fn default_binary_is_copilot() {
         assert_eq!(DEFAULT_BINARY, "copilot");
+    }
+
+    // ---------------------------------------------------------------------
+    // Issue #1335: the caller must be able to tell a supplied answer from a
+    // guessed one. `resolve` alone cannot -- both return a bare String.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn source_labels_are_stable_and_distinct() {
+        let labels = [
+            ResolutionSource::Env.label(),
+            ResolutionSource::LauncherContext.label(),
+            ResolutionSource::Default.label(),
+        ];
+        let unique: std::collections::HashSet<&&str> = labels.iter().collect();
+        assert_eq!(labels.len(), unique.len());
+        assert_eq!(ResolutionSource::Env.label(), "env");
+    }
+
+    // ---------------------------------------------------------------------
+    // Issue #1335 -- precedence, tested through the pure `resolve_layers`
+    // seam so the rule is exercised without touching env or filesystem.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn env_wins_over_everything() {
+        let (name, source) = resolve_layers(Some("claude".into()), Some("codex".into()));
+        assert_eq!(name, "claude");
+        assert_eq!(source, ResolutionSource::Env);
+        assert!(!source.is_inferred());
+    }
+
+    #[test]
+    fn persisted_file_is_used_only_when_nothing_better_exists() {
+        let (name, source) = resolve_layers(None, Some("codex".into()));
+        assert_eq!(name, "codex");
+        assert_eq!(source, ResolutionSource::LauncherContext);
+        assert!(source.is_inferred());
+    }
+
+    #[test]
+    fn default_is_the_last_resort_and_is_marked_inferred() {
+        let (name, source) = resolve_layers(None, None);
+        assert_eq!(name, DEFAULT_BINARY);
+        assert_eq!(source, ResolutionSource::Default);
+        assert!(source.is_inferred());
+    }
+
+    // ---------------------------------------------------------------------
+    // Trust boundary on the persisted layer.
+    // ---------------------------------------------------------------------
+
+    fn write_launcher_context(dir: &Path, launcher: &str) {
+        let runtime = dir.join(".claude").join("runtime");
+        fs::create_dir_all(&runtime).unwrap();
+        fs::write(
+            runtime.join("launcher_context.json"),
+            format!(r#"{{"launcher":"{launcher}"}}"#),
+        )
+        .unwrap();
+    }
+
+    /// Workflow worktrees live under the system temp directory, which has no
+    /// `.git` above it, so the walk-up used to reach `/tmp` -- where a
+    /// five-day-old file written by an unrelated session was deciding the
+    /// agent binary for every run beneath it.
+    #[test]
+    #[cfg(unix)]
+    fn world_writable_ancestor_context_is_ignored() {
+        use std::os::unix::fs::PermissionsExt;
+        let shared = tempfile::tempdir().unwrap();
+        fs::set_permissions(shared.path(), fs::Permissions::from_mode(0o1777)).unwrap();
+        write_launcher_context(shared.path(), "copilot");
+        let work = shared.path().join("work");
+        fs::create_dir_all(&work).unwrap();
+        fs::set_permissions(&work, fs::Permissions::from_mode(0o700)).unwrap();
+
+        assert_eq!(
+            lookup_persisted_launcher(&work),
+            None,
+            "a context under a world-writable ancestor must not be consulted"
+        );
+    }
+
+    /// The boundary must not be so strict that ordinary installs break:
+    /// `umask 002` leaves a user's own directories group-writable at 0775.
+    #[test]
+    #[cfg(unix)]
+    fn group_writable_owned_ancestor_is_still_trusted() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o775)).unwrap();
+        write_launcher_context(root.path(), "codex");
+        let work = root.path().join("repo");
+        fs::create_dir_all(&work).unwrap();
+
+        assert_eq!(lookup_persisted_launcher(&work).as_deref(), Some("codex"));
     }
 }
