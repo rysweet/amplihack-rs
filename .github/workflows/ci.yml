@@ -126,6 +126,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83 # 1.97.0
         with:
           components: clippy, rustfmt
+      # sccache must be installed before the first cargo invocation in this
+      # job. RUSTC_WRAPPER is set job-wide at the top, so any cargo running
+      # before this step dies with "could not execute process `sccache`". The
+      # proof gate below was the first cargo call and was doing exactly that,
+      # turning Lint & Format red on main and on every PR branched from it.
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+
       - name: Proof gate — spawn-accounting decisions (issue #1329)
         run: |
           set -euo pipefail
@@ -147,8 +155,6 @@ jobs:
           echo "${TLA2TOOLS_SHA256}  /tmp/tla2tools.jar" | sha256sum -c -
           TLA2TOOLS_JAR=/tmp/tla2tools.jar ./scripts/check-spec.sh
 
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           cache-targets: false
