@@ -1178,7 +1178,7 @@ existing URL allowlist and SHA-256 verification — the variable cannot be
 used to redirect real downloads or bypass artifact verification. It exists
 exclusively to drive the prompt code path deterministically from the
 integration test suite at
-`crates/amplihack-cli/tests/issue_625_update_prompt_subprocess_safe.rs`.
+`bins/amplihack/tests/issue_625_update_prompt_subprocess_safe.rs`.
 
 ```sh
 # Force a "newer release available" outcome without a network call
