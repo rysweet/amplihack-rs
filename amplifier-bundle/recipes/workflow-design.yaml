@@ -83,10 +83,11 @@ steps:
     output: "architecture_design"
 
   - id: "step-05b-api-design"
+    condition: "clarified_requirements.requires_api_design != 'false'"
     agent: "amplihack:api-designer"
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
-      # Step 5b: API Design (if applicable)
+      # Step 5b: API Design
 
       **Architecture:** {{architecture_design}}
       **Requirements:** {{final_requirements}}
@@ -97,14 +98,14 @@ steps:
       - Error handling patterns
       - Versioning strategy
 
-      Skip if no API work is required.
     output: "api_design"
 
   - id: "step-05c-database-design"
+    condition: "clarified_requirements.requires_database_design != 'false'"
     agent: "amplihack:database"
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
-      # Step 5c: Database Design (if applicable)
+      # Step 5c: Database Design
 
       **Architecture:** {{architecture_design}}
       **Requirements:** {{final_requirements}}
@@ -115,7 +116,6 @@ steps:
       - Indexes and constraints
       - Data relationships
 
-      Skip if no database work is required.
     output: "database_design"
 
   - id: "step-05d-security-review"

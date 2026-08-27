@@ -291,9 +291,11 @@ steps:
     output: "implementation_noop_guard"
 
   - id: "step-08b-integration"
+    # The resume-checkpoint term governs resumption; the applicability term is
+    # what makes the prompt's "Skip if no external integrations" real (#1334).
     agent: "amplihack:integration"
     working_dir: "{{worktree_setup.worktree_path}}"
-    condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
+    condition: "clarified_requirements.requires_integration_work != 'false' and resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
     prompt: |
       # Step 8b: External Service Integration
 
