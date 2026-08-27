@@ -13,6 +13,18 @@
 # between the test gates and the push produces the same silent outcome. So this
 # checks the published result rather than trying to enumerate the causes.
 #
+# Why a missing helper must not fail the push
+# ------------------------------------------------------------------
+# This is called from workflow-publish.yaml, which runs inside the USER's
+# repository -- not amplihack's checkout. That repository does not carry
+# amplifier-bundle/tools/, so the lookup can legitimately come up empty, and
+# treating that as fatal would report a push that actually succeeded as a
+# failure. #1268 is exactly what that costs: a brittle gate failed a run whose
+# work had landed, and it abandoned two live PRs on the way out.
+#
+# So the caller warns when this script cannot be found, and only a real
+# mismatch -- this script running and disagreeing -- fails the step.
+#
 # Usage:
 #   verify_pushed_ref.sh <remote> <branch> <expected-sha>
 #
@@ -42,15 +54,21 @@ if [ -z "$remote" ] || [ -z "$branch" ] || [ -z "$expected" ]; then
   exit 2
 fi
 
-# A computed branch name that collapses to a bare placeholder means the name was
-# never computed at all. Publishing work to it is how #1269 lost its commits, so
-# refuse before anyone treats the push as successful.
+# A computed branch name that collapses to a bare placeholder usually means the
+# name was never computed -- that is how #1269 published a branch holding none
+# of its work. Worth saying out loud, but NOT worth refusing: `feature` is an
+# unusual branch name, not an illegal one, and a repository is entitled to have
+# one. Refusing it broke `step15_fast_forwards_ahead_branch_without_rebase`,
+# whose fixture legitimately uses that name.
+#
+# The name was a symptom. The fault was that the published commit was not the
+# tested one, and the SHA comparison below catches that whatever the branch is
+# called. That check is the gate; this is a hint.
 for bad in $PLACEHOLDER_BRANCHES; do
   if [ "$branch" = "$bad" ]; then
-    echo "ERROR: refusing to verify a push to placeholder branch '$branch' (issue #1269)." >&2
-    echo "  A branch name like this means a computed name was never substituted." >&2
-    echo "  The work belongs on a real, issue-derived branch." >&2
-    exit 1
+    echo "WARNING: pushing to branch '$branch', which looks like an unsubstituted" >&2
+    echo "  placeholder. If a computed branch name was intended, check it (issue #1269)." >&2
+    break
   fi
 done
 

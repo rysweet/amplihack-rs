@@ -296,11 +296,11 @@ steps:
         # shellcheck disable=SC2064
         trap "rm -f \"$push_stderr_file\"; _emit_commit_result" EXIT
         if git push 2>"$push_stderr_file"; then
-          # FIX (#1269): a push can succeed while origin holds a different commit
-          # than the one tested, if HEAD moved after the gates ran. Verify first.
-          V=$(for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -f "$c/amplifier-bundle/tools/verify_pushed_ref.sh" ] && { echo "$c/amplifier-bundle/tools/verify_pushed_ref.sh"; break; }; done)
+          # FIX (#1269): confirm the published commit is the tested one. A missing
+          # helper warns, never fails -- see verify_pushed_ref.sh and #1268.
+          V=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/verify_pushed_ref.sh" ] && { V="$c/amplifier-bundle/tools/verify_pushed_ref.sh"; break; }; done || true
           raw_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
-          [ -n "$V" ] && bash "$V" origin "$(git rev-parse --abbrev-ref HEAD)" "$raw_sha" || { reason="push-verify-failed-or-unavailable: helper=${V:-none}"; exit 1; }
+          if [ -n "$V" ]; then bash "$V" origin "$(git rev-parse --abbrev-ref HEAD)" "$raw_sha" || { reason="push-verify-failed"; exit 1; }; else echo "WARNING: verify_pushed_ref.sh not reachable; published commit unverified (#1269)" >&2; fi
           if printf '%s' "$raw_sha" | grep -qE '^[0-9a-f]{40}$'; then sha="$raw_sha"; fi
           pushed="true"; reason="pushed"  # step-16 gate: only after verification
         else

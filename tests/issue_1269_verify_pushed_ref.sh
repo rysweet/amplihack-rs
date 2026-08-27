@@ -82,24 +82,40 @@ else
   fail "missing ref: expected exit 1, got $rc: ${out:0:160}"
 fi
 
-# --- 4. placeholder branch names are refused --------------------------------
-# 'feature' is the literal name the incident checked out.
-for bad in feature branch HEAD; do
-  out=$("$SCRIPT" origin "$bad" "$WORK_SHA" 2>&1); rc=$?
-  if [ $rc -eq 1 ] && grep -q 'placeholder branch' <<<"$out"; then
-    pass "placeholder branch '$bad' is refused"
-  else
-    fail "placeholder '$bad': expected exit 1, got $rc: ${out:0:160}"
-  fi
-done
+# --- 4. placeholder branch names WARN but do not block ----------------------
+# 'feature' is the literal name the incident checked out, so it is worth
+# flagging. It is not worth refusing: an unusual branch name is not an illegal
+# one, and a repository may legitimately have a branch called `feature` --
+# `step15_fast_forwards_ahead_branch_without_rebase` has a fixture that does.
+# The fault in #1269 was the published commit, not the name, and that is what
+# the SHA comparison gates on.
+git push -q -f origin work:refs/heads/feature
+out=$("$SCRIPT" origin feature "$WORK_SHA" 2>&1); rc=$?
+if [ $rc -eq 0 ]; then
+  pass "a branch named 'feature' still verifies when the commit is right"
+else
+  fail "'feature' was blocked despite a correct commit, exit $rc: ${out:0:160}"
+fi
+grep -qi 'placeholder' <<<"$out" \
+  && pass "'feature' is still flagged as a likely unsubstituted placeholder" \
+  || fail "no warning emitted for a placeholder-looking branch name"
 
-# A real issue-derived name must NOT be caught by that rule.
+# And the real check still bites on that same branch when the commit is wrong.
+git push -q -f origin "$BASE_SHA:refs/heads/feature"
+out=$("$SCRIPT" origin feature "$WORK_SHA" 2>&1); rc=$?
+if [ $rc -eq 1 ] && grep -q 'published the wrong commit' <<<"$out"; then
+  pass "a wrong commit on 'feature' is still caught (the name never gates)"
+else
+  fail "wrong commit on 'feature' not caught: exit $rc: ${out:0:160}"
+fi
+
+# A real issue-derived name verifies and is not flagged.
 git push -q -f origin work:refs/heads/fix/1269-real-name
 out=$("$SCRIPT" origin fix/1269-real-name "$WORK_SHA" 2>&1); rc=$?
-if [ $rc -eq 0 ]; then
-  pass "a real issue-derived branch name is not mistaken for a placeholder"
+if [ $rc -eq 0 ] && ! grep -qi 'placeholder' <<<"$out"; then
+  pass "a real issue-derived branch name verifies with no warning"
 else
-  fail "real branch name rejected, exit $rc: ${out:0:160}"
+  fail "real branch name mishandled, exit $rc: ${out:0:160}"
 fi
 
 # --- 5. usage errors are distinguishable from verification failures ---------
