@@ -21,6 +21,63 @@ pub(super) struct SessionFile {
     pub(super) timestamp: u64,
 }
 
+/// The five fields nesting detection actually consults.
+///
+/// Issue #1272: decoding into this struct instead of a full
+/// [`serde_json::Value`] lets serde skip the record's `argv` array outright.
+/// `argv` embeds the launcher's entire `-p` prompt and dominates the record
+/// — real logs average ~5.7 KB per line — so skipping it roughly halves the
+/// launch-path parse. A line this shape fails to decode falls back to the
+/// original `Value` path, so no record is interpreted differently than
+/// before.
+#[derive(Debug, Default, serde::Deserialize)]
+struct SessionLogEntry {
+    #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    pid: Option<u64>,
+    #[serde(default)]
+    launch_dir: Option<String>,
+    #[serde(default)]
+    parent_session_id: Option<String>,
+}
+
+impl SessionLogEntry {
+    /// Recover the same five fields from a record the typed decode rejected
+    /// (an unexpected type on some field, a legacy shape, ...).
+    fn from_value(entry: &Value) -> Self {
+        Self {
+            session_id: entry
+                .get("session_id")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            status: entry
+                .get("status")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            pid: entry.get("pid").and_then(Value::as_u64),
+            launch_dir: entry
+                .get("launch_dir")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            parent_session_id: entry
+                .get("parent_session_id")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        }
+    }
+
+    fn parse(line: &str) -> Option<Self> {
+        if let Ok(entry) = serde_json::from_str::<Self>(line) {
+            return Some(entry);
+        }
+        let entry = serde_json::from_str::<Value>(line).ok()?;
+        Some(Self::from_value(&entry))
+    }
+}
+
 pub(super) fn detect_from_sessions_log(current_dir: &Path) -> Option<NestingResult> {
     let log_path = ProjectDirs::from_root(current_dir).sessions_log_file();
     let content = std::fs::read_to_string(log_path).ok()?;
@@ -29,20 +86,16 @@ pub(super) fn detect_from_sessions_log(current_dir: &Path) -> Option<NestingResu
     }
 
     let resolved_current_dir = resolve_path(current_dir);
-    let mut sessions: BTreeMap<String, Value> = BTreeMap::new();
+    let mut sessions: BTreeMap<String, SessionLogEntry> = BTreeMap::new();
     for line in content.lines().filter(|line| !line.trim().is_empty()) {
-        let Ok(entry) = serde_json::from_str::<Value>(line) else {
+        let Some(entry) = SessionLogEntry::parse(line) else {
             continue;
         };
-        let Some(session_id) = entry
-            .get("session_id")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-        else {
+        let Some(session_id) = entry.session_id.clone() else {
             continue;
         };
 
-        match entry.get("status").and_then(Value::as_str) {
+        match entry.status.as_deref() {
             Some("completed" | "crashed") => {
                 sessions.remove(&session_id);
             }
@@ -54,24 +107,20 @@ pub(super) fn detect_from_sessions_log(current_dir: &Path) -> Option<NestingResu
     }
 
     for entry in sessions.values().rev() {
-        let Some(pid) = entry.get("pid").and_then(Value::as_u64) else {
+        let Some(pid) = entry.pid else {
             continue;
         };
         if !is_process_alive(pid as u32) {
             continue;
         }
-        let Some(launch_dir) = entry.get("launch_dir").and_then(Value::as_str) else {
+        let Some(launch_dir) = entry.launch_dir.as_deref() else {
             continue;
         };
         if resolve_path(Path::new(launch_dir)) != resolved_current_dir {
             continue;
         }
-        let session_id = entry.get("session_id").and_then(Value::as_str)?.to_string();
-        let depth = entry
-            .get("parent_session_id")
-            .and_then(Value::as_str)
-            .map(|_| 2)
-            .unwrap_or(1);
+        let session_id = entry.session_id.clone()?;
+        let depth = entry.parent_session_id.as_ref().map(|_| 2).unwrap_or(1);
         return Some(NestingResult::Nested { session_id, depth });
     }
 
@@ -93,7 +142,7 @@ pub(super) fn session_file_path() -> Option<PathBuf> {
 
 /// Check if a process with the given PID is alive.
 #[cfg(unix)]
-pub(super) fn is_process_alive(pid: u32) -> bool {
+pub(crate) fn is_process_alive(pid: u32) -> bool {
     // SAFETY: kill(pid, 0) is a standard POSIX signal-safe way to check if
     // a process exists without actually sending a signal.
     if pid > i32::MAX as u32 {
@@ -112,7 +161,7 @@ pub(super) fn is_process_alive(pid: u32) -> bool {
 /// and check the result with `GetExitCodeProcess`.  This is left as a future
 /// improvement since amplihack does not yet actively target Windows.
 #[cfg(not(unix))]
-pub(super) fn is_process_alive(_pid: u32) -> bool {
+pub(crate) fn is_process_alive(_pid: u32) -> bool {
     // On non-Unix, assume alive (conservative)
     true
 }

@@ -200,7 +200,45 @@ fn require_recipe_file(recipes: &Path, recipe: &str) -> Result<PathBuf, BundleCo
     Ok(path)
 }
 
+/// Test-only instrumentation for issue #1271.
+///
+/// Every bundle input file the validator opens bumps this counter, so tests
+/// can assert on the *cost* of a code path — "no recipe file was read" — and
+/// not merely on the verdict, which was already correct before the cache
+/// existed.
+/// The counter is thread-local: the test harness gives every `#[test]` its
+/// own thread, so a count is never polluted by tests running in parallel.
+#[cfg(test)]
+pub(crate) mod read_counter {
+    use std::cell::Cell;
+
+    thread_local! {
+        static BUNDLE_FILE_READS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn record() {
+        BUNDLE_FILE_READS.with(|c| c.set(c.get() + 1));
+    }
+
+    pub(crate) fn get() -> usize {
+        BUNDLE_FILE_READS.with(Cell::get)
+    }
+
+    /// Number of bundle files read while running `body`.
+    pub(crate) fn count_reads<T>(body: impl FnOnce() -> T) -> (T, usize) {
+        let before = get();
+        let value = body();
+        (value, get() - before)
+    }
+}
+
+fn record_bundle_file_read() {
+    #[cfg(test)]
+    read_counter::record();
+}
+
 fn read_file(path: &Path) -> Result<String, BundleCompatibilityError> {
+    record_bundle_file_read();
     fs::read_to_string(path).map_err(|source| BundleCompatibilityError::ReadFile {
         path: path.to_path_buf(),
         source,
@@ -339,6 +377,7 @@ fn validate_recipe_manifest(recipes: &Path) -> Result<(), BundleCompatibilityErr
     if !path.is_file() {
         return Err(BundleCompatibilityError::MissingManifest(path));
     }
+    record_bundle_file_read();
     let raw =
         fs::read_to_string(&path).map_err(|source| BundleCompatibilityError::ReadManifest {
             path: path.clone(),

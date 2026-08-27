@@ -15,6 +15,8 @@ use helpers::{
     SessionFile, detect_from_sessions_log, is_process_alive, is_stale, session_file_path,
 };
 
+pub(crate) use helpers::is_process_alive as process_is_alive;
+
 /// Result of nesting detection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NestingResult {
@@ -285,6 +287,87 @@ mod tests {
             &sessions_log,
             format!(
                 "{{\"pid\":{},\"session_id\":\"session-log-123\",\"launch_dir\":\"{}\",\"argv\":[\"amplihack\",\"claude\"],\"start_time\":0.0,\"is_auto_mode\":false,\"is_nested\":false,\"parent_session_id\":null,\"status\":\"active\",\"end_time\":null}}\n{{\"session_id\":\"session-log-123\",\"status\":\"completed\",\"end_time\":1.0}}\n",
+                std::process::id(),
+                project_dir.display()
+            ),
+        )
+        .unwrap();
+
+        let original_home = set_home(dir.path());
+        let original_cwd = set_cwd(&project_dir).unwrap();
+        unsafe {
+            env::remove_var("AMPLIHACK_SESSION_ID");
+            env::remove_var("AMPLIHACK_DEPTH");
+        }
+
+        let result = NestingDetector::detect();
+
+        restore_cwd(&original_cwd).unwrap();
+        restore_home(original_home);
+
+        assert_eq!(result, NestingResult::NotNested);
+    }
+
+    /// Issue #1272: a compacted log begins with a `{"status":"compacted"}`
+    /// marker that carries no `session_id`. The reader must step over it and
+    /// still find the live session underneath.
+    #[test]
+    fn compaction_marker_does_not_disturb_nesting_detection() {
+        let _home_guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = dir.path().join("project");
+        fs::create_dir_all(project_dir.join(".claude/runtime")).unwrap();
+        let sessions_log = project_dir.join(".claude/runtime/sessions.jsonl");
+        fs::write(
+            &sessions_log,
+            format!(
+                "{{\"status\":\"compacted\",\"compacted_at\":1.0,\"dropped_lines\":42,\"dropped_bytes\":9001}}\n{{\"pid\":{},\"session_id\":\"session-log-456\",\"launch_dir\":\"{}\",\"argv\":[\"amplihack\",\"claude\"],\"start_time\":0.0,\"is_auto_mode\":false,\"is_nested\":false,\"parent_session_id\":null,\"status\":\"active\",\"end_time\":null}}\n",
+                std::process::id(),
+                project_dir.display()
+            ),
+        )
+        .unwrap();
+
+        let original_home = set_home(dir.path());
+        let original_cwd = set_cwd(&project_dir).unwrap();
+        unsafe {
+            env::remove_var("AMPLIHACK_SESSION_ID");
+            env::remove_var("AMPLIHACK_DEPTH");
+        }
+
+        let result = NestingDetector::detect();
+
+        restore_cwd(&original_cwd).unwrap();
+        restore_home(original_home);
+
+        assert!(matches!(
+            result,
+            NestingResult::Nested {
+                ref session_id,
+                depth: 1
+            } if session_id == "session-log-456"
+        ));
+    }
+
+    /// Issue #1272: the fast typed decode must not change how an oddly-typed
+    /// record is treated. A record whose `pid` is a string decoded fine as a
+    /// `serde_json::Value` before and was then skipped for having no numeric
+    /// PID; it must still be skipped, not mistaken for a live parent.
+    #[test]
+    fn record_with_unexpected_field_types_is_still_ignored() {
+        let _home_guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = dir.path().join("project");
+        fs::create_dir_all(project_dir.join(".claude/runtime")).unwrap();
+        let sessions_log = project_dir.join(".claude/runtime/sessions.jsonl");
+        fs::write(
+            &sessions_log,
+            format!(
+                "{{\"pid\":\"{}\",\"session_id\":\"session-string-pid\",\"launch_dir\":\"{}\",\"status\":\"active\"}}\n",
                 std::process::id(),
                 project_dir.display()
             ),

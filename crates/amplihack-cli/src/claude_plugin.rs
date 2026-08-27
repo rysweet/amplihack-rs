@@ -25,7 +25,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -374,12 +374,99 @@ fn known_link_representation_matches(
     Ok(false)
 }
 
+/// Bring `~/.claude/skills/amplihack` up to date.
+///
+/// `validate_plugin_destination` has already established that whatever sits
+/// there is amplihack's own. When a hash-verified wrapper is present it is
+/// reconciled *in place*: each piece is compared before it is touched, and any
+/// replacement is published with a `rename` over the live path. A launch that
+/// changes nothing therefore performs no writes and no unlinks, and no instant
+/// of a launch leaves an asset tree missing (issue #1273). That is also what
+/// makes concurrent launches from different directories safe — they either
+/// both find the wrapper current and do nothing, or they race two renames that
+/// publish the same content.
+///
+/// A first install, and the one-time adoption of a pre-ownership wrapper,
+/// still publish through a sibling transaction directory and a single rename,
+/// so a failure part-way through leaves nothing live.
 fn publish_plugin_wrapper(staged: &Path, plugin_dir: &Path, ownership_path: &Path) -> Result<()> {
     let skills_root = plugin_dir
         .parent()
         .context("Claude plugin directory has no skills parent")?;
     fs::create_dir_all(skills_root)
         .with_context(|| format!("failed to create {}", skills_root.display()))?;
+    let ownership = read_skill_ownership_manifest(ownership_path)?;
+    if ownership.plugin.is_some() && is_real_directory(plugin_dir)? {
+        return reconcile_plugin_wrapper(
+            staged,
+            plugin_dir,
+            ownership_path,
+            skills_root,
+            ownership,
+        );
+    }
+    install_plugin_wrapper(staged, plugin_dir, ownership_path, skills_root)
+}
+
+/// Refresh an existing amplihack-owned wrapper without ever taking it apart.
+///
+/// The ownership digest proved the wrapper is byte-for-byte what amplihack
+/// last published, so every entry under it is ours to compare and, only where
+/// it differs, to replace.
+fn reconcile_plugin_wrapper(
+    staged: &Path,
+    plugin_dir: &Path,
+    ownership_path: &Path,
+    skills_root: &Path,
+    mut ownership: SkillOwnershipManifest,
+) -> Result<()> {
+    let mut scratch = Scratch::new(skills_root);
+    let mut changed = write_plugin_manifest(plugin_dir, &mut scratch)?;
+    changed |= mirror_assets(staged, plugin_dir, &mut scratch)?;
+    changed |= prune_retired_assets(plugin_dir)?;
+    if !changed {
+        return Ok(());
+    }
+    ownership.plugin = Some(OwnedDestination {
+        name: PLUGIN_NAME.to_owned(),
+        content_sha256: hash_directory_tree(plugin_dir)?,
+    });
+    write_skill_ownership_manifest(ownership_path, &ownership)
+}
+
+/// Drop wrapper entries amplihack no longer publishes.
+///
+/// Reached only for a hash-verified wrapper, so anything outside the current
+/// asset set is a leftover from an older release — `skills` used to be
+/// mirrored here — rather than something a user put there.
+fn prune_retired_assets(plugin_dir: &Path) -> Result<bool> {
+    let mut changed = false;
+    for entry in fs::read_dir(plugin_dir)
+        .with_context(|| format!("failed to read {}", plugin_dir.display()))?
+    {
+        let entry = entry?;
+        let name = entry.file_name();
+        let retired = name
+            .to_str()
+            .is_none_or(|name| name != ".claude-plugin" && !MIRRORED_ASSETS.contains(&name));
+        if retired {
+            changed |= remove_mirror(&entry.path())?;
+        }
+    }
+    Ok(changed)
+}
+
+/// Publish a wrapper where none is currently live.
+///
+/// The whole tree is built inside a sibling transaction directory and moved
+/// into place with one rename, so an interrupted install leaves either the
+/// previous state or the new one — never a half-built wrapper.
+fn install_plugin_wrapper(
+    staged: &Path,
+    plugin_dir: &Path,
+    ownership_path: &Path,
+    skills_root: &Path,
+) -> Result<()> {
     let transaction = tempfile::Builder::new()
         .prefix(".amplihack-plugin-transaction-")
         .tempdir_in(skills_root)
@@ -387,8 +474,11 @@ fn publish_plugin_wrapper(staged: &Path, plugin_dir: &Path, ownership_path: &Pat
     let staged_plugin = transaction.path().join("staged").join(PLUGIN_NAME);
     fs::create_dir_all(&staged_plugin)
         .with_context(|| format!("failed to create {}", staged_plugin.display()))?;
-    write_plugin_manifest(&staged_plugin)?;
-    mirror_assets(staged, &staged_plugin)?;
+    {
+        let mut scratch = Scratch::new(transaction.path());
+        write_plugin_manifest(&staged_plugin, &mut scratch)?;
+        mirror_assets(staged, &staged_plugin, &mut scratch)?;
+    }
     let plugin_ownership = OwnedDestination {
         name: PLUGIN_NAME.to_owned(),
         content_sha256: hash_directory_tree(&staged_plugin)?,
@@ -575,17 +665,42 @@ fn skill_ownership_manifest_path(staged: &Path) -> PathBuf {
     staged.join("install").join(SKILL_OWNERSHIP_MANIFEST)
 }
 
-/// Write `.claude-plugin/plugin.json`. Rewritten every launch so the version
-/// stays in sync with the installed amplihack binary.
+/// Bring `.claude-plugin/plugin.json` in line with the running binary, and
+/// return whether that required a write.
+///
+/// The manifest carries the installed amplihack version, so it genuinely has
+/// to be refreshed after an upgrade — but it was previously rewritten on every
+/// launch regardless, which both churned the file and made a full, destructive
+/// republication of the wrapper look necessary. Compare the bytes first, and
+/// when they do differ publish through a scratch file plus `rename` so a
+/// concurrent reader never sees a truncated or absent manifest (issue #1273).
 ///
 /// Field shapes here are load-bearing: `claude plugin validate` rejects a
 /// bare-string `author`. Skills are intentionally omitted because direct
 /// children of `~/.claude/skills` are the sole discovery path.
-fn write_plugin_manifest(plugin_dir: &Path) -> Result<()> {
+fn write_plugin_manifest(plugin_dir: &Path, scratch: &mut Scratch) -> Result<bool> {
     let manifest_dir = plugin_dir.join(".claude-plugin");
-    fs::create_dir_all(&manifest_dir)
-        .with_context(|| format!("failed to create {}", manifest_dir.display()))?;
+    if !manifest_dir.is_dir() {
+        fs::create_dir_all(&manifest_dir)
+            .with_context(|| format!("failed to create {}", manifest_dir.display()))?;
+    }
     let manifest_path = manifest_dir.join("plugin.json");
+    let desired = plugin_manifest_bytes()?;
+    if file_has_contents(&manifest_path, &desired)? {
+        return Ok(false);
+    }
+    let staged_manifest = scratch.path("plugin.json")?;
+    fs::write(&staged_manifest, &desired)
+        .with_context(|| format!("failed to write {}", staged_manifest.display()))?;
+    if let Err(error) = fs::rename(&staged_manifest, &manifest_path) {
+        let _ = fs::remove_file(&staged_manifest);
+        return Err(error)
+            .with_context(|| format!("failed to publish {}", manifest_path.display()));
+    }
+    Ok(true)
+}
+
+fn plugin_manifest_bytes() -> Result<Vec<u8>> {
     let manifest = json!({
         "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
         "name": PLUGIN_NAME,
@@ -595,12 +710,68 @@ fn write_plugin_manifest(plugin_dir: &Path) -> Result<()> {
             "name": "Microsoft",
         },
     });
-    fs::write(
-        &manifest_path,
-        serde_json::to_string_pretty(&manifest)? + "\n",
-    )
-    .with_context(|| format!("failed to write {}", manifest_path.display()))?;
-    Ok(())
+    Ok((serde_json::to_string_pretty(&manifest)? + "\n").into_bytes())
+}
+
+/// Whether `path` is a regular file that already holds exactly `desired`.
+///
+/// A symlink or directory answers `false` so the caller falls through to its
+/// normal publishing path, which fails loudly rather than following the link.
+fn file_has_contents(path: &Path, desired: &[u8]) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => return Ok(false),
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to inspect {}", path.display()));
+        }
+    }
+    Ok(fs::read(path).with_context(|| format!("failed to read {}", path.display()))? == desired)
+}
+
+/// A directory that exists and is not a symlink.
+fn is_real_directory(path: &Path) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(metadata.is_dir()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error).with_context(|| format!("failed to inspect {}", path.display())),
+    }
+}
+
+/// Lazily created scratch space beside the destination being published.
+///
+/// Nothing is created until a replacement is actually needed, so an up-to-date
+/// launch touches the filesystem only to read. It deliberately lives *outside*
+/// the plugin wrapper: a crashed launch can then never strand a half-built
+/// entry inside the wrapper and invalidate its ownership digest.
+struct Scratch {
+    root: PathBuf,
+    directory: Option<tempfile::TempDir>,
+}
+
+impl Scratch {
+    fn new(root: &Path) -> Self {
+        Self {
+            root: root.to_path_buf(),
+            directory: None,
+        }
+    }
+
+    /// A fresh, unused path in the scratch directory, creating it on demand.
+    fn path(&mut self, name: &str) -> Result<PathBuf> {
+        let directory = match &self.directory {
+            Some(directory) => directory,
+            None => self.directory.insert(
+                tempfile::Builder::new()
+                    .prefix(".amplihack-plugin-staging-")
+                    .tempdir_in(&self.root)
+                    .context("failed to create sibling plugin staging directory")?,
+            ),
+        };
+        Ok(directory
+            .path()
+            .join(format!("{name}.{}", uuid::Uuid::new_v4())))
+    }
 }
 
 /// Mirror each asset directory from the staged framework into the plugin
@@ -611,26 +782,167 @@ fn write_plugin_manifest(plugin_dir: &Path) -> Result<()> {
 /// them under `agents/amplihack/<category>/...`. We mirror the `amplihack`
 /// subdirectory directly so `~/.claude/skills/amplihack/agents/<...>`
 /// matches Claude Code's discovery pattern.
-fn mirror_assets(staged: &Path, plugin_dir: &Path) -> Result<()> {
+///
+/// Idempotent and non-destructive, and it has to be: this runs on every
+/// launch. A mirror that already points where it should is left completely
+/// alone, and one that does need replacing is built beside the target and
+/// `rename`d over it. Nothing is ever unlinked before its replacement exists,
+/// so neither a crash nor a second launch racing this one from another
+/// directory can observe a missing asset tree (issue #1273).
+///
+/// Returns whether any mirror was created, replaced, or removed.
+fn mirror_assets(staged: &Path, plugin_dir: &Path, scratch: &mut Scratch) -> Result<bool> {
+    let mut changed = false;
     for asset in MIRRORED_ASSETS {
         let source = resolve_asset_source(staged, asset);
         let target = plugin_dir.join(asset);
         if !source.is_dir() {
+            // The staged framework no longer ships this asset, so a mirror
+            // left by an older amplihack should stop being live.
+            changed |= remove_mirror(&target)?;
             continue;
         }
-
-        // Remove any existing target (stale symlink, stale copy, or a
-        // leftover from an older amplihack version). remove_dir_all also
-        // removes symlinks in both stdlib implementations.
-        if target.exists() || target.symlink_metadata().is_ok() {
-            let _ = fs::remove_file(&target);
-            let _ = fs::remove_dir_all(&target);
-        }
-
-        if try_symlink(&source, &target).is_ok() {
+        if mirror_is_current(&source, &target)? {
             continue;
         }
-        copy_dir_recursive(&source, &target)?;
+        replace_mirror(&source, &target, scratch)?;
+        changed = true;
+    }
+    Ok(changed)
+}
+
+/// Whether `target` already mirrors `source` exactly.
+fn mirror_is_current(source: &Path, target: &Path) -> Result<bool> {
+    let metadata = match fs::symlink_metadata(target) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to inspect {}", target.display()));
+        }
+    };
+    if metadata.file_type().is_symlink() {
+        return Ok(fs::read_link(target)
+            .with_context(|| format!("failed to read symlink {}", target.display()))?
+            == source);
+    }
+    if !metadata.is_dir() {
+        return Ok(false);
+    }
+    // Copy fallback (a platform where symlinking failed): the mirror is
+    // current when it still holds exactly what a fresh copy would produce.
+    // Comparing digests costs a read of both trees, which is cheaper than the
+    // rewrite it avoids — and, unlike the rewrite, it destroys nothing.
+    Ok(hash_directory_tree(target)? == hash_copy_plan(source)?)
+}
+
+/// Put a fresh mirror of `source` at `target` without ever leaving that path
+/// empty: build the replacement under a scratch name, then rename it over.
+fn replace_mirror(source: &Path, target: &Path, scratch: &mut Scratch) -> Result<()> {
+    let name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .with_context(|| format!("mirror target has an invalid name: {}", target.display()))?;
+    let replacement = scratch.path(name)?;
+    let built = match try_symlink(source, &replacement) {
+        Ok(()) => Ok(()),
+        Err(_) => copy_dir_recursive(source, &replacement),
+    };
+    let result = built.and_then(|()| rename_over(&replacement, target, scratch));
+    if result.is_err() {
+        let _ = fs::remove_file(&replacement);
+        let _ = fs::remove_dir_all(&replacement);
+    }
+    result
+}
+
+/// Move `replacement` onto `target`.
+///
+/// `rename(2)` swaps a symlink over a symlink or a file in one atomic step,
+/// which is every steady-state case: the mirror at `target` is a symlink, and
+/// so is its replacement. POSIX refuses the two mixed cases — a symlink over a
+/// directory, or a copy-fallback directory over a symlink — so there the old
+/// entry is moved aside first. That still happens only *after* the replacement
+/// is fully built, so the gap is two adjacent renames rather than the length of
+/// a re-copy, and a failed publish puts the previous tree straight back.
+fn rename_over(replacement: &Path, target: &Path, scratch: &mut Scratch) -> Result<()> {
+    let publish_error = match fs::rename(replacement, target) {
+        Ok(()) => return Ok(()),
+        Err(error) => error,
+    };
+    // Nothing is in the way, so the rename failed for its own reasons.
+    if fs::symlink_metadata(target).is_err() {
+        return Err(publish_error)
+            .with_context(|| format!("failed to publish mirror {}", target.display()));
+    }
+    let name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .with_context(|| format!("mirror target has an invalid name: {}", target.display()))?;
+    let displaced = scratch.path(&format!("{name}.replaced"))?;
+    fs::rename(target, &displaced)
+        .with_context(|| format!("failed to move aside {}", target.display()))?;
+    if let Err(error) = fs::rename(replacement, target) {
+        let _ = fs::rename(&displaced, target);
+        return Err(error)
+            .with_context(|| format!("failed to publish mirror {}", target.display()));
+    }
+    let _ = remove_mirror(&displaced);
+    Ok(())
+}
+
+/// Remove a mirror amplihack no longer publishes, reporting whether anything
+/// was there. Only ever called for paths the ownership digest has vouched for.
+fn remove_mirror(target: &Path) -> Result<bool> {
+    match fs::symlink_metadata(target) {
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to inspect {}", target.display()));
+        }
+        Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(target)
+            .with_context(|| format!("failed to remove stale mirror {}", target.display()))?,
+        Ok(_) => fs::remove_file(target)
+            .with_context(|| format!("failed to remove stale mirror {}", target.display()))?,
+    }
+    Ok(true)
+}
+
+/// Digest of the tree `copy_dir_recursive` would produce from `source`.
+///
+/// Deliberately mirrors `hash_directory_tree` over a finished copy: the same
+/// directories and regular files in the same order, with symlinks skipped
+/// exactly as the copy skips them. That lets a copy-fallback mirror be checked
+/// for staleness without deleting it to find out.
+fn hash_copy_plan(source: &Path) -> Result<String> {
+    let mut entries = Vec::new();
+    collect_copy_plan_entries(source, source, &mut entries)?;
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    hash_tree_entries(source, entries)
+}
+
+fn collect_copy_plan_entries(
+    root: &Path,
+    current: &Path,
+    entries: &mut Vec<(PathBuf, TreeEntry)>,
+) -> Result<()> {
+    for entry in
+        fs::read_dir(current).with_context(|| format!("failed to read {}", current.display()))?
+    {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        let relative = path
+            .strip_prefix(root)
+            .context("staged asset entry escaped its root")?
+            .to_path_buf();
+        if file_type.is_dir() {
+            entries.push((relative, TreeEntry::Directory));
+            collect_copy_plan_entries(root, &path, entries)?;
+        } else if file_type.is_file() {
+            entries.push((relative, TreeEntry::File));
+        }
     }
     Ok(())
 }
@@ -720,9 +1032,36 @@ fn sync_canonical_skills(
     }
     materialize_known_skill_links(source_root, &staging_root, &canonical_root)?;
 
+    // A skill whose freshly staged tree is identical to the installed one
+    // needs no republication at all, and republishing it anyway is not free:
+    // every swap below moves the live directory aside before moving the new
+    // one in, so an unconditional refresh opens one window per skill, on every
+    // launch, in which that skill is simply absent (issue #1273).
+    //
+    // `validate_skill_destination` has already proved that an owned
+    // destination still hashes to its recorded digest, so comparing against
+    // the record is the same comparison as against the destination — without a
+    // second walk of it.
+    let mut digests = BTreeMap::new();
+    let mut unchanged = BTreeSet::new();
+    for (name, staging_dir) in &staged {
+        let digest = hash_directory_tree(staging_dir)?;
+        let matches_record = owned
+            .skills
+            .iter()
+            .any(|entry| entry.name == *name && entry.content_sha256 == digest);
+        if matches_record && is_real_directory(&destination_root.join(name))? {
+            unchanged.insert(name.clone());
+        }
+        digests.insert(name.clone(), digest);
+    }
+
     let mut applied = Vec::new();
     let transaction_result = (|| -> Result<()> {
         for (name, staging_dir) in &staged {
+            if unchanged.contains(name) {
+                continue;
+            }
             let destination = destination_root.join(name);
             let backup = move_destination_to_backup(&destination, &backup_root, name)?;
             applied.push(AppliedSkill {
@@ -751,13 +1090,18 @@ fn sync_canonical_skills(
             }
         }
 
+        // Each published destination is now exactly its staged tree, and each
+        // skipped one already was, so the staged digests describe both without
+        // re-walking the destinations.
         let skills = canonical_names
             .iter()
             .map(|name| {
-                let destination = destination_root.join(name);
                 Ok(OwnedDestination {
                     name: name.clone(),
-                    content_sha256: hash_directory_tree(&destination)?,
+                    content_sha256: digests
+                        .get(name)
+                        .with_context(|| format!("missing staged digest for skill '{name}'"))?
+                        .clone(),
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -933,7 +1277,13 @@ fn read_skill_ownership_manifest(path: &Path) -> Result<SkillOwnershipManifest> 
     Ok(manifest)
 }
 
+/// Publish the ownership record, skipping the write entirely when the record
+/// on disk already says exactly this (issue #1273).
 fn write_skill_ownership_manifest(path: &Path, manifest: &SkillOwnershipManifest) -> Result<()> {
+    let serialized = serde_json::to_string_pretty(&manifest)? + "\n";
+    if file_has_contents(path, serialized.as_bytes())? {
+        return Ok(());
+    }
     let parent = path
         .parent()
         .context("skill ownership manifest has no parent")?;
@@ -942,7 +1292,7 @@ fn write_skill_ownership_manifest(path: &Path, manifest: &SkillOwnershipManifest
         ".{SKILL_OWNERSHIP_MANIFEST}.{}",
         uuid::Uuid::new_v4()
     ));
-    fs::write(&temporary, serde_json::to_string_pretty(&manifest)? + "\n")
+    fs::write(&temporary, &serialized)
         .with_context(|| format!("failed to write {}", temporary.display()))?;
 
     let backup = parent.join(format!(
@@ -2035,6 +2385,421 @@ mod tests {
             fs::read_to_string(external.join("SKILL.md")).unwrap(),
             "external user content\n"
         );
+    }
+
+    /// A stable fingerprint of one filesystem entry.
+    ///
+    /// Inode plus ctime catches every way the launch path could touch a path:
+    /// a rewrite in place moves mtime/ctime, a temp-file-and-rename moves the
+    /// inode, and an unlink-and-recreate moves both. A directory's own ctime
+    /// moves when any child is added or removed, so unlinks show up too.
+    #[cfg(unix)]
+    fn observe_entry(path: &Path) -> String {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = fs::symlink_metadata(path)
+            .unwrap_or_else(|error| panic!("failed to inspect {}: {error}", path.display()));
+        format!(
+            "ino={} ctime={}.{} mtime={}.{} size={} nlink={}",
+            metadata.ino(),
+            metadata.ctime(),
+            metadata.ctime_nsec(),
+            metadata.mtime(),
+            metadata.mtime_nsec(),
+            metadata.size(),
+            metadata.nlink(),
+        )
+    }
+
+    #[cfg(unix)]
+    fn observe_tree(root: &Path) -> Vec<String> {
+        let mut observed = vec![format!(". {}", observe_entry(root))];
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(directory) = pending.pop() {
+            for entry in fs::read_dir(&directory).unwrap() {
+                let path = entry.unwrap().path();
+                observed.push(format!(
+                    "{} {}",
+                    path.strip_prefix(root).unwrap().display(),
+                    observe_entry(&path)
+                ));
+                if fs::symlink_metadata(&path).unwrap().is_dir() {
+                    pending.push(path);
+                }
+            }
+        }
+        observed.sort();
+        observed
+    }
+
+    fn write_staged_assets(staged: &Path) {
+        fs::create_dir_all(staged.join("agents/amplihack/core")).unwrap();
+        fs::write(staged.join("agents/amplihack/core/architect.md"), "agent\n").unwrap();
+        fs::create_dir_all(staged.join("context")).unwrap();
+        fs::write(staged.join("context/PHILOSOPHY.md"), "philosophy\n").unwrap();
+    }
+
+    /// Acceptance criterion 1 of issue #1273: a second consecutive launch with
+    /// nothing to change writes nothing and unlinks nothing.
+    #[cfg(unix)]
+    #[test]
+    fn issue_1273_second_launch_performs_no_writes_and_no_unlinks() {
+        let (_lock, temp, _home) = isolated_home();
+        let staged = temp.path().join(".amplihack/.claude");
+        write_staged_assets(&staged);
+        write_bundled_skill(
+            temp.path(),
+            "quality-audit",
+            "---\nname: quality-audit\n---\n",
+        );
+
+        ensure_claude_plugin_installed().unwrap();
+
+        let plugin_dir = temp.path().join(".claude/skills/amplihack");
+        let skill_dir = temp.path().join(".claude/skills/quality-audit");
+        let ownership_path = skill_ownership_manifest_path(&staged);
+        let wrapper_before = observe_tree(&plugin_dir);
+        let skill_before = observe_tree(&skill_dir);
+        let ownership_before = observe_entry(&ownership_path);
+
+        ensure_claude_plugin_installed().unwrap();
+
+        assert_eq!(
+            wrapper_before,
+            observe_tree(&plugin_dir),
+            "an unchanged launch must not rewrite or re-link anything under the plugin wrapper"
+        );
+        assert_eq!(
+            skill_before,
+            observe_tree(&skill_dir),
+            "an unchanged launch must not republish an already-current canonical skill"
+        );
+        assert_eq!(
+            ownership_before,
+            observe_entry(&ownership_path),
+            "an unchanged launch must not rewrite the ownership record"
+        );
+        assert_eq!(
+            fs::read_link(plugin_dir.join("agents")).unwrap(),
+            staged.join("agents/amplihack"),
+            "leaving the wrapper alone must still leave it correct"
+        );
+    }
+
+    /// Acceptance criterion 2: the pieces that genuinely need repair still get
+    /// repaired on a later launch.
+    #[cfg(unix)]
+    #[test]
+    fn issue_1273_a_moved_or_new_asset_source_is_still_mirrored() {
+        let (_lock, temp, _home) = isolated_home();
+        let staged = temp.path().join(".amplihack/.claude");
+        fs::create_dir_all(staged.join("agents")).unwrap();
+        fs::write(staged.join("agents/architect.md"), "flat agent\n").unwrap();
+        write_bundled_skill(
+            temp.path(),
+            "quality-audit",
+            "---\nname: quality-audit\n---\n",
+        );
+        ensure_claude_plugin_installed().unwrap();
+
+        let plugin_dir = temp.path().join(".claude/skills/amplihack");
+        assert_eq!(
+            fs::read_link(plugin_dir.join("agents")).unwrap(),
+            staged.join("agents")
+        );
+        assert!(!plugin_dir.join("workflow").exists());
+
+        // The staged layout moves under the amplihack-scoped subdir, and a
+        // brand new asset type appears.
+        fs::create_dir_all(staged.join("agents/amplihack")).unwrap();
+        fs::write(staged.join("agents/amplihack/architect.md"), "scoped\n").unwrap();
+        fs::create_dir_all(staged.join("workflow")).unwrap();
+        fs::write(staged.join("workflow/DEFAULT.md"), "workflow\n").unwrap();
+
+        ensure_claude_plugin_installed().unwrap();
+
+        assert_eq!(
+            fs::read_link(plugin_dir.join("agents")).unwrap(),
+            staged.join("agents/amplihack"),
+            "a mirror pointing at the wrong source must be repointed"
+        );
+        assert_eq!(
+            fs::read_link(plugin_dir.join("workflow")).unwrap(),
+            staged.join("workflow"),
+            "a newly staged asset must be mirrored"
+        );
+        assert_eq!(
+            read_skill_ownership_manifest(&skill_ownership_manifest_path(&staged))
+                .unwrap()
+                .plugin
+                .unwrap()
+                .content_sha256,
+            hash_directory_tree(&plugin_dir).unwrap(),
+            "a repaired wrapper must leave the ownership record consistent"
+        );
+    }
+
+    /// Acceptance criterion 3: a stale version in plugin.json is still
+    /// rewritten, even though an unchanged one no longer is.
+    #[test]
+    fn issue_1273_a_stale_manifest_version_is_still_rewritten() {
+        let (_lock, temp, _home) = isolated_home();
+        let staged = temp.path().join(".amplihack/.claude");
+        write_staged_assets(&staged);
+        write_bundled_skill(
+            temp.path(),
+            "quality-audit",
+            "---\nname: quality-audit\n---\n",
+        );
+        ensure_claude_plugin_installed().unwrap();
+
+        // Stand in for "installed by an older amplihack": roll the recorded
+        // version back and re-record ownership so the wrapper still validates.
+        let plugin_dir = temp.path().join(".claude/skills/amplihack");
+        let manifest_path = plugin_dir.join(".claude-plugin/plugin.json");
+        let mut manifest: Value =
+            serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        assert_eq!(manifest["version"], json!(PLUGIN_VERSION));
+        manifest["version"] = json!("0.0.1-previous");
+        fs::write(
+            &manifest_path,
+            serde_json::to_string_pretty(&manifest).unwrap() + "\n",
+        )
+        .unwrap();
+        let ownership_path = skill_ownership_manifest_path(&staged);
+        let mut ownership = read_skill_ownership_manifest(&ownership_path).unwrap();
+        ownership.plugin = Some(OwnedDestination {
+            name: PLUGIN_NAME.to_owned(),
+            content_sha256: hash_directory_tree(&plugin_dir).unwrap(),
+        });
+        write_skill_ownership_manifest(&ownership_path, &ownership).unwrap();
+
+        ensure_claude_plugin_installed().unwrap();
+
+        let installed: Value =
+            serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        assert_eq!(installed["version"], json!(PLUGIN_VERSION));
+        assert_eq!(
+            read_skill_ownership_manifest(&ownership_path)
+                .unwrap()
+                .plugin
+                .unwrap()
+                .content_sha256,
+            hash_directory_tree(&plugin_dir).unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn issue_1273_plugin_manifest_is_written_only_when_it_would_change() {
+        let temp = tempfile::tempdir().unwrap();
+        let plugin_dir = temp.path().join("wrapper");
+        let manifest_path = plugin_dir.join(".claude-plugin/plugin.json");
+        let mut scratch = Scratch::new(temp.path());
+
+        assert!(write_plugin_manifest(&plugin_dir, &mut scratch).unwrap());
+        let published = observe_entry(&manifest_path);
+
+        assert!(
+            !write_plugin_manifest(&plugin_dir, &mut scratch).unwrap(),
+            "an already-current manifest must not be rewritten"
+        );
+        assert_eq!(published, observe_entry(&manifest_path));
+
+        fs::write(&manifest_path, "{}\n").unwrap();
+        assert!(
+            write_plugin_manifest(&plugin_dir, &mut scratch).unwrap(),
+            "a manifest whose bytes differ must still be republished"
+        );
+        assert_eq!(
+            fs::read(&manifest_path).unwrap(),
+            plugin_manifest_bytes().unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn issue_1273_mirror_assets_creates_missing_and_repoints_wrong_links() {
+        let temp = tempfile::tempdir().unwrap();
+        let staged = temp.path().join("staged");
+        for asset in MIRRORED_ASSETS {
+            fs::create_dir_all(staged.join(asset)).unwrap();
+        }
+        let plugin_dir = temp.path().join("wrapper");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        let mut scratch = Scratch::new(temp.path());
+
+        assert!(mirror_assets(&staged, &plugin_dir, &mut scratch).unwrap());
+        for asset in MIRRORED_ASSETS {
+            assert_eq!(
+                fs::read_link(plugin_dir.join(asset)).unwrap(),
+                staged.join(asset)
+            );
+        }
+        let published = observe_tree(&plugin_dir);
+
+        assert!(
+            !mirror_assets(&staged, &plugin_dir, &mut scratch).unwrap(),
+            "correct mirrors must be left completely alone"
+        );
+        assert_eq!(published, observe_tree(&plugin_dir));
+
+        let elsewhere = temp.path().join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        fs::remove_file(plugin_dir.join("agents")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, plugin_dir.join("agents")).unwrap();
+        fs::remove_file(plugin_dir.join("context")).unwrap();
+
+        assert!(mirror_assets(&staged, &plugin_dir, &mut scratch).unwrap());
+        assert_eq!(
+            fs::read_link(plugin_dir.join("agents")).unwrap(),
+            staged.join("agents"),
+            "a mirror pointing somewhere else must be repointed"
+        );
+        assert_eq!(
+            fs::read_link(plugin_dir.join("context")).unwrap(),
+            staged.join("context"),
+            "a missing mirror must be recreated"
+        );
+
+        fs::remove_dir(staged.join("workflow")).unwrap();
+        assert!(mirror_assets(&staged, &plugin_dir, &mut scratch).unwrap());
+        assert!(
+            !plugin_dir.join("workflow").symlink_metadata().is_ok(),
+            "a mirror whose source is gone must not stay live"
+        );
+    }
+
+    #[test]
+    fn issue_1273_copy_fallback_mirror_is_reused_when_current() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir_all(source.join("nested")).unwrap();
+        fs::write(source.join("nested/guide.md"), "content\n").unwrap();
+        let target = temp.path().join("target");
+        copy_dir_recursive(&source, &target).unwrap();
+
+        assert!(
+            mirror_is_current(&source, &target).unwrap(),
+            "a copy-fallback mirror that still matches must not be rebuilt"
+        );
+
+        fs::write(source.join("nested/guide.md"), "changed\n").unwrap();
+        assert!(
+            !mirror_is_current(&source, &target).unwrap(),
+            "a stale copy-fallback mirror must be detected"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn issue_1273_replaces_a_populated_copy_mirror_with_a_link() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("guide.md"), "current\n").unwrap();
+        let plugin_dir = temp.path().join("wrapper");
+        let target = plugin_dir.join("context");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("stale.md"), "stale\n").unwrap();
+        let mut scratch = Scratch::new(temp.path());
+
+        replace_mirror(&source, &target, &mut scratch).unwrap();
+
+        assert_eq!(fs::read_link(&target).unwrap(), source);
+        assert!(target.join("guide.md").is_file());
+        assert!(!target.join("stale.md").exists());
+    }
+
+    /// The mirror image of the case above: a platform that has stopped being
+    /// able to symlink falls back to a copy, and `rename(2)` will not put a
+    /// directory over the symlink that is already there. The old entry has to
+    /// be moved aside — and it must still never be removed before the
+    /// replacement exists.
+    #[cfg(unix)]
+    #[test]
+    fn issue_1273_replaces_a_link_mirror_with_a_copy() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("guide.md"), "current\n").unwrap();
+        let plugin_dir = temp.path().join("wrapper");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        let target = plugin_dir.join("context");
+        std::os::unix::fs::symlink(temp.path().join("elsewhere"), &target).unwrap();
+        let mut scratch = Scratch::new(temp.path());
+
+        // Stand in for `try_symlink` failing: hand `rename_over` a directory.
+        let replacement = scratch.path("context").unwrap();
+        copy_dir_recursive(&source, &replacement).unwrap();
+        rename_over(&replacement, &target, &mut scratch).unwrap();
+
+        let metadata = fs::symlink_metadata(&target).unwrap();
+        assert!(metadata.is_dir() && !metadata.file_type().is_symlink());
+        assert_eq!(fs::read(target.join("guide.md")).unwrap(), b"current\n");
+    }
+
+    /// Acceptance criterion: no point in a launch leaves a mirrored asset
+    /// absent, including when two launches race from different directories.
+    #[cfg(unix)]
+    #[test]
+    fn issue_1273_concurrent_mirroring_never_exposes_a_missing_asset_tree() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let temp = tempfile::tempdir().unwrap();
+        let plugin_dir = temp.path().join("wrapper");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        let sources = [temp.path().join("first"), temp.path().join("second")];
+        for source in &sources {
+            for asset in MIRRORED_ASSETS {
+                fs::create_dir_all(source.join(asset)).unwrap();
+            }
+        }
+        let mut scratch = Scratch::new(temp.path());
+        mirror_assets(&sources[0], &plugin_dir, &mut scratch).unwrap();
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let watching = Arc::clone(&stop);
+        let watched = plugin_dir.clone();
+        let observer = std::thread::spawn(move || {
+            while !watching.load(Ordering::Relaxed) {
+                for asset in MIRRORED_ASSETS {
+                    assert!(
+                        watched.join(asset).symlink_metadata().is_ok(),
+                        "asset tree '{asset}' vanished while another launch was mirroring"
+                    );
+                }
+            }
+        });
+
+        let writers = (0..2usize)
+            .map(|writer| {
+                let plugin_dir = plugin_dir.clone();
+                let sources = sources.clone();
+                let root = temp.path().to_path_buf();
+                std::thread::spawn(move || {
+                    let mut scratch = Scratch::new(&root);
+                    for round in 0..200usize {
+                        let source = &sources[(writer + round) % sources.len()];
+                        mirror_assets(source, &plugin_dir, &mut scratch).unwrap();
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        stop.store(true, Ordering::Relaxed);
+        observer.join().unwrap();
+
+        for asset in MIRRORED_ASSETS {
+            let target = fs::read_link(plugin_dir.join(asset)).unwrap();
+            assert!(
+                sources.iter().any(|source| source.join(asset) == target),
+                "racing launches converged on an unexpected target {}",
+                target.display()
+            );
+        }
     }
 
     #[test]
