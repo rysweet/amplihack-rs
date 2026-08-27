@@ -30,6 +30,10 @@ impl std::fmt::Display for LauncherType {
 /// Persisted launcher context written by the bootstrap layer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LauncherContext {
+    /// The writer emits this field as `launcher`; this reader expected
+    /// `launcher_type` and therefore failed to parse every real file, silently
+    /// falling back to its default (issue #1349).
+    #[serde(alias = "launcher")]
     pub launcher_type: LauncherType,
     #[serde(default)]
     pub command: Option<String>,
@@ -51,7 +55,7 @@ impl LauncherDetector {
         }
     }
 
-    /// Detect the current launcher, defaulting to `Claude` when the file is
+    /// Detect the current launcher, defaulting to `Copilot` when the file is
     /// missing, malformed, or stale (> 24 h) — matching Python's fail-safe.
     pub fn detect(&self) -> LauncherType {
         self.detect_with_staleness(DEFAULT_STALENESS_HOURS)
@@ -63,7 +67,7 @@ impl LauncherDetector {
             Ok(ctx) => {
                 if self.is_stale_ctx(&ctx, max_age_hours) {
                     tracing::debug!("launcher context is stale, defaulting to claude");
-                    LauncherType::Claude
+                    LauncherType::Copilot
                 } else {
                     ctx.launcher_type
                 }
@@ -205,7 +209,16 @@ mod tests {
     }
 
     #[test]
-    fn detect_stale_defaults_to_claude() {
+    /// Superseded by issue #1349. This asserted a default of `Claude`, which
+    /// was the opposite of every other reader of the same file -- and it was
+    /// reached on *every* real file, because this detector expected a field
+    /// named `launcher_type` where the writer emits `launcher`, so the parse
+    /// always failed and the default always applied.
+    ///
+    /// Two defects hid each other: a wrong field name meant the wrong default
+    /// was the only answer this ever gave, and a default that disagreed with
+    /// every sibling meant nobody could reconcile it against them.
+    fn detect_stale_defaults_to_copilot() {
         let (_dir, det) = setup();
         let ctx = LauncherContext {
             launcher_type: LauncherType::Copilot,
@@ -220,7 +233,7 @@ mod tests {
         )
         .unwrap();
         // Stale context defaults to Claude (Python parity)
-        assert_eq!(det.detect(), LauncherType::Claude);
+        assert_eq!(det.detect(), LauncherType::Copilot);
     }
 
     #[test]
@@ -231,7 +244,7 @@ mod tests {
         // Fresh with 24h threshold
         assert_eq!(det.detect_with_staleness(24), LauncherType::Copilot);
         // Stale with 0h threshold — defaults to Claude
-        assert_eq!(det.detect_with_staleness(0), LauncherType::Claude);
+        assert_eq!(det.detect_with_staleness(0), LauncherType::Copilot);
     }
 
     #[test]
