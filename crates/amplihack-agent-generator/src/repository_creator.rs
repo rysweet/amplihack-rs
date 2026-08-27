@@ -214,7 +214,7 @@ fn check_gh_cli() -> Result<(), String> {
 }
 
 fn run_git(args: &[&str], cwd: &Path) -> Result<(), String> {
-    let output = Command::new("git")
+    let output = amplihack_git::command()
         .args(args)
         .current_dir(cwd)
         .output()

@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::{Context, Result};
 use tracing::{info, warn};
@@ -8,7 +7,7 @@ use crate::models::{FixVerifyMode, RecoveryBlocker, Stage1Result, StageStatus};
 
 /// Capture the list of staged files via `git diff --cached --name-only`.
 fn capture_protected_staged_files(repo_path: &Path) -> Result<Vec<String>> {
-    let output = Command::new("git")
+    let output = amplihack_git::command()
         .args(["diff", "--cached", "--name-only"])
         .current_dir(repo_path)
         .output()
@@ -25,7 +24,7 @@ fn capture_protected_staged_files(repo_path: &Path) -> Result<Vec<String>> {
 
 /// Check whether `.claude` has uncommitted changes.
 fn has_dirty_claude(repo_path: &Path) -> Result<bool> {
-    let output = Command::new("git")
+    let output = amplihack_git::command()
         .args(["status", "--porcelain", "--", ".claude"])
         .current_dir(repo_path)
         .output()
@@ -88,29 +87,29 @@ mod tests {
     use super::*;
 
     fn init_git_repo(dir: &Path) {
-        Command::new("git")
+        amplihack_git::command()
             .args(["init", "--initial-branch=main"])
             .current_dir(dir)
             .output()
             .unwrap();
-        Command::new("git")
+        amplihack_git::command()
             .args(["config", "user.email", "test@test.com"])
             .current_dir(dir)
             .output()
             .unwrap();
-        Command::new("git")
+        amplihack_git::command()
             .args(["config", "user.name", "Test"])
             .current_dir(dir)
             .output()
             .unwrap();
         // Need at least one commit for diff to work
         std::fs::write(dir.join("README.md"), "init").unwrap();
-        Command::new("git")
+        amplihack_git::command()
             .args(["add", "."])
             .current_dir(dir)
             .output()
             .unwrap();
-        Command::new("git")
+        amplihack_git::command()
             .args([
                 "-c",
                 "user.name=test",
@@ -157,7 +156,7 @@ mod tests {
         init_git_repo(repo);
 
         std::fs::write(repo.join("staged.txt"), "data").unwrap();
-        Command::new("git")
+        amplihack_git::command()
             .args(["add", "staged.txt"])
             .current_dir(repo)
             .output()

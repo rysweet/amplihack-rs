@@ -44,7 +44,7 @@ impl PluginManager {
             let dir = tempfile::tempdir().context("failed to create temp dir for plugin clone")?;
             let clone_path = dir.path().join(&plugin_name);
 
-            let mut git_cmd = Command::new("git");
+            let mut git_cmd = amplihack_git::command();
             git_cmd.arg("clone").arg(source).arg(&clone_path);
             let status = match run_with_timeout(git_cmd, GIT_CLONE_TIMEOUT) {
                 Ok(s) => s,

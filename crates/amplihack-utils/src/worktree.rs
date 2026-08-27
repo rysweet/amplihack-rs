@@ -14,7 +14,6 @@
 //! - Runtime directories are created with `chmod 0o700` (owner-only).
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Mutex;
 
 use thiserror::Error;
@@ -145,7 +144,7 @@ pub fn get_shared_runtime_dir(project_root: &Path) -> Result<String, WorktreeErr
 ///
 /// Returns the default path on any git failure (fail-open).
 fn resolve_runtime_path(project_path: &Path, default: &Path) -> PathBuf {
-    let output = Command::new("git")
+    let output = amplihack_git::command()
         .args(["rev-parse", "--git-common-dir"])
         .current_dir(project_path)
         .output();

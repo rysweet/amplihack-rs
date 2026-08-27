@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+amplihack-git = { workspace = true }
 # TODO: re-enable once amplihack-memory compiles (rusqlite Mutex API)
 # amplihack-agent-core = { path = "../amplihack-agent-core" }
 # amplihack-memory = { workspace = true }

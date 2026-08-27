@@ -549,7 +549,7 @@ fn test_depth_guard_allows_spawn_below_limit() {
 /// Run `git <args...>` inside `repo` and return trimmed stdout, or `None` if
 /// git is unavailable or the command failed.
 fn git_in(repo: &Path, args: &[&str]) -> Option<String> {
-    let output = std::process::Command::new("git")
+    let output = amplihack_git::command()
         .arg("-C")
         .arg(repo)
         .args(args)
@@ -564,7 +564,7 @@ fn git_in(repo: &Path, args: &[&str]) -> Option<String> {
 /// Initialise a minimal, non-bare git repo at `repo`. Returns false (skip) if
 /// git is not usable in this environment.
 fn init_git_repo(repo: &Path) -> bool {
-    if std::process::Command::new("git")
+    if amplihack_git::command()
         .arg("-C")
         .arg(repo)
         .arg("init")

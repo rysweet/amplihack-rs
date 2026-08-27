@@ -112,7 +112,7 @@ struct GitFixture {
 }
 
 fn git(cwd: &Path, args: &[&str]) -> Output {
-    let out = Command::new("git")
+    let out = amplihack_git::command()
         .args(["-c", "user.email=test@test", "-c", "user.name=test"])
         .args(args)
         .current_dir(cwd)
@@ -130,7 +130,7 @@ fn git(cwd: &Path, args: &[&str]) -> Output {
 impl GitFixture {
     fn new() -> Self {
         let origin = TempDir::new().expect("origin tempdir");
-        Command::new("git")
+        amplihack_git::command()
             .args(["init", "--bare", "-b", "main"])
             .arg(origin.path())
             .output()
@@ -148,7 +148,7 @@ impl GitFixture {
         git(&rp, &["commit", "-m", "init"]);
         git(&rp, &["push", "-u", "origin", "HEAD:main"]);
         // Ensure local 'main' tracks origin/main
-        let _ = Command::new("git")
+        let _ = amplihack_git::command()
             .args(["branch", "--set-upstream-to=origin/main", "main"])
             .current_dir(&rp)
             .output();
@@ -171,7 +171,7 @@ impl GitFixture {
         git(&self.repo_path, &["branch", "-D", name]);
         // Drop the local remote-tracking ref so the branch truly is "remote-only"
         // from the recipe's point of view until it fetches.
-        let _ = Command::new("git")
+        let _ = amplihack_git::command()
             .args(["update-ref", "-d", &format!("refs/remotes/origin/{name}")])
             .current_dir(&self.repo_path)
             .output();

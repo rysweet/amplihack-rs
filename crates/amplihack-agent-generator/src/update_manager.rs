@@ -6,7 +6,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -134,7 +133,7 @@ impl UpdateManager {
     // -- internal -----------------------------------------------------------
 
     fn get_framework_version(&self) -> std::result::Result<String, String> {
-        let output = Command::new("git")
+        let output = amplihack_git::command()
             .args(["rev-parse", "HEAD"])
             .current_dir(&self.framework_repo)
             .output()
@@ -149,7 +148,7 @@ impl UpdateManager {
     }
 
     fn get_changelog(&self, old: &str, new: &str) -> std::result::Result<Vec<String>, String> {
-        let output = Command::new("git")
+        let output = amplihack_git::command()
             .args(["log", &format!("{old}..{new}"), "--oneline"])
             .current_dir(&self.framework_repo)
             .output()

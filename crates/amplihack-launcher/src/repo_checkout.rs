@@ -5,7 +5,6 @@
 //! - Clone repositories via `git clone`
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// Parse any GitHub URI format to `owner/repo`.
 ///
@@ -80,7 +79,7 @@ pub fn checkout_repository(repo_uri: &str, base_dir: Option<&Path>) -> Option<Pa
     }
 
     let clone_url = format!("https://github.com/{owner_repo}.git");
-    let result = Command::new("git")
+    let result = amplihack_git::command()
         .args(["clone", &clone_url, &target_dir.to_string_lossy()])
         .output()
         .ok()?;

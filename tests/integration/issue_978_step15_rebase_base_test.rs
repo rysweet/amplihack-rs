@@ -64,7 +64,7 @@ fn write_file(path: &Path, content: &str) {
 }
 
 fn git(dir: &Path, args: &[&str]) {
-    let output = Command::new("git")
+    let output = amplihack_git::command()
         .args(args)
         .current_dir(dir)
         .output()
@@ -79,7 +79,7 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 fn git_stdout(dir: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
+    let output = amplihack_git::command()
         .args(args)
         .current_dir(dir)
         .output()

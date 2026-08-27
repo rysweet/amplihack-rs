@@ -51,7 +51,7 @@ fn make_executable(path: &Path) {
 }
 
 fn git(repo: &Path, args: &[&str]) {
-    let status = Command::new("git")
+    let status = amplihack_git::command()
         .args(args)
         .current_dir(repo)
         .status()

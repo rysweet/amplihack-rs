@@ -217,7 +217,7 @@ impl Distributor {
 
         // Git add + commit + push.
         let run_git = |args: &[&str]| -> Result<(), BundleError> {
-            let mut cmd = Command::new("git");
+            let mut cmd = amplihack_git::command();
             cmd.args(args).current_dir(&work);
             let out = run_output_with_timeout(cmd, GIT_COMMAND_TIMEOUT).map_err(|err| {
                 BundleError::distribution(format!(

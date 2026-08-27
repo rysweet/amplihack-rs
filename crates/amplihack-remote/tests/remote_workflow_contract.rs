@@ -8,7 +8,6 @@ use std::ffi::OsString;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Mutex;
 
 use amplihack_remote::{VMOptions, execute_remote_workflow};
@@ -69,7 +68,7 @@ fn collect_python_files(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 fn run_git(repo: &Path, args: &[&str]) {
-    let status = Command::new("git")
+    let status = amplihack_git::command()
         .args(args)
         .current_dir(repo)
         .status()

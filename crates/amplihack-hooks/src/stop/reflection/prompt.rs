@@ -163,7 +163,7 @@ fn load_user_preferences_context(dirs: &ProjectDirs) -> Option<String> {
 }
 
 fn get_repository_context(project_root: &Path) -> String {
-    let result = Command::new("git")
+    let result = amplihack_git::command()
         .args(["remote", "get-url", "origin"])
         .current_dir(project_root)
         .output();

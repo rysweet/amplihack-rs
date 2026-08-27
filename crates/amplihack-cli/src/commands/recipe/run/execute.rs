@@ -1404,7 +1404,7 @@ impl CallerGitState {
 /// unavailable or the command failed (e.g. `--get` of an unset key exits
 /// non-zero, which we map to `None` == "unset").
 fn git_capture(dir: &Path, args: &[&str]) -> Option<String> {
-    let output = std::process::Command::new("git")
+    let output = amplihack_git::command()
         .arg("-C")
         .arg(dir)
         .args(args)
@@ -1420,7 +1420,7 @@ fn git_capture(dir: &Path, args: &[&str]) -> Option<String> {
 /// already-absent key exits non-zero (code 5) — treated as a non-fatal no-op so
 /// restoring "was unset, still unset" is not reported as a failure.
 fn git_run(dir: &Path, args: &[&str]) -> bool {
-    match std::process::Command::new("git")
+    match amplihack_git::command()
         .arg("-C")
         .arg(dir)
         .args(args)

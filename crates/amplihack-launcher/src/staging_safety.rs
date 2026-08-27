@@ -5,7 +5,6 @@
 //! from accidental batch operations.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use tracing::{debug, warn};
 
 /// Safety classification for a directory.
@@ -97,7 +96,7 @@ pub fn is_safe_to_delete(directory: &Path) -> DirectorySafetyCheck {
 /// Runs `git diff --cached --name-only` to capture files that are currently
 /// staged for commit and must not be modified by batch operations.
 pub fn capture_protected_staged_files(repo_path: &Path) -> Vec<String> {
-    let output = Command::new("git")
+    let output = amplihack_git::command()
         .args(["diff", "--cached", "--name-only"])
         .current_dir(repo_path)
         .output();
