@@ -78,6 +78,9 @@ jobs:
       - name: Worktree — refuse a repo with no origin remote (issue #1323)
         shell: bash
         run: bash tests/issue_1323_multirepo_origin_precondition.sh
+      - name: Invisible-char scan — stays dependency-free (issue #1397)
+        shell: bash
+        run: bash tests/issue_1397_invisible_scan_stays_dependency_free.sh
       - name: Skill docs — BLOCKED-path steps exist (issue #1255)
         shell: bash
         run: bash tests/issue_1255_blocked_path_steps_exist.sh

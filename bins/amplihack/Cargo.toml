@@ -16,10 +16,6 @@ disabled-strategies = ["quick-install", "compile"]
 name = "amplihack"
 path = "src/main.rs"
 
-[[bin]]
-name = "scan-invisible-chars"
-path = "src/bin/scan_invisible_chars.rs"
-
 [dependencies]
 amplihack-types = { workspace = true }
 amplihack-state = { workspace = true }
