@@ -2,11 +2,9 @@
 //!
 //! Resolution precedence:
 //! 1. `AMPLIHACK_AGENT_BINARY` env var (explicit override; CI/testing).
-//! 2. The `amplihack <binary>` ancestor of this process tree -- the session's
-//!    own identity, which outranks any file on disk.
-//! 3. `<cwd-or-ancestor>/.claude/runtime/launcher_context.json` `launcher` field
+//! 2. `<cwd-or-ancestor>/.claude/runtime/launcher_context.json` `launcher` field
 //!    (persisted state, possibly written by a different session).
-//! 4. Built-in default: `"copilot"`.
+//! 3. Built-in default: `"copilot"`.
 //!
 //! All inputs are validated against a strict allowlist to prevent the resolved
 //! value from being used as an arbitrary `Command::new` target by downstream
@@ -57,9 +55,6 @@ const ANCESTOR_WALK_LIMIT: usize = 32;
 pub enum ResolutionSource {
     /// `AMPLIHACK_AGENT_BINARY` was set and valid.
     Env,
-    /// Determined from this process tree's own `amplihack <binary>` ancestor.
-    /// The session's identity, and authoritative when the env is lost.
-    SessionAncestry,
     /// Read from a persisted `launcher_context.json`, possibly written by an
     /// unrelated earlier session in the same repo.
     LauncherContext,
@@ -77,7 +72,6 @@ impl ResolutionSource {
     pub fn label(self) -> &'static str {
         match self {
             ResolutionSource::Env => "env",
-            ResolutionSource::SessionAncestry => "session_ancestry",
             ResolutionSource::LauncherContext => "launcher_context",
             ResolutionSource::Default => "default",
         }
@@ -145,39 +139,34 @@ pub fn resolve(cwd: &Path) -> Result<String, ResolveError> {
 /// vendor default and executed every step under a different CLI, with a
 /// different tool-timeout policy, for hours. Nothing in the output said so.
 pub fn resolve_with_source(cwd: &Path) -> Result<(String, ResolutionSource), ResolveError> {
+    // Both lookups run unconditionally so the precedence rule lives in exactly
+    // one place, `resolve_layers`. Gating the second on the first being None
+    // would encode the ordering twice -- once here and once there -- and the
+    // two could then drift without any test noticing.
     let from_env = std::env::var("AMPLIHACK_AGENT_BINARY")
         .ok()
         .and_then(|raw| validate_binary_name(&raw));
-    let from_ancestry = if from_env.is_some() {
-        None // don't pay for a /proc walk we cannot use
-    } else {
-        session_launcher_from_ancestry()
-    };
-    let from_persisted = if from_env.is_some() || from_ancestry.is_some() {
-        None
-    } else {
-        lookup_persisted_launcher(cwd)
-    };
+    let from_persisted = lookup_persisted_launcher(cwd);
 
-    let (name, source) = resolve_layers(from_env, from_ancestry, from_persisted);
+    let (name, source) = resolve_layers(from_env, from_persisted);
 
     match source {
-        ResolutionSource::Env | ResolutionSource::SessionAncestry => {
+        ResolutionSource::Env => {
             debug!(binary = %name, source = source.label(), "agent binary resolved");
         }
         ResolutionSource::LauncherContext => warn!(
             binary = %name,
             source = source.label(),
-            "no agent binary in the environment and no amplihack launcher in this \
-             process tree; using the value recorded in launcher_context.json, which \
-             may have been written by a different session"
+            "AMPLIHACK_AGENT_BINARY is unset; using the value recorded in \
+             launcher_context.json, which may have been written by a different \
+             session"
         ),
         ResolutionSource::Default => warn!(
             binary = %name,
             source = source.label(),
-            "no agent binary in the environment, no amplihack launcher in this \
-             process tree, and no launcher_context.json; assuming the built-in \
-             default, which may not be the CLI you are running"
+            "AMPLIHACK_AGENT_BINARY is unset and no launcher_context.json was \
+             found; assuming the built-in default, which may not be the CLI you \
+             are running"
         ),
     }
     Ok((name, source))
@@ -185,20 +174,15 @@ pub fn resolve_with_source(cwd: &Path) -> Result<(String, ResolutionSource), Res
 
 /// Pure precedence rule, separated from the three lookups that feed it.
 ///
-/// Kept free of environment, filesystem and `/proc` access so the ordering can
-/// be tested directly. In particular, the ancestry layer cannot be exercised
-/// through [`resolve_with_source`] from inside a test binary that is itself a
-/// descendant of an `amplihack` session -- the real ancestor would always win.
+/// Kept free of environment and filesystem access so the ordering can be
+/// tested directly, and so it is the single place the precedence is written
+/// down.
 pub fn resolve_layers(
     from_env: Option<String>,
-    from_ancestry: Option<String>,
     from_persisted: Option<String>,
 ) -> (String, ResolutionSource) {
     if let Some(name) = from_env {
         return (name, ResolutionSource::Env);
-    }
-    if let Some(name) = from_ancestry {
-        return (name, ResolutionSource::SessionAncestry);
     }
     if let Some(name) = from_persisted {
         return (name, ResolutionSource::LauncherContext);
@@ -209,78 +193,6 @@ pub fn resolve_layers(
 #[derive(Deserialize)]
 struct LauncherContextSnippet {
     launcher: String,
-}
-
-/// Identify the agent CLI this process tree was started with, by walking the
-/// parent-process chain looking for an `amplihack <binary>` invocation.
-///
-/// This is the session's own identity and it outranks any file on disk. A
-/// session started with `amplihack claude` must keep launching Claude agents
-/// for its whole lifetime, and one started with `amplihack copilot` must keep
-/// launching Copilot agents -- even when a subprocess loses the environment,
-/// and even when some other session left a different answer in a shared
-/// `launcher_context.json` (issue #1335).
-///
-/// Reads `/proc/<pid>/cmdline`, so it is Linux-only; elsewhere it returns
-/// `None` and resolution falls through to the persisted layers as before.
-#[cfg(target_os = "linux")]
-fn session_launcher_from_ancestry() -> Option<String> {
-    const MAX_HOPS: usize = 64;
-    let mut pid = std::process::id();
-    for _ in 0..MAX_HOPS {
-        if let Some(name) = launcher_from_cmdline(pid) {
-            debug!(pid, binary = %name, "session launcher found in process ancestry");
-            return Some(name);
-        }
-        let ppid = parent_pid(pid)?;
-        if ppid <= 1 {
-            return None;
-        }
-        pid = ppid;
-    }
-    None
-}
-
-/// Parse `/proc/<pid>/stat` for the parent pid.
-///
-/// `comm` is parenthesised and may itself contain spaces or parens, so the scan
-/// starts from the last `)`: the fields after it are state, then ppid.
-#[cfg(target_os = "linux")]
-fn parent_pid(pid: u32) -> Option<u32> {
-    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let close = stat.rfind(')')?;
-    let mut fields = stat[close + 1..].split_whitespace();
-    let _state = fields.next()?;
-    fields.next()?.parse::<u32>().ok()
-}
-
-/// Return the agent binary named by an `amplihack <binary> ...` command line.
-///
-/// Only the argument immediately after the `amplihack` executable counts, so
-/// an unrelated occurrence of the word later in a long prompt cannot be
-/// mistaken for the launcher. The value is allowlist-validated like every
-/// other input to this module.
-#[cfg(target_os = "linux")]
-fn launcher_from_cmdline(pid: u32) -> Option<String> {
-    let raw = fs::read(format!("/proc/{pid}/cmdline")).ok()?;
-    let mut args = raw
-        .split(|b| *b == 0)
-        .filter(|a| !a.is_empty())
-        .map(|a| String::from_utf8_lossy(a).into_owned());
-
-    let exe = args.next()?;
-    let exe_name = Path::new(&exe).file_name()?.to_string_lossy().into_owned();
-    if exe_name != "amplihack" && exe_name != "amplihack.exe" {
-        return None;
-    }
-    // Skip global flags to reach the subcommand.
-    let sub = args.find(|a| !a.starts_with('-'))?;
-    validate_binary_name(&sub)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn session_launcher_from_ancestry() -> Option<String> {
-    None
 }
 
 /// Returns `true` when a launcher context found in `dir` cannot be trusted.
@@ -474,51 +386,21 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
-    // Issue #1335 -- a session must keep the agent CLI it was started with.
-    //
-    // Precedence is tested through `resolve_layers`, the pure seam. Going
-    // through `resolve_with_source` would be meaningless here: the test binary
-    // is itself a descendant of an `amplihack` session, so the real ancestry
-    // layer would answer before any fixture could.
+    // Issue #1335 -- precedence, tested through the pure `resolve_layers`
+    // seam so the rule is exercised without touching env or filesystem.
     // ---------------------------------------------------------------------
 
     #[test]
     fn env_wins_over_everything() {
-        let (name, source) = resolve_layers(
-            Some("claude".into()),
-            Some("copilot".into()),
-            Some("codex".into()),
-        );
+        let (name, source) = resolve_layers(Some("claude".into()), Some("codex".into()));
         assert_eq!(name, "claude");
         assert_eq!(source, ResolutionSource::Env);
         assert!(!source.is_inferred());
     }
 
-    /// The core requirement: a tree started by `amplihack claude` keeps using
-    /// Claude even though a persisted file in the repo says copilot. Before
-    /// this layer existed, the file won and the session silently switched
-    /// vendor -- along with that vendor's tool-timeout policy.
-    #[test]
-    fn session_ancestry_beats_a_persisted_file_from_another_session() {
-        let (name, source) = resolve_layers(None, Some("claude".into()), Some("copilot".into()));
-        assert_eq!(
-            name, "claude",
-            "a claude session must not launch copilot agents"
-        );
-        assert_eq!(source, ResolutionSource::SessionAncestry);
-    }
-
-    /// And symmetrically, so a copilot session is equally protected.
-    #[test]
-    fn a_copilot_session_is_not_flipped_to_claude() {
-        let (name, source) = resolve_layers(None, Some("copilot".into()), Some("claude".into()));
-        assert_eq!(name, "copilot");
-        assert_eq!(source, ResolutionSource::SessionAncestry);
-    }
-
     #[test]
     fn persisted_file_is_used_only_when_nothing_better_exists() {
-        let (name, source) = resolve_layers(None, None, Some("codex".into()));
+        let (name, source) = resolve_layers(None, Some("codex".into()));
         assert_eq!(name, "codex");
         assert_eq!(source, ResolutionSource::LauncherContext);
         assert!(source.is_inferred());
@@ -526,7 +408,7 @@ mod tests {
 
     #[test]
     fn default_is_the_last_resort_and_is_marked_inferred() {
-        let (name, source) = resolve_layers(None, None, None);
+        let (name, source) = resolve_layers(None, None);
         assert_eq!(name, DEFAULT_BINARY);
         assert_eq!(source, ResolutionSource::Default);
         assert!(source.is_inferred());
