@@ -56,6 +56,14 @@ const ROUTING_MARKERS: &[(&str, &str)] = &[
         "Skill(skill=\"dev-orchestrator\")",
         "a direct instruction to invoke the orchestrator skill",
     ),
+    (
+        "invoke the dev-orchestrator skill",
+        "the same instruction in prose",
+    ),
+    (
+        "launching dev-orchestrator",
+        "the phrase an agent is told to emit as it re-enters",
+    ),
 ];
 
 /// Files a CLI loads into every agent's context automatically, with no
@@ -77,6 +85,25 @@ const UNGATED_INSTRUCTION_FILES: &[&str] = &[
     "GEMINI.md",
 ];
 
+/// Collapse runs of whitespace and fold case, so a reflowed paragraph or a
+/// different quote style still matches.
+fn normalise(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_space = false;
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            in_space = true;
+            continue;
+        }
+        if in_space && !out.is_empty() {
+            out.push(' ');
+        }
+        in_space = false;
+        out.extend(ch.to_lowercase());
+    }
+    out
+}
+
 #[test]
 fn ungated_instruction_files_carry_no_routing_instructions() {
     let root = repo_root();
@@ -88,10 +115,15 @@ fn ungated_instruction_files_carry_no_routing_instructions() {
         let Ok(body) = std::fs::read_to_string(&path) else {
             continue;
         };
+        // Normalise before matching. An exact, case-sensitive search dies to a
+        // line wrap or a quote swap, and the block this guard was written for
+        // wrapped `recipe run smart-orchestrator` across lines in some
+        // revisions. Collapse whitespace and fold case so reformatting the file
+        // cannot silently disarm the check.
+        let haystack = normalise(&body);
         for (marker, why) in ROUTING_MARKERS {
-            if let Some(offset) = body.find(marker) {
-                let line = body[..offset].lines().count() + 1;
-                findings.push(format!("  {rel}:{line}  contains {marker:?} — {why}"));
+            if haystack.contains(&normalise(marker)) {
+                findings.push(format!("  {rel}  contains {marker:?} — {why}"));
             }
         }
     }
