@@ -129,7 +129,11 @@ steps:
             | awk '{a+=$1;d+=$2} END {print a+d+0}')
         fi
       else
-        echo "WARNING: '${REPO}' is not a git work tree; diff/commit evidence is unavailable (reported as unobserved, not as progress)." >&2
+        # The `[skip] not a git repo` token is the marker issue #537 requires:
+        # a git-using step must be both guarded and visibly skipped, and the
+        # guard test looks for this exact string. Absence of evidence is
+        # reported as unobserved, never as progress.
+        echo "[skip] not a git repo: '${REPO}' is not a git work tree; diff/commit evidence is unavailable (reported as unobserved, not as progress)." >&2
       fi
       [ -n "$COMMITS" ] || COMMITS=0
       [ -n "$DIFF_LINES" ] || DIFF_LINES=0
