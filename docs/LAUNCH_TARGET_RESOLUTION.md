@@ -97,12 +97,28 @@ pub struct Resolution {
     pub rejected: Vec<(PathBuf, Rejection)>,
 }
 
-pub fn resolve(tool: &str) -> Resolution;
+/// Where `AMPLIHACK_<TOOL>_BINARY_PATH` came from. There is deliberately no
+/// `Default`: the safe-looking default is `User`, the *strict* arm, so a caller
+/// that forgot to thread the value would turn a preference into a hard launch
+/// failure. Making every call site name the origin is the point (issue #1276).
+pub enum OverrideOrigin {
+    /// The variable came from the caller's environment. A failing override is a
+    /// hard error — the user named a binary, and amplihack must not quietly run
+    /// a different one.
+    User,
+    /// amplihack set the variable itself, as a preference.
+    /// `configure_preferred_rustyclawd_binary` is the only producer. A failing
+    /// override warns and the search continues, so a broken `rustyclawd` on
+    /// `$PATH` cannot turn a working `amplihack rustyclawd` into a failed launch.
+    AmplihackSupplied,
+}
+
+pub fn resolve(tool: &str, override_origin: OverrideOrigin) -> Resolution;
 
 /// Same answer, ignoring the memo, and refreshes it. For callers that just
 /// changed the filesystem — i.e. installed something. See "One probe per
 /// process" below.
-pub fn resolve_uncached(tool: &str) -> Resolution;
+pub fn resolve_uncached(tool: &str, override_origin: OverrideOrigin) -> Resolution;
 
 impl Resolution {
     /// Human-readable account of what happened, and the remedy.

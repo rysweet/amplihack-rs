@@ -81,6 +81,9 @@ jobs:
       - name: Publish — a push must land the tested commit (issue #1269)
         shell: bash
         run: bash tests/issue_1269_verify_pushed_ref.sh
+      - name: Docs — launch-target frozen contract matches the code (issue #1274)
+        shell: bash
+        run: bash tests/issue_1274_launch_target_contract_matches_code.sh
       - name: Recipes — PR always opens after successful push (issue #495)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-pr-always-opens.sh
