@@ -300,6 +300,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Tutorial: Workflow Runtime Isolation](tutorials/workflow-runtime-isolation.md) - Practice the runtime isolation and strict Artifact Guard contract
 - [Workflow Runtime Artifacts Reference](reference/workflow-runtime-artifacts.md) - Environment variables, shell helper API, lifecycle hooks, and regression contract
 - [Workflow Commit Identity Reference](reference/workflow-commit-identity.md) - Explicit author/committer identity contract for workflow-created commits
+- [Workflow Identity Preflight Reference](reference/identity-preflight.md) - One-call check, before any step does real work, that the acting `gh` account can write to the target repository (issue #1290)
 - [How to Configure Workflow Commit Identity](howto/configure-workflow-commit-identity.md) - Setup for `AMPLIHACK_GIT_*`, repo-local Git identity, and provider-safe fallbacks
 - [Tutorial: Verify Workflow Commit Identity](tutorials/workflow-commit-identity.md) - Disposable-repository walkthrough for explicit, repo-local, GitHub, and Azure DevOps commit attribution
 - [Default Workflow Step 13 Validation Reference](reference/default-workflow-step-13-validation.md) - Toolchain-aware outside-in local validation contract for Step 13

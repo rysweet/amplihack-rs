@@ -35,7 +35,7 @@
 //!      5000ms `libc::poll` hard wall-clock timeout in
 //!      `read_user_input_with_timeout`.
 //!
-//! The `assert_cmd` tests below run the `amplihack` binary as a subprocess
+//! The tests below run the `amplihack` binary as a subprocess
 //! (stdin is not a TTY by default). Each test sanitises CI-runner env
 //! pollution by clearing all five subprocess-safe env vars before
 //! re-adding only the one(s) under test, so the assertion observes exactly
@@ -69,34 +69,47 @@ const SIGNAL_ENV_VARS: &[&str] = &[
     "CI",
 ];
 
-/// Locate the cargo-built `amplihack` binary at workspace root.
+/// Locate the `amplihack` binary Cargo built for this test run.
 ///
-/// `amplihack-cli` is a library crate; the binary lives in `bins/amplihack/`.
-/// `assert_cmd::cargo_bin` doesn't expose `CARGO_BIN_EXE_amplihack` for tests
-/// in sibling crates, so we walk from this crate's manifest dir to the
-/// workspace root and look in `target/debug/`.
-///
-/// Tests that require the binary `panic!` with a clear `cargo build -p
-/// amplihack` instruction when the binary is missing — they DO NOT silently
-/// skip.
+/// This test target lives in the `amplihack` binary package, so Cargo sets
+/// `CARGO_BIN_EXE_amplihack` at compile time and builds the binary as a
+/// prerequisite of the test. That path is correct under any
+/// `CARGO_TARGET_DIR`, profile, or worktree — no path guessing, and no
+/// "binary not found" race (issue #1378). This test previously hand-rolled
+/// `<workspace>/target/debug/amplihack`, which is wrong whenever the build is
+/// redirected — as the pre-commit hooks do.
 fn amplihack_bin() -> PathBuf {
-    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.pop(); // crates/amplihack-cli → crates/
-    path.pop(); // crates/ → workspace root
-    path.push("target/debug/amplihack");
-    path
+    PathBuf::from(env!("CARGO_BIN_EXE_amplihack"))
 }
 
+/// Resolve the binary under test, preferring an explicit `AMPLIHACK_PROBE_BIN`
+/// override so an external harness can point these tests at an already-built
+/// binary. An invalid override is an error, never a silent fallback.
+///
+/// On failure the panic names every candidate that was checked.
 fn require_bin_or_panic() -> PathBuf {
-    let bin = amplihack_bin();
-    if !bin.exists() {
+    if let Some(probe) = std::env::var_os("AMPLIHACK_PROBE_BIN") {
+        let probe = PathBuf::from(probe);
+        if probe.is_file() {
+            return probe;
+        }
         panic!(
-            "amplihack binary not found at {} — run `cargo build -p amplihack` first \
-             (or `cargo test --workspace` which builds it as a dependency)",
-            bin.display()
+            "AMPLIHACK_PROBE_BIN is set to {}, but that path is not an existing file",
+            probe.display()
         );
     }
-    bin
+
+    let bin = amplihack_bin();
+    if bin.is_file() {
+        return bin;
+    }
+
+    panic!(
+        "amplihack binary not found — run `cargo build -p amplihack` first \
+         (or `cargo test -p amplihack`, which builds it as a test prerequisite). \
+         Checked: AMPLIHACK_PROBE_BIN=<unset>, CARGO_BIN_EXE_amplihack={}",
+        bin.display()
+    );
 }
 
 /// Build a child `amplihack` invocation with all skip-signal env vars
@@ -404,7 +417,9 @@ fn empty_ci_value_alone_does_not_classify_as_subprocess_safe() {
     //
     // The source-level invariant is: `classify_skip_reason` checks
     // `!value.is_empty()` before classifying as SubprocessSafe.
-    let src = include_str!("../src/update/check.rs");
+    // This test target lives in `bins/amplihack/tests/`; the implementation it
+    // reads lives in the `amplihack-cli` library crate.
+    let src = include_str!("../../../crates/amplihack-cli/src/update/check.rs");
     assert!(
         src.contains("is_empty"),
         "classify_skip_reason MUST guard CI / AMPLIHACK_AGENT_BINARY with !is_empty() \
