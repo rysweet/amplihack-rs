@@ -78,6 +78,9 @@ jobs:
       - name: Skill docs — BLOCKED-path steps exist (issue #1255)
         shell: bash
         run: bash tests/issue_1255_blocked_path_steps_exist.sh
+      - name: Publish — a push must land the tested commit (issue #1269)
+        shell: bash
+        run: bash tests/issue_1269_verify_pushed_ref.sh
       - name: Recipes — PR always opens after successful push (issue #495)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-pr-always-opens.sh
