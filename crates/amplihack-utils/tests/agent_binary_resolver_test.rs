@@ -30,12 +30,75 @@ fn env_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// Write a launcher context that matches what `write_launcher_context` in
+/// `launcher_context.rs` actually produces.
+///
+/// The fixture used to emit `created_at` with a fixed 2026-01-01 value. The
+/// real writer emits `timestamp`, so the fixture never matched the shape it
+/// was standing in for -- harmless while nothing read the field, and a silent
+/// failure once the resolver started applying the staleness bound (#1342).
 fn write_launcher_context(repo: &Path, launcher: &str) {
+    write_launcher_context_aged(repo, launcher, 0);
+}
+
+/// Same, but stamped `age_hours` in the past, for exercising the bound.
+fn write_launcher_context_aged(repo: &Path, launcher: &str, age_hours: u64) {
     let runtime = repo.join(".claude").join("runtime");
     fs::create_dir_all(&runtime).unwrap();
-    let body =
-        format!(r#"{{"launcher":"{launcher}","pid":1234,"created_at":"2026-01-01T00:00:00Z"}}"#);
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        .saturating_sub(age_hours * 3600);
+    let body = format!(
+        r#"{{"launcher":"{launcher}","pid":1234,"timestamp":"{}"}}"#,
+        rfc3339_utc(secs)
+    );
     fs::write(runtime.join("launcher_context.json"), body).unwrap();
+}
+
+/// Minimal RFC3339 from a unix timestamp, so the test needs no date crate.
+fn rfc3339_utc(mut secs: u64) -> String {
+    let (mut y, mut days) = (1970u64, secs / 86_400);
+    let tod = secs % 86_400;
+    loop {
+        let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+        let len = if leap { 366 } else { 365 };
+        if days < len {
+            break;
+        }
+        days -= len;
+        y += 1;
+    }
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let months = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut m = 0usize;
+    while days >= months[m] {
+        days -= months[m];
+        m += 1;
+    }
+    secs = tod;
+    format!(
+        "{y:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        m + 1,
+        days + 1,
+        secs / 3600,
+        (secs % 3600) / 60,
+        secs % 60
+    )
 }
 
 fn clear_env() {
@@ -226,4 +289,49 @@ fn validate_binary_name_helper_exposed() {
     assert!(agent_binary::validate_binary_name("evil/bin").is_none());
     assert!(agent_binary::validate_binary_name("").is_none());
     assert!(agent_binary::validate_binary_name(&"x".repeat(64)).is_none());
+}
+
+/// Issue #1342: a launcher context describes a session, and sessions end.
+/// The file that hijacked every workflow under /tmp was five days old --
+/// 5x past a 24-hour bound the codebase already defined and this resolver
+/// alone ignored.
+#[test]
+fn stale_launcher_context_is_ignored() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    clear_env();
+    let tmp = TempDir::new().unwrap();
+    write_launcher_context_aged(tmp.path(), "claude", 5 * 24);
+    assert_eq!(
+        resolve(tmp.path()).unwrap(),
+        "copilot",
+        "a context older than the staleness bound must not decide the binary"
+    );
+}
+
+/// The bound must not be so tight that a context written minutes ago,
+/// by the session actually running, gets thrown away.
+#[test]
+fn fresh_launcher_context_is_honoured() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    clear_env();
+    let tmp = TempDir::new().unwrap();
+    write_launcher_context_aged(tmp.path(), "claude", 1);
+    assert_eq!(resolve(tmp.path()).unwrap(), "claude");
+}
+
+/// A context with no timestamp at all predates the field, so it is old by
+/// definition. Fail closed rather than trusting it.
+#[test]
+fn launcher_context_without_timestamp_is_ignored() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    clear_env();
+    let tmp = TempDir::new().unwrap();
+    let runtime = tmp.path().join(".claude").join("runtime");
+    fs::create_dir_all(&runtime).unwrap();
+    fs::write(
+        runtime.join("launcher_context.json"),
+        r#"{"launcher":"claude","pid":1234}"#,
+    )
+    .unwrap();
+    assert_eq!(resolve(tmp.path()).unwrap(), "copilot");
 }
