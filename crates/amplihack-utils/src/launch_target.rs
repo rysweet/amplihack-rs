@@ -246,6 +246,28 @@ pub const PER_CANDIDATE_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 /// Total probe budget across every candidate (SEC-4).
 pub const TOTAL_PROBE_BUDGET: Duration = Duration::from_secs(10);
 
+/// Second-chance budget for a binary the user named explicitly (issue #1325).
+///
+/// A timeout is evidence about the machine, not the file. `Missing` and
+/// `NotExecutable` are conclusions about the binary; `ProbeTimedOut` only says
+/// the answer did not arrive in time. On a loaded host a healthy cold-start
+/// Node process exceeds three seconds easily — `copilot --version` measured
+/// 607 ms at load 9.5 on the host that reported this, which reached load 163
+/// the same day.
+///
+/// Rejecting on that turns an arbitrary constant into an override of the
+/// user's explicit instruction, and a run dies with "explicit binary override
+/// failed the health gate" naming a binary that is perfectly good.
+///
+/// So a *user-supplied* override gets one more attempt with a far larger
+/// budget before it is called broken. This deliberately does NOT relax the
+/// invariant stated on [`LaunchTarget`] — health stays a filter, never an
+/// annotation, and a target still requires a real version. It only stops a
+/// busy machine being mistaken for a broken install. Candidates amplihack
+/// found itself are unaffected: there the search moves on, which costs
+/// nothing.
+pub const EXPLICIT_OVERRIDE_RETRY_BUDGET: Duration = Duration::from_secs(30);
+
 /// Hard cap on how many candidates are probed.
 const MAX_PROBE_CANDIDATES: usize = 8;
 
@@ -467,7 +489,31 @@ pub fn resolve_from_candidates(tool: &str, candidates: &[(PathBuf, TargetSource)
                     break;
                 };
                 probes += 1;
-                match probe_version(path, PER_CANDIDATE_PROBE_TIMEOUT.min(budget)) {
+                let first = probe_version(path, PER_CANDIDATE_PROBE_TIMEOUT.min(budget));
+                let attempt = match (&first, source) {
+                    // Only the user's own instruction earns a second chance, and
+                    // only for a non-answer (issue #1325).
+                    (
+                        Err(Rejection::ProbeTimedOut),
+                        TargetSource::ExplicitOverride {
+                            user_supplied: true,
+                        },
+                    ) => {
+                        tracing::warn!(
+                            tool,
+                            path = %path.display(),
+                            first_budget = ?PER_CANDIDATE_PROBE_TIMEOUT,
+                            retry_budget = ?EXPLICIT_OVERRIDE_RETRY_BUDGET,
+                            "explicitly named binary did not answer --version in time; \
+                             retrying with a larger budget before calling it broken \
+                             (issue #1325). A timeout is evidence about the machine, \
+                             not the file."
+                        );
+                        probe_version(path, EXPLICIT_OVERRIDE_RETRY_BUDGET)
+                    }
+                    _ => first,
+                };
+                match attempt {
                     Ok(version) => {
                         tracing::debug!(
                             tool,
@@ -2172,6 +2218,74 @@ mod tests {
                 .iter()
                 .any(|(path, _)| path == &broken),
             "falling through must still record why the preference was rejected"
+        );
+    }
+}
+
+#[cfg(test)]
+mod issue_1325_timeout_is_not_brokenness {
+    use super::*;
+
+    /// The retry budget must be meaningfully larger than the first attempt, or
+    /// the second chance is no chance at all under the load that caused #1325.
+    #[test]
+    fn the_retry_budget_is_substantially_larger_than_the_first_attempt() {
+        assert!(
+            EXPLICIT_OVERRIDE_RETRY_BUDGET >= PER_CANDIDATE_PROBE_TIMEOUT * 5,
+            "a retry budget close to the original would not survive the load that \
+             produced this bug: first={PER_CANDIDATE_PROBE_TIMEOUT:?} \
+             retry={EXPLICIT_OVERRIDE_RETRY_BUDGET:?}"
+        );
+    }
+
+    /// The retry must not be reachable through the total budget, which is
+    /// smaller. It is a deliberate exception for one candidate, not a raising
+    /// of the overall ceiling.
+    #[test]
+    fn the_retry_exceeds_the_total_budget_on_purpose() {
+        assert!(
+            EXPLICIT_OVERRIDE_RETRY_BUDGET > TOTAL_PROBE_BUDGET,
+            "the second chance exists precisely because the shared budget is too \
+             small for one explicitly named binary on a busy host"
+        );
+    }
+
+    /// A timeout is a non-answer; the others are conclusions about the file.
+    /// Anything that blurs that distinction reintroduces #1325.
+    #[test]
+    fn only_a_timeout_is_a_non_answer() {
+        // Conclusions: the file itself is wrong.
+        for conclusive in [
+            Rejection::Missing,
+            Rejection::NotAFile,
+            Rejection::NotExecutable,
+            Rejection::NotAbsolute,
+        ] {
+            assert_ne!(
+                conclusive,
+                Rejection::ProbeTimedOut,
+                "a conclusion about the file must never be conflated with a timeout"
+            );
+        }
+        // And the retry path keys on exactly one variant.
+        assert_eq!(Rejection::ProbeTimedOut, Rejection::ProbeTimedOut);
+    }
+
+    /// Only the user's own instruction earns the second chance. A candidate
+    /// amplihack found itself should keep searching instead — retrying there
+    /// would spend 30s per candidate on a slow machine.
+    #[test]
+    fn only_a_user_supplied_override_earns_the_retry() {
+        let user = TargetSource::ExplicitOverride {
+            user_supplied: true,
+        };
+        let amplihack = TargetSource::ExplicitOverride {
+            user_supplied: false,
+        };
+        assert_ne!(
+            user, amplihack,
+            "the two override origins must stay distinguishable, or the retry \
+             would apply to amplihack's own preference and cost 30s per candidate"
         );
     }
 }
