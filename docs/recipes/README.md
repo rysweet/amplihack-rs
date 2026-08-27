@@ -369,46 +369,37 @@ amplihack recipe list
 amplihack recipe show default-workflow
 ```
 
-### Tracking Upstream Changes
+### Recipe discovery and the manifest
 
-The `amplifier-bundle/recipes/` directory contains recipes from Microsoft's upstream repository. To stay in sync with upstream and detect local modifications:
+Recipes are discovered by **filesystem glob**: any `amplifier-bundle/recipes/*.yaml`
+is reachable by its filename stem. There is no registration step — adding the file
+is the registration.
 
-**Create baseline manifest:**
+`_recipe_manifest.json` reads like a registry and is not one. `validate_recipe_manifest`
+(`crates/amplihack-cli/src/commands/install/bundle_compat.rs`) checks only that
+`smart-orchestrator` and the required `smart-*` entries are present with non-empty
+string values. Nothing compares the stored hashes against file content, and nothing
+in the repository regenerates them, so most entries are decorative and several are
+stale against their own files.
 
-```bash
-# Records SHA-256 hash of each recipe file
-amplihack recipe manifest update
-```
-
-**Check for local modifications:**
-
-```bash
-amplihack recipe manifest check
-```
-
-**Sync from upstream:**
-
-```bash
-# Fetches latest from microsoft/amplifier-bundle-recipes
-amplihack recipe sync
-```
-
-This downloads the latest recipes from `https://github.com/microsoft/amplifier-bundle-recipes`, compares against local files, and copies any changes. The manifest is automatically updated after sync.
-
-**Recommended workflow:**
+Earlier revisions of this document described `amplihack recipe manifest update`,
+`amplihack recipe manifest check`, and `amplihack recipe sync`, along with a sync
+flow against an upstream recipes repository. **None of those commands exist.** The
+real subcommands are:
 
 ```bash
-# 1. Create initial manifest (do once)
-amplihack recipe manifest update
-
-# 2. Check periodically for upstream updates
-amplihack recipe sync
-
-# 3. Check for local modifications before committing
-amplihack recipe manifest check
+amplihack recipe run <name|path>    # run a recipe
+amplihack recipe list              # list what is discoverable
+amplihack recipe validate <path>   # validate a recipe file
+amplihack recipe show <name>       # show recipe details
 ```
 
-You can also add this to a git pre-commit hook or CI job to automatically stay in sync.
+`crates/amplihack-cli/tests/issue_1348_documented_cli_commands_exist.rs` keeps this
+honest: it extracts every `amplihack ...` invocation from the docs and fails when one
+names a subcommand the CLI does not define. Documentation that describes a command
+nobody can run is worse than no documentation — it sends a reader looking for a bug
+in their environment.
+
 
 ## Creating Custom Recipes
 
