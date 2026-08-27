@@ -22,6 +22,7 @@ flag, and the structured fields (`verdict`, `no_merge`, `goal_status`,
 - [Why this exists](#why-this-exists)
 - [The canonical extraction pipeline](#the-canonical-extraction-pipeline)
 - [`amplihack orch helper normalise-verdict`](#amplihack-orch-helper-normalise-verdict)
+- [`amplihack orch helper normalise-loop-verdict`](#amplihack-orch-helper-normalise-loop-verdict)
 - [`amplihack session-tree register --json`](#amplihack-session-tree-register---json)
 - [Structured fields by recipe](#structured-fields-by-recipe)
 - [Fail-safe guarantees](#fail-safe-guarantees)
@@ -166,6 +167,39 @@ printf '' | amplihack orch helper normalise-verdict
   `INSUFFICIENT_EVIDENCE`, never `WORK_VERIFIED` (a substring match would fail
   open).
 
+## `amplihack orch helper normalise-loop-verdict`
+
+The sibling normaliser for **loop-health** verdicts (issue #1337). Same shape —
+one already-extracted token on stdin, one canonical token on stdout, exit `0`
+always, case-insensitive **exact-token equality** — but a different token set
+and, critically, a different fail-safe direction.
+
+```
+amplihack orch helper normalise-loop-verdict
+```
+
+| Input token (case-insensitive, exact match) | Canonical output |
+| ------------------------------------------- | ---------------- |
+| `CONTINUE`, `CONTINUING`, `PROCEED`, `KEEP_GOING`, `ANOTHER_ROUND`, `ITERATE` | `CONTINUE` |
+| `DONE`, `COMPLETE`, `COMPLETED`, `FINISHED`, `CONVERGED`, `ADVANCE` | `DONE` |
+| _(anything else, including empty input)_ | `STUCK` |
+
+> **The two normalisers fail in opposite directions, deliberately.** An
+> unreadable *work* verdict resolves to `INSUFFICIENT_EVIDENCE`, which is
+> non-fatal — a recipe with real artifacts must never be hard-failed by a
+> verifier-formatting bug. An unreadable *loop* verdict resolves to `STUCK`,
+> which stops the loop — because the fail-open alternative authorises another
+> round of a loop that is already burning budget for nothing. Do not collapse
+> them into one shared default.
+
+The R2 equality property matters even more here: `DISCONTINUE`,
+`CANNOT_CONTINUE`, `DO_NOT_CONTINUE` and `SHOULD_NOT_CONTINUE` all contain
+`CONTINUE`, and `NOT_DONE` contains `DONE`. Under `str::contains` every one of
+them would fail **open**. Unit tests live beside `normalise_verdict`'s in
+`crates/amplihack-cli/src/commands/orch.rs`.
+
+Full contract: [Loop-Health Evaluator Reference](loop-health-evaluator.md).
+
 ## `amplihack session-tree register --json`
 
 `session-tree register` records a session in the session tree and reports the
@@ -217,6 +251,7 @@ emitted by an agent step as a `parse_json` field and read by an engine
 | C       | `smart-reflect-loop.yaml`                       | `goal_status`         | reviewer `parse_json` field, `reflection_N.goal_status == '…'`        |
 | D1      | `smart-execute-routing.yaml`                    | `status`              | `extract-json \| extract-field --field status --default unknown`      |
 | D2      | `smart-classify-route.yaml`                     | `tree_id`, `depth`    | `session-tree register --json` → `extract-field`                      |
+| E       | `loop-health-evaluator.yaml`                     | `loop_verdict`        | `extract-json --require-field loop_verdict \| extract-field --field loop_verdict --default STUCK \| normalise-loop-verdict` |
 
 ### A1 — TDD work-verifier gate (`verdict`)
 
@@ -317,6 +352,9 @@ Every gate remains fail-closed. The parsing change never weakens these:
   supplied `--default`.
 - `normalise-verdict` resolves any unrecognised or empty verdict to
   `INSUFFICIENT_EVIDENCE`.
+- `normalise-loop-verdict` resolves any unrecognised or empty loop verdict to
+  `STUCK` — never `CONTINUE`. Failing safe on a loop means stopping, not
+  spending another round (issue #1337).
 - The `WARNING` stderr messages, `continue_on_error` settings, additive
   "suppress-only" gate semantics, and `# issue #NNN` defensive branches are
   preserved byte-for-behaviour.
@@ -345,4 +383,6 @@ agent-prose scraping, and are left unchanged:
   non-fatal semantics preserved by finding A3.
 - [Workflow Terminal State](workflow-terminal-state.md) — no-merge and
   auto-merge semantics consumed by finding B.
+- [Loop-Health Evaluator](loop-health-evaluator.md) — the reusable
+  `CONTINUE`/`DONE`/`STUCK` loop-health contract built on this pipeline.
 - How-to: [Read agent verdicts with `orch helper`](../howto/parse-agent-verdicts-with-orch-helper.md).

@@ -23,6 +23,8 @@
   "investigation-report": "44bf278b93cd60c7",
   "investigation-verify": "ee3f2dddd1364295",
   "investigation-workflow": "26d3af6c4a6d323f",
+  "loop-evidence-collector": "820ccfc2066112f2",
+  "loop-health-evaluator": "1b702c7ec6b3d823",
   "n-version-workflow": "de1d775051ce5ce3",
   "oxidizer-workflow": "a32ed52db99486e2",
   "qa-workflow": "5d8ffe53942b4076",

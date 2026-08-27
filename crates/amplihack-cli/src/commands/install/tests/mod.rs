@@ -1,6 +1,7 @@
 use super::*;
 
 mod binary_tests;
+mod claude_command_staging_tests;
 mod deploy_binary_tests;
 mod helpers;
 mod hook_specs;

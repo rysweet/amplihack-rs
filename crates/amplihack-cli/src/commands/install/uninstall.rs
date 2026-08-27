@@ -1,13 +1,24 @@
 //! Native uninstall command.
 
+use super::claude_commands::{claude_commands_dir, claude_commands_scratch_dir};
 use super::hooks::ensure_object;
 use super::manifest::{manifest_path, read_manifest};
 use super::paths::{global_settings_path, staging_amplifier_bundle_dir, staging_claude_dir};
 use super::settings::read_settings_json;
+use crate::claude_plugin::CommandRemoval;
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// Remove `~/.claude/commands/amplihack/` if — and only if — it still matches
+/// the ownership digest recorded at install time.
+fn remove_claude_slash_commands() -> Result<(CommandRemoval, PathBuf)> {
+    let target = claude_commands_dir()?;
+    let manifest = crate::claude_plugin::ownership_manifest_path(&staging_claude_dir()?);
+    let outcome = crate::claude_plugin::remove_managed_claude_commands(&manifest, &target)?;
+    Ok((outcome, target))
+}
 
 pub fn run_uninstall() -> Result<()> {
     let claude_dir = staging_claude_dir()?;
@@ -19,6 +30,45 @@ pub fn run_uninstall() -> Result<()> {
 
     let mut removed_any = false;
     let mut removed_files = 0usize;
+    let mut removed_dirs = 0usize;
+
+    // Issue #1344: install stages the slash commands into Claude's own
+    // discovery directory, so uninstall has to take them back out — otherwise
+    // `/amplihack:lock` keeps resolving after the framework is gone.
+    //
+    // Unlike the `claude_dir`-rooted loops below — `~/.amplihack/.claude` is
+    // amplihack-private, so blind removal there is fine — this target lives
+    // under the *user's* `~/.claude`, where a `my-thing.md` of their own is
+    // perfectly legitimate. So it goes through the same verified-removal
+    // contract as the managed Claude plugin destinations: remove only while
+    // the tree still hashes to what install recorded, otherwise leave it alone
+    // and say so. It runs first because the ownership record it consults lives
+    // under `~/.amplihack/.claude`, which those loops are about to delete.
+    match remove_claude_slash_commands() {
+        Ok((CommandRemoval::Removed, path)) => {
+            removed_any = true;
+            removed_dirs += 1;
+            println!("  🗑️  Removed Claude slash commands at {}", path.display());
+        }
+        Ok((CommandRemoval::Preserved, path)) => {
+            println!(
+                "  ⚠️  Kept {} — its contents no longer match what amplihack staged, \
+                 so it may hold commands of your own",
+                path.display()
+            );
+        }
+        Ok((CommandRemoval::Absent, _)) => {}
+        Err(error) => {
+            println!("  ⚠️  Could not remove Claude slash commands: {error:#}");
+        }
+    }
+    if let Ok(scratch) = claude_commands_scratch_dir()
+        && scratch.exists()
+    {
+        // amplihack-private scratch root; an orphan here is left by an
+        // interrupted install and is never anything but ours.
+        let _ = fs::remove_dir_all(&scratch);
+    }
 
     for file in &manifest.files {
         let target = claude_dir.join(file);
@@ -45,7 +95,6 @@ pub fn run_uninstall() -> Result<()> {
         }
     }
 
-    let mut removed_dirs = 0usize;
     for dir in ["agents/amplihack", "commands/amplihack", "tools/amplihack"] {
         let target = claude_dir.join(dir);
         if target.exists() {

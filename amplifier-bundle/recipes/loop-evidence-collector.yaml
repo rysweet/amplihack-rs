@@ -1,0 +1,194 @@
+name: "loop-evidence-collector"
+description: |
+  Deterministic evidence brick for the loop-health contract (issue #1337).
+  Given the accumulated material of an iterative loop — the history, the last
+  round's raw output, the repository, the findings, the test/CI signals — it
+  emits ONE structured `loop_evidence` object of measured facts: git counts,
+  repeated step durations, repeated output, new/recurring/resolved findings,
+  whether test and CI signals moved, whether the loop is waiting on output
+  that never arrives, and whether a child returned the exit-79 terminal
+  policy refusal.
+
+  Split out of `loop-health-evaluator.yaml` deliberately, not for line count:
+  measurement and judgement are different jobs with different failure modes.
+  Everything here is computable and testable without a model, and a caller
+  that only wants the numbers can invoke this brick alone. The evaluator
+  composes it in four lines, the way every other phase recipe is composed.
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["loop", "convergence", "evidence", "agentic", "issue-1337"]
+# Pager safety: recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
+#
+# Output contract: one step output named `loop_evidence`, `parse_json: true`.
+# Because it parses as an object the runner exports it as
+# `RECIPE_VAR_loop_evidence` (plus flattened `RECIPE_VAR_loop_evidence__*`)
+# and does NOT create a plain `LOOP_EVIDENCE` alias — consumers must read it
+# with the dual-name idiom `${LOOP_EVIDENCE:-${RECIPE_VAR_loop_evidence:-}}`.
+#
+# No step in this file declares a timeout. Per issue #439 the recipe runner
+# owns the ceiling; there is deliberately no seconds-scale or single-digit-
+# minute bound on any step here.
+
+recursion:
+  max_depth: 6
+  max_total_steps: 20
+
+context:
+  # Identity / reporting only — never compared against a limit.
+  loop_name: "unnamed-loop"
+  loop_round_label: ""
+  # Accumulated structured verdicts from every round so far (concatenated JSON
+  # records, newest last) and the raw output of the round just finished.
+  loop_history: ""
+  loop_last_round_output: ""
+  # Machine-checkable progress evidence.
+  loop_repo_path: "."
+  loop_baseline_ref: ""
+  loop_child_exit_code: ""
+  loop_findings_current: ""
+  loop_findings_previous: ""
+  loop_test_signal: ""
+  loop_test_signal_previous: ""
+  loop_ci_signal: ""
+  loop_ci_signal_previous: ""
+
+steps:
+  # ---------------------------------------------------------------------------
+  # Collect the evidence deterministically.
+  #
+  # Everything here is measured, not impressed: git counts, token repetition,
+  # set differences over findings, literal signal comparison. The agentic judge
+  # in loop-health-evaluator gets this AS DATA alongside the raw material, so
+  # its judgement is anchored to observations rather than to a prose summary
+  # of them.
+  # ---------------------------------------------------------------------------
+  - id: "step-01-collect-loop-evidence"
+    type: "bash"
+    command: |
+      set -uo pipefail
+      # Only the JSON object goes to stdout; every diagnostic goes to stderr.
+      REPO="${LOOP_REPO_PATH:-.}"
+      LAST="${LOOP_LAST_ROUND_OUTPUT:-}"
+      HIST="${LOOP_HISTORY:-}"
+      WORK="$(mktemp -d)"
+      trap 'rm -rf "$WORK"' EXIT
+
+      esc() { printf '%s' "${1:-}" | tr -d '\000-\010\013\014\016-\037' \
+        | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr '\n\r\t' '   '; }
+
+      # --- (a) Terminal policy refusal: exit 79 / BLOCKED_TERMINAL -----------
+      # Requirement 4: this is TERMINAL. It is surfaced and it stops the loop;
+      # it is never retried into, and step-02 is skipped entirely so not even a
+      # model call is spent deciding whether to re-enter a sealed guard.
+      #
+      # SELF: every line this brick authors carries this marker and is dropped
+      # before the detectors run. Without it the brick poisons itself — its own
+      # reason string says "exited 79" and re-matches the exit-79 regex below,
+      # so feeding one escalation report back into loop_history would make the
+      # loop permanently terminal on evidence it invented.
+      SELF='[loop-health-evaluator]'
+      TERMINAL="false"; TERMINAL_WHY=""
+      if [ "${LOOP_CHILD_EXIT_CODE:-}" = "79" ]; then
+        TERMINAL="true"; TERMINAL_WHY="child process exited 79 (policy refusal, #1327/#1332) ${SELF}"
+      fi
+      printf '%s\n%s\n' "$HIST" "$LAST" | grep -vF "$SELF" > "$WORK/blob" || true
+      if grep -qF 'BLOCKED_TERMINAL' "$WORK/blob" 2>/dev/null; then
+        TERMINAL="true"
+        TERMINAL_WHY="${TERMINAL_WHY:+$TERMINAL_WHY; }BLOCKED_TERMINAL reported by a child ${SELF}"
+      fi
+      if grep -qE '(exit|status|code)[^0-9]{0,12}79([^0-9]|$)' "$WORK/blob" 2>/dev/null; then
+        TERMINAL="true"
+        TERMINAL_WHY="${TERMINAL_WHY:+$TERMINAL_WHY; }exit code 79 present in round output ${SELF}"
+      fi
+
+      # --- (b) Identical step durations repeating (a cap, not work) ----------
+      # The motivating run showed seven consecutive steps each reporting
+      # exactly `10m 0s`. Identical durations are a ceiling being hit over and
+      # over, not seven units of work.
+      DUR_LINE=$(grep -oE '[0-9]+m [0-9]+s' "$WORK/blob" 2>/dev/null \
+        | sort | uniq -c | sort -rn | head -1)
+      DUR_REPEATS=$(printf '%s' "$DUR_LINE" | awk '{print $1+0}')
+      [ -n "$DUR_REPEATS" ] || DUR_REPEATS=0
+      DUR_VALUE=$(printf '%s' "$DUR_LINE" | awk '{$1=""; sub(/^ */,""); print}')
+
+      # --- (c) Did the last round actually produce a diff / commits? ---------
+      COMMITS=0; DIFF_LINES=0; DIFF_STAT=""; GIT_OBSERVED="false"
+      if git -C "$REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        GIT_OBSERVED="true"
+        BASE="${LOOP_BASELINE_REF:-}"
+        if [ -n "$BASE" ] && git -C "$REPO" rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null 2>&1; then
+          COMMITS=$(git -C "$REPO" rev-list --count "${BASE}..HEAD" 2>/dev/null || echo 0)
+          DIFF_STAT=$(git -C "$REPO" diff --stat "$BASE" 2>/dev/null | tail -1)
+          DIFF_LINES=$(git -C "$REPO" diff --numstat "$BASE" 2>/dev/null \
+            | awk '{a+=$1;d+=$2} END {print a+d+0}')
+        else
+          [ -n "$BASE" ] && echo "WARNING: loop_baseline_ref '${BASE}' is not a resolvable commit; falling back to the working tree diff." >&2
+          DIFF_STAT=$(git -C "$REPO" diff --stat 2>/dev/null | tail -1)
+          DIFF_LINES=$(git -C "$REPO" diff --numstat 2>/dev/null \
+            | awk '{a+=$1;d+=$2} END {print a+d+0}')
+        fi
+      else
+        # The `[skip] not a git repo` token is the marker issue #537 requires:
+        # a git-using step must be both guarded and visibly skipped, and the
+        # guard test looks for this exact string. Absence of evidence is
+        # reported as unobserved, never as progress.
+        echo "[skip] not a git repo: '${REPO}' is not a git work tree; diff/commit evidence is unavailable (reported as unobserved, not as progress)." >&2
+      fi
+      [ -n "$COMMITS" ] || COMMITS=0
+      [ -n "$DIFF_LINES" ] || DIFF_LINES=0
+
+      # --- (d) Findings: new vs recurring vs resolved ------------------------
+      printf '%s\n' "${LOOP_FINDINGS_CURRENT:-}" | sed 's/[[:space:]]*$//' \
+        | grep -v '^[[:space:]]*$' | sort -u > "$WORK/cur" || true
+      printf '%s\n' "${LOOP_FINDINGS_PREVIOUS:-}" | sed 's/[[:space:]]*$//' \
+        | grep -v '^[[:space:]]*$' | sort -u > "$WORK/prev" || true
+      F_NEW=$(comm -23 "$WORK/cur" "$WORK/prev" | grep -c . || true)
+      F_RECUR=$(comm -12 "$WORK/cur" "$WORK/prev" | grep -c . || true)
+      F_RESOLVED=$(comm -13 "$WORK/cur" "$WORK/prev" | grep -c . || true)
+
+      # --- (e) Is the same text simply reappearing? --------------------------
+      # Normalise away digits, punctuation and whitespace so "10m 0s / round 3"
+      # and "10m 0s / round 4" collapse to the same shape.
+      norm() { printf '%s' "${1:-}" | tr 'A-Z' 'a-z' \
+        | tr -cs 'a-z' ' ' | tr -s ' ' | sed -e 's/^ //' -e 's/ $//'; }
+      LAST_NORM=$(norm "$LAST")
+      REPEATED="false"
+      if [ -n "$LAST_NORM" ] && [ "${#LAST_NORM}" -ge 24 ]; then
+        HIST_NORM=$(norm "$HIST")
+        case "$HIST_NORM" in
+          *"$LAST_NORM"*) REPEATED="true" ;;
+        esac
+      fi
+
+      # --- (f) Did tests and CI actually move? -------------------------------
+      TESTS_OBSERVED="false"; TESTS_MOVED="false"
+      if [ -n "${LOOP_TEST_SIGNAL:-}" ] || [ -n "${LOOP_TEST_SIGNAL_PREVIOUS:-}" ]; then
+        TESTS_OBSERVED="true"
+        [ "${LOOP_TEST_SIGNAL:-}" != "${LOOP_TEST_SIGNAL_PREVIOUS:-}" ] && TESTS_MOVED="true"
+      fi
+      CI_OBSERVED="false"; CI_MOVED="false"
+      if [ -n "${LOOP_CI_SIGNAL:-}" ] || [ -n "${LOOP_CI_SIGNAL_PREVIOUS:-}" ]; then
+        CI_OBSERVED="true"
+        [ "${LOOP_CI_SIGNAL:-}" != "${LOOP_CI_SIGNAL_PREVIOUS:-}" ] && CI_MOVED="true"
+      fi
+
+      # --- (g) The agent reporting it is waiting on output that never arrives -
+      WAITING="false"
+      if grep -qiE "(still running|waiting (for|on)|has not (yet )?(returned|completed)|no output yet)" "$WORK/blob" 2>/dev/null; then
+        WAITING="true"
+      fi
+
+      echo "INFO: loop-health evidence for '${LOOP_NAME:-unnamed-loop}' round '${LOOP_ROUND_LABEL:-?}': terminal_refusal=${TERMINAL} commits=${COMMITS} diff_lines=${DIFF_LINES} repeated_durations=${DUR_REPEATS} repeated_output=${REPEATED} findings new/recurring/resolved=${F_NEW}/${F_RECUR}/${F_RESOLVED} tests_moved=${TESTS_MOVED} ci_moved=${CI_MOVED} waiting_on_output=${WAITING}" >&2
+
+      printf '{"terminal_refusal":"%s","terminal_reason":"%s","commits_since_baseline":%s,"diff_lines":%s,"diff_stat":"%s","git_observed":"%s","repeated_duration_count":%s,"repeated_duration_value":"%s","repeated_output":"%s","findings_new":%s,"findings_recurring":%s,"findings_resolved":%s,"tests_observed":"%s","tests_moved":"%s","ci_observed":"%s","ci_moved":"%s","waiting_on_output":"%s"}\n' \
+        "$TERMINAL" "$(esc "$TERMINAL_WHY")" "$COMMITS" "$DIFF_LINES" "$(esc "$DIFF_STAT")" \
+        "$GIT_OBSERVED" "$DUR_REPEATS" "$(esc "$DUR_VALUE")" "$REPEATED" \
+        "$F_NEW" "$F_RECUR" "$F_RESOLVED" \
+        "$TESTS_OBSERVED" "$TESTS_MOVED" "$CI_OBSERVED" "$CI_MOVED" "$WAITING"
+    output: "loop_evidence"
+    parse_json: true
+
+output:
+  format: "json"
+  template: |
+    {{loop_evidence}}

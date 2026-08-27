@@ -25,12 +25,13 @@
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::copilot_setup::jsonc as jsonc_utils;
 
 use super::{
     binary::{validate_binary_path, validate_hook_command_string},
+    command_staging,
     hooks::shell_quote_path,
     paths::home_dir,
 };
@@ -195,93 +196,44 @@ fn copilot_hook_command(bin: &str, subcmd: &str) -> Result<String> {
 
 /// Stage slash-command markdown files into the plugin's `commands/` dir.
 ///
-/// In the bundle layout the canonical command markdowns live at
-/// `<repo>/docs/claude/commands/amplihack/`; in legacy `.claude` checkouts
-/// they live at `<repo>/.claude/commands/amplihack/` (or one parent up).
-/// Both locations are probed; the first match wins.
+/// Source probing and the atomic staging-then-swap live in
+/// [`super::command_staging`] so the Claude Code command directory
+/// (`~/.claude/commands/amplihack/`, see [`super::claude_commands`]) is staged
+/// from the same source by the same mechanism — issue #1344 was this function
+/// being the *only* consumer of that command set.
+///
+/// The Copilot-specific part is the per-file transform: Copilot flattens every
+/// plugin's commands into one namespace and rejects a colon in the frontmatter
+/// `name:`, so `name: amplihack:analyze` is rewritten to `name: analyze`.
 ///
 /// Returns `Ok(true)` if at least one `*.md` was copied — used by
 /// [`write_plugin_manifest`] to decide whether to advertise `commands`.
 fn stage_commands(repo_root: &Path, plugin_dir: &Path) -> Result<bool> {
-    let candidates = [
-        repo_root
-            .join("docs")
-            .join("claude")
-            .join("commands")
-            .join("amplihack"),
-        repo_root.join(".claude").join("commands").join("amplihack"),
-        repo_root
-            .parent()
-            .map(|p| p.join(".claude").join("commands").join("amplihack"))
-            .unwrap_or_default(),
-    ];
-    let source = candidates.iter().find(|p| p.is_dir());
-    let Some(source) = source else {
+    let Some(source) = command_staging::command_source_dir(repo_root) else {
         return Ok(false);
     };
 
     let target = plugin_dir.join("commands");
-    let staging = staging_dir(&target);
-    if staging.exists() {
-        let _ = fs::remove_dir_all(&staging);
-    }
-    fs::create_dir_all(&staging)
-        .with_context(|| format!("failed to create {}", staging.display()))?;
-
-    let mut copied = 0_usize;
-    for entry in
-        fs::read_dir(source).with_context(|| format!("failed to read {}", source.display()))?
-    {
-        let entry = entry?;
-        if entry.file_type()?.is_file()
-            && entry.path().extension().and_then(|e| e.to_str()) == Some("md")
-        {
-            let dst = staging.join(entry.file_name());
-            let body = fs::read_to_string(entry.path())
-                .with_context(|| format!("failed to read {}", entry.path().display()))?;
-            let normalized = normalize_command_frontmatter_name(&entry.path(), &body)?;
-            fs::write(&dst, normalized).with_context(|| {
-                format!(
-                    "failed to write normalized command {} to {}",
-                    entry.path().display(),
-                    dst.display()
-                )
-            })?;
-            copied += 1;
-        }
-    }
-
-    if copied == 0 {
-        let _ = fs::remove_dir_all(&staging);
+    // `<plugin_dir>` is amplihack-private: amplihack creates it, owns every
+    // file in it, and its parent is not a command scan root. So the scratch
+    // dirs may sit beside the target and the swap may replace the directory
+    // wholesale — neither is true of the Claude target (see `claude_commands`).
+    let staged = command_staging::stage_command_files(
+        &command_staging::StageRequest {
+            source: &source,
+            target: &target,
+            scratch_root: plugin_dir,
+            target_is_owned: true,
+        },
+        normalize_command_frontmatter_name,
+    )?;
+    if staged.copied == 0 {
         return Ok(false);
     }
 
-    if target.exists() {
-        let backup = backup_dir(&target);
-        if backup.exists() {
-            let _ = fs::remove_dir_all(&backup);
-        }
-        fs::rename(&target, &backup).with_context(|| {
-            format!(
-                "failed to back up existing {} to {}",
-                target.display(),
-                backup.display()
-            )
-        })?;
-        if let Err(err) = fs::rename(&staging, &target) {
-            let _ = fs::rename(&backup, &target);
-            let _ = fs::remove_dir_all(&staging);
-            return Err(err)
-                .with_context(|| format!("failed to swap commands into {}", target.display()));
-        }
-        let _ = fs::remove_dir_all(&backup);
-    } else {
-        fs::rename(&staging, &target)
-            .with_context(|| format!("failed to move commands into {}", target.display()))?;
-    }
-
     println!(
-        "  ✅ Copilot CLI plugin staged {copied} command(s) at {}",
+        "  ✅ Copilot CLI plugin staged {} command(s) at {}",
+        staged.copied,
         target.display()
     );
     Ok(true)
@@ -433,28 +385,11 @@ fn atomic_write(path: &Path, body: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn staging_dir(target: &Path) -> PathBuf {
-    let mut name = target
-        .file_name()
-        .map(|n| n.to_os_string())
-        .unwrap_or_default();
-    name.push(".staging");
-    target.with_file_name(name)
-}
-
-fn backup_dir(target: &Path) -> PathBuf {
-    let mut name = target
-        .file_name()
-        .map(|n| n.to_os_string())
-        .unwrap_or_default();
-    name.push(".old");
-    target.with_file_name(name)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
     fn fake_repo(td: &TempDir, with_commands: bool) -> PathBuf {

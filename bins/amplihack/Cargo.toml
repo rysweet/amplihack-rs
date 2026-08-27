@@ -482,3 +482,13 @@ path = "../../tests/integration/verus_expert_skill_test.rs"
 [[test]]
 name = "ci_wallclock_parallelize"
 path = "../../tests/integration/ci_wallclock_parallelize_test.rs"
+
+# Issue #1337: reusable agentic loop-health evaluation contract.
+# Pins the loop-health-evaluator brick (three-outcome CONTINUE/DONE/STUCK
+# verdict, evidence collection, exit-79 terminal handling, no numeric
+# iteration cap, no per-step timeout), the `orch helper
+# normalise-loop-verdict` fail-safe-to-STUCK helper, and runs the executable
+# STUCK / malformed-verdict contract test.
+[[test]]
+name = "issue_1337_loop_health_evaluator"
+path = "../../tests/integration/issue_1337_loop_health_evaluator_test.rs"

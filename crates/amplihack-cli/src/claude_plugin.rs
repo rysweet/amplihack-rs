@@ -86,6 +86,12 @@ struct SkillOwnershipManifest {
     skills: Vec<OwnedDestination>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     plugin: Option<OwnedDestination>,
+    /// Ownership of `~/.claude/commands/amplihack/` (issue #1344).
+    ///
+    /// Optional and defaulted so a manifest written before the slash commands
+    /// were staged still parses under `deny_unknown_fields`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    commands: Option<OwnedDestination>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -463,6 +469,90 @@ fn remove_verified_destination(path: &Path, ownership: &OwnedDestination) -> Res
     })
 }
 
+/// Path of the ownership manifest for a staged framework root.
+///
+/// Exposed so the installer and uninstaller can name the same record without
+/// re-deriving the layout, and so tests can point at a temp root.
+pub(crate) fn ownership_manifest_path(staged_framework: &Path) -> PathBuf {
+    skill_ownership_manifest_path(staged_framework)
+}
+
+/// Whether `target` still contains exactly what amplihack last staged into
+/// `~/.claude/commands/amplihack/`.
+///
+/// `false` — including "no record yet" and "the directory is a symlink" —
+/// means the installer must treat the directory's contents as possibly the
+/// user's own and preserve anything it does not itself provide.
+pub(crate) fn claude_commands_are_owned(manifest_path: &Path, target: &Path) -> Result<bool> {
+    let Some(owned) = read_skill_ownership_manifest(manifest_path)?.commands else {
+        return Ok(false);
+    };
+    match fs::symlink_metadata(target) {
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to inspect {}", target.display()));
+        }
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => return Ok(false),
+    }
+    Ok(hash_directory_tree(target)? == owned.content_sha256)
+}
+
+/// Record `target`'s current contents as amplihack-owned.
+///
+/// Called after the command swap completes, so uninstall can later tell an
+/// untouched amplihack command set apart from a directory the user has since
+/// made their own.
+pub(crate) fn record_claude_commands_ownership(manifest_path: &Path, target: &Path) -> Result<()> {
+    let mut ownership = read_skill_ownership_manifest(manifest_path)?;
+    ownership.commands = Some(OwnedDestination {
+        name: PLUGIN_NAME.to_string(),
+        content_sha256: hash_directory_tree(target)?,
+    });
+    write_skill_ownership_manifest(manifest_path, &ownership)
+}
+
+/// Outcome of the uninstall-time removal of the Claude command namespace.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum CommandRemoval {
+    /// Nothing was there.
+    Absent,
+    /// Contents matched the ownership record and were removed.
+    Removed,
+    /// Contents no longer match; the directory was left alone.
+    Preserved,
+}
+
+/// Remove `~/.claude/commands/amplihack/` only while it still matches the
+/// ownership record written at install time.
+///
+/// The directory sits under the user's own `~/.claude`, so an unconditional
+/// `remove_dir_all` here destroys a `my-thing.md` the user put in the same
+/// namespace. This is the `remove_verified_destination` contract the managed
+/// plugin destinations already use: refuse non-directories and symlinks, hash
+/// the tree, and preserve when the hash no longer matches.
+pub(crate) fn remove_managed_claude_commands(
+    manifest_path: &Path,
+    target: &Path,
+) -> Result<CommandRemoval> {
+    if !target.exists() {
+        return Ok(CommandRemoval::Absent);
+    }
+    let Some(owned) = read_skill_ownership_manifest(manifest_path)?.commands else {
+        tracing::warn!(
+            path = %target.display(),
+            "preserving Claude command namespace because amplihack has no ownership record for it"
+        );
+        return Ok(CommandRemoval::Preserved);
+    };
+    remove_verified_destination(target, &owned)?;
+    Ok(if target.exists() {
+        CommandRemoval::Preserved
+    } else {
+        CommandRemoval::Removed
+    })
+}
+
 fn staged_framework_dir() -> Result<PathBuf> {
     Ok(home_dir()?.join(".amplihack").join(".claude"))
 }
@@ -677,6 +767,7 @@ fn sync_canonical_skills(
                 version: SKILL_OWNERSHIP_VERSION,
                 skills,
                 plugin: owned.plugin.clone(),
+                commands: owned.commands.clone(),
             },
         )
     })();
@@ -794,6 +885,7 @@ fn read_skill_ownership_manifest(path: &Path) -> Result<SkillOwnershipManifest> 
                 version: SKILL_OWNERSHIP_VERSION,
                 skills: Vec::new(),
                 plugin: None,
+                commands: None,
             });
         }
         Err(error) => {
@@ -828,6 +920,15 @@ fn read_skill_ownership_manifest(path: &Path) -> Result<SkillOwnershipManifest> 
             bail!("invalid Claude plugin identity '{}'", plugin.name);
         }
         validate_sha256(&plugin.content_sha256)?;
+    }
+    if let Some(commands) = &manifest.commands {
+        if commands.name != PLUGIN_NAME {
+            bail!(
+                "invalid Claude command namespace identity '{}'",
+                commands.name
+            );
+        }
+        validate_sha256(&commands.content_sha256)?;
     }
     Ok(manifest)
 }

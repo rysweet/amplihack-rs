@@ -292,7 +292,8 @@ fn args_should_skip(args: &[OsString]) -> bool {
     }
     // `orch helper <sub>` commands are pure stdin->stdout text-transform
     // primitives (extract-json, extract-field, normalise-type,
-    // normalise-verdict, reclassify-task-type, workflow-log-inventory, ...).
+    // normalise-verdict, normalise-loop-verdict, reclassify-task-type,
+    // workflow-log-inventory, ...).
     // They are invoked *inside* recipe bash pipelines whose output is parsed
     // downstream (issue #1062). A self-heal install would emit its banner onto
     // stdout and corrupt the very pipe these helpers exist to make robust, so
@@ -701,6 +702,7 @@ steps:
         // self-heal install banner on stdout would corrupt recipe pipelines.
         for sub in [
             "normalise-verdict",
+            "normalise-loop-verdict",
             "extract-json",
             "extract-field",
             "normalise-type",

@@ -50,7 +50,18 @@ pub enum OrchHelperCommands {
     /// Mirrors `orch_helper.extract_json`. Tries, in order: ```json blocks,
     /// untagged ``` blocks, then a balanced-brace scan over raw prose.
     /// Prints `{}` if nothing parseable is found (matches the Python).
-    ExtractJson,
+    ///
+    /// With `--require-field NAME`, selection changes deliberately: every JSON
+    /// object in the text is collected in DOCUMENT order and the LAST one
+    /// carrying `NAME` wins (issue #1337). First-object-wins is fail-open for
+    /// a verdict — a model that quotes its input back, or that reconsiders in
+    /// prose after an early draft object, gets the wrong object read.
+    ExtractJson {
+        /// Select the LAST JSON object that carries this field, in document
+        /// order, instead of the first parseable object of any shape.
+        #[arg(long, value_name = "NAME")]
+        require_field: Option<String>,
+    },
 
     /// Read stdin, print the normalised task-type label.
     ///
@@ -69,6 +80,21 @@ pub enum OrchHelperCommands {
     /// pass token and fall through to `INSUFFICIENT_EVIDENCE`. Used by the
     /// verdict-gate recipes (issue #1062, finding A).
     NormaliseVerdict,
+
+    /// Read one already-extracted loop-health verdict token from stdin, print
+    /// the canonical loop verdict token.
+    ///
+    /// Output is one of `CONTINUE`, `DONE`, or `STUCK` (the default for
+    /// unknown, malformed, or empty input). Like [`NormaliseVerdict`] the
+    /// matching is **case-insensitive exact-token equality**, never substring
+    /// — `DISCONTINUE` and `CANNOT_CONTINUE` must not collide with
+    /// `CONTINUE`, and `NOT_DONE` must not collide with `DONE`.
+    ///
+    /// The fail-safe direction is deliberately different from
+    /// `normalise-verdict`: an unreadable loop verdict resolves to `STUCK`
+    /// (stop and escalate), never `CONTINUE` (spend another round). Failing
+    /// safe here means stopping, not looping (issue #1337).
+    NormaliseLoopVerdict,
 
     /// Read decomposition JSON from stdin, print the workstream count.
     ///
@@ -211,6 +237,56 @@ fn scan_raw_braces(text: &str) -> Option<serde_json::Value> {
     None
 }
 
+/// Every JSON object in `text`, in DOCUMENT order.
+///
+/// Unlike [`scan_raw_braces`] this does not stop at the first hit, and on a
+/// hit it advances past the object it just consumed rather than by one byte,
+/// so a nested object is never also reported as a top-level candidate.
+/// Fenced blocks need no special case: a ```json body is raw text too, so the
+/// same left-to-right walk sees the objects inside it at their real position.
+fn collect_json_objects(text: &str) -> Vec<serde_json::Value> {
+    let bytes = text.as_bytes();
+    let mut found = Vec::new();
+    let mut pos = 0usize;
+    while let Some(rel) = bytes[pos..].iter().position(|&b| b == b'{') {
+        let start = pos + rel;
+        let mut stream =
+            serde_json::Deserializer::from_str(&text[start..]).into_iter::<serde_json::Value>();
+        match stream.next() {
+            Some(Ok(v @ serde_json::Value::Object(_))) => {
+                let consumed = stream.byte_offset().max(1);
+                found.push(v);
+                pos = start + consumed;
+            }
+            _ => pos = start + 1,
+        }
+    }
+    found
+}
+
+/// Select the LAST JSON object in `text` that carries `field`.
+///
+/// Issue #1337, finding B3. `extract_json` is first-parseable-object-wins,
+/// which is fail-OPEN for a verdict in both directions:
+///
+///   * a draft object followed by a reconsidered one reads the draft
+///     (`{"loop_verdict":"CONTINUE"}` … "on reflection nothing moved" …
+///     `{"loop_verdict":"STUCK"}` resolved to CONTINUE — the sentence that
+///     should stop the loop authorised it);
+///   * an evaluator that quotes its own evidence back inside a ```json fence
+///     reads the EVIDENCE object, whose missing `loop_verdict` then fails
+///     safe to STUCK and kills a converging loop.
+///
+/// Requiring the field removes the first failure mode; taking the LAST match
+/// removes the second and agrees with the prompt's "as the very last thing
+/// you emit". Returns `None` when no object carries the field, so the
+/// caller's `--default` (STUCK) applies rather than some unrelated object.
+pub fn extract_json_with_field(text: &str, field: &str) -> Option<serde_json::Value> {
+    collect_json_objects(text)
+        .into_iter()
+        .rfind(|v| v.get(field).is_some())
+}
+
 /// Normalise an LLM task-type label to one of `Q&A`, `Operations`,
 /// `Investigation`, `Development` (the default for unknowns).
 ///
@@ -284,6 +360,63 @@ pub fn normalise_verdict(raw: &str) -> &'static str {
     "INSUFFICIENT_EVIDENCE"
 }
 
+/// Normalise an already-extracted **loop-health** verdict token to one of
+/// three canonical tokens: `CONTINUE`, `DONE`, or `STUCK`.
+///
+/// This is the control token of the agentic loop-health evaluation contract
+/// (issue #1337): an evaluator step looks at the accumulated evidence of an
+/// iterative loop and decides whether another round is worth spending
+/// (`CONTINUE`), whether the loop has converged (`DONE`), or whether it is no
+/// longer making progress and must stop and escalate (`STUCK`).
+///
+/// Two properties are security- and cost-critical:
+///
+/// 1. **The default is `STUCK`, not `CONTINUE`.** A missing, malformed, or
+///    unrecognised verdict must stop the loop, never authorise another round.
+///    Failing safe here means stopping — a fail-open default would let exactly
+///    the runaway this contract exists to catch keep burning budget. This is
+///    the opposite direction from [`normalise_verdict`], whose
+///    `INSUFFICIENT_EVIDENCE` default is deliberately non-fatal.
+/// 2. **Matching is case-insensitive exact-token equality, never substring.**
+///    `DISCONTINUE`, `CANNOT_CONTINUE` and `DO_NOT_CONTINUE` all contain
+///    `CONTINUE`, and `NOT_DONE` contains `DONE`; a `str::contains`
+///    implementation would fail **open** on every one of them. Under equality
+///    they fall through to the `STUCK` default.
+///
+/// The input is expected to be one already-extracted token (the output of
+/// `extract-field --field loop_verdict --default STUCK`), not raw agent prose.
+pub fn normalise_loop_verdict(raw: &str) -> &'static str {
+    let t = raw.trim().to_ascii_uppercase();
+    // Kept deliberately tight: only unambiguous "spend another round" tokens.
+    // Anything doubtful belongs in the STUCK default, not here.
+    const CONTINUE: &[&str] = &[
+        "CONTINUE",
+        "CONTINUING",
+        "PROCEED",
+        "KEEP_GOING",
+        "ANOTHER_ROUND",
+        "ITERATE",
+    ];
+    const DONE: &[&str] = &[
+        "DONE",
+        "COMPLETE",
+        "COMPLETED",
+        "FINISHED",
+        "CONVERGED",
+        "ADVANCE",
+    ];
+    if CONTINUE.contains(&t.as_str()) {
+        return "CONTINUE";
+    }
+    if DONE.contains(&t.as_str()) {
+        return "DONE";
+    }
+    // `STUCK`, `STOP`, `BLOCKED`, `NO_PROGRESS`, `ESCALATE`, `LOOPING`,
+    // `NOT_CONVERGING`, every negation-adjacent label, and everything else
+    // (including empty input) collapse to the fail-safe stop token.
+    "STUCK"
+}
+
 /// Read all of stdin into a `String`. Errors if reading fails or the input is
 /// not valid UTF-8 (recipe shell pipes always produce UTF-8 in practice).
 fn read_stdin() -> Result<String> {
@@ -297,9 +430,13 @@ fn read_stdin() -> Result<String> {
 /// CLI entry point for `amplihack orch helper <subcommand>`.
 pub fn run(command: OrchHelperCommands) -> Result<()> {
     match command {
-        OrchHelperCommands::ExtractJson => {
+        OrchHelperCommands::ExtractJson { require_field } => {
             let input = read_stdin()?;
-            let value = extract_json(&input).unwrap_or(serde_json::json!({}));
+            let found = match require_field.as_deref() {
+                Some(field) => extract_json_with_field(&input, field),
+                None => extract_json(&input),
+            };
+            let value = found.unwrap_or(serde_json::json!({}));
             println!("{}", serde_json::to_string(&value)?);
             Ok(())
         }
@@ -311,6 +448,11 @@ pub fn run(command: OrchHelperCommands) -> Result<()> {
         OrchHelperCommands::NormaliseVerdict => {
             let input = read_stdin()?;
             println!("{}", normalise_verdict(&input));
+            Ok(())
+        }
+        OrchHelperCommands::NormaliseLoopVerdict => {
+            let input = read_stdin()?;
+            println!("{}", normalise_loop_verdict(&input));
             Ok(())
         }
         OrchHelperCommands::CountWorkstreams { force_single } => {
@@ -479,14 +621,23 @@ fn has_strong_dev_signals(task: &str) -> bool {
 
 /// Extract `field` from a top-level JSON object. Returns the string form of
 /// scalars (without quotes) and the compact JSON encoding of objects/arrays.
-/// Returns `None` if the input is not a JSON object or the field is missing.
+/// Returns `None` if the input is not a JSON object, the field is missing, or
+/// the field is an explicit JSON `null`.
+///
+/// Issue #1337: an explicit `null` used to return `Some("")`, which silently
+/// bypassed the caller's `--default`. `{"terminal_refusal": null}` therefore
+/// read as "the guard did not fire" instead of taking the `--default true`
+/// fail-safe. A null carries no value, so it is treated exactly like an
+/// absent field and the default applies.
 pub fn extract_field(json: &str, field: &str) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(json.trim()).ok()?;
     let obj = v.as_object()?;
     let val = obj.get(field)?;
+    if val.is_null() {
+        return None;
+    }
     Some(match val {
         serde_json::Value::String(s) => s.clone(),
-        serde_json::Value::Null => String::new(),
         serde_json::Value::Bool(b) => b.to_string(),
         serde_json::Value::Number(n) => n.to_string(),
         other => serde_json::to_string(other).unwrap_or_default(),
@@ -746,6 +897,82 @@ mod tests {
         assert_eq!(v["workstreams"][0]["meta"]["k"], json!(1));
     }
 
+    // --- extract_json_with_field (issue #1337, finding B3) --------------------
+    //
+    // The two measured cases the first-JSON-wins extractor got backwards. Both
+    // are recorded here as a table so a future change to the selection rule
+    // has to answer for them.
+
+    #[test]
+    fn require_field_takes_the_reconsidered_verdict_not_the_draft() {
+        // Measured against the shipped binary: first-object-wins resolved this
+        // to CONTINUE — the sentence that should stop the loop authorised it.
+        let input = concat!(
+            "{\"plan\":\"check\",\"loop_verdict\":\"CONTINUE\"}\n",
+            "On reflection nothing moved.\n",
+            "{\"loop_verdict\":\"STUCK\",\"not_converging\":[\"zero commits\"]}\n",
+        );
+        assert_eq!(
+            extract_json(input).expect("first-object-wins picks the draft")["loop_verdict"],
+            json!("CONTINUE"),
+            "guard: this documents the OLD behaviour the fix replaces"
+        );
+        let v = extract_json_with_field(input, "loop_verdict").expect("must find a verdict");
+        assert_eq!(v["loop_verdict"], json!("STUCK"));
+    }
+
+    #[test]
+    fn require_field_ignores_evidence_the_evaluator_quotes_back_in_a_fence() {
+        // The mirror case, which the prompt itself invites by showing the
+        // evidence inside a ```json fence: first-object-wins picked the
+        // EVIDENCE object, whose missing `loop_verdict` failed safe to STUCK
+        // and killed a converging loop.
+        let input = concat!(
+            "Here is the evidence I was given:\n",
+            "```json\n{\"commits_since_baseline\": 3, \"diff_lines\": 120}\n```\n",
+            "It moved. Verdict:\n",
+            "{\"loop_verdict\": \"CONTINUE\", \"moved\": [\"3 commits\"]}\n",
+        );
+        assert!(
+            extract_json(input).expect("first-object-wins picks the evidence")["loop_verdict"]
+                .is_null(),
+            "guard: this documents the OLD behaviour the fix replaces"
+        );
+        let v = extract_json_with_field(input, "loop_verdict").expect("must find a verdict");
+        assert_eq!(v["loop_verdict"], json!("CONTINUE"));
+        assert_eq!(v["moved"], json!(["3 commits"]));
+    }
+
+    #[test]
+    fn require_field_returns_none_when_no_object_carries_it() {
+        // No object carries the field -> None, so the caller's `--default`
+        // (STUCK) applies. Never fall back to an unrelated object.
+        let input = "```json\n{\"commits_since_baseline\": 3}\n```\nI could not decide.";
+        assert!(extract_json_with_field(input, "loop_verdict").is_none());
+        assert!(extract_json_with_field("no json at all", "loop_verdict").is_none());
+        assert!(extract_json_with_field("", "loop_verdict").is_none());
+    }
+
+    #[test]
+    fn require_field_does_not_mistake_a_nested_object_for_the_verdict() {
+        // The verdict object embeds a nested object that also has the key.
+        // Document-order collection must not report the nested one separately,
+        // or "last wins" would read the inner value.
+        let input = "{\"loop_verdict\":\"STUCK\",\"echo\":{\"loop_verdict\":\"CONTINUE\"}}";
+        let v = extract_json_with_field(input, "loop_verdict").expect("must find a verdict");
+        assert_eq!(v["loop_verdict"], json!("STUCK"));
+    }
+
+    #[test]
+    fn require_field_survives_braces_inside_string_values() {
+        let input = concat!(
+            "{\"loop_verdict\":\"CONTINUE\",\"note\":\"a } brace and a { brace\"}\n",
+            "{\"loop_verdict\":\"DONE\",\"note\":\"trailing } brace\"}\n",
+        );
+        let v = extract_json_with_field(input, "loop_verdict").expect("must find a verdict");
+        assert_eq!(v["loop_verdict"], json!("DONE"));
+    }
+
     // --- normalise_type ------------------------------------------------------
 
     #[test]
@@ -868,6 +1095,126 @@ mod tests {
                 "{s:?} must NOT collide with a pass token"
             );
         }
+    }
+
+    // --- normalise_loop_verdict (issue #1337) --------------------------------
+
+    #[test]
+    fn normalise_loop_verdict_continue_synonyms() {
+        for s in [
+            "CONTINUE",
+            "CONTINUING",
+            "PROCEED",
+            "KEEP_GOING",
+            "ANOTHER_ROUND",
+            "ITERATE",
+            "continue",
+            "  Proceed  ",
+        ] {
+            assert_eq!(normalise_loop_verdict(s), "CONTINUE", "{s:?}");
+        }
+    }
+
+    #[test]
+    fn normalise_loop_verdict_done_synonyms() {
+        for s in [
+            "DONE",
+            "COMPLETE",
+            "COMPLETED",
+            "FINISHED",
+            "CONVERGED",
+            "ADVANCE",
+            "done",
+        ] {
+            assert_eq!(normalise_loop_verdict(s), "DONE", "{s:?}");
+        }
+    }
+
+    #[test]
+    fn normalise_loop_verdict_stuck_synonyms() {
+        for s in [
+            "STUCK",
+            "STOP",
+            "BLOCKED",
+            "NO_PROGRESS",
+            "ESCALATE",
+            "LOOPING",
+            "NOT_CONVERGING",
+            "stuck",
+        ] {
+            assert_eq!(normalise_loop_verdict(s), "STUCK", "{s:?}");
+        }
+    }
+
+    #[test]
+    fn normalise_loop_verdict_canonical_tokens_pass_through() {
+        for s in ["CONTINUE", "DONE", "STUCK"] {
+            assert_eq!(
+                normalise_loop_verdict(s),
+                s,
+                "{s:?} must pass through unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn normalise_loop_verdict_malformed_and_empty_default_to_stuck() {
+        // Issue #1337 core guarantee: a missing or unparseable verdict is
+        // treated as STUCK, NEVER as CONTINUE. Failing safe means stopping,
+        // not spending another round of an already-unproductive loop.
+        for s in [
+            "",
+            "   ",
+            "\n",
+            "banana",
+            "The review workflow is still running; I'm waiting for its structured findings.",
+            "{}",
+            "null",
+            "MAYBE",
+            "UNKNOWN",
+            "INSUFFICIENT_EVIDENCE",
+        ] {
+            assert_eq!(
+                normalise_loop_verdict(s),
+                "STUCK",
+                "{s:?} must fail safe to STUCK"
+            );
+        }
+    }
+
+    #[test]
+    fn normalise_loop_verdict_negation_adjacent_never_collides_with_continue_or_done() {
+        // Equality, not containment. Every token here CONTAINS a permissive
+        // token as a substring; a `str::contains` implementation would fail
+        // OPEN and authorise another round of a dead loop.
+        for s in [
+            "DISCONTINUE",
+            "CANNOT_CONTINUE",
+            "DO_NOT_CONTINUE",
+            "SHOULD_NOT_CONTINUE",
+            "NOT_DONE",
+            "NOT_COMPLETE",
+            "NOT_COMPLETED",
+            "UNFINISHED",
+            "NOT_CONVERGED",
+        ] {
+            assert_eq!(
+                normalise_loop_verdict(s),
+                "STUCK",
+                "{s:?} must NOT collide with CONTINUE/DONE"
+            );
+        }
+    }
+
+    #[test]
+    fn normalise_loop_verdict_default_is_stuck_not_the_verdict_default() {
+        // The two normalisers fail in opposite directions on purpose: an
+        // unreadable work verdict is non-fatal (INSUFFICIENT_EVIDENCE), an
+        // unreadable loop verdict stops the loop (STUCK). Guard against a
+        // future refactor collapsing them into one shared default.
+        assert_eq!(normalise_verdict("garbage"), "INSUFFICIENT_EVIDENCE");
+        assert_eq!(normalise_loop_verdict("garbage"), "STUCK");
+        assert_ne!(normalise_loop_verdict("garbage"), "CONTINUE");
     }
 
     #[test]
@@ -1116,7 +1463,24 @@ mod tests {
             extract_field(r#"{"o": {"x": 1}}"#, "o"),
             Some(r#"{"x":1}"#.to_string())
         );
-        assert_eq!(extract_field(r#"{"x": null}"#, "x"), Some(String::new()));
+    }
+
+    #[test]
+    fn extract_field_treats_explicit_null_as_absent_so_the_default_applies() {
+        // Issue #1337: `--default true` is the fail-safe the loop-health gate
+        // leans on hardest. A null that returned Some("") walked straight past
+        // it, so `{"terminal_refusal": null}` read as "the guard did not fire".
+        assert_eq!(extract_field(r#"{"x": null}"#, "x"), None);
+        assert_eq!(
+            extract_field(r#"{"terminal_refusal": null}"#, "terminal_refusal"),
+            None
+        );
+        // An empty STRING is still a value the caller asked for, not an absence.
+        assert_eq!(
+            extract_field(r#"{"x": ""}"#, "x"),
+            Some(String::new()),
+            "an explicit empty string must NOT be swallowed by the default"
+        );
     }
 
     // --- reclassify_task_type (#269) -----------------------------------------
