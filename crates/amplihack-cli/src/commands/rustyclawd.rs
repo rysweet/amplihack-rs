@@ -133,9 +133,6 @@ mod tests {
     use super::*;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     /// Issue #1276 — the origin the launch is threaded is a function of what
     /// was found, and it is pinned without writing the process environment.
@@ -163,7 +160,7 @@ mod tests {
 
     #[test]
     fn finds_custom_rustyclawd_path() {
-        let _guard = ENV_LOCK
+        let _guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = tempfile::tempdir().unwrap();
@@ -188,7 +185,7 @@ mod tests {
 
     #[test]
     fn finds_rustyclawd_before_claude_code_on_path() {
-        let _guard = ENV_LOCK
+        let _guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = tempfile::tempdir().unwrap();

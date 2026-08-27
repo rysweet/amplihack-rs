@@ -291,12 +291,6 @@ fn load_routing_prompt(dirs: &ProjectDirs) -> String {
 mod tests {
     use super::*;
     use std::fs;
-    use std::sync::{Mutex, OnceLock};
-
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
 
     /// Issue #1328: a prompt amplihack wrote for its own recipe step is never a
     /// human changing topic. This is the case that produced the cascade -- the
@@ -455,7 +449,7 @@ mod tests {
 
     #[test]
     fn load_routing_prompt_uses_amplihack_root_override() {
-        let _guard = env_lock()
+        let _guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let project = tempfile::tempdir().unwrap();

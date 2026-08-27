@@ -101,16 +101,9 @@ impl PathResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::env_lock;
     use serde_json::json;
     use std::path::Path;
-    use std::sync::{Mutex, OnceLock};
-
-    /// Serialize tests that mutate the shared `PLUGIN_ROOT` env var so they
-    /// don't race under Rust's parallel test runner.
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
 
     #[test]
     fn resolve_absolute_unchanged() {

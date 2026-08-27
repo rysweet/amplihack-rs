@@ -398,10 +398,6 @@ fn with_amplihack_home_rejects_traversal_path() {
 // via a single mutex, snapshot every relevant key on entry, scrub them, run
 // the assertion, then restore originals on drop (RAII).
 
-use std::sync::Mutex;
-
-static AGENT_BINARY_ENV_LOCK: Mutex<()> = Mutex::new(());
-
 const TRACKED_EXACT: &[&str] = &[
     "AMPLIHACK_AGENT_BINARY",
     "COPILOT_AGENT_SESSION_ID",
@@ -466,8 +462,12 @@ impl Drop for EnvSnapshot {
     }
 }
 
+/// Issue #1380: a local name for the crate's one environment lock, not a
+/// second lock. These tests scrub the agent-detection variables, which sibling
+/// modules read, so they must exclude every other env-mutating test in the
+/// binary -- not just each other.
 fn lock_agent_env() -> std::sync::MutexGuard<'static, ()> {
-    AGENT_BINARY_ENV_LOCK
+    crate::test_support::env_lock()
         .lock()
         .unwrap_or_else(|p| p.into_inner())
 }

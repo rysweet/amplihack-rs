@@ -6,6 +6,8 @@ pub mod migration;
 pub mod mode_detector;
 pub mod path_resolver;
 pub mod strategies;
+#[cfg(test)]
+pub(crate) mod test_support;
 
 pub use launcher_detector::{LauncherContext, LauncherDetector, LauncherType};
 pub use lsp_detector::LSPDetector;

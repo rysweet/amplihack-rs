@@ -2,9 +2,6 @@ use super::builder::EnvBuilder;
 use super::helpers::*;
 use std::env;
 use std::path::PathBuf;
-use std::sync::Mutex;
-
-static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 fn restore_var(name: &str, previous: Option<std::ffi::OsString>) {
     match previous {
@@ -77,7 +74,7 @@ fn with_amplihack_session_id_sets_vars() {
 
 #[test]
 fn with_session_tree_context_preserves_existing_values() {
-    let _guard = ENV_LOCK
+    let _guard = crate::test_support::env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let prev_tree = env::var_os("AMPLIHACK_TREE_ID");
@@ -118,7 +115,7 @@ fn with_session_tree_context_preserves_existing_values() {
 
 #[test]
 fn with_incremented_session_tree_context_increments_depth() {
-    let _guard = ENV_LOCK
+    let _guard = crate::test_support::env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let prev_tree = env::var_os("AMPLIHACK_TREE_ID");

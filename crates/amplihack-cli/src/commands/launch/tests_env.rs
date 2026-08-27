@@ -776,7 +776,7 @@ fn persist_launcher_context_still_persists_a_real_session() {
 /// honoured by the resolver that reads it.
 #[test]
 fn a_persisted_context_round_trips_through_the_resolver() {
-    let _guard = crate::test_env_lock()
+    let _guard = crate::test_support::env_lock()
         .lock()
         .unwrap_or_else(|p| p.into_inner());
     for tool in ["claude", "copilot", "codex", "amplifier"] {

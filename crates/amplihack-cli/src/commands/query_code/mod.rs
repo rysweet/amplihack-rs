@@ -69,13 +69,7 @@ mod tests {
     };
     use amplihack_memory::cli_memory::ffi_test_support::{GraphDbValue, init_graph_backend_schema};
     use std::fs;
-    use std::sync::{Mutex, OnceLock};
     use time::OffsetDateTime;
-
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
 
     fn seed_code_graph(db_path: &Path) {
         let dir = tempfile::tempdir().unwrap();
@@ -234,7 +228,7 @@ mod tests {
 
     #[test]
     fn code_graph_compatibility_notice_surfaces_legacy_env_alias() {
-        let _guard = env_lock()
+        let _guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let previous_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
@@ -266,7 +260,7 @@ mod tests {
 
     #[test]
     fn code_graph_compatibility_notice_surfaces_legacy_store() {
-        let _guard = env_lock()
+        let _guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = tempfile::tempdir().unwrap();

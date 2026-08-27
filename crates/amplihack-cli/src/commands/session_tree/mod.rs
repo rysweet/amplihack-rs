@@ -398,49 +398,77 @@ pub(crate) fn gc_in(
 mod tests {
     use super::state::TreeState;
     use super::*;
-    use serial_test_lock::SerialLock;
     use tempfile::TempDir;
 
-    // Module-private serial lock — TMPDIR mutation must not race other tests.
-    mod serial_test_lock {
-        use std::sync::OnceLock;
-        use std::sync::{Mutex, MutexGuard};
-        pub struct SerialLock;
-        impl SerialLock {
-            pub fn acquire() -> MutexGuard<'static, ()> {
-                static LK: OnceLock<Mutex<()>> = OnceLock::new();
-                LK.get_or_init(|| Mutex::new(()))
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
+    /// Every variable `isolated_env` takes ownership of for the length of a test.
+    const TREE_ENV_KEYS: &[&str] = &[
+        "AMPLIHACK_SESSION_TREE_DIR",
+        "AMPLIHACK_TREE_ID",
+        "AMPLIHACK_SESSION_DEPTH",
+        "AMPLIHACK_MAX_DEPTH",
+        "AMPLIHACK_MAX_SESSIONS",
+    ];
+
+    /// A private tree directory, the crate env lock, and the caller's previous
+    /// environment — all released together, in that order, on drop.
+    ///
+    /// Issue #1380: this used to be handed back as a `(TempDir, MutexGuard)`
+    /// pair, and the two bindings dropped independently. The lock was released
+    /// while `AMPLIHACK_SESSION_TREE_DIR` still named the temp dir, and the temp
+    /// dir was deleted immediately after — so the next test to take the lock
+    /// inherited a tree directory that was already gone. That is how
+    /// `failed to rename /tmp/.tmpXXXX/<hash>.json` (#1369) surfaced in tests
+    /// that never touched the session tree. One guard makes the restore happen
+    /// before either the lock or the directory can go away.
+    struct IsolatedEnv {
+        saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+        _dir: TempDir,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for IsolatedEnv {
+        fn drop(&mut self) {
+            for (key, previous) in self.saved.drain(..) {
+                match previous {
+                    Some(value) => unsafe { std::env::set_var(key, value) },
+                    None => unsafe { std::env::remove_var(key) },
+                }
             }
         }
     }
 
-    fn isolated_env() -> (TempDir, std::sync::MutexGuard<'static, ()>) {
-        // Issue #1329: one lock for the whole crate. This used a module-private
-        // ENV_LOCK, which does not serialise against tests in sibling modules that
-        // read the same variables -- so a tree directory could be swapped out from
-        // under a test that had "isolated" itself.
-        let g = crate::test_env_lock()
+    fn isolated_env() -> IsolatedEnv {
+        // Issue #1329/#1380: one lock for the whole crate. A module-private lock
+        // does not serialise against tests in sibling modules that read the same
+        // variables -- so a tree directory could be swapped out from under a test
+        // that had "isolated" itself.
+        let lock = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         // Anchor to /tmp directly; do NOT mutate the global TMPDIR — other
         // crate tests anchor `TempDir::new()` against it concurrently.
-        let td = TempDir::new_in("/tmp").unwrap();
+        let dir = TempDir::new_in("/tmp").unwrap();
+        let saved = TREE_ENV_KEYS
+            .iter()
+            .map(|key| (*key, std::env::var_os(key)))
+            .collect();
         unsafe {
-            std::env::set_var("AMPLIHACK_SESSION_TREE_DIR", td.path().join("trees"));
+            std::env::set_var("AMPLIHACK_SESSION_TREE_DIR", dir.path().join("trees"));
             std::env::remove_var("AMPLIHACK_TREE_ID");
             std::env::remove_var("AMPLIHACK_SESSION_DEPTH");
             std::env::remove_var("AMPLIHACK_MAX_DEPTH");
             std::env::remove_var("AMPLIHACK_MAX_SESSIONS");
         }
-        (td, g)
+        IsolatedEnv {
+            saved,
+            _dir: dir,
+            _lock: lock,
+        }
     }
 
     #[test]
     fn register_root_creates_tree_and_writes_state() {
-        let _serial = SerialLock::acquire();
-        let (_td, _env) = isolated_env();
+        let _env = isolated_env();
         let ctx = tree_context();
         // Pre-set tree_id so the test is deterministic.
         let tree_id = "regroot".to_string();
@@ -478,8 +506,7 @@ mod tests {
 
     #[test]
     fn check_at_max_depth_blocks() {
-        let _serial = SerialLock::acquire();
-        let (_td, _env) = isolated_env();
+        let _env = isolated_env();
         unsafe {
             std::env::set_var("AMPLIHACK_SESSION_DEPTH", "3");
             std::env::set_var("AMPLIHACK_MAX_DEPTH", "3");
@@ -492,8 +519,7 @@ mod tests {
 
     #[test]
     fn check_below_max_depth_allows_when_no_tree() {
-        let _serial = SerialLock::acquire();
-        let (_td, _env) = isolated_env();
+        let _env = isolated_env();
         unsafe {
             std::env::set_var("AMPLIHACK_SESSION_DEPTH", "0");
             std::env::set_var("AMPLIHACK_MAX_DEPTH", "3");
@@ -505,8 +531,7 @@ mod tests {
 
     #[test]
     fn complete_marks_session_done() {
-        let _serial = SerialLock::acquire();
-        let (_td, _env) = isolated_env();
+        let _env = isolated_env();
         let tree_id = "comp".to_string();
         let dir = state_dir().unwrap();
         with_locked_tree(&dir, &tree_id, |path| {

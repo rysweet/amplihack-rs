@@ -970,21 +970,26 @@ mod tests {
     fn state_dir_has_restrictive_permissions() {
         // Issue #1329: take the crate-wide env lock. This test mutated
         // AMPLIHACK_SESSION_TREE_DIR unserialised, which races every other test that
-        // reads the session-tree location.
-        let _lock = crate::test_env_lock()
+        // reads the session-tree location. Issue #1380: that lock is now the crate's
+        // only one, in `test_support`.
+        let _lock = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let td = TempDir::new_in("/tmp").unwrap();
         // Set the session-tree-specific override; do NOT mutate global TMPDIR
         // because other parallel tests anchor `TempDir::new()` against it.
+        let previous = std::env::var_os("AMPLIHACK_SESSION_TREE_DIR");
         unsafe {
             std::env::set_var("AMPLIHACK_SESSION_TREE_DIR", td.path().join("trees"));
         }
         let dir = state_dir().unwrap();
         let mode = fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700, "state dir mode should be 0700, got {mode:o}");
-        unsafe {
-            std::env::remove_var("AMPLIHACK_SESSION_TREE_DIR");
+        // Restore rather than unset: an ambient value belongs to whoever set it,
+        // and the lock is still held so the restore is not observable mid-flight.
+        match previous {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_SESSION_TREE_DIR", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_SESSION_TREE_DIR") },
         }
     }
 }

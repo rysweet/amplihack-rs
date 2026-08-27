@@ -1,12 +1,7 @@
 use super::*;
+use crate::test_support::env_lock;
 use std::fs;
-use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
-
-fn env_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-}
 
 fn temp_test_dir(name: &str) -> PathBuf {
     let unique = SystemTime::now()

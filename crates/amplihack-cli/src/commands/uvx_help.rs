@@ -82,13 +82,10 @@ fn print_uvx_usage_instructions() {
 mod tests {
     use super::*;
     use std::fs;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn prefers_amplihack_root_environment_variable() {
-        let _guard = ENV_LOCK
+        let _guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = tempfile::tempdir().unwrap();
@@ -108,7 +105,7 @@ mod tests {
 
     #[test]
     fn staged_home_is_used_as_fallback() {
-        let _guard = ENV_LOCK
+        let _guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = tempfile::tempdir().unwrap();

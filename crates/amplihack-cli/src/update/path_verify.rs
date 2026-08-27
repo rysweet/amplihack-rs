@@ -159,6 +159,13 @@ mod tests {
     /// find at least the one it is running as, or the check is inert.
     #[test]
     fn the_probe_finds_copies_on_this_host() {
+        // Issue #1380: this reads PATH, and sibling tests point PATH at a tempdir
+        // holding one stub binary while they run. A reader has to take the same
+        // lock as the writers or it observes a PATH with no amplihack on it and
+        // fails for reasons that have nothing to do with the probe.
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         // Deliberately asks for a version nothing can be, so every copy found is
         // reported stale -- this asserts discovery, not the comparison.
         let found = stale_copies_on_path("0.0.0-nonexistent").unwrap_or_default();

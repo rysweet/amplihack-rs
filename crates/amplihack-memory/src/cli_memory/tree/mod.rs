@@ -144,12 +144,6 @@ mod backend_tests {
 mod tests {
     use super::*;
     use crate::test_support::home_env_lock;
-    use std::sync::{Mutex, OnceLock};
-
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
 
     #[test]
     fn render_tree_matches_python_shape() {
@@ -197,7 +191,7 @@ mod tests {
 
     #[test]
     fn memory_graph_compatibility_notice_surfaces_legacy_env_alias() {
-        let _guard = env_lock()
+        let _guard = home_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let previous_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
@@ -225,10 +219,10 @@ mod tests {
 
     #[test]
     fn memory_graph_compatibility_notice_surfaces_legacy_store() {
-        let _home_guard = home_env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _guard = env_lock()
+        // Issue #1380: one acquisition. This test used to take `home_env_lock()`
+        // and a module-private `env_lock()`, which were two different mutexes; they
+        // are now the same one, and `std::sync::Mutex` is not reentrant.
+        let _guard = home_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let home = tempfile::tempdir().unwrap();

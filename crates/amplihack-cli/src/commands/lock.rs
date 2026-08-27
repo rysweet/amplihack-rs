@@ -115,10 +115,7 @@ pub fn run_check() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
     use tempfile::TempDir;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     struct EnvGuard {
         prev: Option<std::ffi::OsString>,
@@ -143,7 +140,9 @@ mod tests {
 
     #[test]
     fn lock_creates_lock_file_and_message() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let tmp = TempDir::new().unwrap();
         let _env = EnvGuard::set(tmp.path());
 
@@ -163,7 +162,9 @@ mod tests {
 
     #[test]
     fn lock_when_already_locked_is_idempotent_and_updates_message() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let tmp = TempDir::new().unwrap();
         let _env = EnvGuard::set(tmp.path());
 
@@ -176,7 +177,9 @@ mod tests {
 
     #[test]
     fn lock_without_message_creates_only_lock_file() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let tmp = TempDir::new().unwrap();
         let _env = EnvGuard::set(tmp.path());
 
@@ -190,7 +193,9 @@ mod tests {
 
     #[test]
     fn unlock_removes_lock_and_message_files() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let tmp = TempDir::new().unwrap();
         let _env = EnvGuard::set(tmp.path());
 
@@ -205,7 +210,9 @@ mod tests {
 
     #[test]
     fn unlock_when_not_locked_is_noop() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let tmp = TempDir::new().unwrap();
         let _env = EnvGuard::set(tmp.path());
 
@@ -214,7 +221,9 @@ mod tests {
 
     #[test]
     fn check_reports_active_and_inactive_states() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let tmp = TempDir::new().unwrap();
         let _env = EnvGuard::set(tmp.path());
 
@@ -227,7 +236,9 @@ mod tests {
 
     #[test]
     fn project_root_falls_back_to_cwd_without_env() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let prev = std::env::var_os("CLAUDE_PROJECT_DIR");
         unsafe { std::env::remove_var("CLAUDE_PROJECT_DIR") };
         let cwd = std::env::current_dir().unwrap();
