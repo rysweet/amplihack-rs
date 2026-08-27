@@ -63,6 +63,14 @@ pub(crate) enum FailureClass {
     /// The work itself failed: a test failed, code did not compile, an
     /// assertion blew up, a policy guard refused. Never mechanically retried.
     Work,
+    /// An account usage / session limit was reached. Issue #1390: this is a
+    /// *temporary* fault that names its own reset time, but it is NOT the same
+    /// as a transport hiccup. The mechanical retry budget is measured in
+    /// minutes; a usage limit resets hours later. Retrying inside the budget
+    /// would burn every attempt and still fail, so this is not mechanically
+    /// retryable — but calling it `Indeterminate` told the operator nothing was
+    /// known when in fact the cause and its reset time were stated plainly.
+    UsageLimit,
     /// Nothing in the evidence identifies the failure. Treated as terminal —
     /// "we do not know" is not a licence to retry.
     Indeterminate,
@@ -74,6 +82,7 @@ impl FailureClass {
             Self::TransientTransport => "transient_transport",
             Self::Environmental => "environmental",
             Self::Work => "work",
+            Self::UsageLimit => "usage_limit",
             Self::Indeterminate => "indeterminate",
         }
     }
@@ -101,6 +110,21 @@ pub(crate) struct FailureVerdict {
 impl FailureVerdict {
     /// One-line human summary naming the class and the deciding marker.
     pub(crate) fn reasoning(&self) -> String {
+        // Issue #1390: a usage limit states its own reset time. Quoting it is
+        // the difference between "something went wrong" and "come back at
+        // 9:20am"; the operator should not have to re-read the raw log.
+        if self.class == FailureClass::UsageLimit {
+            let when = usage_limit_reset_hint(&self.evidence)
+                .map(|hint| format!("; it resets {hint}"))
+                .unwrap_or_default();
+            return format!(
+                "classified `usage_limit` — evidence contains {:?}{when}. This is \
+                 temporary and NOT a work failure, but it is not retried inside the \
+                 mechanical budget: that budget is minutes long and a usage limit \
+                 outlasts it. Wait for the reset and resume.",
+                self.signal.unwrap_or("a usage limit marker")
+            );
+        }
         match self.signal {
             Some(signal) => format!(
                 "classified `{}` — evidence contains {signal:?}",
@@ -215,6 +239,43 @@ const WORK_MARKERS: &[&str] = &[
     "orchestration_unavailable",
 ];
 
+/// Markers for an account usage / session limit (issue #1390).
+///
+/// These are deliberately NOT in `TRANSIENT_MARKERS`. A 429 or an overload
+/// envelope clears in seconds and is worth retrying inside the budget. A usage
+/// limit clears when the stated reset time arrives, which is typically hours
+/// away -- retrying it inside a minutes-long budget cannot succeed.
+///
+/// Note what is absent: a bare "rate limit". That phrase belongs to the
+/// short-lived envelopes above and must keep its existing meaning.
+const USAGE_LIMIT_MARKERS: &[&str] = &[
+    "session limit",
+    "usage limit",
+    "usage_limit_reached",
+    "quota exceeded",
+    "monthly limit",
+    "credit balance is too low",
+];
+
+/// The reset time a usage-limit message carries, if it states one. Returned
+/// verbatim rather than parsed into a timestamp: the operator needs to read it,
+/// and inventing a timezone we were not given would be worse than quoting it.
+pub(crate) fn usage_limit_reset_hint(text: &str) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    let at = lower.find("resets ")?;
+    let rest = &text[at + "resets ".len()..];
+    let hint: String = rest
+        .chars()
+        .take_while(|c| *c != '\n' && *c != '\r')
+        .collect();
+    let hint = hint.trim();
+    if hint.is_empty() {
+        None
+    } else {
+        Some(hint.to_string())
+    }
+}
+
 /// Classify a blob of failure evidence. Pure: same text in, same verdict out.
 ///
 /// Precedence is `Work` > `Environmental` > `TransientTransport`. Ambiguity
@@ -228,6 +289,12 @@ pub(crate) fn classify_failure_text(text: &str) -> (FailureClass, Option<&'stati
     }
     if let Some(marker) = first_match(&haystack, ENVIRONMENTAL_MARKERS) {
         return (FailureClass::Environmental, Some(marker));
+    }
+    // Before TRANSIENT_MARKERS: a usage-limit response frequently arrives
+    // wrapped in a 429 envelope, and "retry in a moment" is the wrong reading
+    // of it (#1390).
+    if let Some(marker) = first_match(&haystack, USAGE_LIMIT_MARKERS) {
+        return (FailureClass::UsageLimit, Some(marker));
     }
     if let Some(marker) = first_match(&haystack, TRANSIENT_MARKERS) {
         return (FailureClass::TransientTransport, Some(marker));

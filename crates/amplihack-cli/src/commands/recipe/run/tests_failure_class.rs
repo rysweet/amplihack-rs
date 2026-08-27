@@ -12,8 +12,8 @@
 
 use super::super::{RecipeRunResult, RecipeRunStepResult};
 use super::failure_class::{
-    FAILURE_CLASS_RESULT_KEY, FailureClass, FailureVerdict, classify_failure_text,
-    classify_run_failure,
+    FAILURE_CLASS_RESULT_KEY, FailureClass, FailureVerdict, classify_error, classify_failure_text,
+    classify_run_failure, usage_limit_reset_hint,
 };
 use super::retry::{AttemptOutcome, StopReason, TransientRetryLimits, run_with_transient_retry};
 use amplihack_utils::backoff::BackoffPolicy;
@@ -506,5 +506,122 @@ fn limits_never_collapse_to_zero_attempts() {
         limits.max_attempts(),
         1,
         "at least one attempt is always made"
+    );
+}
+
+// -------------------------------------------------------------------------
+// Issue #1390 — a usage limit is a temporary, self-describing fault. It used
+// to classify as `indeterminate` ("nothing in the evidence identifies the
+// failure") even though the message names both its cause and its reset time.
+// -------------------------------------------------------------------------
+
+/// The literal message that terminated four agent sessions on 2026-08-27.
+const OBSERVED_SESSION_LIMIT: &str = "Agent terminated early due to an API error: You've hit your session limit · resets 9:20am (UTC)";
+
+/// Written to compile against the PRE-FIX code on purpose: it names only
+/// symbols that already existed, so it is a genuine red test rather than a
+/// compile error. Before the fix this failed at runtime with
+/// `class=Indeterminate`.
+#[test]
+fn the_observed_session_limit_message_is_never_indeterminate() {
+    let (class, _) = classify_failure_text(OBSERVED_SESSION_LIMIT);
+    assert_ne!(
+        class,
+        FailureClass::Indeterminate,
+        "the message names its own cause and reset time; classifying it as \
+         \"nothing in the evidence identifies the failure\" is wrong. Issue #1390."
+    );
+}
+
+#[test]
+fn the_observed_session_limit_message_classifies_as_a_usage_limit() {
+    let (class, signal) = classify_failure_text(OBSERVED_SESSION_LIMIT);
+    assert_eq!(
+        class,
+        FailureClass::UsageLimit,
+        "the reported message must classify as a usage limit, not as \
+         `indeterminate`; issue #1390. signal={signal:?}"
+    );
+    assert_eq!(signal, Some("session limit"));
+}
+
+#[test]
+fn a_usage_limit_is_not_mechanically_retried() {
+    // Temporary is not the same as retryable-right-now. The mechanical budget
+    // is minutes; a usage limit outlasts it, so retrying burns every attempt
+    // and still fails.
+    assert!(
+        !FailureClass::UsageLimit.is_mechanically_retryable(),
+        "a usage limit must not be retried inside the mechanical budget"
+    );
+    assert!(
+        FailureClass::TransientTransport.is_mechanically_retryable(),
+        "genuinely transient transport faults must stay retryable"
+    );
+}
+
+#[test]
+fn a_usage_limit_wrapped_in_a_429_is_still_a_usage_limit() {
+    // Providers commonly wrap a usage limit in a rate-limit envelope. Reading
+    // that as "retry in a moment" is exactly the wrong call.
+    let (class, _) = classify_failure_text(
+        "API error: 429 too many requests — you have hit your usage limit, resets 9:20am (UTC)",
+    );
+    assert_eq!(
+        class,
+        FailureClass::UsageLimit,
+        "a usage limit wrapped in a 429 envelope must not be read as a \
+         short-lived transport fault"
+    );
+}
+
+#[test]
+fn a_bare_rate_limit_keeps_its_existing_transient_meaning() {
+    // Guard against the fix over-reaching: short-lived envelopes must not be
+    // reclassified, or every 429 stops being retried.
+    let (class, _) = classify_failure_text("API error: 429 too many requests");
+    assert_eq!(
+        class,
+        FailureClass::TransientTransport,
+        "a bare 429 is still a short-lived transport fault"
+    );
+}
+
+#[test]
+fn the_verdict_tells_the_operator_when_to_come_back() {
+    let verdict = classify_error(&anyhow::anyhow!("{OBSERVED_SESSION_LIMIT}"));
+    let reasoning = verdict.reasoning();
+    assert!(
+        reasoning.contains("9:20am"),
+        "the reset time is stated in the message and must survive into the \
+         verdict, so the operator does not have to re-read the raw log. \
+         Got: {reasoning}"
+    );
+    assert!(
+        reasoning.contains("usage_limit"),
+        "the verdict must name the class. Got: {reasoning}"
+    );
+}
+
+#[test]
+fn a_message_without_a_reset_time_still_classifies() {
+    // Not every provider states a reset. Missing detail must degrade the
+    // message, never the classification.
+    let (class, _) = classify_failure_text("Error: monthly limit reached for this account");
+    assert_eq!(class, FailureClass::UsageLimit);
+    assert_eq!(usage_limit_reset_hint("no reset stated here"), None);
+}
+
+#[test]
+fn work_failures_still_beat_a_usage_limit_mention() {
+    // Precedence must not regress: a real test failure that merely mentions a
+    // limit in passing is still a work failure.
+    let (class, _) = classify_failure_text(
+        "test result: FAILED. 1 failed\nnote: the fixture mentions a usage limit",
+    );
+    assert_eq!(
+        class,
+        FailureClass::Work,
+        "work failures keep top precedence; ambiguity must resolve toward not retrying"
     );
 }
