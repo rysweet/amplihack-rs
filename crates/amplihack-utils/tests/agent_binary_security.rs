@@ -21,6 +21,19 @@ fn clear_env() {
     // SAFETY: tests serialized; env mutation unsafe in edition 2024.
     unsafe {
         std::env::remove_var("AMPLIHACK_AGENT_BINARY");
+        // Layer 2 must be silent too. These tests exercise the persisted layer
+        // and the built-in default, both of which sit BELOW the live session
+        // marker -- and the marker is exported by whichever CLI is running the
+        // suite. Leave it set and every case here resolves through layer 2
+        // instead of the layer under test, so the suite is red on a developer
+        // machine and green in CI, which has no session at all.
+        //
+        // #1352 fixed exactly this in active_agent_binary_default_test and
+        // missed this file. Sourced from SESSION_MARKERS so adding a marker
+        // cannot silently reopen it a third time.
+        for (key, _) in amplihack_utils::agent_binary::SESSION_MARKERS {
+            std::env::remove_var(key);
+        }
     }
 }
 
@@ -63,6 +76,15 @@ fn s1_allowlist_is_case_insensitive_exact_match() {
 #[test]
 fn s2_env_input_sanitization_rejects_dangerous_chars() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    // Clear FIRST, not only at the end. This asserts that a rejected env value
+    // falls through to the built-in default, which means every layer between
+    // must be silent when `resolve` is called -- and the trailing `clear_env()`
+    // below only helps whichever test happens to run next.
+    //
+    // It was order-dependent and passed roughly half the time: it inherited a
+    // cleared marker environment when another test had run first, and layer 2
+    // answered "claude" when it had not.
+    clear_env();
     let bad = [
         "/bin/sh",
         "..",
