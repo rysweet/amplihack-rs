@@ -239,6 +239,14 @@ steps:
       Commit normally so the repository's hooks run, then push:
 
       ```bash
+      # Commit as the workflow's identity, not as whatever git is configured
+      # with in this worktree (issue #1394). The helper only exports into the
+      # shell that sources it, so it has to be sourced here, in this block.
+      for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(git rev-parse --show-toplevel)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do
+        [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/git-identity.sh" ] && { . "$c/amplifier-bundle/tools/git-identity.sh"; break; }
+      done
+      amplihack_prepare_git_commit_identity || { echo "ERROR: git identity helper not found; stop rather than commit under a guessed identity" >&2; exit 2; }
+
       amplihack hygiene artifact-guard --repo . --mode pre-commit
       git add -A
       git commit -m "clear merge-ready blockers: <what changed>"
