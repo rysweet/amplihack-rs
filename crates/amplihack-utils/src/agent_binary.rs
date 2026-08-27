@@ -2,9 +2,11 @@
 //!
 //! Resolution precedence:
 //! 1. `AMPLIHACK_AGENT_BINARY` env var (explicit override; CI/testing).
-//! 2. `<cwd-or-ancestor>/.claude/runtime/launcher_context.json` `launcher` field
+//! 2. A live session marker in this process's environment -- the CLI actually
+//!    hosting this process, which outranks any file on disk.
+//! 3. `<cwd-or-ancestor>/.claude/runtime/launcher_context.json` `launcher` field
 //!    (persisted state, possibly written by a different session).
-//! 3. Built-in default: `"copilot"`.
+//! 4. Built-in default: `"copilot"`.
 //!
 //! All inputs are validated against a strict allowlist to prevent the resolved
 //! value from being used as an arbitrary `Command::new` target by downstream
@@ -55,6 +57,9 @@ const ANCESTOR_WALK_LIMIT: usize = 32;
 pub enum ResolutionSource {
     /// `AMPLIHACK_AGENT_BINARY` was set and valid.
     Env,
+    /// Determined from a live session marker in this process's environment.
+    /// The session that is actually running, and it outranks any file.
+    SessionMarker,
     /// Read from a persisted `launcher_context.json`, possibly written by an
     /// unrelated earlier session in the same repo.
     LauncherContext,
@@ -63,15 +68,23 @@ pub enum ResolutionSource {
 }
 
 impl ResolutionSource {
-    /// `true` when the name was inferred rather than supplied by the caller.
+    /// `true` when the name was inferred rather than observed.
+    ///
+    /// A session marker counts as observed: it is exported by the CLI actually
+    /// hosting this process, so it is evidence about the present, not a guess
+    /// from a file that may describe someone else's session.
     pub fn is_inferred(self) -> bool {
-        !matches!(self, ResolutionSource::Env)
+        !matches!(
+            self,
+            ResolutionSource::Env | ResolutionSource::SessionMarker
+        )
     }
 
     /// Short stable label for logs and run headers.
     pub fn label(self) -> &'static str {
         match self {
             ResolutionSource::Env => "env",
+            ResolutionSource::SessionMarker => "session_marker",
             ResolutionSource::LauncherContext => "launcher_context",
             ResolutionSource::Default => "default",
         }
@@ -146,12 +159,13 @@ pub fn resolve_with_source(cwd: &Path) -> Result<(String, ResolutionSource), Res
     let from_env = std::env::var("AMPLIHACK_AGENT_BINARY")
         .ok()
         .and_then(|raw| validate_binary_name(&raw));
+    let from_marker = session_marker();
     let from_persisted = lookup_persisted_launcher(cwd);
 
-    let (name, source) = resolve_layers(from_env, from_persisted);
+    let (name, source) = resolve_layers(from_env, from_marker, from_persisted);
 
     match source {
-        ResolutionSource::Env => {
+        ResolutionSource::Env | ResolutionSource::SessionMarker => {
             debug!(binary = %name, source = source.label(), "agent binary resolved");
         }
         ResolutionSource::LauncherContext => warn!(
@@ -179,10 +193,14 @@ pub fn resolve_with_source(cwd: &Path) -> Result<(String, ResolutionSource), Res
 /// down.
 pub fn resolve_layers(
     from_env: Option<String>,
+    from_marker: Option<String>,
     from_persisted: Option<String>,
 ) -> (String, ResolutionSource) {
     if let Some(name) = from_env {
         return (name, ResolutionSource::Env);
+    }
+    if let Some(name) = from_marker {
+        return (name, ResolutionSource::SessionMarker);
     }
     if let Some(name) = from_persisted {
         return (name, ResolutionSource::LauncherContext);
@@ -193,6 +211,46 @@ pub fn resolve_layers(
 #[derive(Deserialize)]
 struct LauncherContextSnippet {
     launcher: String,
+    /// RFC3339, written by `write_launcher_context`. Absent in files written
+    /// before the field existed, which are by definition old -- treated stale.
+    #[serde(default)]
+    timestamp: Option<String>,
+}
+
+/// Identify the agent CLI hosting this process from its own environment.
+///
+/// Each vendor's CLI exports markers that every child inherits, so this
+/// answers "which session am I actually inside" without reading any file.
+/// It outranks the persisted layer deliberately: a launcher context is
+/// per-directory and last-writer-wins, so on a host running both CLIs it can
+/// name a different vendor than the session reading it (issue #1342).
+///
+/// Unlike a process-ancestry walk this needs no `/proc`, so it behaves the
+/// same on every platform.
+fn session_marker() -> Option<String> {
+    // Claude Code exports CLAUDECODE; CLAUDE_CODE and CLAUDE_PROJECT_DIR are
+    // the older spellings llm_client already recognised.
+    for key in [
+        "CLAUDECODE",
+        "CLAUDE_CODE",
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_PROJECT_DIR",
+    ] {
+        if std::env::var_os(key).is_some_and(|v| !v.is_empty()) {
+            return Some("claude".to_string());
+        }
+    }
+    for key in [
+        "COPILOT_CLI",
+        "GITHUB_COPILOT",
+        "GITHUB_COPILOT_AGENT",
+        "COPILOT_AGENT",
+    ] {
+        if std::env::var_os(key).is_some_and(|v| !v.is_empty()) {
+            return Some("copilot".to_string());
+        }
+    }
+    None
 }
 
 /// Returns `true` when a launcher context found in `dir` cannot be trusted.
@@ -299,6 +357,23 @@ fn read_launcher_field(path: &Path, anchor: &Path) -> Option<String> {
     }
     let body = fs::read_to_string(&canonical).ok()?;
     let parsed: LauncherContextSnippet = serde_json::from_str(&body).ok()?;
+    // A launcher context describes a session, and sessions end. The hooks
+    // reader has always applied a staleness bound; this one never did, so a
+    // file written days earlier by an unrelated session kept deciding which
+    // agent CLI ran (issue #1335).
+    let stale = parsed
+        .timestamp
+        .as_deref()
+        .map(crate::launcher_context::is_timestamp_stale)
+        .unwrap_or(true);
+    if stale {
+        debug!(
+            path = %canonical.display(),
+            timestamp = ?parsed.timestamp,
+            "ignoring launcher context older than the staleness bound"
+        );
+        return None;
+    }
     validate_binary_name(&parsed.launcher)
 }
 
@@ -392,7 +467,11 @@ mod tests {
 
     #[test]
     fn env_wins_over_everything() {
-        let (name, source) = resolve_layers(Some("claude".into()), Some("codex".into()));
+        let (name, source) = resolve_layers(
+            Some("claude".into()),
+            Some("copilot".into()),
+            Some("codex".into()),
+        );
         assert_eq!(name, "claude");
         assert_eq!(source, ResolutionSource::Env);
         assert!(!source.is_inferred());
@@ -400,7 +479,7 @@ mod tests {
 
     #[test]
     fn persisted_file_is_used_only_when_nothing_better_exists() {
-        let (name, source) = resolve_layers(None, Some("codex".into()));
+        let (name, source) = resolve_layers(None, None, Some("codex".into()));
         assert_eq!(name, "codex");
         assert_eq!(source, ResolutionSource::LauncherContext);
         assert!(source.is_inferred());
@@ -408,7 +487,7 @@ mod tests {
 
     #[test]
     fn default_is_the_last_resort_and_is_marked_inferred() {
-        let (name, source) = resolve_layers(None, None);
+        let (name, source) = resolve_layers(None, None, None);
         assert_eq!(name, DEFAULT_BINARY);
         assert_eq!(source, ResolutionSource::Default);
         assert!(source.is_inferred());
@@ -418,12 +497,16 @@ mod tests {
     // Trust boundary on the persisted layer.
     // ---------------------------------------------------------------------
 
+    /// A context is only consulted while it is fresh, so the fixture has to
+    /// carry a real timestamp. Writing one without it exercises the
+    /// no-timestamp-is-stale path, not the walk-up these tests are about.
     fn write_launcher_context(dir: &Path, launcher: &str) {
         let runtime = dir.join(".claude").join("runtime");
         fs::create_dir_all(&runtime).unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
         fs::write(
             runtime.join("launcher_context.json"),
-            format!(r#"{{"launcher":"{launcher}"}}"#),
+            format!(r#"{{"launcher":"{launcher}","timestamp":"{now}"}}"#),
         )
         .unwrap();
     }
@@ -463,5 +546,47 @@ mod tests {
         fs::create_dir_all(&work).unwrap();
 
         assert_eq!(lookup_persisted_launcher(&work).as_deref(), Some("codex"));
+    }
+
+    /// Issue #1342 / crusty B1. Symmetric writes let the persisted layer say
+    /// "claude" for the first time. Without a marker layer above it, a Copilot
+    /// session whose environment variable was lost would read a claude-written
+    /// file and spawn the wrong binary -- a failure that could not exist while
+    /// the file could only ever say copilot.
+    #[test]
+    fn a_live_session_marker_beats_a_file_written_by_another_vendor() {
+        let (name, source) = resolve_layers(None, Some("copilot".into()), Some("claude".into()));
+        assert_eq!(name, "copilot", "a copilot session must not spawn claude");
+        assert_eq!(source, ResolutionSource::SessionMarker);
+
+        let (name, source) = resolve_layers(None, Some("claude".into()), Some("copilot".into()));
+        assert_eq!(
+            name, "claude",
+            "and a claude session must not spawn copilot"
+        );
+        assert_eq!(source, ResolutionSource::SessionMarker);
+    }
+
+    /// The requirement in the maintainer's words: "if started with `amplihack
+    /// claude` you must stick with claude". With no environment variable and no
+    /// file at all, the marker alone must carry it.
+    #[test]
+    fn a_session_marker_alone_decides_when_nothing_else_speaks() {
+        let (name, source) = resolve_layers(None, Some("claude".into()), None);
+        assert_eq!(name, "claude");
+        assert_eq!(source, ResolutionSource::SessionMarker);
+        assert!(!source.is_inferred(), "a live marker is not an inference");
+    }
+
+    /// An explicit override still wins over everything, including the marker.
+    #[test]
+    fn env_still_beats_the_session_marker() {
+        let (name, source) = resolve_layers(
+            Some("codex".into()),
+            Some("claude".into()),
+            Some("copilot".into()),
+        );
+        assert_eq!(name, "codex");
+        assert_eq!(source, ResolutionSource::Env);
     }
 }
