@@ -750,13 +750,13 @@ fn spawn_with_streaming_stderr(
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
-            let _summary = correlation.emit_final(
+            return Err(fail_with_final_record(
+                &correlation,
                 RecipeRunFinalStatus::SpawnFailure,
                 None,
                 None,
-                known_log_paths(None),
-            );
-            return Err(error).context("failed to spawn recipe-runner-rs");
+                anyhow::Error::new(error).context("failed to spawn recipe-runner-rs"),
+            ));
         }
     };
     let child_pid = Some(child.id());
@@ -805,24 +805,42 @@ fn spawn_with_streaming_stderr(
     });
 
     let status = match wait_for_recipe_runner(&mut child, timeout)
-        .context("failed to wait for recipe-runner-rs")?
-    {
+        .context("failed to wait for recipe-runner-rs")
+        .map_err(|error| {
+            fail_with_final_record(
+                &correlation,
+                RecipeRunFinalStatus::Failure,
+                child_pid,
+                None,
+                error,
+            )
+        })? {
         Some(status) => status,
         None => {
             let pid = child.id();
-            terminate_recipe_runner(&mut child)?;
-            let _summary = correlation.emit_final(
+            // Issue #1304: emit the terminal record BEFORE terminating. The
+            // `?` on terminate_recipe_runner used to be able to return first,
+            // so a timeout whose cleanup also failed produced no record at all
+            // -- the worst case reported as an opaque exit 1.
+            let summary = correlation.emit_final(
                 RecipeRunFinalStatus::Failure,
                 child_pid,
                 None,
                 known_log_paths(None),
             );
+            let detail = super::format::format_log_pointer_summary(&summary);
+            let run_id = summary.run_id.clone();
+            terminate_recipe_runner(&mut child).with_context(|| {
+                format!("recipe run {run_id} timed out and could not be terminated: {detail}")
+            })?;
             anyhow::bail!(
-                "recipe-runner-rs timed out after {:?} (pid {}, recipe {}, working dir {})",
+                "recipe-runner-rs timed out after {:?} (pid {}, recipe {}, working dir {}); recipe run {} ended: {}",
                 timeout,
                 pid,
                 recipe_path.display(),
-                correlation.cwd()
+                correlation.cwd(),
+                run_id,
+                detail
             );
         }
     };
@@ -843,8 +861,17 @@ fn spawn_with_streaming_stderr(
                 "recipe-runner-rs stdout did not close within {:?} after process exit",
                 RECIPE_RUNNER_PIPE_DRAIN_TIMEOUT
             )
-        })?
-        .context("failed to read recipe-runner-rs stdout")?;
+        })
+        .and_then(|read| read.context("failed to read recipe-runner-rs stdout"))
+        .map_err(|error| {
+            fail_with_final_record(
+                &correlation,
+                RecipeRunFinalStatus::Failure,
+                child_pid,
+                status.code(),
+                error,
+            )
+        })?;
     let _ = stderr_done_rx.recv_timeout(RECIPE_RUNNER_PIPE_DRAIN_TIMEOUT);
 
     let captured = captured_stderr.lock().expect("stderr mutex");
@@ -887,16 +914,22 @@ fn spawn_with_streaming_stderr(
             } else {
                 RecipeRunFinalStatus::Failure
             };
-            let _summary = correlation.emit_final(
+            let summary = correlation.emit_final(
                 final_status,
                 child_pid,
                 status.code(),
                 known_log_paths(None),
             );
+            // Issue #1304: carry the correlation detail into the error. The
+            // success path returns it in `result.log_pointer`; a failure used
+            // to drop it, leaving the operator no run id to search for.
+            let detail = super::format::format_log_pointer_summary(&summary);
             Err(error).with_context(|| {
                 format!(
-                    "recipe-runner-rs exited with {}",
-                    exit_status_label(&status)
+                    "recipe-runner-rs exited with {}; recipe run {} ended: {}",
+                    exit_status_label(&status),
+                    summary.run_id,
+                    detail
                 )
             })
         }
@@ -1038,6 +1071,28 @@ pub(super) fn pass_context(
     command.arg("--context-file").arg(tmp.path());
 
     Ok(Some(tmp))
+}
+
+// Issue #1304: every exit from `run_recipe_runner` must leave a durable
+// terminal record behind. A run that dies without one is indistinguishable
+// from a run that never started: the operator is left with a bare `exit 1`,
+// no run id to search the logs for, and no way to tell a crashed runner from
+// a runner that was never spawned.
+//
+// Failure paths used to discard the summary (`let _summary = ...`), so a
+// failing run told the operator *less* than a succeeding one -- exactly
+// backwards. This attaches the same correlation detail the success path
+// already returns.
+fn fail_with_final_record(
+    correlation: &RecipeRunCorrelation,
+    status: RecipeRunFinalStatus,
+    child_pid: Option<u32>,
+    exit_code: Option<i32>,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    let summary = correlation.emit_final(status, child_pid, exit_code, known_log_paths(None));
+    let detail = super::format::format_log_pointer_summary(&summary);
+    error.context(format!("recipe run {} ended: {detail}", summary.run_id))
 }
 
 fn exit_status_label(status: &std::process::ExitStatus) -> String {

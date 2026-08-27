@@ -17,7 +17,7 @@ use crate::protocol::{FailurePolicy, Hook};
 use amplihack_types::HookInput;
 use serde_json::Value;
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Error messages for blocked operations.
 const CWD_DELETION_ERROR: &str = "\
@@ -171,9 +171,26 @@ const MAX_SKILL_NAME_LEN: usize = 256;
 /// symlinked directories are not traversed. The returned set is empty only when
 /// no skills directory is reachable.
 fn bundled_skill_names() -> BTreeSet<String> {
+    bundled_skill_names_under(&amplihack_utils::runtime_assets::iter_runtime_roots())
+}
+
+/// Scan an explicit list of roots for bundled `SKILL.md` frontmatter names.
+///
+/// Split out from [`bundled_skill_names`] so callers that must not depend on
+/// ambient machine state can name their roots.
+///
+/// Issue #1386: this crate's tests used to call [`bundled_skill_names`]
+/// directly, so they asserted against whichever copy of the product
+/// `iter_runtime_roots()` happened to find first. Under the pre-commit hooks
+/// that is a stale `~/.amplihack` install rather than the checkout being
+/// tested — `CARGO_TARGET_DIR` points outside the worktree, so the
+/// walk-up-from-exe finds no bundle, and a test binary's cwd is the package
+/// dir. Naming the checkout root here makes the scan resolve the bundle under
+/// test and nothing else.
+fn bundled_skill_names_under(roots: &[PathBuf]) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     let mut files_scanned = 0usize;
-    for root in amplihack_utils::runtime_assets::iter_runtime_roots() {
+    for root in roots {
         for skills_dir in [root.join("amplifier-bundle/skills"), root.join("skills")] {
             collect_skill_frontmatter_names(&skills_dir, &mut names, 0, &mut files_scanned);
         }

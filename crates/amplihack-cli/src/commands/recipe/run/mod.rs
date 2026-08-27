@@ -201,3 +201,5 @@ mod tests_failure_class;
 mod tests_format;
 #[cfg(test)]
 mod tests_teardown;
+#[cfg(test)]
+mod tests_terminal_record;
