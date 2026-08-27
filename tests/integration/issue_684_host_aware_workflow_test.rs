@@ -281,6 +281,14 @@ exit 7
         .env_clear()
         .env("PATH", path)
         .env("REPO_PATH", &repo_dir)
+        // Issue #1361: step-03's provider-metadata helpers now live in
+        // amplifier-bundle/tools/workflow_issue_tracking.sh (extracted to buy the
+        // brick room for the claim check). REPO_PATH here is a synthetic temp
+        // repository with no bundle in it, so the step is told where the bundle
+        // is — the same accommodation the identity-preflight tests make for
+        // step-00a. The resolution cascade itself is exercised by
+        // tests/issue_1361_duplicate_pr_claim_check.sh.
+        .env("AMPLIHACK_HOME", workspace_root())
         .env("REMOTE_HOST_TYPE", host_type)
         .env("TASK_DESCRIPTION", task_description)
         .env("FINAL_REQUIREMENTS", "Issue #718 regression requirements")

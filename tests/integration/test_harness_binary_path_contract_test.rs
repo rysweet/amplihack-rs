@@ -27,27 +27,56 @@
 //! Each assertion FAILS against the current fragile helpers and PASSES once the
 //! path helpers are converted and the orphan test is wired.
 //!
+//! ## Issue #1378
+//! Two more tests were carrying the same defect from
+//! `crates/amplihack-cli/tests/`, where `CARGO_BIN_EXE_amplihack` does not
+//! exist because that package does not produce the binary. They have been
+//! moved into `bins/amplihack/tests/` so the Cargo-provided path resolves and
+//! the binary is built as a test prerequisite; they are covered by the lists
+//! below, which now hold workspace-relative paths rather than bare file names.
+//!
 //! ## Related
 //! - `tests/integration/ci_speedup_optimization_test.rs`
 //! - `docs/reference/ci-pipeline.md`
 
 use std::path::PathBuf;
 
-/// (test file name, binary name whose `CARGO_BIN_EXE_<name>` it must use).
+/// (workspace-relative test file path, binary name whose `CARGO_BIN_EXE_<name>`
+/// it must use).
 const AMPLIHACK_BIN: &str = "amplihack";
 const HOOKS_BIN: &str = "amplihack-hooks";
 
 const FRAGILE_TESTS: &[(&str, &str)] = &[
-    ("cli_golden_tests.rs", AMPLIHACK_BIN),
-    ("kuzu_path_notice_test.rs", AMPLIHACK_BIN),
-    ("cli_launch_test.rs", AMPLIHACK_BIN),
-    ("recipe_e2e_test.rs", AMPLIHACK_BIN),
-    ("security_hygiene_test.rs", AMPLIHACK_BIN),
-    ("fleet_probe.rs", AMPLIHACK_BIN),
-    ("skip_update_check_flag_test.rs", AMPLIHACK_BIN),
-    ("no_python_probe_test.rs", AMPLIHACK_BIN),
-    ("doctor_node_remediation_test.rs", AMPLIHACK_BIN),
-    ("hook_dispatch_test.rs", HOOKS_BIN),
+    ("tests/integration/cli_golden_tests.rs", AMPLIHACK_BIN),
+    ("tests/integration/kuzu_path_notice_test.rs", AMPLIHACK_BIN),
+    ("tests/integration/cli_launch_test.rs", AMPLIHACK_BIN),
+    ("tests/integration/recipe_e2e_test.rs", AMPLIHACK_BIN),
+    ("tests/integration/security_hygiene_test.rs", AMPLIHACK_BIN),
+    ("tests/integration/fleet_probe.rs", AMPLIHACK_BIN),
+    (
+        "tests/integration/skip_update_check_flag_test.rs",
+        AMPLIHACK_BIN,
+    ),
+    ("tests/integration/no_python_probe_test.rs", AMPLIHACK_BIN),
+    (
+        "tests/integration/doctor_node_remediation_test.rs",
+        AMPLIHACK_BIN,
+    ),
+    ("tests/integration/hook_dispatch_test.rs", HOOKS_BIN),
+    // Issue #1378: these two used to live in `crates/amplihack-cli/tests/`,
+    // where `CARGO_BIN_EXE_amplihack` does not exist, and hand-rolled
+    // `<workspace>/target/debug/amplihack` — which is wrong under any
+    // redirected `CARGO_TARGET_DIR`. Moving them into the binary's own package
+    // makes the Cargo-provided path available and builds the binary as a test
+    // prerequisite.
+    (
+        "bins/amplihack/tests/issue_538_install_completeness.rs",
+        AMPLIHACK_BIN,
+    ),
+    (
+        "bins/amplihack/tests/issue_625_update_prompt_subprocess_safe.rs",
+        AMPLIHACK_BIN,
+    ),
 ];
 
 fn workspace_root() -> PathBuf {
@@ -57,16 +86,12 @@ fn workspace_root() -> PathBuf {
     path
 }
 
-fn integration_dir() -> PathBuf {
-    let mut p = workspace_root();
-    p.push("tests");
-    p.push("integration");
-    p
+fn test_source_path(rel: &str) -> PathBuf {
+    workspace_root().join(rel)
 }
 
-fn read_test_source(file: &str) -> String {
-    let mut p = integration_dir();
-    p.push(file);
+fn read_test_source(rel: &str) -> String {
+    let p = test_source_path(rel);
     std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("FAIL: cannot read {p:?}: {e}"))
 }
 
@@ -76,9 +101,8 @@ fn read_test_source(file: &str) -> String {
 
 #[test]
 fn all_target_test_files_exist() {
-    for (file, _) in FRAGILE_TESTS {
-        let mut p = integration_dir();
-        p.push(file);
+    for (rel, _) in FRAGILE_TESTS {
+        let p = test_source_path(rel);
         assert!(p.exists(), "FAIL: expected integration test {p:?} to exist");
     }
 }
@@ -134,14 +158,14 @@ fn fragile_tests_drop_hardcoded_target_debug_path() {
 
 #[test]
 fn soft_lookup_tests_are_tightened_to_hard_env() {
-    let no_python = read_test_source("no_python_probe_test.rs");
+    let no_python = read_test_source("tests/integration/no_python_probe_test.rs");
     assert!(
         !no_python.contains("option_env!(\"CARGO_BIN_EXE_amplihack\")"),
         "FAIL: no_python_probe_test.rs must use the hard `env!(\"CARGO_BIN_EXE_amplihack\")`,\n\
          not `option_env!` with a hardcoded fallback (which re-introduces the race)."
     );
 
-    let doctor = read_test_source("doctor_node_remediation_test.rs");
+    let doctor = read_test_source("tests/integration/doctor_node_remediation_test.rs");
     assert!(
         !doctor.contains("var_os(\"CARGO_BIN_EXE_amplihack\")"),
         "FAIL: doctor_node_remediation_test.rs must use the hard\n\
