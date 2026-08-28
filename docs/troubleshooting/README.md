@@ -8,7 +8,7 @@ Ahoy, matey! Hit a snag? This be yer map to fix common issues and get back on co
 
 **CHECK THIS FIRST!** Most problems have already been solved:
 
-- **[Discoveries](../DISCOVERIES.md)** - Known issues and solutions (CHECK HERE FIRST!)
+- **[Discoveries](../context/DISCOVERIES.md)** - Known issues and solutions (CHECK HERE FIRST!)
 
 ---
 
@@ -97,7 +97,7 @@ Security-related problems?
 
 Still stuck? Here's what to do:
 
-1. **Check Discoveries** - [DISCOVERIES.md](../DISCOVERIES.md) has most known issues
+1. **Check Discoveries** - [DISCOVERIES.md](../context/DISCOVERIES.md) has most known issues
 2. **Search Documentation** - Use the [Documentation Graph](../doc_graph_quick_reference.md)
 3. **Review Patterns** - Check [Development Patterns](../../amplifier-bundle/context/PATTERNS.md)
 4. **Ask for Help** - [GitHub Issues](https://github.com/rysweet/MicrosoftHackathon2025-AgenticCoding/issues)
@@ -122,4 +122,4 @@ Learn how to avoid common issues:
 
 ---
 
-**Pro Tip**: Most issues are already documented in [DISCOVERIES.md](../DISCOVERIES.md). Always check there first!
+**Pro Tip**: Most issues are already documented in [DISCOVERIES.md](../context/DISCOVERIES.md). Always check there first!

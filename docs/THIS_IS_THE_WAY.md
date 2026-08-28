@@ -453,7 +453,7 @@ Amplihack improves itself through usage. You're part of that process.
 
 ### Contributing to Amplihack
 
-**Found a useful pattern?** Document it in `docs/DISCOVERIES.md`:
+**Found a useful pattern?** Document it in `docs/context/DISCOVERIES.md`:
 
 ```markdown
 ## [Problem Title] (YYYY-MM-DD)
