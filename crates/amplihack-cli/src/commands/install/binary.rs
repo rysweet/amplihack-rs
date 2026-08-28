@@ -348,3 +348,70 @@ fn is_python_script(path: &std::path::Path) -> bool {
     }
     false
 }
+
+/// The hooks-binary path that belongs in a DURABLE config file — `settings.json`,
+/// a plugin manifest, anything that outlives the process that wrote it.
+///
+/// `find_hooks_binary()` prefers a sibling of the running executable. That is
+/// right for *finding* a binary to deploy and wrong for *recording* one: run
+/// `amplihack install` from a build tree and it returns
+/// `<target>/debug/amplihack-hooks`, which is a cargo artifact directory that
+/// gets cleaned. Every hook then fails to exec.
+///
+/// Issue #911 documented this after every hook started exiting 127, and the fix
+/// was applied to the Copilot plugin registration — but `ensure_settings_json`
+/// kept receiving the transient path, so Claude Code's hooks were still wired
+/// into a build directory. One such config pointed at
+/// `/tmp/amplihack-precommit-target/debug/amplihack-hooks`, the shared
+/// pre-commit target dir, and broke the moment that cache was reclaimed.
+///
+/// Prefer the deployed copy under the user's bin dir; fall back to discovery
+/// only when nothing has been deployed yet.
+pub(super) fn stable_hooks_binary() -> Result<PathBuf> {
+    let deployed = super::paths::preferred_user_bin_dir()
+        .ok()
+        .map(|dir| dir.join("amplihack-hooks"))
+        .filter(|candidate| is_executable(candidate));
+    Ok(choose_durable_hooks_path(deployed, find_hooks_binary()?))
+}
+
+/// Pure seam for [`stable_hooks_binary`], so the preference is testable without
+/// a real HOME, a real deploy, or control over `current_exe()`.
+pub(super) fn choose_durable_hooks_path(deployed: Option<PathBuf>, discovered: PathBuf) -> PathBuf {
+    match deployed {
+        Some(deployed) => deployed,
+        // Nothing deployed yet. `discovered` is the best we have, but say so
+        // when it is a build artifact: a silent transient path in settings.json
+        // is exactly the failure this function exists to prevent, and the next
+        // person deserves to know why their hooks stopped working.
+        None => {
+            if looks_like_build_artifact(&discovered) {
+                tracing::warn!(
+                    path = %discovered.display(),
+                    "recording a hooks path that lives in a build directory; it will \
+                     break when that directory is cleaned (issue #911). Run \
+                     `amplihack install` to deploy a stable copy."
+                );
+            }
+            discovered
+        }
+    }
+}
+
+/// Does this path live inside a cargo build directory?
+///
+/// Matched on whole path components, not a substring: a user whose home is
+/// `/home/debug` must not be flagged.
+pub(super) fn looks_like_build_artifact(path: &Path) -> bool {
+    let mut saw_profile = false;
+    for component in path.components() {
+        let part = component.as_os_str();
+        if part == "debug" || part == "release" {
+            saw_profile = true;
+        }
+        if part == "target" || part.to_string_lossy().contains("target-") {
+            return true;
+        }
+    }
+    saw_profile
+}

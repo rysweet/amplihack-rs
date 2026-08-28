@@ -25,7 +25,7 @@ pub(crate) mod version_stamp;
 #[cfg(test)]
 mod tests;
 
-use binary::{deploy_binaries, find_hooks_binary};
+use binary::{deploy_binaries, find_hooks_binary, stable_hooks_binary};
 use bundle_compat::validate_framework_bundle_compatibility;
 use clone::{download_and_extract_framework_repo, find_bundled_framework_root};
 use directories::*;
@@ -271,7 +271,9 @@ pub(crate) fn ensure_framework_installed() -> Result<()> {
     // Verify hooks are registered in settings.json — even after a fresh install.
     // This catches the case where `run_install` completed but hooks were not
     // wired into settings.json (issue #202: silent unwiring on fresh env).
-    let hooks_bin = find_hooks_binary().context(
+    // Issue #911: settings.json outlives this process, so it must record the
+    // DEPLOYED path, never a build-tree sibling of the running executable.
+    let hooks_bin = stable_hooks_binary().context(
         "amplihack-hooks binary not found. Run `amplihack install` to set up hooks, \
          or set AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH to the binary location.",
     )?;
@@ -490,8 +492,21 @@ fn local_install(
         effective_scope.display_name(),
         settings_target.display()
     );
+    // Issue #911: every DURABLE consumer -- settings.json and the Copilot
+    // plugin manifest -- records this path, so it must be the DEPLOYED binary,
+    // never `hooks_bin` (the `find_hooks_binary()` source path).
+    // deploy_binaries() has already run above, so the stable copy exists.
+    //
+    // Copilot already used the deployed path; settings.json did not, which is
+    // what put a build directory into a user's hook config and broke every
+    // hook when that directory was cleaned. Both now share one binding so they
+    // cannot drift apart again.
+    let durable_hooks_bin = deployed_binaries
+        .first()
+        .cloned()
+        .unwrap_or_else(|| hooks_bin.clone());
     let (settings_ok, registered_events) =
-        ensure_settings_json(&settings_target, &claude_dir, timestamp, &hooks_bin)?;
+        ensure_settings_json(&settings_target, &claude_dir, timestamp, &durable_hooks_bin)?;
 
     println!();
     println!("🐙 Configuring GitHub Copilot CLI plugin (if installed):");
@@ -512,11 +527,7 @@ fn local_install(
     // target/debug/amplihack-hooks). The source path lives in a build/worktree
     // dir that gets cleaned, making every hook exit 127; Copilot CLI fails
     // closed on hook errors, denying every tool call in nested sessions (#911).
-    let deployed_hooks_bin = deployed_binaries
-        .first()
-        .cloned()
-        .unwrap_or_else(|| hooks_bin.clone());
-    match copilot_plugin::register_copilot_plugin(repo_root, &deployed_hooks_bin)
+    match copilot_plugin::register_copilot_plugin(repo_root, &durable_hooks_bin)
         .context("failed to register Copilot CLI plugin")?
     {
         true => {
