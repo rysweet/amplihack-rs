@@ -134,7 +134,7 @@ fn package_root_above(exe: &Path) -> Option<PathBuf> {
 /// directory in a normal clone, a file in a worktree or submodule) or a
 /// `Cargo.toml` that declares a `[workspace]`. An installed tree has neither,
 /// so installed binaries keep their historical resolution order.
-fn is_source_checkout(root: &Path) -> bool {
+pub(crate) fn is_source_checkout(root: &Path) -> bool {
     if !root.join("amplifier-bundle").is_dir() {
         return false;
     }
