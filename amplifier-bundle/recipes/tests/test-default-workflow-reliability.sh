@@ -87,9 +87,10 @@ if ! command -v python3 >/dev/null 2>&1; then
     exit 2
 fi
 
-WORK="${REPO_ROOT}/../.default-workflow-reliability-test-${$}"
-rm -rf "$WORK"
-mkdir -p "$WORK"
+# Issue #1406: this used to be "${REPO_ROOT}/../.default-workflow-reliability-test-$$",
+# which creates a directory NEXT TO the checkout under test. A crash or a kill
+# between mkdir and the EXIT trap left it behind in the developer's source tree.
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/default-workflow-reliability-XXXXXX")"
 trap 'rm -rf "${WORK}"' EXIT
 STEP04="${WORK}/step-04-setup-worktree.sh"
 STEP_TDD_CHECKPOINT="${WORK}/checkpoint-after-implementation.sh"
@@ -779,12 +780,22 @@ run_worktree_json_escape_case() {
     local stdout_file="${WORK}/worktree-${label}.out"
     local stderr_file="${WORK}/worktree-${label}.err"
     local branch_name='feat/issue-573-json-"quote'
+    local origin_dir="${WORK}/origin-${label}"
 
+    # Issue #1406: this fixture had no origin remote. #1323 (merged as #1374)
+    # made workflow-worktree refuse a repo with nowhere to push, so the case
+    # started failing on its precondition and never reached the thing it
+    # actually tests -- JSON escaping of a branch name containing a quote.
+    # Every other case in this file already seeds a bare origin; this one now
+    # does too.
+    git init --bare -b main "${origin_dir}" >/dev/null
     git init -b main "${case_dir}" >/dev/null
     configure_identity "${case_dir}"
     printf 'base\n' > "${case_dir}/README.md"
     git -C "${case_dir}" add README.md
     git -C "${case_dir}" commit -m "base" >/dev/null
+    git -C "${case_dir}" remote add origin "${origin_dir}"
+    git -C "${case_dir}" push -u origin main >/dev/null 2>&1
     git -C "${case_dir}" branch "${branch_name}"
 
     (
