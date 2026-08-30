@@ -844,13 +844,17 @@ configuration fails before an agent process is spawned.
 LiteLLM and PostgreSQL own usage, spend, budgets, and rate limits. Amplihack
 does not implement process-local gateway accounting or controls.
 
-When the selected launcher is Claude Code, external routing requires the exact
-`claude` executable to report semantic version `2.1.83` or newer. Amplihack
-probes it before launch setup and rejects missing, failed, malformed, unknown,
-or older versions. Supported Claude Code processes receive
+When the selected launcher is Claude Code, amplihack sets
 `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`; users do not need to set that variable.
-The version probe receives neither `AMPLIHACK_LITELLM_API_KEY` nor direct
-provider credentials.
+The current launch path does not check the selected Claude Code version, so the
+flag is not proof that the executable supports subprocess scrubbing.
+
+**Planned capability gate (implementation pending):** External Claude Code
+routing will require the exact `claude` executable to report semantic version
+`2.1.83` or newer. Amplihack will probe it before launch setup and reject
+missing executables, failed probes, malformed or unknown output, prereleases
+below the minimum, and older versions. The probe will receive neither
+`AMPLIHACK_LITELLM_API_KEY` nor direct provider credentials.
 
 The Docker launcher rejects loopback gateway endpoints so normal container
 network isolation remains intact. Use an HTTPS gateway reachable from the

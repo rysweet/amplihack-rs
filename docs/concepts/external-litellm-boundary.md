@@ -52,28 +52,39 @@ bypass arguments, and removes conflicting provider credentials and selectors
 from the child environment. The child CLI owns connection, DNS, TLS, and
 gateway readiness behavior.
 
-Claude Code routing also requires the exact `claude` executable selected for
-launch to report a semantic version greater than or equal to `2.1.83`.
-Amplihack probes that executable before setup, filesystem changes, Docker
-operations, or child creation. A missing executable, failed probe, unrecognized
-output, malformed version, or version below the minimum rejects the launch.
-The probe does not receive the LiteLLM virtual key or provider credentials.
-
 There is no fallback to a direct provider when launch policy rejects a route.
 To disable routing, unset all three `AMPLIHACK_LITELLM_*` variables before
 launch.
 
-Claude Code `2.1.83` and newer receives
-`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`, which keeps the gateway token in the
-Claude process while removing Anthropic and cloud credentials from Bash, hook,
-and stdio MCP subprocess environments. The version gate and environment flag
-form one capability check; setting the flag manually does not bypass the
-minimum.
+Claude Code receives `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`, which requests that
+Claude keep the gateway token in its process while removing Anthropic and cloud
+credentials from Bash, hook, and stdio MCP subprocess environments. Amplihack
+currently sets this variable without checking the selected Claude Code version.
+Operators must not treat the variable alone as proof that the installed
+executable supports subprocess scrubbing.
 
 RustyClawd does not provide a verified equivalent control. Its process and all
 descendants are therefore inside the credential trust boundary. Use a
 short-lived LiteLLM virtual key restricted at the gateway by tenant, route,
 model alias, budget, and rate, and launch RustyClawd only in trusted worktrees.
+
+## Planned Claude Code capability gate
+
+> **Implementation pending:** The capability gate described in this section is
+> the intended security boundary. It is not enforced by the current launch
+> path.
+
+Claude Code routing will require the exact `claude` executable selected for
+launch to report a semantic version greater than or equal to `2.1.83`.
+Amplihack will probe that executable before setup, filesystem changes, Docker
+operations, or child creation. A missing executable, failed probe, unrecognized
+output, malformed version, prerelease below the minimum, or version below the
+minimum will reject the launch.
+
+The probe will run without the LiteLLM virtual key or direct provider
+credentials. The version gate and `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` will
+form one capability check; setting the flag manually will not bypass the
+minimum.
 
 ## Ownership boundary
 

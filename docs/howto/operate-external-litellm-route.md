@@ -27,17 +27,29 @@ alias applies to every supported launcher. Keep the restricted virtual key in
 a secret manager and materialize it only in the launch environment; amplihack
 does not read a key file or TOML gateway configuration.
 
-For Claude Code, install version `2.1.83` or newer and confirm that the
-executable selected by `PATH` reports its version:
+Claude Code currently receives `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`, but
+amplihack does not yet verify that the selected executable supports it. Pin
+Claude Code to version `2.1.83` or newer and confirm the executable selected by
+`PATH`:
 
 ```bash
 command -v claude
 claude --version
 ```
 
-Amplihack probes that same executable before it performs launch setup. Do not
+This is currently an operator check, not an amplihack launch check.
+
+### Prepare for the planned capability gate
+
+> **Implementation pending:** A future launch check will enforce the behavior
+> in this section. Current releases do not reject Claude Code based on version
+> output.
+
+The planned gate will probe the same executable before launch setup. Do not
 wrap `claude --version` with output that hides or replaces the semantic
-version. A probe failure or unrecognized version output fails closed.
+version. A missing executable, failed probe, unrecognized or malformed output,
+prerelease below the minimum, or version older than `2.1.83` will fail closed.
+The probe will run without gateway or direct-provider credentials.
 
 ## Rotate a virtual key
 
@@ -82,11 +94,16 @@ An empty or partial configuration is rejected rather than treated as disabled.
 | Configuration is incomplete | Set all three required variables in the same environment, or unset all three. |
 | Endpoint is rejected | Use HTTPS without credentials, query, or fragment. The path may be empty or `/v1`; HTTP requires a literal loopback address. |
 | Model is rejected | Use a 1-128 character alias containing only letters, digits, `.`, `_`, `:`, `/`, or `-`. |
-| Claude Code version cannot be verified | Run `command -v claude` and `claude --version` in the same environment. Install an official Claude Code executable whose output contains a valid semantic version. |
-| Claude Code is older than `2.1.83` | Upgrade Claude Code. Prerelease versions compare using semantic-version precedence and must be at least `2.1.83`. |
 | Launch option is rejected | Remove remote, export, share, resume, provider, or conflicting model controls. |
 | Launcher is rejected | Use Claude Code, Copilot CLI, or rustyclawd, or unset all gateway variables. |
 | Gateway cannot be reached | Check the child CLI error, gateway health, DNS, TLS trust, and firewall. Amplihack does not probe or retry the gateway. |
+
+After the planned Claude Code capability gate ships:
+
+| Symptom | Action |
+| --- | --- |
+| Claude Code version cannot be verified | Run `command -v claude` and `claude --version` in the same environment. Install an official Claude Code executable whose output contains a valid semantic version. |
+| Claude Code is older than `2.1.83` | Upgrade Claude Code. Prerelease versions will compare using semantic-version precedence and must be at least `2.1.83`. |
 
 ## Operate gateway-owned concerns
 
