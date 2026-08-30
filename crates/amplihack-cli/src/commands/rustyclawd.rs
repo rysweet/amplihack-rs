@@ -5,18 +5,24 @@
 //! the same without delegating to `python3 -m amplihack.cli`.
 
 use crate::commands::launch;
+use crate::external_litellm::GatewayControl;
 use amplihack_utils::launch_target::OverrideOrigin;
 use anyhow::Result;
 use std::env;
 use std::path::{Path, PathBuf};
 
-pub fn run_rustyclawd(args: Vec<String>, no_reflection: bool, subprocess_safe: bool) -> Result<()> {
+pub fn run_rustyclawd(
+    args: Vec<String>,
+    no_reflection: bool,
+    subprocess_safe: bool,
+    gateway: GatewayControl,
+) -> Result<()> {
     let override_origin = configure_preferred_rustyclawd_binary();
-    if override_origin == OverrideOrigin::AmplihackSupplied {
+    if override_origin == OverrideOrigin::AmplihackSupplied && !gateway.may_route() {
         println!("Using RustyClawd (Rust implementation)");
     }
 
-    launch::run_launch(
+    launch::run_launch_with_gateway(
         "claude",
         "claude",
         false,
@@ -32,6 +38,7 @@ pub fn run_rustyclawd(args: Vec<String>, no_reflection: bool, subprocess_safe: b
         // travels with the call that needs it instead of with the process, so
         // the compiler names every site that must honour it.
         override_origin,
+        gateway,
     )
 }
 

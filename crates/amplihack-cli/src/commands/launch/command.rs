@@ -28,6 +28,7 @@ pub(super) fn build_command(
     )
 }
 
+#[cfg(test)]
 pub(super) fn build_command_for_dir(
     binary: &BinaryInfo,
     resume: bool,
@@ -36,6 +37,29 @@ pub(super) fn build_command_for_dir(
     extra_args: &[String],
     add_dir_override: Option<&Path>,
     subprocess_safe: bool,
+) -> Command {
+    build_command_for_dir_with_route(
+        binary,
+        resume,
+        continue_session,
+        skip_permissions,
+        extra_args,
+        add_dir_override,
+        subprocess_safe,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn build_command_for_dir_with_route(
+    binary: &BinaryInfo,
+    resume: bool,
+    continue_session: bool,
+    skip_permissions: bool,
+    extra_args: &[String],
+    add_dir_override: Option<&Path>,
+    subprocess_safe: bool,
+    external_litellm: bool,
 ) -> Command {
     let mut cmd = Command::new(&binary.path);
 
@@ -68,6 +92,13 @@ pub(super) fn build_command_for_dir(
     }
     if continue_session {
         cmd.arg("--continue");
+    }
+
+    // Claude settings can inject provider environment variables after process
+    // creation. Routed launches disable every ambient settings source so the
+    // validated gateway environment remains authoritative.
+    if external_litellm && is_claude_compatible {
+        cmd.arg("--setting-sources").arg("");
     }
 
     // Inject --allow-all for Copilot by default (issue #303). Copilot's
@@ -110,7 +141,7 @@ pub(super) fn build_command_for_dir(
     // GitHub's cloud, which is the preferred mode for amplihack orchestration.
     // Skip injection if the user already passed --remote, or if
     // AMPLIHACK_COPILOT_NO_REMOTE=1.
-    if binary.name == "copilot" && should_inject_copilot_remote(extra_args) {
+    if binary.name == "copilot" && !external_litellm && should_inject_copilot_remote(extra_args) {
         cmd.arg("--remote");
     }
 

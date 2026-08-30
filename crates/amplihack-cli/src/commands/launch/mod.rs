@@ -32,7 +32,9 @@ pub(crate) use power_steering::maybe_prompt_re_enable_power_steering;
 
 // Internal imports from submodules used by run_launch.
 use blarify::maybe_run_blarify_indexing_prompt;
-use command::{augment_claude_launch_env, build_command_for_dir, build_docker_launcher_args};
+use command::{
+    augment_claude_launch_env, build_command_for_dir_with_route, build_docker_launcher_args,
+};
 use context::persist_launcher_context;
 
 // Test-visible re-imports from submodules. These become available to
@@ -46,7 +48,7 @@ use blarify::{
 #[cfg(test)]
 use checkout::{parse_github_repo_uri, resolve_checkout_repo_in};
 #[cfg(test)]
-use command::build_command;
+use command::{build_command, build_command_for_dir};
 #[cfg(test)]
 use context::render_launcher_command;
 #[cfg(test)]
@@ -55,6 +57,7 @@ use power_steering::maybe_prompt_re_enable_power_steering_with;
 use crate::bootstrap;
 use crate::docker::{DockerDetector, DockerManager};
 use crate::env_builder::EnvBuilder;
+use crate::external_litellm::{self, GatewayControl};
 use crate::launcher::ManagedChild;
 use crate::memory_config::prepare_memory_config;
 use crate::nesting::NestingDetector;
@@ -90,12 +93,71 @@ pub fn run_launch(
     extra_args: Vec<String>,
     override_origin: OverrideOrigin,
 ) -> Result<()> {
+    run_launch_with_gateway(
+        tool,
+        launcher_command,
+        docker,
+        resume,
+        continue_session,
+        skip_permissions,
+        skip_update_check,
+        no_reflection,
+        subprocess_safe,
+        checkout_repo,
+        extra_args,
+        override_origin,
+        GatewayControl::default(),
+    )
+}
+
+/// Launch a tool with optional client-side external LiteLLM routing.
+#[allow(clippy::too_many_arguments)]
+pub fn run_launch_with_gateway(
+    tool: &str,
+    launcher_command: &str,
+    docker: bool,
+    resume: bool,
+    continue_session: bool,
+    skip_permissions: bool,
+    skip_update_check: bool,
+    no_reflection: bool,
+    subprocess_safe: bool,
+    checkout_repo: Option<String>,
+    extra_args: Vec<String>,
+    override_origin: OverrideOrigin,
+    gateway_control: GatewayControl,
+) -> Result<()> {
+    // Do not run Docker's availability probe while gateway credentials are in
+    // the parent environment. The only inputs that request Docker routing are
+    // the CLI flag and AMPLIHACK_USE_DOCKER.
+    let docker_requested = DockerDetector.activation_requested(docker);
+    let route = external_litellm::resolve(
+        gateway_control,
+        tool,
+        docker_requested,
+        false,
+        false,
+        resume,
+        continue_session,
+        &extra_args,
+    )?;
+    if route.is_some() && checkout_repo.is_some() {
+        anyhow::bail!("AH_LITELLM_ARGUMENT: checkout launches are unavailable for routed launches");
+    }
+    let resolved_route = route
+        .map(external_litellm::Route::resolve_destination)
+        .transpose()?;
+    let docker_activation = if resolved_route.is_some() {
+        None
+    } else {
+        DockerDetector.activation_source(docker)
+    };
     validate_launch_prompt_delivery(tool)?;
 
     let current_dir = std::env::current_dir()
         .ok()
         .unwrap_or_else(|| PathBuf::from("."));
-    if let Some(activation) = DockerDetector.activation_source(docker) {
+    if let Some(activation) = docker_activation {
         println!("{}", activation.message());
         let docker_args = build_docker_launcher_args(
             launcher_command,
@@ -117,9 +179,11 @@ pub fn run_launch(
     // Check for npm updates before doing anything else.
     // This is a no-op if skip_update_check is true, AMPLIHACK_NONINTERACTIVE is set,
     // or the tool has no npm package mapping.
-    maybe_print_npm_update_notice(tool, skip_update_check, override_origin);
+    if resolved_route.is_none() {
+        maybe_print_npm_update_notice(tool, skip_update_check, override_origin);
+    }
 
-    if !subprocess_safe {
+    if !subprocess_safe && resolved_route.is_none() {
         bootstrap::prepare_launcher(tool)?;
     }
 
@@ -142,8 +206,15 @@ pub fn run_launch(
     }
 
     // Find binary
-    let binary = bootstrap::ensure_tool_available(tool, override_origin)
-        .with_context(|| missing_binary_context(tool))?;
+    let binary = match resolved_route.as_ref() {
+        Some(_) => external_litellm::resolve_executable(tool)?,
+        None => bootstrap::ensure_tool_available(tool, override_origin)
+            .with_context(|| missing_binary_context(tool))?,
+    };
+
+    let prepared_route = resolved_route
+        .map(|route| route.prepare(&binary))
+        .transpose()?;
 
     tracing::info!(
         binary = %binary.path.display(),
@@ -154,7 +225,13 @@ pub fn run_launch(
     let execution_dir = resolve_checkout_repo(checkout_repo.as_deref())?
         .or(Some(current_dir.clone()))
         .unwrap_or_else(|| PathBuf::from("."));
-    let node_options = resolve_launch_node_options(subprocess_safe)?;
+    let node_options = if prepared_route.is_some() {
+        // The routed environment removes NODE_OPTIONS. Avoid platform memory
+        // probes (which can spawn sysctl/wmic) while credentials are present.
+        String::new()
+    } else {
+        resolve_launch_node_options(subprocess_safe)?
+    };
     if !subprocess_safe {
         maybe_prompt_re_enable_power_steering(&execution_dir)?;
     }
@@ -190,11 +267,19 @@ pub fn run_launch(
         let env_builder = augment_claude_launch_env(env_builder, tool, Some(binary.path.as_path()))
             .set_if(is_noninteractive(), "AMPLIHACK_NONINTERACTIVE", "1")
             .set_if(no_reflection, "AMPLIHACK_SKIP_REFLECTION", "1"); // WS2: propagate flags
+        // The gateway patch is deliberately last: removals cannot be undone by
+        // an earlier inherited provider setting and additions are authoritative.
+        let env_builder = match prepared_route.as_ref() {
+            Some(route) => route.apply_environment(env_builder),
+            None => env_builder,
+        };
 
-        maybe_run_blarify_indexing_prompt(tool, is_noninteractive(), Some(&execution_dir))?;
+        if prepared_route.is_none() {
+            maybe_run_blarify_indexing_prompt(tool, is_noninteractive(), Some(&execution_dir))?;
+        }
 
         // Build command
-        let mut cmd = build_command_for_dir(
+        let mut cmd = build_command_for_dir_with_route(
             &binary,
             resume,
             continue_session,
@@ -202,9 +287,17 @@ pub fn run_launch(
             &extra_args,
             Some(&execution_dir),
             subprocess_safe,
+            prepared_route.is_some(),
         );
+        if let Some(route) = prepared_route.as_ref() {
+            route.validate_final_command(&cmd)?;
+        }
         cmd.current_dir(&execution_dir);
-        env_builder.apply_to_command(&mut cmd);
+        if prepared_route.is_some() {
+            env_builder.apply_to_isolated_command(&mut cmd);
+        } else {
+            env_builder.apply_to_command(&mut cmd);
+        }
 
         // Register signal handlers
         let shutdown = signals::register_handlers()?;
@@ -216,9 +309,17 @@ pub fn run_launch(
         // which named nothing real and sent the user hunting for a CPU
         // problem that did not exist. Resolution already knows what it tried
         // and why each candidate was rejected — say that instead.
+        if let Some(route) = prepared_route.as_ref() {
+            route.revalidate_executable()?;
+        }
         let mut child = match ManagedChild::spawn(cmd) {
             Ok(child) => child,
             Err(err) => {
+                if prepared_route.is_some() {
+                    return Err(anyhow::anyhow!(
+                        "AH_LITELLM_CAPABILITY: target executable could not be launched"
+                    ));
+                }
                 let raw_os_error = err
                     .downcast_ref::<std::io::Error>()
                     .and_then(std::io::Error::raw_os_error);

@@ -606,4 +606,47 @@ mod tests {
         ])
         .expect("cleanup-stale --dry-run must parse");
     }
+
+    #[test]
+    fn external_litellm_flags_are_owned_by_each_supported_launcher() {
+        let command = Cli::command();
+        for launcher in ["launch", "claude", "copilot", "RustyClawd"] {
+            let subcommand = command
+                .find_subcommand(launcher)
+                .unwrap_or_else(|| panic!("{launcher} launcher must exist"));
+            let argument_ids = subcommand
+                .get_arguments()
+                .map(|argument| argument.get_id().as_str())
+                .collect::<Vec<_>>();
+            assert!(
+                argument_ids.contains(&"litellm") && argument_ids.contains(&"no_litellm"),
+                "{launcher} must own --litellm and --no-litellm instead of forwarding them: \
+                 {argument_ids:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn external_litellm_activation_flags_are_mutually_exclusive() {
+        let _guard = launcher_env_lock();
+        let parsed = Cli::try_parse_from(["amplihack", "claude", "--litellm", "--no-litellm"]);
+        assert!(
+            parsed.is_err(),
+            "conflicting external gateway controls must fail during CLI validation"
+        );
+    }
+
+    #[test]
+    fn external_litellm_control_flags_are_not_forwarded_as_agent_arguments() {
+        let _guard = launcher_env_lock();
+        let parsed = Cli::try_parse_from(["amplihack", "copilot", "--litellm"])
+            .expect("a supported routed launch must parse");
+        let Commands::Copilot { args, .. } = parsed.command else {
+            panic!("expected Copilot command");
+        };
+        assert!(
+            !args.iter().any(|argument| argument == "--litellm"),
+            "--litellm is an amplihack control and must never reach the agent argv: {args:?}"
+        );
+    }
 }

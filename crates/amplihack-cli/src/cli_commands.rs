@@ -34,6 +34,12 @@ pub enum Commands {
     Uninstall,
     /// Launch Claude Code
     Launch {
+        /// Route this launch through the configured external LiteLLM gateway.
+        #[arg(long)]
+        litellm: bool,
+        /// Disable external LiteLLM routing for this launch.
+        #[arg(long = "no-litellm")]
+        no_litellm: bool,
         /// Resume the previous session
         #[arg(long)]
         resume: bool,
@@ -79,6 +85,12 @@ pub enum Commands {
     },
     /// Launch Claude Code (alias)
     Claude {
+        /// Route this launch through the configured external LiteLLM gateway.
+        #[arg(long)]
+        litellm: bool,
+        /// Disable external LiteLLM routing for this launch.
+        #[arg(long = "no-litellm")]
+        no_litellm: bool,
         /// Disable post-session reflection analysis.
         #[arg(long = "no-reflection")]
         no_reflection: bool,
@@ -109,6 +121,12 @@ pub enum Commands {
     },
     /// Launch GitHub Copilot CLI
     Copilot {
+        /// Route this launch through the configured external LiteLLM gateway.
+        #[arg(long)]
+        litellm: bool,
+        /// Disable external LiteLLM routing for this launch.
+        #[arg(long = "no-litellm")]
+        no_litellm: bool,
         /// Disable post-session reflection analysis.
         #[arg(long = "no-reflection")]
         no_reflection: bool,
@@ -141,6 +159,12 @@ pub enum Commands {
     },
     /// Launch OpenAI Codex CLI
     Codex {
+        /// Request external LiteLLM routing (unsupported for Codex).
+        #[arg(long, hide = true)]
+        litellm: bool,
+        /// Disable external LiteLLM routing.
+        #[arg(long = "no-litellm", hide = true)]
+        no_litellm: bool,
         /// Disable post-session reflection analysis.
         #[arg(long = "no-reflection")]
         no_reflection: bool,
@@ -168,6 +192,12 @@ pub enum Commands {
     },
     /// Launch Amplifier
     Amplifier {
+        /// Request external LiteLLM routing (unsupported for Amplifier).
+        #[arg(long, hide = true)]
+        litellm: bool,
+        /// Disable external LiteLLM routing.
+        #[arg(long = "no-litellm", hide = true)]
+        no_litellm: bool,
         /// Disable post-session reflection analysis.
         #[arg(long = "no-reflection")]
         no_reflection: bool,
@@ -336,6 +366,12 @@ pub enum Commands {
     /// RustyClawd tool (native Rust launcher path)
     #[command(name = "RustyClawd")]
     RustyClawd {
+        /// Route this launch through the configured external LiteLLM gateway.
+        #[arg(long)]
+        litellm: bool,
+        /// Disable external LiteLLM routing for this launch.
+        #[arg(long = "no-litellm")]
+        no_litellm: bool,
         /// Append instructions to a running auto mode session and exit.
         #[arg(long = "append")]
         append: Option<String>,

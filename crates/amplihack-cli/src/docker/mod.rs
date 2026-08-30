@@ -33,6 +33,13 @@ impl DockerActivation {
 pub(crate) struct DockerDetector;
 
 impl DockerDetector {
+    /// Whether CLI or environment state requests Docker, without probing the
+    /// daemon. Security-sensitive preflight paths use this before they are
+    /// allowed to spawn any helper process.
+    pub(crate) fn activation_requested(self, docker_flag: bool) -> bool {
+        docker_flag || is_truthy_env_value(env::var("AMPLIHACK_USE_DOCKER").ok().as_deref())
+    }
+
     pub(crate) fn activation_source(self, docker_flag: bool) -> Option<DockerActivation> {
         if docker_flag {
             Some(DockerActivation::Flag)

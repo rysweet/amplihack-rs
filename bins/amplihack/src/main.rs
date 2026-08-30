@@ -15,10 +15,14 @@ fn main() {
         .init();
 
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
-    if matches!(
-        update::maybe_print_update_notice_from_args(&args),
-        update::StartupUpdateOutcome::ExitSuccess
-    ) {
+    let external_litellm_startup =
+        amplihack_cli::external_litellm::GatewayControl::startup_may_route(&args);
+    if !external_litellm_startup
+        && matches!(
+            update::maybe_print_update_notice_from_args(&args),
+            update::StartupUpdateOutcome::ExitSuccess
+        )
+    {
         return;
     }
 
@@ -28,7 +32,9 @@ fn main() {
     // by self_heal's own skip-list to prevent recursion.
     let cli = Cli::parse_from(&args);
 
-    if let Err(e) = amplihack_cli::self_heal::ensure_assets_match_binary_version(&args) {
+    if !external_litellm_startup
+        && let Err(e) = amplihack_cli::self_heal::ensure_assets_match_binary_version(&args)
+    {
         eprintln!("amplihack: self-heal failed: {e:#}");
         std::process::exit(1);
     }

@@ -31,6 +31,7 @@ pub mod signal;
 pub mod uvx_help;
 pub mod workflow;
 
+use crate::external_litellm::GatewayControl;
 use crate::{
     BuilderCommands, Commands, HygieneCommands, MemoryCommands, ModeCommands, MultitaskCommands,
     PluginCommands, RecipeCommands, ReflectCommands, RemoteCommands,
@@ -49,6 +50,8 @@ pub fn dispatch(command: Commands) -> Result<()> {
         } => install::run_install(local, interactive, force_refresh),
         Commands::Uninstall => install::run_uninstall(),
         Commands::Launch {
+            litellm,
+            no_litellm,
             resume,
             continue_session,
             skip_permissions: _skip_permissions, // always true for Python launcher parity
@@ -63,10 +66,31 @@ pub fn dispatch(command: Commands) -> Result<()> {
             ui,
             claude_args,
         } => {
+            let gateway = GatewayControl::new(litellm, no_litellm);
             if let Some(instruction) = append {
+                external_litellm_mode_gate(
+                    gateway,
+                    "claude",
+                    docker,
+                    false,
+                    true,
+                    resume,
+                    continue_session,
+                    &claude_args,
+                )?;
                 return append::run_append(&instruction);
             }
             if auto {
+                external_litellm_mode_gate(
+                    gateway,
+                    "claude",
+                    docker,
+                    true,
+                    false,
+                    resume,
+                    continue_session,
+                    &claude_args,
+                )?;
                 let working_dir = launch::resolve_checkout_repo(checkout_repo.as_deref())?;
                 return auto_mode::run_auto_mode(
                     auto_mode::AutoModeTool::Claude,
@@ -77,7 +101,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                     working_dir,
                 );
             }
-            launch::run_launch(
+            launch::run_launch_with_gateway(
                 "claude",
                 "launch",
                 docker,
@@ -93,9 +117,12 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 // on amplihack's behalf, so any override in the environment is the
                 // user's instruction.
                 OverrideOrigin::User,
+                gateway,
             )
         }
         Commands::Claude {
+            litellm,
+            no_litellm,
             no_reflection,
             subprocess_safe,
             checkout_repo,
@@ -106,10 +133,31 @@ pub fn dispatch(command: Commands) -> Result<()> {
             ui,
             claude_args,
         } => {
+            let gateway = GatewayControl::new(litellm, no_litellm);
             if let Some(instruction) = append {
+                external_litellm_mode_gate(
+                    gateway,
+                    "claude",
+                    docker,
+                    false,
+                    true,
+                    false,
+                    false,
+                    &claude_args,
+                )?;
                 return append::run_append(&instruction);
             }
             if auto {
+                external_litellm_mode_gate(
+                    gateway,
+                    "claude",
+                    docker,
+                    true,
+                    false,
+                    false,
+                    false,
+                    &claude_args,
+                )?;
                 let working_dir = launch::resolve_checkout_repo(checkout_repo.as_deref())?;
                 return auto_mode::run_auto_mode(
                     auto_mode::AutoModeTool::Claude,
@@ -121,7 +169,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 );
             }
             // Always inject --dangerously-skip-permissions to match Python launcher parity.
-            launch::run_launch(
+            launch::run_launch_with_gateway(
                 "claude",
                 "claude",
                 docker,
@@ -137,9 +185,12 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 // on amplihack's behalf, so any override in the environment is the
                 // user's instruction.
                 OverrideOrigin::User,
+                gateway,
             )
         }
         Commands::Copilot {
+            litellm,
+            no_litellm,
             no_reflection,
             reflection,
             subprocess_safe,
@@ -150,10 +201,17 @@ pub fn dispatch(command: Commands) -> Result<()> {
             ui,
             args,
         } => {
+            let gateway = GatewayControl::new(litellm, no_litellm);
             if let Some(instruction) = append {
+                external_litellm_mode_gate(
+                    gateway, "copilot", docker, false, true, false, false, &args,
+                )?;
                 return append::run_append(&instruction);
             }
             if auto {
+                external_litellm_mode_gate(
+                    gateway, "copilot", docker, true, false, false, false, &args,
+                )?;
                 return auto_mode::run_auto_mode(
                     auto_mode::AutoModeTool::Copilot,
                     max_turns,
@@ -193,7 +251,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 no_reflection_effective = no_reflection_effective,
                 "copilot dispatch decision"
             );
-            launch::run_launch(
+            launch::run_launch_with_gateway(
                 "copilot",
                 "copilot",
                 docker,
@@ -209,9 +267,12 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 // on amplihack's behalf, so any override in the environment is the
                 // user's instruction.
                 OverrideOrigin::User,
+                gateway,
             )
         }
         Commands::Codex {
+            litellm,
+            no_litellm,
             no_reflection,
             subprocess_safe,
             docker,
@@ -221,10 +282,17 @@ pub fn dispatch(command: Commands) -> Result<()> {
             ui,
             args,
         } => {
+            let gateway = GatewayControl::new(litellm, no_litellm);
             if let Some(instruction) = append {
+                external_litellm_mode_gate(
+                    gateway, "codex", docker, false, true, false, false, &args,
+                )?;
                 return append::run_append(&instruction);
             }
             if auto {
+                external_litellm_mode_gate(
+                    gateway, "codex", docker, true, false, false, false, &args,
+                )?;
                 return auto_mode::run_auto_mode(
                     auto_mode::AutoModeTool::Codex,
                     max_turns,
@@ -234,7 +302,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                     None,
                 );
             }
-            launch::run_launch(
+            launch::run_launch_with_gateway(
                 "codex",
                 "codex",
                 docker,
@@ -250,9 +318,12 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 // on amplihack's behalf, so any override in the environment is the
                 // user's instruction.
                 OverrideOrigin::User,
+                gateway,
             )
         }
         Commands::Amplifier {
+            litellm,
+            no_litellm,
             no_reflection,
             subprocess_safe,
             docker,
@@ -262,10 +333,31 @@ pub fn dispatch(command: Commands) -> Result<()> {
             ui,
             args,
         } => {
+            let gateway = GatewayControl::new(litellm, no_litellm);
             if let Some(instruction) = append {
+                external_litellm_mode_gate(
+                    gateway,
+                    "amplifier",
+                    docker,
+                    false,
+                    true,
+                    false,
+                    false,
+                    &args,
+                )?;
                 return append::run_append(&instruction);
             }
             if auto {
+                external_litellm_mode_gate(
+                    gateway,
+                    "amplifier",
+                    docker,
+                    true,
+                    false,
+                    false,
+                    false,
+                    &args,
+                )?;
                 return auto_mode::run_auto_mode(
                     auto_mode::AutoModeTool::Amplifier,
                     max_turns,
@@ -275,7 +367,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                     None,
                 );
             }
-            launch::run_launch(
+            launch::run_launch_with_gateway(
                 "amplifier",
                 "amplifier",
                 docker,
@@ -291,6 +383,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 // on amplihack's behalf, so any override in the environment is the
                 // user's instruction.
                 OverrideOrigin::User,
+                gateway,
             )
         }
         Commands::Plugin { command } => dispatch_plugin(command),
@@ -358,6 +451,8 @@ pub fn dispatch(command: Commands) -> Result<()> {
         ),
         #[allow(non_snake_case)]
         Commands::RustyClawd {
+            litellm,
+            no_litellm,
             append,
             no_reflection,
             subprocess_safe,
@@ -366,10 +461,17 @@ pub fn dispatch(command: Commands) -> Result<()> {
             ui,
             args,
         } => {
+            let gateway = GatewayControl::new(litellm, no_litellm);
             if let Some(instruction) = append {
+                external_litellm_mode_gate(
+                    gateway, "claude", false, false, true, false, false, &args,
+                )?;
                 return append::run_append(&instruction);
             }
             if auto {
+                external_litellm_mode_gate(
+                    gateway, "claude", false, true, false, false, false, &args,
+                )?;
                 return auto_mode::run_auto_mode(
                     auto_mode::AutoModeTool::RustyClawd,
                     max_turns,
@@ -379,8 +481,9 @@ pub fn dispatch(command: Commands) -> Result<()> {
                     None,
                 );
             }
-            rustyclawd::run_rustyclawd(args, no_reflection, subprocess_safe)
+            rustyclawd::run_rustyclawd(args, no_reflection, subprocess_safe, gateway)
         }
+
         Commands::UvxHelp { find_path, info } => uvx_help::run_uvx_help(find_path, info),
         Commands::Completions { shell } => completions::run_completions(shell),
         Commands::Doctor { args } => doctor::run_doctor(args),
@@ -410,6 +513,31 @@ pub fn dispatch(command: Commands) -> Result<()> {
         } => mcp_eval::dispatch(adapter, scenario, mock, output, config),
         Commands::Signal { command } => signal::dispatch(command),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn external_litellm_mode_gate(
+    control: GatewayControl,
+    tool: &str,
+    docker: bool,
+    auto: bool,
+    append: bool,
+    resume: bool,
+    continue_session: bool,
+    args: &[String],
+) -> Result<()> {
+    let effective_docker = crate::docker::DockerDetector.activation_requested(docker);
+    crate::external_litellm::resolve(
+        control,
+        tool,
+        effective_docker,
+        auto,
+        append,
+        resume,
+        continue_session,
+        args,
+    )
+    .map(|_| ())
 }
 
 fn dispatch_hygiene(command: HygieneCommands) -> Result<()> {

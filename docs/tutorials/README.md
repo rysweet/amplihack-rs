@@ -6,6 +6,16 @@
 
 ## Available Tutorials
 
+### [External LiteLLM Gateway](external-litellm-gateway.md)
+
+Route Claude Code, GitHub Copilot CLI, and RustyClawd through an existing,
+operator-managed LiteLLM gateway.
+
+**Prerequisites**: amplihack, a supported agent CLI, and an external LiteLLM
+gateway.
+
+**Duration**: ~15 minutes.
+
 ### 🎓 [Amplihack Tutorial](amplihack-tutorial.md)
 
 Comprehensive guide from basics to advanced topics. 60-90 minutes of hands-on learning with progressive disclosure.

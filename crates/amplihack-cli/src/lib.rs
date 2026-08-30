@@ -28,6 +28,7 @@ pub mod commands;
 pub mod copilot_setup;
 pub mod docker;
 pub mod env_builder;
+pub mod external_litellm;
 /// Local session management dashboard (fleet_local).
 ///
 /// Python-to-Rust port of the amploxy local session TUI.
@@ -128,6 +129,7 @@ impl Cli {
     {
         let cli = <Self as Parser>::try_parse_from(itr)?;
         cli.validate_hygiene_cleanup()?;
+        cli.validate_external_litellm_flags()?;
         Ok(cli)
     }
 
@@ -189,6 +191,64 @@ impl Cli {
                     }
                 }
             }
+        }
+        Ok(())
+    }
+
+    fn validate_external_litellm_flags(&self) -> Result<(), clap::Error> {
+        let controls_and_args = match &self.command {
+            Commands::Launch {
+                litellm,
+                no_litellm,
+                claude_args,
+                ..
+            }
+            | Commands::Claude {
+                litellm,
+                no_litellm,
+                claude_args,
+                ..
+            } => Some(((*litellm, *no_litellm), claude_args)),
+            Commands::Copilot {
+                litellm,
+                no_litellm,
+                args,
+                ..
+            }
+            | Commands::Codex {
+                litellm,
+                no_litellm,
+                args,
+                ..
+            }
+            | Commands::Amplifier {
+                litellm,
+                no_litellm,
+                args,
+                ..
+            }
+            | Commands::RustyClawd {
+                litellm,
+                no_litellm,
+                args,
+                ..
+            } => Some(((*litellm, *no_litellm), args)),
+            _ => None,
+        };
+        if matches!(controls_and_args, Some(((true, true), _))) {
+            return Err(clap::Error::raw(
+                clap::error::ErrorKind::ArgumentConflict,
+                "AH_LITELLM_CONFIG: conflicting activation controls",
+            ));
+        }
+        if controls_and_args.is_some_and(|(_, args)| {
+            args.iter()
+                .any(|argument| matches!(argument.as_str(), "--litellm" | "--no-litellm"))
+        }) {
+            return Err(clap::Error::raw(
+                clap::error::ErrorKind::ArgumentConflict,
+                "AH_LITELLM_CONFIG: gateway controls cannot be passed through",
+            ));
         }
         Ok(())
     }

@@ -4,6 +4,20 @@
 
 This section documents amplihack-rs feature implementations.
 
+## External LiteLLM Gateway
+
+Amplihack routes supported local clients to an existing, operator-managed
+gateway without managing the LiteLLM service lifecycle.
+
+- [Tutorial](../tutorials/external-litellm-gateway.md) - route Claude Code,
+  GitHub Copilot CLI, and RustyClawd through an existing gateway.
+- [Operations guide](../howto/operate-external-litellm-route.md) -
+  configuration, rotation, diagnosis, disablement, and migration.
+- [Reference](../reference/external-litellm-gateway.md) - normative
+  CLI, configuration, endpoint, readiness, adapter, and error design.
+- [External boundary](../concepts/external-litellm-boundary.md) - why the
+  launcher validates the route but does not operate the gateway.
+
 ## Power Steering
 
 Intelligent guidance system that prevents common mistakes and ensures work completeness:

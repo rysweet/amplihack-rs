@@ -11,11 +11,27 @@ use super::helpers::{
 };
 
 /// Builder for constructing the environment passed to child processes.
-#[derive(Debug)]
 pub struct EnvBuilder {
     vars: HashMap<String, String>,
     removed_vars: HashSet<String>,
     path_prepend: Vec<PathBuf>,
+}
+
+impl std::fmt::Debug for EnvBuilder {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Values can include provider credentials. Expose only key names so a
+        // diagnostic can describe the patch without becoming a secret sink.
+        let mut set_keys = self.vars.keys().collect::<Vec<_>>();
+        set_keys.sort();
+        let mut removed_keys = self.removed_vars.iter().collect::<Vec<_>>();
+        removed_keys.sort();
+        formatter
+            .debug_struct("EnvBuilder")
+            .field("set_keys", &set_keys)
+            .field("removed_keys", &removed_keys)
+            .field("path_prepend", &self.path_prepend)
+            .finish()
+    }
 }
 
 impl EnvBuilder {
@@ -370,6 +386,37 @@ impl EnvBuilder {
         let EnvBuilder { removed_vars, .. } = &self;
         for key in removed_vars {
             command.env_remove(key);
+        }
+        command.envs(self.build());
+    }
+
+    /// Apply this environment without inheriting arbitrary parent variables.
+    ///
+    /// Routed external-service launches use this path so unrelated credentials
+    /// from the invoking shell cannot reach the agent process.
+    pub fn apply_to_isolated_command(self, command: &mut Command) {
+        const AMBIENT_ALLOWLIST: &[&str] = &[
+            "HOME",
+            "PATH",
+            "USER",
+            "LOGNAME",
+            "TMPDIR",
+            "TMP",
+            "TEMP",
+            "LANG",
+            "LC_ALL",
+            "LC_CTYPE",
+            "TERM",
+            "COLORTERM",
+            "NO_COLOR",
+            "FORCE_COLOR",
+        ];
+
+        command.env_clear();
+        for name in AMBIENT_ALLOWLIST {
+            if let Some(value) = env::var_os(name) {
+                command.env(name, value);
+            }
         }
         command.envs(self.build());
     }
