@@ -534,10 +534,14 @@ mod tests {
         );
 
         let forwarded = forwarded_env_vars([
+            ("ANTHROPIC_API_KEY", "sk-provider-must-not-forward"),
+            ("GITHUB_TOKEN", "ghp_providerMustNotForward"),
             ("AMPLIHACK_EXTERNAL_OTLP_AUTHORIZATION", "telemetry-secret"),
             ("AMPLIHACK_DATABASE_PASSWORD", "database-secret"),
             ("AMPLIHACK_LITELLM_API_KEY", "gateway-secret"),
         ]);
+        assert!(!forwarded.contains_key("ANTHROPIC_API_KEY"));
+        assert!(!forwarded.contains_key("GITHUB_TOKEN"));
         assert!(!forwarded.contains_key("AMPLIHACK_EXTERNAL_OTLP_AUTHORIZATION"));
         assert!(!forwarded.contains_key("AMPLIHACK_DATABASE_PASSWORD"));
         assert_eq!(

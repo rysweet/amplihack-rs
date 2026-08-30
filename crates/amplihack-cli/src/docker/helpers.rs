@@ -36,31 +36,34 @@ where
     K: Into<std::ffi::OsString>,
     V: Into<std::ffi::OsString>,
 {
-    let env_vars = env_vars
-        .into_iter()
-        .map(|(key, value)| {
-            (
-                key.into().to_string_lossy().into_owned(),
-                value.into().to_string_lossy().into_owned(),
-            )
-        })
-        .collect::<Vec<_>>();
-    let gateway_requested = env_vars.iter().any(|(key, _)| {
-        matches!(
+    let mut forwarded = BTreeMap::new();
+    let mut gateway_requested = false;
+    let mut provider_credentials = Vec::new();
+    for (key, value) in env_vars {
+        let key = key.into().to_string_lossy().into_owned();
+        let value = value.into().to_string_lossy().into_owned();
+
+        if matches!(
             key.as_str(),
             amplihack_utils::litellm_proxy::ENDPOINT_ENV
                 | amplihack_utils::litellm_proxy::API_KEY_ENV
                 | amplihack_utils::litellm_proxy::MODEL_ENV
-        )
-    });
-    let mut forwarded = BTreeMap::new();
-    for (key, value) in env_vars {
-        let should_forward = ((!gateway_requested
-            && matches!(
-                key.as_str(),
-                "ANTHROPIC_API_KEY" | "OPENAI_API_KEY" | "GITHUB_TOKEN" | "GH_TOKEN"
-            ))
-            || key == "TERM"
+        ) {
+            gateway_requested = true;
+            provider_credentials.clear();
+        }
+
+        if matches!(
+            key.as_str(),
+            "ANTHROPIC_API_KEY" | "OPENAI_API_KEY" | "GITHUB_TOKEN" | "GH_TOKEN"
+        ) {
+            if !gateway_requested {
+                provider_credentials.push((key, value));
+            }
+            continue;
+        }
+
+        let should_forward = (key == "TERM"
             || (key.starts_with("AMPLIHACK_")
                 && key != "AMPLIHACK_USE_DOCKER"
                 && (!is_secret_env_key(&key)
@@ -68,6 +71,13 @@ where
             && validate_api_key(&key, &value);
         if should_forward {
             forwarded.insert(key, sanitize_env_value(&value));
+        }
+    }
+    if !gateway_requested {
+        for (key, value) in provider_credentials {
+            if validate_api_key(&key, &value) {
+                forwarded.insert(key, sanitize_env_value(&value));
+            }
         }
     }
     forwarded.insert("AMPLIHACK_IN_DOCKER".to_string(), "1".to_string());
