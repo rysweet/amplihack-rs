@@ -57,14 +57,17 @@ application credentials. It sets:
 | `ANTHROPIC_SMALL_FAST_MODEL` | Configured model alias |
 
 Claude settings sources are disabled. Claude cloud, teleport, remote-control,
-environment, settings, `--from-pr`, and other session-reuse options are
-rejected. rustyclawd session-reuse options are also rejected.
+environment, settings, `--agent`, `--agents`, `--from-pr`, and other
+session-reuse options are rejected. rustyclawd uses the same Claude-compatible
+settings, agent, remote, and session restrictions.
 
 ## GitHub Copilot CLI
 
 Amplihack removes inherited OpenAI credentials and conflicting Copilot
 provider, bearer-token, header, wire-model, GHES, offline, and transport
-settings. It sets:
+settings. It rejects custom-agent selection, marks the provider key as a
+Copilot secret environment variable so shell and MCP subprocesses cannot
+inherit it, and sets:
 
 | Variable | Value |
 | --- | --- |
@@ -86,7 +89,10 @@ Copilot prompt content is not treated as a routing option, and arguments after
 
 Explicit `--model` and `--fallback-model` values are accepted only when each
 exactly matches `AMPLIHACK_LITELLM_MODEL`. Missing values, mismatches, and
-duplicate occurrences are errors.
+duplicate occurrences are errors. `--append` is rejected because an existing
+session's routing cannot be verified. Auto mode validates the gateway
+configuration, supported launcher, and passthrough arguments before creating
+session state or spawning a nested process.
 
 ## Docker contract
 
@@ -97,8 +103,16 @@ API key uses `docker run --env AMPLIHACK_LITELLM_API_KEY`, never
 
 Images must declare the LiteLLM routing capability and the running amplihack
 version. Unlabeled, stale, or external images that cannot prove compatibility
-fail closed. Amplihack does not enable host networking or add
-`host.docker.internal`.
+fail closed. The repository does not ship or pull an image definition; operators
+must build the image from matching source and apply
+`org.amplihack.litellm-routing=2` and
+`org.amplihack.version=<amplihack-version>` in their own image pipeline.
+These labels declare compatibility; they are not provenance attestations.
+Amplihack never pulls the mutable local `amplihack:latest` tag. Operators own
+that local image and should pin its digest or verify its signature in their
+image pipeline. A principal that can replace local Docker images already
+controls the Docker daemon and is outside the launcher trust boundary.
+Amplihack does not enable host networking or add `host.docker.internal`.
 
 ## Secret handling
 

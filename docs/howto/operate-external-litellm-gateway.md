@@ -102,9 +102,14 @@ amplihack copilot --docker
 ```
 
 The Docker launcher forwards the API key by environment-variable name; the
-value does not appear in `docker run` arguments. The image must carry the
-LiteLLM-routing capability label and a compatible amplihack version. Rebuild an
-unlabeled or stale image rather than bypassing the check.
+value does not appear in `docker run` arguments. The image must be built from
+the current amplihack source and carry the LiteLLM-routing capability label and
+matching amplihack version label. Amplihack does not ship or pull a container
+image definition, so provide those labels through your organization's image
+build. Never relabel an older image without rebuilding it from the matching
+source. The labels declare routing compatibility rather than image provenance;
+pin the image digest or verify its signature in your own pipeline. Amplihack
+does not pull `amplihack:latest`.
 
 Host-loopback endpoints are rejected for Docker launches. Do not work around
 that restriction with host networking. Use a container-reachable HTTPS
@@ -136,7 +141,7 @@ Never replace a digest with a floating tag such as `latest`.
 | Claude settings option is rejected | Remove `--settings` or `--setting-sources`. Gateway mode disables mutable settings sources. |
 | Codex or Amplifier is rejected | Disable the gateway variables or use Claude Code, Copilot CLI, or rustyclawd. |
 | Docker rejects a loopback endpoint | Use a container-reachable HTTPS gateway or launch on the host. |
-| Docker rejects the image | Rebuild with the current amplihack image definition. |
+| Docker rejects the image | Build the image from the current amplihack source with your organization's image definition and the required routing/version labels. |
 | Gateway cannot be reached | Check the child CLI error, gateway readiness, DNS, TLS trust, and firewall. Amplihack does not retry or fall back. |
 | Usage appears but cost is missing | Configure provider/model cost in LiteLLM. Treat the value as unknown until LiteLLM records it. |
 | Agent usage is absent from Grafana | Use the LiteLLM UI. Grafana covers infrastructure telemetry, not authoritative request accounting. |

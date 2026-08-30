@@ -93,18 +93,17 @@ pub fn run_launch(
     validate_launch_prompt_delivery(tool)?;
     let proxy_enabled = amplihack_utils::litellm_proxy::validate_environment()
         .context("invalid external LiteLLM proxy configuration")?;
-    if proxy_enabled && !matches!(tool, "claude" | "copilot") {
-        anyhow::bail!(
-            "the external LiteLLM gateway supports only Claude, GitHub Copilot CLI, and rustyclawd; unset AMPLIHACK_LITELLM_ENDPOINT to launch {tool}"
-        );
-    }
-    if proxy_enabled && tool == "copilot" {
-        validate_proxy_launch_args(
-            amplihack_utils::litellm_proxy::CliTarget::CopilotCli,
-            resume,
-            continue_session,
-            &extra_args,
-        )?;
+    if proxy_enabled {
+        let target = match tool {
+            "claude" => amplihack_utils::litellm_proxy::CliTarget::Claude,
+            "copilot" => amplihack_utils::litellm_proxy::CliTarget::CopilotCli,
+            _ => {
+                anyhow::bail!(
+                    "the external LiteLLM gateway supports only Claude, GitHub Copilot CLI, and rustyclawd; unset AMPLIHACK_LITELLM_ENDPOINT to launch {tool}"
+                );
+            }
+        };
+        validate_proxy_launch_args(target, resume, continue_session, &extra_args)?;
     }
 
     let current_dir = std::env::current_dir()

@@ -36,7 +36,7 @@ pub fn validate_launch_args(target: CliTarget, args: &[String]) -> Result<(), Pr
                 || arg == "--session-id"
                 || arg.starts_with("--session-id=")
         }
-        CliTarget::Claude => {
+        CliTarget::Claude | CliTarget::RustyClawd => {
             arg == "--cloud"
                 || arg.starts_with("--cloud=")
                 || arg == "--teleport"
@@ -63,18 +63,6 @@ pub fn validate_launch_args(target: CliTarget, args: &[String]) -> Result<(), Pr
                 || (arg.starts_with("-r") && !arg.starts_with("--"))
                 || arg == "ultrareview"
         }
-        CliTarget::RustyClawd => {
-            arg == "--continue"
-                || arg.starts_with("--continue=")
-                || arg == "--resume"
-                || arg.starts_with("--resume=")
-                || arg == "--session-id"
-                || arg.starts_with("--session-id=")
-                || arg == "-c"
-                || arg == "-r"
-                || arg.starts_with("-r=")
-                || (arg.starts_with("-r") && !arg.starts_with("--"))
-        }
     });
     if proxy_requested() && remote_requested {
         return Err(ProxyError::InvalidConfig(
@@ -83,6 +71,30 @@ pub fn validate_launch_args(target: CliTarget, args: &[String]) -> Result<(), Pr
         ));
     }
     if proxy_requested() {
+        let custom_agent_requested = option_args.iter().any(|arg| match target {
+            CliTarget::Claude | CliTarget::RustyClawd => {
+                matches!(*arg, "--agent" | "--agents")
+                    || arg.starts_with("--agent=")
+                    || arg.starts_with("--agents=")
+            }
+            CliTarget::CopilotCli => *arg == "--agent" || arg.starts_with("--agent="),
+        });
+        if custom_agent_requested {
+            return Err(ProxyError::InvalidConfig(
+                "custom agents cannot be selected or defined while LiteLLM routing is enabled because they can override the configured model"
+                    .to_string(),
+            ));
+        }
+        if target == CliTarget::CopilotCli
+            && option_args
+                .iter()
+                .any(|arg| *arg == "--secret-env-vars" || arg.starts_with("--secret-env-vars="))
+        {
+            return Err(ProxyError::InvalidConfig(
+                "custom --secret-env-vars cannot be used while LiteLLM routing is enabled"
+                    .to_string(),
+            ));
+        }
         let configured_model = nonempty_env(MODEL_ENV);
         for requested_model in requested_models(&option_args)? {
             if configured_model.as_deref() != Some(requested_model) {
@@ -182,6 +194,8 @@ mod tests {
                     "--share-gist",
                     "--share",
                     "--connect",
+                    "--agent",
+                    "--secret-env-vars",
                     "--continue",
                     "-c",
                     "--resume",
@@ -198,6 +212,8 @@ mod tests {
                     "--environment",
                     "--settings",
                     "--setting-sources",
+                    "--agent",
+                    "--agents",
                     "--from-pr",
                     "--continue",
                     "-c",
@@ -208,7 +224,17 @@ mod tests {
             ),
             (
                 CliTarget::RustyClawd,
-                &["--continue", "-c", "--resume", "-rsession", "--session-id"],
+                &[
+                    "--settings",
+                    "--setting-sources",
+                    "--agent",
+                    "--agents",
+                    "--continue",
+                    "-c",
+                    "--resume",
+                    "-rsession",
+                    "--session-id",
+                ],
             ),
         ] {
             for control in controls {

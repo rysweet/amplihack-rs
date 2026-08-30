@@ -36,7 +36,40 @@ use crate::{
     PluginCommands, RecipeCommands, ReflectCommands, RemoteCommands,
 };
 use amplihack_utils::launch_target::OverrideOrigin;
-use anyhow::Result;
+use anyhow::{Context, Result};
+
+fn reject_gateway_append() -> Result<()> {
+    if amplihack_utils::litellm_proxy::validate_environment()
+        .context("invalid external LiteLLM proxy configuration")?
+    {
+        anyhow::bail!(
+            "instructions cannot be appended to an existing session while LiteLLM routing is enabled because that session's routing cannot be verified"
+        );
+    }
+    Ok(())
+}
+
+fn validate_gateway_auto_mode(tool: auto_mode::AutoModeTool, args: &[String]) -> Result<()> {
+    if !amplihack_utils::litellm_proxy::validate_environment()
+        .context("invalid external LiteLLM proxy configuration")?
+    {
+        return Ok(());
+    }
+    let target = match tool {
+        auto_mode::AutoModeTool::Claude => amplihack_utils::litellm_proxy::CliTarget::Claude,
+        auto_mode::AutoModeTool::Copilot => amplihack_utils::litellm_proxy::CliTarget::CopilotCli,
+        auto_mode::AutoModeTool::RustyClawd => {
+            amplihack_utils::litellm_proxy::CliTarget::RustyClawd
+        }
+        auto_mode::AutoModeTool::Codex | auto_mode::AutoModeTool::Amplifier => {
+            anyhow::bail!(
+                "the external LiteLLM gateway supports auto mode only for Claude, GitHub Copilot CLI, and rustyclawd"
+            );
+        }
+    };
+    amplihack_utils::litellm_proxy::validate_launch_args(target, args)
+        .context("invalid external LiteLLM proxy launch arguments")
+}
 
 /// Dispatch a parsed CLI command to the appropriate handler.
 pub fn dispatch(command: Commands) -> Result<()> {
@@ -64,9 +97,11 @@ pub fn dispatch(command: Commands) -> Result<()> {
             claude_args,
         } => {
             if let Some(instruction) = append {
+                reject_gateway_append()?;
                 return append::run_append(&instruction);
             }
             if auto {
+                validate_gateway_auto_mode(auto_mode::AutoModeTool::Claude, &claude_args)?;
                 let working_dir = launch::resolve_checkout_repo(checkout_repo.as_deref())?;
                 return auto_mode::run_auto_mode(
                     auto_mode::AutoModeTool::Claude,
@@ -107,9 +142,11 @@ pub fn dispatch(command: Commands) -> Result<()> {
             claude_args,
         } => {
             if let Some(instruction) = append {
+                reject_gateway_append()?;
                 return append::run_append(&instruction);
             }
             if auto {
+                validate_gateway_auto_mode(auto_mode::AutoModeTool::Claude, &claude_args)?;
                 let working_dir = launch::resolve_checkout_repo(checkout_repo.as_deref())?;
                 return auto_mode::run_auto_mode(
                     auto_mode::AutoModeTool::Claude,
@@ -151,9 +188,11 @@ pub fn dispatch(command: Commands) -> Result<()> {
             args,
         } => {
             if let Some(instruction) = append {
+                reject_gateway_append()?;
                 return append::run_append(&instruction);
             }
             if auto {
+                validate_gateway_auto_mode(auto_mode::AutoModeTool::Copilot, &args)?;
                 return auto_mode::run_auto_mode(
                     auto_mode::AutoModeTool::Copilot,
                     max_turns,
@@ -222,9 +261,11 @@ pub fn dispatch(command: Commands) -> Result<()> {
             args,
         } => {
             if let Some(instruction) = append {
+                reject_gateway_append()?;
                 return append::run_append(&instruction);
             }
             if auto {
+                validate_gateway_auto_mode(auto_mode::AutoModeTool::Codex, &args)?;
                 return auto_mode::run_auto_mode(
                     auto_mode::AutoModeTool::Codex,
                     max_turns,
@@ -263,9 +304,11 @@ pub fn dispatch(command: Commands) -> Result<()> {
             args,
         } => {
             if let Some(instruction) = append {
+                reject_gateway_append()?;
                 return append::run_append(&instruction);
             }
             if auto {
+                validate_gateway_auto_mode(auto_mode::AutoModeTool::Amplifier, &args)?;
                 return auto_mode::run_auto_mode(
                     auto_mode::AutoModeTool::Amplifier,
                     max_turns,
@@ -367,9 +410,11 @@ pub fn dispatch(command: Commands) -> Result<()> {
             args,
         } => {
             if let Some(instruction) = append {
+                reject_gateway_append()?;
                 return append::run_append(&instruction);
             }
             if auto {
+                validate_gateway_auto_mode(auto_mode::AutoModeTool::RustyClawd, &args)?;
                 return auto_mode::run_auto_mode(
                     auto_mode::AutoModeTool::RustyClawd,
                     max_turns,
@@ -618,5 +663,49 @@ fn dispatch_multitask(command: MultitaskCommands) -> Result<()> {
         ),
         MultitaskCommands::Cleanup { config, dry_run } => multitask::run_cleanup(&config, dry_run),
         MultitaskCommands::Status { base_dir } => multitask::run_status(base_dir.as_deref()),
+    }
+}
+
+#[cfg(test)]
+mod gateway_dispatch_tests {
+    use super::*;
+
+    #[test]
+    fn gateway_rejects_append_and_uncontrolled_auto_mode_before_dispatch() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let names = [
+            amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+            amplihack_utils::litellm_proxy::API_KEY_ENV,
+            amplihack_utils::litellm_proxy::MODEL_ENV,
+        ];
+        let previous = names.map(std::env::var_os);
+        for (name, value) in names.into_iter().zip([
+            "https://gateway.example.com",
+            "gateway-key",
+            "gateway-model",
+        ]) {
+            unsafe { std::env::set_var(name, value) };
+        }
+
+        assert!(reject_gateway_append().is_err());
+        assert!(
+            validate_gateway_auto_mode(
+                auto_mode::AutoModeTool::Copilot,
+                &["--agent".to_string(), "uncontrolled".to_string()]
+            )
+            .is_err()
+        );
+        assert!(validate_gateway_auto_mode(auto_mode::AutoModeTool::Codex, &[]).is_err());
+
+        for (name, value) in names.into_iter().zip(previous) {
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
     }
 }

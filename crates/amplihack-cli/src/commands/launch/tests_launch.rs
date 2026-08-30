@@ -125,6 +125,53 @@ fn build_docker_launcher_args_preserves_shared_launcher_flags() {
 }
 
 #[test]
+fn docker_gateway_launch_rejects_claude_conflicts_before_docker() {
+    let _guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let names = [
+        amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+        amplihack_utils::litellm_proxy::API_KEY_ENV,
+        amplihack_utils::litellm_proxy::MODEL_ENV,
+    ];
+    let previous = names.map(std::env::var_os);
+    unsafe {
+        std::env::set_var(names[0], "https://gateway.example.com");
+        std::env::set_var(names[1], "gateway-secret");
+        std::env::set_var(names[2], "gateway-model");
+    }
+
+    let error = run_launch(
+        "claude",
+        "launch",
+        true,
+        false,
+        false,
+        false,
+        true,
+        false,
+        true,
+        None,
+        vec!["--model".to_string(), "bypass-model".to_string()],
+        amplihack_utils::launch_target::OverrideOrigin::User,
+    )
+    .expect_err("a conflicting model must fail before Docker is probed");
+    assert!(
+        format!("{error:#}").contains("requested and fallback models must match"),
+        "unexpected error: {error:#}"
+    );
+
+    for (name, value) in names.into_iter().zip(previous) {
+        unsafe {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+    }
+}
+
+#[test]
 fn build_docker_launcher_args_preserves_non_launch_surface_and_omits_launch_only_flags() {
     assert_eq!(
         build_docker_launcher_args("copilot", false, false, true, false, false, None, &[]),
