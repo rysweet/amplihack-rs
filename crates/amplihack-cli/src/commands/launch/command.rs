@@ -28,6 +28,7 @@ pub(super) fn build_command(
     )
 }
 
+#[cfg(test)]
 pub(super) fn build_command_for_dir(
     binary: &BinaryInfo,
     resume: bool,
@@ -36,6 +37,29 @@ pub(super) fn build_command_for_dir(
     extra_args: &[String],
     add_dir_override: Option<&Path>,
     subprocess_safe: bool,
+) -> Command {
+    build_command_for_dir_with_litellm(
+        binary,
+        resume,
+        continue_session,
+        skip_permissions,
+        extra_args,
+        add_dir_override,
+        subprocess_safe,
+        amplihack_utils::litellm_proxy::proxy_requested(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn build_command_for_dir_with_litellm(
+    binary: &BinaryInfo,
+    resume: bool,
+    continue_session: bool,
+    skip_permissions: bool,
+    extra_args: &[String],
+    add_dir_override: Option<&Path>,
+    subprocess_safe: bool,
+    litellm_enabled: bool,
 ) -> Command {
     let mut cmd = Command::new(&binary.path);
 
@@ -59,12 +83,8 @@ pub(super) fn build_command_for_dir(
         .iter()
         .any(|arg| arg == "--model" || arg.starts_with("--model="));
     if !user_has_model && is_claude_compatible {
-        let default_model = if amplihack_utils::litellm_proxy::proxy_requested() {
-            std::env::var(amplihack_utils::litellm_proxy::MODEL_ENV)
-                .unwrap_or_else(|_| "amplihack-default".to_string())
-        } else {
-            std::env::var("AMPLIHACK_DEFAULT_MODEL").unwrap_or_else(|_| "opus[1m]".to_string())
-        };
+        let default_model =
+            std::env::var("AMPLIHACK_DEFAULT_MODEL").unwrap_or_else(|_| "opus[1m]".to_string());
         cmd.arg("--model");
         cmd.arg(default_model);
     }
@@ -112,12 +132,12 @@ pub(super) fn build_command_for_dir(
         }
     }
 
-    if binary.name == "copilot" && amplihack_utils::litellm_proxy::proxy_requested() {
+    if binary.name == "copilot" && litellm_enabled {
         cmd.arg("--no-remote");
         cmd.arg("--no-remote-export");
     }
 
-    if binary.name == "claude" && amplihack_utils::litellm_proxy::proxy_requested() {
+    if binary.name == "claude" && litellm_enabled {
         cmd.arg("--setting-sources");
         cmd.arg("");
     }
@@ -126,7 +146,9 @@ pub(super) fn build_command_for_dir(
     // GitHub's cloud, which is the preferred mode for amplihack orchestration.
     // Skip injection if the user already passed --remote, or if
     // AMPLIHACK_COPILOT_NO_REMOTE=1.
-    if binary.name == "copilot" && should_inject_copilot_remote(extra_args) {
+    if binary.name == "copilot"
+        && should_inject_copilot_remote_with_litellm(extra_args, litellm_enabled)
+    {
         cmd.arg("--remote");
     }
 
@@ -153,8 +175,39 @@ pub(super) fn build_command_for_dir(
         cmd.arg(fragment);
     }
 
+    if binary.name == "copilot" && litellm_enabled {
+        cmd.arg(copilot_secret_environment_arg(extra_args));
+    }
     cmd.args(extra_args);
     cmd
+}
+
+fn copilot_secret_environment_arg(extra_args: &[String]) -> String {
+    let mut names = std::collections::BTreeSet::from(["COPILOT_PROVIDER_API_KEY".to_string()]);
+    let mut index = 0;
+    while index < extra_args.len() {
+        let argument = &extra_args[index];
+        let value = if argument == "--secret-env-vars" {
+            index += 1;
+            extra_args.get(index).map(String::as_str)
+        } else {
+            argument.strip_prefix("--secret-env-vars=")
+        };
+        if let Some(value) = value {
+            names.extend(
+                value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_string),
+            );
+        }
+        index += 1;
+    }
+    format!(
+        "--secret-env-vars={}",
+        names.into_iter().collect::<Vec<_>>().join(",")
+    )
 }
 
 /// Pure decision function (issue #621): is this Copilot invocation
@@ -265,11 +318,11 @@ pub(crate) fn should_inject_copilot_allow_all(extra_args: &[String]) -> bool {
 /// Decide whether `amplihack` should inject `--remote` into a Copilot
 /// invocation. Returns false if the user already passed `--remote` or
 /// `--no-remote`, or if `AMPLIHACK_COPILOT_NO_REMOTE=1` is set.
-pub(crate) fn should_inject_copilot_remote(extra_args: &[String]) -> bool {
+fn should_inject_copilot_remote_with_litellm(extra_args: &[String], litellm_enabled: bool) -> bool {
     if std::env::var("AMPLIHACK_COPILOT_NO_REMOTE").as_deref() == Ok("1") {
         return false;
     }
-    if amplihack_utils::litellm_proxy::proxy_requested() {
+    if litellm_enabled {
         return false;
     }
     !extra_args

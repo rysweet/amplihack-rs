@@ -29,8 +29,6 @@ out/
 .claude/runtime/
 index.scip
 .amplihack/
-observability/litellm/.env
-observability/litellm/.amplihack-api-key*
 logs/
 outputs/
 

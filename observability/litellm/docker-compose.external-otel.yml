@@ -1,7 +1,0 @@
-services:
-  collector:
-    environment:
-      AMPLIHACK_EXTERNAL_OTLP_ENDPOINT: ${AMPLIHACK_EXTERNAL_OTLP_ENDPOINT:?set AMPLIHACK_EXTERNAL_OTLP_ENDPOINT in .env}
-      AMPLIHACK_EXTERNAL_OTLP_AUTHORIZATION: ${AMPLIHACK_EXTERNAL_OTLP_AUTHORIZATION:?set AMPLIHACK_EXTERNAL_OTLP_AUTHORIZATION in .env}
-    volumes:
-      - ./otel-collector.external.yaml:/etc/otelcol/config.yaml:ro

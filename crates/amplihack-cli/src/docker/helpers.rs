@@ -56,13 +56,6 @@ where
     forwarded
 }
 
-pub(super) fn is_secret_env_key(key: &str) -> bool {
-    let key = key.to_ascii_uppercase();
-    ["API_KEY", "TOKEN", "AUTHORIZATION", "PASSWORD", "SECRET"]
-        .iter()
-        .any(|marker| key.contains(marker))
-}
-
 fn sanitize_env_value(value: &str) -> String {
     value
         .chars()

@@ -583,6 +583,7 @@ fn claude_ignores_user_project_and_local_settings_with_litellm() {
                 "http://127.0.0.1:4000",
             );
         }
+
         let binary = make_binary("/usr/bin/claude");
         let cmd = build_command(&binary, false, false, false, &[]);
         let args: Vec<String> = cmd
@@ -600,6 +601,62 @@ fn claude_ignores_user_project_and_local_settings_with_litellm() {
                 .any(|values| values[0] == "--setting-sources" && values[1].is_empty()),
             "LiteLLM routing must suppress mutable Claude settings sources; got {args:?}"
         );
+    });
+}
+
+#[test]
+fn resolved_litellm_state_controls_remote_and_protects_copilot_key() {
+    with_uvx_detection_disabled(|| {
+        let binary = BinaryInfo {
+            name: "copilot".to_string(),
+            path: PathBuf::from("/usr/bin/copilot"),
+            version: None,
+        };
+        let configured_but_disabled = command::build_command_for_dir_with_litellm(
+            &binary,
+            false,
+            false,
+            false,
+            &[],
+            None,
+            false,
+            false,
+        );
+        let disabled_args = configured_but_disabled
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(disabled_args.iter().any(|arg| arg == "--remote"));
+
+        let routed = command::build_command_for_dir_with_litellm(
+            &binary,
+            false,
+            false,
+            false,
+            &[
+                "--secret-env-vars=OTHER_SECRET".to_string(),
+                "--".to_string(),
+                "prompt".to_string(),
+            ],
+            None,
+            false,
+            true,
+        );
+        let routed_args = routed
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(!routed_args.iter().any(|arg| arg == "--remote"));
+        assert!(routed_args.iter().any(|arg| arg == "--no-remote"));
+        let secret = routed_args
+            .iter()
+            .position(|arg| arg == "--secret-env-vars=COPILOT_PROVIDER_API_KEY,OTHER_SECRET")
+            .expect("mandatory secret protection");
+        let delimiter = routed_args
+            .iter()
+            .position(|arg| arg == "--")
+            .expect("user delimiter");
+        assert!(secret < delimiter);
     });
 }
 

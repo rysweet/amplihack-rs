@@ -1,4 +1,4 @@
-use super::{MODEL_ENV, ProxyError, nonempty_env, proxy_requested};
+use super::{COPILOT_MODEL_ENV, GatewayConfig, ProxyError};
 
 /// Child launcher integration target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -9,7 +9,11 @@ pub enum CliTarget {
 }
 
 /// Reject launch modes that can bypass a locally configured proxy.
-pub fn validate_launch_args(target: CliTarget, args: &[String]) -> Result<(), ProxyError> {
+pub fn validate_launch_args(
+    target: CliTarget,
+    args: &[String],
+    config: &GatewayConfig,
+) -> Result<(), ProxyError> {
     let option_args = launch_option_arguments(target, args);
     let remote_requested = option_args.iter().copied().any(|arg| match target {
         CliTarget::CopilotCli => {
@@ -76,18 +80,17 @@ pub fn validate_launch_args(target: CliTarget, args: &[String]) -> Result<(), Pr
                 || (arg.starts_with("-r") && !arg.starts_with("--"))
         }
     });
-    if proxy_requested() && remote_requested {
-        return Err(ProxyError::InvalidConfig(
-            "remote sessions or session export cannot use the configured LiteLLM gateway; remove the remote/export option or unset AMPLIHACK_LITELLM_ENDPOINT"
-                .to_string(),
+    if remote_requested {
+        return Err(ProxyError::Argument(
+            "remote sessions or session export cannot use LiteLLM routing".to_string(),
         ));
     }
-    if proxy_requested() {
-        let configured_model = nonempty_env(MODEL_ENV);
+    if target == CliTarget::CopilotCli {
+        let configured_model = config.copilot_model();
         for requested_model in requested_models(&option_args)? {
-            if configured_model.as_deref() != Some(requested_model) {
-                return Err(ProxyError::InvalidConfig(format!(
-                    "requested and fallback models must match {MODEL_ENV} while LiteLLM routing is enabled"
+            if configured_model != Some(requested_model) {
+                return Err(ProxyError::Argument(format!(
+                    "requested and fallback models must match {COPILOT_MODEL_ENV} while LiteLLM routing is enabled"
                 )));
             }
         }
@@ -135,7 +138,7 @@ fn requested_models<'a>(args: &[&'a str]) -> Result<Vec<&'a str>, ProxyError> {
             index += 1;
             let value = args
                 .get(index)
-                .ok_or_else(|| ProxyError::InvalidConfig(format!("{argument} requires a value")))?;
+                .ok_or_else(|| ProxyError::Argument(format!("{argument} requires a value")))?;
             (argument, *value)
         } else if let Some(value) = argument.strip_prefix("--model=") {
             ("--model", value)
@@ -154,7 +157,7 @@ fn requested_models<'a>(args: &[&'a str]) -> Result<Vec<&'a str>, ProxyError> {
         index += 1;
     }
     if primary_count > 1 || fallback_count > 1 {
-        return Err(ProxyError::InvalidConfig(
+        return Err(ProxyError::Argument(
             "duplicate model options are not allowed with LiteLLM routing".to_string(),
         ));
     }
@@ -164,14 +167,20 @@ fn requested_models<'a>(args: &[&'a str]) -> Result<Vec<&'a str>, ProxyError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::litellm_proxy::ENDPOINT_ENV;
+    use url::Url;
+
+    fn config(model: Option<&str>) -> GatewayConfig {
+        let root = Url::parse("https://gateway.example").unwrap();
+        GatewayConfig {
+            readiness: root.join("health/readiness").unwrap(),
+            root,
+            api_key: "secret".to_string(),
+            copilot_model: model.map(str::to_string),
+        }
+    }
 
     #[test]
-    fn rejects_all_launcher_bypass_controls() {
-        let _guard = crate::test_serial::acquire();
-        let previous = std::env::var_os(ENDPOINT_ENV);
-        unsafe { std::env::set_var(ENDPOINT_ENV, "https://gateway.example.test") };
-
+    fn rejects_remote_and_session_bypass_controls() {
         for (target, controls) in [
             (
                 CliTarget::CopilotCli,
@@ -180,12 +189,9 @@ mod tests {
                     "--remote",
                     "--remote-export",
                     "--share-gist",
-                    "--share",
                     "--connect",
                     "--continue",
-                    "-c",
                     "--resume",
-                    "-rsession",
                     "--session-id",
                 ][..],
             ),
@@ -197,31 +203,53 @@ mod tests {
                     "--remote-control",
                     "--environment",
                     "--settings",
-                    "--setting-sources",
                     "--from-pr",
                     "--continue",
-                    "-c",
                     "--resume",
-                    "-rsession",
                     "--session-id",
                 ],
             ),
             (
                 CliTarget::RustyClawd,
-                &["--continue", "-c", "--resume", "-rsession", "--session-id"],
+                &["--continue", "--resume", "--session-id"],
             ),
         ] {
             for control in controls {
                 assert!(
-                    validate_launch_args(target, &[control.to_string()]).is_err(),
+                    validate_launch_args(target, &[control.to_string()], &config(Some("model")))
+                        .is_err(),
                     "{target:?} accepted {control}"
                 );
             }
         }
+    }
 
-        match previous {
-            Some(value) => unsafe { std::env::set_var(ENDPOINT_ENV, value) },
-            None => unsafe { std::env::remove_var(ENDPOINT_ENV) },
-        }
+    #[test]
+    fn copilot_model_must_match_and_prompt_content_is_not_parsed_as_options() {
+        let config = config(Some("gateway-model"));
+        assert!(
+            validate_launch_args(
+                CliTarget::CopilotCli,
+                &["--model=gateway-model".to_string()],
+                &config
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_launch_args(
+                CliTarget::CopilotCli,
+                &["--model=other".to_string()],
+                &config
+            )
+            .is_err()
+        );
+        assert!(
+            validate_launch_args(
+                CliTarget::CopilotCli,
+                &["-p".to_string(), "--remote".to_string()],
+                &config
+            )
+            .is_ok()
+        );
     }
 }

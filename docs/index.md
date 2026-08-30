@@ -154,10 +154,11 @@ amplihack copilot
 - [Install/Update PATH Conflict Reference](reference/install-update-path-conflicts.md) - Rust binary precedence, stale wrapper neutralization, and PATH profile persistence
 - [Framework Bundle Compatibility](reference/framework-bundle-compatibility.md) - Atomic bundle refresh and active `orch_helper.py` rejection
 - [Azure Integration](AZURE_INTEGRATION.md) - Deploy to Azure cloud
-- [LiteLLM Gateway Quickstart](tutorials/litellm-gateway-quickstart.md) - Start the reference gateway and route all supported launchers
-- [Operate an External LiteLLM Gateway](howto/operate-external-litellm-gateway.md) - Configure controls, telemetry, rotation, Docker routing, and shutdown
-- [External LiteLLM Gateway Architecture](concepts/external-litellm-gateway.md) - Understand the external-only trust and data boundaries
-- [External LiteLLM Gateway Reference](reference/external-litellm-gateway.md) - Look up configuration, launcher projections, and security behavior
+- [External LiteLLM Gateway](features/README.md#external-litellm-gateway) - Route supported local agents through an operator-managed gateway
+- [External LiteLLM Gateway Tutorial](tutorials/external-litellm-gateway.md) - Configure a protected route to an existing gateway
+- [Operate an External LiteLLM Route](howto/operate-external-litellm-route.md) - Rotate, disable, and troubleshoot routing
+- [External LiteLLM Boundary](concepts/external-litellm-boundary.md) - Understand the external-only trust and data boundaries
+- [External LiteLLM Gateway Reference](reference/external-litellm-gateway.md) - Look up configuration, readiness, and launcher contracts
 
 ---
 

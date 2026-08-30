@@ -530,6 +530,8 @@ Custom workflows:
 
 ### Configuration & Customization
 
+- **[External LiteLLM Gateway](docs/tutorials/external-litellm-gateway.md)** -
+  Route supported agent CLIs through an operator-managed LiteLLM deployment
 - **[Hook Configuration](https://rysweet.github.io/amplihack-rs/HOOK_CONFIGURATION_GUIDE/)** -
   Session hooks and lifecycle management
 - **[Settings Hook](docs/howto/settings-hook-configuration.md)** - Automatic

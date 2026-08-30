@@ -192,7 +192,23 @@ mod tests {
                 assert!(ui);
                 assert_eq!(claude_args, vec!["-p", "task"]);
             }
+
             other => panic!("expected launch command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn supported_launchers_parse_litellm_activation_flags() {
+        let _env = launcher_env_lock();
+        for command in ["launch", "claude", "copilot", "rustyclawd"] {
+            Cli::try_parse_from(["amplihack", command, "--litellm"])
+                .unwrap_or_else(|error| panic!("{command} --litellm did not parse: {error}"));
+            Cli::try_parse_from(["amplihack", command, "--no-litellm"])
+                .unwrap_or_else(|error| panic!("{command} --no-litellm did not parse: {error}"));
+            assert!(
+                Cli::try_parse_from(["amplihack", command, "--litellm", "--no-litellm"]).is_err(),
+                "{command} accepted conflicting activation flags"
+            );
         }
     }
 

@@ -4,6 +4,16 @@
 
 This section documents amplihack-rs feature implementations.
 
+## External LiteLLM Gateway
+
+Route supported local agent CLIs through an existing, operator-managed LiteLLM
+gateway without embedding or operating LiteLLM:
+
+- [Tutorial](../tutorials/external-litellm-gateway.md)
+- [Operations guide](../howto/operate-external-litellm-route.md)
+- [Reference](../reference/external-litellm-gateway.md)
+- [External boundary](../concepts/external-litellm-boundary.md)
+
 ## Power Steering
 
 Intelligent guidance system that prevents common mistakes and ensures work completeness:

@@ -1,6 +1,6 @@
 ---
 title: External LiteLLM Gateway Reference
-description: Complete configuration, launcher routing, Docker, security, and Rust API contract.
+description: CLI, configuration, security, readiness, adapter, and error contract for external LiteLLM routing.
 last_updated: 2026-08-30
 review_schedule: quarterly
 owner: amplihack-maintainers
@@ -9,145 +9,230 @@ doc_type: reference
 
 # External LiteLLM Gateway Reference
 
-This reference defines amplihack's opt-in external LiteLLM routing contract.
+Amplihack configures supported agent CLIs to use an already-running,
+operator-managed LiteLLM gateway. It never installs, starts, embeds, supervises,
+stops, deploys, or manages LiteLLM.
 
-## Configuration
+## Supported commands
 
-| Variable | Required | Accepted value |
-| --- | --- | --- |
-| `AMPLIHACK_LITELLM_ENDPOINT` | Yes when routing is enabled | Absolute HTTPS gateway URL, or HTTP with a literal IPv4 address in `127.0.0.0/8` or literal IPv6 `::1`; path empty or `/v1`. |
-| `AMPLIHACK_LITELLM_API_KEY` | Yes when routing is enabled | Non-empty restricted LiteLLM virtual key, maximum 4096 bytes. |
-| `AMPLIHACK_LITELLM_MODEL` | Yes when routing is enabled | Gateway model alias matching `[A-Za-z0-9._:/-]{1,128}`. |
+| Command | Adapter | `--litellm` | `--no-litellm` |
+| --- | --- | --- | --- |
+| `amplihack launch` | Anthropic | enable | disable |
+| `amplihack claude` | Anthropic | enable | disable |
+| `amplihack copilot` | OpenAI-compatible | enable | disable |
+| `amplihack RustyClawd` | Anthropic | enable | disable |
 
-All three variables absent disables gateway routing and preserves existing
-launcher behavior. Every other combination is an error before process or
-Docker execution.
+Docker, auto mode, Codex, Amplifier, and unimplemented launchers return
+`AH_LITELLM_UNSUPPORTED` before DNS, readiness traffic, or child creation.
 
-Values must be Unicode, non-empty, free of control characters, and unchanged by
-trimming. Error output identifies the variable and rule but never includes the
-rejected value.
+## Activation and precedence
 
-The endpoint must be an absolute hierarchical URL with a host and no username,
-password, query, or fragment. `http://localhost`, non-loopback HTTP, relative
-URLs, opaque URLs, and paths other than `/v1` are invalid. Copilot routing
-normalizes the OpenAI-compatible base to end in `/v1` exactly once.
+Sources are applied in this order:
 
-## Supported launchers
+1. command flag;
+2. recognized environment configuration;
+3. `~/.amplihack/litellm-config.toml`;
+4. disabled.
 
-| Launcher | Command | Gateway protocol |
-| --- | --- | --- |
-| Claude Code | `amplihack launch` or `amplihack claude` | Anthropic-compatible |
-| GitHub Copilot CLI | `amplihack copilot` | OpenAI-compatible BYOK |
-| rustyclawd | `amplihack rustyclawd` | Anthropic-compatible |
+`--litellm` requires a complete valid route. `--no-litellm` disables routing
+and suppresses parsing and validation of LiteLLM environment and file
+configuration. Supplying both flags is invalid.
 
-Codex, Amplifier, and unknown binaries are unsupported while gateway routing
-is enabled.
+Without either flag, any recognized LiteLLM configuration signal enables
+routing and must produce a complete route. No signal leaves routing disabled.
+An empty value from any recognized source is rejected; it does not erase that
+source or expose a lower-precedence value.
 
-## Claude Code and rustyclawd
+## Environment variables
 
-Amplihack removes inherited Anthropic provider keys and headers, Claude
-Bedrock/Vertex/Foundry selectors, relevant AWS credentials, and Google
-application credentials. It sets:
+Only these variables are recognized:
 
-| Variable | Value |
+| Variable | Use |
 | --- | --- |
-| `ANTHROPIC_BASE_URL` | Configured gateway endpoint |
-| `ANTHROPIC_AUTH_TOKEN` | Configured virtual key |
-| `ANTHROPIC_MODEL` | Configured model alias |
-| `ANTHROPIC_SMALL_FAST_MODEL` | Configured model alias |
+| `AMPLIHACK_LITELLM_ENDPOINT` | Deployment root URL. |
+| `AMPLIHACK_LITELLM_API_KEY` | Inline restricted LiteLLM virtual key. |
+| `AMPLIHACK_LITELLM_API_KEY_FILE` | Absolute path to a protected virtual-key file. |
+| `AMPLIHACK_LITELLM_COPILOT_MODEL` | Required gateway model alias for Copilot only. |
 
-Claude settings sources are disabled. Claude cloud, teleport, remote-control,
-environment, settings, `--from-pr`, and other session-reuse options are
-rejected. rustyclawd session-reuse options are also rejected.
+Exactly one credential variable is required when routing is enabled. Claude
+Code and RustyClawd retain their normal model selection; Copilot requires one
+configured gateway model.
 
-## GitHub Copilot CLI
+Unknown variables using the `AMPLIHACK_LITELLM_` prefix are configuration
+errors while routing is enabled. Credentials are not accepted in TOML or CLI
+arguments.
 
-Amplihack removes inherited OpenAI credentials and conflicting Copilot
-provider, bearer-token, header, wire-model, GHES, offline, and transport
-settings. It sets:
+## TOML configuration
 
-| Variable | Value |
+Path: `~/.amplihack/litellm-config.toml`
+
+```toml
+schema_version = 1
+endpoint = "https://llm-gateway.internal.example"
+
+[copilot]
+model = "gateway-coding"
+```
+
+The schema permits only `schema_version`, `endpoint`, and optional
+`[copilot].model`. Unknown, obsolete, duplicate, empty, malformed, partial, or
+unsupported-version configuration is rejected.
+
+## Protected file contract
+
+Configuration and credential files are opened with bounded reads and must be:
+
+- regular files owned by the effective user;
+- free of symbolic links;
+- linked exactly once;
+- inaccessible to group and other users; and
+- unchanged between security validation and use.
+
+If the current platform cannot prove every safeguard, routed operation fails
+before child creation.
+
+## Endpoint contract
+
+The endpoint is a deployment root. It must be an absolute hierarchical URL
+with no username, password, query, or fragment.
+
+HTTPS is accepted after destination validation. HTTP is accepted only for
+literal IPv4 addresses in `127.0.0.0/8` and literal IPv6 `::1`.
+`http://localhost` is not accepted.
+
+Paths are rejected when they:
+
+- contain dot segments, traversal, ambiguous escaping, or encoded separators;
+- already name `/health/readiness` or `/v1`; or
+- name chat, message, response, or completion endpoints.
+
+Amplihack canonicalizes the root once, then derives readiness and adapter URLs
+with structured URL operations.
+
+## Destination policy
+
+Amplihack resolves the hostname once. The entire answer set is rejected if any
+address is metadata, link-local, multicast, unspecified, broadcast,
+mapped-prohibited, or another non-gateway class. Valid private and loopback
+addresses are accepted for HTTPS because external gateways may be internal.
+
+A validated address is selected deterministically for readiness. The original
+hostname remains the HTTP Host and TLS SNI/certificate identity. Child CLI DNS
+resolution occurs later and is outside amplihack's control.
+
+## Readiness request
+
+The derived URL is `<deployment-root>/health/readiness`.
+
+| Property | Contract |
 | --- | --- |
-| `COPILOT_PROVIDER_BASE_URL` | Gateway endpoint normalized to `/v1` |
-| `COPILOT_PROVIDER_API_KEY` | Configured virtual key |
-| `COPILOT_PROVIDER_TYPE` | `openai` |
-| `COPILOT_PROVIDER_WIRE_API` | `completions` |
-| `COPILOT_MODEL` | Configured model alias |
+| Method | `GET` |
+| Request header | `Accept: application/json` |
+| Authentication | none |
+| Redirects | disabled |
+| Retries | disabled |
+| Ambient proxies | disabled |
+| Cookies | disabled |
+| Decompression | disabled |
+| Ambient headers and client credentials | disabled |
+| Total deadline | 15 seconds |
+| Response body | maximum 8 KiB |
 
-Amplihack suppresses ordinary `--remote` injection and adds `--no-remote` and
-`--no-remote-export`. Cloud, remote, export, share, connect, continue, resume,
-and session-ID options are rejected.
+Connection, TLS, and body phases use bounded timeouts within the total
+deadline. Only a 2xx response with a JSON media type is accepted.
 
-## Argument and model enforcement
+## Readiness JSON
 
-Both `--option value` and `--option=value` forms are recognized. Option-like
-Copilot prompt content is not treated as a routing option, and arguments after
-`--` are not interpreted as launcher options.
+The body must contain exactly one top-level JSON object with exactly one
+`status` member:
 
-Explicit `--model` and `--fallback-model` values are accepted only when each
-exactly matches `AMPLIHACK_LITELLM_MODEL`. Missing values, mismatches, and
-duplicate occurrences are errors.
+```json
+{"status":"healthy"}
+```
 
-## Docker contract
+One optional `db` member is accepted:
 
-Docker launches validate before invoking Docker, reject loopback endpoints,
-forward all three variables, and repeat validation inside the container. The
-API key uses `docker run --env AMPLIHACK_LITELLM_API_KEY`, never
-`--env AMPLIHACK_LITELLM_API_KEY=value`.
+```json
+{"status":"healthy","db":"connected"}
+```
 
-Images must declare the LiteLLM routing capability and the running amplihack
-version. Unlabeled, stale, or external images that cannot prove compatibility
-fail closed. Amplihack does not enable host networking or add
-`host.docker.internal`.
+The legacy value `"Not connected"` is also accepted because LiteLLM can be
+healthy without a database. Unknown top-level fields, duplicate governed
+members, trailing JSON, excessive nesting, malformed JSON, and all other
+`status` or `db` values are rejected.
+
+## Launcher projection
+
+### Claude Code and RustyClawd
+
+The Anthropic adapter sets the gateway deployment root and virtual key using
+the target CLI's supported environment contract. It removes conflicting
+provider credentials and routing selectors. No amplihack model override is
+required.
+
+### GitHub Copilot CLI
+
+The Copilot adapter derives the OpenAI-compatible URL, sets the virtual key,
+provider type, wire API, offline/no-remote controls, and configured model.
+Automatic `--remote` injection is suppressed.
+
+The installed Copilot CLI must prove support for custom-provider and offline
+operation. Cloud, remote, export, sharing, connection, resume, and passthrough
+controls are rejected. Explicit model controls must exactly match the
+configured gateway alias.
+
+## Argument and executable validation
+
+Validation examines the final semantic child arguments, including
+`--option=value` and `--option value`, before any network request. Arguments
+after `--` remain positional. Option-like prompt text is not interpreted as a
+launcher option.
+
+The selected executable is resolved and checked before readiness, then its
+identity is revalidated immediately before spawn. A replacement fails with
+`AH_LITELLM_EXECUTABLE_CHANGED`.
 
 ## Secret handling
 
-The virtual key is available only when applying the final environment to a
-child command. It is excluded from command arguments, debug output, errors,
-diagnostics, logs, serialization, and Docker image metadata. Diagnostics name
-configuration fields and violated rules rather than echoing their values.
+The virtual key is materialized only while building the final child
+environment. It is excluded from arguments, errors, debug output, logs,
+serialization, readiness traffic, and capability probes. Diagnostics name the
+field and violated rule, never the rejected endpoint or credential.
 
-## Accounting and controls
+## Stable errors
 
-LiteLLM and PostgreSQL own usage, spend, budgets, rate limits, and reports for
-all agent traffic. Amplihack does not maintain a second accounting ledger.
+| Code | Meaning |
+| --- | --- |
+| `AH_LITELLM_CONFIG` | Activation or configuration is conflicting, missing, partial, empty, unknown, obsolete, malformed, or unsupported. |
+| `AH_LITELLM_CREDENTIAL` | The credential value or credential file is invalid or insecure. |
+| `AH_LITELLM_ENDPOINT` | The deployment root violates URL policy. |
+| `AH_LITELLM_DESTINATION` | DNS or the complete resolved address set violates destination policy. |
+| `AH_LITELLM_READINESS` | Connection, TLS, timeout, HTTP status, media type, redirect, or body-size validation failed. |
+| `AH_LITELLM_PROTOCOL` | The bounded response violates the readiness JSON contract. |
+| `AH_LITELLM_CAPABILITY` | The target executable cannot prove required gateway and no-fallback behavior. |
+| `AH_LITELLM_ARGUMENT` | Effective child arguments conflict with the route. |
+| `AH_LITELLM_EXECUTABLE_CHANGED` | The validated executable changed before spawn. |
+| `AH_LITELLM_UNSUPPORTED` | The target or launch mode is unsupported. |
 
-Reference virtual keys have no budget or rate limit unless the operator
-explicitly sets one. Missing cost remains unknown rather than becoming an exact
-zero. Readiness and liveness probes do not invoke a model.
+## Validation order
 
-The LiteLLM UI is authoritative for request accounting. Prometheus and Grafana
-show privacy-filtered infrastructure telemetry and do not claim complete agent
-cost visibility.
+| Order | Check |
+| --- | --- |
+| 1 | Activation, source precedence, TOML schema, and completeness |
+| 2 | Credential source and protected files |
+| 3 | Endpoint parsing and canonicalization |
+| 4 | Supported target and launch mode |
+| 5 | Final semantic child arguments |
+| 6 | Local target capability |
+| 7 | Complete resolved destination set |
+| 8 | Pinned readiness transport and HTTP response |
+| 9 | Bounded readiness JSON |
+| 10 | Executable identity immediately before spawn |
 
-## Rust API
-
-The public adapter is `amplihack_utils::litellm_proxy`:
-
-```rust
-pub const ENDPOINT_ENV: &str = "AMPLIHACK_LITELLM_ENDPOINT";
-pub const API_KEY_ENV: &str = "AMPLIHACK_LITELLM_API_KEY";
-pub const MODEL_ENV: &str = "AMPLIHACK_LITELLM_MODEL";
-
-pub fn proxy_requested() -> bool;
-pub fn validate_environment() -> Result<bool, ProxyError>;
-pub fn validate_launch_args(
-    target: CliTarget,
-    args: &[String],
-) -> Result<(), ProxyError>;
-pub fn apply_proxy_to_command(
-    command: &mut std::process::Command,
-    target: CliTarget,
-) -> Result<bool, ProxyError>;
-```
-
-There is no public HTTP client, chat-completions DTO, SSE parser, pricing API,
-callback API, or amplihack-specific LiteLLM telemetry API. Applications send
-inference traffic through one of the supported child launchers.
+No failed check starts a child or falls back to another provider.
 
 ## Related documentation
 
-- [External LiteLLM gateway architecture](../concepts/external-litellm-gateway.md)
-- [LiteLLM gateway quickstart](../tutorials/litellm-gateway-quickstart.md)
-- [Operate an external LiteLLM gateway](../howto/operate-external-litellm-gateway.md)
-- [Environment variables](environment-variables.md)
+- [External gateway tutorial](../tutorials/external-litellm-gateway.md)
+- [External gateway operations](../howto/operate-external-litellm-route.md)
+- [Why the gateway stays external](../concepts/external-litellm-boundary.md)
