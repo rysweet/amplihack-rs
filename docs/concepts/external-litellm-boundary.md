@@ -70,7 +70,9 @@ launch.
 The integration supports `launch`, `claude`, `copilot`, and `rustyclawd`.
 Codex, Amplifier, and unknown launch targets are rejected while gateway
 routing is configured. Docker requires a container-reachable HTTPS gateway and
-a compatible image; auto mode rejects gateway routing.
+a compatible image. Auto mode supports Claude Code, Copilot CLI, and
+rustyclawd after applying the same gateway argument restrictions; Codex and
+Amplifier auto mode are rejected.
 
 ## Related documentation
 

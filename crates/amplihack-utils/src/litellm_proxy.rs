@@ -96,9 +96,8 @@ impl ProxyChildEnvironment {
     }
 
     fn apply_to_command(&self, command: &mut Command) {
-        command.env(ENDPOINT_ENV, self.endpoint.as_str());
-        command.env(API_KEY_ENV, &self.api_key);
-        command.env(MODEL_ENV, &self.model);
+        scrub_sensitive_environment(command);
+        remove_env(command, &CONFIG_ENV_VARS);
 
         match self.target {
             CliTarget::Claude | CliTarget::RustyClawd => {
@@ -112,8 +111,11 @@ impl ProxyChildEnvironment {
                         "CLAUDE_CODE_USE_BEDROCK",
                         "CLAUDE_CODE_USE_VERTEX",
                         "CLAUDE_CODE_USE_FOUNDRY",
+                        "CLAUDE_CODE_USE_ANTHROPIC_AWS",
                         "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
                         "CLAUDE_CODE_SKIP_VERTEX_AUTH",
+                        "ANTHROPIC_AWS_API_KEY",
+                        "ANTHROPIC_AWS_REGION",
                         "AWS_ACCESS_KEY_ID",
                         "AWS_SECRET_ACCESS_KEY",
                         "AWS_SESSION_TOKEN",
@@ -121,10 +123,18 @@ impl ProxyChildEnvironment {
                         "GOOGLE_APPLICATION_CREDENTIALS",
                     ],
                 );
-                command.env("ANTHROPIC_BASE_URL", self.endpoint.as_str());
+                command.env(
+                    "ANTHROPIC_BASE_URL",
+                    anthropic_base_url(&self.endpoint).as_str(),
+                );
                 command.env("ANTHROPIC_AUTH_TOKEN", &self.api_key);
                 command.env("ANTHROPIC_MODEL", &self.model);
                 command.env("ANTHROPIC_SMALL_FAST_MODEL", &self.model);
+                command.env("CLAUDE_CODE_SUBAGENT_MODEL", &self.model);
+                command.env("ANTHROPIC_DEFAULT_OPUS_MODEL", &self.model);
+                command.env("ANTHROPIC_DEFAULT_SONNET_MODEL", &self.model);
+                command.env("ANTHROPIC_DEFAULT_HAIKU_MODEL", &self.model);
+                command.env("ANTHROPIC_DEFAULT_FABLE_MODEL", &self.model);
             }
             CliTarget::CopilotCli => {
                 remove_env(
@@ -168,6 +178,40 @@ fn remove_env(command: &mut Command, names: &[&str]) {
     for name in names {
         command.env_remove(name);
     }
+}
+
+fn scrub_sensitive_environment(command: &mut Command) {
+    let mut names = std::env::vars_os()
+        .map(|(name, _)| name)
+        .filter(|name| is_sensitive_env_name(&name.to_string_lossy()))
+        .collect::<Vec<_>>();
+    names.extend(
+        command
+            .get_envs()
+            .filter(|(name, _)| is_sensitive_env_name(&name.to_string_lossy()))
+            .map(|(name, _)| name.to_os_string()),
+    );
+    for name in names {
+        command.env_remove(name);
+    }
+}
+
+fn is_sensitive_env_name(name: &str) -> bool {
+    let name = name.to_ascii_uppercase();
+    [
+        "API_KEY",
+        "TOKEN",
+        "AUTHORIZATION",
+        "PASSWORD",
+        "SECRET",
+        "CREDENTIAL",
+        "PRIVATE_KEY",
+        "CONNECTION_STRING",
+        "COOKIE",
+        "_KEY",
+    ]
+    .iter()
+    .any(|marker| name.contains(marker))
 }
 
 fn required_env(name: &str) -> Result<String, ProxyError> {
@@ -221,8 +265,7 @@ fn validate_endpoint(value: &str) -> Result<Url, ProxyError> {
     let host = endpoint
         .host_str()
         .ok_or_else(|| ProxyError::InvalidConfig(format!("{ENDPOINT_ENV} must include a host")))?;
-    let path = endpoint.path().trim_end_matches('/');
-    if !path.is_empty() && path != "/v1" {
+    if !matches!(endpoint.path(), "/" | "/v1" | "/v1/") {
         return Err(ProxyError::InvalidConfig(format!(
             "{ENDPOINT_ENV} path must be empty or /v1"
         )));
@@ -253,9 +296,13 @@ fn address_is_loopback(address: IpAddr) -> bool {
 
 fn copilot_base_url(endpoint: &Url) -> Url {
     let mut endpoint = endpoint.clone();
-    if endpoint.path().trim_end_matches('/') != "/v1" {
-        endpoint.set_path("/v1");
-    }
+    endpoint.set_path("/v1");
+    endpoint
+}
+
+fn anthropic_base_url(endpoint: &Url) -> Url {
+    let mut endpoint = endpoint.clone();
+    endpoint.set_path("/");
     endpoint
 }
 
@@ -381,6 +428,8 @@ mod tests {
             "http://localhost:4000",
             "https://user:pass@gateway.example.com",
             "https://gateway.example.com/models",
+            "https://gateway.example.com////",
+            "https://gateway.example.com/v1////",
             "https://gateway.example.com?secret=value",
             "https://gateway.example.com#fragment",
             "https:gateway.example.com",
@@ -406,8 +455,18 @@ mod tests {
                     assert!(!format!("{config:?}").contains("gateway-secret"));
                     let mut command = Command::new("child");
                     command.env("ANTHROPIC_API_KEY", "bypass");
+                    command.env("CLAUDE_CODE_USE_ANTHROPIC_AWS", "1");
+                    command.env("ANTHROPIC_AWS_API_KEY", "bypass");
+                    command.env("ANTHROPIC_DEFAULT_SONNET_MODEL", "bypass-model");
                     command.env("OPENAI_API_KEY", "bypass");
+                    command.env("GITHUB_TOKEN", "bypass");
+                    command.env("DATABASE_PASSWORD", "bypass");
                     apply_proxy_to_command(&mut command, target).unwrap();
+                    for name in CONFIG_ENV_VARS {
+                        assert_eq!(command_env(&command, name), Some(None));
+                    }
+                    assert_eq!(command_env(&command, "GITHUB_TOKEN"), Some(None));
+                    assert_eq!(command_env(&command, "DATABASE_PASSWORD"), Some(None));
                     match target {
                         CliTarget::Claude | CliTarget::RustyClawd => {
                             assert_eq!(
@@ -415,6 +474,16 @@ mod tests {
                                 Some(Some("gateway-secret".to_string()))
                             );
                             assert_eq!(command_env(&command, "ANTHROPIC_API_KEY"), Some(None));
+                            assert_eq!(command_env(&command, "OPENAI_API_KEY"), Some(None));
+                            assert_eq!(
+                                command_env(&command, "CLAUDE_CODE_USE_ANTHROPIC_AWS"),
+                                Some(None)
+                            );
+                            assert_eq!(command_env(&command, "ANTHROPIC_AWS_API_KEY"), Some(None));
+                            assert_eq!(
+                                command_env(&command, "ANTHROPIC_DEFAULT_SONNET_MODEL"),
+                                Some(Some("gateway-model".to_string()))
+                            );
                         }
                         CliTarget::CopilotCli => {
                             assert_eq!(
@@ -422,8 +491,41 @@ mod tests {
                                 Some(Some("https://gateway.example.com/v1".to_string()))
                             );
                             assert_eq!(command_env(&command, "OPENAI_API_KEY"), Some(None));
+                            assert_eq!(command_env(&command, "ANTHROPIC_API_KEY"), Some(None));
+                            assert_eq!(command_env(&command, "ANTHROPIC_AWS_API_KEY"), Some(None));
                         }
                     }
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn endpoint_forms_are_normalized_for_each_protocol() {
+        for endpoint in [
+            "https://gateway.example.com",
+            "https://gateway.example.com/",
+            "https://gateway.example.com/v1",
+            "https://gateway.example.com/v1/",
+        ] {
+            with_gateway_env(
+                Some(endpoint),
+                Some("gateway-secret"),
+                Some("gateway-model"),
+                || {
+                    let mut claude = Command::new("claude");
+                    apply_proxy_to_command(&mut claude, CliTarget::Claude).unwrap();
+                    assert_eq!(
+                        command_env(&claude, "ANTHROPIC_BASE_URL"),
+                        Some(Some("https://gateway.example.com/".to_string()))
+                    );
+
+                    let mut copilot = Command::new("copilot");
+                    apply_proxy_to_command(&mut copilot, CliTarget::CopilotCli).unwrap();
+                    assert_eq!(
+                        command_env(&copilot, "COPILOT_PROVIDER_BASE_URL"),
+                        Some(Some("https://gateway.example.com/v1".to_string()))
+                    );
                 },
             );
         }

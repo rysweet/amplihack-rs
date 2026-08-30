@@ -850,8 +850,8 @@ container, or run the agent outside Docker for a host-loopback development
 gateway.
 
 See the
-[external LiteLLM gateway architecture](../concepts/external-litellm-gateway.md)
-for routing, accounting, and deployment details.
+[external LiteLLM boundary](../concepts/external-litellm-boundary.md) for the
+routing and ownership contract.
 
 ---
 

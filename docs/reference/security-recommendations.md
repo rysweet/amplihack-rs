@@ -45,8 +45,9 @@ export ENABLE_TOOL_FALLBACK=true
 The `litellm` dependency was removed from upstream amplihack due to a PyPI
 supply-chain attack. Amplihack does not install, embed, import, start, or
 manage LiteLLM. Optional
-[external-gateway routing](../concepts/external-litellm-gateway.md) connects supported
-agent CLIs to a separately operated service without restoring the dependency.
+[external-gateway routing](../concepts/external-litellm-boundary.md) connects
+supported agent CLIs to a separately operated service without restoring the
+dependency.
 
 That prohibition covers LiteLLM as an **in-process dependency**. An
 operator-managed LiteLLM deployment is a different trust boundary and may be

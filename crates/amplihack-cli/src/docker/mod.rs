@@ -13,6 +13,7 @@ use crate::util::{run_output_with_timeout, run_with_timeout};
 
 pub(crate) const DEFAULT_IMAGE_NAME: &str = "amplihack:latest";
 pub(crate) const LITELLM_ROUTING_LABEL: &str = "org.amplihack.litellm-routing";
+pub(crate) const LITELLM_ROUTING_REVISION: &str = "2";
 pub(crate) const VERSION_LABEL: &str = "org.amplihack.version";
 const DOCKER_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -114,7 +115,8 @@ impl DockerDetector {
             .stdin(Stdio::null());
         run_output_with_timeout(command, DOCKER_PROBE_TIMEOUT)
             .map(|output| {
-                String::from_utf8_lossy(&output.stdout).trim() == format!("1|{}", crate::VERSION)
+                String::from_utf8_lossy(&output.stdout).trim()
+                    == format!("{LITELLM_ROUTING_REVISION}|{}", crate::VERSION)
             })
             .unwrap_or(false)
     }
@@ -323,6 +325,9 @@ mod tests {
                     "Bearer telemetry-secret",
                 ),
                 ("ANTHROPIC_API_KEY", anthropic_api_key.as_str()),
+                ("OPENAI_API_KEY", anthropic_api_key.as_str()),
+                ("GITHUB_TOKEN", "ghp_gatewayMustNotForward"),
+                ("GH_TOKEN", "ghs_gatewayMustNotForward"),
                 ("TERM", "xterm-256color"),
             ],
         );
@@ -341,13 +346,15 @@ mod tests {
             args.windows(2)
                 .any(|window| { window[0] == "-e" && window[1] == "AMPLIHACK_LITELLM_API_KEY" })
         );
+        assert!(!args.iter().any(|arg| matches!(
+            arg.as_str(),
+            "ANTHROPIC_API_KEY" | "OPENAI_API_KEY" | "GITHUB_TOKEN" | "GH_TOKEN"
+        )));
         assert!(
-            args.windows(2)
-                .any(|window| { window[0] == "-e" && window[1] == "ANTHROPIC_API_KEY" })
+            !args
+                .iter()
+                .any(|arg| arg.contains("AMPLIHACK_EXTERNAL_OTLP_AUTHORIZATION"))
         );
-        assert!(args.windows(2).any(|window| {
-            window[0] == "-e" && window[1] == "AMPLIHACK_EXTERNAL_OTLP_AUTHORIZATION"
-        }));
         assert!(args.windows(2).any(|window| {
             window[0] == "-e" && window[1] == "AMPLIHACK_LITELLM_ENDPOINT=http://127.0.0.1:4000"
         }));
@@ -381,7 +388,7 @@ mod tests {
                 "-t".to_string(),
                 "amplihack:latest".to_string(),
                 "--label".to_string(),
-                "org.amplihack.litellm-routing=1".to_string(),
+                format!("org.amplihack.litellm-routing={}", LITELLM_ROUTING_REVISION),
                 "--label".to_string(),
                 format!("org.amplihack.version={}", crate::VERSION),
                 "-f".to_string(),
@@ -524,6 +531,20 @@ mod tests {
         assert!(
             forwarded.contains_key("AMPLIHACK_SESSION_ID"),
             "AMPLIHACK_SESSION_ID must be forwarded without format validation"
+        );
+
+        let forwarded = forwarded_env_vars([
+            ("AMPLIHACK_EXTERNAL_OTLP_AUTHORIZATION", "telemetry-secret"),
+            ("AMPLIHACK_DATABASE_PASSWORD", "database-secret"),
+            ("AMPLIHACK_LITELLM_API_KEY", "gateway-secret"),
+        ]);
+        assert!(!forwarded.contains_key("AMPLIHACK_EXTERNAL_OTLP_AUTHORIZATION"));
+        assert!(!forwarded.contains_key("AMPLIHACK_DATABASE_PASSWORD"));
+        assert_eq!(
+            forwarded
+                .get(amplihack_utils::litellm_proxy::API_KEY_ENV)
+                .map(String::as_str),
+            Some("gateway-secret")
         );
     }
 

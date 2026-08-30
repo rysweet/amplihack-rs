@@ -642,6 +642,11 @@ fn copilot_skips_remote_when_litellm_proxy_is_requested() {
             args.iter().any(|arg| arg == "--no-remote-export"),
             "LiteLLM routing must disable Copilot session export; got {args:?}"
         );
+        assert!(
+            args.iter()
+                .any(|arg| arg == "--secret-env-vars=COPILOT_PROVIDER_API_KEY"),
+            "LiteLLM routing must hide the gateway key from Copilot tools; got {args:?}"
+        );
     });
 }
 

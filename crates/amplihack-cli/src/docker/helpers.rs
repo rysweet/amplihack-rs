@@ -36,20 +36,38 @@ where
     K: Into<std::ffi::OsString>,
     V: Into<std::ffi::OsString>,
 {
+    let env_vars = env_vars
+        .into_iter()
+        .map(|(key, value)| {
+            (
+                key.into().to_string_lossy().into_owned(),
+                value.into().to_string_lossy().into_owned(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let gateway_requested = env_vars.iter().any(|(key, _)| {
+        matches!(
+            key.as_str(),
+            amplihack_utils::litellm_proxy::ENDPOINT_ENV
+                | amplihack_utils::litellm_proxy::API_KEY_ENV
+                | amplihack_utils::litellm_proxy::MODEL_ENV
+        )
+    });
     let mut forwarded = BTreeMap::new();
     for (key, value) in env_vars {
-        let key = key.into();
-        let value = value.into();
-        let key = key.to_string_lossy();
-        let value = value.to_string_lossy();
-        let should_forward = (matches!(
-            key.as_ref(),
-            "ANTHROPIC_API_KEY" | "OPENAI_API_KEY" | "GITHUB_TOKEN" | "GH_TOKEN" | "TERM"
-        ) || (key.starts_with("AMPLIHACK_")
-            && key != "AMPLIHACK_USE_DOCKER"))
+        let should_forward = ((!gateway_requested
+            && matches!(
+                key.as_str(),
+                "ANTHROPIC_API_KEY" | "OPENAI_API_KEY" | "GITHUB_TOKEN" | "GH_TOKEN"
+            ))
+            || key == "TERM"
+            || (key.starts_with("AMPLIHACK_")
+                && key != "AMPLIHACK_USE_DOCKER"
+                && (!is_secret_env_key(&key)
+                    || key == amplihack_utils::litellm_proxy::API_KEY_ENV)))
             && validate_api_key(&key, &value);
         if should_forward {
-            forwarded.insert(key.into_owned(), sanitize_env_value(&value));
+            forwarded.insert(key, sanitize_env_value(&value));
         }
     }
     forwarded.insert("AMPLIHACK_IN_DOCKER".to_string(), "1".to_string());

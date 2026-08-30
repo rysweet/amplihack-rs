@@ -8,7 +8,8 @@ use std::process::Command;
 use std::time::Duration;
 
 use super::{
-    DEFAULT_IMAGE_NAME, DockerDetector, LITELLM_ROUTING_LABEL, VERSION_LABEL,
+    DEFAULT_IMAGE_NAME, DockerDetector, LITELLM_ROUTING_LABEL, LITELLM_ROUTING_REVISION,
+    VERSION_LABEL,
     helpers::{forwarded_env_vars, is_secret_env_key},
 };
 use crate::util::{run_with_timeout, run_with_timeout_described};
@@ -78,7 +79,7 @@ impl DockerManager {
             && !self.detector.image_supports_litellm(self.image_name)
         {
             anyhow::bail!(
-                "the Docker image does not declare LiteLLM routing support for amplihack {}; rebuild a current labeled image or launch the agent outside Docker",
+                "the Docker image does not declare LiteLLM routing support for amplihack {}; provide an image built from this amplihack version with the required routing labels, or launch the agent outside Docker",
                 crate::VERSION
             );
         }
@@ -127,7 +128,7 @@ impl DockerManager {
             "-t".to_string(),
             self.image_name.to_string(),
             "--label".to_string(),
-            format!("{LITELLM_ROUTING_LABEL}=1"),
+            format!("{LITELLM_ROUTING_LABEL}={LITELLM_ROUTING_REVISION}"),
             "--label".to_string(),
             format!("{VERSION_LABEL}={}", crate::VERSION),
             "-f".to_string(),

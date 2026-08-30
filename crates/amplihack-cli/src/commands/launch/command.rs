@@ -115,6 +115,7 @@ pub(super) fn build_command_for_dir(
     if binary.name == "copilot" && amplihack_utils::litellm_proxy::proxy_requested() {
         cmd.arg("--no-remote");
         cmd.arg("--no-remote-export");
+        cmd.arg("--secret-env-vars=COPILOT_PROVIDER_API_KEY");
     }
 
     if binary.name == "claude" && amplihack_utils::litellm_proxy::proxy_requested() {
