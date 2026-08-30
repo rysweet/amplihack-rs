@@ -158,5 +158,6 @@ docker compose -f observability/litellm/docker-compose.yml down --volumes
 Remove local key files after revoking their keys in LiteLLM. Unset the three
 `AMPLIHACK_LITELLM_*` variables to restore ordinary launcher behavior.
 
-See the [external LiteLLM gateway reference](../reference/external-litellm-gateway.md)
-for the complete configuration and routing contract.
+See the
+[external LiteLLM environment variables](../reference/environment-variables.md#external-litellm-gateway-variables)
+for the complete amplihack configuration contract.

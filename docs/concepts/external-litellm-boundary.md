@@ -17,13 +17,12 @@ LiteLLM remains a separately installed and operated service.
 
 ```text
 configuration ----> amplihack launch policy ----> agent CLI
-                           |                          |
-                           | readiness check          | inference traffic
-                           v                          v
-                    external LiteLLM gateway <--------
+                                                      |
+                                                      | inference traffic
+                                                      v
+                                             external LiteLLM gateway
 ```
 
-Amplihack makes one unauthenticated readiness request before starting the child.
 Prompts, responses, streaming, retries, and inference credentials then travel
 directly between the agent CLI and LiteLLM. Amplihack is not an inference proxy.
 
@@ -47,36 +46,15 @@ A partially configured route can silently fall back to a provider the operator
 did not intend. Amplihack therefore treats any recognized LiteLLM configuration
 signal as an intent to route and rejects incomplete or unsafe configuration.
 
-Before child creation, amplihack:
+Before child creation, amplihack requires all three gateway environment
+variables, validates the endpoint and model, rejects unsupported launchers and
+bypass arguments, and removes conflicting provider credentials and selectors
+from the child environment. The child CLI owns connection, DNS, TLS, and
+gateway readiness behavior.
 
-1. resolves configuration using a fixed precedence;
-2. validates protected configuration and credential files;
-3. canonicalizes the deployment root;
-4. rejects unsupported launch modes and bypass arguments;
-5. checks the target CLI's gateway capability;
-6. validates every resolved destination address;
-7. performs one bounded readiness request; and
-8. revalidates the selected executable before spawning it.
-
-There is no fallback to a direct provider when one of these checks fails.
-`--no-litellm` is the explicit escape hatch: it disables routing without
-parsing stale LiteLLM environment or file configuration.
-
-## Why destination validation is strict
-
-The gateway URL is privileged configuration because amplihack connects to it
-before child creation. HTTPS endpoints may resolve to public, private, or
-loopback addresses, but metadata, link-local, multicast, unspecified,
-broadcast, and other prohibited address classes are rejected.
-
-Amplihack resolves a hostname once and rejects the complete answer set when any
-answer is prohibited. The readiness connection uses a deterministically
-selected validated address while retaining the configured hostname for HTTP
-Host and TLS identity checks. This prevents mixed-answer and DNS-rebinding
-bypasses during readiness.
-
-The child CLI performs its own later DNS resolution. Amplihack cannot pin that
-resolution and does not claim otherwise.
+There is no fallback to a direct provider when launch policy rejects a route.
+To disable routing, unset all three `AMPLIHACK_LITELLM_*` variables before
+launch.
 
 ## Ownership boundary
 
@@ -89,12 +67,13 @@ resolution and does not claim otherwise.
 | Prompt and response transport | agent CLI and LiteLLM |
 | Gateway logs, metrics, and retention | LiteLLM operator |
 
-The integration supports local `launch`, `claude`, `copilot`, and `RustyClawd`
-launches. Docker, auto mode, Codex, Amplifier, and other launchers remain
-outside the reviewed trust boundary and are rejected before network access.
+The integration supports `launch`, `claude`, `copilot`, and `rustyclawd`.
+Codex, Amplifier, and unknown launch targets are rejected while gateway
+routing is configured. Docker requires a container-reachable HTTPS gateway and
+a compatible image; auto mode rejects gateway routing.
 
 ## Related documentation
 
 - [Route an agent through an external LiteLLM gateway](../tutorials/external-litellm-gateway.md)
 - [Operate an external LiteLLM route](../howto/operate-external-litellm-route.md)
-- [External LiteLLM gateway reference](../reference/external-litellm-gateway.md)
+- [External LiteLLM environment variables](../reference/environment-variables.md#external-litellm-gateway-variables)

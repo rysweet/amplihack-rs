@@ -849,8 +849,9 @@ network isolation remains intact. Use an HTTPS gateway reachable from the
 container, or run the agent outside Docker for a host-loopback development
 gateway.
 
-See the [external LiteLLM gateway reference](external-litellm-gateway.md) for
-routing, accounting, and deployment details.
+See the
+[external LiteLLM gateway architecture](../concepts/external-litellm-gateway.md)
+for routing, accounting, and deployment details.
 
 ---
 
@@ -1215,24 +1216,6 @@ AMPLIHACK_TEST_FAKE_LATEST_VERSION=99.99.99 amplihack copilot --help
 completeness only.
 
 See: [Startup Self-Update Prompt — Subprocess-Safe Skip](../features/startup-update-prompt-subprocess-safe.md).
-
----
-
-### External LiteLLM gateway variables
-
-These variables configure routing through an already-running external gateway:
-
-| Variable | Default | Effect |
-| --- | --- | --- |
-| `AMPLIHACK_LITELLM_ENDPOINT` | unset | Sets the gateway deployment root. |
-| `AMPLIHACK_LITELLM_API_KEY` | unset | Supplies the restricted virtual key inline. Mutually exclusive with `AMPLIHACK_LITELLM_API_KEY_FILE`. |
-| `AMPLIHACK_LITELLM_API_KEY_FILE` | unset | Supplies an absolute path to a protected virtual-key file. |
-| `AMPLIHACK_LITELLM_COPILOT_MODEL` | unset | Selects the required gateway model alias for Copilot. Not used by Claude Code or RustyClawd. |
-
-Any recognized signal enables fail-closed validation unless `--no-litellm` is
-passed. See the
-[external LiteLLM gateway reference](external-litellm-gateway.md) for
-precedence, file security, endpoint, readiness, and launcher contracts.
 
 ---
 

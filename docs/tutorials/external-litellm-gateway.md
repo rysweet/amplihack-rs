@@ -1,6 +1,6 @@
 ---
 title: Route an Agent Through an External LiteLLM Gateway
-description: Configure a protected route and launch Claude Code or GitHub Copilot CLI through an existing LiteLLM gateway.
+description: Configure environment routing and launch Claude Code or GitHub Copilot CLI through an existing LiteLLM gateway.
 last_updated: 2026-08-30
 review_schedule: quarterly
 owner: amplihack-maintainers
@@ -18,103 +18,59 @@ running. Amplihack does not install or start the gateway.
 - an HTTPS LiteLLM deployment root, such as
   `https://llm-gateway.internal.example`;
 - a restricted LiteLLM virtual key; and
-- for Copilot, a gateway model alias supported by that deployment.
+- a gateway model alias supported by that deployment.
 
 Do not use a LiteLLM administrative key or an upstream provider key.
 
-## 1. Store the virtual key
+## 1. Configure the route
 
-Create a private regular file without following an existing symlink:
-
-```bash
-mkdir -p "$HOME/.amplihack"
-chmod 700 "$HOME/.amplihack"
-test ! -e "$HOME/.amplihack/litellm.key"
-install -m 600 /dev/null "$HOME/.amplihack/litellm.key"
-read -rsp 'LiteLLM virtual key: ' LITELLM_KEY
-printf '%s\n' "$LITELLM_KEY" > "$HOME/.amplihack/litellm.key"
-unset LITELLM_KEY
-```
-
-Amplihack rejects symbolic links, non-regular files, files owned by another
-user, files with group or other permissions, and files with multiple hard
-links.
-
-## 2. Configure the deployment root
-
-Create `~/.amplihack/litellm-config.toml`:
-
-```toml
-schema_version = 1
-endpoint = "https://llm-gateway.internal.example"
-
-[copilot]
-model = "gateway-coding"
-```
-
-Protect the file:
+Read a restricted virtual key from your secret manager and export the complete
+three-variable configuration:
 
 ```bash
-chmod 600 "$HOME/.amplihack/litellm-config.toml"
-export AMPLIHACK_LITELLM_API_KEY_FILE="$HOME/.amplihack/litellm.key"
+export AMPLIHACK_LITELLM_ENDPOINT='https://llm-gateway.internal.example'
+export AMPLIHACK_LITELLM_API_KEY="$(secret-tool lookup service litellm-agent)"
+export AMPLIHACK_LITELLM_MODEL='gateway-coding'
 ```
 
-The endpoint is the deployment root, not `/health/readiness`, `/v1`, or a
-completion endpoint. Omit `[copilot]` when you do not use Copilot.
+The endpoint may have no path or `/v1`; it must not contain credentials, a
+query, or a fragment. Remote endpoints require HTTPS. Do not put the key in
+command arguments, project configuration, or shell history.
 
-## 3. Launch through the gateway
+## 2. Launch through the gateway
 
 Launch Copilot:
 
 ```bash
-amplihack copilot --litellm
+amplihack copilot
 ```
 
 Or launch Claude Code:
 
 ```bash
-amplihack claude --litellm
+amplihack claude
 ```
 
-Before the agent starts, amplihack validates the route and performs one
-unauthenticated request to:
+Before the agent starts, amplihack validates the three values, rejects
+conflicting launch controls, and projects the gateway route into the child
+environment. The child CLI connects to the gateway directly.
 
-```text
-https://llm-gateway.internal.example/health/readiness
-```
-
-The request does not use the virtual key. A failure exits with a stable
-`AH_LITELLM_*` diagnostic and does not start the agent.
-
-## 4. Verify explicit disable
+## 3. Verify disable
 
 Confirm that ordinary launcher behavior remains available:
 
 ```bash
-amplihack copilot --no-litellm
+unset AMPLIHACK_LITELLM_ENDPOINT
+unset AMPLIHACK_LITELLM_API_KEY
+unset AMPLIHACK_LITELLM_MODEL
+amplihack copilot
 ```
 
-`--no-litellm` takes precedence over environment and file configuration. It
-does not parse or validate those route inputs.
-
-## Use environment-only configuration
-
-Environment values override the TOML file:
-
-```bash
-export AMPLIHACK_LITELLM_ENDPOINT='https://llm-gateway.internal.example'
-export AMPLIHACK_LITELLM_API_KEY_FILE="$HOME/.amplihack/litellm.key"
-export AMPLIHACK_LITELLM_COPILOT_MODEL='gateway-coding'
-amplihack copilot --litellm
-```
-
-For Claude Code or RustyClawd, omit
-`AMPLIHACK_LITELLM_COPILOT_MODEL`. Without either activation flag, recognized
-LiteLLM configuration still enables routing; use `--no-litellm` to disable it
-explicitly.
+Routing is disabled only when all three variables are absent. Empty or partial
+configuration fails closed.
 
 ## Next steps
 
 - [Operate and troubleshoot the route](../howto/operate-external-litellm-route.md)
-- [Review the complete configuration contract](../reference/external-litellm-gateway.md)
+- [Review the environment contract](../reference/environment-variables.md#external-litellm-gateway-variables)
 - [Understand why the gateway stays external](../concepts/external-litellm-boundary.md)

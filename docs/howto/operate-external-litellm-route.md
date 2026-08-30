@@ -12,41 +12,27 @@ doc_type: howto
 Use these procedures after completing the
 [external LiteLLM gateway tutorial](../tutorials/external-litellm-gateway.md).
 
-## Select configuration precedence
+## Configure the route
 
-Route inputs use this order:
-
-1. `--litellm` or `--no-litellm`;
-2. recognized `AMPLIHACK_LITELLM_*` environment variables;
-3. `~/.amplihack/litellm-config.toml`; and
-4. disabled when no signal exists.
-
-Environment values replace individual TOML values. A present TOML file must
-still have valid version 1 syntax and no unknown keys.
-
-## Use a key file instead of shell history
-
-Prefer `AMPLIHACK_LITELLM_API_KEY_FILE` for interactive shells:
+All three variables are one configuration unit:
 
 ```bash
-export AMPLIHACK_LITELLM_API_KEY_FILE="$HOME/.amplihack/litellm.key"
-amplihack claude --litellm
+export AMPLIHACK_LITELLM_ENDPOINT='https://gateway.example.net'
+export AMPLIHACK_LITELLM_API_KEY="$(secret-tool lookup service litellm-agent)"
+export AMPLIHACK_LITELLM_MODEL='gateway-coding'
 ```
 
-Set exactly one of `AMPLIHACK_LITELLM_API_KEY` and
-`AMPLIHACK_LITELLM_API_KEY_FILE`. Credentials are not accepted in TOML or
-command arguments.
+If any variable is present, all three must be non-empty and valid. The model
+alias applies to every supported launcher. Keep the restricted virtual key in
+a secret manager and materialize it only in the launch environment; amplihack
+does not read a key file or TOML gateway configuration.
 
 ## Rotate a virtual key
 
-Write the replacement to a new protected file and rename it atomically:
+Update the value in the secret manager, then refresh the launch environment:
 
 ```bash
-install -m 600 /dev/null "$HOME/.amplihack/litellm.key.new"
-read -rsp 'New LiteLLM virtual key: ' LITELLM_KEY
-printf '%s\n' "$LITELLM_KEY" > "$HOME/.amplihack/litellm.key.new"
-unset LITELLM_KEY
-mv "$HOME/.amplihack/litellm.key.new" "$HOME/.amplihack/litellm.key"
+export AMPLIHACK_LITELLM_API_KEY="$(secret-tool lookup service litellm-agent)"
 ```
 
 Revoke the previous virtual key in LiteLLM after confirming a new launch.
@@ -54,11 +40,11 @@ Amplihack does not create, rotate, or revoke gateway keys.
 
 ## Change the gateway
 
-Override the configured root for one launch:
+Override the configured root for one launch while preserving the key and model:
 
 ```bash
 AMPLIHACK_LITELLM_ENDPOINT='https://backup-gateway.internal.example' \
-  amplihack claude --litellm
+  amplihack claude
 ```
 
 Use HTTPS for remote endpoints. Cleartext HTTP is accepted only for a literal
@@ -66,41 +52,27 @@ address in `127.0.0.0/8` or literal `::1`; `http://localhost` is rejected.
 
 ## Disable routing
 
-Disable routing for one launch, even if stored configuration is malformed:
+Disable routing by unsetting the complete configuration:
 
 ```bash
-amplihack copilot --no-litellm
+unset AMPLIHACK_LITELLM_ENDPOINT
+unset AMPLIHACK_LITELLM_API_KEY
+unset AMPLIHACK_LITELLM_MODEL
+amplihack copilot
 ```
 
-To disable implicit activation permanently, unset every recognized
-`AMPLIHACK_LITELLM_*` variable and remove or rename
-`~/.amplihack/litellm-config.toml`.
+An empty or partial configuration is rejected rather than treated as disabled.
 
 ## Troubleshoot a failed launch
 
-Diagnostics begin with a stable code and never include the endpoint or
-credential value:
-
-```text
-AH_LITELLM_READINESS: external LiteLLM gateway is not ready
-```
-
-| Code | Action |
+| Symptom | Action |
 | --- | --- |
-| `AH_LITELLM_CONFIG` | Remove unknown, obsolete, empty, conflicting, or partial settings; verify `schema_version = 1`. |
-| `AH_LITELLM_CREDENTIAL` | Configure exactly one credential source and make credential/config files private regular files owned by the current user. |
-| `AH_LITELLM_ENDPOINT` | Supply a deployment-root URL without credentials, query, fragment, traversal, encoded separators, `/v1`, or completion paths. |
-| `AH_LITELLM_DESTINATION` | Check DNS for mixed answers and metadata, link-local, multicast, unspecified, broadcast, or mapped-prohibited addresses. |
-| `AH_LITELLM_READINESS` | Check gateway availability, TLS identity, media type, response size, and the 15-second deadline. |
-| `AH_LITELLM_PROTOCOL` | Return one JSON object with exactly `status: "healthy"` and only the documented optional `db` field. |
-| `AH_LITELLM_CAPABILITY` | Upgrade the agent CLI to one that proves the required custom-provider and no-fallback behavior. |
-| `AH_LITELLM_ARGUMENT` | Remove model, remote, cloud, export, share, resume, connect, or passthrough options that can bypass the route. |
-| `AH_LITELLM_EXECUTABLE_CHANGED` | Retry after resolving a concurrent executable replacement. |
-| `AH_LITELLM_UNSUPPORTED` | Use a local `launch`, `claude`, `copilot`, or `RustyClawd` launch; Docker, auto, Codex, and Amplifier are unsupported. |
-
-Readiness is intentionally one request with no proxy, redirect, retry, cookie,
-decompression, ambient authorization header, or client credential. Correct the
-gateway instead of adding launcher retries.
+| Configuration is incomplete | Set all three required variables in the same environment, or unset all three. |
+| Endpoint is rejected | Use HTTPS without credentials, query, or fragment. The path may be empty or `/v1`; HTTP requires a literal loopback address. |
+| Model is rejected | Use a 1-128 character alias containing only letters, digits, `.`, `_`, `:`, `/`, or `-`. |
+| Launch option is rejected | Remove remote, export, share, resume, provider, or conflicting model controls. |
+| Launcher is rejected | Use Claude Code, Copilot CLI, or rustyclawd, or unset all gateway variables. |
+| Gateway cannot be reached | Check the child CLI error, gateway health, DNS, TLS trust, and firewall. Amplihack does not probe or retry the gateway. |
 
 ## Operate gateway-owned concerns
 
@@ -114,5 +86,6 @@ Configure these in LiteLLM or its platform, not amplihack:
 | Usage, pricing, budgets, and rate limits | LiteLLM policy |
 | Logs, metrics, traces, and dashboards | LiteLLM operator |
 
-See the [external LiteLLM gateway reference](../reference/external-litellm-gateway.md)
-for the complete contract.
+See the
+[external LiteLLM environment variables](../reference/environment-variables.md#external-litellm-gateway-variables)
+for the complete amplihack configuration contract.

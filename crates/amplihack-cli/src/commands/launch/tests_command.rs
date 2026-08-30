@@ -1,8 +1,40 @@
 use super::*;
 use crate::binary_finder::BinaryInfo;
 use crate::test_support::{home_env_lock, restore_cwd, set_cwd};
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::PathBuf;
+
+const GATEWAY_ENV_NAMES: [&str; 3] = [
+    "AMPLIHACK_LITELLM_ENDPOINT",
+    "AMPLIHACK_LITELLM_API_KEY",
+    "AMPLIHACK_LITELLM_MODEL",
+];
+
+struct GatewayEnvGuard {
+    previous: [Option<OsString>; 3],
+}
+
+impl GatewayEnvGuard {
+    fn set(values: [&str; 3]) -> Self {
+        let previous = GATEWAY_ENV_NAMES.map(std::env::var_os);
+        for (name, value) in GATEWAY_ENV_NAMES.into_iter().zip(values) {
+            unsafe { std::env::set_var(name, value) };
+        }
+        Self { previous }
+    }
+}
+
+impl Drop for GatewayEnvGuard {
+    fn drop(&mut self) {
+        for (name, value) in GATEWAY_ENV_NAMES.into_iter().zip(self.previous.iter()) {
+            match value {
+                Some(value) => unsafe { std::env::set_var(name, value) },
+                None => unsafe { std::env::remove_var(name) },
+            }
+        }
+    }
+}
 
 fn make_binary(path: &str) -> BinaryInfo {
     BinaryInfo {
@@ -69,6 +101,46 @@ fn with_default_model_env<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
         None => unsafe { std::env::remove_var("AMPLIHACK_DEFAULT_MODEL") },
     }
     result
+}
+
+#[test]
+fn gateway_projection_is_the_final_environment_mutation() {
+    let _guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _gateway_env = GatewayEnvGuard::set([
+        "https://gateway.example.com",
+        "gateway-secret",
+        "gateway-model",
+    ]);
+
+    let env_builder = EnvBuilder::new()
+        .set("ANTHROPIC_BASE_URL", "https://bypass.example.com")
+        .set("ANTHROPIC_API_KEY", "direct-provider-secret")
+        .set("ANTHROPIC_AUTH_TOKEN", "stale-gateway-secret");
+    let mut command = std::process::Command::new("claude");
+    apply_launch_environment(
+        &mut command,
+        env_builder,
+        Some(amplihack_utils::litellm_proxy::CliTarget::Claude),
+    )
+    .unwrap();
+
+    let command_env = |name: &str| {
+        command
+            .get_envs()
+            .find(|(key, _)| *key == OsStr::new(name))
+            .map(|(_, value)| value.map(|value| value.to_string_lossy().into_owned()))
+    };
+    assert_eq!(
+        command_env("ANTHROPIC_BASE_URL"),
+        Some(Some("https://gateway.example.com/".to_string()))
+    );
+    assert_eq!(
+        command_env("ANTHROPIC_AUTH_TOKEN"),
+        Some(Some("gateway-secret".to_string()))
+    );
+    assert_eq!(command_env("ANTHROPIC_API_KEY"), Some(None));
 }
 
 /// When skip_permissions=true, --dangerously-skip-permissions MUST be the

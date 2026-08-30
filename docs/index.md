@@ -158,7 +158,7 @@ amplihack copilot
 - [External LiteLLM Gateway Tutorial](tutorials/external-litellm-gateway.md) - Configure a protected route to an existing gateway
 - [Operate an External LiteLLM Route](howto/operate-external-litellm-route.md) - Rotate, disable, and troubleshoot routing
 - [External LiteLLM Boundary](concepts/external-litellm-boundary.md) - Understand the external-only trust and data boundaries
-- [External LiteLLM Gateway Reference](reference/external-litellm-gateway.md) - Look up configuration, readiness, and launcher contracts
+- [External LiteLLM Environment Reference](reference/environment-variables.md#external-litellm-gateway-variables) - Look up the gateway configuration contract
 
 ---
 

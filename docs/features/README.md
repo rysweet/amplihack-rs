@@ -11,7 +11,7 @@ gateway without embedding or operating LiteLLM:
 
 - [Tutorial](../tutorials/external-litellm-gateway.md)
 - [Operations guide](../howto/operate-external-litellm-route.md)
-- [Reference](../reference/external-litellm-gateway.md)
+- [Environment reference](../reference/environment-variables.md#external-litellm-gateway-variables)
 - [External boundary](../concepts/external-litellm-boundary.md)
 
 ## Power Steering

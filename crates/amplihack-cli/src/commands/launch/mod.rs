@@ -74,6 +74,19 @@ use std::time::Duration;
 
 const POWER_STEERING_PROMPT_TIMEOUT: Duration = Duration::from_secs(30);
 
+fn apply_launch_environment(
+    command: &mut std::process::Command,
+    env_builder: EnvBuilder,
+    proxy_target: Option<amplihack_utils::litellm_proxy::CliTarget>,
+) -> Result<()> {
+    env_builder.apply_to_command(command);
+    if let Some(proxy_target) = proxy_target {
+        amplihack_utils::litellm_proxy::apply_proxy_to_command(command, proxy_target)
+            .context("invalid external LiteLLM proxy configuration")?;
+    }
+    Ok(())
+}
+
 /// Launch a tool binary (claude, copilot, codex, amplifier).
 #[allow(clippy::too_many_arguments)]
 pub fn run_launch(
@@ -228,12 +241,8 @@ pub fn run_launch(
             Some(&execution_dir),
             subprocess_safe,
         );
-        if let Some(proxy_target) = proxy_target {
-            amplihack_utils::litellm_proxy::apply_proxy_to_command(&mut cmd, proxy_target)
-                .context("invalid external LiteLLM proxy configuration")?;
-        }
         cmd.current_dir(&execution_dir);
-        env_builder.apply_to_command(&mut cmd);
+        apply_launch_environment(&mut cmd, env_builder, proxy_target)?;
 
         // Register signal handlers
         let shutdown = signals::register_handlers()?;

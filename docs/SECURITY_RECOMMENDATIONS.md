@@ -15,11 +15,9 @@ export ANTHROPIC_API_KEY="your_key_here"  # pragma: allowlist secret
 export OPENAI_API_KEY="your_key_here"  # pragma: allowlist secret
 ```
 
-External LiteLLM routing also supports the dedicated
-`AMPLIHACK_LITELLM_API_KEY_FILE` credential-file variable. The referenced file
-must be private to the effective user and satisfy the gateway's
-[protected file contract](reference/external-litellm-gateway.md#protected-file-contract).
-Do not put the key in `litellm-config.toml` or any project configuration file.
+For external LiteLLM routing, obtain a restricted virtual key from a secret
+manager and expose it only as `AMPLIHACK_LITELLM_API_KEY` in the launch
+environment. Do not put the key in command arguments or project configuration.
 
 ### 2. Tool Calling Configuration
 

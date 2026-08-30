@@ -19,12 +19,9 @@ export OPENAI_API_KEY="sk-..."          # OpenAI API (if using Copilot)
 !!! danger "Never Commit Keys"
     If a key appears in a config file or source code, rotate it immediately.
 
-External LiteLLM routing also supports
-`AMPLIHACK_LITELLM_API_KEY_FILE`. This is a dedicated credential file, not the
-LiteLLM TOML configuration file. It must be an absolute path to a regular file
-owned by the effective user, inaccessible to group and other users, and free
-of symbolic links. See the
-[protected file contract](external-litellm-gateway.md#protected-file-contract).
+For external LiteLLM routing, obtain a restricted virtual key from a secret
+manager and expose it only as `AMPLIHACK_LITELLM_API_KEY` in the launch
+environment. Do not put the key in command arguments or project configuration.
 
 ### 2. Tool Calling Configuration
 
@@ -48,7 +45,7 @@ export ENABLE_TOOL_FALLBACK=true
 The `litellm` dependency was removed from upstream amplihack due to a PyPI
 supply-chain attack. Amplihack does not install, embed, import, start, or
 manage LiteLLM. Optional
-[external-gateway routing](external-litellm-gateway.md) connects supported
+[external-gateway routing](../concepts/external-litellm-gateway.md) connects supported
 agent CLIs to a separately operated service without restoring the dependency.
 
 That prohibition covers LiteLLM as an **in-process dependency**. An
@@ -57,13 +54,6 @@ used by the optional gateway feature; amplihack never installs, starts, or
 manages it. See
 [why the gateway stays external](../concepts/external-litellm-boundary.md) and
 the [supply-chain section](../SECURITY_RECOMMENDATIONS.md) for the distinction.
-
-That prohibition covers LiteLLM as an **in-process dependency**. Running a
-version-pinned LiteLLM container as an **external service** is a different trust
-boundary and is permitted — the optional gateway feature uses it, and amplihack
-never imports or installs the package. See
-[external LiteLLM gateway architecture](../concepts/external-litellm-gateway.md) and the
-[supply-chain section](../SECURITY_RECOMMENDATIONS.md) for the full distinction.
 
 Run supply chain checks:
 

@@ -112,4 +112,4 @@ gateway client.
 
 - [LiteLLM gateway quickstart](../tutorials/litellm-gateway-quickstart.md)
 - [Operate an external LiteLLM gateway](../howto/operate-external-litellm-gateway.md)
-- [External LiteLLM gateway reference](../reference/external-litellm-gateway.md)
+- [External LiteLLM environment variables](../reference/environment-variables.md#external-litellm-gateway-variables)

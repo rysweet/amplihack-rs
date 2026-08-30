@@ -162,7 +162,6 @@ nav:
           - Tutorial: tutorials/external-litellm-gateway.md
           - Operations: howto/operate-external-litellm-route.md
           - Architecture: concepts/external-litellm-boundary.md
-          - Reference: reference/external-litellm-gateway.md
   - Guides:
       - Formal Specifications as Prompt Language: guides/formal-specifications-as-prompt-language.md
   - Advanced Topics:
@@ -217,7 +216,6 @@ nav:
           - Architecture: concepts/external-litellm-gateway.md
           - Quickstart: tutorials/litellm-gateway-quickstart.md
           - Operations: howto/operate-external-litellm-gateway.md
-          - Reference: reference/external-litellm-gateway.md
       - Security: SECURITY_RECOMMENDATIONS.md
       - Testing: testing/TEST_PLAN.md
       - Migration Contract Tests: testing/MIGRATION_CONTRACT_TESTS.md
