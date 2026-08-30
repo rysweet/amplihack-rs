@@ -7,8 +7,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use super::{DEFAULT_IMAGE_NAME, DockerDetector, helpers::forwarded_env_vars};
-use crate::util::run_with_timeout;
+use super::{
+    DEFAULT_IMAGE_NAME, DockerDetector, LITELLM_ROUTING_LABEL, VERSION_LABEL,
+    helpers::{forwarded_env_vars, is_secret_env_key},
+};
+use crate::util::{run_with_timeout, run_with_timeout_described};
 
 const DOCKER_BUILD_TIMEOUT: Duration = Duration::from_secs(600);
 const DOCKER_RUN_TIMEOUT: Duration = Duration::from_secs(3600);
@@ -61,6 +64,7 @@ impl DockerManager {
     }
 
     pub(crate) fn run_command(&self, amplihack_args: &[String], cwd: &Path) -> Result<i32> {
+        validate_docker_gateway_env()?;
         if !self.detector.is_running() {
             eprintln!("Docker is not running.");
             return Ok(1);
@@ -70,11 +74,24 @@ impl DockerManager {
             eprintln!("Failed to build Docker image.");
             return Ok(1);
         }
+        if amplihack_utils::litellm_proxy::proxy_requested()
+            && !self.detector.image_supports_litellm(self.image_name)
+        {
+            anyhow::bail!(
+                "the Docker image does not declare LiteLLM routing support for amplihack {}; rebuild a current labeled image or launch the agent outside Docker",
+                crate::VERSION
+            );
+        }
 
         let run_args = self.build_run_args(cwd, amplihack_args, env::vars_os());
         let mut command = Command::new("docker");
         command.args(&run_args);
-        let status = run_with_timeout(command, DOCKER_RUN_TIMEOUT)
+        command.envs(
+            forwarded_env_vars(env::vars_os())
+                .into_iter()
+                .filter(|(key, _)| is_secret_env_key(key)),
+        );
+        let status = run_with_timeout_described(command, DOCKER_RUN_TIMEOUT, "docker run")
             .context("failed to execute docker run")?;
         Ok(status.code().unwrap_or(1))
     }
@@ -109,6 +126,10 @@ impl DockerManager {
             "build".to_string(),
             "-t".to_string(),
             self.image_name.to_string(),
+            "--label".to_string(),
+            format!("{LITELLM_ROUTING_LABEL}=1"),
+            "--label".to_string(),
+            format!("{VERSION_LABEL}={}", crate::VERSION),
             "-f".to_string(),
             dockerfile.display().to_string(),
             self.project_root.display().to_string(),
@@ -153,13 +174,28 @@ impl DockerManager {
             "-w".to_string(),
             "/workspace".to_string(),
         ]);
-
         for (key, value) in forwarded_env_vars(env_vars) {
-            args.extend(["-e".to_string(), format!("{key}={value}")]);
+            let assignment = if is_secret_env_key(&key) {
+                key
+            } else {
+                format!("{key}={value}")
+            };
+            args.extend(["-e".to_string(), assignment]);
         }
 
         args.push(self.image_name.to_string());
         args.extend(amplihack_args.iter().cloned());
         args
     }
+}
+
+pub(super) fn validate_docker_gateway_env() -> Result<()> {
+    if env::var(amplihack_utils::litellm_proxy::ENDPOINT_ENV)
+        .is_ok_and(|endpoint| amplihack_utils::litellm_proxy::endpoint_is_loopback(&endpoint))
+    {
+        anyhow::bail!(
+            "the Docker launcher cannot safely reach a host-loopback LiteLLM gateway without exposing all host services; use a reachable HTTPS gateway or launch the agent outside Docker"
+        );
+    }
+    Ok(())
 }

@@ -55,10 +55,16 @@ pub(super) fn build_command_for_dir(
 
     // Inject --model unless user already supplied one.
     // Default model depends on the tool — Claude uses opus[1m], Copilot uses its own default.
-    let user_has_model = extra_args.iter().any(|a| a == "--model");
+    let user_has_model = extra_args
+        .iter()
+        .any(|arg| arg == "--model" || arg.starts_with("--model="));
     if !user_has_model && is_claude_compatible {
-        let default_model =
-            std::env::var("AMPLIHACK_DEFAULT_MODEL").unwrap_or_else(|_| "opus[1m]".to_string());
+        let default_model = if amplihack_utils::litellm_proxy::proxy_requested() {
+            std::env::var(amplihack_utils::litellm_proxy::MODEL_ENV)
+                .unwrap_or_else(|_| "amplihack-default".to_string())
+        } else {
+            std::env::var("AMPLIHACK_DEFAULT_MODEL").unwrap_or_else(|_| "opus[1m]".to_string())
+        };
         cmd.arg("--model");
         cmd.arg(default_model);
     }
@@ -104,6 +110,16 @@ pub(super) fn build_command_for_dir(
         if inject_paths {
             cmd.arg("--allow-all-paths");
         }
+    }
+
+    if binary.name == "copilot" && amplihack_utils::litellm_proxy::proxy_requested() {
+        cmd.arg("--no-remote");
+        cmd.arg("--no-remote-export");
+    }
+
+    if binary.name == "claude" && amplihack_utils::litellm_proxy::proxy_requested() {
+        cmd.arg("--setting-sources");
+        cmd.arg("");
     }
 
     // Inject --remote for Copilot by default. Remote mode offloads compute to
@@ -251,6 +267,9 @@ pub(crate) fn should_inject_copilot_allow_all(extra_args: &[String]) -> bool {
 /// `--no-remote`, or if `AMPLIHACK_COPILOT_NO_REMOTE=1` is set.
 pub(crate) fn should_inject_copilot_remote(extra_args: &[String]) -> bool {
     if std::env::var("AMPLIHACK_COPILOT_NO_REMOTE").as_deref() == Ok("1") {
+        return false;
+    }
+    if amplihack_utils::litellm_proxy::proxy_requested() {
         return false;
     }
     !extra_args

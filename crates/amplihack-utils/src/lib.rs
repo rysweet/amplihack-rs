@@ -52,7 +52,7 @@ pub mod knowledge_builder;
 /// and issue #1266.
 pub mod launch_target;
 pub mod launcher_context;
-pub mod litellm_callbacks;
+pub mod litellm_proxy;
 pub mod llm_client;
 pub mod observability;
 pub mod plugin_cli;

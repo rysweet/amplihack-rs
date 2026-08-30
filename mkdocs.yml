@@ -208,6 +208,11 @@ nav:
           - External Dependencies: atlas/inventory/external-deps.md
   - Reference:
       - Discoveries: claude/context/DISCOVERIES.md
+      - External LiteLLM Gateway:
+          - Architecture: concepts/external-litellm-gateway.md
+          - Quickstart: tutorials/litellm-gateway-quickstart.md
+          - Operations: howto/operate-external-litellm-gateway.md
+          - Reference: reference/external-litellm-gateway.md
       - Security: SECURITY_RECOMMENDATIONS.md
       - Testing: testing/TEST_PLAN.md
       - Migration Contract Tests: testing/MIGRATION_CONTRACT_TESTS.md

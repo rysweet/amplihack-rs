@@ -37,7 +37,35 @@ export ENABLE_TOOL_FALLBACK=true
 
 ### 3. Supply Chain Security
 
-**litellm Removal**: The `litellm` dependency was removed due to a PyPI supply chain attack (see commit `ead2a7cb0`). Any functionality that previously depended on litellm has been removed or replaced with direct API integrations.
+**litellm dependency**: The Python `litellm` package remains removed due to a
+PyPI supply chain attack (see commit `ead2a7cb0`). That prohibition is
+unchanged: LiteLLM is not a Python or Rust dependency of amplihack, is not
+imported into any amplihack process, and is not installed by any amplihack
+command.
+
+Distinguish that from **running LiteLLM as an external service**, which is
+permitted and is what the optional gateway feature uses. The distinction is the
+trust boundary, not the name:
+
+| In-process dependency (forbidden) | External service (permitted) |
+|---|---|
+| Executes inside an amplihack process | Runs in its own container, under the operator's control |
+| A compromised release runs our code | A compromised release is confined to that container |
+| Pulled implicitly by a package resolver | Version-pinned container, started explicitly |
+| Shares our address space and secrets | Holds provider keys that amplihack never sees |
+
+The reference deployment in `observability/litellm/` is a container profile you
+start yourself; nothing auto-starts. Amplihack's own role is limited to setting
+vendor environment variables on the child process, so it is never in the agent's
+HTTP data path.
+
+The reference stack binds published ports to `127.0.0.1`, requires Grafana and
+LiteLLM authentication, disables gateway message logging, and persists spend
+records in PostgreSQL.
+
+Amplihack holds exactly one credential, the gateway virtual key, supplied from
+the environment. Provider credentials live in the gateway container only. See
+[external LiteLLM gateway architecture](concepts/external-litellm-gateway.md).
 
 ### 4. Enhanced File Logging Security
 
