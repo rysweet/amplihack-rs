@@ -49,6 +49,8 @@ pub fn dispatch(command: Commands) -> Result<()> {
         } => install::run_install(local, interactive, force_refresh),
         Commands::Uninstall => install::run_uninstall(),
         Commands::Launch {
+            litellm,
+            no_litellm,
             resume,
             continue_session,
             skip_permissions: _skip_permissions, // always true for Python launcher parity
@@ -67,6 +69,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 return append::run_append(&instruction);
             }
             if auto {
+                reject_litellm_auto(litellm, no_litellm)?;
                 let working_dir = launch::resolve_checkout_repo(checkout_repo.as_deref())?;
                 return auto_mode::run_auto_mode(
                     auto_mode::AutoModeTool::Claude,
@@ -80,6 +83,8 @@ pub fn dispatch(command: Commands) -> Result<()> {
             launch::run_launch(
                 "claude",
                 "launch",
+                litellm,
+                no_litellm,
                 docker,
                 resume,
                 continue_session,
@@ -96,6 +101,8 @@ pub fn dispatch(command: Commands) -> Result<()> {
             )
         }
         Commands::Claude {
+            litellm,
+            no_litellm,
             no_reflection,
             subprocess_safe,
             checkout_repo,
@@ -110,6 +117,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 return append::run_append(&instruction);
             }
             if auto {
+                reject_litellm_auto(litellm, no_litellm)?;
                 let working_dir = launch::resolve_checkout_repo(checkout_repo.as_deref())?;
                 return auto_mode::run_auto_mode(
                     auto_mode::AutoModeTool::Claude,
@@ -124,6 +132,8 @@ pub fn dispatch(command: Commands) -> Result<()> {
             launch::run_launch(
                 "claude",
                 "claude",
+                litellm,
+                no_litellm,
                 docker,
                 false,
                 false,
@@ -140,6 +150,8 @@ pub fn dispatch(command: Commands) -> Result<()> {
             )
         }
         Commands::Copilot {
+            litellm,
+            no_litellm,
             no_reflection,
             reflection,
             subprocess_safe,
@@ -154,6 +166,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 return append::run_append(&instruction);
             }
             if auto {
+                reject_litellm_auto(litellm, no_litellm)?;
                 return auto_mode::run_auto_mode(
                     auto_mode::AutoModeTool::Copilot,
                     max_turns,
@@ -196,6 +209,8 @@ pub fn dispatch(command: Commands) -> Result<()> {
             launch::run_launch(
                 "copilot",
                 "copilot",
+                litellm,
+                no_litellm,
                 docker,
                 false,
                 false,
@@ -212,6 +227,8 @@ pub fn dispatch(command: Commands) -> Result<()> {
             )
         }
         Commands::Codex {
+            litellm,
+            no_litellm,
             no_reflection,
             subprocess_safe,
             docker,
@@ -225,6 +242,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 return append::run_append(&instruction);
             }
             if auto {
+                reject_litellm_auto(litellm, no_litellm)?;
                 return auto_mode::run_auto_mode(
                     auto_mode::AutoModeTool::Codex,
                     max_turns,
@@ -237,6 +255,8 @@ pub fn dispatch(command: Commands) -> Result<()> {
             launch::run_launch(
                 "codex",
                 "codex",
+                litellm,
+                no_litellm,
                 docker,
                 false,
                 false,
@@ -253,6 +273,8 @@ pub fn dispatch(command: Commands) -> Result<()> {
             )
         }
         Commands::Amplifier {
+            litellm,
+            no_litellm,
             no_reflection,
             subprocess_safe,
             docker,
@@ -266,6 +288,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 return append::run_append(&instruction);
             }
             if auto {
+                reject_litellm_auto(litellm, no_litellm)?;
                 return auto_mode::run_auto_mode(
                     auto_mode::AutoModeTool::Amplifier,
                     max_turns,
@@ -278,6 +301,8 @@ pub fn dispatch(command: Commands) -> Result<()> {
             launch::run_launch(
                 "amplifier",
                 "amplifier",
+                litellm,
+                no_litellm,
                 docker,
                 false,
                 false,
@@ -358,6 +383,8 @@ pub fn dispatch(command: Commands) -> Result<()> {
         ),
         #[allow(non_snake_case)]
         Commands::RustyClawd {
+            litellm,
+            no_litellm,
             append,
             no_reflection,
             subprocess_safe,
@@ -370,6 +397,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 return append::run_append(&instruction);
             }
             if auto {
+                reject_litellm_auto(litellm, no_litellm)?;
                 return auto_mode::run_auto_mode(
                     auto_mode::AutoModeTool::RustyClawd,
                     max_turns,
@@ -379,8 +407,9 @@ pub fn dispatch(command: Commands) -> Result<()> {
                     None,
                 );
             }
-            rustyclawd::run_rustyclawd(args, no_reflection, subprocess_safe)
+            rustyclawd::run_rustyclawd(args, no_reflection, subprocess_safe, litellm, no_litellm)
         }
+
         Commands::UvxHelp { find_path, info } => uvx_help::run_uvx_help(find_path, info),
         Commands::Completions { shell } => completions::run_completions(shell),
         Commands::Doctor { args } => doctor::run_doctor(args),
@@ -410,6 +439,22 @@ pub fn dispatch(command: Commands) -> Result<()> {
         } => mcp_eval::dispatch(adapter, scenario, mock, output, config),
         Commands::Signal { command } => signal::dispatch(command),
     }
+}
+
+fn reject_litellm_auto(litellm: bool, no_litellm: bool) -> Result<()> {
+    if no_litellm {
+        amplihack_utils::litellm_proxy::clear_current_process_configuration();
+        return Ok(());
+    }
+    if litellm || (!no_litellm && amplihack_utils::litellm_proxy::proxy_requested()) {
+        anyhow::bail!(
+            "{}",
+            amplihack_utils::litellm_proxy::ProxyError::Unsupported(
+                "LiteLLM routing is not supported in auto mode".to_string()
+            )
+        );
+    }
+    Ok(())
 }
 
 fn dispatch_hygiene(command: HygieneCommands) -> Result<()> {

@@ -32,7 +32,9 @@ pub(crate) use power_steering::maybe_prompt_re_enable_power_steering;
 
 // Internal imports from submodules used by run_launch.
 use blarify::maybe_run_blarify_indexing_prompt;
-use command::{augment_claude_launch_env, build_command_for_dir, build_docker_launcher_args};
+use command::{
+    augment_claude_launch_env, build_command_for_dir_with_litellm, build_docker_launcher_args,
+};
 use context::persist_launcher_context;
 
 // Test-visible re-imports from submodules. These become available to
@@ -46,7 +48,7 @@ use blarify::{
 #[cfg(test)]
 use checkout::{parse_github_repo_uri, resolve_checkout_repo_in};
 #[cfg(test)]
-use command::build_command;
+use command::{build_command, build_command_for_dir};
 #[cfg(test)]
 use context::render_launcher_command;
 #[cfg(test)]
@@ -79,6 +81,8 @@ const POWER_STEERING_PROMPT_TIMEOUT: Duration = Duration::from_secs(30);
 pub fn run_launch(
     tool: &str,
     launcher_command: &str,
+    litellm: bool,
+    no_litellm: bool,
     docker: bool,
     resume: bool,
     continue_session: bool,
@@ -91,7 +95,31 @@ pub fn run_launch(
     override_origin: OverrideOrigin,
 ) -> Result<()> {
     validate_launch_prompt_delivery(tool)?;
-
+    let activation = match (litellm, no_litellm) {
+        (true, false) => amplihack_utils::litellm_proxy::Activation::Enabled,
+        (false, true) => amplihack_utils::litellm_proxy::Activation::Disabled,
+        (false, false) => amplihack_utils::litellm_proxy::Activation::Auto,
+        (true, true) => anyhow::bail!("AH_LITELLM_CONFIG: conflicting activation flags"),
+    };
+    if activation == amplihack_utils::litellm_proxy::Activation::Disabled {
+        amplihack_utils::litellm_proxy::clear_current_process_configuration();
+    }
+    let routing_intended = activation == amplihack_utils::litellm_proxy::Activation::Enabled
+        || (activation == amplihack_utils::litellm_proxy::Activation::Auto
+            && amplihack_utils::litellm_proxy::proxy_requested());
+    if routing_intended && !matches!(tool, "claude" | "copilot") {
+        anyhow::bail!("AH_LITELLM_UNSUPPORTED: external LiteLLM routing does not support {tool}");
+    }
+    if routing_intended && docker_requested(docker) {
+        anyhow::bail!("AH_LITELLM_UNSUPPORTED: external LiteLLM routing does not support Docker");
+    }
+    let target_hint = if tool == "copilot" {
+        amplihack_utils::litellm_proxy::CliTarget::CopilotCli
+    } else {
+        amplihack_utils::litellm_proxy::CliTarget::Claude
+    };
+    let proxy_config =
+        amplihack_utils::litellm_proxy::GatewayConfig::load(activation, target_hint)?;
     let current_dir = std::env::current_dir()
         .ok()
         .unwrap_or_else(|| PathBuf::from("."));
@@ -145,6 +173,29 @@ pub fn run_launch(
     let binary = bootstrap::ensure_tool_available(tool, override_origin)
         .with_context(|| missing_binary_context(tool))?;
 
+    let proxy_target = proxy_target_for(tool, &binary.path);
+    if proxy_config.is_some() && proxy_target.is_none() {
+        anyhow::bail!("AH_LITELLM_UNSUPPORTED: the selected launcher has no LiteLLM adapter");
+    }
+    let expected_executable = proxy_config
+        .as_ref()
+        .map(|_| executable_identity(&binary.path))
+        .transpose()?;
+    if let (Some(config), Some(proxy_target)) = (&proxy_config, proxy_target) {
+        validate_proxy_launch_args(config, proxy_target, resume, continue_session, &extra_args)?;
+        if proxy_target == amplihack_utils::litellm_proxy::CliTarget::CopilotCli {
+            validate_copilot_gateway_capability(&binary.path)?;
+        }
+        if executable_identity(&binary.path)? != *expected_executable.as_ref().expect("captured") {
+            anyhow::bail!(
+                "AH_LITELLM_EXECUTABLE_CHANGED: selected launcher changed during capability validation"
+            );
+        }
+    }
+    if let Some(config) = &proxy_config {
+        config.check_readiness()?;
+    }
+
     tracing::info!(
         binary = %binary.path.display(),
         version = binary.version.as_deref().unwrap_or("unknown"),
@@ -194,7 +245,7 @@ pub fn run_launch(
         maybe_run_blarify_indexing_prompt(tool, is_noninteractive(), Some(&execution_dir))?;
 
         // Build command
-        let mut cmd = build_command_for_dir(
+        let mut cmd = build_command_for_dir_with_litellm(
             &binary,
             resume,
             continue_session,
@@ -202,7 +253,12 @@ pub fn run_launch(
             &extra_args,
             Some(&execution_dir),
             subprocess_safe,
+            proxy_config.is_some(),
         );
+        amplihack_utils::litellm_proxy::clear_config_environment(&mut cmd);
+        if let (Some(config), Some(proxy_target)) = (&proxy_config, proxy_target) {
+            config.apply_to_command(&mut cmd, proxy_target);
+        }
         cmd.current_dir(&execution_dir);
         env_builder.apply_to_command(&mut cmd);
 
@@ -216,6 +272,13 @@ pub fn run_launch(
         // which named nothing real and sent the user hunting for a CPU
         // problem that did not exist. Resolution already knows what it tried
         // and why each candidate was rejected — say that instead.
+        if let Some(expected) = &expected_executable
+            && &executable_identity(&binary.path)? != expected
+        {
+            anyhow::bail!(
+                "AH_LITELLM_EXECUTABLE_CHANGED: selected launcher changed after validation"
+            );
+        }
         let mut child = match ManagedChild::spawn(cmd) {
             Ok(child) => child,
             Err(err) => {
@@ -251,6 +314,194 @@ pub fn run_launch(
         let _ = tracker.crash_session(&session_id);
     }
     result
+}
+
+fn validate_proxy_launch_args(
+    config: &amplihack_utils::litellm_proxy::GatewayConfig,
+    target: amplihack_utils::litellm_proxy::CliTarget,
+    resume: bool,
+    continue_session: bool,
+    extra_args: &[String],
+) -> Result<()> {
+    let mut effective_args = extra_args.to_vec();
+    if resume {
+        effective_args.push("--resume".to_string());
+    }
+    if continue_session {
+        effective_args.push("--continue".to_string());
+    }
+    amplihack_utils::litellm_proxy::validate_launch_args(target, &effective_args, config)
+        .context("invalid external LiteLLM proxy launch mode")
+}
+
+fn docker_requested(flag: bool) -> bool {
+    flag || std::env::var("AMPLIHACK_USE_DOCKER")
+        .ok()
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes"
+            )
+        })
+}
+
+fn validate_copilot_gateway_capability(path: &std::path::Path) -> Result<()> {
+    let mut command = std::process::Command::new(path);
+    command.arg("--help");
+    amplihack_utils::litellm_proxy::clear_config_environment(&mut command);
+    let output = crate::util::run_output_with_timeout(command, Duration::from_secs(5))
+        .context("AH_LITELLM_CAPABILITY: could not inspect Copilot CLI capabilities")?;
+    if !output.status.success() {
+        anyhow::bail!("AH_LITELLM_CAPABILITY: Copilot CLI capability probe failed");
+    }
+    let mut help = output.stdout;
+    help.extend_from_slice(&output.stderr);
+    let help = String::from_utf8_lossy(&help);
+    if !help_has_capability(&help, "providers")
+        || !help_has_capability(&help, "--no-remote")
+        || !help_has_capability(&help, "--no-remote-export")
+        || !help_has_capability(&help, "--secret-env-vars")
+    {
+        anyhow::bail!(
+            "AH_LITELLM_CAPABILITY: Copilot CLI does not prove custom-provider and no-remote support"
+        );
+    }
+    Ok(())
+}
+
+fn help_has_capability(help: &str, expected: &str) -> bool {
+    help.split_whitespace().any(|token| {
+        token
+            .split_once('[')
+            .map_or(token, |(prefix, _)| prefix)
+            .trim_end_matches([',', ':', ';'])
+            == expected
+    })
+}
+
+#[cfg(test)]
+#[test]
+fn capability_matching_requires_exact_option_tokens() {
+    assert!(help_has_capability(
+        "providers Custom Model Providers\n  --secret-env-vars[=vars...] secret\n  --no-remote disable\n  --no-remote-export disable",
+        "providers"
+    ));
+    assert!(help_has_capability(
+        "--secret-env-vars[=vars...]",
+        "--secret-env-vars"
+    ));
+    assert!(!help_has_capability("--no-remote-export", "--no-remote"));
+    assert!(!help_has_capability("providers-extra", "providers"));
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ExecutableIdentity {
+    canonical_path: PathBuf,
+    length: u64,
+    modified: std::time::SystemTime,
+    sha256: [u8; 32],
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+}
+
+fn executable_identity(path: &std::path::Path) -> Result<ExecutableIdentity> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+
+    let canonical_path = path
+        .canonicalize()
+        .context("AH_LITELLM_EXECUTABLE_CHANGED: selected launcher cannot be resolved")?;
+    let metadata = canonical_path
+        .metadata()
+        .context("AH_LITELLM_EXECUTABLE_CHANGED: selected launcher cannot be inspected")?;
+    if !metadata.is_file() {
+        anyhow::bail!("AH_LITELLM_EXECUTABLE_CHANGED: selected launcher is not a regular file");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.mode() & 0o022 != 0 {
+            anyhow::bail!(
+                "AH_LITELLM_EXECUTABLE_CHANGED: selected launcher is group- or world-writable"
+            );
+        }
+    }
+    let mut file = std::fs::File::open(&canonical_path)
+        .context("AH_LITELLM_EXECUTABLE_CHANGED: selected launcher cannot be opened")?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .context("AH_LITELLM_EXECUTABLE_CHANGED: selected launcher cannot be read")?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let sha256: [u8; 32] = hasher.finalize().into();
+    Ok(ExecutableIdentity {
+        canonical_path,
+        length: metadata.len(),
+        modified: metadata.modified().context(
+            "AH_LITELLM_EXECUTABLE_CHANGED: selected launcher timestamp cannot be inspected",
+        )?,
+        sha256,
+        #[cfg(unix)]
+        device: {
+            use std::os::unix::fs::MetadataExt;
+            metadata.dev()
+        },
+        #[cfg(unix)]
+        inode: {
+            use std::os::unix::fs::MetadataExt;
+            metadata.ino()
+        },
+    })
+}
+
+fn proxy_target_for(
+    tool: &str,
+    binary_path: &std::path::Path,
+) -> Option<amplihack_utils::litellm_proxy::CliTarget> {
+    match tool {
+        "copilot" => Some(amplihack_utils::litellm_proxy::CliTarget::CopilotCli),
+        _ if binary_path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().contains("rustyclawd")) =>
+        {
+            Some(amplihack_utils::litellm_proxy::CliTarget::RustyClawd)
+        }
+        "claude" => Some(amplihack_utils::litellm_proxy::CliTarget::Claude),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn proxy_target_covers_claude_copilot_and_rustyclawd() {
+    use amplihack_utils::litellm_proxy::CliTarget;
+    use std::path::Path;
+
+    assert_eq!(
+        proxy_target_for("claude", Path::new("/usr/bin/claude")),
+        Some(CliTarget::Claude)
+    );
+    assert_eq!(
+        proxy_target_for("copilot", Path::new("/usr/bin/copilot")),
+        Some(CliTarget::CopilotCli)
+    );
+    assert_eq!(
+        proxy_target_for("claude", Path::new("/opt/bin/rustyclawd")),
+        Some(CliTarget::RustyClawd)
+    );
+    assert_eq!(proxy_target_for("codex", Path::new("/usr/bin/codex")), None);
+    assert_eq!(
+        proxy_target_for("amplifier", Path::new("/usr/bin/amplifier")),
+        None
+    );
 }
 
 fn validate_launch_prompt_delivery(tool: &str) -> Result<()> {

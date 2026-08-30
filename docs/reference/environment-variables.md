@@ -46,6 +46,7 @@ All environment variables read or written by `amplihack` during a launch (`ampli
   - [AMPLIHACK_SKIP_AUTO_INSTALL](#amplihack_skip_auto_install)
   - [AMPLIHACK_SKIP_MMDC](#amplihack_skip_mmdc)
   - [AMPLIHACK_TEST_FAKE_LATEST_VERSION](#amplihack_test_fake_latest_version)
+  - [External LiteLLM gateway variables](#external-litellm-gateway-variables)
   - [AMPLIHACK_TOPIC_NAME](#amplihack_topic_name)
   - [AMPLIHACK_PROJECT_ID](#amplihack_project_id)
   - [CI](#ci)
@@ -825,6 +826,24 @@ for the derivation, essential-key set, and smallest-first fill.
 ## Variables read by amplihack
 
 These variables influence `amplihack`'s behaviour but are not set by it.
+
+---
+
+### External LiteLLM gateway variables
+
+These variables configure routing through an already-running external gateway:
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `AMPLIHACK_LITELLM_ENDPOINT` | unset | Sets the gateway deployment root. |
+| `AMPLIHACK_LITELLM_API_KEY` | unset | Supplies the restricted virtual key inline. Mutually exclusive with `AMPLIHACK_LITELLM_API_KEY_FILE`. |
+| `AMPLIHACK_LITELLM_API_KEY_FILE` | unset | Supplies an absolute path to a protected virtual-key file. |
+| `AMPLIHACK_LITELLM_COPILOT_MODEL` | unset | Selects the required gateway model alias for Copilot. Not used by Claude Code or RustyClawd. |
+
+Any recognized signal enables fail-closed validation unless `--no-litellm` is
+passed. See the
+[external LiteLLM gateway reference](external-litellm-gateway.md) for
+precedence, file security, endpoint, readiness, and launcher contracts.
 
 ---
 

@@ -8,7 +8,8 @@ Operational security checklist and recommendations for amplihack deployments.
 
 ### 1. API Key Exposure (HIGH)
 
-Never hard-code API keys in configuration files. Use environment variables:
+Never hard-code or commit API keys in source code or ordinary configuration
+files. Use environment variables for provider keys:
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."   # Claude API
@@ -17,6 +18,13 @@ export OPENAI_API_KEY="sk-..."          # OpenAI API (if using Copilot)
 
 !!! danger "Never Commit Keys"
     If a key appears in a config file or source code, rotate it immediately.
+
+External LiteLLM routing also supports
+`AMPLIHACK_LITELLM_API_KEY_FILE`. This is a dedicated credential file, not the
+LiteLLM TOML configuration file. It must be an absolute path to a regular file
+owned by the effective user, inaccessible to group and other users, and free
+of symbolic links. See the
+[protected file contract](external-litellm-gateway.md#protected-file-contract).
 
 ### 2. Tool Calling Configuration
 
@@ -38,8 +46,17 @@ export ENABLE_TOOL_FALLBACK=true
 ### 3. Supply Chain Security
 
 The `litellm` dependency was removed from upstream amplihack due to a PyPI
-supply chain attack. amplihack-rs avoids this class of risk by using direct
-API integrations via Rust crates with `cargo audit` verification.
+supply-chain attack. Amplihack does not install, embed, import, start, or
+manage LiteLLM. Optional
+[external-gateway routing](external-litellm-gateway.md) connects supported
+agent CLIs to a separately operated service without restoring the dependency.
+
+That prohibition covers LiteLLM as an **in-process dependency**. An
+operator-managed LiteLLM deployment is a different trust boundary and may be
+used by the optional gateway feature; amplihack never installs, starts, or
+manages it. See
+[why the gateway stays external](../concepts/external-litellm-boundary.md) and
+the [supply-chain section](../SECURITY_RECOMMENDATIONS.md) for the distinction.
 
 Run supply chain checks:
 

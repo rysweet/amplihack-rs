@@ -4,15 +4,22 @@
 
 ### 1. API Key Exposure (HIGH PRIORITY)
 
-**Issue**: Hard-coded API keys in configuration files
+**Issue**: API keys hard-coded or committed in source code or ordinary
+configuration files
 
 **Solution**:
 
 ```bash
-# Use environment variables only — never hard-code keys in files
+# Use environment variables for provider keys; never commit them
 export ANTHROPIC_API_KEY="your_key_here"  # pragma: allowlist secret
 export OPENAI_API_KEY="your_key_here"  # pragma: allowlist secret
 ```
+
+External LiteLLM routing also supports the dedicated
+`AMPLIHACK_LITELLM_API_KEY_FILE` credential-file variable. The referenced file
+must be private to the effective user and satisfy the gateway's
+[protected file contract](reference/external-litellm-gateway.md#protected-file-contract).
+Do not put the key in `litellm-config.toml` or any project configuration file.
 
 ### 2. Tool Calling Configuration
 
@@ -37,7 +44,12 @@ export ENABLE_TOOL_FALLBACK=true
 
 ### 3. Supply Chain Security
 
-**litellm Removal**: The `litellm` dependency was removed due to a PyPI supply chain attack (see commit `ead2a7cb0`). Any functionality that previously depended on litellm has been removed or replaced with direct API integrations.
+**LiteLLM dependency removal**: The `litellm` dependency was removed due to a
+PyPI supply-chain attack (see commit `ead2a7cb0`). Amplihack does not install,
+embed, import, start, or manage LiteLLM. Optional external-gateway routing
+connects supported agent CLIs to a separately operated service and preserves
+that dependency boundary. See
+[why the LiteLLM gateway stays external](concepts/external-litellm-boundary.md).
 
 ### 4. Enhanced File Logging Security
 

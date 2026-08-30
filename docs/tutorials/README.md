@@ -6,6 +6,15 @@
 
 ## Available Tutorials
 
+### [External LiteLLM Gateway](external-litellm-gateway.md)
+
+Route Claude Code, GitHub Copilot CLI, or RustyClawd through an existing,
+operator-managed LiteLLM gateway. Amplihack validates the route but never
+installs or operates the gateway.
+
+**Prerequisites**: amplihack, a supported agent CLI, an external LiteLLM
+deployment root, and a restricted virtual key.
+
 ### 🎓 [Amplihack Tutorial](amplihack-tutorial.md)
 
 Comprehensive guide from basics to advanced topics. 60-90 minutes of hands-on learning with progressive disclosure.

@@ -10,7 +10,13 @@ use anyhow::Result;
 use std::env;
 use std::path::{Path, PathBuf};
 
-pub fn run_rustyclawd(args: Vec<String>, no_reflection: bool, subprocess_safe: bool) -> Result<()> {
+pub fn run_rustyclawd(
+    args: Vec<String>,
+    no_reflection: bool,
+    subprocess_safe: bool,
+    litellm: bool,
+    no_litellm: bool,
+) -> Result<()> {
     let override_origin = configure_preferred_rustyclawd_binary();
     if override_origin == OverrideOrigin::AmplihackSupplied {
         println!("Using RustyClawd (Rust implementation)");
@@ -19,6 +25,8 @@ pub fn run_rustyclawd(args: Vec<String>, no_reflection: bool, subprocess_safe: b
     launch::run_launch(
         "claude",
         "claude",
+        litellm,
+        no_litellm,
         false,
         false,
         false,

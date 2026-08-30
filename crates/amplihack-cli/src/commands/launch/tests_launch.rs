@@ -51,6 +51,8 @@ fn run_launch_rejects_explicit_unsupported_amplifier_prompt_delivery_modes() {
             false,
             false,
             false,
+            false,
+            false,
             true,
             true,
             false,
