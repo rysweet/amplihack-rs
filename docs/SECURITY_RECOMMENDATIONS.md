@@ -18,6 +18,15 @@ export OPENAI_API_KEY="your_key_here"  # pragma: allowlist secret
 For external LiteLLM routing, obtain a restricted virtual key from a secret
 manager and expose it only as `AMPLIHACK_LITELLM_API_KEY` in the launch
 environment. Do not put the key in command arguments or project configuration.
+Restrict it at the gateway by tenant, route, model alias, budget, and rate.
+Client-side model selection is not an authorization boundary.
+
+Claude Code gateway routing requires version `2.1.83` or newer. Amplihack
+probes the exact executable before launch setup and fails closed when the
+executable is missing, the probe fails, its output is malformed or unknown, or
+the version is too old. A supported Claude Code process receives subprocess
+environment scrubbing automatically. RustyClawd does not provide a verified
+equivalent, so its complete descendant process tree remains credential-trusted.
 
 ### 2. Tool Calling Configuration
 

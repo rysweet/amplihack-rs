@@ -22,6 +22,14 @@ export OPENAI_API_KEY="sk-..."          # OpenAI API (if using Copilot)
 For external LiteLLM routing, obtain a restricted virtual key from a secret
 manager and expose it only as `AMPLIHACK_LITELLM_API_KEY` in the launch
 environment. Do not put the key in command arguments or project configuration.
+Restrict it in LiteLLM by tenant, route, model alias, budget, and rate; the
+client-selected model is not an authorization control.
+
+Claude Code routing requires version `2.1.83` or newer. Amplihack validates the
+selected executable before launch side effects and then enables Claude Code
+subprocess environment scrubbing. Unknown, malformed, failed, missing, and
+older versions fail closed. RustyClawd has no verified subprocess-scrubbing
+capability, so treat its complete descendant process tree as credential-trusted.
 
 ### 2. Tool Calling Configuration
 

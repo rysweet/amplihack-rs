@@ -20,9 +20,27 @@ running. Amplihack does not install or start the gateway.
 - a restricted LiteLLM virtual key; and
 - a gateway model alias supported by that deployment.
 
+Claude Code routing requires Claude Code `2.1.83` or newer. Copilot CLI and
+RustyClawd do not use this Claude-specific version gate.
+
 Do not use a LiteLLM administrative key or an upstream provider key.
 
-## 1. Configure the route
+## 1. Verify Claude Code capability
+
+If you intend to launch Claude Code, verify the executable that amplihack will
+select:
+
+```bash
+command -v claude
+claude --version
+```
+
+The reported semantic version must be `2.1.83` or newer. Amplihack repeats this
+probe before setup and rejects missing executables, failed probes, malformed
+output, and unsupported versions without falling back to direct Anthropic
+routing.
+
+## 2. Configure the route
 
 Read a restricted virtual key from your secret manager and export the complete
 three-variable configuration:
@@ -37,7 +55,7 @@ The endpoint may have no path or `/v1`; it must not contain credentials, a
 query, or a fragment. Remote endpoints require HTTPS. Do not put the key in
 command arguments, project configuration, or shell history.
 
-## 2. Launch through the gateway
+## 3. Launch through the gateway
 
 Launch Copilot:
 
@@ -53,9 +71,11 @@ amplihack claude
 
 Before the agent starts, amplihack validates the three values, rejects
 conflicting launch controls, and projects the gateway route into the child
-environment. The child CLI connects to the gateway directly.
+environment. For Claude Code, it first validates the exact selected executable
+and enables subprocess environment scrubbing. The version probe never receives
+the gateway key. The child CLI connects to the gateway directly.
 
-## 3. Verify disable
+## 4. Verify disable
 
 Confirm that ordinary launcher behavior remains available:
 
