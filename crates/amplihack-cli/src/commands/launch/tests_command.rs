@@ -617,7 +617,7 @@ fn resolved_litellm_state_controls_remote_and_protects_copilot_key() {
             false,
             false,
             false,
-            &[],
+            &["--secret-env-vars=USER_SECRET".to_string()],
             None,
             false,
             false,
@@ -627,6 +627,18 @@ fn resolved_litellm_state_controls_remote_and_protects_copilot_key() {
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
         assert!(disabled_args.iter().any(|arg| arg == "--remote"));
+        assert!(
+            disabled_args
+                .iter()
+                .any(|arg| arg == "--secret-env-vars=USER_SECRET"),
+            "disabled routing must leave the user option untouched"
+        );
+        assert!(
+            !disabled_args
+                .iter()
+                .any(|arg| arg.contains("COPILOT_PROVIDER_API_KEY")),
+            "disabled routing must not inject gateway credential handling"
+        );
 
         let routed = command::build_command_for_dir_with_litellm(
             &binary,
@@ -657,6 +669,124 @@ fn resolved_litellm_state_controls_remote_and_protects_copilot_key() {
             .position(|arg| arg == "--")
             .expect("user delimiter");
         assert!(secret < delimiter);
+        assert_eq!(
+            routed_args[..delimiter]
+                .iter()
+                .filter(|arg| arg.starts_with("--secret-env-vars"))
+                .count(),
+            1,
+            "Copilot must receive one authoritative pre-delimiter secret option"
+        );
+        assert!(
+            !routed_args
+                .iter()
+                .any(|arg| arg == "--secret-env-vars=OTHER_SECRET"),
+            "the original option must be removed"
+        );
+    });
+}
+
+#[test]
+fn litellm_rewrites_all_copilot_secret_env_option_forms() {
+    with_uvx_detection_disabled(|| {
+        let binary = BinaryInfo {
+            name: "copilot".to_string(),
+            path: PathBuf::from("/usr/bin/copilot"),
+            version: None,
+        };
+        let extra_args = [
+            "--model",
+            "gpt-5",
+            "--secret-env-vars=EQUALS_SECRET,SHARED_SECRET",
+            "EQUALS_VARIADIC_SECRET",
+            "--secret-env-vars",
+            "SPLIT_SECRET",
+            "SHARED_SECRET",
+            "--secret-env-vars=REPEATED_SECRET",
+            "--",
+            "--secret-env-vars=POST_DELIMITER_IS_OPAQUE",
+            "prompt",
+        ]
+        .map(str::to_string);
+
+        let command = command::build_command_for_dir_with_litellm(
+            &binary,
+            false,
+            false,
+            false,
+            &extra_args,
+            None,
+            false,
+            true,
+        );
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let delimiter = args
+            .iter()
+            .position(|arg| arg == "--")
+            .expect("user delimiter");
+        let pre_delimiter_secrets = args[..delimiter]
+            .iter()
+            .filter(|arg| arg.starts_with("--secret-env-vars"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            pre_delimiter_secrets,
+            vec![
+                "--secret-env-vars=COPILOT_PROVIDER_API_KEY,EQUALS_SECRET,EQUALS_VARIADIC_SECRET,REPEATED_SECRET,SHARED_SECRET,SPLIT_SECRET"
+            ]
+        );
+        assert_eq!(
+            &args[delimiter + 1..],
+            &["--secret-env-vars=POST_DELIMITER_IS_OPAQUE", "prompt"]
+        );
+        assert!(
+            args[..delimiter]
+                .windows(2)
+                .any(|values| { values[0] == "--model" && values[1] == "gpt-5" })
+        );
+    });
+}
+
+#[test]
+fn litellm_secret_env_rewrite_handles_missing_values_without_consuming_options() {
+    with_uvx_detection_disabled(|| {
+        let binary = BinaryInfo {
+            name: "copilot".to_string(),
+            path: PathBuf::from("/usr/bin/copilot"),
+            version: None,
+        };
+        let extra_args =
+            ["--secret-env-vars", "--no-ask-user", "--secret-env-vars="].map(str::to_string);
+
+        let command = command::build_command_for_dir_with_litellm(
+            &binary,
+            false,
+            false,
+            false,
+            &extra_args,
+            None,
+            false,
+            true,
+        );
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            args.iter()
+                .filter(|arg| arg.starts_with("--secret-env-vars"))
+                .collect::<Vec<_>>(),
+            vec!["--secret-env-vars=COPILOT_PROVIDER_API_KEY"]
+        );
+        assert!(args.iter().any(|arg| arg == "--no-ask-user"));
+        assert_eq!(
+            args.last().map(String::as_str),
+            Some("--secret-env-vars=COPILOT_PROVIDER_API_KEY"),
+            "without a delimiter, the variadic option must be emitted last"
+        );
     });
 }
 

@@ -176,38 +176,70 @@ pub(super) fn build_command_for_dir_with_litellm(
     }
 
     if binary.name == "copilot" && litellm_enabled {
-        cmd.arg(copilot_secret_environment_arg(extra_args));
+        cmd.args(rewrite_copilot_secret_environment_args(extra_args));
+    } else {
+        cmd.args(extra_args);
     }
-    cmd.args(extra_args);
     cmd
 }
 
-fn copilot_secret_environment_arg(extra_args: &[String]) -> String {
+fn add_secret_environment_names(names: &mut std::collections::BTreeSet<String>, value: &str) {
+    names.extend(
+        value
+            .split(',')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string),
+    );
+}
+
+fn rewrite_copilot_secret_environment_args(extra_args: &[String]) -> Vec<String> {
     let mut names = std::collections::BTreeSet::from(["COPILOT_PROVIDER_API_KEY".to_string()]);
+    let mut rewritten = Vec::with_capacity(extra_args.len() + 1);
     let mut index = 0;
+
     while index < extra_args.len() {
         let argument = &extra_args[index];
-        let value = if argument == "--secret-env-vars" {
+        if argument == "--" {
+            rewritten.push(format!(
+                "--secret-env-vars={}",
+                names.into_iter().collect::<Vec<_>>().join(",")
+            ));
+            rewritten.extend_from_slice(&extra_args[index..]);
+            return rewritten;
+        }
+
+        let first_value = if argument == "--secret-env-vars" {
             index += 1;
-            extra_args.get(index).map(String::as_str)
+            None
         } else {
             argument.strip_prefix("--secret-env-vars=")
         };
-        if let Some(value) = value {
-            names.extend(
-                value
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|name| !name.is_empty())
-                    .map(str::to_string),
-            );
+
+        if argument == "--secret-env-vars" || first_value.is_some() {
+            if let Some(value) = first_value {
+                add_secret_environment_names(&mut names, value);
+                index += 1;
+            }
+            while index < extra_args.len()
+                && extra_args[index] != "--"
+                && !extra_args[index].starts_with('-')
+            {
+                add_secret_environment_names(&mut names, &extra_args[index]);
+                index += 1;
+            }
+            continue;
         }
+
+        rewritten.push(argument.clone());
         index += 1;
     }
-    format!(
+
+    rewritten.push(format!(
         "--secret-env-vars={}",
         names.into_iter().collect::<Vec<_>>().join(",")
-    )
+    ));
+    rewritten
 }
 
 /// Pure decision function (issue #621): is this Copilot invocation
