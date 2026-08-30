@@ -179,14 +179,18 @@ pub fn run_launch(
     }
     let expected_executable = proxy_config
         .as_ref()
-        .map(|_| executable_identity(&binary.path))
+        .map(|_| ValidatedExecutable::open(&binary.path))
         .transpose()?;
     if let (Some(config), Some(proxy_target)) = (&proxy_config, proxy_target) {
         validate_proxy_launch_args(config, proxy_target, resume, continue_session, &extra_args)?;
         if proxy_target == amplihack_utils::litellm_proxy::CliTarget::CopilotCli {
-            validate_copilot_gateway_capability(&binary.path)?;
+            validate_copilot_gateway_capability(
+                &expected_executable.as_ref().expect("captured").spawn_path,
+            )?;
         }
-        if executable_identity(&binary.path)? != *expected_executable.as_ref().expect("captured") {
+        if executable_identity(&binary.path)?
+            != expected_executable.as_ref().expect("captured").identity
+        {
             anyhow::bail!(
                 "AH_LITELLM_EXECUTABLE_CHANGED: selected launcher changed during capability validation"
             );
@@ -244,9 +248,19 @@ pub fn run_launch(
 
         maybe_run_blarify_indexing_prompt(tool, is_noninteractive(), Some(&execution_dir))?;
 
+        let mut spawn_binary = binary.clone();
+        if let Some(expected) = &expected_executable {
+            if executable_identity(&binary.path)? != expected.identity {
+                anyhow::bail!(
+                    "AH_LITELLM_EXECUTABLE_CHANGED: selected launcher changed after validation"
+                );
+            }
+            spawn_binary.path = expected.spawn_path.clone();
+        }
+
         // Build command
         let mut cmd = build_command_for_dir_with_litellm(
-            &binary,
+            &spawn_binary,
             resume,
             continue_session,
             skip_permissions,
@@ -272,13 +286,6 @@ pub fn run_launch(
         // which named nothing real and sent the user hunting for a CPU
         // problem that did not exist. Resolution already knows what it tried
         // and why each candidate was rejected — say that instead.
-        if let Some(expected) = &expected_executable
-            && &executable_identity(&binary.path)? != expected
-        {
-            anyhow::bail!(
-                "AH_LITELLM_EXECUTABLE_CHANGED: selected launcher changed after validation"
-            );
-        }
         let mut child = match ManagedChild::spawn(cmd) {
             Ok(child) => child,
             Err(err) => {
@@ -407,59 +414,122 @@ struct ExecutableIdentity {
 }
 
 fn executable_identity(path: &std::path::Path) -> Result<ExecutableIdentity> {
-    use sha2::{Digest, Sha256};
-    use std::io::Read;
+    Ok(ValidatedExecutable::open(path)?.identity)
+}
 
-    let canonical_path = path
-        .canonicalize()
-        .context("AH_LITELLM_EXECUTABLE_CHANGED: selected launcher cannot be resolved")?;
-    let metadata = canonical_path
-        .metadata()
-        .context("AH_LITELLM_EXECUTABLE_CHANGED: selected launcher cannot be inspected")?;
-    if !metadata.is_file() {
-        anyhow::bail!("AH_LITELLM_EXECUTABLE_CHANGED: selected launcher is not a regular file");
-    }
+struct ValidatedExecutable {
+    identity: ExecutableIdentity,
+    spawn_path: PathBuf,
+    _file: std::fs::File,
+}
+
+impl ValidatedExecutable {
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
+    fn open(path: &std::path::Path) -> Result<Self> {
+        use sha2::{Digest, Sha256};
+        use std::io::{Read, Seek};
+        use std::os::fd::{AsRawFd, FromRawFd};
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+        let canonical_path = path
+            .canonicalize()
+            .context("AH_LITELLM_EXECUTABLE_CHANGED: selected launcher cannot be resolved")?;
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&canonical_path)
+            .context("AH_LITELLM_EXECUTABLE_CHANGED: selected launcher cannot be opened")?;
+        let metadata = file
+            .metadata()
+            .context("AH_LITELLM_EXECUTABLE_CHANGED: selected launcher cannot be inspected")?;
+        if !metadata.is_file() {
+            anyhow::bail!("AH_LITELLM_EXECUTABLE_CHANGED: selected launcher is not a regular file");
+        }
         if metadata.mode() & 0o022 != 0 {
             anyhow::bail!(
                 "AH_LITELLM_EXECUTABLE_CHANGED: selected launcher is group- or world-writable"
             );
         }
-    }
-    let mut file = std::fs::File::open(&canonical_path)
-        .context("AH_LITELLM_EXECUTABLE_CHANGED: selected launcher cannot be opened")?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = file
-            .read(&mut buffer)
-            .context("AH_LITELLM_EXECUTABLE_CHANGED: selected launcher cannot be read")?;
-        if read == 0 {
-            break;
+
+        let mut hasher = Sha256::new();
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let read = file
+                .read(&mut buffer)
+                .context("AH_LITELLM_EXECUTABLE_CHANGED: selected launcher cannot be read")?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
         }
-        hasher.update(&buffer[..read]);
+
+        file.rewind().context(
+            "AH_LITELLM_EXECUTABLE_CHANGED: selected launcher cannot be prepared for execution",
+        )?;
+        let fd = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD, 64) };
+        if fd == -1 {
+            anyhow::bail!(
+                "AH_LITELLM_EXECUTABLE_CHANGED: selected launcher descriptor cannot be secured"
+            );
+        }
+        // SAFETY: F_DUPFD returned a new descriptor owned by this process.
+        let file = unsafe { std::fs::File::from_raw_fd(fd) };
+        // The descriptor must survive exec for shebang interpreters opening
+        // /proc/self/fd or /dev/fd after the kernel selects the script.
+        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETFD, 0) } == -1 {
+            anyhow::bail!(
+                "AH_LITELLM_EXECUTABLE_CHANGED: selected launcher descriptor cannot be secured"
+            );
+        }
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        let spawn_path = PathBuf::from(format!("/proc/self/fd/{fd}"));
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        let spawn_path = PathBuf::from(format!("/dev/fd/{fd}"));
+
+        Ok(Self {
+            identity: ExecutableIdentity {
+                canonical_path,
+                length: metadata.len(),
+                modified: metadata.modified().context(
+                    "AH_LITELLM_EXECUTABLE_CHANGED: selected launcher timestamp cannot be inspected",
+                )?,
+                sha256: hasher.finalize().into(),
+                device: metadata.dev(),
+                inode: metadata.ino(),
+            },
+            spawn_path,
+            _file: file,
+        })
     }
-    let sha256: [u8; 32] = hasher.finalize().into();
-    Ok(ExecutableIdentity {
-        canonical_path,
-        length: metadata.len(),
-        modified: metadata.modified().context(
-            "AH_LITELLM_EXECUTABLE_CHANGED: selected launcher timestamp cannot be inspected",
-        )?,
-        sha256,
-        #[cfg(unix)]
-        device: {
-            use std::os::unix::fs::MetadataExt;
-            metadata.dev()
-        },
-        #[cfg(unix)]
-        inode: {
-            use std::os::unix::fs::MetadataExt;
-            metadata.ino()
-        },
-    })
+
+    #[cfg(not(unix))]
+    fn open(_path: &std::path::Path) -> Result<Self> {
+        anyhow::bail!(
+            "AH_LITELLM_EXECUTABLE_CHANGED: descriptor-bound launch is unsupported on this platform"
+        )
+    }
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn validated_executable_spawns_opened_file_after_path_replacement() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("launcher");
+    std::fs::write(&path, "#!/bin/sh\nprintf original\n").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    let validated = ValidatedExecutable::open(&path).unwrap();
+    std::fs::rename(&path, directory.path().join("original")).unwrap();
+    std::fs::write(&path, "#!/bin/sh\nprintf replacement\n").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    let output = std::process::Command::new(&validated.spawn_path)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"original");
 }
 
 fn proxy_target_for(

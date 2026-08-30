@@ -336,7 +336,7 @@ impl GatewayConfig {
                 command.env("COPILOT_PROVIDER_API_KEY", &self.api_key);
                 command.env("COPILOT_PROVIDER_TYPE", "openai");
                 command.env("COPILOT_PROVIDER_WIRE_API", "completions");
-                command.env("COPILOT_OFFLINE", "1");
+                command.env("COPILOT_OFFLINE", "true");
                 command.env(
                     "COPILOT_MODEL",
                     self.copilot_model
@@ -1006,6 +1006,24 @@ mod tests {
             command
                 .get_args()
                 .all(|argument| !argument.to_string_lossy().contains("never-send-this-key"))
+        );
+    }
+
+    #[test]
+    fn copilot_projection_enables_exact_offline_contract() {
+        let mut config = test_config(Url::parse("https://gateway.example").unwrap());
+        config.copilot_model = Some("gateway-model".to_string());
+        let mut command = Command::new("copilot");
+
+        config.apply_to_command(&mut command, CliTarget::CopilotCli);
+
+        assert_eq!(
+            command
+                .get_envs()
+                .find(|(name, _)| *name == std::ffi::OsStr::new("COPILOT_OFFLINE"))
+                .and_then(|(_, value)| value)
+                .and_then(|value| value.to_str()),
+            Some("true")
         );
     }
 
