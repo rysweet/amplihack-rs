@@ -1,0 +1,17 @@
+model_list:
+  - model_name: amplihack-ci
+    litellm_params:
+      model: openai/gpt-4o
+      mock_response: gateway ok
+      api_key: ci-not-a-provider-key
+  - model_name: amplihack-ci-failure
+    litellm_params:
+      model: openai/gpt-4o
+      api_base: http://127.0.0.1:9/v1
+      api_key: ci-not-a-provider-key
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+
+litellm_settings:
+  turn_off_message_logging: true

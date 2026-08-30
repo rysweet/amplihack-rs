@@ -334,7 +334,7 @@ pub enum Commands {
         enable_spawning: bool,
     },
     /// RustyClawd tool (native Rust launcher path)
-    #[command(name = "RustyClawd")]
+    #[command(name = "rustyclawd", visible_alias = "RustyClawd")]
     RustyClawd {
         /// Append instructions to a running auto mode session and exit.
         #[arg(long = "append")]

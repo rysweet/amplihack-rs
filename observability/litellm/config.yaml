@@ -1,0 +1,19 @@
+model_list:
+  - model_name: amplihack-default
+    litellm_params:
+      model: os.environ/LITELLM_UPSTREAM_MODEL
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+  store_model_in_db: true
+
+litellm_settings:
+  drop_params: true
+  turn_off_message_logging: true
+  success_callback:
+    - prometheus
+    - otel
+  failure_callback:
+    - prometheus
+    - otel

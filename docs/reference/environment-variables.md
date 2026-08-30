@@ -829,6 +829,31 @@ These variables influence `amplihack`'s behaviour but are not set by it.
 
 ---
 
+### External LiteLLM gateway variables
+
+These three variables form the complete opt-in external LiteLLM configuration.
+If any one is present, all three must be valid. Invalid, empty, or partial
+configuration fails before an agent process is spawned.
+
+| Variable | Type and default | Purpose |
+|---|---|---|
+| `AMPLIHACK_LITELLM_ENDPOINT` | URL; unset | Gateway base URL. HTTPS is required except for literal loopback development URLs. |
+| `AMPLIHACK_LITELLM_API_KEY` | secret string; unset | Restricted LiteLLM virtual key. It is never serialized or placed in child command arguments. Do not use an administrative master key. |
+| `AMPLIHACK_LITELLM_MODEL` | model name; unset | Required for every supported launcher; selects the gateway model alias. |
+
+LiteLLM and PostgreSQL own usage, spend, budgets, and rate limits. Amplihack
+does not implement process-local gateway accounting or controls.
+
+The Docker launcher rejects loopback gateway endpoints so normal container
+network isolation remains intact. Use an HTTPS gateway reachable from the
+container, or run the agent outside Docker for a host-loopback development
+gateway.
+
+See the [external LiteLLM gateway reference](external-litellm-gateway.md) for
+routing, accounting, and deployment details.
+
+---
+
 ### AMPLIHACK_MEMORY_BACKEND
 
 **Type:** string

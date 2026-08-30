@@ -58,6 +58,13 @@ manages it. See
 [why the gateway stays external](../concepts/external-litellm-boundary.md) and
 the [supply-chain section](../SECURITY_RECOMMENDATIONS.md) for the distinction.
 
+That prohibition covers LiteLLM as an **in-process dependency**. Running a
+version-pinned LiteLLM container as an **external service** is a different trust
+boundary and is permitted — the optional gateway feature uses it, and amplihack
+never imports or installs the package. See
+[external LiteLLM gateway architecture](../concepts/external-litellm-gateway.md) and the
+[supply-chain section](../SECURITY_RECOMMENDATIONS.md) for the full distinction.
+
 Run supply chain checks:
 
 ```bash

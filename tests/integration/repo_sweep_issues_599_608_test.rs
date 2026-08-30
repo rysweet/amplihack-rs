@@ -13,7 +13,6 @@
 //! | TC-SWEEP-603  | #603  | Nonexistent Python hook refs in SKILL.md   |
 //! | TC-SWEEP-604  | #604  | Broken ~/.amplihack/ absolute paths in README |
 //! | TC-SWEEP-605  | #605  | GitHubDistributor feature-gated            |
-//! | TC-SWEEP-606  | #606  | litellm_callbacks test serialization       |
 //! | TC-SWEEP-607  | #607  | docker_detector test serialization          |
 //!
 //! Issues #600, #601, #608 are GitHub-only (close duplicates / already-fixed)
@@ -348,59 +347,6 @@ mod github_distributor_gate {
             !toml.contains("github-distributor"),
             "github-distributor feature flag must be removed from Cargo.toml"
         );
-    }
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
-// TC-SWEEP-606: litellm_callbacks tests use SerialLock
-// ═════════════════════════════════════════════════════════════════════════════
-
-mod litellm_serialization {
-    use super::*;
-
-    const SRC: &str = "crates/amplihack-utils/src/litellm_callbacks.rs";
-
-    /// TC-SWEEP-606-01: The test module must contain a SerialLock definition.
-    #[test]
-    fn has_serial_lock() {
-        let src = read_file(SRC);
-        assert!(
-            src.contains("mod serial_lock"),
-            "must define serial_lock submodule"
-        );
-        assert!(
-            src.contains("OnceLock<Mutex<()>>") || src.contains("OnceLock < Mutex < () > >"),
-            "SerialLock must use OnceLock<Mutex<()>> pattern"
-        );
-    }
-
-    /// TC-SWEEP-606-02: The flaky test must acquire the serial lock.
-    #[test]
-    fn flaky_test_uses_serial_lock() {
-        let src = read_file(SRC);
-        let body = extract_test_body(&src, "unregister_removes_callback");
-        assert!(
-            body.contains("SerialLock::acquire()"),
-            "unregister_removes_callback must acquire SerialLock"
-        );
-    }
-
-    /// TC-SWEEP-606-03: All registry-mutating tests must use SerialLock.
-    #[test]
-    fn all_registry_tests_use_serial_lock() {
-        let src = read_file(SRC);
-        for name in [
-            "register_returns_none_when_disabled",
-            "register_returns_some_when_enabled",
-            "unregister_removes_callback",
-            "unregister_noop_when_none",
-        ] {
-            let body = extract_test_body(&src, name);
-            assert!(
-                body.contains("SerialLock::acquire()"),
-                "Test {name} must acquire SerialLock"
-            );
-        }
     }
 }
 
