@@ -56,6 +56,14 @@ There is no fallback to a direct provider when launch policy rejects a route.
 To disable routing, unset all three `AMPLIHACK_LITELLM_*` variables before
 launch.
 
+Claude Code receives `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`, which keeps the
+gateway token in the Claude process while removing Anthropic and cloud
+credentials from Bash, hook, and stdio MCP subprocess environments.
+RustyClawd does not currently provide an equivalent control, so its process
+tree is part of the credential trust boundary. Use a short-lived LiteLLM
+virtual key limited by model, budget, and rate, and launch RustyClawd only in
+trusted worktrees.
+
 ## Ownership boundary
 
 | Concern | Owner |

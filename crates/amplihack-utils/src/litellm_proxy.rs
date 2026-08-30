@@ -101,6 +101,11 @@ impl ProxyChildEnvironment {
 
         match self.target {
             CliTarget::Claude | CliTarget::RustyClawd => {
+                if self.target == CliTarget::Claude {
+                    command.env("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB", "1");
+                } else {
+                    command.env_remove("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB");
+                }
                 remove_env(
                     command,
                     &[
@@ -472,6 +477,15 @@ mod tests {
                             assert_eq!(
                                 command_env(&command, "ANTHROPIC_AUTH_TOKEN"),
                                 Some(Some("gateway-secret".to_string()))
+                            );
+                            let expected_scrub = if target == CliTarget::Claude {
+                                Some(Some("1".to_string()))
+                            } else {
+                                Some(None)
+                            };
+                            assert_eq!(
+                                command_env(&command, "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"),
+                                expected_scrub
                             );
                             assert_eq!(command_env(&command, "ANTHROPIC_API_KEY"), Some(None));
                             assert_eq!(command_env(&command, "OPENAI_API_KEY"), Some(None));
