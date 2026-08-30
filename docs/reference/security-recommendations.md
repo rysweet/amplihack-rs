@@ -41,6 +41,13 @@ The `litellm` dependency was removed from upstream amplihack due to a PyPI
 supply chain attack. amplihack-rs avoids this class of risk by using direct
 API integrations via Rust crates with `cargo audit` verification.
 
+That prohibition covers LiteLLM as an **in-process dependency**. Running a
+version-pinned LiteLLM container as an **external service** is a different trust
+boundary and is permitted — the optional gateway feature uses it, and amplihack
+never imports or installs the package. See
+[external LiteLLM gateway architecture](../concepts/external-litellm-gateway.md) and the
+[supply-chain section](../SECURITY_RECOMMENDATIONS.md) for the full distinction.
+
 Run supply chain checks:
 
 ```bash

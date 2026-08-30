@@ -180,6 +180,21 @@ fn test_build_command_no_model_injection_when_user_supplies_model() {
     );
 }
 
+#[test]
+fn test_build_command_no_model_injection_for_equals_form() {
+    let binary = make_binary("/usr/bin/claude");
+    let extra = vec!["--model=custom-model".to_string()];
+    let cmd = build_command(&binary, false, false, false, &extra);
+    let args = cmd
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        args.iter().filter(|arg| arg.starts_with("--model")).count(),
+        1
+    );
+}
+
 /// When skip_permissions=false, '--dangerously-skip-permissions' MUST NOT
 /// appear in the args list.
 ///
@@ -513,6 +528,77 @@ fn copilot_skips_remote_when_env_opt_out() {
         assert!(
             !args.iter().any(|a| a == "--remote"),
             "opt-out must suppress --remote; got {args:?}"
+        );
+    });
+}
+
+#[test]
+fn copilot_skips_remote_when_litellm_proxy_is_requested() {
+    with_uvx_detection_disabled(|| {
+        let previous = std::env::var_os(amplihack_utils::litellm_proxy::ENDPOINT_ENV);
+        unsafe {
+            std::env::set_var(
+                amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+                "http://127.0.0.1:4000",
+            );
+        }
+        let binary = BinaryInfo {
+            name: "copilot".to_string(),
+            path: PathBuf::from("/usr/bin/copilot"),
+            version: None,
+        };
+        let cmd = build_command(&binary, false, false, false, &[]);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        match previous {
+            Some(value) => unsafe {
+                std::env::set_var(amplihack_utils::litellm_proxy::ENDPOINT_ENV, value)
+            },
+            None => unsafe { std::env::remove_var(amplihack_utils::litellm_proxy::ENDPOINT_ENV) },
+        }
+        assert!(
+            !args.iter().any(|arg| arg == "--remote"),
+            "LiteLLM routing must suppress Copilot remote execution; got {args:?}"
+        );
+        assert!(
+            args.iter().any(|arg| arg == "--no-remote"),
+            "LiteLLM routing must override persisted Copilot remote settings; got {args:?}"
+        );
+        assert!(
+            args.iter().any(|arg| arg == "--no-remote-export"),
+            "LiteLLM routing must disable Copilot session export; got {args:?}"
+        );
+    });
+}
+
+#[test]
+fn claude_ignores_user_project_and_local_settings_with_litellm() {
+    with_uvx_detection_disabled(|| {
+        let previous = std::env::var_os(amplihack_utils::litellm_proxy::ENDPOINT_ENV);
+        unsafe {
+            std::env::set_var(
+                amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+                "http://127.0.0.1:4000",
+            );
+        }
+        let binary = make_binary("/usr/bin/claude");
+        let cmd = build_command(&binary, false, false, false, &[]);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect();
+        match previous {
+            Some(value) => unsafe {
+                std::env::set_var(amplihack_utils::litellm_proxy::ENDPOINT_ENV, value)
+            },
+            None => unsafe { std::env::remove_var(amplihack_utils::litellm_proxy::ENDPOINT_ENV) },
+        }
+        assert!(
+            args.windows(2)
+                .any(|values| values[0] == "--setting-sources" && values[1].is_empty()),
+            "LiteLLM routing must suppress mutable Claude settings sources; got {args:?}"
         );
     });
 }

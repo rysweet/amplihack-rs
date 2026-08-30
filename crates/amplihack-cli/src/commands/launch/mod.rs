@@ -91,6 +91,21 @@ pub fn run_launch(
     override_origin: OverrideOrigin,
 ) -> Result<()> {
     validate_launch_prompt_delivery(tool)?;
+    let proxy_enabled = amplihack_utils::litellm_proxy::validate_environment()
+        .context("invalid external LiteLLM proxy configuration")?;
+    if proxy_enabled && !matches!(tool, "claude" | "copilot") {
+        anyhow::bail!(
+            "the external LiteLLM gateway supports only Claude, GitHub Copilot CLI, and rustyclawd; unset AMPLIHACK_LITELLM_ENDPOINT to launch {tool}"
+        );
+    }
+    if proxy_enabled && tool == "copilot" {
+        validate_proxy_launch_args(
+            amplihack_utils::litellm_proxy::CliTarget::CopilotCli,
+            resume,
+            continue_session,
+            &extra_args,
+        )?;
+    }
 
     let current_dir = std::env::current_dir()
         .ok()
@@ -144,6 +159,16 @@ pub fn run_launch(
     // Find binary
     let binary = bootstrap::ensure_tool_available(tool, override_origin)
         .with_context(|| missing_binary_context(tool))?;
+
+    let proxy_target = proxy_target_for(tool, &binary.path);
+    if proxy_enabled && proxy_target.is_none() {
+        anyhow::bail!(
+            "the external LiteLLM gateway supports only Claude, GitHub Copilot CLI, and rustyclawd; unset AMPLIHACK_LITELLM_ENDPOINT to launch {tool}"
+        );
+    }
+    if let Some(proxy_target) = proxy_target {
+        validate_proxy_launch_args(proxy_target, resume, continue_session, &extra_args)?;
+    }
 
     tracing::info!(
         binary = %binary.path.display(),
@@ -203,6 +228,10 @@ pub fn run_launch(
             Some(&execution_dir),
             subprocess_safe,
         );
+        if let Some(proxy_target) = proxy_target {
+            amplihack_utils::litellm_proxy::apply_proxy_to_command(&mut cmd, proxy_target)
+                .context("invalid external LiteLLM proxy configuration")?;
+        }
         cmd.current_dir(&execution_dir);
         env_builder.apply_to_command(&mut cmd);
 
@@ -251,6 +280,65 @@ pub fn run_launch(
         let _ = tracker.crash_session(&session_id);
     }
     result
+}
+
+fn validate_proxy_launch_args(
+    target: amplihack_utils::litellm_proxy::CliTarget,
+    resume: bool,
+    continue_session: bool,
+    extra_args: &[String],
+) -> Result<()> {
+    let mut effective_args = extra_args.to_vec();
+    if resume {
+        effective_args.push("--resume".to_string());
+    }
+    if continue_session {
+        effective_args.push("--continue".to_string());
+    }
+    amplihack_utils::litellm_proxy::validate_launch_args(target, &effective_args)
+        .context("invalid external LiteLLM proxy launch mode")
+}
+
+fn proxy_target_for(
+    tool: &str,
+    binary_path: &std::path::Path,
+) -> Option<amplihack_utils::litellm_proxy::CliTarget> {
+    match tool {
+        "copilot" => Some(amplihack_utils::litellm_proxy::CliTarget::CopilotCli),
+        _ if binary_path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().contains("rustyclawd")) =>
+        {
+            Some(amplihack_utils::litellm_proxy::CliTarget::RustyClawd)
+        }
+        "claude" => Some(amplihack_utils::litellm_proxy::CliTarget::Claude),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn proxy_target_covers_claude_copilot_and_rustyclawd() {
+    use amplihack_utils::litellm_proxy::CliTarget;
+    use std::path::Path;
+
+    assert_eq!(
+        proxy_target_for("claude", Path::new("/usr/bin/claude")),
+        Some(CliTarget::Claude)
+    );
+    assert_eq!(
+        proxy_target_for("copilot", Path::new("/usr/bin/copilot")),
+        Some(CliTarget::CopilotCli)
+    );
+    assert_eq!(
+        proxy_target_for("claude", Path::new("/opt/bin/rustyclawd")),
+        Some(CliTarget::RustyClawd)
+    );
+    assert_eq!(proxy_target_for("codex", Path::new("/usr/bin/codex")), None);
+    assert_eq!(
+        proxy_target_for("amplifier", Path::new("/usr/bin/amplifier")),
+        None
+    );
 }
 
 fn validate_launch_prompt_delivery(tool: &str) -> Result<()> {
