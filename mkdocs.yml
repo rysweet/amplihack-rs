@@ -158,6 +158,11 @@ nav:
           - Tutorial: tutorials/copilot-parity-control-plane.md
           - Configuration: howto/configure-copilot-parity-control-plane.md
           - Reference: reference/copilot-parity-control-plane.md
+      - External LiteLLM Gateway:
+          - Tutorial: tutorials/external-litellm-gateway.md
+          - Operations: howto/operate-external-litellm-route.md
+          - Architecture: concepts/external-litellm-boundary.md
+          - Reference: reference/external-litellm-gateway.md
   - Guides:
       - Formal Specifications as Prompt Language: guides/formal-specifications-as-prompt-language.md
   - Advanced Topics:
