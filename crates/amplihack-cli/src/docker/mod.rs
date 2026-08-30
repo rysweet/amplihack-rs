@@ -36,6 +36,12 @@ impl DockerActivation {
 pub(crate) struct DockerDetector;
 
 impl DockerDetector {
+    pub(crate) fn requested_outside_container(self, docker_flag: bool) -> bool {
+        docker_flag
+            || (is_truthy_env_value(env::var("AMPLIHACK_USE_DOCKER").ok().as_deref())
+                && !self.is_in_docker())
+    }
+
     pub(crate) fn activation_source(self, docker_flag: bool) -> Option<DockerActivation> {
         if docker_flag {
             Some(DockerActivation::Flag)

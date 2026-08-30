@@ -544,6 +544,7 @@ dependencies = [
  "chrono",
  "libc",
  "regex",
+ "semver",
  "serde",
  "serde_json",
  "sha2",

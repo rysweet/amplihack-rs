@@ -58,33 +58,25 @@ launch.
 
 Claude Code receives `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`, which requests that
 Claude keep the gateway token in its process while removing Anthropic and cloud
-credentials from Bash, hook, and stdio MCP subprocess environments. Amplihack
-currently sets this variable without checking the selected Claude Code version.
-Operators must not treat the variable alone as proof that the installed
-executable supports subprocess scrubbing.
+credentials from Bash, hook, and stdio MCP subprocess environments.
 
 RustyClawd does not provide a verified equivalent control. Its process and all
 descendants are therefore inside the credential trust boundary. Use a
 short-lived LiteLLM virtual key restricted at the gateway by tenant, route,
 model alias, budget, and rate, and launch RustyClawd only in trusted worktrees.
 
-## Planned Claude Code capability gate
+## Claude Code capability gate
 
-> **Implementation pending:** The capability gate described in this section is
-> the intended security boundary. It is not enforced by the current launch
-> path.
-
-Claude Code routing will require the exact `claude` executable selected for
-launch to report a semantic version greater than or equal to `2.1.83`.
-Amplihack will probe that executable before setup, filesystem changes, Docker
+Claude Code routing requires the exact `claude` executable selected for launch
+to report a semantic version greater than or equal to `2.1.83`. Amplihack
+probes that executable before setup, filesystem changes, Docker
 operations, or child creation. A missing executable, failed probe, unrecognized
 output, malformed version, prerelease below the minimum, or version below the
 minimum will reject the launch.
 
-The probe will run without the LiteLLM virtual key or direct provider
-credentials. The version gate and `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` will
-form one capability check; setting the flag manually will not bypass the
-minimum.
+The probe runs without the LiteLLM virtual key or direct provider credentials.
+The version gate and `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` form one capability
+check; setting the flag manually does not bypass the minimum.
 
 ## Ownership boundary
 
@@ -99,10 +91,12 @@ minimum.
 
 The integration supports `launch`, `claude`, `copilot`, and `rustyclawd`.
 Codex, Amplifier, and unknown launch targets are rejected while gateway
-routing is configured. Docker requires a container-reachable HTTPS gateway and
-a compatible image. Auto mode supports Claude Code, Copilot CLI, and
-rustyclawd after applying the same gateway argument restrictions; Codex and
-Amplifier auto mode are rejected.
+routing is configured. Host-side `--docker` and `AMPLIHACK_USE_DOCKER` launches
+of routed Claude Code are rejected because the container executable cannot be
+attested before Docker operations; a launch already inside a trusted container
+probes its exact executable normally. Docker routing for other supported
+targets requires a container-reachable HTTPS gateway and a compatible image.
+Auto mode applies the same restrictions; Codex and Amplifier are rejected.
 
 ## Related documentation
 

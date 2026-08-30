@@ -27,26 +27,17 @@ alias applies to every supported launcher. Keep the restricted virtual key in
 a secret manager and materialize it only in the launch environment; amplihack
 does not read a key file or TOML gateway configuration.
 
-Claude Code currently receives `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`, but
-amplihack does not yet verify that the selected executable supports it. Pin
-Claude Code to version `2.1.83` or newer and confirm the executable selected by
-`PATH`:
+Claude Code receives `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`. Amplihack requires
+the exact selected executable to report version `2.1.83` or newer. You can
+confirm the executable selected by `PATH`:
 
 ```bash
 command -v claude
 claude --version
 ```
 
-This is currently an operator check, not an amplihack launch check.
-
-### Prepare for the planned capability gate
-
-> **Implementation pending:** A future launch check will enforce the behavior
-> in this section. Current releases do not reject Claude Code based on version
-> output.
-
-The planned gate will probe the same executable before launch setup. Do not
-wrap `claude --version` with output that hides or replaces the semantic
+Amplihack probes the same executable before launch setup. Do not wrap
+`claude --version` with output that hides or replaces the semantic
 version. A missing executable, failed probe, unrecognized or malformed output,
 prerelease below the minimum, or version older than `2.1.83` will fail closed.
 The probe will run without gateway or direct-provider credentials.
@@ -96,9 +87,8 @@ An empty or partial configuration is rejected rather than treated as disabled.
 | Model is rejected | Use a 1-128 character alias containing only letters, digits, `.`, `_`, `:`, `/`, or `-`. |
 | Launch option is rejected | Remove remote, export, share, resume, provider, or conflicting model controls. |
 | Launcher is rejected | Use Claude Code, Copilot CLI, or rustyclawd, or unset all gateway variables. |
+| Docker Claude launch is rejected | Launch Claude outside Docker, or enter a trusted container and launch there so amplihack can attest the exact executable before agent startup. |
 | Gateway cannot be reached | Check the child CLI error, gateway health, DNS, TLS trust, and firewall. Amplihack does not probe or retry the gateway. |
-
-After the planned Claude Code capability gate ships:
 
 | Symptom | Action |
 | --- | --- |

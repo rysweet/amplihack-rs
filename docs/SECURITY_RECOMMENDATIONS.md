@@ -21,18 +21,13 @@ environment. Do not put the key in command arguments or project configuration.
 Restrict it at the gateway by tenant, route, model alias, budget, and rate.
 Client-side model selection is not an authorization boundary.
 
-Amplihack currently sets `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` for routed Claude
-Code processes without verifying that the selected executable supports it.
-Operators should pin Claude Code to version `2.1.83` or newer and verify it
-independently.
-
-**Planned capability gate (implementation pending):** Amplihack will probe the
-exact executable before launch setup and fail closed when the executable is
-missing, the probe fails, output is malformed or unknown, a prerelease is below
-the minimum, or the version is older than `2.1.83`. Until that gate ships, the
-scrub variable is a requested control rather than a verified credential
-boundary. RustyClawd does not provide a verified equivalent, so its complete
-descendant process tree remains credential-trusted.
+Amplihack requires Claude Code `2.1.83` or newer and sets
+`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` for routed Claude Code processes. It probes
+the exact executable before launch setup and fails closed when the executable
+is missing, the probe fails, output is malformed or unknown, a prerelease is
+below the minimum, or the version is older than `2.1.83`. RustyClawd does not
+provide a verified equivalent, so its complete descendant process tree remains
+credential-trusted.
 
 ### 2. Tool Calling Configuration
 

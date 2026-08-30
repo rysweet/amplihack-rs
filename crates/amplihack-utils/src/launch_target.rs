@@ -274,15 +274,24 @@ const MAX_PROBE_CANDIDATES: usize = 8;
 /// Extract a parseable semver from `--version` output.
 ///
 /// ANSI escapes are stripped before matching (SEC-3). Returns `None` when the
-/// output carries no `\d+\.\d+\.\d+`, which makes the candidate
+/// output carries no complete semantic version, which makes the candidate
 /// [`Rejection::UnparseableVersion`] — not a target with an unknown version.
 pub(crate) fn extract_version(output: &str) -> Option<String> {
-    static SEMVER: LazyLock<regex::Regex> =
-        LazyLock::new(|| regex::Regex::new(r"\d+\.\d+\.\d+").expect("static semver regex"));
+    static SEMVER: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?:^|[^0-9A-Za-z-])v?([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)(?:$|[^0-9A-Za-z+.-])",
+        )
+        .expect("static semver candidate regex")
+    });
     // SEC-3: strip BEFORE matching, so an ESC sequence can neither hide inside
     // the captured version nor survive into the log line or the user's TTY.
     let cleaned = strip_ansi(output);
-    SEMVER.find(&cleaned).map(|m| m.as_str().to_string())
+    SEMVER
+        .captures(&cleaned)
+        .and_then(|captures| captures.get(1))
+        .map(|matched| matched.as_str())
+        .filter(|candidate| semver::Version::parse(candidate).is_ok())
+        .map(str::to_string)
 }
 
 /// The entire fix for the reinstall-on-every-launch defect, as a pure function.
@@ -699,6 +708,12 @@ fn is_executable(_metadata: &std::fs::Metadata) -> bool {
 fn probe_version(path: &Path, timeout: Duration) -> Result<String, Rejection> {
     let mut cmd = Command::new(path);
     cmd.arg("--version");
+    for name in std::env::vars_os()
+        .map(|(name, _)| name)
+        .filter(|name| crate::litellm_proxy::is_sensitive_env_name(&name.to_string_lossy()))
+    {
+        cmd.env_remove(name);
+    }
     match run_capped_output_with_timeout(cmd, timeout, PROBE_CAPTURE_LIMIT) {
         Ok(Some(output)) if output.status.success() => {
             // SEC-3: stdout here is whatever an arbitrary binary chose to
@@ -1241,6 +1256,29 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn version_probe_does_not_expose_litellm_credential() {
+        let _guard = crate::test_serial::acquire();
+        let dir = tempfile::tempdir().unwrap();
+        let observation = dir.path().join("probe-environment");
+        let script = format!(
+            "#!/bin/sh\nif [ -n \"$AMPLIHACK_LITELLM_API_KEY\" ] || [ -n \"$ANTHROPIC_API_KEY\" ]; then printf exposed > '{}'; else printf scrubbed > '{}'; fi\nprintf '2.1.83\\n'\n",
+            observation.display(),
+            observation.display()
+        );
+        let binary = write_executable(dir.path(), "claude", script.as_bytes());
+        let _env = crate::test_support::EnvGuard::set([
+            (crate::litellm_proxy::API_KEY_ENV, "gateway-secret"),
+            ("ANTHROPIC_API_KEY", "provider-secret"),
+        ]);
+
+        let result = probe_version(&binary, Duration::from_secs(1));
+
+        assert_eq!(result.as_deref(), Ok("2.1.83"));
+        assert_eq!(std::fs::read_to_string(observation).unwrap(), "scrubbed");
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn cheap_reject_passes_a_small_shim_it_cannot_judge() {
         // THE regression. `~/.npm-global/bin/copilot` is a 1185-byte
         // `#!/usr/bin/env node` loader: small, no native magic, and perfectly
@@ -1373,6 +1411,15 @@ mod tests {
         let parsed = extract_version(raw).expect("version behind ANSI must still parse");
         assert_eq!(parsed, "2.1.238");
         assert!(!parsed.contains('\x1b'), "no ESC may survive: {parsed:?}");
+    }
+
+    #[test]
+    fn extract_version_preserves_semver_prerelease_and_build_metadata() {
+        assert_eq!(
+            extract_version("Claude Code v2.1.83-beta.1+build.7").as_deref(),
+            Some("2.1.83-beta.1+build.7")
+        );
+        assert_eq!(extract_version("Claude Code 02.1.83"), None);
     }
 
     #[test]

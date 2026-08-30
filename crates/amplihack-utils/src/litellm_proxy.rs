@@ -7,12 +7,14 @@ use std::fmt;
 use std::net::IpAddr;
 use std::process::Command;
 
+use semver::Version;
 use thiserror::Error;
 use url::Url;
 
 pub const ENDPOINT_ENV: &str = "AMPLIHACK_LITELLM_ENDPOINT";
 pub const API_KEY_ENV: &str = "AMPLIHACK_LITELLM_API_KEY";
 pub const MODEL_ENV: &str = "AMPLIHACK_LITELLM_MODEL";
+pub const MIN_CLAUDE_CODE_VERSION: &str = "2.1.83";
 
 const CONFIG_ENV_VARS: [&str; 3] = [ENDPOINT_ENV, API_KEY_ENV, MODEL_ENV];
 
@@ -24,6 +26,51 @@ pub use routing::{CliTarget, validate_launch_args};
 pub enum ProxyError {
     #[error("invalid LiteLLM gateway configuration: {0}")]
     InvalidConfig(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClaudeCodeCapability {
+    Supported { version: String },
+    Unsupported { version: String },
+    Malformed { reported: String },
+    Unknown,
+}
+
+pub fn claude_code_capability(version: Option<&str>) -> ClaudeCodeCapability {
+    let Some(reported) = version else {
+        return ClaudeCodeCapability::Unknown;
+    };
+    let Ok(version) = Version::parse(reported) else {
+        return ClaudeCodeCapability::Malformed {
+            reported: reported.to_string(),
+        };
+    };
+    let minimum =
+        Version::parse(MIN_CLAUDE_CODE_VERSION).expect("minimum Claude Code version is valid");
+    if version >= minimum {
+        ClaudeCodeCapability::Supported {
+            version: reported.to_string(),
+        }
+    } else {
+        ClaudeCodeCapability::Unsupported {
+            version: reported.to_string(),
+        }
+    }
+}
+
+pub fn require_claude_code_capability(version: Option<&str>) -> Result<(), ProxyError> {
+    match claude_code_capability(version) {
+        ClaudeCodeCapability::Supported { .. } => Ok(()),
+        ClaudeCodeCapability::Unsupported { version } => Err(ProxyError::InvalidConfig(format!(
+            "Claude Code {version} cannot safely use external LiteLLM routing; version {MIN_CLAUDE_CODE_VERSION} or newer is required"
+        ))),
+        ClaudeCodeCapability::Malformed { .. } => Err(ProxyError::InvalidConfig(format!(
+            "Claude Code reported a malformed version; version {MIN_CLAUDE_CODE_VERSION} or newer is required for external LiteLLM routing"
+        ))),
+        ClaudeCodeCapability::Unknown => Err(ProxyError::InvalidConfig(format!(
+            "Claude Code version could not be verified; version {MIN_CLAUDE_CODE_VERSION} or newer is required for external LiteLLM routing"
+        ))),
+    }
 }
 
 struct ProxyConfig {
@@ -201,7 +248,7 @@ fn scrub_sensitive_environment(command: &mut Command) {
     }
 }
 
-fn is_sensitive_env_name(name: &str) -> bool {
+pub(crate) fn is_sensitive_env_name(name: &str) -> bool {
     let name = name.to_ascii_uppercase();
     [
         "API_KEY",
@@ -399,6 +446,40 @@ mod tests {
             assert!(!apply_proxy_to_command(&mut command, CliTarget::Claude).unwrap());
             assert_eq!(command.get_envs().count(), 0);
         });
+    }
+
+    #[test]
+    fn claude_code_capability_accepts_minimum_and_newer_semver() {
+        for version in ["2.1.83", "2.1.84", "3.0.0", "2.1.84-beta.1"] {
+            assert_eq!(
+                claude_code_capability(Some(version)),
+                ClaudeCodeCapability::Supported {
+                    version: version.to_string()
+                },
+                "{version}"
+            );
+            assert!(require_claude_code_capability(Some(version)).is_ok());
+        }
+    }
+
+    #[test]
+    fn claude_code_capability_rejects_old_prerelease_unknown_and_malformed_versions() {
+        for version in ["2.1.82", "2.1.83-beta.1", "not-a-version", "", "2.1"] {
+            let capability = claude_code_capability(Some(version));
+            assert!(
+                !matches!(capability, ClaudeCodeCapability::Supported { .. }),
+                "{version} must not prove subprocess environment scrubbing"
+            );
+            let error = require_claude_code_capability(Some(version))
+                .expect_err("unsupported capability must fail closed");
+            assert!(
+                !format!("{error}").contains("gateway-secret"),
+                "capability errors must not disclose credentials"
+            );
+        }
+
+        assert_eq!(claude_code_capability(None), ClaudeCodeCapability::Unknown);
+        assert!(require_claude_code_capability(None).is_err());
     }
 
     #[test]

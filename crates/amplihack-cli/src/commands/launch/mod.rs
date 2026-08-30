@@ -52,6 +52,7 @@ use context::render_launcher_command;
 #[cfg(test)]
 use power_steering::maybe_prompt_re_enable_power_steering_with;
 
+use crate::binary_finder::BinaryInfo;
 use crate::bootstrap;
 use crate::docker::{DockerDetector, DockerManager};
 use crate::env_builder::EnvBuilder;
@@ -119,6 +120,37 @@ pub fn run_launch(
         validate_proxy_launch_args(target, resume, continue_session, &extra_args)?;
     }
 
+    if proxy_enabled && tool == "claude" && DockerDetector.requested_outside_container(docker) {
+        anyhow::bail!(
+            "external LiteLLM routing cannot launch Claude Code through Docker because the container executable cannot be verified before Docker image or container operations; launch outside Docker or start inside a trusted container"
+        );
+    }
+
+    let prevalidated_binary = if proxy_enabled && tool == "claude" {
+        let resolution = amplihack_utils::launch_target::resolve(tool, override_origin);
+        let rejection_report = resolution.rejection_report(tool, "@anthropic-ai/claude-code");
+        let target = resolution.target.ok_or_else(|| {
+            anyhow::anyhow!(
+                "Claude Code capability could not be verified before external LiteLLM launch:\n{}",
+                rejection_report
+            )
+        })?;
+        let binary = BinaryInfo {
+            name: tool.to_string(),
+            path: target.path,
+            version: Some(target.version),
+        };
+        let target = proxy_target_for(tool, &binary.path).ok_or_else(|| {
+            anyhow::anyhow!(
+                "the external LiteLLM gateway supports only Claude, GitHub Copilot CLI, and rustyclawd; unset AMPLIHACK_LITELLM_ENDPOINT to launch {tool}"
+            )
+        })?;
+        validate_proxy_binary_capability(target, &binary)?;
+        Some(binary)
+    } else {
+        None
+    };
+
     let current_dir = std::env::current_dir()
         .ok()
         .unwrap_or_else(|| PathBuf::from("."));
@@ -169,8 +201,11 @@ pub fn run_launch(
     }
 
     // Find binary
-    let binary = bootstrap::ensure_tool_available(tool, override_origin)
-        .with_context(|| missing_binary_context(tool))?;
+    let binary = match prevalidated_binary {
+        Some(binary) => binary,
+        None => bootstrap::ensure_tool_available(tool, override_origin)
+            .with_context(|| missing_binary_context(tool))?,
+    };
 
     let proxy_target = proxy_target_for(tool, &binary.path);
     if proxy_enabled && proxy_target.is_none() {
@@ -180,6 +215,9 @@ pub fn run_launch(
     }
     if let Some(proxy_target) = proxy_target {
         validate_proxy_launch_args(proxy_target, resume, continue_session, &extra_args)?;
+        if proxy_enabled {
+            validate_proxy_binary_capability(proxy_target, &binary)?;
+        }
     }
 
     tracing::info!(
@@ -288,6 +326,17 @@ pub fn run_launch(
         let _ = tracker.crash_session(&session_id);
     }
     result
+}
+
+fn validate_proxy_binary_capability(
+    target: amplihack_utils::litellm_proxy::CliTarget,
+    binary: &BinaryInfo,
+) -> Result<()> {
+    if target == amplihack_utils::litellm_proxy::CliTarget::Claude {
+        amplihack_utils::litellm_proxy::require_claude_code_capability(binary.version.as_deref())
+            .context("Claude Code external LiteLLM capability check failed")?;
+    }
+    Ok(())
 }
 
 fn validate_proxy_launch_args(
