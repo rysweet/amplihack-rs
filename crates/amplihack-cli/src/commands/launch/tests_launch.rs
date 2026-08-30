@@ -1,7 +1,7 @@
 use super::*;
 use crate::env_builder::EnvBuilder;
 use crate::launcher::ManagedChild;
-use crate::test_support::{home_env_lock, restore_home, set_home};
+use crate::test_support::{EnvGuard, home_env_lock, restore_home, set_home};
 use std::fs;
 use std::process::Command;
 
@@ -129,17 +129,17 @@ fn docker_gateway_launch_rejects_claude_conflicts_before_docker() {
     let _guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let names = [
-        amplihack_utils::litellm_proxy::ENDPOINT_ENV,
-        amplihack_utils::litellm_proxy::API_KEY_ENV,
-        amplihack_utils::litellm_proxy::MODEL_ENV,
-    ];
-    let previous = names.map(std::env::var_os);
-    unsafe {
-        std::env::set_var(names[0], "https://gateway.example.com");
-        std::env::set_var(names[1], "gateway-secret");
-        std::env::set_var(names[2], "gateway-model");
-    }
+    let _gateway_env = EnvGuard::set([
+        (
+            amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+            "https://gateway.example.com",
+        ),
+        (
+            amplihack_utils::litellm_proxy::API_KEY_ENV,
+            "gateway-secret",
+        ),
+        (amplihack_utils::litellm_proxy::MODEL_ENV, "gateway-model"),
+    ]);
 
     let error = run_launch(
         "claude",
@@ -160,15 +160,6 @@ fn docker_gateway_launch_rejects_claude_conflicts_before_docker() {
         format!("{error:#}").contains("requested and fallback models must match"),
         "unexpected error: {error:#}"
     );
-
-    for (name, value) in names.into_iter().zip(previous) {
-        unsafe {
-            match value {
-                Some(value) => std::env::set_var(name, value),
-                None => std::env::remove_var(name),
-            }
-        }
-    }
 }
 
 #[test]

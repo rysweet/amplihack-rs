@@ -669,25 +669,21 @@ fn dispatch_multitask(command: MultitaskCommands) -> Result<()> {
 #[cfg(test)]
 mod gateway_dispatch_tests {
     use super::*;
+    use crate::test_support::EnvGuard;
 
     #[test]
     fn gateway_rejects_append_and_uncontrolled_auto_mode_before_dispatch() {
         let _guard = crate::test_support::home_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let names = [
-            amplihack_utils::litellm_proxy::ENDPOINT_ENV,
-            amplihack_utils::litellm_proxy::API_KEY_ENV,
-            amplihack_utils::litellm_proxy::MODEL_ENV,
-        ];
-        let previous = names.map(std::env::var_os);
-        for (name, value) in names.into_iter().zip([
-            "https://gateway.example.com",
-            "gateway-key",
-            "gateway-model",
-        ]) {
-            unsafe { std::env::set_var(name, value) };
-        }
+        let _gateway_env = EnvGuard::set([
+            (
+                amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+                "https://gateway.example.com",
+            ),
+            (amplihack_utils::litellm_proxy::API_KEY_ENV, "gateway-key"),
+            (amplihack_utils::litellm_proxy::MODEL_ENV, "gateway-model"),
+        ]);
 
         assert!(reject_gateway_append().is_err());
         assert!(
@@ -698,14 +694,5 @@ mod gateway_dispatch_tests {
             .is_err()
         );
         assert!(validate_gateway_auto_mode(auto_mode::AutoModeTool::Codex, &[]).is_err());
-
-        for (name, value) in names.into_iter().zip(previous) {
-            unsafe {
-                match value {
-                    Some(value) => std::env::set_var(name, value),
-                    None => std::env::remove_var(name),
-                }
-            }
-        }
     }
 }
