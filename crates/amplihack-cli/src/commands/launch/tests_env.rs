@@ -70,13 +70,18 @@ fn build_command_injects_uvx_plugin_and_project_args_for_claude() {
     );
     assert_eq!(args[2], "--add-dir");
     assert_eq!(args[3], execution_dir.path().display().to_string());
-    // Issue #1421: the uvx plugin/project args are amplihack's to inject; the
-    // model is not. (`--append-system-prompt` also follows here — see
-    // tests_system_prompt_append.rs — so this asserts the absence of --model
-    // rather than an exact argv length.)
-    assert!(
-        !args.iter().any(|arg| arg == "--model"),
-        "amplihack must not choose a model for a uvx launch either, got: {args:?}"
+    // Issue #1421: a uvx launch requests the same concrete default as any other.
+    // (`--append-system-prompt` also follows here — see
+    // tests_system_prompt_append.rs — so this asserts the model's presence and
+    // value rather than an exact argv length.)
+    let at = args
+        .iter()
+        .position(|arg| arg == "--model")
+        .unwrap_or_else(|| panic!("a uvx launch must request a model too, got: {args:?}"));
+    assert_eq!(
+        args.get(at + 1).map(String::as_str),
+        Some(crate::commands::launch::command::DEFAULT_MODEL),
+        "got: {args:?}"
     );
 }
 
@@ -243,7 +248,12 @@ fn build_command_does_not_duplicate_uvx_plugin_or_add_dir_args() {
     let mut without_fragment = args.clone();
     without_fragment.drain(append..=append + 1);
 
-    // Issue #1421: no `--model` is injected — amplihack no longer chooses one.
+    // Issue #1421: the model request is amplihack's, like the plugin/project
+    // args. Drop it the same way the fragment is dropped, so this test keeps
+    // asserting the thing it is actually about: no DUPLICATED uvx args.
+    if let Some(m) = without_fragment.iter().position(|a| a == "--model") {
+        without_fragment.drain(m..=m + 1);
+    }
     assert_eq!(
         without_fragment,
         vec![

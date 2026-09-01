@@ -123,27 +123,28 @@ pub(super) fn build_command_for_dir(
 
     inject_uvx_plugin_args(&mut cmd, &binary.name, extra_args, add_dir_override);
 
-    // Issue #1421: amplihack does NOT pick a model on its own.
+    // Issue #1421: amplihack requests a CONCRETE model id, never an alias.
     //
-    // It used to force `--model opus[1m]` onto every Claude-compatible launch.
-    // That string is an ALIAS, and the CLI — not amplihack — decides what it
-    // resolves to. On a reporter's install `opus[1m]` resolved to the retired
-    // `claude-opus-4-1-20250805`, so every agent step 404'd naming a model id
-    // the user had never chosen and could not find in any config or binary.
-    // Forcing it also silently outranked the `"model"` that user had set in
-    // `~/.claude/settings.json`, which is why the obvious lever did nothing.
+    // It used to force `--model opus[1m]`. An alias is resolved by the CLI, so
+    // its meaning depends on the CLI version: on a reporter's install it
+    // resolved to the retired `claude-opus-4-1-20250805` and every agent step
+    // 404'd naming an id the user had never chosen and could not find anywhere,
+    // because it existed only at resolution time. `DEFAULT_MODEL` is concrete
+    // for that reason — see its doc comment.
     //
-    // amplihack does not own the model catalogue and cannot keep an alias
-    // current across CLI versions. The evidence that this is unmaintainable is
-    // in the tree: the reference docs still said the default was `sonnet[1m]`
-    // long after the code moved to `opus[1m]`. So amplihack passes nothing and
-    // the CLI applies its own current default, which cannot go stale.
+    // Precedence, highest first:
+    //   1. `--model` on the command line — the operator's, forwarded untouched
+    //   2. the LiteLLM proxy's model, when a launch is routed through the proxy
+    //      — the proxy routes on the model name and has no default of its own
+    //   3. `AMPLIHACK_DEFAULT_MODEL` — pins every launch, and an empty value
+    //      means "pass nothing and let the CLI decide"
+    //   4. `DEFAULT_MODEL`
     //
-    // A model is injected ONLY when something asked for one: `--model` on the
-    // command line is the operator's and is forwarded untouched;
-    // `AMPLIHACK_DEFAULT_MODEL` is the opt-in for pinning every launch; and a
-    // launch through the LiteLLM proxy names the model the proxy routes on,
-    // because the proxy has no default of its own to fall back to.
+    // Note this still outranks a `"model"` set in `~/.claude/settings.json`,
+    // which is why that lever appeared to do nothing in the report. That is now
+    // a deliberate, documented precedence rather than an accident, and the
+    // stderr line below names both the value and where it came from, so the id
+    // in any later error traces straight back to this decision.
     let user_has_model = extra_args
         .iter()
         .any(|arg| arg == "--model" || arg.starts_with("--model="));
@@ -155,7 +156,14 @@ pub(super) fn build_command_for_dir(
                 amplihack_utils::litellm_proxy::MODEL_ENV,
             ))
         } else {
-            configured_default_model().map(|model| (model, "AMPLIHACK_DEFAULT_MODEL"))
+            configured_default_model().map(|model| {
+                let source = if std::env::var("AMPLIHACK_DEFAULT_MODEL").is_ok() {
+                    "AMPLIHACK_DEFAULT_MODEL"
+                } else {
+                    "amplihack's built-in default"
+                };
+                (model, source)
+            })
         };
         if let Some((model, source)) = selection {
             // Diagnosability (issue #1421): a 404 naming a model the user never
@@ -165,7 +173,8 @@ pub(super) fn build_command_for_dir(
             // looking like a hardcoded secret inside the binary.
             eprintln!(
                 "amplihack: passing `--model {model}` to `{}` (from {source}). \
-                 Unset {source} to let {} choose its own default model.",
+                 Set AMPLIHACK_DEFAULT_MODEL to override it, or to an empty value to \
+                 let {} choose its own default model.",
                 binary.name, binary.name
             );
             cmd.arg("--model");
@@ -275,13 +284,46 @@ pub(super) fn build_command_for_dir(
 /// value — amplihack passes no `--model` at all and the underlying CLI applies
 /// its own current default. Substituting a hardcoded alias here is what put a
 /// retired model id on the command line of a user who never chose one.
+/// The model amplihack requests when the operator has not chosen one.
+///
+/// Issue #1421: this is a CONCRETE model id, deliberately not an alias.
+///
+/// The bug was `opus[1m]`. An alias is resolved by the CLI, not by amplihack,
+/// so what it means depends on the CLI version installed — and on a reporter's
+/// machine `opus[1m]` resolved to the retired `claude-opus-4-1-20250805`. Every
+/// agent step then 404'd naming a model id the user had never chosen and could
+/// not find in any config or in the binary, because it was never written down
+/// anywhere: it was invented at resolution time.
+///
+/// A concrete id cannot drift that way. Two CLI versions given
+/// `claude-opus-5[1m]` either both honour it or one fails naming the exact
+/// string amplihack asked for — which is a searchable, diagnosable failure
+/// rather than a phantom. The `[1m]` suffix keeps the 1M context window that
+/// `opus[1m]` provided, so this is not a downgrade.
+///
+/// It will eventually need updating, and that is accepted: the failure mode of
+/// a stale concrete id is a 404 that names itself. The failure mode of a stale
+/// alias is a 404 naming something the user cannot trace. Prefer the loud one.
+pub(crate) const DEFAULT_MODEL: &str = "claude-opus-5[1m]";
+
+/// The model to request, or `None` to let the CLI choose.
+///
+/// `AMPLIHACK_DEFAULT_MODEL` overrides [`DEFAULT_MODEL`]. Setting it to an
+/// empty or whitespace-only value — which is how a shell delivers an unset-ish
+/// value — means "pass no `--model` at all", so an operator can hand the choice
+/// back to the CLI without editing amplihack.
 pub(crate) fn configured_default_model() -> Option<String> {
-    let raw = std::env::var("AMPLIHACK_DEFAULT_MODEL").ok()?;
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
+    match std::env::var("AMPLIHACK_DEFAULT_MODEL") {
+        Ok(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        Err(_) => Some(DEFAULT_MODEL.to_string()),
     }
-    Some(trimmed.to_string())
 }
 
 /// Pure decision function (issue #621): is this Copilot invocation

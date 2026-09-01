@@ -321,16 +321,20 @@ fn render_launcher_command_quotes_prompt_args() {
 }
 
 /// Issue #1421: with no `--model` in extra_args and no `AMPLIHACK_DEFAULT_MODEL`,
-/// build_command MUST NOT put a model on the command line at all.
+/// build_command requests amplihack's built-in default — and that default is a
+/// CONCRETE model id, never an alias.
 ///
-/// amplihack used to force `--model opus[1m]` here. That alias is resolved by
-/// the CLI, whose version amplihack does not control; on one reporter's install
-/// it resolved to the retired `claude-opus-4-1-20250805` and every agent step
-/// 404'd naming a model the user had never chosen. Passing nothing lets the CLI
-/// apply its own current default, and lets the user's `~/.claude/settings.json`
-/// `"model"` actually take effect instead of being outranked by our argv.
+/// amplihack used to force `--model opus[1m]`. An alias is resolved by the CLI,
+/// whose version amplihack does not control; on one reporter's install it
+/// resolved to the retired `claude-opus-4-1-20250805` and every agent step
+/// 404'd naming a model the user had never chosen and could not find written
+/// down anywhere, because it only existed at resolution time.
+///
+/// The fix is not to stop choosing — it is to choose something that cannot be
+/// reinterpreted. A stale concrete id fails with a 404 naming itself, which is
+/// searchable. A stale alias fails with a 404 naming a phantom.
 #[test]
-fn test_build_command_passes_no_model_by_default() {
+fn test_build_command_passes_the_concrete_default_model() {
     with_default_model_env(None, || {
         let binary = make_binary("/usr/bin/claude");
         let cmd = build_command(&binary, false, false, false, &[]);
@@ -338,11 +342,34 @@ fn test_build_command_passes_no_model_by_default() {
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        assert!(
-            !args.contains(&"--model".to_string()),
-            "amplihack must not choose a model when none was asked for; got: {args:?}"
+        let at = args
+            .iter()
+            .position(|a| a == "--model")
+            .unwrap_or_else(|| panic!("expected amplihack to request a model; got: {args:?}"));
+        assert_eq!(
+            args.get(at + 1).map(String::as_str),
+            Some(super::command::DEFAULT_MODEL),
+            "the default must be the concrete id, got: {args:?}"
         );
     });
+}
+
+/// Issue #1421: the built-in default must be a concrete id, not an alias.
+///
+/// This is the property that actually failed. `opus[1m]` was rejected not
+/// because it named the wrong model but because it named *no* model until the
+/// CLI decided — so two hosts running the same amplihack got different models,
+/// and one of them got a retired one.
+#[test]
+fn test_default_model_is_concrete_not_an_alias() {
+    let d = super::command::DEFAULT_MODEL;
+    assert!(
+        d.starts_with("claude-"),
+        "a concrete Anthropic model id starts with `claude-`; {d:?} looks like an alias"
+    );
+    for alias in ["opus", "sonnet", "haiku", "opus[1m]", "sonnet[1m]"] {
+        assert_ne!(d, alias, "the default must not be the bare alias {alias:?}");
+    }
 }
 
 /// Issue #1421: no hardcoded model alias may reach the command line. Asserted
@@ -512,9 +539,19 @@ fn build_command_basic_no_skip_permissions_by_default() {
         }
         assert_eq!(cmd.get_program(), "/usr/bin/claude");
         let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
-        // Issue #1421: nothing at all is injected. amplihack no longer chooses
-        // a model, so a plain launch carries an empty argv.
-        assert!(args.is_empty(), "expected no injected args, got: {args:?}");
+        // Issue #1421: the only thing injected is the model request.
+        let strs: Vec<String> = args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            strs,
+            vec![
+                "--model".to_string(),
+                super::command::DEFAULT_MODEL.to_string()
+            ],
+            "a plain launch should carry only the model request, got: {strs:?}"
+        );
     });
 }
 
@@ -536,9 +573,20 @@ fn build_command_with_skip_permissions_flag() {
             unsafe { std::env::set_var("AMPLIHACK_DEFAULT_MODEL", value) };
         }
         let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
-        // Issue #1421: the permission flag is still ours to inject; the model
-        // is not, so it is the ONLY argument now.
-        assert_eq!(args, &["--dangerously-skip-permissions"]);
+        // Issue #1421: the permission flag and the model request, in that order.
+        let strs: Vec<String> = args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            strs,
+            vec![
+                "--dangerously-skip-permissions".to_string(),
+                "--model".to_string(),
+                super::command::DEFAULT_MODEL.to_string(),
+            ],
+            "got: {strs:?}"
+        );
     });
 }
 
