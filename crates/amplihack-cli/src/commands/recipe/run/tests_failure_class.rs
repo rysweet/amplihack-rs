@@ -818,3 +818,144 @@ fn a_transient_fault_mentioning_a_repository_stays_transient() {
     );
     assert_eq!(class, FailureClass::TransientTransport);
 }
+++ b/crates/amplihack-cli/src/commands/recipe/run/tests_failure_class.rs
+
+// ---------------------------------------------------------------------------
+// Issue #1437 — an agent/API failure is not a structural refusal
+// ---------------------------------------------------------------------------
+
+/// The literal tail from the incident: the merge-ready builder agent did the
+/// work, committed and pushed `9d521815`, and only then lost its session.
+const ISSUE_1437_TAIL: &str = "\
+I completed the work, committed 9d521815 and pushed.
+amplihack copilot failed (exit 1)
+Execution failed: 400 The resource you requested was not found.";
+
+/// `Indeterminate` said \"no transport, environmental, or work marker found\"
+/// about a message that named its own cause. The class must name it.
+#[test]
+fn issue_1437_agent_api_rejection_is_named_not_indeterminate() {
+    let (class, signal) = classify_failure_text(ISSUE_1437_TAIL);
+    assert_ne!(
+        class,
+        FailureClass::Indeterminate,
+        "the endpoint stated its own cause; \"we know nothing\" is not an honest answer"
+    );
+    assert_eq!(class, FailureClass::AgentApi);
+    assert_eq!(signal, Some("execution failed: 400"));
+    assert!(
+        !class.is_mechanically_retryable(),
+        "the identical request gets the identical rejection"
+    );
+}
+
+#[test]
+fn issue_1437_agent_api_endpoint_rejections_are_all_named() {
+    for text in [
+        "Execution failed: 400 The resource you requested was not found.",
+        "API Error: 404 Not Found",
+        "{\"type\":\"invalid_request_error\",\"message\":\"model not available\"}",
+        "error: model_not_found",
+        "the agent reported: session not found",
+    ] {
+        let (class, _) = classify_failure_text(text);
+        assert_eq!(
+            class,
+            FailureClass::AgentApi,
+            "expected agent_api for {text:?}"
+        );
+    }
+}
+
+/// The class must be readable as a REASON, not just a label.
+#[test]
+fn issue_1437_agent_api_reasoning_names_the_cause_and_denies_terminality() {
+    let verdict = FailureVerdict {
+        class: FailureClass::AgentApi,
+        signal: Some("execution failed: 400"),
+        evidence: ISSUE_1437_TAIL.to_string(),
+        failed_steps: vec!["step-04-address-blockers".to_string()],
+        completed_steps: vec!["step-03-extract-merge-ready-verdict".to_string()],
+    };
+    let reasoning = verdict.reasoning();
+    assert!(reasoning.contains("agent_api"), "got: {reasoning}");
+    assert!(reasoning.contains("400"), "got: {reasoning}");
+    assert!(!verdict.is_structural_refusal());
+    let payload = verdict.to_json(1, "terminal");
+    assert_eq!(payload["class"], "agent_api");
+    assert_eq!(payload["retryable"], false);
+    assert_eq!(
+        payload["structural_refusal"], false,
+        "an agent/API rejection must never read as a guard refusal: {payload}"
+    );
+}
+
+/// The other direction: a REAL structural refusal is still a work-class,
+/// non-retryable, flagged terminal answer.
+#[test]
+fn issue_1437_a_real_structural_refusal_is_still_terminal() {
+    let evidence = "BLOCKED_TERMINAL orchestration_unavailable: depth 3 of max 3 \
+                    (issue #964/#1326).\nThis is a POLICY decision, not an \
+                    infrastructure fault.";
+    let (class, signal) = classify_failure_text(evidence);
+    assert_eq!(class, FailureClass::Work);
+    assert_eq!(signal, Some("blocked_terminal orchestration_unavailable"));
+    assert!(!class.is_mechanically_retryable());
+    let verdict = FailureVerdict {
+        class,
+        signal,
+        evidence: evidence.to_string(),
+        failed_steps: vec!["step-02".to_string()],
+        completed_steps: Vec::new(),
+    };
+    assert!(
+        verdict.is_structural_refusal(),
+        "a guard refusal must be flagged so a loop can stop and never retry into it"
+    );
+    assert_eq!(verdict.to_json(1, "terminal")["structural_refusal"], true);
+    assert!(
+        verdict.reasoning().contains("FINAL"),
+        "the refusal must say it is final: {}",
+        verdict.reasoning()
+    );
+}
+
+/// The self-poisoning case that caused the incident. An agent that READ the
+/// repository's own contract test — or handled a refusal aimed at a descendant
+/// — leaves the bare word in the evidence. That is history, not this run's
+/// terminating cause, and it must not be flagged as a structural refusal.
+#[test]
+fn issue_1437_a_quoted_bare_marker_is_not_a_structural_refusal() {
+    let evidence = "\
+grep BLOCKED_TERMINAL amplifier-bundle/recipes/tests/*.sh
+  test-issue-1337-loop-health-evaluator.sh:20:#   - exit 79 / BLOCKED_TERMINAL is TERMINAL
+a nested run was refused; I completed the step inline as instructed.
+Execution failed: 400 The resource you requested was not found.";
+    let (class, signal) = classify_failure_text(evidence);
+    let verdict = FailureVerdict {
+        class,
+        signal,
+        evidence: evidence.to_string(),
+        failed_steps: vec!["step-04-address-blockers".to_string()],
+        completed_steps: Vec::new(),
+    };
+    assert!(
+        !verdict.is_structural_refusal(),
+        "a transcript that merely quotes the word is not a refusal of this run"
+    );
+    assert_eq!(
+        class,
+        FailureClass::AgentApi,
+        "the run's real terminating cause is the endpoint rejection"
+    );
+}
+
+/// Precedence must not regress: a real work failure still outranks an agent
+/// endpoint rejection appearing in the same tail.
+#[test]
+fn issue_1437_work_failures_still_beat_an_agent_api_marker() {
+    let (class, _) = classify_failure_text(
+        "test result: FAILED. 1 failed\nlater: Execution failed: 400 not found",
+    );
+    assert_eq!(class, FailureClass::Work);
+}

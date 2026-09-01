@@ -25,6 +25,15 @@
 #   Exit 79 — a child returned the terminal policy refusal. Surfaced, final,
 #             and NEVER retried into.
 #
+# NOT EVERY FAILURE IS TERMINAL (issue #1437). Exit 79 belongs to a structural
+# guard that DECLINED to run the work and will decline again. An agent whose API
+# session dies, a failing check, a missing binary — those are ordinary round
+# failures with their own classes, and the evaluator decides what to do about
+# them. The two are told apart by the child's exit status and by the structured
+# `amplihack.recipe.failure_class` classification of the step that ended the
+# run — never by grepping a round transcript for a word, because a transcript
+# contains every file the agents read and every refusal they already handled.
+#
 # Policy: this workflow NEVER passes a hook-skipping commit flag or any
 # branch-protection bypass. See
 # docs/reference/auto-drive-to-merge.md#two-absolute-prohibitions.
@@ -87,10 +96,69 @@ field() { # field <json> <name> <default>
     | "$AMPLIHACK_BIN" orch helper extract-field --field "$2" --default "$3"
 }
 
+# --- did THIS child refuse, or did it merely quote a refusal? ---------------
+#
+# Issue #1437. A round log is a TRANSCRIPT, not a verdict. It carries every
+# byte the round's agents read, printed and recovered from — including a
+# structural refusal handed to a DESCENDANT, which the agent then handled
+# exactly as the refusal's own text instructs ("complete this step inline and
+# return your result"). Grepping that transcript for `BLOCKED_TERMINAL` read an
+# already-handled refusal as a refusal of the round: an agent that had done the
+# work, committed and pushed, and then lost its API session, was reported as
+# "exit 79 terminal policy refusal" and the whole run stopped permanently.
+#
+# Only two things speak for THIS child:
+#
+#   * its EXIT STATUS. 79 is the guard's own answer and nothing else emits it
+#     (`terminal_block` in crates/amplihack-cli/.../recipe/run/execute.rs).
+#   * the STRUCTURED classification `amplihack recipe run` prints for its own
+#     run — `amplihack.recipe.failure_class {...}` — whose `structural_refusal`
+#     boolean is computed from the FAILED STEP's evidence by the layer that
+#     knows, not from the transcript at large.
+#
+# Everything else in the log is history. `TERMINAL_WHY` / `CHILD_FAILURE_CLASS`
+# are set here so the verdict can NAME the cause; "stopped" with no reason is
+# what made this expensive to diagnose.
+FAILURE_CLASS_MARKER='amplihack.recipe.failure_class '
+TERMINAL_WHY=""
+CHILD_FAILURE_CLASS=""
+CHILD_FAILURE_SIGNAL=""
+CHILD_STRUCTURAL_REFUSAL=""
+
+classify_child() { # classify_child <log_file>
+  CHILD_FAILURE_CLASS=""; CHILD_FAILURE_SIGNAL=""; CHILD_STRUCTURAL_REFUSAL=""
+  local log="${1:-}" marker=""
+  [ -n "$log" ] && [ -f "$log" ] || return 0
+  # The LAST marker: an earlier attempt may have been retried, and it is the
+  # final classification that describes how the run actually ended.
+  marker="$(grep -a "^${FAILURE_CLASS_MARKER}" "$log" 2>/dev/null | tail -n 1 || true)"
+  [ -n "$marker" ] || return 0
+  marker="${marker#"$FAILURE_CLASS_MARKER"}"
+  CHILD_FAILURE_CLASS="$(field "$marker" class "")"
+  CHILD_FAILURE_SIGNAL="$(field "$marker" signal "")"
+  CHILD_STRUCTURAL_REFUSAL="$(field "$marker" structural_refusal "")"
+}
+
 terminal_refusal() { # terminal_refusal <exit_code> <log_file>
-  [ "${1:-0}" = "$AUTODRIVE_EXIT_POLICY_REFUSAL" ] && return 0
-  [ -f "${2:-}" ] && grep -qF 'BLOCKED_TERMINAL' "$2" 2>/dev/null && return 0
+  TERMINAL_WHY=""
+  classify_child "${2:-}"
+  if [ "${1:-0}" = "$AUTODRIVE_EXIT_POLICY_REFUSAL" ]; then
+    TERMINAL_WHY="the child exited ${AUTODRIVE_EXIT_POLICY_REFUSAL}: a structural guard refused before the work ran (#1327/#1332)"
+    return 0
+  fi
+  if [ "$CHILD_STRUCTURAL_REFUSAL" = "true" ]; then
+    TERMINAL_WHY="the child's own failure classification reports structural_refusal=true (class '${CHILD_FAILURE_CLASS:-unknown}', signal '${CHILD_FAILURE_SIGNAL:-unknown}'): the step that ended the run was refused by a structural guard"
+    return 0
+  fi
   return 1
+}
+
+# One line naming what the child's exit actually was, for reports and verdicts.
+child_failure_summary() { # child_failure_summary <exit_code>
+  local rc="${1:-0}" sig=""
+  if [ "$rc" = "0" ]; then printf 'exit 0'; return 0; fi
+  case "${CHILD_FAILURE_SIGNAL:-}" in ''|null) sig="" ;; *) sig=" (signal ${CHILD_FAILURE_SIGNAL})" ;; esac
+  printf 'exit %s, classified %s%s' "$rc" "${CHILD_FAILURE_CLASS:-unclassified}" "$sig"
 }
 
 escalate() { # escalate <verdict> <why>
@@ -145,9 +213,17 @@ while :; do
   tail -n 200 "$LOG" >&2 || true
 
   if terminal_refusal "$ROUND_RC" "$LOG"; then
-    echo "ERROR: exit ${AUTODRIVE_EXIT_POLICY_REFUSAL} terminal policy refusal from '${ROUND_RECIPE}' (#1327/#1332). Final: the guard is never retried into." >&2
-    escalate "TERMINAL_POLICY_REFUSAL" "child returned the exit-${AUTODRIVE_EXIT_POLICY_REFUSAL} policy refusal"
+    echo "ERROR: terminal policy refusal from '${ROUND_RECIPE}' (#1327/#1332): ${TERMINAL_WHY}. Final: the guard is never retried into." >&2
+    escalate "TERMINAL_POLICY_REFUSAL" "${TERMINAL_WHY}"
     exit "$AUTODRIVE_EXIT_POLICY_REFUSAL"
+  fi
+  ROUND_FAILURE="$(child_failure_summary "$ROUND_RC")"
+  if [ "$ROUND_RC" -ne 0 ]; then
+    # NOT terminal. An ordinary round failure — an agent/API rejection, a
+    # failing check, an environment problem — is exactly what the agentic
+    # terminator below exists to judge. Naming the class here is what stops the
+    # next reader from having to reconstruct it from a 40 MB transcript (#1437).
+    echo "INFO: ${ROUND_LABEL} of '${ROUND_RECIPE}' failed: ${ROUND_FAILURE}. No structural guard refused it, so this is NOT terminal; loop-health-evaluator decides whether another round is worthwhile." >&2
   fi
 
   # --- read the round's STRUCTURED record -----------------------------------
@@ -170,8 +246,11 @@ while :; do
   [ -f "${RECORD}.findings" ] && cp -f "${RECORD}.findings" "${STATE_DIR}/${LOOP_NAME}-latest.json.findings"
   TEST_SIGNAL="$(field "$RAW" test_signal "")"
   CI_SIGNAL="$(field "$RAW" ci_signal "")"
+  # The failure CLASS travels with the history: the evaluator judging whether
+  # to continue must be able to tell "the agent's API session died" from "the
+  # tests fail again", and so must the operator reading the escalation (#1437).
   HISTORY="${HISTORY}
-${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} findings=$(printf '%s' "$FINDINGS" | grep -c . || true)"
+${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} child=${ROUND_FAILURE} findings=$(printf '%s' "$FINDINGS" | grep -c . || true)"
 
   # --- the agentic terminator ----------------------------------------------
   assert_ceiling_untouched
@@ -196,9 +275,12 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} findings=$(prin
   tail -n 120 "$HEALTH_LOG" >&2 || true
 
   if terminal_refusal "$HEALTH_RC" "$HEALTH_LOG"; then
-    echo "ERROR: exit ${AUTODRIVE_EXIT_POLICY_REFUSAL} terminal policy refusal from loop-health-evaluator. Final; not retried." >&2
-    escalate "TERMINAL_POLICY_REFUSAL" "loop-health-evaluator returned the policy refusal"
+    echo "ERROR: terminal policy refusal from loop-health-evaluator: ${TERMINAL_WHY}. Final; not retried." >&2
+    escalate "TERMINAL_POLICY_REFUSAL" "loop-health-evaluator: ${TERMINAL_WHY}"
     exit "$AUTODRIVE_EXIT_POLICY_REFUSAL"
+  fi
+  if [ "$HEALTH_RC" -ne 0 ]; then
+    echo "INFO: loop-health-evaluator for ${ROUND_LABEL} failed: $(child_failure_summary "$HEALTH_RC"). Not a structural refusal; the verdict below fails safe to STUCK." >&2
   fi
 
   # The evaluator's own enforcing step prints exactly one LOOP_HEALTH: marker
@@ -238,7 +320,7 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} findings=$(prin
       continue
       ;;
     *)
-      escalate "STUCK" "loop-health-evaluator returned STUCK (or an unreadable verdict) for '${LOOP_NAME}'"
+      escalate "STUCK" "loop-health-evaluator returned STUCK (or an unreadable verdict) for '${LOOP_NAME}'; the last round ended ${ROUND_FAILURE}"
       exit 1
       ;;
   esac

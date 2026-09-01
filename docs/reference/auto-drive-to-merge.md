@@ -263,12 +263,50 @@ make the exit-79 branch dead code and report every failure as "exit 0".
 
 ## Exit code 79 is terminal
 
-Exit `79` and `BLOCKED_TERMINAL` are final answers from a structural guard
-(#1327 / #1332), not infrastructure hiccups. Every child invocation is checked
-for them; when one appears the loop stops, surfaces the refusal, and exits `79`
-itself so a parent sees a policy refusal rather than a generic failure. It is
-**never** retried into — not at a deeper level, and never with a raised
-ceiling.
+Exit `79` is a final answer from a structural guard (#1327 / #1332), not an
+infrastructure hiccup. Every child invocation is checked; when one appears the
+loop stops, surfaces the refusal, and exits `79` itself so a parent sees a
+policy refusal rather than a generic failure. It is **never** retried into —
+not at a deeper level, and never with a raised ceiling.
+
+### …and not every failure is terminal (issue #1437)
+
+Exactly two things speak for the child the loop just ran:
+
+| Evidence | Meaning |
+| --- | --- |
+| the child's **exit status** is `79` | a guard refused before the work ran. Terminal. |
+| the child's own `amplihack.recipe.failure_class` marker carries `"structural_refusal": true` | the step that ENDED the run was refused by a guard. Terminal. |
+| anything else non-zero | an ordinary round failure. The evaluator decides. |
+
+What is **not** evidence is the round transcript. A round log holds every file
+the round's agents read and every refusal a *descendant* received and then
+handled inline — exactly as the refusal's own text instructs ("complete this
+step inline and return your result"). `autodrive_loop.sh` used to grep that
+transcript for the literal word `BLOCKED_TERMINAL`. Driving PR #1416, the
+merge-ready builder did the work, committed and pushed `9d521815`, then lost
+its Copilot session to `Execution failed: 400 The resource you requested was
+not found.` The nested recipe reported that correctly as exit `1`; the loop
+reported `exit 79 terminal policy refusal` and stopped the run permanently. In
+that run's captured session the word appears 98 times — most of them the
+content of this repository's own contract test and reference docs.
+
+The failure now also carries its **class**, so the report names the cause:
+
+```text
+INFO: round-1 of 'autodrive-merge-round' failed: exit 1, classified agent_api
+      (signal execution failed: 400). No structural guard refused it, so this
+      is NOT terminal; loop-health-evaluator decides whether another round is
+      worthwhile.
+```
+
+`agent_api` is a class of its own (see
+[transient-failure-retry](transient-failure-retry.md)) rather than
+`indeterminate`: the endpoint named its own cause, and "we know nothing" was
+what made this expensive to diagnose.
+
+Contract test: `tests/issue_1437_agent_failure_is_not_a_policy_refusal.sh`,
+run by CI.
 
 ## Recursion context propagation
 

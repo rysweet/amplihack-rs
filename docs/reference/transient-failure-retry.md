@@ -35,13 +35,28 @@ unit-tested in isolation
 | --------------------- | ----------------------------------------------------------------------------------------- | ---------------- |
 | `transient_transport` | `API Error: 529`, 503, 502, 500, 429, `overloaded_error`, `rate_limit_error`, `ECONNRESET`, `socket hang up`, `request timed out` | **Yes**, bounded |
 | `environmental`       | 401/403, `invalid x-api-key`, `command not found`, `no space left on device`                | No               |
-| `work`                | `test result: FAILED`, `assertion failed`, `panicked at`, `error[E0308]`, `merge conflict`, a `BLOCKED_TERMINAL` policy refusal | No               |
+| `work`                | `test result: FAILED`, `assertion failed`, `panicked at`, `error[E0308]`, `merge conflict`, a `BLOCKED_TERMINAL orchestration_unavailable` policy refusal | No               |
+| `agent_api`           | `Execution failed: 400`, `API Error: 404`, `invalid_request_error`, `model_not_found`, `session not found` | No |
 | `indeterminate`       | nothing in the evidence identifies the failure                                              | No               |
 
-Two rules matter more than the tables:
+Four rules matter more than the tables:
 
 - **401 and 403 are not transient.** They are stable server answers. Retrying
   them burns the budget and can never succeed, so they are `environmental`.
+- **An agent endpoint rejection is not "we know nothing"** (issue #1437). A
+  `400 The resource you requested was not found` names its own cause. Calling
+  it `indeterminate` told the operator that nothing could be determined about a
+  message that determined itself, and a supervising loop reading that as a
+  structural refusal stopped a run whose agent had already committed and
+  pushed. It is `agent_api`: not retried mechanically (the identical request
+  gets the identical rejection), and explicitly **not** a policy refusal — a
+  loop is free to start a fresh round.
+- **A policy refusal is matched as the guard's whole line**, `BLOCKED_TERMINAL
+  orchestration_unavailable`, never as the bare word. The bare word appears in
+  a run transcript whenever a descendant was refused and the agent then did
+  what the refusal told it to do. The classification publishes one boolean,
+  `structural_refusal`, so a supervising loop reads a decision made by the
+  layer that knows instead of grepping prose.
 - **Ambiguity resolves toward not retrying.** When the same evidence carries a
   work marker *and* a transient marker, the verdict is `work`. A missed retry
   costs one run; an unbounded retry of an impossible step costs the whole budget
@@ -84,7 +99,7 @@ retry never runs against state the previous attempt corrupted.
 Every classification decision writes a greppable single-line marker to stderr:
 
 ```
-amplihack.recipe.failure_class {"schema_version":1,"issue":1267,"class":"transient_transport","signal":"api error: 529","reasoning":"classified `transient_transport` — evidence contains \"api error: 529\"","action":"retry","attempt":1,"retryable":true,"failed_steps":["step-12-run-precommit"],"completed_steps":["workflow-prep","workflow-worktree"],"evidence":"..."}
+amplihack.recipe.failure_class {"schema_version":1,"issue":1267,"class":"transient_transport","signal":"api error: 529","reasoning":"classified `transient_transport` — evidence contains \"api error: 529\"","action":"retry","attempt":1,"retryable":true,"structural_refusal":false,"failed_steps":["step-12-run-precommit"],"completed_steps":["workflow-prep","workflow-worktree"],"evidence":"..."}
 ```
 
 `action` is one of `retry`, `terminal`, or `terminal_budget_exhausted`. The
