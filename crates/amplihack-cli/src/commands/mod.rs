@@ -128,6 +128,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 // on amplihack's behalf, so any override in the environment is the
                 // user's instruction.
                 OverrideOrigin::User,
+                Some(amplihack_utils::litellm_proxy::CliTarget::Claude),
             )
         }
         Commands::Claude {
@@ -174,6 +175,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 // on amplihack's behalf, so any override in the environment is the
                 // user's instruction.
                 OverrideOrigin::User,
+                Some(amplihack_utils::litellm_proxy::CliTarget::Claude),
             )
         }
         Commands::Copilot {
@@ -248,6 +250,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 // on amplihack's behalf, so any override in the environment is the
                 // user's instruction.
                 OverrideOrigin::User,
+                Some(amplihack_utils::litellm_proxy::CliTarget::CopilotCli),
             )
         }
         Commands::Codex {
@@ -291,6 +294,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 // on amplihack's behalf, so any override in the environment is the
                 // user's instruction.
                 OverrideOrigin::User,
+                None,
             )
         }
         Commands::Amplifier {
@@ -334,6 +338,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 // on amplihack's behalf, so any override in the environment is the
                 // user's instruction.
                 OverrideOrigin::User,
+                None,
             )
         }
         Commands::Plugin { command } => dispatch_plugin(command),

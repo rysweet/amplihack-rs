@@ -68,6 +68,7 @@ fn run_launch_rejects_explicit_unsupported_amplifier_prompt_delivery_modes() {
             None,
             vec!["run".to_string(), "review repo".to_string()],
             amplihack_utils::launch_target::OverrideOrigin::User,
+            None,
         )
         .expect_err("unsupported Amplifier delivery must fail before launch");
         let message = format!("{err:#}");
@@ -164,6 +165,7 @@ fn docker_gateway_launch_rejects_claude_conflicts_before_docker() {
         None,
         vec!["--model".to_string(), "bypass-model".to_string()],
         amplihack_utils::launch_target::OverrideOrigin::User,
+        Some(amplihack_utils::litellm_proxy::CliTarget::Claude),
     )
     .expect_err("a conflicting model must fail before Docker is probed");
     assert!(
@@ -252,7 +254,11 @@ fn rejected_claude_capabilities_fail_before_launch_setup_or_docker() {
         ("missing", "", false, false),
     ] {
         let home = tempfile::tempdir().unwrap();
-        let binary = home.path().join(format!("claude-{case}"));
+        let binary = if case == "unsupported" {
+            home.path().join("old-rustyclawd-wrapper")
+        } else {
+            home.path().join(format!("claude-{case}"))
+        };
         if create_binary {
             write_fake_claude(&binary, script);
         }
@@ -285,6 +291,7 @@ fn rejected_claude_capabilities_fail_before_launch_setup_or_docker() {
             None,
             Vec::new(),
             amplihack_utils::launch_target::OverrideOrigin::User,
+            Some(amplihack_utils::litellm_proxy::CliTarget::Claude),
         )
         .expect_err("unproved Claude capability must reject the launch");
         let message = format!("{error:#}");
@@ -345,6 +352,7 @@ fn docker_claude_gateway_rejects_before_probing_an_unrelated_host_binary() {
         None,
         Vec::new(),
         amplihack_utils::launch_target::OverrideOrigin::User,
+        Some(amplihack_utils::litellm_proxy::CliTarget::Claude),
     )
     .expect_err("Docker cannot attest its selected Claude executable before creation");
 
@@ -400,6 +408,7 @@ fn supported_claude_launch_receives_only_the_scrubbed_gateway_environment() {
         None,
         Vec::new(),
         amplihack_utils::launch_target::OverrideOrigin::User,
+        Some(amplihack_utils::litellm_proxy::CliTarget::Claude),
     )
     .expect("a supported Claude Code executable must launch");
 

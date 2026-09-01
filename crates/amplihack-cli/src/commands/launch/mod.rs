@@ -103,30 +103,32 @@ pub fn run_launch(
     checkout_repo: Option<String>,
     extra_args: Vec<String>,
     override_origin: OverrideOrigin,
+    proxy_target: Option<amplihack_utils::litellm_proxy::CliTarget>,
 ) -> Result<()> {
     validate_launch_prompt_delivery(tool)?;
     let proxy_enabled = amplihack_utils::litellm_proxy::validate_environment()
         .context("invalid external LiteLLM proxy configuration")?;
     if proxy_enabled {
-        let target = match tool {
-            "claude" => amplihack_utils::litellm_proxy::CliTarget::Claude,
-            "copilot" => amplihack_utils::litellm_proxy::CliTarget::CopilotCli,
-            _ => {
-                anyhow::bail!(
-                    "the external LiteLLM gateway supports only Claude, GitHub Copilot CLI, and rustyclawd; unset AMPLIHACK_LITELLM_ENDPOINT to launch {tool}"
-                );
-            }
-        };
+        let target = proxy_target.ok_or_else(|| {
+            anyhow::anyhow!(
+                "the external LiteLLM gateway supports only Claude, GitHub Copilot CLI, and rustyclawd; unset AMPLIHACK_LITELLM_ENDPOINT to launch {tool}"
+            )
+        })?;
         validate_proxy_launch_args(target, resume, continue_session, &extra_args)?;
     }
 
-    if proxy_enabled && tool == "claude" && DockerDetector.requested_outside_container(docker) {
+    if proxy_enabled
+        && proxy_target == Some(amplihack_utils::litellm_proxy::CliTarget::Claude)
+        && DockerDetector.requested_outside_container(docker)
+    {
         anyhow::bail!(
             "external LiteLLM routing cannot launch Claude Code through Docker because the container executable cannot be verified before Docker image or container operations; launch outside Docker or start inside a trusted container"
         );
     }
 
-    let prevalidated_binary = if proxy_enabled && tool == "claude" {
+    let prevalidated_binary = if proxy_enabled
+        && proxy_target == Some(amplihack_utils::litellm_proxy::CliTarget::Claude)
+    {
         let resolution = amplihack_utils::launch_target::resolve(tool, override_origin);
         let rejection_report = resolution.rejection_report(tool, "@anthropic-ai/claude-code");
         let target = resolution.target.ok_or_else(|| {
@@ -140,12 +142,10 @@ pub fn run_launch(
             path: target.path,
             version: Some(target.version),
         };
-        let target = proxy_target_for(tool, &binary.path).ok_or_else(|| {
-            anyhow::anyhow!(
-                "the external LiteLLM gateway supports only Claude, GitHub Copilot CLI, and rustyclawd; unset AMPLIHACK_LITELLM_ENDPOINT to launch {tool}"
-            )
-        })?;
-        validate_proxy_binary_capability(target, &binary)?;
+        validate_proxy_binary_capability(
+            amplihack_utils::litellm_proxy::CliTarget::Claude,
+            &binary,
+        )?;
         Some(binary)
     } else {
         None
@@ -207,12 +207,6 @@ pub fn run_launch(
             .with_context(|| missing_binary_context(tool))?,
     };
 
-    let proxy_target = proxy_target_for(tool, &binary.path);
-    if proxy_enabled && proxy_target.is_none() {
-        anyhow::bail!(
-            "the external LiteLLM gateway supports only Claude, GitHub Copilot CLI, and rustyclawd; unset AMPLIHACK_LITELLM_ENDPOINT to launch {tool}"
-        );
-    }
     if let Some(proxy_target) = proxy_target {
         validate_proxy_launch_args(proxy_target, resume, continue_session, &extra_args)?;
         if proxy_enabled {
@@ -354,48 +348,6 @@ fn validate_proxy_launch_args(
     }
     amplihack_utils::litellm_proxy::validate_launch_args(target, &effective_args)
         .context("invalid external LiteLLM proxy launch mode")
-}
-
-fn proxy_target_for(
-    tool: &str,
-    binary_path: &std::path::Path,
-) -> Option<amplihack_utils::litellm_proxy::CliTarget> {
-    match tool {
-        "copilot" => Some(amplihack_utils::litellm_proxy::CliTarget::CopilotCli),
-        _ if binary_path
-            .file_name()
-            .is_some_and(|name| name.to_string_lossy().contains("rustyclawd")) =>
-        {
-            Some(amplihack_utils::litellm_proxy::CliTarget::RustyClawd)
-        }
-        "claude" => Some(amplihack_utils::litellm_proxy::CliTarget::Claude),
-        _ => None,
-    }
-}
-
-#[cfg(test)]
-#[test]
-fn proxy_target_covers_claude_copilot_and_rustyclawd() {
-    use amplihack_utils::litellm_proxy::CliTarget;
-    use std::path::Path;
-
-    assert_eq!(
-        proxy_target_for("claude", Path::new("/usr/bin/claude")),
-        Some(CliTarget::Claude)
-    );
-    assert_eq!(
-        proxy_target_for("copilot", Path::new("/usr/bin/copilot")),
-        Some(CliTarget::CopilotCli)
-    );
-    assert_eq!(
-        proxy_target_for("claude", Path::new("/opt/bin/rustyclawd")),
-        Some(CliTarget::RustyClawd)
-    );
-    assert_eq!(proxy_target_for("codex", Path::new("/usr/bin/codex")), None);
-    assert_eq!(
-        proxy_target_for("amplifier", Path::new("/usr/bin/amplifier")),
-        None
-    );
 }
 
 fn validate_launch_prompt_delivery(tool: &str) -> Result<()> {

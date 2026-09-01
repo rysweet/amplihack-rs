@@ -52,6 +52,9 @@ bypass arguments, and removes conflicting provider credentials and selectors
 from the child environment. The child CLI owns connection, DNS, TLS, and
 gateway readiness behavior.
 
+Credentials unrelated to model routing, such as `GITHUB_TOKEN` and database
+passwords, remain available to the child and its tools.
+
 There is no fallback to a direct provider when launch policy rejects a route.
 To disable routing, unset all three `AMPLIHACK_LITELLM_*` variables before
 launch.

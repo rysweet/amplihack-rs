@@ -143,7 +143,6 @@ impl ProxyChildEnvironment {
     }
 
     fn apply_to_command(&self, command: &mut Command) {
-        scrub_sensitive_environment(command);
         remove_env(command, &CONFIG_ENV_VARS);
 
         match self.target {
@@ -230,40 +229,6 @@ fn remove_env(command: &mut Command, names: &[&str]) {
     for name in names {
         command.env_remove(name);
     }
-}
-
-fn scrub_sensitive_environment(command: &mut Command) {
-    let mut names = std::env::vars_os()
-        .map(|(name, _)| name)
-        .filter(|name| is_sensitive_env_name(&name.to_string_lossy()))
-        .collect::<Vec<_>>();
-    names.extend(
-        command
-            .get_envs()
-            .filter(|(name, _)| is_sensitive_env_name(&name.to_string_lossy()))
-            .map(|(name, _)| name.to_os_string()),
-    );
-    for name in names {
-        command.env_remove(name);
-    }
-}
-
-pub(crate) fn is_sensitive_env_name(name: &str) -> bool {
-    let name = name.to_ascii_uppercase();
-    [
-        "API_KEY",
-        "TOKEN",
-        "AUTHORIZATION",
-        "PASSWORD",
-        "SECRET",
-        "CREDENTIAL",
-        "PRIVATE_KEY",
-        "CONNECTION_STRING",
-        "COOKIE",
-        "_KEY",
-    ]
-    .iter()
-    .any(|marker| name.contains(marker))
 }
 
 fn required_env(name: &str) -> Result<String, ProxyError> {
@@ -526,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn child_environments_remove_bypass_credentials_and_redact_debug() {
+    fn child_environments_remove_only_routing_credentials_and_redact_debug() {
         for target in [
             CliTarget::Claude,
             CliTarget::RustyClawd,
@@ -551,8 +516,14 @@ mod tests {
                     for name in CONFIG_ENV_VARS {
                         assert_eq!(command_env(&command, name), Some(None));
                     }
-                    assert_eq!(command_env(&command, "GITHUB_TOKEN"), Some(None));
-                    assert_eq!(command_env(&command, "DATABASE_PASSWORD"), Some(None));
+                    assert_eq!(
+                        command_env(&command, "GITHUB_TOKEN"),
+                        Some(Some("bypass".to_string()))
+                    );
+                    assert_eq!(
+                        command_env(&command, "DATABASE_PASSWORD"),
+                        Some(Some("bypass".to_string()))
+                    );
                     match target {
                         CliTarget::Claude | CliTarget::RustyClawd => {
                             assert_eq!(
@@ -569,7 +540,10 @@ mod tests {
                                 expected_scrub
                             );
                             assert_eq!(command_env(&command, "ANTHROPIC_API_KEY"), Some(None));
-                            assert_eq!(command_env(&command, "OPENAI_API_KEY"), Some(None));
+                            assert_eq!(
+                                command_env(&command, "OPENAI_API_KEY"),
+                                Some(Some("bypass".to_string()))
+                            );
                             assert_eq!(
                                 command_env(&command, "CLAUDE_CODE_USE_ANTHROPIC_AWS"),
                                 Some(None)
@@ -586,8 +560,14 @@ mod tests {
                                 Some(Some("https://gateway.example.com/v1".to_string()))
                             );
                             assert_eq!(command_env(&command, "OPENAI_API_KEY"), Some(None));
-                            assert_eq!(command_env(&command, "ANTHROPIC_API_KEY"), Some(None));
-                            assert_eq!(command_env(&command, "ANTHROPIC_AWS_API_KEY"), Some(None));
+                            assert_eq!(
+                                command_env(&command, "ANTHROPIC_API_KEY"),
+                                Some(Some("bypass".to_string()))
+                            );
+                            assert_eq!(
+                                command_env(&command, "ANTHROPIC_AWS_API_KEY"),
+                                Some(Some("bypass".to_string()))
+                            );
                         }
                     }
                 },

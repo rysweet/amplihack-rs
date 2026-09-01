@@ -710,7 +710,7 @@ fn probe_version(path: &Path, timeout: Duration) -> Result<String, Rejection> {
     cmd.arg("--version");
     for name in std::env::vars_os()
         .map(|(name, _)| name)
-        .filter(|name| crate::litellm_proxy::is_sensitive_env_name(&name.to_string_lossy()))
+        .filter(|name| is_sensitive_env_name(&name.to_string_lossy()))
     {
         cmd.env_remove(name);
     }
@@ -729,6 +729,24 @@ fn probe_version(path: &Path, timeout: Duration) -> Result<String, Rejection> {
         // install, not a launch target.
         Err(_) => Err(label_failed_probe(path)),
     }
+}
+
+fn is_sensitive_env_name(name: &str) -> bool {
+    let name = name.to_ascii_uppercase();
+    [
+        "API_KEY",
+        "TOKEN",
+        "AUTHORIZATION",
+        "PASSWORD",
+        "SECRET",
+        "CREDENTIAL",
+        "PRIVATE_KEY",
+        "CONNECTION_STRING",
+        "COOKIE",
+        "_KEY",
+    ]
+    .iter()
+    .any(|marker| name.contains(marker))
 }
 
 /// Who set `AMPLIHACK_{TOOL}_BINARY_PATH`, and therefore what a failing
