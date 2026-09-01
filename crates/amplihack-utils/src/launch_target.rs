@@ -290,6 +290,7 @@ pub(crate) fn extract_version(output: &str) -> Option<String> {
         .captures(&cleaned)
         .and_then(|captures| captures.get(1))
         .map(|matched| matched.as_str())
+        .map(|candidate| candidate.trim_end_matches('.'))
         .filter(|candidate| semver::Version::parse(candidate).is_ok())
         .map(str::to_string)
 }
@@ -1444,6 +1445,17 @@ mod tests {
             Some("2.1.83-beta.1+build.7")
         );
         assert_eq!(extract_version("Claude Code 02.1.83"), None);
+    }
+
+    #[test]
+    fn extract_version_ignores_sentence_punctuation_after_copilot_version() {
+        assert_eq!(
+            extract_version(
+                "GitHub Copilot CLI 1.0.83-1.\nRun 'copilot update' to check for updates."
+            )
+            .as_deref(),
+            Some("1.0.83-1")
+        );
     }
 
     #[test]
