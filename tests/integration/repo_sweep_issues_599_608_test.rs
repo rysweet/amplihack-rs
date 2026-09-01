@@ -13,6 +13,7 @@
 //! | TC-SWEEP-603  | #603  | Nonexistent Python hook refs in SKILL.md   |
 //! | TC-SWEEP-604  | #604  | Broken ~/.amplihack/ absolute paths in README |
 //! | TC-SWEEP-605  | #605  | GitHubDistributor feature-gated            |
+//! | TC-SWEEP-606  | #606  | LiteLLM proxy test serialization           |
 //! | TC-SWEEP-607  | #607  | docker_detector test serialization          |
 //!
 //! Issues #600, #601, #608 are GitHub-only (close duplicates / already-fixed)
@@ -346,6 +347,54 @@ mod github_distributor_gate {
         assert!(
             !toml.contains("github-distributor"),
             "github-distributor feature flag must be removed from Cargo.toml"
+        );
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// TC-SWEEP-606: LiteLLM proxy tests use the crate-wide serial lock
+// ═════════════════════════════════════════════════════════════════════════════
+
+mod litellm_serialization {
+    use super::*;
+
+    const PROXY_SRC: &str = "crates/amplihack-utils/src/litellm_proxy.rs";
+    const ROUTING_SRC: &str = "crates/amplihack-utils/src/litellm_proxy_routing.rs";
+
+    /// TC-SWEEP-606-01: The replacement modules must use the crate-wide lock.
+    #[test]
+    fn has_serial_lock() {
+        let proxy = read_file(PROXY_SRC);
+        let routing = read_file(ROUTING_SRC);
+        assert!(
+            proxy.contains("crate::test_serial::acquire()"),
+            "LiteLLM proxy tests must use the crate-wide test_serial lock"
+        );
+        assert!(
+            routing.contains("crate::test_serial::acquire()"),
+            "LiteLLM routing tests must use the crate-wide test_serial lock"
+        );
+    }
+
+    /// TC-SWEEP-606-02: Proxy environment mutation must acquire the lock.
+    #[test]
+    fn gateway_env_helper_uses_serial_lock() {
+        let src = read_file(PROXY_SRC);
+        let body = extract_test_body(&src, "with_gateway_env");
+        assert!(
+            body.contains("crate::test_serial::acquire()"),
+            "with_gateway_env must acquire the crate-wide test_serial lock"
+        );
+    }
+
+    /// TC-SWEEP-606-03: The removed callback module must not return.
+    #[test]
+    fn obsolete_callback_module_is_absent() {
+        assert!(
+            !workspace_root()
+                .join("crates/amplihack-utils/src/litellm_callbacks.rs")
+                .exists(),
+            "obsolete litellm_callbacks module must stay removed"
         );
     }
 }

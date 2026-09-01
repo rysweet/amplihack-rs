@@ -15,7 +15,7 @@ pub(super) fn validate_api_key(key: &str, value: &str) -> bool {
                 SK_RE.get_or_init(|| Regex::new(r"^sk-[a-zA-Z0-9\-_]+$").expect("static SK regex"));
             re.is_match(value)
         }
-        "GITHUB_TOKEN" | "GH_TOKEN" => {
+        "COPILOT_GITHUB_TOKEN" | "GITHUB_TOKEN" | "GH_TOKEN" => {
             let re = GH_RE.get_or_init(|| {
                 Regex::new(r"^(ghp_|ghs_|gho_|ghu_|github_pat_).+$|^[0-9a-fA-F]{40}$")
                     .expect("static GH token regex")
@@ -38,7 +38,8 @@ where
 {
     let mut forwarded = BTreeMap::new();
     let mut gateway_requested = false;
-    let mut provider_credentials = Vec::new();
+    let mut inference_credentials = Vec::new();
+    let mut github_credentials = Vec::new();
     for (key, value) in env_vars {
         let key = key.into().to_string_lossy().into_owned();
         let value = value.into().to_string_lossy().into_owned();
@@ -50,16 +51,20 @@ where
                 | amplihack_utils::litellm_proxy::MODEL_ENV
         ) {
             gateway_requested = true;
-            provider_credentials.clear();
+            inference_credentials.clear();
         }
 
+        if matches!(key.as_str(), "ANTHROPIC_API_KEY" | "OPENAI_API_KEY") {
+            if !gateway_requested {
+                inference_credentials.push((key, value));
+            }
+            continue;
+        }
         if matches!(
             key.as_str(),
-            "ANTHROPIC_API_KEY" | "OPENAI_API_KEY" | "GITHUB_TOKEN" | "GH_TOKEN"
+            "COPILOT_GITHUB_TOKEN" | "GITHUB_TOKEN" | "GH_TOKEN"
         ) {
-            if !gateway_requested {
-                provider_credentials.push((key, value));
-            }
+            github_credentials.push((key, value));
             continue;
         }
 
@@ -74,10 +79,15 @@ where
         }
     }
     if !gateway_requested {
-        for (key, value) in provider_credentials {
+        for (key, value) in inference_credentials {
             if validate_api_key(&key, &value) {
                 forwarded.insert(key, sanitize_env_value(&value));
             }
+        }
+    }
+    for (key, value) in github_credentials {
+        if validate_api_key(&key, &value) {
+            forwarded.insert(key, sanitize_env_value(&value));
         }
     }
     forwarded.insert("AMPLIHACK_IN_DOCKER".to_string(), "1".to_string());

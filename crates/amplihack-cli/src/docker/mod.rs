@@ -19,7 +19,7 @@ const DOCKER_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(super) fn docker_setup_command() -> Command {
     let mut command = Command::new("docker");
-    amplihack_utils::litellm_proxy::scrub_proxy_environment(&mut command);
+    amplihack_utils::litellm_proxy::scrub_inference_environment(&mut command);
     command
 }
 
@@ -228,12 +228,24 @@ mod tests {
     }
 
     #[test]
-    fn docker_setup_commands_remove_gateway_configuration() {
+    fn docker_setup_commands_remove_inference_configuration() {
         let command = docker_setup_command();
         for name in [
             amplihack_utils::litellm_proxy::ENDPOINT_ENV,
             amplihack_utils::litellm_proxy::API_KEY_ENV,
             amplihack_utils::litellm_proxy::MODEL_ENV,
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "AWS_SECRET_ACCESS_KEY",
+            "COPILOT_PROVIDER_BEARER_TOKEN",
+            "LITELLM_MASTER_KEY",
+            "LITELLM_SALT_KEY",
+            "LITELLM_UPSTREAM_MODEL",
+            "POSTGRES_PASSWORD",
+            "GF_SECURITY_ADMIN_PASSWORD",
+            "AZURE_API_KEY",
+            "AZURE_API_BASE",
+            "AZURE_API_VERSION",
         ] {
             assert_eq!(
                 command
@@ -461,8 +473,9 @@ mod tests {
                 ),
                 ("ANTHROPIC_API_KEY", anthropic_api_key.as_str()),
                 ("OPENAI_API_KEY", anthropic_api_key.as_str()),
-                ("GITHUB_TOKEN", "ghp_gatewayMustNotForward"),
-                ("GH_TOKEN", "ghs_gatewayMustNotForward"),
+                ("COPILOT_GITHUB_TOKEN", "ghu_gatewayMustForward"),
+                ("GITHUB_TOKEN", "ghp_gatewayMustForward"),
+                ("GH_TOKEN", "ghs_gatewayMustForward"),
                 ("TERM", "xterm-256color"),
             ],
         );
@@ -481,10 +494,14 @@ mod tests {
             args.windows(2)
                 .any(|window| { window[0] == "-e" && window[1] == "AMPLIHACK_LITELLM_API_KEY" })
         );
-        assert!(!args.iter().any(|arg| matches!(
-            arg.as_str(),
-            "ANTHROPIC_API_KEY" | "OPENAI_API_KEY" | "GITHUB_TOKEN" | "GH_TOKEN"
-        )));
+        assert!(
+            !args
+                .iter()
+                .any(|arg| matches!(arg.as_str(), "ANTHROPIC_API_KEY" | "OPENAI_API_KEY"))
+        );
+        assert!(args.iter().any(|arg| arg == "COPILOT_GITHUB_TOKEN"));
+        assert!(args.iter().any(|arg| arg == "GITHUB_TOKEN"));
+        assert!(args.iter().any(|arg| arg == "GH_TOKEN"));
         assert!(
             !args
                 .iter()
@@ -670,13 +687,16 @@ mod tests {
 
         let forwarded = forwarded_env_vars([
             ("ANTHROPIC_API_KEY", "sk-provider-must-not-forward"),
-            ("GITHUB_TOKEN", "ghp_providerMustNotForward"),
+            ("GITHUB_TOKEN", "ghp_providerMustForward"),
             ("AMPLIHACK_EXTERNAL_OTLP_AUTHORIZATION", "telemetry-secret"),
             ("AMPLIHACK_DATABASE_PASSWORD", "database-secret"),
             ("AMPLIHACK_LITELLM_API_KEY", "gateway-secret"),
         ]);
         assert!(!forwarded.contains_key("ANTHROPIC_API_KEY"));
-        assert!(!forwarded.contains_key("GITHUB_TOKEN"));
+        assert_eq!(
+            forwarded.get("GITHUB_TOKEN").map(String::as_str),
+            Some("ghp_providerMustForward")
+        );
         assert!(!forwarded.contains_key("AMPLIHACK_EXTERNAL_OTLP_AUTHORIZATION"));
         assert!(!forwarded.contains_key("AMPLIHACK_DATABASE_PASSWORD"));
         assert_eq!(
@@ -709,6 +729,10 @@ mod tests {
             (
                 "GITHUB_TOKEN",
                 sample_prefixed_value(&["github", "_pat_"], "abc123"),
+            ),
+            (
+                "COPILOT_GITHUB_TOKEN",
+                sample_prefixed_value(&["g", "hu_"], "abc123"),
             ),
             ("GH_TOKEN", sample_prefixed_value(&["g", "hp_"], "abc123")),
         ] {

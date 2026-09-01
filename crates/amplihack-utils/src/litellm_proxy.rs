@@ -19,6 +19,61 @@ pub const MODEL_ENV: &str = "AMPLIHACK_LITELLM_MODEL";
 pub const VERIFIED_CLAUDE_CODE_VERSIONS: &[&str] = &["2.1.247"];
 
 const CONFIG_ENV_VARS: [&str; 3] = [ENDPOINT_ENV, API_KEY_ENV, MODEL_ENV];
+const ANTHROPIC_DIRECT_ENV_VARS: [&str; 26] = [
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_CUSTOM_HEADERS",
+    "ANTHROPIC_BEDROCK_BASE_URL",
+    "ANTHROPIC_VERTEX_BASE_URL",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+    "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
+    "CLAUDE_CODE_SKIP_VERTEX_AUTH",
+    "ANTHROPIC_AWS_API_KEY",
+    "ANTHROPIC_AWS_REGION",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_PROFILE",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_SMALL_FAST_MODEL",
+    "CLAUDE_CODE_SUBAGENT_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL",
+];
+const COPILOT_DIRECT_ENV_VARS: [&str; 15] = [
+    "OPENAI_BASE_URL",
+    "OPENAI_API_KEY",
+    "COPILOT_PROVIDER_BEARER_TOKEN",
+    "COPILOT_PROVIDER_HEADERS",
+    "COPILOT_PROVIDER_WIRE_MODEL",
+    "COPILOT_PROVIDER_MODEL_ID",
+    "COPILOT_PROVIDER_GHES_HOST",
+    "COPILOT_PROVIDER_GHES_TOKEN",
+    "COPILOT_OFFLINE",
+    "COPILOT_PROVIDER_TRANSPORT",
+    "COPILOT_PROVIDER_API_KEY",
+    "COPILOT_PROVIDER_BASE_URL",
+    "COPILOT_PROVIDER_TYPE",
+    "COPILOT_PROVIDER_WIRE_API",
+    "COPILOT_MODEL",
+];
+const GATEWAY_OPERATOR_ENV_VARS: [&str; 8] = [
+    "LITELLM_MASTER_KEY",
+    "LITELLM_SALT_KEY",
+    "LITELLM_UPSTREAM_MODEL",
+    "POSTGRES_PASSWORD",
+    "GF_SECURITY_ADMIN_PASSWORD",
+    "AZURE_API_KEY",
+    "AZURE_API_BASE",
+    "AZURE_API_VERSION",
+];
 
 #[path = "litellm_proxy_routing.rs"]
 mod routing;
@@ -125,28 +180,7 @@ impl ProxyConfig {
                 } else {
                     command.env_remove("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB");
                 }
-                remove_env(
-                    command,
-                    &[
-                        "ANTHROPIC_API_KEY",
-                        "ANTHROPIC_CUSTOM_HEADERS",
-                        "ANTHROPIC_BEDROCK_BASE_URL",
-                        "ANTHROPIC_VERTEX_BASE_URL",
-                        "CLAUDE_CODE_USE_BEDROCK",
-                        "CLAUDE_CODE_USE_VERTEX",
-                        "CLAUDE_CODE_USE_FOUNDRY",
-                        "CLAUDE_CODE_USE_ANTHROPIC_AWS",
-                        "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
-                        "CLAUDE_CODE_SKIP_VERTEX_AUTH",
-                        "ANTHROPIC_AWS_API_KEY",
-                        "ANTHROPIC_AWS_REGION",
-                        "AWS_ACCESS_KEY_ID",
-                        "AWS_SECRET_ACCESS_KEY",
-                        "AWS_SESSION_TOKEN",
-                        "AWS_PROFILE",
-                        "GOOGLE_APPLICATION_CREDENTIALS",
-                    ],
-                );
+                remove_env(command, &ANTHROPIC_DIRECT_ENV_VARS);
                 command.env(
                     "ANTHROPIC_BASE_URL",
                     anthropic_base_url(&self.endpoint).as_str(),
@@ -161,21 +195,7 @@ impl ProxyConfig {
                 command.env("ANTHROPIC_DEFAULT_FABLE_MODEL", &self.model);
             }
             CliTarget::CopilotCli => {
-                remove_env(
-                    command,
-                    &[
-                        "OPENAI_BASE_URL",
-                        "OPENAI_API_KEY",
-                        "COPILOT_PROVIDER_BEARER_TOKEN",
-                        "COPILOT_PROVIDER_HEADERS",
-                        "COPILOT_PROVIDER_WIRE_MODEL",
-                        "COPILOT_PROVIDER_MODEL_ID",
-                        "COPILOT_PROVIDER_GHES_HOST",
-                        "COPILOT_PROVIDER_GHES_TOKEN",
-                        "COPILOT_OFFLINE",
-                        "COPILOT_PROVIDER_TRANSPORT",
-                    ],
-                );
+                remove_env(command, &COPILOT_DIRECT_ENV_VARS);
                 command.env(
                     "COPILOT_PROVIDER_BASE_URL",
                     copilot_base_url(&self.endpoint).as_str(),
@@ -328,6 +348,15 @@ pub fn validate_environment() -> Result<bool, ProxyError> {
 /// validated configuration is projected only onto the final supported agent.
 pub fn scrub_proxy_environment(command: &mut Command) {
     remove_env(command, &CONFIG_ENV_VARS);
+}
+
+/// Remove gateway configuration and direct-provider credentials from setup
+/// processes that never need inference access.
+pub fn scrub_inference_environment(command: &mut Command) {
+    scrub_proxy_environment(command);
+    remove_env(command, &ANTHROPIC_DIRECT_ENV_VARS);
+    remove_env(command, &COPILOT_DIRECT_ENV_VARS);
+    remove_env(command, &GATEWAY_OPERATOR_ENV_VARS);
 }
 
 pub fn apply_proxy_to_command(

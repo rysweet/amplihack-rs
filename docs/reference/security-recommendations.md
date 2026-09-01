@@ -25,6 +25,13 @@ environment. Do not put the key in command arguments or project configuration.
 Restrict it in LiteLLM by tenant, route, model alias, budget, and rate; the
 client-selected model is not an authorization control.
 
+For the supplied operator deployment, generate `LITELLM_SALT_KEY` independently
+from `LITELLM_MASTER_KEY` before first startup. Retain the salt key permanently:
+LiteLLM uses it to encrypt database credentials, and changing it after models
+or credentials are stored makes those records unreadable. The independent salt
+allows the administrative master key to rotate without re-encrypting stored
+credentials.
+
 Launch setup subprocesses do not receive any `AMPLIHACK_LITELLM_*` variable.
 Amplihack validates the configuration once and projects translated credentials
 only onto the final supported agent command.

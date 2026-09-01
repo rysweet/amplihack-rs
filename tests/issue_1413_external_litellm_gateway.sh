@@ -5,6 +5,9 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_root"
 
 bash -n observability/litellm/bootstrap-key.sh
+grep -Fq 'LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:?set permanent LITELLM_SALT_KEY in .env}' \
+  observability/litellm/docker-compose.yml
+grep -Fq 'LITELLM_SALT_KEY=' observability/litellm/.env.example
 
 if grep -R -E 'LiteLlmClient|litellm_callbacks|AMPLIHACK_LITELLM_(QUEUE|RATE|INPUT|OUTPUT|COST)' \
   crates docs observability --exclude='issue_1413_external_litellm_gateway.sh'; then
@@ -29,11 +32,18 @@ if grep -E '^[[:space:]]+- "[^"]+:[0-9]+:[0-9]+"' \
   echo "published service port is not bound to loopback" >&2
   exit 1
 fi
-if grep -Eq 'AMPLIHACK_KEY_(MAX_BUDGET|BUDGET_DURATION|REQUESTS_PER_MINUTE):-.+' \
-  observability/litellm/docker-compose.yml; then
-  echo "virtual-key controls must be disabled by default" >&2
+grep -Fq 'AMPLIHACK_KEY_MAX_BUDGET: ${AMPLIHACK_KEY_MAX_BUDGET:-}' \
+  observability/litellm/docker-compose.yml
+grep -Fq 'AMPLIHACK_KEY_BUDGET_DURATION: ${AMPLIHACK_KEY_BUDGET_DURATION:-}' \
+  observability/litellm/docker-compose.yml
+grep -Fq 'AMPLIHACK_KEY_REQUESTS_PER_MINUTE: ${AMPLIHACK_KEY_REQUESTS_PER_MINUTE:-}' \
+  observability/litellm/docker-compose.yml
+grep -Fq 'payload = {' observability/litellm/bootstrap-key.sh
+if grep -Fq 'payload = json.dumps({' observability/litellm/bootstrap-key.sh; then
+  echo "virtual-key request payload must remain an object until serialization" >&2
   exit 1
 fi
+grep -Fq 'data=json.dumps(payload).encode()' observability/litellm/bootstrap-key.sh
 test "$(grep -cE '^[[:space:]]+- otel$' observability/litellm/config.yaml)" -eq 2
 grep -Fq 'turn_off_message_logging: true' observability/litellm/config.yaml
 for collector in \

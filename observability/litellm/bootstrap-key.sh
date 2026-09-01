@@ -36,16 +36,6 @@ key=
 temporary_key_file=
 backup_key_file=
 rotation_committed=0
-compose_exec=(docker compose exec -T)
-for name in \
-  AMPLIHACK_KEY_MAX_BUDGET \
-  AMPLIHACK_KEY_BUDGET_DURATION \
-  AMPLIHACK_KEY_REQUESTS_PER_MINUTE
-do
-  if [[ -v "$name" && -n "${!name}" ]]; then
-    compose_exec+=(-e "$name")
-  fi
-done
 cleanup_rotation() {
   if [[ -n "$temporary_key_file" ]]; then
     rm -f "$temporary_key_file"
@@ -63,16 +53,16 @@ cleanup_rotation() {
 trap cleanup_rotation EXIT
 
 key="$(
-  "${compose_exec[@]}" litellm python -c '
+  docker compose exec -T litellm python -c '
 import json
 import os
 import urllib.request
 import uuid
 
-payload = json.dumps({
+payload = {
     "models": ["amplihack-default"],
     "key_alias": "amplihack-local-agent-" + uuid.uuid4().hex,
-})
+}
 budget = os.environ.get("AMPLIHACK_KEY_MAX_BUDGET")
 duration = os.environ.get("AMPLIHACK_KEY_BUDGET_DURATION")
 if bool(budget) != bool(duration):

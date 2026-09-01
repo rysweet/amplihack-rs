@@ -86,6 +86,8 @@ pub fn validate_launch_args(target: CliTarget, args: &[String]) -> Result<(), Pr
             CliTarget::CopilotCli => {
                 *arg == "--agent"
                     || arg.starts_with("--agent=")
+                    || *arg == "-C"
+                    || (arg.starts_with("-C") && !arg.starts_with("--"))
                     || *arg == "--add-dir"
                     || arg.starts_with("--add-dir=")
                     || *arg == "--plugin-dir"
@@ -208,6 +210,9 @@ mod tests {
                     "--share",
                     "--connect",
                     "--agent",
+                    "-C",
+                    "-C=/tmp/project",
+                    "-C/tmp/project",
                     "--add-dir",
                     "--secret-env-vars",
                     "--continue",

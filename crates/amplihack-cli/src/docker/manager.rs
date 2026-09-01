@@ -88,7 +88,7 @@ impl DockerManager {
         let run_args = self.build_run_args(cwd, amplihack_args, env::vars_os());
         let mut command = Command::new("docker");
         command.args(&run_args);
-        amplihack_utils::litellm_proxy::scrub_proxy_environment(&mut command);
+        amplihack_utils::litellm_proxy::scrub_inference_environment(&mut command);
         command.envs(
             forwarded_env_vars(env::vars_os())
                 .into_iter()
