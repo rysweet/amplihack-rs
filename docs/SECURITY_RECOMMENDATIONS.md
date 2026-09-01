@@ -21,18 +21,32 @@ environment. Do not put the key in command arguments or project configuration.
 Restrict it at the gateway by tenant, route, model alias, budget, and rate.
 Client-side model selection is not an authorization boundary.
 
-Launch setup subprocesses do not receive any `AMPLIHACK_LITELLM_*` variable.
-Amplihack validates the configuration once and projects translated credentials
-only onto the final supported agent command.
+Launch setup subprocesses, including Docker probes and builds, do not receive
+any `AMPLIHACK_LITELLM_*` variable. Amplihack validates the configuration once
+and projects translated credentials only onto the final supported agent
+command. The narrow Docker transport exception is the trusted final
+`docker run` client: it receives only the restricted virtual key so it can
+inject that key into the final container. The endpoint and model remain
+command arguments, not gateway environment variables.
 
 Amplihack currently permits Claude Code `2.1.247` and sets
 `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` for routed Claude Code processes. It probes
 the exact executable before checkout, auto-mode staging, launch setup, session
 tracking, or Docker operations and fails closed when the executable is missing,
 the probe fails, output is malformed or unknown, or the release is outside the
-runtime-attested set. RustyClawd does not
-provide a verified equivalent, so its complete descendant process tree remains
-credential-trusted.
+runtime-attested set.
+
+Routed Copilot CLI similarly requires the exact runtime-attested release
+`1.0.83-1`. Amplihack supplies
+`--secret-env-vars=COPILOT_PROVIDER_API_KEY`, which keeps the restricted
+gateway key in Copilot while removing it from shell and stdio MCP subprocess
+environments and redacting it from tool output. Missing, failed, malformed,
+ambiguous, or unverified version probes fail closed. Routed launches also
+disable Copilot auto-update so the attested executable cannot drift during the
+session.
+
+RustyClawd does not provide a verified equivalent, so its complete descendant
+process tree remains credential-trusted.
 
 ### 2. Tool Calling Configuration
 

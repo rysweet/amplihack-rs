@@ -236,7 +236,20 @@ fn routed_copilot_rejects_repository_custom_agents() {
 
 #[test]
 fn real_copilot_confirms_isolated_home_does_not_disable_repository_scope() {
-    if Command::new("copilot").arg("--version").output().is_err() {
+    let _env_guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Ok(version_output) = Command::new("copilot").arg("--version").output() else {
+        return;
+    };
+    if !version_output.status.success() {
+        return;
+    }
+    let version_stdout = String::from_utf8_lossy(&version_output.stdout);
+    if !matches!(
+        version_stdout.lines().next(),
+        Some("GitHub Copilot CLI 1.0.83-1" | "GitHub Copilot CLI 1.0.83-1.")
+    ) {
         return;
     }
 
@@ -777,10 +790,58 @@ fn copilot_skips_remote_when_litellm_proxy_is_requested() {
             "LiteLLM routing must disable Copilot session export; got {args:?}"
         );
         assert!(
+            args.iter().any(|arg| arg == "--no-auto-update"),
+            "LiteLLM routing must disable Copilot auto-update; got {args:?}"
+        );
+        assert!(
             args.iter()
                 .any(|arg| arg == "--secret-env-vars=COPILOT_PROVIDER_API_KEY"),
             "LiteLLM routing must hide the gateway key from Copilot tools; got {args:?}"
         );
+    });
+}
+
+#[test]
+fn routed_copilot_restrictions_follow_conflicting_user_arguments() {
+    with_uvx_detection_disabled(|| {
+        let previous = std::env::var_os(amplihack_utils::litellm_proxy::ENDPOINT_ENV);
+        unsafe {
+            std::env::set_var(
+                amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+                "http://127.0.0.1:4000",
+            );
+        }
+        let binary = BinaryInfo {
+            name: "copilot".to_string(),
+            path: PathBuf::from("/usr/bin/copilot"),
+            version: None,
+        };
+        let cmd = build_command(
+            &binary,
+            false,
+            false,
+            false,
+            &["--remote".to_string(), "--remote-export".to_string()],
+        );
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect();
+        match previous {
+            Some(value) => unsafe {
+                std::env::set_var(amplihack_utils::litellm_proxy::ENDPOINT_ENV, value)
+            },
+            None => unsafe { std::env::remove_var(amplihack_utils::litellm_proxy::ENDPOINT_ENV) },
+        }
+
+        let position = |flag: &str| {
+            args.iter()
+                .rposition(|arg| arg == flag)
+                .unwrap_or_else(|| panic!("missing {flag}: {args:?}"))
+        };
+        assert!(position("--no-remote") > position("--remote"));
+        assert!(position("--no-remote-export") > position("--remote-export"));
+        assert!(args.iter().any(|arg| arg == "--no-auto-update"));
     });
 }
 

@@ -81,13 +81,16 @@ launch.
 Claude Code receives `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`, which requests that
 Claude keep the gateway token in its process while removing Anthropic and cloud
 credentials from Bash, hook, and stdio MCP subprocess environments.
+Copilot receives `--secret-env-vars=COPILOT_PROVIDER_API_KEY`, which keeps the
+gateway token in the CLI while removing and redacting it from shell and stdio
+MCP subprocesses.
 
 RustyClawd does not provide a verified equivalent control. Its process and all
 descendants are therefore inside the credential trust boundary. Use a
 short-lived LiteLLM virtual key restricted at the gateway by tenant, route,
 model alias, budget, and rate, and launch RustyClawd only in trusted worktrees.
 
-## Claude Code capability gate
+## Agent CLI capability gates
 
 Claude Code routing currently requires the exact `claude` executable selected
 for launch to report version `2.1.247`. This is an explicit attestation set, not
@@ -104,6 +107,12 @@ check; setting the flag manually does not bypass the exact-version policy.
 On Linux, the verified Claude release enforces this boundary with `bubblewrap`
 and `socat` and refuses to start if either dependency is unavailable.
 
+Copilot routing likewise requires the exact selected `copilot` executable to
+report `1.0.83-1`. Later, earlier, malformed, and missing versions are rejected
+until the real-CLI shell isolation contract passes and the attestation set is
+updated. This gate is applied only when external LiteLLM routing is requested;
+ordinary Copilot launches retain their existing version behavior.
+
 ## Ownership boundary
 
 | Concern | Owner |
@@ -118,10 +127,10 @@ and `socat` and refuses to start if either dependency is unavailable.
 The integration supports `launch`, `claude`, `copilot`, and `rustyclawd`.
 Codex, Amplifier, and unknown launch targets are rejected while gateway
 routing is configured. Host-side `--docker` and `AMPLIHACK_USE_DOCKER` launches
-of routed Claude Code are rejected because the container executable cannot be
-attested before Docker operations; a launch already inside a trusted container
-probes its exact executable normally. Docker routing for other supported
-targets requires a container-reachable HTTPS gateway and a compatible image.
+of routed Claude Code and Copilot are rejected because the container executable
+cannot be attested before Docker operations; a launch already inside a trusted
+container probes its exact executable normally. Docker routing for RustyClawd
+requires a container-reachable HTTPS gateway and a compatible image.
 When the fixed default image exists but its routing revision or amplihack
 version label is stale, the launcher rebuilds it automatically before launch.
 Source checkouts with a root Dockerfile rebuild from that definition. Installed

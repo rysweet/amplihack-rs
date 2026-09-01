@@ -277,22 +277,33 @@ const MAX_PROBE_CANDIDATES: usize = 8;
 /// output carries no complete semantic version, which makes the candidate
 /// [`Rejection::UnparseableVersion`] — not a target with an unknown version.
 pub(crate) fn extract_version(output: &str) -> Option<String> {
-    static SEMVER: LazyLock<regex::Regex> = LazyLock::new(|| {
-        regex::Regex::new(
-            r"(?:^|[^0-9A-Za-z-])v?([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)(?:$|[^0-9A-Za-z+.-])",
-        )
-        .expect("static semver candidate regex")
+    static VERSION_TOKEN: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(?:^|[^0-9A-Za-z+.-])v?([0-9][0-9A-Za-z+.-]*)")
+            .expect("static version token regex")
     });
     // SEC-3: strip BEFORE matching, so an ESC sequence can neither hide inside
     // the captured version nor survive into the log line or the user's TTY.
     let cleaned = strip_ansi(output);
-    SEMVER
-        .captures(&cleaned)
-        .and_then(|captures| captures.get(1))
-        .map(|matched| matched.as_str())
-        .map(|candidate| candidate.trim_end_matches('.'))
-        .filter(|candidate| semver::Version::parse(candidate).is_ok())
-        .map(str::to_string)
+    let mut candidates = VERSION_TOKEN
+        .captures_iter(&cleaned)
+        .filter_map(|captures| {
+            let token = captures.get(1)?.as_str();
+            let candidate = match token.strip_suffix('.') {
+                // A single sentence-ending period is accepted. Leaving an earlier
+                // period in place makes repeated punctuation fail semver parsing.
+                Some(without_period) if !without_period.ends_with('.') => without_period,
+                Some(_) => return None,
+                None => token,
+            };
+            semver::Version::parse(candidate)
+                .ok()
+                .map(|_| candidate.to_string())
+        });
+    let candidate = candidates.next()?;
+    if candidates.next().is_some() {
+        return None;
+    }
+    Some(candidate)
 }
 
 /// The entire fix for the reinstall-on-every-launch defect, as a pure function.
@@ -1444,7 +1455,24 @@ mod tests {
             extract_version("Claude Code v2.1.83-beta.1+build.7").as_deref(),
             Some("2.1.83-beta.1+build.7")
         );
+        assert_eq!(
+            extract_version("Node 24; Claude Code 2.1.83").as_deref(),
+            Some("2.1.83")
+        );
         assert_eq!(extract_version("Claude Code 02.1.83"), None);
+    }
+
+    #[test]
+    fn extract_version_rejects_ambiguous_semver_candidates() {
+        assert_eq!(
+            extract_version("runtime 1.0.83-1; GitHub Copilot CLI 9.9.9"),
+            None
+        );
+        assert_eq!(
+            extract_version("dependency 2.1.247; Claude Code 9.9.9"),
+            None
+        );
+        assert_eq!(extract_version("Claude Code 2.1.247 (2.1.247)"), None);
     }
 
     #[test]
@@ -1456,6 +1484,12 @@ mod tests {
             .as_deref(),
             Some("1.0.83-1")
         );
+    }
+
+    #[test]
+    fn extract_version_rejects_embedded_or_repeatedly_terminated_versions() {
+        assert_eq!(extract_version("GitHub Copilot CLI 9.1.0.83-1"), None);
+        assert_eq!(extract_version("GitHub Copilot CLI 1.0.83-1..."), None);
     }
 
     #[test]

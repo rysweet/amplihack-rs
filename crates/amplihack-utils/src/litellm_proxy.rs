@@ -17,6 +17,9 @@ pub const MODEL_ENV: &str = "AMPLIHACK_LITELLM_MODEL";
 // Every entry must pass tests/issue_1414_claude_subprocess_scrub.sh as the real
 // published CLI artifact before it is added here.
 pub const VERIFIED_CLAUDE_CODE_VERSIONS: &[&str] = &["2.1.247"];
+// Every entry must pass tests/issue_1416_copilot_subprocess_scrub.sh as the real
+// published CLI artifact before it is added here.
+pub const VERIFIED_COPILOT_CLI_VERSIONS: &[&str] = &["1.0.83-1"];
 
 const CONFIG_ENV_VARS: [&str; 3] = [ENDPOINT_ENV, API_KEY_ENV, MODEL_ENV];
 const ANTHROPIC_DIRECT_ENV_VARS: [&str; 26] = [
@@ -125,6 +128,50 @@ pub fn require_claude_code_capability(version: Option<&str>) -> Result<(), Proxy
         ))),
         ClaudeCodeCapability::Unknown => Err(ProxyError::InvalidConfig(format!(
             "Claude Code version could not be verified; verified version required for external LiteLLM routing: {verified}"
+        ))),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CopilotCliCapability {
+    Supported { version: String },
+    Unsupported { version: String },
+    Malformed { reported: String },
+    Unknown,
+}
+
+pub fn copilot_cli_capability(version: Option<&str>) -> CopilotCliCapability {
+    let Some(reported) = version else {
+        return CopilotCliCapability::Unknown;
+    };
+    if Version::parse(reported).is_err() {
+        return CopilotCliCapability::Malformed {
+            reported: reported.to_string(),
+        };
+    }
+    if VERIFIED_COPILOT_CLI_VERSIONS.contains(&reported) {
+        CopilotCliCapability::Supported {
+            version: reported.to_string(),
+        }
+    } else {
+        CopilotCliCapability::Unsupported {
+            version: reported.to_string(),
+        }
+    }
+}
+
+pub fn require_copilot_cli_capability(version: Option<&str>) -> Result<(), ProxyError> {
+    let verified = VERIFIED_COPILOT_CLI_VERSIONS.join(", ");
+    match copilot_cli_capability(version) {
+        CopilotCliCapability::Supported { .. } => Ok(()),
+        CopilotCliCapability::Unsupported { version } => Err(ProxyError::InvalidConfig(format!(
+            "GitHub Copilot CLI {version} cannot safely use external LiteLLM routing; verified version required: {verified}"
+        ))),
+        CopilotCliCapability::Malformed { .. } => Err(ProxyError::InvalidConfig(format!(
+            "GitHub Copilot CLI reported a malformed version; verified version required for external LiteLLM routing: {verified}"
+        ))),
+        CopilotCliCapability::Unknown => Err(ProxyError::InvalidConfig(format!(
+            "GitHub Copilot CLI version could not be verified; verified version required for external LiteLLM routing: {verified}"
         ))),
     }
 }
@@ -460,6 +507,45 @@ mod tests {
 
         assert_eq!(claude_code_capability(None), ClaudeCodeCapability::Unknown);
         assert!(require_claude_code_capability(None).is_err());
+    }
+
+    #[test]
+    fn copilot_cli_capability_accepts_only_runtime_verified_releases() {
+        assert_eq!(
+            copilot_cli_capability(Some("1.0.83-1")),
+            CopilotCliCapability::Supported {
+                version: "1.0.83-1".to_string()
+            }
+        );
+        assert!(require_copilot_cli_capability(Some("1.0.83-1")).is_ok());
+    }
+
+    #[test]
+    fn copilot_cli_capability_rejects_unverified_missing_and_malformed_versions() {
+        for version in [
+            "1.0.83",
+            "1.0.83-2",
+            "1.0.84-1",
+            "2.0.0",
+            "not-a-version",
+            "",
+            "1.0",
+        ] {
+            let capability = copilot_cli_capability(Some(version));
+            assert!(
+                !matches!(capability, CopilotCliCapability::Supported { .. }),
+                "{version} must not prove subprocess environment scrubbing"
+            );
+            let error = require_copilot_cli_capability(Some(version))
+                .expect_err("unsupported capability must fail closed");
+            assert!(
+                !format!("{error}").contains("gateway-secret"),
+                "capability errors must not disclose credentials"
+            );
+        }
+
+        assert_eq!(copilot_cli_capability(None), CopilotCliCapability::Unknown);
+        assert!(require_copilot_cli_capability(None).is_err());
     }
 
     #[test]

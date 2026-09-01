@@ -32,9 +32,13 @@ or credentials are stored makes those records unreadable. The independent salt
 allows the administrative master key to rotate without re-encrypting stored
 credentials.
 
-Launch setup subprocesses do not receive any `AMPLIHACK_LITELLM_*` variable.
-Amplihack validates the configuration once and projects translated credentials
-only onto the final supported agent command.
+Launch setup subprocesses, including Docker probes and builds, do not receive
+any `AMPLIHACK_LITELLM_*` variable. Amplihack validates the configuration once
+and projects translated credentials only onto the final supported agent
+command. The narrow Docker transport exception is the trusted final
+`docker run` client: it receives only the restricted virtual key so it can
+inject that key into the final container. The endpoint and model remain
+command arguments, not gateway environment variables.
 
 Amplihack currently permits Claude Code `2.1.247` and sets
 `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`. That exact release is pinned because the
@@ -47,6 +51,15 @@ creation. Missing executables, failed probes, malformed or unknown output, and
 all unverified versions fail closed. On Linux, Claude's scrub enforcement also
 requires `bubblewrap` and `socat`; Claude refuses to start if either dependency
 is unavailable.
+Routed Copilot CLI requires the exact runtime-attested release `1.0.83-1` and
+receives `--secret-env-vars=COPILOT_PROVIDER_API_KEY`. The verified control
+keeps the restricted gateway key in Copilot while removing it from shell and
+stdio MCP subprocess environments and redacting it from tool output. Missing,
+failed, malformed, ambiguous, or unverified version probes fail closed. Routed
+launches disable Copilot auto-update; a new release remains blocked until the
+real-CLI shell and stdio MCP isolation contract passes and the verified-version
+set is updated.
+
 RustyClawd has no verified subprocess-scrubbing capability, so treat its
 complete descendant process tree as credential-trusted.
 

@@ -72,8 +72,16 @@ PY
 done
 
 if ! docker info >/dev/null 2>&1; then
-  echo "Docker daemon unavailable; static deployment checks passed, smoke test skipped."
-  exit 0
+  if [[ "${CI:-}" == "true" ]]; then
+    echo "Docker is required for the external LiteLLM smoke test in CI." >&2
+    exit 1
+  fi
+  if [[ "${LITELLM_SMOKE_OPTIONAL:-0}" == "1" ]]; then
+    echo "Docker unavailable; static deployment checks passed and LITELLM_SMOKE_OPTIONAL=1 permits a local skip."
+    exit 0
+  fi
+  echo "Docker is unavailable; set LITELLM_SMOKE_OPTIONAL=1 only for an explicit local skip." >&2
+  exit 1
 fi
 
 litellm_image="$(

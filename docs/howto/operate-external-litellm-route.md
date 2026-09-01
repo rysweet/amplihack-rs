@@ -45,6 +45,22 @@ The probe will run without gateway or direct-provider credentials.
 On Linux, install `bubblewrap` and `socat`; Claude's scrub mode refuses to start
 without both sandbox dependencies.
 
+Copilot CLI receives `--secret-env-vars=COPILOT_PROVIDER_API_KEY`, and
+amplihack requires the exact selected executable to report the currently
+verified version, `1.0.83-1`:
+
+```bash
+command -v copilot
+copilot --version
+```
+
+The runtime-attested control removes the gateway key from shell and stdio MCP
+subprocess environments and redacts it from tool output. Missing, failed,
+malformed, ambiguous, or unverified version probes fail closed. Routed
+launches disable Copilot auto-update, so later releases remain blocked until
+the real-CLI isolation contract passes and the verified-version set is
+updated.
+
 ## Rotate a virtual key
 
 Update the value in the secret manager, then refresh the launch environment:
@@ -103,7 +119,7 @@ Copilot home.
 | Launch option is rejected | Remove remote, export, share, resume, provider, custom-agent, `--add-dir`, or conflicting model controls. |
 | Copilot workspace is rejected | Remove or rename `.github/agents`, or disable routing before using repository custom agents. |
 | Launcher is rejected | Use Claude Code, Copilot CLI, or rustyclawd, or unset all gateway variables. |
-| Docker Claude launch is rejected | Launch Claude outside Docker, or enter a trusted container and launch there so amplihack can attest the exact executable before agent startup. |
+| Docker Claude or Copilot launch is rejected | Launch outside Docker, or enter a trusted container and launch there so amplihack can attest the exact executable before agent startup. |
 | Gateway cannot be reached | Check the child CLI error, gateway health, DNS, TLS trust, and firewall. Amplihack does not probe or retry the gateway. |
 
 | Symptom | Action |
@@ -111,6 +127,8 @@ Copilot home.
 | Claude Code version cannot be verified | Run `command -v claude` and `claude --version` in the same environment. Install an official Claude Code executable whose output contains a valid semantic version. |
 | Claude Code version is not `2.1.247` | Install the verified release. Future releases remain blocked until the real-CLI Bash, hook, and stdio MCP isolation test is rerun and the attestation set is updated. |
 | Claude reports a missing sandbox dependency | On Linux, install `bubblewrap` and `socat`, then retry. Do not disable `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`. |
+| Copilot CLI version cannot be verified | Run `command -v copilot` and `copilot --version` in the same environment. Install the official Copilot CLI executable. |
+| Copilot CLI version is not `1.0.83-1` | Install the verified release. Later releases remain blocked until the real-CLI shell and stdio MCP isolation test is rerun and the attestation set is updated. |
 
 ## Operate gateway-owned concerns
 

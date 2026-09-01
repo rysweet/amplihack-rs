@@ -69,8 +69,14 @@ fn validate_gateway_auto_mode(tool: auto_mode::AutoModeTool, args: &[String]) ->
     };
     amplihack_utils::litellm_proxy::validate_launch_args(target, args)
         .context("invalid external LiteLLM proxy launch arguments")?;
-    if target == amplihack_utils::litellm_proxy::CliTarget::Claude {
-        launch::preflight_claude_proxy_binary("claude", OverrideOrigin::User)?;
+    match target {
+        amplihack_utils::litellm_proxy::CliTarget::Claude => {
+            launch::preflight_claude_proxy_binary("claude", OverrideOrigin::User)?;
+        }
+        amplihack_utils::litellm_proxy::CliTarget::CopilotCli => {
+            launch::preflight_copilot_proxy_binary("copilot", OverrideOrigin::User)?;
+        }
+        amplihack_utils::litellm_proxy::CliTarget::RustyClawd => {}
     }
     Ok(())
 }

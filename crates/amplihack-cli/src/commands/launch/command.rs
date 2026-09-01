@@ -182,12 +182,6 @@ pub(super) fn build_command_for_dir(
         }
     }
 
-    if binary.name == "copilot" && amplihack_utils::litellm_proxy::proxy_requested() {
-        cmd.arg("--no-remote");
-        cmd.arg("--no-remote-export");
-        cmd.arg("--secret-env-vars=COPILOT_PROVIDER_API_KEY");
-    }
-
     if binary.name == "claude" && amplihack_utils::litellm_proxy::proxy_requested() {
         cmd.arg("--setting-sources");
         cmd.arg("");
@@ -226,6 +220,17 @@ pub(super) fn build_command_for_dir(
     }
 
     cmd.args(extra_args);
+
+    // These routed-Copilot restrictions deliberately come last. Copilot has
+    // enabling counterparts for remote control and export, so user arguments
+    // must not override the gateway isolation contract. It has no enabling
+    // counterpart for `--no-auto-update`.
+    if binary.name == "copilot" && amplihack_utils::litellm_proxy::proxy_requested() {
+        cmd.arg("--no-remote");
+        cmd.arg("--no-remote-export");
+        cmd.arg("--no-auto-update");
+        cmd.arg("--secret-env-vars=COPILOT_PROVIDER_API_KEY");
+    }
     cmd
 }
 

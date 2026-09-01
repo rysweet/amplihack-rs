@@ -20,26 +20,29 @@ running. Amplihack does not install or start the gateway.
 - a restricted LiteLLM virtual key; and
 - a gateway model alias supported by that deployment.
 
-Use Claude Code `2.1.247` when routing Claude. Amplihack enforces this
-version requirement. Copilot CLI and RustyClawd do not use the Claude-specific
-version gate.
+Use Claude Code `2.1.247` when routing Claude and GitHub Copilot CLI
+`1.0.83-1` when routing Copilot. Amplihack enforces these exact version
+requirements. RustyClawd does not use an exact-version gate.
 
 Do not use a LiteLLM administrative key or an upstream provider key.
 
-## 1. Verify Claude Code capability
+## 1. Verify agent CLI capability
 
-If you intend to launch Claude Code, verify the executable that amplihack will
-select:
+If you intend to launch Claude Code or Copilot, verify the executable that
+amplihack will select:
 
 ```bash
 command -v claude
 claude --version
+command -v copilot
+copilot --version
 ```
 
-The reported semantic version must be exactly `2.1.247`. Amplihack repeats this
-probe before setup and rejects missing executables, failed probes, malformed or
-unrecognized output, prereleases, and every release outside the runtime-tested
-attestation set. It does not fall back to direct Anthropic routing.
+Claude must report exactly `2.1.247`; Copilot must report exactly `1.0.83-1`.
+Amplihack repeats the applicable probe before setup and rejects missing
+executables, failed probes, malformed or unrecognized output, and every release
+outside the runtime-tested attestation set. It does not fall back to direct
+provider routing.
 
 ## 2. Configure the route
 
@@ -72,15 +75,15 @@ amplihack claude
 
 Before the agent starts, amplihack validates the three values, rejects
 conflicting launch controls, and projects the gateway route into the child
-environment. For Claude Code, it validates the exact selected executable before
-launch setup and requests subprocess environment scrubbing. The version probe
-does not receive the gateway key or direct provider credentials. The child CLI
-connects to the gateway directly.
+environment. For Claude Code and Copilot, it validates the exact selected
+executable before launch setup and requests subprocess environment scrubbing.
+The version probe does not receive the gateway key or direct provider
+credentials. The child CLI connects to the gateway directly.
 
-Routed Claude Code cannot be started with host-side `--docker` or
-`AMPLIHACK_USE_DOCKER`, because amplihack cannot attest the container's
-executable before Docker operations. Launch outside Docker, or start
-amplihack from inside a trusted container.
+Routed Claude Code and Copilot cannot be started with host-side `--docker` or
+`AMPLIHACK_USE_DOCKER`, because amplihack cannot attest the container
+executables before Docker operations. Launch outside Docker, or start amplihack
+from inside a trusted container.
 
 ## 4. Verify disable
 
