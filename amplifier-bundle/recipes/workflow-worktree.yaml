@@ -105,6 +105,26 @@ steps:
       EXISTING_BRANCH="${EXISTING_BRANCH:-}"
       PR_NUMBER="${PR_NUMBER:-}"
 
+      # EXPLICIT BRANCH WINS (#1426). A task that NAMES its branch — `Branch: <ref>`,
+      # or `BRANCH — already created and checked out in this worktree:` with the ref
+      # on the next line — has already answered the question. Deriving a second name
+      # from the opening characters of the prose produced refs such as
+      # `feat/issue-142-repository-usersryansrcmistt-qaws142jamestown-gith`, competing
+      # with the `fix/142-band-edge-previous-slice` the same task had pinned.
+      # Detection lives in tools/workflow_branch_name.sh — extraction, not compression:
+      # this brick is at its 400-line budget (scripts/check-brick-budget.sh).
+      # A named branch that already exists is handed to the existing-branch path below
+      # so the run REUSES it; otherwise it is created verbatim under that exact name.
+      # `explicit --repo-path` exits 0 only when the named branch ALREADY EXISTS, so a
+      # zero exit routes it into the existing-branch path (reuse) and a non-zero exit
+      # leaves the name in EXPLICIT_BRANCH to be created verbatim further down.
+      BRANCH_HELPER="$TOOLS_DIR/workflow_branch_name.sh"
+      EXPLICIT_BRANCH=""
+      if [ -z "$EXISTING_BRANCH" ] && [ -z "$PR_NUMBER" ]; then
+        EXPLICIT_BRANCH="$(bash "$BRANCH_HELPER" explicit --repo-path "$REPO_PATH" 2>/dev/null)" && EXISTING_BRANCH="$EXPLICIT_BRANCH" || true
+        [ -z "$EXPLICIT_BRANCH" ] || echo "INFO: task_description names branch '$EXPLICIT_BRANCH' — using it instead of deriving a name from task prose (issue #1426)." >&2
+      fi
+
       if [ -n "$EXISTING_BRANCH" ] || [ -n "$PR_NUMBER" ]; then
         # Precedence: existing_branch wins on tie.
         if [ -n "$EXISTING_BRANCH" ] && [ -n "$PR_NUMBER" ]; then
@@ -214,81 +234,50 @@ steps:
         exit 0
       fi
 
-      resolve_base_ref() {
-        local candidate
-
-        candidate="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-        if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then
-          printf '%s\n' "$candidate"
-          return 0
-        fi
-
-        git remote set-head origin -a >/dev/null 2>&1 || true
-        candidate="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-        if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then
-          printf '%s\n' "$candidate"
-          return 0
-        fi
-
-        for candidate in origin/master origin/develop; do
-          if git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then
-            printf '%s\n' "$candidate"
-            return 0
-          fi
-        done
-
-        echo "ERROR: no supported remote base ref found. Expected origin/HEAD, origin/master, or origin/develop." >&2
-        return 1
-      }
-
-      fetch_origin_with_retry() {
-        local attempt
-        local status
-        local delay=1
-        local max_attempts=3
-
-        for attempt in 1 2 3; do
-          if git fetch origin --no-tags >&2; then
-            return 0
-          fi
-          status=$?
-
-          if [ "$attempt" -lt "$max_attempts" ]; then
-            echo "WARNING: git fetch origin failed (exit ${status}); retrying (${attempt}/${max_attempts})." >&2
-            sleep "$delay"
-            delay=$((delay * 2))
-            continue
-          fi
-
-          echo "WARNING: git fetch origin failed after ${max_attempts} attempts (exit ${status}); continuing with local refs after repository validation succeeded." >&2
-          return 0
-        done
-      }
-
       # Fetch latest refs and resolve the base branch without assuming origin/main.
-      fetch_origin_with_retry
-      BASE_REF="$(resolve_base_ref)"
+      # Both ladders (fetch-with-retry, and origin/HEAD -> origin/master ->
+      # origin/develop) moved VERBATIM to tools/workflow_worktree_base_ref.sh —
+      # extraction, not compression: this brick is at its 400-line budget and that is
+      # the rule's remedy for a full brick (scripts/check-brick-budget.sh). It bought
+      # the room for #1426's branch-name resolution above.
+      #
+      # The `else` arm is a DEGRADED MIRROR for a checkout with no bundle on disk (the
+      # phase-brick unit tests run this step body exactly that way): same sequence,
+      # retries dropped. The helper is the authority; move the two together. It still
+      # refuses to invent a base ref — a task worktree branches off a fetched remote
+      # ref, never the caller's HEAD (#858).
+      BASE_HELPER="$TOOLS_DIR/workflow_worktree_base_ref.sh"
+      if [ -f "$BASE_HELPER" ]; then
+        bash "$BASE_HELPER" fetch_origin_with_retry "$REPO_PATH" || true
+        BASE_REF="$(bash "$BASE_HELPER" resolve_base_ref "$REPO_PATH")" || exit 1
+      else
+        git fetch origin --no-tags >&2 || echo "WARNING: git fetch origin failed (base-ref helper unavailable, no retry) — continuing with local refs after repository validation succeeded." >&2
+        BASE_REF="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+        if [ -z "$BASE_REF" ]; then git remote set-head origin -a >/dev/null 2>&1 || true; BASE_REF="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"; fi
+        if [ -n "$BASE_REF" ] && ! git rev-parse --verify --quiet "${BASE_REF}^{commit}" >/dev/null; then BASE_REF=""; fi
+        for CAND_REF in origin/master origin/develop; do
+          if [ -z "$BASE_REF" ] && git rev-parse --verify --quiet "${CAND_REF}^{commit}" >/dev/null; then BASE_REF="$CAND_REF"; fi
+        done
+        [ -n "$BASE_REF" ] || { echo "ERROR: no supported remote base ref found. Expected origin/HEAD, origin/master, or origin/develop." >&2; exit 1; }
+      fi
       BASE_BRANCH="${BASE_REF#origin/}"
 
-      # NOTE: slug pipeline mirrored in consensus-issue-worktree.yaml step3 (30-char
-      # cap vs 50); update both in one commit on security patches. See Issue #2952.
-      # FIX (#469/#311): env var (injection/word-splitting safe) + `tr -cd 'a-z0-9-'`
-      TASK_DESC="$TASK_DESCRIPTION"
-      TASK_SLUG=$(printf '%s' "$TASK_DESC" | tr '\n\r' '  ' | tr '[:upper:] ' '[:lower:]-' | tr -cd 'a-z0-9-' | sed 's/-\{2,\}/-/g' | sed 's/^-//;s/-$//' | cut -c1-50 | sed 's/-$//')
-      # Guard: empty slug (blank/all-symbol input) produces a trailing-hyphen branch that
-      # git check-ref-format accepts as valid but is undesirable. Catch it explicitly first.
-      if [ -z "$TASK_SLUG" ]; then
-        echo "WARNING: task_description produced an empty slug — falling back to task-unnamed" >&2
-        # FIX (#3023/BL-002): hardcode 'feat/' (not $BRANCH_PREFIX) so an invalid or
-        # malicious branch_prefix (e.g. '; rm -rf /', '../../etc') can't inject via fallback.
+      # BRANCH NAMING (#1426). An explicitly named branch wins outright. Otherwise the
+      # name is keyed to the ISSUE NUMBER with a bounded, word-boundary-truncated tail —
+      # never fifty characters of raw task prose with the path separators stripped out.
+      # The ladder (explicit name -> issue-keyed bounded slug -> stable task hash) and
+      # its git-ref validation live in tools/workflow_branch_name.sh: extraction, not
+      # compression, because this brick is at its 400-line budget.
+      # Degraded path (bundle helper unavailable): issue number plus a stable HASH of
+      # the task, which is bounded by construction and still never its prose.
+      # FIX (#3023/BL-002) preserved: the last-resort name hardcodes 'feat/' rather than
+      # $BRANCH_PREFIX so an invalid or malicious branch_prefix cannot inject through it.
+      BRANCH_NAME="${EXPLICIT_BRANCH:-}"
+      [ -n "$BRANCH_NAME" ] || BRANCH_NAME="$(bash "$BRANCH_HELPER" derive --issue "${ISSUE_NUMBER:-}" --prefix "${BRANCH_PREFIX:-feat}" --repo-path "$REPO_PATH" 2>/dev/null || true)"
+      [ -n "$BRANCH_NAME" ] || BRANCH_NAME="${BRANCH_PREFIX:-feat}/issue-${ISSUE_NUMBER:-0}-$(printf '%s' "${TASK_DESCRIPTION:-}" | cksum | cut -d' ' -f1)"
+      if ! git check-ref-format --branch "${BRANCH_NAME}" >/dev/null 2>&1; then
+        echo "WARNING: derived branch name '${BRANCH_NAME}' is invalid — falling back to task-unnamed" >&2
         BRANCH_NAME="feat/task-unnamed-$(date +%s)"
-      else
-        BRANCH_NAME="${BRANCH_PREFIX}/issue-${ISSUE_NUMBER}-${TASK_SLUG}"
-        # Validate with authoritative git ref checker; fall back to safe unique name on failure
-        if ! git check-ref-format --branch "${BRANCH_NAME}" >/dev/null 2>&1; then
-          echo "WARNING: derived branch name '${BRANCH_NAME}' is invalid — falling back to task-unnamed" >&2
-          BRANCH_NAME="feat/task-unnamed-$(date +%s)"
-        fi
       fi
       WORKTREE_PATH="${MAIN_REPO_PATH}/worktrees/${BRANCH_NAME}"
       # --- Foreign-worktree deconfliction (#829/#840): if BRANCH_NAME is held by a
