@@ -11,8 +11,9 @@
 //!
 //! - the `loop-health-evaluator` brick exists, parses, and stays inside the
 //!   400-line brick budget;
-//! - it has exactly one agentic judgement step, gated off on a terminal
-//!   policy refusal so the run never retries into the exit-79 guard;
+//! - its primary judgement and conditional structured retry are both gated
+//!   off on a terminal policy refusal, so the run never retries into the
+//!   exit-79 guard;
 //! - it declares NO numeric iteration cap — not even as a backstop — and NO
 //!   per-step timeout;
 //! - the executable contract test (STUCK path + malformed-verdict path)
@@ -337,6 +338,15 @@ fn exit_79_is_terminal_and_never_retried_into() {
         Some("loop_evidence.terminal_refusal == 'false'"),
         "the evaluator agent step must be skipped on a terminal policy refusal"
     );
+    let repair = step(&recipe, "step-02c-repair-structured-verdict");
+    assert_eq!(
+        repair.get("condition").and_then(Value::as_str),
+        Some(
+            "loop_evidence.terminal_refusal == 'false' and \
+             loop_health_contract.valid == 'false'"
+        ),
+        "the structured retry must also be skipped on a terminal policy refusal"
+    );
 
     let resolve = field(step(&recipe, "step-03-resolve-loop-verdict"), "command");
     assert!(
@@ -400,6 +410,7 @@ fn object_valued_step_outputs_are_read_with_the_recipe_var_fallback() {
             "LOOP_HEALTH_ASSESSMENT",
             "RECIPE_VAR_loop_health_assessment",
         ),
+        ("LOOP_HEALTH_REPAIR", "RECIPE_VAR_loop_health_repair"),
     ];
     for s in steps(&recipe) {
         let id = s.get("id").and_then(Value::as_str).unwrap_or("<unnamed>");
@@ -437,6 +448,41 @@ fn object_valued_step_outputs_are_read_with_the_recipe_var_fallback() {
             "no step reads `{recipe_var}`; the brick cannot see its own step outputs"
         );
     }
+}
+
+#[test]
+fn malformed_primary_verdict_gets_one_structured_retry_without_parsing_prose() {
+    let recipe = recipe_yaml();
+    let check = step(&recipe, "step-02b-check-structured-verdict");
+    assert_eq!(check.get("parse_json").and_then(Value::as_bool), Some(true));
+    let check_command = field(check, "command");
+    assert!(
+        check_command.contains("extract-json --require-field loop_verdict"),
+        "the retry decision must use the canonical structured extractor"
+    );
+    assert!(
+        !check_command.contains("grep") && !check_command.contains("sed"),
+        "the retry decision must not infer a permissive verdict from prose"
+    );
+
+    let repair = step(&recipe, "step-02c-repair-structured-verdict");
+    let prompt = field(repair, "prompt");
+    assert!(
+        prompt.contains("Do not interpret or transform its prose"),
+        "the retry must independently judge measured evidence, not convert prose"
+    );
+    assert!(
+        prompt.contains("Output only this JSON object"),
+        "the retry must have an explicit structured-only output contract"
+    );
+
+    let resolve = field(step(&recipe, "step-03-resolve-loop-verdict"), "command");
+    assert!(
+        resolve.contains("LOOP_HEALTH_REPAIR")
+            && resolve.contains("RECIPE_VAR_loop_health_repair")
+            && resolve.contains("SOURCE=\"repair_evaluator\""),
+        "step 3 must prefer a present structured retry and attribute it distinctly"
+    );
 }
 
 /// Issue #1337, finding B3 — first-JSON-wins is fail-open for a verdict.

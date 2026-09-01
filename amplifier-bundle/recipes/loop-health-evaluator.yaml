@@ -193,6 +193,70 @@ steps:
       stopping, not looping.
     output: "loop_health_assessment"
 
+  # A model can occasionally state the right decision in prose and omit the
+  # required object. Do not parse that prose permissively. Re-ask once for a
+  # fresh structured judgement from the same measured evidence; if that also
+  # fails, step 3 still resolves to STUCK.
+  - id: "step-02b-check-structured-verdict"
+    condition: "loop_evidence.terminal_refusal == 'false'"
+    type: "bash"
+    parse_json: true
+    command: |
+      set -uo pipefail
+      RAW="${LOOP_HEALTH_ASSESSMENT:-${RECIPE_VAR_loop_health_assessment:-}}"
+      VJSON=$(printf '%s' "$RAW" \
+        | amplihack orch helper extract-json --require-field loop_verdict)
+      EXTRACTED=$(printf '%s' "$VJSON" \
+        | amplihack orch helper extract-field --field loop_verdict --default '')
+      VERDICT=""
+      if [ -n "$EXTRACTED" ]; then
+        VERDICT=$(printf '%s' "$EXTRACTED" \
+          | amplihack orch helper normalise-loop-verdict)
+      fi
+      VALID="false"
+      case "$VERDICT" in CONTINUE|DONE|STUCK) VALID="true" ;; esac
+      printf '{"valid":"%s"}\n' "$VALID"
+    output: "loop_health_contract"
+
+  - id: "step-02c-repair-structured-verdict"
+    condition: "loop_evidence.terminal_refusal == 'false' and loop_health_contract.valid == 'false'"
+    agent: "amplihack:analyzer"
+    working_dir: "{{loop_repo_path}}"
+    prompt: |
+      # Repair a missing structured loop-health verdict
+
+      The previous evaluator response did not contain a valid final JSON object.
+      Do not interpret or transform its prose. Independently judge the same
+      measured evidence below using the documented outcomes.
+
+      Loop: **{{loop_name}}**
+      Round: `{{loop_round_label}}`
+
+      Measured evidence:
+
+      ```json
+      {{loop_evidence}}
+      ```
+
+      Accumulated round verdicts:
+
+      {{loop_history}}
+
+      Raw output of the round:
+
+      {{loop_last_round_output}}
+
+      Choose exactly one:
+
+      - `CONTINUE`: concrete progress occurred and another round has a plausible action.
+      - `DONE`: the loop objective is met.
+      - `STUCK`: progress is absent or uncertain.
+
+      Output only this JSON object, with no code fence or prose:
+
+      {"loop_verdict":"CONTINUE" | "DONE" | "STUCK","not_converging":["<specific evidence>", ...],"moved":["<measured progress>", ...],"recommended_action":"<one sentence>"}
+    output: "loop_health_repair"
+
   # ---------------------------------------------------------------------------
   # Step 3 — resolve ONE canonical verdict, fail-safe at every branch.
   # ---------------------------------------------------------------------------
@@ -208,7 +272,13 @@ steps:
       # silently evaluates a fabricated STUCK. Same idiom as workflow-publish /
       # workflow-finalize / workflow-terminal-state.
       RAW="${LOOP_HEALTH_ASSESSMENT:-${RECIPE_VAR_loop_health_assessment:-}}"
+      REPAIR="${LOOP_HEALTH_REPAIR:-${RECIPE_VAR_loop_health_repair:-}}"
       EV="${LOOP_EVIDENCE:-${RECIPE_VAR_loop_evidence:-}}"
+      SOURCE="evaluator"
+      if [ -n "$REPAIR" ]; then
+        RAW="$REPAIR"
+        SOURCE="repair_evaluator"
+      fi
 
       # Fail-safe default is "true": if the evidence step produced nothing
       # parseable we assume the worst and stop, rather than assuming the guard
@@ -245,7 +315,6 @@ steps:
           | amplihack orch helper normalise-loop-verdict)
         NOT_CONVERGING=$(printf '%s' "$VJSON" \
           | amplihack orch helper extract-field --field not_converging --default "[]")
-        SOURCE="evaluator"
         case "$VERDICT" in
           CONTINUE|DONE|STUCK) ;;
           *) echo "WARNING: unrecognised loop verdict '${VERDICT}' — fail-safe to STUCK." >&2

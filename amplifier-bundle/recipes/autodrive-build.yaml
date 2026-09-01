@@ -110,7 +110,8 @@ steps:
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || true
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
-      g() { printf '%s' "${BUILD_PREFLIGHT:-}" | amplihack orch helper extract-json --require-field "$1" \
+      PREFLIGHT="${BUILD_PREFLIGHT:-${RECIPE_VAR_build_preflight:-}}"
+      g() { printf '%s' "$PREFLIGHT" | amplihack orch helper extract-json --require-field "$1" \
               | amplihack orch helper extract-field --field "$1" --default ''; }
       PR="$(g pr)"; DIR="$(g state_dir)"; BRANCH="$(g branch)"
       if [ -z "$PR" ]; then
