@@ -14,7 +14,9 @@ use url::Url;
 pub const ENDPOINT_ENV: &str = "AMPLIHACK_LITELLM_ENDPOINT";
 pub const API_KEY_ENV: &str = "AMPLIHACK_LITELLM_API_KEY";
 pub const MODEL_ENV: &str = "AMPLIHACK_LITELLM_MODEL";
-pub const MIN_CLAUDE_CODE_VERSION: &str = "2.1.83";
+// Every entry must pass tests/issue_1414_claude_subprocess_scrub.sh as the real
+// published CLI artifact before it is added here.
+pub const VERIFIED_CLAUDE_CODE_VERSIONS: &[&str] = &["2.1.247"];
 
 const CONFIG_ENV_VARS: [&str; 3] = [ENDPOINT_ENV, API_KEY_ENV, MODEL_ENV];
 
@@ -40,14 +42,12 @@ pub fn claude_code_capability(version: Option<&str>) -> ClaudeCodeCapability {
     let Some(reported) = version else {
         return ClaudeCodeCapability::Unknown;
     };
-    let Ok(version) = Version::parse(reported) else {
+    if Version::parse(reported).is_err() {
         return ClaudeCodeCapability::Malformed {
             reported: reported.to_string(),
         };
-    };
-    let minimum =
-        Version::parse(MIN_CLAUDE_CODE_VERSION).expect("minimum Claude Code version is valid");
-    if version >= minimum {
+    }
+    if VERIFIED_CLAUDE_CODE_VERSIONS.contains(&reported) {
         ClaudeCodeCapability::Supported {
             version: reported.to_string(),
         }
@@ -59,16 +59,17 @@ pub fn claude_code_capability(version: Option<&str>) -> ClaudeCodeCapability {
 }
 
 pub fn require_claude_code_capability(version: Option<&str>) -> Result<(), ProxyError> {
+    let verified = VERIFIED_CLAUDE_CODE_VERSIONS.join(", ");
     match claude_code_capability(version) {
         ClaudeCodeCapability::Supported { .. } => Ok(()),
         ClaudeCodeCapability::Unsupported { version } => Err(ProxyError::InvalidConfig(format!(
-            "Claude Code {version} cannot safely use external LiteLLM routing; version {MIN_CLAUDE_CODE_VERSION} or newer is required"
+            "Claude Code {version} cannot safely use external LiteLLM routing; verified version required: {verified}"
         ))),
         ClaudeCodeCapability::Malformed { .. } => Err(ProxyError::InvalidConfig(format!(
-            "Claude Code reported a malformed version; version {MIN_CLAUDE_CODE_VERSION} or newer is required for external LiteLLM routing"
+            "Claude Code reported a malformed version; verified version required for external LiteLLM routing: {verified}"
         ))),
         ClaudeCodeCapability::Unknown => Err(ProxyError::InvalidConfig(format!(
-            "Claude Code version could not be verified; version {MIN_CLAUDE_CODE_VERSION} or newer is required for external LiteLLM routing"
+            "Claude Code version could not be verified; verified version required for external LiteLLM routing: {verified}"
         ))),
     }
 }
@@ -414,22 +415,27 @@ mod tests {
     }
 
     #[test]
-    fn claude_code_capability_accepts_minimum_and_newer_semver() {
-        for version in ["2.1.83", "2.1.84", "3.0.0", "2.1.84-beta.1"] {
-            assert_eq!(
-                claude_code_capability(Some(version)),
-                ClaudeCodeCapability::Supported {
-                    version: version.to_string()
-                },
-                "{version}"
-            );
-            assert!(require_claude_code_capability(Some(version)).is_ok());
-        }
+    fn claude_code_capability_accepts_only_runtime_verified_releases() {
+        assert_eq!(
+            claude_code_capability(Some("2.1.247")),
+            ClaudeCodeCapability::Supported {
+                version: "2.1.247".to_string()
+            }
+        );
+        assert!(require_claude_code_capability(Some("2.1.247")).is_ok());
     }
 
     #[test]
-    fn claude_code_capability_rejects_old_prerelease_unknown_and_malformed_versions() {
-        for version in ["2.1.82", "2.1.83-beta.1", "not-a-version", "", "2.1"] {
+    fn claude_code_capability_rejects_unverified_future_old_and_malformed_versions() {
+        for version in [
+            "2.1.248",
+            "3.0.0",
+            "2.1.246",
+            "2.1.247-beta.1",
+            "not-a-version",
+            "",
+            "2.1",
+        ] {
             let capability = claude_code_capability(Some(version));
             assert!(
                 !matches!(capability, ClaudeCodeCapability::Supported { .. }),

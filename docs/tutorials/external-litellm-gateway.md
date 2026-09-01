@@ -20,7 +20,7 @@ running. Amplihack does not install or start the gateway.
 - a restricted LiteLLM virtual key; and
 - a gateway model alias supported by that deployment.
 
-Use Claude Code `2.1.83` or newer when routing Claude. Amplihack enforces this
+Use Claude Code `2.1.247` when routing Claude. Amplihack enforces this
 version requirement. Copilot CLI and RustyClawd do not use the Claude-specific
 version gate.
 
@@ -36,10 +36,10 @@ command -v claude
 claude --version
 ```
 
-The reported semantic version must be `2.1.83` or newer. Amplihack repeats this
+The reported semantic version must be exactly `2.1.247`. Amplihack repeats this
 probe before setup and rejects missing executables, failed probes, malformed or
-unrecognized output, prereleases below the minimum, and versions older than
-`2.1.83`. It does not fall back to direct Anthropic routing.
+unrecognized output, prereleases, and every release outside the runtime-tested
+attestation set. It does not fall back to direct Anthropic routing.
 
 ## 2. Configure the route
 

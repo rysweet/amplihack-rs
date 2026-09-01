@@ -70,16 +70,20 @@ model alias, budget, and rate, and launch RustyClawd only in trusted worktrees.
 
 ## Claude Code capability gate
 
-Claude Code routing requires the exact `claude` executable selected for launch
-to report a semantic version greater than or equal to `2.1.83`. Amplihack
-probes that executable before setup, filesystem changes, Docker
-operations, or child creation. A missing executable, failed probe, unrecognized
-output, malformed version, prerelease below the minimum, or version below the
-minimum will reject the launch.
+Claude Code routing currently requires the exact `claude` executable selected
+for launch to report version `2.1.247`. This is an explicit attestation set, not
+a semver lower bound: later releases are rejected until the real-CLI isolation
+test proves that Bash, hooks, and stdio MCP servers cannot read the gateway
+token. Amplihack probes that executable before checkout, auto-mode staging,
+memory configuration, session tracking, Docker operations, or child creation.
+A missing executable, failed probe, unrecognized output, malformed version, or
+any version outside the attestation set rejects the launch.
 
 The probe runs without the LiteLLM virtual key or direct provider credentials.
 The version gate and `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` form one capability
-check; setting the flag manually does not bypass the minimum.
+check; setting the flag manually does not bypass the exact-version policy.
+On Linux, the verified Claude release enforces this boundary with `bubblewrap`
+and `socat` and refuses to start if either dependency is unavailable.
 
 ## Ownership boundary
 

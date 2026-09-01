@@ -21,11 +21,12 @@ environment. Do not put the key in command arguments or project configuration.
 Restrict it at the gateway by tenant, route, model alias, budget, and rate.
 Client-side model selection is not an authorization boundary.
 
-Amplihack requires Claude Code `2.1.83` or newer and sets
+Amplihack currently permits Claude Code `2.1.247` and sets
 `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` for routed Claude Code processes. It probes
-the exact executable before launch setup and fails closed when the executable
-is missing, the probe fails, output is malformed or unknown, a prerelease is
-below the minimum, or the version is older than `2.1.83`. RustyClawd does not
+the exact executable before checkout, auto-mode staging, launch setup, session
+tracking, or Docker operations and fails closed when the executable is missing,
+the probe fails, output is malformed or unknown, or the release is outside the
+runtime-attested set. RustyClawd does not
 provide a verified equivalent, so its complete descendant process tree remains
 credential-trusted.
 

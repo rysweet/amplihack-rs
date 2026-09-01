@@ -68,7 +68,11 @@ fn validate_gateway_auto_mode(tool: auto_mode::AutoModeTool, args: &[String]) ->
         }
     };
     amplihack_utils::litellm_proxy::validate_launch_args(target, args)
-        .context("invalid external LiteLLM proxy launch arguments")
+        .context("invalid external LiteLLM proxy launch arguments")?;
+    if target == amplihack_utils::litellm_proxy::CliTarget::Claude {
+        launch::preflight_claude_proxy_binary("claude", OverrideOrigin::User)?;
+    }
+    Ok(())
 }
 
 /// Dispatch a parsed CLI command to the appropriate handler.
@@ -674,7 +678,7 @@ fn dispatch_multitask(command: MultitaskCommands) -> Result<()> {
 #[cfg(test)]
 mod gateway_dispatch_tests {
     use super::*;
-    use crate::test_support::EnvGuard;
+    use crate::test_support::{EnvGuard, HomeGuard};
 
     #[test]
     fn gateway_rejects_append_and_uncontrolled_auto_mode_before_dispatch() {
@@ -699,5 +703,52 @@ mod gateway_dispatch_tests {
             .is_err()
         );
         assert!(validate_gateway_auto_mode(auto_mode::AutoModeTool::Codex, &[]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn auto_mode_rejects_unverified_claude_before_staging_or_session_tracking() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let binary = home.path().join("claude");
+        fs::write(
+            &binary,
+            "#!/bin/sh\n\
+             if [ \"$1\" = --version ]; then printf '2.1.248\\n'; exit 0; fi\n\
+             touch \"$HOME/auto-child-launched\"\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&binary).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&binary, permissions).unwrap();
+        let binary = binary.to_string_lossy().into_owned();
+        let _home = HomeGuard::set(home.path());
+        let _gateway_env = EnvGuard::set([
+            (
+                amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+                "https://gateway.example.com",
+            ),
+            (amplihack_utils::litellm_proxy::API_KEY_ENV, "gateway-key"),
+            (amplihack_utils::litellm_proxy::MODEL_ENV, "gateway-model"),
+            ("AMPLIHACK_CLAUDE_BINARY_PATH", binary.as_str()),
+        ]);
+
+        let error = validate_gateway_auto_mode(
+            auto_mode::AutoModeTool::Claude,
+            &["-p".to_string(), "ship safely".to_string()],
+        )
+        .expect_err("an unverified future Claude release must fail closed");
+
+        assert!(format!("{error:#}").contains("2.1.247"));
+        assert!(!home.path().join("auto-child-launched").exists());
+        assert!(
+            !home.path().join(".amplihack").exists(),
+            "capability rejection must precede auto-mode staging and tracking"
+        );
     }
 }

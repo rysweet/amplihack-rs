@@ -847,10 +847,10 @@ does not implement process-local gateway accounting or controls.
 When the selected launcher is Claude Code, amplihack sets
 `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`; users do not need to set that variable.
 External Claude Code routing requires the exact `claude` executable to report
-semantic version `2.1.83` or newer. Amplihack probes it before launch setup and
-rejects
-missing executables, failed probes, malformed or unknown output, prereleases
-below the minimum, and older versions. The probe will receive neither
+semantic version `2.1.247`. Amplihack probes it before checkout, auto-mode
+staging, launch setup, session tracking, or Docker operations and rejects
+missing executables, failed probes, malformed or unknown output, prereleases,
+and all other versions. The probe will receive neither
 `AMPLIHACK_LITELLM_API_KEY` nor direct provider credentials.
 
 The Docker launcher rejects loopback gateway endpoints so normal container

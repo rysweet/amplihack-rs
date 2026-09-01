@@ -181,12 +181,18 @@ fn claude_gateway_capability_gate_uses_the_resolved_binary_version() {
     let supported = BinaryInfo {
         name: "claude".to_string(),
         path: "/opt/claude/bin/claude".into(),
-        version: Some("2.1.83".to_string()),
+        version: Some("2.1.247".to_string()),
     };
     validate_proxy_binary_capability(CliTarget::Claude, &supported)
-        .expect("the minimum supported Claude Code version must pass");
+        .expect("the runtime-verified Claude Code version must pass");
 
-    for version in [Some("2.1.82"), Some("2.1.83-beta.1"), None] {
+    for version in [
+        Some("2.1.246"),
+        Some("2.1.248"),
+        Some("3.0.0"),
+        Some("2.1.247-beta.1"),
+        None,
+    ] {
         let unsupported = BinaryInfo {
             name: "claude".to_string(),
             path: "/opt/claude/bin/claude".into(),
@@ -195,7 +201,7 @@ fn claude_gateway_capability_gate_uses_the_resolved_binary_version() {
         let error = validate_proxy_binary_capability(CliTarget::Claude, &unsupported)
             .expect_err("unproved subprocess scrubbing must fail closed");
         let message = format!("{error:#}");
-        assert!(message.contains("2.1.83"), "{message}");
+        assert!(message.contains("2.1.247"), "{message}");
         assert!(
             !message.contains("gateway-secret"),
             "capability errors must not disclose gateway credentials"
@@ -296,7 +302,7 @@ fn rejected_claude_capabilities_fail_before_launch_setup_or_docker() {
         .expect_err("unproved Claude capability must reject the launch");
         let message = format!("{error:#}");
         assert!(
-            message.contains("capability") || message.contains("2.1.83"),
+            message.contains("capability") || message.contains("2.1.247"),
             "{case}: {message}"
         );
         assert!(
@@ -321,7 +327,7 @@ fn docker_claude_gateway_rejects_before_probing_an_unrelated_host_binary() {
     write_fake_claude(
         &binary,
         "#!/bin/sh\n\
-         [ \"$1\" = --version ] && { touch \"$HOME/probed\"; printf '2.1.83\\n'; exit 0; }\n\
+         [ \"$1\" = --version ] && { touch \"$HOME/probed\"; printf '2.1.247\\n'; exit 0; }\n\
          touch \"$HOME/launched\"\n",
     );
     let binary_text = binary.to_string_lossy().into_owned();
@@ -373,7 +379,7 @@ fn supported_claude_launch_receives_only_the_scrubbed_gateway_environment() {
     write_fake_claude(
         &binary,
         "#!/bin/sh\n\
-         if [ \"$1\" = --version ]; then printf '2.1.83\\n'; exit 0; fi\n\
+         if [ \"$1\" = --version ]; then printf '2.1.247\\n'; exit 0; fi\n\
          printf '%s|%s|%s' \"$CLAUDE_CODE_SUBPROCESS_ENV_SCRUB\" \
          \"${ANTHROPIC_API_KEY-unset}\" \"$ANTHROPIC_AUTH_TOKEN\" > \"$HOME/child-env\"\n",
     );

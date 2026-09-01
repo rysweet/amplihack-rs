@@ -28,7 +28,8 @@ a secret manager and materialize it only in the launch environment; amplihack
 does not read a key file or TOML gateway configuration.
 
 Claude Code receives `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`. Amplihack requires
-the exact selected executable to report version `2.1.83` or newer. You can
+the exact selected executable to report the currently verified version,
+`2.1.247`. You can
 confirm the executable selected by `PATH`:
 
 ```bash
@@ -39,8 +40,10 @@ claude --version
 Amplihack probes the same executable before launch setup. Do not wrap
 `claude --version` with output that hides or replaces the semantic
 version. A missing executable, failed probe, unrecognized or malformed output,
-prerelease below the minimum, or version older than `2.1.83` will fail closed.
+prerelease, or any release other than `2.1.247` will fail closed.
 The probe will run without gateway or direct-provider credentials.
+On Linux, install `bubblewrap` and `socat`; Claude's scrub mode refuses to start
+without both sandbox dependencies.
 
 ## Rotate a virtual key
 
@@ -93,7 +96,8 @@ An empty or partial configuration is rejected rather than treated as disabled.
 | Symptom | Action |
 | --- | --- |
 | Claude Code version cannot be verified | Run `command -v claude` and `claude --version` in the same environment. Install an official Claude Code executable whose output contains a valid semantic version. |
-| Claude Code is older than `2.1.83` | Upgrade Claude Code. Prerelease versions will compare using semantic-version precedence and must be at least `2.1.83`. |
+| Claude Code version is not `2.1.247` | Install the verified release. Future releases remain blocked until the real-CLI Bash, hook, and stdio MCP isolation test is rerun and the attestation set is updated. |
+| Claude reports a missing sandbox dependency | On Linux, install `bubblewrap` and `socat`, then retry. Do not disable `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`. |
 
 ## Operate gateway-owned concerns
 

@@ -25,10 +25,17 @@ environment. Do not put the key in command arguments or project configuration.
 Restrict it in LiteLLM by tenant, route, model alias, budget, and rate; the
 client-selected model is not an authorization control.
 
-Amplihack requires Claude Code `2.1.83` or newer and sets
-`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`. It validates the selected executable
-before launch side effects. Missing executables, failed probes, malformed or
-unknown output, prereleases below the minimum, and older versions fail closed.
+Amplihack currently permits Claude Code `2.1.247` and sets
+`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`. That exact release is pinned because the
+scrub control is not an upstream documented compatibility contract. A new
+Claude Code release remains blocked until the Bash, hook, and stdio MCP
+subprocess isolation test passes for it and the verified-version set is
+updated. The selected executable is validated before checkout, auto-mode
+staging, memory configuration, session tracking, Docker operations, or child
+creation. Missing executables, failed probes, malformed or unknown output, and
+all unverified versions fail closed. On Linux, Claude's scrub enforcement also
+requires `bubblewrap` and `socat`; Claude refuses to start if either dependency
+is unavailable.
 RustyClawd has no verified subprocess-scrubbing capability, so treat its
 complete descendant process tree as credential-trusted.
 

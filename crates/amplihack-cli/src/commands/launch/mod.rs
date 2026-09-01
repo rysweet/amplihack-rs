@@ -129,24 +129,7 @@ pub fn run_launch(
     let prevalidated_binary = if proxy_enabled
         && proxy_target == Some(amplihack_utils::litellm_proxy::CliTarget::Claude)
     {
-        let resolution = amplihack_utils::launch_target::resolve(tool, override_origin);
-        let rejection_report = resolution.rejection_report(tool, "@anthropic-ai/claude-code");
-        let target = resolution.target.ok_or_else(|| {
-            anyhow::anyhow!(
-                "Claude Code capability could not be verified before external LiteLLM launch:\n{}",
-                rejection_report
-            )
-        })?;
-        let binary = BinaryInfo {
-            name: tool.to_string(),
-            path: target.path,
-            version: Some(target.version),
-        };
-        validate_proxy_binary_capability(
-            amplihack_utils::litellm_proxy::CliTarget::Claude,
-            &binary,
-        )?;
-        Some(binary)
+        Some(preflight_claude_proxy_binary(tool, override_origin)?)
     } else {
         None
     };
@@ -320,6 +303,27 @@ pub fn run_launch(
         let _ = tracker.crash_session(&session_id);
     }
     result
+}
+
+pub(crate) fn preflight_claude_proxy_binary(
+    tool: &str,
+    override_origin: OverrideOrigin,
+) -> Result<BinaryInfo> {
+    let resolution = amplihack_utils::launch_target::resolve(tool, override_origin);
+    let rejection_report = resolution.rejection_report(tool, "@anthropic-ai/claude-code");
+    let resolved = resolution.target.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Claude Code capability could not be verified before external LiteLLM launch:\n{}",
+            rejection_report
+        )
+    })?;
+    let binary = BinaryInfo {
+        name: tool.to_string(),
+        path: resolved.path,
+        version: Some(resolved.version),
+    };
+    validate_proxy_binary_capability(amplihack_utils::litellm_proxy::CliTarget::Claude, &binary)?;
+    Ok(binary)
 }
 
 fn validate_proxy_binary_capability(
