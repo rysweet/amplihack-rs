@@ -29,7 +29,8 @@ fail() { printf '  FAIL  %s\n' "$1"; fails=$((fails + 1)); }
 
 # Signatures the doc declares, inside its fenced Rust blocks. Trailing `;` is
 # the doc's convention for "declaration only"; the source has `{` instead.
-mapfile -t sigs < <(
+# while-read, not mapfile: macOS /bin/bash is 3.2 (issue #1423).
+sigs=(); while IFS= read -r _ml; do sigs+=("$_ml"); done < <(
   grep -oE '^pub fn [a-z_]+\([^)]*\)( -> [A-Za-z_:<>&, ]+)?;' "$DOC" \
     | sed 's/;$//' | sort -u
 )

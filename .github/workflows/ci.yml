@@ -72,6 +72,9 @@ jobs:
       - name: Migrate skill — refuses the host it is running on (issue #1167)
         shell: bash
         run: bash tests/issue_1167_migrate_same_host_guard.sh
+      - name: Shipped shell — bash 3.2 portable, no bash-4-only constructs (issue #1423)
+        shell: bash
+        run: bash tests/issue_1423_bash4_constructs.sh
       - name: Workflows — PR runs must not cancel each other (issue #1372)
         shell: bash
         run: bash tests/issue_1372_pr_workflows_scope_concurrency.sh

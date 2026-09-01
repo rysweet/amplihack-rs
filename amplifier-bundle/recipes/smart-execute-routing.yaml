@@ -338,7 +338,7 @@ steps:
       The adaptive strategy step ran \`$RECIPE\` directly to recover.
 
       ---
-      *Auto-filed by smart-orchestrator adaptive error recovery (fix #3132)*
+      *Auto-filed by smart-orchestrator adaptive error recovery — fix #3132*
       EOFBODY
       )
 

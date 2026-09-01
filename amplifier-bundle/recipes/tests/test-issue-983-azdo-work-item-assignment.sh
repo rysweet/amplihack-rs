@@ -157,7 +157,11 @@ run_env_step() {
     out="$(
         cd "${FAKE_REPO}" || exit 3
         export PATH="${STUB_BIN}:/usr/bin:/bin"
-        # Issue #1361: step-03's provider-metadata helpers (emit_local_metadata,
+        # No apostrophe below, deliberately: bash 3.2 does not treat `#` as a
+        # comment while scanning for the closing paren of a command substitution,
+        # so a lone `'` in a comment inside `$( ... )` swallows the rest of the
+        # file. macOS ships bash 3.2 as /bin/bash (issue #1423).
+        # Issue #1361: the step-03 provider-metadata helpers (emit_local_metadata,
         # sanitize_cli_output, _pct_decode) now live in
         # amplifier-bundle/tools/workflow_issue_tracking.sh, reached through the
         # AMPLIHACK_HOME / REPO_PATH / cwd / ~/.copilot / ~/.amplihack cascade.

@@ -217,7 +217,7 @@ steps:
         printf 'other'; exit 0
       fi
       REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
-      REMOTE_URL_LC="${REMOTE_URL,,}"
+      REMOTE_URL_LC=$(printf '%s' "$REMOTE_URL" | tr '[:upper:]' '[:lower:]')
       case "$REMOTE_URL_LC" in
         *://*) REST="${REMOTE_URL_LC#*://}"; REST="${REST##*@}"; REMOTE_HOST="${REST%%[/:]*}" ;;
         *@*:*) REST="${REMOTE_URL_LC##*@}"; REMOTE_HOST="${REST%%[:/]*}" ;;

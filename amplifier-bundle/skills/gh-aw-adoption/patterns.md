@@ -269,13 +269,18 @@ fi
 **Solution**: Priority queue with explicit ordering.
 
 ```bash
-# Define priority levels
-declare -A priorities
-priorities["security"]=1
-priorities["critical-bug"]=2
-priorities["bug"]=3
-priorities["enhancement"]=4
-priorities["cosmetic"]=5
+# Define priority levels. A case lookup, not `declare -A`: associative arrays
+# are bash 4.0 and macOS ships bash 3.2 as /bin/bash (issue #1423).
+priority_of() {
+  case "$1" in
+    security)     echo 1 ;;
+    critical-bug) echo 2 ;;
+    bug)          echo 3 ;;
+    enhancement)  echo 4 ;;
+    cosmetic)     echo 5 ;;
+    *)            echo 9 ;;
+  esac
+}
 
 # Collect all pending actions with priorities
 actions=()
@@ -287,7 +292,7 @@ actions+=("close-issue:126:critical-bug")
 # Sort by priority
 IFS=$'\n' sorted_actions=($(printf '%s\n' "${actions[@]}" | while read action; do
   priority=${action##*:}
-  prio_value=${priorities[$priority]}
+  prio_value=$(priority_of "$priority")
   echo "$prio_value:$action"
 done | sort -n | cut -d: -f2-))
 
@@ -732,18 +737,16 @@ done
 
 # Good: Parallel processing with limit
 max_parallel=10
-pids=()
 
 for issue in $issues; do
-  # Wait if at max concurrency
-  while (( ${#pids[@]} >= max_parallel )); do
-    wait -n  # Wait for any job to complete
-    pids=( $(jobs -pr) )  # Update active PIDs
+  # Wait if at max concurrency. Poll the running-job count rather than using
+  # `wait -n`: that is bash 4.3, and macOS ships bash 3.2 (issue #1423).
+  while [ "$(jobs -pr | wc -l | tr -d ' ')" -ge "$max_parallel" ]; do
+    sleep 0.2
   done
 
   # Start background job
   process_issue "$issue" &
-  pids+=( $! )
 done
 
 wait  # Wait for remaining jobs
