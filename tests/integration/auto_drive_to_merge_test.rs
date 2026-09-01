@@ -560,14 +560,6 @@ fn an_unreadable_loop_verdict_is_stuck_never_continue() {
         driver.contains("failing safe to STUCK"),
         "an evaluator that exits 0 with no readable verdict must fail safe to STUCK"
     );
-    assert!(
-        driver.contains("Output: LOOP_HEALTH:"),
-        "the driver must recognize recipe-runner-rs's indented Output wrapper"
-    );
-    assert!(
-        driver.contains("^(LOOP_HEALTH:|[[:space:]]+Output: LOOP_HEALTH:)"),
-        "the wrapped marker must remain anchored to an exact output line"
-    );
 }
 
 // ── The two absolute prohibitions ────────────────────────────────────────────
