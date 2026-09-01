@@ -150,6 +150,49 @@ fn auth_rejections_are_environmental_not_transient() {
     }
 }
 
+/// Issue #1421: the literal 404 from the issue report. A model the API does not
+/// know is a stable answer, and — unlike the auth rejections above — it used to
+/// classify as `Indeterminate`, i.e. "no marker found", while the evidence in
+/// fact named the cause outright. The operator watching the run got told nothing
+/// was known about a failure that had already explained itself.
+#[test]
+fn an_unknown_model_404_is_environmental_and_names_its_signal() {
+    let reported = "API Error: 404 {\"type\":\"error\",\"error\":{\"type\":\"not_found_error\",\
+                    \"message\":\"model: claude-opus-4-1-20250805\"},\
+                    \"request_id\":\"req_011Ceb8QVbCFFXSNWCw93JGF\"}";
+    let (class, signal) = classify_failure_text(reported);
+    assert_eq!(
+        class,
+        FailureClass::Environmental,
+        "a model-not-found 404 must be named, not shrugged at"
+    );
+    assert!(
+        signal.is_some(),
+        "the verdict must carry the literal marker that decided it"
+    );
+    assert!(
+        !class.is_mechanically_retryable(),
+        "no number of retries makes a retired model exist again"
+    );
+
+    let verdict = FailureVerdict {
+        class,
+        signal,
+        evidence: reported.to_string(),
+        failed_steps: vec!["implement".to_string()],
+        completed_steps: Vec::new(),
+    };
+    let reasoning = verdict.reasoning();
+    assert!(
+        reasoning.contains("environmental"),
+        "reasoning must state the class, got: {reasoning}"
+    );
+    assert!(
+        !reasoning.contains("no transport, environmental, or work marker found"),
+        "the 404 explains itself; the verdict must not claim ignorance: {reasoning}"
+    );
+}
+
 /// Ambiguity must resolve toward NOT retrying. A run whose evidence shows a
 /// real test failure is terminal even when a 529 also appears in the same tail.
 #[test]

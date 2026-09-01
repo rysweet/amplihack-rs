@@ -2,32 +2,48 @@
 
 ## Default Model Behavior
 
-The amplihack launcher uses `sonnet[1m]` as the default model when launching Claude Code. This provides the optimal balance of performance, extended context window, and cost-effectiveness for most development tasks.
+**The amplihack launcher does not choose a model.** When you do not name one, it
+puts no `--model` on the command line and Claude Code applies its own current
+default — which also means the `"model"` in your `~/.claude/settings.json` takes
+effect.
+
+This is deliberate (issue #1421). amplihack used to hardcode a model alias here.
+An alias is resolved by Claude Code, not by amplihack, and what it resolves to
+changes with Claude Code's version: one such alias resolved to a retired model
+id, so every agent step failed with a 404 naming a model the user had never
+chosen and could not find in any config file. amplihack does not own the model
+catalogue, so it no longer pretends to. (This document itself is the other half
+of the evidence: it claimed the default was `sonnet[1m]` long after the code had
+moved to `opus[1m]`.)
 
 ## Model Selection Priority
 
-When the launcher determines which model to use, it follows this strict priority order:
+When the launcher determines which model to pass, it follows this strict priority
+order:
 
 1. **--model Flag** (highest priority)
    - Explicitly specified model via command-line flag
    - Example: `amplihack launch --model opus`
-   - Overrides environment variable and hardcoded default
+   - Overrides the environment variable
 
 2. **AMPLIHACK_DEFAULT_MODEL Environment Variable**
    - Set in your shell environment
    - Example: `export AMPLIHACK_DEFAULT_MODEL=opus`
-   - Overrides hardcoded default but not command-line flag
+   - Opt-in: this is the only way to pin a model for every launch
+   - An empty or whitespace-only value is treated as unset
+   - When it is used, amplihack prints a line to stderr naming the model and
+     this variable, so a later "model not found" error is traceable
 
-3. **Hardcoded Default** (lowest priority)
-   - `sonnet[1m]` is used when no other configuration is present
-   - Provides sensible default for most development work
+3. **Nothing** (the default)
+   - No `--model` argument is passed; Claude Code picks
+   - Cannot go stale, because amplihack is not choosing
 
 ## Usage Examples
 
-### Using the Default Model
+### Using the Tool's Own Default
 
 ```bash
-# Uses sonnet[1m] by default
+# Passes no --model; Claude Code (and ~/.claude/settings.json) decide
 amplihack launch
 ```
 
@@ -59,13 +75,19 @@ amplihack launch --model haiku
 
 ## Available Models
 
-| Model        | Context     | Best For                            |
-| ------------ | ----------- | ----------------------------------- |
-| `sonnet[1m]` | 1M tokens   | Default - most development tasks    |
-| `sonnet`     | 200K tokens | Standard development work           |
-| `opus[1m]`   | 1M tokens   | Complex architecture, critical code |
-| `opus`       | 200K tokens | High-quality reasoning              |
-| `haiku`      | 200K tokens | Quick tasks, simple operations      |
+Claude Code owns the model catalogue and resolves aliases such as `opus[1m]`,
+`sonnet`, and `haiku`. Which concrete model each alias maps to changes with the
+Claude Code version you have installed, so this page deliberately does not
+tabulate them — a table here would go stale exactly the way the old hardcoded
+default did. Run `claude --help`, or consult the Claude Code release notes, for
+the aliases your install supports.
+
+The `[1m]` suffix requests the 1M-token context window where the model offers
+one. If your workflow depends on it, pin it explicitly:
+
+```bash
+export AMPLIHACK_DEFAULT_MODEL='opus[1m]'
+```
 
 ## Configuration Persistence
 
@@ -73,7 +95,7 @@ Model selection is **per-session only**. Each time you launch amplihack, the pri
 
 - Command-line flags apply to that session only
 - Environment variables persist across shell sessions (until unset)
-- Hardcoded default is always available as fallback
+- With neither set, nothing is passed and Claude Code decides
 
 **To permanently change your default model**, set the environment variable in your shell profile:
 
@@ -99,19 +121,27 @@ For more information about the statusline, see [STATUSLINE.md](./STATUSLINE.md).
 
 ### Environment variable not being respected
 
-**Problem**: You set `AMPLIHACK_DEFAULT_MODEL` but the default `sonnet[1m]` is still used.
+**Problem**: You set `AMPLIHACK_DEFAULT_MODEL` but a different model is used.
 
 **Solution**:
 
 1. Verify the variable is exported: `echo $AMPLIHACK_DEFAULT_MODEL`
-2. Check for command-line flags that override it
-3. Ensure you've reloaded your shell after setting it
+2. Verify it is not empty or whitespace-only — that is treated as unset
+3. Check for command-line flags that override it
+4. Ensure you've reloaded your shell after setting it
+5. Look for amplihack's own stderr line naming the model it passed:
+   `amplihack: passing \`--model ...\` to \`claude\` (from AMPLIHACK_DEFAULT_MODEL)`
 
-### Invalid model name
+### Model not found (404)
 
-**Problem**: Error when specifying an invalid model name.
+**Problem**: Every step fails with
+`API Error: 404 {"type":"not_found_error","message":"model: <some id>"}`.
 
-**Solution**: Use one of the valid model names listed in the "Available Models" table above. Model names are case-sensitive.
+**Solution**: The alias you pinned resolved to a model your account or your
+Claude Code version cannot reach. Unset `AMPLIHACK_DEFAULT_MODEL` and let Claude
+Code choose, or pin an alias your install supports. If the id in the error is one
+you never chose, check `AMPLIHACK_DEFAULT_MODEL`, any `--model` in your command
+line, and `~/.claude/settings.json` — amplihack itself contributes no model id.
 
 ## Related Documentation
 

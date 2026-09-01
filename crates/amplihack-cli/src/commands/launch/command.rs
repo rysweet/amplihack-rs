@@ -123,20 +123,54 @@ pub(super) fn build_command_for_dir(
 
     inject_uvx_plugin_args(&mut cmd, &binary.name, extra_args, add_dir_override);
 
-    // Inject --model unless user already supplied one.
-    // Default model depends on the tool — Claude uses opus[1m], Copilot uses its own default.
+    // Issue #1421: amplihack does NOT pick a model on its own.
+    //
+    // It used to force `--model opus[1m]` onto every Claude-compatible launch.
+    // That string is an ALIAS, and the CLI — not amplihack — decides what it
+    // resolves to. On a reporter's install `opus[1m]` resolved to the retired
+    // `claude-opus-4-1-20250805`, so every agent step 404'd naming a model id
+    // the user had never chosen and could not find in any config or binary.
+    // Forcing it also silently outranked the `"model"` that user had set in
+    // `~/.claude/settings.json`, which is why the obvious lever did nothing.
+    //
+    // amplihack does not own the model catalogue and cannot keep an alias
+    // current across CLI versions. The evidence that this is unmaintainable is
+    // in the tree: the reference docs still said the default was `sonnet[1m]`
+    // long after the code moved to `opus[1m]`. So amplihack passes nothing and
+    // the CLI applies its own current default, which cannot go stale.
+    //
+    // A model is injected ONLY when something asked for one: `--model` on the
+    // command line is the operator's and is forwarded untouched;
+    // `AMPLIHACK_DEFAULT_MODEL` is the opt-in for pinning every launch; and a
+    // launch through the LiteLLM proxy names the model the proxy routes on,
+    // because the proxy has no default of its own to fall back to.
     let user_has_model = extra_args
         .iter()
         .any(|arg| arg == "--model" || arg.starts_with("--model="));
     if !user_has_model && is_claude_compatible {
-        let default_model = if amplihack_utils::litellm_proxy::proxy_requested() {
-            std::env::var(amplihack_utils::litellm_proxy::MODEL_ENV)
-                .unwrap_or_else(|_| "amplihack-default".to_string())
+        let selection = if amplihack_utils::litellm_proxy::proxy_requested() {
+            Some((
+                std::env::var(amplihack_utils::litellm_proxy::MODEL_ENV)
+                    .unwrap_or_else(|_| "amplihack-default".to_string()),
+                amplihack_utils::litellm_proxy::MODEL_ENV,
+            ))
         } else {
-            std::env::var("AMPLIHACK_DEFAULT_MODEL").unwrap_or_else(|_| "opus[1m]".to_string())
+            configured_default_model().map(|model| (model, "AMPLIHACK_DEFAULT_MODEL"))
         };
-        cmd.arg("--model");
-        cmd.arg(default_model);
+        if let Some((model, source)) = selection {
+            // Diagnosability (issue #1421): a 404 naming a model the user never
+            // typed is not diagnosable. When amplihack puts a model on the
+            // command line, it says so and says where the value came from, so
+            // the id in any later error traces back to this decision instead of
+            // looking like a hardcoded secret inside the binary.
+            eprintln!(
+                "amplihack: passing `--model {model}` to `{}` (from {source}). \
+                 Unset {source} to let {} choose its own default model.",
+                binary.name, binary.name
+            );
+            cmd.arg("--model");
+            cmd.arg(model);
+        }
     }
 
     if resume {
@@ -232,6 +266,22 @@ pub(super) fn build_command_for_dir(
         cmd.arg("--secret-env-vars=COPILOT_PROVIDER_API_KEY");
     }
     cmd
+}
+
+/// The model an operator explicitly asked amplihack to pass, if any.
+///
+/// Issue #1421: there is deliberately no fallback. When `AMPLIHACK_DEFAULT_MODEL`
+/// is unset — or set to whitespace, which is how a shell delivers an unset-ish
+/// value — amplihack passes no `--model` at all and the underlying CLI applies
+/// its own current default. Substituting a hardcoded alias here is what put a
+/// retired model id on the command line of a user who never chose one.
+pub(crate) fn configured_default_model() -> Option<String> {
+    let raw = std::env::var("AMPLIHACK_DEFAULT_MODEL").ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_string())
 }
 
 /// Pure decision function (issue #621): is this Copilot invocation

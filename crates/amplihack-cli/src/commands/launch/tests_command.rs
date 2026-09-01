@@ -320,12 +320,17 @@ fn render_launcher_command_quotes_prompt_args() {
     );
 }
 
-/// When no --model is present in extra_args, build_command MUST inject
-/// '--model' followed by the default model value (opus[1m] or AMPLIHACK_DEFAULT_MODEL).
+/// Issue #1421: with no `--model` in extra_args and no `AMPLIHACK_DEFAULT_MODEL`,
+/// build_command MUST NOT put a model on the command line at all.
 ///
-/// Fails if no --model flag is injected by default.
+/// amplihack used to force `--model opus[1m]` here. That alias is resolved by
+/// the CLI, whose version amplihack does not control; on one reporter's install
+/// it resolved to the retired `claude-opus-4-1-20250805` and every agent step
+/// 404'd naming a model the user had never chosen. Passing nothing lets the CLI
+/// apply its own current default, and lets the user's `~/.claude/settings.json`
+/// `"model"` actually take effect instead of being outranked by our argv.
 #[test]
-fn test_build_command_injects_default_model() {
+fn test_build_command_passes_no_model_by_default() {
     with_default_model_env(None, || {
         let binary = make_binary("/usr/bin/claude");
         let cmd = build_command(&binary, false, false, false, &[]);
@@ -334,21 +339,54 @@ fn test_build_command_injects_default_model() {
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
         assert!(
-            args.contains(&"--model".to_string()),
-            "Expected '--model' to be injected when no --model in extra_args, got: {args:?}"
-        );
-        let model_pos = args.iter().position(|a| a == "--model").unwrap();
-        assert_eq!(
-            args[model_pos + 1],
-            "opus[1m]",
-            "Expected default model 'opus[1m]' after '--model', got: {:?}",
-            args[model_pos + 1]
+            !args.contains(&"--model".to_string()),
+            "amplihack must not choose a model when none was asked for; got: {args:?}"
         );
     });
 }
 
-/// When AMPLIHACK_DEFAULT_MODEL env var is set, build_command MUST use that
-/// value instead of the hard-coded default 'opus[1m]'.
+/// Issue #1421: no hardcoded model alias may reach the command line. Asserted
+/// on the argv as a whole rather than on the `--model` flag alone, so a future
+/// re-introduction by any other route also trips this.
+#[test]
+fn test_build_command_never_hardcodes_a_model_alias() {
+    with_default_model_env(None, || {
+        let binary = make_binary("/usr/bin/claude");
+        let cmd = build_command(&binary, false, false, false, &[]);
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        for hardcoded in ["opus[1m]", "sonnet[1m]", "opus", "sonnet", "haiku"] {
+            assert!(
+                !args.iter().any(|a| a == hardcoded),
+                "amplihack hardcoded the model alias {hardcoded:?};                  the CLI owns the model catalogue, not amplihack. Args: {args:?}"
+            );
+        }
+    });
+}
+
+/// Issue #1421: an empty / whitespace-only AMPLIHACK_DEFAULT_MODEL is how a
+/// shell delivers an unset-ish value. It must mean "no model", never
+/// `--model ""`, which the CLI would reject with its own confusing error.
+#[test]
+fn test_build_command_blank_model_env_injects_nothing() {
+    with_default_model_env(Some("   "), || {
+        let binary = make_binary("/usr/bin/claude");
+        let cmd = build_command(&binary, false, false, false, &[]);
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !args.contains(&"--model".to_string()),
+            "A blank AMPLIHACK_DEFAULT_MODEL must inject nothing, got: {args:?}"
+        );
+    });
+}
+
+/// When AMPLIHACK_DEFAULT_MODEL env var is set, build_command MUST pass that
+/// value through — it is the operator's explicit opt-in to pinning a model.
 ///
 /// Fails if the env var override is not respected.
 #[test]
@@ -463,14 +501,20 @@ fn build_command_basic_no_skip_permissions_by_default() {
             path: PathBuf::from("/usr/bin/claude"),
             version: Some("1.0.0".to_string()),
         };
+        // Safety: tests in this file are serialized via home_env_lock(), which
+        // `with_uvx_detection_disabled` already holds.
+        let previous_model = std::env::var_os("AMPLIHACK_DEFAULT_MODEL");
+        unsafe { std::env::remove_var("AMPLIHACK_DEFAULT_MODEL") };
         // skip_permissions = false (default): should NOT inject --dangerously-skip-permissions
         let cmd = build_command(&binary, false, false, false, &[]);
+        if let Some(value) = previous_model {
+            unsafe { std::env::set_var("AMPLIHACK_DEFAULT_MODEL", value) };
+        }
         assert_eq!(cmd.get_program(), "/usr/bin/claude");
         let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
-        // Should inject --model <default> only
-        assert_eq!(args[0], "--model");
-        // Default model depends on env; just check we have 2 args
-        assert_eq!(args.len(), 2);
+        // Issue #1421: nothing at all is injected. amplihack no longer chooses
+        // a model, so a plain launch carries an empty argv.
+        assert!(args.is_empty(), "expected no injected args, got: {args:?}");
     });
 }
 
@@ -482,12 +526,19 @@ fn build_command_with_skip_permissions_flag() {
             path: PathBuf::from("/usr/bin/claude"),
             version: Some("1.0.0".to_string()),
         };
+        // Safety: tests in this file are serialized via home_env_lock(), which
+        // `with_uvx_detection_disabled` already holds.
+        let previous_model = std::env::var_os("AMPLIHACK_DEFAULT_MODEL");
+        unsafe { std::env::remove_var("AMPLIHACK_DEFAULT_MODEL") };
         // skip_permissions = true: should inject --dangerously-skip-permissions
         let cmd = build_command(&binary, false, false, true, &[]);
+        if let Some(value) = previous_model {
+            unsafe { std::env::set_var("AMPLIHACK_DEFAULT_MODEL", value) };
+        }
         let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
-        assert_eq!(args[0], "--dangerously-skip-permissions");
-        assert_eq!(args[1], "--model");
-        assert_eq!(args.len(), 3);
+        // Issue #1421: the permission flag is still ours to inject; the model
+        // is not, so it is the ONLY argument now.
+        assert_eq!(args, &["--dangerously-skip-permissions"]);
     });
 }
 
