@@ -48,8 +48,10 @@ signal as an intent to route and rejects incomplete or unsafe configuration.
 
 Before child creation, amplihack requires all three gateway environment
 variables, validates the endpoint and model, rejects unsupported launchers and
-bypass arguments, including Claude custom-agent and plugin loading, and removes
-conflicting provider credentials and selectors from the child environment.
+bypass arguments, including custom-agent loading and every supported plugin
+loading option (`--plugin-dir` for all launchers and `--plugin-url` for
+Claude/RustyClawd), and removes conflicting provider credentials and selectors
+from the child environment.
 Routed Claude launches use safe mode and do not load the UVX plugin directory.
 Amplihack retains the validated route as data and removes all three
 `AMPLIHACK_LITELLM_*` variables from checkout, Docker probe/build, update,

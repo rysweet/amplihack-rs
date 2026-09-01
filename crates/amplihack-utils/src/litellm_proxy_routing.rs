@@ -78,10 +78,17 @@ pub fn validate_launch_args(target: CliTarget, args: &[String]) -> Result<(), Pr
                     || arg.starts_with("--agents=")
                     || *arg == "--plugin-dir"
                     || arg.starts_with("--plugin-dir=")
+                    || *arg == "--plugin-url"
+                    || arg.starts_with("--plugin-url=")
                     || *arg == "--safe-mode"
                     || arg.starts_with("--safe-mode=")
             }
-            CliTarget::CopilotCli => *arg == "--agent" || arg.starts_with("--agent="),
+            CliTarget::CopilotCli => {
+                *arg == "--agent"
+                    || arg.starts_with("--agent=")
+                    || *arg == "--plugin-dir"
+                    || arg.starts_with("--plugin-dir=")
+            }
         });
         if custom_agent_requested {
             return Err(ProxyError::InvalidConfig(
@@ -255,6 +262,50 @@ mod tests {
             validate_launch_args(CliTarget::Claude, &["--safe-mode=false".to_string()]).is_err(),
             "Claude safe mode must remain launcher-owned during routed launches"
         );
+
+        match previous {
+            Some(value) => unsafe { std::env::set_var(ENDPOINT_ENV, value) },
+            None => unsafe { std::env::remove_var(ENDPOINT_ENV) },
+        }
+    }
+
+    #[test]
+    fn rejects_every_supported_plugin_loading_option() {
+        let _guard = crate::test_serial::acquire();
+        let previous = std::env::var_os(ENDPOINT_ENV);
+        unsafe { std::env::set_var(ENDPOINT_ENV, "https://gateway.example.test") };
+
+        for (target, options) in [
+            (
+                CliTarget::Claude,
+                &[
+                    "--plugin-dir",
+                    "--plugin-dir=/tmp/plugin",
+                    "--plugin-url",
+                    "--plugin-url=https://plugins.example.test/plugin",
+                ][..],
+            ),
+            (
+                CliTarget::RustyClawd,
+                &[
+                    "--plugin-dir",
+                    "--plugin-dir=/tmp/plugin",
+                    "--plugin-url",
+                    "--plugin-url=https://plugins.example.test/plugin",
+                ],
+            ),
+            (
+                CliTarget::CopilotCli,
+                &["--plugin-dir", "--plugin-dir=/tmp/plugin"],
+            ),
+        ] {
+            for option in options {
+                assert!(
+                    validate_launch_args(target, &[option.to_string()]).is_err(),
+                    "{target:?} accepted plugin loading option {option}"
+                );
+            }
+        }
 
         match previous {
             Some(value) => unsafe { std::env::set_var(ENDPOINT_ENV, value) },
