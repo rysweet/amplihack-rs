@@ -55,14 +55,34 @@
 set -uo pipefail
 
 # Bound on how much task text is examined. Overridable for tests; the default is
-# the contract, and matches the `head -c 65536` the recipe applies inline.
+# the contract, and matches the 65536-character bound step-04 applies inline.
 MAX_INPUT_BYTES="${AMPLIHACK_BRANCH_INPUT_MAX:-65536}"
 
 # Branches a run must never adopt from prose: "Branch: main" in a task
 # description describes the base, never the branch to commit onto.
 RESERVED_REFS=" main master develop trunk head "
 
-task_text() { printf '%s' "${TASK_DESCRIPTION:-}" | head -c "$MAX_INPUT_BYTES"; }
+# NEVER `| head -c`. Bounded with a shell substring instead.
+#
+# ISSUE #1426 CI FAILURE, and the reason step-04's inline derivation is written the
+# same way. `printf '%s' "$TASK" | head -c 65536 | tr … | sed …` looks harmless and
+# is not: `head` stops reading once it has its bytes, so with a task larger than the
+# 64 KiB pipe buffer the producer is left writing into a closed pipe. It then dies of
+# SIGPIPE (status 141), or — where SIGPIPE is ignored, a disposition that survives
+# exec and is common in CI — bash's printf reports "write error: Broken pipe" and
+# returns 1. `set -o pipefail` promotes either to the pipeline's status, the command
+# substitution yields "", and `set -e` kills the step before it emits any JSON.
+#
+# Reproduction:
+#   $ trap '' PIPE; set -euo pipefail
+#   $ X="$(printf '%s' "$BIG" | head -c 10)"; echo REACHED
+#   bash: printf: write error: Broken pipe        # rc=1, "REACHED" never printed
+#
+# Whether it fires at a given size is a race on the pipe buffer, so it was green on
+# bash 5.3.9 locally and red on the runner's 5.2.21 with a 100 KB task description.
+# A branch name is load-bearing: an empty one is worse than an ugly one. The rule
+# that follows — no pipeline stage may stop reading before its producer is done.
+task_text() { local t="${TASK_DESCRIPTION:-}"; printf '%s' "${t:0:$MAX_INPUT_BYTES}"; }
 
 lower() { printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'; }
 

@@ -135,6 +135,34 @@ it, or it stays `feat`.
 
 ---
 
+## Never pipe into an early-exit stage
+
+The derivation bounds its input with a **shell substring**, never `| head -c`. That is
+not a style preference; the first version used `head` and it broke CI.
+
+`printf '%s' "$TASK" | head -c 65536 | tr … | sed …` — `head` stops reading once it has
+its bytes, so with a task larger than the 64 KiB pipe buffer the producer is left
+writing into a closed pipe. It then dies of `SIGPIPE` (status 141), or — where SIGPIPE
+is ignored, a disposition that survives `exec` and is common in CI — bash's `printf`
+reports `write error: Broken pipe` and returns **1**. `set -o pipefail` promotes either
+to the pipeline's status, the command substitution yields `""`, and `set -e` kills
+step-04 before it emits any JSON.
+
+```console
+$ trap '' PIPE; set -euo pipefail
+$ X="$(printf '%s' "$BIG" | head -c 10)"; echo REACHED
+bash: printf: write error: Broken pipe          # rc=1, "REACHED" never printed
+```
+
+Whether it fires at a given size is a race on the pipe buffer, which is why it was
+green on bash 5.3.9 locally and red on the runner's 5.2.21 with a 100 KB task
+description. An empty branch name is worse than an ugly one, so: **no pipeline stage
+may stop reading before its producer is done.** `tests/issue_1426_branch_name_not_prose.sh`
+guards this twice — B6 exercises a 100 KB description end to end, and D4 asserts the
+shape, deterministically, on every machine.
+
+---
+
 ## Why the derived name is inline
 
 Rank 2 may live in a bundle helper because it is *optional*: when the helper cannot be

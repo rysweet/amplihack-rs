@@ -40,6 +40,14 @@
 # Exit codes: 0 = pass, 1 = fail, 2 = harness error.
 # Expected before the fix: FAIL. Expected after the fix: PASS.
 
+# This script drives commands that exit non-zero BY DESIGN — the explicit-branch
+# helper reports "no branch named / not an existing ref" as exit 10 — and reports its
+# own verdict through FAIL_COUNT and the final exit. So `-e` must not leak in from the
+# caller: CI's wrapper shell is `bash --noprofile --norc -e -o pipefail`, and a
+# reviewer may well run this file with those flags directly. Without the explicit
+# `set +e` the run dies at the first intentional non-zero and reports a phantom pass
+# count. Every command status here is checked explicitly.
+set +e
 set -uo pipefail
 
 # --- Hermetic isolation -----------------------------------------------------
@@ -214,10 +222,15 @@ json_field() { printf '%s' "$1" | sed -n "s/.*\"$2\": *\"\([^\"]*\)\".*/\1/p"; }
 
 # run_step_bare <cwd> <issue> <prefix> <task> -> RUN_RC / RUN_JSON / RUN_ERR.
 # Exit status is read from $? on its own line, never through a pipeline.
+#
+# `trap '' PIPE` is deliberate. An ignored-SIGPIPE disposition SURVIVES exec and is
+# common in CI, and it is what turns a pipeline stage that stops reading early into a
+# plain exit 1 instead of a signal death. Running the step body this way is the
+# closer approximation of the runner (see B6).
 run_step_bare() {
     local cwd="$1" issue="$2" prefix="$3" task="$4"
     RUN_JSON="$(
-        cd "${cwd}" && env -i \
+        cd "${cwd}" && trap '' PIPE && env -i \
             PATH="${PATH}" \
             HOME="${TEST_TMP}/nobundle" \
             REPO_PATH="." \
@@ -300,7 +313,7 @@ LONG_NAME="$(json_field "${RUN_JSON}" branch_name)"
 if [[ "${RUN_RC}" -eq 0 && -n "${LONG_NAME}" ]] && (( ${#LONG_NAME} <= 72 )); then
     pass "B6-huge-input" "a 100 KB task description still yields a ${#LONG_NAME}-character ref: ${LONG_NAME}"
 else
-    fail "B6-huge-input" "rc=${RUN_RC} 100 KB task produced '${LONG_NAME}' (${#LONG_NAME} chars)"
+    fail "B6-huge-input" "rc=${RUN_RC} 100 KB task produced '${LONG_NAME}' (${#LONG_NAME} chars)\nstderr:\n${RUN_ERR}"
 fi
 
 # --- B7: nothing usable to say -> a stable hash, never an empty tail --------
@@ -408,6 +421,18 @@ if grep -qE 'BRANCH_HELPER" derive|workflow_branch_name.sh" derive' "${WORKTREE_
     fail "D3-derive-inline" "the derived branch name is delegated to a bundle helper — it is load-bearing and must be computed inline (#1121)"
 else
     pass "D3-derive-inline" "the derived branch name is computed inline, not behind a bundle helper"
+fi
+
+# D4 (#1426 CI): the derivation must contain no pipeline stage that stops reading
+# before its producer is done. `head -c` there left `printf` writing into a closed
+# pipe; under `pipefail` that emptied the branch name and killed step-04 with exit 1
+# on a 100 KB task — green on bash 5.3 locally, red on the runner's 5.2.21. B6 covers
+# the behaviour; this covers the shape, deterministically, on every machine.
+DERIVATION="$(sed -n '/^      # BRANCH NAMING/,/^      BRANCH_NAME=/p' "${WORKTREE_YAML}" | grep -v '^ *#')"
+if printf '%s' "${DERIVATION}" | grep -qE '\|[[:space:]]*(head|tail)( |$)|grep -m'; then
+    fail "D4-no-early-exit" "the branch-name derivation pipes into an early-exit stage (head/tail/grep -m); under pipefail that empties the name"
+else
+    pass "D4-no-early-exit" "the derivation has no early-exit pipeline stage (pipefail-safe)"
 fi
 
 echo ""
