@@ -84,12 +84,14 @@ An empty or partial configuration is rejected rather than treated as disabled.
 ## Copilot configuration isolation
 
 While routing is enabled, each Copilot launch uses a fresh temporary
-`COPILOT_HOME`. Persisted user- and repository-scoped plugins, agents, hooks,
-MCP servers, credentials, and preferences are therefore unavailable to the
-routed process, and any state it writes is removed when the process exits.
-Repository files remain available as workspace content, but plugins installed
-through Copilot's configuration home cannot execute in the routed session.
-Unset all three routing variables to use the normal Copilot home.
+`COPILOT_HOME`. Persisted user-scoped plugins, agents, hooks, MCP servers,
+credentials, and preferences are therefore unavailable to the routed process,
+and any state it writes is removed when the process exits. Copilot discovers
+repository configuration independently of `COPILOT_HOME`, so routed launches
+reject `--add-dir` and reject workspaces containing `.github/agents`; repository
+custom agents may select a model. Remove or rename that directory, or unset all
+three routing variables to launch with repository custom agents and the normal
+Copilot home.
 
 ## Troubleshoot a failed launch
 
@@ -98,7 +100,8 @@ Unset all three routing variables to use the normal Copilot home.
 | Configuration is incomplete | Set all three required variables in the same environment, or unset all three. |
 | Endpoint is rejected | Use HTTPS without credentials, query, or fragment. The path may be empty or `/v1`; HTTP requires a literal loopback address. |
 | Model is rejected | Use a 1-128 character alias containing only letters, digits, `.`, `_`, `:`, `/`, or `-`. |
-| Launch option is rejected | Remove remote, export, share, resume, provider, or conflicting model controls. |
+| Launch option is rejected | Remove remote, export, share, resume, provider, custom-agent, `--add-dir`, or conflicting model controls. |
+| Copilot workspace is rejected | Remove or rename `.github/agents`, or disable routing before using repository custom agents. |
 | Launcher is rejected | Use Claude Code, Copilot CLI, or rustyclawd, or unset all gateway variables. |
 | Docker Claude launch is rejected | Launch Claude outside Docker, or enter a trusted container and launch there so amplihack can attest the exact executable before agent startup. |
 | Gateway cannot be reached | Check the child CLI error, gateway health, DNS, TLS trust, and firewall. Amplihack does not probe or retry the gateway. |

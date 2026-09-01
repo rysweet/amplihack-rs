@@ -49,16 +49,18 @@ signal as an intent to route and rejects incomplete or unsafe configuration.
 Before child creation, amplihack requires all three gateway environment
 variables, validates the endpoint and model, rejects unsupported launchers and
 bypass arguments, including custom-agent loading and every supported plugin
-loading option (`--plugin-dir` for all launchers and `--plugin-url` for
-Claude/RustyClawd), and removes conflicting provider credentials and selectors
-from the child environment.
+loading option (`--plugin-dir` for all launchers, `--plugin-url` for
+Claude/RustyClawd, and Copilot's trusted-configuration `--add-dir`), and removes
+conflicting provider credentials and selectors from the child environment.
 Routed Claude launches use safe mode and do not load the UVX plugin directory.
 Routed Copilot launches receive a fresh, empty `COPILOT_HOME` that exists only
-for the child process lifetime. This prevents persisted Copilot configuration
-across user and repository scopes, including installed plugins and their
-contributed agents, hooks, and MCP servers, from loading even when no plugin
-option appears in argv. The user's normal Copilot home is neither read nor
-modified by the routed session.
+for the child process lifetime. This prevents persisted user-scoped plugins and
+their contributed agents, hooks, and MCP servers from loading even when no
+plugin option appears in argv. `COPILOT_HOME` does not disable repository
+configuration discovery. Because Copilot has no supported switch to disable
+repository custom agents and those agents may select a model, amplihack rejects
+routed launches from workspaces containing `.github/agents`. The user's normal
+Copilot home is neither read nor modified by the routed session.
 Amplihack retains the validated route as data and removes all three
 `AMPLIHACK_LITELLM_*` variables from checkout, Docker probe/build, update,
 bootstrap, freshness, memory-detection, installation, and background-indexing

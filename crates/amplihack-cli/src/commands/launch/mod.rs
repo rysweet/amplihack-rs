@@ -27,7 +27,9 @@ mod tests_system_prompt_append;
 
 // Re-exports — public API of the launch module.
 pub(crate) use checkout::resolve_checkout_repo;
-pub(crate) use command::{resolve_no_reflection, resolve_subprocess_safe};
+pub(crate) use command::{
+    resolve_no_reflection, resolve_subprocess_safe, validate_routed_copilot_workspace,
+};
 pub(crate) use power_steering::maybe_prompt_re_enable_power_steering;
 
 // Internal imports from submodules used by run_launch.
@@ -263,6 +265,7 @@ pub fn run_launch(
         cmd.current_dir(&execution_dir);
         let routed_copilot = proxy_config.is_some()
             && proxy_target == Some(amplihack_utils::litellm_proxy::CliTarget::CopilotCli);
+        validate_routed_copilot_workspace(&execution_dir, routed_copilot)?;
         let _isolated_copilot_home = isolate_routed_copilot_home(&mut cmd, routed_copilot)
             .context("failed to create isolated Copilot home for external LiteLLM launch")?;
         apply_launch_environment(

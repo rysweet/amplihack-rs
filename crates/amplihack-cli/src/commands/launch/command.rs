@@ -6,10 +6,55 @@ use crate::binary_finder::BinaryInfo;
 use crate::commands::uvx_help::is_uvx_deployment;
 use crate::env_builder::EnvBuilder;
 
+use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub(super) const COPILOT_HOME_ENV: &str = "COPILOT_HOME";
+
+/// Reject repository custom agents before a routed Copilot process starts.
+///
+/// `COPILOT_HOME` isolates user configuration, but Copilot independently
+/// discovers `.github/agents` from the workspace. Copilot has no supported
+/// switch that disables that discovery, and an agent may select its own model.
+pub(crate) fn validate_routed_copilot_workspace(
+    execution_dir: &Path,
+    routed_copilot: bool,
+) -> Result<()> {
+    if !routed_copilot {
+        return Ok(());
+    }
+
+    let start = execution_dir.canonicalize().with_context(|| {
+        format!(
+            "failed to resolve routed Copilot workspace {}",
+            execution_dir.display()
+        )
+    })?;
+    for directory in start.ancestors() {
+        let agents = directory.join(".github").join("agents");
+        match std::fs::symlink_metadata(&agents) {
+            Ok(_) => bail!(
+                "routed Copilot cannot launch from a workspace containing {}; repository custom agents can override the configured model",
+                agents.display()
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to inspect routed Copilot custom-agent path {}",
+                        agents.display()
+                    )
+                });
+            }
+        }
+
+        if std::fs::symlink_metadata(directory.join(".git")).is_ok() {
+            break;
+        }
+    }
+    Ok(())
+}
 
 /// Give a routed Copilot process a fresh configuration root for its lifetime.
 ///
@@ -17,6 +62,8 @@ pub(super) const COPILOT_HOME_ENV: &str = "COPILOT_HOME";
 /// `--plugin-dir` is not sufficient. Keeping the returned guard alive prevents
 /// user-scoped plugin, hook, agent, and MCP configuration from entering the
 /// routed session and ensures the isolated state is removed after exit.
+/// Repository configuration is a separate scope enforced by
+/// [`validate_routed_copilot_workspace`].
 pub(super) fn isolate_routed_copilot_home(
     command: &mut Command,
     routed_copilot: bool,

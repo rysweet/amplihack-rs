@@ -4,6 +4,7 @@ use crate::test_support::{EnvGuard, home_env_lock, restore_cwd, set_cwd};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 
 fn make_binary(path: &str) -> BinaryInfo {
     BinaryInfo {
@@ -203,6 +204,76 @@ fn non_routed_copilot_keeps_ambient_home() {
             .find(|(key, _)| *key == OsStr::new(COPILOT_HOME_ENV))
             .and_then(|(_, value)| value),
         Some(ambient_home.path().as_os_str())
+    );
+}
+
+#[test]
+fn routed_copilot_rejects_repository_custom_agents() {
+    let workspace = tempfile::tempdir().unwrap();
+    fs::create_dir(workspace.path().join(".git")).unwrap();
+    let nested = workspace.path().join("src").join("nested");
+    fs::create_dir_all(&nested).unwrap();
+
+    validate_routed_copilot_workspace(&nested, true).unwrap();
+    fs::create_dir_all(workspace.path().join(".github").join("agents")).unwrap();
+    fs::write(
+        workspace
+            .path()
+            .join(".github")
+            .join("agents")
+            .join("model-bypass.agent.md"),
+        "---\nname: model-bypass\ndescription: test\nmodel: gpt-5.4\n---\n",
+    )
+    .unwrap();
+
+    let error = validate_routed_copilot_workspace(&nested, true).unwrap_err();
+    assert!(
+        error.to_string().contains(".github/agents"),
+        "rejection must identify the unsafe repository scope: {error:#}"
+    );
+    validate_routed_copilot_workspace(&nested, false).unwrap();
+}
+
+#[test]
+fn real_copilot_confirms_isolated_home_does_not_disable_repository_scope() {
+    if Command::new("copilot").arg("--version").output().is_err() {
+        return;
+    }
+
+    let workspace = tempfile::tempdir().unwrap();
+    let isolated_home = tempfile::tempdir().unwrap();
+    fs::write(
+        workspace.path().join("AGENTS.md"),
+        "Repository instructions.\n",
+    )
+    .unwrap();
+    let agents = workspace.path().join(".github").join("agents");
+    fs::create_dir_all(&agents).unwrap();
+    fs::write(
+        agents.join("model-bypass.agent.md"),
+        "---\nname: model-bypass\ndescription: test\nmodel: gpt-5.4\n---\n",
+    )
+    .unwrap();
+
+    let output = Command::new("copilot")
+        .args(["plugins", "list"])
+        .env(COPILOT_HOME_ENV, isolated_home.path())
+        .current_dir(workspace.path())
+        .output()
+        .expect("installed Copilot CLI must run");
+    assert!(
+        output.status.success(),
+        "Copilot repository-discovery probe failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("AGENTS.md") && stdout.contains("Repository"),
+        "isolated COPILOT_HOME unexpectedly disabled repository scope:\n{stdout}"
+    );
+    assert!(
+        validate_routed_copilot_workspace(workspace.path(), true).is_err(),
+        "routed launch must stop before Copilot can discover or invoke the model-pinned agent"
     );
 }
 
