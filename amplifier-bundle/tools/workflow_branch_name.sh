@@ -17,18 +17,22 @@
 # The same shape produced `feat/issue-1277-skip-workflow-launch-this-agent-is-
 # already-executi`: a truncated prompt fragment leaked into a git ref.
 #
-# Two rules follow, and this helper implements both:
+# Two rules follow. This helper implements the FIRST one:
 #
 #   `explicit`  An explicitly NAMED branch wins. A task that says
 #               `Branch: <ref>` (or `BRANCH — already created …:` with the ref on
 #               the next line) has already answered the question; the caller uses
 #               that answer verbatim and never derives a competitor.
 #
-#   `derive`    Absent one, the name is keyed to the ISSUE NUMBER, and the
-#               descriptive tail is bounded (24 characters by default) and cut on
-#               a WORD BOUNDARY — never mid-word, never a filesystem path, never
-#               fifty characters of raw prose. With nothing usable to say, the
-#               tail is a short stable HASH of the task rather than its prose.
+# The second rule — absent an explicit branch, key the name to the ISSUE NUMBER
+# with a bounded, word-boundary-truncated tail — is implemented INLINE in
+# step-04-setup-worktree and deliberately NOT here. It is load-bearing: the phase
+# bricks are executed with no amplifier-bundle on disk by design (see
+# amplifier-bundle/recipes/tests/), so a derived name living behind an optional
+# helper would change with the environment, and a re-run would fail to recognise
+# the worktree its predecessor registered (issue #1121). Detection of an explicit
+# branch is different in kind: when this file is absent the caller simply does not
+# detect one, which is pre-#1426 behaviour, never a DIFFERENT name.
 #
 # The task text is read from the TASK_DESCRIPTION *environment variable*, never
 # from argv. On Linux a single argument is capped at MAX_ARG_STRLEN (128 KB), so
@@ -39,22 +43,19 @@
 # PORTABILITY: bash 3.2 (the system bash on macOS) — no `${VAR,,}`, no `mapfile`,
 # no associative arrays. Issue #1423 was exactly this mistake.
 #
-# `set -e` is deliberately NOT used: every subcommand here is best-effort by
-# contract, returns its answer on stdout, and prints nothing on stdout when it
-# has no answer. Failures are reported by an empty stdout, so the caller's own
-# fallback ladder stays in charge.
+# `set -e` is deliberately NOT used: this subcommand is best-effort by contract,
+# returns its answer on stdout, and prints nothing on stdout when it has no
+# answer, so the caller's own ladder stays in charge.
 #
 # Usage:
-#   TASK_DESCRIPTION=... workflow_branch_name.sh explicit
-#   TASK_DESCRIPTION=... workflow_branch_name.sh derive --issue N --prefix feat [--title T]
+#   TASK_DESCRIPTION=... workflow_branch_name.sh explicit [--repo-path PATH]
 #
 # Direct tests: tests/issue_1426_branch_name_not_prose.sh
 
 set -uo pipefail
 
-# Bounds. Overridable for tests; the defaults are the contract.
-MAX_SLUG_CHARS="${AMPLIHACK_BRANCH_SLUG_MAX:-24}"
-MAX_NAME_CHARS="${AMPLIHACK_BRANCH_NAME_MAX:-72}"
+# Bound on how much task text is examined. Overridable for tests; the default is
+# the contract, and matches the `head -c 65536` the recipe applies inline.
 MAX_INPUT_BYTES="${AMPLIHACK_BRANCH_INPUT_MAX:-65536}"
 
 # Branches a run must never adopt from prose: "Branch: main" in a task
@@ -64,16 +65,6 @@ RESERVED_REFS=" main master develop trunk head "
 task_text() { printf '%s' "${TASK_DESCRIPTION:-}" | head -c "$MAX_INPUT_BYTES"; }
 
 lower() { printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'; }
-
-task_hash() {
-  if command -v shasum >/dev/null 2>&1; then
-    task_text | shasum -a 256 2>/dev/null | cut -c1-8
-  elif command -v sha256sum >/dev/null 2>&1; then
-    task_text | sha256sum 2>/dev/null | cut -c1-8
-  else
-    task_text | cksum | cut -d' ' -f1 | cut -c1-8
-  fi
-}
 
 # ref_is_valid REF — a conservative shape check plus git's own authoritative
 # checker. The regex runs first so a name containing shell metacharacters or a
@@ -181,102 +172,10 @@ emit_explicit() {
   return 10
 }
 
-# ---------------------------------------------------------------------------
-# slug_stdin ISSUE — read text on stdin, print a bounded word-boundary slug.
-#
-# Tokens that are filesystem paths, URLs, or e-mail-ish (anything containing
-# '/', '\' or '@') are dropped outright: they are the source of
-# "usersryansrcmistt-qaws142jamestown". Overlong single tokens (identifier
-# blobs, hashes) are dropped too. Words are then joined with '-' only while the
-# result still fits MAX_SLUG_CHARS, so the slug always ends on a whole word.
-# A leading "issue <N>" is skipped — the number is already in the branch name.
-# ---------------------------------------------------------------------------
-slug_stdin() {
-  awk -v maxlen="$MAX_SLUG_CHARS" -v issue="${1:-}" '
-    {
-      n = split($0, w, /[ \t]+/); s = ""
-      for (i = 1; i <= n; i++) {
-        if (w[i] ~ /[\/\\@]/) continue
-        s = s " " w[i]
-      }
-      gsub(/[^A-Za-z0-9]+/, " ", s)
-      m = split(s, u, / +/)
-      for (j = 1; j <= m; j++) {
-        if (u[j] == "" || length(u[j]) > 20) continue
-        words[++wc] = tolower(u[j])
-      }
-    }
-    END {
-      start = 1
-      while (start <= wc && (words[start] == "issue" || words[start] == "issues" \
-             || (issue != "" && words[start] == tolower(issue)))) start++
-      out = ""
-      for (k = start; k <= wc; k++) {
-        cand = (out == "" ? words[k] : out "-" words[k])
-        if (length(cand) > maxlen) {
-          # Never truncate mid-word except when the very first word alone is
-          # already over budget and there is nothing else to say.
-          if (out == "") out = substr(words[k], 1, maxlen)
-          break
-        }
-        out = cand
-      }
-      sub(/-+$/, "", out)
-      print out
-    }
-  '
-}
-
-# ---------------------------------------------------------------------------
-# `derive` — build a bounded, issue-keyed branch name.
-# ---------------------------------------------------------------------------
-cmd_derive() {
-  local issue="" prefix="feat" title="" slug name
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --issue)     issue="${2:-}"; shift 2 || break ;;
-      --prefix)    prefix="${2:-}"; shift 2 || break ;;
-      --title)     title="${2:-}"; shift 2 || break ;;
-      --repo-path) shift 2 || break ;;
-      *)           shift ;;
-    esac
-  done
-
-  # The issue reference may be a number (GitHub/AzDO) or a local tracking id
-  # such as `local-9f2c1a` (workflow_issue_tracking.sh). Both are kept; anything
-  # else is reduced to ref-safe characters and bounded.
-  issue="$(printf '%s' "$issue" | tr -cd 'A-Za-z0-9-' | cut -c1-24)"
-  ref_is_valid "$prefix" || prefix="feat"
-
-  # Preference order for the descriptive tail: an explicitly supplied title
-  # (the issue title, when the caller has it), then the task text, then nothing.
-  slug=""
-  if [ -n "$title" ]; then slug="$(printf '%s' "$title" | slug_stdin "$issue")"; fi
-  if [ -z "$slug" ]; then slug="$(task_text | slug_stdin "$issue")"; fi
-
-  if [ -n "$issue" ]; then
-    if [ -n "$slug" ]; then name="$prefix/issue-$issue-$slug"
-    else                   name="$prefix/issue-$issue-$(task_hash)"; fi
-  else
-    if [ -n "$slug" ]; then name="$prefix/$slug-$(task_hash)"
-    else                   name="$prefix/task-unnamed-$(task_hash)"; fi
-  fi
-
-  # Hard bound on the whole ref, cut back to a word boundary. Directory names
-  # built from these have hit the filename limit before (#1249, #1260).
-  if [ "${#name}" -gt "$MAX_NAME_CHARS" ]; then
-    name="$(printf '%s' "$name" | cut -c1-"$MAX_NAME_CHARS" | sed -e 's/-[^-/]*$//' -e 's/[-/]*$//')"
-  fi
-  ref_is_valid "$name" || name="$prefix/task-unnamed-$(task_hash)"
-  ref_is_valid "$name" || name="feat/task-unnamed-$(task_hash)"
-  printf '%s' "$name"
-}
-
 case "${1:-}" in
   explicit) shift; cmd_explicit "$@" ;;
-  derive)   shift; cmd_derive "$@" ;;
   *)
-    echo "usage: workflow_branch_name.sh {explicit|derive --issue N --prefix P [--title T]}" >&2
+    echo "usage: workflow_branch_name.sh explicit [--repo-path PATH]" >&2
     exit 2
     ;;
 esac
