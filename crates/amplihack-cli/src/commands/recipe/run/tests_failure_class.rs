@@ -625,3 +625,196 @@ fn work_failures_still_beat_a_usage_limit_mention() {
         "work failures keep top precedence; ambiguity must resolve toward not retrying"
     );
 }
+
+// -------------------------------------------------------------------------
+// Issue #1435 — a repository-selection precondition failure is self-describing.
+// `workflow-worktree`'s #1323 precondition refuses a repository with no
+// `origin` remote and names the remedy in the same breath ("point repo_path at
+// the one to work in"). The classifier used to answer `indeterminate` — "no
+// transport, environmental, or work marker found" — about a message that
+// plainly states both its cause and its fix, and threw that guidance away.
+//
+// The right class is `Environmental` by the taxonomy's own definition: the
+// environment cannot support the work as configured, and retrying the identical
+// call cannot help — an operator has to pick a repository or add an origin.
+// -------------------------------------------------------------------------
+
+/// The verbatim output of `workflow_worktree_root.sh assert-origin` run against
+/// a multi-repository workspace root, captured from the script itself. Line
+/// wrapping included: a marker that spans one of these breaks would not match
+/// the real thing.
+const OBSERVED_REPO_SELECTION_ERROR: &str = "\
+ERROR: '/home/azureuser/src' is a git repository but has no 'origin' remote, so this
+       workflow cannot resolve a base ref or push its work.
+       This looks like a multi-repository workspace. Repositories found:
+         /home/azureuser/src/amplihack-rs
+         /home/azureuser/src/Specs
+       Point repo_path at the one to work in (issue #1323).";
+
+/// Written to compile against the PRE-FIX code on purpose: it names only
+/// symbols that already existed, so it is a genuine red test rather than a
+/// compile error. Before the fix this failed at runtime with
+/// `class=Indeterminate`.
+#[test]
+fn the_observed_repo_selection_error_is_never_indeterminate() {
+    let (class, _) = classify_failure_text(OBSERVED_REPO_SELECTION_ERROR);
+    assert_ne!(
+        class,
+        FailureClass::Indeterminate,
+        "the message names its own cause and its remedy; classifying it as \
+         \"no transport, environmental, or work marker found\" is wrong. Issue #1435."
+    );
+}
+
+#[test]
+fn the_observed_repo_selection_error_classifies_as_environmental() {
+    let (class, signal) = classify_failure_text(OBSERVED_REPO_SELECTION_ERROR);
+    assert_eq!(
+        class,
+        FailureClass::Environmental,
+        "a repository-selection problem is environmental: the environment cannot \
+         support the work as configured and a human must change something. \
+         Issue #1435. signal={signal:?}"
+    );
+    assert_eq!(signal, Some("has no 'origin' remote"));
+}
+
+#[test]
+fn a_repo_selection_failure_is_not_mechanically_retried() {
+    // Retrying the identical run re-reads the identical repo_path and fails
+    // identically. Someone has to pick a repository first.
+    assert!(
+        !FailureClass::Environmental.is_mechanically_retryable(),
+        "a repository-selection failure must not be retried inside the budget"
+    );
+}
+
+#[test]
+fn the_repo_selection_verdict_names_the_remedy_not_just_the_class() {
+    // The whole defect: the error already told the operator what to do and the
+    // classifier discarded it. The verdict has to carry that forward.
+    let verdict = classify_error(&anyhow::anyhow!("{OBSERVED_REPO_SELECTION_ERROR}"));
+    let reasoning = verdict.reasoning();
+    assert!(
+        reasoning.contains("environmental"),
+        "the verdict must name the class. Got: {reasoning}"
+    );
+    assert!(
+        reasoning.contains("repo_path"),
+        "the remedy is to point `repo_path` at a specific repository; the verdict \
+         must say so rather than only naming a class. Got: {reasoning}"
+    );
+    assert!(
+        reasoning.contains("origin"),
+        "adding an `origin` remote is the other remedy and must be stated. \
+         Got: {reasoning}"
+    );
+    assert!(
+        reasoning.contains("/home/azureuser/src\""),
+        "the repository that was actually refused is named in the message and \
+         must survive into the verdict, so the operator does not have to \
+         re-read the raw log. Got: {reasoning}"
+    );
+}
+
+#[test]
+fn the_no_nested_repos_variant_of_the_precondition_also_classifies() {
+    // The precondition has a second branch: a lone repo with no origin and no
+    // nested checkouts. Its remedy line differs, and it must classify too.
+    let text = "\
+ERROR: '/srv/checkout' is a git repository but has no 'origin' remote, so this
+       workflow cannot resolve a base ref or push its work.
+       Add an 'origin' remote, or point repo_path at a checkout that has one.";
+    let (class, _) = classify_failure_text(text);
+    assert_eq!(class, FailureClass::Environmental);
+}
+
+#[test]
+fn a_repo_selection_step_inside_a_run_result_classifies_environmental() {
+    // The shape the issue actually reported: step-04-setup-worktree fails after
+    // earlier phases completed. The completed phases must still be recorded.
+    let result = RecipeRunResult {
+        status: Some("error".to_string()),
+        step_results: vec![
+            step("step-01-classify", "success"),
+            step("step-02-plan", "success"),
+            failed_step_with_stdout(
+                "step-04-setup-worktree",
+                "workflow-worktree failed (exit 1)",
+                &OBSERVED_REPO_SELECTION_ERROR.lines().collect::<Vec<_>>(),
+            ),
+        ],
+        ..RecipeRunResult::default()
+    };
+    let verdict = classify_run_failure(&result, "");
+    assert_eq!(
+        verdict.class,
+        FailureClass::Environmental,
+        "issue #1435 reported this exact run shape as `indeterminate`"
+    );
+    assert_eq!(
+        verdict.completed_steps,
+        vec!["step-01-classify", "step-02-plan"]
+    );
+    assert_eq!(verdict.failed_steps, vec!["step-04-setup-worktree"]);
+}
+
+// --- over-reach guards ---------------------------------------------------
+
+#[test]
+fn a_bare_429_still_stays_transient_after_the_repo_selection_fix() {
+    // Same guard #1390 added, re-asserted against this change: a new marker
+    // table must not disturb the transport tier.
+    let (class, _) = classify_failure_text("API error: 429 too many requests");
+    assert_eq!(
+        class,
+        FailureClass::TransientTransport,
+        "a bare 429 is still a short-lived transport fault"
+    );
+}
+
+#[test]
+fn work_failures_still_beat_a_repository_mention() {
+    // A real work failure that merely mentions a repository keeps top
+    // precedence. Ambiguity must resolve toward not retrying.
+    let (class, _) = classify_failure_text(
+        "test result: FAILED. 1 failed\nnote: fixture asserts the repo has no 'origin' remote",
+    );
+    assert_eq!(
+        class,
+        FailureClass::Work,
+        "work failures keep top precedence; issue #1435 must not invert that"
+    );
+}
+
+#[test]
+fn ordinary_git_errors_do_not_become_repo_selection_failures() {
+    // The narrow-marker discipline: everyday git noise must classify exactly as
+    // it did before. A marker broad enough to swallow these would be worse than
+    // the bug being fixed.
+    for text in [
+        "fatal: not a git repository (or any of the parent directories): .git",
+        "fatal: 'upstream' does not appear to be a git repository",
+        "error: failed to push some refs to 'https://github.com/o/r.git'",
+        "fatal: couldn't find remote ref refs/heads/nope",
+        "hint: Updates were rejected because the remote contains work that you do not have locally.",
+    ] {
+        let (class, signal) = classify_failure_text(text);
+        assert_ne!(
+            class,
+            FailureClass::Environmental,
+            "ordinary git output must not be reclassified by the #1435 markers: \
+             {text:?} -> signal={signal:?}"
+        );
+    }
+}
+
+#[test]
+fn a_transient_fault_mentioning_a_repository_stays_transient() {
+    // Repo-selection markers sit in the environmental tier, above transport.
+    // Merely naming a repository must not promote a 529 out of that tier.
+    let (class, _) = classify_failure_text(
+        "API Error: 529 Overloaded while fetching origin from the repository",
+    );
+    assert_eq!(class, FailureClass::TransientTransport);
+}
