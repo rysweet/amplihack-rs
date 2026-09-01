@@ -91,6 +91,17 @@ jobs:
         shell: bash
         run: |
           sudo apt-get install -y bubblewrap socat
+          sudo install -m 0644 /dev/stdin /etc/apparmor.d/bwrap <<'EOF'
+          abi <abi/4.0>,
+          include <tunables/global>
+
+          profile bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+            include if exists <local/bwrap>
+          }
+          EOF
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+          bwrap --ro-bind / / true
           npm install --prefix "$RUNNER_TEMP/claude-code-contract" \
             @anthropic-ai/claude-code@2.1.247
           CLAUDE_BIN="$RUNNER_TEMP/claude-code-contract/node_modules/.bin/claude" \
