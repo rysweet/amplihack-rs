@@ -3,7 +3,7 @@
 //! Uses `which`-style lookup with version verification. No fallbacks:
 //! if the binary isn't found, we error out.
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use std::collections::HashSet;
 use std::env;
 use std::path::{Path, PathBuf};
@@ -368,19 +368,42 @@ pub(crate) fn run_capped_output_with_timeout(
     // the wait below the moment the child's pipes reach EOF.
     let (eof_tx, eof_rx) = std::sync::mpsc::channel::<std::convert::Infallible>();
     let stderr_tx = eof_tx.clone();
+    // `Builder::spawn` rather than `thread::spawn`, deliberately (issue #1424).
+    // `thread::spawn` PANICS when the host is out of threads, and the host
+    // being out of threads is precisely the condition this probe is asked to
+    // survive: the panic reads
+    // `failed to spawn thread: Os { code: 11, kind: WouldBlock ... }` and takes
+    // amplihack down mid-diagnosis, which is how a resource problem came to be
+    // reported as anything at all except a resource problem. As an
+    // `io::Result` it becomes an ordinary error whose `EAGAIN` the caller can
+    // read — see `launch_target::resource_exhaustion_from_error`.
     let stdout_reader = {
         let sink = Arc::clone(&stdout_buf);
-        thread::spawn(move || {
-            let _eof_tx = eof_tx;
-            drain_pipe_capped(stdout, limit, &sink)
-        })
+        thread::Builder::new()
+            .name("probe-stdout-drain".to_string())
+            .spawn(move || {
+                let _eof_tx = eof_tx;
+                drain_pipe_capped(stdout, limit, &sink)
+            })
+            .inspect_err(|_| {
+                let _ = child.kill();
+                let _ = child.wait();
+            })
+            .context("could not start the stdout drain thread")?
     };
     let stderr_reader = {
         let sink = Arc::clone(&stderr_buf);
-        thread::spawn(move || {
-            let _eof_tx = stderr_tx;
-            drain_pipe_capped(stderr, limit, &sink)
-        })
+        thread::Builder::new()
+            .name("probe-stderr-drain".to_string())
+            .spawn(move || {
+                let _eof_tx = stderr_tx;
+                drain_pipe_capped(stderr, limit, &sink)
+            })
+            .inspect_err(|_| {
+                let _ = child.kill();
+                let _ = child.wait();
+            })
+            .context("could not start the stderr drain thread")?
     };
 
     let Some(status) = wait_for_child_exit(&mut child, timeout, &eof_rx)? else {
@@ -515,7 +538,7 @@ pub(crate) fn strip_ansi(s: &str) -> String {
     result
 }
 
-fn truncate_chars_with_notice(value: &str, max_chars: usize) -> String {
+pub(crate) fn truncate_chars_with_notice(value: &str, max_chars: usize) -> String {
     if value.len() <= max_chars {
         return value.to_string();
     }

