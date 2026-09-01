@@ -60,7 +60,7 @@ based on the repository it detects.
 
 | Toolchain | Detection signals | Outside-in validation examples |
 | --- | --- | --- |
-| Rust / Cargo | `Cargo.toml`, `Cargo.lock`, `src/main.rs`, workspace members | `cargo test`, `cargo run -- <args>`, `cargo install --path . --locked` followed by invoking the installed CLI. |
+| Rust / Cargo | `Cargo.toml`, `Cargo.lock`, `src/main.rs`, workspace members | `cargo test`, `cargo run -- <args>`, `cargo install --path <binary-package-dir> --locked` followed by invoking the installed CLI. In a workspace, `--path .` fails with "found a virtual manifest" -- name the package directory that owns the binary (in this repository, `bins/amplihack`). |
 | Node / npm | `package.json`, `package-lock.json`, `npm` scripts, `bin` entries | `npm test`, `npm run build`, `npm run <documented-script>`, direct `node ./bin/...` invocation for CLI behavior, or `npm link` only when local package-link behavior itself must be validated. |
 | Python / uv | `pyproject.toml`, `uv.lock`, Python package entry points | `uv run pytest`, `uv run <module-or-script>`, or `uvx` only when validating a Python/uv-distributed CLI path is appropriate for the project. |
 | Go | `go.mod`, `go.sum`, `cmd/` entry points | `go test ./...`, `go run ./cmd/<name> -- <args>`, `go install ./cmd/<name>` followed by invoking the built binary. |

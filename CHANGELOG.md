@@ -9,6 +9,36 @@ Unreleased changes appear at the top under `[Unreleased]`.
 
 ### Fixed
 
+- **Artifact Guard blocked verified work over a pre-existing repository
+  condition (#1422)** — the guard now distinguishes artifacts the change under
+  review *introduced* from artifacts the repository already carried, and the
+  `pre-commit`/`pre-publish` gates block only on the former. A
+  `smart-orchestrator` run had designed, implemented, tested, and verified its
+  work over ninety minutes, made three commits, logged
+  `{"verdict": "WORK_VERIFIED"}`, and was then killed at
+  `checkpoint-after-implementation` by `Artifact Guard blocked 668 prohibited
+  artifact path(s) ... (mode: pre-publish)` — 668 `node_modules` paths committed
+  into that repository long before the run started, already the subject of a
+  separate open pull request there, and out of scope for a change that was told
+  not to make unrelated edits. None of the three printed remedies fit, and the
+  same wall was hit five times in one run. Provenance is measured against a
+  baseline (the merge base of `HEAD` with `@{upstream}`, `origin/HEAD`,
+  `origin/main`, `origin/master`, `main`, or `master`, or `--baseline <rev>` /
+  `AMPLIHACK_ARTIFACT_GUARD_BASELINE`): a path in `git diff <baseline> HEAD` or
+  `git diff HEAD` is `introduced`, anything else tracked is `pre-existing`, and
+  staged/untracked/ignored-present paths are always `introduced` because a broad
+  `git add -A` would sweep them into the commit. A pre-existing condition is
+  still reported in full on stderr — grouped by artifact root, with the baseline
+  it was measured against and a documented way forward — and the `all` and
+  `worktree` audit modes still fail closed on it, as does
+  `--preexisting block` / `AMPLIHACK_ARTIFACT_GUARD_PREEXISTING=block`. Both
+  messages now name the offending paths and print the exact commands that clear
+  them, and a refusal never collapses to a `git rm -r --cached` that would
+  untrack the pre-existing tree as a side effect. Same reasoning as the #928
+  ignored-present narrowing, applied along the provenance axis: an artifact
+  already on the baseline cannot enter this change's diff, so blocking there
+  protects nothing and destroys the verified work in front of it.
+
 - **Brittle JSON parsing of agent prose fails successful runs (#969)** —
   `default-workflow` finalization no longer parses the agentic finalizer's
   stdout as one exact JSON object. Previously a fully successful run

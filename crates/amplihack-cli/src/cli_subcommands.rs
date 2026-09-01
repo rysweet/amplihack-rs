@@ -18,7 +18,7 @@ pub enum HygieneCommands {
 
 #[derive(Args, Debug, Clone)]
 #[command(
-    after_help = "Modes: pre-commit and pre-publish scan staged, tracked, untracked, and ignored-present artifact paths. staged scans staged paths only. worktree scans tracked, untracked, and ignored-present paths. exit code 0 = clean, exit code 1 = prohibited artifacts found, exit code 2 = configuration, mode, allowlist, Git, or path error. The guard reports clear remediation and does not delete, move, unstage, or rewrite artifacts. Use a narrow repo-controlled allowlist only for intentional generated artifacts."
+    after_help = "Modes: pre-commit and pre-publish scan staged, tracked, untracked, and ignored-present artifact paths. staged scans staged paths only. worktree scans tracked, untracked, and ignored-present paths. exit code 0 = clean, exit code 1 = prohibited artifacts found, exit code 2 = configuration, mode, allowlist, Git, or path error. The guard reports clear remediation and does not delete, move, unstage, or rewrite artifacts. Use a narrow repo-controlled allowlist only for intentional generated artifacts. Provenance: tracked artifacts already committed on the baseline and untouched by the change under review are reported as pre-existing and, in the pre-commit and pre-publish gates, do not block (--preexisting block restores the old behaviour; --mode all always fails closed on them)."
 )]
 pub struct HygieneArtifactGuardArgs {
     /// Repository worktree to scan.
@@ -32,6 +32,20 @@ pub struct HygieneArtifactGuardArgs {
     /// Optional repo-controlled allowlist file.
     #[arg(long)]
     pub allowlist: Option<PathBuf>,
+
+    /// Revision the change under review is measured against when deciding
+    /// whether a tracked artifact is pre-existing. Defaults to the first of
+    /// @{upstream}, origin/HEAD, origin/main, origin/master, main, master that
+    /// shares a merge base with HEAD. Env: AMPLIHACK_ARTIFACT_GUARD_BASELINE.
+    #[arg(long)]
+    pub baseline: Option<String>,
+
+    /// What the pre-commit/pre-publish gates do about pre-existing artifacts
+    /// (tracked on the baseline, untouched by this change): `report` (default,
+    /// print in full and do not block) or `block`. Ignored by the auditing
+    /// modes, which always fail closed. Env: AMPLIHACK_ARTIFACT_GUARD_PREEXISTING.
+    #[arg(long, value_parser = ["report", "block"])]
+    pub preexisting: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]

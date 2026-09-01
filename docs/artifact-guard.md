@@ -18,6 +18,7 @@ moves, unstages, or rewrites files.
 ## Contents
 
 - [Behavior](#behavior)
+- [Provenance: this change vs the repository's history](#provenance-this-change-vs-the-repositorys-history)
 - [Command-line interface](#command-line-interface)
 - [Default prohibited rules](#default-prohibited-rules)
 - [Allowlist configuration](#allowlist-configuration)
@@ -39,10 +40,14 @@ Artifact Guard:
 4. Check ignored-present artifact paths only in the `worktree` and `all` modes,
    which are local-hygiene scans. The commit- and publication-gate modes
    (`pre-commit`, `pre-publish`) never block on ignored-present artifacts.
-5. Fail closed on invalid configuration, invalid paths, Git failures, and unsafe
+5. Separate artifacts the change under review introduced from artifacts the
+   repository already carried, and block the gate modes only on the former. See
+   [Provenance](#provenance-this-change-vs-the-repositorys-history).
+6. Fail closed on invalid configuration, invalid paths, Git failures, and unsafe
    allowlist entries.
-6. Print actionable remediation before exiting.
-7. Leave the repository unchanged.
+7. Print actionable remediation before exiting, naming the offending paths and
+   the exact commands that clear them.
+8. Leave the repository unchanged.
 
 ### Ignored-present scope
 
@@ -95,6 +100,56 @@ Workflow steps that need strict build-output isolation should set
 `CARGO_TARGET_DIR` to an isolated location instead of relying on the default
 repo-local `target/` directory.
 
+## Provenance: this change vs the repository's history
+
+Every violation carries a **provenance**:
+
+| Provenance | Meaning | Gate modes | Audit modes |
+| --- | --- | --- | --- |
+| `introduced` | The change under review staged, committed, or left this path — it is in the diff, or a broad `git add -A` is about to put it there | **Block** | Block |
+| `pre-existing` | The path is committed on the baseline and untouched by the change under review, so it cannot enter that change's diff | **Report, do not block** | Block |
+
+Provenance is measured against a **baseline** revision: the merge base of `HEAD`
+and the first of `@{upstream}`, `origin/HEAD`, `origin/main`, `origin/master`,
+`main`, `master` that resolves, or the revision given to `--baseline` /
+`AMPLIHACK_ARTIFACT_GUARD_BASELINE`. A path is `introduced` when it appears in
+`git diff <baseline> HEAD` or in `git diff HEAD` (the working tree and index),
+and `pre-existing` otherwise. Staged, untracked, and ignored-present paths are
+always `introduced`: they are live worktree state the change is carrying now,
+not repository history.
+
+If a baseline was explicitly requested and does not resolve, that is a
+configuration error (exit `2`) rather than a silent fallback. If no baseline
+resolves at all — a repository with no upstream and no `main`/`master` — the
+report says so and treats the tracked index as pre-existing, because the guard
+will not assert a provenance it could not measure.
+
+### Why the gates do not block on a pre-existing condition
+
+Issue #1422: a `smart-orchestrator` run spent ninety minutes designing,
+implementing, testing, and verifying a change to pin dependency versions. It
+made three commits, logged `{"verdict": "WORK_VERIFIED"}`, and was then killed
+at `checkpoint-after-implementation` because the repository it was working in
+had 668 `node_modules` paths committed into Git long before the run started. The
+finding was true. The run had not caused it, its brief told it not to make
+unrelated changes, and none of the three printed remedies fit: removing 668
+tracked files was already a separate open pull request, moving them was the same
+edit by another name, and "a narrow reviewed allowlist entry" is not 668 lines.
+The run then hit the same wall four more times.
+
+A pre-existing tracked artifact is *already on the baseline*. No commit or
+publish gate can keep it out of anything, because it is not in the change's
+diff. Blocking there protects nothing and discards the verified work standing in
+front of it. This is the same reasoning that narrowed the gates away from
+ignored-present paths in issue #928, applied along the provenance axis instead
+of the reachability axis.
+
+The condition never stops being reported. `--mode all` and `--mode worktree`
+audit the whole repository and still exit `1` on it, the gate modes print the
+full pre-existing report on stderr before passing, and
+`--preexisting block` (or `AMPLIHACK_ARTIFACT_GUARD_PREEXISTING=block`) restores
+whole-repository enforcement for repositories that want it.
+
 ## Command-line interface
 
 ```bash
@@ -109,6 +164,8 @@ amplihack hygiene artifact-guard \
 | `--repo <path>` | Repository worktree to scan. The path must resolve inside a Git repository. | current directory |
 | `--mode <mode>` | Scan mode: `pre-commit`, `pre-publish`, `all`, `staged`, or `worktree`. | `pre-commit` |
 | `--allowlist <path>` | Optional allowlist file. Relative paths resolve from the repository root. | `.amplihack-artifact-allowlist` when present |
+| `--baseline <rev>` | Revision the change under review is measured against for provenance. Env: `AMPLIHACK_ARTIFACT_GUARD_BASELINE`. | first resolvable of `@{upstream}`, `origin/HEAD`, `origin/main`, `origin/master`, `main`, `master` |
+| `--preexisting <policy>` | What the gate modes do about pre-existing artifacts: `report` (print in full, do not block) or `block`. Ignored by the audit modes, which always fail closed. Env: `AMPLIHACK_ARTIFACT_GUARD_PREEXISTING`. | `report` |
 
 | Mode | Sources checked | Typical use |
 | --- | --- | --- |
@@ -130,8 +187,8 @@ Exit codes:
 
 | Code | Meaning |
 | --- | --- |
-| `0` | No prohibited artifacts were found |
-| `1` | Prohibited artifacts were found |
+| `0` | No blocking prohibited artifacts were found (a pre-existing condition may still have been reported) |
+| `1` | Blocking prohibited artifacts were found |
 | `2` | The guard could not complete because configuration, paths, mode, allowlist, or Git state was invalid |
 
 Violation output (this example is from a `--mode all` scan, which is the only
@@ -139,19 +196,46 @@ class of mode that reports an `ignored-present` source alongside `staged` and
 `untracked`):
 
 ```text
-Artifact Guard blocked 3 prohibited artifact paths.
+Artifact Guard blocked 3 prohibited artifact path(s) introduced by this change in /repo (mode: all).
+Baseline: origin/main (1f0c2b9a4d31).
 
-source           path                  rule
-staged           dist/plugin.js        plugin-bundle
-ignored-present  node_modules/         dependency-tree
-untracked        .cache/               cache-artifact
+source           provenance     path                  rule
+staged           introduced     dist/plugin.js        plugin-bundle
+ignored-present  introduced     node_modules/         node-modules
+untracked        introduced     .cache/               cache-artifact
 
 Remediation:
-  - Move generated, plugin, cache, and runtime output into an isolated directory.
   - Remove local artifact leftovers from the parent worktree.
-  - If the artifact is intentional source material, add a narrow reviewed entry
-    to .amplihack-artifact-allowlist.
+  - Move generated, plugin, cache, and runtime output into an ignored isolated directory outside the parent worktree.
+  - If intentional source material, add a narrow reviewed entry to .amplihack-artifact-allowlist.
+
+Exact commands for the paths above:
+  git rm -r --cached -- 'dist'   # drop from the change, keep on disk
+  rm -rf -- 'dist'               # or delete the leftover outright
+  ...
 ```
+
+A pre-existing condition is printed on stderr and does **not** set a non-zero
+exit in the gate modes:
+
+```text
+Artifact Guard: 668 pre-existing prohibited artifact path(s) in /repo — NOT blocking this pre-publish gate.
+These paths are committed in the baseline main (735b3633e9cd) and are untouched by this change, so they cannot enter its diff. This run did not create them (issue #1422).
+
+  node_modules/  — 668 path(s), rule node-modules
+      node_modules/pkg0/f120.js
+      ... and 663 more under node_modules/
+
+Way forward (none of these is required to finish the current change):
+  - Clean up in a dedicated change: git rm -r --cached -- 'node_modules' && echo 'node_modules/' >> .gitignore && git commit -m 'chore: untrack node_modules'
+  - List every path and fail closed on the whole condition: amplihack hygiene artifact-guard --repo /repo --mode all
+  - Enforce it here anyway: --preexisting block (or AMPLIHACK_ARTIFACT_GUARD_PREEXISTING=block).
+```
+
+When one introduced path lands inside a tree that also holds pre-existing
+entries, the refusal lists that path individually instead of collapsing to
+`git rm -r --cached node_modules`, which would untrack the pre-existing tree as
+a side effect — the unrelated change the run was told not to make.
 
 Configuration errors exit with code `2`:
 
@@ -475,17 +559,35 @@ pub enum ArtifactSource {
     IgnoredPresent,
 }
 
+pub enum ArtifactProvenance {
+    /// The change under review staged, committed, or left this path.
+    Introduced,
+    /// Committed on the baseline and untouched by the change under review.
+    PreExisting,
+}
+
 pub struct ArtifactViolation {
     pub path: String,
     pub source: ArtifactSource,
     pub rule_id: String,
     pub message: String,
+    pub provenance: ArtifactProvenance,
 }
 
 pub struct ArtifactGuardReport {
     pub repo_root: PathBuf,
     pub mode: ArtifactGuardMode,
     pub violations: Vec<ArtifactViolation>,
+    pub baseline: Option<ArtifactBaseline>,
+    pub preexisting_policy: PreExistingPolicy,
+}
+
+impl ArtifactGuardReport {
+    /// Violations that must fail the caller (exit 1).
+    fn blocking_violations(&self) -> Vec<&ArtifactViolation>;
+    /// Pre-existing violations reported without failing a gate mode.
+    fn advisory_violations(&self) -> Vec<&ArtifactViolation>;
+    fn blocks(&self) -> bool;
 }
 
 pub fn run_artifact_guard(
@@ -531,6 +633,21 @@ guard reports `node_modules/`, `.pytest_cache/`, `.cache/`, or another
 ignored-present artifact under those hygiene modes, relocate or remove the local
 output. Do not treat `.gitignore` as approval to keep parent-worktree pollution
 — clean it up locally even though it will not block a commit or a publish.
+
+For a pre-existing condition the gate reported without blocking, nothing is
+required to finish the current change. Clean it up in its own change:
+
+```bash
+amplihack hygiene artifact-guard --repo . --mode all   # full audit, exits 1
+git rm -r --cached -- node_modules
+printf 'node_modules/\n' >> .gitignore
+git commit -m 'chore: untrack vendored node_modules'
+```
+
+Do not widen the allowlist to cover it. A directory-wide entry such as
+`node_modules/**` is rejected on purpose (see
+[Allowlist configuration](#allowlist-configuration)); provenance, not a broad
+exemption, is what keeps the pre-existing tree from stopping unrelated work.
 
 For an intentional fixture, add the narrowest allowlist entry that preserves the
 test:
@@ -600,7 +717,41 @@ amplihack hygiene artifact-guard --repo . --mode pre-publish  # exit 1
 | --- | --- | --- |
 | Gitignored, untracked `.pytest_cache/`, `node_modules/` | Pass (exit 0) | Flag (exit 1) |
 | Untracked cache dir **not** in `.gitignore` | Flag (exit 1) | Flag (exit 1) |
-| Staged or tracked prohibited artifact | Flag (exit 1) | Flag (exit 1) |
+| Staged or tracked artifact this change introduced | Flag (exit 1) | Flag (exit 1) |
+| Tracked artifact committed on the baseline, untouched here | Report, pass (exit 0) | Flag (exit 1) |
+
+## Worked example: a pre-existing tracked tree does not stop unrelated work
+
+This example reproduces issue #1422. The repository has `node_modules`
+committed into Git long before the current change began, and the change under
+review only pins dependency versions:
+
+```bash
+git checkout -b task/pin-dependency-versions origin/main
+$EDITOR package.json && git commit -am 'pin dependency versions'
+amplihack hygiene artifact-guard --repo . --mode pre-publish   # exit 0
+```
+
+The gate prints all 668 pre-existing paths, grouped under `node_modules/`, with
+the baseline they were measured against and a way forward — and passes, because
+the tracked tree is already on `origin/main` and cannot enter this change's
+diff. The moment the change adds an artifact of its own, the gate refuses:
+
+```bash
+git add -f dist/plugin.js && git commit -m 'oops'
+amplihack hygiene artifact-guard --repo . --mode pre-publish   # exit 1
+```
+
+The refusal names `dist/plugin.js`, marks it `introduced`, and prints the exact
+`git rm -r --cached -- 'dist'` that clears it. The pre-existing tree is still
+listed above it, still not the reason for the refusal.
+
+To audit or enforce the whole condition anyway:
+
+```bash
+amplihack hygiene artifact-guard --repo . --mode all                      # exit 1
+amplihack hygiene artifact-guard --repo . --mode pre-publish --preexisting block  # exit 1
+```
 
 ## Review expectations
 
