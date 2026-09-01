@@ -28,6 +28,14 @@
 #      name is keyed to the issue number with a short tail cut on a WORD
 #      BOUNDARY, never a filesystem path and never fifty characters of prose.
 #
+# Part B runs the derived-name cases with NO amplifier-bundle reachable, because
+# the derived name is LOAD-BEARING and must not change with the environment. A
+# first cut of this fix put it behind a bundle helper with a hash fallback; the
+# phase bricks run bundle-less by design, so the name silently became a hash, a
+# re-run stopped recognising the worktree its predecessor had registered, and
+# test-issue-1121-relative-repo-path.sh went red on exactly that. B0 pins the
+# name that test's fixture depends on, so the two can never drift apart again.
+#
 # Usage: bash tests/issue_1426_branch_name_not_prose.sh
 # Exit codes: 0 = pass, 1 = fail, 2 = harness error.
 # Expected before the fix: FAIL. Expected after the fix: PASS.
@@ -133,75 +141,6 @@ else
     fi
 fi
 
-# ===========================================================================
-# Part B — the DERIVED name is bounded, issue-keyed, and free of prose paths.
-# ===========================================================================
-if [[ -f "${BRANCH_HELPER}" ]]; then
-    derive_of() { TASK_DESCRIPTION="$1" bash "${BRANCH_HELPER}" derive --issue "$2" --prefix "${3:-feat}" 2>/dev/null; }
-
-    DERIVED="$(derive_of "${INCIDENT_PREAMBLE}" 142 feat)"
-    if [[ "${DERIVED}" == feat/issue-142-* ]]; then
-        pass "B1-issue-keyed" "derived name is keyed to the issue: ${DERIVED}"
-    else
-        fail "B1-issue-keyed" "expected a 'feat/issue-142-' name, got '${DERIVED}'"
-    fi
-
-    if [[ "${DERIVED}" != *usersryan* && "${DERIVED}" != *jamestown* && "${DERIVED}" != *mistt* ]]; then
-        pass "B2-no-paths" "the filesystem path in the task did not leak into the ref"
-    else
-        fail "B2-no-paths" "path fragments leaked into the branch name: '${DERIVED}'"
-    fi
-
-    TAIL="${DERIVED#feat/issue-142-}"
-    if (( ${#TAIL} <= 24 )); then
-        pass "B3-bounded-tail" "descriptive tail is ${#TAIL} characters (bound: 24)"
-    else
-        fail "B3-bounded-tail" "tail '${TAIL}' is ${#TAIL} characters, over the 24-character bound"
-    fi
-
-    # Word-boundary truncation: every hyphen-separated piece of the tail must be a
-    # WHOLE word of the task description, never a fragment such as "gith".
-    BAD_WORD=""
-    LOWER_TASK="$(printf '%s' "${INCIDENT_PREAMBLE}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' ' ')"
-    for piece in ${TAIL//-/ }; do
-        FOUND=0
-        for word in ${LOWER_TASK}; do
-            [[ "${word}" == "${piece}" ]] && { FOUND=1; break; }
-        done
-        (( FOUND )) || BAD_WORD="${piece}"
-    done
-    if [[ -z "${BAD_WORD}" ]]; then
-        pass "B4-word-boundary" "every piece of '${TAIL}' is a whole word of the task, not a fragment"
-    else
-        fail "B4-word-boundary" "'${BAD_WORD}' in '${TAIL}' is a mid-word truncation, not a word of the task"
-    fi
-
-    # A very long description must not produce a very long ref (see #1249/#1260).
-    # 100 KB, not more: Linux caps a single exec string at MAX_ARG_STRLEN (128 KB),
-    # so a larger TASK_DESCRIPTION cannot reach ANY child process through the
-    # environment — including the bash step the recipe runner spawns in the first
-    # place. Within what is executable at all, the ref stays bounded.
-    HUGE="$(head -c 100000 /dev/zero | tr '\0' 'a' | sed 's/.\{9\}/& /g')"
-    LONG_NAME="$(derive_of "prevent overlong refs ${HUGE}" 1260 feat)"
-    if [[ -n "${LONG_NAME}" ]] && (( ${#LONG_NAME} <= 72 )); then
-        pass "B5-huge-input" "a 100 KB task description still yields a ${#LONG_NAME}-character ref: ${LONG_NAME}"
-    else
-        fail "B5-huge-input" "100 KB task produced '${LONG_NAME}' (${#LONG_NAME} chars)"
-    fi
-
-    EMPTY_NAME="$(derive_of "" 9 feat)"
-    if [[ "${EMPTY_NAME}" == feat/issue-9-* ]] && (( ${#EMPTY_NAME} <= 72 )); then
-        pass "B6-empty-task" "an empty task still yields an issue-keyed ref: ${EMPTY_NAME}"
-    else
-        fail "B6-empty-task" "empty task produced '${EMPTY_NAME}'"
-    fi
-else
-    fail "B1-issue-keyed" "tools/workflow_branch_name.sh is missing"
-fi
-
-# ===========================================================================
-# Part C — the REAL step-04 body against REAL repositories.
-# ===========================================================================
 build_repo() {
     local name="$1"
     local remote="${TEST_TMP}/remote-${name}.git"
@@ -261,6 +200,122 @@ run_step() {
 }
 
 json_field() { printf '%s' "$1" | sed -n "s/.*\"$2\": *\"\([^\"]*\)\".*/\1/p"; }
+
+
+# ===========================================================================
+# Part B — the DERIVED name, produced with NO amplifier-bundle reachable.
+#
+# `run_step_bare` mirrors the environment of
+# amplifier-bundle/recipes/tests/test-issue-1121-relative-repo-path.sh: env -i,
+# HOME repointed at the scratch dir, no AMPLIHACK_HOME, a RELATIVE repo_path.
+# Nothing under amplifier-bundle/tools is reachable, so whatever these cases
+# assert is what the recipe itself computes.
+# ===========================================================================
+
+# run_step_bare <cwd> <issue> <prefix> <task> -> RUN_RC / RUN_JSON / RUN_ERR.
+# Exit status is read from $? on its own line, never through a pipeline.
+run_step_bare() {
+    local cwd="$1" issue="$2" prefix="$3" task="$4"
+    RUN_JSON="$(
+        cd "${cwd}" && env -i \
+            PATH="${PATH}" \
+            HOME="${TEST_TMP}/nobundle" \
+            REPO_PATH="." \
+            TASK_DESCRIPTION="${task}" \
+            BRANCH_PREFIX="${prefix}" \
+            ISSUE_NUMBER="${issue}" \
+            bash "${STEP_SCRIPT}" 2>"${TEST_TMP}/step.err"
+    )"
+    RUN_RC=$?
+    RUN_ERR="$(cat "${TEST_TMP}/step.err")"
+}
+mkdir -p "${TEST_TMP}/nobundle"
+
+# --- B0: the exact name test-issue-1121-relative-repo-path.sh pins ----------
+REPO_B0="$(build_repo b0)"
+run_step_bare "${REPO_B0}" 1121 fix "reuse me"
+B0_BRANCH="$(json_field "${RUN_JSON}" branch_name)"
+if [[ "${RUN_RC}" -eq 0 && "${B0_BRANCH}" == "fix/issue-1121-reuse-me" ]]; then
+    pass "B0-1121-fixture" "bundle-less derivation still yields fix/issue-1121-reuse-me"
+else
+    fail "B0-1121-fixture" "rc=${RUN_RC} branch='${B0_BRANCH}' (expected 'fix/issue-1121-reuse-me' — test-issue-1121-relative-repo-path.sh depends on this exact name)\nstderr:\n${RUN_ERR}"
+fi
+
+# --- B1: re-running the same task reuses the worktree it created ------------
+run_step_bare "${REPO_B0}" 1121 fix "reuse me"
+B1_BRANCH="$(json_field "${RUN_JSON}" branch_name)"
+if [[ "${RUN_RC}" -eq 0 && "${B1_BRANCH}" == "${B0_BRANCH}" ]] \
+   && printf '%s' "${RUN_JSON}" | grep -qE '"created":[[:space:]]*false'; then
+    pass "B1-idempotent" "a second run derives the same name and REUSES the worktree (created=false)"
+else
+    fail "B1-idempotent" "rc=${RUN_RC} branch='${B1_BRANCH}' json=${RUN_JSON}\nstderr:\n${RUN_ERR}"
+fi
+
+# --- B2..B5: the incident's own prose, bundle-less --------------------------
+REPO_B2="$(build_repo b2)"
+run_step_bare "${REPO_B2}" 142 feat "${INCIDENT_PREAMBLE}"
+DERIVED="$(json_field "${RUN_JSON}" branch_name)"
+
+if [[ "${RUN_RC}" -eq 0 && "${DERIVED}" == feat/issue-142-* ]]; then
+    pass "B2-issue-keyed" "derived name is keyed to the issue: ${DERIVED}"
+else
+    fail "B2-issue-keyed" "rc=${RUN_RC} branch='${DERIVED}'\nstderr:\n${RUN_ERR}"
+fi
+
+if [[ "${DERIVED}" != *usersryan* && "${DERIVED}" != *jamestown* && "${DERIVED}" != *mistt* ]]; then
+    pass "B3-no-paths" "the filesystem path in the task did not leak into the ref"
+else
+    fail "B3-no-paths" "path fragments leaked into the branch name: '${DERIVED}'"
+fi
+
+TAIL="${DERIVED#feat/issue-142-}"
+if (( ${#TAIL} <= 24 )) && (( ${#DERIVED} <= 72 )); then
+    pass "B4-bounded" "tail is ${#TAIL} characters and the ref is ${#DERIVED} (bounds: 24 / 72)"
+else
+    fail "B4-bounded" "tail '${TAIL}' is ${#TAIL} characters, ref ${#DERIVED}: ${DERIVED}"
+fi
+
+# Word-boundary truncation: every hyphen-separated piece of the tail must be a
+# WHOLE word of the task description, never a fragment such as "gith".
+BAD_WORD=""
+LOWER_TASK="$(printf '%s' "${INCIDENT_PREAMBLE}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' ' ')"
+for piece in ${TAIL//-/ }; do
+    FOUND=0
+    for word in ${LOWER_TASK}; do
+        [[ "${word}" == "${piece}" ]] && { FOUND=1; break; }
+    done
+    (( FOUND )) || BAD_WORD="${piece}"
+done
+if [[ -z "${BAD_WORD}" ]]; then
+    pass "B5-word-boundary" "every piece of '${TAIL}' is a whole word of the task, not a fragment"
+else
+    fail "B5-word-boundary" "'${BAD_WORD}' in '${TAIL}' is a mid-word truncation, not a word of the task"
+fi
+
+# --- B6: a very long description must not produce a very long ref (#1249/#1260)
+REPO_B6="$(build_repo b6)"
+HUGE="$(head -c 100000 /dev/zero | tr '\0' 'a' | sed 's/.\{9\}/& /g')"
+run_step_bare "${REPO_B6}" 1260 feat "prevent overlong refs ${HUGE}"
+LONG_NAME="$(json_field "${RUN_JSON}" branch_name)"
+if [[ "${RUN_RC}" -eq 0 && -n "${LONG_NAME}" ]] && (( ${#LONG_NAME} <= 72 )); then
+    pass "B6-huge-input" "a 100 KB task description still yields a ${#LONG_NAME}-character ref: ${LONG_NAME}"
+else
+    fail "B6-huge-input" "rc=${RUN_RC} 100 KB task produced '${LONG_NAME}' (${#LONG_NAME} chars)"
+fi
+
+# --- B7: nothing usable to say -> a stable hash, never an empty tail --------
+REPO_B7="$(build_repo b7)"
+run_step_bare "${REPO_B7}" 9 feat "@@@ /// ###"
+EMPTY_NAME="$(json_field "${RUN_JSON}" branch_name)"
+if [[ "${RUN_RC}" -eq 0 && "${EMPTY_NAME}" == feat/issue-9-* ]] && (( ${#EMPTY_NAME} <= 72 )); then
+    pass "B7-no-words" "an all-symbol task still yields an issue-keyed ref: ${EMPTY_NAME}"
+else
+    fail "B7-no-words" "rc=${RUN_RC} all-symbol task produced '${EMPTY_NAME}'"
+fi
+
+# ===========================================================================
+# Part C — the REAL step-04 body against REAL repositories.
+# ===========================================================================
 
 # --- C1: an explicitly pinned branch that already exists is REUSED ----------
 REPO_A="$(build_repo a)"
@@ -341,9 +396,18 @@ else
 fi
 
 if grep -q 'workflow_branch_name.sh' "${WORKTREE_YAML}"; then
-    pass "D2-uses-helper" "workflow-worktree.yaml resolves branch names through the extracted helper"
+    pass "D2-uses-helper" "workflow-worktree.yaml scans for an explicit branch via the extracted helper"
 else
     fail "D2-uses-helper" "workflow-worktree.yaml does not call tools/workflow_branch_name.sh"
+fi
+
+# D3 (#1121): the DERIVED name must never come from a bundle helper. Part B proves
+# the behaviour; this pins the structural reason, so the regression cannot return
+# as "the helper computes it and the recipe falls back".
+if grep -qE 'BRANCH_HELPER" derive|workflow_branch_name.sh" derive' "${WORKTREE_YAML}"; then
+    fail "D3-derive-inline" "the derived branch name is delegated to a bundle helper — it is load-bearing and must be computed inline (#1121)"
+else
+    pass "D3-derive-inline" "the derived branch name is computed inline, not behind a bundle helper"
 fi
 
 echo ""

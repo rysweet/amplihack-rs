@@ -30,7 +30,9 @@ pinned and told the run not to branch away from. The same shape once produced
 `feat/issue-1277-skip-workflow-launch-this-agent-is-already-executi`: a truncated
 prompt fragment living in the git ref namespace.
 
-The name is now resolved by a ladder, in `amplifier-bundle/tools/workflow_branch_name.sh`.
+The name is now resolved by a ladder. Rank 2 below (scanning the task for a branch it
+names) lives in `amplifier-bundle/tools/workflow_branch_name.sh`; ranks 3 and 4 are
+computed **inline** in the recipe — see [Why the derived name is inline](#why-the-derived-name-is-inline).
 
 ---
 
@@ -83,8 +85,7 @@ exactly that name.
 {branch_prefix}/issue-{issue_number}-{slug}
 ```
 
-The slug is built from the issue title when the caller supplies one (`--title`),
-otherwise from the task description, and it is bounded on both ends:
+The slug is built from the task description and bounded on both ends:
 
 - Tokens containing `/`, `\` or `@` — filesystem paths, URLs, `org/repo` slugs, e-mail
   addresses — are dropped whole. They are where `usersryansrcmistt-qaws142jamestown`
@@ -94,7 +95,9 @@ otherwise from the task description, and it is bounded on both ends:
 - Words are joined with `-` **only while the result still fits 24 characters**, so the
   slug always ends on a whole word. Nothing is cut mid-word unless the very first word
   is itself over budget and there is nothing else to say.
-- The finished ref is capped at 72 characters, again trimmed back to a word boundary.
+- Only the first 64 KB of the task is examined, so the cost does not grow with the
+  prompt. With words capped at 20 characters and the slug at 24, the finished ref
+  cannot exceed roughly 60 characters.
 
 **Examples:**
 
@@ -107,7 +110,7 @@ otherwise from the task description, and it is bounded on both ends:
 
 ### Rank 4 and the last resort
 
-With no usable words at all the tail is `sha256(task_description)[0:8]` — bounded by
+With no usable words at all the tail is a `cksum` of the task — bounded by
 construction, stable across re-runs of the same task, and never prose. If the assembled
 name still fails `git check-ref-format --branch`, the recipe falls back to
 `feat/task-unnamed-<unix-timestamp>`. That last-resort name hardcodes `feat/` rather
@@ -126,13 +129,34 @@ fallback (issue #3023 / BL-002).
 | `existing_branch` | No | Target an existing branch outright (rank 1). | `""` |
 | `pr_number` | No | Resolve a PR's head branch (rank 1). | `""` |
 
-Bounds are overridable for testing but the defaults are the contract:
-`AMPLIHACK_BRANCH_SLUG_MAX` (24), `AMPLIHACK_BRANCH_NAME_MAX` (72),
-`AMPLIHACK_BRANCH_INPUT_MAX` (65536 bytes of task text examined).
-
 `branch_prefix` is **not** inferred from the task text. Reading the commit type out of
 the prose would reintroduce exactly the class of bug #1426 is about; the caller states
 it, or it stays `feat`.
+
+---
+
+## Why the derived name is inline
+
+Rank 2 may live in a bundle helper because it is *optional*: when the helper cannot be
+found, the run simply does not detect a named branch, which is the pre-#1426 behaviour.
+The derived name is not optional. It is the key under which a re-run recognises — and
+reuses — the branch and worktree its predecessor registered.
+
+A first cut of this fix put the derivation behind the same helper, with a hash fallback
+when it could not be resolved. The phase bricks are executed with **no `amplifier-bundle`
+on disk** by design (`amplifier-bundle/recipes/tests/`, and the step-04 unit tests), so
+the fallback fired, the name silently became `fix/issue-1121-2052514743` instead of
+`fix/issue-1121-reuse-me`, the already-registered worktree no longer matched, and
+`test-issue-1121-relative-repo-path.sh` went red on lost idempotency — the same defect
+family as #1420 (duplicate issue, branch and PR on relaunch).
+
+The rule that follows: **a load-bearing value must not change with the environment.**
+Anything whose absence would produce a *different* name stays inline in the recipe;
+only logic whose absence produces *no* name may be extracted.
+
+`tests/issue_1426_branch_name_not_prose.sh` Part B runs every derived-name case with no
+bundle reachable, and pins `fix/issue-1121-reuse-me` explicitly so the two tests cannot
+drift apart.
 
 ---
 
@@ -155,13 +179,11 @@ amplihack recipe run default-workflow \
   -c repo_path="/path/to/repo"
 ```
 
-The helper can also be run on its own:
+The explicit-branch scan can be run on its own:
 
 ```bash
 TASK_DESCRIPTION="$(cat task.txt)" \
   bash amplifier-bundle/tools/workflow_branch_name.sh explicit
-TASK_DESCRIPTION="$(cat task.txt)" \
-  bash amplifier-bundle/tools/workflow_branch_name.sh derive --issue 142 --prefix fix
 ```
 
 `explicit` prints the named branch, or nothing. With `--repo-path`, its exit code
@@ -171,17 +193,19 @@ answers "does it already exist?": 0 for yes (reuse it), 10 for no (create it).
 
 ## Security considerations
 
-- **No shell injection.** The task text reaches the helper through the environment, not
-  through a command line, so quoting and word-splitting cannot be subverted. It is also
-  why a task description larger than Linux's 128 KB `MAX_ARG_STRLEN` cannot reach the
-  helper at all — but such a description cannot reach the recipe's own bash step either.
+- **No shell injection.** The task text is read from the `TASK_DESCRIPTION` environment
+  variable, never interpolated into a command line, so quoting and word-splitting cannot
+  be subverted. (This is also why a task description larger than Linux's 128 KB
+  `MAX_ARG_STRLEN` cannot reach the helper — but such a description cannot reach the
+  recipe's own bash step either.)
 - **No path traversal.** `..`, `//` and a trailing `/` are refused before any name is
   used, and `git check-ref-format --branch` is the authority on the rest.
 - **No ref-namespace corruption.** Every branch name, derived or explicit, passes
   `git check-ref-format --branch` before it is used in a path or a git invocation. A
   name recovered from the task text is re-validated exactly like one from `gh`.
-- **Bounded by construction.** The slug (24), the ref (72) and the amount of task text
-  examined (64 KB) are all capped, so directory names cannot grow with the prompt.
+- **Bounded by construction.** The word length (20), the slug (24) and the amount of
+  task text examined (64 KB) are all capped, so directory names cannot grow with the
+  prompt.
 
 ---
 
@@ -222,7 +246,8 @@ runs that would collide are separated by `tools/workflow_worktree_deconflict.sh`
 ## Related documentation
 
 - [Workflow execution guardrails](workflow-execution-guardrails.md)
-- `amplifier-bundle/recipes/workflow-worktree.yaml` — `step-04-setup-worktree`
-- `amplifier-bundle/tools/workflow_branch_name.sh` — the ladder
+- `amplifier-bundle/recipes/workflow-worktree.yaml` — `step-04-setup-worktree`, and the
+  inline derivation (ranks 3-4)
+- `amplifier-bundle/tools/workflow_branch_name.sh` — the explicit-branch scan (rank 2)
 - `amplifier-bundle/tools/workflow_worktree_base_ref.sh` — fetch + base-ref resolution
 - `tests/issue_1426_branch_name_not_prose.sh` — the regression spec

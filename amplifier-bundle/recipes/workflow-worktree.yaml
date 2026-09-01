@@ -113,11 +113,11 @@ steps:
       # with the `fix/142-band-edge-previous-slice` the same task had pinned.
       # Detection lives in tools/workflow_branch_name.sh — extraction, not compression:
       # this brick is at its 400-line budget (scripts/check-brick-budget.sh).
-      # A named branch that already exists is handed to the existing-branch path below
-      # so the run REUSES it; otherwise it is created verbatim under that exact name.
       # `explicit --repo-path` exits 0 only when the named branch ALREADY EXISTS, so a
-      # zero exit routes it into the existing-branch path (reuse) and a non-zero exit
-      # leaves the name in EXPLICIT_BRANCH to be created verbatim further down.
+      # zero exit hands it to the existing-branch path below and the run REUSES it,
+      # while a non-zero exit leaves the name in EXPLICIT_BRANCH to be created verbatim.
+      # A MISSING helper degrades to no detection at all — pre-#1426 behaviour — and
+      # never to a DIFFERENT name: the name itself is derived inline below (#1121).
       BRANCH_HELPER="$TOOLS_DIR/workflow_branch_name.sh"
       EXPLICIT_BRANCH=""
       if [ -z "$EXISTING_BRANCH" ] && [ -z "$PR_NUMBER" ]; then
@@ -264,17 +264,27 @@ steps:
 
       # BRANCH NAMING (#1426). An explicitly named branch wins outright. Otherwise the
       # name is keyed to the ISSUE NUMBER with a bounded, word-boundary-truncated tail —
-      # never fifty characters of raw task prose with the path separators stripped out.
-      # The ladder (explicit name -> issue-keyed bounded slug -> stable task hash) and
-      # its git-ref validation live in tools/workflow_branch_name.sh: extraction, not
-      # compression, because this brick is at its 400-line budget.
-      # Degraded path (bundle helper unavailable): issue number plus a stable HASH of
-      # the task, which is bounded by construction and still never its prose.
-      # FIX (#3023/BL-002) preserved: the last-resort name hardcodes 'feat/' rather than
-      # $BRANCH_PREFIX so an invalid or malicious branch_prefix cannot inject through it.
-      BRANCH_NAME="${EXPLICIT_BRANCH:-}"
-      [ -n "$BRANCH_NAME" ] || BRANCH_NAME="$(bash "$BRANCH_HELPER" derive --issue "${ISSUE_NUMBER:-}" --prefix "${BRANCH_PREFIX:-feat}" --repo-path "$REPO_PATH" 2>/dev/null || true)"
-      [ -n "$BRANCH_NAME" ] || BRANCH_NAME="${BRANCH_PREFIX:-feat}/issue-${ISSUE_NUMBER:-0}-$(printf '%s' "${TASK_DESCRIPTION:-}" | cksum | cut -d' ' -f1)"
+      # never fifty characters of raw task prose with the path separators stripped out
+      # (`feat/issue-142-repository-usersryansrcmistt-qaws142jamestown-gith`).
+      # Computed INLINE, deliberately, and never behind a bundle helper (#1121): the
+      # phase bricks are executed with no amplifier-bundle on disk by design, and a
+      # LOAD-BEARING name that changes with the environment stops a re-run from
+      # recognising — and reusing — the worktree its predecessor registered.
+      # Rules: drop path/URL/e-mail tokens whole, drop 20+ character identifier blobs,
+      # skip a leading `issue <N>`, then join words only while the result still fits 24
+      # characters, so the tail always ends on a WHOLE WORD. Nothing usable to say ->
+      # a stable hash of the task, never its prose. FIX (#3023/BL-002) preserved: the
+      # last-resort name below hardcodes 'feat/' rather than $BRANCH_PREFIX so an
+      # invalid or malicious branch_prefix cannot inject through the fallback.
+      SLUG_WORDS="$(printf '%s' "${TASK_DESCRIPTION:-}" | head -c 65536 | tr '[:upper:]' '[:lower:]' \
+        | sed -e 's#[^[:space:]]*[/\\@][^[:space:]]*# #g' -e 's/[^a-z0-9]\{1,\}/-/g' \
+        | tr '\n\r' '--' | sed -e 's/-\{2,\}/-/g' -e 's/^-*//;s/-*$//' \
+        | sed -E "s/^(issues?-)?(${ISSUE_NUMBER:-0})-//")"
+      TASK_SLUG=""; SLUG_OIFS="$IFS"; IFS='-'
+      for SLUG_W in $SLUG_WORDS; do [ -n "$SLUG_W" ] && [ ${#SLUG_W} -le 20 ] || continue; SLUG_N="${TASK_SLUG:+$TASK_SLUG-}$SLUG_W"; [ ${#SLUG_N} -le 24 ] || break; TASK_SLUG="$SLUG_N"; done
+      IFS="$SLUG_OIFS"
+      [ -n "$TASK_SLUG" ] || TASK_SLUG="$(printf '%s' "${TASK_DESCRIPTION:-}" | cksum | cut -d' ' -f1)"
+      BRANCH_NAME="${EXPLICIT_BRANCH:-${BRANCH_PREFIX:-feat}/issue-${ISSUE_NUMBER:-0}-${TASK_SLUG}}"
       if ! git check-ref-format --branch "${BRANCH_NAME}" >/dev/null 2>&1; then
         echo "WARNING: derived branch name '${BRANCH_NAME}' is invalid — falling back to task-unnamed" >&2
         BRANCH_NAME="feat/task-unnamed-$(date +%s)"
