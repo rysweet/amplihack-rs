@@ -94,8 +94,20 @@ else
 fi
 
 # --- 5. the guard runs before any remote command ---------------------------
-guard_line=$(grep -n 'already running on' "$SCRIPT" | head -1 | cut -d: -f1)
-first_remote=$(grep -n 'azlin connect' "$SCRIPT" | head -1 | cut -d: -f1)
+# first_line_matching <fixed-string> <file> — the 1-based line number of the
+# first line containing <fixed-string>, or "" if there is none.
+#
+# One awk that reads the whole file. The `head`-terminated pipeline this
+# replaces left `grep` writing into a closed pipe: under `pipefail` that is a
+# non-zero pipeline whose substitution collapses to "", turning a real ordering
+# check into a vacuous one — and whether it fires is a race on the pipe buffer,
+# so it cannot be ruled out by running the test (issue #1434).
+first_line_matching() {
+  awk -v needle="$1" 'n == 0 && index($0, needle) { n = FNR } END { if (n) print n }' "$2"
+}
+
+guard_line=$(first_line_matching 'already running on' "$SCRIPT")
+first_remote=$(first_line_matching 'azlin connect' "$SCRIPT")
 if [ -z "$guard_line" ] || [ -z "$first_remote" ]; then
   fail "could not locate guard or first remote call — ordering check is vacuous"
 elif [ "$guard_line" -lt "$first_remote" ]; then

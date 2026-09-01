@@ -75,6 +75,9 @@ jobs:
       - name: Workflows — PR runs must not cancel each other (issue #1372)
         shell: bash
         run: bash tests/issue_1372_pr_workflows_scope_concurrency.sh
+      - name: CI scripts — no early-exit pipeline stage (issue #1434)
+        shell: bash
+        run: bash tests/issue_1434_no_early_exit_pipelines.sh
       - name: Worktree — refuse a repo with no origin remote (issue #1323)
         shell: bash
         run: bash tests/issue_1323_multirepo_origin_precondition.sh
