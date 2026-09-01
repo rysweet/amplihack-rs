@@ -49,8 +49,12 @@ signal as an intent to route and rejects incomplete or unsafe configuration.
 Before child creation, amplihack requires all three gateway environment
 variables, validates the endpoint and model, rejects unsupported launchers and
 bypass arguments, and removes conflicting provider credentials and selectors
-from the child environment. The child CLI owns connection, DNS, TLS, and
-gateway readiness behavior.
+from the child environment. It retains that validated configuration as data
+and removes all three `AMPLIHACK_LITELLM_*` variables from update, bootstrap,
+freshness, memory-detection, installation, and background-indexing
+subprocesses. Only the final supported agent receives translated provider
+credentials. The child CLI owns connection, DNS, TLS, and gateway readiness
+behavior.
 
 Credentials unrelated to model routing, such as `GITHUB_TOKEN` and database
 passwords, remain available to the child and its tools.

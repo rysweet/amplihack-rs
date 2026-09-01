@@ -25,6 +25,10 @@ environment. Do not put the key in command arguments or project configuration.
 Restrict it in LiteLLM by tenant, route, model alias, budget, and rate; the
 client-selected model is not an authorization control.
 
+Launch setup subprocesses do not receive any `AMPLIHACK_LITELLM_*` variable.
+Amplihack validates the configuration once and projects translated credentials
+only onto the final supported agent command.
+
 Amplihack currently permits Claude Code `2.1.247` and sets
 `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`. That exact release is pinned because the
 scrub control is not an upstream documented compatibility contract. A new

@@ -21,6 +21,10 @@ environment. Do not put the key in command arguments or project configuration.
 Restrict it at the gateway by tenant, route, model alias, budget, and rate.
 Client-side model selection is not an authorization boundary.
 
+Launch setup subprocesses do not receive any `AMPLIHACK_LITELLM_*` variable.
+Amplihack validates the configuration once and projects translated credentials
+only onto the final supported agent command.
+
 Amplihack currently permits Claude Code `2.1.247` and sets
 `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` for routed Claude Code processes. It probes
 the exact executable before checkout, auto-mode staging, launch setup, session

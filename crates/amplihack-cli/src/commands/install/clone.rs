@@ -543,6 +543,7 @@ fn git_clone_framework_repo(git_path: &Path, destination: &Path) -> Result<()> {
     let stderr_file = tempfile::NamedTempFile::new()
         .context("failed to create temporary stderr file for git clone")?;
     let mut command = Command::new(git_path);
+    amplihack_utils::litellm_proxy::scrub_proxy_environment(&mut command);
     command
         .args([
             "clone",
@@ -628,6 +629,7 @@ fn terminate_git_clone(child: &mut std::process::Child) {
     {
         let pid = child.id().to_string();
         let mut command = Command::new("taskkill");
+        amplihack_utils::litellm_proxy::scrub_proxy_environment(&mut command);
         command
             .args(["/PID", &pid, "/T", "/F"])
             .stdin(Stdio::null())

@@ -78,14 +78,15 @@ const POWER_STEERING_PROMPT_TIMEOUT: Duration = Duration::from_secs(30);
 fn apply_launch_environment(
     command: &mut std::process::Command,
     env_builder: EnvBuilder,
-    proxy_target: Option<amplihack_utils::litellm_proxy::CliTarget>,
-) -> Result<()> {
+    proxy: Option<(
+        &amplihack_utils::litellm_proxy::ProxyConfig,
+        amplihack_utils::litellm_proxy::CliTarget,
+    )>,
+) {
     env_builder.apply_to_command(command);
-    if let Some(proxy_target) = proxy_target {
-        amplihack_utils::litellm_proxy::apply_proxy_to_command(command, proxy_target)
-            .context("invalid external LiteLLM proxy configuration")?;
+    if let Some((config, target)) = proxy {
+        config.apply_to_command(command, target);
     }
-    Ok(())
 }
 
 /// Launch a tool binary (claude, copilot, codex, amplifier).
@@ -106,8 +107,9 @@ pub fn run_launch(
     proxy_target: Option<amplihack_utils::litellm_proxy::CliTarget>,
 ) -> Result<()> {
     validate_launch_prompt_delivery(tool)?;
-    let proxy_enabled = amplihack_utils::litellm_proxy::validate_environment()
+    let proxy_config = amplihack_utils::litellm_proxy::ProxyConfig::from_env()
         .context("invalid external LiteLLM proxy configuration")?;
+    let proxy_enabled = proxy_config.is_some();
     if proxy_enabled {
         let target = proxy_target.ok_or_else(|| {
             anyhow::anyhow!(
@@ -256,7 +258,11 @@ pub fn run_launch(
             subprocess_safe,
         );
         cmd.current_dir(&execution_dir);
-        apply_launch_environment(&mut cmd, env_builder, proxy_target)?;
+        apply_launch_environment(
+            &mut cmd,
+            env_builder,
+            proxy_config.as_ref().zip(proxy_target),
+        );
 
         // Register signal handlers
         let shutdown = signals::register_handlers()?;

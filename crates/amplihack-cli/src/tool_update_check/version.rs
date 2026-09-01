@@ -108,6 +108,7 @@ pub fn sanitize_version(s: &str) -> String {
 /// - stdout is not valid UTF-8
 pub fn run_npm_with_timeout(args: &[&str], timeout: Duration) -> Option<String> {
     let mut cmd = Command::new("npm");
+    amplihack_utils::litellm_proxy::scrub_proxy_environment(&mut cmd);
     cmd.args(args);
     let output = run_output_with_timeout(cmd, timeout).ok()?;
     if !output.status.success() {
@@ -119,6 +120,65 @@ pub fn run_npm_with_timeout(args: &[&str], timeout: Duration) -> Option<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn npm_subprocess_does_not_inherit_gateway_configuration() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let fake_npm = temp.path().join("npm");
+        std::fs::write(
+            &fake_npm,
+            "#!/bin/sh\n\
+             if [ -n \"${AMPLIHACK_LITELLM_ENDPOINT-}\" ] || \
+                [ -n \"${AMPLIHACK_LITELLM_API_KEY-}\" ] || \
+                [ -n \"${AMPLIHACK_LITELLM_MODEL-}\" ]; then\n\
+               exit 97\n\
+             fi\n\
+             printf '7.8.9\\n'\n",
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&fake_npm).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&fake_npm, perms).unwrap();
+
+        let previous_path = std::env::var_os("PATH");
+        let names = [
+            amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+            amplihack_utils::litellm_proxy::API_KEY_ENV,
+            amplihack_utils::litellm_proxy::MODEL_ENV,
+        ];
+        let previous = names.map(std::env::var_os);
+        unsafe {
+            std::env::set_var("PATH", temp.path());
+            std::env::set_var(names[0], "https://gateway.example.com");
+            std::env::set_var(names[1], "gateway-secret");
+            std::env::set_var(names[2], "gateway-model");
+        }
+
+        let result = run_npm_with_timeout(&["show", "pkg", "version"], NPM_TIMEOUT);
+
+        unsafe {
+            match previous_path {
+                Some(value) => std::env::set_var("PATH", value),
+                None => std::env::remove_var("PATH"),
+            }
+            for (name, value) in names.into_iter().zip(previous) {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+
+        assert_eq!(
+            result.as_deref(),
+            Some("7.8.9\n"),
+            "the fake pre-launch npm fails if any gateway variable survives"
+        );
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

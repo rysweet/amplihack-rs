@@ -708,6 +708,7 @@ fn is_executable(_metadata: &std::fs::Metadata) -> bool {
 fn probe_version(path: &Path, timeout: Duration) -> Result<String, Rejection> {
     let mut cmd = Command::new(path);
     cmd.arg("--version");
+    crate::litellm_proxy::scrub_proxy_environment(&mut cmd);
     for name in std::env::vars_os()
         .map(|(name, _)| name)
         .filter(|name| is_sensitive_env_name(&name.to_string_lossy()))
@@ -1274,18 +1275,23 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn version_probe_does_not_expose_litellm_credential() {
+    fn version_probe_does_not_expose_litellm_configuration() {
         let _guard = crate::test_serial::acquire();
         let dir = tempfile::tempdir().unwrap();
         let observation = dir.path().join("probe-environment");
         let script = format!(
-            "#!/bin/sh\nif [ -n \"$AMPLIHACK_LITELLM_API_KEY\" ] || [ -n \"$ANTHROPIC_API_KEY\" ]; then printf exposed > '{}'; else printf scrubbed > '{}'; fi\nprintf '2.1.83\\n'\n",
+            "#!/bin/sh\nif [ -n \"$AMPLIHACK_LITELLM_ENDPOINT\" ] || [ -n \"$AMPLIHACK_LITELLM_API_KEY\" ] || [ -n \"$AMPLIHACK_LITELLM_MODEL\" ] || [ -n \"$ANTHROPIC_API_KEY\" ]; then printf exposed > '{}'; else printf scrubbed > '{}'; fi\nprintf '2.1.83\\n'\n",
             observation.display(),
             observation.display()
         );
         let binary = write_executable(dir.path(), "claude", script.as_bytes());
         let _env = crate::test_support::EnvGuard::set([
+            (
+                crate::litellm_proxy::ENDPOINT_ENV,
+                "https://gateway.example.com",
+            ),
             (crate::litellm_proxy::API_KEY_ENV, "gateway-secret"),
+            (crate::litellm_proxy::MODEL_ENV, "gateway-model"),
             ("ANTHROPIC_API_KEY", "provider-secret"),
         ]);
 

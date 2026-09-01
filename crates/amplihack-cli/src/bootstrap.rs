@@ -194,6 +194,7 @@ fn ensure_node_for_copilot() -> Result<Option<PathBuf>> {
         .with_context(|| format!("failed to create temp dir {}", temp_dir.display()))?;
 
     let mut extract_cmd = Command::new("tar");
+    amplihack_utils::litellm_proxy::scrub_proxy_environment(&mut extract_cmd);
     extract_cmd
         .args(["--strip-components=1", "-xJf"])
         .arg(&tmp_path)
@@ -238,6 +239,7 @@ fn ensure_node_for_copilot() -> Result<Option<PathBuf>> {
 
 fn download_with_curl(url: &str, destination: &Path, label: &str) -> Result<()> {
     let mut cmd = Command::new("curl");
+    amplihack_utils::litellm_proxy::scrub_proxy_environment(&mut cmd);
     cmd.args(["-fsSL", "-o"]).arg(destination).arg(url);
     let output = run_output_with_timeout(cmd, DOWNLOAD_TIMEOUT)
         .with_context(|| format!("{label} download timed out or failed to execute: {url}"))?;
@@ -748,6 +750,7 @@ fn run_claude_vendor_postinstall(pkg_dir: &Path, prefix: &Path) {
         return;
     };
     let mut cmd = Command::new(node.path);
+    amplihack_utils::litellm_proxy::scrub_proxy_environment(&mut cmd);
     cmd.arg(&script).current_dir(pkg_dir);
     match run_with_timeout(cmd, INSTALL_TIMEOUT) {
         Ok(status) => tracing::debug!(
@@ -848,6 +851,7 @@ fn claude_binary_is_materialized(path: &Path) -> bool {
 
 fn run_npm_install(npm: &Path, prefix: &Path, package: &str) -> Result<()> {
     let mut npm_cmd = Command::new(npm);
+    amplihack_utils::litellm_proxy::scrub_proxy_environment(&mut npm_cmd);
     npm_cmd
         .arg("install")
         .arg("-g")
@@ -979,6 +983,7 @@ fn install_amplifier() -> Result<()> {
 
     println!("📦 Installing amplifier via uv tool...");
     let mut uv_cmd = Command::new(uv);
+    amplihack_utils::litellm_proxy::scrub_proxy_environment(&mut uv_cmd);
     uv_cmd
         .arg("tool")
         .arg("install")

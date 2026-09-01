@@ -225,6 +225,7 @@ pub(crate) fn install_recipe_runner_from_git() -> Result<()> {
         "cargo is required to install recipe-runner-rs. Install Rust: https://rustup.rs/",
     )?;
     let mut cmd = Command::new(cargo);
+    amplihack_utils::litellm_proxy::scrub_proxy_environment(&mut cmd);
     cmd.arg("install")
         .arg("--git")
         .arg(RECIPE_RUNNER_GIT_URL)

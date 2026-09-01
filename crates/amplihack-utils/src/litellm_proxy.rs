@@ -74,7 +74,7 @@ pub fn require_claude_code_capability(version: Option<&str>) -> Result<(), Proxy
     }
 }
 
-struct ProxyConfig {
+pub struct ProxyConfig {
     endpoint: Url,
     api_key: String,
     model: String,
@@ -92,7 +92,7 @@ impl fmt::Debug for ProxyConfig {
 }
 
 impl ProxyConfig {
-    fn from_env() -> Result<Option<Self>, ProxyError> {
+    pub fn from_env() -> Result<Option<Self>, ProxyError> {
         if !proxy_requested() {
             return Ok(None);
         }
@@ -114,41 +114,13 @@ impl ProxyConfig {
     }
 }
 
-struct ProxyChildEnvironment {
-    target: CliTarget,
-    endpoint: Url,
-    api_key: String,
-    model: String,
-}
+impl ProxyConfig {
+    pub fn apply_to_command(&self, command: &mut Command, target: CliTarget) {
+        scrub_proxy_environment(command);
 
-impl fmt::Debug for ProxyChildEnvironment {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("ProxyChildEnvironment")
-            .field("target", &self.target)
-            .field("endpoint", &"[REDACTED]")
-            .field("api_key", &"[REDACTED]")
-            .field("model", &self.model)
-            .finish()
-    }
-}
-
-impl ProxyChildEnvironment {
-    fn from_config(target: CliTarget, config: ProxyConfig) -> Self {
-        Self {
-            target,
-            endpoint: config.endpoint,
-            api_key: config.api_key,
-            model: config.model,
-        }
-    }
-
-    fn apply_to_command(&self, command: &mut Command) {
-        remove_env(command, &CONFIG_ENV_VARS);
-
-        match self.target {
+        match target {
             CliTarget::Claude | CliTarget::RustyClawd => {
-                if self.target == CliTarget::Claude {
+                if target == CliTarget::Claude {
                     command.env("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB", "1");
                 } else {
                     command.env_remove("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB");
@@ -217,7 +189,7 @@ impl ProxyChildEnvironment {
 
         command.env(
             "AMPLIHACK_LITELLM_TARGET",
-            match self.target {
+            match target {
                 CliTarget::Claude => "claude",
                 CliTarget::CopilotCli => "copilot",
                 CliTarget::RustyClawd => "rustyclawd",
@@ -350,6 +322,14 @@ pub fn validate_environment() -> Result<bool, ProxyError> {
     ProxyConfig::from_env().map(|config| config.is_some())
 }
 
+/// Remove ambient gateway configuration from a non-agent child process.
+///
+/// Setup subprocesses must never receive the operator-owned gateway key. The
+/// validated configuration is projected only onto the final supported agent.
+pub fn scrub_proxy_environment(command: &mut Command) {
+    remove_env(command, &CONFIG_ENV_VARS);
+}
+
 pub fn apply_proxy_to_command(
     command: &mut Command,
     target: CliTarget,
@@ -357,7 +337,7 @@ pub fn apply_proxy_to_command(
     let Some(config) = ProxyConfig::from_env()? else {
         return Ok(false);
     };
-    ProxyChildEnvironment::from_config(target, config).apply_to_command(command);
+    config.apply_to_command(command, target);
     Ok(true)
 }
 

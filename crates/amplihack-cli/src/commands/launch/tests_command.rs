@@ -93,13 +93,24 @@ fn gateway_projection_is_the_final_environment_mutation() {
         .set("ANTHROPIC_BASE_URL", "https://bypass.example.com")
         .set("ANTHROPIC_API_KEY", "direct-provider-secret")
         .set("ANTHROPIC_AUTH_TOKEN", "stale-gateway-secret");
+    let proxy_config = amplihack_utils::litellm_proxy::ProxyConfig::from_env()
+        .unwrap()
+        .unwrap();
+    unsafe {
+        std::env::set_var(
+            amplihack_utils::litellm_proxy::API_KEY_ENV,
+            "mutated-after-validation",
+        );
+    }
     let mut command = std::process::Command::new("claude");
     apply_launch_environment(
         &mut command,
         env_builder,
-        Some(amplihack_utils::litellm_proxy::CliTarget::Claude),
-    )
-    .unwrap();
+        Some((
+            &proxy_config,
+            amplihack_utils::litellm_proxy::CliTarget::Claude,
+        )),
+    );
 
     let command_env = |name: &str| {
         command
