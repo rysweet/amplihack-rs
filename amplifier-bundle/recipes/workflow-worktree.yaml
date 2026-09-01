@@ -276,14 +276,17 @@ steps:
       # a stable hash of the task, never its prose. FIX (#3023/BL-002) preserved: the
       # last-resort name below hardcodes 'feat/' rather than $BRANCH_PREFIX so an
       # invalid or malicious branch_prefix cannot inject through the fallback.
-      SLUG_WORDS="$(printf '%s' "${TASK_DESCRIPTION:-}" | head -c 65536 | tr '[:upper:]' '[:lower:]' \
+      # The input is bounded by a SHELL SUBSTRING, never by piping into `head -c`: a
+      # stage that stops reading early leaves the producer writing into a closed pipe,
+      # and `pipefail` above turns that into an EMPTY name and a dead step-04. Every
+      # stage below consumes its entire input. Full account: tools/workflow_branch_name.sh.
+      SLUG_HEAD="${TASK_DESCRIPTION:-}"; SLUG_WORDS="$(printf '%s' "${SLUG_HEAD:0:65536}" | tr '[:upper:]' '[:lower:]' \
         | sed -e 's#[^[:space:]]*[/\\@][^[:space:]]*# #g' -e 's/[^a-z0-9]\{1,\}/-/g' \
         | tr '\n\r' '--' | sed -e 's/-\{2,\}/-/g' -e 's/^-*//;s/-*$//' \
         | sed -E "s/^(issues?-)?(${ISSUE_NUMBER:-0})-//")"
       TASK_SLUG=""; SLUG_OIFS="$IFS"; IFS='-'
       for SLUG_W in $SLUG_WORDS; do [ -n "$SLUG_W" ] && [ ${#SLUG_W} -le 20 ] || continue; SLUG_N="${TASK_SLUG:+$TASK_SLUG-}$SLUG_W"; [ ${#SLUG_N} -le 24 ] || break; TASK_SLUG="$SLUG_N"; done
-      IFS="$SLUG_OIFS"
-      [ -n "$TASK_SLUG" ] || TASK_SLUG="$(printf '%s' "${TASK_DESCRIPTION:-}" | cksum | cut -d' ' -f1)"
+      IFS="$SLUG_OIFS"; [ -n "$TASK_SLUG" ] || TASK_SLUG="$(printf '%s' "${TASK_DESCRIPTION:-}" | cksum | cut -d' ' -f1)"
       BRANCH_NAME="${EXPLICIT_BRANCH:-${BRANCH_PREFIX:-feat}/issue-${ISSUE_NUMBER:-0}-${TASK_SLUG}}"
       if ! git check-ref-format --branch "${BRANCH_NAME}" >/dev/null 2>&1; then
         echo "WARNING: derived branch name '${BRANCH_NAME}' is invalid — falling back to task-unnamed" >&2
@@ -308,10 +311,7 @@ steps:
         fi
       fi
 
-      echo "Branch: ${BRANCH_NAME}" >&2
-      echo "Worktree: ${WORKTREE_PATH}" >&2
-      echo "Base ref: ${BASE_REF}" >&2
-      echo "" >&2
+      printf 'Branch: %s\nWorktree: %s\nBase ref: %s\n\n' "${BRANCH_NAME}" "${WORKTREE_PATH}" "${BASE_REF}" >&2
 
       # --- Idempotency: detect existing branch and/or worktree ---
       # FIX (issue #3023 / BL-002): Three-state guard makes re-runs safe. State 1:
