@@ -4,6 +4,14 @@ use std::io::Write as IoWrite;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
+mod execute {
+    pub(super) use super::super::execute::{
+        CONTEXT_ENV_BUDGET_OVERRIDE_ENV, ENV_ENTRY_OVERHEAD_BYTES, context_env_budget,
+        context_env_pairs, parse_recipe_output, pass_context, resolve_context_env_budget,
+    };
+    pub(super) use super::execute_recipe_via_rust_for_test as execute_recipe_via_rust;
+}
+
 // -------------------------------------------------------------------------
 // execute_recipe_via_rust — E2E integration (dry-run, requires binary in PATH)
 // -------------------------------------------------------------------------
@@ -42,7 +50,7 @@ steps:
     let recipe_path = tmp.path();
     let context = BTreeMap::new();
 
-    let result = execute::execute_recipe_via_rust(
+    let result = execute_recipe_via_rust_for_test(
         recipe_path,
         &context,
         true,
@@ -2357,6 +2365,18 @@ fn test_run_recipe_forwards_recipe_parent_as_dash_r() {
 
     let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
     unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner) };
+    let orchestration_env = [
+        "AMPLIHACK_SESSION_TREE_DIR",
+        "AMPLIHACK_TREE_ID",
+        "AMPLIHACK_SESSION_DEPTH",
+        "AMPLIHACK_MAX_DEPTH",
+        "AMPLIHACK_RECIPE_RUN_ID",
+    ]
+    .map(|key| {
+        let previous = std::env::var_os(key);
+        unsafe { std::env::remove_var(key) };
+        (key, previous)
+    });
 
     let result = super::run_recipe(
         recipe.to_str().unwrap(),
@@ -2371,6 +2391,12 @@ fn test_run_recipe_forwards_recipe_parent_as_dash_r() {
     match prev_runner {
         Some(v) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", v) },
         None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
+    }
+    for (key, previous) in orchestration_env {
+        match previous {
+            Some(value) => unsafe { std::env::set_var(key, value) },
+            None => unsafe { std::env::remove_var(key) },
+        }
     }
 
     result.expect("run_recipe must succeed");

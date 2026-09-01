@@ -29,6 +29,11 @@
 #![cfg(unix)]
 
 use super::*;
+
+mod execute {
+    pub(super) use super::super::execute::{new_tree_id, resolve_claimed_depth};
+    pub(super) use super::execute_recipe_via_rust_for_test as execute_recipe_via_rust;
+}
 use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;

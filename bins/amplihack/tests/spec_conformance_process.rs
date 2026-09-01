@@ -40,7 +40,9 @@ impl Sandbox {
     /// location does not depend on it.
     fn register(&self, tree_id: &str, session: &str, tmpdir: &Path, max_sessions: u32) -> bool {
         fs::create_dir_all(tmpdir).expect("tmpdir");
-        Command::new(BIN)
+        let mut command = Command::new(BIN);
+        isolate_outer_orchestration(&mut command);
+        command
             .args(["session-tree", "register", session])
             .env("HOME", &self.root)
             .env("TMPDIR", tmpdir)
@@ -55,6 +57,18 @@ impl Sandbox {
             .status()
             .expect("spawn amplihack")
             .success()
+    }
+}
+
+fn isolate_outer_orchestration(command: &mut Command) {
+    for key in [
+        "AMPLIHACK_SESSION_TREE_DIR",
+        "AMPLIHACK_TREE_ID",
+        "AMPLIHACK_SESSION_DEPTH",
+        "AMPLIHACK_MAX_DEPTH",
+        "AMPLIHACK_RECIPE_RUN_ID",
+    ] {
+        command.env_remove(key);
     }
 }
 
@@ -134,7 +148,9 @@ fn invariant_node_budget_concurrent_registers_respect_cap() {
     // Spawn all attempts before reaping any, so they genuinely contend.
     let mut children: Vec<_> = (0..ATTEMPTS)
         .map(|i| {
-            Command::new(BIN)
+            let mut command = Command::new(BIN);
+            isolate_outer_orchestration(&mut command);
+            command
                 .args(["session-tree", "register", &format!("s{i}")])
                 .env("HOME", &sb.root)
                 .env("TMPDIR", &tmp)

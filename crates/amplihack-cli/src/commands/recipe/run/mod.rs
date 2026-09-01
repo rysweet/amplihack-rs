@@ -12,6 +12,71 @@ mod retry;
 use execute::execute_recipe_via_rust;
 use format::format_recipe_run_result;
 
+#[cfg(test)]
+fn execute_recipe_via_rust_for_test(
+    recipe_path: &Path,
+    context: &BTreeMap<String, String>,
+    dry_run: bool,
+    verbose: bool,
+    working_dir: &Path,
+    search_dirs: &[PathBuf],
+    step_timeout: Option<u64>,
+) -> Result<RecipeRunResult> {
+    struct EnvRestore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (key, value) in self.0.drain(..) {
+                match value {
+                    Some(value) => unsafe { std::env::set_var(key, value) },
+                    None => unsafe { std::env::remove_var(key) },
+                }
+            }
+        }
+    }
+
+    let inherited_identity = [
+        (
+            "AMPLIHACK_TREE_ID",
+            option_env!("AMPLIHACK_TREE_ID").map(std::ffi::OsStr::new),
+        ),
+        (
+            "AMPLIHACK_SESSION_DEPTH",
+            option_env!("AMPLIHACK_SESSION_DEPTH").map(std::ffi::OsStr::new),
+        ),
+    ];
+    let is_outer_orchestration = inherited_identity
+        .iter()
+        .all(|(key, inherited)| std::env::var_os(key).as_deref() == *inherited);
+    let _restore = is_outer_orchestration.then(|| {
+        EnvRestore(
+            [
+                "AMPLIHACK_SESSION_TREE_DIR",
+                "AMPLIHACK_TREE_ID",
+                "AMPLIHACK_SESSION_DEPTH",
+                "AMPLIHACK_MAX_DEPTH",
+                "AMPLIHACK_RECIPE_RUN_ID",
+            ]
+            .into_iter()
+            .map(|key| {
+                let previous = std::env::var_os(key);
+                unsafe { std::env::remove_var(key) };
+                (key, previous)
+            })
+            .collect(),
+        )
+    });
+
+    execute_recipe_via_rust(
+        recipe_path,
+        context,
+        dry_run,
+        verbose,
+        working_dir,
+        search_dirs,
+        step_timeout,
+    )
+}
+
 /// Build the ordered, deduplicated list of sub-recipe search dirs to forward
 /// to recipe-runner-rs as `-R` flags (issue #494).
 ///
