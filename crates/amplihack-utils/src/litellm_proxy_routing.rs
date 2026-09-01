@@ -76,12 +76,16 @@ pub fn validate_launch_args(target: CliTarget, args: &[String]) -> Result<(), Pr
                 matches!(*arg, "--agent" | "--agents")
                     || arg.starts_with("--agent=")
                     || arg.starts_with("--agents=")
+                    || *arg == "--plugin-dir"
+                    || arg.starts_with("--plugin-dir=")
+                    || *arg == "--safe-mode"
+                    || arg.starts_with("--safe-mode=")
             }
             CliTarget::CopilotCli => *arg == "--agent" || arg.starts_with("--agent="),
         });
         if custom_agent_requested {
             return Err(ProxyError::InvalidConfig(
-                "custom agents cannot be selected or defined while LiteLLM routing is enabled because they can override the configured model"
+                "custom agents, plugins, and safe-mode overrides cannot be used while LiteLLM routing is enabled because they can override the configured model"
                     .to_string(),
             ));
         }
@@ -214,6 +218,8 @@ mod tests {
                     "--setting-sources",
                     "--agent",
                     "--agents",
+                    "--plugin-dir",
+                    "--safe-mode",
                     "--from-pr",
                     "--continue",
                     "-c",
@@ -244,6 +250,11 @@ mod tests {
                 );
             }
         }
+
+        assert!(
+            validate_launch_args(CliTarget::Claude, &["--safe-mode=false".to_string()]).is_err(),
+            "Claude safe mode must remain launcher-owned during routed launches"
+        );
 
         match previous {
             Some(value) => unsafe { std::env::set_var(ENDPOINT_ENV, value) },

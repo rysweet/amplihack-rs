@@ -1,7 +1,7 @@
 ---
 title: Why the LiteLLM Gateway Stays External
 description: Explains amplihack's control-plane-only integration with an operator-managed LiteLLM gateway.
-last_updated: 2026-08-30
+last_updated: 2026-09-01
 review_schedule: quarterly
 owner: amplihack-maintainers
 doc_type: explanation
@@ -48,12 +48,17 @@ signal as an intent to route and rejects incomplete or unsafe configuration.
 
 Before child creation, amplihack requires all three gateway environment
 variables, validates the endpoint and model, rejects unsupported launchers and
-bypass arguments, and removes conflicting provider credentials and selectors
-from the child environment. It retains that validated configuration as data
-and removes all three `AMPLIHACK_LITELLM_*` variables from update, bootstrap,
-freshness, memory-detection, installation, and background-indexing
+bypass arguments, including Claude custom-agent and plugin loading, and removes
+conflicting provider credentials and selectors from the child environment.
+Routed Claude launches use safe mode and do not load the UVX plugin directory.
+Amplihack retains the validated route as data and removes all three
+`AMPLIHACK_LITELLM_*` variables from checkout, Docker probe/build, update,
+bootstrap, freshness, memory-detection, installation, and background-indexing
 subprocesses. Only the final supported agent receives translated provider
-credentials. The child CLI owns connection, DNS, TLS, and gateway readiness
+credentials. For Docker launches, the `docker run` client receives only the
+virtual key needed to transfer that key into the final container; endpoint and
+model are command arguments, while Docker probes and builds receive none of the
+route variables. The child CLI owns connection, DNS, TLS, and gateway readiness
 behavior.
 
 Credentials unrelated to model routing, such as `GITHUB_TOKEN` and database
@@ -107,6 +112,12 @@ of routed Claude Code are rejected because the container executable cannot be
 attested before Docker operations; a launch already inside a trusted container
 probes its exact executable normally. Docker routing for other supported
 targets requires a container-reachable HTTPS gateway and a compatible image.
+When the fixed default image exists but its routing revision or amplihack
+version label is stale, the launcher rebuilds it automatically before launch.
+Source checkouts with a root Dockerfile rebuild from that definition. Installed
+binaries without that source asset create a temporary upgrade layer from the
+existing image and replace its amplihack executable with the exact running
+binary; the base image's agent tools and runtime remain intact.
 Auto mode applies the same restrictions; Codex and Amplifier are rejected.
 
 ## Related documentation

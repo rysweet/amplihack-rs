@@ -121,6 +121,7 @@ pub(super) fn build_command_for_dir(
     if binary.name == "claude" && amplihack_utils::litellm_proxy::proxy_requested() {
         cmd.arg("--setting-sources");
         cmd.arg("");
+        cmd.arg("--safe-mode");
     }
 
     // Inject --remote for Copilot by default. Remote mode offloads compute to
@@ -284,7 +285,8 @@ fn inject_uvx_plugin_args(
     extra_args: &[String],
     add_dir_override: Option<&Path>,
 ) {
-    if tool != "claude" || !is_uvx_deployment() {
+    if tool != "claude" || amplihack_utils::litellm_proxy::proxy_requested() || !is_uvx_deployment()
+    {
         return;
     }
 

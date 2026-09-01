@@ -66,7 +66,15 @@ fn resolve_checkout_repo_in_uses_git_clone_stub() {
     let git_path = bin_dir.join("git");
     fs::write(
         &git_path,
-        "#!/bin/sh\nif [ \"$1\" = \"clone\" ]; then\n  /bin/mkdir -p \"$3/.git\"\n  exit 0\nfi\nexit 1\n",
+        "#!/bin/sh\n\
+         [ -z \"$AMPLIHACK_LITELLM_ENDPOINT\" ] || exit 41\n\
+         [ -z \"$AMPLIHACK_LITELLM_API_KEY\" ] || exit 42\n\
+         [ -z \"$AMPLIHACK_LITELLM_MODEL\" ] || exit 43\n\
+         if [ \"$1\" = \"clone\" ]; then\n\
+           /bin/mkdir -p \"$3/.git\"\n\
+           exit 0\n\
+         fi\n\
+         exit 1\n",
     )
     .unwrap();
     let mut permissions = fs::metadata(&git_path).unwrap().permissions();
@@ -74,13 +82,36 @@ fn resolve_checkout_repo_in_uses_git_clone_stub() {
     fs::set_permissions(&git_path, permissions).unwrap();
 
     let previous_path = std::env::var_os("PATH");
-    unsafe { std::env::set_var("PATH", &bin_dir) };
+    let proxy_env = [
+        (
+            amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+            "https://gateway.example.test",
+        ),
+        (
+            amplihack_utils::litellm_proxy::API_KEY_ENV,
+            "checkout-must-not-see-this",
+        ),
+        (amplihack_utils::litellm_proxy::MODEL_ENV, "routed-model"),
+    ];
+    let previous_proxy_env = proxy_env.map(|(name, _)| std::env::var_os(name));
+    unsafe {
+        std::env::set_var("PATH", &bin_dir);
+        for (name, value) in proxy_env {
+            std::env::set_var(name, value);
+        }
+    }
 
     let checkout = resolve_checkout_repo_in("owner/repo", &base_dir).unwrap();
 
     match previous_path {
         Some(value) => unsafe { std::env::set_var("PATH", value) },
         None => unsafe { std::env::remove_var("PATH") },
+    }
+    for ((name, _), previous) in proxy_env.into_iter().zip(previous_proxy_env) {
+        match previous {
+            Some(value) => unsafe { std::env::set_var(name, value) },
+            None => unsafe { std::env::remove_var(name) },
+        }
     }
 
     assert_eq!(checkout, base_dir.join("owner-repo"));

@@ -68,6 +68,53 @@ fn build_command_injects_uvx_plugin_and_project_args_for_claude() {
 }
 
 #[test]
+fn build_command_suppresses_uvx_plugins_for_routed_claude() {
+    let _home_guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let home = tempfile::tempdir().unwrap();
+    let original_home = set_home(home.path());
+    let previous_uv_python = std::env::var_os("UV_PYTHON");
+    let previous_endpoint = std::env::var_os(amplihack_utils::litellm_proxy::ENDPOINT_ENV);
+    unsafe {
+        std::env::set_var("UV_PYTHON", "1");
+        std::env::set_var(
+            amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+            "https://gateway.example.test",
+        );
+    }
+
+    let binary = BinaryInfo {
+        name: "claude".to_string(),
+        path: PathBuf::from("/usr/bin/claude"),
+        version: None,
+    };
+    let cmd = build_command(&binary, false, false, false, &[]);
+    let args = cmd
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+
+    restore_home(original_home);
+    match previous_uv_python {
+        Some(value) => unsafe { std::env::set_var("UV_PYTHON", value) },
+        None => unsafe { std::env::remove_var("UV_PYTHON") },
+    }
+    match previous_endpoint {
+        Some(value) => unsafe {
+            std::env::set_var(amplihack_utils::litellm_proxy::ENDPOINT_ENV, value)
+        },
+        None => unsafe { std::env::remove_var(amplihack_utils::litellm_proxy::ENDPOINT_ENV) },
+    }
+
+    assert!(
+        !args.iter().any(|arg| arg == "--plugin-dir"),
+        "a routed UVX launch must not load plugin agents: {args:?}"
+    );
+    assert!(args.iter().any(|arg| arg == "--safe-mode"));
+}
+
+#[test]
 fn build_command_prefers_original_cwd_for_staged_uvx_launches() {
     let _home_guard = home_env_lock()
         .lock()

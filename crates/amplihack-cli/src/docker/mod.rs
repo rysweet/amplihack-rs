@@ -17,6 +17,12 @@ pub(crate) const LITELLM_ROUTING_REVISION: &str = "2";
 pub(crate) const VERSION_LABEL: &str = "org.amplihack.version";
 const DOCKER_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
+pub(super) fn docker_setup_command() -> Command {
+    let mut command = Command::new("docker");
+    amplihack_utils::litellm_proxy::scrub_proxy_environment(&mut command);
+    command
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DockerActivation {
     Flag,
@@ -64,7 +70,7 @@ impl DockerDetector {
             return false;
         }
 
-        let mut command = Command::new("docker");
+        let mut command = docker_setup_command();
         command
             .arg("info")
             .stdin(Stdio::null())
@@ -102,7 +108,7 @@ impl DockerDetector {
             return false;
         }
 
-        let mut command = Command::new("docker");
+        let mut command = docker_setup_command();
         command
             .args(["images", "-q", image_name])
             .stdin(Stdio::null());
@@ -115,7 +121,7 @@ impl DockerDetector {
         let format = format!(
             "{{{{ index .Config.Labels \"{LITELLM_ROUTING_LABEL}\" }}}}|{{{{ index .Config.Labels \"{VERSION_LABEL}\" }}}}"
         );
-        let mut command = Command::new("docker");
+        let mut command = docker_setup_command();
         command
             .args(["image", "inspect", "--format", &format, image_name])
             .stdin(Stdio::null());
@@ -204,6 +210,7 @@ fn is_truthy_env_value(value: Option<&str>) -> bool {
 mod tests {
     use super::*;
     use helpers::forwarded_env_vars;
+    use std::ffi::OsStr;
     use std::path::PathBuf;
 
     fn sample_prefixed_value(parts: &[&str], suffix: &str) -> String {
@@ -218,6 +225,128 @@ mod tests {
         assert!(!should_use_docker_from_state(Some("true"), true, true));
         assert!(!should_use_docker_from_state(Some("true"), false, false));
         assert!(!should_use_docker_from_state(Some("0"), false, true));
+    }
+
+    #[test]
+    fn docker_setup_commands_remove_gateway_configuration() {
+        let command = docker_setup_command();
+        for name in [
+            amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+            amplihack_utils::litellm_proxy::API_KEY_ENV,
+            amplihack_utils::litellm_proxy::MODEL_ENV,
+        ] {
+            assert_eq!(
+                command
+                    .get_envs()
+                    .find(|(key, _)| *key == OsStr::new(name))
+                    .map(|(_, value)| value),
+                Some(None),
+                "{name} must be removed from Docker setup subprocesses"
+            );
+        }
+    }
+
+    #[test]
+    fn routed_existing_images_are_reused_only_when_compatible() {
+        assert!(super::manager::existing_image_is_usable(true, false, false));
+        assert!(super::manager::existing_image_is_usable(true, true, true));
+        assert!(!super::manager::existing_image_is_usable(true, true, false));
+        assert!(!super::manager::existing_image_is_usable(false, true, true));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn routed_launch_rebuilds_an_incompatible_existing_image() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let bin_dir = temp.path().join("bin");
+        let log = temp.path().join("docker.log");
+        let rebuilt = temp.path().join("rebuilt");
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::write(temp.path().join("Dockerfile"), "FROM scratch\n").unwrap();
+
+        let docker = bin_dir.join("docker");
+        fs::write(
+            &docker,
+            format!(
+                "#!/bin/sh\n\
+                 printf '%s\\n' \"$1 $2\" >> \"$DOCKER_TEST_LOG\"\n\
+                 if [ \"$1\" != \"run\" ]; then\n\
+                   [ -z \"$AMPLIHACK_LITELLM_ENDPOINT\" ] || exit 71\n\
+                   [ -z \"$AMPLIHACK_LITELLM_API_KEY\" ] || exit 72\n\
+                   [ -z \"$AMPLIHACK_LITELLM_MODEL\" ] || exit 73\n\
+                 fi\n\
+                 case \"$1 $2\" in\n\
+                   'info ') exit 0 ;;\n\
+                   'images -q') printf 'existing-image\\n'; exit 0 ;;\n\
+                   'image inspect')\n\
+                     if [ -f \"$DOCKER_TEST_REBUILT\" ]; then\n\
+                       printf '{}|{}\\n'\n\
+                     else\n\
+                       printf 'old-revision|old-version\\n'\n\
+                     fi\n\
+                     exit 0 ;;\n\
+                   'build -t') : > \"$DOCKER_TEST_REBUILT\"; exit 0 ;;\n\
+                   'run --rm')\n\
+                     [ \"$AMPLIHACK_LITELLM_API_KEY\" = 'gateway-secret' ] || exit 74\n\
+                     [ -z \"$AMPLIHACK_LITELLM_ENDPOINT\" ] || exit 75\n\
+                     [ -z \"$AMPLIHACK_LITELLM_MODEL\" ] || exit 76\n\
+                     exit 0 ;;\n\
+                 esac\n\
+                 exit 77\n",
+                LITELLM_ROUTING_REVISION,
+                crate::VERSION
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&docker).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&docker, permissions).unwrap();
+
+        let names = [
+            "PATH",
+            "DOCKER_TEST_LOG",
+            "DOCKER_TEST_REBUILT",
+            amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+            amplihack_utils::litellm_proxy::API_KEY_ENV,
+            amplihack_utils::litellm_proxy::MODEL_ENV,
+        ];
+        let previous = names.map(std::env::var_os);
+        unsafe {
+            std::env::set_var("PATH", &bin_dir);
+            std::env::set_var("DOCKER_TEST_LOG", &log);
+            std::env::set_var("DOCKER_TEST_REBUILT", &rebuilt);
+            std::env::set_var(
+                amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+                "https://gateway.example.test",
+            );
+            std::env::set_var(
+                amplihack_utils::litellm_proxy::API_KEY_ENV,
+                "gateway-secret",
+            );
+            std::env::set_var(amplihack_utils::litellm_proxy::MODEL_ENV, "routed-model");
+        }
+
+        let manager = DockerManager::new_for_tests(temp.path().to_path_buf());
+        let result = manager.run_command(&["launch".to_string()], temp.path());
+
+        for (name, value) in names.into_iter().zip(previous) {
+            match value {
+                Some(value) => unsafe { std::env::set_var(name, value) },
+                None => unsafe { std::env::remove_var(name) },
+            }
+        }
+
+        assert_eq!(result.unwrap(), 0);
+        assert!(rebuilt.is_file(), "the stale image must be rebuilt");
+        let log = fs::read_to_string(log).unwrap();
+        assert!(log.lines().any(|line| line == "build -t"), "{log}");
+        assert!(log.lines().any(|line| line == "run --rm"), "{log}");
     }
 
     /// The probes must not run when the environment has already decided.

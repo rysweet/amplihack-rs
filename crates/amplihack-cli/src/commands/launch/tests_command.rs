@@ -637,7 +637,7 @@ fn copilot_skips_remote_when_litellm_proxy_is_requested() {
 }
 
 #[test]
-fn claude_ignores_user_project_and_local_settings_with_litellm() {
+fn claude_disables_settings_and_plugins_with_litellm() {
     with_uvx_detection_disabled(|| {
         let previous = std::env::var_os(amplihack_utils::litellm_proxy::ENDPOINT_ENV);
         unsafe {
@@ -662,6 +662,14 @@ fn claude_ignores_user_project_and_local_settings_with_litellm() {
             args.windows(2)
                 .any(|values| values[0] == "--setting-sources" && values[1].is_empty()),
             "LiteLLM routing must suppress mutable Claude settings sources; got {args:?}"
+        );
+        assert!(
+            args.iter().any(|arg| arg == "--safe-mode"),
+            "LiteLLM routing must disable Claude customizations; got {args:?}"
+        );
+        assert!(
+            !args.iter().any(|arg| arg == "--plugin-dir"),
+            "LiteLLM routing must not inject a UVX plugin directory; got {args:?}"
         );
     });
 }

@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use std::env;
+use std::fs;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -9,7 +10,7 @@ use std::time::Duration;
 
 use super::{
     DEFAULT_IMAGE_NAME, DockerDetector, LITELLM_ROUTING_LABEL, LITELLM_ROUTING_REVISION,
-    VERSION_LABEL,
+    VERSION_LABEL, docker_setup_command,
     helpers::{forwarded_env_vars, is_secret_env_key},
 };
 use crate::util::{run_with_timeout, run_with_timeout_described};
@@ -87,6 +88,7 @@ impl DockerManager {
         let run_args = self.build_run_args(cwd, amplihack_args, env::vars_os());
         let mut command = Command::new("docker");
         command.args(&run_args);
+        amplihack_utils::litellm_proxy::scrub_proxy_environment(&mut command);
         command.envs(
             forwarded_env_vars(env::vars_os())
                 .into_iter()
@@ -98,19 +100,37 @@ impl DockerManager {
     }
 
     fn build_image(&self) -> Result<bool> {
-        if self.detector.check_image_exists(self.image_name) {
+        let image_exists = self.detector.check_image_exists(self.image_name);
+        let routing_requested = amplihack_utils::litellm_proxy::proxy_requested();
+        let routing_compatible = image_exists
+            && routing_requested
+            && self.detector.image_supports_litellm(self.image_name);
+        if existing_image_is_usable(image_exists, routing_requested, routing_compatible) {
             return Ok(true);
+        }
+        if image_exists {
+            println!(
+                "Rebuilding incompatible Docker image for amplihack {}: {}",
+                crate::VERSION,
+                self.image_name
+            );
         }
 
         let dockerfile = self.project_root.join("Dockerfile");
-        if !dockerfile.is_file() {
+        let upgrade_context;
+        let build_args = if dockerfile.is_file() {
+            self.build_image_args(&dockerfile)
+        } else if image_exists {
+            upgrade_context = self.prepare_upgrade_context()?;
+            self.build_image_args(&upgrade_context.path().join("Dockerfile"))
+        } else {
             eprintln!("Dockerfile not found at {}", dockerfile.display());
             return Ok(false);
-        }
+        };
 
         println!("Building Docker image: {}", self.image_name);
-        let mut command = Command::new("docker");
-        command.args(self.build_image_args(&dockerfile));
+        let mut command = docker_setup_command();
+        command.args(build_args);
         let status = run_with_timeout(command, DOCKER_BUILD_TIMEOUT)
             .context("failed to execute docker build")?;
         if !status.success() {
@@ -122,7 +142,29 @@ impl DockerManager {
         Ok(true)
     }
 
+    fn prepare_upgrade_context(&self) -> Result<tempfile::TempDir> {
+        let context = tempfile::tempdir().context("failed to create Docker upgrade context")?;
+        let executable =
+            env::current_exe().context("failed to locate the running amplihack executable")?;
+        fs::copy(&executable, context.path().join("amplihack")).with_context(|| {
+            format!(
+                "failed to stage {} for Docker image upgrade",
+                executable.display()
+            )
+        })?;
+        fs::write(
+            context.path().join("Dockerfile"),
+            format!(
+                "FROM {}\nCOPY amplihack /usr/local/bin/amplihack\n",
+                self.image_name
+            ),
+        )
+        .context("failed to write Docker upgrade definition")?;
+        Ok(context)
+    }
+
     pub(crate) fn build_image_args(&self, dockerfile: &Path) -> Vec<String> {
+        let build_context = dockerfile.parent().unwrap_or(&self.project_root);
         vec![
             "build".to_string(),
             "-t".to_string(),
@@ -133,7 +175,7 @@ impl DockerManager {
             format!("{VERSION_LABEL}={}", crate::VERSION),
             "-f".to_string(),
             dockerfile.display().to_string(),
-            self.project_root.display().to_string(),
+            build_context.display().to_string(),
         ]
     }
 
@@ -188,6 +230,14 @@ impl DockerManager {
         args.extend(amplihack_args.iter().cloned());
         args
     }
+}
+
+pub(super) fn existing_image_is_usable(
+    image_exists: bool,
+    routing_requested: bool,
+    routing_compatible: bool,
+) -> bool {
+    image_exists && (!routing_requested || routing_compatible)
 }
 
 pub(super) fn validate_docker_gateway_env() -> Result<()> {
