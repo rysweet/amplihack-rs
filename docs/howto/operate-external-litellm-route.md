@@ -81,6 +81,16 @@ amplihack copilot
 
 An empty or partial configuration is rejected rather than treated as disabled.
 
+## Copilot configuration isolation
+
+While routing is enabled, each Copilot launch uses a fresh temporary
+`COPILOT_HOME`. Persisted user- and repository-scoped plugins, agents, hooks,
+MCP servers, credentials, and preferences are therefore unavailable to the
+routed process, and any state it writes is removed when the process exits.
+Repository files remain available as workspace content, but plugins installed
+through Copilot's configuration home cannot execute in the routed session.
+Unset all three routing variables to use the normal Copilot home.
+
 ## Troubleshoot a failed launch
 
 | Symptom | Action |

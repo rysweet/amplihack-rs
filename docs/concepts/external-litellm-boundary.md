@@ -53,6 +53,12 @@ loading option (`--plugin-dir` for all launchers and `--plugin-url` for
 Claude/RustyClawd), and removes conflicting provider credentials and selectors
 from the child environment.
 Routed Claude launches use safe mode and do not load the UVX plugin directory.
+Routed Copilot launches receive a fresh, empty `COPILOT_HOME` that exists only
+for the child process lifetime. This prevents persisted Copilot configuration
+across user and repository scopes, including installed plugins and their
+contributed agents, hooks, and MCP servers, from loading even when no plugin
+option appears in argv. The user's normal Copilot home is neither read nor
+modified by the routed session.
 Amplihack retains the validated route as data and removes all three
 `AMPLIHACK_LITELLM_*` variables from checkout, Docker probe/build, update,
 bootstrap, freshness, memory-detection, installation, and background-indexing

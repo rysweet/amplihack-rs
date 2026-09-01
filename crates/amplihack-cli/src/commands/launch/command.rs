@@ -9,6 +9,29 @@ use crate::env_builder::EnvBuilder;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+pub(super) const COPILOT_HOME_ENV: &str = "COPILOT_HOME";
+
+/// Give a routed Copilot process a fresh configuration root for its lifetime.
+///
+/// Copilot discovers installed plugins without an argv flag, so rejecting
+/// `--plugin-dir` is not sufficient. Keeping the returned guard alive prevents
+/// user-scoped plugin, hook, agent, and MCP configuration from entering the
+/// routed session and ensures the isolated state is removed after exit.
+pub(super) fn isolate_routed_copilot_home(
+    command: &mut Command,
+    routed_copilot: bool,
+) -> std::io::Result<Option<tempfile::TempDir>> {
+    if !routed_copilot {
+        return Ok(None);
+    }
+
+    let home = tempfile::Builder::new()
+        .prefix("amplihack-routed-copilot-")
+        .tempdir()?;
+    command.env(COPILOT_HOME_ENV, home.path());
+    Ok(Some(home))
+}
+
 #[cfg(test)]
 pub(super) fn build_command(
     binary: &BinaryInfo,

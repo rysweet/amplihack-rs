@@ -129,6 +129,83 @@ fn gateway_projection_is_the_final_environment_mutation() {
     assert_eq!(command_env("ANTHROPIC_API_KEY"), Some(None));
 }
 
+#[test]
+fn routed_copilot_child_cannot_see_installed_user_plugin() {
+    let ambient_home = tempfile::tempdir().unwrap();
+    let installed_plugin = ambient_home
+        .path()
+        .join("installed-plugins")
+        .join("review-fixture@local");
+    fs::create_dir_all(&installed_plugin).unwrap();
+    fs::write(
+        installed_plugin.join("plugin.json"),
+        r#"{"name":"review-fixture","hooks":"./hooks.json"}"#,
+    )
+    .unwrap();
+    fs::write(
+        ambient_home.path().join("config.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "installedPlugins": [{
+                "cache_path": installed_plugin,
+                "enabled": true,
+                "marketplace": "local",
+                "name": "review-fixture",
+                "source": "local",
+                "version": "1.0.0"
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let mut command = std::process::Command::new("copilot");
+    command.env(COPILOT_HOME_ENV, ambient_home.path());
+    let isolated_home = isolate_routed_copilot_home(&mut command, true)
+        .unwrap()
+        .expect("routed Copilot must receive an isolated home");
+    let child_home = command
+        .get_envs()
+        .find(|(key, _)| *key == OsStr::new(COPILOT_HOME_ENV))
+        .and_then(|(_, value)| value)
+        .map(PathBuf::from)
+        .expect("routed Copilot command must set COPILOT_HOME");
+
+    assert_ne!(child_home, ambient_home.path());
+    assert_eq!(child_home, isolated_home.path());
+    assert!(
+        !child_home.join("installed-plugins").exists(),
+        "the routed child must not discover ambient installed plugins"
+    );
+    assert!(
+        !child_home.join("config.json").exists(),
+        "the routed child must not read the ambient plugin registry"
+    );
+    assert!(
+        installed_plugin.join("plugin.json").is_file(),
+        "the fixture must prove isolation without deleting the user's plugin"
+    );
+}
+
+#[test]
+fn non_routed_copilot_keeps_ambient_home() {
+    let ambient_home = tempfile::tempdir().unwrap();
+    let mut command = std::process::Command::new("copilot");
+    command.env(COPILOT_HOME_ENV, ambient_home.path());
+
+    assert!(
+        isolate_routed_copilot_home(&mut command, false)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        command
+            .get_envs()
+            .find(|(key, _)| *key == OsStr::new(COPILOT_HOME_ENV))
+            .and_then(|(_, value)| value),
+        Some(ambient_home.path().as_os_str())
+    );
+}
+
 /// When skip_permissions=true, --dangerously-skip-permissions MUST be the
 /// first argument injected before any other flags.
 ///

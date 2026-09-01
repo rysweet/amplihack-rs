@@ -32,7 +32,10 @@ pub(crate) use power_steering::maybe_prompt_re_enable_power_steering;
 
 // Internal imports from submodules used by run_launch.
 use blarify::maybe_run_blarify_indexing_prompt;
-use command::{augment_claude_launch_env, build_command_for_dir, build_docker_launcher_args};
+use command::{
+    augment_claude_launch_env, build_command_for_dir, build_docker_launcher_args,
+    isolate_routed_copilot_home,
+};
 use context::persist_launcher_context;
 
 // Test-visible re-imports from submodules. These become available to
@@ -46,7 +49,7 @@ use blarify::{
 #[cfg(test)]
 use checkout::{parse_github_repo_uri, resolve_checkout_repo_in};
 #[cfg(test)]
-use command::build_command;
+use command::{COPILOT_HOME_ENV, build_command};
 #[cfg(test)]
 use context::render_launcher_command;
 #[cfg(test)]
@@ -258,6 +261,10 @@ pub fn run_launch(
             subprocess_safe,
         );
         cmd.current_dir(&execution_dir);
+        let routed_copilot = proxy_config.is_some()
+            && proxy_target == Some(amplihack_utils::litellm_proxy::CliTarget::CopilotCli);
+        let _isolated_copilot_home = isolate_routed_copilot_home(&mut cmd, routed_copilot)
+            .context("failed to create isolated Copilot home for external LiteLLM launch")?;
         apply_launch_environment(
             &mut cmd,
             env_builder,
