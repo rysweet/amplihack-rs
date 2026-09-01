@@ -37,7 +37,7 @@ If ye prefer manual updates:
 
    ```bash
    git pull origin main
-   cargo install --path .
+   cargo install --path bins/amplihack --locked
    ```
 
 2. Verify version:
