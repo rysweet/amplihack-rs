@@ -16,7 +16,10 @@
 # does not need a bash 3.2 to run, which is exactly why it can run on every PR.
 #
 # Portable replacements:
-#   ${v,,} / ${v^^}      ->  $(printf '%s' "$v" | tr '[:upper:]' '[:lower:]')
+#   ${v,,} / ${v^^}      ->  $(printf '%s' "$v" | tr '[:upper:]' '[:lower:]'),
+#                            or `shopt -s nocasematch` (bash 3.1) when the fold
+#                            only feeds a `case` or `[[ ]]` -- no fork, and no
+#                            secret-bearing value put on a stream
 #   mapfile -t a < <(x)  ->  a=(); while IFS= read -r l; do a+=("$l"); done < <(x)
 #   mapfile -d '' -t a   ->  a=(); while IFS= read -r -d '' l; do a+=("$l"); done
 #   declare -A m         ->  a case lookup, or two parallel indexed arrays
