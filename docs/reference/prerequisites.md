@@ -115,8 +115,9 @@ git clone https://github.com/rysweet/amplihack-rs.git
 cd amplihack-rs
 cargo build --release
 
-# Install
-cargo install --path crates/amplihack-cli
+# Install. Note this is bins/amplihack, not crates/amplihack-cli:
+# amplihack-cli is a library crate and has no binaries to install.
+cargo install --path bins/amplihack --locked
 
 # Verify
 amplihack --version
