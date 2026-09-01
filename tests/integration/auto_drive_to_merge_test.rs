@@ -235,87 +235,6 @@ fn both_loops_terminate_on_the_loop_health_evaluator_contract() {
 }
 
 #[test]
-fn object_valued_step_outputs_use_recipe_var_fallbacks() {
-    let required_reads = [
-        (
-            "autodrive-build",
-            "BUILD_PREFLIGHT",
-            "RECIPE_VAR_build_preflight",
-        ),
-        (
-            "autodrive-crusty-loop",
-            "CRUSTY_LOOP_PREFLIGHT",
-            "RECIPE_VAR_crusty_loop_preflight",
-        ),
-        (
-            "autodrive-crusty-loop",
-            "CRUSTY_LOOP_RESULT",
-            "RECIPE_VAR_crusty_loop_result",
-        ),
-        (
-            "autodrive-merge-loop",
-            "MERGE_LOOP_PREFLIGHT",
-            "RECIPE_VAR_merge_loop_preflight",
-        ),
-        (
-            "autodrive-merge-loop",
-            "MERGE_GATE_RESULT",
-            "RECIPE_VAR_merge_gate_result",
-        ),
-        (
-            "autodrive-crusty-round",
-            "CRUSTY_ROUND_CONTEXT",
-            "RECIPE_VAR_crusty_round_context",
-        ),
-        (
-            "autodrive-crusty-round",
-            "CRUSTY_VERDICT",
-            "RECIPE_VAR_crusty_verdict",
-        ),
-        (
-            "autodrive-crusty-round",
-            "CRUSTY_FIX_EVIDENCE",
-            "RECIPE_VAR_crusty_fix_evidence",
-        ),
-        (
-            "autodrive-merge-round",
-            "MERGE_READY_VERDICT",
-            "RECIPE_VAR_merge_ready_verdict",
-        ),
-        (
-            "autodrive-merge-round",
-            "PLATFORM_FACTS",
-            "RECIPE_VAR_platform_facts",
-        ),
-        (
-            "autodrive-merge-round",
-            "MERGE_SYNC",
-            "RECIPE_VAR_merge_sync",
-        ),
-        (
-            "autodrive-merge-round",
-            "QA_EVIDENCE",
-            "RECIPE_VAR_qa_evidence",
-        ),
-        (
-            "autodrive-merge-round",
-            "CI_EVIDENCE",
-            "RECIPE_VAR_ci_evidence",
-        ),
-    ];
-
-    for (recipe, plain, fallback) in required_reads {
-        let text = recipe_text(recipe);
-        let dual_read = format!("${{{plain}:-${{{fallback}:-}}}}");
-        assert!(
-            text.contains(&dual_read),
-            "{recipe} must read object output `{plain}` through `{fallback}`; \
-             recipe-runner-rs does not create the plain alias for JSON objects"
-        );
-    }
-}
-
-#[test]
 fn no_numeric_iteration_cap_anywhere() {
     // Not a max-rounds integer, not a backstop, not a wall-clock budget. An
     // integer cap cuts off the round that was about to converge AND lets a
@@ -454,7 +373,6 @@ fn verdict_gates_use_the_canonical_orch_helper_pipeline() {
             "crusty_verdict",
             "CONCERNS",
             "CRUSTY_REVIEW",
-            "RECIPE_VAR_crusty_review",
         ),
         (
             "autodrive-merge-round",
@@ -462,10 +380,9 @@ fn verdict_gates_use_the_canonical_orch_helper_pipeline() {
             "merge_ready_verdict",
             "NOT_MERGE_READY",
             "MERGE_READY_REVIEW",
-            "RECIPE_VAR_merge_ready_review",
         ),
     ];
-    for (recipe_name, step_id, verdict_field, blocking_default, env_var, fallback) in cases {
+    for (recipe_name, step_id, verdict_field, blocking_default, env_var) in cases {
         let recipe = recipe_yaml(recipe_name);
         let s = step(&recipe, step_id);
         let cmd = field(s, "command");
@@ -488,8 +405,8 @@ fn verdict_gates_use_the_canonical_orch_helper_pipeline() {
         // Agent output is untrusted data: env var + stdin, never interpolated
         // into a command position.
         assert!(
-            cmd.contains(&format!("${{{env_var}:-${{{fallback}:-}}}}")),
-            "{step_id} must read the agent output through both runner environment names"
+            cmd.contains(&format!("${{{env_var}:-}}")),
+            "{step_id} must read the agent output from the environment"
         );
         assert!(
             cmd.contains("printf '%s' \""),

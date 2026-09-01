@@ -138,7 +138,7 @@ steps:
       # Canonical pipeline (docs/reference/structured-verdict-parsing.md):
       # agent output is untrusted DATA on stdin, never interpolated into a
       # command position and never branched on as raw prose.
-      RAW="${MERGE_READY_REVIEW:-${RECIPE_VAR_merge_ready_review:-}}"
+      RAW="${MERGE_READY_REVIEW:-}"
       RECORD="${AUTODRIVE_ROUND_RECORD:-}"
       if [ -z "$RAW" ]; then
         echo "WARNING: the merge-ready assessment produced no output; a missing verdict is NOT_MERGE_READY, never MERGE_READY." >&2
@@ -162,17 +162,13 @@ steps:
       # A model may not overrule measured evidence. Even a MERGE_READY verdict
       # is downgraded when the numbers say otherwise — this is the "never
       # advance on a prose impression" rule, enforced rather than asked for.
-      QA_RAW="${QA_EVIDENCE:-${RECIPE_VAR_qa_evidence:-}}"
-      CI_RAW="${CI_EVIDENCE:-${RECIPE_VAR_ci_evidence:-}}"
-      SYNC_RAW="${MERGE_SYNC:-${RECIPE_VAR_merge_sync:-}}"
-      PLATFORM_RAW="${PLATFORM_FACTS:-${RECIPE_VAR_platform_facts:-}}"
-      QA="$(printf '%s' "$QA_RAW" | amplihack orch helper extract-json --require-field qa_status \
+      QA="$(printf '%s' "${QA_EVIDENCE:-}" | amplihack orch helper extract-json --require-field qa_status \
             | amplihack orch helper extract-field --field qa_status --default MISSING)"
-      CI="$(printf '%s' "$CI_RAW" | amplihack orch helper extract-json --require-field ci_status \
+      CI="$(printf '%s' "${CI_EVIDENCE:-}" | amplihack orch helper extract-json --require-field ci_status \
             | amplihack orch helper extract-field --field ci_status --default MISSING)"
-      CONFLICT="$(printf '%s' "$SYNC_RAW" | amplihack orch helper extract-json --require-field conflict \
+      CONFLICT="$(printf '%s' "${MERGE_SYNC:-}" | amplihack orch helper extract-json --require-field conflict \
             | amplihack orch helper extract-field --field conflict --default unknown)"
-      THREADS="$(printf '%s' "$PLATFORM_RAW" | amplihack orch helper extract-json --require-field unresolved_threads \
+      THREADS="$(printf '%s' "${PLATFORM_FACTS:-}" | amplihack orch helper extract-json --require-field unresolved_threads \
             | amplihack orch helper extract-field --field unresolved_threads --default unreadable)"
       DOWNGRADE=""
       [ "$QA" = "PASS" ] || DOWNGRADE="${DOWNGRADE}qa_status=${QA} "
@@ -279,21 +275,18 @@ steps:
       else
         echo "[skip] not a git repo; the head sha is left empty so the merge gate refuses rather than merging unbound evidence" >&2
       fi
-      VERDICT_RAW="${MERGE_READY_VERDICT:-${RECIPE_VAR_merge_ready_verdict:-}}"
-      QA_RAW="${QA_EVIDENCE:-${RECIPE_VAR_qa_evidence:-}}"
-      CI_RAW="${CI_EVIDENCE:-${RECIPE_VAR_ci_evidence:-}}"
-      VERDICT="$(g "$VERDICT_RAW" merge_ready_verdict NOT_MERGE_READY)"
+      VERDICT="$(g "${MERGE_READY_VERDICT:-}" merge_ready_verdict NOT_MERGE_READY)"
       case "$VERDICT" in MERGE_READY|NOT_MERGE_READY) ;; *) VERDICT="NOT_MERGE_READY" ;; esac
       [ -f "${RECORD}.findings" ] || : > "${RECORD}.findings"
       printf '{"merge_ready_verdict":"%s","blocker_count":%s,"head_sha":"%s","round_label":"%s","test_signal":"%s","ci_signal":"%s","qa_status":"%s","ci_status":"%s"}\n' \
         "$VERDICT" \
-        "$(g "$VERDICT_RAW" blocker_count 0)" \
+        "$(g "${MERGE_READY_VERDICT:-}" blocker_count 0)" \
         "$HEAD_SHA" \
         "${AUTODRIVE_ROUND_LABEL:-round}" \
-        "$(g "$QA_RAW" qa_status MISSING)" \
-        "$(g "$CI_RAW" ci_signal unreadable)" \
-        "$(g "$QA_RAW" qa_status MISSING)" \
-        "$(g "$CI_RAW" ci_status MISSING)" > "$RECORD"
+        "$(g "${QA_EVIDENCE:-}" qa_status MISSING)" \
+        "$(g "${CI_EVIDENCE:-}" ci_signal unreadable)" \
+        "$(g "${QA_EVIDENCE:-}" qa_status MISSING)" \
+        "$(g "${CI_EVIDENCE:-}" ci_status MISSING)" > "$RECORD"
       echo "INFO: round record written to ${RECORD}" >&2
       cat "$RECORD"
     output: "merge_round_record_written"

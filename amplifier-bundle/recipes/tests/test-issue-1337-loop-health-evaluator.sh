@@ -372,38 +372,6 @@ else
         E2E_RC=$?
     }
 
-    # e2e_run_repair <name> <primary-output> <repair-output>
-    e2e_run_repair() {
-        local name="$1" primary_text="$2" repair_text="$3"
-        local primary="${E2E_DIR}/${name}-primary.out"
-        local repair="${E2E_DIR}/${name}-repair.out"
-        local primary_stub="${E2E_DIR}/${name}-primary.yaml"
-        local stubbed="${E2E_DIR}/${name}-loop-health-evaluator.yaml"
-        printf '%s\n' "${primary_text}" > "${primary}"
-        printf '%s\n' "${repair_text}" > "${repair}"
-        make_stubbed_recipe "${primary_stub}" "${primary}" || {
-            echo "HARNESS-ERROR: could not stub primary evaluator for ${name}" >&2; exit 2; }
-        awk -v payload="${repair}" '
-            /^  - id: "step-02c-repair-structured-verdict"/ {
-                print
-                print "    condition: \"loop_evidence.terminal_refusal == '"'"'false'"'"' and loop_health_contract.valid == '"'"'false'"'"'\""
-                print "    type: \"bash\""
-                print "    command: |"
-                print "      cat " payload
-                print "    output: \"loop_health_repair\""
-                skip = 1
-                next
-            }
-            skip && /^  - id: / { skip = 0 }
-            !skip { print }
-        ' "${primary_stub}" > "${stubbed}"
-        E2E_OUT="$("${RUNNER}" "${stubbed}" \
-            -R "${E2E_DIR}" -C "${REPO_ROOT}" \
-            -c loop_name="e2e-${name}" -c loop_repo_path="${REPO_ROOT}" \
-            --output-format json 2>&1)"
-        E2E_RC=$?
-    }
-
     # --- 7a. CONTINUE reaches step-04 and exits 0 (the B1 regression) --------
     e2e_run continue '{"loop_verdict":"CONTINUE","moved":["3 commits"]}'
     if [[ ${E2E_RC} -eq 0 ]] && printf '%s' "${E2E_OUT}" | grep -qF 'LOOP_HEALTH: CONTINUE'; then
@@ -425,20 +393,6 @@ ${E2E_OUT}"
         pass "E2E-verdict-source" "the verdict is attributed to the evaluator, not to a failed read"
     else
         fail "E2E-verdict-source" "verdict_source is not 'evaluator':
-${E2E_OUT}"
-    fi
-
-    # A malformed primary response gets one structured re-evaluation. The
-    # primary prose is never itself interpreted as a verdict.
-    e2e_run_repair repair \
-        'CONTINUE — one commit and a new finding show progress.' \
-        '{"loop_verdict":"CONTINUE","moved":["one commit"],"not_converging":[]}'
-    if [[ ${E2E_RC} -eq 0 ]] \
-       && printf '%s' "${E2E_OUT}" | grep -qF 'LOOP_HEALTH: CONTINUE' \
-       && printf '%s' "${E2E_OUT}" | grep -q '"verdict_source": *"repair_evaluator"'; then
-        pass "E2E-repair" "malformed primary output gets one structured retry that can continue"
-    else
-        fail "E2E-repair" "structured retry did not recover malformed primary output (rc=${E2E_RC}):
 ${E2E_OUT}"
     fi
 

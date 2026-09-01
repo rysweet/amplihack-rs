@@ -97,11 +97,10 @@ steps:
       [ -f "$LOOP_HELPER" ] || LOOP_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/autodrive_loop.sh"
       [ -f "$LOOP_HELPER" ] || LOOP_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/autodrive_loop.sh"
       [ -f "$LOOP_HELPER" ] || { echo "ERROR: autodrive loop helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): $LOOP_HELPER; cwd=$(pwd)" >&2; exit 1; }
-      PREFLIGHT="${CRUSTY_LOOP_PREFLIGHT:-${RECIPE_VAR_crusty_loop_preflight:-}}"
-      DIR="$(printf '%s' "$PREFLIGHT" \
+      DIR="$(printf '%s' "${CRUSTY_LOOP_PREFLIGHT:-}" \
         | amplihack orch helper extract-json --require-field state_dir \
         | amplihack orch helper extract-field --field state_dir --default '')"
-      PR="$(printf '%s' "$PREFLIGHT" \
+      PR="$(printf '%s' "${CRUSTY_LOOP_PREFLIGHT:-}" \
         | amplihack orch helper extract-json --require-field pr \
         | amplihack orch helper extract-field --field pr --default '')"
       [ -n "$DIR" ] || { echo "ERROR: preflight produced no state_dir; refusing to run an unrecorded loop." >&2; exit 1; }
@@ -138,16 +137,14 @@ steps:
       [ -f "$STATE_HELPER" ] || STATE_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/autodrive_state.sh"
       [ -f "$STATE_HELPER" ] || { echo "WARNING: autodrive state helper not found; this run stays correct but a resumed run will redo the crusty loop." >&2; exit 0; }
       . "$STATE_HELPER"
-      PREFLIGHT="${CRUSTY_LOOP_PREFLIGHT:-${RECIPE_VAR_crusty_loop_preflight:-}}"
-      DIR="$(printf '%s' "$PREFLIGHT" \
+      DIR="$(printf '%s' "${CRUSTY_LOOP_PREFLIGHT:-}" \
         | amplihack orch helper extract-json --require-field state_dir \
         | amplihack orch helper extract-field --field state_dir --default '')"
-      PR="$(printf '%s' "$PREFLIGHT" \
+      PR="$(printf '%s' "${CRUSTY_LOOP_PREFLIGHT:-}" \
         | amplihack orch helper extract-json --require-field pr \
         | amplihack orch helper extract-field --field pr --default '')"
       [ -n "$DIR" ] || exit 0
-      RESULT_RAW="${CRUSTY_LOOP_RESULT:-${RECIPE_VAR_crusty_loop_result:-}}"
-      RESULT="$(printf '%s' "$RESULT_RAW" \
+      RESULT="$(printf '%s' "${CRUSTY_LOOP_RESULT:-}" \
         | amplihack orch helper extract-json --require-field loop_result \
         | amplihack orch helper extract-field --field loop_result --default '')"
       if [ "$RESULT" != "DONE" ]; then

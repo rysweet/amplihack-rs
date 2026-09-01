@@ -92,8 +92,7 @@ steps:
       [ -f "$LOOP_HELPER" ] || LOOP_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/autodrive_loop.sh"
       [ -f "$LOOP_HELPER" ] || LOOP_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/autodrive_loop.sh"
       [ -f "$LOOP_HELPER" ] || { echo "ERROR: autodrive loop helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): $LOOP_HELPER; cwd=$(pwd)" >&2; exit 1; }
-      PREFLIGHT="${MERGE_LOOP_PREFLIGHT:-${RECIPE_VAR_merge_loop_preflight:-}}"
-      g() { printf '%s' "$PREFLIGHT" | amplihack orch helper extract-json --require-field "$1" \
+      g() { printf '%s' "${MERGE_LOOP_PREFLIGHT:-}" | amplihack orch helper extract-json --require-field "$1" \
               | amplihack orch helper extract-field --field "$1" --default ''; }
       DIR="$(g state_dir)"; PR="$(g pr)"
       [ -n "$DIR" ] || { echo "ERROR: preflight produced no state_dir; refusing to run an unrecorded loop." >&2; exit 1; }
@@ -130,8 +129,7 @@ steps:
       [ -f "$GATE" ] || GATE="${HOME:-/root}/.copilot/amplifier-bundle/tools/autodrive_merge_gate.sh"
       [ -f "$GATE" ] || GATE="${HOME:-/root}/.amplihack/amplifier-bundle/tools/autodrive_merge_gate.sh"
       [ -f "$GATE" ] || { echo "ERROR: autodrive merge gate not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): $GATE; cwd=$(pwd)" >&2; exit 1; }
-      PREFLIGHT="${MERGE_LOOP_PREFLIGHT:-${RECIPE_VAR_merge_loop_preflight:-}}"
-      g() { printf '%s' "$PREFLIGHT" | amplihack orch helper extract-json --require-field "$1" \
+      g() { printf '%s' "${MERGE_LOOP_PREFLIGHT:-}" | amplihack orch helper extract-json --require-field "$1" \
               | amplihack orch helper extract-field --field "$1" --default ''; }
       DIR="$(g state_dir)"; PR="$(g pr)"
       ARGS=(--pr "$PR" --repo "${REPO_PATH:-.}" --state-dir "$DIR" \
@@ -162,11 +160,9 @@ steps:
       . "$STATE_HELPER"
       g() { printf '%s' "${1:-}" | amplihack orch helper extract-json --require-field "$2" \
               | amplihack orch helper extract-field --field "$2" --default ''; }
-      PREFLIGHT="${MERGE_LOOP_PREFLIGHT:-${RECIPE_VAR_merge_loop_preflight:-}}"
-      GATE_RESULT="${MERGE_GATE_RESULT:-${RECIPE_VAR_merge_gate_result:-}}"
-      DIR="$(g "$PREFLIGHT" state_dir)"; PR="$(g "$PREFLIGHT" pr)"
+      DIR="$(g "${MERGE_LOOP_PREFLIGHT:-}" state_dir)"; PR="$(g "${MERGE_LOOP_PREFLIGHT:-}" pr)"
       [ -n "$DIR" ] || exit 0
-      RESULT="$(g "$GATE_RESULT" merge_result)"
+      RESULT="$(g "${MERGE_GATE_RESULT:-}" merge_result)"
       case "$RESULT" in
         MERGED|ALREADY_MERGED)
           autodrive_mark_phase_done "$DIR" "merge-ready-loop"

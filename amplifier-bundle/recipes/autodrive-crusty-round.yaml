@@ -145,7 +145,7 @@ steps:
       # Canonical pipeline (docs/reference/structured-verdict-parsing.md):
       # agent output is untrusted DATA on stdin, never interpolated into a
       # command position, never eval'd, never branched on as raw prose.
-      RAW="${CRUSTY_REVIEW:-${RECIPE_VAR_crusty_review:-}}"
+      RAW="${CRUSTY_REVIEW:-}"
       RECORD="${AUTODRIVE_ROUND_RECORD:-}"
       if [ -z "$RAW" ]; then
         echo "WARNING: crusty produced no output; a missing verdict is CONCERNS, never CLEAN." >&2
@@ -255,8 +255,7 @@ steps:
         GIT_OK="false"
         echo "[skip] not a git repo; commit evidence is reported as unobserved, never as progress" >&2
       fi
-      ROUND_CONTEXT="${CRUSTY_ROUND_CONTEXT:-${RECIPE_VAR_crusty_round_context:-}}"
-      BASE="$(printf '%s' "$ROUND_CONTEXT" \
+      BASE="$(printf '%s' "${CRUSTY_ROUND_CONTEXT:-}" \
         | amplihack orch helper extract-json --require-field head_sha \
         | amplihack orch helper extract-field --field head_sha --default '')"
       NOW=""
@@ -280,19 +279,17 @@ steps:
       set -uo pipefail
       RECORD="${AUTODRIVE_ROUND_RECORD:-}"
       [ -n "$RECORD" ] || { echo "ERROR: autodrive_round_record is required; the loop driver reads the round record from a file, never from stdout." >&2; exit 1; }
-      VERDICT_RAW="${CRUSTY_VERDICT:-${RECIPE_VAR_crusty_verdict:-}}"
-      FIX_EVIDENCE="${CRUSTY_FIX_EVIDENCE:-${RECIPE_VAR_crusty_fix_evidence:-}}"
-      VERDICT="$(printf '%s' "$VERDICT_RAW" \
+      VERDICT="$(printf '%s' "${CRUSTY_VERDICT:-}" \
         | amplihack orch helper extract-json --require-field crusty_verdict \
         | amplihack orch helper extract-field --field crusty_verdict --default CONCERNS)"
       case "$VERDICT" in CLEAN|CONCERNS) ;; *) VERDICT="CONCERNS" ;; esac
-      COUNT="$(printf '%s' "$VERDICT_RAW" \
+      COUNT="$(printf '%s' "${CRUSTY_VERDICT:-}" \
         | amplihack orch helper extract-json --require-field concern_count \
         | amplihack orch helper extract-field --field concern_count --default 0)"
-      COMMITS="$(printf '%s' "$FIX_EVIDENCE" \
+      COMMITS="$(printf '%s' "${CRUSTY_FIX_EVIDENCE:-}" \
         | amplihack orch helper extract-json --require-field commits \
         | amplihack orch helper extract-field --field commits --default 0)"
-      SHA="$(printf '%s' "$FIX_EVIDENCE" \
+      SHA="$(printf '%s' "${CRUSTY_FIX_EVIDENCE:-}" \
         | amplihack orch helper extract-json --require-field head_sha \
         | amplihack orch helper extract-field --field head_sha --default '')"
       [ -f "${RECORD}.findings" ] || : > "${RECORD}.findings"
