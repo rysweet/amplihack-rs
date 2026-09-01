@@ -211,6 +211,25 @@ else
   fail "PASSTHRU" "a converging loop was not allowed to finish (rc=${rc}): ${LOOP_OUT}"
 fi
 
+# The real recipe runner renders step output as an indented `Output:` summary
+# line. That wrapper must preserve the exact verdict without making arbitrary
+# prose containing LOOP_HEALTH permissive.
+set_stub '{"crusty_verdict":"CLEAN"}' 0 '    Output: LOOP_HEALTH: DONE — converged'
+run_loop wrapped; rc=$?
+if [ "$rc" -eq 0 ] && printf '%s' "${LOOP_OUT}" | grep -qF '"loop_result":"DONE"'; then
+  pass "PASSTHRU-wrapped" "the recipe-runner Output wrapper preserves DONE"
+else
+  fail "PASSTHRU-wrapped" "the recipe-runner Output wrapper hid DONE (rc=${rc}): ${LOOP_OUT}"
+fi
+
+set_stub '{"crusty_verdict":"CONCERNS"}' 0 'review says Output: LOOP_HEALTH: CONTINUE'
+run_loop wrapped-prose; rc=$?
+if [ "$rc" -ne 0 ] && grep -qF 'AUTO_DRIVE_LOOP: STUCK' "${LOOP_DIR}/err"; then
+  pass "MALFORMED-wrapped-prose" "prose containing an Output marker remains STUCK"
+else
+  fail "MALFORMED-wrapped-prose" "prose containing an Output marker authorised a round (rc=${rc})"
+fi
+
 # ---------------------------------------------------------------------------
 # 2b. Dependency preflight — a missing terminator costs ZERO rounds.
 # ---------------------------------------------------------------------------

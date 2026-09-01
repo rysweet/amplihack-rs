@@ -201,14 +201,15 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} findings=$(prin
     exit "$AUTODRIVE_EXIT_POLICY_REFUSAL"
   fi
 
-  # The evaluator's own enforcing step prints exactly one LOOP_HEALTH: marker
-  # and exits non-zero on STUCK. Anything we cannot read as CONTINUE or DONE
-  # is STUCK — a missing verdict never authorises another round.
+  # The evaluator's enforcing step prints exactly one LOOP_HEALTH marker.
+  # recipe-runner-rs may preserve it directly or wrap it in an indented
+  # `Output:` summary line. Accept only those two exact line shapes; arbitrary
+  # prose containing the marker still cannot authorise another round.
   LOOP_VERDICT="STUCK"
   if [ "$HEALTH_RC" -eq 0 ]; then
-    if grep -qE '^LOOP_HEALTH: CONTINUE( |$)' "$HEALTH_LOG"; then
+    if grep -qE '^(LOOP_HEALTH:|[[:space:]]+Output: LOOP_HEALTH:) CONTINUE([[:space:]]|$)' "$HEALTH_LOG"; then
       LOOP_VERDICT="CONTINUE"
-    elif grep -qE '^LOOP_HEALTH: DONE( |$)' "$HEALTH_LOG"; then
+    elif grep -qE '^(LOOP_HEALTH:|[[:space:]]+Output: LOOP_HEALTH:) DONE([[:space:]]|$)' "$HEALTH_LOG"; then
       LOOP_VERDICT="DONE"
     else
       echo "WARNING: loop-health-evaluator exited 0 with no readable LOOP_HEALTH verdict; failing safe to STUCK." >&2
