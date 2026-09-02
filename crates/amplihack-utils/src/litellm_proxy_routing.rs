@@ -103,10 +103,10 @@ pub fn validate_launch_args(target: CliTarget, args: &[String]) -> Result<(), Pr
         if target == CliTarget::RustyClawd
             && requested_providers(&option_args)?
                 .iter()
-                .any(|provider| *provider != "copilot")
+                .any(|provider| *provider != "anthropic")
         {
             return Err(ProxyError::InvalidConfig(
-                "RustyClawd --provider must be copilot while LiteLLM routing is enabled; amplihack selects its explicit Copilot-compatible gateway transport"
+                "RustyClawd --provider must be anthropic while LiteLLM routing is enabled; amplihack selects its explicit Anthropic-compatible gateway transport"
                     .to_string(),
             ));
         }
@@ -348,6 +348,34 @@ mod tests {
                 );
             }
         }
+
+        match previous {
+            Some(value) => unsafe { std::env::set_var(ENDPOINT_ENV, value) },
+            None => unsafe { std::env::remove_var(ENDPOINT_ENV) },
+        }
+    }
+
+    #[test]
+    fn rustyclawd_route_requires_the_native_anthropic_gateway_backend() {
+        let _guard = crate::test_serial::acquire();
+        let previous = std::env::var_os(ENDPOINT_ENV);
+        unsafe { std::env::set_var(ENDPOINT_ENV, "https://gateway.example.test") };
+
+        assert!(
+            validate_launch_args(
+                CliTarget::RustyClawd,
+                &["--provider".to_string(), "anthropic".to_string()]
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_launch_args(
+                CliTarget::RustyClawd,
+                &["--provider".to_string(), "copilot".to_string()]
+            )
+            .is_err(),
+            "the Copilot backend can bypass RustyClawd's native Anthropic-compatible gateway route"
+        );
 
         match previous {
             Some(value) => unsafe { std::env::set_var(ENDPOINT_ENV, value) },

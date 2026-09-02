@@ -47,18 +47,18 @@ metadata; RustyClawd uses its Cargo provenance contract below.
 | Client | Binary | Exact version | Protocol |
 | --- | --- | --- | --- |
 | Claude Code | `claude` | `2.1.247` | Anthropic messages |
-| GitHub Copilot CLI | `copilot` | `1.0.83-2` | OpenAI chat completions |
-| RustyClawd | `rusty` | `0.1.1` | OpenAI chat completions |
+| GitHub Copilot CLI | `copilot` | npm `1.0.83-2`; runtime `1.0.83-3` | OpenAI chat completions |
+| RustyClawd | `rusty` | `0.1.1` | Anthropic messages |
 
 RustyClawd additionally requires an unambiguous Cargo git receipt for
 `https://github.com/rysweet/RustyClawd` at revision
-`2825862711a4bd1367022c62ed6cd2efae9f4998`. Registry, path, branch-only,
+`e03613a731ec2243590ccbb2b50db4dcf83ca69b`. Registry, path, branch-only,
 tag-only, and alternate-binary receipts are rejected.
 
-The verifier uses RustyClawd's native Copilot-compatible backend with an
-explicit `--provider copilot`, exact model alias, and
-`GITHUB_COPILOT_ENDPOINT=<gateway>/v1`. It translates the LiteLLM virtual key
-to `GITHUB_TOKEN` only inside RustyClawd's cleared child environment. The
+The verifier uses RustyClawd's native Anthropic-compatible gateway support
+with an explicit `--provider anthropic`, exact model alias,
+`ANTHROPIC_BASE_URL=<gateway>`, `ANTHROPIC_AUTH_TOKEN=<virtual-key>`, and
+`ANTHROPIC_MODEL=<alias>` inside RustyClawd's cleared child environment. The
 explicit provider prevents RustyClawd's implicit Anthropic-to-Copilot fallback.
 No wrapper, traffic interception, substitute binary, or direct provider route
 is used.

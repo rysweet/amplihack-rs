@@ -75,9 +75,12 @@ behavior.
 
 Credentials unrelated to model routing, such as database passwords, retain
 their ordinary launcher behavior. For RustyClawd specifically, amplihack
-replaces `GITHUB_TOKEN` with the restricted LiteLLM virtual key because its
-native Copilot-compatible transport uses that variable for gateway
-authorization.
+projects the restricted LiteLLM virtual key through `ANTHROPIC_AUTH_TOKEN`
+because its native Anthropic-compatible transport supports opaque gateway
+credentials. The verified RustyClawd revision treats the non-empty
+`ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_BASE_URL` pair as authoritative, so
+user, project, command-line, and enterprise settings cannot redirect that
+credential to another endpoint or replace the routed model.
 
 There is no fallback to a direct provider when launch policy rejects a route.
 To disable routing, unset all three `AMPLIHACK_LITELLM_*` variables before
@@ -113,7 +116,8 @@ On Linux, the verified Claude release enforces this boundary with `bubblewrap`
 and `socat` and refuses to start if either dependency is unavailable.
 
 Copilot routing likewise requires the exact selected `copilot` executable to
-report `1.0.83-2`. Later, earlier, malformed, and missing versions are rejected
+report `1.0.83-3` from the pinned npm `1.0.83-2` artifact. Later, earlier,
+malformed, and missing versions are rejected
 until the real-CLI shell isolation contract passes and the attestation set is
 updated. This gate is applied only when external LiteLLM routing is requested;
 ordinary Copilot launches retain their existing version behavior.

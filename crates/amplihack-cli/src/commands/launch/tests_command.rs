@@ -248,7 +248,7 @@ fn real_copilot_confirms_isolated_home_does_not_disable_repository_scope() {
     let version_stdout = String::from_utf8_lossy(&version_output.stdout);
     if !matches!(
         version_stdout.lines().next(),
-        Some("GitHub Copilot CLI 1.0.83-2" | "GitHub Copilot CLI 1.0.83-2.")
+        Some("GitHub Copilot CLI 1.0.83-3" | "GitHub Copilot CLI 1.0.83-3.")
     ) {
         return;
     }

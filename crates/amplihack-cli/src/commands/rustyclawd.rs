@@ -32,7 +32,7 @@ pub fn run_rustyclawd(
             .any(|arg| arg == "--provider" || arg.starts_with("--provider="));
         let mut routed = Vec::new();
         if !has_provider {
-            routed.extend(["--provider".to_string(), "copilot".to_string()]);
+            routed.extend(["--provider".to_string(), "anthropic".to_string()]);
         }
         if !has_model {
             routed.extend(["--model".to_string(), model]);

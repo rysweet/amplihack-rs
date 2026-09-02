@@ -899,7 +899,7 @@ fn tc_sec_20_no_hardcoded_high_entropy_secrets_in_fleet_source() {
         "AMPLIHACK_NATIVE_REASONER_BACKEND",
         "dangerously-skip-permissions",
         // Public git revision pin for the authoritative RustyClawd build.
-        "2825862711a4bd1367022c62ed6cd2efae9f4998",
+        "e03613a731ec2243590ccbb2b50db4dcf83ca69b",
     ];
 
     // Regex-free scan: look for very long alphanumeric tokens in string literals.

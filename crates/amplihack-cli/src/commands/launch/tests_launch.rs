@@ -282,7 +282,7 @@ fn copilot_gateway_capability_gate_uses_the_resolved_binary_version() {
     let supported = BinaryInfo {
         name: "copilot".to_string(),
         path: "/opt/copilot/bin/copilot".into(),
-        version: Some("1.0.83-2".to_string()),
+        version: Some("1.0.83-3".to_string()),
     };
     validate_proxy_binary_capability(CliTarget::CopilotCli, &supported)
         .expect("the runtime-verified Copilot CLI version must pass");
@@ -303,7 +303,7 @@ fn copilot_gateway_capability_gate_uses_the_resolved_binary_version() {
         let error = validate_proxy_binary_capability(CliTarget::CopilotCli, &binary)
             .expect_err("unproved subprocess scrubbing must fail closed");
         let message = format!("{error:#}");
-        assert!(message.contains("1.0.83-2"), "{message}");
+        assert!(message.contains("1.0.83-3"), "{message}");
         assert!(
             !message.contains("gateway-secret"),
             "capability errors must not disclose gateway credentials"
@@ -312,17 +312,95 @@ fn copilot_gateway_capability_gate_uses_the_resolved_binary_version() {
 }
 
 #[test]
-fn capability_gate_does_not_change_rustyclawd() {
+fn rustyclawd_gateway_capability_requires_the_pinned_cargo_receipt() {
+    let _lock = home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let cargo_home = tempfile::tempdir().unwrap();
+    let bin_dir = cargo_home.path().join("bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+    let executable = bin_dir.join("rusty");
+    fs::write(&executable, b"synthetic rustyclawd executable").unwrap();
+    let receipt_key = format!(
+        "{} {} (git+{}?rev={}#{})",
+        RUSTYCLAWD_PACKAGE,
+        RUSTYCLAWD_VERSION,
+        RUSTYCLAWD_SOURCE,
+        RUSTYCLAWD_REVISION,
+        RUSTYCLAWD_REVISION
+    );
+    fs::write(
+        cargo_home.path().join(".crates2.json"),
+        serde_json::json!({
+            "installs": {
+                (receipt_key): {
+                    "bins": ["rusty"]
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let _cargo_home = EnvGuard::set([("CARGO_HOME", cargo_home.path().to_str().unwrap())]);
     let binary = BinaryInfo {
         name: "rustyclawd".to_string(),
-        path: "/opt/rustyclawd".into(),
-        version: None,
+        path: executable,
+        version: Some(RUSTYCLAWD_VERSION.to_string()),
     };
     validate_proxy_binary_capability(
         amplihack_utils::litellm_proxy::CliTarget::RustyClawd,
         &binary,
     )
-    .expect("the exact-version gates must not apply to RustyClawd");
+    .expect("the pinned Cargo-installed RustyClawd must pass");
+
+    let pinned_receipt = format!(
+        "{} {} (git+{}?rev={}#{})",
+        RUSTYCLAWD_PACKAGE,
+        RUSTYCLAWD_VERSION,
+        RUSTYCLAWD_SOURCE,
+        RUSTYCLAWD_REVISION,
+        RUSTYCLAWD_REVISION
+    );
+    fs::write(
+        cargo_home.path().join(".crates2.json"),
+        serde_json::json!({
+            "installs": {
+                (pinned_receipt): {
+                    "bins": ["rusty"]
+                },
+                "rustyclawd-cli 0.1.1 (git+https://github.com/rysweet/RustyClawd?rev=obsolete#obsolete)": {
+                    "bins": ["rusty"]
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let error = validate_proxy_binary_capability(
+        amplihack_utils::litellm_proxy::CliTarget::RustyClawd,
+        &binary,
+    )
+    .expect_err("ambiguous RustyClawd receipts must fail closed");
+    assert!(format!("{error:#}").contains("ambiguous"));
+
+    fs::write(
+        cargo_home.path().join(".crates2.json"),
+        serde_json::json!({
+            "installs": {
+                "rustyclawd-cli 0.1.1 (git+https://github.com/rysweet/RustyClawd?rev=obsolete#obsolete)": {
+                    "bins": ["rusty"]
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let error = validate_proxy_binary_capability(
+        amplihack_utils::litellm_proxy::CliTarget::RustyClawd,
+        &binary,
+    )
+    .expect_err("an unpinned RustyClawd receipt must fail closed");
+    assert!(format!("{error:#}").contains(RUSTYCLAWD_REVISION));
 }
 
 #[cfg(unix)]

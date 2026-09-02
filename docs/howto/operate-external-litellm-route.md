@@ -47,7 +47,7 @@ without both sandbox dependencies.
 
 Copilot CLI receives `--secret-env-vars=COPILOT_PROVIDER_API_KEY`, and
 amplihack requires the exact selected executable to report the currently
-verified version, `1.0.83-2`:
+verified npm package, `1.0.83-2` (runtime version `1.0.83-3`):
 
 ```bash
 command -v copilot
@@ -61,12 +61,14 @@ launches disable Copilot auto-update, so later releases remain blocked until
 the real-CLI isolation contract passes and the verified-version set is
 updated.
 
-RustyClawd uses its native Copilot-compatible transport. Amplihack supplies
-`--provider copilot`, supplies the configured alias as `--model`, maps the
-gateway root to `GITHUB_COPILOT_ENDPOINT=<gateway>/v1`, and replaces
-`GITHUB_TOKEN` in that child with the LiteLLM virtual key. User-supplied
-provider overrides are rejected so a routed launch cannot select the direct
-Anthropic, Copilot, or Azure service.
+RustyClawd uses its native Anthropic-compatible gateway transport. Amplihack
+supplies `--provider anthropic`, supplies the configured alias as `--model`,
+and maps the gateway root, virtual key, and alias to `ANTHROPIC_BASE_URL`,
+`ANTHROPIC_AUTH_TOKEN`, and `ANTHROPIC_MODEL`. User-supplied provider
+overrides are rejected so a routed launch cannot select the direct Anthropic,
+Copilot, or Azure service. Before projecting the virtual key, amplihack also
+requires the canonical Cargo-installed binary and the exact pinned git receipt
+listed in the live-verification reference.
 
 ## Rotate a virtual key
 
@@ -116,6 +118,11 @@ custom agents may select a model. Remove or rename that directory, or unset all
 three routing variables to launch with repository custom agents and the normal
 Copilot home.
 
+Routed RustyClawd launches remove inherited `CLAUDE_API_URL` and
+`CLAUDE_MODEL` values. The verified RustyClawd revision also makes the explicit
+`ANTHROPIC_AUTH_TOKEN` plus `ANTHROPIC_BASE_URL` gateway route authoritative
+over settings from every supported settings source.
+
 ## Troubleshoot a failed launch
 
 | Symptom | Action |
@@ -135,7 +142,7 @@ Copilot home.
 | Claude Code version is not `2.1.247` | Install the verified release. Future releases remain blocked until the real-CLI Bash, hook, and stdio MCP isolation test is rerun and the attestation set is updated. |
 | Claude reports a missing sandbox dependency | On Linux, install `bubblewrap` and `socat`, then retry. Do not disable `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`. |
 | Copilot CLI version cannot be verified | Run `command -v copilot` and `copilot --version` in the same environment. Install the official Copilot CLI executable. |
-| Copilot CLI version is not `1.0.83-2` | Install the verified release. Later releases remain blocked until the real-CLI shell and stdio MCP isolation test is rerun and the attestation set is updated. |
+| Copilot CLI runtime version is not `1.0.83-3` | Install npm package `1.0.83-2`. Later artifacts remain blocked until the real-CLI shell and stdio MCP isolation test is rerun and the attestation set is updated. |
 
 ## Operate gateway-owned concerns
 

@@ -25,16 +25,18 @@ The gateway must expose the protocol required by the selected client:
 | Client | Required LiteLLM compatibility surface |
 | --- | --- |
 | Claude Code | Anthropic-compatible API |
-| RustyClawd | OpenAI-compatible completions API under `/v1` |
+| RustyClawd | Anthropic-compatible API |
 | GitHub Copilot CLI | OpenAI-compatible completions API under `/v1` |
 
 Configuring only one compatibility surface does not satisfy clients that use
 the other protocol. For Copilot, confirm that the selected model and route
 support streaming responses and tool calls before launching an agent.
 
-Use Claude Code `2.1.247` when routing Claude and GitHub Copilot CLI
-`1.0.83-2` when routing Copilot. Amplihack enforces these exact version
-requirements. RustyClawd does not use an exact-version gate.
+Use Claude Code `2.1.247` when routing Claude. Install GitHub Copilot CLI from
+npm package `1.0.83-2`; its immutable Linux executable reports runtime version
+`1.0.83-3`, which is the version amplihack enforces. Routed RustyClawd launches
+must resolve to the canonical Cargo binary installed from the pinned git
+revision documented below.
 
 Do not use a LiteLLM administrative key or an upstream provider key.
 
@@ -50,7 +52,7 @@ command -v copilot
 copilot --version
 ```
 
-Claude must report exactly `2.1.247`; Copilot must report exactly `1.0.83-2`.
+Claude must report exactly `2.1.247`; Copilot must report exactly `1.0.83-3`.
 Amplihack repeats the applicable probe before setup and rejects missing
 executables, failed probes, malformed or unrecognized output, and every release
 outside the runtime-tested attestation set. It does not fall back to direct
@@ -97,9 +99,9 @@ environment. For Claude Code and Copilot, it validates the exact selected
 executable before launch setup and requests subprocess environment scrubbing.
 The version probe does not receive the gateway key or direct provider
 credentials. The child CLI connects to the gateway directly. RustyClawd uses
-its native Copilot-compatible transport with an explicit provider and model;
-amplihack maps the endpoint to `GITHUB_COPILOT_ENDPOINT=<gateway>/v1` and maps
-the virtual key to `GITHUB_TOKEN` only for that client.
+its native Anthropic-compatible gateway transport with an explicit provider
+and model; amplihack maps the endpoint, virtual key, and alias to
+`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, and `ANTHROPIC_MODEL`.
 
 Routed Claude Code and Copilot cannot be started with host-side `--docker` or
 `AMPLIHACK_USE_DOCKER`, because amplihack cannot attest the container

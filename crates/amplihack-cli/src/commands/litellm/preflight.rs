@@ -19,10 +19,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
-const RUSTYCLAWD_PACKAGE: &str = "rustyclawd-cli";
-const RUSTYCLAWD_VERSION: &str = "0.1.1";
-const RUSTYCLAWD_SOURCE: &str = "https://github.com/rysweet/RustyClawd";
-const RUSTYCLAWD_REVISION: &str = "2825862711a4bd1367022c62ed6cd2efae9f4998";
+const COPILOT_NPM_PACKAGE_VERSION: &str = "1.0.83-2";
 
 pub(crate) struct VerifyFailure {
     pub exit: u8,
@@ -118,16 +115,24 @@ pub(crate) fn run(args: &VerifyLiveArgs) -> Result<RunSummaryV1, VerifyFailure> 
                 "claude",
                 "claude",
                 amplihack_utils::litellm_proxy::VERIFIED_CLAUDE_CODE_VERSIONS[0],
-                Some("@anthropic-ai/claude-code"),
+                Some((
+                    "@anthropic-ai/claude-code",
+                    amplihack_utils::litellm_proxy::VERIFIED_CLAUDE_CODE_VERSIONS[0],
+                )),
             )?,
             LiveClient::Copilot => attest_client(
                 "copilot",
                 "copilot",
                 amplihack_utils::litellm_proxy::VERIFIED_COPILOT_CLI_VERSIONS[0],
-                Some("@github/copilot"),
+                Some(("@github/copilot", COPILOT_NPM_PACKAGE_VERSION)),
             )?,
             LiveClient::Rustyclawd => {
-                let attestation = attest_client("rustyclawd", "rusty", RUSTYCLAWD_VERSION, None)?;
+                let attestation = attest_client(
+                    "rustyclawd",
+                    "rusty",
+                    crate::commands::launch::RUSTYCLAWD_VERSION,
+                    None,
+                )?;
                 attest_rustyclawd_receipt(&attestation.path)?;
                 attestation
             }
@@ -660,7 +665,7 @@ fn attest_client(
     id: &'static str,
     binary_name: &str,
     expected_version: &str,
-    npm_package: Option<&'static str>,
+    npm_package: Option<(&'static str, &'static str)>,
 ) -> Result<ClientAttestation, VerifyFailure> {
     let path = resolve_unique_binary(binary_name)?;
     let isolated_home = tempfile::tempdir().map_err(|error| {
@@ -686,7 +691,7 @@ fn attest_client(
     let digest = sha256_file(&path)?;
     let identity = file_identity(&path)?;
     let package_integrity_sha256 = npm_package
-        .map(|package| attest_npm_package(&path, binary_name, package, expected_version))
+        .map(|(package, version)| attest_npm_package(&path, binary_name, package, version))
         .transpose()?;
     Ok(ClientAttestation {
         id,
@@ -694,7 +699,7 @@ fn attest_client(
         digest,
         path,
         identity,
-        package_name: npm_package,
+        package_name: npm_package.map(|(package, _)| package),
         package_integrity_sha256,
     })
 }
@@ -728,60 +733,8 @@ fn resolve_unique_binary(name: &str) -> Result<PathBuf, VerifyFailure> {
 }
 
 fn attest_rustyclawd_receipt(executable: &Path) -> Result<(), VerifyFailure> {
-    let cargo_home = std::env::var_os("CARGO_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")))
-        .ok_or_else(|| identity_failure("cannot locate Cargo installation receipt"))?;
-    let receipt = cargo_home.join(".crates2.json");
-    let metadata = fs::symlink_metadata(&receipt).map_err(|error| {
-        identity_failure(format!("cannot inspect Cargo receipt: {}", error.kind()))
-    })?;
-    if !metadata.is_file() || metadata.file_type().is_symlink() {
-        return Err(identity_failure(
-            "Cargo receipt must be a regular non-symlink file",
-        ));
-    }
-    let bytes = fs::read(&receipt).map_err(|error| {
-        identity_failure(format!("cannot read Cargo receipt: {}", error.kind()))
-    })?;
-    let document: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|_| identity_failure("Cargo receipt is malformed"))?;
-    let installs = document
-        .get("installs")
-        .and_then(serde_json::Value::as_object)
-        .ok_or_else(|| identity_failure("Cargo receipt has no installs object"))?;
-    let expected_receipt = format!(
-        "{RUSTYCLAWD_PACKAGE} {RUSTYCLAWD_VERSION} (git+{RUSTYCLAWD_SOURCE}?rev={RUSTYCLAWD_REVISION}#{RUSTYCLAWD_REVISION})"
-    );
-    let matches = installs
-        .iter()
-        .filter(|(package, value)| {
-            package.as_str() == expected_receipt
-                && value
-                    .get("bins")
-                    .and_then(serde_json::Value::as_array)
-                    .is_some_and(|bins| {
-                        bins.as_slice() == [serde_json::Value::String("rusty".to_string())]
-                    })
-        })
-        .count();
-    if matches != 1 {
-        return Err(identity_failure(format!(
-            "RustyClawd must have one authoritative git receipt for {RUSTYCLAWD_SOURCE} at revision {RUSTYCLAWD_REVISION}; registry, path, tag-only, branch-only, and ambiguous receipts are rejected"
-        )));
-    }
-    let expected = fs::canonicalize(cargo_home.join("bin/rusty")).map_err(|error| {
-        identity_failure(format!(
-            "cannot resolve Cargo-installed RustyClawd binary: {}",
-            error.kind()
-        ))
-    })?;
-    if executable != expected {
-        return Err(identity_failure(
-            "RustyClawd executable is not the canonical Cargo-installed binary",
-        ));
-    }
-    Ok(())
+    crate::commands::launch::require_rustyclawd_capability(executable)
+        .map_err(|error| identity_failure(format!("{error:#}")))
 }
 
 fn attest_npm_package(
@@ -1027,11 +980,12 @@ fn execute_client(
         }
         "rustyclawd" => {
             command
-                .env("GITHUB_TOKEN", &config.key)
-                .env("GITHUB_COPILOT_ENDPOINT", format!("{}/v1", config.endpoint))
+                .env("ANTHROPIC_BASE_URL", &config.endpoint)
+                .env("ANTHROPIC_AUTH_TOKEN", &config.key)
+                .env("ANTHROPIC_MODEL", &config.model)
                 .args([
                     "--provider",
-                    "copilot",
+                    "anthropic",
                     "--model",
                     &config.model,
                     "--print",
@@ -1867,9 +1821,9 @@ fn client_summary(
         result_sha256: Some(run.result_sha256),
         failure_case: None,
         failure_stage: None,
-        rustyclawd_source: rustyclawd.then_some(RUSTYCLAWD_SOURCE),
-        rustyclawd_revision: rustyclawd.then_some(RUSTYCLAWD_REVISION),
-        rustyclawd_package: rustyclawd.then_some(RUSTYCLAWD_PACKAGE),
+        rustyclawd_source: rustyclawd.then_some(crate::commands::launch::RUSTYCLAWD_SOURCE),
+        rustyclawd_revision: rustyclawd.then_some(crate::commands::launch::RUSTYCLAWD_REVISION),
+        rustyclawd_package: rustyclawd.then_some(crate::commands::launch::RUSTYCLAWD_PACKAGE),
         executable_path: rustyclawd.then(|| client.path.display().to_string()),
         tools_disabled: Some(true),
         negative_cases,
@@ -2240,10 +2194,10 @@ mod tests {
 
     #[test]
     fn exact_version_accepts_copilot_terminal_period_only() {
-        assert!(version_word_matches("1.0.83-2", "1.0.83-2"));
-        assert!(version_word_matches("1.0.83-2.", "1.0.83-2"));
-        assert!(!version_word_matches("1.0.83-1", "1.0.83-2"));
-        assert!(!version_word_matches("9.1.0.83-2", "1.0.83-2"));
+        assert!(version_word_matches("1.0.83-3", "1.0.83-3"));
+        assert!(version_word_matches("1.0.83-3.", "1.0.83-3"));
+        assert!(!version_word_matches("1.0.83-2", "1.0.83-3"));
+        assert!(!version_word_matches("9.1.0.83-3", "1.0.83-3"));
     }
 
     #[test]

@@ -2,7 +2,8 @@
 set -euo pipefail
 
 COPILOT_BIN="${COPILOT_BIN:-copilot}"
-EXPECTED_VERSION=1.0.83-2
+EXPECTED_VERSION=1.0.83-3
+EXPECTED_PACKAGE_VERSION=1.0.83-2
 SENTINEL="copilot-gateway-secret-must-not-reach-tools"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -11,7 +12,7 @@ if ! command -v "$COPILOT_BIN" >/dev/null 2>&1 && [[ ! -x "$COPILOT_BIN" ]]; the
         echo "SKIP: Copilot CLI is absent and COPILOT_CONTRACT_OPTIONAL=1"
         exit 0
     fi
-    echo "FAIL: Copilot CLI is required; set COPILOT_BIN or install @github/copilot@$EXPECTED_VERSION" >&2
+    echo "FAIL: Copilot CLI is required; set COPILOT_BIN or install @github/copilot@$EXPECTED_PACKAGE_VERSION" >&2
     exit 1
 fi
 

@@ -34,7 +34,7 @@ npm install --prefix "$HOME/.local/share/amplihack-live-clients" --save-exact \
   @github/copilot@1.0.83-2
 cargo install \
   --git https://github.com/rysweet/RustyClawd \
-  --rev 2825862711a4bd1367022c62ed6cd2efae9f4998 \
+  --rev e03613a731ec2243590ccbb2b50db4dcf83ca69b \
   rustyclawd-cli
 
 export PATH="$HOME/.local/share/amplihack-live-clients/node_modules/.bin:$HOME/.cargo/bin:/usr/bin:/bin"
@@ -44,6 +44,9 @@ copilot --version
 rusty --version
 gh auth status
 ```
+
+The pinned Copilot npm package is `1.0.83-2`; its immutable native executable
+reports `1.0.83-3`. The verifier attests both identities independently.
 
 ## Prepare the checkout
 
@@ -122,11 +125,11 @@ amplihack litellm verify-live \
 
 Do not combine `--client all` with another `--client`.
 
-RustyClawd runs its native Copilot-compatible transport with explicit provider
-and model arguments. The verifier points `GITHUB_COPILOT_ENDPOINT` at LiteLLM
-and translates the virtual key into the cleared child environment. This is not
-GitHub Copilot model-service fallback: telemetry must still prove the selected
-LiteLLM alias and configured upstream dispatch.
+RustyClawd runs its native Anthropic-compatible gateway transport with explicit
+provider and model arguments. The verifier projects `ANTHROPIC_BASE_URL`,
+`ANTHROPIC_AUTH_TOKEN`, and `ANTHROPIC_MODEL` into the cleared child
+environment. Telemetry must still prove the selected LiteLLM alias and
+configured upstream dispatch.
 
 The command also runs independent missing-endpoint, missing-key, missing-model,
 invalid-credential, unavailable-gateway, upstream-failure, malformed-response,
