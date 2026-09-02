@@ -6,7 +6,8 @@
 
 use serde_yaml::Value;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::OnceLock;
 
 /// The wrapper the build hooks run through (issue #1278). It removes git's
@@ -84,20 +85,93 @@ fn strip_hook_wrapper(tokens: &[String]) -> (bool, &[String]) {
 
 /// Confirm the wrapper really does isolate CARGO_TARGET_DIR.
 ///
-/// Read out of the script rather than assumed, so moving the isolation into
-/// the wrapper cannot quietly become no isolation at all. The returned string
-/// is what the wrapper exports, and stands in for the inline assignment the
-/// entry used to carry.
+/// Asked of the script rather than assumed, so moving the isolation into the
+/// wrapper cannot quietly become no isolation at all.
+///
+/// This used to read the text of the `export CARGO_TARGET_DIR=` line and match
+/// it against a path shape. That only worked while the line was a literal, and
+/// a literal is what pinned every pre-commit cache to /tmp until it filled
+/// (issue #1440). So the wrapper is now *run*, in a private HOME with its
+/// reclaim sweep disabled, and asked what it actually exports. Proving the
+/// property beats pattern-matching the source of it.
 fn wrapper_target_dir(entry: &str) -> Result<String, String> {
     let path = workspace_root().join(HOOK_WRAPPER);
     let script = fs::read_to_string(&path)
         .map_err(|e| format!("read {} for `{entry}`: {e}", path.display()))?;
-    script
+    if !script
         .lines()
         .map(str::trim)
-        .find_map(|line| line.strip_prefix("export CARGO_TARGET_DIR="))
-        .map(str::to_string)
-        .ok_or_else(|| format!("{HOOK_WRAPPER} must export CARGO_TARGET_DIR; entry was `{entry}`"))
+        .any(|line| line.starts_with("export CARGO_TARGET_DIR"))
+    {
+        return Err(format!(
+            "{HOOK_WRAPPER} must export CARGO_TARGET_DIR; entry was `{entry}`"
+        ));
+    }
+
+    // A private HOME: the wrapper creates its cache root, and a contract test
+    // has no business writing into the developer's real one.
+    let home = std::env::temp_dir().join(format!(
+        "amplihack-hook-contract-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    fs::create_dir_all(&home).map_err(|e| format!("create {}: {e}", home.display()))?;
+
+    let output = Command::new("bash")
+        .arg(&path)
+        .args(["printenv", "CARGO_TARGET_DIR"])
+        .current_dir(workspace_root())
+        // The caller's own cache must not stand in for the default under test.
+        .env_remove("CARGO_TARGET_DIR")
+        .env("HOME", &home)
+        .env("XDG_CACHE_HOME", home.join(".cache"))
+        .env("AMPLIHACK_PRECOMMIT_CACHE_TTL_DAYS", "0")
+        .output();
+    let _ = fs::remove_dir_all(&home);
+
+    let output = output.map_err(|e| format!("run {} for `{entry}`: {e}", path.display()))?;
+    if !output.status.success() {
+        return Err(format!(
+            "{HOOK_WRAPPER} exited {} instead of reporting CARGO_TARGET_DIR; entry was `{entry}`",
+            output.status
+        ));
+    }
+    let resolved = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if resolved.is_empty() {
+        return Err(format!(
+            "{HOOK_WRAPPER} exported an empty CARGO_TARGET_DIR; entry was `{entry}`"
+        ));
+    }
+    Ok(resolved)
+}
+
+/// A build cache is isolated when it lands OUTSIDE the worktree. Not when it
+/// lands on /tmp.
+///
+/// This check used to be `target_dir.contains("/tmp")`, and that is how the
+/// per-checkout caches came to fill the host's temp filesystem (issue #1440):
+/// a contract meant to keep build output out of the repository also pinned it
+/// to the smallest, most heavily shared filesystem on the machine, 12 dirs and
+/// 122 GB at a time. Where the cache lives is a storage decision; all this
+/// contract is entitled to require is that it is not in the checkout.
+fn assert_isolated_target_dir(target_dir: &str, entry: &str) -> Result<(), String> {
+    let outside_worktree = match target_dir.chars().next() {
+        // An absolute path -- what the wrapper resolves to -- must not point
+        // back into the checkout.
+        Some('/') => !Path::new(target_dir).starts_with(workspace_root()),
+        // An unexpanded shell expression, which an inline entry carries
+        // verbatim: `${TMPDIR:-/tmp}/...`. The shell resolves it, not this
+        // test, and it cannot land in the worktree without naming it.
+        Some('$') => true,
+        _ => false,
+    };
+    if !outside_worktree {
+        return Err(format!(
+            "cargo fallback must isolate CARGO_TARGET_DIR outside the repo; \
+             got `{target_dir}` in `{entry}`"
+        ));
+    }
+    Ok(())
 }
 
 fn assert_artifact_guard_entry_contract(entry: &str) -> Result<(), String> {
@@ -173,11 +247,7 @@ fn assert_cargo_fallback<'a>(
     }
     let target_dir = cargo_target_dir
         .ok_or_else(|| format!("cargo fallback must set CARGO_TARGET_DIR; entry was `{entry}`"))?;
-    if !target_dir.contains("/tmp") {
-        return Err(format!(
-            "cargo fallback must isolate CARGO_TARGET_DIR outside the repo; entry was `{entry}`"
-        ));
-    }
+    assert_isolated_target_dir(target_dir, entry)?;
 
     let separator = command[2..].iter().position(|arg| arg == "--").ok_or_else(|| {
         format!("cargo fallback must separate Cargo args from amplihack args with `--`; entry was `{entry}`")
@@ -357,6 +427,10 @@ fn artifact_guard_contract_rejects_invalid_entries() {
         (
             "missing target dir",
             "bash -c 'cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit'",
+        ),
+        (
+            "target dir inside the worktree",
+            "bash -c 'CARGO_TARGET_DIR=target cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit'",
         ),
         (
             "wrong cargo bin",
