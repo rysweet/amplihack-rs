@@ -97,6 +97,8 @@ jobs:
         run: |
           node --version
           npm --version
+      - name: Build amplihack for real-client route contracts
+        run: cargo build -p amplihack --locked
       - name: Claude subprocess scrub contract (issue #1414)
         shell: bash
         run: |
@@ -116,6 +118,9 @@ jobs:
             @anthropic-ai/claude-code@2.1.247
           CLAUDE_BIN="$RUNNER_TEMP/claude-code-contract/node_modules/.bin/claude" \
             bash tests/issue_1414_claude_subprocess_scrub.sh
+          AMPLIHACK_BIN="$GITHUB_WORKSPACE/target/debug/amplihack" \
+          CLAUDE_BIN="$RUNNER_TEMP/claude-code-contract/node_modules/.bin/claude" \
+            bash tests/external_litellm_user_journey.sh
       - name: Copilot subprocess scrub contract (issue #1416)
         shell: bash
         run: |

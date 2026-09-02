@@ -510,6 +510,9 @@ Custom workflows:
   including office, Azure, and workflow patterns
 - **[GitHub Copilot Integration](https://rysweet.github.io/amplihack-rs/COPILOT_CLI/)** -
   Full CLI support
+- **[External LiteLLM Gateway](docs/tutorials/external-litellm-gateway.md)** -
+  Route Claude Code, GitHub Copilot CLI, or RustyClawd through an
+  operator-managed LiteLLM gateway
 - **[Awesome-Copilot Integration](docs/howto/awesome-copilot-integration.md)** -
   MCP server and plugin marketplace
 - **[Gherkin Expert](docs/howto/use_gherkin_expert.md)** - BDD specification
