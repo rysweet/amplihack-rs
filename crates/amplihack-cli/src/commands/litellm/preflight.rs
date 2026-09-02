@@ -742,43 +742,7 @@ fn execute_client(
     timeout_seconds: u64,
     failure_case: &'static str,
 ) -> Result<String, VerifyFailure> {
-    #[cfg(not(target_os = "linux"))]
-    return Err(client_failure(
-        client.id,
-        78,
-        failure_case,
-        "read-only repository isolation is unavailable on this host",
-        "Run live verification on Linux with bubblewrap installed.",
-    ));
-
-    #[cfg(target_os = "linux")]
-    let mut command = {
-        use std::os::unix::process::CommandExt;
-        let mut command = Command::new("bwrap");
-        command
-            .process_group(0)
-            .args([
-                "--die-with-parent",
-                "--new-session",
-                "--ro-bind",
-                "/",
-                "/",
-                "--dev-bind",
-                "/dev",
-                "/dev",
-                "--proc",
-                "/proc",
-                "--tmpfs",
-                "/tmp",
-                "--dir",
-                "/tmp/amplihack-home",
-                "--chdir",
-            ])
-            .arg(repo)
-            .arg("--")
-            .arg(&client.path);
-        command
-    };
+    let mut command = isolated_client_command(client, repo, failure_case)?;
     command
         .env_clear()
         .env("PATH", restricted_path())
@@ -1060,6 +1024,54 @@ fn execute_client(
         )
     })?;
     Ok(output)
+}
+
+#[cfg(target_os = "linux")]
+fn isolated_client_command(
+    client: &ClientAttestation,
+    repo: &Path,
+    _failure_case: &'static str,
+) -> Result<Command, VerifyFailure> {
+    use std::os::unix::process::CommandExt;
+    let mut command = Command::new("bwrap");
+    command
+        .process_group(0)
+        .args([
+            "--die-with-parent",
+            "--new-session",
+            "--ro-bind",
+            "/",
+            "/",
+            "--dev-bind",
+            "/dev",
+            "/dev",
+            "--proc",
+            "/proc",
+            "--tmpfs",
+            "/tmp",
+            "--dir",
+            "/tmp/amplihack-home",
+            "--chdir",
+        ])
+        .arg(repo)
+        .arg("--")
+        .arg(&client.path);
+    Ok(command)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn isolated_client_command(
+    client: &ClientAttestation,
+    _repo: &Path,
+    failure_case: &'static str,
+) -> Result<Command, VerifyFailure> {
+    Err(client_failure(
+        client.id,
+        78,
+        failure_case,
+        "read-only repository isolation is unavailable on this host",
+        "Run live verification on Linux with bubblewrap installed.",
+    ))
 }
 
 #[cfg(target_os = "linux")]
