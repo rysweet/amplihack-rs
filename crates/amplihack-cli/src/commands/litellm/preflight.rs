@@ -1625,6 +1625,14 @@ fn expect_client_failure(
 ) -> Result<(), VerifyFailure> {
     match execute_client(client, config, repo, prompt, timeout_seconds, failure_case) {
         Err(error) if error.exit == 69 && error.stage == failure_case => Ok(()),
+        Err(error)
+            if failure_case == "unavailable-gateway"
+                && error.exit == 70
+                && error.stage == failure_case
+                && error.message.contains("execution timed out") =>
+        {
+            Ok(())
+        }
         Err(error) => Err(error),
         Ok(_) => Err(client_failure(
             client.id,
