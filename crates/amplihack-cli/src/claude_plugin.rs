@@ -1629,6 +1629,19 @@ fn copy_file(source: &Path, target: &Path) -> Result<()> {
     })
 }
 
+/// Skill names discoverable under `root`.
+///
+/// Applies the same rule as [`find_skill_dirs`] — a directory is a skill when
+/// it contains a `SKILL.md` — so callers can compare what was staged against
+/// what was published without duplicating that definition. A `root` that does
+/// not exist yields an empty set rather than an error: "nothing is published
+/// there yet" is the answer, not a failure.
+pub fn discoverable_skill_names(root: &Path) -> Result<BTreeSet<String>> {
+    let mut skills = Vec::new();
+    find_skill_dirs(root, &mut skills)?;
+    Ok(skills.into_iter().map(|(name, _)| name).collect())
+}
+
 fn find_skill_dirs(root: &Path, skills: &mut Vec<(String, PathBuf)>) -> Result<()> {
     if !root.is_dir() {
         return Ok(());
