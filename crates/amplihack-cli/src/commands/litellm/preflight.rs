@@ -1,5 +1,7 @@
 use super::evidence;
-use super::types::{ClientSummaryV1, GatewayTelemetryV1, RunStatus, RunSummaryV1};
+use super::types::{
+    ClientSummaryV1, GatewayTelemetryV1, NegativeCaseSummaryV1, RunStatus, RunSummaryV1,
+};
 use crate::{LiveClient, VerifyLiveArgs};
 use chrono::{SecondsFormat, Utc};
 use sha2::{Digest, Sha256};
@@ -62,6 +64,9 @@ struct ClientAttestation {
     version: String,
     digest: String,
     path: PathBuf,
+    identity: FileIdentity,
+    package_name: Option<&'static str>,
+    package_integrity_sha256: Option<String>,
 }
 
 struct LiveConfig {
@@ -70,6 +75,7 @@ struct LiveConfig {
     model: String,
     expected_provider: String,
     expected_model: String,
+    expected_gateway_identity: String,
     telemetry_file: PathBuf,
     telemetry_hmac_key: String,
 }
@@ -78,6 +84,15 @@ struct ClientRun {
     correlation_id: String,
     result_sha256: String,
     telemetry: GatewayTelemetryV1,
+}
+
+#[derive(Clone, Copy)]
+struct FileIdentity {
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    len: u64,
 }
 
 pub(crate) fn run(args: &VerifyLiveArgs) -> Result<RunSummaryV1, VerifyFailure> {
@@ -103,14 +118,16 @@ pub(crate) fn run(args: &VerifyLiveArgs) -> Result<RunSummaryV1, VerifyFailure> 
                 "claude",
                 "claude",
                 amplihack_utils::litellm_proxy::VERIFIED_CLAUDE_CODE_VERSIONS[0],
+                Some("@anthropic-ai/claude-code"),
             )?,
             LiveClient::Copilot => attest_client(
                 "copilot",
                 "copilot",
                 amplihack_utils::litellm_proxy::VERIFIED_COPILOT_CLI_VERSIONS[0],
+                Some("@github/copilot"),
             )?,
             LiveClient::Rustyclawd => {
-                let attestation = attest_client("rustyclawd", "rusty", RUSTYCLAWD_VERSION)?;
+                let attestation = attest_client("rustyclawd", "rusty", RUSTYCLAWD_VERSION, None)?;
                 attest_rustyclawd_receipt(&attestation.path)?;
                 attestation
             }
@@ -134,10 +151,21 @@ pub(crate) fn run(args: &VerifyLiveArgs) -> Result<RunSummaryV1, VerifyFailure> 
             args.timeout_seconds,
         )?;
         ensure_repository_unchanged(&repo, client.id, "positive-postcondition")?;
-        negative_cases_passed +=
+        assert_client_binary_unchanged(client)?;
+        let negative_cases =
             run_negative_cases(client, &config, &repo, args.timeout_seconds.min(45))?;
+        negative_cases_passed += u16::try_from(negative_cases.len()).map_err(|_| {
+            client_failure(
+                client.id,
+                70,
+                "negative-summary",
+                "negative-case count exceeded the evidence schema",
+                "Reduce the configured negative-case set and rerun.",
+            )
+        })?;
         ensure_repository_unchanged(&repo, client.id, "negative-postcondition")?;
-        summaries.push(client_summary(client, &config, run));
+        assert_client_binary_unchanged(client)?;
+        summaries.push(client_summary(client, &config, run, negative_cases));
     }
 
     let mut summary = RunSummaryV1 {
@@ -181,6 +209,8 @@ impl LiveConfig {
         let model = required_live_env(amplihack_utils::litellm_proxy::MODEL_ENV)?;
         let expected_provider = required_live_env("AMPLIHACK_LITELLM_EXPECTED_PROVIDER")?;
         let expected_model = required_live_env("AMPLIHACK_LITELLM_EXPECTED_MODEL")?;
+        let expected_gateway_identity =
+            required_live_env("AMPLIHACK_LITELLM_EXPECTED_GATEWAY_IDENTITY")?;
         let telemetry_file = PathBuf::from(required_live_env("AMPLIHACK_LITELLM_TELEMETRY_FILE")?);
         if !telemetry_file.is_absolute() {
             return Err(config_failure(
@@ -232,6 +262,7 @@ impl LiveConfig {
             model,
             expected_provider,
             expected_model,
+            expected_gateway_identity,
             telemetry_file,
             telemetry_hmac_key,
         })
@@ -310,10 +341,10 @@ fn repository_context(
         })?;
         prompt_context.push_str(&format!("\n--- {path} ---\n{text}\n"));
     }
-    if prompt_context.len() > 512 * 1024 {
+    if prompt_context.len() > 96 * 1024 {
         return Err(config_failure(
             "repository-context",
-            "combined repository context exceeds 512 KiB",
+            "combined repository context exceeds the 96 KiB safe argument limit",
         ));
     }
     Ok((evidence::hex(&hasher.finalize()), prompt_context))
@@ -351,7 +382,7 @@ fn run_positive(
         timeout_seconds,
         "positive-live",
     )?;
-    if output.contains(&config.key) {
+    if reject_credential_in_output(&config.key, &output).is_err() {
         return Err(client_failure(
             client.id,
             70,
@@ -408,6 +439,14 @@ fn extract_result_line(output: &str) -> Option<&str> {
         .or_else(|| tail.find("\\n"))
         .unwrap_or(tail.len());
     Some(&tail[..end])
+}
+
+fn reject_credential_in_output(key: &str, output: &str) -> Result<(), ()> {
+    if output.contains(key) {
+        Err(())
+    } else {
+        Ok(())
+    }
 }
 
 fn validate_substantive_result(
@@ -619,6 +658,7 @@ fn attest_client(
     id: &'static str,
     binary_name: &str,
     expected_version: &str,
+    npm_package: Option<&'static str>,
 ) -> Result<ClientAttestation, VerifyFailure> {
     let path = resolve_unique_binary(binary_name)?;
     let isolated_home = tempfile::tempdir().map_err(|error| {
@@ -642,11 +682,18 @@ fn attest_client(
         )));
     }
     let digest = sha256_file(&path)?;
+    let identity = file_identity(&path)?;
+    let package_integrity_sha256 = npm_package
+        .map(|package| attest_npm_package(&path, binary_name, package, expected_version))
+        .transpose()?;
     Ok(ClientAttestation {
         id,
         version: expected_version.to_string(),
         digest,
         path,
+        identity,
+        package_name: npm_package,
+        package_integrity_sha256,
     })
 }
 
@@ -701,12 +748,13 @@ fn attest_rustyclawd_receipt(executable: &Path) -> Result<(), VerifyFailure> {
         .get("installs")
         .and_then(serde_json::Value::as_object)
         .ok_or_else(|| identity_failure("Cargo receipt has no installs object"))?;
+    let expected_receipt = format!(
+        "{RUSTYCLAWD_PACKAGE} {RUSTYCLAWD_VERSION} (git+{RUSTYCLAWD_SOURCE}?rev={RUSTYCLAWD_REVISION}#{RUSTYCLAWD_REVISION})"
+    );
     let matches = installs
         .iter()
         .filter(|(package, value)| {
-            package.starts_with(&format!("{RUSTYCLAWD_PACKAGE} {RUSTYCLAWD_VERSION} "))
-                && package.contains(&format!("git+{RUSTYCLAWD_SOURCE}"))
-                && package.contains(RUSTYCLAWD_REVISION)
+            package.as_str() == expected_receipt
                 && value
                     .get("bins")
                     .and_then(serde_json::Value::as_array)
@@ -734,6 +782,135 @@ fn attest_rustyclawd_receipt(executable: &Path) -> Result<(), VerifyFailure> {
     Ok(())
 }
 
+fn attest_npm_package(
+    executable: &Path,
+    binary_name: &str,
+    package_name: &'static str,
+    expected_version: &str,
+) -> Result<String, VerifyFailure> {
+    let package_root = executable
+        .ancestors()
+        .find(|directory| {
+            let Ok(bytes) = fs::read(directory.join("package.json")) else {
+                return false;
+            };
+            serde_json::from_slice::<serde_json::Value>(&bytes).is_ok_and(|document| {
+                document.get("name").and_then(serde_json::Value::as_str) == Some(package_name)
+                    && document.get("version").and_then(serde_json::Value::as_str)
+                        == Some(expected_version)
+            })
+        })
+        .ok_or_else(|| {
+            identity_failure(format!(
+                "{package_name} must resolve from its exact npm package installation"
+            ))
+        })?;
+    let package_document: serde_json::Value = serde_json::from_slice(
+        &fs::read(package_root.join("package.json")).map_err(|error| {
+            identity_failure(format!(
+                "cannot read npm package metadata: {}",
+                error.kind()
+            ))
+        })?,
+    )
+    .map_err(|_| identity_failure("npm package metadata is malformed"))?;
+    let bin_target = package_document
+        .get("bin")
+        .and_then(|bin| bin.get(binary_name))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| identity_failure("npm package does not declare the selected binary"))?;
+    let declared_binary = fs::canonicalize(package_root.join(bin_target)).map_err(|error| {
+        identity_failure(format!(
+            "cannot resolve npm package binary: {}",
+            error.kind()
+        ))
+    })?;
+    if executable != declared_binary {
+        return Err(identity_failure(
+            "resolved executable does not match the npm package bin declaration",
+        ));
+    }
+
+    let lock_path = package_root
+        .ancestors()
+        .map(|directory| directory.join("package-lock.json"))
+        .find(|candidate| candidate.is_file())
+        .ok_or_else(|| identity_failure("npm installation has no package-lock provenance"))?;
+    let lock: serde_json::Value =
+        serde_json::from_slice(&fs::read(&lock_path).map_err(|error| {
+            identity_failure(format!("cannot read npm package lock: {}", error.kind()))
+        })?)
+        .map_err(|_| identity_failure("npm package lock is malformed"))?;
+    let packages = lock
+        .get("packages")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| identity_failure("npm package lock has no packages object"))?;
+    let entry_name = format!("node_modules/{package_name}");
+    let mut attested = vec![attest_npm_lock_entry(
+        packages,
+        &entry_name,
+        package_name,
+        expected_version,
+    )?];
+    if package_name == "@github/copilot" {
+        let mut platform_entries = packages
+            .keys()
+            .filter(|name| name.starts_with("node_modules/@github/copilot-"))
+            .cloned()
+            .collect::<Vec<_>>();
+        platform_entries.sort();
+        if platform_entries.is_empty() {
+            return Err(identity_failure(
+                "Copilot npm installation has no platform package provenance",
+            ));
+        }
+        for entry in platform_entries {
+            let dependency = entry
+                .strip_prefix("node_modules/")
+                .expect("filtered npm entry");
+            attested.push(attest_npm_lock_entry(
+                packages,
+                &entry,
+                dependency,
+                expected_version,
+            )?);
+        }
+    }
+    Ok(evidence::hex(&Sha256::digest(
+        attested.join("\n").as_bytes(),
+    )))
+}
+
+fn attest_npm_lock_entry(
+    packages: &serde_json::Map<String, serde_json::Value>,
+    entry_name: &str,
+    package_name: &str,
+    expected_version: &str,
+) -> Result<String, VerifyFailure> {
+    let entry = packages
+        .get(entry_name)
+        .ok_or_else(|| identity_failure(format!("npm lock is missing {package_name}")))?;
+    let version = entry.get("version").and_then(serde_json::Value::as_str);
+    let resolved = entry.get("resolved").and_then(serde_json::Value::as_str);
+    let integrity = entry.get("integrity").and_then(serde_json::Value::as_str);
+    let archive_name = package_name.rsplit('/').next().unwrap_or(package_name);
+    let expected_url = format!(
+        "https://registry.npmjs.org/{package_name}/-/{archive_name}-{expected_version}.tgz"
+    );
+    if version != Some(expected_version)
+        || resolved != Some(expected_url.as_str())
+        || !integrity.is_some_and(|value| value.starts_with("sha512-") && value.len() > 20)
+    {
+        return Err(identity_failure(format!(
+            "{package_name} npm lock provenance does not match the exact registry artifact"
+        )));
+    }
+    Ok(format!(
+        "{package_name}\n{expected_version}\n{expected_url}\n{}",
+        integrity.expect("validated integrity")
+    ))
+}
+
 fn execute_client(
     client: &ClientAttestation,
     config: &LiveConfig,
@@ -742,6 +919,22 @@ fn execute_client(
     timeout_seconds: u64,
     failure_case: &'static str,
 ) -> Result<String, VerifyFailure> {
+    assert_client_binary_unchanged(client)?;
+    validate_client_route(
+        client.id,
+        Some(&config.endpoint),
+        Some(&config.key),
+        Some(&config.model),
+    )
+    .map_err(|()| {
+        client_failure(
+            client.id,
+            64,
+            failure_case,
+            "client route is incomplete",
+            "Provide the endpoint, key, and model required by this client.",
+        )
+    })?;
     let mut command = isolated_client_command(client, repo, failure_case)?;
     command
         .env_clear()
@@ -1023,6 +1216,7 @@ fn execute_client(
             "Configure the client for UTF-8 text output.",
         )
     })?;
+    assert_client_binary_unchanged(client)?;
     Ok(output)
 }
 
@@ -1092,8 +1286,8 @@ fn run_negative_cases(
     config: &LiveConfig,
     repo: &Path,
     timeout_seconds: u64,
-) -> Result<u16, VerifyFailure> {
-    let mut passed = 0_u16;
+) -> Result<Vec<NegativeCaseSummaryV1>, VerifyFailure> {
+    let mut passed = Vec::new();
     for (case, endpoint, key, model) in [
         ("missing-endpoint", None, Some("key"), Some("model")),
         (
@@ -1109,7 +1303,7 @@ fn run_negative_cases(
             None,
         ),
     ] {
-        if validate_negative_route(endpoint, key, model).is_ok() {
+        if validate_client_route(client.id, endpoint, key, model).is_ok() {
             return Err(client_failure(
                 client.id,
                 1,
@@ -1118,7 +1312,7 @@ fn run_negative_cases(
                 "Require endpoint, key, and model before launching every client.",
             ));
         }
-        passed += 1;
+        passed.push(negative_case(case, "route-preflight"));
     }
     let prompt = format!(
         "Negative route verification {}. Return no sensitive values.",
@@ -1130,6 +1324,7 @@ fn run_negative_cases(
         model: config.model.clone(),
         expected_provider: config.expected_provider.clone(),
         expected_model: config.expected_model.clone(),
+        expected_gateway_identity: config.expected_gateway_identity.clone(),
         telemetry_file: config.telemetry_file.clone(),
         telemetry_hmac_key: config.telemetry_hmac_key.clone(),
     };
@@ -1141,7 +1336,7 @@ fn run_negative_cases(
         timeout_seconds,
         "invalid-credential",
     )?;
-    passed += 1;
+    passed.push(negative_case("invalid-credential", "client-execution"));
 
     let unavailable = LiveConfig {
         endpoint: "http://127.0.0.1:9".to_string(),
@@ -1149,6 +1344,7 @@ fn run_negative_cases(
         model: config.model.clone(),
         expected_provider: config.expected_provider.clone(),
         expected_model: config.expected_model.clone(),
+        expected_gateway_identity: config.expected_gateway_identity.clone(),
         telemetry_file: config.telemetry_file.clone(),
         telemetry_hmac_key: config.telemetry_hmac_key.clone(),
     };
@@ -1160,7 +1356,7 @@ fn run_negative_cases(
         timeout_seconds,
         "unavailable-gateway",
     )?;
-    passed += 1;
+    passed.push(negative_case("unavailable-gateway", "client-execution"));
 
     for scenario in [FixtureScenario::UpstreamFailure, FixtureScenario::Malformed] {
         let fixture = FailureFixture::start(scenario, &config.model)?;
@@ -1170,6 +1366,7 @@ fn run_negative_cases(
             model: config.model.clone(),
             expected_provider: config.expected_provider.clone(),
             expected_model: config.expected_model.clone(),
+            expected_gateway_identity: config.expected_gateway_identity.clone(),
             telemetry_file: config.telemetry_file.clone(),
             telemetry_hmac_key: config.telemetry_hmac_key.clone(),
         };
@@ -1185,17 +1382,141 @@ fn run_negative_cases(
             timeout_seconds,
             case,
         )?;
-        passed += 1;
+        passed.push(negative_case(case, "client-execution"));
     }
+
+    let valid = GatewayTelemetryV1 {
+        schema_version: 1,
+        correlation_id: "negative-correlation".to_string(),
+        requested_alias: config.model.clone(),
+        observed_provider: config.expected_provider.clone(),
+        observed_model: config.expected_model.clone(),
+        gateway_identity: config.expected_gateway_identity.clone(),
+        cache_status: "miss".to_string(),
+        backend_dispatch_id: "negative-dispatch".to_string(),
+        result_sha256: "0".repeat(64),
+        signature_sha256: String::new(),
+    };
+    for (case, mut record) in [
+        (
+            "cache-hit",
+            GatewayTelemetryV1 {
+                cache_status: "hit".to_string(),
+                ..clone_telemetry(&valid)
+            },
+        ),
+        (
+            "forbidden-model-fallback",
+            GatewayTelemetryV1 {
+                observed_model: format!("{}-fallback", config.expected_model),
+                ..clone_telemetry(&valid)
+            },
+        ),
+        (
+            "forbidden-provider-fallback",
+            GatewayTelemetryV1 {
+                observed_provider: format!("{}-fallback", config.expected_provider),
+                ..clone_telemetry(&valid)
+            },
+        ),
+        (
+            "gateway-identity-mismatch",
+            GatewayTelemetryV1 {
+                gateway_identity: format!("{}-other", config.expected_gateway_identity),
+                ..clone_telemetry(&valid)
+            },
+        ),
+    ] {
+        record.signature_sha256 = telemetry_signature(&record, &config.telemetry_hmac_key);
+        if validate_telemetry_record(config, &record, &valid.result_sha256).is_ok() {
+            return Err(client_failure(
+                client.id,
+                1,
+                case,
+                "forbidden telemetry unexpectedly passed validation",
+                "Keep telemetry validation fail-closed for cache, model, provider, and gateway identity.",
+            ));
+        }
+        passed.push(negative_case(case, "gateway-telemetry"));
+    }
+    if validate_telemetry_match_count(2).is_ok() {
+        return Err(client_failure(
+            client.id,
+            1,
+            "replay",
+            "duplicate correlated telemetry unexpectedly passed validation",
+            "Require exactly one fresh signed record for every correlation ID.",
+        ));
+    }
+    passed.push(negative_case("replay", "gateway-telemetry"));
+
+    if reject_credential_in_output(&config.key, &format!("prefix {} suffix", config.key)).is_ok() {
+        return Err(client_failure(
+            client.id,
+            1,
+            "credential-leakage",
+            "credential-bearing output unexpectedly passed validation",
+            "Reject output containing the translated gateway credential.",
+        ));
+    }
+    passed.push(negative_case("credential-leakage", "result-validation"));
+
+    if version_word_matches(
+        &format!("{}-mismatch", client.version),
+        client.version.as_str(),
+    ) {
+        return Err(client_failure(
+            client.id,
+            1,
+            "client-identity-mismatch",
+            "mismatched client identity unexpectedly passed validation",
+            "Require the exact pinned client version.",
+        ));
+    }
+    passed.push(negative_case(
+        "client-identity-mismatch",
+        "client-provenance",
+    ));
+
+    prove_repository_is_read_only(client, repo)?;
+    passed.push(negative_case(
+        "repository-modification",
+        "repository-isolation",
+    ));
     Ok(passed)
 }
 
-fn validate_negative_route(
+fn negative_case(case: &'static str, stage: &'static str) -> NegativeCaseSummaryV1 {
+    NegativeCaseSummaryV1 {
+        case,
+        stage,
+        status: "passed",
+    }
+}
+
+fn clone_telemetry(record: &GatewayTelemetryV1) -> GatewayTelemetryV1 {
+    GatewayTelemetryV1 {
+        schema_version: record.schema_version,
+        correlation_id: record.correlation_id.clone(),
+        requested_alias: record.requested_alias.clone(),
+        observed_provider: record.observed_provider.clone(),
+        observed_model: record.observed_model.clone(),
+        gateway_identity: record.gateway_identity.clone(),
+        cache_status: record.cache_status.clone(),
+        backend_dispatch_id: record.backend_dispatch_id.clone(),
+        result_sha256: record.result_sha256.clone(),
+        signature_sha256: record.signature_sha256.clone(),
+    }
+}
+
+fn validate_client_route(
+    client: &str,
     endpoint: Option<&str>,
     key: Option<&str>,
     model: Option<&str>,
 ) -> Result<(), ()> {
-    if endpoint.is_some_and(|value| !value.is_empty())
+    if matches!(client, "claude" | "copilot" | "rustyclawd")
+        && endpoint.is_some_and(|value| !value.is_empty())
         && key.is_some_and(|value| !value.is_empty())
         && model.is_some_and(|value| !value.is_empty())
     {
@@ -1303,7 +1624,7 @@ fn expect_client_failure(
     failure_case: &'static str,
 ) -> Result<(), VerifyFailure> {
     match execute_client(client, config, repo, prompt, timeout_seconds, failure_case) {
-        Err(error) if error.exit == 69 || error.exit == 70 => Ok(()),
+        Err(error) if error.exit == 69 && error.stage == failure_case => Ok(()),
         Err(error) => Err(error),
         Ok(_) => Err(client_failure(
             client.id,
@@ -1325,6 +1646,7 @@ fn read_telemetry(
     use std::io::{Seek, SeekFrom};
 
     let deadline = Instant::now() + Duration::from_secs(10);
+    let mut first_match_at = None;
     let mut matches = Vec::new();
     while Instant::now() < deadline {
         let metadata = fs::symlink_metadata(&config.telemetry_file).map_err(|error| {
@@ -1388,12 +1710,18 @@ fn read_telemetry(
             .filter_map(|line| serde_json::from_str::<GatewayTelemetryV1>(line).ok())
             .filter(|record| record.correlation_id == correlation_id)
             .collect::<Vec<_>>();
-        if !matches.is_empty() {
+        if matches.len() > 1 {
             break;
+        }
+        if matches.len() == 1 {
+            let observed_at = first_match_at.get_or_insert_with(Instant::now);
+            if observed_at.elapsed() >= Duration::from_millis(500) {
+                break;
+            }
         }
         thread::sleep(Duration::from_millis(50));
     }
-    if matches.len() != 1 {
+    if validate_telemetry_match_count(matches.len()).is_err() {
         return Err(client_failure(
             client,
             70,
@@ -1406,11 +1734,33 @@ fn read_telemetry(
         ));
     }
     let record = matches.pop().expect("one telemetry record");
+    validate_telemetry_record(config, &record, result_sha256).map_err(|()| {
+        client_failure(
+            client,
+            70,
+            "gateway-telemetry",
+            "gateway telemetry failed signature, gateway identity, model, dispatch, or cache-miss validation",
+            "Disable caches and fallbacks, select the exact gateway and alias, and verify the telemetry HMAC key.",
+        )
+    })?;
+    Ok(record)
+}
+
+fn validate_telemetry_match_count(count: usize) -> Result<(), ()> {
+    if count == 1 { Ok(()) } else { Err(()) }
+}
+
+fn validate_telemetry_record(
+    config: &LiveConfig,
+    record: &GatewayTelemetryV1,
+    result_sha256: &str,
+) -> Result<(), ()> {
     if record.schema_version != 1
-        || record.signature_sha256 != telemetry_signature(&record, &config.telemetry_hmac_key)
+        || record.signature_sha256 != telemetry_signature(record, &config.telemetry_hmac_key)
         || record.requested_alias != config.model
         || record.observed_provider != config.expected_provider
         || record.observed_model != config.expected_model
+        || record.gateway_identity != config.expected_gateway_identity
         || record.cache_status != "miss"
         || record.backend_dispatch_id.is_empty()
         || record.observed_provider.is_empty()
@@ -1422,15 +1772,9 @@ fn read_telemetry(
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     {
-        return Err(client_failure(
-            client,
-            70,
-            "gateway-telemetry",
-            "gateway telemetry failed signature, model, dispatch, or cache-miss validation",
-            "Disable caches and fallbacks, select the exact alias, and verify the telemetry HMAC key.",
-        ));
+        return Err(());
     }
-    Ok(record)
+    Ok(())
 }
 
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
@@ -1488,12 +1832,15 @@ fn client_summary(
     client: &ClientAttestation,
     config: &LiveConfig,
     run: ClientRun,
+    negative_cases: Vec<NegativeCaseSummaryV1>,
 ) -> ClientSummaryV1 {
     let rustyclawd = client.id == "rustyclawd";
     ClientSummaryV1 {
         client: client.id,
         version: Some(client.version.clone()),
         binary_sha256: Some(client.digest.clone()),
+        package_name: client.package_name,
+        package_integrity_sha256: client.package_integrity_sha256.clone(),
         status: "passed",
         correlation_id: Some(run.correlation_id),
         requested_alias: Some(config.model.clone()),
@@ -1508,8 +1855,76 @@ fn client_summary(
         rustyclawd_source: rustyclawd.then_some(RUSTYCLAWD_SOURCE),
         rustyclawd_revision: rustyclawd.then_some(RUSTYCLAWD_REVISION),
         rustyclawd_package: rustyclawd.then_some(RUSTYCLAWD_PACKAGE),
-        executable_path: Some(client.path.display().to_string()),
+        executable_path: rustyclawd.then(|| client.path.display().to_string()),
         tools_disabled: Some(true),
+        negative_cases,
+    }
+}
+
+fn prove_repository_is_read_only(
+    client: &ClientAttestation,
+    repo: &Path,
+) -> Result<(), VerifyFailure> {
+    #[cfg(target_os = "linux")]
+    {
+        let probe = tempfile::tempdir().map_err(|error| {
+            client_failure(
+                client.id,
+                78,
+                "repository-modification",
+                format!("cannot create isolation probe: {}", error.kind()),
+                "Ensure the host temporary directory is writable.",
+            )
+        })?;
+        let destination = probe.path().join("must-not-exist");
+        let mut command = Command::new("bwrap");
+        command
+            .env_clear()
+            .args([
+                "--die-with-parent",
+                "--new-session",
+                "--ro-bind",
+                "/",
+                "/",
+                "--dev-bind",
+                "/dev",
+                "/dev",
+                "--proc",
+                "/proc",
+                "--",
+                "/usr/bin/touch",
+            ])
+            .arg(&destination);
+        let output = command.output().map_err(|error| {
+            client_failure(
+                client.id,
+                78,
+                "repository-modification",
+                format!("cannot run read-only isolation probe: {}", error.kind()),
+                "Install bubblewrap and permit unprivileged user namespaces.",
+            )
+        })?;
+        if output.status.success() || destination.exists() {
+            return Err(client_failure(
+                client.id,
+                70,
+                "repository-modification",
+                "read-only sandbox permitted a filesystem write",
+                "Repair the bubblewrap read-only mount before running live clients.",
+            ));
+        }
+        ensure_repository_unchanged(repo, client.id, "repository-modification")
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = repo;
+        Err(client_failure(
+            client.id,
+            78,
+            "repository-modification",
+            "read-only repository isolation is unavailable on this host",
+            "Run live verification on Linux with bubblewrap installed.",
+        ))
     }
 }
 
@@ -1691,6 +2106,44 @@ fn sha256_file(path: &Path) -> Result<String, VerifyFailure> {
     Ok(evidence::hex(&hasher.finalize()))
 }
 
+fn file_identity(path: &Path) -> Result<FileIdentity, VerifyFailure> {
+    let metadata = fs::metadata(path).map_err(|error| {
+        identity_failure(format!("cannot inspect client binary: {}", error.kind()))
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Ok(FileIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            len: metadata.len(),
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(FileIdentity {
+            len: metadata.len(),
+        })
+    }
+}
+
+fn assert_client_binary_unchanged(client: &ClientAttestation) -> Result<(), VerifyFailure> {
+    let current = file_identity(&client.path)?;
+    #[cfg(unix)]
+    let same_file = current.device == client.identity.device
+        && current.inode == client.identity.inode
+        && current.len == client.identity.len;
+    #[cfg(not(unix))]
+    let same_file = current.len == client.identity.len;
+    if !same_file || sha256_file(&client.path)? != client.digest {
+        return Err(identity_failure(format!(
+            "{} executable changed after attestation",
+            client.id
+        )));
+    }
+    Ok(())
+}
+
 fn restricted_path() -> std::ffi::OsString {
     let mut directories = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
         .filter(|path| path.is_absolute())
@@ -1734,7 +2187,41 @@ fn identity_failure(message: impl Into<String>) -> VerifyFailure {
 
 #[cfg(test)]
 mod tests {
-    use super::version_word_matches;
+    use super::{
+        GatewayTelemetryV1, LiveConfig, clone_telemetry, reject_credential_in_output,
+        telemetry_signature, validate_telemetry_match_count, validate_telemetry_record,
+        version_word_matches,
+    };
+
+    fn config() -> LiveConfig {
+        LiveConfig {
+            endpoint: "https://gateway.invalid".to_string(),
+            key: "private-gateway-key".to_string(),
+            model: "coding-alias".to_string(),
+            expected_provider: "azure".to_string(),
+            expected_model: "azure/deployment".to_string(),
+            expected_gateway_identity: "gateway-a".to_string(),
+            telemetry_file: std::path::PathBuf::from("/tmp/not-read-by-this-test"),
+            telemetry_hmac_key: "0123456789abcdef0123456789abcdef".to_string(),
+        }
+    }
+
+    fn telemetry(config: &LiveConfig) -> GatewayTelemetryV1 {
+        let mut record = GatewayTelemetryV1 {
+            schema_version: 1,
+            correlation_id: "correlation".to_string(),
+            requested_alias: config.model.clone(),
+            observed_provider: config.expected_provider.clone(),
+            observed_model: config.expected_model.clone(),
+            gateway_identity: config.expected_gateway_identity.clone(),
+            cache_status: "miss".to_string(),
+            backend_dispatch_id: "dispatch".to_string(),
+            result_sha256: "0".repeat(64),
+            signature_sha256: String::new(),
+        };
+        record.signature_sha256 = telemetry_signature(&record, &config.telemetry_hmac_key);
+        record
+    }
 
     #[test]
     fn exact_version_accepts_copilot_terminal_period_only() {
@@ -1742,5 +2229,42 @@ mod tests {
         assert!(version_word_matches("1.0.83-2.", "1.0.83-2"));
         assert!(!version_word_matches("1.0.83-1", "1.0.83-2"));
         assert!(!version_word_matches("9.1.0.83-2", "1.0.83-2"));
+    }
+
+    #[test]
+    fn telemetry_rejects_cache_fallback_identity_and_replay() {
+        let config = config();
+        let valid = telemetry(&config);
+        assert!(validate_telemetry_record(&config, &valid, &valid.result_sha256).is_ok());
+
+        for mut invalid in [
+            GatewayTelemetryV1 {
+                cache_status: "hit".to_string(),
+                ..clone_telemetry(&valid)
+            },
+            GatewayTelemetryV1 {
+                observed_provider: "other".to_string(),
+                ..clone_telemetry(&valid)
+            },
+            GatewayTelemetryV1 {
+                observed_model: "other".to_string(),
+                ..clone_telemetry(&valid)
+            },
+            GatewayTelemetryV1 {
+                gateway_identity: "other".to_string(),
+                ..clone_telemetry(&valid)
+            },
+        ] {
+            invalid.signature_sha256 = telemetry_signature(&invalid, &config.telemetry_hmac_key);
+            assert!(validate_telemetry_record(&config, &invalid, &valid.result_sha256).is_err());
+        }
+        assert!(validate_telemetry_match_count(0).is_err());
+        assert!(validate_telemetry_match_count(2).is_err());
+    }
+
+    #[test]
+    fn output_rejects_translated_gateway_credential() {
+        assert!(reject_credential_in_output("secret", "safe output").is_ok());
+        assert!(reject_credential_in_output("secret", "leaked secret value").is_err());
     }
 }

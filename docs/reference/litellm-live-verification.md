@@ -30,7 +30,17 @@ amplihack litellm verify-live \
 
 The repository must be clean and exactly at both the supplied SHA and the open
 pull request's current head. Supply 2-24 distinct tracked regular files.
-Evidence must be outside the worktree.
+Context paths must be UTF-8, repository-relative, non-symlink paths with `/`
+separators. Their combined content must be valid UTF-8 and no larger than
+96 KiB so the complete bounded prompt remains below Linux's per-argument
+limit. Evidence must be outside the worktree. `--repo` must identify the
+worktree root, not a subdirectory.
+
+The command runs on Linux and requires `git`, an authenticated `gh`, and
+`bwrap` on `PATH`. Every selected client name must resolve through `PATH` to
+exactly one distinct executable. Claude Code and Copilot must resolve from
+their exact npm registry packages with matching package-lock URL and integrity
+metadata; RustyClawd uses its Cargo provenance contract below.
 
 ## Attested clients
 
@@ -64,6 +74,7 @@ AMPLIHACK_LITELLM_API_KEY
 AMPLIHACK_LITELLM_MODEL
 AMPLIHACK_LITELLM_EXPECTED_PROVIDER
 AMPLIHACK_LITELLM_EXPECTED_MODEL
+AMPLIHACK_LITELLM_EXPECTED_GATEWAY_IDENTITY
 AMPLIHACK_LITELLM_TELEMETRY_FILE
 AMPLIHACK_LITELLM_TELEMETRY_HMAC_KEY
 ```
@@ -76,14 +87,34 @@ The telemetry file is external to the repository. Each JSONL record has schema
 version `1` and fields `correlation_id`, `requested_alias`,
 `observed_provider`, `observed_model`, `gateway_identity`, `cache_status`,
 `backend_dispatch_id`, `result_sha256`, and `signature_sha256`. The signature
-is lowercase HMAC-SHA-256 over the preceding values in that order, separated
-by newline characters. The HMAC key must contain at least 32 bytes.
+is lowercase HMAC-SHA-256 over `schema_version` followed by the preceding
+fields except `signature_sha256`, in that order, separated by newline
+characters. The HMAC key must contain at least 32 bytes. The telemetry path
+must be absolute and name an existing regular non-symlink file whose resolved
+parent is outside the repository.
 
 LiteLLM's operator-owned success callback must append exactly one record for
 each correlation ID. A record passes only when it authenticates, names the
 requested alias and actual upstream provider/model, identifies a backend
 dispatch, and reports `cache_status=miss`. A missing, duplicate, replayed,
 unsigned, cache-hit, or model-mismatched record fails closed.
+
+## Deterministic execution order
+
+The verifier evaluates controls in this order:
+
+1. Refuse recognized CI environments before Clap value validation, update checks, or self-heal.
+2. Attest the clean worktree, expected commit, context path grammar, external evidence location, and open pull-request head.
+3. Resolve each selected executable, run its isolated `--version` probe, record its SHA-256 digest, and verify RustyClawd's Cargo provenance when selected.
+4. Read and hash the repository context.
+5. Validate the live route and signed telemetry configuration.
+6. For each client, run one positive proof, confirm the worktree and executable are unchanged, run every named negative case, and confirm both identities again.
+7. Commit owner-only evidence only after every selected client passes.
+
+Steps 1-4 do not read the live route credential. Client version probes run
+with a cleared environment and an isolated temporary home. The recorded binary
+digest identifies the executable used for the run; it is evidence, not a
+digest allowlist.
 
 ## Exit codes
 
@@ -98,6 +129,16 @@ unsigned, cache-hit, or model-mismatched record fails closed.
 | 77 | Client identity, provenance, integrity, or capability failure |
 | 78 | CI refusal or missing host isolation primitive |
 | 130 | User interruption |
+
+## Diagnostics
+
+| Identifier | Failure class |
+| --- | --- |
+| `AH-LIVE-CI-001` | CI host refusal |
+| `AH-LIVE-CONFIG-001` | Argument, repository, pull-request, or live configuration refusal |
+| `AH-LIVE-IDENTITY-001` | Client version, executable identity, digest, or RustyClawd provenance refusal |
+| `AH-LIVE-CLIENT-001` | Positive proof, negative case, subprocess, result, telemetry, or repository postcondition failure |
+| `AH-LIVE-EVIDENCE-001` | Atomic evidence commit failure |
 
 ## CI boundary
 
@@ -115,8 +156,14 @@ Passing evidence is a schema-versioned JSONL record in an owner-only directory
 and file. The default is
 `$XDG_STATE_HOME/amplihack/litellm-evidence`, or
 `$HOME/.local/state/amplihack/litellm-evidence` when `XDG_STATE_HOME` is
-unset. It contains client and binary identity, repository and context digests,
+unset. It contains client, package-integrity, and binary identity, repository and context digests,
 correlation and dispatch identifiers, requested and observed models,
-cache status, result digests, negative-case totals, and RustyClawd provenance.
+cache status, result digests, named negative-case results and totals, and
+RustyClawd provenance.
 It excludes credentials, token hashes, endpoint values, prompts, repository
 content, raw client output, response bodies, environment values, and nonces.
+
+On success, stdout emits the same run summary augmented with `evidence_path`
+and `evidence_sha256`. The digest covers the newline-terminated record
+persisted on disk. Failed preflight or client runs do not commit passing
+evidence.

@@ -7,10 +7,19 @@ pub(crate) enum RunStatus {
 }
 
 #[derive(Debug, Serialize)]
+pub(crate) struct NegativeCaseSummaryV1 {
+    pub case: &'static str,
+    pub stage: &'static str,
+    pub status: &'static str,
+}
+
+#[derive(Debug, Serialize)]
 pub(crate) struct ClientSummaryV1 {
     pub client: &'static str,
     pub version: Option<String>,
     pub binary_sha256: Option<String>,
+    pub package_name: Option<&'static str>,
+    pub package_integrity_sha256: Option<String>,
     pub status: &'static str,
     pub correlation_id: Option<String>,
     pub requested_alias: Option<String>,
@@ -27,6 +36,7 @@ pub(crate) struct ClientSummaryV1 {
     pub rustyclawd_package: Option<&'static str>,
     pub executable_path: Option<String>,
     pub tools_disabled: Option<bool>,
+    pub negative_cases: Vec<NegativeCaseSummaryV1>,
 }
 
 #[derive(Debug, Serialize)]
