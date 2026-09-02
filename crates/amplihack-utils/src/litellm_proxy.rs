@@ -19,10 +19,12 @@ pub const MODEL_ENV: &str = "AMPLIHACK_LITELLM_MODEL";
 pub const VERIFIED_CLAUDE_CODE_VERSIONS: &[&str] = &["2.1.247"];
 // Every entry must pass tests/issue_1416_copilot_subprocess_scrub.sh as the real
 // published CLI artifact before it is added here.
-pub const VERIFIED_COPILOT_CLI_VERSIONS: &[&str] = &["1.0.83-1"];
+pub const COPILOT_NPM_PACKAGE_VERSION: &str = "1.0.83-2";
+pub const COPILOT_ISOLATED_RUNTIME_VERSION: &str = "1.0.83-2";
+pub const VERIFIED_COPILOT_CLI_VERSIONS: &[&str] = &[COPILOT_ISOLATED_RUNTIME_VERSION, "1.0.83-3"];
 
 const CONFIG_ENV_VARS: [&str; 3] = [ENDPOINT_ENV, API_KEY_ENV, MODEL_ENV];
-const ANTHROPIC_DIRECT_ENV_VARS: [&str; 26] = [
+const ANTHROPIC_DIRECT_ENV_VARS: [&str; 28] = [
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_CUSTOM_HEADERS",
     "ANTHROPIC_BEDROCK_BASE_URL",
@@ -33,6 +35,8 @@ const ANTHROPIC_DIRECT_ENV_VARS: [&str; 26] = [
     "CLAUDE_CODE_USE_ANTHROPIC_AWS",
     "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
     "CLAUDE_CODE_SKIP_VERTEX_AUTH",
+    "CLAUDE_API_URL",
+    "CLAUDE_MODEL",
     "ANTHROPIC_AWS_API_KEY",
     "ANTHROPIC_AWS_REGION",
     "AWS_ACCESS_KEY_ID",
@@ -221,12 +225,8 @@ impl ProxyConfig {
         scrub_inference_environment(command);
 
         match target {
-            CliTarget::Claude | CliTarget::RustyClawd => {
-                if target == CliTarget::Claude {
-                    command.env("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB", "1");
-                } else {
-                    command.env_remove("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB");
-                }
+            CliTarget::Claude => {
+                command.env("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB", "1");
                 remove_env(command, &ANTHROPIC_DIRECT_ENV_VARS);
                 command.env(
                     "ANTHROPIC_BASE_URL",
@@ -240,6 +240,19 @@ impl ProxyConfig {
                 command.env("ANTHROPIC_DEFAULT_SONNET_MODEL", &self.model);
                 command.env("ANTHROPIC_DEFAULT_HAIKU_MODEL", &self.model);
                 command.env("ANTHROPIC_DEFAULT_FABLE_MODEL", &self.model);
+            }
+            CliTarget::RustyClawd => {
+                command.env_remove("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB");
+                remove_env(command, &ANTHROPIC_DIRECT_ENV_VARS);
+                remove_env(command, &COPILOT_DIRECT_ENV_VARS);
+                command.env_remove("GITHUB_TOKEN");
+                command.env_remove("GITHUB_COPILOT_ENDPOINT");
+                command.env(
+                    "ANTHROPIC_BASE_URL",
+                    anthropic_base_url(&self.endpoint).as_str(),
+                );
+                command.env("ANTHROPIC_AUTH_TOKEN", &self.api_key);
+                command.env("ANTHROPIC_MODEL", &self.model);
             }
             CliTarget::CopilotCli => {
                 remove_env(command, &COPILOT_DIRECT_ENV_VARS);
@@ -361,6 +374,13 @@ fn anthropic_base_url(endpoint: &Url) -> Url {
     let mut endpoint = endpoint.clone();
     endpoint.set_path("/");
     endpoint
+}
+
+/// Validate an endpoint and return its authority without a protocol path.
+pub fn gateway_root_url(value: &str) -> Result<String, ProxyError> {
+    let mut endpoint = validate_endpoint(value)?;
+    endpoint.set_path("/");
+    Ok(endpoint.as_str().trim_end_matches('/').to_string())
 }
 
 pub fn endpoint_is_loopback(value: &str) -> bool {
@@ -511,20 +531,22 @@ mod tests {
 
     #[test]
     fn copilot_cli_capability_accepts_only_runtime_verified_releases() {
-        assert_eq!(
-            copilot_cli_capability(Some("1.0.83-1")),
-            CopilotCliCapability::Supported {
-                version: "1.0.83-1".to_string()
-            }
-        );
-        assert!(require_copilot_cli_capability(Some("1.0.83-1")).is_ok());
+        for version in ["1.0.83-2", "1.0.83-3"] {
+            assert_eq!(
+                copilot_cli_capability(Some(version)),
+                CopilotCliCapability::Supported {
+                    version: version.to_string()
+                }
+            );
+            assert!(require_copilot_cli_capability(Some(version)).is_ok());
+        }
     }
 
     #[test]
     fn copilot_cli_capability_rejects_unverified_missing_and_malformed_versions() {
         for version in [
             "1.0.83",
-            "1.0.83-2",
+            "1.0.83-1",
             "1.0.84-1",
             "2.0.0",
             "not-a-version",
@@ -592,6 +614,18 @@ mod tests {
     }
 
     #[test]
+    fn gateway_root_removes_supported_api_path() {
+        assert_eq!(
+            gateway_root_url("https://gateway.example.com/v1").unwrap(),
+            "https://gateway.example.com"
+        );
+        assert_eq!(
+            gateway_root_url("http://127.0.0.1:4000/v1/").unwrap(),
+            "http://127.0.0.1:4000"
+        );
+    }
+
+    #[test]
     fn child_environments_remove_only_routing_credentials_and_redact_debug() {
         for target in [
             CliTarget::Claude,
@@ -623,28 +657,28 @@ mod tests {
                     for name in GATEWAY_OPERATOR_ENV_VARS {
                         assert_eq!(command_env(&command, name), Some(None), "{name}");
                     }
+                    let expected_github_token = if target == CliTarget::RustyClawd {
+                        None
+                    } else {
+                        Some("bypass".to_string())
+                    };
                     assert_eq!(
                         command_env(&command, "GITHUB_TOKEN"),
-                        Some(Some("bypass".to_string()))
+                        Some(expected_github_token)
                     );
                     assert_eq!(
                         command_env(&command, "DATABASE_PASSWORD"),
                         Some(Some("bypass".to_string()))
                     );
                     match target {
-                        CliTarget::Claude | CliTarget::RustyClawd => {
+                        CliTarget::Claude => {
                             assert_eq!(
                                 command_env(&command, "ANTHROPIC_AUTH_TOKEN"),
                                 Some(Some("gateway-secret".to_string()))
                             );
-                            let expected_scrub = if target == CliTarget::Claude {
-                                Some(Some("1".to_string()))
-                            } else {
-                                Some(None)
-                            };
                             assert_eq!(
                                 command_env(&command, "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"),
-                                expected_scrub
+                                Some(Some("1".to_string()))
                             );
                             assert_eq!(command_env(&command, "ANTHROPIC_API_KEY"), Some(None));
                             assert_eq!(command_env(&command, "OPENAI_API_KEY"), Some(None));
@@ -657,6 +691,32 @@ mod tests {
                                 command_env(&command, "ANTHROPIC_DEFAULT_SONNET_MODEL"),
                                 Some(Some("gateway-model".to_string()))
                             );
+                        }
+                        CliTarget::RustyClawd => {
+                            assert_eq!(
+                                command_env(&command, "ANTHROPIC_BASE_URL"),
+                                Some(Some("https://gateway.example.com/".to_string()))
+                            );
+                            assert_eq!(
+                                command_env(&command, "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"),
+                                Some(None)
+                            );
+                            assert_eq!(command_env(&command, "ANTHROPIC_API_KEY"), Some(None));
+                            assert_eq!(
+                                command_env(&command, "ANTHROPIC_AUTH_TOKEN"),
+                                Some(Some("gateway-secret".to_string()))
+                            );
+                            assert_eq!(
+                                command_env(&command, "ANTHROPIC_MODEL"),
+                                Some(Some("gateway-model".to_string()))
+                            );
+                            assert_eq!(command_env(&command, "CLAUDE_API_URL"), Some(None));
+                            assert_eq!(command_env(&command, "CLAUDE_MODEL"), Some(None));
+                            assert_eq!(
+                                command_env(&command, "GITHUB_COPILOT_ENDPOINT"),
+                                Some(None)
+                            );
+                            assert_eq!(command_env(&command, "OPENAI_API_KEY"), Some(None));
                         }
                         CliTarget::CopilotCli => {
                             assert_eq!(
@@ -732,6 +792,13 @@ mod tests {
                     assert_eq!(
                         command_env(&copilot, "COPILOT_PROVIDER_BASE_URL"),
                         Some(Some("https://gateway.example.com/v1".to_string()))
+                    );
+
+                    let mut rusty = Command::new("rusty");
+                    apply_proxy_to_command(&mut rusty, CliTarget::RustyClawd).unwrap();
+                    assert_eq!(
+                        command_env(&rusty, "ANTHROPIC_BASE_URL"),
+                        Some(Some("https://gateway.example.com/".to_string()))
                     );
                 },
             );
