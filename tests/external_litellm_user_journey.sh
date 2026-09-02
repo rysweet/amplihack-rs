@@ -106,6 +106,11 @@ server.listen(0, "127.0.0.1", () => {
 EOF
 
 mkdir "$tmp/home"
+cat >"$tmp/recipe-runner-rs" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$tmp/recipe-runner-rs"
 PORT_FILE="$tmp/port" \
     REQUEST_PATH_FILE="$tmp/request-path" \
     AUTH_FILE="$tmp/auth" \
@@ -128,6 +133,7 @@ if ! (
         AMPLIHACK_HOME="$repo_root" \
         AMPLIHACK_NONINTERACTIVE=1 \
         AMPLIHACK_SKIP_MMDC=1 \
+        RECIPE_RUNNER_RS_PATH="$tmp/recipe-runner-rs" \
         AMPLIHACK_LITELLM_ENDPOINT="http://127.0.0.1:$(<"$tmp/port")" \
         AMPLIHACK_LITELLM_API_KEY="$GATEWAY_KEY" \
         AMPLIHACK_LITELLM_MODEL="gateway-model" \
