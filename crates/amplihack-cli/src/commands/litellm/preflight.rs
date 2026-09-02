@@ -621,11 +621,14 @@ fn attest_client(
     expected_version: &str,
 ) -> Result<ClientAttestation, VerifyFailure> {
     let path = resolve_unique_binary(binary_name)?;
+    let isolated_home = tempfile::tempdir().map_err(|error| {
+        identity_failure(format!("cannot isolate client HOME: {}", error.kind()))
+    })?;
     let output = safe_command(
         Command::new(&path)
             .env_clear()
             .env("PATH", restricted_path())
-            .env("HOME", "/nonexistent")
+            .env("HOME", isolated_home.path())
             .env("LC_ALL", "C")
             .arg("--version"),
         "client-resolution",
