@@ -36,7 +36,50 @@ use crate::{
     PluginCommands, RecipeCommands, ReflectCommands, RemoteCommands,
 };
 use amplihack_utils::launch_target::OverrideOrigin;
-use anyhow::Result;
+use anyhow::{Context, Result};
+
+fn reject_gateway_append() -> Result<()> {
+    if amplihack_utils::litellm_proxy::validate_environment()
+        .context("invalid external LiteLLM proxy configuration")?
+    {
+        anyhow::bail!(
+            "instructions cannot be appended to an existing session while LiteLLM routing is enabled because that session's routing cannot be verified"
+        );
+    }
+    Ok(())
+}
+
+fn validate_gateway_auto_mode(tool: auto_mode::AutoModeTool, args: &[String]) -> Result<()> {
+    if !amplihack_utils::litellm_proxy::validate_environment()
+        .context("invalid external LiteLLM proxy configuration")?
+    {
+        return Ok(());
+    }
+    let target = match tool {
+        auto_mode::AutoModeTool::Claude => amplihack_utils::litellm_proxy::CliTarget::Claude,
+        auto_mode::AutoModeTool::Copilot => amplihack_utils::litellm_proxy::CliTarget::CopilotCli,
+        auto_mode::AutoModeTool::RustyClawd => {
+            amplihack_utils::litellm_proxy::CliTarget::RustyClawd
+        }
+        auto_mode::AutoModeTool::Codex | auto_mode::AutoModeTool::Amplifier => {
+            anyhow::bail!(
+                "the external LiteLLM gateway supports auto mode only for Claude, GitHub Copilot CLI, and rustyclawd"
+            );
+        }
+    };
+    amplihack_utils::litellm_proxy::validate_launch_args(target, args)
+        .context("invalid external LiteLLM proxy launch arguments")?;
+    match target {
+        amplihack_utils::litellm_proxy::CliTarget::Claude => {
+            launch::preflight_claude_proxy_binary("claude", OverrideOrigin::User)?;
+        }
+        amplihack_utils::litellm_proxy::CliTarget::CopilotCli => {
+            launch::preflight_copilot_proxy_binary("copilot", OverrideOrigin::User)?;
+        }
+        amplihack_utils::litellm_proxy::CliTarget::RustyClawd => {}
+    }
+    Ok(())
+}
 
 /// Dispatch a parsed CLI command to the appropriate handler.
 pub fn dispatch(command: Commands) -> Result<()> {
@@ -64,9 +107,11 @@ pub fn dispatch(command: Commands) -> Result<()> {
             claude_args,
         } => {
             if let Some(instruction) = append {
+                reject_gateway_append()?;
                 return append::run_append(&instruction);
             }
             if auto {
+                validate_gateway_auto_mode(auto_mode::AutoModeTool::Claude, &claude_args)?;
                 let working_dir = launch::resolve_checkout_repo(checkout_repo.as_deref())?;
                 return auto_mode::run_auto_mode(
                     auto_mode::AutoModeTool::Claude,
@@ -93,6 +138,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 // on amplihack's behalf, so any override in the environment is the
                 // user's instruction.
                 OverrideOrigin::User,
+                Some(amplihack_utils::litellm_proxy::CliTarget::Claude),
             )
         }
         Commands::Claude {
@@ -107,9 +153,11 @@ pub fn dispatch(command: Commands) -> Result<()> {
             claude_args,
         } => {
             if let Some(instruction) = append {
+                reject_gateway_append()?;
                 return append::run_append(&instruction);
             }
             if auto {
+                validate_gateway_auto_mode(auto_mode::AutoModeTool::Claude, &claude_args)?;
                 let working_dir = launch::resolve_checkout_repo(checkout_repo.as_deref())?;
                 return auto_mode::run_auto_mode(
                     auto_mode::AutoModeTool::Claude,
@@ -137,6 +185,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 // on amplihack's behalf, so any override in the environment is the
                 // user's instruction.
                 OverrideOrigin::User,
+                Some(amplihack_utils::litellm_proxy::CliTarget::Claude),
             )
         }
         Commands::Copilot {
@@ -151,9 +200,11 @@ pub fn dispatch(command: Commands) -> Result<()> {
             args,
         } => {
             if let Some(instruction) = append {
+                reject_gateway_append()?;
                 return append::run_append(&instruction);
             }
             if auto {
+                validate_gateway_auto_mode(auto_mode::AutoModeTool::Copilot, &args)?;
                 return auto_mode::run_auto_mode(
                     auto_mode::AutoModeTool::Copilot,
                     max_turns,
@@ -209,6 +260,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 // on amplihack's behalf, so any override in the environment is the
                 // user's instruction.
                 OverrideOrigin::User,
+                Some(amplihack_utils::litellm_proxy::CliTarget::CopilotCli),
             )
         }
         Commands::Codex {
@@ -222,9 +274,11 @@ pub fn dispatch(command: Commands) -> Result<()> {
             args,
         } => {
             if let Some(instruction) = append {
+                reject_gateway_append()?;
                 return append::run_append(&instruction);
             }
             if auto {
+                validate_gateway_auto_mode(auto_mode::AutoModeTool::Codex, &args)?;
                 return auto_mode::run_auto_mode(
                     auto_mode::AutoModeTool::Codex,
                     max_turns,
@@ -250,6 +304,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 // on amplihack's behalf, so any override in the environment is the
                 // user's instruction.
                 OverrideOrigin::User,
+                None,
             )
         }
         Commands::Amplifier {
@@ -263,9 +318,11 @@ pub fn dispatch(command: Commands) -> Result<()> {
             args,
         } => {
             if let Some(instruction) = append {
+                reject_gateway_append()?;
                 return append::run_append(&instruction);
             }
             if auto {
+                validate_gateway_auto_mode(auto_mode::AutoModeTool::Amplifier, &args)?;
                 return auto_mode::run_auto_mode(
                     auto_mode::AutoModeTool::Amplifier,
                     max_turns,
@@ -291,6 +348,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 // on amplihack's behalf, so any override in the environment is the
                 // user's instruction.
                 OverrideOrigin::User,
+                None,
             )
         }
         Commands::Plugin { command } => dispatch_plugin(command),
@@ -367,9 +425,11 @@ pub fn dispatch(command: Commands) -> Result<()> {
             args,
         } => {
             if let Some(instruction) = append {
+                reject_gateway_append()?;
                 return append::run_append(&instruction);
             }
             if auto {
+                validate_gateway_auto_mode(auto_mode::AutoModeTool::RustyClawd, &args)?;
                 return auto_mode::run_auto_mode(
                     auto_mode::AutoModeTool::RustyClawd,
                     max_turns,
@@ -618,5 +678,83 @@ fn dispatch_multitask(command: MultitaskCommands) -> Result<()> {
         ),
         MultitaskCommands::Cleanup { config, dry_run } => multitask::run_cleanup(&config, dry_run),
         MultitaskCommands::Status { base_dir } => multitask::run_status(base_dir.as_deref()),
+    }
+}
+
+#[cfg(test)]
+mod gateway_dispatch_tests {
+    use super::*;
+    use crate::test_support::{EnvGuard, HomeGuard};
+
+    #[test]
+    fn gateway_rejects_append_and_uncontrolled_auto_mode_before_dispatch() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _gateway_env = EnvGuard::set([
+            (
+                amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+                "https://gateway.example.com",
+            ),
+            (amplihack_utils::litellm_proxy::API_KEY_ENV, "gateway-key"),
+            (amplihack_utils::litellm_proxy::MODEL_ENV, "gateway-model"),
+        ]);
+
+        assert!(reject_gateway_append().is_err());
+        assert!(
+            validate_gateway_auto_mode(
+                auto_mode::AutoModeTool::Copilot,
+                &["--agent".to_string(), "uncontrolled".to_string()]
+            )
+            .is_err()
+        );
+        assert!(validate_gateway_auto_mode(auto_mode::AutoModeTool::Codex, &[]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn auto_mode_rejects_unverified_claude_before_staging_or_session_tracking() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let binary = home.path().join("claude");
+        fs::write(
+            &binary,
+            "#!/bin/sh\n\
+             if [ \"$1\" = --version ]; then printf '2.1.248\\n'; exit 0; fi\n\
+             touch \"$HOME/auto-child-launched\"\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&binary).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&binary, permissions).unwrap();
+        let binary = binary.to_string_lossy().into_owned();
+        let _home = HomeGuard::set(home.path());
+        let _gateway_env = EnvGuard::set([
+            (
+                amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+                "https://gateway.example.com",
+            ),
+            (amplihack_utils::litellm_proxy::API_KEY_ENV, "gateway-key"),
+            (amplihack_utils::litellm_proxy::MODEL_ENV, "gateway-model"),
+            ("AMPLIHACK_CLAUDE_BINARY_PATH", binary.as_str()),
+        ]);
+
+        let error = validate_gateway_auto_mode(
+            auto_mode::AutoModeTool::Claude,
+            &["-p".to_string(), "ship safely".to_string()],
+        )
+        .expect_err("an unverified future Claude release must fail closed");
+
+        assert!(format!("{error:#}").contains("2.1.247"));
+        assert!(!home.path().join("auto-child-launched").exists());
+        assert!(
+            !home.path().join(".amplihack").exists(),
+            "capability rejection must precede auto-mode staging and tracking"
+        );
     }
 }

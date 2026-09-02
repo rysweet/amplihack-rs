@@ -4,7 +4,7 @@ use super::helpers::{
 };
 use super::run::render_auto_session_argv;
 use super::*;
-use crate::test_support::{ClearedGraphDbEnv, env_lock};
+use crate::test_support::{ClearedGraphDbEnv, EnvGuard, env_lock};
 use std::collections::HashMap;
 
 #[test]
@@ -87,6 +87,39 @@ fn build_tool_passthrough_args_matches_codex_and_copilot_contracts() {
         copilot,
         vec!["--allow-all", "--add-dir", "/", "-p", "add logging"]
     );
+}
+
+#[test]
+fn routed_copilot_auto_command_satisfies_gateway_policy() {
+    let _env_guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _proxy = EnvGuard::set([("AMPLIHACK_LITELLM_ENDPOINT", "https://gateway.example.test")]);
+    let _graph_guard = ClearedGraphDbEnv::new();
+    let dir = tempfile::tempdir().unwrap();
+
+    let command = build_auto_command(
+        AutoModeTool::Copilot,
+        dir.path(),
+        dir.path(),
+        None,
+        &[],
+        "add logging",
+    )
+    .expect("routed Copilot auto-mode command should build");
+    let effective_args = command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .skip_while(|arg| arg != "--")
+        .skip(1)
+        .collect::<Vec<_>>();
+
+    assert!(!effective_args.iter().any(|arg| arg == "--add-dir"));
+    amplihack_utils::litellm_proxy::validate_launch_args(
+        amplihack_utils::litellm_proxy::CliTarget::CopilotCli,
+        &effective_args,
+    )
+    .expect("recursive routed Copilot arguments must satisfy gateway policy");
 }
 
 #[test]

@@ -32,6 +32,7 @@ pub fn run_rustyclawd(args: Vec<String>, no_reflection: bool, subprocess_safe: b
         // travels with the call that needs it instead of with the process, so
         // the compiler names every site that must honour it.
         override_origin,
+        Some(amplihack_utils::litellm_proxy::CliTarget::RustyClawd),
     )
 }
 
@@ -164,7 +165,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = tempfile::tempdir().unwrap();
-        let binary = dir.path().join("rustyclawd-custom");
+        let binary = dir.path().join("rc");
         fs::write(&binary, "#!/usr/bin/env bash\n").unwrap();
         let mut perms = fs::metadata(&binary).unwrap().permissions();
         perms.set_mode(0o755);

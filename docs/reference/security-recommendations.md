@@ -8,7 +8,8 @@ Operational security checklist and recommendations for amplihack deployments.
 
 ### 1. API Key Exposure (HIGH)
 
-Never hard-code API keys in configuration files. Use environment variables:
+Never hard-code or commit API keys in source code or ordinary configuration
+files. Use environment variables for provider keys:
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."   # Claude API
@@ -17,6 +18,50 @@ export OPENAI_API_KEY="sk-..."          # OpenAI API (if using Copilot)
 
 !!! danger "Never Commit Keys"
     If a key appears in a config file or source code, rotate it immediately.
+
+For external LiteLLM routing, obtain a restricted virtual key from a secret
+manager and expose it only as `AMPLIHACK_LITELLM_API_KEY` in the launch
+environment. Do not put the key in command arguments or project configuration.
+Restrict it in LiteLLM by tenant, route, model alias, budget, and rate; the
+client-selected model is not an authorization control.
+
+For the supplied operator deployment, generate `LITELLM_SALT_KEY` independently
+from `LITELLM_MASTER_KEY` before first startup. Retain the salt key permanently:
+LiteLLM uses it to encrypt database credentials, and changing it after models
+or credentials are stored makes those records unreadable. The independent salt
+allows the administrative master key to rotate without re-encrypting stored
+credentials.
+
+Launch setup subprocesses, including Docker probes and builds, do not receive
+any `AMPLIHACK_LITELLM_*` variable. Amplihack validates the configuration once
+and projects translated credentials only onto the final supported agent
+command. The narrow Docker transport exception is the trusted final
+`docker run` client: it receives only the restricted virtual key so it can
+inject that key into the final container. The endpoint and model remain
+command arguments, not gateway environment variables.
+
+Amplihack currently permits Claude Code `2.1.247` and sets
+`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`. That exact release is pinned because the
+scrub control is not an upstream documented compatibility contract. A new
+Claude Code release remains blocked until the Bash, hook, and stdio MCP
+subprocess isolation test passes for it and the verified-version set is
+updated. The selected executable is validated before checkout, auto-mode
+staging, memory configuration, session tracking, Docker operations, or child
+creation. Missing executables, failed probes, malformed or unknown output, and
+all unverified versions fail closed. On Linux, Claude's scrub enforcement also
+requires `bubblewrap` and `socat`; Claude refuses to start if either dependency
+is unavailable.
+Routed Copilot CLI requires the exact runtime-attested release `1.0.83-1` and
+receives `--secret-env-vars=COPILOT_PROVIDER_API_KEY`. The verified control
+keeps the restricted gateway key in Copilot while removing it from shell and
+stdio MCP subprocess environments and redacting it from tool output. Missing,
+failed, malformed, ambiguous, or unverified version probes fail closed. Routed
+launches disable Copilot auto-update; a new release remains blocked until the
+real-CLI shell and stdio MCP isolation contract passes and the verified-version
+set is updated.
+
+RustyClawd has no verified subprocess-scrubbing capability, so treat its
+complete descendant process tree as credential-trusted.
 
 ### 2. Tool Calling Configuration
 
@@ -38,8 +83,18 @@ export ENABLE_TOOL_FALLBACK=true
 ### 3. Supply Chain Security
 
 The `litellm` dependency was removed from upstream amplihack due to a PyPI
-supply chain attack. amplihack-rs avoids this class of risk by using direct
-API integrations via Rust crates with `cargo audit` verification.
+supply-chain attack. Amplihack does not install, embed, import, start, or
+manage LiteLLM. Optional
+[external-gateway routing](../concepts/external-litellm-boundary.md) connects
+supported agent CLIs to a separately operated service without restoring the
+dependency.
+
+That prohibition covers LiteLLM as an **in-process dependency**. An
+operator-managed LiteLLM deployment is a different trust boundary and may be
+used by the optional gateway feature; amplihack never installs, starts, or
+manages it. See
+[why the gateway stays external](../concepts/external-litellm-boundary.md) and
+the [supply-chain section](../SECURITY_RECOMMENDATIONS.md) for the distinction.
 
 Run supply chain checks:
 

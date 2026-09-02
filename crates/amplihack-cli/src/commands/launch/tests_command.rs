@@ -1,8 +1,10 @@
 use super::*;
 use crate::binary_finder::BinaryInfo;
-use crate::test_support::{home_env_lock, restore_cwd, set_cwd};
+use crate::test_support::{EnvGuard, home_env_lock, restore_cwd, set_cwd};
+use std::ffi::OsStr;
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 
 fn make_binary(path: &str) -> BinaryInfo {
     BinaryInfo {
@@ -69,6 +71,223 @@ fn with_default_model_env<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
         None => unsafe { std::env::remove_var("AMPLIHACK_DEFAULT_MODEL") },
     }
     result
+}
+
+#[test]
+fn gateway_projection_is_the_final_environment_mutation() {
+    let _guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _gateway_env = EnvGuard::set([
+        (
+            amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+            "https://gateway.example.com",
+        ),
+        (
+            amplihack_utils::litellm_proxy::API_KEY_ENV,
+            "gateway-secret",
+        ),
+        (amplihack_utils::litellm_proxy::MODEL_ENV, "gateway-model"),
+    ]);
+
+    let env_builder = EnvBuilder::new()
+        .set("ANTHROPIC_BASE_URL", "https://bypass.example.com")
+        .set("ANTHROPIC_API_KEY", "direct-provider-secret")
+        .set("ANTHROPIC_AUTH_TOKEN", "stale-gateway-secret");
+    let proxy_config = amplihack_utils::litellm_proxy::ProxyConfig::from_env()
+        .unwrap()
+        .unwrap();
+    unsafe {
+        std::env::set_var(
+            amplihack_utils::litellm_proxy::API_KEY_ENV,
+            "mutated-after-validation",
+        );
+    }
+    let mut command = std::process::Command::new("claude");
+    apply_launch_environment(
+        &mut command,
+        env_builder,
+        Some((
+            &proxy_config,
+            amplihack_utils::litellm_proxy::CliTarget::Claude,
+        )),
+    );
+
+    let command_env = |name: &str| {
+        command
+            .get_envs()
+            .find(|(key, _)| *key == OsStr::new(name))
+            .map(|(_, value)| value.map(|value| value.to_string_lossy().into_owned()))
+    };
+    assert_eq!(
+        command_env("ANTHROPIC_BASE_URL"),
+        Some(Some("https://gateway.example.com/".to_string()))
+    );
+    assert_eq!(
+        command_env("ANTHROPIC_AUTH_TOKEN"),
+        Some(Some("gateway-secret".to_string()))
+    );
+    assert_eq!(command_env("ANTHROPIC_API_KEY"), Some(None));
+}
+
+#[test]
+fn routed_copilot_child_cannot_see_installed_user_plugin() {
+    let ambient_home = tempfile::tempdir().unwrap();
+    let installed_plugin = ambient_home
+        .path()
+        .join("installed-plugins")
+        .join("review-fixture@local");
+    fs::create_dir_all(&installed_plugin).unwrap();
+    fs::write(
+        installed_plugin.join("plugin.json"),
+        r#"{"name":"review-fixture","hooks":"./hooks.json"}"#,
+    )
+    .unwrap();
+    fs::write(
+        ambient_home.path().join("config.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "installedPlugins": [{
+                "cache_path": installed_plugin,
+                "enabled": true,
+                "marketplace": "local",
+                "name": "review-fixture",
+                "source": "local",
+                "version": "1.0.0"
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let mut command = std::process::Command::new("copilot");
+    command.env(COPILOT_HOME_ENV, ambient_home.path());
+    let isolated_home = isolate_routed_copilot_home(&mut command, true)
+        .unwrap()
+        .expect("routed Copilot must receive an isolated home");
+    let child_home = command
+        .get_envs()
+        .find(|(key, _)| *key == OsStr::new(COPILOT_HOME_ENV))
+        .and_then(|(_, value)| value)
+        .map(PathBuf::from)
+        .expect("routed Copilot command must set COPILOT_HOME");
+
+    assert_ne!(child_home, ambient_home.path());
+    assert_eq!(child_home, isolated_home.path());
+    assert!(
+        !child_home.join("installed-plugins").exists(),
+        "the routed child must not discover ambient installed plugins"
+    );
+    assert!(
+        !child_home.join("config.json").exists(),
+        "the routed child must not read the ambient plugin registry"
+    );
+    assert!(
+        installed_plugin.join("plugin.json").is_file(),
+        "the fixture must prove isolation without deleting the user's plugin"
+    );
+}
+
+#[test]
+fn non_routed_copilot_keeps_ambient_home() {
+    let ambient_home = tempfile::tempdir().unwrap();
+    let mut command = std::process::Command::new("copilot");
+    command.env(COPILOT_HOME_ENV, ambient_home.path());
+
+    assert!(
+        isolate_routed_copilot_home(&mut command, false)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        command
+            .get_envs()
+            .find(|(key, _)| *key == OsStr::new(COPILOT_HOME_ENV))
+            .and_then(|(_, value)| value),
+        Some(ambient_home.path().as_os_str())
+    );
+}
+
+#[test]
+fn routed_copilot_rejects_repository_custom_agents() {
+    let workspace = tempfile::tempdir().unwrap();
+    fs::create_dir(workspace.path().join(".git")).unwrap();
+    let nested = workspace.path().join("src").join("nested");
+    fs::create_dir_all(&nested).unwrap();
+
+    validate_routed_copilot_workspace(&nested, true).unwrap();
+    fs::create_dir_all(workspace.path().join(".github").join("agents")).unwrap();
+    fs::write(
+        workspace
+            .path()
+            .join(".github")
+            .join("agents")
+            .join("model-bypass.agent.md"),
+        "---\nname: model-bypass\ndescription: test\nmodel: gpt-5.4\n---\n",
+    )
+    .unwrap();
+
+    let error = validate_routed_copilot_workspace(&nested, true).unwrap_err();
+    assert!(
+        error.to_string().contains(".github/agents"),
+        "rejection must identify the unsafe repository scope: {error:#}"
+    );
+    validate_routed_copilot_workspace(&nested, false).unwrap();
+}
+
+#[test]
+fn real_copilot_confirms_isolated_home_does_not_disable_repository_scope() {
+    let _env_guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Ok(version_output) = Command::new("copilot").arg("--version").output() else {
+        return;
+    };
+    if !version_output.status.success() {
+        return;
+    }
+    let version_stdout = String::from_utf8_lossy(&version_output.stdout);
+    if !matches!(
+        version_stdout.lines().next(),
+        Some("GitHub Copilot CLI 1.0.83-1" | "GitHub Copilot CLI 1.0.83-1.")
+    ) {
+        return;
+    }
+
+    let workspace = tempfile::tempdir().unwrap();
+    let isolated_home = tempfile::tempdir().unwrap();
+    fs::write(
+        workspace.path().join("AGENTS.md"),
+        "Repository instructions.\n",
+    )
+    .unwrap();
+    let agents = workspace.path().join(".github").join("agents");
+    fs::create_dir_all(&agents).unwrap();
+    fs::write(
+        agents.join("model-bypass.agent.md"),
+        "---\nname: model-bypass\ndescription: test\nmodel: gpt-5.4\n---\n",
+    )
+    .unwrap();
+
+    let output = Command::new("copilot")
+        .args(["plugins", "list"])
+        .env(COPILOT_HOME_ENV, isolated_home.path())
+        .current_dir(workspace.path())
+        .output()
+        .expect("installed Copilot CLI must run");
+    assert!(
+        output.status.success(),
+        "Copilot repository-discovery probe failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("AGENTS.md") && stdout.contains("Repository"),
+        "isolated COPILOT_HOME unexpectedly disabled repository scope:\n{stdout}"
+    );
+    assert!(
+        validate_routed_copilot_workspace(workspace.path(), true).is_err(),
+        "routed launch must stop before Copilot can discover or invoke the model-pinned agent"
+    );
 }
 
 /// When skip_permissions=true, --dangerously-skip-permissions MUST be the
@@ -177,6 +396,21 @@ fn test_build_command_no_model_injection_when_user_supplies_model() {
         args[model_pos + 1],
         "custom-model",
         "User-supplied model value must be preserved"
+    );
+}
+
+#[test]
+fn test_build_command_no_model_injection_for_equals_form() {
+    let binary = make_binary("/usr/bin/claude");
+    let extra = vec!["--model=custom-model".to_string()];
+    let cmd = build_command(&binary, false, false, false, &extra);
+    let args = cmd
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        args.iter().filter(|arg| arg.starts_with("--model")).count(),
+        1
     );
 }
 
@@ -513,6 +747,138 @@ fn copilot_skips_remote_when_env_opt_out() {
         assert!(
             !args.iter().any(|a| a == "--remote"),
             "opt-out must suppress --remote; got {args:?}"
+        );
+    });
+}
+
+#[test]
+fn copilot_skips_remote_when_litellm_proxy_is_requested() {
+    with_uvx_detection_disabled(|| {
+        let previous = std::env::var_os(amplihack_utils::litellm_proxy::ENDPOINT_ENV);
+        unsafe {
+            std::env::set_var(
+                amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+                "http://127.0.0.1:4000",
+            );
+        }
+        let binary = BinaryInfo {
+            name: "copilot".to_string(),
+            path: PathBuf::from("/usr/bin/copilot"),
+            version: None,
+        };
+        let cmd = build_command(&binary, false, false, false, &[]);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        match previous {
+            Some(value) => unsafe {
+                std::env::set_var(amplihack_utils::litellm_proxy::ENDPOINT_ENV, value)
+            },
+            None => unsafe { std::env::remove_var(amplihack_utils::litellm_proxy::ENDPOINT_ENV) },
+        }
+        assert!(
+            !args.iter().any(|arg| arg == "--remote"),
+            "LiteLLM routing must suppress Copilot remote execution; got {args:?}"
+        );
+        assert!(
+            args.iter().any(|arg| arg == "--no-remote"),
+            "LiteLLM routing must override persisted Copilot remote settings; got {args:?}"
+        );
+        assert!(
+            args.iter().any(|arg| arg == "--no-remote-export"),
+            "LiteLLM routing must disable Copilot session export; got {args:?}"
+        );
+        assert!(
+            args.iter().any(|arg| arg == "--no-auto-update"),
+            "LiteLLM routing must disable Copilot auto-update; got {args:?}"
+        );
+        assert!(
+            args.iter()
+                .any(|arg| arg == "--secret-env-vars=COPILOT_PROVIDER_API_KEY"),
+            "LiteLLM routing must hide the gateway key from Copilot tools; got {args:?}"
+        );
+    });
+}
+
+#[test]
+fn routed_copilot_restrictions_follow_conflicting_user_arguments() {
+    with_uvx_detection_disabled(|| {
+        let previous = std::env::var_os(amplihack_utils::litellm_proxy::ENDPOINT_ENV);
+        unsafe {
+            std::env::set_var(
+                amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+                "http://127.0.0.1:4000",
+            );
+        }
+        let binary = BinaryInfo {
+            name: "copilot".to_string(),
+            path: PathBuf::from("/usr/bin/copilot"),
+            version: None,
+        };
+        let cmd = build_command(
+            &binary,
+            false,
+            false,
+            false,
+            &["--remote".to_string(), "--remote-export".to_string()],
+        );
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect();
+        match previous {
+            Some(value) => unsafe {
+                std::env::set_var(amplihack_utils::litellm_proxy::ENDPOINT_ENV, value)
+            },
+            None => unsafe { std::env::remove_var(amplihack_utils::litellm_proxy::ENDPOINT_ENV) },
+        }
+
+        let position = |flag: &str| {
+            args.iter()
+                .rposition(|arg| arg == flag)
+                .unwrap_or_else(|| panic!("missing {flag}: {args:?}"))
+        };
+        assert!(position("--no-remote") > position("--remote"));
+        assert!(position("--no-remote-export") > position("--remote-export"));
+        assert!(args.iter().any(|arg| arg == "--no-auto-update"));
+    });
+}
+
+#[test]
+fn claude_disables_settings_and_plugins_with_litellm() {
+    with_uvx_detection_disabled(|| {
+        let previous = std::env::var_os(amplihack_utils::litellm_proxy::ENDPOINT_ENV);
+        unsafe {
+            std::env::set_var(
+                amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+                "http://127.0.0.1:4000",
+            );
+        }
+        let binary = make_binary("/usr/bin/claude");
+        let cmd = build_command(&binary, false, false, false, &[]);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect();
+        match previous {
+            Some(value) => unsafe {
+                std::env::set_var(amplihack_utils::litellm_proxy::ENDPOINT_ENV, value)
+            },
+            None => unsafe { std::env::remove_var(amplihack_utils::litellm_proxy::ENDPOINT_ENV) },
+        }
+        assert!(
+            args.windows(2)
+                .any(|values| values[0] == "--setting-sources" && values[1].is_empty()),
+            "LiteLLM routing must suppress mutable Claude settings sources; got {args:?}"
+        );
+        assert!(
+            args.iter().any(|arg| arg == "--safe-mode"),
+            "LiteLLM routing must disable Claude customizations; got {args:?}"
+        );
+        assert!(
+            !args.iter().any(|arg| arg == "--plugin-dir"),
+            "LiteLLM routing must not inject a UVX plugin directory; got {args:?}"
         );
     });
 }

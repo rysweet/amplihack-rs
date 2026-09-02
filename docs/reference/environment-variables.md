@@ -46,6 +46,7 @@ All environment variables read or written by `amplihack` during a launch (`ampli
   - [AMPLIHACK_SKIP_AUTO_INSTALL](#amplihack_skip_auto_install)
   - [AMPLIHACK_SKIP_MMDC](#amplihack_skip_mmdc)
   - [AMPLIHACK_TEST_FAKE_LATEST_VERSION](#amplihack_test_fake_latest_version)
+  - [External LiteLLM gateway variables](#external-litellm-gateway-variables)
   - [AMPLIHACK_TOPIC_NAME](#amplihack_topic_name)
   - [AMPLIHACK_PROJECT_ID](#amplihack_project_id)
   - [CI](#ci)
@@ -825,6 +826,41 @@ for the derivation, essential-key set, and smallest-first fill.
 ## Variables read by amplihack
 
 These variables influence `amplihack`'s behaviour but are not set by it.
+
+---
+
+### External LiteLLM gateway variables
+
+These three variables form the complete opt-in external LiteLLM configuration.
+If any one is present, all three must be valid. Invalid, empty, or partial
+configuration fails before an agent process is spawned.
+
+| Variable | Type and default | Purpose |
+|---|---|---|
+| `AMPLIHACK_LITELLM_ENDPOINT` | URL; unset | Gateway base URL. HTTPS is required except for literal loopback development URLs. |
+| `AMPLIHACK_LITELLM_API_KEY` | secret string; unset | Restricted LiteLLM virtual key. It is never serialized or placed in child command arguments. Do not use an administrative master key. |
+| `AMPLIHACK_LITELLM_MODEL` | model name; unset | Required for every supported launcher; selects the gateway model alias. |
+
+LiteLLM and PostgreSQL own usage, spend, budgets, and rate limits. Amplihack
+does not implement process-local gateway accounting or controls.
+
+When the selected launcher is Claude Code, amplihack sets
+`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`; users do not need to set that variable.
+External Claude Code routing requires the exact `claude` executable to report
+semantic version `2.1.247`. Amplihack probes it before checkout, auto-mode
+staging, launch setup, session tracking, or Docker operations and rejects
+missing executables, failed probes, malformed or unknown output, prereleases,
+and all other versions. The probe will receive neither
+`AMPLIHACK_LITELLM_API_KEY` nor direct provider credentials.
+
+The Docker launcher rejects loopback gateway endpoints so normal container
+network isolation remains intact. Use an HTTPS gateway reachable from the
+container, or run the agent outside Docker for a host-loopback development
+gateway.
+
+See the
+[external LiteLLM boundary](../concepts/external-litellm-boundary.md) for the
+routing and ownership contract.
 
 ---
 

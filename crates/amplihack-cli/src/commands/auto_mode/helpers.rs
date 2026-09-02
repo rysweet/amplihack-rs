@@ -125,6 +125,7 @@ pub fn build_auto_command_with_prompt_delivery(
     args.extend(build_tool_passthrough_prefix_args(
         options.tool,
         &options.passthrough_args,
+        options.tool == AutoModeTool::Copilot && amplihack_utils::litellm_proxy::proxy_requested(),
     ));
     let mut delivered = build_command_with_prompt_delivery(
         current_exe.as_os_str(),
@@ -259,62 +260,18 @@ pub(super) fn build_tool_passthrough_args(
     passthrough_args: &[String],
     prompt: &str,
 ) -> Vec<String> {
-    let mut args = passthrough_args.to_vec();
-    match tool {
-        AutoModeTool::Claude | AutoModeTool::RustyClawd => {
-            if !args
-                .iter()
-                .any(|arg| arg == "--dangerously-skip-permissions")
-            {
-                args.push("--dangerously-skip-permissions".to_string());
-            }
-            if !args.iter().any(|arg| arg == "--verbose") {
-                args.push("--verbose".to_string());
-            }
-            args.push("-p".to_string());
-            args.push(prompt.to_string());
-        }
-        AutoModeTool::Copilot => {
-            // Strip Claude-only flags from Copilot invocations (PR #4142).
-            args = strip_claude_only_flags(args);
-            // #277: use `--allow-all` (tools + paths + urls) in non-interactive
-            // mode. `--allow-all-tools` alone permits the tools but keeps the
-            // path-allowlist gate in effect, which causes shell commands to
-            // fail with "could not request permission from user" when the
-            // worktree is outside an explicitly-added directory.
-            let has_allow_all = args.iter().any(|a| a == "--allow-all");
-            let has_allow_all_tools = args.iter().any(|a| a == "--allow-all-tools");
-            if !has_allow_all && !has_allow_all_tools {
-                args.push("--allow-all".to_string());
-            }
-            if !args.iter().any(|arg| arg == "--add-dir") {
-                args.push("--add-dir".to_string());
-                args.push("/".to_string());
-            }
-            args.push("-p".to_string());
-            args.push(prompt.to_string());
-        }
-        AutoModeTool::Codex => {
-            if !args
-                .iter()
-                .any(|arg| arg == "--dangerously-bypass-approvals-and-sandbox")
-            {
-                args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
-            }
-            args.push("exec".to_string());
-            args.push(prompt.to_string());
-        }
-        AutoModeTool::Amplifier => {
-            args.insert(0, "run".to_string());
-            args.push(prompt.to_string());
-        }
-    }
+    let mut args = build_tool_passthrough_prefix_args(tool, passthrough_args, false)
+        .into_iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    args.push(prompt.to_string());
     args
 }
 
 fn build_tool_passthrough_prefix_args(
     tool: AutoModeTool,
     passthrough_args: &[String],
+    routed_copilot: bool,
 ) -> Vec<OsString> {
     if tool == AutoModeTool::Amplifier {
         let mut args = Vec::with_capacity(passthrough_args.len() + 1);
@@ -344,7 +301,7 @@ fn build_tool_passthrough_prefix_args(
             if !has_allow_all && !has_allow_all_tools {
                 args.push("--allow-all".to_string());
             }
-            if !args.iter().any(|arg| arg == "--add-dir") {
+            if !routed_copilot && !args.iter().any(|arg| arg == "--add-dir") {
                 args.push("--add-dir".to_string());
                 args.push("/".to_string());
             }

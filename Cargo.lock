@@ -544,6 +544,7 @@ dependencies = [
  "chrono",
  "libc",
  "regex",
+ "semver",
  "serde",
  "serde_json",
  "sha2",
@@ -551,6 +552,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "url",
 ]
 
 [[package]]

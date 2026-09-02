@@ -274,15 +274,36 @@ const MAX_PROBE_CANDIDATES: usize = 8;
 /// Extract a parseable semver from `--version` output.
 ///
 /// ANSI escapes are stripped before matching (SEC-3). Returns `None` when the
-/// output carries no `\d+\.\d+\.\d+`, which makes the candidate
+/// output carries no complete semantic version, which makes the candidate
 /// [`Rejection::UnparseableVersion`] — not a target with an unknown version.
 pub(crate) fn extract_version(output: &str) -> Option<String> {
-    static SEMVER: LazyLock<regex::Regex> =
-        LazyLock::new(|| regex::Regex::new(r"\d+\.\d+\.\d+").expect("static semver regex"));
+    static VERSION_TOKEN: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(?:^|[^0-9A-Za-z+.-])v?([0-9][0-9A-Za-z+.-]*)")
+            .expect("static version token regex")
+    });
     // SEC-3: strip BEFORE matching, so an ESC sequence can neither hide inside
     // the captured version nor survive into the log line or the user's TTY.
     let cleaned = strip_ansi(output);
-    SEMVER.find(&cleaned).map(|m| m.as_str().to_string())
+    let mut candidates = VERSION_TOKEN
+        .captures_iter(&cleaned)
+        .filter_map(|captures| {
+            let token = captures.get(1)?.as_str();
+            let candidate = match token.strip_suffix('.') {
+                // A single sentence-ending period is accepted. Leaving an earlier
+                // period in place makes repeated punctuation fail semver parsing.
+                Some(without_period) if !without_period.ends_with('.') => without_period,
+                Some(_) => return None,
+                None => token,
+            };
+            semver::Version::parse(candidate)
+                .ok()
+                .map(|_| candidate.to_string())
+        });
+    let candidate = candidates.next()?;
+    if candidates.next().is_some() {
+        return None;
+    }
+    Some(candidate)
 }
 
 /// The entire fix for the reinstall-on-every-launch defect, as a pure function.
@@ -699,6 +720,13 @@ fn is_executable(_metadata: &std::fs::Metadata) -> bool {
 fn probe_version(path: &Path, timeout: Duration) -> Result<String, Rejection> {
     let mut cmd = Command::new(path);
     cmd.arg("--version");
+    crate::litellm_proxy::scrub_inference_environment(&mut cmd);
+    for name in std::env::vars_os()
+        .map(|(name, _)| name)
+        .filter(|name| is_sensitive_env_name(&name.to_string_lossy()))
+    {
+        cmd.env_remove(name);
+    }
     match run_capped_output_with_timeout(cmd, timeout, PROBE_CAPTURE_LIMIT) {
         Ok(Some(output)) if output.status.success() => {
             // SEC-3: stdout here is whatever an arbitrary binary chose to
@@ -714,6 +742,24 @@ fn probe_version(path: &Path, timeout: Duration) -> Result<String, Rejection> {
         // install, not a launch target.
         Err(_) => Err(label_failed_probe(path)),
     }
+}
+
+fn is_sensitive_env_name(name: &str) -> bool {
+    let name = name.to_ascii_uppercase();
+    [
+        "API_KEY",
+        "TOKEN",
+        "AUTHORIZATION",
+        "PASSWORD",
+        "SECRET",
+        "CREDENTIAL",
+        "PRIVATE_KEY",
+        "CONNECTION_STRING",
+        "COOKIE",
+        "_KEY",
+    ]
+    .iter()
+    .any(|marker| name.contains(marker))
 }
 
 /// Who set `AMPLIHACK_{TOOL}_BINARY_PATH`, and therefore what a failing
@@ -1241,6 +1287,34 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn version_probe_does_not_expose_litellm_configuration() {
+        let _guard = crate::test_serial::acquire();
+        let dir = tempfile::tempdir().unwrap();
+        let observation = dir.path().join("probe-environment");
+        let script = format!(
+            "#!/bin/sh\nif [ -n \"$AMPLIHACK_LITELLM_ENDPOINT\" ] || [ -n \"$AMPLIHACK_LITELLM_API_KEY\" ] || [ -n \"$AMPLIHACK_LITELLM_MODEL\" ] || [ -n \"$ANTHROPIC_API_KEY\" ]; then printf exposed > '{}'; else printf scrubbed > '{}'; fi\nprintf '2.1.83\\n'\n",
+            observation.display(),
+            observation.display()
+        );
+        let binary = write_executable(dir.path(), "claude", script.as_bytes());
+        let _env = crate::test_support::EnvGuard::set([
+            (
+                crate::litellm_proxy::ENDPOINT_ENV,
+                "https://gateway.example.com",
+            ),
+            (crate::litellm_proxy::API_KEY_ENV, "gateway-secret"),
+            (crate::litellm_proxy::MODEL_ENV, "gateway-model"),
+            ("ANTHROPIC_API_KEY", "provider-secret"),
+        ]);
+
+        let result = probe_version(&binary, Duration::from_secs(1));
+
+        assert_eq!(result.as_deref(), Ok("2.1.83"));
+        assert_eq!(std::fs::read_to_string(observation).unwrap(), "scrubbed");
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn cheap_reject_passes_a_small_shim_it_cannot_judge() {
         // THE regression. `~/.npm-global/bin/copilot` is a 1185-byte
         // `#!/usr/bin/env node` loader: small, no native magic, and perfectly
@@ -1373,6 +1447,49 @@ mod tests {
         let parsed = extract_version(raw).expect("version behind ANSI must still parse");
         assert_eq!(parsed, "2.1.238");
         assert!(!parsed.contains('\x1b'), "no ESC may survive: {parsed:?}");
+    }
+
+    #[test]
+    fn extract_version_preserves_semver_prerelease_and_build_metadata() {
+        assert_eq!(
+            extract_version("Claude Code v2.1.83-beta.1+build.7").as_deref(),
+            Some("2.1.83-beta.1+build.7")
+        );
+        assert_eq!(
+            extract_version("Node 24; Claude Code 2.1.83").as_deref(),
+            Some("2.1.83")
+        );
+        assert_eq!(extract_version("Claude Code 02.1.83"), None);
+    }
+
+    #[test]
+    fn extract_version_rejects_ambiguous_semver_candidates() {
+        assert_eq!(
+            extract_version("runtime 1.0.83-1; GitHub Copilot CLI 9.9.9"),
+            None
+        );
+        assert_eq!(
+            extract_version("dependency 2.1.247; Claude Code 9.9.9"),
+            None
+        );
+        assert_eq!(extract_version("Claude Code 2.1.247 (2.1.247)"), None);
+    }
+
+    #[test]
+    fn extract_version_ignores_sentence_punctuation_after_copilot_version() {
+        assert_eq!(
+            extract_version(
+                "GitHub Copilot CLI 1.0.83-1.\nRun 'copilot update' to check for updates."
+            )
+            .as_deref(),
+            Some("1.0.83-1")
+        );
+    }
+
+    #[test]
+    fn extract_version_rejects_embedded_or_repeatedly_terminated_versions() {
+        assert_eq!(extract_version("GitHub Copilot CLI 9.1.0.83-1"), None);
+        assert_eq!(extract_version("GitHub Copilot CLI 1.0.83-1..."), None);
     }
 
     #[test]

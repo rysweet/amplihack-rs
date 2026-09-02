@@ -27,12 +27,17 @@ mod tests_system_prompt_append;
 
 // Re-exports — public API of the launch module.
 pub(crate) use checkout::resolve_checkout_repo;
-pub(crate) use command::{resolve_no_reflection, resolve_subprocess_safe};
+pub(crate) use command::{
+    resolve_no_reflection, resolve_subprocess_safe, validate_routed_copilot_workspace,
+};
 pub(crate) use power_steering::maybe_prompt_re_enable_power_steering;
 
 // Internal imports from submodules used by run_launch.
 use blarify::maybe_run_blarify_indexing_prompt;
-use command::{augment_claude_launch_env, build_command_for_dir, build_docker_launcher_args};
+use command::{
+    augment_claude_launch_env, build_command_for_dir, build_docker_launcher_args,
+    isolate_routed_copilot_home,
+};
 use context::persist_launcher_context;
 
 // Test-visible re-imports from submodules. These become available to
@@ -46,12 +51,13 @@ use blarify::{
 #[cfg(test)]
 use checkout::{parse_github_repo_uri, resolve_checkout_repo_in};
 #[cfg(test)]
-use command::build_command;
+use command::{COPILOT_HOME_ENV, build_command};
 #[cfg(test)]
 use context::render_launcher_command;
 #[cfg(test)]
 use power_steering::maybe_prompt_re_enable_power_steering_with;
 
+use crate::binary_finder::BinaryInfo;
 use crate::bootstrap;
 use crate::docker::{DockerDetector, DockerManager};
 use crate::env_builder::EnvBuilder;
@@ -67,12 +73,28 @@ use amplihack_launcher::flag_matrix::AgentBinary;
 use amplihack_launcher::prompt_delivery::validate_prompt_delivery_env_for;
 use amplihack_utils::launch_target::OverrideOrigin;
 use anyhow::{Context, Result};
-use std::path::PathBuf;
+use sha2::{Digest, Sha256};
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 const POWER_STEERING_PROMPT_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn apply_launch_environment(
+    command: &mut std::process::Command,
+    env_builder: EnvBuilder,
+    proxy: Option<(
+        &amplihack_utils::litellm_proxy::ProxyConfig,
+        amplihack_utils::litellm_proxy::CliTarget,
+    )>,
+) {
+    env_builder.apply_to_command(command);
+    if let Some((config, target)) = proxy {
+        config.apply_to_command(command, target);
+    }
+}
 
 /// Launch a tool binary (claude, copilot, codex, amplifier).
 #[allow(clippy::too_many_arguments)]
@@ -89,8 +111,52 @@ pub fn run_launch(
     checkout_repo: Option<String>,
     extra_args: Vec<String>,
     override_origin: OverrideOrigin,
+    proxy_target: Option<amplihack_utils::litellm_proxy::CliTarget>,
 ) -> Result<()> {
     validate_launch_prompt_delivery(tool)?;
+    let proxy_config = amplihack_utils::litellm_proxy::ProxyConfig::from_env()
+        .context("invalid external LiteLLM proxy configuration")?;
+    let proxy_enabled = proxy_config.is_some();
+    if proxy_enabled {
+        let target = proxy_target.ok_or_else(|| {
+            anyhow::anyhow!(
+                "the external LiteLLM gateway supports only Claude, GitHub Copilot CLI, and rustyclawd; unset AMPLIHACK_LITELLM_ENDPOINT to launch {tool}"
+            )
+        })?;
+        validate_proxy_launch_args(target, resume, continue_session, &extra_args)?;
+    }
+
+    if proxy_enabled && DockerDetector.requested_outside_container(docker) {
+        match proxy_target {
+            Some(amplihack_utils::litellm_proxy::CliTarget::Claude) => {
+                anyhow::bail!(
+                    "external LiteLLM routing cannot launch Claude Code through Docker because the container executable cannot be verified before Docker image or container operations; launch outside Docker or start inside a trusted container"
+                );
+            }
+            Some(amplihack_utils::litellm_proxy::CliTarget::CopilotCli) => {
+                anyhow::bail!(
+                    "external LiteLLM routing cannot launch GitHub Copilot CLI through Docker because the container executable cannot be verified before Docker image or container operations; launch outside Docker or start inside a trusted container"
+                );
+            }
+            _ => {}
+        }
+    }
+
+    let prevalidated_binary = if proxy_enabled {
+        match proxy_target {
+            Some(amplihack_utils::litellm_proxy::CliTarget::Claude)
+            | Some(amplihack_utils::litellm_proxy::CliTarget::CopilotCli) => {
+                Some(preflight_proxy_binary(
+                    tool,
+                    override_origin,
+                    proxy_target.expect("matched routed target"),
+                )?)
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
 
     let current_dir = std::env::current_dir()
         .ok()
@@ -142,8 +208,21 @@ pub fn run_launch(
     }
 
     // Find binary
-    let binary = bootstrap::ensure_tool_available(tool, override_origin)
-        .with_context(|| missing_binary_context(tool))?;
+    let (binary, preflight_identity) = match prevalidated_binary {
+        Some(preflight) => (preflight.binary, Some(preflight.identity)),
+        None => (
+            bootstrap::ensure_tool_available(tool, override_origin)
+                .with_context(|| missing_binary_context(tool))?,
+            None,
+        ),
+    };
+
+    if let Some(proxy_target) = proxy_target {
+        validate_proxy_launch_args(proxy_target, resume, continue_session, &extra_args)?;
+        if proxy_enabled {
+            validate_proxy_binary_capability(proxy_target, &binary)?;
+        }
+    }
 
     tracing::info!(
         binary = %binary.path.display(),
@@ -193,7 +272,17 @@ pub fn run_launch(
 
         maybe_run_blarify_indexing_prompt(tool, is_noninteractive(), Some(&execution_dir))?;
 
-        // Build command
+        // Register before the final executable check so revalidation, command
+        // construction, credential projection, and spawn remain adjacent.
+        let shutdown = signals::register_handlers()?;
+
+        if let (Some(identity), Some(target)) = (&preflight_identity, proxy_target) {
+            revalidate_proxy_binary(tool, override_origin, target, &binary, identity)?;
+        }
+
+        // This final check catches ordinary package and symlink replacement
+        // after preflight and narrows same-user races without claiming the
+        // stronger guarantees of descriptor-based execution.
         let mut cmd = build_command_for_dir(
             &binary,
             resume,
@@ -204,10 +293,16 @@ pub fn run_launch(
             subprocess_safe,
         );
         cmd.current_dir(&execution_dir);
-        env_builder.apply_to_command(&mut cmd);
-
-        // Register signal handlers
-        let shutdown = signals::register_handlers()?;
+        let routed_copilot = proxy_config.is_some()
+            && proxy_target == Some(amplihack_utils::litellm_proxy::CliTarget::CopilotCli);
+        validate_routed_copilot_workspace(&execution_dir, routed_copilot)?;
+        let _isolated_copilot_home = isolate_routed_copilot_home(&mut cmd, routed_copilot)
+            .context("failed to create isolated Copilot home for external LiteLLM launch")?;
+        apply_launch_environment(
+            &mut cmd,
+            env_builder,
+            proxy_config.as_ref().zip(proxy_target),
+        );
 
         // Spawn child in its own process group.
         //
@@ -251,6 +346,232 @@ pub fn run_launch(
         let _ = tracker.crash_session(&session_id);
     }
     result
+}
+
+pub(crate) fn preflight_claude_proxy_binary(
+    tool: &str,
+    override_origin: OverrideOrigin,
+) -> Result<BinaryInfo> {
+    preflight_proxy_binary(
+        tool,
+        override_origin,
+        amplihack_utils::litellm_proxy::CliTarget::Claude,
+    )
+    .map(|preflight| preflight.binary)
+}
+
+pub(crate) fn preflight_copilot_proxy_binary(
+    tool: &str,
+    override_origin: OverrideOrigin,
+) -> Result<BinaryInfo> {
+    preflight_proxy_binary(
+        tool,
+        override_origin,
+        amplihack_utils::litellm_proxy::CliTarget::CopilotCli,
+    )
+    .map(|preflight| preflight.binary)
+}
+
+#[derive(Debug)]
+struct ProxyBinaryPreflight {
+    binary: BinaryInfo,
+    identity: ExecutableIdentity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExecutableIdentity {
+    canonical_path: PathBuf,
+    metadata: StableExecutableMetadata,
+    digest: [u8; 32],
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StableExecutableMetadata {
+    device: u64,
+    inode: u64,
+    length: u64,
+    mode: u32,
+    modified_seconds: i64,
+    modified_nanoseconds: i64,
+    changed_seconds: i64,
+    changed_nanoseconds: i64,
+}
+
+#[cfg(not(unix))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StableExecutableMetadata {
+    length: u64,
+    modified: std::time::SystemTime,
+}
+
+fn capture_executable_identity(path: &Path) -> Result<ExecutableIdentity> {
+    let canonical_path = path
+        .canonicalize()
+        .with_context(|| format!("failed to canonicalize executable {}", path.display()))?;
+    let mut executable = std::fs::File::open(&canonical_path).with_context(|| {
+        format!(
+            "failed to open executable {} for identity capture",
+            canonical_path.display()
+        )
+    })?;
+    let metadata = executable.metadata().with_context(|| {
+        format!(
+            "failed to read executable metadata for {}",
+            canonical_path.display()
+        )
+    })?;
+    #[cfg(unix)]
+    let metadata = {
+        use std::os::unix::fs::MetadataExt;
+        StableExecutableMetadata {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            length: metadata.len(),
+            mode: metadata.mode(),
+            modified_seconds: metadata.mtime(),
+            modified_nanoseconds: metadata.mtime_nsec(),
+            changed_seconds: metadata.ctime(),
+            changed_nanoseconds: metadata.ctime_nsec(),
+        }
+    };
+    #[cfg(not(unix))]
+    let metadata = StableExecutableMetadata {
+        length: metadata.len(),
+        modified: metadata.modified().with_context(|| {
+            format!(
+                "failed to read executable modification time for {}",
+                canonical_path.display()
+            )
+        })?,
+    };
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let bytes_read = executable.read(&mut buffer).with_context(|| {
+            format!(
+                "failed to hash executable contents for {}",
+                canonical_path.display()
+            )
+        })?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+    Ok(ExecutableIdentity {
+        canonical_path,
+        metadata,
+        digest: hasher.finalize().into(),
+    })
+}
+
+fn preflight_proxy_binary(
+    tool: &str,
+    override_origin: OverrideOrigin,
+    target: amplihack_utils::litellm_proxy::CliTarget,
+) -> Result<ProxyBinaryPreflight> {
+    let resolution = amplihack_utils::launch_target::resolve(tool, override_origin);
+    let (display_name, package) = match target {
+        amplihack_utils::litellm_proxy::CliTarget::Claude => {
+            ("Claude Code", "@anthropic-ai/claude-code")
+        }
+        amplihack_utils::litellm_proxy::CliTarget::CopilotCli => {
+            ("GitHub Copilot CLI", "@github/copilot")
+        }
+        amplihack_utils::litellm_proxy::CliTarget::RustyClawd => ("RustyClawd", "rustyclawd"),
+    };
+    let rejection_report = resolution.rejection_report(tool, package);
+    let resolved = resolution.target.ok_or_else(|| {
+        anyhow::anyhow!(
+            "{display_name} capability could not be verified before external LiteLLM launch:\n{}",
+            rejection_report
+        )
+    })?;
+    let binary = BinaryInfo {
+        name: tool.to_string(),
+        path: resolved.path,
+        version: Some(resolved.version),
+    };
+    validate_proxy_binary_capability(target, &binary)?;
+    let identity = capture_executable_identity(&binary.path)
+        .context("failed to capture routed executable identity during preflight")?;
+    Ok(ProxyBinaryPreflight { binary, identity })
+}
+
+fn revalidate_proxy_binary(
+    tool: &str,
+    override_origin: OverrideOrigin,
+    target: amplihack_utils::litellm_proxy::CliTarget,
+    expected: &BinaryInfo,
+    expected_identity: &ExecutableIdentity,
+) -> Result<()> {
+    let resolution = amplihack_utils::launch_target::resolve_uncached(tool, override_origin);
+    let rejection_report = resolution.rejection_report(tool, tool);
+    let resolved = resolution.target.ok_or_else(|| {
+        anyhow::anyhow!(
+            "routed executable changed after preflight and no longer passes verification:\n{}",
+            rejection_report
+        )
+    })?;
+    let actual = BinaryInfo {
+        name: tool.to_string(),
+        path: resolved.path,
+        version: Some(resolved.version),
+    };
+    validate_proxy_binary_capability(target, &actual)?;
+    let actual_identity = capture_executable_identity(&actual.path)
+        .context("failed to revalidate routed executable identity immediately before spawn")?;
+
+    if actual.version != expected.version || actual_identity != *expected_identity {
+        anyhow::bail!(
+            "routed executable changed after preflight; refusing to spawn (expected {} version {}, resolved {} version {})",
+            expected_identity.canonical_path.display(),
+            expected.version.as_deref().unwrap_or("unknown"),
+            actual_identity.canonical_path.display(),
+            actual.version.as_deref().unwrap_or("unknown"),
+        );
+    }
+    Ok(())
+}
+
+fn validate_proxy_binary_capability(
+    target: amplihack_utils::litellm_proxy::CliTarget,
+    binary: &BinaryInfo,
+) -> Result<()> {
+    match target {
+        amplihack_utils::litellm_proxy::CliTarget::Claude => {
+            amplihack_utils::litellm_proxy::require_claude_code_capability(
+                binary.version.as_deref(),
+            )
+            .context("Claude Code external LiteLLM capability check failed")?;
+        }
+        amplihack_utils::litellm_proxy::CliTarget::CopilotCli => {
+            amplihack_utils::litellm_proxy::require_copilot_cli_capability(
+                binary.version.as_deref(),
+            )
+            .context("GitHub Copilot CLI external LiteLLM capability check failed")?;
+        }
+        amplihack_utils::litellm_proxy::CliTarget::RustyClawd => {}
+    }
+    Ok(())
+}
+
+fn validate_proxy_launch_args(
+    target: amplihack_utils::litellm_proxy::CliTarget,
+    resume: bool,
+    continue_session: bool,
+    extra_args: &[String],
+) -> Result<()> {
+    let mut effective_args = extra_args.to_vec();
+    if resume {
+        effective_args.push("--resume".to_string());
+    }
+    if continue_session {
+        effective_args.push("--continue".to_string());
+    }
+    amplihack_utils::litellm_proxy::validate_launch_args(target, &effective_args)
+        .context("invalid external LiteLLM proxy launch mode")
 }
 
 fn validate_launch_prompt_delivery(tool: &str) -> Result<()> {

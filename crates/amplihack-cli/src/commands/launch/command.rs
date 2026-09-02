@@ -6,8 +6,78 @@ use crate::binary_finder::BinaryInfo;
 use crate::commands::uvx_help::is_uvx_deployment;
 use crate::env_builder::EnvBuilder;
 
+use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+pub(super) const COPILOT_HOME_ENV: &str = "COPILOT_HOME";
+
+/// Reject repository custom agents before a routed Copilot process starts.
+///
+/// `COPILOT_HOME` isolates user configuration, but Copilot independently
+/// discovers `.github/agents` from the workspace. Copilot has no supported
+/// switch that disables that discovery, and an agent may select its own model.
+pub(crate) fn validate_routed_copilot_workspace(
+    execution_dir: &Path,
+    routed_copilot: bool,
+) -> Result<()> {
+    if !routed_copilot {
+        return Ok(());
+    }
+
+    let start = execution_dir.canonicalize().with_context(|| {
+        format!(
+            "failed to resolve routed Copilot workspace {}",
+            execution_dir.display()
+        )
+    })?;
+    for directory in start.ancestors() {
+        let agents = directory.join(".github").join("agents");
+        match std::fs::symlink_metadata(&agents) {
+            Ok(_) => bail!(
+                "routed Copilot cannot launch from a workspace containing {}; repository custom agents can override the configured model",
+                agents.display()
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to inspect routed Copilot custom-agent path {}",
+                        agents.display()
+                    )
+                });
+            }
+        }
+
+        if std::fs::symlink_metadata(directory.join(".git")).is_ok() {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Give a routed Copilot process a fresh configuration root for its lifetime.
+///
+/// Copilot discovers installed plugins without an argv flag, so rejecting
+/// `--plugin-dir` is not sufficient. Keeping the returned guard alive prevents
+/// user-scoped plugin, hook, agent, and MCP configuration from entering the
+/// routed session and ensures the isolated state is removed after exit.
+/// Repository configuration is a separate scope enforced by
+/// [`validate_routed_copilot_workspace`].
+pub(super) fn isolate_routed_copilot_home(
+    command: &mut Command,
+    routed_copilot: bool,
+) -> std::io::Result<Option<tempfile::TempDir>> {
+    if !routed_copilot {
+        return Ok(None);
+    }
+
+    let home = tempfile::Builder::new()
+        .prefix("amplihack-routed-copilot-")
+        .tempdir()?;
+    command.env(COPILOT_HOME_ENV, home.path());
+    Ok(Some(home))
+}
 
 #[cfg(test)]
 pub(super) fn build_command(
@@ -55,10 +125,16 @@ pub(super) fn build_command_for_dir(
 
     // Inject --model unless user already supplied one.
     // Default model depends on the tool — Claude uses opus[1m], Copilot uses its own default.
-    let user_has_model = extra_args.iter().any(|a| a == "--model");
+    let user_has_model = extra_args
+        .iter()
+        .any(|arg| arg == "--model" || arg.starts_with("--model="));
     if !user_has_model && is_claude_compatible {
-        let default_model =
-            std::env::var("AMPLIHACK_DEFAULT_MODEL").unwrap_or_else(|_| "opus[1m]".to_string());
+        let default_model = if amplihack_utils::litellm_proxy::proxy_requested() {
+            std::env::var(amplihack_utils::litellm_proxy::MODEL_ENV)
+                .unwrap_or_else(|_| "amplihack-default".to_string())
+        } else {
+            std::env::var("AMPLIHACK_DEFAULT_MODEL").unwrap_or_else(|_| "opus[1m]".to_string())
+        };
         cmd.arg("--model");
         cmd.arg(default_model);
     }
@@ -106,6 +182,12 @@ pub(super) fn build_command_for_dir(
         }
     }
 
+    if binary.name == "claude" && amplihack_utils::litellm_proxy::proxy_requested() {
+        cmd.arg("--setting-sources");
+        cmd.arg("");
+        cmd.arg("--safe-mode");
+    }
+
     // Inject --remote for Copilot by default. Remote mode offloads compute to
     // GitHub's cloud, which is the preferred mode for amplihack orchestration.
     // Skip injection if the user already passed --remote, or if
@@ -138,6 +220,17 @@ pub(super) fn build_command_for_dir(
     }
 
     cmd.args(extra_args);
+
+    // These routed-Copilot restrictions deliberately come last. Copilot has
+    // enabling counterparts for remote control and export, so user arguments
+    // must not override the gateway isolation contract. It has no enabling
+    // counterpart for `--no-auto-update`.
+    if binary.name == "copilot" && amplihack_utils::litellm_proxy::proxy_requested() {
+        cmd.arg("--no-remote");
+        cmd.arg("--no-remote-export");
+        cmd.arg("--no-auto-update");
+        cmd.arg("--secret-env-vars=COPILOT_PROVIDER_API_KEY");
+    }
     cmd
 }
 
@@ -253,6 +346,9 @@ pub(crate) fn should_inject_copilot_remote(extra_args: &[String]) -> bool {
     if std::env::var("AMPLIHACK_COPILOT_NO_REMOTE").as_deref() == Ok("1") {
         return false;
     }
+    if amplihack_utils::litellm_proxy::proxy_requested() {
+        return false;
+    }
     !extra_args
         .iter()
         .any(|a| a == "--remote" || a == "--no-remote")
@@ -264,7 +360,8 @@ fn inject_uvx_plugin_args(
     extra_args: &[String],
     add_dir_override: Option<&Path>,
 ) {
-    if tool != "claude" || !is_uvx_deployment() {
+    if tool != "claude" || amplihack_utils::litellm_proxy::proxy_requested() || !is_uvx_deployment()
+    {
         return;
     }
 

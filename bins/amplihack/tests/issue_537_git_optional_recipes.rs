@@ -35,6 +35,15 @@ fn amplihack_bin() -> PathBuf {
 
 fn run_recipe_from(cwd: &Path, recipe: &Path, extra_args: &[&str]) -> Output {
     let mut command = Command::new(amplihack_bin());
+    for key in [
+        "AMPLIHACK_SESSION_TREE_DIR",
+        "AMPLIHACK_TREE_ID",
+        "AMPLIHACK_SESSION_DEPTH",
+        "AMPLIHACK_MAX_DEPTH",
+        "AMPLIHACK_RECIPE_RUN_ID",
+    ] {
+        command.env_remove(key);
+    }
     command
         .current_dir(cwd)
         .env("AMPLIHACK_HOME", workspace_root())

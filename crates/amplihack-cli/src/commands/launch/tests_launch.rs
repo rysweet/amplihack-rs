@@ -1,9 +1,85 @@
 use super::*;
 use crate::env_builder::EnvBuilder;
 use crate::launcher::ManagedChild;
-use crate::test_support::{home_env_lock, restore_home, set_home};
+use crate::test_support::{CwdGuard, EnvGuard, HomeGuard, home_env_lock, restore_home, set_home};
 use std::fs;
 use std::process::Command;
+
+#[cfg(unix)]
+fn write_fake_claude(path: &std::path::Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::write(path, body).unwrap();
+    let mut permissions = fs::metadata(path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).unwrap();
+}
+
+#[test]
+fn executable_identity_detects_file_replacement() {
+    let directory = tempfile::tempdir().unwrap();
+    let executable = directory.path().join("agent");
+    fs::write(&executable, b"original executable").unwrap();
+    let original = capture_executable_identity(&executable).unwrap();
+
+    fs::rename(&executable, directory.path().join("original-agent")).unwrap();
+    fs::write(&executable, b"replacement executable with different length").unwrap();
+    let replacement = capture_executable_identity(&executable).unwrap();
+
+    assert_ne!(original, replacement);
+}
+
+#[test]
+fn executable_identity_detects_equal_length_content_changes() {
+    let directory = tempfile::tempdir().unwrap();
+    let executable = directory.path().join("agent");
+    fs::write(&executable, b"first payload").unwrap();
+    let original = capture_executable_identity(&executable).unwrap();
+
+    fs::write(&executable, b"other payload").unwrap();
+    let replacement = capture_executable_identity(&executable).unwrap();
+
+    assert_eq!(original.metadata.length, replacement.metadata.length);
+    assert_ne!(original.digest, replacement.digest);
+    assert_ne!(original, replacement);
+}
+
+#[cfg(unix)]
+#[test]
+fn routed_executable_revalidation_rejects_same_version_replacement() {
+    let _guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let directory = tempfile::tempdir().unwrap();
+    let executable = directory.path().join("claude");
+    let body = "#!/bin/sh\n[ \"$1\" = --version ] && { printf '2.1.247\\n'; exit 0; }\n";
+    let replacement_body =
+        "#!/bin/sh\n[ \"$1\" = --version ] && { printf \"2.1.247\\n\"; exit 0; }\n";
+    assert_eq!(body.len(), replacement_body.len());
+    write_fake_claude(&executable, body);
+    let expected = BinaryInfo {
+        name: "claude".to_string(),
+        path: executable.clone(),
+        version: Some("2.1.247".to_string()),
+    };
+    let identity = capture_executable_identity(&executable).unwrap();
+    let executable_text = executable.to_string_lossy().into_owned();
+    let _env = EnvGuard::set([("AMPLIHACK_CLAUDE_BINARY_PATH", executable_text.as_str())]);
+
+    fs::rename(&executable, directory.path().join("original-claude")).unwrap();
+    write_fake_claude(&executable, replacement_body);
+
+    let error = revalidate_proxy_binary(
+        "claude",
+        amplihack_utils::launch_target::OverrideOrigin::User,
+        amplihack_utils::litellm_proxy::CliTarget::Claude,
+        &expected,
+        &identity,
+    )
+    .expect_err("replacement with the same version must fail closed");
+
+    assert!(format!("{error:#}").contains("changed after preflight"));
+}
 
 fn restore_prompt_delivery(previous: Option<std::ffi::OsString>) {
     unsafe {
@@ -58,6 +134,7 @@ fn run_launch_rejects_explicit_unsupported_amplifier_prompt_delivery_modes() {
             None,
             vec!["run".to_string(), "review repo".to_string()],
             amplihack_utils::launch_target::OverrideOrigin::User,
+            None,
         )
         .expect_err("unsupported Amplifier delivery must fail before launch");
         let message = format!("{err:#}");
@@ -121,6 +198,323 @@ fn build_docker_launcher_args_preserves_shared_launcher_flags() {
             "-p",
             "audit parity",
         ]
+    );
+}
+
+#[test]
+fn docker_gateway_launch_rejects_claude_conflicts_before_docker() {
+    let _guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _gateway_env = EnvGuard::set([
+        (
+            amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+            "https://gateway.example.com",
+        ),
+        (
+            amplihack_utils::litellm_proxy::API_KEY_ENV,
+            "gateway-secret",
+        ),
+        (amplihack_utils::litellm_proxy::MODEL_ENV, "gateway-model"),
+    ]);
+
+    let error = run_launch(
+        "claude",
+        "launch",
+        true,
+        false,
+        false,
+        false,
+        true,
+        false,
+        true,
+        None,
+        vec!["--model".to_string(), "bypass-model".to_string()],
+        amplihack_utils::launch_target::OverrideOrigin::User,
+        Some(amplihack_utils::litellm_proxy::CliTarget::Claude),
+    )
+    .expect_err("a conflicting model must fail before Docker is probed");
+    assert!(
+        format!("{error:#}").contains("requested and fallback models must match"),
+        "unexpected error: {error:#}"
+    );
+}
+
+#[test]
+fn claude_gateway_capability_gate_uses_the_resolved_binary_version() {
+    use amplihack_utils::litellm_proxy::CliTarget;
+
+    let supported = BinaryInfo {
+        name: "claude".to_string(),
+        path: "/opt/claude/bin/claude".into(),
+        version: Some("2.1.247".to_string()),
+    };
+    validate_proxy_binary_capability(CliTarget::Claude, &supported)
+        .expect("the runtime-verified Claude Code version must pass");
+
+    for version in [
+        Some("2.1.246"),
+        Some("2.1.248"),
+        Some("3.0.0"),
+        Some("2.1.247-beta.1"),
+        None,
+    ] {
+        let unsupported = BinaryInfo {
+            name: "claude".to_string(),
+            path: "/opt/claude/bin/claude".into(),
+            version: version.map(str::to_string),
+        };
+        let error = validate_proxy_binary_capability(CliTarget::Claude, &unsupported)
+            .expect_err("unproved subprocess scrubbing must fail closed");
+        let message = format!("{error:#}");
+        assert!(message.contains("2.1.247"), "{message}");
+        assert!(
+            !message.contains("gateway-secret"),
+            "capability errors must not disclose gateway credentials"
+        );
+    }
+}
+
+#[test]
+fn copilot_gateway_capability_gate_uses_the_resolved_binary_version() {
+    use amplihack_utils::litellm_proxy::CliTarget;
+
+    let supported = BinaryInfo {
+        name: "copilot".to_string(),
+        path: "/opt/copilot/bin/copilot".into(),
+        version: Some("1.0.83-1".to_string()),
+    };
+    validate_proxy_binary_capability(CliTarget::CopilotCli, &supported)
+        .expect("the runtime-verified Copilot CLI version must pass");
+
+    for version in [
+        Some("1.0.83"),
+        Some("1.0.83-2"),
+        Some("1.0.84-1"),
+        Some("2.0.0"),
+        Some("not-a-version"),
+        None,
+    ] {
+        let binary = BinaryInfo {
+            name: "copilot".to_string(),
+            path: "/opt/copilot/bin/copilot".into(),
+            version: version.map(str::to_string),
+        };
+        let error = validate_proxy_binary_capability(CliTarget::CopilotCli, &binary)
+            .expect_err("unproved subprocess scrubbing must fail closed");
+        let message = format!("{error:#}");
+        assert!(message.contains("1.0.83-1"), "{message}");
+        assert!(
+            !message.contains("gateway-secret"),
+            "capability errors must not disclose gateway credentials"
+        );
+    }
+}
+
+#[test]
+fn capability_gate_does_not_change_rustyclawd() {
+    let binary = BinaryInfo {
+        name: "rustyclawd".to_string(),
+        path: "/opt/rustyclawd".into(),
+        version: None,
+    };
+    validate_proxy_binary_capability(
+        amplihack_utils::litellm_proxy::CliTarget::RustyClawd,
+        &binary,
+    )
+    .expect("the exact-version gates must not apply to RustyClawd");
+}
+
+#[cfg(unix)]
+#[test]
+fn rejected_claude_capabilities_fail_before_launch_setup_or_docker() {
+    let _guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    for (case, script, create_binary, docker) in [
+        (
+            "unsupported",
+            "#!/bin/sh\n[ \"$1\" = --version ] && { printf '2.1.82\\n'; exit 0; }\ntouch \"$HOME/launched\"\n",
+            true,
+            false,
+        ),
+        (
+            "malformed",
+            "#!/bin/sh\n[ \"$1\" = --version ] && { printf 'unknown\\n'; exit 0; }\ntouch \"$HOME/launched\"\n",
+            true,
+            false,
+        ),
+        (
+            "failed",
+            "#!/bin/sh\n[ \"$1\" = --version ] && exit 7\ntouch \"$HOME/launched\"\n",
+            true,
+            false,
+        ),
+        ("missing", "", false, false),
+    ] {
+        let home = tempfile::tempdir().unwrap();
+        let binary = if case == "unsupported" {
+            home.path().join("old-rustyclawd-wrapper")
+        } else {
+            home.path().join(format!("claude-{case}"))
+        };
+        if create_binary {
+            write_fake_claude(&binary, script);
+        }
+        let binary_text = binary.to_string_lossy().into_owned();
+        let _home = HomeGuard::set(home.path());
+        let _env = EnvGuard::set([
+            (
+                amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+                "https://gateway.example.com",
+            ),
+            (
+                amplihack_utils::litellm_proxy::API_KEY_ENV,
+                "gateway-secret",
+            ),
+            (amplihack_utils::litellm_proxy::MODEL_ENV, "gateway-model"),
+            ("AMPLIHACK_CLAUDE_BINARY_PATH", binary_text.as_str()),
+            ("AMPLIHACK_NONINTERACTIVE", "1"),
+        ]);
+
+        let error = run_launch(
+            "claude",
+            "launch",
+            docker,
+            false,
+            false,
+            false,
+            true,
+            false,
+            false,
+            None,
+            Vec::new(),
+            amplihack_utils::launch_target::OverrideOrigin::User,
+            Some(amplihack_utils::litellm_proxy::CliTarget::Claude),
+        )
+        .expect_err("unproved Claude capability must reject the launch");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("capability") || message.contains("2.1.247"),
+            "{case}: {message}"
+        );
+        assert!(
+            !home.path().join("launched").exists(),
+            "{case}: the selected executable must not be launched"
+        );
+        assert!(
+            !home.path().join(".amplihack").exists(),
+            "{case}: capability rejection must precede launch filesystem setup"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn docker_claude_gateway_rejects_before_probing_an_unrelated_host_binary() {
+    let _guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let home = tempfile::tempdir().unwrap();
+    let binary = home.path().join("claude");
+    write_fake_claude(
+        &binary,
+        "#!/bin/sh\n\
+         [ \"$1\" = --version ] && { touch \"$HOME/probed\"; printf '2.1.247\\n'; exit 0; }\n\
+         touch \"$HOME/launched\"\n",
+    );
+    let binary_text = binary.to_string_lossy().into_owned();
+    let _home = HomeGuard::set(home.path());
+    let _env = EnvGuard::set([
+        (
+            amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+            "https://gateway.example.com",
+        ),
+        (
+            amplihack_utils::litellm_proxy::API_KEY_ENV,
+            "gateway-secret",
+        ),
+        (amplihack_utils::litellm_proxy::MODEL_ENV, "gateway-model"),
+        ("AMPLIHACK_CLAUDE_BINARY_PATH", binary_text.as_str()),
+    ]);
+
+    let error = run_launch(
+        "claude",
+        "launch",
+        true,
+        false,
+        false,
+        false,
+        true,
+        false,
+        false,
+        None,
+        Vec::new(),
+        amplihack_utils::launch_target::OverrideOrigin::User,
+        Some(amplihack_utils::litellm_proxy::CliTarget::Claude),
+    )
+    .expect_err("Docker cannot attest its selected Claude executable before creation");
+
+    assert!(format!("{error:#}").contains("container executable"));
+    assert!(!home.path().join("probed").exists());
+    assert!(!home.path().join("launched").exists());
+    assert!(!home.path().join(".amplihack").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn supported_claude_launch_receives_only_the_scrubbed_gateway_environment() {
+    let _guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let home = tempfile::tempdir().unwrap();
+    let binary = home.path().join("claude");
+    write_fake_claude(
+        &binary,
+        "#!/bin/sh\n\
+         if [ \"$1\" = --version ]; then printf '2.1.247\\n'; exit 0; fi\n\
+         printf '%s|%s|%s' \"$CLAUDE_CODE_SUBPROCESS_ENV_SCRUB\" \
+         \"${ANTHROPIC_API_KEY-unset}\" \"$ANTHROPIC_AUTH_TOKEN\" > \"$HOME/child-env\"\n",
+    );
+    let binary_text = binary.to_string_lossy().into_owned();
+    let _home = HomeGuard::set(home.path());
+    let _cwd = CwdGuard::set(home.path()).unwrap();
+    let _env = EnvGuard::set([
+        (
+            amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+            "https://gateway.example.com",
+        ),
+        (
+            amplihack_utils::litellm_proxy::API_KEY_ENV,
+            "gateway-secret",
+        ),
+        (amplihack_utils::litellm_proxy::MODEL_ENV, "gateway-model"),
+        ("AMPLIHACK_CLAUDE_BINARY_PATH", binary_text.as_str()),
+        ("AMPLIHACK_NONINTERACTIVE", "1"),
+        ("ANTHROPIC_API_KEY", "direct-provider-secret"),
+    ]);
+
+    run_launch(
+        "claude",
+        "launch",
+        false,
+        false,
+        false,
+        false,
+        true,
+        false,
+        true,
+        None,
+        Vec::new(),
+        amplihack_utils::launch_target::OverrideOrigin::User,
+        Some(amplihack_utils::litellm_proxy::CliTarget::Claude),
+    )
+    .expect("a supported Claude Code executable must launch");
+
+    assert_eq!(
+        fs::read_to_string(home.path().join("child-env")).unwrap(),
+        "1|unset|gateway-secret"
     );
 }
 
