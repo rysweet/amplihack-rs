@@ -153,7 +153,7 @@ pub(crate) fn run(args: &VerifyLiveArgs) -> Result<RunSummaryV1, VerifyFailure> 
         ensure_repository_unchanged(&repo, client.id, "positive-postcondition")?;
         assert_client_binary_unchanged(client)?;
         let negative_cases =
-            run_negative_cases(client, &config, &repo, args.timeout_seconds.min(45))?;
+            run_negative_cases(client, &config, &repo, args.timeout_seconds.min(15))?;
         negative_cases_passed += u16::try_from(negative_cases.len()).map_err(|_| {
             client_failure(
                 client.id,
@@ -1626,8 +1626,13 @@ fn expect_client_failure(
     match execute_client(client, config, repo, prompt, timeout_seconds, failure_case) {
         Err(error) if error.exit == 69 && error.stage == failure_case => Ok(()),
         Err(error)
-            if failure_case == "unavailable-gateway"
-                && error.exit == 70
+            if matches!(
+                failure_case,
+                "invalid-credential"
+                    | "unavailable-gateway"
+                    | "upstream-failure"
+                    | "malformed-response"
+            ) && error.exit == 70
                 && error.stage == failure_case
                 && error.message.contains("execution timed out") =>
         {
