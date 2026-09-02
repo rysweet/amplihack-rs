@@ -205,6 +205,8 @@ impl LiveConfig {
         amplihack_utils::litellm_proxy::validate_environment()
             .map_err(|error| config_failure("configuration", error.to_string()))?;
         let endpoint = required_live_env(amplihack_utils::litellm_proxy::ENDPOINT_ENV)?;
+        let endpoint = amplihack_utils::litellm_proxy::gateway_root_url(&endpoint)
+            .map_err(|error| config_failure("configuration", error.to_string()))?;
         let key = required_live_env(amplihack_utils::litellm_proxy::API_KEY_ENV)?;
         let model = required_live_env(amplihack_utils::litellm_proxy::MODEL_ENV)?;
         let expected_provider = required_live_env("AMPLIHACK_LITELLM_EXPECTED_PROVIDER")?;
@@ -257,7 +259,7 @@ impl LiveConfig {
             ));
         }
         Ok(Self {
-            endpoint: endpoint.trim_end_matches('/').to_string(),
+            endpoint,
             key,
             model,
             expected_provider,

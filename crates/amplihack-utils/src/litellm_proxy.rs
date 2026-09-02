@@ -369,6 +369,13 @@ fn anthropic_base_url(endpoint: &Url) -> Url {
     endpoint
 }
 
+/// Validate an endpoint and return its authority without a protocol path.
+pub fn gateway_root_url(value: &str) -> Result<String, ProxyError> {
+    let mut endpoint = validate_endpoint(value)?;
+    endpoint.set_path("/");
+    Ok(endpoint.as_str().trim_end_matches('/').to_string())
+}
+
 pub fn endpoint_is_loopback(value: &str) -> bool {
     Url::parse(value)
         .ok()
@@ -595,6 +602,18 @@ mod tests {
         ] {
             assert!(validate_endpoint(rejected).is_err(), "{rejected}");
         }
+    }
+
+    #[test]
+    fn gateway_root_removes_supported_api_path() {
+        assert_eq!(
+            gateway_root_url("https://gateway.example.com/v1").unwrap(),
+            "https://gateway.example.com"
+        );
+        assert_eq!(
+            gateway_root_url("http://127.0.0.1:4000/v1/").unwrap(),
+            "http://127.0.0.1:4000"
+        );
     }
 
     #[test]
