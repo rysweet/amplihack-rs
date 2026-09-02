@@ -10,11 +10,16 @@ GATEWAY_KEY="gateway-user-journey-secret"
     echo "FAIL: build amplihack or set AMPLIHACK_BIN to an executable" >&2
     exit 1
 }
-[[ -x "$CLAUDE_BIN" ]] || {
+if [[ -x "$CLAUDE_BIN" ]]; then
+    claude_path="$(cd "$(dirname "$CLAUDE_BIN")" && pwd)/$(basename "$CLAUDE_BIN")"
+else
+    claude_path="$(command -v "$CLAUDE_BIN" || true)"
+fi
+[[ -n "$claude_path" && -x "$claude_path" ]] || {
     echo "FAIL: set CLAUDE_BIN to Claude Code $EXPECTED_CLAUDE_VERSION" >&2
     exit 1
 }
-actual_version="$("$CLAUDE_BIN" --version | sed -nE 's/.*([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | head -1)"
+actual_version="$("$claude_path" --version | sed -nE 's/.*([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | head -1)"
 [[ "$actual_version" == "$EXPECTED_CLAUDE_VERSION" ]] || {
     echo "FAIL: expected Claude Code $EXPECTED_CLAUDE_VERSION, got ${actual_version:-unknown}" >&2
     exit 1
@@ -22,7 +27,7 @@ actual_version="$("$CLAUDE_BIN" --version | sed -nE 's/.*([0-9]+\.[0-9]+\.[0-9]+
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 amplihack_bin="$(cd "$(dirname "$AMPLIHACK_BIN")" && pwd)/$(basename "$AMPLIHACK_BIN")"
-claude_dir="$(cd "$(dirname "$CLAUDE_BIN")" && pwd)"
+claude_dir="$(dirname "$claude_path")"
 tmp="$(mktemp -d)"
 server_pid=
 cleanup() {
