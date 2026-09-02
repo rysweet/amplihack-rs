@@ -51,8 +51,8 @@ creation. Missing executables, failed probes, malformed or unknown output, and
 all unverified versions fail closed. On Linux, Claude's scrub enforcement also
 requires `bubblewrap` and `socat`; Claude refuses to start if either dependency
 is unavailable.
-Routed Copilot CLI requires runtime `1.0.83-3` from exact npm package
-`1.0.83-2` and
+Routed Copilot CLI requires exact npm package `1.0.83-2` and runtime
+`1.0.83-2` or `1.0.83-3`, and
 receives `--secret-env-vars=COPILOT_PROVIDER_API_KEY`. The verified control
 keeps the restricted gateway key in Copilot while removing it from shell and
 stdio MCP subprocess environments and redacting it from tool output. Missing,

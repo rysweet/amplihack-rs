@@ -46,8 +46,8 @@ On Linux, install `bubblewrap` and `socat`; Claude's scrub mode refuses to start
 without both sandbox dependencies.
 
 Copilot CLI receives `--secret-env-vars=COPILOT_PROVIDER_API_KEY`, and
-amplihack requires the exact selected executable to report the currently
-verified npm package, `1.0.83-2` (runtime version `1.0.83-3`):
+amplihack requires the exact selected executable to resolve from npm package
+`1.0.83-2` and report runtime `1.0.83-2` or `1.0.83-3`:
 
 ```bash
 command -v copilot
@@ -142,7 +142,7 @@ over settings from every supported settings source.
 | Claude Code version is not `2.1.247` | Install the verified release. Future releases remain blocked until the real-CLI Bash, hook, and stdio MCP isolation test is rerun and the attestation set is updated. |
 | Claude reports a missing sandbox dependency | On Linux, install `bubblewrap` and `socat`, then retry. Do not disable `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`. |
 | Copilot CLI version cannot be verified | Run `command -v copilot` and `copilot --version` in the same environment. Install the official Copilot CLI executable. |
-| Copilot CLI runtime version is not `1.0.83-3` | Install npm package `1.0.83-2`. Later artifacts remain blocked until the real-CLI shell and stdio MCP isolation test is rerun and the attestation set is updated. |
+| Copilot CLI runtime version is not `1.0.83-2` or `1.0.83-3` | Install npm package `1.0.83-2`. Later artifacts remain blocked until the real-CLI shell and stdio MCP isolation test is rerun and the attestation set is updated. |
 
 ## Operate gateway-owned concerns
 

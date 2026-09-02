@@ -45,8 +45,10 @@ rusty --version
 gh auth status
 ```
 
-The pinned Copilot npm package is `1.0.83-2`; its immutable native executable
-reports `1.0.83-3`. The verifier attests both identities independently.
+The pinned Copilot npm package and its runtime both report `1.0.83-2` in the
+verifier's clean home. A user-home cache may make the same package launcher
+report the separately tested `1.0.83-3`, but that mutable cache is intentionally
+excluded from live-verification provenance.
 
 ## Prepare the checkout
 

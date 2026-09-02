@@ -19,7 +19,9 @@ pub const MODEL_ENV: &str = "AMPLIHACK_LITELLM_MODEL";
 pub const VERIFIED_CLAUDE_CODE_VERSIONS: &[&str] = &["2.1.247"];
 // Every entry must pass tests/issue_1416_copilot_subprocess_scrub.sh as the real
 // published CLI artifact before it is added here.
-pub const VERIFIED_COPILOT_CLI_VERSIONS: &[&str] = &["1.0.83-3"];
+pub const COPILOT_NPM_PACKAGE_VERSION: &str = "1.0.83-2";
+pub const COPILOT_ISOLATED_RUNTIME_VERSION: &str = "1.0.83-2";
+pub const VERIFIED_COPILOT_CLI_VERSIONS: &[&str] = &[COPILOT_ISOLATED_RUNTIME_VERSION, "1.0.83-3"];
 
 const CONFIG_ENV_VARS: [&str; 3] = [ENDPOINT_ENV, API_KEY_ENV, MODEL_ENV];
 const ANTHROPIC_DIRECT_ENV_VARS: [&str; 28] = [
@@ -529,13 +531,15 @@ mod tests {
 
     #[test]
     fn copilot_cli_capability_accepts_only_runtime_verified_releases() {
-        assert_eq!(
-            copilot_cli_capability(Some("1.0.83-3")),
-            CopilotCliCapability::Supported {
-                version: "1.0.83-3".to_string()
-            }
-        );
-        assert!(require_copilot_cli_capability(Some("1.0.83-3")).is_ok());
+        for version in ["1.0.83-2", "1.0.83-3"] {
+            assert_eq!(
+                copilot_cli_capability(Some(version)),
+                CopilotCliCapability::Supported {
+                    version: version.to_string()
+                }
+            );
+            assert!(require_copilot_cli_capability(Some(version)).is_ok());
+        }
     }
 
     #[test]

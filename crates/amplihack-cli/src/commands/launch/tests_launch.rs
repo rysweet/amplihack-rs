@@ -279,13 +279,15 @@ fn claude_gateway_capability_gate_uses_the_resolved_binary_version() {
 fn copilot_gateway_capability_gate_uses_the_resolved_binary_version() {
     use amplihack_utils::litellm_proxy::CliTarget;
 
-    let supported = BinaryInfo {
-        name: "copilot".to_string(),
-        path: "/opt/copilot/bin/copilot".into(),
-        version: Some("1.0.83-3".to_string()),
-    };
-    validate_proxy_binary_capability(CliTarget::CopilotCli, &supported)
-        .expect("the runtime-verified Copilot CLI version must pass");
+    for version in ["1.0.83-2", "1.0.83-3"] {
+        let supported = BinaryInfo {
+            name: "copilot".to_string(),
+            path: "/opt/copilot/bin/copilot".into(),
+            version: Some(version.to_string()),
+        };
+        validate_proxy_binary_capability(CliTarget::CopilotCli, &supported)
+            .expect("the runtime-verified Copilot CLI version must pass");
+    }
 
     for version in [
         Some("1.0.83"),
@@ -303,6 +305,7 @@ fn copilot_gateway_capability_gate_uses_the_resolved_binary_version() {
         let error = validate_proxy_binary_capability(CliTarget::CopilotCli, &binary)
             .expect_err("unproved subprocess scrubbing must fail closed");
         let message = format!("{error:#}");
+        assert!(message.contains("1.0.83-2"), "{message}");
         assert!(message.contains("1.0.83-3"), "{message}");
         assert!(
             !message.contains("gateway-secret"),

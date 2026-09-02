@@ -47,7 +47,7 @@ metadata; RustyClawd uses its Cargo provenance contract below.
 | Client | Binary | Exact version | Protocol |
 | --- | --- | --- | --- |
 | Claude Code | `claude` | `2.1.247` | Anthropic messages |
-| GitHub Copilot CLI | `copilot` | npm `1.0.83-2`; runtime `1.0.83-3` | OpenAI chat completions |
+| GitHub Copilot CLI | `copilot` | npm `1.0.83-2`; isolated runtime `1.0.83-2` | OpenAI chat completions |
 | RustyClawd | `rusty` | `0.1.1` | Anthropic messages |
 
 RustyClawd additionally requires an unambiguous Cargo git receipt for

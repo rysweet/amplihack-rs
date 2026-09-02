@@ -19,8 +19,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
-const COPILOT_NPM_PACKAGE_VERSION: &str = "1.0.83-2";
-
 pub(crate) struct VerifyFailure {
     pub exit: u8,
     id: &'static str,
@@ -123,8 +121,11 @@ pub(crate) fn run(args: &VerifyLiveArgs) -> Result<RunSummaryV1, VerifyFailure> 
             LiveClient::Copilot => attest_client(
                 "copilot",
                 "copilot",
-                amplihack_utils::litellm_proxy::VERIFIED_COPILOT_CLI_VERSIONS[0],
-                Some(("@github/copilot", COPILOT_NPM_PACKAGE_VERSION)),
+                amplihack_utils::litellm_proxy::COPILOT_ISOLATED_RUNTIME_VERSION,
+                Some((
+                    "@github/copilot",
+                    amplihack_utils::litellm_proxy::COPILOT_NPM_PACKAGE_VERSION,
+                )),
             )?,
             LiveClient::Rustyclawd => {
                 let attestation = attest_client(
@@ -2194,6 +2195,7 @@ mod tests {
 
     #[test]
     fn exact_version_accepts_copilot_terminal_period_only() {
+        assert!(version_word_matches("1.0.83-2", "1.0.83-2"));
         assert!(version_word_matches("1.0.83-3", "1.0.83-3"));
         assert!(version_word_matches("1.0.83-3.", "1.0.83-3"));
         assert!(!version_word_matches("1.0.83-2", "1.0.83-3"));

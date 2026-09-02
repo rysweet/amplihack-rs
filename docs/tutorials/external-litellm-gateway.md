@@ -33,10 +33,12 @@ the other protocol. For Copilot, confirm that the selected model and route
 support streaming responses and tool calls before launching an agent.
 
 Use Claude Code `2.1.247` when routing Claude. Install GitHub Copilot CLI from
-npm package `1.0.83-2`; its immutable Linux executable reports runtime version
-`1.0.83-3`, which is the version amplihack enforces. Routed RustyClawd launches
-must resolve to the canonical Cargo binary installed from the pinned git
-revision documented below.
+npm package `1.0.83-2`. Its packaged runtime reports `1.0.83-2` in a clean
+home; a previously downloaded user-cache update can make the same launcher
+report `1.0.83-3`. Amplihack accepts those two tested runtimes while still
+attesting the exact `1.0.83-2` npm package. Routed RustyClawd launches must
+resolve to the canonical Cargo binary installed from the pinned git revision
+documented below.
 
 Do not use a LiteLLM administrative key or an upstream provider key.
 
@@ -52,11 +54,11 @@ command -v copilot
 copilot --version
 ```
 
-Claude must report exactly `2.1.247`; Copilot must report exactly `1.0.83-3`.
-Amplihack repeats the applicable probe before setup and rejects missing
-executables, failed probes, malformed or unrecognized output, and every release
-outside the runtime-tested attestation set. It does not fall back to direct
-provider routing.
+Claude must report exactly `2.1.247`; Copilot must report `1.0.83-2` or
+`1.0.83-3`. Amplihack repeats the applicable probe before setup and rejects
+missing executables, failed probes, malformed or unrecognized output, and every
+release outside the runtime-tested attestation set. It does not fall back to
+direct provider routing.
 
 ## 2. Configure the route
 

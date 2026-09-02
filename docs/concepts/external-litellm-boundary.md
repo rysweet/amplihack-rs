@@ -116,7 +116,8 @@ On Linux, the verified Claude release enforces this boundary with `bubblewrap`
 and `socat` and refuses to start if either dependency is unavailable.
 
 Copilot routing likewise requires the exact selected `copilot` executable to
-report `1.0.83-3` from the pinned npm `1.0.83-2` artifact. Later, earlier,
+resolve from the pinned npm `1.0.83-2` artifact and report a tested runtime:
+the packaged `1.0.83-2` runtime or the user-cache update `1.0.83-3`. Other,
 malformed, and missing versions are rejected
 until the real-CLI shell isolation contract passes and the attestation set is
 updated. This gate is applied only when external LiteLLM routing is requested;
