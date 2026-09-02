@@ -2215,7 +2215,7 @@ mod tests {
             expected_model: "azure/deployment".to_string(),
             expected_gateway_identity: "gateway-a".to_string(),
             telemetry_file: std::path::PathBuf::from("/tmp/not-read-by-this-test"),
-            telemetry_hmac_key: "0123456789abcdef0123456789abcdef".to_string(),
+            telemetry_hmac_key: "0123456789abcdef".repeat(2),
         }
     }
 
