@@ -23,7 +23,7 @@
       "type": "timeseries",
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
       "targets": [
-        {"expr": "sum(rate(litellm_proxy_total_requests_metric[5m]))", "legendFormat": "requests/s"}
+        {"expr": "sum(rate(litellm_proxy_total_requests_metric_total[5m]))", "legendFormat": "requests/s"}
       ]
     },
     {
@@ -31,7 +31,7 @@
       "type": "timeseries",
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
       "targets": [
-        {"expr": "sum(rate(litellm_proxy_failed_requests_metric[5m]))", "legendFormat": "failures/s"}
+        {"expr": "sum(rate(litellm_proxy_failed_requests_metric_total[5m]))", "legendFormat": "failures/s"}
       ]
     }
   ],

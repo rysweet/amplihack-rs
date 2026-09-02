@@ -15,3 +15,7 @@ general_settings:
 
 litellm_settings:
   turn_off_message_logging: true
+  success_callback:
+    - prometheus
+  failure_callback:
+    - prometheus

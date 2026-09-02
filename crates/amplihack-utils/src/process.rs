@@ -118,7 +118,6 @@ impl ProcessManager {
         }
 
         let mut cmd = std::process::Command::new(args[0]);
-        crate::litellm_proxy::scrub_proxy_environment(&mut cmd);
         cmd.args(&args[1..]);
 
         if let Some(dir) = cwd {
@@ -129,6 +128,7 @@ impl ProcessManager {
                 cmd.env(k, v);
             }
         }
+        crate::litellm_proxy::scrub_inference_environment(&mut cmd);
 
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());

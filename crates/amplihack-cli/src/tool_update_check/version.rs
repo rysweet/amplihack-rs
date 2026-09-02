@@ -108,7 +108,7 @@ pub fn sanitize_version(s: &str) -> String {
 /// - stdout is not valid UTF-8
 pub fn run_npm_with_timeout(args: &[&str], timeout: Duration) -> Option<String> {
     let mut cmd = Command::new("npm");
-    amplihack_utils::litellm_proxy::scrub_proxy_environment(&mut cmd);
+    amplihack_utils::litellm_proxy::scrub_inference_environment(&mut cmd);
     cmd.args(args);
     let output = run_output_with_timeout(cmd, timeout).ok()?;
     if !output.status.success() {
@@ -134,7 +134,10 @@ mod tests {
             "#!/bin/sh\n\
              if [ -n \"${AMPLIHACK_LITELLM_ENDPOINT-}\" ] || \
                 [ -n \"${AMPLIHACK_LITELLM_API_KEY-}\" ] || \
-                [ -n \"${AMPLIHACK_LITELLM_MODEL-}\" ]; then\n\
+                [ -n \"${AMPLIHACK_LITELLM_MODEL-}\" ] || \
+                [ -n \"${ANTHROPIC_API_KEY-}\" ] || \
+                [ -n \"${OPENAI_API_KEY-}\" ] || \
+                [ -n \"${LITELLM_MASTER_KEY-}\" ]; then\n\
                exit 97\n\
              fi\n\
              printf '7.8.9\\n'\n",
@@ -149,6 +152,9 @@ mod tests {
             amplihack_utils::litellm_proxy::ENDPOINT_ENV,
             amplihack_utils::litellm_proxy::API_KEY_ENV,
             amplihack_utils::litellm_proxy::MODEL_ENV,
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "LITELLM_MASTER_KEY",
         ];
         let previous = names.map(std::env::var_os);
         unsafe {
@@ -156,6 +162,9 @@ mod tests {
             std::env::set_var(names[0], "https://gateway.example.com");
             std::env::set_var(names[1], "gateway-secret");
             std::env::set_var(names[2], "gateway-model");
+            std::env::set_var(names[3], "anthropic-secret");
+            std::env::set_var(names[4], "openai-secret");
+            std::env::set_var(names[5], "operator-secret");
         }
 
         let result = run_npm_with_timeout(&["show", "pkg", "version"], NPM_TIMEOUT);

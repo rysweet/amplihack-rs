@@ -40,7 +40,7 @@ pub(super) fn resolve_checkout_repo_in(repo_uri: &str, base_dir: &Path) -> Resul
     command
         .args(["clone", &clone_url, target_dir_arg.as_ref()])
         .stdin(Stdio::null());
-    amplihack_utils::litellm_proxy::scrub_proxy_environment(&mut command);
+    amplihack_utils::litellm_proxy::scrub_inference_environment(&mut command);
     let output = run_output_with_timeout(command, GIT_CLONE_TIMEOUT)
         .context("git clone timed out or failed to execute")?;
     if !output.status.success() {

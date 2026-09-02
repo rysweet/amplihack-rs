@@ -110,7 +110,7 @@ fn detect_ram_linux() -> Option<u64> {
 
 fn detect_ram_macos() -> Option<u64> {
     let mut command = Command::new("sysctl");
-    amplihack_utils::litellm_proxy::scrub_proxy_environment(&mut command);
+    amplihack_utils::litellm_proxy::scrub_inference_environment(&mut command);
     command.args(["-n", "hw.memsize"]);
     let output = run_output_with_timeout(command, RAM_DETECTION_TIMEOUT).ok()?;
     if !output.status.success() {
@@ -126,7 +126,7 @@ fn detect_ram_macos() -> Option<u64> {
 
 fn detect_ram_windows() -> Option<u64> {
     let mut command = Command::new("wmic");
-    amplihack_utils::litellm_proxy::scrub_proxy_environment(&mut command);
+    amplihack_utils::litellm_proxy::scrub_inference_environment(&mut command);
     command.args(["ComputerSystem", "get", "TotalPhysicalMemory"]);
     let output = run_output_with_timeout(command, RAM_DETECTION_TIMEOUT).ok()?;
     if !output.status.success() {

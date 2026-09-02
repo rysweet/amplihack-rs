@@ -387,14 +387,13 @@ mod litellm_serialization {
         );
     }
 
-    /// TC-SWEEP-606-03: The removed callback module must not return.
+    /// TC-SWEEP-606-03: The callback API remains only as a deprecated shim.
     #[test]
-    fn obsolete_callback_module_is_absent() {
+    fn obsolete_callback_module_is_deprecated() {
+        let lib = read_file("crates/amplihack-utils/src/lib.rs");
         assert!(
-            !workspace_root()
-                .join("crates/amplihack-utils/src/litellm_callbacks.rs")
-                .exists(),
-            "obsolete litellm_callbacks module must stay removed"
+            lib.contains("#[deprecated(") && lib.contains("pub mod litellm_callbacks;"),
+            "litellm_callbacks must remain a deprecated compatibility surface until 0.19.0"
         );
     }
 }

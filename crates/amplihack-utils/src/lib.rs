@@ -52,6 +52,11 @@ pub mod knowledge_builder;
 /// and issue #1266.
 pub mod launch_target;
 pub mod launcher_context;
+#[deprecated(
+    since = "0.18.0",
+    note = "use trace_logger directly; this compatibility module will be removed in 0.19.0"
+)]
+pub mod litellm_callbacks;
 pub mod litellm_proxy;
 pub mod llm_client;
 pub mod observability;

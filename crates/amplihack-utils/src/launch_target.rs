@@ -720,7 +720,7 @@ fn is_executable(_metadata: &std::fs::Metadata) -> bool {
 fn probe_version(path: &Path, timeout: Duration) -> Result<String, Rejection> {
     let mut cmd = Command::new(path);
     cmd.arg("--version");
-    crate::litellm_proxy::scrub_proxy_environment(&mut cmd);
+    crate::litellm_proxy::scrub_inference_environment(&mut cmd);
     for name in std::env::vars_os()
         .map(|(name, _)| name)
         .filter(|name| is_sensitive_env_name(&name.to_string_lossy()))

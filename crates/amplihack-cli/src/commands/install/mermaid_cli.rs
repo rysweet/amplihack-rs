@@ -67,7 +67,7 @@ pub(super) enum Outcome {
 /// the install console quiet and avoids allocating/reading capture pipes.
 fn version_probe_succeeds(bin: &str) -> bool {
     let mut cmd = Command::new(bin);
-    amplihack_utils::litellm_proxy::scrub_proxy_environment(&mut cmd);
+    amplihack_utils::litellm_proxy::scrub_inference_environment(&mut cmd);
     cmd.arg("--version")
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -103,7 +103,7 @@ pub(super) fn ensure_mermaid_cli() -> Result<Outcome> {
     // sudo / no privilege escalation; bounded so a wedged npm/Chromium download
     // cannot hang install indefinitely.
     let mut install_cmd = Command::new("npm");
-    amplihack_utils::litellm_proxy::scrub_proxy_environment(&mut install_cmd);
+    amplihack_utils::litellm_proxy::scrub_inference_environment(&mut install_cmd);
     install_cmd.args(["install", "-g", MERMAID_CLI_PACKAGE]);
     let install_result = run_with_timeout(install_cmd, NPM_INSTALL_TIMEOUT);
 

@@ -9,7 +9,7 @@ grep -Fq 'LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:?set permanent LITELLM_SALT_KEY i
   observability/litellm/docker-compose.yml
 grep -Fq 'LITELLM_SALT_KEY=' observability/litellm/.env.example
 
-if grep -R -E 'LiteLlmClient|litellm_callbacks|AMPLIHACK_LITELLM_(QUEUE|RATE|INPUT|OUTPUT|COST)' \
+if grep -R -E 'LiteLlmClient|AMPLIHACK_LITELLM_(QUEUE|RATE|INPUT|OUTPUT|COST)' \
   crates docs observability --exclude='issue_1413_external_litellm_gateway.sh'; then
   echo "obsolete embedded LiteLLM references remain" >&2
   exit 1
@@ -46,6 +46,10 @@ fi
 grep -Fq 'data=json.dumps(payload).encode()' observability/litellm/bootstrap-key.sh
 test "$(grep -cE '^[[:space:]]+- otel$' observability/litellm/config.yaml)" -eq 2
 grep -Fq 'turn_off_message_logging: true' observability/litellm/config.yaml
+grep -Fq 'litellm_proxy_total_requests_metric_total[5m]' \
+  observability/litellm/grafana/dashboards/litellm.json
+grep -Fq 'litellm_proxy_failed_requests_metric_total[5m]' \
+  observability/litellm/grafana/dashboards/litellm.json
 for collector in \
   observability/litellm/otel-collector.yaml \
   observability/litellm/otel-collector.external.yaml
@@ -122,3 +126,18 @@ if curl --fail --silent \
   echo "unreachable upstream unexpectedly produced a successful gateway response" >&2
   exit 1
 fi
+metrics=""
+for _ in $(seq 1 30); do
+  metrics="$(
+    curl --fail --silent \
+      -H "Authorization: Bearer ${LITELLM_MASTER_KEY}" \
+      "http://127.0.0.1:$port/metrics/"
+  )"
+  if grep -q '^# HELP litellm_proxy_total_requests_metric_total ' <<<"$metrics" &&
+    grep -q '^# HELP litellm_proxy_failed_requests_metric_total ' <<<"$metrics"; then
+    break
+  fi
+  sleep 1
+done
+grep -q '^# HELP litellm_proxy_total_requests_metric_total ' <<<"$metrics"
+grep -q '^# HELP litellm_proxy_failed_requests_metric_total ' <<<"$metrics"

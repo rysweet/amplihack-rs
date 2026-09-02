@@ -35,7 +35,9 @@ incident. External routing does not reverse that decision:
 - no LiteLLM process, container, database, dashboard, or collector is managed;
 - no provider credential is stored by amplihack;
 - no model request or response body passes through amplihack; and
-- no embedded callback or gateway-client compatibility layer remains.
+- no embedded callback runtime or gateway client remains; the deprecated
+  `litellm_callbacks` Rust API is a trace-logger compatibility shim only and
+  will be removed in 0.19.0.
 
 The gateway operator chooses the LiteLLM version, deployment controls, provider
 credentials, model aliases, accounting, retention, and availability policy.

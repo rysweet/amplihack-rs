@@ -218,7 +218,7 @@ impl ProxyConfig {
 
 impl ProxyConfig {
     pub fn apply_to_command(&self, command: &mut Command, target: CliTarget) {
-        scrub_proxy_environment(command);
+        scrub_inference_environment(command);
 
         match target {
             CliTarget::Claude | CliTarget::RustyClawd => {
@@ -611,11 +611,17 @@ mod tests {
                     command.env("ANTHROPIC_AWS_API_KEY", "bypass");
                     command.env("ANTHROPIC_DEFAULT_SONNET_MODEL", "bypass-model");
                     command.env("OPENAI_API_KEY", "bypass");
+                    for name in GATEWAY_OPERATOR_ENV_VARS {
+                        command.env(name, "operator-secret");
+                    }
                     command.env("GITHUB_TOKEN", "bypass");
                     command.env("DATABASE_PASSWORD", "bypass");
                     apply_proxy_to_command(&mut command, target).unwrap();
                     for name in CONFIG_ENV_VARS {
                         assert_eq!(command_env(&command, name), Some(None));
+                    }
+                    for name in GATEWAY_OPERATOR_ENV_VARS {
+                        assert_eq!(command_env(&command, name), Some(None), "{name}");
                     }
                     assert_eq!(
                         command_env(&command, "GITHUB_TOKEN"),
@@ -641,10 +647,7 @@ mod tests {
                                 expected_scrub
                             );
                             assert_eq!(command_env(&command, "ANTHROPIC_API_KEY"), Some(None));
-                            assert_eq!(
-                                command_env(&command, "OPENAI_API_KEY"),
-                                Some(Some("bypass".to_string()))
-                            );
+                            assert_eq!(command_env(&command, "OPENAI_API_KEY"), Some(None));
                             assert_eq!(
                                 command_env(&command, "CLAUDE_CODE_USE_ANTHROPIC_AWS"),
                                 Some(None)
@@ -661,19 +664,47 @@ mod tests {
                                 Some(Some("https://gateway.example.com/v1".to_string()))
                             );
                             assert_eq!(command_env(&command, "OPENAI_API_KEY"), Some(None));
-                            assert_eq!(
-                                command_env(&command, "ANTHROPIC_API_KEY"),
-                                Some(Some("bypass".to_string()))
-                            );
-                            assert_eq!(
-                                command_env(&command, "ANTHROPIC_AWS_API_KEY"),
-                                Some(Some("bypass".to_string()))
-                            );
+                            assert_eq!(command_env(&command, "ANTHROPIC_API_KEY"), Some(None));
+                            assert_eq!(command_env(&command, "ANTHROPIC_AWS_API_KEY"), Some(None));
                         }
                     }
                 },
             );
         }
+    }
+
+    #[test]
+    fn inference_scrub_removes_routing_and_operator_secrets_only() {
+        let mut command = Command::new("setup");
+        for name in CONFIG_ENV_VARS
+            .iter()
+            .chain(ANTHROPIC_DIRECT_ENV_VARS.iter())
+            .chain(COPILOT_DIRECT_ENV_VARS.iter())
+            .chain(GATEWAY_OPERATOR_ENV_VARS.iter())
+        {
+            command.env(name, "secret");
+        }
+        command.env("GITHUB_TOKEN", "tool-secret");
+        command.env("DATABASE_PASSWORD", "unrelated-secret");
+
+        scrub_inference_environment(&mut command);
+
+        for name in CONFIG_ENV_VARS
+            .iter()
+            .chain(ANTHROPIC_DIRECT_ENV_VARS.iter())
+            .chain(COPILOT_DIRECT_ENV_VARS.iter())
+            .chain(GATEWAY_OPERATOR_ENV_VARS.iter())
+        {
+            assert_eq!(command_env(&command, name), Some(None), "{name}");
+        }
+        assert_eq!(
+            command_env(&command, "GITHUB_TOKEN"),
+            Some(Some("tool-secret".to_string()))
+        );
+        assert_eq!(
+            command_env(&command, "DATABASE_PASSWORD"),
+            Some(Some("unrelated-secret".to_string()))
+        );
     }
 
     #[test]
