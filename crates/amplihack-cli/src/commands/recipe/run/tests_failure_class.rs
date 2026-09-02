@@ -818,7 +818,6 @@ fn a_transient_fault_mentioning_a_repository_stays_transient() {
     );
     assert_eq!(class, FailureClass::TransientTransport);
 }
-++ b/crates/amplihack-cli/src/commands/recipe/run/tests_failure_class.rs
 
 // ---------------------------------------------------------------------------
 // Issue #1437 — an agent/API failure is not a structural refusal
