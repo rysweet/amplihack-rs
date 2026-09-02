@@ -228,7 +228,11 @@ jobs:
         uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
 
       - name: Build amplihack for real-client route contracts
-        run: cargo build -p amplihack --locked
+        run: |
+          cargo build --locked \
+            -p amplihack \
+            -p amplihack-hooks-bin \
+            -p amplihack-asset-resolver-bin
       - name: Claude subprocess scrub contract (issue #1414)
         shell: bash
         run: |
