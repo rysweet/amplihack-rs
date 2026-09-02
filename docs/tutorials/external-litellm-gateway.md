@@ -1,7 +1,7 @@
 ---
 title: Route an Agent Through an External LiteLLM Gateway
 description: Configure environment routing and launch Claude Code or GitHub Copilot CLI through an existing LiteLLM gateway.
-last_updated: 2026-08-30
+last_updated: 2026-09-02
 review_schedule: quarterly
 owner: amplihack-maintainers
 doc_type: tutorial
@@ -19,6 +19,18 @@ running. Amplihack does not install or start the gateway.
   `https://llm-gateway.internal.example`;
 - a restricted LiteLLM virtual key; and
 - a gateway model alias supported by that deployment.
+
+The gateway must expose the protocol required by the selected client:
+
+| Client | Required LiteLLM compatibility surface |
+| --- | --- |
+| Claude Code | Anthropic-compatible API |
+| RustyClawd | Anthropic-compatible API |
+| GitHub Copilot CLI | OpenAI-compatible completions API under `/v1` |
+
+Configuring only one compatibility surface does not satisfy clients that use
+the other protocol. For Copilot, confirm that the selected model and route
+support streaming responses and tool calls before launching an agent.
 
 Use Claude Code `2.1.247` when routing Claude and GitHub Copilot CLI
 `1.0.83-1` when routing Copilot. Amplihack enforces these exact version
