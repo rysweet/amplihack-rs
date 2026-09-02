@@ -5,9 +5,9 @@ use clap_complete::Shell;
 use std::path::PathBuf;
 
 use super::{
-    BuilderCommands, HygieneCommands, MemoryCommands, ModeCommands, MultitaskCommands,
-    PluginCommands, QueryCodeCommands, RecipeCommands, ReflectCommands, RemoteCommands,
-    SignalCommands,
+    BuilderCommands, HygieneCommands, LiteLlmCommands, MemoryCommands, ModeCommands,
+    MultitaskCommands, PluginCommands, QueryCodeCommands, RecipeCommands, ReflectCommands,
+    RemoteCommands, SignalCommands,
 };
 
 #[derive(Subcommand, Debug)]
@@ -357,6 +357,12 @@ pub enum Commands {
         /// Arguments forwarded to the RustyClawd/Claude binary
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
+    },
+    /// Host-only external LiteLLM verification
+    #[command(name = "litellm")]
+    LiteLlm {
+        #[command(subcommand)]
+        command: LiteLlmCommands,
     },
     /// UVX help information
     #[command(name = "uvx-help")]

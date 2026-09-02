@@ -11,6 +11,7 @@ pub mod hive_haymaker;
 pub mod hygiene;
 pub mod install;
 pub mod launch;
+pub mod litellm;
 pub mod lock;
 pub mod mcp_eval;
 pub mod memory;
@@ -32,8 +33,8 @@ pub mod uvx_help;
 pub mod workflow;
 
 use crate::{
-    BuilderCommands, Commands, HygieneCommands, MemoryCommands, ModeCommands, MultitaskCommands,
-    PluginCommands, RecipeCommands, ReflectCommands, RemoteCommands,
+    BuilderCommands, Commands, HygieneCommands, LiteLlmCommands, MemoryCommands, ModeCommands,
+    MultitaskCommands, PluginCommands, RecipeCommands, ReflectCommands, RemoteCommands,
 };
 use amplihack_utils::launch_target::OverrideOrigin;
 use anyhow::{Context, Result};
@@ -441,6 +442,9 @@ pub fn dispatch(command: Commands) -> Result<()> {
             }
             rustyclawd::run_rustyclawd(args, no_reflection, subprocess_safe)
         }
+        Commands::LiteLlm { command } => match command {
+            LiteLlmCommands::VerifyLive(args) => litellm::run_verify_live(args),
+        },
         Commands::UvxHelp { find_path, info } => uvx_help::run_uvx_help(find_path, info),
         Commands::Completions { shell } => completions::run_completions(shell),
         Commands::Doctor { args } => doctor::run_doctor(args),

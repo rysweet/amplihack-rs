@@ -2,7 +2,7 @@
 set -euo pipefail
 
 COPILOT_BIN="${COPILOT_BIN:-copilot}"
-EXPECTED_VERSION=1.0.83-1
+EXPECTED_VERSION=1.0.83-2
 SENTINEL="copilot-gateway-secret-must-not-reach-tools"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 

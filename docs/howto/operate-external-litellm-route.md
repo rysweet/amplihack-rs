@@ -47,7 +47,7 @@ without both sandbox dependencies.
 
 Copilot CLI receives `--secret-env-vars=COPILOT_PROVIDER_API_KEY`, and
 amplihack requires the exact selected executable to report the currently
-verified version, `1.0.83-1`:
+verified version, `1.0.83-2`:
 
 ```bash
 command -v copilot
@@ -60,6 +60,13 @@ malformed, ambiguous, or unverified version probes fail closed. Routed
 launches disable Copilot auto-update, so later releases remain blocked until
 the real-CLI isolation contract passes and the verified-version set is
 updated.
+
+RustyClawd uses its native Copilot-compatible transport. Amplihack supplies
+`--provider copilot`, supplies the configured alias as `--model`, maps the
+gateway root to `GITHUB_COPILOT_ENDPOINT=<gateway>/v1`, and replaces
+`GITHUB_TOKEN` in that child with the LiteLLM virtual key. User-supplied
+provider overrides are rejected so a routed launch cannot select the direct
+Anthropic, Copilot, or Azure service.
 
 ## Rotate a virtual key
 
@@ -128,7 +135,7 @@ Copilot home.
 | Claude Code version is not `2.1.247` | Install the verified release. Future releases remain blocked until the real-CLI Bash, hook, and stdio MCP isolation test is rerun and the attestation set is updated. |
 | Claude reports a missing sandbox dependency | On Linux, install `bubblewrap` and `socat`, then retry. Do not disable `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`. |
 | Copilot CLI version cannot be verified | Run `command -v copilot` and `copilot --version` in the same environment. Install the official Copilot CLI executable. |
-| Copilot CLI version is not `1.0.83-1` | Install the verified release. Later releases remain blocked until the real-CLI shell and stdio MCP isolation test is rerun and the attestation set is updated. |
+| Copilot CLI version is not `1.0.83-2` | Install the verified release. Later releases remain blocked until the real-CLI shell and stdio MCP isolation test is rerun and the attestation set is updated. |
 
 ## Operate gateway-owned concerns
 

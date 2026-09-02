@@ -73,8 +73,11 @@ model are command arguments, while Docker probes and builds receive none of the
 route variables. The child CLI owns connection, DNS, TLS, and gateway readiness
 behavior.
 
-Credentials unrelated to model routing, such as `GITHUB_TOKEN` and database
-passwords, remain available to the child and its tools.
+Credentials unrelated to model routing, such as database passwords, retain
+their ordinary launcher behavior. For RustyClawd specifically, amplihack
+replaces `GITHUB_TOKEN` with the restricted LiteLLM virtual key because its
+native Copilot-compatible transport uses that variable for gateway
+authorization.
 
 There is no fallback to a direct provider when launch policy rejects a route.
 To disable routing, unset all three `AMPLIHACK_LITELLM_*` variables before
@@ -110,7 +113,7 @@ On Linux, the verified Claude release enforces this boundary with `bubblewrap`
 and `socat` and refuses to start if either dependency is unavailable.
 
 Copilot routing likewise requires the exact selected `copilot` executable to
-report `1.0.83-1`. Later, earlier, malformed, and missing versions are rejected
+report `1.0.83-2`. Later, earlier, malformed, and missing versions are rejected
 until the real-CLI shell isolation contract passes and the attestation set is
 updated. This gate is applied only when external LiteLLM routing is requested;
 ordinary Copilot launches retain their existing version behavior.

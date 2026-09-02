@@ -10,10 +10,35 @@ use anyhow::Result;
 use std::env;
 use std::path::{Path, PathBuf};
 
-pub fn run_rustyclawd(args: Vec<String>, no_reflection: bool, subprocess_safe: bool) -> Result<()> {
+pub fn run_rustyclawd(
+    mut args: Vec<String>,
+    no_reflection: bool,
+    subprocess_safe: bool,
+) -> Result<()> {
     let override_origin = configure_preferred_rustyclawd_binary();
     if override_origin == OverrideOrigin::AmplihackSupplied {
         println!("Using RustyClawd (Rust implementation)");
+    }
+    if amplihack_utils::litellm_proxy::proxy_requested() {
+        let model = std::env::var(amplihack_utils::litellm_proxy::MODEL_ENV)
+            .map_err(|_| anyhow::anyhow!("AMPLIHACK_LITELLM_MODEL is required"))?;
+        let has_model = args
+            .iter()
+            .take_while(|arg| arg.as_str() != "--")
+            .any(|arg| arg == "--model" || arg.starts_with("--model="));
+        let has_provider = args
+            .iter()
+            .take_while(|arg| arg.as_str() != "--")
+            .any(|arg| arg == "--provider" || arg.starts_with("--provider="));
+        let mut routed = Vec::new();
+        if !has_provider {
+            routed.extend(["--provider".to_string(), "copilot".to_string()]);
+        }
+        if !has_model {
+            routed.extend(["--model".to_string(), model]);
+        }
+        routed.append(&mut args);
+        args = routed;
     }
 
     launch::run_launch(
@@ -92,7 +117,7 @@ fn find_preferred_rustyclawd_binary() -> Option<PathBuf> {
         }
     }
 
-    find_in_path(&["rustyclawd", "claude-code"])
+    find_in_path(&["rusty", "rustyclawd", "claude-code"])
 }
 
 fn find_in_path(names: &[&str]) -> Option<PathBuf> {
