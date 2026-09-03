@@ -24,7 +24,7 @@ can override the defaults.
 | Flag | Injected when? | Applicable tools | Override mechanism |
 |------|----------------|-------------------|-------------------|
 | `--dangerously-skip-permissions` | `--skip-permissions` passed AND tool is Claude-compatible | `claude`, `rusty`, `rustyclawd`, `amplifier` | omit `--skip-permissions` |
-| `--model <value>` | user did not pass `--model` AND tool is Claude-compatible | `claude`, `rusty`, `rustyclawd`, `amplifier` | `AMPLIHACK_DEFAULT_MODEL` or `--model` on the command line |
+| `--model <value>` | **only** when `AMPLIHACK_DEFAULT_MODEL` is set AND user did not pass `--model` AND tool is Claude-compatible | `claude`, `rusty`, `rustyclawd`, `amplifier` | unset `AMPLIHACK_DEFAULT_MODEL` to let the tool pick its own default |
 | `--resume` | only when `amplihack launch --resume` | `launch` only (not `claude`) | pass `--resume` to the `launch` subcommand |
 | `--continue` | only when `amplihack launch --continue` | `launch` only (not `claude`) | pass `--continue` to the `launch` subcommand |
 
@@ -46,7 +46,7 @@ flag because they do not support it.
 amplihack launch --skip-permissions
 
 # amplihack spawns:
-claude --dangerously-skip-permissions --model opus[1m]
+claude --dangerously-skip-permissions
 ```
 
 ```sh
@@ -54,7 +54,7 @@ claude --dangerously-skip-permissions --model opus[1m]
 amplihack claude
 
 # amplihack spawns:
-claude --model opus[1m]
+claude
 ```
 
 ```sh
@@ -77,30 +77,42 @@ may behave differently. Verify Python launcher behavior independently.
 
 ## --model
 
-`amplihack` injects `--model <value>` into the subprocess command line to set
-the AI model variant used for the session. This flag is only injected for
+`amplihack` does **not** choose a model. When you ask for one it is passed
+through to the subprocess; when you do not, nothing is passed and the tool
+applies its own current default. Injection, when it happens, is only for
 **Claude-compatible** tools (`claude`, `rusty`, `rustyclawd`, `amplifier`). Non-Claude
 tools (`copilot`, `codex`) use their own default model selection.
 
-### Default model
+### Default: no model at all
 
-The default model is `opus[1m]`. It is used when:
-
-- The user has not passed `--model` on the command line, **and**
-- `AMPLIHACK_DEFAULT_MODEL` is not set in the environment.
+With neither `--model` on the command line nor `AMPLIHACK_DEFAULT_MODEL` in the
+environment, the command line carries no `--model`:
 
 ```sh
 # User runs:
 amplihack claude
 
 # amplihack spawns:
-claude --model opus[1m]
+claude
 ```
 
-### Override via environment variable
+The tool then resolves its own default, and any `"model"` you have set in
+`~/.claude/settings.json` takes effect.
 
-Set `AMPLIHACK_DEFAULT_MODEL` to use a different model for all sessions without
-changing the command line:
+**Why there is no built-in default (issue #1421):** amplihack used to force
+`--model opus[1m]`. That string is an alias resolved by the tool, not by
+amplihack, and what it resolves to depends on the tool's version. On one
+install it resolved to the retired `claude-opus-4-1-20250805`, so every agent
+step failed with `API Error: 404 ... model: claude-opus-4-1-20250805` — an id
+the user had never chosen and could not find in any config file or binary.
+Forcing an alias also silently outranked that user's `~/.claude/settings.json`.
+amplihack does not own the model catalogue and cannot keep an alias current
+across tool versions, so it no longer tries.
+
+### Pinning a model via environment variable
+
+Set `AMPLIHACK_DEFAULT_MODEL` to pin a model for all sessions without
+changing the command line. This is opt-in: unset, no model is passed.
 
 ```sh
 export AMPLIHACK_DEFAULT_MODEL=sonnet
@@ -109,6 +121,17 @@ amplihack claude
 # amplihack spawns:
 claude --model sonnet
 ```
+
+When amplihack puts a model on the command line it announces it on stderr:
+
+```
+amplihack: passing `--model sonnet` to `claude` (from AMPLIHACK_DEFAULT_MODEL).
+Unset AMPLIHACK_DEFAULT_MODEL to let claude choose its own default model.
+```
+
+That line exists so a later "model not found" error names an id you can trace
+back to a decision you made, rather than to an invisible constant. A value that
+is empty or whitespace-only is treated as unset.
 
 This is the recommended approach for teams or CI environments that standardise
 on a particular model.
@@ -146,11 +169,11 @@ are not treated as model overrides.
 to the tool. Refer to the tool's own documentation for supported model names.
 Examples that work at time of writing:
 
-| Value | Resolves to |
-|-------|-------------|
-| `opus[1m]` | Claude claude-opus-4-5 with 1M-token context |
-| `sonnet` | Claude claude-sonnet-4-5 |
-| `haiku` | Claude claude-haiku-3-5 |
+Aliases such as `opus[1m]`, `sonnet`, and `haiku` are resolved by the tool, and
+which concrete model each maps to changes with the tool's version. This document
+deliberately does not tabulate those mappings: a table of them here would go
+stale exactly the way the old hardcoded default did. Ask the tool
+(`claude --help`, or its release notes) for the current list.
 
 ---
 
@@ -164,10 +187,10 @@ the `launch` subcommand. They are never injected automatically.
 
 ```sh
 amplihack launch --resume --skip-permissions
-# spawns: claude --dangerously-skip-permissions --model opus[1m] --resume
+# spawns: claude --dangerously-skip-permissions --resume
 
 amplihack launch --continue --skip-permissions
-# spawns: claude --dangerously-skip-permissions --model opus[1m] --continue
+# spawns: claude --dangerously-skip-permissions --continue
 ```
 
 The `claude`, `copilot`, `codex`, and `amplifier` subcommands do not support
@@ -188,7 +211,7 @@ verbatim to the tool subprocess after the injected flags. Order is:
 amplihack claude --print 'Fix the failing tests' --output-format json
 
 # amplihack spawns:
-claude --model opus[1m] --print 'Fix the failing tests' --output-format json
+claude --print 'Fix the failing tests' --output-format json
 ```
 
 There is no processing or escaping of `extra_args`. What the user types is what
@@ -204,8 +227,9 @@ the final command line. The assembly order is:
 1. Binary path (resolved by `bootstrap::ensure_tool_available()`)
 2. `--dangerously-skip-permissions` — only if `skip_permissions == true` **and**
    the tool is Claude-compatible (`claude`, `rusty`, `rustyclawd`, `amplifier`)
-3. `--model <value>` — only if `--model` not already present in `extra_args`
-   **and** the tool is Claude-compatible
+3. `--model <value>` — only if `AMPLIHACK_DEFAULT_MODEL` is set to a non-blank
+   value, `--model` is not already present in `extra_args`, **and** the tool is
+   Claude-compatible. There is no built-in default (issue #1421)
 4. `--resume` (if requested — `launch` subcommand only)
 5. `--continue` (if requested — `launch` subcommand only)
 6. All `extra_args` in the order they were passed on the command line
@@ -215,10 +239,10 @@ subcommand with no extra args:
 
 ```sh
 amplihack claude
-# → claude --model opus[1m]
+# → claude
 
 amplihack claude --skip-permissions
-# → claude --dangerously-skip-permissions --model opus[1m]
+# → claude --dangerously-skip-permissions
 
 amplihack copilot
 # → copilot
@@ -227,10 +251,13 @@ amplihack codex
 # → codex
 
 amplihack amplifier
-# → amplifier --model opus[1m]
+# → amplifier
 
 amplihack launch --skip-permissions
-# → claude --dangerously-skip-permissions --model opus[1m]
+# → claude --dangerously-skip-permissions
+
+AMPLIHACK_DEFAULT_MODEL=sonnet amplihack claude
+# → claude --model sonnet
 ```
 
 ---
@@ -244,7 +271,7 @@ contract:
 | Behaviour | Python launcher | Rust launcher |
 |-----------|----------------|---------------|
 | `--dangerously-skip-permissions` | always injected | conditional: Claude-compatible tool AND `--skip-permissions` |
-| `--model <default>` | `opus[1m]` unless `AMPLIHACK_DEFAULT_MODEL` set | same, Claude-compatible tools only |
+| `--model <default>` | `opus[1m]` unless `AMPLIHACK_DEFAULT_MODEL` set | **intentional divergence (#1421):** no built-in default; injected only when `AMPLIHACK_DEFAULT_MODEL` is set, Claude-compatible tools only |
 | `--model` suppressed when user provides it | yes | yes |
 | `--resume` passthrough | yes | `launch` subcommand only |
 | `--continue` passthrough | yes | `launch` subcommand only |
