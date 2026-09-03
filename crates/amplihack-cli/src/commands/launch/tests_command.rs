@@ -54,11 +54,29 @@ fn with_uvx_detection_disabled<T>(f: impl FnOnce() -> T) -> T {
     result
 }
 
+/// The three variables that make `proxy_requested()` true. A launch routed
+/// through the LiteLLM gateway names the gateway's model and outranks
+/// `AMPLIHACK_DEFAULT_MODEL`, so every test that asserts on the *default* has
+/// to start from a host where the gateway is not configured -- otherwise the
+/// result depends on the developer's shell.
+const PROXY_ENV_VARS: [&str; 3] = [
+    amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+    amplihack_utils::litellm_proxy::API_KEY_ENV,
+    amplihack_utils::litellm_proxy::MODEL_ENV,
+];
+
 fn with_default_model_env<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
     let _guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let previous = std::env::var_os("AMPLIHACK_DEFAULT_MODEL");
+    let previous_proxy: Vec<_> = PROXY_ENV_VARS
+        .iter()
+        .map(|name| (*name, std::env::var_os(name)))
+        .collect();
+    for name in PROXY_ENV_VARS {
+        unsafe { std::env::remove_var(name) };
+    }
     match value {
         Some(value) => unsafe { std::env::set_var("AMPLIHACK_DEFAULT_MODEL", value) },
         None => unsafe { std::env::remove_var("AMPLIHACK_DEFAULT_MODEL") },
@@ -70,7 +88,63 @@ fn with_default_model_env<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
         Some(value) => unsafe { std::env::set_var("AMPLIHACK_DEFAULT_MODEL", value) },
         None => unsafe { std::env::remove_var("AMPLIHACK_DEFAULT_MODEL") },
     }
+    for (name, value) in previous_proxy {
+        match value {
+            Some(value) => unsafe { std::env::set_var(name, value) },
+            None => unsafe { std::env::remove_var(name) },
+        }
+    }
     result
+}
+
+/// The model on the command line when a launch is routed through the LiteLLM
+/// gateway, with `AMPLIHACK_LITELLM_MODEL` set to `model`.
+fn model_arg_through_proxy(model: Option<&str>) -> Option<String> {
+    with_default_model_env(Some("pinned-by-env"), || {
+        // `with_default_model_env` has already cleared all three, so setting
+        // the endpoint alone is what "gateway configured, no model named" is.
+        let _endpoint = EnvGuard::set([(
+            amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+            "https://gateway.example.com",
+        )]);
+        let _model =
+            model.map(|model| EnvGuard::set([(amplihack_utils::litellm_proxy::MODEL_ENV, model)]));
+        let binary = make_binary("/usr/bin/claude");
+        let cmd = build_command(&binary, false, false, false, &[]);
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        args.iter()
+            .position(|a| a == "--model")
+            .and_then(|at| args.get(at + 1).cloned())
+    })
+}
+
+/// A gateway launch must name the gateway's model.
+///
+/// LiteLLM routes on the model name, so the name is not a preference here --
+/// it is the address. `AMPLIHACK_DEFAULT_MODEL` is set to something else in
+/// this test precisely to prove the gateway wins: a rebase that dropped this
+/// branch would send every proxied launch to amplihack's own default, which
+/// the gateway does not serve.
+#[test]
+fn a_gateway_launch_names_the_gateway_model() {
+    assert_eq!(
+        model_arg_through_proxy(Some("gateway-model")).as_deref(),
+        Some("gateway-model")
+    );
+}
+
+/// With the gateway configured but no model named, amplihack still passes a
+/// name -- the gateway's documented catch-all -- rather than falling back to a
+/// concrete Anthropic id the gateway has no route for.
+#[test]
+fn a_gateway_launch_without_a_named_model_uses_the_gateway_default() {
+    assert_eq!(
+        model_arg_through_proxy(None).as_deref(),
+        Some("amplihack-default")
+    );
 }
 
 #[test]
