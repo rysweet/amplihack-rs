@@ -365,15 +365,15 @@ steps:
       printf '%s' "$EXTRACTED"
     output: "issue_number"
 
-  # STEP 03c: ISSUE CLAIM CHECK (issue #1361)
+  # STEP 03c: ISSUE CLAIM CHECK (issues #1361, #1448)
   # Before this run does any work on issue N, ask whether a pull request is
   # already working on it. The workflow's only de-duplication was per-BRANCH
   # (workflow_pr_scope.sh keys on head+base), which is precisely the key a second
-  # run defeats: it derives a NEW branch, so the lookup truthfully reports "no PR
-  # for this head" and a duplicate is opened. Five near-identical PRs for #1277
-  # were opened in 103 minutes that way. Advisory by construction: only a pull
-  # request we actually saw stops a run, while a check that could not be made
-  # warns and continues (the lesson of #1268).
+  # run defeats: it derives a NEW branch, so five near-identical PRs for #1277
+  # were opened in 103 minutes. A run standing ON the claiming PR's head branch
+  # is the opposite case — a review, a CI fix, a resume — and is allowed (#1448;
+  # `-c allow_existing_pr=true` when the worktree cannot be on that branch).
+  # Advisory: an un-runnable check warns and continues (the lesson of #1268).
   - id: "step-03c-issue-claim-check"
     type: "bash"
     command: |
