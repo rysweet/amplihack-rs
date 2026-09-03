@@ -90,6 +90,9 @@ jobs:
       - name: External LiteLLM deployment fixture (issue #1413)
         shell: bash
         run: bash tests/issue_1413_external_litellm_gateway.sh
+      - name: Pre-commit build cache — off /tmp, reclaimed, legible when full (issue #1440)
+        shell: bash
+        run: bash tests/issue_1440_precommit_cache_location.sh
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "24.19.0"
