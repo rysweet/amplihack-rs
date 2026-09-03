@@ -68,9 +68,24 @@ pub fn prepare_launcher(tool: &str) -> Result<()> {
             // discoverable through Claude Code's plugin system. A failure
             // here must not block the launch — hooks are still wired via
             // settings.json even if the plugin registration fails.
-            if let Err(err) = claude_plugin::ensure_claude_plugin_installed() {
-                tracing::warn!(%err, "failed to register amplihack Claude plugin");
-                eprintln!("⚠️  Failed to register amplihack as a Claude Code plugin: {err}");
+            match claude_plugin::ensure_claude_plugin_installed() {
+                Ok(registration) => {
+                    // Issue #1449: a partial registration used to be a total
+                    // one, and the banner said only that registration had
+                    // "failed". Name what is missing, so the line is still
+                    // useful to someone who scrolls back to it after a skill
+                    // turned out not to exist.
+                    if let Some(warning) = registration.warning() {
+                        tracing::warn!(%warning, "amplihack Claude plugin registered partially");
+                        eprintln!(
+                            "⚠️  amplihack Claude Code plugin registered partially: {warning}"
+                        );
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(%err, "failed to register amplihack Claude plugin");
+                    eprintln!("⚠️  Failed to register amplihack as a Claude Code plugin: {err}");
+                }
             }
         }
         "codex" => configure_codex()?,

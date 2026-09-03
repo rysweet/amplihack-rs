@@ -5,7 +5,14 @@
 //! (the normal trigger is inside `bootstrap::prepare_launcher("claude", ...)`).
 
 fn main() -> anyhow::Result<()> {
-    amplihack_cli::claude_plugin::ensure_claude_plugin_installed()?;
-    println!("✅ amplihack Claude Code plugin bootstrap complete");
+    let registration = amplihack_cli::claude_plugin::ensure_claude_plugin_installed()?;
+    if let Some(warning) = registration.warning() {
+        println!("⚠️  partial registration: {warning}");
+    }
+    println!(
+        "✅ amplihack Claude Code plugin bootstrap complete ({} skill(s) published, {} skipped)",
+        registration.published.len(),
+        registration.skipped.len()
+    );
     Ok(())
 }

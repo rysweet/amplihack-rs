@@ -101,33 +101,144 @@ struct OwnedDestination {
     content_sha256: String,
 }
 
+/// One canonical skill that did not reach `~/.claude/skills`, and why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SkippedSkill {
+    /// The skill name a Claude session would ask for.
+    pub name: String,
+    /// What is in the way, naming the destination path.
+    pub reason: String,
+}
+
+/// What registration actually achieved.
+///
+/// Issue #1449: registration used to be all-or-nothing. One
+/// `~/.claude/skills/<name>` amplihack could not prove it wrote aborted the
+/// whole run, so a single stale directory left a session with *no* amplihack
+/// skills — and the only evidence was one warning line in the launch banner.
+/// Review loops that were told to invoke a skill ran, reported success, and
+/// produced nothing for a day.
+///
+/// Registration is now per-destination: everything that can be published is,
+/// and what could not is named here so the caller can say so where it is
+/// felt. Losing one shadowed skill is a far smaller harm than losing all of
+/// them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PluginRegistration {
+    /// Canonical skills a Claude session will now discover as amplihack's.
+    pub published: BTreeSet<String>,
+    /// Canonical skills left unpublished because their destination holds
+    /// content amplihack cannot prove it wrote.
+    pub skipped: Vec<SkippedSkill>,
+    /// Directories amplihack once published, no longer ships, and did not
+    /// remove because their contents had been changed.
+    pub preserved: Vec<SkippedSkill>,
+    /// Why the `amplihack` plugin wrapper could not be published, when it
+    /// could not. The wrapper carries agents, commands, context and workflow;
+    /// skills are separate destinations and register regardless (#1449).
+    pub wrapper_error: Option<String>,
+}
+
+/// Names listed individually before a warning switches to a count.
+const MAX_REPORTED_SKILLS: usize = 8;
+
+impl PluginRegistration {
+    /// Every destination published.
+    pub fn is_complete(&self) -> bool {
+        self.skipped.is_empty() && self.preserved.is_empty() && self.wrapper_error.is_none()
+    }
+
+    /// A warning naming what a session will be missing, or `None` when
+    /// everything registered.
+    pub fn warning(&self) -> Option<String> {
+        if self.is_complete() {
+            return None;
+        }
+        let mut lines = Vec::new();
+        if !self.skipped.is_empty() {
+            lines.push(format!(
+                "{} of {} amplihack skill(s) are NOT available to Claude sessions \
+                 because ~/.claude/skills already holds content amplihack did not write:",
+                self.skipped.len(),
+                self.skipped.len() + self.published.len()
+            ));
+            lines.extend(describe(&self.skipped));
+            lines
+                .push("   Move those entries aside and relaunch to restore the skills.".to_owned());
+        }
+        if !self.preserved.is_empty() {
+            lines.push(
+                "amplihack no longer ships these skills but left the changed directories in place:"
+                    .to_owned(),
+            );
+            lines.extend(describe(&self.preserved));
+        }
+        if let Some(error) = &self.wrapper_error {
+            lines.push(format!(
+                "the amplihack plugin wrapper (~/.claude/skills/amplihack) was not published: {error}"
+            ));
+        }
+        Some(lines.join("\n"))
+    }
+}
+
+fn describe(entries: &[SkippedSkill]) -> Vec<String> {
+    let mut lines = entries
+        .iter()
+        .take(MAX_REPORTED_SKILLS)
+        .map(|entry| format!("   - {}: {}", entry.name, entry.reason))
+        .collect::<Vec<_>>();
+    if entries.len() > MAX_REPORTED_SKILLS {
+        lines.push(format!(
+            "   - ... and {} more",
+            entries.len() - MAX_REPORTED_SKILLS
+        ));
+    }
+    lines
+}
+
 /// Ensure amplihack is staged as a Claude Code skills-dir plugin.
 ///
 /// Idempotent: safe to call on every launcher start. Returns install
 /// errors to the caller; callers should treat failures as non-fatal so a
 /// plugin issue does not block Claude launch.
-pub fn ensure_claude_plugin_installed() -> Result<()> {
+///
+/// Only a failure that makes *every* destination unsafe to touch — an
+/// unreadable ownership manifest, a staged tree that cannot be copied — is
+/// still an error. A problem with one destination is reported in the returned
+/// [`PluginRegistration`] and costs the caller only that destination (#1449).
+pub fn ensure_claude_plugin_installed() -> Result<PluginRegistration> {
     let staged = staged_framework_dir()?;
     if !staged.is_dir() {
         tracing::debug!(
             path = %staged.display(),
             "staged amplihack framework not found; skipping Claude plugin install"
         );
-        return Ok(());
+        return Ok(PluginRegistration::default());
     }
     let plugin_dir = plugin_install_dir()?;
     let ownership_path = skill_ownership_manifest_path(&staged);
-    let ownership = read_skill_ownership_manifest(&ownership_path)?;
-    validate_plugin_destination(&staged, &plugin_dir, ownership.plugin.as_ref())?;
+    let skills_root = plugin_dir
+        .parent()
+        .context("Claude plugin directory has no skills parent")?
+        .to_path_buf();
 
-    sync_canonical_skills(
-        &staged.join("skills"),
-        plugin_dir
-            .parent()
-            .context("Claude plugin directory has no skills parent")?,
-        &ownership_path,
-    )?;
-    publish_plugin_wrapper(&staged, &plugin_dir, &ownership_path)
+    // Skills first, and independently of the wrapper. The wrapper is one more
+    // directory under `~/.claude/skills`, and a user-replaced wrapper used to
+    // abort the run before a single skill was published (#1449).
+    let mut registration =
+        sync_canonical_skills(&staged.join("skills"), &skills_root, &ownership_path)?;
+
+    let wrapper = (|| -> Result<()> {
+        let ownership = read_skill_ownership_manifest(&ownership_path)?;
+        validate_plugin_destination(&staged, &plugin_dir, ownership.plugin.as_ref())?;
+        publish_plugin_wrapper(&staged, &plugin_dir, &ownership_path)
+    })();
+    if let Err(error) = wrapper {
+        tracing::warn!(%error, "amplihack Claude plugin wrapper was not published");
+        registration.wrapper_error = Some(format!("{error:#}"));
+    }
+    Ok(registration)
 }
 
 fn validate_plugin_destination(
@@ -962,11 +1073,15 @@ fn resolve_asset_source(staged: &Path, asset: &str) -> PathBuf {
 
 /// Install every canonical skill as a direct child of Claude's discovery
 /// directory while leaving user-owned entries untouched.
+///
+/// Per destination, never all-or-nothing (#1449): a skill whose destination
+/// amplihack must not overwrite is skipped and named in the returned report,
+/// and every other skill still publishes.
 fn sync_canonical_skills(
     source_root: &Path,
     destination_root: &Path,
     ownership_manifest_path: &Path,
-) -> Result<()> {
+) -> Result<PluginRegistration> {
     let mut skills = Vec::new();
     find_skill_dirs(source_root, &mut skills)?;
     skills.sort_by(|left, right| left.0.cmp(&right.0));
@@ -991,25 +1106,6 @@ fn sync_canonical_skills(
         .map(|(name, _)| name.clone())
         .collect::<BTreeSet<_>>();
 
-    for (name, _) in &skills {
-        validate_skill_destination(
-            name,
-            &destination_root.join(name),
-            owned.skills.iter().find(|entry| entry.name == *name),
-        )?;
-    }
-    for stale in owned
-        .skills
-        .iter()
-        .filter(|entry| !canonical_names.contains(&entry.name))
-    {
-        validate_skill_destination(
-            &stale.name,
-            &destination_root.join(&stale.name),
-            Some(stale),
-        )?;
-    }
-
     let canonical_root = fs::canonicalize(source_root)
         .with_context(|| format!("failed to resolve {}", source_root.display()))?;
     let transaction_dir = tempfile::Builder::new()
@@ -1023,12 +1119,16 @@ fn sync_canonical_skills(
     fs::create_dir_all(&backup_root)
         .with_context(|| format!("failed to create {}", backup_root.display()))?;
 
+    // Staging happens before any destination is inspected: it only writes
+    // inside the transaction directory, and the staged digest is what proves
+    // whether a destination amplihack has no ownership record for is already
+    // exactly the tree we would publish.
     let mut staged = Vec::with_capacity(skills.len());
     for (name, source) in &skills {
         let staging_dir = staging_root.join(name);
         copy_skill_tree(source, &staging_dir, source_root)
             .with_context(|| format!("failed to stage canonical skill '{name}'"))?;
-        staged.push((name.clone(), staging_dir));
+        staged.push(staging_dir);
     }
     materialize_known_skill_links(source_root, &staging_root, &canonical_root)?;
 
@@ -1037,38 +1137,51 @@ fn sync_canonical_skills(
     // every swap below moves the live directory aside before moving the new
     // one in, so an unconditional refresh opens one window per skill, on every
     // launch, in which that skill is simply absent (issue #1273).
-    //
-    // `validate_skill_destination` has already proved that an owned
-    // destination still hashes to its recorded digest, so comparing against
-    // the record is the same comparison as against the destination — without a
-    // second walk of it.
-    let mut digests = BTreeMap::new();
-    let mut unchanged = BTreeSet::new();
-    for (name, staging_dir) in &staged {
+    let mut registration = PluginRegistration::default();
+    let mut record = BTreeMap::new();
+    let mut publish = Vec::new();
+    for ((name, source), staging_dir) in skills.iter().zip(staged.iter()) {
         let digest = hash_directory_tree(staging_dir)?;
-        let matches_record = owned
-            .skills
-            .iter()
-            .any(|entry| entry.name == *name && entry.content_sha256 == digest);
-        if matches_record && is_real_directory(&destination_root.join(name))? {
-            unchanged.insert(name.clone());
+        let destination = destination_root.join(name);
+        let recorded = owned.skills.iter().find(|entry| entry.name == *name);
+        match plan_skill_destination(&destination, recorded, &digest, source)? {
+            DestinationPlan::Publish => {
+                publish.push((name.clone(), staging_dir.clone(), destination));
+                record.insert(name.clone(), digest);
+                registration.published.insert(name.clone());
+            }
+            DestinationPlan::Current => {
+                record.insert(name.clone(), digest);
+                registration.published.insert(name.clone());
+            }
+            DestinationPlan::Skip(reason) => {
+                // Any existing ownership record is carried forward untouched.
+                // It only ever authorises replacing content that still hashes
+                // to it — content amplihack itself wrote — so keeping it
+                // cannot authorise anything new, and it lets the skill resume
+                // being managed if the user puts the original back.
+                if let Some(recorded) = recorded {
+                    record.insert(name.clone(), recorded.content_sha256.clone());
+                }
+                tracing::warn!(skill = %name, %reason, "amplihack skill was not published");
+                registration.skipped.push(SkippedSkill {
+                    name: name.clone(),
+                    reason,
+                });
+            }
         }
-        digests.insert(name.clone(), digest);
     }
 
     let mut applied = Vec::new();
+    let mut preserved = Vec::new();
     let transaction_result = (|| -> Result<()> {
-        for (name, staging_dir) in &staged {
-            if unchanged.contains(name) {
-                continue;
-            }
-            let destination = destination_root.join(name);
-            let backup = move_destination_to_backup(&destination, &backup_root, name)?;
+        for (name, staging_dir, destination) in &publish {
+            let backup = move_destination_to_backup(destination, &backup_root, name)?;
             applied.push(AppliedSkill {
                 destination: destination.clone(),
                 backup,
             });
-            if let Err(error) = fs::rename(staging_dir, &destination) {
+            if let Err(error) = fs::rename(staging_dir, destination) {
                 return Err(error)
                     .with_context(|| format!("failed to publish canonical skill '{name}'"));
             }
@@ -1080,31 +1193,37 @@ fn sync_canonical_skills(
             .filter(|entry| !canonical_names.contains(&entry.name))
         {
             let destination = destination_root.join(&stale.name);
-            if destination.symlink_metadata().is_ok() {
-                let backup = move_destination_to_backup(&destination, &backup_root, &stale.name)?
-                    .context("owned stale skill disappeared during refresh")?;
-                applied.push(AppliedSkill {
-                    destination,
-                    backup: Some(backup),
-                });
+            match plan_stale_destination(&destination, stale)? {
+                StalePlan::Gone => {}
+                StalePlan::Remove => {
+                    let backup =
+                        move_destination_to_backup(&destination, &backup_root, &stale.name)?
+                            .context("owned stale skill disappeared during refresh")?;
+                    applied.push(AppliedSkill {
+                        destination,
+                        backup: Some(backup),
+                    });
+                }
+                // Changed since amplihack wrote it, and no longer shipped:
+                // there is nothing left to manage, so the ownership claim is
+                // dropped and the directory is left for its owner.
+                StalePlan::Keep(reason) => preserved.push(SkippedSkill {
+                    name: stale.name.clone(),
+                    reason,
+                }),
             }
         }
 
         // Each published destination is now exactly its staged tree, and each
         // skipped one already was, so the staged digests describe both without
         // re-walking the destinations.
-        let skills = canonical_names
+        let skills = record
             .iter()
-            .map(|name| {
-                Ok(OwnedDestination {
-                    name: name.clone(),
-                    content_sha256: digests
-                        .get(name)
-                        .with_context(|| format!("missing staged digest for skill '{name}'"))?
-                        .clone(),
-                })
+            .map(|(name, content_sha256)| OwnedDestination {
+                name: name.clone(),
+                content_sha256: content_sha256.clone(),
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Vec<_>>();
         write_skill_ownership_manifest(
             ownership_manifest_path,
             &SkillOwnershipManifest {
@@ -1120,9 +1239,148 @@ fn sync_canonical_skills(
         return Err(skill_transaction_error(error, &applied, transaction_dir));
     }
 
+    registration.preserved = preserved;
     transaction_dir
         .close()
-        .context("failed to remove completed skill transaction directory")
+        .context("failed to remove completed skill transaction directory")?;
+    Ok(registration)
+}
+
+/// What to do with one skill's destination under `~/.claude/skills`.
+enum DestinationPlan {
+    /// Publish the staged tree over what is there.
+    Publish,
+    /// The destination already is the staged tree; leave it alone.
+    Current,
+    /// Leave the destination alone and go without the skill.
+    Skip(String),
+}
+
+/// Decide what to do with one skill's destination.
+///
+/// Provenance, not the name, is the discriminator (#1449). A directory whose
+/// name matches a canonical skill is the ordinary steady state — after a
+/// successful publish, every skill name "collides" — so the question is
+/// whether amplihack wrote what is there. Three facts prove it did, and each
+/// is safe to replace:
+///
+/// * the ownership manifest records the destination and its tree still hashes
+///   to the recorded digest;
+/// * the tree is byte-for-byte the tree about to be published, so publishing
+///   would lose nothing (this is a host whose ownership manifest was lost, or
+///   predates it — the record is missing, but the content is still ours);
+/// * it is a symlink to the canonical source of that same skill, which is how
+///   an earlier amplihack published skills.
+///
+/// Anything else may be the user's own work and is skipped, never overwritten.
+fn plan_skill_destination(
+    destination: &Path,
+    owned: Option<&OwnedDestination>,
+    staged_digest: &str,
+    canonical_source: &Path,
+) -> Result<DestinationPlan> {
+    let metadata = match fs::symlink_metadata(destination) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(DestinationPlan::Publish),
+        Err(error) => {
+            return Ok(DestinationPlan::Skip(format!(
+                "{} could not be inspected: {error}",
+                destination.display()
+            )));
+        }
+    };
+
+    if metadata.file_type().is_symlink() {
+        // Resolved for comparison only — nothing is ever written through it.
+        return Ok(match resolves_to(destination, canonical_source) {
+            Ok(true) => DestinationPlan::Publish,
+            _ => DestinationPlan::Skip(format!(
+                "{} is a symlink amplihack did not create; remove it to restore this skill",
+                destination.display()
+            )),
+        });
+    }
+    if !metadata.is_dir() {
+        return Ok(DestinationPlan::Skip(format!(
+            "{} is not a directory; move it aside to restore this skill",
+            destination.display()
+        )));
+    }
+
+    let actual = match hash_directory_tree(destination) {
+        Ok(actual) => actual,
+        Err(error) => {
+            return Ok(DestinationPlan::Skip(format!(
+                "{} could not be compared with amplihack's copy: {error:#}",
+                destination.display()
+            )));
+        }
+    };
+    if let Some(owned) = owned {
+        if actual == owned.content_sha256 {
+            return Ok(if actual == staged_digest {
+                DestinationPlan::Current
+            } else {
+                DestinationPlan::Publish
+            });
+        }
+        return Ok(DestinationPlan::Skip(format!(
+            "{} no longer matches what amplihack published there; the replaced content is preserved and this skill is not refreshed",
+            destination.display()
+        )));
+    }
+    if actual == staged_digest {
+        return Ok(DestinationPlan::Current);
+    }
+    Ok(DestinationPlan::Skip(format!(
+        "{} is a directory amplihack cannot prove it wrote; move it aside to restore this skill",
+        destination.display()
+    )))
+}
+
+/// Whether `path` resolves to the same location as `expected`.
+fn resolves_to(path: &Path, expected: &Path) -> Result<bool> {
+    Ok(fs::canonicalize(path)? == fs::canonicalize(expected)?)
+}
+
+/// What to do with a destination amplihack owns but no longer ships.
+enum StalePlan {
+    /// Already gone.
+    Gone,
+    /// Still exactly what amplihack wrote; remove it.
+    Remove,
+    /// Changed since amplihack wrote it; leave it and disown it.
+    Keep(String),
+}
+
+fn plan_stale_destination(destination: &Path, owned: &OwnedDestination) -> Result<StalePlan> {
+    let metadata = match fs::symlink_metadata(destination) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(StalePlan::Gone),
+        Err(error) => {
+            return Ok(StalePlan::Keep(format!(
+                "{} could not be inspected: {error}",
+                destination.display()
+            )));
+        }
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Ok(StalePlan::Keep(format!(
+            "{} is no longer the directory amplihack published",
+            destination.display()
+        )));
+    }
+    match hash_directory_tree(destination) {
+        Ok(actual) if actual == owned.content_sha256 => Ok(StalePlan::Remove),
+        Ok(_) => Ok(StalePlan::Keep(format!(
+            "{} no longer matches what amplihack published there",
+            destination.display()
+        ))),
+        Err(error) => Ok(StalePlan::Keep(format!(
+            "{} could not be compared with amplihack's copy: {error:#}",
+            destination.display()
+        ))),
+    }
 }
 
 fn skill_transaction_error(
@@ -1669,54 +1927,6 @@ fn find_skill_dirs(root: &Path, skills: &mut Vec<(String, PathBuf)>) -> Result<(
     Ok(())
 }
 
-fn validate_skill_destination(
-    name: &str,
-    destination: &Path,
-    owned: Option<&OwnedDestination>,
-) -> Result<()> {
-    let metadata = match fs::symlink_metadata(destination) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("failed to inspect skill destination '{}'", name));
-        }
-    };
-
-    if metadata.file_type().is_symlink() {
-        bail!(
-            "skill '{}' conflicts with destination symlink {}; remove it before installing",
-            name,
-            destination.display()
-        );
-    }
-    if !metadata.is_dir() {
-        bail!(
-            "skill '{}' conflicts with user-owned destination {}; move it before installing",
-            name,
-            destination.display()
-        );
-    }
-
-    let Some(owned) = owned else {
-        bail!(
-            "skill '{}' conflicts with user-owned directory {}; move it before installing",
-            name,
-            destination.display()
-        );
-    };
-
-    let actual = hash_directory_tree(destination)?;
-    if actual != owned.content_sha256 {
-        bail!(
-            "skill '{}' no longer matches amplihack ownership state at {}; preserving replaced content",
-            name,
-            destination.display()
-        );
-    }
-    Ok(())
-}
-
 #[cfg(unix)]
 fn try_symlink(source: &Path, target: &Path) -> Result<()> {
     std::os::unix::fs::symlink(source, target)
@@ -1940,9 +2150,15 @@ mod tests {
         }
         fs::write(legacy_skills.join("docx/ooxml"), "not a link placeholder").unwrap();
 
-        let error = ensure_claude_plugin_installed().unwrap_err();
+        let registration = ensure_claude_plugin_installed().unwrap();
 
-        assert!(format!("{error:#}").contains("unowned destination"));
+        assert!(
+            registration
+                .wrapper_error
+                .as_deref()
+                .is_some_and(|error| error.contains("unowned destination")),
+            "wrapper adoption must still fail closed: {registration:?}"
+        );
         assert_eq!(
             fs::read_to_string(legacy_skills.join("docx/ooxml")).unwrap(),
             "not a link placeholder"
@@ -1958,14 +2174,27 @@ mod tests {
         write_legacy_plugin_wrapper(&staged, &plugin_dir);
         fs::write(plugin_dir.join("user-notes.txt"), "preserve\n").unwrap();
 
-        let error = ensure_claude_plugin_installed().unwrap_err();
+        let registration = ensure_claude_plugin_installed().unwrap();
 
-        assert!(format!("{error:#}").contains("unowned destination"));
+        assert!(
+            registration
+                .wrapper_error
+                .as_deref()
+                .is_some_and(|error| error.contains("unowned destination")),
+            "wrapper adoption must still fail closed: {registration:?}"
+        );
         assert_eq!(
             fs::read_to_string(plugin_dir.join("user-notes.txt")).unwrap(),
             "preserve\n"
         );
-        assert!(!temp.path().join(".claude/skills/quality-audit").exists());
+        // Issue #1449: the wrapper is one destination among several. A user
+        // who has put something in it must not thereby lose every skill.
+        assert!(
+            temp.path()
+                .join(".claude/skills/quality-audit/SKILL.md")
+                .is_file()
+        );
+        assert!(registration.published.contains("quality-audit"));
     }
 
     #[test]
@@ -2117,28 +2346,164 @@ mod tests {
     }
 
     #[test]
-    fn issue_1277_rejects_a_conflicting_user_owned_skill_name() {
+    fn issue_1449_a_user_owned_collision_costs_only_the_colliding_skill() {
         let (_lock, temp, _home) = isolated_home();
-        write_bundled_skill(
-            temp.path(),
-            "dev-orchestrator",
-            "---\nname: dev-orchestrator\n---\nbundled\n",
-        );
+        for name in ["dev-orchestrator", "crusty-old-engineer", "quality-audit"] {
+            write_bundled_skill(
+                temp.path(),
+                name,
+                &format!("---\nname: {name}\n---\nbundled\n"),
+            );
+        }
         let collision = temp.path().join(".claude/skills/dev-orchestrator");
         fs::create_dir_all(&collision).unwrap();
         fs::write(collision.join("SKILL.md"), "user-owned\n").unwrap();
 
-        let error = ensure_claude_plugin_installed().unwrap_err();
+        let registration = ensure_claude_plugin_installed().unwrap();
 
-        let message = format!("{error:#}");
-        assert!(
-            message.contains("dev-orchestrator") && message.contains("conflict"),
-            "collision error must identify the skill and conflict: {message}"
+        // The whole cost of #1449: one colliding name used to disable every
+        // skill, and the session that lost them looked healthy all day.
+        assert_eq!(
+            registration.published,
+            BTreeSet::from(["crusty-old-engineer".to_owned(), "quality-audit".to_owned()])
         );
+        assert!(
+            temp.path()
+                .join(".claude/skills/crusty-old-engineer/SKILL.md")
+                .is_file()
+        );
+        assert!(
+            temp.path()
+                .join(".claude/skills/quality-audit/SKILL.md")
+                .is_file()
+        );
+
+        let skipped = &registration.skipped;
+        assert_eq!(skipped.len(), 1, "{registration:?}");
+        assert_eq!(skipped[0].name, "dev-orchestrator");
+        assert!(
+            skipped[0].reason.contains("dev-orchestrator"),
+            "a skip must name the destination in the way: {}",
+            skipped[0].reason
+        );
+        let warning = registration.warning().expect("a skip must be reportable");
+        assert!(warning.contains("dev-orchestrator"), "{warning}");
+
         assert_eq!(
             fs::read_to_string(collision.join("SKILL.md")).unwrap(),
             "user-owned\n",
             "a conflicting user skill must never be overwritten"
+        );
+        // A skipped skill is never claimed in the ownership manifest, so a
+        // later run cannot mistake the user's directory for amplihack's.
+        let manifest = read_skill_ownership_manifest(&skill_ownership_manifest_path(
+            &temp.path().join(".amplihack/.claude"),
+        ))
+        .unwrap();
+        assert!(
+            !manifest
+                .skills
+                .iter()
+                .any(|entry| entry.name == "dev-orchestrator"),
+            "{manifest:?}"
+        );
+    }
+
+    /// A name match against amplihack's own content is the steady state, not
+    /// a conflict — after any successful publish every skill name "collides".
+    /// A host whose ownership manifest was lost (or predates it) must
+    /// therefore adopt the identical copy rather than skip all of them.
+    #[test]
+    fn issue_1449_adopts_an_identical_copy_it_has_no_ownership_record_of() {
+        let (_lock, temp, _home) = isolated_home();
+        let source = write_bundled_skill(
+            temp.path(),
+            "crusty-old-engineer",
+            "---\nname: crusty-old-engineer\n---\nbundled\n",
+        );
+        let destination = temp.path().join(".claude/skills/crusty-old-engineer");
+        copy_dir_recursive(&source, &destination).unwrap();
+
+        let registration = ensure_claude_plugin_installed().unwrap();
+
+        assert!(registration.skipped.is_empty(), "{registration:?}");
+        assert!(registration.published.contains("crusty-old-engineer"));
+        assert_eq!(
+            fs::read_to_string(destination.join("SKILL.md")).unwrap(),
+            "---\nname: crusty-old-engineer\n---\nbundled\n"
+        );
+        let manifest = read_skill_ownership_manifest(&skill_ownership_manifest_path(
+            &temp.path().join(".amplihack/.claude"),
+        ))
+        .unwrap();
+        assert!(
+            manifest
+                .skills
+                .iter()
+                .any(|entry| entry.name == "crusty-old-engineer"),
+            "an adopted copy must be recorded as amplihack's: {manifest:?}"
+        );
+    }
+
+    /// An earlier amplihack published skills as symlinks into the staged
+    /// framework. Those are amplihack's own publication, so they are replaced
+    /// with the current layout instead of being refused as foreign symlinks.
+    #[cfg(unix)]
+    #[test]
+    fn issue_1449_replaces_its_own_legacy_symlink_publication() {
+        let (_lock, temp, _home) = isolated_home();
+        let source = write_bundled_skill(
+            temp.path(),
+            "crusty-old-engineer",
+            "---\nname: crusty-old-engineer\n---\nbundled\n",
+        );
+        let destination = temp.path().join(".claude/skills/crusty-old-engineer");
+        fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&source, &destination).unwrap();
+
+        let registration = ensure_claude_plugin_installed().unwrap();
+
+        assert!(registration.skipped.is_empty(), "{registration:?}");
+        assert!(registration.published.contains("crusty-old-engineer"));
+        assert!(
+            !destination
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the legacy link must be replaced by a real directory"
+        );
+        assert_eq!(
+            fs::read_to_string(destination.join("SKILL.md")).unwrap(),
+            "---\nname: crusty-old-engineer\n---\nbundled\n"
+        );
+        assert!(
+            source.join("SKILL.md").is_file(),
+            "the staged source the link pointed at must survive"
+        );
+    }
+
+    /// A stale skill amplihack no longer ships, whose directory has since been
+    /// changed, is left alone and disowned rather than removed or refused.
+    #[test]
+    fn issue_1449_keeps_a_changed_stale_skill_and_reports_it() {
+        let (_lock, temp, _home) = isolated_home();
+        write_bundled_skill(temp.path(), "kept", "---\nname: kept\n---\n");
+        let removed = write_bundled_skill(temp.path(), "removed", "---\nname: removed\n---\n");
+        ensure_claude_plugin_installed().unwrap();
+
+        fs::remove_dir_all(removed).unwrap();
+        let stale = temp.path().join(".claude/skills/removed");
+        fs::write(stale.join("SKILL.md"), "edited by hand\n").unwrap();
+
+        let registration = ensure_claude_plugin_installed().unwrap();
+
+        assert!(registration.published.contains("kept"));
+        assert_eq!(registration.preserved.len(), 1, "{registration:?}");
+        assert_eq!(registration.preserved[0].name, "removed");
+        assert_eq!(
+            fs::read_to_string(stale.join("SKILL.md")).unwrap(),
+            "edited by hand\n"
         );
     }
 
@@ -2155,9 +2520,11 @@ mod tests {
         fs::write(collision.join("SKILL.md"), "user-owned\n").unwrap();
         fs::write(collision.join(".amplihack-managed"), "amplihack\n").unwrap();
 
-        let error = ensure_claude_plugin_installed().unwrap_err();
+        let registration = ensure_claude_plugin_installed().unwrap();
 
-        assert!(format!("{error:#}").contains("user-owned"));
+        assert_eq!(registration.skipped.len(), 1, "{registration:?}");
+        assert_eq!(registration.skipped[0].name, "dev-orchestrator");
+        assert!(registration.published.is_empty());
         assert_eq!(
             fs::read_to_string(collision.join("SKILL.md")).unwrap(),
             "user-owned\n"
@@ -2216,9 +2583,13 @@ mod tests {
         let installed = temp.path().join(".claude/skills/kept/SKILL.md");
         fs::write(&installed, "user replacement\n").unwrap();
 
-        let error = ensure_claude_plugin_installed().unwrap_err();
+        let registration = ensure_claude_plugin_installed().unwrap();
 
-        assert!(format!("{error:#}").contains("no longer matches"));
+        assert_eq!(registration.skipped.len(), 1, "{registration:?}");
+        assert!(
+            registration.skipped[0].reason.contains("no longer matches"),
+            "{registration:?}"
+        );
         assert_eq!(fs::read_to_string(installed).unwrap(), "user replacement\n");
     }
 
@@ -2237,9 +2608,13 @@ mod tests {
         )
         .unwrap();
 
-        let error = ensure_claude_plugin_installed().unwrap_err();
+        let registration = ensure_claude_plugin_installed().unwrap();
 
-        assert!(format!("{error:#}").contains("no longer matches"));
+        assert_eq!(registration.skipped.len(), 1, "{registration:?}");
+        assert!(
+            registration.skipped[0].reason.contains("no longer matches"),
+            "{registration:?}"
+        );
         assert_eq!(
             fs::read_to_string(installed.join("SKILL.md")).unwrap(),
             "user content\n"
@@ -2388,11 +2763,20 @@ mod tests {
         fs::create_dir_all(destination.parent().unwrap()).unwrap();
         std::os::unix::fs::symlink(&external, &destination).unwrap();
 
-        let error = ensure_claude_plugin_installed().unwrap_err();
+        let registration = ensure_claude_plugin_installed().unwrap();
 
+        assert_eq!(registration.skipped.len(), 1, "{registration:?}");
+        assert_eq!(
+            registration.skipped[0].name, "quality-audit",
+            "symlink collision must identify the affected skill"
+        );
         assert!(
-            format!("{error:#}").contains("quality-audit"),
-            "symlink collision error must identify the affected skill"
+            destination
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "a foreign destination symlink must be left exactly as it was"
         );
         assert_eq!(
             fs::read_to_string(external.join("SKILL.md")).unwrap(),
