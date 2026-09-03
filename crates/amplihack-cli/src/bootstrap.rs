@@ -335,6 +335,20 @@ pub fn ensure_tool_available(tool: &str, override_origin: OverrideOrigin) -> Res
             // the per-candidate one sends the reader looking at the wrong
             // number.
             log_rejected_candidates(tool, &resolution);
+            // Issue #1424: `Abstain` has two shapes now, and quoting the probe
+            // budgets at a user whose binary was killed by SIGABRT names the
+            // wrong number as confidently as the old "no platform package
+            // found" named the wrong cause.
+            if let Some(detail) = resolution.resource_failure() {
+                bail!(
+                    "'{tool}' is installed and amplihack reached it — and this \
+                     host could not carry a run of it through, so nothing was \
+                     learned about the binary. This is NOT a missing or broken \
+                     install, and reinstalling will not change it.\n\n\
+                     What happened: {detail}\n\n{report}",
+                    report = resolution.rejection_report(tool, package.unwrap_or(tool)),
+                );
+            }
             bail!(
                 "Could not verify a working '{tool}' — resolution ended without a \
                  conclusive answer: a candidate did not respond within {per:?}, or \
@@ -402,6 +416,17 @@ pub fn ensure_tool_available(tool: &str, override_origin: OverrideOrigin) -> Res
         let prefix_hint = npm_prefix_dir()
             .map(|p| p.join("bin").display().to_string())
             .unwrap_or_else(|_| "~/.npm-global/bin".to_string());
+        // Issue #1424: only tell the user to install or to fix their `$PATH`
+        // when the evidence is that something is missing. If a candidate ran
+        // and died, `rejection_report` has already said so and said what to
+        // check; adding a `$PATH` and an `npm install -g` here would put the
+        // wrong instruction last, where it is read first.
+        if !resolution.install_would_help() {
+            bail!(
+                "{report}",
+                report = resolution.rejection_report(tool, package.unwrap_or(tool)),
+            );
+        }
         bail!(
             "{report}\n\
              If '{tool}' is installed somewhere amplihack did not look, add it to \
@@ -510,7 +535,7 @@ fn log_rejected_candidates(tool: &str, resolution: &Resolution) {
         tracing::info!(
             tool,
             path = %launch_target::display_untrusted_path(path),
-            reason = rejection.explain(),
+            reason = %rejection.explain(),
             "candidate rejected before install"
         );
     }
