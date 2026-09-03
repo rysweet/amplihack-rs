@@ -2,7 +2,10 @@
 set -euo pipefail
 
 COPILOT_BIN="${COPILOT_BIN:-copilot}"
-EXPECTED_VERSION=1.0.83-1
+EXPECTED_PACKAGE_VERSION=1.0.83-2
+EXPECTED_ISOLATED_VERSION=1.0.83-2
+EXPECTED_CACHED_VERSION=1.0.83-3
+CONTRACT_HOME_MODE="${COPILOT_CONTRACT_HOME_MODE:-isolated}"
 SENTINEL="copilot-gateway-secret-must-not-reach-tools"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -11,20 +14,25 @@ if ! command -v "$COPILOT_BIN" >/dev/null 2>&1 && [[ ! -x "$COPILOT_BIN" ]]; the
         echo "SKIP: Copilot CLI is absent and COPILOT_CONTRACT_OPTIONAL=1"
         exit 0
     fi
-    echo "FAIL: Copilot CLI is required; set COPILOT_BIN or install @github/copilot@$EXPECTED_VERSION" >&2
+    echo "FAIL: Copilot CLI is required; set COPILOT_BIN or install @github/copilot@$EXPECTED_PACKAGE_VERSION" >&2
     exit 1
 fi
 
-grep -Fq "VERIFIED_COPILOT_CLI_VERSIONS: &[&str] = &[\"$EXPECTED_VERSION\"]" \
+grep -Fq "COPILOT_NPM_PACKAGE_VERSION: &str = \"$EXPECTED_PACKAGE_VERSION\"" \
+    "$repo_root/crates/amplihack-utils/src/litellm_proxy.rs" || {
+    echo "FAIL: real-CLI package version and Rust attestation differ" >&2
+    exit 1
+}
+grep -Fq "COPILOT_ISOLATED_RUNTIME_VERSION: &str = \"$EXPECTED_ISOLATED_VERSION\"" \
+    "$repo_root/crates/amplihack-utils/src/litellm_proxy.rs" || {
+    echo "FAIL: isolated real-CLI contract version and Rust attestation differ" >&2
+    exit 1
+}
+grep -Fq "&[COPILOT_ISOLATED_RUNTIME_VERSION, \"$EXPECTED_CACHED_VERSION\"]" \
     "$repo_root/crates/amplihack-utils/src/litellm_proxy.rs" || {
     echo "FAIL: real-CLI contract version and Rust attestation set differ" >&2
     exit 1
 }
-actual_version="$("$COPILOT_BIN" --version | sed -nE 's/.*([0-9]+\.[0-9]+\.[0-9]+-[0-9]+).*/\1/p' | head -1)"
-if [[ "$actual_version" != "$EXPECTED_VERSION" ]]; then
-    echo "FAIL: expected GitHub Copilot CLI $EXPECTED_VERSION, got ${actual_version:-unknown}" >&2
-    exit 1
-fi
 
 tmp="$(mktemp -d)"
 server_pid=
@@ -157,6 +165,25 @@ server.listen(0, "127.0.0.1", () => {
 EOF
 
 mkdir "$tmp/home"
+case "$CONTRACT_HOME_MODE" in
+    isolated)
+        contract_home="$tmp/home"
+        expected_runtime="$EXPECTED_ISOLATED_VERSION"
+        ;;
+    current)
+        contract_home="$HOME"
+        expected_runtime="$EXPECTED_CACHED_VERSION"
+        ;;
+    *)
+        echo "FAIL: COPILOT_CONTRACT_HOME_MODE must be isolated or current" >&2
+        exit 1
+        ;;
+esac
+actual_version="$(HOME="$contract_home" "$COPILOT_BIN" --version | sed -nE 's/.*([0-9]+\.[0-9]+\.[0-9]+-[0-9]+).*/\1/p' | head -1)"
+if [[ "$actual_version" != "$expected_runtime" ]]; then
+    echo "FAIL: expected GitHub Copilot CLI $expected_runtime in $CONTRACT_HOME_MODE home mode, got ${actual_version:-unknown}" >&2
+    exit 1
+fi
 PORT_FILE="$tmp/port" GATEWAY_ERROR_FILE="$tmp/gateway-error" \
     CAPTURE_SCRIPT="$tmp/capture-env.sh" \
     node "$tmp/gateway.cjs" >"$tmp/gateway.log" 2>&1 &
@@ -170,7 +197,7 @@ done
 mcp_config="$(printf '{"mcpServers":{"scrub-contract":{"type":"stdio","command":"node","args":["%s"]}}}' "$tmp/mcp-server.cjs")"
 if ! (
     cd "$tmp"
-    HOME="$tmp/home" \
+    HOME="$contract_home" \
         CAPTURE_FILE="$tmp/shell-capture" \
         MCP_CAPTURE_FILE="$tmp/mcp-capture" \
         COPILOT_PROVIDER_BASE_URL="http://127.0.0.1:$(<"$tmp/port")/v1" \
@@ -221,4 +248,4 @@ fi
     exit 1
 }
 
-echo "PASS: GitHub Copilot CLI $EXPECTED_VERSION scrubs shell and stdio MCP environments and redacts output"
+echo "PASS: GitHub Copilot CLI $expected_runtime scrubs shell and stdio MCP environments and redacts output"

@@ -36,8 +36,9 @@ tracking, or Docker operations and fails closed when the executable is missing,
 the probe fails, output is malformed or unknown, or the release is outside the
 runtime-attested set.
 
-Routed Copilot CLI similarly requires the exact runtime-attested release
-`1.0.83-1`. Amplihack supplies
+Routed Copilot CLI similarly requires the exact npm package `1.0.83-2` and a
+tested runtime (`1.0.83-2` packaged or `1.0.83-3` from the user cache).
+Amplihack supplies
 `--secret-env-vars=COPILOT_PROVIDER_API_KEY`, which keeps the restricted
 gateway key in Copilot while removing it from shell and stdio MCP subprocess
 environments and redacting it from tool output. Missing, failed, malformed,

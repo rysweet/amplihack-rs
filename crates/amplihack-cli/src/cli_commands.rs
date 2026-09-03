@@ -5,9 +5,9 @@ use clap_complete::Shell;
 use std::path::PathBuf;
 
 use super::{
-    BuilderCommands, HygieneCommands, MemoryCommands, ModeCommands, MultitaskCommands,
-    PluginCommands, QueryCodeCommands, RecipeCommands, ReflectCommands, RemoteCommands,
-    SignalCommands,
+    BuilderCommands, HygieneCommands, LiteLlmCommands, MemoryCommands, ModeCommands,
+    MultitaskCommands, PluginCommands, QueryCodeCommands, RecipeCommands, ReflectCommands,
+    RemoteCommands, SignalCommands,
 };
 
 #[derive(Subcommand, Debug)]
@@ -78,6 +78,21 @@ pub enum Commands {
         claude_args: Vec<String>,
     },
     /// Launch Claude Code (alias)
+    #[command(long_about = "Launch Claude Code (alias).
+
+MODEL SELECTION (issue #1421)
+  amplihack does not choose a model. With no `--model` on the command line and
+  no AMPLIHACK_DEFAULT_MODEL in the environment, no `--model` is passed and
+  Claude Code applies its own default -- which is also what lets the \"model\"
+  in ~/.claude/settings.json take effect.
+
+  AMPLIHACK_DEFAULT_MODEL=<alias>   pin a model for every launch (e.g. `opus[1m]`).
+                                    Empty / whitespace-only is treated as unset.
+                                    When amplihack uses it, it says so on stderr,
+                                    so a later 404 names an id you can trace.
+  --model <alias>                   pin a model for this launch; takes priority
+                                    over AMPLIHACK_DEFAULT_MODEL and is forwarded
+                                    to Claude Code unchanged.")]
     Claude {
         /// Disable post-session reflection analysis.
         #[arg(long = "no-reflection")]
@@ -357,6 +372,12 @@ pub enum Commands {
         /// Arguments forwarded to the RustyClawd/Claude binary
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
+    },
+    /// Host-only external LiteLLM verification
+    #[command(name = "litellm")]
+    LiteLlm {
+        #[command(subcommand)]
+        command: LiteLlmCommands,
     },
     /// UVX help information
     #[command(name = "uvx-help")]

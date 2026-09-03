@@ -157,8 +157,10 @@ amplihack copilot
 - [External LiteLLM Gateway](features/README.md#external-litellm-gateway) - Route supported local agents through an operator-managed gateway
 - [External LiteLLM Gateway Tutorial](tutorials/external-litellm-gateway.md) - Configure a protected route to an existing gateway
 - [Operate an External LiteLLM Route](howto/operate-external-litellm-route.md) - Rotate, disable, and troubleshoot routing
+- [Verify Real LiteLLM Clients](howto/verify-live-litellm-clients.md) - Attest Claude Code, Copilot CLI, and RustyClawd on a trusted host
 - [External LiteLLM Boundary](concepts/external-litellm-boundary.md) - Understand the external-only trust and data boundaries
 - [External LiteLLM Environment Reference](reference/environment-variables.md#external-litellm-gateway-variables) - Look up the gateway configuration contract
+- [LiteLLM Live Verification Contract](reference/litellm-live-verification.md) - Review host controls, evidence, diagnostics, and exit codes
 
 ---
 

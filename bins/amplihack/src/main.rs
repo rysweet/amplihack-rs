@@ -15,6 +15,26 @@ fn main() {
         .init();
 
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let startup_intent = amplihack_cli::commands::litellm::startup_guard::classify_startup(&args);
+    if startup_intent == amplihack_cli::commands::litellm::startup_guard::StartupIntent::VerifyLive
+        && amplihack_cli::commands::litellm::startup_guard::ci_environment_present()
+    {
+        amplihack_cli::commands::litellm::startup_guard::print_ci_refusal();
+        std::process::exit(78);
+    }
+
+    if startup_intent != amplihack_cli::commands::litellm::startup_guard::StartupIntent::Ordinary {
+        let cli = Cli::parse_from(&args);
+        if let Err(error) = commands::dispatch(cli.command) {
+            if let Some(code) = command_error::exit_code(&error) {
+                std::process::exit(code);
+            }
+            eprintln!("error: {error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     if matches!(
         update::maybe_print_update_notice_from_args(&args),
         update::StartupUpdateOutcome::ExitSuccess

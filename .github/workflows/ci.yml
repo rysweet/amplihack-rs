@@ -96,7 +96,7 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "24.19.0"
-      - name: Record real-CLI attestation toolchain
+      - name: Record Node.js test toolchain
         run: |
           node --version
           npm --version
@@ -127,6 +127,9 @@ jobs:
       - name: Tests — one environment lock per crate, in test_support (issue #1380)
         shell: bash
         run: bash tests/issue_1380_single_env_lock.sh
+      - name: Claim check — working on an issue's own PR is not racing it (issue #1448)
+        shell: bash
+        run: bash tests/issue_1448_review_is_not_a_duplicate.sh
       - name: Git subprocesses — no unsanitised Command::new("git") (issue #1278)
         run: scripts/check-git-command-sanitised.sh
       - name: Git env isolation — hooks scrub GIT_DIR and friends (issue #1278)
@@ -229,42 +232,6 @@ jobs:
       # turning Lint & Format red on main and on every PR branched from it.
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
-
-      - name: Build amplihack for real-client route contracts
-        run: |
-          cargo build --locked \
-            -p amplihack \
-            -p amplihack-hooks-bin \
-            -p amplihack-asset-resolver-bin
-      - name: Claude subprocess scrub contract (issue #1414)
-        shell: bash
-        run: |
-          sudo apt-get install -y bubblewrap socat
-          sudo install -m 0644 /dev/stdin /etc/apparmor.d/bwrap <<'EOF'
-          abi <abi/4.0>,
-          include <tunables/global>
-
-          profile bwrap /usr/bin/bwrap flags=(unconfined) {
-            userns,
-            include if exists <local/bwrap>
-          }
-          EOF
-          sudo apparmor_parser -r /etc/apparmor.d/bwrap
-          bwrap --ro-bind / / true
-          npm install --prefix "$RUNNER_TEMP/claude-code-contract" \
-            @anthropic-ai/claude-code@2.1.247
-          CLAUDE_BIN="$RUNNER_TEMP/claude-code-contract/node_modules/.bin/claude" \
-            bash tests/issue_1414_claude_subprocess_scrub.sh
-          AMPLIHACK_BIN="$GITHUB_WORKSPACE/target/debug/amplihack" \
-          CLAUDE_BIN="$RUNNER_TEMP/claude-code-contract/node_modules/.bin/claude" \
-            bash tests/external_litellm_user_journey.sh
-      - name: Copilot subprocess scrub contract (issue #1416)
-        shell: bash
-        run: |
-          npm install --prefix "$RUNNER_TEMP/copilot-contract" \
-            @github/copilot@1.0.83-1
-          COPILOT_BIN="$RUNNER_TEMP/copilot-contract/node_modules/.bin/copilot" \
-            bash tests/issue_1416_copilot_subprocess_scrub.sh
 
       - name: Proof gate — spawn-accounting decisions (issue #1329)
         run: |

@@ -4,6 +4,7 @@ mod binary;
 pub(crate) mod bundle_compat;
 pub(crate) mod bundle_compat_cache;
 mod claude_commands;
+mod claude_publication;
 mod clone;
 mod command_staging;
 mod copilot_plugin;
@@ -227,12 +228,12 @@ fn framework_restage_needed(staging_exists: bool, missing: &[String]) -> bool {
     !staging_exists || !missing.is_empty()
 }
 
-/// Announce files the command swap carried across because amplihack could not
+/// Announce entries a publisher carried across because amplihack could not
 /// prove it had staged them.
 ///
 /// Loud on purpose: before issue #1344's review these were renamed aside and
 /// deleted while the installer printed a green success line.
-fn report_preserved_commands(preserved: &[String], target: &Path) {
+fn report_preserved_entries(preserved: &[String], target: &Path) {
     if preserved.is_empty() {
         return;
     }
@@ -539,37 +540,36 @@ fn local_install(
     }
 
     println!();
-    println!("🤖 Staging Claude Code slash commands:");
-    // Issue #1344: the command markdowns used to be staged into the Copilot
-    // plugin and nowhere else, so a Claude session got none of them — `/lock`,
-    // `/unlock`, `/auto`, `/ultrathink` all silently absent. Claude discovers
-    // user commands under `~/.claude/commands/<namespace>/`, so the same source
-    // directory is staged there too, and the outcome is printed alongside the
-    // Copilot line above: the missing line is what made the gap invisible.
+    println!("🤖 Publishing assets to Claude Code (~/.claude):");
+    // Issues #1344 and #1438: staging into `~/.amplihack/.claude/` reaches no
+    // Claude session. Each asset type has to be published into the directories
+    // Claude Code actually discovers, and both times that was missed it was
+    // because the fan-out was a per-asset-type call someone had to remember.
+    // `claude_publication::CLAUDE_DESTINATIONS` is the single enumerated list
+    // of those destinations; this loop is the only thing that walks it, and
+    // every outcome — published, skipped, failed — gets a line, because the
+    // absence of a line is exactly what made both gaps invisible.
     //
     // Deliberately NOT fatal: `ensure_framework_installed` calls this whole
-    // install path on every `amplihack launch`, so a permission problem on
-    // `~/.claude/commands/` — or a source that resolves to the staging target
-    // itself — must cost the user their slash commands, not their session.
-    let mut staged_claude_command_count = 0_usize;
-    match claude_commands::stage_claude_commands(repo_root) {
-        Ok(staged) if staged.copied > 0 => {
-            staged_claude_command_count = staged.copied;
-            println!(
-                "  ✅ Claude Code staged {} command(s) at {}",
-                staged.copied,
-                staged.target.display()
-            );
-            report_preserved_commands(&staged.preserved, &staged.target);
-        }
-        Ok(_) => {
-            println!(
-                "  ↩️  No slash-command markdown found under {} — skipping",
-                repo_root.display()
-            );
-        }
-        Err(error) => {
-            println!("  ⚠️  Could not stage Claude Code slash commands: {error:#}");
+    // install path on every `amplihack launch`, so a permission problem under
+    // `~/.claude/` — or a source that resolves to the staging target itself —
+    // must cost the user those assets, not their session.
+    let mut claude_features: Vec<String> = Vec::new();
+    for destination in claude_publication::CLAUDE_DESTINATIONS {
+        match (destination.publish)(repo_root) {
+            Ok(published) => {
+                println!("  {}", published.detail);
+                report_preserved_entries(&published.preserved, &published.target);
+                if let Some(feature) = published.feature {
+                    claude_features.push(feature);
+                }
+            }
+            Err(error) => {
+                println!(
+                    "  ⚠️  Could not publish {} to ~/.claude: {error:#}",
+                    destination.label
+                );
+            }
         }
     }
 
@@ -651,10 +651,8 @@ fn local_install(
         println!("   • Post-tool-use hook");
         println!("   • Pre-compact hook");
         println!("   • Runtime logging and metrics");
-        if staged_claude_command_count > 0 {
-            println!(
-                "   • {staged_claude_command_count} Claude Code slash commands (/amplihack:<name>)"
-            );
+        for feature in &claude_features {
+            println!("   • {feature}");
         }
         println!("   • dev-orchestrator recipe execution");
         println!();

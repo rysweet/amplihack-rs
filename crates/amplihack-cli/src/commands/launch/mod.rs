@@ -74,6 +74,7 @@ use amplihack_launcher::prompt_delivery::validate_prompt_delivery_env_for;
 use amplihack_utils::launch_target::OverrideOrigin;
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
+use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -81,6 +82,10 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 const POWER_STEERING_PROMPT_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const RUSTYCLAWD_PACKAGE: &str = "rustyclawd-cli";
+pub(crate) const RUSTYCLAWD_VERSION: &str = "0.1.1";
+pub(crate) const RUSTYCLAWD_SOURCE: &str = "https://github.com/rysweet/RustyClawd";
+pub(crate) const RUSTYCLAWD_REVISION: &str = "e03613a731ec2243590ccbb2b50db4dcf83ca69b";
 
 fn apply_launch_environment(
     command: &mut std::process::Command,
@@ -552,7 +557,72 @@ fn validate_proxy_binary_capability(
             )
             .context("GitHub Copilot CLI external LiteLLM capability check failed")?;
         }
-        amplihack_utils::litellm_proxy::CliTarget::RustyClawd => {}
+        amplihack_utils::litellm_proxy::CliTarget::RustyClawd => {
+            require_rustyclawd_capability(&binary.path)
+                .context("RustyClawd external LiteLLM capability check failed")?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn require_rustyclawd_capability(executable: &Path) -> Result<()> {
+    let cargo_home = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")))
+        .context("cannot locate Cargo installation receipt")?;
+    let receipt = cargo_home.join(".crates2.json");
+    let metadata = fs::symlink_metadata(&receipt)
+        .with_context(|| format!("cannot inspect Cargo receipt {}", receipt.display()))?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        anyhow::bail!("Cargo receipt must be a regular non-symlink file");
+    }
+    let document: serde_json::Value = serde_json::from_slice(
+        &fs::read(&receipt)
+            .with_context(|| format!("cannot read Cargo receipt {}", receipt.display()))?,
+    )
+    .context("Cargo receipt is malformed")?;
+    let installs = document
+        .get("installs")
+        .and_then(serde_json::Value::as_object)
+        .context("Cargo receipt has no installs object")?;
+    let expected_receipt = format!(
+        "{RUSTYCLAWD_PACKAGE} {RUSTYCLAWD_VERSION} (git+{RUSTYCLAWD_SOURCE}?rev={RUSTYCLAWD_REVISION}#{RUSTYCLAWD_REVISION})"
+    );
+    let candidates = installs
+        .iter()
+        .filter(|(package, value)| {
+            package.starts_with(&format!("{RUSTYCLAWD_PACKAGE} "))
+                && value
+                    .get("bins")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|bins| {
+                        bins.iter()
+                            .any(|bin| bin.as_str().is_some_and(|name| name == "rusty"))
+                    })
+        })
+        .collect::<Vec<_>>();
+    let authoritative = if let [(package, value)] = candidates.as_slice() {
+        package.as_str() == expected_receipt
+            && value
+                .get("bins")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|bins| {
+                    bins.as_slice() == [serde_json::Value::String("rusty".to_string())]
+                })
+    } else {
+        false
+    };
+    if !authoritative {
+        anyhow::bail!(
+            "RustyClawd must have one authoritative git receipt for {RUSTYCLAWD_SOURCE} at revision {RUSTYCLAWD_REVISION}; registry, path, tag-only, branch-only, and ambiguous receipts are rejected"
+        );
+    }
+    let expected = fs::canonicalize(cargo_home.join("bin/rusty"))
+        .context("cannot resolve Cargo-installed RustyClawd binary")?;
+    let actual =
+        fs::canonicalize(executable).context("cannot resolve selected RustyClawd binary")?;
+    if actual != expected {
+        anyhow::bail!("RustyClawd executable is not the canonical Cargo-installed binary");
     }
     Ok(())
 }

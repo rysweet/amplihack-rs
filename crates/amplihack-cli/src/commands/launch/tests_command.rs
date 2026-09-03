@@ -54,11 +54,29 @@ fn with_uvx_detection_disabled<T>(f: impl FnOnce() -> T) -> T {
     result
 }
 
+/// The three variables that make `proxy_requested()` true. A launch routed
+/// through the LiteLLM gateway names the gateway's model and outranks
+/// `AMPLIHACK_DEFAULT_MODEL`, so every test that asserts on the *default* has
+/// to start from a host where the gateway is not configured -- otherwise the
+/// result depends on the developer's shell.
+const PROXY_ENV_VARS: [&str; 3] = [
+    amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+    amplihack_utils::litellm_proxy::API_KEY_ENV,
+    amplihack_utils::litellm_proxy::MODEL_ENV,
+];
+
 fn with_default_model_env<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
     let _guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let previous = std::env::var_os("AMPLIHACK_DEFAULT_MODEL");
+    let previous_proxy: Vec<_> = PROXY_ENV_VARS
+        .iter()
+        .map(|name| (*name, std::env::var_os(name)))
+        .collect();
+    for name in PROXY_ENV_VARS {
+        unsafe { std::env::remove_var(name) };
+    }
     match value {
         Some(value) => unsafe { std::env::set_var("AMPLIHACK_DEFAULT_MODEL", value) },
         None => unsafe { std::env::remove_var("AMPLIHACK_DEFAULT_MODEL") },
@@ -70,7 +88,63 @@ fn with_default_model_env<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
         Some(value) => unsafe { std::env::set_var("AMPLIHACK_DEFAULT_MODEL", value) },
         None => unsafe { std::env::remove_var("AMPLIHACK_DEFAULT_MODEL") },
     }
+    for (name, value) in previous_proxy {
+        match value {
+            Some(value) => unsafe { std::env::set_var(name, value) },
+            None => unsafe { std::env::remove_var(name) },
+        }
+    }
     result
+}
+
+/// The model on the command line when a launch is routed through the LiteLLM
+/// gateway, with `AMPLIHACK_LITELLM_MODEL` set to `model`.
+fn model_arg_through_proxy(model: Option<&str>) -> Option<String> {
+    with_default_model_env(Some("pinned-by-env"), || {
+        // `with_default_model_env` has already cleared all three, so setting
+        // the endpoint alone is what "gateway configured, no model named" is.
+        let _endpoint = EnvGuard::set([(
+            amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+            "https://gateway.example.com",
+        )]);
+        let _model =
+            model.map(|model| EnvGuard::set([(amplihack_utils::litellm_proxy::MODEL_ENV, model)]));
+        let binary = make_binary("/usr/bin/claude");
+        let cmd = build_command(&binary, false, false, false, &[]);
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        args.iter()
+            .position(|a| a == "--model")
+            .and_then(|at| args.get(at + 1).cloned())
+    })
+}
+
+/// A gateway launch must name the gateway's model.
+///
+/// LiteLLM routes on the model name, so the name is not a preference here --
+/// it is the address. `AMPLIHACK_DEFAULT_MODEL` is set to something else in
+/// this test precisely to prove the gateway wins: a rebase that dropped this
+/// branch would send every proxied launch to amplihack's own default, which
+/// the gateway does not serve.
+#[test]
+fn a_gateway_launch_names_the_gateway_model() {
+    assert_eq!(
+        model_arg_through_proxy(Some("gateway-model")).as_deref(),
+        Some("gateway-model")
+    );
+}
+
+/// With the gateway configured but no model named, amplihack still passes a
+/// name -- the gateway's documented catch-all -- rather than falling back to a
+/// concrete Anthropic id the gateway has no route for.
+#[test]
+fn a_gateway_launch_without_a_named_model_uses_the_gateway_default() {
+    assert_eq!(
+        model_arg_through_proxy(None).as_deref(),
+        Some("amplihack-default")
+    );
 }
 
 #[test]
@@ -248,7 +322,7 @@ fn real_copilot_confirms_isolated_home_does_not_disable_repository_scope() {
     let version_stdout = String::from_utf8_lossy(&version_output.stdout);
     if !matches!(
         version_stdout.lines().next(),
-        Some("GitHub Copilot CLI 1.0.83-1" | "GitHub Copilot CLI 1.0.83-1.")
+        Some("GitHub Copilot CLI 1.0.83-3" | "GitHub Copilot CLI 1.0.83-3.")
     ) {
         return;
     }
@@ -320,12 +394,21 @@ fn render_launcher_command_quotes_prompt_args() {
     );
 }
 
-/// When no --model is present in extra_args, build_command MUST inject
-/// '--model' followed by the default model value (opus[1m] or AMPLIHACK_DEFAULT_MODEL).
+/// Issue #1421: with no `--model` in extra_args and no `AMPLIHACK_DEFAULT_MODEL`,
+/// build_command requests amplihack's built-in default — and that default is a
+/// CONCRETE model id, never an alias.
 ///
-/// Fails if no --model flag is injected by default.
+/// amplihack used to force `--model opus[1m]`. An alias is resolved by the CLI,
+/// whose version amplihack does not control; on one reporter's install it
+/// resolved to the retired `claude-opus-4-1-20250805` and every agent step
+/// 404'd naming a model the user had never chosen and could not find written
+/// down anywhere, because it only existed at resolution time.
+///
+/// The fix is not to stop choosing — it is to choose something that cannot be
+/// reinterpreted. A stale concrete id fails with a 404 naming itself, which is
+/// searchable. A stale alias fails with a 404 naming a phantom.
 #[test]
-fn test_build_command_injects_default_model() {
+fn test_build_command_passes_the_concrete_default_model() {
     with_default_model_env(None, || {
         let binary = make_binary("/usr/bin/claude");
         let cmd = build_command(&binary, false, false, false, &[]);
@@ -333,22 +416,78 @@ fn test_build_command_injects_default_model() {
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        assert!(
-            args.contains(&"--model".to_string()),
-            "Expected '--model' to be injected when no --model in extra_args, got: {args:?}"
-        );
-        let model_pos = args.iter().position(|a| a == "--model").unwrap();
+        let at = args
+            .iter()
+            .position(|a| a == "--model")
+            .unwrap_or_else(|| panic!("expected amplihack to request a model; got: {args:?}"));
         assert_eq!(
-            args[model_pos + 1],
-            "opus[1m]",
-            "Expected default model 'opus[1m]' after '--model', got: {:?}",
-            args[model_pos + 1]
+            args.get(at + 1).map(String::as_str),
+            Some(super::command::DEFAULT_MODEL),
+            "the default must be the concrete id, got: {args:?}"
         );
     });
 }
 
-/// When AMPLIHACK_DEFAULT_MODEL env var is set, build_command MUST use that
-/// value instead of the hard-coded default 'opus[1m]'.
+/// Issue #1421: the built-in default must be a concrete id, not an alias.
+///
+/// This is the property that actually failed. `opus[1m]` was rejected not
+/// because it named the wrong model but because it named *no* model until the
+/// CLI decided — so two hosts running the same amplihack got different models,
+/// and one of them got a retired one.
+#[test]
+fn test_default_model_is_concrete_not_an_alias() {
+    let d = super::command::DEFAULT_MODEL;
+    assert!(
+        d.starts_with("claude-"),
+        "a concrete Anthropic model id starts with `claude-`; {d:?} looks like an alias"
+    );
+    for alias in ["opus", "sonnet", "haiku", "opus[1m]", "sonnet[1m]"] {
+        assert_ne!(d, alias, "the default must not be the bare alias {alias:?}");
+    }
+}
+
+/// Issue #1421: no hardcoded model alias may reach the command line. Asserted
+/// on the argv as a whole rather than on the `--model` flag alone, so a future
+/// re-introduction by any other route also trips this.
+#[test]
+fn test_build_command_never_hardcodes_a_model_alias() {
+    with_default_model_env(None, || {
+        let binary = make_binary("/usr/bin/claude");
+        let cmd = build_command(&binary, false, false, false, &[]);
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        for hardcoded in ["opus[1m]", "sonnet[1m]", "opus", "sonnet", "haiku"] {
+            assert!(
+                !args.iter().any(|a| a == hardcoded),
+                "amplihack hardcoded the model alias {hardcoded:?};                  the CLI owns the model catalogue, not amplihack. Args: {args:?}"
+            );
+        }
+    });
+}
+
+/// Issue #1421: an empty / whitespace-only AMPLIHACK_DEFAULT_MODEL is how a
+/// shell delivers an unset-ish value. It must mean "no model", never
+/// `--model ""`, which the CLI would reject with its own confusing error.
+#[test]
+fn test_build_command_blank_model_env_injects_nothing() {
+    with_default_model_env(Some("   "), || {
+        let binary = make_binary("/usr/bin/claude");
+        let cmd = build_command(&binary, false, false, false, &[]);
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !args.contains(&"--model".to_string()),
+            "A blank AMPLIHACK_DEFAULT_MODEL must inject nothing, got: {args:?}"
+        );
+    });
+}
+
+/// When AMPLIHACK_DEFAULT_MODEL env var is set, build_command MUST pass that
+/// value through — it is the operator's explicit opt-in to pinning a model.
 ///
 /// Fails if the env var override is not respected.
 #[test]
@@ -463,14 +602,30 @@ fn build_command_basic_no_skip_permissions_by_default() {
             path: PathBuf::from("/usr/bin/claude"),
             version: Some("1.0.0".to_string()),
         };
+        // Safety: tests in this file are serialized via home_env_lock(), which
+        // `with_uvx_detection_disabled` already holds.
+        let previous_model = std::env::var_os("AMPLIHACK_DEFAULT_MODEL");
+        unsafe { std::env::remove_var("AMPLIHACK_DEFAULT_MODEL") };
         // skip_permissions = false (default): should NOT inject --dangerously-skip-permissions
         let cmd = build_command(&binary, false, false, false, &[]);
+        if let Some(value) = previous_model {
+            unsafe { std::env::set_var("AMPLIHACK_DEFAULT_MODEL", value) };
+        }
         assert_eq!(cmd.get_program(), "/usr/bin/claude");
         let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
-        // Should inject --model <default> only
-        assert_eq!(args[0], "--model");
-        // Default model depends on env; just check we have 2 args
-        assert_eq!(args.len(), 2);
+        // Issue #1421: the only thing injected is the model request.
+        let strs: Vec<String> = args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            strs,
+            vec![
+                "--model".to_string(),
+                super::command::DEFAULT_MODEL.to_string()
+            ],
+            "a plain launch should carry only the model request, got: {strs:?}"
+        );
     });
 }
 
@@ -482,12 +637,30 @@ fn build_command_with_skip_permissions_flag() {
             path: PathBuf::from("/usr/bin/claude"),
             version: Some("1.0.0".to_string()),
         };
+        // Safety: tests in this file are serialized via home_env_lock(), which
+        // `with_uvx_detection_disabled` already holds.
+        let previous_model = std::env::var_os("AMPLIHACK_DEFAULT_MODEL");
+        unsafe { std::env::remove_var("AMPLIHACK_DEFAULT_MODEL") };
         // skip_permissions = true: should inject --dangerously-skip-permissions
         let cmd = build_command(&binary, false, false, true, &[]);
+        if let Some(value) = previous_model {
+            unsafe { std::env::set_var("AMPLIHACK_DEFAULT_MODEL", value) };
+        }
         let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
-        assert_eq!(args[0], "--dangerously-skip-permissions");
-        assert_eq!(args[1], "--model");
-        assert_eq!(args.len(), 3);
+        // Issue #1421: the permission flag and the model request, in that order.
+        let strs: Vec<String> = args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            strs,
+            vec![
+                "--dangerously-skip-permissions".to_string(),
+                "--model".to_string(),
+                super::command::DEFAULT_MODEL.to_string(),
+            ],
+            "got: {strs:?}"
+        );
     });
 }
 

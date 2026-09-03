@@ -161,6 +161,8 @@ nav:
       - External LiteLLM Gateway:
           - Tutorial: tutorials/external-litellm-gateway.md
           - Operations: howto/operate-external-litellm-route.md
+          - Verify Real Clients: howto/verify-live-litellm-clients.md
+          - Live Verification Contract: reference/litellm-live-verification.md
           - Architecture: concepts/external-litellm-boundary.md
   - Guides:
       - Formal Specifications as Prompt Language: guides/formal-specifications-as-prompt-language.md
