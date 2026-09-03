@@ -273,8 +273,12 @@ if [ -s "$STEP" ]; then
 fi
 
 # The claim check must be consulted BEFORE the create call, not after it.
-claim_pos=$(grep -n 'workflow_issue_claim_check.sh' "$PUBLISH_TOOL" | tail -1 | cut -d: -f1)
-create_pos=$(grep -n 'PR_URL_RESULT="\$(gh_pr_create_with_retry)"' "$PUBLISH_TOOL" | head -1 | cut -d: -f1)
+# One awk per value, over the whole file. The `tail`/`head`-terminated pipelines
+# this replaces left `grep` writing into a closed pipe; under `pipefail` either
+# position collapses to "" and the ordering assertion silently becomes vacuous
+# (issue #1434).
+claim_pos=$(awk 'index($0, "workflow_issue_claim_check.sh") { n = FNR } END { if (n) print n }' "$PUBLISH_TOOL")
+create_pos=$(awk 'n == 0 && index($0, "PR_URL_RESULT=\"$(gh_pr_create_with_retry)\"") { n = FNR } END { if (n) print n }' "$PUBLISH_TOOL")
 if [ -n "$claim_pos" ] && [ -n "$create_pos" ] && [ "$claim_pos" -lt "$create_pos" ]; then
   pass "workflow_publish_pr.sh consults the claim check before it creates a PR"
 else

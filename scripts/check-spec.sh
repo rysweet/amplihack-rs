@@ -41,11 +41,14 @@ for case in "${CASES[@]}"; do
 
   if [ "$want" = "PASS" ]; then
     if grep -q "Model checking completed. No error has been found" <<<"$out"; then
-      states=$(grep -oE "[0-9,]+ distinct states found" <<<"$out" | tail -1)
+      # One awk over the whole output, keeping the last match. The
+      # `tail`-terminated pipeline it replaces is the early-exit shape
+      # banned by issue #1434.
+      states=$(awk 'match($0, /[0-9,]+ distinct states found/) { s = substr($0, RSTART, RLENGTH) } END { print s }' <<<"$out")
       printf '  ok   %-14s no error (%s)\n' "$cfg" "$states"
     else
       printf '  FAIL %-14s expected no error; got:\n' "$cfg"
-      grep -E "Invariant .* is violated|Error:" <<<"$out" | head -3 | sed 's/^/       /'
+      awk '/Invariant .* is violated|Error:/ { if (n < 3) { printf "       %s\n", $0; n++ } }' <<<"$out"
       rc=1
     fi
   else

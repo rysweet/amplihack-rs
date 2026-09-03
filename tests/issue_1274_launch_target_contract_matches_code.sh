@@ -41,8 +41,12 @@ fi
 
 for sig in "${sigs[@]}"; do
   name=$(sed -E 's/^pub fn ([a-z_]+)\(.*/\1/' <<<"$sig")
+  # One awk over the whole grep output. A `head`-terminated stage would stop
+  # reading and leave `grep` writing into a closed pipe; under `pipefail` the
+  # substitution then collapses to "" and the test reports the symbol as
+  # missing when it is present (issue #1434).
   # shellcheck disable=SC2086
-  hit=$(grep -rhE "^pub fn ${name}\(" $SRC_DIRS 2>/dev/null | head -1)
+  hit=$(grep -rhE "^pub fn ${name}\(" $SRC_DIRS 2>/dev/null | awk 'NR == 1')
   if [ -z "$hit" ]; then
     fail "doc declares '$name', which no longer exists in the documented scope"
     continue

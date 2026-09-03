@@ -26,11 +26,19 @@ echo "$out" | grep -E "Checking harness|VERIFICATION:" || true
 
 if ! grep -qE "Complete - [0-9]+ successfully verified harnesses, 0 failures" <<<"$out"; then
   echo "check-proofs: FAILED" >&2
-  grep -E "Failed Checks|VERIFICATION:- FAILED" <<<"$out" | head -20 >&2
+  # `awk` reads all of its input. A `head`-terminated stage would stop early
+  # and leave `grep` writing into a closed pipe (issue #1434).
+  grep -E "Failed Checks|VERIFICATION:- FAILED" <<<"$out" | awk 'NR <= 20' >&2
   exit 1
 fi
 
-count=$(grep -oE "Complete - [0-9]+ successfully verified" <<<"$out" | grep -oE "[0-9]+" | head -1)
+# No pipeline at all: the count is read straight out of the captured output.
+# The two-grep, `head`-terminated pipeline this replaces could collapse to ""
+# whenever the producer lost the race to `head` closing the pipe (issue #1434).
+count=""
+if [[ "$out" =~ Complete\ -\ ([0-9]+)\ successfully\ verified ]]; then
+  count="${BASH_REMATCH[1]}"
+fi
 if [ "${count:-0}" -lt 1 ]; then
   echo "check-proofs: no harnesses ran — the proof gate is verifying nothing" >&2
   exit 1

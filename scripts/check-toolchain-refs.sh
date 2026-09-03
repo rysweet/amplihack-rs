@@ -51,9 +51,17 @@ err() { printf 'ERROR: %s\n' "$1" >&2; }
 warn() { printf 'WARNING: %s\n' "$1" >&2; }
 
 # Resolve the pinned channel (e.g. 1.97.0) from rust-toolchain.toml.
+# A single awk that reads the whole file and prints only the first match. The
+# `head`-terminated pipeline this replaces would leave `sed` writing into a
+# closed pipe; under `pipefail` the channel then resolves to "" (issue #1434).
 toolchain_channel() {
-    sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
-        "$TOOLCHAIN_TOML" | head -n1
+    awk 'n == 0 && match($0, /^[[:space:]]*channel[[:space:]]*=[[:space:]]*"[^"]*"/) {
+             s = substr($0, RSTART, RLENGTH)
+             sub(/^[^"]*"/, "", s)
+             sub(/"$/, "", s)
+             print s
+             n = 1
+         }' "$TOOLCHAIN_TOML"
 }
 
 # Emit "lineno:ref" for every dtolnay/rust-toolchain step in $1 that declares a
