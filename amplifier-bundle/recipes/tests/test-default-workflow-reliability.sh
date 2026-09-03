@@ -1590,7 +1590,10 @@ assert_sanitize_cli_output_redacts_secrets() {
     # workflow_issue_tracking.sh (#1361) while the GitHub error path keeps its
     # inline copy in the recipe. Scanning both is what preserves this guard --
     # pinning it to the recipe alone would have quietly stopped comparing them.
-    mapfile -t redaction_lines < <(grep -HnE 'sed -E .*<redacted-token>' "${PREP_RECIPE}" "${PREP_TRACKING_TOOL}")
+    # while-read, not mapfile: macOS /bin/bash is 3.2 (issue #1423).
+    redaction_lines=()
+    while IFS= read -r _ml; do redaction_lines+=("${_ml}"); done \
+        < <(grep -HnE 'sed -E .*<redacted-token>' "${PREP_RECIPE}" "${PREP_TRACKING_TOOL}")
     [ "${#redaction_lines[@]}" -ge 2 ] \
         || fail "issue #1103: expected >=2 <redacted-token> sed chains across ${PREP_RECIPE} and ${PREP_TRACKING_TOOL}, found ${#redaction_lines[@]}"
     local ref_count="" line clause_count loc

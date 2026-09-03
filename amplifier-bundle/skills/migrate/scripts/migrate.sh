@@ -191,7 +191,8 @@ migrate_with_retry() {
 is_same_host_by_name() {
   local dest="${1:-}"
   [[ -n "$dest" ]] || return 1
-  dest="${dest,,}"
+  # bash 3.2 (macOS /bin/bash) has no lowercase expansion — fold with tr (#1423).
+  dest="$(printf '%s' "$dest" | tr '[:upper:]' '[:lower:]')"
 
   case "$dest" in
     localhost | localhost.* | 127.0.0.1 | ::1) return 0 ;;
@@ -200,8 +201,8 @@ is_same_host_by_name() {
   local short long
   short="$(hostname -s 2>/dev/null || true)"
   long="$(hostname -f 2>/dev/null || hostname 2>/dev/null || true)"
-  short="${short,,}"
-  long="${long,,}"
+  short="$(printf '%s' "$short" | tr '[:upper:]' '[:lower:]')"
+  long="$(printf '%s' "$long" | tr '[:upper:]' '[:lower:]')"
 
   [[ -n "$short" && "$dest" == "$short" ]] && return 0
   [[ -n "$long" && "$dest" == "$long" ]] && return 0

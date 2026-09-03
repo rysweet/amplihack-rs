@@ -92,8 +92,9 @@ finish_publish() {
 }
 
 load_pr_fields() {
-  local pr_json="$1"
-  mapfile -t PR_FIELDS < <(
+  local pr_json="$1" _ml
+  # while-read, not mapfile: macOS /bin/bash is 3.2 (issue #1423).
+  PR_FIELDS=(); while IFS= read -r _ml; do PR_FIELDS+=("$_ml"); done < <(
     printf '%s' "$pr_json" | jq -r '.url // "", ((.number // "") | tostring), .state // "", .mergedAt // ""'
   )
   PR_URL_RESULT="${PR_FIELDS[0]:-}"
@@ -304,8 +305,9 @@ select_matching_azdo_pr() {
 }
 
 load_azdo_pr_fields() {
-  local pr_json="$1"
-  mapfile -t AZDO_PR_FIELDS < <(
+  local pr_json="$1" _ml
+  # while-read, not mapfile: macOS /bin/bash is 3.2 (issue #1423).
+  AZDO_PR_FIELDS=(); while IFS= read -r _ml; do AZDO_PR_FIELDS+=("$_ml"); done < <(
     printf '%s' "$pr_json" | jq -r '.url // "", ((.pullRequestId // "") | tostring), .status // "", .sourceRefName // "", .targetRefName // ""'
   )
   PR_URL_RESULT="${AZDO_PR_FIELDS[0]:-}"

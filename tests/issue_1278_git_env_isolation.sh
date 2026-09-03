@@ -51,7 +51,8 @@ trap 'rm -rf "$TMPROOT"' EXIT
 # The list is read out of the Rust constant so it cannot drift away from
 # amplihack_git::REPOSITORY_ENV_VARS.
 # ---------------------------------------------------------------------------
-mapfile -t rust_vars < <(
+# while-read, not mapfile: macOS /bin/bash is 3.2 (issue #1423).
+rust_vars=(); while IFS= read -r _ml; do rust_vars+=("$_ml"); done < <(
     sed -n '/^pub const REPOSITORY_ENV_VARS/,/^];$/p' "$HELPER_SRC" \
         | grep -o '"GIT_[A-Z_]*"' | tr -d '"' | sort
 )

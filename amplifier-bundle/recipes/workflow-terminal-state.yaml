@@ -414,7 +414,7 @@ steps:
       fi
 
       if [ -n "$pr_json" ] && [ "$pr_json" != "{}" ]; then
-        mapfile -t pr_fields < <(
+        pr_fields=(); while IFS= read -r _ml; do pr_fields+=("$_ml"); done < <(
           printf '%s' "$pr_json" | jq -r '.url // "", ((.number // "") | tostring), .state // "", .mergedAt // "", .headRefName // "", .baseRefName // "", .headRefOid // "", (.headRepositoryOwner.login // .headRepositoryOwner.name // .headRepositoryOwner // ""), (.headRepository.name // ((.headRepository.nameWithOwner // "") | split("/") | .[-1]) // ""), (.isCrossRepository // false | tostring), ([.statusCheckRollup[]? | select((.conclusion? // "") as $c | $c == "FAILURE" or $c == "ERROR" or $c == "TIMED_OUT" or $c == "CANCELLED")] | length | tostring)'
         )
         pr_url_result="${pr_fields[0]:-}"

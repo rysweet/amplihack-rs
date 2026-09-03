@@ -23,7 +23,8 @@
 #
 # Security contracts for the new checkpoint bash step (untrusted agent feedback
 # is consumed as data, never as code):
-#   S1. No eval / source / dynamic command construction; no ${!var} / ${var@P}.
+#   S1. No eval / source / dynamic command construction; no indirect expansion
+#       or "@P"-style parameter transformation.
 #   S2. Untrusted feedback is read with `printf '%s'` (not `printf "$X"` or a
 #       bare `echo $X`) to prevent format-string / word-splitting injection.
 #   S3. `set -uo pipefail` WITHOUT `-e`, and the step is structured to exit 0
@@ -194,7 +195,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # Assertion 6 (security): no eval / source / dynamic command construction and
-# no ${!var} / ${var@P} indirection in the checkpoint step.
+# no indirect expansion or "@P"-style parameter transformation in the checkpoint step.
 # ---------------------------------------------------------------------------
 if [[ -n "${CHECKPOINT_BLOCK}" ]]; then
     if printf '%s\n' "${CHECKPOINT_BLOCK}" | grep -qE '(^|[^[:alnum:]_])(eval|source)([^[:alnum:]_]|$)' \

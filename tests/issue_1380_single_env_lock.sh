@@ -30,7 +30,8 @@ report() {
 }
 
 # Every .rs file under a crate's src/, except that crate's test_support module.
-mapfile -t files < <(
+# while-read, not mapfile: macOS /bin/bash is 3.2 (issue #1423).
+files=(); while IFS= read -r _ml; do files+=("$_ml"); done < <(
   find crates -type d -name src -print0 |
     xargs -0 -I{} find {} -name '*.rs' -type f |
     grep -v '/src/test_support\.rs$' |
