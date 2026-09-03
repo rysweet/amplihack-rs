@@ -121,6 +121,9 @@ jobs:
       - name: Duplicate PRs — an issue already claimed is not started again (issue #1361)
         shell: bash
         run: bash tests/issue_1361_duplicate_pr_claim_check.sh
+      - name: Duplicate issues — a relaunch reuses the issue it already opened (issue #1420)
+        shell: bash
+        run: bash tests/issue_1420_duplicate_issue_dedup_check.sh
       - name: Tests — one environment lock per crate, in test_support (issue #1380)
         shell: bash
         run: bash tests/issue_1380_single_env_lock.sh

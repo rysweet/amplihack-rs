@@ -264,8 +264,20 @@ steps:
       case "$HOST_TYPE" in
       github)
         if [ -n "$REF_ISSUE_NUM" ]; then EXISTING_URL=$(timeout 60 gh issue view "$REF_ISSUE_NUM" --json url --jq '.url // ""' 2>/dev/null || echo ''); [ -n "$EXISTING_URL" ] && { printf '%s\n' "$EXISTING_URL"; exit 0; }; fi
-        SEARCH_Q="${ISSUE_TITLE:0:100}"; if [ -n "$SEARCH_Q" ]; then FOUND_URL=$(timeout 60 gh issue list --state open --search "$SEARCH_Q" --json url --jq '.[0].url // ""' 2>/dev/null || echo ''); [ -n "$FOUND_URL" ] && { printf '%s\n' "$FOUND_URL"; exit 0; }; fi
-        ISSUE_BODY=$(printf '## Task Description\n%s\n\n## Requirements\n%s\n\n## Acceptance Criteria\n- [ ] All explicit requirements met\n- [ ] Tests passing\n- [ ] Philosophy compliant\n- [ ] Documentation updated\n\n## Classification\nGenerated via default-workflow recipe\n' "$TASK_DESC" "$SANITIZED_ISSUE_REQS")
+        # DE-DUPLICATION GUARD (#1420). The previous guard asked GitHub's SEARCH INDEX for
+        # `${ISSUE_TITLE:0:100}` restricted to `--state open`. For a title that begins with a
+        # filesystem path that prefix is cut mid-token, carries an unbalanced `(` and contains
+        # slashes the index tokenises differently from the stored title, so it silently matched
+        # nothing and a SECOND issue was created for the same task 27 minutes after the first —
+        # followed by a second worktree, branch and PR. The decision now lives in
+        # amplifier-bundle/tools/workflow_issue_dedup_check.sh, which lists issues directly (no
+        # index), matches on the deterministic task key written into ISSUE_BODY below, falls back
+        # to normalised-title comparison for issues predating the key, covers ALL states, and logs
+        # its outcome in BOTH directions. Extraction, not compression: this brick is at budget.
+        D=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_issue_dedup_check.sh" ] && { D="$c/amplifier-bundle/tools/workflow_issue_dedup_check.sh"; break; }; done
+        TASK_KEY=""
+        if [ -n "$D" ]; then FOUND_URL=$(bash "$D" --task-description "$TASK_DESC" --title "$ISSUE_TITLE" --repo-path "$REPO_PATH") || true; [ -n "$FOUND_URL" ] && { printf '%s\n' "$FOUND_URL"; exit 0; }; TASK_KEY=$(bash "$D" --print-key --task-description "$TASK_DESC" 2>/dev/null || echo ''); else echo "WARNING: issue de-duplication helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack) — creating a tracking issue without a duplicate check (issue #1420)" >&2; fi
+        ISSUE_BODY=$(printf '## Task Description\n%s\n\n## Requirements\n%s\n\n## Acceptance Criteria\n- [ ] All explicit requirements met\n- [ ] Tests passing\n- [ ] Philosophy compliant\n- [ ] Documentation updated\n\n## Classification\nGenerated via default-workflow recipe\n%s\n' "$TASK_DESC" "$SANITIZED_ISSUE_REQS" "${TASK_KEY:+<!-- amplihack-task-key: ${TASK_KEY} -->}")
         LABEL_NAME="workflow:default"
         timeout 30 gh label create "$LABEL_NAME" --color "0366d6" --description "Created by default-workflow recipe" 2>/dev/null || true
         gh_create_issue() { timeout 60 gh issue create --title "$ISSUE_TITLE" --body "$ISSUE_BODY" "$@" 2>&1; }
