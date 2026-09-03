@@ -1,407 +1,281 @@
 # Branch Name Generation in default-workflow
 
-**Hardened pipeline that converts any `task_description` into a valid, safe git branch name.**
+**How `default-workflow` decides what to call its branch and its worktree directory.**
 
 ---
 
 ## Overview
 
-Step 4 of `default-workflow` (`step-04-setup-worktree`) automatically generates a git branch name from the `task_description` context variable. The generation pipeline is designed to be robust against:
+Step 4 of `default-workflow` (`step-04-setup-worktree`, in
+`amplifier-bundle/recipes/workflow-worktree.yaml`) has to answer one question before
+it can create anything: *what is this branch called?* The answer also names the
+worktree directory, at `<main-repo>/worktrees/<branch>`.
 
-- Multi-paragraph task descriptions containing newlines
-- Unicode and special characters
-- Excessively long descriptions
-- Pathological input that could corrupt the git ref namespace or inject shell commands
+Until issue #1426 the answer was always "slugify the first fifty characters of
+`task_description`". That is how a run whose task opened with
 
-The result is always a branch name that:
+```
+Repository: /Users/ryan/src/mistt-qa/ws/142/jamestown (GitHub mistt-repo/jamestown).
+```
 
-- Contains only lowercase alphanumeric characters and hyphens
-- Is at most 50 characters long (in the slug portion)
-- Passes `git check-ref-format --branch` validation
-- Has a safe, predictable fallback when validation fails
+ended up on
+
+```
+feat/issue-142-repository-usersryansrcmistt-qaws142jamestown-gith
+```
+
+— the path separators stripped out, the name cut mid-word at "gith", and created as a
+**second** branch beside `fix/142-band-edge-previous-slice`, which the same task had
+pinned and told the run not to branch away from. The same shape once produced
+`feat/issue-1277-skip-workflow-launch-this-agent-is-already-executi`: a truncated
+prompt fragment living in the git ref namespace.
+
+The name is now resolved by a ladder. Rank 2 below (scanning the task for a branch it
+names) lives in `amplifier-bundle/tools/workflow_branch_name.sh`; ranks 3 and 4 are
+computed **inline** in the recipe — see [Why the derived name is inline](#why-the-derived-name-is-inline).
 
 ---
 
-## Generated Branch Name Format
+## The resolution ladder
+
+| Rank | Source | Result |
+| ---- | ------ | ------ |
+| 1 | `existing_branch` / `pr_number` context keys | that branch, unchanged (issue #342 path) |
+| 2 | A branch **named in the task description** | that branch, verbatim |
+| 3 | The issue number plus a bounded slug | `{branch_prefix}/issue-{issue_number}-{slug}` |
+| 4 | Nothing usable | `{branch_prefix}/issue-{issue_number}-{hash}` |
+
+Ranks 1 and 2 are the same rule stated twice: **an explicitly supplied branch wins, and
+no competing name is derived alongside it.** Rank 3 keys the name to the work (the
+issue), not to the wording of the prompt. Rank 4 uses a short stable hash of the task
+rather than its prose.
+
+### Rank 2 — a branch named in the task
+
+A directive **anchored at the start of a line** names the branch. Both the value on the
+same line and the value on the following line are recognised:
 
 ```
-{branch_prefix}/issue-{issue_number}-{task_slug}
+Branch: fix/142-band-edge-previous-slice
+Branch name = fix/142-band-edge-previous-slice
+
+BRANCH — already created and checked out in this worktree:
+    fix/142-band-edge-previous-slice
 ```
+
+Backticks, quotes, brackets and trailing sentence punctuation are stripped from the
+value, which is then validated with `git check-ref-format --branch`.
+
+Detection is deliberately conservative, because a false positive hijacks the run:
+
+- The word `branch` must open the line. `Please use the branch fix/9-foo` names nothing.
+- The value must contain a `/` or a `-`. `Branch protection rules: enabled` names
+  nothing. A genuinely single-word branch is still reachable through the
+  `existing_branch` context key, which needs no guessing.
+- `main`, `master`, `develop`, `trunk` and `head` are refused. A task that mentions one
+  of those is describing the base, not the branch to commit onto.
+
+When the named branch already exists (locally or on `origin`), the run takes the
+existing-branch path and **reuses** it. When it does not exist, it is created under
+exactly that name.
+
+### Rank 3 — the bounded, issue-keyed slug
+
+```
+{branch_prefix}/issue-{issue_number}-{slug}
+```
+
+The slug is built from the task description and bounded on both ends:
+
+- Tokens containing `/`, `\` or `@` — filesystem paths, URLs, `org/repo` slugs, e-mail
+  addresses — are dropped whole. They are where `usersryansrcmistt-qaws142jamestown`
+  came from.
+- Tokens longer than 20 characters (identifier blobs, hashes) are dropped.
+- A leading `issue <N>` is skipped; the number is already in the branch name.
+- Words are joined with `-` **only while the result still fits 24 characters**, so the
+  slug always ends on a whole word. Nothing is cut mid-word unless the very first word
+  is itself over budget and there is nothing else to say.
+- Only the first 64 KB of the task is examined, so the cost does not grow with the
+  prompt. With words capped at 20 characters and the slug at 24, the finished ref
+  cannot exceed roughly 60 characters.
 
 **Examples:**
 
-| `task_description`                                    | `branch_prefix` | `issue_number` | Generated branch                                                |
-| ----------------------------------------------------- | --------------- | -------------- | --------------------------------------------------------------- |
-| `Add user authentication`                             | `feat`          | `123`          | `feat/issue-123-add-user-authentication`                        |
-| `Fix the login bug\n\nUsers cannot log in on Safari.` | `fix`           | `456`          | `fix/issue-456-fix-the-login-bug-users-cannot-log-in-on-safari` |
-| `Réfactoriser l'API d'authentification`               | `refactor`      | `789`          | `refactor/issue-789-rfactoriser-lapi-dauthentification`         |
-| `  ` (blank)                                          | `feat`          | `42`           | `feat/task-unnamed-<timestamp>` (fallback)                      |
+| `task_description` | `branch_prefix` | `issue_number` | Generated branch |
+| ------------------ | --------------- | -------------- | ---------------- |
+| `Add user authentication` | `feat` | `123` | `feat/issue-123-add-user-authentication` |
+| `child task` | `fix` | `1134` | `fix/issue-1134-child-task` |
+| `Repository: /Users/ryan/src/mistt-qa/ws/142/jamestown (GitHub mistt-repo/jamestown).` | `feat` | `142` | `feat/issue-142-repository-github` |
+| `  ` (blank) | `feat` | `42` | `feat/issue-42-36a9e7f1` (hash, rank 4) |
 
----
+### Rank 4 and the last resort
 
-## Pipeline Stages
-
-The branch name is generated by piping `task_description` through eight sequential transforms:
-
-```bash
-TASK_DESC=$(printf '%s' '{{task_description}}')
-TASK_SLUG=$(printf '%s' "$TASK_DESC" \
-  | tr '\n\r' '  ' \
-  | tr '[:upper:]' '[:lower:]' \
-  | tr -s ' ' '-' \
-  | sed 's/[^a-z0-9-]//g' \
-  | sed 's/-\{2,\}/-/g' \
-  | sed 's/^-//;s/-$//' \
-  | cut -c1-50 \
-  | sed 's/-$//')
-if [ -z "$TASK_SLUG" ]; then
-  echo "WARNING: task_description produced an empty slug — falling back to task-unnamed" >&2
-  BRANCH_NAME="{{branch_prefix}}/task-unnamed-$(date +%s)"
-else
-  BRANCH_NAME="{{branch_prefix}}/issue-{{issue_number}}-${TASK_SLUG}"
-  if ! git check-ref-format --branch "${BRANCH_NAME}" >/dev/null 2>&1; then
-    echo "WARNING: derived branch name '${BRANCH_NAME}' is invalid — falling back to task-unnamed" >&2
-    BRANCH_NAME="{{branch_prefix}}/task-unnamed-$(date +%s)"
-  fi
-fi
-```
-
-### Stage 1: Safe capture — `printf '%s'`
-
-```bash
-TASK_DESC=$(printf '%s' '{{task_description}}')
-```
-
-The template variable is rendered inside single quotes so the shell never interprets its contents. `printf '%s'` captures the value verbatim, including any embedded newlines, without triggering word-splitting or glob expansion.
-
-### Stage 2: Newline normalisation — `tr '\n\r' '  '`
-
-```bash
-tr '\n\r' '  '
-```
-
-Converts both Unix (`\n`) and Windows (`\r`) line endings to spaces. This is the root-cause fix for [issue #2952](#issue-2952) — multi-paragraph descriptions previously allowed raw newlines to flow into the slug, producing invalid branch names.
-
-**Before this stage a description like:**
-
-```
-Fix the login bug
-
-Users cannot log in on Safari when using SSO.
-```
-
-would produce a branch name with a literal newline in it.
-
-**After this stage** it becomes a single space-separated string:
-
-```
-Fix the login bug   Users cannot log in on Safari when using SSO.
-```
-
-### Stage 3: Lowercase — `tr '[:upper:]' '[:lower:]'`
-
-```bash
-tr '[:upper:]' '[:lower:]'
-```
-
-Converts all ASCII uppercase letters to lowercase. Branch names are case-insensitive on case-insensitive filesystems (macOS HFS+) and conventionally lowercase on all platforms.
-
-### Stage 4: Space-to-hyphen squeeze — `tr -s ' ' '-'`
-
-```bash
-tr -s ' ' '-'
-```
-
-The `-s` (squeeze) flag converts **one or more** consecutive spaces into a single hyphen. This eliminates double-hyphen runs that would otherwise appear wherever consecutive spaces came from `tr '\n\r'` (stage 2) or multiple spaces in the original description.
-
-### Stage 5: Whitelist sanitisation — `sed`
-
-```bash
-sed 's/[^a-z0-9-]//g; s/-\{2,\}/-/g; s/^-//; s/-$//'
-```
-
-Four substitutions in one `sed` invocation:
-
-| Expression        | Effect                                                  |
-| ----------------- | ------------------------------------------------------- |
-| `s/[^a-z0-9-]//g` | Strips every character that is not `a-z`, `0-9`, or `-` |
-| `s/-\{2,\}/-/g`   | Collapses two-or-more consecutive hyphens to one        |
-| `s/^-//`          | Strips a leading hyphen (would make an invalid ref)     |
-| `s/-$//`          | Strips a trailing hyphen (would make an invalid ref)    |
-
-The whitelist expression (`[^a-z0-9-]`) also removes characters that could be interpreted as shell metacharacters (`$`, `` ` ``, `;`, `&`, `|`, `(`, `)`) — this stage is the primary command-injection defence.
-
-### Stage 6: Length cap — `cut -c1-50`
-
-```bash
-cut -c1-50
-```
-
-Truncates the slug to at most 50 characters. Git itself has no hard branch-name length limit, but the full branch name (prefix + issue number + slug) must fit within remote URL limits and terminal display widths. 50 characters for the slug portion is conservative and leaves room for all standard prefixes.
-
-### Stage 7: Trailing-hyphen strip — `sed 's/-$//'`
-
-```bash
-sed 's/-$//'
-```
-
-`cut -c1-50` can produce a trailing hyphen when the character at position 50 happens to be a hyphen — for example, a description that generates `add-oauth-support-and-user-authentication-flow-` (50 chars). Stage 5 already strips trailing hyphens, but it runs **before** `cut`, so any hyphen introduced by truncation must be removed again here.
-
-This stage is a no-op on the vast majority of inputs; it fires only when `cut` lands exactly on a hyphen character.
-
-### Stage 8: Validation gate — empty-slug guard + `git check-ref-format`
-
-```bash
-# Guard: empty slug produces a trailing-hyphen branch (e.g. feat/issue-42-)
-# that git check-ref-format accepts as valid but is undesirable.
-if [ -z "$TASK_SLUG" ]; then
-  echo "WARNING: task_description produced an empty slug — falling back to task-unnamed" >&2
-  BRANCH_NAME="{{branch_prefix}}/task-unnamed-$(date +%s)"
-else
-  BRANCH_NAME="{{branch_prefix}}/issue-{{issue_number}}-${TASK_SLUG}"
-  if ! git check-ref-format --branch "${BRANCH_NAME}" >/dev/null 2>&1; then
-    echo "WARNING: derived branch name '${BRANCH_NAME}' is invalid — falling back to task-unnamed" >&2
-    BRANCH_NAME="{{branch_prefix}}/task-unnamed-$(date +%s)"
-  fi
-fi
-```
-
-The gate has two layers:
-
-1. **Empty-slug guard**: If the pipeline produces an empty slug (blank or all-symbol input), `git check-ref-format` would accept the resulting `feat/issue-42-` name (trailing hyphen is git-valid). The explicit `[ -z "$TASK_SLUG" ]` check catches this case before the git command runs.
-
-2. **`git check-ref-format --branch`**: The authoritative oracle for branch-name validity. Catches edge cases such as a branch prefix that contains invalid characters.
-
-On failure, the branch name falls back to `{{branch_prefix}}/task-unnamed-<unix-timestamp>`. The timestamp suffix prevents "branch already exists" errors when the fallback is triggered on multiple consecutive runs. The raw `task_description` is **never** logged in the warning message; only the sanitised (and therefore safe) `BRANCH_NAME` is printed.
+With no usable words at all the tail is a `cksum` of the task — bounded by
+construction, stable across re-runs of the same task, and never prose. If the assembled
+name still fails `git check-ref-format --branch`, the recipe falls back to
+`feat/task-unnamed-<unix-timestamp>`. That last-resort name hardcodes `feat/` rather
+than `$branch_prefix` so an invalid or malicious prefix cannot inject through the
+fallback (issue #3023 / BL-002).
 
 ---
 
 ## Configuration
 
-Branch name generation uses three context variables supplied when invoking the workflow:
+| Context key | Required | Meaning | Default |
+| ----------- | -------- | ------- | ------- |
+| `task_description` | Yes | The task. Read from the `TASK_DESCRIPTION` environment variable, never from argv. | — |
+| `issue_number` | Yes | Issue number, or a local tracking id such as `local-9f2c1a`. | — |
+| `branch_prefix` | No | `feat`, `fix`, `docs`, `refactor`, `test`, … | `feat` |
+| `existing_branch` | No | Target an existing branch outright (rank 1). | `""` |
+| `pr_number` | No | Resolve a PR's head branch (rank 1). | `""` |
 
-| Variable           | Required | Description                                                                  | Example               |
-| ------------------ | -------- | ---------------------------------------------------------------------------- | --------------------- |
-| `task_description` | Yes      | Human-readable description of the task                                       | `"Add OAuth support"` |
-| `issue_number`     | Yes      | Issue or ticket number (numeric or string)                                   | `"2952"`              |
-| `branch_prefix`    | Yes      | Git branch prefix (conventionally `feat`, `fix`, `docs`, `refactor`, `test`) | `"feat"`              |
-| `repo_path`        | Yes      | Absolute path to the git repository                                          | `"/home/user/myapp"`  |
+`branch_prefix` is **not** inferred from the task text. Reading the commit type out of
+the prose would reintroduce exactly the class of bug #1426 is about; the caller states
+it, or it stays `feat`.
 
-**Branch prefix conventions:**
+---
 
-| Prefix     | Use for                                     |
-| ---------- | ------------------------------------------- |
-| `feat`     | New features                                |
-| `fix`      | Bug fixes                                   |
-| `docs`     | Documentation-only changes                  |
-| `refactor` | Code restructuring without behaviour change |
-| `test`     | Adding or updating tests                    |
-| `chore`    | Build, tooling, dependency updates          |
+## Never pipe into an early-exit stage
+
+The derivation bounds its input with a **shell substring**, never `| head -c`. That is
+not a style preference; the first version used `head` and it broke CI.
+
+`printf '%s' "$TASK" | head -c 65536 | tr … | sed …` — `head` stops reading once it has
+its bytes, so with a task larger than the 64 KiB pipe buffer the producer is left
+writing into a closed pipe. It then dies of `SIGPIPE` (status 141), or — where SIGPIPE
+is ignored, a disposition that survives `exec` and is common in CI — bash's `printf`
+reports `write error: Broken pipe` and returns **1**. `set -o pipefail` promotes either
+to the pipeline's status, the command substitution yields `""`, and `set -e` kills
+step-04 before it emits any JSON.
+
+```console
+$ trap '' PIPE; set -euo pipefail
+$ X="$(printf '%s' "$BIG" | head -c 10)"; echo REACHED
+bash: printf: write error: Broken pipe          # rc=1, "REACHED" never printed
+```
+
+Whether it fires at a given size is a race on the pipe buffer, which is why it was
+green on bash 5.3.9 locally and red on the runner's 5.2.21 with a 100 KB task
+description. An empty branch name is worse than an ugly one, so: **no pipeline stage
+may stop reading before its producer is done.** `tests/issue_1426_branch_name_not_prose.sh`
+guards this twice — B6 exercises a 100 KB description end to end, and D4 asserts the
+shape, deterministically, on every machine.
+
+---
+
+## Why the derived name is inline
+
+Rank 2 may live in a bundle helper because it is *optional*: when the helper cannot be
+found, the run simply does not detect a named branch, which is the pre-#1426 behaviour.
+The derived name is not optional. It is the key under which a re-run recognises — and
+reuses — the branch and worktree its predecessor registered.
+
+A first cut of this fix put the derivation behind the same helper, with a hash fallback
+when it could not be resolved. The phase bricks are executed with **no `amplifier-bundle`
+on disk** by design (`amplifier-bundle/recipes/tests/`, and the step-04 unit tests), so
+the fallback fired, the name silently became `fix/issue-1121-2052514743` instead of
+`fix/issue-1121-reuse-me`, the already-registered worktree no longer matched, and
+`test-issue-1121-relative-repo-path.sh` went red on lost idempotency — the same defect
+family as #1420 (duplicate issue, branch and PR on relaunch).
+
+The rule that follows: **a load-bearing value must not change with the environment.**
+Anything whose absence would produce a *different* name stays inline in the recipe;
+only logic whose absence produces *no* name may be extracted.
+
+`tests/issue_1426_branch_name_not_prose.sh` Part B runs every derived-name case with no
+bundle reachable, and pins `fix/issue-1121-reuse-me` explicitly so the two tests cannot
+drift apart.
 
 ---
 
 ## Usage
 
-### Run default-workflow with a simple description
+```bash
+amplihack recipe run default-workflow \
+  -c task_description="Add user authentication with OAuth" \
+  -c branch_prefix="feat" \
+  -c repo_path="/path/to/repo"
+# Creates branch: feat/issue-123-add-user-authentication
+```
+
+Pin the branch explicitly and nothing is derived:
 
 ```bash
-amplihack recipe run default-workflow --context '{
-  "task_description": "Add user authentication with OAuth",
-  "issue_number": "123",
-  "branch_prefix": "feat",
-  "repo_path": "/home/user/myapp"
-}'
-# Creates branch: feat/issue-123-add-user-authentication-with-oauth
+amplihack recipe run default-workflow \
+  -c task_description="$(cat task.txt)" \
+  -c existing_branch="fix/142-band-edge-previous-slice" \
+  -c repo_path="/path/to/repo"
 ```
 
-### Run with a multi-paragraph description
+The explicit-branch scan can be run on its own:
 
 ```bash
-amplihack recipe run default-workflow --context-file task.json
+TASK_DESCRIPTION="$(cat task.txt)" \
+  bash amplifier-bundle/tools/workflow_branch_name.sh explicit
 ```
 
-Where `task.json` contains:
-
-```json
-{
-  "task_description": "Fix login timeout\n\nUsers are logged out after 5 minutes instead of 30.\nThis happens on all browsers. The session cookie is set correctly\nbut the server-side token expires too early.",
-  "issue_number": "456",
-  "branch_prefix": "fix",
-  "repo_path": "/home/user/myapp"
-}
-```
-
-Generated branch: `fix/issue-456-fix-login-timeout-users-are-logged-out`
-
-The pipeline converts newlines to spaces and truncates to 50 characters, so the full multi-paragraph description is safely reduced to a valid branch name.
-
-### Dry-run to preview the branch name
-
-```bash
-amplihack recipe run default-workflow --dry-run --context '{
-  "task_description": "Refactor the authentication module",
-  "issue_number": "789",
-  "branch_prefix": "refactor",
-  "repo_path": "/home/user/myapp"
-}'
-# Shows the generated branch name without creating the worktree
-```
+`explicit` prints the named branch, or nothing. With `--repo-path`, its exit code
+answers "does it already exist?": 0 for yes (reuse it), 10 for no (create it).
 
 ---
 
-## Fallback Behaviour
+## Security considerations
 
-When `git check-ref-format --branch` rejects the generated name, the workflow uses `{{branch_prefix}}/task-unnamed-<unix-timestamp>` as the fallback branch name.
-
-**Conditions that trigger the fallback:**
-
-| Condition                                                | Example input | Fallback branch                                                                             |
-| -------------------------------------------------------- | ------------- | ------------------------------------------------------------------------------------------- |
-| `task_description` is empty or whitespace-only           | `"   "`       | `feat/task-unnamed-1741478400` (empty-slug guard fires before git check)                    |
-| Slug becomes empty after sanitisation (all-symbol input) | `"!!!???###"` | `feat/task-unnamed-1741478400` (empty-slug guard fires before git check)                    |
-| `branch_prefix` itself is invalid                        | `"feat name"` | `feat name/task-unnamed-...` (still invalid; `git worktree add` will fail — fix the prefix) |
-| `issue_number` is empty, producing `feat/issue--slug`    | `""`          | `feat/issue--slug` (git accepts double-hyphen; branch is created with this name)            |
-
-The Unix timestamp suffix ensures each fallback branch is unique, preventing "branch already exists" errors when the fallback fires on multiple consecutive runs (e.g., CI retrying a workflow with the same pathological input).
-
----
-
-## Security Considerations
-
-The branch name pipeline provides several layers of protection against malicious or accidental input:
-
-| Threat                                         | Mitigation                                                                                                                                                                               |
-| ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Shell command injection via `task_description` | `printf '%s' '...'` renders in single quotes (prevents word-splitting and `$()` injection); `sed 's/[^a-z0-9-]//g'` removes all shell metacharacters from the slug                       |
-| Single-quote injection in `task_description`   | **Known limitation (REQ-SEC-001, issue #2974):** a `'` in the input breaks the single-quote wrapping. Full mitigation requires env-var injection in the recipe runner (tracked in #2974) |
-| CRLF injection                                 | `tr '\n\r' '  '` converts all line endings to spaces before any other processing                                                                                                         |
-| Path traversal via `..` in branch name         | `sed 's/[^a-z0-9-]//g'` removes `.`                                                                                                                                                      |
-| Branch name exceeding remote URL limits        | `cut -c1-50` enforces a hard upper bound                                                                                                                                                 |
-| Trailing hyphen from `cut` truncation          | `sed 's/-$//'` after `cut` strips any hyphen left at position 50                                                                                                                         |
-| Invalid ref reaching `git worktree add`        | `git check-ref-format --branch` validates before the git command runs                                                                                                                    |
-| Fallback branch collision (repeated failures)  | Fallback name includes `$(date +%s)` Unix timestamp for uniqueness                                                                                                                       |
-| Secrets or PII leaking into git history        | Warning message logs only the sanitised `BRANCH_NAME`, never the raw `task_description`                                                                                                  |
-
-> **Important:** Branch names derived from `task_description` appear in git history, remote branch listings, pull request titles, and CI logs. Do not include secrets, passwords, API keys, or PII in `task_description`.
+- **No shell injection.** The task text is read from the `TASK_DESCRIPTION` environment
+  variable, never interpolated into a command line, so quoting and word-splitting cannot
+  be subverted. (This is also why a task description larger than Linux's 128 KB
+  `MAX_ARG_STRLEN` cannot reach the helper — but such a description cannot reach the
+  recipe's own bash step either.)
+- **No path traversal.** `..`, `//` and a trailing `/` are refused before any name is
+  used, and `git check-ref-format --branch` is the authority on the rest.
+- **No ref-namespace corruption.** Every branch name, derived or explicit, passes
+  `git check-ref-format --branch` before it is used in a path or a git invocation. A
+  name recovered from the task text is re-validated exactly like one from `gh`.
+- **Bounded by construction.** The word length (20), the slug (24) and the amount of
+  task text examined (64 KB) are all capped, so directory names cannot grow with the
+  prompt.
 
 ---
 
 ## Troubleshooting
 
-### Branch name always falls back to `task-unnamed`
+### The branch is not the one my task named
 
-**Symptom:** Every run creates a `feat/task-unnamed` branch regardless of input.
+Check that the directive opens a line (`Branch: …`, not `…use the branch …`), that the
+value contains a `/` or `-`, and that it is not `main`/`master`/`develop`. When in
+doubt, pass `-c existing_branch=<ref>`, which is unambiguous.
 
-**Diagnosis:**
+### The branch name is shorter than I expected
 
-1. Check that `issue_number` is set and non-empty:
+That is the 24-character slug bound, cut on a word boundary. The full task lives in the
+tracking issue and the PR body; the ref only has to be a readable handle.
 
-   ```bash
-   amplihack recipe show default-workflow --steps-only | grep issue_number
-   ```
+### Two runs of the same task create conflicting branches
 
-2. Check that `branch_prefix` is a valid git component (no spaces, slashes, or special characters):
+They do not: for a given issue number and task the name is deterministic. Concurrent
+runs that would collide are separated by `tools/workflow_worktree_deconflict.sh`
+(issues #829/#840), and an issue already claimed by an open PR stops the second run
+(`tools/workflow_issue_claim_check.sh`, issue #1361).
 
-   ```bash
-   git check-ref-format --branch "feat/issue-1-test"   # should exit 0
-   git check-ref-format --branch "my prefix/issue-1-test"  # will exit 1
-   ```
+### The name looks like `feat/task-unnamed-1699564800`
 
-3. Check if `task_description` is entirely non-alphanumeric:
-
-   ```bash
-   echo "!!!???###" | tr '\n\r' '  ' | tr '[:upper:]' '[:lower:]' | tr -s ' ' '-' | sed 's/[^a-z0-9-]//g'
-   # Output: (empty) — will trigger fallback
-   ```
-
-### Branch name is unexpectedly truncated
-
-The slug portion is capped at 50 characters. Descriptions longer than ~50 characters will be truncated. This is intentional. The first 50 characters should be descriptive enough to identify the branch. Use the issue number and PR title for full context.
-
-### Two runs with the same description create conflicting branches
-
-If `issue_number` is the same across two runs, the branch name will be identical. The second `git worktree add` will fail with "branch already exists". Assign a unique `issue_number` to each task or delete the existing branch first:
-
-```bash
-git branch -d feat/issue-123-add-user-authentication
-```
-
-### Worktree path contains unexpected hyphens
-
-Multi-word descriptions with consecutive spaces or punctuation produce multiple hyphens that are then collapsed. `"Add  OAuth  support"` (double spaces) becomes `add-oauth-support`, not `add--oauth--support`. This is the intended behaviour of `tr -s ' ' '-'`.
+`git check-ref-format --branch` rejected the assembled name — most often because
+`branch_prefix` is not a valid ref component (a space, a slash, a leading dash).
 
 ---
 
-## Technical Reference
+## Portability
 
-### Full pipeline (annotated)
-
-```bash
-# Stage 1: safely capture template variable — single-quote prevents word-splitting and
-# glob expansion. NOTE (REQ-SEC-001, issue #2974): a single-quote in the input value
-# would break out of this string. Full fix requires env-var injection in the runner.
-TASK_DESC=$(printf '%s' '{{task_description}}')
-
-TASK_SLUG=$(printf '%s' "$TASK_DESC" \
-  | tr '\n\r' '  ' \                        # Stage 2: normalise newlines → spaces
-  | tr '[:upper:]' '[:lower:]' \            # Stage 3: lowercase
-  | tr -s ' ' '-' \                         # Stage 4: spaces → single hyphen
-  # Stage 5: whitelist + normalise hyphens
-  # 5a: strip every char that is not a-z, 0-9, or hyphen (also removes shell metacharacters)
-  # 5b: collapse two-or-more consecutive hyphens to one
-  # 5c: strip a leading hyphen (would make an invalid ref)
-  # 5d: strip a trailing hyphen (would make an invalid ref)
-  | sed 's/[^a-z0-9-]//g' \
-  | sed 's/-\{2,\}/-/g' \
-  | sed 's/^-//;s/-$//' \
-  | cut -c1-50 \                            # Stage 6: truncate slug to 50 chars
-  | sed 's/-$//')                           # Stage 7: strip trailing hyphen cut can leave
-
-# Stage 8a: empty-slug guard — git check-ref-format accepts trailing-hyphen branches
-# (e.g. feat/issue-42-) as valid, so we must catch an empty slug explicitly.
-if [ -z "$TASK_SLUG" ]; then
-  echo "WARNING: task_description produced an empty slug — falling back to task-unnamed" >&2
-  BRANCH_NAME="{{branch_prefix}}/task-unnamed-$(date +%s)"
-else
-  # Assemble full branch name
-  BRANCH_NAME="{{branch_prefix}}/issue-{{issue_number}}-${TASK_SLUG}"
-  # Stage 8b: authoritative validation gate — timestamp suffix prevents fallback collisions
-  if ! git check-ref-format --branch "${BRANCH_NAME}" >/dev/null 2>&1; then
-    echo "WARNING: derived branch name '${BRANCH_NAME}' is invalid — falling back to task-unnamed" >&2
-    BRANCH_NAME="{{branch_prefix}}/task-unnamed-$(date +%s)"
-  fi
-fi
-```
-
-### Portability notes
-
-- `tr '\n\r' '  '` — POSIX `tr`; works on GNU coreutils, BSD `tr`, and BusyBox.
-- `sed 's/-\{2,\}/-/g'` — POSIX BRE; `\{2,\}` is supported everywhere. Equivalent ERE: `sed -E 's/-{2,}/-/g'`.
-- `cut -c1-50` — POSIX; counts bytes, not Unicode codepoints. For multi-byte UTF-8 input the cut position may fall inside a multi-byte sequence, producing a trailing invalid byte. The subsequent `git check-ref-format` call will reject such a name and use the fallback.
-
-### Acceptance criteria (issue #2952)
-
-| Criterion                                               | How it is met                                                                                                                                                |
-| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| No newlines in branch name                              | `tr '\n\r' '  '` (Stage 2) converts before any other transform                                                                                               |
-| Max 50 characters in slug                               | `cut -c1-50` (Stage 6)                                                                                                                                       |
-| No trailing hyphen in slug                              | `sed 's/-$//'` (Stage 7) runs after `cut`; empty-slug guard (Stage 8) prevents the trailing-hyphen branch that `git check-ref-format` would otherwise accept |
-| `git check-ref-format` exits 0                          | Empty-slug guard + `git check-ref-format` validation (Stage 8)                                                                                               |
-| Safe fallback on invalid name                           | Falls back to `{{branch_prefix}}/task-unnamed-<timestamp>` with stderr warning                                                                               |
-| Fallback uniqueness                                     | Timestamp suffix (`date +%s`) prevents collision when fallback fires on repeated runs                                                                        |
-| Single-line short descriptions produce identical output | New stages 2–8 are no-ops on already-valid input                                                                                                             |
+`workflow_branch_name.sh` targets bash 3.2, the system bash on macOS: no `${VAR,,}`, no
+`mapfile`, no associative arrays. Issue #1423 was exactly that mistake.
 
 ---
 
-## Related Documentation
+## Related documentation
 
-- [Default Workflow](../concepts/default-workflow.md) — Full 22-step development process
-- [Main Branch Protection](main-branch-protection.md) — Preventing direct commits to `main`
-- [Recipe CLI Commands](../howto/recipe-cli-examples.md) — Running and configuring recipes
-- [Worktree Support](../concepts/worktree-support.md) — Power Steering in git worktrees
-- [Worktree Troubleshooting](../howto/power-steering-worktree-troubleshooting.md) — Resolving worktree issues
-
----
-
-**Last Updated:** 2026-03-09
-**Minimum Requirements:** Git 2.5+ (worktree support), POSIX shell (bash/sh), GNU or BSD coreutils
+- [Workflow execution guardrails](workflow-execution-guardrails.md)
+- `amplifier-bundle/recipes/workflow-worktree.yaml` — `step-04-setup-worktree`, and the
+  inline derivation (ranks 3-4)
+- `amplifier-bundle/tools/workflow_branch_name.sh` — the explicit-branch scan (rank 2)
+- `amplifier-bundle/tools/workflow_worktree_base_ref.sh` — fetch + base-ref resolution
+- `tests/issue_1426_branch_name_not_prose.sh` — the regression spec
