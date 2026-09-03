@@ -60,6 +60,10 @@ tokio = { workspace = true, features = ["rt", "time"] }
 tracing = { workspace = true }
 sha2 = { workspace = true }
 toml = "0.8"
+# Issue #1453 — Codex's config.toml is a file users hand-edit, so amplihack
+# merges its one key into the existing document rather than reserializing it,
+# keeping their comments, ordering, and formatting intact.
+toml_edit = "0.22"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 regex = "1"
 ureq = { version = "2", features = ["json"] }
