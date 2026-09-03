@@ -75,6 +75,19 @@ pub(crate) enum FailureClass {
     /// retryable — but calling it `Indeterminate` told the operator nothing was
     /// known when in fact the cause and its reset time were stated plainly.
     UsageLimit,
+    /// The agent transport itself never reached a verdict: the model / session
+    /// endpoint rejected the request outright (`400`, `404`, "the resource you
+    /// requested was not found", a vanished session). Issue #1437: this used to
+    /// fall through to `Indeterminate` — "nothing in the evidence identifies the
+    /// failure" — about a message that names its own cause, and a supervising
+    /// loop reading that as a structural refusal stopped a run whose agent had
+    /// already committed and pushed real work.
+    ///
+    /// It is NOT mechanically retryable: the identical request gets the
+    /// identical rejection. It is also NOT a structural refusal — nothing
+    /// declined to do the work, a call failed — so a loop is free to decide, on
+    /// its own evidence, whether another round is worthwhile.
+    AgentApi,
     /// Nothing in the evidence identifies the failure. Treated as terminal —
     /// "we do not know" is not a licence to retry.
     Indeterminate,
@@ -87,6 +100,7 @@ impl FailureClass {
             Self::Environmental => "environmental",
             Self::Work => "work",
             Self::UsageLimit => "usage_limit",
+            Self::AgentApi => "agent_api",
             Self::Indeterminate => "indeterminate",
         }
     }
@@ -97,6 +111,17 @@ impl FailureClass {
         matches!(self, Self::TransientTransport)
     }
 }
+
+/// The literal line a structural guard prints when it refuses to spawn
+/// (`terminal_block` in `execute.rs`, issues #1326/#1327/#1329/#1332).
+///
+/// Matched as the whole phrase, never as the bare word `BLOCKED_TERMINAL`.
+/// Issue #1437: the bare word appears in a run transcript whenever a
+/// *descendant* was refused and the agent then did exactly what the refusal
+/// told it to do — "complete this step inline and return your result" — so
+/// matching the word alone reported an already-handled refusal as this run's
+/// terminating cause.
+const STRUCTURAL_REFUSAL_MARKER: &str = "blocked_terminal orchestration_unavailable";
 
 /// A classification plus the literal evidence that produced it, so the decision
 /// is auditable rather than asserted.
@@ -112,6 +137,19 @@ pub(crate) struct FailureVerdict {
 }
 
 impl FailureVerdict {
+    /// Did a STRUCTURAL GUARD refuse this run — the sealed recursion ceiling,
+    /// the width cap, the free-memory floor (#1326/#1327/#1329/#1332)?
+    ///
+    /// This is the single bit a supervising loop needs to tell "stop, and never
+    /// retry into the guard" from "a call failed; decide for yourself whether
+    /// another round is worthwhile". It is published on the classification JSON
+    /// as `structural_refusal` so a loop reads ONE boolean produced by the layer
+    /// that knows, instead of grepping a whole transcript for a word that also
+    /// appears in refusals a descendant already handled (issue #1437).
+    pub(crate) fn is_structural_refusal(&self) -> bool {
+        self.signal == Some(STRUCTURAL_REFUSAL_MARKER)
+    }
+
     /// One-line human summary naming the class and the deciding marker.
     pub(crate) fn reasoning(&self) -> String {
         // Issue #1435: this error already told the operator what to do — pick a
@@ -148,6 +186,26 @@ impl FailureVerdict {
                 self.signal.unwrap_or("a usage limit marker")
             );
         }
+        // Issue #1437: name the cause. "Stopped" without a reason is what made
+        // this expensive to diagnose in the first place.
+        if self.class == FailureClass::AgentApi {
+            return format!(
+                "classified `agent_api` — evidence contains {:?}. The agent transport \
+                 rejected the request outright, so no verdict was ever reached. This is \
+                 NOT a structural policy refusal and NOT a work failure; it is also not \
+                 retried mechanically, because the identical request gets the identical \
+                 rejection. A supervising loop may start a fresh round.",
+                self.signal.unwrap_or("an agent endpoint rejection")
+            );
+        }
+        if self.is_structural_refusal() {
+            return format!(
+                "classified `{}` — a structural guard refused this run \
+                 ({STRUCTURAL_REFUSAL_MARKER:?}, #1326/#1327/#1329/#1332). This is a FINAL \
+                 answer: retrying into the guard is precisely what the guard exists to stop.",
+                self.class.as_str()
+            );
+        }
         match self.signal {
             Some(signal) => format!(
                 "classified `{}` — evidence contains {signal:?}",
@@ -170,6 +228,10 @@ impl FailureVerdict {
             "action": action,
             "attempt": attempt,
             "retryable": self.class.is_mechanically_retryable(),
+            // Issue #1437: the one bit a supervising loop needs. `true` ONLY
+            // when a structural guard refused THIS run; a transcript that
+            // merely quotes a refusal a descendant already handled is `false`.
+            "structural_refusal": self.is_structural_refusal(),
             "failed_steps": self.failed_steps,
             "completed_steps": self.completed_steps,
             "evidence": self.evidence,
@@ -294,9 +356,10 @@ const WORK_MARKERS: &[&str] = &[
     "hook failed",
     // Terminal policy refusals from the recursion / width guards (#1326,
     // #1327, #1332). These are FINAL answers by construction; retrying into a
-    // guard is precisely the behaviour those guards exist to stop.
-    "blocked_terminal",
-    "orchestration_unavailable",
+    // guard is precisely the behaviour those guards exist to stop. Matched as
+    // the guard's whole literal line, not as the bare word — see
+    // `STRUCTURAL_REFUSAL_MARKER` (#1437).
+    STRUCTURAL_REFUSAL_MARKER,
 ];
 
 /// Markers for an account usage / session limit (issue #1390).
@@ -315,6 +378,35 @@ const USAGE_LIMIT_MARKERS: &[&str] = &[
     "quota exceeded",
     "monthly limit",
     "credit balance is too low",
+];
+
+/// Markers for an agent transport / model-endpoint rejection (issue #1437).
+///
+/// These name a request that never reached a verdict because the endpoint
+/// refused it outright — a 400/404 envelope, a model or session that does not
+/// exist. They are deliberately NOT in `TRANSIENT_MARKERS` (the identical
+/// request gets the identical rejection, so retrying inside the mechanical
+/// budget cannot succeed) and NOT in `WORK_MARKERS` (nothing about the work
+/// failed, and nothing declined to do it).
+///
+/// Note what is absent: the generic `amplihack copilot failed (exit 1)` /
+/// `amplihack claude failed (exit 1)` wrapper. That string is present on EVERY
+/// failed agent step, including one whose real cause is a failing test, so
+/// matching it would relabel most work failures. `Indeterminate` stays
+/// meaningful.
+const AGENT_API_MARKERS: &[&str] = &[
+    "execution failed: 400",
+    "execution failed: 404",
+    "the resource you requested was not found",
+    "api error: 400",
+    "400 bad request",
+    "api error: 404",
+    "404 not found",
+    "not_found_error",
+    "model_not_found",
+    "invalid_request_error",
+    "session not found",
+    "conversation not found",
 ];
 
 /// The reset time a usage-limit message carries, if it states one. Returned
@@ -382,6 +474,13 @@ pub(crate) fn classify_failure_text(text: &str) -> (FailureClass, Option<&'stati
     // of it (#1390).
     if let Some(marker) = first_match(&haystack, USAGE_LIMIT_MARKERS) {
         return (FailureClass::UsageLimit, Some(marker));
+    }
+    // Before TRANSIENT_MARKERS: an agent-endpoint rejection is a stable answer,
+    // not an overloaded one, and it must not be read as "retry in a moment"
+    // (#1437). After the three above so a real work/environment/limit cause
+    // still wins when both appear.
+    if let Some(marker) = first_match(&haystack, AGENT_API_MARKERS) {
+        return (FailureClass::AgentApi, Some(marker));
     }
     if let Some(marker) = first_match(&haystack, TRANSIENT_MARKERS) {
         return (FailureClass::TransientTransport, Some(marker));

@@ -81,6 +81,9 @@ jobs:
       - name: Install docs — every documented path installs a real binary (issue #1412)
         shell: bash
         run: bash tests/issue_1412_install_docs_name_a_real_package.sh
+      - name: Auto-drive — an agent/API failure is not a policy refusal (issue #1437)
+        shell: bash
+        run: bash tests/issue_1437_agent_failure_is_not_a_policy_refusal.sh
       - name: Recipes — every committing recipe prepares its identity (issue #1394)
         shell: bash
         run: bash tests/recipe_commit_identity_static_test.sh
