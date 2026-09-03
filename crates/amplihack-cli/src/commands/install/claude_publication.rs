@@ -22,8 +22,13 @@
 //! remember to call — so the fan-out lives here as ONE enumerated list.
 //! Adding an asset type to the framework is a new row in
 //! [`CLAUDE_DESTINATIONS`], not a new call site to forget.
+//!
+//! What each supported harness actually reads — and how to check it —
+//! is written down in `docs/reference/harness-skill-mechanisms.md`.
+//! Read it before changing a publication path.
 
 use anyhow::Result;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 /// Outcome of publishing one asset type into `~/.claude`.
@@ -116,32 +121,80 @@ fn publish_skills(_repo_root: &Path) -> Result<Publication> {
         });
     }
 
-    crate::claude_plugin::ensure_claude_plugin_installed()?;
+    let registration = crate::claude_plugin::ensure_claude_plugin_installed()?;
 
-    let published = crate::claude_plugin::discoverable_skill_names(&target)?;
-    let missing = staged.difference(&published).cloned().collect::<Vec<_>>();
-    if missing.is_empty() {
-        return Ok(Publication {
-            detail: format!(
-                "✅ Published {} skill(s) to {}",
-                staged.len(),
-                target.display()
-            ),
-            feature: Some(format!("{} Claude Code skills", staged.len())),
-            preserved: Vec::new(),
-            target,
-        });
-    }
-    Ok(Publication {
-        detail: format!(
-            "⚠️  {} of {} staged skill(s) did not reach {} — Claude sessions will not see them: {}",
-            missing.len(),
+    // Discoverability is still measured at the destination — the invariant is
+    // what a session can see, not what the publisher believes it wrote. But a
+    // name is not enough: a skill amplihack skipped is *discoverable* under
+    // that name, because the directory shadowing it has its own `SKILL.md`.
+    // The registration report is the only thing that separates "amplihack's
+    // copy is live" from "someone else's copy is live", and that distinction
+    // is the whole of #1449.
+    let discoverable = crate::claude_plugin::discoverable_skill_names(&target)?;
+    let shadowed = registration
+        .skipped
+        .iter()
+        .map(|skipped| skipped.name.clone())
+        .collect::<BTreeSet<_>>();
+    let unavailable = staged
+        .iter()
+        .filter(|name| !discoverable.contains(*name) || shadowed.contains(*name))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let mut detail = if unavailable.is_empty() {
+        format!(
+            "✅ Published {} skill(s) to {}",
+            staged.len(),
+            target.display()
+        )
+    } else {
+        format!(
+            "⚠️  {} of {} staged skill(s) are not amplihack's in {} — Claude sessions will not \
+             see amplihack's copy: {}. Move those entries aside and re-run `amplihack install`.",
+            unavailable.len(),
             staged.len(),
             target.display(),
-            missing.join(", ")
-        ),
-        feature: None,
-        preserved: Vec::new(),
+            summarize(&unavailable)
+        )
+    };
+    if let Some(error) = &registration.wrapper_error {
+        detail.push_str(&format!(
+            "\n      ⚠️  The amplihack plugin wrapper was not published: {error}"
+        ));
+    }
+    let published = staged.len() - unavailable.len();
+    Ok(Publication {
+        detail,
+        feature: (published > 0).then(|| {
+            if unavailable.is_empty() {
+                format!("{published} Claude Code skills")
+            } else {
+                format!(
+                    "{published} Claude Code skills ({} unavailable)",
+                    unavailable.len()
+                )
+            }
+        }),
+        preserved: registration
+            .preserved
+            .iter()
+            .map(|entry| entry.name.clone())
+            .collect(),
         target,
     })
+}
+
+/// At most a handful of names, then a count — an install line naming 129
+/// skills is as unreadable as one naming none.
+fn summarize(names: &[String]) -> String {
+    const MAX_NAMED: usize = 8;
+    if names.len() <= MAX_NAMED {
+        return names.join(", ");
+    }
+    format!(
+        "{}, and {} more",
+        names[..MAX_NAMED].join(", "),
+        names.len() - MAX_NAMED
+    )
 }
