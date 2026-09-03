@@ -16,12 +16,13 @@ use amplihack_utils::launch_target::{
     self, InstallDecision, LaunchTarget, OverrideOrigin, Resolution,
 };
 use anyhow::{Context, Result, anyhow, bail};
-use serde_json::{Value, json};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
+use toml_edit::DocumentMut;
 
 /// Timeout for tool installation commands (npm install, uv tool install).
 /// These involve network downloads and can be legitimately slow, so we allow
@@ -73,7 +74,12 @@ pub fn prepare_launcher(tool: &str) -> Result<()> {
                 eprintln!("⚠️  Failed to register amplihack as a Claude Code plugin: {err}");
             }
         }
-        "codex" => configure_codex()?,
+        "codex" => {
+            // Issue #1453 — clear the misleading file amplihack used to write
+            // before writing the one Codex actually reads.
+            retire_stale_openai_codex_config();
+            configure_codex()?;
+        }
         _ => {}
     }
 
@@ -999,49 +1005,131 @@ fn install_amplifier() -> Result<()> {
     Ok(())
 }
 
+/// Codex's configuration home: `$CODEX_HOME` when it is set and non-empty,
+/// `~/.codex` otherwise.
+///
+/// Issue #1453 — this mirrors the resolution the Codex binary performs and
+/// prints for itself (`codex_home: AbsolutePathBuf("<dir>")` in its startup
+/// warning). An empty `CODEX_HOME` falls back to `~/.codex` there too, so it
+/// falls back here.
+fn codex_home() -> Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("CODEX_HOME") {
+        let path = PathBuf::from(dir);
+        if !path.as_os_str().is_empty() {
+            return Ok(path);
+        }
+    }
+    Ok(home_dir()?.join(".codex"))
+}
+
+/// The one key Codex reads for approval behaviour. Issue #1453 — amplihack
+/// used to write `approval_mode`, which Codex treats exactly like a key that
+/// does not exist: accepted and ignored, with no error even for a nonsense
+/// value. `approval_policy` is validated.
+const CODEX_APPROVAL_POLICY_KEY: &str = "approval_policy";
+
+/// Codex accepts exactly `untrusted`, `on-failure`, `on-request`, `granular`,
+/// and `never` here, and rejects anything else by name. amplihack's intent for
+/// this file has always been autonomous operation with no approval prompts,
+/// and `never` is the only one of the five that means that. The old value,
+/// `"auto"`, is not one of them.
+const CODEX_APPROVAL_POLICY: &str = "never";
+
+/// Point Codex at autonomous operation by setting `approval_policy` in
+/// `$CODEX_HOME/config.toml`.
+///
+/// Merges into whatever is already there rather than replacing it: the
+/// document is edited in place, so other keys, their ordering, and the user's
+/// comments all survive. Refuses rather than clobbers when it cannot read the
+/// file, cannot parse it, or finds `approval_policy` holding something other
+/// than a string. (TOML documents are tables at the root, so the "not a table"
+/// refusal this function used to make against JSON has no separate shape here:
+/// text that is not a table does not parse, and the parse arm refuses it.)
 fn configure_codex() -> Result<()> {
-    let config_dir = home_dir()?.join(".openai").join("codex");
+    let config_dir = codex_home()?;
     fs::create_dir_all(&config_dir)
         .with_context(|| format!("failed to create {}", config_dir.display()))?;
-    let config_path = config_dir.join("config.json");
+    let config_path = config_dir.join("config.toml");
 
-    let mut value = if config_path.exists() {
+    let mut document = if config_path.exists() {
         let raw = fs::read_to_string(&config_path).with_context(|| {
             format!(
                 "refusing to overwrite unreadable existing Codex config {}",
                 config_path.display()
             )
         })?;
-        let parsed: Value = serde_json::from_str(&raw).with_context(|| {
+        raw.parse::<DocumentMut>().with_context(|| {
             format!(
                 "refusing to overwrite malformed existing Codex config {}",
                 config_path.display()
             )
-        })?;
-        if !parsed.is_object() {
-            bail!(
-                "refusing to overwrite existing Codex config {} because it is not an object",
-                config_path.display()
-            );
-        }
-        parsed
+        })?
     } else {
-        json!({})
+        DocumentMut::new()
     };
 
-    let object = value
-        .as_object_mut()
-        .expect("value is guaranteed an object");
-    if object.get("approval_mode").and_then(Value::as_str) != Some("auto") {
-        object.insert(
-            "approval_mode".to_string(),
-            Value::String("auto".to_string()),
-        );
-        fs::write(&config_path, serde_json::to_string_pretty(&value)? + "\n")
-            .with_context(|| format!("failed to write {}", config_path.display()))?;
+    match document.get(CODEX_APPROVAL_POLICY_KEY) {
+        Some(item) if item.as_str() == Some(CODEX_APPROVAL_POLICY) => return Ok(()),
+        Some(item) if item.as_str().is_none() => {
+            bail!(
+                "refusing to overwrite existing Codex config {} because its `{}` is a {}, not a string",
+                config_path.display(),
+                CODEX_APPROVAL_POLICY_KEY,
+                item.type_name()
+            );
+        }
+        _ => {}
     }
 
+    document[CODEX_APPROVAL_POLICY_KEY] = toml_edit::value(CODEX_APPROVAL_POLICY);
+    fs::write(&config_path, document.to_string())
+        .with_context(|| format!("failed to write {}", config_path.display()))?;
+
     Ok(())
+}
+
+/// Retire the file amplihack wrote to `~/.openai/codex/config.json` before
+/// issue #1453 was fixed.
+///
+/// Codex has never read that path — `.openai/codex` does not appear anywhere
+/// in the Codex binary — so what is there is a file that looks like Codex
+/// configuration, is not, and will mislead the next person who edits it.
+///
+/// Removed only when its content is exactly what amplihack wrote: a JSON
+/// object whose single key is `approval_mode` with the value `"auto"`.
+/// Anything else — extra keys, a different value, unparseable text — is
+/// someone else's file, so it is left alone and named on stderr instead.
+/// Failure to remove is reported, never fatal: it must not block a launch.
+fn retire_stale_openai_codex_config() {
+    let Ok(home) = home_dir() else { return };
+    let stale_dir = home.join(".openai").join("codex");
+    let stale = stale_dir.join("config.json");
+    let Ok(raw) = fs::read_to_string(&stale) else {
+        return;
+    };
+
+    let is_amplihacks_own = serde_json::from_str::<Value>(&raw)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .is_some_and(|object| {
+            object.len() == 1 && object.get("approval_mode").and_then(Value::as_str) == Some("auto")
+        });
+
+    if !is_amplihacks_own {
+        eprintln!(
+            "⚠️  {} is not read by Codex (its config is $CODEX_HOME/config.toml, default ~/.codex/config.toml). Leaving it alone because amplihack cannot prove it wrote it.",
+            stale.display()
+        );
+        return;
+    }
+
+    if let Err(err) = fs::remove_file(&stale) {
+        tracing::warn!(path = %stale.display(), %err, "failed to remove stale Codex config");
+        return;
+    }
+    // Succeeds only if nothing else lives there; a non-empty directory is
+    // left as it is.
+    let _ = fs::remove_dir(&stale_dir);
 }
 
 fn prepend_path(dir: &Path) -> Result<()> {
@@ -1140,18 +1228,167 @@ fn home_dir() -> Result<PathBuf> {
 mod tests {
     use super::*;
 
+    /// The one test that asks Codex, not amplihack, whether the file is any
+    /// good. Issue #1453 — every earlier test read back what amplihack had
+    /// just written and asserted it matched what amplihack meant to write, so
+    /// all three of the wrong directory, the wrong format, and the wrong key
+    /// passed.
+    ///
+    /// Skips with a message when the Codex binary is absent. It never fails
+    /// for that reason.
     #[test]
-    fn configure_codex_sets_auto_mode() {
+    fn codex_reads_the_config_amplihack_writes() {
+        let Some(codex) = which("codex") else {
+            eprintln!("skipping codex_reads_the_config_amplihack_writes: codex is not installed");
+            return;
+        };
+
         let _guard = crate::test_support::home_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp = tempfile::tempdir().unwrap();
         let previous_home = crate::test_support::set_home(temp.path());
+        let previous_codex_home = std::env::var_os("CODEX_HOME");
+        unsafe { std::env::remove_var("CODEX_HOME") };
+
+        let result = configure_codex();
+
+        let restore = || {
+            match &previous_codex_home {
+                Some(value) => unsafe { std::env::set_var("CODEX_HOME", value) },
+                None => unsafe { std::env::remove_var("CODEX_HOME") },
+            }
+            crate::test_support::restore_home(previous_home.clone());
+        };
+
+        // Reads the config the same way Codex does at startup, and reports
+        // anything it could not load.
+        let load_config = |home: &Path| -> String {
+            let output = Command::new(&codex)
+                .args(["login", "status"])
+                .env("HOME", home)
+                .env_remove("CODEX_HOME")
+                .output()
+                .expect("failed to run codex login status");
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        };
+
+        let outcome = (|| -> Result<()> {
+            result?;
+
+            // 1. The directory and file name Codex looks in.
+            let config_path = temp.path().join(".codex").join("config.toml");
+            if !config_path.exists() {
+                bail!(
+                    "Codex reads {}, and amplihack did not write it",
+                    config_path.display()
+                );
+            }
+
+            // 2. The format and every value in it: Codex parses and validates
+            //    the whole document, and names the file when it cannot.
+            let loaded = load_config(temp.path());
+            if loaded.contains("Error loading configuration") {
+                bail!("Codex could not load the config amplihack wrote: {loaded}");
+            }
+
+            // 3. The key. An unknown key is accepted and ignored no matter
+            //    what value it holds, so a key Codex really reads is one that
+            //    rejects a value outside its own list. This is what fails when
+            //    amplihack writes `approval_mode` instead of `approval_policy`.
+            let written = fs::read_to_string(&config_path)?
+                .parse::<DocumentMut>()
+                .context("amplihack wrote a config it cannot parse back")?;
+            let keys: Vec<String> = written.iter().map(|(key, _)| key.to_string()).collect();
+            if keys.is_empty() {
+                bail!("amplihack wrote an empty config");
+            }
+            for key in keys {
+                let probe = tempfile::tempdir()?;
+                fs::create_dir_all(probe.path().join(".codex"))?;
+                fs::write(
+                    probe.path().join(".codex").join("config.toml"),
+                    format!("{key} = \"amplihack-not-a-valid-value\"\n"),
+                )?;
+                let probed = load_config(probe.path());
+                if !probed.contains("Error loading configuration") {
+                    bail!(
+                        "Codex does not read `{key}`: it accepted a nonsense value for it \
+                         instead of rejecting it, which is how it treats a key that does not \
+                         exist. Codex said: {probed}"
+                    );
+                }
+            }
+            Ok(())
+        })();
+
+        restore();
+        outcome.unwrap();
+    }
+
+    #[test]
+    fn configure_codex_writes_approval_policy_to_codex_home() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let previous_home = crate::test_support::set_home(temp.path());
+        let codex_home = temp.path().join("elsewhere");
+        let _env = crate::test_support::EnvGuard::set([(
+            "CODEX_HOME",
+            codex_home.to_str().expect("temp path is UTF-8"),
+        )]);
+
         configure_codex().unwrap();
 
-        let config = fs::read_to_string(temp.path().join(".openai/codex/config.json")).unwrap();
-        let value: Value = serde_json::from_str(&config).unwrap();
-        assert_eq!(value["approval_mode"], "auto");
+        let document = fs::read_to_string(codex_home.join("config.toml"))
+            .expect("CODEX_HOME must be honoured")
+            .parse::<DocumentMut>()
+            .expect("amplihack must write TOML");
+        assert_eq!(document["approval_policy"].as_str(), Some("never"));
+        assert!(
+            !temp.path().join(".codex").exists(),
+            "nothing belongs in ~/.codex when CODEX_HOME points elsewhere"
+        );
+        assert!(
+            !temp.path().join(".openai").exists(),
+            "Codex never reads ~/.openai"
+        );
+
+        crate::test_support::restore_home(previous_home);
+    }
+
+    #[test]
+    fn configure_codex_merges_into_an_existing_config() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let previous_home = crate::test_support::set_home(temp.path());
+        let config_dir = temp.path().join(".codex");
+        fs::create_dir_all(&config_dir).unwrap();
+        let config_path = config_dir.join("config.toml");
+        fs::write(
+            &config_path,
+            "# chosen by hand, keep it\nmodel = \"gpt-5-codex\"\n\n[tui]\nnotifications = true\n",
+        )
+        .unwrap();
+
+        configure_codex().unwrap();
+
+        let raw = fs::read_to_string(&config_path).unwrap();
+        let document = raw.parse::<DocumentMut>().unwrap();
+        assert_eq!(document["approval_policy"].as_str(), Some("never"));
+        assert_eq!(document["model"].as_str(), Some("gpt-5-codex"));
+        assert_eq!(document["tui"]["notifications"].as_bool(), Some(true));
+        assert!(
+            raw.contains("# chosen by hand, keep it"),
+            "a merge must not throw away the user's comments; got {raw}"
+        );
 
         crate::test_support::restore_home(previous_home);
     }
@@ -1163,10 +1400,13 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp = tempfile::tempdir().unwrap();
         let previous_home = crate::test_support::set_home(temp.path());
-        let config_dir = temp.path().join(".openai/codex");
+        let config_dir = temp.path().join(".codex");
         fs::create_dir_all(&config_dir).unwrap();
-        let config_path = config_dir.join("config.json");
-        let original = "{ this is not json";
+        let config_path = config_dir.join("config.toml");
+        // Not a table, and not parseable as one: TOML documents have no
+        // non-table shape, so this is where the old "not an object" refusal
+        // lands too.
+        let original = "[\"not\", \"a\", \"table\"]\n";
         fs::write(&config_path, original).unwrap();
 
         let error = configure_codex().expect_err("malformed config must be preserved");
@@ -1182,26 +1422,69 @@ mod tests {
     }
 
     #[test]
-    fn configure_codex_refuses_non_object_existing_config_without_overwriting() {
+    fn configure_codex_refuses_non_string_approval_policy_without_overwriting() {
         let _guard = crate::test_support::home_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp = tempfile::tempdir().unwrap();
         let previous_home = crate::test_support::set_home(temp.path());
-        let config_dir = temp.path().join(".openai/codex");
+        let config_dir = temp.path().join(".codex");
         fs::create_dir_all(&config_dir).unwrap();
-        let config_path = config_dir.join("config.json");
-        let original = "[\"not\", \"an\", \"object\"]\n";
+        let config_path = config_dir.join("config.toml");
+        let original = "[approval_policy]\nsomething = \"else\"\n";
         fs::write(&config_path, original).unwrap();
 
-        let error = configure_codex().expect_err("non-object config must be preserved");
+        let error = configure_codex().expect_err("non-string approval_policy must be preserved");
 
         assert_eq!(fs::read_to_string(&config_path).unwrap(), original);
         assert!(
-            error.to_string().contains("not an object")
+            error.to_string().contains("not a string")
                 || error.to_string().contains("refusing to overwrite"),
-            "error should clearly explain non-object config preservation; got {error:#}"
+            "error should clearly explain what it refused to overwrite; got {error:#}"
         );
+
+        crate::test_support::restore_home(previous_home);
+    }
+
+    #[test]
+    fn retire_stale_openai_codex_config_removes_only_amplihacks_own_file() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let previous_home = crate::test_support::set_home(temp.path());
+        let stale_dir = temp.path().join(".openai").join("codex");
+        let stale = stale_dir.join("config.json");
+        fs::create_dir_all(&stale_dir).unwrap();
+        fs::write(&stale, "{\n  \"approval_mode\": \"auto\"\n}\n").unwrap();
+
+        retire_stale_openai_codex_config();
+
+        assert!(
+            !stale.exists(),
+            "the file amplihack wrote and Codex never read must not be left behind"
+        );
+        assert!(!stale_dir.exists(), "the emptied directory goes too");
+
+        crate::test_support::restore_home(previous_home);
+    }
+
+    #[test]
+    fn retire_stale_openai_codex_config_keeps_a_file_it_cannot_prove_it_wrote() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let previous_home = crate::test_support::set_home(temp.path());
+        let stale_dir = temp.path().join(".openai").join("codex");
+        let stale = stale_dir.join("config.json");
+        fs::create_dir_all(&stale_dir).unwrap();
+        let theirs = "{\"approval_mode\": \"auto\", \"api_key_ref\": \"somebody-elses\"}\n";
+        fs::write(&stale, theirs).unwrap();
+
+        retire_stale_openai_codex_config();
+
+        assert_eq!(fs::read_to_string(&stale).unwrap(), theirs);
 
         crate::test_support::restore_home(previous_home);
     }
