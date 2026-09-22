@@ -38,3 +38,11 @@ outputs/
 .github/hooks/
 crates/amplihack-cli/.github/hooks/
 docs/atlas/graph.kuzu/
+
+# TLC model-checker scratch. scripts/check-spec.sh runs `tlc2.TLC` with its cwd
+# set to docs/spec/, so TLC writes its metadir to docs/spec/states/<timestamp>/.
+# `-cleanup` removes it only when the run COMPLETES; an interrupted or killed run
+# leaves it behind, which is how 69 files (65 .st, 2 .fp and the nodes_0/ptrs_0
+# disk graph — 4.2 MB) came to be committed. They are deleted in this branch, and
+# this rule is what keeps the next local spec run from putting them back.
+docs/spec/states/

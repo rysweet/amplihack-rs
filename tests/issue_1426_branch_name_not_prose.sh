@@ -435,6 +435,76 @@ else
     pass "D4-no-early-exit" "the derivation has no early-exit pipeline stage (pipefail-safe)"
 fi
 
+# ===========================================================================
+# Part E — the two boundaries this fix creates, pinned so they stay deliberate.
+# ===========================================================================
+
+# --- E1: a non-numeric issue number must not kill the derivation ------------
+# The inline derivation strips a leading `issue <N>` off the task's own words,
+# which means interpolating the issue number into a sed ERE. The first cut
+# interpolated it raw:
+#
+#     sed -E "s/^(issues?-)?(${ISSUE_NUMBER:-0})-//"
+#
+# ISSUE_NUMBER is NOT guaranteed numeric. workflow-prep's step-03b propagates a
+# LOCAL TRACKING reference verbatim and says so in as many words — "never
+# coercing to a number" (#815, #804) — and `issue_number` is an ordinary recipe
+# context key any caller may set. A value carrying the s/// delimiter ended the
+# run at step-04 with
+#
+#     sed: -e expression #1, char 22: unknown option to `s'
+#
+# which names neither this step nor the variable that caused it. `origin/main`
+# survives the same input — it has no such sed — so this was a regression of
+# THIS change, not an inherited one: the derivation that replaces the prose slug
+# has to be at least as hard to kill as the prose slug was. The fix is SLUG_NUM,
+# ISSUE_NUMBER forced numeric before it ever reaches the expression.
+REPO_E1="$(build_repo e1)"
+run_step_bare "${REPO_E1}" 'a/b' feat "add retry logic to the fetch path"
+E1_BRANCH="$(json_field "${RUN_JSON}" branch_name)"
+if [[ "${RUN_RC}" -eq 0 && -n "${E1_BRANCH}" ]] && ! printf '%s' "${RUN_ERR}" | grep -q '^sed:'; then
+    pass "E1-issue-number-metachar" "a non-numeric issue number does not break the derivation: ${E1_BRANCH}"
+else
+    fail "E1-issue-number-metachar" "rc=${RUN_RC} branch='${E1_BRANCH}' — ISSUE_NUMBER reached sed unescaped\nstderr:\n${RUN_ERR}"
+fi
+
+# --- E2: the incident's own configuration — branch ALREADY CHECKED OUT ------
+# Issue #1426 asks for this outright, and it is the one item of the report that
+# is NOT granted:
+#
+#     If a branch is already checked out in the working directory the recipe was
+#     pointed at with -w, prefer it rather than creating a second one.
+#
+# It cannot be granted here. #858 forbids adopting the caller checkout as a task
+# worktree at all, because that checkout may carry unrelated commits and
+# uncommitted files from another recipe. The two requests are irreconcilable and
+# the conflict is resolved in #858's favour; the reasoning is written down in
+# docs/features/branch-name-generation.md so that whoever reopens #858 finds it.
+#
+# So the reporter's exact setup gets a LOUD REFUSAL rather than the branch. That
+# is a deliberate trade and this case exists to keep it deliberate. C1 covers the
+# pinned branch when it is checked out NOWHERE; only this case reproduces the
+# incident as it was actually filed.
+REPO_E2="$(build_repo e2)"
+git -C "${REPO_E2}" checkout -q -b "${PINNED_BRANCH}" main
+run_step "${REPO_E2}" 142 "${INCIDENT_TASK}"
+if [[ "${RUN_RC}" -ne 0 ]] && printf '%s' "${RUN_ERR}" | grep -q 'issue #858'; then
+    pass "E2-caller-checkout-refused" "the pinned branch checked out in the caller repo is refused loudly, never silently adopted (#858)"
+else
+    fail "E2-caller-checkout-refused" "rc=${RUN_RC} json=${RUN_JSON}\nstderr:\n${RUN_ERR}"
+fi
+
+# The half of #1426 that IS won even while refusing: no second, prose-derived
+# branch is invented alongside the one the task pinned. On pre-fix main this is
+# precisely where `feat/issue-142-repository-usersryansrcmistt-qaws142jamestown-gith`
+# came from.
+E2_COMPETING="$(git -C "${REPO_E2}" for-each-ref --format='%(refname:short)' 'refs/heads/feat/*')"
+if [[ -z "${E2_COMPETING}" ]]; then
+    pass "E2b-no-competitor" "no prose-derived branch was invented while refusing"
+else
+    fail "E2b-no-competitor" "a competing branch was derived from prose despite the pinned branch:\n${E2_COMPETING}"
+fi
+
 echo ""
 echo "=== ${PASS_COUNT} passed, ${FAIL_COUNT} failed ==="
 [[ "${FAIL_COUNT}" -eq 0 ]] || exit 1

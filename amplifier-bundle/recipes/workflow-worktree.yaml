@@ -263,9 +263,8 @@ steps:
       BASE_BRANCH="${BASE_REF#origin/}"
 
       # BRANCH NAMING (#1426). An explicitly named branch wins outright. Otherwise the
-      # name is keyed to the ISSUE NUMBER with a bounded, word-boundary-truncated tail —
-      # never fifty characters of raw task prose with the path separators stripped out
-      # (`feat/issue-142-repository-usersryansrcmistt-qaws142jamestown-gith`).
+      # name is keyed to the ISSUE NUMBER with a bounded, word-boundary-truncated tail,
+      # never fifty characters of prose (`feat/issue-142-repository-usersryan…-gith`).
       # Computed INLINE, deliberately, and never behind a bundle helper (#1121): the
       # phase bricks are executed with no amplifier-bundle on disk by design, and a
       # LOAD-BEARING name that changes with the environment stops a re-run from
@@ -273,17 +272,18 @@ steps:
       # Rules: drop path/URL/e-mail tokens whole, drop 20+ character identifier blobs,
       # skip a leading `issue <N>`, then join words only while the result still fits 24
       # characters, so the tail always ends on a WHOLE WORD. Nothing usable to say ->
-      # a stable hash of the task, never its prose. FIX (#3023/BL-002) preserved: the
-      # last-resort name below hardcodes 'feat/' rather than $BRANCH_PREFIX so an
-      # invalid or malicious branch_prefix cannot inject through the fallback.
-      # The input is bounded by a SHELL SUBSTRING, never by piping into `head -c`: a
-      # stage that stops reading early leaves the producer writing into a closed pipe,
-      # and `pipefail` above turns that into an EMPTY name and a dead step-04. Every
-      # stage below consumes its entire input. Full account: tools/workflow_branch_name.sh.
-      SLUG_HEAD="${TASK_DESCRIPTION:-}"; SLUG_WORDS="$(printf '%s' "${SLUG_HEAD:0:65536}" | tr '[:upper:]' '[:lower:]' \
+      # a stable hash of the task, never its prose. SLUG_NUM — ISSUE_NUMBER forced numeric
+      # — reaches that sed, because issue_number is NOT always a number (workflow-prep
+      # passes a local-tracking ref through verbatim, #815) and a bare '/' there kills step-04.
+      # FIX (#3023/BL-002) preserved: the last-resort name below hardcodes 'feat/' rather
+      # than $BRANCH_PREFIX so an invalid or malicious branch_prefix cannot inject.
+      # The input is bounded by a SHELL SUBSTRING, never by piping into `head -c`: a stage
+      # that stops reading early leaves the producer writing into a closed pipe, and
+      # `pipefail` turns it into an EMPTY name. Full account: tools/workflow_branch_name.sh.
+      SLUG_HEAD="${TASK_DESCRIPTION:-}"; SLUG_NUM="${ISSUE_NUMBER:-0}"; case "$SLUG_NUM" in ''|*[!0-9]*) SLUG_NUM=0 ;; esac; SLUG_WORDS="$(printf '%s' "${SLUG_HEAD:0:65536}" | tr '[:upper:]' '[:lower:]' \
         | sed -e 's#[^[:space:]]*[/\\@][^[:space:]]*# #g' -e 's/[^a-z0-9]\{1,\}/-/g' \
         | tr '\n\r' '--' | sed -e 's/-\{2,\}/-/g' -e 's/^-*//;s/-*$//' \
-        | sed -E "s/^(issues?-)?(${ISSUE_NUMBER:-0})-//")"
+        | sed -E "s/^(issues?-)?(${SLUG_NUM})-//")"
       TASK_SLUG=""; SLUG_OIFS="$IFS"; IFS='-'
       for SLUG_W in $SLUG_WORDS; do [ -n "$SLUG_W" ] && [ ${#SLUG_W} -le 20 ] || continue; SLUG_N="${TASK_SLUG:+$TASK_SLUG-}$SLUG_W"; [ ${#SLUG_N} -le 24 ] || break; TASK_SLUG="$SLUG_N"; done
       IFS="$SLUG_OIFS"; [ -n "$TASK_SLUG" ] || TASK_SLUG="$(printf '%s' "${TASK_DESCRIPTION:-}" | cksum | cut -d' ' -f1)"

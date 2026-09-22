@@ -131,7 +131,8 @@ fallback (issue #3023 / BL-002).
 
 `branch_prefix` is **not** inferred from the task text. Reading the commit type out of
 the prose would reintroduce exactly the class of bug #1426 is about; the caller states
-it, or it stays `feat`.
+it, or it stays `feat`. There is also no structured source to read it
+from today — see [Item 5 — the kind prefix](#item-5--the-kind-prefix).
 
 ---
 
@@ -237,6 +238,79 @@ answers "does it already exist?": 0 for yes (reuse it), 10 for no (create it).
 
 ---
 
+## What issue #1426 asked for, item by item
+
+The report closed with a six-part "Suggested fix". Three parts are implemented as
+written, one is implemented differently, and two are refused. The refusals are the
+ones worth reading.
+
+| # | #1426 asked for | Outcome |
+| - | --------------- | ------- |
+| 1 | a branch named in the task or context, if present | **As asked** — ranks 1–2 |
+| 2 | otherwise issue number + the **issue title** slug | **Deviated** — issue number + a slug of the task's own words |
+| 3 | otherwise a short stable hash, not prose | **As asked** — rank 4 |
+| 4 | cap the slug (~30 chars), cut on a word boundary | **As asked** — 24 chars, word boundary |
+| 5 | take the kind prefix from the work type | **Not done** — below |
+| 6 | prefer a branch already checked out in the `-w` directory | **Refused** — conflicts with #858 |
+
+### Item 2 — why the slug is the task's words, not the issue title
+
+No issue *title* reaches `step-04-setup-worktree`. `workflow-prep` extracts an issue
+*number* (`step-03b-extract-issue-number`) and nothing else about the issue; there is
+no `issue_title` key anywhere in the context chain. Supplying one means changing
+`workflow-prep.yaml`, `default-workflow.yaml` and a brick already at its 400-line
+budget — for a tail bounded to 24 characters either way.
+
+What #1426 objected to was a ref built out of a prose sentence. The issue title was a
+suggested *means* to that end, not the end itself, and `issue-<N>` plus a bounded,
+word-boundary slug meets the end. If the title is wanted later it is a separate,
+self-contained change to the context chain.
+
+### Item 5 — the kind prefix
+
+`branch_prefix` is already a context key and already honoured: a caller who knows the
+work is a fix passes `-c branch_prefix=fix` and gets `fix/issue-N-…`. What is not done
+is choosing it *automatically*, and the reason is narrower than "prose parsing is bad":
+
+- Inferring it from the task text is refused outright — that is the #1426 defect.
+- The one structured classification the orchestrator does produce, `task_type` in
+  `smart-classify-route.yaml`, has the vocabulary `Q&A | Operations | Investigation |
+  Development`. It carries no commit kind, so it cannot supply the prefix either.
+
+So there is currently no structured source to read the prefix from; one would have to
+be built (the tracking issue's labels are the obvious candidate). That is a design
+question of its own and is tracked in **#1463** rather than smuggled in here.
+
+### Item 6 — the branch already checked out in the `-w` directory
+
+This is refused, and it is a real conflict rather than an oversight.
+
+#1426 asks: if the directory the recipe was pointed at is already on the branch, use it
+instead of creating a second one. Issue **#858** forbids precisely that — the caller
+checkout must never be adopted as a recipe task worktree, because it may carry
+unrelated commits and uncommitted files from another recipe that a failed run would
+then have to salvage. `step-04` therefore **fails closed**, with an error naming #858.
+
+Both positions are right in their own context. The conflict is resolved in #858's
+favour because silently committing into a checkout the user was already working in is
+the more expensive mistake. The consequence, stated plainly:
+
+> The exact configuration in #1426's report — the pinned branch checked out in the
+> `-w` directory — now **stops the run with an error** instead of producing a
+> wrongly-named branch.
+
+What #1426 does win even there is that no competing `feat/issue-N-<prose>` branch is
+invented while refusing. `E2` and `E2b` in `tests/issue_1426_branch_name_not_prose.sh`
+pin both halves, so neither can drift by accident.
+
+A caller who hits this takes the remedy the error prints: run the recipe from a base
+checkout, or pass `-c existing_branch=<ref>` from a directory not sitting on that
+branch.
+
+Anyone reopening #858 should start here.
+
+---
+
 ## Troubleshooting
 
 ### The branch is not the one my task named
@@ -257,10 +331,25 @@ runs that would collide are separated by `tools/workflow_worktree_deconflict.sh`
 (issues #829/#840), and an issue already claimed by an open PR stops the second run
 (`tools/workflow_issue_claim_check.sh`, issue #1361).
 
+### The run stops with "refusing to use the caller checkout as a recipe task worktree"
+
+The branch the task named is checked out in the directory passed to `-w`. That is
+refused by design (issue #858) even though issue #1426 asked for the opposite; the
+reasoning is under [Item 6](#item-6--the-branch-already-checked-out-in-the--w-directory).
+Run the recipe from a base checkout, or pass `-c existing_branch=<ref>` from a
+directory not sitting on that branch.
+
 ### The name looks like `feat/task-unnamed-1699564800`
 
 `git check-ref-format --branch` rejected the assembled name — most often because
-`branch_prefix` is not a valid ref component (a space, a slash, a leading dash).
+`branch_prefix` is not a valid ref component (a space, a slash, a leading dash), or
+because `issue_number` is a local tracking id containing a `:`, which is not legal in
+a git ref.
+
+That fallback is keyed to the clock, so it is **not** deterministic: a re-run gets a
+different name and therefore a different worktree, and stops recognising the one its
+predecessor registered. Tracked in **#1464**; until it is fixed, pass a `branch_prefix`
+and an `issue_number` that form a valid ref, or name the branch outright.
 
 ---
 
@@ -279,3 +368,5 @@ runs that would collide are separated by `tools/workflow_worktree_deconflict.sh`
 - `amplifier-bundle/tools/workflow_branch_name.sh` — the explicit-branch scan (rank 2)
 - `amplifier-bundle/tools/workflow_worktree_base_ref.sh` — fetch + base-ref resolution
 - `tests/issue_1426_branch_name_not_prose.sh` — the regression spec
+- #1463 — deriving `branch_prefix` from a structured source (item 5)
+- #1464 — the non-deterministic `feat/task-unnamed-<epoch>` fallback
