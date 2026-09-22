@@ -12,7 +12,16 @@ use std::time::Duration;
 use crate::util::{run_output_with_timeout, run_with_timeout};
 
 pub(crate) const DEFAULT_IMAGE_NAME: &str = "amplihack:latest";
+pub(crate) const LITELLM_ROUTING_LABEL: &str = "org.amplihack.litellm-routing";
+pub(crate) const LITELLM_ROUTING_REVISION: &str = "2";
+pub(crate) const VERSION_LABEL: &str = "org.amplihack.version";
 const DOCKER_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+pub(super) fn docker_setup_command() -> Command {
+    let mut command = Command::new("docker");
+    amplihack_utils::litellm_proxy::scrub_inference_environment(&mut command);
+    command
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DockerActivation {
@@ -33,6 +42,12 @@ impl DockerActivation {
 pub(crate) struct DockerDetector;
 
 impl DockerDetector {
+    pub(crate) fn requested_outside_container(self, docker_flag: bool) -> bool {
+        docker_flag
+            || (is_truthy_env_value(env::var("AMPLIHACK_USE_DOCKER").ok().as_deref())
+                && !self.is_in_docker())
+    }
+
     pub(crate) fn activation_source(self, docker_flag: bool) -> Option<DockerActivation> {
         if docker_flag {
             Some(DockerActivation::Flag)
@@ -55,7 +70,7 @@ impl DockerDetector {
             return false;
         }
 
-        let mut command = Command::new("docker");
+        let mut command = docker_setup_command();
         command
             .arg("info")
             .stdin(Stdio::null())
@@ -93,12 +108,28 @@ impl DockerDetector {
             return false;
         }
 
-        let mut command = Command::new("docker");
+        let mut command = docker_setup_command();
         command
             .args(["images", "-q", image_name])
             .stdin(Stdio::null());
         run_output_with_timeout(command, DOCKER_PROBE_TIMEOUT)
             .map(|output| !String::from_utf8_lossy(&output.stdout).trim().is_empty())
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn image_supports_litellm(self, image_name: &str) -> bool {
+        let format = format!(
+            "{{{{ index .Config.Labels \"{LITELLM_ROUTING_LABEL}\" }}}}|{{{{ index .Config.Labels \"{VERSION_LABEL}\" }}}}"
+        );
+        let mut command = docker_setup_command();
+        command
+            .args(["image", "inspect", "--format", &format, image_name])
+            .stdin(Stdio::null());
+        run_output_with_timeout(command, DOCKER_PROBE_TIMEOUT)
+            .map(|output| {
+                String::from_utf8_lossy(&output.stdout).trim()
+                    == format!("{LITELLM_ROUTING_REVISION}|{}", crate::VERSION)
+            })
             .unwrap_or(false)
     }
 }
@@ -179,6 +210,7 @@ fn is_truthy_env_value(value: Option<&str>) -> bool {
 mod tests {
     use super::*;
     use helpers::forwarded_env_vars;
+    use std::ffi::OsStr;
     use std::path::PathBuf;
 
     fn sample_prefixed_value(parts: &[&str], suffix: &str) -> String {
@@ -193,6 +225,140 @@ mod tests {
         assert!(!should_use_docker_from_state(Some("true"), true, true));
         assert!(!should_use_docker_from_state(Some("true"), false, false));
         assert!(!should_use_docker_from_state(Some("0"), false, true));
+    }
+
+    #[test]
+    fn docker_setup_commands_remove_inference_configuration() {
+        let command = docker_setup_command();
+        for name in [
+            amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+            amplihack_utils::litellm_proxy::API_KEY_ENV,
+            amplihack_utils::litellm_proxy::MODEL_ENV,
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "AWS_SECRET_ACCESS_KEY",
+            "COPILOT_PROVIDER_BEARER_TOKEN",
+            "LITELLM_MASTER_KEY",
+            "LITELLM_SALT_KEY",
+            "LITELLM_UPSTREAM_MODEL",
+            "POSTGRES_PASSWORD",
+            "GF_SECURITY_ADMIN_PASSWORD",
+            "AZURE_API_KEY",
+            "AZURE_API_BASE",
+            "AZURE_API_VERSION",
+        ] {
+            assert_eq!(
+                command
+                    .get_envs()
+                    .find(|(key, _)| *key == OsStr::new(name))
+                    .map(|(_, value)| value),
+                Some(None),
+                "{name} must be removed from Docker setup subprocesses"
+            );
+        }
+    }
+
+    #[test]
+    fn routed_existing_images_are_reused_only_when_compatible() {
+        assert!(super::manager::existing_image_is_usable(true, false, false));
+        assert!(super::manager::existing_image_is_usable(true, true, true));
+        assert!(!super::manager::existing_image_is_usable(true, true, false));
+        assert!(!super::manager::existing_image_is_usable(false, true, true));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn routed_launch_rebuilds_an_incompatible_existing_image() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let bin_dir = temp.path().join("bin");
+        let log = temp.path().join("docker.log");
+        let rebuilt = temp.path().join("rebuilt");
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::write(temp.path().join("Dockerfile"), "FROM scratch\n").unwrap();
+
+        let docker = bin_dir.join("docker");
+        fs::write(
+            &docker,
+            format!(
+                "#!/bin/sh\n\
+                 printf '%s\\n' \"$1 $2\" >> \"$DOCKER_TEST_LOG\"\n\
+                 if [ \"$1\" != \"run\" ]; then\n\
+                   [ -z \"$AMPLIHACK_LITELLM_ENDPOINT\" ] || exit 71\n\
+                   [ -z \"$AMPLIHACK_LITELLM_API_KEY\" ] || exit 72\n\
+                   [ -z \"$AMPLIHACK_LITELLM_MODEL\" ] || exit 73\n\
+                 fi\n\
+                 case \"$1 $2\" in\n\
+                   'info ') exit 0 ;;\n\
+                   'images -q') printf 'existing-image\\n'; exit 0 ;;\n\
+                   'image inspect')\n\
+                     if [ -f \"$DOCKER_TEST_REBUILT\" ]; then\n\
+                       printf '{}|{}\\n'\n\
+                     else\n\
+                       printf 'old-revision|old-version\\n'\n\
+                     fi\n\
+                     exit 0 ;;\n\
+                   'build -t') : > \"$DOCKER_TEST_REBUILT\"; exit 0 ;;\n\
+                   'run --rm')\n\
+                     [ \"$AMPLIHACK_LITELLM_API_KEY\" = 'gateway-secret' ] || exit 74\n\
+                     [ -z \"$AMPLIHACK_LITELLM_ENDPOINT\" ] || exit 75\n\
+                     [ -z \"$AMPLIHACK_LITELLM_MODEL\" ] || exit 76\n\
+                     exit 0 ;;\n\
+                 esac\n\
+                 exit 77\n",
+                LITELLM_ROUTING_REVISION,
+                crate::VERSION
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&docker).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&docker, permissions).unwrap();
+
+        let names = [
+            "PATH",
+            "DOCKER_TEST_LOG",
+            "DOCKER_TEST_REBUILT",
+            amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+            amplihack_utils::litellm_proxy::API_KEY_ENV,
+            amplihack_utils::litellm_proxy::MODEL_ENV,
+        ];
+        let previous = names.map(std::env::var_os);
+        unsafe {
+            std::env::set_var("PATH", &bin_dir);
+            std::env::set_var("DOCKER_TEST_LOG", &log);
+            std::env::set_var("DOCKER_TEST_REBUILT", &rebuilt);
+            std::env::set_var(
+                amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+                "https://gateway.example.test",
+            );
+            std::env::set_var(
+                amplihack_utils::litellm_proxy::API_KEY_ENV,
+                "gateway-secret",
+            );
+            std::env::set_var(amplihack_utils::litellm_proxy::MODEL_ENV, "routed-model");
+        }
+
+        let manager = DockerManager::new_for_tests(temp.path().to_path_buf());
+        let result = manager.run_command(&["launch".to_string()], temp.path());
+
+        for (name, value) in names.into_iter().zip(previous) {
+            match value {
+                Some(value) => unsafe { std::env::set_var(name, value) },
+                None => unsafe { std::env::remove_var(name) },
+            }
+        }
+
+        assert_eq!(result.unwrap(), 0);
+        assert!(rebuilt.is_file(), "the stale image must be rebuilt");
+        let log = fs::read_to_string(log).unwrap();
+        assert!(log.lines().any(|line| line == "build -t"), "{log}");
+        assert!(log.lines().any(|line| line == "run --rm"), "{log}");
     }
 
     /// The probes must not run when the environment has already decided.
@@ -299,7 +465,17 @@ mod tests {
             [
                 ("AMPLIHACK_USE_DOCKER", "1"),
                 ("AMPLIHACK_SESSION_ID", "abc123"),
+                ("AMPLIHACK_LITELLM_API_KEY", "gateway-secret"),
+                ("AMPLIHACK_LITELLM_ENDPOINT", "http://127.0.0.1:4000"),
+                (
+                    "AMPLIHACK_EXTERNAL_OTLP_AUTHORIZATION",
+                    "Bearer telemetry-secret",
+                ),
                 ("ANTHROPIC_API_KEY", anthropic_api_key.as_str()),
+                ("OPENAI_API_KEY", anthropic_api_key.as_str()),
+                ("COPILOT_GITHUB_TOKEN", "ghu_gatewayMustForward"),
+                ("GITHUB_TOKEN", "ghp_gatewayMustForward"),
+                ("GH_TOKEN", "ghs_gatewayMustForward"),
                 ("TERM", "xterm-256color"),
             ],
         );
@@ -314,6 +490,35 @@ mod tests {
                 .any(|window| { window[0] == "-e" && window[1] == "AMPLIHACK_IN_DOCKER=1" })
         );
         assert!(!args.iter().any(|arg| arg.contains("AMPLIHACK_USE_DOCKER")));
+        assert!(
+            args.windows(2)
+                .any(|window| { window[0] == "-e" && window[1] == "AMPLIHACK_LITELLM_API_KEY" })
+        );
+        assert!(
+            !args
+                .iter()
+                .any(|arg| matches!(arg.as_str(), "ANTHROPIC_API_KEY" | "OPENAI_API_KEY"))
+        );
+        assert!(args.iter().any(|arg| arg == "COPILOT_GITHUB_TOKEN"));
+        assert!(args.iter().any(|arg| arg == "GITHUB_TOKEN"));
+        assert!(args.iter().any(|arg| arg == "GH_TOKEN"));
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg.contains("AMPLIHACK_EXTERNAL_OTLP_AUTHORIZATION"))
+        );
+        assert!(args.windows(2).any(|window| {
+            window[0] == "-e" && window[1] == "AMPLIHACK_LITELLM_ENDPOINT=http://127.0.0.1:4000"
+        }));
+        assert!(!args.iter().any(|arg| arg == "--network"));
+        assert!(!args.iter().any(|arg| arg == "--add-host"));
+        assert!(!args.iter().any(|arg| arg.contains("gateway-secret")));
+        assert!(!args.iter().any(|arg| arg.contains("telemetry-secret")));
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg.contains(anthropic_api_key.as_str()))
+        );
         assert!(args.ends_with(&[
             "amplihack:latest".to_string(),
             "launch".to_string(),
@@ -331,14 +536,66 @@ mod tests {
         assert_eq!(
             manager.build_image_args(&dockerfile),
             vec![
-                "build",
-                "-t",
-                "amplihack:latest",
-                "-f",
-                "/tmp/amplihack-rs/Dockerfile",
-                "/tmp/amplihack-rs",
+                "build".to_string(),
+                "-t".to_string(),
+                "amplihack:latest".to_string(),
+                "--label".to_string(),
+                format!("org.amplihack.litellm-routing={}", LITELLM_ROUTING_REVISION),
+                "--label".to_string(),
+                format!("org.amplihack.version={}", crate::VERSION),
+                "-f".to_string(),
+                "/tmp/amplihack-rs/Dockerfile".to_string(),
+                "/tmp/amplihack-rs".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn docker_network_isolation_is_preserved_without_a_loopback_gateway() {
+        let manager = DockerManager::new_for_tests(PathBuf::from("/repo"));
+        for env in [
+            vec![("AMPLIHACK_SESSION_ID", "abc123")],
+            vec![
+                ("AMPLIHACK_SESSION_ID", "abc123"),
+                ("AMPLIHACK_LITELLM_ENDPOINT", "https://gateway.example.com"),
+            ],
+        ] {
+            let args = manager.build_run_args(
+                std::path::Path::new("/tmp/workspace"),
+                &["launch".to_string()],
+                env,
+            );
+            assert!(!args.iter().any(|arg| arg == "--network"));
+            assert!(!args.iter().any(|arg| arg == "--add-host"));
+        }
+    }
+
+    #[test]
+    fn docker_launcher_rejects_loopback_gateway_without_weakening_isolation() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = std::env::var_os(amplihack_utils::litellm_proxy::ENDPOINT_ENV);
+        for endpoint in [
+            "http://127.0.0.1:4000",
+            "http://127.0.0.2:4000",
+            "https://127.1:4000",
+            "http://localhost:4000",
+            "http://[::1]:4000",
+            "https://[::ffff:127.0.0.1]:4000",
+        ] {
+            unsafe { std::env::set_var(amplihack_utils::litellm_proxy::ENDPOINT_ENV, endpoint) };
+            assert!(
+                super::manager::validate_docker_gateway_env().is_err(),
+                "{endpoint} must be rejected for Docker launches"
+            );
+        }
+        match previous {
+            Some(value) => unsafe {
+                std::env::set_var(amplihack_utils::litellm_proxy::ENDPOINT_ENV, value)
+            },
+            None => unsafe { std::env::remove_var(amplihack_utils::litellm_proxy::ENDPOINT_ENV) },
+        }
     }
 
     #[test]
@@ -427,6 +684,27 @@ mod tests {
             forwarded.contains_key("AMPLIHACK_SESSION_ID"),
             "AMPLIHACK_SESSION_ID must be forwarded without format validation"
         );
+
+        let forwarded = forwarded_env_vars([
+            ("ANTHROPIC_API_KEY", "sk-provider-must-not-forward"),
+            ("GITHUB_TOKEN", "ghp_providerMustForward"),
+            ("AMPLIHACK_EXTERNAL_OTLP_AUTHORIZATION", "telemetry-secret"),
+            ("AMPLIHACK_DATABASE_PASSWORD", "database-secret"),
+            ("AMPLIHACK_LITELLM_API_KEY", "gateway-secret"),
+        ]);
+        assert!(!forwarded.contains_key("ANTHROPIC_API_KEY"));
+        assert_eq!(
+            forwarded.get("GITHUB_TOKEN").map(String::as_str),
+            Some("ghp_providerMustForward")
+        );
+        assert!(!forwarded.contains_key("AMPLIHACK_EXTERNAL_OTLP_AUTHORIZATION"));
+        assert!(!forwarded.contains_key("AMPLIHACK_DATABASE_PASSWORD"));
+        assert_eq!(
+            forwarded
+                .get(amplihack_utils::litellm_proxy::API_KEY_ENV)
+                .map(String::as_str),
+            Some("gateway-secret")
+        );
     }
 
     #[test]
@@ -451,6 +729,10 @@ mod tests {
             (
                 "GITHUB_TOKEN",
                 sample_prefixed_value(&["github", "_pat_"], "abc123"),
+            ),
+            (
+                "COPILOT_GITHUB_TOKEN",
+                sample_prefixed_value(&["g", "hu_"], "abc123"),
             ),
             ("GH_TOKEN", sample_prefixed_value(&["g", "hp_"], "abc123")),
         ] {

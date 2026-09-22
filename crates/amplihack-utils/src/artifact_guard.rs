@@ -16,6 +16,8 @@ pub struct ArtifactGuardConfig {
     repo: PathBuf,
     mode: ArtifactGuardMode,
     allowlist: Option<PathBuf>,
+    baseline: Option<String>,
+    preexisting_policy: PreExistingPolicy,
 }
 
 impl ArtifactGuardConfig {
@@ -24,6 +26,8 @@ impl ArtifactGuardConfig {
             repo: repo.to_path_buf(),
             mode: ArtifactGuardMode::All,
             allowlist: None,
+            baseline: None,
+            preexisting_policy: PreExistingPolicy::default(),
         }
     }
 
@@ -37,8 +41,28 @@ impl ArtifactGuardConfig {
         self
     }
 
+    /// Pin the revision the change under review is measured against. When unset
+    /// the guard walks [`BASELINE_CANDIDATES`]. An explicitly configured
+    /// baseline that cannot be resolved is a configuration error, never a
+    /// silent fallback.
+    pub fn with_baseline(mut self, baseline: impl Into<String>) -> Self {
+        self.baseline = Some(baseline.into());
+        self
+    }
+
+    /// How the commit/publish gate modes treat pre-existing violations
+    /// (issue #1422). Defaults to [`PreExistingPolicy::Report`].
+    pub fn with_preexisting_policy(mut self, policy: PreExistingPolicy) -> Self {
+        self.preexisting_policy = policy;
+        self
+    }
+
     pub fn mode(&self) -> ArtifactGuardMode {
         self.mode
+    }
+
+    pub fn preexisting_policy(&self) -> PreExistingPolicy {
+        self.preexisting_policy
     }
 }
 
@@ -87,6 +111,14 @@ impl ArtifactGuardMode {
     fn scans_ignored_present(self) -> bool {
         matches!(self, Self::All | Self::Worktree)
     }
+
+    /// Whether this mode is a fail-closed commit/publish gate rather than an
+    /// auditing scan. Only gate modes honour [`PreExistingPolicy`]: `all`,
+    /// `worktree`, and `staged` exist to report the complete condition and stay
+    /// fail-closed on every violation they find (issue #1422).
+    pub fn is_gate(self) -> bool {
+        matches!(self, Self::PreCommit | Self::PrePublish)
+    }
 }
 
 impl fmt::Display for ArtifactGuardMode {
@@ -122,6 +154,87 @@ impl fmt::Display for ArtifactSource {
     }
 }
 
+/// Whether a violating path was introduced by the change under review or was
+/// already in the repository before that change began (issue #1422).
+///
+/// A guard that blocks completed, verified work over a condition the run did
+/// not create — and offers no remedy that fits inside the run's scope —
+/// destroys more value than the artifacts it protects against. Provenance is
+/// the axis that separates the two cases so each can get the response it
+/// deserves: refuse the first, report the second.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ArtifactProvenance {
+    /// The change under review staged, committed, or left this path: it is
+    /// inside the diff (or about to be swept into it by a broad `git add`).
+    Introduced,
+    /// The path is committed in the baseline and is untouched by the change
+    /// under review, so it cannot enter that change's diff.
+    PreExisting,
+}
+
+impl fmt::Display for ArtifactProvenance {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Introduced => "introduced",
+            Self::PreExisting => "pre-existing",
+        })
+    }
+}
+
+/// What the commit/publish gate modes do about [`ArtifactProvenance::PreExisting`]
+/// violations.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PreExistingPolicy {
+    /// Report them in full, do not block the gate. The default: a pre-existing
+    /// tracked artifact is already on the baseline, so the gate cannot keep it
+    /// out of anything, and blocking only discards the work in front of it.
+    #[default]
+    Report,
+    /// Block on them too — the pre-#1422 behaviour, for repositories that want
+    /// the gate to enforce whole-repository cleanliness.
+    Block,
+}
+
+impl PreExistingPolicy {
+    pub fn parse(value: &str) -> Result<Self, ArtifactGuardError> {
+        match value {
+            "report" | "warn" => Ok(Self::Report),
+            "block" => Ok(Self::Block),
+            other => Err(ArtifactGuardError::InvalidPreExistingPolicy(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+impl fmt::Display for PreExistingPolicy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Report => "report",
+            Self::Block => "block",
+        })
+    }
+}
+
+/// The resolved revision the change under review is measured against.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArtifactBaseline {
+    /// The revision expression that resolved (for example `@{upstream}`).
+    pub rev: String,
+    /// The merge-base commit of `HEAD` and `rev`.
+    pub commit: String,
+}
+
+/// Revisions tried, in order, when no baseline is configured.
+pub const BASELINE_CANDIDATES: &[&str] = &[
+    "@{upstream}",
+    "origin/HEAD",
+    "origin/main",
+    "origin/master",
+    "main",
+    "master",
+];
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArtifactRule {
     pub id: &'static str,
@@ -135,6 +248,7 @@ pub struct ArtifactViolation {
     pub source: ArtifactSource,
     pub rule_id: String,
     pub remediation: String,
+    pub provenance: ArtifactProvenance,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -142,6 +256,9 @@ pub struct ArtifactGuardReport {
     pub repo: PathBuf,
     pub mode: ArtifactGuardMode,
     pub violations: Vec<ArtifactViolation>,
+    /// The revision provenance was measured against, when one resolved.
+    pub baseline: Option<ArtifactBaseline>,
+    pub preexisting_policy: PreExistingPolicy,
 }
 
 impl ArtifactGuardReport {
@@ -151,6 +268,40 @@ impl ArtifactGuardReport {
 
     pub fn has_violations(&self) -> bool {
         !self.is_clean()
+    }
+
+    /// Whether pre-existing violations are reported without failing the scan.
+    /// True only for the gate modes under [`PreExistingPolicy::Report`].
+    pub fn preexisting_is_advisory(&self) -> bool {
+        self.mode.is_gate() && self.preexisting_policy == PreExistingPolicy::Report
+    }
+
+    /// Violations that must fail the scan.
+    pub fn blocking_violations(&self) -> Vec<&ArtifactViolation> {
+        let advisory = self.preexisting_is_advisory();
+        self.violations
+            .iter()
+            .filter(|violation| {
+                !(advisory && violation.provenance == ArtifactProvenance::PreExisting)
+            })
+            .collect()
+    }
+
+    /// Violations reported without failing the scan. Empty unless
+    /// [`Self::preexisting_is_advisory`].
+    pub fn advisory_violations(&self) -> Vec<&ArtifactViolation> {
+        if !self.preexisting_is_advisory() {
+            return Vec::new();
+        }
+        self.violations
+            .iter()
+            .filter(|violation| violation.provenance == ArtifactProvenance::PreExisting)
+            .collect()
+    }
+
+    /// Whether this report must fail the caller (exit 1).
+    pub fn blocks(&self) -> bool {
+        !self.blocking_violations().is_empty()
     }
 }
 
@@ -166,6 +317,12 @@ pub enum ArtifactGuardError {
     },
     #[error("artifact guard invalid mode: {0}")]
     InvalidMode(String),
+    #[error("artifact guard invalid pre-existing policy: {0} (expected `report` or `block`)")]
+    InvalidPreExistingPolicy(String),
+    #[error(
+        "artifact guard baseline `{rev}` did not resolve against HEAD in this repository: {reason}"
+    )]
+    Baseline { rev: String, reason: String },
     #[error("artifact guard allowlist error: {0}")]
     Allowlist(String),
     #[error("artifact guard path escaped repository root: {0}")]
@@ -279,6 +436,7 @@ pub fn scan_artifacts(
     let allowlist = load_effective_allowlist(config, &repo)?;
     let mut violations = Vec::new();
     let mut seen = BTreeSet::new();
+    let mut baseline = None;
 
     if config.mode.scans_staged() {
         scan_git_paths(
@@ -292,17 +450,25 @@ pub fn scan_artifacts(
             ],
             ArtifactSource::Staged,
             &allowlist,
+            None,
             &mut violations,
             &mut seen,
         )?;
     }
 
     if config.mode.scans_worktree() {
+        // Only the *tracked* index can hold paths the change under review never
+        // touched, so that is the one scan that needs a provenance baseline
+        // (issue #1422). Staged, untracked, and ignored-present paths are all
+        // live worktree state the change is carrying right now.
+        baseline = resolve_baseline(&repo, config.baseline.as_deref())?;
+        let introduced = introduced_paths(&repo, baseline.as_ref())?;
         scan_git_paths(
             &repo,
             &["ls-files", "-z"],
             ArtifactSource::Tracked,
             &allowlist,
+            Some(&introduced),
             &mut violations,
             &mut seen,
         )?;
@@ -311,6 +477,7 @@ pub fn scan_artifacts(
             &["ls-files", "--others", "--exclude-standard", "-z"],
             ArtifactSource::Untracked,
             &allowlist,
+            None,
             &mut violations,
             &mut seen,
         )?;
@@ -330,7 +497,132 @@ pub fn scan_artifacts(
         repo,
         mode: config.mode,
         violations,
+        baseline,
+        preexisting_policy: config.preexisting_policy,
     })
+}
+
+/// Resolve the revision the change under review is measured against.
+///
+/// An explicitly configured baseline that does not resolve is a configuration
+/// error (fail closed): the operator asked for a specific comparison and
+/// silently substituting another one would report the wrong provenance. With no
+/// configured baseline the guard walks [`BASELINE_CANDIDATES`] and returns
+/// `None` when none of them resolve, which callers must surface — see
+/// [`introduced_paths`] for what `None` costs.
+fn resolve_baseline(
+    repo: &Path,
+    configured: Option<&str>,
+) -> Result<Option<ArtifactBaseline>, ArtifactGuardError> {
+    if !head_exists(repo) {
+        return Ok(None);
+    }
+    if let Some(rev) = configured {
+        return match merge_base(repo, rev) {
+            Some(commit) => Ok(Some(ArtifactBaseline {
+                rev: rev.to_string(),
+                commit,
+            })),
+            None => Err(ArtifactGuardError::Baseline {
+                rev: rev.to_string(),
+                reason: "no merge base with HEAD (check the revision exists and is fetched)"
+                    .to_string(),
+            }),
+        };
+    }
+    for candidate in BASELINE_CANDIDATES {
+        if let Some(commit) = merge_base(repo, candidate) {
+            return Ok(Some(ArtifactBaseline {
+                rev: (*candidate).to_string(),
+                commit,
+            }));
+        }
+    }
+    Ok(None)
+}
+
+fn head_exists(repo: &Path) -> bool {
+    amplihack_git::command()
+        .args(["-C"])
+        .arg(repo)
+        .args(["rev-parse", "--verify", "--quiet", "HEAD"])
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+fn merge_base(repo: &Path, rev: &str) -> Option<String> {
+    let output = amplihack_git::command()
+        .args(["-C"])
+        .arg(repo)
+        .args(["merge-base", "HEAD", rev])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let commit = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!commit.is_empty()).then_some(commit)
+}
+
+/// Repo-relative paths the change under review added or modified: everything
+/// the branch changed since `baseline`, plus everything the worktree and index
+/// currently differ from `HEAD` by.
+///
+/// With no resolvable baseline the branch half is unknowable, so only the
+/// worktree half is returned. Every tracked violation then reads as
+/// pre-existing, and [`ArtifactGuardReport::baseline`] is `None` so the caller
+/// can say plainly that provenance could not be established rather than
+/// asserting a provenance it did not measure.
+fn introduced_paths(
+    repo: &Path,
+    baseline: Option<&ArtifactBaseline>,
+) -> Result<BTreeSet<String>, ArtifactGuardError> {
+    let mut paths = BTreeSet::new();
+    if !head_exists(repo) {
+        return Ok(paths);
+    }
+    collect_diff_paths(repo, &["diff", "--name-only", "-z", "HEAD"], &mut paths)?;
+    if let Some(baseline) = baseline {
+        collect_diff_paths(
+            repo,
+            &["diff", "--name-only", "-z", &baseline.commit, "HEAD"],
+            &mut paths,
+        )?;
+    }
+    Ok(paths)
+}
+
+fn collect_diff_paths(
+    repo: &Path,
+    args: &[&str],
+    paths: &mut BTreeSet<String>,
+) -> Result<(), ArtifactGuardError> {
+    let output = amplihack_git::command()
+        .args(["-C"])
+        .arg(repo)
+        .args(args)
+        .output()
+        .map_err(|error| ArtifactGuardError::Git {
+            args: args.join(" "),
+            code: None,
+            stderr: error.to_string(),
+        })?;
+    if !output.status.success() {
+        return Err(ArtifactGuardError::Git {
+            args: args.join(" "),
+            code: output.status.code(),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        });
+    }
+    for raw in output.stdout.split(|byte| *byte == 0) {
+        if raw.is_empty() {
+            continue;
+        }
+        paths.insert(normalize_slashes(
+            String::from_utf8_lossy(raw).trim_end_matches('/'),
+        ));
+    }
+    Ok(())
 }
 
 fn resolve_repo_root(repo: &Path) -> Result<PathBuf, ArtifactGuardError> {
@@ -393,6 +685,7 @@ fn scan_git_paths(
     args: &[&str],
     source: ArtifactSource,
     allowlist: &ArtifactAllowlist,
+    introduced: Option<&BTreeSet<String>>,
     violations: &mut Vec<ArtifactViolation>,
     seen: &mut BTreeSet<(ArtifactSource, String)>,
 ) -> Result<(), ArtifactGuardError> {
@@ -418,7 +711,7 @@ fn scan_git_paths(
             continue;
         }
         let path = String::from_utf8_lossy(raw);
-        add_violation_if_prohibited(&path, source, allowlist, violations, seen);
+        add_violation_if_prohibited(&path, source, allowlist, introduced, violations, seen);
     }
     Ok(())
 }
@@ -474,6 +767,7 @@ fn scan_ignored_present(
             &path,
             ArtifactSource::IgnoredPresent,
             allowlist,
+            None,
             violations,
             seen,
         );
@@ -535,6 +829,7 @@ fn add_violation_if_prohibited(
     raw_path: &str,
     source: ArtifactSource,
     allowlist: &ArtifactAllowlist,
+    introduced: Option<&BTreeSet<String>>,
     violations: &mut Vec<ArtifactViolation>,
     seen: &mut BTreeSet<(ArtifactSource, String)>,
 ) {
@@ -546,12 +841,25 @@ fn add_violation_if_prohibited(
         return;
     };
     if seen.insert((source, path.clone())) {
+        let provenance = provenance_for(&path, introduced);
         violations.push(ArtifactViolation {
             path,
             source,
             rule_id: rule.id.to_string(),
             remediation: rule.remediation.to_string(),
+            provenance,
         });
+    }
+}
+
+/// Sources scanned without an `introduced` set are live worktree/index state
+/// that the change under review is carrying right now — a broad `git add -A`
+/// sweeps untracked artifacts straight into the commit — so they are always
+/// [`ArtifactProvenance::Introduced`].
+fn provenance_for(path: &str, introduced: Option<&BTreeSet<String>>) -> ArtifactProvenance {
+    match introduced {
+        Some(introduced) if !introduced.contains(path) => ArtifactProvenance::PreExisting,
+        _ => ArtifactProvenance::Introduced,
     }
 }
 

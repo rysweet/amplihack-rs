@@ -267,6 +267,27 @@ fn run_terminal_state_with_issue(
     let old_path = std::env::var("PATH").unwrap_or_default();
     let path = format!("{}:{old_path}", fake_path.display());
     let mut cmd = Command::new("bash");
+    for key in [
+        "PR_URL",
+        "RECIPE_VAR_pr_url",
+        "PR_PUBLISH_RESULT_PR_URL",
+        "RECIPE_VAR_pr_publish_result__pr_url",
+        "PR_NUMBER",
+        "RECIPE_VAR_pr_number",
+        "PR_PUBLISH_RESULT_PR_NUMBER",
+        "RECIPE_VAR_pr_publish_result__pr_number",
+        "ISSUE_NUMBER",
+        "RECIPE_VAR_issue_number",
+        "EXPECTED_PR_TITLE_PREFIX",
+        "PR_EXPECTED_TITLE_PREFIX",
+        "WORKFLOW_STARTED_AT",
+        "RECIPE_STARTED_AT",
+        "TASK_STARTED_AT",
+        "NO_MERGE",
+        "RECIPE_VAR_no_merge",
+    ] {
+        cmd.env_remove(key);
+    }
     cmd.arg("-c")
         .arg(command)
         .env("PATH", path)
@@ -1055,12 +1076,23 @@ steps:
         );
         write_file(&recipe_path, &recipe);
 
-        let output = Command::new(env!("CARGO_BIN_EXE_amplihack"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_amplihack"));
+        command
             .args(["recipe", "run"])
             .arg(&recipe_path)
             .args(["--format", "json"])
             .arg("--working-dir")
-            .arg(tmp.path())
+            .arg(tmp.path());
+        for key in [
+            "AMPLIHACK_SESSION_TREE_DIR",
+            "AMPLIHACK_TREE_ID",
+            "AMPLIHACK_SESSION_DEPTH",
+            "AMPLIHACK_MAX_DEPTH",
+            "AMPLIHACK_RECIPE_RUN_ID",
+        ] {
+            command.env_remove(key);
+        }
+        let output = command
             .output()
             .unwrap_or_else(|e| panic!("run amplihack recipe run for {terminal_state}: {e}"));
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();

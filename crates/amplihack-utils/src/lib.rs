@@ -52,7 +52,12 @@ pub mod knowledge_builder;
 /// and issue #1266.
 pub mod launch_target;
 pub mod launcher_context;
+#[deprecated(
+    since = "0.18.0",
+    note = "use trace_logger directly; this compatibility module will be removed in 0.19.0"
+)]
 pub mod litellm_callbacks;
+pub mod litellm_proxy;
 pub mod llm_client;
 pub mod observability;
 pub mod plugin_cli;
@@ -66,7 +71,7 @@ pub mod process;
 pub mod project_init;
 pub(crate) mod project_init_detect;
 /// Subprocess prompt-delivery helper (argv/tempfile/stdin). See Simard
-/// issue #1897. STUB module in the TDD red phase.
+/// issue #1897.
 pub mod prompt_delivery;
 pub mod resolve_bundle_asset;
 pub mod runtime_assets;
@@ -97,13 +102,12 @@ pub use slugify::slugify;
 /// this single shared lock.
 #[cfg(test)]
 pub(crate) mod test_serial {
-    use std::sync::{Mutex, MutexGuard, OnceLock};
+    use std::sync::MutexGuard;
 
     /// Acquire the crate-wide test serialization guard. Poisoned locks are
     /// recovered so a panicking test does not cascade into false failures.
     pub(crate) fn acquire() -> MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
+        crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }

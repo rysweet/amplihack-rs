@@ -421,3 +421,248 @@ fn cli_pre_commit_still_exits_1_for_staged_committable_artifact() {
         "must report the staged committable artifact; got:\n{combined}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1422: the CLI must answer a pre-existing repository condition with a
+// full report and exit 0, and answer artifacts the change itself introduced
+// with a refusal that names the paths and the exact commands.
+// ---------------------------------------------------------------------------
+
+/// A repo shaped like the one in issue #1422: `node_modules` committed on the
+/// base branch long ago, and a task branch carrying an unrelated change.
+fn repo_with_preexisting_tracked_node_modules() -> TempDir {
+    let tmp = TempDir::new().expect("tempdir");
+    run_git(tmp.path(), &["init", "-q"]);
+    run_git(tmp.path(), &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    run_git(
+        tmp.path(),
+        &["config", "user.email", "artifact-guard@example.invalid"],
+    );
+    run_git(tmp.path(), &["config", "user.name", "Artifact Guard Test"]);
+    write_file(&tmp.path().join("README.md"), "# fixture\n");
+    run_git(tmp.path(), &["add", "README.md"]);
+    run_git(tmp.path(), &["commit", "-qm", "initial"]);
+    write_file(
+        &tmp.path().join("node_modules/leftpad/index.js"),
+        "module.exports = 1;\n",
+    );
+    write_file(&tmp.path().join("node_modules/.bin/acorn"), "#!/bin/sh\n");
+    run_git(tmp.path(), &["add", "-f", "node_modules"]);
+    run_git(
+        tmp.path(),
+        &["commit", "-qm", "history: vendored node_modules"],
+    );
+    run_git(tmp.path(), &["checkout", "-q", "-b", "task/pin-deps"]);
+    write_file(&tmp.path().join("package.json"), "{\"name\":\"pinned\"}\n");
+    run_git(tmp.path(), &["add", "package.json"]);
+    run_git(tmp.path(), &["commit", "-qm", "pin dependency versions"]);
+    tmp
+}
+
+fn combined(output: &std::process::Output) -> String {
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+
+#[test]
+fn cli_pre_publish_exits_0_and_reports_a_preexisting_condition_with_a_way_forward() {
+    let tmp = repo_with_preexisting_tracked_node_modules();
+
+    let output = run_guard(tmp.path(), "pre-publish");
+    let combined = combined(&output);
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a pre-existing repository condition this change did not create must not \
+         discard the change's verified work (#1422)\n{combined}"
+    );
+    for required in [
+        "pre-existing",
+        "NOT blocking",
+        "node_modules/leftpad/index.js",
+        "git rm -r --cached -- 'node_modules'",
+        "--mode all",
+        "--preexisting block",
+    ] {
+        assert!(
+            combined.contains(required),
+            "the pre-existing report must name the paths and the way forward, missing \
+             `{required}`; got:\n{combined}"
+        );
+    }
+    assert!(
+        tmp.path().join("node_modules/leftpad/index.js").exists(),
+        "the guard must never delete anything"
+    );
+}
+
+#[test]
+fn cli_pre_publish_exits_1_and_names_paths_for_artifacts_this_change_introduced() {
+    let tmp = repo_with_preexisting_tracked_node_modules();
+    // The change under review commits its own artifact tree on the task branch.
+    write_file(&tmp.path().join("dist/plugin.js"), "generated bundle\n");
+    run_git(tmp.path(), &["add", "-f", "dist/plugin.js"]);
+    run_git(tmp.path(), &["commit", "-qm", "oops: commit built bundle"]);
+
+    let output = run_guard(tmp.path(), "pre-publish");
+    let combined = combined(&output);
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "artifacts this change introduced must still fail closed\n{combined}"
+    );
+    for required in [
+        "dist/plugin.js",
+        "introduced",
+        "git rm -r --cached -- 'dist'",
+        "re-run to confirm",
+    ] {
+        assert!(
+            combined.contains(required),
+            "the refusal must name the offending path and the exact remedy, missing \
+             `{required}`; got:\n{combined}"
+        );
+    }
+    assert!(
+        !combined.contains("Artifact Guard blocked 3 ")
+            && !combined.contains("Artifact Guard blocked 2 "),
+        "only the introduced path may be counted as blocking, not the pre-existing \
+         node_modules tree; got:\n{combined}"
+    );
+}
+
+#[test]
+fn cli_preexisting_block_policy_restores_the_old_fail_closed_gate() {
+    let tmp = repo_with_preexisting_tracked_node_modules();
+
+    let flag = Command::new(bin())
+        .args([
+            "hygiene",
+            "artifact-guard",
+            "--mode",
+            "pre-publish",
+            "--preexisting",
+            "block",
+            "--repo",
+        ])
+        .arg(tmp.path())
+        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
+        .output()
+        .expect("run artifact guard");
+    assert_eq!(
+        flag.status.code(),
+        Some(1),
+        "--preexisting block must fail closed\n{}",
+        combined(&flag)
+    );
+
+    let env = Command::new(bin())
+        .args([
+            "hygiene",
+            "artifact-guard",
+            "--mode",
+            "pre-publish",
+            "--repo",
+        ])
+        .arg(tmp.path())
+        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
+        .env("AMPLIHACK_ARTIFACT_GUARD_PREEXISTING", "block")
+        .output()
+        .expect("run artifact guard");
+    assert_eq!(
+        env.status.code(),
+        Some(1),
+        "AMPLIHACK_ARTIFACT_GUARD_PREEXISTING=block must fail closed\n{}",
+        combined(&env)
+    );
+}
+
+#[test]
+fn cli_mode_all_still_fails_closed_on_a_preexisting_condition() {
+    // The condition never stops being reported: `--mode all` is the audit that
+    // lists it in full and exits 1, which is the documented way to see it.
+    let tmp = repo_with_preexisting_tracked_node_modules();
+
+    let output = run_guard(tmp.path(), "all");
+    let combined = combined(&output);
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "the audit mode must keep failing closed on the whole repository condition\n{combined}"
+    );
+    assert!(
+        combined.contains("node_modules/leftpad/index.js"),
+        "the audit must list every offending path; got:\n{combined}"
+    );
+}
+
+#[test]
+fn cli_rejects_an_unresolvable_explicit_baseline_with_exit_2() {
+    let tmp = repo_with_preexisting_tracked_node_modules();
+
+    let output = Command::new(bin())
+        .args([
+            "hygiene",
+            "artifact-guard",
+            "--mode",
+            "pre-publish",
+            "--baseline",
+            "refs/heads/does-not-exist",
+            "--repo",
+        ])
+        .arg(tmp.path())
+        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
+        .output()
+        .expect("run artifact guard");
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "an explicitly requested baseline that cannot resolve is a misconfiguration, \
+         not a silent fallback\n{}",
+        combined(&output)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("baseline `refs/heads/does-not-exist`"),
+        "the error must name the baseline that failed to resolve; got:\n{stderr}"
+    );
+}
+
+#[test]
+fn cli_never_prints_a_remedy_that_would_untrack_the_preexisting_tree() {
+    // The change adds one package inside a vendored tree of many. Collapsing the
+    // remedy to `git rm -r --cached node_modules` would untrack all of them --
+    // exactly the unrelated, out-of-scope change issue #1422 says the run must
+    // not be pushed into making.
+    let tmp = repo_with_preexisting_tracked_node_modules();
+    write_file(
+        &tmp.path().join("node_modules/newdep/index.js"),
+        "module.exports = 1;\n",
+    );
+    run_git(tmp.path(), &["add", "-f", "node_modules/newdep/index.js"]);
+    run_git(tmp.path(), &["commit", "-qm", "add one new package"]);
+
+    let output = run_guard(tmp.path(), "pre-publish");
+    let combined = combined(&output);
+
+    assert_eq!(output.status.code(), Some(1), "{combined}");
+    let (_, refusal) = combined
+        .split_once("Exact commands for the paths above:")
+        .unwrap_or_else(|| panic!("refusal must print exact commands; got:\n{combined}"));
+    assert!(
+        refusal.contains("git rm --cached -- 'node_modules/newdep/index.js'"),
+        "the remedy must name the introduced path exactly; got:\n{refusal}"
+    );
+    assert!(
+        !refusal.contains("git rm -r --cached -- 'node_modules'"),
+        "the refusal's remedy must never sweep the pre-existing tree along with the \
+         one path this change added; got:\n{refusal}"
+    );
+}

@@ -93,10 +93,11 @@ For development or latest features:
 ```bash
 # Clone repository
 git clone https://github.com/rysweet/amplihack-rs.git
-cd amplihack
+cd amplihack-rs
 
-# Install in editable mode
-cargo install --path .
+# Install the binary. The repository root is a virtual workspace manifest,
+# so `--path .` cannot work -- the installable package is bins/amplihack.
+cargo install --path bins/amplihack --locked
 
 # Install plugin from source
 amplihack plugin install --dev

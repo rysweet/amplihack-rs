@@ -81,12 +81,28 @@ jobs:
       - name: Worktree — refuse a repo with no origin remote (issue #1323)
         shell: bash
         run: bash tests/issue_1323_multirepo_origin_precondition.sh
+      - name: Install docs — every documented path installs a real binary (issue #1412)
+        shell: bash
+        run: bash tests/issue_1412_install_docs_name_a_real_package.sh
       - name: Recipes — every committing recipe prepares its identity (issue #1394)
         shell: bash
         run: bash tests/recipe_commit_identity_static_test.sh
       - name: Invisible-char scan — stays dependency-free (issue #1397)
         shell: bash
         run: bash tests/issue_1397_invisible_scan_stays_dependency_free.sh
+      - name: External LiteLLM deployment fixture (issue #1413)
+        shell: bash
+        run: bash tests/issue_1413_external_litellm_gateway.sh
+      - name: Pre-commit build cache — off /tmp, reclaimed, legible when full (issue #1440)
+        shell: bash
+        run: bash tests/issue_1440_precommit_cache_location.sh
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24.19.0"
+      - name: Record Node.js test toolchain
+        run: |
+          node --version
+          npm --version
       - name: Skill docs — BLOCKED-path steps exist (issue #1255)
         shell: bash
         run: bash tests/issue_1255_blocked_path_steps_exist.sh
@@ -114,6 +130,9 @@ jobs:
       - name: Tests — one environment lock per crate, in test_support (issue #1380)
         shell: bash
         run: bash tests/issue_1380_single_env_lock.sh
+      - name: Claim check — working on an issue's own PR is not racing it (issue #1448)
+        shell: bash
+        run: bash tests/issue_1448_review_is_not_a_duplicate.sh
       - name: Git subprocesses — no unsanitised Command::new("git") (issue #1278)
         run: scripts/check-git-command-sanitised.sh
       - name: Git env isolation — hooks scrub GIT_DIR and friends (issue #1278)

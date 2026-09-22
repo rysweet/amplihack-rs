@@ -111,7 +111,7 @@ _(no top-level modules)_
 
 ## `amplihack-utils` (crates/amplihack-utils)
 
-`agent_binary`, `artifact_guard`, `bundle_generator`, `claude_md`, `cleanup`, `defensive`, `docker_detector`, `docker_manager`, `hook_merge`, `kb_types`, `knowledge_builder`, `litellm_callbacks`, `llm_client`, `observability`, `plugin_cli`, `plugin_manager`, `plugin_manager_paths`, `plugin_manifest`, `plugin_verifier`, `power_steering`, `prerequisites`, `process`, `project_init`, `project_init_detect`, `prompt_delivery`, `secure_files`, `send_input_allowlist`, `settings_generator`, `settings_helpers`, `simple_tui`, `simple_tui_runner`, `simple_tui_types`, `slugify`, `terminal_launcher`, `tests/`, `trace_logger`, `uvx_manager`, `worktree`
+`agent_binary`, `artifact_guard`, `bundle_generator`, `claude_md`, `cleanup`, `defensive`, `docker_detector`, `docker_manager`, `hook_merge`, `kb_types`, `knowledge_builder`, `litellm_proxy`, `llm_client`, `observability`, `plugin_cli`, `plugin_manager`, `plugin_manager_paths`, `plugin_manifest`, `plugin_verifier`, `power_steering`, `prerequisites`, `process`, `project_init`, `project_init_detect`, `prompt_delivery`, `secure_files`, `send_input_allowlist`, `settings_generator`, `settings_helpers`, `simple_tui`, `simple_tui_runner`, `simple_tui_types`, `slugify`, `terminal_launcher`, `tests/`, `trace_logger`, `uvx_manager`, `worktree`
 
 ## `amplihack-workflows` (crates/amplihack-workflows)
 

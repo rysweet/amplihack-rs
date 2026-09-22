@@ -12,9 +12,11 @@ anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 regex = "1"
+semver = "1"
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tokio = { version = "1", features = ["process", "time", "rt", "io-util"] }
+url = "2"
 sha2 = { workspace = true }
 chrono = { workspace = true }
 libc = { workspace = true }

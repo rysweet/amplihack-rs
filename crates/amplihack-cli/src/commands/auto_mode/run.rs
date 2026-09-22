@@ -12,6 +12,10 @@ pub fn run_auto_mode(
 ) -> Result<()> {
     let project_dir =
         working_dir.unwrap_or(env::current_dir().context("failed to resolve current directory")?);
+    crate::commands::launch::validate_routed_copilot_workspace(
+        &project_dir,
+        tool == AutoModeTool::Copilot && amplihack_utils::litellm_proxy::proxy_requested(),
+    )?;
     let existing_node_options = std::env::var("NODE_OPTIONS").ok();
     let node_options = prepare_memory_config(existing_node_options.as_deref())?.node_options;
     crate::commands::launch::maybe_prompt_re_enable_power_steering(&project_dir)?;
