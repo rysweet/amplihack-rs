@@ -412,7 +412,10 @@ ATLAS="${REPO_ROOT}/docs/atlas"
 BUG_REPORTS="${ATLAS}/bug-reports"
 
 # Cache pass3 file list once — avoids 5 redundant filesystem scans below.
-mapfile -d '' _pass3_files < <(find "$BUG_REPORTS" -name "*pass3*" -print0 2>/dev/null)
+# while-read, not mapfile: macOS /bin/bash is 3.2 (issue #1423).
+_pass3_files=()
+while IFS= read -r -d '' _ml; do _pass3_files+=("$_ml"); done \
+  < <(find "$BUG_REPORTS" -name "*pass3*" -print0 2>/dev/null)
 pass3_count="${#_pass3_files[@]}"
 
 # 6.1: At least one pass3 report file should exist (requires atlas run)
