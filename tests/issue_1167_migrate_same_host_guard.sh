@@ -37,7 +37,9 @@ SHORT="$(hostname -s 2>/dev/null || hostname)"
 LONG="$(hostname -f 2>/dev/null || hostname)"
 
 # --- 1. this host, in the forms a user would actually type ------------------
-for name in "$SHORT" "$LONG" "${SHORT^^}" localhost 127.0.0.1; do
+# tr, not bash 4 uppercase expansion: macOS /bin/bash is 3.2 (issue #1423).
+SHORT_UC="$(printf '%s' "$SHORT" | tr '[:lower:]' '[:upper:]')"
+for name in "$SHORT" "$LONG" "$SHORT_UC" localhost 127.0.0.1; do
   if is_same_host_by_name "$name"; then
     pass "refuses '$name' as the same host"
   else

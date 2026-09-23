@@ -1,12 +1,66 @@
 //! Subcommand enums for nested CLI commands.
 
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 use super::{graph_db_backend_value_parser, raw_db_format_value_parser};
 
 pub const MIN_CLEANUP_APPLY_OLDER_THAN_SECS: u64 = 48 * 60 * 60;
 pub const MIN_CLEANUP_APPLY_OLDER_THAN_HOURS: u64 = MIN_CLEANUP_APPLY_OLDER_THAN_SECS / (60 * 60);
+
+#[derive(Subcommand, Debug)]
+pub enum LiteLlmCommands {
+    /// Verify all real clients through an external LiteLLM gateway
+    #[command(name = "verify-live")]
+    VerifyLive(VerifyLiveArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct VerifyLiveArgs {
+    /// Real client to verify; repeat to select several (default: all)
+    #[arg(long, value_enum, action = clap::ArgAction::Append)]
+    pub client: Vec<LiveClient>,
+
+    /// Git worktree containing the exact PR head
+    #[arg(long, default_value = ".")]
+    pub repo: PathBuf,
+
+    /// Open pull request whose head is being verified
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+    pub pr: u64,
+
+    /// Exact 40-character pull-request head SHA
+    #[arg(long, value_parser = parse_git_sha1)]
+    pub expected_head: String,
+
+    /// Tracked repository file supplied to every client (repeat 2-24 times)
+    #[arg(long = "context", required = true, action = clap::ArgAction::Append)]
+    pub context_paths: Vec<PathBuf>,
+
+    /// Owner-only evidence directory outside the worktree
+    #[arg(long)]
+    pub evidence_dir: Option<PathBuf>,
+
+    /// Maximum seconds allowed for each client execution
+    #[arg(long, default_value_t = 180, value_parser = clap::value_parser!(u64).range(10..=900))]
+    pub timeout_seconds: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, ValueEnum)]
+pub enum LiveClient {
+    All,
+    Claude,
+    Copilot,
+    Rustyclawd,
+}
+
+fn parse_git_sha1(value: &str) -> Result<String, String> {
+    if value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Ok(value.to_ascii_lowercase())
+    } else {
+        Err("expected exactly 40 hexadecimal characters".to_string())
+    }
+}
 
 #[derive(Subcommand, Debug)]
 pub enum HygieneCommands {

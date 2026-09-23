@@ -127,7 +127,8 @@ mod launch_flag_injection {
     }
 
     /// Examples must NOT show --dangerously-skip-permissions without --skip-permissions.
-    /// After fix, bare `amplihack claude` should spawn `claude --model opus[1m]` only.
+    /// Issue #1421: bare `amplihack claude` now spawns a bare `claude` — no
+    /// `--dangerously-skip-permissions`, and no `--model` either.
     #[test]
     fn bare_claude_example_no_skip_permissions() {
         let doc = read_doc("docs/reference/launch-flag-injection.md");

@@ -35,7 +35,8 @@ if [[ -z "$limit" ]]; then
 fi
 
 # Names between `const PHASE_RECIPES: &[&str] = &[` and its closing `];`.
-mapfile -t recipes < <(
+# while-read, not mapfile: macOS /bin/bash is 3.2 (issue #1423).
+recipes=(); while IFS= read -r _ml; do recipes+=("$_ml"); done < <(
   awk '/^const PHASE_RECIPES: &\[&str\] = &\[/{f=1; next} f && /^\];/{exit} f' "$TEST_FILE" \
     | sed -n 's/.*"\([^"]\+\)".*/\1/p'
 )

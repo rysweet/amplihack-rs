@@ -46,6 +46,7 @@ All environment variables read or written by `amplihack` during a launch (`ampli
   - [AMPLIHACK_SKIP_AUTO_INSTALL](#amplihack_skip_auto_install)
   - [AMPLIHACK_SKIP_MMDC](#amplihack_skip_mmdc)
   - [AMPLIHACK_TEST_FAKE_LATEST_VERSION](#amplihack_test_fake_latest_version)
+  - [External LiteLLM gateway variables](#external-litellm-gateway-variables)
   - [AMPLIHACK_TOPIC_NAME](#amplihack_topic_name)
   - [AMPLIHACK_PROJECT_ID](#amplihack_project_id)
   - [CI](#ci)
@@ -828,6 +829,41 @@ These variables influence `amplihack`'s behaviour but are not set by it.
 
 ---
 
+### External LiteLLM gateway variables
+
+These three variables form the complete opt-in external LiteLLM configuration.
+If any one is present, all three must be valid. Invalid, empty, or partial
+configuration fails before an agent process is spawned.
+
+| Variable | Type and default | Purpose |
+|---|---|---|
+| `AMPLIHACK_LITELLM_ENDPOINT` | URL; unset | Gateway base URL. HTTPS is required except for literal loopback development URLs. |
+| `AMPLIHACK_LITELLM_API_KEY` | secret string; unset | Restricted LiteLLM virtual key. It is never serialized or placed in child command arguments. Do not use an administrative master key. |
+| `AMPLIHACK_LITELLM_MODEL` | model name; unset | Required for every supported launcher; selects the gateway model alias. |
+
+LiteLLM and PostgreSQL own usage, spend, budgets, and rate limits. Amplihack
+does not implement process-local gateway accounting or controls.
+
+When the selected launcher is Claude Code, amplihack sets
+`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`; users do not need to set that variable.
+External Claude Code routing requires the exact `claude` executable to report
+semantic version `2.1.247`. Amplihack probes it before checkout, auto-mode
+staging, launch setup, session tracking, or Docker operations and rejects
+missing executables, failed probes, malformed or unknown output, prereleases,
+and all other versions. The probe will receive neither
+`AMPLIHACK_LITELLM_API_KEY` nor direct provider credentials.
+
+The Docker launcher rejects loopback gateway endpoints so normal container
+network isolation remains intact. Use an HTTPS gateway reachable from the
+container, or run the agent outside Docker for a host-loopback development
+gateway.
+
+See the
+[external LiteLLM boundary](../concepts/external-litellm-boundary.md) for the
+routing and ownership contract.
+
+---
+
 ### AMPLIHACK_MEMORY_BACKEND
 
 **Type:** string
@@ -878,14 +914,30 @@ Standard Unix home directory. Used to resolve `~/.amplihack`, `~/.npm-global`, a
 ### AMPLIHACK_DEFAULT_MODEL
 
 **Type:** string
-**Default:** `opus[1m]`
+**Default:** unset — amplihack passes **no** `--model` at all
 **Used by:** `build_command()` in `launch.rs`
 
-The `--model` flag passed to the launched tool when the user has not specified one explicitly. Override to use a different model variant.
+Pins the `--model` flag passed to Claude-compatible tools. When it is unset (or
+set to an empty / whitespace-only value), amplihack puts no model on the command
+line and the tool applies its own current default — which also lets the `"model"`
+in your `~/.claude/settings.json` take effect.
+
+There is deliberately no built-in default (issue #1421). A model alias hardcoded
+by amplihack is resolved by the tool, whose version amplihack does not control;
+one such alias resolved to a retired model id and every agent step failed with a
+404 naming a model the user had never chosen.
 
 ```sh
 AMPLIHACK_DEFAULT_MODEL=sonnet amplihack claude
 # Passes: claude --model sonnet --dangerously-skip-permissions
+```
+
+When amplihack injects the flag it says so on stderr, naming the model and this
+variable as its source, so a later "model not found" is traceable:
+
+```
+amplihack: passing `--model sonnet` to `claude` (from AMPLIHACK_DEFAULT_MODEL).
+Unset AMPLIHACK_DEFAULT_MODEL to let claude choose its own default model.
 ```
 
 If the user supplies `--model` explicitly on the command line, this variable is

@@ -73,7 +73,7 @@ Current behavior, derived from `command.rs`:
 
 | Variable | Effect |
 |---|---|
-| `AMPLIHACK_DEFAULT_MODEL` | Override the default model (default: `opus[1m]`) |
+| `AMPLIHACK_DEFAULT_MODEL` | Pin the model passed to Claude-compatible tools. Unset (the default) means amplihack passes no `--model` at all |
 | `AMPLIHACK_COPILOT_NO_ALLOW_ALL` | Set to `1` to suppress `--allow-all` injection for Copilot |
 | `AMPLIHACK_COPILOT_NO_REMOTE` | Set to `1` to suppress `--remote` injection for Copilot |
 
@@ -83,9 +83,11 @@ Current behavior, derived from `command.rs`:
    `--skip-permissions` AND the tool is Claude-compatible. Never injected
    by default (SEC-2).
 
-2. **`--model`**: Injected for Claude-compatible tools unless the user
-   already supplied `--model` in extra args. Defaults to `opus[1m]` or
-   the value of `AMPLIHACK_DEFAULT_MODEL`.
+2. **`--model`**: Injected for Claude-compatible tools **only** when
+   `AMPLIHACK_DEFAULT_MODEL` is set to a non-blank value and the user did not
+   already supply `--model` in extra args. There is no built-in default: an
+   alias amplihack hardcodes here is resolved by the tool and goes stale with
+   the tool's version (issue #1421).
 
 3. **`--allow-all`**: Injected only for `copilot` unless suppressed by env
    var or the user already provided any `--allow-all*` flag.
@@ -150,8 +152,9 @@ its full flag capabilities.
 
 | Test case | Input | Expected flags |
 |---|---|---|
-| Claude default | `claude`, no extra args | `--model opus[1m]` |
-| Claude skip-perms | `claude`, `--skip-permissions` | `--dangerously-skip-permissions --model opus[1m]` |
+| Claude default | `claude`, no extra args | (no flags) |
+| Claude skip-perms | `claude`, `--skip-permissions` | `--dangerously-skip-permissions` |
+| Claude pinned model | `claude`, `AMPLIHACK_DEFAULT_MODEL=sonnet` | `--model sonnet` |
 | Copilot default | `copilot`, no extra args | `--allow-all --remote` |
 | Copilot suppressed | `copilot`, `AMPLIHACK_COPILOT_NO_ALLOW_ALL=1` + `AMPLIHACK_COPILOT_NO_REMOTE=1` | (no flags) |
 | Copilot no-remote | `copilot`, `--no-remote` | `--allow-all` (no `--remote` injected) |

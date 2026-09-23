@@ -177,6 +177,7 @@ dependencies = [
  "time",
  "tokio",
  "toml",
+ "toml_edit",
  "tracing",
  "tracing-subscriber",
  "ureq",
@@ -544,6 +545,7 @@ dependencies = [
  "chrono",
  "libc",
  "regex",
+ "semver",
  "serde",
  "serde_json",
  "sha2",
@@ -551,6 +553,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "url",
 ]
 
 [[package]]

@@ -13,7 +13,7 @@
 //! | TC-SWEEP-603  | #603  | Nonexistent Python hook refs in SKILL.md   |
 //! | TC-SWEEP-604  | #604  | Broken ~/.amplihack/ absolute paths in README |
 //! | TC-SWEEP-605  | #605  | GitHubDistributor feature-gated            |
-//! | TC-SWEEP-606  | #606  | litellm_callbacks test serialization       |
+//! | TC-SWEEP-606  | #606  | LiteLLM proxy test serialization           |
 //! | TC-SWEEP-607  | #607  | docker_detector test serialization          |
 //!
 //! Issues #600, #601, #608 are GitHub-only (close duplicates / already-fixed)
@@ -352,55 +352,49 @@ mod github_distributor_gate {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// TC-SWEEP-606: litellm_callbacks tests use SerialLock
+// TC-SWEEP-606: LiteLLM proxy tests use the crate-wide serial lock
 // ═════════════════════════════════════════════════════════════════════════════
 
 mod litellm_serialization {
     use super::*;
 
-    const SRC: &str = "crates/amplihack-utils/src/litellm_callbacks.rs";
+    const PROXY_SRC: &str = "crates/amplihack-utils/src/litellm_proxy.rs";
+    const ROUTING_SRC: &str = "crates/amplihack-utils/src/litellm_proxy_routing.rs";
 
-    /// TC-SWEEP-606-01: The test module must contain a SerialLock definition.
+    /// TC-SWEEP-606-01: The replacement modules must use the crate-wide lock.
     #[test]
     fn has_serial_lock() {
-        let src = read_file(SRC);
+        let proxy = read_file(PROXY_SRC);
+        let routing = read_file(ROUTING_SRC);
         assert!(
-            src.contains("mod serial_lock"),
-            "must define serial_lock submodule"
+            proxy.contains("crate::test_serial::acquire()"),
+            "LiteLLM proxy tests must use the crate-wide test_serial lock"
         );
         assert!(
-            src.contains("OnceLock<Mutex<()>>") || src.contains("OnceLock < Mutex < () > >"),
-            "SerialLock must use OnceLock<Mutex<()>> pattern"
-        );
-    }
-
-    /// TC-SWEEP-606-02: The flaky test must acquire the serial lock.
-    #[test]
-    fn flaky_test_uses_serial_lock() {
-        let src = read_file(SRC);
-        let body = extract_test_body(&src, "unregister_removes_callback");
-        assert!(
-            body.contains("SerialLock::acquire()"),
-            "unregister_removes_callback must acquire SerialLock"
+            routing.contains("crate::test_serial::acquire()"),
+            "LiteLLM routing tests must use the crate-wide test_serial lock"
         );
     }
 
-    /// TC-SWEEP-606-03: All registry-mutating tests must use SerialLock.
+    /// TC-SWEEP-606-02: Proxy environment mutation must acquire the lock.
     #[test]
-    fn all_registry_tests_use_serial_lock() {
-        let src = read_file(SRC);
-        for name in [
-            "register_returns_none_when_disabled",
-            "register_returns_some_when_enabled",
-            "unregister_removes_callback",
-            "unregister_noop_when_none",
-        ] {
-            let body = extract_test_body(&src, name);
-            assert!(
-                body.contains("SerialLock::acquire()"),
-                "Test {name} must acquire SerialLock"
-            );
-        }
+    fn gateway_env_helper_uses_serial_lock() {
+        let src = read_file(PROXY_SRC);
+        let body = extract_test_body(&src, "with_gateway_env");
+        assert!(
+            body.contains("crate::test_serial::acquire()"),
+            "with_gateway_env must acquire the crate-wide test_serial lock"
+        );
+    }
+
+    /// TC-SWEEP-606-03: The callback API remains only as a deprecated shim.
+    #[test]
+    fn obsolete_callback_module_is_deprecated() {
+        let lib = read_file("crates/amplihack-utils/src/lib.rs");
+        assert!(
+            lib.contains("#[deprecated(") && lib.contains("pub mod litellm_callbacks;"),
+            "litellm_callbacks must remain a deprecated compatibility surface until 0.19.0"
+        );
     }
 }
 

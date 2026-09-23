@@ -132,6 +132,31 @@ pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<ExitStatu
     )
 }
 
+/// Run a command with a timeout while using a caller-supplied safe description
+/// instead of debugging the command and its environment on timeout.
+pub fn run_with_timeout_described(
+    mut cmd: Command,
+    timeout: Duration,
+    description: &str,
+) -> Result<ExitStatus> {
+    let mut child = spawn_subprocess(&mut cmd).context("failed to spawn subprocess")?;
+    let pid = child.id();
+
+    if let Some(status) =
+        wait_for_child_exit(&mut child, timeout).context("failed to wait for subprocess")?
+    {
+        return Ok(status);
+    }
+
+    terminate_timed_out_child(&mut child)?;
+    bail!(
+        "subprocess `{}` timed out after {:?} (pid {})",
+        description,
+        timeout,
+        pid
+    )
+}
+
 /// Run a pre-built `Command` with stdout/stderr capture and a hard timeout.
 pub fn run_output_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Output> {
     run_output_with_timeout_inner(&mut cmd, timeout, None)
