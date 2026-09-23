@@ -26,7 +26,16 @@ jobs:
   check:
     name: Lint & Format
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # 25 was enough only while the proof gate below was dying early. Pinning kani
+    # to 0.67.0 pins its toolchain to nightly-2025-11-21, which shares nothing with
+    # the toolchain the rest of this job uses, so the gate's first run recompiles
+    # the whole dependency tree cold: 0 sccache hits, 1752 misses, and the job was
+    # killed at exactly 25m22s with every other job green. This is the honest cost
+    # of a gate that actually runs. It should fall back toward the old figure once
+    # sccache holds that toolchain's artifacts; lower it again when it does, and
+    # do not move the gate to a job of its own -- branch protection requires these
+    # seven check names, so a new job would not block a merge.
+    timeout-minutes: 60
     env:
       # SPIKE (#1052 follow-up): compiled-artifact caching via sccache with the
       # GitHub Actions cache backend. Unlike restoring the whole target/ dir
@@ -239,7 +248,18 @@ jobs:
           # Kani proves each decision function for EVERY input, where the spec gate
           # above proves the ORDERING. The two real defects in this area were one of
           # each kind, so neither gate substitutes for the other.
-          cargo install --locked kani-verifier
+          #
+          # Pin the version. `--locked` fixes the dependency graph of whichever
+          # version resolves, not the version itself, so an unpinned install
+          # silently adopts each new kani release. 0.68.0 (16 Sep 2026) crashes
+          # with an internal compiler error while codegenning this crate --
+          #   kani-compiler/src/intrinsics.rs:243: assertion failed:
+          #   matches!(output.kind(), TyKind::RigidTy(RigidTy::Int(IntTy::I32)))
+          # -- which turned this gate red on every branch from the day it shipped.
+          # Nothing in the repository changed; the tool did. The TLA2TOOLS step
+          # below already pins a version and a checksum for the same reason.
+          # Revisit when a kani release above 0.68.0 compiles this crate.
+          cargo install --locked kani-verifier@0.67.0
           cargo kani setup
           ./scripts/check-proofs.sh
 
