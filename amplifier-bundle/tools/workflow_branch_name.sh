@@ -1,220 +1,154 @@
 #!/usr/bin/env bash
-# workflow_branch_name.sh — decide the branch name a workflow run should use.
+# workflow_branch_name.sh — find the branch a task description explicitly NAMES.
 #
-# ISSUE #1426. `workflow-worktree.yaml` derived its branch name — and therefore
-# its worktree DIRECTORY name — by slugifying the first 50 characters of
-# `task_description`. A task whose opening line was
-#
-#     Repository: /Users/ryan/src/mistt-qa/ws/142/jamestown (GitHub mistt-repo/jamestown).
-#
-# produced the ref
-#
-#     feat/issue-142-repository-usersryansrcmistt-qaws142jamestown-gith
-#
-# — sixty-five characters of path-mangled prose, cut mid-word at "gith", and
-# created as a SECOND branch alongside `fix/142-band-edge-previous-slice`, which
-# the same task had explicitly pinned and told the run not to branch away from.
-# The same shape produced `feat/issue-1277-skip-workflow-launch-this-agent-is-
-# already-executi`: a truncated prompt fragment leaked into a git ref.
-#
-# Two rules follow. This helper implements the FIRST one:
-#
-#   `explicit`  An explicitly NAMED branch wins. A task that says
-#               `Branch: <ref>` (or `BRANCH — already created …:` with the ref on
-#               the next line) has already answered the question; the caller uses
-#               that answer verbatim and never derives a competitor.
-#
-# The second rule — absent an explicit branch, key the name to the ISSUE NUMBER
-# with a bounded, word-boundary-truncated tail — is implemented INLINE in
-# step-04-setup-worktree and deliberately NOT here. It is load-bearing: the phase
-# bricks are executed with no amplifier-bundle on disk by design (see
-# amplifier-bundle/recipes/tests/), so a derived name living behind an optional
-# helper would change with the environment, and a re-run would fail to recognise
-# the worktree its predecessor registered (issue #1121). Detection of an explicit
-# branch is different in kind: when this file is absent the caller simply does not
-# detect one, which is pre-#1426 behaviour, never a DIFFERENT name.
-#
-# The task text is read from the TASK_DESCRIPTION *environment variable*, never
-# from argv. On Linux a single argument is capped at MAX_ARG_STRLEN (128 KB), so
-# a 150 KB task description passed as an argument would die with E2BIG before
-# this script ever ran; and only the first 64 KB is ever examined, so the cost
-# does not grow with the description either.
-#
-# PORTABILITY: bash 3.2 (the system bash on macOS) — no `${VAR,,}`, no `mapfile`,
-# no associative arrays. Issue #1423 was exactly this mistake.
-#
-# `set -e` is deliberately NOT used: this subcommand is best-effort by contract,
-# returns its answer on stdout, and prints nothing on stdout when it has no
-# answer, so the caller's own ladder stays in charge.
+# Issue #1426: a workflow run must use the branch its task pins, never invent a
+# competitor from prose. This helper answers only "did the task name a branch?".
+# The fallback, issue-keyed name is derived INLINE in step-04-setup-worktree,
+# because it is load-bearing and must not depend on the bundle being on disk
+# (#1121). History: docs/features/branch-name-generation.md.
 #
 # Usage:
-#   TASK_DESCRIPTION=... workflow_branch_name.sh explicit [--repo-path PATH]
+#   TASK_DESCRIPTION=... workflow_branch_name.sh explicit --repo-path REPO --main-repo MAIN
 #
-# Direct tests: tests/issue_1426_branch_name_not_prose.sh
+#   REPO  the checkout the run was pointed at (the caller checkout).
+#   MAIN  the main repository whose worktrees/<branch> the run would use.
+#
+# Output: the named branch on stdout, or nothing.
+# Exit codes:
+#   0   a branch is named and already exists (local or origin) — REUSE it
+#   10  a branch is named and does not exist yet            — CREATE it
+#   1   no branch is named                                  — derive one
+#   2   usage error (unknown flag, missing or non-directory path)
+#   3   the named branch is checked out in a worktree that is neither REPO nor
+#       MAIN/worktrees/<branch>: another session owns it; refuse, never share it
+#
+# Rules:
+#   * Only these directive forms count, case-insensitive, at the start of a line:
+#       Branch: <ref>          Branch name: <ref>        Branch ref: <ref>
+#       Branch = <ref>         (value may instead be on the next non-blank line)
+#       Branch — <any text>:   (value MUST be on the next non-blank line; `—`, `–`
+#                               or `-`; this is the form from the #1426 incident)
+#     Anything else — "Branch coverage is low in: src/foo-bar.rs" — is prose.
+#   * The value must be a valid ref containing `/` or `-`, must not be a base
+#     branch (main, master, develop, trunk, head), and must not start with
+#     origin/, refs/ or heads/.
+#   * Only the first 65536 characters and the first MAX_DIRECTIVES directive
+#     lines are examined, so cost is bounded whatever the task contains.
+#
+# Portable to bash 3.2 (#1423). Input is bounded with a shell substring, never
+# `| head -c`: an early-exit pipeline stage under pipefail empties the result.
 
 set -uo pipefail
 
-# Bound on how much task text is examined. Overridable for tests; the default is
-# the contract, and matches the 65536-character bound step-04 applies inline.
-MAX_INPUT_BYTES="${AMPLIHACK_BRANCH_INPUT_MAX:-65536}"
+readonly MAX_INPUT_CHARS=65536
+readonly MAX_DIRECTIVES=20
+readonly RESERVED_REFS=" main master develop trunk head "
 
-# Branches a run must never adopt from prose: "Branch: main" in a task
-# description describes the base, never the branch to commit onto.
-RESERVED_REFS=" main master develop trunk head "
+# `[[ =~ ]]` has no case-insensitive flag, hence the spelled-out classes. The
+# patterns MUST stay unquoted at the match site, or bash matches them literally.
+readonly KEY_RE='^[[:space:]]*[Bb][Rr][Aa][Nn][Cc][Hh]([[:space:]]+([Nn][Aa][Mm][Ee]|[Rr][Ee][Ff]))?[[:space:]]*[:=]'
+readonly DASH_RE='^[[:space:]]*[Bb][Rr][Aa][Nn][Cc][Hh][[:space:]]+(—|–|-)[^:=]*:[[:space:]]*$'
 
-# NEVER `| head -c`. Bounded with a shell substring instead.
-#
-# ISSUE #1426 CI FAILURE, and the reason step-04's inline derivation is written the
-# same way. `printf '%s' "$TASK" | head -c 65536 | tr … | sed …` looks harmless and
-# is not: `head` stops reading once it has its bytes, so with a task larger than the
-# 64 KiB pipe buffer the producer is left writing into a closed pipe. It then dies of
-# SIGPIPE (status 141), or — where SIGPIPE is ignored, a disposition that survives
-# exec and is common in CI — bash's printf reports "write error: Broken pipe" and
-# returns 1. `set -o pipefail` promotes either to the pipeline's status, the command
-# substitution yields "", and `set -e` kills the step before it emits any JSON.
-#
-# Reproduction:
-#   $ trap '' PIPE; set -euo pipefail
-#   $ X="$(printf '%s' "$BIG" | head -c 10)"; echo REACHED
-#   bash: printf: write error: Broken pipe        # rc=1, "REACHED" never printed
-#
-# Whether it fires at a given size is a race on the pipe buffer, so it was green on
-# bash 5.3.9 locally and red on the runner's 5.2.21 with a 100 KB task description.
-# A branch name is load-bearing: an empty one is worse than an ugly one. The rule
-# that follows — no pipeline stage may stop reading before its producer is done.
-task_text() { local t="${TASK_DESCRIPTION:-}"; printf '%s' "${t:0:$MAX_INPUT_BYTES}"; }
-
-lower() { printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'; }
-
-# ref_is_valid REF — a conservative shape check plus git's own authoritative
-# checker. The regex runs first so a name containing shell metacharacters or a
-# leading dash never reaches `git` as an argument at all.
-ref_is_valid() {
-  local ref="${1:-}"
-  [ -n "$ref" ] || return 1
-  [ "${#ref}" -le 200 ] || return 1
-  printf '%s' "$ref" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/-]*$' || return 1
-  case "$ref" in *..*|*//*|*/) return 1 ;; esac
-  if command -v git >/dev/null 2>&1; then
-    git check-ref-format --branch "$ref" >/dev/null 2>&1 || return 1
-  fi
-  return 0
+usage() {
+  echo "usage: TASK_DESCRIPTION=... workflow_branch_name.sh explicit --repo-path REPO --main-repo MAIN" >&2
+  exit 2
 }
 
-# first_token LINE — the first whitespace-delimited token, stripped of the
-# decoration a human puts around a branch name in prose: backticks, quotes,
-# angle brackets, brackets, and trailing sentence punctuation.
+ref_is_valid() {
+  local ref="$1"
+  [ -n "$ref" ] && [ "${#ref}" -le 200 ] || return 1
+  # Shape check first, so nothing with a leading dash or metacharacter reaches git.
+  [[ $ref =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || return 1
+  case "$ref" in *..*|*//*|*/) return 1 ;; esac
+  git check-ref-format --branch "$ref" >/dev/null 2>&1
+}
+
+# First whitespace-delimited token, stripped of quotes, brackets and trailing punctuation.
 first_token() {
-  printf '%s' "${1:-}" \
+  printf '%s' "$1" \
     | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]].*$//' \
           -e 's/[`"'"'"'<>(){}]//g' -e 's/[][]//g' -e 's/[.,;:]*$//'
 }
 
-# candidate_ok REF — would this token be an acceptable explicit branch name?
 candidate_ok() {
-  local c="${1:-}" lc
+  local c="$1" lc
   ref_is_valid "$c" || return 1
-  # Conservative on purpose. A prose line such as
-  #     Branch protection rules: enabled
-  # matches the directive shape, and "enabled" must NOT hijack the run into the
-  # existing-branch path. Requiring a '/' or a '-' — the shape essentially every
-  # real branch name has — rejects that class of false positive. A genuinely
-  # single-word branch is still reachable through the `existing_branch` context
-  # key, which is unambiguous and needs no guessing.
   case "$c" in *[/-]*) ;; *) return 1 ;; esac
-  lc="$(lower "$c")"
+  lc="$(printf '%s' "$c" | tr '[:upper:]' '[:lower:]')"
+  case "$lc" in origin/*|refs/*|heads/*) return 1 ;; esac
   case "$RESERVED_REFS" in *" $lc "*) return 1 ;; esac
-  return 0
 }
 
-# The directive shape, as a bash ERE. It lives in a variable for two reasons.
-# `[[ =~ ]]` has no case-insensitive flag, hence the spelled-out classes; and the
-# pattern MUST stay UNQUOTED at the match site — quoting it makes bash match it
-# as a LITERAL string, and every directive line then fails to match.
-# `[[ =~ ]]` is bash 3.0+, within the 3.2 floor this file holds to (#1423).
-DIRECTIVE_RE='^[[:space:]]*[Bb][Rr][Aa][Nn][Cc][Hh]([[:space:]]+[^:=]*)?[[:space:]]*[:=]'
+real_dir() { (cd "$1" 2>/dev/null && pwd -P); }
 
-# ---------------------------------------------------------------------------
-# `explicit` — find the branch the task NAMES, if it names one.
-#
-# Recognised shapes (case-insensitive, the directive anchored at line start so
-# the word "branch" buried in a sentence never triggers it):
-#
-#     Branch: fix/142-band-edge-previous-slice
-#     BRANCH = fix/142-band-edge-previous-slice
-#     Branch name: fix/142-band-edge-previous-slice
-#     BRANCH — already created and checked out in this worktree:
-#         fix/142-band-edge-previous-slice
-#
-# The last shape — value on the following line — is the one from the incident.
-#
-# Prints the branch on stdout, or nothing at all.
-#
-# EXIT CODE is the "does it already exist?" answer, and only when --repo-path is
-# given: 0 when the named branch resolves to a local or origin ref (the caller
-# should REUSE it through its existing-branch path), 10 when no branch was named
-# or the named branch does not exist yet (the caller should CREATE it under
-# exactly that name). Without --repo-path, 0 means "a branch was named".
-# ---------------------------------------------------------------------------
+# decide REF REPO MAIN — print REF and exit with the code documented above.
+decide() {
+  local ref="$1" repo="$2" main="$3" holder holder_real repo_real intended
+  holder="$(git -C "$repo" worktree list --porcelain 2>/dev/null | awk -v b="refs/heads/$ref" '
+    $1=="worktree" { wt=substr($0, 10) }
+    $1=="branch" && $2==b { print wt; exit }')"
+  if [ -n "$holder" ]; then
+    holder_real="$(real_dir "$holder" || printf '%s' "$holder")"
+    repo_real="$(real_dir "$repo")"
+    intended="$(real_dir "$main")/worktrees/$ref"
+    # The caller checkout is left to step-04's own #858 refusal; our own
+    # worktree from a previous run of this task is an idempotent re-run.
+    if [ "$holder_real" != "$repo_real" ] && [ "$holder_real" != "$intended" ]; then
+      echo "ERROR: task_description names branch '$ref', but it is checked out in another worktree ('$holder'). Refusing to share another session's branch. Pass it as existing_branch to adopt it deliberately (issue #1426)." >&2
+      exit 3
+    fi
+  fi
+  printf '%s' "$ref"
+  git -C "$repo" rev-parse --verify --quiet "refs/heads/$ref" >/dev/null 2>&1 && exit 0
+  git -C "$repo" rev-parse --verify --quiet "refs/remotes/origin/$ref" >/dev/null 2>&1 && exit 0
+  exit 10
+}
+
 cmd_explicit() {
-  local line blank rest cand pending=0 repo=""
+  local repo="" main="" line rest cand text pending=0 seen=0
   while [ $# -gt 0 ]; do
     case "$1" in
-      --repo-path) repo="${2:-}"; shift 2 || break ;;
-      *)           shift ;;
+      --repo-path|--main-repo)
+        [ $# -ge 2 ] && [ -n "$2" ] && [ -d "$2" ] || { echo "ERROR: $1 needs an existing directory" >&2; usage; }
+        if [ "$1" = --repo-path ]; then repo="$2"; else main="$2"; fi
+        shift 2 ;;
+      *) echo "ERROR: unknown argument '$1'" >&2; usage ;;
     esac
   done
-  # `|| [ -n "$line" ]`: a task description with no trailing newline leaves its
-  # last (often only) line in $line with read returning non-zero at EOF.
+  [ -n "$repo" ] && [ -n "$main" ] || usage
+
+  text="${TASK_DESCRIPTION:-}"
+  text="${text:0:$MAX_INPUT_CHARS}"
+  # `|| [ -n "$line" ]`: keep a final line that has no trailing newline.
   while IFS= read -r line || [ -n "$line" ]; do
     line="${line%$'\r'}"
-    # Is this line all whitespace? Asked with a `case` glob, which scans for one
-    # non-space character and stops. NOT with `${line#"${line%%[![:space:]]*}"}`:
-    # that idiom is QUADRATIC in the length of the leading whitespace run where
-    # this is linear. TASK_DESCRIPTION is untrusted prose that is only size
-    # checked, so a single 64 KB indented line — one pasted, indented issue body
-    # — is enough to take the whole scan from well under a second into seconds.
-    blank=1; case "$line" in *[![:space:]]*) blank=0 ;; esac
-    # A directive line whose value was empty: the value is the first token of
-    # the next non-blank line.
     if [ "$pending" -eq 1 ]; then
-      if [ "$blank" -eq 0 ]; then
-        pending=0
-        cand="$(first_token "$line")"
-        if candidate_ok "$cand"; then emit_explicit "$cand" "$repo"; return $?; fi
-      else
-        continue
-      fi
+      # A `case` glob, not `${line#"${line%%[![:space:]]*}"}`: that idiom is
+      # quadratic in the length of a whitespace run.
+      case "$line" in *[![:space:]]*) ;; *) continue ;; esac
+      pending=0
+      cand="$(first_token "$line")"
+      candidate_ok "$cand" && decide "$cand" "$repo" "$main"
     fi
-    # The directive test, in process. This loop runs once per line of a task
-    # description bounded at 64 KB — up to a thousand lines — so the
-    # `printf … | grep -Eqi` this replaces cost a fork+exec PER LINE on EVERY
-    # workflow run, and dominated the scan. $DIRECTIVE_RE is unquoted on
-    # purpose; see its definition above.
-    [[ $line =~ $DIRECTIVE_RE ]] || continue
-    rest="${line#*[:=]}"
-    cand="$(first_token "$rest")"
-    if candidate_ok "$cand"; then emit_explicit "$cand" "$repo"; return $?; fi
-    # Same all-whitespace question as at the top of the loop, same answer.
-    case "$rest" in *[![:space:]]*) ;; *) pending=1 ;; esac
-  done < <(task_text)
-  return 10
-}
-
-# emit_explicit REF [REPO] — print REF; exit 0 if it already exists (or if no
-# repository was given to ask), 10 if it does not exist yet.
-emit_explicit() {
-  printf '%s' "$1"
-  [ -n "${2:-}" ] || return 0
-  git -C "$2" rev-parse --verify --quiet "refs/heads/$1" >/dev/null 2>&1 && return 0
-  git -C "$2" rev-parse --verify --quiet "refs/remotes/origin/$1" >/dev/null 2>&1 && return 0
-  return 10
+    if [[ $line =~ $DASH_RE ]]; then
+      pending=1
+    elif [[ $line =~ $KEY_RE ]]; then
+      rest="${line#*[:=]}"
+      case "$rest" in
+        *[![:space:]]*) cand="$(first_token "$rest")"
+                        candidate_ok "$cand" && decide "$cand" "$repo" "$main" ;;
+        *)              pending=1 ;;
+      esac
+    else
+      continue
+    fi
+    seen=$((seen + 1))
+    [ "$seen" -lt "$MAX_DIRECTIVES" ] || break
+  done <<< "$text"
+  exit 1
 }
 
 case "${1:-}" in
   explicit) shift; cmd_explicit "$@" ;;
-  *)
-    echo "usage: workflow_branch_name.sh explicit [--repo-path PATH]" >&2
-    exit 2
-    ;;
+  *) usage ;;
 esac

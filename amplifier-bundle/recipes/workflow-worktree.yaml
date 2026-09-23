@@ -105,24 +105,25 @@ steps:
       EXISTING_BRANCH="${EXISTING_BRANCH:-}"
       PR_NUMBER="${PR_NUMBER:-}"
 
-      # EXPLICIT BRANCH WINS (#1426). A task that NAMES its branch — `Branch: <ref>`,
-      # or `BRANCH — already created and checked out in this worktree:` with the ref
-      # on the next line — has already answered the question. Deriving a second name
-      # from the opening characters of the prose produced refs such as
-      # `feat/issue-142-repository-usersryansrcmistt-qaws142jamestown-gith`, competing
-      # with the `fix/142-band-edge-previous-slice` the same task had pinned.
-      # Detection lives in tools/workflow_branch_name.sh — extraction, not compression:
-      # this brick is at its 400-line budget (scripts/check-brick-budget.sh).
-      # `explicit --repo-path` exits 0 only when the named branch ALREADY EXISTS, so a
-      # zero exit hands it to the existing-branch path below and the run REUSES it,
-      # while a non-zero exit leaves the name in EXPLICIT_BRANCH to be created verbatim.
-      # A MISSING helper degrades to no detection at all — pre-#1426 behaviour — and
-      # never to a DIFFERENT name: the name itself is derived inline below (#1121).
+      # EXPLICIT BRANCH WINS (#1426). A task that names its branch (`Branch: <ref>`) has
+      # answered the question; never derive a competitor from prose. Detection lives in
+      # tools/workflow_branch_name.sh (exit codes documented there): 0 reuse, 10 create,
+      # 1 none named, anything else aborts. A missing helper means no detection — the
+      # name itself is still derived inline below (#1121) — and says so on stderr.
       BRANCH_HELPER="$TOOLS_DIR/workflow_branch_name.sh"
       EXPLICIT_BRANCH=""
-      if [ -z "$EXISTING_BRANCH" ] && [ -z "$PR_NUMBER" ]; then
-        EXPLICIT_BRANCH="$(bash "$BRANCH_HELPER" explicit --repo-path "$REPO_PATH" 2>/dev/null)" && EXISTING_BRANCH="$EXPLICIT_BRANCH" || true
-        [ -z "$EXPLICIT_BRANCH" ] || echo "INFO: task_description names branch '$EXPLICIT_BRANCH' — using it instead of deriving a name from task prose (issue #1426)." >&2
+      if [ -n "$EXISTING_BRANCH" ] || [ -n "$PR_NUMBER" ]; then :
+      elif [ ! -f "$BRANCH_HELPER" ]; then
+        echo "WARNING: $BRANCH_HELPER not found — not checking task_description for an explicitly named branch (issue #1426)." >&2
+      else
+        EXPLICIT_RC=0
+        EXPLICIT_BRANCH="$(bash "$BRANCH_HELPER" explicit --repo-path "$REPO_PATH" --main-repo "$MAIN_REPO_PATH")" || EXPLICIT_RC=$?
+        case "$EXPLICIT_RC" in
+          0) EXISTING_BRANCH="$EXPLICIT_BRANCH" ;;
+          1|10) ;;
+          *) echo "ERROR: branch detection failed (workflow_branch_name.sh exit $EXPLICIT_RC; see above)." >&2; exit 1 ;;
+        esac
+        [ -z "$EXPLICIT_BRANCH" ] || echo "INFO: task_description names branch '$EXPLICIT_BRANCH' — using it instead of deriving a name (issue #1426)." >&2
       fi
 
       if [ -n "$EXISTING_BRANCH" ] || [ -n "$PR_NUMBER" ]; then
@@ -277,9 +278,8 @@ steps:
       # passes a local-tracking ref through verbatim, #815) and a bare '/' there kills step-04.
       # FIX (#3023/BL-002) preserved: the last-resort name below hardcodes 'feat/' rather
       # than $BRANCH_PREFIX so an invalid or malicious branch_prefix cannot inject.
-      # The input is bounded by a SHELL SUBSTRING, never by piping into `head -c`: a stage
-      # that stops reading early leaves the producer writing into a closed pipe, and
-      # `pipefail` turns it into an EMPTY name. Full account: tools/workflow_branch_name.sh.
+      # Input is bounded by a SHELL SUBSTRING, never `| head -c`: an early-exit stage under
+      # `pipefail` empties the name. See docs/features/branch-name-generation.md.
       # DIVERGED, no longer mirrored: consensus-issue-worktree.yaml still runs the old 30-char prose slug (#2952 pairing ends here; tracked in #1430).
       SLUG_HEAD="${TASK_DESCRIPTION:-}"; SLUG_NUM="${ISSUE_NUMBER:-0}"; case "$SLUG_NUM" in ''|*[!0-9]*) SLUG_NUM=0 ;; esac; SLUG_WORDS="$(printf '%s' "${SLUG_HEAD:0:65536}" | tr '[:upper:]' '[:lower:]' \
         | sed -e 's#[^[:space:]]*[/\\@][^[:space:]]*# #g' -e 's/[^a-z0-9]\{1,\}/-/g' \

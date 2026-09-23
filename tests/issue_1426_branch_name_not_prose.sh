@@ -110,7 +110,9 @@ else
     pass "A0-helper" "tools/workflow_branch_name.sh exists"
 
     # explicit_of TASK -> prints the named branch (empty when none is named).
-    explicit_of() { TASK_DESCRIPTION="$1" bash "${BRANCH_HELPER}" explicit 2>/dev/null; }
+    HELPER_REPO="${TEST_TMP}/helper-repo"
+    git init --quiet "${HELPER_REPO}"
+    explicit_of() { TASK_DESCRIPTION="$1" bash "${BRANCH_HELPER}" explicit --repo-path "${HELPER_REPO}" --main-repo "${HELPER_REPO}" 2>/dev/null; }
 
     GOT="$(explicit_of "${INCIDENT_TASK}")"
     if [[ "${GOT}" == "${PINNED_BRANCH}" ]]; then
@@ -147,6 +149,48 @@ else
     else
         fail "A5-not-a-directive" "mid-sentence prose was read as a directive: '${GOT}'"
     fi
+
+    # A6/A7 (PR #1429 review): a line that merely STARTS with "Branch" and holds a
+    # colon is prose. File paths contain '/' and '-', so the shape check alone
+    # used to let them through as the branch name.
+    GOT="$(explicit_of 'Branch coverage is low in these files: src/foo-bar.rs')"
+    if [[ -z "${GOT}" ]]; then
+        pass "A6-prose-colon-inline" "'Branch coverage … files: src/foo-bar.rs' names no branch"
+    else
+        fail "A6-prose-colon-inline" "a file path in prose became the branch: '${GOT}'"
+    fi
+
+    GOT="$(explicit_of 'Branch coverage is low in these files:
+    src/lib-core.rs')"
+    if [[ -z "${GOT}" ]]; then
+        pass "A7-prose-colon-nextline" "a prose line ending in ':' does not pull a path off the next line"
+    else
+        fail "A7-prose-colon-nextline" "a file path on the next line became the branch: '${GOT}'"
+    fi
+
+    GOT="$(explicit_of 'Branch name: fix/9-foo')$(explicit_of 'BRANCH = fix/9-foo')"
+    if [[ "${GOT}" == "fix/9-foofix/9-foo" ]]; then
+        pass "A8-directive-forms" "'Branch name:' and 'BRANCH =' are recognised"
+    else
+        fail "A8-directive-forms" "expected both forms to yield fix/9-foo, got '${GOT}'"
+    fi
+
+    GOT="$(explicit_of 'Branch: origin/main')$(explicit_of 'Branch: refs/heads/fix-1')"
+    if [[ -z "${GOT}" ]]; then
+        pass "A9-no-remote-or-refs" "'origin/…' and 'refs/…' are never taken as a local branch name"
+    else
+        fail "A9-no-remote-or-refs" "expected no branch, got '${GOT}'"
+    fi
+
+    # A10: bad arguments are errors (exit 2), never a silent "branch exists".
+    A10_OK=1
+    for args in "--repo-path" "--repo-path ''" "--bogus x" ""; do
+        eval "set -- ${args}"
+        TASK_DESCRIPTION='Branch: fix/9-foo' bash "${BRANCH_HELPER}" explicit "$@" >/dev/null 2>&1
+        rc=$?
+        [[ "${rc}" -eq 2 ]] || { A10_OK=0; fail "A10-bad-args" "args '${args}' exited ${rc}, expected 2"; }
+    done
+    [[ "${A10_OK}" -eq 1 ]] && pass "A10-bad-args" "missing, empty and unknown arguments exit 2"
 fi
 
 build_repo() {
@@ -354,6 +398,26 @@ if [[ "${C1_WT}" == *"/worktrees/${PINNED_BRANCH}" ]]; then
     pass "C3-worktree-path" "worktree directory is named for the pinned branch: ${C1_WT}"
 else
     fail "C3-worktree-path" "worktree path '${C1_WT}' is not named for '${PINNED_BRANCH}'"
+fi
+
+# --- C1b: a re-run of the same task reuses its own worktree (idempotent) -----
+run_step "${REPO_A}" 142 "${INCIDENT_TASK}"
+if [[ "${RUN_RC}" -eq 0 && "$(json_field "${RUN_JSON}" branch_name)" == "${PINNED_BRANCH}" ]]; then
+    pass "C1b-rerun" "a re-run reuses the pinned branch and its own worktree"
+else
+    fail "C1b-rerun" "rc=${RUN_RC} json=${RUN_JSON}\nstderr:\n${RUN_ERR}"
+fi
+
+# --- C9: a named branch held by ANOTHER session's worktree is refused -------
+# PR #1429 security review: prose must not be able to steer a run onto a branch
+# another worktree is using. existing_branch remains the deliberate way to do so.
+REPO_F="$(build_repo f)"
+git -C "${REPO_F}" worktree add -q -b fix/77-other-session "${TEST_TMP}/other-session" main 2>/dev/null
+run_step "${REPO_F}" 77 "Branch: fix/77-other-session"
+if [[ "${RUN_RC}" -ne 0 ]] && printf '%s' "${RUN_ERR}" | grep -q 'checked out in another worktree'; then
+    pass "C9-foreign-worktree-refused" "a task-named branch held by another worktree is refused loudly"
+else
+    fail "C9-foreign-worktree-refused" "rc=${RUN_RC} json=${RUN_JSON}\nstderr:\n${RUN_ERR}"
 fi
 
 # --- C4: an explicitly named branch that does NOT exist is created verbatim --

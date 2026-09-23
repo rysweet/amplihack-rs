@@ -52,16 +52,25 @@ rather than its prose.
 
 ### Rank 2 — a branch named in the task
 
-A directive **anchored at the start of a line** names the branch. Both the value on the
-same line and the value on the following line are recognised:
+Only a fixed set of directives names the branch. Each must open a line, and case is
+ignored:
 
 ```
 Branch: fix/142-band-edge-previous-slice
-Branch name = fix/142-band-edge-previous-slice
+Branch name: fix/142-band-edge-previous-slice
+Branch ref: fix/142-band-edge-previous-slice
+BRANCH = fix/142-band-edge-previous-slice
 
 BRANCH — already created and checked out in this worktree:
     fix/142-band-edge-previous-slice
 ```
+
+The `Branch:`, `Branch name:`, `Branch ref:` and `Branch =` forms take their value
+from the same line or, when it is empty, from the next non-blank line. The dash form
+(`—`, `–` or `-`, any text, then a closing `:`) is the one from the #1426 incident. It
+takes its value only from the next non-blank line. Any other line that merely starts
+with "Branch" and contains a colon is prose. For example, `Branch coverage is low in
+these files: src/foo-bar.rs` names nothing.
 
 Backticks, quotes, brackets and trailing sentence punctuation are stripped from the
 value, which is then validated with `git check-ref-format --branch`.
@@ -74,10 +83,20 @@ Detection is deliberately conservative, because a false positive hijacks the run
   `existing_branch` context key, which needs no guessing.
 - `main`, `master`, `develop`, `trunk` and `head` are refused. A task that mentions one
   of those is describing the base, not the branch to commit onto.
+- Names starting with `origin/`, `refs/` or `heads/` are refused. Created as local
+  branches, they would make git report ambiguous refs.
+- At most 20 directive lines are examined, so a task full of `Branch:` lines cannot
+  stall the step.
 
 When the named branch already exists (locally or on `origin`), the run takes the
 existing-branch path and **reuses** it. When it does not exist, it is created under
 exactly that name.
+
+The run **refuses** (exit 3 from the helper, which aborts step-04) if the named branch
+is checked out in another worktree, meaning any worktree other than the caller checkout
+or this run's own `worktrees/<branch>`. Task text must not be able to move a run onto a
+branch another session is using. To adopt such a branch on purpose, pass
+`-c existing_branch=<ref>`.
 
 ### Rank 3 — the bounded, issue-keyed slug
 
@@ -212,11 +231,22 @@ The explicit-branch scan can be run on its own:
 
 ```bash
 TASK_DESCRIPTION="$(cat task.txt)" \
-  bash amplifier-bundle/tools/workflow_branch_name.sh explicit
+  bash amplifier-bundle/tools/workflow_branch_name.sh explicit \
+    --repo-path /path/to/repo --main-repo /path/to/repo
 ```
 
-`explicit` prints the named branch, or nothing. With `--repo-path`, its exit code
-answers "does it already exist?": 0 for yes (reuse it), 10 for no (create it).
+`explicit` prints the named branch, or nothing. Exit codes:
+
+| Code | Meaning |
+| ---- | ------- |
+| 0 | A branch is named and already exists. Reuse it. |
+| 10 | A branch is named and does not exist yet. Create it. |
+| 1 | No branch is named. Derive one (rank 3). |
+| 2 | Usage error: an unknown flag, or a missing or non-directory path. |
+| 3 | The named branch is checked out in another session's worktree. Refuse. |
+
+Step-04 aborts on any other exit code. If the helper is missing, step-04 prints a
+`WARNING` and skips detection. It never skips it silently.
 
 ---
 
@@ -316,8 +346,9 @@ Anyone reopening #858 should start here.
 ### The branch is not the one my task named
 
 Check that the directive opens a line (`Branch: …`, not `…use the branch …`), that the
-value contains a `/` or `-`, and that it is not `main`/`master`/`develop`. When in
-doubt, pass `-c existing_branch=<ref>`, which is unambiguous.
+directive is one of the recognised forms above (`Branch:`, `Branch name:`, `Branch ref:`,
+`Branch =`, or the dash form), that the value contains a `/` or `-`, and that it is not
+`main`/`master`/`develop`. When in doubt, pass `-c existing_branch=<ref>`, which is unambiguous.
 
 ### The branch name is shorter than I expected
 
