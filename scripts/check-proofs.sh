@@ -21,7 +21,18 @@ fi
 
 # Every harness must pass, and there must BE harnesses: a proof suite that silently
 # verifies nothing is worse than none, because it reports success.
-out="$(cargo kani -p amplihack-cli 2>&1)"
+# `if ! out=$(...)` and not a bare `out=$(...)`: under `set -e` a bare assignment
+# aborts the script the instant cargo kani exits non-zero, so every line below --
+# including the ones that exist to say WHY the gate failed -- is skipped and CI
+# shows a red step with no output at all. That is how a kani ICE cost two full CI
+# runs and 26 minutes of silence before anyone could see the compiler error.
+# A tool that cannot report its own failure is worse than no tool.
+if ! out="$(cargo kani -p amplihack-cli 2>&1)"; then
+  echo "check-proofs: cargo kani exited non-zero (it did not get as far as a verdict)" >&2
+  echo "check-proofs: its full output follows" >&2
+  printf '%s\n' "$out" >&2
+  exit 1
+fi
 echo "$out" | grep -E "Checking harness|VERIFICATION:" || true
 
 if ! grep -qE "Complete - [0-9]+ successfully verified harnesses, 0 failures" <<<"$out"; then

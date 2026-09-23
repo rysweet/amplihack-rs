@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -19,6 +20,36 @@ pub(crate) fn home_env_lock() -> &'static Mutex<()> {
 /// Alias for `env_lock()` — all env locks use the same underlying mutex.
 pub(crate) fn cwd_env_lock() -> &'static Mutex<()> {
     env_lock()
+}
+
+pub(crate) struct EnvGuard {
+    previous: Vec<(OsString, Option<OsString>)>,
+}
+
+impl EnvGuard {
+    pub(crate) fn set<const N: usize>(values: [(&str, &str); N]) -> Self {
+        let previous = values
+            .iter()
+            .map(|(name, _)| (OsString::from(name), std::env::var_os(name)))
+            .collect();
+        for (name, value) in values {
+            unsafe { std::env::set_var(name, value) };
+        }
+        Self { previous }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        for (name, value) in self.previous.drain(..) {
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
 }
 
 pub(crate) fn set_home(path: &Path) -> Option<std::ffi::OsString> {

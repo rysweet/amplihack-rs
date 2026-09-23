@@ -10,6 +10,23 @@ on:
   # branch protection) so approved PRs are validated together instead of each
   # forcing its own full serial CI cycle under strict "up-to-date" mode.
   merge_group:
+  # Mondays and Thursdays, so no gap between runs reaches seven days.
+  #
+  # GitHub deletes an Actions cache that has not been read for 7 days. This
+  # repository went 19 days without a run (3 to 22 September), every cache was
+  # deleted, and the next pull request paid for all of it: Lint & Format went
+  # from 10 minutes to over 25, Test from 15 to 28, each Build from 6 to 17,
+  # Install Smoke from 7 to 18. sccache reported 0 hits against 1752 misses,
+  # where a warm run reports 88.91%. None of that was caused by the pull
+  # request that paid for it.
+  #
+  # The same 19 days hid two external breakages until a contributor found them:
+  # kani 0.68.0 (16 Sep) crashed the proof gate, and RUSTSEC-2026-0285 (14 Sep)
+  # failed the sibling repository's audit. A run every few days keeps the caches
+  # alive and finds that kind of drift against main, where it belongs.
+  schedule:
+    - cron: "0 6 * * 1,4"
+  workflow_dispatch:
 
 # Least-privilege default: every job gets a read-only token unless it opts up.
 permissions:
@@ -19,14 +36,18 @@ env:
   CARGO_TERM_COLOR: always
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # github.event_name is in the key so a scheduled run and a push run on main do
+  # not share a group. Without it the 06:00 schedule could cancel the CI run for
+  # a merge that was already in flight, and a cancelled run reports as a failed
+  # required check (issue #1372). github.ref stays in the key, which is what
+  # keeps open pull requests from cancelling each other.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   check:
     name: Lint & Format
     runs-on: ubuntu-latest
-    timeout-minutes: 25
     env:
       # SPIKE (#1052 follow-up): compiled-artifact caching via sccache with the
       # GitHub Actions cache backend. Unlike restoring the whole target/ dir
@@ -35,7 +56,12 @@ jobs:
       # disk low. Goal: cut the ~16 min from-scratch clippy compile on warm runs.
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
-      SCCACHE_CACHE_SIZE: "2G"
+      # 2G was below what this workspace already stores: the repository's
+      # active Actions cache measured 2.49 GB across 9111 entries, so the
+      # cap was evicting entries inside a single run. Pinning kani to its
+      # own nightly adds a second toolchain whose objects cannot share
+      # entries with the 1.97.0 build, roughly doubling what one job needs.
+      SCCACHE_CACHE_SIZE: "10G"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Verify cxx-build pin
@@ -72,18 +98,37 @@ jobs:
       - name: Migrate skill — refuses the host it is running on (issue #1167)
         shell: bash
         run: bash tests/issue_1167_migrate_same_host_guard.sh
+      - name: Shipped shell — bash 3.2 portable, no bash-4-only constructs (issue #1423)
+        shell: bash
+        run: bash tests/issue_1423_bash4_constructs.sh
       - name: Workflows — PR runs must not cancel each other (issue #1372)
         shell: bash
         run: bash tests/issue_1372_pr_workflows_scope_concurrency.sh
       - name: Worktree — refuse a repo with no origin remote (issue #1323)
         shell: bash
         run: bash tests/issue_1323_multirepo_origin_precondition.sh
+      - name: Install docs — every documented path installs a real binary (issue #1412)
+        shell: bash
+        run: bash tests/issue_1412_install_docs_name_a_real_package.sh
       - name: Recipes — every committing recipe prepares its identity (issue #1394)
         shell: bash
         run: bash tests/recipe_commit_identity_static_test.sh
       - name: Invisible-char scan — stays dependency-free (issue #1397)
         shell: bash
         run: bash tests/issue_1397_invisible_scan_stays_dependency_free.sh
+      - name: External LiteLLM deployment fixture (issue #1413)
+        shell: bash
+        run: bash tests/issue_1413_external_litellm_gateway.sh
+      - name: Pre-commit build cache — off /tmp, reclaimed, legible when full (issue #1440)
+        shell: bash
+        run: bash tests/issue_1440_precommit_cache_location.sh
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24.19.0"
+      - name: Record Node.js test toolchain
+        run: |
+          node --version
+          npm --version
       - name: Skill docs — BLOCKED-path steps exist (issue #1255)
         shell: bash
         run: bash tests/issue_1255_blocked_path_steps_exist.sh
@@ -114,6 +159,9 @@ jobs:
       - name: Tests — one environment lock per crate, in test_support (issue #1380)
         shell: bash
         run: bash tests/issue_1380_single_env_lock.sh
+      - name: Claim check — working on an issue's own PR is not racing it (issue #1448)
+        shell: bash
+        run: bash tests/issue_1448_review_is_not_a_duplicate.sh
       - name: Git subprocesses — no unsanitised Command::new("git") (issue #1278)
         run: scripts/check-git-command-sanitised.sh
       - name: Git env isolation — hooks scrub GIT_DIR and friends (issue #1278)
@@ -223,7 +271,18 @@ jobs:
           # Kani proves each decision function for EVERY input, where the spec gate
           # above proves the ORDERING. The two real defects in this area were one of
           # each kind, so neither gate substitutes for the other.
-          cargo install --locked kani-verifier
+          #
+          # Pin the version. `--locked` fixes the dependency graph of whichever
+          # version resolves, not the version itself, so an unpinned install
+          # silently adopts each new kani release. 0.68.0 (16 Sep 2026) crashes
+          # with an internal compiler error while codegenning this crate --
+          #   kani-compiler/src/intrinsics.rs:243: assertion failed:
+          #   matches!(output.kind(), TyKind::RigidTy(RigidTy::Int(IntTy::I32)))
+          # -- which turned this gate red on every branch from the day it shipped.
+          # Nothing in the repository changed; the tool did. The TLA2TOOLS step
+          # below already pins a version and a checksum for the same reason.
+          # Revisit when a kani release above 0.68.0 compiles this crate.
+          cargo install --locked kani-verifier@0.67.0
           cargo kani setup
           ./scripts/check-proofs.sh
 
@@ -265,7 +324,6 @@ jobs:
     # merge. Running Test concurrently with Lint & Format drops the critical
     # path to ~35 min. `concurrency: cancel-in-progress` still supersedes stale
     # runs; a lint failure only costs redundant Test compute, not correctness.
-    timeout-minutes: 45
     env:
       # Drop debug info from the workspace's large test-binary surface (60+
       # integration [[test]] targets plus per-crate unit tests): smaller links
@@ -274,7 +332,12 @@ jobs:
       # SPIKE: sccache compiled-artifact caching (GHA backend). See check job.
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
-      SCCACHE_CACHE_SIZE: "2G"
+      # 2G was below what this workspace already stores: the repository's
+      # active Actions cache measured 2.49 GB across 9111 entries, so the
+      # cap was evicting entries inside a single run. Pinning kani to its
+      # own nightly adds a second toolchain whose objects cannot share
+      # entries with the 1.97.0 build, roughly doubling what one job needs.
+      SCCACHE_CACHE_SIZE: "10G"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Free disk space
@@ -341,7 +404,6 @@ jobs:
     name: Install Smoke Test
     runs-on: ubuntu-latest
     # No `needs: check` — parallelize with Lint & Format (see Test job note).
-    timeout-minutes: 30
     env:
       # This job only asserts that `cargo install` succeeds and the binary
       # launches — it neither ships nor benchmarks the artifact. The workspace's
@@ -355,7 +417,12 @@ jobs:
       # SPIKE: sccache compiled-artifact caching (GHA backend). See check job.
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
-      SCCACHE_CACHE_SIZE: "2G"
+      # 2G was below what this workspace already stores: the repository's
+      # active Actions cache measured 2.49 GB across 9111 entries, so the
+      # cap was evicting entries inside a single run. Pinning kani to its
+      # own nightly adds a second toolchain whose objects cannot share
+      # entries with the 1.97.0 build, roughly doubling what one job needs.
+      SCCACHE_CACHE_SIZE: "10G"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83 # 1.97.0
@@ -383,7 +450,6 @@ jobs:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     # No `needs: check` — parallelize with Lint & Format (see Test job note).
-    timeout-minutes: 45
     env:
       # PR/branch runs only *verify* that each target compiles; the optimized
       # binaries are shipped exclusively by the `release` job on tag pushes.
@@ -398,7 +464,12 @@ jobs:
       # the host rustc directly; sccache keys already include the target triple.
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
-      SCCACHE_CACHE_SIZE: "2G"
+      # 2G was below what this workspace already stores: the repository's
+      # active Actions cache measured 2.49 GB across 9111 entries, so the
+      # cap was evicting entries inside a single run. Pinning kani to its
+      # own nightly adds a second toolchain whose objects cannot share
+      # entries with the 1.97.0 build, roughly doubling what one job needs.
+      SCCACHE_CACHE_SIZE: "10G"
     strategy:
       fail-fast: false
       matrix:
@@ -483,7 +554,6 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [test, cross-compile]
     runs-on: ubuntu-latest
-    timeout-minutes: 20
     permissions:
       contents: write
     steps:

@@ -8,8 +8,8 @@
 //! deleting, moving, unstaging, or rewriting files.
 
 use super::{
-    ArtifactAllowlist, ArtifactGuardConfig, ArtifactGuardMode, ArtifactSource, ArtifactViolation,
-    scan_artifacts,
+    ArtifactAllowlist, ArtifactGuardConfig, ArtifactGuardMode, ArtifactProvenance, ArtifactSource,
+    ArtifactViolation, PreExistingPolicy, scan_artifacts,
 };
 use std::fs;
 use std::path::Path;
@@ -847,5 +847,256 @@ fn untracked_but_not_ignored_artifact_still_blocks_under_pre_commit() {
         &report.violations,
         "dist/plugin.js",
         ArtifactSource::Untracked,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1422: provenance — artifacts THIS change created vs a pre-existing
+// repository condition.
+//
+// A `smart-orchestrator` run designed, tested, implemented, and verified its
+// work over ninety minutes, then died at `checkpoint-after-implementation`
+// because the repository it was working in had 668 `node_modules` paths
+// committed long before the run started. The finding was true; the run did not
+// cause it; none of the printed remedies fit inside the change's scope. The
+// guard must separate the two cases and answer each on its own terms.
+// ---------------------------------------------------------------------------
+
+/// A repository shaped like every workflow run: a `main` base branch plus a
+/// task branch holding the change under review.
+fn repo_on_main() -> TempDir {
+    let tmp = TempDir::new().expect("tempdir");
+    run_git(tmp.path(), &["init", "-q"]);
+    // Pin the base branch name so baseline resolution does not depend on the
+    // host's `init.defaultBranch`.
+    run_git(tmp.path(), &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    run_git(
+        tmp.path(),
+        &["config", "user.email", "artifact-guard@example.invalid"],
+    );
+    run_git(tmp.path(), &["config", "user.name", "Artifact Guard Test"]);
+    write_file(&tmp.path().join("README.md"), "# fixture\n");
+    run_git(tmp.path(), &["add", "README.md"]);
+    run_git(tmp.path(), &["commit", "-qm", "initial"]);
+    tmp
+}
+
+/// `main` already carries committed `node_modules`; the task branch makes an
+/// unrelated source change. This is the issue #1422 repository exactly.
+fn repo_with_preexisting_tracked_node_modules() -> TempDir {
+    let tmp = repo_on_main();
+    write_file(
+        &tmp.path().join("node_modules/leftpad/index.js"),
+        "module.exports = 1;\n",
+    );
+    write_file(&tmp.path().join("node_modules/.bin/acorn"), "#!/bin/sh\n");
+    run_git(tmp.path(), &["add", "-f", "node_modules"]);
+    run_git(
+        tmp.path(),
+        &["commit", "-qm", "history: vendored node_modules"],
+    );
+    run_git(tmp.path(), &["checkout", "-q", "-b", "task/pin-deps"]);
+    write_file(&tmp.path().join("package.json"), "{\"name\":\"pinned\"}\n");
+    run_git(tmp.path(), &["add", "package.json"]);
+    run_git(tmp.path(), &["commit", "-qm", "pin dependency versions"]);
+    tmp
+}
+
+#[test]
+fn preexisting_tracked_artifacts_are_reported_but_do_not_block_the_publish_gate() {
+    let tmp = repo_with_preexisting_tracked_node_modules();
+
+    let report = scan_artifacts(
+        &ArtifactGuardConfig::new(tmp.path()).with_mode(ArtifactGuardMode::PrePublish),
+    )
+    .expect("scan artifacts");
+
+    let violation = violation_for(
+        &report.violations,
+        "node_modules/leftpad/index.js",
+        ArtifactSource::Tracked,
+    );
+    assert_eq!(
+        violation.provenance,
+        ArtifactProvenance::PreExisting,
+        "a path committed on the baseline and untouched by this change is pre-existing"
+    );
+    assert!(
+        report.baseline.is_some(),
+        "the baseline must resolve so the report can say what provenance was measured against"
+    );
+    assert!(
+        !report.blocks(),
+        "a pre-existing repository condition must not fail the publish gate (#1422); blocking: {:#?}",
+        report.blocking_violations()
+    );
+    assert_eq!(
+        report.advisory_violations().len(),
+        report.violations.len(),
+        "every pre-existing violation must still be reported, just not blocking"
+    );
+}
+
+#[test]
+fn artifacts_introduced_by_this_change_still_block_the_publish_gate() {
+    let tmp = repo_on_main();
+    run_git(tmp.path(), &["checkout", "-q", "-b", "task/pin-deps"]);
+    write_file(
+        &tmp.path().join("node_modules/leftpad/index.js"),
+        "module.exports = 1;\n",
+    );
+    run_git(tmp.path(), &["add", "-f", "node_modules"]);
+    run_git(tmp.path(), &["commit", "-qm", "oops: commit node_modules"]);
+
+    let report = scan_artifacts(
+        &ArtifactGuardConfig::new(tmp.path()).with_mode(ArtifactGuardMode::PrePublish),
+    )
+    .expect("scan artifacts");
+
+    let violation = violation_for(
+        &report.violations,
+        "node_modules/leftpad/index.js",
+        ArtifactSource::Tracked,
+    );
+    assert_eq!(
+        violation.provenance,
+        ArtifactProvenance::Introduced,
+        "a path this branch committed since the baseline was introduced by this change"
+    );
+    assert!(
+        report.blocks(),
+        "artifacts this change introduced must still fail closed"
+    );
+}
+
+#[test]
+fn preexisting_policy_block_restores_the_fail_closed_gate() {
+    let tmp = repo_with_preexisting_tracked_node_modules();
+
+    let report = scan_artifacts(
+        &ArtifactGuardConfig::new(tmp.path())
+            .with_mode(ArtifactGuardMode::PrePublish)
+            .with_preexisting_policy(PreExistingPolicy::Block),
+    )
+    .expect("scan artifacts");
+
+    assert!(
+        report.blocks(),
+        "--preexisting block must restore whole-repository enforcement"
+    );
+    assert!(
+        report.advisory_violations().is_empty(),
+        "nothing is advisory under the block policy"
+    );
+}
+
+#[test]
+fn audit_modes_stay_fail_closed_on_a_preexisting_condition() {
+    let tmp = repo_with_preexisting_tracked_node_modules();
+
+    for mode in [ArtifactGuardMode::All, ArtifactGuardMode::Worktree] {
+        let report = scan_artifacts(&ArtifactGuardConfig::new(tmp.path()).with_mode(mode))
+            .expect("scan artifacts");
+
+        assert!(
+            report.blocks(),
+            "{mode} is an audit scan, not a gate: it must keep failing closed so the \
+             condition still has a place that reports it in full"
+        );
+        assert!(
+            report.advisory_violations().is_empty(),
+            "{mode} must not soften anything"
+        );
+    }
+}
+
+#[test]
+fn untracked_artifacts_are_introduced_because_broad_staging_would_sweep_them_in() {
+    // A leftover on disk is not "the repository's history": the very next
+    // `git add -A` puts it in the commit. It must stay blocking.
+    let tmp = repo_on_main();
+    run_git(tmp.path(), &["checkout", "-q", "-b", "task/pin-deps"]);
+    write_file(&tmp.path().join("dist/plugin.js"), "generated bundle\n");
+
+    let report = scan_artifacts(
+        &ArtifactGuardConfig::new(tmp.path()).with_mode(ArtifactGuardMode::PrePublish),
+    )
+    .expect("scan artifacts");
+
+    let violation = violation_for(
+        &report.violations,
+        "dist/plugin.js",
+        ArtifactSource::Untracked,
+    );
+    assert_eq!(violation.provenance, ArtifactProvenance::Introduced);
+    assert!(
+        report.blocks(),
+        "untracked artifacts must still fail closed"
+    );
+}
+
+#[test]
+fn a_tracked_artifact_this_change_modified_is_introduced_not_preexisting() {
+    let tmp = repo_with_preexisting_tracked_node_modules();
+    write_file(
+        &tmp.path().join("node_modules/leftpad/index.js"),
+        "module.exports = 2;\n",
+    );
+    run_git(tmp.path(), &["add", "-f", "node_modules/leftpad/index.js"]);
+    run_git(tmp.path(), &["commit", "-qm", "edit vendored artifact"]);
+
+    let report = scan_artifacts(
+        &ArtifactGuardConfig::new(tmp.path()).with_mode(ArtifactGuardMode::PrePublish),
+    )
+    .expect("scan artifacts");
+
+    let violation = violation_for(
+        &report.violations,
+        "node_modules/leftpad/index.js",
+        ArtifactSource::Tracked,
+    );
+    assert_eq!(
+        violation.provenance,
+        ArtifactProvenance::Introduced,
+        "touching a pre-existing artifact pulls it into this change's diff"
+    );
+    assert!(report.blocks());
+}
+
+#[test]
+fn an_explicit_baseline_selects_what_counts_as_this_change() {
+    let tmp = repo_with_preexisting_tracked_node_modules();
+
+    let report = scan_artifacts(
+        &ArtifactGuardConfig::new(tmp.path())
+            .with_mode(ArtifactGuardMode::PrePublish)
+            .with_baseline("main"),
+    )
+    .expect("scan artifacts");
+
+    assert_eq!(
+        report
+            .baseline
+            .as_ref()
+            .map(|baseline| baseline.rev.clone()),
+        Some("main".to_string())
+    );
+    assert!(!report.blocks());
+}
+
+#[test]
+fn an_unresolvable_explicit_baseline_fails_closed_as_configuration_error() {
+    let tmp = repo_with_preexisting_tracked_node_modules();
+
+    let error = scan_artifacts(
+        &ArtifactGuardConfig::new(tmp.path())
+            .with_mode(ArtifactGuardMode::PrePublish)
+            .with_baseline("refs/heads/does-not-exist"),
+    )
+    .expect_err("an explicitly requested baseline that cannot resolve is a misconfiguration");
+
+    assert!(
+        matches!(error, super::ArtifactGuardError::Baseline { .. }),
+        "expected a baseline error; got {error:?}"
     );
 }

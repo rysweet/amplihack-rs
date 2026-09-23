@@ -10,7 +10,8 @@
 # surfaced somewhere other than the racing test.
 #
 # So: a crate's env lock must be `<crate>/src/test_support.rs::env_lock()`, and
-# nothing else in `<crate>/src/` may declare one.
+# nothing else in `<crate>/src/` may declare one. Compatibility helpers such as
+# `test_serial::acquire()` must delegate to that same function.
 #
 # Integration tests (`<crate>/tests/*.rs`) are deliberately NOT covered: cargo
 # builds each of those files as its own binary, so a file-local mutex there
@@ -29,7 +30,8 @@ report() {
 }
 
 # Every .rs file under a crate's src/, except that crate's test_support module.
-mapfile -t files < <(
+# while-read, not mapfile: macOS /bin/bash is 3.2 (issue #1423).
+files=(); while IFS= read -r _ml; do files+=("$_ml"); done < <(
   find crates -type d -name src -print0 |
     xargs -0 -I{} find {} -name '*.rs' -type f |
     grep -v '/src/test_support\.rs$' |
@@ -55,6 +57,14 @@ for file in "${files[@]}"; do
     fi
   done < <(grep -nE '^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?fn[[:space:]]+[a-z0-9_]*env_lock[[:space:]]*\(' "$file" | cut -d: -f1)
 done
+
+# amplihack-utils historically exposed both helpers. Keep the compatibility
+# API, but prove that it cannot regress to a second static mutex.
+utils_lib="crates/amplihack-utils/src/lib.rs"
+if ! sed -n '/mod test_serial/,/^}/p' "$utils_lib" |
+  grep -q 'crate::test_support::env_lock()'; then
+  report "$utils_lib: test_serial::acquire() must delegate to crate::test_support::env_lock()."
+fi
 
 if [ "$violations" -gt 0 ]; then
   echo "" >&2

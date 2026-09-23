@@ -25,7 +25,6 @@ jobs:
   cross-compile:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -130,7 +129,6 @@ jobs:
     name: Publish snapshot release
     needs: cross-compile
     runs-on: ubuntu-latest
-    timeout-minutes: 20
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:

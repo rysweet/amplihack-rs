@@ -57,8 +57,12 @@ pub(crate) enum FailureClass {
     /// verdict. Mechanically retryable.
     TransientTransport,
     /// The environment cannot support the work as configured (missing binary,
-    /// no auth, disk full). Retrying the identical call cannot help; a human or
-    /// an agent has to change something first.
+    /// no auth, disk full, no repository selected). Retrying the identical call
+    /// cannot help; a human or an agent has to change something first.
+    ///
+    /// Issue #1435: a repository-selection refusal lands here, and its verdict
+    /// repeats the remedy the refusal already stated rather than only naming
+    /// the class.
     Environmental,
     /// The work itself failed: a test failed, code did not compile, an
     /// assertion blew up, a policy guard refused. Never mechanically retried.
@@ -110,6 +114,25 @@ pub(crate) struct FailureVerdict {
 impl FailureVerdict {
     /// One-line human summary naming the class and the deciding marker.
     pub(crate) fn reasoning(&self) -> String {
+        // Issue #1435: this error already told the operator what to do — pick a
+        // repository, or add an origin. Answering only with a class name throws
+        // that away a second time, which is the defect itself.
+        if let Some(signal) = self.signal
+            && REPO_SELECTION_MARKERS.contains(&signal)
+        {
+            let which = repo_selection_repo_hint(&self.evidence)
+                .map(|repo| format!(" The repository it was pointed at is {repo:?}."))
+                .unwrap_or_default();
+            return format!(
+                "classified `environmental` — evidence contains {signal:?}: the workflow \
+                 cannot select a repository to work in.{which} Retrying is pointless; the \
+                 same repo_path is refused the same way every time. Remedy: point \
+                 `repo_path` at the specific repository to work in — in a multi-repository \
+                 workspace that is one of the nested checkouts the error lists — or add an \
+                 `origin` remote to the repository already selected, which this workflow \
+                 needs to resolve a base ref and push its work (issue #1323).",
+            );
+        }
         // Issue #1390: a usage limit states its own reset time. Quoting it is
         // the difference between "something went wrong" and "come back at
         // 9:20am"; the operator should not have to re-read the raw log.
@@ -158,9 +181,9 @@ impl FailureVerdict {
 /// line or a socket-level error string — none of them is something a compiler,
 /// a test runner, or an agent's prose would emit as its own terminal message.
 ///
-/// Note what is deliberately absent: 401/403. An auth rejection is a *stable*
-/// server answer, not an overloaded one, and retrying it just burns budget.
-/// It is classified `Environmental` below.
+/// Note what is deliberately absent: 401/403/404. An auth rejection or an
+/// unknown-model answer is a *stable* server answer, not an overloaded one, and
+/// retrying it just burns budget. Those are classified `Environmental` below.
 const TRANSIENT_MARKERS: &[&str] = &[
     // Anthropic / OpenAI style overload and rate-limit envelopes.
     "api error: 529",
@@ -204,6 +227,15 @@ const ENVIRONMENTAL_MARKERS: &[&str] = &[
     "api error: 403",
     "403 forbidden",
     "permission_error",
+    // Issue #1421: a model the API does not know. This is the most misleading
+    // failure the runner sees — it looks like an API blip, so it used to fall
+    // through to `Indeterminate` ("nothing in the evidence identifies the
+    // failure") when in fact the evidence names the exact problem. It is
+    // environmental by definition: retrying the identical call with the same
+    // model can never succeed, something has to change first.
+    "api error: 404",
+    "404 not found",
+    "not_found_error",
     "credit balance is too low",
     "command not found",
     "no such file or directory",
@@ -212,6 +244,43 @@ const ENVIRONMENTAL_MARKERS: &[&str] = &[
     "disk quota exceeded",
     "gh auth login",
     "not logged in",
+];
+
+/// Markers for a repository-selection precondition failure (issue #1435).
+///
+/// `workflow-worktree` refuses a repository with no `origin` remote before
+/// anything tries to fetch from it (issue #1323, merged as #1374) — a workflow
+/// that will eventually push cannot proceed without one. That refusal is
+/// correct, and its message names both the cause and the remedy:
+///
+/// ```text
+/// ERROR: '/home/me/src' is a git repository but has no 'origin' remote, so this
+///        workflow cannot resolve a base ref or push its work.
+///        This looks like a multi-repository workspace. Repositories found:
+///          /home/me/src/amplihack-rs
+///        Point repo_path at the one to work in (issue #1323).
+/// ```
+///
+/// The classifier used to answer `indeterminate` — "no transport, environmental,
+/// or work marker found" — about that. It is `Environmental` by this taxonomy's
+/// own definition: the environment cannot support the work as configured, and
+/// retrying the identical call cannot help because the identical `repo_path`
+/// will be refused identically. A human has to pick a repository or add an
+/// origin.
+///
+/// These are held apart from `ENVIRONMENTAL_MARKERS` for one reason: the
+/// verdict quotes the remedy back (see `FailureVerdict::reasoning`), and that
+/// only makes sense when the deciding signal came from this table.
+///
+/// Every entry is a literal from the precondition's own output. Note what is
+/// deliberately absent: bare `repository`, bare `origin`, and git's own
+/// `fatal: not a git repository` / `does not appear to be a git repository`.
+/// Those are everyday git noise; a marker broad enough to catch them would
+/// reclassify ordinary failures, which is worse than the bug being fixed.
+const REPO_SELECTION_MARKERS: &[&str] = &[
+    "has no 'origin' remote",
+    "point repo_path at",
+    "add an 'origin' remote",
 ];
 
 /// Markers that mean the work itself failed. These win over everything: a run
@@ -276,16 +345,43 @@ pub(crate) fn usage_limit_reset_hint(text: &str) -> Option<String> {
     }
 }
 
+/// The repository a repository-selection precondition refused, if it names one.
+///
+/// Returned verbatim for the same reason the reset hint is (#1390): the
+/// operator has to recognise the path, and a normalised or re-rooted version of
+/// it would be a different path than the one they passed as `repo_path`.
+pub(crate) fn repo_selection_repo_hint(text: &str) -> Option<String> {
+    const NEEDLE: &str = "is a git repository but has no 'origin' remote";
+    let line = text
+        .lines()
+        .find(|line| line.to_ascii_lowercase().contains(NEEDLE))?;
+    let open = line.find('\'')?;
+    let rest = &line[open + 1..];
+    let close = rest.find('\'')?;
+    let repo = rest[..close].trim();
+    if repo.is_empty() {
+        None
+    } else {
+        Some(repo.to_string())
+    }
+}
+
 /// Classify a blob of failure evidence. Pure: same text in, same verdict out.
 ///
-/// Precedence is `Work` > `Environmental` > `TransientTransport`. Ambiguity
-/// therefore resolves toward NOT retrying, which is the cheap direction to be
-/// wrong in.
+/// Precedence is `Work` > `Environmental` > `UsageLimit` > `TransientTransport`.
+/// Ambiguity therefore resolves toward NOT retrying, which is the cheap
+/// direction to be wrong in.
 pub(crate) fn classify_failure_text(text: &str) -> (FailureClass, Option<&'static str>) {
     let haystack = text.to_ascii_lowercase();
 
     if let Some(marker) = first_match(&haystack, WORK_MARKERS) {
         return (FailureClass::Work, Some(marker));
+    }
+    // Checked ahead of ENVIRONMENTAL_MARKERS inside the same tier (#1435): both
+    // yield `Environmental`, but only this table's signals let the verdict
+    // repeat the remedy the precondition already stated.
+    if let Some(marker) = first_match(&haystack, REPO_SELECTION_MARKERS) {
+        return (FailureClass::Environmental, Some(marker));
     }
     if let Some(marker) = first_match(&haystack, ENVIRONMENTAL_MARKERS) {
         return (FailureClass::Environmental, Some(marker));

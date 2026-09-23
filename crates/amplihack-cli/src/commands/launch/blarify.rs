@@ -243,6 +243,7 @@ fn run_code_indexing(
         let current_exe =
             std::env::current_exe().context("failed to resolve current executable")?;
         let mut cmd = Command::new(current_exe);
+        amplihack_utils::litellm_proxy::scrub_inference_environment(&mut cmd);
         let child = match action {
             BlarifyIndexAction::ImportExistingJson => {
                 cmd.arg("index-code")

@@ -217,18 +217,23 @@ steps:
         printf 'other'; exit 0
       fi
       REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
-      REMOTE_URL_LC="${REMOTE_URL,,}"
-      case "$REMOTE_URL_LC" in
-        *://*) REST="${REMOTE_URL_LC#*://}"; REST="${REST##*@}"; REMOTE_HOST="${REST%%[/:]*}" ;;
-        *@*:*) REST="${REMOTE_URL_LC##*@}"; REMOTE_HOST="${REST%%[:/]*}" ;;
-        *) REMOTE_HOST="${REMOTE_URL_LC%%[/:]*}" ;;
+      # nocasematch (bash 3.1) folds case inside `case` itself. Not bash 4's
+      # lowercase expansion, which macOS /bin/bash 3.2 rejects (issue #1423), and
+      # not a lowercasing pipe, which would put a possibly-PAT-bearing URL on a
+      # stream (issue #684). Every removal pattern below is punctuation-only, so
+      # case cannot affect it; only the two `case` commands need the fold.
+      shopt -s nocasematch
+      case "$REMOTE_URL" in
+        *://*) REST="${REMOTE_URL#*://}"; REST="${REST##*@}"; REMOTE_HOST="${REST%%[/:]*}" ;;
+        *@*:*) REST="${REMOTE_URL##*@}"; REMOTE_HOST="${REST%%[:/]*}" ;;
+        *) REMOTE_HOST="${REMOTE_URL%%[/:]*}" ;;
       esac
       case "$REMOTE_HOST" in
         github.com) HT="github" ;;
         dev.azure.com|ssh.dev.azure.com|visualstudio.com|*.visualstudio.com) HT="azdo" ;;
         *) HT="other" ;;
       esac
-      echo "INFO: Remote host type: $HT" >&2
+      shopt -u nocasematch; echo "INFO: Remote host type: $HT" >&2
       printf '%s' "$HT"
     output: "remote_host_type"
 
@@ -377,15 +382,15 @@ steps:
       printf '%s' "$EXTRACTED"
     output: "issue_number"
 
-  # STEP 03c: ISSUE CLAIM CHECK (issue #1361)
+  # STEP 03c: ISSUE CLAIM CHECK (issues #1361, #1448)
   # Before this run does any work on issue N, ask whether a pull request is
   # already working on it. The workflow's only de-duplication was per-BRANCH
   # (workflow_pr_scope.sh keys on head+base), which is precisely the key a second
-  # run defeats: it derives a NEW branch, so the lookup truthfully reports "no PR
-  # for this head" and a duplicate is opened. Five near-identical PRs for #1277
-  # were opened in 103 minutes that way. Advisory by construction: only a pull
-  # request we actually saw stops a run, while a check that could not be made
-  # warns and continues (the lesson of #1268).
+  # run defeats: it derives a NEW branch, so five near-identical PRs for #1277
+  # were opened in 103 minutes. A run standing ON the claiming PR's head branch
+  # is the opposite case — a review, a CI fix, a resume — and is allowed (#1448;
+  # `-c allow_existing_pr=true` when the worktree cannot be on that branch).
+  # Advisory: an un-runnable check warns and continues (the lesson of #1268).
   - id: "step-03c-issue-claim-check"
     type: "bash"
     command: |

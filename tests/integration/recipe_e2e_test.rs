@@ -43,7 +43,7 @@ fn amplihack_bin() -> PathBuf {
 
 /// Assert that a Command exits with the expected success/failure status.
 fn assert_exit(cmd: &mut Command, expect_success: bool, context: &str) {
-    cmd.env("AMPLIHACK_SKIP_AUTO_INSTALL", "1");
+    isolate_recipe_run(cmd);
     let status = cmd
         .status()
         .unwrap_or_else(|e| panic!("Failed to run command ({context}): {e}"));
@@ -62,7 +62,7 @@ fn assert_exit(cmd: &mut Command, expect_success: bool, context: &str) {
 
 /// Run a command and return (stdout, stderr, exit_code).
 fn run_output(cmd: &mut Command, context: &str) -> (String, String, bool) {
-    cmd.env("AMPLIHACK_SKIP_AUTO_INSTALL", "1");
+    isolate_recipe_run(cmd);
     let output = cmd
         .output()
         .unwrap_or_else(|e| panic!("Failed to run command ({context}): {e}"));
@@ -71,6 +71,19 @@ fn run_output(cmd: &mut Command, context: &str) -> (String, String, bool) {
         String::from_utf8_lossy(&output.stderr).into_owned(),
         output.status.success(),
     )
+}
+
+fn isolate_recipe_run(cmd: &mut Command) {
+    cmd.env("AMPLIHACK_SKIP_AUTO_INSTALL", "1");
+    for key in [
+        "AMPLIHACK_SESSION_TREE_DIR",
+        "AMPLIHACK_TREE_ID",
+        "AMPLIHACK_SESSION_DEPTH",
+        "AMPLIHACK_MAX_DEPTH",
+        "AMPLIHACK_RECIPE_RUN_ID",
+    ] {
+        cmd.env_remove(key);
+    }
 }
 
 /// Write a minimal valid recipe YAML to a temp file, return the path.

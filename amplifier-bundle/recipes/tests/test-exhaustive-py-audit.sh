@@ -100,7 +100,9 @@ is_excluded() {
 # mention in a "Note:" or "replaced by" context).
 is_invocation() {
     local line="$1"
-    local lower="${line,,}"
+    # tr, not bash 4 lowercase expansion: macOS /bin/bash is 3.2 (issue #1423).
+    local lower
+    lower="$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')"
     # Bash regex avoids subshell forks (echo|grep) on every match line
     local deprecation_re='note.*replaced|replaced by|legacy|deprecated|replaces|migration|was replaced|note [(]may'
     local invoke_re='run:|python3?[[:space:]]|bash[[:space:]]|\./|command -v|which[[:space:]]|invoke|execute'
