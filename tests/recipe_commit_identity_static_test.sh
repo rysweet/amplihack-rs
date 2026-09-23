@@ -82,7 +82,8 @@ for file in "${expected_files[@]}"; do
     assert "$(basename "$file") exists" "[ -f '$file' ]"
 done
 
-mapfile -t files < <(commit_recipe_files)
+# while-read, not mapfile: macOS /bin/bash is 3.2 (issue #1423).
+files=(); while IFS= read -r _ml; do files+=("$_ml"); done < <(commit_recipe_files)
 if [ "${#files[@]}" -gt 0 ]; then
     record_pass "found commit-producing recipe files"
 else

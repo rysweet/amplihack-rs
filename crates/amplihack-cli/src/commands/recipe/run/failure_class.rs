@@ -181,9 +181,9 @@ impl FailureVerdict {
 /// line or a socket-level error string — none of them is something a compiler,
 /// a test runner, or an agent's prose would emit as its own terminal message.
 ///
-/// Note what is deliberately absent: 401/403. An auth rejection is a *stable*
-/// server answer, not an overloaded one, and retrying it just burns budget.
-/// It is classified `Environmental` below.
+/// Note what is deliberately absent: 401/403/404. An auth rejection or an
+/// unknown-model answer is a *stable* server answer, not an overloaded one, and
+/// retrying it just burns budget. Those are classified `Environmental` below.
 const TRANSIENT_MARKERS: &[&str] = &[
     // Anthropic / OpenAI style overload and rate-limit envelopes.
     "api error: 529",
@@ -227,6 +227,15 @@ const ENVIRONMENTAL_MARKERS: &[&str] = &[
     "api error: 403",
     "403 forbidden",
     "permission_error",
+    // Issue #1421: a model the API does not know. This is the most misleading
+    // failure the runner sees — it looks like an API blip, so it used to fall
+    // through to `Indeterminate` ("nothing in the evidence identifies the
+    // failure") when in fact the evidence names the exact problem. It is
+    // environmental by definition: retrying the identical call with the same
+    // model can never succeed, something has to change first.
+    "api error: 404",
+    "404 not found",
+    "not_found_error",
     "credit balance is too low",
     "command not found",
     "no such file or directory",
