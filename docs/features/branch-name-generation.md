@@ -397,7 +397,6 @@ and an `issue_number` that form a valid ref, or name the branch outright.
 - `amplifier-bundle/recipes/workflow-worktree.yaml` — `step-04-setup-worktree`, and the
   inline derivation (ranks 3-4)
 - `amplifier-bundle/tools/workflow_branch_name.sh` — the explicit-branch scan (rank 2)
-- `amplifier-bundle/tools/workflow_worktree_base_ref.sh` — fetch + base-ref resolution
 - `tests/issue_1426_branch_name_not_prose.sh` — the regression spec
 - #1463 — deriving `branch_prefix` from a structured source (item 5)
 - #1464 — the non-deterministic `feat/task-unnamed-<epoch>` fallback

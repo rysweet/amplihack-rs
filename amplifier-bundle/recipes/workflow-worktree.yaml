@@ -105,26 +105,26 @@ steps:
       EXISTING_BRANCH="${EXISTING_BRANCH:-}"
       PR_NUMBER="${PR_NUMBER:-}"
 
-      # EXPLICIT BRANCH WINS (#1426). A task that names its branch (`Branch: <ref>`) has
-      # answered the question; never derive a competitor from prose. Detection lives in
-      # tools/workflow_branch_name.sh (exit codes documented there): 0 reuse, 10 create,
-      # 1 none named, anything else aborts. A missing helper means no detection — the
-      # name itself is still derived inline below (#1121) — and says so on stderr.
+      # EXPLICIT BRANCH WINS (#1426): a task that names its branch (`Branch: <ref>`)
+      # gets that branch, never a prose-derived competitor. Forms and exit codes are
+      # documented in tools/workflow_branch_name.sh; a missing helper warns and skips.
       BRANCH_HELPER="$TOOLS_DIR/workflow_branch_name.sh"
       EXPLICIT_BRANCH=""
-      if [ -n "$EXISTING_BRANCH" ] || [ -n "$PR_NUMBER" ]; then :
-      elif [ ! -f "$BRANCH_HELPER" ]; then
-        echo "WARNING: $BRANCH_HELPER not found — not checking task_description for an explicitly named branch (issue #1426)." >&2
-      else
-        EXPLICIT_RC=0
-        EXPLICIT_BRANCH="$(bash "$BRANCH_HELPER" explicit --repo-path "$REPO_PATH" --main-repo "$MAIN_REPO_PATH")" || EXPLICIT_RC=$?
-        case "$EXPLICIT_RC" in
-          0) EXISTING_BRANCH="$EXPLICIT_BRANCH" ;;
-          1|10) ;;
-          *) echo "ERROR: branch detection failed (workflow_branch_name.sh exit $EXPLICIT_RC; see above)." >&2; exit 1 ;;
-        esac
-        [ -z "$EXPLICIT_BRANCH" ] || echo "INFO: task_description names branch '$EXPLICIT_BRANCH' — using it instead of deriving a name (issue #1426)." >&2
+      if [ -z "$EXISTING_BRANCH" ] && [ -z "$PR_NUMBER" ]; then
+        if [ ! -f "$BRANCH_HELPER" ]; then
+          echo "WARNING: $BRANCH_HELPER not found — not checking task_description for an explicitly named branch (issue #1426)." >&2
+        else
+          EXPLICIT_RC=0
+          EXPLICIT_BRANCH="$(bash "$BRANCH_HELPER" explicit --repo-path "$REPO_PATH" --main-repo "$MAIN_REPO_PATH")" || EXPLICIT_RC=$?
+          case "$EXPLICIT_RC" in
+            0) EXISTING_BRANCH="$EXPLICIT_BRANCH" ;;  # named and exists: reuse
+            1|10) ;;                                  # none named / named, to create
+            *) echo "ERROR: branch detection failed (workflow_branch_name.sh exit $EXPLICIT_RC; see above)." >&2
+               exit 1 ;;
+          esac
+        fi
       fi
+      [ -z "$EXPLICIT_BRANCH" ] || echo "INFO: task_description names branch '$EXPLICIT_BRANCH' (issue #1426)." >&2
 
       if [ -n "$EXISTING_BRANCH" ] || [ -n "$PR_NUMBER" ]; then
         # Precedence: existing_branch wins on tie.
@@ -236,58 +236,57 @@ steps:
       fi
 
       # Fetch latest refs and resolve the base branch without assuming origin/main.
-      # Both ladders (fetch-with-retry, and origin/HEAD -> origin/master ->
-      # origin/develop) moved VERBATIM to tools/workflow_worktree_base_ref.sh —
-      # extraction, not compression: this brick is at its 400-line budget and that is
-      # the rule's remedy for a full brick (scripts/check-brick-budget.sh). It bought
-      # the room for #1426's branch-name resolution above.
-      #
-      # The `else` arm is a DEGRADED MIRROR for a checkout with no bundle on disk (the
-      # phase-brick unit tests run this step body exactly that way): same sequence,
-      # retries dropped. The helper is the authority; move the two together. It still
-      # refuses to invent a base ref — a task worktree branches off a fetched remote
-      # ref, never the caller's HEAD (#858).
-      BASE_HELPER="$TOOLS_DIR/workflow_worktree_base_ref.sh"
-      if [ -f "$BASE_HELPER" ]; then
-        bash "$BASE_HELPER" fetch_origin_with_retry "$REPO_PATH" || true
-        BASE_REF="$(bash "$BASE_HELPER" resolve_base_ref "$REPO_PATH")" || exit 1
-      else
-        git fetch origin --no-tags >&2 || echo "WARNING: git fetch origin failed (base-ref helper unavailable, no retry) — continuing with local refs after repository validation succeeded." >&2
-        BASE_REF="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-        if [ -z "$BASE_REF" ]; then git remote set-head origin -a >/dev/null 2>&1 || true; BASE_REF="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"; fi
-        if [ -n "$BASE_REF" ] && ! git rev-parse --verify --quiet "${BASE_REF}^{commit}" >/dev/null; then BASE_REF=""; fi
-        for CAND_REF in origin/master origin/develop; do
-          if [ -z "$BASE_REF" ] && git rev-parse --verify --quiet "${CAND_REF}^{commit}" >/dev/null; then BASE_REF="$CAND_REF"; fi
+      # A task worktree branches off a fetched remote ref, never the caller's HEAD (#858).
+      for FETCH_TRY in 1 2 3; do
+        git fetch origin --no-tags >&2 && break
+        echo "WARNING: git fetch origin failed (attempt ${FETCH_TRY}/3); after the last attempt, continuing with local refs." >&2
+        [ "$FETCH_TRY" -eq 3 ] || sleep "$FETCH_TRY"
+      done
+      resolve_base_ref() {
+        local ref
+        ref="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+        if [ -z "$ref" ] || ! git rev-parse --verify --quiet "${ref}^{commit}" >/dev/null; then
+          git remote set-head origin -a >/dev/null 2>&1 || true
+          ref="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+        fi
+        for ref in $ref origin/master origin/develop; do
+          if git rev-parse --verify --quiet "${ref}^{commit}" >/dev/null; then
+            printf '%s\n' "$ref"
+            return 0
+          fi
         done
-        [ -n "$BASE_REF" ] || { echo "ERROR: no supported remote base ref found. Expected origin/HEAD, origin/master, or origin/develop." >&2; exit 1; }
-      fi
+        echo "ERROR: no supported remote base ref found. Expected origin/HEAD, origin/master, or origin/develop." >&2
+        return 1
+      }
+      BASE_REF="$(resolve_base_ref)" || exit 1
       BASE_BRANCH="${BASE_REF#origin/}"
 
-      # BRANCH NAMING (#1426). An explicitly named branch wins outright. Otherwise the
-      # name is keyed to the ISSUE NUMBER with a bounded, word-boundary-truncated tail,
-      # never fifty characters of prose (`feat/issue-142-repository-usersryan…-gith`).
-      # Computed INLINE, deliberately, and never behind a bundle helper (#1121): the
-      # phase bricks are executed with no amplifier-bundle on disk by design, and a
-      # LOAD-BEARING name that changes with the environment stops a re-run from
-      # recognising — and reusing — the worktree its predecessor registered.
-      # Rules: drop path/URL/e-mail tokens whole, drop 20+ character identifier blobs,
-      # skip a leading `issue <N>`, then join words only while the result still fits 24
-      # characters, so the tail always ends on a WHOLE WORD. Nothing usable to say ->
-      # a stable hash of the task, never its prose. SLUG_NUM — ISSUE_NUMBER forced numeric
-      # — reaches that sed, because issue_number is NOT always a number (workflow-prep
-      # passes a local-tracking ref through verbatim, #815) and a bare '/' there kills step-04.
-      # FIX (#3023/BL-002) preserved: the last-resort name below hardcodes 'feat/' rather
-      # than $BRANCH_PREFIX so an invalid or malicious branch_prefix cannot inject.
-      # Input is bounded by a SHELL SUBSTRING, never `| head -c`: an early-exit stage under
-      # `pipefail` empties the name. See docs/features/branch-name-generation.md.
-      # DIVERGED, no longer mirrored: consensus-issue-worktree.yaml still runs the old 30-char prose slug (#2952 pairing ends here; tracked in #1430).
-      SLUG_HEAD="${TASK_DESCRIPTION:-}"; SLUG_NUM="${ISSUE_NUMBER:-0}"; case "$SLUG_NUM" in ''|*[!0-9]*) SLUG_NUM=0 ;; esac; SLUG_WORDS="$(printf '%s' "${SLUG_HEAD:0:65536}" | tr '[:upper:]' '[:lower:]' \
+      # BRANCH NAMING (#1426): the explicit branch, else <prefix>/issue-<N>-<tail>.
+      # Derived INLINE, never in a bundle helper: re-runs depend on the name (#1121).
+      # Tail rules (whole words, <=24 chars, no paths or blobs, task hash if empty) and
+      # rationale: docs/features/branch-name-generation.md. SLUG_NUM reaches sed, so it
+      # is forced numeric (#815). consensus-issue-worktree.yaml still differs (#1430).
+      SLUG_NUM="${ISSUE_NUMBER:-0}"
+      case "$SLUG_NUM" in ''|*[!0-9]*) SLUG_NUM=0 ;; esac
+      SLUG_HEAD="${TASK_DESCRIPTION:-}"
+      SLUG_WORDS="$(printf '%s' "${SLUG_HEAD:0:65536}" | tr '[:upper:]' '[:lower:]' \
         | sed -e 's#[^[:space:]]*[/\\@][^[:space:]]*# #g' -e 's/[^a-z0-9]\{1,\}/-/g' \
         | tr '\n\r' '--' | sed -e 's/-\{2,\}/-/g' -e 's/^-*//;s/-*$//' \
         | sed -E "s/^(issues?-)?(${SLUG_NUM})-//")"
-      TASK_SLUG=""; SLUG_OIFS="$IFS"; IFS='-'
-      for SLUG_W in $SLUG_WORDS; do [ -n "$SLUG_W" ] && [ ${#SLUG_W} -le 20 ] || continue; SLUG_N="${TASK_SLUG:+$TASK_SLUG-}$SLUG_W"; [ ${#SLUG_N} -le 24 ] || break; TASK_SLUG="$SLUG_N"; done
-      IFS="$SLUG_OIFS"; [ -n "$TASK_SLUG" ] || TASK_SLUG="$(printf '%s' "${TASK_DESCRIPTION:-}" | cksum | cut -d' ' -f1)"
+      TASK_SLUG=""
+      SLUG_OIFS="$IFS"
+      IFS='-'
+      for SLUG_W in $SLUG_WORDS; do
+        [ -n "$SLUG_W" ] && [ ${#SLUG_W} -le 20 ] || continue
+        SLUG_N="${TASK_SLUG:+$TASK_SLUG-}$SLUG_W"
+        [ ${#SLUG_N} -le 24 ] || break
+        TASK_SLUG="$SLUG_N"
+      done
+      IFS="$SLUG_OIFS"
+      if [ -z "$TASK_SLUG" ]; then
+        TASK_SLUG="$(printf '%s' "${TASK_DESCRIPTION:-}" | cksum | cut -d' ' -f1)"
+      fi
+      # The last-resort name hardcodes 'feat/' so a bad branch_prefix cannot inject (#3023).
       BRANCH_NAME="${EXPLICIT_BRANCH:-${BRANCH_PREFIX:-feat}/issue-${ISSUE_NUMBER:-0}-${TASK_SLUG}}"
       if ! git check-ref-format --branch "${BRANCH_NAME}" >/dev/null 2>&1; then
         echo "WARNING: derived branch name '${BRANCH_NAME}' is invalid — falling back to task-unnamed" >&2
