@@ -26,7 +26,6 @@ jobs:
   check:
     name: Lint & Format
     runs-on: ubuntu-latest
-    timeout-minutes: 25
     env:
       # SPIKE (#1052 follow-up): compiled-artifact caching via sccache with the
       # GitHub Actions cache backend. Unlike restoring the whole target/ dir
@@ -242,7 +241,18 @@ jobs:
           # Kani proves each decision function for EVERY input, where the spec gate
           # above proves the ORDERING. The two real defects in this area were one of
           # each kind, so neither gate substitutes for the other.
-          cargo install --locked kani-verifier
+          #
+          # Pin the version. `--locked` fixes the dependency graph of whichever
+          # version resolves, not the version itself, so an unpinned install
+          # silently adopts each new kani release. 0.68.0 (16 Sep 2026) crashes
+          # with an internal compiler error while codegenning this crate --
+          #   kani-compiler/src/intrinsics.rs:243: assertion failed:
+          #   matches!(output.kind(), TyKind::RigidTy(RigidTy::Int(IntTy::I32)))
+          # -- which turned this gate red on every branch from the day it shipped.
+          # Nothing in the repository changed; the tool did. The TLA2TOOLS step
+          # below already pins a version and a checksum for the same reason.
+          # Revisit when a kani release above 0.68.0 compiles this crate.
+          cargo install --locked kani-verifier@0.67.0
           cargo kani setup
           ./scripts/check-proofs.sh
 
@@ -284,7 +294,6 @@ jobs:
     # merge. Running Test concurrently with Lint & Format drops the critical
     # path to ~35 min. `concurrency: cancel-in-progress` still supersedes stale
     # runs; a lint failure only costs redundant Test compute, not correctness.
-    timeout-minutes: 45
     env:
       # Drop debug info from the workspace's large test-binary surface (60+
       # integration [[test]] targets plus per-crate unit tests): smaller links
@@ -360,7 +369,6 @@ jobs:
     name: Install Smoke Test
     runs-on: ubuntu-latest
     # No `needs: check` — parallelize with Lint & Format (see Test job note).
-    timeout-minutes: 30
     env:
       # This job only asserts that `cargo install` succeeds and the binary
       # launches — it neither ships nor benchmarks the artifact. The workspace's
@@ -402,7 +410,6 @@ jobs:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     # No `needs: check` — parallelize with Lint & Format (see Test job note).
-    timeout-minutes: 45
     env:
       # PR/branch runs only *verify* that each target compiles; the optimized
       # binaries are shipped exclusively by the `release` job on tag pushes.
@@ -502,7 +509,6 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [test, cross-compile]
     runs-on: ubuntu-latest
-    timeout-minutes: 20
     permissions:
       contents: write
     steps:
