@@ -24,7 +24,6 @@ jobs:
       github.actor != 'copilot[bot]'
     runs-on: ubuntu-latest
     environment: external-pr-scan
-    timeout-minutes: 15
     steps:
       - name: Checkout base (safe — not PR head)
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
