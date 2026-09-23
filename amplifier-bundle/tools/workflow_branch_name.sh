@@ -127,6 +127,13 @@ candidate_ok() {
   return 0
 }
 
+# The directive shape, as a bash ERE. It lives in a variable for two reasons.
+# `[[ =~ ]]` has no case-insensitive flag, hence the spelled-out classes; and the
+# pattern MUST stay UNQUOTED at the match site — quoting it makes bash match it
+# as a LITERAL string, and every directive line then fails to match.
+# `[[ =~ ]]` is bash 3.0+, within the 3.2 floor this file holds to (#1423).
+DIRECTIVE_RE='^[[:space:]]*[Bb][Rr][Aa][Nn][Cc][Hh]([[:space:]]+[^:=]*)?[[:space:]]*[:=]'
+
 # ---------------------------------------------------------------------------
 # `explicit` — find the branch the task NAMES, if it names one.
 #
@@ -150,7 +157,7 @@ candidate_ok() {
 # exactly that name). Without --repo-path, 0 means "a branch was named".
 # ---------------------------------------------------------------------------
 cmd_explicit() {
-  local line rest cand pending=0 repo=""
+  local line blank rest cand pending=0 repo=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo-path) repo="${2:-}"; shift 2 || break ;;
@@ -161,10 +168,17 @@ cmd_explicit() {
   # last (often only) line in $line with read returning non-zero at EOF.
   while IFS= read -r line || [ -n "$line" ]; do
     line="${line%$'\r'}"
+    # Is this line all whitespace? Asked with a `case` glob, which scans for one
+    # non-space character and stops. NOT with `${line#"${line%%[![:space:]]*}"}`:
+    # that idiom is QUADRATIC in the length of the leading whitespace run where
+    # this is linear. TASK_DESCRIPTION is untrusted prose that is only size
+    # checked, so a single 64 KB indented line — one pasted, indented issue body
+    # — is enough to take the whole scan from well under a second into seconds.
+    blank=1; case "$line" in *[![:space:]]*) blank=0 ;; esac
     # A directive line whose value was empty: the value is the first token of
     # the next non-blank line.
     if [ "$pending" -eq 1 ]; then
-      if [ -n "$(printf '%s' "$line" | tr -d '[:space:]')" ]; then
+      if [ "$blank" -eq 0 ]; then
         pending=0
         cand="$(first_token "$line")"
         if candidate_ok "$cand"; then emit_explicit "$cand" "$repo"; return $?; fi
@@ -172,12 +186,17 @@ cmd_explicit() {
         continue
       fi
     fi
-    printf '%s' "$line" \
-      | grep -Eqi '^[[:space:]]*branch([[:space:]]+[^:=]*)?[[:space:]]*[:=]' || continue
+    # The directive test, in process. This loop runs once per line of a task
+    # description bounded at 64 KB — up to a thousand lines — so the
+    # `printf … | grep -Eqi` this replaces cost a fork+exec PER LINE on EVERY
+    # workflow run, and dominated the scan. $DIRECTIVE_RE is unquoted on
+    # purpose; see its definition above.
+    [[ $line =~ $DIRECTIVE_RE ]] || continue
     rest="${line#*[:=]}"
     cand="$(first_token "$rest")"
     if candidate_ok "$cand"; then emit_explicit "$cand" "$repo"; return $?; fi
-    if [ -z "$(printf '%s' "$rest" | tr -d '[:space:]')" ]; then pending=1; fi
+    # Same all-whitespace question as at the top of the loop, same answer.
+    case "$rest" in *[![:space:]]*) ;; *) pending=1 ;; esac
   done < <(task_text)
   return 10
 }

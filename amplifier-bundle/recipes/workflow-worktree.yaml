@@ -280,6 +280,7 @@ steps:
       # The input is bounded by a SHELL SUBSTRING, never by piping into `head -c`: a stage
       # that stops reading early leaves the producer writing into a closed pipe, and
       # `pipefail` turns it into an EMPTY name. Full account: tools/workflow_branch_name.sh.
+      # DIVERGED, no longer mirrored: consensus-issue-worktree.yaml still runs the old 30-char prose slug (#2952 pairing ends here; tracked in #1430).
       SLUG_HEAD="${TASK_DESCRIPTION:-}"; SLUG_NUM="${ISSUE_NUMBER:-0}"; case "$SLUG_NUM" in ''|*[!0-9]*) SLUG_NUM=0 ;; esac; SLUG_WORDS="$(printf '%s' "${SLUG_HEAD:0:65536}" | tr '[:upper:]' '[:lower:]' \
         | sed -e 's#[^[:space:]]*[/\\@][^[:space:]]*# #g' -e 's/[^a-z0-9]\{1,\}/-/g' \
         | tr '\n\r' '--' | sed -e 's/-\{2,\}/-/g' -e 's/^-*//;s/-*$//' \
