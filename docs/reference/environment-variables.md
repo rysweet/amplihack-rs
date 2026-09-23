@@ -914,14 +914,30 @@ Standard Unix home directory. Used to resolve `~/.amplihack`, `~/.npm-global`, a
 ### AMPLIHACK_DEFAULT_MODEL
 
 **Type:** string
-**Default:** `opus[1m]`
+**Default:** unset — amplihack passes **no** `--model` at all
 **Used by:** `build_command()` in `launch.rs`
 
-The `--model` flag passed to the launched tool when the user has not specified one explicitly. Override to use a different model variant.
+Pins the `--model` flag passed to Claude-compatible tools. When it is unset (or
+set to an empty / whitespace-only value), amplihack puts no model on the command
+line and the tool applies its own current default — which also lets the `"model"`
+in your `~/.claude/settings.json` take effect.
+
+There is deliberately no built-in default (issue #1421). A model alias hardcoded
+by amplihack is resolved by the tool, whose version amplihack does not control;
+one such alias resolved to a retired model id and every agent step failed with a
+404 naming a model the user had never chosen.
 
 ```sh
 AMPLIHACK_DEFAULT_MODEL=sonnet amplihack claude
 # Passes: claude --model sonnet --dangerously-skip-permissions
+```
+
+When amplihack injects the flag it says so on stderr, naming the model and this
+variable as its source, so a later "model not found" is traceable:
+
+```
+amplihack: passing `--model sonnet` to `claude` (from AMPLIHACK_DEFAULT_MODEL).
+Unset AMPLIHACK_DEFAULT_MODEL to let claude choose its own default model.
 ```
 
 If the user supplies `--model` explicitly on the command line, this variable is

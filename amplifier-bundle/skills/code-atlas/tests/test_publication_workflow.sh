@@ -13,7 +13,7 @@
 # Exit:  0 = all tests passed, non-zero = failures
 
 set -uo pipefail
-shopt -s globstar nullglob  # enable ** recursive globs; unmatched globs expand to nothing
+shopt -s nullglob  # unmatched globs expand to nothing
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
@@ -70,8 +70,9 @@ echo ""
 echo "=== SVG Companion Files ==="
 
 # Every .mmd and .dot file must have a matching .svg companion
-for mmd_file in "${ATLAS}"/**/*.mmd "${ATLAS}"/*.mmd; do
-    [[ -f "$mmd_file" ]] || continue
+# find, not a `**` globstar sweep: globstar is bash 4.0 and macOS ships bash 3.2
+# as /bin/bash (issue #1423). -print0 / read -d '' keeps paths with spaces whole.
+while IFS= read -r -d '' mmd_file; do
     svg_file="${mmd_file%.mmd}.svg"
     layer_dir=$(dirname "$mmd_file" | sed "s|${REPO_ROOT}/||")
     fname=$(basename "$mmd_file")
@@ -80,10 +81,9 @@ for mmd_file in "${ATLAS}"/**/*.mmd "${ATLAS}"/*.mmd; do
         assert_file_size_gt "SVG not empty: ${fname%.mmd}.svg" "$svg_file" 100
         assert_file_contains "SVG has valid SVG content" "<svg\|xmlns.*svg" "$svg_file"
     fi
-done
+done < <(find "${ATLAS}" -type f -name '*.mmd' -print0 2>/dev/null)
 
-for dot_file in "${ATLAS}"/**/*.dot "${ATLAS}"/*.dot; do
-    [[ -f "$dot_file" ]] || continue
+while IFS= read -r -d '' dot_file; do
     svg_file="${dot_file%.dot}.svg"
     layer_dir=$(dirname "$dot_file" | sed "s|${REPO_ROOT}/||")
     fname=$(basename "$dot_file")
@@ -92,7 +92,7 @@ for dot_file in "${ATLAS}"/**/*.dot "${ATLAS}"/*.dot; do
         assert_file_size_gt "SVG not empty: ${fname%.dot}.svg" "$svg_file" 100
         assert_file_contains "SVG has valid SVG content (dot)" "<svg\|xmlns.*svg" "$svg_file"
     fi
-done
+done < <(find "${ATLAS}" -type f -name '*.dot' -print0 2>/dev/null)
 
 # ============================================================================
 # Test Group 2: index.md Landing Page Quality

@@ -50,30 +50,28 @@ fn ci_workflows_define_concurrency_boundaries() {
     );
 }
 
-#[test]
-fn ci_jobs_have_timeout_minutes() {
-    let mut missing = Vec::new();
-    for path in workflow_files() {
-        let workflow = load_yaml(&path);
-        let Some(jobs) = workflow.get("jobs").and_then(Value::as_mapping) else {
-            continue;
-        };
-        for job_name in jobs.keys().filter_map(Value::as_str) {
-            let job = &jobs[Value::String(job_name.to_string())];
-            if job.get("timeout-minutes").is_none() {
-                missing.push(format!(
-                    "{}:{job_name}",
-                    path.strip_prefix(repo_root()).unwrap().display()
-                ));
-            }
-        }
-    }
-
-    assert!(
-        missing.is_empty(),
-        "each CI job must set timeout-minutes so runaway jobs fail predictably; missing: {missing:?}"
-    );
-}
+// `ci_jobs_have_timeout_minutes` used to live here. It required every job in
+// every workflow to set `timeout-minutes`, on the reasoning that a runaway job
+// should "fail predictably".
+//
+// It does not fail predictably. It fails as `The operation was canceled.`, with
+// no step named and no output kept, which is indistinguishable from a cancelled
+// run and reads as a failed required check on a pull request that did nothing
+// wrong. That is what happened here: pinning kani stopped the proof gate
+// crashing early, the gate began running to completion, and a 25-minute budget
+// killed Lint & Format at 25m22s with every other job green. The diagnosis cost
+// two full CI runs and a local kani install, because the timeout discarded the
+// evidence.
+//
+// A wall clock cannot tell a slow job from a hung one. Slow CI is a thing to
+// measure and fix -- and it was measured: the slowdown was cache deletion after
+// 19 idle days, addressed in #1469. Converting it into red checks on unrelated
+// pull requests only hides it. Without `timeout-minutes` GitHub still applies
+// its own 6-hour ceiling, so a genuinely hung job is still reaped.
+//
+// The two tests either side of this comment stay: concurrency boundaries and
+// the target/ caching opt-out are real resource discipline, and neither
+// destroys the evidence when it trips.
 
 #[test]
 fn ci_rust_cache_entries_do_not_cache_workspace_targets_by_default() {

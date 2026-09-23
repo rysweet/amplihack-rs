@@ -18,9 +18,11 @@ fn build_command_injects_uvx_plugin_and_project_args_for_claude() {
     let original_cwd = set_cwd(cwd.path()).unwrap();
     let previous_uv_python = std::env::var_os("UV_PYTHON");
     let previous_original_cwd = std::env::var_os("AMPLIHACK_ORIGINAL_CWD");
+    let previous_model = std::env::var_os("AMPLIHACK_DEFAULT_MODEL");
     unsafe {
         std::env::set_var("UV_PYTHON", "1");
         std::env::remove_var("AMPLIHACK_ORIGINAL_CWD");
+        std::env::remove_var("AMPLIHACK_DEFAULT_MODEL");
     }
 
     let binary = BinaryInfo {
@@ -52,6 +54,10 @@ fn build_command_injects_uvx_plugin_and_project_args_for_claude() {
         Some(value) => unsafe { std::env::set_var("AMPLIHACK_ORIGINAL_CWD", value) },
         None => unsafe { std::env::remove_var("AMPLIHACK_ORIGINAL_CWD") },
     }
+    match previous_model {
+        Some(value) => unsafe { std::env::set_var("AMPLIHACK_DEFAULT_MODEL", value) },
+        None => unsafe { std::env::remove_var("AMPLIHACK_DEFAULT_MODEL") },
+    }
 
     assert_eq!(args[0], "--plugin-dir");
     assert_eq!(
@@ -64,7 +70,19 @@ fn build_command_injects_uvx_plugin_and_project_args_for_claude() {
     );
     assert_eq!(args[2], "--add-dir");
     assert_eq!(args[3], execution_dir.path().display().to_string());
-    assert_eq!(args[4], "--model");
+    // Issue #1421: a uvx launch requests the same concrete default as any other.
+    // (`--append-system-prompt` also follows here — see
+    // tests_system_prompt_append.rs — so this asserts the model's presence and
+    // value rather than an exact argv length.)
+    let at = args
+        .iter()
+        .position(|arg| arg == "--model")
+        .unwrap_or_else(|| panic!("a uvx launch must request a model too, got: {args:?}"));
+    assert_eq!(
+        args.get(at + 1).map(String::as_str),
+        Some(crate::commands::launch::command::DEFAULT_MODEL),
+        "got: {args:?}"
+    );
 }
 
 #[test]
@@ -183,7 +201,11 @@ fn build_command_does_not_duplicate_uvx_plugin_or_add_dir_args() {
     let original_home = set_home(home.path());
     let original_cwd = set_cwd(cwd.path()).unwrap();
     let previous_uv_python = std::env::var_os("UV_PYTHON");
-    unsafe { std::env::set_var("UV_PYTHON", "1") };
+    let previous_model = std::env::var_os("AMPLIHACK_DEFAULT_MODEL");
+    unsafe {
+        std::env::set_var("UV_PYTHON", "1");
+        std::env::remove_var("AMPLIHACK_DEFAULT_MODEL");
+    }
 
     let binary = BinaryInfo {
         name: "claude".to_string(),
@@ -208,6 +230,10 @@ fn build_command_does_not_duplicate_uvx_plugin_or_add_dir_args() {
         Some(value) => unsafe { std::env::set_var("UV_PYTHON", value) },
         None => unsafe { std::env::remove_var("UV_PYTHON") },
     }
+    match previous_model {
+        Some(value) => unsafe { std::env::set_var("AMPLIHACK_DEFAULT_MODEL", value) },
+        None => unsafe { std::env::remove_var("AMPLIHACK_DEFAULT_MODEL") },
+    }
 
     // The system-prompt fragment (issue #1265) is compiled into the binary, so
     // it is injected on every claude launch regardless of what is on disk —
@@ -222,11 +248,15 @@ fn build_command_does_not_duplicate_uvx_plugin_or_add_dir_args() {
     let mut without_fragment = args.clone();
     without_fragment.drain(append..=append + 1);
 
+    // Issue #1421: the model request is amplihack's, like the plugin/project
+    // args. Drop it the same way the fragment is dropped, so this test keeps
+    // asserting the thing it is actually about: no DUPLICATED uvx args.
+    if let Some(m) = without_fragment.iter().position(|a| a == "--model") {
+        without_fragment.drain(m..=m + 1);
+    }
     assert_eq!(
         without_fragment,
         vec![
-            "--model",
-            "opus[1m]",
             "--plugin-dir",
             "/custom/plugin",
             "--add-dir",

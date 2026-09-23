@@ -362,7 +362,7 @@ steps:
         fi
         tmp=$(mktemp -t step19c-untracked-XXXXXX)
         if git ls-files --others --exclude-standard -z -- "$@" >"$tmp"; then
-          mapfile -d '' -t files <"$tmp"; rm -f "$tmp"
+          while IFS= read -r -d '' file; do files+=("$file"); done <"$tmp"; rm -f "$tmp"
         else
           rc=$?; rm -f "$tmp"; echo "ERROR: git ls-files failed during $label (exit $rc)" >&2; return "$rc"
         fi

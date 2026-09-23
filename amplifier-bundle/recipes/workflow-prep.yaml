@@ -217,18 +217,23 @@ steps:
         printf 'other'; exit 0
       fi
       REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
-      REMOTE_URL_LC="${REMOTE_URL,,}"
-      case "$REMOTE_URL_LC" in
-        *://*) REST="${REMOTE_URL_LC#*://}"; REST="${REST##*@}"; REMOTE_HOST="${REST%%[/:]*}" ;;
-        *@*:*) REST="${REMOTE_URL_LC##*@}"; REMOTE_HOST="${REST%%[:/]*}" ;;
-        *) REMOTE_HOST="${REMOTE_URL_LC%%[/:]*}" ;;
+      # nocasematch (bash 3.1) folds case inside `case` itself. Not bash 4's
+      # lowercase expansion, which macOS /bin/bash 3.2 rejects (issue #1423), and
+      # not a lowercasing pipe, which would put a possibly-PAT-bearing URL on a
+      # stream (issue #684). Every removal pattern below is punctuation-only, so
+      # case cannot affect it; only the two `case` commands need the fold.
+      shopt -s nocasematch
+      case "$REMOTE_URL" in
+        *://*) REST="${REMOTE_URL#*://}"; REST="${REST##*@}"; REMOTE_HOST="${REST%%[/:]*}" ;;
+        *@*:*) REST="${REMOTE_URL##*@}"; REMOTE_HOST="${REST%%[:/]*}" ;;
+        *) REMOTE_HOST="${REMOTE_URL%%[/:]*}" ;;
       esac
       case "$REMOTE_HOST" in
         github.com) HT="github" ;;
         dev.azure.com|ssh.dev.azure.com|visualstudio.com|*.visualstudio.com) HT="azdo" ;;
         *) HT="other" ;;
       esac
-      echo "INFO: Remote host type: $HT" >&2
+      shopt -u nocasematch; echo "INFO: Remote host type: $HT" >&2
       printf '%s' "$HT"
     output: "remote_host_type"
 
