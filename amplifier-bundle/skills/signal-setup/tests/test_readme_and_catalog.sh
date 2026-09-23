@@ -167,7 +167,10 @@ echo "Test 4: signal-setup occupies the correct alphabetical slot"
 
 # Ordered list of skill names exactly as they appear as table rows.
 # shellcheck disable=SC2016  # literal backticks are catalog markdown, not expansion
-mapfile -t CAT_NAMES < <(grep -oE '^\| `[a-z0-9-]+`' "$CATALOG" | sed -E 's/^\| `([a-z0-9-]+)`/\1/')
+# while-read, not mapfile: macOS /bin/bash is 3.2 (issue #1423).
+CAT_NAMES=()
+while IFS= read -r _ml; do CAT_NAMES+=("$_ml"); done \
+  < <(grep -oE '^\| `[a-z0-9-]+`' "$CATALOG" | sed -E 's/^\| `([a-z0-9-]+)`/\1/')
 
 # Find signal-setup's neighbours in emission order.
 prev=""; next=""; found=""
