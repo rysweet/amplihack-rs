@@ -49,7 +49,9 @@ while [ $# -gt 0 ]; do
   esac
 done
 for req in LOOP_NAME ROUND_RECIPE CLEAN_TOKEN VERDICT_FIELD STATE_DIR; do
-  [ -n "${!req}" ] || { echo "ERROR: autodrive_loop.sh: --${req,,} is required" >&2; exit 2; }
+  # tr, not bash 4 lowercase expansion: macOS /bin/bash is 3.2 (issue #1423).
+  flag="$(printf '%s' "$req" | tr '[:upper:]' '[:lower:]')"
+  [ -n "${!req}" ] || { echo "ERROR: autodrive_loop.sh: --$flag is required" >&2; exit 2; }
 done
 mkdir -p "$STATE_DIR" || exit 2
 
