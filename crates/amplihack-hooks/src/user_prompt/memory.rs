@@ -257,14 +257,26 @@ fn outside_code<'a>(text: &'a str, delimiter: &str) -> Vec<&'a str> {
         .collect()
 }
 
+/// The roles a Claude- or OpenAI-style transcript entry can carry, which
+/// session-stop writes as `<role>: ` labels.
+const TRANSCRIPT_ROLES: &[&str] = &[
+    "assistant",
+    "developer",
+    "function",
+    "human",
+    "system",
+    "tool",
+    "user",
+];
+
 /// `text` split into transcript turns, without their role labels.
 ///
 /// Session-stop flattens a transcript as `<role>: <text>` paragraphs joined
-/// by blank lines, with whatever role the transcript carries (`user`,
-/// `assistant`, `human`, `system`, `tool`). A paragraph that starts with a
-/// lower-case `<word>:` label starts a turn; other paragraphs (a code block
-/// with blank lines in it) continue the current one. Text without labels is
-/// one turn.
+/// by blank lines, with whatever role the transcript carries. A paragraph
+/// that starts with one of the [`TRANSCRIPT_ROLES`] labels starts a turn;
+/// other paragraphs (a code block with blank lines in it, or a note that
+/// opens with `sqlite: …`) continue the current one and keep their words.
+/// Text without labels is one turn.
 fn turns(text: &str) -> Vec<String> {
     let mut turns = vec![String::new()];
     let mut paragraph_start = true;
@@ -273,13 +285,10 @@ fn turns(text: &str) -> Vec<String> {
             paragraph_start = true;
             continue;
         }
-        let label = line.trim_start().split_once(": ").filter(|(role, _)| {
-            paragraph_start
-                && (1..=20).contains(&role.len())
-                && role
-                    .chars()
-                    .all(|c| c.is_ascii_lowercase() || c == '_' || c == '-')
-        });
+        let label = line
+            .trim_start()
+            .split_once(": ")
+            .filter(|(role, _)| paragraph_start && TRANSCRIPT_ROLES.contains(role));
         match label {
             Some((_, rest)) => turns.push(rest.to_string()),
             None => {
@@ -1090,6 +1099,15 @@ mod tests {
                 "/fix the sqlite flaky test",
                 "Agent tester: user: run `cargo test\n\nassistant: The sqlite test is flaky because it shares a temp dir",
             ),
+            // A note opening with a lower-case topic word is not a role label.
+            (
+                "/analyze the sqlite timeout",
+                "Agent tester: sqlite: the timeout is too short when it runs in parallel",
+            ),
+            (
+                "/analyze the sqlite timeout",
+                "Agent tester: Sqlite: the timeout is too short when it runs in parallel",
+            ),
         ] {
             assert!(
                 format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(relevant)])
@@ -1106,6 +1124,10 @@ mod tests {
             ["hola", "see:\n```\nfn a() {}\nfn b() {}\n```", "done"]
         );
         assert_eq!(turns("Note: plain text"), ["Note: plain text"]);
+        assert_eq!(
+            turns("sqlite: the timeout\n\nauth: tokens expire"),
+            ["sqlite: the timeout\nauth: tokens expire"]
+        );
         assert_eq!(outside_code("a `b` c `d", "`"), ["a ", " c ", "d"]);
     }
 

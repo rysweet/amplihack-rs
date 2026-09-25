@@ -23,12 +23,12 @@ Each stored memory is scored against the prompt, and only relevant memories are 
   - contractions,
   - words shorter than 3 characters,
   - the agent names and slash command that triggered the hook,
-  - the `Agent <name>:` prefix and `user:` / `assistant:` labels that stored learnings carry.
+  - the `Agent <name>:` prefix and the transcript role labels (`user:`, `assistant:`, `human:`, `system:`, `tool:`, `developer:`, `function:`) that stored learnings carry.
 
   There is no stemming.
 - **Relevance.** A memory must share at least 2 topic words with the prompt and score at least 0.2 cosine similarity. The score is printed as `(relevance: N.NN)`. A prompt left with a single topic word therefore never matches.
 - **Output.** Copies of the same memory stored under different agents are printed once. At most 5 memories are injected, most relevant first, and each is cut to 400 characters. If nothing is relevant, nothing is injected.
-- **English only.** Each transcript turn of a memory is checked on its own. A turn is a paragraph that starts with a role label such as `user:`, `assistant:`, `human:` or `tool:`. Only turns whose prose reads as English contribute topic words: at least 10% of their prose words must be common English function words (`the`, `and`, `with`, `because`, …) or English contractions.
+- **English only.** Each transcript turn of a memory is checked on its own. A turn is a paragraph that starts with one of those role labels. Any other paragraph, including one that opens with a lower-case word and a colon (`sqlite: …`), continues the current turn and keeps its words. Only turns whose prose reads as English contribute topic words: at least 10% of their prose words must be common English function words (`the`, `and`, `with`, `because`, …) or English contractions.
   - Words that are also frequent in other Latin-script languages don't count (`is`, `to`, `for`, `has`, `just`, `most`, …). The marker list shares no word with the [stopwords-iso](https://github.com/stopwords-iso/stopwords-iso) lists of 35 Latin-script languages. It still shares `are` and `or` with Romanian, `it` with Latvian and Lithuanian, and `it`, `out` and `you` with Breton; see `ENGLISH_MARKERS`.
   - Code is ignored when judging the language: fenced blocks, closed backtick spans, paths, flags, `snake_case` and `ALL_CAPS` identifiers. Surrounding punctuation and quotes in any script (`¿`, `“`, `»`) are trimmed first, so they don't make a word look like code.
   - Non-ASCII words are never topic words.
