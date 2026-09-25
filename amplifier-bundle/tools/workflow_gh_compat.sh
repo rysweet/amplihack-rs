@@ -541,41 +541,71 @@ EOF_CANDS
   printf '%s\n' "$out"
 }
 
-# ghc_search KIND(pr|issue) STATE TEXT LIMIT — raw REST issue objects, like
-# /search/issues. The cloud proxy refuses /search (it only serves repository-
-# scoped paths), so on failure the repo's issues are listed and the free-text
-# terms matched client-side against title and body.
+# ghc_search KIND(pr|issue) STATE TEXT LIMIT — /search/issues items (for
+# issues) or at least their .number (for PRs), honouring --author, --label,
+# --assignee, --head, --base and --draft as gh's search query does. The cloud
+# proxy refuses /search (it only serves repository-scoped paths), so on failure
+# the repository's issues or pulls are listed and everything matched
+# client-side, the free-text terms against title and body.
 ghc_search() {
-  local kind="$1" state="$2" text="$3" limit="$4" q raw rstate author="${GHC_O_author:-}"
+  local kind="$1" state="$2" text="$3" limit="$4" q l rstate path author="${GHC_O_author:-}" assignee="${GHC_O_assignee:-}" qs=""
   q="repo:${GHC_REPO} is:${kind} ${text}"
   # /search serves the first 1000 results only.
   [ "$limit" -gt 1000 ] && { ghc_log "search: --limit ${limit} cut to /search's 1000"; limit=1000; }
   case "$state" in open|closed|merged) q="$q is:$state" ;; esac
-  [ -n "${GHC_O_author:-}" ] && q="$q author:${GHC_O_author}"
-  [ -n "${GHC_O_label:-}" ] && q="$q label:\"${GHC_O_label}\""
+  [ -n "$author" ] && q="$q author:${author}"
+  [ -n "$assignee" ] && q="$q assignee:${assignee}"
+  # Repeated --label means every one of them, so one qualifier each.
+  while IFS= read -r l; do
+    [ -z "$l" ] || q="$q label:\"$l\""
+  done <<EOF_LABELS
+$(printf '%s' "${GHC_O_label:-}" | tr ',' '\n')
+EOF_LABELS
+  [ -n "${GHC_O_head:-}" ] && q="$q head:${GHC_O_head#*:}"
+  [ -n "${GHC_O_base:-}" ] && q="$q base:${GHC_O_base}"
+  [ "${GHC_B_draft:-}" = 1 ] && q="$q draft:true"
   # Probe /search with one small page; when it answers, page through it.
   if ghc_api GET "search/issues?per_page=1&q=$(ghc_uri "$q")" >/dev/null; then
     GHC_PAGE_ITEMS='.items // []' ghc_paged "search/issues?q=$(ghc_uri "$q")" "$limit" '.'; return
   fi
   ghc_last
-  ghc_log "search unavailable (${GHC_STATUS:-?}); matching '${text}' client-side over repos/${GHC_REPO}/issues"
+  ghc_log "search unavailable (${GHC_STATUS:-?}); matching '${text}' client-side over repos/${GHC_REPO}"
   # /search resolves @me server-side; the client-side match compares logins,
   # where a literal "@me" would silently match nobody (quality-loop's
   # `--author=@me` lists would come back empty).
   [ "$author" = "@me" ] && { author="$(ghc_api_or_die GET user | jq -r '.login // empty')" || exit 1; }
   [ -n "${GHC_O_author:-}" ] && [ -z "$author" ] && ghc_die "gh: could not resolve --author ${GHC_O_author}"
-  rstate="$state"; case "$state" in open|closed) ;; *) rstate=all ;; esac
+  rstate="$state"; case "$state" in open|closed) ;; merged) rstate=closed ;; *) rstate=all ;; esac
+  if [ "$kind" = pr ]; then
+    # /pulls filters head and base itself; /issues cannot.
+    case "${GHC_O_head:-}" in '') ;; *:*) qs="&head=$(ghc_uri "$GHC_O_head")" ;; *) qs="&head=$(ghc_uri "${GHC_REPO%%/*}:${GHC_O_head}")" ;; esac
+    [ -n "${GHC_O_base:-}" ] && qs="${qs}&base=$(ghc_uri "$GHC_O_base")"
+    [ -n "$assignee" ] && { assignee="$(ghc_expand_me "$assignee")"; [ "$assignee" != "@me" ] || ghc_die "gh: could not resolve --assignee @me"; }
+    path="repos/${GHC_REPO}/pulls?state=${rstate}${qs}"
+  else
+    [ -n "${GHC_O_label:-}" ] && qs="&labels=$(ghc_uri "$GHC_O_label")"
+    [ -n "$assignee" ] && qs="${qs}&assignee=$(ghc_uri "$(ghc_expand_me "$assignee")")"
+    assignee=""   # /issues filtered it
+    path="repos/${GHC_REPO}/issues?state=${rstate}${qs}"
+  fi
   # Full pages: the text match keeps few items, and --limit 1 must not stop
-  # the scan after ~11 issues.
-  GHC_PAGE_SIZE=100 ghc_paged "repos/${GHC_REPO}/issues?state=${rstate}$([ -n "${GHC_O_label:-}" ] && printf '&labels=%s' "$(ghc_uri "$GHC_O_label")")" "$limit" '
+  # the scan after ~11 items.
+  GHC_PAGE_SIZE=100 ghc_paged "$path" "$limit" '
     # Whole words, as /search matches them. A substring test lets "a" or "it"
     # match any body, and step-03 would adopt an unrelated issue as its tracker.
     def words: ascii_downcase | [scan("[a-z0-9]+")];
     ($t | split(" ") | map(select(contains(":") | not)) | join(" ") | words) as $words
-    | map(select((.pull_request != null) == ($k == "pr"))
+    | ($l | split(",") | map(select(. != ""))) as $labels
+    | map(select($k == "pr" or .pull_request == null)
           | select($a == "" or .user.login == $a)
+          | select($k == "issue" or (
+              ([.labels[]?.name] as $have | all($labels[]; . as $x | $have | index([$x]) != null))
+              and ($as == "" or any(.assignees[]?; .login == $as))
+              and ($d == "" or (.draft // false))
+              and ($s != "merged" or .merged_at != null)))
           | select(((.title // "") + " " + (.body // "") | words) as $h | all($words[]; . as $w | $h | index([$w]) != null)))' \
-    --arg k "$kind" --arg t "$text" --arg a "$author"
+    --arg k "$kind" --arg t "$text" --arg a "$author" --arg l "${GHC_O_label:-}" --arg as "$assignee" \
+    --arg d "${GHC_B_draft:-}" --arg s "$state"
 }
 
 # ---------------------------------------------------------------------------
@@ -596,11 +626,11 @@ ghc_pr_view() {
 
 ghc_pr_list() {
   local state limit q raw owner nums n out="[]" obj
-  ghc_parse "$GHC_COMMON_V -s:state --state:state -L:limit --limit:limit -H:head --head:head -B:base --base:base -S:search --search:search -A:author --author:author -l:label --label:label" "-d:draft --draft:draft -w:web --web:web" "$@"
+  ghc_parse "$GHC_COMMON_V -s:state --state:state -L:limit --limit:limit -H:head --head:head -B:base --base:base -S:search --search:search -A:author --author:author -l:label --label:label -a:assignee --assignee:assignee" "-d:draft --draft:draft -w:web --web:web" "$@"
   ghc_resolve_repo
   state="${GHC_O_state:-open}"; limit="${GHC_O_limit:-30}"; owner="${GHC_REPO%%/*}"
   case "$limit" in ''|*[!0-9]*|0) ghc_die "invalid value for --limit: ${limit}" ;; esac
-  if [ -n "${GHC_O_search:-}${GHC_O_author:-}${GHC_O_label:-}" ]; then
+  if [ -n "${GHC_O_search:-}${GHC_O_author:-}${GHC_O_label:-}${GHC_O_assignee:-}" ]; then
     raw="$(ghc_search pr "$state" "${GHC_O_search:-}" "$limit")" || exit 1
     nums="$(printf '%s' "$raw" | jq -r '.[].number')"
     for n in $nums; do
@@ -613,7 +643,10 @@ ghc_pr_list() {
     # OWNER:BRANCH keeps its (fork) owner; a bare branch is looked up in this repo's owner.
     case "${GHC_O_head:-}" in '') ;; *:*) qs="&head=$(ghc_uri "$GHC_O_head")" ;; *) qs="&head=$(ghc_uri "${owner}:${GHC_O_head}")" ;; esac
     [ -n "${GHC_O_base:-}" ] && qs="${qs}&base=$(ghc_uri "$GHC_O_base")"
-    out="$(ghc_paged "repos/${GHC_REPO}/pulls?state=${rstate}${qs}" "$limit" "${GHC_JQ_DEFS}"' map(pr) | if $s == "merged" then map(select(.state == "MERGED")) else . end' --arg s "$state")" || exit 1
+    # merged and --draft filter each page, so --limit counts what survives.
+    out="$(ghc_paged "repos/${GHC_REPO}/pulls?state=${rstate}${qs}" "$limit" "${GHC_JQ_DEFS}"' map(pr)
+      | if $s == "merged" then map(select(.state == "MERGED")) else . end
+      | if $d == "1" then map(select(.isDraft)) else . end' --arg s "$state" --arg d "${GHC_B_draft:-}")" || exit 1
     # A /pulls listing leaves these out (or, for reviews, needs another call).
     if ghc_wants_any reviews latestReviews reviewDecision statusCheckRollup mergeable mergeStateStatus \
         files commits comments additions deletions changedFiles mergedBy maintainerCanModify potentialMergeCommit; then

@@ -126,15 +126,21 @@ if [ "$1" = "api" ]; then
     "POST repos/o/r/labels") printf '{"message":"Validation Failed"}'; echo "gh: Validation Failed (HTTP 422)" >&2; exit 1 ;;
     "GET user") printf '{"login":"bot"}\n' ;;
     "PUT repos/o/r/pulls/42/merge") printf '{"merged":true}\n' ;;
+    # Open PRs for the client-side search fallback: #51 first, then draft #50.
+    "GET repos/o/r/pulls?state=open&per_page="*)
+      printf '[%s,%s,%s]\n' \
+        '{"number":51,"state":"open","draft":false,"title":"t","user":{"login":"bot"},"labels":[{"name":"x"},{"name":"y"}],"assignees":[],"head":{"ref":"b"},"base":{"ref":"main"}}' \
+        '{"number":50,"state":"open","draft":true,"title":"t","user":{"login":"bot"},"labels":[{"name":"x"}],"assignees":[{"login":"a"}],"head":{"ref":"b"},"base":{"ref":"main"}}' \
+        '{"number":52,"state":"open","draft":false,"title":"t","user":{"login":"other"},"labels":[],"assignees":[],"head":{"ref":"b"},"base":{"ref":"main"}}' ;;
     "GET repos/o/r/pulls?state=closed"*)
       # Paged: per_page=3; page 1 holds one merged PR of three, page 2 two of three.
       pg="${path##*page=}"
-      jq -nc --argjson p "$pg" '[range(0;3) | {number: ($p * 10 + .), state: "closed", title: "t", html_url: "u", head: {ref: "b", sha: "s", repo: null}, base: {ref: "main", sha: "m", repo: null},
+      jq -nc --argjson p "$pg" '[range(0;3) | {number: ($p * 10 + .), state: "closed", title: "t", html_url: "u", user: {login: "bot"}, head: {ref: "b", sha: "s", repo: null}, base: {ref: "main", sha: "m", repo: null},
         merged_at: (if ($p == 1 and . == 0) or ($p == 2 and . > 0) then "2026-01-01T00:00:00Z" else null end)}]' ;;
     # Any other PR: into the default branch, except #46 (a release branch).
     "GET repos/"*"/pulls/"[0-9]*)
-      n="${path##*/}"; b=main; [ "$n" = 46 ] && b=release
-      printf '{"number":%s,"base":{"ref":"%s","repo":{"default_branch":"main"}}}\n' "$n" "$b" ;;
+      n="${path##*/}"; b=main; [ "$n" = 46 ] && b=release; d=false; [ "$n" = 50 ] && d=true
+      printf '{"number":%s,"draft":%s,"base":{"ref":"%s","repo":{"default_branch":"main"}}}\n' "$n" "$d" "$b" ;;
     *) printf '{"message":"Not Found"}'; echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
   esac
   exit 0
@@ -569,5 +575,16 @@ ok "pr checks --json workflow/event/description come from REST, not placeholders
 rc=0; gh label list --sort color >/dev/null 2>&1 || rc=$?
 [ "$rc" = 1 ] || fail labels "--sort color accepted"
 ok "label list: --search, gh's sort orders, --limit, isDefault"
+
+# 38. pr list: every filter holds in the search fallback, and --limit counts
+#     what survives --draft.
+: > "$AMPLIHACK_GH_COMPAT_STATE"
+pl() { gh pr list "$@" --json number --jq '[.[].number] | map(tostring) | join(",")'; }
+[ "$(pl --label x --label y)" = 51 ] || fail pr-filters "--label x --label y must mean both"
+[ "$(pl --author @me --draft)" = 50 ] || fail pr-filters "--draft ignored in the search fallback"
+[ "$(pl --assignee a)" = 50 ] || fail pr-filters "--assignee ignored"
+[ "$(pl --draft --limit 1)" = 50 ] || fail pr-filters "--draft applied after --limit"
+[ "$(pl --author @me --state merged)" = 10 ] || fail pr-filters "--state merged let unmerged PRs through the search fallback"
+ok "pr list filters (label AND, draft, assignee, merged) hold in the REST fallback"
 
 echo "PASS: ${PASS} checks"
