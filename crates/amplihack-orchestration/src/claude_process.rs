@@ -79,6 +79,21 @@ fn build_command_prefix(delegate: Option<&str>, model: Option<&str>) -> Vec<Stri
     cmd
 }
 
+/// Issue #1482: a bare `claude` child needs `IS_SANDBOX=1` as root, set on
+/// `command` only, or an error before the spawn when Claude Code would refuse
+/// `--dangerously-skip-permissions`. An `amplihack <tool>` delegate decides
+/// for itself in its launcher, so `detect` is not called for it.
+fn apply_root_sandbox(
+    program: &str,
+    command: &mut StdCommand,
+    detect: impl FnOnce() -> amplihack_utils::root_sandbox::SkipPermissionsEnv,
+) -> Result<(), amplihack_utils::root_sandbox::RootSandboxError> {
+    if program != "claude" {
+        return Ok(());
+    }
+    detect().apply(command)
+}
+
 #[derive(Debug)]
 pub struct DeliveredProcessCommand {
     pub command: StdCommand,
@@ -302,11 +317,11 @@ impl ProcessRunner for TokioProcessRunner {
         if let Some(dir) = &opts.working_dir {
             delivered.command.current_dir(dir);
         }
-        // Issue #1482: a bare `claude` child needs IS_SANDBOX=1 as root. An
-        // `amplihack <tool>` delegate decides for itself in its launcher.
-        if program == "claude"
-            && let Err(e) = amplihack_utils::root_sandbox::detect().apply(&mut delivered.command)
-        {
+        if let Err(e) = apply_root_sandbox(
+            program,
+            &mut delivered.command,
+            amplihack_utils::root_sandbox::detect,
+        ) {
             return ProcessResult::err(e.to_string(), opts.process_id, start.elapsed());
         }
 
@@ -548,6 +563,67 @@ impl ProcessRunner for MockProcessRunner {
 
 #[cfg(test)]
 mod tests {
+
+    // --- issue #1482: root sandbox wiring --------------------------------
+
+    fn command_is_sandbox(command: &StdCommand) -> Option<String> {
+        command
+            .get_envs()
+            .find(|(key, _)| *key == amplihack_utils::root_sandbox::IS_SANDBOX_ENV)
+            .and_then(|(_, value)| value)
+            .map(|value| value.to_string_lossy().into_owned())
+    }
+
+    #[test]
+    fn bare_claude_child_follows_the_injected_root_sandbox_decision() {
+        use amplihack_utils::root_sandbox::SkipPermissionsEnv;
+        for (decision, expected) in [
+            (
+                SkipPermissionsEnv::SetSandbox {
+                    signal: "/.dockerenv",
+                },
+                Some("1"),
+            ),
+            (
+                SkipPermissionsEnv::NormalizeExplicit {
+                    value: "yes".to_string(),
+                },
+                Some("1"),
+            ),
+            (SkipPermissionsEnv::NotRoot, None),
+            (SkipPermissionsEnv::AlreadySandboxed, None),
+        ] {
+            let mut command = StdCommand::new("claude");
+            apply_root_sandbox("claude", &mut command, || decision.clone()).unwrap();
+            assert_eq!(
+                command_is_sandbox(&command).as_deref(),
+                expected,
+                "{decision:?}"
+            );
+        }
+        for decision in [
+            SkipPermissionsEnv::RootOutsideSandbox,
+            SkipPermissionsEnv::ExplicitlyNotSandboxed {
+                value: "0".to_string(),
+            },
+        ] {
+            let mut command = StdCommand::new("claude");
+            let error = apply_root_sandbox("claude", &mut command, || decision.clone())
+                .expect_err("claude would refuse the flag");
+            assert!(error.to_string().contains("IS_SANDBOX=1"), "{error}");
+            assert_eq!(command_is_sandbox(&command), None);
+        }
+    }
+
+    #[test]
+    fn amplihack_delegates_are_not_probed() {
+        let mut command = StdCommand::new("amplihack");
+        apply_root_sandbox("amplihack", &mut command, || {
+            panic!("an amplihack delegate decides in its own launcher")
+        })
+        .unwrap();
+        assert_eq!(command_is_sandbox(&command), None);
+    }
     use super::*;
 
     // ── build_command ──────────────────────────────────────────────

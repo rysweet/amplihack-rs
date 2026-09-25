@@ -87,6 +87,26 @@ pub fn build_tool_command_with_prompt_delivery(
     prompt: &str,
     requested: PromptDelivery,
 ) -> io::Result<DeliveredCommand> {
+    build_tool_command_with_root_sandbox(
+        binary,
+        project_path,
+        extra_args,
+        prompt,
+        requested,
+        root_sandbox::detect,
+    )
+}
+
+/// [`build_tool_command_with_prompt_delivery`] with the issue #1482
+/// root-sandbox decision injected; `detect` is called only for Claude.
+fn build_tool_command_with_root_sandbox(
+    binary: AgentBinary,
+    project_path: &Path,
+    extra_args: &[String],
+    prompt: &str,
+    requested: PromptDelivery,
+    detect: impl FnOnce() -> root_sandbox::SkipPermissionsEnv,
+) -> io::Result<DeliveredCommand> {
     validate_prompt_delivery_request(binary, requested)?;
 
     let mut command = Command::new(binary.env_value());
@@ -97,7 +117,7 @@ pub fn build_tool_command_with_prompt_delivery(
     if binary == AgentBinary::Claude {
         // Issue #1482: `--dangerously-skip-permissions` as root needs
         // `IS_SANDBOX=1` on this child, or a clear error before the spawn.
-        root_sandbox::detect().apply(&mut command)?;
+        detect().apply(&mut command)?;
     }
 
     finish_prompt_delivery(command, prompt, requested, prompt_delivery_caps_for(binary))
@@ -176,6 +196,88 @@ fn add_prompt_prefix_args(command: &mut Command, binary: AgentBinary, extra_args
         AgentBinary::Amplifier => {
             command.arg("run");
             command.args(extra_args);
+        }
+    }
+}
+
+#[cfg(test)]
+mod root_sandbox_tests {
+    //! Issue #1482: the Claude builder's IS_SANDBOX wiring, with the decision
+    //! injected so every branch runs whatever uid the tests run as.
+
+    use super::*;
+    use root_sandbox::{IS_SANDBOX_ENV, SkipPermissionsEnv};
+
+    fn build(binary: AgentBinary, decision: SkipPermissionsEnv) -> io::Result<DeliveredCommand> {
+        build_tool_command_with_root_sandbox(
+            binary,
+            Path::new("."),
+            &[],
+            "hello",
+            PromptDelivery::Argv,
+            || decision,
+        )
+    }
+
+    fn is_sandbox(delivered: &DeliveredCommand) -> Option<String> {
+        delivered
+            .command
+            .get_envs()
+            .find(|(key, _)| *key == IS_SANDBOX_ENV)
+            .and_then(|(_, value)| value)
+            .map(|value| value.to_string_lossy().into_owned())
+    }
+
+    #[test]
+    fn claude_gets_is_sandbox_exactly_when_amplihack_enables_it() {
+        for (decision, expected) in [
+            (
+                SkipPermissionsEnv::SetSandbox {
+                    signal: "/.dockerenv",
+                },
+                Some("1"),
+            ),
+            (
+                SkipPermissionsEnv::NormalizeExplicit {
+                    value: "yes".to_string(),
+                },
+                Some("1"),
+            ),
+            (SkipPermissionsEnv::NotRoot, None),
+            (SkipPermissionsEnv::AlreadySandboxed, None),
+        ] {
+            let delivered = build(AgentBinary::Claude, decision.clone()).unwrap();
+            assert_eq!(is_sandbox(&delivered).as_deref(), expected, "{decision:?}");
+        }
+    }
+
+    #[test]
+    fn claude_fails_before_spawning_when_claude_code_would_refuse() {
+        for decision in [
+            SkipPermissionsEnv::RootOutsideSandbox,
+            SkipPermissionsEnv::ExplicitlyNotSandboxed {
+                value: "0".to_string(),
+            },
+        ] {
+            let error = build(AgentBinary::Claude, decision).expect_err("refused up front");
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            assert!(error.to_string().contains("IS_SANDBOX=1"), "{error}");
+        }
+    }
+
+    #[test]
+    fn other_binaries_are_never_probed() {
+        for binary in [AgentBinary::Copilot, AgentBinary::Codex] {
+            let delivered = build_tool_command_with_root_sandbox(
+                binary,
+                Path::new("."),
+                &[],
+                "hello",
+                PromptDelivery::Argv,
+                || panic!("only claude is probed"),
+            )
+            .unwrap();
+            assert_eq!(is_sandbox(&delivered), None);
         }
     }
 }
