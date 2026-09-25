@@ -270,7 +270,7 @@ pub fn run_launch(
             .with_agent_binary(tool) // WS1: AMPLIHACK_AGENT_BINARY
             .with_amplihack_home() // WS3: AMPLIHACK_HOME
             .with_asset_resolver(); // Rust-native bundle asset resolver
-        env_builder = env_builder.with_project_graph_db(&execution_dir)?;
+        env_builder = env_builder.with_project_artifact_dir(&execution_dir)?;
         let env_builder = augment_claude_launch_env(env_builder, tool, Some(binary.path.as_path()))
             .set_if(is_noninteractive(), "AMPLIHACK_NONINTERACTIVE", "1")
             .set_if(no_reflection, "AMPLIHACK_SKIP_REFLECTION", "1"); // WS2: propagate flags

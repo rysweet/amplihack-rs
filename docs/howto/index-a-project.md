@@ -57,6 +57,35 @@ Imported: files=89, classes=24, functions=412, imports=156, relationships=538
 If a language's indexer is not installed, it is skipped with a note in the
 `Skipped:` line — this is not an error.
 
+The `Artifact:` paths above are inside the indexed project today.
+`[PLANNED]` Issue #1476 moves them to a per-project cache directory, so the
+same run prints:
+
+```
+Artifact: /home/user/.cache/amplihack/projects/myproject-3f9c1ad7b2e40561/indexes/python.scip
+Artifact: /home/user/.cache/amplihack/projects/myproject-3f9c1ad7b2e40561/indexes/rust.scip
+```
+
+Either way, run `git status` after indexing. It should report nothing. If it
+shows an untracked `.amplihack/` or `index.scip`, you are on a build from
+before that change — do not `git add -A`; see
+[Per-Project Artifact Cache](../reference/project-artifact-cache.md).
+
+### What happens to an index you already have
+
+`[PLANNED]` The first session after the upgrade moves your existing in-repo
+artifacts into the cache directory, before anything checks whether the index is
+stale — so you do not pay for a full reindex. Two outcomes are worth knowing:
+
+- **Untracked artifacts are moved.** `git status` goes quiet on its own and
+  there is nothing to do.
+- **Artifacts you committed are left where they are** and reported as skipped.
+  They are not moved into your cache, because a committed file is
+  repository-supplied data and promoting it into amplihack's own trusted
+  storage is not something a migration should do silently. Removing them stays
+  your call: `git rm -r --cached .amplihack index.scip`, then add both to
+  `.gitignore`.
+
 ### 3. Confirm the graph has data
 
 ```sh
@@ -152,10 +181,11 @@ or were skipped). Common causes:
 |-------|-----|
 | Indexer binary not on PATH | Install the binary; check with `amplihack doctor` |
 | `index.scip` not written | The indexer ran but produced no output; check its stderr |
-| Graph DB path not writable | Ensure `<project>/.amplihack/` is writable |
+| Graph DB path not writable | Ensure `<project>/.amplihack/` is writable — `[PLANNED]` after issue #1476, the per-project cache directory instead |
 
 ## Related
 
 - [`amplihack index-scip` and `index-code` reference](../reference/memory-index-command.md)
 - [`amplihack query-code` reference](../reference/query-code-command.md)
 - [LadybugDB Code Graph Architecture](../concepts/kuzu-code-graph.md)
+- [Per-Project Artifact Cache](../reference/project-artifact-cache.md) — where the artifacts are written, and why not in your repo

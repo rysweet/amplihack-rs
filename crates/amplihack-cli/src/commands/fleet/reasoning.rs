@@ -254,7 +254,7 @@ impl NativeReasonerBackend {
                     .with_asset_resolver()
                     .set("AMPLIHACK_NONINTERACTIVE", "1");
                 if let Ok(current_dir) = env::current_dir() {
-                    env_builder = env_builder.with_project_graph_db(&current_dir)?;
+                    env_builder = env_builder.with_project_artifact_dir(&current_dir)?;
                 }
                 env_builder.apply_to_command(&mut cmd);
                 let output = run_output_with_timeout(cmd, SCOUT_REASONER_TIMEOUT)?;

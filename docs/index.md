@@ -140,6 +140,7 @@ amplihack copilot
 - [Profile Management](PROFILE_MANAGEMENT.md) - Multiple environment configurations
 - [Hook Configuration](HOOK_CONFIGURATION_GUIDE.md) - Customize framework behavior
 - [Artifact Guard](artifact-guard.md) - Guard for broad staging, pre-commit, and workflow publication artifacts
+- [Per-Project Artifact Cache](reference/project-artifact-cache.md) - Where code-index artifacts are written, `AMPLIHACK_ARTIFACT_DIR`, and migration out of the repo
 - [Configure Workflow Runtime Isolation](howto/configure-workflow-runtime-isolation.md) - Keep generated workflow runtime output outside commit worktrees
 - [Memory Configuration Consent](features/memory-consent-prompt.md) - Intelligent memory settings with timeout protection
 - [Verify .claude/ Staging](howto/verify-claude-staging.md) - Check that framework files are properly staged
@@ -617,6 +618,7 @@ amplihack query-code functions --file <path>
 
 - [Documentation Knowledge Graph](documentation_knowledge_graph.md) - Documentation graph architecture and workflows
 - [Blarify Code Graph Integration](blarify_integration.md) - Kuzu-backed code graph indexing and retrieval
+- [Per-Project Artifact Cache](reference/project-artifact-cache.md) - Artifact locations for the code graph and SCIP indexes
 
 ### Memory Testing
 

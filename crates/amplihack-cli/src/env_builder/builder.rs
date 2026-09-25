@@ -126,24 +126,47 @@ impl EnvBuilder {
         self.set("AMPLIHACK_AGENT_BINARY", tool)
     }
 
-    /// Set the backend-neutral code-graph DB path for child processes.
+    /// Set the per-project artifact directory and the code-graph DB path
+    /// derived from it, for child processes.
     ///
     /// The explicit `project_root` argument is authoritative — it always wins
-    /// over any inherited `AMPLIHACK_GRAPH_DB_PATH` / `AMPLIHACK_KUZU_DB_PATH`
-    /// in the parent environment (issue #250). The legacy alias is unset so
-    /// only the neutral contract propagates forward.
-    pub fn with_project_graph_db(self, project_root: &Path) -> Result<Self> {
+    /// over any inherited `AMPLIHACK_ARTIFACT_DIR`, `AMPLIHACK_GRAPH_DB_PATH`
+    /// or `AMPLIHACK_KUZU_DB_PATH` in the parent environment (issue #250).
+    /// That matters more than it sounds: this repo runs agents in git
+    /// worktrees, so a child launched for project B would otherwise inherit
+    /// project A's artifact dir and write B's index into A's cache. The legacy
+    /// alias is unset so only the neutral contract propagates forward.
+    ///
+    /// Both variables come from **one** `ensure_artifact_root` call, so they
+    /// cannot disagree. Two independent resolutions is exactly the shape that
+    /// lets the SCIP indexes land in the cache while the graph store lands
+    /// somewhere else — and `AMPLIHACK_GRAPH_DB_PATH` outranks every
+    /// project-derived path in the resolver, so the disagreement would resolve
+    /// silently in favour of the wrong one (issue #1476).
+    ///
+    /// Creating the (empty) artifact root here is deliberate and does not move
+    /// the code-graph consent gate earlier: an empty `0o700` directory
+    /// discloses nothing beyond a path the user chose, and no index is written
+    /// before the existing consent check passes.
+    pub fn with_project_artifact_dir(self, project_root: &Path) -> Result<Self> {
         debug_assert!(
             project_root.is_absolute(),
             "project_root must be an absolute path; got: {}",
             project_root.display()
         );
 
-        let path = project_root.join(".amplihack").join("graph_db");
-        let path = path.to_string_lossy().into_owned();
+        let root = amplihack_memory::cli_memory::ensure_artifact_root(project_root)?.root;
+        let graph_db = root.join("graph_db");
         Ok(self
             .unset("AMPLIHACK_KUZU_DB_PATH")
-            .set("AMPLIHACK_GRAPH_DB_PATH", path))
+            .set(
+                "AMPLIHACK_ARTIFACT_DIR",
+                root.to_string_lossy().into_owned(),
+            )
+            .set(
+                "AMPLIHACK_GRAPH_DB_PATH",
+                graph_db.to_string_lossy().into_owned(),
+            ))
     }
 
     /// Resolve and set `AMPLIHACK_HOME` in the child environment.

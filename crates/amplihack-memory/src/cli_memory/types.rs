@@ -117,26 +117,36 @@ pub(crate) fn memory_home_paths() -> Result<MemoryHomePaths> {
     })
 }
 
+/// Per-project artifact paths, all under a cache directory **outside** the
+/// project checkout.
+///
+/// Deliberately **not** `#[non_exhaustive]`: every consumer is in this
+/// workspace, and exhaustive destructuring is what makes the compiler point at
+/// every call site when a field is added or removed. A missed consumer here is
+/// an artifact written back into someone's repository, not a compile warning.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProjectArtifactPaths {
-    pub(crate) artifact_dir: PathBuf,
-    pub(crate) indexes_dir: PathBuf,
-    pub(crate) blarify_json: PathBuf,
-    pub(crate) root_index_scip: PathBuf,
-    pub(crate) index_scip: PathBuf,
-    pub(crate) index_scip_backup: PathBuf,
-    pub(crate) indexing_pid: PathBuf,
+pub struct ProjectArtifactPaths {
+    pub artifact_dir: PathBuf,
+    pub indexes_dir: PathBuf,
+    pub blarify_json: PathBuf,
+    pub index_scip: PathBuf,
+    pub indexing_pid: PathBuf,
+    pub blarify_stale: PathBuf,
 }
 
-pub(crate) fn project_artifact_paths(project_path: &Path) -> ProjectArtifactPaths {
-    let artifact_dir = project_path.join(".amplihack");
-    ProjectArtifactPaths {
+/// Resolve the artifact paths for `project_path`.
+///
+/// Returns `Err` rather than falling back to a project-relative path:
+/// returning one on failure would reintroduce issue #1476 on exactly the
+/// systems where it is hardest to notice.
+pub fn project_artifact_paths(project_path: &Path) -> Result<ProjectArtifactPaths> {
+    let artifact_dir = super::artifact_root::project_artifact_root(project_path)?;
+    Ok(ProjectArtifactPaths {
         indexes_dir: artifact_dir.join("indexes"),
         blarify_json: artifact_dir.join("blarify.json"),
-        root_index_scip: project_path.join("index.scip"),
         index_scip: artifact_dir.join("index.scip"),
-        index_scip_backup: artifact_dir.join("index.scip.backup"),
         indexing_pid: artifact_dir.join("indexing.pid"),
+        blarify_stale: artifact_dir.join("blarify_stale"),
         artifact_dir,
-    }
+    })
 }

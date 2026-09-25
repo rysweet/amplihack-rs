@@ -109,12 +109,20 @@ Accepted language values: `python`, `typescript`, `javascript`, `go`, `rust`,
    indexer binary is on `PATH`. Adds `~/.local/bin`, `~/.dotnet/tools`, and
    `~/go/bin` to the search path automatically.
 4. Runs available indexers in sequence, saving each output to
-   `<project>/.amplihack/indexes/<language>.scip`.
-5. Backs up any existing `index.scip` at the project root and restores it when
-   each indexer finishes (indexers write to `index.scip` by convention; the
-   backup/restore prevents cross-contamination).
-6. Imports each `.scip` artifact into the code-graph store via `import_scip_file`.
-7. Prints a summary to stdout and exits 0 if at least one language succeeded.
+   `<artifact-dir>/indexes/<language>.scip`.
+5. Imports each `.scip` artifact into the code-graph store via `import_scip_file`.
+6. Prints a summary to stdout and exits 0 if at least one language succeeded.
+
+Step 4's `<artifact-dir>` is `<project>/.amplihack` today and a per-project
+cache directory outside the project once issue #1476 is implemented
+(`[PLANNED]`, see [Per-Project Artifact Cache](project-artifact-cache.md)).
+
+Today there is an extra step between 4 and 5: because no indexer is given an
+output path, each one writes `index.scip` into the project root by convention,
+and the command backs up and restores any pre-existing `index.scip` there to
+keep the runs from contaminating each other. `[PLANNED]` Passing each indexer
+an explicit output path removes the root write, and with it the
+backup/restore pair.
 
 Languages whose indexer binary is absent are silently skipped with a note in
 the summary — partial success is valid.
@@ -192,6 +200,14 @@ The default code-graph database path is `<project-root>/.amplihack/graph_db`.
 For `index-code`, the project root is inferred from the input path: if the
 input is `<project>/.amplihack/blarify.json`, the database will be
 `<project>/.amplihack/graph_db`. Otherwise the current directory is used.
+
+`[PLANNED]` Issue #1476 moves the database into the per-project cache
+directory and replaces the "otherwise the current directory" fallback with an
+error. Falling back to `$PWD` means `amplihack index-code` on an unrecognised
+input path creates a graph database inside whatever repository the user is
+standing in; the cache layout reads the project path from a pointer file in
+the artifact directory instead. See
+[Per-Project Artifact Cache](project-artifact-cache.md#the-project-pointer-file).
 
 Use `--db-path` on `index-code` to override. `--kuzu-path` remains accepted as a backward-compatible alias.
 
@@ -274,3 +290,4 @@ Run `amplihack doctor` to check which prerequisites are currently satisfied.
 - [`amplihack doctor`](./doctor-command.md) — Check indexer prerequisites
 - [Index a project end-to-end](../howto/index-a-project.md) — Step-by-step guide
 - [LadybugDB Code Graph Architecture](../concepts/kuzu-code-graph.md) — How the graph is structured
+- [Per-Project Artifact Cache](./project-artifact-cache.md) — Where the indexes, `blarify.json`, and graph store are written

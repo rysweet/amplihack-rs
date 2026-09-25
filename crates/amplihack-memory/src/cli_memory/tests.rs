@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_support::home_env_lock;
+use crate::test_support::{home_env_lock, restore_home, set_home};
 use rusqlite::{Connection as SqliteConnection, params};
 use std::fs;
 
@@ -104,33 +104,110 @@ fn retrieve_prompt_context_memories_reads_sqlite_backend() -> Result<()> {
     Ok(())
 }
 
+/// Issue #1476 / AC1' — replaces `project_artifact_paths_include_root_and_artifact_index_paths`.
+///
+/// The destructure is deliberately exhaustive (no `..`) and
+/// `ProjectArtifactPaths` is deliberately not `#[non_exhaustive]`: adding a
+/// field must fail to compile here until somebody states where it lives.
+/// Asserting field-by-field is the whole point — the previous version of this
+/// test pinned `root_index_scip == project.join("index.scip")`, which is
+/// exactly the layout that put an 8 MB binary in front of `git add -A`.
 #[test]
-fn project_artifact_paths_include_root_and_artifact_index_paths() {
-    let project = Path::new("/tmp/example-project");
-    let paths = project_artifact_paths(project);
+fn every_project_artifact_path_resolves_outside_the_checkout() {
+    let _guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let home = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let prev_home = set_home(home.path());
+    let prev_xdg = std::env::var_os("XDG_CACHE_HOME");
+    let prev_artifact = std::env::var_os("AMPLIHACK_ARTIFACT_DIR");
+    unsafe { std::env::set_var("XDG_CACHE_HOME", cache.path()) };
+    unsafe { std::env::remove_var("AMPLIHACK_ARTIFACT_DIR") };
 
-    assert_eq!(paths.artifact_dir, project.join(".amplihack"));
-    assert_eq!(
-        paths.indexes_dir,
-        project.join(".amplihack").join("indexes")
-    );
-    assert_eq!(
-        paths.blarify_json,
-        project.join(".amplihack").join("blarify.json")
-    );
-    assert_eq!(paths.root_index_scip, project.join("index.scip"));
-    assert_eq!(
-        paths.index_scip,
-        project.join(".amplihack").join("index.scip")
-    );
-    assert_eq!(
-        paths.index_scip_backup,
-        project.join(".amplihack").join("index.scip.backup")
-    );
-    assert_eq!(
-        paths.indexing_pid,
-        project.join(".amplihack").join("indexing.pid")
-    );
+    let resolved = project_artifact_paths(project.path());
+    let artifact_root = project_artifact_root(project.path());
+
+    restore_home(prev_home);
+    match prev_xdg {
+        Some(value) => unsafe { std::env::set_var("XDG_CACHE_HOME", value) },
+        None => unsafe { std::env::remove_var("XDG_CACHE_HOME") },
+    }
+    match prev_artifact {
+        Some(value) => unsafe { std::env::set_var("AMPLIHACK_ARTIFACT_DIR", value) },
+        None => unsafe { std::env::remove_var("AMPLIHACK_ARTIFACT_DIR") },
+    }
+
+    let artifact_root = artifact_root.unwrap();
+    let ProjectArtifactPaths {
+        artifact_dir,
+        indexes_dir,
+        blarify_json,
+        index_scip,
+        indexing_pid,
+        blarify_stale,
+    } = resolved.unwrap();
+
+    assert_eq!(artifact_dir, artifact_root);
+    assert_eq!(indexes_dir, artifact_root.join("indexes"));
+    assert_eq!(blarify_json, artifact_root.join("blarify.json"));
+    assert_eq!(index_scip, artifact_root.join("index.scip"));
+    assert_eq!(indexing_pid, artifact_root.join("indexing.pid"));
+    assert_eq!(blarify_stale, artifact_root.join("blarify_stale"));
+
+    for path in [
+        &artifact_dir,
+        &indexes_dir,
+        &blarify_json,
+        &index_scip,
+        &indexing_pid,
+        &blarify_stale,
+    ] {
+        assert!(
+            !path.starts_with(project.path()),
+            "{} must not be inside the project checkout",
+            path.display()
+        );
+        assert!(
+            path.starts_with(cache.path()),
+            "{} must be under the per-project cache root",
+            path.display()
+        );
+    }
+}
+
+/// Issue #1476 — the field that used to name `<project>/index.scip` is gone,
+/// not relocated. A path field whose entire purpose was "the file the indexer
+/// drops in the repo root" cannot be pointed at the cache without lying.
+#[test]
+fn two_projects_never_share_an_artifact_directory() {
+    let _guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let home = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    // Same basename, different parents — the git-worktree case this repo uses
+    // for every feature branch.
+    let a = parent.path().join("checkout-a/amplihack-rs");
+    let b = parent.path().join("checkout-b/amplihack-rs");
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    let prev_home = set_home(home.path());
+    let prev_xdg = std::env::var_os("XDG_CACHE_HOME");
+    unsafe { std::env::set_var("XDG_CACHE_HOME", cache.path()) };
+
+    let paths_a = project_artifact_paths(&a);
+    let paths_b = project_artifact_paths(&b);
+
+    restore_home(prev_home);
+    match prev_xdg {
+        Some(value) => unsafe { std::env::set_var("XDG_CACHE_HOME", value) },
+        None => unsafe { std::env::remove_var("XDG_CACHE_HOME") },
+    }
+
+    assert_ne!(paths_a.unwrap().artifact_dir, paths_b.unwrap().artifact_dir);
 }
 
 #[test]

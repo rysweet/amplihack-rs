@@ -35,7 +35,7 @@ pub fn check_index_status(project_path: &Path) -> Result<IndexStatus> {
         .canonicalize()
         .unwrap_or_else(|_| project_path.to_path_buf());
     let (estimated_files, newest_source_mtime) = scan_source_files(&project_path);
-    let index_file = resolve_index_artifact(&project_path);
+    let index_file = resolve_index_artifact(&project_path)?;
 
     let index_metadata = match fs::metadata(&index_file) {
         Ok(metadata) => Some(metadata),
@@ -92,15 +92,15 @@ pub fn check_index_status(project_path: &Path) -> Result<IndexStatus> {
     })
 }
 
-fn resolve_index_artifact(project_path: &Path) -> std::path::PathBuf {
-    let paths = project_artifact_paths(project_path);
+fn resolve_index_artifact(project_path: &Path) -> Result<std::path::PathBuf> {
+    let paths = project_artifact_paths(project_path)?;
     if paths.blarify_json.exists() {
-        return paths.blarify_json;
+        return Ok(paths.blarify_json);
     }
     if let Some(latest) = latest_scip_artifact(&paths.indexes_dir) {
-        return latest;
+        return Ok(latest);
     }
-    paths.index_scip
+    Ok(paths.index_scip)
 }
 
 fn latest_scip_artifact(indexes_dir: &Path) -> Option<std::path::PathBuf> {

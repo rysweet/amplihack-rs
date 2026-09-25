@@ -8,6 +8,7 @@ All environment variables read or written by `amplihack` during a launch (`ampli
   - [AMPLIHACK_AGENT_BINARY](#amplihack_agent_binary)
   - [AMPLIHACK_ASSET_RESOLVER](#amplihack_asset_resolver)
   - [AMPLIHACK_HOME](#amplihack_home)
+  - [AMPLIHACK_ARTIFACT_DIR](#amplihack_artifact_dir)
   - [AMPLIHACK_GRAPH_DB_PATH](#amplihack_graph_db_path)
   - [AMPLIHACK_KUZU_DB_PATH](#amplihack_kuzu_db_path-backward-compatible-alias)
   - [AMPLIHACK_NONINTERACTIVE](#amplihack_noninteractive)
@@ -186,6 +187,85 @@ AMPLIHACK_HOME=/opt/amplihack amplihack claude --print-env 2>&1 | grep AMPLIHACK
 **Security note:** The resolved path is validated to be absolute and must not contain `..` path components. Paths that fail validation are silently dropped; a warning is emitted to the trace log.
 
 **Python parity:** Corresponds to `AMPLIHACK_HOME` propagation in the Python launcher.
+
+---
+
+### AMPLIHACK_ARTIFACT_DIR
+
+**Status: [PLANNED — Implementation Pending]** (issue #1476)
+
+**Type:** path (absolute)
+**Example:** `/home/user/.cache/amplihack/projects/myproject-3f9c1ad7b2e40561`
+**Set by:** `[PLANNED] EnvBuilder::with_project_artifact_dir(project_root)`
+**Read by:** `[PLANNED] project_artifact_paths()`
+
+Overrides the per-project directory holding code-index artifacts: SCIP indexes,
+`blarify.json`, the code-graph store, and the background-indexing PID file. The
+value is the artifact directory itself, not a parent to derive one from — the
+same direct-path contract as `AMPLIHACK_GRAPH_DB_PATH`.
+
+When unset, the directory is derived from the canonicalised project path:
+
+```
+${XDG_CACHE_HOME:-$HOME/.cache}/amplihack/projects/<basename>-<sha256(path)[..16]>
+```
+
+Neither location is inside the indexed project. Before issue #1476 these
+artifacts were written to `<project>/.amplihack/` and `<project>/index.scip`,
+which staged an 8 MB graph store into a user's commit in any repository whose
+`.gitignore` did not happen to exclude them.
+
+```sh
+# Point one project's artifacts at a scratch disk
+AMPLIHACK_ARTIFACT_DIR=/mnt/scratch/amplihack/myproject amplihack index-scip
+```
+
+**Set together with `AMPLIHACK_GRAPH_DB_PATH`.** One
+`with_project_artifact_dir(project_root)` call resolves the artifact root once
+and derives **both** variables from it, then unsets `AMPLIHACK_KUZU_DB_PATH`.
+Resolving them independently is what would let the SCIP indexes and the
+code-graph store end up in different places, and because
+`AMPLIHACK_GRAPH_DB_PATH` outranks every project-derived path in the resolver,
+a disagreement would resolve silently in favour of the wrong one.
+
+**Validation:** `[PLANNED] validate_env_dir_path(var_name, path)` — a
+generalisation of today's `validate_graph_db_env_path()`
+(`code_graph/paths.rs:123`) that carries the variable name so errors identify
+what the user set. It is applied to `AMPLIHACK_ARTIFACT_DIR`,
+`XDG_CACHE_HOME`, and `HOME` alike. Shared checks: must be
+absolute, must not contain a `..` component, must not start with `/proc`,
+`/sys`, or `/dev`.
+
+`AMPLIHACK_ARTIFACT_DIR` additionally rejects `/`, `$HOME`, `/tmp`, and
+`/var/tmp`, because unlike the other two it is used *directly* as the artifact
+directory with nothing appended: `/` or `$HOME` would scope migration and
+cleanup to the whole filesystem or the whole home directory, and the two
+world-writable paths let another local user pre-create the directory and
+poison the index.
+
+The failure modes are deliberately **asymmetric**:
+
+| Invalid value in | Result |
+| --- | --- |
+| `XDG_CACHE_HOME` | Warning, falls through to `HOME` — the user probably did not set it for amplihack, and a usable fallback exists |
+| `AMPLIHACK_ARTIFACT_DIR` | **Error** — the user set it deliberately for this tool; writing somewhere else instead is worse than stopping |
+
+**Permissions:** the resolved directory chain is created `0o700` on Unix, and a
+pre-existing `amplihack/` directory with looser bits is tightened (amplihack
+never changes the mode of a directory it did not create, so `~/.cache` and
+`$HOME` are left alone). See
+[Directory permissions](project-artifact-cache.md#directory-permissions).
+
+**Inherited-value guard:** because the variable names one specific project's
+directory and is exported to every child process, a child launched for a
+different project would otherwise write into the parent's cache. The primary
+defence is that each launch through `EnvBuilder` re-resolves and **overwrites**
+the value for the project it is launching. A secondary check ignores, with a
+warning, a directory whose `project` pointer file records a different project
+path — but that check cannot fire before a pointer file exists, so a hand-set
+`AMPLIHACK_ARTIFACT_DIR` naming an empty directory is still accepted. See
+[Inheritance hazard](project-artifact-cache.md#inheritance-hazard) for the
+residual gap.
 
 ---
 
@@ -999,11 +1079,16 @@ AMPLIHACK_ENABLE_BLARIFY=1 amplihack claude
 amplihack index-scip --project-path .
 ```
 
-**Artifact locations:**
+**Artifact locations:** relative to the indexed project today; relative to the
+per-project cache directory once issue #1476 is implemented
+(`[PLANNED]`, see [Per-Project Artifact Cache](project-artifact-cache.md)).
 
-- `.amplihack/blarify.json` — LadybugDB import input for `amplihack index-code`
-- `.amplihack/indexes/<language>.scip` — per-language native SCIP artifacts from `amplihack index-scip`
-- `.amplihack/graph_db` — native code-graph store populated by `index-code` or `index-scip`
+- `blarify.json` — LadybugDB import input for `amplihack index-code`
+- `indexes/<language>.scip` — per-language native SCIP artifacts from `amplihack index-scip`
+- `graph_db` — native code-graph store populated by `index-code` or `index-scip`
+
+Today these resolve to `<project>/.amplihack/...`, plus a bare
+`<project>/index.scip` written by each indexer and moved aside afterwards.
 
 **Why it exists:** Code-graph indexing is computationally expensive and should not run on every launch. This flag keeps the behavior opt-in so only projects that benefit from code-graph enrichment pay the cost.
 

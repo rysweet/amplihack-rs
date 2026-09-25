@@ -560,7 +560,7 @@ pub(super) fn execute_recipe_via_rust(
             .with_python_sanitization()
             .unset("CLAUDECODE")
             .set("AMPLIHACK_NONINTERACTIVE", "1")
-            .with_project_graph_db(working_dir)?;
+            .with_project_artifact_dir(working_dir)?;
 
         // Issue #439: propagate --step-timeout as AMPLIHACK_STEP_TIMEOUT env var.
         // When Some(n), the child process sees AMPLIHACK_STEP_TIMEOUT=n (0 = disable).

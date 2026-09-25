@@ -21,6 +21,7 @@ moves, unstages, or rewrites files.
 - [Provenance: this change vs the repository's history](#provenance-this-change-vs-the-repositorys-history)
 - [Command-line interface](#command-line-interface)
 - [Default prohibited rules](#default-prohibited-rules)
+  - [Code-index artifacts](#code-index-artifacts)
 - [Allowlist configuration](#allowlist-configuration)
 - [Workflow and pre-commit coverage](#workflow-and-pre-commit-coverage)
 - [Output isolation](#output-isolation)
@@ -273,6 +274,37 @@ untracked-but-not-ignored.
 Rules match normalized repo-relative paths using `/` separators. The guard does
 not need to read artifact file contents; path-level scanning is the intended
 contract.
+
+### Code-index artifacts
+
+The `index.scip` entry in the Build output row matches `index.scip` at any
+depth (`crates/amplihack-utils/src/artifact_guard.rs:993`). It is there because
+the SCIP indexers write their output into the project root by convention, so an
+indexing run leaves a multi-megabyte protobuf in the worktree.
+
+`[PLANNED]` Issue #1476 moves those artifacts into a per-project cache
+directory outside the checkout, so they should stop appearing in any worktree.
+**The rule stays.** A guard rule for a path that is no longer produced costs
+nothing and turns a regression — or a third-party indexer someone runs by hand
+— into a blocked commit instead of a staged binary. See
+[Per-Project Artifact Cache](reference/project-artifact-cache.md).
+
+`[PLANNED]` Three paths are **added** as prohibited rules by the same change.
+The default rules today match `.amplihack/session-state`
+(`artifact_guard.rs:954-955`) but nothing else under `.amplihack/`, so the
+8 MB graph store that issue #1476 describes would not have been named as a
+violation even by `--mode all`:
+
+| Added rule | What it catches |
+| --- | --- |
+| `.amplihack/graph_db` | The code-graph store — the file staged in the motivating incident |
+| `.amplihack/kuzu_db` | The legacy code-graph store, same size, same problem |
+| `.amplihack/indexes/` | Per-language SCIP indexes, 1–50 MB each |
+
+After the relocation these paths should never appear in a worktree, which is
+exactly what makes them good guard rules: a rule that only ever matches during
+a regression costs nothing to carry and converts a silent reappearance into a
+blocked commit.
 
 ### Built-in `.claude/runtime/` exemption
 
@@ -776,3 +808,4 @@ proper output placement.
 - [Recipe CLI Reference](reference/recipe-cli-reference.md)
 - [Pre-Commit Diagnostics](claude/agents/amplihack/specialized/pre-commit-diagnostic.md)
 - [Developing amplihack](DEVELOPING_AMPLIHACK.md)
+- [Per-Project Artifact Cache](reference/project-artifact-cache.md)

@@ -57,3 +57,7 @@ use validation::validate_blarify_json_size;
 pub mod test_support {
     pub use super::backend::with_test_code_graph_conn;
 }
+
+#[cfg(test)]
+#[path = "paths_artifact_root_tests.rs"]
+mod paths_artifact_root_tests;

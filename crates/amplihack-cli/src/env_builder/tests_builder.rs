@@ -5,6 +5,63 @@ use std::collections::HashMap;
 use std::env;
 use std::process::Command;
 
+/// Issue #1476: the artifact dir — and the graph DB derived from it — now
+/// resolve under the per-project cache, so these tests must point
+/// `HOME`/`XDG_CACHE_HOME` at tempdirs and clear any inherited
+/// `AMPLIHACK_ARTIFACT_DIR`. Each assertion below still encodes its original
+/// issue #250 precedence rule; only the expected path changed.
+struct ArtifactCache {
+    _home: tempfile::TempDir,
+    _cache: tempfile::TempDir,
+    previous: Vec<(&'static str, Option<std::ffi::OsString>)>,
+}
+
+impl ArtifactCache {
+    fn new() -> Self {
+        let home = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let previous = vec![
+            ("HOME", std::env::var_os("HOME")),
+            ("XDG_CACHE_HOME", std::env::var_os("XDG_CACHE_HOME")),
+            (
+                "AMPLIHACK_ARTIFACT_DIR",
+                std::env::var_os("AMPLIHACK_ARTIFACT_DIR"),
+            ),
+        ];
+        // SAFETY: every caller holds `cwd_env_lock()`.
+        unsafe {
+            std::env::set_var("HOME", home.path());
+            std::env::set_var("XDG_CACHE_HOME", cache.path());
+            std::env::remove_var("AMPLIHACK_ARTIFACT_DIR");
+        }
+        Self {
+            _home: home,
+            _cache: cache,
+            previous,
+        }
+    }
+
+    fn graph_db(&self, project: &std::path::Path) -> std::path::PathBuf {
+        amplihack_memory::cli_memory::project_artifact_root(project)
+            .unwrap()
+            .join("graph_db")
+    }
+}
+
+impl Drop for ArtifactCache {
+    fn drop(&mut self) {
+        for (key, value) in self.previous.drain(..) {
+            // SAFETY: every caller holds `cwd_env_lock()`.
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+}
+
 // ── WS1: with_agent_binary ────────────────────────────────────────────────
 
 /// WS1-1: with_agent_binary must insert AMPLIHACK_AGENT_BINARY for each
@@ -37,18 +94,19 @@ fn active_agent_binary_reads_env_override() {
 }
 
 #[test]
-fn with_project_graph_db_sets_project_local_path() {
+fn with_project_artifact_dir_sets_a_path_outside_the_project() {
     let _guard = cwd_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
+    let cache = ArtifactCache::new();
     let prev_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
     let prev = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
     unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") };
     unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") };
 
     let env = EnvBuilder::new()
-        .with_project_graph_db(temp.path())
+        .with_project_artifact_dir(temp.path())
         .unwrap()
         .build();
 
@@ -61,7 +119,7 @@ fn with_project_graph_db_sets_project_local_path() {
         None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
     }
 
-    let expected = temp.path().join(".amplihack").join("graph_db");
+    let expected = cache.graph_db(temp.path());
     assert_eq!(
         env.get("AMPLIHACK_GRAPH_DB_PATH").map(String::as_str),
         Some(expected.to_str().unwrap())
@@ -72,18 +130,19 @@ fn with_project_graph_db_sets_project_local_path() {
 /// Issue #250: explicit `project_root` is authoritative — an inherited
 /// `AMPLIHACK_KUZU_DB_PATH` legacy alias must NOT override the derived path.
 #[test]
-fn with_project_graph_db_ignores_inherited_legacy_kuzu_alias() {
+fn with_project_artifact_dir_ignores_inherited_legacy_kuzu_alias() {
     let _guard = cwd_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
+    let cache = ArtifactCache::new();
     let prev_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
     let prev = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
     unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") };
     unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", "/custom/legacy-graph-alias") };
 
     let env = EnvBuilder::new()
-        .with_project_graph_db(temp.path())
+        .with_project_artifact_dir(temp.path())
         .unwrap()
         .build();
 
@@ -96,7 +155,7 @@ fn with_project_graph_db_ignores_inherited_legacy_kuzu_alias() {
         None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
     }
 
-    let expected = temp.path().join(".amplihack").join("graph_db");
+    let expected = cache.graph_db(temp.path());
     assert_eq!(
         env.get("AMPLIHACK_GRAPH_DB_PATH").map(String::as_str),
         Some(expected.to_str().unwrap()),
@@ -109,18 +168,19 @@ fn with_project_graph_db_ignores_inherited_legacy_kuzu_alias() {
 /// `AMPLIHACK_GRAPH_DB_PATH` must NOT override the derived path. Legacy
 /// alias is still removed so only the neutral contract propagates.
 #[test]
-fn with_project_graph_db_ignores_inherited_graph_db_env() {
+fn with_project_artifact_dir_ignores_inherited_graph_db_env() {
     let _guard = cwd_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
+    let cache = ArtifactCache::new();
     let prev_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
     let prev = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
     unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", "/custom/graph-only") };
     unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") };
 
     let env = EnvBuilder::new()
-        .with_project_graph_db(temp.path())
+        .with_project_artifact_dir(temp.path())
         .unwrap()
         .build();
 
@@ -133,7 +193,7 @@ fn with_project_graph_db_ignores_inherited_graph_db_env() {
         None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
     }
 
-    let expected = temp.path().join(".amplihack").join("graph_db");
+    let expected = cache.graph_db(temp.path());
     assert_eq!(
         env.get("AMPLIHACK_GRAPH_DB_PATH").map(String::as_str),
         Some(expected.to_str().unwrap()),
@@ -149,18 +209,19 @@ fn with_project_graph_db_ignores_inherited_graph_db_env() {
 /// Issue #250: when both legacy and neutral envs are set in the parent process,
 /// the explicit `project_root` still wins; the legacy alias is unset.
 #[test]
-fn with_project_graph_db_ignores_both_inherited_envs() {
+fn with_project_artifact_dir_ignores_both_inherited_envs() {
     let _guard = cwd_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
+    let cache = ArtifactCache::new();
     let prev_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
     let prev = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
     unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", "/custom/graph") };
     unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", "/custom/legacy-graph-alias") };
 
     let env = EnvBuilder::new()
-        .with_project_graph_db(temp.path())
+        .with_project_artifact_dir(temp.path())
         .unwrap()
         .build();
 
@@ -173,7 +234,7 @@ fn with_project_graph_db_ignores_both_inherited_envs() {
         None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
     }
 
-    let expected = temp.path().join(".amplihack").join("graph_db");
+    let expected = cache.graph_db(temp.path());
     assert_eq!(
         env.get("AMPLIHACK_GRAPH_DB_PATH").map(String::as_str),
         Some(expected.to_str().unwrap()),
@@ -183,14 +244,15 @@ fn with_project_graph_db_ignores_both_inherited_envs() {
 }
 
 /// Issue #250: bogus inherited env values (relative, /proc-prefixed, traversal)
-/// are ignored entirely — `with_project_graph_db` never reads them, so they
+/// are ignored entirely — `with_project_artifact_dir` never reads them, so they
 /// can never cause errors or leak into child processes.
 #[test]
-fn with_project_graph_db_ignores_bogus_inherited_envs() {
+fn with_project_artifact_dir_ignores_bogus_inherited_envs() {
     let _guard = cwd_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
+    let cache = ArtifactCache::new();
     let prev_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
     let prev = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
 
@@ -199,11 +261,11 @@ fn with_project_graph_db_ignores_bogus_inherited_envs() {
         unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", bogus) };
 
         let env = EnvBuilder::new()
-            .with_project_graph_db(temp.path())
+            .with_project_artifact_dir(temp.path())
             .expect("bogus inherited env must NOT cause an error")
             .build();
 
-        let expected = temp.path().join(".amplihack").join("graph_db");
+        let expected = cache.graph_db(temp.path());
         assert_eq!(
             env.get("AMPLIHACK_GRAPH_DB_PATH").map(String::as_str),
             Some(expected.to_str().unwrap()),
@@ -228,6 +290,7 @@ fn apply_to_command_translates_kuzu_alias_to_graph_db_path_and_removes_kuzu_var(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
+    let cache = ArtifactCache::new();
     let prev_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
     let prev = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
     unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") };
@@ -235,7 +298,7 @@ fn apply_to_command_translates_kuzu_alias_to_graph_db_path_and_removes_kuzu_var(
 
     let mut cmd = Command::new("true");
     EnvBuilder::new()
-        .with_project_graph_db(temp.path())
+        .with_project_artifact_dir(temp.path())
         .unwrap()
         .apply_to_command(&mut cmd);
 
@@ -257,7 +320,7 @@ fn apply_to_command_translates_kuzu_alias_to_graph_db_path_and_removes_kuzu_var(
             )
         })
         .collect();
-    let expected = temp.path().join(".amplihack").join("graph_db");
+    let expected = cache.graph_db(temp.path());
     assert_eq!(
         envs.get("AMPLIHACK_GRAPH_DB_PATH")
             .and_then(|value| value.as_deref()),

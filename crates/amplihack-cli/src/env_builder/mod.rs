@@ -12,6 +12,8 @@ pub use builder::EnvBuilder;
 pub use helpers::active_agent_binary;
 
 #[cfg(test)]
+mod tests_artifact_dir;
+#[cfg(test)]
 mod tests_builder;
 #[cfg(test)]
 mod tests_vars;

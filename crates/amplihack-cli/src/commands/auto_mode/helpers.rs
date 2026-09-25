@@ -142,7 +142,7 @@ pub fn build_auto_command_with_prompt_delivery(
         .with_agent_binary(options.tool.slug())
         .with_amplihack_home()
         .with_asset_resolver()
-        .with_project_graph_db(&options.project_dir)?;
+        .with_project_artifact_dir(&options.project_dir)?;
     let env_builder = if options.execution_dir != options.project_dir {
         env_builder.set("AMPLIHACK_IS_STAGED", "1").set(
             "AMPLIHACK_ORIGINAL_CWD",

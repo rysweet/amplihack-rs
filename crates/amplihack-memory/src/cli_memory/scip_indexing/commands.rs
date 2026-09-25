@@ -1,11 +1,11 @@
 use super::helpers::{check_language, normalize_languages, scan_languages};
-use super::indexer::{restore_root_index, run_indexer_for_language};
+use super::indexer::run_indexer_for_language;
 use super::types::{LANGUAGE_ORDER, NativeScipIndexSummary, PrerequisiteResult};
 use crate::cli_memory::code_graph::{
     CodeGraphImportCounts, code_graph_compatibility_notice_for_project,
     resolve_code_graph_db_path_for_project,
 };
-use crate::cli_memory::{import_scip_file, project_artifact_paths, required_parent_dir};
+use crate::cli_memory::{import_scip_file, project_artifact_paths};
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
 use std::fs;
@@ -105,29 +105,17 @@ pub fn run_native_scip_indexing(
     let mut artifacts = Vec::new();
     let mut errors = Vec::new();
 
-    let artifact_paths = project_artifact_paths(&project_path);
+    // Indexers are given an explicit output path inside this directory, which
+    // is outside the checkout. Nothing is staged in the project root, so the
+    // back-up-and-restore dance that used to protect a user's own `index.scip`
+    // is gone with the file that made it necessary (issue #1476).
+    let artifact_paths = project_artifact_paths(&project_path)?;
     fs::create_dir_all(&artifact_paths.indexes_dir)
         .with_context(|| format!("failed to create {}", artifact_paths.indexes_dir.display()))?;
 
-    let root_index = artifact_paths.root_index_scip.clone();
-    let backup_index = if root_index.exists() {
-        let backup = artifact_paths.index_scip_backup.clone();
-        fs::create_dir_all(required_parent_dir(&backup)?)
-            .with_context(|| format!("failed to create backup parent for {}", backup.display()))?;
-        fs::copy(&root_index, &backup)
-            .with_context(|| format!("failed to back up {}", root_index.display()))?;
-        Some(backup)
-    } else {
-        None
-    };
-
     for language in prereqs.available_languages {
-        let result = run_indexer_for_language(
-            &language,
-            &project_path,
-            &artifact_paths.indexes_dir,
-            &root_index,
-        );
+        let result =
+            run_indexer_for_language(&language, &project_path, &artifact_paths.indexes_dir);
         if result.success {
             completed_languages.push(result.language.clone());
             if let Some(path) = result.artifact_path {
@@ -140,8 +128,6 @@ pub fn run_native_scip_indexing(
             }
         }
     }
-
-    restore_root_index(&root_index, backup_index.as_deref())?;
 
     let success = !completed_languages.is_empty();
     let partial_success =

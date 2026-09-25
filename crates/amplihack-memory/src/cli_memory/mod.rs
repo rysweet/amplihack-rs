@@ -1,10 +1,13 @@
 //! Native memory commands (`tree`, `export`, `import`, `clean`).
 
 pub mod agent_kv;
+mod artifact_migration;
+mod artifact_root;
 pub mod backend;
 pub mod clean;
 pub mod code_graph;
 mod command_error;
+mod fs_move;
 pub mod indexing_job;
 pub mod scip_indexing;
 pub mod staleness_detector;
@@ -24,6 +27,14 @@ mod types;
 #[cfg(test)]
 pub(crate) use backend::sqlite::{
     SQLITE_SCHEMA, SQLITE_TREE_BACKEND_NAME, list_sqlite_sessions_from_conn, open_sqlite_memory_db,
+};
+pub use artifact_migration::{
+    ArtifactSkipReason, FailedArtifact, MigrationReport, MigrationSkipReason, MovedArtifact,
+    SkippedArtifact, describe_migration, migrate_in_repo_artifacts,
+};
+pub use artifact_root::{
+    ArtifactRootInit, ensure_artifact_root, project_artifact_root, project_for_artifact_dir,
+    project_slug, validate_env_dir_path,
 };
 pub use clean::run_clean;
 pub use code_graph::{
@@ -45,7 +56,9 @@ pub use tree::run_tree;
 // --- Re-exports from new submodules ---
 
 pub use learning::{retrieve_prompt_context_memories, store_session_learning};
-pub use types::{PromptContextMemory, SessionSummary};
+pub use types::{
+    ProjectArtifactPaths, PromptContextMemory, SessionSummary, project_artifact_paths,
+};
 
 pub(crate) use helpers::{
     ensure_parent_dir, parse_backend_choice_env_value, parse_json_value, required_parent_dir,
@@ -55,7 +68,7 @@ pub(crate) use resolve::resolve_memory_cli_backend;
 pub(crate) use schema::{GRAPH_DB_TREE_BACKEND_NAME, HIERARCHICAL_SCHEMA};
 pub(crate) use types::{
     BackendChoice, MemoryRecord, SessionLearningRecord, TransferFormat, memory_home_paths,
-    project_artifact_paths, transfer_format_cli_compatibility_notice,
+    transfer_format_cli_compatibility_notice,
 };
 
 // Private imports: accessible to descendant modules (tests) via `use super::*`.
