@@ -8,6 +8,7 @@ use amplihack_types::ProjectDirs;
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 /// Minimum relevance a memory needs before it is injected into the prompt.
 const RELEVANCE_THRESHOLD: f64 = 0.2;
@@ -21,8 +22,7 @@ const RELEVANCE_THRESHOLD: f64 = 0.2;
 /// pong` smoke test), and one shared word is not evidence of relevance.
 const MIN_SHARED_TERMS: usize = 2;
 /// Topic words shorter than this (`rs`, `md`, `ci`) are too common to count.
-/// Han and katakana are split into character pairs instead and Hangul words
-/// need two syllables (see [`topic_terms`]).
+/// Han and katakana are tokenised differently (see [`topic_terms`]).
 const MIN_TERM_CHARS: usize = 3;
 /// At most this many memories are injected for one prompt.
 const MAX_INJECTED_MEMORIES: usize = 5;
@@ -30,140 +30,31 @@ const MAX_INJECTED_MEMORIES: usize = 5;
 /// transcript never lands in the prompt whole.
 const MAX_MEMORY_CHARS: usize = 400;
 
-/// Words that carry no topic: English function words, the role labels
+/// The SMART information-retrieval system's English stop list (Salton,
+/// Cornell; 571 words), verbatim from
+/// <https://github.com/igorbrigadir/stopwords/blob/master/en/smart.txt>.
+/// A standard list rather than a hand-grown one: any two function words
+/// missing from a short list would make a chit-chat transcript "relevant".
+const SMART_STOP_WORDS: &str = include_str!("smart_stop_words.txt");
+
+/// Words that carry no topic here beyond the SMART list: the role labels
 /// stored transcripts use (`user:` / `assistant:`), and the words of the
 /// `Agent <name>:` prefix every stored learning carries.
-const STOP_WORDS: &[&str] = &[
-    "a",
-    "about",
-    "agent",
-    "agents",
-    "after",
-    "all",
-    "also",
-    "am",
-    "an",
-    "and",
-    "any",
-    "are",
-    "as",
-    "assistant",
-    "at",
-    "be",
-    "been",
-    "but",
-    "by",
-    "can",
-    "could",
-    "did",
-    "do",
-    "does",
-    "for",
-    "from",
-    "general",
-    "had",
-    "has",
-    "have",
-    "how",
-    "i",
-    "if",
-    "in",
-    "into",
-    "is",
-    "it",
-    "its",
-    "just",
-    "me",
-    "my",
-    "no",
-    "not",
-    "now",
-    "of",
-    "on",
-    "or",
-    "our",
-    "please",
-    "should",
-    "so",
-    "that",
-    "the",
-    "their",
-    "them",
-    "then",
-    "there",
-    "these",
-    "this",
-    "those",
-    "to",
-    "up",
-    "us",
-    "use",
-    "user",
-    "was",
-    "we",
-    "were",
-    "what",
-    "when",
-    "where",
-    "which",
-    "who",
-    "why",
-    "will",
-    "with",
-    "would",
-    "you",
-    "your",
-    // English contractions, as `topic_terms` spells them once the
-    // apostrophe is gone (`don't` → `dont`; `'s` is dropped first).
-    "aren",
-    "arent",
-    "cannot",
-    "cant",
-    "couldnt",
-    "didnt",
-    "doesnt",
-    "dont",
-    "hadnt",
-    "hasnt",
-    "havent",
-    "isnt",
-    "ive",
-    "let",
-    "shouldnt",
-    "theyre",
-    "theyve",
-    "wasnt",
-    "werent",
-    "weve",
-    "wont",
-    "wouldnt",
-    "youll",
-    "youre",
-    "youve",
-    // Korean words that carry no topic: conjunctions, pronouns and the
-    // polite sentence endings that stand as their own word.
-    "그리고",
-    "그러나",
-    "하지만",
-    "그래서",
-    "그런데",
-    "그것",
-    "이것",
-    "저것",
-    "우리",
-    "저는",
-    "제가",
-    "나는",
-    "무엇",
-    "어떻게",
-    "합니다",
-    "했습니다",
-    "입니다",
-    "있습니다",
-    "없습니다",
-    "됩니다",
-    "주세요",
-];
+const EXTRA_STOP_WORDS: &[&str] = &["agent", "agents", "assistant", "general", "user"];
+
+fn is_stop_word(word: &str) -> bool {
+    static STOP_WORDS: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    STOP_WORDS
+        .get_or_init(|| {
+            SMART_STOP_WORDS
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .chain(EXTRA_STOP_WORDS.iter().copied())
+                .collect()
+        })
+        .contains(word)
+}
 
 /// Chinese and Japanese characters that are grammar rather than topic
 /// (particles, pronouns, copulas, measure words). A Han pair containing one
@@ -296,30 +187,36 @@ fn strip_agent_prefix(content: &str) -> &str {
 /// Distinct lower-cased topic words of `text`, without stop words, short
 /// words or `ignored` words.
 ///
-/// Chinese and Japanese are written without spaces, so whitespace splitting
-/// would turn a whole sentence into one term that never matches:
-/// - Han and katakana runs contribute overlapping character pairs (`构建失败`
-///   → `构建`, `建失`, `失败`), the usual segmentation-free approximation.
-///   Han pairs containing a grammatical character ([`HAN_FUNCTION_CHARS`])
-///   are dropped.
-/// - Hiragana is dropped. In Japanese it carries particles and verb endings
-///   (`が`, `しました`), whose pairs would match any two sentences.
-/// - Hangul is space-separated; each word of two or more syllables is a term,
-///   except the grammatical words in [`STOP_WORDS`].
+/// - English words are checked against the SMART stop list. A word with an
+///   apostrophe other than a possessive `'s` is a contraction (`doesn't`,
+///   `they'll`, `you'd`) and never a topic.
+/// - Han runs contribute overlapping character pairs (`构建失败` → `构建`,
+///   `建失`, `失败`), the usual segmentation-free approximation for Chinese
+///   and Japanese kanji. Pairs containing a grammatical character
+///   ([`HAN_FUNCTION_CHARS`]) are dropped.
+/// - A katakana run is one term (`サーバー`, `エラー`): katakana words are
+///   loanwords delimited by the kana around them, and pairs inside them
+///   (`サー`, `ター`) are shared by unrelated words.
+/// - Hiragana (Japanese particles and verb endings) is dropped.
 ///
-/// Known limit: Korean words keep their attached particles (`빌드가` ≠ `빌드`),
-/// and Thai, Lao, Khmer and Myanmar, which also lack spaces, are not split, so
-/// memories in those scripts rarely match. Both fail closed: nothing
-/// irrelevant is injected, a relevant memory may be missed.
+/// Known limit: Hangul is dropped too, and Thai, Lao, Khmer and Myanmar are
+/// not split. Korean attaches particles and verb endings to words
+/// (`빌드가`, `합니까`), so whole Korean words match on grammar, not topic;
+/// telling them apart needs a morphological analyser. Memories in these
+/// scripts are therefore rarely or never injected: this fails closed —
+/// nothing irrelevant is injected, a relevant memory may be missed.
 fn topic_terms(text: &str, ignored: &HashSet<String>) -> HashSet<String> {
     let mut terms = HashSet::new();
     let mut keep = |term: String| {
-        if !STOP_WORDS.contains(&term.as_str()) && !ignored.contains(&term) {
+        if !is_stop_word(&term) && !ignored.contains(&term) {
             terms.insert(term);
         }
     };
     for raw in text.split(|c: char| !c.is_alphanumeric() && !is_apostrophe(c)) {
-        let chars = without_apostrophes(raw).chars().collect::<Vec<_>>();
+        let Some(word) = without_apostrophes(raw) else {
+            continue;
+        };
+        let chars = word.chars().collect::<Vec<_>>();
         for run in chars.chunk_by(|left, right| Script::of(*left) == Script::of(*right)) {
             match Script::of(run[0]) {
                 Script::Han => {
@@ -329,14 +226,8 @@ fn topic_terms(text: &str, ignored: &HashSet<String>) -> HashSet<String> {
                         }
                     }
                 }
-                Script::Katakana => {
-                    for pair in run.windows(2) {
-                        keep(pair.iter().collect());
-                    }
-                }
-                Script::Hiragana => {}
-                Script::Hangul if run.len() >= 2 => keep(run.iter().collect()),
-                Script::Hangul => {}
+                Script::Katakana if run.len() >= 2 => keep(run.iter().collect()),
+                Script::Katakana | Script::Hiragana | Script::Hangul => {}
                 Script::Other if run.len() >= MIN_TERM_CHARS => {
                     keep(run.iter().collect::<String>().to_lowercase());
                 }
@@ -351,10 +242,12 @@ fn is_apostrophe(c: char) -> bool {
     matches!(c, '\'' | '\u{2019}')
 }
 
-/// `raw` with a possessive `'s` dropped and other apostrophes removed, so
-/// `builder's` is `builder` and `doesn't` is one word, `doesnt`, not a stray
-/// `doesn` that would count as a topic.
-fn without_apostrophes(raw: &str) -> String {
+/// `raw` with surrounding quotes and a possessive `'s` dropped
+/// (`builder's` → `builder`), or `None` when an apostrophe remains: the
+/// word is a contraction (`doesn't`, `we'll`, `you'd`), which carries no
+/// topic, and whose apostrophe-less spelling can collide with a real word
+/// (`we'll` → `well`).
+fn without_apostrophes(raw: &str) -> Option<&str> {
     let word = raw.trim_matches(is_apostrophe);
     let word = word
         .char_indices()
@@ -364,7 +257,7 @@ fn without_apostrophes(raw: &str) -> String {
             is_apostrophe(*c) && word[index + c.len_utf8()..].eq_ignore_ascii_case("s")
         })
         .map_or(word, |(index, _)| &word[..index]);
-    word.chars().filter(|c| !is_apostrophe(*c)).collect()
+    (!word.contains(is_apostrophe)).then_some(word)
 }
 
 /// The scripts [`topic_terms`] tokenises differently from space-separated
@@ -490,10 +383,10 @@ mod tests {
         .expect("relevant memory is injected");
         assert!(result.contains("## Relevant Memory (agents: analyzer)"));
         assert!(result.contains("Always run cargo test before pushing to CI"));
-        // `analyze` invokes the agent and `ci` is too short, leaving
-        // {cargo, test, fails} vs {always, run, cargo, test, before,
-        // pushing}: 2 shared / sqrt(3 * 6).
-        let expected = 2.0 / 18f64.sqrt();
+        // `analyze` invokes the agent, `ci` is too short and `always` /
+        // `before` are stop words, leaving {cargo, test, fails} vs {run,
+        // cargo, test, pushing}: 2 shared / sqrt(3 * 4).
+        let expected = 2.0 / 12f64.sqrt();
         assert!(result.contains(&format!("(relevance: {expected:.2})")));
         assert!(!result.contains("relevance: 0.00"));
     }
@@ -651,18 +544,69 @@ mod tests {
         assert!(!result.contains("部署成功"));
     }
 
-    /// Japanese and Korean verb endings and particles are not topic words:
-    /// sentences that share only those match nothing.
+    /// Sentences that share only grammar — Japanese endings, Korean
+    /// endings and question words, katakana fragments — match nothing.
     #[test]
-    fn japanese_and_korean_endings_do_not_make_memories_relevant() {
+    fn japanese_and_korean_grammar_does_not_make_memories_relevant() {
         for (prompt, unrelated) in [
             (
                 "/analyze ビルドが失敗しました",
                 "Agent analyzer: デプロイが成功しました",
             ),
             (
+                "/analyze サーバーのエラーをチェック",
+                "Agent general: パーサーのエラーメッセージ",
+            ),
+            (
+                "/analyze データベースのエラー",
+                "Agent general: ユーザーのデータをフィルター",
+            ),
+            ("/analyze マスターブランチ", "Agent general: スターを付けた"),
+            (
+                "/analyze コンピューターのモニター",
+                "Agent general: データのフィルター",
+            ),
+            (
                 "/analyze 빌드가 실패했습니다",
                 "Agent analyzer: 배포가 성공했습니다",
+            ),
+            (
+                "/fix 테스트가 실패합니다 어떻게 해야 합니까",
+                "Agent general: user: 점심은 어떻게 해야 합니까",
+            ),
+            (
+                "/fix 빌드가 실패했는데 왜 그런지 모르겠습니다",
+                "Agent general: user: 점심을 먹었는데 왜 그런지 모르겠습니다",
+            ),
+            (
+                "/analyze 테스트가 실패하는 이유가 뭔가요 알려주세요",
+                "Agent general: user: 날씨가 좋은 이유가 뭔가요 알려주세요",
+            ),
+        ] {
+            assert_eq!(
+                format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(unrelated)]),
+                None,
+                "{unrelated:?} is not relevant to {prompt:?}"
+            );
+        }
+    }
+
+    /// Two common English function or filler words do not make a chit-chat
+    /// transcript relevant.
+    #[test]
+    fn english_function_words_do_not_make_memories_relevant() {
+        for (prompt, unrelated) in [
+            (
+                "/fix because they said some of it was very broken",
+                "Agent general: user: because they are very late, some of them left\n\nassistant: ok",
+            ),
+            (
+                "/analyze why here more than once",
+                "Agent general: user: more coffee here than there, once\n\nassistant: ok",
+            ),
+            (
+                "/fix the flaky test, thanks! yes, okay",
+                "Agent general: user: thanks, yes okay\n\nassistant: pong",
             ),
         ] {
             assert_eq!(
@@ -687,24 +631,36 @@ mod tests {
         );
     }
 
-    /// Contractions are one stop word, not a stray `doesn` / `isn` topic.
+    /// Contractions are never topic words, whatever their ending.
     #[test]
     fn contractions_do_not_make_memories_relevant() {
-        let prompt = "/analyze why doesn't it work, isn't it wired?";
-        assert_eq!(
-            format_agent_memory_context(
-                prompt,
-                &prompt_agents(prompt),
-                &[memory(
-                    "Agent analyzer: the cache doesn't expire and isn't cleared"
-                )]
+        for (prompt, unrelated) in [
+            (
+                "/analyze why doesn't it work, isn't it wired?",
+                "Agent analyzer: the cache doesn't expire and isn't cleared",
             ),
-            None
-        );
-        assert_eq!(without_apostrophes("builder's"), "builder");
-        assert_eq!(without_apostrophes("doesn\u{2019}t"), "doesnt");
-        assert_eq!(without_apostrophes("'quoted'"), "quoted");
-        assert_eq!(without_apostrophes("s"), "s");
+            (
+                "/fix I'll check why they'll fail",
+                "Agent general: user: I'll call you, they'll wait\n\nassistant: ok",
+            ),
+            (
+                "/analyze we'll see if you'd merge it",
+                "Agent general: user: we'll have lunch if you'd like\n\nassistant: sure",
+            ),
+        ] {
+            assert_eq!(
+                format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(unrelated)]),
+                None,
+                "{unrelated:?} is not relevant to {prompt:?}"
+            );
+        }
+        assert_eq!(without_apostrophes("builder's"), Some("builder"));
+        assert_eq!(without_apostrophes("Builder\u{2019}S"), Some("Builder"));
+        assert_eq!(without_apostrophes("'quoted'"), Some("quoted"));
+        assert_eq!(without_apostrophes("s"), Some("s"));
+        assert_eq!(without_apostrophes("doesn\u{2019}t"), None);
+        assert_eq!(without_apostrophes("we'll"), None);
+        assert_eq!(without_apostrophes("you'd"), None);
     }
 
     #[test]
@@ -722,13 +678,30 @@ mod tests {
     }
 
     #[test]
-    fn space_separated_short_korean_words_count() {
+    fn katakana_loanwords_match_as_whole_words() {
+        let prompt = "/analyze サーバーのエラーをチェック";
         let result = format_agent_memory_context(
-            "/analyze 빌드 실패",
-            &agents(&["analyzer"]),
-            &[memory("Agent analyzer: 빌드 실패 원인은 포맷")],
+            prompt,
+            &prompt_agents(prompt),
+            &[memory("Agent analyzer: サーバーのエラーはログを見る")],
+        )
+        .expect("katakana memory is injected");
+        assert!(result.contains("サーバーのエラーはログを見る"));
+    }
+
+    /// Known limit: Hangul contributes no topic words, so a Korean memory
+    /// is never injected, even a relevant one (see [`topic_terms`]).
+    #[test]
+    fn korean_memories_are_not_injected() {
+        let prompt = "/analyze 빌드 실패";
+        assert_eq!(
+            format_agent_memory_context(
+                prompt,
+                &prompt_agents(prompt),
+                &[memory("Agent analyzer: 빌드 실패 원인은 포맷")]
+            ),
+            None
         );
-        assert!(result.is_some_and(|text| text.contains("빌드 실패 원인은 포맷")));
     }
 
     #[test]
