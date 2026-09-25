@@ -263,16 +263,15 @@ fn words(text: &str) -> impl Iterator<Item = Option<&str>> {
         .map(without_apostrophes)
 }
 
-/// `text` as prose and code parts, following CommonMark (spec 0.31.2,
-/// §4.5 and §6.1): a block between `~~~` fence lines, and the text between
-/// a run of backticks and the next run of exactly as many (`` `x` ``,
-/// ``` ``x`` ```, and ```` ``` ```` fences) are code (`true`); everything
-/// else is prose. A delimiter with no closing partner (a stray backtick,
-/// or a block cut off by session-stop's 500-character head) opens nothing:
-/// the text after it stays prose.
+/// `text` as prose and code parts, following CommonMark (spec 0.31.2):
+/// fenced blocks (§4.5) are found first, in one pass over lines, and code
+/// spans (§6.1) in the prose between them. Code parts are tagged `true`.
+/// A delimiter with no closing partner (a stray backtick, or a block cut
+/// off by session-stop's 500-character head) opens nothing: the text after
+/// it stays prose.
 fn segments(text: &str) -> Vec<(bool, &str)> {
     let mut segments = Vec::new();
-    for (in_fence, part) in tilde_fences(text) {
+    for (in_fence, part) in fenced_blocks(text) {
         if in_fence {
             segments.push((true, part));
         } else {
@@ -282,11 +281,13 @@ fn segments(text: &str) -> Vec<(bool, &str)> {
     segments
 }
 
-/// `text` split at `~~~` fence lines: a line starting with three or more
-/// tildes opens a block that a later line starting with at least as many
-/// closes.
-fn tilde_fences(text: &str) -> Vec<(bool, &str)> {
-    let fence_len = |line: &str| line.trim_start().chars().take_while(|c| *c == '~').count();
+/// `text` split at fenced code blocks (CommonMark §4.5). A line whose
+/// trimmed start is three or more backticks or tildes opens a fence (a
+/// backtick fence's info string may not contain a backtick); the next line
+/// holding at least as many of the same character and nothing else but
+/// whitespace closes it. Everything between is code, fence-like lines of
+/// the other character included.
+fn fenced_blocks(text: &str) -> Vec<(bool, &str)> {
     let mut lines = Vec::new();
     let mut offset = 0;
     for line in text.split_inclusive('\n') {
@@ -298,14 +299,15 @@ fn tilde_fences(text: &str) -> Vec<(bool, &str)> {
     let mut index = 0;
     while index < lines.len() {
         let (open_at, open_line) = lines[index];
-        let opener = fence_len(open_line);
-        let close = (opener >= 3)
-            .then(|| {
-                lines[index + 1..]
-                    .iter()
-                    .position(|(_, line)| fence_len(line) >= opener)
+        let opener = fence_run(open_line)
+            .filter(|(marker, _, rest)| !(*marker == '`' && rest.contains('`')));
+        let close = opener.and_then(|(marker, width, _)| {
+            lines[index + 1..].iter().position(|(_, line)| {
+                fence_run(line).is_some_and(|(closer, closer_width, rest)| {
+                    closer == marker && closer_width >= width && rest.trim().is_empty()
+                })
             })
-            .flatten();
+        });
         let Some(close) = close else {
             index += 1;
             continue;
@@ -318,6 +320,15 @@ fn tilde_fences(text: &str) -> Vec<(bool, &str)> {
     }
     parts.push((false, &text[prose_start..]));
     parts
+}
+
+/// The fence run a line starts with (after indentation): its character
+/// (`` ` `` or `~`), its width (at least 3), and the rest of the line.
+fn fence_run(line: &str) -> Option<(char, usize, &str)> {
+    let line = line.trim_start();
+    let marker = line.chars().next().filter(|c| matches!(c, '`' | '~'))?;
+    let width = line.chars().take_while(|c| *c == marker).count();
+    (width >= 3).then(|| (marker, width, &line[width..]))
 }
 
 /// `text` split at backtick code spans: a run of backticks opens a span
@@ -1332,6 +1343,24 @@ mod tests {
                 (false, " c")
             ]
         );
+        // Fences nest the CommonMark way: other-character fence lines are
+        // content, a closer may be longer, and an info string can't close.
+        assert_eq!(
+            segments("```\n~~~\n```\nx\n~~~\n"),
+            [(false, ""), (true, "~~~\n"), (false, "x\n~~~\n")]
+        );
+        assert_eq!(
+            segments("see:\n~~~\nhallo\n~~~ rust\nwelt\n~~~\n"),
+            [
+                (false, "see:\n"),
+                (true, "hallo\n~~~ rust\nwelt\n"),
+                (false, "")
+            ]
+        );
+        assert_eq!(
+            segments("```\nhallo\n````\nafter"),
+            [(false, ""), (true, "hallo\n"), (false, "after")]
+        );
         assert_eq!(
             segments("see:\n~~~ text\nhallo welt\n~~~~\nafter ~~~\nopen"),
             [
@@ -1432,6 +1461,8 @@ mod tests {
         for prompt in [
             "/fix this:\n~~~\nFehler: die Datei hat man nicht gefunden\n~~~",
             "/fix the ``die Pipeline hat keinen Erfolg man`` error",
+            "/fix this:\n```\nFehler: die Datei hat man nicht gefunden\n~~~\nx\n~~~\n```",
+            "/fix this:\n```\nFehler: die Datei hat man nicht gefunden\n````",
         ] {
             assert_eq!(
                 format_agent_memory_context(prompt, &prompt_agents(prompt), &man_memory),
@@ -1446,6 +1477,16 @@ mod tests {
                 &prompt_agents(prompt),
                 &[memory(
                     "Agent x: assistant: The deploy failed with this error:\n~~~\nFehler: die Datei hat man nicht gefunden, der Server ist weg\n~~~"
+                )]
+            ),
+            None
+        );
+        assert_eq!(
+            format_agent_memory_context(
+                prompt,
+                &prompt_agents(prompt),
+                &[memory(
+                    "Agent x: assistant: The docs build failed on this page:\n```markdown\nFehler: die Datei hat man nicht gefunden, der Server ist weg\n~~~\nx\n~~~\n```"
                 )]
             ),
             None
