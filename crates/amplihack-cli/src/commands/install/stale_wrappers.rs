@@ -20,6 +20,11 @@ pub(crate) struct StaleWrapperNeutralizerReport {
     pub(crate) neutralized: Vec<NeutralizedWrapper>,
     pub(crate) manifest_path: Option<PathBuf>,
     pub(crate) resolved_after: PathBuf,
+    /// Transient `npx` shims for our own npm wrapper that sit ahead of the
+    /// Rust binary on PATH, shadowing it only while the launching `npx`
+    /// process runs (issue #1480). They are left in place and reported so the
+    /// caller can warn. Empty when the Rust binary is not on PATH at all.
+    pub(crate) skipped_transient_shims: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,10 +84,7 @@ enum PathCandidateKind {
     PreferredRustBinary,
     StalePythonWrapper,
     StaleUvxWrapper,
-    /// The npm/npx launcher (`npm/bin/amplihack.js`). It only delegates to the
-    /// Rust binary, and under `npx` it sits in a transient
-    /// `node_modules/.bin` entry that npx prepends to PATH for the one run.
-    NpmLauncher,
+    TransientNpxShim,
     UnknownExecutable,
     Inaccessible(String),
 }
@@ -125,6 +127,7 @@ pub(crate) fn neutralize_shadowing_stale_wrappers(
     };
 
     let mut neutralized = Vec::new();
+    let mut skipped_transient_shims = Vec::new();
     let mut manifest_entries = Vec::new();
     let mut run_dir = None;
 
@@ -138,9 +141,13 @@ pub(crate) fn neutralize_shadowing_stale_wrappers(
                 },
             )?;
         match kind {
-            PathCandidateKind::PreferredRustBinary
-            | PathCandidateKind::CurrentRustBinary
-            | PathCandidateKind::NpmLauncher => {}
+            PathCandidateKind::PreferredRustBinary | PathCandidateKind::CurrentRustBinary => {}
+            PathCandidateKind::TransientNpxShim => {
+                // Only a shim ahead of the Rust binary on PATH shadows it.
+                if preferred_on_path {
+                    skipped_transient_shims.push(candidate.clone());
+                }
+            }
             PathCandidateKind::StalePythonWrapper | PathCandidateKind::StaleUvxWrapper => {
                 let wrapper_kind = match kind {
                     PathCandidateKind::StalePythonWrapper => {
@@ -229,7 +236,7 @@ pub(crate) fn neutralize_shadowing_stale_wrappers(
             resolved_kind,
             PathCandidateKind::PreferredRustBinary
                 | PathCandidateKind::CurrentRustBinary
-                | PathCandidateKind::NpmLauncher
+                | PathCandidateKind::TransientNpxShim
         ) {
             return Err(StaleWrapperRepairError::RustBinaryStillShadowed {
                 resolved_after,
@@ -242,6 +249,7 @@ pub(crate) fn neutralize_shadowing_stale_wrappers(
         neutralized,
         manifest_path,
         resolved_after,
+        skipped_transient_shims,
     })
 }
 
@@ -272,10 +280,11 @@ fn classify_path_candidate(
         return Ok(PathCandidateKind::CurrentRustBinary);
     }
 
-    let metadata = fs::symlink_metadata(path)?;
-    if is_amplihack_npm_launcher(path) {
-        return Ok(PathCandidateKind::NpmLauncher);
+    if is_transient_npx_shim(path, &canonical) {
+        return Ok(PathCandidateKind::TransientNpxShim);
     }
+
+    let metadata = fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink() {
         if !is_safe_wrapper_location(&canonical, home) {
             return Ok(PathCandidateKind::UnknownExecutable);
@@ -297,23 +306,6 @@ fn classify_path_candidate(
     Ok(PathCandidateKind::UnknownExecutable)
 }
 
-/// Marker printed by `npm/bin/amplihack.js`; identifies our own npm launcher.
-const NPM_LAUNCHER_MARKER: &str = "amplihack npm wrapper failed";
-
-/// Whether `path` (following symlinks) is the amplihack npm/npx launcher
-/// script, e.g. `~/.npm/_npx/<hash>/node_modules/.bin/amplihack`.
-pub(crate) fn is_amplihack_npm_launcher(path: &Path) -> bool {
-    let Ok(content) = read_prefix(path) else {
-        return false;
-    };
-    content.starts_with("#!")
-        && content
-            .lines()
-            .next()
-            .is_some_and(|line| line.contains("node"))
-        && content.contains(NPM_LAUNCHER_MARKER)
-}
-
 fn is_safe_wrapper_location(path: &Path, home: &Path) -> bool {
     let Ok(relative) = path.strip_prefix(home) else {
         return false;
@@ -322,6 +314,46 @@ fn is_safe_wrapper_location(path: &Path, home: &Path) -> bool {
     rel.starts_with(".local/share/uv/")
         || rel.starts_with(".cache/uv/")
         || rel.starts_with(".amplihack/")
+}
+
+/// Recognize the `node_modules/.bin/amplihack` shim that `npx` puts first on
+/// PATH while running our own npm wrapper (issue #1480). Both must hold:
+/// the shim lives under an npx cache dir (`_npx/<hash>/node_modules/.bin/`),
+/// and it resolves to this package's `npm/bin/amplihack.js` wrapper. The npx
+/// cache entry is transient, so the shim stops shadowing once npx exits.
+fn is_transient_npx_shim(path: &Path, canonical: &Path) -> bool {
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    let Some((_, after_npx)) = normalized.rsplit_once("/_npx/") else {
+        return false;
+    };
+    let mut parts = after_npx.split('/');
+    let (Some(hash), Some("node_modules"), Some(".bin"), Some(_name), None) = (
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+    ) else {
+        return false;
+    };
+    if hash.is_empty() {
+        return false;
+    }
+    let target = canonical.to_string_lossy().replace('\\', "/");
+    if !target.ends_with("/npm/bin/amplihack.js") {
+        return false;
+    }
+    read_prefix(canonical).is_ok_and(|content| is_amplihack_npm_wrapper(&content))
+}
+
+/// [`is_transient_npx_shim`] for a PATH entry that has not been resolved yet,
+/// so the post-install PATH advisory can recognize the same shim.
+pub(crate) fn is_transient_npx_shim_path(path: &Path) -> bool {
+    fs::canonicalize(path).is_ok_and(|canonical| is_transient_npx_shim(path, &canonical))
+}
+
+fn is_amplihack_npm_wrapper(content: &str) -> bool {
+    content.contains("ensureNativeBinaries") && content.contains("amplihack npm wrapper")
 }
 
 fn read_prefix(path: &Path) -> io::Result<String> {

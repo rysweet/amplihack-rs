@@ -241,13 +241,24 @@ pub(super) fn path_conflict_warning_after_install(
         let Some(resolution) = report.resolution(binary_name) else {
             continue;
         };
+        // The npx shim running this install shadows ~/.local/bin only until
+        // npx exits, and the install already says so (#1480). Judge the PATH
+        // the user is left with instead: whatever remains once it is gone.
+        let without_shims;
+        let resolution =
+            if super::stale_wrappers::is_transient_npx_shim_path(&resolution.resolved.path) {
+                let Some(remaining) = resolution.without_candidates(|candidate| {
+                    super::stale_wrappers::is_transient_npx_shim_path(&candidate.path)
+                }) else {
+                    continue;
+                };
+                without_shims = remaining;
+                &without_shims
+            } else {
+                resolution
+            };
 
         if resolution.is_shadowed_by_earlier_path_entry {
-            // `npx` prepends its own `node_modules/.bin` for the duration of
-            // the run; that launcher only delegates to the Rust binary.
-            if super::stale_wrappers::is_amplihack_npm_launcher(&resolution.resolved.path) {
-                continue;
-            }
             let Some(preferred) = resolution.preferred_user_candidate.as_ref() else {
                 continue;
             };

@@ -219,28 +219,3 @@ fn install_warns_when_multiple_distinct_binary_candidates_create_ambiguity() {
     assert!(warning.contains(&other_amplihack.display().to_string()));
     assert!(warning.contains("Remove stale candidates or reorder PATH"));
 }
-
-#[test]
-fn install_does_not_warn_when_shadowed_only_by_npx_launcher() {
-    let temp = tempfile::tempdir().unwrap();
-    let local_bin = temp.path().join(".local/bin");
-    let npx_bin = temp.path().join(".npm/_npx/abc/node_modules/.bin");
-    let local_amplihack = create_exe_stub(&local_bin, "amplihack");
-    create_exe_stub(&local_bin, "amplihack-hooks");
-    let launcher = create_exe_stub(&npx_bin, "amplihack");
-    fs::write(
-        &launcher,
-        "#!/usr/bin/env node\nconsole.error(`amplihack npm wrapper failed: ${e}`);\n",
-    )
-    .unwrap();
-
-    let report = analyze_path_conflicts(&PathAnalysisInput {
-        home_dir: temp.path().to_path_buf(),
-        current_exe: local_amplihack,
-        path_dirs: vec![npx_bin, local_bin],
-        binary_names: vec!["amplihack".into(), "amplihack-hooks".into()],
-    })
-    .unwrap();
-
-    assert_eq!(binary::path_conflict_warning_after_install(&report), None);
-}

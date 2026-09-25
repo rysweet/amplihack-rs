@@ -13,8 +13,6 @@ async function main() {
   runAmplihack(mainBinary, process.argv.slice(2));
 }
 
-// The Rust installer recognises this launcher by the message below (see
-// `is_amplihack_npm_launcher` in crates/amplihack-cli). Keep it verbatim.
 main().catch((error) => {
   console.error(`amplihack npm wrapper failed: ${error.message}`);
   process.exit(1);
