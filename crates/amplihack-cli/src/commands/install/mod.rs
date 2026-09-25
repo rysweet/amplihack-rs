@@ -395,12 +395,19 @@ fn local_install(
                 home_dir: paths::home_dir()?,
                 current_exe: std::env::current_exe()
                     .unwrap_or_else(|_| preferred_amplihack.to_path_buf()),
-                preferred_rust_binary: preferred_amplihack,
+                preferred_rust_binary: preferred_amplihack.clone(),
                 path_dirs,
                 binary_name: crate::path_conflicts::binary_filename("amplihack"),
             },
         )
         .context("failed to neutralize stale Python/uvx amplihack PATH wrappers")?;
+        for shim in &repair.skipped_transient_shims {
+            println!(
+                "  ℹ️  Leaving transient npx shim {} in place; it stops shadowing {} once npx exits.",
+                shim.display(),
+                preferred_amplihack.display()
+            );
+        }
         if !repair.neutralized.is_empty() {
             let manifest_path = repair
                 .manifest_path
