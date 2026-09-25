@@ -24,6 +24,8 @@
 #      recipe-runner-rs is still found.
 #   6. `apt-get update` failing for a non-lock reason (broken repo): not
 #      retried; the build-essential install still goes ahead.
+#   7. the `install --force-refresh` child of `amplihack update`
+#      (AMPLIHACK_POST_UPDATE_INSTALL=1): never bootstraps.
 #
 # Usage: AMPLIHACK_BIN=/path/to/amplihack bash tests/rust_toolchain_bootstrap_install.sh
 # (defaults to the `amplihack` on PATH). CI runs it in the Install Smoke Test job.
@@ -288,6 +290,20 @@ if [[ "$status" -eq 0 && "$(grep -c "update -qq" "$home/apt.log" 2>/dev/null)" -
   pass "a permanent apt-get update error is not retried; install proceeds"
 else
   fail "permanent update error handling wrong (exit $status): $(cat "$home/apt.log" 2>/dev/null)"
+  cat "$out" >&2
+fi
+
+# --- 7. the install `amplihack update` spawns: never bootstraps -------------
+home="$TMP/case7"
+make_tools "$TMP/case7-tools" curl cc
+out="$TMP/case7.log"
+status=0
+run_install "$home" "$TMP/case7-tools" "$out" AMPLIHACK_POST_UPDATE_INSTALL=1 || status=$?
+if [[ "$status" -ne 0 && ! -e "$home/curl.args" && ! -e "$home/.cargo" ]] \
+  && grep -qF "cargo is required to install recipe-runner-rs" "$out"; then
+  pass "post-update install leaves Rust bootstrapping to an explicit install"
+else
+  fail "post-update install bootstrapped Rust or failed oddly (exit $status)"
   cat "$out" >&2
 fi
 

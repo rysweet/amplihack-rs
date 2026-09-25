@@ -60,8 +60,15 @@ pub(crate) fn with_bootstrap_permitted<T>(f: impl FnOnce() -> T) -> T {
 
 /// Whether the running command may bootstrap a toolchain: it is the explicit
 /// `amplihack install`, and `AMPLIHACK_NO_RUST_BOOTSTRAP` does not forbid it.
+/// The `install --force-refresh` child that `amplihack update` spawns is
+/// excluded too: it runs under a short timeout that could kill rustup-init
+/// half way, so it leaves bootstrapping to the next explicit install.
 pub(crate) fn bootstrap_permitted() -> bool {
-    EXPLICIT_INSTALL.load(Ordering::SeqCst) && !bootstrap_disabled()
+    EXPLICIT_INSTALL.load(Ordering::SeqCst) && !bootstrap_disabled() && !post_update_install()
+}
+
+fn post_update_install() -> bool {
+    std::env::var_os("AMPLIHACK_POST_UPDATE_INSTALL").is_some_and(|value| value == "1")
 }
 
 /// `AMPLIHACK_NO_RUST_BOOTSTRAP` semantics: unset, empty and `0` leave
@@ -418,6 +425,11 @@ mod tests {
 
     #[test]
     fn bootstrap_is_permitted_only_inside_the_explicit_install_scope() {
+        // The flag is process-wide: hold the env lock so no concurrent test
+        // (e.g. one driving ensure_recipe_runner) observes it set.
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         assert!(!EXPLICIT_INSTALL.load(Ordering::SeqCst));
         with_bootstrap_permitted(|| assert!(EXPLICIT_INSTALL.load(Ordering::SeqCst)));
         assert!(

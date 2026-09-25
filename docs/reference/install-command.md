@@ -105,8 +105,9 @@ the dpkg lock via `DPkg::Lock::Timeout`, and the apt lists lock by retrying
 falls through to the install with the existing package lists); it never
 prompts for a password and instead fails with the command to run.
 `recipe-runner-rs` is found in `$CARGO_HOME/bin` even when that directory is
-not on PATH. Only an explicit `amplihack install` does this; the startup self-heal and
-launch-time checks that also re-run install never download rustup or run apt.
+not on PATH. Only an explicit `amplihack install` does this; the startup self-heal,
+launch-time checks and the install that `amplihack update` runs afterwards
+never download rustup or run apt.
 Set `AMPLIHACK_NO_RUST_BOOTSTRAP=1` to disable both automatic installs.
 
 ### Environment Variables
