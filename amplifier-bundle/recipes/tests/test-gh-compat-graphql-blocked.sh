@@ -81,6 +81,16 @@ if [ "$1" = "api" ]; then
     echo "HTTP 403: GitHub GraphQL is not available from Claude Code sessions; use the REST API (gh api repos/{owner}/{repo}/...). (https://api.github.com/graphql)" >&2; exit 1
   fi
   pr='{"number":42,"node_id":"PR_1","title":"feat: widget","body":"Fixes #7","state":"open","draft":true,"merged_at":null,"html_url":"https://github.com/o/r/pull/42","created_at":"2026-01-01T00:00:00Z","user":{"login":"bot"},"labels":[],"mergeable":true,"mergeable_state":"clean","head":{"ref":"feat","sha":"abc123","repo":{"name":"r","full_name":"o/r","owner":{"login":"o"}}},"base":{"ref":"main","sha":"def456","repo":{"full_name":"o/r"}}}'
+  # Fork PR (head in fork/r) and odd head branch names, for --delete-branch.
+  [ "${STUB_FORK_PR:-0}" = 1 ] && pr="$(printf '%s' "$pr" | jq -c '.head.repo = {name: "r", full_name: "fork/r", owner: {login: "fork"}} | .head.ref = "release-1"')"
+  [ -n "${STUB_HEAD:-}" ] && pr="$(printf '%s' "$pr" | jq -c --arg h "$STUB_HEAD" '.head.ref = $h')"
+  # Results past Linux's 128 KiB per-argument limit (MAX_ARG_STRLEN).
+  big() { jq -nc --argjson n "$1" '[range(0; $n) | {id: ., node_id: "C\(.)", user: {login: "a"}, body: ("x" * 60000)}]'; }
+  case "$method $path" in
+    "GET repos/o/r/issues/5/comments"*) [ "${STUB_BIG:-0}" = 1 ] && { big 3; exit 0; } ;;
+    "GET repos/o/r/issues/42/comments"*) [ "${STUB_BIG:-0}" = 1 ] && { big 3; exit 0; } ;;
+    "GET repos/o/r/pulls/42/files"*) [ "${STUB_BADJSON:-0}" = 1 ] && { echo '[{"filename": trunc'; exit 0; } ;;
+  esac
   case "$method $path" in
     "GET repos/o/r/pulls/42")
       if [ -n "${STUB_BASE:-}" ]; then printf '%s\n' "$pr" | jq -c --arg b "$STUB_BASE" '.base.ref = $b | .base.repo.default_branch = "main"'
@@ -157,6 +167,7 @@ esac
 # A long-running call (think `pr checks --watch`) that reports progress on
 # stderr and only finishes once the test has seen that progress.
 if [ "${STUB_STREAM:-}" != "" ]; then
+  [ -n "${STUB_PIDFILE:-}" ] && echo $$ > "$STUB_PIDFILE"
   echo "progress: 1 pending" >&2
   i=0; while [ ! -e "$STUB_STREAM" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
   [ -e "$STUB_STREAM" ] && { echo "done"; exit 0; }
@@ -172,6 +183,9 @@ fi
 if [ "${STUB_NOISY:-}" != "" ]; then
   i=0; while [ "$i" -lt "$STUB_NOISY" ]; do echo "noise line $i" >&2; i=$((i + 1)); done
   echo "noisy-done"; exit 0
+fi
+if [ "${STUB_INTERLEAVE:-0}" = 1 ]; then
+  echo err1 >&2; echo out1; echo err2 >&2; echo out2; exit 0
 fi
 if [ "${STUB_FORK:-0}" = 1 ]; then sleep 5 >/dev/null & echo "forked"; exit 0; fi
 if [ "${STUB_WARN_BLOCK:-0}" = 1 ]; then
@@ -641,5 +655,25 @@ logged 'BODY {"title":"Feat","body":"- add a\n- add b","head":"feat","base":"mai
 reset_log; gh pr create --fill-first >/dev/null || fail flags2 "pr create --fill-first failed"
 logged 'BODY {"title":"add a","body":"why a","head":"feat","base":"main","draft":false}' || fail flags2 "--fill-first"
 ok "--milestone, --edit-last, --patch and --fill are implemented; --web and --dry-run are refused"
+
+# ---------------------------------------------------------------------------
+# Independent crusty review of 8dcec6eb (PR comment 5840823326).
+# ---------------------------------------------------------------------------
+
+# 42. argjson-accumulator-arg-max-silent-empty: results past 128 KiB come back
+#     whole, and a jq failure fails the call instead of printing nothing, rc 0.
+: > "$AMPLIHACK_GH_COMPAT_STATE"
+rc=0; out="$(STUB_BIG=1 gh issue list --json number,comments 2>/dev/null)" || rc=$?
+[ "$rc" = 0 ] || fail arg-max "issue list with 180 KB of comments exited $rc"
+[ "$(printf '%s' "$out" | jq -c 'map([.number, (.comments | length)])' 2>/dev/null)" = '[[5,3]]' ] || fail arg-max "issue list: $(printf '%s' "$out" | head -c 80)"
+rc=0; out="$(STUB_BIG=1 gh pr view 42 --json number,comments 2>/dev/null)" || rc=$?
+[ "$rc" = 0 ] && [ "$(printf '%s' "$out" | jq '.comments | length' 2>/dev/null)" = 3 ] || fail arg-max "pr view with 180 KB of comments: rc $rc, '$(printf '%s' "$out" | head -c 80)'"
+head -c 200000 /dev/zero | tr '\0' b > "${WORK}/big.body"
+reset_log; rc=0; gh issue create --title T --body-file "${WORK}/big.body" >/dev/null 2>&1 || rc=$?
+[ "$rc" = 0 ] || fail arg-max "issue create with a 200 KB body exited $rc"
+[ "$(grep '^BODY ' "$STUB_LOG" | wc -c)" -gt 200000 ] || fail arg-max "a 200 KB body did not reach the POST"
+rc=0; out="$(STUB_BADJSON=1 gh pr view 42 --json number,files 2>/dev/null)" || rc=$?
+[ "$rc" != 0 ] || fail arg-max "unparseable REST JSON gave rc 0 and '$out'"
+ok "results over 128 KiB come back whole; a jq failure fails the call"
 
 echo "PASS: ${PASS} checks"

@@ -79,6 +79,36 @@ ghc_log() {
 ghc_die() { printf '%s\n' "$1" >&2; ghc_log "error: $1"; exit "${2:-1}"; }
 ghc_warn() { printf 'warning: %s\n' "$1" >&2; ghc_log "warning: $1"; }
 
+# JSON and bodies never travel to jq through argv: Linux caps one argument at
+# 128 KiB, and jq failing on E2BIG left an empty variable and exit 0. Values go
+# through private scratch files or stdin, and every jq result is checked, so a
+# failure fails the call (ghc_jq_fail) instead of printing nothing.
+ghc_f() { # ghc_f VALUE — write VALUE to a scratch file, print its path.
+  local f
+  f="$(mktemp "${GHC_RUN_DIR}/json.XXXXXX")" || return 1
+  printf '%s' "$1" >"$f" || return 1
+  printf '%s\n' "$f"
+}
+ghc_jq_fail() { ghc_die "gh-compat: could not process GitHub's REST response${1:+ ($1)}"; }
+# ghc_merge OBJ EXTRA FILTER — FILTER run with $o = OBJ and $r = EXTRA.
+ghc_merge() {
+  local fo fr
+  fo="$(ghc_f "$1")" && fr="$(ghc_f "$2")" || return 1
+  jq -n --slurpfile o "$fo" --slurpfile r "$fr" "(\$o[0]) as \$o | (\$r[0]) as \$r | $3"
+}
+# ghc_body_path — the body (--body or --body-file) in a scratch file.
+ghc_body_json() { # {"body": BODY}
+  local bf
+  bf="$(ghc_body_path)" || exit 1
+  jq -n --rawfile b "$bf" '{body: $b}' || ghc_jq_fail
+}
+ghc_body_path() {
+  local f
+  f="$(mktemp "${GHC_RUN_DIR}/body.XXXXXX")" || return 1
+  ghc_body >"$f" || return 1
+  printf '%s\n' "$f"
+}
+
 # First `gh` on PATH that is not a compat launcher (a dir carrying the marker).
 ghc_find_real_gh() {
   local d
@@ -356,7 +386,7 @@ ghc_pr_target() {
   owner="${GHC_REPO%%/*}"
   case "$t" in *:*) ;; *) t="${owner}:${t}" ;; esac   # OWNER:BRANCH names a fork's branch
   pulls="$(ghc_api_or_die GET "repos/${GHC_REPO}/pulls?head=$(ghc_uri "$t")&state=all&per_page=30")" || exit 1
-  GHC_N="$(printf '%s' "$pulls" | jq -r 'sort_by(if .state == "open" then 0 else 1 end) | .[0].number // empty')"
+  GHC_N="$(printf '%s' "$pulls" | jq -r 'sort_by(if .state == "open" then 0 else 1 end) | .[0].number // empty')" || ghc_jq_fail
   [ -n "$GHC_N" ] || ghc_die "no pull requests found for branch \"${t#"${owner}":}\""
 }
 
@@ -446,7 +476,7 @@ ghc_wants_any() { local f; for f in "$@"; do ghc_wants "$f" && return 0; done; r
 
 # Check runs + commit statuses for SHA, as gh's statusCheckRollup.
 ghc_rollup() {
-  local sha="$1" names="${2:-soft}" runs statuses wruns
+  local sha="$1" names="${2:-soft}" runs statuses wruns fr fs fw
   # A merge gate reads this: an unreadable list fails the call, never "no checks".
   runs="$(ghc_all "repos/${GHC_REPO}/commits/${sha}/check-runs?filter=latest&per_page=100" .check_runs)" || exit 1
   statuses="$(ghc_all "repos/${GHC_REPO}/commits/${sha}/status?per_page=100" .statuses)" || exit 1
@@ -456,15 +486,17 @@ ghc_rollup() {
   # soft (part of statusCheckRollup: unreadable reads null, never a made-up
   # "", and never fails a merge gate over a cosmetic field).
   wruns='[]'
-  if [ "$names" != skip ] && printf '%s' "$runs" | jq -e 'any(.[]; (.details_url // "") | test("/actions/runs/[0-9]+"))' >/dev/null; then
+  if [ "$names" != skip ] && [ "$(printf '%s' "$runs" | jq 'any(.[]; (.details_url // "") | test("/actions/runs/[0-9]+"))')" = true ]; then
     if [ "$names" = strict ]; then
       wruns="$(ghc_all "repos/${GHC_REPO}/actions/runs?head_sha=${sha}&per_page=100" .workflow_runs)" || exit 1
     elif ! wruns="$(GHC_PAGINATE=1 ghc_api GET "repos/${GHC_REPO}/actions/runs?head_sha=${sha}&per_page=100" | jq -s 'map(.workflow_runs) | add // []')"; then
       ghc_log "workflow runs for ${sha} unreadable; statusCheckRollup workflowName is null"; wruns=null
     fi
   fi
-  jq -n --argjson r "$runs" --argjson s "$statuses" --argjson w "$wruns" '
-    (($w // []) | map({key: (.id | tostring), value: {name, event}}) | from_entries) as $wm
+  fr="$(ghc_f "$runs")" && fs="$(ghc_f "$statuses")" && fw="$(ghc_f "$wruns")" || exit 1
+  jq -n --slurpfile r "$fr" --slurpfile s "$fs" --slurpfile w "$fw" '
+    ($r[0]) as $r | ($s[0]) as $s | ($w[0]) as $w
+    | (($w // []) | map({key: (.id | tostring), value: {name, event}}) | from_entries) as $wm
     | [$r[] | ((.details_url // "") | capture("/actions/runs/(?<id>[0-9]+)").id // "") as $id
       | {__typename: "CheckRun", name, status: (.status // "" | ascii_upcase),
       conclusion: (.conclusion // "" | ascii_upcase), detailsUrl: .details_url, title: (.output.title // ""),
@@ -472,7 +504,7 @@ ghc_rollup() {
       workflowName: (if $w == null then null else ($wm[$id].name // "") end),
       event: (if $w == null then null else ($wm[$id].event // "") end)}]
     + [$s[] | {__typename: "StatusContext", context, state: (.state // "" | ascii_upcase),
-      targetUrl: .target_url, description}]'
+      targetUrl: .target_url, description}]' || ghc_jq_fail "check runs"
 }
 
 # ghc_pr_full NUMBER — mapped PR, enriched with whatever --json asked for.
@@ -484,29 +516,29 @@ ghc_pr_full() {
     # call, not report "no reviews". REST has no REVIEW_REQUIRED (that needs
     # branch protection); mergeStateStatus BLOCKED still carries it.
     extra="$(ghc_all "repos/${GHC_REPO}/pulls/${n}/reviews?per_page=100")" || exit 1
-    obj="$(jq -n --argjson o "$obj" --argjson r "$extra" '
+    obj="$(ghc_merge "$obj" "$extra" '
       ($r | map({author: {login: (.user.login // "")}, authorAssociation: .author_association, state, body, submittedAt: .submitted_at, id: .node_id})) as $m
       | ([$r[] | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")]
          | group_by(.user.login // "") | map(max_by(.submitted_at // "") | .state)) as $last
       | $o + {reviews: $m, latestReviews: $m,
               reviewDecision: (if any($last[]; . == "CHANGES_REQUESTED") then "CHANGES_REQUESTED"
-                               elif any($last[]; . == "APPROVED") then "APPROVED" else "" end)}')" || exit 1
+                               elif any($last[]; . == "APPROVED") then "APPROVED" else "" end)}')" || ghc_jq_fail
   fi
   if ghc_wants statusCheckRollup; then
     extra="$(ghc_rollup "$(printf '%s' "$obj" | jq -r .headRefOid)")" || exit 1
-    obj="$(jq -n --argjson o "$obj" --argjson r "$extra" '$o + {statusCheckRollup: ($r | map(del(.title, .event)))}')"
+    obj="$(ghc_merge "$obj" "$extra" '$o + {statusCheckRollup: ($r | map(del(.title, .event)))}')" || ghc_jq_fail
   fi
   if ghc_wants files; then
     extra="$(ghc_all "repos/${GHC_REPO}/pulls/${n}/files?per_page=100")" || exit 1
-    obj="$(jq -n --argjson o "$obj" --argjson r "$extra" '$o + {files: ($r | map({path: .filename, additions, deletions}))}')"
+    obj="$(ghc_merge "$obj" "$extra" '$o + {files: ($r | map({path: .filename, additions, deletions}))}')" || ghc_jq_fail
   fi
   if ghc_wants commits; then
     extra="$(ghc_all "repos/${GHC_REPO}/pulls/${n}/commits?per_page=100")" || exit 1
-    obj="$(jq -n --argjson o "$obj" --argjson r "$extra" '$o + {commits: ($r | map({oid: .sha, messageHeadline: (.commit.message | split("\n")[0])}))}')"
+    obj="$(ghc_merge "$obj" "$extra" '$o + {commits: ($r | map({oid: .sha, messageHeadline: (.commit.message | split("\n")[0])}))}')" || ghc_jq_fail
   fi
   if ghc_wants comments; then
     extra="$(ghc_comments "$n")" || exit 1
-    obj="$(jq -n --argjson o "$obj" --argjson r "$extra" '$o + {comments: $r}')"
+    obj="$(ghc_merge "$obj" "$extra" '$o + {comments: $r}')" || ghc_jq_fail
   fi
   printf '%s\n' "$obj"
 }
@@ -534,7 +566,7 @@ GHC_JQ_RAW_COMMENTS='
 # made by hand in the Development sidebar leaves no trace in REST and is not
 # seen (logged each time).
 ghc_closed_by() {
-  local cands out="[]" c pr
+  local cands acc c pr
   ghc_log "closedByPullRequestsReferences: from cross-referencing PR bodies; sidebar-only links are not visible over REST"
   cands="$(ghc_all "repos/${GHC_REPO}/issues/$1/timeline?per_page=100" | jq -c --arg repo "$GHC_REPO" --argjson n "$1" "${GHC_JQ_DEFS}"'
     [ .[] | select(.event == "cross-referenced") | .source.issue // empty
@@ -544,15 +576,19 @@ ghc_closed_by() {
       | {id: .node_id, number, url: .html_url, repository: reponame($src), src: $src} ] | unique_by(.url) | .[]')" || exit 1
   # Only a PR into its default branch closes anything; the timeline does not
   # say which branch a PR targets, so each candidate is looked up.
+  acc="$(ghc_f "")" || exit 1
   while IFS= read -r c; do
     [ -n "$c" ] || continue
-    pr="$(ghc_api_or_die GET "repos/$(printf '%s' "$c" | jq -r '.src')/pulls/$(printf '%s' "$c" | jq -r .number)")" || exit 1
-    printf '%s' "$pr" | jq -e '.base.ref == (.base.repo.default_branch // .base.ref)' >/dev/null || continue
-    out="$(jq -n --argjson a "$out" --argjson c "$c" '$a + [$c | del(.src)]')"
+    pr="$(ghc_api_or_die GET "repos/$(printf '%s' "$c" | jq -r '"\(.src)/pulls/\(.number)"')")" || exit 1
+    case "$(printf '%s' "$pr" | jq '.base.ref == (.base.repo.default_branch // .base.ref)')" in
+      true) printf '%s' "$c" | jq -c 'del(.src)' >>"$acc" || ghc_jq_fail ;;
+      false) ;;
+      *) ghc_jq_fail "pull request lookup" ;;
+    esac
   done <<EOF_CANDS
 $cands
 EOF_CANDS
-  printf '%s\n' "$out"
+  jq -s . "$acc" || ghc_jq_fail
 }
 
 # ghc_search KIND(pr|issue) STATE TEXT LIMIT — /search/issues items (for
@@ -642,19 +678,24 @@ ghc_pr_view() {
   ghc_emit "$obj"
 }
 
+# ghc_pr_full_all NUMBER... — ghc_pr_full for each, as one array.
+ghc_pr_full_all() {
+  local acc n
+  acc="$(ghc_f "")" || exit 1
+  for n in "$@"; do ghc_pr_full "$n" >>"$acc" || exit 1; done
+  jq -s . "$acc" || ghc_jq_fail
+}
+
 ghc_pr_list() {
-  local state limit q raw owner nums n out="[]" obj
+  local state limit q raw owner nums out="[]"
   ghc_parse "$GHC_COMMON_V -s:state --state:state -L:limit --limit:limit -H:head --head:head -B:base --base:base -S:search --search:search -A:author --author:author -l:label --label:label -a:assignee --assignee:assignee" "-d:draft --draft:draft" "$@"
   ghc_resolve_repo
   state="${GHC_O_state:-open}"; limit="${GHC_O_limit:-30}"; owner="${GHC_REPO%%/*}"
   case "$limit" in ''|*[!0-9]*|0) ghc_die "invalid value for --limit: ${limit}" ;; esac
   if [ -n "${GHC_O_search:-}${GHC_O_author:-}${GHC_O_label:-}${GHC_O_assignee:-}" ]; then
     raw="$(ghc_search pr "$state" "${GHC_O_search:-}" "$limit")" || exit 1
-    nums="$(printf '%s' "$raw" | jq -r '.[].number')"
-    for n in $nums; do
-      obj="$(ghc_pr_full "$n")" || exit 1
-      out="$(jq -n --argjson a "$out" --argjson o "$obj" '$a + [$o]')"
-    done
+    nums="$(printf '%s' "$raw" | jq -r '.[].number')" || ghc_jq_fail
+    out="$(ghc_pr_full_all $nums)" || exit 1
   else
     local rstate="$state" qs=""
     [ "$state" = merged ] && rstate=closed
@@ -668,15 +709,11 @@ ghc_pr_list() {
     # A /pulls listing leaves these out (or, for reviews, needs another call).
     if ghc_wants_any reviews latestReviews reviewDecision statusCheckRollup mergeable mergeStateStatus \
         files commits comments additions deletions changedFiles mergedBy maintainerCanModify potentialMergeCommit; then
-      local full="[]"
-      for n in $(printf '%s' "$out" | jq -r '.[].number'); do
-        obj="$(ghc_pr_full "$n")" || exit 1
-        full="$(jq -n --argjson a "$full" --argjson o "$obj" '$a + [$o]')"
-      done
-      out="$full"
+      nums="$(printf '%s' "$out" | jq -r '.[].number')" || ghc_jq_fail
+      out="$(ghc_pr_full_all $nums)" || exit 1
     fi
   fi
-  [ "${GHC_B_draft:-}" = 1 ] && out="$(printf '%s' "$out" | jq 'map(select(.isDraft))')"
+  if [ "${GHC_B_draft:-}" = 1 ]; then out="$(printf '%s' "$out" | jq 'map(select(.isDraft))')" || ghc_jq_fail; fi
   if [ -z "${GHC_O_json:-}" ]; then
     printf '%s' "$out" | jq -r '.[] | "\(.number)\t\(.title)\t\(.headRefName)\t\(.state)"'
     return 0
@@ -685,7 +722,7 @@ ghc_pr_list() {
 }
 
 ghc_pr_create() {
-  local head base body payload resp url n q ms
+  local head base body payload resp url n q ms bf
   ghc_parse "-R:repo --repo:repo -t:title --title:title -b:body --body:body -F:body_file --body-file:body_file -B:base --base:base -H:head --head:head -l:label --label:label -a:assignee --assignee:assignee -r:reviewer --reviewer:reviewer -m:milestone --milestone:milestone" "-d:draft --draft:draft -f:fill --fill:fill --fill-first:fill_first" "$@"
   ghc_resolve_repo
   head="${GHC_O_head:-$(ghc_current_branch)}"
@@ -697,8 +734,9 @@ ghc_pr_create() {
   [ -n "${GHC_O_title:-}" ] || ghc_die "gh: --title is required when GraphQL is unavailable"
   # Resolved before anything is created, as gh resolves its metadata.
   ms=""; [ -z "${GHC_O_milestone:-}" ] || ms="$(ghc_milestone "$GHC_O_milestone")" || exit 1
-  payload="$(jq -n --arg t "$GHC_O_title" --arg b "$body" --arg h "$head" --arg B "$base" --argjson d "$([ "${GHC_B_draft:-}" = 1 ] && echo true || echo false)" \
-    '{title: $t, body: $b, head: $h, base: $B, draft: $d}')"
+  bf="$(ghc_f "$body")" || exit 1
+  payload="$(jq -n --arg t "$GHC_O_title" --rawfile b "$bf" --arg h "$head" --arg B "$base" --argjson d "$([ "${GHC_B_draft:-}" = 1 ] && echo true || echo false)" \
+    '{title: $t, body: $b, head: $h, base: $B, draft: $d}')" || ghc_jq_fail
   if ! resp="$(ghc_api POST "repos/${GHC_REPO}/pulls" "$payload")"; then
     ghc_last
     if [ "$GHC_STATUS" = 422 ] && printf '%s' "$resp$GHC_ERR" | grep -q 'already exists'; then
@@ -709,7 +747,7 @@ $url"
     fi
     ghc_die "pull request create failed: ${GHC_ERR}"
   fi
-  url="$(printf '%s' "$resp" | jq -r .html_url)"; n="$(printf '%s' "$resp" | jq -r .number)"
+  url="$(printf '%s' "$resp" | jq -r .html_url)" && n="$(printf '%s' "$resp" | jq -r .number)" || ghc_jq_fail
   ghc_add_labels "$n" "${GHC_O_label:-}" || ghc_warn "could not add labels ${GHC_O_label} to #${n}: ${GHC_ERR#gh: }"
   if [ -n "${GHC_O_assignee:-}" ]; then
     # The PR exists either way, so its URL still prints; the miss is not silent.
@@ -775,13 +813,14 @@ ghc_add_labels() {
 }
 
 ghc_pr_edit() {
-  local n patch rc=0
+  local n patch rc=0 bf
   ghc_parse "-R:repo --repo:repo -t:title --title:title -b:body --body:body -F:body_file --body-file:body_file -B:base --base:base --add-label:add_label --remove-label:remove_label --add-assignee:assignee --add-reviewer:reviewer" "" "$@"
   ghc_resolve_repo
   ghc_pr_target "${GHC_POS[0]:-}"; n="$GHC_N"
-  patch="$(jq -n --arg t "${GHC_O_title:-}" --arg B "${GHC_O_base:-}" '{} + (if $t != "" then {title: $t} else {} end) + (if $B != "" then {base: $B} else {} end)')"
+  patch="$(jq -n --arg t "${GHC_O_title:-}" --arg B "${GHC_O_base:-}" '{} + (if $t != "" then {title: $t} else {} end) + (if $B != "" then {base: $B} else {} end)')" || ghc_jq_fail
   if [ -n "${GHC_O_body:-}${GHC_O_body_file:-}" ]; then
-    patch="$(jq -n --argjson p "$patch" --arg b "$(ghc_body)" '$p + {body: $b}')"
+    bf="$(ghc_body_path)" || exit 1
+    patch="$(printf '%s' "$patch" | jq --rawfile b "$bf" '. + {body: $b}')" || ghc_jq_fail
   fi
   if [ "$patch" != "{}" ]; then ghc_api_or_die PATCH "repos/${GHC_REPO}/pulls/${n}" "$patch" >/dev/null || exit 1; fi
   ghc_add_labels "$n" "${GHC_O_add_label:-}" || rc=1
@@ -811,7 +850,7 @@ EOF_LABELS
 }
 
 ghc_comment() { # ghc_comment KIND(pr|issue) ARGS...
-  local kind="$1" n resp me id
+  local kind="$1" n resp me id payload
   shift
   ghc_parse "-R:repo --repo:repo -b:body --body:body -F:body_file --body-file:body_file" "--edit-last:edit_last" "$@"
   ghc_resolve_repo
@@ -821,9 +860,11 @@ ghc_comment() { # ghc_comment KIND(pr|issue) ARGS...
     me="$(ghc_api_or_die GET user | jq -r '.login // empty')" || exit 1
     id="$(ghc_all "repos/${GHC_REPO}/issues/${n}/comments?per_page=100" | jq -r --arg me "$me" '[.[] | select(.user.login == $me)] | last | .id // empty')" || exit 1
     [ -n "$id" ] || ghc_die "no comments found for current user"
-    resp="$(ghc_api_or_die PATCH "repos/${GHC_REPO}/issues/comments/${id}" "$(jq -n --arg b "$(ghc_body)" '{body: $b}')")" || exit 1
+    payload="$(ghc_body_json)" || exit 1
+    resp="$(ghc_api_or_die PATCH "repos/${GHC_REPO}/issues/comments/${id}" "$payload")" || exit 1
   else
-    resp="$(ghc_api_or_die POST "repos/${GHC_REPO}/issues/${n}/comments" "$(jq -n --arg b "$(ghc_body)" '{body: $b}')")" || exit 1
+    payload="$(ghc_body_json)" || exit 1
+    resp="$(ghc_api_or_die POST "repos/${GHC_REPO}/issues/${n}/comments" "$payload")" || exit 1
   fi
   printf '%s' "$resp" | jq -r .html_url
 }
@@ -866,7 +907,7 @@ ghc_pr_merge() {
     return 0
   fi
   obj="$(jq -n --arg m "$method" --arg t "${GHC_O_subject:-}" --arg b "${GHC_O_body:-}" --arg s "${GHC_O_sha:-}" \
-    '{merge_method: $m} + (if $t != "" then {commit_title: $t} else {} end) + (if $b != "" then {commit_message: $b} else {} end) + (if $s != "" then {sha: $s} else {} end)')"
+    '{merge_method: $m} + (if $t != "" then {commit_title: $t} else {} end) + (if $b != "" then {commit_message: $b} else {} end) + (if $s != "" then {sha: $s} else {} end)')" || ghc_jq_fail
   ghc_api_or_die PUT "repos/${GHC_REPO}/pulls/${n}/merge" "$obj" >/dev/null || exit 1
   printf '✓ Merged pull request %s#%s\n' "$GHC_REPO" "$n" >&2
   if [ "${GHC_B_delete:-}" = 1 ]; then
@@ -919,7 +960,7 @@ ghc_pr_checks() {
   ghc_resolve_repo
   ghc_pr_target "${GHC_POS[0]:-}"; n="$GHC_N"
   pr="$(ghc_api_or_die GET "repos/${GHC_REPO}/pulls/${n}")" || exit 1
-  sha="$(printf '%s' "$pr" | jq -r .head.sha)"; base="$(printf '%s' "$pr" | jq -r .base.ref)"
+  sha="$(printf '%s' "$pr" | jq -r .head.sha)" && base="$(printf '%s' "$pr" | jq -r .base.ref)" || ghc_jq_fail
   interval="${GHC_O_interval:-10}"
   if ghc_wants_any workflow event; then names=strict; fi
   required=""
@@ -939,8 +980,8 @@ ghc_pr_checks() {
                bucket: (if .state == "SUCCESS" then "pass" elif .state == "PENDING" then "pending" else "fail" end)}
             end)
       | if ($r | length) > 0 then map(select(.name as $n | $r | index($n))) else . end')" || exit 1
-    fails="$(printf '%s' "$checks" | jq '[.[] | select(.bucket == "fail" or .bucket == "cancel")] | length')"
-    pend="$(printf '%s' "$checks" | jq '[.[] | select(.bucket == "pending")] | length')"
+    fails="$(printf '%s' "$checks" | jq '[.[] | select(.bucket == "fail" or .bucket == "cancel")] | length')" || ghc_jq_fail
+    pend="$(printf '%s' "$checks" | jq '[.[] | select(.bucket == "pending")] | length')" || ghc_jq_fail
     if [ "${GHC_B_watch:-}" = 1 ] && [ "$pend" -gt 0 ]; then
       if ! { [ "${GHC_B_fail_fast:-}" = 1 ] && [ "$fails" -gt 0 ]; }; then sleep "$interval"; continue; fi
     fi
@@ -979,14 +1020,14 @@ ghc_issue_target() {
 # --json (or --comments) asks for them.
 ghc_issue_enrich() {
   local obj="$1" n extra
-  n="$(printf '%s' "$obj" | jq -r .number)"
+  n="$(printf '%s' "$obj" | jq -r .number)" || ghc_jq_fail
   if ghc_wants comments || [ "${GHC_B_comments:-}" = 1 ]; then
     extra="$(ghc_comments "$n")" || exit 1
-    obj="$(jq -n --argjson o "$obj" --argjson r "$extra" '$o + {comments: $r}')"
+    obj="$(ghc_merge "$obj" "$extra" '$o + {comments: $r}')" || ghc_jq_fail
   fi
   if ghc_wants closedByPullRequestsReferences; then
     extra="$(ghc_closed_by "$n")" || exit 1
-    obj="$(jq -n --argjson o "$obj" --argjson r "$extra" '$o + {closedByPullRequestsReferences: $r}')"
+    obj="$(ghc_merge "$obj" "$extra" '$o + {closedByPullRequestsReferences: $r}')" || ghc_jq_fail
   fi
   printf '%s\n' "$obj"
 }
@@ -1025,12 +1066,11 @@ ghc_issue_list() {
   fi
   out="$(printf '%s' "$raw" | jq "${GHC_JQ_DEFS}"' map(select(.pull_request == null) | issue)')" || exit 1
   if ghc_wants comments || ghc_wants closedByPullRequestsReferences; then
-    local full="[]" i obj
-    for i in $(printf '%s' "$out" | jq -r 'keys[]'); do
-      obj="$(ghc_issue_enrich "$(printf '%s' "$out" | jq ".[$i]")")" || exit 1
-      full="$(jq -n --argjson a "$full" --argjson o "$obj" '$a + [$o]')"
-    done
-    out="$full"
+    local items acc item
+    items="$(ghc_f "")" && acc="$(ghc_f "")" || exit 1
+    printf '%s' "$out" | jq -c '.[]' >"$items" || ghc_jq_fail
+    while IFS= read -r item; do ghc_issue_enrich "$item" >>"$acc" || exit 1; done <"$items"
+    out="$(jq -s . "$acc")" || ghc_jq_fail
   fi
   if [ -z "${GHC_O_json:-}" ]; then
     printf '%s' "$out" | jq -r '.[] | "\(.number)\t\(.state)\t\(.title)\t\([.labels[].name] | join(", "))\t\(.updatedAt)"'
@@ -1040,15 +1080,16 @@ ghc_issue_list() {
 }
 
 ghc_issue_create() {
-  local payload resp labels ms
+  local payload resp labels ms bf
   ghc_parse "-R:repo --repo:repo -t:title --title:title -b:body --body:body -F:body_file --body-file:body_file -l:label --label:label -a:assignee --assignee:assignee -m:milestone --milestone:milestone" "" "$@"
   ghc_resolve_repo
   [ -n "${GHC_O_title:-}" ] || ghc_die "gh: --title is required when GraphQL is unavailable"
   labels="${GHC_O_label:-}"
   ms="null"; [ -z "${GHC_O_milestone:-}" ] || ms="$(ghc_milestone "$GHC_O_milestone")" || exit 1
-  payload="$(jq -n --arg t "$GHC_O_title" --arg b "$(ghc_body)" --arg l "$labels" --arg a "$(ghc_expand_me "${GHC_O_assignee:-}")" --argjson m "$ms" \
+  bf="$(ghc_body_path)" || exit 1
+  payload="$(jq -n --arg t "$GHC_O_title" --rawfile b "$bf" --arg l "$labels" --arg a "$(ghc_expand_me "${GHC_O_assignee:-}")" --argjson m "$ms" \
     '{title: $t, body: $b} + (if $l != "" then {labels: ($l | split(","))} else {} end) + (if $a != "" then {assignees: ($a | split(","))} else {} end)
-     + (if $m != null then {milestone: $m} else {} end)')"
+     + (if $m != null then {milestone: $m} else {} end)')" || ghc_jq_fail
   resp="$(ghc_api POST "repos/${GHC_REPO}/issues" "$payload")" || {
     ghc_last
     # gh fails the whole create on an unknown label; mirror that message so
@@ -1074,12 +1115,15 @@ ghc_issue_state() { # ghc_issue_state close|reopen ARGS...
 }
 
 ghc_issue_edit() {
-  local n patch
+  local n patch bf
   ghc_parse "-R:repo --repo:repo -t:title --title:title -b:body --body:body -F:body_file --body-file:body_file --add-label:add_label --remove-label:remove_label --add-assignee:assignee" "" "$@"
   ghc_resolve_repo
   ghc_issue_target "${GHC_POS[0]:-}"; n="$GHC_N"
-  patch="$(jq -n --arg t "${GHC_O_title:-}" '{} + (if $t != "" then {title: $t} else {} end)')"
-  if [ -n "${GHC_O_body:-}${GHC_O_body_file:-}" ]; then patch="$(jq -n --argjson p "$patch" --arg b "$(ghc_body)" '$p + {body: $b}')"; fi
+  patch="$(jq -n --arg t "${GHC_O_title:-}" '{} + (if $t != "" then {title: $t} else {} end)')" || ghc_jq_fail
+  if [ -n "${GHC_O_body:-}${GHC_O_body_file:-}" ]; then
+    bf="$(ghc_body_path)" || exit 1
+    patch="$(printf '%s' "$patch" | jq --rawfile b "$bf" '. + {body: $b}')" || ghc_jq_fail
+  fi
   if [ "$patch" != "{}" ]; then ghc_api_or_die PATCH "repos/${GHC_REPO}/issues/${n}" "$patch" >/dev/null || exit 1; fi
   ghc_add_labels "$n" "${GHC_O_add_label:-}" || ghc_die "failed to add labels to #${n}"
   ghc_remove_labels "$n" "${GHC_O_remove_label:-}" || ghc_die "failed to remove labels from #${n}"
@@ -1091,7 +1135,7 @@ ghc_label_create() {
   ghc_parse "-R:repo --repo:repo -c:color --color:color -d:description --description:description" "-f:force --force:force" "$@"
   ghc_resolve_repo
   name="${GHC_POS[0]:-}"; [ -n "$name" ] || ghc_die "gh: label name required"
-  payload="$(jq -n --arg n "$name" --arg c "${GHC_O_color:-ededed}" --arg d "${GHC_O_description:-}" '{name: $n, color: ($c | ltrimstr("#")), description: $d}')"
+  payload="$(jq -n --arg n "$name" --arg c "${GHC_O_color:-ededed}" --arg d "${GHC_O_description:-}" '{name: $n, color: ($c | ltrimstr("#")), description: $d}')" || ghc_jq_fail
   if ghc_api POST "repos/${GHC_REPO}/labels" "$payload" >/dev/null; then
     printf '✓ Label "%s" created in %s\n' "$name" "$GHC_REPO" >&2; return 0
   fi
@@ -1159,11 +1203,11 @@ ghc_api_graphql() {
   login="$(ghc_api_or_die GET user | jq -r .login)" || exit 1
   if [[ "$a" == *viewerPermission* ]] && [ -n "$owner" ] && [ -n "$name" ]; then
     repo="$(ghc_api_or_die GET "repos/${owner}/${name}")" || exit 1
-    perm="$(printf '%s' "$repo" | jq -r '.permissions // {} | if .admin then "ADMIN" elif .maintain then "MAINTAIN" elif .push then "WRITE" elif .triage then "TRIAGE" elif .pull then "READ" else "" end')"
+    perm="$(printf '%s' "$repo" | jq -r '.permissions // {} | if .admin then "ADMIN" elif .maintain then "MAINTAIN" elif .push then "WRITE" elif .triage then "TRIAGE" elif .pull then "READ" else "" end')" || ghc_jq_fail
     out="$(jq -n -c --arg l "$login" --arg r "$(printf '%s' "$repo" | jq -r .full_name)" --arg p "$perm" \
-      '{data: {viewer: {login: $l}, repository: {nameWithOwner: $r, viewerPermission: $p}}}')"
+      '{data: {viewer: {login: $l}, repository: {nameWithOwner: $r, viewerPermission: $p}}}')" || ghc_jq_fail
   else
-    out="$(jq -n -c --arg l "$login" '{data: {viewer: {login: $l}}}')"
+    out="$(jq -n -c --arg l "$login" '{data: {viewer: {login: $l}}}')" || ghc_jq_fail
   fi
   if [ -n "$jqf" ]; then printf '%s' "$out" | jq -r -c " $jqf"; else printf '%s\n' "$out"; fi
 }
