@@ -233,8 +233,15 @@ fn is_affirmative(value: &str) -> bool {
         .any(|affirmative| value.eq_ignore_ascii_case(affirmative))
 }
 
+/// Claude Code's own truthiness test for `CLAUDE_CODE_BUBBLEWRAP` (`1`,
+/// `true`, `yes`, `on`). Narrower than [`is_affirmative`], which also takes `y`
+/// as a user's stated intent for `IS_SANDBOX`: a `CLAUDE_CODE_BUBBLEWRAP=y`
+/// that Claude Code ignores must not be passed through as accepted.
 fn is_truthy(value: &str) -> bool {
-    value == "1" || is_affirmative(value)
+    value == "1"
+        || ["true", "yes", "on"]
+            .iter()
+            .any(|truthy| value.eq_ignore_ascii_case(truthy))
 }
 
 /// [`decide`] against the real process state. The sandbox probes (a file
@@ -501,7 +508,7 @@ mod tests {
                 assert_eq!(command_is_sandbox(&command), None);
             }
         }
-        for value in ["", "0", "false"] {
+        for value in ["", "0", "false", "y"] {
             assert_eq!(
                 decide(Some(0), None, Some(value), NO_SIGNALS),
                 SkipPermissionsEnv::RootOutsideSandbox,
