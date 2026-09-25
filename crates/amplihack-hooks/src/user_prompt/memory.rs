@@ -184,7 +184,7 @@ pub fn format_agent_memory_context(
     if !prompt_reads_as_english(prompt, &ignored) {
         return None;
     }
-    let prompt_terms = topic_terms(prompt, &ignored);
+    let prompt_terms = scored_terms(prompt, &ignored);
 
     let mut scored: Vec<(f64, String, &PromptContextMemory)> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -203,7 +203,7 @@ pub fn format_agent_memory_context(
         let memory_terms: HashSet<String> = turns(strip_agent_prefix(&memory.content))
             .iter()
             .filter(|turn| reads_as_english(turn))
-            .flat_map(|turn| topic_terms(turn, &ignored))
+            .flat_map(|turn| scored_terms(turn, &ignored))
             .collect();
         let shared = prompt_terms.intersection(&memory_terms).count();
         let relevance = memory_relevance(&prompt_terms, &memory_terms);
@@ -267,14 +267,37 @@ fn words(text: &str) -> impl Iterator<Item = Option<&str>> {
 /// no closing partner (a stray backtick, or a span cut off by session-stop's
 /// 500-character head) opens nothing: the text after it stays prose.
 fn outside_code<'a>(text: &'a str, delimiter: &str) -> Vec<&'a str> {
+    code_split(text, delimiter)
+        .into_iter()
+        .filter(|(is_code, _)| !is_code)
+        .map(|(_, part)| part)
+        .collect()
+}
+
+/// `text` cut at `delimiter`, each part tagged `true` when it is enclosed
+/// code (see [`outside_code`] for unclosed delimiters).
+fn code_split<'a>(text: &'a str, delimiter: &str) -> Vec<(bool, &'a str)> {
     let parts = text.split(delimiter).collect::<Vec<_>>();
     let last = parts.len() - 1;
     parts
         .into_iter()
         .enumerate()
-        .filter(|(index, _)| index % 2 == 0 || *index == last)
-        .map(|(_, part)| part)
+        .map(|(index, part)| (index % 2 == 1 && index != last, part))
         .collect()
+}
+
+/// `text` as prose and code parts: fenced blocks and closed backtick spans
+/// are code (`true`), everything else is prose.
+fn segments(text: &str) -> Vec<(bool, &str)> {
+    let mut segments = Vec::new();
+    for (in_fence, part) in code_split(text, "```") {
+        if in_fence {
+            segments.push((true, part));
+        } else {
+            segments.extend(code_split(part, "`"));
+        }
+    }
+    segments
 }
 
 /// The roles a Claude- or OpenAI-style transcript entry can carry, which
@@ -335,25 +358,54 @@ fn turns(text: &str) -> Vec<String> {
 /// Surrounding punctuation and quotes in any script (`¿`, `“`, `»`, `.`)
 /// are trimmed first, so they don't make a word look like code.
 fn prose_words(text: &str) -> Vec<String> {
-    let mut prose = Vec::new();
-    for outside_fence in outside_code(text, "```") {
-        for outside_ticks in outside_code(outside_fence, "`") {
-            for token in outside_ticks.split_whitespace() {
-                let token = token
-                    .trim_start_matches(|c: char| is_prose_punctuation(c) && c != '-')
-                    .trim_end_matches(is_prose_punctuation);
-                // Capitals alone don't make code: `ICH BIN` is still words
-                // that `topic_terms` scores, so the check must see them too.
-                let looks_like_code = token
-                    .chars()
-                    .any(|c| !c.is_alphabetic() && !is_apostrophe(c));
-                if !token.is_empty() && !looks_like_code {
-                    prose.push(token.to_lowercase().replace('\u{2019}', "'"));
-                }
+    segments(text)
+        .into_iter()
+        .filter(|(is_code, _)| !is_code)
+        .flat_map(|(_, part)| part.split_whitespace().filter_map(prose_word))
+        .collect()
+}
+
+/// `token` as a lower-cased prose word, or `None` when it looks like code.
+/// Capitals alone don't make code: `ICH BIN` is still words that
+/// [`topic_terms`] scores, so the language check must see them too.
+fn prose_word(token: &str) -> Option<String> {
+    let token = token
+        .trim_start_matches(|c: char| is_prose_punctuation(c) && c != '-')
+        .trim_end_matches(is_prose_punctuation);
+    let looks_like_code = token
+        .chars()
+        .any(|c| !c.is_alphabetic() && !is_apostrophe(c));
+    (!token.is_empty() && !looks_like_code).then(|| token.to_lowercase().replace('\u{2019}', "'"))
+}
+
+/// The topic words of `text` that are scored: those of its prose, and of
+/// each code part unless that part is itself a sentence in another
+/// language.
+///
+/// Code is left out of the language check, so a German error pasted in a
+/// fence after `fix this:` would otherwise be scored as English. A code part
+/// with at least [`MIN_WORDS_TO_JUDGE`] prose-like words is judged like
+/// prose; if it doesn't read as English, only its code-looking tokens
+/// (`needless_borrow`, `src/main.rs`) are scored, not its words.
+fn scored_terms(text: &str, ignored: &HashSet<String>) -> HashSet<String> {
+    let mut terms = HashSet::new();
+    for (is_code, part) in segments(text) {
+        let words = part
+            .split_whitespace()
+            .filter_map(prose_word)
+            .collect::<Vec<_>>();
+        if !is_code || words.len() < MIN_WORDS_TO_JUDGE || english_share_ok(&words) {
+            terms.extend(topic_terms(part, ignored));
+        } else {
+            for token in part
+                .split_whitespace()
+                .filter(|token| prose_word(token).is_none())
+            {
+                terms.extend(topic_terms(token, ignored));
             }
         }
     }
-    prose
+    terms
 }
 
 /// Punctuation that surrounds prose words rather than making up code:
@@ -362,26 +414,24 @@ fn is_prose_punctuation(c: char) -> bool {
     !c.is_alphanumeric() && !"-/\\_~$@#=+*<>|&%`^".contains(c)
 }
 
-/// A prompt with fewer prose words and fewer topic words than this is too
-/// short to judge its language, and is scored as it is (see
-/// [`prompt_reads_as_english`]).
-const MIN_PROMPT_WORDS_TO_JUDGE: usize = 4;
+/// Text with fewer words than this is too short to judge its language, and
+/// is scored as it is (see [`prompt_reads_as_english`], [`scored_terms`]).
+const MIN_WORDS_TO_JUDGE: usize = 4;
 
 /// Whether the prompt reads as English, as memory turns must
 /// ([`reads_as_english`]). A prompt with fewer than
-/// [`MIN_PROMPT_WORDS_TO_JUDGE`] prose words *and* fewer than that many
-/// topic words (`/analyze user login`) is too short to tell and passes.
-/// Counting topic words too means a prompt whose scored words are not prose
-/// (`ICH BIN NICHT SICHER, WARUM DIE TESTS SCHEITERN`, all capitals) is
-/// still judged.
+/// [`MIN_WORDS_TO_JUDGE`] prose words *and* fewer than that many
+/// scored topic words (`/analyze user login`) is too short to tell and
+/// passes. Counting topic words too means a prompt whose scored words are
+/// mostly code (``/fix `src/die/bin.rs` `mit_hat` `was_ist` ``) is still
+/// judged.
 ///
 /// Known limits: a longer English prompt with no function words (`/fix
-/// flaky sqlite test timeout on linux ci`, or one in capitals) gets no
-/// memories, failing closed; a non-English prompt of three words or fewer
-/// is not checked.
+/// flaky sqlite test timeout on linux ci`) gets no memories, failing
+/// closed; a non-English prompt of three words or fewer is not checked.
 fn prompt_reads_as_english(prompt: &str, ignored: &HashSet<String>) -> bool {
-    let too_short_to_judge = prose_words(prompt).len() < MIN_PROMPT_WORDS_TO_JUDGE
-        && topic_terms(prompt, ignored).len() < MIN_PROMPT_WORDS_TO_JUDGE;
+    let too_short_to_judge = prose_words(prompt).len() < MIN_WORDS_TO_JUDGE
+        && scored_terms(prompt, ignored).len() < MIN_WORDS_TO_JUDGE;
     too_short_to_judge || reads_as_english(prompt)
 }
 
@@ -401,7 +451,12 @@ fn prompt_reads_as_english(prompt: &str, ignored: &HashSet<String>) -> bool {
 /// unscreened language that happens to use one of the markers, or a single
 /// turn that mixes English with another language, is judged as English.
 fn reads_as_english(text: &str) -> bool {
-    let prose = prose_words(text);
+    english_share_ok(&prose_words(text))
+}
+
+/// Whether at least [`MIN_ENGLISH_MARKER_SHARE`] of `words` are
+/// [`ENGLISH_MARKERS`] or English contractions (and there are any).
+fn english_share_ok(prose: &[String]) -> bool {
     let english = prose
         .iter()
         .filter(|word| {
@@ -1242,6 +1297,50 @@ mod tests {
         ));
     }
 
+    /// Foreign text in a code span is judged like prose: pasting a German
+    /// error in backticks or a fence doesn't make its words English.
+    #[test]
+    fn foreign_text_in_code_spans_is_judged() {
+        for (prompt, unrelated) in [
+            (
+                "/fix the error `ICH BIN NICHT SICHER WARUM DIE TESTS HEUTE SCHEITERN`",
+                "Agent general: user: The build copies files into the bin directory, and the workers die if it is missing",
+            ),
+            (
+                "/fix this build error:\n```\nFehler: die Pipeline hat keinen Erfolg, man sieht nichts\n```",
+                "Agent general: user: the man with the red hat waved at us from the bus",
+            ),
+            (
+                "/fix the bin directory so the workers don't die",
+                "Agent general: user: the note says `ich bin nicht sicher warum die tests scheitern`",
+            ),
+        ] {
+            assert_eq!(
+                format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(unrelated)]),
+                None,
+                "{unrelated:?} is not relevant to {prompt:?}"
+            );
+        }
+        // Identifiers in code still match, in short spans and in a
+        // non-English block alike.
+        for (prompt, relevant) in [
+            (
+                "/fix the `needless_borrow` lint in `session_stop`",
+                "Agent builder: the needless_borrow lint fires in session_stop on every build",
+            ),
+            (
+                "/fix the needless_borrow lint in session_stop",
+                "Agent builder: the lint output was:\n```\nwarnung: needless_borrow in session_stop hier und dort\n```",
+            ),
+        ] {
+            assert!(
+                format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(relevant)])
+                    .is_some(),
+                "{relevant:?} is relevant to {prompt:?}"
+            );
+        }
+    }
+
     /// A non-English prompt's function words (`die`, `bin`, `hat`, `mit`)
     /// don't match the same English words in an English memory.
     #[test]
@@ -1259,8 +1358,7 @@ mod tests {
                 "/fix die Tests laufen nicht mit dem neuen Build",
                 "Agent general: user: The MIT licence file and the old processes that die at shutdown",
             ),
-            // In capitals every word looks like code to the language check,
-            // but not to scoring: the prompt is still judged.
+            // Capitals are words like any other: the prompt is judged.
             (
                 "/fix ICH BIN NICHT SICHER, WARUM DIE TESTS SCHEITERN",
                 "Agent general: user: The build copies files into the bin directory, and the workers die if it is missing",
