@@ -59,6 +59,7 @@ if [ "$1" = "api" ]; then
   pr='{"number":42,"node_id":"PR_1","title":"feat: widget","body":"Fixes #7","state":"open","draft":true,"merged_at":null,"html_url":"https://github.com/o/r/pull/42","created_at":"2026-01-01T00:00:00Z","user":{"login":"bot"},"labels":[],"mergeable":true,"mergeable_state":"clean","head":{"ref":"feat","sha":"abc123","repo":{"name":"r","full_name":"o/r","owner":{"login":"o"}}},"base":{"ref":"main","sha":"def456","repo":{"full_name":"o/r"}}}'
   case "$method $path" in
     "GET repos/o/r/pulls/42") printf '%s\n' "$pr" ;;
+    "GET repos/o/r/pulls/42/reviews"*) printf '[{"user":{"login":"a"},"state":"CHANGES_REQUESTED","submitted_at":"2026-01-01T00:00:00Z"},{"user":{"login":"b"},"state":"APPROVED","submitted_at":"2026-01-02T00:00:00Z"},{"user":{"login":"b"},"state":"COMMENTED","submitted_at":"2026-01-03T00:00:00Z"}]\n' ;;
     "GET repos/o/r/pulls?"*"head=o%3Afeat"*) printf '[%s]\n' "$pr" ;;
     "POST repos/o/r/pulls")
       if [ "${STUB_PR_EXISTS:-0}" = 1 ]; then
@@ -192,6 +193,8 @@ url="$(gh issue create --title "Widget" --body "b" --label workflow:default 2>&1
 logged 'BODY {"title":"Widget","body":"b","labels":["workflow:default"]}' || fail issue-create "POST body not as expected"
 found="$(gh issue list --state open --search "flaky widget" --json url --jq '.[0].url // ""')"
 [ "$found" = "https://github.com/o/r/issues/5" ] || fail issue-search "search fallback gave '$found' (PRs must be excluded)"
+miss="$(gh issue list --state open --search "wid" --json url --jq '.[0].url // ""')"
+[ -z "$miss" ] || fail issue-search "search fallback matched a word fragment: '$miss'"
 ok "issue view/create over REST; blocked /search falls back to repo issues"
 
 # 8. label create on an existing label fails the way gh does.
@@ -205,6 +208,10 @@ resp="$(gh api graphql --hostname github.com -f owner=o -f name=r -f query='quer
   || fail graphql "got $resp"
 rc=0; gh api graphql -f query='{ rateLimit { remaining } }' >/dev/null 2>&1 || rc=$?
 [ "$rc" != 0 ] || fail graphql "an untranslatable query must fail, not fake success"
+# "reviewer" contains "viewer": a substring match would fake this one.
+rc=0; gh api graphql -f query='{repository(owner:"o",name:"r"){pullRequest(number:42){reviewRequests(first:9){nodes{requestedReviewer{... on User{login}}}}}}}' >/dev/null 2>&1 || rc=$?
+[ "$rc" != 0 ] || fail graphql "a reviewer query was answered with a bare viewer object"
+[ "$(gh api graphql -f query='query { viewer { login } }' --jq .data.viewer.login)" = bot ] || fail graphql "--jq not applied to viewer answer"
 ok "api graphql: viewerPermission answered from REST; other queries still fail"
 
 # 10. auth status: gh rejects the proxy token, REST /user accepts it.
@@ -239,8 +246,24 @@ logged "api -X GET repos/o/r/pulls?head=o%3Afix%2Ba%26b&state=all&per_page=30" |
 ok "branch names are percent-encoded in ?head="
 
 # 15. Per-call scratch files are private and cleaned up.
-leftover="$(find "$WORK" -maxdepth 1 -name 'ghc*' | head -1)"
+leftover="$(find "$WORK" -maxdepth 1 -name 'ghc*' -print -quit)"
 [ -z "$leftover" ] || fail cleanup "scratch left behind: $leftover"
 ok "no gh-compat scratch files left in TMPDIR"
+
+# 16. reviewDecision comes from each reviewer's latest decisive review, never a
+#     constant "" that a merge gate would read as "nothing blocking".
+[ "$(gh pr view 42 --json reviewDecision --jq .reviewDecision)" = CHANGES_REQUESTED ] || fail review "reviewDecision did not surface CHANGES_REQUESTED"
+ok "pr view reviewDecision derived from REST reviews"
+
+# 17. An issue URL names its own repository.
+reset_log
+gh issue view https://github.com/o2/r2/issues/7 --json url >/dev/null 2>&1 || true
+logged "api -X GET repos/o2/r2/issues/7" || fail issue-url "issue URL resolved against the checkout's repo"
+ok "issue URL targets its own repository"
+
+# 18. --template cannot be honoured over REST: fail, do not emit JSON instead.
+rc=0; gh pr view 42 --json title --template '{{.title}}' >/dev/null 2>&1 || rc=$?
+[ "$rc" = 1 ] || fail template "--template exited $rc, want 1"
+ok "--template fails instead of printing JSON"
 
 echo "PASS: ${PASS} checks"

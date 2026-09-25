@@ -253,7 +253,9 @@ def bucket: if .status != null and .status != "completed" then "pending"
 # ghc_emit JSON — apply --json field selection and --jq like gh does.
 ghc_emit() {
   local json="$1"
-  if [ -n "${GHC_O_template:-}" ]; then ghc_log "--template is unsupported over REST; emitting JSON"; fi
+  # Go templates have no jq translation; JSON in place of the asked-for text
+  # would be a success that is not one.
+  if [ -n "${GHC_O_template:-}" ]; then ghc_die "gh-compat: --template is not supported without GitHub GraphQL; use --json/--jq"; fi
   if [ -n "${GHC_O_json:-}" ]; then
     json="$(printf '%s' "$json" | jq --arg f "$GHC_O_json" '
       def pick: . as $o | reduce ($f | split(",")[] | select(. != "")) as $k ({}; .[$k] = $o[$k]);
@@ -285,9 +287,18 @@ ghc_rollup() {
 ghc_pr_full() {
   local n="$1" obj extra
   obj="$(ghc_api_or_die GET "repos/${GHC_REPO}/pulls/${n}" | jq "${GHC_JQ_DEFS} pr")" || exit 1
-  if ghc_wants reviews || ghc_wants latestReviews; then
-    extra="$(ghc_api GET "repos/${GHC_REPO}/pulls/${n}/reviews?per_page=100")" || extra='[]'
-    obj="$(jq -n --argjson o "$obj" --argjson r "$extra" '$r | map({author: {login: (.user.login // "")}, state, body, submittedAt: .submitted_at, id: .node_id}) as $m | $o + {reviews: $m, latestReviews: $m}')"
+  if ghc_wants reviews || ghc_wants latestReviews || ghc_wants reviewDecision; then
+    # A merge gate reads reviewDecision; an unreadable review list must fail the
+    # call, not report "no reviews". REST has no REVIEW_REQUIRED (that needs
+    # branch protection); mergeStateStatus BLOCKED still carries it.
+    extra="$(ghc_api_or_die GET "repos/${GHC_REPO}/pulls/${n}/reviews?per_page=100")" || exit 1
+    obj="$(jq -n --argjson o "$obj" --argjson r "$extra" '
+      ($r | map({author: {login: (.user.login // "")}, state, body, submittedAt: .submitted_at, id: .node_id})) as $m
+      | ([$r[] | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")]
+         | group_by(.user.login // "") | map(max_by(.submitted_at // "") | .state)) as $last
+      | $o + {reviews: $m, latestReviews: $m,
+              reviewDecision: (if any($last[]; . == "CHANGES_REQUESTED") then "CHANGES_REQUESTED"
+                               elif any($last[]; . == "APPROVED") then "APPROVED" else "" end)}')" || exit 1
   fi
   if ghc_wants statusCheckRollup; then
     extra="$(ghc_rollup "$(printf '%s' "$obj" | jq -r .headRefOid)")"
@@ -326,10 +337,13 @@ ghc_search() {
   rstate="$state"; case "$state" in open|closed) ;; *) rstate=all ;; esac
   raw="$(ghc_api_or_die GET "repos/${GHC_REPO}/issues?state=${rstate}&per_page=100$([ -n "${GHC_O_label:-}" ] && printf '&labels=%s' "$(jq -rn --arg l "$GHC_O_label" '$l|@uri')")")" || return 1
   printf '%s' "$raw" | jq --arg k "$kind" --arg t "$text" --arg a "${GHC_O_author:-}" --argjson n "$limit" '
-    ($t | ascii_downcase | split(" ") | map(select(. != "" and (contains(":") | not)))) as $words
+    # Whole words, as /search matches them. A substring test lets "a" or "it"
+    # match any body, and step-03 would adopt an unrelated issue as its tracker.
+    def words: ascii_downcase | [scan("[a-z0-9]+")];
+    ($t | split(" ") | map(select(contains(":") | not)) | join(" ") | words) as $words
     | map(select((.pull_request != null) == ($k == "pr"))
           | select($a == "" or .user.login == $a)
-          | select(((.title // "") + " " + (.body // "") | ascii_downcase) as $h | all($words[]; . as $w | $h | contains($w))))
+          | select(((.title // "") + " " + (.body // "") | words) as $h | all($words[]; . as $w | $h | index([$w]) != null)))
     | .[:$n]'
 }
 
@@ -474,7 +488,7 @@ ghc_comment() { # ghc_comment KIND(pr|issue) ARGS...
   shift
   ghc_parse "-R:repo --repo:repo -b:body --body:body -F:body_file --body-file:body_file" "--edit-last:edit_last -w:web --web:web" "$@"
   ghc_resolve_repo
-  if [ "$kind" = pr ]; then ghc_pr_target "${GHC_POS[0]:-}"; n="$GHC_N"; else n="${GHC_POS[0]#\#}"; n="${n##*/}"; fi
+  if [ "$kind" = pr ]; then ghc_pr_target "${GHC_POS[0]:-}"; n="$GHC_N"; else ghc_issue_target "${GHC_POS[0]:-}"; n="$GHC_N"; fi
   resp="$(ghc_api_or_die POST "repos/${GHC_REPO}/issues/${n}/comments" "$(jq -n --arg b "$(ghc_body)" '{body: $b}')")" || exit 1
   printf '%s' "$resp" | jq -r .html_url
 }
@@ -607,13 +621,24 @@ ghc_pr_checks() {
 # ---------------------------------------------------------------------------
 # gh issue ... / gh label ...
 # ---------------------------------------------------------------------------
-ghc_issue_number() { local t="${1#\#}"; t="${t##*/}"; case "$t" in ''|*[!0-9]*) ghc_die "gh: invalid issue number: $1" ;; esac; printf '%s\n' "$t"; }
+# ghc_issue_target TARGET -> sets GHC_N (TARGET: N, #N or issue/PR URL). Runs in
+# the caller's shell: a URL names its own repository, as it does for gh.
+ghc_issue_target() {
+  local t="${1#\#}"
+  if [[ "$t" =~ ^https?://.*/(issues|pull)/([0-9]+)/?$ ]]; then
+    GHC_N="${BASH_REMATCH[2]}"
+    GHC_REPO="$(ghc_repo_from_url "${t%/*/*}")" || ghc_die "gh: cannot parse issue URL: $1"
+    return 0
+  fi
+  case "$t" in ''|*[!0-9]*) ghc_die "gh: invalid issue number: $1" ;; esac
+  GHC_N="$t"
+}
 
 ghc_issue_view() {
   local n obj c
   ghc_parse "$GHC_COMMON_V" "-c:comments --comments:comments -w:web --web:web" "$@"
   ghc_resolve_repo
-  n="$(ghc_issue_number "${GHC_POS[0]:-}")" || exit 1
+  ghc_issue_target "${GHC_POS[0]:-}"; n="$GHC_N"
   obj="$(ghc_api_or_die GET "repos/${GHC_REPO}/issues/${n}" | jq "${GHC_JQ_DEFS} issue")" || exit 1
   if ghc_wants closedByPullRequestsReferences; then ghc_log "issue view: closedByPullRequestsReferences has no REST equivalent; reporting []"; fi
   if ghc_wants comments || [ "${GHC_B_comments:-}" = 1 ]; then
@@ -672,7 +697,7 @@ ghc_issue_state() { # ghc_issue_state close|reopen ARGS...
   shift
   ghc_parse "-R:repo --repo:repo -c:comment --comment:comment -r:reason --reason:reason" "" "$@"
   ghc_resolve_repo
-  n="$(ghc_issue_number "${GHC_POS[0]:-}")" || exit 1
+  ghc_issue_target "${GHC_POS[0]:-}"; n="$GHC_N"
   [ "$verb" = reopen ] && state=open
   if [ -n "${GHC_O_comment:-}" ]; then
     ghc_api POST "repos/${GHC_REPO}/issues/${n}/comments" "$(jq -n --arg b "$GHC_O_comment" '{body: $b}')" >/dev/null || true
@@ -685,7 +710,7 @@ ghc_issue_edit() {
   local n patch
   ghc_parse "-R:repo --repo:repo -t:title --title:title -b:body --body:body -F:body_file --body-file:body_file --add-label:add_label --remove-label:remove_label --add-assignee:assignee" "" "$@"
   ghc_resolve_repo
-  n="$(ghc_issue_number "${GHC_POS[0]:-}")" || exit 1
+  ghc_issue_target "${GHC_POS[0]:-}"; n="$GHC_N"
   patch="$(jq -n --arg t "${GHC_O_title:-}" '{} + (if $t != "" then {title: $t} else {} end)')"
   if [ -n "${GHC_O_body:-}${GHC_O_body_file:-}" ]; then patch="$(jq -n --argjson p "$patch" --arg b "$(ghc_body)" '$p + {body: $b}')"; fi
   if [ "$patch" != "{}" ]; then ghc_api_or_die PATCH "repos/${GHC_REPO}/issues/${n}" "$patch" >/dev/null || exit 1; fi
@@ -728,19 +753,24 @@ ghc_label_list() {
 # sends has a REST answer. Anything else fails as it did, and is logged.
 # ---------------------------------------------------------------------------
 ghc_api_graphql() {
-  local query="" owner="" name="" a login perm repo
+  local query="" owner="" name="" jqf="" a login perm repo out
   while [ $# -gt 0 ]; do
     case "$1" in
       -f|-F|--field|--raw-field)
         case "$2" in query=*) query="${2#query=}" ;; owner=*) owner="${2#owner=}" ;; name=*) name="${2#name=}" ;; esac
         shift 2 ;;
-      --hostname|-H|--header|-q|--jq) shift 2 ;;
+      -q|--jq) jqf="$2"; shift 2 ;;
+      --hostname|-H|--header) shift 2 ;;
       *) shift ;;
     esac
   done
-  a="$query"
+  # Exact shapes only (whitespace ignored). A substring test such as *viewer*
+  # also matches reviewer/viewerDidAuthor queries and would answer them with a
+  # bare viewer object and exit 0 — a fabricated success.
+  a="$(printf '%s' "$query" | tr -d ' \t\r\n')"
   case "$a" in
-    *viewer*) ;;
+    '{viewer{login}}'|'query{viewer{login}}') ;;
+    'query($owner:String!,$name:String!){viewer{login}repository(owner:$owner,name:$name){nameWithOwnerviewerPermission}}') ;;
     *) ghc_log "api graphql: no REST equivalent for this query; failing as gh does"
        ghc_die "gh: GitHub GraphQL is not available and this query has no REST equivalent (HTTP 403)" ;;
   esac
@@ -748,11 +778,12 @@ ghc_api_graphql() {
   if [[ "$a" == *viewerPermission* ]] && [ -n "$owner" ] && [ -n "$name" ]; then
     repo="$(ghc_api_or_die GET "repos/${owner}/${name}")" || exit 1
     perm="$(printf '%s' "$repo" | jq -r '.permissions // {} | if .admin then "ADMIN" elif .maintain then "MAINTAIN" elif .push then "WRITE" elif .triage then "TRIAGE" elif .pull then "READ" else "" end')"
-    jq -n --arg l "$login" --arg r "$(printf '%s' "$repo" | jq -r .full_name)" --arg p "$perm" \
-      '{data: {viewer: {login: $l}, repository: {nameWithOwner: $r, viewerPermission: $p}}}' | jq -c .
+    out="$(jq -n -c --arg l "$login" --arg r "$(printf '%s' "$repo" | jq -r .full_name)" --arg p "$perm" \
+      '{data: {viewer: {login: $l}, repository: {nameWithOwner: $r, viewerPermission: $p}}}')"
   else
-    jq -n -c --arg l "$login" '{data: {viewer: {login: $l}}}'
+    out="$(jq -n -c --arg l "$login" '{data: {viewer: {login: $l}}}')"
   fi
+  if [ -n "$jqf" ]; then printf '%s' "$out" | jq -r "$jqf"; else printf '%s\n' "$out"; fi
 }
 
 # gh auth status — the proxy token fails gh's own check but works for REST.
