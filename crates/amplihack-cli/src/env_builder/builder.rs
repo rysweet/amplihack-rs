@@ -41,6 +41,11 @@ impl EnvBuilder {
         self
     }
 
+    /// Value this builder will set for `key`, if any.
+    pub fn var(&self, key: &str) -> Option<&str> {
+        self.vars.get(key).map(String::as_str)
+    }
+
     /// Prepend a directory to PATH (deduplicated).
     pub fn prepend_path(mut self, dir: impl Into<PathBuf>) -> Self {
         self.path_prepend.push(dir.into());
@@ -357,7 +362,12 @@ impl EnvBuilder {
 
         // Build augmented PATH
         if !self.path_prepend.is_empty() {
-            let current_path = env::var("PATH").unwrap_or_default();
+            // Build on a PATH this builder already rewrote (e.g. the Python
+            // sanitization), not the ambient one, so neither edit is lost.
+            let current_path = result
+                .get("PATH")
+                .cloned()
+                .unwrap_or_else(|| env::var("PATH").unwrap_or_default());
             let new_path = build_path(&self.path_prepend, &current_path);
             result.insert("PATH".to_string(), new_path);
         }

@@ -158,6 +158,10 @@ struct Step03Run {
 }
 
 fn run_step_02d_with_remote(remote_url: &str) -> Step02dRun {
+    run_step_02d_with_env(remote_url, &[])
+}
+
+fn run_step_02d_with_env(remote_url: &str, extra_env: &[(&str, &str)]) -> Step02dRun {
     let temp = tempfile::tempdir().expect("tempdir");
     let repo_dir = temp.path().join("repo");
     let bin_dir = temp.path().join("bin");
@@ -191,6 +195,7 @@ esac
         .env("REPO_PATH", &repo_dir)
         .env("GIT_LOG", &git_log)
         .env("GIT_REMOTE_URL", remote_url)
+        .envs(extra_env.iter().copied())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1138,8 +1143,13 @@ fn step_03_github_repo_resolution_failure_uses_issue_number_for_local_tracking()
     );
 }
 
+/// Issue #1484 reversed the old "unexpected failure is fatal" rule: a tracking
+/// issue is bookkeeping, and aborting the whole workflow over it is what made
+/// default-workflow unusable in Claude Code on the web. The failure must still
+/// be loud (WARNING plus gh's redacted output), and the run continues on local
+/// tracking.
 #[test]
-fn step_03_github_unexpected_create_failure_remains_error() {
+fn step_03_github_unexpected_create_failure_falls_back_visibly() {
     let run = run_step_03_with_env(
         "github",
         "",
@@ -1156,14 +1166,15 @@ fn step_03_github_unexpected_create_failure_remains_error() {
     let stdout = String::from_utf8_lossy(&run.output.stdout);
     let stderr = String::from_utf8_lossy(&run.output.stderr);
     assert!(
-        !run.output.status.success(),
-        "unexpected GitHub failures must not fall back locally; stdout:\n{stdout}\nstderr:\n{stderr}"
+        run.output.status.success(),
+        "a failed tracking-issue create must not abort the workflow (#1484); stdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
-        stderr.contains("ERROR: GitHub issue creation failed.")
-            && stderr.contains("GraphQL: unexpected create failure")
+        stderr.contains(
+            "WARNING: GitHub issue creation failed; continuing with local tracking metadata"
+        ) && stderr.contains("GraphQL: unexpected create failure")
             && stderr.contains("https://<redacted>@github.com/example-org/example-repo"),
-        "unexpected GitHub failures must remain visible; stdout:\n{stdout}\nstderr:\n{stderr}"
+        "the failure must remain visible; stdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
         !stderr.contains("ghp_secret123")
@@ -1171,9 +1182,85 @@ fn step_03_github_unexpected_create_failure_remains_error() {
         "unexpected GitHub failures must sanitize credential-bearing CLI output; stdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
-        !stdout.contains("issue_creation=local-tracking")
-            && !stdout.contains("tracking_system=local"),
-        "unexpected GitHub failures must not emit local tracking metadata; stdout:\n{stdout}"
+        stdout.contains("tracking_system=local")
+            && stdout.contains("issue_creation=local-tracking"),
+        "the fallback must emit local tracking metadata; stdout:\n{stdout}"
+    );
+}
+
+/// Issue #1484: the exact refusal Claude Code on the web returns for GraphQL.
+#[test]
+fn step_03_graphql_block_falls_back_to_local_tracking() {
+    let run = run_step_03_with_env(
+        "github",
+        "",
+        "Add a clarification to the install docs",
+        &[
+            (
+                "GH_CREATE_OUTPUT",
+                "HTTP 403: GitHub GraphQL is not available from Claude Code sessions; use the REST API (gh api repos/{owner}/{repo}/...). (https://api.github.com/graphql)",
+            ),
+            ("GH_CREATE_STATUS", "1"),
+        ],
+    );
+    let stdout = String::from_utf8_lossy(&run.output.stdout);
+    let stderr = String::from_utf8_lossy(&run.output.stderr);
+    assert!(
+        run.output.status.success() && stdout.contains("tracking_system=local"),
+        "a GraphQL-blocked host must fall back to local tracking; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("waiting") && !run.gh_log.contains("api rate_limit"),
+        "the GraphQL block is not a rate limit and must not wait for a reset; gh log:\n{}",
+        run.gh_log
+    );
+}
+
+/// Issue #1484: an explicit `-c remote_host_type=...` wins over detection, so a
+/// user can opt a github.com checkout out of remote tracking and PRs.
+#[test]
+fn step_02d_honors_explicit_remote_host_type() {
+    let run = run_step_02d_with_env(
+        "https://github.com/example-org/example-repo.git",
+        &[("REMOTE_HOST_TYPE", "other")],
+    );
+    let stdout = String::from_utf8_lossy(&run.output.stdout);
+    assert!(run.output.status.success(), "step-02d must succeed");
+    assert_eq!(stdout.trim(), "other", "explicit remote_host_type must win");
+    assert!(
+        run.git_log.is_empty(),
+        "no detection when explicit: {}",
+        run.git_log
+    );
+
+    let detected = run_step_02d_with_env(
+        "https://github.com/example-org/example-repo.git",
+        &[("REMOTE_HOST_TYPE", "")],
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&detected.output.stdout).trim(),
+        "github"
+    );
+}
+
+/// Issue #1484: `-c issue_tracking=local` skips the remote tracker entirely.
+#[test]
+fn step_03_issue_tracking_local_skips_github() {
+    let run = run_step_03_with_env(
+        "github",
+        "",
+        "Track this locally",
+        &[("ISSUE_TRACKING", "local")],
+    );
+    let stdout = String::from_utf8_lossy(&run.output.stdout);
+    assert!(
+        run.output.status.success() && stdout.contains("tracking_system=local"),
+        "issue_tracking=local must use local tracking; stdout:\n{stdout}"
+    );
+    assert!(
+        run.gh_log.is_empty(),
+        "issue_tracking=local must not call gh at all; gh log:\n{}",
+        run.gh_log
     );
 }
 

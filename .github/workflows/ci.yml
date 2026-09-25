@@ -251,6 +251,12 @@ jobs:
             sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
             shellcheck -S warning amplifier-bundle/tools/workflow_worktree_sweep.sh
           fi
+      - name: Recipes — gh compatibility layer when GraphQL is blocked (issue #1484)
+        shell: bash
+        run: |
+          bash amplifier-bundle/recipes/tests/test-gh-compat-graphql-blocked.sh
+          command -v shellcheck >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck; }
+          shellcheck -S warning amplifier-bundle/tools/workflow_gh_compat.sh
       - name: Recipes — shellcheck worktree deconflict helper (concurrency)
         shell: bash
         run: |

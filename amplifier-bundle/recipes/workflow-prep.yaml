@@ -212,6 +212,8 @@ steps:
     type: "bash"
     command: |
       set -euo pipefail; cd "$REPO_PATH"
+      # An explicit `-c remote_host_type=github|azdo|other` wins over detection (#1484).
+      case "${REMOTE_HOST_TYPE:-}" in github|azdo|other) echo "INFO: Remote host type: $REMOTE_HOST_TYPE (explicit remote_host_type)" >&2; printf '%s' "$REMOTE_HOST_TYPE"; exit 0 ;; esac
       if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         echo "[skip] not a git repo — defaulting to 'other'" >&2
         printf 'other'; exit 0
@@ -248,6 +250,7 @@ steps:
       SANITIZED_ISSUE_REQS="$(printf '%s\n' "$FINAL_REQUIREMENTS" | awk '/^ℹ NODE_OPTIONS=--max-old-space-size=[0-9]+ \(saved preference\)(\. To change: .+)?$/ { next } { print }')"  # sanitize only launcher "ℹ NODE_OPTIONS=--max-old-space-size=N (saved preference). To change: ~/.amplihack/config" notices; preserve legitimate NODE_OPTIONS task text such as "Ensure the workflow rejects unsafe NODE_OPTIONS values"
       HOST_TYPE="${REMOTE_HOST_TYPE:-other}"; EXISTING_ISSUE_NUMBER="${ISSUE_NUMBER:-}"
       case "$HOST_TYPE" in github|azdo|other) ;; azure-devops) HOST_TYPE="azdo" ;; *) echo "WARN: Unexpected REMOTE_HOST_TYPE — using local tracking" >&2; HOST_TYPE="other" ;; esac
+      [ "${ISSUE_TRACKING:-auto}" = "local" ] && { echo "INFO: issue_tracking=local requested — using local tracking" >&2; HOST_TYPE="other"; }
       # step-03's provider-metadata helpers (derive_local_tracking_id, emit_local_metadata,
       # sanitize_cli_output, _pct_decode) live in amplifier-bundle/tools/workflow_issue_tracking.sh.
       # They were extracted, not trimmed: this brick is at its 400-line budget and the rule's
@@ -287,9 +290,9 @@ steps:
           echo "WARNING: GitHub issue creation failed because the repository could not be resolved or accessed; using local tracking metadata instead." >&2
           emit_local_metadata; exit 0
         fi
-        echo "ERROR: GitHub issue creation failed." >&2
-        sanitize_cli_output "$GH_ISSUE_OUTPUT" >&2
-        exit 1
+        # A tracking issue is bookkeeping, not the task: never abort the run over it (#1484).
+        echo "WARNING: GitHub issue creation failed; continuing with local tracking metadata. gh reported:" >&2
+        sanitize_cli_output "$GH_ISSUE_OUTPUT" >&2; emit_local_metadata; exit 0
         ;;
       azdo|azure-devops)
         REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
