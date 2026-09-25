@@ -1100,7 +1100,11 @@ fn exit_status_label(status: &std::process::ExitStatus) -> String {
     {
         use std::os::unix::process::ExitStatusExt;
         if let Some(signal) = status.signal() {
-            return format!("signal {} ({})", signal_name(signal), signal);
+            return format!(
+                "signal {} ({})",
+                amplihack_utils::launch_target::signal_name(signal),
+                signal
+            );
         }
     }
 
@@ -1108,18 +1112,6 @@ fn exit_status_label(status: &std::process::ExitStatus) -> String {
         .code()
         .map(|code| code.to_string())
         .unwrap_or_else(|| "unknown".to_string())
-}
-
-#[cfg(unix)]
-fn signal_name(signal: i32) -> &'static str {
-    match signal {
-        2 => "SIGINT",
-        6 => "SIGABRT",
-        9 => "SIGKILL",
-        11 => "SIGSEGV",
-        15 => "SIGTERM",
-        _ => "signal",
-    }
 }
 
 #[cfg(test)]

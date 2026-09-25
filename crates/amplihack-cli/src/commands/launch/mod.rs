@@ -709,13 +709,77 @@ fn wait_for_child_or_signal(
         // Check if child has exited
         match child.try_wait()? {
             Some(status) => {
-                return Ok(status.code().unwrap_or(0)); // SIGINT-killed: no numeric code → 0 (parity with Python signal_handler → sys.exit(0))
+                return Ok(exit_code_for_status(&status));
             }
             None => {
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
         }
     }
+}
+
+/// The exit code amplihack reports for a child that has finished, and the one
+/// place a child's death by signal is put into words.
+///
+/// Issue #1424. This used to be `status.code().unwrap_or(0)`, which is 0 for
+/// **every** signal death, not just the one it was written for. So the exact
+/// failure that issue reports — a Copilot binary that started and then aborted
+/// on `SIGABRT` — made `amplihack copilot` exit 0 and report success, and the
+/// only account of what happened was whatever the child had already printed.
+///
+/// `SIGINT` keeps its 0: the user pressed Ctrl+C, that is not a failure, and
+/// the parity with Python's `signal_handler → sys.exit(0)` is deliberate. Every
+/// other signal is a death — reported by name, and exited `128 + N` the way a
+/// shell reports it.
+#[cfg(unix)]
+fn exit_code_for_status(status: &std::process::ExitStatus) -> i32 {
+    use std::os::unix::process::ExitStatusExt;
+    if let Some(code) = status.code() {
+        return code;
+    }
+    let Some(signal) = status.signal() else {
+        return 0;
+    };
+    if signal == libc::SIGINT {
+        return 0;
+    }
+    eprintln!("{}", describe_child_signal(signal));
+    128 + signal
+}
+
+#[cfg(not(unix))]
+fn exit_code_for_status(status: &std::process::ExitStatus) -> i32 {
+    status.code().unwrap_or(0)
+}
+
+/// What to tell the user about a child that was killed by a signal.
+///
+/// Pure, so the words can be tested without killing a process. Two rules:
+/// it says the binary **ran** — that is the fact "no platform package found"
+/// contradicted — and for the two signals that resource exhaustion actually
+/// produces it points at the machine WITHOUT asserting the cause. Naming a
+/// cause that is merely likely is the mistake this issue is about; naming what
+/// to look at is not.
+#[cfg(unix)]
+fn describe_child_signal(signal: i32) -> String {
+    let name = amplihack_utils::launch_target::signal_name(signal);
+    let mut message = format!(
+        "amplihack: the child process was killed by {name} (signal {signal}). \
+         It was found and executed, so this is not a missing or incomplete \
+         install."
+    );
+    if signal == libc::SIGABRT || signal == libc::SIGKILL {
+        message.push_str(
+            " A death by SIGABRT or SIGKILL on a loaded host is commonly \
+             resource exhaustion: if the output above mentions \"Resource \
+             temporarily unavailable\" or \"failed to spawn thread\", or the \
+             kernel OOM-killed it, check the per-user process/thread limit \
+             (`ulimit -u`), the cgroup limit (/sys/fs/cgroup/pids.max), load \
+             and free memory before assuming anything is wrong with the \
+             install.",
+        );
+    }
+    message
 }
 
 /// Error context for "the tool could not be found", with the one explanation

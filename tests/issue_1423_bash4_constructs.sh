@@ -116,6 +116,52 @@ report 4.3 'wait -n' '(^|[;&|[:space:]])wait[[:space:]]+-n([[:space:]]|$)'
 report 4.4 'parameter transformation ${v@Q}' \
   '\$\{[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?@[QEPAKakLUu]\}'
 
+# 11. `|&`, the bash 4.0 shorthand for `2>&1 |`. bash 3.2 parses it as a plain
+# pipe followed by a background `&`, which does not fail — it silently drops
+# stderr and detaches. The only bash-4 construct here that misbehaves quietly
+# instead of aborting, which is why it gets a rule of its own.
+#
+# `report` cannot express it, because two things in this tree look like `|&`
+# and are not:
+#
+#   workflow-pr-review.yaml   '...|2>/dev/null|&>/dev/null|set \+e'
+#       a single-quoted ERE where `|&` is alternation meeting `&>`
+#   amplifier-cli-architect.md   .map(|&k| (k, self.score(k, ...)))
+#       a Rust closure parameter, inside a fenced block in a shipped skill doc
+#
+# So: drop single-quoted spans first, then require whitespace before the token.
+# A real `cmd |& cmd` has it; `(|&k|` does not. `cmd|&cmd` without the space is
+# legal bash and is missed — a known gap, taken deliberately, because a false
+# positive here fails CI on a file that is correct.
+#
+# Double-quoted text is not stripped, so `echo "a |& b"` would be reported.
+# Nothing in the tree does that today, and the cure is to quote it differently.
+report_pipe_ampersand() {
+  local hits="" line file rest lineno text stripped
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    file="${line%%:*}"; rest="${line#*:}"
+    lineno="${rest%%:*}"; text="${rest#*:}"
+    stripped="$(printf '%s' "$text" | sed "s/'[^']*'//g")"
+    case "$stripped" in
+      *[[:space:]]"|&"*) hits="${hits}${file}:${lineno}:${text}
+" ;;
+    esac
+  done <<EOF
+$(grep -rnF "${INCLUDES[@]}" -- '|&' "${SCAN_DIRS[@]}" 2>/dev/null | grep -v "^${SELF}:" || true)
+EOF
+  if [ -n "$hits" ]; then
+    printf '  FAIL  %s (bash %s+, absent from macOS /bin/bash 3.2)\n' \
+      '|& (shorthand for 2>&1 |)' '4.0'
+    printf '%s' "$hits" | sed 's/^/          /'
+    found_total=$((found_total + $(printf '%s' "$hits" | grep -c '')))
+    fails=$((fails + 1))
+  else
+    printf '  ok    no %s\n' '|& (shorthand for 2>&1 |)'
+  fi
+}
+report_pipe_ampersand
+
 echo ""
 if [ "$fails" -ne 0 ]; then
   cat <<'MSG'
