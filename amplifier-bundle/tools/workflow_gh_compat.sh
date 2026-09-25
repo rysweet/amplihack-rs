@@ -16,10 +16,12 @@
 # BEHAVIOUR.
 #   * Anything other than issue/pr/label/`api graphql`/`auth status` is handed
 #     to the real gh untouched (`exec`).
-#   * For those subcommands the real gh runs first. Only when it fails with the
-#     GraphQL-block text is the call replayed over REST (`gh api repos/...`),
-#     and the block is remembered for the rest of the run so later calls go
-#     straight to REST. Where GraphQL works (terminals, CI) nothing changes.
+#   * For those subcommands the host is probed once with the smallest GraphQL
+#     query (`{viewer{login}}`), and the answer is remembered for the TTL. Where
+#     GraphQL answers (terminals, CI) the real gh is then exec'd untouched: its
+#     output, interleaving, exit code and signals are gh's own; the only cost
+#     is that one probe per TTL. Where the probe gets the block text, the call
+#     and later ones are served over REST (`gh api repos/...`).
 #   * Output keeps the shapes callers parse: the `--json` field names, `--jq`,
 #     a bare URL from `create`, and gh's exit codes (`pr checks`: 1 fail, 8
 #     pending).
@@ -29,8 +31,9 @@
 #
 # Knobs: AMPLIHACK_GH_REST_ONLY=1 forces REST; AMPLIHACK_REAL_GH names the real
 # binary; AMPLIHACK_GH_COMPAT_STATE / AMPLIHACK_GH_COMPAT_LOG move the state and
-# log files; AMPLIHACK_GH_COMPAT_STATE_TTL_MIN (default 60) is how long a
-# recorded block is trusted before the real gh is probed again;
+# log files (a working host's marker is the state path plus ".ok");
+# AMPLIHACK_GH_COMPAT_STATE_TTL_MIN (default 60) is how long either answer is
+# trusted before GraphQL is probed again;
 # AMPLIHACK_GH_COMPAT_VERBOSE=1 also logs to stderr. The log stays off stderr by
 # default because callers capture `2>&1` (step-03 does, for the URL).
 #
@@ -53,10 +56,11 @@ set -o pipefail
 
 GHC_BLOCK_RE='GraphQL is not available|GraphQL (API )?(is )?(disabled|blocked)'
 GHC_TMP="${TMPDIR:-/tmp}"
-# The "GraphQL is blocked" marker. Under the recipe runner TMPDIR is per run, so
-# it lives and dies with the run. Elsewhere TMPDIR is shared, so the default is
+# The probe's answer: the "GraphQL is blocked" marker, or the same path plus
+# ".ok" where GraphQL works. Under the recipe runner TMPDIR is per run, so it
+# lives and dies with the run. Elsewhere TMPDIR is shared, so the default is
 # a private per-user directory, and a marker older than the TTL is ignored: the
-# next call probes the real gh again (and re-records the block if it persists).
+# next call probes GraphQL again (and re-records the answer).
 GHC_STATE="${AMPLIHACK_GH_COMPAT_STATE:-}"
 GHC_STATE_TTL_MIN="${AMPLIHACK_GH_COMPAT_STATE_TTL_MIN:-60}"
 case "$GHC_STATE_TTL_MIN" in ''|*[!0-9]*) GHC_STATE_TTL_MIN=60 ;; esac
@@ -123,12 +127,15 @@ ghc_find_real_gh() {
   return 1
 }
 
+# ghc_fresh FILE — FILE exists and is younger than the TTL (find -mmin is GNU
+# and BSD); a stale marker is re-probed.
+ghc_fresh() { [ -n "$1" ] && [ -f "$1" ] && [ -n "$(find "$1" -mmin "-${GHC_STATE_TTL_MIN}" 2>/dev/null)" ]; }
 ghc_rest_mode() {
   [ "${AMPLIHACK_GH_REST_ONLY:-0}" = 1 ] && return 0
-  [ -n "$GHC_STATE" ] && [ -f "$GHC_STATE" ] || return 1
-  # Fresh markers only (find -mmin is GNU and BSD); a stale one is re-probed.
-  [ -n "$(find "$GHC_STATE" -mmin "-${GHC_STATE_TTL_MIN}" 2>/dev/null)" ]
+  ghc_fresh "$GHC_STATE"
 }
+# GraphQL answered on this host within the TTL: calls go straight to the real gh.
+ghc_graphql_ok() { [ -n "$GHC_STATE" ] && ghc_fresh "${GHC_STATE}.ok"; }
 
 # ---------------------------------------------------------------------------
 # REST transport. Always the real `gh api`: it already owns auth, proxy and CA
@@ -269,30 +276,11 @@ ghc_gh_fields() {
   "$GHC_REAL" "$1" "$2" --json 2>&1 | sed -n 's/^  *\([A-Za-z][A-Za-z]*\)$/\1/p' | tr '\n' ' '
 }
 
-# ghc_wants_newer_field ARGS... — the call asks --json for a GHC_NEWER_FIELDS
-# field that the installed gh does not know, so the real gh would refuse it
-# before reaching GitHub, and the probe would never see a GraphQL block.
-ghc_wants_newer_field() {
-  local group="${1:-}" verb="${2:-}" json="" prev="" a f avail
-  for a in "$@"; do
-    case "$prev" in --json) json="$a" ;; esac
-    case "$a" in --json=*) json="${a#--json=}" ;; esac
-    prev="$a"
-  done
-  [ -n "$json" ] || return 1
-  for f in $GHC_NEWER_FIELDS; do
-    case "$f" in "$group.$verb":*) ;; *) continue ;; esac
-    case ",$json," in *",${f#*:},"*) ;; *) continue ;; esac
-    [ -n "${avail+set}" ] || avail="$(ghc_gh_fields "$group" "$verb")"
-    case " $avail " in *" ${f#*:} "*) ;; *) return 0 ;; esac
-  done
-  return 1
-}
-
 # ghc_graphql_blocked — ask GitHub GraphQL the smallest question; true when the
-# answer is the block refusal.
+# answer is the block refusal. GHC_PROBE_RC keeps the probe's exit status.
 ghc_graphql_blocked() {
-  "$GHC_REAL" api graphql -f query='{viewer{login}}' >/dev/null 2>"${GHC_RUN_DIR}/graphql.probe" || true
+  GHC_PROBE_RC=0
+  "$GHC_REAL" api graphql -f query='{viewer{login}}' >/dev/null 2>"${GHC_RUN_DIR}/graphql.probe" || GHC_PROBE_RC=$?
   grep -Eiq "$GHC_BLOCK_RE" "${GHC_RUN_DIR}/graphql.probe"
 }
 
@@ -1257,8 +1245,14 @@ ghc_auth_status() {
   return "$rc"
 }
 
+ghc_mark_ok() {
+  [ -n "$GHC_STATE" ] && { rm -f "$GHC_STATE"; : >"${GHC_STATE}.ok"; } 2>/dev/null
+  ghc_log "GitHub GraphQL answers on this host; gh runs untouched (marker: ${GHC_STATE:+${GHC_STATE}.ok})"
+  return 0
+}
+
 ghc_mark_blocked() {
-  [ -n "$GHC_STATE" ] && { : >"$GHC_STATE"; } 2>/dev/null
+  [ -n "$GHC_STATE" ] && { rm -f "${GHC_STATE}.ok"; : >"$GHC_STATE"; } 2>/dev/null
   ghc_log "host refuses GitHub GraphQL; routing gh issue/pr/label/api graphql over REST (marker: ${GHC_STATE:-none})"
   return 0
 }
@@ -1293,101 +1287,33 @@ ghc_rest_dispatch() {
   esac
 }
 
-# ghc_reads_stdin ARGS... — true when a --body-file/-F argument is "-".
-ghc_reads_stdin() {
-  local prev="" a
-  for a in "$@"; do
-    case "$prev $a" in "-F -"|"--body-file -") return 0 ;; esac
-    case "$a" in --body-file=-|-F-|-F=-) return 0 ;; esac
-    prev="$a"
-  done
-  return 1
-}
-
-# The real gh's stderr goes to a file, not a pipe, so the shim is done the
-# moment gh exits: a child gh leaves behind holding the descriptor (a --web
-# browser) cannot make it wait. ghc_stderr_follow tails that file in the
-# background and passes each line on as it lands (a long `pr checks --watch`
-# keeps its progress), except the GraphQL-block refusal: that one is held
-# back, and ghc_main prints it only if no REST replay answers in its place.
-#
-# ghc_stderr_follow FILE DONE OWNER — stops once DONE exists (gh has exited, so
-# FILE is complete) or the shim (pid OWNER) is gone.
-ghc_stderr_follow() {
-  local file="$1" donef="$2" owner="$3" l part="" last="" fin=0
-  # A reader that went away must not kill the follower (the call would end 141)
-  # or stall gh: writes just fail from then on, and the file keeps everything.
-  trap '' PIPE
-  GHC_ERR_OPEN=1
-  exec 5<"$file" || return 0
-  while :; do
-    [ -e "$donef" ] && fin=1
-    while IFS= read -r l <&5; do ghc_stderr_line "$part$l" nl; part=""; done
-    part="$part$l"   # a failed read keeps the partial line it consumed
-    if [ "$fin" = 1 ]; then [ -z "$part" ] || ghc_stderr_line "$part"; return 0; fi
-    kill -0 "$owner" 2>/dev/null || return 0
-    # A prompt with no newline yet: pass it on once it stops growing.
-    if [ -n "$part" ] && [ "$part" = "$last" ]; then ghc_stderr_line "$part"; part=""; fi
-    last="$part"
-    sleep 0.1
-  done
-}
-
-# ghc_stderr_line TEXT [nl] — pass TEXT on to stderr unless it is the block
-# refusal. Only lines naming GraphQL pay for a grep (-i: bash 3.2's =~ has no
-# nocasematch).
-ghc_stderr_line() {
-  case "$1" in
-    *[Gg][Rr][Aa][Pp][Hh][Qq][Ll]*) printf '%s\n' "$1" | grep -Eiq "$GHC_BLOCK_RE" && return 0 ;;
-  esac
-  [ "$GHC_ERR_OPEN" = 1 ] || return 0
-  { if [ -n "${2:-}" ]; then printf '%s\n' "$1"; else printf '%s' "$1"; fi; } >&2 2>/dev/null || GHC_ERR_OPEN=0
-}
-
 ghc_main() {
   GHC_REAL="$(ghc_find_real_gh)" || { printf 'gh: command not found (amplihack gh-compat found no real gh on PATH)\n' >&2; exit 127; }
   case "${1:-} ${2:-}" in
     "auth status"|"pr "?*|"issue "?*|"label "?*|"api graphql") ;;
     *) exec "$GHC_REAL" "$@" ;;
   esac
+  ghc_init_state
+  # A host recorded as answering GraphQL costs no more than this check.
+  if [ "${1:-} ${2:-}" != "auth status" ] && ! ghc_rest_mode && ghc_graphql_ok; then exec "$GHC_REAL" "$@"; fi
   command -v jq >/dev/null 2>&1 || exec "$GHC_REAL" "$@"
   # Private per-invocation scratch (REST error/status hand-off, request bodies,
-  # buffered stdin); never a predictable name in a shared TMPDIR.
+  # JSON hand-offs); never a predictable name in a shared TMPDIR.
   GHC_RUN_DIR="$(mktemp -d "${GHC_TMP}/ghc.XXXXXX")" || exec "$GHC_REAL" "$@"
   trap 'rm -rf "$GHC_RUN_DIR"' EXIT
-  ghc_init_state
   if [ "${1:-} ${2:-}" = "auth status" ]; then shift 2; ghc_auth_status "$@"; exit $?; fi
-  local via_rest=0
-  if ghc_rest_mode; then
-    via_rest=1
-  elif ghc_wants_newer_field "$@" && ghc_graphql_blocked; then
-    ghc_mark_blocked; via_rest=1
-  fi
-  if [ "$via_rest" = 0 ]; then
-    local errf rc=0 stdinf=""
-    errf="${GHC_RUN_DIR}/probe.err"; : >"$errf"
-    # `--body-file -` reads stdin. The probe would consume it and leave the REST
-    # replay with an empty body, so buffer it once and feed both.
-    if ghc_reads_stdin "$@"; then
-      stdinf="${GHC_RUN_DIR}/stdin"; cat >"$stdinf" || exit 1
-    fi
-    # stdout goes straight through; stderr is followed from its file.
-    local donef="${GHC_RUN_DIR}/probe.done" fpid
-    ghc_stderr_follow "$errf" "$donef" "$$" >/dev/null &
-    fpid=$!
-    if [ -n "$stdinf" ]; then
-      "$GHC_REAL" "$@" <"$stdinf" 2>"$errf" || rc=$?
+  if ! ghc_rest_mode; then
+    # Where GraphQL answers, the real gh replaces this process (exec): its
+    # stdout/stderr interleaving, stdin, exit code and signals are its own, and
+    # nothing is left behind to orphan. One probe per TTL decides; a probe that
+    # fails for any other reason (network, auth) records nothing, so the next
+    # call asks again.
+    if ghc_graphql_blocked; then
+      ghc_mark_blocked
     else
-      "$GHC_REAL" "$@" 2>"$errf" || rc=$?
+      [ "$GHC_PROBE_RC" -ne 0 ] || ghc_mark_ok
+      rm -rf "$GHC_RUN_DIR"; exec "$GHC_REAL" "$@"
     fi
-    : >"$donef"; wait "$fpid" 2>/dev/null
-    if [ "$rc" -eq 0 ] || ! grep -Eiq "$GHC_BLOCK_RE" "$errf"; then
-      # No replay: a held-back block line belongs to this answer after all.
-      [ "$rc" -ne 0 ] || grep -Ei "$GHC_BLOCK_RE" "$errf" >&2 2>/dev/null
-      exit "$rc"
-    fi
-    [ -z "$stdinf" ] || exec <"$stdinf"
-    ghc_mark_blocked
   fi
   ghc_log "REST fallback: gh $1 $2"
   ghc_rest_dispatch "$@"

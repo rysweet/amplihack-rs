@@ -234,7 +234,13 @@ echo "issue #1484: gh compatibility layer when GraphQL is blocked"
 reset_log
 out="$(STUB_GRAPHQL_OK=1 gh pr view 42 --json state)"
 [ "$out" = "real-gh-output: pr view 42 --json state" ] || fail pass-through "got '$out'"
-logged_prefix "api " && fail pass-through "REST was called although GraphQL works"
+logged_prefix "api -X" && fail pass-through "REST was called although GraphQL works"
+logged "api graphql -f query={viewer{login}}" || fail pass-through "GraphQL was not probed"
+[ -e "${AMPLIHACK_GH_COMPAT_STATE}.ok" ] || fail pass-through "a working GraphQL was not recorded"
+reset_log
+STUB_GRAPHQL_OK=1 gh pr view 42 --json state >/dev/null
+logged_prefix "api " && fail pass-through "a recorded working host was probed again"
+rm -f "${AMPLIHACK_GH_COMPAT_STATE}.ok"
 [ ! -e "$AMPLIHACK_GH_COMPAT_STATE" ] || fail pass-through "block state recorded although GraphQL works"
 ok "GraphQL available: real gh output passes through, no REST call"
 
@@ -242,14 +248,14 @@ ok "GraphQL available: real gh output passes through, no REST call"
 reset_log
 out="$(gh pr view 42 --json headRefName -q .headRefName)"
 [ "$out" = "feat" ] || fail detect "pr view -q .headRefName gave '$out'"
-logged "pr view 42 --json headRefName -q .headRefName" || fail detect "real gh was not tried first"
+logged "api graphql -f query={viewer{login}}" || fail detect "GraphQL was not probed first"
 logged "api -X GET repos/o/r/pulls/42" || fail detect "no REST GET repos/o/r/pulls/42"
 [ -e "$AMPLIHACK_GH_COMPAT_STATE" ] || fail detect "block not remembered"
 ok "403 detected once, pr view served by GET repos/o/r/pulls/42"
 
 reset_log
 json="$(gh pr view https://github.com/o/r/pull/42 --json number,state,isDraft,headRefOid,isCrossRepository,closingIssuesReferences)"
-logged_prefix "pr view" && fail remembered "real gh retried after the block was recorded"
+logged_prefix "api graphql" && fail remembered "GraphQL re-probed after the block was recorded"
 [ "$(printf '%s' "$json" | jq -c '[.number,.state,.isDraft,.headRefOid,.isCrossRepository,.closingIssuesReferences[0].number]')" = '[42,"OPEN",true,"abc123",false,7]' ] \
   || fail shape "pr view JSON shape: $json"
 ok "later calls go straight to REST; pr view JSON keeps gh field names"
@@ -407,7 +413,7 @@ logged 'BODY {"title":"T","body":"","labels":["x"]}' || fail flags "--body= swal
 ok "flags: -Ro/r, --repo=o/r, -R o/r and --body= (empty) parse like gh"
 
 # 21. auth status: the real output and exit code stand unless GraphQL is blocked.
-rm -f "$AMPLIHACK_GH_COMPAT_STATE"
+rm -f "$AMPLIHACK_GH_COMPAT_STATE" "${AMPLIHACK_GH_COMPAT_STATE}.ok"
 rc=0; err="$(STUB_GRAPHQL_OK=1 gh auth status 2>&1 >/dev/null)" || rc=$?
 [ "$rc" = 1 ] || fail auth "auth status on a working-GraphQL host exited $rc, want gh's 1"
 case "$err" in *"The token in GH_TOKEN is invalid."*) ;; *) fail auth "real gh output discarded: '$err'" ;; esac
@@ -429,11 +435,11 @@ ok "auth status: substituted only when GraphQL is confirmed blocked"
   [ "$(ls -ld "$d" | cut -c1-10)" = drwx------ ] || fail state "per-user dir is not private: $(ls -ld "$d")"
   reset_log
   gh pr view 42 --json number >/dev/null 2>&1
-  logged_prefix "pr view" && fail state "a fresh marker should skip the probe"
+  logged_prefix "api graphql" && fail state "a fresh marker should skip the probe"
   touch -t 200001010000 "$d/graphql-blocked"
   reset_log
   gh pr view 42 --json number >/dev/null 2>&1
-  logged "pr view 42 --json number" || fail state "an expired marker must re-probe the real gh"
+  logged "api graphql -f query={viewer{login}}" || fail state "an expired marker must re-probe GraphQL"
   exit 0
 ) || exit 1
 ok "block marker: private per-user dir by default, re-probed after the TTL"
@@ -465,7 +471,7 @@ logged_prefix "pulls?state=closed&per_page=3&page=2" || fail paging "second page
 ok "pr list pages through REST until --limit items survive the filter"
 
 # 26. Pass-through mode streams the real gh's stderr instead of holding it.
-rm -f "$AMPLIHACK_GH_COMPAT_STATE"
+rm -f "$AMPLIHACK_GH_COMPAT_STATE" "${AMPLIHACK_GH_COMPAT_STATE}.ok"
 go="${WORK}/stream.go"; errlog="${WORK}/stream.err"; : > "$errlog"
 STUB_GRAPHQL_OK=1 STUB_STREAM="$go" gh pr checks 42 --watch >/dev/null 2>"$errlog" &
 bg=$!
@@ -477,6 +483,7 @@ rc=0; wait "$bg" || rc=$?
 ok "pass-through stderr is streamed, not buffered until exit"
 
 # 27. --author @me in the /search fallback means the REST login, not a literal "@me".
+: > "$AMPLIHACK_GH_COMPAT_STATE"   # back to a blocked host after 26's working one
 reset_log
 nums="$(gh issue list --author @me --limit 1 --json number --jq '[.[].number] | join(",")')"
 [ "$nums" = 5 ] || fail author-me "--author @me gave '$nums'"
@@ -489,12 +496,14 @@ ok "search fallback resolves --author @me and reads full pages"
 # Issue #1499: the low-severity leftovers of the #1497 reviews.
 # ---------------------------------------------------------------------------
 
-# 28. A stderr reader that exits early leaves gh's exit code, not 141.
-rm -f "$AMPLIHACK_GH_COMPAT_STATE"
+# 28. A stderr reader that exits early: the result is exactly the real gh's
+#     (the shim adds no stage of its own that could die of SIGPIPE first).
+rm -f "$AMPLIHACK_GH_COMPAT_STATE" "${AMPLIHACK_GH_COMPAT_STATE}.ok"
+drc=0; dout="$(STUB_GRAPHQL_OK=1 STUB_NOISY=5000 "${WORK}/real/gh" pr view 42 2> >(head -1 >/dev/null))" || drc=$?
 rc=0; out="$(STUB_GRAPHQL_OK=1 STUB_NOISY=5000 gh pr view 42 2> >(head -1 >/dev/null))" || rc=$?
-[ "$rc" = 0 ] || fail stderr-closed "exit $rc when the stderr reader went away, want gh's 0"
-[ "$out" = noisy-done ] || fail stderr-closed "stdout was '$out'"
-ok "stderr reader exiting early: gh's exit code and stdout survive"
+[ "$rc" = "$drc" ] || fail stderr-closed "exit $rc when the stderr reader went away; the real gh alone exits $drc"
+[ "$out" = "$dout" ] || fail stderr-closed "stdout '$out', the real gh alone gives '$dout'"
+ok "stderr reader exiting early: same exit code and stdout as the real gh"
 
 # 29. A child the real gh leaves holding stderr does not hold the shim.
 start=$SECONDS
@@ -526,7 +535,7 @@ ok "a partial-line prompt is passed on while gh waits"
 rc=0; err="$(gh pr view 42 --json number,authorAssociation 2>&1 >/dev/null)" || rc=$?
 [ "$rc" = 1 ] || fail json-field "unknown field exited $rc"
 case "$err" in *'Unknown JSON field: "authorAssociation"'*"Available fields:"*) ;; *) fail json-field "message was '$err'" ;; esac
-logged_prefix "api " && fail json-field "REST was called for an invalid field list"
+logged_prefix "api -X" && fail json-field "REST was called for an invalid field list"
 rc=0; err="$(gh issue view 7 --json projectItems 2>&1 >/dev/null)" || rc=$?
 [ "$rc" = 1 ] || fail json-field "REST-less field exited $rc"
 rc=0; err="$(gh issue list --json number,isPinned 2>&1 >/dev/null)" || rc=$?
@@ -542,10 +551,10 @@ n="$(STUB_OLD_GH=1 gh pr view 42 --json closingIssuesReferences --jq '.closingIs
 [ "$(gh pr view 42 --json number --jq '-.number')" = -42 ] || fail json-field "a --jq expression starting with '-' was read as a jq option"
 # First call of a run, before any block is on record: the installed gh refuses
 # the newer field itself, so the shim must check for the block up front.
-rm -f "$AMPLIHACK_GH_COMPAT_STATE"
+rm -f "$AMPLIHACK_GH_COMPAT_STATE" "${AMPLIHACK_GH_COMPAT_STATE}.ok"
 n="$(STUB_OLD_GH=1 gh pr view 42 --json closingIssuesReferences --jq '.closingIssuesReferences | length' 2>/dev/null)" || fail json-field "first call with a newer field failed on a blocked host"
 [ "$n" = 1 ] || fail json-field "first call closingIssuesReferences gave '$n'"
-rm -f "$AMPLIHACK_GH_COMPAT_STATE"
+rm -f "$AMPLIHACK_GH_COMPAT_STATE" "${AMPLIHACK_GH_COMPAT_STATE}.ok"
 out="$(STUB_OLD_GH=1 STUB_GRAPHQL_OK=1 gh pr view 42 --json closingIssuesReferences 2>&1)" || true
 [ ! -e "$AMPLIHACK_GH_COMPAT_STATE" ] || fail json-field "a working host was recorded as blocked"
 : > "$AMPLIHACK_GH_COMPAT_STATE"
@@ -607,7 +616,7 @@ pl() { gh pr list "$@" --json number --jq '[.[].number] | map(tostring) | join("
 reset_log; rc=0; err="$(gh issue list --milestone v1 --json number 2>&1 >/dev/null)" || rc=$?
 [ "$rc" = 1 ] || fail pr-filters "an unsupported filter flag exited $rc instead of failing"
 case "$err" in *"flag --milestone"*"no REST fallback"*) ;; *) fail pr-filters "message was '$err'" ;; esac
-logged_prefix "api " && fail pr-filters "an unsupported flag still listed (widened) over REST"
+logged_prefix "api -X" && fail pr-filters "an unsupported flag still listed (widened) over REST"
 ok "pr list filters (label AND, draft, assignee, merged) hold in the REST fallback"
 
 # 39. view --comments without --json prints the comments, as gh does off a terminal.
@@ -665,9 +674,9 @@ ok "--milestone, --edit-last, --patch and --fill are implemented; --web and --dr
 : > "$AMPLIHACK_GH_COMPAT_STATE"
 rc=0; out="$(STUB_BIG=1 gh issue list --json number,comments 2>/dev/null)" || rc=$?
 [ "$rc" = 0 ] || fail arg-max "issue list with 180 KB of comments exited $rc"
-[ "$(printf '%s' "$out" | jq -c 'map([.number, (.comments | length)])' 2>/dev/null)" = '[[5,3]]' ] || fail arg-max "issue list: $(printf '%s' "$out" | head -c 80)"
+[ "$(printf '%s' "$out" | jq -c 'map([.number, (.comments | length)])' 2>/dev/null)" = '[[5,3]]' ] || fail arg-max "issue list: ${out:0:80}"
 rc=0; out="$(STUB_BIG=1 gh pr view 42 --json number,comments 2>/dev/null)" || rc=$?
-[ "$rc" = 0 ] && [ "$(printf '%s' "$out" | jq '.comments | length' 2>/dev/null)" = 3 ] || fail arg-max "pr view with 180 KB of comments: rc $rc, '$(printf '%s' "$out" | head -c 80)'"
+[ "$rc" = 0 ] && [ "$(printf '%s' "$out" | jq '.comments | length' 2>/dev/null)" = 3 ] || fail arg-max "pr view with 180 KB of comments: rc $rc, '${out:0:80}'"
 head -c 200000 /dev/zero | tr '\0' b > "${WORK}/big.body"
 reset_log; rc=0; gh issue create --title T --body-file "${WORK}/big.body" >/dev/null 2>&1 || rc=$?
 [ "$rc" = 0 ] || fail arg-max "issue create with a 200 KB body exited $rc"
@@ -683,5 +692,25 @@ logged_prefix "api -X DELETE" && fail delete-branch "deleted a base-repo branch 
 reset_log; STUB_HEAD='feat/a#b' gh pr merge 42 --squash --delete-branch >/dev/null 2>&1 || true
 logged "api -X DELETE repos/o/r/git/refs/heads/feat%2Fa%23b" || fail delete-branch "ref not encoded: $(grep DELETE "$STUB_LOG")"
 ok "--delete-branch: skipped for fork PRs, ref percent-encoded"
+
+# 44. passthrough-stderr-reordered-on-working-hosts: where GraphQL works, gh's
+#     own stdout/stderr interleaving is kept (the real gh is exec'd).
+rm -f "$AMPLIHACK_GH_COMPAT_STATE" "${AMPLIHACK_GH_COMPAT_STATE}.ok"
+direct="$(STUB_GRAPHQL_OK=1 STUB_INTERLEAVE=1 "${WORK}/real/gh" pr view 42 2>&1 | paste -sd' ' -)"
+for i in 1 2 3; do
+  via="$(STUB_GRAPHQL_OK=1 STUB_INTERLEAVE=1 gh pr view 42 2>&1 | paste -sd' ' -)"
+  [ "$via" = "$direct" ] || fail interleave "via shim '$via', direct '$direct'"
+done
+ok "working host: stdout/stderr interleaving is gh's own"
+
+# 45. sigterm-orphans-real-gh: TERM to the shim reaches the real gh.
+go="${WORK}/term.go"; pidf="${WORK}/term.pid"; rm -f "$go" "$pidf"
+STUB_GRAPHQL_OK=1 STUB_STREAM="$go" STUB_PIDFILE="$pidf" gh pr checks 42 --watch >/dev/null 2>&1 &
+bg=$!
+i=0; while [ ! -s "$pidf" ] && [ "$i" -lt 40 ]; do sleep 0.1; i=$((i + 1)); done
+[ -s "$pidf" ] || fail sigterm "stub never started"
+kill -TERM "$bg"; wait "$bg" 2>/dev/null || true; sleep 0.3
+if kill -0 "$(cat "$pidf")" 2>/dev/null; then kill "$(cat "$pidf")"; fail sigterm "real gh survived SIGTERM to the shim"; fi
+ok "SIGTERM to the shim leaves no real gh behind"
 
 echo "PASS: ${PASS} checks"
