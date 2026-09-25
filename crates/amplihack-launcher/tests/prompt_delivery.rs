@@ -300,7 +300,7 @@ fn claude_command_follows_the_root_sandbox_decision() {
             assert_eq!(err.kind(), ErrorKind::PermissionDenied);
             assert!(err.to_string().contains("IS_SANDBOX=1"), "{err}");
         }
-        SkipPermissionsEnv::SetSandbox { .. } => {
+        SkipPermissionsEnv::SetSandbox { .. } | SkipPermissionsEnv::NormalizeExplicit { .. } => {
             let delivered = result.expect("root in a sandbox builds");
             let is_sandbox = delivered
                 .command

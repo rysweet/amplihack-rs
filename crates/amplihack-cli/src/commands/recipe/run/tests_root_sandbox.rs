@@ -51,6 +51,9 @@ fn launchable_decisions_pass() {
         SkipPermissionsEnv::SetSandbox {
             signal: "/.dockerenv",
         },
+        SkipPermissionsEnv::NormalizeExplicit {
+            value: "yes".to_string(),
+        },
     ] {
         preflight_root_sandbox(&recipe(AGENT_STEP), "claude", &decision).unwrap();
     }

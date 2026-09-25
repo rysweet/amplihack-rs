@@ -15,9 +15,12 @@
 //! The rule implemented by [`decide`]:
 //!
 //! - Not root: nothing to do.
-//! - `IS_SANDBOX` already set by the user: respected, never overwritten. `1`
-//!   passes through; any other value on root is reported up front, because
-//!   Claude Code accepts only the exact value `1`.
+//! - `IS_SANDBOX` already set by the user: its meaning is respected. `1`
+//!   passes through untouched. Claude Code accepts only the exact value `1`, so
+//!   another affirmative spelling (`yes`, `true`, `on`) is passed to the child
+//!   as `1` — Claude Code cloud containers export `IS_SANDBOX=yes`, which the
+//!   CLI rejects. A negative (`0`, `false`, `no`, `off`) or unrecognised value
+//!   on root is reported up front and never overridden.
 //! - Root inside a detectable sandbox (`CLAUDE_CODE_REMOTE=true`,
 //!   `/.dockerenv`, `/run/.containerenv`, or a container marker in
 //!   `/proc/1/cgroup`): `IS_SANDBOX=1` is set on the child `claude` process
@@ -123,7 +126,13 @@ pub enum SkipPermissionsEnv {
         /// The signal that identified the sandbox.
         signal: &'static str,
     },
-    /// Root, and the user set `IS_SANDBOX` to something other than `1`.
+    /// Root, and the user set `IS_SANDBOX` to an affirmative spelling other
+    /// than `1`; pass it to the child as `1`, the only value Claude Code takes.
+    NormalizeExplicit {
+        /// The user's value.
+        value: String,
+    },
+    /// Root, and the user set `IS_SANDBOX` to a negative or unrecognised value.
     ExplicitlyNotSandboxed {
         /// The user's value, which is respected and not overwritten.
         value: String,
@@ -146,6 +155,11 @@ pub fn decide(
     }
     match explicit_is_sandbox.map(str::trim) {
         Some("1") => return SkipPermissionsEnv::AlreadySandboxed,
+        Some(value) if is_affirmative(value) => {
+            return SkipPermissionsEnv::NormalizeExplicit {
+                value: value.to_string(),
+            };
+        }
         Some(value) if !value.is_empty() => {
             return SkipPermissionsEnv::ExplicitlyNotSandboxed {
                 value: value.to_string(),
@@ -157,6 +171,12 @@ pub fn decide(
         Some(signal) => SkipPermissionsEnv::SetSandbox { signal },
         None => SkipPermissionsEnv::RootOutsideSandbox,
     }
+}
+
+fn is_affirmative(value: &str) -> bool {
+    ["yes", "true", "on", "y"]
+        .iter()
+        .any(|affirmative| value.eq_ignore_ascii_case(affirmative))
 }
 
 /// [`decide`] against the real process state.
@@ -173,7 +193,10 @@ impl SkipPermissionsEnv {
     /// names `IS_SANDBOX=1`.
     pub fn check(&self) -> Result<(), RootSandboxError> {
         match self {
-            Self::NotRoot | Self::AlreadySandboxed | Self::SetSandbox { .. } => Ok(()),
+            Self::NotRoot
+            | Self::AlreadySandboxed
+            | Self::SetSandbox { .. }
+            | Self::NormalizeExplicit { .. } => Ok(()),
             Self::ExplicitlyNotSandboxed { value } => {
                 Err(RootSandboxError::ExplicitlyNotSandboxed {
                     value: value.clone(),
@@ -187,12 +210,22 @@ impl SkipPermissionsEnv {
     /// on it when needed, or returns the error from [`Self::check`].
     pub fn apply(&self, command: &mut Command) -> Result<(), RootSandboxError> {
         self.check()?;
-        if let Self::SetSandbox { signal } = self {
-            tracing::debug!(
-                signal,
-                "running as root in a sandbox; setting IS_SANDBOX=1 on the claude child"
-            );
-            command.env(IS_SANDBOX_ENV, "1");
+        match self {
+            Self::SetSandbox { signal } => {
+                tracing::debug!(
+                    signal,
+                    "running as root in a sandbox; setting IS_SANDBOX=1 on the claude child"
+                );
+                command.env(IS_SANDBOX_ENV, "1");
+            }
+            Self::NormalizeExplicit { value } => {
+                tracing::debug!(
+                    value,
+                    "running as root with an affirmative IS_SANDBOX; passing IS_SANDBOX=1 to the claude child"
+                );
+                command.env(IS_SANDBOX_ENV, "1");
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -225,7 +258,8 @@ impl fmt::Display for RootSandboxError {
                 f,
                 "amplihack runs `claude {SKIP_PERMISSIONS_FLAG}`, which Claude Code refuses as root \
                  (uid 0) unless {IS_SANDBOX_ENV}=1 is set, and {IS_SANDBOX_ENV} is set to \
-                 {value:?}. Claude Code accepts only the exact value 1: export \
+                 {value:?}, which amplihack does not override. Claude Code accepts only the \
+                 exact value 1: export \
                  {IS_SANDBOX_ENV}=1 if this machine is a disposable sandbox, or run amplihack \
                  as a non-root user."
             ),
@@ -396,20 +430,41 @@ mod tests {
     }
 
     #[test]
-    fn explicit_other_value_is_respected_and_reported_as_root() {
-        for signals in [NO_SIGNALS, REMOTE] {
-            let decision = decide(Some(0), Some("true"), signals);
-            assert_eq!(
-                decision,
-                SkipPermissionsEnv::ExplicitlyNotSandboxed {
-                    value: "true".to_string()
-                }
-            );
-            let mut command = Command::new("claude");
-            let error = decision.apply(&mut command).unwrap_err();
-            assert!(error.to_string().contains("IS_SANDBOX=1"), "{error}");
-            assert!(error.to_string().contains("\"true\""), "{error}");
-            assert_eq!(command_is_sandbox(&command), None, "never overwritten");
+    fn explicit_affirmative_spelling_reaches_the_child_as_1() {
+        // Claude Code cloud containers export IS_SANDBOX=yes; the CLI takes only 1.
+        for value in ["yes", "YES", "true", "on", " y "] {
+            for signals in [NO_SIGNALS, REMOTE] {
+                let decision = decide(Some(0), Some(value), signals);
+                assert_eq!(
+                    decision,
+                    SkipPermissionsEnv::NormalizeExplicit {
+                        value: value.trim().to_string()
+                    }
+                );
+                let mut command = Command::new("claude");
+                decision.apply(&mut command).unwrap();
+                assert_eq!(command_is_sandbox(&command), Some(Some("1".to_string())));
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_negative_or_unknown_value_is_respected_and_reported_as_root() {
+        for value in ["0", "false", "no", "off", "maybe"] {
+            for signals in [NO_SIGNALS, REMOTE] {
+                let decision = decide(Some(0), Some(value), signals);
+                assert_eq!(
+                    decision,
+                    SkipPermissionsEnv::ExplicitlyNotSandboxed {
+                        value: value.to_string()
+                    }
+                );
+                let mut command = Command::new("claude");
+                let error = decision.apply(&mut command).unwrap_err();
+                assert!(error.to_string().contains("IS_SANDBOX=1"), "{error}");
+                assert!(error.to_string().contains(&format!("{value:?}")), "{error}");
+                assert_eq!(command_is_sandbox(&command), None, "never overridden");
+            }
         }
     }
 
