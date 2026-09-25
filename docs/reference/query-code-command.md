@@ -45,7 +45,8 @@ amplihack query-code [--db-path <PATH>] [--json] [--limit <N>] <SUBCOMMAND>
 ### stats
 
 Print aggregate counts for the entire code-graph, including any native
-memory↔code relationships already linked in the same project-local LadybugDB.
+memory↔code relationships already linked in the same per-project LadybugDB
+store under the [artifact cache directory](project-artifact-cache.md).
 
 ```sh
 amplihack query-code stats

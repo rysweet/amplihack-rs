@@ -55,8 +55,11 @@ a success-shaped zero-count import.
 ### Example
 
 ```sh
-# Index the blarify JSON produced by a CI step
-amplihack index-code /workspace/myproject/.amplihack/blarify.json
+# Index the blarify JSON from the project's artifact cache directory. The input
+# must be `<artifact-dir>/blarify.json` so the `project` pointer beside it can
+# name the project; an in-repo path like `myproject/.amplihack/blarify.json` is
+# an error, not a fallback. See "Database location" below.
+amplihack index-code ~/.cache/amplihack/projects/myproject-3f9c1ad7b2e40561/blarify.json
 
 # Output:
 # {
@@ -69,7 +72,9 @@ amplihack index-code /workspace/myproject/.amplihack/blarify.json
 ```
 
 ```sh
-# Point at a custom database location
+# An input outside any artifact cache directory is legal only with --db-path,
+# which skips project inference entirely. A CI step that stages its JSON
+# somewhere else takes this form.
 amplihack index-code /tmp/analysis/blarify.json --db-path /var/cache/myproject/graph_db
 ```
 

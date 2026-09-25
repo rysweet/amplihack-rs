@@ -52,7 +52,7 @@ cache directory:
 | `graph_db` | LadybugDB code-graph store (a single file) | 8–10 MB |
 | `kuzu_db` | Legacy code-graph store, where one was migrated | 8–10 MB |
 | `indexes/<language>.scip` | Per-language SCIP index | 1–50 MB |
-| `index.scip` | Staging target for a tier-2 indexer run | 1–50 MB |
+| `index.scip` | Single-file index: where a migrated repo-root `index.scip` lands, and the last-resort path staleness reports on | 1–50 MB |
 | `blarify.json` | Import input for `amplihack index-code` | KB–MB |
 | `blarify_stale` | Staleness marker, written on the first code edit of a session | bytes |
 | `indexing.pid` | Background-indexing lock | bytes |
@@ -71,7 +71,7 @@ ${XDG_CACHE_HOME:-$HOME/.cache}/amplihack/projects/<slug>/
 ├── indexes/
 │   ├── python.scip
 │   └── rust.scip
-├── index.scip               # staging target for the current indexer run
+├── index.scip               # migrated repo-root index; staleness fallback
 ├── blarify.json
 ├── blarify_stale
 ├── indexing.pid
@@ -284,6 +284,14 @@ output flag cannot quietly reintroduce an in-repo write while a stub-based test
 stays green. Empty argv is unrepresentable at the call site (`split_first`), so
 a plan that names no binary cannot panic.
 
+No indexer arm writes `<artifact_root>/index.scip`. Tier 2 stages inside
+`plan.working_dir` and lands on `indexes/<language>.scip` like every other tier.
+The bare `index.scip` field exists for two other readers: it is the destination
+migration gives a legacy repo-root `index.scip`, and it is the last-resort value
+`staleness_detector::resolve_index_artifact` reports when neither `blarify.json`
+nor any `indexes/*.scip` is present — which is how "missing" is phrased to the
+user rather than a path anything indexes into.
+
 The `javascript` arm's temporary `tsconfig.json` stays in the project root. That
 file is an *input* to `scip-typescript` and must sit where the tool reads it. It
 is created with `create_new(true)` — the `O_EXCL` create *is* the
@@ -319,10 +327,31 @@ one unlucky user: for **every existing user, on their first session after
 upgrading**, while a perfectly good index sat in the repository waiting to be
 moved.
 
-`amplihack index-scip` and `index-code` also migrate before they inspect
-anything, so a project indexed outside a session gets the same treatment. The
-entry point cheap-exits after two `exists()` checks when there is nothing
-in-repo to move, so the common case costs two syscalls.
+The `session_start` hook is the **only** call site. `amplihack index-scip` and
+`amplihack index-code` do not migrate before they inspect anything, so a project
+whose artifacts were produced entirely outside a session — by CI, or by direct
+CLI invocations that never launched a tool — keeps them in the checkout until its
+next session.
+
+That is a **known gap, recorded rather than closed.** Every user who upgrades by
+launching amplihack is already covered on their first session, and each extra
+call site is another place that can fail in front of an index read for a case
+that is already handled a moment later. A user who needs it sooner can start one
+session in the project, or move the files by hand
+(see [Cache growth and reclaiming space](#cache-growth-and-reclaiming-space) for
+the layout).
+
+The entry point stands down cheaply when there is nothing to move:
+`collect_sources()` runs one `fs::symlink_metadata` per row of
+`RECOGNISED_ARTIFACTS` — nine stats on a clean project — and returns an empty
+list before any cache-root resolution, lock acquisition, or PID read. Nine stats
+per session start is not a cost worth optimising, and short-circuiting on a
+subset would make the trigger depend on table order. It is `symlink_metadata`
+rather than `exists()` throughout, for the reason in
+[Symlinks are never followed](#symlinks-are-never-followed): the scan's result is
+what the move then acts on, so a symlink has to stay visible as a symlink
+instead of being resolved away — and the file type is re-checked at the point of
+use regardless, so nothing here is an `exists()`-then-act.
 
 ### Trigger and stand-down
 
@@ -693,7 +722,9 @@ hook, and asserts the indexing status came back complete: migration ran before
 anything asked whether an index existed. This is the test that catches the
 600-second-rebuild-for-every-user failure.
 
-**The resolution test** — that no resolution path returns a cwd-relative or
+**`artifact_root_errors_when_home_and_xdg_are_both_unset` in
+`crates/amplihack-memory/src/cli_memory/artifact_root_tests.rs`** — the
+resolution property: no resolution path returns a cwd-relative or
 project-relative artifact path, including when `HOME` and `XDG_CACHE_HOME` are
 both unset. It reads as redundant with the two above, because on a healthy system
 it reaches the same outcome by a different route. It is not: it is the only test

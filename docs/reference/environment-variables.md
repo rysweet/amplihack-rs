@@ -288,8 +288,13 @@ in the child process environment.
 
 ```sh
 # Effective child-process environment for a project rooted at /work/repo
-AMPLIHACK_GRAPH_DB_PATH=/work/repo/.amplihack/graph_db amplihack claude
+AMPLIHACK_GRAPH_DB_PATH=$HOME/.cache/amplihack/projects/repo-3f9c1ad7b2e40561/graph_db amplihack claude
 ```
+
+An override pointing inside a checkout — `/work/repo/.amplihack/graph_db` — is
+accepted (it is your machine and your explicit instruction), but it re-creates
+the bug this layout exists to fix: the store becomes `git add -A` bait again. Point
+it outside the indexed tree.
 
 **Why it exists:** Launched sessions, hooks, and native code-graph features
 must all operate on the same project-local DB. Setting this variable ensures
@@ -308,7 +313,7 @@ and also exports it for older child-process consumers. When both are present,
 
 ```sh
 # Backward-compatible older configuration still works
-AMPLIHACK_KUZU_DB_PATH=/work/repo/.amplihack/graph_db amplihack claude
+AMPLIHACK_KUZU_DB_PATH=$HOME/.cache/amplihack/projects/repo-3f9c1ad7b2e40561/graph_db amplihack claude
 ```
 
 The alias remains because the storage engine was originally named Kuzu (now
@@ -1062,11 +1067,11 @@ detects this and skips injection automatically.
 **Values:** `1` enables launcher-side code-indexing checks; absence or any other value disables them
 **Read by:** `commands::launch::should_prompt_blarify_indexing()`
 
-Opt-in gate for launcher-side code indexing. When set to `1` for `amplihack claude`, the Rust launcher checks whether code-graph artifacts are missing or stale, and whether the project-local `.amplihack/graph_db` store already exists, then either prompts or follows `AMPLIHACK_BLARIFY_MODE` if that mode is set.
+Opt-in gate for launcher-side code indexing. When set to `1` for `amplihack claude`, the Rust launcher checks whether code-graph artifacts are missing or stale, and whether the `graph_db` store in the project's [artifact cache directory](project-artifact-cache.md) already exists, then either prompts or follows `AMPLIHACK_BLARIFY_MODE` if that mode is set.
 
 Without `AMPLIHACK_BLARIFY_MODE`, interactive launches offer to either:
 
-- import an existing fresh `.amplihack/blarify.json` via `amplihack index-code` when the code-graph DB is missing, or
+- import an existing fresh `blarify.json` from the artifact cache directory via `amplihack index-code` when the code-graph DB is missing, or
 - generate fresh native SCIP artifacts via `amplihack index-scip` when the existing artifact is stale or no fresh import input exists.
 
 If the variable is unset, the launcher skips all code-indexing checks and proceeds directly to the target AI tool.
