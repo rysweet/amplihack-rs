@@ -263,32 +263,109 @@ fn words(text: &str) -> impl Iterator<Item = Option<&str>> {
         .map(without_apostrophes)
 }
 
-/// `text` cut at `delimiter`, each part tagged `true` when it is enclosed
-/// code. A delimiter with no closing partner (a stray backtick, or a span
-/// cut off by session-stop's 500-character head) opens nothing: the text
-/// after it stays prose.
-fn code_split<'a>(text: &'a str, delimiter: &str) -> Vec<(bool, &'a str)> {
-    let parts = text.split(delimiter).collect::<Vec<_>>();
-    let last = parts.len() - 1;
-    parts
-        .into_iter()
-        .enumerate()
-        .map(|(index, part)| (index % 2 == 1 && index != last, part))
-        .collect()
-}
-
-/// `text` as prose and code parts: fenced blocks and closed backtick spans
-/// are code (`true`), everything else is prose.
+/// `text` as prose and code parts, following CommonMark (spec 0.31.2,
+/// §4.5 and §6.1): a block between `~~~` fence lines, and the text between
+/// a run of backticks and the next run of exactly as many (`` `x` ``,
+/// ``` ``x`` ```, and ```` ``` ```` fences) are code (`true`); everything
+/// else is prose. A delimiter with no closing partner (a stray backtick,
+/// or a block cut off by session-stop's 500-character head) opens nothing:
+/// the text after it stays prose.
 fn segments(text: &str) -> Vec<(bool, &str)> {
     let mut segments = Vec::new();
-    for (in_fence, part) in code_split(text, "```") {
+    for (in_fence, part) in tilde_fences(text) {
         if in_fence {
             segments.push((true, part));
         } else {
-            segments.extend(code_split(part, "`"));
+            segments.extend(backtick_spans(part));
         }
     }
     segments
+}
+
+/// `text` split at `~~~` fence lines: a line starting with three or more
+/// tildes opens a block that a later line starting with at least as many
+/// closes.
+fn tilde_fences(text: &str) -> Vec<(bool, &str)> {
+    let fence_len = |line: &str| line.trim_start().chars().take_while(|c| *c == '~').count();
+    let mut lines = Vec::new();
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        lines.push((offset, line));
+        offset += line.len();
+    }
+    let mut parts = Vec::new();
+    let mut prose_start = 0;
+    let mut index = 0;
+    while index < lines.len() {
+        let (open_at, open_line) = lines[index];
+        let opener = fence_len(open_line);
+        let close = (opener >= 3)
+            .then(|| {
+                lines[index + 1..]
+                    .iter()
+                    .position(|(_, line)| fence_len(line) >= opener)
+            })
+            .flatten();
+        let Some(close) = close else {
+            index += 1;
+            continue;
+        };
+        let (close_at, close_line) = lines[index + 1 + close];
+        parts.push((false, &text[prose_start..open_at]));
+        parts.push((true, &text[open_at + open_line.len()..close_at]));
+        prose_start = close_at + close_line.len();
+        index += close + 2;
+    }
+    parts.push((false, &text[prose_start..]));
+    parts
+}
+
+/// `text` split at backtick code spans: a run of backticks opens a span
+/// that the next run of exactly as many closes.
+fn backtick_spans(text: &str) -> Vec<(bool, &str)> {
+    let bytes = text.as_bytes();
+    let run_end = |from: usize| {
+        let mut end = from;
+        while end < bytes.len() && bytes[end] == b'`' {
+            end += 1;
+        }
+        end
+    };
+    let mut parts = Vec::new();
+    let (mut prose_start, mut index) = (0, 0);
+    while index < bytes.len() {
+        if bytes[index] != b'`' {
+            index += 1;
+            continue;
+        }
+        let open_end = run_end(index);
+        let width = open_end - index;
+        let mut scan = open_end;
+        let mut close = None;
+        while scan < bytes.len() {
+            if bytes[scan] == b'`' {
+                let end = run_end(scan);
+                if end - scan == width {
+                    close = Some((scan, end));
+                    break;
+                }
+                scan = end;
+            } else {
+                scan += 1;
+            }
+        }
+        match close {
+            Some((close_start, close_end)) => {
+                parts.push((false, &text[prose_start..index]));
+                parts.push((true, &text[open_end..close_start]));
+                prose_start = close_end;
+                index = close_end;
+            }
+            None => index = open_end,
+        }
+    }
+    parts.push((false, &text[prose_start..]));
+    parts
 }
 
 /// The roles a Claude- or OpenAI-style transcript entry can carry, which
@@ -1243,7 +1320,25 @@ mod tests {
         );
         assert_eq!(
             segments("a `b` c `d"),
-            [(false, "a "), (true, "b"), (false, " c "), (false, "d")]
+            [(false, "a "), (true, "b"), (false, " c `d")]
+        );
+        assert_eq!(
+            segments("a ``x ` y`` b ```\nfn f() {}\n``` c"),
+            [
+                (false, "a "),
+                (true, "x ` y"),
+                (false, " b "),
+                (true, "\nfn f() {}\n"),
+                (false, " c")
+            ]
+        );
+        assert_eq!(
+            segments("see:\n~~~ text\nhallo welt\n~~~~\nafter ~~~\nopen"),
+            [
+                (false, "see:\n"),
+                (true, "hallo welt\n"),
+                (false, "after ~~~\nopen")
+            ]
         );
     }
 
@@ -1330,6 +1425,31 @@ mod tests {
                 "{unrelated:?} is not relevant to {prompt:?}"
             );
         }
+        // `~~~` fences and double-backtick spans are code too (CommonMark).
+        let man_memory = [memory(
+            "Agent x: user: the man with the red hat waved at us from the bus",
+        )];
+        for prompt in [
+            "/fix this:\n~~~\nFehler: die Datei hat man nicht gefunden\n~~~",
+            "/fix the ``die Pipeline hat keinen Erfolg man`` error",
+        ] {
+            assert_eq!(
+                format_agent_memory_context(prompt, &prompt_agents(prompt), &man_memory),
+                None,
+                "{prompt:?} is not about the man in the hat"
+            );
+        }
+        let prompt = "/fix the man who lost his hat on the bus";
+        assert_eq!(
+            format_agent_memory_context(
+                prompt,
+                &prompt_agents(prompt),
+                &[memory(
+                    "Agent x: assistant: The deploy failed with this error:\n~~~\nFehler: die Datei hat man nicht gefunden, der Server ist weg\n~~~"
+                )]
+            ),
+            None
+        );
         // A pasted foreign error doesn't shrink a foreign prompt below the
         // size at which it is judged.
         for (prompt, unrelated) in [
