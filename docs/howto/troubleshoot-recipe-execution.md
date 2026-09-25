@@ -223,7 +223,11 @@ bubblewrap sandbox.
 A container is detected from `CLAUDE_CODE_REMOTE=true` (Claude Code cloud
 sessions), `/.dockerenv`, `/run/.containerenv`, or a container runtime in the
 path of `/proc/1/cgroup`. Under WSL the two marker files are ignored, because a
-distribution imported from `docker export` keeps `/.dockerenv`. The notice
+distribution imported from `docker export` keeps `/.dockerenv`. WSL is
+recognised by its kernel release (`/proc/sys/kernel/osrelease` containing
+`microsoft` or `WSL`), `WSL_DISTRO_NAME`/`WSL_INTEROP`, or its interop entries.
+Docker Desktop on Windows runs containers on the same WSL kernel, so a root
+container there needs `export IS_SANDBOX=1` unless its cgroup names the runtime. The notice
 looks like this:
 
 ```text

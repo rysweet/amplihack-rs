@@ -29,7 +29,11 @@
 //!   Windows drives mounted, and a distribution imported from `docker export`
 //!   keeps the image's `/.dockerenv`; WSL imports also log in as root by
 //!   default. A container marker in `/proc/1/cgroup` still counts there,
-//!   because it describes the process tree, not the root filesystem.
+//!   because it describes the process tree, not the root filesystem. WSL is
+//!   recognised by its kernel release, its session variables or its interop
+//!   entries. Docker Desktop on Windows runs containers on the same WSL
+//!   kernel, so there too only a cgroup marker or an explicit `IS_SANDBOX=1`
+//!   enables the flag: failing closed is the safe side of that ambiguity.
 //! - `CLAUDE_CODE_BUBBLEWRAP` set: Claude Code accepts the flag itself, so
 //!   nothing is needed.
 //! - Root with no sandbox signal: an error naming `IS_SANDBOX=1`, raised before
@@ -93,12 +97,54 @@ const WSL_PATHS: [&str; 3] = [
     "/run/WSL",
 ];
 
-/// Whether this process runs in a WSL distribution.
-fn running_under_wsl() -> bool {
-    WSL_ENV_VARS
-        .iter()
-        .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
-        || WSL_PATHS.iter().any(|path| Path::new(path).exists())
+/// The kernel release; a WSL kernel names itself (`…-microsoft-standard-WSL2`,
+/// `…-Microsoft` on WSL1). It survives `sudo -i` and `[interop] enabled=false`,
+/// which remove the variables and the `WSLInterop` entries.
+const OSRELEASE_PATH: &str = "/proc/sys/kernel/osrelease";
+
+const DOCKERENV_PATH: &str = "/.dockerenv";
+const CONTAINERENV_PATH: &str = "/run/.containerenv";
+const PID1_CGROUP_PATH: &str = "/proc/1/cgroup";
+
+/// The facts the sandbox probe reads from the process environment and the
+/// filesystem. [`RealSystem`] reads the real ones; tests pass a fake, so every
+/// path and variable the probe depends on is pinned by a test.
+pub trait SystemProbe {
+    /// A non-empty environment variable.
+    fn env(&self, name: &str) -> Option<String>;
+    /// Whether `path` exists.
+    fn exists(&self, path: &str) -> bool;
+    /// The contents of `path`, when it can be read.
+    fn read(&self, path: &str) -> Option<String>;
+}
+
+/// The running process's environment and filesystem.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RealSystem;
+
+impl SystemProbe for RealSystem {
+    fn env(&self, name: &str) -> Option<String> {
+        std::env::var(name).ok().filter(|value| !value.is_empty())
+    }
+
+    fn exists(&self, path: &str) -> bool {
+        Path::new(path).exists()
+    }
+
+    fn read(&self, path: &str) -> Option<String> {
+        std::fs::read_to_string(path).ok()
+    }
+}
+
+/// Whether this process runs in a WSL distribution. Any one indicator is
+/// enough: it only ever makes detection stricter.
+fn running_under_wsl(system: &impl SystemProbe) -> bool {
+    WSL_ENV_VARS.iter().any(|name| system.env(name).is_some())
+        || WSL_PATHS.iter().any(|path| system.exists(path))
+        || system.read(OSRELEASE_PATH).is_some_and(|release| {
+            let release = release.to_ascii_lowercase();
+            release.contains("microsoft") || release.contains("wsl")
+        })
 }
 
 /// Evidence that this process runs inside a disposable container.
@@ -117,18 +163,22 @@ pub struct SandboxSignals {
 impl SandboxSignals {
     /// Probe the real process environment and filesystem.
     pub fn detect() -> Self {
-        let cgroup = std::fs::read_to_string("/proc/1/cgroup").ok();
+        Self::probe(&RealSystem)
+    }
+
+    /// Probe `system` for every signal.
+    pub fn probe(system: &impl SystemProbe) -> Self {
         Self::from_state(
-            std::env::var(CLAUDE_CODE_REMOTE_ENV).ok().as_deref(),
-            Path::new("/.dockerenv").exists(),
-            Path::new("/run/.containerenv").exists(),
-            cgroup.as_deref(),
-            running_under_wsl(),
+            system.env(CLAUDE_CODE_REMOTE_ENV).as_deref(),
+            system.exists(DOCKERENV_PATH),
+            system.exists(CONTAINERENV_PATH),
+            system.read(PID1_CGROUP_PATH).as_deref(),
+            running_under_wsl(system),
         )
     }
 
-    /// Pure form of [`SandboxSignals::detect`], for tests. Under `wsl` the
-    /// marker files are ignored (see the module documentation).
+    /// The signals from already-probed facts. Under `wsl` the marker files
+    /// are ignored (see the module documentation).
     pub fn from_state(
         claude_code_remote: Option<&str>,
         dockerenv: bool,
@@ -247,15 +297,19 @@ fn is_truthy(value: &str) -> bool {
 /// [`decide`] against the real process state. The sandbox probes (a file
 /// read and a few `stat`s) run only as root.
 pub fn detect() -> SkipPermissionsEnv {
-    let euid = effective_uid();
+    detect_on(effective_uid(), &RealSystem)
+}
+
+/// [`detect`] against `system` with effective uid `euid`.
+pub fn detect_on(euid: Option<u32>, system: &impl SystemProbe) -> SkipPermissionsEnv {
     if euid != Some(0) {
         return SkipPermissionsEnv::NotRoot;
     }
     decide(
         euid,
-        std::env::var(IS_SANDBOX_ENV).ok().as_deref(),
-        std::env::var(CLAUDE_CODE_BUBBLEWRAP_ENV).ok().as_deref(),
-        SandboxSignals::detect(),
+        system.env(IS_SANDBOX_ENV).as_deref(),
+        system.env(CLAUDE_CODE_BUBBLEWRAP_ENV).as_deref(),
+        SandboxSignals::probe(system),
     )
 }
 
@@ -656,6 +710,171 @@ mod tests {
                 "{cgroup}"
             );
         }
+    }
+
+    /// A fake system. Paths and names are spelled out literally here, not
+    /// taken from the module's constants, so a misspelt probe path fails.
+    #[derive(Default)]
+    struct FakeSystem {
+        env: Vec<(&'static str, &'static str)>,
+        files: Vec<(&'static str, &'static str)>,
+    }
+
+    impl FakeSystem {
+        fn with_env(mut self, name: &'static str, value: &'static str) -> Self {
+            self.env.push((name, value));
+            self
+        }
+
+        fn with_file(mut self, path: &'static str, contents: &'static str) -> Self {
+            self.files.push((path, contents));
+            self
+        }
+    }
+
+    impl SystemProbe for FakeSystem {
+        fn env(&self, name: &str) -> Option<String> {
+            self.env
+                .iter()
+                .find(|(key, value)| *key == name && !value.is_empty())
+                .map(|(_, value)| value.to_string())
+        }
+
+        fn exists(&self, path: &str) -> bool {
+            self.files.iter().any(|(file, _)| *file == path)
+        }
+
+        fn read(&self, path: &str) -> Option<String> {
+            self.files
+                .iter()
+                .find(|(file, _)| *file == path)
+                .map(|(_, contents)| contents.to_string())
+        }
+    }
+
+    const HOST_CGROUP: &str = "0::/init.scope";
+    const WSL2_RELEASE: &str = "5.15.167.4-microsoft-standard-WSL2\n";
+
+    #[test]
+    fn probe_reads_each_marker_at_its_real_path() {
+        let cases = [
+            (
+                FakeSystem::default().with_file("/.dockerenv", ""),
+                "/.dockerenv",
+            ),
+            (
+                FakeSystem::default().with_file("/run/.containerenv", ""),
+                "/run/.containerenv",
+            ),
+            (
+                FakeSystem::default().with_file("/proc/1/cgroup", "0::/docker/abcd\n"),
+                "container cgroup in /proc/1/cgroup",
+            ),
+            (
+                FakeSystem::default().with_env("CLAUDE_CODE_REMOTE", "true"),
+                "CLAUDE_CODE_REMOTE=true",
+            ),
+        ];
+        for (system, signal) in cases {
+            assert_eq!(
+                detect_on(Some(0), &system),
+                SkipPermissionsEnv::SetSandbox { signal }
+            );
+        }
+        let host = FakeSystem::default().with_file("/proc/1/cgroup", HOST_CGROUP);
+        assert_eq!(
+            detect_on(Some(0), &host),
+            SkipPermissionsEnv::RootOutsideSandbox
+        );
+    }
+
+    #[test]
+    fn probe_reads_is_sandbox_and_bubblewrap_and_skips_non_root() {
+        let docker = || FakeSystem::default().with_file("/.dockerenv", "");
+        assert_eq!(
+            detect_on(Some(0), &docker().with_env("IS_SANDBOX", "0")),
+            SkipPermissionsEnv::ExplicitlyNotSandboxed {
+                value: "0".to_string()
+            }
+        );
+        assert_eq!(
+            detect_on(Some(0), &FakeSystem::default().with_env("IS_SANDBOX", "1")),
+            SkipPermissionsEnv::AlreadySandboxed
+        );
+        assert_eq!(
+            detect_on(
+                Some(0),
+                &FakeSystem::default().with_env("CLAUDE_CODE_BUBBLEWRAP", "1")
+            ),
+            SkipPermissionsEnv::AlreadySandboxed
+        );
+        assert_eq!(
+            detect_on(Some(1000), &docker()),
+            SkipPermissionsEnv::NotRoot
+        );
+        assert_eq!(detect_on(None, &docker()), SkipPermissionsEnv::NotRoot);
+    }
+
+    /// A WSL distribution imported from `docker export` keeps `/.dockerenv`
+    /// (and may have `/run/.containerenv`). Each WSL indicator on its own must
+    /// stop them counting, including after `sudo -i` scrubbed the environment
+    /// and with interop disabled (no `WSLInterop`, no `/run/WSL`).
+    #[test]
+    fn wsl_workstation_with_docker_markers_is_not_a_sandbox() {
+        let imported = || {
+            FakeSystem::default()
+                .with_file("/.dockerenv", "")
+                .with_file("/run/.containerenv", "")
+                .with_file("/proc/1/cgroup", "0::/\n")
+        };
+        let indicators = [
+            imported().with_file("/proc/sys/kernel/osrelease", WSL2_RELEASE),
+            imported().with_file("/proc/sys/kernel/osrelease", "4.4.0-19041-Microsoft\n"),
+            imported().with_env("WSL_DISTRO_NAME", "Ubuntu"),
+            imported().with_env("WSL_INTEROP", "/run/WSL/1_interop"),
+            imported().with_file("/proc/sys/fs/binfmt_misc/WSLInterop", ""),
+            imported().with_file("/proc/sys/fs/binfmt_misc/WSLInterop-late", ""),
+            imported().with_file("/run/WSL", ""),
+        ];
+        for system in &indicators {
+            assert_eq!(
+                detect_on(Some(0), system),
+                SkipPermissionsEnv::RootOutsideSandbox,
+                "env {:?} files {:?}",
+                system.env,
+                system.files
+            );
+        }
+        // The same markers on a non-WSL kernel are a container.
+        let container = imported().with_file("/proc/sys/kernel/osrelease", "6.8.0-45-generic\n");
+        assert_eq!(
+            detect_on(Some(0), &container),
+            SkipPermissionsEnv::SetSandbox {
+                signal: "/.dockerenv"
+            }
+        );
+    }
+
+    #[test]
+    fn wsl_still_honours_a_container_cgroup_and_explicit_opt_in() {
+        let wsl = || {
+            FakeSystem::default()
+                .with_file("/.dockerenv", "")
+                .with_file("/proc/sys/kernel/osrelease", WSL2_RELEASE)
+        };
+        assert_eq!(
+            detect_on(
+                Some(0),
+                &wsl().with_file("/proc/1/cgroup", "0::/docker/abcd\n")
+            ),
+            SkipPermissionsEnv::SetSandbox {
+                signal: "container cgroup in /proc/1/cgroup"
+            }
+        );
+        assert_eq!(
+            detect_on(Some(0), &wsl().with_env("IS_SANDBOX", "1")),
+            SkipPermissionsEnv::AlreadySandboxed
+        );
     }
 
     #[test]
