@@ -44,7 +44,9 @@ If a source produces a value that fails validation (allowlist, length, character
 ### Resolving once for a whole recipe run
 
 `amplihack recipe run` resolves the binary once, at entry, and exports it to
-`recipe-runner-rs` as `AMPLIHACK_AGENT_BINARY`. It has to: every step runs
+`recipe-runner-rs` as `AMPLIHACK_AGENT_BINARY`. The launcher-context walk-up
+starts at the run's working directory (`--working-dir`, default `.`), where
+the steps run. It has to: every step runs
 under the runner's curated environment, where the session markers of the CLI
 that started the run may be gone, and a nested `amplihack` resolving on its own
 there would fall through to the default (issue #1481).

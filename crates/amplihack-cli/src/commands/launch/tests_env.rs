@@ -798,15 +798,33 @@ fn persist_launcher_context_records_the_launcher_that_ran() {
     }
 }
 
+/// A fake inherited environment for [`persist_launcher_context_with`].
+fn inherited(
+    binary: Option<&'static str>,
+    tag: Option<&'static str>,
+) -> impl Fn(&str) -> Option<String> {
+    move |key| match key {
+        amplihack_utils::agent_binary::BINARY_ENV => binary.map(str::to_string),
+        amplihack_utils::agent_binary::SOURCE_ENV => tag.map(str::to_string),
+        _ => None,
+    }
+}
+
 /// Issue #1481. An agent step that `amplihack recipe run` launched on the
 /// built-in default is not a session anyone chose. Persisting it made the
 /// guess durable: the checkout's launcher context said copilot, and later runs
 /// read it back as though a session had decided.
 #[test]
 fn a_launch_picked_by_the_default_layer_persists_nothing() {
-    for tool in ["claude", "copilot", "codex", "amplifier"] {
+    for (tool, tag) in [
+        ("claude", "default:claude"),
+        ("copilot", "default:copilot"),
+        ("codex", "default:codex"),
+        ("amplifier", "default:amplifier"),
+    ] {
         let dir = tempfile::tempdir().unwrap();
-        persist_launcher_context_with(tool, Some(dir.path()), &[], true).unwrap();
+        let env = inherited(Some(tool), Some(tag));
+        persist_launcher_context_with(tool, Some(dir.path()), &[], &env).unwrap();
         assert!(
             read_launcher_context(dir.path()).is_none(),
             "{tool}: a default-layer guess must not be persisted"
@@ -814,13 +832,26 @@ fn a_launch_picked_by_the_default_layer_persists_nothing() {
     }
 }
 
-/// The same launch, chosen by anything other than the default, still records.
+/// The same launch, chosen by anything other than the default, still records:
+/// no tag, a tag naming a different value, or a tagged value naming a
+/// different launcher than the one that ran.
 #[test]
 fn a_launch_not_picked_by_the_default_layer_still_persists() {
-    let dir = tempfile::tempdir().unwrap();
-    persist_launcher_context_with("claude", Some(dir.path()), &[], false).unwrap();
-    let context = read_launcher_context(dir.path()).expect("a chosen launcher must persist");
-    assert_eq!(context.launcher, LauncherKind::Claude);
+    for (tool, binary, tag) in [
+        ("claude", Some("claude"), None),
+        ("claude", None, None),
+        ("codex", Some("codex"), Some("default:copilot")),
+        ("claude", Some("copilot"), Some("default:copilot")),
+        ("copilot", Some("copilot"), Some("default")),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let env = inherited(binary, tag);
+        persist_launcher_context_with(tool, Some(dir.path()), &[], &env).unwrap();
+        let context = read_launcher_context(dir.path()).unwrap_or_else(|| {
+            panic!("{tool} with {binary:?}/{tag:?}: a chosen launcher must persist")
+        });
+        assert_eq!(context.launcher.as_str(), tool);
+    }
 }
 
 /// A non-launcher subcommand must not stamp the repository at all.

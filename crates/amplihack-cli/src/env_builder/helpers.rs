@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Resolves which agent binary identifier the current process is operating
 /// under. Delegates to [`amplihack_utils::agent_binary::resolve`], which
@@ -25,7 +25,20 @@ pub fn active_agent_binary() -> String {
 pub fn active_agent_binary_with_source() -> (String, amplihack_utils::agent_binary::ResolutionSource)
 {
     let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    match amplihack_utils::agent_binary::resolve_with_source(&cwd) {
+    active_agent_binary_with_source_in(&cwd)
+}
+
+/// [`active_agent_binary_with_source`] with the launcher-context walk-up
+/// starting at `dir` instead of the process cwd.
+///
+/// `amplihack recipe run -w <dir>` runs every step in `<dir>`, so that is where
+/// a nested `amplihack` would look for `launcher_context.json`. Resolving the
+/// run's binary from anywhere else can let one level guess `copilot` while the
+/// level below reads a context file the top never saw.
+pub fn active_agent_binary_with_source_in(
+    dir: &Path,
+) -> (String, amplihack_utils::agent_binary::ResolutionSource) {
+    match amplihack_utils::agent_binary::resolve_with_source(dir) {
         Ok(resolved) => resolved,
         Err(err) => {
             tracing::warn!(error = %err, "agent binary resolver failed; using built-in default");

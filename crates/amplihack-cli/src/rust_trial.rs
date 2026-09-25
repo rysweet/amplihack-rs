@@ -230,6 +230,22 @@ pub fn install_rust_cli(trial_home: &Path, options: &InstallOptions) -> Result<P
     Ok(target)
 }
 
+/// The trial command: `binary rust_args` with `env` layered over the inherited
+/// environment.
+///
+/// An inherited [`amplihack_utils::agent_binary::SOURCE_ENV`] is removed first.
+/// `env` re-adds it only when this level's own answer was a default guess;
+/// otherwise a parent's tag would survive and mark a value this level resolved
+/// from a real source as a guess (issue #1481).
+fn trial_command(binary: &Path, rust_args: &[String], env: &HashMap<String, String>) -> Command {
+    let mut command = Command::new(binary);
+    command
+        .args(rust_args)
+        .env_remove(amplihack_utils::agent_binary::SOURCE_ENV)
+        .envs(env);
+    command
+}
+
 /// Run the Rust CLI in an isolated HOME environment.
 ///
 /// Returns the process exit code.
@@ -250,8 +266,7 @@ pub fn run_rust_trial(rust_args: &[String], trial_home: &Path) -> i32 {
         "running rust trial"
     );
 
-    let mut command = Command::new(&binary);
-    command.args(rust_args).envs(&env);
+    let command = trial_command(&binary, rust_args, &env);
     let status = run_with_timeout(command, RUST_TRIAL_TIMEOUT);
 
     match status {
@@ -332,6 +347,37 @@ mod tests {
         assert_eq!(env["AMPLIHACK_RUST_TRIAL_HOME"], "/test/trial");
         // PATH should be forwarded
         assert!(env.contains_key("PATH"));
+    }
+
+    /// Issue #1481: a parent's default-guess tag must not reach the trial
+    /// child unless this level's own answer was a guess too.
+    #[test]
+    fn trial_command_drops_an_inherited_tag_unless_it_re_adds_one() {
+        use amplihack_utils::agent_binary::SOURCE_ENV;
+        let lookup = |command: &Command| {
+            command
+                .get_envs()
+                .filter(|(k, _)| *k == std::ffi::OsStr::new(SOURCE_ENV))
+                .map(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+                .last()
+        };
+
+        let mut env = HashMap::new();
+        env.insert("AMPLIHACK_AGENT_BINARY".to_string(), "claude".to_string());
+        let command = trial_command(Path::new("amplihack"), &[], &env);
+        assert_eq!(
+            lookup(&command),
+            Some(None),
+            "inherited tag must be removed"
+        );
+
+        env.insert(SOURCE_ENV.to_string(), "default:copilot".to_string());
+        let command = trial_command(Path::new("amplihack"), &[], &env);
+        assert_eq!(
+            lookup(&command),
+            Some(Some("default:copilot".to_string())),
+            "this level's own tag must still be passed down"
+        );
     }
 
     #[test]

@@ -67,6 +67,11 @@ impl Fixture {
     /// Run `amplihack recipe run` under a cleared environment, adding only
     /// what a caller would really have plus `extra`.
     fn run(&self, extra: &[(&str, &str)]) -> (Output, Value) {
+        self.run_with_args(&[], extra)
+    }
+
+    /// [`Fixture::run`] with extra `recipe run` arguments.
+    fn run_with_args(&self, args: &[&std::ffi::OsStr], extra: &[(&str, &str)]) -> (Output, Value) {
         let mut command = Command::new(env!("CARGO_BIN_EXE_amplihack"));
         command
             .env_clear()
@@ -83,7 +88,8 @@ impl Fixture {
             .current_dir(self.work())
             .arg("recipe")
             .arg("run")
-            .arg(self.path().join("probe.yaml"));
+            .arg(self.path().join("probe.yaml"))
+            .args(args);
         for (key, value) in extra {
             command.env(key, value);
         }
@@ -221,4 +227,25 @@ fn recipe_run_writes_no_launcher_context() {
             .exists(),
         "a default-layer run must not leave a launcher context behind"
     );
+}
+
+/// The steps run in `--working-dir`, so that is where a nested `amplihack`
+/// looks for a launcher context. Resolving the run's binary from the caller's
+/// cwd instead would tag `default:copilot` while the level below read a
+/// context naming another CLI, and one run would mix CLIs.
+#[test]
+fn the_launcher_context_is_read_from_the_working_dir() {
+    let fx = Fixture::new();
+    let project = fx.path().join("project");
+    fs::create_dir_all(project.join(".git")).expect("create project");
+    amplihack_cli::launcher_context::write_launcher_context(
+        &project,
+        amplihack_cli::launcher_context::LauncherKind::Codex,
+        "amplihack codex",
+        Default::default(),
+    )
+    .expect("write launcher context");
+    let (output, probe) = fx.run_with_args(&["--working-dir".as_ref(), project.as_os_str()], &[]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(handed(&probe), ("codex", "<unset>"));
 }

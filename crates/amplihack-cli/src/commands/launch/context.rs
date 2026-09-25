@@ -53,11 +53,15 @@ fn is_non_session_invocation(extra_args: &[String]) -> bool {
 /// runs in the checkout. The tag is bound to the inherited value, and that
 /// value must also name this tool: the tag describes what was handed down, not
 /// whatever launcher a user typed.
-fn launched_on_a_default_guess(tool: &str) -> bool {
-    amplihack_utils::agent_binary::inherited_binary_is_default_guess()
-        && std::env::var(amplihack_utils::agent_binary::BINARY_ENV)
-            .ok()
-            .and_then(|raw| amplihack_utils::agent_binary::validate_binary_name(&raw))
+fn launched_on_a_default_guess(tool: &str, var: &dyn Fn(&str) -> Option<String>) -> bool {
+    use amplihack_utils::agent_binary::{
+        BINARY_ENV, SOURCE_ENV, is_default_guess, validate_binary_name,
+    };
+    let binary = var(BINARY_ENV);
+    is_default_guess(binary.as_deref(), var(SOURCE_ENV).as_deref())
+        && binary
+            .as_deref()
+            .and_then(validate_binary_name)
             .is_some_and(|inherited| inherited == tool)
 }
 
@@ -66,21 +70,18 @@ pub(super) fn persist_launcher_context(
     project_root: Option<&Path>,
     extra_args: &[String],
 ) -> Result<()> {
-    persist_launcher_context_with(
-        tool,
-        project_root,
-        extra_args,
-        launched_on_a_default_guess(tool),
-    )
+    persist_launcher_context_with(tool, project_root, extra_args, &|key| {
+        std::env::var(key).ok()
+    })
 }
 
-/// [`persist_launcher_context`] with the environment-derived input passed in,
-/// so the rule can be tested without mutating process state.
+/// [`persist_launcher_context`] reading the inherited environment through
+/// `var`, so the rule can be tested without mutating process state.
 pub(super) fn persist_launcher_context_with(
     tool: &str,
     project_root: Option<&Path>,
     extra_args: &[String],
-    default_guess: bool,
+    var: &dyn Fn(&str) -> Option<String>,
 ) -> Result<()> {
     let Some(kind) = launcher_kind_for(tool) else {
         return Ok(());
@@ -92,7 +93,7 @@ pub(super) fn persist_launcher_context_with(
         );
         return Ok(());
     }
-    if default_guess {
+    if launched_on_a_default_guess(tool, var) {
         tracing::debug!(
             tool,
             "not persisting launcher context: the launcher was the built-in default, \

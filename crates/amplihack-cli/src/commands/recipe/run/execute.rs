@@ -5,7 +5,7 @@ use super::failure_class::{
 };
 use super::retry::{AttemptOutcome, RetrySummary, TransientRetryLimits, run_with_transient_retry};
 use super::*;
-use crate::env_builder::{EnvBuilder, active_agent_binary_with_source};
+use crate::env_builder::{EnvBuilder, active_agent_binary_with_source_in};
 #[cfg(windows)]
 use crate::util::run_with_timeout;
 use crate::util::truncate_chars_with_notice;
@@ -495,8 +495,10 @@ pub(super) fn execute_recipe_via_rust(
     // below runs under recipe-runner-rs's curated environment, and a nested
     // `amplihack` resolving on its own there has lost the evidence -- it fell
     // through to the vendor default and ran every agent step under Copilot from
-    // inside a Claude Code session.
-    let (agent_binary, agent_binary_source) = active_agent_binary_with_source();
+    // inside a Claude Code session. The launcher-context walk-up starts at
+    // `working_dir`, where the steps run, so a nested `amplihack` there cannot
+    // find a context file this level never looked at.
+    let (agent_binary, agent_binary_source) = active_agent_binary_with_source_in(working_dir);
     report_inferred_agent_binary(&agent_binary, agent_binary_source);
 
     let runtime_dir = tempfile::Builder::new()
