@@ -205,7 +205,11 @@ pub(crate) fn recipe_runner_binary_present() -> bool {
             home.join(".local/bin").join(bin_name),
         ]
     });
-    for candidate in home_candidates {
+    // `cargo install` places it in `$CARGO_HOME/bin`, which may be neither of
+    // the above and not on PATH.
+    let cargo_home_candidate =
+        crate::rust_toolchain::cargo_home().map(|cargo_home| cargo_home.join("bin").join(bin_name));
+    for candidate in home_candidates.chain(cargo_home_candidate) {
         if candidate.is_file() {
             return true;
         }

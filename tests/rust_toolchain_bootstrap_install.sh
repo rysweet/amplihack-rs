@@ -18,6 +18,8 @@
 #   3. no C compiler and sudo that needs a password: install fails with the
 #      exact apt-get command and never runs apt-get.
 #   4. AMPLIHACK_NO_RUST_BOOTSTRAP=1: install fails fast, nothing downloaded.
+#   5. a non-default CARGO_HOME that is not on PATH: the installed
+#      recipe-runner-rs is still found.
 #
 # Usage: AMPLIHACK_BIN=/path/to/amplihack bash tests/rust_toolchain_bootstrap_install.sh
 # (defaults to the `amplihack` on PATH). CI runs it in the Install Smoke Test job.
@@ -96,8 +98,8 @@ EOF
         cat > "$dir/apt-get" <<EOF
 #!/bin/sh
 printf '%s DEBIAN_FRONTEND=%s\n' "\$*" "\${DEBIAN_FRONTEND:-}" >> "\$HOME/apt.log"
-case "\$1" in
-  install) printf '#!/bin/sh\nexit 0\n' > "$dir/cc"; chmod +x "$dir/cc" ;;
+case " \$* " in
+  *" install "*) printf '#!/bin/sh\nexit 0\n' > "$dir/cc"; chmod +x "$dir/cc" ;;
 esac
 EOF
         ;;
@@ -181,7 +183,7 @@ else
   fail "install exited $status with no C compiler"
   cat "$out" >&2
 fi
-if grep -q "^install -y -qq build-essential DEBIAN_FRONTEND=noninteractive$" "$home/apt.log" 2>/dev/null; then
+if grep -q "^-o DPkg::Lock::Timeout=300 install -y -qq build-essential DEBIAN_FRONTEND=noninteractive$" "$home/apt.log" 2>/dev/null; then
   pass "build-essential installed non-interactively"
 else
   fail "apt-get install build-essential not run as expected: $(cat "$home/apt.log" 2>/dev/null || echo '<not run>')"
@@ -226,6 +228,19 @@ if [[ ! -e "$home/curl.called" && ! -e "$home/.cargo" ]]; then
   pass "opt-out downloads and installs nothing"
 else
   fail "opt-out still bootstrapped Rust"
+fi
+
+# --- 5. non-default CARGO_HOME, not on PATH ---------------------------------
+home="$TMP/case5"
+make_tools "$TMP/case5-tools" curl cc
+out="$TMP/case5.log"
+status=0
+run_install "$home" "$TMP/case5-tools" "$out" CARGO_HOME="$home/custom-cargo" || status=$?
+if [[ "$status" -eq 0 && -x "$home/custom-cargo/bin/recipe-runner-rs" ]]; then
+  pass "recipe-runner-rs in a custom \$CARGO_HOME/bin is found after install"
+else
+  fail "custom CARGO_HOME install failed (exit $status)"
+  cat "$out" >&2
 fi
 
 if [[ "$failures" -ne 0 ]]; then

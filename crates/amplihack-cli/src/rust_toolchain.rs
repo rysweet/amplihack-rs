@@ -33,8 +33,14 @@ const C_COMPILERS: [&str; 3] = ["cc", "gcc", "clang"];
 const LINKER_REMEDIATION: &str = "sudo apt-get install -y build-essential   \
      (Fedora: sudo dnf install -y gcc; macOS: xcode-select --install)";
 
+/// `AMPLIHACK_NO_RUST_BOOTSTRAP` semantics: unset, empty and `0` leave
+/// bootstrapping on; any other value turns it off.
+fn bootstrap_disabled_by(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|value| !value.is_empty() && value != "0")
+}
+
 fn bootstrap_disabled() -> bool {
-    std::env::var_os(NO_BOOTSTRAP_ENV).is_some_and(|value| !value.is_empty() && value != "0")
+    bootstrap_disabled_by(std::env::var_os(NO_BOOTSTRAP_ENV).as_deref())
 }
 
 /// `$CARGO_HOME`, defaulting to `~/.cargo`.
@@ -76,24 +82,44 @@ fn path_dirs() -> Vec<PathBuf> {
     amplihack_utils::launch_target::env_path_dirs()
 }
 
-/// PATH with `<cargo_home>/bin` prepended, for running a freshly
-/// bootstrapped `cargo` whose directory is not yet on the user's PATH.
-pub(crate) fn path_with_cargo_bin(cargo: &Path) -> Option<OsString> {
+/// The PATH to give a `cargo` child: `None` (inherit unchanged) when cargo's
+/// directory is already among `entries`, otherwise `entries` with that
+/// directory prepended — the `$CARGO_HOME/bin` fallback or a toolchain rustup
+/// just installed, where cargo needs its own dir on PATH to find `rustc`.
+fn path_for_cargo(cargo: &Path, entries: Vec<PathBuf>) -> Option<OsString> {
     let bin_dir = cargo.parent()?.to_path_buf();
-    let current = std::env::var_os("PATH").unwrap_or_default();
-    let mut dirs = vec![bin_dir.clone()];
-    dirs.extend(std::env::split_paths(&current).filter(|dir| *dir != bin_dir));
-    std::env::join_paths(dirs).ok()
+    if entries.contains(&bin_dir) {
+        return None;
+    }
+    std::env::join_paths(std::iter::once(bin_dir).chain(entries)).ok()
+}
+
+/// [`path_for_cargo`] against the process `$PATH`.
+pub(crate) fn path_with_cargo_bin(cargo: &Path) -> Option<OsString> {
+    // Rebuilding `$PATH` for a child, not choosing a file to run: keep the
+    // user's entries verbatim (relative ones included) and only prepend.
+    path_for_cargo(cargo, amplihack_utils::launch_target::env_path_entries())
 }
 
 /// Return a usable `cargo`, installing rustup first when `allow_bootstrap`
 /// is set and no toolchain is found.
 pub(crate) fn ensure_cargo(allow_bootstrap: bool) -> Result<PathBuf> {
-    let home = cargo_home();
-    if let Some(cargo) = find_cargo(&path_dirs(), home.as_deref()) {
+    ensure_cargo_in(
+        &path_dirs(),
+        cargo_home(),
+        allow_bootstrap && !bootstrap_disabled(),
+    )
+}
+
+fn ensure_cargo_in(
+    path_dirs: &[PathBuf],
+    home: Option<PathBuf>,
+    allow_bootstrap: bool,
+) -> Result<PathBuf> {
+    if let Some(cargo) = find_cargo(path_dirs, home.as_deref()) {
         return Ok(cargo);
     }
-    if !allow_bootstrap || bootstrap_disabled() {
+    if !allow_bootstrap {
         bail!("cargo is required to install recipe-runner-rs. Install Rust: https://rustup.rs/");
     }
     if !cfg!(unix) {
@@ -119,17 +145,17 @@ pub(crate) fn ensure_cargo(allow_bootstrap: bool) -> Result<PathBuf> {
 }
 
 fn install_rustup() -> Result<()> {
-    let dirs = path_dirs();
+    let dirs = &path_dirs()[..];
     let temp = tempfile::tempdir().context("failed to create a temp dir for rustup-init")?;
     let script = temp.path().join("rustup-init.sh");
 
-    let fetch = if let Some(curl) = find_in_dirs(&dirs, &["curl"]) {
+    let fetch = if let Some(curl) = find_in_dirs(dirs, &["curl"]) {
         let mut cmd = Command::new(curl);
         cmd.args(["--proto", "=https", "--tlsv1.2", "-sSfL", "-o"])
             .arg(&script)
             .arg(RUSTUP_INIT_URL);
         cmd
-    } else if let Some(wget) = find_in_dirs(&dirs, &["wget"]) {
+    } else if let Some(wget) = find_in_dirs(dirs, &["wget"]) {
         let mut cmd = Command::new(wget);
         cmd.args(["--https-only", "-q", "-O"])
             .arg(&script)
@@ -161,22 +187,25 @@ fn install_rustup() -> Result<()> {
 /// Make sure a C compiler/linker exists, installing `build-essential` via
 /// apt when that is possible without a password prompt.
 pub(crate) fn ensure_c_linker(allow_bootstrap: bool) -> Result<()> {
-    if !cfg!(unix) || find_c_compiler(&path_dirs()).is_some() {
+    ensure_c_linker_in(&path_dirs(), allow_bootstrap && !bootstrap_disabled())
+}
+
+fn ensure_c_linker_in(dirs: &[PathBuf], allow_bootstrap: bool) -> Result<()> {
+    if !cfg!(unix) || find_c_compiler(dirs).is_some() {
         return Ok(());
     }
     let missing = "no C compiler (cc/gcc/clang) found; Rust needs one as its linker to build \
                    recipe-runner-rs";
-    if !allow_bootstrap || bootstrap_disabled() {
+    if !allow_bootstrap {
         bail!("{missing}. Install one with: {LINKER_REMEDIATION}");
     }
-    let dirs = path_dirs();
-    let Some(apt_get) = find_in_dirs(&dirs, &["apt-get"]) else {
+    let Some(apt_get) = find_in_dirs(dirs, &["apt-get"]) else {
         bail!("{missing}. Install one with: {LINKER_REMEDIATION}");
     };
     let sudo = if is_root() {
         None
     } else {
-        let Some(sudo) = find_in_dirs(&dirs, &["sudo"]) else {
+        let Some(sudo) = find_in_dirs(dirs, &["sudo"]) else {
             bail!("{missing}, and sudo is unavailable. Install one with: {LINKER_REMEDIATION}");
         };
         let passwordless = Command::new(&sudo)
@@ -196,9 +225,18 @@ pub(crate) fn ensure_c_linker(allow_bootstrap: bool) -> Result<()> {
     };
 
     println!("   ⏬ No C linker found — installing build-essential with apt-get");
+    // A freshly booted VM usually has apt-daily/unattended-upgrades holding
+    // the dpkg lock; wait for it instead of failing at once (apt >= 1.9.11).
     for args in [
-        &["update", "-qq"][..],
-        &["install", "-y", "-qq", "build-essential"][..],
+        &["-o", "DPkg::Lock::Timeout=300", "update", "-qq"][..],
+        &[
+            "-o",
+            "DPkg::Lock::Timeout=300",
+            "install",
+            "-y",
+            "-qq",
+            "build-essential",
+        ][..],
     ] {
         let mut cmd = match &sudo {
             Some(sudo) => {
@@ -299,15 +337,56 @@ mod tests {
     }
 
     #[test]
-    fn path_with_cargo_bin_prepends_once() {
-        let joined = path_with_cargo_bin(Path::new("/opt/cargo/bin/cargo")).unwrap();
-        let dirs: Vec<PathBuf> = std::env::split_paths(&joined).collect();
-        assert_eq!(dirs[0], PathBuf::from("/opt/cargo/bin"));
+    fn path_for_cargo_leaves_path_alone_when_cargo_dir_is_on_it() {
+        let entries = vec![
+            PathBuf::from("/home/u/.local/bin"),
+            PathBuf::from("/usr/bin"),
+        ];
         assert_eq!(
-            dirs.iter()
-                .filter(|dir| dir.as_path() == Path::new("/opt/cargo/bin"))
-                .count(),
-            1
+            path_for_cargo(Path::new("/usr/bin/cargo"), entries),
+            None,
+            "distro cargo must not reorder the user's PATH"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn path_for_cargo_prepends_off_path_cargo_dir() {
+        let entries = vec![PathBuf::from("/usr/bin"), PathBuf::from("")];
+        let joined = path_for_cargo(Path::new("/h/.cargo/bin/cargo"), entries).unwrap();
+        assert_eq!(
+            joined,
+            OsString::from("/h/.cargo/bin:/usr/bin:"),
+            "only prepends; the user's own entries stay verbatim"
+        );
+    }
+
+    #[test]
+    fn opt_out_env_semantics() {
+        use std::ffi::OsStr;
+        assert!(!bootstrap_disabled_by(None));
+        assert!(!bootstrap_disabled_by(Some(OsStr::new(""))));
+        assert!(!bootstrap_disabled_by(Some(OsStr::new("0"))));
+        assert!(bootstrap_disabled_by(Some(OsStr::new("1"))));
+        assert!(bootstrap_disabled_by(Some(OsStr::new("yes"))));
+    }
+
+    /// The launch-time refresh passes `allow_bootstrap = false`: it must fail
+    /// without downloading or installing anything.
+    #[test]
+    fn no_bootstrap_means_no_side_effects() {
+        let temp = tempfile::tempdir().unwrap();
+        let empty_path = vec![temp.path().join("empty-bin")];
+        let home = temp.path().join("cargo-home");
+
+        let err = ensure_cargo_in(&empty_path, Some(home.clone()), false)
+            .expect_err("no cargo and no bootstrap must fail");
+        assert!(format!("{err:#}").contains("cargo is required"));
+        assert!(!home.exists(), "nothing may be installed into CARGO_HOME");
+
+        let err = ensure_c_linker_in(&empty_path, false)
+            .expect_err("no C compiler and no bootstrap must fail");
+        assert!(format!("{err:#}").contains("build-essential"));
+        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 0);
     }
 }

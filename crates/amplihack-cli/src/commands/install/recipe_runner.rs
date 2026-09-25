@@ -85,11 +85,14 @@ pub(super) fn ensure_recipe_runner() -> Result<Outcome> {
         println!("   ✅ recipe-runner-rs installed from git");
         Ok(Outcome::InstalledFromGit)
     } else {
-        // cargo install reported success but the binary still isn't
-        // discoverable on PATH (for example, ~/.cargo/bin not in PATH).
+        // cargo install reported success but the binary is in none of the
+        // places probed (PATH, ~/.cargo/bin, ~/.local/bin, $CARGO_HOME/bin).
+        let cargo_bin = crate::rust_toolchain::cargo_home()
+            .map(|home| home.join("bin").display().to_string())
+            .unwrap_or_else(|| "~/.cargo/bin".to_string());
         bail!(
             "cargo install for recipe-runner-rs reported success but the binary is still not \
-             on PATH. Add ~/.cargo/bin to PATH and re-run `amplihack install`, or set \
+             discoverable. Add {cargo_bin} to PATH and re-run `amplihack install`, or set \
              RECIPE_RUNNER_RS_PATH explicitly. {REMEDIATION}"
         );
     }
