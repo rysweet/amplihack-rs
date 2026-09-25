@@ -1380,6 +1380,27 @@ mod tests {
             "```\nFehler: die Pipeline hat keinen Erfolg, man sieht nichts\n```"
         ));
         assert!(!reads_as_english("`src/die/bin.rs` `mit_hat` `was_ist`"));
+        // A turn that is only a foreign fence contributes nothing, its
+        // identifiers included; with English prose before it, they count.
+        let prompt = "/fix the `needless_borrow` lint in `session_stop`";
+        assert_eq!(
+            format_agent_memory_context(
+                prompt,
+                &prompt_agents(prompt),
+                &[memory(
+                    "Agent x: assistant: ```\nwarnung: needless_borrow in session_stop, die Pipeline hat keinen Erfolg\n```"
+                )]
+            ),
+            None
+        );
+        assert!(
+            format_agent_memory_context(
+                prompt,
+                &prompt_agents(prompt),
+                &[memory("Agent x: assistant: see this:\n```\nwarnung: needless_borrow in session_stop, die Pipeline hat keinen Erfolg\n```")]
+            )
+            .is_some()
+        );
         // Identifiers in code still match, in short spans and in a
         // non-English block alike.
         for (prompt, relevant) in [
