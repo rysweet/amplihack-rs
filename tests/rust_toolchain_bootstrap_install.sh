@@ -87,13 +87,14 @@ make_tools() {
       curl)
         cat > "$dir/curl" <<EOF
 #!/bin/sh
+saved_args="\$*"
 out=""
 while [ \$# -gt 0 ]; do
   case "\$1" in -o) out="\$2"; shift ;; esac
   shift
 done
 [ -n "\$out" ] || exit 2
-touch "\$HOME/curl.called"
+printf '%s\n' "\$saved_args" > "\$HOME/curl.args"
 cp "$TMP/rustup-init.sh" "\$out"
 EOF
         ;;
@@ -184,6 +185,11 @@ if grep -qx -- "-y --no-modify-path --profile minimal" "$home/rustup-init.args" 
 else
   fail "rustup-init args wrong: $(cat "$home/rustup-init.args" 2>/dev/null || echo '<not run>')"
 fi
+if grep -q -- "^--proto =https --tlsv1.2 -sSfL -o .* https://static.rust-lang.org/rustup/rustup-init.sh$" "$home/curl.args" 2>/dev/null; then
+  pass "rustup-init.sh downloaded over HTTPS-only, TLS >= 1.2"
+else
+  fail "curl args wrong: $(cat "$home/curl.args" 2>/dev/null || echo '<not run>')"
+fi
 if grep -q "^install --git https://github.com/rysweet/amplihack-recipe-runner" "$home/cargo.args" 2>/dev/null; then
   pass "bootstrapped cargo installed recipe-runner-rs from git"
 else
@@ -253,7 +259,7 @@ else
   fail "opt-out did not fail as expected (exit $status)"
   cat "$out" >&2
 fi
-if [[ ! -e "$home/curl.called" && ! -e "$home/.cargo" ]]; then
+if [[ ! -e "$home/curl.args" && ! -e "$home/.cargo" ]]; then
   pass "opt-out downloads and installs nothing"
 else
   fail "opt-out still bootstrapped Rust"

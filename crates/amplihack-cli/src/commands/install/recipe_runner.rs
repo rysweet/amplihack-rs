@@ -77,7 +77,10 @@ pub(super) fn ensure_recipe_runner() -> Result<Outcome> {
     }
 
     println!("   ⏬ recipe-runner-rs missing — installing from git (cargo install --locked)");
-    if let Err(err) = install_recipe_runner_from_git(true) {
+    // Only the user-typed `amplihack install` may bootstrap a Rust toolchain;
+    // self-heal and ensure_framework_installed reach this same function.
+    let bootstrap = crate::rust_toolchain::bootstrap_permitted();
+    if let Err(err) = install_recipe_runner_from_git(bootstrap) {
         bail!("failed to install recipe-runner-rs via cargo: {err:#}. {REMEDIATION}");
     }
 
@@ -187,5 +190,56 @@ mod tests {
         let msg = format!("{err:#}").to_ascii_lowercase();
         assert!(msg.contains("recipe-runner-rs"), "msg={msg}");
         assert!(msg.contains("cargo install"), "msg={msg}");
+    }
+
+    /// Issue: startup self-heal and `ensure_framework_installed` reach
+    /// `ensure_recipe_runner` too. Outside the explicit `amplihack install`
+    /// scope a missing toolchain must fail with the manual hint, never
+    /// download rustup or run apt as root.
+    #[test]
+    fn implicit_install_never_bootstraps_a_toolchain() {
+        let _guard = lock_env();
+        let temp = tempfile::tempdir().unwrap();
+        let saved: Vec<(&str, Option<std::ffi::OsString>)> = [
+            "PATH",
+            "HOME",
+            "CARGO_HOME",
+            "RECIPE_RUNNER_RS_PATH",
+            "AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL",
+            "AMPLIHACK_NO_RUST_BOOTSTRAP",
+        ]
+        .into_iter()
+        .map(|key| (key, std::env::var_os(key)))
+        .collect();
+        unsafe {
+            // No cargo, no curl/wget, no recipe-runner-rs anywhere: were
+            // bootstrapping attempted, the error would name curl/wget.
+            std::env::set_var("PATH", temp.path());
+            std::env::set_var("HOME", temp.path());
+            for key in [
+                "CARGO_HOME",
+                "RECIPE_RUNNER_RS_PATH",
+                "AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL",
+                "AMPLIHACK_NO_RUST_BOOTSTRAP",
+            ] {
+                std::env::remove_var(key);
+            }
+        }
+        let result = ensure_recipe_runner();
+        unsafe {
+            for (key, value) in saved {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+        let msg = format!("{:#}", result.expect_err("no toolchain, no bootstrap"));
+        assert!(msg.contains("cargo is required"), "msg={msg}");
+        assert!(
+            !msg.contains("curl or wget"),
+            "must not try to download rustup: {msg}"
+        );
+        assert!(!temp.path().join(".cargo").exists());
     }
 }

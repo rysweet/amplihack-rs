@@ -96,8 +96,8 @@ Phase 7b installs `recipe-runner-rs` with `cargo install` when it is not
 already present. On a fresh machine with no Rust toolchain it first runs the
 official rustup installer (`rustup-init.sh -y --no-modify-path --profile
 minimal`) into `$CARGO_HOME` (default `~/.cargo`); shell profiles are not
-modified because amplihack finds `~/.cargo/bin` itself. If no C compiler
-(`cc`/`gcc`/`clang`) exists and `apt-get` is available, it installs
+modified because amplihack finds `~/.cargo/bin` itself. If there is no `cc`
+(rustc's linker) and `apt-get` is available, it installs
 `build-essential` as root or through passwordless `sudo -n` (on a fresh VM it
 waits up to about 5 minutes for first-boot `apt-daily`/`unattended-upgrades`:
 the dpkg lock via `DPkg::Lock::Timeout`, and the apt lists lock by retrying
@@ -105,8 +105,9 @@ the dpkg lock via `DPkg::Lock::Timeout`, and the apt lists lock by retrying
 falls through to the install with the existing package lists); it never
 prompts for a password and instead fails with the command to run.
 `recipe-runner-rs` is found in `$CARGO_HOME/bin` even when that directory is
-not on PATH. Set
-`AMPLIHACK_NO_RUST_BOOTSTRAP=1` to disable both automatic installs.
+not on PATH. Only an explicit `amplihack install` does this; the startup self-heal and
+launch-time checks that also re-run install never download rustup or run apt.
+Set `AMPLIHACK_NO_RUST_BOOTSTRAP=1` to disable both automatic installs.
 
 ### Environment Variables
 

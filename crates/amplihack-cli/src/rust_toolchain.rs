@@ -24,6 +24,7 @@ use anyhow::{Context, Result, bail};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 const NO_BOOTSTRAP_ENV: &str = "AMPLIHACK_NO_RUST_BOOTSTRAP";
@@ -31,9 +32,37 @@ const RUSTUP_INIT_URL: &str = "https://static.rust-lang.org/rustup/rustup-init.s
 const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(900);
 const APT_UPDATE_DEADLINE: Duration = Duration::from_secs(300);
 const APT_UPDATE_RETRY_DELAY: Duration = Duration::from_secs(5);
-const C_COMPILERS: [&str; 3] = ["cc", "gcc", "clang"];
+/// rustc's default linker on Linux/macOS is literally `cc`; a host with only
+/// `gcc` or `clang` still fails to link, so only `cc` counts.
+const C_COMPILERS: [&str; 1] = ["cc"];
 const LINKER_REMEDIATION: &str = "sudo apt-get install -y build-essential   \
      (Fedora: sudo dnf install -y gcc; macOS: xcode-select --install)";
+
+/// Set only while the user-typed `amplihack install` runs. Every other path
+/// into the install flow — startup self-heal, `ensure_framework_installed`,
+/// the launch-time freshness refresh — must never download rustup or run
+/// apt as root, so they see `false`.
+static EXPLICIT_INSTALL: AtomicBool = AtomicBool::new(false);
+
+/// Run `f` (the explicit `amplihack install` command) with toolchain
+/// bootstrapping permitted.
+pub(crate) fn with_bootstrap_permitted<T>(f: impl FnOnce() -> T) -> T {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            EXPLICIT_INSTALL.store(false, Ordering::SeqCst);
+        }
+    }
+    EXPLICIT_INSTALL.store(true, Ordering::SeqCst);
+    let _reset = Reset;
+    f()
+}
+
+/// Whether the running command may bootstrap a toolchain: it is the explicit
+/// `amplihack install`, and `AMPLIHACK_NO_RUST_BOOTSTRAP` does not forbid it.
+pub(crate) fn bootstrap_permitted() -> bool {
+    EXPLICIT_INSTALL.load(Ordering::SeqCst) && !bootstrap_disabled()
+}
 
 /// `AMPLIHACK_NO_RUST_BOOTSTRAP` semantics: unset, empty and `0` leave
 /// bootstrapping on; any other value turns it off.
@@ -176,7 +205,9 @@ fn install_rustup() -> Result<()> {
         bail!("downloading {RUSTUP_INIT_URL} failed with status {status}");
     }
 
-    let mut sh = Command::new("sh");
+    // Absolute: a bare `sh` would be looked up through the raw $PATH,
+    // relative entries (cwd) included — the class issue #1274 closed.
+    let mut sh = Command::new("/bin/sh");
     sh.arg(&script)
         .args(["-y", "--no-modify-path", "--profile", "minimal"]);
     let status = run_with_timeout(sh, BOOTSTRAP_TIMEOUT).context("failed to run rustup-init")?;
@@ -196,7 +227,7 @@ fn ensure_c_linker_in(dirs: &[PathBuf], allow_bootstrap: bool) -> Result<()> {
     if !cfg!(unix) || find_c_compiler(dirs).is_some() {
         return Ok(());
     }
-    let missing = "no C compiler (cc/gcc/clang) found; Rust needs one as its linker to build \
+    let missing = "no C compiler (`cc`) found; Rust needs one as its linker to build \
                    recipe-runner-rs";
     if !allow_bootstrap {
         bail!("{missing}. Install one with: {LINKER_REMEDIATION}");
@@ -368,29 +399,30 @@ mod tests {
     }
 
     #[test]
-    fn find_c_compiler_accepts_cc_gcc_or_clang() {
+    fn find_c_compiler_requires_cc() {
         let temp = tempfile::tempdir().unwrap();
         let dir = temp.path().to_path_buf();
-        assert_eq!(find_c_compiler(std::slice::from_ref(&dir)), None);
+        touch(&dir.join("gcc"));
         touch(&dir.join("clang"));
         assert_eq!(
             find_c_compiler(std::slice::from_ref(&dir)),
-            Some(dir.join("clang"))
-        );
-        touch(&dir.join("gcc"));
-        assert_eq!(
-            find_c_compiler(std::slice::from_ref(&dir)),
-            Some(dir.join("gcc"))
-        );
-        std::fs::remove_file(dir.join("gcc")).unwrap();
-        assert_eq!(
-            find_c_compiler(std::slice::from_ref(&dir)),
-            Some(dir.join("clang"))
+            None,
+            "rustc links with `cc`; gcc/clang alone still fail to link"
         );
         touch(&dir.join("cc"));
         assert_eq!(
             find_c_compiler(std::slice::from_ref(&dir)),
             Some(dir.join("cc"))
+        );
+    }
+
+    #[test]
+    fn bootstrap_is_permitted_only_inside_the_explicit_install_scope() {
+        assert!(!EXPLICIT_INSTALL.load(Ordering::SeqCst));
+        with_bootstrap_permitted(|| assert!(EXPLICIT_INSTALL.load(Ordering::SeqCst)));
+        assert!(
+            !EXPLICIT_INSTALL.load(Ordering::SeqCst),
+            "the permission must not outlive `amplihack install`"
         );
     }
 

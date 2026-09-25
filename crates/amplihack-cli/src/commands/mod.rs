@@ -90,7 +90,9 @@ pub fn dispatch(command: Commands) -> Result<()> {
             interactive,
             verbose: _,
             force_refresh,
-        } => install::run_install(local, interactive, force_refresh),
+        } => crate::rust_toolchain::with_bootstrap_permitted(|| {
+            install::run_install(local, interactive, force_refresh)
+        }),
         Commands::Uninstall => install::run_uninstall(),
         Commands::Launch {
             resume,
