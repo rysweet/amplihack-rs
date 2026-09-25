@@ -428,6 +428,9 @@ fn prompt_reads_as_english(prompt: &str, ignored: &HashSet<String>) -> bool {
 
 /// Whether `text` reads as English: at least [`MIN_ENGLISH_MARKER_SHARE`]
 /// of its [`prose_words`] are [`ENGLISH_MARKERS`] or English contractions.
+/// Text with no prose outside code (`/fix` and a pasted error in a fence) is
+/// judged on the prose-like words inside its code spans instead, the same
+/// words [`scored_terms`] judges a span on.
 ///
 /// The relevance filter only knows English. Another language's function
 /// words (`schon`, `niet`, `jest`, `porque`) would be topic words to it, so
@@ -442,7 +445,16 @@ fn prompt_reads_as_english(prompt: &str, ignored: &HashSet<String>) -> bool {
 /// unscreened language that happens to use one of the markers, or a single
 /// turn that mixes English with another language, is judged as English.
 fn reads_as_english(text: &str) -> bool {
-    english_share_ok(&prose_words(text))
+    let prose = prose_words(text);
+    if !prose.is_empty() {
+        return english_share_ok(&prose);
+    }
+    let code_words = segments(text)
+        .into_iter()
+        .filter(|(is_code, _)| *is_code)
+        .flat_map(|(_, part)| part.split_whitespace().filter_map(prose_word))
+        .collect::<Vec<_>>();
+    english_share_ok(&code_words)
 }
 
 /// Whether at least [`MIN_ENGLISH_MARKER_SHARE`] of `words` are
@@ -1127,7 +1139,10 @@ mod tests {
         assert!(!reads_as_english("porque el perro no funciona para nada"));
         assert!(!reads_as_english("cargo fmt"));
         assert!(!reads_as_english(""));
-        assert!(!reads_as_english("```\nlet the = it;\n``` `the` `and`"));
+        // With prose outside code, the code's words don't count.
+        assert!(!reads_as_english(
+            "cargo fmt ```\nlet the = it;\n``` `the` `and`"
+        ));
         assert_eq!(
             prose_words("“The build” fails «again» ¡now! „quoted“ ¿qué? 'this'"),
             [
@@ -1337,6 +1352,34 @@ mod tests {
                 "{unrelated:?} is not relevant to {prompt:?}"
             );
         }
+        // With no prose outside code, a pasted English error is what the
+        // language is judged on; a pasted German one still fails.
+        let pool = [memory(
+            "Agent builder: the database connection pool is exhausted when the workers restart",
+        )];
+        for prompt in [
+            "/fix\n```\nerror: the connection to the database was refused because the pool is exhausted\n```",
+            "/fix `the database connection pool is exhausted`",
+            "/fix this:\n```\nerror: the connection to the database was refused because the pool is exhausted\n```",
+        ] {
+            assert!(
+                format_agent_memory_context(prompt, &prompt_agents(prompt), &pool).is_some(),
+                "{prompt:?} reads as English"
+            );
+        }
+        let prompt = "/fix the database pool exhaustion when workers restart";
+        assert!(
+            format_agent_memory_context(
+                prompt,
+                &prompt_agents(prompt),
+                &[memory("Agent builder: assistant: ```\nthe database connection pool is exhausted when the workers restart\n```")]
+            )
+            .is_some()
+        );
+        assert!(!reads_as_english(
+            "```\nFehler: die Pipeline hat keinen Erfolg, man sieht nichts\n```"
+        ));
+        assert!(!reads_as_english("`src/die/bin.rs` `mit_hat` `was_ist`"));
         // Identifiers in code still match, in short spans and in a
         // non-English block alike.
         for (prompt, relevant) in [
