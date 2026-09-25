@@ -330,7 +330,8 @@ fn turns(text: &str) -> Vec<String> {
 /// The natural-language words of `text`, lower-cased: code is not
 /// evidence of any language, so fenced blocks, closed backtick spans and
 /// tokens that look like code (`src/main.rs:12`, `--test-threads=1`,
-/// `needless_borrow`, `re-ran`, `DEFAULT_STEP_TIMEOUT`, `CI`) are left out.
+/// `needless_borrow`, `re-ran`, `DEFAULT_STEP_TIMEOUT`) are left out. Words
+/// in capitals (`CI`, `THE`, `ICH`) are words like any other.
 /// Surrounding punctuation and quotes in any script (`¿`, `“`, `»`, `.`)
 /// are trimmed first, so they don't make a word look like code.
 fn prose_words(text: &str) -> Vec<String> {
@@ -341,11 +342,11 @@ fn prose_words(text: &str) -> Vec<String> {
                 let token = token
                     .trim_start_matches(|c: char| is_prose_punctuation(c) && c != '-')
                     .trim_end_matches(is_prose_punctuation);
-                let letters = token.chars().filter(|c| c.is_alphabetic()).count();
+                // Capitals alone don't make code: `ICH BIN` is still words
+                // that `topic_terms` scores, so the check must see them too.
                 let looks_like_code = token
                     .chars()
-                    .any(|c| !c.is_alphabetic() && !is_apostrophe(c))
-                    || (letters >= 2 && token.chars().all(|c| !c.is_lowercase()));
+                    .any(|c| !c.is_alphabetic() && !is_apostrophe(c));
                 if !token.is_empty() && !looks_like_code {
                     prose.push(token.to_lowercase().replace('\u{2019}', "'"));
                 }
@@ -1091,7 +1092,7 @@ mod tests {
             prose_words(
                 "Fix CI: run `cargo fmt --all` then --test-threads=1 on src/main.rs:12 (DEFAULT_STEP_TIMEOUT), re-ran."
             ),
-            ["fix", "run", "then", "on"]
+            ["fix", "ci", "run", "then", "on"]
         );
     }
 
@@ -1180,6 +1181,65 @@ mod tests {
             ["sqlite: the timeout\nauth: tokens expire"]
         );
         assert_eq!(outside_code("a `b` c `d", "`"), ["a ", " c ", "d"]);
+    }
+
+    /// Capitals don't hide a prompt's or a memory's words from the language
+    /// check: the words that are scored are the words that are judged.
+    #[test]
+    fn capitalised_foreign_text_is_judged() {
+        for (prompt, unrelated) in [
+            (
+                "/fix this: ICH BIN NICHT SICHER, WARUM DIE TESTS HEUTE SCHEITERN, SAGT JEMAND",
+                "Agent general: user: The build copies files into the bin directory, and the workers die if it is missing",
+            ),
+            (
+                "/fix the bin directory so the workers don't die",
+                "Agent general: user: the note says ICH BIN NICHT SICHER WARUM DIE TESTS SCHEITERN",
+            ),
+        ] {
+            assert_eq!(
+                format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(unrelated)]),
+                None,
+                "{unrelated:?} is not relevant to {prompt:?}"
+            );
+        }
+        // Letter case never changes the outcome. (One English word ahead
+        // of nine German ones is 1 marker in 10 prose words in either case:
+        // a mixed-language prompt, the documented residual tracked in #1500.)
+        for (prompt, memory_text) in [
+            (
+                "/analyze why: WARUM DIE PIPELINE HAT KEINEN ERFOLG, MAN SIEHT NICHTS",
+                "Agent general: user: the man with the red hat waved at us from the bus",
+            ),
+            (
+                "/fix the error ICH BIN NICHT SICHER, WARUM DIE TESTS SCHEITERN",
+                "Agent general: user: The build copies files into the bin directory, and the workers die if it is missing",
+            ),
+            (
+                "/fix this: ICH BIN NICHT SICHER, WARUM DIE TESTS HEUTE SCHEITERN, SAGT JEMAND",
+                "Agent general: user: The build copies files into the bin directory, and the workers die if it is missing",
+            ),
+        ] {
+            let memories = [memory(memory_text)];
+            assert_eq!(
+                format_agent_memory_context(prompt, &prompt_agents(prompt), &memories),
+                format_agent_memory_context(
+                    &prompt.to_lowercase(),
+                    &prompt_agents(prompt),
+                    &memories
+                ),
+                "{prompt:?} is judged the same in either case"
+            );
+        }
+        let none = HashSet::new();
+        assert!(prompt_reads_as_english(
+            "/FIX THE FLAKY SQLITE TEST ON THE LINUX RUNNER",
+            &none
+        ));
+        assert!(prompt_reads_as_english(
+            "/fix the HTTP API timeout in the auth client",
+            &none
+        ));
     }
 
     /// A non-English prompt's function words (`die`, `bin`, `hat`, `mit`)
