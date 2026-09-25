@@ -173,7 +173,8 @@ fn ensure_recipe_runner_up_to_date_inner() -> Result<()> {
         );
     }
 
-    if let Err(err) = install_recipe_runner_from_git() {
+    // Launch-time refresh: use an existing toolchain, never bootstrap one.
+    if let Err(err) = install_recipe_runner_from_git(false) {
         eprintln!("⚠️  recipe-runner-rs install failed: {err}");
         // Still record checked_at so we don't re-try on every launch when
         // the user is offline or cargo is misconfigured.
@@ -220,11 +221,17 @@ pub(crate) fn recipe_runner_binary_present() -> bool {
     false
 }
 
-pub(crate) fn install_recipe_runner_from_git() -> Result<()> {
-    let cargo = which_binary("cargo").context(
-        "cargo is required to install recipe-runner-rs. Install Rust: https://rustup.rs/",
-    )?;
-    let mut cmd = Command::new(cargo);
+/// `cargo install` recipe-runner-rs. With `bootstrap_toolchain`, a missing
+/// Rust toolchain / C linker is installed first (see [`crate::rust_toolchain`]).
+pub(crate) fn install_recipe_runner_from_git(bootstrap_toolchain: bool) -> Result<()> {
+    let cargo = crate::rust_toolchain::ensure_cargo(bootstrap_toolchain)?;
+    crate::rust_toolchain::ensure_c_linker(bootstrap_toolchain)?;
+    let mut cmd = Command::new(&cargo);
+    // A freshly bootstrapped ~/.cargo/bin is not on PATH yet; cargo needs it
+    // to find rustc and to place the installed binary where we probe.
+    if let Some(path) = crate::rust_toolchain::path_with_cargo_bin(&cargo) {
+        cmd.env("PATH", path);
+    }
     amplihack_utils::litellm_proxy::scrub_inference_environment(&mut cmd);
     cmd.arg("install")
         .arg("--git")
@@ -268,21 +275,6 @@ pub fn framework_needs_refresh() -> bool {
 // ---------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------
-
-/// Issue #1274 — one seam. The result is passed straight to `Command::new`,
-/// so this is a "choose a file to run" walk and drops relative entries.
-fn which_binary(tool: &str) -> Option<PathBuf> {
-    amplihack_utils::launch_target::env_path_dirs()
-        .into_iter()
-        .find_map(|dir| {
-            let candidate = dir.join(tool);
-            if candidate.is_file() {
-                Some(candidate)
-            } else {
-                None
-            }
-        })
-}
 
 fn short_sha(sha: &str) -> String {
     if sha.is_empty() {

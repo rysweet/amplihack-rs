@@ -1,0 +1,313 @@
+//! Locate — and on a fresh machine, bootstrap — the Rust toolchain that
+//! `cargo install` of `recipe-runner-rs` needs.
+//!
+//! `amplihack install` must work out of the box on a clean Linux/macOS host
+//! (for example a fresh Ubuntu VM reached via `npx ... -- amplihack install`),
+//! where neither `cargo` nor a C linker is present. With bootstrapping
+//! allowed, this module:
+//!
+//! 1. Finds `cargo` on PATH or in `$CARGO_HOME/bin` (default `~/.cargo/bin`).
+//! 2. Otherwise installs a minimal user-local toolchain with the official
+//!    rustup installer (`rustup-init.sh`, `-y --no-modify-path --profile
+//!    minimal`). Nothing outside `$CARGO_HOME`/`$RUSTUP_HOME` is touched and
+//!    shell profiles are left alone — amplihack finds `~/.cargo/bin` itself.
+//! 3. Finds a C compiler (`cc`, `gcc` or `clang`), which rustc uses as the
+//!    linker. When none exists and `apt-get` is available, it installs
+//!    `build-essential` as root or through *passwordless* `sudo -n`. It never
+//!    prompts for a password; if sudo needs one, it fails with the exact
+//!    command to run.
+//!
+//! Set `AMPLIHACK_NO_RUST_BOOTSTRAP=1` to disable steps 2 and 3.
+
+use crate::util::run_with_timeout;
+use anyhow::{Context, Result, bail};
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::Duration;
+
+pub(crate) const NO_BOOTSTRAP_ENV: &str = "AMPLIHACK_NO_RUST_BOOTSTRAP";
+const RUSTUP_INIT_URL: &str = "https://static.rust-lang.org/rustup/rustup-init.sh";
+const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(900);
+const C_COMPILERS: [&str; 3] = ["cc", "gcc", "clang"];
+const LINKER_REMEDIATION: &str = "sudo apt-get install -y build-essential   \
+     (Fedora: sudo dnf install -y gcc; macOS: xcode-select --install)";
+
+fn bootstrap_disabled() -> bool {
+    std::env::var_os(NO_BOOTSTRAP_ENV).is_some_and(|value| !value.is_empty() && value != "0")
+}
+
+/// `$CARGO_HOME`, defaulting to `~/.cargo`.
+pub(crate) fn cargo_home() -> Option<PathBuf> {
+    std::env::var_os("CARGO_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .filter(|value| !value.is_empty())
+                .map(|home| PathBuf::from(home).join(".cargo"))
+        })
+}
+
+fn find_in_dirs(dirs: &[PathBuf], names: &[&str]) -> Option<PathBuf> {
+    dirs.iter().find_map(|dir| {
+        names
+            .iter()
+            .map(|name| dir.join(name))
+            .find(|candidate| candidate.is_file())
+    })
+}
+
+/// `cargo` from `path_dirs`, else from `<cargo_home>/bin`.
+pub(crate) fn find_cargo(path_dirs: &[PathBuf], cargo_home: Option<&Path>) -> Option<PathBuf> {
+    find_in_dirs(path_dirs, &["cargo"]).or_else(|| {
+        cargo_home
+            .map(|home| home.join("bin").join("cargo"))
+            .filter(|candidate| candidate.is_file())
+    })
+}
+
+/// A C compiler rustc can use as its linker.
+pub(crate) fn find_c_compiler(path_dirs: &[PathBuf]) -> Option<PathBuf> {
+    find_in_dirs(path_dirs, &C_COMPILERS)
+}
+
+fn path_dirs() -> Vec<PathBuf> {
+    amplihack_utils::launch_target::env_path_dirs()
+}
+
+/// PATH with `<cargo_home>/bin` prepended, for running a freshly
+/// bootstrapped `cargo` whose directory is not yet on the user's PATH.
+pub(crate) fn path_with_cargo_bin(cargo: &Path) -> Option<OsString> {
+    let bin_dir = cargo.parent()?.to_path_buf();
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    let mut dirs = vec![bin_dir.clone()];
+    dirs.extend(std::env::split_paths(&current).filter(|dir| *dir != bin_dir));
+    std::env::join_paths(dirs).ok()
+}
+
+/// Return a usable `cargo`, installing rustup first when `allow_bootstrap`
+/// is set and no toolchain is found.
+pub(crate) fn ensure_cargo(allow_bootstrap: bool) -> Result<PathBuf> {
+    let home = cargo_home();
+    if let Some(cargo) = find_cargo(&path_dirs(), home.as_deref()) {
+        return Ok(cargo);
+    }
+    if !allow_bootstrap || bootstrap_disabled() {
+        bail!("cargo is required to install recipe-runner-rs. Install Rust: https://rustup.rs/");
+    }
+    if !cfg!(unix) {
+        bail!(
+            "cargo is required to install recipe-runner-rs and cannot be installed automatically \
+             on this platform. Install Rust: https://rustup.rs/"
+        );
+    }
+    let home = home.context("cannot locate a home directory to install Rust into")?;
+
+    println!("   ⏬ cargo not found — installing a minimal Rust toolchain with rustup");
+    install_rustup()?;
+
+    let cargo = home.join("bin").join("cargo");
+    if !cargo.is_file() {
+        bail!(
+            "rustup finished but {} does not exist. Install Rust manually: https://rustup.rs/",
+            cargo.display()
+        );
+    }
+    println!("   ✅ Installed Rust toolchain ({})", cargo.display());
+    Ok(cargo)
+}
+
+fn install_rustup() -> Result<()> {
+    let dirs = path_dirs();
+    let temp = tempfile::tempdir().context("failed to create a temp dir for rustup-init")?;
+    let script = temp.path().join("rustup-init.sh");
+
+    let fetch = if let Some(curl) = find_in_dirs(&dirs, &["curl"]) {
+        let mut cmd = Command::new(curl);
+        cmd.args(["--proto", "=https", "--tlsv1.2", "-sSfL", "-o"])
+            .arg(&script)
+            .arg(RUSTUP_INIT_URL);
+        cmd
+    } else if let Some(wget) = find_in_dirs(&dirs, &["wget"]) {
+        let mut cmd = Command::new(wget);
+        cmd.args(["--https-only", "-q", "-O"])
+            .arg(&script)
+            .arg(RUSTUP_INIT_URL);
+        cmd
+    } else {
+        bail!(
+            "installing Rust needs curl or wget, and neither is on PATH. \
+             Install one (e.g. sudo apt-get install -y curl) or install Rust manually: \
+             https://rustup.rs/"
+        );
+    };
+    let status = run_with_timeout(fetch, BOOTSTRAP_TIMEOUT)
+        .context("failed to download the rustup installer")?;
+    if !status.success() {
+        bail!("downloading {RUSTUP_INIT_URL} failed with status {status}");
+    }
+
+    let mut sh = Command::new("sh");
+    sh.arg(&script)
+        .args(["-y", "--no-modify-path", "--profile", "minimal"]);
+    let status = run_with_timeout(sh, BOOTSTRAP_TIMEOUT).context("failed to run rustup-init")?;
+    if !status.success() {
+        bail!("rustup-init exited with status {status}");
+    }
+    Ok(())
+}
+
+/// Make sure a C compiler/linker exists, installing `build-essential` via
+/// apt when that is possible without a password prompt.
+pub(crate) fn ensure_c_linker(allow_bootstrap: bool) -> Result<()> {
+    if !cfg!(unix) || find_c_compiler(&path_dirs()).is_some() {
+        return Ok(());
+    }
+    let missing = "no C compiler (cc/gcc/clang) found; Rust needs one as its linker to build \
+                   recipe-runner-rs";
+    if !allow_bootstrap || bootstrap_disabled() {
+        bail!("{missing}. Install one with: {LINKER_REMEDIATION}");
+    }
+    let dirs = path_dirs();
+    let Some(apt_get) = find_in_dirs(&dirs, &["apt-get"]) else {
+        bail!("{missing}. Install one with: {LINKER_REMEDIATION}");
+    };
+    let sudo = if is_root() {
+        None
+    } else {
+        let Some(sudo) = find_in_dirs(&dirs, &["sudo"]) else {
+            bail!("{missing}, and sudo is unavailable. Install one with: {LINKER_REMEDIATION}");
+        };
+        let passwordless = Command::new(&sudo)
+            .args(["-n", "true"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        if !passwordless {
+            bail!(
+                "{missing}, and sudo needs a password so amplihack will not install it for you. \
+                 Run this, then re-run `amplihack install`:\n    {LINKER_REMEDIATION}"
+            );
+        }
+        Some(sudo)
+    };
+
+    println!("   ⏬ No C linker found — installing build-essential with apt-get");
+    for args in [
+        &["update", "-qq"][..],
+        &["install", "-y", "-qq", "build-essential"][..],
+    ] {
+        let mut cmd = match &sudo {
+            Some(sudo) => {
+                let mut cmd = Command::new(sudo);
+                cmd.args(["-n", "env", "DEBIAN_FRONTEND=noninteractive"])
+                    .arg(&apt_get);
+                cmd
+            }
+            None => {
+                let mut cmd = Command::new(&apt_get);
+                cmd.env("DEBIAN_FRONTEND", "noninteractive");
+                cmd
+            }
+        };
+        cmd.args(args);
+        let status = run_with_timeout(cmd, BOOTSTRAP_TIMEOUT)
+            .with_context(|| format!("failed to run apt-get {}", args.join(" ")))?;
+        if !status.success() {
+            bail!(
+                "apt-get {} exited with status {status}. Install a C compiler manually: \
+                 {LINKER_REMEDIATION}",
+                args.join(" ")
+            );
+        }
+    }
+    if find_c_compiler(&path_dirs()).is_none() {
+        bail!("{missing} even after installing build-essential. {LINKER_REMEDIATION}");
+    }
+    println!("   ✅ Installed build-essential");
+    Ok(())
+}
+
+#[cfg(unix)]
+fn is_root() -> bool {
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    unsafe { libc::geteuid() == 0 }
+}
+
+#[cfg(not(unix))]
+fn is_root() -> bool {
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn touch(path: &Path) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "").unwrap();
+    }
+
+    #[test]
+    fn find_cargo_prefers_path_then_cargo_home() {
+        let temp = tempfile::tempdir().unwrap();
+        let path_dir = temp.path().join("path");
+        let home = temp.path().join("cargo-home");
+        touch(&home.join("bin/cargo"));
+
+        assert_eq!(
+            find_cargo(std::slice::from_ref(&path_dir), Some(&home)),
+            Some(home.join("bin/cargo")),
+            "fresh rustup installs are found without ~/.cargo/bin on PATH"
+        );
+
+        touch(&path_dir.join("cargo"));
+        assert_eq!(
+            find_cargo(std::slice::from_ref(&path_dir), Some(&home)),
+            Some(path_dir.join("cargo"))
+        );
+    }
+
+    #[test]
+    fn find_cargo_none_when_absent() {
+        let temp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            find_cargo(&[temp.path().to_path_buf()], Some(&temp.path().join("x"))),
+            None
+        );
+    }
+
+    #[test]
+    fn find_c_compiler_accepts_cc_gcc_or_clang() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().to_path_buf();
+        assert_eq!(find_c_compiler(std::slice::from_ref(&dir)), None);
+        touch(&dir.join("clang"));
+        assert_eq!(
+            find_c_compiler(std::slice::from_ref(&dir)),
+            Some(dir.join("clang"))
+        );
+        touch(&dir.join("cc"));
+        assert_eq!(
+            find_c_compiler(std::slice::from_ref(&dir)),
+            Some(dir.join("cc"))
+        );
+    }
+
+    #[test]
+    fn path_with_cargo_bin_prepends_once() {
+        let joined = path_with_cargo_bin(Path::new("/opt/cargo/bin/cargo")).unwrap();
+        let dirs: Vec<PathBuf> = std::env::split_paths(&joined).collect();
+        assert_eq!(dirs[0], PathBuf::from("/opt/cargo/bin"));
+        assert_eq!(
+            dirs.iter()
+                .filter(|dir| dir.as_path() == Path::new("/opt/cargo/bin"))
+                .count(),
+            1
+        );
+    }
+}

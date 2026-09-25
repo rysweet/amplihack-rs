@@ -82,6 +82,7 @@ amplihack install [--interactive]
 ├── 5. create_runtime_dirs()      — create runtime/ subdirs with 0o755 permissions
 ├── 6. ensure_settings_json()     — backup settings.json, register hooks, set permissions
 ├── 7. verify_framework_assets()  — confirm required staged framework assets exist
+├── 7b. ensure_recipe_runner()    — `cargo install` recipe-runner-rs if missing; bootstraps rustup + a C linker first when absent
 ├── 8. apply_config()             — if wizard ran, write preferences to manifest and settings
 ├── 9. write_manifest()           — write amplihack-manifest.json for uninstall
 └── 10. ensure_mermaid_cli()      — best-effort: provision mmdc (npm @mermaid-js/mermaid-cli); warn-and-continue on failure
@@ -90,6 +91,16 @@ amplihack install [--interactive]
 Phase 0 runs only when `--interactive` is passed **and** stdin is a TTY. If `--interactive` is set but no TTY is available, the wizard is skipped with a warning to stderr. Phase 7 applies wizard results (default tool, update-check preference) to the manifest and writes hooks to the selected settings.json scope.
 
 Phase 10 runs **after** the version stamp, manifest, and Copilot-home staging, so an `mmdc` failure can never leave required install state unwritten. It is **optional and best-effort**: it attempts `npm install -g @mermaid-js/mermaid-cli` only when npm is available and `mmdc` is missing, and it always continues — a failed or skipped install emits a warning/info line and never fails the install. See [Best-Effort Mermaid CLI Provisioning](../features/mermaid-cli-best-effort-install.md).
+
+Phase 7b installs `recipe-runner-rs` with `cargo install` when it is not
+already present. On a fresh machine with no Rust toolchain it first runs the
+official rustup installer (`rustup-init.sh -y --no-modify-path --profile
+minimal`) into `$CARGO_HOME` (default `~/.cargo`); shell profiles are not
+modified because amplihack finds `~/.cargo/bin` itself. If no C compiler
+(`cc`/`gcc`/`clang`) exists and `apt-get` is available, it installs
+`build-essential` as root or through passwordless `sudo -n`; it never prompts
+for a password and instead fails with the command to run. Set
+`AMPLIHACK_NO_RUST_BOOTSTRAP=1` to disable both automatic installs.
 
 ### Environment Variables
 
@@ -100,6 +111,7 @@ These variables are read during install. All are optional; the installer works w
 | `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` | Override the path used for `amplihack-hooks`. Useful in tests and CI. If set but the path does not exist, resolution falls through to Step 2. See [Binary Resolution](./binary-resolution.md). |
 | `AMPLIHACK_HOME` | Override `~/.amplihack` staging root (default: `$HOME/.amplihack`). |
 | `AMPLIHACK_SKIP_AUTO_INSTALL` | When set to any non-empty value, suppresses the startup-time [self-heal check](../features/self-heal-asset-restage.md) that would otherwise re-run install when `~/.amplihack/.installed-version` is missing or stale. Has no effect on an explicit `amplihack install` invocation. |
+| `AMPLIHACK_NO_RUST_BOOTSTRAP` | When set to a non-empty value other than `0`, install never installs rustup or `build-essential` automatically; a missing cargo or C linker fails phase 7b with manual instructions. |
 | `AMPLIHACK_SKIP_MMDC` | When set to any non-empty value, skips the best-effort [Mermaid CLI provisioning](../features/mermaid-cli-best-effort-install.md) step (no `mmdc`/`npm` probe, no `npm install -g @mermaid-js/mermaid-cli`). The install proceeds normally; this optional step never gates a successful install. |
 
 ### Version stamp

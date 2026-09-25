@@ -77,7 +77,7 @@ pub(super) fn ensure_recipe_runner() -> Result<Outcome> {
     }
 
     println!("   ⏬ recipe-runner-rs missing — installing from git (cargo install --locked)");
-    if let Err(err) = install_recipe_runner_from_git() {
+    if let Err(err) = install_recipe_runner_from_git(true) {
         bail!("failed to install recipe-runner-rs via cargo: {err:#}. {REMEDIATION}");
     }
 
