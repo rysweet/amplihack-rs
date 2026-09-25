@@ -113,7 +113,62 @@ const STOP_WORDS: &[&str] = &[
     "would",
     "you",
     "your",
+    // English contractions, as `topic_terms` spells them once the
+    // apostrophe is gone (`don't` → `dont`; `'s` is dropped first).
+    "aren",
+    "arent",
+    "cannot",
+    "cant",
+    "couldnt",
+    "didnt",
+    "doesnt",
+    "dont",
+    "hadnt",
+    "hasnt",
+    "havent",
+    "isnt",
+    "ive",
+    "let",
+    "shouldnt",
+    "theyre",
+    "theyve",
+    "wasnt",
+    "werent",
+    "weve",
+    "wont",
+    "wouldnt",
+    "youll",
+    "youre",
+    "youve",
+    // Korean words that carry no topic: conjunctions, pronouns and the
+    // polite sentence endings that stand as their own word.
+    "그리고",
+    "그러나",
+    "하지만",
+    "그래서",
+    "그런데",
+    "그것",
+    "이것",
+    "저것",
+    "우리",
+    "저는",
+    "제가",
+    "나는",
+    "무엇",
+    "어떻게",
+    "합니다",
+    "했습니다",
+    "입니다",
+    "있습니다",
+    "없습니다",
+    "됩니다",
+    "주세요",
 ];
+
+/// Chinese and Japanese characters that are grammar rather than topic
+/// (particles, pronouns, copulas, measure words). A Han pair containing one
+/// (`失败了` → `败了`) would match any two sentences, so it is not a term.
+const HAN_FUNCTION_CHARS: &str = "的了是在我你他她它们这那吗呢吧啊和与也就都要会有不没一个把被对从到给还又很让说之其以而及或如但并为什么事中方";
 
 /// The agents `prompt` invokes, by name or by slash command.
 fn prompt_agents(prompt: &str) -> Vec<String> {
@@ -245,9 +300,12 @@ fn strip_agent_prefix(content: &str) -> &str {
 /// would turn a whole sentence into one term that never matches:
 /// - Han and katakana runs contribute overlapping character pairs (`构建失败`
 ///   → `构建`, `建失`, `失败`), the usual segmentation-free approximation.
+///   Han pairs containing a grammatical character ([`HAN_FUNCTION_CHARS`])
+///   are dropped.
 /// - Hiragana is dropped. In Japanese it carries particles and verb endings
 ///   (`が`, `しました`), whose pairs would match any two sentences.
-/// - Hangul is space-separated; each word of two or more syllables is a term.
+/// - Hangul is space-separated; each word of two or more syllables is a term,
+///   except the grammatical words in [`STOP_WORDS`].
 ///
 /// Known limit: Korean words keep their attached particles (`빌드가` ≠ `빌드`),
 /// and Thai, Lao, Khmer and Myanmar, which also lack spaces, are not split, so
@@ -260,11 +318,18 @@ fn topic_terms(text: &str, ignored: &HashSet<String>) -> HashSet<String> {
             terms.insert(term);
         }
     };
-    for word in text.split(|c: char| !c.is_alphanumeric()) {
-        let chars = word.chars().collect::<Vec<_>>();
+    for raw in text.split(|c: char| !c.is_alphanumeric() && !is_apostrophe(c)) {
+        let chars = without_apostrophes(raw).chars().collect::<Vec<_>>();
         for run in chars.chunk_by(|left, right| Script::of(*left) == Script::of(*right)) {
             match Script::of(run[0]) {
-                Script::Han | Script::Katakana => {
+                Script::Han => {
+                    for pair in run.windows(2) {
+                        if !pair.iter().any(|c| HAN_FUNCTION_CHARS.contains(*c)) {
+                            keep(pair.iter().collect());
+                        }
+                    }
+                }
+                Script::Katakana => {
                     for pair in run.windows(2) {
                         keep(pair.iter().collect());
                     }
@@ -280,6 +345,26 @@ fn topic_terms(text: &str, ignored: &HashSet<String>) -> HashSet<String> {
         }
     }
     terms
+}
+
+fn is_apostrophe(c: char) -> bool {
+    matches!(c, '\'' | '\u{2019}')
+}
+
+/// `raw` with a possessive `'s` dropped and other apostrophes removed, so
+/// `builder's` is `builder` and `doesn't` is one word, `doesnt`, not a stray
+/// `doesn` that would count as a topic.
+fn without_apostrophes(raw: &str) -> String {
+    let word = raw.trim_matches(is_apostrophe);
+    let word = word
+        .char_indices()
+        .rev()
+        .nth(1)
+        .filter(|(index, c)| {
+            is_apostrophe(*c) && word[index + c.len_utf8()..].eq_ignore_ascii_case("s")
+        })
+        .map_or(word, |(index, _)| &word[..index]);
+    word.chars().filter(|c| !is_apostrophe(*c)).collect()
 }
 
 /// The scripts [`topic_terms`] tokenises differently from space-separated
@@ -586,6 +671,40 @@ mod tests {
                 "{unrelated:?} is not relevant to {prompt:?}"
             );
         }
+    }
+
+    /// Chinese particles and pronouns are not topic words either.
+    #[test]
+    fn chinese_function_characters_do_not_make_memories_relevant() {
+        let prompt = "/analyze 我们的构建失败了吗";
+        assert_eq!(
+            format_agent_memory_context(
+                prompt,
+                &prompt_agents(prompt),
+                &[memory("Agent analyzer: 我们的部署成功了吗")]
+            ),
+            None
+        );
+    }
+
+    /// Contractions are one stop word, not a stray `doesn` / `isn` topic.
+    #[test]
+    fn contractions_do_not_make_memories_relevant() {
+        let prompt = "/analyze why doesn't it work, isn't it wired?";
+        assert_eq!(
+            format_agent_memory_context(
+                prompt,
+                &prompt_agents(prompt),
+                &[memory(
+                    "Agent analyzer: the cache doesn't expire and isn't cleared"
+                )]
+            ),
+            None
+        );
+        assert_eq!(without_apostrophes("builder's"), "builder");
+        assert_eq!(without_apostrophes("doesn\u{2019}t"), "doesnt");
+        assert_eq!(without_apostrophes("'quoted'"), "quoted");
+        assert_eq!(without_apostrophes("s"), "s");
     }
 
     #[test]
