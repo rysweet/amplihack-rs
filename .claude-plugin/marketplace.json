@@ -1,0 +1,19 @@
+{
+  "name": "amplihack",
+  "owner": {
+    "name": "Ryan Sweet",
+    "url": "https://github.com/rysweet"
+  },
+  "metadata": {
+    "description": "The amplihack engineering system for Claude Code, installable from git."
+  },
+  "plugins": [
+    {
+      "name": "amplihack",
+      "source": "./",
+      "description": "amplihack engineering system for Claude Code: dev-orchestrator and default-workflow skills, specialized agents, slash commands and quality hooks, driven by the Rust recipe runner.",
+      "homepage": "https://github.com/rysweet/amplihack-rs",
+      "license": "MIT"
+    }
+  ]
+}
