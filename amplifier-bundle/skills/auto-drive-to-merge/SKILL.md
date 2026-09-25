@@ -172,13 +172,23 @@ absent round record — each is a blocker. After the merge, the platform must
 confirm `MERGED`; a `gh` success that the platform does not confirm is
 reported as not merged.
 
-## Exit code 79 is terminal
+## Exit code 79 is terminal — and nothing else is
 
-Exit `79` (and `BLOCKED_TERMINAL`) is a final answer from a structural guard,
-not an infrastructure hiccup. It is surfaced, it stops the run, and it is
-**never** retried into — not at a deeper level, not with a raised ceiling. The
-loop driver propagates `79` as its own exit code so a parent sees the refusal
-rather than a generic failure.
+Exit `79` is a final answer from a structural guard, not an infrastructure
+hiccup. It is surfaced, it stops the run, and it is **never** retried into —
+not at a deeper level, not with a raised ceiling. The loop driver propagates
+`79` as its own exit code so a parent sees the refusal rather than a generic
+failure.
+
+Only two things make a round terminal (issue #1437): the child's **exit
+status** is `79`, or the child's own `amplihack.recipe.failure_class` marker
+carries `"structural_refusal": true`. A round log is a transcript — it holds
+every file the round's agents read and every refusal a descendant already
+handled inline — so the word `BLOCKED_TERMINAL` appearing in it decides
+nothing. Any other non-zero exit is an ordinary round failure, reported with
+its class (`agent_api`, `work`, `environmental`, `usage_limit`,
+`indeterminate`), and `loop-health-evaluator` decides whether another round is
+worthwhile.
 
 ## Resumability
 

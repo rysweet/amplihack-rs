@@ -287,10 +287,32 @@ fn no_numeric_iteration_cap_anywhere() {
         if trimmed.starts_with('#') {
             continue;
         }
-        let names_round = line.contains("$ROUND")
+        // Match the round LABEL only. `contains("$ROUND")` also matches
+        // `$ROUND_RC`, `$ROUND_LOG` and any other `ROUND_*` variable, because
+        // `$ROUND` is a prefix of them. `$ROUND_RC` is a child's exit CODE,
+        // not the label, and comparing an exit code to 0 is not an iteration
+        // cap -- it is how you notice the child failed. Requiring the next
+        // character to be a non-identifier keeps the guard aimed at the label
+        // it is actually about.
+        let names_round_label = |needle: &str| {
+            let mut from = 0usize;
+            while let Some(at) = line[from..].find(needle) {
+                let end = from + at + needle.len();
+                let next_is_ident = line[end..]
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+                if !next_is_ident {
+                    return true;
+                }
+                from = end;
+            }
+            false
+        };
+        let names_round = names_round_label("$ROUND")
             || line.contains("${ROUND}")
-            || line.contains("((ROUND")
-            || line.contains("(( ROUND");
+            || names_round_label("((ROUND")
+            || names_round_label("(( ROUND");
         if !names_round {
             continue;
         }
