@@ -254,7 +254,13 @@ mod shell {
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
     use std::process::{Command, Output, Stdio};
+    use std::sync::Mutex;
     use std::time::{Duration, Instant};
+
+    /// Held while writing an executable and while forking. A thread that forks
+    /// while another still has a script open for writing hands that fd to its
+    /// child until exec, and exec of the script then fails with ETXTBSY.
+    static EXEC_LOCK: Mutex<()> = Mutex::new(());
 
     const SCRIPTS: &[&str] = &["amplihack-hook", "bootstrap", "install-runtime"];
 
@@ -268,6 +274,7 @@ mod shell {
     }
 
     fn write_exe(path: &Path, body: &str) {
+        let _guard = EXEC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         fs::write(path, body).unwrap();
         fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
     }
@@ -293,13 +300,17 @@ mod shell {
         for (k, v) in envs {
             cmd.env(k, v);
         }
-        let mut child = cmd.spawn().unwrap();
-        child
+        let mut child = {
+            let _guard = EXEC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            cmd.spawn().unwrap()
+        };
+        // A no-op path exits without reading stdin, so the write can race a
+        // closed pipe; that is the behavior under test, not a failure.
+        let _ = child
             .stdin
             .take()
             .unwrap()
-            .write_all(b"{\"hook\":\"payload\"}")
-            .unwrap();
+            .write_all(b"{\"hook\":\"payload\"}");
         child.wait_with_output().unwrap()
     }
 
@@ -362,11 +373,9 @@ mod shell {
     /// bootstrap next to a stub install-runtime that just leaves a marker.
     fn bootstrap_fixture() -> tempfile::TempDir {
         let bin = tempfile::tempdir().unwrap();
-        fs::copy(
-            repo_root().join("claude-plugin/bin/bootstrap"),
-            bin.path().join("bootstrap"),
-        )
-        .unwrap();
+        let bootstrap =
+            fs::read_to_string(repo_root().join("claude-plugin/bin/bootstrap")).unwrap();
+        write_exe(&bin.path().join("bootstrap"), &bootstrap);
         write_exe(
             &bin.path().join("install-runtime"),
             "#!/bin/sh\ntouch \"$HOME/installer-ran\"\nrm -rf \"$AMPLIHACK_PLUGIN_INSTALL_LOCK\"\n",
