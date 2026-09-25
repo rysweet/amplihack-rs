@@ -45,6 +45,47 @@ pub(crate) struct PathConflictReport {
     resolutions: BTreeMap<String, BinaryResolution>,
 }
 
+impl BinaryResolution {
+    /// This resolution as it would be with the candidates `drop` selects gone
+    /// from `PATH`: resolved binary, shadowing and ambiguity recomputed by the
+    /// same rules [`analyze_path_conflicts`] uses. `None` when nothing is left.
+    pub(crate) fn without_candidates(
+        &self,
+        drop: impl Fn(&BinaryCandidate) -> bool,
+    ) -> Option<BinaryResolution> {
+        let kept: Vec<BinaryCandidate> = self
+            .canonical_candidates
+            .iter()
+            .filter(|candidate| !drop(candidate))
+            .cloned()
+            .collect();
+        resolve_candidates(&kept, self.preferred_user_candidate.clone())
+    }
+}
+
+/// Resolve `candidates` (in `PATH` order): the first one wins, and it shadows
+/// the preferred user-level binary when it comes earlier and is a different
+/// file. More than one distinct file is ambiguous.
+fn resolve_candidates(
+    candidates: &[BinaryCandidate],
+    preferred_user_candidate: Option<BinaryCandidate>,
+) -> Option<BinaryResolution> {
+    let resolved = candidates.first()?.clone();
+    let canonical_candidates = collapse_canonical_candidates(candidates);
+    let is_shadowed_by_earlier_path_entry =
+        preferred_user_candidate.as_ref().is_some_and(|preferred| {
+            resolved.path_index < preferred.path_index
+                && resolved.canonical_path != preferred.canonical_path
+        });
+    Some(BinaryResolution {
+        resolved,
+        preferred_user_candidate,
+        has_ambiguous_candidates: canonical_candidates.len() > 1,
+        canonical_candidates,
+        is_shadowed_by_earlier_path_entry,
+    })
+}
+
 impl PathConflictReport {
     pub(crate) fn resolution(&self, binary_name: &str) -> Option<&BinaryResolution> {
         self.resolutions.get(binary_name)
@@ -66,7 +107,6 @@ pub(crate) fn analyze_path_conflicts(input: &PathAnalysisInput) -> Result<PathCo
             continue;
         }
 
-        let resolved = candidates[0].clone();
         let preferred_user_candidate = candidates
             .iter()
             .find(|candidate| {
@@ -74,22 +114,9 @@ pub(crate) fn analyze_path_conflicts(input: &PathAnalysisInput) -> Result<PathCo
                     || candidate.canonical_path == preferred_canonical_path
             })
             .cloned();
-        let canonical_candidates = collapse_canonical_candidates(&candidates);
-        let preferred_is_shadowed = preferred_user_candidate.as_ref().is_some_and(|preferred| {
-            resolved.path_index < preferred.path_index
-                && resolved.canonical_path != preferred.canonical_path
-        });
-
-        resolutions.insert(
-            binary_name.clone(),
-            BinaryResolution {
-                resolved,
-                preferred_user_candidate,
-                has_ambiguous_candidates: canonical_candidates.len() > 1,
-                canonical_candidates,
-                is_shadowed_by_earlier_path_entry: preferred_is_shadowed,
-            },
-        );
+        if let Some(resolution) = resolve_candidates(&candidates, preferred_user_candidate) {
+            resolutions.insert(binary_name.clone(), resolution);
+        }
     }
 
     Ok(PathConflictReport {
