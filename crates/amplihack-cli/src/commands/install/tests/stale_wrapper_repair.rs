@@ -453,6 +453,14 @@ fn issue_1480_path_advisory_still_flags_a_persistent_shadow_behind_the_npx_shim(
         "advisory must name the persistent shadow, got: {warning}"
     );
     assert!(
+        warning.contains("shadows the user-level binary"),
+        "the persistent executable resolves first once npx exits, so this is a shadow, got: {warning}"
+    );
+    assert!(
+        !warning.contains("Multiple distinct"),
+        "a shadow must be reported as a shadow, not as ambiguity, got: {warning}"
+    );
+    assert!(
         !warning.contains("_npx"),
         "advisory must not name the transient npx shim, got: {warning}"
     );
@@ -485,6 +493,10 @@ fn issue_1480_path_advisory_keeps_ambiguity_warning_behind_the_npx_shim() {
     let warning = super::super::binary::path_conflict_warning_after_install(&report)
         .expect("a second distinct binary on PATH is still ambiguous");
     assert!(warning.contains("Multiple distinct"), "got: {warning}");
+    assert!(
+        !warning.contains("shadows the user-level binary"),
+        "~/.local/bin wins once npx exits, so nothing shadows it, got: {warning}"
+    );
     assert!(
         warning.contains(&later.display().to_string()),
         "got: {warning}"
