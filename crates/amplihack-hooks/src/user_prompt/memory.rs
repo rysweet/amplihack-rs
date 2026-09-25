@@ -165,6 +165,12 @@ pub fn format_agent_memory_context(
             ignored.insert(command.to_string());
         }
     }
+    // The prompt is held to the same language check as memory turns: a
+    // German prompt's `die` / `bin` / `mit` would otherwise match the same
+    // words in an English memory.
+    if !prompt_reads_as_english(prompt) {
+        return None;
+    }
     let prompt_terms = topic_terms(prompt, &ignored);
 
     let mut scored: Vec<(f64, String, &PromptContextMemory)> = Vec::new();
@@ -340,6 +346,22 @@ fn prose_words(text: &str) -> Vec<String> {
 /// anything but a letter, a digit or a character code is written with.
 fn is_prose_punctuation(c: char) -> bool {
     !c.is_alphanumeric() && !"-/\\_~$@#=+*<>|&%`^".contains(c)
+}
+
+/// A prompt with fewer prose words than this is too short to judge its
+/// language, and is scored as it is (see [`prompt_reads_as_english`]).
+const MIN_PROMPT_WORDS_TO_JUDGE: usize = 4;
+
+/// Whether the prompt reads as English, as memory turns must
+/// ([`reads_as_english`]). A prompt of fewer than
+/// [`MIN_PROMPT_WORDS_TO_JUDGE`] prose words (`/analyze user login`) is
+/// too short to tell and passes.
+///
+/// Known limits: a longer English prompt with no function words (`/fix
+/// flaky sqlite test timeout on linux ci`) gets no memories, failing closed;
+/// a non-English prompt of three words or fewer is not checked.
+fn prompt_reads_as_english(prompt: &str) -> bool {
+    prose_words(prompt).len() < MIN_PROMPT_WORDS_TO_JUDGE || reads_as_english(prompt)
 }
 
 /// Whether `text` reads as English: at least [`MIN_ENGLISH_MARKER_SHARE`]
@@ -633,7 +655,7 @@ mod tests {
     fn memories_differing_past_the_cut_are_both_kept() {
         let shared = format!("cargo fmt failures {}", "the detail ".repeat(40));
         let result = format_agent_memory_context(
-            "cargo fmt failures detail",
+            "the cargo fmt failures detail",
             &agents(&["builder"]),
             &[
                 PromptContextMemory {
@@ -1139,6 +1161,43 @@ mod tests {
         assert_eq!(outside_code("a `b` c `d", "`"), ["a ", " c ", "d"]);
     }
 
+    /// A non-English prompt's function words (`die`, `bin`, `hat`, `mit`)
+    /// don't match the same English words in an English memory.
+    #[test]
+    fn non_english_prompts_are_not_scored() {
+        for (prompt, unrelated) in [
+            (
+                "/fix ich bin nicht sicher, warum die Tests scheitern",
+                "Agent general: user: The build copies files into the bin directory, and the workers die if it is missing",
+            ),
+            (
+                "/analyze warum die Pipeline hat keinen Erfolg, man sieht nichts",
+                "Agent general: user: the man with the red hat waved at us from the bus",
+            ),
+            (
+                "/fix die Tests laufen nicht mit dem neuen Build",
+                "Agent general: user: The MIT licence file and the old processes that die at shutdown",
+            ),
+            (
+                "/fix la red se cae cuando son las dos",
+                "Agent general: user: my son painted the red door for the two of us",
+            ),
+        ] {
+            assert_eq!(
+                format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(unrelated)]),
+                None,
+                "{unrelated:?} is not relevant to {prompt:?}"
+            );
+        }
+        // Known limit: a long English prompt without function words is
+        // judged not English and gets nothing; a short one is not judged.
+        assert!(!prompt_reads_as_english(
+            "/fix flaky sqlite test timeout on linux ci"
+        ));
+        assert!(prompt_reads_as_english("/analyze user login"));
+        assert!(prompt_reads_as_english("/fix the flaky sqlite test"));
+    }
+
     /// Shared numbers are not shared topics.
     #[test]
     fn numbers_are_not_topic_words() {
@@ -1245,7 +1304,7 @@ mod tests {
     fn injected_memory_is_bounded() {
         let long = format!("cargo test ci {}", "the detail ".repeat(250));
         let result = format_agent_memory_context(
-            "cargo test ci detail",
+            "the cargo test ci detail",
             &agents(&["tester"]),
             &[memory(&long)],
         )

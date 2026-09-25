@@ -35,6 +35,10 @@ Each stored memory is scored against the prompt, and only relevant memories are 
 
   This fails closed. Turns in other languages are ignored, so a Spanish question answered in English is matched only on the English answer. Terse English notes with too few function words to tell (`user login uses oauth`) are not injected either, even when they are relevant. The check is a screened word list, not a language identifier: a turn in an unscreened language that happens to use a marker word, or one turn mixing English with another language, is treated as English.
 
+  The prompt is held to the same check. A prompt of 4 or more prose words that doesn't read as English gets no memories, so a German prompt's `die`, `bin` or `mit` can't match those words in an English memory. This also fails closed:
+  - A long English prompt with no function words (`/fix flaky sqlite test timeout on linux ci`) gets no memories.
+  - A prompt of 3 prose words or fewer (`/analyze user login`) is too short to judge, so it isn't checked.
+
 ## Hook Signature
 
 **File**: `~/.amplihack/.claude/tools/amplihack/hooks/user_prompt_submit.py`
