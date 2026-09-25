@@ -310,24 +310,35 @@ struct Fence {
 
 /// The closed fenced blocks of `text`, in order (see [`fenced_blocks`]).
 fn fences(text: &str) -> Vec<Fence> {
+    fences_in(text, text)
+}
+
+/// The closed fenced blocks of `text`, with openers looked for in
+/// `openers`, a copy of `text` of the same length (with role labels
+/// blanked, say), and closers in `text` itself: a line inside a fence is
+/// content, whatever it starts with.
+fn fences_in(text: &str, openers: &str) -> Vec<Fence> {
     let mut lines = Vec::new();
     let mut offset = 0;
-    for line in text.split_inclusive('\n') {
-        lines.push((offset, line));
+    for (line, opener_line) in text
+        .split_inclusive('\n')
+        .zip(openers.split_inclusive('\n'))
+    {
+        lines.push((offset, line, opener_line));
         offset += line.len();
     }
     let mut fences = Vec::new();
     let mut index = 0;
     while index < lines.len() {
-        let (open_at, open_line) = lines[index];
-        let opener = fence_run(open_line)
+        let (open_at, open_line, opener_line) = lines[index];
+        let opener = fence_run(opener_line)
             .filter(|opener| !(opener.marker == '`' && opener.rest.contains('`')));
         // A closer sits in the same container as its opener: the same
         // number of `>` markers, and never behind a list-item marker (a list
         // item's closer is indented instead). Inside a fence, a `- ```` diff
         // line or a ` * ```` doc-comment line is content.
         let close = opener.and_then(|opener| {
-            lines[index + 1..].iter().position(|(_, line)| {
+            lines[index + 1..].iter().position(|(_, line, _)| {
                 fence_run(line).is_some_and(|closer| {
                     closer.marker == opener.marker
                         && closer.width >= opener.width
@@ -341,7 +352,7 @@ fn fences(text: &str) -> Vec<Fence> {
             index += 1;
             continue;
         };
-        let (close_at, close_line) = lines[index + 1 + close];
+        let (close_at, close_line, _) = lines[index + 1 + close];
         fences.push(Fence {
             start: open_at,
             content: open_at + open_line.len()..close_at,
@@ -500,7 +511,7 @@ fn turns(text: &str) -> Vec<String> {
     // A label inside a closed fenced block is part of the block, not a turn.
     // Fences are found with the labels blanked out (same byte offsets), so
     // a message that starts with a fence (`user: ```) opens it.
-    let fences = fences(&without_labels(text));
+    let fences = fences_in(text, &without_labels(text));
     let in_fence = |at: usize| fences.iter().any(|fence| fence.content.contains(&at));
     let mut turns = vec![String::new()];
     let mut paragraph_start = true;
@@ -1622,6 +1633,16 @@ mod tests {
         assert_eq!(
             turns("assistant: log:\n```\nx\n\nuser: y\n```\n\nuser: next"),
             ["log:\n```\nx\nuser: y\n```", "next"]
+        );
+        // A pasted `user: ```` line inside a fence is content, not a closer.
+        assert_eq!(
+            turns("assistant: log:\n```\nhallo\n\nuser: ```\nx\n```\n```\n\nuser: next"),
+            ["log:\n```\nhallo\nuser: ```\nx\n```\n```", "next"]
+        );
+        let unrelated = "Agent x: assistant: The build is fixed now and all the tests are green again with the new config. Here is the chat log that you asked for:\n```\nder Mann mit dem Hut hat den Bus verpasst, sagt man\n\nuser: ```\ncargo test\n```\n```";
+        assert_eq!(
+            format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(unrelated)]),
+            None
         );
         // A message that starts with a fence still ends where it ends.
         assert_eq!(
