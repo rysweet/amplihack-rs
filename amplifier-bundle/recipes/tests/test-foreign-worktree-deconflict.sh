@@ -213,9 +213,14 @@ fi
 # `git branch -D`. This is the core of the fix: detect foreign ownership before
 # any destructive/reuse decision.
 if [[ -n "${STEP04}" ]]; then
-    DECON_LINE="$(printf '%s\n' "${STEP04}" | grep -nE 'workflow_worktree_deconflict\.sh' | head -1 | cut -d: -f1 || true)"
-    BEXISTS_LINE="$(printf '%s\n' "${STEP04}" | grep -nE '^[[:space:]]*BRANCH_EXISTS=' | head -1 | cut -d: -f1 || true)"
-    BRANCHD_LINE="$(printf '%s\n' "${STEP04}" | grep -nE 'git branch -D' | head -1 | cut -d: -f1 || true)"
+    # One awk per position, reading the whole step body. The
+    # `head`-terminated pipelines these replace left `printf` writing into a
+    # closed pipe once ${STEP04} outgrew the pipe buffer; under `pipefail` every
+    # position then collapsed to "" and this ordering check — the core of the
+    # #1391 fix — silently became vacuous (issue #1434).
+    DECON_LINE="$(awk 'n == 0 && /workflow_worktree_deconflict\.sh/ { print FNR; n = 1 }' <<<"${STEP04}")"
+    BEXISTS_LINE="$(awk 'n == 0 && /^[[:space:]]*BRANCH_EXISTS=/ { print FNR; n = 1 }' <<<"${STEP04}")"
+    BRANCHD_LINE="$(awk 'n == 0 && /git branch -D/ { print FNR; n = 1 }' <<<"${STEP04}")"
     if [[ -n "${DECON_LINE}" && -n "${BEXISTS_LINE}" && "${DECON_LINE}" -lt "${BEXISTS_LINE}" ]] \
        && { [[ -z "${BRANCHD_LINE}" ]] || [[ "${DECON_LINE}" -lt "${BRANCHD_LINE}" ]]; }; then
         pass "A13-ordering" "deconflict runs before BRANCH_EXISTS probe and State-2 'git branch -D'"

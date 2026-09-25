@@ -56,9 +56,21 @@ done
 # --- 3. the overlay guard must run BEFORE the archive is shipped ------------
 # A guard placed after `azlin cp` would still refuse, but only after pushing
 # gigabytes across the network.
-guard_line=$(grep -n 'already has a populated ~/.simard' "$SCRIPT" | head -1 | cut -d: -f1)
-ship_line=$(grep -n 'azlin cp "\$TARBALL"' "$SCRIPT" | head -1 | cut -d: -f1)
-extract_line=$(grep -n 'unzstd -xpf' "$SCRIPT" | head -1 | cut -d: -f1)
+# first_line_matching <fixed-string> <file> — the 1-based line number of the
+# first line containing <fixed-string>, or "" if there is none.
+#
+# One awk that reads the whole file. The `head`-terminated pipeline this
+# replaces left `grep` writing into a closed pipe: under `pipefail` that is a
+# non-zero pipeline whose substitution collapses to "", turning a real ordering
+# check into a vacuous one — and whether it fires is a race on the pipe buffer,
+# so it cannot be ruled out by running the test (issue #1434).
+first_line_matching() {
+  awk -v needle="$1" 'n == 0 && index($0, needle) { n = FNR } END { if (n) print n }' "$2"
+}
+
+guard_line=$(first_line_matching 'already has a populated ~/.simard' "$SCRIPT")
+ship_line=$(first_line_matching 'azlin cp "$TARBALL"' "$SCRIPT")
+extract_line=$(first_line_matching 'unzstd -xpf' "$SCRIPT")
 if [[ -z "$guard_line" ]]; then
   fail "no destination-overlay guard found"
 elif [[ -z "$ship_line" || -z "$extract_line" ]]; then
