@@ -16,8 +16,12 @@
 
 use super::{
     ArtifactSkipReason, MigrationSkipReason, ensure_artifact_root, migrate_in_repo_artifacts,
-    project_artifact_paths, project_artifact_root,
+    project_artifact_root,
 };
+// Not via `super::`: `project_artifact_paths` lives in `types`, and the parent
+// module has no use for it. Importing it there just so this child could reach
+// it through `super::` left a dead import in non-test builds.
+use crate::cli_memory::project_artifact_paths;
 use crate::test_support::{HomeGuard, env_lock};
 use std::fs;
 use std::path::{Path, PathBuf};

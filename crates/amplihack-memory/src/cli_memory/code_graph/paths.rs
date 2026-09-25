@@ -168,7 +168,10 @@ pub(super) fn project_root_for_blarify_input(input_path: &Path) -> Result<Option
     let Some(artifact_dir) = input_path.parent() else {
         return Ok(None);
     };
-    if input_path.file_name().is_none_or(|name| name != "blarify.json") {
+    if input_path
+        .file_name()
+        .is_none_or(|name| name != "blarify.json")
+    {
         return Ok(None);
     }
     let Some(project_root) = project_for_artifact_dir(artifact_dir)? else {

@@ -16,7 +16,10 @@ use crate::cli_memory::backend::graph_db::{
 use crate::cli_memory::code_graph::backend::{
     initialize_test_code_graph_db, with_test_code_graph_conn,
 };
-use crate::test_support::{home_env_lock, restore_cwd, set_cwd};
+use crate::cli_memory::artifact_root::project_artifact_root;
+use crate::test_support::{
+    ArtifactCacheGuard, ClearedGraphDbEnv, home_env_lock, restore_cwd, set_cwd,
+};
 
 use anyhow::Result;
 use prost::Message;
@@ -297,30 +300,39 @@ fn import_blarify_json_links_semantic_memory_by_function_name() {
     .unwrap();
 }
 
+/// Renamed from `..._uses_project_local_store`: since #1476 the store is NOT
+/// project-local. It lives in the per-project artifact cache outside the
+/// checkout, which is the whole point of that change — `graph_db` is the 8 MB
+/// binary that a `git add -A` used to stage.
 #[test]
-fn default_code_graph_db_path_uses_project_local_store() {
+fn default_code_graph_db_path_uses_the_project_artifact_cache() {
     let _home_guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = TempDir::new().unwrap();
-    let prev_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
-    let prev_kuzu = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
-    unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") };
-    unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") };
+    // A cache directory distinct from the project, so a path that accidentally
+    // resolved project-local would be visibly wrong rather than coincidentally
+    // equal.
+    let cache = TempDir::new().unwrap();
+    let _cache_guard = ArtifactCacheGuard::set(cache.path());
+    let _cleared = ClearedGraphDbEnv::new();
     let previous = set_cwd(dir.path()).unwrap();
 
     let path = default_code_graph_db_path().unwrap();
 
     restore_cwd(&previous).unwrap();
-    match prev_graph {
-        Some(value) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", value) },
-        None => unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") },
-    }
-    match prev_kuzu {
-        Some(value) => unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", value) },
-        None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
-    }
-    assert_eq!(path, dir.path().join(".amplihack").join("graph_db"));
+
+    // Derived, not hardcoded: this test is about `graph_db` rather than
+    // `kuzu_db`, so it should not also re-specify where the cache lives.
+    assert_eq!(
+        path,
+        project_artifact_root(dir.path()).unwrap().join("graph_db")
+    );
+    assert!(
+        !path.starts_with(dir.path()),
+        "the store must not be inside the checkout: {}",
+        path.display()
+    );
 }
 
 #[test]
@@ -329,25 +341,20 @@ fn default_code_graph_db_path_prefers_existing_legacy_project_store() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    let _cache_guard = ArtifactCacheGuard::set(cache.path());
+    let _cleared = ClearedGraphDbEnv::new();
     let previous = set_cwd(dir.path()).unwrap();
-    let prev_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
-    let prev_kuzu = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
-    unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") };
-    unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") };
-    let legacy = dir.path().join(".amplihack").join("kuzu_db");
+    // "legacy" is the old NAME (`kuzu_db`, before the rename to `graph_db`), not
+    // the old LOCATION. Since #1476 both names resolve inside the per-project
+    // artifact cache; relocating a pre-existing in-repo store is the separate
+    // job of `artifact_migration`.
+    let legacy = project_artifact_root(dir.path()).unwrap().join("kuzu_db");
     fs::create_dir_all(&legacy).unwrap();
 
     let path = default_code_graph_db_path().unwrap();
 
     restore_cwd(&previous).unwrap();
-    match prev_graph {
-        Some(value) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", value) },
-        None => unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") },
-    }
-    match prev_kuzu {
-        Some(value) => unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", value) },
-        None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
-    }
     assert_eq!(path, legacy);
 }
 
@@ -726,50 +733,63 @@ fn validate_blarify_json_size_rejects_missing_file() {
 // unsafe env overrides are rejected, and the legacy disk shim must remain
 // contained within the project root before it can activate.
 
-/// I77-DEFAULT: default_code_graph_db_path_for_project() must return
-/// `.amplihack/graph_db` regardless of env vars — it is a pure default query
-/// with no env-var override semantics.
+/// I77-DEFAULT: default_code_graph_db_path_for_project() must return the
+/// `graph_db` name regardless of env vars — it is a pure default query with no
+/// env-var override semantics. Since #1476 that name sits in the per-project
+/// artifact cache rather than `.amplihack/` inside the checkout; the assertion
+/// below is about the NAME, so it derives the directory instead of restating it.
 #[test]
 fn default_code_graph_db_path_for_project_returns_graph_db() {
+    let _home_guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    let _cache_guard = ArtifactCacheGuard::set(cache.path());
+
     let result = default_code_graph_db_path_for_project(dir.path()).unwrap();
+
     assert_eq!(
         result,
-        dir.path().join(".amplihack").join("graph_db"),
-        "default_code_graph_db_path_for_project must return .amplihack/graph_db (not kuzu_db)"
+        project_artifact_root(dir.path()).unwrap().join("graph_db"),
+        "default_code_graph_db_path_for_project must return graph_db (not kuzu_db)"
     );
 }
 
 #[test]
 fn resolve_project_code_graph_paths_prefers_valid_legacy_shim_when_neutral_missing() {
+    let _home_guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = TempDir::new().unwrap();
-    let amplihack_dir = dir.path().join(".amplihack");
-    fs::create_dir_all(amplihack_dir.join("kuzu_db")).unwrap();
+    let cache = TempDir::new().unwrap();
+    let _cache_guard = ArtifactCacheGuard::set(cache.path());
+    let root = project_artifact_root(dir.path()).unwrap();
+    fs::create_dir_all(root.join("kuzu_db")).unwrap();
 
     let paths = resolve_project_code_graph_paths(dir.path()).unwrap();
 
-    assert_eq!(
-        paths.neutral,
-        dir.path().join(".amplihack").join("graph_db")
-    );
-    assert_eq!(paths.legacy, dir.path().join(".amplihack").join("kuzu_db"));
+    assert_eq!(paths.neutral, root.join("graph_db"));
+    assert_eq!(paths.legacy, root.join("kuzu_db"));
     assert_eq!(paths.resolved, paths.legacy);
 }
 
 #[test]
 fn resolve_project_code_graph_paths_prefers_neutral_when_both_paths_exist() {
+    let _home_guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = TempDir::new().unwrap();
-    let amplihack_dir = dir.path().join(".amplihack");
-    fs::create_dir_all(amplihack_dir.join("graph_db")).unwrap();
-    fs::create_dir_all(amplihack_dir.join("kuzu_db")).unwrap();
+    let cache = TempDir::new().unwrap();
+    let _cache_guard = ArtifactCacheGuard::set(cache.path());
+    let root = project_artifact_root(dir.path()).unwrap();
+    fs::create_dir_all(root.join("graph_db")).unwrap();
+    fs::create_dir_all(root.join("kuzu_db")).unwrap();
 
     let paths = resolve_project_code_graph_paths(dir.path()).unwrap();
 
-    assert_eq!(
-        paths.neutral,
-        dir.path().join(".amplihack").join("graph_db")
-    );
-    assert_eq!(paths.legacy, dir.path().join(".amplihack").join("kuzu_db"));
+    assert_eq!(paths.neutral, root.join("graph_db"));
+    assert_eq!(paths.legacy, root.join("kuzu_db"));
     assert_eq!(paths.resolved, paths.neutral);
 }
 
@@ -927,33 +947,28 @@ fn resolve_code_graph_db_path_for_project_disk_shim_blocks_escaping_symlink() {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = TempDir::new().unwrap();
     let outside = TempDir::new().unwrap();
-    let prev_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
-    let prev_kuzu = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
-    unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") };
-    unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") };
+    let cache = TempDir::new().unwrap();
+    let _cache_guard = ArtifactCacheGuard::set(cache.path());
+    let _cleared = ClearedGraphDbEnv::new();
 
-    // Create .amplihack/ inside the project root.
-    let amplihack_dir = dir.path().join(".amplihack");
-    fs::create_dir_all(&amplihack_dir).unwrap();
+    // The escape is planted in the ARTIFACT ROOT, not in `<project>/.amplihack`.
+    // #1476 moved artifacts out of the checkout and re-anchored the containment
+    // guard to the artifact root, because anchoring it to the project root would
+    // now reject every legitimate path. The attack is unchanged — a `kuzu_db`
+    // symlink resolving outside the directory meant to contain it — so only the
+    // boundary being crossed has moved.
+    let root = project_artifact_root(dir.path()).unwrap();
+    fs::create_dir_all(&root).unwrap();
 
-    // Create a symlink: <project>/.amplihack/kuzu_db → <outside tempdir>
-    // The symlink resolves OUTSIDE the project root, simulating a symlink
-    // escape / TOCTOU attack.
-    let kuzu_symlink = amplihack_dir.join("kuzu_db");
+    let kuzu_symlink = root.join("kuzu_db");
     std::os::unix::fs::symlink(outside.path(), &kuzu_symlink).unwrap();
 
     let error = resolve_code_graph_db_path_for_project(dir.path()).unwrap_err();
 
-    match prev_graph {
-        Some(v) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", v) },
-        None => unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") },
-    }
-    match prev_kuzu {
-        Some(v) => unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", v) },
-        None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
-    }
-
     let rendered = format!("{error:#}");
-    assert!(rendered.contains("legacy graph DB shim escapes project root"));
+    assert!(
+        rendered.contains("legacy graph DB shim escapes the artifact root"),
+        "the error must name the boundary that was crossed: {rendered}"
+    );
     assert!(rendered.contains(kuzu_symlink.to_string_lossy().as_ref()));
 }

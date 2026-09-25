@@ -136,7 +136,11 @@ mod tests {
         let fx = fixture();
         record_background_index_pid(fx.project.path(), u32::MAX).unwrap();
         assert!(!background_index_job_active(fx.project.path()).unwrap());
-        assert!(!background_index_job_path(fx.project.path()).unwrap().exists());
+        assert!(
+            !background_index_job_path(fx.project.path())
+                .unwrap()
+                .exists()
+        );
     }
 
     /// The upgrade window: a job recorded by a pre-#1476 build left its PID in

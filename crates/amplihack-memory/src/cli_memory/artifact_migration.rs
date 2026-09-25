@@ -9,7 +9,6 @@
 
 use super::artifact_root::{ensure_artifact_root, project_artifact_root};
 use super::fs_move::move_path;
-use super::types::project_artifact_paths;
 use anyhow::{Context, Result};
 use fs4::fs_std::FileExt;
 use std::collections::BTreeSet;
@@ -331,9 +330,7 @@ pub fn describe_migration(report: &MigrationReport) -> Option<String> {
     }
     for skipped in &report.skipped {
         let reason = match skipped.reason {
-            ArtifactSkipReason::DestinationExists => {
-                "a file already exists at its new location"
-            }
+            ArtifactSkipReason::DestinationExists => "a file already exists at its new location",
             ArtifactSkipReason::Tracked => {
                 "git tracks it; `git rm --cached` plus a .gitignore entry is your call"
             }
@@ -342,7 +339,11 @@ pub fn describe_migration(report: &MigrationReport) -> Option<String> {
         lines.push(format!("Kept `{}`: {reason}", skipped.from.display()));
     }
     for failed in &report.failed {
-        lines.push(format!("Kept `{}`: {}", failed.from.display(), failed.error));
+        lines.push(format!(
+            "Kept `{}`: {}",
+            failed.from.display(),
+            failed.error
+        ));
     }
     if lines.is_empty() {
         return None;

@@ -10,10 +10,6 @@ fn parent_dir(path: &Path) -> Option<&Path> {
         .filter(|parent| !parent.as_os_str().is_empty())
 }
 
-pub(crate) fn required_parent_dir(path: &Path) -> Result<&Path> {
-    parent_dir(path).with_context(|| format!("path {} has no parent directory", path.display()))
-}
-
 pub(crate) fn ensure_parent_dir(path: &Path) -> Result<()> {
     let Some(parent) = parent_dir(path) else {
         return Ok(());

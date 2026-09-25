@@ -101,7 +101,10 @@ fn validate_artifact_dir_override(path: &Path) -> Result<()> {
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from)
         && path == home
     {
-        bail!("{VAR} must not be the home directory itself: {}", path.display());
+        bail!(
+            "{VAR} must not be the home directory itself: {}",
+            path.display()
+        );
     }
     Ok(())
 }
@@ -275,7 +278,9 @@ fn create_artifact_chain(root: &Path) -> Result<bool> {
     if let Some(projects) = root.parent()
         && projects.file_name().is_some_and(|name| name == "projects")
         && let Some(amplihack) = projects.parent()
-        && amplihack.file_name().is_some_and(|name| name == "amplihack")
+        && amplihack
+            .file_name()
+            .is_some_and(|name| name == "amplihack")
     {
         if let Some(base) = amplihack.parent() {
             fs::create_dir_all(base)

@@ -30,6 +30,15 @@ pub(super) enum ScipOutput {
     /// Expected to stay unused. It exists so that discovering a tool without
     /// an output flag cannot quietly reintroduce the in-repo write while a
     /// stub-based test stays green.
+    ///
+    /// `dead_code` is allowed deliberately, and only on this variant: never
+    /// being constructed is the point. Every indexer known today lands in tier
+    /// 1 or 2, so the compiler is right that nothing builds it — but deleting
+    /// it to satisfy the lint would remove the branch that a future tool with
+    /// no output flag has to be routed into, and the in-repo write this whole
+    /// change removes would come back silently. The match arm below and the
+    /// coverage in `indexer_output_tests.rs` keep it honest.
+    #[allow(dead_code)]
     Unsupported { reason: String },
 }
 

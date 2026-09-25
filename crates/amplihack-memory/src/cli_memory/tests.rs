@@ -211,16 +211,6 @@ fn two_projects_never_share_an_artifact_directory() {
 }
 
 #[test]
-fn required_parent_dir_rejects_paths_without_parent_directory() {
-    let err = required_parent_dir(Path::new("index.scip")).unwrap_err();
-
-    assert!(
-        err.to_string()
-            .contains("path index.scip has no parent directory")
-    );
-}
-
-#[test]
 fn ensure_parent_dir_allows_current_directory_relative_paths() -> Result<()> {
     ensure_parent_dir(Path::new("index.scip"))?;
     Ok(())

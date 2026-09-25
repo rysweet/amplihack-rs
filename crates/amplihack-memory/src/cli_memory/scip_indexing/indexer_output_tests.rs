@@ -14,12 +14,11 @@
 //! current directory — which is the project checkout. The ladder replaces that
 //! convention with an explicit per-language decision:
 //!
-//! * `Flag`            — the tool takes an output path; pass it.
+//! * `Flag` — the tool takes an output path; pass it.
 //! * `RootArgThenMove` — the tool takes the project root as an argument, so it
-//!                       can run from a tempdir outside the checkout and have
-//!                       its result moved.
-//! * `Unsupported`     — neither. The language is skipped with a named reason.
-//!                       It is *not* indexed into the repository.
+//!   can run from a tempdir outside the checkout and have its result moved.
+//! * `Unsupported` — neither. The language is skipped with a named reason, and
+//!   is *not* indexed into the repository.
 //!
 //! `Unsupported` is expected to stay empty. It exists so that discovering a
 //! tool without an output flag during implementation cannot quietly

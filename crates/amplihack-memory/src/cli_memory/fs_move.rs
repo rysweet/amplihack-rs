@@ -15,8 +15,8 @@ use std::path::Path;
 ///
 /// Refuses a symlinked source and refuses to clobber an existing destination.
 pub(crate) fn move_path(src: &Path, dst: &Path) -> Result<()> {
-    let metadata = fs::symlink_metadata(src)
-        .with_context(|| format!("cannot move {}", src.display()))?;
+    let metadata =
+        fs::symlink_metadata(src).with_context(|| format!("cannot move {}", src.display()))?;
     if metadata.file_type().is_symlink() {
         bail!(
             "refusing to move the symlink {}: a rename would move the link itself and every \
@@ -35,9 +35,8 @@ pub(crate) fn move_path(src: &Path, dst: &Path) -> Result<()> {
     match fs::rename(src, dst) {
         Ok(()) => Ok(()),
         Err(err) if is_cross_device(&err) => copy_then_remove(src, dst),
-        Err(err) => Err(err).with_context(|| {
-            format!("failed to move {} to {}", src.display(), dst.display())
-        }),
+        Err(err) => Err(err)
+            .with_context(|| format!("failed to move {} to {}", src.display(), dst.display())),
     }
 }
 
@@ -54,8 +53,8 @@ fn is_cross_device(_err: &std::io::Error) -> bool {
 /// The cross-device branch: copy, verify, then remove the source — in that
 /// order, so a failure mid-copy leaves the source whole.
 pub(crate) fn copy_then_remove(src: &Path, dst: &Path) -> Result<()> {
-    let metadata = fs::symlink_metadata(src)
-        .with_context(|| format!("cannot copy {}", src.display()))?;
+    let metadata =
+        fs::symlink_metadata(src).with_context(|| format!("cannot copy {}", src.display()))?;
     if metadata.file_type().is_symlink() {
         bail!("refusing to copy the symlink {}", src.display());
     }
@@ -94,8 +93,7 @@ fn create_parent(dst: &Path) -> Result<()> {
 }
 
 fn reject_nested_symlinks(dir: &Path) -> Result<()> {
-    let entries =
-        fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))?;
+    let entries = fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))?;
     for entry in entries {
         let entry = entry.with_context(|| format!("failed to read {}", dir.display()))?;
         let path = entry.path();
@@ -114,8 +112,7 @@ fn reject_nested_symlinks(dir: &Path) -> Result<()> {
 
 fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
     fs::create_dir_all(dst).with_context(|| format!("failed to create {}", dst.display()))?;
-    let entries =
-        fs::read_dir(src).with_context(|| format!("failed to read {}", src.display()))?;
+    let entries = fs::read_dir(src).with_context(|| format!("failed to read {}", src.display()))?;
     for entry in entries {
         let entry = entry.with_context(|| format!("failed to read {}", src.display()))?;
         let from = entry.path();

@@ -24,10 +24,6 @@ mod types;
 
 // --- Re-exports from existing submodules (unchanged public API) ---
 
-#[cfg(test)]
-pub(crate) use backend::sqlite::{
-    SQLITE_SCHEMA, SQLITE_TREE_BACKEND_NAME, list_sqlite_sessions_from_conn, open_sqlite_memory_db,
-};
 pub use artifact_migration::{
     ArtifactSkipReason, FailedArtifact, MigrationReport, MigrationSkipReason, MovedArtifact,
     SkippedArtifact, describe_migration, migrate_in_repo_artifacts,
@@ -35,6 +31,10 @@ pub use artifact_migration::{
 pub use artifact_root::{
     ArtifactRootInit, ensure_artifact_root, project_artifact_root, project_for_artifact_dir,
     project_slug, validate_env_dir_path,
+};
+#[cfg(test)]
+pub(crate) use backend::sqlite::{
+    SQLITE_SCHEMA, SQLITE_TREE_BACKEND_NAME, list_sqlite_sessions_from_conn, open_sqlite_memory_db,
 };
 pub use clean::run_clean;
 pub use code_graph::{
@@ -60,9 +60,7 @@ pub use types::{
     ProjectArtifactPaths, PromptContextMemory, SessionSummary, project_artifact_paths,
 };
 
-pub(crate) use helpers::{
-    ensure_parent_dir, parse_backend_choice_env_value, parse_json_value, required_parent_dir,
-};
+pub(crate) use helpers::{ensure_parent_dir, parse_backend_choice_env_value, parse_json_value};
 pub(crate) use prompt_context::parse_memory_timestamp;
 pub(crate) use resolve::resolve_memory_cli_backend;
 pub(crate) use schema::{GRAPH_DB_TREE_BACKEND_NAME, HIERARCHICAL_SCHEMA};

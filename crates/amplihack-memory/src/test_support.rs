@@ -153,3 +153,64 @@ impl Drop for ClearedGraphDbEnv {
         }
     }
 }
+
+/// RAII guard that pins the per-project artifact cache to a directory the test
+/// owns, restoring the prior environment on drop.
+///
+/// `project_artifact_root` resolves `XDG_CACHE_HOME`, then `$HOME/.cache`
+/// (issue #1476). A test that asserts against a cache path but sets neither ends
+/// up reading and WRITING the developer's real `~/.cache/amplihack` — which is
+/// how the code-graph path tests came to resolve into a live cache instead of a
+/// fixture. Pinning both variables makes the answer depend only on `dir`.
+///
+/// `AMPLIHACK_ARTIFACT_DIR` is cleared rather than set: it overrides the cache
+/// entirely, so an ambient value in the developer's shell would otherwise win
+/// and the assertion would fail for a reason that has nothing to do with the
+/// code under test.
+///
+/// Acquire `env_lock()` (or `home_env_lock()`) before constructing this: every
+/// variable it touches is process-global.
+pub(crate) struct ArtifactCacheGuard {
+    previous_xdg: Option<std::ffi::OsString>,
+    previous_home: Option<std::ffi::OsString>,
+    previous_override: Option<std::ffi::OsString>,
+}
+
+impl ArtifactCacheGuard {
+    pub(crate) fn set(dir: &Path) -> Self {
+        let previous_xdg = std::env::var_os("XDG_CACHE_HOME");
+        let previous_home = std::env::var_os("HOME");
+        let previous_override = std::env::var_os("AMPLIHACK_ARTIFACT_DIR");
+        // SAFETY: edition 2024 requires unsafe; tests serialise via env_lock().
+        unsafe {
+            std::env::set_var("XDG_CACHE_HOME", dir);
+            std::env::set_var("HOME", dir);
+            std::env::remove_var("AMPLIHACK_ARTIFACT_DIR");
+        }
+        Self {
+            previous_xdg,
+            previous_home,
+            previous_override,
+        }
+    }
+}
+
+impl Drop for ArtifactCacheGuard {
+    fn drop(&mut self) {
+        // SAFETY: edition 2024 requires unsafe; tests serialise via env_lock().
+        unsafe {
+            match self.previous_xdg.take() {
+                Some(value) => std::env::set_var("XDG_CACHE_HOME", value),
+                None => std::env::remove_var("XDG_CACHE_HOME"),
+            }
+            match self.previous_home.take() {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+            match self.previous_override.take() {
+                Some(value) => std::env::set_var("AMPLIHACK_ARTIFACT_DIR", value),
+                None => std::env::remove_var("AMPLIHACK_ARTIFACT_DIR"),
+            }
+        }
+    }
+}
