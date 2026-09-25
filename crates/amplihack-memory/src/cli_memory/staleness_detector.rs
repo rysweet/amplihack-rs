@@ -198,8 +198,29 @@ fn is_indexable_file(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli_memory::artifact_root::project_artifact_root;
+    use crate::test_support::{ArtifactCacheGuard, env_lock};
     use std::thread;
     use std::time::Duration;
+
+    /// Isolate the artifact cache and hand back the project plus its artifact
+    /// root. These tests write the fixtures the detector then reads, so they must
+    /// write them where it looks: since #1476 that is the per-project cache, not
+    /// `<project>/.amplihack`. Without the guard they resolved into the
+    /// developer's real `~/.cache/amplihack` and the detector answered
+    /// "missing", because the fixture was planted somewhere it never reads.
+    fn project_with_isolated_cache() -> (
+        tempfile::TempDir,
+        tempfile::TempDir,
+        std::path::PathBuf,
+        ArtifactCacheGuard,
+    ) {
+        let project = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let guard = ArtifactCacheGuard::set(cache.path());
+        let root = project_artifact_root(project.path()).unwrap();
+        (project, cache, root, guard)
+    }
 
     #[test]
     fn check_index_status_reports_missing_when_sources_exist() {
@@ -216,10 +237,12 @@ mod tests {
 
     #[test]
     fn check_index_status_reports_up_to_date_for_current_blarify_json() {
-        let project = tempfile::tempdir().unwrap();
+        let _lock = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (project, _cache, artifact_dir, _cache_guard) = project_with_isolated_cache();
         fs::write(project.path().join("main.rs"), "fn main() {}\n").unwrap();
         thread::sleep(Duration::from_millis(20));
-        let artifact_dir = project.path().join(".amplihack");
         fs::create_dir_all(&artifact_dir).unwrap();
         fs::write(artifact_dir.join("blarify.json"), "{}\n").unwrap();
 
@@ -232,8 +255,10 @@ mod tests {
 
     #[test]
     fn check_index_status_reports_stale_when_source_is_newer() {
-        let project = tempfile::tempdir().unwrap();
-        let artifact_dir = project.path().join(".amplihack");
+        let _lock = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (project, _cache, artifact_dir, _cache_guard) = project_with_isolated_cache();
         fs::create_dir_all(&artifact_dir).unwrap();
         fs::write(artifact_dir.join("blarify.json"), "{}\n").unwrap();
         thread::sleep(Duration::from_millis(20));
@@ -266,10 +291,13 @@ mod tests {
 
     #[test]
     fn check_index_status_uses_generated_scip_artifacts_directory() {
-        let project = tempfile::tempdir().unwrap();
+        let _lock = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (project, _cache, artifact_root, _cache_guard) = project_with_isolated_cache();
         fs::write(project.path().join("main.rs"), "fn main() {}\n").unwrap();
         thread::sleep(Duration::from_millis(20));
-        let artifact_dir = project.path().join(".amplihack").join("indexes");
+        let artifact_dir = artifact_root.join("indexes");
         fs::create_dir_all(&artifact_dir).unwrap();
         fs::write(artifact_dir.join("rust.scip"), "scip-bytes").unwrap();
 
