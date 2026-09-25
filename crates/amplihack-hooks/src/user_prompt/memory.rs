@@ -288,14 +288,34 @@ fn segments(text: &str) -> Vec<(bool, &str)> {
 /// whitespace closes it. Everything between is code, fence-like lines of
 /// the other character included.
 fn fenced_blocks(text: &str) -> Vec<(bool, &str)> {
+    let mut parts = Vec::new();
+    let mut prose_start = 0;
+    for fence in fences(text) {
+        parts.push((false, &text[prose_start..fence.start]));
+        parts.push((true, &text[fence.content.clone()]));
+        prose_start = fence.end;
+    }
+    parts.push((false, &text[prose_start..]));
+    parts
+}
+
+/// A closed fenced block in a text: its byte range from the opening line's
+/// start to the closing line's end, and the range of its content.
+struct Fence {
+    start: usize,
+    content: std::ops::Range<usize>,
+    end: usize,
+}
+
+/// The closed fenced blocks of `text`, in order (see [`fenced_blocks`]).
+fn fences(text: &str) -> Vec<Fence> {
     let mut lines = Vec::new();
     let mut offset = 0;
     for line in text.split_inclusive('\n') {
         lines.push((offset, line));
         offset += line.len();
     }
-    let mut parts = Vec::new();
-    let mut prose_start = 0;
+    let mut fences = Vec::new();
     let mut index = 0;
     while index < lines.len() {
         let (open_at, open_line) = lines[index];
@@ -313,19 +333,38 @@ fn fenced_blocks(text: &str) -> Vec<(bool, &str)> {
             continue;
         };
         let (close_at, close_line) = lines[index + 1 + close];
-        parts.push((false, &text[prose_start..open_at]));
-        parts.push((true, &text[open_at + open_line.len()..close_at]));
-        prose_start = close_at + close_line.len();
+        fences.push(Fence {
+            start: open_at,
+            content: open_at + open_line.len()..close_at,
+            end: close_at + close_line.len(),
+        });
         index += close + 2;
     }
-    parts.push((false, &text[prose_start..]));
-    parts
+    fences
 }
 
-/// The fence run a line starts with (after indentation): its character
-/// (`` ` `` or `~`), its width (at least 3), and the rest of the line.
+/// The fence run a line starts with, after indentation and any block-quote
+/// (`>`) or list-item (`-`, `*`, `+`, `1.`, `1)`) markers, since a fence
+/// inside those containers is still a fence: its character (`` ` `` or
+/// `~`), its width (at least 3), and the rest of the line.
 fn fence_run(line: &str) -> Option<(char, usize, &str)> {
-    let line = line.trim_start();
+    let mut line = line.trim_start();
+    while let Some(rest) = line.strip_prefix('>') {
+        line = rest.trim_start();
+    }
+    let digits = line.chars().take_while(char::is_ascii_digit).count();
+    let list_marker = if line.starts_with(['-', '*', '+']) {
+        Some(1)
+    } else if (1..=9).contains(&digits) && line[digits..].starts_with(['.', ')']) {
+        Some(digits + 1)
+    } else {
+        None
+    };
+    if let Some(marker_len) = list_marker
+        && line[marker_len..].starts_with(char::is_whitespace)
+    {
+        line = line[marker_len..].trim_start();
+    }
     let marker = line.chars().next().filter(|c| matches!(c, '`' | '~'))?;
     let width = line.chars().take_while(|c| *c == marker).count();
     (width >= 3).then(|| (marker, width, &line[width..]))
@@ -396,21 +435,28 @@ const TRANSCRIPT_ROLES: &[&str] = &[
 /// Session-stop flattens a transcript as `<role>: <text>` paragraphs joined
 /// by blank lines, with whatever role the transcript carries. A paragraph
 /// that starts with one of the [`TRANSCRIPT_ROLES`] labels starts a turn;
-/// other paragraphs (a code block with blank lines in it, or a note that
-/// opens with `sqlite: …`) continue the current one and keep their words.
+/// other paragraphs (a code block with blank lines in it, a pasted log line
+/// such as `user: …` inside a closed fenced block, or a note that opens
+/// with `sqlite: …`) continue the current one and keep their words.
 /// Text without labels is one turn.
 fn turns(text: &str) -> Vec<String> {
+    // A label inside a closed fenced block is part of the block, not a turn.
+    let fences = fences(text);
+    let in_fence = |at: usize| fences.iter().any(|fence| fence.content.contains(&at));
     let mut turns = vec![String::new()];
     let mut paragraph_start = true;
-    for line in text.lines() {
+    let mut offset = 0;
+    for raw_line in text.split_inclusive('\n') {
+        let at = offset;
+        offset += raw_line.len();
+        let line = raw_line.trim_end_matches(['\n', '\r']);
         if line.trim().is_empty() {
             paragraph_start = true;
             continue;
         }
-        let label = line
-            .trim_start()
-            .split_once(": ")
-            .filter(|(role, _)| paragraph_start && TRANSCRIPT_ROLES.contains(role));
+        let label = line.trim_start().split_once(": ").filter(|(role, _)| {
+            paragraph_start && !in_fence(at) && TRANSCRIPT_ROLES.contains(role)
+        });
         match label {
             Some((_, rest)) => turns.push(rest.to_string()),
             None => {
@@ -1490,6 +1536,33 @@ mod tests {
                 )]
             ),
             None
+        );
+        // Fences inside block quotes and list items are fences, and a
+        // role-label line inside a closed fence doesn't split the turn.
+        for prompt in [
+            "/fix this:\n> ~~~\n> Fehler: die Datei hat man nicht gefunden\n> ~~~",
+            "/fix this:\n- ~~~\n  Fehler: die Datei hat man nicht gefunden\n  ~~~",
+            "/fix this:\n1. ~~~\n   Fehler: die Datei hat man nicht gefunden\n   ~~~",
+        ] {
+            assert_eq!(
+                format_agent_memory_context(prompt, &prompt_agents(prompt), &man_memory),
+                None,
+                "{prompt:?} is not about the man in the hat"
+            );
+        }
+        for unrelated in [
+            "Agent x: assistant: The docs build failed on this page:\n> ~~~\n> Fehler: die Datei hat man nicht gefunden, der Server ist weg\n> ~~~",
+            "Agent x: assistant: The docs build failed with this log:\n```\nFehler: die Datei hat man nicht gefunden\n\nuser: der Server ist weg, hat man\n```",
+        ] {
+            assert_eq!(
+                format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(unrelated)]),
+                None,
+                "{unrelated:?} is not relevant to {prompt:?}"
+            );
+        }
+        assert_eq!(
+            turns("assistant: log:\n```\nx\n\nuser: y\n```\n\nuser: next"),
+            ["log:\n```\nx\nuser: y\n```", "next"]
         );
         // A pasted foreign error doesn't shrink a foreign prompt below the
         // size at which it is judged.
