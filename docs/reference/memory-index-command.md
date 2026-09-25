@@ -34,7 +34,7 @@ amplihack index-code <INPUT> [--db-path <PATH>]
 | Argument | Required | Description |
 |----------|----------|-------------|
 | `<INPUT>` | yes | Path to a blarify JSON export (`blarify.json`) |
-| `--db-path <PATH>` | no | Override the code-graph database directory. Defaults to `<project>/.amplihack/graph_db` inferred from the input path location. `--kuzu-path` remains as a backward-compatible alias. |
+| `--db-path <PATH>` | no | Override the code-graph database directory. Defaults to `graph_db` in the project's [artifact cache directory](project-artifact-cache.md), recovered from the input path. `--kuzu-path` remains as a backward-compatible alias. |
 
 ### Behavior
 
@@ -113,16 +113,18 @@ Accepted language values: `python`, `typescript`, `javascript`, `go`, `rust`,
 5. Imports each `.scip` artifact into the code-graph store via `import_scip_file`.
 6. Prints a summary to stdout and exits 0 if at least one language succeeded.
 
-Step 4's `<artifact-dir>` is `<project>/.amplihack` today and a per-project
-cache directory outside the project once issue #1476 is implemented
-(`[PLANNED]`, see [Per-Project Artifact Cache](project-artifact-cache.md)).
+Step 4's `<artifact-dir>` is the project's
+[per-project cache directory](project-artifact-cache.md), outside the indexed
+checkout: `${XDG_CACHE_HOME:-$HOME/.cache}/amplihack/projects/<slug>`. Override it
+with `AMPLIHACK_ARTIFACT_DIR`.
 
-Today there is an extra step between 4 and 5: because no indexer is given an
-output path, each one writes `index.scip` into the project root by convention,
-and the command backs up and restores any pre-existing `index.scip` there to
-keep the runs from contaminating each other. `[PLANNED]` Passing each indexer
-an explicit output path removes the root write, and with it the
-backup/restore pair.
+Each indexer is given that destination explicitly — `--output <file>` for most,
+`--index-output-path <file>` for `scip-clang`. `rust-analyzer scip` takes no
+output flag, so it runs from a staging directory beside the final artifact and
+its result is moved into place. A language whose indexer accepts neither is
+skipped with a named reason rather than indexed into the repository. There is no
+step that writes `index.scip` into the project root, and so no backup/restore
+pair around one.
 
 Languages whose indexer binary is absent are silently skipped with a note in
 the summary — partial success is valid.
@@ -140,8 +142,8 @@ amplihack index-scip
 # Success: true
 # Completed: python, rust
 # Skipped: typescript
-# Artifact: /home/user/src/myproject/.amplihack/indexes/python.scip
-# Artifact: /home/user/src/myproject/.amplihack/indexes/rust.scip
+# Artifact: /home/user/.cache/amplihack/projects/myproject-3f9c1ad7b2e40561/indexes/python.scip
+# Artifact: /home/user/.cache/amplihack/projects/myproject-3f9c1ad7b2e40561/indexes/rust.scip
 # Imported: files=89, classes=24, functions=412, imports=156, relationships=538
 ```
 
@@ -179,8 +181,8 @@ Native SCIP indexing summary
 Success: true
 Completed: python, rust
 Skipped: typescript
-Artifact: /home/user/src/myproject/.amplihack/indexes/python.scip
-Artifact: /home/user/src/myproject/.amplihack/indexes/rust.scip
+Artifact: /home/user/.cache/amplihack/projects/myproject-3f9c1ad7b2e40561/indexes/python.scip
+Artifact: /home/user/.cache/amplihack/projects/myproject-3f9c1ad7b2e40561/indexes/rust.scip
 Imported: files=89, classes=24, functions=412, imports=156, relationships=538
 ```
 
@@ -195,19 +197,18 @@ by default.
 
 ## Database location
 
-The default code-graph database path is `<project-root>/.amplihack/graph_db`.
+The default code-graph database path is `graph_db` inside the project's
+[artifact cache directory](project-artifact-cache.md), outside the checkout.
 
-For `index-code`, the project root is inferred from the input path: if the
-input is `<project>/.amplihack/blarify.json`, the database will be
-`<project>/.amplihack/graph_db`. Otherwise the current directory is used.
+For `index-code`, the project is recovered from the input path: an input at
+`<artifact-dir>/blarify.json` resolves to `<artifact-dir>/graph_db`, with the
+project path read from the `project` pointer file in that directory. An input
+path that resolves to no project is an **error**.
 
-`[PLANNED]` Issue #1476 moves the database into the per-project cache
-directory and replaces the "otherwise the current directory" fallback with an
-error. Falling back to `$PWD` means `amplihack index-code` on an unrecognised
-input path creates a graph database inside whatever repository the user is
-standing in; the cache layout reads the project path from a pointer file in
-the artifact directory instead. See
-[Per-Project Artifact Cache](project-artifact-cache.md#the-project-pointer-file).
+There is no fallback to the current directory. Falling back to `$PWD` meant
+`amplihack index-code` on an unrecognised input path created a graph database
+inside whatever repository the user happened to be standing in. See
+[The `project` pointer file](project-artifact-cache.md#the-project-pointer-file).
 
 Use `--db-path` on `index-code` to override. `--kuzu-path` remains accepted as a backward-compatible alias.
 

@@ -277,34 +277,41 @@ contract.
 
 ### Code-index artifacts
 
-The `index.scip` entry in the Build output row matches `index.scip` at any
-depth (`crates/amplihack-utils/src/artifact_guard.rs:993`). It is there because
-the SCIP indexers write their output into the project root by convention, so an
-indexing run leaves a multi-megabyte protobuf in the worktree.
+The `index.scip` entry in the Build output row matches `index.scip` at any depth.
+It is there because the SCIP indexers used to write their output into the project
+root by convention, so an indexing run left a multi-megabyte protobuf in the
+worktree.
 
-`[PLANNED]` Issue #1476 moves those artifacts into a per-project cache
-directory outside the checkout, so they should stop appearing in any worktree.
-**The rule stays.** A guard rule for a path that is no longer produced costs
-nothing and turns a regression — or a third-party indexer someone runs by hand
-— into a blocked commit instead of a staged binary. See
-[Per-Project Artifact Cache](reference/project-artifact-cache.md).
+Code-index artifacts now go to a [per-project cache directory](reference/project-artifact-cache.md)
+outside the checkout, so they should stop appearing in a worktree at all. **The
+rule stays.** A guard rule for a path that is no longer produced costs nothing
+and turns a regression — or a third-party indexer someone runs by hand — into a
+blocked commit instead of a staged binary.
 
-`[PLANNED]` Three paths are **added** as prohibited rules by the same change.
-The default rules today match `.amplihack/session-state`
-(`artifact_guard.rs:954-955`) but nothing else under `.amplihack/`, so the
-8 MB graph store that issue #1476 describes would not have been named as a
-violation even by `--mode all`:
+Three paths are prohibited alongside it. The default rules match
+`.amplihack/session-state` but nothing else under `.amplihack/`, so the 8 MB
+graph store described in issue #1476 would not have been named as a violation
+even by `--mode all`:
 
-| Added rule | What it catches |
+| Rule | What it catches |
 | --- | --- |
 | `.amplihack/graph_db` | The code-graph store — the file staged in the motivating incident |
 | `.amplihack/kuzu_db` | The legacy code-graph store, same size, same problem |
 | `.amplihack/indexes/` | Per-language SCIP indexes, 1–50 MB each |
 
-After the relocation these paths should never appear in a worktree, which is
-exactly what makes them good guard rules: a rule that only ever matches during
-a regression costs nothing to carry and converts a silent reappearance into a
-blocked commit.
+All three also match the nested form, `packages/app/.amplihack/graph_db`, which
+is what a submodule or a monorepo package produces — one directory deeper is the
+same incident. They are classified under the existing build-artifact rule; no new
+rule id, no allowlist change.
+
+The widening is narrow on purpose: it is scoped to the `.amplihack/` prefix, so a
+repository's own directory named `indexes` is not prohibited and `.amplihack/` is
+not blanket-prohibited. A repository that deliberately commits something else
+under `.amplihack/` is unaffected.
+
+The guard says nothing about artifacts inside the cache directory, and should
+not — they are not in a repository. The detectors are pure path logic with no
+dependency on `amplihack-memory`.
 
 ### Built-in `.claude/runtime/` exemption
 

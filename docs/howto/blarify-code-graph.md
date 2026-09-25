@@ -31,7 +31,16 @@ rustup component add rust-analyzer             # Rust
 3. **Kuzu import**: The SCIP index is imported into a Kuzu graph database
 4. **Context injection**: Agents get a summary of the code graph and query instructions
 
-The database is stored at `.amplihack/kuzu_db` in your project root.
+The database is stored in the project's
+[per-project artifact cache directory](../reference/project-artifact-cache.md),
+not in your project root:
+
+```
+${XDG_CACHE_HOME:-$HOME/.cache}/amplihack/projects/<basename>-<hash>/graph_db
+```
+
+Indexing leaves the indexed repository unchanged; `git status --porcelain` prints
+nothing after a run.
 
 ## Querying the Code Graph
 
@@ -115,7 +124,7 @@ The data is still imported correctly - duplicates are silently skipped.
 Check that the database exists:
 
 ```bash
-ls -la .amplihack/kuzu_db
+ls -la "${XDG_CACHE_HOME:-$HOME/.cache}"/amplihack/projects/*/graph_db
 ```
 
 If missing, trigger a re-index:
@@ -128,3 +137,7 @@ AMPLIHACK_BLARIFY_MODE=sync amplihack
 
 The SCIP indexer only indexes files tracked by git. Make sure your source files
 are committed or at least staged.
+
+## Related
+
+- [Per-Project Artifact Cache](../reference/project-artifact-cache.md) — where the graph store and SCIP indexes are written, and why not in your repository

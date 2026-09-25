@@ -34,7 +34,7 @@ amplihack query-code [--db-path <PATH>] [--json] [--limit <N>] <SUBCOMMAND>
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--db-path <PATH>` | `<cwd>/.amplihack/graph_db` | Path to the code-graph database directory. `--kuzu-path` remains as a backward-compatible alias. |
+| `--db-path <PATH>` | `graph_db` in the project's [artifact cache directory](./project-artifact-cache.md) | Path to the code-graph database directory. `--kuzu-path` remains as a backward-compatible alias. |
 | `--json` | false | Emit output as JSON instead of human-readable text. |
 | `--limit <N>` | 50 | Maximum number of rows returned by list subcommands. |
 
@@ -346,3 +346,4 @@ amplihack query-code --json stats | jq '.functions'
 - [`amplihack index-code`](./memory-index-command.md#index-code) — Import a blarify JSON
 - [LadybugDB Code Graph Architecture](../concepts/kuzu-code-graph.md) — Schema and data model
 - [Index a project end-to-end](../howto/index-a-project.md) — Walkthrough
+- [Per-Project Artifact Cache](./project-artifact-cache.md) — Where the graph store lives

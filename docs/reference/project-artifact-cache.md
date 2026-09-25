@@ -1,34 +1,33 @@
 # Per-Project Artifact Cache — Reference
 
-**Status: [PLANNED — Implementation Pending]** (issue #1476). This document
-describes the intended layout. Code marked `[PLANNED]` does not exist yet; the
-"Layout today" section describes what shipping code does right now. Remove the
-`[PLANNED]` markers once the code is merged.
-
 Code-index artifacts for a project — SCIP indexes, the `blarify.json` import
-file, the code-graph database, the staleness marker, and the
-background-indexing PID file — live in a per-project cache directory
-**outside** the indexed checkout.
+file, the code-graph store, the staleness marker, and the background-indexing
+PID file — live in a per-project cache directory **outside** the indexed
+checkout. Indexing a repository leaves that repository byte-for-byte unchanged.
 
 ## Contents
 
-- [Why: the failure mode](#why-the-failure-mode)
-- [Layout today](#layout-today)
-- [Planned layout](#planned-layout)
+- [Why the artifacts are not in your repository](#why-the-artifacts-are-not-in-your-repository)
+- [Cache layout](#cache-layout)
 - [Resolution order](#resolution-order)
 - [Directory permissions](#directory-permissions)
 - [The `project` pointer file](#the-project-pointer-file)
 - [SCIP indexer output paths](#scip-indexer-output-paths)
-- [Migration from an in-repo layout](#migration-from-an-in-repo-layout)
+- [Migration out of an in-repo layout](#migration-out-of-an-in-repo-layout)
+- [The staleness marker](#the-staleness-marker)
+- [API](#api)
 - [Interaction with Artifact Guard](#interaction-with-artifact-guard)
-- [What moving the artifacts changes for confidentiality](#what-moving-the-artifacts-changes-for-confidentiality)
+- [What the relocation changes for confidentiality](#what-the-relocation-changes-for-confidentiality)
+- [Cache growth and reclaiming space](#cache-growth-and-reclaiming-space)
 - [Out of scope](#out-of-scope)
 - [Verifying the invariant](#verifying-the-invariant)
+- [Related](#related)
 
-## Why: the failure mode
+## Why the artifacts are not in your repository
 
-Indexing writes into the repository it indexes. In `amplihack-rs` this is
-invisible, because this repo's own `.gitignore` lists both offenders:
+Indexing used to write into the repository it indexed. Inside `amplihack-rs`
+that is invisible, because this repository's own `.gitignore` lists both
+offenders:
 
 ```sh
 $ grep -n 'index.scip\|\.amplihack' .gitignore
@@ -40,76 +39,34 @@ $ grep -n 'index.scip\|\.amplihack' .gitignore
 No other repository has those entries. In `rysweet/amplihack-recipe-runner` a
 routine `git add -A` therefore staged an 8&nbsp;MB `graph_db` binary along with
 the rest of the generated tree. The user had asked amplihack to index their
-code; amplihack answered by putting a build artifact into their commit.
+code; amplihack answered by putting a build artifact into their commit. The
+asymmetry is the whole reason the bug survived: from inside `amplihack-rs` the
+artifacts were always being written into the checkout, and a local ignore rule
+hid it.
 
-The artifacts a single indexing run leaves in the indexed checkout today:
+A single indexing run produces these files. Every one of them now lands in the
+cache directory:
 
-| Path (relative to the indexed project) | What it is | Typical size | Persists after a clean run? |
-| --- | --- | --- | --- |
-| `.amplihack/graph_db` | LadybugDB code-graph store (a single file) | 8–10 MB | Yes |
-| `.amplihack/indexes/<language>.scip` | Per-language SCIP index | 1–50 MB | Yes |
-| `.amplihack/blarify.json` | Import input for `index-code` | KB–MB | Yes |
-| `.amplihack/blarify_stale` | Staleness marker, rewritten on every code edit | bytes | Yes |
-| `.amplihack/indexing.pid` | Background-indexing lock | bytes | Yes, until the job exits |
-| `.amplihack/kuzu_db` | Legacy code-graph store | 8–10 MB | Yes, where it already exists |
-| `index.scip` | Raw indexer output, at the repo **root** | 1–50 MB | No — deleted or restored by `restore_root_index` |
-| `.amplihack/index.scip.backup` | Backup of a pre-existing root `index.scip` | 1–50 MB | No — renamed back over the root file |
+| Artifact | What it is | Typical size |
+| --- | --- | --- |
+| `graph_db` | LadybugDB code-graph store (a single file) | 8–10 MB |
+| `kuzu_db` | Legacy code-graph store, where one was migrated | 8–10 MB |
+| `indexes/<language>.scip` | Per-language SCIP index | 1–50 MB |
+| `index.scip` | Staging target for a tier-2 indexer run | 1–50 MB |
+| `blarify.json` | Import input for `amplihack index-code` | KB–MB |
+| `blarify_stale` | Staleness marker, written on the first code edit of a session | bytes |
+| `indexing.pid` | Background-indexing lock | bytes |
 
-The root `index.scip` and its backup are transient by design, but "transient"
-only holds for a run that finishes. An indexer that is interrupted, killed by
-the 600-second timeout, or whose rename fails leaves the root `index.scip`
-behind — and the background indexing mode means the run outliving the session
-is the normal case, not the exotic one. The `.amplihack/` contents are not
-transient at all: they are the point of indexing and they stay.
+Nothing on that list is transient. They are the point of indexing and they
+persist between runs — which is why "clean up afterwards" was never an adequate
+answer, and why the destination had to move instead.
 
-`.amplihack/blarify_stale` deserves separate attention because nothing in the
-indexing pipeline writes it. The PostToolUse hook does, on the first code-file
-edit of a session (`mark_blarify_stale_if_needed`,
-`crates/amplihack-hooks/src/post_tool_use/validation.rs:103-114`), using a
-project root it derives itself from `ProjectDirs::from_cwd()`. Relocating only
-the indexing writes would leave this one re-creating `<root>/.amplihack/` on
-the next edit, which is enough to fail the clean-repo test in
-[Verifying the invariant](#verifying-the-invariant).
-
-## Layout today
-
-**Three** functions place these paths, all keyed on a project root — and the
-third is the one most easily missed:
-
-- `project_artifact_paths()` — `crates/amplihack-memory/src/cli_memory/types.rs:131`
-  returns `artifact_dir = project_path.join(".amplihack")` and
-  `root_index_scip = project_path.join("index.scip")`.
-- `project_code_graph_paths()` — `crates/amplihack-memory/src/cli_memory/code_graph/paths.rs:23`
-  returns `project_root/.amplihack/graph_db` (and the legacy `kuzu_db`).
-- `GraphDbConfig::default()` — `crates/amplihack-memory/src/graph_db.rs:64`
-  hardcodes a **cwd-relative** `PathBuf::from(".amplihack/kuzu_db")`. It takes
-  no project root at all, so it writes wherever the process happens to be
-  standing. Any caller that constructs a `GraphDbConfig` without an explicit
-  `db_path` reintroduces the bug regardless of what the other two functions do.
-
-`root_index_scip` is a write target, not a compatibility read:
-`crates/amplihack-memory/src/cli_memory/scip_indexing/commands.rs:112` passes it
-into `run_indexer_for_language`, which deletes it, runs the indexer with
-`current_dir` set to the project, then renames whatever the indexer dropped at
-the repo root into `.amplihack/indexes/<language>.scip`
-(`scip_indexing/indexer.rs:12-114`). A backup/restore pair brackets the loop so
-a user's own `index.scip` survives the run.
-
-The decisive **production** write path is neither of these functions directly.
-`EnvBuilder::with_project_graph_db()`
-(`crates/amplihack-cli/src/env_builder/builder.rs:135`) joins
-`.amplihack/graph_db` onto the project root and exports it as
-`AMPLIHACK_GRAPH_DB_PATH`, which is the **highest-precedence** input to
-`resolve_code_graph_db_path_for_project()` (`paths.rs:157-165`) — it is checked
-before any project-derived path. Whatever the resolver would compute on its
-own, the launcher's exported value wins.
-
-## Planned layout
+## Cache layout
 
 ```
 ${XDG_CACHE_HOME:-$HOME/.cache}/amplihack/projects/<slug>/
-├── project                  # canonical project path, one line, no trailing junk
-├── graph_db                 # code-graph store (single file)
+├── project                  # canonical project path, one line
+├── graph_db                 # code-graph store
 ├── kuzu_db                  # legacy store, only if migrated from one
 ├── indexes/
 │   ├── python.scip
@@ -121,109 +78,38 @@ ${XDG_CACHE_HOME:-$HOME/.cache}/amplihack/projects/<slug>/
 └── .migration.lock          # fs4 advisory lock, migration only
 ```
 
-`<slug>` is `<basename>-<sha256(canonical_project_path)[..16]>`, so it is both
-readable and collision-resistant:
+`<slug>` is `<sanitised basename>-<sha256(canonical project path)[..16]>`, so it
+is both readable and collision-resistant:
 
 ```
 /home/user/src/myproject  ->  myproject-3f9c1ad7b2e40561
 ```
 
-The hash is taken over the **canonicalised absolute** path, so a symlinked and
-a real path to the same checkout share one cache entry, and two checkouts with
-the same basename (`worktrees/feat-a/myproject` and `worktrees/feat-b/myproject`)
-do not.
+The hash covers the **canonicalised absolute** path, so a symlink to a checkout
+and the checkout itself share one cache entry, while two checkouts with the same
+basename — `worktrees/feat-a/myproject` and `worktrees/feat-b/myproject` — do
+not. A project path that cannot be canonicalised (it does not exist yet) is
+absolutised instead, which is still never cwd-relative.
 
 Two details of the hash are deliberate:
 
 - **The hash input is the raw `OsStr` bytes of the canonical path**, not
-  `to_string_lossy()`. Lossy conversion replaces every invalid UTF-8 byte with
-  the same `U+FFFD`, so two distinct non-UTF-8 paths can hash identically and
+  `to_string_lossy()`. Lossy conversion maps every invalid UTF-8 byte to the
+  same `U+FFFD`, so two distinct non-UTF-8 paths can hash identically and
   collide into one cache entry — one project silently reading and overwriting
   another's index. This is the one place the existing precedent is **not**
   copied: `consent_cache_path()`
-  (`crates/amplihack-cli/src/commands/launch/blarify.rs:334`) does hash
+  (`crates/amplihack-cli/src/commands/launch/blarify.rs`) does hash
   `to_string_lossy()`. It is intentionally left alone and intentionally not
-  unified with `project_slug()` — changing it would invalidate every user's
-  stored consent and re-prompt them, and a consent-file collision is a
-  different and much smaller problem than an index collision.
+  unified with `project_slug()`: changing it would invalidate every user's
+  stored consent and re-prompt them, and a consent-file collision is a much
+  smaller problem than an index collision.
 - **Truncating to 16 hex digits (64 bits) is accepted.** These are local
-  filesystem paths derived from paths the user already controls, not a
-  security boundary; there is no adversary choosing project paths to force a
-  collision. 64 bits also matches the existing fingerprint precedent in
-  `crates/amplihack-hooks/src/issue_dedup.rs:24`, and a full 64-character
-  directory name would make the cache unreadable for the humans who have to
-  debug it.
-
-Nothing is written under the indexed project. That is the whole point of the
-change, and it is enforced by a test rather than by review
-(see [Verifying the invariant](#verifying-the-invariant)).
-
-### Planned API
-
-```rust
-// [PLANNED] crates/amplihack-memory/src/cli_memory/types.rs
-
-/// Per-project artifact paths, all under a cache directory outside the project.
-///
-/// Deliberately **not** `#[non_exhaustive]`: every consumer is in this
-/// workspace, and exhaustive struct literals plus exhaustive destructuring are
-/// what make the compiler point at every call site when a field is added or
-/// removed. That is the property this change depends on — a missed consumer is
-/// an artifact written back into someone's repository, not a compile warning.
-pub struct ProjectArtifactPaths {
-    pub artifact_dir: PathBuf,
-    pub indexes_dir: PathBuf,
-    pub blarify_json: PathBuf,
-    pub blarify_stale: PathBuf,
-    pub index_scip: PathBuf,
-    pub indexing_pid: PathBuf,
-}
-
-/// Resolve the artifact dir for `project_path`. Fails rather than falling back
-/// to a project-relative path.
-pub fn project_artifact_paths(project_path: &Path) -> Result<ProjectArtifactPaths> {
-    todo!()
-}
-```
-
-Three changes to the shape:
-
-- **`blarify_stale` is added.** It is not an artifact path today — the
-  PostToolUse hook builds it inline — and bringing it into the struct is what
-  makes the compiler force that hook onto the new location.
-- **`root_index_scip` and `index_scip_backup` are removed**, not relocated.
-  They exist only to name the file an indexer drops in the repo root and the
-  backup that protects a user's copy of it. Once indexers are given an explicit
-  output path (below), both the drop and the rescue disappear. Their complete
-  consumer set is `commands.rs:112,114`, `indexer.rs:12-20`, and
-  `indexer.rs:187-202` — nothing else in the workspace reads either one. A
-  field called `root_index_scip` pointed at a cache directory would be a name
-  that lies.
-- **The struct and function become `pub`**, not `pub(crate)`. The hooks and CLI
-  crates both need them.
-
-`project_artifact_paths()` returns `Result` because resolution can now fail
-(no `HOME`, no usable `XDG_CACHE_HOME`, un-canonicalisable project path).
-Returning a project-relative path on failure would reintroduce the bug on
-exactly the systems where it is hardest to notice.
-
-### Environment builder contract
-
-`[PLANNED] EnvBuilder::with_project_artifact_dir(project_root)` replaces
-`with_project_graph_db()` (which is deleted, or deprecated as a thin forward to
-the new call). One invocation:
-
-1. calls `ensure_artifact_root()` **once**, creating the directory chain with
-   the permissions described below;
-2. derives **both** `AMPLIHACK_ARTIFACT_DIR` and `AMPLIHACK_GRAPH_DB_PATH` from
-   that single resolved root, so the two cannot disagree;
-3. unsets `AMPLIHACK_KUZU_DB_PATH`, so only the neutral contract propagates.
-
-Deriving both from one resolution is the point. Two independent resolutions —
-one for the artifact dir, one for the graph DB — is exactly the shape that lets
-the SCIP indexes land in the cache while the graph store lands somewhere else,
-and `AMPLIHACK_GRAPH_DB_PATH` outranks every project-derived path in the
-resolver, so a disagreement resolves in favour of the wrong one silently.
+  filesystem paths derived from paths the user already controls, not a security
+  boundary; nobody is choosing project paths to force a collision. 64 bits
+  matches the existing fingerprint precedent in
+  `crates/amplihack-hooks/src/issue_dedup.rs`, and a 64-character directory name
+  would make the cache unreadable for the humans who have to debug it.
 
 ## Resolution order
 
@@ -234,26 +120,34 @@ resolver, so a disagreement resolves in favour of the wrong one silently.
 | 3 | `HOME` | `$HOME/.cache/amplihack/projects/<slug>` |
 | 4 | none of the above | Error |
 
+Row 4 is the fix. Resolution **fails** rather than returning a project-relative
+or cwd-relative path, because a fallback into the repository would reintroduce
+the bug on exactly the systems where it is hardest to notice.
+
 ### Validation
 
-Today's validator, `validate_graph_db_env_path()`
-(`code_graph/paths.rs:123-144`), checks one variable's value: absolute, no `..`
-component, not under `/proc`, `/sys`, or `/dev`. `[PLANNED]` it is generalised
-to `validate_env_dir_path(var_name, path)` — the `var_name` is carried so the
-error message names the variable the user actually set — and applied to **all
-three** inputs above, not just the override. An attacker-controlled or merely
-mistaken `XDG_CACHE_HOME` or `HOME` is the same class of problem as a bad
-`AMPLIHACK_ARTIFACT_DIR`, and today neither is checked at all.
+`validate_env_dir_path(var_name, path)` is applied to all three inputs, not just
+the override: a mistaken `XDG_CACHE_HOME` or `HOME` is the same class of problem
+as a bad `AMPLIHACK_ARTIFACT_DIR`. The `var_name` is carried so the rejection
+names the variable the user actually set rather than the subsystem that read it.
+Shared checks: absolute, no `..` component, not under `/proc`, `/sys`, or
+`/dev`.
 
-`AMPLIHACK_ARTIFACT_DIR` gets four additional rejections on top of the shared
-checks, because it is used *directly* as the artifact dir rather than having
-`amplihack/projects/<slug>/` appended:
+`AMPLIHACK_ARTIFACT_DIR` gets four further rejections, because it is used
+*directly* as the artifact dir rather than having `amplihack/projects/<slug>/`
+appended:
 
 | Rejected value | Why |
 | --- | --- |
-| `/` | Migration and cleanup would operate on the filesystem root |
+| `/` | Migration and permission repair would be scoped to the filesystem root |
 | `$HOME` | Same, scoped to the user's entire home directory |
 | `/tmp`, `/var/tmp` | World-writable; a pre-created `<slug>` directory owned by another user is a straightforward index-poisoning path |
+
+A directory the user supplies is also checked for **loose permissions**.
+amplihack does not re-`chmod` a directory it did not create, so an override
+keeps whatever mode it has — group or other bits produce a warning naming the
+mode, and a **world-writable** override is refused outright. Silently accepting
+`0o777` would hand any local user a searchable index of the user's source.
 
 The two failure modes are **asymmetric**, and the asymmetry is intentional:
 
@@ -261,259 +155,284 @@ The two failure modes are **asymmetric**, and the asymmetry is intentional:
   to `HOME`**. The user very likely did not set it for amplihack's benefit, and
   a usable fallback exists.
 - An invalid `AMPLIHACK_ARTIFACT_DIR` is an **error**. The user set it
-  deliberately, for this tool; silently ignoring it and writing somewhere else
-  is worse than stopping.
+  deliberately, for this tool; ignoring it and writing somewhere else is worse
+  than stopping.
 
 See [Environment Variables](environment-variables.md#amplihack_artifact_dir).
 
 ### Inheritance hazard
 
 `AMPLIHACK_ARTIFACT_DIR` names one project's directory, and the environment
-builder exports it to every child process. Agents in this repo run in git
-worktrees (`AGENTS.md`), so a child launched for project B would otherwise
-inherit project A's artifact dir and write B's index into A's cache.
+builder exports it to every child process. Agents in this repository run in git
+worktrees, so a child launched for project B would otherwise inherit project A's
+artifact dir and write B's index into A's cache.
 
 The **primary** defence is (1); (2) is a backstop that does not always fire:
 
-1. `with_project_artifact_dir(project_root)` re-resolves the directory for the
-   project being launched and **overwrites** any inherited value — the same
-   contract `with_project_graph_db` already documents for issue #250
-   (`builder.rs:130-138`). Every launch that goes through the builder is
-   correct by construction.
+1. `EnvBuilder::with_project_artifact_dir(project_root)` re-resolves the
+   directory for the project being launched and **overwrites** any inherited
+   value — the same contract `with_project_graph_db` carried for issue #250.
+   Every launch that goes through the builder is correct by construction.
 2. If `AMPLIHACK_ARTIFACT_DIR` names a directory whose `project` pointer file
    records a *different* canonical project path, the override is ignored with a
    `tracing::warn!` and resolution falls through to `XDG_CACHE_HOME`.
 
 **A residual gap remains.** Check (2) cannot fire before a pointer file exists,
-and the first thing an inherited-but-wrong directory tends to be is one that
-has not been written yet — a fresh cache entry has no pointer, so the mismatch
-is undetectable and the value is accepted. It closes the case where project A
-has already been indexed, which is the common one, and leaves open the case
-where a hand-set `AMPLIHACK_ARTIFACT_DIR` points at an empty directory. A
-process launched outside the builder — a user running `amplihack index-scip`
-directly in an inherited shell — is therefore still able to write project B's
-index into a directory named for project A. Accepted, and recorded here rather
-than papered over.
+and a fresh cache entry has no pointer — so a hand-set `AMPLIHACK_ARTIFACT_DIR`
+naming an empty directory is accepted. It closes the case where project A has
+already been indexed, which is the common one. A process launched outside the
+builder — a user running `amplihack index-scip` directly in an inherited shell —
+can still write project B's index into a directory named for project A.
+Accepted, and recorded here rather than papered over.
 
 ## Directory permissions
 
 The cache holds a searchable index of the user's source code. On a shared host
-the default `0o755` that `create_dir_all` produces under a typical `umask`
-would make every indexed project world-readable.
+the `0o755` that `create_dir_all` produces under a typical `umask` would make
+every indexed project world-readable.
 
-- Every directory in the chain — `<cache>/amplihack`, `.../projects`,
+- Every directory amplihack creates — `<cache>/amplihack`, `.../projects`,
   `.../projects/<slug>`, `.../indexes` — is created with
-  `DirBuilder::mode(0o700)` under `cfg(unix)`.
+  `DirBuilder::mode(0o700)` under `cfg(unix)`, at create time. There is never a
+  umask-width window followed by a `chmod`.
 - **`create_dir_all` does not re-tighten an existing directory.** A
-  `~/.cache/amplihack` left at `0o755` by an earlier version, or created by
-  something else entirely, keeps those bits forever. Resolution therefore
-  inspects the directories amplihack owns and repairs loose modes, logging the
-  repair.
+  `~/.cache/amplihack` left at `0o755` by an earlier version keeps those bits
+  forever, so resolution inspects the directories amplihack owns and repairs
+  loose modes, logging the repair. Permissions are only ever narrowed.
 - **amplihack never `chmod`s a directory it did not create.** `~/.cache` and
   `$HOME` belong to the user and to other tools; tightening them would break
-  unrelated software. The repair rule above is scoped to `amplihack/` and
-  below.
+  unrelated software. The repair rule is scoped to `amplihack/` and below.
 - After creating or repairing, the result is verified with `symlink_metadata`
-  (not `metadata` — the distinction is the whole point), checking that the
-  entry is a real directory rather than a symlink, that its `uid` matches the
-  current user, and that its mode is `0o700`. A pre-existing entry that fails
-  any of these is an error, not something to fix in place: it is the shape a
-  planted symlink takes.
+  (not `metadata` — the distinction is the point): a real directory, not a
+  symlink; `uid` matching the current user; mode `0o700`. A pre-existing entry
+  that fails any of these is an error, not something to fix in place. It is the
+  shape a planted symlink takes.
 - The `project` pointer file is written with `create_new` and mode `0o600`, via
   a temporary name carrying a **random** suffix rather than the process id.
   `create_new` turns a pre-planted file into an error instead of a truncation,
   and a predictable temp name in a directory an attacker can reach is the
   classic symlink race.
-- Pointer reads are **bounded to 4&nbsp;KiB** and validated before use. The
-  file is one line of path; refusing to read more means a hostile or corrupt
-  cache entry cannot be turned into an allocation.
+- Pointer reads are **bounded to 4&nbsp;KiB** and validated before use. The file
+  is one line of path; refusing to read more means a hostile or corrupt cache
+  entry cannot be turned into an allocation.
 
 ### Consent gate
 
-Code-graph indexing is already gated on explicit user consent. That gate is
-unchanged and is not moved earlier. `ensure_artifact_root()` may create an
-**empty** `0o700` directory before consent is resolved — an empty directory
-discloses nothing beyond a path the user chose — but **no index, no
-`blarify.json`, and no graph store is written before the existing consent check
-passes**.
+Code-graph indexing is gated on explicit user consent. That gate is unchanged
+and is not moved earlier. `ensure_artifact_root()` may create an **empty**
+`0o700` directory before consent is resolved — an empty directory discloses
+nothing beyond a path the user chose — but **no index, no `blarify.json`, and no
+graph store is written before the existing consent check passes**. Migration is
+not a second un-gated write path either: it moves only artifacts the user
+already consented to producing.
 
 ## The `project` pointer file
 
 The artifact dir contains a `project` file holding the canonical project path,
 written atomically when the dir is created. It exists because one path lookup
-runs backwards: `project_root_for_blarify_input()`
-(`code_graph/paths.rs:167`) recovers a project root by walking **two** parents
-up from a `blarify.json` — `<project>/.amplihack/blarify.json` — and confirming
-the guess against `project_artifact_paths()`. Under the slug layout that
-confirmation can never match.
+runs backwards: `project_root_for_blarify_input()` used to recover a project root
+by walking **two** parents up from `<project>/.amplihack/blarify.json`. Under the
+slug layout that arithmetic can never work — the cache directory name is a hash,
+not a repository.
 
-What happens on that failure differs between the two callers, and only one of
-them is dangerous:
+The reverse lookup reads the pointer instead: one parent hop from
+`<artifact_root>/blarify.json`, then `project_for_artifact_dir()`. It returns
+`Result<Option<PathBuf>>` — an owned path, because the answer no longer borrows
+from the input, and `Result` because a missing or unreadable pointer is reported
+rather than swallowed.
 
-- `infer_code_graph_db_path_from_input()` (`paths.rs:172-177`) falls back to
-  `default_code_graph_db_path()`, which resolves to **the current working
-  directory**. `amplihack index-code <blarify.json>` would then create a graph
-  database inside whichever repo the user happened to be standing in: the same
-  bug, relocated.
-- `code_graph_compatibility_notice_for_input()` (`paths.rs:109-121`) also
-  retries against the cwd, but it is only producing an advisory notice and
-  degrades to `Ok(None)` when it finds nothing. It is wrong, not harmful.
-
-`[PLANNED]` the reverse lookup reads the pointer file instead. The new
-signature is `Result<Option<PathBuf>>` — it returns an owned path because the
-answer no longer borrows from the input, and `Result` because a missing or
-unreadable pointer is now reported rather than swallowed. It walks **one**
-parent hop (`<artifact_root>/blarify.json`), not two. Crucially it **errors on
-a missing or unreadable pointer instead of falling back to the cwd**: that
-silent cwd fallback is itself a latent instance of this failure mode and is
-removed on this path.
+That last part matters more than it looks. The old failure path fell back to
+**the current working directory**, so `amplihack index-code <blarify.json>` with
+an unrecognised input path created a graph database inside whichever repository
+the user happened to be standing in: the same bug, relocated. The pointer file
+is what makes the correct answer available, and the cwd fallback is gone.
 
 ## SCIP indexer output paths
 
 Every artifact-relocation scheme depends on the indexer writing where it is
-told. The flags are **not** uniform, and today no language arm passes one
-(`scip_indexing/indexer.rs:120-183`). In-repo evidence confirms `--output` for
-two of the seven:
+told, and the flags are not uniform. Each language arm names its destination
+explicitly; none relies on the convention that an indexer drops `index.scip`
+into the current directory.
 
-```sh
-$ grep -n -- '--output' crates/amplihack-blarify/src/code_refs/scip.rs
-128:                "--output",
-143:            .args(["index", "--output", "index.scip"])
-```
+| Language | Invocation | Tier |
+| --- | --- | --- |
+| `python` | `scip-python index --output <out>` | 1 |
+| `typescript`, `javascript` | `scip-typescript index --output <out>` | 1 |
+| `go` | `scip-go --output <out>` | 1 |
+| `csharp` | `scip-dotnet index --output <out>` | 1 |
+| `cpp` | `scip-clang --index-output-path <out>` | 1 |
+| `rust` | `rust-analyzer scip <project>`, run from a staging dir beside `<out>` | 2 |
+| anything else | skipped with a named reason | 3 |
 
-Line 128 is `scip-python` and line 143 is `scip-typescript`, in
-`amplihack-blarify`'s own indexer wrapper — a separate code path from
-`scip_indexing`, and the only place in the workspace where an output path is
-passed at all. Note that even there the destination is inside the project
-(`generate_python_index` builds `root_path/index.scip`,
-`crates/amplihack-blarify/src/code_refs/scip.rs:121`), so it confirms the flag
-exists without demonstrating the fix. The flags for `scip-go`,
-`rust-analyzer scip`, `scip-dotnet`, and `scip-clang` are unverified and must
-each be confirmed against the installed tool, not assumed.
-
-`[PLANNED]` A per-language `ScipOutput` table replaces the bare command
-vectors, with a doc comment on each arm citing where its flag was confirmed,
-and a three-tier ladder:
+`<out>` is always `<artifact_dir>/indexes/<language>.scip`. The three tiers:
 
 | Tier | Condition | Behaviour |
 | --- | --- | --- |
-| 1 | Indexer accepts an output flag | Pass `<artifact_dir>/indexes/<lang>.scip` directly |
-| 2 | No output flag, but takes an explicit project root (e.g. `rust-analyzer scip <path>`) | Run with `current_dir` set to a tempdir **outside** the checkout, pass the project root explicitly, then move the result into the cache |
-| 3 | Neither | Report the language through the existing `skipped_languages` channel with a named reason |
+| 1 | The tool takes an output path | Pass it |
+| 2 | No output flag, but the project root is an argument | Run with `current_dir` set to a staging directory beside the final artifact — already outside the checkout — and move the result into place |
+| 3 | Neither | Report the language through the existing `skipped_languages` channel with a named reason, and **do not** index |
 
-No language is *expected* to reach tier 3. The tier exists so that discovering
-one during implementation cannot quietly reintroduce an in-repo write. Tier 2
-matters because "write into the repo, then move it out" is not available to a
-tool that infers its project root from `current_dir` — moving the cwd out of
-the checkout changes what gets indexed. A silent degradation to an in-repo
-write would keep stub-based tests green while the bug returned in production.
+Tier 2 exists because "write into the repo, then move it out" is not available
+to a tool that infers its project root from `current_dir`: moving the cwd out of
+the checkout would change what gets indexed. `rust-analyzer scip` takes the root
+as an argument, so the working directory is free to move instead.
 
-The `javascript` arm's temporary `tsconfig.json` stays where it is. That file
-is an *input* to `scip-typescript` and must sit where the tool reads it, in the
-project root (`indexer.rs:130-168`). It is already written and then removed by
-an explicit cleanup closure, so it is not an artifact and not in scope.
+Tier 3 is `ScipOutput::Unsupported { reason }`, and it is a real constructed
+value rather than a placeholder: an unknown language resolves to it and is
+skipped loudly. That is the structural guarantee — discovering a tool without an
+output flag cannot quietly reintroduce an in-repo write while a stub-based test
+stays green. Empty argv is unrepresentable at the call site (`split_first`), so
+a plan that names no binary cannot panic.
+
+The `javascript` arm's temporary `tsconfig.json` stays in the project root. That
+file is an *input* to `scip-typescript` and must sit where the tool reads it. It
+is created with `create_new(true)` — the `O_EXCL` create *is* the
+don't-clobber check, with no exists-then-write window — and removed by a `Drop`
+guard, so an interrupted run, a timeout, or a panic cleans up as reliably as a
+successful one. The guard re-checks with `symlink_metadata` and refuses to
+remove anything that is not the regular file it created.
 
 ### Detecting a live indexer during and after the move
 
-The background-indexing lock moves from `<project>/.amplihack/indexing.pid` to
-`<artifact_root>/indexing.pid`. The liveness check must read **both**.
+The background-indexing lock lives at `<artifact_root>/indexing.pid`. The
+liveness check reads **both** that path and the legacy
+`<project>/.amplihack/indexing.pid`.
 
-Checking only the new location fails open on the single upgrade every existing
-user performs: an unmigrated project has no `<artifact_root>/indexing.pid`,
-because the artifact root did not exist when the job started. The check would
-see no lock, conclude nothing is running, and start a second indexer over the
-same tree while the first is still writing — or migrate the files out from
-under it. The legacy path is read until migration has completed for that
-project.
+Checking only the new location would fail open on the single upgrade every
+existing user performs: an unmigrated project has no
+`<artifact_root>/indexing.pid`, because the artifact root did not exist when the
+job started. The check would see no lock, conclude nothing is running, and start
+a second indexer over the same tree while the first was still writing — or
+migrate the files out from under it.
 
-## Migration from an in-repo layout
+## Migration out of an in-repo layout
 
-`[PLANNED]` Migration runs from the **`session_start` hook**, positioned
-between `migrate_global_hooks()` and `setup_blarify_indexing()`
-(`crates/amplihack-hooks/src/session_start/mod.rs:90-100`).
+Migration runs from the **`session_start` hook**, positioned after
+`migrate_global_hooks()` and before `setup_blarify_indexing()`.
 
 **The ordering is load-bearing, not cosmetic.** `setup_blarify_indexing()`
-decides whether to reindex by looking at what is present. If migration ran
-later — or lazily, on first artifact-path resolution — the staleness check
-would inspect a cache directory that is still empty, conclude the project has
-never been indexed, and start a full rebuild against the 600-second timeout.
-Not for one unlucky user: for **every existing user, on their first session
-after upgrading**, while a perfectly good index sat in the repo waiting to be
-moved. Migration therefore completes before anything asks whether an index
-exists.
+decides whether to reindex by looking at what is present. If migration ran later
+— or lazily, on first artifact-path resolution — the staleness check would
+inspect a cache directory that is still empty, conclude the project has never
+been indexed, and start a full rebuild against the 600-second timeout. Not for
+one unlucky user: for **every existing user, on their first session after
+upgrading**, while a perfectly good index sat in the repository waiting to be
+moved.
 
-### Trigger
+`amplihack index-scip` and `index-code` also migrate before they inspect
+anything, so a project indexed outside a session gets the same treatment. The
+entry point cheap-exits after two `exists()` checks when there is nothing
+in-repo to move, so the common case costs two syscalls.
 
-Migration is triggered by the **presence of a source artifact** in the
-checkout, and runs at most once per project. It is explicitly **not** triggered
-by the absence of a pointer file or an empty cache directory — a project that
-has genuinely never been indexed has both, and there is nothing to migrate.
+### Trigger and stand-down
+
+Migration is triggered by the **presence of a source artifact** in the checkout.
+It is explicitly *not* triggered by a missing pointer file or an empty cache
+directory — a project that has genuinely never been indexed has both, and there
+is nothing to move.
 
 Concurrency is handled by an `fs4` advisory lock on
-`<artifact_root>/.migration.lock`. A session that cannot take the lock
-**returns a skipped reason and continues** — another session is already doing
-the work, which is a normal outcome, not a failure. `Err` from the migration
-entry point is reserved for one condition: **the artifact root cannot be
-resolved at all.** Everything else — a conflicting destination, an unreadable
-source, a tracked file, lock contention — is a per-item entry in the migration
-report.
+`<artifact_root>/.migration.lock`. Both indexing PID files are re-read **after**
+the lock is held, not only before: a check before the lock leaves a window in
+which an indexer starts and has its `graph_db` moved out from under it.
+
+`Err` from `migrate_in_repo_artifacts()` is reserved for one condition: **the
+artifact root cannot be resolved at all.** Everything else is a value in the
+report, because a migration that fails session start invites users to work
+around it by deleting their cache:
+
+| Report field | Meaning |
+| --- | --- |
+| `moved` | Source and destination of each artifact that left the checkout |
+| `skipped` | `DestinationExists`, `Tracked`, or `Symlink` — the user decides |
+| `failed` | Per-artifact error string; the artifact stayed where it was |
+| `skipped_reason` | `IndexerRunning` or `LockUnavailable` — whole-migration stand-down, both normal outcomes |
+
+`describe_migration(&report)` renders the report for the session-start context
+block, and returns `None` when nothing happened, so a project that never had
+in-repo artifacts gains no notice. It interpolates only the fixed names it
+recognises plus the project path — never a repository-supplied filename, which
+would make the notice a prompt-injection channel into session start.
 
 ### What moves
 
-The recognised names, all under `<project>/.amplihack/`:
+| Source, relative to the project | Destination, relative to the artifact root |
+| --- | --- |
+| `index.scip` | `index.scip` |
+| `.amplihack/graph_db` | `graph_db` |
+| `.amplihack/kuzu_db` | `kuzu_db` |
+| `.amplihack/indexes/` | `indexes/` |
+| `.amplihack/blarify.json` | `blarify.json` |
+| `.amplihack/blarify_stale` | `blarify_stale` |
+| `.amplihack/indexing.pid` | `indexing.pid` |
+| `.amplihack/index.scip` | `index.scip.superseded` |
+| `.amplihack/index.scip.backup` | `index.scip.backup` |
 
-`graph_db`, `kuzu_db`, `indexes/`, `blarify.json`, `blarify_stale`,
-`indexing.pid`, `index.scip`, `index.scip.backup`
+The ordering of that table is load-bearing in one place: the repo-root
+`index.scip` is the file an indexer actually wrote, so it claims
+`<root>/index.scip`. A `.amplihack/index.scip` — a staging path amplihack only
+ever read — is preserved under a distinct name rather than being left in the
+checkout or deleted.
 
-plus `<project>/index.scip` at the repo root. Everything else in `.amplihack/`
-is left untouched, including `.amplihack/session-state/` and any file the user
-put there. Migration deletes nothing it did not move; an emptied `.amplihack/`
-is left in place rather than removed.
+Everything else in `.amplihack/` is left untouched, including
+`.amplihack/session-state/` and any file the user put there. **Migration deletes
+nothing it did not move.** An emptied `.amplihack/` is removed with `fs::remove_dir`,
+which fails on a non-empty directory and on a symlink — exactly the wanted
+behaviour: anything a human or another subsystem left there keeps the directory
+alive. No `remove_dir_all` is ever aimed at a path inside a checkout.
 
-Each moved path is logged at `info`. Migration is idempotent: a destination
-that already exists is left alone and the source is recorded as a conflict
+Each moved path is logged at `info`. Migration is idempotent: a destination that
+already exists is left alone and the source is recorded as `DestinationExists`
 rather than overwritten.
 
 ### Git-tracked artifacts are skipped, not moved
 
-**Only untracked sources are migrated.** A source that Git already tracks — as
-in the `amplihack-recipe-runner` incident that motivated this change — is
-recorded in the report as `skipped: tracked` and left exactly where it is.
+**Only untracked sources migrate.** A source that Git already tracks — as in the
+`amplihack-recipe-runner` incident that motivated this change — is recorded as
+`skipped: Tracked` and left exactly where it is.
 
-This is not politeness about the user's working tree. A committed file is
-repository-supplied data: it arrived through the repo, it can have been
+This is not politeness about the working tree. A committed file is
+repository-supplied data: it arrived through the repository, it can have been
 authored by anyone with commit access, and its contents are attacker-influenced
-in the same way any other checked-in file is. Moving those bytes into
-`~/.cache/amplihack/` promotes them into trusted, agent-readable,
-user-permissioned storage that later reads treat as amplihack's own output. A
-poisoned `blarify.json` committed to a repository would become the graph the
-agent reasons over.
+like any other checked-in file. Moving those bytes into `~/.cache/amplihack/`
+would promote them into trusted, agent-readable, user-permissioned storage that
+later reads treat as amplihack's own output. A poisoned `blarify.json` committed
+to a repository would become the graph the agent reasons over.
+
+The control therefore **fails closed**. The tracked-path set is an
+`Option<BTreeSet<String>>`: if `git ls-files` fails, is refused, times out, or
+exits non-zero, the answer is `None` and **nothing moves** — every source is
+reported as failed with the reason. An empty set means Git answered and tracks
+none of them, which is different from Git not answering, and the two are not
+collapsed. The `git` call itself runs under a timeout, because session start
+must not hang on a wedged `git`.
 
 The user is told, and removing the file from the repository stays their
-decision — `git rm --cached` plus a `.gitignore` entry, or nothing at all if
-they committed it deliberately.
+decision: `git rm -r --cached .amplihack index.scip`, plus `.gitignore` entries —
+or nothing at all, if they committed it deliberately.
 
-Size validation is unchanged and stays at the **new** location:
-`validate_blarify_json_size()` runs against the migrated
-`<artifact_root>/blarify.json` before it is read, exactly as it runs today
-against the in-repo copy.
+Size validation is unchanged and runs at the **new** location:
+`validate_blarify_json_size()` checks `<artifact_root>/blarify.json` before it is
+read, exactly as it checked the in-repo copy.
 
 ### Symlinks are never followed
 
-Every stat during migration uses `symlink_metadata`, and every resolved
-destination is checked for containment inside the artifact root after
-canonicalisation. A symlink at `<project>/.amplihack/graph_db` pointing at
-`~/.ssh/id_ed25519` must be moved as *a symlink* or refused — never followed
-and copied. The same applies to the destination side: a symlink planted in the
-cache directory must not redirect a write outside it.
+Every stat during migration uses `symlink_metadata`, and the check is repeated
+at the point of use rather than only during the initial scan. A symlink at
+`<project>/.amplihack/graph_db` pointing at `~/.ssh/id_ed25519` is skipped as
+`Symlink` — never followed and copied. The directory copy re-checks each entry's
+file type as it walks, so a symlink planted after the scan cannot be read
+through. Every resolved destination is checked for containment inside the
+artifact root after canonicalisation, so a symlink planted in the cache cannot
+redirect a write outside it.
 
 ### Cross-device moves preserve mtimes
 
 `fs::rename` fails with `EXDEV` when `$HOME` and the checkout are on different
 filesystems — a container bind-mount, a separate `/home` partition, an
-NFS-mounted work tree. The fallback is **copy, verify, then remove the
-source**, in that order, and it explicitly restores the source's modification
-time on the destination with `File::set_modified`.
+NFS-mounted work tree. The fallback is **copy, verify, then remove the source**,
+in that order, and it restores the source's modification time on the destination
+with `File::set_modified`.
 
 Without that last step every cross-device migration would stamp
 `SystemTime::now()` on the copies, and the staleness comparison — which asks
@@ -522,41 +441,190 @@ months-old index is newer than the code it describes. The user would get stale
 query results with no error, on the machines where the failure is hardest to
 reproduce.
 
+## The staleness marker
+
+`blarify_stale` is not written by the indexing pipeline. The PostToolUse hook
+writes it on the first code-file edit of a session
+(`mark_blarify_stale_if_needed`,
+`crates/amplihack-hooks/src/post_tool_use/validation.rs`), deriving the project
+root itself.
+
+It goes through `ensure_artifact_root()` like everything else, which preserves
+the pointer-file invariant for a cache entry the hook may be the first to touch.
+Relocating only the indexing writes would leave this one re-creating
+`<project>/.amplihack/` on the next edit — a fix that undoes itself on the next
+tool call. `blarify_stale` is a field of `ProjectArtifactPaths` for that reason:
+the compiler, not review, is what keeps the hook pointed at the cache.
+
+The marker write runs after **every** tool call, so it is deliberately quiet:
+`symlink_metadata` and `create_new` rather than a blind `fs::write`, and every
+error becomes a `tracing::warn!`. A failure to record staleness never fails a
+tool call.
+
+`blarify.json` is read from the same place it is written. The session-start
+import path resolves it through `project_artifact_paths()`, so an existing index
+is imported rather than silently degrading into a full rebuild because the old
+in-repo path no longer exists.
+
+## API
+
+`crates/amplihack-memory/src/cli_memory/` — re-exported from
+`amplihack_memory::cli_memory`.
+
+```rust
+use amplihack_memory::cli_memory::{
+    ProjectArtifactPaths, ensure_artifact_root, migrate_in_repo_artifacts,
+    project_artifact_paths,
+};
+use std::path::Path;
+
+let project = Path::new("/home/user/src/myproject");
+
+// Resolve every artifact path for a project. Never falls back into the repo.
+let paths: ProjectArtifactPaths = project_artifact_paths(project)?;
+assert!(paths.blarify_json.starts_with("/home/user/.cache/amplihack/projects/"));
+
+// Resolve *and* create the directory chain at 0o700.
+let init = ensure_artifact_root(project)?;
+println!("{} (created: {})", init.root.display(), init.created);
+
+// Move any pre-existing in-repo artifacts in. Idempotent, safe to call often.
+let report = migrate_in_repo_artifacts(project)?;
+for moved in &report.moved {
+    println!("moved {} -> {}", moved.from.display(), moved.to.display());
+}
+```
+
+| Item | Signature | Notes |
+| --- | --- | --- |
+| `ProjectArtifactPaths` | struct with `artifact_dir`, `indexes_dir`, `blarify_json`, `index_scip`, `indexing_pid`, `blarify_stale` | Not `#[non_exhaustive]` — see below |
+| `project_artifact_paths` | `(&Path) -> Result<ProjectArtifactPaths>` | Resolves only; creates nothing |
+| `project_artifact_root` | `(&Path) -> Result<PathBuf>` | The directory alone, uncreated |
+| `ensure_artifact_root` | `(&Path) -> Result<ArtifactRootInit>` | Creates the chain at `0o700`, repairs loose modes, returns `{ root, created }` |
+| `project_slug` | `(&Path) -> String` | `<basename>-<sha256(canonical path)[..16]>` |
+| `project_for_artifact_dir` | `(&Path) -> Result<Option<PathBuf>>` | Reads the `project` pointer; `Ok(None)` means no pointer yet |
+| `validate_env_dir_path` | `(&str, &Path) -> Result<()>` | `var_name` is carried into the error message |
+| `migrate_in_repo_artifacts` | `(&Path) -> Result<MigrationReport>` | `Err` only when the artifact root cannot be resolved |
+| `describe_migration` | `(&MigrationReport) -> Option<String>` | `None` when nothing happened |
+
+`ProjectArtifactPaths` is deliberately **not** `#[non_exhaustive]`. Every
+consumer is in this workspace, and exhaustive struct literals plus exhaustive
+destructuring are what make the compiler point at every call site when a field
+is added or removed. A missed consumer here is an artifact written back into
+someone's repository, not a compile warning. Keep it that way.
+
+`root_index_scip` and `index_scip_backup` are **absent** rather than relocated.
+They named the file an indexer dropped in the repo root and the backup that
+rescued the user's own copy of it. Now that every indexer is given an explicit
+output path, both the drop and the rescue are gone. A field called
+`root_index_scip` pointing at a cache directory would be a name that lies.
+
+### Environment builder contract
+
+`EnvBuilder::with_project_artifact_dir(project_root)` replaces
+`with_project_graph_db()`. One invocation:
+
+1. calls `ensure_artifact_root()` **once**;
+2. derives **both** `AMPLIHACK_ARTIFACT_DIR` and `AMPLIHACK_GRAPH_DB_PATH` from
+   that single resolved root, so the two cannot disagree;
+3. unsets `AMPLIHACK_KUZU_DB_PATH`, so only the neutral contract propagates.
+
+Deriving both from one resolution is the point. Two independent resolutions is
+exactly the shape that lets the SCIP indexes land in the cache while the graph
+store lands somewhere else — and `AMPLIHACK_GRAPH_DB_PATH` outranks every
+project-derived path in the resolver, so a disagreement resolves silently in
+favour of the wrong one.
+
 ## Interaction with Artifact Guard
 
 [Artifact Guard](../artifact-guard.md) is **strengthened** by this work, not
-weakened. Its `build-artifact` rule already blocks `index.scip` at any depth
-(`crates/amplihack-utils/src/artifact_guard.rs:993`), and that rule **stays**
-even though the relocation should stop producing the file — it is a cheap
-backstop against a regression or a third-party indexer run by hand.
+weakened. Two different files carry that name, and only one of them is touched:
 
-The gap this change closes: the guard's default rules match
-`.amplihack/session-state` (`artifact_guard.rs:954-955`) but **not**
-`.amplihack/graph_db`, `.amplihack/kuzu_db`, or `.amplihack/indexes/`. The
-8&nbsp;MB store in the motivating incident would not have been named as a
-violation even by a full `--mode all` scan. `[PLANNED]` those three paths are
-added as prohibited rules as part of this change, so that if the relocation
-ever regresses, the result is a blocked commit rather than a staged binary.
+- `crates/amplihack-cli/src/commands/hygiene/artifact_guard.rs` — the hygiene
+  command. **Unchanged**, byte-for-byte.
+- `crates/amplihack-utils/src/artifact_guard.rs` — the path detectors. **Widened,
+  additively.**
 
-## What moving the artifacts changes for confidentiality
+The `build-artifact` rule already blocked `index.scip` at any depth, and that
+rule **stays** even though the relocation should stop producing the file: it is
+a cheap backstop against a regression, or against a third-party indexer someone
+runs by hand.
+
+The gap this change closes: the default rules matched `.amplihack/session-state`
+but nothing else under `.amplihack/`, so the 8&nbsp;MB store from the motivating
+incident would not have been named as a violation even by a full `--mode all`
+scan. `graph_db`, `kuzu_db`, and `indexes/` under `.amplihack/` are now
+classified as build artifacts, including the nested
+`packages/app/.amplihack/graph_db` form a submodule or monorepo package
+produces — one directory deeper is the same incident.
+
+The widening is narrow on purpose. It is scoped to the `.amplihack/` prefix, so
+a repository's own directory named `indexes` is not suddenly prohibited, and
+`.amplihack/` is not blanket-prohibited either. No check was removed, no
+allowlist widened, no early return added. The detectors stay pure string logic
+with no dependency on `amplihack-memory`, so the guard says nothing at all about
+artifacts that live in the cache — which is correct: they are not in a
+repository.
+
+## What the relocation changes for confidentiality
 
 Relocating the artifacts is a net improvement, but it is a **trade**, and the
-trade should be written down where users read it rather than only in a pull
-request description.
+trade belongs where users read it.
 
-- **Permission model changes from repository-level to user-level.** In the
-  repo, the index inherited the checkout's permissions, which on a shared
+- **The permission model changes from repository-level to user-level.** In the
+  repository, the index inherited the checkout's permissions, which on a shared
   project directory may be deliberately group-readable. In
-  `~/.cache/amplihack/projects/`, it is `0o700` and readable only by the
-  invoking user. For almost every user this is strictly tighter. For a
-  deliberately shared checkout it is a behaviour change: collaborators who
-  could read the index no longer can, and each will build their own.
-- **The cache directory names every project the user has indexed.** A listing
-  of `~/.cache/amplihack/projects/` shows the *basename* of every checkout —
-  `acme-billing-rewrite-3f9c1ad7b2e40561` — to anything that can read the
-  user's home directory. The hash hides the full path; the basename is
-  deliberately in the clear so humans can debug the cache. If a project name is
-  itself sensitive, `AMPLIHACK_ARTIFACT_DIR` puts the directory somewhere else.
+  `~/.cache/amplihack/projects/`, it is `0o700` and readable only by the invoking
+  user. For almost every user this is strictly tighter. For a deliberately shared
+  checkout it is a behaviour change: collaborators who could read the index no
+  longer can, and each will build their own.
+- **The cache directory names every project the user has indexed.** A listing of
+  `~/.cache/amplihack/projects/` shows the *basename* of every checkout —
+  `acme-billing-rewrite-3f9c1ad7b2e40561` — to anything that can read the user's
+  home directory. The hash hides the full path; the basename is deliberately in
+  the clear so humans can debug the cache. If a project name is itself
+  sensitive, `AMPLIHACK_ARTIFACT_DIR` puts the directory somewhere else.
+- **The cache is a secondary copy of the source, including any secret committed
+  to it.** `0o700` plus mode repair is the whole control. Cache *contents* are
+  never written to logs, to the session-start context block, or to any report —
+  paths only.
+
+Three properties are accepted rather than solved here:
+
+- Running `git` inside a checkout honours that repository's local config. This
+  predates the change and is not widened by it.
+- On a case-insensitive filesystem, `.Amplihack/Graph_db` bypasses the guard
+  predicates. That is a uniform pre-existing property of `artifact_guard.rs`,
+  not specific to these rules.
+- `augmented_path()` prepends `$HOME/.local/bin`, `$HOME/.dotnet/tools`, and
+  `$HOME/go/bin` — user-writable, and normal for these toolchains. It notably
+  does **not** add a repo-local `node_modules/.bin`, so indexing a hostile
+  repository does not execute repository-supplied binaries. Keep it that way.
+
+## Cache growth and reclaiming space
+
+Nothing reaps orphaned entries. A deleted project leaves its cache directory
+behind, and because every git worktree canonicalises to a distinct path, every
+worktree is a distinct cache identity — this repository's own workflow creates
+one per feature branch. Tens of gigabytes in `~/.cache/amplihack/projects/` is a
+realistic steady state for a heavy user.
+
+Deleting a `<slug>` directory by hand is safe; the next run rebuilds it:
+
+```sh
+du -sh "${XDG_CACHE_HOME:-$HOME/.cache}"/amplihack/projects/* | sort -h | tail
+rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}"/amplihack/projects/myproject-3f9c1ad7b2e40561
+```
+
+To find out which checkout an entry belongs to, read its pointer file:
+
+```sh
+cat "${XDG_CACHE_HOME:-$HOME/.cache}"/amplihack/projects/myproject-3f9c1ad7b2e40561/project
+```
+
+An `amplihack cache gc` — prune entries whose `project` pointer names a path that
+no longer exists, plus an age bound — is the intended fix and is tracked
+separately.
 
 ## Out of scope
 
@@ -564,76 +632,73 @@ This change moves artifacts. It does not change:
 
 - what is indexed, or which indexers run
 - the code-graph schema (see [LadybugDB Code Schema](../memory/KUZU_CODE_SCHEMA.md))
-- the memory database layout under `~/.amplihack/`
-  (`memory_home_paths()`, `types.rs:109`)
+- the memory database layout under `~/.amplihack/` (`memory_home_paths()`)
 - `.amplihack/session-state/`, which is workflow session state, not an index
   artifact
 - the per-project `.claude/` staging directory
 - `consent_cache_path()`, which keeps its own hashing scheme
-  ([above](#planned-layout))
+  ([above](#cache-layout))
+- `AgentConfig.storage_path` (`crates/amplihack-agent-core/src/models.rs`), whose
+  default is `.amplihack/agents`. It is agent storage rather than an index
+  artifact, so it is out of scope here — and it is a project-relative default of
+  the same shape, worth revisiting on its own terms.
 
-Two known limitations are accepted rather than solved here:
-
-**Unbounded cache growth.** Nothing reaps orphaned entries. A deleted project
-leaves its cache directory behind forever, and because every git worktree
-canonicalises to a distinct path, every worktree is a distinct cache identity —
-this repository's own workflow creates one per feature branch. Tens of
-gigabytes in `~/.cache/amplihack/projects/` is a realistic steady state for a
-heavy user. A follow-up `amplihack cache gc` — prune entries whose `project`
-pointer names a path that no longer exists, plus an age bound — is the intended
-fix and is tracked separately. Until then, deleting a `<slug>` directory by
-hand is safe: the next run rebuilds it.
+`GraphDbConfig::default()` carries a `.amplihack/kuzu_db` literal that reads like
+the same bug. It is unreachable as a path: `GraphDbConnector::new` overwrites
+`db_path`, and the only other constructor is a test asserting unrelated fields.
+The literal is documented in place rather than changed, because changing an
+unreachable default is a change with no observable behaviour and a real chance of
+breaking the test that reads it.
 
 **Windows.** `0o700` is `cfg(unix)`; there is no equivalent call on Windows and
 `HOME` is usually unset there. Windows resolution uses the same `home_dir()`
-helper `memory_home_paths()` already relies on (`types.rs:109`), and the
-security boundary is the per-user profile directory's own ACL — amplihack sets
-no additional ACL. Documented as the accepted posture, not as an oversight.
+helper `memory_home_paths()` relies on, and the security boundary is the per-user
+profile directory's own ACL — amplihack sets no additional ACL. This is the
+accepted posture, not an oversight.
 
 ## Verifying the invariant
 
-`[PLANNED]` Two tests, in the crates that own the behaviour:
+Three tests hold the property, in the crates that own the behaviour.
 
 **`crates/amplihack-cli/tests/issue_1476_no_artifacts_in_checkout.rs`** — the
-clean-repo property. Indexes a throwaway git repository in a tempdir and
-asserts the repository is untouched:
+clean-repo property. It indexes a throwaway git repository in a tempdir, with
+stub `scip-*` binaries on `PATH` that exit non-zero unless they are given an
+explicit output path, and asserts the repository is untouched:
 
 ```rust
-// [PLANNED]
 let repo = init_git_repo_with_one_source_file()?;
 run_native_scip_indexing(Some(repo.path()), &[])?;
 
-let status = git(&repo, &["status", "--porcelain"])?;
-assert_eq!(status, "", "indexing dirtied the indexed repository");
-assert!(!repo.path().join(".amplihack").exists());
-assert!(!repo.path().join("index.scip").exists());
+// The headline assertion: the user's repository is unchanged.
+assert_eq!(git(&repo, &["status", "--porcelain"])?, "");
+
+// And the ignored-but-present case `git status` cannot see.
+for entry in walk_skipping_git_and_symlinks(repo.path()) {
+    assert_ne!(entry.file_name(), ".amplihack");
+    assert_ne!(entry.file_name(), "index.scip");
+}
 ```
 
-It asserts on `git status` rather than on a path list because the property that
-matters is "the user's repository is unchanged", not "these six filenames are
-absent". It fails on `main` — `git status --porcelain` reports `?? .amplihack/`
-— and passes after the change.
+`git status --porcelain` being byte-empty is the property that matters — "the
+user's repository is unchanged", not "these six filenames are absent". The
+recursive walk catches what porcelain cannot: a repository whose `.gitignore`
+hides `.amplihack/`, which is precisely the configuration `amplihack-rs` itself
+has and the configuration that hid this bug for as long as it did. The walk uses
+`entry.file_type()` and never descends into a symlinked directory, because a
+symlink cycle in the safety net is an infinite loop in the safety net.
 
-The `index.scip` assertion is the weaker of the two on `main`: a run that
-completes cleanly removes the root `index.scip` itself, so that line alone
-would pass today. Keep it anyway — it is what catches a tier-2 or tier-3
-regression in [SCIP indexer output paths](#scip-indexer-output-paths), where an
-indexer writes to the repo root again and the move back out fails.
+**`crates/amplihack-hooks/src/session_start/tests_artifact_migration.rs`** — the
+ordering property. It populates an in-repo `.amplihack/`, runs the `session_start`
+hook, and asserts the indexing status came back complete: migration ran before
+anything asked whether an index existed. This is the test that catches the
+600-second-rebuild-for-every-user failure.
 
-**`crates/amplihack-hooks/tests/issue_1476_migration_before_staleness.rs`** —
-the ordering property. Sets up a project with a populated in-repo
-`.amplihack/`, runs the `session_start` hook, and asserts that
-`setup_blarify_indexing()` saw the migrated index and did **not** trigger a
-rebuild. This is the test that would have caught the 600-second-rebuild-for-
-everyone failure described under [Migration](#migration-from-an-in-repo-layout).
-
-A third test — asserting that no resolution path ever returns a
-cwd-relative or project-relative artifact path, including when `HOME` and
-`XDG_CACHE_HOME` are both unset — is a **security regression test**. It reads
-as redundant with the two above, because on a healthy system it exercises the
-same outcome by a different route. It is not: it is the only test that pins the
-"error rather than fall back into the repository" decision, and that decision is
-the entire fix. Do not delete it as duplicative.
+**The resolution test** — that no resolution path returns a cwd-relative or
+project-relative artifact path, including when `HOME` and `XDG_CACHE_HOME` are
+both unset. It reads as redundant with the two above, because on a healthy system
+it reaches the same outcome by a different route. It is not: it is the only test
+pinning the "error rather than fall back into the repository" decision, and that
+decision is the entire fix. Do not delete it as duplicative.
 
 To check by hand in any repository:
 
@@ -641,6 +706,7 @@ To check by hand in any repository:
 cd /path/to/some/other/repo
 amplihack index-scip
 git status --porcelain     # must print nothing
+git status --porcelain --ignored | grep -E '\.amplihack|index\.scip'   # also nothing
 ls "${XDG_CACHE_HOME:-$HOME/.cache}"/amplihack/projects/
 ```
 

@@ -49,42 +49,62 @@ Native SCIP indexing summary
 ========================================
 Success: true
 Completed: python, rust
-Artifact: /home/user/myproject/.amplihack/indexes/python.scip
-Artifact: /home/user/myproject/.amplihack/indexes/rust.scip
+Artifact: /home/user/.cache/amplihack/projects/myproject-3f9c1ad7b2e40561/indexes/python.scip
+Artifact: /home/user/.cache/amplihack/projects/myproject-3f9c1ad7b2e40561/indexes/rust.scip
 Imported: files=89, classes=24, functions=412, imports=156, relationships=538
 ```
 
 If a language's indexer is not installed, it is skipped with a note in the
 `Skipped:` line — this is not an error.
 
-The `Artifact:` paths above are inside the indexed project today.
-`[PLANNED]` Issue #1476 moves them to a per-project cache directory, so the
-same run prints:
+The `Artifact:` paths are in a
+[per-project cache directory](../reference/project-artifact-cache.md), not in
+your repository. Indexing never writes into the checkout it indexes:
 
-```
-Artifact: /home/user/.cache/amplihack/projects/myproject-3f9c1ad7b2e40561/indexes/python.scip
-Artifact: /home/user/.cache/amplihack/projects/myproject-3f9c1ad7b2e40561/indexes/rust.scip
+```sh
+git status --porcelain     # prints nothing after an indexing run
 ```
 
-Either way, run `git status` after indexing. It should report nothing. If it
-shows an untracked `.amplihack/` or `index.scip`, you are on a build from
-before that change — do not `git add -A`; see
-[Per-Project Artifact Cache](../reference/project-artifact-cache.md).
+If that prints an untracked `.amplihack/` or `index.scip`, you are running a
+build from before issue #1476 — do not `git add -A`.
+
+To see where a project's artifacts went, or which checkout a cache entry belongs
+to:
+
+```sh
+ls "${XDG_CACHE_HOME:-$HOME/.cache}"/amplihack/projects/
+cat "${XDG_CACHE_HOME:-$HOME/.cache}"/amplihack/projects/myproject-3f9c1ad7b2e40561/project
+```
+
+To put them somewhere else — a scratch disk, or off a machine where the project
+name is itself sensitive — set `AMPLIHACK_ARTIFACT_DIR` to the directory you
+want:
+
+```sh
+AMPLIHACK_ARTIFACT_DIR=/mnt/scratch/amplihack/myproject amplihack index-scip
+```
 
 ### What happens to an index you already have
 
-`[PLANNED]` The first session after the upgrade moves your existing in-repo
-artifacts into the cache directory, before anything checks whether the index is
-stale — so you do not pay for a full reindex. Two outcomes are worth knowing:
+Your first session after upgrading moves existing in-repo artifacts into the
+cache directory, before anything checks whether the index is stale — so you do
+not pay for a full reindex. The session-start notice lists what moved. Two
+outcomes are worth knowing:
 
-- **Untracked artifacts are moved.** `git status` goes quiet on its own and
-  there is nothing to do.
-- **Artifacts you committed are left where they are** and reported as skipped.
-  They are not moved into your cache, because a committed file is
-  repository-supplied data and promoting it into amplihack's own trusted
-  storage is not something a migration should do silently. Removing them stays
-  your call: `git rm -r --cached .amplihack index.scip`, then add both to
-  `.gitignore`.
+- **Untracked artifacts are moved.** `git status` goes quiet on its own and there
+  is nothing to do.
+- **Artifacts you committed are left where they are** and reported as kept. They
+  are not moved into your cache, because a committed file is repository-supplied
+  data and promoting it into amplihack's own trusted storage is not something a
+  migration should do silently. Removing them stays your call:
+
+  ```sh
+  git rm -r --cached .amplihack index.scip
+  printf '.amplihack/\nindex.scip\n' >> .gitignore
+  ```
+
+Nothing else in `.amplihack/` is touched — including `session-state/` and any
+file you put there — and nothing is deleted that was not moved.
 
 ### 3. Confirm the graph has data
 
@@ -180,8 +200,8 @@ or were skipped). Common causes:
 | Cause | Fix |
 |-------|-----|
 | Indexer binary not on PATH | Install the binary; check with `amplihack doctor` |
-| `index.scip` not written | The indexer ran but produced no output; check its stderr |
-| Graph DB path not writable | Ensure `<project>/.amplihack/` is writable — `[PLANNED]` after issue #1476, the per-project cache directory instead |
+| `<language>.scip` not written | The indexer ran but produced no output; check its stderr |
+| Graph DB path not writable | Ensure the project's [artifact cache directory](../reference/project-artifact-cache.md) is writable, or set `AMPLIHACK_ARTIFACT_DIR` |
 
 ## Related
 
