@@ -77,6 +77,7 @@ ghc_log() {
 }
 
 ghc_die() { printf '%s\n' "$1" >&2; ghc_log "error: $1"; exit "${2:-1}"; }
+ghc_warn() { printf 'warning: %s\n' "$1" >&2; ghc_log "warning: $1"; }
 
 # First `gh` on PATH that is not a compat launcher (a dir carrying the marker).
 ghc_find_real_gh() {
@@ -709,12 +710,15 @@ $url"
     ghc_die "pull request create failed: ${GHC_ERR}"
   fi
   url="$(printf '%s' "$resp" | jq -r .html_url)"; n="$(printf '%s' "$resp" | jq -r .number)"
-  ghc_add_labels "$n" "${GHC_O_label:-}"
+  ghc_add_labels "$n" "${GHC_O_label:-}" || ghc_warn "could not add labels ${GHC_O_label} to #${n}: ${GHC_ERR#gh: }"
   if [ -n "${GHC_O_assignee:-}" ]; then
-    ghc_api POST "repos/${GHC_REPO}/issues/${n}/assignees" "$(ghc_csv_json assignees "$(ghc_expand_me "$GHC_O_assignee")")" >/dev/null || ghc_log "assignees not applied to #$n"
+    # The PR exists either way, so its URL still prints; the miss is not silent.
+    ghc_api POST "repos/${GHC_REPO}/issues/${n}/assignees" "$(ghc_csv_json assignees "$(ghc_expand_me "$GHC_O_assignee")")" >/dev/null \
+      || ghc_warn "could not assign ${GHC_O_assignee} to #${n}: ${GHC_ERR#gh: }"
   fi
   if [ -n "${GHC_O_reviewer:-}" ]; then
-    ghc_api POST "repos/${GHC_REPO}/pulls/${n}/requested_reviewers" "$(ghc_csv_json reviewers "$GHC_O_reviewer")" >/dev/null || ghc_log "reviewers not requested on #$n"
+    ghc_api POST "repos/${GHC_REPO}/pulls/${n}/requested_reviewers" "$(ghc_csv_json reviewers "$GHC_O_reviewer")" >/dev/null \
+      || ghc_warn "could not request review from ${GHC_O_reviewer} on #${n}: ${GHC_ERR#gh: }"
   fi
   printf '%s\n' "$url"
 }
@@ -749,7 +753,7 @@ ghc_pr_edit() {
   fi
   if [ "$patch" != "{}" ]; then ghc_api_or_die PATCH "repos/${GHC_REPO}/pulls/${n}" "$patch" >/dev/null || exit 1; fi
   ghc_add_labels "$n" "${GHC_O_add_label:-}" || rc=1
-  ghc_remove_labels "$n" "${GHC_O_remove_label:-}"
+  ghc_remove_labels "$n" "${GHC_O_remove_label:-}" || rc=1
   if [ -n "${GHC_O_assignee:-}" ]; then
     ghc_api POST "repos/${GHC_REPO}/issues/${n}/assignees" "$(ghc_csv_json assignees "$(ghc_expand_me "$GHC_O_assignee")")" >/dev/null || rc=1
   fi
@@ -761,11 +765,17 @@ ghc_pr_edit() {
 }
 
 ghc_remove_labels() {
-  local l
+  local l rc=0
   [ -n "${2:-}" ] || return 0
-  for l in $(printf '%s' "$2" | tr ',' ' '); do
-    ghc_api DELETE "repos/${GHC_REPO}/issues/$1/labels/$(jq -rn --arg l "$l" '$l|@uri')" >/dev/null || ghc_log "label '$l' not removed from #$1"
-  done
+  # One label per line: a label name may hold spaces ("good first issue").
+  while IFS= read -r l; do
+    [ -n "$l" ] || continue
+    ghc_api DELETE "repos/${GHC_REPO}/issues/$1/labels/$(ghc_uri "$l")" >/dev/null \
+      || { ghc_log "label '$l' not removed from #$1: $GHC_ERR"; rc=1; }
+  done <<EOF_LABELS
+$(printf '%s' "$2" | tr ',' '\n')
+EOF_LABELS
+  return "$rc"
 }
 
 ghc_comment() { # ghc_comment KIND(pr|issue) ARGS...
@@ -821,7 +831,8 @@ ghc_pr_merge() {
   printf '✓ Merged pull request %s#%s\n' "$GHC_REPO" "$n" >&2
   if [ "${GHC_B_delete:-}" = 1 ]; then
     branch="$(ghc_api GET "repos/${GHC_REPO}/pulls/${n}" | jq -r .head.ref)"
-    ghc_api DELETE "repos/${GHC_REPO}/git/refs/heads/${branch}" >/dev/null || ghc_log "branch ${branch} not deleted"
+    ghc_api DELETE "repos/${GHC_REPO}/git/refs/heads/${branch}" >/dev/null \
+      || ghc_die "failed to delete remote branch ${branch}: ${GHC_ERR#gh: }"
   fi
 }
 
@@ -831,7 +842,7 @@ ghc_pr_close() {
   ghc_resolve_repo
   ghc_pr_target "${GHC_POS[0]:-}"; n="$GHC_N"
   if [ -n "${GHC_O_comment:-}" ]; then
-    ghc_api POST "repos/${GHC_REPO}/issues/${n}/comments" "$(jq -n --arg b "$GHC_O_comment" '{body: $b}')" >/dev/null || true
+    ghc_api_or_die POST "repos/${GHC_REPO}/issues/${n}/comments" "$(jq -n --arg b "$GHC_O_comment" '{body: $b}')" >/dev/null || exit 1
   fi
   ghc_api_or_die PATCH "repos/${GHC_REPO}/pulls/${n}" '{"state":"closed"}' >/dev/null || exit 1
   printf '✓ Closed pull request %s#%s\n' "$GHC_REPO" "$n" >&2
@@ -1014,7 +1025,7 @@ ghc_issue_state() { # ghc_issue_state close|reopen ARGS...
   ghc_issue_target "${GHC_POS[0]:-}"; n="$GHC_N"
   [ "$verb" = reopen ] && state=open
   if [ -n "${GHC_O_comment:-}" ]; then
-    ghc_api POST "repos/${GHC_REPO}/issues/${n}/comments" "$(jq -n --arg b "$GHC_O_comment" '{body: $b}')" >/dev/null || true
+    ghc_api_or_die POST "repos/${GHC_REPO}/issues/${n}/comments" "$(jq -n --arg b "$GHC_O_comment" '{body: $b}')" >/dev/null || exit 1
   fi
   reason="$(printf '%s' "${GHC_O_reason:-}" | tr ' A-Z' '_a-z')"
   ghc_api_or_die PATCH "repos/${GHC_REPO}/issues/${n}" "$(jq -n --arg s "$state" --arg r "$reason" '{state: $s} + (if $r != "" then {state_reason: $r} else {} end)')" >/dev/null || exit 1
@@ -1029,7 +1040,7 @@ ghc_issue_edit() {
   if [ -n "${GHC_O_body:-}${GHC_O_body_file:-}" ]; then patch="$(jq -n --argjson p "$patch" --arg b "$(ghc_body)" '$p + {body: $b}')"; fi
   if [ "$patch" != "{}" ]; then ghc_api_or_die PATCH "repos/${GHC_REPO}/issues/${n}" "$patch" >/dev/null || exit 1; fi
   ghc_add_labels "$n" "${GHC_O_add_label:-}" || ghc_die "failed to add labels to #${n}"
-  ghc_remove_labels "$n" "${GHC_O_remove_label:-}"
+  ghc_remove_labels "$n" "${GHC_O_remove_label:-}" || ghc_die "failed to remove labels from #${n}"
   printf 'https://github.com/%s/issues/%s\n' "$GHC_REPO" "$n"
 }
 

@@ -600,4 +600,16 @@ out="$(gh pr view 42 --comments)" || fail view-comments "pr view --comments fail
 case "$out" in *"status:	changes_requested"*"status:	approved"*) ;; *) fail view-comments "pr reviews missing: '$out'" ;; esac
 ok "view --comments prints the comment list instead of dropping it"
 
+# 40. Write side effects never fail silently.
+reset_log; rc=0; gh issue close 99 --comment "closing" >/dev/null 2>&1 || rc=$?
+[ "$rc" = 1 ] || fail writes "issue close with an unpostable --comment exited $rc"
+logged_prefix "api -X PATCH" && fail writes "closed although the --comment failed"
+reset_log; rc=0; gh pr edit 42 --remove-label "good first issue" >/dev/null 2>&1 || rc=$?
+logged "api -X DELETE repos/o/r/issues/42/labels/good%20first%20issue" || fail writes "a label with spaces was split"
+[ "$rc" = 1 ] || fail writes "a failed --remove-label exited $rc"
+rc=0; out="$(gh pr create --title t --body b --reviewer someone 2>"${WORK}/create.err")" || rc=$?
+[ "$rc" = 0 ] && [ "$out" = "https://github.com/o/r/pull/43" ] || fail writes "pr create: rc $rc, stdout '$out'"
+grep -q "warning: could not request review from someone" "${WORK}/create.err" || fail writes "a failed reviewer request was silent"
+ok "write side effects (comment, label removal, reviewers) fail or warn, never silently"
+
 echo "PASS: ${PASS} checks"
