@@ -4,23 +4,30 @@
 # Contract under test (amplifier-bundle/tools/workflow_gh_compat.sh, reached
 # through a `gh` launcher first on PATH, the way the recipe runner installs it):
 #
-#   1. Where GraphQL works, the real gh's output and exit status pass through
-#      unchanged and no REST call is made.
-#   2. When the real gh fails with the Claude Code GraphQL block (HTTP 403), the
-#      call is replayed over REST (`gh api repos/...`) in the shape callers
-#      parse, and the block is remembered: the next call goes straight to REST.
-#   3. pr view/list/create/checks/ready, issue view/list/create, label create,
+#   1. Each call aimed at a GraphQL client first learns whether GraphQL works
+#      on its host: one bounded `gh api graphql '{viewer{login}}'` probe, whose
+#      answer is remembered per host (works/blocked for the TTL, "could not
+#      tell" briefly). Where it works, the real gh runs with the caller's own
+#      descriptors (output, interleaving, exit status and signals are gh's) and
+#      no REST call is made.
+#   2. Where the probe gets the Claude Code GraphQL block (HTTP 403), the call
+#      is served over REST (`gh api repos/...`) in the shape callers parse, and
+#      later calls go straight to REST. A block that gh itself meets after an
+#      inconclusive probe or a stale "works" answer is recorded and replayed.
+#   3. pr view/list/create/checks/ready, issue view/list/create, label list,
 #      `api graphql` (viewer permission) and `auth status` each issue the
 #      expected REST request.
 #   4. /search is refused by the proxy; issue search falls back to matching
 #      the repo's issues client-side.
-#   5. Subcommands that are not GraphQL clients are exec'd untouched.
+#   5. Subcommands that are not GraphQL clients, -h/--help and `label create`
+#      are exec'd untouched, without a probe.
 #   6. workflow_gh_retry.sh classifies the block as permanent, not a rate limit
 #      (a rate limit waits for a reset that never comes).
-#   7. (#1499) Pass-through stderr survives an early-exiting reader, a child
-#      holding the descriptor, block text on success and newline-less prompts;
-#      --json fields are validated as gh does and never read as a silent null;
-#      sub-lists read every page; closedByPullRequestsReferences is derived.
+#   7. --json fields are validated as gh does and never read as a silent null;
+#      sub-lists read every page; results over 128 KiB come back whole;
+#      closedByPullRequestsReferences is derived; unsupported flags fail.
+#   8. Another host (HOST/OWNER/REPO, GHE remote, GH_HOST) is never answered
+#      from github.com.
 #
 # Never touches the network: the "real" gh is a stub that records its argv.
 # Usage: bash amplifier-bundle/recipes/tests/test-gh-compat-graphql-blocked.sh
@@ -63,7 +70,7 @@ if [ $# = 3 ] && [ "$3" = --json ]; then
 fi
 printf '%s\n' "$*" >> "$STUB_LOG"
 if [ "$1" = "api" ]; then
-  method=GET; path=""; input=""; paginate=0
+  method=GET; path=""; input=""; paginate=0; host=github.com
   shift
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -72,11 +79,19 @@ if [ "$1" = "api" ]; then
       -f|-F) shift 2 ;;
       --input) input="$2"; shift 2 ;;
       --paginate) paginate=1; shift ;;
+      --hostname) host="$2"; shift 2 ;;
       *) path="$1"; shift ;;
     esac
   done
   [ -n "$input" ] && printf 'BODY %s\n' "$(jq -c . "$input")" >> "$STUB_LOG"
   if [ "$path" = graphql ]; then
+    # Probe edge cases: a one-off 502, a rate limit, a slow endpoint, a GHE host.
+    if [ -n "${STUB_PROBE_502_ONCE:-}" ] && [ ! -e "$STUB_PROBE_502_ONCE" ]; then
+      : > "$STUB_PROBE_502_ONCE"; echo "HTTP 502: Bad Gateway (https://api.github.com/graphql)" >&2; exit 1
+    fi
+    [ "${STUB_PROBE_RATELIMIT:-0}" = 1 ] && { echo "GraphQL: API rate limit exceeded for user ID 1." >&2; exit 1; }
+    [ -n "${STUB_PROBE_SLEEP:-}" ] && sleep "$STUB_PROBE_SLEEP"
+    [ "$host" != github.com ] && [ "${STUB_GHE_OK:-0}" = 1 ] && { echo '{"data":{"viewer":{"login":"ghe"}}}'; exit 0; }
     if [ "${STUB_GRAPHQL_OK:-0}" = 1 ]; then echo '{"data":{"viewer":{"login":"bot"}}}'; exit 0; fi
     echo "HTTP 403: GitHub GraphQL is not available from Claude Code sessions; use the REST API (gh api repos/{owner}/{repo}/...). (https://api.github.com/graphql)" >&2; exit 1
   fi
@@ -184,6 +199,9 @@ if [ "${STUB_NOISY:-}" != "" ]; then
   i=0; while [ "$i" -lt "$STUB_NOISY" ]; do echo "noise line $i" >&2; i=$((i + 1)); done
   echo "noisy-done"; exit 0
 fi
+for a in "$@"; do case "$a" in -h|--help) echo "help for $1 $2"; exit 0 ;; esac; done
+[ "${STUB_ENV:-0}" = 1 ] && { echo "GHC_REPO=${GHC_REPO-unset}"; exit 0; }
+[ "${STUB_GHE_OK:-0}" = 1 ] && [ "${GH_HOST:-}" = ghe.example.com ] && { echo "ghe-output: $*"; exit 0; }
 if [ "${STUB_INTERLEAVE:-0}" = 1 ]; then
   echo err1 >&2; echo out1; echo err2 >&2; echo out2; exit 0
 fi
@@ -308,10 +326,11 @@ miss="$(gh issue list --state open --search "wid" --json url --jq '.[0].url // "
 [ -z "$miss" ] || fail issue-search "search fallback matched a word fragment: '$miss'"
 ok "issue view/create over REST; blocked /search falls back to repo issues"
 
-# 8. label create on an existing label fails the way gh does.
-rc=0; gh label create workflow:default --color 0366d6 >/dev/null 2>&1 || rc=$?
-[ "$rc" = 1 ] || fail label "existing label should exit 1, got $rc"
-ok "label create: 422 maps to gh's 'already exists' failure"
+# 8. label create is REST in gh itself: handed to the real gh, not replayed.
+reset_log; gh label create workflow:default --color 0366d6 >/dev/null 2>&1 || true
+logged "label create workflow:default --color 0366d6" || fail label "label create not handed to the real gh"
+logged_prefix "api " && fail label "label create was probed or replayed"
+ok "label create goes to the real gh (REST there) untouched"
 
 # 9. api graphql viewer permission (the identity preflight query).
 resp="$(gh api graphql --hostname github.com -f owner=o -f name=r -f query='query($owner:String!,$name:String!){viewer{login} repository(owner:$owner,name:$name){nameWithOwner viewerPermission}}')"
@@ -712,5 +731,72 @@ i=0; while [ ! -s "$pidf" ] && [ "$i" -lt 40 ]; do sleep 0.1; i=$((i + 1)); done
 kill -TERM "$bg"; wait "$bg" 2>/dev/null || true; sleep 0.3
 if kill -0 "$(cat "$pidf")" 2>/dev/null; then kill "$(cat "$pidf")"; fail sigterm "real gh survived SIGTERM to the shim"; fi
 ok "SIGTERM to the shim leaves no real gh behind"
+
+# ---------------------------------------------------------------------------
+# Independent crusty review round 2, of bc9da2dd (PR comment 5841113968).
+# ---------------------------------------------------------------------------
+fresh() { rm -f "$AMPLIHACK_GH_COMPAT_STATE"*; reset_log; }
+probes() { grep -c '^api graphql' "$STUB_LOG" || true; }
+
+# 46. inconclusive-probe-execs-into-block: a probe that gets a 502 on a blocked
+#     host, and a stale ".ok" on a host that has become blocked, still end in
+#     the REST answer.
+fresh
+out="$(STUB_PROBE_502_ONCE="${WORK}/p502" gh issue view 7 --json url --jq .url 2>/dev/null)" || fail inconclusive "502 probe: exit $?"
+[ "$out" = "https://github.com/o/r/issues/7" ] || fail inconclusive "502 probe then block gave '$out'"
+[ -e "$AMPLIHACK_GH_COMPAT_STATE" ] || fail inconclusive "the block seen by gh was not recorded"
+# An .ok recorded 10 minutes ago (inside the 60 min TTL, past the 5 min recheck).
+ago="$(date -d '10 minutes ago' +%Y%m%d%H%M 2>/dev/null || date -v-10M +%Y%m%d%H%M)"
+fresh; : > "${AMPLIHACK_GH_COMPAT_STATE}.ok"; touch -t "$ago" "${AMPLIHACK_GH_COMPAT_STATE}.ok"
+out="$(gh issue view 7 --json url --jq .url 2>/dev/null)" || fail inconclusive "stale .ok on a blocked host: exit $?"
+[ "$out" = "https://github.com/o/r/issues/7" ] || fail inconclusive "stale .ok on a blocked host gave '$out'"
+ok "an inconclusive probe or a stale .ok still ends in the REST answer"
+
+# 47. probe-unbounded-and-uncached-when-inconclusive.
+fresh
+for i in 1 2 3; do STUB_GRAPHQL_OK=1 STUB_PROBE_RATELIMIT=1 gh pr view 42 >/dev/null 2>&1 || true; done
+[ "$(probes)" = 1 ] || fail probe "a rate-limited probe was repeated: $(probes) probes for 3 calls"
+fresh; start=$SECONDS
+STUB_GRAPHQL_OK=1 STUB_PROBE_SLEEP=5 AMPLIHACK_GH_COMPAT_PROBE_TIMEOUT=1 gh pr view 42 >/dev/null 2>&1 || true
+[ $((SECONDS - start)) -lt 4 ] || fail probe "a hung probe held the call for $((SECONDS - start))s"
+fresh; gh label create x --color 000000 >/dev/null 2>&1 || true
+[ "$(probes)" = 0 ] || fail probe "label create (REST in gh) was probed"
+ok "the probe is bounded, an inconclusive answer is cached, label create is not probed"
+
+# 48. help-flag-refused-on-blocked-host.
+fresh; : > "$AMPLIHACK_GH_COMPAT_STATE"
+for h in "pr view --help" "issue list -h"; do
+  out="$(gh $h 2>&1)" || fail help "'gh $h' exited $?: $out"
+  case "$out" in "help for ${h% *}") ;; *) fail help "'gh $h' gave '$out'" ;; esac
+done
+ok "-h/--help reaches gh's offline help on a blocked host"
+
+# 49. host-qualified-repo-and-host-unkeyed-state.
+fresh; : > "$AMPLIHACK_GH_COMPAT_STATE"
+rc=0; err="$(gh issue view 5 -R ghe.example.com/o/r 2>&1)" || rc=$?
+[ "$rc" != 0 ] || fail host "-R ghe.example.com/o/r answered from github.com"
+logged_prefix "api -X GET repos/ghe.example.com" && fail host "HOST/OWNER/REPO sent as a github.com path"
+case "$err" in *ghe.example.com*) ;; *) fail host "refusal does not name the host: '$err'" ;; esac
+rm -f "${AMPLIHACK_GH_COMPAT_STATE}@"*; reset_log   # github.com stays blocked
+out="$(GH_HOST=ghe.example.com STUB_GHE_OK=1 gh pr view 42 2>/dev/null)" || true
+[ "$out" = "ghe-output: pr view 42" ] || fail host "github.com's block marker applied to ghe.example.com: '$out'"
+logged "api graphql --hostname ghe.example.com -f query={viewer{login}}" || fail host "ghe.example.com was not probed itself"
+git init -q -b feat "${WORK}/ghe" && git -C "${WORK}/ghe" remote add origin https://ghe.example.com/o/r.git
+reset_log; rc=0; ( cd "${WORK}/ghe" && gh issue view 5 >/dev/null 2>&1 ) || rc=$?
+logged_prefix "api -X GET repos/o/r" && fail host "a GHE origin was answered from github.com's o/r"
+ok "HOST/OWNER/REPO and GHE remotes are not answered from github.com; answers are per host"
+
+# 50. ghc-repo-env-leaks-into-exec.
+fresh; : > "${AMPLIHACK_GH_COMPAT_STATE}.ok"
+[ "$(STUB_GRAPHQL_OK=1 STUB_ENV=1 gh pr view 42)" = "GHC_REPO=unset" ] || fail env "GHC_REPO leaked into the real gh's environment"
+ok "no gh-compat variables leak into the real gh"
+fresh; : > "$AMPLIHACK_GH_COMPAT_STATE"
+
+# 51. stale-test-contract-header: the contract above describes the probe, not
+#     the removed stderr follower or a first real-gh attempt.
+hdr="$(sed -n '2,/^set -euo pipefail/p' "${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")")"
+case "$hdr" in *"survives an early"*|*"When the real gh fails with"*) fail header "contract header describes removed behaviour" ;; esac
+case "$hdr" in *"probe"*) ;; *) fail header "contract header does not describe the GraphQL probe" ;; esac
+ok "the contract header matches the probe design"
 
 echo "PASS: ${PASS} checks"
