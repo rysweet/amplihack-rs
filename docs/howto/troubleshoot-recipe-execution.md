@@ -8,6 +8,7 @@ Use this guide when a recipe step fails unexpectedly — a shell step hangs, an 
 - [Shell step fails with "TASK_DESCRIPTION: unbound variable"](#shell-step-fails-with-task_description-unbound-variable)
 - [Late shell step fails with "Argument list too long (os error 7)"](#late-shell-step-fails-with-argument-list-too-long-os-error-7)
 - [Agent step completes but changes nothing](#agent-step-completes-but-changes-nothing)
+- [Agent steps fail as root with "--dangerously-skip-permissions cannot be used with root"](#agent-steps-fail-as-root-with---dangerously-skip-permissions-cannot-be-used-with-root)
 - [Shell step fails with "python3 not found"](#shell-step-fails-with-python3-not-found)
 - [Workflow classification routes to the wrong type](#workflow-classification-routes-to-the-wrong-type)
 - [Workflow step requires a Git repository](#workflow-step-requires-a-git-repository)
@@ -193,6 +194,56 @@ inherited environment safely under `ARG_MAX`, so late steps no longer fail.
 See
 [Recipe Context Environment Export → Aggregate environment budget](../reference/recipe-context-environment.md#aggregate-environment-budget)
 and the [`AMPLIHACK_CONTEXT_ENV_BUDGET_BYTES` reference](../reference/environment-variables.md#amplihack_context_env_budget_bytes).
+
+---
+
+## Agent steps fail as root with "--dangerously-skip-permissions cannot be used with root"
+
+**Symptom:** Running as root, `amplihack recipe run` stops before the first
+agent step with ``recipe pre-flight failed for '<recipe>': amplihack runs
+`claude --dangerously-skip-permissions`, which Claude Code refuses as root``,
+or an older amplihack fails inside the step with
+`--dangerously-skip-permissions cannot be used with root/sudo privileges`.
+
+**Cause:** amplihack passes `--dangerously-skip-permissions` to every
+non-interactive `claude` it starts. Claude Code refuses that flag as uid 0
+unless `IS_SANDBOX=1` is set (the exact value `1`) or it runs in its own
+bubblewrap sandbox.
+
+**What amplihack does as root** (for `claude` only):
+
+| Situation | Result |
+|---|---|
+| `IS_SANDBOX=1`, or a truthy `CLAUDE_CODE_BUBBLEWRAP` | Passed through unchanged |
+| `IS_SANDBOX=yes`/`true`/`on`/`y` | Passed to `claude` as `IS_SANDBOX=1` |
+| `IS_SANDBOX=0` or any other value | Never overridden; fails up front |
+| `IS_SANDBOX` unset, in a detected container | `IS_SANDBOX=1` set on the `claude` child only, with a one-line notice on stderr |
+| `IS_SANDBOX` unset, no container detected | Fails up front naming `IS_SANDBOX=1` |
+
+A container is detected from `CLAUDE_CODE_REMOTE=true` (Claude Code cloud
+sessions), `/.dockerenv`, `/run/.containerenv`, or a container runtime in the
+path of `/proc/1/cgroup`. Under WSL the two marker files are ignored, because a
+distribution imported from `docker export` keeps `/.dockerenv`. The notice
+looks like this:
+
+```text
+amplihack: running as root in a container (/.dockerenv); passing IS_SANDBOX=1 to claude so --dangerously-skip-permissions is accepted. Set IS_SANDBOX=0 to refuse.
+```
+
+**Fix:**
+
+- On a disposable machine that was not detected (a root CI VM, for example),
+  opt in explicitly:
+
+  ```bash
+  export IS_SANDBOX=1
+  amplihack recipe run <recipe>
+  ```
+
+- On a machine that is not disposable, run amplihack as a non-root user.
+- To stop amplihack enabling it automatically in a container that is not
+  disposable (one with the host filesystem or `docker.sock` mounted, for
+  example), `export IS_SANDBOX=0`. Agent steps then fail up front instead.
 
 ---
 

@@ -25,6 +25,11 @@
 //!   `/.dockerenv`, `/run/.containerenv`, or a container marker in
 //!   `/proc/1/cgroup`): `IS_SANDBOX=1` is set on the child `claude` process
 //!   only. amplihack's own environment is never modified.
+//! - Under WSL the marker files do not count. WSL is a workstation with the
+//!   Windows drives mounted, and a distribution imported from `docker export`
+//!   keeps the image's `/.dockerenv`; WSL imports also log in as root by
+//!   default. A container marker in `/proc/1/cgroup` still counts there,
+//!   because it describes the process tree, not the root filesystem.
 //! - `CLAUDE_CODE_BUBBLEWRAP` set: Claude Code accepts the flag itself, so
 //!   nothing is needed.
 //! - Root with no sandbox signal: an error naming `IS_SANDBOX=1`, raised before
@@ -76,6 +81,26 @@ fn cgroup_names_a_container(contents: &str) -> bool {
     })
 }
 
+/// Environment variables WSL sets in every session of a distribution.
+const WSL_ENV_VARS: [&str; 2] = ["WSL_DISTRO_NAME", "WSL_INTEROP"];
+
+/// Paths that exist in a WSL distribution and not in a container. The
+/// `binfmt_misc` entries are how WSL runs Windows executables; `/run/WSL` holds
+/// its interop sockets. They catch WSL when `sudo` has reset the environment.
+const WSL_PATHS: [&str; 3] = [
+    "/proc/sys/fs/binfmt_misc/WSLInterop",
+    "/proc/sys/fs/binfmt_misc/WSLInterop-late",
+    "/run/WSL",
+];
+
+/// Whether this process runs in a WSL distribution.
+fn running_under_wsl() -> bool {
+    WSL_ENV_VARS
+        .iter()
+        .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
+        || WSL_PATHS.iter().any(|path| Path::new(path).exists())
+}
+
 /// Evidence that this process runs inside a disposable container.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SandboxSignals {
@@ -98,21 +123,24 @@ impl SandboxSignals {
             Path::new("/.dockerenv").exists(),
             Path::new("/run/.containerenv").exists(),
             cgroup.as_deref(),
+            running_under_wsl(),
         )
     }
 
-    /// Pure form of [`SandboxSignals::detect`], for tests.
+    /// Pure form of [`SandboxSignals::detect`], for tests. Under `wsl` the
+    /// marker files are ignored (see the module documentation).
     pub fn from_state(
         claude_code_remote: Option<&str>,
         dockerenv: bool,
         containerenv: bool,
         cgroup: Option<&str>,
+        wsl: bool,
     ) -> Self {
         Self {
             claude_code_remote: claude_code_remote
                 .is_some_and(|value| value.trim().eq_ignore_ascii_case("true")),
-            dockerenv,
-            containerenv,
+            dockerenv: dockerenv && !wsl,
+            containerenv: containerenv && !wsl,
             container_cgroup: cgroup.is_some_and(cgroup_names_a_container),
         }
     }
@@ -209,10 +237,15 @@ fn is_truthy(value: &str) -> bool {
     value == "1" || is_affirmative(value)
 }
 
-/// [`decide`] against the real process state.
+/// [`decide`] against the real process state. The sandbox probes (a file
+/// read and a few `stat`s) run only as root.
 pub fn detect() -> SkipPermissionsEnv {
+    let euid = effective_uid();
+    if euid != Some(0) {
+        return SkipPermissionsEnv::NotRoot;
+    }
     decide(
-        effective_uid(),
+        euid,
         std::env::var(IS_SANDBOX_ENV).ok().as_deref(),
         std::env::var(CLAUDE_CODE_BUBBLEWRAP_ENV).ok().as_deref(),
         SandboxSignals::detect(),
@@ -295,7 +328,7 @@ impl fmt::Display for RootSandboxError {
                 "amplihack runs `claude {SKIP_PERMISSIONS_FLAG}`, which Claude Code refuses as root \
                  (uid 0) unless {IS_SANDBOX_ENV}=1 is set, and no container sandbox was detected \
                  (checked {CLAUDE_CODE_REMOTE_ENV}=true, /.dockerenv, /run/.containerenv and \
-                 /proc/1/cgroup). If this machine is a disposable sandbox, export \
+                 /proc/1/cgroup; the marker files do not count under WSL). If this machine is a disposable sandbox, export \
                  {IS_SANDBOX_ENV}=1 and re-run; otherwise run amplihack as a non-root user."
             ),
             Self::ExplicitlyNotSandboxed { value } => write!(
@@ -564,11 +597,20 @@ mod tests {
 
     #[test]
     fn claude_code_remote_must_be_true() {
-        assert!(SandboxSignals::from_state(Some("true"), false, false, None).claude_code_remote);
-        assert!(SandboxSignals::from_state(Some("TRUE"), false, false, None).claude_code_remote);
-        assert!(!SandboxSignals::from_state(Some("false"), false, false, None).claude_code_remote);
-        assert!(!SandboxSignals::from_state(Some(""), false, false, None).claude_code_remote);
-        assert!(!SandboxSignals::from_state(None, false, false, None).claude_code_remote);
+        assert!(
+            SandboxSignals::from_state(Some("true"), false, false, None, false).claude_code_remote
+        );
+        assert!(
+            SandboxSignals::from_state(Some("TRUE"), false, false, None, false).claude_code_remote
+        );
+        assert!(
+            !SandboxSignals::from_state(Some("false"), false, false, None, false)
+                .claude_code_remote
+        );
+        assert!(
+            !SandboxSignals::from_state(Some(""), false, false, None, false).claude_code_remote
+        );
+        assert!(!SandboxSignals::from_state(None, false, false, None, false).claude_code_remote);
     }
 
     #[test]
@@ -585,7 +627,8 @@ mod tests {
             "1:name=systemd:/\n0::/docker/abcd",
         ] {
             assert!(
-                SandboxSignals::from_state(None, false, false, Some(cgroup)).container_cgroup,
+                SandboxSignals::from_state(None, false, false, Some(cgroup), false)
+                    .container_cgroup,
                 "{cgroup}"
             );
         }
@@ -601,11 +644,38 @@ mod tests {
             "3:docker:/",
         ] {
             assert_eq!(
-                SandboxSignals::from_state(None, false, false, Some(cgroup)),
+                SandboxSignals::from_state(None, false, false, Some(cgroup), false),
                 NO_SIGNALS,
                 "{cgroup}"
             );
         }
+    }
+
+    #[test]
+    fn wsl_ignores_marker_files_but_not_a_container_cgroup() {
+        // A distribution imported from `docker export` keeps `/.dockerenv`.
+        assert_eq!(
+            SandboxSignals::from_state(None, true, true, Some("0::/"), true),
+            NO_SIGNALS
+        );
+        assert_eq!(
+            decide(
+                Some(0),
+                None,
+                None,
+                SandboxSignals::from_state(None, true, true, None, true)
+            ),
+            SkipPermissionsEnv::RootOutsideSandbox
+        );
+        let outside_wsl = SandboxSignals::from_state(None, true, true, None, false);
+        assert!(outside_wsl.dockerenv && outside_wsl.containerenv);
+        assert!(
+            SandboxSignals::from_state(None, false, false, Some("0::/docker/abcd"), true)
+                .container_cgroup
+        );
+        assert!(
+            SandboxSignals::from_state(Some("true"), false, false, None, true).claude_code_remote
+        );
     }
 
     #[test]

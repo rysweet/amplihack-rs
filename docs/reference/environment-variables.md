@@ -51,6 +51,7 @@ All environment variables read or written by `amplihack` during a launch (`ampli
   - [AMPLIHACK_PROJECT_ID](#amplihack_project_id)
   - [CI](#ci)
   - [UV_TOOL_BIN_DIR](#uv_tool_bin_dir)
+  - [IS_SANDBOX](#is_sandbox)
 - [Signal channel variables](#signal-channel-variables)
   - [AMPLIHACK_SIGNAL_REUSE_ROLLING_GROUP](#amplihack_signal_reuse_rolling_group)
   - [AMPLIHACK_SIGNAL_ROLLING_GROUP_ID](#amplihack_signal_rolling_group_id)
@@ -1290,6 +1291,32 @@ See: [Startup Self-Update Prompt — Subprocess-Safe Skip](../features/startup-u
 **Used by:** `bootstrap.rs` when installing `amplifier`
 
 Override the directory where `uv tool install` places the `amplifier` binary. Defaults to `~/.local/bin`.
+
+---
+
+### IS_SANDBOX
+
+**Type:** `1` to allow; `0` to refuse
+**Used by:** every `claude --dangerously-skip-permissions` amplihack starts
+(`amplihack claude`, recipe agent steps, the orchestration runner, the fleet
+reasoner)
+
+Claude Code refuses `--dangerously-skip-permissions` as root unless
+`IS_SANDBOX=1` is set. It accepts only the exact value `1`. When amplihack runs
+as root:
+
+- `IS_SANDBOX=1`, or a truthy `CLAUDE_CODE_BUBBLEWRAP`, is passed through.
+- `yes`, `true`, `on` and `y` are passed to `claude` as `1`.
+- `0` or any other value is never overridden, and amplihack fails before
+  starting `claude`.
+- Unset in a detected container (`CLAUDE_CODE_REMOTE=true`, `/.dockerenv`,
+  `/run/.containerenv`, or a container runtime in `/proc/1/cgroup`; the marker
+  files do not count under WSL): amplihack sets `IS_SANDBOX=1` on the `claude`
+  child only and prints a one-line notice on stderr.
+- Unset with no container detected: amplihack fails before starting `claude`.
+
+Not root: ignored. See
+[Agent steps fail as root](../howto/troubleshoot-recipe-execution.md#agent-steps-fail-as-root-with---dangerously-skip-permissions-cannot-be-used-with-root).
 
 ---
 
