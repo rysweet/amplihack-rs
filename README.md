@@ -123,6 +123,18 @@ This launches an interactive agent session enhanced with amplihack workflows,
 specialized agents, and development tools. You get a CLI prompt where you can
 describe tasks and the framework orchestrates their execution.
 
+**Option 5: Claude Code plugin (desktop, terminal, and cloud sessions)**
+
+```text
+/plugin marketplace add rysweet/amplihack-rs
+/plugin install amplihack@amplihack
+```
+
+This loads the skills, agents, and slash commands straight from git with no
+`amplihack install`. That makes it the way to get amplihack into Claude Code
+on the web. See
+[Install amplihack as a Claude Code plugin](docs/howto/install-claude-code-plugin.md).
+
 ### Runtime and install path
 
 `amplihack` ships the runtime entrypoint, recipe runner, hook engine, install

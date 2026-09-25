@@ -1,0 +1,146 @@
+#!/bin/sh
+# Claude Code plugin SessionStart hook: make the amplihack runtime reachable.
+#
+# The plugin root is a full amplihack-rs checkout, so it serves as
+# AMPLIHACK_HOME and recipes resolve from it. What it cannot carry are the
+# native binaries: amplihack, amplihack-hooks and recipe-runner-rs. This hook:
+#
+#   1. exports AMPLIHACK_HOME and a PATH covering ~/.local/bin and ~/.cargo/bin
+#      into the session through $CLAUDE_ENV_FILE;
+#   2. reconciles the runtime with this plugin version. install-runtime records
+#      the plugin version it installed for in runtime.stamp, so a plugin update
+#      also updates the binaries instead of running new recipes on old ones.
+#      When anything is missing or stale it either starts install-runtime in
+#      the background (default in cloud sessions, CLAUDE_CODE_REMOTE=true) or
+#      tells Claude the command that installs it.
+#      AMPLIHACK_PLUGIN_AUTO_INSTALL=1/0 overrides the default.
+#
+# A failed install is not retried for six hours (or until the plugin version
+# changes), and installs never start on a compaction: SessionStart also fires
+# on resume, clear and compact, and a failing multi-minute cargo build must
+# not restart every time.
+#
+# It always exits 0 and returns immediately: a SessionStart hook must never
+# block or fail a session.
+
+bin_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" 2>/dev/null && pwd) || exit 0
+root="${CLAUDE_PLUGIN_ROOT:-$(CDPATH='' cd -- "$bin_dir/../.." 2>/dev/null && pwd)}"
+# Same default as install-runtime: the directory Claude Code gives this plugin,
+# so manual runs (which do not get CLAUDE_PLUGIN_DATA) share its state.
+data="${CLAUDE_PLUGIN_DATA:-${CLAUDE_CODE_PLUGIN_CACHE_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins}/data/amplihack-amplihack}"
+# The cache directory name is the plugin version (the commit when plugin.json
+# carries no version), so it identifies what the runtime was installed for.
+plugin_id=$(basename -- "$root")
+
+PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+export PATH
+
+append_env() {
+  [ -n "${CLAUDE_ENV_FILE:-}" ] || return 0
+  if [ ! -f "$CLAUDE_ENV_FILE" ] || ! grep -qxF "$1" "$CLAUDE_ENV_FILE" 2>/dev/null; then
+    printf '%s\n' "$1" >>"$CLAUDE_ENV_FILE" 2>/dev/null || true
+  fi
+}
+
+json_escape() {
+  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+emit_context() {
+  printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"%s"}}\n' \
+    "$(json_escape "$1")"
+}
+
+append_env "export AMPLIHACK_HOME=\"$root\""
+# shellcheck disable=SC2016 # $HOME and $PATH must expand when the file is sourced
+append_env 'export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"'
+# This plugin only runs inside Claude Code, so recipe agent steps must too.
+# Without a live CLAUDECODE marker the resolver falls back to copilot (#1481).
+# shellcheck disable=SC2016 # expand when sourced, so an explicit choice wins
+append_env 'export AMPLIHACK_AGENT_BINARY="${AMPLIHACK_AGENT_BINARY:-claude}"'
+# Cloud containers run as root, where claude refuses the
+# --dangerously-skip-permissions that recipe agent steps pass (#1482).
+if [ "${CLAUDE_CODE_REMOTE:-}" = "true" ] && [ "$(id -u 2>/dev/null)" = 0 ]; then
+  append_env 'export IS_SANDBOX=1'
+fi
+
+missing=""
+for tool in amplihack amplihack-hooks recipe-runner-rs; do
+  command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
+done
+missing=${missing# }
+
+stamp="$data/runtime.stamp"
+installed_for=$(sed -n 1p "$stamp" 2>/dev/null)
+[ -z "$missing" ] && [ "$installed_for" = "$plugin_id" ] && exit 0
+
+# install-runtime found an amplihack the user manages but not its partner,
+# and will not add one beside it. Say what is missing; do not retry.
+# Once nothing is missing (the user completed the pair), fall through so the
+# reconcile below records the runtime and clears the marker.
+if [ -n "$missing" ] && [ "$(sed -n 1p "$data/user-managed" 2>/dev/null)" = "$plugin_id" ]; then
+  case " $missing " in
+    *" recipe-runner-rs "*) ;;
+    *)
+      emit_context "amplihack plugin: amplihack here is user-managed (not installed by the plugin) and incomplete (missing: $missing), so recipe skills and hooks are unavailable. Install the missing binary the same way amplihack itself was installed (for example \`amplihack install\` or cargo install); the plugin does not install next to a user-managed amplihack."
+      exit 0
+      ;;
+  esac
+fi
+
+case "${AMPLIHACK_PLUGIN_AUTO_INSTALL:-}" in
+  1 | true) auto=1 ;;
+  0 | false) auto=0 ;;
+  *) if [ "${CLAUDE_CODE_REMOTE:-}" = "true" ]; then auto=1; else auto=0; fi ;;
+esac
+
+installer="$bin_dir/install-runtime"
+if [ "$auto" != 1 ]; then
+  # A runtime the user installed and manages themselves is left alone.
+  [ -n "$missing" ] || exit 0
+  emit_context "amplihack plugin: the amplihack runtime is not installed (missing: $missing). Skills, agents and commands are loaded, but skills that run recipes (dev-orchestrator, default-workflow, investigation-workflow) need it. If the user wants those workflows, install it with: sh \"$installer\" (downloads prebuilt amplihack binaries into ~/.local/bin and builds recipe-runner-rs with cargo; takes several minutes)."
+  exit 0
+fi
+
+mkdir -p "$data" 2>/dev/null || exit 0
+lock="$data/install.lock"
+log="$data/install-runtime.log"
+failed="$data/install.failed"
+
+# Back off after a failure: same plugin version, failed within six hours.
+if [ -f "$failed" ] && [ "$(sed -n 1p "$failed" 2>/dev/null)" = "$plugin_id" ] &&
+  [ -z "$(find "$failed" -mmin +360 2>/dev/null)" ]; then
+  [ -n "$missing" ] || exit 0
+  emit_context "amplihack plugin: the last amplihack runtime install failed (missing: $missing); see $log. It is not retried automatically for six hours. To retry now: rm \"$failed\" && sh \"$installer\"."
+  exit 0
+fi
+
+# The hook input names what started the session (startup/resume/clear/compact).
+# Read it only here, after the exports: a stdin that never closes may cost the
+# compaction check, never the session environment.
+source_kind=""
+if [ ! -t 0 ]; then
+  source_kind=$(cat 2>/dev/null | sed -n 's/.*"source"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
+fi
+if [ "$source_kind" = "compact" ]; then
+  exit 0
+fi
+
+# A missing file makes `.` fatal in POSIX sh, so check before sourcing.
+[ -f "$bin_dir/plugin-lock.sh" ] || exit 0
+# shellcheck source=SCRIPTDIR/plugin-lock.sh
+. "$bin_dir/plugin-lock.sh"
+if lock_acquire "$lock"; then
+  if command -v setsid >/dev/null 2>&1; then
+    AMPLIHACK_PLUGIN_INSTALL_LOCK="$lock" nohup setsid sh "$installer" </dev/null >>"$log" 2>&1 &
+  else
+    AMPLIHACK_PLUGIN_INSTALL_LOCK="$lock" nohup sh "$installer" </dev/null >>"$log" 2>&1 &
+  fi
+  child=$!
+  [ -f "$lock/pid" ] || printf '%s\n' "$child" >"$lock/pid" 2>/dev/null
+fi
+
+if [ -n "$missing" ]; then
+  emit_context "amplihack plugin: the amplihack runtime (missing: $missing) is being installed in the background; log: $log. It is done when $lock no longer exists. Skills, agents and commands already work; before running 'amplihack recipe run' (dev-orchestrator, default-workflow), check the log and wait for the install to finish."
+fi
+exit 0
