@@ -888,7 +888,7 @@ ghc_pr_ready() {
 }
 
 ghc_pr_merge() {
-  local n method=merge obj branch
+  local n method=merge obj pr=""
   ghc_parse "-R:repo --repo:repo -t:subject --subject:subject -b:body --body:body --match-head-commit:sha" "-m:merge --merge:merge -s:squash --squash:squash -r:rebase --rebase:rebase --auto:auto -d:delete --delete-branch:delete --admin:admin --disable-auto:disable_auto" "$@"
   ghc_resolve_repo
   ghc_pr_target "${GHC_POS[0]:-}"; n="$GHC_N"
@@ -906,14 +906,37 @@ ghc_pr_merge() {
     printf '✓ Pull request %s#%s will be automatically merged via %s when all requirements are met\n' "$GHC_REPO" "$n" "$method" >&2
     return 0
   fi
+  # The head branch is read before merging, as gh does, so a failed read never
+  # turns into a DELETE of heads/null afterwards.
+  if [ "${GHC_B_delete:-}" = 1 ]; then pr="$(ghc_api_or_die GET "repos/${GHC_REPO}/pulls/${n}")" || exit 1; fi
   obj="$(jq -n --arg m "$method" --arg t "${GHC_O_subject:-}" --arg b "${GHC_O_body:-}" --arg s "${GHC_O_sha:-}" \
     '{merge_method: $m} + (if $t != "" then {commit_title: $t} else {} end) + (if $b != "" then {commit_message: $b} else {} end) + (if $s != "" then {sha: $s} else {} end)')" || ghc_jq_fail
   ghc_api_or_die PUT "repos/${GHC_REPO}/pulls/${n}/merge" "$obj" >/dev/null || exit 1
   printf '✓ Merged pull request %s#%s\n' "$GHC_REPO" "$n" >&2
-  if [ "${GHC_B_delete:-}" = 1 ]; then
-    branch="$(ghc_api GET "repos/${GHC_REPO}/pulls/${n}" | jq -r .head.ref)"
-    ghc_api DELETE "repos/${GHC_REPO}/git/refs/heads/${branch}" >/dev/null \
+  if [ "${GHC_B_delete:-}" = 1 ]; then ghc_delete_head_branch "$pr"; fi
+}
+
+# ghc_delete_head_branch PR_JSON — --delete-branch after a merge, as gh does it
+# remotely: only a head branch in the base repository is deleted (a fork's
+# branch is never touched, and never mistaken for a same-named base branch),
+# and the ref is percent-encoded so "a#b" cannot turn into "a". gh's local
+# half (switching to the base branch, deleting the local branch) is not
+# reproduced; a local branch of that name is reported, not removed.
+ghc_delete_head_branch() {
+  local branch head_repo base_repo
+  branch="$(printf '%s' "$1" | jq -r '.head.ref // empty')" \
+    && head_repo="$(printf '%s' "$1" | jq -r '.head.repo.full_name // empty')" \
+    && base_repo="$(printf '%s' "$1" | jq -r '.base.repo.full_name // empty')" || ghc_jq_fail
+  [ -n "$branch" ] && [ -n "$base_repo" ] || ghc_die "failed to delete remote branch: the pull request's head branch is unknown"
+  if [ "$head_repo" != "$base_repo" ]; then
+    ghc_log "delete-branch: head ${head_repo:-<deleted fork>}:${branch} is not in ${base_repo}; not deleted"
+  else
+    ghc_api DELETE "repos/${base_repo}/git/refs/heads/$(ghc_uri "$branch")" >/dev/null \
       || ghc_die "failed to delete remote branch ${branch}: ${GHC_ERR#gh: }"
+    printf '✓ Deleted remote branch %s\n' "$branch" >&2
+  fi
+  if git show-ref --verify --quiet "refs/heads/${branch}" 2>/dev/null; then
+    ghc_warn "local branch ${branch} was left in place (without GraphQL gh-compat deletes the remote branch only)"
   fi
 }
 

@@ -676,4 +676,12 @@ rc=0; out="$(STUB_BADJSON=1 gh pr view 42 --json number,files 2>/dev/null)" || r
 [ "$rc" != 0 ] || fail arg-max "unparseable REST JSON gave rc 0 and '$out'"
 ok "results over 128 KiB come back whole; a jq failure fails the call"
 
+# 43. delete-branch-wrong-ref: never the base repo's branch for a fork PR,
+#     and the ref is percent-encoded.
+reset_log; STUB_FORK_PR=1 gh pr merge 42 --squash --delete-branch >/dev/null 2>&1 || true
+logged_prefix "api -X DELETE" && fail delete-branch "deleted a base-repo branch for a fork PR: $(grep DELETE "$STUB_LOG")"
+reset_log; STUB_HEAD='feat/a#b' gh pr merge 42 --squash --delete-branch >/dev/null 2>&1 || true
+logged "api -X DELETE repos/o/r/git/refs/heads/feat%2Fa%23b" || fail delete-branch "ref not encoded: $(grep DELETE "$STUB_LOG")"
+ok "--delete-branch: skipped for fork PRs, ref percent-encoded"
+
 echo "PASS: ${PASS} checks"
