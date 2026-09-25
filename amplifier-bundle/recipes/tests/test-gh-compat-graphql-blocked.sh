@@ -60,7 +60,12 @@ if [ "$1" = "api" ]; then
   case "$method $path" in
     "GET repos/o/r/pulls/42") printf '%s\n' "$pr" ;;
     "GET repos/o/r/pulls?"*"head=o:feat"*) printf '[%s]\n' "$pr" ;;
-    "POST repos/o/r/pulls") printf '%s\n' "$pr" | jq -c '.number = 43 | .html_url = "https://github.com/o/r/pull/43"' ;;
+    "POST repos/o/r/pulls")
+      if [ "${STUB_PR_EXISTS:-0}" = 1 ]; then
+        printf '{"message":"Validation Failed","errors":[{"message":"A pull request already exists for o:feat."}]}'
+        echo "gh: Validation Failed (HTTP 422)" >&2; exit 1
+      fi
+      printf '%s\n' "$pr" | jq -c '.number = 43 | .html_url = "https://github.com/o/r/pull/43"' ;;
     "GET repos/o/r") printf '{"full_name":"o/r","default_branch":"main","permissions":{"admin":false,"maintain":false,"push":true,"triage":true,"pull":true}}\n' ;;
     "POST repos/o/r/issues") printf '{"number":8,"html_url":"https://github.com/o/r/issues/8"}\n' ;;
     "GET repos/o/r/issues/7") printf '{"number":7,"title":"Widget","body":"","state":"open","html_url":"https://github.com/o/r/issues/7","user":{"login":"bot"},"labels":[]}\n' ;;
@@ -153,6 +158,13 @@ url="$(gh pr create --draft --title "feat: widget" --body "Fixes #7")"
 logged 'BODY {"title":"feat: widget","body":"Fixes #7","head":"feat","base":"main","draft":true}' \
   || fail pr-create "POST body not as expected"
 ok "pr create --draft -> POST repos/o/r/pulls, prints the PR URL"
+
+# 4b. A create collision surfaces gh's own message, which publish's #1017
+#     recovery path keys on; the HTTP status must survive the $(...) capture.
+rc=0; msg="$(STUB_PR_EXISTS=1 gh pr create --draft --title t --body b 2>&1)" || rc=$?
+[ "$rc" = 1 ] || fail pr-exists "exit $rc, want 1"
+case "$msg" in *'a pull request for branch "feat" into branch "main" already exists'*) ;; *) fail pr-exists "message was: $msg" ;; esac
+ok "pr create collision (422) -> gh's 'already exists' message, exit 1"
 
 # 5. pr checks exit codes: 0 pass, 8 pending, 1 fail.
 for case_ in "pass 0" "pending 8" "fail 1"; do

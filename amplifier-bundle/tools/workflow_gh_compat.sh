@@ -88,13 +88,23 @@ ghc_api() {
   [ "$rc" -eq 0 ] && [ -z "$GHC_STATUS" ] && GHC_STATUS=200
   rm -f "$errf"; [ -n "$bodyf" ] && rm -f "$bodyf"
   ghc_log "REST $method $path -> ${GHC_STATUS:-rc=$rc}"
+  # Callers usually run this inside $(...), where these globals die with the
+  # subshell; persist them for ghc_last. $$ is the main shell's pid in both.
+  printf '%s' "$GHC_STATUS" >"${GHC_TMP}/ghc-last.$$.status" 2>/dev/null
+  printf '%s' "$GHC_ERR" >"${GHC_TMP}/ghc-last.$$.err" 2>/dev/null
   return "$rc"
+}
+
+# ghc_last — reload GHC_STATUS / GHC_ERR from the most recent ghc_api call.
+ghc_last() {
+  GHC_STATUS="$(cat "${GHC_TMP}/ghc-last.$$.status" 2>/dev/null)"
+  GHC_ERR="$(cat "${GHC_TMP}/ghc-last.$$.err" 2>/dev/null)"
 }
 
 # ghc_api_or_die METHOD PATH [BODY] [ACCEPT] — body on stdout, gh-style failure.
 ghc_api_or_die() {
   local out
-  out="$(ghc_api "$@")" || ghc_die "gh: ${GHC_ERR:-REST $1 $2 failed}"
+  out="$(ghc_api "$@")" || { ghc_last; ghc_die "gh: ${GHC_ERR:-REST $1 $2 failed}"; }
   printf '%s\n' "$out"
 }
 
@@ -307,6 +317,7 @@ ghc_search() {
   if raw="$(ghc_api GET "search/issues?per_page=${limit}&q=$(jq -rn --arg q "$q" '$q|@uri')")"; then
     printf '%s' "$raw" | jq '.items // []'; return 0
   fi
+  ghc_last
   ghc_log "search unavailable (${GHC_STATUS:-?}); matching '${text}' client-side over repos/${GHC_REPO}/issues"
   rstate="$state"; case "$state" in open|closed) ;; *) rstate=all ;; esac
   raw="$(ghc_api_or_die GET "repos/${GHC_REPO}/issues?state=${rstate}&per_page=100$([ -n "${GHC_O_label:-}" ] && printf '&labels=%s' "$(jq -rn --arg l "$GHC_O_label" '$l|@uri')")")" || return 1
@@ -387,6 +398,7 @@ ghc_pr_create() {
   payload="$(jq -n --arg t "$GHC_O_title" --arg b "$body" --arg h "$head" --arg B "$base" --argjson d "$([ "${GHC_B_draft:-}" = 1 ] && echo true || echo false)" \
     '{title: $t, body: $b, head: $h, base: $B, draft: $d}')"
   if ! resp="$(ghc_api POST "repos/${GHC_REPO}/pulls" "$payload")"; then
+    ghc_last
     if [ "$GHC_STATUS" = 422 ] && printf '%s' "$resp$GHC_ERR" | grep -q 'already exists'; then
       url="$(ghc_api GET "repos/${GHC_REPO}/pulls?head=${GHC_REPO%%/*}:${head}&base=${base}&state=open" | jq -r '.[0].html_url // empty')"
       ghc_die "a pull request for branch \"$head\" into branch \"$base\" already exists:
@@ -642,6 +654,7 @@ ghc_issue_create() {
   payload="$(jq -n --arg t "$GHC_O_title" --arg b "$(ghc_body)" --arg l "$labels" --arg a "$(ghc_expand_me "${GHC_O_assignee:-}")" \
     '{title: $t, body: $b} + (if $l != "" then {labels: ($l | split(","))} else {} end) + (if $a != "" then {assignees: ($a | split(","))} else {} end)')"
   resp="$(ghc_api POST "repos/${GHC_REPO}/issues" "$payload")" || {
+    ghc_last
     # gh fails the whole create on an unknown label; mirror that message so
     # callers that retry without --label (step-03 does) behave as before.
     [ -n "$labels" ] && [ "$GHC_STATUS" = 422 ] && ghc_die "could not add label: '${labels}' not found"
@@ -782,6 +795,7 @@ ghc_rest_dispatch() {
 }
 
 ghc_main() {
+  trap 'rm -f "${GHC_TMP}/ghc-last.$$.status" "${GHC_TMP}/ghc-last.$$.err"' EXIT
   GHC_REAL="$(ghc_find_real_gh)" || { printf 'gh: command not found (amplihack gh-compat found no real gh on PATH)\n' >&2; exit 127; }
   case "${1:-} ${2:-}" in
     "auth status") shift 2; ghc_auth_status "$@"; exit $? ;;
