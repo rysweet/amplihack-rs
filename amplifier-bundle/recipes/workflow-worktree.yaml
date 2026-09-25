@@ -105,6 +105,27 @@ steps:
       EXISTING_BRANCH="${EXISTING_BRANCH:-}"
       PR_NUMBER="${PR_NUMBER:-}"
 
+      # EXPLICIT BRANCH WINS (#1426): a task that names its branch (`Branch: <ref>`)
+      # gets that branch, never a prose-derived competitor. Forms and exit codes are
+      # documented in tools/workflow_branch_name.sh; a missing helper warns and skips.
+      BRANCH_HELPER="$TOOLS_DIR/workflow_branch_name.sh"
+      EXPLICIT_BRANCH=""
+      if [ -z "$EXISTING_BRANCH" ] && [ -z "$PR_NUMBER" ]; then
+        if [ ! -f "$BRANCH_HELPER" ]; then
+          echo "WARNING: $BRANCH_HELPER not found — not checking task_description for an explicitly named branch (issue #1426)." >&2
+        else
+          EXPLICIT_RC=0
+          EXPLICIT_BRANCH="$(bash "$BRANCH_HELPER" explicit --repo-path "$REPO_PATH" --main-repo "$MAIN_REPO_PATH")" || EXPLICIT_RC=$?
+          case "$EXPLICIT_RC" in
+            0) EXISTING_BRANCH="$EXPLICIT_BRANCH" ;;  # named and exists: reuse
+            1|10) ;;                                  # none named / named, to create
+            *) echo "ERROR: branch detection failed (workflow_branch_name.sh exit $EXPLICIT_RC; see above)." >&2
+               exit 1 ;;
+          esac
+        fi
+      fi
+      [ -z "$EXPLICIT_BRANCH" ] || echo "INFO: task_description names branch '$EXPLICIT_BRANCH' (issue #1426)." >&2
+
       if [ -n "$EXISTING_BRANCH" ] || [ -n "$PR_NUMBER" ]; then
         # Precedence: existing_branch wins on tie.
         if [ -n "$EXISTING_BRANCH" ] && [ -n "$PR_NUMBER" ]; then
@@ -214,81 +235,62 @@ steps:
         exit 0
       fi
 
+      # Fetch latest refs and resolve the base branch without assuming origin/main.
+      # A task worktree branches off a fetched remote ref, never the caller's HEAD (#858).
+      for FETCH_TRY in 1 2 3; do
+        git fetch origin --no-tags >&2 && break
+        echo "WARNING: git fetch origin failed (attempt ${FETCH_TRY}/3); after the last attempt, continuing with local refs." >&2
+        [ "$FETCH_TRY" -eq 3 ] || sleep "$FETCH_TRY"
+      done
       resolve_base_ref() {
-        local candidate
-
-        candidate="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-        if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then
-          printf '%s\n' "$candidate"
-          return 0
+        local ref
+        ref="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+        if [ -z "$ref" ] || ! git rev-parse --verify --quiet "${ref}^{commit}" >/dev/null; then
+          git remote set-head origin -a >/dev/null 2>&1 || true
+          ref="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
         fi
-
-        git remote set-head origin -a >/dev/null 2>&1 || true
-        candidate="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-        if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then
-          printf '%s\n' "$candidate"
-          return 0
-        fi
-
-        for candidate in origin/master origin/develop; do
-          if git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then
-            printf '%s\n' "$candidate"
+        for ref in $ref origin/master origin/develop; do
+          if git rev-parse --verify --quiet "${ref}^{commit}" >/dev/null; then
+            printf '%s\n' "$ref"
             return 0
           fi
         done
-
         echo "ERROR: no supported remote base ref found. Expected origin/HEAD, origin/master, or origin/develop." >&2
         return 1
       }
-
-      fetch_origin_with_retry() {
-        local attempt
-        local status
-        local delay=1
-        local max_attempts=3
-
-        for attempt in 1 2 3; do
-          if git fetch origin --no-tags >&2; then
-            return 0
-          fi
-          status=$?
-
-          if [ "$attempt" -lt "$max_attempts" ]; then
-            echo "WARNING: git fetch origin failed (exit ${status}); retrying (${attempt}/${max_attempts})." >&2
-            sleep "$delay"
-            delay=$((delay * 2))
-            continue
-          fi
-
-          echo "WARNING: git fetch origin failed after ${max_attempts} attempts (exit ${status}); continuing with local refs after repository validation succeeded." >&2
-          return 0
-        done
-      }
-
-      # Fetch latest refs and resolve the base branch without assuming origin/main.
-      fetch_origin_with_retry
-      BASE_REF="$(resolve_base_ref)"
+      BASE_REF="$(resolve_base_ref)" || exit 1
       BASE_BRANCH="${BASE_REF#origin/}"
 
-      # NOTE: slug pipeline mirrored in consensus-issue-worktree.yaml step3 (30-char
-      # cap vs 50); update both in one commit on security patches. See Issue #2952.
-      # FIX (#469/#311): env var (injection/word-splitting safe) + `tr -cd 'a-z0-9-'`
-      TASK_DESC="$TASK_DESCRIPTION"
-      TASK_SLUG=$(printf '%s' "$TASK_DESC" | tr '\n\r' '  ' | tr '[:upper:] ' '[:lower:]-' | tr -cd 'a-z0-9-' | sed 's/-\{2,\}/-/g' | sed 's/^-//;s/-$//' | cut -c1-50 | sed 's/-$//')
-      # Guard: empty slug (blank/all-symbol input) produces a trailing-hyphen branch that
-      # git check-ref-format accepts as valid but is undesirable. Catch it explicitly first.
+      # BRANCH NAMING (#1426): the explicit branch, else <prefix>/issue-<N>-<tail>.
+      # Derived INLINE, never in a bundle helper: re-runs depend on the name (#1121).
+      # Tail rules (whole words, <=24 chars, no paths or blobs, task hash if empty) and
+      # rationale: docs/features/branch-name-generation.md. SLUG_NUM reaches sed, so it
+      # is forced numeric (#815). consensus-issue-worktree.yaml still differs (#1430).
+      SLUG_NUM="${ISSUE_NUMBER:-0}"
+      case "$SLUG_NUM" in ''|*[!0-9]*) SLUG_NUM=0 ;; esac
+      SLUG_HEAD="${TASK_DESCRIPTION:-}"
+      SLUG_WORDS="$(printf '%s' "${SLUG_HEAD:0:65536}" | tr '[:upper:]' '[:lower:]' \
+        | sed -e 's#[^[:space:]]*[/\\@][^[:space:]]*# #g' -e 's/[^a-z0-9]\{1,\}/-/g' \
+        | tr '\n\r' '--' | sed -e 's/-\{2,\}/-/g' -e 's/^-*//;s/-*$//' \
+        | sed -E "s/^(issues?-)?(${SLUG_NUM})-//")"
+      TASK_SLUG=""
+      SLUG_OIFS="$IFS"
+      IFS='-'
+      for SLUG_W in $SLUG_WORDS; do
+        [ -n "$SLUG_W" ] && [ ${#SLUG_W} -le 20 ] || continue
+        SLUG_N="${TASK_SLUG:+$TASK_SLUG-}$SLUG_W"
+        [ ${#SLUG_N} -le 24 ] || break
+        TASK_SLUG="$SLUG_N"
+      done
+      IFS="$SLUG_OIFS"
       if [ -z "$TASK_SLUG" ]; then
-        echo "WARNING: task_description produced an empty slug — falling back to task-unnamed" >&2
-        # FIX (#3023/BL-002): hardcode 'feat/' (not $BRANCH_PREFIX) so an invalid or
-        # malicious branch_prefix (e.g. '; rm -rf /', '../../etc') can't inject via fallback.
+        TASK_SLUG="$(printf '%s' "${TASK_DESCRIPTION:-}" | cksum | cut -d' ' -f1)"
+      fi
+      # The last-resort name hardcodes 'feat/' so a bad branch_prefix cannot inject (#3023).
+      BRANCH_NAME="${EXPLICIT_BRANCH:-${BRANCH_PREFIX:-feat}/issue-${ISSUE_NUMBER:-0}-${TASK_SLUG}}"
+      if ! git check-ref-format --branch "${BRANCH_NAME}" >/dev/null 2>&1; then
+        echo "WARNING: derived branch name '${BRANCH_NAME}' is invalid — falling back to task-unnamed" >&2
         BRANCH_NAME="feat/task-unnamed-$(date +%s)"
-      else
-        BRANCH_NAME="${BRANCH_PREFIX}/issue-${ISSUE_NUMBER}-${TASK_SLUG}"
-        # Validate with authoritative git ref checker; fall back to safe unique name on failure
-        if ! git check-ref-format --branch "${BRANCH_NAME}" >/dev/null 2>&1; then
-          echo "WARNING: derived branch name '${BRANCH_NAME}' is invalid — falling back to task-unnamed" >&2
-          BRANCH_NAME="feat/task-unnamed-$(date +%s)"
-        fi
       fi
       WORKTREE_PATH="${MAIN_REPO_PATH}/worktrees/${BRANCH_NAME}"
       # --- Foreign-worktree deconfliction (#829/#840): if BRANCH_NAME is held by a
@@ -309,10 +311,7 @@ steps:
         fi
       fi
 
-      echo "Branch: ${BRANCH_NAME}" >&2
-      echo "Worktree: ${WORKTREE_PATH}" >&2
-      echo "Base ref: ${BASE_REF}" >&2
-      echo "" >&2
+      printf 'Branch: %s\nWorktree: %s\nBase ref: %s\n\n' "${BRANCH_NAME}" "${WORKTREE_PATH}" "${BASE_REF}" >&2
 
       # --- Idempotency: detect existing branch and/or worktree ---
       # FIX (issue #3023 / BL-002): Three-state guard makes re-runs safe. State 1:
