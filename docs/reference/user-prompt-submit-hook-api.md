@@ -28,7 +28,12 @@ Each stored memory is scored against the prompt, and only relevant memories are 
   There is no stemming.
 - **Relevance.** A memory must share at least 2 topic words with the prompt and score at least 0.2 cosine similarity. The score is printed as `(relevance: N.NN)`. A prompt left with a single topic word therefore never matches.
 - **Output.** Copies of the same memory stored under different agents are printed once. At most 5 memories are injected, most relevant first, and each is cut to 400 characters. If nothing is relevant, nothing is injected.
-- **English only.** Memories are scored only if their prose reads as English: at least 10% of the prose words must be common English function words (`the`, `and`, `with`, `because`…) or English contractions. Words shared with Dutch, German, Danish, Polish and the Romance languages (`is`, `to`, `for`, `at`, `in`…) don't count. Code is ignored when judging the language: fenced blocks, backtick spans, paths, flags, `snake_case` and `ALL_CAPS` identifiers. Non-ASCII words are never topic words. This fails closed. Memories in other languages are not injected, and neither are terse English notes with too few function words to tell (`user login uses oauth`), even when they are relevant.
+- **English only.** Each transcript turn (`user:` / `assistant:`) of a memory is checked on its own. Only turns whose prose reads as English contribute topic words: at least 10% of their prose words must be common English function words (`the`, `and`, `with`, `because`, …) or English contractions.
+  - Words that are also frequent in Dutch, German, Danish, Swedish, Hungarian, Polish or the Romance languages don't count (`is`, `to`, `for`, `just`, `most`, …).
+  - Code is ignored when judging the language: fenced blocks, closed backtick spans, paths, flags, `snake_case` and `ALL_CAPS` identifiers.
+  - Non-ASCII words are never topic words.
+
+  This fails closed. Turns in other languages are ignored, so a Spanish question answered in English is matched only on the English answer. Terse English notes with too few function words to tell (`user login uses oauth`) are not injected either, even when they are relevant. The check is a screened word list, not a language identifier: a turn in an unscreened language that happens to use a marker word, or one turn mixing English with another language, is treated as English.
 
 ## Hook Signature
 

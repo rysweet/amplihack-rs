@@ -70,19 +70,20 @@ fn is_stop_word(word: &str) -> bool {
 /// - `a`, `de`, `la`, `no`, `he`, `on`, `me`, `do`, `as` (Romance),
 /// - `in`, `an`, `so`, `was`, `also`, `will`, `am` (German),
 /// - `is`, `of`, `we`, `had`, `over` (Dutch),
-/// - `at`, `for`, `her`, `i` (Danish, Norwegian, Tagalog),
+/// - `at`, `for`, `her`, `have`, `i` (Danish, Norwegian, Tagalog),
+/// - `just` (Swedish), `most`, `be` (Hungarian),
 /// - `to`, `my`, `by` (Polish, Czech, Slovak).
 ///
 /// Their share of a text's prose words is a cheap language check, the
 /// "common words" method of language identification (Grefenstette,
 /// *Comparing two language identification schemes*, JADT 1995).
 const ENGLISH_MARKERS: &[&str] = &[
-    "about", "after", "and", "any", "are", "be", "because", "been", "before", "between", "but",
-    "can", "could", "did", "does", "each", "from", "has", "have", "here", "his", "how", "if",
-    "into", "it", "its", "just", "more", "most", "must", "not", "now", "off", "only", "or",
-    "other", "our", "out", "she", "should", "some", "than", "that", "the", "their", "them", "then",
-    "there", "these", "they", "this", "those", "too", "up", "us", "very", "were", "what", "when",
-    "where", "which", "while", "who", "why", "with", "without", "would", "you", "your",
+    "about", "after", "and", "any", "are", "because", "been", "before", "between", "but", "can",
+    "could", "did", "does", "each", "from", "has", "here", "his", "how", "if", "into", "it", "its",
+    "more", "must", "not", "now", "off", "only", "or", "other", "our", "out", "she", "should",
+    "some", "than", "that", "the", "their", "them", "then", "there", "these", "they", "this",
+    "those", "too", "up", "us", "very", "were", "what", "when", "where", "which", "while", "who",
+    "why", "with", "without", "would", "you", "your",
 ];
 
 /// Endings only English contractions have (`doesn't`, `we'll`, `they're`,
@@ -157,9 +158,6 @@ pub fn format_agent_memory_context(
     let mut scored: Vec<(f64, String, &PromptContextMemory)> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for memory in memories {
-        if !reads_as_english(strip_agent_prefix(&memory.content)) {
-            continue;
-        }
         // Deduplicate on the whole text with whitespace collapsed, so copies
         // that differ only in layout are one memory, while memories that
         // differ anywhere (even past the printed cut) stay distinct.
@@ -167,7 +165,15 @@ pub fn format_agent_memory_context(
         if seen.contains(&text) {
             continue;
         }
-        let memory_terms = topic_terms(&text, &ignored);
+        // Only the turns that read as English are understood, so only they
+        // contribute topic words: in a transcript where the user wrote
+        // another language and the assistant answered in English, the
+        // user's function words must not count.
+        let memory_terms: HashSet<String> = turns(strip_agent_prefix(&memory.content))
+            .iter()
+            .filter(|turn| reads_as_english(turn))
+            .flat_map(|turn| topic_terms(turn, &ignored))
+            .collect();
         let shared = prompt_terms.intersection(&memory_terms).count();
         let relevance = memory_relevance(&prompt_terms, &memory_terms);
         if shared >= MIN_SHARED_TERMS && relevance >= RELEVANCE_THRESHOLD {
@@ -233,14 +239,46 @@ fn words(text: &str) -> impl Iterator<Item = Option<&str>> {
         .map(without_apostrophes)
 }
 
+/// The parts of `text` outside `delimiter`-enclosed code. A delimiter with
+/// no closing partner (a stray backtick, or a span cut off by session-stop's
+/// 500-character head) opens nothing: the text after it stays prose.
+fn outside_code<'a>(text: &'a str, delimiter: &str) -> Vec<&'a str> {
+    let parts = text.split(delimiter).collect::<Vec<_>>();
+    let last = parts.len() - 1;
+    parts
+        .into_iter()
+        .enumerate()
+        .filter(|(index, _)| index % 2 == 0 || *index == last)
+        .map(|(_, part)| part)
+        .collect()
+}
+
+/// `text` split into transcript turns at its `user:` / `assistant:` role
+/// labels; text without labels is one turn.
+fn turns(text: &str) -> Vec<String> {
+    let mut turns = vec![Vec::new()];
+    for token in text.split_whitespace() {
+        if matches!(token, "user:" | "assistant:") {
+            turns.push(Vec::new());
+        } else if let Some(turn) = turns.last_mut() {
+            turn.push(token);
+        }
+    }
+    turns
+        .into_iter()
+        .filter(|turn| !turn.is_empty())
+        .map(|turn| turn.join(" "))
+        .collect()
+}
+
 /// The natural-language words of `text`, lower-cased: code is not
 /// evidence of any language, so fenced blocks, backtick spans, role labels
 /// and tokens that look like code (`src/main.rs:12`, `--test-threads=1`,
 /// `needless_borrow`, `re-ran`, `DEFAULT_STEP_TIMEOUT`, `CI`) are left out.
 fn prose_words(text: &str) -> Vec<String> {
     let mut prose = Vec::new();
-    for outside_fence in text.split("```").step_by(2) {
-        for outside_ticks in outside_fence.split('`').step_by(2) {
+    for outside_fence in outside_code(text, "```") {
+        for outside_ticks in outside_code(outside_fence, "`") {
             for token in without_role_labels(outside_ticks) {
                 let token = token
                     .trim_start_matches(['(', '[', '{', '"', '\'', '\u{2019}'])
@@ -266,10 +304,16 @@ fn prose_words(text: &str) -> Vec<String> {
 ///
 /// The relevance filter only knows English. Another language's function
 /// words (`schon`, `niet`, `jest`, `porque`) would be topic words to it, so
-/// two unrelated sentences in that language could look relevant; such a
-/// memory is not scored at all. A memory with too little English prose to
+/// two unrelated sentences in that language could look relevant. Each
+/// transcript turn of a memory is checked on its own, and only turns that
+/// pass contribute topic words. A turn with too little English prose to
 /// tell — a bare keyword list (`cargo fmt`) or a note that is almost all
 /// code — fails the check too. Both fail closed.
+///
+/// Known limit: a word list screened against the languages named on
+/// [`ENGLISH_MARKERS`] is not a language identifier. A turn in an
+/// unscreened language that happens to use one of the markers, or a single
+/// turn that mixes English with another language, is judged as English.
 fn reads_as_english(text: &str) -> bool {
     let prose = prose_words(text);
     let english = prose
@@ -295,7 +339,7 @@ fn reads_as_english(text: &str) -> bool {
 /// Known limit: only ASCII words are topic words. Accented Latin, Cyrillic,
 /// Greek, and Chinese, Japanese and Korean text (which has no spaces
 /// between words, or attaches grammar to them) contribute nothing, and
-/// memories that do not read as English are not scored (see
+/// memory turns that do not read as English contribute nothing (see
 /// [`reads_as_english`]), which also drops terse English notes with too few
 /// function words to tell. This fails closed: nothing irrelevant is
 /// injected, a relevant memory may be missed.
@@ -829,6 +873,44 @@ mod tests {
                 "/fix jeg tror at build er for langsom",
                 "Agent general: user: jeg tror at det er for koldt her i dag",
             ),
+            (
+                "/fix jag kan inte bygga just nu, det blir fel",
+                "Agent general: user: jag kan inte komma just nu, det regnar",
+            ),
+            (
+                "/fix jag vet inte varför bygget inte fungerar just nu",
+                "Agent general: user: jag vet inte varför katten inte äter just nu",
+            ),
+            (
+                "/fix most nem megy be a build, hogy van ez",
+                "Agent general: user: most nem megy be a vonat, hogy van ez",
+            ),
+            (
+                "/fix most nem tudom hogy mi van a builddel",
+                "Agent general: user: most nem tudom hogy mi van az ebéddel",
+            ),
+            (
+                "/fix vi skal have en build som virker, ikke fejler",
+                "Agent general: user: vi skal have frokost, ikke kaffe",
+            ),
+            // A non-English user turn answered by an English assistant turn:
+            // the English turn is understood, the user's words are not.
+            (
+                "/fix por favor, ¿puedes arreglar como falla esta compilación?",
+                "Agent general: user: por favor, ¿puedes explicar como funciona esta función para mí?\n\nassistant: Sure, this function parses the config file and returns the settings.",
+            ),
+            (
+                "/fix el build falla, pero no sé porque",
+                "Agent general: user: el gato duerme, pero no sé porque\n\nassistant: Cats sleep a lot because it saves their energy.",
+            ),
+            (
+                "/fix der Build ist kaputt, warum nicht",
+                "Agent general: user: der Hund ist müde, warum nicht\n\nassistant: Dogs get tired after they have been walking for a long time.",
+            ),
+            (
+                "/fix het build is niet goed",
+                "Agent general: user: het weer is niet goed\n\nassistant: That is a shame, the weather should improve later this week.",
+            ),
         ] {
             assert_eq!(
                 format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(unrelated)]),
@@ -896,6 +978,10 @@ mod tests {
     fn technical_english_memories_are_injected() {
         for (prompt, relevant) in [
             (
+                "/fix the release workflow token permissions",
+                "Agent general: user: release workflow fails with 403\n\nassistant: GITHUB_TOKEN lacks contents: write. Added permissions: contents: write to .github/workflows/release.yml; re-ran, green.",
+            ),
+            (
                 "/fix cargo clippy warnings in the hooks crate",
                 "Agent builder: Fix CI: run cargo fmt --all then cargo clippy -D warnings on the hooks crate",
             ),
@@ -926,6 +1012,34 @@ mod tests {
         }
     }
 
+    /// In a mixed transcript the English turn still counts, and an unclosed
+    /// backtick (a span cut by session-stop's 500-character head) does not
+    /// hide the prose after it.
+    #[test]
+    fn english_turns_and_unclosed_spans_are_read() {
+        for (prompt, relevant) in [
+            (
+                "/fix the config file parser settings",
+                "Agent general: user: ¿puedes explicar esta función?\n\nassistant: Sure, this function parses the config file and returns the settings.",
+            ),
+            (
+                "/fix the sqlite flaky test",
+                "Agent tester: user: run `cargo test\n\nassistant: The sqlite test is flaky because it shares a temp dir",
+            ),
+        ] {
+            assert!(
+                format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(relevant)])
+                    .is_some(),
+                "{relevant:?} is relevant to {prompt:?}"
+            );
+        }
+        assert_eq!(
+            turns("user: hola amigo\n\nassistant: hello there"),
+            ["hola amigo", "hello there"]
+        );
+        assert_eq!(outside_code("a `b` c `d", "`"), ["a ", " c ", "d"]);
+    }
+
     /// Known limit: a note whose prose has too few English function words
     /// to tell its language is not scored, even when it is relevant (see
     /// [`reads_as_english`]).
@@ -939,10 +1053,6 @@ mod tests {
             (
                 "/fix clippy warnings in the hooks crate",
                 "Agent builder: clippy warnings in hooks crate: needless_borrow, redundant_clone; fixed via cargo clippy --fix",
-            ),
-            (
-                "/fix the release workflow token permissions",
-                "Agent general: user: release workflow fails with 403\n\nassistant: GITHUB_TOKEN lacks contents: write. Added permissions: contents: write to .github/workflows/release.yml; re-ran, green.",
             ),
         ] {
             assert_eq!(
