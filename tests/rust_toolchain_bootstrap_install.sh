@@ -100,7 +100,7 @@ EOF
       apt)
         cat > "$dir/apt-get" <<EOF
 #!/bin/sh
-printf '%s DEBIAN_FRONTEND=%s\n' "\$*" "\${DEBIAN_FRONTEND:-}" >> "\$HOME/apt.log"
+printf '%s DEBIAN_FRONTEND=%s LC_ALL=%s\n' "\$*" "\${DEBIAN_FRONTEND:-}" "\${LC_ALL:-}" >> "\$HOME/apt.log"
 # First \`update\` fails like apt-daily holding /var/lib/apt/lists/lock.
 case " \$* " in
   *" update "*)
@@ -206,8 +206,8 @@ else
   fail "install exited $status with no C compiler"
   cat "$out" >&2
 fi
-if grep -q "^-o DPkg::Lock::Timeout=300 install -y -qq build-essential DEBIAN_FRONTEND=noninteractive$" "$home/apt.log" 2>/dev/null; then
-  pass "build-essential installed non-interactively"
+if grep -q "^-o DPkg::Lock::Timeout=300 install -y -qq build-essential DEBIAN_FRONTEND=noninteractive LC_ALL=C$" "$home/apt.log" 2>/dev/null; then
+  pass "build-essential installed non-interactively, in the C locale"
 else
   fail "apt-get install build-essential not run as expected: $(cat "$home/apt.log" 2>/dev/null || echo '<not run>')"
 fi

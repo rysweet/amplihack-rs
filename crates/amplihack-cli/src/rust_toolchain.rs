@@ -231,13 +231,14 @@ fn ensure_c_linker_in(dirs: &[PathBuf], allow_bootstrap: bool) -> Result<()> {
         let mut cmd = match &sudo {
             Some(sudo) => {
                 let mut cmd = Command::new(sudo);
-                cmd.args(["-n", "env", "DEBIAN_FRONTEND=noninteractive"])
+                cmd.args(["-n", "env", "DEBIAN_FRONTEND=noninteractive", "LC_ALL=C"])
                     .arg(&apt_get);
                 cmd
             }
             None => {
                 let mut cmd = Command::new(&apt_get);
-                cmd.env("DEBIAN_FRONTEND", "noninteractive");
+                cmd.env("DEBIAN_FRONTEND", "noninteractive")
+                    .env("LC_ALL", "C");
                 cmd
             }
         };
@@ -257,15 +258,22 @@ fn ensure_c_linker_in(dirs: &[PathBuf], allow_bootstrap: bool) -> Result<()> {
     // other update failure (e.g. a broken third-party repo) is not waited on:
     // the install is tried with the lists already on disk.
     let deadline = std::time::Instant::now() + APT_UPDATE_DEADLINE;
+    // LC_ALL=C (set above) keeps apt's "Could not get lock" untranslated.
     let mut announced_wait = false;
     loop {
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         let log = tempfile::tempfile().context("failed to create apt-get stderr log")?;
-        let status = apt(
+        // A timed-out or unrunnable update is not fatal either: fall through.
+        let status = match apt(
             &["update", "-qq"],
             Some(log.try_clone()?),
-            remaining.max(APT_UPDATE_RETRY_DELAY),
-        )?;
+            BOOTSTRAP_TIMEOUT,
+        ) {
+            Ok(status) => status,
+            Err(err) => {
+                println!("   ⚠️  apt-get update failed ({err:#}); trying the install anyway");
+                break;
+            }
+        };
         let mut stderr = String::new();
         {
             use std::io::{Read, Seek};
