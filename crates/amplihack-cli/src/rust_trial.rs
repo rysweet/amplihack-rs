@@ -118,6 +118,25 @@ pub fn find_rust_cli_binary(trial_home: &Path) -> Result<PathBuf> {
 /// Returns env vars that set `HOME` to the trial home and preserve
 /// critical variables like `PATH`, `TERM`, and `LANG`.
 pub fn build_trial_env(trial_home: &Path) -> HashMap<String, String> {
+    // Forward the resolved agent binary so subprocesses see it explicitly,
+    // even when their cwd lacks a launcher_context.json. Resolver returns the
+    // canonical (allowlisted, lowercased) name; falls back to "copilot".
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let resolved = amplihack_utils::agent_binary::resolve_with_source(&cwd).unwrap_or_else(|_| {
+        (
+            amplihack_utils::agent_binary::DEFAULT_BINARY.to_string(),
+            amplihack_utils::agent_binary::ResolutionSource::Default,
+        )
+    });
+    build_trial_env_with(trial_home, resolved)
+}
+
+/// [`build_trial_env`] with the agent binary already resolved, so the tagging
+/// rule can be tested without depending on the process environment.
+fn build_trial_env_with(
+    trial_home: &Path,
+    (resolved, source): (String, amplihack_utils::agent_binary::ResolutionSource),
+) -> HashMap<String, String> {
     let mut env = HashMap::new();
 
     env.insert("HOME".to_string(), trial_home.display().to_string());
@@ -133,19 +152,8 @@ pub fn build_trial_env(trial_home: &Path) -> HashMap<String, String> {
         }
     }
 
-    // Forward the resolved agent binary so subprocesses see it explicitly,
-    // even when their cwd lacks a launcher_context.json. Resolver returns the
-    // canonical (allowlisted, lowercased) name; falls back to "copilot".
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     // Issue #1481: a default-layer answer is tagged so descendants treat it as
     // the guess it is.
-    let (resolved, source) = amplihack_utils::agent_binary::resolve_with_source(&cwd)
-        .unwrap_or_else(|_| {
-            (
-                amplihack_utils::agent_binary::DEFAULT_BINARY.to_string(),
-                amplihack_utils::agent_binary::ResolutionSource::Default,
-            )
-        });
     if source == amplihack_utils::agent_binary::ResolutionSource::Default {
         env.insert(
             amplihack_utils::agent_binary::SOURCE_ENV.to_string(),
@@ -347,6 +355,33 @@ mod tests {
         assert_eq!(env["AMPLIHACK_RUST_TRIAL_HOME"], "/test/trial");
         // PATH should be forwarded
         assert!(env.contains_key("PATH"));
+    }
+
+    /// Issue #1481 / quality-audit S1: only a default-layer answer is tagged.
+    #[test]
+    fn build_trial_env_tags_only_a_default_layer_answer() {
+        use amplihack_utils::agent_binary::{ResolutionSource, SOURCE_ENV};
+        let home = PathBuf::from("/test/trial");
+
+        let env = build_trial_env_with(&home, ("copilot".to_string(), ResolutionSource::Default));
+        assert_eq!(env["AMPLIHACK_AGENT_BINARY"], "copilot");
+        assert_eq!(
+            env.get(SOURCE_ENV).map(String::as_str),
+            Some("default:copilot")
+        );
+
+        for source in [
+            ResolutionSource::Env,
+            ResolutionSource::SessionMarker,
+            ResolutionSource::LauncherContext,
+        ] {
+            let env = build_trial_env_with(&home, ("claude".to_string(), source));
+            assert_eq!(env["AMPLIHACK_AGENT_BINARY"], "claude");
+            assert!(
+                !env.contains_key(SOURCE_ENV),
+                "{source:?} must not be tagged"
+            );
+        }
     }
 
     /// Issue #1481: a parent's default-guess tag must not reach the trial

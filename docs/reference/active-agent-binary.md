@@ -60,8 +60,15 @@ stderr. The tag keeps a guess a guess on the way down:
   sets a *different* binary has made a choice, and the stale tag does not veto
   it;
 - a launcher (`amplihack copilot`, ...) started with a tagged value naming
-  itself does not write `launcher_context.json`, so a default-layer guess never
-  becomes persisted state that pins later runs in the checkout.
+  itself does not write `launcher_context.json`, and hands the value on to its
+  own children still tagged. A default-layer guess therefore never becomes
+  persisted state that pins later runs in the checkout, however deep the
+  nesting.
+
+Setting the *same* value again does not lift the tag, because the two cannot
+be told apart. To make that value an instruction, unset
+`AMPLIHACK_AGENT_BINARY_SOURCE` as well. The stderr notice says so when it
+sees an inherited guess.
 
 Any code that sets `AMPLIHACK_AGENT_BINARY` explicitly through
 `EnvBuilder::with_agent_binary` clears the tag.

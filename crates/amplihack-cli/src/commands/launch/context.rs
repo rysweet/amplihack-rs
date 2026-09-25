@@ -65,6 +65,25 @@ fn launched_on_a_default_guess(tool: &str, var: &dyn Fn(&str) -> Option<String>)
             .is_some_and(|inherited| inherited == tool)
 }
 
+/// Where the binary this launcher exports to its child came from.
+///
+/// Quality-audit S3: a launcher started on an inherited default guess naming
+/// itself persists nothing, but it used to re-export its own name untagged. A
+/// launcher nested below it then saw an explicit value and persisted it, so
+/// the guess became durable one level further down. Such a launch hands the
+/// guess on as a guess; any other launch is a choice.
+pub(super) fn launch_binary_source(
+    tool: &str,
+    var: &dyn Fn(&str) -> Option<String>,
+) -> amplihack_utils::agent_binary::ResolutionSource {
+    use amplihack_utils::agent_binary::ResolutionSource;
+    if launched_on_a_default_guess(tool, var) {
+        ResolutionSource::Default
+    } else {
+        ResolutionSource::Env
+    }
+}
+
 pub(super) fn persist_launcher_context(
     tool: &str,
     project_root: Option<&Path>,

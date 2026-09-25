@@ -119,9 +119,9 @@ sequenceDiagram
     U->>L: amplihack copilot
     L->>F: write {"launcher":"copilot",...}
     L->>R: spawn with AMPLIHACK_AGENT_BINARY=copilot
-    R->>R: resolve(cwd) → "copilot" (layer 1)
+    R->>R: resolve(--working-dir) → "copilot" (layer 1)
     R->>S: run step with AMPLIHACK_AGENT_BINARY=copilot
-    S->>S: resolve(cwd) → "copilot"
+    S->>S: resolve(step cwd) → "copilot" (layer 1)
 ```
 
 ## Default: copilot

@@ -732,16 +732,42 @@ fn report_inferred_agent_binary(
     binary: &str,
     source: amplihack_utils::agent_binary::ResolutionSource,
 ) {
-    use amplihack_utils::agent_binary::ResolutionSource;
+    let inherited_guess = amplihack_utils::agent_binary::inherited_binary_is_default_guess();
+    if let Some(notice) = inferred_agent_binary_notice(binary, source, inherited_guess) {
+        eprintln!("{notice}");
+    }
+}
+
+/// The notice [`report_inferred_agent_binary`] prints, or `None` when the
+/// binary was observed rather than inferred.
+///
+/// `inherited_guess` is true when `AMPLIHACK_AGENT_BINARY` was present but
+/// tagged as a parent's default guess. The resolver skips such a value, so
+/// saying none was found would be wrong, and setting the same value again does
+/// not help while the tag still names it.
+pub(super) fn inferred_agent_binary_notice(
+    binary: &str,
+    source: amplihack_utils::agent_binary::ResolutionSource,
+    inherited_guess: bool,
+) -> Option<String> {
+    use amplihack_utils::agent_binary::{ResolutionSource, SOURCE_ENV};
     let why = match source {
-        ResolutionSource::Env | ResolutionSource::SessionMarker => return,
+        ResolutionSource::Env | ResolutionSource::SessionMarker => return None,
         ResolutionSource::LauncherContext => "read from .claude/runtime/launcher_context.json",
+        ResolutionSource::Default if inherited_guess => {
+            "AMPLIHACK_AGENT_BINARY was inherited as a parent's default guess and no \
+             agent session marker was found"
+        }
         ResolutionSource::Default => "no AMPLIHACK_AGENT_BINARY or agent session marker was found",
     };
-    eprintln!(
-        "amplihack: agent steps will run under '{binary}' ({why}). \
-         Set AMPLIHACK_AGENT_BINARY to choose a different agent CLI."
-    );
+    let how = if inherited_guess {
+        format!("Set AMPLIHACK_AGENT_BINARY and unset {SOURCE_ENV} to choose an agent CLI.")
+    } else {
+        "Set AMPLIHACK_AGENT_BINARY to choose a different agent CLI.".to_string()
+    };
+    Some(format!(
+        "amplihack: agent steps will run under '{binary}' ({why}). {how}"
+    ))
 }
 
 /// The `action` recorded on the classification attached to a terminal result.
@@ -1636,5 +1662,63 @@ fn git_run(dir: &Path, args: &[&str]) -> bool {
         // `git config --unset` of a missing key -> exit code 5; benign here.
         Ok(status) if args.contains(&"--unset") && status.code() == Some(5) => true,
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod inferred_agent_binary_notice_tests {
+    use super::inferred_agent_binary_notice;
+    use amplihack_utils::agent_binary::ResolutionSource;
+
+    #[test]
+    fn an_observed_binary_needs_no_notice() {
+        for source in [ResolutionSource::Env, ResolutionSource::SessionMarker] {
+            for inherited_guess in [false, true] {
+                assert_eq!(
+                    inferred_agent_binary_notice("claude", source, inherited_guess),
+                    None
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_default_with_nothing_inherited_says_nothing_was_found() {
+        let notice =
+            inferred_agent_binary_notice("copilot", ResolutionSource::Default, false).unwrap();
+        assert!(notice.contains("'copilot'"), "{notice}");
+        assert!(
+            notice.contains("no AMPLIHACK_AGENT_BINARY or agent session marker was found"),
+            "{notice}"
+        );
+        assert!(
+            !notice.contains("AMPLIHACK_AGENT_BINARY_SOURCE"),
+            "{notice}"
+        );
+    }
+
+    /// Quality-audit S4: the variable was there, only tagged. Saying none was
+    /// found sends the user to set a value that the tag would still veto.
+    #[test]
+    fn a_default_over_an_inherited_guess_names_the_tag() {
+        let notice =
+            inferred_agent_binary_notice("copilot", ResolutionSource::Default, true).unwrap();
+        assert!(
+            !notice.contains("no AMPLIHACK_AGENT_BINARY"),
+            "the variable was present: {notice}"
+        );
+        assert!(notice.contains("default guess"), "{notice}");
+        assert!(
+            notice.contains("unset AMPLIHACK_AGENT_BINARY_SOURCE"),
+            "{notice}"
+        );
+    }
+
+    #[test]
+    fn a_launcher_context_answer_names_the_file() {
+        let notice =
+            inferred_agent_binary_notice("codex", ResolutionSource::LauncherContext, false)
+                .unwrap();
+        assert!(notice.contains("launcher_context.json"), "{notice}");
     }
 }

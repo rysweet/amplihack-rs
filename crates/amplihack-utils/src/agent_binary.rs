@@ -652,6 +652,12 @@ mod tests {
     fn a_tag_matching_the_value_marks_it_as_a_guess() {
         assert!(is_default_guess(Some("copilot"), Some("default:copilot")));
         assert!(is_default_guess(Some(" Copilot "), Some("default:copilot")));
+        // The tag's surrounding whitespace is trimmed too, as migrate.sh's
+        // detect_cli does (tests/issue_1481_migrate_detect_cli_default_tag.sh).
+        assert!(is_default_guess(Some("copilot"), Some(" default:copilot ")));
+        // ...but not its inside, and not its case.
+        assert!(!is_default_guess(Some("copilot"), Some("default: copilot")));
+        assert!(!is_default_guess(Some("copilot"), Some("DEFAULT:copilot")));
     }
 
     /// Every step of a default-guess run inherits the tag. A step that then

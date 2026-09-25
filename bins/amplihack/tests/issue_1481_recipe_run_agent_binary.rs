@@ -182,6 +182,14 @@ fn an_inherited_guess_stays_tagged_when_nothing_better_is_visible() {
     ]);
     assert!(output.status.success(), "{output:?}");
     assert_eq!(handed(&probe), ("copilot", "default:copilot"));
+    // The variable was present, only tagged: the notice must not claim none
+    // was found, and must say how to turn it into a choice.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("no AMPLIHACK_AGENT_BINARY")
+            && stderr.contains("unset AMPLIHACK_AGENT_BINARY_SOURCE"),
+        "{stderr}"
+    );
 }
 
 /// Every step of a default-guess run inherits the tag. A step that then sets a

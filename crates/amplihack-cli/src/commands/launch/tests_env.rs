@@ -854,6 +854,45 @@ fn a_launch_not_picked_by_the_default_layer_still_persists() {
     }
 }
 
+/// Quality-audit S3: a launcher that ran on an inherited guess naming itself
+/// hands the guess on still tagged, so a launcher nested below it does not
+/// persist it either. Any other launch exports an untagged, chosen value.
+#[test]
+fn a_launch_on_a_default_guess_hands_the_guess_on_tagged() {
+    use amplihack_utils::agent_binary::{ResolutionSource, SOURCE_ENV};
+
+    let guess = inherited(Some("copilot"), Some("default:copilot"));
+    assert_eq!(
+        launch_binary_source("copilot", &guess),
+        ResolutionSource::Default
+    );
+    let env = EnvBuilder::new()
+        .with_resolved_agent_binary("copilot", launch_binary_source("copilot", &guess))
+        .build();
+    assert_eq!(
+        env.get(SOURCE_ENV).map(String::as_str),
+        Some("default:copilot")
+    );
+
+    // The child's own view: a nested `amplihack copilot` persists nothing.
+    let child = |key: &str| env.get(key).cloned();
+    let dir = tempfile::tempdir().unwrap();
+    persist_launcher_context_with("copilot", Some(dir.path()), &[], &child).unwrap();
+    assert!(read_launcher_context(dir.path()).is_none());
+
+    for (tool, binary, tag) in [
+        ("claude", Some("copilot"), Some("default:copilot")),
+        ("copilot", Some("copilot"), None),
+        ("copilot", None, None),
+    ] {
+        assert_eq!(
+            launch_binary_source(tool, &inherited(binary, tag)),
+            ResolutionSource::Env,
+            "{tool} with {binary:?}/{tag:?} was chosen"
+        );
+    }
+}
+
 /// A non-launcher subcommand must not stamp the repository at all.
 #[test]
 fn persist_launcher_context_ignores_non_launcher_subcommands() {
