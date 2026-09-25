@@ -143,7 +143,7 @@ ghc_api_or_die() {
 ghc_paged() {
   local path="$1" limit="$2" filter="$3" per page=1 max raw n acc
   shift 3
-  per=100; [ "$limit" -lt 100 ] 2>/dev/null && per="$limit"
+  per="${GHC_PAGE_SIZE:-100}"; [ "$limit" -lt "$per" ] 2>/dev/null && [ -z "${GHC_PAGE_SIZE:-}" ] && per="$limit"
   [ "$per" -ge 1 ] 2>/dev/null || per=30
   max=$(( (limit + per - 1) / per + 10 ))
   acc="${GHC_RUN_DIR}/paged.$$.$RANDOM"; : >"$acc" || return 1
@@ -292,6 +292,7 @@ def pr: {
   mergeable: (if .mergeable == true then "MERGEABLE" elif .mergeable == false then "CONFLICTING" else "UNKNOWN" end),
   mergeStateStatus: (.mergeable_state // "unknown" | ascii_upcase),
   additions, deletions, changedFiles: .changed_files,
+  mergeCommit: (if .merged_at then {oid: .merge_commit_sha} else null end),
   closingIssuesReferences: closing, reviewDecision: ""
 };
 def issue: {
@@ -383,7 +384,7 @@ ghc_pr_full() {
 # scoped paths), so on failure the repo's issues are listed and the free-text
 # terms matched client-side against title and body.
 ghc_search() {
-  local kind="$1" state="$2" text="$3" limit="$4" q raw rstate
+  local kind="$1" state="$2" text="$3" limit="$4" q raw rstate author="${GHC_O_author:-}"
   q="repo:${GHC_REPO} is:${kind} ${text}"
   case "$state" in open|closed|merged) q="$q is:$state" ;; esac
   [ -n "${GHC_O_author:-}" ] && q="$q author:${GHC_O_author}"
@@ -394,8 +395,15 @@ ghc_search() {
   fi
   ghc_last
   ghc_log "search unavailable (${GHC_STATUS:-?}); matching '${text}' client-side over repos/${GHC_REPO}/issues"
+  # /search resolves @me server-side; the client-side match compares logins,
+  # where a literal "@me" would silently match nobody (quality-loop's
+  # `--author=@me` lists would come back empty).
+  [ "$author" = "@me" ] && { author="$(ghc_api_or_die GET user | jq -r '.login // empty')" || exit 1; }
+  [ -n "${GHC_O_author:-}" ] && [ -z "$author" ] && ghc_die "gh: could not resolve --author ${GHC_O_author}"
   rstate="$state"; case "$state" in open|closed) ;; *) rstate=all ;; esac
-  ghc_paged "repos/${GHC_REPO}/issues?state=${rstate}$([ -n "${GHC_O_label:-}" ] && printf '&labels=%s' "$(ghc_uri "$GHC_O_label")")" "$limit" '
+  # Full pages: the text match keeps few items, and --limit 1 must not stop
+  # the scan after ~11 issues.
+  GHC_PAGE_SIZE=100 ghc_paged "repos/${GHC_REPO}/issues?state=${rstate}$([ -n "${GHC_O_label:-}" ] && printf '&labels=%s' "$(ghc_uri "$GHC_O_label")")" "$limit" '
     # Whole words, as /search matches them. A substring test lets "a" or "it"
     # match any body, and step-03 would adopt an unrelated issue as its tracker.
     def words: ascii_downcase | [scan("[a-z0-9]+")];
@@ -403,7 +411,7 @@ ghc_search() {
     | map(select((.pull_request != null) == ($k == "pr"))
           | select($a == "" or .user.login == $a)
           | select(((.title // "") + " " + (.body // "") | words) as $h | all($words[]; . as $w | $h | index([$w]) != null)))' \
-    --arg k "$kind" --arg t "$text" --arg a "${GHC_O_author:-}"
+    --arg k "$kind" --arg t "$text" --arg a "$author"
 }
 
 # ---------------------------------------------------------------------------
@@ -501,7 +509,8 @@ ghc_csv_json() { jq -n --arg k "$1" --arg v "$2" '{($k): ($v | split(",") | map(
 ghc_expand_me() {
   local v="$1" me
   case ",$v," in
-    *,@me,*) me="$(ghc_api GET user | jq -r .login)"; v="$(printf '%s' "$v" | sed "s/@me/${me}/g")" ;;
+    *,@me,*) me="$(ghc_api GET user | jq -r '.login // empty')"
+      [ -n "$me" ] && v="$(printf '%s' "$v" | sed "s/@me/${me}/g")" ;;  # unresolved: GitHub rejects "@me" rather than widening to everyone
   esac
   printf '%s' "$v"
 }
@@ -882,7 +891,7 @@ ghc_auth_status() {
 
 ghc_mark_blocked() {
   [ -n "$GHC_STATE" ] && { : >"$GHC_STATE"; } 2>/dev/null
-  ghc_log "GraphQL is blocked on this host; routing gh issue/pr/label/api graphql over REST (marker: ${GHC_STATE:-none})"
+  ghc_log "host refuses GitHub GraphQL; routing gh issue/pr/label/api graphql over REST (marker: ${GHC_STATE:-none})"
   return 0
 }
 

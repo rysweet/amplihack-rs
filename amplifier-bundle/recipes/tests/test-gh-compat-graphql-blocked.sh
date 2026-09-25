@@ -390,4 +390,13 @@ rc=0; wait "$bg" || rc=$?
 [ "$rc" = 0 ] || fail stream "streamed call exited $rc"
 ok "pass-through stderr is streamed, not buffered until exit"
 
+# 27. --author @me in the /search fallback means the REST login, not a literal "@me".
+reset_log
+nums="$(gh issue list --author @me --limit 1 --json number --jq '[.[].number] | join(",")')"
+[ "$nums" = 5 ] || fail author-me "--author @me gave '$nums'"
+logged_prefix "issues?state=open&per_page=100&page=1" || fail author-me "search fallback read a short page"
+nums="$(gh issue list --author someone-else --json number --jq 'length')"
+[ "$nums" = 0 ] || fail author-me "--author someone-else matched $nums"
+ok "search fallback resolves --author @me and reads full pages"
+
 echo "PASS: ${PASS} checks"
