@@ -7,10 +7,18 @@
 #
 #   1. exports AMPLIHACK_HOME and a PATH covering ~/.local/bin and ~/.cargo/bin
 #      into the session through $CLAUDE_ENV_FILE;
-#   2. if any binary is missing, either starts install-runtime in the
-#      background (default in cloud sessions, CLAUDE_CODE_REMOTE=true) or tells
-#      Claude the command that installs it. AMPLIHACK_PLUGIN_AUTO_INSTALL=1/0
-#      overrides the default.
+#   2. reconciles the runtime with this plugin version. install-runtime records
+#      the plugin version it installed for in runtime.stamp, so a plugin update
+#      also updates the binaries instead of running new recipes on old ones.
+#      When anything is missing or stale it either starts install-runtime in
+#      the background (default in cloud sessions, CLAUDE_CODE_REMOTE=true) or
+#      tells Claude the command that installs it.
+#      AMPLIHACK_PLUGIN_AUTO_INSTALL=1/0 overrides the default.
+#
+# A failed install is not retried for six hours (or until the plugin version
+# changes), and installs never start on a compaction: SessionStart also fires
+# on resume, clear and compact, and a failing multi-minute cargo build must
+# not restart every time.
 #
 # It always exits 0 and returns immediately: a SessionStart hook must never
 # block or fail a session.
@@ -18,9 +26,18 @@
 bin_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" 2>/dev/null && pwd) || exit 0
 root="${CLAUDE_PLUGIN_ROOT:-$(CDPATH='' cd -- "$bin_dir/../.." 2>/dev/null && pwd)}"
 data="${CLAUDE_PLUGIN_DATA:-$HOME/.amplihack/plugin}"
+# The cache directory name is the plugin version (the commit when plugin.json
+# carries no version), so it identifies what the runtime was installed for.
+plugin_id=$(basename -- "$root")
 
 PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 export PATH
+
+# The hook input names what started the session (startup/resume/clear/compact).
+source_kind=""
+if [ ! -t 0 ]; then
+  source_kind=$(cat 2>/dev/null | sed -n 's/.*"source"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
+fi
 
 append_env() {
   [ -n "${CLAUDE_ENV_FILE:-}" ] || return 0
@@ -55,8 +72,11 @@ missing=""
 for tool in amplihack amplihack-hooks recipe-runner-rs; do
   command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
 done
-[ -n "$missing" ] || exit 0
 missing=${missing# }
+
+stamp="$data/runtime.stamp"
+installed_for=$(sed -n 1p "$stamp" 2>/dev/null)
+[ -z "$missing" ] && [ "$installed_for" = "$plugin_id" ] && exit 0
 
 case "${AMPLIHACK_PLUGIN_AUTO_INSTALL:-}" in
   1 | true) auto=1 ;;
@@ -66,6 +86,8 @@ esac
 
 installer="$bin_dir/install-runtime"
 if [ "$auto" != 1 ]; then
+  # A runtime the user installed and manages themselves is left alone.
+  [ -n "$missing" ] || exit 0
   emit_context "amplihack plugin: the amplihack runtime is not installed (missing: $missing). Skills, agents and commands are loaded, but skills that run recipes (dev-orchestrator, default-workflow, investigation-workflow) need it. If the user wants those workflows, install it with: sh \"$installer\" (downloads prebuilt amplihack binaries into ~/.local/bin and builds recipe-runner-rs with cargo; takes several minutes)."
   exit 0
 fi
@@ -73,13 +95,27 @@ fi
 mkdir -p "$data" 2>/dev/null || exit 0
 lock="$data/install.lock"
 log="$data/install-runtime.log"
+failed="$data/install.failed"
 
-# A lock is stale when its owner is gone or it has outlived any plausible
-# install (a cargo build of recipe-runner-rs takes minutes, not an hour).
+# Back off after a failure: same plugin version, failed within six hours.
+if [ -f "$failed" ] && [ "$(sed -n 1p "$failed" 2>/dev/null)" = "$plugin_id" ] &&
+  [ -z "$(find "$failed" -mmin +360 2>/dev/null)" ]; then
+  [ -n "$missing" ] || exit 0
+  emit_context "amplihack plugin: the last amplihack runtime install failed (missing: $missing); see $log. It is not retried automatically for six hours. To retry now: rm \"$failed\" && sh \"$installer\"."
+  exit 0
+fi
+
+if [ "$source_kind" = "compact" ]; then
+  exit 0
+fi
+
+# Reclaim a lock only when its owner is gone. A live installer keeps its lock
+# however long a cold cargo build takes; a lock with no pid is reclaimed once
+# it is old enough that its creator cannot still be writing the pid.
 if [ -d "$lock" ]; then
   pid=$(cat "$lock/pid" 2>/dev/null)
   if { [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; } ||
-    [ -n "$(find "$lock" -maxdepth 0 -mmin +60 2>/dev/null)" ]; then
+    { [ -z "$pid" ] && [ -n "$(find "$lock" -maxdepth 0 -mmin +10 2>/dev/null)" ]; }; then
     rm -rf "$lock" 2>/dev/null
   fi
 fi
@@ -94,5 +130,7 @@ if mkdir "$lock" 2>/dev/null; then
   [ -f "$lock/pid" ] || printf '%s\n' "$child" >"$lock/pid" 2>/dev/null
 fi
 
-emit_context "amplihack plugin: the amplihack runtime (missing: $missing) is being installed in the background; log: $log. It is done when $lock no longer exists. Skills, agents and commands already work; before running 'amplihack recipe run' (dev-orchestrator, default-workflow), check the log and wait for the install to finish."
+if [ -n "$missing" ]; then
+  emit_context "amplihack plugin: the amplihack runtime (missing: $missing) is being installed in the background; log: $log. It is done when $lock no longer exists. Skills, agents and commands already work; before running 'amplihack recipe run' (dev-orchestrator, default-workflow), check the log and wait for the install to finish."
+fi
 exit 0

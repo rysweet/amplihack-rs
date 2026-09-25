@@ -1,29 +1,40 @@
 #!/bin/sh
 # Install the native amplihack runtime for the Claude Code plugin.
 #
-#   * amplihack + amplihack-hooks: prebuilt release binaries, fetched with the
-#     same verified downloader the npm wrapper uses (npm/lib/bootstrap.js),
-#     which falls back to a cargo build from this checkout. Copied into
-#     ~/.local/bin.
-#   * recipe-runner-rs: cargo install from rysweet/amplihack-recipe-runner.
+#   * amplihack + amplihack-hooks: the latest release's prebuilt binaries,
+#     fetched with the downloader the npm wrapper uses (npm/lib/bootstrap.js),
+#     which checks each archive against the release's sha256 file and falls
+#     back to a cargo build from this checkout. Copied into ~/.local/bin.
+#     Already-installed binaries are replaced when their version differs.
+#   * recipe-runner-rs: cargo install from rysweet/amplihack-recipe-runner at
+#     the exact commit pinned in claude-plugin/recipe-runner.rev, so what a
+#     plugin commit runs is reviewable in that commit. (amplihack's own
+#     launcher tracks the runner's main branch; the plugin pins instead
+#     because it installs without asking.)
 #
 # Deliberately does NOT run `amplihack install`: that publishes a second copy
 # of every skill into ~/.claude/skills and hook registrations into
 # settings.json, duplicating what the plugin already provides.
 #
-# Idempotent: anything already on PATH is left alone. Exits non-zero if any
-# component is still missing at the end.
+# On success it records the plugin version in runtime.stamp, so bootstrap
+# knows the runtime matches this plugin. On failure it records install.failed,
+# which bootstrap uses to back off. Idempotent and safe to run by hand.
 
 bin_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd) || exit 1
 root="${CLAUDE_PLUGIN_ROOT:-$(CDPATH='' cd -- "$bin_dir/../.." && pwd)}"
+data="${CLAUDE_PLUGIN_DATA:-$HOME/.amplihack/plugin}"
+plugin_id=$(basename -- "$root")
 dest="$HOME/.local/bin"
+runner_url=https://github.com/rysweet/amplihack-recipe-runner
 
 PATH="$dest:$HOME/.cargo/bin:$PATH"
 export PATH
 
 if [ -n "${AMPLIHACK_PLUGIN_INSTALL_LOCK:-}" ]; then
   printf '%s\n' "$$" >"$AMPLIHACK_PLUGIN_INSTALL_LOCK/pid" 2>/dev/null
-  trap 'rm -rf "$AMPLIHACK_PLUGIN_INSTALL_LOCK"' EXIT
+  # Remove the lock only while it is still ours: a lock bootstrap reclaimed
+  # and handed to another installer must survive this one exiting.
+  trap 'if [ "$(cat "$AMPLIHACK_PLUGIN_INSTALL_LOCK/pid" 2>/dev/null)" = "$$" ]; then rm -rf "$AMPLIHACK_PLUGIN_INSTALL_LOCK"; fi' EXIT
   trap 'exit 1' HUP INT TERM
 fi
 
@@ -40,26 +51,32 @@ place() {
   cp "$1" "$dest/.$2.tmp.$$" && chmod 755 "$dest/.$2.tmp.$$" && mv -f "$dest/.$2.tmp.$$" "$dest/$2"
 }
 
-mkdir -p "$dest" || exit 1
-log "plugin root: $root"
+mkdir -p "$dest" "$data" || exit 1
+log "plugin root: $root ($plugin_id)"
 
+# The release to install: an explicit AMPLIHACK_NPM_VERSION wins; otherwise
+# the latest tag, from the github.com releases/latest redirect. The npm
+# downloader's own lookup uses the unauthenticated GitHub API, and when a
+# shared egress IP is rate limited it silently falls back to package.json,
+# which stays at the workspace base version while releases advance by tag.
+if [ -z "${AMPLIHACK_NPM_VERSION:-}" ] && have curl; then
+  tag=$(curl -fsSI https://github.com/rysweet/amplihack-rs/releases/latest 2>/dev/null |
+    tr -d '\r' | grep -i '^location:' | sed 's#.*/tag/v##')
+  case "$tag" in
+    [0-9]*.[0-9]*.[0-9]*) AMPLIHACK_NPM_VERSION="$tag" && export AMPLIHACK_NPM_VERSION ;;
+  esac
+fi
+want="${AMPLIHACK_NPM_VERSION:-}"
+
+current=""
 if have amplihack && have amplihack-hooks; then
-  log "amplihack and amplihack-hooks already installed"
+  current=$(amplihack --version 2>/dev/null | sed -n 's/^amplihack //p')
+fi
+
+if [ -n "$current" ] && { [ -z "$want" ] || [ "$current" = "$want" ]; }; then
+  log "amplihack $current already installed"
 elif have node; then
-  # Pin the latest release tag. package.json stays at the workspace base
-  # version while releases advance by tag, and the downloader's GitHub API
-  # lookup is unauthenticated: when a shared egress IP is rate limited it
-  # silently falls back to package.json and installs a release that can be
-  # dozens of patches behind the recipes in this checkout. The releases/latest
-  # redirect on github.com is not API rate limited.
-  if [ -z "${AMPLIHACK_NPM_VERSION:-}" ] && have curl; then
-    tag=$(curl -fsSI https://github.com/rysweet/amplihack-rs/releases/latest 2>/dev/null |
-      tr -d '\r' | grep -i '^location:' | sed 's#.*/tag/v##')
-    case "$tag" in
-      [0-9]*.[0-9]*.[0-9]*) AMPLIHACK_NPM_VERSION="$tag" && export AMPLIHACK_NPM_VERSION ;;
-    esac
-  fi
-  log "fetching amplihack release binaries (${AMPLIHACK_NPM_VERSION:-latest})"
+  log "fetching amplihack release binaries (${want:-latest}; installed: ${current:-none})"
   paths=$(AMPLIHACK_PLUGIN_ROOT="$root" node -e '
     const path = require("node:path");
     const root = process.env.AMPLIHACK_PLUGIN_ROOT;
@@ -75,20 +92,24 @@ elif have node; then
     place "$main" amplihack && place "$hooks" amplihack-hooks && log "installed amplihack binaries into $dest"
   fi
 elif have cargo; then
-  log "node not found; building amplihack from source"
-  if (cd "$root" && cargo build --release --locked --bin amplihack --bin amplihack-hooks); then
-    place "$root/target/release/amplihack" amplihack && place "$root/target/release/amplihack-hooks" amplihack-hooks
+  log "node not found; building amplihack from source (installed: ${current:-none})"
+  # Build outside the plugin root: it is replaced on every plugin update.
+  target="$data/target"
+  if (cd "$root" && CARGO_TARGET_DIR="$target" cargo build --release --locked --bin amplihack --bin amplihack-hooks); then
+    place "$target/release/amplihack" amplihack && place "$target/release/amplihack-hooks" amplihack-hooks
   fi
 else
   log "neither node nor cargo is available; cannot install amplihack binaries"
 fi
 
-if have recipe-runner-rs; then
-  log "recipe-runner-rs already installed"
-elif have cargo; then
-  log "building recipe-runner-rs (cargo install; this takes a few minutes)"
-  cargo install --git https://github.com/rysweet/amplihack-recipe-runner --branch main --locked ||
+rev=$(sed -n 1p "$root/claude-plugin/recipe-runner.rev" 2>/dev/null)
+if have cargo && [ -n "$rev" ]; then
+  # cargo skips the build when this exact revision is already installed.
+  log "ensuring recipe-runner-rs at $rev"
+  cargo install --git "$runner_url" --rev "$rev" --locked ||
     log "recipe-runner-rs build failed"
+elif have recipe-runner-rs; then
+  log "recipe-runner-rs already installed (cannot pin: cargo or recipe-runner.rev missing)"
 else
   log "cargo not found; install Rust (https://rustup.rs) to build recipe-runner-rs"
 fi
@@ -97,4 +118,10 @@ status=0
 for tool in amplihack amplihack-hooks recipe-runner-rs; do
   if have "$tool"; then log "ok: $tool -> $(command -v "$tool")"; else log "MISSING: $tool"; status=1; fi
 done
+if [ "$status" = 0 ]; then
+  printf '%s\n' "$plugin_id" >"$data/runtime.stamp"
+  rm -f "$data/install.failed"
+else
+  printf '%s\n' "$plugin_id" >"$data/install.failed"
+fi
 exit "$status"

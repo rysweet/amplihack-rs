@@ -236,6 +236,39 @@ fn plugin_hooks_mirror_the_installer() {
             );
         }
     }
+    // And the other direction: a hook the installer gains must reach the plugin.
+    let specs = types
+        .split("AMPLIHACK_HOOK_SPECS: &[HookSpec] = &[")
+        .nth(1)
+        .and_then(|rest| rest.split("\n];").next())
+        .expect("AMPLIHACK_HOOK_SPECS in install/types.rs");
+    let plugin_subcommands: BTreeSet<&str> = EXPECTED_HOOKS
+        .iter()
+        .flat_map(|(_, _, subs)| subs.iter().copied())
+        .collect();
+    for sub in specs.split("subcmd: \"").skip(1) {
+        let sub = sub.split('"').next().unwrap();
+        assert!(
+            plugin_subcommands.contains(sub),
+            "the installer registers {sub}; add it to claude-plugin/hooks.json and EXPECTED_HOOKS"
+        );
+    }
+}
+
+#[test]
+fn recipe_runner_is_pinned_to_a_commit() {
+    // install-runtime builds recipe-runner-rs without asking, so the plugin
+    // commit pins exactly what it builds rather than following a branch.
+    let rev = fs::read_to_string(repo_root().join("claude-plugin/recipe-runner.rev")).unwrap();
+    let rev = rev.trim();
+    assert_eq!(rev.len(), 40, "full commit sha expected, got {rev:?}");
+    assert!(rev.chars().all(|c| c.is_ascii_hexdigit()), "{rev:?}");
+    let script = fs::read_to_string(repo_root().join("claude-plugin/bin/install-runtime")).unwrap();
+    assert!(script.contains("--rev \"$rev\""));
+    assert!(
+        !script.contains("--branch"),
+        "install-runtime must not follow a branch"
+    );
 }
 
 #[test]
@@ -294,6 +327,17 @@ mod shell {
         args: &[&str],
         envs: &[(&str, &str)],
     ) -> Output {
+        run_with_input(script, home, stub, args, envs, b"{\"hook\":\"payload\"}")
+    }
+
+    fn run_with_input(
+        script: &Path,
+        home: &Path,
+        stub: &Path,
+        args: &[&str],
+        envs: &[(&str, &str)],
+        input: &[u8],
+    ) -> Output {
         let mut cmd = Command::new(script);
         cmd.args(args)
             .env_clear()
@@ -314,11 +358,7 @@ mod shell {
         };
         // A no-op path exits without reading stdin, so the write can race a
         // closed pipe; that is the behavior under test, not a failure.
-        let _ = child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(b"{\"hook\":\"payload\"}");
+        let _ = child.stdin.take().unwrap().write_all(input);
         child.wait_with_output().unwrap()
     }
 
@@ -349,15 +389,50 @@ mod shell {
         let stub = tempfile::tempdir().unwrap();
         stub_hooks(stub.path());
         fs::create_dir_all(home.path().join(".claude")).unwrap();
+        let registered = stub.path().join("amplihack-hooks");
         fs::write(
             home.path().join(".claude/settings.json"),
-            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"\"/x/amplihack-hooks\" stop"}]}]}}"#,
+            format!(
+                r#"{{"hooks":{{"Stop":[{{"hooks":[{{"type":"command","command":"\"{}\" stop"}}]}}]}}}}"#,
+                registered.display()
+            ),
         )
         .unwrap();
         let out = run(&hook_script(), home.path(), stub.path(), &["stop"], &[]);
         assert!(out.status.success());
         assert!(out.stdout.is_empty());
         assert!(!home.path().join("called").exists(), "binary must not run");
+    }
+
+    #[test]
+    fn a_registration_whose_binary_is_gone_does_not_disable_the_plugin_hooks() {
+        let home = tempfile::tempdir().unwrap();
+        let stub = tempfile::tempdir().unwrap();
+        stub_hooks(stub.path());
+        fs::create_dir_all(home.path().join(".claude")).unwrap();
+        fs::write(
+            home.path().join(".claude/settings.json"),
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"\"/gone/amplihack-hooks\" stop"}]}]}}"#,
+        )
+        .unwrap();
+        let out = run(&hook_script(), home.path(), stub.path(), &["stop"], &[]);
+        assert!(out.status.success());
+        assert!(home.path().join("called").exists(), "binary must run");
+    }
+
+    #[test]
+    fn hook_points_amplihack_hooks_at_the_plugin_root() {
+        let home = tempfile::tempdir().unwrap();
+        let stub = tempfile::tempdir().unwrap();
+        write_exe(
+            &stub.path().join("amplihack-hooks"),
+            "#!/bin/sh\nprintf '%s' \"$AMPLIHACK_HOME\" > \"$HOME/home-seen\"\n",
+        );
+        let envs = [("CLAUDE_PLUGIN_ROOT", "/plugin/root")];
+        let out = run(&hook_script(), home.path(), stub.path(), &["stop"], &envs);
+        assert!(out.status.success());
+        let seen = fs::read_to_string(home.path().join("home-seen")).unwrap();
+        assert_eq!(seen, "/plugin/root");
     }
 
     #[test]
@@ -368,9 +443,13 @@ mod shell {
         let project = tempfile::tempdir().unwrap();
         stub_hooks(stub.path());
         fs::create_dir_all(project.path().join(".claude")).unwrap();
+        let registered = stub.path().join("amplihack-hooks");
         fs::write(
             project.path().join(".claude/settings.json"),
-            "{\n  \"hooks\": {\"Stop\": [{\"hooks\": [{\n    \"type\": \"command\",\n    \"command\": \"\\\"/x/amplihack-hooks\\\" stop\"\n  }]}]}\n}\n",
+            format!(
+                "{{\n  \"hooks\": {{\"Stop\": [{{\"hooks\": [{{\n    \"type\": \"command\",\n    \"command\": \"\\\"{}\\\" stop\"\n  }}]}}]}}\n}}\n",
+                registered.display()
+            ),
         )
         .unwrap();
         let envs = [("CLAUDE_PROJECT_DIR", project.path().to_str().unwrap())];
@@ -519,5 +598,308 @@ mod shell {
             std::thread::sleep(Duration::from_millis(50));
         }
         assert!(marker.exists(), "install-runtime was not started");
+    }
+
+    fn wait_for(path: &Path) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !path.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        path.exists()
+    }
+
+    /// Stubs for all three runtime binaries, so nothing reads as missing.
+    fn stub_runtime(stub: &Path) {
+        for tool in ["amplihack", "amplihack-hooks", "recipe-runner-rs"] {
+            write_exe(&stub.join(tool), "#!/bin/sh\n");
+        }
+    }
+
+    #[test]
+    fn bootstrap_reinstalls_when_the_plugin_version_changes() {
+        // The runtime must follow plugin updates, not stay at the first install.
+        let home = tempfile::tempdir().unwrap();
+        let stub = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        stub_runtime(stub.path());
+        fs::write(data.path().join("runtime.stamp"), "oldcommit\n").unwrap();
+        let bin = bootstrap_fixture();
+        let envs = [
+            ("CLAUDE_CODE_REMOTE", "true"),
+            ("CLAUDE_PLUGIN_ROOT", "/cache/amplihack/newcommit"),
+            ("CLAUDE_PLUGIN_DATA", data.path().to_str().unwrap()),
+        ];
+        let out = run(
+            &bin.path().join("bootstrap"),
+            home.path(),
+            stub.path(),
+            &[],
+            &envs,
+        );
+        assert!(out.status.success());
+        assert!(
+            out.stdout.is_empty(),
+            "nothing is missing, so nothing to tell Claude"
+        );
+        assert!(
+            wait_for(&home.path().join("installer-ran")),
+            "stale runtime not reconciled"
+        );
+    }
+
+    #[test]
+    fn bootstrap_does_nothing_when_the_runtime_matches_the_plugin() {
+        let home = tempfile::tempdir().unwrap();
+        let stub = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        stub_runtime(stub.path());
+        fs::write(data.path().join("runtime.stamp"), "samecommit\n").unwrap();
+        let bin = bootstrap_fixture();
+        let envs = [
+            ("CLAUDE_CODE_REMOTE", "true"),
+            ("CLAUDE_PLUGIN_ROOT", "/cache/amplihack/samecommit"),
+            ("CLAUDE_PLUGIN_DATA", data.path().to_str().unwrap()),
+        ];
+        let out = run(
+            &bin.path().join("bootstrap"),
+            home.path(),
+            stub.path(),
+            &[],
+            &envs,
+        );
+        assert!(out.status.success() && out.stdout.is_empty());
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!home.path().join("installer-ran").exists());
+        assert!(!data.path().join("install.lock").exists());
+    }
+
+    #[test]
+    fn bootstrap_backs_off_after_a_failed_install() {
+        let home = tempfile::tempdir().unwrap();
+        let stub = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        fs::write(data.path().join("install.failed"), "thiscommit\n").unwrap();
+        let bin = bootstrap_fixture();
+        let envs = [
+            ("CLAUDE_CODE_REMOTE", "true"),
+            ("CLAUDE_PLUGIN_ROOT", "/cache/amplihack/thiscommit"),
+            ("CLAUDE_PLUGIN_DATA", data.path().to_str().unwrap()),
+        ];
+        let out = run(
+            &bin.path().join("bootstrap"),
+            home.path(),
+            stub.path(),
+            &[],
+            &envs,
+        );
+        assert!(out.status.success());
+        let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        let context = json["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        assert!(context.contains("failed"), "{context}");
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            !home.path().join("installer-ran").exists(),
+            "must not retry yet"
+        );
+    }
+
+    #[test]
+    fn bootstrap_never_starts_an_install_on_compaction() {
+        let home = tempfile::tempdir().unwrap();
+        let stub = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let bin = bootstrap_fixture();
+        let envs = [
+            ("CLAUDE_CODE_REMOTE", "true"),
+            ("CLAUDE_PLUGIN_DATA", data.path().to_str().unwrap()),
+        ];
+        let out = run_with_input(
+            &bin.path().join("bootstrap"),
+            home.path(),
+            stub.path(),
+            &[],
+            &envs,
+            br#"{"hook_event_name":"SessionStart","source": "compact"}"#,
+        );
+        assert!(out.status.success());
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!home.path().join("installer-ran").exists());
+    }
+
+    #[test]
+    fn bootstrap_leaves_a_live_installers_lock_alone_however_old() {
+        let home = tempfile::tempdir().unwrap();
+        let stub = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let lock = data.path().join("install.lock");
+        fs::create_dir(&lock).unwrap();
+        // This test process stands in for a live installer.
+        fs::write(lock.join("pid"), format!("{}\n", std::process::id())).unwrap();
+        let aged = Command::new("touch")
+            .args(["-d", "2 hours ago"])
+            .arg(&lock)
+            .status()
+            .unwrap();
+        assert!(aged.success());
+        let bin = bootstrap_fixture();
+        let envs = [
+            ("CLAUDE_CODE_REMOTE", "true"),
+            ("CLAUDE_PLUGIN_DATA", data.path().to_str().unwrap()),
+        ];
+        let out = run(
+            &bin.path().join("bootstrap"),
+            home.path(),
+            stub.path(),
+            &[],
+            &envs,
+        );
+        assert!(out.status.success());
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            !home.path().join("installer-ran").exists(),
+            "second installer started"
+        );
+        assert_eq!(
+            fs::read_to_string(lock.join("pid")).unwrap().trim(),
+            std::process::id().to_string()
+        );
+    }
+
+    #[test]
+    fn bootstrap_marks_root_cloud_sessions_as_sandboxed() {
+        let home = tempfile::tempdir().unwrap();
+        let stub = tempfile::tempdir().unwrap();
+        stub_runtime(stub.path());
+        let bin = bootstrap_fixture();
+        let env_file = home.path().join("env.sh");
+        let envs = [
+            ("CLAUDE_ENV_FILE", env_file.to_str().unwrap()),
+            ("CLAUDE_CODE_REMOTE", "true"),
+            ("AMPLIHACK_PLUGIN_AUTO_INSTALL", "0"),
+        ];
+        run(
+            &bin.path().join("bootstrap"),
+            home.path(),
+            stub.path(),
+            &[],
+            &envs,
+        );
+        let exported = fs::read_to_string(&env_file).unwrap();
+        let uid = Command::new("id").arg("-u").output().unwrap();
+        let is_root = String::from_utf8_lossy(&uid.stdout).trim() == "0";
+        assert_eq!(
+            exported.contains("export IS_SANDBOX=1"),
+            is_root,
+            "{exported}"
+        );
+
+        // Never outside a cloud session.
+        let local = tempfile::tempdir().unwrap();
+        let env_file = local.path().join("env.sh");
+        let envs = [
+            ("CLAUDE_ENV_FILE", env_file.to_str().unwrap()),
+            ("AMPLIHACK_PLUGIN_AUTO_INSTALL", "0"),
+        ];
+        run(
+            &bin.path().join("bootstrap"),
+            local.path(),
+            stub.path(),
+            &[],
+            &envs,
+        );
+        assert!(
+            !fs::read_to_string(&env_file)
+                .unwrap()
+                .contains("IS_SANDBOX")
+        );
+    }
+
+    /// install-runtime with stub binaries: `amplihack --version` reports
+    /// `version`, and `cargo` records its argv (failing when `cargo_ok` is false).
+    fn run_install_runtime(
+        version: &str,
+        cargo_ok: bool,
+        want: &str,
+    ) -> (Output, tempfile::TempDir, tempfile::TempDir) {
+        let home = tempfile::tempdir().unwrap();
+        let stub = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        write_exe(
+            &stub.path().join("amplihack"),
+            &format!("#!/bin/sh\necho 'amplihack {version}'\n"),
+        );
+        write_exe(&stub.path().join("amplihack-hooks"), "#!/bin/sh\n");
+        let cargo = if cargo_ok {
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/cargo-args\"\nmkdir -p \"$HOME/.cargo/bin\"\nprintf '#!/bin/sh\\n' > \"$HOME/.cargo/bin/recipe-runner-rs\"\nchmod +x \"$HOME/.cargo/bin/recipe-runner-rs\"\n"
+        } else {
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/cargo-args\"\nexit 101\n"
+        };
+        write_exe(&stub.path().join("cargo"), cargo);
+        let root = repo_root();
+        let envs = [
+            ("CLAUDE_PLUGIN_ROOT", root.to_str().unwrap()),
+            ("CLAUDE_PLUGIN_DATA", data.path().to_str().unwrap()),
+            ("AMPLIHACK_NPM_VERSION", want),
+        ];
+        let out = run(
+            &root.join("claude-plugin/bin/install-runtime"),
+            home.path(),
+            stub.path(),
+            &[],
+            &envs,
+        );
+        drop(stub);
+        (out, home, data)
+    }
+
+    #[test]
+    fn install_runtime_builds_the_pinned_runner_and_stamps_the_plugin_version() {
+        let (out, home, data) = run_install_runtime("1.2.3", true, "1.2.3");
+        let log = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{log}");
+        assert!(log.contains("amplihack 1.2.3 already installed"), "{log}");
+        let rev = fs::read_to_string(repo_root().join("claude-plugin/recipe-runner.rev")).unwrap();
+        let args = fs::read_to_string(home.path().join("cargo-args")).unwrap();
+        assert!(args.contains(&format!("--rev {}", rev.trim())), "{args}");
+        let plugin_id = repo_root()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let stamp = fs::read_to_string(data.path().join("runtime.stamp")).unwrap();
+        assert_eq!(stamp.trim(), plugin_id);
+        assert!(!data.path().join("install.failed").exists());
+    }
+
+    #[test]
+    fn install_runtime_replaces_binaries_from_another_release() {
+        // 1.0.0 is installed but 1.2.3 is wanted. There is no node on the test
+        // PATH, so the replacement goes down the cargo source-build fallback,
+        // which the stub cargo records; what matters is 1.0.0 is not accepted.
+        let (out, home, _data) = run_install_runtime("1.0.0", true, "1.2.3");
+        let log = String::from_utf8_lossy(&out.stdout);
+        assert!(!log.contains("already installed"), "{log}");
+        assert!(log.contains("installed: 1.0.0"), "{log}");
+        let args = fs::read_to_string(home.path().join("cargo-args")).unwrap();
+        assert!(
+            args.contains("build --release --locked --bin amplihack"),
+            "{args}"
+        );
+    }
+
+    #[test]
+    fn install_runtime_records_a_failure_for_bootstrap_to_back_off() {
+        let (out, _home, data) = run_install_runtime("1.2.3", false, "1.2.3");
+        assert!(!out.status.success());
+        let plugin_id = repo_root()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let failed = fs::read_to_string(data.path().join("install.failed")).unwrap();
+        assert_eq!(failed.trim(), plugin_id);
+        assert!(!data.path().join("runtime.stamp").exists());
     }
 }

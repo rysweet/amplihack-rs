@@ -28,16 +28,40 @@ place of the `owner/repo` shorthand. Start a new session after installing.
 
 ### Claude Code on the web (cloud sessions)
 
-Each cloud session starts in a fresh container, so install the plugin from the
-environment's **setup script**. It runs before Claude Code starts:
+Each cloud session starts in a fresh container, so install the plugin, and
+the native runtime it drives, from the environment's **setup script**. It runs
+before Claude Code starts:
 
 ```bash
 claude plugin marketplace add rysweet/amplihack-rs
 claude plugin install amplihack@amplihack
+sh "$(ls -d ~/.claude/plugins/cache/amplihack/amplihack/*/ | tail -n 1)claude-plugin/bin/install-runtime"
 ```
 
 Edit the setup script from the cloud environment menu in the session's title
 bar (**Edit** → **Setup script**). New sessions pick up the change.
+
+How [cloud environments](https://code.claude.com/docs/en/cloud-environments)
+treat this script shapes what you get:
+
+- **The result is cached.** After the setup script finishes, the filesystem is
+  snapshotted and later sessions start from that snapshot. The script runs
+  again only when you change it or its network settings, or when the cache
+  expires after roughly seven days. So the plugin stays at the commit it was
+  installed at until the cache is rebuilt. To pick up a newer amplihack sooner,
+  make any edit to the setup script.
+- **Keep it under about five minutes.** The cache is built only from a setup
+  script that finishes in roughly five minutes. The release download takes
+  seconds, but the `recipe-runner-rs` cargo build takes a few minutes on a cold
+  container. If the script cannot fit, leave out the `install-runtime` line:
+  the plugin's `SessionStart` hook installs the runtime in the background
+  instead, but then it does so in every new session, because that install is
+  not part of the snapshot.
+- **Attach amplihack-rs to the environment.** GitHub release-asset requests
+  from a cloud session reach only the repositories attached to it. When
+  rysweet/amplihack-rs is not attached, the release download is refused and
+  `install-runtime` falls back to building amplihack from source, which is too
+  slow for a setup script.
 
 ## What you get
 
@@ -73,8 +97,11 @@ The plugin's `SessionStart` hook, `claude-plugin/bin/bootstrap`, handles this:
   `AMPLIHACK_AGENT_BINARY=claude` so recipe agent steps run under Claude Code.
   In cloud sessions, which run as root, it exports `IS_SANDBOX=1` so the
   `claude` child processes accept `--dangerously-skip-permissions`.
-- If any binary is missing, it either starts `claude-plugin/bin/install-runtime`
-  in the background or tells Claude the command to run:
+- If any binary is missing, or the runtime was installed for a different
+  plugin version, it either starts `claude-plugin/bin/install-runtime` in the
+  background or tells Claude the command to run. `install-runtime` records the
+  plugin version it installed for, so a plugin update also updates the
+  binaries instead of running new recipes on old ones.
 
 | Setting                                    | Behavior when the runtime is missing              |
 | ------------------------------------------ | ------------------------------------------------- |
@@ -83,16 +110,33 @@ The plugin's `SessionStart` hook, `claude-plugin/bin/bootstrap`, handles this:
 | `AMPLIHACK_PLUGIN_AUTO_INSTALL=1`          | Always installs in the background                 |
 | `AMPLIHACK_PLUGIN_AUTO_INSTALL=0`          | Never installs automatically                      |
 
+When the runtime is present but was installed for another plugin version,
+the background reconcile runs silently; only a missing runtime is reported to
+Claude. Two guards keep a broken install from looping:
+
+- A failed install writes `install.failed`. It is not retried automatically
+  for six hours, or until the plugin version changes.
+- `SessionStart` also fires on resume, `/clear`, and compaction. An install is
+  never started on compaction.
+
 `install-runtime` does three things:
 
-1. It downloads the checksum-verified prebuilt `amplihack` and
-   `amplihack-hooks` release binaries with the same downloader the npm wrapper
-   uses (`npm/lib/bootstrap.js`), and falls back to a cargo build from the
-   checkout.
+1. It downloads the latest release's prebuilt `amplihack` and
+   `amplihack-hooks` binaries with the same downloader the npm wrapper uses
+   (`npm/lib/bootstrap.js`). Each archive is checked against the `.sha256`
+   file published with the same release. That catches a corrupted download,
+   not a compromised release. Binaries already on `PATH` are replaced when
+   their version differs. Without `node` it builds from the checkout with
+   cargo, outside the plugin directory.
 2. It copies them into `~/.local/bin`.
 3. It builds `recipe-runner-rs` with `cargo install --git
-   https://github.com/rysweet/amplihack-recipe-runner --locked`, which takes a
-   few minutes.
+   https://github.com/rysweet/amplihack-recipe-runner --rev <sha> --locked`.
+   The commit comes from `claude-plugin/recipe-runner.rev`, so the code a
+   plugin commit builds is fixed and reviewable in that commit. cargo skips
+   the build when that exact commit is already installed. amplihack's own
+   launcher tracks the runner's `main` branch instead; the plugin pins because
+   it installs without asking. Bump the file to move the plugin to a newer
+   runner.
 
 It is idempotent and safe to run by hand:
 
@@ -103,7 +147,7 @@ sh ~/.claude/plugins/cache/amplihack/amplihack/<version>/claude-plugin/bin/insta
 Background installs log to `${CLAUDE_PLUGIN_DATA}/install-runtime.log`, or to
 `~/.amplihack/plugin/install-runtime.log` when `CLAUDE_PLUGIN_DATA` is not set.
 While an install is running, an `install.lock` directory exists next to the
-log.
+log. The lock is reclaimed only when the installer that holds it has exited.
 
 `install-runtime` installs the latest published release. It resolves the tag
 through the `github.com/…/releases/latest` redirect, not the rate-limited
@@ -122,9 +166,17 @@ binary when:
 - `amplihack-hooks` is not installed yet, or
 - a hook `command` in `${CLAUDE_CONFIG_DIR:-~/.claude}/settings.json`, or in
   the project's `.claude/settings.json` or `.claude/settings.local.json`,
-  already runs `amplihack-hooks`. That means `amplihack install` wired the hooks
-  (user scope, or the interactive installer's repo-local scope) and they
-  already fire. Other mentions, such as a permission rule, do not count.
+  already runs an `amplihack-hooks` binary that exists. That means `amplihack
+  install` wired the hooks (user scope, or the interactive installer's
+  repo-local scope) and they already fire. Claude Code keeps a plugin's copy of
+  a handler separate from the settings copy, so without this check each hook
+  would run twice. Other mentions, such as a permission rule, do not count.
+  Neither does a registration whose binary has since been removed. Managed
+  policy settings and `--settings` files are not inspected.
+
+The wrapper also sets `AMPLIHACK_HOME` to the plugin root for `amplihack-hooks`.
+Hook processes do not see the variables `bootstrap` writes to
+`CLAUDE_ENV_FILE`; those reach Bash tool commands only.
 
 So hooks never fire twice. Skills installed by `amplihack install` appear
 unprefixed (`dev-orchestrator`), and the plugin's copies appear as
@@ -145,6 +197,9 @@ unprefixed (`dev-orchestrator`), and the plugin's copies appear as
   issues and pull requests through `gh`. Cloud sessions block the GraphQL API
   that `gh issue` and `gh pr` use
   ([#1484](https://github.com/rysweet/amplihack-rs/issues/1484)).
+- **Skill-to-agent redirect.** The `pre-tool-use` hook's redirect from a skill
+  name to the matching agent compares bare names. Plugin skills are namespaced
+  (`amplihack:…`), so under the plugin that redirect does not trigger.
 - **Adding agents.** New agents must be listed in `plugin.json`, because
   Claude Code rejects directories in `agents`. The
   `claude_code_plugin_manifest` test fails and names the file when one is
@@ -152,10 +207,20 @@ unprefixed (`dev-orchestrator`), and the plugin's copies appear as
 
 ## Update and uninstall
 
-```text
-/plugin marketplace update amplihack
-/plugin uninstall amplihack@amplihack
-/plugin marketplace remove amplihack
+```bash
+claude plugin marketplace update amplihack   # refresh the catalog
+claude plugin update amplihack@amplihack     # install the newer version
+```
+
+`marketplace update` only refreshes the catalog; `plugin update` installs the
+new version, which loads in your next session. Automatic updates are off for
+third-party marketplaces unless you turn them on for this marketplace in
+`/plugin`. In cloud sessions the plugin updates when the environment cache is
+rebuilt (see above).
+
+```bash
+claude plugin uninstall amplihack@amplihack
+claude plugin marketplace remove amplihack
 ```
 
 Uninstalling the plugin leaves the runtime binaries in place. To remove them,
@@ -164,7 +229,7 @@ delete `~/.local/bin/amplihack`, `~/.local/bin/amplihack-hooks` and
 
 ## Validate changes
 
-Contributors changing the plugin files should run:
+CI runs all three. Contributors changing the plugin files should run them too:
 
 ```bash
 claude plugin validate .
@@ -176,8 +241,8 @@ shellcheck -s sh -S style claude-plugin/bin/*
 deliberate. When a version is set, Claude Code caches the plugin by that version
 and delivers no update until it changes. amplihack releases advance by git tag
 while `package.json` stays at the workspace base version, so a pinned version
-would freeze installs. Without one, the cache follows the commit and
-`/plugin marketplace update amplihack` picks up new content.
+would freeze installs. Without one, the cache follows the commit, and
+`claude plugin update amplihack@amplihack` installs each new commit.
 
 `--strict` reports two more expected warnings:
 

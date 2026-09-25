@@ -7,26 +7,50 @@
 #
 #   * amplihack-hooks is not installed yet (the plugin's skills, agents and
 #     commands still work; bootstrap may be installing the runtime right now);
-#   * a settings file already registers an amplihack-hooks hook command
-#     because `amplihack install` wired them, in the user scope or (with the
-#     interactive installer's repo-local scope) the project. Those
-#     registrations fire on their own; running this copy too would fire every
-#     hook twice. Only a hook "command" counts: a permission rule or any other
-#     mention of the name must not switch the plugin's hooks off.
+#   * a settings file already registers a working amplihack-hooks hook
+#     command because `amplihack install` wired them, in the user scope or
+#     (with the interactive installer's repo-local scope) the project. Claude
+#     Code keeps a plugin's copy of a handler separate from the settings copy,
+#     so running this one too would fire every hook twice. Only a hook
+#     "command" whose amplihack-hooks binary still exists counts: a permission
+#     rule, another mention of the name, or a registration left behind after
+#     the binary was removed must not switch the plugin's hooks off.
+#     Managed-policy settings and --settings files are not inspected.
 
 PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 export PATH
+# Hooks do not see $CLAUDE_ENV_FILE exports (those reach Bash tool commands
+# only), so point amplihack-hooks at the plugin checkout here.
+AMPLIHACK_HOME="${AMPLIHACK_HOME:-${CLAUDE_PLUGIN_ROOT:-}}"
+[ -n "$AMPLIHACK_HOME" ] && export AMPLIHACK_HOME
 
 command -v amplihack-hooks >/dev/null 2>&1 || exit 0
 
-for settings in \
-  "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" \
-  "${CLAUDE_PROJECT_DIR:-.}/.claude/settings.json" \
-  "${CLAUDE_PROJECT_DIR:-.}/.claude/settings.local.json"; do
-  if [ -f "$settings" ] &&
-    grep -Eq '"command"[[:space:]]*:[^,}]*amplihack-hooks' "$settings" 2>/dev/null; then
-    exit 0
-  fi
-done
+registered_elsewhere() {
+  for settings in \
+    "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" \
+    "${CLAUDE_PROJECT_DIR:-.}/.claude/settings.json" \
+    "${CLAUDE_PROJECT_DIR:-.}/.claude/settings.local.json"; do
+    [ -f "$settings" ] || continue
+    # Each hook command that runs amplihack-hooks, reduced to its binary.
+    if grep -Eo '"command"[[:space:]]*:[^,}]*amplihack-hooks' "$settings" 2>/dev/null |
+      sed 's/^"command"[[:space:]]*:[[:space:]]*"//; s/\\"//g; s/^"//' |
+      {
+        # The pipeline runs in a subshell: exit 0 means "found", and an
+        # empty or exhausted list falls through to exit 1.
+        while IFS= read -r bin; do
+          if [ -x "$bin" ] || { [ "$bin" = amplihack-hooks ] && command -v amplihack-hooks >/dev/null 2>&1; }; then
+            exit 0
+          fi
+        done
+        exit 1
+      }; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+registered_elsewhere && exit 0
 
 exec amplihack-hooks "$@"
