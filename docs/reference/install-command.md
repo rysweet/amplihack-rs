@@ -101,7 +101,8 @@ modified because amplihack finds `~/.cargo/bin` itself. If no C compiler
 `build-essential` as root or through passwordless `sudo -n` (on a fresh VM it
 waits up to about 5 minutes for first-boot `apt-daily`/`unattended-upgrades`:
 the dpkg lock via `DPkg::Lock::Timeout`, and the apt lists lock by retrying
-`apt-get update`); it never
+`apt-get update` while that lock is the failure; any other `update` error
+falls through to the install with the existing package lists); it never
 prompts for a password and instead fails with the command to run.
 `recipe-runner-rs` is found in `$CARGO_HOME/bin` even when that directory is
 not on PATH. Set

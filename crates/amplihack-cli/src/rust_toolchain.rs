@@ -29,7 +29,7 @@ use std::time::Duration;
 pub(crate) const NO_BOOTSTRAP_ENV: &str = "AMPLIHACK_NO_RUST_BOOTSTRAP";
 const RUSTUP_INIT_URL: &str = "https://static.rust-lang.org/rustup/rustup-init.sh";
 const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(900);
-const APT_UPDATE_ATTEMPTS: u32 = 60;
+const APT_UPDATE_DEADLINE: Duration = Duration::from_secs(300);
 const APT_UPDATE_RETRY_DELAY: Duration = Duration::from_secs(5);
 const C_COMPILERS: [&str; 3] = ["cc", "gcc", "clang"];
 const LINKER_REMEDIATION: &str = "sudo apt-get install -y build-essential   \
@@ -227,7 +227,7 @@ fn ensure_c_linker_in(dirs: &[PathBuf], allow_bootstrap: bool) -> Result<()> {
     };
 
     println!("   ⏬ No C linker found — installing build-essential with apt-get");
-    let apt = |args: &[&str]| -> Result<std::process::ExitStatus> {
+    let apt = |args: &[&str], stderr: Option<std::fs::File>, timeout: Duration| {
         let mut cmd = match &sudo {
             Some(sudo) => {
                 let mut cmd = Command::new(sudo);
@@ -244,29 +244,55 @@ fn ensure_c_linker_in(dirs: &[PathBuf], allow_bootstrap: bool) -> Result<()> {
         // A freshly booted VM usually has apt-daily/unattended-upgrades
         // holding the dpkg lock; wait for it (apt >= 1.9.11).
         cmd.args(["-o", "DPkg::Lock::Timeout=300"]).args(args);
-        run_with_timeout(cmd, BOOTSTRAP_TIMEOUT)
+        if let Some(stderr) = stderr {
+            cmd.stderr(stderr);
+        }
+        run_with_timeout(cmd, timeout)
             .with_context(|| format!("failed to run apt-get {}", args.join(" ")))
     };
 
     // DPkg::Lock::Timeout does not cover /var/lib/apt/lists/lock, which
-    // apt-daily's boot-time `update` holds, so retry `update` for the same
-    // ~5 minutes. If it never succeeds, still try the install: the package
-    // lists already on disk are often enough.
-    let mut updated = false;
-    for attempt in 1..=APT_UPDATE_ATTEMPTS {
-        if apt(&["update", "-qq"])?.success() {
-            updated = true;
+    // apt-daily's boot-time `update` holds. Retry `update` only while that
+    // lock is the failure, and for at most APT_UPDATE_DEADLINE overall. Any
+    // other update failure (e.g. a broken third-party repo) is not waited on:
+    // the install is tried with the lists already on disk.
+    let deadline = std::time::Instant::now() + APT_UPDATE_DEADLINE;
+    let mut announced_wait = false;
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let log = tempfile::tempfile().context("failed to create apt-get stderr log")?;
+        let status = apt(
+            &["update", "-qq"],
+            Some(log.try_clone()?),
+            remaining.max(APT_UPDATE_RETRY_DELAY),
+        )?;
+        let mut stderr = String::new();
+        {
+            use std::io::{Read, Seek};
+            let mut log = log;
+            log.rewind()?;
+            let _ = log.read_to_string(&mut stderr);
+        }
+        if status.success() {
             break;
         }
-        if attempt < APT_UPDATE_ATTEMPTS {
-            println!("   ⏳ apt-get update failed (apt may be busy); retrying in 5s");
-            std::thread::sleep(APT_UPDATE_RETRY_DELAY);
+        let lock_held = stderr.contains("Could not get lock");
+        if !lock_held || std::time::Instant::now() + APT_UPDATE_RETRY_DELAY >= deadline {
+            eprint!("{stderr}");
+            println!("   ⚠️  apt-get update failed; trying the install with existing lists");
+            break;
         }
+        if !announced_wait {
+            println!("   ⏳ apt is busy (package lists locked); waiting up to 5 minutes");
+            announced_wait = true;
+        }
+        std::thread::sleep(APT_UPDATE_RETRY_DELAY);
     }
-    if !updated {
-        println!("   ⚠️  apt-get update kept failing; trying the install with existing lists");
-    }
-    let status = apt(&["install", "-y", "-qq", "build-essential"])?;
+    let status = apt(
+        &["install", "-y", "-qq", "build-essential"],
+        None,
+        BOOTSTRAP_TIMEOUT,
+    )?;
     if !status.success() {
         bail!(
             "apt-get install build-essential exited with status {status}. Install a C \

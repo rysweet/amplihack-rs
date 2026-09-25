@@ -21,6 +21,8 @@
 #   4. AMPLIHACK_NO_RUST_BOOTSTRAP=1: install fails fast, nothing downloaded.
 #   5. a non-default CARGO_HOME that is not on PATH: the installed
 #      recipe-runner-rs is still found.
+#   6. `apt-get update` failing for a non-lock reason (broken repo): not
+#      retried; the build-essential install still goes ahead.
 #
 # Usage: AMPLIHACK_BIN=/path/to/amplihack bash tests/rust_toolchain_bootstrap_install.sh
 # (defaults to the `amplihack` on PATH). CI runs it in the Install Smoke Test job.
@@ -109,6 +111,17 @@ case " \$* " in
     fi ;;
 esac
 case " \$* " in
+  *" install "*) printf '#!/bin/sh\nexit 0\n' > "$dir/cc"; chmod +x "$dir/cc" ;;
+esac
+EOF
+        ;;
+      apt-broken)
+        # `update` always fails like a PPA with a missing key; install works.
+        cat > "$dir/apt-get" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "\$HOME/apt.log"
+case " \$* " in
+  *" update "*) echo "E: The repository is not signed. NO_PUBKEY 0123" >&2; exit 100 ;;
   *" install "*) printf '#!/bin/sh\nexit 0\n' > "$dir/cc"; chmod +x "$dir/cc" ;;
 esac
 EOF
@@ -255,6 +268,19 @@ if [[ "$status" -eq 0 && -x "$home/custom-cargo/bin/recipe-runner-rs" ]]; then
   pass "recipe-runner-rs in a custom \$CARGO_HOME/bin is found after install"
 else
   fail "custom CARGO_HOME install failed (exit $status)"
+  cat "$out" >&2
+fi
+
+# --- 6. apt-get update fails for a non-lock reason: no waiting --------------
+home="$TMP/case6"
+make_tools "$TMP/case6-tools" curl apt-broken sudo-ok
+out="$TMP/case6.log"
+status=0
+run_install "$home" "$TMP/case6-tools" "$out" || status=$?
+if [[ "$status" -eq 0 && "$(grep -c "update -qq" "$home/apt.log" 2>/dev/null)" -eq 1 ]]; then
+  pass "a permanent apt-get update error is not retried; install proceeds"
+else
+  fail "permanent update error handling wrong (exit $status): $(cat "$home/apt.log" 2>/dev/null)"
   cat "$out" >&2
 fi
 
