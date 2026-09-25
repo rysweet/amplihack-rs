@@ -859,6 +859,7 @@ fn a_launch_not_picked_by_the_default_layer_still_persists() {
 /// persist it either. Any other launch exports an untagged, chosen value.
 #[test]
 fn a_launch_on_a_default_guess_hands_the_guess_on_tagged() {
+    use crate::env_builder::launch_binary_source;
     use amplihack_utils::agent_binary::{ResolutionSource, SOURCE_ENV};
 
     let guess = inherited(Some("copilot"), Some("default:copilot"));
@@ -867,7 +868,7 @@ fn a_launch_on_a_default_guess_hands_the_guess_on_tagged() {
         ResolutionSource::Default
     );
     let env = EnvBuilder::new()
-        .with_resolved_agent_binary("copilot", launch_binary_source("copilot", &guess))
+        .with_launched_agent_binary_from("copilot", &guess)
         .build();
     assert_eq!(
         env.get(SOURCE_ENV).map(String::as_str),

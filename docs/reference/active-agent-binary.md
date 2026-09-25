@@ -44,12 +44,14 @@ If a source produces a value that fails validation (allowlist, length, character
 ### Resolving once for a whole recipe run
 
 `amplihack recipe run` resolves the binary once, at entry, and exports it to
-`recipe-runner-rs` as `AMPLIHACK_AGENT_BINARY`. The launcher-context walk-up
-starts at the run's working directory (`--working-dir`, default `.`), where
-the steps run. It has to: every step runs
+`recipe-runner-rs` as `AMPLIHACK_AGENT_BINARY`. It has to: every step runs
 under the runner's curated environment, where the session markers of the CLI
 that started the run may be gone, and a nested `amplihack` resolving on its own
 there would fall through to the default (issue #1481).
+
+The launcher-context walk-up for that decision starts at the run's working
+directory (`--working-dir`, default `.`), where the steps run. The top level
+then reads the same context file a nested `amplihack` in a step would.
 
 When the answer came from layer 4, recipe run also exports
 `AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>` and prints a one-line notice on
@@ -61,9 +63,10 @@ stderr. The tag keeps a guess a guess on the way down:
   it;
 - a launcher (`amplihack copilot`, ...) started with a tagged value naming
   itself does not write `launcher_context.json`, and hands the value on to its
-  own children still tagged. A default-layer guess therefore never becomes
-  persisted state that pins later runs in the checkout, however deep the
-  nesting.
+  own children still tagged (`EnvBuilder::with_launched_agent_binary`, used by
+  both the interactive launcher and `--auto`). A default-layer guess therefore
+  never becomes persisted state that pins later runs in the checkout, however
+  deep the nesting.
 
 Setting the *same* value again does not lift the tag, because the two cannot
 be told apart. To make that value an instruction, unset

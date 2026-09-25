@@ -43,47 +43,6 @@ fn is_non_session_invocation(extra_args: &[String]) -> bool {
     )
 }
 
-/// `true` when this launcher was picked for us by a parent that only had the
-/// built-in default to go on.
-///
-/// Issue #1481: `amplihack recipe run` inside a Claude Code session whose
-/// markers had been stripped exported the vendor default, and every agent step
-/// then ran `amplihack copilot`. That launch is not a session anyone chose, so
-/// recording it would turn one guess into persisted state that decides later
-/// runs in the checkout. The tag is bound to the inherited value, and that
-/// value must also name this tool: the tag describes what was handed down, not
-/// whatever launcher a user typed.
-fn launched_on_a_default_guess(tool: &str, var: &dyn Fn(&str) -> Option<String>) -> bool {
-    use amplihack_utils::agent_binary::{
-        BINARY_ENV, SOURCE_ENV, is_default_guess, validate_binary_name,
-    };
-    let binary = var(BINARY_ENV);
-    is_default_guess(binary.as_deref(), var(SOURCE_ENV).as_deref())
-        && binary
-            .as_deref()
-            .and_then(validate_binary_name)
-            .is_some_and(|inherited| inherited == tool)
-}
-
-/// Where the binary this launcher exports to its child came from.
-///
-/// Quality-audit S3: a launcher started on an inherited default guess naming
-/// itself persists nothing, but it used to re-export its own name untagged. A
-/// launcher nested below it then saw an explicit value and persisted it, so
-/// the guess became durable one level further down. Such a launch hands the
-/// guess on as a guess; any other launch is a choice.
-pub(super) fn launch_binary_source(
-    tool: &str,
-    var: &dyn Fn(&str) -> Option<String>,
-) -> amplihack_utils::agent_binary::ResolutionSource {
-    use amplihack_utils::agent_binary::ResolutionSource;
-    if launched_on_a_default_guess(tool, var) {
-        ResolutionSource::Default
-    } else {
-        ResolutionSource::Env
-    }
-}
-
 pub(super) fn persist_launcher_context(
     tool: &str,
     project_root: Option<&Path>,
@@ -112,7 +71,7 @@ pub(super) fn persist_launcher_context_with(
         );
         return Ok(());
     }
-    if launched_on_a_default_guess(tool, var) {
+    if crate::env_builder::launched_on_a_default_guess(tool, var) {
         tracing::debug!(
             tool,
             "not persisting launcher context: the launcher was the built-in default, \

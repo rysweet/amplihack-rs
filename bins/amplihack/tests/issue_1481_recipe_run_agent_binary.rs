@@ -257,3 +257,107 @@ fn the_launcher_context_is_read_from_the_working_dir() {
     assert!(output.status.success(), "{output:?}");
     assert_eq!(handed(&probe), ("codex", "<unset>"));
 }
+
+/// Every `launcher_context.json` under `root`.
+fn launcher_contexts_under(root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() && !path.is_symlink() {
+                pending.push(path);
+            } else if path
+                .file_name()
+                .is_some_and(|n| n == "launcher_context.json")
+            {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
+/// Crusty round 4: `amplihack <tool> --auto` built its child with
+/// `with_agent_binary`, which clears the tag. The inner launcher then saw an
+/// untagged value, handed it on untagged and persisted it. A launcher started
+/// on an inherited guess naming itself must hand the guess on as a guess on
+/// every path, and persist it nowhere.
+#[cfg(unix)]
+#[test]
+fn auto_mode_hands_an_inherited_guess_on_tagged_and_persists_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{Duration, Instant};
+
+    let fx = Fixture::new();
+    let bin = fx.path().join("bin");
+    let tmp = fx.path().join("tmp");
+    fs::create_dir_all(&bin).expect("create bin");
+    fs::create_dir_all(&tmp).expect("create tmp");
+    fs::create_dir_all(fx.work().join(".git")).expect("mark work as a repo");
+    let probe = fx.path().join("claude-probe.log");
+    // A stand-in `claude` that records what each invocation was handed.
+    fs::write(
+        bin.join("claude"),
+        format!(
+            "#!/bin/sh\n\
+             if [ \"$1\" = \"--version\" ]; then echo '2.0.0 (Claude Code)'; exit 0; fi\n\
+             printf '%s|%s\\n' \"${{AMPLIHACK_AGENT_BINARY-<unset>}}\" \"${{{SOURCE_ENV}-<unset>}}\" >> '{}'\n\
+             exit 0\n",
+            probe.display()
+        ),
+    )
+    .expect("write claude stub");
+    fs::set_permissions(bin.join("claude"), fs::Permissions::from_mode(0o755))
+        .expect("chmod claude stub");
+
+    let path = std::env::join_paths(std::iter::once(bin.clone()).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .expect("join PATH");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_amplihack"))
+        .env_clear()
+        .env("PATH", path)
+        .env("HOME", fx.path().join("home"))
+        .env("TMPDIR", &tmp)
+        .env("AMPLIHACK_HOME", fx.path())
+        .env("AMPLIHACK_NONINTERACTIVE", "1")
+        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
+        .env("AMPLIHACK_AGENT_BINARY", "claude")
+        .env(SOURCE_ENV, "default:claude")
+        .current_dir(fx.work())
+        .args(["claude", "--auto", "--max-turns", "1", "--", "-p", "hi"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("run amplihack claude --auto");
+    let started = Instant::now();
+    while child.try_wait().expect("try_wait").is_none() {
+        if started.elapsed() > Duration::from_secs(120) {
+            let _ = child.kill();
+            panic!("amplihack claude --auto did not exit within 120s");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    let calls = fs::read_to_string(&probe).unwrap_or_default();
+    assert!(
+        !calls.is_empty(),
+        "the claude stub was never run as an agent session"
+    );
+    for call in calls.lines() {
+        assert_eq!(
+            call, "claude|default:claude",
+            "every level must still see the guess as a guess:\n{calls}"
+        );
+    }
+    let persisted = launcher_contexts_under(fx.path());
+    assert!(
+        persisted.is_empty(),
+        "a default-guess launch must persist nothing, found {persisted:?}"
+    );
+}

@@ -129,6 +129,25 @@ impl EnvBuilder {
             .unset(amplihack_utils::agent_binary::SOURCE_ENV)
     }
 
+    /// Export `tool` as the binary of the launcher that is starting this child.
+    ///
+    /// Issue #1481: a launcher started on an inherited default guess naming
+    /// itself hands the guess on still tagged, so no launcher nested below it
+    /// persists the guess. See [`super::launch_binary_source`].
+    pub fn with_launched_agent_binary(self, tool: &str) -> Self {
+        self.with_launched_agent_binary_from(tool, &|key| std::env::var(key).ok())
+    }
+
+    /// [`EnvBuilder::with_launched_agent_binary`] reading the inherited
+    /// environment through `var`.
+    pub fn with_launched_agent_binary_from(
+        self,
+        tool: &str,
+        var: &dyn Fn(&str) -> Option<String>,
+    ) -> Self {
+        self.with_resolved_agent_binary(tool, super::launch_binary_source(tool, var))
+    }
+
     /// Export a binary the resolver chose, together with where it came from.
     ///
     /// Issue #1481: a value from the built-in default is tagged with

@@ -38,7 +38,7 @@ use command::{
     augment_claude_launch_env, build_command_for_dir, build_docker_launcher_args,
     isolate_routed_copilot_home,
 };
-use context::{launch_binary_source, persist_launcher_context};
+use context::persist_launcher_context;
 
 // Test-visible re-imports from submodules. These become available to
 // `#[cfg(test)] mod tests_*` children via `use super::*`.
@@ -268,10 +268,7 @@ pub fn run_launch(
             .with_session_tree_context() // preserve orchestration tree vars if present
             .with_amplihack_vars_with_node_options(Some(node_options.as_str())) // AMPLIHACK_RUST_RUNTIME, AMPLIHACK_VERSION, NODE_OPTIONS
             // WS1: AMPLIHACK_AGENT_BINARY, still tagged if it was a guess (#1481)
-            .with_resolved_agent_binary(
-                tool,
-                launch_binary_source(tool, &|key| std::env::var(key).ok()),
-            )
+            .with_launched_agent_binary(tool)
             .with_amplihack_home() // WS3: AMPLIHACK_HOME
             .with_asset_resolver(); // Rust-native bundle asset resolver
         env_builder = env_builder.with_project_graph_db(&execution_dir)?;
