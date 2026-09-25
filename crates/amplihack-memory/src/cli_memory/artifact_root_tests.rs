@@ -385,7 +385,12 @@ fn slug_falls_back_to_project_when_the_basename_sanitises_to_nothing() {
 #[test]
 fn slug_truncates_a_very_long_basename_but_keeps_the_hash() {
     let parent = TempDir::new().unwrap();
-    let long = parent.path().join("a".repeat(300));
+    // 200, not 300: Linux caps a single path component at NAME_MAX (255 bytes),
+    // so `create_dir_all` on a 300-character name fails with ENAMETOOLONG before
+    // `project_slug` is ever called — the test failed in its own setup and looked
+    // like a truncation bug. 200 is still far past SLUG_HUMAN_MAX (48), so it
+    // exercises the truncation this test exists to prove.
+    let long = parent.path().join("a".repeat(200));
     fs::create_dir_all(&long).unwrap();
 
     let slug = project_slug(&long);
