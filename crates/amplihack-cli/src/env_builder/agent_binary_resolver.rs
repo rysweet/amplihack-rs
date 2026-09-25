@@ -13,8 +13,8 @@
 //! beyond what the documented contract specifies.
 //!
 //! Resolution precedence (issue #489):
-//!   1. `AMPLIHACK_AGENT_BINARY` env var (allowlist-validated; ignored when
-//!      tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default`, issue #1481)
+//!   1. `AMPLIHACK_AGENT_BINARY` env var (allowlist-validated; ignored while
+//!      tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary>`, #1481)
 //!   2. A live session marker (`agent_binary::SESSION_MARKERS`)
 //!   3. `<repo>/.claude/runtime/launcher_context.json` `launcher` field
 //!   4. Default: `"copilot"`

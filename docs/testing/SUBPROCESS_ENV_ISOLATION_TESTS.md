@@ -124,9 +124,9 @@ following resolution precedence and is the subject under test:
 
 | Priority | Source | Notes |
 |----------|--------|-------|
-| 1 | `AMPLIHACK_AGENT_BINARY` env var | Allowlist-validated; invalid values are silently discarded |
-| 2 | `$AMPLIHACK_RUNTIME_ROOT/launcher_context.json` `launcher` field | Canonical workflow runtime state for nested agent sessions |
-| 3 | `<repo>/.claude/runtime/launcher_context.json` `launcher` field | Legacy fallback only |
+| 1 | `AMPLIHACK_AGENT_BINARY` env var | Allowlist-validated; invalid values fall through. Skipped while tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary>` |
+| 2 | Live session marker (`agent_binary::SESSION_MARKERS`) | e.g. `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `COPILOT_CLI` |
+| 3 | `<repo>/.claude/runtime/launcher_context.json` `launcher` field | Used only while fresh and trusted |
 | 4 | Built-in default | Always `"copilot"` |
 
 ### Allowlisted binary names

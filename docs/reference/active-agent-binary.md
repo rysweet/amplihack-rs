@@ -2,7 +2,7 @@
 
 ## Overview
 
-The **active agent binary** is the AI tool (`claude`, `copilot`, `codex`, or `amplifier`) that the current process should treat as its runtime. It is resolved by a single shared function, used by every read site across `amplihack-cli`, `amplihack-utils`, `amplihack-workflows`, and `amplihack-hooks`, plus the Python helpers in `amplifier-bundle/`.
+The **active agent binary** is the AI tool (`claude`, `copilot`, `codex`, or `amplifier`) that the current process should treat as its runtime. It is resolved by a single shared function, used by every read site across `amplihack-cli`, `amplihack-utils`, `amplihack-workflows`, and `amplihack-hooks`. One shell helper approximates it (see below).
 
 **Canonical entry point (Rust):**
 
@@ -20,24 +20,13 @@ use amplihack_cli::env_builder::agent_binary_resolver;
 let binary: String = agent_binary_resolver::resolve(&cwd);
 ```
 
-**Canonical entry point (Python):**
-
-```rust
-# Defined in amplifier-bundle/skills/pm-architect/scripts/agent_query.py
-from agent_query import detect_runtime
-
-binary = detect_runtime()
-```
-
-The `detect_runtime()` function in `agent_query.py` is the single Python
-implementation; `delegate_response.py` imports it instead of re-implementing
-the precedence. The shell helper in `amplifier-bundle/skills/migrate/scripts/migrate.sh`
-re-implements the same precedence using a `case` statement allowlist (shell
-scripts cannot import Python).
-
-All implementations follow the **same precedence**, the **same allowlist**, and
-produce the **same default** so behavior is consistent across Rust, Python, and
-shell consumers that inherit the workflow environment.
+**Shell:** `amplifier-bundle/skills/migrate/scripts/migrate.sh` (`detect_cli`)
+approximates the precedence with a regex allowlist: it honours
+`AMPLIHACK_AGENT_BINARY` (and its default-guess tag), then the walked-up
+`launcher_context.json`, then the parent process chain, then the default. It
+has no session-marker layer. There is no Python implementation in this
+repository. The Rust resolver is authoritative wherever another
+implementation differs.
 
 ## Resolution Precedence
 
@@ -94,7 +83,7 @@ directory). It has no `$AMPLIHACK_RUNTIME_ROOT` layer.
 
 ## Allowlist & Validation
 
-The allowlist is **fixed** and identical in Rust and Python:
+The allowlist is **fixed** and identical in Rust and the shell helper:
 
 ```text
 { "claude", "copilot", "codex", "amplifier" }
@@ -226,16 +215,6 @@ Command::new(binary)
     .arg("--prompt")
     .arg("Run the next workstream")
     .status()?;
-```
-
-### From a Python skill helper
-
-```rust
-# Defined in amplifier-bundle/skills/pm-architect/scripts/agent_query.py
-from agent_query import detect_runtime
-
-binary = detect_runtime()
-print(f"querying via {binary}")
 ```
 
 ### Explicit override for a single command
