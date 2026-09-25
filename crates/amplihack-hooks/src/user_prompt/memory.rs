@@ -66,24 +66,35 @@ fn is_stop_word(word: &str) -> bool {
 }
 
 /// Frequent English function words that are not also frequent words in
-/// another common Latin-script language, so not:
-/// - `a`, `de`, `la`, `no`, `he`, `on`, `me`, `do`, `as` (Romance),
+/// other Latin-script languages. Removed for that reason:
+/// - `a`, `de`, `la`, `no`, `he`, `has`, `on`, `me`, `do`, `as` (Spanish,
+///   Catalan, French, Italian, Portuguese), `any`, `us` (Catalan),
 /// - `in`, `an`, `so`, `was`, `also`, `will`, `am` (German),
 /// - `is`, `of`, `we`, `had`, `over` (Dutch),
 /// - `at`, `for`, `her`, `have`, `i` (Danish, Norwegian, Tagalog),
 /// - `just` (Swedish), `most`, `be` (Hungarian),
 /// - `to`, `my`, `by` (Polish, Czech, Slovak).
 ///
+/// No word left is in the stopwords-iso list
+/// (<https://github.com/stopwords-iso/stopwords-iso>) of Afrikaans,
+/// Basque, Catalan, Croatian, Czech, Danish, Dutch, Esperanto, Estonian,
+/// Finnish, French, Galician, German, Hausa, Hungarian, Indonesian, Irish,
+/// Italian, Latin, Malay, Norwegian, Polish, Portuguese, Slovak, Slovenian,
+/// Somali, Sotho, Spanish, Swahili, Swedish, Tagalog, Turkish, Vietnamese,
+/// Yoruba or Zulu. Known remaining collisions, kept because removing them
+/// stops realistic English notes from reading as English: `are`, `or`
+/// (Romanian), `it` (Latvian, Lithuanian), `it`, `out`, `you` (Breton).
+///
 /// Their share of a text's prose words is a cheap language check, the
 /// "common words" method of language identification (Grefenstette,
 /// *Comparing two language identification schemes*, JADT 1995).
 const ENGLISH_MARKERS: &[&str] = &[
-    "about", "after", "and", "any", "are", "because", "been", "before", "between", "but", "can",
-    "could", "did", "does", "each", "from", "has", "here", "his", "how", "if", "into", "it", "its",
-    "more", "must", "not", "now", "off", "only", "or", "other", "our", "out", "she", "should",
-    "some", "than", "that", "the", "their", "them", "then", "there", "these", "they", "this",
-    "those", "too", "up", "us", "very", "were", "what", "when", "where", "which", "while", "who",
-    "why", "with", "without", "would", "you", "your",
+    "about", "after", "and", "are", "because", "been", "before", "between", "but", "can", "could",
+    "did", "does", "each", "from", "here", "his", "how", "if", "into", "it", "its", "more", "must",
+    "not", "now", "off", "only", "or", "other", "our", "out", "she", "should", "some", "than",
+    "that", "the", "their", "them", "then", "there", "these", "they", "this", "those", "too", "up",
+    "very", "were", "what", "when", "where", "which", "while", "who", "why", "with", "without",
+    "would", "you", "your",
 ];
 
 /// Endings only English contractions have (`doesn't`, `we'll`, `they're`,
@@ -222,18 +233,11 @@ fn strip_agent_prefix(content: &str) -> &str {
         .map_or(content, |(_, body)| body.trim())
 }
 
-/// Transcript role labels (`user:` / `assistant:`) are structure, not
-/// words of the memory.
-fn without_role_labels(text: &str) -> impl Iterator<Item = &str> {
-    text.split_whitespace()
-        .filter(|token| !matches!(*token, "user:" | "assistant:"))
-}
-
 /// The words of `text`: split on anything but letters, digits and
 /// apostrophes, with contractions (`None` from [`without_apostrophes`])
 /// kept as `None`.
 fn words(text: &str) -> impl Iterator<Item = Option<&str>> {
-    without_role_labels(text)
+    text.split_whitespace()
         .flat_map(|token| token.split(|c: char| !c.is_alphanumeric() && !is_apostrophe(c)))
         .filter(|raw| !raw.is_empty())
         .map(without_apostrophes)
@@ -253,38 +257,61 @@ fn outside_code<'a>(text: &'a str, delimiter: &str) -> Vec<&'a str> {
         .collect()
 }
 
-/// `text` split into transcript turns at its `user:` / `assistant:` role
-/// labels; text without labels is one turn.
+/// `text` split into transcript turns, without their role labels.
+///
+/// Session-stop flattens a transcript as `<role>: <text>` paragraphs joined
+/// by blank lines, with whatever role the transcript carries (`user`,
+/// `assistant`, `human`, `system`, `tool`). A paragraph that starts with a
+/// lower-case `<word>:` label starts a turn; other paragraphs (a code block
+/// with blank lines in it) continue the current one. Text without labels is
+/// one turn.
 fn turns(text: &str) -> Vec<String> {
-    let mut turns = vec![Vec::new()];
-    for token in text.split_whitespace() {
-        if matches!(token, "user:" | "assistant:") {
-            turns.push(Vec::new());
-        } else if let Some(turn) = turns.last_mut() {
-            turn.push(token);
+    let mut turns = vec![String::new()];
+    let mut paragraph_start = true;
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            paragraph_start = true;
+            continue;
         }
+        let label = line.trim_start().split_once(": ").filter(|(role, _)| {
+            paragraph_start
+                && (1..=20).contains(&role.len())
+                && role
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c == '_' || c == '-')
+        });
+        match label {
+            Some((_, rest)) => turns.push(rest.to_string()),
+            None => {
+                if let Some(turn) = turns.last_mut() {
+                    turn.push('\n');
+                    turn.push_str(line);
+                }
+            }
+        }
+        paragraph_start = false;
     }
     turns
         .into_iter()
+        .map(|turn| turn.trim().to_string())
         .filter(|turn| !turn.is_empty())
-        .map(|turn| turn.join(" "))
         .collect()
 }
 
 /// The natural-language words of `text`, lower-cased: code is not
-/// evidence of any language, so fenced blocks, backtick spans, role labels
-/// and tokens that look like code (`src/main.rs:12`, `--test-threads=1`,
+/// evidence of any language, so fenced blocks, closed backtick spans and
+/// tokens that look like code (`src/main.rs:12`, `--test-threads=1`,
 /// `needless_borrow`, `re-ran`, `DEFAULT_STEP_TIMEOUT`, `CI`) are left out.
+/// Surrounding punctuation and quotes in any script (`¿`, `“`, `»`, `.`)
+/// are trimmed first, so they don't make a word look like code.
 fn prose_words(text: &str) -> Vec<String> {
     let mut prose = Vec::new();
     for outside_fence in outside_code(text, "```") {
         for outside_ticks in outside_code(outside_fence, "`") {
-            for token in without_role_labels(outside_ticks) {
+            for token in outside_ticks.split_whitespace() {
                 let token = token
-                    .trim_start_matches(['(', '[', '{', '"', '\'', '\u{2019}'])
-                    .trim_end_matches([
-                        '.', ',', ';', ':', '!', '?', ')', ']', '}', '"', '\'', '\u{2019}',
-                    ]);
+                    .trim_start_matches(|c: char| is_prose_punctuation(c) && c != '-')
+                    .trim_end_matches(is_prose_punctuation);
                 let letters = token.chars().filter(|c| c.is_alphabetic()).count();
                 let looks_like_code = token
                     .chars()
@@ -297,6 +324,12 @@ fn prose_words(text: &str) -> Vec<String> {
         }
     }
     prose
+}
+
+/// Punctuation that surrounds prose words rather than making up code:
+/// anything but a letter, a digit or a character code is written with.
+fn is_prose_punctuation(c: char) -> bool {
+    !c.is_alphanumeric() && !"-/\\_~$@#=+*<>|&%`^".contains(c)
 }
 
 /// Whether `text` reads as English: at least [`MIN_ENGLISH_MARKER_SHARE`]
@@ -893,6 +926,31 @@ mod tests {
                 "/fix vi skal have en build som virker, ikke fejler",
                 "Agent general: user: vi skal have frokost, ikke kaffe",
             ),
+            (
+                "/fix ¿qué has hecho con el build? no funciona para nada",
+                "Agent general: user: ¿qué has hecho con la cena? no me gusta para nada",
+            ),
+            (
+                "/fix has probado otra vez, porque todavía falla",
+                "Agent general: user: has llamado a tu madre otra vez, porque todavía espera",
+            ),
+            (
+                "/fix has vist com falla el build avui",
+                "Agent general: user: has vist com plou avui",
+            ),
+            // Any role label starts a turn, not only `user:` / `assistant:`.
+            (
+                "/fix jag vet inte varför bygget inte fungerar",
+                "Agent general: human: jag kan inte komma, det regnar\n\nassistant: That is a shame, the weather should improve later this week.\n\nhuman: jag vet inte varför katten inte äter",
+            ),
+            (
+                "/fix jag kan inte bygga, det blir fel",
+                "Agent general: user: jag kan inte komma, det regnar\n\ntool: The command completed and returned the output",
+            ),
+            (
+                "/fix jag kan inte bygga, det blir fel",
+                "Agent general: user: jag kan inte komma, det regnar\n\nsystem: The command completed and returned the output",
+            ),
             // A non-English user turn answered by an English assistant turn:
             // the English turn is understood, the user's words are not.
             (
@@ -963,6 +1021,12 @@ mod tests {
         assert!(!reads_as_english("cargo fmt"));
         assert!(!reads_as_english(""));
         assert!(!reads_as_english("```\nlet the = it;\n``` `the` `and`"));
+        assert_eq!(
+            prose_words("“The build” fails «again» ¡now! „quoted“ ¿qué? 'this'"),
+            [
+                "the", "build", "fails", "again", "now", "quoted", "qué", "this"
+            ]
+        );
         assert_eq!(
             prose_words(
                 "Fix CI: run `cargo fmt --all` then --test-threads=1 on src/main.rs:12 (DEFAULT_STEP_TIMEOUT), re-ran."
@@ -1037,6 +1101,11 @@ mod tests {
             turns("user: hola amigo\n\nassistant: hello there"),
             ["hola amigo", "hello there"]
         );
+        assert_eq!(
+            turns("human: hola\n\nassistant: see:\n```\nfn a() {}\n\nfn b() {}\n```\n\ntool: done"),
+            ["hola", "see:\n```\nfn a() {}\nfn b() {}\n```", "done"]
+        );
+        assert_eq!(turns("Note: plain text"), ["Note: plain text"]);
         assert_eq!(outside_code("a `b` c `d", "`"), ["a ", " c ", "d"]);
     }
 
