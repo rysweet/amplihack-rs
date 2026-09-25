@@ -1,3 +1,4 @@
+use crate::known_agents::is_amplihack_agent;
 use regex::Regex;
 use std::sync::OnceLock;
 
@@ -20,6 +21,11 @@ const SLASH_COMMAND_AGENTS: &[(&str, &str)] = &[
     ("xpia", "xpia-defense"),
 ];
 
+/// Names of real amplihack agents referenced in `prompt`.
+///
+/// The patterns are loose (`/([a-z-]+)\s` matches any path segment such as
+/// `/skills ` or `/bin `), so a capture only counts when it names a bundled
+/// agent definition. Ordinary words never become "agents" (issue #1483).
 pub(crate) fn detect_agent_references(prompt: &str) -> Vec<String> {
     static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
     let patterns = PATTERNS.get_or_init(|| {
@@ -38,6 +44,9 @@ pub(crate) fn detect_agent_references(prompt: &str) -> Vec<String> {
             else {
                 continue;
             };
+            if !is_amplihack_agent(&agent_name) {
+                continue;
+            }
             if !agents.iter().any(|existing| existing == &agent_name) {
                 agents.push(agent_name);
             }

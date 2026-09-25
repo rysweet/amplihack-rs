@@ -111,6 +111,7 @@ fn detects_slash_command_agent() {
 #[test]
 fn formats_agent_memory_context() {
     let context = format_agent_memory_context(
+        "/analyze why CI fails on cargo fmt",
         &[String::from("analyzer")],
         &[PromptContextMemory {
             content: String::from("Fix CI by running cargo fmt before push."),
@@ -118,12 +119,55 @@ fn formats_agent_memory_context() {
                 "**Related Files:**\n- src/example/module.py (python)",
             )),
         }],
-    );
-    assert!(context.contains("## Memory for analyzer Agent"));
+    )
+    .expect("relevant memory is injected");
+    assert!(context.contains("## Relevant Memory (agents: analyzer)"));
     assert!(context.contains("Fix CI by running cargo fmt before push."));
-    assert!(context.contains("relevance: 0.00"));
+    assert!(!context.contains("relevance: 0.00"));
     assert!(context.contains("**Related Files:**"));
     assert!(context.contains("src/example/module.py"));
+}
+
+/// Issue #1483: words and path segments from a prompt are not agents.
+#[test]
+fn ordinary_words_and_paths_are_not_agent_references() {
+    for prompt in [
+        "look at the files in /skills /web /docs /commands /plugin and /bin today",
+        "check ~/.amplihack/bin/amplihack-hook and /amplihack-recipe-runner output",
+        "search amaz /amaz products",
+        "reply with just: pong",
+    ] {
+        assert!(
+            detect_agent_references(prompt).is_empty(),
+            "no agent in {prompt:?}: {:?}",
+            detect_agent_references(prompt)
+        );
+    }
+    assert_eq!(
+        detect_agent_references("run /analyzer on /skills and /builder here"),
+        vec!["analyzer".to_string(), "builder".to_string()]
+    );
+}
+
+/// Issue #1483: the stored "pong" smoke-test memory is unrelated to the
+/// prompt and must not be injected, once per agent or at all.
+#[test]
+fn unrelated_smoke_test_memory_is_not_injected() {
+    let agents = ["analyzer", "builder", "reviewer"].map(String::from);
+    let memories = [PromptContextMemory {
+        content: String::from("user: reply with just: pong\nassistant: pong"),
+        code_context: None,
+    }];
+    for prompt in [
+        "update the skills under docs and web, then rebuild bin",
+        "/analyze the amplihack-hook plugin commands",
+    ] {
+        assert_eq!(
+            format_agent_memory_context(prompt, &agents, &memories),
+            None,
+            "nothing is injected for {prompt:?}"
+        );
+    }
 }
 
 #[test]
