@@ -1,0 +1,210 @@
+//! Issue #1481: `amplihack recipe run` launched from a Claude Code session ran
+//! its agent steps under Copilot.
+//!
+//! The dev-orchestrator skill tells callers to `env -u CLAUDECODE`, and
+//! recipe-runner-rs spawns every step under `env_clear()` plus a curated
+//! environment. A nested `amplihack` resolving the agent binary on its own
+//! could no longer see any Claude marker, fell through to the vendor default,
+//! npm-installed Copilot, and persisted a launcher context that pinned later
+//! runs in the checkout to it.
+//!
+//! These tests run the real binary under a cleared environment with a stub in
+//! place of recipe-runner-rs, and assert what the runner is handed -- which is
+//! all any agent step can know about the session that started it.
+
+use serde_json::Value;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+const SOURCE_ENV: &str = "AMPLIHACK_AGENT_BINARY_SOURCE";
+
+struct Fixture {
+    dir: tempfile::TempDir,
+}
+
+impl Fixture {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let runner = dir.path().join("recipe-runner-rs");
+        // Records what it was handed. The unset/empty distinction matters for
+        // the tag, so it is written as an explicit marker rather than "".
+        fs::write(
+            &runner,
+            format!(
+                "#!/bin/sh\n\
+                 out=\"$(dirname \"$0\")/probe.json\"\n\
+                 printf '{{\"agent_binary\":\"%s\",\"source\":\"%s\"}}' \
+                   \"${{AMPLIHACK_AGENT_BINARY-<unset>}}\" \"${{{SOURCE_ENV}-<unset>}}\" > \"$out\"\n\
+                 printf '%s' '{{\"recipe_name\":\"probe\",\"success\":true,\"step_results\":[],\"context\":{{}}}}'\n"
+            ),
+        )
+        .expect("write runner stub");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&runner, fs::Permissions::from_mode(0o755))
+                .expect("chmod runner stub");
+        }
+        fs::write(
+            dir.path().join("probe.yaml"),
+            "name: probe\nsteps:\n  - id: noop\n    type: bash\n    command: \"true\"\n",
+        )
+        .expect("write recipe");
+        fs::create_dir_all(dir.path().join("home")).expect("create home");
+        fs::create_dir_all(dir.path().join("work")).expect("create work dir");
+        Self { dir }
+    }
+
+    fn path(&self) -> &Path {
+        self.dir.path()
+    }
+
+    fn work(&self) -> PathBuf {
+        self.path().join("work")
+    }
+
+    /// Run `amplihack recipe run` under a cleared environment, adding only
+    /// what a caller would really have plus `extra`.
+    fn run(&self, extra: &[(&str, &str)]) -> (Output, Value) {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_amplihack"));
+        command
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", self.path().join("home"))
+            .env("TMPDIR", std::env::temp_dir())
+            .env(
+                "RECIPE_RUNNER_RS_PATH",
+                self.path().join("recipe-runner-rs"),
+            )
+            .env("AMPLIHACK_HOME", self.path())
+            .env("AMPLIHACK_NONINTERACTIVE", "1")
+            .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
+            .current_dir(self.work())
+            .arg("recipe")
+            .arg("run")
+            .arg(self.path().join("probe.yaml"));
+        for (key, value) in extra {
+            command.env(key, value);
+        }
+        let output = command.output().expect("run amplihack");
+        let probe_path = self.path().join("probe.json");
+        let probe = fs::read_to_string(&probe_path).unwrap_or_else(|_| {
+            panic!(
+                "recipe-runner stub never ran.\nstdout: {}\nstderr: {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        });
+        fs::remove_file(&probe_path).ok();
+        (output, serde_json::from_str(&probe).expect("probe is JSON"))
+    }
+}
+
+fn handed(probe: &Value) -> (&str, &str) {
+    (
+        probe["agent_binary"].as_str().unwrap(),
+        probe["source"].as_str().unwrap(),
+    )
+}
+
+/// The field failure, exactly: the caller followed the skill and removed
+/// CLAUDECODE, but the rest of the Claude Code session's markers are present.
+#[test]
+fn a_claude_session_without_claudecode_hands_claude_to_the_runner() {
+    let fx = Fixture::new();
+    let (output, probe) = fx.run(&[
+        ("CLAUDE_CODE_SESSION_ID", "session_0123"),
+        ("CLAUDE_CODE_REMOTE", "true"),
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        handed(&probe),
+        ("claude", "<unset>"),
+        "every agent step inherits this value; resolving it anywhere below \
+         recipe run is resolving it without the session's markers"
+    );
+}
+
+/// Claude Code exports CLAUDE_CODE_ENTRYPOINT in every mode. On a host where
+/// CLAUDECODE was the only other marker, `env -u CLAUDECODE` left nothing.
+#[test]
+fn claude_code_entrypoint_alone_identifies_a_claude_session() {
+    let fx = Fixture::new();
+    let (output, probe) = fx.run(&[("CLAUDE_CODE_ENTRYPOINT", "cli")]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(handed(&probe), ("claude", "<unset>"));
+}
+
+/// With nothing to go on, the vendor default is still what runs -- but it is
+/// handed down marked as a guess, and the caller is told.
+#[test]
+fn a_default_layer_answer_is_tagged_and_reported() {
+    let fx = Fixture::new();
+    let (output, probe) = fx.run(&[]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(handed(&probe), ("copilot", "default"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("'copilot'") && stderr.contains("AMPLIHACK_AGENT_BINARY"),
+        "an inferred agent binary must be visible without RUST_LOG:\n{stderr}"
+    );
+}
+
+/// A guess inherited from a parent must not outrank a marker this process can
+/// see -- otherwise the tag would be decoration and one level's fallback would
+/// still decide for every level beneath it.
+#[test]
+fn an_inherited_guess_yields_to_a_visible_session_marker() {
+    let fx = Fixture::new();
+    let (output, probe) = fx.run(&[
+        ("AMPLIHACK_AGENT_BINARY", "copilot"),
+        (SOURCE_ENV, "default"),
+        ("CLAUDE_CODE_SESSION_ID", "session_0123"),
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(handed(&probe), ("claude", "<unset>"));
+}
+
+/// ...and with nothing better visible, it stays a guess on the way down.
+#[test]
+fn an_inherited_guess_stays_tagged_when_nothing_better_is_visible() {
+    let fx = Fixture::new();
+    let (output, probe) = fx.run(&[
+        ("AMPLIHACK_AGENT_BINARY", "copilot"),
+        (SOURCE_ENV, "default"),
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(handed(&probe), ("copilot", "default"));
+}
+
+/// An explicit choice still beats everything, and is not tagged.
+#[test]
+fn an_explicit_binary_wins_and_is_not_tagged() {
+    let fx = Fixture::new();
+    let (output, probe) = fx.run(&[
+        ("AMPLIHACK_AGENT_BINARY", "codex"),
+        ("CLAUDE_CODE_SESSION_ID", "session_0123"),
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(handed(&probe), ("codex", "<unset>"));
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("agent steps will run under"),
+        "an explicit choice is not an inference and needs no notice"
+    );
+}
+
+/// `recipe run` itself never stamps the checkout; only a launcher does, and
+/// only for a launcher a session chose.
+#[test]
+fn recipe_run_writes_no_launcher_context() {
+    let fx = Fixture::new();
+    let (output, _) = fx.run(&[]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        !fx.work()
+            .join(".claude/runtime/launcher_context.json")
+            .exists(),
+        "a default-layer run must not leave a launcher context behind"
+    );
+}

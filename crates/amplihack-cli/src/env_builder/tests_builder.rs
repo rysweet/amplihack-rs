@@ -400,6 +400,7 @@ fn with_amplihack_home_rejects_traversal_path() {
 
 const TRACKED_EXACT: &[&str] = &[
     "AMPLIHACK_AGENT_BINARY",
+    "AMPLIHACK_AGENT_BINARY_SOURCE",
     "COPILOT_AGENT_SESSION_ID",
     "CLAUDECODE",
     "CODEX_HOME",

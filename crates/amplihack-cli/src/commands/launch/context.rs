@@ -43,10 +43,43 @@ fn is_non_session_invocation(extra_args: &[String]) -> bool {
     )
 }
 
+/// `true` when this launcher was picked for us by a parent that only had the
+/// built-in default to go on.
+///
+/// Issue #1481: `amplihack recipe run` inside a Claude Code session whose
+/// markers had been stripped exported the vendor default, and every agent step
+/// then ran `amplihack copilot`. That launch is not a session anyone chose, so
+/// recording it would turn one guess into persisted state that decides later
+/// runs in the checkout. Only a match on the tool counts: the tag describes the
+/// inherited value, not whatever launcher a user typed.
+fn launched_on_a_default_guess(tool: &str) -> bool {
+    amplihack_utils::agent_binary::inherited_binary_is_default_guess()
+        && std::env::var(amplihack_utils::agent_binary::BINARY_ENV)
+            .ok()
+            .and_then(|raw| amplihack_utils::agent_binary::validate_binary_name(&raw))
+            .is_some_and(|inherited| inherited == tool)
+}
+
 pub(super) fn persist_launcher_context(
     tool: &str,
     project_root: Option<&Path>,
     extra_args: &[String],
+) -> Result<()> {
+    persist_launcher_context_with(
+        tool,
+        project_root,
+        extra_args,
+        launched_on_a_default_guess(tool),
+    )
+}
+
+/// [`persist_launcher_context`] with the environment-derived input passed in,
+/// so the rule can be tested without mutating process state.
+pub(super) fn persist_launcher_context_with(
+    tool: &str,
+    project_root: Option<&Path>,
+    extra_args: &[String],
+    default_guess: bool,
 ) -> Result<()> {
     let Some(kind) = launcher_kind_for(tool) else {
         return Ok(());
@@ -55,6 +88,14 @@ pub(super) fn persist_launcher_context(
         tracing::debug!(
             tool,
             "not persisting launcher context for a non-session invocation"
+        );
+        return Ok(());
+    }
+    if default_guess {
+        tracing::debug!(
+            tool,
+            "not persisting launcher context: the launcher was the built-in default, \
+             not a session's choice"
         );
         return Ok(());
     }

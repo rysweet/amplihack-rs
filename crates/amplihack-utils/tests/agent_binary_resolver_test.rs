@@ -86,20 +86,14 @@ fn clear_env() {
     unsafe {
         // The resolver now consults live session markers, which this test
         // binary inherits from whatever CLI is running it. Leave them set and
-        // every case below silently resolves through layer 2.
-        for k in [
-            "CLAUDECODE",
-            "CLAUDE_CODE",
-            "CLAUDE_CODE_SESSION_ID",
-            "CLAUDE_PROJECT_DIR",
-            "COPILOT_CLI",
-            "GITHUB_COPILOT",
-            "GITHUB_COPILOT_AGENT",
-            "COPILOT_AGENT",
-        ] {
-            std::env::remove_var(k);
+        // every case below silently resolves through layer 2. Sourced from
+        // SESSION_MARKERS: a hand-copied list here fell behind the moment a
+        // marker was added (issue #1481).
+        for (key, _) in amplihack_utils::agent_binary::SESSION_MARKERS {
+            std::env::remove_var(key);
         }
         std::env::remove_var("AMPLIHACK_AGENT_BINARY");
+        std::env::remove_var(amplihack_utils::agent_binary::SOURCE_ENV);
     }
 }
 

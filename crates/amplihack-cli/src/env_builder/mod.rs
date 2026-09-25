@@ -9,7 +9,7 @@ mod builder;
 pub mod helpers;
 
 pub use builder::EnvBuilder;
-pub use helpers::active_agent_binary;
+pub use helpers::{active_agent_binary, active_agent_binary_with_source};
 
 #[cfg(test)]
 mod tests_builder;

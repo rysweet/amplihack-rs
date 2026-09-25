@@ -7,19 +7,32 @@ use std::path::PathBuf;
 /// applies the precedence:
 ///
 /// 1. `AMPLIHACK_AGENT_BINARY` env var (explicit override).
-/// 2. `<cwd-or-ancestor>/.claude/runtime/launcher_context.json`.
-/// 3. Built-in default `"copilot"`.
+/// 2. A live session marker (`CLAUDE_CODE_SESSION_ID`, `COPILOT_CLI`, ...).
+/// 3. `<cwd-or-ancestor>/.claude/runtime/launcher_context.json`.
+/// 4. Built-in default `"copilot"`.
 ///
 /// Always returns an allowlisted name (`claude`, `copilot`, `codex`, or
 /// `amplifier`). Unknown / dangerous overrides silently fall through to the
 /// next layer — they never reach `Command::new`.
 pub fn active_agent_binary() -> String {
+    active_agent_binary_with_source().0
+}
+
+/// [`active_agent_binary`] plus the layer that supplied the answer.
+///
+/// Callers that export the result to children use this so a guess from the
+/// built-in default can be tagged as one (issue #1481).
+pub fn active_agent_binary_with_source() -> (String, amplihack_utils::agent_binary::ResolutionSource)
+{
     let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    match amplihack_utils::agent_binary::resolve(&cwd) {
-        Ok(name) => name,
+    match amplihack_utils::agent_binary::resolve_with_source(&cwd) {
+        Ok(resolved) => resolved,
         Err(err) => {
             tracing::warn!(error = %err, "agent binary resolver failed; using built-in default");
-            amplihack_utils::agent_binary::DEFAULT_BINARY.to_string()
+            (
+                amplihack_utils::agent_binary::DEFAULT_BINARY.to_string(),
+                amplihack_utils::agent_binary::ResolutionSource::Default,
+            )
         }
     }
 }

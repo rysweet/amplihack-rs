@@ -798,6 +798,31 @@ fn persist_launcher_context_records_the_launcher_that_ran() {
     }
 }
 
+/// Issue #1481. An agent step that `amplihack recipe run` launched on the
+/// built-in default is not a session anyone chose. Persisting it made the
+/// guess durable: the checkout's launcher context said copilot, and later runs
+/// read it back as though a session had decided.
+#[test]
+fn a_launch_picked_by_the_default_layer_persists_nothing() {
+    for tool in ["claude", "copilot", "codex", "amplifier"] {
+        let dir = tempfile::tempdir().unwrap();
+        persist_launcher_context_with(tool, Some(dir.path()), &[], true).unwrap();
+        assert!(
+            read_launcher_context(dir.path()).is_none(),
+            "{tool}: a default-layer guess must not be persisted"
+        );
+    }
+}
+
+/// The same launch, chosen by anything other than the default, still records.
+#[test]
+fn a_launch_not_picked_by_the_default_layer_still_persists() {
+    let dir = tempfile::tempdir().unwrap();
+    persist_launcher_context_with("claude", Some(dir.path()), &[], false).unwrap();
+    let context = read_launcher_context(dir.path()).expect("a chosen launcher must persist");
+    assert_eq!(context.launcher, LauncherKind::Claude);
+}
+
 /// A non-launcher subcommand must not stamp the repository at all.
 #[test]
 fn persist_launcher_context_ignores_non_launcher_subcommands() {
@@ -862,17 +887,13 @@ fn a_persisted_context_round_trips_through_the_resolver() {
 
         // Layers above the file must be silent so the file is what answers.
         let prev = std::env::var_os("AMPLIHACK_AGENT_BINARY");
-        let markers = [
-            "CLAUDECODE",
-            "CLAUDE_CODE",
-            "CLAUDE_CODE_SESSION_ID",
-            "CLAUDE_PROJECT_DIR",
-            "COPILOT_CLI",
-            "GITHUB_COPILOT",
-            "GITHUB_COPILOT_AGENT",
-            "COPILOT_AGENT",
-        ];
-        let saved: Vec<_> = markers.iter().map(|k| (*k, std::env::var_os(k))).collect();
+        // Sourced from SESSION_MARKERS so a new marker cannot leave this probe
+        // answering from layer 2 (issue #1481 added one).
+        let markers = amplihack_utils::agent_binary::SESSION_MARKERS
+            .iter()
+            .map(|(k, _)| *k)
+            .chain([amplihack_utils::agent_binary::SOURCE_ENV]);
+        let saved: Vec<_> = markers.map(|k| (k, std::env::var_os(k))).collect();
         unsafe {
             std::env::remove_var("AMPLIHACK_AGENT_BINARY");
             for (k, _) in &saved {

@@ -45,12 +45,33 @@ The resolver evaluates sources in order and returns the first valid value. A val
 
 | # | Source | Notes |
 | - | --- | --- |
-| 1 | `AMPLIHACK_AGENT_BINARY` env var | Explicit override. Used by CI, tests, and external consumers that have not migrated yet. |
-| 2 | `$AMPLIHACK_RUNTIME_ROOT/launcher_context.json` `launcher` field | Canonical workflow runtime state. Written outside the task worktree and inherited by child workflows through `AMPLIHACK_RUNTIME_ROOT`. |
-| 3 | `<repo>/.claude/runtime/launcher_context.json` `launcher` field | Legacy fallback only. Read for migration compatibility, but new workflow code must not write canonical state here. |
+| 1 | `AMPLIHACK_AGENT_BINARY` env var | Explicit override. Used by CI, tests, and external consumers that have not migrated yet. Ignored when tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default` (see below). |
+| 2 | Live session marker | An environment variable the hosting CLI exports, such as `CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_ENTRYPOINT` or `COPILOT_CLI`. The full list is `agent_binary::SESSION_MARKERS`. |
+| 3 | `<repo>/.claude/runtime/launcher_context.json` `launcher` field | Persisted state, possibly written by a different session. Consulted only while fresh, and never above a world-writable or foreign-owned directory. |
 | 4 | Built-in default | `"copilot"` |
 
 If a source produces a value that fails validation (allowlist, length, character class), the resolver emits `tracing::warn!` with structured fields and falls through to the next source. **No source ever silently coerces an invalid value.**
+
+### Resolving once for a whole recipe run
+
+`amplihack recipe run` resolves the binary once, at entry, and exports it to
+`recipe-runner-rs` as `AMPLIHACK_AGENT_BINARY`. It has to: every step runs
+under the runner's curated environment, where the session markers of the CLI
+that started the run may be gone, and a nested `amplihack` resolving on its own
+there would fall through to the default (issue #1481).
+
+When the answer came from layer 4, recipe run also exports
+`AMPLIHACK_AGENT_BINARY_SOURCE=default` and prints a one-line notice on stderr.
+The tag keeps a guess a guess on the way down:
+
+- the resolver ignores a tagged `AMPLIHACK_AGENT_BINARY`, so a session marker
+  visible at a lower level still wins;
+- a launcher (`amplihack copilot`, ...) started with a tagged value naming
+  itself does not write `launcher_context.json`, so a default-layer guess never
+  becomes persisted state that pins later runs in the checkout.
+
+Any code that sets `AMPLIHACK_AGENT_BINARY` explicitly through
+`EnvBuilder::with_agent_binary` clears the tag.
 
 ### Why file-based, not env-based
 

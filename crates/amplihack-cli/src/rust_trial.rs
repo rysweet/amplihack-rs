@@ -137,9 +137,22 @@ pub fn build_trial_env(trial_home: &Path) -> HashMap<String, String> {
     // even when their cwd lacks a launcher_context.json. Resolver returns the
     // canonical (allowlisted, lowercased) name; falls back to "copilot".
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let resolved = amplihack_utils::agent_binary::resolve(&cwd)
-        .unwrap_or_else(|_| amplihack_utils::agent_binary::DEFAULT_BINARY.to_string());
+    // Issue #1481: a default-layer answer is tagged so descendants treat it as
+    // the guess it is.
+    let (resolved, source) = amplihack_utils::agent_binary::resolve_with_source(&cwd)
+        .unwrap_or_else(|_| {
+            (
+                amplihack_utils::agent_binary::DEFAULT_BINARY.to_string(),
+                amplihack_utils::agent_binary::ResolutionSource::Default,
+            )
+        });
     env.insert("AMPLIHACK_AGENT_BINARY".to_string(), resolved);
+    if source == amplihack_utils::agent_binary::ResolutionSource::Default {
+        env.insert(
+            amplihack_utils::agent_binary::SOURCE_ENV.to_string(),
+            source.label().to_string(),
+        );
+    }
 
     env
 }

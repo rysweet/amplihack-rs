@@ -123,7 +123,29 @@ impl EnvBuilder {
             matches!(tool.as_str(), "claude" | "copilot" | "codex" | "amplifier"),
             "AMPLIHACK_AGENT_BINARY must be one of: claude, copilot, codex, amplifier; got: {tool}"
         );
+        // A caller naming the binary is an instruction, so any inherited
+        // "this was only the default" tag no longer describes the value.
         self.set("AMPLIHACK_AGENT_BINARY", tool)
+            .unset(amplihack_utils::agent_binary::SOURCE_ENV)
+    }
+
+    /// Export a binary the resolver chose, together with where it came from.
+    ///
+    /// Issue #1481: a value from the built-in default is tagged with
+    /// [`amplihack_utils::agent_binary::SOURCE_ENV`] so that no descendant
+    /// treats it as an instruction or persists it as a session's choice.
+    pub fn with_resolved_agent_binary(
+        self,
+        tool: impl Into<String>,
+        source: amplihack_utils::agent_binary::ResolutionSource,
+    ) -> Self {
+        let this = self.with_agent_binary(tool);
+        match source {
+            amplihack_utils::agent_binary::ResolutionSource::Default => {
+                this.set(amplihack_utils::agent_binary::SOURCE_ENV, source.label())
+            }
+            _ => this,
+        }
     }
 
     /// Set the backend-neutral code-graph DB path for child processes.
@@ -478,6 +500,37 @@ mod tests {
     fn with_agent_binary_sets_var() {
         let env = EnvBuilder::new().with_agent_binary("copilot").build();
         assert_eq!(env.get("AMPLIHACK_AGENT_BINARY").unwrap(), "copilot");
+    }
+
+    /// Issue #1481: only a value from the built-in default is tagged, and an
+    /// explicit binary clears a tag that would otherwise be inherited.
+    #[test]
+    fn resolved_agent_binary_tags_only_the_default_layer() {
+        use amplihack_utils::agent_binary::{ResolutionSource, SOURCE_ENV};
+
+        let env = EnvBuilder::new()
+            .with_resolved_agent_binary("copilot", ResolutionSource::Default)
+            .build();
+        assert_eq!(env.get("AMPLIHACK_AGENT_BINARY").unwrap(), "copilot");
+        assert_eq!(env.get(SOURCE_ENV).map(String::as_str), Some("default"));
+
+        for source in [
+            ResolutionSource::Env,
+            ResolutionSource::SessionMarker,
+            ResolutionSource::LauncherContext,
+        ] {
+            let builder = EnvBuilder::new().with_resolved_agent_binary("claude", source);
+            assert!(
+                builder.removed_vars.contains(SOURCE_ENV),
+                "{source:?}: an inherited tag must be removed from the child"
+            );
+            let env = builder.build();
+            assert_eq!(env.get("AMPLIHACK_AGENT_BINARY").unwrap(), "claude");
+            assert!(
+                !env.contains_key(SOURCE_ENV),
+                "{source:?} must not be tagged"
+            );
+        }
     }
 
     #[test]

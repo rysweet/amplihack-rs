@@ -73,10 +73,15 @@ These variables are injected into every child process launched by `amplihack`. T
 
 Identifies which CLI binary the current session should use when spawning new AI sessions. As of the workflow runtime-isolation contract, this variable is an explicit override and read-through cache, not the only routing source. The shared resolver consults:
 
-1. `AMPLIHACK_AGENT_BINARY` env var (explicit override; CI/testing/back-compat)
-2. `$AMPLIHACK_RUNTIME_ROOT/launcher_context.json` `launcher` field (canonical workflow runtime state)
-3. `<repo>/.claude/runtime/launcher_context.json` `launcher` field (legacy fallback only)
+1. `AMPLIHACK_AGENT_BINARY` env var (explicit override; CI/testing/back-compat), unless tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default`
+2. A live session marker exported by the hosting CLI (`CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_ENTRYPOINT`, `COPILOT_CLI`, ...)
+3. `<repo>/.claude/runtime/launcher_context.json` `launcher` field (persisted, possibly by another session)
 4. Built-in default: **`copilot`**
+
+`amplihack recipe run` resolves once at entry and exports the result to the
+recipe runner. A result from the built-in default is exported with
+`AMPLIHACK_AGENT_BINARY_SOURCE=default`; see
+[Active Agent Binary](./active-agent-binary.md#resolving-once-for-a-whole-recipe-run).
 
 The launcher continues to write this variable to subprocess environments so that external consumers (notably `rysweet/amplihack-recipe-runner`) that have not yet migrated to the file-based resolver continue to work. New code inside `amplihack-rs` should call `amplihack_utils::agent_binary::resolve(&cwd)` instead of reading the env var directly.
 
@@ -560,6 +565,12 @@ Amplifier.
 
 Use `AMPLIHACK_AGENT_BINARY` for runtime routing. It is validated, propagated,
 and documented as the active agent selector.
+
+Do not unset `CLAUDECODE` before calling `amplihack recipe run`. Recipe run
+reads it, with the other session markers, to decide which agent CLI every step
+uses, and only then removes it from the runner's environment. Stripping it
+first could leave no marker at all, and the steps then ran under the `copilot`
+default from inside a Claude Code session (issue #1481).
 
 ```sh
 # The parent value is ignored for the recipe-runner child.

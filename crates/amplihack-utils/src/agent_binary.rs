@@ -8,6 +8,11 @@
 //!    (persisted state, possibly written by a different session).
 //! 4. Built-in default: `"copilot"`.
 //!
+//! An `AMPLIHACK_AGENT_BINARY` that a parent exported from layer 4 carries
+//! [`SOURCE_ENV`]`=default` beside it. Such a value is a guess handed down, not
+//! an instruction, so layer 1 ignores it and the lower layers answer again
+//! (issue #1481).
+//!
 //! All inputs are validated against a strict allowlist to prevent the resolved
 //! value from being used as an arbitrary `Command::new` target by downstream
 //! callers. Untrusted values silently fall through to the next layer.
@@ -37,6 +42,20 @@ pub const ALLOWED_BINARIES: &[&str] = &["amplifier", "claude", "codex", "copilot
 
 /// Built-in default when no override is present and no launcher_context exists.
 pub const DEFAULT_BINARY: &str = "copilot";
+
+/// Environment variable naming the agent binary.
+pub const BINARY_ENV: &str = "AMPLIHACK_AGENT_BINARY";
+
+/// Companion to [`BINARY_ENV`], exported beside it when the value came from the
+/// built-in default rather than from anything that observed a session.
+///
+/// Issue #1481: `amplihack recipe run` exports the binary to recipe-runner-rs
+/// so every agent step agrees. When all it had was the vendor default, that
+/// export used to be indistinguishable from an instruction: each step then
+/// launched `amplihack copilot`, which persisted a launcher context saying
+/// copilot, which pinned every later run in the checkout. The tag keeps the
+/// guess a guess all the way down.
+pub const SOURCE_ENV: &str = "AMPLIHACK_AGENT_BINARY_SOURCE";
 
 /// Maximum bytes accepted from the `AMPLIHACK_AGENT_BINARY` env var.
 const ENV_VALUE_MAX_LEN: usize = 32;
@@ -156,9 +175,14 @@ pub fn resolve_with_source(cwd: &Path) -> Result<(String, ResolutionSource), Res
     // one place, `resolve_layers`. Gating the second on the first being None
     // would encode the ordering twice -- once here and once there -- and the
     // two could then drift without any test noticing.
-    let from_env = std::env::var("AMPLIHACK_AGENT_BINARY")
-        .ok()
-        .and_then(|raw| validate_binary_name(&raw));
+    let from_env = if inherited_binary_is_default_guess() {
+        debug!("ignoring an inherited AMPLIHACK_AGENT_BINARY that a parent guessed");
+        None
+    } else {
+        std::env::var(BINARY_ENV)
+            .ok()
+            .and_then(|raw| validate_binary_name(&raw))
+    };
     let from_marker = session_marker();
     let from_persisted = lookup_persisted_launcher(cwd);
 
@@ -184,6 +208,15 @@ pub fn resolve_with_source(cwd: &Path) -> Result<(String, ResolutionSource), Res
         ),
     }
     Ok((name, source))
+}
+
+/// `true` when the inherited [`BINARY_ENV`] is tagged as a parent's fallback
+/// to the built-in default (see [`SOURCE_ENV`]).
+///
+/// Such a value must neither outrank a session marker this process can see nor
+/// be persisted as though a session had chosen it.
+pub fn inherited_binary_is_default_guess() -> bool {
+    std::env::var(SOURCE_ENV).is_ok_and(|v| v.trim() == ResolutionSource::Default.label())
 }
 
 /// Pure precedence rule, separated from the three lookups that feed it.
@@ -240,6 +273,11 @@ pub const SESSION_MARKERS: &[(&str, &str)] = &[
     ("CLAUDE_CODE", "claude"),
     ("CLAUDE_CODE_SESSION_ID", "claude"),
     ("CLAUDE_PROJECT_DIR", "claude"),
+    // Issue #1481: exported by Claude Code in every mode (cli, sdk, remote).
+    // The dev-orchestrator skill used to tell callers to `env -u CLAUDECODE`,
+    // and on a host where CLAUDECODE was the only marker in this list that
+    // left nothing to say which CLI was running.
+    ("CLAUDE_CODE_ENTRYPOINT", "claude"),
     ("COPILOT_CLI", "copilot"),
     ("GITHUB_COPILOT", "copilot"),
     ("GITHUB_COPILOT_AGENT", "copilot"),

@@ -53,7 +53,7 @@ use checkout::{parse_github_repo_uri, resolve_checkout_repo_in};
 #[cfg(test)]
 use command::{COPILOT_HOME_ENV, build_command};
 #[cfg(test)]
-use context::render_launcher_command;
+use context::{persist_launcher_context_with, render_launcher_command};
 #[cfg(test)]
 use power_steering::maybe_prompt_re_enable_power_steering_with;
 
