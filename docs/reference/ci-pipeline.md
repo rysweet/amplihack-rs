@@ -157,6 +157,52 @@ out-of-scope, in-progress pinning follow-up; allowlisted drift is surfaced as a
 visible `WARNING` (never silently ignored) and must be removed once the target
 workflow is pinned.
 
+## Shell strictness: no early-exit pipeline stages
+
+GitHub's `shell: bash` runs a step body as `bash --noprofile --norc -eo pipefail`,
+but that strictness stops at the step: a step whose body is `bash tests/foo.sh`
+starts a **child** shell with neither flag, and `foo.sh` sets its own. Recipe
+steps, by contrast, run their bodies under `set -euo pipefail` directly. The two
+environments therefore disagree, and a script can be green in CI while returning
+a silent empty value in production.
+
+The shape that exploits the gap is a pipeline stage that stops reading before its
+producer is done:
+
+```bash
+SLUG="$(printf '%s' "$TASK_DESCRIPTION" | head -c 65536 | tr … | sed …)"
+```
+
+`head` stops once satisfied, leaving `printf` writing into a closed pipe. The
+producer dies of `SIGPIPE` — or, where `SIGPIPE` is **ignored** (a disposition
+that survives `exec` and is common in CI), bash's `printf` reports
+`write error: Broken pipe` and returns 1. `pipefail` promotes either outcome to
+the pipeline's status, the command substitution yields `""`, and under `set -e`
+the step dies. This is the mechanism behind #1426.
+
+Whether it fires at a given input size is a **race on the 64 KB pipe buffer**.
+The same code was green on bash 5.3.9 and red on the runner's 5.2.21, and an
+earlier 300-run attempt to reproduce a sibling failure came back clean. Execution
+cannot establish absence, so the invariant is asserted **statically**:
+
+```bash
+bash tests/issue_1434_no_early_exit_pipelines.sh
+```
+
+The guard derives its script list from `.github/workflows/*.yml` rather than from
+a path glob — a `tests/` glob misses the 17 scripts under
+`amplifier-bundle/recipes/tests/` — and fails on any `| head`, `| tail`, or
+`grep -m` stage in them. It first runs itself against known-bad and known-good
+fixtures, so a detector that has stopped discriminating fails loudly instead of
+passing vacuously. #1429's `D4-no-early-exit` applies the same rule to the
+branch-name derivation inside `workflow-worktree.yaml`.
+
+**Fix by removing the early exit, never by suppressing the status.** Use a shell
+substring (`${VAR:0:N}`), a single `awk`, or any consumer that reads all of its
+input. `|| true` silences the crash and leaves the empty value, which is the
+worse half of the bug. A whole-line comment is ignored by the guard, and a line
+that genuinely needs an early exit can carry `# early-exit-ok: <reason>`.
+
 ## Test execution
 
 The `test` job runs the workspace suite with `cargo-nextest`, a parallel runner

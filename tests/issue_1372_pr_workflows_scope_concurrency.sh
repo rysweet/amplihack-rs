@@ -39,7 +39,11 @@ for f in "$DIR"/*.yml "$DIR"/*.yaml; do
   [ -n "$block" ] || continue
   grep -qE '^ *cancel-in-progress: *true' <<<"$block" || continue
 
-  group="$(sed -n 's/^ *group: *//p' <<<"$block" | head -1)"
+  # One awk over the whole block: it reads to EOF, where a `head`-terminated
+  # stage would stop early and leave `sed` writing into a closed pipe. Under
+  # `pipefail` the group then reads as empty and a correctly-scoped workflow is
+  # reported as having no group at all (issue #1434).
+  group="$(awk 'n == 0 && match($0, /^ *group: */) { print substr($0, RSTART + RLENGTH); n = 1 }' <<<"$block")"
   checked=$((checked + 1))
 
   if [ -z "$group" ]; then
