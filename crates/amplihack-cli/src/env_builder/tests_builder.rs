@@ -23,17 +23,14 @@ fn with_agent_binary_sets_env_var_for_all_tools() {
 
 #[test]
 fn active_agent_binary_reads_env_override() {
-    let previous = env::var_os("AMPLIHACK_AGENT_BINARY");
-    unsafe { env::set_var("AMPLIHACK_AGENT_BINARY", "copilot") };
+    let _guard = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    // No inherited `default:<binary>` tag (issue #1481): a recipe step running
+    // this suite can carry one, and it would make the resolver skip the value.
+    let _env = crate::test_support::AgentBinaryEnv::set(Some("copilot"), None);
 
-    let binary = active_agent_binary();
-
-    match previous {
-        Some(value) => unsafe { env::set_var("AMPLIHACK_AGENT_BINARY", value) },
-        None => unsafe { env::remove_var("AMPLIHACK_AGENT_BINARY") },
-    }
-
-    assert_eq!(binary, "copilot");
+    assert_eq!(active_agent_binary(), "copilot");
 }
 
 #[test]

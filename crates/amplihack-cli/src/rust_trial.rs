@@ -393,6 +393,9 @@ mod tests {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let cwd = tempfile::tempdir().unwrap();
+        // A `.git` boundary stops the launcher-context walk-up here, so a
+        // context file above the temp dir (e.g. in $HOME) cannot answer.
+        std::fs::create_dir_all(cwd.path().join(".git")).unwrap();
         let _cwd = crate::test_support::CwdGuard::set(cwd.path()).unwrap();
         let home = PathBuf::from("/test/trial");
 
