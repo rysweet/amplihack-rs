@@ -207,15 +207,17 @@ pub fn resolve_with_source(cwd: &Path) -> Result<(String, ResolutionSource), Res
         ResolutionSource::LauncherContext => warn!(
             binary = %name,
             source = source.label(),
-            "AMPLIHACK_AGENT_BINARY is unset; using the value recorded in \
+            "no usable AMPLIHACK_AGENT_BINARY (unset, rejected, or a parent's \
+             default guess) and no session marker; using the value recorded in \
              launcher_context.json, which may have been written by a different \
              session"
         ),
         ResolutionSource::Default => warn!(
             binary = %name,
             source = source.label(),
-            "AMPLIHACK_AGENT_BINARY is unset and no launcher_context.json was \
-             found; assuming the built-in default, which may not be the CLI you \
+            "no usable AMPLIHACK_AGENT_BINARY (unset, rejected, or a parent's \
+             default guess), no session marker and no usable launcher_context.json \
+             was found; assuming the built-in default, which may not be the CLI you \
              are running"
         ),
     }

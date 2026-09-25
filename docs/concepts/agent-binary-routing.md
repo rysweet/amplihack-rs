@@ -61,21 +61,24 @@ flowchart TD
     V1 -- reject --> M
     B -- no --> M{Session marker set?}
     M -- yes --> R2[Return the marker's binary]
-    M -- no --> L1[Walk up for .claude/runtime/launcher_context.json]
-    L1 -- found, fresh, trusted, ≤64 KiB --> P[Parse launcher field]
-    P --> V2[Validate against allowlist]
-    V2 -- ok --> R3[Return file value]
-    V2 -- reject --> D
-    L1 -- not found / stale / untrusted / too big --> D[Return built-in default 'copilot']
+    M -- no --> L1[Start the walk-up at cwd]
+    L1 --> U{Directory world-writable<br/>or foreign-owned?}
+    U -- yes --> D
+    U -- no --> F{.claude/runtime/launcher_context.json<br/>fresh, ≤64 KiB, allowlisted?}
+    F -- yes --> R3[Return file value]
+    F -- absent or unusable --> G{.git here, or 32 ancestors checked?}
+    G -- yes --> D[Return built-in default 'copilot']
+    G -- no --> L2[Move to the parent directory] --> U
 ```
 
 Walk-up rules for the persisted launcher context:
 
-- Stop at the first `.claude/runtime/launcher_context.json` found.
+- Return the first usable `.claude/runtime/launcher_context.json`. A file that
+  is stale (older than 24h), oversized, malformed, not allowlisted or escapes
+  its directory through a symlink is skipped, and the walk continues upward.
 - Stop at the first `.git` boundary; do not cross into a parent repo.
 - Stop at the first world-writable or foreign-owned directory (issue #1335).
 - Cap at 32 ancestors.
-- Treat files older than 24h as unset.
 
 The **anchor** for symlink-escape checks is the directory containing the
 discovered `launcher_context.json`. The discovered file is canonicalized; if the

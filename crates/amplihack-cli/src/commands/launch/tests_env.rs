@@ -355,7 +355,7 @@ fn persist_launcher_context_writes_copilot_context_file() {
     let dir = tempfile::tempdir().unwrap();
     let args = vec!["--model".to_string(), "opus".to_string()];
 
-    persist_launcher_context("copilot", Some(dir.path()), &args).unwrap();
+    persist_hermetic("copilot", Some(dir.path()), &args).unwrap();
 
     let context = read_launcher_context(dir.path()).unwrap();
     assert_eq!(context.launcher, LauncherKind::Copilot);
@@ -388,7 +388,7 @@ fn persist_launcher_context_writes_copilot_context_file() {
 fn persist_launcher_context_writes_agent_binary_for_copilot() {
     let dir = tempfile::tempdir().unwrap();
 
-    persist_launcher_context("copilot", Some(dir.path()), &[]).unwrap();
+    persist_hermetic("copilot", Some(dir.path()), &[]).unwrap();
 
     let context = read_launcher_context(dir.path()).unwrap();
     assert_eq!(context.launcher, LauncherKind::Copilot);
@@ -437,9 +437,9 @@ fn persist_launcher_context_writes_agent_binary_for_copilot() {
 fn persist_launcher_context_writes_nothing_for_non_launcher_subcommands() {
     let dir = tempfile::tempdir().unwrap();
 
-    persist_launcher_context("install", Some(dir.path()), &[]).unwrap();
-    persist_launcher_context("doctor", Some(dir.path()), &[]).unwrap();
-    persist_launcher_context("recipe", Some(dir.path()), &[]).unwrap();
+    persist_hermetic("install", Some(dir.path()), &[]).unwrap();
+    persist_hermetic("doctor", Some(dir.path()), &[]).unwrap();
+    persist_hermetic("recipe", Some(dir.path()), &[]).unwrap();
 
     assert!(
         read_launcher_context(dir.path()).is_none(),
@@ -775,7 +775,7 @@ fn persist_launcher_context_records_the_launcher_that_ran() {
         ("amplifier", LauncherKind::Amplifier),
     ] {
         let dir = tempfile::tempdir().unwrap();
-        persist_launcher_context(tool, Some(dir.path()), &[]).unwrap();
+        persist_hermetic(tool, Some(dir.path()), &[]).unwrap();
 
         let context = read_launcher_context(dir.path())
             .unwrap_or_else(|| panic!("{tool}: expected a persisted launcher context"));
@@ -796,6 +796,43 @@ fn persist_launcher_context_records_the_launcher_that_ran() {
             Some(tool)
         );
     }
+}
+
+/// [`persist_launcher_context`] with no inherited agent-binary environment.
+///
+/// Quality-audit C3-2: the wrapper reads the real process environment, and a
+/// recipe step running `cargo test` here inherits a `default:<binary>` tag.
+/// Tests about what gets written must not depend on that.
+fn persist_hermetic(
+    tool: &str,
+    project_root: Option<&Path>,
+    extra_args: &[String],
+) -> anyhow::Result<()> {
+    persist_launcher_context_with(tool, project_root, extra_args, &|_| None)
+}
+
+/// The production wrapper reads the process environment: a tagged guess
+/// naming the launcher persists nothing, and any other launcher still records.
+#[test]
+fn persist_launcher_context_reads_the_inherited_guess_from_the_process_env() {
+    let _guard = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _env = crate::test_support::AgentBinaryEnv::set(Some("copilot"), Some("default:copilot"));
+
+    let dir = tempfile::tempdir().unwrap();
+    persist_launcher_context("copilot", Some(dir.path()), &[]).unwrap();
+    assert!(
+        read_launcher_context(dir.path()).is_none(),
+        "a launch on an inherited guess must not persist"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    persist_launcher_context("claude", Some(dir.path()), &[]).unwrap();
+    assert_eq!(
+        read_launcher_context(dir.path()).map(|c| c.launcher),
+        Some(LauncherKind::Claude)
+    );
 }
 
 /// A fake inherited environment for [`persist_launcher_context_with`].
@@ -898,7 +935,7 @@ fn a_launch_on_a_default_guess_hands_the_guess_on_tagged() {
 #[test]
 fn persist_launcher_context_ignores_non_launcher_subcommands() {
     let dir = tempfile::tempdir().unwrap();
-    persist_launcher_context("install", Some(dir.path()), &[]).unwrap();
+    persist_hermetic("install", Some(dir.path()), &[]).unwrap();
     assert!(
         read_launcher_context(dir.path()).is_none(),
         "only agent launchers describe a session"
@@ -918,7 +955,7 @@ fn persist_launcher_context_ignores_non_launcher_subcommands() {
 fn persist_launcher_context_skips_non_session_invocations() {
     for flag in ["--version", "-V", "help"] {
         let dir = tempfile::tempdir().unwrap();
-        persist_launcher_context("copilot", Some(dir.path()), &[flag.to_string()]).unwrap();
+        persist_hermetic("copilot", Some(dir.path()), &[flag.to_string()]).unwrap();
         assert!(
             read_launcher_context(dir.path()).is_none(),
             "{flag}: must not persist a session identity"
@@ -930,7 +967,7 @@ fn persist_launcher_context_skips_non_session_invocations() {
 #[test]
 fn persist_launcher_context_still_persists_a_real_session() {
     let dir = tempfile::tempdir().unwrap();
-    persist_launcher_context(
+    persist_hermetic(
         "claude",
         Some(dir.path()),
         &["--model".into(), "opus".into()],
@@ -954,7 +991,7 @@ fn a_persisted_context_round_trips_through_the_resolver() {
         .unwrap_or_else(|p| p.into_inner());
     for tool in ["claude", "copilot", "codex", "amplifier"] {
         let dir = tempfile::tempdir().unwrap();
-        persist_launcher_context(tool, Some(dir.path()), &[]).unwrap();
+        persist_hermetic(tool, Some(dir.path()), &[]).unwrap();
 
         // Layers above the file must be silent so the file is what answers.
         let prev = std::env::var_os("AMPLIHACK_AGENT_BINARY");
@@ -1014,7 +1051,7 @@ fn prompt_text_that_merely_mentions_a_flag_still_persists() {
         // `help` in position zero is a real question-and-exit; deeper in the
         // list it is just a word.
         let is_query = matches!(args.first().map(String::as_str), Some("help"));
-        persist_launcher_context("claude", Some(dir.path()), &args).unwrap();
+        persist_hermetic("claude", Some(dir.path()), &args).unwrap();
         assert_eq!(
             read_launcher_context(dir.path()).is_none(),
             is_query,

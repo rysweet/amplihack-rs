@@ -384,6 +384,37 @@ mod tests {
         }
     }
 
+    /// Quality-audit C3-3(c): the production wrapper passes the resolver's real
+    /// source through, so a default-layer answer arrives tagged.
+    #[test]
+    fn build_trial_env_resolves_and_tags_from_the_process() {
+        use amplihack_utils::agent_binary::SOURCE_ENV;
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let cwd = tempfile::tempdir().unwrap();
+        let _cwd = crate::test_support::CwdGuard::set(cwd.path()).unwrap();
+        let home = PathBuf::from("/test/trial");
+
+        {
+            // Nothing to go on: the default, tagged.
+            let _env = crate::test_support::AgentBinaryEnv::set(None, None);
+            let env = build_trial_env(&home);
+            assert_eq!(env["AMPLIHACK_AGENT_BINARY"], "copilot");
+            assert_eq!(
+                env.get(SOURCE_ENV).map(String::as_str),
+                Some("default:copilot")
+            );
+        }
+        {
+            // A chosen value: exported as is, untagged.
+            let _env = crate::test_support::AgentBinaryEnv::set(Some("codex"), None);
+            let env = build_trial_env(&home);
+            assert_eq!(env["AMPLIHACK_AGENT_BINARY"], "codex");
+            assert!(!env.contains_key(SOURCE_ENV));
+        }
+    }
+
     /// Issue #1481: a parent's default-guess tag must not reach the trial
     /// child unless this level's own answer was a guess too.
     #[test]
