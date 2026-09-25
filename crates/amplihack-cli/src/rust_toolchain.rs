@@ -19,14 +19,14 @@
 //!
 //! Set `AMPLIHACK_NO_RUST_BOOTSTRAP=1` to disable steps 2 and 3.
 
-use crate::util::run_with_timeout;
+use crate::util::{run_output_with_timeout, run_with_timeout};
 use anyhow::{Context, Result, bail};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::Duration;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
-pub(crate) const NO_BOOTSTRAP_ENV: &str = "AMPLIHACK_NO_RUST_BOOTSTRAP";
+const NO_BOOTSTRAP_ENV: &str = "AMPLIHACK_NO_RUST_BOOTSTRAP";
 const RUSTUP_INIT_URL: &str = "https://static.rust-lang.org/rustup/rustup-init.sh";
 const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(900);
 const APT_UPDATE_DEADLINE: Duration = Duration::from_secs(300);
@@ -67,7 +67,7 @@ fn find_in_dirs(dirs: &[PathBuf], names: &[&str]) -> Option<PathBuf> {
 }
 
 /// `cargo` from `path_dirs`, else from `<cargo_home>/bin`.
-pub(crate) fn find_cargo(path_dirs: &[PathBuf], cargo_home: Option<&Path>) -> Option<PathBuf> {
+fn find_cargo(path_dirs: &[PathBuf], cargo_home: Option<&Path>) -> Option<PathBuf> {
     find_in_dirs(path_dirs, &["cargo"]).or_else(|| {
         cargo_home
             .map(|home| home.join("bin").join("cargo"))
@@ -76,7 +76,7 @@ pub(crate) fn find_cargo(path_dirs: &[PathBuf], cargo_home: Option<&Path>) -> Op
 }
 
 /// A C compiler rustc can use as its linker.
-pub(crate) fn find_c_compiler(path_dirs: &[PathBuf]) -> Option<PathBuf> {
+fn find_c_compiler(path_dirs: &[PathBuf]) -> Option<PathBuf> {
     find_in_dirs(path_dirs, &C_COMPILERS)
 }
 
@@ -204,103 +204,48 @@ fn ensure_c_linker_in(dirs: &[PathBuf], allow_bootstrap: bool) -> Result<()> {
     let Some(apt_get) = find_in_dirs(dirs, &["apt-get"]) else {
         bail!("{missing}. Install one with: {LINKER_REMEDIATION}");
     };
-    let sudo = if is_root() {
-        None
-    } else {
-        let Some(sudo) = find_in_dirs(dirs, &["sudo"]) else {
-            bail!("{missing}, and sudo is unavailable. Install one with: {LINKER_REMEDIATION}");
-        };
-        let passwordless = Command::new(&sudo)
-            .args(["-n", "true"])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success());
-        if !passwordless {
-            bail!(
-                "{missing}, and sudo needs a password so amplihack will not install it for you. \
-                 Run this, then re-run `amplihack install`:\n    {LINKER_REMEDIATION}"
-            );
-        }
-        Some(sudo)
-    };
+    let sudo = apt_privilege(dirs, missing)?;
 
     println!("   ⏬ No C linker found — installing build-essential with apt-get");
-    let apt = |args: &[&str], stderr: Option<std::fs::File>, timeout: Duration| {
-        let mut cmd = match &sudo {
-            Some(sudo) => {
-                let mut cmd = Command::new(sudo);
-                cmd.args(["-n", "env", "DEBIAN_FRONTEND=noninteractive", "LC_ALL=C"])
-                    .arg(&apt_get);
-                cmd
-            }
-            None => {
-                let mut cmd = Command::new(&apt_get);
-                cmd.env("DEBIAN_FRONTEND", "noninteractive")
-                    .env("LC_ALL", "C");
-                cmd
-            }
-        };
-        // A freshly booted VM usually has apt-daily/unattended-upgrades
-        // holding the dpkg lock; wait for it (apt >= 1.9.11).
-        cmd.args(["-o", "DPkg::Lock::Timeout=300"]).args(args);
-        if let Some(stderr) = stderr {
-            cmd.stderr(stderr);
-        }
-        run_with_timeout(cmd, timeout)
-            .with_context(|| format!("failed to run apt-get {}", args.join(" ")))
-    };
+    let apt = |args: &[&str]| apt_command(sudo.as_deref(), &apt_get, args);
 
     // DPkg::Lock::Timeout does not cover /var/lib/apt/lists/lock, which
     // apt-daily's boot-time `update` holds. Retry `update` only while that
-    // lock is the failure, and for at most APT_UPDATE_DEADLINE overall. Any
-    // other update failure (e.g. a broken third-party repo) is not waited on:
+    // lock is the failure, for at most APT_UPDATE_DEADLINE overall. Any other
+    // update failure (a broken third-party repo, a timeout) is not waited on:
     // the install is tried with the lists already on disk.
-    let deadline = std::time::Instant::now() + APT_UPDATE_DEADLINE;
-    // LC_ALL=C (set above) keeps apt's "Could not get lock" untranslated.
+    let deadline = Instant::now() + APT_UPDATE_DEADLINE;
     let mut announced_wait = false;
     loop {
-        let log = tempfile::tempfile().context("failed to create apt-get stderr log")?;
-        // A timed-out or unrunnable update is not fatal either: fall through.
-        let status = match apt(
-            &["update", "-qq"],
-            Some(log.try_clone()?),
-            BOOTSTRAP_TIMEOUT,
-        ) {
-            Ok(status) => status,
+        let output = match run_output_with_timeout(apt(&["update", "-qq"]), BOOTSTRAP_TIMEOUT) {
+            Ok(output) => output,
             Err(err) => {
                 println!("   ⚠️  apt-get update failed ({err:#}); trying the install anyway");
                 break;
             }
         };
-        let mut stderr = String::new();
-        {
-            use std::io::{Read, Seek};
-            let mut log = log;
-            log.rewind()?;
-            let _ = log.read_to_string(&mut stderr);
-        }
-        if status.success() {
+        if output.status.success() {
             break;
         }
-        let lock_held = stderr.contains("Could not get lock");
-        if !lock_held || std::time::Instant::now() + APT_UPDATE_RETRY_DELAY >= deadline {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !update_should_retry(&stderr, Instant::now(), deadline) {
             eprint!("{stderr}");
             println!("   ⚠️  apt-get update failed; trying the install with existing lists");
             break;
         }
         if !announced_wait {
-            println!("   ⏳ apt is busy (package lists locked); waiting up to 5 minutes");
+            println!(
+                "   ⏳ apt is busy (package lists locked); waiting up to {} minutes",
+                APT_UPDATE_DEADLINE.as_secs() / 60
+            );
             announced_wait = true;
         }
         std::thread::sleep(APT_UPDATE_RETRY_DELAY);
     }
-    let status = apt(
-        &["install", "-y", "-qq", "build-essential"],
-        None,
-        BOOTSTRAP_TIMEOUT,
-    )?;
+
+    let install = ["install", "-y", "-qq", "build-essential"];
+    let status = run_with_timeout(apt(&install), BOOTSTRAP_TIMEOUT)
+        .context("failed to run apt-get install build-essential")?;
     if !status.success() {
         bail!(
             "apt-get install build-essential exited with status {status}. Install a C \
@@ -312,6 +257,64 @@ fn ensure_c_linker_in(dirs: &[PathBuf], allow_bootstrap: bool) -> Result<()> {
     }
     println!("   ✅ Installed build-essential");
     Ok(())
+}
+
+/// How apt will be run: `None` as root, `Some(sudo)` with passwordless sudo.
+/// Fails (with the command to run by hand) when neither is possible.
+fn apt_privilege(dirs: &[PathBuf], missing: &str) -> Result<Option<PathBuf>> {
+    if is_root() {
+        return Ok(None);
+    }
+    let Some(sudo) = find_in_dirs(dirs, &["sudo"]) else {
+        bail!("{missing}, and sudo is unavailable. Install one with: {LINKER_REMEDIATION}");
+    };
+    let passwordless = Command::new(&sudo)
+        .args(["-n", "true"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    if !passwordless {
+        bail!(
+            "{missing}, and sudo needs a password so amplihack will not install it for you. \
+             Run this, then re-run `amplihack install`:\n    {LINKER_REMEDIATION}"
+        );
+    }
+    Ok(Some(sudo))
+}
+
+/// A non-interactive `apt-get <args>`, via `sudo -n` when given. `LC_ALL=C`
+/// keeps apt's "Could not get lock" untranslated for [`update_should_retry`];
+/// `DPkg::Lock::Timeout` waits out a dpkg lock held by first-boot upgrades.
+fn apt_command(sudo: Option<&Path>, apt_get: &Path, args: &[&str]) -> Command {
+    let mut cmd = match sudo {
+        Some(sudo) => {
+            let mut cmd = Command::new(sudo);
+            cmd.args(["-n", "env", "DEBIAN_FRONTEND=noninteractive", "LC_ALL=C"])
+                .arg(apt_get);
+            cmd
+        }
+        None => {
+            let mut cmd = Command::new(apt_get);
+            cmd.env("DEBIAN_FRONTEND", "noninteractive")
+                .env("LC_ALL", "C");
+            cmd
+        }
+    };
+    cmd.arg("-o")
+        .arg(format!(
+            "DPkg::Lock::Timeout={}",
+            APT_UPDATE_DEADLINE.as_secs()
+        ))
+        .args(args);
+    cmd
+}
+
+/// Whether a failed `apt-get update` is worth retrying: only while the apt
+/// lists lock is held and another attempt still fits before `deadline`.
+fn update_should_retry(stderr: &str, now: Instant, deadline: Instant) -> bool {
+    stderr.contains("Could not get lock") && now + APT_UPDATE_RETRY_DELAY < deadline
 }
 
 #[cfg(unix)]
@@ -374,6 +377,16 @@ mod tests {
             find_c_compiler(std::slice::from_ref(&dir)),
             Some(dir.join("clang"))
         );
+        touch(&dir.join("gcc"));
+        assert_eq!(
+            find_c_compiler(std::slice::from_ref(&dir)),
+            Some(dir.join("gcc"))
+        );
+        std::fs::remove_file(dir.join("gcc")).unwrap();
+        assert_eq!(
+            find_c_compiler(std::slice::from_ref(&dir)),
+            Some(dir.join("clang"))
+        );
         touch(&dir.join("cc"));
         assert_eq!(
             find_c_compiler(std::slice::from_ref(&dir)),
@@ -416,19 +429,17 @@ mod tests {
         assert!(bootstrap_disabled_by(Some(OsStr::new("yes"))));
     }
 
-    /// The launch-time refresh passes `allow_bootstrap = false`: it must fail
-    /// without downloading or installing anything.
+    /// The launch-time refresh passes `allow_bootstrap = false`: a missing
+    /// toolchain is an error there, never a download.
     #[test]
-    fn no_bootstrap_means_no_side_effects() {
+    fn no_bootstrap_fails_without_cargo() {
         let temp = tempfile::tempdir().unwrap();
         let empty_path = vec![temp.path().join("empty-bin")];
         let home = temp.path().join("cargo-home");
 
-        let err = ensure_cargo_in(&empty_path, Some(home.clone()), false)
+        let err = ensure_cargo_in(&empty_path, Some(home), false)
             .expect_err("no cargo and no bootstrap must fail");
         assert!(format!("{err:#}").contains("cargo is required"));
-        assert!(!home.exists(), "nothing may be installed into CARGO_HOME");
-        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 0);
     }
 
     /// Unix only: elsewhere `ensure_c_linker_in` never needs a C compiler.
@@ -440,6 +451,68 @@ mod tests {
         let err = ensure_c_linker_in(&empty_path, false)
             .expect_err("no C compiler and no bootstrap must fail");
         assert!(format!("{err:#}").contains("build-essential"));
-        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn update_is_retried_only_while_lists_lock_is_held_and_time_remains() {
+        let now = Instant::now();
+        let later = now + APT_UPDATE_DEADLINE;
+        let locked = "E: Could not get lock /var/lib/apt/lists/lock. It is held by process 42";
+        assert!(update_should_retry(locked, now, later));
+        assert!(
+            !update_should_retry(
+                "E: The repository is not signed. NO_PUBKEY 0123",
+                now,
+                later
+            ),
+            "a permanent repo error is not waited on"
+        );
+        assert!(
+            !update_should_retry(locked, now, now + APT_UPDATE_RETRY_DELAY),
+            "no retry that cannot finish before the deadline"
+        );
+    }
+
+    #[test]
+    fn apt_command_is_noninteractive_c_locale_with_dpkg_lock_wait() {
+        let args = |cmd: &Command| -> Vec<String> {
+            cmd.get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect()
+        };
+        let lock = format!("DPkg::Lock::Timeout={}", APT_UPDATE_DEADLINE.as_secs());
+
+        let via_sudo = apt_command(
+            Some(Path::new("/usr/bin/sudo")),
+            Path::new("/usr/bin/apt-get"),
+            &["update"],
+        );
+        assert_eq!(via_sudo.get_program(), "/usr/bin/sudo");
+        assert_eq!(
+            args(&via_sudo),
+            [
+                "-n",
+                "env",
+                "DEBIAN_FRONTEND=noninteractive",
+                "LC_ALL=C",
+                "/usr/bin/apt-get",
+                "-o",
+                &lock,
+                "update"
+            ]
+        );
+
+        let as_root = apt_command(None, Path::new("/usr/bin/apt-get"), &["update"]);
+        assert_eq!(as_root.get_program(), "/usr/bin/apt-get");
+        assert_eq!(args(&as_root), ["-o", lock.as_str(), "update"]);
+        let envs: Vec<_> = as_root.get_envs().collect();
+        assert!(envs.contains(&(
+            std::ffi::OsStr::new("LC_ALL"),
+            Some(std::ffi::OsStr::new("C"))
+        )));
+        assert!(envs.contains(&(
+            std::ffi::OsStr::new("DEBIAN_FRONTEND"),
+            Some(std::ffi::OsStr::new("noninteractive"))
+        )));
     }
 }

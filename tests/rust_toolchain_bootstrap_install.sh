@@ -12,7 +12,8 @@
 # whose `install` drops a recipe-runner-rs into $HOME/.cargo/bin; `sudo`/
 # `apt-get` stand in for the build-essential install. Cases:
 #   1. no cargo, C compiler present: rustup is bootstrapped, install succeeds,
-#      and the shell profile gains no rustup PATH edits (--no-modify-path).
+#      and rustup-init is run with --no-modify-path (so real rustup leaves
+#      shell profiles alone).
 #   2. no cargo, no C compiler, passwordless sudo + apt-get: build-essential is
 #      installed non-interactively (after retrying an `apt-get update` that
 #      first fails on a held lists lock), install succeeds.
@@ -179,7 +180,7 @@ else
   fail "recipe-runner-rs missing from ~/.cargo/bin"
 fi
 if grep -qx -- "-y --no-modify-path --profile minimal" "$home/rustup-init.args" 2>/dev/null; then
-  pass "rustup-init ran unattended, minimal, without touching shell profiles"
+  pass "rustup-init ran with -y --no-modify-path --profile minimal"
 else
   fail "rustup-init args wrong: $(cat "$home/rustup-init.args" 2>/dev/null || echo '<not run>')"
 fi

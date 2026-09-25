@@ -73,7 +73,7 @@ high-quality code.
   [partial support](#windows-support).
 - **Runtime**: Rust 1.88+ / cargo, Node.js 18+, git. `amplihack install`
   installs a user-local Rust toolchain via rustup (and `build-essential` via
-  apt when passwordless sudo is available) if cargo or a C linker is missing.
+  apt, as root or with passwordless sudo) if cargo or a C linker is missing.
 - **Build tools**: cmake and a C/C++ toolchain for LadybugDB.
 - **Optional**: GitHub CLI (`gh`), Azure CLI (`az`).
 

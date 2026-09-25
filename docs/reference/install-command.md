@@ -82,7 +82,7 @@ amplihack install [--interactive]
 ├── 5. create_runtime_dirs()      — create runtime/ subdirs with 0o755 permissions
 ├── 6. ensure_settings_json()     — backup settings.json, register hooks, set permissions
 ├── 7. verify_framework_assets()  — confirm required staged framework assets exist
-├── 7b. ensure_recipe_runner()    — `cargo install` recipe-runner-rs if missing; bootstraps rustup + a C linker first when absent
+├── 7b. ensure_recipe_runner()    — `cargo install` recipe-runner-rs if missing; bootstraps rustup (and build-essential on apt systems) when absent
 ├── 8. apply_config()             — if wizard ran, write preferences to manifest and settings
 ├── 9. write_manifest()           — write amplihack-manifest.json for uninstall
 └── 10. ensure_mermaid_cli()      — best-effort: provision mmdc (npm @mermaid-js/mermaid-cli); warn-and-continue on failure
