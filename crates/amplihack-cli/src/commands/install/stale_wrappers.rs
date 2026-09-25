@@ -20,6 +20,10 @@ pub(crate) struct StaleWrapperNeutralizerReport {
     pub(crate) neutralized: Vec<NeutralizedWrapper>,
     pub(crate) manifest_path: Option<PathBuf>,
     pub(crate) resolved_after: PathBuf,
+    /// Transient `npx` shims for our own npm wrapper that shadow the Rust
+    /// binary only while the launching `npx` process runs (issue #1480).
+    /// They are left in place and reported so the caller can warn.
+    pub(crate) skipped_transient_shims: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,6 +83,7 @@ enum PathCandidateKind {
     PreferredRustBinary,
     StalePythonWrapper,
     StaleUvxWrapper,
+    TransientNpxShim,
     UnknownExecutable,
     Inaccessible(String),
 }
@@ -121,6 +126,7 @@ pub(crate) fn neutralize_shadowing_stale_wrappers(
     };
 
     let mut neutralized = Vec::new();
+    let mut skipped_transient_shims = Vec::new();
     let mut manifest_entries = Vec::new();
     let mut run_dir = None;
 
@@ -135,6 +141,7 @@ pub(crate) fn neutralize_shadowing_stale_wrappers(
             )?;
         match kind {
             PathCandidateKind::PreferredRustBinary | PathCandidateKind::CurrentRustBinary => {}
+            PathCandidateKind::TransientNpxShim => skipped_transient_shims.push(candidate.clone()),
             PathCandidateKind::StalePythonWrapper | PathCandidateKind::StaleUvxWrapper => {
                 let wrapper_kind = match kind {
                     PathCandidateKind::StalePythonWrapper => {
@@ -221,7 +228,9 @@ pub(crate) fn neutralize_shadowing_stale_wrappers(
                 )?;
         if !matches!(
             resolved_kind,
-            PathCandidateKind::PreferredRustBinary | PathCandidateKind::CurrentRustBinary
+            PathCandidateKind::PreferredRustBinary
+                | PathCandidateKind::CurrentRustBinary
+                | PathCandidateKind::TransientNpxShim
         ) {
             return Err(StaleWrapperRepairError::RustBinaryStillShadowed {
                 resolved_after,
@@ -234,6 +243,7 @@ pub(crate) fn neutralize_shadowing_stale_wrappers(
         neutralized,
         manifest_path,
         resolved_after,
+        skipped_transient_shims,
     })
 }
 
@@ -262,6 +272,10 @@ fn classify_path_candidate(
     }
     if canonical == *current || same_path(path, current) {
         return Ok(PathCandidateKind::CurrentRustBinary);
+    }
+
+    if is_transient_npx_shim(path, &canonical) {
+        return Ok(PathCandidateKind::TransientNpxShim);
     }
 
     let metadata = fs::symlink_metadata(path)?;
@@ -294,6 +308,40 @@ fn is_safe_wrapper_location(path: &Path, home: &Path) -> bool {
     rel.starts_with(".local/share/uv/")
         || rel.starts_with(".cache/uv/")
         || rel.starts_with(".amplihack/")
+}
+
+/// Recognize the `node_modules/.bin/amplihack` shim that `npx` puts first on
+/// PATH while running our own npm wrapper (issue #1480). Both must hold:
+/// the shim lives under an npx cache dir (`_npx/<hash>/node_modules/.bin/`),
+/// and it resolves to this package's `npm/bin/amplihack.js` wrapper. The npx
+/// cache entry is transient, so the shim stops shadowing once npx exits.
+fn is_transient_npx_shim(path: &Path, canonical: &Path) -> bool {
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    let Some((_, after_npx)) = normalized.rsplit_once("/_npx/") else {
+        return false;
+    };
+    let mut parts = after_npx.split('/');
+    let (Some(hash), Some("node_modules"), Some(".bin"), Some(_name), None) = (
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+    ) else {
+        return false;
+    };
+    if hash.is_empty() {
+        return false;
+    }
+    let target = canonical.to_string_lossy().replace('\\', "/");
+    if !target.ends_with("/npm/bin/amplihack.js") {
+        return false;
+    }
+    read_prefix(canonical).is_ok_and(|content| is_amplihack_npm_wrapper(&content))
+}
+
+fn is_amplihack_npm_wrapper(content: &str) -> bool {
+    content.contains("ensureNativeBinaries") && content.contains("amplihack npm wrapper")
 }
 
 fn read_prefix(path: &Path) -> io::Result<String> {

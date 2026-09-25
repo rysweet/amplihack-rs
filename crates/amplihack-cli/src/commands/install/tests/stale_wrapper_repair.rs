@@ -257,3 +257,75 @@ fn update_repair_uses_preserved_parent_path_even_when_runtime_path_is_repaired()
     assert_eq!(report.neutralized.len(), 1);
     assert_eq!(report.resolved_after, preferred_rust);
 }
+
+/// Lay out the `node_modules/.bin/amplihack` shim exactly as
+/// `npx --package=<amplihack-rs> -- amplihack install` does: a symlink into
+/// the package's own `npm/bin/amplihack.js` wrapper, under `~/.npm/_npx/<hash>`.
+#[cfg(unix)]
+fn create_npx_shim(home: &Path, wrapper_source: &str) -> (PathBuf, PathBuf) {
+    let npx_root = home.join(".npm/_npx/20a160db8db9e1ce/node_modules");
+    let npx_bin = npx_root.join(".bin");
+    let wrapper = npx_root.join("@rysweet/amplihack-rs/npm/bin/amplihack.js");
+    write_executable(&wrapper, wrapper_source);
+    fs::create_dir_all(&npx_bin).unwrap();
+    let shim = npx_bin.join("amplihack");
+    std::os::unix::fs::symlink("../@rysweet/amplihack-rs/npm/bin/amplihack.js", &shim).unwrap();
+    (npx_bin, shim)
+}
+
+/// Issue #1480: the README quick-start (`npx ... amplihack install`) puts our
+/// own npm wrapper shim first on PATH. The neutralizer must recognize it as a
+/// transient npx shim, leave it alone, and not abort the install.
+#[cfg(unix)]
+#[test]
+fn issue_1480_transient_npx_shim_for_our_wrapper_does_not_abort_install() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let preferred_bin = home.join(".local/bin");
+    let preferred_rust = create_exe_stub(&preferred_bin, "amplihack");
+    let wrapper_source = include_str!("../../../../../../npm/bin/amplihack.js");
+    let (npx_bin, shim) = create_npx_shim(&home, wrapper_source);
+
+    let report = neutralize_shadowing_stale_wrappers(repair_config(
+        &home,
+        &preferred_rust,
+        &preferred_rust,
+        vec![npx_bin, preferred_bin],
+    ))
+    .expect("the transient npx shim for our own npm wrapper must not abort install");
+
+    assert!(report.neutralized.is_empty());
+    assert!(report.manifest_path.is_none());
+    assert_eq!(report.skipped_transient_shims, vec![shim.clone()]);
+    assert!(
+        fs::symlink_metadata(&shim).is_ok(),
+        "the npx shim belongs to the running npx process and must be left in place"
+    );
+}
+
+/// Being under `_npx/` alone is not enough: an unrelated package's bin that
+/// happens to be named `amplihack` is still an unknown executable.
+#[cfg(unix)]
+#[test]
+fn issue_1480_npx_shim_for_unrelated_script_is_still_unknown() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let preferred_bin = home.join(".local/bin");
+    let preferred_rust = create_exe_stub(&preferred_bin, "amplihack");
+    let (npx_bin, shim) = create_npx_shim(&home, "#!/usr/bin/env node\nconsole.log('other');\n");
+
+    let err = neutralize_shadowing_stale_wrappers(repair_config(
+        &home,
+        &preferred_rust,
+        &preferred_rust,
+        vec![npx_bin, preferred_bin],
+    ))
+    .expect_err("an unrecognized script under _npx must still block repair");
+
+    match err {
+        StaleWrapperRepairError::UnknownShadowingExecutable { path, .. } => {
+            assert_eq!(path, shim);
+        }
+        other => panic!("expected UnknownShadowingExecutable, got {other:?}"),
+    }
+}
