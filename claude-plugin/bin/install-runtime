@@ -54,14 +54,14 @@ mkdir -p "$dest" "$data" || exit 1
 
 # Take the install lock unless bootstrap already handed us one.
 if [ -z "${AMPLIHACK_PLUGIN_INSTALL_LOCK:-}" ]; then
+  # A missing file makes `.` fatal in POSIX sh, so check before sourcing.
+  [ -f "$bin_dir/plugin-lock.sh" ] || exit 1
+  # shellcheck source=SCRIPTDIR/plugin-lock.sh
+  . "$bin_dir/plugin-lock.sh"
   lock="$data/install.lock"
-  if ! mkdir "$lock" 2>/dev/null; then
-    pid=$(cat "$lock/pid" 2>/dev/null)
-    if [ -n "$pid" ] && ps -o args= -p "$pid" 2>/dev/null | grep -q install-runtime; then
-      log "another install is running (pid $pid); see $data/install-runtime.log"
-      exit 0
-    fi
-    rm -rf "$lock" && mkdir "$lock" || exit 1
+  if ! lock_acquire "$lock"; then
+    log "another install is running; see $data/install-runtime.log"
+    exit 0
   fi
   AMPLIHACK_PLUGIN_INSTALL_LOCK="$lock"
 fi
@@ -72,15 +72,19 @@ trap 'if [ "$(cat "$AMPLIHACK_PLUGIN_INSTALL_LOCK/pid" 2>/dev/null)" = "$$" ]; t
 trap 'exit 1' HUP INT TERM
 
 # is_ours <name>: the binary PATH resolves is the copy this script placed.
+# Without a checksum there is no evidence either way, so nothing is ours.
 is_ours() {
-  [ "$(command -v "$1")" = "$dest/$1" ] &&
-    grep -qxF "$1 $(sha "$dest/$1")" "$owned" 2>/dev/null
+  _sum=$(sha "$dest/$1")
+  [ -n "$_sum" ] && [ "$(command -v "$1")" = "$dest/$1" ] &&
+    grep -qxF "$1 $_sum" "$owned" 2>/dev/null
 }
 
 place() {
-  # place <source> <name>: atomic copy into $dest, recorded as ours
+  # place <source> <name>: atomic copy into $dest, recorded as ours when a
+  # checksum can be taken (unrecorded, it is later treated as the user's)
   cp "$1" "$dest/.$2.tmp.$$" && chmod 755 "$dest/.$2.tmp.$$" && mv -f "$dest/.$2.tmp.$$" "$dest/$2" || return 1
-  { grep -v "^$2 " "$owned" 2>/dev/null; printf '%s %s\n' "$2" "$(sha "$dest/$2")"; } >"$owned.tmp.$$" &&
+  _sum=$(sha "$dest/$2")
+  { grep -v "^$2 " "$owned" 2>/dev/null; [ -z "$_sum" ] || printf '%s %s\n' "$2" "$_sum"; } >"$owned.tmp.$$" &&
     mv -f "$owned.tmp.$$" "$owned"
 }
 
@@ -108,13 +112,23 @@ current=""
 if have amplihack && have amplihack-hooks; then
   current=$(version_of)
 fi
+# Any amplihack or amplihack-hooks on PATH that the plugin did not place makes
+# the runtime the user's, even when only one of the two is there: installing
+# the other into ~/.local/bin would shadow theirs.
 managed=1
 for tool in amplihack amplihack-hooks; do
   if have "$tool" && ! is_ours "$tool"; then managed=0; fi
 done
+# Source builds report the workspace version unless told the release they
+# stand for (the release workflow does the same), and both build paths (the
+# cargo fallback here, and the npm downloader's) inherit this.
+if [ -n "$want" ]; then
+  AMPLIHACK_RELEASE_VERSION="$want"
+  export AMPLIHACK_RELEASE_VERSION
+fi
 
-if [ -n "$current" ] && [ "$managed" = 0 ]; then
-  log "amplihack $current at $(command -v amplihack) was not installed by the plugin; leaving it as is"
+if [ "$managed" = 0 ]; then
+  log "amplihack at $(command -v amplihack || command -v amplihack-hooks) was not installed by the plugin; leaving it as is"
 elif [ -n "$current" ] && [ -n "$want" ] && [ "$current" = "$want" ]; then
   log "amplihack $current already installed"
 elif have node; then

@@ -112,21 +112,11 @@ if [ "$source_kind" = "compact" ]; then
   exit 0
 fi
 
-# Reclaim a lock only when no installer holds it. A live installer keeps its
-# lock however long a cold cargo build takes. The pid must still be an
-# install-runtime process: after a SIGKILL or a reboot the number can belong to
-# something else. A lock with no pid is reclaimed once it is old enough that its
-# creator cannot still be writing the pid.
-if [ -d "$lock" ]; then
-  pid=$(cat "$lock/pid" 2>/dev/null)
-  if [ -n "$pid" ]; then
-    ps -o args= -p "$pid" 2>/dev/null | grep -q install-runtime || rm -rf "$lock" 2>/dev/null
-  elif [ -n "$(find "$lock" -maxdepth 0 -mmin +10 2>/dev/null)" ]; then
-    rm -rf "$lock" 2>/dev/null
-  fi
-fi
-
-if mkdir "$lock" 2>/dev/null; then
+# A missing file makes `.` fatal in POSIX sh, so check before sourcing.
+[ -f "$bin_dir/plugin-lock.sh" ] || exit 0
+# shellcheck source=SCRIPTDIR/plugin-lock.sh
+. "$bin_dir/plugin-lock.sh"
+if lock_acquire "$lock"; then
   if command -v setsid >/dev/null 2>&1; then
     AMPLIHACK_PLUGIN_INSTALL_LOCK="$lock" nohup setsid sh "$installer" </dev/null >>"$log" 2>&1 &
   else

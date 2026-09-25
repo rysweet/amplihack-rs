@@ -35,11 +35,18 @@ before Claude Code starts:
 ```bash
 claude plugin marketplace add rysweet/amplihack-rs
 claude plugin install amplihack@amplihack
-sh "$(node -p 'require(process.env.HOME + "/.claude/plugins/installed_plugins.json").plugins["amplihack@amplihack"][0].installPath')/claude-plugin/bin/install-runtime"
+plugin_dir=$(node -e '
+  const dir = process.env.CLAUDE_CONFIG_DIR || require("os").homedir() + "/.claude";
+  const records = require(dir + "/plugins/installed_plugins.json").plugins["amplihack@amplihack"] || [];
+  const user = records.find((r) => r.scope === "user");
+  if (!user) { console.error("amplihack@amplihack is not installed at user scope"); process.exit(1); }
+  console.log(user.installPath);
+') && sh "$plugin_dir/claude-plugin/bin/install-runtime"
 ```
 
-The last line reads the installed copy's path from Claude Code's
-`installed_plugins.json`; the plugin cache can hold older versions too.
+The last step reads the user-scope install's path from Claude Code's
+`installed_plugins.json`. The plugin cache can hold older versions too, and a
+project-scope record can come first.
 
 Edit the setup script from the cloud environment menu in the session's title
 bar (**Edit** → **Setup script**). New sessions pick up the change.
@@ -117,8 +124,13 @@ When the runtime is present but was installed for another plugin version,
 the background reconcile runs silently; only a missing runtime is reported to
 Claude. The reconcile only ever replaces binaries the plugin installed itself:
 `install-runtime` records their sha256 sums in `owned-binaries`. An `amplihack`
-you installed any other way (`amplihack install`, your own build, a package) is
-left as it is, whatever its version. A reconcile counts as done only when the
+or `amplihack-hooks` you installed any other way (`amplihack install`, your own
+build, a package) is left as it is, whatever its version. That holds even when
+only one of the two is yours: the plugin will not install the other next to it
+and shadow yours on `PATH`. When no `sha256sum` or `shasum` is available,
+ownership cannot be proven, so nothing is replaced. Source builds are stamped
+with the release they stand for, the way the release workflow stamps its
+builds. A reconcile counts as done only when the
 binaries the plugin manages are at the wanted release; merely being present is
 not enough. Two guards keep a broken install from looping:
 
@@ -160,7 +172,10 @@ set). Background installs log to `install-runtime.log` there. While an install
 is running, an `install.lock` directory exists next to the log. A manual run
 takes the same lock and steps aside when an install is already running. The
 lock is reclaimed only when no `install-runtime` process holds it; a recorded
-pid that now belongs to some other process does not count.
+pid that now belongs to some other process does not count. When `ps` cannot
+say (no procps, or a BusyBox `ps`), the lock is kept until it is three hours
+old, since starting a second install is worse than waiting. Reclaims are
+serialised, so concurrent runs never install at the same time.
 
 `install-runtime` installs the latest published release. It resolves the tag
 through the `github.com/…/releases/latest` redirect, not the rate-limited

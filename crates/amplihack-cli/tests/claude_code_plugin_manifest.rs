@@ -498,6 +498,11 @@ mod shell {
         let bootstrap =
             fs::read_to_string(repo_root().join("claude-plugin/bin/bootstrap")).unwrap();
         write_exe(&bin.path().join("bootstrap"), &bootstrap);
+        fs::copy(
+            repo_root().join("claude-plugin/bin/plugin-lock.sh"),
+            bin.path().join("plugin-lock.sh"),
+        )
+        .unwrap();
         write_exe(
             &bin.path().join("install-runtime"),
             "#!/bin/sh\ntouch \"$HOME/installer-ran\"\nrm -rf \"$AMPLIHACK_PLUGIN_INSTALL_LOCK\"\n",
@@ -932,18 +937,31 @@ mod shell {
     /// in the log and never touches the network. `cargo` records its argv and
     /// installs a recipe-runner-rs stub unless `cargo_ok` is false.
     fn install_runtime(installed: &str, owned: bool, cargo_ok: bool, want: &str) -> InstallRun {
+        install_runtime_with(installed, true, owned, cargo_ok, want, &[])
+    }
+
+    /// As `install_runtime`, optionally without amplihack-hooks, and with
+    /// `extra` stubs (name, script) shadowing system tools.
+    fn install_runtime_with(
+        installed: &str,
+        with_hooks: bool,
+        owned: bool,
+        cargo_ok: bool,
+        want: &str,
+        extra: &[(&str, &str)],
+    ) -> InstallRun {
         let home = tempfile::tempdir().unwrap();
         let stub = tempfile::tempdir().unwrap();
         let data = tempfile::tempdir().unwrap();
         let dest = home.path().join(".local/bin");
         fs::create_dir_all(&dest).unwrap();
-        let bins = [
-            (
-                "amplihack",
-                format!("#!/bin/sh\necho 'amplihack {installed}'\n"),
-            ),
-            ("amplihack-hooks", "#!/bin/sh\n".to_owned()),
-        ];
+        let mut bins = vec![(
+            "amplihack",
+            format!("#!/bin/sh\necho 'amplihack {installed}'\n"),
+        )];
+        if with_hooks {
+            bins.push(("amplihack-hooks", "#!/bin/sh\n".to_owned()));
+        }
         let mut record = String::new();
         for (name, body) in &bins {
             write_exe(&dest.join(name), body);
@@ -972,6 +990,9 @@ mod shell {
             "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/cargo-args\"\nexit 101\n"
         };
         write_exe(&stub.path().join("cargo"), cargo);
+        for (name, body) in extra {
+            write_exe(&stub.path().join(name), body);
+        }
         let root = repo_root();
         let envs = [
             ("CLAUDE_PLUGIN_ROOT", root.to_str().unwrap()),
@@ -1098,5 +1119,142 @@ mod shell {
         assert!(out.status.success());
         assert!(String::from_utf8_lossy(&out.stdout).contains("another install is running"));
         assert!(lock.exists(), "a running installer's lock was removed");
+    }
+
+    #[test]
+    fn install_runtime_does_not_shadow_a_lone_user_amplihack() {
+        // A user's amplihack without amplihack-hooks is still the user's:
+        // placing the plugin's pair in ~/.local/bin would shadow it.
+        let run = install_runtime_with("1.0.0", false, false, true, "1.2.3", &[]);
+        let log = run.log();
+        assert!(log.contains("was not installed by the plugin"), "{log}");
+        assert!(!log.contains("fetching amplihack"), "{log}");
+        assert!(!run.home.path().join(".local/bin/amplihack-hooks").exists());
+        assert!(
+            !run.out.status.success(),
+            "amplihack-hooks is missing: {log}"
+        );
+    }
+
+    #[test]
+    fn install_runtime_treats_binaries_as_the_users_when_it_cannot_checksum() {
+        // The owned record is correct, but with no working sha256sum/shasum
+        // there is no evidence the binaries are still the plugin's.
+        let broken = "#!/bin/sh\nexit 1\n";
+        let run = install_runtime_with(
+            "1.0.0",
+            true,
+            true,
+            true,
+            "1.2.3",
+            &[("sha256sum", broken), ("shasum", broken)],
+        );
+        let log = run.log();
+        assert!(log.contains("was not installed by the plugin"), "{log}");
+        assert!(!log.contains("fetching amplihack"), "{log}");
+    }
+
+    #[test]
+    fn install_runtime_tells_source_builds_which_release_they_stand_for() {
+        let node = "#!/bin/sh\nprintf '%s' \"$AMPLIHACK_RELEASE_VERSION\" > \"$HOME/release-seen\"\nexit 1\n";
+        let run = install_runtime_with("1.0.0", true, true, true, "1.2.3", &[("node", node)]);
+        let seen = fs::read_to_string(run.home.path().join("release-seen")).unwrap();
+        assert_eq!(seen, "1.2.3", "{}", run.log());
+    }
+
+    /// A manual install-runtime run against a lock prepared by `lock_setup`.
+    fn manual_install_against(
+        lock_setup: impl FnOnce(&Path),
+        extra: &[(&str, &str)],
+    ) -> (Output, tempfile::TempDir) {
+        let data = tempfile::tempdir().unwrap();
+        lock_setup(&data.path().join("install.lock"));
+        let home = tempfile::tempdir().unwrap();
+        let stub = tempfile::tempdir().unwrap();
+        for (name, body) in extra {
+            write_exe(&stub.path().join(name), body);
+        }
+        let root = repo_root();
+        let envs = [
+            ("CLAUDE_PLUGIN_ROOT", root.to_str().unwrap()),
+            ("CLAUDE_PLUGIN_DATA", data.path().to_str().unwrap()),
+            ("AMPLIHACK_NPM_VERSION", "1.2.3"),
+        ];
+        let script = root.join("claude-plugin/bin/install-runtime");
+        let out = run(&script, home.path(), stub.path(), &[], &envs);
+        (out, data)
+    }
+
+    #[test]
+    fn a_manual_run_leaves_a_lock_that_has_no_pid_yet() {
+        // bootstrap has just created it and its installer is starting.
+        let (out, data) = manual_install_against(|lock| fs::create_dir(lock).unwrap(), &[]);
+        assert!(String::from_utf8_lossy(&out.stdout).contains("another install is running"));
+        assert!(data.path().join("install.lock").exists());
+    }
+
+    #[test]
+    fn without_a_usable_ps_a_live_installers_lock_is_kept() {
+        let mut installer = Command::new("sh")
+            .args(["-c", "sleep 30", "install-runtime"])
+            .spawn()
+            .unwrap();
+        let pid = installer.id();
+        let (out, data) = manual_install_against(
+            |lock| {
+                fs::create_dir(lock).unwrap();
+                fs::write(lock.join("pid"), format!("{pid}\n")).unwrap();
+            },
+            &[("ps", "#!/bin/sh\nexit 1\n")],
+        );
+        let _ = installer.kill();
+        let _ = installer.wait();
+        assert!(String::from_utf8_lossy(&out.stdout).contains("another install is running"));
+        assert!(data.path().join("install.lock").exists());
+    }
+
+    #[test]
+    fn concurrent_manual_runs_never_install_at_the_same_time() {
+        // Several runs reclaim the same dead-pid lock at once; at most one
+        // may hold it, so the builds never overlap.
+        let mut dead = Command::new("true").spawn().unwrap();
+        let dead_pid = dead.id();
+        dead.wait().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let lock = data.path().join("install.lock");
+        fs::create_dir(&lock).unwrap();
+        fs::write(lock.join("pid"), format!("{dead_pid}\n")).unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let stub = tempfile::tempdir().unwrap();
+        write_exe(
+            &stub.path().join("cargo"),
+            "#!/bin/sh\nif mkdir \"$HOME/building\" 2>/dev/null; then sleep 1; rmdir \"$HOME/building\"; else echo overlap >> \"$HOME/overlaps\"; fi\necho ran >> \"$HOME/cargo-runs\"\n",
+        );
+        write_exe(&stub.path().join("curl"), "#!/bin/sh\nexit 7\n");
+        write_exe(&stub.path().join("node"), "#!/bin/sh\nexit 1\n");
+        let root = repo_root();
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let script = root.join("claude-plugin/bin/install-runtime");
+                let (home, stub) = (home.path().to_path_buf(), stub.path().to_path_buf());
+                let (data, root) = (data.path().to_path_buf(), root.clone());
+                std::thread::spawn(move || {
+                    let envs = [
+                        ("CLAUDE_PLUGIN_ROOT", root.to_str().unwrap()),
+                        ("CLAUDE_PLUGIN_DATA", data.to_str().unwrap()),
+                        ("AMPLIHACK_NPM_VERSION", "1.2.3"),
+                    ];
+                    run(&script, &home, &stub, &[], &envs)
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        assert!(
+            !home.path().join("overlaps").exists(),
+            "two installs ran at once"
+        );
+        assert!(home.path().join("cargo-runs").exists(), "no install ran");
     }
 }
