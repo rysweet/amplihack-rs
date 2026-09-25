@@ -27,7 +27,7 @@ bin_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" 2>/dev/null && pwd) || exit 0
 root="${CLAUDE_PLUGIN_ROOT:-$(CDPATH='' cd -- "$bin_dir/../.." 2>/dev/null && pwd)}"
 # Same default as install-runtime: the directory Claude Code gives this plugin,
 # so manual runs (which do not get CLAUDE_PLUGIN_DATA) share its state.
-data="${CLAUDE_PLUGIN_DATA:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/data/amplihack-amplihack}"
+data="${CLAUDE_PLUGIN_DATA:-${CLAUDE_CODE_PLUGIN_CACHE_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins}/data/amplihack-amplihack}"
 # The cache directory name is the plugin version (the commit when plugin.json
 # carries no version), so it identifies what the runtime was installed for.
 plugin_id=$(basename -- "$root")
@@ -73,6 +73,18 @@ missing=${missing# }
 stamp="$data/runtime.stamp"
 installed_for=$(sed -n 1p "$stamp" 2>/dev/null)
 [ -z "$missing" ] && [ "$installed_for" = "$plugin_id" ] && exit 0
+
+# install-runtime found an amplihack the user manages but not its partner,
+# and will not add one beside it. Say what is missing; do not retry.
+if [ "$(sed -n 1p "$data/user-managed" 2>/dev/null)" = "$plugin_id" ]; then
+  case " $missing " in
+    *" recipe-runner-rs "*) ;;
+    *)
+      emit_context "amplihack plugin: amplihack here is user-managed (not installed by the plugin) and incomplete (missing: $missing), so recipe skills and hooks are unavailable. Install the missing binary the same way amplihack itself was installed (for example \`amplihack install\` or cargo install); the plugin does not install next to a user-managed amplihack."
+      exit 0
+      ;;
+  esac
+fi
 
 case "${AMPLIHACK_PLUGIN_AUTO_INSTALL:-}" in
   1 | true) auto=1 ;;

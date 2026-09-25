@@ -1130,10 +1130,83 @@ mod shell {
         assert!(log.contains("was not installed by the plugin"), "{log}");
         assert!(!log.contains("fetching amplihack"), "{log}");
         assert!(!run.home.path().join(".local/bin/amplihack-hooks").exists());
-        assert!(
-            !run.out.status.success(),
-            "amplihack-hooks is missing: {log}"
+        // A settled user-managed state, not a failed install to retry.
+        assert!(run.out.status.success(), "{log}");
+        assert!(run.data.path().join("user-managed").exists());
+        assert!(!run.data.path().join("install.failed").exists());
+        assert!(!run.data.path().join("runtime.stamp").exists());
+    }
+
+    #[test]
+    fn bootstrap_explains_an_incomplete_user_managed_runtime_without_retrying() {
+        let home = tempfile::tempdir().unwrap();
+        let stub = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        for tool in ["amplihack", "recipe-runner-rs"] {
+            write_exe(&stub.path().join(tool), "#!/bin/sh\n");
+        }
+        fs::write(data.path().join("user-managed"), "thiscommit\n").unwrap();
+        let bin = bootstrap_fixture();
+        let envs = [
+            ("CLAUDE_CODE_REMOTE", "true"),
+            ("CLAUDE_PLUGIN_ROOT", "/cache/amplihack/thiscommit"),
+            ("CLAUDE_PLUGIN_DATA", data.path().to_str().unwrap()),
+        ];
+        let out = run(
+            &bin.path().join("bootstrap"),
+            home.path(),
+            stub.path(),
+            &[],
+            &envs,
         );
+        assert!(out.status.success());
+        let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        let context = json["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        assert!(
+            context.contains("user-managed") && context.contains("amplihack-hooks"),
+            "{context}"
+        );
+        assert!(
+            !context.contains("rm "),
+            "must not suggest a retry: {context}"
+        );
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!home.path().join("installer-ran").exists());
+    }
+
+    #[test]
+    fn install_runtime_keeps_state_under_a_relocated_plugins_root() {
+        // CLAUDE_CODE_PLUGIN_CACHE_DIR moves installed_plugins.json and
+        // data/<id>/; a manual run (no CLAUDE_PLUGIN_DATA) must follow it.
+        let home = tempfile::tempdir().unwrap();
+        let stub = tempfile::tempdir().unwrap();
+        let plugins = tempfile::tempdir().unwrap();
+        for (name, body) in [
+            ("curl", "#!/bin/sh\nexit 7\n"),
+            ("node", "#!/bin/sh\nexit 1\n"),
+            ("cargo", "#!/bin/sh\nexit 101\n"),
+        ] {
+            write_exe(&stub.path().join(name), body);
+        }
+        let root = repo_root();
+        let envs = [
+            ("CLAUDE_PLUGIN_ROOT", root.to_str().unwrap()),
+            (
+                "CLAUDE_CODE_PLUGIN_CACHE_DIR",
+                plugins.path().to_str().unwrap(),
+            ),
+            ("AMPLIHACK_NPM_VERSION", "1.2.3"),
+        ];
+        let script = root.join("claude-plugin/bin/install-runtime");
+        run(&script, home.path(), stub.path(), &[], &envs);
+        let data = plugins.path().join("data/amplihack-amplihack");
+        assert!(
+            data.join("install.failed").exists(),
+            "state not under the relocated root"
+        );
+        assert!(!home.path().join(".claude/plugins/data").exists());
     }
 
     #[test]

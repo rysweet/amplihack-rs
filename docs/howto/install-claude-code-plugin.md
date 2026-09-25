@@ -36,8 +36,9 @@ before Claude Code starts:
 claude plugin marketplace add rysweet/amplihack-rs
 claude plugin install amplihack@amplihack
 plugin_dir=$(node -e '
-  const dir = process.env.CLAUDE_CONFIG_DIR || require("os").homedir() + "/.claude";
-  const records = require(dir + "/plugins/installed_plugins.json").plugins["amplihack@amplihack"] || [];
+  const plugins = process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR ||
+    (process.env.CLAUDE_CONFIG_DIR || require("os").homedir() + "/.claude") + "/plugins";
+  const records = require(plugins + "/installed_plugins.json").plugins["amplihack@amplihack"] || [];
   const user = records.find((r) => r.scope === "user");
   if (!user) { console.error("amplihack@amplihack is not installed at user scope"); process.exit(1); }
   console.log(user.installPath);
@@ -127,7 +128,8 @@ Claude. The reconcile only ever replaces binaries the plugin installed itself:
 or `amplihack-hooks` you installed any other way (`amplihack install`, your own
 build, a package) is left as it is, whatever its version. That holds even when
 only one of the two is yours: the plugin will not install the other next to it
-and shadow yours on `PATH`. When no `sha256sum` or `shasum` is available,
+and shadow yours on `PATH`. It records that settled state instead of a failure,
+and each session start tells Claude which binary to install your own way. When no `sha256sum` or `shasum` is available,
 ownership cannot be proven, so nothing is replaced. Source builds are stamped
 with the release they stand for, the way the release workflow stamps its
 builds. A reconcile counts as done only when the
@@ -167,8 +169,8 @@ sh ~/.claude/plugins/cache/amplihack/amplihack/<version>/claude-plugin/bin/insta
 State and logs live in the plugin's data directory, `${CLAUDE_PLUGIN_DATA}`.
 When that variable is unset, as it is for commands Claude runs through the Bash
 tool and for setup scripts, both scripts fall back to the same directory:
-`~/.claude/plugins/data/amplihack-amplihack` (under `$CLAUDE_CONFIG_DIR` when
-set). Background installs log to `install-runtime.log` there. While an install
+`~/.claude/plugins/data/amplihack-amplihack`, with the plugins root moved by
+`CLAUDE_CODE_PLUGIN_CACHE_DIR` or `CLAUDE_CONFIG_DIR` when either is set. Background installs log to `install-runtime.log` there. While an install
 is running, an `install.lock` directory exists next to the log. A manual run
 takes the same lock and steps aside when an install is already running. The
 lock is reclaimed only when no `install-runtime` process holds it; a recorded

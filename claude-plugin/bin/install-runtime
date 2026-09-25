@@ -29,7 +29,7 @@ root="${CLAUDE_PLUGIN_ROOT:-$(CDPATH='' cd -- "$bin_dir/../.." && pwd)}"
 # The directory Claude Code gives this plugin. Commands Claude runs through the
 # Bash tool, and setup scripts, do not get CLAUDE_PLUGIN_DATA, so fall back to
 # the same path rather than splitting state between two directories.
-data="${CLAUDE_PLUGIN_DATA:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/data/amplihack-amplihack}"
+data="${CLAUDE_PLUGIN_DATA:-${CLAUDE_CODE_PLUGIN_CACHE_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins}/data/amplihack-amplihack}"
 plugin_id=$(basename -- "$root")
 dest="$HOME/.local/bin"
 owned="$data/owned-binaries"
@@ -180,6 +180,15 @@ if [ "$status" = 0 ] && [ "$managed" = 1 ] && [ -n "$want" ] && [ "$(version_of)
   log "amplihack is $(version_of), not the wanted $want"
   status=1
 fi
+if [ "$status" != 0 ] && [ "$managed" = 0 ] && have recipe-runner-rs; then
+  # The user owns part of the amplihack pair and the plugin will not install
+  # the rest beside it. That is a settled state, not a failure to retry.
+  printf '%s\n' "$plugin_id" >"$data/user-managed"
+  rm -f "$data/install.failed"
+  log "amplihack is user-managed and incomplete; install the missing binary the same way the other was installed"
+  exit 0
+fi
+rm -f "$data/user-managed"
 if [ "$status" != 0 ]; then
   printf '%s\n' "$plugin_id" >"$data/install.failed"
 elif [ -z "$want" ] && [ "$managed" = 1 ]; then
