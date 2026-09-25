@@ -21,7 +21,7 @@ Each stored memory is scored against the prompt, and only relevant memories are 
 - **Topic words.** Topic words are the prompt's and the memory's English words, minus:
   - the [SMART stop list](https://github.com/igorbrigadir/stopwords/blob/master/en/smart.txt) (a few developer words such as `value` and `name` are kept),
   - contractions,
-  - words shorter than 3 characters, and numbers (`500`, `2026`; `sha256` and `v2` count),
+  - words shorter than 3 characters, and words that start with a digit, such as numbers with or without a suffix (`500`, `2026`, `2nd`, `10am`, `100ms`); `sha256`, `utf8` and `e2e` count, while `2fa` does not,
   - the agent names and slash command that triggered the hook,
   - the `Agent <name>:` prefix and the transcript role labels (`user:`, `assistant:`, `human:`, `system:`, `tool:`, `developer:`, `function:`) that stored learnings carry.
 

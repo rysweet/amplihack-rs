@@ -378,8 +378,10 @@ fn reads_as_english(text: &str) -> bool {
 /// (`doesn't`, `they'll`, `you'd`) and never a topic. There is no stemming:
 /// `tests` does not match `test`.
 ///
-/// A topic word needs a letter: numbers (`500`, `2026`, `404`) are shared by
-/// unrelated text too often to count, while `v2`, `sha256` and `e2e` do.
+/// A topic word starts with a letter: numbers, with or without a suffix
+/// (`500`, `2026`, `2nd`, `10am`, `100ms`), are shared by unrelated text too
+/// often to count, while `sha256`, `utf8`, `e2e` and `x86` do. Terms that
+/// start with a digit (`2fa`, `3des`) are dropped too, failing closed.
 ///
 /// Known limit: only ASCII words are topic words. Accented Latin, Cyrillic,
 /// Greek, and Chinese, Japanese and Korean text (which has no spaces
@@ -394,7 +396,7 @@ fn topic_terms(text: &str, ignored: &HashSet<String>) -> HashSet<String> {
         .filter(|word| {
             word.len() >= MIN_TERM_CHARS
                 && word.chars().all(|c| c.is_ascii_alphanumeric())
-                && word.chars().any(|c| c.is_ascii_alphabetic())
+                && word.starts_with(|c: char| c.is_ascii_alphabetic())
         })
         .map(str::to_lowercase)
         .filter(|word| !is_stop_word(word) && !ignored.contains(word))
@@ -1139,10 +1141,25 @@ mod tests {
     /// Shared numbers are not shared topics.
     #[test]
     fn numbers_are_not_topic_words() {
+        let terms = topic_terms(
+            "v2 sha256 e2e utf8 x86 500 2026 2nd 10am 100ms",
+            &HashSet::new(),
+        );
+        let mut terms = terms.into_iter().collect::<Vec<_>>();
+        terms.sort();
+        assert_eq!(terms, ["e2e", "sha256", "utf8", "x86"]);
         for (prompt, unrelated) in [
             (
                 "/fix the 500 errors after 100 requests",
                 "Agent general: user: I need 500 grams of flour and 100 grams of sugar for the cake",
+            ),
+            (
+                "/fix the retries on the 2nd and 3rd attempt",
+                "Agent general: user: we met on the 2nd and 3rd of May at the beach with the kids",
+            ),
+            (
+                "/analyze why the backup job at 10am and 5pm fails",
+                "Agent general: user: the dentist is at 10am and the gym is at 5pm so I can't come",
             ),
             (
                 "/analyze why the 2026 release fails with 404",
