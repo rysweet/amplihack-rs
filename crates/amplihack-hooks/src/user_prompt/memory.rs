@@ -12,12 +12,17 @@ use std::path::PathBuf;
 /// Minimum relevance a memory needs before it is injected into the prompt.
 const RELEVANCE_THRESHOLD: f64 = 0.2;
 /// A memory must also share at least this many topic words with the prompt,
-/// so one coincidental word never makes a short memory relevant. A prompt
-/// with fewer topic words than this (`/fix clippy`) needs all of them shared.
+/// so one coincidental word never makes a short memory relevant.
+///
+/// Known limit, chosen deliberately: a prompt left with a single topic word
+/// once its agent names and slash command are ignored (`/fix clippy`) never
+/// matches. Letting one word suffice re-admits exactly the #1483 failure
+/// (`/improve reply to the reviewer` pulling in the stored `reply with just:
+/// pong` smoke test), and one shared word is not evidence of relevance.
 const MIN_SHARED_TERMS: usize = 2;
 /// Topic words shorter than this (`rs`, `md`, `ci`) are too common to count.
-/// Scripts written without spaces between words are split into character
-/// pairs instead (see [`topic_terms`]), so the limit does not apply to them.
+/// Han and katakana are split into character pairs instead and Hangul words
+/// need two syllables (see [`topic_terms`]).
 const MIN_TERM_CHARS: usize = 3;
 /// At most this many memories are injected for one prompt.
 const MAX_INJECTED_MEMORIES: usize = 5;
@@ -110,14 +115,19 @@ const STOP_WORDS: &[&str] = &[
     "your",
 ];
 
-pub(crate) fn inject_memory(prompt: &str, session_id: Option<&str>) -> Option<String> {
+/// The agents `prompt` invokes, by name or by slash command.
+fn prompt_agents(prompt: &str) -> Vec<String> {
     let mut agent_types = detect_agent_references(prompt);
     if let Some(agent) = detect_slash_command_agent(prompt)
         && !agent_types.iter().any(|existing| existing == agent)
     {
         agent_types.push(agent.to_string());
     }
+    agent_types
+}
 
+pub(crate) fn inject_memory(prompt: &str, session_id: Option<&str>) -> Option<String> {
+    let agent_types = prompt_agents(prompt);
     if agent_types.is_empty() {
         return None;
     }
@@ -149,10 +159,9 @@ pub(crate) fn inject_memory(prompt: &str, session_id: Option<&str>) -> Option<St
 ///
 /// Each memory is scored against the prompt with [`memory_relevance`];
 /// memories below [`RELEVANCE_THRESHOLD`] or sharing fewer than
-/// [`MIN_SHARED_TERMS`] topic words (or every prompt topic word, when the
-/// prompt has fewer) are dropped. Memories that would print the same line,
-/// ignoring the `Agent <name>:` prefix and whitespace, are printed once, and
-/// each entry is bounded to [`MAX_MEMORY_CHARS`]. Returns `None` when no
+/// [`MIN_SHARED_TERMS`] topic words are dropped. Memories with the same
+/// text, ignoring the `Agent <name>:` prefix and whitespace, are printed
+/// once, and each entry is bounded to [`MAX_MEMORY_CHARS`]. Returns `None` when no
 /// memory is relevant, so nothing is injected.
 pub fn format_agent_memory_context(
     prompt: &str,
@@ -169,24 +178,23 @@ pub fn format_agent_memory_context(
         }
     }
     let prompt_terms = topic_terms(prompt, &ignored);
-    let required_shared = MIN_SHARED_TERMS.min(prompt_terms.len()).max(1);
 
     let mut scored: Vec<(f64, String, &PromptContextMemory)> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for memory in memories {
-        let body = strip_agent_prefix(&memory.content);
-        // Deduplicate on the line that would be printed, so two memories
-        // can never produce the same entry twice.
-        let line = bounded_memory_text(body);
-        if seen.contains(&line) {
+        // Deduplicate on the whole text with whitespace collapsed, so copies
+        // that differ only in layout are one memory, while memories that
+        // differ anywhere (even past the printed cut) stay distinct.
+        let text = single_line(strip_agent_prefix(&memory.content));
+        if seen.contains(&text) {
             continue;
         }
-        let memory_terms = topic_terms(body, &ignored);
+        let memory_terms = topic_terms(&text, &ignored);
         let shared = prompt_terms.intersection(&memory_terms).count();
         let relevance = memory_relevance(&prompt_terms, &memory_terms);
-        if shared >= required_shared && relevance >= RELEVANCE_THRESHOLD {
-            seen.insert(line.clone());
-            scored.push((relevance, line, memory));
+        if shared >= MIN_SHARED_TERMS && relevance >= RELEVANCE_THRESHOLD {
+            seen.insert(text.clone());
+            scored.push((relevance, text, memory));
         }
     }
     if scored.is_empty() {
@@ -204,8 +212,11 @@ pub fn format_agent_memory_context(
         )
     };
     let mut lines = vec![heading];
-    for (relevance, line, memory) in scored {
-        lines.push(format!("- {line} (relevance: {relevance:.2})"));
+    for (relevance, text, memory) in scored {
+        lines.push(format!(
+            "- {} (relevance: {relevance:.2})",
+            bounded_memory_text(&text)
+        ));
         if let Some(code_context) = memory.code_context.as_deref()
             && !code_context.trim().is_empty()
         {
@@ -230,11 +241,18 @@ fn strip_agent_prefix(content: &str) -> &str {
 /// Distinct lower-cased topic words of `text`, without stop words, short
 /// words or `ignored` words.
 ///
-/// Chinese, Japanese, Korean and Thai text has no spaces between words (or,
-/// for Korean, mostly two-syllable words), so whitespace splitting would
-/// turn a whole CJK sentence into one term that never matches. Runs of those
-/// scripts contribute overlapping character pairs (`构建失败` → `构建`, `建失`,
-/// `失败`) instead, the usual word-segmentation-free approximation.
+/// Chinese and Japanese are written without spaces, so whitespace splitting
+/// would turn a whole sentence into one term that never matches:
+/// - Han and katakana runs contribute overlapping character pairs (`构建失败`
+///   → `构建`, `建失`, `失败`), the usual segmentation-free approximation.
+/// - Hiragana is dropped. In Japanese it carries particles and verb endings
+///   (`が`, `しました`), whose pairs would match any two sentences.
+/// - Hangul is space-separated; each word of two or more syllables is a term.
+///
+/// Known limit: Korean words keep their attached particles (`빌드가` ≠ `빌드`),
+/// and Thai, Lao, Khmer and Myanmar, which also lack spaces, are not split, so
+/// memories in those scripts rarely match. Both fail closed: nothing
+/// irrelevant is injected, a relevant memory may be missed.
 fn topic_terms(text: &str, ignored: &HashSet<String>) -> HashSet<String> {
     let mut terms = HashSet::new();
     let mut keep = |term: String| {
@@ -244,37 +262,47 @@ fn topic_terms(text: &str, ignored: &HashSet<String>) -> HashSet<String> {
     };
     for word in text.split(|c: char| !c.is_alphanumeric()) {
         let chars = word.chars().collect::<Vec<_>>();
-        for run in chars.chunk_by(|left, right| is_unsegmented(*left) == is_unsegmented(*right)) {
-            if is_unsegmented(run[0]) {
-                for pair in run.windows(2) {
-                    keep(pair.iter().collect());
+        for run in chars.chunk_by(|left, right| Script::of(*left) == Script::of(*right)) {
+            match Script::of(run[0]) {
+                Script::Han | Script::Katakana => {
+                    for pair in run.windows(2) {
+                        keep(pair.iter().collect());
+                    }
                 }
-            } else if run.len() >= MIN_TERM_CHARS {
-                keep(run.iter().collect::<String>().to_lowercase());
+                Script::Hiragana => {}
+                Script::Hangul if run.len() >= 2 => keep(run.iter().collect()),
+                Script::Hangul => {}
+                Script::Other if run.len() >= MIN_TERM_CHARS => {
+                    keep(run.iter().collect::<String>().to_lowercase());
+                }
+                Script::Other => {}
             }
         }
     }
     terms
 }
 
-/// Whether `c` belongs to a script written without spaces between words
-/// (Han, kana, Hangul, Thai, Lao, Khmer, Myanmar).
-fn is_unsegmented(c: char) -> bool {
-    matches!(
-        c as u32,
-        0x0E00..=0x0EFF      // Thai, Lao
-            | 0x1000..=0x109F // Myanmar
-            | 0x1100..=0x11FF // Hangul Jamo
-            | 0x1780..=0x17FF // Khmer
-            | 0x3040..=0x30FF // Hiragana, Katakana
-            | 0x3130..=0x318F // Hangul compatibility Jamo
-            | 0x31F0..=0x31FF // Katakana extensions
-            | 0x3400..=0x4DBF // CJK extension A
-            | 0x4E00..=0x9FFF // CJK unified ideographs
-            | 0xAC00..=0xD7AF // Hangul syllables
-            | 0xF900..=0xFAFF // CJK compatibility ideographs
-            | 0x20000..=0x3FFFF // CJK extensions B and later
-    )
+/// The scripts [`topic_terms`] tokenises differently from space-separated
+/// text.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Script {
+    Han,
+    Hiragana,
+    Katakana,
+    Hangul,
+    Other,
+}
+
+impl Script {
+    fn of(c: char) -> Self {
+        match c as u32 {
+            0x3040..=0x309F => Self::Hiragana,
+            0x30A0..=0x30FF | 0x31F0..=0x31FF | 0xFF66..=0xFF9F => Self::Katakana,
+            0x1100..=0x11FF | 0x3130..=0x318F | 0xAC00..=0xD7AF => Self::Hangul,
+            0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0x20000..=0x3FFFF => Self::Han,
+            _ => Self::Other,
+        }
+    }
 }
 
 /// Cosine similarity of the prompt's and the memory's topic-word sets, in
@@ -288,16 +316,17 @@ fn memory_relevance(prompt_terms: &HashSet<String>, memory_terms: &HashSet<Strin
     shared / ((prompt_terms.len() * memory_terms.len()) as f64).sqrt()
 }
 
-/// The memory as one line, cut to [`MAX_MEMORY_CHARS`] characters.
-fn bounded_memory_text(content: &str) -> String {
-    let single_line = content.split_whitespace().collect::<Vec<_>>().join(" ");
-    if single_line.chars().count() <= MAX_MEMORY_CHARS {
-        return single_line;
+/// `content` with every run of whitespace collapsed to one space.
+fn single_line(content: &str) -> String {
+    content.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// A single-line memory cut to [`MAX_MEMORY_CHARS`] characters.
+fn bounded_memory_text(line: &str) -> String {
+    if line.chars().count() <= MAX_MEMORY_CHARS {
+        return line.to_string();
     }
-    let mut cut = single_line
-        .chars()
-        .take(MAX_MEMORY_CHARS)
-        .collect::<String>();
+    let mut cut = line.chars().take(MAX_MEMORY_CHARS).collect::<String>();
     cut.push('…');
     cut
 }
@@ -439,14 +468,70 @@ mod tests {
         assert!(!result.contains("Agent "));
     }
 
+    /// The agents are detected from the prompt exactly as `inject_memory`
+    /// does, so an agent name the prompt uses is ignored as it is in
+    /// production, which leaves some prompts a single topic word.
     #[test]
     fn one_shared_word_is_not_relevant() {
+        let pong = [memory(
+            "Agent general: user: reply with just: pong\n\nassistant: pong",
+        )];
+        for prompt in [
+            "/improve reply to the reviewer",
+            "/fix the reply",
+            "/analyze this reply",
+        ] {
+            let agent_types = prompt_agents(prompt);
+            assert!(!agent_types.is_empty(), "{prompt:?} names an agent");
+            assert_eq!(
+                format_agent_memory_context(prompt, &agent_types, &pong),
+                None,
+                "nothing is injected for {prompt:?}"
+            );
+        }
+    }
+
+    /// Known limit: a prompt with one topic word left never matches, even a
+    /// memory that contains it (see [`MIN_SHARED_TERMS`]).
+    #[test]
+    fn single_topic_word_prompt_does_not_match() {
+        let prompt = "/fix clippy";
         let result = format_agent_memory_context(
-            "reply to the reviewer",
-            &agents(&["analyzer"]),
-            &[memory("Agent general: user: reply with just: pong")],
+            prompt,
+            &prompt_agents(prompt),
+            &[memory(
+                "Agent fix-agent: run clippy with -D warnings before pushing",
+            )],
         );
         assert_eq!(result, None);
+    }
+
+    /// Memories that share their first [`MAX_MEMORY_CHARS`] characters but
+    /// differ later are distinct, and each keeps its own code context.
+    #[test]
+    fn memories_differing_past_the_cut_are_both_kept() {
+        let shared = format!("cargo fmt failures {}", "detail ".repeat(80));
+        let result = format_agent_memory_context(
+            "cargo fmt failures detail",
+            &agents(&["builder"]),
+            &[
+                PromptContextMemory {
+                    content: format!("{shared} first ending"),
+                    code_context: Some("ctx-one".to_string()),
+                },
+                PromptContextMemory {
+                    content: format!("{shared} second ending"),
+                    code_context: Some("ctx-two".to_string()),
+                },
+            ],
+        )
+        .expect("relevant memories are injected");
+        assert_eq!(
+            result.lines().filter(|line| line.starts_with("- ")).count(),
+            2
+        );
+        assert!(result.contains("ctx-one"));
+        assert!(result.contains("ctx-two"));
     }
 
     /// Copies that differ only in whitespace print the same line, so they
@@ -481,6 +566,42 @@ mod tests {
         assert!(!result.contains("部署成功"));
     }
 
+    /// Japanese and Korean verb endings and particles are not topic words:
+    /// sentences that share only those match nothing.
+    #[test]
+    fn japanese_and_korean_endings_do_not_make_memories_relevant() {
+        for (prompt, unrelated) in [
+            (
+                "/analyze ビルドが失敗しました",
+                "Agent analyzer: デプロイが成功しました",
+            ),
+            (
+                "/analyze 빌드가 실패했습니다",
+                "Agent analyzer: 배포가 성공했습니다",
+            ),
+        ] {
+            assert_eq!(
+                format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(unrelated)]),
+                None,
+                "{unrelated:?} is not relevant to {prompt:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn japanese_memory_is_injected_for_a_japanese_prompt() {
+        let prompt = "/analyze ビルドが失敗しました";
+        let result = format_agent_memory_context(
+            prompt,
+            &prompt_agents(prompt),
+            &[memory(
+                "Agent analyzer: ビルド失敗の原因は cargo fmt でした",
+            )],
+        )
+        .expect("Japanese memory is injected");
+        assert!(result.contains("ビルド失敗の原因は cargo fmt でした"));
+    }
+
     #[test]
     fn space_separated_short_korean_words_count() {
         let result = format_agent_memory_context(
@@ -489,22 +610,6 @@ mod tests {
             &[memory("Agent analyzer: 빌드 실패 원인은 포맷")],
         );
         assert!(result.is_some_and(|text| text.contains("빌드 실패 원인은 포맷")));
-    }
-
-    /// `/fix clippy` has one topic word; it must be able to match.
-    #[test]
-    fn single_topic_word_prompt_can_match() {
-        let result = format_agent_memory_context(
-            "/fix clippy",
-            &agents(&["fix-agent"]),
-            &[
-                memory("Agent fix-agent: run clippy with -D warnings before pushing"),
-                memory("Agent fix-agent: cargo fmt before pushing"),
-            ],
-        )
-        .expect("single-word prompt matches");
-        assert!(result.contains("run clippy with -D warnings before pushing"));
-        assert!(!result.contains("cargo fmt before pushing"));
     }
 
     #[test]
