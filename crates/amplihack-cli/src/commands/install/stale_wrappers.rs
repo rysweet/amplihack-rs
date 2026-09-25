@@ -20,9 +20,10 @@ pub(crate) struct StaleWrapperNeutralizerReport {
     pub(crate) neutralized: Vec<NeutralizedWrapper>,
     pub(crate) manifest_path: Option<PathBuf>,
     pub(crate) resolved_after: PathBuf,
-    /// Transient `npx` shims for our own npm wrapper that shadow the Rust
-    /// binary only while the launching `npx` process runs (issue #1480).
-    /// They are left in place and reported so the caller can warn.
+    /// Transient `npx` shims for our own npm wrapper that sit ahead of the
+    /// Rust binary on PATH, shadowing it only while the launching `npx`
+    /// process runs (issue #1480). They are left in place and reported so the
+    /// caller can warn. Empty when the Rust binary is not on PATH at all.
     pub(crate) skipped_transient_shims: Vec<PathBuf>,
 }
 
@@ -141,7 +142,12 @@ pub(crate) fn neutralize_shadowing_stale_wrappers(
             )?;
         match kind {
             PathCandidateKind::PreferredRustBinary | PathCandidateKind::CurrentRustBinary => {}
-            PathCandidateKind::TransientNpxShim => skipped_transient_shims.push(candidate.clone()),
+            PathCandidateKind::TransientNpxShim => {
+                // Only a shim ahead of the Rust binary on PATH shadows it.
+                if preferred_on_path {
+                    skipped_transient_shims.push(candidate.clone());
+                }
+            }
             PathCandidateKind::StalePythonWrapper | PathCandidateKind::StaleUvxWrapper => {
                 let wrapper_kind = match kind {
                     PathCandidateKind::StalePythonWrapper => {

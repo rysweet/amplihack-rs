@@ -491,3 +491,29 @@ fn issue_1480_path_advisory_keeps_ambiguity_warning_behind_the_npx_shim() {
     );
     assert!(!warning.contains("_npx"), "got: {warning}");
 }
+
+/// With ~/.local/bin off PATH the npx shim shadows nothing, so it must not be
+/// reported as a shim that "stops shadowing" the Rust binary; the separate
+/// "~/.local/bin is not in $PATH" advisory covers that setup.
+#[cfg(unix)]
+#[test]
+fn issue_1480_npx_shim_not_reported_when_local_bin_is_off_path() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let preferred_bin = home.join(".local/bin");
+    let preferred_rust = create_exe_stub(&preferred_bin, "amplihack");
+    let wrapper_source = include_str!("../../../../../../npm/bin/amplihack.js");
+    let (npx_bin, _shim) = create_npx_shim(&home, wrapper_source);
+
+    let report = neutralize_shadowing_stale_wrappers(repair_config(
+        &home,
+        &preferred_rust,
+        &preferred_rust,
+        vec![npx_bin],
+    ))
+    .expect("an npx shim with ~/.local/bin off PATH must not abort install");
+
+    assert!(report.skipped_transient_shims.is_empty());
+    assert!(report.neutralized.is_empty());
+    assert_eq!(report.resolved_after, preferred_rust);
+}
