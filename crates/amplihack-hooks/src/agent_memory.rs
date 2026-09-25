@@ -25,7 +25,8 @@ const SLASH_COMMAND_AGENTS: &[(&str, &str)] = &[
 ///
 /// The patterns are loose (`/([a-z-]+)\s` matches any path segment such as
 /// `/skills ` or `/bin `), so a capture only counts when it names a bundled
-/// agent definition. Ordinary words never become "agents" (issue #1483).
+/// agent definition or a slash-command agent (`/reflect` → `reflection`).
+/// Ordinary words never become "agents" (issue #1483).
 pub(crate) fn detect_agent_references(prompt: &str) -> Vec<String> {
     static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
     let patterns = PATTERNS.get_or_init(|| {
@@ -44,7 +45,7 @@ pub(crate) fn detect_agent_references(prompt: &str) -> Vec<String> {
             else {
                 continue;
             };
-            if !is_amplihack_agent(&agent_name) {
+            if !is_amplihack_agent(&agent_name) && !is_slash_command_agent(&agent_name) {
                 continue;
             }
             if !agents.iter().any(|existing| existing == &agent_name) {
@@ -68,6 +69,20 @@ pub(crate) fn detect_slash_command_agent(prompt: &str) -> Option<&'static str> {
     SLASH_COMMAND_AGENTS
         .iter()
         .find_map(|(name, agent)| (*name == command).then_some(*agent))
+}
+
+fn is_slash_command_agent(agent_name: &str) -> bool {
+    SLASH_COMMAND_AGENTS
+        .iter()
+        .any(|(_, agent)| *agent == agent_name)
+}
+
+/// Slash commands that invoke `agent_name` (`analyzer` → `analyze`).
+pub(crate) fn slash_commands_for(agent_name: &str) -> impl Iterator<Item = &'static str> + '_ {
+    SLASH_COMMAND_AGENTS
+        .iter()
+        .filter(move |(_, agent)| *agent == agent_name)
+        .map(|(command, _)| *command)
 }
 
 pub(crate) fn normalize_agent_name(agent_name: &str) -> String {

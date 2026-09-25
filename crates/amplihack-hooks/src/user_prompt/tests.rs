@@ -154,13 +154,15 @@ fn ordinary_words_and_paths_are_not_agent_references() {
 #[test]
 fn unrelated_smoke_test_memory_is_not_injected() {
     let agents = ["analyzer", "builder", "reviewer"].map(String::from);
+    // Shaped as session-stop stores it: `Agent <name>: <transcript>`.
     let memories = [PromptContextMemory {
-        content: String::from("user: reply with just: pong\nassistant: pong"),
+        content: String::from("Agent general: user: reply with just: pong\n\nassistant: pong"),
         code_context: None,
     }];
     for prompt in [
         "update the skills under docs and web, then rebuild bin",
         "/analyze the amplihack-hook plugin commands",
+        "/analyze the builder agent output",
     ] {
         assert_eq!(
             format_agent_memory_context(prompt, &agents, &memories),
@@ -168,6 +170,71 @@ fn unrelated_smoke_test_memory_is_not_injected() {
             "nothing is injected for {prompt:?}"
         );
     }
+}
+
+/// A mid-prompt slash command still names its agent.
+#[test]
+fn midprompt_slash_command_agents_are_detected() {
+    assert_eq!(
+        detect_agent_references("please /reflect on this session"),
+        vec!["reflection".to_string()]
+    );
+    assert_eq!(
+        detect_agent_references("then /ultrathink about it"),
+        vec!["orchestrator".to_string()]
+    );
+}
+
+/// Issue #1483 end to end: learnings stored by session-stop under several
+/// agents reach the prompt once when relevant, and not at all otherwise.
+#[test]
+fn stored_learnings_are_injected_once_and_only_when_relevant() {
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let _home = EnvVarGuard::set("HOME", dir.path());
+    let _backend = EnvVarGuard::set("AMPLIHACK_MEMORY_BACKEND", "sqlite");
+    let session = "issue-1483-session";
+
+    for agent in ["general", "analyzer", "builder"] {
+        amplihack_memory::cli_memory::store_session_learning(
+            session,
+            agent,
+            "user: reply with just: pong\n\nassistant: pong",
+            None,
+            true,
+        )
+        .unwrap();
+        amplihack_memory::cli_memory::store_session_learning(
+            session,
+            agent,
+            "The auth middleware rejected expired tokens before refresh",
+            None,
+            true,
+        )
+        .unwrap();
+    }
+
+    assert_eq!(
+        memory::inject_memory("/analyze the builder agent output", Some(session)),
+        None
+    );
+
+    let context = memory::inject_memory(
+        "/analyze why the auth middleware rejected expired tokens",
+        Some(session),
+    )
+    .expect("relevant learning is injected");
+    assert_eq!(
+        context
+            .matches("The auth middleware rejected expired tokens before refresh")
+            .count(),
+        1
+    );
+    assert!(!context.contains("pong"));
+    assert!(!context.contains("Agent "));
+    assert!(!context.contains("relevance: 0.00"));
 }
 
 #[test]

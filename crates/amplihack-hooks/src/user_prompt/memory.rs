@@ -1,6 +1,8 @@
 //! Agent memory injection and framework file detection.
 
-use crate::agent_memory::{detect_agent_references, detect_slash_command_agent};
+use crate::agent_memory::{
+    detect_agent_references, detect_slash_command_agent, slash_commands_for,
+};
 use amplihack_memory::cli_memory::{PromptContextMemory, retrieve_prompt_context_memories};
 use amplihack_types::ProjectDirs;
 use std::collections::HashSet;
@@ -9,18 +11,25 @@ use std::path::PathBuf;
 
 /// Minimum relevance a memory needs before it is injected into the prompt.
 const RELEVANCE_THRESHOLD: f64 = 0.2;
+/// A memory must also share at least this many topic words with the prompt,
+/// so one coincidental word never makes a short memory relevant.
+const MIN_SHARED_TERMS: usize = 2;
+/// Topic words shorter than this (`rs`, `md`, `ci`) are too common to count.
+const MIN_TERM_CHARS: usize = 3;
 /// At most this many memories are injected for one prompt.
 const MAX_INJECTED_MEMORIES: usize = 5;
 /// Each injected memory is cut to this many characters, so a stored
 /// transcript never lands in the prompt whole.
 const MAX_MEMORY_CHARS: usize = 400;
 
-/// Words that carry no topic: English function words, plus the role labels
-/// stored transcripts use (`user:` / `assistant:`), which would otherwise
-/// match every prompt that says "user".
+/// Words that carry no topic: English function words, the role labels
+/// stored transcripts use (`user:` / `assistant:`), and the words of the
+/// `Agent <name>:` prefix every stored learning carries.
 const STOP_WORDS: &[&str] = &[
     "a",
     "about",
+    "agent",
+    "agents",
     "after",
     "all",
     "also",
@@ -43,6 +52,7 @@ const STOP_WORDS: &[&str] = &[
     "does",
     "for",
     "from",
+    "general",
     "had",
     "has",
     "have",
@@ -135,26 +145,37 @@ pub(crate) fn inject_memory(prompt: &str, session_id: Option<&str>) -> Option<St
 /// Format the memories relevant to `prompt` as one context section.
 ///
 /// Each memory is scored against the prompt with [`memory_relevance`];
-/// memories below [`RELEVANCE_THRESHOLD`] are dropped, duplicates are printed
-/// once, and each entry is bounded to [`MAX_MEMORY_CHARS`]. Returns `None`
+/// memories below [`RELEVANCE_THRESHOLD`] or sharing fewer than
+/// [`MIN_SHARED_TERMS`] topic words are dropped, duplicates (ignoring the
+/// `Agent <name>:` prefix) are printed once, and each entry is bounded to [`MAX_MEMORY_CHARS`]. Returns `None`
 /// when no memory is relevant, so nothing is injected.
 pub fn format_agent_memory_context(
     prompt: &str,
     agent_types: &[String],
     memories: &[PromptContextMemory],
 ) -> Option<String> {
-    let prompt_terms = topic_terms(prompt);
-    let mut scored: Vec<(f64, &PromptContextMemory)> = Vec::new();
+    // The agent names (and the slash commands that invoke them) are how the
+    // prompt reached this hook, not what it is about.
+    let mut ignored: HashSet<String> = HashSet::new();
+    for agent in agent_types {
+        ignored.extend(topic_terms(agent, &HashSet::new()));
+        for command in slash_commands_for(agent) {
+            ignored.insert(command.to_string());
+        }
+    }
+    let prompt_terms = topic_terms(prompt, &ignored);
+
+    let mut scored: Vec<(f64, &str, &PromptContextMemory)> = Vec::new();
     for memory in memories {
-        if scored
-            .iter()
-            .any(|(_, seen)| seen.content.trim() == memory.content.trim())
-        {
+        let body = strip_agent_prefix(&memory.content);
+        if scored.iter().any(|(_, seen, _)| *seen == body) {
             continue;
         }
-        let relevance = memory_relevance(&prompt_terms, &topic_terms(&memory.content));
-        if relevance >= RELEVANCE_THRESHOLD {
-            scored.push((relevance, memory));
+        let memory_terms = topic_terms(body, &ignored);
+        let shared = prompt_terms.intersection(&memory_terms).count();
+        let relevance = memory_relevance(&prompt_terms, &memory_terms);
+        if shared >= MIN_SHARED_TERMS && relevance >= RELEVANCE_THRESHOLD {
+            scored.push((relevance, body, memory));
         }
     }
     if scored.is_empty() {
@@ -167,10 +188,10 @@ pub fn format_agent_memory_context(
         "\n## Relevant Memory (agents: {})\n",
         agent_types.join(", ")
     )];
-    for (relevance, memory) in scored {
+    for (relevance, body, memory) in scored {
         lines.push(format!(
             "- {} (relevance: {relevance:.2})",
-            bounded_memory_text(&memory.content)
+            bounded_memory_text(body)
         ));
         if let Some(code_context) = memory.code_context.as_deref()
             && !code_context.trim().is_empty()
@@ -181,12 +202,25 @@ pub fn format_agent_memory_context(
     Some(lines.join("\n"))
 }
 
-/// Distinct lower-cased topic words of `text`, without stop words.
-fn topic_terms(text: &str) -> HashSet<String> {
+/// The memory without the `Agent <name>: ` prefix session-stop stores it
+/// with. The same summary is stored once per agent, so the prefix must not
+/// count toward relevance or make copies look distinct.
+fn strip_agent_prefix(content: &str) -> &str {
+    let content = content.trim();
+    content
+        .strip_prefix("Agent ")
+        .and_then(|rest| rest.split_once(": "))
+        .filter(|(name, _)| !name.is_empty() && !name.contains(char::is_whitespace))
+        .map_or(content, |(_, body)| body.trim())
+}
+
+/// Distinct lower-cased topic words of `text`, without stop words, short
+/// words or `ignored` words.
+fn topic_terms(text: &str, ignored: &HashSet<String>) -> HashSet<String> {
     text.split(|c: char| !c.is_alphanumeric())
-        .filter(|word| !word.is_empty())
+        .filter(|word| word.chars().count() >= MIN_TERM_CHARS)
         .map(str::to_lowercase)
-        .filter(|word| !STOP_WORDS.contains(&word.as_str()))
+        .filter(|word| !STOP_WORDS.contains(&word.as_str()) && !ignored.contains(word))
         .collect()
 }
 
@@ -289,9 +323,10 @@ mod tests {
         .expect("relevant memory is injected");
         assert!(result.contains("## Relevant Memory (agents: analyzer)"));
         assert!(result.contains("Always run cargo test before pushing to CI"));
-        // {analyze, cargo, test, fails, ci} vs {always, run, cargo, test,
-        // before, pushing, ci}: 3 shared / sqrt(5 * 7).
-        let expected = 3.0 / 35f64.sqrt();
+        // `analyze` invokes the agent and `ci` is too short, leaving
+        // {cargo, test, fails} vs {always, run, cargo, test, before,
+        // pushing}: 2 shared / sqrt(3 * 6).
+        let expected = 2.0 / 18f64.sqrt();
         assert!(result.contains(&format!("(relevance: {expected:.2})")));
         assert!(!result.contains("relevance: 0.00"));
     }
@@ -333,6 +368,42 @@ mod tests {
             1
         );
         assert!(result.contains("builder, reviewer, tester"));
+    }
+
+    /// Session-stop stores one `Agent <name>: <summary>` copy per agent.
+    #[test]
+    fn per_agent_prefixed_copies_are_printed_once_without_prefix() {
+        let body = "cargo fmt failures come from the builder output";
+        let memories = ["builder", "reviewer", "tester", "general"]
+            .map(|agent| memory(&format!("Agent {agent}: {body}")));
+        let result = format_agent_memory_context(
+            "why does cargo fmt report failures",
+            &agents(&["builder"]),
+            &memories,
+        )
+        .expect("relevant memory is injected");
+        assert_eq!(result.matches(body).count(), 1);
+        assert!(!result.contains("Agent "));
+    }
+
+    #[test]
+    fn one_shared_word_is_not_relevant() {
+        let result = format_agent_memory_context(
+            "reply to the reviewer",
+            &agents(&["analyzer"]),
+            &[memory("Agent general: user: reply with just: pong")],
+        );
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn agent_prefix_is_stripped_only_when_it_is_one() {
+        assert_eq!(strip_agent_prefix("Agent builder: body"), "body");
+        assert_eq!(
+            strip_agent_prefix("Agent smith said: hello"),
+            "Agent smith said: hello"
+        );
+        assert_eq!(strip_agent_prefix("plain memory"), "plain memory");
     }
 
     #[test]
@@ -399,10 +470,10 @@ mod tests {
     #[test]
     fn format_empty_code_context_skipped() {
         let result = format_agent_memory_context(
-            "fact",
+            "cargo fact",
             &agents(&["builder"]),
             &[PromptContextMemory {
-                content: "Fact".to_string(),
+                content: "Cargo fact".to_string(),
                 code_context: Some("  ".to_string()),
             }],
         )
