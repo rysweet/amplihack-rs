@@ -138,6 +138,16 @@ pub fn run_recipe(
             )?;
         }
     }
+    if !dry_run
+        && let Err(error) = preflight_root_sandbox(
+            &recipe,
+            &crate::env_builder::active_agent_binary(),
+            &amplihack_utils::root_sandbox::detect(),
+        )
+    {
+        writeln!(io::stderr(), "Error: {error}")?;
+        return Err(exit_error(1));
+    }
     let search_dirs = build_search_dirs(&validated_path, &abs_working_dir)?;
     let result = match execute_recipe_via_rust(
         &validated_path,
@@ -171,6 +181,33 @@ pub fn run_recipe(
     } else {
         Err(exit_error(1))
     }
+}
+
+/// Issue #1482: fail before the runner starts, rather than inside the first
+/// agent step, when agent steps would launch `claude
+/// --dangerously-skip-permissions` as root and Claude Code would refuse it.
+///
+/// Sub-recipe steps count as agent steps: what they run is not known here.
+fn preflight_root_sandbox(
+    recipe: &RecipeDoc,
+    agent_binary: &str,
+    decision: &amplihack_utils::root_sandbox::SkipPermissionsEnv,
+) -> Result<()> {
+    if agent_binary != "claude" {
+        return Ok(());
+    }
+    let launches_agents = recipe.steps.iter().any(|step| {
+        matches!(
+            super::show_validate::infer_step_type(step),
+            "agent" | "recipe"
+        )
+    });
+    if !launches_agents {
+        return Ok(());
+    }
+    decision
+        .check()
+        .map_err(|error| anyhow::anyhow!("recipe pre-flight failed for '{}': {error}", recipe.name))
 }
 
 fn parse_context_args(context_args: &[String]) -> (BTreeMap<String, String>, Vec<String>) {
@@ -264,6 +301,8 @@ mod tests_execute;
 mod tests_failure_class;
 #[cfg(test)]
 mod tests_format;
+#[cfg(test)]
+mod tests_root_sandbox;
 #[cfg(test)]
 mod tests_teardown;
 #[cfg(test)]

@@ -9,6 +9,7 @@ use amplihack_utils::prompt_delivery::{
     DeliveryCaps, DeliveryHandle, DeliveryMode, PromptDelivery, deliver, from_env,
     sanitize_prompt_nul,
 };
+use amplihack_utils::root_sandbox;
 
 use crate::flag_matrix::{
     AgentBinary, delivery_mode_name, prompt_delivery_caps_for, prompt_delivery_name,
@@ -93,6 +94,11 @@ pub fn build_tool_command_with_prompt_delivery(
     command.env("AMPLIHACK_AGENT_BINARY", binary.env_value());
 
     add_prompt_prefix_args(&mut command, binary, extra_args);
+    if binary == AgentBinary::Claude {
+        // Issue #1482: `--dangerously-skip-permissions` as root needs
+        // `IS_SANDBOX=1` on this child, or a clear error before the spawn.
+        root_sandbox::detect().apply(&mut command)?;
+    }
 
     finish_prompt_delivery(command, prompt, requested, prompt_delivery_caps_for(binary))
 }
@@ -155,7 +161,7 @@ fn warnings_for(
 fn add_prompt_prefix_args(command: &mut Command, binary: AgentBinary, extra_args: &[String]) {
     match binary {
         AgentBinary::Claude => {
-            command.arg("--dangerously-skip-permissions");
+            command.arg(root_sandbox::SKIP_PERMISSIONS_FLAG);
             command.args(extra_args);
             command.arg("-p");
         }

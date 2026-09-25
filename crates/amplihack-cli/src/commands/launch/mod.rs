@@ -185,6 +185,20 @@ pub fn run_launch(
         return Ok(());
     }
 
+    // Issue #1482: Claude Code refuses `--dangerously-skip-permissions` as root
+    // unless IS_SANDBOX=1 is set. Decide now, after the Docker hand-off (the
+    // container launch decides for itself), so a root host outside a sandbox
+    // fails here with a message naming IS_SANDBOX=1 instead of inside claude.
+    let root_sandbox = if tool == "claude"
+        && (skip_permissions || amplihack_utils::root_sandbox::args_skip_permissions(&extra_args))
+    {
+        let decision = amplihack_utils::root_sandbox::detect();
+        decision.check()?;
+        Some(decision)
+    } else {
+        None
+    };
+
     // Check for npm updates before doing anything else.
     // This is a no-op if skip_update_check is true, AMPLIHACK_NONINTERACTIVE is set,
     // or the tool has no npm package mapping.
@@ -308,6 +322,10 @@ pub fn run_launch(
             env_builder,
             proxy_config.as_ref().zip(proxy_target),
         );
+        // Issue #1482: IS_SANDBOX=1 goes on this child only, never on amplihack.
+        if let Some(decision) = &root_sandbox {
+            decision.apply(&mut cmd)?;
+        }
 
         // Spawn child in its own process group.
         //

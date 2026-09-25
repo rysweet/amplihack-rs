@@ -276,3 +276,48 @@ fn prompt_delivery_report_matches_doctor_order_and_effective_modes() {
         "every argv-only binary should explain an unsupported tempfile request"
     );
 }
+
+/// Issue #1482: a Claude command carries `IS_SANDBOX=1` exactly when the
+/// root-sandbox decision asks for it, and fails before spawning when Claude
+/// Code would refuse `--dangerously-skip-permissions`. Asserted against the
+/// live decision so it holds as root in a container and as a normal user.
+#[test]
+fn claude_command_follows_the_root_sandbox_decision() {
+    use amplihack_utils::root_sandbox::{self, IS_SANDBOX_ENV, SkipPermissionsEnv};
+
+    let decision = root_sandbox::detect();
+    let result = build_tool_command_with_prompt_delivery(
+        AgentBinary::Claude,
+        Path::new("."),
+        &[],
+        "hello",
+        PromptDelivery::Argv,
+    );
+    match decision {
+        SkipPermissionsEnv::RootOutsideSandbox
+        | SkipPermissionsEnv::ExplicitlyNotSandboxed { .. } => {
+            let err = result.expect_err("root outside a sandbox must fail before spawning");
+            assert_eq!(err.kind(), ErrorKind::PermissionDenied);
+            assert!(err.to_string().contains("IS_SANDBOX=1"), "{err}");
+        }
+        SkipPermissionsEnv::SetSandbox { .. } => {
+            let delivered = result.expect("root in a sandbox builds");
+            let is_sandbox = delivered
+                .command
+                .get_envs()
+                .find(|(key, _)| *key == IS_SANDBOX_ENV)
+                .and_then(|(_, value)| value);
+            assert_eq!(is_sandbox, Some(OsStr::new("1")));
+        }
+        SkipPermissionsEnv::NotRoot | SkipPermissionsEnv::AlreadySandboxed => {
+            let delivered = result.expect("builds");
+            assert!(
+                delivered
+                    .command
+                    .get_envs()
+                    .all(|(key, _)| key != IS_SANDBOX_ENV),
+                "IS_SANDBOX must not be set when it is not needed"
+            );
+        }
+    }
+}

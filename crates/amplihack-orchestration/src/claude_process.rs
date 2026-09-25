@@ -302,6 +302,13 @@ impl ProcessRunner for TokioProcessRunner {
         if let Some(dir) = &opts.working_dir {
             delivered.command.current_dir(dir);
         }
+        // Issue #1482: a bare `claude` child needs IS_SANDBOX=1 as root. An
+        // `amplihack <tool>` delegate decides for itself in its launcher.
+        if program == "claude"
+            && let Err(e) = amplihack_utils::root_sandbox::detect().apply(&mut delivered.command)
+        {
+            return ProcessResult::err(e.to_string(), opts.process_id, start.elapsed());
+        }
 
         run_delivered_command(
             delivered,

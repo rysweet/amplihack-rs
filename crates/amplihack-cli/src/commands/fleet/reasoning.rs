@@ -244,7 +244,13 @@ impl NativeReasonerBackend {
             NativeReasonerBackend::Claude(path) => {
                 let mut cmd = Command::new(path);
                 cmd.stdin(Stdio::null());
-                cmd.args(["--dangerously-skip-permissions", "-p", prompt]);
+                cmd.args([
+                    amplihack_utils::root_sandbox::SKIP_PERMISSIONS_FLAG,
+                    "-p",
+                    prompt,
+                ]);
+                // Issue #1482: IS_SANDBOX=1 as root in a sandbox, else a clear error.
+                amplihack_utils::root_sandbox::detect().apply(&mut cmd)?;
                 let mut env_builder = EnvBuilder::new()
                     .with_amplihack_session_id()
                     .with_session_tree_context()
