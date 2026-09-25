@@ -12,6 +12,24 @@ The UserPromptSubmit hook injects context on every user message:
 
 This document focuses on the framework injection mechanism (item 3).
 
+### Agent memories (item 2)
+
+Memories are injected only when the prompt names an amplihack agent, either by a slash command (`/analyze`, `/fix`) or by an agent definition reference. Ordinary words and path segments such as `/skills` or `/bin` are not agents.
+
+Each stored memory is scored against the prompt, and only relevant memories are injected (issue #1483). The rules, in `crates/amplihack-hooks/src/user_prompt/memory.rs`:
+
+- **Topic words.** Topic words are the prompt's and the memory's English words, minus:
+  - the [SMART stop list](https://github.com/igorbrigadir/stopwords/blob/master/en/smart.txt) (a few developer words such as `value` and `name` are kept),
+  - contractions,
+  - words shorter than 3 characters,
+  - the agent names and slash command that triggered the hook,
+  - the `Agent <name>:` prefix and `user:` / `assistant:` labels that stored learnings carry.
+
+  There is no stemming.
+- **Relevance.** A memory must share at least 2 topic words with the prompt and score at least 0.2 cosine similarity. The score is printed as `(relevance: N.NN)`. A prompt left with a single topic word therefore never matches.
+- **Output.** Copies of the same memory stored under different agents are printed once. At most 5 memories are injected, most relevant first, and each is cut to 400 characters. If nothing is relevant, nothing is injected.
+- **English only.** A memory is scored only if at least 15% of its words are common English function words. Non-ASCII words are never topic words, so memories in other languages are never injected. This fails closed: nothing irrelevant is injected, but a relevant non-English memory is missed.
+
 ## Hook Signature
 
 **File**: `~/.amplihack/.claude/tools/amplihack/hooks/user_prompt_submit.py`

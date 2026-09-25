@@ -22,8 +22,10 @@ const RELEVANCE_THRESHOLD: f64 = 0.2;
 /// pong` smoke test), and one shared word is not evidence of relevance.
 const MIN_SHARED_TERMS: usize = 2;
 /// Topic words shorter than this (`rs`, `md`, `ci`) are too common to count.
-/// Han and katakana are tokenised differently (see [`topic_terms`]).
 const MIN_TERM_CHARS: usize = 3;
+/// A memory is scored only if at least this share of its words are
+/// [`ENGLISH_MARKERS`], i.e. it reads as English (see [`reads_as_english`]).
+const MIN_ENGLISH_MARKER_SHARE: f64 = 0.15;
 /// At most this many memories are injected for one prompt.
 const MAX_INJECTED_MEMORIES: usize = 5;
 /// Each injected memory is cut to this many characters, so a stored
@@ -37,10 +39,17 @@ const MAX_MEMORY_CHARS: usize = 400;
 /// missing from a short list would make a chit-chat transcript "relevant".
 const SMART_STOP_WORDS: &str = include_str!("smart_stop_words.txt");
 
-/// Words that carry no topic here beyond the SMART list: the role labels
-/// stored transcripts use (`user:` / `assistant:`), and the words of the
+/// Words that carry no topic here beyond the SMART list: the words of the
 /// `Agent <name>:` prefix every stored learning carries.
-const EXTRA_STOP_WORDS: &[&str] = &["agent", "agents", "assistant", "general", "user"];
+const EXTRA_STOP_WORDS: &[&str] = &["agent", "agents", "general"];
+
+/// SMART words kept as topic words. SMART was built for news retrieval;
+/// these are everyday developer vocabulary (`value`, `name`, `self`), and
+/// dropping them left prompts such as `/fix the value name of the first
+/// test` with nothing to match on.
+const DEV_VOCABULARY: &[&str] = &[
+    "example", "first", "help", "last", "name", "new", "second", "self", "value",
+];
 
 fn is_stop_word(word: &str) -> bool {
     static STOP_WORDS: OnceLock<HashSet<&'static str>> = OnceLock::new();
@@ -49,17 +58,28 @@ fn is_stop_word(word: &str) -> bool {
             SMART_STOP_WORDS
                 .lines()
                 .map(str::trim)
-                .filter(|line| !line.is_empty())
+                .filter(|line| !line.is_empty() && !DEV_VOCABULARY.contains(line))
                 .chain(EXTRA_STOP_WORDS.iter().copied())
                 .collect()
         })
         .contains(word)
 }
 
-/// Chinese and Japanese characters that are grammar rather than topic
-/// (particles, pronouns, copulas, measure words). A Han pair containing one
-/// (`失败了` → `败了`) would match any two sentences, so it is not a term.
-const HAN_FUNCTION_CHARS: &str = "的了是在我你他她它们这那吗呢吧啊和与也就都要会有不没一个把被对从到给还又很让说之其以而及或如但并为什么事中方";
+/// Frequent English function words that are not also common words in
+/// Spanish, French, German, Italian or Portuguese (so not `a`, `de`, `la`,
+/// `no`, `in`, `an`, `so`, `was`, `also`, `will`, `me`, `on`, `do`, `as`).
+/// Their share of a text's words is a cheap language check, the "common
+/// words" method of language identification (Grefenstette, *Comparing two
+/// language identification schemes*, JADT 1995).
+const ENGLISH_MARKERS: &[&str] = &[
+    "about", "after", "and", "any", "are", "at", "be", "because", "been", "before", "between",
+    "but", "by", "can", "could", "did", "does", "each", "for", "from", "had", "has", "have", "he",
+    "her", "here", "his", "how", "if", "into", "is", "it", "its", "just", "more", "most", "must",
+    "my", "not", "now", "of", "off", "only", "or", "other", "our", "out", "over", "she", "should",
+    "some", "than", "that", "the", "their", "them", "then", "there", "these", "they", "this",
+    "those", "to", "too", "up", "us", "very", "we", "were", "what", "when", "where", "which",
+    "while", "who", "why", "with", "without", "would", "you", "your",
+];
 
 /// The agents `prompt` invokes, by name or by slash command.
 fn prompt_agents(prompt: &str) -> Vec<String> {
@@ -128,6 +148,9 @@ pub fn format_agent_memory_context(
     let mut scored: Vec<(f64, String, &PromptContextMemory)> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for memory in memories {
+        if !reads_as_english(strip_agent_prefix(&memory.content)) {
+            continue;
+        }
         // Deduplicate on the whole text with whitespace collapsed, so copies
         // that differ only in layout are one memory, while memories that
         // differ anywhere (even past the printed cut) stay distinct.
@@ -184,58 +207,65 @@ fn strip_agent_prefix(content: &str) -> &str {
         .map_or(content, |(_, body)| body.trim())
 }
 
+/// Transcript role labels (`user:` / `assistant:`) are structure, not
+/// words of the memory.
+fn without_role_labels(text: &str) -> impl Iterator<Item = &str> {
+    text.split_whitespace()
+        .filter(|token| !matches!(*token, "user:" | "assistant:"))
+}
+
+/// The words of `text`: split on anything but letters, digits and
+/// apostrophes, with contractions (`None` from [`without_apostrophes`])
+/// kept as `None`.
+fn words(text: &str) -> impl Iterator<Item = Option<&str>> {
+    without_role_labels(text)
+        .flat_map(|token| token.split(|c: char| !c.is_alphanumeric() && !is_apostrophe(c)))
+        .filter(|raw| !raw.is_empty())
+        .map(without_apostrophes)
+}
+
+/// Whether `text` reads as English: at least [`MIN_ENGLISH_MARKER_SHARE`]
+/// of its words are [`ENGLISH_MARKERS`].
+///
+/// The relevance filter only knows English. Another language's function
+/// words (`schon`, `jetzt`, `porque`, `可能`) would be topic words to it, so
+/// two unrelated sentences in that language could look relevant; such a
+/// memory is not scored at all. English memories that are bare keyword
+/// lists (`cargo fmt`) fail the check too. Both fail closed.
+fn reads_as_english(text: &str) -> bool {
+    let (mut total, mut english) = (0usize, 0usize);
+    for word in words(text) {
+        total += 1;
+        if word.is_some_and(|word| ENGLISH_MARKERS.contains(&word.to_lowercase().as_str())) {
+            english += 1;
+        }
+    }
+    total > 0 && english as f64 / total as f64 >= MIN_ENGLISH_MARKER_SHARE
+}
+
 /// Distinct lower-cased topic words of `text`, without stop words, short
 /// words or `ignored` words.
 ///
-/// - English words are checked against the SMART stop list. A word with an
-///   apostrophe other than a possessive `'s` is a contraction (`doesn't`,
-///   `they'll`, `you'd`) and never a topic.
-/// - Han runs contribute overlapping character pairs (`构建失败` → `构建`,
-///   `建失`, `失败`), the usual segmentation-free approximation for Chinese
-///   and Japanese kanji. Pairs containing a grammatical character
-///   ([`HAN_FUNCTION_CHARS`]) are dropped.
-/// - A katakana run is one term (`サーバー`, `エラー`): katakana words are
-///   loanwords delimited by the kana around them, and pairs inside them
-///   (`サー`, `ター`) are shared by unrelated words.
-/// - Hiragana (Japanese particles and verb endings) is dropped.
+/// Only English is understood: stop words are the SMART list, and a word
+/// with an apostrophe other than a possessive `'s` is a contraction
+/// (`doesn't`, `they'll`, `you'd`) and never a topic. There is no stemming:
+/// `tests` does not match `test`.
 ///
-/// Known limit: Hangul is dropped too, and Thai, Lao, Khmer and Myanmar are
-/// not split. Korean attaches particles and verb endings to words
-/// (`빌드가`, `합니까`), so whole Korean words match on grammar, not topic;
-/// telling them apart needs a morphological analyser. Memories in these
-/// scripts are therefore rarely or never injected: this fails closed —
+/// Known limit: only ASCII words are topic words. Accented Latin, Cyrillic,
+/// Greek, and Chinese, Japanese and Korean text (which has no spaces
+/// between words, or attaches grammar to them) contribute nothing, and
+/// non-English memories are not scored (see [`reads_as_english`]). Memories
+/// in other languages are therefore never injected: this fails closed —
 /// nothing irrelevant is injected, a relevant memory may be missed.
 fn topic_terms(text: &str, ignored: &HashSet<String>) -> HashSet<String> {
-    let mut terms = HashSet::new();
-    let mut keep = |term: String| {
-        if !is_stop_word(&term) && !ignored.contains(&term) {
-            terms.insert(term);
-        }
-    };
-    for raw in text.split(|c: char| !c.is_alphanumeric() && !is_apostrophe(c)) {
-        let Some(word) = without_apostrophes(raw) else {
-            continue;
-        };
-        let chars = word.chars().collect::<Vec<_>>();
-        for run in chars.chunk_by(|left, right| Script::of(*left) == Script::of(*right)) {
-            match Script::of(run[0]) {
-                Script::Han => {
-                    for pair in run.windows(2) {
-                        if !pair.iter().any(|c| HAN_FUNCTION_CHARS.contains(*c)) {
-                            keep(pair.iter().collect());
-                        }
-                    }
-                }
-                Script::Katakana if run.len() >= 2 => keep(run.iter().collect()),
-                Script::Katakana | Script::Hiragana | Script::Hangul => {}
-                Script::Other if run.len() >= MIN_TERM_CHARS => {
-                    keep(run.iter().collect::<String>().to_lowercase());
-                }
-                Script::Other => {}
-            }
-        }
-    }
-    terms
+    words(text)
+        .flatten()
+        .filter(|word| {
+            word.len() >= MIN_TERM_CHARS && word.chars().all(|c| c.is_ascii_alphanumeric())
+        })
+        .map(str::to_lowercase)
+        .filter(|word| !is_stop_word(word) && !ignored.contains(word))
+        .collect()
 }
 
 fn is_apostrophe(c: char) -> bool {
@@ -258,29 +288,6 @@ fn without_apostrophes(raw: &str) -> Option<&str> {
         })
         .map_or(word, |(index, _)| &word[..index]);
     (!word.contains(is_apostrophe)).then_some(word)
-}
-
-/// The scripts [`topic_terms`] tokenises differently from space-separated
-/// text.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Script {
-    Han,
-    Hiragana,
-    Katakana,
-    Hangul,
-    Other,
-}
-
-impl Script {
-    fn of(c: char) -> Self {
-        match c as u32 {
-            0x3040..=0x309F => Self::Hiragana,
-            0x30A0..=0x30FF | 0x31F0..=0x31FF | 0xFF66..=0xFF9F => Self::Katakana,
-            0x1100..=0x11FF | 0x3130..=0x318F | 0xAC00..=0xD7AF => Self::Hangul,
-            0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0x20000..=0x3FFFF => Self::Han,
-            _ => Self::Other,
-        }
-    }
 }
 
 /// Cosine similarity of the prompt's and the memory's topic-word sets, in
@@ -488,7 +495,7 @@ mod tests {
     /// differ later are distinct, and each keeps its own code context.
     #[test]
     fn memories_differing_past_the_cut_are_both_kept() {
-        let shared = format!("cargo fmt failures {}", "detail ".repeat(80));
+        let shared = format!("cargo fmt failures {}", "the detail ".repeat(40));
         let result = format_agent_memory_context(
             "cargo fmt failures detail",
             &agents(&["builder"]),
@@ -520,28 +527,18 @@ mod tests {
             "why does cargo fmt report failures in the builder",
             &agents(&["analyzer"]),
             &[
-                memory("Agent a: cargo fmt failures\nbuilder"),
-                memory("Agent b: cargo fmt failures builder"),
-                memory("cargo  fmt failures   builder "),
+                memory("Agent a: cargo fmt failures\nfrom the builder"),
+                memory("Agent b: cargo fmt failures from the builder"),
+                memory("cargo  fmt failures   from the builder "),
             ],
         )
         .expect("relevant memory is injected");
-        assert_eq!(result.matches("- cargo fmt failures builder").count(), 1);
-    }
-
-    #[test]
-    fn cjk_memory_is_injected_for_a_cjk_prompt() {
-        let result = format_agent_memory_context(
-            "/analyze 构建失败",
-            &agents(&["analyzer"]),
-            &[
-                memory("Agent analyzer: 构建失败时先运行 cargo fmt"),
-                memory("Agent analyzer: 部署成功"),
-            ],
-        )
-        .expect("CJK memory is injected");
-        assert!(result.contains("构建失败时先运行 cargo fmt"));
-        assert!(!result.contains("部署成功"));
+        assert_eq!(
+            result
+                .matches("- cargo fmt failures from the builder")
+                .count(),
+            1
+        );
     }
 
     /// Sentences that share only grammar — Japanese endings, Korean
@@ -690,50 +687,151 @@ mod tests {
         assert_eq!(without_apostrophes("you'd"), None);
     }
 
+    /// Known limit: only English is understood, so a memory in another
+    /// language is never injected, even a relevant one (see [`topic_terms`]).
     #[test]
-    fn japanese_memory_is_injected_for_a_japanese_prompt() {
-        let prompt = "/analyze ビルドが失敗しました";
-        let result = format_agent_memory_context(
-            prompt,
-            &prompt_agents(prompt),
-            &[memory(
-                "Agent analyzer: ビルド失敗の原因は cargo fmt でした",
-            )],
-        )
-        .expect("Japanese memory is injected");
-        assert!(result.contains("ビルド失敗の原因は cargo fmt でした"));
-    }
-
-    #[test]
-    fn katakana_loanwords_match_as_whole_words() {
-        let prompt = "/analyze サーバーのエラーをチェック";
-        let result = format_agent_memory_context(
-            prompt,
-            &prompt_agents(prompt),
-            &[memory("Agent analyzer: サーバーのエラーはログを見る")],
-        )
-        .expect("katakana memory is injected");
-        assert!(result.contains("サーバーのエラーはログを見る"));
-    }
-
-    /// Known limit: Hangul contributes no topic words, so a Korean memory
-    /// is never injected, even a relevant one (see [`topic_terms`]).
-    #[test]
-    fn korean_memories_are_not_injected() {
-        let prompt = "/analyze 빌드 실패";
-        assert_eq!(
-            format_agent_memory_context(
-                prompt,
-                &prompt_agents(prompt),
-                &[memory("Agent analyzer: 빌드 실패 원인은 포맷")]
+    fn non_english_memories_are_not_injected() {
+        for (prompt, relevant) in [
+            (
+                "/analyze 构建失败",
+                "Agent analyzer: 构建失败时先运行 cargo fmt",
             ),
-            None
-        );
+            (
+                "/analyze ビルドが失敗しました",
+                "Agent analyzer: ビルド失敗の原因は cargo fmt でした",
+            ),
+            (
+                "/analyze 빌드 실패",
+                "Agent analyzer: 빌드 실패 원인은 포맷",
+            ),
+            (
+                "/fix la compilación falla por cargo fmt",
+                "Agent general: la compilación falla por cargo fmt",
+            ),
+            (
+                "/fix der Build schlägt wegen cargo fmt fehl",
+                "Agent general: der Build schlägt wegen cargo fmt fehl",
+            ),
+        ] {
+            assert_eq!(
+                format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(relevant)]),
+                None,
+                "{relevant:?} is not scored"
+            );
+        }
+    }
+
+    /// Function words of other languages are not topic words: sentences that
+    /// share only those match nothing, as the same English sentence doesn't.
+    #[test]
+    fn other_languages_function_words_do_not_make_memories_relevant() {
+        for (prompt, unrelated) in [
+            (
+                "/fix maybe the build has already failed now",
+                "Agent general: user: maybe it has already rained now",
+            ),
+            (
+                "/fix quizás la compilación ya falló ahora",
+                "Agent general: user: quizás ya llovió ahora",
+            ),
+            (
+                "/fix vielleicht ist der Build schon jetzt kaputt",
+                "Agent general: user: vielleicht regnet es schon jetzt",
+            ),
+            (
+                "/fix peut-être que le build est déjà cassé",
+                "Agent general: user: peut-être que la pluie est déjà là",
+            ),
+            (
+                "/fix Kompilierung schlägt fehl weil der Test nicht läuft",
+                "Agent general: user: weil der Hund nicht läuft",
+            ),
+            (
+                "/fix сборка падает потому что тест",
+                "Agent general: user: потому что погода",
+            ),
+            (
+                "/fix la compilación falla porque el test no funciona",
+                "Agent general: user: porque el perro no funciona para nada",
+            ),
+            (
+                "/fix 现在可能已经构建失败",
+                "Agent general: user: 现在可能已经下雨",
+            ),
+            ("/fix 今天的构建问题", "Agent general: user: 今天的天气问题"),
+            (
+                "/fix 今日も全部ビルドが失敗",
+                "Agent general: user: 今日も全部雨",
+            ),
+            (
+                "/fix 今回の場合はビルドが失敗します",
+                "Agent general: user: 今回の旅行の場合、パスポートは必要ですか\n\nassistant: はい",
+            ),
+            (
+                "/analyze 本当に最近の問題ですか",
+                "Agent general: user: 本当に最近の天気は問題ですね",
+            ),
+            (
+                "/fix 自分の時間の問題",
+                "Agent general: user: 自分の時間がない問題",
+            ),
+        ] {
+            assert_eq!(
+                format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(unrelated)]),
+                None,
+                "{unrelated:?} is not relevant to {prompt:?}"
+            );
+        }
+    }
+
+    /// Developer vocabulary that SMART lists (`value`, `name`, `first`,
+    /// `second`, `last`, `new`, `help`, `example`) and `user`, outside a
+    /// transcript's `user:` label, are topic words.
+    #[test]
+    fn developer_vocabulary_is_matched() {
+        for (prompt, relevant) in [
+            (
+                "/fix the value name of the first test",
+                "Agent general: test name value must match the first fixture",
+            ),
+            (
+                "/fix the second index and the last index",
+                "Agent general: the second index is off by one and the last index panics",
+            ),
+            (
+                "/analyze why the new help example is unavailable",
+                "Agent general: the help example for the new command",
+            ),
+            (
+                "/analyze user login",
+                "Agent general: the user login uses oauth",
+            ),
+        ] {
+            let result =
+                format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(relevant)]);
+            assert!(
+                result.is_some_and(|text| text.contains(strip_agent_prefix(relevant))),
+                "{relevant:?} is relevant to {prompt:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn language_check_counts_english_function_words() {
+        assert!(reads_as_english("Fix CI by running cargo fmt before push."));
+        assert!(reads_as_english(
+            "user: reply with just: pong\n\nassistant: pong"
+        ));
+        assert!(!reads_as_english("vielleicht regnet es schon jetzt"));
+        assert!(!reads_as_english("porque el perro no funciona para nada"));
+        assert!(!reads_as_english("cargo fmt"));
+        assert!(!reads_as_english(""));
     }
 
     #[test]
     fn empty_agent_list_has_a_plain_heading() {
-        let result = format_agent_memory_context("cargo fmt", &[], &[memory("cargo fmt")]).unwrap();
+        let result =
+            format_agent_memory_context("cargo fmt", &[], &[memory("the cargo fmt")]).unwrap();
         assert!(result.contains("## Relevant Memory\n"));
         assert!(!result.contains("agents:"));
     }
@@ -764,7 +862,7 @@ mod tests {
 
     #[test]
     fn injected_memory_is_bounded() {
-        let long = format!("cargo test ci {}", "detail ".repeat(500));
+        let long = format!("cargo test ci {}", "the detail ".repeat(250));
         let result = format_agent_memory_context(
             "cargo test ci detail",
             &agents(&["tester"]),
@@ -782,9 +880,9 @@ mod tests {
     #[test]
     fn at_most_max_memories_are_injected_most_relevant_first() {
         let mut memories = (0..MAX_INJECTED_MEMORIES + 3)
-            .map(|index| memory(&format!("cargo fmt note{index} extra{index} more{index}")))
+            .map(|index| memory(&format!("the cargo fmt note{index} extra{index}")))
             .collect::<Vec<_>>();
-        memories.push(memory("cargo fmt"));
+        memories.push(memory("the cargo fmt"));
         let result =
             format_agent_memory_context("cargo fmt", &agents(&["builder"]), &memories).unwrap();
         let entries = result
@@ -792,7 +890,7 @@ mod tests {
             .filter(|line| line.starts_with("- "))
             .collect::<Vec<_>>();
         assert_eq!(entries.len(), MAX_INJECTED_MEMORIES);
-        assert!(entries[0].starts_with("- cargo fmt (relevance: 1.00)"));
+        assert!(entries[0].starts_with("- the cargo fmt (relevance: 1.00)"));
     }
 
     #[test]
@@ -815,7 +913,7 @@ mod tests {
             "cargo fact",
             &agents(&["builder"]),
             &[PromptContextMemory {
-                content: "Cargo fact".to_string(),
+                content: "The cargo fact".to_string(),
                 code_context: Some("  ".to_string()),
             }],
         )
