@@ -241,16 +241,25 @@ pub(super) fn path_conflict_warning_after_install(
         let Some(resolution) = report.resolution(binary_name) else {
             continue;
         };
+        // The npx shim running this install shadows ~/.local/bin only until
+        // npx exits, and the install already says so (#1480). Judge the PATH
+        // the user is left with instead: whatever remains once it is gone.
+        let without_shims;
+        let resolution =
+            if super::stale_wrappers::is_transient_npx_shim_path(&resolution.resolved.path) {
+                let Some(remaining) = without_transient_npx_shims(resolution) else {
+                    continue;
+                };
+                without_shims = remaining;
+                &without_shims
+            } else {
+                resolution
+            };
 
         if resolution.is_shadowed_by_earlier_path_entry {
             let Some(preferred) = resolution.preferred_user_candidate.as_ref() else {
                 continue;
             };
-            // The npx shim running this install shadows ~/.local/bin only
-            // until npx exits; the install already says so (#1480).
-            if super::stale_wrappers::is_transient_npx_shim_path(&resolution.resolved.path) {
-                continue;
-            }
             append_shadow_warning(&mut warning, binary_name, resolution, &preferred.path);
         } else if resolution.has_ambiguous_candidates {
             append_ambiguity_warning(&mut warning, binary_name, resolution);
@@ -262,6 +271,35 @@ pub(super) fn path_conflict_warning_after_install(
     } else {
         Some(warning.trim_end().to_string())
     }
+}
+
+/// `resolution` as it will be once npx exits: transient npx shims removed from
+/// the candidates, and the shadow/ambiguity flags recomputed on what remains.
+/// `None` when nothing but npx shims was on PATH.
+fn without_transient_npx_shims(
+    resolution: &crate::path_conflicts::BinaryResolution,
+) -> Option<crate::path_conflicts::BinaryResolution> {
+    let canonical_candidates: Vec<_> = resolution
+        .canonical_candidates
+        .iter()
+        .filter(|candidate| !super::stale_wrappers::is_transient_npx_shim_path(&candidate.path))
+        .cloned()
+        .collect();
+    let resolved = canonical_candidates.first()?.clone();
+    let is_shadowed_by_earlier_path_entry = resolution
+        .preferred_user_candidate
+        .as_ref()
+        .is_some_and(|preferred| {
+            resolved.path_index < preferred.path_index
+                && resolved.canonical_path != preferred.canonical_path
+        });
+    Some(crate::path_conflicts::BinaryResolution {
+        resolved,
+        preferred_user_candidate: resolution.preferred_user_candidate.clone(),
+        has_ambiguous_candidates: canonical_candidates.len() > 1,
+        canonical_candidates,
+        is_shadowed_by_earlier_path_entry,
+    })
 }
 
 fn append_shadow_warning(

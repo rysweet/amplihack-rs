@@ -420,3 +420,74 @@ fn issue_1480_path_advisory_still_flags_an_unrelated_npx_script() {
         .expect("an unrelated executable shadowing ~/.local/bin must still be reported");
     assert!(warning.contains("shadows"));
 }
+
+/// Skipping the npx shim must not hide a persistent executable behind it:
+/// once npx exits, that executable still shadows ~/.local/bin, so the
+/// advisory has to name it.
+#[cfg(unix)]
+#[test]
+fn issue_1480_path_advisory_still_flags_a_persistent_shadow_behind_the_npx_shim() {
+    use crate::path_conflicts::{PathAnalysisInput, analyze_path_conflicts};
+
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let preferred_bin = home.join(".local/bin");
+    let preferred_rust = create_exe_stub(&preferred_bin, "amplihack");
+    let wrapper_source = include_str!("../../../../../../npm/bin/amplihack.js");
+    let (npx_bin, _shim) = create_npx_shim(&home, wrapper_source);
+    let system_bin = temp.path().join("usr/local/bin");
+    let persistent = create_exe_stub(&system_bin, "amplihack");
+
+    let report = analyze_path_conflicts(&PathAnalysisInput {
+        home_dir: home.clone(),
+        current_exe: preferred_rust,
+        path_dirs: vec![npx_bin, system_bin, preferred_bin],
+        binary_names: vec!["amplihack".into()],
+    })
+    .unwrap();
+
+    let warning = super::super::binary::path_conflict_warning_after_install(&report)
+        .expect("a persistent executable behind the npx shim still shadows ~/.local/bin");
+    assert!(
+        warning.contains(&persistent.display().to_string()),
+        "advisory must name the persistent shadow, got: {warning}"
+    );
+    assert!(
+        !warning.contains("_npx"),
+        "advisory must not name the transient npx shim, got: {warning}"
+    );
+}
+
+/// A distinct binary after ~/.local/bin is still reported as ambiguous when
+/// the npx shim resolves first, exactly as it would be without npx.
+#[cfg(unix)]
+#[test]
+fn issue_1480_path_advisory_keeps_ambiguity_warning_behind_the_npx_shim() {
+    use crate::path_conflicts::{PathAnalysisInput, analyze_path_conflicts};
+
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let preferred_bin = home.join(".local/bin");
+    let preferred_rust = create_exe_stub(&preferred_bin, "amplihack");
+    let wrapper_source = include_str!("../../../../../../npm/bin/amplihack.js");
+    let (npx_bin, _shim) = create_npx_shim(&home, wrapper_source);
+    let system_bin = temp.path().join("usr/bin");
+    let later = create_exe_stub(&system_bin, "amplihack");
+
+    let report = analyze_path_conflicts(&PathAnalysisInput {
+        home_dir: home.clone(),
+        current_exe: preferred_rust,
+        path_dirs: vec![npx_bin, preferred_bin, system_bin],
+        binary_names: vec!["amplihack".into()],
+    })
+    .unwrap();
+
+    let warning = super::super::binary::path_conflict_warning_after_install(&report)
+        .expect("a second distinct binary on PATH is still ambiguous");
+    assert!(warning.contains("Multiple distinct"), "got: {warning}");
+    assert!(
+        warning.contains(&later.display().to_string()),
+        "got: {warning}"
+    );
+    assert!(!warning.contains("_npx"), "got: {warning}");
+}
