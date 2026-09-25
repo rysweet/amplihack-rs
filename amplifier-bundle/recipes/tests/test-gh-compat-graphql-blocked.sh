@@ -59,7 +59,7 @@ if [ "$1" = "api" ]; then
   pr='{"number":42,"node_id":"PR_1","title":"feat: widget","body":"Fixes #7","state":"open","draft":true,"merged_at":null,"html_url":"https://github.com/o/r/pull/42","created_at":"2026-01-01T00:00:00Z","user":{"login":"bot"},"labels":[],"mergeable":true,"mergeable_state":"clean","head":{"ref":"feat","sha":"abc123","repo":{"name":"r","full_name":"o/r","owner":{"login":"o"}}},"base":{"ref":"main","sha":"def456","repo":{"full_name":"o/r"}}}'
   case "$method $path" in
     "GET repos/o/r/pulls/42") printf '%s\n' "$pr" ;;
-    "GET repos/o/r/pulls?"*"head=o:feat"*) printf '[%s]\n' "$pr" ;;
+    "GET repos/o/r/pulls?"*"head=o%3Afeat"*) printf '[%s]\n' "$pr" ;;
     "POST repos/o/r/pulls")
       if [ "${STUB_PR_EXISTS:-0}" = 1 ]; then
         printf '{"message":"Validation Failed","errors":[{"message":"A pull request already exists for o:feat."}]}'
@@ -79,6 +79,8 @@ if [ "$1" = "api" ]; then
       esac ;;
     "GET repos/o/r/commits/abc123/status"*) printf '{"statuses":[]}\n' ;;
     "POST repos/o/r/pulls/42/ccr/ready_for_review") printf '{}\n' ;;
+    "POST repos/o/r/issues/42/comments") printf '{"html_url":"https://github.com/o/r/pull/42#issuecomment-1"}\n' ;;
+    "GET repos/o/r/pulls?"*"head=o%3Afix%2Ba%26b"*) printf '[]\n' ;;
     "POST repos/o/r/labels") printf '{"message":"Validation Failed"}'; echo "gh: Validation Failed (HTTP 422)" >&2; exit 1 ;;
     "GET user") printf '{"login":"bot"}\n' ;;
     *) printf '{"message":"Not Found"}'; echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
@@ -89,6 +91,8 @@ case "$1 ${2:-}" in
   "auth status") echo "  X The token in GH_TOKEN is invalid." >&2; exit 1 ;;
   "run list") echo "real-run-list"; exit 0 ;;
 esac
+# Like the real gh, a `--body-file -` call drains stdin before the request fails.
+[ "${STUB_READS_STDIN:-0}" = 1 ] && cat >/dev/null
 if [ "${STUB_GRAPHQL_OK:-0}" = 1 ]; then echo "real-gh-output: $*"; exit 0; fi
 echo "HTTP 403: GitHub GraphQL is not available from Claude Code sessions; use the REST API (gh api repos/{owner}/{repo}/...). (https://api.github.com/graphql)" >&2
 exit 1
@@ -148,8 +152,8 @@ ok "later calls go straight to REST; pr view JSON keeps gh field names"
 reset_log
 n="$(gh pr list --head feat --state all --json number,url --jq '.[0].number')"
 [ "$n" = 42 ] || fail pr-list "got '$n'"
-logged "api -X GET repos/o/r/pulls?state=all&per_page=30&head=o:feat" || fail pr-list "unexpected REST path"
-ok "pr list --head -> GET repos/o/r/pulls?head=o:feat"
+logged "api -X GET repos/o/r/pulls?state=all&per_page=30&head=o%3Afeat" || fail pr-list "unexpected REST path"
+ok "pr list --head -> GET repos/o/r/pulls?head=o%3Afeat"
 
 # 4. pr create --draft uses the current branch and the default base.
 reset_log
@@ -218,5 +222,25 @@ echo "HTTP 403: GitHub GraphQL is not available from Claude Code sessions" > "$b
 class="$(. "$RETRY"; classify_gh_error "$blk")"
 [ "$class" = other ] || fail classify "GraphQL block classified as '$class', must not be rate_limit"
 ok "workflow_gh_retry.sh: GraphQL block is not a rate limit"
+
+# 13. `--body-file -` on the call that first detects the block: the probe must
+#     not swallow stdin, or the REST replay posts an empty body.
+rm -f "$AMPLIHACK_GH_COMPAT_STATE"; reset_log
+url="$(printf 'body from stdin' | STUB_READS_STDIN=1 gh pr comment 42 --body-file -)"
+[ "$url" = "https://github.com/o/r/pull/42#issuecomment-1" ] || fail stdin "stdout was '$url'"
+logged 'BODY {"body":"body from stdin"}' || fail stdin "stdin body lost between the probe and the REST replay"
+ok "--body-file - survives the GraphQL probe"
+
+# 14. Branch names are percent-encoded in REST queries.
+reset_log
+rc=0; gh pr view 'fix+a&b' --json number >/dev/null 2>&1 || rc=$?
+[ "$rc" = 1 ] || fail uri "unknown branch should exit 1, got $rc"
+logged "api -X GET repos/o/r/pulls?head=o%3Afix%2Ba%26b&state=all&per_page=30" || fail uri "head= not percent-encoded"
+ok "branch names are percent-encoded in ?head="
+
+# 15. Per-call scratch files are private and cleaned up.
+leftover="$(find "$WORK" -maxdepth 1 -name 'ghc*' | head -1)"
+[ -z "$leftover" ] || fail cleanup "scratch left behind: $leftover"
+ok "no gh-compat scratch files left in TMPDIR"
 
 echo "PASS: ${PASS} checks"

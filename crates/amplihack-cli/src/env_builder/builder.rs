@@ -484,6 +484,19 @@ mod tests {
         assert!(path.contains("/second"));
     }
 
+    /// Issue #1484: a prepend builds on a PATH the builder already set, so the
+    /// gh-compat launcher dir does not discard an earlier PATH rewrite.
+    #[test]
+    fn prepend_path_builds_on_a_path_the_builder_set() {
+        let env = EnvBuilder::new()
+            .set("PATH", "/rewritten/bin")
+            .prepend_path("/launcher")
+            .build();
+        let path = env.get("PATH").unwrap();
+        assert!(path.starts_with("/launcher"), "{path}");
+        assert!(path.ends_with("/rewritten/bin"), "{path}");
+    }
+
     #[test]
     fn with_agent_binary_sets_var() {
         let env = EnvBuilder::new().with_agent_binary("copilot").build();

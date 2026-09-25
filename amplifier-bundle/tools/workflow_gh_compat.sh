@@ -71,14 +71,14 @@ ghc_rest_mode() { [ "${AMPLIHACK_GH_REST_ONLY:-0}" = 1 ] || [ -f "$GHC_STATE" ];
 # handling. Sets GHC_STATUS (HTTP code) and GHC_ERR; stdout is the body.
 # ghc_api METHOD PATH [JSON_BODY] [ACCEPT]
 # ---------------------------------------------------------------------------
-GHC_STATUS=""; GHC_ERR=""
+GHC_STATUS=""; GHC_ERR=""; GHC_RUN_DIR="${GHC_RUN_DIR:-$GHC_TMP}"  # ghc_main makes a private one
 ghc_api() {
   local method="$1" path="$2" body="${3:-}" accept="${4:-}" errf bodyf="" rc=0
   local args=(api -X "$method" "$path")
-  errf="$(mktemp "${GHC_TMP}/ghc-err.XXXXXX")" || return 1
+  errf="$(mktemp "${GHC_RUN_DIR}/err.XXXXXX")" || return 1
   [ -n "$accept" ] && args+=(-H "Accept: $accept")
   if [ -n "$body" ]; then
-    bodyf="$(mktemp "${GHC_TMP}/ghc-body.XXXXXX")" || { rm -f "$errf"; return 1; }
+    bodyf="$(mktemp "${GHC_RUN_DIR}/body.XXXXXX")" || { rm -f "$errf"; return 1; }
     printf '%s' "$body" >"$bodyf"
     args+=(--input "$bodyf")
   fi
@@ -89,22 +89,22 @@ ghc_api() {
   rm -f "$errf"; [ -n "$bodyf" ] && rm -f "$bodyf"
   ghc_log "REST $method $path -> ${GHC_STATUS:-rc=$rc}"
   # Callers usually run this inside $(...), where these globals die with the
-  # subshell; persist them for ghc_last. $$ is the main shell's pid in both.
-  printf '%s' "$GHC_STATUS" >"${GHC_TMP}/ghc-last.$$.status" 2>/dev/null
-  printf '%s' "$GHC_ERR" >"${GHC_TMP}/ghc-last.$$.err" 2>/dev/null
+  # subshell; persist them for ghc_last in this invocation's private dir.
+  printf '%s' "$GHC_STATUS" >"${GHC_RUN_DIR}/last.status" 2>/dev/null
+  printf '%s' "$GHC_ERR" >"${GHC_RUN_DIR}/last.err" 2>/dev/null
   return "$rc"
 }
 
 # ghc_last — reload GHC_STATUS / GHC_ERR from the most recent ghc_api call.
 ghc_last() {
-  GHC_STATUS="$(cat "${GHC_TMP}/ghc-last.$$.status" 2>/dev/null)"
-  GHC_ERR="$(cat "${GHC_TMP}/ghc-last.$$.err" 2>/dev/null)"
+  GHC_STATUS="$(cat "${GHC_RUN_DIR}/last.status" 2>/dev/null)"
+  GHC_ERR="$(cat "${GHC_RUN_DIR}/last.err" 2>/dev/null)"
 }
 
 # ghc_api_or_die METHOD PATH [BODY] [ACCEPT] — body on stdout, gh-style failure.
 ghc_api_or_die() {
   local out
-  out="$(ghc_api "$@")" || { ghc_last; ghc_die "gh: ${GHC_ERR:-REST $1 $2 failed}"; }
+  out="$(ghc_api "$@")" || { ghc_last; GHC_ERR="${GHC_ERR#gh: }"; ghc_die "gh: ${GHC_ERR:-REST $1 $2 failed}"; }
   printf '%s\n' "$out"
 }
 
@@ -186,6 +186,10 @@ ghc_resolve_repo() {
 
 ghc_current_branch() { git branch --show-current 2>/dev/null; }
 
+# ghc_uri TEXT — percent-encode one query/path component (branch names may hold
+# '&', '#', '+' ...).
+ghc_uri() { jq -rn --arg v "$1" '$v|@uri'; }
+
 # ghc_pr_target TARGET -> sets GHC_N (TARGET: "", N, #N, URL or branch). Runs
 # in the caller's shell, not a $(...), because a URL target also sets the repo.
 GHC_N=""
@@ -203,7 +207,7 @@ ghc_pr_target() {
     return 0
   fi
   owner="${GHC_REPO%%/*}"
-  pulls="$(ghc_api_or_die GET "repos/${GHC_REPO}/pulls?head=${owner}:${t}&state=all&per_page=30")" || exit 1
+  pulls="$(ghc_api_or_die GET "repos/${GHC_REPO}/pulls?head=$(ghc_uri "${owner}:${t}")&state=all&per_page=30")" || exit 1
   GHC_N="$(printf '%s' "$pulls" | jq -r 'sort_by(if .state == "open" then 0 else 1 end) | .[0].number // empty')"
   [ -n "$GHC_N" ] || ghc_die "no pull requests found for branch \"$t\""
 }
@@ -361,8 +365,8 @@ ghc_pr_list() {
   else
     local rstate="$state" qs=""
     [ "$state" = merged ] && rstate=closed
-    [ -n "${GHC_O_head:-}" ] && qs="&head=${owner}:${GHC_O_head#*:}"
-    [ -n "${GHC_O_base:-}" ] && qs="${qs}&base=${GHC_O_base}"
+    [ -n "${GHC_O_head:-}" ] && qs="&head=$(ghc_uri "${owner}:${GHC_O_head#*:}")"
+    [ -n "${GHC_O_base:-}" ] && qs="${qs}&base=$(ghc_uri "$GHC_O_base")"
     raw="$(ghc_api_or_die GET "repos/${GHC_REPO}/pulls?state=${rstate}&per_page=${limit}${qs}")" || exit 1
     out="$(printf '%s' "$raw" | jq --arg s "$state" "${GHC_JQ_DEFS}"' map(pr) | if $s == "merged" then map(select(.state == "MERGED")) else . end')"
     if ghc_wants reviews || ghc_wants statusCheckRollup || ghc_wants mergeable || ghc_wants files || ghc_wants commits || ghc_wants comments; then
@@ -400,7 +404,7 @@ ghc_pr_create() {
   if ! resp="$(ghc_api POST "repos/${GHC_REPO}/pulls" "$payload")"; then
     ghc_last
     if [ "$GHC_STATUS" = 422 ] && printf '%s' "$resp$GHC_ERR" | grep -q 'already exists'; then
-      url="$(ghc_api GET "repos/${GHC_REPO}/pulls?head=${GHC_REPO%%/*}:${head}&base=${base}&state=open" | jq -r '.[0].html_url // empty')"
+      url="$(ghc_api GET "repos/${GHC_REPO}/pulls?head=$(ghc_uri "${GHC_REPO%%/*}:${head}")&base=$(ghc_uri "$base")&state=open" | jq -r '.[0].html_url // empty')"
       ghc_die "a pull request for branch \"$head\" into branch \"$base\" already exists:
 $url"
     fi
@@ -658,7 +662,7 @@ ghc_issue_create() {
     # gh fails the whole create on an unknown label; mirror that message so
     # callers that retry without --label (step-03 does) behave as before.
     [ -n "$labels" ] && [ "$GHC_STATUS" = 422 ] && ghc_die "could not add label: '${labels}' not found"
-    ghc_die "gh: ${GHC_ERR:-issue create failed}"
+    GHC_ERR="${GHC_ERR#gh: }"; ghc_die "gh: ${GHC_ERR:-issue create failed}"
   }
   printf '%s' "$resp" | jq -r .html_url
 }
@@ -705,7 +709,7 @@ ghc_label_create() {
     fi
     ghc_die "label with name \"$name\" already exists; use \`--force\` to update its color and description"
   fi
-  ghc_die "gh: ${GHC_ERR}"
+  ghc_die "gh: ${GHC_ERR#gh: }"
 }
 
 ghc_label_list() {
@@ -794,8 +798,18 @@ ghc_rest_dispatch() {
   esac
 }
 
+# ghc_reads_stdin ARGS... — true when a --body-file/-F argument is "-".
+ghc_reads_stdin() {
+  local prev="" a
+  for a in "$@"; do
+    case "$prev $a" in "-F -"|"--body-file -") return 0 ;; esac
+    [ "$a" = "--body-file=-" ] && return 0
+    prev="$a"
+  done
+  return 1
+}
+
 ghc_main() {
-  trap 'rm -f "${GHC_TMP}/ghc-last.$$.status" "${GHC_TMP}/ghc-last.$$.err"' EXIT
   GHC_REAL="$(ghc_find_real_gh)" || { printf 'gh: command not found (amplihack gh-compat found no real gh on PATH)\n' >&2; exit 127; }
   case "${1:-} ${2:-}" in
     "auth status") shift 2; ghc_auth_status "$@"; exit $? ;;
@@ -803,14 +817,25 @@ ghc_main() {
     *) exec "$GHC_REAL" "$@" ;;
   esac
   command -v jq >/dev/null 2>&1 || exec "$GHC_REAL" "$@"
+  # Private per-invocation scratch (REST error/status hand-off, request bodies,
+  # buffered stdin); never a predictable name in a shared TMPDIR.
+  GHC_RUN_DIR="$(mktemp -d "${GHC_TMP}/ghc.XXXXXX")" || exec "$GHC_REAL" "$@"
+  trap 'rm -rf "$GHC_RUN_DIR"' EXIT
   if ! ghc_rest_mode; then
-    local errf rc=0
-    errf="$(mktemp "${GHC_TMP}/ghc-probe.XXXXXX")" || exec "$GHC_REAL" "$@"
-    "$GHC_REAL" "$@" 2>"$errf" || rc=$?
-    if [ "$rc" -eq 0 ] || ! grep -Eiq "$GHC_BLOCK_RE" "$errf"; then
-      cat "$errf" >&2; rm -f "$errf"; exit "$rc"
+    local errf rc=0 stdinf=""
+    errf="${GHC_RUN_DIR}/probe.err"
+    # `--body-file -` reads stdin. The probe would consume it and leave the REST
+    # replay with an empty body, so buffer it once and feed both.
+    if ghc_reads_stdin "$@"; then
+      stdinf="${GHC_RUN_DIR}/stdin"; cat >"$stdinf" || exit 1
+      "$GHC_REAL" "$@" <"$stdinf" 2>"$errf" || rc=$?
+    else
+      "$GHC_REAL" "$@" 2>"$errf" || rc=$?
     fi
-    rm -f "$errf"
+    if [ "$rc" -eq 0 ] || ! grep -Eiq "$GHC_BLOCK_RE" "$errf"; then
+      cat "$errf" >&2; exit "$rc"
+    fi
+    [ -z "$stdinf" ] || exec <"$stdinf"
     : >"$GHC_STATE" 2>/dev/null || true
     ghc_log "GraphQL is blocked on this host; routing gh issue/pr/label/api graphql over REST for the rest of the run"
   fi
