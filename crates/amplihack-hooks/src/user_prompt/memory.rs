@@ -263,19 +263,10 @@ fn words(text: &str) -> impl Iterator<Item = Option<&str>> {
         .map(without_apostrophes)
 }
 
-/// The parts of `text` outside `delimiter`-enclosed code. A delimiter with
-/// no closing partner (a stray backtick, or a span cut off by session-stop's
-/// 500-character head) opens nothing: the text after it stays prose.
-fn outside_code<'a>(text: &'a str, delimiter: &str) -> Vec<&'a str> {
-    code_split(text, delimiter)
-        .into_iter()
-        .filter(|(is_code, _)| !is_code)
-        .map(|(_, part)| part)
-        .collect()
-}
-
 /// `text` cut at `delimiter`, each part tagged `true` when it is enclosed
-/// code (see [`outside_code`] for unclosed delimiters).
+/// code. A delimiter with no closing partner (a stray backtick, or a span
+/// cut off by session-stop's 500-character head) opens nothing: the text
+/// after it stays prose.
 fn code_split<'a>(text: &'a str, delimiter: &str) -> Vec<(bool, &'a str)> {
     let parts = text.split(delimiter).collect::<Vec<_>>();
     let last = parts.len() - 1;
@@ -420,18 +411,18 @@ const MIN_WORDS_TO_JUDGE: usize = 4;
 
 /// Whether the prompt reads as English, as memory turns must
 /// ([`reads_as_english`]). A prompt with fewer than
-/// [`MIN_WORDS_TO_JUDGE`] prose words *and* fewer than that many
-/// scored topic words (`/analyze user login`) is too short to tell and
-/// passes. Counting topic words too means a prompt whose scored words are
-/// mostly code (``/fix `src/die/bin.rs` `mit_hat` `was_ist` ``) is still
-/// judged.
+/// [`MIN_WORDS_TO_JUDGE`] prose words *and* fewer than that many topic
+/// words in all (`/analyze user login`) is too short to tell and passes.
+/// Counting every topic word, code included, means a prompt that is mostly
+/// code (``/fix `src/die/bin.rs` `mit_hat` `was_ist` ``) or a pasted error
+/// (a German one in a fence, then `Hat man Ideen?`) is still judged.
 ///
 /// Known limits: a longer English prompt with no function words (`/fix
 /// flaky sqlite test timeout on linux ci`) gets no memories, failing
 /// closed; a non-English prompt of three words or fewer is not checked.
 fn prompt_reads_as_english(prompt: &str, ignored: &HashSet<String>) -> bool {
     let too_short_to_judge = prose_words(prompt).len() < MIN_WORDS_TO_JUDGE
-        && scored_terms(prompt, ignored).len() < MIN_WORDS_TO_JUDGE;
+        && topic_terms(prompt, ignored).len() < MIN_WORDS_TO_JUDGE;
     too_short_to_judge || reads_as_english(prompt)
 }
 
@@ -1235,7 +1226,10 @@ mod tests {
             turns("sqlite: the timeout\n\nauth: tokens expire"),
             ["sqlite: the timeout\nauth: tokens expire"]
         );
-        assert_eq!(outside_code("a `b` c `d", "`"), ["a ", " c ", "d"]);
+        assert_eq!(
+            segments("a `b` c `d"),
+            [(false, "a "), (true, "b"), (false, " c "), (false, "d")]
+        );
     }
 
     /// Capitals don't hide a prompt's or a memory's words from the language
@@ -1313,6 +1307,28 @@ mod tests {
             (
                 "/fix the bin directory so the workers don't die",
                 "Agent general: user: the note says `ich bin nicht sicher warum die tests scheitern`",
+            ),
+        ] {
+            assert_eq!(
+                format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(unrelated)]),
+                None,
+                "{unrelated:?} is not relevant to {prompt:?}"
+            );
+        }
+        // A pasted foreign error doesn't shrink a foreign prompt below the
+        // size at which it is judged.
+        for (prompt, unrelated) in [
+            (
+                "/fix ```\nFehler: die Pipeline hat keinen Erfolg, man sieht nichts\n```\nHat man Ideen?",
+                "Agent general: user: the man with the red hat waved at us from the bus",
+            ),
+            (
+                "/fix `Fehler: die Pipeline hat keinen Erfolg, man sieht nichts` hat man Ideen?",
+                "Agent general: user: the man with the red hat waved at us from the bus",
+            ),
+            (
+                "/fix `ich bin nicht sicher warum die tests scheitern` bin die",
+                "Agent general: user: The build copies files into the bin directory, and the workers die if it is missing",
             ),
         ] {
             assert_eq!(
