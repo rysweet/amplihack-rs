@@ -17,6 +17,10 @@
 #   5. Subcommands that are not GraphQL clients are exec'd untouched.
 #   6. workflow_gh_retry.sh classifies the block as permanent, not a rate limit
 #      (a rate limit waits for a reset that never comes).
+#   7. (#1499) Pass-through stderr survives an early-exiting reader, a child
+#      holding the descriptor, block text on success and newline-less prompts;
+#      --json fields are validated as gh does and never read as a silent null;
+#      sub-lists read every page; closedByPullRequestsReferences is derived.
 #
 # Never touches the network: the "real" gh is a stub that records its argv.
 # Usage: bash amplifier-bundle/recipes/tests/test-gh-compat-graphql-blocked.sh
@@ -78,7 +82,9 @@ if [ "$1" = "api" ]; then
   fi
   pr='{"number":42,"node_id":"PR_1","title":"feat: widget","body":"Fixes #7","state":"open","draft":true,"merged_at":null,"html_url":"https://github.com/o/r/pull/42","created_at":"2026-01-01T00:00:00Z","user":{"login":"bot"},"labels":[],"mergeable":true,"mergeable_state":"clean","head":{"ref":"feat","sha":"abc123","repo":{"name":"r","full_name":"o/r","owner":{"login":"o"}}},"base":{"ref":"main","sha":"def456","repo":{"full_name":"o/r"}}}'
   case "$method $path" in
-    "GET repos/o/r/pulls/42") printf '%s\n' "$pr" ;;
+    "GET repos/o/r/pulls/42")
+      if [ -n "${STUB_BASE:-}" ]; then printf '%s\n' "$pr" | jq -c --arg b "$STUB_BASE" '.base.ref = $b | .base.repo.default_branch = "main"'
+      else printf '%s\n' "$pr"; fi ;;
     # --paginate prints each page's JSON in turn.
     "GET repos/o/r/pulls/42/files"*)
       printf '[{"filename":"a.rs","additions":1,"deletions":0}]\n'
@@ -88,9 +94,11 @@ if [ "$1" = "api" ]; then
       xr() { printf '{"event":"cross-referenced","source":{"type":"issue","issue":{"number":%s,"node_id":"PR_%s","html_url":"https://github.com/%s/pull/%s","state":"%s","body":"%s","pull_request":{"merged_at":%s},"repository":{"full_name":"%s","name":"%s","owner":{"login":"%s"}}}}}' \
         "$1" "$1" "$2" "$1" "$3" "$4" "$5" "$2" "${2#*/}" "${2%/*}"; }
       printf '[%s,%s,%s]\n' "$(xr 42 o/r open 'Fixes #7' null)" "$(xr 43 o/r closed 'Fixes #7' null)" "$(xr 44 o/r open 'see #7' null)"
-      [ "$paginate" = 1 ] && printf '[%s,%s,%s]\n' "$(xr 45 o/r closed 'Closes #7' '"2026-01-01T00:00:00Z"')" "$(xr 9 o2/r2 open 'Fixes o/r#7' null)" "$(xr 10 o2/r2 open 'Fixes #7' null)" ;;
+      [ "$paginate" = 1 ] && printf '[%s,%s,%s,%s]\n' "$(xr 45 o/r closed 'Closes #7' '"2026-01-01T00:00:00Z"')" "$(xr 9 o2/r2 open 'Fixes o/r#7' null)" "$(xr 10 o2/r2 open 'Fixes #7' null)" "$(xr 46 o/r open 'Fixes #7' null)" ;;
     "GET repos/o/r/labels?"*) printf '[{"id":2,"node_id":"L2","name":"bug","color":"f00","description":"Something broken","default":true},{"id":1,"node_id":"L1","name":"docs","color":"0f0","description":null,"default":false}]\n' ;;
-    "GET repos/o/r/actions/runs?head_sha=abc123"*) printf '{"workflow_runs":[{"id":99,"name":"CI","event":"pull_request"}]}\n' ;;
+    "GET repos/o/r/actions/runs?head_sha=abc123"*)
+      [ "${STUB_NO_ACTIONS:-0}" = 1 ] && { echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1; }
+      printf '{"workflow_runs":[{"id":99,"name":"CI","event":"pull_request"}]}\n' ;;
     "GET repos/o/r/pulls/42/reviews"*) printf '[{"user":{"login":"a"},"state":"CHANGES_REQUESTED","submitted_at":"2026-01-01T00:00:00Z"},{"user":{"login":"b"},"state":"APPROVED","submitted_at":"2026-01-02T00:00:00Z"},{"user":{"login":"b"},"state":"COMMENTED","submitted_at":"2026-01-03T00:00:00Z"}]\n' ;;
     "GET repos/o/r/pulls?"*"head=o%3Afeat"*) printf '[%s]\n' "$pr" ;;
     "POST repos/o/r/pulls")
@@ -123,6 +131,10 @@ if [ "$1" = "api" ]; then
       pg="${path##*page=}"
       jq -nc --argjson p "$pg" '[range(0;3) | {number: ($p * 10 + .), state: "closed", title: "t", html_url: "u", head: {ref: "b", sha: "s", repo: null}, base: {ref: "main", sha: "m", repo: null},
         merged_at: (if ($p == 1 and . == 0) or ($p == 2 and . > 0) then "2026-01-01T00:00:00Z" else null end)}]' ;;
+    # Any other PR: into the default branch, except #46 (a release branch).
+    "GET repos/"*"/pulls/"[0-9]*)
+      n="${path##*/}"; b=main; [ "$n" = 46 ] && b=release
+      printf '{"number":%s,"base":{"ref":"%s","repo":{"default_branch":"main"}}}\n' "$n" "$b" ;;
     *) printf '{"message":"Not Found"}'; echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
   esac
   exit 0
@@ -502,6 +514,7 @@ printf '%s' "$json" | jq -e 'has("closed") and has("mergedBy") and (.reviewReque
 n="$(STUB_OLD_GH=1 gh pr view 42 --json closingIssuesReferences --jq '.closingIssuesReferences | length')" || fail json-field "an older gh's list rejected closingIssuesReferences"
 [ "$n" = 1 ] || fail json-field "closingIssuesReferences gave '$n'"
 [ "$(gh pr view 42 --json number,state --jq '{number, state}')" = '{"number":42,"state":"OPEN"}' ] || fail json-field "--jq object output is not compact like gh's"
+[ "$(gh pr view 42 --json number --jq '-.number')" = -42 ] || fail json-field "a --jq expression starting with '-' was read as a jq option"
 # First call of a run, before any block is on record: the installed gh refuses
 # the newer field itself, so the shim must check for the block up front.
 rm -f "$AMPLIHACK_GH_COMPAT_STATE"
@@ -530,16 +543,27 @@ refs="$(gh issue view 7 --json closedByPullRequestsReferences --jq '[.closedByPu
 [ "$refs" = "o/r#42,o/r#45,o2/r2#9" ] || fail closed-by "got '$refs'"
 [ "$(gh pr view 42 --json closingIssuesReferences --jq '.closingIssuesReferences[0] | "\(.repository.owner.login)/\(.repository.name)#\(.number)"')" = "o/r#7" ] \
   || fail closed-by "closingIssuesReferences lost its repository"
+# A PR into a non-default branch closes nothing, so it lists no closing issues.
+[ "$(STUB_BASE=release gh pr view 42 --json closingIssuesReferences --jq '.closingIssuesReferences | length')" = 0 ] \
+  || fail closed-by "a PR into a non-default branch listed closing issues"
 ok "closedByPullRequestsReferences derived from the cross-reference timeline"
 
 # 36. pr checks: workflow and event from the Actions run, description from the output title.
 json="$(STUB_CHECKS=actions gh pr checks 42 --json name,workflow,event,description)"
 [ "$(printf '%s' "$json" | jq -c '.[0] | [.workflow, .event, .description]')" = '["CI","pull_request","All green"]' ] || fail checks-json "got $json"
+# Unreadable Actions runs: a rollup's workflowName reads null (the merge gate's
+# conclusions still answer); a call that asked for workflow fails.
+[ "$(STUB_CHECKS=actions STUB_NO_ACTIONS=1 gh pr view 42 --json statusCheckRollup --jq '.statusCheckRollup[0] | [.conclusion, .workflowName]')" = '["SUCCESS",null]' ] \
+  || fail checks-json "rollup with unreadable Actions runs"
+rc=0; STUB_CHECKS=actions STUB_NO_ACTIONS=1 gh pr checks 42 --json name,workflow >/dev/null 2>&1 || rc=$?
+[ "$rc" = 1 ] || fail checks-json "pr checks --json workflow with unreadable runs exited $rc"
+reset_log; STUB_CHECKS=actions gh pr checks 42 >/dev/null 2>&1
+logged_prefix "actions/runs" && fail checks-json "plain pr checks looked up workflow runs it does not print"
 ok "pr checks --json workflow/event/description come from REST, not placeholders"
 
 # 37. label list: --search on name or description; creation order by default,
 #     --sort name on request; --limit cuts the ordered list.
-[ "$(gh label list --search broken --json name,isDefault --jq -c '.')" = '[{"name":"bug","isDefault":true}]' ] || fail labels "search/isDefault wrong"
+[ "$(gh label list --search broken --json name,isDefault --jq '.')" = '[{"name":"bug","isDefault":true}]' ] || fail labels "search/isDefault wrong"
 [ "$(gh label list --limit 1 --json name --jq '.[].name')" = docs ] || fail labels "default order is not creation order"
 [ "$(gh label list --limit 1 --sort name --json name --jq '.[].name')" = bug ] || fail labels "--sort name ignored"
 rc=0; gh label list --sort color >/dev/null 2>&1 || rc=$?

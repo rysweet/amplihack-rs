@@ -399,7 +399,9 @@ def pr: (.base.repo.full_name // env.GHC_REPO // "") as $home | {
   autoMergeRequest: (if .auto_merge then {mergeMethod: (.auto_merge.merge_method | up), enabledBy: (.auto_merge.enabled_by | login),
     commitHeadline: .auto_merge.commit_title, commitBody: .auto_merge.commit_message, enabledAt: null} else null end),
   reviewRequests: ([.requested_reviewers[]? | {__typename: "User", login}] + [.requested_teams[]? | {__typename: "Team", name, slug}]),
-  closingIssuesReferences: closing($home), reviewDecision: ""
+  # GitHub honours closing keywords only in PRs into the default branch.
+  closingIssuesReferences: (if .base.ref == (.base.repo.default_branch // .base.ref) then closing($home) else [] end),
+  reviewDecision: ""
 };
 def issue: {
   number, id: .node_id, title: (.title // ""), body: (.body // ""), state: (.state | up),
@@ -428,7 +430,9 @@ ghc_emit() {
       if type == "array" then map(pick) else pick end')" || return 1
   fi
   if [ -n "${GHC_O_jq:-}" ]; then
-    printf '%s' "$json" | jq -r -c "$GHC_O_jq"   # gh prints --jq results compact
+    # gh prints --jq results compact. The leading space keeps an expression
+    # such as "-1" from reading as a jq option.
+    printf '%s' "$json" | jq -r -c " $GHC_O_jq"
   else
     printf '%s\n' "$json" | jq .
   fi
@@ -439,23 +443,31 @@ ghc_wants_any() { local f; for f in "$@"; do ghc_wants "$f" && return 0; done; r
 
 # Check runs + commit statuses for SHA, as gh's statusCheckRollup.
 ghc_rollup() {
-  local sha="$1" runs statuses wruns
+  local sha="$1" names="${2:-soft}" runs statuses wruns
   # A merge gate reads this: an unreadable list fails the call, never "no checks".
   runs="$(ghc_all "repos/${GHC_REPO}/commits/${sha}/check-runs?filter=latest&per_page=100" .check_runs)" || exit 1
   statuses="$(ghc_all "repos/${GHC_REPO}/commits/${sha}/status?per_page=100" .statuses)" || exit 1
   # Workflow name and triggering event live on the Actions run a check run's
   # details_url points into; one listing covers every run for the commit.
+  # NAMES: skip (not asked for), strict (asked for: unreadable fails the call),
+  # soft (part of statusCheckRollup: unreadable reads null, never a made-up
+  # "", and never fails a merge gate over a cosmetic field).
   wruns='[]'
-  if printf '%s' "$runs" | jq -e 'any(.[]; (.details_url // "") | test("/actions/runs/[0-9]+"))' >/dev/null; then
-    wruns="$(ghc_all "repos/${GHC_REPO}/actions/runs?head_sha=${sha}&per_page=100" .workflow_runs)" || exit 1
+  if [ "$names" != skip ] && printf '%s' "$runs" | jq -e 'any(.[]; (.details_url // "") | test("/actions/runs/[0-9]+"))' >/dev/null; then
+    if [ "$names" = strict ]; then
+      wruns="$(ghc_all "repos/${GHC_REPO}/actions/runs?head_sha=${sha}&per_page=100" .workflow_runs)" || exit 1
+    elif ! wruns="$(GHC_PAGINATE=1 ghc_api GET "repos/${GHC_REPO}/actions/runs?head_sha=${sha}&per_page=100" | jq -s 'map(.workflow_runs) | add // []')"; then
+      ghc_log "workflow runs for ${sha} unreadable; statusCheckRollup workflowName is null"; wruns=null
+    fi
   fi
   jq -n --argjson r "$runs" --argjson s "$statuses" --argjson w "$wruns" '
-    ($w | map({key: (.id | tostring), value: {name, event}}) | from_entries) as $wm
+    (($w // []) | map({key: (.id | tostring), value: {name, event}}) | from_entries) as $wm
     | [$r[] | ((.details_url // "") | capture("/actions/runs/(?<id>[0-9]+)").id // "") as $id
       | {__typename: "CheckRun", name, status: (.status // "" | ascii_upcase),
       conclusion: (.conclusion // "" | ascii_upcase), detailsUrl: .details_url, title: (.output.title // ""),
       startedAt: .started_at, completedAt: .completed_at,
-      workflowName: ($wm[$id].name // ""), event: ($wm[$id].event // "")}]
+      workflowName: (if $w == null then null else ($wm[$id].name // "") end),
+      event: (if $w == null then null else ($wm[$id].event // "") end)}]
     + [$s[] | {__typename: "StatusContext", context, state: (.state // "" | ascii_upcase),
       targetUrl: .target_url, description}]'
 }
@@ -503,17 +515,30 @@ ghc_comments() {
 }
 
 # ghc_closed_by NUMBER — gh's closedByPullRequestsReferences: the open or merged
-# pull requests whose body names this issue with a closing keyword, found through
-# the issue's cross-reference timeline. A link made by hand in the Development
-# sidebar leaves no trace in REST and is not seen (logged each time).
+# pull requests into their default branch whose body names this issue with a
+# closing keyword, found through the issue's cross-reference timeline. A link
+# made by hand in the Development sidebar leaves no trace in REST and is not
+# seen (logged each time).
 ghc_closed_by() {
+  local cands out="[]" c pr
   ghc_log "closedByPullRequestsReferences: from cross-referencing PR bodies; sidebar-only links are not visible over REST"
-  ghc_all "repos/${GHC_REPO}/issues/$1/timeline?per_page=100" | jq --arg repo "$GHC_REPO" --argjson n "$1" "${GHC_JQ_DEFS}"'
+  cands="$(ghc_all "repos/${GHC_REPO}/issues/$1/timeline?per_page=100" | jq -c --arg repo "$GHC_REPO" --argjson n "$1" "${GHC_JQ_DEFS}"'
     [ .[] | select(.event == "cross-referenced") | .source.issue // empty
       | select(.pull_request != null and (.state == "open" or .pull_request.merged_at != null))
       | (.repository.full_name // "") as $src
       | select(any(closing($src)[]; .number == $n and "\(.repository.owner.login)/\(.repository.name)" == $repo))
-      | {id: .node_id, number, url: .html_url, repository: reponame($src)} ] | unique_by(.url)'
+      | {id: .node_id, number, url: .html_url, repository: reponame($src), src: $src} ] | unique_by(.url) | .[]')" || exit 1
+  # Only a PR into its default branch closes anything; the timeline does not
+  # say which branch a PR targets, so each candidate is looked up.
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    pr="$(ghc_api_or_die GET "repos/$(printf '%s' "$c" | jq -r '.src')/pulls/$(printf '%s' "$c" | jq -r .number)")" || exit 1
+    printf '%s' "$pr" | jq -e '.base.ref == (.base.repo.default_branch // .base.ref)' >/dev/null || continue
+    out="$(jq -n --argjson a "$out" --argjson c "$c" '$a + [$c | del(.src)]')"
+  done <<EOF_CANDS
+$cands
+EOF_CANDS
+  printf '%s\n' "$out"
 }
 
 # ghc_search KIND(pr|issue) STATE TEXT LIMIT — raw REST issue objects, like
@@ -788,20 +813,21 @@ ghc_required_checks() {
 }
 
 ghc_pr_checks() {
-  local n pr sha base interval checks required fails pend
+  local n pr sha base interval checks required fails pend names=skip
   ghc_parse "-R:repo --repo:repo --json:json -q:jq --jq:jq -t:template --template:template -i:interval --interval:interval" "--required:required --watch:watch --fail-fast:fail_fast -w:web --web:web" "$@"
   ghc_resolve_repo
   ghc_pr_target "${GHC_POS[0]:-}"; n="$GHC_N"
   pr="$(ghc_api_or_die GET "repos/${GHC_REPO}/pulls/${n}")" || exit 1
   sha="$(printf '%s' "$pr" | jq -r .head.sha)"; base="$(printf '%s' "$pr" | jq -r .base.ref)"
   interval="${GHC_O_interval:-10}"
+  if ghc_wants_any workflow event; then names=strict; fi
   required=""
   if [ "${GHC_B_required:-}" = 1 ]; then
     required="$(ghc_required_checks "$base")"
     [ -n "$required" ] || ghc_log "pr checks --required: required checks unreadable over REST; treating all checks as required"
   fi
   while :; do
-    checks="$(ghc_rollup "$sha" | jq --arg req "$required" "${GHC_JQ_DEFS}"'
+    checks="$(ghc_rollup "$sha" "$names" | jq --arg req "$required" "${GHC_JQ_DEFS}"'
       ($req | split("\n") | map(select(. != ""))) as $r
       | map(if .__typename == "CheckRun" then
               {name, state: (if .status != "COMPLETED" then .status else .conclusion end),
@@ -1033,7 +1059,7 @@ ghc_api_graphql() {
   else
     out="$(jq -n -c --arg l "$login" '{data: {viewer: {login: $l}}}')"
   fi
-  if [ -n "$jqf" ]; then printf '%s' "$out" | jq -r -c "$jqf"; else printf '%s\n' "$out"; fi
+  if [ -n "$jqf" ]; then printf '%s' "$out" | jq -r -c " $jqf"; else printf '%s\n' "$out"; fi
 }
 
 # gh auth status. On a GraphQL-blocked host gh's own token check fails ("The
