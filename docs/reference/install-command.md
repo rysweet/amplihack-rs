@@ -98,8 +98,10 @@ official rustup installer (`rustup-init.sh -y --no-modify-path --profile
 minimal`) into `$CARGO_HOME` (default `~/.cargo`); shell profiles are not
 modified because amplihack finds `~/.cargo/bin` itself. If no C compiler
 (`cc`/`gcc`/`clang`) exists and `apt-get` is available, it installs
-`build-essential` as root or through passwordless `sudo -n` (waiting up to
-5 minutes for a dpkg lock held by first-boot `unattended-upgrades`); it never
+`build-essential` as root or through passwordless `sudo -n` (on a fresh VM it
+waits up to about 5 minutes for first-boot `apt-daily`/`unattended-upgrades`:
+the dpkg lock via `DPkg::Lock::Timeout`, and the apt lists lock by retrying
+`apt-get update`); it never
 prompts for a password and instead fails with the command to run.
 `recipe-runner-rs` is found in `$CARGO_HOME/bin` even when that directory is
 not on PATH. Set

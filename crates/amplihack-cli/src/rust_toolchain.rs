@@ -29,6 +29,8 @@ use std::time::Duration;
 pub(crate) const NO_BOOTSTRAP_ENV: &str = "AMPLIHACK_NO_RUST_BOOTSTRAP";
 const RUSTUP_INIT_URL: &str = "https://static.rust-lang.org/rustup/rustup-init.sh";
 const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(900);
+const APT_UPDATE_ATTEMPTS: u32 = 60;
+const APT_UPDATE_RETRY_DELAY: Duration = Duration::from_secs(5);
 const C_COMPILERS: [&str; 3] = ["cc", "gcc", "clang"];
 const LINKER_REMEDIATION: &str = "sudo apt-get install -y build-essential   \
      (Fedora: sudo dnf install -y gcc; macOS: xcode-select --install)";
@@ -225,19 +227,7 @@ fn ensure_c_linker_in(dirs: &[PathBuf], allow_bootstrap: bool) -> Result<()> {
     };
 
     println!("   ⏬ No C linker found — installing build-essential with apt-get");
-    // A freshly booted VM usually has apt-daily/unattended-upgrades holding
-    // the dpkg lock; wait for it instead of failing at once (apt >= 1.9.11).
-    for args in [
-        &["-o", "DPkg::Lock::Timeout=300", "update", "-qq"][..],
-        &[
-            "-o",
-            "DPkg::Lock::Timeout=300",
-            "install",
-            "-y",
-            "-qq",
-            "build-essential",
-        ][..],
-    ] {
+    let apt = |args: &[&str]| -> Result<std::process::ExitStatus> {
         let mut cmd = match &sudo {
             Some(sudo) => {
                 let mut cmd = Command::new(sudo);
@@ -251,16 +241,37 @@ fn ensure_c_linker_in(dirs: &[PathBuf], allow_bootstrap: bool) -> Result<()> {
                 cmd
             }
         };
-        cmd.args(args);
-        let status = run_with_timeout(cmd, BOOTSTRAP_TIMEOUT)
-            .with_context(|| format!("failed to run apt-get {}", args.join(" ")))?;
-        if !status.success() {
-            bail!(
-                "apt-get {} exited with status {status}. Install a C compiler manually: \
-                 {LINKER_REMEDIATION}",
-                args.join(" ")
-            );
+        // A freshly booted VM usually has apt-daily/unattended-upgrades
+        // holding the dpkg lock; wait for it (apt >= 1.9.11).
+        cmd.args(["-o", "DPkg::Lock::Timeout=300"]).args(args);
+        run_with_timeout(cmd, BOOTSTRAP_TIMEOUT)
+            .with_context(|| format!("failed to run apt-get {}", args.join(" ")))
+    };
+
+    // DPkg::Lock::Timeout does not cover /var/lib/apt/lists/lock, which
+    // apt-daily's boot-time `update` holds, so retry `update` for the same
+    // ~5 minutes. If it never succeeds, still try the install: the package
+    // lists already on disk are often enough.
+    let mut updated = false;
+    for attempt in 1..=APT_UPDATE_ATTEMPTS {
+        if apt(&["update", "-qq"])?.success() {
+            updated = true;
+            break;
         }
+        if attempt < APT_UPDATE_ATTEMPTS {
+            println!("   ⏳ apt-get update failed (apt may be busy); retrying in 5s");
+            std::thread::sleep(APT_UPDATE_RETRY_DELAY);
+        }
+    }
+    if !updated {
+        println!("   ⚠️  apt-get update kept failing; trying the install with existing lists");
+    }
+    let status = apt(&["install", "-y", "-qq", "build-essential"])?;
+    if !status.success() {
+        bail!(
+            "apt-get install build-essential exited with status {status}. Install a C \
+             compiler manually: {LINKER_REMEDIATION}"
+        );
     }
     if find_c_compiler(&path_dirs()).is_none() {
         bail!("{missing} even after installing build-essential. {LINKER_REMEDIATION}");
@@ -383,7 +394,15 @@ mod tests {
             .expect_err("no cargo and no bootstrap must fail");
         assert!(format!("{err:#}").contains("cargo is required"));
         assert!(!home.exists(), "nothing may be installed into CARGO_HOME");
+        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 0);
+    }
 
+    /// Unix only: elsewhere `ensure_c_linker_in` never needs a C compiler.
+    #[cfg(unix)]
+    #[test]
+    fn no_bootstrap_means_no_linker_install() {
+        let temp = tempfile::tempdir().unwrap();
+        let empty_path = vec![temp.path().join("empty-bin")];
         let err = ensure_c_linker_in(&empty_path, false)
             .expect_err("no C compiler and no bootstrap must fail");
         assert!(format!("{err:#}").contains("build-essential"));

@@ -14,7 +14,8 @@
 #   1. no cargo, C compiler present: rustup is bootstrapped, install succeeds,
 #      and the shell profile gains no rustup PATH edits (--no-modify-path).
 #   2. no cargo, no C compiler, passwordless sudo + apt-get: build-essential is
-#      installed non-interactively, install succeeds.
+#      installed non-interactively (after retrying an `apt-get update` that
+#      first fails on a held lists lock), install succeeds.
 #   3. no C compiler and sudo that needs a password: install fails with the
 #      exact apt-get command and never runs apt-get.
 #   4. AMPLIHACK_NO_RUST_BOOTSTRAP=1: install fails fast, nothing downloaded.
@@ -98,6 +99,15 @@ EOF
         cat > "$dir/apt-get" <<EOF
 #!/bin/sh
 printf '%s DEBIAN_FRONTEND=%s\n' "\$*" "\${DEBIAN_FRONTEND:-}" >> "\$HOME/apt.log"
+# First \`update\` fails like apt-daily holding /var/lib/apt/lists/lock.
+case " \$* " in
+  *" update "*)
+    if [ ! -e "\$HOME/apt.update.busy" ]; then
+      touch "\$HOME/apt.update.busy"
+      echo "E: Could not get lock /var/lib/apt/lists/lock" >&2
+      exit 100
+    fi ;;
+esac
 case " \$* " in
   *" install "*) printf '#!/bin/sh\nexit 0\n' > "$dir/cc"; chmod +x "$dir/cc" ;;
 esac
@@ -187,6 +197,11 @@ if grep -q "^-o DPkg::Lock::Timeout=300 install -y -qq build-essential DEBIAN_FR
   pass "build-essential installed non-interactively"
 else
   fail "apt-get install build-essential not run as expected: $(cat "$home/apt.log" 2>/dev/null || echo '<not run>')"
+fi
+if [[ "$(grep -c " update -qq " "$home/apt.log" 2>/dev/null)" -eq 2 ]]; then
+  pass "apt-get update retried while apt lists were locked"
+else
+  fail "apt-get update was not retried after a lock failure"
 fi
 
 # --- 3. no C compiler, sudo needs a password ----------------------------------
