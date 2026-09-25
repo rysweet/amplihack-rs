@@ -23,8 +23,9 @@ const RELEVANCE_THRESHOLD: f64 = 0.2;
 const MIN_SHARED_TERMS: usize = 2;
 /// Topic words shorter than this (`rs`, `md`, `ci`) are too common to count.
 const MIN_TERM_CHARS: usize = 3;
-/// A memory is scored only if at least this share of its words are
-/// [`ENGLISH_MARKERS`], i.e. it reads as English (see [`reads_as_english`]).
+/// A memory turn contributes topic words only if at least this share of
+/// its prose words are [`ENGLISH_MARKERS`] or English contractions, i.e. it
+/// reads as English (see [`reads_as_english`]).
 const MIN_ENGLISH_MARKER_SHARE: f64 = 0.1;
 /// At most this many memories are injected for one prompt.
 const MAX_INJECTED_MEMORIES: usize = 5;
