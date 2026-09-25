@@ -567,6 +567,10 @@ mod tests {
                 "Agent general: データのフィルター",
             ),
             (
+                "/analyze 빌드가 왜 실패하는지 어떻게 알 수 있습니까",
+                "Agent general: 배포를 어떻게 롤백할 수 있습니까",
+            ),
+            (
                 "/analyze 빌드가 실패했습니다",
                 "Agent analyzer: 배포가 성공했습니다",
             ),
@@ -620,15 +624,30 @@ mod tests {
     /// Chinese particles and pronouns are not topic words either.
     #[test]
     fn chinese_function_characters_do_not_make_memories_relevant() {
-        let prompt = "/analyze 我们的构建失败了吗";
-        assert_eq!(
-            format_agent_memory_context(
-                prompt,
-                &prompt_agents(prompt),
-                &[memory("Agent analyzer: 我们的部署成功了吗")]
+        for (prompt, unrelated) in [
+            (
+                "/analyze 我们的构建失败了吗",
+                "Agent analyzer: 我们的部署成功了吗",
             ),
-            None
-        );
+            (
+                "/analyze 为什么我们的构建失败了",
+                "Agent general: 我们的部署脚本需要更新",
+            ),
+            (
+                "/analyze 这个测试为什么失败",
+                "Agent general: 这个部署为什么成功",
+            ),
+            (
+                "/fix 我们的构建失败了",
+                "Agent general: user: 我们的午饭吃什么\n\nassistant: 我们的午饭吃面条",
+            ),
+        ] {
+            assert_eq!(
+                format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(unrelated)]),
+                None,
+                "{unrelated:?} is not relevant to {prompt:?}"
+            );
+        }
     }
 
     /// Contractions are never topic words, whatever their ending.
@@ -638,6 +657,14 @@ mod tests {
             (
                 "/analyze why doesn't it work, isn't it wired?",
                 "Agent analyzer: the cache doesn't expire and isn't cleared",
+            ),
+            (
+                "/analyze why doesn't the build work, don't guess",
+                "Agent general: user: it doesn't matter, don't worry\n\nassistant: ok",
+            ),
+            (
+                "/fix I don't know why it isn't working",
+                "Agent general: user: I don't like pineapple, it isn't food\n\nassistant: noted",
             ),
             (
                 "/fix I'll check why they'll fail",
