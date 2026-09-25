@@ -105,8 +105,9 @@ Background installs log to `${CLAUDE_PLUGIN_DATA}/install-runtime.log`, or to
 While an install is running, an `install.lock` directory exists next to the
 log.
 
-The release downloader may install the latest published release rather than
-the exact plugin version.
+`install-runtime` installs the latest published release. It resolves the tag
+through the `github.com/…/releases/latest` redirect, not the rate-limited
+GitHub API. Set `AMPLIHACK_NPM_VERSION` to pin a different release.
 
 ## Relationship to `amplihack install`
 
@@ -119,9 +120,11 @@ You can still use both on the same machine. Every plugin hook goes through
 binary when:
 
 - `amplihack-hooks` is not installed yet, or
-- `${CLAUDE_CONFIG_DIR:-~/.claude}/settings.json` already registers
-  `amplihack-hooks`, which means `amplihack install` wired the hooks and they
-  already fire.
+- a hook `command` in `${CLAUDE_CONFIG_DIR:-~/.claude}/settings.json`, or in
+  the project's `.claude/settings.json` or `.claude/settings.local.json`,
+  already runs `amplihack-hooks`. That means `amplihack install` wired the hooks
+  (user scope, or the interactive installer's repo-local scope) and they
+  already fire. Other mentions, such as a permission rule, do not count.
 
 So hooks never fire twice. Skills installed by `amplihack install` appear
 unprefixed (`dev-orchestrator`), and the plugin's copies appear as
@@ -169,7 +172,14 @@ cargo test -p amplihack-cli --test claude_code_plugin_manifest
 shellcheck -s sh -S style claude-plugin/bin/*
 ```
 
-`claude plugin validate . --strict` reports two expected warnings:
+`claude plugin validate .` warns that no `version` is set. That is
+deliberate. When a version is set, Claude Code caches the plugin by that version
+and delivers no update until it changes. amplihack releases advance by git tag
+while `package.json` stays at the workspace base version, so a pinned version
+would freeze installs. Without one, the cache follows the commit and
+`/plugin marketplace update amplihack` picks up new content.
+
+`--strict` reports two more expected warnings:
 
 - it does not follow the `skills` symlink (a session does);
 - it scans `agents/eval-recipes/README.md`, which the explicit `agents` list

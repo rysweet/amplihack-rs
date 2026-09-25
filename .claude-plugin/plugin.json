@@ -1,6 +1,5 @@
 {
   "name": "amplihack",
-  "version": "0.18.0",
   "description": "amplihack engineering system for Claude Code: dev-orchestrator and default-workflow skills, specialized agents, slash commands and quality hooks, driven by the Rust recipe runner.",
   "author": {
     "name": "Ryan Sweet",

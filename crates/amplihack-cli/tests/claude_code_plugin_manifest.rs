@@ -19,7 +19,7 @@
 //!   and covers exactly the Claude agents under `amplifier-bundle/agents/`
 //!   so a new agent cannot be silently left out;
 //! * the plugin's hooks mirror the events `amplihack install` registers;
-//! * the plugin version tracks `package.json`;
+//! * the plugin carries no `version`, so installs follow the commit;
 //! * the hook wrapper never breaks a session and never doubles hooks that
 //!   `amplihack install` already registered.
 
@@ -73,11 +73,17 @@ fn assert_contained(field: &str, rel: &str) {
 fn manifest_identity_matches_the_package() {
     let plugin = plugin();
     assert_eq!(plugin["name"], "amplihack");
-    let package = read_json("package.json");
-    assert_eq!(
-        plugin["version"], package["version"],
-        "bump .claude-plugin/plugin.json version together with package.json"
+    // Claude Code keys the plugin cache by `version` when one is set, and an
+    // unchanged version means no update reaches installed users. Releases
+    // advance by tag while package.json and Cargo.toml stay at the workspace
+    // base version, so any version written here would freeze every install at
+    // the commit it first saw. With none, the cache follows the commit.
+    assert!(
+        plugin.get("version").is_none(),
+        "plugin.json must not pin a version; see the comment above"
     );
+    let marketplace = read_json(".claude-plugin/marketplace.json");
+    assert!(marketplace["plugins"][0].get("version").is_none());
     // `claude plugin validate` rejects a bare-string author.
     assert!(
         plugin["author"].is_object() && plugin["author"]["name"].is_string(),
@@ -291,6 +297,8 @@ mod shell {
         let mut cmd = Command::new(script);
         cmd.args(args)
             .env_clear()
+            // Hermetic project scope: CLAUDE_PROJECT_DIR defaults to the cwd.
+            .current_dir(home)
             .env("HOME", home)
             .env("PATH", format!("{}:/usr/bin:/bin", stub.display()))
             .env("CLAUDE_CONFIG_DIR", home.join(".claude"))
@@ -350,6 +358,41 @@ mod shell {
         assert!(out.status.success());
         assert!(out.stdout.is_empty());
         assert!(!home.path().join("called").exists(), "binary must not run");
+    }
+
+    #[test]
+    fn hook_defers_to_hooks_registered_in_the_project_scope() {
+        // `amplihack install --interactive` can register hooks repo-locally.
+        let home = tempfile::tempdir().unwrap();
+        let stub = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        stub_hooks(stub.path());
+        fs::create_dir_all(project.path().join(".claude")).unwrap();
+        fs::write(
+            project.path().join(".claude/settings.json"),
+            "{\n  \"hooks\": {\"Stop\": [{\"hooks\": [{\n    \"type\": \"command\",\n    \"command\": \"\\\"/x/amplihack-hooks\\\" stop\"\n  }]}]}\n}\n",
+        )
+        .unwrap();
+        let envs = [("CLAUDE_PROJECT_DIR", project.path().to_str().unwrap())];
+        let out = run(&hook_script(), home.path(), stub.path(), &["stop"], &envs);
+        assert!(out.status.success());
+        assert!(!home.path().join("called").exists(), "binary must not run");
+    }
+
+    #[test]
+    fn a_mere_mention_of_amplihack_hooks_does_not_disable_the_plugin_hooks() {
+        let home = tempfile::tempdir().unwrap();
+        let stub = tempfile::tempdir().unwrap();
+        stub_hooks(stub.path());
+        fs::create_dir_all(home.path().join(".claude")).unwrap();
+        fs::write(
+            home.path().join(".claude/settings.json"),
+            r#"{"permissions":{"allow":["Bash(amplihack-hooks:*)"]}}"#,
+        )
+        .unwrap();
+        let out = run(&hook_script(), home.path(), stub.path(), &["stop"], &[]);
+        assert!(out.status.success());
+        assert!(home.path().join("called").exists(), "binary must run");
     }
 
     #[test]

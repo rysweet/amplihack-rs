@@ -46,7 +46,20 @@ log "plugin root: $root"
 if have amplihack && have amplihack-hooks; then
   log "amplihack and amplihack-hooks already installed"
 elif have node; then
-  log "fetching amplihack release binaries"
+  # Pin the latest release tag. package.json stays at the workspace base
+  # version while releases advance by tag, and the downloader's GitHub API
+  # lookup is unauthenticated: when a shared egress IP is rate limited it
+  # silently falls back to package.json and installs a release that can be
+  # dozens of patches behind the recipes in this checkout. The releases/latest
+  # redirect on github.com is not API rate limited.
+  if [ -z "${AMPLIHACK_NPM_VERSION:-}" ] && have curl; then
+    tag=$(curl -fsSI https://github.com/rysweet/amplihack-rs/releases/latest 2>/dev/null |
+      tr -d '\r' | grep -i '^location:' | sed 's#.*/tag/v##')
+    case "$tag" in
+      [0-9]*.[0-9]*.[0-9]*) AMPLIHACK_NPM_VERSION="$tag" && export AMPLIHACK_NPM_VERSION ;;
+    esac
+  fi
+  log "fetching amplihack release binaries (${AMPLIHACK_NPM_VERSION:-latest})"
   paths=$(AMPLIHACK_PLUGIN_ROOT="$root" node -e '
     const path = require("node:path");
     const root = process.env.AMPLIHACK_PLUGIN_ROOT;
