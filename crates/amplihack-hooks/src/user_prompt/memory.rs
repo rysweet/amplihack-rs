@@ -378,6 +378,9 @@ fn reads_as_english(text: &str) -> bool {
 /// (`doesn't`, `they'll`, `you'd`) and never a topic. There is no stemming:
 /// `tests` does not match `test`.
 ///
+/// A topic word needs a letter: numbers (`500`, `2026`, `404`) are shared by
+/// unrelated text too often to count, while `v2`, `sha256` and `e2e` do.
+///
 /// Known limit: only ASCII words are topic words. Accented Latin, Cyrillic,
 /// Greek, and Chinese, Japanese and Korean text (which has no spaces
 /// between words, or attaches grammar to them) contribute nothing, and
@@ -389,7 +392,9 @@ fn topic_terms(text: &str, ignored: &HashSet<String>) -> HashSet<String> {
     words(text)
         .flatten()
         .filter(|word| {
-            word.len() >= MIN_TERM_CHARS && word.chars().all(|c| c.is_ascii_alphanumeric())
+            word.len() >= MIN_TERM_CHARS
+                && word.chars().all(|c| c.is_ascii_alphanumeric())
+                && word.chars().any(|c| c.is_ascii_alphabetic())
         })
         .map(str::to_lowercase)
         .filter(|word| !is_stop_word(word) && !ignored.contains(word))
@@ -1129,6 +1134,38 @@ mod tests {
             ["sqlite: the timeout\nauth: tokens expire"]
         );
         assert_eq!(outside_code("a `b` c `d", "`"), ["a ", " c ", "d"]);
+    }
+
+    /// Shared numbers are not shared topics.
+    #[test]
+    fn numbers_are_not_topic_words() {
+        for (prompt, unrelated) in [
+            (
+                "/fix the 500 errors after 100 requests",
+                "Agent general: user: I need 500 grams of flour and 100 grams of sugar for the cake",
+            ),
+            (
+                "/analyze why the 2026 release fails with 404",
+                "Agent general: user: we booked the 2026 trip but the hotel page returned a 404 when we paid",
+            ),
+        ] {
+            assert_eq!(
+                format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(unrelated)]),
+                None,
+                "{unrelated:?} is not relevant to {prompt:?}"
+            );
+        }
+        let prompt = "/fix the sha256 checksum errors after 100 requests";
+        assert!(
+            format_agent_memory_context(
+                prompt,
+                &prompt_agents(prompt),
+                &[memory(
+                    "Agent general: the sha256 checksum fails after 100 requests to the cache"
+                )]
+            )
+            .is_some()
+        );
     }
 
     /// Known limit: a note whose prose has too few English function words
