@@ -106,6 +106,18 @@ outcomes are worth knowing:
 Nothing else in `.amplihack/` is touched — including `session-state/` and any
 file you put there — and nothing is deleted that was not moved.
 
+The move runs from session start, not from `amplihack index-scip` or
+`amplihack index-code`. If you only ever index this project with those commands
+— in CI, or from a shell that never launches a tool — the old artifacts stay in
+the checkout. Start one session in the project, or delete them and reindex —
+the reindex writes to the cache directory, so nothing lands back in the
+checkout:
+
+```sh
+rm -rf .amplihack/graph_db .amplihack/indexes index.scip
+amplihack index-scip
+```
+
 ### 3. Confirm the graph has data
 
 ```sh
