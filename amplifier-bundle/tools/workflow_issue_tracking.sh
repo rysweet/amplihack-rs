@@ -16,6 +16,8 @@
 #                               no reachable issue provider
 #   emit_local_metadata       — the tracking_* key/value block step-03b parses
 #   sanitize_cli_output       — redact provider CLI output before it is logged
+#   issue_create_host_unsupported — true when a failed `gh issue create` means
+#                               this host cannot reach GitHub issues at all
 
 derive_local_tracking_id() {
   if [[ "$EXISTING_ISSUE_NUMBER" =~ ^#?([0-9]+)$ ]]; then
@@ -36,6 +38,17 @@ derive_local_tracking_id() {
 emit_local_metadata() { LOCAL_REF="$(derive_local_tracking_id)"; LOCAL_NUM=""; [[ "$LOCAL_REF" =~ local-(issue|ab)-([0-9]+)$ ]] && LOCAL_NUM="${BASH_REMATCH[2]}"; printf 'tracking_system=local\ntracking_reference=%s\ntracking_issue=%s\nissue_creation=local-tracking\n' "$LOCAL_REF" "$LOCAL_REF"; [ -n "$LOCAL_NUM" ] && printf 'issue_number=%s\n' "$LOCAL_NUM"; return 0; }
 
 sanitize_cli_output() { printf '%s\n' "$1" | head -c 4000 | sed -E 's#https?://[^[:space:]]*@#https://<redacted>@#g; s#gh[pousr]_[A-Za-z0-9_]{8,}#<redacted-token>#g; s#github_pat_[A-Za-z0-9_]+#<redacted-token>#g; s#[Bb]earer[[:space:]]+[A-Za-z0-9._~+/=-]{20,}#Bearer <redacted-token>#g; s#[A-Za-z0-9]{52}#<redacted-token>#g'; }
+
+# issue_create_host_unsupported RC OUTPUT — true only for the failures issue
+# #1484 is about: gh is missing (rc 127 / "command not found"), or the host
+# blocks GitHub GraphQL (the Claude Code on the web refusal, or amplihack's gh
+# compatibility layer reporting a subcommand it cannot replay over REST). Any
+# other failure (permission denied, issues disabled, a bad payload) is a real
+# error on a host where gh works, and step-03 must keep failing loudly on it.
+issue_create_host_unsupported() {
+  [ "${1:-}" = 127 ] && return 0
+  printf '%s' "${2:-}" | grep -Ei 'GraphQL is not available|GraphQL (API )?(is )?(disabled|blocked)|GraphQL, which this host blocks|gh: command not found|command not found: gh|failed to run command .gh.' >/dev/null
+}
 
 # Percent-decode one path segment of an Azure DevOps remote URL. Returns 1 (and
 # an empty result) on a malformed or NUL-bearing encoding so the caller falls

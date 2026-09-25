@@ -29,8 +29,17 @@
 #
 # Knobs: AMPLIHACK_GH_REST_ONLY=1 forces REST; AMPLIHACK_REAL_GH names the real
 # binary; AMPLIHACK_GH_COMPAT_STATE / AMPLIHACK_GH_COMPAT_LOG move the state and
-# log files; AMPLIHACK_GH_COMPAT_VERBOSE=1 also logs to stderr. The log stays off
-# stderr by default because callers capture `2>&1` (step-03 does, for the URL).
+# log files; AMPLIHACK_GH_COMPAT_STATE_TTL_MIN (default 60) is how long a
+# recorded block is trusted before the real gh is probed again;
+# AMPLIHACK_GH_COMPAT_VERBOSE=1 also logs to stderr. The log stays off stderr by
+# default because callers capture `2>&1` (step-03 does, for the URL).
+#
+# LIMITS. `pr list` / `issue list` page through REST 100 at a time up to
+# --limit, reading at most ~10 extra pages past it when a filter (merged, PRs
+# mixed into /issues, the search fallback) drops items. Per-PR sub-lists
+# (reviews, files, commits, comments, check runs) read the first 100 only.
+# `closedByPullRequestsReferences` has no REST source and is always [] (logged);
+# its one caller, workflow-design step-06d, fails closed on an empty list.
 #
 # bash 3.2 compatible (issue #1423): no associative arrays, no case folding
 # expansions, no mapfile; no `set -u`, so empty arrays are safe to expand.
@@ -39,7 +48,21 @@ set -o pipefail
 
 GHC_BLOCK_RE='GraphQL is not available|GraphQL (API )?(is )?(disabled|blocked)'
 GHC_TMP="${TMPDIR:-/tmp}"
-GHC_STATE="${AMPLIHACK_GH_COMPAT_STATE:-${GHC_TMP}/amplihack-gh-compat.graphql-blocked}"
+# The "GraphQL is blocked" marker. Under the recipe runner TMPDIR is per run, so
+# it lives and dies with the run. Elsewhere TMPDIR is shared, so the default is
+# a private per-user directory, and a marker older than the TTL is ignored: the
+# next call probes the real gh again (and re-records the block if it persists).
+GHC_STATE="${AMPLIHACK_GH_COMPAT_STATE:-}"
+GHC_STATE_TTL_MIN="${AMPLIHACK_GH_COMPAT_STATE_TTL_MIN:-60}"
+case "$GHC_STATE_TTL_MIN" in ''|*[!0-9]*) GHC_STATE_TTL_MIN=60 ;; esac
+ghc_init_state() {
+  local d
+  [ -z "$GHC_STATE" ] || return 0
+  d="${GHC_TMP}/amplihack-gh-compat-$(id -u 2>/dev/null || echo 0)"
+  [ -d "$d" ] || mkdir -m 700 "$d" 2>/dev/null || true
+  # Someone else's (or a symlinked) directory is never trusted: no state.
+  if [ -d "$d" ] && [ ! -L "$d" ] && [ -O "$d" ]; then GHC_STATE="$d/graphql-blocked"; fi
+}
 GHC_LOG="${AMPLIHACK_GH_COMPAT_LOG:-${AMPLIHACK_WORKFLOW_ARTIFACT_DIR:-$GHC_TMP}/gh-compat.log}"
 
 ghc_log() {
@@ -64,7 +87,12 @@ ghc_find_real_gh() {
   return 1
 }
 
-ghc_rest_mode() { [ "${AMPLIHACK_GH_REST_ONLY:-0}" = 1 ] || [ -f "$GHC_STATE" ]; }
+ghc_rest_mode() {
+  [ "${AMPLIHACK_GH_REST_ONLY:-0}" = 1 ] && return 0
+  [ -n "$GHC_STATE" ] && [ -f "$GHC_STATE" ] || return 1
+  # Fresh markers only (find -mmin is GNU and BSD); a stale one is re-probed.
+  [ -n "$(find "$GHC_STATE" -mmin "-${GHC_STATE_TTL_MIN}" 2>/dev/null)" ]
+}
 
 # ---------------------------------------------------------------------------
 # REST transport. Always the real `gh api`: it already owns auth, proxy and CA
@@ -108,24 +136,52 @@ ghc_api_or_die() {
   printf '%s\n' "$out"
 }
 
+# ghc_paged PATH LIMIT FILTER [jq args...] — GET PATH (which already has a
+# query string) page by page, keeping the items the jq FILTER (array -> array)
+# passes, until LIMIT are kept, a short page ends the list, or ~10 pages past
+# what LIMIT needs have been read. Prints the first LIMIT kept items.
+ghc_paged() {
+  local path="$1" limit="$2" filter="$3" per page=1 max raw n acc
+  shift 3
+  per=100; [ "$limit" -lt 100 ] 2>/dev/null && per="$limit"
+  [ "$per" -ge 1 ] 2>/dev/null || per=30
+  max=$(( (limit + per - 1) / per + 10 ))
+  acc="${GHC_RUN_DIR}/paged.$$.$RANDOM"; : >"$acc" || return 1
+  while :; do
+    raw="$(ghc_api_or_die GET "${path}&per_page=${per}&page=${page}")" || { rm -f "$acc"; return 1; }
+    n="$(printf '%s' "$raw" | jq 'length')" || { rm -f "$acc"; return 1; }
+    printf '%s' "$raw" | jq -c "$@" "$filter" >>"$acc" || { rm -f "$acc"; return 1; }
+    [ "$(jq -s 'add | length' "$acc")" -ge "$limit" ] && break
+    [ "$n" -lt "$per" ] && break
+    [ "$page" -ge "$max" ] && { ghc_log "list truncated after ${page} pages of ${path}"; break; }
+    page=$((page + 1))
+  done
+  jq -s --argjson n "$limit" 'add // [] | .[:$n]' "$acc"; rm -f "$acc"
+}
+
 # ---------------------------------------------------------------------------
 # Option parsing. ghc_parse "<value spec>" "<bool spec>" ARGS...
 # A spec is " -R:repo --repo:repo ..." (flag:name). Value flags land in
 # GHC_O_<name> (repeatable ones joined with ","), booleans in GHC_B_<name>=1,
-# positionals in GHC_POS. `--flag=value` is split first.
+# positionals in GHC_POS. The value may be attached, as pflag accepts it:
+# `--repo=o/r`, `--body=` (explicitly empty), `-Ro/r`, `-L50`. Only a flag with
+# no attached value takes the next argument.
 # ---------------------------------------------------------------------------
 GHC_REPEAT=" label assignee reviewer add_label remove_label field "
 ghc_parse() {
-  local vspec=" $1 " bspec=" $2 " a val name cur vn
+  local vspec=" $1 " bspec=" $2 " a val has name cur vn
   shift 2
   GHC_POS=()
   while [ $# -gt 0 ]; do
-    a="$1"; val=""
-    case "$a" in --*=*) val="${a#*=}"; a="${a%%=*}" ;; esac
+    a="$1"; val=""; has=0
+    case "$a" in
+      --*=*) val="${a#*=}"; a="${a%%=*}"; has=1 ;;
+      -[!-]?*) case "$vspec" in *" ${a:0:2}:"*) val="${a:2}"; val="${val#=}"; a="${a:0:2}"; has=1 ;; esac ;;
+    esac
     case "$vspec" in
       *" $a:"*)
         name="${vspec#* "$a":}"; name="${name%% *}"
-        if [ -z "$val" ]; then val="${2-}"; shift; fi
+        if [ "$has" = 0 ]; then val="${2-}"; shift; fi
         vn="GHC_O_${name}"; cur="${!vn:-}"
         case "$GHC_REPEAT" in
           *" $name "*) [ -n "$cur" ] && val="$cur,$val" ;;
@@ -134,7 +190,9 @@ ghc_parse() {
         shift; continue ;;
     esac
     case "$bspec" in
-      *" $a:"*) name="${bspec#* "$a":}"; name="${name%% *}"; printf -v "GHC_B_${name}" '%s' 1; shift; continue ;;
+      *" $a:"*) name="${bspec#* "$a":}"; name="${name%% *}"
+        if [ "$has" = 1 ] && [ "$val" = false ]; then val=""; else val=1; fi   # --draft=false
+        printf -v "GHC_B_${name}" '%s' "$val"; shift; continue ;;
     esac
     case "$a" in
       --) shift; GHC_POS+=("$@"); break ;;
@@ -207,9 +265,10 @@ ghc_pr_target() {
     return 0
   fi
   owner="${GHC_REPO%%/*}"
-  pulls="$(ghc_api_or_die GET "repos/${GHC_REPO}/pulls?head=$(ghc_uri "${owner}:${t}")&state=all&per_page=30")" || exit 1
+  case "$t" in *:*) ;; *) t="${owner}:${t}" ;; esac   # OWNER:BRANCH names a fork's branch
+  pulls="$(ghc_api_or_die GET "repos/${GHC_REPO}/pulls?head=$(ghc_uri "$t")&state=all&per_page=30")" || exit 1
   GHC_N="$(printf '%s' "$pulls" | jq -r 'sort_by(if .state == "open" then 0 else 1 end) | .[0].number // empty')"
-  [ -n "$GHC_N" ] || ghc_die "no pull requests found for branch \"$t\""
+  [ -n "$GHC_N" ] || ghc_die "no pull requests found for branch \"${t#"${owner}":}\""
 }
 
 # ---------------------------------------------------------------------------
@@ -329,22 +388,22 @@ ghc_search() {
   case "$state" in open|closed|merged) q="$q is:$state" ;; esac
   [ -n "${GHC_O_author:-}" ] && q="$q author:${GHC_O_author}"
   [ -n "${GHC_O_label:-}" ] && q="$q label:\"${GHC_O_label}\""
-  if raw="$(ghc_api GET "search/issues?per_page=${limit}&q=$(jq -rn --arg q "$q" '$q|@uri')")"; then
+  # /search pages hold at most 100; a larger --limit is cut there.
+  if raw="$(ghc_api GET "search/issues?per_page=$([ "$limit" -gt 100 ] && echo 100 || echo "$limit")&q=$(jq -rn --arg q "$q" '$q|@uri')")"; then
     printf '%s' "$raw" | jq '.items // []'; return 0
   fi
   ghc_last
   ghc_log "search unavailable (${GHC_STATUS:-?}); matching '${text}' client-side over repos/${GHC_REPO}/issues"
   rstate="$state"; case "$state" in open|closed) ;; *) rstate=all ;; esac
-  raw="$(ghc_api_or_die GET "repos/${GHC_REPO}/issues?state=${rstate}&per_page=100$([ -n "${GHC_O_label:-}" ] && printf '&labels=%s' "$(jq -rn --arg l "$GHC_O_label" '$l|@uri')")")" || return 1
-  printf '%s' "$raw" | jq --arg k "$kind" --arg t "$text" --arg a "${GHC_O_author:-}" --argjson n "$limit" '
+  ghc_paged "repos/${GHC_REPO}/issues?state=${rstate}$([ -n "${GHC_O_label:-}" ] && printf '&labels=%s' "$(ghc_uri "$GHC_O_label")")" "$limit" '
     # Whole words, as /search matches them. A substring test lets "a" or "it"
     # match any body, and step-03 would adopt an unrelated issue as its tracker.
     def words: ascii_downcase | [scan("[a-z0-9]+")];
     ($t | split(" ") | map(select(contains(":") | not)) | join(" ") | words) as $words
     | map(select((.pull_request != null) == ($k == "pr"))
           | select($a == "" or .user.login == $a)
-          | select(((.title // "") + " " + (.body // "") | words) as $h | all($words[]; . as $w | $h | index([$w]) != null)))
-    | .[:$n]'
+          | select(((.title // "") + " " + (.body // "") | words) as $h | all($words[]; . as $w | $h | index([$w]) != null)))' \
+    --arg k "$kind" --arg t "$text" --arg a "${GHC_O_author:-}"
 }
 
 # ---------------------------------------------------------------------------
@@ -368,7 +427,7 @@ ghc_pr_list() {
   ghc_parse "$GHC_COMMON_V -s:state --state:state -L:limit --limit:limit -H:head --head:head -B:base --base:base -S:search --search:search -A:author --author:author -l:label --label:label" "-d:draft --draft:draft -w:web --web:web" "$@"
   ghc_resolve_repo
   state="${GHC_O_state:-open}"; limit="${GHC_O_limit:-30}"; owner="${GHC_REPO%%/*}"
-  [ "$limit" -gt 100 ] 2>/dev/null && limit=100
+  case "$limit" in ''|*[!0-9]*|0) ghc_die "invalid value for --limit: ${limit}" ;; esac
   if [ -n "${GHC_O_search:-}${GHC_O_author:-}${GHC_O_label:-}" ]; then
     raw="$(ghc_search pr "$state" "${GHC_O_search:-}" "$limit")" || exit 1
     nums="$(printf '%s' "$raw" | jq -r '.[].number')"
@@ -379,10 +438,10 @@ ghc_pr_list() {
   else
     local rstate="$state" qs=""
     [ "$state" = merged ] && rstate=closed
-    [ -n "${GHC_O_head:-}" ] && qs="&head=$(ghc_uri "${owner}:${GHC_O_head#*:}")"
+    # OWNER:BRANCH keeps its (fork) owner; a bare branch is looked up in this repo's owner.
+    case "${GHC_O_head:-}" in '') ;; *:*) qs="&head=$(ghc_uri "$GHC_O_head")" ;; *) qs="&head=$(ghc_uri "${owner}:${GHC_O_head}")" ;; esac
     [ -n "${GHC_O_base:-}" ] && qs="${qs}&base=$(ghc_uri "$GHC_O_base")"
-    raw="$(ghc_api_or_die GET "repos/${GHC_REPO}/pulls?state=${rstate}&per_page=${limit}${qs}")" || exit 1
-    out="$(printf '%s' "$raw" | jq --arg s "$state" "${GHC_JQ_DEFS}"' map(pr) | if $s == "merged" then map(select(.state == "MERGED")) else . end')"
+    out="$(ghc_paged "repos/${GHC_REPO}/pulls?state=${rstate}${qs}" "$limit" "${GHC_JQ_DEFS}"' map(pr) | if $s == "merged" then map(select(.state == "MERGED")) else . end' --arg s "$state")" || exit 1
     if ghc_wants reviews || ghc_wants statusCheckRollup || ghc_wants mergeable || ghc_wants files || ghc_wants commits || ghc_wants comments; then
       local full="[]"
       for n in $(printf '%s' "$out" | jq -r '.[].number'); do
@@ -401,7 +460,7 @@ ghc_pr_list() {
 }
 
 ghc_pr_create() {
-  local head base body payload resp url n
+  local head base body payload resp url n q
   ghc_parse "-R:repo --repo:repo -t:title --title:title -b:body --body:body -F:body_file --body-file:body_file -B:base --base:base -H:head --head:head -l:label --label:label -a:assignee --assignee:assignee -r:reviewer --reviewer:reviewer -m:milestone --milestone:milestone -p:project --project:project" "-d:draft --draft:draft -f:fill --fill:fill --fill-first:fill -w:web --web:web --dry-run:dry_run" "$@"
   ghc_resolve_repo
   head="${GHC_O_head:-$(ghc_current_branch)}"
@@ -418,7 +477,8 @@ ghc_pr_create() {
   if ! resp="$(ghc_api POST "repos/${GHC_REPO}/pulls" "$payload")"; then
     ghc_last
     if [ "$GHC_STATUS" = 422 ] && printf '%s' "$resp$GHC_ERR" | grep -q 'already exists'; then
-      url="$(ghc_api GET "repos/${GHC_REPO}/pulls?head=$(ghc_uri "${GHC_REPO%%/*}:${head}")&base=$(ghc_uri "$base")&state=open" | jq -r '.[0].html_url // empty')"
+      case "$head" in *:*) q="$head" ;; *) q="${GHC_REPO%%/*}:${head}" ;; esac
+      url="$(ghc_api GET "repos/${GHC_REPO}/pulls?head=$(ghc_uri "$q")&base=$(ghc_uri "$base")&state=open" | jq -r '.[0].html_url // empty')"
       ghc_die "a pull request for branch \"$head\" into branch \"$base\" already exists:
 $url"
     fi
@@ -518,6 +578,10 @@ ghc_pr_merge() {
   ghc_pr_target "${GHC_POS[0]:-}"; n="$GHC_N"
   [ "${GHC_B_squash:-}" = 1 ] && method=squash
   [ "${GHC_B_rebase:-}" = 1 ] && method=rebase
+  # gh never picks a merge method for a non-interactive caller.
+  if [ "${GHC_B_disable_auto:-}" != 1 ] && [ -z "${GHC_B_merge:-}${GHC_B_squash:-}${GHC_B_rebase:-}" ]; then
+    ghc_die "--merge, --rebase, or --squash required when not running interactively"
+  fi
   if [ "${GHC_B_disable_auto:-}" = 1 ]; then
     ghc_api_or_die DELETE "repos/${GHC_REPO}/pulls/${n}/ccr/auto_merge" >/dev/null || exit 1; return 0
   fi
@@ -657,14 +721,15 @@ ghc_issue_list() {
   ghc_parse "$GHC_COMMON_V -s:state --state:state -L:limit --limit:limit -S:search --search:search -l:label --label:label -a:assignee --assignee:assignee -A:author --author:author" "-w:web --web:web" "$@"
   ghc_resolve_repo
   state="${GHC_O_state:-open}"; limit="${GHC_O_limit:-30}"
-  [ "$limit" -gt 100 ] 2>/dev/null && limit=100
+  case "$limit" in ''|*[!0-9]*|0) ghc_die "invalid value for --limit: ${limit}" ;; esac
   if [ -n "${GHC_O_search:-}${GHC_O_author:-}" ]; then
     raw="$(ghc_search issue "$state" "${GHC_O_search:-}" "$limit")" || exit 1
   else
-    q="state=${state}&per_page=${limit}"
-    [ -n "${GHC_O_label:-}" ] && q="${q}&labels=$(jq -rn --arg l "$GHC_O_label" '$l|@uri')"
-    [ -n "${GHC_O_assignee:-}" ] && q="${q}&assignee=$(ghc_expand_me "$GHC_O_assignee")"
-    raw="$(ghc_api_or_die GET "repos/${GHC_REPO}/issues?${q}")" || exit 1
+    q="state=${state}"
+    [ -n "${GHC_O_label:-}" ] && q="${q}&labels=$(ghc_uri "$GHC_O_label")"
+    [ -n "${GHC_O_assignee:-}" ] && q="${q}&assignee=$(ghc_uri "$(ghc_expand_me "$GHC_O_assignee")")"
+    # /issues also returns pull requests; drop them per page so --limit counts issues.
+    raw="$(ghc_paged "repos/${GHC_REPO}/issues?${q}" "$limit" 'map(select(.pull_request == null))')" || exit 1
   fi
   out="$(printf '%s' "$raw" | jq "${GHC_JQ_DEFS}"' map(select(.pull_request == null) | issue)')" || exit 1
   if [ -z "${GHC_O_json:-}" ]; then
@@ -753,16 +818,20 @@ ghc_label_list() {
 # sends has a REST answer. Anything else fails as it did, and is logged.
 # ---------------------------------------------------------------------------
 ghc_api_graphql() {
-  local query="" owner="" name="" jqf="" a login perm repo out
+  local query="" owner="" name="" jqf="" a f login perm repo out
   while [ $# -gt 0 ]; do
+    f=""
     case "$1" in
-      -f|-F|--field|--raw-field)
-        case "$2" in query=*) query="${2#query=}" ;; owner=*) owner="${2#owner=}" ;; name=*) name="${2#name=}" ;; esac
-        shift 2 ;;
-      -q|--jq) jqf="$2"; shift 2 ;;
-      --hostname|-H|--header) shift 2 ;;
+      -f|-F|--field|--raw-field) f="${2-}"; shift; [ $# -eq 0 ] || shift ;;
+      -f?*|-F?*) f="${1:2}"; f="${f#=}"; shift ;;
+      --field=*|--raw-field=*) f="${1#*=}"; shift ;;
+      -q|--jq) jqf="${2-}"; shift; [ $# -eq 0 ] || shift ;;
+      -q?*) jqf="${1:2}"; jqf="${jqf#=}"; shift ;;
+      --jq=*) jqf="${1#--jq=}"; shift ;;
+      --hostname|-H|--header) shift; [ $# -eq 0 ] || shift ;;
       *) shift ;;
     esac
+    case "$f" in query=*) query="${f#query=}" ;; owner=*) owner="${f#owner=}" ;; name=*) name="${f#name=}" ;; esac
   done
   # Exact shapes only (whitespace ignored). A substring test such as *viewer*
   # also matches reviewer/viewerDidAuthor queries and would answer them with a
@@ -786,18 +855,35 @@ ghc_api_graphql() {
   if [ -n "$jqf" ]; then printf '%s' "$out" | jq -r "$jqf"; else printf '%s\n' "$out"; fi
 }
 
-# gh auth status — the proxy token fails gh's own check but works for REST.
+# gh auth status. On a GraphQL-blocked host gh's own token check fails ("The
+# token in GH_TOKEN is invalid") although the token works for REST. Only there
+# is the failure replaced, and only after confirming both halves: GraphQL
+# answers with the block text, and REST /user answers. Anywhere else (an expired
+# token, a second account, another host) gh's real output and exit code stand.
 ghc_auth_status() {
-  local out rc=0 login
-  out="$("$GHC_REAL" auth status "$@" 2>&1)" || rc=$?
-  if [ "$rc" -eq 0 ]; then printf '%s\n' "$out"; return 0; fi
-  if login="$(ghc_api GET user 2>/dev/null | jq -r '.login // empty')" && [ -n "$login" ]; then
-    ghc_log "auth status: gh reported failure but REST /user answers as ${login}; reporting logged in"
-    printf 'github.com\n  ✓ Logged in to github.com account %s (token verified over REST by amplihack gh-compat)\n' "$login"
-    return 0
+  local outf errf probef rc=0 login a
+  for a in "$@"; do case "$a" in -h|--hostname|--hostname=*|-h?*) GHC_AUTH_HOSTNAME=1 ;; esac; done
+  outf="${GHC_RUN_DIR}/auth.out"; errf="${GHC_RUN_DIR}/auth.err"; probef="${GHC_RUN_DIR}/auth.probe"
+  "$GHC_REAL" auth status "$@" >"$outf" 2>"$errf" || rc=$?
+  if [ "$rc" -ne 0 ] && [ -z "${GHC_AUTH_HOSTNAME:-}" ]; then
+    if ! ghc_rest_mode; then
+      "$GHC_REAL" api graphql -f query='{viewer{login}}' >/dev/null 2>"$probef" || true
+      if grep -Eiq "$GHC_BLOCK_RE" "$probef"; then ghc_mark_blocked; fi
+    fi
+    if ghc_rest_mode && login="$(ghc_api GET user 2>/dev/null | jq -r '.login // empty')" && [ -n "$login" ]; then
+      ghc_log "auth status: gh's token check failed on a GraphQL-blocked host; REST /user answers as ${login}"
+      printf 'github.com\n  ✓ Logged in to github.com account %s (GraphQL is blocked on this host; token verified over REST by amplihack gh-compat)\n' "$login"
+      return 0
+    fi
   fi
-  printf '%s\n' "$out" >&2
+  cat "$outf"; cat "$errf" >&2
   return "$rc"
+}
+
+ghc_mark_blocked() {
+  [ -n "$GHC_STATE" ] && { : >"$GHC_STATE"; } 2>/dev/null
+  ghc_log "GraphQL is blocked on this host; routing gh issue/pr/label/api graphql over REST (marker: ${GHC_STATE:-none})"
+  return 0
 }
 
 ghc_rest_dispatch() {
@@ -834,17 +920,33 @@ ghc_reads_stdin() {
   local prev="" a
   for a in "$@"; do
     case "$prev $a" in "-F -"|"--body-file -") return 0 ;; esac
-    [ "$a" = "--body-file=-" ] && return 0
+    case "$a" in --body-file=-|-F-|-F=-) return 0 ;; esac
     prev="$a"
   done
   return 1
 }
 
+# ghc_stderr_filter FILE — the real gh's stderr, line by line: every line goes
+# to FILE, and every line except the GraphQL-block refusal is passed on at once
+# (a long `pr checks --watch` keeps its progress). The refusal is held back
+# because the REST replay answers in its place. Reads all of its input.
+ghc_stderr_filter() {
+  local l
+  while IFS= read -r l || [ -n "$l" ]; do
+    printf '%s\n' "$l" >>"$1"
+    # Only lines naming GraphQL pay for a grep (-i: bash 3.2's =~ has no nocasematch).
+    case "$l" in
+      *[Gg][Rr][Aa][Pp][Hh][Qq][Ll]*) printf '%s\n' "$l" | grep -Ei "$GHC_BLOCK_RE" >/dev/null && continue ;;
+    esac
+    printf '%s\n' "$l" >&2
+  done
+  return 0
+}
+
 ghc_main() {
   GHC_REAL="$(ghc_find_real_gh)" || { printf 'gh: command not found (amplihack gh-compat found no real gh on PATH)\n' >&2; exit 127; }
   case "${1:-} ${2:-}" in
-    "auth status") shift 2; ghc_auth_status "$@"; exit $? ;;
-    "pr "?*|"issue "?*|"label "?*|"api graphql") ;;
+    "auth status"|"pr "?*|"issue "?*|"label "?*|"api graphql") ;;
     *) exec "$GHC_REAL" "$@" ;;
   esac
   command -v jq >/dev/null 2>&1 || exec "$GHC_REAL" "$@"
@@ -852,23 +954,28 @@ ghc_main() {
   # buffered stdin); never a predictable name in a shared TMPDIR.
   GHC_RUN_DIR="$(mktemp -d "${GHC_TMP}/ghc.XXXXXX")" || exec "$GHC_REAL" "$@"
   trap 'rm -rf "$GHC_RUN_DIR"' EXIT
+  ghc_init_state
+  if [ "${1:-} ${2:-}" = "auth status" ]; then shift 2; ghc_auth_status "$@"; exit $?; fi
   if ! ghc_rest_mode; then
     local errf rc=0 stdinf=""
-    errf="${GHC_RUN_DIR}/probe.err"
+    errf="${GHC_RUN_DIR}/probe.err"; : >"$errf"
     # `--body-file -` reads stdin. The probe would consume it and leave the REST
     # replay with an empty body, so buffer it once and feed both.
     if ghc_reads_stdin "$@"; then
       stdinf="${GHC_RUN_DIR}/stdin"; cat >"$stdinf" || exit 1
-      "$GHC_REAL" "$@" <"$stdinf" 2>"$errf" || rc=$?
+    fi
+    # stdout goes straight through (fd 4); stderr streams through the filter.
+    # Under pipefail the pipeline's status is gh's: the filter always returns 0.
+    exec 4>&1
+    if [ -n "$stdinf" ]; then
+      { "$GHC_REAL" "$@" <"$stdinf" 2>&1 1>&4 4>&-; } | ghc_stderr_filter "$errf" || rc=$?
     else
-      "$GHC_REAL" "$@" 2>"$errf" || rc=$?
+      { "$GHC_REAL" "$@" 2>&1 1>&4 4>&-; } | ghc_stderr_filter "$errf" || rc=$?
     fi
-    if [ "$rc" -eq 0 ] || ! grep -Eiq "$GHC_BLOCK_RE" "$errf"; then
-      cat "$errf" >&2; exit "$rc"
-    fi
+    exec 4>&-
+    if [ "$rc" -eq 0 ] || ! grep -Eiq "$GHC_BLOCK_RE" "$errf"; then exit "$rc"; fi
     [ -z "$stdinf" ] || exec <"$stdinf"
-    : >"$GHC_STATE" 2>/dev/null || true
-    ghc_log "GraphQL is blocked on this host; routing gh issue/pr/label/api graphql over REST for the rest of the run"
+    ghc_mark_blocked
   fi
   ghc_log "REST fallback: gh $1 $2"
   ghc_rest_dispatch "$@"

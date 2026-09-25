@@ -1143,13 +1143,12 @@ fn step_03_github_repo_resolution_failure_uses_issue_number_for_local_tracking()
     );
 }
 
-/// Issue #1484 reversed the old "unexpected failure is fatal" rule: a tracking
-/// issue is bookkeeping, and aborting the whole workflow over it is what made
-/// default-workflow unusable in Claude Code on the web. The failure must still
-/// be loud (WARNING plus gh's redacted output), and the run continues on local
-/// tracking.
+/// Issue #1484 limits the local-tracking fallback to hosts where gh cannot
+/// reach GitHub issues at all (GraphQL blocked, gh missing). Anywhere gh works,
+/// an unexpected create failure (permission denied, issues disabled, a bad
+/// payload) is still fatal and loud.
 #[test]
-fn step_03_github_unexpected_create_failure_falls_back_visibly() {
+fn step_03_github_unexpected_create_failure_remains_error() {
     let run = run_step_03_with_env(
         "github",
         "",
@@ -1166,15 +1165,14 @@ fn step_03_github_unexpected_create_failure_falls_back_visibly() {
     let stdout = String::from_utf8_lossy(&run.output.stdout);
     let stderr = String::from_utf8_lossy(&run.output.stderr);
     assert!(
-        run.output.status.success(),
-        "a failed tracking-issue create must not abort the workflow (#1484); stdout:\n{stdout}\nstderr:\n{stderr}"
+        !run.output.status.success(),
+        "unexpected GitHub failures must not fall back locally; stdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
-        stderr.contains(
-            "WARNING: GitHub issue creation failed; continuing with local tracking metadata"
-        ) && stderr.contains("GraphQL: unexpected create failure")
+        stderr.contains("ERROR: GitHub issue creation failed.")
+            && stderr.contains("GraphQL: unexpected create failure")
             && stderr.contains("https://<redacted>@github.com/example-org/example-repo"),
-        "the failure must remain visible; stdout:\n{stdout}\nstderr:\n{stderr}"
+        "unexpected GitHub failures must remain visible; stdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
         !stderr.contains("ghp_secret123")
@@ -1182,9 +1180,9 @@ fn step_03_github_unexpected_create_failure_falls_back_visibly() {
         "unexpected GitHub failures must sanitize credential-bearing CLI output; stdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
-        stdout.contains("tracking_system=local")
-            && stdout.contains("issue_creation=local-tracking"),
-        "the fallback must emit local tracking metadata; stdout:\n{stdout}"
+        !stdout.contains("issue_creation=local-tracking")
+            && !stdout.contains("tracking_system=local"),
+        "unexpected GitHub failures must not emit local tracking metadata; stdout:\n{stdout}"
     );
 }
 
@@ -1213,6 +1211,34 @@ fn step_03_graphql_block_falls_back_to_local_tracking() {
         !stderr.contains("waiting") && !run.gh_log.contains("api rate_limit"),
         "the GraphQL block is not a rate limit and must not wait for a reset; gh log:\n{}",
         run.gh_log
+    );
+}
+
+/// Issue #1484: a host with no usable gh (exit 127) also degrades to local
+/// tracking; that is the other case the fallback exists for.
+#[test]
+fn step_03_gh_unavailable_falls_back_to_local_tracking() {
+    let run = run_step_03_with_env(
+        "github",
+        "",
+        "Track work on a host without gh",
+        &[
+            (
+                "GH_CREATE_OUTPUT",
+                "timeout: failed to run command 'gh': No such file or directory",
+            ),
+            ("GH_CREATE_STATUS", "127"),
+        ],
+    );
+    let stdout = String::from_utf8_lossy(&run.output.stdout);
+    let stderr = String::from_utf8_lossy(&run.output.stderr);
+    assert!(
+        run.output.status.success() && stdout.contains("tracking_system=local"),
+        "a host without gh must fall back to local tracking; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("GraphQL blocked or gh unavailable"),
+        "the fallback must say why; stderr:\n{stderr}"
     );
 }
 

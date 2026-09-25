@@ -290,9 +290,9 @@ steps:
           echo "WARNING: GitHub issue creation failed because the repository could not be resolved or accessed; using local tracking metadata instead." >&2
           emit_local_metadata; exit 0
         fi
-        # A tracking issue is bookkeeping, not the task: never abort the run over it (#1484).
-        echo "WARNING: GitHub issue creation failed; continuing with local tracking metadata. gh reported:" >&2
-        sanitize_cli_output "$GH_ISSUE_OUTPUT" >&2; emit_local_metadata; exit 0
+        # #1484: only a host where gh cannot reach GitHub issues at all (GraphQL blocked, gh missing) degrades to local tracking.
+        if issue_create_host_unsupported "$GH_ISSUE_RC" "$GH_ISSUE_OUTPUT"; then echo "WARNING: this host cannot create GitHub issues (GraphQL blocked or gh unavailable); using local tracking metadata. gh reported:" >&2; sanitize_cli_output "$GH_ISSUE_OUTPUT" >&2; emit_local_metadata; exit 0; fi
+        echo "ERROR: GitHub issue creation failed." >&2; sanitize_cli_output "$GH_ISSUE_OUTPUT" >&2; exit 1
         ;;
       azdo|azure-devops)
         REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")

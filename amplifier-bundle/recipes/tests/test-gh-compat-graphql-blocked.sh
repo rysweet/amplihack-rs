@@ -51,11 +51,16 @@ if [ "$1" = "api" ]; then
     case "$1" in
       -X) method="$2"; shift 2 ;;
       -H) shift 2 ;;
+      -f|-F) shift 2 ;;
       --input) input="$2"; shift 2 ;;
       *) path="$1"; shift ;;
     esac
   done
   [ -n "$input" ] && printf 'BODY %s\n' "$(jq -c . "$input")" >> "$STUB_LOG"
+  if [ "$path" = graphql ]; then
+    if [ "${STUB_GRAPHQL_OK:-0}" = 1 ]; then echo '{"data":{"viewer":{"login":"bot"}}}'; exit 0; fi
+    echo "HTTP 403: GitHub GraphQL is not available from Claude Code sessions; use the REST API (gh api repos/{owner}/{repo}/...). (https://api.github.com/graphql)" >&2; exit 1
+  fi
   pr='{"number":42,"node_id":"PR_1","title":"feat: widget","body":"Fixes #7","state":"open","draft":true,"merged_at":null,"html_url":"https://github.com/o/r/pull/42","created_at":"2026-01-01T00:00:00Z","user":{"login":"bot"},"labels":[],"mergeable":true,"mergeable_state":"clean","head":{"ref":"feat","sha":"abc123","repo":{"name":"r","full_name":"o/r","owner":{"login":"o"}}},"base":{"ref":"main","sha":"def456","repo":{"full_name":"o/r"}}}'
   case "$method $path" in
     "GET repos/o/r/pulls/42") printf '%s\n' "$pr" ;;
@@ -84,6 +89,12 @@ if [ "$1" = "api" ]; then
     "GET repos/o/r/pulls?"*"head=o%3Afix%2Ba%26b"*) printf '[]\n' ;;
     "POST repos/o/r/labels") printf '{"message":"Validation Failed"}'; echo "gh: Validation Failed (HTTP 422)" >&2; exit 1 ;;
     "GET user") printf '{"login":"bot"}\n' ;;
+    "PUT repos/o/r/pulls/42/merge") printf '{"merged":true}\n' ;;
+    "GET repos/o/r/pulls?state=closed"*)
+      # Paged: per_page=3; page 1 holds one merged PR of three, page 2 two of three.
+      pg="${path##*page=}"
+      jq -nc --argjson p "$pg" '[range(0;3) | {number: ($p * 10 + .), state: "closed", title: "t", html_url: "u", head: {ref: "b", sha: "s", repo: null}, base: {ref: "main", sha: "m", repo: null},
+        merged_at: (if ($p == 1 and . == 0) or ($p == 2 and . > 0) then "2026-01-01T00:00:00Z" else null end)}]' ;;
     *) printf '{"message":"Not Found"}'; echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
   esac
   exit 0
@@ -92,6 +103,14 @@ case "$1 ${2:-}" in
   "auth status") echo "  X The token in GH_TOKEN is invalid." >&2; exit 1 ;;
   "run list") echo "real-run-list"; exit 0 ;;
 esac
+# A long-running call (think `pr checks --watch`) that reports progress on
+# stderr and only finishes once the test has seen that progress.
+if [ "${STUB_STREAM:-}" != "" ]; then
+  echo "progress: 1 pending" >&2
+  i=0; while [ ! -e "$STUB_STREAM" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+  [ -e "$STUB_STREAM" ] && { echo "done"; exit 0; }
+  exit 3
+fi
 # Like the real gh, a `--body-file -` call drains stdin before the request fails.
 [ "${STUB_READS_STDIN:-0}" = 1 ] && cat >/dev/null
 if [ "${STUB_GRAPHQL_OK:-0}" = 1 ]; then echo "real-gh-output: $*"; exit 0; fi
@@ -153,7 +172,7 @@ ok "later calls go straight to REST; pr view JSON keeps gh field names"
 reset_log
 n="$(gh pr list --head feat --state all --json number,url --jq '.[0].number')"
 [ "$n" = 42 ] || fail pr-list "got '$n'"
-logged "api -X GET repos/o/r/pulls?state=all&per_page=30&head=o%3Afeat" || fail pr-list "unexpected REST path"
+logged "api -X GET repos/o/r/pulls?state=all&head=o%3Afeat&per_page=30&page=1" || fail pr-list "unexpected REST path"
 ok "pr list --head -> GET repos/o/r/pulls?head=o%3Afeat"
 
 # 4. pr create --draft uses the current branch and the default base.
@@ -265,5 +284,110 @@ ok "issue URL targets its own repository"
 rc=0; gh pr view 42 --json title --template '{{.title}}' >/dev/null 2>&1 || rc=$?
 [ "$rc" = 1 ] || fail template "--template exited $rc, want 1"
 ok "--template fails instead of printing JSON"
+
+# ---------------------------------------------------------------------------
+# Review follow-ups (PR #1497 review, comment 5837593243).
+# ---------------------------------------------------------------------------
+
+# 19. step-03 falls back to local tracking ONLY where gh cannot reach GitHub
+#     issues at all; a real failure on a working host stays fatal.
+TRACK="${REPO_ROOT}/amplifier-bundle/tools/workflow_issue_tracking.sh"
+# shellcheck source=/dev/null
+unsupported() { ( . "$TRACK"; issue_create_host_unsupported "$1" "$2" ); }
+unsupported 1 "HTTP 403: GitHub GraphQL is not available from Claude Code sessions; use the REST API" || fail step03 "GraphQL block not recognised"
+unsupported 127 "timeout: failed to run command 'gh': No such file or directory" || fail step03 "missing gh not recognised"
+unsupported 1 "gh-compat: 'gh issue pin' needs GitHub GraphQL, which this host blocks, and has no REST fallback" || fail step03 "compat refusal not recognised"
+unsupported 1 "HTTP 403: Resource not accessible by integration" && fail step03 "a permission error on a working host must stay fatal"
+unsupported 1 "GraphQL: Issues are disabled for this repo (createIssue)" && fail step03 "issues-disabled must stay fatal"
+unsupported 1 "could not add label: 'x' not found" && fail step03 "a bad payload must stay fatal"
+grep -Fq 'issue_create_host_unsupported "$GH_ISSUE_RC" "$GH_ISSUE_OUTPUT"' "${REPO_ROOT}/amplifier-bundle/recipes/workflow-prep.yaml" \
+  || fail step03 "workflow-prep step-03 no longer gates its local fallback on issue_create_host_unsupported"
+ok "step-03 local fallback limited to GraphQL-blocked / gh-unavailable hosts"
+
+# 20. Attached and explicitly-empty flag values.
+reset_log
+gh issue view 7 -Ro2/r2 --json url >/dev/null 2>&1 || true
+logged "api -X GET repos/o2/r2/issues/7" || fail flags "-Ro2/r2 ignored (fell back to the origin repo)"
+reset_log
+gh issue view 7 --repo=o2/r2 --json url >/dev/null 2>&1 || true
+logged "api -X GET repos/o2/r2/issues/7" || fail flags "--repo=o2/r2 ignored"
+reset_log
+gh issue view 7 -R o2/r2 --json url >/dev/null 2>&1 || true
+logged "api -X GET repos/o2/r2/issues/7" || fail flags "-R o2/r2 ignored"
+reset_log
+gh issue create --title T --body= --label x >/dev/null 2>&1 || fail flags "issue create --body= failed"
+logged 'BODY {"title":"T","body":"","labels":["x"]}' || fail flags "--body= swallowed the next argument"
+[ "$(gh api graphql -fquery='query { viewer { login } }' --jq=.data.viewer.login)" = bot ] || fail flags "attached -fquery=/--jq= not parsed"
+ok "flags: -Ro/r, --repo=o/r, -R o/r and --body= (empty) parse like gh"
+
+# 21. auth status: the real output and exit code stand unless GraphQL is blocked.
+rm -f "$AMPLIHACK_GH_COMPAT_STATE"
+rc=0; err="$(STUB_GRAPHQL_OK=1 gh auth status 2>&1 >/dev/null)" || rc=$?
+[ "$rc" = 1 ] || fail auth "auth status on a working-GraphQL host exited $rc, want gh's 1"
+case "$err" in *"The token in GH_TOKEN is invalid."*) ;; *) fail auth "real gh output discarded: '$err'" ;; esac
+[ ! -e "$AMPLIHACK_GH_COMPAT_STATE" ] || fail auth "block recorded although GraphQL works"
+out="$(gh auth status 2>/dev/null)" || fail auth "blocked host: auth status should pass when REST /user answers"
+case "$out" in *"Logged in to github.com account bot"*) ;; *) fail auth "blocked host: got '$out'" ;; esac
+[ -e "$AMPLIHACK_GH_COMPAT_STATE" ] || fail auth "a confirmed block was not recorded"
+rc=0; gh auth status --hostname ghe.example.com >/dev/null 2>&1 || rc=$?
+[ "$rc" = 1 ] || fail auth "another host must keep gh's own answer"
+ok "auth status: substituted only when GraphQL is confirmed blocked"
+
+# 22. The block marker: private per-user default, and it expires.
+(
+  unset AMPLIHACK_GH_COMPAT_STATE
+  reset_log
+  gh pr view 42 --json number >/dev/null 2>&1 || fail state "pr view failed"
+  d="${TMPDIR}/amplihack-gh-compat-$(id -u)"
+  [ -f "$d/graphql-blocked" ] || fail state "default marker not in the per-user dir"
+  [ "$(ls -ld "$d" | cut -c1-10)" = drwx------ ] || fail state "per-user dir is not private: $(ls -ld "$d")"
+  reset_log
+  gh pr view 42 --json number >/dev/null 2>&1
+  logged_prefix "pr view" && fail state "a fresh marker should skip the probe"
+  touch -t 200001010000 "$d/graphql-blocked"
+  reset_log
+  gh pr view 42 --json number >/dev/null 2>&1
+  logged "pr view 42 --json number" || fail state "an expired marker must re-probe the real gh"
+  exit 0
+) || exit 1
+ok "block marker: private per-user dir by default, re-probed after the TTL"
+
+# 23. pr merge without a method refuses, as non-interactive gh does.
+reset_log
+rc=0; msg="$(gh pr merge 42 2>&1)" || rc=$?
+[ "$rc" = 1 ] || fail merge "pr merge without a method exited $rc"
+case "$msg" in *"--merge, --rebase, or --squash required"*) ;; *) fail merge "message was: $msg" ;; esac
+logged_prefix "api -X PUT" && fail merge "merged without a method"
+gh pr merge 42 --squash 2>/dev/null || fail merge "pr merge --squash failed"
+logged 'BODY {"merge_method":"squash"}' || fail merge "--squash not sent"
+ok "pr merge: no method flag refuses; --squash merges by squash"
+
+# 24. assignee is percent-encoded; --head OWNER:BRANCH keeps the fork owner.
+reset_log
+gh issue list --assignee 'a b&c' --json number >/dev/null 2>&1 || true
+logged_prefix "assignee=a%20b%26c" || fail encode "assignee not percent-encoded"
+reset_log
+gh pr list --head fork:feat --json number >/dev/null 2>&1 || true
+logged_prefix "head=fork%3Afeat" || fail head "--head fork:feat lost the fork owner"
+ok "assignee percent-encoded; --head fork:branch keeps its owner"
+
+# 25. Pagination: --limit counts what survives the filter (merged), across pages.
+reset_log
+nums="$(gh pr list --state merged --limit 3 --json number --jq '[.[].number] | join(",")')"
+[ "$nums" = "10,21,22" ] || fail paging "merged --limit 3 gave '$nums'"
+logged_prefix "pulls?state=closed&per_page=3&page=2" || fail paging "second page not read"
+ok "pr list pages through REST until --limit items survive the filter"
+
+# 26. Pass-through mode streams the real gh's stderr instead of holding it.
+rm -f "$AMPLIHACK_GH_COMPAT_STATE"
+go="${WORK}/stream.go"; errlog="${WORK}/stream.err"; : > "$errlog"
+STUB_GRAPHQL_OK=1 STUB_STREAM="$go" gh pr checks 42 --watch >/dev/null 2>"$errlog" &
+bg=$!
+i=0; while ! grep -q progress "$errlog" && [ "$i" -lt 40 ]; do sleep 0.1; i=$((i + 1)); done
+grep -q progress "$errlog" || { kill "$bg" 2>/dev/null; fail stream "stderr held back until exit"; }
+touch "$go"
+rc=0; wait "$bg" || rc=$?
+[ "$rc" = 0 ] || fail stream "streamed call exited $rc"
+ok "pass-through stderr is streamed, not buffered until exit"
 
 echo "PASS: ${PASS} checks"
