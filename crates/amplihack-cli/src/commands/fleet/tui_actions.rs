@@ -11,6 +11,9 @@ pub(super) fn run_tui_dry_run(
     };
 
     let backend = NativeReasonerBackend::detect("auto")?;
+    // Issue #1482: the TUI owns the terminal, so an automatic IS_SANDBOX=1 is
+    // announced in the notice panel rather than on stderr.
+    let sandbox_notice = backend.root_sandbox_notice();
     let mut reasoner = FleetSessionReasoner::new(azlin_path.to_path_buf(), backend);
     let analysis = reasoner.reason_about_session(
         &vm.name,
@@ -26,15 +29,12 @@ pub(super) fn run_tui_dry_run(
         analysis.decision.action.as_str(),
         analysis.decision.confidence * 100.0
     );
-    ui_state.proposal_notice = analysis
-        .diagnostic
-        .as_ref()
-        .map(|diagnostic| FleetProposalNotice {
-            vm_name: analysis.decision.vm_name.clone(),
-            session_name: analysis.decision.session_name.clone(),
-            title: "Reasoner status".to_string(),
-            message: diagnostic.clone(),
-        });
+    ui_state.proposal_notice = reasoner_status_notice(
+        &analysis.decision.vm_name,
+        &analysis.decision.session_name,
+        analysis.diagnostic.as_deref(),
+        sandbox_notice.as_deref(),
+    );
     ui_state.last_decision = Some(analysis.decision);
     ui_state.status_message = Some(summary);
     ui_state.tab = FleetTuiTab::Detail;
@@ -385,4 +385,25 @@ pub(super) fn run_tui_remove_project(ui_state: &mut FleetTuiUiState) -> Result<(
         "Removed project '{removed_name}' from the dashboard."
     ));
     Ok(())
+}
+
+/// The TUI's "Reasoner status" panel: the reasoner diagnostic and the
+/// issue #1482 root-sandbox notice, whichever are present.
+pub(super) fn reasoner_status_notice(
+    vm_name: &str,
+    session_name: &str,
+    diagnostic: Option<&str>,
+    sandbox_notice: Option<&str>,
+) -> Option<FleetProposalNotice> {
+    let message = [sandbox_notice, diagnostic]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!message.is_empty()).then(|| FleetProposalNotice {
+        vm_name: vm_name.to_string(),
+        session_name: session_name.to_string(),
+        title: "Reasoner status".to_string(),
+        message,
+    })
 }

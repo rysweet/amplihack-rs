@@ -227,8 +227,12 @@ distribution imported from `docker export` keeps `/.dockerenv`. WSL is
 recognised by its kernel release (`/proc/sys/kernel/osrelease` containing
 `microsoft` or `WSL`), `WSL_DISTRO_NAME`/`WSL_INTEROP`, or its interop entries.
 Docker Desktop on Windows runs containers on the same WSL kernel, so a root
-container there needs `export IS_SANDBOX=1` unless its cgroup names the runtime. The notice
-looks like this:
+container there needs `export IS_SANDBOX=1` unless its cgroup names the runtime.
+
+`amplihack recipe run` prints the notice once on stderr before the first step,
+because agent steps' own stderr is shown only when a step fails. The fleet
+commands print it on stderr, and the fleet TUI shows it in the reasoner status
+panel. The notice looks like this:
 
 ```text
 amplihack: running as root in a container (/.dockerenv); passing IS_SANDBOX=1 to claude so --dangerously-skip-permissions is accepted. Set IS_SANDBOX=0 to refuse.

@@ -5213,3 +5213,73 @@ fn editor_discard_clears_without_saving() {
     assert!(!ui.editor_active, "editor deactivated after discard");
     assert!(ui.editor_lines.is_empty(), "lines cleared after discard");
 }
+
+// --- issue #1482: root sandbox wiring for the reasoner's claude -------------
+
+fn command_is_sandbox(command: &std::process::Command) -> Option<String> {
+    command
+        .get_envs()
+        .find(|(key, _)| *key == amplihack_utils::root_sandbox::IS_SANDBOX_ENV)
+        .and_then(|(_, value)| value)
+        .map(|value| value.to_string_lossy().into_owned())
+}
+
+#[test]
+fn reasoner_command_sets_is_sandbox_only_when_amplihack_enables_it() {
+    use amplihack_utils::root_sandbox::{SKIP_PERMISSIONS_FLAG, SkipPermissionsEnv};
+
+    let path = Path::new("/usr/bin/claude");
+    for (decision, expected) in [
+        (
+            SkipPermissionsEnv::SetSandbox {
+                signal: "/.dockerenv",
+            },
+            Some("1"),
+        ),
+        (
+            SkipPermissionsEnv::NormalizeExplicit {
+                value: "yes".to_string(),
+            },
+            Some("1"),
+        ),
+        (SkipPermissionsEnv::NotRoot, None),
+        (SkipPermissionsEnv::AlreadySandboxed, None),
+    ] {
+        let command = reasoning::reasoner_command(path, "inspect", &decision).unwrap();
+        assert!(command.get_args().any(|arg| arg == SKIP_PERMISSIONS_FLAG));
+        assert_eq!(
+            command_is_sandbox(&command).as_deref(),
+            expected,
+            "{decision:?}"
+        );
+    }
+    for decision in [
+        SkipPermissionsEnv::RootOutsideSandbox,
+        SkipPermissionsEnv::ExplicitlyNotSandboxed {
+            value: "0".to_string(),
+        },
+    ] {
+        let error = reasoning::reasoner_command(path, "inspect", &decision)
+            .expect_err("claude would refuse the flag");
+        assert!(error.to_string().contains("IS_SANDBOX=1"), "{error}");
+    }
+}
+
+#[test]
+fn tui_reasoner_panel_shows_the_root_sandbox_notice() {
+    let notice = "amplihack: running as root in a container (/.dockerenv); passing IS_SANDBOX=1";
+    let panel = tui_actions::reasoner_status_notice("vm-1", "s-1", None, Some(notice))
+        .expect("the notice alone opens the panel");
+    assert_eq!(panel.message, notice);
+    let panel = tui_actions::reasoner_status_notice(
+        "vm-1",
+        "s-1",
+        Some("fell back to heuristics"),
+        Some(notice),
+    )
+    .unwrap();
+    assert!(panel.message.contains(notice) && panel.message.contains("fell back to heuristics"));
+    let panel = tui_actions::reasoner_status_notice("vm-1", "s-1", Some("diag"), None).unwrap();
+    assert_eq!(panel.message, "diag");
+    assert!(tui_actions::reasoner_status_notice("vm-1", "s-1", None, None).is_none());
+}

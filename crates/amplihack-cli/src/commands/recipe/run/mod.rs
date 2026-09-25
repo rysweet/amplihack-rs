@@ -143,6 +143,7 @@ pub fn run_recipe(
             &recipe,
             &crate::env_builder::active_agent_binary(),
             &amplihack_utils::root_sandbox::detect(),
+            &mut io::stderr(),
         )
     {
         writeln!(io::stderr(), "Error: {error}")?;
@@ -188,10 +189,16 @@ pub fn run_recipe(
 /// --dangerously-skip-permissions` as root and Claude Code would refuse it.
 ///
 /// Sub-recipe steps count as agent steps: what they run is not known here.
+///
+/// When amplihack sets `IS_SANDBOX=1` by itself, the notice is written to
+/// `notices` (stderr) once, here. The nested `amplihack claude` processes
+/// print it too, but the recipe runner keeps their stderr in temp files and
+/// shows it only when a step fails, so this is the copy the user sees.
 fn preflight_root_sandbox(
     recipe: &RecipeDoc,
     agent_binary: &str,
     decision: &amplihack_utils::root_sandbox::SkipPermissionsEnv,
+    notices: &mut dyn Write,
 ) -> Result<()> {
     if agent_binary != "claude" {
         return Ok(());
@@ -205,9 +212,13 @@ fn preflight_root_sandbox(
     if !launches_agents {
         return Ok(());
     }
-    decision
-        .check()
-        .map_err(|error| anyhow::anyhow!("recipe pre-flight failed for '{}': {error}", recipe.name))
+    decision.check().map_err(|error| {
+        anyhow::anyhow!("recipe pre-flight failed for '{}': {error}", recipe.name)
+    })?;
+    if let Some(notice) = decision.notice() {
+        writeln!(notices, "{notice}")?;
+    }
+    Ok(())
 }
 
 fn parse_context_args(context_args: &[String]) -> (BTreeMap<String, String>, Vec<String>) {

@@ -237,6 +237,10 @@ pub(super) fn run_dry_run(vm_names: &[String], priorities: &str, backend: &str) 
     }
 
     let backend = NativeReasonerBackend::detect(backend)?;
+    // Issue #1482: announce an automatic IS_SANDBOX=1 once, where it is seen.
+    if let Some(notice) = backend.root_sandbox_notice() {
+        eprintln!("{notice}");
+    }
     let mut reasoner = FleetSessionReasoner::new(azlin, backend);
     println!();
     println!("Fleet Admiral Dry Run -- {} sessions", sessions.len());

@@ -236,26 +236,24 @@ impl NativeReasonerBackend {
         }
     }
 
+    /// Issue #1482: the line announcing an automatic `IS_SANDBOX=1` for this
+    /// backend's `claude`, for the caller to show once where the user sees it
+    /// (stderr for the fleet commands, the notice panel in the TUI).
+    pub(super) fn root_sandbox_notice(&self) -> Option<String> {
+        match self {
+            NativeReasonerBackend::None => None,
+            NativeReasonerBackend::Claude(_) => amplihack_utils::root_sandbox::detect().notice(),
+        }
+    }
+
     pub(super) fn complete(&self, prompt: &str) -> Result<String> {
         match self {
             NativeReasonerBackend::None => {
                 bail!("no native reasoner backend available")
             }
             NativeReasonerBackend::Claude(path) => {
-                let mut cmd = Command::new(path);
-                cmd.stdin(Stdio::null());
-                cmd.args([
-                    amplihack_utils::root_sandbox::SKIP_PERMISSIONS_FLAG,
-                    "-p",
-                    prompt,
-                ]);
-                // Issue #1482: IS_SANDBOX=1 as root in a sandbox, else a clear error.
-                // The fleet TUI owns the terminal, so the notice goes to the log.
-                if let Some(notice) =
-                    amplihack_utils::root_sandbox::detect().apply_quietly(&mut cmd)?
-                {
-                    tracing::warn!("{notice}");
-                }
+                let mut cmd =
+                    reasoner_command(path, prompt, &amplihack_utils::root_sandbox::detect())?;
                 let mut env_builder = EnvBuilder::new()
                     .with_amplihack_session_id()
                     .with_session_tree_context()
@@ -279,4 +277,25 @@ impl NativeReasonerBackend {
             }
         }
     }
+}
+
+/// The reasoner's `claude` invocation with the root-sandbox `decision` applied
+/// (issue #1482): `IS_SANDBOX=1` on the child when amplihack enables it, or an
+/// error when Claude Code would refuse the flag. The notice is shown once by
+/// the caller through [`NativeReasonerBackend::root_sandbox_notice`], not per
+/// call.
+pub(super) fn reasoner_command(
+    path: &Path,
+    prompt: &str,
+    decision: &amplihack_utils::root_sandbox::SkipPermissionsEnv,
+) -> Result<Command> {
+    let mut cmd = Command::new(path);
+    cmd.stdin(Stdio::null());
+    cmd.args([
+        amplihack_utils::root_sandbox::SKIP_PERMISSIONS_FLAG,
+        "-p",
+        prompt,
+    ]);
+    decision.apply_quietly(&mut cmd)?;
+    Ok(cmd)
 }

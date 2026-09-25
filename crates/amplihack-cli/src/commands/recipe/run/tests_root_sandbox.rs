@@ -19,6 +19,7 @@ fn root_outside_a_sandbox_fails_before_agent_steps_naming_is_sandbox() {
             &recipe(steps),
             "claude",
             &SkipPermissionsEnv::RootOutsideSandbox,
+            &mut std::io::sink(),
         )
         .expect_err("must fail up front");
         let message = error.to_string();
@@ -38,6 +39,7 @@ fn explicit_non_1_is_sandbox_fails_as_root() {
         &SkipPermissionsEnv::ExplicitlyNotSandboxed {
             value: "0".to_string(),
         },
+        &mut std::io::sink(),
     )
     .expect_err("must fail up front");
     assert!(error.to_string().contains("IS_SANDBOX=1"), "{error}");
@@ -55,7 +57,13 @@ fn launchable_decisions_pass() {
             value: "yes".to_string(),
         },
     ] {
-        preflight_root_sandbox(&recipe(AGENT_STEP), "claude", &decision).unwrap();
+        preflight_root_sandbox(
+            &recipe(AGENT_STEP),
+            "claude",
+            &decision,
+            &mut std::io::sink(),
+        )
+        .unwrap();
     }
 }
 
@@ -65,6 +73,7 @@ fn bash_only_recipes_and_other_agents_are_not_blocked() {
         &recipe(BASH_STEP),
         "claude",
         &SkipPermissionsEnv::RootOutsideSandbox,
+        &mut std::io::sink(),
     )
     .unwrap();
     for binary in ["copilot", "codex", "amplifier"] {
@@ -72,7 +81,61 @@ fn bash_only_recipes_and_other_agents_are_not_blocked() {
             &recipe(AGENT_STEP),
             binary,
             &SkipPermissionsEnv::RootOutsideSandbox,
+            &mut std::io::sink(),
         )
         .unwrap();
+    }
+}
+
+#[test]
+fn an_automatic_enable_is_announced_once_by_the_preflight() {
+    let mut notices = Vec::new();
+    preflight_root_sandbox(
+        &recipe(AGENT_STEP),
+        "claude",
+        &SkipPermissionsEnv::SetSandbox {
+            signal: "/.dockerenv",
+        },
+        &mut notices,
+    )
+    .unwrap();
+    let notices = String::from_utf8(notices).unwrap();
+    assert_eq!(notices.lines().count(), 1, "{notices}");
+    assert!(notices.contains("/.dockerenv"), "{notices}");
+    assert!(notices.contains("IS_SANDBOX=1"), "{notices}");
+    assert!(notices.contains("IS_SANDBOX=0"), "{notices}");
+}
+
+#[test]
+fn nothing_is_announced_unless_amplihack_enables_it_for_agent_steps() {
+    let quiet = [
+        (AGENT_STEP, "claude", SkipPermissionsEnv::NotRoot),
+        (AGENT_STEP, "claude", SkipPermissionsEnv::AlreadySandboxed),
+        (
+            AGENT_STEP,
+            "claude",
+            SkipPermissionsEnv::NormalizeExplicit {
+                value: "yes".to_string(),
+            },
+        ),
+        (
+            BASH_STEP,
+            "claude",
+            SkipPermissionsEnv::SetSandbox {
+                signal: "/.dockerenv",
+            },
+        ),
+        (
+            AGENT_STEP,
+            "copilot",
+            SkipPermissionsEnv::SetSandbox {
+                signal: "/.dockerenv",
+            },
+        ),
+    ];
+    for (steps, binary, decision) in quiet {
+        let mut notices = Vec::new();
+        preflight_root_sandbox(&recipe(steps), binary, &decision, &mut notices).unwrap();
+        assert!(notices.is_empty(), "{binary} {decision:?}");
     }
 }
