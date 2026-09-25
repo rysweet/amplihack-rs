@@ -910,3 +910,62 @@ fn test_wait_for_child_returns_zero_when_shutdown_flag_set() {
          Got: {exit_code}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1424: a child that dies on a signal is reported, not silently zeroed.
+// ---------------------------------------------------------------------------
+
+/// A child killed by SIGABRT — the Copilot native binary in issue #1424, which
+/// panicked on a failed thread spawn and aborted — must NOT be reported as a
+/// clean exit. `status.code().unwrap_or(0)` said 0 for every signal death, so
+/// `amplihack copilot` exited 0 and claimed success.
+#[test]
+#[cfg(unix)]
+fn test_wait_for_child_reports_a_sigabrt_death_instead_of_success() {
+    let _guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    let mut cmd = Command::new("sh");
+    cmd.args(["-c", "ulimit -c 0 2>/dev/null; kill -ABRT $$"]);
+    let mut child = ManagedChild::spawn(cmd).expect("failed to spawn sh");
+    let shutdown = Arc::new(AtomicBool::new(false));
+
+    let exit_code = wait_for_child_or_signal(&mut child, &shutdown)
+        .expect("wait_for_child_or_signal returned an error");
+
+    assert_eq!(
+        exit_code,
+        128 + libc::SIGABRT,
+        "a SIGABRT death must be reported as 128+6, not as success. Got {exit_code}."
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn describe_child_signal_says_the_binary_ran() {
+    // The one sentence the misdiagnosis contradicted: it was there, and it ran.
+    let message = describe_child_signal(libc::SIGABRT);
+    assert!(message.contains("SIGABRT"), "{message}");
+    assert!(
+        !message.to_lowercase().contains("not installed")
+            && !message.to_lowercase().contains("no platform package"),
+        "must not blame the install: {message}"
+    );
+    assert!(
+        message.contains("ulimit -u") && message.contains("pids.max"),
+        "SIGABRT must point at the machine: {message}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn describe_child_signal_does_not_invent_a_cause_for_every_signal() {
+    // SIGSEGV is not resource exhaustion; naming a likely-but-unverified cause
+    // is the mistake this issue is about.
+    let message = describe_child_signal(libc::SIGSEGV);
+    assert!(message.contains("SIGSEGV"), "{message}");
+    assert!(!message.contains("ulimit -u"), "{message}");
+}

@@ -90,6 +90,10 @@ pub enum Rejection {
     ProbeTimedOut,      // `--version` exceeded the per-candidate budget
     UnparseableVersion, // `--version` succeeded but emitted no semver
     NotProbed,          // never examined — see "Stopping early is recorded"
+    // The binary RAN and died. Never evidence of a missing install (issue #1424).
+    KilledBySignal { signal: i32, stderr_tail: String },
+    // The host would not run it, or took it down for want of resources.
+    ResourceExhausted { detail: String },
 }
 
 pub struct Resolution {
@@ -217,11 +221,42 @@ A candidate becomes a `LaunchTarget` only if **all** of the following hold:
 | Path exists | `Rejection::Missing` |
 | Path resolves to a regular file — `fs::metadata`, **following symlinks** | `Rejection::NotAFile` |
 | File is executable | `Rejection::NotExecutable` |
-| `--version` exits 0 within the per-candidate budget | `Rejection::ProbeFailed` / `Rejection::PlaceholderStub` / `Rejection::Unreadable` / `Rejection::ProbeTimedOut` |
+| `--version` exits 0 within the per-candidate budget | `Rejection::ProbeFailed` / `Rejection::PlaceholderStub` / `Rejection::Unreadable` / `Rejection::ProbeTimedOut` / `Rejection::KilledBySignal` / `Rejection::ResourceExhausted` |
 | `--version` output contains a parseable semver | `Rejection::UnparseableVersion` |
 
 `Rejection::NotProbed` is not in this table on purpose: it is not a verdict on
 the candidate at all — see "Stopping early is recorded".
+
+#### A candidate that ran is not a candidate that is missing
+
+Issue #1424. `output.status.success()` is false for three unrelated events, and
+only one of them is repaired by an install:
+
+| What happened | Verdict | `decide_install` |
+| --- | --- | --- |
+| Exited non-zero | `ProbeFailed` / `PlaceholderStub` | `InstallMissing` |
+| Killed by a signal | `KilledBySignal { signal, stderr_tail }` | `Abstain` |
+| `EAGAIN`/`ENOMEM` on spawn, or a death with the host's out-of-resources fingerprint on stderr | `ResourceExhausted { detail }` | `Abstain` |
+
+A Copilot native binary that launched and then aborted on `SIGABRT` — after
+failing to spawn a thread with `EAGAIN` — was reported as a missing platform
+package, which sent the reader after an installation problem that did not
+exist. A binary that executed is present and executable by construction, so
+nothing downstream may say otherwise:
+
+* `Rejection::is_about_the_machine` is the single predicate `decide_install`
+  reads for inconclusive evidence. Adding a machine-shaped verdict means adding
+  it here, not to a `matches!` at the call site.
+* `Resolution::install_would_help` gates the `npm install -g` remedy in
+  `rejection_report`. An install remedy under a verdict that says the binary ran
+  is a confident instruction to fix something that is not broken.
+* `Resolution::resource_failure` is what a caller reports instead of the probe
+  budgets, which name the wrong number just as confidently.
+
+The `stderr_tail` is sanitised the way `display_untrusted_path` sanitises a
+path, and folded to a single line: a child's stderr is attacker-influenced text
+that lands in amplihack's own diagnosis, and a newline in it would forge a row
+in the report.
 
 The first four rows are `cheap_reject`, and they are the **only** pre-probe
 checks. Absoluteness is a fact about the path; the other three are filesystem
@@ -472,7 +507,7 @@ exit below is where they come apart.
 
 | Resolved target | Latest version from registry | Decision |
 | --- | --- | --- |
-| `None`, and some candidate was `ProbeTimedOut` or `NotProbed` | any | `Abstain` |
+| `None`, and some candidate was `ProbeTimedOut`, `NotProbed`, `KilledBySignal` or `ResourceExhausted` — i.e. `Rejection::is_about_the_machine` | any | `Abstain` |
 | `None`, halted on a user override **inside** `amplihack_bin` | any | `InstallMissing` |
 | `None`, halted on a user override **outside** `amplihack_bin` | any | `BrokenOverride` |
 | `None`, every rejection conclusive | any | `InstallMissing` |

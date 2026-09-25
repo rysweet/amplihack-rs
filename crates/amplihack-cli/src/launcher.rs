@@ -133,6 +133,32 @@ pub(crate) fn enrich_spawn_error(
     /// handed to `execve` as if it were a native binary — i.e. the placeholder.
     const ENOEXEC: i32 = 8;
 
+    // Issue #1424. EAGAIN/ENOMEM from `fork`/`clone` is the host saying "not
+    // right now": the per-user process limit (`ulimit -u`), a cgroup's
+    // `pids.max`, `threads-max`, or memory. amplihack had already resolved this
+    // binary and verified its `--version`, so it is present, executable and
+    // working — and appending the resolution report here would end the message
+    // with `npm install -g`, an instruction to reinstall something that is not
+    // broken. That is the misdiagnosis this issue is about, so this arm returns
+    // early and the report is deliberately NOT included.
+    if matches!(raw_os_error, Some(libc::EAGAIN) | Some(libc::ENOMEM)) {
+        return format!(
+            "Could not start {path}.\n\n\
+             The host would not create a new process for it (errno {errno}). \
+             The binary is present and amplihack verified it a moment ago, so \
+             this is resource exhaustion on this machine, NOT a missing or \
+             broken install — reinstalling {package} will not change it.\n\n\
+             Check the machine:\n  \
+             ulimit -u                        # per-user process/thread limit\n  \
+             cat /proc/sys/kernel/threads-max # system-wide thread limit\n  \
+             cat /sys/fs/cgroup/pids.max      # cgroup/container process limit\n  \
+             uptime; free -m                  # load, and memory still available\n\
+             Then re-run amplihack once the host has room.",
+            path = amplihack_utils::launch_target::display_untrusted_path(path),
+            errno = raw_os_error.unwrap_or_default(),
+        );
+    }
+
     let cause = match raw_os_error {
         Some(ENOEXEC) => format!(
             "The file is not a runnable program. This is the placeholder that \
@@ -292,6 +318,57 @@ mod tests {
     #[test]
     fn spawn_error_names_the_binary_it_tried_to_run() {
         assert!(enriched().contains("/home/you/.npm-global/bin/claude"));
+    }
+
+    // ------------------------------------------------------------------
+    // Issue #1424: EAGAIN is the host, not the install.
+    // ------------------------------------------------------------------
+
+    /// The spawn that fails because the host is at its process/thread limit.
+    fn eagain() -> String {
+        enrich_spawn_error(
+            Some(libc::EAGAIN),
+            std::path::Path::new("/home/you/.npm-global/bin/copilot"),
+            "@github/copilot",
+            STUB_REPORT,
+        )
+    }
+
+    #[test]
+    fn eagain_does_not_tell_the_user_to_reinstall() {
+        // amplihack had already resolved and version-checked this binary. The
+        // kernel said "not right now"; answering that with `npm install -g` is
+        // the misdiagnosis issue #1424 is about.
+        let msg = eagain();
+        assert!(
+            !msg.contains("npm install"),
+            "EAGAIN must not carry an install remedy, got:\n{msg}"
+        );
+        assert!(
+            !msg.to_lowercase().contains("incomplete install"),
+            "EAGAIN must not call the install incomplete, got:\n{msg}"
+        );
+    }
+
+    #[test]
+    fn eagain_names_resource_exhaustion_and_what_to_check() {
+        let msg = eagain();
+        assert!(
+            msg.to_lowercase().contains("resource exhaustion"),
+            "must name the real cause, got:\n{msg}"
+        );
+        for hint in ["ulimit -u", "pids.max", "free -m"] {
+            assert!(msg.contains(hint), "must name {hint:?}, got:\n{msg}");
+        }
+        assert!(msg.contains("/home/you/.npm-global/bin/copilot"));
+    }
+
+    #[test]
+    fn enoexec_still_names_the_incomplete_install() {
+        // The genuine fallback must survive: a placeholder handed to execve is
+        // still an install problem and still gets the install remedy.
+        let msg = enriched();
+        assert!(msg.contains("npm install") && msg.to_lowercase().contains("placeholder"));
     }
 
     #[test]
