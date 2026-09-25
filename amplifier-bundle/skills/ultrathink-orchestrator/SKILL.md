@@ -1,9 +1,7 @@
 ---
 name: ultrathink-orchestrator
 version: 2.0.0
-description: |
-  DEPRECATED — Use dev-orchestrator skill instead.
-  This skill redirects to dev-orchestrator for backward compatibility.
+description: Deprecated, redirects to dev-orchestrator. Kept for backward compatibility only.
 deprecated: true
 deprecated_since: "2.0.0"
 replaced_by: dev-orchestrator

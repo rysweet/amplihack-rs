@@ -1,12 +1,7 @@
 ---
 name: cybersecurity-analyst
 version: 1.0.0
-description: |
-  Analyzes events through cybersecurity lens using threat modeling, attack surface analysis, defense-in-depth,
-  zero-trust architecture, and risk-based frameworks (CIA triad, STRIDE, MITRE ATT&CK).
-  Provides insights on vulnerabilities, attack vectors, defense strategies, incident response, and security posture.
-  Use when: Security incidents, vulnerability assessments, threat analysis, security architecture, compliance.
-  Evaluates: Confidentiality, integrity, availability, threat actors, attack patterns, controls, residual risk.
+description: Security lens on threat modeling, attack surface, and defense-in-depth. Use for incidents or security architecture.
 ---
 
 # Cybersecurity Analyst Skill

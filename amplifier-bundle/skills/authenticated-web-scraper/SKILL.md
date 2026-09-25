@@ -1,6 +1,6 @@
 ---
 name: authenticated-web-scraper
-description: Scrape authenticated websites from WSL2 using Edge CDP. Launches headed Edge for user auth, then headless scraping via Chrome DevTools Protocol. Use when mirroring internal wikis, docs sites, or any site requiring 2FA/SSO login.
+description: Scrape sites needing 2FA or SSO login from WSL2 via Edge CDP. Use when mirroring internal wikis or private docs.
 version: 1.0.0
 ---
 

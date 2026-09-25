@@ -496,6 +496,9 @@ Specialized AI agents and tools for every development task.
 Modular, on-demand capabilities that extend amplihack:
 
 - [Skills Catalog](skills/SKILL_CATALOG.md) - Complete skills catalog
+- [The Skill Listing Budget](concepts/skill-listing-budget.md) - Why every bundled skill's description is capped at ~120 characters, and what happens when the listing overruns
+- [Skill Listing Budget Reference](reference/skill-listing-budget.md) - The `SKILL_LISTING_BUDGET_CHARS` limit, the `skill_listing_budget` API, the install check, and the re-measurement script
+- [Keep Skill Descriptions in Budget](howto/keep-skill-descriptions-in-budget.md) - Measure the listing, write a description that fits, and fix an over-budget install or pre-commit failure
 <!-- - [Documentation Writing](claude/skills/documentation-writing/SKILL.md) - Eight Rules compliance (Coming soon) -->
 - [Mermaid Diagrams](claude/skills/mermaid-diagram-generator/SKILL.md) - Visual documentation
 - [Test Gap Analyzer](claude/skills/test-gap-analyzer/SKILL.md) - Find untested code
@@ -763,6 +766,7 @@ Testing strategies, quality assurance, and validation patterns.
 - [CS Validator](cs-validator/README.md) - Code style validation
 - [Testing Plan](testing/TEST_PLAN.md) - Testing strategy and execution checklist
 - [Skill Frontmatter Type Guard](testing/SKILL_FRONTMATTER_TYPE_GUARD.md) - Regression test catching Copilot CLI frontmatter string-scalar TYPE bugs
+- [Skill Listing Budget Reference](reference/skill-listing-budget.md) - Regression guard that fails install and pre-commit when staged skill descriptions overrun the session skill listing
 
 ### Code Review
 

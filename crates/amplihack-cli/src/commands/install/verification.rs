@@ -3,6 +3,9 @@
 use super::bundle_compat::validate_staged_framework_bundle;
 use super::filesystem::walk_dirs;
 use super::types::{SOURCE_CONDITIONAL_BUNDLE_DIR_MAPPING, SourceLayout, dir_mapping};
+use crate::skill_listing_budget::{
+    SKILL_LISTING_BUDGET_CHARS, collect_skill_listing, over_budget_report,
+};
 use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -49,6 +52,7 @@ pub(super) fn verify_install_completeness(
     }
 
     verify_skill_count(source_root, claude_dir, &mut missing)?;
+    verify_skill_description_budget(claude_dir, &mut missing)?;
     verify_staged_bundle(source_root, layout, claude_dir, &mut missing)?;
 
     if !missing.is_empty() {
@@ -78,6 +82,45 @@ fn verify_skill_count(
     if staged_count < source_count {
         missing.push(format!(
             "staged skills are incomplete: expected at least {source_count} skill directories, found {staged_count} at {}",
+            staged_skills.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Fail the install when the staged skills contribute more `name` +
+/// `description` text than Claude Code will keep resident (issue #1459).
+///
+/// Past that limit Claude Code **silently** truncates the tail of its skill
+/// listing to bare names. A truncated skill still installs and still runs when
+/// invoked by name, but can no longer be matched to a task — the same class of
+/// defect as a component that failed to stage, which
+/// `amplifier-bundle/context/PHILOSOPHY.md` says install must report loudly.
+///
+/// This measures `<claude_dir>/skills`, the tree amplihack staged, and nothing
+/// else. It never reads the user's own skills directory: someone with 200
+/// personal skills must not be locked out of installing amplihack.
+///
+/// An absent staged tree is an empty listing here, which passes. That is safe
+/// only because of the call ordering: if the source bundle has no `skills/`
+/// there was nothing to stage and an empty listing is the right answer, and if
+/// it does, `verify_skill_count` has already run and pushed the shortfall onto
+/// `missing`. Keep this call after it.
+fn verify_skill_description_budget(claude_dir: &Path, missing: &mut Vec<String>) -> Result<()> {
+    let staged_skills = claude_dir.join("skills");
+    let entries = collect_skill_listing(&staged_skills).with_context(|| {
+        format!(
+            "failed to measure the staged skill listing at {}",
+            staged_skills.display()
+        )
+    })?;
+
+    if let Some(report) = over_budget_report(&entries, SKILL_LISTING_BUDGET_CHARS) {
+        // The report carries skill labels and character counts only, never
+        // description text — see `skill_listing_budget`'s module docs.
+        missing.push(format!(
+            "staged {report}\n    at {}\n    If you did not author the skills named above, remove that \
+             directory and re-run `amplihack install`.",
             staged_skills.display()
         ));
     }

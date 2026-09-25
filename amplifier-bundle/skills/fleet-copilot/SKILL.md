@@ -1,9 +1,7 @@
 ---
 name: fleet-copilot
 version: 2.0.0
-description: >-
-  Autonomous co-pilot — agent formulates goal from natural language, enables
-  lock mode with SessionCopilot reasoning, works until goal is achieved.
+description: Autonomous co-pilot that forms a goal from natural language and works in lock mode until it is achieved.
 triggers:
   - "fleet copilot"
   - "copilot mode"

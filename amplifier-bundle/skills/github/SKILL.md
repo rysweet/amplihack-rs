@@ -1,6 +1,6 @@
 ---
 name: github
-description: Expert guidance for GitHub CLI (gh) - issues, PRs, repos, releases, and GitHub API. Use when working with GitHub, managing issues/PRs, or when user mentions GitHub, PRs, issues, or repos. Preferred over GitHub MCP server for context efficiency.
+description: GitHub CLI guidance for issues, PRs, repos, releases, and the API. Preferred over the GitHub MCP server.
 ---
 
 # GitHub CLI Skill

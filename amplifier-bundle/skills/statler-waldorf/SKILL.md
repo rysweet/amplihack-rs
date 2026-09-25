@@ -1,13 +1,7 @@
 ---
 name: statler-waldorf
 version: 1.0.0
-description: |
-  Acerbic dual-voice analysis of meetings, transcripts, plans, and strategy documents.
-  Channels Statler & Waldorf from the Muppets — world-weary hecklers who mock process
-  and pretension, never people. Delivers ruthless distillation, archetype matching,
-  theatrical commentary, and actionable feedback disguised as roast material.
-  Use when: reviewing meeting transcripts, agent session logs, strategy documents,
-  planning artifacts, or any "performance" that deserves an honest audience.
+description: Acerbic dual-voice roast of meetings, transcripts, plans, and strategy docs, with actionable feedback inside.
 allowed-tools: ["Read", "Grep", "Glob", "Bash", "WebFetch", "Agent"]
 user-invocable: true
 argument-hint: "<paste transcript, path to file, or describe the meeting>"

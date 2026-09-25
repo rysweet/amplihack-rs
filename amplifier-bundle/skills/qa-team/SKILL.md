@@ -1,10 +1,6 @@
 ---
 name: qa-team
-description: |
-  QA team for outside-in validation, side-by-side parity loops, and A/B behavioral comparison.
-  Use when you need behavior-driven tests, legacy-vs-new comparison, or rollout shadow validation.
-  Creates executable scenarios and parity workflows that agents can observe, compare, and iterate on.
-  Supports local, observable tmux, remote SSH, and shadow-mode divergence logging patterns.
+description: Outside-in validation, side-by-side parity loops, and A/B behavioral comparison. Use for behavior-driven tests.
 version: 1.1.0
 embedded_framework_version: 0.1.0
 github_repo: https://github.com/rysweet/gadugi-agentic-test

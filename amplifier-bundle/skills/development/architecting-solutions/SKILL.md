@@ -1,6 +1,6 @@
 ---
 name: architecting-solutions
-description: "Analyzes problems and designs system architecture before implementation. Activates when user asks design questions, discusses architecture, or needs to break down complex features. Creates clear specifications following the brick philosophy of simple, modular, regeneratable components."
+description: Designs system architecture and specs before implementation. Use for design questions or breaking down a feature.
 ---
 
 # Architecting Solutions

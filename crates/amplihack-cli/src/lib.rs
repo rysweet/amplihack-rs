@@ -53,6 +53,9 @@ pub(crate) mod session_log;
 pub mod session_tracker;
 pub mod settings_manager;
 pub mod signals;
+/// Issue #1459: the `name` + `description` listing Claude Code loads every
+/// session has a budget, and it truncates past it silently.
+pub mod skill_listing_budget;
 #[cfg(test)]
 pub mod test_support;
 pub mod tool_update_check;

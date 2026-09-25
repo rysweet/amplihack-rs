@@ -1,10 +1,6 @@
 ---
 name: mermaid-diagram-generator
-description: |
-  Converts architecture descriptions, module specs, or workflow docs into Mermaid diagrams.
-  Use when visualizing brick module relationships, workflows (DDD, investigation), or system architecture.
-  Supports: flowcharts, sequence diagrams, class diagrams, state machines, entity relationship diagrams, and Gantt charts.
-  Generates valid Mermaid syntax for embedding in markdown docs.
+description: Turns architecture or workflow descriptions into Mermaid diagrams. Use for flowcharts, sequence, state, or ER.
 ---
 
 # Mermaid Diagram Generator Skill

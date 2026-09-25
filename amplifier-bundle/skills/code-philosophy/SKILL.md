@@ -1,12 +1,7 @@
 ---
 name: code-philosophy
 version: 1.0.0
-description: |
-  Multi-pass code philosophy audit skill. Performs three distinct passes
-  over target code to verify adherence to the project's PHILOSOPHY.md
-  principles. Produces a structured report with findings and delegates
-  fixes to dev-orchestrator. This is an advisory audit-only skill — it
-  does not modify code directly.
+description: Three-pass audit of code against PHILOSOPHY.md, advisory only. Use when checking philosophy compliance.
 auto_activates:
   - "philosophy check"
   - "brick rule"

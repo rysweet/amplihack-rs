@@ -1,6 +1,6 @@
 ---
 name: creating-pull-requests
-description: "Creates high-quality pull requests with comprehensive descriptions, test plans, and context. Activates when user wants to create PR, says 'ready to merge', or has completed feature work. Analyzes commits and changes to generate meaningful PR descriptions."
+description: Creates PRs with descriptions, test plans, and context from commits. Use when work is ready to merge.
 allowed-tools: ["Bash", "Read", "Grep", "Glob"]
 ---
 

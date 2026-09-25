@@ -1,13 +1,7 @@
 ---
 name: self-improving-agent-builder
 version: 1.1.0
-description: |
-  Encodes a continuous improvement loop for goal-seeking agents: EVAL, ANALYZE,
-  RESEARCH (hypothesis + evidence + counter-arguments), IMPROVE, RE-EVAL, DECIDE.
-  Auto-commits improvements (+2% net, no regression >5%) and reverts failures.
-  Works with all 4 SDK implementations.
-  Auto-activates on "improve agent", "self-improving loop", "agent eval loop",
-  "benchmark agents", "run improvement cycle".
+description: Improvement loop for goal-seeking agents that evals, analyzes, improves, re-evals, and auto-commits wins.
 source_urls:
   - https://github.com/rysweet/amplihack
 ---

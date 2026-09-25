@@ -1,11 +1,7 @@
 ---
 name: session-to-agent
 version: 1.0.0
-description: >-
-  Converts interactive Claude Code or GitHub Copilot session goals and processes
-  into a reusable goal-seeking agent with memory. Extracts goals, constraints,
-  and approaches from session transcripts and generates agent prompts via the
-  amplihack goal_agent_generator CLI.
+description: Turns a session's goals and approach into a reusable goal-seeking agent with memory.
 auto-detection:
   triggers:
     - "session to agent"

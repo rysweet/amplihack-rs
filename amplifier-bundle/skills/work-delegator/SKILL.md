@@ -1,6 +1,6 @@
 ---
 name: work-delegator
-description: Expert delegation specialist that creates comprehensive context packages for coding agents, analyzes requirements, identifies relevant files, and generates clear instructions. Activates when delegating work, assigning tasks, creating delegation packages, or preparing agent instructions.
+description: Builds context packages for coding agents with requirements, relevant files, and instructions. Use when delegating.
 ---
 
 # Work Delegator Skill

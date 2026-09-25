@@ -1,12 +1,7 @@
 ---
 name: novelist-analyst
 version: 1.0.0
-description: |
-  Analyzes events through narrative lens using story structure, character arc analysis, dramatic tension,
-  thematic development, and narrative theory (three-act structure, hero's journey, conflict-resolution).
-  Provides insights on narrative coherence, character motivations, dramatic stakes, plot development, and thematic resonance.
-  Use when: Complex human stories, leadership analysis, organizational narratives, crisis narratives, cultural moments.
-  Evaluates: Character development, narrative arc, dramatic tension, thematic depth, symbolic meaning, narrative coherence.
+description: Narrative lens on story structure, character arc, tension, and theme. Use for human stories and leadership.
 ---
 
 # Novelist Analyst Skill

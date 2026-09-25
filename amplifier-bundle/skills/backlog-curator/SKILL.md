@@ -1,6 +1,6 @@
 ---
 name: backlog-curator
-description: Expert backlog manager that prioritizes work using multi-criteria scoring, analyzes dependencies, and recommends optimal next tasks. Activates when managing backlogs, prioritizing work, adding items, or analyzing what to work on next.
+description: Prioritizes a backlog by multi-criteria scoring and dependencies. Use when picking what to work on next.
 ---
 
 # Backlog Curator Skill

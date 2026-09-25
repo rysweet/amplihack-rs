@@ -1,7 +1,7 @@
 ---
 name: property-based-testing
 version: 1.0.0
-description: Property-based and metamorphic testing expert for choosing a library, finding good properties (invariants, round-trips, idempotence, oracle/differential, metamorphic relations), and wiring generative tests into the existing test runner.
+description: Property-based and metamorphic testing, from choosing a library to finding invariants and wiring generative tests.
 auto_activates:
   - "property-based testing"
   - "property based test"

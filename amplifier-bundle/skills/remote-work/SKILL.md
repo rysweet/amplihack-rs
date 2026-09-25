@@ -1,6 +1,6 @@
 ---
 name: remote-work
-description: Execute amplihack work on remote Azure VMs with automatic region and resource selection
+description: Runs amplihack work on remote Azure VMs with automatic region and resource selection.
 version: 1.0.0
 author: amplihack
 activation_keywords:

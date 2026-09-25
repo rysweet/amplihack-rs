@@ -1,12 +1,7 @@
 ---
 name: economist-analyst
 version: 1.0.0
-description: |
-  Analyzes events through economic lens using supply/demand, incentive structures, market dynamics,
-  and multiple schools of economic thought (Classical, Keynesian, Austrian, Behavioral).
-  Provides insights on market impacts, resource allocation, policy implications, and distributional effects.
-  Use when: Economic events, policy changes, market shifts, financial crises, regulatory decisions.
-  Evaluates: Incentives, efficiency, opportunity costs, market failures, systemic risks.
+description: Economics lens on supply and demand, incentives, and market dynamics. Use for policy changes or market shifts.
 ---
 
 # Economist Analyst Skill

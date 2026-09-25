@@ -1,6 +1,6 @@
 ---
 name: github-copilot-sdk
-description: Comprehensive knowledge of GitHub Copilot SDK for embedding Copilot's agentic workflows in Python, TypeScript, Go, and .NET applications. Auto-activates for Copilot SDK integration, CopilotClient usage, session management, streaming responses, custom tools, and MCP server connections.
+description: GitHub Copilot SDK for Python, TypeScript, Go, and .NET, covering sessions, streaming, custom tools, and MCP.
 version: 1.0.0
 last_updated: 2025-01-25
 source_urls:

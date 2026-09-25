@@ -1,12 +1,7 @@
 ---
 name: lawyer-analyst
 version: 1.0.0
-description: |
-  Analyzes events through legal lens using statutory interpretation, case law analysis, legal reasoning,
-  constitutional principles, and multiple legal frameworks (common law, civil law, international law).
-  Provides insights on legal rights, obligations, liabilities, remedies, and compliance requirements.
-  Use when: Legal disputes, contracts, regulations, compliance, rights analysis, liability assessment.
-  Evaluates: Legal obligations, rights, liabilities, remedies, precedent, statutory authority, constitutionality.
+description: Legal lens on statutes, case law, and constitutional principles. Use for contracts, compliance, rights, liability.
 ---
 
 # Lawyer Analyst Skill

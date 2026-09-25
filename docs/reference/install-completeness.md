@@ -52,6 +52,7 @@ Verification checks:
 6. The full staged `amplifier-bundle/` exists under the user's Amplihack home directory.
 7. The staged `amplifier-bundle/` passes framework bundle compatibility validation, including the composable smart-orchestrator contract.
 8. Source-conditional categories such as `commands/` and `hooks/` are verified when they exist in the source-derived manifest.
+9. The staged skills contribute no more `name` + `description` text than Claude Code will keep in its session skill listing. Past that limit Claude Code silently truncates the listing to bare names and the affected skills stop being selectable — staged but unreachable is the same class of defect as never staged. See [Skill Listing Budget](skill-listing-budget.md).
 
 If any check fails, `amplihack install` exits non-zero with an actionable error message.
 
@@ -82,6 +83,20 @@ If an individual source component directory is missing from the staged destinati
 ```text
 install failed: staged framework component missing: skills/github
 ```
+
+If the staged skills exceed the session skill-listing budget:
+
+```text
+install completeness verification failed for <resolved install destination>:
+  - staged skill listing is over budget: 24118 of 20000 characters across 131 skills
+    at <resolved install destination>/skills
+      ... (largest contributors, then the recovery action) ...
+```
+
+Elided for width — the real message is one line per offending skill. See
+[Skill Listing Budget](skill-listing-budget.md) for the full format and
+[Keep Skill Descriptions in Budget](../howto/keep-skill-descriptions-in-budget.md)
+to resolve it.
 
 If the staged smart-orchestrator bundle is stale:
 
@@ -168,5 +183,11 @@ The test asserts:
 8. A stale monolithic smart-orchestrator cannot remain staged after install/update repair.
 9. Package metadata includes `amplifier-bundle/`.
 10. Copy failures surface both source and destination paths.
+11. The staged skill listing total stays at or under `SKILL_LISTING_BUDGET_CHARS`, and an over-budget staged tree fails install with the offenders named.
 
 This test prevents regressions where published or local installs silently omit framework components.
+
+## See Also
+
+- [Skill Listing Budget](skill-listing-budget.md) — the staged-skill listing size check and its API.
+- [The Skill Listing Budget](../concepts/skill-listing-budget.md) — why a staged-but-unreachable skill is an install-completeness defect.

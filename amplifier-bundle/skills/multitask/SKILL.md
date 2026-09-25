@@ -1,9 +1,6 @@
 ---
 name: multitask
-description: |
-  Execute multiple independent development tasks in parallel using subprocess isolation.
-  Each task runs in a clean /tmp clone with Recipe Runner code-enforced workflow execution.
-  Proven pattern: 4/5 PRs created successfully in first production use.
+description: Runs independent development tasks in parallel, each in an isolated clone with the recipe runner.
 version: 1.0.0
 auto_activates:
   - "parallel workstreams"

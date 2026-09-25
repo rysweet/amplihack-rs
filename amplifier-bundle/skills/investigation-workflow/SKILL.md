@@ -1,10 +1,7 @@
 ---
 name: investigation-workflow
 version: 2.0.0
-description: |
-  6-phase investigation workflow for understanding existing systems. Normally executed
-  as a sub-recipe by dev-orchestrator/smart-orchestrator. Supports direct invocation
-  via recipe runner for standalone use.
+description: Six-phase workflow for understanding an existing system. Usually run as a sub-recipe by dev-orchestrator.
 auto_activates:
   - "investigate how"
   - "explain the architecture"

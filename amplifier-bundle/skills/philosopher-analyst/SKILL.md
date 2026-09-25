@@ -1,12 +1,7 @@
 ---
 name: philosopher-analyst
 version: 1.0.0
-description: |
-  Analyzes fundamental questions and concepts through philosophical lens using logic, epistemology,
-  metaphysics, and critical analysis frameworks.
-  Provides insights on meaning, truth, knowledge, existence, reasoning, and conceptual clarity.
-  Use when: Conceptual ambiguity, logical arguments, foundational assumptions, meaning questions.
-  Evaluates: Validity, soundness, coherence, assumptions, implications, conceptual clarity.
+description: Philosophy lens on logic, epistemology, and metaphysics. Use for conceptual ambiguity or foundational assumptions.
 ---
 
 # Philosopher Analyst Skill

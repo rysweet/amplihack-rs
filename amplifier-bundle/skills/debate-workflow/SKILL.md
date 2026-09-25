@@ -1,7 +1,7 @@
 ---
 name: debate-workflow
 version: 1.0.0
-description: Structured multi-perspective debate for important architectural decisions and complex trade-offs
+description: Structured multi-perspective debate. Use for important architectural decisions and complex trade-offs.
 auto_activates:
   - "architectural decision"
   - "design trade-off"

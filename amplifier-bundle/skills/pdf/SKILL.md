@@ -1,7 +1,7 @@
 ---
 name: pdf
 version: 1.0.0
-description: Comprehensive PDF manipulation toolkit for extracting text and tables, creating new PDFs, merging/splitting documents, and handling forms. When Claude needs to fill in a PDF form or programmatically process, generate, or analyze PDF documents at scale.
+description: Extract text and tables, create, merge, split, and fill PDF forms. Use for programmatic PDF work.
 license: Proprietary. LICENSE.txt has complete terms
 ---
 

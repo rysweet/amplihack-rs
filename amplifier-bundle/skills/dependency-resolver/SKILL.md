@@ -1,7 +1,7 @@
 ---
 name: dependency-resolver
 version: 1.0.0
-description: Automated dependency conflict detection and resolution. Detects local vs CI environment mismatches, compares versions, and generates pinning recommendations. Run as pre-push check to catch issues early.
+description: Detects local-versus-CI dependency mismatches and recommends pins. Use as a pre-push check.
 auto_activates:
   - "dependency conflict"
   - "version mismatch"

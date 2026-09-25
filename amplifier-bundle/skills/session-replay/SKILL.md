@@ -1,9 +1,7 @@
 ---
 name: session-replay
 version: 1.0.0
-description: |
-  Analyze claude-trace JSONL files for session health, patterns, and actionable insights.
-  Use when debugging session issues, understanding token usage, or identifying failure patterns.
+description: Analyzes claude-trace JSONL for session health, token usage, and failure patterns.
 auto_activates:
   - "analyze session"
   - "session health"

@@ -1,6 +1,6 @@
 ---
 name: npe-hunting-workflow
-description: Investigates and remediates NullPointerException (NPE) and null-dereference failures from a real stack trace. Use when tracing an NPE, finding structurally similar null bugs, filtering false positives, deciding whether TLA+ applies, or coordinating validated fixes.
+description: Investigates null-dereference failures from a stack trace and finds similar bugs. Use when tracing an NPE.
 metadata:
   version: "1.0"
   author: amplihack

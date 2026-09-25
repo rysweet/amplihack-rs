@@ -1,13 +1,7 @@
 ---
 name: transcript-viewer
 version: 1.2.0
-description: |
-  Convert and browse session transcripts as HTML or Markdown.
-  Supports Claude Code JSONL logs (auto-saved to ~/.claude/projects/) and
-  GitHub Copilot CLI JSONL logs (auto-saved to ~/.copilot/session-state/*/events.jsonl).
-  Auto-detects log source based on available directories and file format.
-  Supports viewing the current session, a specific session by ID, agent background task
-  output files, or all project sessions with optional date-range filtering.
+description: Converts and browses Claude Code or Copilot CLI session transcripts as HTML or Markdown.
 auto_activate_keywords:
   - "view transcript"
   - "show transcript"

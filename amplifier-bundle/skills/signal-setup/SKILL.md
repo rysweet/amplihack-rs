@@ -1,16 +1,7 @@
 ---
 name: signal-setup
 version: 1.0.0
-description: |
-  End-to-end, idempotent Signal device-linking for amplihack on a local or
-  remote (azlin VM) host. Runs the full loop in one invocation: prerequisite
-  check, prompt to open the phone's scan screen, mint a fresh device-link under
-  systemd-run, render the QR DIRECTLY in the terminal (zero delivery latency,
-  ANSIUTF8i inverted for dark terminals), verify linkage, and optionally start
-  the JSON-RPC daemon, ensure the amplihack self-group, and post a test message.
-  Use when onboarding a host to the amplihack Signal channel, when a prior link
-  attempt showed "invalid response from server", or when you need to re-link /
-  verify a fleet host's Signal account.
+description: Idempotent Signal device-linking for amplihack on a local or azlin host, with in-terminal QR. Use to link or re-link.
 auto_activates:
   - "Set up Signal for a host"
   - "Link Signal device"

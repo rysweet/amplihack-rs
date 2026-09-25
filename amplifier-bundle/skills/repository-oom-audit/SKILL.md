@@ -1,6 +1,6 @@
 ---
 name: repository-oom-audit
-description: Performs exhaustive repository-wide OutOfMemoryError and memory-retention audits with tracked-file inventory, systematic risk taxonomy, anchored evidence, severity and confidence, reviewed non-issues, remediation, and validation. Use for OOM investigations, memory leak audits, unbounded growth reviews, resource-lifecycle audits, allocation-amplification analysis, or JVM/native memory risk assessments.
+description: Repository-wide out-of-memory and memory-retention audit with evidence and remediation. Use for leak hunts.
 ---
 
 # Repository OOM Audit

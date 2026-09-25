@@ -1,6 +1,6 @@
 ---
 name: agentic-workflow-first
-description: Start new work as a deterministic workflow of agentic steps, prompts, and tools instead of code. Use when designing a feature, deciding how to build something, choosing code vs recipe, or asking "how should I structure this".
+description: Start new work as a workflow of agentic steps and tools, not code. Use when deciding how to structure a feature.
 metadata:
   version: "1.0"
   author: amplihack

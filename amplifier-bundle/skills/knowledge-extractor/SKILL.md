@@ -1,11 +1,7 @@
 ---
 name: knowledge-extractor
 version: 1.0.0
-description: |
-  Extracts key learnings from conversations, debugging sessions, and failed attempts.
-  Use at session end or after solving complex problems to capture insights.
-  Stores discoveries in memory (via `amplihack memory store-discovery` CLI), suggests PATTERNS.md updates, and recommends new agent creation.
-  Ensures knowledge persists across sessions via Kuzu memory backend.
+description: Extracts learnings from sessions and debugging into memory. Use at session end or after solving a hard problem.
 ---
 
 # Knowledge Extractor Skill

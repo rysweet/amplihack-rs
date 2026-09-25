@@ -1,11 +1,7 @@
 ---
 name: module-spec-generator
 version: 1.0.0
-description: |
-  Generates module specifications following amplihack's brick philosophy template.
-  Use when creating new modules or documenting existing ones to ensure they follow
-  the brick & studs pattern. Analyzes code to extract: purpose, public contract,
-  dependencies, test requirements.
+description: Generates brick-philosophy module specs covering purpose, contract, dependencies, and tests. Use for new modules.
 ---
 
 # Module Spec Generator Skill

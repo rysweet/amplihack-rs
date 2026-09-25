@@ -1,7 +1,7 @@
 ---
 name: dotnet10-pack-tool
 version: 1.0.0
-description: Creates hybrid Native AOT + CoreCLR .NET 10 tool packages using ToolPackageRuntimeIdentifiers. Use for building high-performance CLI tools with Native AOT on supported platforms and CoreCLR fallback for universal compatibility.
+description: Builds hybrid Native AOT and CoreCLR .NET 10 tool packages. Use for fast, portable CLI tools.
 source_urls:
   - https://github.com/richlander/dotnet10-hybrid-tool
   - https://github.com/richlander/dotnet10-hybrid-tool/blob/main/build-packages.sh

@@ -1,7 +1,7 @@
 ---
 name: multi-repo
 version: 1.0.0
-description: Multi-repository orchestration for coordinating atomic changes across dependent repositories. Tracks dependency graphs, coordinates cross-repo PRs, and detects breaking changes.
+description: Coordinates atomic changes across dependent repositories, tracking dependency graphs and cross-repo PRs.
 auto_activates:
   - "multiple repositories"
   - "cross-repo change"

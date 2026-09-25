@@ -1,12 +1,6 @@
 ---
 name: gh-work-report
-description: >
-  Generates comprehensive GitHub activity reports across all authenticated accounts.
-  Gathers repos, PRs, features, and themes for configurable time periods (1/5/7/30/90 days).
-  Produces shareable markdown with tables, mermaid charts, and executive summaries.
-  Can create a private repo with GitHub Actions automation and GitHub Pages aggregation site.
-  Use when: "github report", "work report", "activity summary", "what did I work on",
-  "gh-work-report", "show my github activity".
+description: Builds a GitHub activity report across accounts for a time window. Use for work report or what did I work on.
 auto_activate_keywords:
   - gh-work-report
   - github report

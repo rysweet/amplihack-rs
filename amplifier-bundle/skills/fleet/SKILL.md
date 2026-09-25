@@ -1,11 +1,6 @@
 ---
 name: fleet
-description: |
-  Fleet orchestration for distributed coding agents across Azure VMs.
-  Invoked as `/fleet <command>`. Covers all fleet operations: status, scout,
-  advance, adopt, watch, snapshot, dry-run, start, add-task, queue, auth,
-  dashboard, tui, and more. Use when: user mentions fleet, agents, VMs,
-  sessions, or asks "what are my agents doing".
+description: Fleet orchestration for coding agents on Azure VMs, including status, scout, watch, and queue. Use for /fleet.
 ---
 
 # /fleet

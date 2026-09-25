@@ -1,11 +1,7 @@
 ---
 name: code-smell-detector
 version: 1.0.0
-description: |
-  Identifies anti-patterns specific to amplihack philosophy.
-  Use when reviewing code for quality issues or refactoring.
-  Detects: over-abstraction, complex inheritance, large functions (>50 lines), tight coupling, missing __all__ exports.
-  Provides specific fixes and explanations for each smell.
+description: Finds amplihack anti-patterns such as over-abstraction, large functions, and tight coupling. Use when refactoring.
 ---
 
 # Code Smell Detector Skill

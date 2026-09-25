@@ -1,13 +1,7 @@
 ---
 name: supply-chain-audit
 version: 1.0.0
-description: |
-  Auditing software supply chain security across CI/CD pipelines, container images, and
-  language ecosystems. Detects mutable dependency references, insecure CI patterns,
-  credential exposure risks, and missing SBOM/SLSA controls. Use when performing a
-  supply chain audit, checking action pinning, auditing dependencies, scanning for
-  CI security issues, reviewing container security, or assessing dependency security.
-  Covers GitHub Actions, containers, Python, Node, Go, Rust, .NET, and more.
+description: Audits supply chain security across action pinning, CI patterns, credentials, SBOM, containers, and dependencies.
 auto_activates:
   - "supply chain audit"
   - "audit dependencies"

@@ -1,7 +1,7 @@
 ---
 name: verus-expert
 version: 1.0.0
-description: Verus deductive-verification expert for proving Rust functional correctness, panic-freedom, and arithmetic-overflow-freedom with SMT-backed specs and LLM-assisted proof synthesis
+description: Verus verification of Rust for functional correctness, panic-freedom, and overflow-freedom with SMT-backed specs.
 activation_keywords:
   - "Verus"
   - "verus!"

@@ -1,11 +1,7 @@
 ---
 name: context-management
 version: 3.1.0
-description: |
-  Proactive context window management via token monitoring, intelligent extraction, and selective rehydration.
-  Features context health checks, priority-based retention, and recovery guidance.
-  Use when approaching token limits or needing to preserve essential context.
-  Complements /transcripts, /reflect, session checkpoints, and PreCompact hooks.
+description: Token monitoring, extraction, and selective rehydration. Use when approaching context limits or preserving context.
 ---
 
 # Context Management Skill

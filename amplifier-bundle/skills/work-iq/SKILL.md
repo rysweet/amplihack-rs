@@ -1,7 +1,7 @@
 ---
 name: work-iq
 version: 1.0.0
-description: Microsoft Work IQ MCP integration for querying M365 data (emails, meetings, Teams, documents) with natural language. Enables searching your Microsoft 365 workspace directly from Claude Code.
+description: Microsoft Work IQ MCP for querying M365 email, meetings, Teams, and documents in natural language.
 license: MIT
 auto_activate:
   - "work-iq"

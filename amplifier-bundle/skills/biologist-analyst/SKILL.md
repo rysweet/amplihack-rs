@@ -1,12 +1,7 @@
 ---
 name: biologist-analyst
 version: 1.0.0
-description: |
-  Analyzes living systems and biological phenomena through biological lens using evolution, molecular biology,
-  ecology, and systems biology frameworks.
-  Provides insights on mechanisms, adaptations, interactions, and life processes.
-  Use when: Biological systems, health issues, evolutionary questions, ecological problems, biotechnology.
-  Evaluates: Function, structure, heredity, evolution, interactions, molecular mechanisms.
+description: Biology lens on evolution, molecular biology, and ecology. Use for biological, health, or ecological questions.
 ---
 
 # Biologist Analyst Skill

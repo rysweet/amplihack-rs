@@ -1,6 +1,6 @@
 ---
 name: skill-builder
-description: Creates, refines, and validates Agent Skills following the open standard at agentskills.io, Claude Code extensions, and Anthropic best practices. Use when building, creating, generating, or designing new skills.
+description: Creates, refines, and validates Agent Skills per the agentskills.io standard. Use when building a new skill.
 metadata:
   version: "2.0"
   author: amplihack

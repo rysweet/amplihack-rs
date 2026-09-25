@@ -1,7 +1,7 @@
 ---
 name: workflow-enforcement
 version: 1.1.0
-description: Workflow step compliance guidance with mandatory step reminders and visual progress tracking. Reminds Claude to complete all workflow steps before PR creation.
+description: Reminds Claude to complete every workflow step before PR creation, with visual progress tracking.
 auto_activates:
   - "start workflow"
   - "beginning DEFAULT_WORKFLOW"

@@ -1,7 +1,7 @@
 ---
 name: gh-aw-adoption
 version: 1.0.0
-description: Adopt GitHub Agentic Workflows (gh-aw) in any repository. Investigates existing workflows, identifies gaps, creates agentic workflows, and handles CI/merge issues. Auto-activates for gh-aw adoption, agentic workflow setup, or workflow automation requests.
+description: Adopts GitHub Agentic Workflows in a repo, covering gaps, new workflows, and CI fixes. Use for gh-aw setup.
 source_urls:
   - https://github.com/github/gh-aw
   - https://github.com/github/gh-aw/blob/main/.github/aw/github-agentic-workflows.md

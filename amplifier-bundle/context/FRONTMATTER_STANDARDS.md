@@ -30,7 +30,7 @@ description: What this skill does and when to use it.
 | Field         | Required | Constraints |
 | ------------- | -------- | ----------- |
 | `name`        | **Yes**  | Max 64 chars. Lowercase letters, numbers, hyphens only. Must match directory name. |
-| `description` | **Yes**  | Max 1024 chars. Include keywords that help Claude decide when to auto-load the skill. |
+| `description` | **Yes**  | Spec maximum is 1024 chars, but **target ~120** — see [Description Length](#description-length). Single-line scalar. Include the trigger keywords that help Claude decide when to auto-load the skill. |
 
 ### Optional Fields (Agent Skills Spec)
 
@@ -58,22 +58,45 @@ description: What this skill does and when to use it.
 ```yaml
 ---
 name: quality-audit
-description: >
-  Iterative codebase quality audit with multi-agent validation and
-  escalating-depth SEEK/VALIDATE/FIX/RECURSE cycle. Use for quality audit,
-  code audit, codebase review, technical debt audit, or architecture review.
+description: Iterative codebase quality audit with multi-agent validation. Use when auditing code quality, technical debt, or architecture.
 metadata:
   version: "3.0"
   author: amplihack
 ---
 ```
 
+### Description Length
+
+Every bundled skill's `name` + `description` is resident in **every** Claude
+Code session. That listing has a size budget, and past it Claude Code silently
+truncates the tail to bare names — a truncated skill still installs, still runs
+when invoked by name, and can no longer be matched to a task automatically.
+
+The rules, enforced by `scripts/check-skill-description-budget.sh`, a pre-commit
+hook, and an install-time check:
+
+| Rule | Why |
+| ---- | --- |
+| Target **~120 characters** | 130 skills x ~120 chars keeps the whole listing under 18,000, comfortably inside the 20,000-character limit. |
+| Use the form `<What it does>. Use when <triggers>.` | The trigger wording is what the matcher keys on. Taxonomy prose ("Provides insights on…", "Evaluates:…") costs characters and matches nothing. |
+| **Single-line scalar** — no `\|` or `>` block form | At ~120 chars a block scalar buys nothing and makes the diff harder to check. The budget script rejects block scalars outright. |
+| Quote only when the value contains a `:` or starts with a YAML indicator | Keeps the common case unquoted and readable. |
+| No imperatives aimed at the agent, no URLs, no paths, no commands | These strings are injected into an agent's context by construction. |
+
+The spec's 1024-character maximum is a per-field ceiling, not a target. A single
+1024-character description would consume 5% of the entire listing budget.
+
+See [Skill Listing Budget](../../docs/reference/skill-listing-budget.md) for the
+constant and the API, and
+[Keep Skill Descriptions in Budget](../../docs/howto/keep-skill-descriptions-in-budget.md)
+for how to measure and fix.
+
 ### What NOT to Put in Skill Frontmatter
 
 These fields were used in earlier versions of this doc but are **not recognized**
 by Claude Code or the Agent Skills spec. They are silently ignored:
 
-- ~~`auto_activates`~~ — Put activation keywords in `description` instead.
+- ~~`auto_activates`~~ — Put activation keywords in the `description` trigger clause instead.
 - ~~`priority_score`~~ — Not a real field. Claude uses `description` quality.
 - ~~`evaluation_criteria`~~ — Not a real field.
 - ~~`version`~~ — Use `metadata.version` if needed.

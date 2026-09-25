@@ -1,12 +1,7 @@
 ---
 name: environmentalist-analyst
 version: 1.0.0
-description: |
-  Analyzes events through environmental lens using ecological principles, systems thinking, sustainability frameworks,
-  and conservation biology to assess ecosystem health, biodiversity impacts, and long-term environmental sustainability.
-  Provides insights on climate change, resource management, pollution, habitat conservation, and human-nature relationships.
-  Use when: Environmental policy, climate decisions, conservation planning, resource extraction, pollution assessment.
-  Evaluates: Ecosystem health, biodiversity, sustainability, climate impacts, carrying capacity, environmental justice.
+description: Environmental lens on ecology, sustainability, and conservation. Use for climate, resource, or pollution decisions.
 ---
 
 # Environmentalist Analyst Skill

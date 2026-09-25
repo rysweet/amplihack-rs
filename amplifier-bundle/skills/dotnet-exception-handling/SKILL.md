@@ -1,6 +1,6 @@
 ---
 name: dotnet-exception-handling
-description: Comprehensive .NET exception handling quality improvement workflow. Auto-detects .NET projects, investigates 10 common exception handling mistakes, generates prioritized findings, and orchestrates fixes following best practices.
+description: Audits and fixes .NET exception-handling mistakes. Use when reviewing error handling in a .NET project.
 version: 1.0.0
 tags: [dotnet, quality, exception-handling, investigation, refactoring, security]
 token_budget: 5000

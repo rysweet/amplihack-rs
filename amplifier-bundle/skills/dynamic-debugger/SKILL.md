@@ -1,6 +1,6 @@
 ---
 name: dynamic-debugger
-description: Interactive debugging via DAP-MCP for multiple languages with natural language commands
+description: Interactive multi-language debugging via DAP-MCP with natural language commands.
 version: 1.0.0
 disableModelInvocation: true
 activation_conditions:

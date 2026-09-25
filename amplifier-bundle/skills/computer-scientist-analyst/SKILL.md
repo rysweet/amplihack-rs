@@ -1,12 +1,7 @@
 ---
 name: computer-scientist-analyst
 version: 1.0.0
-description: |
-  Analyzes events through computer science lens using computational complexity, algorithms, data structures,
-  systems architecture, information theory, and software engineering principles to evaluate feasibility, scalability, security.
-  Provides insights on algorithmic efficiency, system design, computational limits, data management, and technical trade-offs.
-  Use when: Technology evaluation, system architecture, algorithm design, scalability analysis, security assessment.
-  Evaluates: Computational complexity, algorithmic efficiency, system architecture, scalability, data integrity, security.
+description: Computer science lens on complexity, algorithms, data structures, and architecture. Use for feasibility or scalability.
 ---
 
 # Computer Scientist Analyst Skill

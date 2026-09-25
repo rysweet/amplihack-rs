@@ -1,7 +1,7 @@
 ---
 name: markitdown
 version: 1.0.0
-description: Convert documents (PDF, Word, Excel, PowerPoint, images, HTML) to Markdown using microsoft/markitdown. Use for document analysis, content extraction, preprocessing for LLMs, or batch document conversion. Supports images with OCR/LLM descriptions, audio transcription, and ZIP archives.
+description: Converts PDF, Word, Excel, PowerPoint, images, and HTML to Markdown. Use for extraction or LLM preprocessing.
 auto_activates:
   - "convert to markdown"
   - "extract document content"

@@ -1,7 +1,7 @@
 ---
 name: docx
 version: 1.0.0
-description: Create, edit, and analyze Word documents with tracked changes support
+description: Create, edit, and analyze Word documents, including tracked changes.
 ---
 
 # DOCX creation, editing, and analysis

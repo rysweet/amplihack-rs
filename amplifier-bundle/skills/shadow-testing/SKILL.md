@@ -1,10 +1,6 @@
 ---
 name: shadow-testing
-description: |
-  Creates isolated container environments for testing local uncommitted changes before pushing.
-  Use when testing library changes, multi-repo coordination, or validating "works on my machine" → "works in CI".
-  Provides git bundle snapshots, embedded git server, selective URL rewriting, and package manager cache isolation.
-  Works with any coding agent via standalone CLI, shell scripts, or Docker Compose.
+description: Containerized testing of local uncommitted changes before pushing. Use for works-on-my-machine and multi-repo.
 version: 1.0.0
 amplifier_bundle: https://github.com/microsoft/amplifier-bundle-shadow
 ---

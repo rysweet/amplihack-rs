@@ -1,9 +1,6 @@
 ---
 name: outside-in-testing
-description: |
-  Deprecated compatibility alias for qa-team.
-  Use when existing recipes or agents still invoke outside-in-testing by name.
-  Redirects future work to the qa-team skill for outside-in validation and parity loops.
+description: Deprecated alias for qa-team. Use only when an existing recipe still calls outside-in-testing by name.
 version: 1.1.0
 ---
 

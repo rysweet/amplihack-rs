@@ -1,12 +1,7 @@
 ---
 name: agent-generator-tutor
 version: 1.0.0
-description: |
-  Interactive teaching agent for the goal-seeking agent generator and eval system.
-  Provides a structured 14-lesson curriculum covering agent generation, SDK selection,
-  multi-agent architecture, progressive evaluation (L1-L12), retrieval strategies,
-  intent classification, math code generation, self-improvement loops with patch
-  proposer and reviewer voting, and memory export/import.
+description: Teaches the goal-seeking agent generator and eval system in 14 lessons. Use when learning agent generation or evals.
 auto-detection:
   triggers:
     - "teach me"

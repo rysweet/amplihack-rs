@@ -1,11 +1,7 @@
 ---
 name: pr-review-assistant
 version: 1.0.0
-description: |
-  Philosophy-aware PR reviews checking alignment with amplihack principles.
-  Use when reviewing PRs to ensure ruthless simplicity, modular design, and zero-BS implementation.
-  Suggests simplifications, identifies over-engineering, verifies brick module structure.
-  Posts detailed, constructive review comments with specific file:line references.
+description: Philosophy-aware PR review posting file and line comments. Use to catch over-engineering and verify structure.
 ---
 
 # PR Review Assistant Skill

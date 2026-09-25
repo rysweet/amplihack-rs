@@ -1,12 +1,7 @@
 ---
 name: journalist-analyst
 version: 1.0.0
-description: |
-  Analyzes events through journalistic lens using 5 Ws and H, investigative methods, source evaluation,
-  fact-checking, newsworthiness criteria, and ethical journalism principles.
-  Provides insights on story angles, information gaps, credibility, public interest, and media framing.
-  Use when: Breaking news, information verification, source analysis, story development, media criticism.
-  Evaluates: Factual accuracy, source credibility, completeness, newsworthiness, bias, public interest.
+description: Journalism lens on the 5 Ws, sourcing, and fact-checking. Use for verification or story development.
 ---
 
 # Journalist Analyst Skill

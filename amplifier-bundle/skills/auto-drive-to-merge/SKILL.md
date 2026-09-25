@@ -1,13 +1,6 @@
 ---
 name: auto-drive-to-merge
-description: |
-  Wraps default-workflow and drives the resulting PR all the way to merge:
-  build the PR, loop with the crusty-old-engineer skill as the maintainer's
-  proxy until zero concerns remain, then loop on the merge-ready criteria —
-  qa-team scenarios, CI, conflicts, review threads — until every one holds, and
-  merge behind an evidence gate. Both loops are terminated by agentic
-  loop-health evaluation, never by an iteration count.
-  Use when: "drive this to merge", "take this all the way", "build it and land it".
+description: Builds a PR then drives it to merge through review and merge-ready loops. Use for drive this to merge, land it.
 version: 1.0.0
 allowed-tools: ["Read", "Grep", "Glob", "Bash", "Agent", "Edit", "Write"]
 user-invocable: true

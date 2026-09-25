@@ -1,6 +1,6 @@
 ---
 name: merge-ready
-description: Checks whether a PR/pull request satisfies the project's merge criteria and records the required evidence in the PR/pull request description. Use with `/merge-ready` before review or merge when QA-team scenarios, docs links, quality-audit convergence, checks/build validation status, and diff scope must be verified.
+description: Checks a PR against the project's merge criteria and records the evidence. Use before review or merge.
 disable-model-invocation: true
 argument-hint: "[pr-number]"
 ---

@@ -1,6 +1,6 @@
 ---
 name: quality-audit
-description: Iterative codebase quality audit with multi-agent validation and escalating-depth SEEK/VALIDATE/FIX/RECURSE cycle. Enforces fix-all-per-cycle rule — every confirmed finding must be fixed before moving to the next cycle. Use for quality audit, code audit, codebase review, technical debt audit, refactoring opportunities, module quality check, or architecture review.
+description: Iterative seek, validate, fix, recurse codebase audit, fixing all findings per cycle. Use for technical debt review.
 metadata:
   version: "4.0"
   author: amplihack

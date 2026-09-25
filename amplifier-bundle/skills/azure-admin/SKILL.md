@@ -1,9 +1,6 @@
 ---
 name: azure-admin
-description: |
-  Comprehensive Azure administration capabilities covering identity management,
-  resource orchestration, CLI tooling, and DevOps automation. Auto-activates for
-  Azure, az cli, azd, Entra ID, RBAC, and infrastructure tasks.
+description: Azure administration for Entra ID, RBAC, resources, az cli, and azd. Use for Azure identity or infrastructure.
 ---
 
 # Azure Administration Skill

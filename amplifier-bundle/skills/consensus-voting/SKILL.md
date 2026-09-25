@@ -1,7 +1,7 @@
 ---
 name: consensus-voting
 version: 1.0.0
-description: Multi-agent consensus voting with domain-weighted expertise for critical decisions requiring structured validation
+description: Multi-agent consensus voting with domain-weighted expertise. Use for critical decisions needing structured validation.
 auto_activates:
   - "security implementation"
   - "authentication change"

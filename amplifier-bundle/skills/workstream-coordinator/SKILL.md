@@ -1,6 +1,6 @@
 ---
 name: workstream-coordinator
-description: Expert workstream coordinator managing multiple concurrent tasks, tracking progress, detecting conflicts and stalls, analyzing dependencies, and ensuring smooth parallel execution. Activates when coordinating workstreams, tracking progress, checking status, or managing concurrent work.
+description: Tracks concurrent workstreams for progress, dependencies, conflicts, and stalls. Use for parallel execution.
 ---
 
 # Workstream Coordinator Skill

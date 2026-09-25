@@ -1,7 +1,7 @@
 ---
 name: signal
 version: 1.0.0
-description: Drive an agent session from a Signal group chat. Opens an operator-only Signal group for a topic and turns every operator message into a real agent prompt with full session context.
+description: Drives an agent session from a Signal group chat, turning operator messages into prompts with session context.
 activation_keywords:
   - "/signal"
   - "signal chat"

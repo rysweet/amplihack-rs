@@ -1,13 +1,7 @@
 ---
 name: code-visualizer
 version: 2.0.0
-description: |
-  Auto-generates code flow diagrams from multi-language module analysis.
-  Detects when architecture diagrams become stale (code changed, diagram didn't).
-  Supports Python, TypeScript/JavaScript, Rust, and Go out of the box.
-  Use when: creating new modules, reviewing PRs for architecture impact, or
-  checking diagram freshness across polyglot repositories.
-  Generates mermaid diagrams showing imports, dependencies, and module relationships.
+description: Generates mermaid module and dependency diagrams and detects stale ones. Use for new modules or PR review.
 invokes:
   skills:
     - mermaid-diagram-generator # For mermaid syntax generation and formatting

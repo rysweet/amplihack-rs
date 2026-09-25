@@ -1,7 +1,7 @@
 ---
 name: philosophy-compliance-workflow
 version: 1.0.0
-description: Philosophy compliance guardian - ensures code aligns with amplihack's ruthless simplicity, brick philosophy, and Zen-like minimalism through systematic review
+description: Systematic review that code follows amplihack's ruthless simplicity and brick philosophy.
 auto_activates:
   - "philosophy review"
   - "check philosophy"

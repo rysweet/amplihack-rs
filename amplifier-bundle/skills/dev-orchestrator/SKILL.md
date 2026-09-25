@@ -1,9 +1,6 @@
 ---
 name: dev-orchestrator
-description: |
-  Default task orchestrator for all development and investigation work.
-  Classifies tasks, decomposes into parallel workstreams if appropriate,
-  and routes execution through the recipe runner. Replaces ultrathink-orchestrator.
+description: Default orchestrator for development and investigation work. Classifies, decomposes, and routes through the runner.
 version: 2.0.0
 auto_activates:
   - "implement"

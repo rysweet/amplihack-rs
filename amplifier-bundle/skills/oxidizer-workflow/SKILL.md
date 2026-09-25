@@ -1,11 +1,6 @@
 ---
 name: oxidizer-workflow
-description: |
-  Automated Python-to-Rust migration via iterative convergence loops.
-  Treats the Python codebase as the living specification and produces a
-  fully-tested Rust equivalent with zero-tolerance parity validation.
-  Use when migrating Python modules, libraries, or CLIs to Rust.
-  Activates for: migration, oxidize, python to rust, port to rust, rewrite in rust.
+description: Python-to-Rust migration by convergence loops with parity validation. Use for oxidize, port to rust, rewrite in rust.
 ---
 
 # Oxidizer Workflow Skill

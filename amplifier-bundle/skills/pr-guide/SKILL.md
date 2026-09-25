@@ -1,6 +1,6 @@
 ---
 name: pr-guide
-description: Generates an illustrated, plain-language walkthrough document for a pull request — problem statement, approach overview, step-by-step code tour with mermaid diagrams, deep diff links, key decisions, and testing summary. Use when explaining, documenting, or summarizing a PR, creating a reviewer-friendly illustrated guide, or producing walkthrough notes at the end of default-workflow. Works with GitHub and Azure DevOps.
+description: Writes an illustrated plain-language walkthrough of a PR with a code tour and diagrams. GitHub and Azure DevOps.
 ---
 
 # PR Illustrated Guide

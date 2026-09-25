@@ -1,9 +1,7 @@
 ---
 name: model-evaluation-benchmark
 version: 1.0.0
-description: |
-  Automated reproduction of comprehensive model evaluation benchmarks following the Benchmark Suite V3.
-  Auto-activates for model benchmarking, comparison evaluation, or performance testing between AI models.
+description: Reproduces the Benchmark Suite V3 model evaluation. Use for model benchmarking or comparison.
 ---
 
 # Model Evaluation Benchmark Skill

@@ -1,12 +1,7 @@
 ---
 name: poet-analyst
 version: 1.0.0
-description: |
-  Analyzes events through poetic lens using close reading, metaphor analysis, imagery, rhythm,
-  form analysis, and attention to language's emotional and aesthetic dimensions.
-  Provides insights on emotional truth, symbolic meaning, human experience, aesthetic impact, and expressive depth.
-  Use when: Understanding emotional dimensions, symbolic meaning, communication impact, cultural resonance, human experience.
-  Evaluates: Imagery, metaphor, rhythm, emotional truth, symbolic depth, aesthetic power, resonance, ambiguity.
+description: Poetic lens on close reading, metaphor, imagery, and rhythm. Use for emotional truth and communication impact.
 ---
 
 # Poet Analyst Skill

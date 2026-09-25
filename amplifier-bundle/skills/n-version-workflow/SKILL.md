@@ -1,7 +1,7 @@
 ---
 name: n-version-workflow
 version: 1.0.0
-description: N-version programming for critical implementations - generates N independent solutions and selects the best through comparison
+description: Generates N independent solutions and picks the best by comparison. Use for critical implementations.
 auto_activates:
   - "critical security feature"
   - "authentication system"

@@ -1,12 +1,7 @@
 ---
 name: anthropologist-analyst
 version: 1.0.0
-description: |
-  Analyzes events through anthropological lens using cultural analysis, ethnographic methods, kinship and social organization,
-  symbolic systems, ritual and practice, and comparative ethnology. Provides insights on cultural meanings, social practices,
-  symbolic structures, cultural change, and cross-cultural patterns.
-  Use when: Cultural conflicts, identity issues, ritual significance, symbolic meanings, cultural change, cross-cultural comparison.
-  Evaluates: Cultural systems, symbolic meanings, social practices, kinship structures, cultural adaptation, power-culture nexus.
+description: Anthropology lens on culture, ritual, kinship, and symbols. Use for cultural conflict, identity, or cross-cultural work.
 ---
 
 # Anthropologist Analyst Skill

@@ -1,12 +1,7 @@
 ---
 name: indigenous-leader-analyst
 version: 1.0.0
-description: |
-  Analyzes events through indigenous knowledge systems using relational thinking, seven generations principle,
-  reciprocity, holistic integration, and traditional ecological knowledge frameworks.
-  Provides insights on interconnectedness, long-term sustainability, collective wisdom, and decolonial perspectives.
-  Use when: Environmental decisions, resource stewardship, community governance, decolonization, intergenerational planning.
-  Evaluates: Relationships, sustainability, collective impact, indigenous rights, traditional knowledge integration.
+description: Indigenous knowledge lens on relational thinking, seven generations, and reciprocity. Use for stewardship decisions.
 ---
 
 # Indigenous Leader Analyst Skill

@@ -1,10 +1,7 @@
 ---
 name: smart-test
 version: 1.1.0
-description: |
-  Intelligent test selection based on code changes. Maps source files to tests via import analysis,
-  implements tiered testing (fast < 1 min, impacted < 5 min, full suite), and tracks test reliability.
-  Use when running tests after code changes to optimize feedback loops and CI time.
+description: Selects tests from changed files by import analysis, in fast, impacted, and full tiers. Use to cut feedback time.
 auto_activates:
   - "run affected tests"
   - "run impacted tests"

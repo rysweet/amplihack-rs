@@ -516,3 +516,13 @@ path = "../../tests/integration/issue_1337_loop_health_evaluator_test.rs"
 [[test]]
 name = "auto_drive_to_merge"
 path = "../../tests/integration/auto_drive_to_merge_test.rs"
+
+# Issue #1459: the skill `name` + `description` listing Claude Code keeps
+# resident in every session has a budget, and it truncates the tail to bare
+# names silently past it — 67 of 130 bundled skills were reaching the model
+# with no description at all. Pins the corpus size, the total against
+# SKILL_LISTING_BUDGET_CHARS, script/library parity, the install-time hook and
+# its ordering, and the pre-commit wiring.
+[[test]]
+name = "skill_description_budget"
+path = "../../tests/integration/skill_description_budget_test.rs"

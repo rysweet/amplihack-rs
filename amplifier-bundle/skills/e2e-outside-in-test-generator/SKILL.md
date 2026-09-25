@@ -1,10 +1,7 @@
 ---
 name: e2e-outside-in-test-generator
 version: 0.3.0
-description: |
-  Generates comprehensive end-to-end test scenarios using outside-in methodology.
-  Supports Web (Playwright), CLI, TUI, API, and MCP/gadugi-style scenarios.
-  Auto-detects app type or accepts explicit override.
+description: Generates outside-in end-to-end scenarios for Web, CLI, TUI, API, or MCP apps. Use when writing E2E tests.
 activation_keywords:
   - "add e2e tests"
   - "add playwright tests"

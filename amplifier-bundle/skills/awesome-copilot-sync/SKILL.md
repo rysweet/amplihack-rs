@@ -1,11 +1,7 @@
 ---
 name: awesome-copilot-sync
 version: 1.0.0
-description: |
-  Monitors awesome-copilot releases for drift against the amplihack integration.
-  Checks latest commits on github/awesome-copilot via the GitHub API and reports
-  whether the local integration is current or has drifted behind upstream changes.
-  Use when auditing integration freshness or before updating awesome-copilot features.
+description: Checks whether the amplihack awesome-copilot integration has drifted behind upstream. Use when auditing freshness.
 ---
 
 # Awesome-Copilot Sync Skill

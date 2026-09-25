@@ -1,6 +1,6 @@
 ---
 name: socratic-review
-description: "Socratic code review using probing questions instead of direct critique. Based on Feynman's principle that teaching reveals gaps in understanding. Helps developers articulate reasoning, surface hidden assumptions, and discover issues themselves."
+description: Code review by probing questions rather than critique, so the author surfaces their own assumptions.
 allowed-tools: ["Read", "Grep", "Glob", "Bash", "Task", "AskUserQuestion"]
 user-invocable: true
 auto-activation:

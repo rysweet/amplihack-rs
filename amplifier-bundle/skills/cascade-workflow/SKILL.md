@@ -1,7 +1,7 @@
 ---
 name: cascade-workflow
 version: 1.0.0
-description: Graceful degradation through cascading fallback strategies - ensures system always completes while maintaining acceptable functionality
+description: Graceful degradation via cascading fallback strategies. Use when an operation must always complete, even degraded.
 auto_activates:
   - "external API"
   - "external service"

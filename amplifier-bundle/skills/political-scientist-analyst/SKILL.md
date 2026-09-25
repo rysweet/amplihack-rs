@@ -1,12 +1,7 @@
 ---
 name: political-scientist-analyst
 version: 1.0.0
-description: |
-  Analyzes events through political science lens using IR theory (Realism, Liberalism, Constructivism),
-  comparative politics, institutional analysis, and power dynamics.
-  Provides insights on governance, security, regime change, international cooperation, and policy outcomes.
-  Use when: Political events, international crises, elections, regime transitions, policy changes, conflicts.
-  Evaluates: Power distributions, institutional effects, actor interests, strategic interactions, norms.
+description: Political science lens on IR theory, institutions, and power. Use for governance, elections, or conflict.
 ---
 
 # Political Scientist Analyst Skill

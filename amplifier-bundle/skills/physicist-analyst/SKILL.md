@@ -1,12 +1,7 @@
 ---
 name: physicist-analyst
 version: 1.0.0
-description: |
-  Analyzes events through physics lens using fundamental laws (thermodynamics, conservation, relativity),
-  quantitative modeling, systems dynamics, and energy principles to understand causation, constraints, and feasibility.
-  Provides insights on energy systems, physical limits, technological feasibility, and complex systems behavior.
-  Use when: Energy decisions, technology assessment, systems analysis, physical constraints, feasibility evaluation.
-  Evaluates: Energy flows, conservation laws, efficiency limits, physical feasibility, scaling behavior, emergent properties.
+description: Physics lens on conservation, thermodynamics, scaling, and modeling. Use for physical limits and feasibility.
 ---
 
 # Physicist Analyst Skill

@@ -1,6 +1,6 @@
 ---
 name: amplihack-expert
-description: Comprehensive knowledge of amplihack framework architecture, patterns, and usage
+description: Amplihack framework architecture, patterns, and usage. Use when working on amplihack itself.
 version: 2.0.0
 author: amplihack team
 tags: [amplihack, framework, architecture, workflows, agents, commands]

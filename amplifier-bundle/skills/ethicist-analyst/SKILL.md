@@ -1,12 +1,7 @@
 ---
 name: ethicist-analyst
 version: 1.0.0
-description: |
-  Analyzes moral dimensions and value conflicts through ethical frameworks using deontology, consequentialism,
-  virtue ethics, and applied ethics methodologies.
-  Provides insights on moral obligations, rights, justice, and ethical decision-making.
-  Use when: Ethical dilemmas, policy decisions, technology ethics, professional conduct issues.
-  Evaluates: Moral principles, stakeholder interests, consequences, rights, justice, virtues.
+description: Ethics lens on deontology, consequentialism, and virtue ethics. Use for moral dilemmas and technology ethics.
 ---
 
 # Ethicist Analyst Skill

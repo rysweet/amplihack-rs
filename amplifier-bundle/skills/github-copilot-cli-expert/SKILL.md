@@ -1,7 +1,7 @@
 ---
 name: github-copilot-cli-expert
 version: 2.0.0
-description: Expert knowledge of GitHub Copilot CLI - installation, configuration, usage, custom agents, MCP servers, and version management. Use when asking about copilot cli, copilot commands, installing copilot, updating copilot, copilot features.
+description: GitHub Copilot CLI expertise in custom agents, MCP servers, version management, and troubleshooting.
 tags: [github-copilot, cli, installation, mcp, agents, skills]
 token_budget: 5000
 source_urls:

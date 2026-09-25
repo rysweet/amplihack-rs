@@ -1,7 +1,7 @@
 ---
 name: gherkin-expert
 version: 1.0.0
-description: Gherkin/BDD expert for writing, reviewing, and refactoring Cucumber feature files and step definitions.
+description: Writes, reviews, and refactors Cucumber feature files and step definitions.
 auto_activates:
   - "write feature file"
   - "write gherkin"

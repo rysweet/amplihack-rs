@@ -1,6 +1,6 @@
 ---
 name: mcp-manager
-description: Conversational interface for managing MCP (Model Context Protocol) server configurations in Claude Code
+description: Conversational management of MCP server configuration in Claude Code.
 type: skill
 activationStrategy: lazy-aggressive
 activationKeywords:

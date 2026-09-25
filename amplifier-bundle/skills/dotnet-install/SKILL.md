@@ -1,7 +1,7 @@
 ---
 name: dotnet-install
 version: 1.0.0
-description: .NET SDK and runtime installation across Windows, macOS, and Linux. Handles version detection, platform-specific installers (WinGet, Homebrew, apt, dnf), SDK vs runtime selection, offline installation, Docker setup, and troubleshooting. Auto-activates for .NET installation, setup, version management, and multi-platform deployment.
+description: .NET SDK and runtime install on Windows, macOS, Linux, and Docker. Use for setup, versions, or troubleshooting.
 activation_keywords:
   - "install .NET"
   - "setup dotnet"

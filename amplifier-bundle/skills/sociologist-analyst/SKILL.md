@@ -1,12 +1,7 @@
 ---
 name: sociologist-analyst
 version: 1.0.0
-description: |
-  Analyzes events through sociological lens using social structures, institutions, stratification, culture,
-  norms, collective behavior, and multiple theoretical perspectives (functionalist, conflict, symbolic interactionist).
-  Provides insights on social patterns, group dynamics, inequality, socialization, social change, and collective action.
-  Use when: Social movements, inequality, cultural trends, group behavior, institutions, identity, social change.
-  Evaluates: Social structures, power relations, inequality, norms, group dynamics, cultural patterns, social change.
+description: Sociology lens on structures, institutions, stratification, and norms. Use for inequality or group behavior.
 ---
 
 # Sociologist Analyst Skill

@@ -1,7 +1,7 @@
 ---
 name: documentation-writing
 version: 1.0.0
-description: Writing clear, discoverable software documentation following the Eight Rules and Diataxis framework. Use when creating README files, API docs, tutorials, how-to guides, or any project documentation. Automatically enforces docs/ location, linking requirements, and runnable examples.
+description: Writes docs by the Eight Rules and Diataxis. Use for READMEs, API docs, tutorials, and how-to guides.
 source_urls:
   - https://diataxis.fr/
   - https://www.writethedocs.org/guide/writing/docs-principles/

@@ -1,7 +1,7 @@
 ---
 name: github-copilot-cli
 version: 1.0.0
-description: Expert knowledge of GitHub Copilot CLI - installation, configuration, usage, MCP servers, skills, custom agents, and troubleshooting. Use when asking about copilot cli, installing copilot, gh copilot, copilot commands, MCP setup, or copilot extensibility.
+description: GitHub Copilot CLI install, config, MCP servers, skills, and custom agents. Use for copilot cli questions.
 source_urls:
   - https://docs.github.com/en/copilot/concepts/agents/about-copilot-cli
   - https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli

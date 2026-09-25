@@ -1,9 +1,6 @@
 ---
 name: design-patterns-expert
-description: |
-  Comprehensive knowledge of all 23 Gang of Four design patterns with
-  progressive disclosure (Quick/Practical/Deep), pattern recognition for
-  problem-solving, and philosophy-aligned guidance to prevent over-engineering.
+description: All 23 Gang of Four patterns with progressive depth. Use for pattern choice without over-engineering.
 category: knowledge
 version: 1.0.0
 author: amplihack

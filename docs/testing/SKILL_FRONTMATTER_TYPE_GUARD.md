@@ -81,9 +81,18 @@ argument-hint: "[pr-number]"                  # double-quoted
 argument-hint: '[pr-number]'                  # single-quoted
 ```
 
-Block (`|`) and folded (`>`) scalars are the common form for `description` in
-this bundle (71 of 122 skills use one) and all parse to `serde_yaml::Value::String`,
+Block (`|`) and folded (`>`) scalars all parse to `serde_yaml::Value::String`,
 so the guard accepts them. Only sequences and mappings fail.
+
+The guard has no opinion on **which** scalar form a description uses, and that
+is deliberate — it is a type guard, not a style guard. The bundle's own style
+is a separate rule enforced by a separate check: descriptions must be
+single-line scalars of ~120 characters so the session skill listing stays under
+its size budget. See
+[Skill Listing Budget](../reference/skill-listing-budget.md). Block scalars were
+the common form before [#1459](https://github.com/rysweet/amplihack-rs/issues/1459)
+rewrote them; they remain type-valid wherever they appear, which matters because
+the install-time budget check measures a user-writable tree.
 
 **Violations** (parse as a sequence or mapping):
 
@@ -218,15 +227,23 @@ cargo test -p amplihack --test skill_frontmatter_type
 
 ## Audit Baseline
 
-All 122 bundled `SKILL.md` files were inspected when the guard was introduced:
+**Historical snapshot.** The figures below record the corpus as it stood when
+the guard was introduced. They are not the current counts and are not meant to
+track the bundle — the guard itself asserts the invariant on whatever is
+present. For the live count, run the guard; for the current listing size, run
+`scripts/check-skill-description-budget.sh`.
+
+All 122 bundled `SKILL.md` files present at that time were inspected:
 
 - Only `merge-ready` and `statler-waldorf` carry an `argument-hint` in their
   frontmatter, and both are already quoted string scalars. (`skill-builder`
   mentions `argument-hint` only in prose, not frontmatter, so it is irrelevant.)
 - Every `name` and `description` value parses as a YAML `String`. `name` is
   always a plain scalar; `description` is a mix of plain, quoted, and
-  block/folded (`|`, `>`) scalars — 71 of 122 use a block scalar — all of which
-  are valid strings and pass the guard.
+  block/folded (`|`, `>`) scalars — 71 of the 122 then-present skills used a
+  block scalar — all of which are valid strings and pass the guard. (The bundle
+  has since grown to 130 skills, and #1459 converts descriptions to single-line
+  scalars; neither change affects what this guard asserts.)
 - **No source fixes were required** beyond the pre-existing `merge-ready` fix
   (`e0abfb4`). The deliverable is the guard test itself plus its Cargo
   registration.

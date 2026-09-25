@@ -1,6 +1,6 @@
 ---
 name: lsp-setup
-description: Auto-discovers and configures Language Server Protocol (LSP) servers for project languages
+description: Discovers and configures Language Server Protocol servers for the project's languages.
 type: skill
 activationStrategy: lazy-aggressive
 activationKeywords:

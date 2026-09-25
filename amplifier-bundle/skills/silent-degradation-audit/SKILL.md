@@ -1,9 +1,6 @@
 ---
 name: silent-degradation-audit
-description: |
-  Production-ready skill for detecting silent degradation across codebases.
-  Uses multi-wave audit system with 6 specialized category agents, multi-agent
-  validation panel, and convergence detection.
+description: Multi-wave audit detecting silent degradation across a codebase, with a validation panel and convergence.
 ---
 
 # Silent Degradation Audit Skill

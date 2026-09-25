@@ -1,12 +1,7 @@
 ---
 name: goal-seeking-agent-pattern
 version: 1.0.0
-description: |
-  Guides architects on when and how to use goal-seeking agents as a design pattern.
-  This skill helps evaluate whether autonomous agents are appropriate for a given
-  problem, how to structure their objectives, integrate with goal_agent_generator,
-  and reference real amplihack examples like AKS SRE automation, CI diagnostics,
-  pre-commit workflows, and fix-agent pattern matching.
+description: When and how to use goal-seeking agents, how to structure objectives, and real amplihack examples.
 auto-detection:
   triggers:
     - "complex workflow"

@@ -1,6 +1,6 @@
 ---
 name: pm-architect
-description: Expert project manager orchestrating backlog-curator, work-delegator, workstream-coordinator, and roadmap-strategist sub-skills. Coordinates complex software projects through delegation and strategic oversight. Activates when managing projects, coordinating work, or tracking overall progress.
+description: Project manager coordinating backlog, delegation, workstreams, and roadmap. Use for managing a project.
 explicit_triggers:
   - /top5
 ---

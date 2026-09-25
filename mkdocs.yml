@@ -138,6 +138,9 @@ nav:
       - /customize: claude/commands/amplihack/customize.md
   - Skills:
       - Catalog: skills/SKILL_CATALOG.md
+      - Listing Budget Concepts: concepts/skill-listing-budget.md
+      - Listing Budget Reference: reference/skill-listing-budget.md
+      - Keep Descriptions in Budget: howto/keep-skill-descriptions-in-budget.md
       - Agent SDK: claude/skills/claude-agent-sdk/SKILL.md
       - DOCX: claude/skills/docx/SKILL.md
       - PPTX: claude/skills/pptx/SKILL.md
@@ -224,6 +227,8 @@ nav:
       - CLI Reference: reference/cli.md
       - install Command: reference/install-command.md
       - Install/Update PATH Conflicts: reference/install-update-path-conflicts.md
+      - Install Completeness: reference/install-completeness.md
+      - Skill Listing Budget: reference/skill-listing-budget.md
       - recipe Command: reference/recipe-command.md
       - RustyClawd Command: reference/rustyclawd-command.md
       - uvx-help Command: reference/uvx-help-command.md

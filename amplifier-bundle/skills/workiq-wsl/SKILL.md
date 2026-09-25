@@ -1,9 +1,6 @@
 ---
 name: workiq-wsl
-description: |
-  Access Microsoft 365 data (emails, calendar, files) from WSL via the Windows
-  Copilot CLI bridge. Routes queries through powershell.exe to the Windows-native
-  Copilot CLI with WorkIQ plugin for M365 Graph API access.
+description: Reaches M365 email, calendar, and files from WSL through the Windows Copilot CLI bridge.
 version: 1.0.0
 auto_activates:
   - "workiq"

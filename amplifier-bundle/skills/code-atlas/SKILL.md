@@ -1,16 +1,7 @@
 ---
 name: code-atlas
 version: 2.0.0
-description: |
-  Builds comprehensive, living code-atlases as multi-layer architecture documents derived from
-  code-first truth. Defaults to both Graphviz DOT and Mermaid. User can override to single format.
-  Language-agnostic (Go, TypeScript, Python, .NET, Rust, Java). Files issues with
-  'code-atlas-bughunt' label. Treats atlas-building as a multi-agent bug-hunting journey:
-  graph-form reasoning exposes structural bugs, route/DTO mismatches, orphaned env vars,
-  dead code paths, and stale documentation that linear review misses. Three-pass bug hunt
-  with per-journey PASS/FAIL/NEEDS_ATTENTION verdicts.
-  Use when: creating architecture documentation, investigating unfamiliar codebases,
-  hunting structural bugs, setting up CI/CD diagram refresh, or publishing to GitHub Pages/mkdocs.
+description: Builds living multi-layer architecture atlases in DOT and Mermaid and hunts structural bugs. Use for unfamiliar code.
 invokes:
   skills:
     - code-visualizer

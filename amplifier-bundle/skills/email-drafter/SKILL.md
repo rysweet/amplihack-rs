@@ -1,11 +1,7 @@
 ---
 name: email-drafter
 version: 1.0.0
-description: |
-  Generates professional emails from bullet points or conversation summaries.
-  Use when you need to draft emails quickly with consistent style and tone.
-  Supports multiple tones: formal, casual, technical
-  Supports contexts: status updates, requests, announcements, follow-ups
+description: Drafts professional emails from bullets or summaries in a chosen tone. Use for updates, requests, or follow-ups.
 ---
 
 # Email Drafter Skill

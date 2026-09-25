@@ -1,11 +1,7 @@
 ---
 name: test-gap-analyzer
 version: 1.0.0
-description: |
-  Analyzes code to identify untested functions, low coverage areas, and missing edge cases.
-  Use when reviewing test coverage or planning test improvements.
-  Generates specific test suggestions with example templates following amplihack's testing pyramid (60% unit, 30% integration, 10% E2E).
-  Can use coverage.py for Python projects.
+description: Finds untested functions, low-coverage areas, and missing edge cases, with example tests. Use for coverage review.
 ---
 
 # Test Gap Analyzer Skill

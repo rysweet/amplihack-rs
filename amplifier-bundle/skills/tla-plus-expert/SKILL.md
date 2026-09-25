@@ -1,7 +1,7 @@
 ---
 name: tla-plus-expert
 version: 1.0.0
-description: TLA+ formal specification expert for writing specs, model checking, and applying formal methods to amplihack workflows
+description: TLA+ formal specification for writing specs, model checking, and applying formal methods to workflows.
 activation_keywords:
   - "TLA+"
   - "TLA"

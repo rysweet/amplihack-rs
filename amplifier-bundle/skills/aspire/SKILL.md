@@ -1,6 +1,6 @@
 ---
 name: aspire
-description: Aspire orchestration for cloud-native distributed applications in any language (C#, Python, Node.js, Go). Handles dependency management, local dev with Docker, Azure deployment, service discovery, and observability dashboards. Use when setting up microservices, containerized apps, or polyglot distributed systems.
+description: Aspire orchestration for cloud-native distributed apps. Use for microservices, containers, or polyglot services.
 version: 1.0.0
 source_urls:
   - https://learn.microsoft.com/dotnet/aspire/get-started/aspire-overview

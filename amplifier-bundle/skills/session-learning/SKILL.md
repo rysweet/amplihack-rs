@@ -1,10 +1,7 @@
 ---
 name: session-learning
 version: 1.0.0
-description: |
-  Cross-session learning system that extracts insights from session transcripts and injects
-  relevant past learnings at session start. Uses simple keyword matching for relevance.
-  Complements DISCOVERIES.md/PATTERNS.md with structured YAML storage.
+description: Extracts insights from session transcripts and injects relevant past learnings at session start.
 invokes:
   - tools: [Read, Write, Edit, Grep, Glob]
   - commands: [/amplihack:learnings]

@@ -1,10 +1,7 @@
 ---
 name: default-workflow
 version: 2.0.0
-description: |
-  Development workflow for features, bugs, refactoring. Normally executed as a
-  sub-recipe by dev-orchestrator/smart-orchestrator. Supports direct invocation
-  via recipe runner for standalone use.
+description: Development workflow for features, bugs, and refactoring. Usually run as a sub-recipe by dev-orchestrator.
 auto_activates:
   - "implement feature spanning multiple files"
   - "complex integration across components"

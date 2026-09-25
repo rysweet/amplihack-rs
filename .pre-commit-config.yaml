@@ -33,6 +33,13 @@ repos:
         pass_filenames: false
         files: '(^amplifier-bundle/recipes/.*\.ya?ml$|^tests/integration/default_workflow_decomposition_test\.rs$)'
 
+      - id: check-skill-description-budget
+        name: staged skill name+description under the listing budget (issue #1459)
+        entry: scripts/check-skill-description-budget.sh
+        language: system
+        pass_filenames: false
+        files: '(^amplifier-bundle/skills/.*/SKILL\.md$|^crates/amplihack-cli/src/skill_listing_budget\.rs$)'
+
       - id: check-git-command-sanitised
         name: git subprocesses go through amplihack-git (issue #1278)
         entry: scripts/check-git-command-sanitised.sh

@@ -1,12 +1,7 @@
 ---
 name: engineer-analyst
 version: 1.0.0
-description: |
-  Analyzes technical systems and problems through engineering lens using first principles, systems thinking,
-  design methodologies, and optimization frameworks.
-  Provides insights on feasibility, performance, reliability, scalability, and trade-offs.
-  Use when: System design, technical feasibility, optimization, failure analysis, performance issues.
-  Evaluates: Requirements, constraints, trade-offs, efficiency, robustness, maintainability.
+description: Engineering lens on first principles, systems thinking, and optimization. Use for feasibility or performance.
 ---
 
 # Engineer Analyst Skill

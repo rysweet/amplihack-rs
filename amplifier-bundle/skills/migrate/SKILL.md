@@ -1,6 +1,6 @@
 ---
 name: amplihack-migrate
-description: Move the active amplihack CLI session (Copilot/Claude/Amplifier) to a fresh azlin-managed VM, preserving auth, plugins, skills, plan.md, todos, and conversation history. Resumes the session in a detached tmux on the destination host.
+description: Move a running amplihack CLI session to a fresh azlin VM, keeping auth, plugins, skills, todos, and history.
 version: 1.0.0
 author: amplihack
 activation_keywords:
