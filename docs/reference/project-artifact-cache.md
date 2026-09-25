@@ -337,9 +337,9 @@ That is a **known gap, recorded rather than closed.** Every user who upgrades by
 launching amplihack is already covered on their first session, and each extra
 call site is another place that can fail in front of an index read for a case
 that is already handled a moment later. A user who needs it sooner can start one
-session in the project, or move the files by hand
-(see [Cache growth and reclaiming space](#cache-growth-and-reclaiming-space) for
-the layout).
+session in the project, or delete the in-repo artifacts and reindex — the reindex
+writes to the cache either way. Both are spelled out in
+[Index a project](../howto/index-a-project.md#what-happens-to-an-index-you-already-have).
 
 The entry point stands down cheaply when there is nothing to move:
 `collect_sources()` runs one `fs::symlink_metadata` per row of
