@@ -259,7 +259,10 @@ delete `~/.local/bin/amplihack`, `~/.local/bin/amplihack-hooks` and
 
 ## Validate changes
 
-CI runs all three. Contributors changing the plugin files should run them too:
+CI runs the test and shellcheck. It does not run `claude plugin validate`,
+because CI deliberately never installs the real Claude client (a guard test,
+`issue_1445_host_only_litellm`, forbids it); the Rust test pins what the
+validator checks. Contributors changing the plugin files should run all three:
 
 ```bash
 claude plugin validate .

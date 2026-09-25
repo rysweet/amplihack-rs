@@ -267,11 +267,6 @@ jobs:
             sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
           fi
           shellcheck -s sh -S style claude-plugin/bin/*
-      - name: Plugin — claude plugin validate
-        shell: bash
-        # Needs no credentials. The one expected warning is the deliberately
-        # absent plugin.json version (docs/howto/install-claude-code-plugin.md).
-        run: npx --yes @anthropic-ai/claude-code@2.1.282 plugin validate .
       - uses: dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83 # 1.97.0
         with:
           components: clippy, rustfmt
