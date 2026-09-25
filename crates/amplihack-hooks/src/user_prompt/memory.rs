@@ -25,7 +25,7 @@ const MIN_SHARED_TERMS: usize = 2;
 const MIN_TERM_CHARS: usize = 3;
 /// A memory is scored only if at least this share of its words are
 /// [`ENGLISH_MARKERS`], i.e. it reads as English (see [`reads_as_english`]).
-const MIN_ENGLISH_MARKER_SHARE: f64 = 0.15;
+const MIN_ENGLISH_MARKER_SHARE: f64 = 0.1;
 /// At most this many memories are injected for one prompt.
 const MAX_INJECTED_MEMORIES: usize = 5;
 /// Each injected memory is cut to this many characters, so a stored
@@ -65,21 +65,30 @@ fn is_stop_word(word: &str) -> bool {
         .contains(word)
 }
 
-/// Frequent English function words that are not also common words in
-/// Spanish, French, German, Italian or Portuguese (so not `a`, `de`, `la`,
-/// `no`, `in`, `an`, `so`, `was`, `also`, `will`, `me`, `on`, `do`, `as`).
-/// Their share of a text's words is a cheap language check, the "common
-/// words" method of language identification (Grefenstette, *Comparing two
-/// language identification schemes*, JADT 1995).
+/// Frequent English function words that are not also frequent words in
+/// another common Latin-script language, so not:
+/// - `a`, `de`, `la`, `no`, `he`, `on`, `me`, `do`, `as` (Romance),
+/// - `in`, `an`, `so`, `was`, `also`, `will`, `am` (German),
+/// - `is`, `of`, `we`, `had`, `over` (Dutch),
+/// - `at`, `for`, `her`, `i` (Danish, Norwegian, Tagalog),
+/// - `to`, `my`, `by` (Polish, Czech, Slovak).
+///
+/// Their share of a text's prose words is a cheap language check, the
+/// "common words" method of language identification (Grefenstette,
+/// *Comparing two language identification schemes*, JADT 1995).
 const ENGLISH_MARKERS: &[&str] = &[
-    "about", "after", "and", "any", "are", "at", "be", "because", "been", "before", "between",
-    "but", "by", "can", "could", "did", "does", "each", "for", "from", "had", "has", "have", "he",
-    "her", "here", "his", "how", "if", "into", "is", "it", "its", "just", "more", "most", "must",
-    "my", "not", "now", "of", "off", "only", "or", "other", "our", "out", "over", "she", "should",
-    "some", "than", "that", "the", "their", "them", "then", "there", "these", "they", "this",
-    "those", "to", "too", "up", "us", "very", "we", "were", "what", "when", "where", "which",
-    "while", "who", "why", "with", "without", "would", "you", "your",
+    "about", "after", "and", "any", "are", "be", "because", "been", "before", "between", "but",
+    "can", "could", "did", "does", "each", "from", "has", "have", "here", "his", "how", "if",
+    "into", "it", "its", "just", "more", "most", "must", "not", "now", "off", "only", "or",
+    "other", "our", "out", "she", "should", "some", "than", "that", "the", "their", "them", "then",
+    "there", "these", "they", "this", "those", "too", "up", "us", "very", "were", "what", "when",
+    "where", "which", "while", "who", "why", "with", "without", "would", "you", "your",
 ];
+
+/// Endings only English contractions have (`doesn't`, `we'll`, `they're`,
+/// `I've`, `you'd`, `I'm`); French and Italian elisions (`c'est`, `l'acqua`)
+/// put the apostrophe elsewhere.
+const ENGLISH_CONTRACTION_ENDINGS: &[&str] = &["n't", "'ll", "'re", "'ve", "'d", "'m"];
 
 /// The agents `prompt` invokes, by name or by slash command.
 fn prompt_agents(prompt: &str) -> Vec<String> {
@@ -224,23 +233,55 @@ fn words(text: &str) -> impl Iterator<Item = Option<&str>> {
         .map(without_apostrophes)
 }
 
-/// Whether `text` reads as English: at least [`MIN_ENGLISH_MARKER_SHARE`]
-/// of its words are [`ENGLISH_MARKERS`].
-///
-/// The relevance filter only knows English. Another language's function
-/// words (`schon`, `jetzt`, `porque`, `可能`) would be topic words to it, so
-/// two unrelated sentences in that language could look relevant; such a
-/// memory is not scored at all. English memories that are bare keyword
-/// lists (`cargo fmt`) fail the check too. Both fail closed.
-fn reads_as_english(text: &str) -> bool {
-    let (mut total, mut english) = (0usize, 0usize);
-    for word in words(text) {
-        total += 1;
-        if word.is_some_and(|word| ENGLISH_MARKERS.contains(&word.to_lowercase().as_str())) {
-            english += 1;
+/// The natural-language words of `text`, lower-cased: code is not
+/// evidence of any language, so fenced blocks, backtick spans, role labels
+/// and tokens that look like code (`src/main.rs:12`, `--test-threads=1`,
+/// `needless_borrow`, `re-ran`, `DEFAULT_STEP_TIMEOUT`, `CI`) are left out.
+fn prose_words(text: &str) -> Vec<String> {
+    let mut prose = Vec::new();
+    for outside_fence in text.split("```").step_by(2) {
+        for outside_ticks in outside_fence.split('`').step_by(2) {
+            for token in without_role_labels(outside_ticks) {
+                let token = token
+                    .trim_start_matches(['(', '[', '{', '"', '\'', '\u{2019}'])
+                    .trim_end_matches([
+                        '.', ',', ';', ':', '!', '?', ')', ']', '}', '"', '\'', '\u{2019}',
+                    ]);
+                let letters = token.chars().filter(|c| c.is_alphabetic()).count();
+                let looks_like_code = token
+                    .chars()
+                    .any(|c| !c.is_alphabetic() && !is_apostrophe(c))
+                    || (letters >= 2 && token.chars().all(|c| !c.is_lowercase()));
+                if !token.is_empty() && !looks_like_code {
+                    prose.push(token.to_lowercase().replace('\u{2019}', "'"));
+                }
+            }
         }
     }
-    total > 0 && english as f64 / total as f64 >= MIN_ENGLISH_MARKER_SHARE
+    prose
+}
+
+/// Whether `text` reads as English: at least [`MIN_ENGLISH_MARKER_SHARE`]
+/// of its [`prose_words`] are [`ENGLISH_MARKERS`] or English contractions.
+///
+/// The relevance filter only knows English. Another language's function
+/// words (`schon`, `niet`, `jest`, `porque`) would be topic words to it, so
+/// two unrelated sentences in that language could look relevant; such a
+/// memory is not scored at all. A memory with too little English prose to
+/// tell — a bare keyword list (`cargo fmt`) or a note that is almost all
+/// code — fails the check too. Both fail closed.
+fn reads_as_english(text: &str) -> bool {
+    let prose = prose_words(text);
+    let english = prose
+        .iter()
+        .filter(|word| {
+            ENGLISH_MARKERS.contains(&word.as_str())
+                || ENGLISH_CONTRACTION_ENDINGS
+                    .iter()
+                    .any(|ending| word.ends_with(ending))
+        })
+        .count();
+    !prose.is_empty() && english as f64 / prose.len() as f64 >= MIN_ENGLISH_MARKER_SHARE
 }
 
 /// Distinct lower-cased topic words of `text`, without stop words, short
@@ -254,9 +295,10 @@ fn reads_as_english(text: &str) -> bool {
 /// Known limit: only ASCII words are topic words. Accented Latin, Cyrillic,
 /// Greek, and Chinese, Japanese and Korean text (which has no spaces
 /// between words, or attaches grammar to them) contribute nothing, and
-/// non-English memories are not scored (see [`reads_as_english`]). Memories
-/// in other languages are therefore never injected: this fails closed —
-/// nothing irrelevant is injected, a relevant memory may be missed.
+/// memories that do not read as English are not scored (see
+/// [`reads_as_english`]), which also drops terse English notes with too few
+/// function words to tell. This fails closed: nothing irrelevant is
+/// injected, a relevant memory may be missed.
 fn topic_terms(text: &str, ignored: &HashSet<String>) -> HashSet<String> {
     words(text)
         .flatten()
@@ -775,6 +817,18 @@ mod tests {
                 "/fix 自分の時間の問題",
                 "Agent general: user: 自分の時間がない問題",
             ),
+            (
+                "/fix het build is niet goed",
+                "Agent general: user: het weer is niet goed vandaag, het is koud",
+            ),
+            (
+                "/fix to jest tak, nie działa build",
+                "Agent general: user: to jest tak, nie wiem czy to dobrze",
+            ),
+            (
+                "/fix jeg tror at build er for langsom",
+                "Agent general: user: jeg tror at det er for koldt her i dag",
+            ),
         ] {
             assert_eq!(
                 format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(unrelated)]),
@@ -826,6 +880,77 @@ mod tests {
         assert!(!reads_as_english("porque el perro no funciona para nada"));
         assert!(!reads_as_english("cargo fmt"));
         assert!(!reads_as_english(""));
+        assert!(!reads_as_english("```\nlet the = it;\n``` `the` `and`"));
+        assert_eq!(
+            prose_words(
+                "Fix CI: run `cargo fmt --all` then --test-threads=1 on src/main.rs:12 (DEFAULT_STEP_TIMEOUT), re-ran."
+            ),
+            ["fix", "run", "then", "on"]
+        );
+    }
+
+    /// Session-stop stores the head of a coding transcript: English prose
+    /// full of paths, flags and identifiers. The code is not held against
+    /// the prose.
+    #[test]
+    fn technical_english_memories_are_injected() {
+        for (prompt, relevant) in [
+            (
+                "/fix cargo clippy warnings in the hooks crate",
+                "Agent builder: Fix CI: run cargo fmt --all then cargo clippy -D warnings on the hooks crate",
+            ),
+            (
+                "/fix the flaky sqlite test",
+                "Agent tester: Flaky sqlite_end_to_end test times out under parallel runs; use --test-threads=1",
+            ),
+            (
+                "/fix the flaky sqlite test",
+                "Agent tester: The sqlite test is flaky because it shares a temp dir with other tests; give each test its own tempdir.",
+            ),
+            (
+                "/analyze the recipe runner timeout",
+                "Agent general: user: /analyze recipe runner timeout\n\nassistant: Root cause: `amplihack-recipe-runner` kills steps after 300s (DEFAULT_STEP_TIMEOUT in crates/amplihack-recipe/src/runner.rs:88). Long cargo builds exceed it. Fix: raise to 1800s or make it configurable via AMPLIHACK_STEP_TIMEOUT.",
+            ),
+            (
+                "/fix the clippy needless_borrow warning in session_stop",
+                "Agent builder: user: fix the clippy warning\n\nassistant: warning: this expression creates a reference which is immediately dereferenced by the compiler\n --> crates/amplihack-hooks/src/session_stop/mod.rs:57:21\n  = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_borrow\nRemoved the needless borrow in session_stop.",
+            ),
+        ] {
+            let result =
+                format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(relevant)]);
+            let body = single_line(strip_agent_prefix(relevant));
+            assert!(
+                result.is_some_and(|text| text.contains(&bounded_memory_text(&body))),
+                "{relevant:?} is relevant to {prompt:?}"
+            );
+        }
+    }
+
+    /// Known limit: a note whose prose has too few English function words
+    /// to tell its language is not scored, even when it is relevant (see
+    /// [`reads_as_english`]).
+    #[test]
+    fn terse_notes_without_english_function_words_are_not_scored() {
+        for (prompt, relevant) in [
+            (
+                "/analyze user login",
+                "Agent general: user login uses oauth",
+            ),
+            (
+                "/fix clippy warnings in the hooks crate",
+                "Agent builder: clippy warnings in hooks crate: needless_borrow, redundant_clone; fixed via cargo clippy --fix",
+            ),
+            (
+                "/fix the release workflow token permissions",
+                "Agent general: user: release workflow fails with 403\n\nassistant: GITHUB_TOKEN lacks contents: write. Added permissions: contents: write to .github/workflows/release.yml; re-ran, green.",
+            ),
+        ] {
+            assert_eq!(
+                format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(relevant)]),
+                None,
+                "{relevant:?} is not scored"
+            );
+        }
     }
 
     #[test]
