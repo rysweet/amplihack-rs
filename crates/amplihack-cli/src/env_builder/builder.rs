@@ -132,17 +132,20 @@ impl EnvBuilder {
     /// Export a binary the resolver chose, together with where it came from.
     ///
     /// Issue #1481: a value from the built-in default is tagged with
-    /// [`amplihack_utils::agent_binary::SOURCE_ENV`] so that no descendant
-    /// treats it as an instruction or persists it as a session's choice.
+    /// [`amplihack_utils::agent_binary::SOURCE_ENV`]`=default:<tool>` so that no
+    /// descendant treats it as an instruction or persists it as a session's
+    /// choice, while one that later sets a different binary is still obeyed.
     pub fn with_resolved_agent_binary(
         self,
         tool: impl Into<String>,
         source: amplihack_utils::agent_binary::ResolutionSource,
     ) -> Self {
+        let tool = tool.into();
+        let tag = amplihack_utils::agent_binary::default_guess_tag(&tool);
         let this = self.with_agent_binary(tool);
         match source {
             amplihack_utils::agent_binary::ResolutionSource::Default => {
-                this.set(amplihack_utils::agent_binary::SOURCE_ENV, source.label())
+                this.set(amplihack_utils::agent_binary::SOURCE_ENV, tag)
             }
             _ => this,
         }
@@ -512,7 +515,10 @@ mod tests {
             .with_resolved_agent_binary("copilot", ResolutionSource::Default)
             .build();
         assert_eq!(env.get("AMPLIHACK_AGENT_BINARY").unwrap(), "copilot");
-        assert_eq!(env.get(SOURCE_ENV).map(String::as_str), Some("default"));
+        assert_eq!(
+            env.get(SOURCE_ENV).map(String::as_str),
+            Some("default:copilot")
+        );
 
         for source in [
             ResolutionSource::Env,

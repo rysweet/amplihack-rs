@@ -9,9 +9,10 @@
 //! 4. Built-in default: `"copilot"`.
 //!
 //! An `AMPLIHACK_AGENT_BINARY` that a parent exported from layer 4 carries
-//! [`SOURCE_ENV`]`=default` beside it. Such a value is a guess handed down, not
-//! an instruction, so layer 1 ignores it and the lower layers answer again
-//! (issue #1481).
+//! [`SOURCE_ENV`]`=default:<binary>` beside it. While the two still agree, the
+//! value is a guess handed down, not an instruction, so layer 1 ignores it and
+//! the lower layers answer again (issue #1481). Anyone who later sets a
+//! different binary has made a choice, and the stale tag no longer applies.
 //!
 //! All inputs are validated against a strict allowlist to prevent the resolved
 //! value from being used as an arbitrary `Command::new` target by downstream
@@ -55,7 +56,18 @@ pub const BINARY_ENV: &str = "AMPLIHACK_AGENT_BINARY";
 /// launched `amplihack copilot`, which persisted a launcher context saying
 /// copilot, which pinned every later run in the checkout. The tag keeps the
 /// guess a guess all the way down.
+///
+/// The value is `default:<binary>` -- see [`default_guess_tag`]. It names the
+/// binary it describes because every descendant inherits it: a bash step that
+/// sets `AMPLIHACK_AGENT_BINARY=codex` without clearing the tag has still
+/// chosen codex, and must not be overruled by a tag describing an earlier
+/// guess.
 pub const SOURCE_ENV: &str = "AMPLIHACK_AGENT_BINARY_SOURCE";
+
+/// The [`SOURCE_ENV`] value marking `binary` as a default-layer guess.
+pub fn default_guess_tag(binary: &str) -> String {
+    format!("{}:{binary}", ResolutionSource::Default.label())
+}
 
 /// Maximum bytes accepted from the `AMPLIHACK_AGENT_BINARY` env var.
 const ENV_VALUE_MAX_LEN: usize = 32;
@@ -216,7 +228,22 @@ pub fn resolve_with_source(cwd: &Path) -> Result<(String, ResolutionSource), Res
 /// Such a value must neither outrank a session marker this process can see nor
 /// be persisted as though a session had chosen it.
 pub fn inherited_binary_is_default_guess() -> bool {
-    std::env::var(SOURCE_ENV).is_ok_and(|v| v.trim() == ResolutionSource::Default.label())
+    is_default_guess(
+        std::env::var(BINARY_ENV).ok().as_deref(),
+        std::env::var(SOURCE_ENV).ok().as_deref(),
+    )
+}
+
+/// Pure form of [`inherited_binary_is_default_guess`].
+///
+/// The tag counts only while it describes the binary actually set: a tag with
+/// no value, a tag naming a different binary, or an unrecognised tag all mean
+/// the current value was chosen by someone, so it is honoured.
+pub fn is_default_guess(binary: Option<&str>, tag: Option<&str>) -> bool {
+    match (binary.and_then(validate_binary_name), tag) {
+        (Some(binary), Some(tag)) => tag.trim() == default_guess_tag(&binary),
+        _ => false,
+    }
 }
 
 /// Pure precedence rule, separated from the three lookups that feed it.
@@ -615,6 +642,31 @@ mod tests {
         assert_eq!(name, "claude");
         assert_eq!(source, ResolutionSource::SessionMarker);
         assert!(!source.is_inferred(), "a live marker is not an inference");
+    }
+
+    // ---------------------------------------------------------------------
+    // Issue #1481 -- the default-guess tag is bound to the value it describes.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn a_tag_matching_the_value_marks_it_as_a_guess() {
+        assert!(is_default_guess(Some("copilot"), Some("default:copilot")));
+        assert!(is_default_guess(Some(" Copilot "), Some("default:copilot")));
+    }
+
+    /// Every step of a default-guess run inherits the tag. A step that then
+    /// names a binary on purpose has made a choice the stale tag must not veto.
+    #[test]
+    fn a_tag_describing_a_different_binary_does_not_veto_an_explicit_choice() {
+        assert!(!is_default_guess(Some("codex"), Some("default:copilot")));
+    }
+
+    #[test]
+    fn a_bare_or_unknown_tag_is_not_a_guess() {
+        assert!(!is_default_guess(Some("copilot"), Some("default")));
+        assert!(!is_default_guess(Some("copilot"), Some("session_marker")));
+        assert!(!is_default_guess(Some("copilot"), None));
+        assert!(!is_default_guess(None, Some("default:copilot")));
     }
 
     /// An explicit override still wins over everything, including the marker.

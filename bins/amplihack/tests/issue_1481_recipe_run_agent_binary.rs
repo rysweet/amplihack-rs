@@ -143,7 +143,7 @@ fn a_default_layer_answer_is_tagged_and_reported() {
     let fx = Fixture::new();
     let (output, probe) = fx.run(&[]);
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(handed(&probe), ("copilot", "default"));
+    assert_eq!(handed(&probe), ("copilot", "default:copilot"));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("'copilot'") && stderr.contains("AMPLIHACK_AGENT_BINARY"),
@@ -159,7 +159,7 @@ fn an_inherited_guess_yields_to_a_visible_session_marker() {
     let fx = Fixture::new();
     let (output, probe) = fx.run(&[
         ("AMPLIHACK_AGENT_BINARY", "copilot"),
-        (SOURCE_ENV, "default"),
+        (SOURCE_ENV, "default:copilot"),
         ("CLAUDE_CODE_SESSION_ID", "session_0123"),
     ]);
     assert!(output.status.success(), "{output:?}");
@@ -172,10 +172,24 @@ fn an_inherited_guess_stays_tagged_when_nothing_better_is_visible() {
     let fx = Fixture::new();
     let (output, probe) = fx.run(&[
         ("AMPLIHACK_AGENT_BINARY", "copilot"),
-        (SOURCE_ENV, "default"),
+        (SOURCE_ENV, "default:copilot"),
     ]);
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(handed(&probe), ("copilot", "default"));
+    assert_eq!(handed(&probe), ("copilot", "default:copilot"));
+}
+
+/// Every step of a default-guess run inherits the tag. A step that then sets a
+/// different binary on purpose has chosen it; the stale tag describes an
+/// earlier value and must not veto the new one.
+#[test]
+fn a_stale_tag_does_not_veto_a_binary_set_after_it() {
+    let fx = Fixture::new();
+    let (output, probe) = fx.run(&[
+        ("AMPLIHACK_AGENT_BINARY", "codex"),
+        (SOURCE_ENV, "default:copilot"),
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(handed(&probe), ("codex", "<unset>"));
 }
 
 /// An explicit choice still beats everything, and is not tagged.

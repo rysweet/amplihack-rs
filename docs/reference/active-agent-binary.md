@@ -45,7 +45,7 @@ The resolver evaluates sources in order and returns the first valid value. A val
 
 | # | Source | Notes |
 | - | --- | --- |
-| 1 | `AMPLIHACK_AGENT_BINARY` env var | Explicit override. Used by CI, tests, and external consumers that have not migrated yet. Ignored when tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default` (see below). |
+| 1 | `AMPLIHACK_AGENT_BINARY` env var | Explicit override. Used by CI, tests, and external consumers that have not migrated yet. Ignored while tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary>` (see below). |
 | 2 | Live session marker | An environment variable the hosting CLI exports, such as `CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_ENTRYPOINT` or `COPILOT_CLI`. The full list is `agent_binary::SESSION_MARKERS`. |
 | 3 | `<repo>/.claude/runtime/launcher_context.json` `launcher` field | Persisted state, possibly written by a different session. Consulted only while fresh, and never above a world-writable or foreign-owned directory. |
 | 4 | Built-in default | `"copilot"` |
@@ -61,11 +61,13 @@ that started the run may be gone, and a nested `amplihack` resolving on its own
 there would fall through to the default (issue #1481).
 
 When the answer came from layer 4, recipe run also exports
-`AMPLIHACK_AGENT_BINARY_SOURCE=default` and prints a one-line notice on stderr.
-The tag keeps a guess a guess on the way down:
+`AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>` and prints a one-line notice on
+stderr. The tag keeps a guess a guess on the way down:
 
-- the resolver ignores a tagged `AMPLIHACK_AGENT_BINARY`, so a session marker
-  visible at a lower level still wins;
+- the resolver ignores `AMPLIHACK_AGENT_BINARY` while the tag still names its
+  value, so a session marker visible at a lower level still wins. A step that
+  sets a *different* binary has made a choice, and the stale tag does not veto
+  it;
 - a launcher (`amplihack copilot`, ...) started with a tagged value naming
   itself does not write `launcher_context.json`, so a default-layer guess never
   becomes persisted state that pins later runs in the checkout.
@@ -82,15 +84,13 @@ Environment variables do not survive every subprocess boundary in the launcher's
 - Sub-recipes spawned by `amplihack recipe run` invoke fresh `amplihack` binaries that may be reading env from the user's shell rather than the parent recipe runner.
 - Python hooks shell out to subcommands using `subprocess.run` which inherits the calling Python's env, not the Rust launcher's.
 
-Workflow runtime isolation moves generated launcher context out of the task
-worktree. New workflow code writes `launcher_context.json` under
-`$AMPLIHACK_RUNTIME_ROOT` with owner-only permissions where supported and an
-atomic rename. Descendant workflows inherit `AMPLIHACK_RUNTIME_ROOT` unchanged
-and read the same runtime-root context.
+That is why the environment variable is not the only layer. It is also why a
+recipe run resolves once, at the top, and hands the answer down explicitly
+rather than letting each nested process re-derive it (see above).
 
-The old `<repo>/.claude/runtime/launcher_context.json` path remains a
-backward-compatible fallback only. It is not canonical durable state for new
-workflow runs.
+The resolver reads `<repo>/.claude/runtime/launcher_context.json` (walking up
+from the working directory, stopping at a `.git` boundary or an untrusted
+directory). It has no `$AMPLIHACK_RUNTIME_ROOT` layer.
 
 ## Allowlist & Validation
 
@@ -118,15 +118,12 @@ AMPLIHACK_AGENT_BINARY=claude amplihack recipe run smart-orchestrator -c task_de
 ```
 
 To force `"claude"` for a single command, set `AMPLIHACK_AGENT_BINARY=claude`.
-For workflow-managed runs, persistent launcher context belongs under
-`AMPLIHACK_RUNTIME_ROOT`.
 
-**Existing `claude` users:** if your repo already has `.claude/runtime/launcher_context.json` with `"launcher": "claude"` from a prior `amplihack claude` invocation, it continues to work as a legacy fallback when the env override and runtime-root context are absent. New workflow runs should rely on runtime-root context instead.
+**Existing `claude` users:** a fresh `.claude/runtime/launcher_context.json` with `"launcher": "claude"` from a prior `amplihack claude` session resolves to `claude` when no env override or session marker answers first.
 
 ## File Format: `launcher_context.json`
 
-Canonical workflow path: `$AMPLIHACK_RUNTIME_ROOT/launcher_context.json`
-Legacy fallback path: `<repo>/.claude/runtime/launcher_context.json`
+Path: `<repo>/.claude/runtime/launcher_context.json`
 Permissions: `0o600` (owner read/write only)
 Read cap: 64 KiB (oversized files are rejected with a warning)
 Staleness window: 24 hours (older files fall through as if unset)
@@ -201,10 +198,10 @@ The path is **always** validated:
 
 ### From a recipe step (bash)
 
-Do not parse `<repo>/.claude/runtime/launcher_context.json` from shell. That
-path is legacy fallback state. Prefer invoking nested work through `amplihack`
-so the shared resolver handles `AMPLIHACK_AGENT_BINARY`,
-`AMPLIHACK_RUNTIME_ROOT`, legacy fallback, and the default consistently:
+Do not parse `<repo>/.claude/runtime/launcher_context.json` from shell.
+Prefer invoking nested work through `amplihack` so the shared resolver handles
+`AMPLIHACK_AGENT_BINARY` (and its default-guess tag), session markers, the
+launcher context, and the default consistently:
 
 ```sh
 amplihack recipe run investigation-workflow \

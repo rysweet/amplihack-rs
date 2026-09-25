@@ -146,13 +146,13 @@ pub fn build_trial_env(trial_home: &Path) -> HashMap<String, String> {
                 amplihack_utils::agent_binary::ResolutionSource::Default,
             )
         });
-    env.insert("AMPLIHACK_AGENT_BINARY".to_string(), resolved);
     if source == amplihack_utils::agent_binary::ResolutionSource::Default {
         env.insert(
             amplihack_utils::agent_binary::SOURCE_ENV.to_string(),
-            source.label().to_string(),
+            amplihack_utils::agent_binary::default_guess_tag(&resolved),
         );
     }
+    env.insert("AMPLIHACK_AGENT_BINARY".to_string(), resolved);
 
     env
 }

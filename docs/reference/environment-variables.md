@@ -73,14 +73,14 @@ These variables are injected into every child process launched by `amplihack`. T
 
 Identifies which CLI binary the current session should use when spawning new AI sessions. As of the workflow runtime-isolation contract, this variable is an explicit override and read-through cache, not the only routing source. The shared resolver consults:
 
-1. `AMPLIHACK_AGENT_BINARY` env var (explicit override; CI/testing/back-compat), unless tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default`
+1. `AMPLIHACK_AGENT_BINARY` env var (explicit override; CI/testing/back-compat), unless tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary>`
 2. A live session marker exported by the hosting CLI (`CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_ENTRYPOINT`, `COPILOT_CLI`, ...)
 3. `<repo>/.claude/runtime/launcher_context.json` `launcher` field (persisted, possibly by another session)
 4. Built-in default: **`copilot`**
 
 `amplihack recipe run` resolves once at entry and exports the result to the
 recipe runner. A result from the built-in default is exported with
-`AMPLIHACK_AGENT_BINARY_SOURCE=default`; see
+`AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>`; see
 [Active Agent Binary](./active-agent-binary.md#resolving-once-for-a-whole-recipe-run).
 
 The launcher continues to write this variable to subprocess environments so that external consumers (notably `rysweet/amplihack-recipe-runner`) that have not yet migrated to the file-based resolver continue to work. New code inside `amplihack-rs` should call `amplihack_utils::agent_binary::resolve(&cwd)` instead of reading the env var directly.
@@ -102,21 +102,21 @@ AMPLIHACK_AGENT_BINARY=claude amplihack recipe run smart-orchestrator -c task_de
 
 # Invalid values are rejected and the resolver falls through
 AMPLIHACK_AGENT_BINARY="../bin/evil" amplihack copilot
-# warn: rejected AMPLIHACK_AGENT_BINARY (failed allowlist); falling back to runtime launcher context
+# warn: rejected AMPLIHACK_AGENT_BINARY (failed allowlist); falling through to the next layer
 ```
 
 #### Why the precedence order
 
-- **Env var first** preserves the established escape hatch for CI/testing and lets external recipe-runner builds keep working unchanged.
-- **Runtime-root launcher context second** keeps durable workflow state outside the task worktree while preserving routing for descendants that inherit `AMPLIHACK_RUNTIME_ROOT`.
-- **Legacy `.claude/runtime` fallback third** preserves older repositories long enough to migrate without treating task-worktree runtime state as canonical.
+- **Env var first** preserves the established escape hatch for CI/testing and lets external recipe-runner builds keep working unchanged. A value tagged as a default-layer guess (`AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>`) is not an instruction and is skipped while the tag still describes it.
+- **Session marker second** names the CLI actually hosting the process, so it outranks any file on disk (#1342).
+- **`.claude/runtime/launcher_context.json` third** is persisted, per-directory, last-writer-wins state that may describe a different session. It is consulted only while fresh and never above a world-writable or foreign-owned directory (#1335).
 - **`copilot` default last** matches the project's current preferred runtime and removes the prior implicit `claude` assumption.
 
 **Why it exists:** Recipe runner, hooks, and sub-agents are agent-agnostic and must call back into whatever tool the user actually launched. See [Active Agent Binary](./active-agent-binary.md) for the full algorithm and [Agent Binary Routing](../concepts/agent-binary-routing.md) for the architectural rationale.
 
-**Python parity:** Python skill scripts (`amplifier-bundle/skills/pm-architect/scripts/agent_query.py`, `delegate_response.py`) implement the **same** precedence and **same** allowlist; `agent_query.py::detect_runtime()` is the canonical Python entry point and is reused by `delegate_response.py`. The shell helper at `amplifier-bundle/skills/migrate/scripts/migrate.sh` re-implements the same algorithm with a `case` statement allowlist. The active binary is therefore consistent across Rust, Python, and shell code paths.
+**Python parity:** Python skill scripts (`amplifier-bundle/skills/pm-architect/scripts/agent_query.py`, `delegate_response.py`) implement the **same** precedence and **same** allowlist; `agent_query.py::detect_runtime()` is the canonical Python entry point and is reused by `delegate_response.py`. The shell helper at `amplifier-bundle/skills/migrate/scripts/migrate.sh` re-implements the env and launcher-context layers with a regex allowlist and honours the default-guess tag. The Rust resolver is authoritative where they differ.
 
-**Existing `claude` users:** repos that already have `.claude/runtime/launcher_context.json` with `"launcher": "claude"` continue to resolve to `claude` during migration — the legacy fallback wins over the new `copilot` default when runtime-root state and the env override are absent. New workflow code must write launcher context under `AMPLIHACK_RUNTIME_ROOT`, not under the task worktree.
+**Existing `claude` users:** a fresh `.claude/runtime/launcher_context.json` with `"launcher": "claude"` resolves to `claude` when no env override or session marker answers first.
 
 **Effect on startup self-update prompt:** A non-empty `AMPLIHACK_AGENT_BINARY` is also recognised by the startup self-update prompt as a subprocess-safe signal — when the variable is set, the prompt is skipped and the skip-line `amplihack: skipping update check (subprocess-safe / no TTY)` is emitted to stderr. This means delegated agent invocations never block on the prompt, even at an interactive TTY. See [Startup Self-Update Prompt — Subprocess-Safe Skip](../features/startup-update-prompt-subprocess-safe.md).
 

@@ -50,8 +50,9 @@ fn is_non_session_invocation(extra_args: &[String]) -> bool {
 /// markers had been stripped exported the vendor default, and every agent step
 /// then ran `amplihack copilot`. That launch is not a session anyone chose, so
 /// recording it would turn one guess into persisted state that decides later
-/// runs in the checkout. Only a match on the tool counts: the tag describes the
-/// inherited value, not whatever launcher a user typed.
+/// runs in the checkout. The tag is bound to the inherited value, and that
+/// value must also name this tool: the tag describes what was handed down, not
+/// whatever launcher a user typed.
 fn launched_on_a_default_guess(tool: &str) -> bool {
     amplihack_utils::agent_binary::inherited_binary_is_default_guess()
         && std::env::var(amplihack_utils::agent_binary::BINARY_ENV)
