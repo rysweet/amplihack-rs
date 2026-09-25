@@ -103,6 +103,19 @@ const ENGLISH_MARKERS: &[&str] = &[
 /// put the apostrophe elsewhere.
 const ENGLISH_CONTRACTION_ENDINGS: &[&str] = &["n't", "'ll", "'re", "'ve", "'d", "'m"];
 
+/// The agent names, and the slash commands that invoke them, are how the
+/// prompt reached this hook, not what it is about.
+fn ignored_terms(agent_types: &[String]) -> HashSet<String> {
+    let mut ignored = HashSet::new();
+    for agent in agent_types {
+        ignored.extend(topic_terms(agent, &HashSet::new()));
+        for command in slash_commands_for(agent) {
+            ignored.insert(command.to_string());
+        }
+    }
+    ignored
+}
+
 /// The agents `prompt` invokes, by name or by slash command.
 fn prompt_agents(prompt: &str) -> Vec<String> {
     let mut agent_types = detect_agent_references(prompt);
@@ -133,6 +146,11 @@ pub(crate) fn inject_memory(prompt: &str, session_id: Option<&str>) -> Option<St
         }
     };
     let query_text = prompt.chars().take(500).collect::<String>();
+    // Checked before retrieval too: a prompt that fails it gets nothing, so
+    // loading the session's memories for it would be wasted.
+    if !prompt_reads_as_english(&query_text, &ignored_terms(&agent_types)) {
+        return None;
+    }
 
     match retrieve_prompt_context_memories(session_id, &query_text, 2000) {
         Ok(memories) => format_agent_memory_context(&query_text, &agent_types, &memories),
@@ -149,26 +167,21 @@ pub(crate) fn inject_memory(prompt: &str, session_id: Option<&str>) -> Option<St
 /// memories below [`RELEVANCE_THRESHOLD`] or sharing fewer than
 /// [`MIN_SHARED_TERMS`] topic words are dropped. Memories with the same
 /// text, ignoring the `Agent <name>:` prefix and whitespace, are printed
-/// once, and each entry is bounded to [`MAX_MEMORY_CHARS`]. Returns `None` when no
-/// memory is relevant, so nothing is injected.
+/// once, and each entry is bounded to [`MAX_MEMORY_CHARS`].
+///
+/// Returns `None`, so nothing is injected, when no memory is relevant, or
+/// when the prompt itself fails [`prompt_reads_as_english`]: the filter
+/// only understands English, on both sides of the comparison.
 pub fn format_agent_memory_context(
     prompt: &str,
     agent_types: &[String],
     memories: &[PromptContextMemory],
 ) -> Option<String> {
-    // The agent names (and the slash commands that invoke them) are how the
-    // prompt reached this hook, not what it is about.
-    let mut ignored: HashSet<String> = HashSet::new();
-    for agent in agent_types {
-        ignored.extend(topic_terms(agent, &HashSet::new()));
-        for command in slash_commands_for(agent) {
-            ignored.insert(command.to_string());
-        }
-    }
+    let ignored = ignored_terms(agent_types);
     // The prompt is held to the same language check as memory turns: a
     // German prompt's `die` / `bin` / `mit` would otherwise match the same
     // words in an English memory.
-    if !prompt_reads_as_english(prompt) {
+    if !prompt_reads_as_english(prompt, &ignored) {
         return None;
     }
     let prompt_terms = topic_terms(prompt, &ignored);
@@ -348,20 +361,27 @@ fn is_prose_punctuation(c: char) -> bool {
     !c.is_alphanumeric() && !"-/\\_~$@#=+*<>|&%`^".contains(c)
 }
 
-/// A prompt with fewer prose words than this is too short to judge its
-/// language, and is scored as it is (see [`prompt_reads_as_english`]).
+/// A prompt with fewer prose words and fewer topic words than this is too
+/// short to judge its language, and is scored as it is (see
+/// [`prompt_reads_as_english`]).
 const MIN_PROMPT_WORDS_TO_JUDGE: usize = 4;
 
 /// Whether the prompt reads as English, as memory turns must
-/// ([`reads_as_english`]). A prompt of fewer than
-/// [`MIN_PROMPT_WORDS_TO_JUDGE`] prose words (`/analyze user login`) is
-/// too short to tell and passes.
+/// ([`reads_as_english`]). A prompt with fewer than
+/// [`MIN_PROMPT_WORDS_TO_JUDGE`] prose words *and* fewer than that many
+/// topic words (`/analyze user login`) is too short to tell and passes.
+/// Counting topic words too means a prompt whose scored words are not prose
+/// (`ICH BIN NICHT SICHER, WARUM DIE TESTS SCHEITERN`, all capitals) is
+/// still judged.
 ///
 /// Known limits: a longer English prompt with no function words (`/fix
-/// flaky sqlite test timeout on linux ci`) gets no memories, failing closed;
-/// a non-English prompt of three words or fewer is not checked.
-fn prompt_reads_as_english(prompt: &str) -> bool {
-    prose_words(prompt).len() < MIN_PROMPT_WORDS_TO_JUDGE || reads_as_english(prompt)
+/// flaky sqlite test timeout on linux ci`, or one in capitals) gets no
+/// memories, failing closed; a non-English prompt of three words or fewer
+/// is not checked.
+fn prompt_reads_as_english(prompt: &str, ignored: &HashSet<String>) -> bool {
+    let too_short_to_judge = prose_words(prompt).len() < MIN_PROMPT_WORDS_TO_JUDGE
+        && topic_terms(prompt, ignored).len() < MIN_PROMPT_WORDS_TO_JUDGE;
+    too_short_to_judge || reads_as_english(prompt)
 }
 
 /// Whether `text` reads as English: at least [`MIN_ENGLISH_MARKER_SHARE`]
@@ -411,7 +431,8 @@ fn reads_as_english(text: &str) -> bool {
 /// between words, or attaches grammar to them) contribute nothing, and
 /// memory turns that do not read as English contribute nothing (see
 /// [`reads_as_english`]), which also drops terse English notes with too few
-/// function words to tell. This fails closed: nothing irrelevant is
+/// function words to tell. A prompt that does not read as English gets no
+/// memories at all (see [`prompt_reads_as_english`]). This fails closed: nothing irrelevant is
 /// injected, a relevant memory may be missed.
 fn topic_terms(text: &str, ignored: &HashSet<String>) -> HashSet<String> {
     words(text)
@@ -1178,6 +1199,16 @@ mod tests {
                 "/fix die Tests laufen nicht mit dem neuen Build",
                 "Agent general: user: The MIT licence file and the old processes that die at shutdown",
             ),
+            // In capitals every word looks like code to the language check,
+            // but not to scoring: the prompt is still judged.
+            (
+                "/fix ICH BIN NICHT SICHER, WARUM DIE TESTS SCHEITERN",
+                "Agent general: user: The build copies files into the bin directory, and the workers die if it is missing",
+            ),
+            (
+                "/analyze WARUM DIE PIPELINE HAT KEINEN ERFOLG, MAN SIEHT NICHTS",
+                "Agent general: user: the man with the red hat waved at us from the bus",
+            ),
             (
                 "/fix la red se cae cuando son las dos",
                 "Agent general: user: my son painted the red door for the two of us",
@@ -1191,11 +1222,13 @@ mod tests {
         }
         // Known limit: a long English prompt without function words is
         // judged not English and gets nothing; a short one is not judged.
+        let none = HashSet::new();
         assert!(!prompt_reads_as_english(
-            "/fix flaky sqlite test timeout on linux ci"
+            "/fix flaky sqlite test timeout on linux ci",
+            &none
         ));
-        assert!(prompt_reads_as_english("/analyze user login"));
-        assert!(prompt_reads_as_english("/fix the flaky sqlite test"));
+        assert!(prompt_reads_as_english("/analyze user login", &none));
+        assert!(prompt_reads_as_english("/fix the flaky sqlite test", &none));
     }
 
     /// Shared numbers are not shared topics.

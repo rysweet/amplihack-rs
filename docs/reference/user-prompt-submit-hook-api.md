@@ -37,7 +37,7 @@ Each stored memory is scored against the prompt, and only relevant memories are 
 
   The prompt is held to the same check. A prompt of 4 or more prose words that doesn't read as English gets no memories, so a German prompt's `die`, `bin` or `mit` can't match those words in an English memory. This also fails closed:
   - A long English prompt with no function words (`/fix flaky sqlite test timeout on linux ci`) gets no memories.
-  - A prompt of 3 prose words or fewer (`/analyze user login`) is too short to judge, so it isn't checked.
+  - A prompt with 3 or fewer prose words *and* 3 or fewer topic words (`/analyze user login`) is too short to judge, so it isn't checked. A prompt whose scored words aren't prose, such as one written in capitals, is still judged.
 
 ## Hook Signature
 
