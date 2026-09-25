@@ -35,8 +35,11 @@ before Claude Code starts:
 ```bash
 claude plugin marketplace add rysweet/amplihack-rs
 claude plugin install amplihack@amplihack
-sh "$(ls -d ~/.claude/plugins/cache/amplihack/amplihack/*/ | tail -n 1)claude-plugin/bin/install-runtime"
+sh "$(node -p 'require(process.env.HOME + "/.claude/plugins/installed_plugins.json").plugins["amplihack@amplihack"][0].installPath')/claude-plugin/bin/install-runtime"
 ```
+
+The last line reads the installed copy's path from Claude Code's
+`installed_plugins.json`; the plugin cache can hold older versions too.
 
 Edit the setup script from the cloud environment menu in the session's title
 bar (**Edit** → **Setup script**). New sessions pick up the change.
@@ -112,7 +115,12 @@ The plugin's `SessionStart` hook, `claude-plugin/bin/bootstrap`, handles this:
 
 When the runtime is present but was installed for another plugin version,
 the background reconcile runs silently; only a missing runtime is reported to
-Claude. Two guards keep a broken install from looping:
+Claude. The reconcile only ever replaces binaries the plugin installed itself:
+`install-runtime` records their sha256 sums in `owned-binaries`. An `amplihack`
+you installed any other way (`amplihack install`, your own build, a package) is
+left as it is, whatever its version. A reconcile counts as done only when the
+binaries the plugin manages are at the wanted release; merely being present is
+not enough. Two guards keep a broken install from looping:
 
 - A failed install writes `install.failed`. It is not retried automatically
   for six hours, or until the plugin version changes.
@@ -144,10 +152,15 @@ It is idempotent and safe to run by hand:
 sh ~/.claude/plugins/cache/amplihack/amplihack/<version>/claude-plugin/bin/install-runtime
 ```
 
-Background installs log to `${CLAUDE_PLUGIN_DATA}/install-runtime.log`, or to
-`~/.amplihack/plugin/install-runtime.log` when `CLAUDE_PLUGIN_DATA` is not set.
-While an install is running, an `install.lock` directory exists next to the
-log. The lock is reclaimed only when the installer that holds it has exited.
+State and logs live in the plugin's data directory, `${CLAUDE_PLUGIN_DATA}`.
+When that variable is unset, as it is for commands Claude runs through the Bash
+tool and for setup scripts, both scripts fall back to the same directory:
+`~/.claude/plugins/data/amplihack-amplihack` (under `$CLAUDE_CONFIG_DIR` when
+set). Background installs log to `install-runtime.log` there. While an install
+is running, an `install.lock` directory exists next to the log. A manual run
+takes the same lock and steps aside when an install is already running. The
+lock is reclaimed only when no `install-runtime` process holds it; a recorded
+pid that now belongs to some other process does not count.
 
 `install-runtime` installs the latest published release. It resolves the tag
 through the `github.com/…/releases/latest` redirect, not the rate-limited

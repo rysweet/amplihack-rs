@@ -728,6 +728,16 @@ mod shell {
         assert!(!home.path().join("installer-ran").exists());
     }
 
+    /// Age a path with POSIX `touch -t` (GNU `-d` is not portable).
+    fn age(path: &Path) {
+        let aged = Command::new("touch")
+            .args(["-t", "202001010000"])
+            .arg(path)
+            .status()
+            .unwrap();
+        assert!(aged.success());
+    }
+
     #[test]
     fn bootstrap_leaves_a_live_installers_lock_alone_however_old() {
         let home = tempfile::tempdir().unwrap();
@@ -735,14 +745,46 @@ mod shell {
         let data = tempfile::tempdir().unwrap();
         let lock = data.path().join("install.lock");
         fs::create_dir(&lock).unwrap();
-        // This test process stands in for a live installer.
-        fs::write(lock.join("pid"), format!("{}\n", std::process::id())).unwrap();
-        let aged = Command::new("touch")
-            .args(["-d", "2 hours ago"])
-            .arg(&lock)
-            .status()
+        // A process whose command line names install-runtime stands in for a
+        // live installer.
+        let mut installer = Command::new("sh")
+            .args(["-c", "sleep 30", "install-runtime"])
+            .spawn()
             .unwrap();
-        assert!(aged.success());
+        fs::write(lock.join("pid"), format!("{}\n", installer.id())).unwrap();
+        age(&lock);
+        let bin = bootstrap_fixture();
+        let envs = [
+            ("CLAUDE_CODE_REMOTE", "true"),
+            ("CLAUDE_PLUGIN_DATA", data.path().to_str().unwrap()),
+        ];
+        let out = run(
+            &bin.path().join("bootstrap"),
+            home.path(),
+            stub.path(),
+            &[],
+            &envs,
+        );
+        std::thread::sleep(Duration::from_millis(300));
+        let _ = installer.kill();
+        let _ = installer.wait();
+        assert!(out.status.success());
+        assert!(
+            !home.path().join("installer-ran").exists(),
+            "second installer started"
+        );
+    }
+
+    #[test]
+    fn bootstrap_reclaims_a_lock_whose_pid_now_belongs_to_something_else() {
+        // After a SIGKILL or a reboot the recorded pid can be reused.
+        let home = tempfile::tempdir().unwrap();
+        let stub = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let lock = data.path().join("install.lock");
+        fs::create_dir(&lock).unwrap();
+        // This test process is alive but is not an installer.
+        fs::write(lock.join("pid"), format!("{}\n", std::process::id())).unwrap();
         let bin = bootstrap_fixture();
         let envs = [
             ("CLAUDE_CODE_REMOTE", "true"),
@@ -756,14 +798,70 @@ mod shell {
             &envs,
         );
         assert!(out.status.success());
-        std::thread::sleep(Duration::from_millis(300));
         assert!(
-            !home.path().join("installer-ran").exists(),
-            "second installer started"
+            wait_for(&home.path().join("installer-ran")),
+            "stale lock not reclaimed"
         );
-        assert_eq!(
-            fs::read_to_string(lock.join("pid")).unwrap().trim(),
-            std::process::id().to_string()
+    }
+
+    #[test]
+    fn bootstrap_retries_once_the_backoff_expires() {
+        let home = tempfile::tempdir().unwrap();
+        let stub = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let failed = data.path().join("install.failed");
+        fs::write(&failed, "thiscommit\n").unwrap();
+        age(&failed);
+        let bin = bootstrap_fixture();
+        let envs = [
+            ("CLAUDE_CODE_REMOTE", "true"),
+            ("CLAUDE_PLUGIN_ROOT", "/cache/amplihack/thiscommit"),
+            ("CLAUDE_PLUGIN_DATA", data.path().to_str().unwrap()),
+        ];
+        let out = run(
+            &bin.path().join("bootstrap"),
+            home.path(),
+            stub.path(),
+            &[],
+            &envs,
+        );
+        assert!(out.status.success());
+        assert!(
+            wait_for(&home.path().join("installer-ran")),
+            "backoff never expired"
+        );
+    }
+
+    #[test]
+    fn bootstrap_exports_env_even_when_stdin_never_closes() {
+        let home = tempfile::tempdir().unwrap();
+        let stub = tempfile::tempdir().unwrap();
+        let bin = bootstrap_fixture();
+        let env_file = home.path().join("env.sh");
+        let mut cmd = Command::new(bin.path().join("bootstrap"));
+        cmd.env_clear()
+            .current_dir(home.path())
+            .env("HOME", home.path())
+            .env("PATH", format!("{}:/usr/bin:/bin", stub.path().display()))
+            .env("CLAUDE_ENV_FILE", &env_file)
+            .env("CLAUDE_CODE_REMOTE", "true")
+            .env("CLAUDE_PLUGIN_DATA", home.path().join("data"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = {
+            let _guard = EXEC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            cmd.spawn().unwrap()
+        };
+        let open_stdin = child.stdin.take();
+        let exported = wait_for(&env_file);
+        drop(open_stdin);
+        let _ = child.wait();
+        assert!(exported, "no environment exported while stdin stayed open");
+        assert!(
+            fs::read_to_string(&env_file)
+                .unwrap()
+                .contains("AMPLIHACK_HOME")
         );
     }
 
@@ -816,21 +914,58 @@ mod shell {
         );
     }
 
-    /// install-runtime with stub binaries: `amplihack --version` reports
-    /// `version`, and `cargo` records its argv (failing when `cargo_ok` is false).
-    fn run_install_runtime(
-        version: &str,
-        cargo_ok: bool,
-        want: &str,
-    ) -> (Output, tempfile::TempDir, tempfile::TempDir) {
+    struct InstallRun {
+        out: Output,
+        home: tempfile::TempDir,
+        data: tempfile::TempDir,
+    }
+
+    impl InstallRun {
+        fn log(&self) -> String {
+            String::from_utf8_lossy(&self.out.stdout).into_owned()
+        }
+    }
+
+    /// Run install-runtime hermetically. `amplihack` and `amplihack-hooks`
+    /// stubs report `installed` from ~/.local/bin, recorded as plugin-owned
+    /// when `owned`. `curl` and `node` always fail, so an attempted download is visible
+    /// in the log and never touches the network. `cargo` records its argv and
+    /// installs a recipe-runner-rs stub unless `cargo_ok` is false.
+    fn install_runtime(installed: &str, owned: bool, cargo_ok: bool, want: &str) -> InstallRun {
         let home = tempfile::tempdir().unwrap();
         let stub = tempfile::tempdir().unwrap();
         let data = tempfile::tempdir().unwrap();
+        let dest = home.path().join(".local/bin");
+        fs::create_dir_all(&dest).unwrap();
+        let bins = [
+            (
+                "amplihack",
+                format!("#!/bin/sh\necho 'amplihack {installed}'\n"),
+            ),
+            ("amplihack-hooks", "#!/bin/sh\n".to_owned()),
+        ];
+        let mut record = String::new();
+        for (name, body) in &bins {
+            write_exe(&dest.join(name), body);
+            let sum = Command::new("sha256sum")
+                .arg(dest.join(name))
+                .output()
+                .unwrap();
+            let sum = String::from_utf8_lossy(&sum.stdout);
+            record.push_str(&format!(
+                "{name} {}\n",
+                sum.split_whitespace().next().unwrap()
+            ));
+        }
+        if owned {
+            fs::write(data.path().join("owned-binaries"), record).unwrap();
+        }
+        // No network: curl and node stubs shadow any real ones in /usr/bin.
+        write_exe(&stub.path().join("curl"), "#!/bin/sh\nexit 7\n");
         write_exe(
-            &stub.path().join("amplihack"),
-            &format!("#!/bin/sh\necho 'amplihack {version}'\n"),
+            &stub.path().join("node"),
+            "#!/bin/sh\necho 'node stub: no network' >&2\nexit 1\n",
         );
-        write_exe(&stub.path().join("amplihack-hooks"), "#!/bin/sh\n");
         let cargo = if cargo_ok {
             "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/cargo-args\"\nmkdir -p \"$HOME/.cargo/bin\"\nprintf '#!/bin/sh\\n' > \"$HOME/.cargo/bin/recipe-runner-rs\"\nchmod +x \"$HOME/.cargo/bin/recipe-runner-rs\"\n"
         } else {
@@ -850,56 +985,118 @@ mod shell {
             &[],
             &envs,
         );
-        drop(stub);
-        (out, home, data)
+        InstallRun { out, home, data }
+    }
+
+    fn plugin_id() -> String {
+        repo_root()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()
     }
 
     #[test]
     fn install_runtime_builds_the_pinned_runner_and_stamps_the_plugin_version() {
-        let (out, home, data) = run_install_runtime("1.2.3", true, "1.2.3");
-        let log = String::from_utf8_lossy(&out.stdout);
-        assert!(out.status.success(), "{log}");
+        let run = install_runtime("1.2.3", true, true, "1.2.3");
+        let log = run.log();
+        assert!(run.out.status.success(), "{log}");
         assert!(log.contains("amplihack 1.2.3 already installed"), "{log}");
         let rev = fs::read_to_string(repo_root().join("claude-plugin/recipe-runner.rev")).unwrap();
-        let args = fs::read_to_string(home.path().join("cargo-args")).unwrap();
+        let args = fs::read_to_string(run.home.path().join("cargo-args")).unwrap();
         assert!(args.contains(&format!("--rev {}", rev.trim())), "{args}");
-        let plugin_id = repo_root()
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
-        let stamp = fs::read_to_string(data.path().join("runtime.stamp")).unwrap();
-        assert_eq!(stamp.trim(), plugin_id);
-        assert!(!data.path().join("install.failed").exists());
-    }
-
-    #[test]
-    fn install_runtime_replaces_binaries_from_another_release() {
-        // 1.0.0 is installed but 1.2.3 is wanted. There is no node on the test
-        // PATH, so the replacement goes down the cargo source-build fallback,
-        // which the stub cargo records; what matters is 1.0.0 is not accepted.
-        let (out, home, _data) = run_install_runtime("1.0.0", true, "1.2.3");
-        let log = String::from_utf8_lossy(&out.stdout);
-        assert!(!log.contains("already installed"), "{log}");
-        assert!(log.contains("installed: 1.0.0"), "{log}");
-        let args = fs::read_to_string(home.path().join("cargo-args")).unwrap();
+        let stamp = fs::read_to_string(run.data.path().join("runtime.stamp")).unwrap();
+        assert_eq!(stamp.trim(), plugin_id());
+        assert!(!run.data.path().join("install.failed").exists());
         assert!(
-            args.contains("build --release --locked --bin amplihack"),
-            "{args}"
+            !run.data.path().join("install.lock").exists(),
+            "lock not released"
         );
     }
 
     #[test]
+    fn install_runtime_replaces_its_own_binaries_from_another_release() {
+        let run = install_runtime("1.0.0", true, true, "1.2.3");
+        let log = run.log();
+        assert!(
+            log.contains("fetching amplihack release binaries (1.2.3; installed: 1.0.0)"),
+            "{log}"
+        );
+        // The stub download fails, so 1.0.0 remains: that is a failure, not
+        // a reconciled runtime.
+        assert!(!run.out.status.success(), "{log}");
+        assert!(!run.data.path().join("runtime.stamp").exists());
+        assert!(run.data.path().join("install.failed").exists());
+    }
+
+    #[test]
+    fn install_runtime_leaves_binaries_it_did_not_install_alone() {
+        // e.g. `amplihack install` or a developer's own build in ~/.local/bin.
+        let run = install_runtime("1.0.0", false, true, "1.2.3");
+        let log = run.log();
+        assert!(run.out.status.success(), "{log}");
+        assert!(
+            log.contains("was not installed by the plugin; leaving it as is"),
+            "{log}"
+        );
+        assert!(!log.contains("fetching amplihack"), "{log}");
+        let seen = Command::new(run.home.path().join(".local/bin/amplihack"))
+            .arg("--version")
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&seen.stdout).trim(),
+            "amplihack 1.0.0"
+        );
+        assert!(run.data.path().join("runtime.stamp").exists());
+    }
+
+    #[test]
+    fn install_runtime_does_not_stamp_when_the_release_is_unknown() {
+        let run = install_runtime("1.0.0", true, true, "");
+        let log = run.log();
+        assert!(run.out.status.success(), "{log}");
+        assert!(!run.data.path().join("runtime.stamp").exists(), "{log}");
+    }
+
+    #[test]
     fn install_runtime_records_a_failure_for_bootstrap_to_back_off() {
-        let (out, _home, data) = run_install_runtime("1.2.3", false, "1.2.3");
-        assert!(!out.status.success());
-        let plugin_id = repo_root()
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
-        let failed = fs::read_to_string(data.path().join("install.failed")).unwrap();
-        assert_eq!(failed.trim(), plugin_id);
-        assert!(!data.path().join("runtime.stamp").exists());
+        let run = install_runtime("1.2.3", true, false, "1.2.3");
+        assert!(!run.out.status.success());
+        let failed = fs::read_to_string(run.data.path().join("install.failed")).unwrap();
+        assert_eq!(failed.trim(), plugin_id());
+        assert!(!run.data.path().join("runtime.stamp").exists());
+    }
+
+    #[test]
+    fn install_runtime_defers_to_an_install_already_running() {
+        let home_data = tempfile::tempdir().unwrap();
+        let lock = home_data.path().join("install.lock");
+        fs::create_dir(&lock).unwrap();
+        let mut installer = Command::new("sh")
+            .args(["-c", "sleep 30", "install-runtime"])
+            .spawn()
+            .unwrap();
+        fs::write(lock.join("pid"), format!("{}\n", installer.id())).unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let stub = tempfile::tempdir().unwrap();
+        let root = repo_root();
+        let envs = [
+            ("CLAUDE_PLUGIN_ROOT", root.to_str().unwrap()),
+            ("CLAUDE_PLUGIN_DATA", home_data.path().to_str().unwrap()),
+            ("AMPLIHACK_NPM_VERSION", "1.2.3"),
+        ];
+        let out = run(
+            &root.join("claude-plugin/bin/install-runtime"),
+            home.path(),
+            stub.path(),
+            &[],
+            &envs,
+        );
+        let _ = installer.kill();
+        let _ = installer.wait();
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("another install is running"));
+        assert!(lock.exists(), "a running installer's lock was removed");
     }
 }

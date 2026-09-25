@@ -5,12 +5,15 @@
 #     fetched with the downloader the npm wrapper uses (npm/lib/bootstrap.js),
 #     which checks each archive against the release's sha256 file and falls
 #     back to a cargo build from this checkout. Copied into ~/.local/bin.
-#     Already-installed binaries are replaced when their version differs.
 #   * recipe-runner-rs: cargo install from rysweet/amplihack-recipe-runner at
 #     the exact commit pinned in claude-plugin/recipe-runner.rev, so what a
 #     plugin commit runs is reviewable in that commit. (amplihack's own
 #     launcher tracks the runner's main branch; the plugin pins instead
 #     because it installs without asking.)
+#
+# It only ever replaces binaries it placed itself. Their sha256 sums are kept
+# in owned-binaries; an amplihack the user installed (`amplihack install`, a
+# source build, a package) is left exactly as it is, whatever its version.
 #
 # Deliberately does NOT run `amplihack install`: that publishes a second copy
 # of every skill into ~/.claude/skills and hook registrations into
@@ -18,25 +21,22 @@
 #
 # On success it records the plugin version in runtime.stamp, so bootstrap
 # knows the runtime matches this plugin. On failure it records install.failed,
-# which bootstrap uses to back off. Idempotent and safe to run by hand.
+# which bootstrap uses to back off. Idempotent and safe to run by hand; a
+# manual run takes the same lock as a background one.
 
 bin_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd) || exit 1
 root="${CLAUDE_PLUGIN_ROOT:-$(CDPATH='' cd -- "$bin_dir/../.." && pwd)}"
-data="${CLAUDE_PLUGIN_DATA:-$HOME/.amplihack/plugin}"
+# The directory Claude Code gives this plugin. Commands Claude runs through the
+# Bash tool, and setup scripts, do not get CLAUDE_PLUGIN_DATA, so fall back to
+# the same path rather than splitting state between two directories.
+data="${CLAUDE_PLUGIN_DATA:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/data/amplihack-amplihack}"
 plugin_id=$(basename -- "$root")
 dest="$HOME/.local/bin"
+owned="$data/owned-binaries"
 runner_url=https://github.com/rysweet/amplihack-recipe-runner
 
 PATH="$dest:$HOME/.cargo/bin:$PATH"
 export PATH
-
-if [ -n "${AMPLIHACK_PLUGIN_INSTALL_LOCK:-}" ]; then
-  printf '%s\n' "$$" >"$AMPLIHACK_PLUGIN_INSTALL_LOCK/pid" 2>/dev/null
-  # Remove the lock only while it is still ours: a lock bootstrap reclaimed
-  # and handed to another installer must survive this one exiting.
-  trap 'if [ "$(cat "$AMPLIHACK_PLUGIN_INSTALL_LOCK/pid" 2>/dev/null)" = "$$" ]; then rm -rf "$AMPLIHACK_PLUGIN_INSTALL_LOCK"; fi' EXIT
-  trap 'exit 1' HUP INT TERM
-fi
 
 log() {
   printf '[amplihack-plugin %s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"
@@ -46,12 +46,44 @@ have() {
   command -v "$1" >/dev/null 2>&1
 }
 
-place() {
-  # place <source> <name>: atomic copy into $dest
-  cp "$1" "$dest/.$2.tmp.$$" && chmod 755 "$dest/.$2.tmp.$$" && mv -f "$dest/.$2.tmp.$$" "$dest/$2"
+sha() {
+  { sha256sum "$1" 2>/dev/null || shasum -a 256 "$1" 2>/dev/null; } | cut -d' ' -f1
 }
 
 mkdir -p "$dest" "$data" || exit 1
+
+# Take the install lock unless bootstrap already handed us one.
+if [ -z "${AMPLIHACK_PLUGIN_INSTALL_LOCK:-}" ]; then
+  lock="$data/install.lock"
+  if ! mkdir "$lock" 2>/dev/null; then
+    pid=$(cat "$lock/pid" 2>/dev/null)
+    if [ -n "$pid" ] && ps -o args= -p "$pid" 2>/dev/null | grep -q install-runtime; then
+      log "another install is running (pid $pid); see $data/install-runtime.log"
+      exit 0
+    fi
+    rm -rf "$lock" && mkdir "$lock" || exit 1
+  fi
+  AMPLIHACK_PLUGIN_INSTALL_LOCK="$lock"
+fi
+printf '%s\n' "$$" >"$AMPLIHACK_PLUGIN_INSTALL_LOCK/pid" 2>/dev/null
+# Remove the lock only while it is still ours: a lock bootstrap reclaimed and
+# handed to another installer must survive this one exiting.
+trap 'if [ "$(cat "$AMPLIHACK_PLUGIN_INSTALL_LOCK/pid" 2>/dev/null)" = "$$" ]; then rm -rf "$AMPLIHACK_PLUGIN_INSTALL_LOCK"; fi' EXIT
+trap 'exit 1' HUP INT TERM
+
+# is_ours <name>: the binary PATH resolves is the copy this script placed.
+is_ours() {
+  [ "$(command -v "$1")" = "$dest/$1" ] &&
+    grep -qxF "$1 $(sha "$dest/$1")" "$owned" 2>/dev/null
+}
+
+place() {
+  # place <source> <name>: atomic copy into $dest, recorded as ours
+  cp "$1" "$dest/.$2.tmp.$$" && chmod 755 "$dest/.$2.tmp.$$" && mv -f "$dest/.$2.tmp.$$" "$dest/$2" || return 1
+  { grep -v "^$2 " "$owned" 2>/dev/null; printf '%s %s\n' "$2" "$(sha "$dest/$2")"; } >"$owned.tmp.$$" &&
+    mv -f "$owned.tmp.$$" "$owned"
+}
+
 log "plugin root: $root ($plugin_id)"
 
 # The release to install: an explicit AMPLIHACK_NPM_VERSION wins; otherwise
@@ -68,12 +100,22 @@ if [ -z "${AMPLIHACK_NPM_VERSION:-}" ] && have curl; then
 fi
 want="${AMPLIHACK_NPM_VERSION:-}"
 
+version_of() {
+  amplihack --version 2>/dev/null | sed -n 's/^amplihack //p'
+}
+
 current=""
 if have amplihack && have amplihack-hooks; then
-  current=$(amplihack --version 2>/dev/null | sed -n 's/^amplihack //p')
+  current=$(version_of)
 fi
+managed=1
+for tool in amplihack amplihack-hooks; do
+  if have "$tool" && ! is_ours "$tool"; then managed=0; fi
+done
 
-if [ -n "$current" ] && { [ -z "$want" ] || [ "$current" = "$want" ]; }; then
+if [ -n "$current" ] && [ "$managed" = 0 ]; then
+  log "amplihack $current at $(command -v amplihack) was not installed by the plugin; leaving it as is"
+elif [ -n "$current" ] && [ -n "$want" ] && [ "$current" = "$want" ]; then
   log "amplihack $current already installed"
 elif have node; then
   log "fetching amplihack release binaries (${want:-latest}; installed: ${current:-none})"
@@ -114,14 +156,24 @@ else
   log "cargo not found; install Rust (https://rustup.rs) to build recipe-runner-rs"
 fi
 
+# Success means the runtime is usable AND, where the plugin manages it, at the
+# release it asked for; binaries that merely exist do not count as reconciled.
 status=0
 for tool in amplihack amplihack-hooks recipe-runner-rs; do
   if have "$tool"; then log "ok: $tool -> $(command -v "$tool")"; else log "MISSING: $tool"; status=1; fi
 done
-if [ "$status" = 0 ]; then
+if [ "$status" = 0 ] && [ "$managed" = 1 ] && [ -n "$want" ] && [ "$(version_of)" != "$want" ]; then
+  log "amplihack is $(version_of), not the wanted $want"
+  status=1
+fi
+if [ "$status" != 0 ]; then
+  printf '%s\n' "$plugin_id" >"$data/install.failed"
+elif [ -z "$want" ] && [ "$managed" = 1 ]; then
+  # Usable, but whether it is current is unknown; leave the stamp unwritten so
+  # the next session start checks again.
+  log "could not resolve the latest release; runtime usable but not stamped"
+else
   printf '%s\n' "$plugin_id" >"$data/runtime.stamp"
   rm -f "$data/install.failed"
-else
-  printf '%s\n' "$plugin_id" >"$data/install.failed"
 fi
 exit "$status"

@@ -25,19 +25,15 @@
 
 bin_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" 2>/dev/null && pwd) || exit 0
 root="${CLAUDE_PLUGIN_ROOT:-$(CDPATH='' cd -- "$bin_dir/../.." 2>/dev/null && pwd)}"
-data="${CLAUDE_PLUGIN_DATA:-$HOME/.amplihack/plugin}"
+# Same default as install-runtime: the directory Claude Code gives this plugin,
+# so manual runs (which do not get CLAUDE_PLUGIN_DATA) share its state.
+data="${CLAUDE_PLUGIN_DATA:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/data/amplihack-amplihack}"
 # The cache directory name is the plugin version (the commit when plugin.json
 # carries no version), so it identifies what the runtime was installed for.
 plugin_id=$(basename -- "$root")
 
 PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 export PATH
-
-# The hook input names what started the session (startup/resume/clear/compact).
-source_kind=""
-if [ ! -t 0 ]; then
-  source_kind=$(cat 2>/dev/null | sed -n 's/.*"source"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
-fi
 
 append_env() {
   [ -n "${CLAUDE_ENV_FILE:-}" ] || return 0
@@ -105,17 +101,27 @@ if [ -f "$failed" ] && [ "$(sed -n 1p "$failed" 2>/dev/null)" = "$plugin_id" ] &
   exit 0
 fi
 
+# The hook input names what started the session (startup/resume/clear/compact).
+# Read it only here, after the exports: a stdin that never closes may cost the
+# compaction check, never the session environment.
+source_kind=""
+if [ ! -t 0 ]; then
+  source_kind=$(cat 2>/dev/null | sed -n 's/.*"source"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
+fi
 if [ "$source_kind" = "compact" ]; then
   exit 0
 fi
 
-# Reclaim a lock only when its owner is gone. A live installer keeps its lock
-# however long a cold cargo build takes; a lock with no pid is reclaimed once
-# it is old enough that its creator cannot still be writing the pid.
+# Reclaim a lock only when no installer holds it. A live installer keeps its
+# lock however long a cold cargo build takes. The pid must still be an
+# install-runtime process: after a SIGKILL or a reboot the number can belong to
+# something else. A lock with no pid is reclaimed once it is old enough that its
+# creator cannot still be writing the pid.
 if [ -d "$lock" ]; then
   pid=$(cat "$lock/pid" 2>/dev/null)
-  if { [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; } ||
-    { [ -z "$pid" ] && [ -n "$(find "$lock" -maxdepth 0 -mmin +10 2>/dev/null)" ]; }; then
+  if [ -n "$pid" ]; then
+    ps -o args= -p "$pid" 2>/dev/null | grep -q install-runtime || rm -rf "$lock" 2>/dev/null
+  elif [ -n "$(find "$lock" -maxdepth 0 -mmin +10 2>/dev/null)" ]; then
     rm -rf "$lock" 2>/dev/null
   fi
 fi

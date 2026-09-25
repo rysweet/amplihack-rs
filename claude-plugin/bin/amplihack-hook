@@ -35,16 +35,17 @@ registered_elsewhere() {
     # Each hook command that runs amplihack-hooks, reduced to its binary.
     if grep -Eo '"command"[[:space:]]*:[^,}]*amplihack-hooks' "$settings" 2>/dev/null |
       sed 's/^"command"[[:space:]]*:[[:space:]]*"//; s/\\"//g; s/^"//' |
-      {
-        # The pipeline runs in a subshell: exit 0 means "found", and an
-        # empty or exhausted list falls through to exit 1.
+      (
+        # An explicit subshell: some shells run a pipeline's last element in
+        # the current shell, where these exits would end the wrapper. exit 0
+        # means "found"; an empty or exhausted list falls through to exit 1.
         while IFS= read -r bin; do
           if [ -x "$bin" ] || { [ "$bin" = amplihack-hooks ] && command -v amplihack-hooks >/dev/null 2>&1; }; then
             exit 0
           fi
         done
         exit 1
-      }; then
+      ); then
       return 0
     fi
   done
