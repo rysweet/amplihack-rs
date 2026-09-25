@@ -246,6 +246,11 @@ pub(super) fn path_conflict_warning_after_install(
             let Some(preferred) = resolution.preferred_user_candidate.as_ref() else {
                 continue;
             };
+            // The npx shim running this install shadows ~/.local/bin only
+            // until npx exits; the install already says so (#1480).
+            if super::stale_wrappers::is_transient_npx_shim_path(&resolution.resolved.path) {
+                continue;
+            }
             append_shadow_warning(&mut warning, binary_name, resolution, &preferred.path);
         } else if resolution.has_ambiguous_candidates {
             append_ambiguity_warning(&mut warning, binary_name, resolution);

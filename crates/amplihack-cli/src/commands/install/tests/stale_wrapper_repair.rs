@@ -297,6 +297,10 @@ fn issue_1480_transient_npx_shim_for_our_wrapper_does_not_abort_install() {
     assert!(report.neutralized.is_empty());
     assert!(report.manifest_path.is_none());
     assert_eq!(report.skipped_transient_shims, vec![shim.clone()]);
+    assert_eq!(
+        report.resolved_after, shim,
+        "while npx runs, its shim still resolves first; repair must accept that"
+    );
     assert!(
         fs::symlink_metadata(&shim).is_ok(),
         "the npx shim belongs to the running npx process and must be left in place"
@@ -328,4 +332,91 @@ fn issue_1480_npx_shim_for_unrelated_script_is_still_unknown() {
         }
         other => panic!("expected UnknownShadowingExecutable, got {other:?}"),
     }
+}
+
+/// Skipping the npx shim must not stop the repair: a stale Python wrapper
+/// behind it on PATH is still quarantined.
+#[cfg(unix)]
+#[test]
+fn issue_1480_npx_shim_does_not_hide_a_stale_wrapper_behind_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let preferred_bin = home.join(".local/bin");
+    let uv_tools_bin = home.join(".local/share/uv/tools/amplihack/bin");
+    let preferred_rust = create_exe_stub(&preferred_bin, "amplihack");
+    let stale_wrapper = uv_tools_bin.join("amplihack");
+    write_executable(
+        &stale_wrapper,
+        "#!/usr/bin/env python3\nimport sys\nfrom amplihack.cli import main\nsys.exit(main())\n",
+    );
+    let wrapper_source = include_str!("../../../../../../npm/bin/amplihack.js");
+    let (npx_bin, shim) = create_npx_shim(&home, wrapper_source);
+
+    let report = neutralize_shadowing_stale_wrappers(repair_config(
+        &home,
+        &preferred_rust,
+        &preferred_rust,
+        vec![npx_bin, uv_tools_bin, preferred_bin],
+    ))
+    .expect("a stale wrapper behind the npx shim is repairable");
+
+    assert_eq!(report.skipped_transient_shims, vec![shim.clone()]);
+    assert_eq!(report.neutralized.len(), 1);
+    assert_eq!(report.neutralized[0].original_path, stale_wrapper);
+    assert!(!stale_wrapper.exists());
+    assert_eq!(report.resolved_after, shim);
+}
+
+/// The post-install PATH advisory must not contradict the npx notice by
+/// telling the user to reorder PATH around a shim that disappears with npx.
+#[cfg(unix)]
+#[test]
+fn issue_1480_path_advisory_does_not_flag_the_npx_shim() {
+    use crate::path_conflicts::{PathAnalysisInput, analyze_path_conflicts};
+
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let preferred_bin = home.join(".local/bin");
+    let preferred_rust = create_exe_stub(&preferred_bin, "amplihack");
+    let wrapper_source = include_str!("../../../../../../npm/bin/amplihack.js");
+    let (npx_bin, _shim) = create_npx_shim(&home, wrapper_source);
+
+    let report = analyze_path_conflicts(&PathAnalysisInput {
+        home_dir: home.clone(),
+        current_exe: preferred_rust,
+        path_dirs: vec![npx_bin, preferred_bin],
+        binary_names: vec!["amplihack".into()],
+    })
+    .unwrap();
+
+    assert_eq!(
+        super::super::binary::path_conflict_warning_after_install(&report),
+        None
+    );
+}
+
+/// Control for the test above: the same layout with an unrelated script under
+/// `_npx` still gets the shadowing advisory.
+#[cfg(unix)]
+#[test]
+fn issue_1480_path_advisory_still_flags_an_unrelated_npx_script() {
+    use crate::path_conflicts::{PathAnalysisInput, analyze_path_conflicts};
+
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let preferred_bin = home.join(".local/bin");
+    let preferred_rust = create_exe_stub(&preferred_bin, "amplihack");
+    let (npx_bin, _shim) = create_npx_shim(&home, "#!/usr/bin/env node\nconsole.log('other');\n");
+
+    let report = analyze_path_conflicts(&PathAnalysisInput {
+        home_dir: home.clone(),
+        current_exe: preferred_rust,
+        path_dirs: vec![npx_bin, preferred_bin],
+        binary_names: vec!["amplihack".into()],
+    })
+    .unwrap();
+
+    let warning = super::super::binary::path_conflict_warning_after_install(&report)
+        .expect("an unrelated executable shadowing ~/.local/bin must still be reported");
+    assert!(warning.contains("shadows"));
 }

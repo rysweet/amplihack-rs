@@ -340,6 +340,12 @@ fn is_transient_npx_shim(path: &Path, canonical: &Path) -> bool {
     read_prefix(canonical).is_ok_and(|content| is_amplihack_npm_wrapper(&content))
 }
 
+/// [`is_transient_npx_shim`] for a PATH entry that has not been resolved yet,
+/// so the post-install PATH advisory can recognize the same shim.
+pub(crate) fn is_transient_npx_shim_path(path: &Path) -> bool {
+    fs::canonicalize(path).is_ok_and(|canonical| is_transient_npx_shim(path, &canonical))
+}
+
 fn is_amplihack_npm_wrapper(content: &str) -> bool {
     content.contains("ensureNativeBinaries") && content.contains("amplihack npm wrapper")
 }
