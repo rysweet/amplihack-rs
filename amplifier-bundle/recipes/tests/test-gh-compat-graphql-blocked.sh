@@ -43,9 +43,23 @@ mkdir -p "${WORK}/real" "${WORK}/launcher"
 export STUB_LOG="${WORK}/gh.log"
 cat > "${WORK}/real/gh" <<'STUB'
 #!/usr/bin/env bash
+# `gh GROUP VERB --json` alone lists the fields, offline (a newer gh's lists).
+if [ $# = 3 ] && [ "$3" = --json ]; then
+  echo 'Specify one or more comma-separated fields for `--json`:' >&2
+  case "$1 $2" in
+    "pr view"|"pr list") f="additions assignees author autoMergeRequest baseRefName baseRefOid body changedFiles closed closedAt closingIssuesReferences comments commits createdAt deletions files fullDatabaseId headRefName headRefOid headRepository headRepositoryOwner id isCrossRepository isDraft labels latestReviews maintainerCanModify mergeCommit mergeStateStatus mergeable mergedAt mergedBy milestone number potentialMergeCommit projectCards projectItems reactionGroups reviewDecision reviewRequests reviews state statusCheckRollup title updatedAt url" ;;
+    "issue view"|"issue list") f="assignees author body closed closedAt closedByPullRequestsReferences comments createdAt id isPinned labels milestone number projectCards projectItems reactionGroups state stateReason title updatedAt url" ;;
+    "pr checks") f="bucket completedAt description event link name startedAt state workflow" ;;
+    "label list") f="color createdAt description id isDefault name updatedAt url" ;;
+  esac
+  # gh 2.63 (what cloud sessions have) predates these two.
+  [ "${STUB_OLD_GH:-0}" = 1 ] && f="$(printf '%s' "$f" | tr ' ' '\n' | grep -v -e closingIssuesReferences -e closedByPullRequestsReferences | tr '\n' ' ')"
+  for x in $f; do echo "  $x" >&2; done
+  exit 1
+fi
 printf '%s\n' "$*" >> "$STUB_LOG"
 if [ "$1" = "api" ]; then
-  method=GET; path=""; input=""
+  method=GET; path=""; input=""; paginate=0
   shift
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -53,6 +67,7 @@ if [ "$1" = "api" ]; then
       -H) shift 2 ;;
       -f|-F) shift 2 ;;
       --input) input="$2"; shift 2 ;;
+      --paginate) paginate=1; shift ;;
       *) path="$1"; shift ;;
     esac
   done
@@ -64,6 +79,18 @@ if [ "$1" = "api" ]; then
   pr='{"number":42,"node_id":"PR_1","title":"feat: widget","body":"Fixes #7","state":"open","draft":true,"merged_at":null,"html_url":"https://github.com/o/r/pull/42","created_at":"2026-01-01T00:00:00Z","user":{"login":"bot"},"labels":[],"mergeable":true,"mergeable_state":"clean","head":{"ref":"feat","sha":"abc123","repo":{"name":"r","full_name":"o/r","owner":{"login":"o"}}},"base":{"ref":"main","sha":"def456","repo":{"full_name":"o/r"}}}'
   case "$method $path" in
     "GET repos/o/r/pulls/42") printf '%s\n' "$pr" ;;
+    # --paginate prints each page's JSON in turn.
+    "GET repos/o/r/pulls/42/files"*)
+      printf '[{"filename":"a.rs","additions":1,"deletions":0}]\n'
+      [ "$paginate" = 1 ] && printf '[{"filename":"b.rs","additions":2,"deletions":1}]\n' ;;
+    "GET repos/o/r/issues/5/comments"*) printf '[{"node_id":"C1","user":{"login":"a"},"body":"x"},{"node_id":"C2","user":{"login":"b"},"body":"y"}]\n' ;;
+    "GET repos/o/r/issues/7/timeline"*)
+      xr() { printf '{"event":"cross-referenced","source":{"type":"issue","issue":{"number":%s,"node_id":"PR_%s","html_url":"https://github.com/%s/pull/%s","state":"%s","body":"%s","pull_request":{"merged_at":%s},"repository":{"full_name":"%s","name":"%s","owner":{"login":"%s"}}}}}' \
+        "$1" "$1" "$2" "$1" "$3" "$4" "$5" "$2" "${2#*/}" "${2%/*}"; }
+      printf '[%s,%s,%s]\n' "$(xr 42 o/r open 'Fixes #7' null)" "$(xr 43 o/r closed 'Fixes #7' null)" "$(xr 44 o/r open 'see #7' null)"
+      [ "$paginate" = 1 ] && printf '[%s,%s,%s]\n' "$(xr 45 o/r closed 'Closes #7' '"2026-01-01T00:00:00Z"')" "$(xr 9 o2/r2 open 'Fixes o/r#7' null)" "$(xr 10 o2/r2 open 'Fixes #7' null)" ;;
+    "GET repos/o/r/labels?"*) printf '[{"id":2,"node_id":"L2","name":"bug","color":"f00","description":"Something broken","default":true},{"id":1,"node_id":"L1","name":"docs","color":"0f0","description":null,"default":false}]\n' ;;
+    "GET repos/o/r/actions/runs?head_sha=abc123"*) printf '{"workflow_runs":[{"id":99,"name":"CI","event":"pull_request"}]}\n' ;;
     "GET repos/o/r/pulls/42/reviews"*) printf '[{"user":{"login":"a"},"state":"CHANGES_REQUESTED","submitted_at":"2026-01-01T00:00:00Z"},{"user":{"login":"b"},"state":"APPROVED","submitted_at":"2026-01-02T00:00:00Z"},{"user":{"login":"b"},"state":"COMMENTED","submitted_at":"2026-01-03T00:00:00Z"}]\n' ;;
     "GET repos/o/r/pulls?"*"head=o%3Afeat"*) printf '[%s]\n' "$pr" ;;
     "POST repos/o/r/pulls")
@@ -81,6 +108,7 @@ if [ "$1" = "api" ]; then
       case "${STUB_CHECKS:-pass}" in
         pending) printf '{"check_runs":[{"name":"Test","status":"in_progress","conclusion":null,"details_url":"u"},{"name":"Lint","status":"completed","conclusion":"success","details_url":"u"}]}\n' ;;
         fail) printf '{"check_runs":[{"name":"Test","status":"completed","conclusion":"failure","details_url":"u"}]}\n' ;;
+        actions) printf '{"check_runs":[{"name":"Test","status":"completed","conclusion":"success","details_url":"https://github.com/o/r/actions/runs/99/job/1","output":{"title":"All green"}}]}\n' ;;
         *) printf '{"check_runs":[{"name":"Test","status":"completed","conclusion":"success","details_url":"u"}]}\n' ;;
       esac ;;
     "GET repos/o/r/commits/abc123/status"*) printf '{"statuses":[]}\n' ;;
@@ -109,6 +137,27 @@ if [ "${STUB_STREAM:-}" != "" ]; then
   echo "progress: 1 pending" >&2
   i=0; while [ ! -e "$STUB_STREAM" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
   [ -e "$STUB_STREAM" ] && { echo "done"; exit 0; }
+  exit 3
+fi
+# An older gh refuses a field it does not know before it reaches GitHub.
+if [ "${STUB_OLD_GH:-0}" = 1 ]; then
+  case " $* " in *closingIssuesReferences*|*closedByPullRequestsReferences*)
+    echo 'Unknown JSON field: "closingIssuesReferences"' >&2; exit 1 ;;
+  esac
+fi
+# stderr edge cases for the pass-through mode (#1499).
+if [ "${STUB_NOISY:-}" != "" ]; then
+  i=0; while [ "$i" -lt "$STUB_NOISY" ]; do echo "noise line $i" >&2; i=$((i + 1)); done
+  echo "noisy-done"; exit 0
+fi
+if [ "${STUB_FORK:-0}" = 1 ]; then sleep 5 >/dev/null & echo "forked"; exit 0; fi
+if [ "${STUB_WARN_BLOCK:-0}" = 1 ]; then
+  echo "HTTP 403: GitHub GraphQL is not available from Claude Code sessions" >&2; echo "answered-anyway"; exit 0
+fi
+if [ "${STUB_PROMPT:-}" != "" ]; then
+  printf 'Continue? ' >&2
+  i=0; while [ ! -e "$STUB_PROMPT" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+  [ -e "$STUB_PROMPT" ] && { echo "done"; exit 0; }
   exit 3
 fi
 # Like the real gh, a `--body-file -` call drains stdin before the request fails.
@@ -398,5 +447,103 @@ logged_prefix "issues?state=open&per_page=100&page=1" || fail author-me "search 
 nums="$(gh issue list --author someone-else --json number --jq 'length')"
 [ "$nums" = 0 ] || fail author-me "--author someone-else matched $nums"
 ok "search fallback resolves --author @me and reads full pages"
+
+# ---------------------------------------------------------------------------
+# Issue #1499: the low-severity leftovers of the #1497 reviews.
+# ---------------------------------------------------------------------------
+
+# 28. A stderr reader that exits early leaves gh's exit code, not 141.
+rm -f "$AMPLIHACK_GH_COMPAT_STATE"
+rc=0; out="$(STUB_GRAPHQL_OK=1 STUB_NOISY=5000 gh pr view 42 2> >(head -1 >/dev/null))" || rc=$?
+[ "$rc" = 0 ] || fail stderr-closed "exit $rc when the stderr reader went away, want gh's 0"
+[ "$out" = noisy-done ] || fail stderr-closed "stdout was '$out'"
+ok "stderr reader exiting early: gh's exit code and stdout survive"
+
+# 29. A child the real gh leaves holding stderr does not hold the shim.
+start=$SECONDS
+out="$(STUB_GRAPHQL_OK=1 STUB_FORK=1 gh pr view 42 2>/dev/null)" || fail fork "exited non-zero"
+[ "$out" = forked ] || fail fork "stdout was '$out'"
+[ $((SECONDS - start)) -lt 3 ] || fail fork "waited $((SECONDS - start))s for gh's background child"
+ok "a background child holding stderr does not delay the shim"
+
+# 30. A block-text line on a call that succeeds is shown, not swallowed.
+rc=0; err="$(STUB_GRAPHQL_OK=1 STUB_WARN_BLOCK=1 gh pr view 42 2>&1 >/dev/null)" || rc=$?
+[ "$rc" = 0 ] || fail block-line "exited $rc"
+case "$err" in *"GraphQL is not available"*) ;; *) fail block-line "line swallowed on success: '$err'" ;; esac
+[ ! -e "$AMPLIHACK_GH_COMPAT_STATE" ] || fail block-line "a successful call recorded a block"
+ok "block text on a successful call reaches stderr"
+
+# 31. A prompt without a trailing newline is passed on while gh waits.
+go="${WORK}/prompt.go"; errlog="${WORK}/prompt.err"; : > "$errlog"
+STUB_GRAPHQL_OK=1 STUB_PROMPT="$go" gh pr view 42 >/dev/null 2>"$errlog" &
+bg=$!
+i=0; while ! grep -q 'Continue?' "$errlog" && [ "$i" -lt 40 ]; do sleep 0.1; i=$((i + 1)); done
+grep -q 'Continue?' "$errlog" || { kill "$bg" 2>/dev/null; fail prompt "partial-line prompt held back"; }
+touch "$go"; rc=0; wait "$bg" || rc=$?
+[ "$rc" = 0 ] || fail prompt "exited $rc"
+ok "a partial-line prompt is passed on while gh waits"
+
+# 32. --json fields: gh's own error for an unknown one; a loud failure for one
+#     REST cannot answer; never null.
+: > "$AMPLIHACK_GH_COMPAT_STATE"; reset_log
+rc=0; err="$(gh pr view 42 --json number,authorAssociation 2>&1 >/dev/null)" || rc=$?
+[ "$rc" = 1 ] || fail json-field "unknown field exited $rc"
+case "$err" in *'Unknown JSON field: "authorAssociation"'*"Available fields:"*) ;; *) fail json-field "message was '$err'" ;; esac
+logged_prefix "api " && fail json-field "REST was called for an invalid field list"
+rc=0; err="$(gh issue view 7 --json projectItems 2>&1 >/dev/null)" || rc=$?
+[ "$rc" = 1 ] || fail json-field "REST-less field exited $rc"
+rc=0; err="$(gh issue list --json number,isPinned 2>&1 >/dev/null)" || rc=$?
+[ "$rc" = 1 ] || fail json-field "REST-less field on issue list exited $rc"
+rc=0; err="$(gh issue view 7 --json projectItems 2>&1 >/dev/null)" || rc=$?
+[ "$rc" = 1 ] || fail json-field "REST-less field exited $rc"
+case "$err" in *'"projectItems"'*"no REST equivalent"*) ;; *) fail json-field "message was '$err'" ;; esac
+json="$(gh pr view 42 --json closed,mergedBy,reviewRequests,potentialMergeCommit,fullDatabaseId)"
+printf '%s' "$json" | jq -e 'has("closed") and has("mergedBy") and (.reviewRequests | type == "array")' >/dev/null || fail json-field "known fields missing: $json"
+n="$(STUB_OLD_GH=1 gh pr view 42 --json closingIssuesReferences --jq '.closingIssuesReferences | length')" || fail json-field "an older gh's list rejected closingIssuesReferences"
+[ "$n" = 1 ] || fail json-field "closingIssuesReferences gave '$n'"
+[ "$(gh pr view 42 --json number,state --jq '{number, state}')" = '{"number":42,"state":"OPEN"}' ] || fail json-field "--jq object output is not compact like gh's"
+# First call of a run, before any block is on record: the installed gh refuses
+# the newer field itself, so the shim must check for the block up front.
+rm -f "$AMPLIHACK_GH_COMPAT_STATE"
+n="$(STUB_OLD_GH=1 gh pr view 42 --json closingIssuesReferences --jq '.closingIssuesReferences | length' 2>/dev/null)" || fail json-field "first call with a newer field failed on a blocked host"
+[ "$n" = 1 ] || fail json-field "first call closingIssuesReferences gave '$n'"
+rm -f "$AMPLIHACK_GH_COMPAT_STATE"
+out="$(STUB_OLD_GH=1 STUB_GRAPHQL_OK=1 gh pr view 42 --json closingIssuesReferences 2>&1)" || true
+[ ! -e "$AMPLIHACK_GH_COMPAT_STATE" ] || fail json-field "a working host was recorded as blocked"
+: > "$AMPLIHACK_GH_COMPAT_STATE"
+ok "--json: unknown fields rejected as gh does; GraphQL-only fields fail loudly"
+
+# 33. issue list --json comments carries each issue's comments.
+json="$(gh issue list --json number,comments)"
+[ "$(printf '%s' "$json" | jq -c 'map([.number, (.comments | length)])')" = '[[5,2]]' ] || fail list-comments "got $json"
+ok "issue list --json comments is filled in, not null"
+
+# 34. Per-PR sub-lists read every page.
+reset_log
+n="$(gh pr view 42 --json files --jq '.files | length')"
+[ "$n" = 2 ] || fail sublist "files gave $n, want both pages"
+logged "api -X GET repos/o/r/pulls/42/files?per_page=100 --paginate" || fail sublist "files not paginated"
+ok "per-PR sub-lists page past the first 100"
+
+# 35. closedByPullRequestsReferences: open or merged PRs whose body closes the issue.
+refs="$(gh issue view 7 --json closedByPullRequestsReferences --jq '[.closedByPullRequestsReferences[] | "\(.repository.owner.login)/\(.repository.name)#\(.number)"] | sort | join(",")')"
+[ "$refs" = "o/r#42,o/r#45,o2/r2#9" ] || fail closed-by "got '$refs'"
+[ "$(gh pr view 42 --json closingIssuesReferences --jq '.closingIssuesReferences[0] | "\(.repository.owner.login)/\(.repository.name)#\(.number)"')" = "o/r#7" ] \
+  || fail closed-by "closingIssuesReferences lost its repository"
+ok "closedByPullRequestsReferences derived from the cross-reference timeline"
+
+# 36. pr checks: workflow and event from the Actions run, description from the output title.
+json="$(STUB_CHECKS=actions gh pr checks 42 --json name,workflow,event,description)"
+[ "$(printf '%s' "$json" | jq -c '.[0] | [.workflow, .event, .description]')" = '["CI","pull_request","All green"]' ] || fail checks-json "got $json"
+ok "pr checks --json workflow/event/description come from REST, not placeholders"
+
+# 37. label list: --search on name or description; creation order by default,
+#     --sort name on request; --limit cuts the ordered list.
+[ "$(gh label list --search broken --json name,isDefault --jq -c '.')" = '[{"name":"bug","isDefault":true}]' ] || fail labels "search/isDefault wrong"
+[ "$(gh label list --limit 1 --json name --jq '.[].name')" = docs ] || fail labels "default order is not creation order"
+[ "$(gh label list --limit 1 --sort name --json name --jq '.[].name')" = bug ] || fail labels "--sort name ignored"
+rc=0; gh label list --sort color >/dev/null 2>&1 || rc=$?
+[ "$rc" = 1 ] || fail labels "--sort color accepted"
+ok "label list: --search, gh's sort orders, --limit, isDefault"
 
 echo "PASS: ${PASS} checks"
