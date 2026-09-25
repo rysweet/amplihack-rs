@@ -281,12 +281,13 @@ fn segments(text: &str) -> Vec<(bool, &str)> {
     segments
 }
 
-/// `text` split at fenced code blocks (CommonMark §4.5). A line whose
-/// trimmed start is three or more backticks or tildes opens a fence (a
-/// backtick fence's info string may not contain a backtick); the next line
-/// holding at least as many of the same character and nothing else but
-/// whitespace closes it. Everything between is code, fence-like lines of
-/// the other character included.
+/// `text` split at fenced code blocks (CommonMark §4.5). A line that starts
+/// with three or more backticks or tildes, after any container markers (see
+/// [`fence_run`]), opens a fence (a backtick fence's info string may not
+/// contain a backtick). The next line in the same container holding at
+/// least as many of the same character and nothing else but whitespace
+/// closes it. Everything between is code, fence-like lines of the other
+/// character included.
 fn fenced_blocks(text: &str) -> Vec<(bool, &str)> {
     let mut parts = Vec::new();
     let mut prose_start = 0;
@@ -320,11 +321,19 @@ fn fences(text: &str) -> Vec<Fence> {
     while index < lines.len() {
         let (open_at, open_line) = lines[index];
         let opener = fence_run(open_line)
-            .filter(|(marker, _, rest)| !(*marker == '`' && rest.contains('`')));
-        let close = opener.and_then(|(marker, width, _)| {
+            .filter(|opener| !(opener.marker == '`' && opener.rest.contains('`')));
+        // A closer sits in the same container as its opener: the same
+        // number of `>` markers, and never behind a list-item marker (a list
+        // item's closer is indented instead). Inside a fence, a `- ```` diff
+        // line or a ` * ```` doc-comment line is content.
+        let close = opener.and_then(|opener| {
             lines[index + 1..].iter().position(|(_, line)| {
-                fence_run(line).is_some_and(|(closer, closer_width, rest)| {
-                    closer == marker && closer_width >= width && rest.trim().is_empty()
+                fence_run(line).is_some_and(|closer| {
+                    closer.marker == opener.marker
+                        && closer.width >= opener.width
+                        && closer.rest.trim().is_empty()
+                        && closer.quote_depth == opener.quote_depth
+                        && !closer.list_item
                 })
             })
         });
@@ -343,14 +352,29 @@ fn fences(text: &str) -> Vec<Fence> {
     fences
 }
 
-/// The fence run a line starts with, after indentation and any block-quote
-/// (`>`) or list-item (`-`, `*`, `+`, `1.`, `1)`) markers, since a fence
-/// inside those containers is still a fence: its character (`` ` `` or
-/// `~`), its width (at least 3), and the rest of the line.
-fn fence_run(line: &str) -> Option<(char, usize, &str)> {
+/// A line that starts with a fence run, after indentation and any
+/// block-quote (`>`) or list-item (`-`, `*`, `+`, `1.`, `1)`) markers, since
+/// a fence inside those containers is still a fence.
+struct FenceLine<'a> {
+    /// `` ` `` or `~`.
+    marker: char,
+    /// The run's length, at least 3.
+    width: usize,
+    /// The rest of the line after the run.
+    rest: &'a str,
+    /// How many `>` block-quote markers came before the run.
+    quote_depth: usize,
+    /// Whether a list-item marker came before the run.
+    list_item: bool,
+}
+
+/// The fence run `line` starts with, if any (see [`FenceLine`]).
+fn fence_run(line: &str) -> Option<FenceLine<'_>> {
     let mut line = line.trim_start();
+    let mut quote_depth = 0;
     while let Some(rest) = line.strip_prefix('>') {
         line = rest.trim_start();
+        quote_depth += 1;
     }
     let digits = line.chars().take_while(char::is_ascii_digit).count();
     let list_marker = if line.starts_with(['-', '*', '+']) {
@@ -360,14 +384,22 @@ fn fence_run(line: &str) -> Option<(char, usize, &str)> {
     } else {
         None
     };
+    let mut list_item = false;
     if let Some(marker_len) = list_marker
         && line[marker_len..].starts_with(char::is_whitespace)
     {
         line = line[marker_len..].trim_start();
+        list_item = true;
     }
     let marker = line.chars().next().filter(|c| matches!(c, '`' | '~'))?;
     let width = line.chars().take_while(|c| *c == marker).count();
-    (width >= 3).then(|| (marker, width, &line[width..]))
+    (width >= 3).then(|| FenceLine {
+        marker,
+        width,
+        rest: &line[width..],
+        quote_depth,
+        list_item,
+    })
 }
 
 /// `text` split at backtick code spans: a run of backticks opens a span
@@ -430,6 +462,31 @@ const TRANSCRIPT_ROLES: &[&str] = &[
     "user",
 ];
 
+/// `text` with each paragraph-opening role label (`user: `) replaced by as
+/// many spaces, so byte offsets are unchanged.
+fn without_labels(text: &str) -> String {
+    let mut masked = String::with_capacity(text.len());
+    let mut paragraph_start = true;
+    for line in text.split_inclusive('\n') {
+        let indent = line.len() - line.trim_start().len();
+        let label_len = line
+            .trim_start()
+            .split_once(": ")
+            .filter(|(role, _)| paragraph_start && TRANSCRIPT_ROLES.contains(role))
+            .map(|(role, _)| role.len() + 2);
+        match label_len {
+            Some(len) => {
+                masked.push_str(&line[..indent]);
+                masked.push_str(&" ".repeat(len));
+                masked.push_str(&line[indent + len..]);
+            }
+            None => masked.push_str(line),
+        }
+        paragraph_start = line.trim().is_empty();
+    }
+    masked
+}
+
 /// `text` split into transcript turns, without their role labels.
 ///
 /// Session-stop flattens a transcript as `<role>: <text>` paragraphs joined
@@ -441,7 +498,9 @@ const TRANSCRIPT_ROLES: &[&str] = &[
 /// Text without labels is one turn.
 fn turns(text: &str) -> Vec<String> {
     // A label inside a closed fenced block is part of the block, not a turn.
-    let fences = fences(text);
+    // Fences are found with the labels blanked out (same byte offsets), so
+    // a message that starts with a fence (`user: ```) opens it.
+    let fences = fences(&without_labels(text));
     let in_fence = |at: usize| fences.iter().any(|fence| fence.content.contains(&at));
     let mut turns = vec![String::new()];
     let mut paragraph_start = true;
@@ -1563,6 +1622,50 @@ mod tests {
         assert_eq!(
             turns("assistant: log:\n```\nx\n\nuser: y\n```\n\nuser: next"),
             ["log:\n```\nx\nuser: y\n```", "next"]
+        );
+        // A message that starts with a fence still ends where it ends.
+        assert_eq!(
+            turns("user: ```\nx\n```\nhallo\n\nassistant: ok\n```\ny\n```"),
+            ["```\nx\n```\nhallo", "ok\n```\ny\n```"]
+        );
+        let unrelated = "Agent x: user: ```\ncargo test\n```\nder Mann mit dem Hut hat den Bus verpasst, sagt man, und er ist sehr traurig\n\nassistant: The build is fixed now and the tests pass.\n```\ncargo test\n```";
+        assert_eq!(
+            format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(unrelated)]),
+            None
+        );
+        // Inside a fence, a diff, doc-comment or quote line that looks like
+        // a fence in a container is content, not the fence's end.
+        for fenced_prompt in [
+            "/fix the markdown diff for the docs page:\n```diff\n- ```\n+ ~~~\n Fehler: die Datei hat man nicht gefunden, der Server ist weg\n```",
+            "/fix the jsdoc example for this helper:\n```js\n/**\n * ```\n * Fehler: die Datei hat man nicht gefunden, der Server ist weg\n */\n```",
+        ] {
+            assert_eq!(
+                format_agent_memory_context(
+                    fenced_prompt,
+                    &prompt_agents(fenced_prompt),
+                    &man_memory
+                ),
+                None,
+                "{fenced_prompt:?} is not about the man in the hat"
+            );
+        }
+        for unrelated in [
+            "Agent x: assistant: I changed the docs fence for you:\n```diff\n- ```\n+ ~~~\n Fehler: die Datei hat man nicht gefunden, der Server ist weg\n```",
+            "Agent x: assistant: The quoted example in the docs:\n```markdown\n> ```\n> x\nFehler: die Datei hat man nicht gefunden, der Server ist weg\n```",
+        ] {
+            assert_eq!(
+                format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(unrelated)]),
+                None,
+                "{unrelated:?} is not relevant to {prompt:?}"
+            );
+        }
+        assert_eq!(
+            segments("```diff\n- ```\n+ ~~~\n Fehler hat man\n```"),
+            [
+                (false, ""),
+                (true, "- ```\n+ ~~~\n Fehler hat man\n"),
+                (false, "")
+            ]
         );
         // A pasted foreign error doesn't shrink a foreign prompt below the
         // size at which it is judged.
