@@ -627,7 +627,7 @@ EOF_LABELS
 # ---------------------------------------------------------------------------
 ghc_pr_view() {
   local n obj
-  ghc_parse "$GHC_COMMON_V" "-c:comments --comments:comments -w:web --web:web" "$@"
+  ghc_parse "$GHC_COMMON_V" "-c:comments --comments:comments" "$@"
   ghc_resolve_repo
   ghc_pr_target "${GHC_POS[0]:-}"; n="$GHC_N"
   if [ -z "${GHC_O_json:-}" ] && [ "${GHC_B_comments:-}" = 1 ]; then
@@ -644,7 +644,7 @@ ghc_pr_view() {
 
 ghc_pr_list() {
   local state limit q raw owner nums n out="[]" obj
-  ghc_parse "$GHC_COMMON_V -s:state --state:state -L:limit --limit:limit -H:head --head:head -B:base --base:base -S:search --search:search -A:author --author:author -l:label --label:label -a:assignee --assignee:assignee" "-d:draft --draft:draft -w:web --web:web" "$@"
+  ghc_parse "$GHC_COMMON_V -s:state --state:state -L:limit --limit:limit -H:head --head:head -B:base --base:base -S:search --search:search -A:author --author:author -l:label --label:label -a:assignee --assignee:assignee" "-d:draft --draft:draft" "$@"
   ghc_resolve_repo
   state="${GHC_O_state:-open}"; limit="${GHC_O_limit:-30}"; owner="${GHC_REPO%%/*}"
   case "$limit" in ''|*[!0-9]*|0) ghc_die "invalid value for --limit: ${limit}" ;; esac
@@ -685,18 +685,18 @@ ghc_pr_list() {
 }
 
 ghc_pr_create() {
-  local head base body payload resp url n q
-  ghc_parse "-R:repo --repo:repo -t:title --title:title -b:body --body:body -F:body_file --body-file:body_file -B:base --base:base -H:head --head:head -l:label --label:label -a:assignee --assignee:assignee -r:reviewer --reviewer:reviewer -m:milestone --milestone:milestone -p:project --project:project" "-d:draft --draft:draft -f:fill --fill:fill --fill-first:fill -w:web --web:web --dry-run:dry_run" "$@"
+  local head base body payload resp url n q ms
+  ghc_parse "-R:repo --repo:repo -t:title --title:title -b:body --body:body -F:body_file --body-file:body_file -B:base --base:base -H:head --head:head -l:label --label:label -a:assignee --assignee:assignee -r:reviewer --reviewer:reviewer -m:milestone --milestone:milestone" "-d:draft --draft:draft -f:fill --fill:fill --fill-first:fill_first" "$@"
   ghc_resolve_repo
   head="${GHC_O_head:-$(ghc_current_branch)}"
   [ -n "$head" ] || ghc_die "gh: could not determine the head branch"
   base="${GHC_O_base:-}"
   [ -n "$base" ] || base="$(ghc_api_or_die GET "repos/${GHC_REPO}" | jq -r .default_branch)" || exit 1
   body="$(ghc_body)"
-  if [ -z "${GHC_O_title:-}" ] && [ "${GHC_B_fill:-}" = 1 ]; then
-    GHC_O_title="$(git log -1 --format=%s 2>/dev/null)"
-  fi
+  if [ "${GHC_B_fill:-}${GHC_B_fill_first:-}" != "" ]; then ghc_fill "$base" "$head"; fi
   [ -n "${GHC_O_title:-}" ] || ghc_die "gh: --title is required when GraphQL is unavailable"
+  # Resolved before anything is created, as gh resolves its metadata.
+  ms=""; [ -z "${GHC_O_milestone:-}" ] || ms="$(ghc_milestone "$GHC_O_milestone")" || exit 1
   payload="$(jq -n --arg t "$GHC_O_title" --arg b "$body" --arg h "$head" --arg B "$base" --argjson d "$([ "${GHC_B_draft:-}" = 1 ] && echo true || echo false)" \
     '{title: $t, body: $b, head: $h, base: $B, draft: $d}')"
   if ! resp="$(ghc_api POST "repos/${GHC_REPO}/pulls" "$payload")"; then
@@ -720,7 +720,39 @@ $url"
     ghc_api POST "repos/${GHC_REPO}/pulls/${n}/requested_reviewers" "$(ghc_csv_json reviewers "$GHC_O_reviewer")" >/dev/null \
       || ghc_warn "could not request review from ${GHC_O_reviewer} on #${n}: ${GHC_ERR#gh: }"
   fi
+  if [ -n "$ms" ]; then
+    ghc_api PATCH "repos/${GHC_REPO}/issues/${n}" "{\"milestone\":${ms}}" >/dev/null \
+      || ghc_warn "could not add #${n} to milestone ${GHC_O_milestone}: ${GHC_ERR#gh: }"
+  fi
   printf '%s\n' "$url"
+}
+
+# ghc_fill BASE HEAD — gh's --fill / --fill-first for a missing title and body:
+# one commit (or --fill-first) gives its subject and body; several give the
+# humanized branch name and a list of their subjects.
+ghc_fill() {
+  local range="origin/$1..HEAD" first n
+  git rev-parse --verify -q "origin/$1" >/dev/null || range="HEAD~1..HEAD"
+  n="$(git rev-list --count "$range" 2>/dev/null)" || n=0
+  first="$(git rev-list --reverse "$range" 2>/dev/null | sed -n 1p)"
+  [ -n "$first" ] || ghc_die "gh: could not compute title or body defaults: no commits between $1 and ${2}"
+  if [ "${GHC_B_fill_first:-}" = 1 ] || [ "$n" = 1 ]; then
+    [ -n "${GHC_O_title:-}" ] || GHC_O_title="$(git log -1 --format=%s "$first")"
+    [ -n "$body" ] || body="$(git log -1 --format=%b "$first")"
+  else
+    [ -n "${GHC_O_title:-}" ] || GHC_O_title="$(printf '%s' "${2#*:}" | tr -- '-_' '  ' | awk '{ $0 = toupper(substr($0,1,1)) substr($0,2); print }')"
+    [ -n "$body" ] || body="$(git log --reverse --format='- %s' "$range")"
+  fi
+}
+
+# ghc_milestone NAME — the milestone number for a title (or number), as gh
+# resolves --milestone; unknown fails the way gh does.
+ghc_milestone() {
+  local num
+  num="$(ghc_all "repos/${GHC_REPO}/milestones?state=all&per_page=100" \
+    | jq -r --arg m "$1" 'map(select(.title == $m or (.number | tostring) == $m)) | .[0].number // empty')" || exit 1
+  [ -n "$num" ] || ghc_die "could not add to milestone '$1': '$1' not found"
+  printf '%s\n' "$num"
 }
 
 # ghc_csv_json KEY "a,b" -> {"KEY":["a","b"]}
@@ -779,12 +811,20 @@ EOF_LABELS
 }
 
 ghc_comment() { # ghc_comment KIND(pr|issue) ARGS...
-  local kind="$1" n resp
+  local kind="$1" n resp me id
   shift
-  ghc_parse "-R:repo --repo:repo -b:body --body:body -F:body_file --body-file:body_file" "--edit-last:edit_last -w:web --web:web" "$@"
+  ghc_parse "-R:repo --repo:repo -b:body --body:body -F:body_file --body-file:body_file" "--edit-last:edit_last" "$@"
   ghc_resolve_repo
   if [ "$kind" = pr ]; then ghc_pr_target "${GHC_POS[0]:-}"; n="$GHC_N"; else ghc_issue_target "${GHC_POS[0]:-}"; n="$GHC_N"; fi
-  resp="$(ghc_api_or_die POST "repos/${GHC_REPO}/issues/${n}/comments" "$(jq -n --arg b "$(ghc_body)" '{body: $b}')")" || exit 1
+  if [ "${GHC_B_edit_last:-}" = 1 ]; then
+    # --edit-last rewrites the viewer's most recent comment instead of adding one.
+    me="$(ghc_api_or_die GET user | jq -r '.login // empty')" || exit 1
+    id="$(ghc_all "repos/${GHC_REPO}/issues/${n}/comments?per_page=100" | jq -r --arg me "$me" '[.[] | select(.user.login == $me)] | last | .id // empty')" || exit 1
+    [ -n "$id" ] || ghc_die "no comments found for current user"
+    resp="$(ghc_api_or_die PATCH "repos/${GHC_REPO}/issues/comments/${id}" "$(jq -n --arg b "$(ghc_body)" '{body: $b}')")" || exit 1
+  else
+    resp="$(ghc_api_or_die POST "repos/${GHC_REPO}/issues/${n}/comments" "$(jq -n --arg b "$(ghc_body)" '{body: $b}')")" || exit 1
+  fi
   printf '%s' "$resp" | jq -r .html_url
 }
 
@@ -850,13 +890,13 @@ ghc_pr_close() {
 
 ghc_pr_diff() {
   local n
-  ghc_parse "-R:repo --repo:repo --color:color" "--name-only:name_only --patch:patch -w:web --web:web" "$@"
+  ghc_parse "-R:repo --repo:repo --color:color" "--name-only:name_only --patch:patch" "$@"
   ghc_resolve_repo
   ghc_pr_target "${GHC_POS[0]:-}"; n="$GHC_N"
   if [ "${GHC_B_name_only:-}" = 1 ]; then
     ghc_all "repos/${GHC_REPO}/pulls/${n}/files?per_page=100" | jq -r '.[].filename'
   else
-    ghc_api_or_die GET "repos/${GHC_REPO}/pulls/${n}" "" "application/vnd.github.v3.diff"
+    ghc_api_or_die GET "repos/${GHC_REPO}/pulls/${n}" "" "application/vnd.github.v3.$([ "${GHC_B_patch:-}" = 1 ] && echo patch || echo diff)"
   fi
 }
 
@@ -875,7 +915,7 @@ ghc_required_checks() {
 
 ghc_pr_checks() {
   local n pr sha base interval checks required fails pend names=skip
-  ghc_parse "-R:repo --repo:repo --json:json -q:jq --jq:jq -t:template --template:template -i:interval --interval:interval" "--required:required --watch:watch --fail-fast:fail_fast -w:web --web:web" "$@"
+  ghc_parse "-R:repo --repo:repo --json:json -q:jq --jq:jq -t:template --template:template -i:interval --interval:interval" "--required:required --watch:watch --fail-fast:fail_fast" "$@"
   ghc_resolve_repo
   ghc_pr_target "${GHC_POS[0]:-}"; n="$GHC_N"
   pr="$(ghc_api_or_die GET "repos/${GHC_REPO}/pulls/${n}")" || exit 1
@@ -953,7 +993,7 @@ ghc_issue_enrich() {
 
 ghc_issue_view() {
   local n obj
-  ghc_parse "$GHC_COMMON_V" "-c:comments --comments:comments -w:web --web:web" "$@"
+  ghc_parse "$GHC_COMMON_V" "-c:comments --comments:comments" "$@"
   ghc_resolve_repo
   ghc_issue_target "${GHC_POS[0]:-}"; n="$GHC_N"
   obj="$(ghc_api_or_die GET "repos/${GHC_REPO}/issues/${n}" | jq "${GHC_JQ_DEFS} issue")" || exit 1
@@ -970,7 +1010,7 @@ ghc_issue_view() {
 
 ghc_issue_list() {
   local state limit q raw out
-  ghc_parse "$GHC_COMMON_V -s:state --state:state -L:limit --limit:limit -S:search --search:search -l:label --label:label -a:assignee --assignee:assignee -A:author --author:author" "-w:web --web:web" "$@"
+  ghc_parse "$GHC_COMMON_V -s:state --state:state -L:limit --limit:limit -S:search --search:search -l:label --label:label -a:assignee --assignee:assignee -A:author --author:author" "" "$@"
   ghc_resolve_repo
   state="${GHC_O_state:-open}"; limit="${GHC_O_limit:-30}"
   case "$limit" in ''|*[!0-9]*|0) ghc_die "invalid value for --limit: ${limit}" ;; esac
@@ -1000,13 +1040,15 @@ ghc_issue_list() {
 }
 
 ghc_issue_create() {
-  local payload resp labels
-  ghc_parse "-R:repo --repo:repo -t:title --title:title -b:body --body:body -F:body_file --body-file:body_file -l:label --label:label -a:assignee --assignee:assignee -m:milestone --milestone:milestone -p:project --project:project -T:template --template:template" "-w:web --web:web" "$@"
+  local payload resp labels ms
+  ghc_parse "-R:repo --repo:repo -t:title --title:title -b:body --body:body -F:body_file --body-file:body_file -l:label --label:label -a:assignee --assignee:assignee -m:milestone --milestone:milestone" "" "$@"
   ghc_resolve_repo
   [ -n "${GHC_O_title:-}" ] || ghc_die "gh: --title is required when GraphQL is unavailable"
   labels="${GHC_O_label:-}"
-  payload="$(jq -n --arg t "$GHC_O_title" --arg b "$(ghc_body)" --arg l "$labels" --arg a "$(ghc_expand_me "${GHC_O_assignee:-}")" \
-    '{title: $t, body: $b} + (if $l != "" then {labels: ($l | split(","))} else {} end) + (if $a != "" then {assignees: ($a | split(","))} else {} end)')"
+  ms="null"; [ -z "${GHC_O_milestone:-}" ] || ms="$(ghc_milestone "$GHC_O_milestone")" || exit 1
+  payload="$(jq -n --arg t "$GHC_O_title" --arg b "$(ghc_body)" --arg l "$labels" --arg a "$(ghc_expand_me "${GHC_O_assignee:-}")" --argjson m "$ms" \
+    '{title: $t, body: $b} + (if $l != "" then {labels: ($l | split(","))} else {} end) + (if $a != "" then {assignees: ($a | split(","))} else {} end)
+     + (if $m != null then {milestone: $m} else {} end)')"
   resp="$(ghc_api POST "repos/${GHC_REPO}/issues" "$payload")" || {
     ghc_last
     # gh fails the whole create on an unknown label; mirror that message so
@@ -1064,7 +1106,7 @@ ghc_label_create() {
 
 ghc_label_list() {
   local limit out
-  ghc_parse "$GHC_COMMON_V -L:limit --limit:limit -S:search --search:search --sort:sort --order:order" "-w:web --web:web" "$@"
+  ghc_parse "$GHC_COMMON_V -L:limit --limit:limit -S:search --search:search --sort:sort --order:order" "" "$@"
   ghc_resolve_repo
   limit="${GHC_O_limit:-30}"
   case "$limit" in ''|*[!0-9]*|0) ghc_die "invalid value for --limit: ${limit}" ;; esac

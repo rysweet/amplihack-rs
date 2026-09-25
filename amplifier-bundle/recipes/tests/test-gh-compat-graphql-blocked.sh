@@ -90,7 +90,10 @@ if [ "$1" = "api" ]; then
       printf '[{"filename":"a.rs","additions":1,"deletions":0}]\n'
       [ "$paginate" = 1 ] && printf '[{"filename":"b.rs","additions":2,"deletions":1}]\n' ;;
     "GET repos/o/r/issues/5") printf '{"number":5,"title":"Fix the flaky widget","body":"","state":"open","html_url":"https://github.com/o/r/issues/5","user":{"login":"bot"},"labels":[]}\n' ;;
-    "GET repos/o/r/issues/42/comments"*) printf '[]\n' ;;
+    "GET repos/o/r/issues/42/comments"*) printf '[{"id":76,"user":{"login":"bot"},"body":"older"},{"id":77,"user":{"login":"bot"},"body":"old"},{"id":78,"user":{"login":"else"},"body":"theirs"}]\n' ;;
+    "PATCH repos/o/r/issues/comments/77") printf '{"html_url":"https://github.com/o/r/pull/42#issuecomment-77"}\n' ;;
+    "GET repos/o/r/milestones"*) printf '[{"number":3,"title":"v1"}]\n' ;;
+    "PATCH repos/o/r/issues/43") printf '{}\n' ;;
     "GET repos/o/r/issues/5/comments"*) printf '[{"node_id":"C1","user":{"login":"a"},"body":"x"},{"node_id":"C2","user":{"login":"b"},"body":"y"}]\n' ;;
     "GET repos/o/r/issues/7/timeline"*)
       xr() { printf '{"event":"cross-referenced","source":{"type":"issue","issue":{"number":%s,"node_id":"PR_%s","html_url":"https://github.com/%s/pull/%s","state":"%s","body":"%s","pull_request":{"merged_at":%s},"repository":{"full_name":"%s","name":"%s","owner":{"login":"%s"}}}}}' \
@@ -611,5 +614,32 @@ rc=0; out="$(gh pr create --title t --body b --reviewer someone 2>"${WORK}/creat
 [ "$rc" = 0 ] && [ "$out" = "https://github.com/o/r/pull/43" ] || fail writes "pr create: rc $rc, stdout '$out'"
 grep -q "warning: could not request review from someone" "${WORK}/create.err" || fail writes "a failed reviewer request was silent"
 ok "write side effects (comment, label removal, reviewers) fail or warn, never silently"
+
+# 41. Flags the fallback implements instead of dropping: --milestone,
+#     --edit-last, --patch, --fill / --fill-first. --web and --dry-run are refused.
+reset_log
+gh issue create --title T --body b --milestone v1 >/dev/null || fail flags2 "issue create --milestone failed"
+logged 'BODY {"title":"T","body":"b","milestone":3}' || fail flags2 "--milestone not sent as its number"
+reset_log; rc=0; gh issue create --title T --body b --milestone nope >/dev/null 2>&1 || rc=$?
+[ "$rc" = 1 ] || fail flags2 "unknown milestone exited $rc"
+logged_prefix "api -X POST" && fail flags2 "created an issue although the milestone is unknown"
+reset_log
+[ "$(gh pr comment 42 --edit-last --body new)" = "https://github.com/o/r/pull/42#issuecomment-77" ] || fail flags2 "--edit-last did not edit the viewer's last comment"
+logged_prefix "api -X POST repos/o/r/issues/42/comments" && fail flags2 "--edit-last posted a new comment"
+reset_log; gh pr diff 42 --patch >/dev/null
+logged_prefix "Accept: application/vnd.github.v3.patch" || fail flags2 "--patch did not ask for a patch"
+for fl in "pr view 42 --web" "pr create --title t --body b --dry-run"; do
+  rc=0; reset_log; gh $fl >/dev/null 2>&1 || rc=$?
+  [ "$rc" = 1 ] || fail flags2 "'$fl' exited $rc"
+  logged_prefix "api -X POST" && fail flags2 "'$fl' created something"
+done
+gi() { git -c user.name=t -c user.email=t@t "$@"; }
+gi commit -q --allow-empty -m base && gi update-ref refs/remotes/origin/main HEAD
+gi commit -q --allow-empty -m "add a" -m "why a" && gi commit -q --allow-empty -m "add b"
+reset_log; gh pr create --fill >/dev/null || fail flags2 "pr create --fill failed"
+logged 'BODY {"title":"Feat","body":"- add a\n- add b","head":"feat","base":"main","draft":false}' || fail flags2 "--fill over two commits"
+reset_log; gh pr create --fill-first >/dev/null || fail flags2 "pr create --fill-first failed"
+logged 'BODY {"title":"add a","body":"why a","head":"feat","base":"main","draft":false}' || fail flags2 "--fill-first"
+ok "--milestone, --edit-last, --patch and --fill are implemented; --web and --dry-run are refused"
 
 echo "PASS: ${PASS} checks"
