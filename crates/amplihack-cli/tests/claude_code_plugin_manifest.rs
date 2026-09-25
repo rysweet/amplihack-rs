@@ -1330,4 +1330,38 @@ mod shell {
         );
         assert!(home.path().join("cargo-runs").exists(), "no install ran");
     }
+
+    #[test]
+    fn a_user_managed_runtime_the_user_completes_is_recorded_not_nagged() {
+        // The marker must not outlive the gap: once the user installs the
+        // missing partner, bootstrap reconciles instead of reporting it.
+        let home = tempfile::tempdir().unwrap();
+        let stub = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        stub_runtime(stub.path());
+        fs::write(data.path().join("user-managed"), "thiscommit\n").unwrap();
+        let bin = bootstrap_fixture();
+        let envs = [
+            ("CLAUDE_CODE_REMOTE", "true"),
+            ("CLAUDE_PLUGIN_ROOT", "/cache/amplihack/thiscommit"),
+            ("CLAUDE_PLUGIN_DATA", data.path().to_str().unwrap()),
+        ];
+        let out = run(
+            &bin.path().join("bootstrap"),
+            home.path(),
+            stub.path(),
+            &[],
+            &envs,
+        );
+        assert!(out.status.success());
+        assert!(
+            out.stdout.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert!(
+            wait_for(&home.path().join("installer-ran")),
+            "no reconcile to clear the marker"
+        );
+    }
 }

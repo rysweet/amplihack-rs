@@ -76,7 +76,9 @@ installed_for=$(sed -n 1p "$stamp" 2>/dev/null)
 
 # install-runtime found an amplihack the user manages but not its partner,
 # and will not add one beside it. Say what is missing; do not retry.
-if [ "$(sed -n 1p "$data/user-managed" 2>/dev/null)" = "$plugin_id" ]; then
+# Once nothing is missing (the user completed the pair), fall through so the
+# reconcile below records the runtime and clears the marker.
+if [ -n "$missing" ] && [ "$(sed -n 1p "$data/user-managed" 2>/dev/null)" = "$plugin_id" ]; then
   case " $missing " in
     *" recipe-runner-rs "*) ;;
     *)
