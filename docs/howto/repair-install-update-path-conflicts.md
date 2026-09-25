@@ -95,8 +95,21 @@ action.
 | Preferred Rust binary in `~/.local/bin` | Accepted and made first for future shells. |
 | Stale Python wrapper | Quarantined only when it shadows Rust, is clearly identified, and is in a safe location. |
 | Stale uvx wrapper | Quarantined only when it shadows Rust, is clearly identified, and is in a safe location. |
+| `npx` shim for this package (`…/_npx/<hash>/node_modules/.bin/amplihack` → `npm/bin/amplihack.js`) | Left in place; it disappears from `PATH` when `npx` exits. |
 | Unknown executable | Not modified; reported as a conflict. |
 | Inaccessible path | Not modified; reported with the filesystem error. |
+
+When you install with `npx … amplihack install`, npm puts its own shim for
+this package first on `PATH` for as long as `npx` runs. Install recognizes it,
+leaves it alone, and prints:
+
+```text
+  ℹ️  Leaving transient npx shim /home/alice/.npm/_npx/<hash>/node_modules/.bin/amplihack in place; it stops shadowing /home/alice/.local/bin/amplihack once npx exits.
+```
+
+No action is needed. Any other executable under `_npx/` is still treated as an
+unknown executable, and the post-install `PATH` advisory still reports any
+persistent executable behind the shim.
 
 ## Review quarantined wrappers
 
