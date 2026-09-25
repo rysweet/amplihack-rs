@@ -212,7 +212,9 @@ ghc_parse() {
     esac
     case "$a" in
       --) shift; GHC_POS+=("$@"); break ;;
-      -?*) ghc_log "ignoring unsupported flag $a"; shift ;;
+      # Ignoring a flag would silently widen or change the call (an unknown
+      # --milestone would list every issue), so it fails the way gh does.
+      -?*) ghc_die "gh-compat: flag $a of 'gh ${GHC_GROUP:-} ${GHC_VERB:-}' has no REST fallback; it needs GitHub GraphQL, which this host blocks" ;;
       *) GHC_POS+=("$a"); shift ;;
     esac
   done
@@ -482,7 +484,7 @@ ghc_pr_full() {
     # branch protection); mergeStateStatus BLOCKED still carries it.
     extra="$(ghc_all "repos/${GHC_REPO}/pulls/${n}/reviews?per_page=100")" || exit 1
     obj="$(jq -n --argjson o "$obj" --argjson r "$extra" '
-      ($r | map({author: {login: (.user.login // "")}, state, body, submittedAt: .submitted_at, id: .node_id})) as $m
+      ($r | map({author: {login: (.user.login // "")}, authorAssociation: .author_association, state, body, submittedAt: .submitted_at, id: .node_id})) as $m
       | ([$r[] | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")]
          | group_by(.user.login // "") | map(max_by(.submitted_at // "") | .state)) as $last
       | $o + {reviews: $m, latestReviews: $m,
@@ -511,8 +513,19 @@ ghc_pr_full() {
 # ghc_comments NUMBER — an issue's or PR's conversation comments, gh's shape.
 ghc_comments() {
   ghc_all "repos/${GHC_REPO}/issues/$1/comments?per_page=100" \
-    | jq 'map({id: .node_id, author: {login: (.user.login // "")}, authorAssociation: .author_association, body, createdAt: .created_at, url: .html_url})'
+    | jq 'map({id: .node_id, author: {login: (.user.login // "")}, authorAssociation: .author_association, body,
+               createdAt: .created_at, includesCreatedEdit: (.updated_at != null and .updated_at != .created_at), url: .html_url})'
 }
+
+# Non-JSON `view --comments`: gh prints, without a terminal, only the raw
+# comment list (and a PR's reviews), oldest first.
+# shellcheck disable=SC2016  # jq program, not shell expansions.
+GHC_JQ_RAW_COMMENTS='
+  [ (.comments // [])[] | {a: .author.login, as: (.authorAssociation // "none"), e: (.includesCreatedEdit // false), st: "none", b: (.body // ""), t: (.createdAt // "")} ]
+  + [ (.reviews // [])[] | select((.body // "") != "" or .state != "COMMENTED")
+      | {a: .author.login, as: (.authorAssociation // "none"), e: false, st: .state, b: (.body // ""), t: (.submittedAt // "")} ]
+  | sort_by(.t)[] | "author:\t\(.a)\nassociation:\t\(.as | ascii_downcase)\nedited:\t\(.e)\nstatus:\t\(.st | ascii_downcase)\n--\n\(.b)\n--"'
+
 
 # ghc_closed_by NUMBER — gh's closedByPullRequestsReferences: the open or merged
 # pull requests into their default branch whose body names this issue with a
@@ -616,6 +629,10 @@ ghc_pr_view() {
   ghc_parse "$GHC_COMMON_V" "-c:comments --comments:comments -w:web --web:web" "$@"
   ghc_resolve_repo
   ghc_pr_target "${GHC_POS[0]:-}"; n="$GHC_N"
+  if [ -z "${GHC_O_json:-}" ] && [ "${GHC_B_comments:-}" = 1 ]; then
+    obj="$(GHC_O_json=comments,reviews ghc_pr_full "$n")" || exit 1
+    printf '%s' "$obj" | jq -r "$GHC_JQ_RAW_COMMENTS"; return 0
+  fi
   obj="$(ghc_pr_full "$n")" || exit 1
   if [ -z "${GHC_O_json:-}" ]; then
     printf '%s' "$obj" | jq -r '"title:\t\(.title)\nstate:\t\(.state)\nauthor:\t\(.author.login)\nnumber:\t\(.number)\nurl:\t\(.url)\n--\n\(.body)"'
@@ -930,6 +947,9 @@ ghc_issue_view() {
   ghc_issue_target "${GHC_POS[0]:-}"; n="$GHC_N"
   obj="$(ghc_api_or_die GET "repos/${GHC_REPO}/issues/${n}" | jq "${GHC_JQ_DEFS} issue")" || exit 1
   obj="$(ghc_issue_enrich "$obj")" || exit 1
+  if [ -z "${GHC_O_json:-}" ] && [ "${GHC_B_comments:-}" = 1 ]; then
+    printf '%s' "$obj" | jq -r "$GHC_JQ_RAW_COMMENTS"; return 0
+  fi
   if [ -z "${GHC_O_json:-}" ]; then
     printf '%s' "$obj" | jq -r '"title:\t\(.title)\nstate:\t\(.state)\nauthor:\t\(.author.login)\nlabels:\t\([.labels[].name] | join(", "))\nnumber:\t\(.number)\nurl:\t\(.url)\n--\n\(.body)"'
     return 0

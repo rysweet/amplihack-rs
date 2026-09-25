@@ -89,6 +89,8 @@ if [ "$1" = "api" ]; then
     "GET repos/o/r/pulls/42/files"*)
       printf '[{"filename":"a.rs","additions":1,"deletions":0}]\n'
       [ "$paginate" = 1 ] && printf '[{"filename":"b.rs","additions":2,"deletions":1}]\n' ;;
+    "GET repos/o/r/issues/5") printf '{"number":5,"title":"Fix the flaky widget","body":"","state":"open","html_url":"https://github.com/o/r/issues/5","user":{"login":"bot"},"labels":[]}\n' ;;
+    "GET repos/o/r/issues/42/comments"*) printf '[]\n' ;;
     "GET repos/o/r/issues/5/comments"*) printf '[{"node_id":"C1","user":{"login":"a"},"body":"x"},{"node_id":"C2","user":{"login":"b"},"body":"y"}]\n' ;;
     "GET repos/o/r/issues/7/timeline"*)
       xr() { printf '{"event":"cross-referenced","source":{"type":"issue","issue":{"number":%s,"node_id":"PR_%s","html_url":"https://github.com/%s/pull/%s","state":"%s","body":"%s","pull_request":{"merged_at":%s},"repository":{"full_name":"%s","name":"%s","owner":{"login":"%s"}}}}}' \
@@ -585,6 +587,17 @@ pl() { gh pr list "$@" --json number --jq '[.[].number] | map(tostring) | join("
 [ "$(pl --assignee a)" = 50 ] || fail pr-filters "--assignee ignored"
 [ "$(pl --draft --limit 1)" = 50 ] || fail pr-filters "--draft applied after --limit"
 [ "$(pl --author @me --state merged)" = 10 ] || fail pr-filters "--state merged let unmerged PRs through the search fallback"
+reset_log; rc=0; err="$(gh issue list --milestone v1 --json number 2>&1 >/dev/null)" || rc=$?
+[ "$rc" = 1 ] || fail pr-filters "an unsupported filter flag exited $rc instead of failing"
+case "$err" in *"flag --milestone"*"no REST fallback"*) ;; *) fail pr-filters "message was '$err'" ;; esac
+logged_prefix "api " && fail pr-filters "an unsupported flag still listed (widened) over REST"
 ok "pr list filters (label AND, draft, assignee, merged) hold in the REST fallback"
+
+# 39. view --comments without --json prints the comments, as gh does off a terminal.
+out="$(gh issue view 5 --comments)" || fail view-comments "issue view --comments failed"
+case "$out" in *"author:	a"*"--"*"x"*"author:	b"*"y"*) ;; *) fail view-comments "got '$out'" ;; esac
+out="$(gh pr view 42 --comments)" || fail view-comments "pr view --comments failed"
+case "$out" in *"status:	changes_requested"*"status:	approved"*) ;; *) fail view-comments "pr reviews missing: '$out'" ;; esac
+ok "view --comments prints the comment list instead of dropping it"
 
 echo "PASS: ${PASS} checks"
