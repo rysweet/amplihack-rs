@@ -57,6 +57,7 @@ nav:
       - Installation: PREREQUISITES.md
       - Interactive Setup: INTERACTIVE_INSTALLATION.md
       - First-Time Install: howto/first-install.md
+      - Claude Code Plugin: howto/install-claude-code-plugin.md
       - PATH Conflict Tutorial: tutorials/repair-install-update-path-conflicts.md
       - Local Install: howto/local-install.md
       - Repair PATH Conflicts: howto/repair-install-update-path-conflicts.md
