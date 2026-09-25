@@ -517,3 +517,30 @@ fn issue_1480_npx_shim_not_reported_when_local_bin_is_off_path() {
     assert!(report.neutralized.is_empty());
     assert_eq!(report.resolved_after, preferred_rust);
 }
+
+/// With nothing but the npx shim on PATH there is nothing left to judge once
+/// npx exits; the separate "~/.local/bin is not in $PATH" advisory covers it.
+#[cfg(unix)]
+#[test]
+fn issue_1480_path_advisory_silent_when_only_the_npx_shim_is_on_path() {
+    use crate::path_conflicts::{PathAnalysisInput, analyze_path_conflicts};
+
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let preferred_rust = create_exe_stub(&home.join(".local/bin"), "amplihack");
+    let wrapper_source = include_str!("../../../../../../npm/bin/amplihack.js");
+    let (npx_bin, _shim) = create_npx_shim(&home, wrapper_source);
+
+    let report = analyze_path_conflicts(&PathAnalysisInput {
+        home_dir: home.clone(),
+        current_exe: preferred_rust,
+        path_dirs: vec![npx_bin],
+        binary_names: vec!["amplihack".into()],
+    })
+    .unwrap();
+
+    assert_eq!(
+        super::super::binary::path_conflict_warning_after_install(&report),
+        None
+    );
+}

@@ -104,7 +104,7 @@ this package first on `PATH` for as long as `npx` runs. Install recognizes it,
 leaves it alone, and prints:
 
 ```text
-  ⚠️  Leaving transient npx shim /home/alice/.npm/_npx/<hash>/node_modules/.bin/amplihack in place; it stops shadowing /home/alice/.local/bin/amplihack once npx exits.
+  ℹ️  Leaving transient npx shim /home/alice/.npm/_npx/<hash>/node_modules/.bin/amplihack in place; it stops shadowing /home/alice/.local/bin/amplihack once npx exits.
 ```
 
 No action is needed. Any other executable under `_npx/` is still treated as an
