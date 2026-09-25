@@ -1,0 +1,87 @@
+#!/bin/sh
+# Install the native amplihack runtime for the Claude Code plugin.
+#
+#   * amplihack + amplihack-hooks: prebuilt release binaries, fetched with the
+#     same verified downloader the npm wrapper uses (npm/lib/bootstrap.js),
+#     which falls back to a cargo build from this checkout. Copied into
+#     ~/.local/bin.
+#   * recipe-runner-rs: cargo install from rysweet/amplihack-recipe-runner.
+#
+# Deliberately does NOT run `amplihack install`: that publishes a second copy
+# of every skill into ~/.claude/skills and hook registrations into
+# settings.json, duplicating what the plugin already provides.
+#
+# Idempotent: anything already on PATH is left alone. Exits non-zero if any
+# component is still missing at the end.
+
+bin_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd) || exit 1
+root="${CLAUDE_PLUGIN_ROOT:-$(CDPATH='' cd -- "$bin_dir/../.." && pwd)}"
+dest="$HOME/.local/bin"
+
+PATH="$dest:$HOME/.cargo/bin:$PATH"
+export PATH
+
+if [ -n "${AMPLIHACK_PLUGIN_INSTALL_LOCK:-}" ]; then
+  printf '%s\n' "$$" >"$AMPLIHACK_PLUGIN_INSTALL_LOCK/pid" 2>/dev/null
+  trap 'rm -rf "$AMPLIHACK_PLUGIN_INSTALL_LOCK"' EXIT
+  trap 'exit 1' HUP INT TERM
+fi
+
+log() {
+  printf '[amplihack-plugin %s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"
+}
+
+have() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+place() {
+  # place <source> <name>: atomic copy into $dest
+  cp "$1" "$dest/.$2.tmp.$$" && chmod 755 "$dest/.$2.tmp.$$" && mv -f "$dest/.$2.tmp.$$" "$dest/$2"
+}
+
+mkdir -p "$dest" || exit 1
+log "plugin root: $root"
+
+if have amplihack && have amplihack-hooks; then
+  log "amplihack and amplihack-hooks already installed"
+elif have node; then
+  log "fetching amplihack release binaries"
+  paths=$(AMPLIHACK_PLUGIN_ROOT="$root" node -e '
+    const path = require("node:path");
+    const root = process.env.AMPLIHACK_PLUGIN_ROOT;
+    const { ensureNativeBinaries } = require(path.join(root, "npm", "lib", "bootstrap.js"));
+    const { version } = require(path.join(root, "package.json"));
+    ensureNativeBinaries({ root, version })
+      .then((r) => console.log(r.mainBinary + "\n" + r.hooksBinary))
+      .catch((e) => { console.error(e.message); process.exit(1); });
+  ') || log "binary download failed"
+  main=$(printf '%s\n' "$paths" | sed -n 1p)
+  hooks=$(printf '%s\n' "$paths" | sed -n 2p)
+  if [ -f "$main" ] && [ -f "$hooks" ]; then
+    place "$main" amplihack && place "$hooks" amplihack-hooks && log "installed amplihack binaries into $dest"
+  fi
+elif have cargo; then
+  log "node not found; building amplihack from source"
+  if (cd "$root" && cargo build --release --locked --bin amplihack --bin amplihack-hooks); then
+    place "$root/target/release/amplihack" amplihack && place "$root/target/release/amplihack-hooks" amplihack-hooks
+  fi
+else
+  log "neither node nor cargo is available; cannot install amplihack binaries"
+fi
+
+if have recipe-runner-rs; then
+  log "recipe-runner-rs already installed"
+elif have cargo; then
+  log "building recipe-runner-rs (cargo install; this takes a few minutes)"
+  cargo install --git https://github.com/rysweet/amplihack-recipe-runner --branch main --locked ||
+    log "recipe-runner-rs build failed"
+else
+  log "cargo not found; install Rust (https://rustup.rs) to build recipe-runner-rs"
+fi
+
+status=0
+for tool in amplihack amplihack-hooks recipe-runner-rs; do
+  if have "$tool"; then log "ok: $tool -> $(command -v "$tool")"; else log "MISSING: $tool"; status=1; fi
+done
+exit "$status"

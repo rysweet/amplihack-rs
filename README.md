@@ -119,6 +119,18 @@ Download a platform archive from
 https://github.com/rysweet/amplihack-rs/releases, place `amplihack` and
 `amplihack-hooks` on PATH, then run `amplihack install`.
 
+**Option 5: Claude Code plugin (desktop, terminal, and cloud sessions)**
+
+```text
+/plugin marketplace add rysweet/amplihack-rs
+/plugin install amplihack@amplihack
+```
+
+This loads the skills, agents, and slash commands straight from git with no
+`amplihack install`. That makes it the way to get amplihack into Claude Code
+on the web. See
+[Install amplihack as a Claude Code plugin](docs/howto/install-claude-code-plugin.md).
+
 This launches an interactive agent session enhanced with amplihack workflows,
 specialized agents, and development tools. You get a CLI prompt where you can
 describe tasks and the framework orchestrates their execution.

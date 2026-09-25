@@ -1,0 +1,24 @@
+#!/bin/sh
+# Claude Code plugin hook wrapper: `amplihack-hook <subcommand>`.
+#
+# Forwards one Claude Code hook event to the native `amplihack-hooks` binary,
+# with stdin passed through. It stays silent and exits 0 in two cases, so the
+# plugin can never break or double up a session:
+#
+#   * amplihack-hooks is not installed yet (the plugin's skills, agents and
+#     commands still work; bootstrap may be installing the runtime right now);
+#   * the user's settings.json already registers amplihack-hooks because
+#     `amplihack install` wired them. Those registrations fire on their own, and
+#     running this copy too would fire every hook twice.
+
+PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+export PATH
+
+command -v amplihack-hooks >/dev/null 2>&1 || exit 0
+
+settings="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
+if [ -f "$settings" ] && grep -q 'amplihack-hooks' "$settings" 2>/dev/null; then
+  exit 0
+fi
+
+exec amplihack-hooks "$@"

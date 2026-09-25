@@ -1,0 +1,98 @@
+#!/bin/sh
+# Claude Code plugin SessionStart hook: make the amplihack runtime reachable.
+#
+# The plugin root is a full amplihack-rs checkout, so it serves as
+# AMPLIHACK_HOME and recipes resolve from it. What it cannot carry are the
+# native binaries: amplihack, amplihack-hooks and recipe-runner-rs. This hook:
+#
+#   1. exports AMPLIHACK_HOME and a PATH covering ~/.local/bin and ~/.cargo/bin
+#      into the session through $CLAUDE_ENV_FILE;
+#   2. if any binary is missing, either starts install-runtime in the
+#      background (default in cloud sessions, CLAUDE_CODE_REMOTE=true) or tells
+#      Claude the command that installs it. AMPLIHACK_PLUGIN_AUTO_INSTALL=1/0
+#      overrides the default.
+#
+# It always exits 0 and returns immediately: a SessionStart hook must never
+# block or fail a session.
+
+bin_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" 2>/dev/null && pwd) || exit 0
+root="${CLAUDE_PLUGIN_ROOT:-$(CDPATH='' cd -- "$bin_dir/../.." 2>/dev/null && pwd)}"
+data="${CLAUDE_PLUGIN_DATA:-$HOME/.amplihack/plugin}"
+
+PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+export PATH
+
+append_env() {
+  [ -n "${CLAUDE_ENV_FILE:-}" ] || return 0
+  if [ ! -f "$CLAUDE_ENV_FILE" ] || ! grep -qxF "$1" "$CLAUDE_ENV_FILE" 2>/dev/null; then
+    printf '%s\n' "$1" >>"$CLAUDE_ENV_FILE" 2>/dev/null || true
+  fi
+}
+
+json_escape() {
+  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+emit_context() {
+  printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"%s"}}\n' \
+    "$(json_escape "$1")"
+}
+
+append_env "export AMPLIHACK_HOME=\"$root\""
+# shellcheck disable=SC2016 # $HOME and $PATH must expand when the file is sourced
+append_env 'export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"'
+# This plugin only runs inside Claude Code, so recipe agent steps must too.
+# Without a live CLAUDECODE marker the resolver falls back to copilot (#1481).
+# shellcheck disable=SC2016 # expand when sourced, so an explicit choice wins
+append_env 'export AMPLIHACK_AGENT_BINARY="${AMPLIHACK_AGENT_BINARY:-claude}"'
+# Cloud containers run as root, where claude refuses the
+# --dangerously-skip-permissions that recipe agent steps pass (#1482).
+if [ "${CLAUDE_CODE_REMOTE:-}" = "true" ] && [ "$(id -u 2>/dev/null)" = 0 ]; then
+  append_env 'export IS_SANDBOX=1'
+fi
+
+missing=""
+for tool in amplihack amplihack-hooks recipe-runner-rs; do
+  command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
+done
+[ -n "$missing" ] || exit 0
+missing=${missing# }
+
+case "${AMPLIHACK_PLUGIN_AUTO_INSTALL:-}" in
+  1 | true) auto=1 ;;
+  0 | false) auto=0 ;;
+  *) if [ "${CLAUDE_CODE_REMOTE:-}" = "true" ]; then auto=1; else auto=0; fi ;;
+esac
+
+installer="$bin_dir/install-runtime"
+if [ "$auto" != 1 ]; then
+  emit_context "amplihack plugin: the amplihack runtime is not installed (missing: $missing). Skills, agents and commands are loaded, but skills that run recipes (dev-orchestrator, default-workflow, investigation-workflow) need it. If the user wants those workflows, install it with: sh \"$installer\" (downloads prebuilt amplihack binaries into ~/.local/bin and builds recipe-runner-rs with cargo; takes several minutes)."
+  exit 0
+fi
+
+mkdir -p "$data" 2>/dev/null || exit 0
+lock="$data/install.lock"
+log="$data/install-runtime.log"
+
+# A lock is stale when its owner is gone or it has outlived any plausible
+# install (a cargo build of recipe-runner-rs takes minutes, not an hour).
+if [ -d "$lock" ]; then
+  pid=$(cat "$lock/pid" 2>/dev/null)
+  if { [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; } ||
+    [ -n "$(find "$lock" -maxdepth 0 -mmin +60 2>/dev/null)" ]; then
+    rm -rf "$lock" 2>/dev/null
+  fi
+fi
+
+if mkdir "$lock" 2>/dev/null; then
+  if command -v setsid >/dev/null 2>&1; then
+    AMPLIHACK_PLUGIN_INSTALL_LOCK="$lock" nohup setsid sh "$installer" </dev/null >>"$log" 2>&1 &
+  else
+    AMPLIHACK_PLUGIN_INSTALL_LOCK="$lock" nohup sh "$installer" </dev/null >>"$log" 2>&1 &
+  fi
+  child=$!
+  [ -f "$lock/pid" ] || printf '%s\n' "$child" >"$lock/pid" 2>/dev/null
+fi
+
+emit_context "amplihack plugin: the amplihack runtime (missing: $missing) is being installed in the background; log: $log. It is done when $lock no longer exists. Skills, agents and commands already work; before running 'amplihack recipe run' (dev-orchestrator, default-workflow), check the log and wait for the install to finish."
+exit 0
