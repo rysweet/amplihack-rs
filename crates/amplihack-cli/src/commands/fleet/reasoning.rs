@@ -250,7 +250,12 @@ impl NativeReasonerBackend {
                     prompt,
                 ]);
                 // Issue #1482: IS_SANDBOX=1 as root in a sandbox, else a clear error.
-                amplihack_utils::root_sandbox::detect().apply(&mut cmd)?;
+                // The fleet TUI owns the terminal, so the notice goes to the log.
+                if let Some(notice) =
+                    amplihack_utils::root_sandbox::detect().apply_quietly(&mut cmd)?
+                {
+                    tracing::warn!("{notice}");
+                }
                 let mut env_builder = EnvBuilder::new()
                     .with_amplihack_session_id()
                     .with_session_tree_context()

@@ -25,9 +25,16 @@
 //!   `/.dockerenv`, `/run/.containerenv`, or a container marker in
 //!   `/proc/1/cgroup`): `IS_SANDBOX=1` is set on the child `claude` process
 //!   only. amplihack's own environment is never modified.
+//! - `CLAUDE_CODE_BUBBLEWRAP` set: Claude Code accepts the flag itself, so
+//!   nothing is needed.
 //! - Root with no sandbox signal: an error naming `IS_SANDBOX=1`, raised before
 //!   anything is spawned. amplihack never silently declares a real host a
 //!   sandbox.
+//!
+//! A container marker shows the process is contained, not that the machine is
+//! disposable, so every automatic `IS_SANDBOX=1` is announced on stderr with
+//! the signal that caused it (see [`SkipPermissionsEnv::notice`]); exporting
+//! `IS_SANDBOX=0` turns it off.
 
 use std::fmt;
 use std::path::Path;
@@ -42,16 +49,32 @@ pub const SKIP_PERMISSIONS_FLAG: &str = "--dangerously-skip-permissions";
 /// Set by Claude Code on the web for its cloud containers.
 const CLAUDE_CODE_REMOTE_ENV: &str = "CLAUDE_CODE_REMOTE";
 
-/// Substrings of `/proc/1/cgroup` that only appear inside a container.
-const CONTAINER_CGROUP_MARKERS: &[&str] = &[
-    "docker",
-    "kubepods",
-    "containerd",
-    "libpod",
-    "podman",
-    "lxc",
-    "crio",
-];
+/// Claude Code's own bubblewrap sandbox; Claude Code accepts the flag as root
+/// when it is truthy.
+const CLAUDE_CODE_BUBBLEWRAP_ENV: &str = "CLAUDE_CODE_BUBBLEWRAP";
+
+/// Whether one path component of a `/proc/1/cgroup` entry names a container
+/// runtime's cgroup. Whole components, not substrings, so a host unit that
+/// merely mentions a runtime (`containerd.service`) does not count.
+fn is_container_cgroup_component(component: &str) -> bool {
+    component == "docker"
+        || component == "lxc"
+        || component == "podman"
+        || component.starts_with("docker-")
+        || component.starts_with("libpod-")
+        || component.starts_with("crio-")
+        || component.starts_with("cri-containerd-")
+        || component.starts_with("kubepods")
+        || component.starts_with("lxc.payload")
+}
+
+fn cgroup_names_a_container(contents: &str) -> bool {
+    contents.lines().any(|line| {
+        line.splitn(3, ':')
+            .nth(2)
+            .is_some_and(|path| path.split('/').any(is_container_cgroup_component))
+    })
+}
 
 /// Evidence that this process runs inside a disposable container.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -90,11 +113,7 @@ impl SandboxSignals {
                 .is_some_and(|value| value.trim().eq_ignore_ascii_case("true")),
             dockerenv,
             containerenv,
-            container_cgroup: cgroup.is_some_and(|contents| {
-                CONTAINER_CGROUP_MARKERS
-                    .iter()
-                    .any(|marker| contents.contains(marker))
-            }),
+            container_cgroup: cgroup.is_some_and(cgroup_names_a_container),
         }
     }
 
@@ -119,7 +138,8 @@ impl SandboxSignals {
 pub enum SkipPermissionsEnv {
     /// Not running as root; Claude Code accepts the flag as is.
     NotRoot,
-    /// The user already exported `IS_SANDBOX=1`; the child inherits it.
+    /// Claude Code already accepts the flag: the user exported `IS_SANDBOX=1`
+    /// or a truthy `CLAUDE_CODE_BUBBLEWRAP`, and the child inherits it.
     AlreadySandboxed,
     /// Root inside a detected sandbox; set `IS_SANDBOX=1` on the child only.
     SetSandbox {
@@ -145,13 +165,19 @@ pub enum SkipPermissionsEnv {
 ///
 /// `euid` is `None` on platforms without uids. `explicit_is_sandbox` is the
 /// inherited `IS_SANDBOX`; an empty or whitespace value counts as unset.
+/// `bubblewrap` is the inherited `CLAUDE_CODE_BUBBLEWRAP`.
 pub fn decide(
     euid: Option<u32>,
     explicit_is_sandbox: Option<&str>,
+    bubblewrap: Option<&str>,
     signals: SandboxSignals,
 ) -> SkipPermissionsEnv {
     if euid != Some(0) {
         return SkipPermissionsEnv::NotRoot;
+    }
+    // Claude Code accepts CLAUDE_CODE_BUBBLEWRAP regardless of IS_SANDBOX.
+    if bubblewrap.map(str::trim).is_some_and(is_truthy) {
+        return SkipPermissionsEnv::AlreadySandboxed;
     }
     match explicit_is_sandbox.map(str::trim) {
         Some("1") => return SkipPermissionsEnv::AlreadySandboxed,
@@ -179,11 +205,16 @@ fn is_affirmative(value: &str) -> bool {
         .any(|affirmative| value.eq_ignore_ascii_case(affirmative))
 }
 
+fn is_truthy(value: &str) -> bool {
+    value == "1" || is_affirmative(value)
+}
+
 /// [`decide`] against the real process state.
 pub fn detect() -> SkipPermissionsEnv {
     decide(
         effective_uid(),
         std::env::var(IS_SANDBOX_ENV).ok().as_deref(),
+        std::env::var(CLAUDE_CODE_BUBBLEWRAP_ENV).ok().as_deref(),
         SandboxSignals::detect(),
     )
 }
@@ -206,28 +237,41 @@ impl SkipPermissionsEnv {
         }
     }
 
-    /// Prepare `command` (a `claude` child) for the flag: sets `IS_SANDBOX=1`
-    /// on it when needed, or returns the error from [`Self::check`].
-    pub fn apply(&self, command: &mut Command) -> Result<(), RootSandboxError> {
-        self.check()?;
+    /// The line announcing an `IS_SANDBOX=1` amplihack decided on by itself,
+    /// naming the signal and how to refuse it; `None` when amplihack changes
+    /// nothing or only restates a value the user set.
+    pub fn notice(&self) -> Option<String> {
         match self {
-            Self::SetSandbox { signal } => {
-                tracing::debug!(
-                    signal,
-                    "running as root in a sandbox; setting IS_SANDBOX=1 on the claude child"
-                );
-                command.env(IS_SANDBOX_ENV, "1");
-            }
-            Self::NormalizeExplicit { value } => {
-                tracing::debug!(
-                    value,
-                    "running as root with an affirmative IS_SANDBOX; passing IS_SANDBOX=1 to the claude child"
-                );
-                command.env(IS_SANDBOX_ENV, "1");
-            }
-            _ => {}
+            Self::SetSandbox { signal } => Some(format!(
+                "amplihack: running as root in a container ({signal}); passing \
+                 {IS_SANDBOX_ENV}=1 to claude so {SKIP_PERMISSIONS_FLAG} is accepted. \
+                 Set {IS_SANDBOX_ENV}=0 to refuse."
+            )),
+            _ => None,
+        }
+    }
+
+    /// Prepare `command` (a `claude` child) for the flag and announce any
+    /// automatic `IS_SANDBOX=1` on stderr. See [`Self::apply_quietly`].
+    pub fn apply(&self, command: &mut Command) -> Result<(), RootSandboxError> {
+        if let Some(notice) = self.apply_quietly(command)? {
+            eprintln!("{notice}");
         }
         Ok(())
+    }
+
+    /// Set `IS_SANDBOX=1` on `command` when needed, or return the error from
+    /// [`Self::check`]. Returns [`Self::notice`] for the caller to show where
+    /// stderr is not the right place (a TUI).
+    pub fn apply_quietly(&self, command: &mut Command) -> Result<Option<String>, RootSandboxError> {
+        self.check()?;
+        if matches!(
+            self,
+            Self::SetSandbox { .. } | Self::NormalizeExplicit { .. }
+        ) {
+            command.env(IS_SANDBOX_ENV, "1");
+        }
+        Ok(self.notice())
     }
 }
 
@@ -324,7 +368,7 @@ mod tests {
         for signals in [NO_SIGNALS, REMOTE] {
             for explicit in [None, Some("1"), Some("0")] {
                 assert_eq!(
-                    decide(Some(1000), explicit, signals),
+                    decide(Some(1000), explicit, None, signals),
                     SkipPermissionsEnv::NotRoot
                 );
             }
@@ -333,13 +377,16 @@ mod tests {
 
     #[test]
     fn no_uid_platform_is_treated_as_non_root() {
-        assert_eq!(decide(None, None, NO_SIGNALS), SkipPermissionsEnv::NotRoot);
+        assert_eq!(
+            decide(None, None, None, NO_SIGNALS),
+            SkipPermissionsEnv::NotRoot
+        );
     }
 
     #[test]
     fn non_root_leaves_the_child_environment_alone() {
         let mut command = Command::new("claude");
-        decide(Some(1000), None, REMOTE)
+        decide(Some(1000), None, None, REMOTE)
             .apply(&mut command)
             .unwrap();
         assert_eq!(command_is_sandbox(&command), None);
@@ -374,7 +421,7 @@ mod tests {
             ),
         ];
         for (signals, expected) in cases {
-            let decision = decide(Some(0), None, signals);
+            let decision = decide(Some(0), None, None, signals);
             assert_eq!(
                 decision,
                 SkipPermissionsEnv::SetSandbox { signal: expected }
@@ -386,9 +433,54 @@ mod tests {
     }
 
     #[test]
+    fn auto_enable_is_announced_naming_the_signal_and_the_opt_out() {
+        let decision = decide(Some(0), None, None, REMOTE);
+        let notice = decision.notice().expect("an automatic enable is announced");
+        assert!(notice.contains("CLAUDE_CODE_REMOTE=true"), "{notice}");
+        assert!(notice.contains("IS_SANDBOX=1"), "{notice}");
+        assert!(notice.contains("IS_SANDBOX=0"), "{notice}");
+        let mut command = Command::new("claude");
+        assert_eq!(decision.apply_quietly(&mut command), Ok(Some(notice)));
+        assert_eq!(command_is_sandbox(&command), Some(Some("1".to_string())));
+    }
+
+    #[test]
+    fn nothing_is_announced_when_amplihack_decides_nothing() {
+        for decision in [
+            decide(Some(1000), None, None, REMOTE),
+            decide(Some(0), Some("1"), None, NO_SIGNALS),
+            decide(Some(0), Some("yes"), None, NO_SIGNALS),
+            decide(Some(0), None, Some("1"), NO_SIGNALS),
+        ] {
+            assert_eq!(decision.notice(), None, "{decision:?}");
+        }
+    }
+
+    #[test]
+    fn truthy_bubblewrap_is_accepted_as_root_like_claude_code_does() {
+        for value in ["1", "true", "yes", "on"] {
+            for (explicit, signals) in [(None, NO_SIGNALS), (Some("0"), NO_SIGNALS), (None, REMOTE)]
+            {
+                let decision = decide(Some(0), explicit, Some(value), signals);
+                assert_eq!(decision, SkipPermissionsEnv::AlreadySandboxed);
+                let mut command = Command::new("claude");
+                decision.apply(&mut command).unwrap();
+                assert_eq!(command_is_sandbox(&command), None);
+            }
+        }
+        for value in ["", "0", "false"] {
+            assert_eq!(
+                decide(Some(0), None, Some(value), NO_SIGNALS),
+                SkipPermissionsEnv::RootOutsideSandbox,
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
     fn empty_is_sandbox_counts_as_unset() {
         assert_eq!(
-            decide(Some(0), Some("  "), REMOTE),
+            decide(Some(0), Some("  "), None, REMOTE),
             SkipPermissionsEnv::SetSandbox {
                 signal: "CLAUDE_CODE_REMOTE=true"
             }
@@ -399,7 +491,7 @@ mod tests {
 
     #[test]
     fn root_outside_a_sandbox_fails_naming_is_sandbox() {
-        let decision = decide(Some(0), None, NO_SIGNALS);
+        let decision = decide(Some(0), None, None, NO_SIGNALS);
         assert_eq!(decision, SkipPermissionsEnv::RootOutsideSandbox);
         let mut command = Command::new("claude");
         let error = decision.apply(&mut command).unwrap_err();
@@ -417,7 +509,7 @@ mod tests {
     #[test]
     fn explicit_is_sandbox_1_is_respected_as_root_anywhere() {
         for signals in [NO_SIGNALS, REMOTE] {
-            let decision = decide(Some(0), Some("1"), signals);
+            let decision = decide(Some(0), Some("1"), None, signals);
             assert_eq!(decision, SkipPermissionsEnv::AlreadySandboxed);
             let mut command = Command::new("claude");
             decision.apply(&mut command).unwrap();
@@ -434,7 +526,7 @@ mod tests {
         // Claude Code cloud containers export IS_SANDBOX=yes; the CLI takes only 1.
         for value in ["yes", "YES", "true", "on", " y "] {
             for signals in [NO_SIGNALS, REMOTE] {
-                let decision = decide(Some(0), Some(value), signals);
+                let decision = decide(Some(0), Some(value), None, signals);
                 assert_eq!(
                     decision,
                     SkipPermissionsEnv::NormalizeExplicit {
@@ -452,7 +544,7 @@ mod tests {
     fn explicit_negative_or_unknown_value_is_respected_and_reported_as_root() {
         for value in ["0", "false", "no", "off", "maybe"] {
             for signals in [NO_SIGNALS, REMOTE] {
-                let decision = decide(Some(0), Some(value), signals);
+                let decision = decide(Some(0), Some(value), None, signals);
                 assert_eq!(
                     decision,
                     SkipPermissionsEnv::ExplicitlyNotSandboxed {
@@ -483,18 +575,31 @@ mod tests {
     fn container_cgroups_are_recognised_and_host_cgroups_are_not() {
         for cgroup in [
             "12:memory:/docker/0123abcd",
+            "0::/system.slice/docker-0123abcd.scope",
             "0::/kubepods/besteffort/pod1234/abcd",
-            "1:name=systemd:/system.slice/containerd.service/x",
+            "0::/kubepods.slice/kubepods-burstable.slice/cri-containerd-abcd.scope",
             "0::/machine.slice/libpod-abcd.scope",
             "0::/lxc/box",
+            "0::/lxc.payload.box",
             "0::/kubepods.slice/crio-abcd.scope",
+            "1:name=systemd:/\n0::/docker/abcd",
         ] {
             assert!(
                 SandboxSignals::from_state(None, false, false, Some(cgroup)).container_cgroup,
                 "{cgroup}"
             );
         }
-        for cgroup in ["0::/", "0::/user.slice/user-1000.slice/session-2.scope"] {
+        for cgroup in [
+            "0::/",
+            "0::/init.scope",
+            "0::/user.slice/user-1000.slice/session-2.scope",
+            // A host unit that merely mentions a runtime is not a container.
+            "0::/system.slice/containerd.service",
+            "0::/system.slice/docker.service",
+            "0::/user.slice/mydocker-notes.scope",
+            // A marker in the controller name, not the path, does not count.
+            "3:docker:/",
+        ] {
             assert_eq!(
                 SandboxSignals::from_state(None, false, false, Some(cgroup)),
                 NO_SIGNALS,

@@ -21,6 +21,8 @@ mod tests_env;
 #[cfg(test)]
 mod tests_launch;
 #[cfg(test)]
+mod tests_root_sandbox;
+#[cfg(test)]
 mod tests_subprocess_safe;
 #[cfg(test)]
 mod tests_system_prompt_append;
@@ -99,6 +101,29 @@ fn apply_launch_environment(
     if let Some((config, target)) = proxy {
         config.apply_to_command(command, target);
     }
+}
+
+/// Issue #1482: what a `claude` launch needs for `--dangerously-skip-permissions`
+/// as root, or `None` when this launch does not pass the flag to claude.
+///
+/// Claude Code refuses the flag as root unless IS_SANDBOX=1 is set. `Err` when
+/// it would refuse, so the launch stops before anything is spawned; the caller
+/// applies the returned decision to the child command only. `detect` is
+/// injected so tests can stand in for root and sandbox states.
+pub(super) fn root_sandbox_for_launch(
+    tool: &str,
+    skip_permissions: bool,
+    extra_args: &[String],
+    detect: impl FnOnce() -> amplihack_utils::root_sandbox::SkipPermissionsEnv,
+) -> Result<Option<amplihack_utils::root_sandbox::SkipPermissionsEnv>> {
+    let passes_flag =
+        skip_permissions || amplihack_utils::root_sandbox::args_skip_permissions(extra_args);
+    if tool != "claude" || !passes_flag {
+        return Ok(None);
+    }
+    let decision = detect();
+    decision.check()?;
+    Ok(Some(decision))
 }
 
 /// Launch a tool binary (claude, copilot, codex, amplifier).
@@ -185,19 +210,15 @@ pub fn run_launch(
         return Ok(());
     }
 
-    // Issue #1482: Claude Code refuses `--dangerously-skip-permissions` as root
-    // unless IS_SANDBOX=1 is set. Decide now, after the Docker hand-off (the
-    // container launch decides for itself), so a root host outside a sandbox
-    // fails here with a message naming IS_SANDBOX=1 instead of inside claude.
-    let root_sandbox = if tool == "claude"
-        && (skip_permissions || amplihack_utils::root_sandbox::args_skip_permissions(&extra_args))
-    {
-        let decision = amplihack_utils::root_sandbox::detect();
-        decision.check()?;
-        Some(decision)
-    } else {
-        None
-    };
+    // Issue #1482: decide now, after the Docker hand-off (the container launch
+    // decides for itself), so a root host outside a sandbox fails here with a
+    // message naming IS_SANDBOX=1 instead of inside claude.
+    let root_sandbox = root_sandbox_for_launch(
+        tool,
+        skip_permissions,
+        &extra_args,
+        amplihack_utils::root_sandbox::detect,
+    )?;
 
     // Check for npm updates before doing anything else.
     // This is a no-op if skip_update_check is true, AMPLIHACK_NONINTERACTIVE is set,
