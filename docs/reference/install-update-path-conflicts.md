@@ -110,6 +110,13 @@ Unknown executables are never deleted or quarantined automatically. If an
 unknown executable remains before `~/.local/bin/amplihack` after the managed
 PATH repair, install/update fails with guidance.
 
+The amplihack npm launcher (`npm/bin/amplihack.js`) is not an unknown
+executable. `npx ... -- amplihack install` prepends
+`~/.npm/_npx/<hash>/node_modules/.bin` to PATH for that one run, so the launcher
+shim there resolves before `~/.local/bin/amplihack`. Install recognises the
+launcher, leaves it untouched, and does not fail or warn about it: it only
+delegates to the Rust binary and disappears from PATH when npx exits.
+
 System-managed paths are never mutated automatically, even if they are writable:
 
 ```text

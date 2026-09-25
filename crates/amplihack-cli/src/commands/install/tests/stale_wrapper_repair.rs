@@ -257,3 +257,62 @@ fn update_repair_uses_preserved_parent_path_even_when_runtime_path_is_repaired()
     assert_eq!(report.neutralized.len(), 1);
     assert_eq!(report.resolved_after, preferred_rust);
 }
+
+const NPM_LAUNCHER: &str = "#!/usr/bin/env node\n'use strict';\nmain().catch((error) => {\n  console.error(`amplihack npm wrapper failed: ${error.message}`);\n});\n";
+
+/// `npx --package=git+https://.../amplihack-rs.git -- amplihack install`
+/// prepends `~/.npm/_npx/<hash>/node_modules/.bin` to PATH. The launcher there
+/// shadows `~/.local/bin/amplihack` for that run only and must not fail install.
+#[cfg(unix)]
+#[test]
+fn npx_launcher_shim_shadowing_rust_binary_is_tolerated_and_untouched() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let preferred_bin = home.join(".local/bin");
+    let preferred_rust = create_exe_stub(&preferred_bin, "amplihack");
+    let current_rust = create_exe_stub(&home.join(".cache/amplihack-npm/bin"), "amplihack");
+    let npx_root = home.join(".npm/_npx/20a160db8db9e1ce/node_modules");
+    let launcher = npx_root.join("@rysweet/amplihack-rs/npm/bin/amplihack.js");
+    write_executable(&launcher, NPM_LAUNCHER);
+    let shim_dir = npx_root.join(".bin");
+    fs::create_dir_all(&shim_dir).unwrap();
+    let shim = shim_dir.join("amplihack");
+    std::os::unix::fs::symlink("../@rysweet/amplihack-rs/npm/bin/amplihack.js", &shim).unwrap();
+
+    let report = neutralize_shadowing_stale_wrappers(repair_config(
+        &home,
+        &current_rust,
+        &preferred_rust,
+        vec![shim_dir.clone(), preferred_bin.clone()],
+    ))
+    .expect("the amplihack npx launcher must not block install");
+
+    assert!(report.neutralized.is_empty());
+    assert!(report.manifest_path.is_none());
+    assert_eq!(fs::read_to_string(&shim).unwrap(), NPM_LAUNCHER);
+}
+
+#[test]
+fn unrelated_node_script_shadowing_rust_binary_still_fails() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let preferred_bin = home.join(".local/bin");
+    let preferred_rust = create_exe_stub(&preferred_bin, "amplihack");
+    let other_bin = home.join("node_modules/.bin");
+    write_executable(
+        &other_bin.join("amplihack"),
+        "#!/usr/bin/env node\nconsole.log('not ours');\n",
+    );
+
+    let err = neutralize_shadowing_stale_wrappers(repair_config(
+        &home,
+        &preferred_rust,
+        &preferred_rust,
+        vec![other_bin, preferred_bin],
+    ))
+    .expect_err("unknown node scripts must still be reported");
+    assert!(matches!(
+        err,
+        StaleWrapperRepairError::UnknownShadowingExecutable { .. }
+    ));
+}

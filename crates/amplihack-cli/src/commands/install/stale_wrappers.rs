@@ -79,6 +79,10 @@ enum PathCandidateKind {
     PreferredRustBinary,
     StalePythonWrapper,
     StaleUvxWrapper,
+    /// The npm/npx launcher (`npm/bin/amplihack.js`). It only delegates to the
+    /// Rust binary, and under `npx` it sits in a transient
+    /// `node_modules/.bin` entry that npx prepends to PATH for the one run.
+    NpmLauncher,
     UnknownExecutable,
     Inaccessible(String),
 }
@@ -134,7 +138,9 @@ pub(crate) fn neutralize_shadowing_stale_wrappers(
                 },
             )?;
         match kind {
-            PathCandidateKind::PreferredRustBinary | PathCandidateKind::CurrentRustBinary => {}
+            PathCandidateKind::PreferredRustBinary
+            | PathCandidateKind::CurrentRustBinary
+            | PathCandidateKind::NpmLauncher => {}
             PathCandidateKind::StalePythonWrapper | PathCandidateKind::StaleUvxWrapper => {
                 let wrapper_kind = match kind {
                     PathCandidateKind::StalePythonWrapper => {
@@ -221,7 +227,9 @@ pub(crate) fn neutralize_shadowing_stale_wrappers(
                 )?;
         if !matches!(
             resolved_kind,
-            PathCandidateKind::PreferredRustBinary | PathCandidateKind::CurrentRustBinary
+            PathCandidateKind::PreferredRustBinary
+                | PathCandidateKind::CurrentRustBinary
+                | PathCandidateKind::NpmLauncher
         ) {
             return Err(StaleWrapperRepairError::RustBinaryStillShadowed {
                 resolved_after,
@@ -265,6 +273,9 @@ fn classify_path_candidate(
     }
 
     let metadata = fs::symlink_metadata(path)?;
+    if is_amplihack_npm_launcher(path) {
+        return Ok(PathCandidateKind::NpmLauncher);
+    }
     if metadata.file_type().is_symlink() {
         if !is_safe_wrapper_location(&canonical, home) {
             return Ok(PathCandidateKind::UnknownExecutable);
@@ -284,6 +295,23 @@ fn classify_path_candidate(
         return Ok(PathCandidateKind::StalePythonWrapper);
     }
     Ok(PathCandidateKind::UnknownExecutable)
+}
+
+/// Marker printed by `npm/bin/amplihack.js`; identifies our own npm launcher.
+const NPM_LAUNCHER_MARKER: &str = "amplihack npm wrapper failed";
+
+/// Whether `path` (following symlinks) is the amplihack npm/npx launcher
+/// script, e.g. `~/.npm/_npx/<hash>/node_modules/.bin/amplihack`.
+pub(crate) fn is_amplihack_npm_launcher(path: &Path) -> bool {
+    let Ok(content) = read_prefix(path) else {
+        return false;
+    };
+    content.starts_with("#!")
+        && content
+            .lines()
+            .next()
+            .is_some_and(|line| line.contains("node"))
+        && content.contains(NPM_LAUNCHER_MARKER)
 }
 
 fn is_safe_wrapper_location(path: &Path, home: &Path) -> bool {

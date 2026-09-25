@@ -243,6 +243,11 @@ pub(super) fn path_conflict_warning_after_install(
         };
 
         if resolution.is_shadowed_by_earlier_path_entry {
+            // `npx` prepends its own `node_modules/.bin` for the duration of
+            // the run; that launcher only delegates to the Rust binary.
+            if super::stale_wrappers::is_amplihack_npm_launcher(&resolution.resolved.path) {
+                continue;
+            }
             let Some(preferred) = resolution.preferred_user_candidate.as_ref() else {
                 continue;
             };
