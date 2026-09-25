@@ -27,9 +27,11 @@ echo "Recipe runner log: $LOG_FILE"
 ```
 
 - `chmod 600 "$LOG_FILE"` — keeps the log file private
-- `AMPLIHACK_AGENT_BINARY=...` — required here: `tmux new-session` gives the
-  command the tmux server's environment, not yours, so the markers that tell
-  `amplihack recipe run` which agent CLI you are in do not reach it (#1335)
+- `AMPLIHACK_AGENT_BINARY=...` — required here: once a tmux server is running,
+  `tmux new-session` gives the command that server's environment, not yours.
+  The markers that tell `amplihack recipe run` which agent CLI you are in then
+  do not reach it. The first run, which starts the server, still sees them, so
+  this can work once and then silently stop (#1335)
 - `tmux new-session -d` — detached session, no timeout, survives disconnects
 - Monitor with: `tail -f "$LOG_FILE"` or `tmux attach -t recipe-runner`
 
