@@ -9,6 +9,7 @@ mod hook_staging_tests;
 mod install_flow;
 mod issue_1266_restage_loop;
 mod issue_1438_skill_publication;
+mod issue_1449_partial_registration;
 mod issue_527_tests;
 mod issue_911_durable_hooks_path;
 mod mermaid_cli_tests;

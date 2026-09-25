@@ -10,6 +10,23 @@ on:
   # branch protection) so approved PRs are validated together instead of each
   # forcing its own full serial CI cycle under strict "up-to-date" mode.
   merge_group:
+  # Mondays and Thursdays, so no gap between runs reaches seven days.
+  #
+  # GitHub deletes an Actions cache that has not been read for 7 days. This
+  # repository went 19 days without a run (3 to 22 September), every cache was
+  # deleted, and the next pull request paid for all of it: Lint & Format went
+  # from 10 minutes to over 25, Test from 15 to 28, each Build from 6 to 17,
+  # Install Smoke from 7 to 18. sccache reported 0 hits against 1752 misses,
+  # where a warm run reports 88.91%. None of that was caused by the pull
+  # request that paid for it.
+  #
+  # The same 19 days hid two external breakages until a contributor found them:
+  # kani 0.68.0 (16 Sep) crashed the proof gate, and RUSTSEC-2026-0285 (14 Sep)
+  # failed the sibling repository's audit. A run every few days keeps the caches
+  # alive and finds that kind of drift against main, where it belongs.
+  schedule:
+    - cron: "0 6 * * 1,4"
+  workflow_dispatch:
 
 # Least-privilege default: every job gets a read-only token unless it opts up.
 permissions:
@@ -19,7 +36,12 @@ env:
   CARGO_TERM_COLOR: always
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # github.event_name is in the key so a scheduled run and a push run on main do
+  # not share a group. Without it the 06:00 schedule could cancel the CI run for
+  # a merge that was already in flight, and a cancelled run reports as a failed
+  # required check (issue #1372). github.ref stays in the key, which is what
+  # keeps open pull requests from cancelling each other.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -34,7 +56,12 @@ jobs:
       # disk low. Goal: cut the ~16 min from-scratch clippy compile on warm runs.
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
-      SCCACHE_CACHE_SIZE: "2G"
+      # 2G was below what this workspace already stores: the repository's
+      # active Actions cache measured 2.49 GB across 9111 entries, so the
+      # cap was evicting entries inside a single run. Pinning kani to its
+      # own nightly adds a second toolchain whose objects cannot share
+      # entries with the 1.97.0 build, roughly doubling what one job needs.
+      SCCACHE_CACHE_SIZE: "10G"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Verify cxx-build pin
@@ -132,6 +159,9 @@ jobs:
       - name: Claim check — working on an issue's own PR is not racing it (issue #1448)
         shell: bash
         run: bash tests/issue_1448_review_is_not_a_duplicate.sh
+      - name: Branch names — from the branch or the issue, never task prose (issue #1426)
+        shell: bash
+        run: bash tests/issue_1426_branch_name_not_prose.sh
       - name: Git subprocesses — no unsanitised Command::new("git") (issue #1278)
         run: scripts/check-git-command-sanitised.sh
       - name: Git env isolation — hooks scrub GIT_DIR and friends (issue #1278)
@@ -305,7 +335,12 @@ jobs:
       # SPIKE: sccache compiled-artifact caching (GHA backend). See check job.
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
-      SCCACHE_CACHE_SIZE: "2G"
+      # 2G was below what this workspace already stores: the repository's
+      # active Actions cache measured 2.49 GB across 9111 entries, so the
+      # cap was evicting entries inside a single run. Pinning kani to its
+      # own nightly adds a second toolchain whose objects cannot share
+      # entries with the 1.97.0 build, roughly doubling what one job needs.
+      SCCACHE_CACHE_SIZE: "10G"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Free disk space
@@ -385,7 +420,12 @@ jobs:
       # SPIKE: sccache compiled-artifact caching (GHA backend). See check job.
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
-      SCCACHE_CACHE_SIZE: "2G"
+      # 2G was below what this workspace already stores: the repository's
+      # active Actions cache measured 2.49 GB across 9111 entries, so the
+      # cap was evicting entries inside a single run. Pinning kani to its
+      # own nightly adds a second toolchain whose objects cannot share
+      # entries with the 1.97.0 build, roughly doubling what one job needs.
+      SCCACHE_CACHE_SIZE: "10G"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83 # 1.97.0
@@ -427,7 +467,12 @@ jobs:
       # the host rustc directly; sccache keys already include the target triple.
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
-      SCCACHE_CACHE_SIZE: "2G"
+      # 2G was below what this workspace already stores: the repository's
+      # active Actions cache measured 2.49 GB across 9111 entries, so the
+      # cap was evicting entries inside a single run. Pinning kani to its
+      # own nightly adds a second toolchain whose objects cannot share
+      # entries with the 1.97.0 build, roughly doubling what one job needs.
+      SCCACHE_CACHE_SIZE: "10G"
     strategy:
       fail-fast: false
       matrix:
