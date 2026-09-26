@@ -25,15 +25,23 @@
 //!   `/.dockerenv`, `/run/.containerenv`, or a container marker in
 //!   `/proc/1/cgroup`): `IS_SANDBOX=1` is set on the child `claude` process
 //!   only. amplihack's own environment is never modified.
-//! - Under WSL the marker files do not count. WSL is a workstation with the
-//!   Windows drives mounted, and a distribution imported from `docker export`
-//!   keeps the image's `/.dockerenv`; WSL imports also log in as root by
-//!   default. A container marker in `/proc/1/cgroup` still counts there,
-//!   because it describes the process tree, not the root filesystem. WSL is
-//!   recognised by its kernel release, its session variables or its interop
-//!   entries. Docker Desktop on Windows runs containers on the same WSL
-//!   kernel, so there too only a cgroup marker or an explicit `IS_SANDBOX=1`
-//!   enables the flag: failing closed is the safe side of that ambiguity.
+//! - The marker files (`/.dockerenv`, `/run/.containerenv`) are part of a
+//!   root filesystem, and any rootfs extracted with `docker export` carries
+//!   them, so they count only when that rootfs is really a container's:
+//!   - not under WSL. WSL is a workstation with the Windows drives mounted,
+//!     a distribution imported from `docker export` keeps `/.dockerenv`, and
+//!     imports log in as root by default. WSL is recognised by its kernel
+//!     release, its session variables or its interop entries. Docker Desktop
+//!     on Windows runs containers on the same kernel, so a root container
+//!     there needs an explicit `IS_SANDBOX=1` (its private cgroup namespace
+//!     shows `0::/`, so the cgroup signal does not fire either);
+//!   - only when `/` is PID 1's root (same device and inode as
+//!     `/proc/1/root`), which rules out a `chroot` into an extracted image on
+//!     an ordinary host. When that cannot be checked the markers do not count.
+//!
+//!   A marker that exists but does not count is named in the refusal, with the
+//!   reason. `CLAUDE_CODE_REMOTE` and the `/proc/1/cgroup` signal describe the
+//!   process, not the root filesystem, and are unaffected.
 //! - `CLAUDE_CODE_BUBBLEWRAP` set: Claude Code accepts the flag itself, so
 //!   nothing is needed.
 //! - Root with no sandbox signal: an error naming `IS_SANDBOX=1`, raised before
@@ -106,6 +114,12 @@ const DOCKERENV_PATH: &str = "/.dockerenv";
 const CONTAINERENV_PATH: &str = "/run/.containerenv";
 const PID1_CGROUP_PATH: &str = "/proc/1/cgroup";
 
+/// This process's root directory and PID 1's. They differ in a `chroot`,
+/// where the marker files belong to whatever rootfs was extracted there (the
+/// check `systemd-detect-virt --chroot` makes).
+const ROOT_PATH: &str = "/";
+const PID1_ROOT_PATH: &str = "/proc/1/root";
+
 /// The facts the sandbox probe reads from the process environment and the
 /// filesystem. [`RealSystem`] reads the real ones; tests pass a fake, so every
 /// path and variable the probe depends on is pinned by a test.
@@ -116,6 +130,9 @@ pub trait SystemProbe {
     fn exists(&self, path: &str) -> bool;
     /// The contents of `path`, when it can be read.
     fn read(&self, path: &str) -> Option<String>;
+    /// The `(device, inode)` of `path`, following links; `None` when it
+    /// cannot be read.
+    fn identity(&self, path: &str) -> Option<(u64, u64)>;
 }
 
 /// The running process's environment and filesystem.
@@ -134,6 +151,19 @@ impl SystemProbe for RealSystem {
     fn read(&self, path: &str) -> Option<String> {
         std::fs::read_to_string(path).ok()
     }
+
+    #[cfg(unix)]
+    fn identity(&self, path: &str) -> Option<(u64, u64)> {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(path)
+            .ok()
+            .map(|metadata| (metadata.dev(), metadata.ino()))
+    }
+
+    #[cfg(not(unix))]
+    fn identity(&self, _path: &str) -> Option<(u64, u64)> {
+        None
+    }
 }
 
 /// Whether this process runs in a WSL distribution. Any one indicator is
@@ -147,6 +177,60 @@ fn running_under_wsl(system: &impl SystemProbe) -> bool {
         })
 }
 
+/// Why a marker file (`/.dockerenv`, `/run/.containerenv`) that exists is not
+/// trusted as a sandbox signal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MarkerDistrust {
+    /// The kernel is WSL: a WSL distribution (possibly imported from
+    /// `docker export`) or a Docker Desktop container on the WSL kernel.
+    Wsl,
+    /// `/` is not PID 1's root: a chroot, for example into an extracted image.
+    NotPid1Root,
+    /// Whether `/` is PID 1's root could not be checked (`/proc/1/root`
+    /// unreadable), so the marker is not trusted.
+    Pid1RootUnverified,
+}
+
+impl fmt::Display for MarkerDistrust {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Wsl => {
+                "the kernel is WSL (a WSL distribution, or a Docker Desktop container, which \
+                 runs on the WSL kernel)"
+            }
+            Self::NotPid1Root => {
+                "/ is not PID 1's root directory (a chroot, for example into an extracted image)"
+            }
+            Self::Pid1RootUnverified => {
+                "whether / is PID 1's root directory could not be checked (/proc/1/root is not \
+                 readable)"
+            }
+        })
+    }
+}
+
+/// A marker file that exists but is not trusted, and why.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UntrustedMarker {
+    /// The marker file.
+    pub marker: &'static str,
+    /// Why it is not trusted.
+    pub reason: MarkerDistrust,
+}
+
+/// Whether the marker files can be trusted: not under WSL, and only when `/`
+/// is PID 1's root. Fails closed when that cannot be checked.
+fn marker_distrust(system: &impl SystemProbe) -> Option<MarkerDistrust> {
+    if running_under_wsl(system) {
+        return Some(MarkerDistrust::Wsl);
+    }
+    match (system.identity(ROOT_PATH), system.identity(PID1_ROOT_PATH)) {
+        (Some(root), Some(pid1_root)) if root == pid1_root => None,
+        (Some(_), Some(_)) => Some(MarkerDistrust::NotPid1Root),
+        _ => Some(MarkerDistrust::Pid1RootUnverified),
+    }
+}
+
 /// Evidence that this process runs inside a disposable container.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SandboxSignals {
@@ -158,6 +242,8 @@ pub struct SandboxSignals {
     pub containerenv: bool,
     /// `/proc/1/cgroup` names a container runtime.
     pub container_cgroup: bool,
+    /// A marker file that exists but was not counted, for the refusal message.
+    pub untrusted_marker: Option<UntrustedMarker>,
 }
 
 impl SandboxSignals {
@@ -173,25 +259,37 @@ impl SandboxSignals {
             system.exists(DOCKERENV_PATH),
             system.exists(CONTAINERENV_PATH),
             system.read(PID1_CGROUP_PATH).as_deref(),
-            running_under_wsl(system),
+            marker_distrust(system),
         )
     }
 
-    /// The signals from already-probed facts. Under `wsl` the marker files
-    /// are ignored (see the module documentation).
+    /// The signals from already-probed facts. With a `distrust` the marker
+    /// files do not count, and one that exists is recorded as untrusted (see
+    /// the module documentation).
     pub fn from_state(
         claude_code_remote: Option<&str>,
         dockerenv: bool,
         containerenv: bool,
         cgroup: Option<&str>,
-        wsl: bool,
+        distrust: Option<MarkerDistrust>,
     ) -> Self {
+        let trusted = distrust.is_none();
+        let marker = if dockerenv {
+            Some(DOCKERENV_PATH)
+        } else if containerenv {
+            Some(CONTAINERENV_PATH)
+        } else {
+            None
+        };
         Self {
             claude_code_remote: claude_code_remote
                 .is_some_and(|value| value.trim().eq_ignore_ascii_case("true")),
-            dockerenv: dockerenv && !wsl,
-            containerenv: containerenv && !wsl,
+            dockerenv: dockerenv && trusted,
+            containerenv: containerenv && trusted,
             container_cgroup: cgroup.is_some_and(cgroup_names_a_container),
+            untrusted_marker: marker
+                .zip(distrust)
+                .map(|(marker, reason)| UntrustedMarker { marker, reason }),
         }
     }
 
@@ -237,6 +335,9 @@ pub enum SkipPermissionsEnv {
     },
     /// Root with no sandbox signal and no `IS_SANDBOX`.
     RootOutsideSandbox,
+    /// Root with no sandbox signal and no `IS_SANDBOX`, but a marker file
+    /// exists that was not trusted; the refusal says which and why.
+    UntrustedMarker(UntrustedMarker),
 }
 
 /// Decide what a root-safe `claude --dangerously-skip-permissions` needs.
@@ -271,9 +372,10 @@ pub fn decide(
         }
         _ => {}
     }
-    match signals.first() {
-        Some(signal) => SkipPermissionsEnv::SetSandbox { signal },
-        None => SkipPermissionsEnv::RootOutsideSandbox,
+    match (signals.first(), signals.untrusted_marker) {
+        (Some(signal), _) => SkipPermissionsEnv::SetSandbox { signal },
+        (None, Some(untrusted)) => SkipPermissionsEnv::UntrustedMarker(untrusted),
+        (None, None) => SkipPermissionsEnv::RootOutsideSandbox,
     }
 }
 
@@ -328,6 +430,7 @@ impl SkipPermissionsEnv {
                 })
             }
             Self::RootOutsideSandbox => Err(RootSandboxError::RootOutsideSandbox),
+            Self::UntrustedMarker(untrusted) => Err(RootSandboxError::UntrustedMarker(*untrusted)),
         }
     }
 
@@ -379,6 +482,8 @@ pub enum RootSandboxError {
         /// The user's value.
         value: String,
     },
+    /// Root, `IS_SANDBOX` unset, and a marker file exists but is not trusted.
+    UntrustedMarker(UntrustedMarker),
 }
 
 impl fmt::Display for RootSandboxError {
@@ -389,8 +494,16 @@ impl fmt::Display for RootSandboxError {
                 "amplihack runs `claude {SKIP_PERMISSIONS_FLAG}`, which Claude Code refuses as root \
                  (uid 0) unless {IS_SANDBOX_ENV}=1 is set, and no container sandbox was detected \
                  (checked {CLAUDE_CODE_REMOTE_ENV}=true, /.dockerenv, /run/.containerenv and \
-                 /proc/1/cgroup; the marker files do not count under WSL). If this machine is a disposable sandbox, export \
+                 /proc/1/cgroup). If this machine is a disposable sandbox, export \
                  {IS_SANDBOX_ENV}=1 and re-run; otherwise run amplihack as a non-root user."
+            ),
+            Self::UntrustedMarker(UntrustedMarker { marker, reason }) => write!(
+                f,
+                "amplihack runs `claude {SKIP_PERMISSIONS_FLAG}`, which Claude Code refuses as root \
+                 (uid 0) unless {IS_SANDBOX_ENV}=1 is set. Found the container marker {marker}, \
+                 but {reason}, so amplihack does not treat it as a sandbox. If this container \
+                 is disposable, export {IS_SANDBOX_ENV}=1 and re-run; otherwise run amplihack \
+                 as a non-root user."
             ),
             Self::ExplicitlyNotSandboxed { value } => write!(
                 f,
@@ -441,6 +554,7 @@ mod tests {
         dockerenv: false,
         containerenv: false,
         container_cgroup: false,
+        untrusted_marker: None,
     };
 
     const REMOTE: SandboxSignals = SandboxSignals {
@@ -659,19 +773,16 @@ mod tests {
     #[test]
     fn claude_code_remote_must_be_true() {
         assert!(
-            SandboxSignals::from_state(Some("true"), false, false, None, false).claude_code_remote
+            SandboxSignals::from_state(Some("true"), false, false, None, None).claude_code_remote
         );
         assert!(
-            SandboxSignals::from_state(Some("TRUE"), false, false, None, false).claude_code_remote
+            SandboxSignals::from_state(Some("TRUE"), false, false, None, None).claude_code_remote
         );
         assert!(
-            !SandboxSignals::from_state(Some("false"), false, false, None, false)
-                .claude_code_remote
+            !SandboxSignals::from_state(Some("false"), false, false, None, None).claude_code_remote
         );
-        assert!(
-            !SandboxSignals::from_state(Some(""), false, false, None, false).claude_code_remote
-        );
-        assert!(!SandboxSignals::from_state(None, false, false, None, false).claude_code_remote);
+        assert!(!SandboxSignals::from_state(Some(""), false, false, None, None).claude_code_remote);
+        assert!(!SandboxSignals::from_state(None, false, false, None, None).claude_code_remote);
     }
 
     #[test]
@@ -688,8 +799,7 @@ mod tests {
             "1:name=systemd:/\n0::/docker/abcd",
         ] {
             assert!(
-                SandboxSignals::from_state(None, false, false, Some(cgroup), false)
-                    .container_cgroup,
+                SandboxSignals::from_state(None, false, false, Some(cgroup), None).container_cgroup,
                 "{cgroup}"
             );
         }
@@ -705,7 +815,7 @@ mod tests {
             "3:docker:/",
         ] {
             assert_eq!(
-                SandboxSignals::from_state(None, false, false, Some(cgroup), false),
+                SandboxSignals::from_state(None, false, false, Some(cgroup), None),
                 NO_SIGNALS,
                 "{cgroup}"
             );
@@ -718,6 +828,7 @@ mod tests {
     struct FakeSystem {
         env: Vec<(&'static str, &'static str)>,
         files: Vec<(&'static str, &'static str)>,
+        identities: Vec<(&'static str, (u64, u64))>,
     }
 
     impl FakeSystem {
@@ -729,6 +840,17 @@ mod tests {
         fn with_file(mut self, path: &'static str, contents: &'static str) -> Self {
             self.files.push((path, contents));
             self
+        }
+
+        fn with_identity(mut self, path: &'static str, identity: (u64, u64)) -> Self {
+            self.identities.push((path, identity));
+            self
+        }
+
+        /// `/` is PID 1's root: not a chroot, so marker files can count.
+        fn pid1_root(self) -> Self {
+            self.with_identity("/", (2049, 2))
+                .with_identity("/proc/1/root", (2049, 2))
         }
     }
 
@@ -750,6 +872,13 @@ mod tests {
                 .find(|(file, _)| *file == path)
                 .map(|(_, contents)| contents.to_string())
         }
+
+        fn identity(&self, path: &str) -> Option<(u64, u64)> {
+            self.identities
+                .iter()
+                .find(|(file, _)| *file == path)
+                .map(|(_, identity)| *identity)
+        }
     }
 
     const HOST_CGROUP: &str = "0::/init.scope";
@@ -759,11 +888,15 @@ mod tests {
     fn probe_reads_each_marker_at_its_real_path() {
         let cases = [
             (
-                FakeSystem::default().with_file("/.dockerenv", ""),
+                FakeSystem::default()
+                    .pid1_root()
+                    .with_file("/.dockerenv", ""),
                 "/.dockerenv",
             ),
             (
-                FakeSystem::default().with_file("/run/.containerenv", ""),
+                FakeSystem::default()
+                    .pid1_root()
+                    .with_file("/run/.containerenv", ""),
                 "/run/.containerenv",
             ),
             (
@@ -790,7 +923,11 @@ mod tests {
 
     #[test]
     fn probe_reads_is_sandbox_and_bubblewrap_and_skips_non_root() {
-        let docker = || FakeSystem::default().with_file("/.dockerenv", "");
+        let docker = || {
+            FakeSystem::default()
+                .pid1_root()
+                .with_file("/.dockerenv", "")
+        };
         assert_eq!(
             detect_on(Some(0), &docker().with_env("IS_SANDBOX", "0")),
             SkipPermissionsEnv::ExplicitlyNotSandboxed {
@@ -823,6 +960,7 @@ mod tests {
     fn wsl_workstation_with_docker_markers_is_not_a_sandbox() {
         let imported = || {
             FakeSystem::default()
+                .pid1_root()
                 .with_file("/.dockerenv", "")
                 .with_file("/run/.containerenv", "")
                 .with_file("/proc/1/cgroup", "0::/\n")
@@ -830,6 +968,8 @@ mod tests {
         let indicators = [
             imported().with_file("/proc/sys/kernel/osrelease", WSL2_RELEASE),
             imported().with_file("/proc/sys/kernel/osrelease", "4.4.0-19041-Microsoft\n"),
+            // A custom WSL kernel that does not say "microsoft".
+            imported().with_file("/proc/sys/kernel/osrelease", "6.6.36-WSL2-custom\n"),
             imported().with_env("WSL_DISTRO_NAME", "Ubuntu"),
             imported().with_env("WSL_INTEROP", "/run/WSL/1_interop"),
             imported().with_file("/proc/sys/fs/binfmt_misc/WSLInterop", ""),
@@ -839,7 +979,10 @@ mod tests {
         for system in &indicators {
             assert_eq!(
                 detect_on(Some(0), system),
-                SkipPermissionsEnv::RootOutsideSandbox,
+                SkipPermissionsEnv::UntrustedMarker(UntrustedMarker {
+                    marker: "/.dockerenv",
+                    reason: MarkerDistrust::Wsl
+                }),
                 "env {:?} files {:?}",
                 system.env,
                 system.files
@@ -859,6 +1002,7 @@ mod tests {
     fn wsl_still_honours_a_container_cgroup_and_explicit_opt_in() {
         let wsl = || {
             FakeSystem::default()
+                .pid1_root()
                 .with_file("/.dockerenv", "")
                 .with_file("/proc/sys/kernel/osrelease", WSL2_RELEASE)
         };
@@ -877,30 +1021,160 @@ mod tests {
         );
     }
 
+    /// A root `chroot` into a rootfs extracted with `docker export` keeps
+    /// `/.dockerenv` on an ordinary host. The markers count only when `/` is
+    /// PID 1's root, and not when that cannot be checked.
+    #[test]
+    fn marker_files_count_only_when_root_is_pid1s_root() {
+        let markers = || {
+            FakeSystem::default()
+                .with_file("/.dockerenv", "")
+                .with_file("/run/.containerenv", "")
+                .with_file("/proc/1/cgroup", "0::/init.scope\n")
+                .with_file("/proc/sys/kernel/osrelease", "6.8.0-45-generic\n")
+        };
+        let chroot = markers()
+            .with_identity("/", (2049, 1_234_567))
+            .with_identity("/proc/1/root", (2049, 2));
+        assert_eq!(
+            detect_on(Some(0), &chroot),
+            SkipPermissionsEnv::UntrustedMarker(UntrustedMarker {
+                marker: "/.dockerenv",
+                reason: MarkerDistrust::NotPid1Root
+            })
+        );
+        // Same inode on another device is another filesystem, not PID 1's root.
+        let other_device = markers()
+            .with_identity("/", (2050, 2))
+            .with_identity("/proc/1/root", (2049, 2));
+        assert_eq!(
+            detect_on(Some(0), &other_device),
+            SkipPermissionsEnv::UntrustedMarker(UntrustedMarker {
+                marker: "/.dockerenv",
+                reason: MarkerDistrust::NotPid1Root
+            })
+        );
+        // /proc/1/root unreadable (EACCES), or / unreadable: fail closed.
+        for unverifiable in [
+            markers().with_identity("/", (2049, 2)),
+            markers().with_identity("/proc/1/root", (2049, 2)),
+            markers(),
+        ] {
+            assert_eq!(
+                detect_on(Some(0), &unverifiable),
+                SkipPermissionsEnv::UntrustedMarker(UntrustedMarker {
+                    marker: "/.dockerenv",
+                    reason: MarkerDistrust::Pid1RootUnverified
+                })
+            );
+        }
+        // Only /run/.containerenv present: it is the marker reported.
+        let podman_chroot = FakeSystem::default()
+            .with_file("/run/.containerenv", "")
+            .with_identity("/", (2049, 9))
+            .with_identity("/proc/1/root", (2049, 2));
+        assert_eq!(
+            detect_on(Some(0), &podman_chroot),
+            SkipPermissionsEnv::UntrustedMarker(UntrustedMarker {
+                marker: "/run/.containerenv",
+                reason: MarkerDistrust::NotPid1Root
+            })
+        );
+        // Same root: the markers count.
+        assert_eq!(
+            detect_on(Some(0), &markers().pid1_root()),
+            SkipPermissionsEnv::SetSandbox {
+                signal: "/.dockerenv"
+            }
+        );
+        // Signals that are not files are unaffected by the root check.
+        assert_eq!(
+            detect_on(Some(0), &chroot.with_env("CLAUDE_CODE_REMOTE", "true")),
+            SkipPermissionsEnv::SetSandbox {
+                signal: "CLAUDE_CODE_REMOTE=true"
+            }
+        );
+        let chroot_in_container = FakeSystem::default()
+            .with_file("/.dockerenv", "")
+            .with_file("/proc/1/cgroup", "0::/docker/abcd\n");
+        assert_eq!(
+            detect_on(Some(0), &chroot_in_container),
+            SkipPermissionsEnv::SetSandbox {
+                signal: "container cgroup in /proc/1/cgroup"
+            }
+        );
+        // No marker at all: the plain refusal, not an untrusted marker.
+        assert_eq!(
+            detect_on(Some(0), &FakeSystem::default().with_identity("/", (1, 9))),
+            SkipPermissionsEnv::RootOutsideSandbox
+        );
+    }
+
+    #[test]
+    fn an_untrusted_marker_refusal_names_the_marker_and_the_reason() {
+        for (reason, says) in [
+            (MarkerDistrust::Wsl, "WSL"),
+            (MarkerDistrust::Wsl, "Docker Desktop"),
+            (MarkerDistrust::NotPid1Root, "chroot"),
+            (MarkerDistrust::Pid1RootUnverified, "/proc/1/root"),
+        ] {
+            let decision = SkipPermissionsEnv::UntrustedMarker(UntrustedMarker {
+                marker: "/.dockerenv",
+                reason,
+            });
+            let mut command = Command::new("claude");
+            let error = decision.apply(&mut command).unwrap_err().to_string();
+            assert!(error.contains("/.dockerenv"), "{error}");
+            assert!(error.contains(says), "{error}");
+            assert!(error.contains("export IS_SANDBOX=1"), "{error}");
+            assert!(
+                !error.contains("no container sandbox was detected"),
+                "{error}"
+            );
+            assert_eq!(command_is_sandbox(&command), None);
+        }
+    }
+
     #[test]
     fn wsl_ignores_marker_files_but_not_a_container_cgroup() {
         // A distribution imported from `docker export` keeps `/.dockerenv`.
         assert_eq!(
-            SandboxSignals::from_state(None, true, true, Some("0::/"), true),
-            NO_SIGNALS
+            SandboxSignals::from_state(None, true, true, Some("0::/"), Some(MarkerDistrust::Wsl)),
+            SandboxSignals {
+                untrusted_marker: Some(UntrustedMarker {
+                    marker: "/.dockerenv",
+                    reason: MarkerDistrust::Wsl
+                }),
+                ..NO_SIGNALS
+            }
         );
         assert_eq!(
             decide(
                 Some(0),
                 None,
                 None,
-                SandboxSignals::from_state(None, true, true, None, true)
+                SandboxSignals::from_state(None, true, true, None, Some(MarkerDistrust::Wsl))
             ),
-            SkipPermissionsEnv::RootOutsideSandbox
+            SkipPermissionsEnv::UntrustedMarker(UntrustedMarker {
+                marker: "/.dockerenv",
+                reason: MarkerDistrust::Wsl
+            })
         );
-        let outside_wsl = SandboxSignals::from_state(None, true, true, None, false);
+        let outside_wsl = SandboxSignals::from_state(None, true, true, None, None);
         assert!(outside_wsl.dockerenv && outside_wsl.containerenv);
         assert!(
-            SandboxSignals::from_state(None, false, false, Some("0::/docker/abcd"), true)
-                .container_cgroup
+            SandboxSignals::from_state(
+                None,
+                false,
+                false,
+                Some("0::/docker/abcd"),
+                Some(MarkerDistrust::Wsl)
+            )
+            .container_cgroup
         );
         assert!(
-            SandboxSignals::from_state(Some("true"), false, false, None, true).claude_code_remote
+            SandboxSignals::from_state(Some("true"), false, false, None, Some(MarkerDistrust::Wsl))
+                .claude_code_remote
         );
     }
 

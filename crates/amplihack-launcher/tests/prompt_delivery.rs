@@ -295,6 +295,7 @@ fn claude_command_follows_the_root_sandbox_decision() {
     );
     match decision {
         SkipPermissionsEnv::RootOutsideSandbox
+        | SkipPermissionsEnv::UntrustedMarker(_)
         | SkipPermissionsEnv::ExplicitlyNotSandboxed { .. } => {
             let err = result.expect_err("root outside a sandbox must fail before spawning");
             assert_eq!(err.kind(), ErrorKind::PermissionDenied);

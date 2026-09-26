@@ -222,12 +222,21 @@ bubblewrap sandbox.
 
 A container is detected from `CLAUDE_CODE_REMOTE=true` (Claude Code cloud
 sessions), `/.dockerenv`, `/run/.containerenv`, or a container runtime in the
-path of `/proc/1/cgroup`. Under WSL the two marker files are ignored, because a
-distribution imported from `docker export` keeps `/.dockerenv`. WSL is
-recognised by its kernel release (`/proc/sys/kernel/osrelease` containing
-`microsoft` or `WSL`), `WSL_DISTRO_NAME`/`WSL_INTEROP`, or its interop entries.
-Docker Desktop on Windows runs containers on the same WSL kernel, so a root
-container there needs `export IS_SANDBOX=1` unless its cgroup names the runtime.
+path of `/proc/1/cgroup`.
+
+The two marker files are part of the root filesystem, and any image extracted
+with `docker export` carries them, so they count only when:
+
+- the kernel is not WSL (`/proc/sys/kernel/osrelease` containing `microsoft` or
+  `WSL`, `WSL_DISTRO_NAME`/`WSL_INTEROP`, or the WSL interop entries). Docker
+  Desktop on Windows runs containers on the WSL kernel, and its private cgroup
+  namespace hides the runtime from `/proc/1/cgroup`, so a root container there
+  needs `export IS_SANDBOX=1`;
+- `/` is PID 1's root (same device and inode as `/proc/1/root`), so a `chroot`
+  into an extracted image does not count. If `/proc/1/root` cannot be read,
+  the markers do not count.
+
+When a marker exists but does not count, the error names it and says why.
 
 `amplihack recipe run` prints the notice once on stderr before the first step,
 because agent steps' own stderr is shown only when a step fails. The fleet

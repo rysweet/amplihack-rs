@@ -1311,8 +1311,8 @@ as root:
   starting `claude`.
 - Unset in a detected container (`CLAUDE_CODE_REMOTE=true`, `/.dockerenv`,
   `/run/.containerenv`, or a container runtime in `/proc/1/cgroup`; the marker
-  files do not count under WSL, which includes Docker Desktop containers on
-  Windows because they share the WSL kernel): amplihack sets `IS_SANDBOX=1` on the `claude`
+  files count only outside WSL, which includes Docker Desktop containers on
+  Windows, and only when `/` is PID 1's root, so not in a `chroot`): amplihack sets `IS_SANDBOX=1` on the `claude`
   child only and prints a one-line notice on stderr.
 - Unset with no container detected: amplihack fails before starting `claude`.
 
