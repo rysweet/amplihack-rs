@@ -53,9 +53,10 @@ The launcher-context walk-up for that decision starts at the run's working
 directory (`--working-dir`, default `.`), where the steps run. The top level
 then reads the same context file a nested `amplihack` in a step would.
 
-When the answer came from layer 4, recipe run also exports
-`AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>` and prints a one-line notice on
-stderr. The tag keeps a guess a guess on the way down:
+When the answer was inferred rather than observed (layer 3 or 4), recipe run
+prints a one-line notice on stderr saying why. When it came from layer 4, it
+also exports `AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>`. The tag keeps a
+guess a guess on the way down:
 
 - the resolver ignores `AMPLIHACK_AGENT_BINARY` while the tag still names its
   value, so a session marker visible at a lower level still wins. A step that

@@ -880,6 +880,11 @@ fn a_launch_not_picked_by_the_default_layer_still_persists() {
         ("codex", Some("codex"), Some("default:copilot")),
         ("claude", Some("copilot"), Some("default:copilot")),
         ("copilot", Some("copilot"), Some("default")),
+        // Quality-audit cycle 7 S7-1: the tag is bound to the *inherited*
+        // value, not to the launcher that runs. A stale tag naming this tool
+        // over no value, or over a different value, is not a guess.
+        ("copilot", None, Some("default:copilot")),
+        ("copilot", Some("claude"), Some("default:copilot")),
     ] {
         let dir = tempfile::tempdir().unwrap();
         let env = inherited(binary, tag);
@@ -922,6 +927,8 @@ fn a_launch_on_a_default_guess_hands_the_guess_on_tagged() {
         ("claude", Some("copilot"), Some("default:copilot")),
         ("copilot", Some("copilot"), None),
         ("copilot", None, None),
+        ("copilot", None, Some("default:copilot")),
+        ("copilot", Some("claude"), Some("default:copilot")),
     ] {
         assert_eq!(
             launch_binary_source(tool, &inherited(binary, tag)),

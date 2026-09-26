@@ -105,8 +105,9 @@ session's choice, and persisting it would pin later runs in the checkout.
 session markers of the CLI that invoked it, and exports the answer to
 `recipe-runner-rs` as `AMPLIHACK_AGENT_BINARY`. Steps run under the runner's
 curated environment, where those markers may be gone. When the answer came
-from the default layer, recipe run also exports the `default:<binary>` tag and
-prints a one-line notice on stderr (issue #1481).
+from the launcher context or the default layer, recipe run prints a one-line
+notice on stderr; from the default layer it also exports the `default:<binary>`
+tag (issue #1481).
 
 Inside `amplihack-rs`, every read site calls `resolve(&cwd)` rather than reading
 the env var directly.

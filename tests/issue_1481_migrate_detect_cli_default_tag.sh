@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Issue #1481 — migrate.sh `detect_cli` must treat an AMPLIHACK_AGENT_BINARY
 # that a parent tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>` as the
-# guess it is, and fall through to the next layer, exactly as the Rust resolver
+# guess it is, and fall through to the next layer, as the Rust resolver
 # (`agent_binary::is_default_guess`) does. Any other value is an instruction.
+# detect_cli only approximates the resolver elsewhere (it strips all whitespace
+# from the value, and has a process-chain layer instead of session markers);
+# these checks pin the tag rule.
 #
 # The fall-through is made observable with a launcher_context.json naming
 # `codex`: a skipped env value answers `codex`, an honoured one answers itself.
