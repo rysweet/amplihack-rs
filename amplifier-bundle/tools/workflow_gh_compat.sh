@@ -766,18 +766,14 @@ EOF_LABELS
     path="repos/${GHC_REPO}/issues?state=${rstate}${qs}"
   fi
   # Full pages: the text match keeps few items, and --limit 1 must not stop
-  # the scan after ~11 items.
-  # Matches come newest first; one whose title begins with the query's words
-  # is moved ahead (a stable sort), so step-03's `.[0]` is its own tracker
-  # rather than a newer near-duplicate that merely contains the same words.
-  GHC_PAGE_SIZE=100 ghc_paged "$path" "$limit" '
-    # Words match whole words, as /search matches them (a substring test lets
-    # "a" or "it" match any body); URLs match as literal text; "#N" and this
-    # repository issue/PR URLs match as text or as that issue number.
-    def words: ascii_downcase | [scan("[a-z0-9]+")];
-    ($w | words) as $words
-    | ($u | split("\n") | map(select(. != "") | ascii_downcase)) as $urls
-    | ($r | split("\n") | map(select(. != "") | split("\t") | {n: (.[0] | tonumber), t: (.[1] | ascii_downcase)})) as $refs
+  # the scan after ~11 items. Then exactly two tiers: issues whose title is the
+  # query itself (the same words, in order; case, spacing and punctuation
+  # aside) first, so step-03's `.[0]` is its own tracker; then the rest in the
+  # REST order (newest first).
+  GHC_PAGE_SIZE=100 ghc_paged "$path" "$limit" "$GHC_SQ_JQ"'
+    ($w | uwords) as $words
+    | ($u | split("\n") | map(select(. != ""))) as $urls
+    | ($r | split("\n") | map(select(. != "") | split("\t") | {n: (.[0] | tonumber), t: .[1]})) as $refs
     | ($l | split(",") | map(select(. != ""))) as $labels
     | map(select($k == "pr" or .pull_request == null)
           | select($a == "" or .user.login == $a)
@@ -789,67 +785,93 @@ EOF_LABELS
               and ($d == "" or (.draft // false))
               and ($s != "merged" or .merged_at != null)))
           | (if $f == "title" then (.title // "") elif $f == "body" then (.body // "") else (.title // "") + " " + (.body // "") end) as $hay
-          | select(($hay | words) as $h | all($words[]; . as $x | $h | index([$x]) != null))
-          | select(($hay | ascii_downcase) as $lh | all($urls[]; . as $x | $lh | contains($x)))
-          | select(.number as $x | (($hay | ascii_downcase) as $lh | all($refs[]; . as $ref | $ref.n == $x or ($lh | contains($ref.t))))))' \
+          | ($hay | uwords) as $h
+          | select(all($words[]; hasword($h)))
+          | select(all($urls[]; . as $x | $hay | hastoken($x)))
+          | select(.number as $x | all($refs[]; . as $ref | $ref.n == $x or ($hay | hastoken($ref.t)))))' \
     --arg k "$kind" --arg w "$GHC_SQ_WORDS" --arg u "$GHC_SQ_URLS" --arg r "$GHC_SQ_REFS" --arg f "$GHC_SQ_IN" \
     --arg qs "$GHC_SQ_STATE" --arg qm "$GHC_SQ_MERGED" --arg a "$author" --arg l "$l" --arg as "$assignee" \
     --arg d "${GHC_B_draft:-}" --arg s "$state" \
-    | jq --arg w "$GHC_SQ_WORDS" 'def words: ascii_downcase | [scan("[a-z0-9]+")];
-        ($w | words) as $q | sort_by(if ($q | length) > 0 and ((.title // "") | words | .[:($q | length)]) == $q then 0 else 1 end)'
+    | jq --arg q "$GHC_SQ_TEXT" "$GHC_SQ_JQ"'
+        ($q | uwords | map(ascii_downcase)) as $qw
+        | sort_by(if ($qw | length) > 0 and ((.title // "") | uwords | map(ascii_downcase)) == $qw then 0 else 1 end)'
 }
 
+# jq helpers for the search fallback. Words are runs of Unicode letters and
+# digits (titles in any script match); comparison ignores ASCII case, and
+# Unicode case too where a word is not plain ASCII. hastoken finds a reference
+# or URL only as a whole token: the character after it may not continue it
+# (#12 never matches #123, /issues/5 never /issues/55).
+# shellcheck disable=SC2016  # jq program, not shell expansions.
+GHC_SQ_JQ='
+def uwords: [scan("[\\p{L}\\p{N}]+")];
+def esc: [explode[] | [.] | implode | if test("[A-Za-z0-9]") then . else "\\" + . end] | join("");
+def hasword($h): . as $x | ($x | ascii_downcase) as $lx
+  | any($h[]; ascii_downcase == $lx)
+    or (($x | test("^[\\x00-\\x7f]*$") | not) and any($h[]; test("^" + ($x | esc) + "$"; "i")));
+def hastoken($t): test("(^|[^\\p{L}\\p{N}/#])" + ($t | esc) + "(?![\\p{L}\\p{N}_])"; "i");
+'
+
 # ghc_search_terms KIND TEXT — split a --search query for the client-side
-# fallback into GHC_SQ_* terms. The grammar is deliberately small and anything
-# outside it fails loudly (ghc_search_unsupported) instead of being misread:
-#   word          must appear as a whole word in the title or body
-#   URL           must appear as text; this repository's issue/PR URL, or #N,
-#                 also matches issue N itself
-#   is:open|closed|issue|pr|merged, state:open|closed, label:X, author:X,
-#   assignee:X, in:title|body|title,body
-# Refused: negation (-word, -qualifier), OR/NOT/AND, double quotes, and every
-# other GitHub search qualifier. A query that leaves nothing to match on
-# (GHC_SQ_NONE=1) matches nothing: step-03 must create an issue, never adopt an
-# unrelated one because every issue "matched" an empty query.
+# fallback into GHC_SQ_* terms. The grammar is a closed allowlist; a query is
+# one line, split on spaces and tabs, and every token must be one of:
+#   a plain word    (no ":", quote or parenthesis, not starting with "-"; not
+#                   OR/NOT/AND) - each of its words must appear in the text
+#   #N, or an issue/PR URL of this repository - issue N, or the text holding
+#                   that reference as a whole token (#12 never matches #123)
+#   any other http(s) URL - must appear in the text as a whole token
+#   is:open  is:closed  is:issue  is:pr  is:merged  state:open  state:closed
+#   in:title  in:body  in:title,body  in:body,title
+#   label:NAME (one name, no comma)  author:LOGIN  assignee:LOGIN
+# Anything else fails loudly (ghc_search_unsupported): every other qualifier
+# (has:, sort:, field.x:, ...), a leading - or --, quotes, parentheses,
+# OR/NOT/AND, a comma in label:, a newline. A query that leaves nothing to
+# match on (GHC_SQ_NONE=1) matches nothing: step-03 must create an issue, never
+# adopt an unrelated one because every issue "matched" an empty query.
+# GHC_SQ_TEXT keeps the query's non-qualifier tokens, in order, for ranking.
 ghc_search_terms() {
   local kind="$1" text="$2" tok name val num toks=() used=0
   GHC_SQ_WORDS=""; GHC_SQ_URLS=""; GHC_SQ_REFS=""; GHC_SQ_IN=""; GHC_SQ_STATE=""; GHC_SQ_MERGED=""
-  GHC_SQ_LABELS=""; GHC_SQ_AUTHOR=""; GHC_SQ_ASSIGNEE=""; GHC_SQ_NONE=0
+  GHC_SQ_LABELS=""; GHC_SQ_AUTHOR=""; GHC_SQ_ASSIGNEE=""; GHC_SQ_NONE=0; GHC_SQ_TEXT=""
   [ -n "$text" ] || return 0
-  case "$text" in *'"'*) ghc_search_unsupported "quoted text" ;; esac
+  case "$text" in *$'\n'*|*$'\r'*) ghc_search_unsupported "a line break" ;; esac
   read -r -a toks <<<"$text"
   for tok in "${toks[@]}"; do
     case "$tok" in
+      *'"'*) ghc_search_unsupported "quotes in '$tok'" ;;
+      *'('*|*')'*) ghc_search_unsupported "parentheses in '$tok'" ;;
+      -*) ghc_search_unsupported "'$tok' (negation or a flag)" ;;
       OR|NOT|AND) ghc_search_unsupported "'$tok'" ;;
-      -[A-Za-z0-9]*) ghc_search_unsupported "negation '$tok'" ;;
       http://*|https://*)
         num=""
-        if [[ "$tok" =~ ^https?://(www\.)?github\.com/([^/]+/[^/]+)/(issues|pull)/([0-9]+)([/#?].*)?$ ]]; then
+        if [[ "$tok" =~ ^https?://(www\.)?github\.com/([^/]+/[^/]+)/(issues|pull)/([0-9]+)/?$ ]]; then
           [ "$(printf '%s' "${BASH_REMATCH[2]}" | tr 'A-Z' 'a-z')" = "$(printf '%s' "$GHC_REPO" | tr 'A-Z' 'a-z')" ] && num="${BASH_REMATCH[4]}"
         fi
+        tok="${tok%/}"
         if [ -n "$num" ]; then GHC_SQ_REFS="${GHC_SQ_REFS}${num}"$'\t'"${tok}"$'\n'; else GHC_SQ_URLS="${GHC_SQ_URLS}${tok}"$'\n'; fi
-        used=1; continue ;;
+        GHC_SQ_TEXT="$GHC_SQ_TEXT $tok"; used=1; continue ;;
       \#[0-9]*)
-        case "${tok#\#}" in *[!0-9]*) ;; *) GHC_SQ_REFS="${GHC_SQ_REFS}${tok#\#}"$'\t'"${tok}"$'\n'; used=1; continue ;; esac ;;
-      [A-Za-z]*:?*)
+        num="${tok#\#}"; num="${num%%[!0-9]*}"
+        case "${tok#\#"$num"}" in *[!.,\;!?]*) ghc_search_unsupported "'$tok'" ;; esac
+        GHC_SQ_REFS="${GHC_SQ_REFS}${num}"$'\t'"#${num}"$'\n'; GHC_SQ_TEXT="$GHC_SQ_TEXT #$num"; used=1; continue ;;
+      *:*)
         name="$(printf '%s' "${tok%%:*}" | tr 'A-Z' 'a-z')"; val="${tok#*:}"
         case "$name:$val" in
-          is:open|is:closed|state:open|state:closed) GHC_SQ_STATE="$val"; used=1; continue ;;
-          is:merged) [ "$kind" = pr ] || GHC_SQ_NONE=1; GHC_SQ_MERGED=1; used=1; continue ;;
-          is:issue|is:pr) [ "$val" = "$kind" ] || GHC_SQ_NONE=1; used=1; continue ;;
-          in:title|in:body) GHC_SQ_IN="$val"; continue ;;
-          in:title,body|in:body,title) continue ;;   # the default
-          label:*) GHC_SQ_LABELS="${GHC_SQ_LABELS:+$GHC_SQ_LABELS,}$val"; used=1; continue ;;
-          author:*) GHC_SQ_AUTHOR="$val"; used=1; continue ;;
-          assignee:*) GHC_SQ_ASSIGNEE="$val"; used=1; continue ;;
+          is:open|is:closed|state:open|state:closed) GHC_SQ_STATE="$val"; used=1 ;;
+          is:merged) [ "$kind" = pr ] || GHC_SQ_NONE=1; GHC_SQ_MERGED=1; used=1 ;;
+          is:issue|is:pr) [ "$val" = "$kind" ] || GHC_SQ_NONE=1; used=1 ;;
+          in:title|in:body) GHC_SQ_IN="$val" ;;
+          in:title,body|in:body,title) ;;   # the default
+          label:*,*|label:) ghc_search_unsupported "'$tok' (one label per label: qualifier)" ;;
+          label:*) GHC_SQ_LABELS="${GHC_SQ_LABELS:+$GHC_SQ_LABELS,}$val"; used=1 ;;
+          author:?*) GHC_SQ_AUTHOR="$val"; used=1 ;;
+          assignee:?*) GHC_SQ_ASSIGNEE="$val"; used=1 ;;
+          *) ghc_search_unsupported "'$tok'" ;;
         esac
-        case "$name" in
-          is|in|state|repo|org|user|no|sort|head|base|draft|created|updated|closed|merged|comments|interactions|reactions|milestone|project|language|linked|type|archived|review|reviewed-by|review-requested|user-review-requested|team-review-requested|status|team|involves|mentions|commenter|reason)
-            ghc_search_unsupported "qualifier '$tok'" ;;
-        esac ;;
+        continue ;;
     esac
-    # Plain text: its words must all appear (a word-less token adds nothing).
-    [ -n "$(printf '%s' "$tok" | tr -cd 'A-Za-z0-9')" ] && { GHC_SQ_WORDS="$GHC_SQ_WORDS $tok"; used=1; }
+    # A plain word: a token with no letter or digit (of any script) adds nothing.
+    if [[ "$tok" =~ [^[:punct:][:space:]] ]]; then GHC_SQ_WORDS="$GHC_SQ_WORDS $tok"; GHC_SQ_TEXT="$GHC_SQ_TEXT $tok"; used=1; fi
   done
   [ "$used" = 1 ] || GHC_SQ_NONE=1
 }
@@ -1583,6 +1605,8 @@ ghc_is_read() {
 # REST, a write prints gh's error and a hint and fails.
 ghc_run_uncertain() {
   local rc=0 errf="${GHC_RUN_DIR}/gh.err" sig
+  : >"$errf" || exit 1
+  { : <&0; } 2>/dev/null || exec </dev/null   # a closed stdin must not stop gh
   ( trap - INT QUIT; exec "$GHC_REAL" "$@" ) <&0 2>"$errf" &
   GHC_CHILD=$!
   for sig in INT TERM HUP QUIT; do

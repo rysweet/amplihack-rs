@@ -42,10 +42,13 @@ sanitize_cli_output() { printf '%s\n' "$1" | head -c 4000 | sed -E 's#https?://[
 # issue_search_query TITLE — step-03's tracker lookup query: whole words only
 # (at most 100 characters, cut at a word boundary: a cut word matches nothing),
 # with the search syntax a title can carry by accident made plain text: double
-# quotes dropped, leading '-' (negation) stripped, bare OR/NOT/AND lowercased,
-# and ':' outside URLs turned into a space (no accidental qualifiers).
+# quotes and parentheses dropped, leading '-' stripped, bare OR/NOT/AND lowercased,
+# ':' outside URLs turned into a space (no accidental qualifiers). A single
+# over-long first token is cut to its first 100 characters, never mid-way
+# through a multi-byte character (the result is always valid UTF-8).
 issue_search_query() {
-  local t="${1//\"/}" out="" w cand toks=()
+  local t out="" w cand toks=()
+  t="$(printf '%s' "$1" | tr -d '"()')"
   read -r -a toks <<<"$t"
   for w in "${toks[@]}"; do
     while [ "${w#-}" != "$w" ]; do w="${w#-}"; done
@@ -57,11 +60,13 @@ issue_search_query() {
     [ -n "${w// /}" ] || continue
     cand="${out:+$out }$w"
     if [ "${#cand}" -gt 100 ]; then
-      [ -n "$out" ] || out="${w:0:100}"   # one over-long first token: its prefix
+      [ -n "$out" ] || out="${w:0:100}"
       break
     fi
     out="$cand"
   done
+  # ${w:0:100} counts bytes outside a UTF-8 locale: drop a cut character.
+  if command -v iconv >/dev/null 2>&1; then out="$(printf '%s' "$out" | iconv -c -f UTF-8 -t UTF-8 2>/dev/null)"; fi
   printf '%s\n' "$out"
 }
 

@@ -978,15 +978,59 @@ ok "in:title,body and in:body,title are the default"
 #     into the same tracker (a cut word matched nothing before).
 long="Refactor the recipe runner so that every workflow step reports progress and errors through one structured channel ok"
 [ "${#long}" -gt 100 ] || fail step03-query "test title too short"
-# Newest first, as REST lists them: a near-duplicate that contains the same
-# words must not win over the tracker whose title is the task's.
-STUB_TRACKERS="$(printf '1478\tFollow-up to %s\n1477\tSomething else entirely\n1476\t%s\n' "$long" "$long")"; export STUB_TRACKERS
+STUB_TRACKERS="$(printf '1477\tSomething else entirely\n1476\t%s\n' "$long")"; export STUB_TRACKERS
 [ "$(step03_lookup "$long")" = "https://github.com/o/r/issues/1476" ] || fail step03-query "a ${#long}-char title missed its tracker"
 # shellcheck source=/dev/null
 ( . "$TRACK"; q="$(issue_search_query 'Handle "quoted" -v flags OR sort:x')"; case "$q" in *'"'*|*" -"*|*" OR "*|*sort:*) exit 1 ;; esac ) \
   || fail step03-query "issue_search_query left search syntax in the query"
 unset STUB_TRACKERS
 ok "step-03's query keeps whole words and carries no search syntax"
+
+# ---------------------------------------------------------------------------
+# Independent crusty review round 7, of 1aa1c5b1 (PR comment 5842423919).
+# ---------------------------------------------------------------------------
+fresh; : > "$AMPLIHACK_GH_COMPAT_STATE"
+first() { gh issue list --state open --search "$1" --json number --jq '.[0].number // ""'; }
+
+# 65. search-rank-ignores-refs-adopts-cited-issue: exactly two tiers - a title
+#     that is the query itself, then the REST order (newest first).
+STUB_TRACKERS="$(printf '1510\tPort #5 to the new runner\n5\tPort to the new runner\n')"; export STUB_TRACKERS
+[ "$(first "Port #5 to the new runner")" = 1510 ] || fail rank "'Port #5 ...' ranked the cited #5 first"
+STUB_TRACKERS="$(printf '1511\tPort https://github.com/o/r/issues/5 to the new runner\n5\tPort to the new runner\n')"; export STUB_TRACKERS
+[ "$(first "Port https://github.com/o/r/issues/5 to the new runner")" = 1511 ] || fail rank "the URL form ranked the cited #5 first"
+STUB_TRACKERS="$(printf '30\tFix parser crash (follow-up)\n28\tFix parser crash\n')"; export STUB_TRACKERS
+[ "$(first "Fix parser crash")" = 28 ] || fail rank "the exact-title tracker #28 lost to the newer #30"
+ok "an exact-title match ranks first, then REST order; a cited issue is not adopted"
+
+# 66. search-grammar-header-overclaims-loud-failure and
+#     search-label-comma-or-read-as-and: a closed allowlist.
+for q in "parser has:label" "parser field.priority:high" "(label:bug) parser" "parser --foo" "$(printf 'parser\nlexer')" "parser label:a,b" "note:x parser"; do
+  rc=0; gh issue list --search "$q" --json number >/dev/null 2>&1 || rc=$?
+  [ "$rc" != 0 ] || fail allowlist "'$q' was accepted"
+done
+ok "only allowlisted search tokens are accepted; everything else fails loudly"
+
+# 67. search-ref-substring-matches-longer-number: whole tokens only.
+STUB_TRACKERS="$(printf '123\tSee #123 notes\n55\tFollow https://github.com/o/r/issues/55 closely\n')"; export STUB_TRACKERS
+[ "$(first "#12 notes")" = "" ] || fail ref-token "'#12' matched '#123'"
+[ "$(first "Follow https://github.com/o/r/issues/5 closely")" = "" ] || fail ref-token "'/issues/5' matched '/issues/55'"
+[ "$(first "See #123 notes")" = 123 ] || fail ref-token "'#123' no longer matches itself"
+ok "#N and issue URLs match as whole tokens, not as prefixes of longer numbers"
+
+# 68. search-non-ascii-titles-unmatched.
+cjk="修复 解析器 崩溃"
+STUB_TRACKERS="$(printf '41\tUnrelated\n40\t%s\n' "$cjk")"; export STUB_TRACKERS
+[ "$(first "$cjk")" = 40 ] || fail unicode "a CJK title did not find its tracker"
+[ "$(step03_lookup "$cjk")" = "https://github.com/o/r/issues/40" ] || fail unicode "step-03 rerun of a CJK task missed its tracker"
+STUB_TRACKERS="$(printf '42\tCafé crash\n')"; export STUB_TRACKERS
+[ "$(first "CAFÉ crash")" = 42 ] || fail unicode "non-ASCII words are not compared case-insensitively"
+long_mb="$(printf '界%.0s' $(seq 1 41))"   # 123 bytes, one token
+# shellcheck source=/dev/null
+q="$( . "$TRACK"; issue_search_query "$long_mb")"
+printf '%s' "$q" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 || fail unicode "issue_search_query cut a multi-byte character"
+[ -n "$q" ] || fail unicode "issue_search_query emptied a long multi-byte token"
+unset STUB_TRACKERS
+ok "titles in any script match; truncation keeps valid UTF-8"
 
 # 51. stale-test-contract-header: the contract above describes the probe, not
 #     the removed stderr follower or a first real-gh attempt.
