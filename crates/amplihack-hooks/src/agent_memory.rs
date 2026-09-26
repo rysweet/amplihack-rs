@@ -1,13 +1,35 @@
 use crate::known_agents::is_amplihack_agent;
 use regex::Regex;
+use std::borrow::Cow;
 use std::sync::OnceLock;
 
+/// An agent definition reference: `@` and a path to a `.md` file under a
+/// `.claude/agents/` directory, at any depth below it, optionally with a
+/// path before it (`@~/.amplihack/.claude/agents/…`). The `Include @…` form
+/// is covered too. The name is the file's own stem, one path component.
+const DEFINITION_REFERENCE_PATTERN: &str =
+    r"@(?:[~A-Za-z0-9_.-]+/)*\.claude/agents/(?:[A-Za-z0-9_-]+/)*([A-Za-z0-9_-]+)\.md";
+
 const AGENT_REFERENCE_PATTERNS: &[&str] = &[
-    // Any directory depth under `.claude/agents/`, the `Include @…` form
-    // included; the name is the file's own stem, one path component.
-    r"@\.claude/agents/(?:[A-Za-z0-9_-]+/)*([A-Za-z0-9_-]+)\.md",
+    DEFINITION_REFERENCE_PATTERN,
+    // `Use <name>.md agent`, with a capital `U`.
     r"Use\s+([a-z-]+)\.md\s+agent",
 ];
+
+fn definition_reference_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(DEFINITION_REFERENCE_PATTERN).expect("valid definition reference regex")
+    })
+}
+
+/// `text` with every agent definition reference blanked to a space. A
+/// reference is how a prompt invokes an agent, not what it is about: its
+/// directory names (`claude`, `amplihack`, `core`) must not make a memory
+/// that used the same reference look relevant.
+pub(crate) fn without_definition_references(text: &str) -> Cow<'_, str> {
+    definition_reference_regex().replace_all(text, " ")
+}
 
 const SLASH_COMMAND_AGENTS: &[(&str, &str)] = &[
     ("ultrathink", "orchestrator"),
@@ -21,14 +43,17 @@ const SLASH_COMMAND_AGENTS: &[(&str, &str)] = &[
 ];
 
 /// Names of real amplihack agents referenced in `prompt`: by an agent
-/// definition reference (`@.claude/agents/…/builder.md`), or by a slash word
-/// (`/analyzer`, `/reflect` → `reflection`).
+/// definition reference (`@.claude/agents/…/builder.md`), by
+/// `Use <name>.md agent` (capital `U`), or by a slash word (`/analyzer`,
+/// `/reflect` → `reflection`).
 ///
 /// An agent definition reference names its agent explicitly, so any agent
-/// counts, bundled or project-defined (`@.claude/agents/my-reviewer.md`),
-/// at any directory depth (`@.claude/agents/team/security-reviewer.md`,
-/// `@.claude/agents/amplihack/core/builder.md`). The agent is the file's
-/// stem: a name is one path component, never prose up to a later `.md`.
+/// counts, bundled, project-defined (`@.claude/agents/my-reviewer.md`) or
+/// user-level (`@~/.claude/agents/my-reviewer.md`), at any directory depth
+/// below `.claude/agents/` (`@.claude/agents/team/security-reviewer.md`,
+/// `@~/.amplihack/.claude/agents/amplihack/core/builder.md`). The agent is
+/// the file's stem: a name is one path component, never prose up to a
+/// later `.md`. `Use <name>.md agent` names any agent too.
 ///
 /// A slash word is a whitespace-separated token, ignoring surrounding
 /// punctuation (`(/analyze`, `/reflect.`), that is `/` followed only by

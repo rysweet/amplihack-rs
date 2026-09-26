@@ -91,6 +91,10 @@ cat >"${WORK}/detected.jsonl" <<'EOF'
 {"role":"user","content":"use @.claude/agents/team/reviewer.md to check README.md, then /analyze why the queue stalls at night"}
 {"role":"assistant","content":"The queue stalls at night because the cron job holds the lock while the backup runs."}
 EOF
+cat >"${WORK}/css.jsonl" <<'EOF'
+{"role":"user","content":"use @.claude/agents/amplihack/core/builder.md to tidy the css grid on the landing page"}
+{"role":"assistant","content":"I tidied the css grid so that the landing page columns line up on mobile."}
+EOF
 cat >"${WORK}/bin.jsonl" <<'EOF'
 {"role":"user","content":"why do the workers crash on startup?"}
 {"role":"assistant","content":"The build copies files into the bin directory, and the workers die if it is missing."}
@@ -105,6 +109,7 @@ for agent in analyzer builder; do
 done
 store "${WORK}/bin.jsonl" builder
 store "${WORK}/detected.jsonl" ""
+store "${WORK}/css.jsonl" ""
 
 echo "scenario 1: the #1483 smoke-test memory is not injected for an agent prompt"
 out="$(ask "/analyze the builder agent output")"
@@ -156,6 +161,15 @@ if [ "${agents}" = "analyzer,reviewer" ]; then pass "learning stored under the d
 out="$(ask "/analyze why the queue stalls at night")"
 if [ "$(count "${out}" "The queue stalls at night because")" -eq 1 ]; then pass "detected-agent learning printed once"; else fail "detected-agent learning not printed exactly once: ${out}"; fi
 if [ "$(count "${out}" "Agent ")" -eq 0 ]; then pass "no agent prefix printed"; else fail "agent prefix printed: ${out}"; fi
+
+echo "scenario 7: a shared agent definition path doesn't make a memory relevant"
+# The css learning was stored from a prompt that used this same nested
+# reference; its directory names (claude, amplihack, core) are how the
+# agent was invoked, not a topic the auth question shares.
+out="$(ask "@.claude/agents/amplihack/core/builder.md why does the auth middleware reject expired tokens")"
+if [ "$(count "${out}" "css grid")" -eq 0 ]; then pass "unrelated memory with the same reference left out"; else fail "css memory injected by its reference path: ${out}"; fi
+out="$(ask "@.claude/agents/amplihack/core/builder.md why do the css grid columns break on the landing page")"
+if [ "$(count "${out}" "tidied the css grid")" -eq 1 ]; then pass "on-topic prompt with the reference gets the memory"; else fail "relevant css memory missing: ${out}"; fi
 
 echo
 echo "passed: ${PASS_COUNT}, failed: ${FAIL_COUNT}"

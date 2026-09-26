@@ -14,7 +14,7 @@ This document focuses on the framework injection mechanism (item 3).
 
 ### Agent memories (item 2)
 
-Memories are injected only when the prompt names an amplihack agent, either by a slash command (`/analyze`, `/fix`) or by an agent definition reference. A slash word is its own whitespace-separated token, ignoring surrounding punctuation (`(/analyze`, `/reflect.`). It counts wherever it appears, including at the end of the prompt. An agent definition reference counts for any agent, including project-defined ones (`@.claude/agents/my-reviewer.md`), at any directory depth under `.claude/agents/` (`@.claude/agents/team/security-reviewer.md`). The agent is the file's stem, one path component, so a later `.md` in the prompt (`then check README.md`) is not part of its name. Ordinary words are not agents. Neither are path segments, even ones named like an agent (`docs/security`), or slash words that name no agent (`/skills`, `/bin`).
+Memories are injected only when the prompt names an amplihack agent: by a slash command (`/analyze`, `/fix`), by an agent definition reference, or by `Use <name>.md agent` (with a capital `U`; it names any agent). A slash word is its own whitespace-separated token, ignoring surrounding punctuation (`(/analyze`, `/reflect.`). It counts wherever it appears, including at the end of the prompt. An agent definition reference is `@` and a path to a `.md` file under a `.claude/agents/` directory, and it counts for any agent: bundled, project-defined (`@.claude/agents/my-reviewer.md`) or user-level (`@~/.claude/agents/my-reviewer.md`). The file can be at any directory depth below `.claude/agents/` (`@.claude/agents/team/security-reviewer.md`), and the `.claude` directory can have a path before it (`Include @~/.amplihack/.claude/agents/amplihack/core/architect.md`). The agent is the file's stem, one path component, so a later `.md` in the prompt (`then check README.md`) is not part of its name. Ordinary words are not agents. Neither are path segments, even ones named like an agent (`docs/security`), or slash words that name no agent (`/skills`, `/bin`).
 
 Each stored memory is scored against the prompt, and only relevant memories are injected (issue #1483). The rules, in `crates/amplihack-hooks/src/user_prompt/memory.rs`:
 
@@ -22,7 +22,7 @@ Each stored memory is scored against the prompt, and only relevant memories are 
   - the [SMART stop list](https://github.com/igorbrigadir/stopwords/blob/master/en/smart.txt) (a few developer words such as `value` and `name` are kept),
   - contractions,
   - words shorter than 3 characters, and words that start with a digit, such as numbers with or without a suffix (`500`, `2026`, `2nd`, `10am`, `100ms`); `sha256`, `utf8` and `e2e` count, while `2fa` does not,
-  - the agent names and slash command that triggered the hook,
+  - the agent names and slash command that triggered the hook, and every agent definition reference as a whole (its directory names, such as `claude`, `amplihack` or `core`, are how the agent was invoked, not what the prompt is about),
   - the `Agent <name>:` prefix and the transcript role labels (`user:`, `assistant:`, `human:`, `system:`, `tool:`, `developer:`, `function:`) that stored learnings carry.
 
   There is no stemming.

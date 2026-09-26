@@ -2,6 +2,7 @@
 
 use crate::agent_memory::{
     detect_agent_references, detect_slash_command_agent, slash_commands_for,
+    without_definition_references,
 };
 use amplihack_memory::cli_memory::{PromptContextMemory, retrieve_prompt_context_memories};
 use amplihack_types::ProjectDirs;
@@ -148,7 +149,10 @@ pub(crate) fn inject_memory(prompt: &str, session_id: Option<&str>) -> Option<St
     let query_text = prompt.chars().take(500).collect::<String>();
     // Checked before retrieval too: a prompt that fails it gets nothing, so
     // loading the session's memories for it would be wasted.
-    if !prompt_reads_as_english(&query_text, &ignored_terms(&agent_types)) {
+    if !prompt_reads_as_english(
+        &without_definition_references(&query_text),
+        &ignored_terms(&agent_types),
+    ) {
         return None;
     }
 
@@ -178,13 +182,17 @@ pub fn format_agent_memory_context(
     memories: &[PromptContextMemory],
 ) -> Option<String> {
     let ignored = ignored_terms(agent_types);
+    // Agent definition references are left out of the comparison, on both
+    // sides: a memory stored from a prompt that used the same reference
+    // would otherwise share its directory names (`claude`, `amplihack`).
+    let prompt = without_definition_references(prompt);
     // The prompt is held to the same language check as memory turns: a
     // German prompt's `die` / `bin` / `mit` would otherwise match the same
     // words in an English memory.
-    if !prompt_reads_as_english(prompt, &ignored) {
+    if !prompt_reads_as_english(&prompt, &ignored) {
         return None;
     }
-    let prompt_terms = scored_terms(prompt, &ignored);
+    let prompt_terms = scored_terms(&prompt, &ignored);
 
     let mut scored: Vec<(f64, String, &PromptContextMemory)> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -208,9 +216,9 @@ pub fn format_agent_memory_context(
         // memory must be relevant under both readings, so neither can merge
         // a non-English turn into an English one; without such a fence the
         // two readings are the same.
-        let body = strip_agent_prefix(&memory.content);
+        let body = without_definition_references(strip_agent_prefix(&memory.content));
         let readings = [true, false].map(|respect_fences| {
-            let memory_terms: HashSet<String> = turns_with(body, respect_fences)
+            let memory_terms: HashSet<String> = turns_with(&body, respect_fences)
                 .iter()
                 .filter(|turn| reads_as_english(turn))
                 .flat_map(|turn| scored_terms(turn, &ignored))
@@ -2032,6 +2040,48 @@ mod tests {
         assert_eq!(
             prompt_agents("Include @.claude/agents/a/b/c/deep-agent.md now"),
             ["deep-agent"]
+        );
+        // A path before `.claude/agents/`: an installed or user-level one.
+        assert_eq!(
+            prompt_agents(
+                "Include @~/.amplihack/.claude/agents/amplihack/core/architect.md -- why does the auth middleware reject expired tokens"
+            ),
+            ["architect"]
+        );
+        assert_eq!(
+            prompt_agents("@~/.claude/agents/my-reviewer.md review the auth flow"),
+            ["my-reviewer"]
+        );
+        // `Use <name>.md agent` needs its capital `U`.
+        assert!(prompt_agents("use my-reviewer.md agent to review").is_empty());
+    }
+
+    /// A definition reference is how a prompt invokes an agent, not what it
+    /// is about: a memory stored from a prompt that used the same nested
+    /// reference shares its directory names (`claude`, `amplihack`, `core`),
+    /// which must not make it relevant to an unrelated prompt.
+    #[test]
+    fn definition_reference_paths_are_not_topic_words() {
+        let reference = "@.claude/agents/amplihack/core/builder.md";
+        let css = format!(
+            "Agent builder: user: use {reference} to tidy the css grid on the landing page\n\nassistant: I tidied the css grid so that the landing page columns line up on mobile."
+        );
+        let unrelated = format!("{reference} why does the auth middleware reject expired tokens");
+        assert_eq!(
+            format_agent_memory_context(&unrelated, &agents(&["builder"]), &[memory(&css)]),
+            None,
+            "{unrelated:?} matched the memory by its reference path"
+        );
+        let related = format!("{reference} why do the css grid columns break on the landing page");
+        let result = format_agent_memory_context(&related, &agents(&["builder"]), &[memory(&css)])
+            .expect("an on-topic prompt with the same reference still gets the memory");
+        assert!(result.contains("tidied the css grid"));
+
+        assert_eq!(
+            without_definition_references(
+                "use @~/.amplihack/.claude/agents/amplihack/core/builder.md to tidy, then read README.md"
+            ),
+            "use   to tidy, then read README.md"
         );
     }
 
