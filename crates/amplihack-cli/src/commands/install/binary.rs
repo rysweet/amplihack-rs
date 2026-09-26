@@ -241,22 +241,26 @@ pub(super) fn path_conflict_warning_after_install(
         let Some(resolution) = report.resolution(binary_name) else {
             continue;
         };
-        // The npx shim running this install shadows ~/.local/bin only until
-        // npx exits, and the install already says so (#1480). Judge the PATH
-        // the user is left with instead: whatever remains once it is gone.
+        // The npx / pnpm dlx / bunx shim running this install shadows
+        // ~/.local/bin only until that command exits, and the install already
+        // says so (#1480). Judge the PATH the user is left with instead:
+        // whatever remains once it is gone.
+        let is_transient = |path: &std::path::Path| {
+            super::stale_wrappers::npm_launcher_path(path)
+                == Some(super::stale_wrappers::NpmLauncherKind::Transient)
+        };
         let without_shims;
-        let resolution =
-            if super::stale_wrappers::is_transient_npx_shim_path(&resolution.resolved.path) {
-                let Some(remaining) = resolution.without_candidates(|candidate| {
-                    super::stale_wrappers::is_transient_npx_shim_path(&candidate.path)
-                }) else {
-                    continue;
-                };
-                without_shims = remaining;
-                &without_shims
-            } else {
-                resolution
+        let resolution = if is_transient(&resolution.resolved.path) {
+            let Some(remaining) =
+                resolution.without_candidates(|candidate| is_transient(&candidate.path))
+            else {
+                continue;
             };
+            without_shims = remaining;
+            &without_shims
+        } else {
+            resolution
+        };
 
         if resolution.is_shadowed_by_earlier_path_entry {
             let Some(preferred) = resolution.preferred_user_candidate.as_ref() else {
@@ -281,6 +285,19 @@ fn append_shadow_warning(
     resolution: &crate::path_conflicts::BinaryResolution,
     preferred_path: &std::path::Path,
 ) {
+    // Issue #1496: a persistent launcher for our own npm wrapper (`npm
+    // install -g`, a project dependency) is not a stale or unknown program,
+    // but it does decide which binary `amplihack` runs. Say so plainly.
+    if binary_name == "amplihack" && is_persistent_npm_launcher(&resolution.resolved.path) {
+        warning.push_str(&format!(
+            "  ⚠️  `amplihack` at {} is the npm launcher for this package (e.g. `npm install -g @rysweet/amplihack-rs`) and comes before {} on PATH.\n",
+            resolution.resolved.path.display(),
+            preferred_path.display()
+        ));
+        append_npm_launcher_guidance(warning);
+        return;
+    }
+
     if binary_name == "amplihack" && is_python_script(&resolution.resolved.path) {
         warning.push_str(&format!(
             "  ⚠️  A Python `amplihack` script at {} shadows the Rust binary at {}.\n",
@@ -317,6 +334,26 @@ fn append_shadow_warning(
     ));
 }
 
+fn is_persistent_npm_launcher(path: &std::path::Path) -> bool {
+    super::stale_wrappers::npm_launcher_path(path)
+        == Some(super::stale_wrappers::NpmLauncherKind::Persistent)
+}
+
+/// What a persistent launcher for our own npm wrapper means and how to prefer
+/// the `~/.local/bin` copy instead (issue #1496). Shared by the shadow and the
+/// ambiguity branches: `amplihack update` re-runs install with `~/.local/bin`
+/// moved first, so the same launcher shows up as an ambiguity there.
+fn append_npm_launcher_guidance(warning: &mut String) {
+    warning.push_str(
+        "     Through that launcher `amplihack` runs the npm wrapper and its own cached release binary, not the copy `amplihack update` maintains in ~/.local/bin.\n",
+    );
+    warning.push_str("     To use ~/.local/bin/amplihack directly, do one of the following:\n");
+    warning.push_str("       1. Remove the launcher:  npm uninstall -g @rysweet/amplihack-rs\n");
+    warning.push_str(
+        "       2. Reorder PATH so ~/.local/bin comes first:  export PATH=\"$HOME/.local/bin:$PATH\"\n",
+    );
+}
+
 fn append_ambiguity_warning(
     warning: &mut String,
     binary_name: &str,
@@ -325,12 +362,26 @@ fn append_ambiguity_warning(
     warning.push_str(&format!(
         "  ⚠️  Multiple distinct `{binary_name}` binaries are on PATH:\n"
     ));
+    let mut launcher = None;
     for candidate in &resolution.canonical_candidates {
-        warning.push_str(&format!("     - {}\n", candidate.path.display()));
+        if binary_name == "amplihack" && is_persistent_npm_launcher(&candidate.path) {
+            launcher = Some(candidate.path.as_path());
+            warning.push_str(&format!(
+                "     - {}  (this package's npm launcher, e.g. `npm install -g`; not stale)\n",
+                candidate.path.display()
+            ));
+        } else {
+            warning.push_str(&format!("     - {}\n", candidate.path.display()));
+        }
     }
-    warning.push_str(
-        "     Remove stale candidates or reorder PATH so the intended user-level install resolves first.\n",
-    );
+    if launcher.is_some() {
+        warning.push_str("     Whichever comes first on PATH in your shell wins.\n");
+        append_npm_launcher_guidance(warning);
+    } else {
+        warning.push_str(
+            "     Remove stale candidates or reorder PATH so the intended user-level install resolves first.\n",
+        );
+    }
 }
 
 /// Check whether a file is a Python script (shebang or .py extension).

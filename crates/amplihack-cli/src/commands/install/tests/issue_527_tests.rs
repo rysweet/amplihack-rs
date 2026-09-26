@@ -324,5 +324,17 @@ fn install_bails_when_recipe_runner_missing_and_install_skipped() {
             "issue #527 BUG 2: error must include actionable remediation \
              (cargo install command or PATH guidance); got: {err}"
         );
+        // Issue #1491: the loud failure must not strand the staged assets.
+        let manifest = manifest::manifest_path().unwrap();
+        assert!(
+            manifest.is_file(),
+            "issue #1491: staged framework assets must have an uninstall manifest \
+             even when the recipe-runner phase fails; missing {}",
+            manifest.display()
+        );
+        assert!(
+            lower.contains("amplihack uninstall"),
+            "issue #1491: the error must say how to clean up or finish; got: {err}"
+        );
     });
 }

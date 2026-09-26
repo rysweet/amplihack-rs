@@ -6,7 +6,7 @@ Use `amplihack install --local <PATH>` when you want to install from a local che
 
 | Scenario | Command |
 |----------|---------|
-| Air-gapped machine | `amplihack install --local /mnt/usb/amplihack` |
+| Air-gapped machine | `amplihack install --local /mnt/usb/amplihack` (pre-install `recipe-runner-rs`, see below) |
 | Testing a dev branch | `amplihack install --local ~/src/amplihack-dev` |
 | CI pipeline (pre-cloned) | `amplihack install --local $GITHUB_WORKSPACE` |
 | Normal first install | `amplihack install` (no flag, uses bundled assets) |
@@ -24,6 +24,16 @@ rsync -a user@remote:~/src/amplihack ~/src/amplihack
 ```
 
 ### 2. Run install with --local
+
+`--local` reads the framework bundle from the given checkout and does not
+contact GitHub for it, but the recipe-runner phase still runs
+`cargo install --git https://github.com/rysweet/amplihack-recipe-runner` when
+`recipe-runner-rs` is missing, and that needs network access. On an air-gapped
+host, build `recipe-runner-rs` elsewhere and either place it on `PATH`
+(`~/.cargo/bin` or `~/.local/bin`) or point `RECIPE_RUNNER_RS_PATH` at it
+before installing. If the phase does fail, the staged assets already have an
+uninstall manifest: provision the binary and re-run install, or run
+`amplihack uninstall`.
 
 ```sh
 amplihack install --local ~/src/amplihack
