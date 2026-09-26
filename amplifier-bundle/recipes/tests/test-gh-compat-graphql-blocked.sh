@@ -886,6 +886,49 @@ out="$(gh issue create --title "$TASK_DESC" --body "$ISSUE_BODY" --label workflo
 logged_prefix "api -X POST repos/o/r/issues" || fail free-text "step-03 create made no REST POST"
 ok "a URL at the start of a body, title or search is data, not a target host"
 
+# ---------------------------------------------------------------------------
+# Independent crusty review round 5, of 532aede2 (PR comment 5842017601).
+# ---------------------------------------------------------------------------
+
+# 58. search-fallback-empty-query-matches-every-issue: in the client-side
+#     fallback (the only one in cloud sessions), a query that leaves nothing to
+#     match on matches nothing, URLs are matched as text or as this repo's
+#     issue number, and unsupported qualifiers fail instead of being dropped.
+fresh; : > "$AMPLIHACK_GH_COMPAT_STATE"
+sl() { gh issue list --state open --search "$1" --json number --jq '[.[].number] | map(tostring) | join(",")'; }
+[ "$(sl "https://ghe.example.com/o/r/pull/7/")" = "" ] || fail search "a URL-only query matched: $(sl "https://ghe.example.com/o/r/pull/7/")"
+[ "$(sl "fix https://github.com/o/r/issues/99")" = "" ] || fail search "'fix <issue 99 URL>' matched another issue"
+[ "$(sl "fix https://github.com/o/r/issues/5")" = 5 ] || fail search "'fix <issue 5 URL>' did not find #5"
+[ "$(sl "widget is:closed")" = "" ] || fail search "is:closed was dropped"
+[ "$(sl "--- ...")" = "" ] || fail search "a word-less query matched"
+rc=0; gh issue list --search "widget sort:created-asc" --json number >/dev/null 2>&1 || rc=$?
+[ "$rc" != 0 ] || fail search "an unsupported qualifier was silently dropped"
+# step-03 with a task description that is only a PR URL: no tracker found,
+# so a new issue is created.
+TASK_DESC="https://ghe.example.com/o/r/pull/7/"; SEARCH_Q="${TASK_DESC:0:100}"; reset_log
+FOUND_URL="$(gh issue list --state open --search "$SEARCH_Q" --json url --jq '.[0].url // ""' 2>/dev/null || echo '')"
+[ -z "$FOUND_URL" ] || fail search "step-03 would adopt $FOUND_URL as its tracker"
+[ "$(gh issue create --title "$TASK_DESC" --body b --label workflow:default 2>&1)" = "https://github.com/o/r/issues/8" ] || fail search "step-03 did not create an issue"
+ok "search fallback: an empty residue matches nothing, URLs match as text or number, unknown qualifiers fail"
+
+# 59. vspec-incomplete-free-text-selects-host: values of every gh value flag
+#     (implemented or not) and prose after a URL never select a host.
+fresh; : > "$AMPLIHACK_GH_COMPAT_STATE"
+gh pr review 42 --comment --body "https://ghe.example.com/o/r/pull/7#issuecomment-1 already covers this" >/dev/null 2>&1 || true
+gh pr merge 42 --squash --body-file https://ghe.example.com/o/r >/dev/null 2>&1 || true
+gh pr view "https://ghe.example.com/o/r/pull/7 is related" >/dev/null 2>&1 || true
+logged_prefix "api graphql --hostname" && fail vspec "a flag value or prose selected a foreign host: $(grep hostname "$STUB_LOG")"
+ok "values of gh's value flags and prose after a URL select no host"
+
+# 60. issue-reopen-accepts-reason-flag: gh's own error, no request.
+fresh; : > "$AMPLIHACK_GH_COMPAT_STATE"
+rc=0; err="$(gh issue reopen 5 -r completed 2>&1)" || rc=$?
+[ "$rc" = 1 ] || fail reopen "issue reopen -r exited $rc"
+case "$err" in *"unknown shorthand flag: 'r' in -r"*) ;; *) fail reopen "message was '$err'" ;; esac
+case "$(gh issue reopen 5 --reason x 2>&1)" in *"unknown flag: --reason"*) ;; *) fail reopen "--reason not rejected like gh" ;; esac
+logged_prefix "api -X PATCH" && fail reopen "reopen sent a request"
+ok "issue reopen rejects -r/--reason as gh does"
+
 # 51. stale-test-contract-header: the contract above describes the probe, not
 #     the removed stderr follower or a first real-gh attempt.
 hdr="$(sed -n '2,/^set -euo pipefail/p' "${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")")"

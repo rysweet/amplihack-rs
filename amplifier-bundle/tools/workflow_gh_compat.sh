@@ -279,7 +279,7 @@ ghc_parse() {
       --) shift; GHC_POS+=("$@"); break ;;
       # Ignoring a flag would silently widen or change the call (an unknown
       # --milestone would list every issue), so it fails the way gh does.
-      -?*) ghc_die "gh-compat: flag $a of 'gh ${GHC_GROUP:-} ${GHC_VERB:-}' has no REST fallback; it needs GitHub GraphQL, which this host blocks" ;;
+      -?*) ghc_unknown_flag "$a" ;;
       *) GHC_POS+=("$a"); shift ;;
     esac
   done
@@ -372,12 +372,75 @@ ghc_vspec() {
     "issue view") printf '%s\n' "$GHC_COMMON_V" ;;
     "issue list") printf '%s\n' "$GHC_COMMON_V -s:state --state:state -L:limit --limit:limit -S:search --search:search -l:label --label:label -a:assignee --assignee:assignee -A:author --author:author" ;;
     "issue create") printf '%s\n' "-R:repo --repo:repo -t:title --title:title -b:body --body:body -F:body_file --body-file:body_file -l:label --label:label -a:assignee --assignee:assignee -m:milestone --milestone:milestone" ;;
-    "issue close"|"issue reopen") printf '%s\n' "-R:repo --repo:repo -c:comment --comment:comment -r:reason --reason:reason" ;;
+    "issue close") printf '%s\n' "-R:repo --repo:repo -c:comment --comment:comment -r:reason --reason:reason" ;;
+    "issue reopen") printf '%s\n' "-R:repo --repo:repo -c:comment --comment:comment" ;;
     "issue edit") printf '%s\n' "-R:repo --repo:repo -t:title --title:title -b:body --body:body -F:body_file --body-file:body_file --add-label:add_label --remove-label:remove_label --add-assignee:assignee" ;;
     "label list") printf '%s\n' "$GHC_COMMON_V -L:limit --limit:limit -S:search --search:search --sort:sort --order:order" ;;
     "api graphql") printf '%s\n' "-f:field -F:field --field:field --raw-field:field -q:jq --jq:jq --hostname:hostname -H:header --header:header" ;;
     "auth status") printf '%s\n' "-h:hostname --hostname:hostname" ;;
     *) printf '%s\n' "$GHC_COMMON_V" ;;
+  esac
+}
+
+# ghc_gh_vflags GROUP VERB — every value-taking flag gh 2.63 has for the
+# command (from `gh GROUP VERB --help`), including ones the REST fallback does
+# not implement (its parser refuses those). ghc_target_host skips their values
+# too, so no flag value, implemented or not, is ever read as a target.
+ghc_gh_vflags() {
+  case "$1 $2" in
+    "pr create") echo "-a --assignee -B --base -b --body -F --body-file -H --head -l --label -m --milestone -p --project --recover -r --reviewer -T --template -t --title" ;;
+    "pr list") echo "--app -a --assignee -A --author -B --base -H --head -q --jq --json -l --label -L --limit -S --search -s --state -t --template" ;;
+    "pr status"|"pr checks"|"pr view"|"issue status"|"issue view") echo "-q --jq --json -t --template" ;;
+    "pr checkout") echo "-b --branch" ;;
+    "pr close"|"pr reopen"|"issue reopen") echo "-c --comment" ;;
+    "pr comment"|"pr review"|"issue comment") echo "-b --body -F --body-file" ;;
+    "pr diff") echo "--color" ;;
+    "pr edit") echo "--add-assignee --add-label --add-project --add-reviewer -B --base -b --body -F --body-file -m --milestone --remove-assignee --remove-label --remove-project --remove-reviewer -t --title" ;;
+    "pr lock"|"issue lock") echo "-r --reason" ;;
+    "pr merge") echo "-A --author-email -b --body -F --body-file --match-head-commit -t --subject" ;;
+    "issue create") echo "-a --assignee -b --body -F --body-file -l --label -m --milestone -p --project --recover -T --template -t --title" ;;
+    "issue list") echo "--app -a --assignee -A --author -q --jq --json -l --label -L --limit --mention -m --milestone -S --search -s --state -t --template" ;;
+    "issue close") echo "-c --comment -r --reason" ;;
+    "issue develop") echo "-b --base --branch-repo -n --name" ;;
+    "issue edit") echo "--add-assignee --add-label --add-project -b --body -F --body-file -m --milestone --remove-assignee --remove-label --remove-project -t --title" ;;
+    "label create") echo "-c --color -d --description" ;;
+    "label edit") echo "-c --color -d --description -n --name" ;;
+    "label list") echo "-q --jq --json -L --limit --order -S --search --sort -t --template" ;;
+    "api graphql") echo "--cache -F --field -H --header --hostname --input -q --jq -X --method -p --preview -f --raw-field -t --template" ;;
+  esac
+}
+
+# ghc_gh_bflags GROUP VERB — gh 2.63's boolean flags for the commands the REST
+# fallback serves, so a flag gh itself does not have fails with gh's words.
+ghc_gh_bflags() {
+  case "$1 $2" in
+    "pr create") echo "-d --draft --dry-run -e --editor -f --fill --fill-first --fill-verbose --no-maintainer-edit -w --web" ;;
+    "pr list") echo "-d --draft -w --web" ;;
+    "issue list"|"label list") echo "-w --web" ;;
+    "pr checks") echo "--fail-fast --required --watch -w --web" ;;
+    "pr close") echo "-d --delete-branch" ;;
+    "pr comment"|"issue comment") echo "--edit-last -e --editor -w --web" ;;
+    "pr diff") echo "--name-only --patch -w --web" ;;
+    "pr edit"|"issue edit") echo "--remove-milestone" ;;
+    "pr merge") echo "--admin --auto -d --delete-branch --disable-auto -m --merge -r --rebase -s --squash" ;;
+    "pr ready") echo "--undo" ;;
+    "pr view"|"issue view") echo "-c --comments -w --web" ;;
+    "issue create") echo "-e --editor -w --web" ;;
+  esac
+}
+
+# ghc_unknown_flag FLAG — FLAG is not one of the fallback's: fail as gh does
+# for a flag gh lacks, or say plainly that REST cannot do what gh would.
+ghc_unknown_flag() {
+  local f="${1%%=*}" known
+  case "$f" in --*) ;; *) f="${f:0:2}" ;; esac
+  known=" -R --repo -h --help $(ghc_gh_vflags "$GHC_GROUP" "$GHC_VERB") $(ghc_gh_bflags "$GHC_GROUP" "$GHC_VERB") "
+  case "$known" in
+    *" $f "*) ghc_die "gh-compat: flag $1 of 'gh ${GHC_GROUP:-} ${GHC_VERB:-}' has no REST fallback; it needs GitHub GraphQL, which this host blocks" ;;
+  esac
+  case "$f" in
+    --*) ghc_die "unknown flag: $f" ;;
+    *) ghc_die "unknown shorthand flag: '${f:1:1}' in $1" ;;
   esac
 }
 
@@ -682,8 +745,13 @@ EOF_LABELS
   # /search resolves @me server-side; the client-side match compares logins,
   # where a literal "@me" would silently match nobody (quality-loop's
   # `--author=@me` lists would come back empty).
+  ghc_search_terms "$kind" "$text"
+  [ "$GHC_SQ_NONE" = 1 ] && { printf '[]\n'; return 0; }   # nothing it could match
+  [ -n "$author" ] || author="$GHC_SQ_AUTHOR"
+  [ -n "$assignee" ] || assignee="$GHC_SQ_ASSIGNEE"
   [ "$author" = "@me" ] && { author="$(ghc_api_or_die GET user | jq -r '.login // empty')" || exit 1; }
-  [ -n "${GHC_O_author:-}" ] && [ -z "$author" ] && ghc_die "gh: could not resolve --author ${GHC_O_author}"
+  [ -n "${GHC_O_author:-}${GHC_SQ_AUTHOR}" ] && [ -z "$author" ] && ghc_die "gh: could not resolve --author ${GHC_O_author:-$GHC_SQ_AUTHOR}"
+  l="${GHC_O_label:-}"; [ -z "$GHC_SQ_LABELS" ] || l="${l:+$l,}${GHC_SQ_LABELS}"
   rstate="$state"; case "$state" in open|closed) ;; merged) rstate=closed ;; *) rstate=all ;; esac
   if [ "$kind" = pr ]; then
     # /pulls filters head and base itself; /issues cannot.
@@ -692,7 +760,7 @@ EOF_LABELS
     [ -n "$assignee" ] && { assignee="$(ghc_expand_me "$assignee")"; [ "$assignee" != "@me" ] || ghc_die "gh: could not resolve --assignee @me"; }
     path="repos/${GHC_REPO}/pulls?state=${rstate}${qs}"
   else
-    [ -n "${GHC_O_label:-}" ] && qs="&labels=$(ghc_uri "$GHC_O_label")"
+    [ -n "$l" ] && qs="&labels=$(ghc_uri "$l")"
     [ -n "$assignee" ] && qs="${qs}&assignee=$(ghc_uri "$(ghc_expand_me "$assignee")")"
     assignee=""   # /issues filtered it
     path="repos/${GHC_REPO}/issues?state=${rstate}${qs}"
@@ -700,21 +768,76 @@ EOF_LABELS
   # Full pages: the text match keeps few items, and --limit 1 must not stop
   # the scan after ~11 items.
   GHC_PAGE_SIZE=100 ghc_paged "$path" "$limit" '
-    # Whole words, as /search matches them. A substring test lets "a" or "it"
-    # match any body, and step-03 would adopt an unrelated issue as its tracker.
+    # Words match whole words, as /search matches them (a substring test lets
+    # "a" or "it" match any body); URLs match as literal text; "#N" and this
+    # repository issue/PR URLs match that number only.
     def words: ascii_downcase | [scan("[a-z0-9]+")];
-    ($t | split(" ") | map(select(contains(":") | not)) | join(" ") | words) as $words
+    ($w | words) as $words
+    | ($u | split("\n") | map(select(. != "") | ascii_downcase)) as $urls
+    | ($n | split(",") | map(select(. != "") | tonumber)) as $nums
     | ($l | split(",") | map(select(. != ""))) as $labels
     | map(select($k == "pr" or .pull_request == null)
           | select($a == "" or .user.login == $a)
+          | select($qs == "" or .state == $qs)
+          | select($qm == "" or .merged_at != null)
+          | select(($nums | length) == 0 or (.number as $x | all($nums[]; . == $x)))
           | select($k == "issue" or (
               ([.labels[]?.name] as $have | all($labels[]; . as $x | $have | index([$x]) != null))
               and ($as == "" or any(.assignees[]?; .login == $as))
               and ($d == "" or (.draft // false))
               and ($s != "merged" or .merged_at != null)))
-          | select(((.title // "") + " " + (.body // "") | words) as $h | all($words[]; . as $w | $h | index([$w]) != null)))' \
-    --arg k "$kind" --arg t "$text" --arg a "$author" --arg l "${GHC_O_label:-}" --arg as "$assignee" \
+          | (if $f == "title" then (.title // "") elif $f == "body" then (.body // "") else (.title // "") + " " + (.body // "") end) as $hay
+          | select(($hay | words) as $h | all($words[]; . as $x | $h | index([$x]) != null))
+          | select(($hay | ascii_downcase) as $lh | all($urls[]; . as $x | $lh | contains($x))))' \
+    --arg k "$kind" --arg w "$GHC_SQ_WORDS" --arg u "$GHC_SQ_URLS" --arg n "$GHC_SQ_NUMS" --arg f "$GHC_SQ_IN" \
+    --arg qs "$GHC_SQ_STATE" --arg qm "$GHC_SQ_MERGED" --arg a "$author" --arg l "$l" --arg as "$assignee" \
     --arg d "${GHC_B_draft:-}" --arg s "$state"
+}
+
+# ghc_search_terms KIND TEXT — split a --search query for the client-side
+# fallback into GHC_SQ_* terms. Qualifiers the fallback can apply (is:open,
+# is:closed, is:issue, is:pr, is:merged, state:, in:title, in:body, label:,
+# author:, assignee:) are applied; any other GitHub search qualifier fails the
+# call rather than being dropped. A query that leaves nothing to match on
+# (GHC_SQ_NONE=1) matches nothing: step-03 must create an issue, never adopt
+# an unrelated one because every issue "matched" an empty query.
+ghc_search_terms() {
+  local kind="$1" text="$2" tok name val num toks=() used=0
+  GHC_SQ_WORDS=""; GHC_SQ_URLS=""; GHC_SQ_NUMS=""; GHC_SQ_IN=""; GHC_SQ_STATE=""; GHC_SQ_MERGED=""
+  GHC_SQ_LABELS=""; GHC_SQ_AUTHOR=""; GHC_SQ_ASSIGNEE=""; GHC_SQ_NONE=0
+  [ -n "$text" ] || return 0
+  read -r -a toks <<<"$text"
+  for tok in "${toks[@]}"; do
+    case "$tok" in
+      http://*|https://*)
+        num=""
+        if [[ "$tok" =~ ^https?://(www\.)?github\.com/([^/]+/[^/]+)/(issues|pull)/([0-9]+)([/#?].*)?$ ]]; then
+          [ "$(printf '%s' "${BASH_REMATCH[2]}" | tr 'A-Z' 'a-z')" = "$(printf '%s' "$GHC_REPO" | tr 'A-Z' 'a-z')" ] && num="${BASH_REMATCH[4]}"
+        fi
+        if [ -n "$num" ]; then GHC_SQ_NUMS="${GHC_SQ_NUMS:+$GHC_SQ_NUMS,}$num"; else GHC_SQ_URLS="${GHC_SQ_URLS}${tok}"$'\n'; fi
+        used=1; continue ;;
+      \#[0-9]*)
+        case "${tok#\#}" in *[!0-9]*) ;; *) GHC_SQ_NUMS="${GHC_SQ_NUMS:+$GHC_SQ_NUMS,}${tok#\#}"; used=1; continue ;; esac ;;
+      [A-Za-z]*:?*)
+        name="$(printf '%s' "${tok%%:*}" | tr 'A-Z' 'a-z')"; val="${tok#*:}"; val="${val#\"}"; val="${val%\"}"
+        case "$name:$val" in
+          is:open|is:closed|state:open|state:closed) GHC_SQ_STATE="$val"; used=1; continue ;;
+          is:merged) [ "$kind" = pr ] || GHC_SQ_NONE=1; GHC_SQ_MERGED=1; used=1; continue ;;
+          is:issue|is:pr) [ "$val" = "$kind" ] || GHC_SQ_NONE=1; used=1; continue ;;
+          in:title|in:body) GHC_SQ_IN="$val"; continue ;;
+          label:*) GHC_SQ_LABELS="${GHC_SQ_LABELS:+$GHC_SQ_LABELS,}$val"; used=1; continue ;;
+          author:*) GHC_SQ_AUTHOR="$val"; used=1; continue ;;
+          assignee:*) GHC_SQ_ASSIGNEE="$val"; used=1; continue ;;
+        esac
+        case "$name" in
+          is|in|state|repo|org|user|no|sort|head|base|draft|created|updated|closed|merged|comments|interactions|reactions|milestone|project|language|linked|type|archived|review|reviewed-by|review-requested|user-review-requested|team-review-requested|status|team|involves|mentions|commenter|reason)
+            ghc_die "gh-compat: search qualifier '${tok}' is not supported without GitHub search (the fallback matches the repository's ${kind}s client-side)" ;;
+        esac ;;
+    esac
+    # Plain text: its words must all appear (a word-less token adds nothing).
+    [ -n "$(printf '%s' "$tok" | tr -cd 'A-Za-z0-9')" ] && { GHC_SQ_WORDS="$GHC_SQ_WORDS $tok"; used=1; }
+  done
+  [ "$used" = 1 ] || GHC_SQ_NONE=1
 }
 
 # ---------------------------------------------------------------------------
@@ -1185,7 +1308,7 @@ ghc_issue_create() {
 ghc_issue_state() { # ghc_issue_state close|reopen ARGS...
   local verb="$1" n state=closed reason
   shift
-  ghc_parse "$(ghc_vspec issue close)" "" "$@"
+  ghc_parse "$(ghc_vspec issue "$verb")" "" "$@"
   ghc_resolve_repo
   ghc_issue_target "${GHC_POS[0]:-}"; n="$GHC_N"
   [ "$verb" = reopen ] && state=open
@@ -1372,7 +1495,7 @@ ghc_url_host() {
 # GH_HOST, then the origin remote, decides.
 ghc_target_host() {
   local vspec a v h
-  vspec=" $(ghc_vspec "${1:-}" "${2:-}") "
+  vspec=" $(ghc_vspec "${1:-}" "${2:-}") $(ghc_gh_vflags "${1:-}" "${2:-}" | sed 's/\(-[^ ]*\)/\1:/g') "
   shift 2
   set -- "$@" "--repo=${GH_REPO:-}"
   while [ $# -gt 0 ]; do
@@ -1406,7 +1529,9 @@ ghc_target_host() {
 # repository, issue or pull request URL on a host other than github.com.
 ghc_positional_host() {
   local h
-  [[ "$1" =~ ^https?://[^/]+/[^/]+/[^/]+(/(pull|pulls|issues)/[0-9]+([/#?].*)?)?/?$ ]] || return 1
+  # The whole argument must be the URL: no spaces, nothing after the number
+  # but a /files-style tab, a slash, or a #anchor / ?query.
+  [[ "$1" =~ ^https?://[^/[:space:]]+/[^/[:space:]]+/[^/[:space:]]+(/(pull|pulls|issues)/[0-9]+(/(files|commits|checks))?)?/?([#?][^[:space:]]*)?$ ]] || return 1
   h="$(ghc_url_host "$1")"
   [ "$h" != github.com ] || return 1
   printf '%s\n' "$h"
