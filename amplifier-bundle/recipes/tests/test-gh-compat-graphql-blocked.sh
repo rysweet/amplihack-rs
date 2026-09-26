@@ -16,8 +16,9 @@
 #   3. pr view/list/create/checks/ready, issue view/list/create, label list,
 #      `api graphql` (viewer permission) and `auth status` each issue the
 #      expected REST request.
-#   4. /search is refused by the proxy; issue search falls back to matching
-#      the repo's issues client-side.
+#   4. /search is refused by the proxy, and --search then fails loudly (no
+#      client-side imitation); step-03 finds its tracker by listing open issues
+#      and comparing the exact title (issue_find_tracker).
 #   5. Subcommands that are not GraphQL clients, -h/--help and `label create`
 #      are exec'd untouched, without a probe.
 #   6. workflow_gh_retry.sh classifies the block as permanent, not a rate limit
@@ -91,6 +92,8 @@ if [ "$1" = "api" ]; then
     fi
     [ "${STUB_PROBE_RATELIMIT:-0}" = 1 ] && { echo "GraphQL: API rate limit exceeded for user ID 1." >&2; exit 1; }
     [ -n "${STUB_PROBE_SLEEP:-}" ] && sleep "$STUB_PROBE_SLEEP"
+    # Like Go's gh: SIGALRM ignored, and the process is the hang itself.
+    [ -n "${STUB_PROBE_HANG:-}" ] && { trap '' ALRM; exec sleep "$STUB_PROBE_HANG"; }
     [ "$host" != github.com ] && [ "${STUB_GHE_OK:-0}" = 1 ] && { echo '{"data":{"viewer":{"login":"ghe"}}}'; exit 0; }
     if [ "${STUB_GRAPHQL_OK:-0}" = 1 ]; then echo '{"data":{"viewer":{"login":"bot"}}}'; exit 0; fi
     echo "HTTP 403: GitHub GraphQL is not available from Claude Code sessions; use the REST API (gh api repos/{owner}/{repo}/...). (https://api.github.com/graphql)" >&2; exit 1
@@ -142,10 +145,13 @@ if [ "$1" = "api" ]; then
     "GET repos/o/r/issues/7") printf '{"number":7,"title":"Widget","body":"","state":"open","html_url":"https://github.com/o/r/issues/7","user":{"login":"bot"},"labels":[]}\n' ;;
     "GET search/"*) printf '{"message":"This GitHub API path is not available"}'; echo "gh: This GitHub API path is not available: sessions are bound to their configured repositories. (HTTP 403)" >&2; exit 1 ;;
     "GET repos/o/r/issues?"*)
+      [ "${STUB_LIST_FAIL:-0}" = 1 ] && { printf '{"message":"Server Error"}'; echo "gh: Server Error (HTTP 500)" >&2; exit 1; }
       if [ -n "${STUB_TRACKERS:-}" ]; then
-        # STUB_TRACKERS: one "NUMBER<TAB>TITLE" per line; bodies are empty.
-        printf '%s' "$STUB_TRACKERS" | jq -Rn '[inputs | split("\t") | {number: (.[0] | tonumber), title: .[1], body: "", state: "open",
-          html_url: "https://github.com/o/r/issues/\(.[0])", user: {login: "bot"}, labels: []}]'
+        # STUB_TRACKERS: one "NUMBER<TAB>TITLE" per line, newest first; bodies
+        # are empty; served a page at a time like REST (per_page, page).
+        pg="${path##*page=}"; pp="${path##*per_page=}"; pp="${pp%%&*}"
+        printf '%s' "$STUB_TRACKERS" | jq -Rn --argjson pg "$pg" --argjson pp "$pp" '[inputs | split("\t") | {number: (.[0] | tonumber), title: .[1], body: "", state: "open",
+          html_url: "https://github.com/o/r/issues/\(.[0])", user: {login: "bot"}, labels: []}] | .[($pg - 1) * $pp : $pg * $pp]'
         exit 0
       fi
       printf '[{"number":5,"title":"Fix the flaky widget","body":"","state":"open","html_url":"https://github.com/o/r/issues/5","user":{"login":"bot"},"labels":[]},{"number":6,"title":"Fix the flaky widget","pull_request":{},"state":"open","html_url":"https://github.com/o/r/pull/6","user":{"login":"bot"},"labels":[]}]\n' ;;
@@ -322,17 +328,17 @@ gh pr ready 42 2>/dev/null || fail pr-ready "exited non-zero"
 logged "api -X POST repos/o/r/pulls/42/ccr/ready_for_review" || fail pr-ready "no ccr/ready_for_review POST"
 ok "pr ready -> POST .../pulls/42/ccr/ready_for_review"
 
-# 7. issue view / create, and search falling back to a client-side match.
+# 7. issue view / create over REST; --search without GitHub search fails loudly.
 reset_log
 [ "$(gh issue view 7 --json url --jq '.url // ""')" = "https://github.com/o/r/issues/7" ] || fail issue-view "wrong url"
 url="$(gh issue create --title "Widget" --body "b" --label workflow:default 2>&1)"
 [ "$url" = "https://github.com/o/r/issues/8" ] || fail issue-create "stdout+stderr was '$url' (callers capture 2>&1)"
 logged 'BODY {"title":"Widget","body":"b","labels":["workflow:default"]}' || fail issue-create "POST body not as expected"
-found="$(gh issue list --state open --search "flaky widget" --json url --jq '.[0].url // ""')"
-[ "$found" = "https://github.com/o/r/issues/5" ] || fail issue-search "search fallback gave '$found' (PRs must be excluded)"
-miss="$(gh issue list --state open --search "wid" --json url --jq '.[0].url // ""')"
-[ -z "$miss" ] || fail issue-search "search fallback matched a word fragment: '$miss'"
-ok "issue view/create over REST; blocked /search falls back to repo issues"
+reset_log; rc=0; err="$(gh issue list --state open --search "flaky widget" --json url 2>&1)" || rc=$?
+[ "$rc" != 0 ] || fail issue-search "--search answered without GitHub search: $err"
+case "$err" in *"--search needs GitHub search"*) ;; *) fail issue-search "message was '$err'" ;; esac
+logged_prefix "api -X GET repos/o/r/issues" && fail issue-search "--search fell back to listing and guessing"
+ok "issue view/create over REST; --search without GitHub search fails loudly"
 
 # 8. label create is REST in gh itself: handed to the real gh, not replayed.
 reset_log; gh label create workflow:default --color 0366d6 >/dev/null 2>&1 || true
@@ -881,9 +887,9 @@ for args in "--body $u" "-b $u" "--title $u" "--body=$u"; do
   logged_prefix "api graphql --hostname" && fail free-text "'$args' probed a foreign host"
 done
 reset_log
-gh issue list --search "$u" --json number >/dev/null 2>&1 || fail free-text "issue list --search '$u' failed"
+gh issue list --search "$u" --json number >/dev/null 2>&1 || true
 logged_prefix "api graphql --hostname" && fail free-text "a search term probed a foreign host"
-logged_prefix "api -X GET repos/o/r/issues" || fail free-text "issue list --search '$u' made no REST call"
+logged_prefix "api -X GET search/issues" || fail free-text "issue list --search '$u' did not ask github.com's /search"
 # step-03's own call shape, with a task description that begins with a URL.
 TASK_DESC="$u is broken"
 ISSUE_BODY="$(printf '## Task Description\n%s\n' "$TASK_DESC")"
@@ -896,27 +902,6 @@ ok "a URL at the start of a body, title or search is data, not a target host"
 # ---------------------------------------------------------------------------
 # Independent crusty review round 5, of 532aede2 (PR comment 5842017601).
 # ---------------------------------------------------------------------------
-
-# 58. search-fallback-empty-query-matches-every-issue: in the client-side
-#     fallback (the only one in cloud sessions), a query that leaves nothing to
-#     match on matches nothing, URLs are matched as text or as this repo's
-#     issue number, and unsupported qualifiers fail instead of being dropped.
-fresh; : > "$AMPLIHACK_GH_COMPAT_STATE"
-sl() { gh issue list --state open --search "$1" --json number --jq '[.[].number] | map(tostring) | join(",")' 2>/dev/null; }
-[ "$(sl "https://ghe.example.com/o/r/pull/7/")" = "" ] || fail search "a URL-only query matched: $(sl "https://ghe.example.com/o/r/pull/7/")"
-[ "$(sl "fix https://github.com/o/r/issues/99")" = "" ] || fail search "'fix <issue 99 URL>' matched another issue"
-[ "$(sl "fix https://github.com/o/r/issues/5")" = 5 ] || fail search "'fix <issue 5 URL>' did not find #5"
-[ "$(sl "widget is:closed")" = "" ] || fail search "is:closed was dropped"
-[ "$(sl "--- ...")" = "" ] || fail search "a word-less query matched"
-rc=0; gh issue list --search "widget sort:created-asc" --json number >/dev/null 2>&1 || rc=$?
-[ "$rc" != 0 ] || fail search "an unsupported qualifier was silently dropped"
-# step-03 with a task description that is only a PR URL: no tracker found,
-# so a new issue is created.
-TASK_DESC="https://ghe.example.com/o/r/pull/7/"; SEARCH_Q="${TASK_DESC:0:100}"; reset_log
-FOUND_URL="$(gh issue list --state open --search "$SEARCH_Q" --json url --jq '.[0].url // ""' 2>/dev/null || echo '')"
-[ -z "$FOUND_URL" ] || fail search "step-03 would adopt $FOUND_URL as its tracker"
-[ "$(gh issue create --title "$TASK_DESC" --body b --label workflow:default 2>&1)" = "https://github.com/o/r/issues/8" ] || fail search "step-03 did not create an issue"
-ok "search fallback: an empty residue matches nothing, URLs match as text or number, unknown qualifiers fail"
 
 # 59. vspec-incomplete-free-text-selects-host: values of every gh value flag
 #     (implemented or not) and prose after a URL never select a host.
@@ -935,119 +920,6 @@ case "$err" in *"unknown shorthand flag: 'r' in -r"*) ;; *) fail reopen "message
 case "$(gh issue reopen 5 --reason x 2>&1)" in *"unknown flag: --reason"*) ;; *) fail reopen "--reason not rejected like gh" ;; esac
 logged_prefix "api -X PATCH" && fail reopen "reopen sent a request"
 ok "issue reopen rejects -r/--reason as gh does"
-
-# ---------------------------------------------------------------------------
-# Independent crusty review round 6, of 728d52b4 (PR comment 5842222462).
-# ---------------------------------------------------------------------------
-TRACK="${REPO_ROOT}/amplifier-bundle/tools/workflow_issue_tracking.sh"
-# step-03's lookup, exactly as workflow-prep.yaml runs it.
-step03_lookup() {
-  (
-    # shellcheck source=/dev/null
-    . "$TRACK"
-    SEARCH_Q="$(issue_search_query "$1")"
-    [ -n "$SEARCH_Q" ] || exit 0
-    gh issue list --state open --search "$SEARCH_Q" --json number,title,url 2>/dev/null | issue_pick_tracker "$1" || echo ''
-  )
-}
-grep -Fq 'SEARCH_Q="$(issue_search_query "$ISSUE_TITLE")"' "${REPO_ROOT}/amplifier-bundle/recipes/workflow-prep.yaml" \
-  || fail step03-query "workflow-prep step-03 does not build its query with issue_search_query"
-grep -Fq -- '--json number,title,url 2>/dev/null | issue_pick_tracker "$ISSUE_TITLE"' "${REPO_ROOT}/amplifier-bundle/recipes/workflow-prep.yaml" \
-  || fail step03-query "workflow-prep step-03 does not pick its tracker with issue_pick_tracker"
-
-# 61. search-same-repo-url-number-only-misses-tracker: this repository's issue
-#     URL in a query matches as text too, so a rerun finds its own tracker.
-fresh; : > "$AMPLIHACK_GH_COMPAT_STATE"
-title="Implement the design in https://github.com/o/r/issues/1484"
-STUB_TRACKERS="$(printf '1484\tDesign doc\n1510\t%s\n' "$title")"; export STUB_TRACKERS
-[ "$(sl "$title")" = 1510 ] || fail same-repo-url "searching the tracker's own title gave '$(sl "$title")'"
-[ "$(step03_lookup "$title")" = "https://github.com/o/r/issues/1510" ] || fail same-repo-url "step-03 rerun did not reuse #1510"
-ok "a same-repo issue URL matches as text or number; step-03 reuses its tracker"
-
-# 62. search-negation-or-quotes-silently-misread: each fails loudly.
-for q in "parser -label:bug" "-is:open parser" "parser -break" "parser OR lexer" "parser NOT break" 'label:"needs review"' '"exact phrase"'; do
-  rc=0; err="$(gh issue list --search "$q" --json number 2>&1)" || rc=$?
-  [ "$rc" != 0 ] || fail search-syntax "'$q' was silently misread"
-  case "$err" in *"not supported by the REST fallback"*) ;; *) fail search-syntax "'$q' failed with '$err'" ;; esac
-done
-ok "negation, OR/NOT and quotes fail loudly instead of being misread"
-
-# 63. search-in-title-body-refused: in:title,body is the default.
-unset STUB_TRACKERS
-[ "$(sl "widget in:title,body")" = 5 ] || fail in-title-body "in:title,body refused or misread"
-[ "$(sl "widget in:body,title")" = 5 ] || fail in-title-body "in:body,title refused or misread"
-ok "in:title,body and in:body,title are the default"
-
-# 64. step-03's query is cut at a word boundary: a 120-character title reruns
-#     into the same tracker (a cut word matched nothing before).
-long="Refactor the recipe runner so that every workflow step reports progress and errors through one structured channel ok"
-[ "${#long}" -gt 100 ] || fail step03-query "test title too short"
-STUB_TRACKERS="$(printf '1477\tSomething else entirely\n1476\t%s\n' "$long")"; export STUB_TRACKERS
-[ "$(step03_lookup "$long")" = "https://github.com/o/r/issues/1476" ] || fail step03-query "a ${#long}-char title missed its tracker"
-# shellcheck source=/dev/null
-( . "$TRACK"; q="$(issue_search_query 'Handle "quoted" -v flags OR sort:x')"; case "$q" in *'"'*|*" -"*|*" OR "*|*sort:*) exit 1 ;; esac ) \
-  || fail step03-query "issue_search_query left search syntax in the query"
-unset STUB_TRACKERS
-ok "step-03's query keeps whole words and carries no search syntax"
-
-# ---------------------------------------------------------------------------
-# Independent crusty review round 7, of 1aa1c5b1 (PR comment 5842423919).
-# ---------------------------------------------------------------------------
-fresh; : > "$AMPLIHACK_GH_COMPAT_STATE"
-first() { gh issue list --state open --search "$1" --json number --jq '.[0].number // ""'; }
-
-# 65. search-rank-ignores-refs-adopts-cited-issue: exactly two tiers - a title
-#     that is the query itself, then the REST order (newest first).
-STUB_TRACKERS="$(printf '1510\tPort #5 to the new runner\n5\tPort to the new runner\n')"; export STUB_TRACKERS
-[ "$(first "Port #5 to the new runner")" = 1510 ] || fail rank "'Port #5 ...' ranked the cited #5 first"
-STUB_TRACKERS="$(printf '1511\tPort https://github.com/o/r/issues/5 to the new runner\n5\tPort to the new runner\n')"; export STUB_TRACKERS
-[ "$(first "Port https://github.com/o/r/issues/5 to the new runner")" = 1511 ] || fail rank "the URL form ranked the cited #5 first"
-STUB_TRACKERS="$(printf '30\tFix parser crash (follow-up)\n28\tFix parser crash\n')"; export STUB_TRACKERS
-[ "$(first "Fix parser crash")" = 28 ] || fail rank "the exact-title tracker #28 lost to the newer #30"
-ok "an exact-title match ranks first, then REST order; a cited issue is not adopted"
-
-# 66. search-grammar-header-overclaims-loud-failure and
-#     search-label-comma-or-read-as-and: a closed allowlist.
-for q in "parser has:label" "parser field.priority:high" "(label:bug) parser" "parser --foo" "$(printf 'parser\nlexer')" "parser label:a,b" "note:x parser"; do
-  rc=0; gh issue list --search "$q" --json number >/dev/null 2>&1 || rc=$?
-  [ "$rc" != 0 ] || fail allowlist "'$q' was accepted"
-done
-ok "only allowlisted search tokens are accepted; everything else fails loudly"
-
-# 67. search-ref-substring-matches-longer-number: whole tokens only.
-STUB_TRACKERS="$(printf '123\tSee #123 notes\n55\tFollow https://github.com/o/r/issues/55 closely\n')"; export STUB_TRACKERS
-[ "$(first "#12 notes")" = "" ] || fail ref-token "'#12' matched '#123'"
-[ "$(first "Follow https://github.com/o/r/issues/5 closely")" = "" ] || fail ref-token "'/issues/5' matched '/issues/55'"
-[ "$(first "See #123 notes")" = 123 ] || fail ref-token "'#123' no longer matches itself"
-ok "#N and issue URLs match as whole tokens, not as prefixes of longer numbers"
-
-# 68. search-non-ascii-titles-unmatched.
-cjk="修复 解析器 崩溃"
-STUB_TRACKERS="$(printf '41\tUnrelated\n40\t%s\n' "$cjk")"; export STUB_TRACKERS
-[ "$(first "$cjk")" = 40 ] || fail unicode "a CJK title did not find its tracker"
-[ "$(step03_lookup "$cjk")" = "https://github.com/o/r/issues/40" ] || fail unicode "step-03 rerun of a CJK task missed its tracker"
-STUB_TRACKERS="$(printf '42\tCafé crash\n')"; export STUB_TRACKERS
-[ "$(first "CAFÉ crash")" = 42 ] || fail unicode "non-ASCII words are not compared case-insensitively"
-long_mb="$(printf '界%.0s' $(seq 1 41))"   # 123 bytes, one token
-# shellcheck source=/dev/null
-q="$( . "$TRACK"; issue_search_query "$long_mb")"
-printf '%s' "$q" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 || fail unicode "issue_search_query cut a multi-byte character"
-[ -n "$q" ] || fail unicode "issue_search_query emptied a long multi-byte token"
-unset STUB_TRACKERS
-ok "titles in any script match; truncation keeps valid UTF-8"
-
-# 69. step-03 prefers an exact match on its FULL title over search ranking: a
-#     150-character tracker beats a newer "Follow-up to <same title>"; with no
-#     exact match it takes the first result, as before.
-fresh; : > "$AMPLIHACK_GH_COMPAT_STATE"
-t150="Make the recipe runner report every step's progress, warnings and errors through one structured channel that agents, humans and CI can all read"
-[ "${#t150}" -gt 100 ] || fail step03-exact "test title too short"
-STUB_TRACKERS="$(printf '1480\tFollow-up to %s\n1479\tSomething else\n1478\t%s\n' "$t150" "$t150")"; export STUB_TRACKERS
-[ "$(step03_lookup "$t150")" = "https://github.com/o/r/issues/1478" ] || fail step03-exact "a ${#t150}-char title adopted $(step03_lookup "$t150")"
-STUB_TRACKERS="$(printf '1490\tFix the parser crash in the lexer too\n1489\tFix the parser crash in the lexer later\n')"; export STUB_TRACKERS
-[ "$(step03_lookup "Fix the parser crash in the lexer")" = "https://github.com/o/r/issues/1490" ] || fail step03-exact "no exact match did not fall back to the first result"
-unset STUB_TRACKERS
-ok "step-03 adopts the issue whose full title is its own, else the first result"
 
 # ---------------------------------------------------------------------------
 # Independent crusty review round 8, of 6358b25c (PR comment 5848407742).
@@ -1069,49 +941,116 @@ leftover="$(find "$WORK" -maxdepth 1 -name 'ghc.*' -print -quit)"
 [ -z "$leftover" ] || fail cold-calls "a run dir was left behind: $leftover"
 ok "60 cold calls: no lost run dir, no stray process, no leftover scratch"
 
-# 71. search-query-deletes-parens-joins-words: parentheses split words.
-fresh; : > "$AMPLIHACK_GH_COMPAT_STATE"
-t1376="merge queue is wired in ci.yml but not enabled, so N open PRs cost O(N²) CI runs"
-STUB_TRACKERS="$(printf '41\tUnrelated\n40\tFix parse(x) crash\n1376\t%s\n' "$t1376")"; export STUB_TRACKERS
-[ "$(step03_lookup "Fix parse(x) crash")" = "https://github.com/o/r/issues/40" ] || fail parens "'Fix parse(x) crash' missed its tracker"
-[ "$(step03_lookup "$t1376")" = "https://github.com/o/r/issues/1376" ] || fail parens "the #1376 title missed its tracker"
-ok "parentheses in a title split words instead of gluing them"
-
-# 72. search-emoji-only-query-matches-everything: a query with no letter or
-#     digit matches nothing, on the shim and in step-03's pick.
-for q in "🎉 ✨" "✅ — 🚀"; do
-  [ "$(sl "$q")" = "" ] || fail emoji "'$q' matched: $(sl "$q")"
-  [ "$(step03_lookup "$q")" = "" ] || fail emoji "step-03 adopted a tracker for '$q'"
-done
+# ---------------------------------------------------------------------------
+# Independent crusty review round 9, of 8a950a19 (PR comment 5848778379):
+# step-03 no longer searches. It lists open issues and takes the exact title.
+# ---------------------------------------------------------------------------
+TRACK="${REPO_ROOT}/amplifier-bundle/tools/workflow_issue_tracking.sh"
+# step-03's lookup, exactly as workflow-prep.yaml runs it.
 # shellcheck source=/dev/null
-[ "$( . "$TRACK"; printf '[{"number":9,"title":"✨","url":"u9"}]' | issue_pick_tracker "🎉 ✨")" = "" ] \
-  || fail emoji "issue_pick_tracker preferred a wordless title for a wordless target"
-unset STUB_TRACKERS
-ok "a query with no letter or digit matches nothing"
+step03_lookup() ( . "$TRACK"; issue_find_tracker "$1" )
+grep -Fq 'FOUND_URL="$(issue_find_tracker "$ISSUE_TITLE")" || exit 1;' "${REPO_ROOT}/amplifier-bundle/recipes/workflow-prep.yaml" \
+  || fail lookup "workflow-prep step-03 does not look its tracker up with issue_find_tracker (and stop on failure)"
+grep -q -- '--search' <(sed -n '/^issue_find_tracker() {/,/^}/p' "$TRACK") && fail lookup "the tracker lookup still searches"
+fresh; : > "$AMPLIHACK_GH_COMPAT_STATE"
 
-# 73. search-query-hash-ref-suffix-refused: every title step-03 may meet gives
-#     a query the shim accepts (or no query at all).
+# 74. The exact title is found among newer near-duplicates, whatever it holds.
+long150="Make the recipe runner report every step's progress, warnings and errors through one structured channel that agents, humans and CI can all read"
+n=100
 while IFS= read -r t; do
-  # shellcheck source=/dev/null
-  q="$( . "$TRACK"; issue_search_query "$t")"
-  [ -n "$q" ] || continue
-  rc=0; gh issue list --state open --search "$q" --json number >/dev/null 2>"${WORK}/corpus.err" || rc=$?
-  [ "$rc" = 0 ] || fail corpus "title '$t' gave query '$q', refused: $(cat "${WORK}/corpus.err")"
-done <<'CORPUS'
-Fix #12's regression in parser
-Handle #12/#13 and #1.5 before the #1st release
+  n=$((n + 2))
+  STUB_TRACKERS="$(printf '%s\tFollow-up: %s\n%s\t%s (again)\n%s\t%s\n7\tUnrelated\n' "$((n + 1))" "$t" "$((n + 100))" "$t" "$n" "$t")"; export STUB_TRACKERS
+  got="$(step03_lookup "$t")"
+  [ "$got" = "https://github.com/o/r/issues/$n" ] || fail lookup "'$t' found '$got', want #$n"
+done <<LOOKUP_TITLES
 Fix parse(x) crash
 merge queue is wired in ci.yml but not enabled, so N open PRs cost O(N²) CI runs
-"Quoted" titles -v with OR, NOT and AND: sort:created has:label
-feat(cli): add --flag and (label:bug) note:x field.priority:high
-https://github.com/o/r/issues/5 regression and #7
-Implement the design in https://ghe.example.com/o/r/pull/7/
-C# port of the lexer — phase 2
+Fix #12's regression in parser
+Handle #12/#13 and #1.5 before the #1st release
+Port https://github.com/o/r/issues/5 to the new runner
 修复 解析器 崩溃
-🎉 ✨
-- - - leading dashes
-CORPUS
-ok "every corpus title yields a query the shim accepts"
+Ship it 🎉 now
+"Quoted" -v OR NOT: sort:created (label:bug)
+$long150
+LOOKUP_TITLES
+ok "step-03 finds its exact title (parens, #N forms, URLs, CJK, emoji, 143 chars)"
+
+# 75. Near matches are never adopted, and a title with no word matches nothing.
+STUB_TRACKERS="$(printf '31\tFix parser crash (follow-up)\n30\tFix parser\n29\tPort to the new runner\n28\t🎉 ✨\n')"; export STUB_TRACKERS
+for t in "Fix parser crash" "Port #5 to the new runner" "🎉 ✨" "✅ — 🚀"; do
+  [ "$(step03_lookup "$t")" = "" ] || fail lookup "'$t' adopted $(step03_lookup "$t")"
+done
+ok "no near-match or wordless adoption"
+
+# 76. The lookup reads past the first page of open issues.
+STUB_TRACKERS="$(for i in $(seq 400 -1 101); do printf '%s\tIssue number %s\n' "$i" "$i"; done; printf '42\tThe tracker far down\n')"; export STUB_TRACKERS
+reset_log
+[ "$(step03_lookup "The tracker far down")" = "https://github.com/o/r/issues/42" ] || fail lookup "an issue past the first page was not found"
+logged_prefix "api -X GET repos/o/r/issues?state=open&per_page=100&page=4" || fail lookup "the lookup did not page"
+ok "the lookup pages through open issues"
+
+# 77. A lookup that fails stops step-03 loudly; only a host that cannot reach
+#     GitHub issues at all hands over to the create path's local fallback.
+rc=0; err="$(STUB_LIST_FAIL=1 step03_lookup "The tracker far down" 2>&1 >/dev/null)" || rc=$?
+[ "$rc" = 1 ] || fail lookup "a failed lookup returned $rc (would read as 'no tracker' and file a duplicate)"
+case "$err" in *"ERROR: looking up an existing tracking issue failed"*"Server Error"*) ;; *) fail lookup "failure not reported: '$err'" ;; esac
+rc=0; out="$(PATH="${WORK}/real:$PATH" step03_lookup "Anything" 2>/dev/null)" || rc=$?
+[ "$rc" = 0 ] && [ -z "$out" ] || fail lookup "a GraphQL-blocked gh with no fallback did not hand over to the create path (rc $rc, '$out')"
+unset STUB_TRACKERS
+ok "a failed lookup stops the step; only an unsupported host falls through"
+
+# 78. No system jq on the lookup path (gh's own --jq does the matching); where
+#     the shim itself needs jq, its absence fails loudly.
+sed -n '/^issue_find_tracker() {/,/^}/p' "$TRACK" | grep -Ev '^\s*#|--jq' | grep -Eq '(^|[^-])\bjq\b' \
+  && fail no-jq "issue_find_tracker runs a system jq"
+nojq="${WORK}/nojq"; mkdir -p "$nojq"
+for b in /usr/bin/* /bin/*; do
+  case "${b##*/}" in jq) continue ;; esac
+  [ -e "$nojq/${b##*/}" ] || ln -s "$b" "$nojq/${b##*/}" 2>/dev/null || true
+done
+fresh; : > "$AMPLIHACK_GH_COMPAT_STATE"
+rc=0; err="$(PATH="${WORK}/launcher:${WORK}/real:$nojq" gh issue view 7 --json url 2>&1)" || rc=$?
+[ "$rc" != 0 ] || fail no-jq "no jq on a blocked host still answered: $err"
+case "$err" in *"needs jq, which is not installed"*) ;; *) fail no-jq "missing jq was not reported: '$err'" ;; esac
+ok "the lookup needs no system jq; the shim without jq fails loudly"
+
+# 79. perl-alarm-does-not-bound-go-gh: on the perl path (no GNU timeout) a probe
+#     that ignores SIGALRM, as Go does, is still ended at the deadline.
+notimeout="${WORK}/notimeout"; mkdir -p "$notimeout"
+for b in /usr/bin/* /bin/*; do
+  case "${b##*/}" in timeout|gtimeout) continue ;; esac
+  [ -e "$notimeout/${b##*/}" ] || ln -s "$b" "$notimeout/${b##*/}" 2>/dev/null || true
+done
+fresh; start=$SECONDS
+PATH="${WORK}/launcher:${WORK}/real:$notimeout" STUB_GRAPHQL_OK=1 STUB_PROBE_HANG=20 AMPLIHACK_GH_COMPAT_PROBE_TIMEOUT=1 gh pr view 42 >/dev/null 2>&1 || true
+[ $((SECONDS - start)) -lt 6 ] || fail perl-bound "a probe ignoring SIGALRM held the call $((SECONDS - start))s on the perl path"
+sleep 0.3
+[ "$(ps -eo args= | grep -c '^sleep 20$' || true)" = 0 ] || fail perl-bound "the hung probe survived its deadline"
+ok "the perl-path deadline ends a probe that ignores SIGALRM"
+
+# 80. timeout-probe-swallows-ctrl-c: SIGINT (and TERM) to the shim's process
+#     group during a hung probe ends the call promptly, non-zero, before the
+#     requested command runs - on the timeout path and on the perl path.
+for variant in "timeout INT" "timeout TERM" "perl INT" "perl TERM"; do
+  set -- $variant
+  p="${WORK}/launcher:${WORK}/real:$PATH"; [ "$1" = perl ] && p="${WORK}/launcher:${WORK}/real:$notimeout"
+  fresh
+  # A new process group with SIGINT at its default (a background job starts
+  # with it ignored), as an interactive Ctrl-C would find it.
+  PATH="$p" STUB_GRAPHQL_OK=1 STUB_PROBE_HANG=21 AMPLIHACK_GH_COMPAT_PROBE_TIMEOUT=30 \
+    perl -e '$SIG{INT} = $SIG{QUIT} = "DEFAULT"; setpgrp(0, 0); exec @ARGV' gh issue comment 42 --body hi >/dev/null 2>&1 &
+  bg=$!
+  sleep 1; start=$SECONDS
+  kill -s "$2" -- "-$bg" 2>/dev/null || kill -s "$2" "$bg"
+  rc=0; { wait "$bg"; } 2>/dev/null || rc=$?
+  [ $((SECONDS - start)) -lt 3 ] || fail interrupt "$variant: the shim took $((SECONDS - start))s to stop"
+  [ "$rc" != 0 ] || fail interrupt "$variant: the interrupted call exited 0"
+  logged_prefix "issue comment 42" && fail interrupt "$variant: the requested command ran after the interrupt"
+  logged_prefix "api -X POST" && fail interrupt "$variant: the comment was posted after the interrupt"
+  sleep 0.3
+  [ "$(ps -eo args= | grep -c '^sleep 21$' || true)" = 0 ] || fail interrupt "$variant: the probe survived the interrupt"
+done
+ok "Ctrl-C or a group TERM during the probe stops the call; nothing runs after it"
 
 # 51. stale-test-contract-header: the contract above describes the probe, not
 #     the removed stderr follower or a first real-gh attempt.

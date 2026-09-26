@@ -249,7 +249,7 @@ case "$1:$2" in
     exit "${GH_VIEW_STATUS:-1}"
     ;;
   issue:list)
-    [ -n "${GH_LIST_URL:-}" ] && printf '[{"number":1,"title":"","url":"%s"}]\n' "$GH_LIST_URL"
+    [ -n "${GH_LIST_URL:-}" ] && printf '%s\n' "$GH_LIST_URL"
     exit "${GH_LIST_STATUS:-0}"
     ;;
   label:create) exit 0 ;;

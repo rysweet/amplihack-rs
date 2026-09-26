@@ -39,70 +39,37 @@ emit_local_metadata() { LOCAL_REF="$(derive_local_tracking_id)"; LOCAL_NUM=""; [
 
 sanitize_cli_output() { printf '%s\n' "$1" | head -c 4000 | sed -E 's#https?://[^[:space:]]*@#https://<redacted>@#g; s#gh[pousr]_[A-Za-z0-9_]{8,}#<redacted-token>#g; s#github_pat_[A-Za-z0-9_]+#<redacted-token>#g; s#[Bb]earer[[:space:]]+[A-Za-z0-9._~+/=-]{20,}#Bearer <redacted-token>#g; s#[A-Za-z0-9]{52}#<redacted-token>#g'; }
 
-# issue_search_query TITLE — step-03's tracker lookup query, the same on hosts
-# with real /search and on GraphQL-blocked ones: whole words only (at most 100
-# characters, cut at a word boundary: a cut word matches nothing), and never
-# anything gh-compat's search grammar refuses. Double quotes and parentheses
-# become spaces (parse(x) stays "parse x", not "parsex"); a leading '-' is
-# stripped; bare OR/NOT/AND are lowercased; ':' outside URLs becomes a space;
-# a '#' that does not start a clean #N (#12's, #12/#13, #1.5, #1st) becomes a
-# space. A title with no letter or digit at all gives an empty query (step-03
-# then searches nothing and creates its issue). A single over-long first
-# token is cut to 100 characters, never mid-way through a multi-byte character.
-issue_search_query() {
-  local t out="" w cand toks=() plain=""
-  t="$(printf '%s' "$1" | tr '"()' '   ')"
-  # Pass 1: split off the characters that could form syntax.
-  read -r -a toks <<<"$t"
-  for w in "${toks[@]}"; do
-    case "$w" in
-      http://*|https://*) ;;
-      *) w="${w//:/ }"
-         case "$w" in \#*) [[ "$w" =~ ^\#[0-9]+$ ]] || w="${w//#/ }" ;; esac ;;
-    esac
-    plain="$plain $w"
-  done
-  # Pass 2: per resulting token, drop negation and operators, then cut.
-  read -r -a toks <<<"$plain"
-  for w in "${toks[@]}"; do
-    while [ "${w#-}" != "$w" ]; do w="${w#-}"; done
-    case "$w" in OR|NOT|AND) w="$(printf '%s' "$w" | tr 'A-Z' 'a-z')" ;; esac
-    [ -n "$w" ] || continue
-    cand="${out:+$out }$w"
-    if [ "${#cand}" -gt 100 ]; then
-      [ -n "$out" ] || out="${w:0:100}"
-      break
-    fi
-    out="$cand"
-  done
-  # ${w:0:100} counts bytes outside a UTF-8 locale: drop a cut character.
-  if command -v iconv >/dev/null 2>&1; then out="$(printf '%s' "$out" | iconv -c -f UTF-8 -t UTF-8 2>/dev/null)"; fi
-  # Words are what gh-compat's search counts: runs of Unicode letters/digits.
-  [ "$(issue_title_words "$out")" = "" ] && out=""
-  printf '%s\n' "$out"
-}
-
-# issue_title_words TEXT — TEXT's words, lowercased, one line: the runs of
-# Unicode letters and digits, exactly gh-compat's search `uwords`.
-issue_title_words() {
-  jq -rn --arg t "$1" '[$t | scan("[\\p{L}\\p{N}]+") | ascii_downcase] | join(" ")' 2>/dev/null
-}
-
-# issue_pick_tracker TITLE — read `gh issue list --json number,title,url`
-# output on stdin and print the URL of step-03's existing tracker: the first
-# issue whose title equals TITLE (the same Unicode words in order, #N and URLs
-# included; case, spacing and punctuation aside, as gh-compat's exact tier
-# compares), else the first result, else nothing. The search query is cut at
-# 100 characters, so search ranking alone cannot tell a long title's own
-# tracker from a newer near-duplicate; comparing against the full title can,
-# the same way on hosts with real /search and on GraphQL-blocked ones.
-issue_pick_tracker() {
-  jq -r --arg t "$1" '
+# issue_find_tracker TITLE — step-03's existing-tracker lookup. No --search:
+# it lists the open issues (up to 1000; on GraphQL-blocked hosts gh-compat
+# pages them over REST) and prints the URL of the first one whose title is
+# TITLE — the same Unicode words (runs of letters and digits) in order, case,
+# spacing and punctuation aside — or nothing when none is. The comparison runs
+# in gh's own --jq, so no system jq is needed. A title with no word matches
+# nothing. A lookup that fails does not read as "no tracker" (that would file a
+# duplicate): it is reported on stderr and returns 1, except on a host that
+# cannot reach GitHub issues at all (GraphQL blocked with no fallback, gh
+# missing), where step-03's create path takes over and falls back to local
+# tracking.
+issue_find_tracker() {
+  local t out err rc=0 errf
+  # The title as a jq string literal: backslash and quote escaped, control
+  # characters (none survive step-03's title cleanup) dropped.
+  t="$(printf '%s' "$1" | tr -d '\000-\037')"; t="${t//\\/\\\\}"; t="${t//\"/\\\"}"
+  errf="$(mktemp "${TMPDIR:-/tmp}/tracker-lookup.XXXXXX")" || { echo "ERROR: tracking-issue lookup: mktemp failed" >&2; return 1; }
+  out="$(timeout 60 gh issue list --state open --limit 1000 --json number,title,url --jq '
     def norm: [scan("[\\p{L}\\p{N}]+") | ascii_downcase];
-    ($t | norm) as $want
-    | if type != "array" or ($want | length) == 0 then "" else
-        ((map(select(((.title // "") | norm) == $want)) + .)[0].url // "")
-      end' 2>/dev/null || true
+    ("'"$t"'" | norm) as $want
+    | if ($want | length) == 0 then "" else ([.[] | select((.title // "" | norm) == $want)][0].url // "") end' 2>"$errf")" || rc=$?
+  err="$(cat "$errf")"; rm -f "$errf"
+  if [ "$rc" -ne 0 ]; then
+    if issue_create_host_unsupported "$rc" "$err"; then return 0; fi
+    echo "ERROR: looking up an existing tracking issue failed (rc $rc); not creating one, which could duplicate it. gh reported:" >&2
+    sanitize_cli_output "$err" >&2
+    return 1
+  fi
+  case "$out" in https://*|http://*|'') printf '%s\n' "$out" ;;
+    *) echo "ERROR: tracking-issue lookup returned unexpected output:" >&2; sanitize_cli_output "$out" >&2; return 1 ;;
+  esac
 }
 
 # issue_create_host_unsupported RC OUTPUT — true only for the failures issue

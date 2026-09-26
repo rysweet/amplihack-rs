@@ -52,8 +52,9 @@
 #
 # LIMITS. `pr list` / `issue list` / `label list` page through REST up to
 # --limit, reading at most ~10 extra pages past it when a filter (merged, PRs
-# mixed into /issues, the search fallback) drops items; /search stops at its
-# 1000 results. Per-PR sub-lists (reviews, files, commits, comments, check
+# mixed into /issues, --author/--label/--assignee) drops items. --search is
+# served by GitHub search (/search/issues, first 1000 results) or fails: where
+# /search is refused (the cloud proxy) there is no client-side imitation. Per-PR sub-lists (reviews, files, commits, comments, check
 # runs, statuses, timeline) read every page. `--json` is checked against the
 # real gh's own field list; fields only GraphQL has (Projects, PR reactions,
 # isPinned, label timestamps) fail the call instead of reading null.
@@ -310,11 +311,33 @@ ghc_graphql_blocked() {
   [ "$GHC_HOST" = github.com ] || args+=(--hostname "$GHC_HOST")
   GHC_PROBE_RC=0
   # Bounded, so a hung GraphQL endpoint cannot hang the call behind it, and
-  # with no helper process of our own to race or orphan: `timeout` (GNU), else
-  # perl's alarm, which survives exec (stock on macOS), else unbounded.
-  if command -v timeout >/dev/null 2>&1; then bound=(timeout "$GHC_PROBE_TIMEOUT")
-  elif command -v perl >/dev/null 2>&1; then bound=(perl -e 'alarm shift; exec @ARGV or exit 127' "$GHC_PROBE_TIMEOUT")
-  else ghc_log "probe: neither timeout nor perl found; the GraphQL probe is unbounded"
+  # interruptible: the probe stays in the caller's process group, so a Ctrl-C
+  # (SIGINT to the group) or a group TERM ends it and the shim together, and
+  # the requested command never runs afterwards.
+  #   * GNU timeout --foreground (plain timeout moves itself into its own group
+  #     and the group's SIGINT would miss it); -k: KILL after a grace period.
+  #   * else perl (stock on macOS): fork, exec gh in the child, and from the
+  #     parent send TERM at the deadline and KILL after the grace period
+  #     (an alarm set before exec would not do: Go ignores SIGALRM); INT, TERM
+  #     and HUP are passed to gh and the parent then dies by the same signal.
+  #   * else unbounded (logged).
+  if timeout --foreground 5 true 2>/dev/null; then
+    bound=(timeout --foreground -k 2 "$GHC_PROBE_TIMEOUT")
+  elif command -v perl >/dev/null 2>&1; then
+    bound=(perl -e 'my ($t, $g) = (shift, 2);
+      my $pid = fork; defined $pid or exit 127;
+      unless ($pid) { exec @ARGV; exit 127 }
+      my ($timed, $sig) = (0, "");
+      for my $s (qw(INT TERM HUP)) { $SIG{$s} = sub { $sig = $s; kill $s, $pid } }
+      $SIG{ALRM} = sub { if ($timed++) { kill "KILL", $pid } else { kill "TERM", $pid; alarm $g } };
+      alarm $t;
+      my $r; do { $r = waitpid($pid, 0) } while ($r == -1 && $!{EINTR});
+      my $st = $?; alarm 0;
+      if ($sig) { $SIG{$sig} = "DEFAULT"; kill $sig, $$; sleep 1; exit 128 }
+      exit 124 if $timed;
+      exit(($st & 127) ? 128 + ($st & 127) : $st >> 8);' "$GHC_PROBE_TIMEOUT")
+  else
+    ghc_log "probe: neither GNU timeout nor perl found; the GraphQL probe is unbounded"
   fi
   "${bound[@]}" "$GHC_REAL" "${args[@]}" -f query='{viewer{login}}' </dev/null >/dev/null 2>"$pf" || GHC_PROBE_RC=$?
   grep -Eiq "$GHC_BLOCK_RE" "$pf"
@@ -706,48 +729,47 @@ EOF_CANDS
   jq -s . "$acc" || ghc_jq_fail
 }
 
-# ghc_search KIND(pr|issue) STATE TEXT LIMIT — /search/issues items (for
-# issues) or at least their .number (for PRs), honouring --author, --label,
-# --assignee, --head, --base and --draft as gh's search query does. The cloud
-# proxy refuses /search (it only serves repository-scoped paths), so on failure
-# the repository's issues or pulls are listed and everything matched
-# client-side, the free-text terms against title and body.
+# ghc_search KIND(pr|issue) STATE TEXT LIMIT — the issues or pulls a gh
+# --search/--author/--label/--assignee list names (issue objects, or at least
+# their .number for PRs).
+#   * With --search TEXT: GitHub search itself (/search/issues), with the
+#     flags as qualifiers, as gh builds the query. Where /search is refused
+#     (the cloud proxy serves only repository-scoped paths) the call FAILS: a
+#     client-side imitation of search syntax misreads queries in ways callers
+#     cannot see, and step-03 no longer needs one (it lists and compares titles).
+#   * Without TEXT: the repository's pulls or issues are listed over REST and
+#     filtered client-side by author, labels (all of them), assignee, --draft
+#     and --state merged; /pulls filters head and base itself.
 ghc_search() {
   local kind="$1" state="$2" text="$3" limit="$4" q l rstate path author="${GHC_O_author:-}" assignee="${GHC_O_assignee:-}" qs=""
-  q="repo:${GHC_REPO} is:${kind} ${text}"
-  # /search serves the first 1000 results only.
-  [ "$limit" -gt 1000 ] && { ghc_log "search: --limit ${limit} cut to /search's 1000"; limit=1000; }
-  case "$state" in open|closed|merged) q="$q is:$state" ;; esac
-  [ -n "$author" ] && q="$q author:${author}"
-  [ -n "$assignee" ] && q="$q assignee:${assignee}"
-  # Repeated --label means every one of them, so one qualifier each.
-  while IFS= read -r l; do
-    [ -z "$l" ] || q="$q label:\"$l\""
-  done <<EOF_LABELS
+  if [ -n "$text" ]; then
+    q="repo:${GHC_REPO} is:${kind} ${text}"
+    # /search serves the first 1000 results only.
+    [ "$limit" -gt 1000 ] && { ghc_log "search: --limit ${limit} cut to /search's 1000"; limit=1000; }
+    case "$state" in open|closed|merged) q="$q is:$state" ;; esac
+    [ -n "$author" ] && q="$q author:${author}"
+    [ -n "$assignee" ] && q="$q assignee:${assignee}"
+    # Repeated --label means every one of them, so one qualifier each.
+    while IFS= read -r l; do
+      [ -z "$l" ] || q="$q label:\"$l\""
+    done <<EOF_LABELS
 $(printf '%s' "${GHC_O_label:-}" | tr ',' '\n')
 EOF_LABELS
-  [ -n "${GHC_O_head:-}" ] && q="$q head:${GHC_O_head#*:}"
-  [ -n "${GHC_O_base:-}" ] && q="$q base:${GHC_O_base}"
-  [ "${GHC_B_draft:-}" = 1 ] && q="$q draft:true"
-  # Probe /search with one small page; when it answers, page through it.
-  if ghc_api GET "search/issues?per_page=1&q=$(ghc_uri "$q")" >/dev/null; then
-    GHC_PAGE_ITEMS='.items // []' ghc_paged "search/issues?q=$(ghc_uri "$q")" "$limit" '.'; return
+    [ -n "${GHC_O_head:-}" ] && q="$q head:${GHC_O_head#*:}"
+    [ -n "${GHC_O_base:-}" ] && q="$q base:${GHC_O_base}"
+    [ "${GHC_B_draft:-}" = 1 ] && q="$q draft:true"
+    if ghc_api GET "search/issues?per_page=1&q=$(ghc_uri "$q")" >/dev/null; then
+      GHC_PAGE_ITEMS='.items // []' ghc_paged "search/issues?q=$(ghc_uri "$q")" "$limit" '.'; return
+    fi
+    ghc_last
+    ghc_die "gh-compat: --search needs GitHub search, which this host refuses (${GHC_STATUS:-?}: ${GHC_ERR#gh: }); list without --search and filter the result instead"
   fi
-  ghc_last
-  ghc_log "search unavailable (${GHC_STATUS:-?}); matching '${text}' client-side over repos/${GHC_REPO}"
-  # /search resolves @me server-side; the client-side match compares logins,
-  # where a literal "@me" would silently match nobody (quality-loop's
-  # `--author=@me` lists would come back empty).
-  ghc_search_terms "$kind" "$text"
-  [ "$GHC_SQ_NONE" = 1 ] && { printf '[]\n'; return 0; }   # nothing it could match
-  [ -n "$author" ] || author="$GHC_SQ_AUTHOR"
-  [ -n "$assignee" ] || assignee="$GHC_SQ_ASSIGNEE"
+  # /search resolves @me server-side; the client-side match compares logins.
   [ "$author" = "@me" ] && { author="$(ghc_api_or_die GET user | jq -r '.login // empty')" || exit 1; }
-  [ -n "${GHC_O_author:-}${GHC_SQ_AUTHOR}" ] && [ -z "$author" ] && ghc_die "gh: could not resolve --author ${GHC_O_author:-$GHC_SQ_AUTHOR}"
-  l="${GHC_O_label:-}"; [ -z "$GHC_SQ_LABELS" ] || l="${l:+$l,}${GHC_SQ_LABELS}"
+  [ -n "${GHC_O_author:-}" ] && [ -z "$author" ] && ghc_die "gh: could not resolve --author ${GHC_O_author}"
+  l="${GHC_O_label:-}"
   rstate="$state"; case "$state" in open|closed) ;; merged) rstate=closed ;; *) rstate=all ;; esac
   if [ "$kind" = pr ]; then
-    # /pulls filters head and base itself; /issues cannot.
     case "${GHC_O_head:-}" in '') ;; *:*) qs="&head=$(ghc_uri "$GHC_O_head")" ;; *) qs="&head=$(ghc_uri "${GHC_REPO%%/*}:${GHC_O_head}")" ;; esac
     [ -n "${GHC_O_base:-}" ] && qs="${qs}&base=$(ghc_uri "$GHC_O_base")"
     [ -n "$assignee" ] && { assignee="$(ghc_expand_me "$assignee")"; [ "$assignee" != "@me" ] || ghc_die "gh: could not resolve --assignee @me"; }
@@ -758,126 +780,19 @@ EOF_LABELS
     assignee=""   # /issues filtered it
     path="repos/${GHC_REPO}/issues?state=${rstate}${qs}"
   fi
-  # Full pages: the text match keeps few items, and --limit 1 must not stop
-  # the scan after ~11 items. Then exactly two tiers: issues whose title is the
-  # query itself (the same words, in order; case, spacing and punctuation
-  # aside) first, so step-03's `.[0]` is its own tracker; then the rest in the
-  # REST order (newest first).
-  GHC_PAGE_SIZE=100 ghc_paged "$path" "$limit" "$GHC_SQ_JQ"'
-    ($w | uwords) as $words
-    | ($u | split("\n") | map(select(. != ""))) as $urls
-    | ($r | split("\n") | map(select(. != "") | split("\t") | {n: (.[0] | tonumber), t: .[1]})) as $refs
-    | ($l | split(",") | map(select(. != ""))) as $labels
+  # Full pages: a filter may keep few items, and --limit 1 must not stop the
+  # scan after ~11 items.
+  GHC_PAGE_SIZE=100 ghc_paged "$path" "$limit" '
+    ($l | split(",") | map(select(. != ""))) as $labels
     | map(select($k == "pr" or .pull_request == null)
           | select($a == "" or .user.login == $a)
-          | select($qs == "" or .state == $qs)
-          | select($qm == "" or .merged_at != null)
           | select($k == "issue" or (
               ([.labels[]?.name] as $have | all($labels[]; . as $x | $have | index([$x]) != null))
               and ($as == "" or any(.assignees[]?; .login == $as))
               and ($d == "" or (.draft // false))
-              and ($s != "merged" or .merged_at != null)))
-          | (if $f == "title" then (.title // "") elif $f == "body" then (.body // "") else (.title // "") + " " + (.body // "") end) as $hay
-          | ($hay | uwords) as $h
-          | select(all($words[]; hasword($h)))
-          | select(all($urls[]; . as $x | $hay | hastoken($x)))
-          | select(.number as $x | all($refs[]; . as $ref | $ref.n == $x or ($hay | hastoken($ref.t)))))' \
-    --arg k "$kind" --arg w "$GHC_SQ_WORDS" --arg u "$GHC_SQ_URLS" --arg r "$GHC_SQ_REFS" --arg f "$GHC_SQ_IN" \
-    --arg qs "$GHC_SQ_STATE" --arg qm "$GHC_SQ_MERGED" --arg a "$author" --arg l "$l" --arg as "$assignee" \
-    --arg d "${GHC_B_draft:-}" --arg s "$state" \
-    | jq --arg q "$GHC_SQ_TEXT" "$GHC_SQ_JQ"'
-        ($q | uwords | map(ascii_downcase)) as $qw
-        | sort_by(if ($qw | length) > 0 and ((.title // "") | uwords | map(ascii_downcase)) == $qw then 0 else 1 end)'
-}
-
-# jq helpers for the search fallback. Words are runs of Unicode letters and
-# digits (titles in any script match); comparison ignores ASCII case, and
-# Unicode case too where a word is not plain ASCII. hastoken finds a reference
-# or URL only as a whole token: the character after it may not continue it
-# (#12 never matches #123, /issues/5 never /issues/55).
-# One definition of a word for the whole fallback (the matcher, the ranking and
-# ghc_search_terms' "is there anything to match" test): a run of Unicode
-# letters and digits, as a jq string literal.
-GHC_UWORDS_RE='[\\p{L}\\p{N}]+'
-# shellcheck disable=SC2016  # jq program, not shell expansions.
-GHC_SQ_JQ='
-def uwords: [scan("'"$GHC_UWORDS_RE"'")];
-def esc: [explode[] | [.] | implode | if test("[A-Za-z0-9]") then . else "\\" + . end] | join("");
-def hasword($h): . as $x | ($x | ascii_downcase) as $lx
-  | any($h[]; ascii_downcase == $lx)
-    or (($x | test("^[\\x00-\\x7f]*$") | not) and any($h[]; test("^" + ($x | esc) + "$"; "i")));
-def hastoken($t): test("(^|[^\\p{L}\\p{N}/#])" + ($t | esc) + "(?![\\p{L}\\p{N}_])"; "i");
-'
-
-# ghc_search_terms KIND TEXT — split a --search query for the client-side
-# fallback into GHC_SQ_* terms. The grammar is a closed allowlist; a query is
-# one line, split on spaces and tabs, and every token must be one of:
-#   a plain word    (no ":", quote or parenthesis, not starting with "-"; not
-#                   OR/NOT/AND) - each of its words must appear in the text
-#   #N, or an issue/PR URL of this repository - issue N, or the text holding
-#                   that reference as a whole token (#12 never matches #123)
-#   any other http(s) URL - must appear in the text as a whole token
-#   is:open  is:closed  is:issue  is:pr  is:merged  state:open  state:closed
-#   in:title  in:body  in:title,body  in:body,title
-#   label:NAME (one name, no comma)  author:LOGIN  assignee:LOGIN
-# Anything else fails loudly (ghc_search_unsupported): every other qualifier
-# (has:, sort:, field.x:, ...), a leading - or --, quotes, parentheses,
-# OR/NOT/AND, a comma in label:, a newline. A query that leaves nothing to
-# match on (GHC_SQ_NONE=1) matches nothing: step-03 must create an issue, never
-# adopt an unrelated one because every issue "matched" an empty query.
-# GHC_SQ_TEXT keeps the query's non-qualifier tokens, in order, for ranking.
-ghc_search_terms() {
-  local kind="$1" text="$2" tok name val num toks=() used=0
-  GHC_SQ_WORDS=""; GHC_SQ_URLS=""; GHC_SQ_REFS=""; GHC_SQ_IN=""; GHC_SQ_STATE=""; GHC_SQ_MERGED=""
-  GHC_SQ_LABELS=""; GHC_SQ_AUTHOR=""; GHC_SQ_ASSIGNEE=""; GHC_SQ_NONE=0; GHC_SQ_TEXT=""
-  [ -n "$text" ] || return 0
-  case "$text" in *$'\n'*|*$'\r'*) ghc_search_unsupported "a line break" ;; esac
-  read -r -a toks <<<"$text"
-  for tok in "${toks[@]}"; do
-    case "$tok" in
-      *'"'*) ghc_search_unsupported "quotes in '$tok'" ;;
-      *'('*|*')'*) ghc_search_unsupported "parentheses in '$tok'" ;;
-      -*) ghc_search_unsupported "'$tok' (negation or a flag)" ;;
-      OR|NOT|AND) ghc_search_unsupported "'$tok'" ;;
-      http://*|https://*)
-        num=""
-        if [[ "$tok" =~ ^https?://(www\.)?github\.com/([^/]+/[^/]+)/(issues|pull)/([0-9]+)/?$ ]]; then
-          [ "$(printf '%s' "${BASH_REMATCH[2]}" | tr 'A-Z' 'a-z')" = "$(printf '%s' "$GHC_REPO" | tr 'A-Z' 'a-z')" ] && num="${BASH_REMATCH[4]}"
-        fi
-        tok="${tok%/}"
-        if [ -n "$num" ]; then GHC_SQ_REFS="${GHC_SQ_REFS}${num}"$'\t'"${tok}"$'\n'; else GHC_SQ_URLS="${GHC_SQ_URLS}${tok}"$'\n'; fi
-        GHC_SQ_TEXT="$GHC_SQ_TEXT $tok"; used=1; continue ;;
-      \#[0-9]*)
-        num="${tok#\#}"; num="${num%%[!0-9]*}"
-        case "${tok#\#"$num"}" in *[!.,\;!?]*) ghc_search_unsupported "'$tok'" ;; esac
-        GHC_SQ_REFS="${GHC_SQ_REFS}${num}"$'\t'"#${num}"$'\n'; GHC_SQ_TEXT="$GHC_SQ_TEXT #$num"; used=1; continue ;;
-      *:*)
-        name="$(printf '%s' "${tok%%:*}" | tr 'A-Z' 'a-z')"; val="${tok#*:}"
-        case "$name:$val" in
-          is:open|is:closed|state:open|state:closed) GHC_SQ_STATE="$val"; used=1 ;;
-          is:merged) [ "$kind" = pr ] || GHC_SQ_NONE=1; GHC_SQ_MERGED=1; used=1 ;;
-          is:issue|is:pr) [ "$val" = "$kind" ] || GHC_SQ_NONE=1; used=1 ;;
-          in:title|in:body) GHC_SQ_IN="$val" ;;
-          in:title,body|in:body,title) ;;   # the default
-          label:*,*|label:) ghc_search_unsupported "'$tok' (one label per label: qualifier)" ;;
-          label:*) GHC_SQ_LABELS="${GHC_SQ_LABELS:+$GHC_SQ_LABELS,}$val"; used=1 ;;
-          author:?*) GHC_SQ_AUTHOR="$val"; used=1 ;;
-          assignee:?*) GHC_SQ_ASSIGNEE="$val"; used=1 ;;
-          *) ghc_search_unsupported "'$tok'" ;;
-        esac
-        continue ;;
-    esac
-    # A plain word; whether it holds any word at all is decided below.
-    GHC_SQ_WORDS="$GHC_SQ_WORDS $tok"; GHC_SQ_TEXT="$GHC_SQ_TEXT $tok"
-  done
-  # Words are counted exactly as the matcher counts them (GHC_UWORDS_RE): an
-  # emoji or a dash holds none, so a query of only those matches nothing.
-  if [ -n "$GHC_SQ_WORDS" ] && [ "$(jq -rn --arg w "$GHC_SQ_WORDS" "[\$w | scan(\"$GHC_UWORDS_RE\")] | length")" != 0 ]; then used=1; fi
-  [ "$used" = 1 ] || GHC_SQ_NONE=1
-}
-
-ghc_search_unsupported() {
-  ghc_die "gh-compat: search syntax $1 is not supported by the REST fallback (GitHub search is unavailable here; the repository's issues are matched client-side)"
+              and ($s != "merged" or .merged_at != null))))' \
+    --arg k "$kind" --arg a "$author" --arg l "$l" --arg as "$assignee" \
+    --arg d "${GHC_B_draft:-}" --arg s "$state"
 }
 
 # ---------------------------------------------------------------------------
@@ -1644,7 +1559,6 @@ ghc_main() {
     "label create") exec "$GHC_REAL" "$@" ;;
     *) if ghc_wants_help "$@"; then exec "$GHC_REAL" "$@"; fi ;;
   esac
-  command -v jq >/dev/null 2>&1 || exec "$GHC_REAL" "$@"
   GHC_HOST="$(ghc_target_host "${1:-}" "${2:-}" "${@:3}")"
   ghc_init_state; ghc_key_state
   # Private per-invocation scratch (REST error/status hand-off, request bodies,
@@ -1679,6 +1593,10 @@ ghc_main() {
   esac
   [ "$GHC_HOST" = github.com ] \
     || ghc_die "gh-compat: GitHub GraphQL is blocked for ${GHC_HOST}, and the REST fallback serves github.com only"
+  # Everything past here shapes JSON with jq. Without it there is no fallback,
+  # and saying so beats gh's bare GraphQL refusal (or a caller reading "none").
+  command -v jq >/dev/null 2>&1 \
+    || ghc_die "gh-compat: GitHub GraphQL is blocked on this host and the REST fallback needs jq, which is not installed"
   ghc_log "REST fallback: gh $1 $2"
   ghc_rest_dispatch "$@"
 }

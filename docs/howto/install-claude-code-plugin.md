@@ -228,8 +228,8 @@ unprefixed (`dev-orchestrator`), and the plugin's copies appear as
   `gh` first on `PATH` that replays those calls over the REST API when it sees
   the block ([#1484](https://github.com/rysweet/amplihack-rs/issues/1484)).
   What only GraphQL can answer (Projects, pinned issues, filters such as
-  `--milestone`, arbitrary `gh api graphql` queries) fails with a message that
-  names it. `gh` run outside a recipe is not wrapped; set
+  `--milestone`, arbitrary `gh api graphql` queries), and `--search` where the
+  host also refuses GitHub search, fails with a message that names it. `gh` run outside a recipe is not wrapped; set
   `AMPLIHACK_GH_COMPAT=0` to turn the layer off.
 - **Skill-to-agent redirect.** The `pre-tool-use` hook's redirect from a skill
   name to the matching agent compares bare names. Plugin skills are namespaced
