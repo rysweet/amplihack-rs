@@ -96,11 +96,18 @@ fn apply_launch_environment(
         &amplihack_utils::litellm_proxy::ProxyConfig,
         amplihack_utils::litellm_proxy::CliTarget,
     )>,
-) {
+    root_sandbox: Option<&amplihack_utils::root_sandbox::SkipPermissionsEnv>,
+) -> Result<()> {
     env_builder.apply_to_command(command);
     if let Some((config, target)) = proxy {
         config.apply_to_command(command, target);
     }
+    // Issue #1482: IS_SANDBOX=1 goes on this child only, never on amplihack,
+    // and last, so nothing applied above can undo it.
+    if let Some(decision) = root_sandbox {
+        decision.apply(command)?;
+    }
+    Ok(())
 }
 
 /// Issue #1482: what a `claude` launch needs for `--dangerously-skip-permissions`
@@ -142,6 +149,43 @@ pub fn run_launch(
     extra_args: Vec<String>,
     override_origin: OverrideOrigin,
     proxy_target: Option<amplihack_utils::litellm_proxy::CliTarget>,
+) -> Result<()> {
+    run_launch_with(
+        tool,
+        launcher_command,
+        docker,
+        resume,
+        continue_session,
+        skip_permissions,
+        skip_update_check,
+        no_reflection,
+        subprocess_safe,
+        checkout_repo,
+        extra_args,
+        override_origin,
+        proxy_target,
+        amplihack_utils::root_sandbox::detect,
+    )
+}
+
+/// [`run_launch`] with the issue #1482 root-sandbox decision injected, so
+/// tests reach the call in the launch whatever uid they run as.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_launch_with(
+    tool: &str,
+    launcher_command: &str,
+    docker: bool,
+    resume: bool,
+    continue_session: bool,
+    skip_permissions: bool,
+    skip_update_check: bool,
+    no_reflection: bool,
+    subprocess_safe: bool,
+    checkout_repo: Option<String>,
+    extra_args: Vec<String>,
+    override_origin: OverrideOrigin,
+    proxy_target: Option<amplihack_utils::litellm_proxy::CliTarget>,
+    root_sandbox_decision: fn() -> amplihack_utils::root_sandbox::SkipPermissionsEnv,
 ) -> Result<()> {
     validate_launch_prompt_delivery(tool)?;
     let proxy_config = amplihack_utils::litellm_proxy::ProxyConfig::from_env()
@@ -213,12 +257,8 @@ pub fn run_launch(
     // Issue #1482: decide now, after the Docker hand-off (the container launch
     // decides for itself), so a root host outside a sandbox fails here with a
     // message naming IS_SANDBOX=1 instead of inside claude.
-    let root_sandbox = root_sandbox_for_launch(
-        tool,
-        skip_permissions,
-        &extra_args,
-        amplihack_utils::root_sandbox::detect,
-    )?;
+    let root_sandbox =
+        root_sandbox_for_launch(tool, skip_permissions, &extra_args, root_sandbox_decision)?;
 
     // Check for npm updates before doing anything else.
     // This is a no-op if skip_update_check is true, AMPLIHACK_NONINTERACTIVE is set,
@@ -342,11 +382,8 @@ pub fn run_launch(
             &mut cmd,
             env_builder,
             proxy_config.as_ref().zip(proxy_target),
-        );
-        // Issue #1482: IS_SANDBOX=1 goes on this child only, never on amplihack.
-        if let Some(decision) = &root_sandbox {
-            decision.apply(&mut cmd)?;
-        }
+            root_sandbox.as_ref(),
+        )?;
 
         // Spawn child in its own process group.
         //

@@ -100,3 +100,81 @@ fn non_root_and_explicit_sandbox_leave_the_child_environment_alone() {
         assert_eq!(child_is_sandbox(&cmd), None);
     }
 }
+
+// --- the calls in run_launch_with -------------------------------------------
+
+#[test]
+fn launch_environment_puts_is_sandbox_on_the_child_last() {
+    let set_sandbox = SkipPermissionsEnv::SetSandbox {
+        signal: "/.dockerenv",
+    };
+    // Even an inherited or builder-set value is overridden by the decision.
+    let mut cmd = std::process::Command::new("claude");
+    apply_launch_environment(
+        &mut cmd,
+        EnvBuilder::new().set(IS_SANDBOX_ENV, "0"),
+        None,
+        Some(&set_sandbox),
+    )
+    .unwrap();
+    assert_eq!(child_is_sandbox(&cmd).as_deref(), Some("1"));
+
+    for decision in [None, Some(&SkipPermissionsEnv::NotRoot)] {
+        let mut cmd = std::process::Command::new("claude");
+        apply_launch_environment(&mut cmd, EnvBuilder::new(), None, decision).unwrap();
+        assert_eq!(child_is_sandbox(&cmd), None, "{decision:?}");
+    }
+
+    let mut cmd = std::process::Command::new("claude");
+    let error = apply_launch_environment(
+        &mut cmd,
+        EnvBuilder::new(),
+        None,
+        Some(&SkipPermissionsEnv::RootOutsideSandbox),
+    )
+    .expect_err("a refusal is never applied");
+    assert!(error.to_string().contains("IS_SANDBOX=1"), "{error}");
+}
+
+/// The decision in `run_launch_with` stops `amplihack claude` before anything
+/// else runs (update check, bootstrap, binary lookup, spawn).
+#[test]
+fn claude_launch_stops_up_front_when_claude_code_would_refuse() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if std::env::var_os("AMPLIHACK_USE_DOCKER").is_some()
+        || amplihack_utils::litellm_proxy::ProxyConfig::from_env()
+            .ok()
+            .flatten()
+            .is_some()
+    {
+        // Those launches hand off before the root-sandbox decision.
+        return;
+    }
+    for decision in [
+        (|| SkipPermissionsEnv::RootOutsideSandbox) as fn() -> SkipPermissionsEnv,
+        || SkipPermissionsEnv::ExplicitlyNotSandboxed {
+            value: "0".to_string(),
+        },
+    ] {
+        let error = run_launch_with(
+            "claude",
+            "claude",
+            false,
+            false,
+            false,
+            true,
+            true,
+            false,
+            true,
+            None,
+            vec!["-p".to_string(), "hello".to_string()],
+            amplihack_utils::launch_target::OverrideOrigin::User,
+            None,
+            decision,
+        )
+        .expect_err("the launch must stop before spawning");
+        assert!(format!("{error:#}").contains("IS_SANDBOX=1"), "{error:#}");
+    }
+}
