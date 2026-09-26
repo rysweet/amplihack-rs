@@ -499,6 +499,21 @@ test('resolveLatestReleaseTag uses the redirect when the API is rate-limited', w
   ]);
 }));
 
+test('resolveLatestReleaseTag tries the redirect when the API answer is unparseable', withIsolatedCache(async () => {
+  const urls = [];
+  await withMockHttpsGet((url, _options, callback) => {
+    urls.push(url);
+    const response = url.startsWith('https://api.github.com/')
+      ? responseFor(200, '{"tag_name":"latest"}')
+      : responseFor(302, '', { location: 'https://github.com/rysweet/amplihack-rs/releases/tag/v0.18.37' });
+    callback(response);
+    response.send();
+  }, async () => {
+    assert.equal(await resolveLatestReleaseTag('0.18.0'), '0.18.37');
+  });
+  assert.equal(urls.length, 2, 'an unparseable API answer must reach the redirect probe');
+}));
+
 test('resolveLatestReleaseTag falls back to package.json only when both fail', withIsolatedCache(async () => {
   const originalWrite = process.stderr.write;
   let warned = '';

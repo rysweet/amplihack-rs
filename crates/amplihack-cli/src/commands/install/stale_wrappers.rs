@@ -403,7 +403,10 @@ fn npm_launcher_target(path: &Path, canonical: &Path) -> Option<PathBuf> {
 /// - `npx`:      `.../_npx/<hash>/node_modules/.bin/<name>`
 /// - `pnpm dlx`: `.../pnpm/dlx/<hash>/<id>/node_modules/.bin/<name>`
 /// - `bunx`:     `.../bunx-<uid>-<pkg>@<ver>/node_modules/.bin/<name>`
-/// - `yarn dlx`: `.../xfs-<hash>/dlx-<pid>/.../node_modules/.bin/<name>`
+///
+/// `yarn dlx` is not recognized as transient: its layout was not reproduced
+/// here. A yarn launcher that resolves to the wrapper is treated as persistent
+/// (install continues; the advisory explains it), never as unknown.
 fn is_transient_launcher_location(path: &Path) -> bool {
     let parts: Vec<String> = path
         .components()
@@ -423,7 +426,7 @@ fn is_transient_launcher_location(path: &Path) -> bool {
     let all_digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
 
     // npx: `_npx/<hash>` directly above node_modules.
-    if bin_at >= 2 && ancestors[bin_at - 2] == "_npx" && !ancestors[bin_at - 1].is_empty() {
+    if bin_at >= 2 && ancestors[bin_at - 2] == "_npx" {
         return true;
     }
     // pnpm dlx: `pnpm/dlx/<hash>/<id>` directly above node_modules.
@@ -436,14 +439,6 @@ fn is_transient_launcher_location(path: &Path) -> bool {
             .strip_prefix("bunx-")
             .and_then(|rest| rest.split_once('-'))
             .is_some_and(|(uid, _)| all_digits(uid))
-    {
-        return true;
-    }
-    // yarn dlx: an `xfs-<hash>` temp dir with a `dlx-<pid>` project inside it.
-    if let Some(xfs) = ancestors.iter().position(|p| p.starts_with("xfs-"))
-        && ancestors[xfs + 1..]
-            .iter()
-            .any(|p| p.strip_prefix("dlx-").is_some_and(all_digits))
     {
         return true;
     }

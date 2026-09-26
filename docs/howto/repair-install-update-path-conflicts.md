@@ -105,7 +105,7 @@ package manager puts its own shim for this package first on `PATH` for as long
 as that command runs. Install recognizes it, leaves it alone, and prints:
 
 ```text
-  ℹ️  Leaving transient npx/dlx shim /home/alice/.npm/_npx/<hash>/node_modules/.bin/amplihack in place; it stops shadowing /home/alice/.local/bin/amplihack once the launching command exits.
+  ℹ️  Leaving transient package-manager launcher /home/alice/.npm/_npx/<hash>/node_modules/.bin/amplihack in place; it stops shadowing /home/alice/.local/bin/amplihack once the launching command exits.
 ```
 
 No action is needed. Any other executable under such a cache is still treated

@@ -131,7 +131,7 @@ if grep -qF "failed to neutralize" "$out"; then
 else
   pass "no neutralizer failure"
 fi
-if grep -qF "Leaving transient npx/dlx shim $npx_bin/amplihack in place" "$out"; then
+if grep -qF "Leaving transient package-manager launcher $npx_bin/amplihack in place" "$out"; then
   pass "install prints the transient npx shim notice"
 else
   fail "missing transient npx shim notice"
@@ -193,7 +193,7 @@ pnpm_bin="$(make_pnpm_dlx_layout "$home" "$ROOT/npm/bin/amplihack.js")"
 out="$TMP/case4.log"
 status=0
 run_install "$home" "$pnpm_bin:$home/.local/bin:$SYSTEM_PATH" "$out" || status=$?
-if [[ "$status" -eq 0 ]] && grep -qF "Leaving transient npx/dlx shim $pnpm_bin/amplihack in place" "$out"; then
+if [[ "$status" -eq 0 ]] && grep -qF "Leaving transient package-manager launcher $pnpm_bin/amplihack in place" "$out"; then
   pass "install succeeds with the pnpm dlx sh shim first on PATH"
 else
   fail "install exited $status with the pnpm dlx shim first on PATH"

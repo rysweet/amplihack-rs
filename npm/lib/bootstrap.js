@@ -537,9 +537,9 @@ async function resolveLatestReleaseTag(fallbackVersion) {
     const data = JSON.parse(body.toString('utf8'));
     const tag = typeof data.tag_name === 'string' ? data.tag_name.replace(/^v/, '') : '';
     if (!TAG_REGEX.test(tag)) {
-      // Network response was unparseable: fall back without poisoning the cache.
-      process.stderr.write(`amplihack: could not parse latest release tag, using fallback v${fallbackVersion}\n`);
-      return fallbackVersion;
+      // Unparseable API answer: same recovery as a failed call (redirect
+      // probe, then the warned fallback), and never cached.
+      throw new Error(`unparseable tag_name in the releases/latest API response: ${JSON.stringify(data.tag_name)}`);
     }
     writeLatestTagCache(tag);
     return tag;
