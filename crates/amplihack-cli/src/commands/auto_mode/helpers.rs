@@ -283,6 +283,8 @@ fn build_tool_passthrough_prefix_args(
     let mut args = passthrough_args.to_vec();
     match tool {
         AutoModeTool::Claude | AutoModeTool::RustyClawd => {
+            // These args go to a nested `amplihack claude`, whose launcher sets
+            // IS_SANDBOX=1 for a root sandbox or fails naming it (issue #1482).
             if !args
                 .iter()
                 .any(|arg| arg == "--dangerously-skip-permissions")

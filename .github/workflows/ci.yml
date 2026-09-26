@@ -458,6 +458,10 @@ jobs:
           amplihack --version
           amplihack --help
           amplihack recipe list || true
+      - name: Install — npx shim does not abort install (issue #1480)
+        run: AMPLIHACK_BIN="$(command -v amplihack)" bash tests/issue_1480_npx_shim_install.sh
+      - name: Install — bootstraps Rust toolchain when cargo is missing
+        run: AMPLIHACK_BIN="$(command -v amplihack)" bash tests/rust_toolchain_bootstrap_install.sh
 
   cross-compile:
     name: Build ${{ matrix.target }}

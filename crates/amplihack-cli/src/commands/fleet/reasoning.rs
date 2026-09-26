@@ -210,17 +210,23 @@ pub(super) struct SessionAnalysis {
     pub(super) diagnostic: Option<String>,
 }
 
+/// Issue #1482: where the Claude reasoner gets its root-sandbox decision;
+/// [`amplihack_utils::root_sandbox::detect`] outside tests.
+pub(super) type RootSandboxDecision = fn() -> amplihack_utils::root_sandbox::SkipPermissionsEnv;
+
 #[derive(Debug, Clone)]
 pub(super) enum NativeReasonerBackend {
     None,
-    Claude(PathBuf),
+    Claude(PathBuf, RootSandboxDecision),
 }
 
 impl NativeReasonerBackend {
     pub(super) fn detect(requested: &str) -> Result<Self> {
         match requested {
             "auto" | "anthropic" | "claude" => Ok(find_reasoner_binary()
-                .map(NativeReasonerBackend::Claude)
+                .map(|path| {
+                    NativeReasonerBackend::Claude(path, amplihack_utils::root_sandbox::detect)
+                })
                 .unwrap_or(NativeReasonerBackend::None)),
             "copilot" | "litellm" => bail!(
                 "native fleet reasoner backend `{requested}` is not implemented yet; use the default Claude backend"
@@ -232,7 +238,17 @@ impl NativeReasonerBackend {
     pub(super) fn label(&self) -> &'static str {
         match self {
             NativeReasonerBackend::None => "heuristic",
-            NativeReasonerBackend::Claude(_) => "claude",
+            NativeReasonerBackend::Claude(..) => "claude",
+        }
+    }
+
+    /// Issue #1482: the line announcing an automatic `IS_SANDBOX=1` for this
+    /// backend's `claude`, for the caller to show once where the user sees it
+    /// (stderr for the fleet commands, the notice panel in the TUI).
+    pub(super) fn root_sandbox_notice(&self) -> Option<String> {
+        match self {
+            NativeReasonerBackend::None => None,
+            NativeReasonerBackend::Claude(_, decision) => decision().notice(),
         }
     }
 
@@ -241,10 +257,8 @@ impl NativeReasonerBackend {
             NativeReasonerBackend::None => {
                 bail!("no native reasoner backend available")
             }
-            NativeReasonerBackend::Claude(path) => {
-                let mut cmd = Command::new(path);
-                cmd.stdin(Stdio::null());
-                cmd.args(["--dangerously-skip-permissions", "-p", prompt]);
+            NativeReasonerBackend::Claude(path, decision) => {
+                let mut cmd = reasoner_command(path, prompt, &decision())?;
                 let mut env_builder = EnvBuilder::new()
                     .with_amplihack_session_id()
                     .with_session_tree_context()
@@ -268,4 +282,25 @@ impl NativeReasonerBackend {
             }
         }
     }
+}
+
+/// The reasoner's `claude` invocation with the root-sandbox `decision` applied
+/// (issue #1482): `IS_SANDBOX=1` on the child when amplihack enables it, or an
+/// error when Claude Code would refuse the flag. The notice is shown once by
+/// the caller through [`NativeReasonerBackend::root_sandbox_notice`], not per
+/// call.
+pub(super) fn reasoner_command(
+    path: &Path,
+    prompt: &str,
+    decision: &amplihack_utils::root_sandbox::SkipPermissionsEnv,
+) -> Result<Command> {
+    let mut cmd = Command::new(path);
+    cmd.stdin(Stdio::null());
+    cmd.args([
+        amplihack_utils::root_sandbox::SKIP_PERMISSIONS_FLAG,
+        "-p",
+        prompt,
+    ]);
+    decision.apply_quietly(&mut cmd)?;
+    Ok(cmd)
 }
