@@ -101,6 +101,10 @@ fn set_env(value: &str) {
     // SAFETY: see clear_env.
     unsafe {
         std::env::set_var("AMPLIHACK_AGENT_BINARY", value);
+        // A value set here is a choice. Without this, a `default:<binary>` tag
+        // inherited from a recipe step running the suite would make the
+        // resolver skip it (issue #1481).
+        std::env::remove_var(amplihack_utils::agent_binary::SOURCE_ENV);
     }
 }
 
@@ -327,4 +331,37 @@ fn launcher_context_without_timestamp_is_ignored() {
     )
     .unwrap();
     assert_eq!(resolve(tmp.path()).unwrap(), "copilot");
+}
+
+/// Issue #1481: a value tagged as a parent's default guess for the same binary
+/// is skipped, and the layers below it answer. A tag naming another binary
+/// does not veto the value.
+#[test]
+fn a_tagged_default_guess_is_skipped_by_the_resolver() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    clear_env();
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join(".git")).unwrap();
+    write_launcher_context(tmp.path(), "codex");
+
+    set_env("copilot");
+    // SAFETY: see clear_env.
+    unsafe { std::env::set_var(agent_binary::SOURCE_ENV, "default:copilot") };
+    let skipped = agent_binary::resolve_with_source(tmp.path()).unwrap();
+
+    unsafe { std::env::set_var(agent_binary::SOURCE_ENV, "default:claude") };
+    let honoured = agent_binary::resolve_with_source(tmp.path()).unwrap();
+    clear_env();
+
+    assert_eq!(
+        skipped,
+        (
+            "codex".to_string(),
+            agent_binary::ResolutionSource::LauncherContext
+        )
+    );
+    assert_eq!(
+        honoured,
+        ("copilot".to_string(), agent_binary::ResolutionSource::Env)
+    );
 }
