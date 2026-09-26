@@ -39,25 +39,35 @@ emit_local_metadata() { LOCAL_REF="$(derive_local_tracking_id)"; LOCAL_NUM=""; [
 
 sanitize_cli_output() { printf '%s\n' "$1" | head -c 4000 | sed -E 's#https?://[^[:space:]]*@#https://<redacted>@#g; s#gh[pousr]_[A-Za-z0-9_]{8,}#<redacted-token>#g; s#github_pat_[A-Za-z0-9_]+#<redacted-token>#g; s#[Bb]earer[[:space:]]+[A-Za-z0-9._~+/=-]{20,}#Bearer <redacted-token>#g; s#[A-Za-z0-9]{52}#<redacted-token>#g'; }
 
-# issue_search_query TITLE — step-03's tracker lookup query: whole words only
-# (at most 100 characters, cut at a word boundary: a cut word matches nothing),
-# with the search syntax a title can carry by accident made plain text: double
-# quotes and parentheses dropped, leading '-' stripped, bare OR/NOT/AND lowercased,
-# ':' outside URLs turned into a space (no accidental qualifiers). A single
-# over-long first token is cut to its first 100 characters, never mid-way
-# through a multi-byte character (the result is always valid UTF-8).
+# issue_search_query TITLE — step-03's tracker lookup query, the same on hosts
+# with real /search and on GraphQL-blocked ones: whole words only (at most 100
+# characters, cut at a word boundary: a cut word matches nothing), and never
+# anything gh-compat's search grammar refuses. Double quotes and parentheses
+# become spaces (parse(x) stays "parse x", not "parsex"); a leading '-' is
+# stripped; bare OR/NOT/AND are lowercased; ':' outside URLs becomes a space;
+# a '#' that does not start a clean #N (#12's, #12/#13, #1.5, #1st) becomes a
+# space. A title with no letter or digit at all gives an empty query (step-03
+# then searches nothing and creates its issue). A single over-long first
+# token is cut to 100 characters, never mid-way through a multi-byte character.
 issue_search_query() {
-  local t out="" w cand toks=()
-  t="$(printf '%s' "$1" | tr -d '"()')"
+  local t out="" w cand toks=() plain=""
+  t="$(printf '%s' "$1" | tr '"()' '   ')"
+  # Pass 1: split off the characters that could form syntax.
   read -r -a toks <<<"$t"
   for w in "${toks[@]}"; do
-    while [ "${w#-}" != "$w" ]; do w="${w#-}"; done
     case "$w" in
-      OR|NOT|AND) w="$(printf '%s' "$w" | tr 'A-Z' 'a-z')" ;;
       http://*|https://*) ;;
-      *:*) w="${w//:/ }" ;;
+      *) w="${w//:/ }"
+         case "$w" in \#*) [[ "$w" =~ ^\#[0-9]+$ ]] || w="${w//#/ }" ;; esac ;;
     esac
-    [ -n "${w// /}" ] || continue
+    plain="$plain $w"
+  done
+  # Pass 2: per resulting token, drop negation and operators, then cut.
+  read -r -a toks <<<"$plain"
+  for w in "${toks[@]}"; do
+    while [ "${w#-}" != "$w" ]; do w="${w#-}"; done
+    case "$w" in OR|NOT|AND) w="$(printf '%s' "$w" | tr 'A-Z' 'a-z')" ;; esac
+    [ -n "$w" ] || continue
     cand="${out:+$out }$w"
     if [ "${#cand}" -gt 100 ]; then
       [ -n "$out" ] || out="${w:0:100}"
@@ -67,7 +77,15 @@ issue_search_query() {
   done
   # ${w:0:100} counts bytes outside a UTF-8 locale: drop a cut character.
   if command -v iconv >/dev/null 2>&1; then out="$(printf '%s' "$out" | iconv -c -f UTF-8 -t UTF-8 2>/dev/null)"; fi
+  # Words are what gh-compat's search counts: runs of Unicode letters/digits.
+  [ "$(issue_title_words "$out")" = "" ] && out=""
   printf '%s\n' "$out"
+}
+
+# issue_title_words TEXT — TEXT's words, lowercased, one line: the runs of
+# Unicode letters and digits, exactly gh-compat's search `uwords`.
+issue_title_words() {
+  jq -rn --arg t "$1" '[$t | scan("[\\p{L}\\p{N}]+") | ascii_downcase] | join(" ")' 2>/dev/null
 }
 
 # issue_pick_tracker TITLE — read `gh issue list --json number,title,url`
@@ -82,7 +100,7 @@ issue_pick_tracker() {
   jq -r --arg t "$1" '
     def norm: [scan("[\\p{L}\\p{N}]+") | ascii_downcase];
     ($t | norm) as $want
-    | if type != "array" then "" else
+    | if type != "array" or ($want | length) == 0 then "" else
         ((map(select(((.title // "") | norm) == $want)) + .)[0].url // "")
       end' 2>/dev/null || true
 }

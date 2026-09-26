@@ -306,24 +306,17 @@ ghc_gh_fields() {
 # ghc_graphql_blocked — ask GitHub GraphQL the smallest question; true when the
 # answer is the block refusal. GHC_PROBE_RC keeps the probe's exit status.
 ghc_graphql_blocked() {
-  local pf="${GHC_RUN_DIR}/graphql.probe" pid w args=(api graphql)
+  local pf="${GHC_RUN_DIR}/graphql.probe" args=(api graphql) bound=()
   [ "$GHC_HOST" = github.com ] || args+=(--hostname "$GHC_HOST")
   GHC_PROBE_RC=0
-  # Bounded: a hung GraphQL endpoint must not hang the call behind it. A
-  # watcher kills the probe after GHC_PROBE_TIMEOUT seconds (no `timeout`
-  # binary needed; macOS has none). The probe reads no stdin.
-  "$GHC_REAL" "${args[@]}" -f query='{viewer{login}}' </dev/null >/dev/null 2>"$pf" &
-  pid=$!
-  # The watcher's own sleep dies with it: killing the watcher interrupts its
-  # wait, and its trap kills the sleep, so no stray process outlives a probe.
-  (
-    trap 'kill "$s" 2>/dev/null; exit 0' TERM
-    sleep "$GHC_PROBE_TIMEOUT" & s=$!
-    wait "$s" && kill "$pid" 2>/dev/null
-  ) </dev/null >/dev/null 2>&1 &
-  w=$!
-  wait "$pid" || GHC_PROBE_RC=$?
-  kill "$w" 2>/dev/null; wait "$w" 2>/dev/null
+  # Bounded, so a hung GraphQL endpoint cannot hang the call behind it, and
+  # with no helper process of our own to race or orphan: `timeout` (GNU), else
+  # perl's alarm, which survives exec (stock on macOS), else unbounded.
+  if command -v timeout >/dev/null 2>&1; then bound=(timeout "$GHC_PROBE_TIMEOUT")
+  elif command -v perl >/dev/null 2>&1; then bound=(perl -e 'alarm shift; exec @ARGV or exit 127' "$GHC_PROBE_TIMEOUT")
+  else ghc_log "probe: neither timeout nor perl found; the GraphQL probe is unbounded"
+  fi
+  "${bound[@]}" "$GHC_REAL" "${args[@]}" -f query='{viewer{login}}' </dev/null >/dev/null 2>"$pf" || GHC_PROBE_RC=$?
   grep -Eiq "$GHC_BLOCK_RE" "$pf"
 }
 
@@ -802,9 +795,13 @@ EOF_LABELS
 # Unicode case too where a word is not plain ASCII. hastoken finds a reference
 # or URL only as a whole token: the character after it may not continue it
 # (#12 never matches #123, /issues/5 never /issues/55).
+# One definition of a word for the whole fallback (the matcher, the ranking and
+# ghc_search_terms' "is there anything to match" test): a run of Unicode
+# letters and digits, as a jq string literal.
+GHC_UWORDS_RE='[\\p{L}\\p{N}]+'
 # shellcheck disable=SC2016  # jq program, not shell expansions.
 GHC_SQ_JQ='
-def uwords: [scan("[\\p{L}\\p{N}]+")];
+def uwords: [scan("'"$GHC_UWORDS_RE"'")];
 def esc: [explode[] | [.] | implode | if test("[A-Za-z0-9]") then . else "\\" + . end] | join("");
 def hasword($h): . as $x | ($x | ascii_downcase) as $lx
   | any($h[]; ascii_downcase == $lx)
@@ -870,9 +867,12 @@ ghc_search_terms() {
         esac
         continue ;;
     esac
-    # A plain word: a token with no letter or digit (of any script) adds nothing.
-    if [[ "$tok" =~ [^[:punct:][:space:]] ]]; then GHC_SQ_WORDS="$GHC_SQ_WORDS $tok"; GHC_SQ_TEXT="$GHC_SQ_TEXT $tok"; used=1; fi
+    # A plain word; whether it holds any word at all is decided below.
+    GHC_SQ_WORDS="$GHC_SQ_WORDS $tok"; GHC_SQ_TEXT="$GHC_SQ_TEXT $tok"
   done
+  # Words are counted exactly as the matcher counts them (GHC_UWORDS_RE): an
+  # emoji or a dash holds none, so a query of only those matches nothing.
+  if [ -n "$GHC_SQ_WORDS" ] && [ "$(jq -rn --arg w "$GHC_SQ_WORDS" "[\$w | scan(\"$GHC_UWORDS_RE\")] | length")" != 0 ]; then used=1; fi
   [ "$used" = 1 ] || GHC_SQ_NONE=1
 }
 
@@ -1607,7 +1607,7 @@ ghc_run_uncertain() {
   local rc=0 errf="${GHC_RUN_DIR}/gh.err" sig
   : >"$errf" || exit 1
   { : <&0; } 2>/dev/null || exec </dev/null   # a closed stdin must not stop gh
-  ( trap - INT QUIT; exec "$GHC_REAL" "$@" ) <&0 2>"$errf" &
+  ( trap - EXIT INT QUIT; exec "$GHC_REAL" "$@" ) <&0 2>"$errf" &
   GHC_CHILD=$!
   for sig in INT TERM HUP QUIT; do
     # shellcheck disable=SC2064  # $sig is meant to be fixed per trap here.
@@ -1650,7 +1650,11 @@ ghc_main() {
   # Private per-invocation scratch (REST error/status hand-off, request bodies,
   # JSON hand-offs); never a predictable name in a shared TMPDIR.
   GHC_RUN_DIR="$(mktemp -d "${GHC_TMP}/ghc.XXXXXX")" || exec "$GHC_REAL" "$@"
-  trap 'rm -rf "$GHC_RUN_DIR"' EXIT
+  # Only the main shell cleans up: a subshell that inherits this trap must never
+  # delete the run dir under the call still using it. Subshells drop it as their
+  # first act; BASHPID (bash 4+) guards the moment before that.
+  GHC_MAIN_PID=$$
+  trap '[ "${BASHPID:-$GHC_MAIN_PID}" = "$GHC_MAIN_PID" ] && rm -rf "$GHC_RUN_DIR"' EXIT
   if [ "${1:-} ${2:-}" = "auth status" ]; then
     shift 2
     [ "$GHC_HOST" = github.com ] || { rm -rf "$GHC_RUN_DIR"; exec "$GHC_REAL" auth status "$@"; }

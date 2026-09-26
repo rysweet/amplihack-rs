@@ -861,7 +861,7 @@ ok "exec where GraphQL works; the received signal is passed on and re-raised oth
 fresh; AMPLIHACK_GH_COMPAT_PROBE_TIMEOUT=37 STUB_GRAPHQL_OK=1 gh pr view 42 >/dev/null 2>&1 || true
 sleep 0.2
 [ "$(ps -eo args= | grep -c '^sleep 37$' || true)" = 0 ] || fail watcher "a probe left its watcher's sleep running"
-ok "the probe's timeout watcher leaves no process behind"
+ok "the bounded probe leaves no process behind"
 
 # ---------------------------------------------------------------------------
 # Independent crusty review round 4, of 76587c19 (PR comment 5841827808).
@@ -1048,6 +1048,70 @@ STUB_TRACKERS="$(printf '1490\tFix the parser crash in the lexer too\n1489\tFix 
 [ "$(step03_lookup "Fix the parser crash in the lexer")" = "https://github.com/o/r/issues/1490" ] || fail step03-exact "no exact match did not fall back to the first result"
 unset STUB_TRACKERS
 ok "step-03 adopts the issue whose full title is its own, else the first result"
+
+# ---------------------------------------------------------------------------
+# Independent crusty review round 8, of 6358b25c (PR comment 5848407742).
+# ---------------------------------------------------------------------------
+
+# 70. probe-watcher-inherits-exit-trap-deletes-run-dir: many cold calls against
+#     an instantly-answering host never lose the run dir mid-call and leave no
+#     process behind (the probe is bounded by timeout/perl alarm, no watcher).
+fresh; bad=0; lost=0
+for i in $(seq 1 60); do
+  rm -f "$AMPLIHACK_GH_COMPAT_STATE"*
+  AMPLIHACK_GH_COMPAT_PROBE_TIMEOUT=43 gh issue view 7 --json url >/dev/null 2>"${WORK}/cold.err" || bad=$((bad + 1))
+  grep -q 'No such file' "${WORK}/cold.err" && lost=$((lost + 1))
+done
+sleep 0.3
+[ "$bad" = 0 ] && [ "$lost" = 0 ] || fail cold-calls "$bad of 60 cold calls failed, $lost lost their run dir"
+[ "$(ps -eo args= | grep -c '^sleep 43$' || true)" = 0 ] || fail cold-calls "a probe left a sleep behind"
+leftover="$(find "$WORK" -maxdepth 1 -name 'ghc.*' -print -quit)"
+[ -z "$leftover" ] || fail cold-calls "a run dir was left behind: $leftover"
+ok "60 cold calls: no lost run dir, no stray process, no leftover scratch"
+
+# 71. search-query-deletes-parens-joins-words: parentheses split words.
+fresh; : > "$AMPLIHACK_GH_COMPAT_STATE"
+t1376="merge queue is wired in ci.yml but not enabled, so N open PRs cost O(N²) CI runs"
+STUB_TRACKERS="$(printf '41\tUnrelated\n40\tFix parse(x) crash\n1376\t%s\n' "$t1376")"; export STUB_TRACKERS
+[ "$(step03_lookup "Fix parse(x) crash")" = "https://github.com/o/r/issues/40" ] || fail parens "'Fix parse(x) crash' missed its tracker"
+[ "$(step03_lookup "$t1376")" = "https://github.com/o/r/issues/1376" ] || fail parens "the #1376 title missed its tracker"
+ok "parentheses in a title split words instead of gluing them"
+
+# 72. search-emoji-only-query-matches-everything: a query with no letter or
+#     digit matches nothing, on the shim and in step-03's pick.
+for q in "🎉 ✨" "✅ — 🚀"; do
+  [ "$(sl "$q")" = "" ] || fail emoji "'$q' matched: $(sl "$q")"
+  [ "$(step03_lookup "$q")" = "" ] || fail emoji "step-03 adopted a tracker for '$q'"
+done
+# shellcheck source=/dev/null
+[ "$( . "$TRACK"; printf '[{"number":9,"title":"✨","url":"u9"}]' | issue_pick_tracker "🎉 ✨")" = "" ] \
+  || fail emoji "issue_pick_tracker preferred a wordless title for a wordless target"
+unset STUB_TRACKERS
+ok "a query with no letter or digit matches nothing"
+
+# 73. search-query-hash-ref-suffix-refused: every title step-03 may meet gives
+#     a query the shim accepts (or no query at all).
+while IFS= read -r t; do
+  # shellcheck source=/dev/null
+  q="$( . "$TRACK"; issue_search_query "$t")"
+  [ -n "$q" ] || continue
+  rc=0; gh issue list --state open --search "$q" --json number >/dev/null 2>"${WORK}/corpus.err" || rc=$?
+  [ "$rc" = 0 ] || fail corpus "title '$t' gave query '$q', refused: $(cat "${WORK}/corpus.err")"
+done <<'CORPUS'
+Fix #12's regression in parser
+Handle #12/#13 and #1.5 before the #1st release
+Fix parse(x) crash
+merge queue is wired in ci.yml but not enabled, so N open PRs cost O(N²) CI runs
+"Quoted" titles -v with OR, NOT and AND: sort:created has:label
+feat(cli): add --flag and (label:bug) note:x field.priority:high
+https://github.com/o/r/issues/5 regression and #7
+Implement the design in https://ghe.example.com/o/r/pull/7/
+C# port of the lexer — phase 2
+修复 解析器 崩溃
+🎉 ✨
+- - - leading dashes
+CORPUS
+ok "every corpus title yields a query the shim accepts"
 
 # 51. stale-test-contract-header: the contract above describes the probe, not
 #     the removed stderr follower or a first real-gh attempt.
