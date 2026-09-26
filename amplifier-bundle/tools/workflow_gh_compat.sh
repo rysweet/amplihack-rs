@@ -767,20 +767,22 @@ EOF_LABELS
   fi
   # Full pages: the text match keeps few items, and --limit 1 must not stop
   # the scan after ~11 items.
+  # Matches come newest first; one whose title begins with the query's words
+  # is moved ahead (a stable sort), so step-03's `.[0]` is its own tracker
+  # rather than a newer near-duplicate that merely contains the same words.
   GHC_PAGE_SIZE=100 ghc_paged "$path" "$limit" '
     # Words match whole words, as /search matches them (a substring test lets
     # "a" or "it" match any body); URLs match as literal text; "#N" and this
-    # repository issue/PR URLs match that number only.
+    # repository issue/PR URLs match as text or as that issue number.
     def words: ascii_downcase | [scan("[a-z0-9]+")];
     ($w | words) as $words
     | ($u | split("\n") | map(select(. != "") | ascii_downcase)) as $urls
-    | ($n | split(",") | map(select(. != "") | tonumber)) as $nums
+    | ($r | split("\n") | map(select(. != "") | split("\t") | {n: (.[0] | tonumber), t: (.[1] | ascii_downcase)})) as $refs
     | ($l | split(",") | map(select(. != ""))) as $labels
     | map(select($k == "pr" or .pull_request == null)
           | select($a == "" or .user.login == $a)
           | select($qs == "" or .state == $qs)
           | select($qm == "" or .merged_at != null)
-          | select(($nums | length) == 0 or (.number as $x | all($nums[]; . == $x)))
           | select($k == "issue" or (
               ([.labels[]?.name] as $have | all($labels[]; . as $x | $have | index([$x]) != null))
               and ($as == "" or any(.assignees[]?; .login == $as))
@@ -788,56 +790,72 @@ EOF_LABELS
               and ($s != "merged" or .merged_at != null)))
           | (if $f == "title" then (.title // "") elif $f == "body" then (.body // "") else (.title // "") + " " + (.body // "") end) as $hay
           | select(($hay | words) as $h | all($words[]; . as $x | $h | index([$x]) != null))
-          | select(($hay | ascii_downcase) as $lh | all($urls[]; . as $x | $lh | contains($x))))' \
-    --arg k "$kind" --arg w "$GHC_SQ_WORDS" --arg u "$GHC_SQ_URLS" --arg n "$GHC_SQ_NUMS" --arg f "$GHC_SQ_IN" \
+          | select(($hay | ascii_downcase) as $lh | all($urls[]; . as $x | $lh | contains($x)))
+          | select(.number as $x | (($hay | ascii_downcase) as $lh | all($refs[]; . as $ref | $ref.n == $x or ($lh | contains($ref.t))))))' \
+    --arg k "$kind" --arg w "$GHC_SQ_WORDS" --arg u "$GHC_SQ_URLS" --arg r "$GHC_SQ_REFS" --arg f "$GHC_SQ_IN" \
     --arg qs "$GHC_SQ_STATE" --arg qm "$GHC_SQ_MERGED" --arg a "$author" --arg l "$l" --arg as "$assignee" \
-    --arg d "${GHC_B_draft:-}" --arg s "$state"
+    --arg d "${GHC_B_draft:-}" --arg s "$state" \
+    | jq --arg w "$GHC_SQ_WORDS" 'def words: ascii_downcase | [scan("[a-z0-9]+")];
+        ($w | words) as $q | sort_by(if ($q | length) > 0 and ((.title // "") | words | .[:($q | length)]) == $q then 0 else 1 end)'
 }
 
 # ghc_search_terms KIND TEXT — split a --search query for the client-side
-# fallback into GHC_SQ_* terms. Qualifiers the fallback can apply (is:open,
-# is:closed, is:issue, is:pr, is:merged, state:, in:title, in:body, label:,
-# author:, assignee:) are applied; any other GitHub search qualifier fails the
-# call rather than being dropped. A query that leaves nothing to match on
-# (GHC_SQ_NONE=1) matches nothing: step-03 must create an issue, never adopt
-# an unrelated one because every issue "matched" an empty query.
+# fallback into GHC_SQ_* terms. The grammar is deliberately small and anything
+# outside it fails loudly (ghc_search_unsupported) instead of being misread:
+#   word          must appear as a whole word in the title or body
+#   URL           must appear as text; this repository's issue/PR URL, or #N,
+#                 also matches issue N itself
+#   is:open|closed|issue|pr|merged, state:open|closed, label:X, author:X,
+#   assignee:X, in:title|body|title,body
+# Refused: negation (-word, -qualifier), OR/NOT/AND, double quotes, and every
+# other GitHub search qualifier. A query that leaves nothing to match on
+# (GHC_SQ_NONE=1) matches nothing: step-03 must create an issue, never adopt an
+# unrelated one because every issue "matched" an empty query.
 ghc_search_terms() {
   local kind="$1" text="$2" tok name val num toks=() used=0
-  GHC_SQ_WORDS=""; GHC_SQ_URLS=""; GHC_SQ_NUMS=""; GHC_SQ_IN=""; GHC_SQ_STATE=""; GHC_SQ_MERGED=""
+  GHC_SQ_WORDS=""; GHC_SQ_URLS=""; GHC_SQ_REFS=""; GHC_SQ_IN=""; GHC_SQ_STATE=""; GHC_SQ_MERGED=""
   GHC_SQ_LABELS=""; GHC_SQ_AUTHOR=""; GHC_SQ_ASSIGNEE=""; GHC_SQ_NONE=0
   [ -n "$text" ] || return 0
+  case "$text" in *'"'*) ghc_search_unsupported "quoted text" ;; esac
   read -r -a toks <<<"$text"
   for tok in "${toks[@]}"; do
     case "$tok" in
+      OR|NOT|AND) ghc_search_unsupported "'$tok'" ;;
+      -[A-Za-z0-9]*) ghc_search_unsupported "negation '$tok'" ;;
       http://*|https://*)
         num=""
         if [[ "$tok" =~ ^https?://(www\.)?github\.com/([^/]+/[^/]+)/(issues|pull)/([0-9]+)([/#?].*)?$ ]]; then
           [ "$(printf '%s' "${BASH_REMATCH[2]}" | tr 'A-Z' 'a-z')" = "$(printf '%s' "$GHC_REPO" | tr 'A-Z' 'a-z')" ] && num="${BASH_REMATCH[4]}"
         fi
-        if [ -n "$num" ]; then GHC_SQ_NUMS="${GHC_SQ_NUMS:+$GHC_SQ_NUMS,}$num"; else GHC_SQ_URLS="${GHC_SQ_URLS}${tok}"$'\n'; fi
+        if [ -n "$num" ]; then GHC_SQ_REFS="${GHC_SQ_REFS}${num}"$'\t'"${tok}"$'\n'; else GHC_SQ_URLS="${GHC_SQ_URLS}${tok}"$'\n'; fi
         used=1; continue ;;
       \#[0-9]*)
-        case "${tok#\#}" in *[!0-9]*) ;; *) GHC_SQ_NUMS="${GHC_SQ_NUMS:+$GHC_SQ_NUMS,}${tok#\#}"; used=1; continue ;; esac ;;
+        case "${tok#\#}" in *[!0-9]*) ;; *) GHC_SQ_REFS="${GHC_SQ_REFS}${tok#\#}"$'\t'"${tok}"$'\n'; used=1; continue ;; esac ;;
       [A-Za-z]*:?*)
-        name="$(printf '%s' "${tok%%:*}" | tr 'A-Z' 'a-z')"; val="${tok#*:}"; val="${val#\"}"; val="${val%\"}"
+        name="$(printf '%s' "${tok%%:*}" | tr 'A-Z' 'a-z')"; val="${tok#*:}"
         case "$name:$val" in
           is:open|is:closed|state:open|state:closed) GHC_SQ_STATE="$val"; used=1; continue ;;
           is:merged) [ "$kind" = pr ] || GHC_SQ_NONE=1; GHC_SQ_MERGED=1; used=1; continue ;;
           is:issue|is:pr) [ "$val" = "$kind" ] || GHC_SQ_NONE=1; used=1; continue ;;
           in:title|in:body) GHC_SQ_IN="$val"; continue ;;
+          in:title,body|in:body,title) continue ;;   # the default
           label:*) GHC_SQ_LABELS="${GHC_SQ_LABELS:+$GHC_SQ_LABELS,}$val"; used=1; continue ;;
           author:*) GHC_SQ_AUTHOR="$val"; used=1; continue ;;
           assignee:*) GHC_SQ_ASSIGNEE="$val"; used=1; continue ;;
         esac
         case "$name" in
           is|in|state|repo|org|user|no|sort|head|base|draft|created|updated|closed|merged|comments|interactions|reactions|milestone|project|language|linked|type|archived|review|reviewed-by|review-requested|user-review-requested|team-review-requested|status|team|involves|mentions|commenter|reason)
-            ghc_die "gh-compat: search qualifier '${tok}' is not supported without GitHub search (the fallback matches the repository's ${kind}s client-side)" ;;
+            ghc_search_unsupported "qualifier '$tok'" ;;
         esac ;;
     esac
     # Plain text: its words must all appear (a word-less token adds nothing).
     [ -n "$(printf '%s' "$tok" | tr -cd 'A-Za-z0-9')" ] && { GHC_SQ_WORDS="$GHC_SQ_WORDS $tok"; used=1; }
   done
   [ "$used" = 1 ] || GHC_SQ_NONE=1
+}
+
+ghc_search_unsupported() {
+  ghc_die "gh-compat: search syntax $1 is not supported by the REST fallback (GitHub search is unavailable here; the repository's issues are matched client-side)"
 }
 
 # ---------------------------------------------------------------------------

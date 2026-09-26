@@ -141,7 +141,14 @@ if [ "$1" = "api" ]; then
     "POST repos/o/r/issues") printf '{"number":8,"html_url":"https://github.com/o/r/issues/8"}\n' ;;
     "GET repos/o/r/issues/7") printf '{"number":7,"title":"Widget","body":"","state":"open","html_url":"https://github.com/o/r/issues/7","user":{"login":"bot"},"labels":[]}\n' ;;
     "GET search/"*) printf '{"message":"This GitHub API path is not available"}'; echo "gh: This GitHub API path is not available: sessions are bound to their configured repositories. (HTTP 403)" >&2; exit 1 ;;
-    "GET repos/o/r/issues?"*) printf '[{"number":5,"title":"Fix the flaky widget","body":"","state":"open","html_url":"https://github.com/o/r/issues/5","user":{"login":"bot"},"labels":[]},{"number":6,"title":"Fix the flaky widget","pull_request":{},"state":"open","html_url":"https://github.com/o/r/pull/6","user":{"login":"bot"},"labels":[]}]\n' ;;
+    "GET repos/o/r/issues?"*)
+      if [ -n "${STUB_TRACKERS:-}" ]; then
+        # STUB_TRACKERS: one "NUMBER<TAB>TITLE" per line; bodies are empty.
+        printf '%s' "$STUB_TRACKERS" | jq -Rn '[inputs | split("\t") | {number: (.[0] | tonumber), title: .[1], body: "", state: "open",
+          html_url: "https://github.com/o/r/issues/\(.[0])", user: {login: "bot"}, labels: []}]'
+        exit 0
+      fi
+      printf '[{"number":5,"title":"Fix the flaky widget","body":"","state":"open","html_url":"https://github.com/o/r/issues/5","user":{"login":"bot"},"labels":[]},{"number":6,"title":"Fix the flaky widget","pull_request":{},"state":"open","html_url":"https://github.com/o/r/pull/6","user":{"login":"bot"},"labels":[]}]\n' ;;
     "GET repos/o/r/commits/abc123/check-runs"*)
       case "${STUB_CHECKS:-pass}" in
         pending) printf '{"check_runs":[{"name":"Test","status":"in_progress","conclusion":null,"details_url":"u"},{"name":"Lint","status":"completed","conclusion":"success","details_url":"u"}]}\n' ;;
@@ -928,6 +935,58 @@ case "$err" in *"unknown shorthand flag: 'r' in -r"*) ;; *) fail reopen "message
 case "$(gh issue reopen 5 --reason x 2>&1)" in *"unknown flag: --reason"*) ;; *) fail reopen "--reason not rejected like gh" ;; esac
 logged_prefix "api -X PATCH" && fail reopen "reopen sent a request"
 ok "issue reopen rejects -r/--reason as gh does"
+
+# ---------------------------------------------------------------------------
+# Independent crusty review round 6, of 728d52b4 (PR comment 5842222462).
+# ---------------------------------------------------------------------------
+TRACK="${REPO_ROOT}/amplifier-bundle/tools/workflow_issue_tracking.sh"
+# step-03's lookup, exactly as workflow-prep.yaml runs it.
+step03_lookup() {
+  local SEARCH_Q
+  # shellcheck source=/dev/null
+  SEARCH_Q="$( . "$TRACK"; issue_search_query "$1")"
+  [ -n "$SEARCH_Q" ] || return 0
+  gh issue list --state open --search "$SEARCH_Q" --json url --jq '.[0].url // ""' 2>/dev/null || echo ''
+}
+grep -Fq 'SEARCH_Q="$(issue_search_query "$ISSUE_TITLE")"' "${REPO_ROOT}/amplifier-bundle/recipes/workflow-prep.yaml" \
+  || fail step03-query "workflow-prep step-03 does not build its query with issue_search_query"
+
+# 61. search-same-repo-url-number-only-misses-tracker: this repository's issue
+#     URL in a query matches as text too, so a rerun finds its own tracker.
+fresh; : > "$AMPLIHACK_GH_COMPAT_STATE"
+title="Implement the design in https://github.com/o/r/issues/1484"
+STUB_TRACKERS="$(printf '1484\tDesign doc\n1510\t%s\n' "$title")"; export STUB_TRACKERS
+[ "$(sl "$title")" = 1510 ] || fail same-repo-url "searching the tracker's own title gave '$(sl "$title")'"
+[ "$(step03_lookup "$title")" = "https://github.com/o/r/issues/1510" ] || fail same-repo-url "step-03 rerun did not reuse #1510"
+ok "a same-repo issue URL matches as text or number; step-03 reuses its tracker"
+
+# 62. search-negation-or-quotes-silently-misread: each fails loudly.
+for q in "parser -label:bug" "-is:open parser" "parser -break" "parser OR lexer" "parser NOT break" 'label:"needs review"' '"exact phrase"'; do
+  rc=0; err="$(gh issue list --search "$q" --json number 2>&1)" || rc=$?
+  [ "$rc" != 0 ] || fail search-syntax "'$q' was silently misread"
+  case "$err" in *"not supported by the REST fallback"*) ;; *) fail search-syntax "'$q' failed with '$err'" ;; esac
+done
+ok "negation, OR/NOT and quotes fail loudly instead of being misread"
+
+# 63. search-in-title-body-refused: in:title,body is the default.
+unset STUB_TRACKERS
+[ "$(sl "widget in:title,body")" = 5 ] || fail in-title-body "in:title,body refused or misread"
+[ "$(sl "widget in:body,title")" = 5 ] || fail in-title-body "in:body,title refused or misread"
+ok "in:title,body and in:body,title are the default"
+
+# 64. step-03's query is cut at a word boundary: a 120-character title reruns
+#     into the same tracker (a cut word matched nothing before).
+long="Refactor the recipe runner so that every workflow step reports progress and errors through one structured channel ok"
+[ "${#long}" -gt 100 ] || fail step03-query "test title too short"
+# Newest first, as REST lists them: a near-duplicate that contains the same
+# words must not win over the tracker whose title is the task's.
+STUB_TRACKERS="$(printf '1478\tFollow-up to %s\n1477\tSomething else entirely\n1476\t%s\n' "$long" "$long")"; export STUB_TRACKERS
+[ "$(step03_lookup "$long")" = "https://github.com/o/r/issues/1476" ] || fail step03-query "a ${#long}-char title missed its tracker"
+# shellcheck source=/dev/null
+( . "$TRACK"; q="$(issue_search_query 'Handle "quoted" -v flags OR sort:x')"; case "$q" in *'"'*|*" -"*|*" OR "*|*sort:*) exit 1 ;; esac ) \
+  || fail step03-query "issue_search_query left search syntax in the query"
+unset STUB_TRACKERS
+ok "step-03's query keeps whole words and carries no search syntax"
 
 # 51. stale-test-contract-header: the contract above describes the probe, not
 #     the removed stderr follower or a first real-gh attempt.

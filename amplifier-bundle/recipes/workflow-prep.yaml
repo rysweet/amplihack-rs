@@ -272,7 +272,7 @@ steps:
       case "$HOST_TYPE" in
       github)
         if [ -n "$REF_ISSUE_NUM" ]; then EXISTING_URL=$(timeout 60 gh issue view "$REF_ISSUE_NUM" --json url --jq '.url // ""' 2>/dev/null || echo ''); [ -n "$EXISTING_URL" ] && { printf '%s\n' "$EXISTING_URL"; exit 0; }; fi
-        SEARCH_Q="${ISSUE_TITLE:0:100}"; if [ -n "$SEARCH_Q" ]; then FOUND_URL=$(timeout 60 gh issue list --state open --search "$SEARCH_Q" --json url --jq '.[0].url // ""' 2>/dev/null || echo ''); [ -n "$FOUND_URL" ] && { printf '%s\n' "$FOUND_URL"; exit 0; }; fi
+        SEARCH_Q="$(issue_search_query "$ISSUE_TITLE")"; if [ -n "$SEARCH_Q" ]; then FOUND_URL=$(timeout 60 gh issue list --state open --search "$SEARCH_Q" --json url --jq '.[0].url // ""' 2>/dev/null || echo ''); [ -n "$FOUND_URL" ] && { printf '%s\n' "$FOUND_URL"; exit 0; }; fi
         ISSUE_BODY=$(printf '## Task Description\n%s\n\n## Requirements\n%s\n\n## Acceptance Criteria\n- [ ] All explicit requirements met\n- [ ] Tests passing\n- [ ] Philosophy compliant\n- [ ] Documentation updated\n\n## Classification\nGenerated via default-workflow recipe\n' "$TASK_DESC" "$SANITIZED_ISSUE_REQS")
         LABEL_NAME="workflow:default"
         timeout 30 gh label create "$LABEL_NAME" --color "0366d6" --description "Created by default-workflow recipe" 2>/dev/null || true

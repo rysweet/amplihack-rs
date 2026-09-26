@@ -39,6 +39,32 @@ emit_local_metadata() { LOCAL_REF="$(derive_local_tracking_id)"; LOCAL_NUM=""; [
 
 sanitize_cli_output() { printf '%s\n' "$1" | head -c 4000 | sed -E 's#https?://[^[:space:]]*@#https://<redacted>@#g; s#gh[pousr]_[A-Za-z0-9_]{8,}#<redacted-token>#g; s#github_pat_[A-Za-z0-9_]+#<redacted-token>#g; s#[Bb]earer[[:space:]]+[A-Za-z0-9._~+/=-]{20,}#Bearer <redacted-token>#g; s#[A-Za-z0-9]{52}#<redacted-token>#g'; }
 
+# issue_search_query TITLE — step-03's tracker lookup query: whole words only
+# (at most 100 characters, cut at a word boundary: a cut word matches nothing),
+# with the search syntax a title can carry by accident made plain text: double
+# quotes dropped, leading '-' (negation) stripped, bare OR/NOT/AND lowercased,
+# and ':' outside URLs turned into a space (no accidental qualifiers).
+issue_search_query() {
+  local t="${1//\"/}" out="" w cand toks=()
+  read -r -a toks <<<"$t"
+  for w in "${toks[@]}"; do
+    while [ "${w#-}" != "$w" ]; do w="${w#-}"; done
+    case "$w" in
+      OR|NOT|AND) w="$(printf '%s' "$w" | tr 'A-Z' 'a-z')" ;;
+      http://*|https://*) ;;
+      *:*) w="${w//:/ }" ;;
+    esac
+    [ -n "${w// /}" ] || continue
+    cand="${out:+$out }$w"
+    if [ "${#cand}" -gt 100 ]; then
+      [ -n "$out" ] || out="${w:0:100}"   # one over-long first token: its prefix
+      break
+    fi
+    out="$cand"
+  done
+  printf '%s\n' "$out"
+}
+
 # issue_create_host_unsupported RC OUTPUT — true only for the failures issue
 # #1484 is about: gh is missing (rc 127 / "command not found"), or the host
 # blocks GitHub GraphQL (the Claude Code on the web refusal, or amplihack's gh
