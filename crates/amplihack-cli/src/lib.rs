@@ -47,6 +47,7 @@ pub(crate) mod path_conflicts;
 mod remote_cli_tests;
 pub mod resolve_bundle_asset;
 pub mod runtime_assets;
+pub(crate) mod rust_toolchain;
 pub mod rust_trial;
 pub mod self_heal;
 pub(crate) mod session_log;
