@@ -586,10 +586,6 @@ fn local_install(
     verify_install_completeness(&source_root, layout, &claude_dir)?;
 
     println!();
-    println!("🦀 Ensuring Rust recipe runner:");
-    recipe_runner::ensure_recipe_runner()?;
-
-    println!();
     println!("📝 Generating uninstall manifest:");
     let manifest_path = manifest_path()?;
     let mut tracked_roots = Vec::new();
@@ -638,6 +634,22 @@ fn local_install(
 
     write_manifest(&manifest_path, &manifest)?;
     println!("   Manifest written to {}", manifest_path.display());
+
+    // Issue #1491: this phase can fail on an air-gapped host (no network for
+    // `cargo install`) or a host that cannot bootstrap a toolchain. It stays
+    // a loud failure (issue #527 install-completeness), but it runs only
+    // AFTER the manifest above is written, so the staged assets are never
+    // left behind without an `amplihack uninstall` path.
+    println!();
+    println!("🦀 Ensuring Rust recipe runner:");
+    recipe_runner::ensure_recipe_runner().with_context(|| {
+        format!(
+            "framework assets are staged at {} and the uninstall manifest is written; \
+             provision recipe-runner-rs and re-run `amplihack install` to finish, or run \
+             `amplihack uninstall` to remove the staged assets",
+            claude_dir.display()
+        )
+    })?;
 
     println!();
     println!("============================================================");
