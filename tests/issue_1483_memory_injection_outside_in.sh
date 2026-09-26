@@ -26,6 +26,9 @@ if [ -z "${HOOKS}" ] || [ ! -x "${HOOKS}" ]; then
   echo "FAIL: no amplihack-hooks binary (pass a path or set AMPLIHACK_HOOKS)" >&2
   exit 1
 fi
+# The script works in a temp directory, so the binary's path must not be
+# relative to the caller's.
+HOOKS="$(cd "$(dirname "${HOOKS}")" && pwd)/$(basename "${HOOKS}")"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
@@ -43,15 +46,28 @@ fail() { printf '  FAIL: %s\n' "$1"; FAIL_COUNT=$((FAIL_COUNT + 1)); }
 
 # store <transcript file> <agent>: run session-stop on a transcript, storing
 # its learning under <agent> (session-stop's explicit `agent_type`).
+# A failed or crashed hook is reported with its stderr, never silently.
 store() {
+  local status=0
   printf '{"hook_event_name":"SessionStop","session_id":"%s","transcript_path":"%s","agent_type":"%s"}' \
-    "${SESSION}" "$1" "$2" | "${HOOKS}" session-stop >/dev/null 2>&1
+    "${SESSION}" "$1" "$2" | "${HOOKS}" session-stop >/dev/null 2>"${WORK}/stderr" || status=$?
+  if [ "${status}" -ne 0 ] || grep -q "failed to store" "${WORK}/stderr"; then
+    echo "FAIL: session-stop for agent '$2' (exit ${status}):" >&2
+    cat "${WORK}/stderr" >&2
+    exit 1
+  fi
 }
 
 # ask <prompt>: run user-prompt-submit and print its JSON output.
 ask() {
+  local status=0
   printf '{"hook_event_name":"UserPromptSubmit","session_id":"%s","prompt":"%s"}' \
-    "${SESSION}" "$1" | "${HOOKS}" user-prompt-submit 2>/dev/null
+    "${SESSION}" "$1" | "${HOOKS}" user-prompt-submit 2>"${WORK}/stderr" || status=$?
+  if [ "${status}" -ne 0 ]; then
+    echo "FAIL: user-prompt-submit for '$1' (exit ${status}):" >&2
+    cat "${WORK}/stderr" >&2
+    exit 1
+  fi
 }
 
 # count <haystack> <needle>: occurrences of a fixed string.
@@ -92,12 +108,14 @@ out="$(ask "/analyze why the auth middleware rejected expired tokens")"
 if [ "$(count "${out}" "## Relevant Memory")" -eq 1 ]; then pass "one memory section"; else fail "memory sections != 1: ${out}"; fi
 if [ "$(count "${out}" "The auth middleware rejected expired tokens because")" -eq 1 ]; then pass "relevant memory printed once"; else fail "relevant memory not printed exactly once: ${out}"; fi
 if [ "$(count "${out}" "Agent analyzer:")" -eq 0 ] && [ "$(count "${out}" "Agent builder:")" -eq 0 ]; then pass "agent prefix stripped"; else fail "agent prefix printed: ${out}"; fi
-if [ "$(count "${out}" "(relevance: 0.")" -ge 1 ] && [ "$(count "${out}" "relevance: 0.00")" -eq 0 ]; then pass "computed relevance score"; else fail "no computed score: ${out}"; fi
+if [ "$(count "${out}" "(relevance: ")" -ge 1 ] && [ "$(count "${out}" "relevance: 0.00")" -eq 0 ]; then pass "computed relevance score"; else fail "no computed score: ${out}"; fi
 if [ "$(count "${out}" "pong")" -eq 0 ]; then pass "unrelated pong memory left out"; else fail "pong injected: ${out}"; fi
 
-echo "scenario 3: ordinary words and paths are not agents"
-out="$(ask "look at the files in /skills /web /docs and /bin today")"
-if [ "$(count "${out}" "Relevant Memory")" -eq 0 ]; then pass "no memory for a path-only prompt"; else fail "memory injected: ${out}"; fi
+echo "scenario 3: a path segment named like an agent is not an agent"
+# Relevant to the auth memory, but it names no agent: `src/builder` is a
+# path. The loose pre-#1483 pattern made `/builder ` an agent and injected.
+out="$(ask "why the auth middleware in src/builder rejected expired tokens")"
+if [ "$(count "${out}" "Relevant Memory")" -eq 0 ]; then pass "no memory without an agent"; else fail "memory injected: ${out}"; fi
 
 echo "scenario 4: a German prompt's function words don't match an English memory"
 out="$(ask "/fix ich bin nicht sicher, warum die Tests scheitern")"

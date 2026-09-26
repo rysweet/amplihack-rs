@@ -24,12 +24,16 @@ const SLASH_COMMAND_AGENTS: &[(&str, &str)] = &[
 /// definition reference (`@.claude/agents/…/builder.md`), or by a slash word
 /// (`/analyzer`, `/reflect` → `reflection`).
 ///
-/// A slash word is a whitespace-separated token that is `/` followed only by
+/// An agent definition reference names its agent explicitly, so any agent
+/// counts, bundled or project-defined (`@.claude/agents/my-reviewer.md`).
+///
+/// A slash word is a whitespace-separated token, ignoring surrounding
+/// punctuation (`(/analyze`, `/reflect.`), that is `/` followed only by
 /// lower-case letters and hyphens, anywhere in the prompt (at its end too).
 /// A path segment is not one: in `docs/security` or `~/.amplihack/bin` the
-/// `/` is inside a token. Even a slash word only counts when it names a
-/// bundled agent definition or a slash-command agent, so `/skills` or `/bin`
-/// on their own are not agents either (issue #1483).
+/// `/` is inside a token. A slash word only counts when it names a bundled
+/// agent definition or a slash-command agent, so `/skills` or `/bin` on
+/// their own are not agents either (issue #1483).
 pub(crate) fn detect_agent_references(prompt: &str) -> Vec<String> {
     static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
     let patterns = PATTERNS.get_or_init(|| {
@@ -48,15 +52,15 @@ pub(crate) fn detect_agent_references(prompt: &str) -> Vec<String> {
             else {
                 continue;
             };
-            if !is_amplihack_agent(&agent_name) && !is_slash_command_agent(&agent_name) {
-                continue;
-            }
             if !agents.iter().any(|existing| existing == &agent_name) {
                 agents.push(agent_name);
             }
         }
     }
     for token in prompt.split_whitespace() {
+        let token = token
+            .trim_start_matches(['(', '[', '"', '\'', '`'])
+            .trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '"', '\'', '`']);
         let Some(word) = token.strip_prefix('/') else {
             continue;
         };

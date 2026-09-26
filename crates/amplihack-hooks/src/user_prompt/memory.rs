@@ -1986,6 +1986,22 @@ mod tests {
             prompt_agents("/analyze /fix both"),
             ["analyzer", "fix-agent"]
         );
+        assert_eq!(prompt_agents("please /reflect."), ["reflection"]);
+        assert_eq!(prompt_agents("(/analyze this) now"), ["analyzer"]);
+        assert_eq!(
+            prompt_agents("run /analyze, then /fix."),
+            ["analyzer", "fix-agent"]
+        );
+        assert!(prompt_agents("see (/bin) and /skills.").is_empty());
+        // An explicit definition reference names any agent, project ones too.
+        assert_eq!(
+            prompt_agents("@.claude/agents/my-reviewer.md review the auth flow"),
+            ["my-reviewer"]
+        );
+        assert_eq!(
+            prompt_agents("Use my-reviewer.md agent to review"),
+            ["my-reviewer"]
+        );
     }
 
     #[test]
