@@ -902,7 +902,7 @@ ok "a URL at the start of a body, title or search is data, not a target host"
 #     match on matches nothing, URLs are matched as text or as this repo's
 #     issue number, and unsupported qualifiers fail instead of being dropped.
 fresh; : > "$AMPLIHACK_GH_COMPAT_STATE"
-sl() { gh issue list --state open --search "$1" --json number --jq '[.[].number] | map(tostring) | join(",")'; }
+sl() { gh issue list --state open --search "$1" --json number --jq '[.[].number] | map(tostring) | join(",")' 2>/dev/null; }
 [ "$(sl "https://ghe.example.com/o/r/pull/7/")" = "" ] || fail search "a URL-only query matched: $(sl "https://ghe.example.com/o/r/pull/7/")"
 [ "$(sl "fix https://github.com/o/r/issues/99")" = "" ] || fail search "'fix <issue 99 URL>' matched another issue"
 [ "$(sl "fix https://github.com/o/r/issues/5")" = 5 ] || fail search "'fix <issue 5 URL>' did not find #5"
@@ -942,14 +942,18 @@ ok "issue reopen rejects -r/--reason as gh does"
 TRACK="${REPO_ROOT}/amplifier-bundle/tools/workflow_issue_tracking.sh"
 # step-03's lookup, exactly as workflow-prep.yaml runs it.
 step03_lookup() {
-  local SEARCH_Q
-  # shellcheck source=/dev/null
-  SEARCH_Q="$( . "$TRACK"; issue_search_query "$1")"
-  [ -n "$SEARCH_Q" ] || return 0
-  gh issue list --state open --search "$SEARCH_Q" --json url --jq '.[0].url // ""' 2>/dev/null || echo ''
+  (
+    # shellcheck source=/dev/null
+    . "$TRACK"
+    SEARCH_Q="$(issue_search_query "$1")"
+    [ -n "$SEARCH_Q" ] || exit 0
+    gh issue list --state open --search "$SEARCH_Q" --json number,title,url 2>/dev/null | issue_pick_tracker "$1" || echo ''
+  )
 }
 grep -Fq 'SEARCH_Q="$(issue_search_query "$ISSUE_TITLE")"' "${REPO_ROOT}/amplifier-bundle/recipes/workflow-prep.yaml" \
   || fail step03-query "workflow-prep step-03 does not build its query with issue_search_query"
+grep -Fq -- '--json number,title,url 2>/dev/null | issue_pick_tracker "$ISSUE_TITLE"' "${REPO_ROOT}/amplifier-bundle/recipes/workflow-prep.yaml" \
+  || fail step03-query "workflow-prep step-03 does not pick its tracker with issue_pick_tracker"
 
 # 61. search-same-repo-url-number-only-misses-tracker: this repository's issue
 #     URL in a query matches as text too, so a rerun finds its own tracker.
@@ -1031,6 +1035,19 @@ printf '%s' "$q" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 || fail unicode "issu
 [ -n "$q" ] || fail unicode "issue_search_query emptied a long multi-byte token"
 unset STUB_TRACKERS
 ok "titles in any script match; truncation keeps valid UTF-8"
+
+# 69. step-03 prefers an exact match on its FULL title over search ranking: a
+#     150-character tracker beats a newer "Follow-up to <same title>"; with no
+#     exact match it takes the first result, as before.
+fresh; : > "$AMPLIHACK_GH_COMPAT_STATE"
+t150="Make the recipe runner report every step's progress, warnings and errors through one structured channel that agents, humans and CI can all read"
+[ "${#t150}" -gt 100 ] || fail step03-exact "test title too short"
+STUB_TRACKERS="$(printf '1480\tFollow-up to %s\n1479\tSomething else\n1478\t%s\n' "$t150" "$t150")"; export STUB_TRACKERS
+[ "$(step03_lookup "$t150")" = "https://github.com/o/r/issues/1478" ] || fail step03-exact "a ${#t150}-char title adopted $(step03_lookup "$t150")"
+STUB_TRACKERS="$(printf '1490\tFix the parser crash in the lexer too\n1489\tFix the parser crash in the lexer later\n')"; export STUB_TRACKERS
+[ "$(step03_lookup "Fix the parser crash in the lexer")" = "https://github.com/o/r/issues/1490" ] || fail step03-exact "no exact match did not fall back to the first result"
+unset STUB_TRACKERS
+ok "step-03 adopts the issue whose full title is its own, else the first result"
 
 # 51. stale-test-contract-header: the contract above describes the probe, not
 #     the removed stderr follower or a first real-gh attempt.

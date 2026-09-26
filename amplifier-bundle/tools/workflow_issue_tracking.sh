@@ -70,6 +70,23 @@ issue_search_query() {
   printf '%s\n' "$out"
 }
 
+# issue_pick_tracker TITLE — read `gh issue list --json number,title,url`
+# output on stdin and print the URL of step-03's existing tracker: the first
+# issue whose title equals TITLE (the same Unicode words in order, #N and URLs
+# included; case, spacing and punctuation aside, as gh-compat's exact tier
+# compares), else the first result, else nothing. The search query is cut at
+# 100 characters, so search ranking alone cannot tell a long title's own
+# tracker from a newer near-duplicate; comparing against the full title can,
+# the same way on hosts with real /search and on GraphQL-blocked ones.
+issue_pick_tracker() {
+  jq -r --arg t "$1" '
+    def norm: [scan("[\\p{L}\\p{N}]+") | ascii_downcase];
+    ($t | norm) as $want
+    | if type != "array" then "" else
+        ((map(select(((.title // "") | norm) == $want)) + .)[0].url // "")
+      end' 2>/dev/null || true
+}
+
 # issue_create_host_unsupported RC OUTPUT — true only for the failures issue
 # #1484 is about: gh is missing (rc 127 / "command not found"), or the host
 # blocks GitHub GraphQL (the Claude Code on the web refusal, or amplihack's gh
