@@ -111,6 +111,7 @@ fn detects_slash_command_agent() {
 #[test]
 fn formats_agent_memory_context() {
     let context = format_agent_memory_context(
+        "/analyze why CI fails on cargo fmt",
         &[String::from("analyzer")],
         &[PromptContextMemory {
             content: String::from("Fix CI by running cargo fmt before push."),
@@ -118,12 +119,122 @@ fn formats_agent_memory_context() {
                 "**Related Files:**\n- src/example/module.py (python)",
             )),
         }],
-    );
-    assert!(context.contains("## Memory for analyzer Agent"));
+    )
+    .expect("relevant memory is injected");
+    assert!(context.contains("## Relevant Memory (agents: analyzer)"));
     assert!(context.contains("Fix CI by running cargo fmt before push."));
-    assert!(context.contains("relevance: 0.00"));
+    assert!(!context.contains("relevance: 0.00"));
     assert!(context.contains("**Related Files:**"));
     assert!(context.contains("src/example/module.py"));
+}
+
+/// Issue #1483: words and path segments from a prompt are not agents.
+#[test]
+fn ordinary_words_and_paths_are_not_agent_references() {
+    for prompt in [
+        "look at the files in /skills /web /docs /commands /plugin and /bin today",
+        "check ~/.amplihack/bin/amplihack-hook and /amplihack-recipe-runner output",
+        "search amaz /amaz products",
+        "reply with just: pong",
+    ] {
+        assert!(
+            detect_agent_references(prompt).is_empty(),
+            "no agent in {prompt:?}: {:?}",
+            detect_agent_references(prompt)
+        );
+    }
+    assert_eq!(
+        detect_agent_references("run /analyzer on /skills and /builder here"),
+        vec!["analyzer".to_string(), "builder".to_string()]
+    );
+}
+
+/// Issue #1483: the stored "pong" smoke-test memory is unrelated to the
+/// prompt and must not be injected, once per agent or at all.
+#[test]
+fn unrelated_smoke_test_memory_is_not_injected() {
+    let agents = ["analyzer", "builder", "reviewer"].map(String::from);
+    // Shaped as session-stop stores it: `Agent <name>: <transcript>`.
+    let memories = [PromptContextMemory {
+        content: String::from("Agent general: user: reply with just: pong\n\nassistant: pong"),
+        code_context: None,
+    }];
+    for prompt in [
+        "update the skills under docs and web, then rebuild bin",
+        "/analyze the amplihack-hook plugin commands",
+        "/analyze the builder agent output",
+    ] {
+        assert_eq!(
+            format_agent_memory_context(prompt, &agents, &memories),
+            None,
+            "nothing is injected for {prompt:?}"
+        );
+    }
+}
+
+/// A mid-prompt slash command still names its agent.
+#[test]
+fn midprompt_slash_command_agents_are_detected() {
+    assert_eq!(
+        detect_agent_references("please /reflect on this session"),
+        vec!["reflection".to_string()]
+    );
+    assert_eq!(
+        detect_agent_references("then /ultrathink about it"),
+        vec!["orchestrator".to_string()]
+    );
+}
+
+/// Issue #1483 end to end: learnings stored by session-stop under several
+/// agents reach the prompt once when relevant, and not at all otherwise.
+#[test]
+fn stored_learnings_are_injected_once_and_only_when_relevant() {
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let _home = EnvVarGuard::set("HOME", dir.path());
+    let _backend = EnvVarGuard::set("AMPLIHACK_MEMORY_BACKEND", "sqlite");
+    let session = "issue-1483-session";
+
+    for agent in ["general", "analyzer", "builder"] {
+        amplihack_memory::cli_memory::store_session_learning(
+            session,
+            agent,
+            "user: reply with just: pong\n\nassistant: pong",
+            None,
+            true,
+        )
+        .unwrap();
+        amplihack_memory::cli_memory::store_session_learning(
+            session,
+            agent,
+            "The auth middleware rejected expired tokens before refresh",
+            None,
+            true,
+        )
+        .unwrap();
+    }
+
+    assert_eq!(
+        memory::inject_memory("/analyze the builder agent output", Some(session)),
+        None
+    );
+
+    let context = memory::inject_memory(
+        "/analyze why the auth middleware rejected expired tokens",
+        Some(session),
+    )
+    .expect("relevant learning is injected");
+    assert_eq!(
+        context
+            .matches("The auth middleware rejected expired tokens before refresh")
+            .count(),
+        1
+    );
+    assert!(!context.contains("pong"));
+    assert!(!context.contains("Agent "));
+    assert!(!context.contains("relevance: 0.00"));
 }
 
 #[test]

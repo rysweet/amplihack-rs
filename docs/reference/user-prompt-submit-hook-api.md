@@ -12,6 +12,32 @@ The UserPromptSubmit hook injects context on every user message:
 
 This document focuses on the framework injection mechanism (item 3).
 
+### Agent memories (item 2)
+
+Memories are injected only when the prompt names an amplihack agent: by a slash command (`/analyze`, `/fix`), by an agent definition reference, or by `Use <name>.md agent` (with a capital `U`; it names any agent, and `<name>` is a file stem as in a definition reference). A slash word is its own whitespace-separated token, ignoring surrounding punctuation (`(/analyze`, `/reflect.`). It counts wherever it appears, including at the end of the prompt. An agent definition reference is `@` and a path to a `.md` file under a `.claude/agents/` directory, and it counts for any agent: bundled, project-defined (`@.claude/agents/my-reviewer.md`) or user-level (`@~/.claude/agents/my-reviewer.md`). The file can be at any directory depth below `.claude/agents/` (`@.claude/agents/team/security-reviewer.md`), and the `.claude` directory can have a relative, `~` or absolute path before it (`Include @~/.amplihack/.claude/agents/amplihack/core/architect.md`, `@/home/me/proj/.claude/agents/builder.md`). The agent is the file's stem, one path component, so a later `.md` in the prompt (`then check README.md`) is not part of its name. Ordinary words are not agents. Neither are path segments, even ones named like an agent (`docs/security`), or slash words that name no agent (`/skills`, `/bin`).
+
+Each stored memory is scored against the prompt, and only relevant memories are injected (issue #1483). The rules, in `crates/amplihack-hooks/src/user_prompt/memory.rs`:
+
+- **Topic words.** Topic words are the prompt's and the memory's English words, minus:
+  - the [SMART stop list](https://github.com/igorbrigadir/stopwords/blob/master/en/smart.txt) (a few developer words such as `value` and `name` are kept),
+  - function words of German, Spanish, French, Italian, Portuguese and Dutch that are also English words (`die`, `bin`, `hat`, `man`, `mit`, `son`, `con`, …; see `FOREIGN_FUNCTION_WORDS`), so a prompt in one of those languages can't match an English memory on them,
+  - contractions,
+  - words shorter than 3 characters, and words that start with a digit, such as numbers with or without a suffix (`500`, `2026`, `2nd`, `10am`, `100ms`); `sha256`, `utf8` and `e2e` count, while `2fa` does not,
+  - the agent names and slash command that triggered the hook, and every agent definition reference as a whole (its directory names, such as `claude`, `amplihack` or `core`, are how the agent was invoked, not what the prompt is about),
+  - the `Agent <name>:` prefix and the transcript role labels (`user:`, `assistant:`, `human:`, `system:`, `tool:`, `developer:`, `function:`) that stored learnings carry.
+
+  There is no stemming.
+- **Relevance.** A memory must share at least 2 topic words with the prompt and score at least 0.2 cosine similarity. The score is printed as `(relevance: N.NN)`. A prompt left with a single topic word therefore never matches.
+- **Output.** Copies of the same memory stored under different agents are printed once. At most 5 memories are injected, most relevant first, and each is cut to 400 characters. If nothing is relevant, nothing is injected.
+- **English memories only.** Each transcript turn of a memory is checked on its own. A turn is a paragraph that starts with one of those role labels, even inside a code block, since a flattened transcript can't tell a pasted log line from a real turn. Any other paragraph continues the current turn and keeps its words. That includes one that opens with a lower-case word and a colon (`sqlite: …`). Only turns whose prose reads as English contribute topic words: at least 10% of their prose words must be common English function words (`the`, `and`, `with`, `because`, …) or English contractions.
+  - Words that are also frequent in other Latin-script languages don't count (`is`, `to`, `for`, `has`, `just`, `most`, …). The marker list shares no word with the [stopwords-iso](https://github.com/stopwords-iso/stopwords-iso) lists of 35 Latin-script languages. It still shares `are` and `or` with Romanian, `it` with Latvian and Lithuanian, and `it`, `out` and `you` with Breton; see `ENGLISH_MARKERS`.
+  - Code is ignored when judging the language: fenced blocks (a line starting with ```` ``` ```` or `~~~`, closed by a line of at least as many of the same character; fences inside block quotes or list items are not recognised), closed backtick spans of any width, and tokens with digits or symbols in them (paths, flags, `snake_case`, `DEFAULT_TIMEOUT`, `sha256`). An unclosed fence or backtick opens nothing, since session-stop cuts memories at 500 characters. Words written in capitals (`CI`, `THE`) are still words. A turn with no prose outside code (an assistant reply that is only a fenced block) is judged on the words inside its code. If those aren't English, the turn contributes nothing, its code-looking tokens included. Surrounding punctuation and quotes in any script (`¿`, `“`, `»`) are trimmed first, so they don't make a word look like code.
+  - Non-ASCII words are never topic words.
+
+  This fails closed. Turns in other languages are ignored, so a Spanish question answered in English is matched only on the English answer. Terse English notes with too few function words to tell (`user login uses oauth`) are not injected either, even when they are relevant. The check is a screened word list, not a language identifier: a turn in an unscreened language that happens to use a marker word, or one turn mixing English with another language, is treated as English.
+
+  The prompt is not language-checked: terse English prompts (`/fix flaky sqlite test timeout on linux ci`, `/fix clippy needless_borrow parser`) have no function words to judge by, and a check would drop them. A prompt in another language is kept from matching English memories by the foreign function words in the stop list above; its other words are topic words like any other.
+
 ## Hook Signature
 
 **File**: `~/.amplihack/.claude/tools/amplihack/hooks/user_prompt_submit.py`

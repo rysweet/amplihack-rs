@@ -549,6 +549,13 @@ jobs:
           -p amplihack -p amplihack-hooks-bin
           --features amplihack-hooks-bin/signal
 
+      # Outside-in: drive the real hooks binary through session-stop and
+      # user-prompt-submit, as Claude Code does (issue #1483).
+      - name: Outside-in — memory injection via the real hooks binary (issue #1483)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        run: bash tests/issue_1483_memory_injection_outside_in.sh "target/${{ matrix.target }}/release/amplihack-hooks"
+
       # Cross build (Linux ARM64)
       - name: Build (cross)
         if: matrix.cross
