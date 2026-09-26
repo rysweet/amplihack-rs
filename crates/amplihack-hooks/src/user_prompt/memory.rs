@@ -45,6 +45,21 @@ const SMART_STOP_WORDS: &str = include_str!("smart_stop_words.txt");
 /// `Agent <name>:` prefix every stored learning carries.
 const EXTRA_STOP_WORDS: &[&str] = &["agent", "agents", "general"];
 
+/// Frequent function words of German, Spanish, French, Italian, Portuguese
+/// and Dutch (from their stopwords-iso lists,
+/// <https://github.com/stopwords-iso/stopwords-iso>) that are also English
+/// words, so a prompt in one of those languages can't match an English
+/// memory on them (`ich bin nicht sicher, warum die Tests scheitern` against
+/// `the workers die if the bin directory is missing`). The prompt is not
+/// language-checked: that would drop terse English prompts too (`/fix flaky
+/// sqlite test timeout on linux ci`), which have no function words to judge.
+/// Kept out, as everyday developer vocabulary: `dir`, `due`, `sin`, `col`,
+/// `del`, `com`, `net`.
+const FOREIGN_FUNCTION_WORDS: &[&str] = &[
+    "bin", "car", "con", "den", "die", "doe", "dos", "era", "hat", "man", "met", "mit", "sea",
+    "son", "ton", "van", "war",
+];
+
 /// SMART words kept as topic words. SMART was built for news retrieval;
 /// these are everyday developer vocabulary (`value`, `name`, `self`), and
 /// dropping them left prompts such as `/fix the value name of the first
@@ -62,6 +77,7 @@ fn is_stop_word(word: &str) -> bool {
                 .map(str::trim)
                 .filter(|line| !line.is_empty() && !DEV_VOCABULARY.contains(line))
                 .chain(EXTRA_STOP_WORDS.iter().copied())
+                .chain(FOREIGN_FUNCTION_WORDS.iter().copied())
                 .collect()
         })
         .contains(word)
@@ -147,15 +163,6 @@ pub(crate) fn inject_memory(prompt: &str, session_id: Option<&str>) -> Option<St
         }
     };
     let query_text = prompt.chars().take(500).collect::<String>();
-    // Checked before retrieval too: a prompt that fails it gets nothing, so
-    // loading the session's memories for it would be wasted.
-    if !prompt_reads_as_english(
-        &without_definition_references(&query_text),
-        &ignored_terms(&agent_types),
-    ) {
-        return None;
-    }
-
     match retrieve_prompt_context_memories(session_id, &query_text, 2000) {
         Ok(memories) => format_agent_memory_context(&query_text, &agent_types, &memories),
         Err(error) => {
@@ -173,9 +180,7 @@ pub(crate) fn inject_memory(prompt: &str, session_id: Option<&str>) -> Option<St
 /// text, ignoring the `Agent <name>:` prefix and whitespace, are printed
 /// once, and each entry is bounded to [`MAX_MEMORY_CHARS`].
 ///
-/// Returns `None`, so nothing is injected, when no memory is relevant, or
-/// when the prompt itself fails [`prompt_reads_as_english`]: the filter
-/// only understands English, on both sides of the comparison.
+/// Returns `None`, so nothing is injected, when no memory is relevant.
 pub fn format_agent_memory_context(
     prompt: &str,
     agent_types: &[String],
@@ -186,13 +191,7 @@ pub fn format_agent_memory_context(
     // sides: a memory stored from a prompt that used the same reference
     // would otherwise share its directory names (`claude`, `amplihack`).
     let prompt = without_definition_references(prompt);
-    // The prompt is held to the same language check as memory turns: a
-    // German prompt's `die` / `bin` / `mit` would otherwise match the same
-    // words in an English memory.
-    if !prompt_reads_as_english(&prompt, &ignored) {
-        return None;
-    }
-    let prompt_terms = scored_terms(&prompt, &ignored);
+    let prompt_terms = topic_terms(&prompt, &ignored);
 
     let mut scored: Vec<(f64, String, &PromptContextMemory)> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -208,28 +207,14 @@ pub fn format_agent_memory_context(
         // contribute topic words: in a transcript where the user wrote
         // another language and the assistant answered in English, the
         // user's function words must not count.
-        //
-        // A fence that seems to span a role label is ambiguous once a
-        // transcript is flattened: a pasted log inside one message (the
-        // label is content) or a stray fence line in one message pairing
-        // with a fence in the next (the label is a real turn boundary). The
-        // memory must be relevant under both readings, so neither can merge
-        // a non-English turn into an English one; without such a fence the
-        // two readings are the same.
         let body = without_definition_references(strip_agent_prefix(&memory.content));
-        let readings = [true, false].map(|respect_fences| {
-            let memory_terms: HashSet<String> = turns_with(&body, respect_fences)
-                .iter()
-                .filter(|turn| reads_as_english(turn))
-                .flat_map(|turn| scored_terms(turn, &ignored))
-                .collect();
-            (
-                prompt_terms.intersection(&memory_terms).count(),
-                memory_relevance(&prompt_terms, &memory_terms),
-            )
-        });
-        let shared = readings[0].0.min(readings[1].0);
-        let relevance = readings[0].1.min(readings[1].1);
+        let memory_terms: HashSet<String> = turns(&body)
+            .iter()
+            .filter(|turn| reads_as_english(turn))
+            .flat_map(|turn| topic_terms(turn, &ignored))
+            .collect();
+        let shared = prompt_terms.intersection(&memory_terms).count();
+        let relevance = memory_relevance(&prompt_terms, &memory_terms);
         if shared >= MIN_SHARED_TERMS && relevance >= RELEVANCE_THRESHOLD {
             seen.insert(text.clone());
             scored.push((relevance, text, memory));
@@ -304,136 +289,55 @@ fn segments(text: &str) -> Vec<(bool, &str)> {
     segments
 }
 
-/// `text` split at fenced code blocks (CommonMark §4.5). A line that starts
-/// with three or more backticks or tildes, after any container markers (see
-/// [`fence_run`]), opens a fence (a backtick fence's info string may not
-/// contain a backtick). The next line in the same container holding at
-/// least as many of the same character and nothing else but whitespace
-/// closes it. Everything between is code, fence-like lines of the other
-/// character included.
+/// `text` split at fenced code blocks (CommonMark §4.5): a line that
+/// starts, after indentation, with three or more backticks or tildes opens
+/// a fence (a backtick fence's info string may not contain a backtick), and
+/// the next line holding at least as many of the same character and nothing
+/// else closes it. Everything between is code. Fences inside block quotes
+/// or list items are not recognised; their text stays prose.
 fn fenced_blocks(text: &str) -> Vec<(bool, &str)> {
+    let mut lines = Vec::new();
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        lines.push((offset, line));
+        offset += line.len();
+    }
     let mut parts = Vec::new();
     let mut prose_start = 0;
-    for fence in fences(text) {
-        parts.push((false, &text[prose_start..fence.start]));
-        parts.push((true, &text[fence.content.clone()]));
-        prose_start = fence.end;
+    let mut index = 0;
+    while index < lines.len() {
+        let (open_at, open_line) = lines[index];
+        let close = fence_run(open_line)
+            .filter(|(marker, _, rest)| !(*marker == '`' && rest.contains('`')))
+            .and_then(|(marker, width, _)| {
+                lines[index + 1..].iter().position(|(_, line)| {
+                    fence_run(line).is_some_and(|(closer, closer_width, rest)| {
+                        closer == marker && closer_width >= width && rest.trim().is_empty()
+                    })
+                })
+            });
+        let Some(close) = close else {
+            index += 1;
+            continue;
+        };
+        let (close_at, close_line) = lines[index + 1 + close];
+        parts.push((false, &text[prose_start..open_at]));
+        parts.push((true, &text[open_at + open_line.len()..close_at]));
+        prose_start = close_at + close_line.len();
+        index += close + 2;
     }
     parts.push((false, &text[prose_start..]));
     parts
 }
 
-/// A closed fenced block in a text: its byte range from the opening line's
-/// start to the closing line's end, and the range of its content.
-struct Fence {
-    start: usize,
-    content: std::ops::Range<usize>,
-    end: usize,
-}
-
-/// The closed fenced blocks of `text`, in order (see [`fenced_blocks`]).
-fn fences(text: &str) -> Vec<Fence> {
-    fences_in(text, text)
-}
-
-/// The closed fenced blocks of `text`, with openers looked for in
-/// `openers`, a copy of `text` of the same length (with role labels
-/// blanked, say), and closers in `text` itself: a line inside a fence is
-/// content, whatever it starts with.
-fn fences_in(text: &str, openers: &str) -> Vec<Fence> {
-    let mut lines = Vec::new();
-    let mut offset = 0;
-    for (line, opener_line) in text
-        .split_inclusive('\n')
-        .zip(openers.split_inclusive('\n'))
-    {
-        lines.push((offset, line, opener_line));
-        offset += line.len();
-    }
-    let mut fences = Vec::new();
-    let mut index = 0;
-    while index < lines.len() {
-        let (open_at, open_line, opener_line) = lines[index];
-        let opener = fence_run(opener_line)
-            .filter(|opener| !(opener.marker == '`' && opener.rest.contains('`')));
-        // A closer sits in the same container as its opener: the same
-        // number of `>` markers, and never behind a list-item marker (a list
-        // item's closer is indented instead). Inside a fence, a `- ```` diff
-        // line or a ` * ```` doc-comment line is content.
-        let close = opener.and_then(|opener| {
-            lines[index + 1..].iter().position(|(_, line, _)| {
-                fence_run(line).is_some_and(|closer| {
-                    closer.marker == opener.marker
-                        && closer.width >= opener.width
-                        && closer.rest.trim().is_empty()
-                        && closer.quote_depth == opener.quote_depth
-                        && !closer.list_item
-                })
-            })
-        });
-        let Some(close) = close else {
-            index += 1;
-            continue;
-        };
-        let (close_at, close_line, _) = lines[index + 1 + close];
-        fences.push(Fence {
-            start: open_at,
-            content: open_at + open_line.len()..close_at,
-            end: close_at + close_line.len(),
-        });
-        index += close + 2;
-    }
-    fences
-}
-
-/// A line that starts with a fence run, after indentation and any
-/// block-quote (`>`) or list-item (`-`, `*`, `+`, `1.`, `1)`) markers, since
-/// a fence inside those containers is still a fence.
-struct FenceLine<'a> {
-    /// `` ` `` or `~`.
-    marker: char,
-    /// The run's length, at least 3.
-    width: usize,
-    /// The rest of the line after the run.
-    rest: &'a str,
-    /// How many `>` block-quote markers came before the run.
-    quote_depth: usize,
-    /// Whether a list-item marker came before the run.
-    list_item: bool,
-}
-
-/// The fence run `line` starts with, if any (see [`FenceLine`]).
-fn fence_run(line: &str) -> Option<FenceLine<'_>> {
-    let mut line = line.trim_start();
-    let mut quote_depth = 0;
-    while let Some(rest) = line.strip_prefix('>') {
-        line = rest.trim_start();
-        quote_depth += 1;
-    }
-    let digits = line.chars().take_while(char::is_ascii_digit).count();
-    let list_marker = if line.starts_with(['-', '*', '+']) {
-        Some(1)
-    } else if (1..=9).contains(&digits) && line[digits..].starts_with(['.', ')']) {
-        Some(digits + 1)
-    } else {
-        None
-    };
-    let mut list_item = false;
-    if let Some(marker_len) = list_marker
-        && line[marker_len..].starts_with(char::is_whitespace)
-    {
-        line = line[marker_len..].trim_start();
-        list_item = true;
-    }
+/// The fence run `line` starts with after indentation, if any: its
+/// character (`` ` `` or `~`), its length (at least 3) and the rest of the
+/// line.
+fn fence_run(line: &str) -> Option<(char, usize, &str)> {
+    let line = line.trim_start();
     let marker = line.chars().next().filter(|c| matches!(c, '`' | '~'))?;
     let width = line.chars().take_while(|c| *c == marker).count();
-    (width >= 3).then(|| FenceLine {
-        marker,
-        width,
-        rest: &line[width..],
-        quote_depth,
-        list_item,
-    })
+    (width >= 3).then(|| (marker, width, &line[width..]))
 }
 
 /// `text` split at backtick code spans: a run of backticks opens a span
@@ -496,73 +400,28 @@ const TRANSCRIPT_ROLES: &[&str] = &[
     "user",
 ];
 
-/// `text` with each paragraph-opening role label (`user: `) replaced by as
-/// many spaces, so byte offsets are unchanged.
-fn without_labels(text: &str) -> String {
-    let mut masked = String::with_capacity(text.len());
-    let mut paragraph_start = true;
-    for line in text.split_inclusive('\n') {
-        let indent = line.len() - line.trim_start().len();
-        let label_len = line
-            .trim_start()
-            .split_once(": ")
-            .filter(|(role, _)| paragraph_start && TRANSCRIPT_ROLES.contains(role))
-            .map(|(role, _)| role.len() + 2);
-        match label_len {
-            Some(len) => {
-                masked.push_str(&line[..indent]);
-                masked.push_str(&" ".repeat(len));
-                masked.push_str(&line[indent + len..]);
-            }
-            None => masked.push_str(line),
-        }
-        paragraph_start = line.trim().is_empty();
-    }
-    masked
-}
-
-/// `text` split into transcript turns, respecting fences (see
-/// [`turns_with`]).
-#[cfg(test)]
-fn turns(text: &str) -> Vec<String> {
-    turns_with(text, true)
-}
-
 /// `text` split into transcript turns, without their role labels.
 ///
 /// Session-stop flattens a transcript as `<role>: <text>` paragraphs joined
 /// by blank lines, with whatever role the transcript carries. A paragraph
-/// that starts with one of the [`TRANSCRIPT_ROLES`] labels starts a turn;
-/// other paragraphs (a code block with blank lines in it, a pasted log line
-/// such as `user: …` inside a closed fenced block, when `respect_fences`,
-/// or a note that opens
-/// with `sqlite: …`) continue the current one and keep their words.
-/// Text without labels is one turn. With `respect_fences` false, every
-/// paragraph-opening label starts a turn, fence or not.
-fn turns_with(text: &str, respect_fences: bool) -> Vec<String> {
-    // A label inside a closed fenced block is part of the block, not a turn.
-    // Fences are found with the labels blanked out (same byte offsets), so
-    // a message that starts with a fence (`user: ```) opens it.
-    let fences = if respect_fences {
-        fences_in(text, &without_labels(text))
-    } else {
-        Vec::new()
-    };
-    let in_fence = |at: usize| fences.iter().any(|fence| fence.content.contains(&at));
+/// that starts with one of the [`TRANSCRIPT_ROLES`] labels starts a turn,
+/// even inside a code block: the flattened text can't tell a pasted log
+/// line from a real turn, and a split never merges two turns' languages.
+/// Other paragraphs (a code block with blank lines in it, or a note that
+/// opens with `sqlite: …`) continue the current turn. Text without labels
+/// is one turn.
+fn turns(text: &str) -> Vec<String> {
     let mut turns = vec![String::new()];
     let mut paragraph_start = true;
-    let mut offset = 0;
-    for raw_line in text.split_inclusive('\n') {
-        let at = offset;
-        offset += raw_line.len();
-        let line = raw_line.trim_end_matches(['\n', '\r']);
+    for line in text.lines() {
         if line.trim().is_empty() {
             paragraph_start = true;
             continue;
         }
-        let label = line.trim_start().split_once(": ").filter(|(role, _)| {
-            paragraph_start && !in_fence(at) && TRANSCRIPT_ROLES.contains(role)
-        });
+        let label = line
+            .trim_start()
+            .split_once(": ")
+            .filter(|(role, _)| paragraph_start && TRANSCRIPT_ROLES.contains(role));
         match label {
             Some((_, rest)) => turns.push(rest.to_string()),
             None => {
@@ -609,68 +468,16 @@ fn prose_word(token: &str) -> Option<String> {
     (!token.is_empty() && !looks_like_code).then(|| token.to_lowercase().replace('\u{2019}', "'"))
 }
 
-/// The topic words of `text` that are scored: those of its prose, and of
-/// each code part unless that part is itself a sentence in another
-/// language.
-///
-/// Code is left out of the language check, so a German error pasted in a
-/// fence after `fix this:` would otherwise be scored as English. A code part
-/// with at least [`MIN_WORDS_TO_JUDGE`] prose-like words is judged like
-/// prose; if it doesn't read as English, only its code-looking tokens
-/// (`needless_borrow`, `src/main.rs`) are scored, not its words.
-fn scored_terms(text: &str, ignored: &HashSet<String>) -> HashSet<String> {
-    let mut terms = HashSet::new();
-    for (is_code, part) in segments(text) {
-        let words = part
-            .split_whitespace()
-            .filter_map(prose_word)
-            .collect::<Vec<_>>();
-        if !is_code || words.len() < MIN_WORDS_TO_JUDGE || english_share_ok(&words) {
-            terms.extend(topic_terms(part, ignored));
-        } else {
-            for token in part
-                .split_whitespace()
-                .filter(|token| prose_word(token).is_none())
-            {
-                terms.extend(topic_terms(token, ignored));
-            }
-        }
-    }
-    terms
-}
-
 /// Punctuation that surrounds prose words rather than making up code:
 /// anything but a letter, a digit or a character code is written with.
 fn is_prose_punctuation(c: char) -> bool {
     !c.is_alphanumeric() && !"-/\\_~$@#=+*<>|&%`^".contains(c)
 }
 
-/// Text with fewer words than this is too short to judge its language, and
-/// is scored as it is (see [`prompt_reads_as_english`], [`scored_terms`]).
-const MIN_WORDS_TO_JUDGE: usize = 4;
-
-/// Whether the prompt reads as English, as memory turns must
-/// ([`reads_as_english`]). A prompt with fewer than
-/// [`MIN_WORDS_TO_JUDGE`] prose words *and* fewer than that many topic
-/// words in all (`/analyze user login`) is too short to tell and passes.
-/// Counting every topic word, code included, means a prompt that is mostly
-/// code (``/fix `src/die/bin.rs` `mit_hat` `was_ist` ``) or a pasted error
-/// (a German one in a fence, then `Hat man Ideen?`) is still judged.
-///
-/// Known limits: a longer English prompt with no function words (`/fix
-/// flaky sqlite test timeout on linux ci`) gets no memories, failing
-/// closed; a non-English prompt of three words or fewer is not checked.
-fn prompt_reads_as_english(prompt: &str, ignored: &HashSet<String>) -> bool {
-    let too_short_to_judge = prose_words(prompt).len() < MIN_WORDS_TO_JUDGE
-        && topic_terms(prompt, ignored).len() < MIN_WORDS_TO_JUDGE;
-    too_short_to_judge || reads_as_english(prompt)
-}
-
 /// Whether `text` reads as English: at least [`MIN_ENGLISH_MARKER_SHARE`]
 /// of its [`prose_words`] are [`ENGLISH_MARKERS`] or English contractions.
-/// Text with no prose outside code (`/fix` and a pasted error in a fence) is
-/// judged on the prose-like words inside its code spans instead, the same
-/// words [`scored_terms`] judges a span on.
+/// Text with no prose outside code (an assistant reply that is only a
+/// fenced block) is judged on the prose-like words inside its code instead.
 ///
 /// The relevance filter only knows English. Another language's function
 /// words (`schon`, `niet`, `jest`, `porque`) would be topic words to it, so
@@ -730,8 +537,7 @@ fn english_share_ok(prose: &[String]) -> bool {
 /// between words, or attaches grammar to them) contribute nothing, and
 /// memory turns that do not read as English contribute nothing (see
 /// [`reads_as_english`]), which also drops terse English notes with too few
-/// function words to tell. A prompt that does not read as English gets no
-/// memories at all (see [`prompt_reads_as_english`]). This fails closed: nothing irrelevant is
+/// function words to tell. This fails closed: nothing irrelevant is
 /// injected, a relevant memory may be missed.
 fn topic_terms(text: &str, ignored: &HashSet<String>) -> HashSet<String> {
     words(text)
@@ -1571,15 +1377,6 @@ mod tests {
                 "{prompt:?} is judged the same in either case"
             );
         }
-        let none = HashSet::new();
-        assert!(prompt_reads_as_english(
-            "/FIX THE FLAKY SQLITE TEST ON THE LINUX RUNNER",
-            &none
-        ));
-        assert!(prompt_reads_as_english(
-            "/fix the HTTP API timeout in the auth client",
-            &none
-        ));
     }
 
     /// Foreign text in a code span is judged like prose: pasting a German
@@ -1643,8 +1440,9 @@ mod tests {
             ),
             None
         );
-        // Fences inside block quotes and list items are fences, and a
-        // role-label line inside a closed fence doesn't split the turn.
+        // Fences inside block quotes and list items are not recognised, so
+        // their text is prose, and a role-label line inside a fence splits
+        // the turn; neither makes a German sentence match English words.
         for prompt in [
             "/fix this:\n> ~~~\n> Fehler: die Datei hat man nicht gefunden\n> ~~~",
             "/fix this:\n- ~~~\n  Fehler: die Datei hat man nicht gefunden\n  ~~~",
@@ -1666,14 +1464,12 @@ mod tests {
                 "{unrelated:?} is not relevant to {prompt:?}"
             );
         }
+        // A paragraph-opening role label starts a turn even inside a code
+        // block: a flattened transcript can't tell a pasted log line from a
+        // real turn, and splitting never merges two turns' languages.
         assert_eq!(
             turns("assistant: log:\n```\nx\n\nuser: y\n```\n\nuser: next"),
-            ["log:\n```\nx\nuser: y\n```", "next"]
-        );
-        // A pasted `user: ```` line inside a fence is content, not a closer.
-        assert_eq!(
-            turns("assistant: log:\n```\nhallo\n\nuser: ```\nx\n```\n```\n\nuser: next"),
-            ["log:\n```\nhallo\nuser: ```\nx\n```\n```", "next"]
+            ["log:\n```\nx", "y\n```", "next"]
         );
         let unrelated = "Agent x: assistant: The build is fixed now and all the tests are green again with the new config. Here is the chat log that you asked for:\n```\nder Mann mit dem Hut hat den Bus verpasst, sagt man\n\nuser: ```\ncargo test\n```\n```";
         assert_eq!(
@@ -1700,8 +1496,8 @@ mod tests {
             )
             .is_some()
         );
-        // Both readings must find the memory relevant: dropping each
-        // reading's own words must not shrink the score's denominator.
+        // A German log pasted into an English turn, with a role label
+        // inside it, doesn't make the memory relevant.
         let sqlite_prompt = "/fix the sqlite timeout on the release branch of the payments service";
         assert_eq!(
             format_agent_memory_context(
@@ -1723,8 +1519,8 @@ mod tests {
             format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(unrelated)]),
             None
         );
-        // Inside a fence, a diff, doc-comment or quote line that looks like
-        // a fence in a container is content, not the fence's end.
+        // Inside a fence, a diff, doc-comment or quote line with a fence run
+        // after its marker is content, not the fence's end.
         for fenced_prompt in [
             "/fix the markdown diff for the docs page:\n```diff\n- ```\n+ ~~~\n Fehler: die Datei hat man nicht gefunden, der Server ist weg\n```",
             "/fix the jsdoc example for this helper:\n```js\n/**\n * ```\n * Fehler: die Datei hat man nicht gefunden, der Server ist weg\n */\n```",
@@ -1757,8 +1553,8 @@ mod tests {
                 (false, "")
             ]
         );
-        // A pasted foreign error doesn't shrink a foreign prompt below the
-        // size at which it is judged.
+        // A foreign prompt with a pasted foreign error matches no English
+        // memory on the words the two languages share.
         for (prompt, unrelated) in [
             (
                 "/fix ```\nFehler: die Pipeline hat keinen Erfolg, man sieht nichts\n```\nHat man Ideen?",
@@ -1885,15 +1681,34 @@ mod tests {
                 "{unrelated:?} is not relevant to {prompt:?}"
             );
         }
-        // Known limit: a long English prompt without function words is
-        // judged not English and gets nothing; a short one is not judged.
-        let none = HashSet::new();
-        assert!(!prompt_reads_as_english(
-            "/fix flaky sqlite test timeout on linux ci",
-            &none
-        ));
-        assert!(prompt_reads_as_english("/analyze user login", &none));
-        assert!(prompt_reads_as_english("/fix the flaky sqlite test", &none));
+    }
+
+    /// The prompt is not language-checked: terse English prompts, nouns and
+    /// identifiers with no function words, get their memories (#1483 review:
+    /// a prompt-side check dropped them, and adding an on-topic word such as
+    /// `linux` could make a memory disappear).
+    #[test]
+    fn terse_english_prompts_get_their_memories() {
+        let sqlite = "Agent tester: user: the sqlite test is flaky on linux ci\n\nassistant: The sqlite test times out on the linux runner because the lock is held too long; raising the busy timeout fixed it.";
+        let clippy = "Agent builder: user: fix the clippy warning in the parser\n\nassistant: I removed the needless_borrow that clippy flagged in the parser.";
+        let css = "Agent builder: user: tidy the css grid on the landing page\n\nassistant: I tidied the css grid so that the landing page columns line up on mobile.";
+        for (prompt, relevant) in [
+            ("/fix flaky sqlite test timeout on linux ci", sqlite),
+            ("/fix sqlite flaky test linux", sqlite),
+            ("/fix sqlite test flaky", sqlite),
+            ("/FIX THE FLAKY SQLITE TEST ON THE LINUX RUNNER", sqlite),
+            ("/fix clippy needless_borrow parser", clippy),
+            ("/fix clippy needless_borrow in src/parser.rs again", clippy),
+            ("/builder tidy css grid landing page", css),
+        ] {
+            let result =
+                format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(relevant)]);
+            assert!(
+                result
+                    .is_some_and(|text| text.contains(&single_line(strip_agent_prefix(relevant)))),
+                "{relevant:?} is relevant to {prompt:?}"
+            );
+        }
     }
 
     /// Shared numbers are not shared topics.

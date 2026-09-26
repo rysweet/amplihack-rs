@@ -95,6 +95,10 @@ cat >"${WORK}/css.jsonl" <<'EOF'
 {"role":"user","content":"use @.claude/agents/amplihack/core/builder.md to tidy the css grid on the landing page"}
 {"role":"assistant","content":"I tidied the css grid so that the landing page columns line up on mobile."}
 EOF
+cat >"${WORK}/sqlite.jsonl" <<'EOF'
+{"role":"user","content":"the sqlite test is flaky on linux ci"}
+{"role":"assistant","content":"The sqlite test times out on the linux runner because the lock is held too long; raising the busy timeout fixed it."}
+EOF
 cat >"${WORK}/bin.jsonl" <<'EOF'
 {"role":"user","content":"why do the workers crash on startup?"}
 {"role":"assistant","content":"The build copies files into the bin directory, and the workers die if it is missing."}
@@ -108,6 +112,7 @@ for agent in analyzer builder; do
   store "${WORK}/auth.jsonl" "${agent}"
 done
 store "${WORK}/bin.jsonl" builder
+store "${WORK}/sqlite.jsonl" tester
 store "${WORK}/detected.jsonl" ""
 store "${WORK}/css.jsonl" ""
 
@@ -174,6 +179,14 @@ if [ "$(count "${out}" "tidied the css grid")" -eq 1 ]; then pass "on-topic prom
 # tell, and so allowed, only while the reference's path words aren't counted.
 out="$(ask "@.claude/agents/amplihack/core/builder.md tidy css grid")"
 if [ "$(count "${out}" "tidied the css grid")" -eq 1 ]; then pass "short on-topic prompt with the reference gets the memory"; else fail "relevant css memory missing for a short prompt: ${out}"; fi
+
+echo "scenario 8: a terse English prompt gets its memory"
+# Nouns and identifiers, no function words: the prompt is not
+# language-checked, so it isn't mistaken for another language.
+for prompt in "/fix flaky sqlite test timeout on linux ci" "/fix sqlite flaky test linux"; do
+  out="$(ask "${prompt}")"
+  if [ "$(count "${out}" "raising the busy timeout fixed it")" -eq 1 ]; then pass "'${prompt}' gets the sqlite memory"; else fail "sqlite memory missing for '${prompt}': ${out}"; fi
+done
 
 echo
 echo "passed: ${PASS_COUNT}, failed: ${FAIL_COUNT}"
