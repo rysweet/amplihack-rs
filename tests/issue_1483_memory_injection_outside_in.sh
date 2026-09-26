@@ -45,12 +45,16 @@ pass() { printf '  PASS: %s\n' "$1"; PASS_COUNT=$((PASS_COUNT + 1)); }
 fail() { printf '  FAIL: %s\n' "$1"; FAIL_COUNT=$((FAIL_COUNT + 1)); }
 
 # store <transcript file> <agent>: run session-stop on a transcript, storing
-# its learning under <agent> (session-stop's explicit `agent_type`).
+# its learning under <agent> (session-stop's explicit `agent_type`), or,
+# with <agent> empty, under the agents session-stop detects in it.
 # A failed or crashed hook is reported with its stderr, never silently.
 store() {
-  local status=0
-  printf '{"hook_event_name":"SessionStop","session_id":"%s","transcript_path":"%s","agent_type":"%s"}' \
-    "${SESSION}" "$1" "$2" | "${HOOKS}" session-stop >/dev/null 2>"${WORK}/stderr" || status=$?
+  local status=0 agent_field=""
+  if [ -n "$2" ]; then
+    agent_field=",\"agent_type\":\"$2\""
+  fi
+  printf '{"hook_event_name":"SessionStop","session_id":"%s","transcript_path":"%s"%s}' \
+    "${SESSION}" "$1" "${agent_field}" | "${HOOKS}" session-stop >/dev/null 2>"${WORK}/stderr" || status=$?
   if [ "${status}" -ne 0 ] || grep -q "failed to store" "${WORK}/stderr"; then
     echo "FAIL: session-stop for agent '$2' (exit ${status}):" >&2
     cat "${WORK}/stderr" >&2
@@ -83,6 +87,10 @@ cat >"${WORK}/auth.jsonl" <<'EOF'
 {"role":"user","content":"why did the auth middleware reject expired tokens?"}
 {"role":"assistant","content":"The auth middleware rejected expired tokens because the refresh ran after the check."}
 EOF
+cat >"${WORK}/detected.jsonl" <<'EOF'
+{"role":"user","content":"use @.claude/agents/reviewer.md to check README.md, then /analyze why the queue stalls at night"}
+{"role":"assistant","content":"The queue stalls at night because the cron job holds the lock while the backup runs."}
+EOF
 cat >"${WORK}/bin.jsonl" <<'EOF'
 {"role":"user","content":"why do the workers crash on startup?"}
 {"role":"assistant","content":"The build copies files into the bin directory, and the workers die if it is missing."}
@@ -96,6 +104,7 @@ for agent in analyzer builder; do
   store "${WORK}/auth.jsonl" "${agent}"
 done
 store "${WORK}/bin.jsonl" builder
+store "${WORK}/detected.jsonl" ""
 
 echo "scenario 1: the #1483 smoke-test memory is not injected for an agent prompt"
 out="$(ask "/analyze the builder agent output")"
@@ -124,6 +133,14 @@ if [ "$(count "${out}" "bin directory")" -eq 0 ]; then pass "no memory for a non
 echo "scenario 5: an English prompt about that memory still gets it"
 out="$(ask "/fix why the workers die when the bin directory is missing")"
 if [ "$(count "${out}" "bin directory, and the workers die")" -eq 1 ]; then pass "relevant bin memory injected"; else fail "relevant memory missing: ${out}"; fi
+
+echo "scenario 6: agents detected from a transcript are real agent names"
+# session-stop stores this learning under the agents it detects; an agent
+# definition reference followed by another `.md` must not become a prose
+# "agent" whose `Agent ...:` prefix is then printed.
+out="$(ask "/analyze why the queue stalls at night")"
+if [ "$(count "${out}" "The queue stalls at night because")" -eq 1 ]; then pass "detected-agent learning printed once"; else fail "detected-agent learning not printed exactly once: ${out}"; fi
+if [ "$(count "${out}" "Agent ")" -eq 0 ]; then pass "no agent prefix printed"; else fail "agent prefix printed: ${out}"; fi
 
 echo
 echo "passed: ${PASS_COUNT}, failed: ${FAIL_COUNT}"

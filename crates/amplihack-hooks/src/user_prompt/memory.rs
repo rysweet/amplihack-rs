@@ -2002,6 +2002,16 @@ mod tests {
             prompt_agents("Use my-reviewer.md agent to review"),
             ["my-reviewer"]
         );
+        // An agent name is one file name, never a run of prose up to a
+        // later `.md`.
+        assert_eq!(
+            prompt_agents("@.claude/agents/my-reviewer.md review, then check README.md"),
+            ["my-reviewer"]
+        );
+        assert_eq!(
+            prompt_agents("Include @.claude/agents/amplihack/core/builder.md then read docs.md"),
+            ["builder"]
+        );
     }
 
     #[test]

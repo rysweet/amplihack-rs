@@ -3,9 +3,9 @@ use regex::Regex;
 use std::sync::OnceLock;
 
 const AGENT_REFERENCE_PATTERNS: &[&str] = &[
-    r"@\.claude/agents/amplihack/[^/]+/([^/]+)\.md",
-    r"@\.claude/agents/([^/]+)\.md",
-    r"Include\s+@\.claude/agents/[^/]+/([^/]+)\.md",
+    r"@\.claude/agents/amplihack/[A-Za-z0-9_-]+/([A-Za-z0-9_-]+)\.md",
+    r"@\.claude/agents/([A-Za-z0-9_-]+)\.md",
+    r"Include\s+@\.claude/agents/[A-Za-z0-9_-]+/([A-Za-z0-9_-]+)\.md",
     r"Use\s+([a-z-]+)\.md\s+agent",
 ];
 
