@@ -14,7 +14,7 @@ This document focuses on the framework injection mechanism (item 3).
 
 ### Agent memories (item 2)
 
-Memories are injected only when the prompt names an amplihack agent, either by a slash command (`/analyze`, `/fix`) or by an agent definition reference. Ordinary words and path segments such as `/skills` or `/bin` are not agents.
+Memories are injected only when the prompt names an amplihack agent, either by a slash command (`/analyze`, `/fix`) or by an agent definition reference. A slash word counts wherever it appears, including at the end of the prompt. Ordinary words are not agents. Neither are path segments, even ones named like an agent (`docs/security`), or slash words that name no agent (`/skills`, `/bin`).
 
 Each stored memory is scored against the prompt, and only relevant memories are injected (issue #1483). The rules, in `crates/amplihack-hooks/src/user_prompt/memory.rs`:
 

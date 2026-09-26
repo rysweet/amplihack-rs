@@ -7,7 +7,6 @@ const AGENT_REFERENCE_PATTERNS: &[&str] = &[
     r"@\.claude/agents/([^/]+)\.md",
     r"Include\s+@\.claude/agents/[^/]+/([^/]+)\.md",
     r"Use\s+([a-z-]+)\.md\s+agent",
-    r"/([a-z-]+)\s",
 ];
 
 const SLASH_COMMAND_AGENTS: &[(&str, &str)] = &[
@@ -21,12 +20,16 @@ const SLASH_COMMAND_AGENTS: &[(&str, &str)] = &[
     ("xpia", "xpia-defense"),
 ];
 
-/// Names of real amplihack agents referenced in `prompt`.
+/// Names of real amplihack agents referenced in `prompt`: by an agent
+/// definition reference (`@.claude/agents/…/builder.md`), or by a slash word
+/// (`/analyzer`, `/reflect` → `reflection`).
 ///
-/// The patterns are loose (`/([a-z-]+)\s` matches any path segment such as
-/// `/skills ` or `/bin `), so a capture only counts when it names a bundled
-/// agent definition or a slash-command agent (`/reflect` → `reflection`).
-/// Ordinary words never become "agents" (issue #1483).
+/// A slash word is a whitespace-separated token that is `/` followed only by
+/// lower-case letters and hyphens, anywhere in the prompt (at its end too).
+/// A path segment is not one: in `docs/security` or `~/.amplihack/bin` the
+/// `/` is inside a token. Even a slash word only counts when it names a
+/// bundled agent definition or a slash-command agent, so `/skills` or `/bin`
+/// on their own are not agents either (issue #1483).
 pub(crate) fn detect_agent_references(prompt: &str) -> Vec<String> {
     static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
     let patterns = PATTERNS.get_or_init(|| {
@@ -51,6 +54,20 @@ pub(crate) fn detect_agent_references(prompt: &str) -> Vec<String> {
             if !agents.iter().any(|existing| existing == &agent_name) {
                 agents.push(agent_name);
             }
+        }
+    }
+    for token in prompt.split_whitespace() {
+        let Some(word) = token.strip_prefix('/') else {
+            continue;
+        };
+        if word.is_empty() || !word.chars().all(|c| c.is_ascii_lowercase() || c == '-') {
+            continue;
+        }
+        let agent_name = normalize_agent_name(word);
+        if (is_amplihack_agent(&agent_name) || is_slash_command_agent(&agent_name))
+            && !agents.iter().any(|existing| existing == &agent_name)
+        {
+            agents.push(agent_name);
         }
     }
     agents

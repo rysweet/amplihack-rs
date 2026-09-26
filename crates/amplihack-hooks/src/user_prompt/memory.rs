@@ -1958,6 +1958,36 @@ mod tests {
         }
     }
 
+    /// A path segment that happens to name an agent is not an agent; a slash
+    /// word is one wherever it stands, the end of the prompt included.
+    #[test]
+    fn only_slash_words_name_agents() {
+        assert!(
+            prompt_agents("the notes under docs/security are stale, and the auth tokens expire")
+                .is_empty()
+        );
+        assert!(
+            prompt_agents("move src/database into crates/patterns and rerun the cleanup tests")
+                .is_empty()
+        );
+        assert!(
+            prompt_agents(
+                "check ~/.amplihack/bin/amplihack-hook and /amplihack-recipe-runner output"
+            )
+            .is_empty()
+        );
+        assert_eq!(prompt_agents("please /reflect"), ["reflection"]);
+        assert_eq!(prompt_agents("why did CI fail? /fix"), ["fix-agent"]);
+        assert_eq!(
+            prompt_agents("run /analyzer on /skills and /builder here"),
+            ["analyzer", "builder"]
+        );
+        assert_eq!(
+            prompt_agents("/analyze /fix both"),
+            ["analyzer", "fix-agent"]
+        );
+    }
+
     #[test]
     fn empty_agent_list_has_a_plain_heading() {
         let result =
