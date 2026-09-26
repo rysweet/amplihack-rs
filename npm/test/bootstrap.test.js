@@ -462,6 +462,18 @@ test('resolveLatestTagFromRedirect rejects a non-redirect or non-tag answer', as
   });
 });
 
+test('resolveLatestTagFromRedirect rejects (never throws) on a malformed encoded tag', async () => {
+  await withMockHttpsGet((_url, _options, callback) => {
+    const response = responseFor(302, '', {
+      location: 'https://github.com/rysweet/amplihack-rs/releases/tag/v0.18.%E0%A4%A',
+    });
+    callback(response);
+    response.send();
+  }, async () => {
+    await assert.rejects(resolveLatestTagFromRedirect(), /unparseable release tag/u);
+  });
+});
+
 test('resolveLatestReleaseTag uses the redirect when the API is rate-limited', withIsolatedCache(async () => {
   const urls = [];
   await withMockHttpsGet((url, _options, callback) => {

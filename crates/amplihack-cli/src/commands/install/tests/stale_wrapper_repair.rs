@@ -770,3 +770,92 @@ fn issue_1496_path_advisory_ignores_the_pnpm_dlx_shim() {
         None
     );
 }
+
+/// A project dependency (`./node_modules/.bin/amplihack`) is a persistent
+/// launcher too: nothing about it goes away when a command exits.
+#[cfg(unix)]
+#[test]
+fn issue_1496_project_local_launcher_is_persistent() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let preferred_bin = home.join(".local/bin");
+    let preferred_rust = create_exe_stub(&preferred_bin, "amplihack");
+    let modules = home.join("src/myproject/node_modules");
+    write_executable(
+        &modules.join("@rysweet/amplihack-rs/npm/bin/amplihack.js"),
+        WRAPPER_JS,
+    );
+    let bin = modules.join(".bin");
+    fs::create_dir_all(&bin).unwrap();
+    let shim = bin.join("amplihack");
+    std::os::unix::fs::symlink("../@rysweet/amplihack-rs/npm/bin/amplihack.js", &shim).unwrap();
+
+    let report = neutralize_shadowing_stale_wrappers(repair_config(
+        &home,
+        &preferred_rust,
+        &preferred_rust,
+        vec![bin, preferred_bin],
+    ))
+    .unwrap();
+    assert_eq!(report.persistent_npm_launchers, vec![shim]);
+    assert!(report.skipped_transient_shims.is_empty());
+}
+
+/// A directory whose name merely contains `bunx-` or `dlx-` is not a run
+/// cache: the launcher there is persistent and must be reported as such,
+/// not promised to disappear.
+#[cfg(unix)]
+#[test]
+fn issue_1496_run_cache_shapes_are_anchored_not_substring_matched() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    for project in ["src/bunx-experiments", "src/dlx-tools", "src/my_npx_thing"] {
+        let modules = home.join(project).join("node_modules");
+        write_executable(
+            &modules.join("@rysweet/amplihack-rs/npm/bin/amplihack.js"),
+            WRAPPER_JS,
+        );
+        let bin = modules.join(".bin");
+        fs::create_dir_all(&bin).unwrap();
+        let shim = bin.join("amplihack");
+        std::os::unix::fs::symlink("../@rysweet/amplihack-rs/npm/bin/amplihack.js", &shim).unwrap();
+        assert_eq!(
+            super::super::stale_wrappers::npm_launcher_path(&shim),
+            Some(NpmLauncherKind::Persistent),
+            "{project}: not a run cache"
+        );
+    }
+    let (_, npx_shim) = create_npx_shim(&home, WRAPPER_JS);
+    assert_eq!(
+        super::super::stale_wrappers::npm_launcher_path(&npx_shim),
+        Some(NpmLauncherKind::Transient)
+    );
+}
+
+/// An sh shim whose `$basedir` target does not exist resolves to nothing,
+/// so it stays an unknown executable (the old refusal), never a launcher.
+#[cfg(unix)]
+#[test]
+fn issue_1496_sh_shim_with_missing_target_is_unknown() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let preferred_bin = home.join(".local/bin");
+    let preferred_rust = create_exe_stub(&preferred_bin, "amplihack");
+    let (bin, _shim) = create_pnpm_dlx_shim(&home, WRAPPER_JS);
+    fs::remove_dir_all(
+        home.join(".cache/pnpm/dlx/8528939ac0074566c55bd016/1a0df37544d-1dc2/node_modules/.pnpm"),
+    )
+    .unwrap();
+
+    let err = neutralize_shadowing_stale_wrappers(repair_config(
+        &home,
+        &preferred_rust,
+        &preferred_rust,
+        vec![bin, preferred_bin],
+    ))
+    .expect_err("a dangling sh shim is not our launcher");
+    assert!(matches!(
+        err,
+        StaleWrapperRepairError::UnknownShadowingExecutable { .. }
+    ));
+}

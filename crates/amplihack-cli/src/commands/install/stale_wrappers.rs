@@ -396,14 +396,58 @@ fn npm_launcher_target(path: &Path, canonical: &Path) -> Option<PathBuf> {
 }
 
 /// Launchers under a package-manager run cache disappear with the command
-/// that made them: `~/.npm/_npx/<hash>/`, `~/.cache/pnpm/dlx/<hash>/`,
-/// `$TMPDIR/bunx-<uid>-<pkg>@<ver>/`, yarn's `$TMPDIR/xfs-<hash>/dlx-<pid>/`.
+/// that made them. Only the documented shapes count, anchored on the
+/// `node_modules/.bin/<name>` tail, so a persistent launcher under a directory
+/// that merely contains `dlx-` or `bunx-` in its name is not mistaken for one:
+///
+/// - `npx`:      `.../_npx/<hash>/node_modules/.bin/<name>`
+/// - `pnpm dlx`: `.../pnpm/dlx/<hash>/<id>/node_modules/.bin/<name>`
+/// - `bunx`:     `.../bunx-<uid>-<pkg>@<ver>/node_modules/.bin/<name>`
+/// - `yarn dlx`: `.../xfs-<hash>/dlx-<pid>/.../node_modules/.bin/<name>`
 fn is_transient_launcher_location(path: &Path) -> bool {
-    let text = path.to_string_lossy().replace('\\', "/");
-    text.contains("/_npx/")
-        || text.contains("/pnpm/dlx/")
-        || text.contains("/bunx-")
-        || text.contains("/dlx-")
+    let parts: Vec<String> = path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(value) => Some(value.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect();
+    let Some(bin_at) = parts
+        .len()
+        .checked_sub(3)
+        .filter(|&i| parts[i] == "node_modules" && parts[i + 1] == ".bin")
+    else {
+        return false;
+    };
+    let ancestors = &parts[..bin_at];
+    let all_digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+
+    // npx: `_npx/<hash>` directly above node_modules.
+    if bin_at >= 2 && ancestors[bin_at - 2] == "_npx" && !ancestors[bin_at - 1].is_empty() {
+        return true;
+    }
+    // pnpm dlx: `pnpm/dlx/<hash>/<id>` directly above node_modules.
+    if bin_at >= 4 && ancestors[bin_at - 4] == "pnpm" && ancestors[bin_at - 3] == "dlx" {
+        return true;
+    }
+    // bunx: `bunx-<uid>-...` directly above node_modules.
+    if bin_at >= 1
+        && ancestors[bin_at - 1]
+            .strip_prefix("bunx-")
+            .and_then(|rest| rest.split_once('-'))
+            .is_some_and(|(uid, _)| all_digits(uid))
+    {
+        return true;
+    }
+    // yarn dlx: an `xfs-<hash>` temp dir with a `dlx-<pid>` project inside it.
+    if let Some(xfs) = ancestors.iter().position(|p| p.starts_with("xfs-"))
+        && ancestors[xfs + 1..]
+            .iter()
+            .any(|p| p.strip_prefix("dlx-").is_some_and(all_digits))
+    {
+        return true;
+    }
+    false
 }
 
 /// [`npm_launcher`] for a PATH entry that has not been resolved yet, so the

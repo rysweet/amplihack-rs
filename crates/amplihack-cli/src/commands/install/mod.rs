@@ -408,6 +408,13 @@ fn local_install(
                 preferred_amplihack.display()
             );
         }
+        for launcher in &repair.persistent_npm_launchers {
+            println!(
+                "  ℹ️  Leaving this package's npm launcher {} in place; it stays ahead of {} on PATH (see the PATH notice above).",
+                launcher.display(),
+                preferred_amplihack.display()
+            );
+        }
         if !repair.neutralized.is_empty() {
             let manifest_path = repair
                 .manifest_path

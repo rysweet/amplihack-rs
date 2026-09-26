@@ -472,16 +472,6 @@ async function downloadFile(url, destination, {
 }
 
 /**
- * Resolve the latest published release tag for the configured GitHub repo.
- *
- * Returns the bare semver string (e.g. "0.7.63"). Falls back to the
- * fallbackVersion parameter when the API call fails (offline, rate-limited,
- * etc.) so installation degrades gracefully — only the freshness suffers.
- *
- * Honors AMPLIHACK_NPM_VERSION as an explicit override (set by users or CI
- * who want a specific pinned version).
- */
-/**
  * Resolve the latest release tag from the `releases/latest` redirect on
  * github.com, which needs no API call and so is not subject to the 60/hour
  * unauthenticated API rate limit (fresh cloud VMs often share an IP that has
@@ -502,7 +492,9 @@ function resolveLatestTagFromRedirect({ timeoutMs = DOWNLOAD_TIMEOUT_MS } = {}) 
           reject(new Error(`unexpected response (HTTP ${statusCode}) from ${url}`));
           return;
         }
-        const tag = decodeURIComponent(match[1]);
+        // No decoding: TAG_REGEX admits no '%', and this callback runs outside
+        // the executor, where a throw would be an uncaught exception.
+        const tag = match[1];
         if (!TAG_REGEX.test(tag)) {
           reject(new Error(`unparseable release tag in redirect from ${url}: ${tag}`));
           return;
@@ -516,6 +508,16 @@ function resolveLatestTagFromRedirect({ timeoutMs = DOWNLOAD_TIMEOUT_MS } = {}) 
   });
 }
 
+/**
+ * Resolve the latest published release tag for the configured GitHub repo.
+ *
+ * Returns the bare semver string (e.g. "0.7.63"). Falls back to the
+ * fallbackVersion parameter when both the API call and the github.com
+ * redirect probe fail (offline etc.) so installation degrades gracefully — only the freshness suffers.
+ *
+ * Honors AMPLIHACK_NPM_VERSION as an explicit override (set by users or CI
+ * who want a specific pinned version).
+ */
 async function resolveLatestReleaseTag(fallbackVersion) {
   const explicit = process.env.AMPLIHACK_NPM_VERSION;
   if (explicit) {
