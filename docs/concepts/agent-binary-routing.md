@@ -1,6 +1,6 @@
 # Agent Binary Routing
 
-`amplihack` supports four AI backends — `claude`, `copilot`, `codex`, and `amplifier` — each launched via the same `amplihack <tool>` pattern. This document explains how downstream components (recipe runner, hooks, sub-agents, Python skills) know which backend is active, why this matters, and how workflow runtime isolation keeps generated launcher state out of task worktrees.
+`amplihack` supports four AI backends — `claude`, `copilot`, `codex`, and `amplifier` — each launched via the same `amplihack <tool>` pattern. This document explains how downstream components (recipe runner, hooks, sub-agents) know which backend is active, and why this matters.
 
 ## Contents
 
@@ -13,8 +13,7 @@
   - [Recipe runner](#recipe-runner)
   - [Hooks](#hooks)
   - [Sub-agents](#sub-agents)
-  - [Python skills](#python-skills)
-- [Hook resolution & missing-hook errors](#hook-resolution--missing-hook-errors)
+- [Hook registration](#hook-registration)
 - [Security](#security)
 - [Related](#related)
 
@@ -31,115 +30,121 @@ Earlier iterations of `amplihack-rs` solved this by writing `AMPLIHACK_AGENT_BIN
 
 The result: a session started as `copilot` could end up running `claude` for late-arriving hooks or sub-recipes, and `SessionEnd` hooks would fail-silent looking for a `claude`-shaped file that did not exist.
 
-## The solution: a runtime-root resolver
+## The solution: a config-driven resolver
 
 A single shared resolver (`amplihack_utils::agent_binary::resolve`) is now the only sanctioned way to determine the active binary. It consults four sources in order, falling through on missing or invalid input:
 
-1. `AMPLIHACK_AGENT_BINARY` environment variable (explicit override)
-2. `$AMPLIHACK_RUNTIME_ROOT/launcher_context.json` `launcher` field
-3. `<repo>/.claude/runtime/launcher_context.json` `launcher` field (legacy fallback only)
+1. `AMPLIHACK_AGENT_BINARY` environment variable (explicit override), unless it
+   is tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary>` as a parent's
+   guess (issue #1481)
+2. A live session marker: an environment variable the hosting CLI exports,
+   such as `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT` or `COPILOT_CLI`
+   (`agent_binary::SESSION_MARKERS`)
+3. `<repo>/.claude/runtime/launcher_context.json` `launcher` field, found by
+   walking up from the working directory
 4. Built-in default `"copilot"`
 
-The runtime-root file is the **canonical workflow state**. It keeps generated
-launcher state outside task worktrees while giving child workflows that inherit
-`AMPLIHACK_RUNTIME_ROOT` the same active-binary value. The old
-`.claude/runtime` location is read only as a migration fallback.
+There is no `$AMPLIHACK_RUNTIME_ROOT` layer. `amplihack recipe run` does set
+`AMPLIHACK_RUNTIME_ROOT` for the runner, but the resolver never reads a
+launcher context from it. [Active Agent Binary](../reference/active-agent-binary.md#resolution-precedence)
+is the reference for this order; this page explains why it looks the way it does.
 
 ## Resolution algorithm
 
 ```mermaid
 flowchart TD
     A[Caller invokes resolve&#40;cwd&#41;] --> B{AMPLIHACK_AGENT_BINARY set?}
-    B -- yes --> V1[Validate against allowlist]
+    B -- yes --> T{Tagged default:&lt;same binary&gt;?}
+    T -- yes --> M
+    T -- no --> V1[Validate against allowlist]
     V1 -- ok --> R1[Return env value]
-    V1 -- reject --> W1[warn! and fall through]
-    B -- no --> W1
-    W1 --> C{AMPLIHACK_RUNTIME_ROOT set?}
-    C -- yes --> F1[Read runtime-root<br/>launcher_context.json]
-    C -- no --> L1[Check legacy fallback]
-    F1 -- found, fresh, ≤64 KiB --> P[Parse launcher field]
-    P --> V2[Validate against allowlist]
-    V2 -- ok --> R2[Return file value]
-    V2 -- reject --> W2[warn! and fall through]
-    F1 -- not found / stale / too big --> L1[Check legacy fallback]
-    L1 -- found, fresh, ≤64 KiB --> P2[Parse legacy launcher field]
-    P2 --> V3[Validate against allowlist]
-    V3 -- ok --> R3[Return legacy value]
-    V3 -- reject --> W2[warn! and fall through]
-    L1 -- not found / stale / too big --> W2
-    W2 --> D[Return built-in default 'copilot']
+    V1 -- reject --> M
+    B -- no --> M{Session marker set?}
+    M -- yes --> R2[Return the marker's binary]
+    M -- no --> L1[Start the walk-up at cwd]
+    L1 --> U{Directory world-writable<br/>or foreign-owned?}
+    U -- yes --> D
+    U -- no --> F{.claude/runtime/launcher_context.json<br/>fresh, ≤64 KiB, allowlisted?}
+    F -- yes --> R3[Return file value]
+    F -- absent or unusable --> G{.git here, or 32 ancestors checked?}
+    G -- yes --> D[Return built-in default 'copilot']
+    G -- no --> L2[Move to the parent directory] --> U
 ```
 
-Runtime-root rules:
+Walk-up rules for the persisted launcher context:
 
-- Use `AMPLIHACK_RUNTIME_ROOT` exactly as a filesystem path after validation.
-- Read only `$AMPLIHACK_RUNTIME_ROOT/launcher_context.json` for canonical
-  workflow state.
-- Create runtime-root launcher context with owner-only permissions where the
-  platform supports them.
-
-Legacy fallback walk-up rules:
-
-- Stop at the first `.claude/runtime/launcher_context.json` found.
+- Return the first usable `.claude/runtime/launcher_context.json`. A file that
+  is stale (older than 24h), oversized, malformed, not allowlisted or escapes
+  its directory through a symlink is skipped, and the walk continues upward.
 - Stop at the first `.git` boundary; do not cross into a parent repo.
+- Stop at the first world-writable or foreign-owned directory (issue #1335).
 - Cap at 32 ancestors.
-- Treat the file as migration compatibility only, never as the write target for
-  new workflow code.
 
-The **anchor** for symlink-escape checks is the directory containing the
-discovered `launcher_context.json`. The discovered file is canonicalized; if the
-canonical path does not start with the canonical anchor, the file is rejected.
+The **anchor** for symlink-escape checks is the walked directory in which the
+file was found, the one that contains `.claude/`. The discovered file is
+canonicalized; if the canonical path does not start with the canonical anchor,
+the file is rejected.
 
-If runtime-root lookup and legacy walk-up both fail, the resolver returns the
-built-in default with no anchor check because there is nothing to escape from.
+If every layer above fails, the resolver returns the built-in default with no
+anchor check because there is nothing to escape from.
 
 ## How it propagates across processes
 
-The launcher writes the resolved value into runtime-owned state and a
-back-compat env cache at start time:
+The launcher (`amplihack claude`, `amplihack copilot`, ...) records its choice
+in two places at start time:
 
-1. `$AMPLIHACK_RUNTIME_ROOT/launcher_context.json` — canonical generated
-   launcher state outside the task worktree
-2. `AMPLIHACK_AGENT_BINARY` in the subprocess `Command` env — read-through cache
-   for back-compat with external consumers that have not migrated
+1. `<repo>/.claude/runtime/launcher_context.json`, which later processes in
+   the same checkout can read back (layer 3)
+2. `AMPLIHACK_AGENT_BINARY` in the subprocess `Command` env, which direct
+   children read first (layer 1)
 
-Inside `amplihack-rs`, every read site calls `resolve(&cwd)` rather than reading
-the env var directly. Child workflows inherit `AMPLIHACK_RUNTIME_ROOT`
-unchanged; they must not compute separate runtime roots. The legacy
-`.claude/runtime` file is read only when runtime-root state is absent.
+A launcher started on an inherited `default:<binary>`-tagged value naming
+itself does not write `launcher_context.json`: that launch was a guess, not a
+session's choice, and persisting it would pin later runs in the checkout.
+
+`amplihack recipe run` resolves once, at entry, while it can still see the
+session markers of the CLI that invoked it, and exports the answer to
+`recipe-runner-rs` as `AMPLIHACK_AGENT_BINARY`. Steps run under the runner's
+curated environment, where those markers may be gone. When the answer came
+from the launcher context or the default layer, recipe run prints a one-line
+notice on stderr; from the default layer it also exports the `default:<binary>`
+tag (issue #1481).
+
+Inside `amplihack-rs`, code that picks the binary calls `resolve(&cwd)` rather
+than reading the env var directly. One older helper,
+`amplihack_utils::llm_client::detect_launcher_from`, still reads
+`AMPLIHACK_AGENT_BINARY` itself and does not honour the default-guess tag.
+Code that only checks whether the variable is set (as a sign of running as a
+subprocess) does not choose a binary and is unaffected by the tag.
 
 ```mermaid
 sequenceDiagram
     participant U as User
     participant L as amplihack launcher
-    participant F as runtime-root launcher_context.json
-    participant T as tmux session
-    participant R as recipe runner
-    participant H as SessionEnd hook
+    participant F as .claude/runtime/launcher_context.json
+    participant R as amplihack recipe run
+    participant S as recipe step (nested amplihack)
 
     U->>L: amplihack copilot
     L->>F: write {"launcher":"copilot",...}
-    L->>T: spawn with AMPLIHACK_RUNTIME_ROOT
-    Note over T: Child workflow inherits<br/>the same runtime root
-    T->>R: amplihack recipe run smart-orchestrator
-    R->>F: resolve(cwd) → read file → "copilot"
-    R->>H: invoke SessionEnd
-    H->>F: resolve(cwd) → "copilot"
-    H->>H: load .claude/hooks/copilot/session_end.py
+    L->>R: spawn with AMPLIHACK_AGENT_BINARY=copilot
+    R->>R: resolve(--working-dir) → "copilot" (layer 1)
+    R->>S: run step with AMPLIHACK_AGENT_BINARY=copilot
+    S->>S: resolve(step cwd) → "copilot" (layer 1)
 ```
 
 ## Default: copilot
 
 The implicit default changed from `"claude"` to `"copilot"`. This affects only sessions where:
 
-- `AMPLIHACK_AGENT_BINARY` is unset, AND
-- No runtime-root `launcher_context.json` is available, AND
-- No legacy `launcher_context.json` is found within the walk-up window, AND
-- Nothing else in the precedence chain produced a valid value
+- `AMPLIHACK_AGENT_BINARY` is unset (or is a tagged default guess), AND
+- No session marker is set, AND
+- No fresh, trusted `launcher_context.json` is found within the walk-up window
 
-For typical workflow use the default never matters — the top-level workflow
-writes runtime-root launcher context. The default only governs cold-start cases
-where no env override, runtime-root context, or legacy context exists.
+For typical use the default never matters: the launcher exports
+`AMPLIHACK_AGENT_BINARY`, and a CLI session exports its own marker. The default
+only governs cold-start cases where none of those exist, and `amplihack recipe
+run` says so on stderr when it happens.
 
 To force `claude` for a single command, prefix with
 `AMPLIHACK_AGENT_BINARY=claude`.
@@ -148,7 +153,9 @@ To force `claude` for a single command, prefix with
 
 ### Recipe runner
 
-`recipe-runner-rs` reads the env-var cache today; PR follow-up will switch it to call `resolve(&cwd)` directly. Both paths produce the same value because the launcher writes the env var from the resolver.
+`recipe-runner-rs` does not resolve on its own; it reads the
+`AMPLIHACK_AGENT_BINARY` (and `AMPLIHACK_AGENT_BINARY_SOURCE`) that
+`amplihack recipe run` resolved and exported, and passes them to every step.
 
 ### Hooks
 

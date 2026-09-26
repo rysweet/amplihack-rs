@@ -322,6 +322,9 @@ mod tests {
 
         let previous_path = std::env::var_os("PATH");
         let previous_agent_binary = std::env::var_os("AMPLIHACK_AGENT_BINARY");
+        // Issue #1481: a recipe step can inherit a `default:copilot` tag, which
+        // would make the resolver skip the value this test sets.
+        let previous_agent_source = std::env::var_os("AMPLIHACK_AGENT_BINARY_SOURCE");
         let previous_reflection_binary = std::env::var_os("AMPLIHACK_REFLECTION_BINARY");
         let temp_path = match previous_path.as_ref() {
             Some(path) => format!("{}:{}", dir.path().display(), path.to_string_lossy()),
@@ -330,6 +333,7 @@ mod tests {
         unsafe {
             std::env::set_var("PATH", temp_path);
             std::env::set_var("AMPLIHACK_AGENT_BINARY", "copilot");
+            std::env::remove_var("AMPLIHACK_AGENT_BINARY_SOURCE");
             std::env::remove_var("AMPLIHACK_REFLECTION_BINARY");
         }
 
@@ -342,6 +346,9 @@ mod tests {
         match previous_agent_binary {
             Some(value) => unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", value) },
             None => unsafe { std::env::remove_var("AMPLIHACK_AGENT_BINARY") },
+        }
+        if let Some(value) = previous_agent_source {
+            unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY_SOURCE", value) };
         }
         match previous_reflection_binary {
             Some(value) => unsafe { std::env::set_var("AMPLIHACK_REFLECTION_BINARY", value) },

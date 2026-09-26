@@ -8,6 +8,12 @@
 //!    (persisted state, possibly written by a different session).
 //! 4. Built-in default: `"copilot"`.
 //!
+//! An `AMPLIHACK_AGENT_BINARY` that a parent exported from layer 4 carries
+//! [`SOURCE_ENV`]`=default:<binary>` beside it. While the two still agree, the
+//! value is a guess handed down, not an instruction, so layer 1 ignores it and
+//! the lower layers answer again (issue #1481). Anyone who later sets a
+//! different binary has made a choice, and the stale tag no longer applies.
+//!
 //! All inputs are validated against a strict allowlist to prevent the resolved
 //! value from being used as an arbitrary `Command::new` target by downstream
 //! callers. Untrusted values silently fall through to the next layer.
@@ -37,6 +43,31 @@ pub const ALLOWED_BINARIES: &[&str] = &["amplifier", "claude", "codex", "copilot
 
 /// Built-in default when no override is present and no launcher_context exists.
 pub const DEFAULT_BINARY: &str = "copilot";
+
+/// Environment variable naming the agent binary.
+pub const BINARY_ENV: &str = "AMPLIHACK_AGENT_BINARY";
+
+/// Companion to [`BINARY_ENV`], exported beside it when the value came from the
+/// built-in default rather than from anything that observed a session.
+///
+/// Issue #1481: `amplihack recipe run` exports the binary to recipe-runner-rs
+/// so every agent step agrees. When all it had was the vendor default, that
+/// export used to be indistinguishable from an instruction: each step then
+/// launched `amplihack copilot`, which persisted a launcher context saying
+/// copilot, which pinned every later run in the checkout. The tag keeps the
+/// guess a guess all the way down.
+///
+/// The value is `default:<binary>` -- see [`default_guess_tag`]. It names the
+/// binary it describes because every descendant inherits it: a bash step that
+/// sets `AMPLIHACK_AGENT_BINARY=codex` without clearing the tag has still
+/// chosen codex, and must not be overruled by a tag describing an earlier
+/// guess.
+pub const SOURCE_ENV: &str = "AMPLIHACK_AGENT_BINARY_SOURCE";
+
+/// The [`SOURCE_ENV`] value marking `binary` as a default-layer guess.
+pub fn default_guess_tag(binary: &str) -> String {
+    format!("{}:{binary}", ResolutionSource::Default.label())
+}
 
 /// Maximum bytes accepted from the `AMPLIHACK_AGENT_BINARY` env var.
 const ENV_VALUE_MAX_LEN: usize = 32;
@@ -156,9 +187,14 @@ pub fn resolve_with_source(cwd: &Path) -> Result<(String, ResolutionSource), Res
     // one place, `resolve_layers`. Gating the second on the first being None
     // would encode the ordering twice -- once here and once there -- and the
     // two could then drift without any test noticing.
-    let from_env = std::env::var("AMPLIHACK_AGENT_BINARY")
-        .ok()
-        .and_then(|raw| validate_binary_name(&raw));
+    let from_env = if inherited_binary_is_default_guess() {
+        debug!("ignoring an inherited AMPLIHACK_AGENT_BINARY that a parent guessed");
+        None
+    } else {
+        std::env::var(BINARY_ENV)
+            .ok()
+            .and_then(|raw| validate_binary_name(&raw))
+    };
     let from_marker = session_marker();
     let from_persisted = lookup_persisted_launcher(cwd);
 
@@ -171,19 +207,45 @@ pub fn resolve_with_source(cwd: &Path) -> Result<(String, ResolutionSource), Res
         ResolutionSource::LauncherContext => warn!(
             binary = %name,
             source = source.label(),
-            "AMPLIHACK_AGENT_BINARY is unset; using the value recorded in \
+            "no usable AMPLIHACK_AGENT_BINARY (unset, rejected, or a parent's \
+             default guess) and no session marker; using the value recorded in \
              launcher_context.json, which may have been written by a different \
              session"
         ),
         ResolutionSource::Default => warn!(
             binary = %name,
             source = source.label(),
-            "AMPLIHACK_AGENT_BINARY is unset and no launcher_context.json was \
-             found; assuming the built-in default, which may not be the CLI you \
+            "no usable AMPLIHACK_AGENT_BINARY (unset, rejected, or a parent's \
+             default guess), no session marker and no usable launcher_context.json \
+             was found; assuming the built-in default, which may not be the CLI you \
              are running"
         ),
     }
     Ok((name, source))
+}
+
+/// `true` when the inherited [`BINARY_ENV`] is tagged as a parent's fallback
+/// to the built-in default (see [`SOURCE_ENV`]).
+///
+/// Such a value must neither outrank a session marker this process can see nor
+/// be persisted as though a session had chosen it.
+pub fn inherited_binary_is_default_guess() -> bool {
+    is_default_guess(
+        std::env::var(BINARY_ENV).ok().as_deref(),
+        std::env::var(SOURCE_ENV).ok().as_deref(),
+    )
+}
+
+/// Pure form of [`inherited_binary_is_default_guess`].
+///
+/// The tag counts only while it describes the binary actually set: a tag with
+/// no value, a tag naming a different binary, or an unrecognised tag all mean
+/// the current value was chosen by someone, so it is honoured.
+pub fn is_default_guess(binary: Option<&str>, tag: Option<&str>) -> bool {
+    match (binary.and_then(validate_binary_name), tag) {
+        (Some(binary), Some(tag)) => tag.trim() == default_guess_tag(&binary),
+        _ => false,
+    }
 }
 
 /// Pure precedence rule, separated from the three lookups that feed it.
@@ -240,6 +302,11 @@ pub const SESSION_MARKERS: &[(&str, &str)] = &[
     ("CLAUDE_CODE", "claude"),
     ("CLAUDE_CODE_SESSION_ID", "claude"),
     ("CLAUDE_PROJECT_DIR", "claude"),
+    // Issue #1481: exported by Claude Code in every mode (cli, sdk, remote).
+    // The dev-orchestrator skill used to tell callers to `env -u CLAUDECODE`,
+    // and on a host where CLAUDECODE was the only marker in this list that
+    // left nothing to say which CLI was running.
+    ("CLAUDE_CODE_ENTRYPOINT", "claude"),
     ("COPILOT_CLI", "copilot"),
     ("GITHUB_COPILOT", "copilot"),
     ("GITHUB_COPILOT_AGENT", "copilot"),
@@ -577,6 +644,37 @@ mod tests {
         assert_eq!(name, "claude");
         assert_eq!(source, ResolutionSource::SessionMarker);
         assert!(!source.is_inferred(), "a live marker is not an inference");
+    }
+
+    // ---------------------------------------------------------------------
+    // Issue #1481 -- the default-guess tag is bound to the value it describes.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn a_tag_matching_the_value_marks_it_as_a_guess() {
+        assert!(is_default_guess(Some("copilot"), Some("default:copilot")));
+        assert!(is_default_guess(Some(" Copilot "), Some("default:copilot")));
+        // The tag's surrounding whitespace is trimmed too, as migrate.sh's
+        // detect_cli does (tests/issue_1481_migrate_detect_cli_default_tag.sh).
+        assert!(is_default_guess(Some("copilot"), Some(" default:copilot ")));
+        // ...but not its inside, and not its case.
+        assert!(!is_default_guess(Some("copilot"), Some("default: copilot")));
+        assert!(!is_default_guess(Some("copilot"), Some("DEFAULT:copilot")));
+    }
+
+    /// Every step of a default-guess run inherits the tag. A step that then
+    /// names a binary on purpose has made a choice the stale tag must not veto.
+    #[test]
+    fn a_tag_describing_a_different_binary_does_not_veto_an_explicit_choice() {
+        assert!(!is_default_guess(Some("codex"), Some("default:copilot")));
+    }
+
+    #[test]
+    fn a_bare_or_unknown_tag_is_not_a_guess() {
+        assert!(!is_default_guess(Some("copilot"), Some("default")));
+        assert!(!is_default_guess(Some("copilot"), Some("session_marker")));
+        assert!(!is_default_guess(Some("copilot"), None));
+        assert!(!is_default_guess(None, Some("default:copilot")));
     }
 
     /// An explicit override still wins over everything, including the marker.

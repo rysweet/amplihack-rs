@@ -2,7 +2,7 @@
 
 ## Overview
 
-The **active agent binary** is the AI tool (`claude`, `copilot`, `codex`, or `amplifier`) that the current process should treat as its runtime. It is resolved by a single shared function, used by every read site across `amplihack-cli`, `amplihack-utils`, `amplihack-workflows`, and `amplihack-hooks`, plus the Python helpers in `amplifier-bundle/`.
+The **active agent binary** is the AI tool (`claude`, `copilot`, `codex`, or `amplifier`) that the current process should treat as its runtime. It is resolved by a single shared function, used by every read site across `amplihack-cli`, `amplihack-utils`, `amplihack-workflows`, and `amplihack-hooks`. One shell helper approximates it (see below).
 
 **Canonical entry point (Rust):**
 
@@ -20,24 +20,13 @@ use amplihack_cli::env_builder::agent_binary_resolver;
 let binary: String = agent_binary_resolver::resolve(&cwd);
 ```
 
-**Canonical entry point (Python):**
-
-```rust
-# Defined in amplifier-bundle/skills/pm-architect/scripts/agent_query.py
-from agent_query import detect_runtime
-
-binary = detect_runtime()
-```
-
-The `detect_runtime()` function in `agent_query.py` is the single Python
-implementation; `delegate_response.py` imports it instead of re-implementing
-the precedence. The shell helper in `amplifier-bundle/skills/migrate/scripts/migrate.sh`
-re-implements the same precedence using a `case` statement allowlist (shell
-scripts cannot import Python).
-
-All implementations follow the **same precedence**, the **same allowlist**, and
-produce the **same default** so behavior is consistent across Rust, Python, and
-shell consumers that inherit the workflow environment.
+**Shell:** `amplifier-bundle/skills/migrate/scripts/migrate.sh` (`detect_cli`)
+approximates the precedence with a regex allowlist: it honours
+`AMPLIHACK_AGENT_BINARY` (and its default-guess tag), then the walked-up
+`launcher_context.json`, then the parent process chain, then the default. It
+has no session-marker layer. There is no Python implementation in this
+repository. The Rust resolver is authoritative wherever another
+implementation differs.
 
 ## Resolution Precedence
 
@@ -45,12 +34,52 @@ The resolver evaluates sources in order and returns the first valid value. A val
 
 | # | Source | Notes |
 | - | --- | --- |
-| 1 | `AMPLIHACK_AGENT_BINARY` env var | Explicit override. Used by CI, tests, and external consumers that have not migrated yet. |
-| 2 | `$AMPLIHACK_RUNTIME_ROOT/launcher_context.json` `launcher` field | Canonical workflow runtime state. Written outside the task worktree and inherited by child workflows through `AMPLIHACK_RUNTIME_ROOT`. |
-| 3 | `<repo>/.claude/runtime/launcher_context.json` `launcher` field | Legacy fallback only. Read for migration compatibility, but new workflow code must not write canonical state here. |
+| 1 | `AMPLIHACK_AGENT_BINARY` env var | Explicit override. Used by CI, tests, and external consumers that have not migrated yet. Ignored while tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary>` (see below). |
+| 2 | Live session marker | An environment variable the hosting CLI exports, such as `CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_ENTRYPOINT` or `COPILOT_CLI`. The full list is `agent_binary::SESSION_MARKERS`. |
+| 3 | `<repo>/.claude/runtime/launcher_context.json` `launcher` field | Persisted state, possibly written by a different session. Consulted only while fresh, and never above a world-writable or foreign-owned directory. |
 | 4 | Built-in default | `"copilot"` |
 
 If a source produces a value that fails validation (allowlist, length, character class), the resolver emits `tracing::warn!` with structured fields and falls through to the next source. **No source ever silently coerces an invalid value.**
+
+### Resolving once for a whole recipe run
+
+`amplihack recipe run` resolves the binary once, at entry, and exports it to
+`recipe-runner-rs` as `AMPLIHACK_AGENT_BINARY`. It has to: every step runs
+under the runner's curated environment, where the session markers of the CLI
+that started the run may be gone, and a nested `amplihack` resolving on its own
+there would fall through to the default (issue #1481).
+
+The launcher-context walk-up for that decision starts at the run's working
+directory (`--working-dir`, default `.`), where the steps run. The top level
+then reads the same context file a nested `amplihack` in a step would.
+
+When the answer was inferred rather than observed (layer 3 or 4), recipe run
+prints a one-line notice on stderr saying why. When it came from layer 4, it
+also exports `AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>`. The tag keeps a
+guess a guess on the way down:
+
+- the resolver ignores `AMPLIHACK_AGENT_BINARY` while the tag still names its
+  value, so a session marker visible at a lower level still wins. A step that
+  sets a *different* binary has made a choice, and the stale tag does not veto
+  it;
+- a launcher (`amplihack copilot`, ...) started with a tagged value naming
+  itself does not write `launcher_context.json`, and hands the value on to its
+  own children still tagged (`EnvBuilder::with_launched_agent_binary`, used by
+  both the interactive launcher and `--auto`). The guess itself therefore never
+  becomes persisted state that pins later runs in the checkout, however deep
+  the nesting. What can be persisted further down is an *observation*: if the
+  CLI that the guess launched exports its own session marker (Copilot CLI sets
+  `COPILOT_CLI`), a nested `recipe run` inside it resolves from that marker,
+  exports the value untagged, and a launcher below that records it, because
+  that session really did run.
+
+Setting the *same* value again does not lift the tag, because the two cannot
+be told apart. To make that value an instruction, unset
+`AMPLIHACK_AGENT_BINARY_SOURCE` as well. The stderr notice says so when it
+sees an inherited guess.
+
+Any code that sets `AMPLIHACK_AGENT_BINARY` explicitly through
+`EnvBuilder::with_agent_binary` clears the tag.
 
 ### Why file-based, not env-based
 
@@ -61,19 +90,17 @@ Environment variables do not survive every subprocess boundary in the launcher's
 - Sub-recipes spawned by `amplihack recipe run` invoke fresh `amplihack` binaries that may be reading env from the user's shell rather than the parent recipe runner.
 - Python hooks shell out to subcommands using `subprocess.run` which inherits the calling Python's env, not the Rust launcher's.
 
-Workflow runtime isolation moves generated launcher context out of the task
-worktree. New workflow code writes `launcher_context.json` under
-`$AMPLIHACK_RUNTIME_ROOT` with owner-only permissions where supported and an
-atomic rename. Descendant workflows inherit `AMPLIHACK_RUNTIME_ROOT` unchanged
-and read the same runtime-root context.
+That is why the environment variable is not the only layer. It is also why a
+recipe run resolves once, at the top, and hands the answer down explicitly
+rather than letting each nested process re-derive it (see above).
 
-The old `<repo>/.claude/runtime/launcher_context.json` path remains a
-backward-compatible fallback only. It is not canonical durable state for new
-workflow runs.
+The resolver reads `<repo>/.claude/runtime/launcher_context.json` (walking up
+from the working directory, stopping at a `.git` boundary or an untrusted
+directory). It has no `$AMPLIHACK_RUNTIME_ROOT` layer.
 
 ## Allowlist & Validation
 
-The allowlist is **fixed** and identical in Rust and Python:
+The allowlist is **fixed** and identical in Rust and the shell helper:
 
 ```text
 { "claude", "copilot", "codex", "amplifier" }
@@ -97,15 +124,12 @@ AMPLIHACK_AGENT_BINARY=claude amplihack recipe run smart-orchestrator -c task_de
 ```
 
 To force `"claude"` for a single command, set `AMPLIHACK_AGENT_BINARY=claude`.
-For workflow-managed runs, persistent launcher context belongs under
-`AMPLIHACK_RUNTIME_ROOT`.
 
-**Existing `claude` users:** if your repo already has `.claude/runtime/launcher_context.json` with `"launcher": "claude"` from a prior `amplihack claude` invocation, it continues to work as a legacy fallback when the env override and runtime-root context are absent. New workflow runs should rely on runtime-root context instead.
+**Existing `claude` users:** a fresh `.claude/runtime/launcher_context.json` with `"launcher": "claude"` from a prior `amplihack claude` session resolves to `claude` when no env override or session marker answers first.
 
 ## File Format: `launcher_context.json`
 
-Canonical workflow path: `$AMPLIHACK_RUNTIME_ROOT/launcher_context.json`
-Legacy fallback path: `<repo>/.claude/runtime/launcher_context.json`
+Path: `<repo>/.claude/runtime/launcher_context.json`
 Permissions: `0o600` (owner read/write only)
 Read cap: 64 KiB (oversized files are rejected with a warning)
 Staleness window: 24 hours (older files fall through as if unset)
@@ -180,10 +204,10 @@ The path is **always** validated:
 
 ### From a recipe step (bash)
 
-Do not parse `<repo>/.claude/runtime/launcher_context.json` from shell. That
-path is legacy fallback state. Prefer invoking nested work through `amplihack`
-so the shared resolver handles `AMPLIHACK_AGENT_BINARY`,
-`AMPLIHACK_RUNTIME_ROOT`, legacy fallback, and the default consistently:
+Do not parse `<repo>/.claude/runtime/launcher_context.json` from shell.
+Prefer invoking nested work through `amplihack` so the shared resolver handles
+`AMPLIHACK_AGENT_BINARY` (and its default-guess tag), session markers, the
+launcher context, and the default consistently:
 
 ```sh
 amplihack recipe run investigation-workflow \
@@ -208,16 +232,6 @@ Command::new(binary)
     .arg("--prompt")
     .arg("Run the next workstream")
     .status()?;
-```
-
-### From a Python skill helper
-
-```rust
-# Defined in amplifier-bundle/skills/pm-architect/scripts/agent_query.py
-from agent_query import detect_runtime
-
-binary = detect_runtime()
-print(f"querying via {binary}")
 ```
 
 ### Explicit override for a single command

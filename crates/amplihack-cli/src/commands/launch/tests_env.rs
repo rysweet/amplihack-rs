@@ -355,7 +355,7 @@ fn persist_launcher_context_writes_copilot_context_file() {
     let dir = tempfile::tempdir().unwrap();
     let args = vec!["--model".to_string(), "opus".to_string()];
 
-    persist_launcher_context("copilot", Some(dir.path()), &args).unwrap();
+    persist_hermetic("copilot", Some(dir.path()), &args).unwrap();
 
     let context = read_launcher_context(dir.path()).unwrap();
     assert_eq!(context.launcher, LauncherKind::Copilot);
@@ -388,7 +388,7 @@ fn persist_launcher_context_writes_copilot_context_file() {
 fn persist_launcher_context_writes_agent_binary_for_copilot() {
     let dir = tempfile::tempdir().unwrap();
 
-    persist_launcher_context("copilot", Some(dir.path()), &[]).unwrap();
+    persist_hermetic("copilot", Some(dir.path()), &[]).unwrap();
 
     let context = read_launcher_context(dir.path()).unwrap();
     assert_eq!(context.launcher, LauncherKind::Copilot);
@@ -437,9 +437,9 @@ fn persist_launcher_context_writes_agent_binary_for_copilot() {
 fn persist_launcher_context_writes_nothing_for_non_launcher_subcommands() {
     let dir = tempfile::tempdir().unwrap();
 
-    persist_launcher_context("install", Some(dir.path()), &[]).unwrap();
-    persist_launcher_context("doctor", Some(dir.path()), &[]).unwrap();
-    persist_launcher_context("recipe", Some(dir.path()), &[]).unwrap();
+    persist_hermetic("install", Some(dir.path()), &[]).unwrap();
+    persist_hermetic("doctor", Some(dir.path()), &[]).unwrap();
+    persist_hermetic("recipe", Some(dir.path()), &[]).unwrap();
 
     assert!(
         read_launcher_context(dir.path()).is_none(),
@@ -775,7 +775,7 @@ fn persist_launcher_context_records_the_launcher_that_ran() {
         ("amplifier", LauncherKind::Amplifier),
     ] {
         let dir = tempfile::tempdir().unwrap();
-        persist_launcher_context(tool, Some(dir.path()), &[]).unwrap();
+        persist_hermetic(tool, Some(dir.path()), &[]).unwrap();
 
         let context = read_launcher_context(dir.path())
             .unwrap_or_else(|| panic!("{tool}: expected a persisted launcher context"));
@@ -798,11 +798,151 @@ fn persist_launcher_context_records_the_launcher_that_ran() {
     }
 }
 
+/// [`persist_launcher_context`] with no inherited agent-binary environment.
+///
+/// Quality-audit C3-2: the wrapper reads the real process environment, and a
+/// recipe step running `cargo test` here inherits a `default:<binary>` tag.
+/// Tests about what gets written must not depend on that.
+fn persist_hermetic(
+    tool: &str,
+    project_root: Option<&Path>,
+    extra_args: &[String],
+) -> anyhow::Result<()> {
+    persist_launcher_context_with(tool, project_root, extra_args, &|_| None)
+}
+
+/// The production wrapper reads the process environment: a tagged guess
+/// naming the launcher persists nothing, and any other launcher still records.
+#[test]
+fn persist_launcher_context_reads_the_inherited_guess_from_the_process_env() {
+    let _guard = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _env = crate::test_support::AgentBinaryEnv::set(Some("copilot"), Some("default:copilot"));
+
+    let dir = tempfile::tempdir().unwrap();
+    persist_launcher_context("copilot", Some(dir.path()), &[]).unwrap();
+    assert!(
+        read_launcher_context(dir.path()).is_none(),
+        "a launch on an inherited guess must not persist"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    persist_launcher_context("claude", Some(dir.path()), &[]).unwrap();
+    assert_eq!(
+        read_launcher_context(dir.path()).map(|c| c.launcher),
+        Some(LauncherKind::Claude)
+    );
+}
+
+/// A fake inherited environment for [`persist_launcher_context_with`].
+fn inherited(
+    binary: Option<&'static str>,
+    tag: Option<&'static str>,
+) -> impl Fn(&str) -> Option<String> {
+    move |key| match key {
+        amplihack_utils::agent_binary::BINARY_ENV => binary.map(str::to_string),
+        amplihack_utils::agent_binary::SOURCE_ENV => tag.map(str::to_string),
+        _ => None,
+    }
+}
+
+/// Issue #1481. An agent step that `amplihack recipe run` launched on the
+/// built-in default is not a session anyone chose. Persisting it made the
+/// guess durable: the checkout's launcher context said copilot, and later runs
+/// read it back as though a session had decided.
+#[test]
+fn a_launch_picked_by_the_default_layer_persists_nothing() {
+    for (tool, tag) in [
+        ("claude", "default:claude"),
+        ("copilot", "default:copilot"),
+        ("codex", "default:codex"),
+        ("amplifier", "default:amplifier"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let env = inherited(Some(tool), Some(tag));
+        persist_launcher_context_with(tool, Some(dir.path()), &[], &env).unwrap();
+        assert!(
+            read_launcher_context(dir.path()).is_none(),
+            "{tool}: a default-layer guess must not be persisted"
+        );
+    }
+}
+
+/// The same launch, chosen by anything other than the default, still records:
+/// no tag, a tag naming a different value, or a tagged value naming a
+/// different launcher than the one that ran.
+#[test]
+fn a_launch_not_picked_by_the_default_layer_still_persists() {
+    for (tool, binary, tag) in [
+        ("claude", Some("claude"), None),
+        ("claude", None, None),
+        ("codex", Some("codex"), Some("default:copilot")),
+        ("claude", Some("copilot"), Some("default:copilot")),
+        ("copilot", Some("copilot"), Some("default")),
+        // Quality-audit cycle 7 S7-1: the tag is bound to the *inherited*
+        // value, not to the launcher that runs. A stale tag naming this tool
+        // over no value, or over a different value, is not a guess.
+        ("copilot", None, Some("default:copilot")),
+        ("copilot", Some("claude"), Some("default:copilot")),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let env = inherited(binary, tag);
+        persist_launcher_context_with(tool, Some(dir.path()), &[], &env).unwrap();
+        let context = read_launcher_context(dir.path()).unwrap_or_else(|| {
+            panic!("{tool} with {binary:?}/{tag:?}: a chosen launcher must persist")
+        });
+        assert_eq!(context.launcher.as_str(), tool);
+    }
+}
+
+/// Quality-audit S3: a launcher that ran on an inherited guess naming itself
+/// hands the guess on still tagged, so a launcher nested below it does not
+/// persist it either. Any other launch exports an untagged, chosen value.
+#[test]
+fn a_launch_on_a_default_guess_hands_the_guess_on_tagged() {
+    use crate::env_builder::launch_binary_source;
+    use amplihack_utils::agent_binary::{ResolutionSource, SOURCE_ENV};
+
+    let guess = inherited(Some("copilot"), Some("default:copilot"));
+    assert_eq!(
+        launch_binary_source("copilot", &guess),
+        ResolutionSource::Default
+    );
+    let env = EnvBuilder::new()
+        .with_launched_agent_binary_from("copilot", &guess)
+        .build();
+    assert_eq!(
+        env.get(SOURCE_ENV).map(String::as_str),
+        Some("default:copilot")
+    );
+
+    // The child's own view: a nested `amplihack copilot` persists nothing.
+    let child = |key: &str| env.get(key).cloned();
+    let dir = tempfile::tempdir().unwrap();
+    persist_launcher_context_with("copilot", Some(dir.path()), &[], &child).unwrap();
+    assert!(read_launcher_context(dir.path()).is_none());
+
+    for (tool, binary, tag) in [
+        ("claude", Some("copilot"), Some("default:copilot")),
+        ("copilot", Some("copilot"), None),
+        ("copilot", None, None),
+        ("copilot", None, Some("default:copilot")),
+        ("copilot", Some("claude"), Some("default:copilot")),
+    ] {
+        assert_eq!(
+            launch_binary_source(tool, &inherited(binary, tag)),
+            ResolutionSource::Env,
+            "{tool} with {binary:?}/{tag:?} was chosen"
+        );
+    }
+}
+
 /// A non-launcher subcommand must not stamp the repository at all.
 #[test]
 fn persist_launcher_context_ignores_non_launcher_subcommands() {
     let dir = tempfile::tempdir().unwrap();
-    persist_launcher_context("install", Some(dir.path()), &[]).unwrap();
+    persist_hermetic("install", Some(dir.path()), &[]).unwrap();
     assert!(
         read_launcher_context(dir.path()).is_none(),
         "only agent launchers describe a session"
@@ -822,7 +962,7 @@ fn persist_launcher_context_ignores_non_launcher_subcommands() {
 fn persist_launcher_context_skips_non_session_invocations() {
     for flag in ["--version", "-V", "help"] {
         let dir = tempfile::tempdir().unwrap();
-        persist_launcher_context("copilot", Some(dir.path()), &[flag.to_string()]).unwrap();
+        persist_hermetic("copilot", Some(dir.path()), &[flag.to_string()]).unwrap();
         assert!(
             read_launcher_context(dir.path()).is_none(),
             "{flag}: must not persist a session identity"
@@ -834,7 +974,7 @@ fn persist_launcher_context_skips_non_session_invocations() {
 #[test]
 fn persist_launcher_context_still_persists_a_real_session() {
     let dir = tempfile::tempdir().unwrap();
-    persist_launcher_context(
+    persist_hermetic(
         "claude",
         Some(dir.path()),
         &["--model".into(), "opus".into()],
@@ -858,21 +998,17 @@ fn a_persisted_context_round_trips_through_the_resolver() {
         .unwrap_or_else(|p| p.into_inner());
     for tool in ["claude", "copilot", "codex", "amplifier"] {
         let dir = tempfile::tempdir().unwrap();
-        persist_launcher_context(tool, Some(dir.path()), &[]).unwrap();
+        persist_hermetic(tool, Some(dir.path()), &[]).unwrap();
 
         // Layers above the file must be silent so the file is what answers.
         let prev = std::env::var_os("AMPLIHACK_AGENT_BINARY");
-        let markers = [
-            "CLAUDECODE",
-            "CLAUDE_CODE",
-            "CLAUDE_CODE_SESSION_ID",
-            "CLAUDE_PROJECT_DIR",
-            "COPILOT_CLI",
-            "GITHUB_COPILOT",
-            "GITHUB_COPILOT_AGENT",
-            "COPILOT_AGENT",
-        ];
-        let saved: Vec<_> = markers.iter().map(|k| (*k, std::env::var_os(k))).collect();
+        // Sourced from SESSION_MARKERS so a new marker cannot leave this probe
+        // answering from layer 2 (issue #1481 added one).
+        let markers = amplihack_utils::agent_binary::SESSION_MARKERS
+            .iter()
+            .map(|(k, _)| *k)
+            .chain([amplihack_utils::agent_binary::SOURCE_ENV]);
+        let saved: Vec<_> = markers.map(|k| (k, std::env::var_os(k))).collect();
         unsafe {
             std::env::remove_var("AMPLIHACK_AGENT_BINARY");
             for (k, _) in &saved {
@@ -922,7 +1058,7 @@ fn prompt_text_that_merely_mentions_a_flag_still_persists() {
         // `help` in position zero is a real question-and-exit; deeper in the
         // list it is just a word.
         let is_query = matches!(args.first().map(String::as_str), Some("help"));
-        persist_launcher_context("claude", Some(dir.path()), &args).unwrap();
+        persist_hermetic("claude", Some(dir.path()), &args).unwrap();
         assert_eq!(
             read_launcher_context(dir.path()).is_none(),
             is_query,

@@ -48,6 +48,19 @@ pub(super) fn persist_launcher_context(
     project_root: Option<&Path>,
     extra_args: &[String],
 ) -> Result<()> {
+    persist_launcher_context_with(tool, project_root, extra_args, &|key| {
+        std::env::var(key).ok()
+    })
+}
+
+/// [`persist_launcher_context`] reading the inherited environment through
+/// `var`, so the rule can be tested without mutating process state.
+pub(super) fn persist_launcher_context_with(
+    tool: &str,
+    project_root: Option<&Path>,
+    extra_args: &[String],
+    var: &dyn Fn(&str) -> Option<String>,
+) -> Result<()> {
     let Some(kind) = launcher_kind_for(tool) else {
         return Ok(());
     };
@@ -55,6 +68,14 @@ pub(super) fn persist_launcher_context(
         tracing::debug!(
             tool,
             "not persisting launcher context for a non-session invocation"
+        );
+        return Ok(());
+    }
+    if crate::env_builder::launched_on_a_default_guess(tool, var) {
+        tracing::debug!(
+            tool,
+            "not persisting launcher context: the launcher was the built-in default, \
+             not a session's choice"
         );
         return Ok(());
     }
