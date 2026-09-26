@@ -71,12 +71,11 @@ pub(super) fn run_scout(
     }
 
     println!("\nPhase 3: Reasoning about sessions...");
-    let backend = NativeReasonerBackend::detect("auto")?;
-    // Issue #1482: announce an automatic IS_SANDBOX=1 once, where it is seen.
-    if let Some(notice) = backend.root_sandbox_notice() {
-        eprintln!("{notice}");
-    }
-    let mut reasoner = FleetSessionReasoner::new(azlin, backend);
+    let mut reasoner = cli_reasoner(
+        azlin,
+        NativeReasonerBackend::detect("auto")?,
+        &mut std::io::stderr(),
+    )?;
     let mut decisions = Vec::<SessionDecisionRecord>::new();
 
     for session in &discovery.sessions {

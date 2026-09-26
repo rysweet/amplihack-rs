@@ -5315,3 +5315,131 @@ fn claude_backend_uses_its_root_sandbox_decision() {
     assert_eq!(quiet.root_sandbox_notice(), None);
     assert_eq!(NativeReasonerBackend::None.root_sandbox_notice(), None);
 }
+
+/// The fleet CLI commands (dry-run, scout, advance) build their reasoner
+/// through `cli_reasoner`, which prints the automatic-IS_SANDBOX=1 notice.
+#[test]
+fn cli_reasoner_announces_an_automatic_enable_once() {
+    use amplihack_utils::root_sandbox::SkipPermissionsEnv;
+
+    let claude = PathBuf::from("/nonexistent/amplihack-1482/claude");
+    let mut out = Vec::new();
+    let reasoner = cli_reasoner(
+        PathBuf::from("/bin/true"),
+        NativeReasonerBackend::Claude(claude.clone(), || SkipPermissionsEnv::SetSandbox {
+            signal: "/.dockerenv",
+        }),
+        &mut out,
+    )
+    .unwrap();
+    assert_eq!(reasoner.backend_label(), "claude");
+    let out = String::from_utf8(out).unwrap();
+    assert_eq!(out.lines().count(), 1, "{out}");
+    assert!(
+        out.contains("/.dockerenv") && out.contains("IS_SANDBOX=0"),
+        "{out}"
+    );
+
+    for backend in [
+        NativeReasonerBackend::Claude(claude, || SkipPermissionsEnv::NotRoot),
+        NativeReasonerBackend::None,
+    ] {
+        let mut out = Vec::new();
+        cli_reasoner(PathBuf::from("/bin/true"), backend, &mut out).unwrap();
+        assert!(out.is_empty(), "{}", String::from_utf8_lossy(&out));
+    }
+}
+
+/// Each fleet CLI command gets its reasoner from `cli_reasoner` writing to
+/// stderr, so none of them can drop the notice.
+#[test]
+fn fleet_cli_commands_build_reasoners_through_cli_reasoner() {
+    for (name, source) in [
+        ("commands.rs", include_str!("commands.rs")),
+        ("commands_advance.rs", include_str!("commands_advance.rs")),
+        ("commands_scout.rs", include_str!("commands_scout.rs")),
+    ] {
+        assert!(
+            !source.contains("FleetSessionReasoner::new("),
+            "{name} must build its reasoner with cli_reasoner"
+        );
+        let start = source
+            .find("cli_reasoner(")
+            .unwrap_or_else(|| panic!("{name} must call cli_reasoner"));
+        let call = &source[start..start + source[start..].find(';').unwrap()];
+        assert!(
+            call.contains("NativeReasonerBackend::detect(") && call.contains("std::io::stderr()"),
+            "{name}: {call}"
+        );
+    }
+}
+
+/// The TUI dry run shows the automatic-IS_SANDBOX=1 notice in its reasoner
+/// status panel (the TUI owns the terminal, so not on stderr).
+#[test]
+fn tui_dry_run_shows_the_root_sandbox_notice_in_the_panel() {
+    use amplihack_utils::root_sandbox::SkipPermissionsEnv;
+
+    let _guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let azlin = dir.path().join("azlin");
+    write_executable(&azlin, "#!/bin/sh\nexit 0\n");
+    let state = FleetState {
+        vms: vec![VmInfo {
+            name: "vm-1".to_string(),
+            session_name: "vm-1".to_string(),
+            os: "linux".to_string(),
+            status: "Running".to_string(),
+            ip: String::new(),
+            region: "westus2".to_string(),
+            tmux_sessions: vec![TmuxSessionInfo {
+                session_name: "claude-1".to_string(),
+                vm_name: "vm-1".to_string(),
+                windows: 1,
+                attached: false,
+                agent_status: AgentStatus::WaitingInput,
+                last_output: "Proceed with deploy? [y/n]".to_string(),
+                working_directory: String::new(),
+                repo_url: String::new(),
+                git_branch: String::new(),
+                pr_url: String::new(),
+                task_summary: String::new(),
+            }],
+        }],
+        timestamp: None,
+        azlin_path: azlin.clone(),
+        exclude_vms: Vec::new(),
+    };
+    let mut ui_state = FleetTuiUiState::default();
+    ui_state.sync_to_state(&state);
+
+    let previous_home = env::var_os("HOME");
+    unsafe { env::set_var("HOME", home.path()) };
+    // A reasoner binary that does not exist: the proposal falls back to
+    // heuristics, and the panel must still carry the notice.
+    let result = run_tui_dry_run_with(&azlin, &state, &mut ui_state, || {
+        Ok(NativeReasonerBackend::Claude(
+            dir.path().join("missing-claude"),
+            || SkipPermissionsEnv::SetSandbox {
+                signal: "/.dockerenv",
+            },
+        ))
+    });
+    restore_var("HOME", previous_home);
+
+    result.unwrap();
+    let panel = ui_state
+        .proposal_notice
+        .as_ref()
+        .expect("the notice opens the reasoner status panel");
+    assert_eq!(panel.title, "Reasoner status");
+    assert!(
+        panel.message.contains("passing IS_SANDBOX=1 to claude")
+            && panel.message.contains("/.dockerenv"),
+        "{}",
+        panel.message
+    );
+}

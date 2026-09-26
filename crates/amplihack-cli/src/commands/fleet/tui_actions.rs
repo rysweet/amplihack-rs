@@ -5,12 +5,25 @@ pub(super) fn run_tui_dry_run(
     state: &FleetState,
     ui_state: &mut FleetTuiUiState,
 ) -> Result<()> {
+    run_tui_dry_run_with(azlin_path, state, ui_state, || {
+        NativeReasonerBackend::detect("auto")
+    })
+}
+
+/// [`run_tui_dry_run`] with the reasoner backend injected (issue #1482: so
+/// tests reach the root-sandbox notice binding with a chosen decision).
+pub(super) fn run_tui_dry_run_with(
+    azlin_path: &Path,
+    state: &FleetState,
+    ui_state: &mut FleetTuiUiState,
+    backend: impl FnOnce() -> Result<NativeReasonerBackend>,
+) -> Result<()> {
     let Some((vm, session)) = ui_state.selected_session(state) else {
         ui_state.status_message = Some("No session selected for dry-run.".to_string());
         return Ok(());
     };
 
-    let backend = NativeReasonerBackend::detect("auto")?;
+    let backend = backend()?;
     // Issue #1482: the TUI owns the terminal, so an automatic IS_SANDBOX=1 is
     // announced in the notice panel rather than on stderr.
     let sandbox_notice = backend.root_sandbox_notice();
