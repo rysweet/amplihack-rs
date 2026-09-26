@@ -3,9 +3,9 @@ use regex::Regex;
 use std::sync::OnceLock;
 
 const AGENT_REFERENCE_PATTERNS: &[&str] = &[
-    r"@\.claude/agents/amplihack/[A-Za-z0-9_-]+/([A-Za-z0-9_-]+)\.md",
-    r"@\.claude/agents/([A-Za-z0-9_-]+)\.md",
-    r"Include\s+@\.claude/agents/[A-Za-z0-9_-]+/([A-Za-z0-9_-]+)\.md",
+    // Any directory depth under `.claude/agents/`, the `Include @…` form
+    // included; the name is the file's own stem, one path component.
+    r"@\.claude/agents/(?:[A-Za-z0-9_-]+/)*([A-Za-z0-9_-]+)\.md",
     r"Use\s+([a-z-]+)\.md\s+agent",
 ];
 
@@ -25,7 +25,10 @@ const SLASH_COMMAND_AGENTS: &[(&str, &str)] = &[
 /// (`/analyzer`, `/reflect` → `reflection`).
 ///
 /// An agent definition reference names its agent explicitly, so any agent
-/// counts, bundled or project-defined (`@.claude/agents/my-reviewer.md`).
+/// counts, bundled or project-defined (`@.claude/agents/my-reviewer.md`),
+/// at any directory depth (`@.claude/agents/team/security-reviewer.md`,
+/// `@.claude/agents/amplihack/core/builder.md`). The agent is the file's
+/// stem: a name is one path component, never prose up to a later `.md`.
 ///
 /// A slash word is a whitespace-separated token, ignoring surrounding
 /// punctuation (`(/analyze`, `/reflect.`), that is `/` followed only by

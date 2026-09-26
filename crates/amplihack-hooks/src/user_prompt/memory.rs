@@ -2012,6 +2012,27 @@ mod tests {
             prompt_agents("Include @.claude/agents/amplihack/core/builder.md then read docs.md"),
             ["builder"]
         );
+        // A definition reference names its agent at any directory depth.
+        assert_eq!(
+            prompt_agents(
+                "@.claude/agents/team/security-reviewer.md why does the auth middleware reject expired tokens"
+            ),
+            ["security-reviewer"]
+        );
+        assert_eq!(
+            prompt_agents(
+                "@.claude/agents/amplihack/guide.md why does the auth middleware reject expired tokens"
+            ),
+            ["guide"]
+        );
+        assert_eq!(
+            prompt_agents("Include @.claude/agents/team/reviewer.md then read docs.md"),
+            ["reviewer"]
+        );
+        assert_eq!(
+            prompt_agents("Include @.claude/agents/a/b/c/deep-agent.md now"),
+            ["deep-agent"]
+        );
     }
 
     #[test]

@@ -14,7 +14,7 @@ This document focuses on the framework injection mechanism (item 3).
 
 ### Agent memories (item 2)
 
-Memories are injected only when the prompt names an amplihack agent, either by a slash command (`/analyze`, `/fix`) or by an agent definition reference. A slash word is its own whitespace-separated token, ignoring surrounding punctuation (`(/analyze`, `/reflect.`). It counts wherever it appears, including at the end of the prompt. An agent definition reference counts for any agent, including project-defined ones (`@.claude/agents/my-reviewer.md`). Ordinary words are not agents. Neither are path segments, even ones named like an agent (`docs/security`), or slash words that name no agent (`/skills`, `/bin`).
+Memories are injected only when the prompt names an amplihack agent, either by a slash command (`/analyze`, `/fix`) or by an agent definition reference. A slash word is its own whitespace-separated token, ignoring surrounding punctuation (`(/analyze`, `/reflect.`). It counts wherever it appears, including at the end of the prompt. An agent definition reference counts for any agent, including project-defined ones (`@.claude/agents/my-reviewer.md`), at any directory depth under `.claude/agents/` (`@.claude/agents/team/security-reviewer.md`). The agent is the file's stem, one path component, so a later `.md` in the prompt (`then check README.md`) is not part of its name. Ordinary words are not agents. Neither are path segments, even ones named like an agent (`docs/security`), or slash words that name no agent (`/skills`, `/bin`).
 
 Each stored memory is scored against the prompt, and only relevant memories are injected (issue #1483). The rules, in `crates/amplihack-hooks/src/user_prompt/memory.rs`:
 

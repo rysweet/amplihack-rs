@@ -88,7 +88,7 @@ cat >"${WORK}/auth.jsonl" <<'EOF'
 {"role":"assistant","content":"The auth middleware rejected expired tokens because the refresh ran after the check."}
 EOF
 cat >"${WORK}/detected.jsonl" <<'EOF'
-{"role":"user","content":"use @.claude/agents/reviewer.md to check README.md, then /analyze why the queue stalls at night"}
+{"role":"user","content":"use @.claude/agents/team/reviewer.md to check README.md, then /analyze why the queue stalls at night"}
 {"role":"assistant","content":"The queue stalls at night because the cron job holds the lock while the backup runs."}
 EOF
 cat >"${WORK}/bin.jsonl" <<'EOF'
@@ -134,10 +134,25 @@ echo "scenario 5: an English prompt about that memory still gets it"
 out="$(ask "/fix why the workers die when the bin directory is missing")"
 if [ "$(count "${out}" "bin directory, and the workers die")" -eq 1 ]; then pass "relevant bin memory injected"; else fail "relevant memory missing: ${out}"; fi
 
+# stored_agents <text>: the agent ids, sorted and comma-joined, that
+# session-stop stored a learning containing <text> under.
+stored_agents() {
+  python3 - "${HOME}/.amplihack/memory.db" "$1" <<'PYEOF'
+import sqlite3, sys
+rows = sqlite3.connect(sys.argv[1]).execute(
+    "SELECT agent_id FROM memory_entries WHERE instr(content, ?) > 0", (sys.argv[2],)
+).fetchall()
+print(",".join(sorted(agent for (agent,) in rows)))
+PYEOF
+}
+
 echo "scenario 6: agents detected from a transcript are real agent names"
-# session-stop stores this learning under the agents it detects; an agent
-# definition reference followed by another `.md` must not become a prose
-# "agent" whose `Agent ...:` prefix is then printed.
+# session-stop stores this learning under the agents it detects: the nested
+# definition reference `@.claude/agents/team/reviewer.md` names `reviewer`
+# (the later `README.md` is not part of its name), and `/analyze` names
+# `analyzer`. Detecting nothing would store it under `general` instead.
+agents="$(stored_agents "The queue stalls at night because")"
+if [ "${agents}" = "analyzer,reviewer" ]; then pass "learning stored under the detected agents"; else fail "stored under '${agents}', not 'analyzer,reviewer'"; fi
 out="$(ask "/analyze why the queue stalls at night")"
 if [ "$(count "${out}" "The queue stalls at night because")" -eq 1 ]; then pass "detected-agent learning printed once"; else fail "detected-agent learning not printed exactly once: ${out}"; fi
 if [ "$(count "${out}" "Agent ")" -eq 0 ]; then pass "no agent prefix printed"; else fail "agent prefix printed: ${out}"; fi
