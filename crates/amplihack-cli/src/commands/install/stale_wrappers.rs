@@ -25,6 +25,21 @@ pub(crate) struct StaleWrapperNeutralizerReport {
     /// process runs (issue #1480). They are left in place and reported so the
     /// caller can warn. Empty when the Rust binary is not on PATH at all.
     pub(crate) skipped_transient_shims: Vec<PathBuf>,
+    /// Persistent launchers for our own npm wrapper (`npm install -g`, a
+    /// project's `node_modules/.bin`, `pnpm add -g`) that sit ahead of the
+    /// Rust binary on PATH (issue #1496). They keep shadowing it after
+    /// install, so they are left in place, never treated as unknown, and the
+    /// post-install PATH advisory tells the user which binary wins.
+    pub(crate) persistent_npm_launchers: Vec<PathBuf>,
+}
+
+/// How long a launcher for our npm wrapper stays on PATH.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NpmLauncherKind {
+    /// `npx` / `pnpm dlx` / `bunx` cache entry: gone once that command exits.
+    Transient,
+    /// `npm install -g`, a project dependency, `pnpm add -g`: stays.
+    Persistent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,7 +99,7 @@ enum PathCandidateKind {
     PreferredRustBinary,
     StalePythonWrapper,
     StaleUvxWrapper,
-    TransientNpxShim,
+    NpmLauncher(NpmLauncherKind),
     UnknownExecutable,
     Inaccessible(String),
 }
@@ -128,6 +143,7 @@ pub(crate) fn neutralize_shadowing_stale_wrappers(
 
     let mut neutralized = Vec::new();
     let mut skipped_transient_shims = Vec::new();
+    let mut persistent_npm_launchers = Vec::new();
     let mut manifest_entries = Vec::new();
     let mut run_dir = None;
 
@@ -142,10 +158,17 @@ pub(crate) fn neutralize_shadowing_stale_wrappers(
             )?;
         match kind {
             PathCandidateKind::PreferredRustBinary | PathCandidateKind::CurrentRustBinary => {}
-            PathCandidateKind::TransientNpxShim => {
-                // Only a shim ahead of the Rust binary on PATH shadows it.
+            PathCandidateKind::NpmLauncher(kind) => {
+                // Only a launcher ahead of the Rust binary on PATH shadows it.
                 if preferred_on_path {
-                    skipped_transient_shims.push(candidate.clone());
+                    match kind {
+                        NpmLauncherKind::Transient => {
+                            skipped_transient_shims.push(candidate.clone());
+                        }
+                        NpmLauncherKind::Persistent => {
+                            persistent_npm_launchers.push(candidate.clone());
+                        }
+                    }
                 }
             }
             PathCandidateKind::StalePythonWrapper | PathCandidateKind::StaleUvxWrapper => {
@@ -236,7 +259,7 @@ pub(crate) fn neutralize_shadowing_stale_wrappers(
             resolved_kind,
             PathCandidateKind::PreferredRustBinary
                 | PathCandidateKind::CurrentRustBinary
-                | PathCandidateKind::TransientNpxShim
+                | PathCandidateKind::NpmLauncher(_)
         ) {
             return Err(StaleWrapperRepairError::RustBinaryStillShadowed {
                 resolved_after,
@@ -250,6 +273,7 @@ pub(crate) fn neutralize_shadowing_stale_wrappers(
         manifest_path,
         resolved_after,
         skipped_transient_shims,
+        persistent_npm_launchers,
     })
 }
 
@@ -280,8 +304,8 @@ fn classify_path_candidate(
         return Ok(PathCandidateKind::CurrentRustBinary);
     }
 
-    if is_transient_npx_shim(path, &canonical) {
-        return Ok(PathCandidateKind::TransientNpxShim);
+    if let Some(kind) = npm_launcher(path, &canonical) {
+        return Ok(PathCandidateKind::NpmLauncher(kind));
     }
 
     let metadata = fs::symlink_metadata(path)?;
@@ -316,40 +340,77 @@ fn is_safe_wrapper_location(path: &Path, home: &Path) -> bool {
         || rel.starts_with(".amplihack/")
 }
 
-/// Recognize the `node_modules/.bin/amplihack` shim that `npx` puts first on
-/// PATH while running our own npm wrapper (issue #1480). Both must hold:
-/// the shim lives under an npx cache dir (`_npx/<hash>/node_modules/.bin/`),
-/// and it resolves to this package's `npm/bin/amplihack.js` wrapper. The npx
-/// cache entry is transient, so the shim stops shadowing once npx exits.
-fn is_transient_npx_shim(path: &Path, canonical: &Path) -> bool {
-    let normalized = path.to_string_lossy().replace('\\', "/");
-    let Some((_, after_npx)) = normalized.rsplit_once("/_npx/") else {
-        return false;
-    };
-    let mut parts = after_npx.split('/');
-    let (Some(hash), Some("node_modules"), Some(".bin"), Some(_name), None) = (
-        parts.next(),
-        parts.next(),
-        parts.next(),
-        parts.next(),
-        parts.next(),
-    ) else {
-        return false;
-    };
-    if hash.is_empty() {
-        return false;
+/// Recognize a package-manager launcher for this package's own
+/// `npm/bin/amplihack.js` wrapper (issues #1480, #1496), whatever put it on
+/// PATH: the `node_modules/.bin/amplihack` symlink that `npx`, `bunx`,
+/// `npm install -g` or a project dependency create, or the `sh` shim script
+/// that `pnpm` writes (`exec node "$basedir/../.pnpm/…/npm/bin/amplihack.js"`).
+/// The launcher must resolve to a file that really is our wrapper; a
+/// look-alike path is not enough. The kind says whether it outlives the
+/// command that created it.
+fn npm_launcher(path: &Path, canonical: &Path) -> Option<NpmLauncherKind> {
+    let target = npm_launcher_target(path, canonical)?;
+    let target_text = target.to_string_lossy().replace('\\', "/");
+    if !target_text.ends_with("/npm/bin/amplihack.js") {
+        return None;
     }
-    let target = canonical.to_string_lossy().replace('\\', "/");
-    if !target.ends_with("/npm/bin/amplihack.js") {
-        return false;
+    if !read_prefix(&target).is_ok_and(|content| is_amplihack_npm_wrapper(&content)) {
+        return None;
     }
-    read_prefix(canonical).is_ok_and(|content| is_amplihack_npm_wrapper(&content))
+    Some(if is_transient_launcher_location(path) {
+        NpmLauncherKind::Transient
+    } else {
+        NpmLauncherKind::Persistent
+    })
 }
 
-/// [`is_transient_npx_shim`] for a PATH entry that has not been resolved yet,
-/// so the post-install PATH advisory can recognize the same shim.
-pub(crate) fn is_transient_npx_shim_path(path: &Path) -> bool {
-    fs::canonicalize(path).is_ok_and(|canonical| is_transient_npx_shim(path, &canonical))
+/// The script a launcher runs: the symlink target, or for an `sh` shim the
+/// first `"$basedir/…/*.js"` it `exec`s, resolved next to the shim.
+fn npm_launcher_target(path: &Path, canonical: &Path) -> Option<PathBuf> {
+    let is_symlink = fs::symlink_metadata(path)
+        .ok()
+        .is_some_and(|metadata| metadata.file_type().is_symlink());
+    if is_symlink {
+        return Some(canonical.to_path_buf());
+    }
+    let content = read_prefix(path).ok()?;
+    if !content.starts_with("#!/bin/sh") && !content.starts_with("#!/usr/bin/env sh") {
+        return None;
+    }
+    let shim_dir = path.parent()?;
+    for line in content.lines() {
+        let Some(mut rest) = line.trim_start().strip_prefix("exec ") else {
+            continue;
+        };
+        while let Some(start) = rest.find("\"$basedir/") {
+            let after = &rest[start + "\"$basedir/".len()..];
+            let Some(end) = after.find('"') else { break };
+            let relative = &after[..end];
+            if relative.ends_with(".js") {
+                return fs::canonicalize(shim_dir.join(relative)).ok();
+            }
+            rest = &after[end + 1..];
+        }
+    }
+    None
+}
+
+/// Launchers under a package-manager run cache disappear with the command
+/// that made them: `~/.npm/_npx/<hash>/`, `~/.cache/pnpm/dlx/<hash>/`,
+/// `$TMPDIR/bunx-<uid>-<pkg>@<ver>/`, yarn's `$TMPDIR/xfs-<hash>/dlx-<pid>/`.
+fn is_transient_launcher_location(path: &Path) -> bool {
+    let text = path.to_string_lossy().replace('\\', "/");
+    text.contains("/_npx/")
+        || text.contains("/pnpm/dlx/")
+        || text.contains("/bunx-")
+        || text.contains("/dlx-")
+}
+
+/// [`npm_launcher`] for a PATH entry that has not been resolved yet, so the
+/// post-install PATH advisory can recognize the same launchers.
+pub(crate) fn npm_launcher_path(path: &Path) -> Option<NpmLauncherKind> {
+    let canonical = fs::canonicalize(path).ok()?;
+    npm_launcher(path, &canonical)
 }
 
 fn is_amplihack_npm_wrapper(content: &str) -> bool {

@@ -403,7 +403,7 @@ fn local_install(
         .context("failed to neutralize stale Python/uvx amplihack PATH wrappers")?;
         for shim in &repair.skipped_transient_shims {
             println!(
-                "  ℹ️  Leaving transient npx shim {} in place; it stops shadowing {} once npx exits.",
+                "  ℹ️  Leaving transient npx/dlx shim {} in place; it stops shadowing {} once the launching command exits.",
                 shim.display(),
                 preferred_amplihack.display()
             );

@@ -58,7 +58,8 @@ and manual repair guidance.
 | `PreferredRustBinary` | The Rust binary deployed to `~/.local/bin/amplihack`. | Accepted and made first for future shells. |
 | `StalePythonWrapper` | A user-controlled wrapper whose content positively identifies old Python amplihack launch behavior. | Quarantined when safe and shadowing Rust. |
 | `StaleUvxWrapper` | A user-controlled wrapper whose content positively identifies uvx/uv wrapper launch behavior for amplihack. | Quarantined when safe and shadowing Rust. |
-| `TransientNpxShim` | The `…/_npx/<hash>/node_modules/.bin/amplihack` shim that `npx` puts first on `PATH` while it runs this package's own `npm/bin/amplihack.js` wrapper. Both the path shape and the wrapper target must match. | Left in place with a notice; it stops shadowing Rust when `npx` exits. Not reported by the post-install `PATH` advisory, which judges the candidates behind it instead. |
+| `NpmLauncher(Transient)` | A launcher for this package's own `npm/bin/amplihack.js` wrapper under a run cache: the `…/_npx/<hash>/node_modules/.bin/amplihack` symlink from `npx`, the `sh` shim `pnpm dlx` writes under `~/.cache/pnpm/dlx/`, or the `$TMPDIR/bunx-…/node_modules/.bin/amplihack` symlink from `bunx`. The launcher must resolve (symlink target, or the `"$basedir/…/*.js"` an `sh` shim `exec`s) to a file that really is the wrapper. | Left in place with a notice; it stops shadowing Rust when the launching command exits. Not reported by the post-install `PATH` advisory, which judges the candidates behind it instead. |
+| `NpmLauncher(Persistent)` | The same wrapper launcher outside a run cache: `npm install -g @rysweet/amplihack-rs` (global prefix `bin/`), a project's `node_modules/.bin/`, `pnpm add -g`. It keeps shadowing Rust after install. | Left in place and never treated as unknown; install does not abort. The post-install `PATH` advisory says the npm launcher wins and how to change that (`npm uninstall -g`, or reorder `PATH`). |
 | `UnknownExecutable` | An executable named `amplihack` that is not positively identified as Rust or stale wrapper. | Not modified; reported as a conflict if it shadows Rust. |
 | `Inaccessible` | Metadata, ownership, canonicalization, or content could not be inspected. | Not modified; reported with the underlying error. |
 
@@ -183,7 +184,8 @@ Classifies an executable candidate.
 | `PreferredRustBinary` | Candidate is the Rust binary in the preferred user bin directory. |
 | `StalePythonWrapper` | Candidate is a positively identified stale Python wrapper. |
 | `StaleUvxWrapper` | Candidate is a positively identified stale uvx wrapper. |
-| `TransientNpxShim` | Candidate is the transient `npx` shim for this package's own npm wrapper. |
+| `NpmLauncher(Transient)` | Candidate is a transient `npx` / `pnpm dlx` / `bunx` launcher for this package's own npm wrapper. |
+| `NpmLauncher(Persistent)` | Candidate is a persistent launcher for this package's own npm wrapper (`npm install -g`, project dependency). |
 | `UnknownExecutable` | Candidate is executable but not safely classifiable. |
 | `Inaccessible` | Candidate could not be inspected. |
 
