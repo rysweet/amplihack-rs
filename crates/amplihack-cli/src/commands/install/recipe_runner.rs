@@ -161,11 +161,14 @@ mod tests {
         let prev_override = std::env::var_os("RECIPE_RUNNER_RS_PATH");
         let prev_skip = std::env::var_os("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL");
         let prev_home = std::env::var_os("HOME");
+        let prev_cargo_home = std::env::var_os("CARGO_HOME");
         unsafe {
-            // Empty PATH dir + tempdir HOME so neither $HOME/.cargo/bin nor
-            // PATH dirs contain a real recipe-runner-rs.
+            // Empty PATH dir + tempdir HOME, no CARGO_HOME, so neither
+            // $CARGO_HOME/bin, $HOME/.cargo/bin nor PATH dirs contain a real
+            // recipe-runner-rs.
             std::env::set_var("PATH", temp.path());
             std::env::set_var("HOME", temp.path());
+            std::env::remove_var("CARGO_HOME");
             std::env::remove_var("RECIPE_RUNNER_RS_PATH");
             std::env::set_var("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL", "1");
         }
@@ -184,6 +187,9 @@ mod tests {
             }
             if let Some(v) = prev_home {
                 std::env::set_var("HOME", v);
+            }
+            if let Some(v) = prev_cargo_home {
+                std::env::set_var("CARGO_HOME", v);
             }
         }
         let err = result.expect_err("must bail when missing + env-skip set");
