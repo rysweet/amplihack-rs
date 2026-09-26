@@ -17,19 +17,21 @@
 #   * Anything other than issue/pr/label/`api graphql`/`auth status` is handed
 #     to the real gh untouched (`exec`), and so are -h/--help (offline in gh)
 #     and `label create` (REST in gh itself).
-#   * For the rest, the target host (-R HOST/OWNER/REPO, GH_REPO, a URL target,
-#     GH_HOST, then the origin remote) is probed with the smallest GraphQL
-#     query (`{viewer{login}}`), bounded by a timeout, and the answer is
-#     remembered per host: "works" and "blocked" for the TTL, "could not tell"
-#     (5xx, timeout, rate limit) for a few minutes.
-#   * Works: the real gh runs as a child with the caller's own stdin, stdout
-#     and stderr (interleaving and exit code are gh's), and TERM/INT/HUP are
-#     passed on to it. If it fails and "works" is more than a few minutes old,
-#     GraphQL is asked again, so a host that has since been blocked is caught.
-#   * Could not tell: the real gh runs with its stderr held; if it fails with
-#     the block text, the block is recorded and the call replayed over REST.
+#   * For the rest, the target host is found (any URL anywhere in argv,
+#     -R/--repo HOST/OWNER/REPO, --hostname, GH_REPO, GH_HOST, then the origin
+#     remote) and asked the smallest GraphQL query (`{viewer{login}}`), bounded
+#     by a timeout. The answer is remembered per host: "blocked" for the TTL,
+#     "works" and "could not tell" (5xx, timeout, rate limit) for a few
+#     minutes, after which the next call asks again before it runs.
+#   * Works: the real gh replaces this process (exec). stdin/tty, signals, exit
+#     codes and output are gh's own; nothing on this path is ever replayed.
+#   * Could not tell: the real gh runs with its stderr held (signals are passed
+#     on as themselves). If it fails with the block text, the block is
+#     recorded; a read is then replayed over REST, a write is not (it may have
+#     been partly applied) and fails with a hint to run it again.
 #   * Blocked: the call is served over REST (`gh api repos/...`), on
-#     github.com only; another host's call is refused with a clear message.
+#     github.com only; a call aimed at any other host is refused before any
+#     request.
 #   * Output keeps the shapes callers parse: the `--json` field names, `--jq`,
 #     a bare URL from `create`, and gh's exit codes (`pr checks`: 1 fail, 8
 #     pending).
@@ -41,10 +43,9 @@
 # binary; AMPLIHACK_GH_COMPAT_STATE / AMPLIHACK_GH_COMPAT_LOG move the state and
 # log files (other answers are the state path plus ".ok"/".unknown", and
 # "@HOST" for a host other than github.com); AMPLIHACK_GH_COMPAT_STATE_TTL_MIN
-# (default 60) is how long "works"/"blocked" is trusted before GraphQL is
-# probed again, AMPLIHACK_GH_COMPAT_UNKNOWN_TTL_MIN (default 5) the same for
-# "could not tell"; AMPLIHACK_GH_COMPAT_PROBE_TIMEOUT (default 10) bounds the
-# probe in seconds;
+# (default 60) is how long "blocked" is trusted, AMPLIHACK_GH_COMPAT_RECHECK_MIN
+# (default 5) how long "works" and "could not tell" are;
+# AMPLIHACK_GH_COMPAT_PROBE_TIMEOUT (default 10) bounds the probe in seconds;
 # AMPLIHACK_GH_COMPAT_VERBOSE=1 also logs to stderr. The log stays off stderr by
 # default because callers capture `2>&1` (step-03 does, for the URL).
 #
@@ -76,10 +77,10 @@ GHC_TMP="${TMPDIR:-/tmp}"
 GHC_STATE="${AMPLIHACK_GH_COMPAT_STATE:-}"
 GHC_STATE_TTL_MIN="${AMPLIHACK_GH_COMPAT_STATE_TTL_MIN:-60}"
 case "$GHC_STATE_TTL_MIN" in ''|*[!0-9]*) GHC_STATE_TTL_MIN=60 ;; esac
-# An inconclusive probe (5xx, timeout, rate limit) is not asked again for this
-# long, so a struggling GraphQL endpoint is not hit by every call.
-GHC_UNKNOWN_TTL_MIN="${AMPLIHACK_GH_COMPAT_UNKNOWN_TTL_MIN:-5}"
-case "$GHC_UNKNOWN_TTL_MIN" in ''|*[!0-9]*) GHC_UNKNOWN_TTL_MIN=5 ;; esac
+# "Works" and "could not tell" are trusted this long; then the next call probes
+# again before it runs (a struggling endpoint is still asked at most this often).
+GHC_RECHECK_MIN="${AMPLIHACK_GH_COMPAT_RECHECK_MIN:-5}"
+case "$GHC_RECHECK_MIN" in ''|*[!0-9]*) GHC_RECHECK_MIN=5 ;; esac
 GHC_PROBE_TIMEOUT="${AMPLIHACK_GH_COMPAT_PROBE_TIMEOUT:-10}"
 case "$GHC_PROBE_TIMEOUT" in ''|*[!0-9]*|0) GHC_PROBE_TIMEOUT=10 ;; esac
 ghc_init_state() {
@@ -158,9 +159,9 @@ ghc_rest_mode() {
   ghc_fresh "$GHC_STATE"
 }
 # GraphQL answered on this host within the TTL.
-ghc_graphql_ok() { [ -n "$GHC_STATE" ] && ghc_fresh "${GHC_STATE}.ok"; }
+ghc_graphql_ok() { [ -n "$GHC_STATE" ] && ghc_fresh "${GHC_STATE}.ok" "$GHC_RECHECK_MIN"; }
 # The probe could not tell, recently: do not ask again yet.
-ghc_graphql_unknown() { [ -n "$GHC_STATE" ] && ghc_fresh "${GHC_STATE}.unknown" "$GHC_UNKNOWN_TTL_MIN"; }
+ghc_graphql_unknown() { [ -n "$GHC_STATE" ] && ghc_fresh "${GHC_STATE}.unknown" "$GHC_RECHECK_MIN"; }
 
 # ---------------------------------------------------------------------------
 # REST transport. Always the real `gh api`: it already owns auth, proxy and CA
@@ -312,7 +313,13 @@ ghc_graphql_blocked() {
   # binary needed; macOS has none). The probe reads no stdin.
   "$GHC_REAL" "${args[@]}" -f query='{viewer{login}}' </dev/null >/dev/null 2>"$pf" &
   pid=$!
-  ( sleep "$GHC_PROBE_TIMEOUT"; kill "$pid" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
+  # The watcher's own sleep dies with it: killing the watcher interrupts its
+  # wait, and its trap kills the sleep, so no stray process outlives a probe.
+  (
+    trap 'kill "$s" 2>/dev/null; exit 0' TERM
+    sleep "$GHC_PROBE_TIMEOUT" & s=$!
+    wait "$s" && kill "$pid" 2>/dev/null
+  ) </dev/null >/dev/null 2>&1 &
   w=$!
   wait "$pid" || GHC_PROBE_RC=$?
   kill "$w" 2>/dev/null; wait "$w" 2>/dev/null
@@ -361,11 +368,10 @@ ghc_body() {
 ghc_repo_from_url() {
   local u="$1"
   u="${u%/}"; u="${u%.git}"
-  if [[ "$u" =~ github\.com[:/]+([^/]+)/([^/]+)$ ]]; then
-    printf '%s/%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"; return 0
-  fi
-  # Proxied remotes (e.g. http://proxy@127.0.0.1:port/git/OWNER/REPO).
-  if [[ "$u" =~ ^[a-z]+://.*/([^/]+)/([^/]+)$ ]]; then
+  # Only github.com (or the cloud proxy in front of it): another host's
+  # OWNER/REPO must never be answered from github.com's.
+  [ "$(ghc_url_host "$u")" = github.com ] || return 1
+  if [[ "$u" =~ [:/]([^/:]+)/([^/]+)$ ]]; then
     printf '%s/%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"; return 0
   fi
   return 1
@@ -405,7 +411,7 @@ ghc_pr_target() {
   esac
   if [[ "$t" =~ /pull/([0-9]+) ]]; then
     GHC_N="${BASH_REMATCH[1]}"
-    GHC_REPO="$(ghc_repo_from_url "${t%%/pull/*}")" || ghc_die "gh: cannot parse pull request URL: $t"
+    GHC_REPO="$(ghc_repo_from_url "${t%%/pull/*}")" || ghc_die "gh-compat: cannot use pull request URL $t without GraphQL: the REST fallback serves github.com only"
     return 0
   fi
   owner="${GHC_REPO%%/*}"
@@ -1057,7 +1063,7 @@ ghc_issue_target() {
   local t="${1#\#}"
   if [[ "$t" =~ ^https?://.*/(issues|pull)/([0-9]+)/?$ ]]; then
     GHC_N="${BASH_REMATCH[2]}"
-    GHC_REPO="$(ghc_repo_from_url "${t%/*/*}")" || ghc_die "gh: cannot parse issue URL: $1"
+    GHC_REPO="$(ghc_repo_from_url "${t%/*/*}")" || ghc_die "gh-compat: cannot use issue URL $1 without GraphQL: the REST fallback serves github.com only"
     return 0
   fi
   case "$t" in ''|*[!0-9]*) ghc_die "gh: invalid issue number: $1" ;; esac
@@ -1266,7 +1272,7 @@ ghc_auth_status() {
 
 ghc_mark_unknown() {
   [ -n "$GHC_STATE" ] && { : >"${GHC_STATE}.unknown"; } 2>/dev/null
-  ghc_log "GraphQL probe inconclusive (rc ${GHC_PROBE_RC}: $(head -c 200 "${GHC_RUN_DIR}/graphql.probe" 2>/dev/null | tr '\n' ' ')); not asking again for ${GHC_UNKNOWN_TTL_MIN} min"
+  ghc_log "GraphQL probe inconclusive (rc ${GHC_PROBE_RC}: $(head -c 200 "${GHC_RUN_DIR}/graphql.probe" 2>/dev/null | tr '\n' ' ')); not asking again for ${GHC_RECHECK_MIN} min"
   return 0
 }
 
@@ -1328,31 +1334,31 @@ ghc_url_host() {
   esac
 }
 
-# ghc_target_host ARGS... — the host this call is aimed at, as gh picks it:
-# -R/--repo (HOST/OWNER/REPO or a URL), GH_REPO, a URL target, GH_HOST, then
-# the origin remote.
+# ghc_target_host ARGS... — the host this call is aimed at. Every argument is
+# looked at, with no guessing about which are flag values: any URL, a
+# -R/--repo HOST/OWNER/REPO, --hostname, GH_REPO or GH_HOST naming a host other
+# than github.com makes that the host (and REST mode then refuses it). With
+# none of those, the origin remote decides.
 ghc_target_host() {
-  local prev="" a r="" u=""
-  for a in "$@"; do
-    [ "$a" = "--" ] && break
-    case "$prev" in -R|--repo) r="$a" ;; esac
+  local prev="" a h="" v
+  for a in "$@" "--repo=${GH_REPO:-}"; do
+    v=""
+    case "$prev" in -R|--repo|--hostname) v="$a" ;; esac
     case "$a" in
-      --repo=*) r="${a#--repo=}" ;;
-      -R?*) r="${a#-R}"; r="${r#=}" ;;
-      http://*|https://*) case "$prev" in -*) ;; *) [ -n "$u" ] || u="$a" ;; esac ;;
+      --repo=*|--hostname=*) v="${a#*=}" ;;
+      -R?*) v="${a#-R}"; v="${v#=}" ;;
+      http://*|https://*) v="$a" ;;
     esac
+    case "$prev" in --hostname) v="https://${v}/" ;; esac
+    case "$a" in --hostname=*) v="https://${v}/" ;; esac
+    case "$v" in
+      *://*) h="$(ghc_url_host "$v")" ;;
+      */*/*) h="$(ghc_url_host "https://${v%%/*}/")" ;;
+      *) h="" ;;
+    esac
+    if [ -n "$h" ] && [ "$h" != github.com ]; then printf '%s\n' "$h"; return 0; fi
     prev="$a"
   done
-  [ -n "$r" ] || r="${GH_REPO:-}"
-  if [ -n "$r" ]; then
-    case "$r" in
-      *://*) ghc_url_host "$r" ;;
-      */*/*) ghc_url_host "https://${r%%/*}/" ;;
-      *) printf '%s\n' "${GH_HOST:-github.com}" ;;
-    esac
-    return 0
-  fi
-  if [ -n "$u" ]; then ghc_url_host "$u"; return 0; fi
   if [ -n "${GH_HOST:-}" ]; then ghc_url_host "https://${GH_HOST}/"; return 0; fi
   ghc_url_host "$(git remote get-url origin 2>/dev/null)"
 }
@@ -1366,60 +1372,46 @@ ghc_wants_help() {
   return 1
 }
 
-# ghc_reads_stdin ARGS... — true when a --body-file/-F argument is "-".
-ghc_reads_stdin() {
-  local prev="" a
-  for a in "$@"; do
-    case "$prev $a" in "-F -"|"--body-file -") return 0 ;; esac
-    case "$a" in --body-file=-|-F-|-F=-) return 0 ;; esac
-    prev="$a"
-  done
+# Subcommands that only read. After an inconclusive probe, only these are
+# replayed over REST when gh meets the block: a write may have been partly
+# applied by gh, so it is never sent twice.
+ghc_is_read() {
+  case "$1 $2" in
+    "pr view"|"pr list"|"pr checks"|"pr diff"|"issue view"|"issue list"|"label list"|"api graphql") return 0 ;;
+  esac
   return 1
 }
 
-# ghc_run_real CAPTURE ARGS... — run the real gh as a child with the caller's
-# stdout (and, unless CAPTURE=1, stderr), passing TERM/INT/HUP on so nothing is
-# orphaned. Exits with gh's status, except when gh turns out to have hit the
-# GraphQL block: then it records the block and returns, and the caller replays
-# the call over REST (stdin, if gh was to read a body from it, is buffered so
-# the replay still has it).
-#   CAPTURE=1 (the probe was inconclusive): gh's stderr is held in a file and
-#     checked for the block text, then printed if there is no replay.
-#   CAPTURE=0 (GraphQL answered): gh's output is untouched. On failure, if the
-#     ".ok" answer is more than GHC_UNKNOWN_TTL_MIN old, GraphQL is asked
-#     again, so a host that has since become blocked is noticed.
-ghc_run_real() {
-  local capture="$1" rc=0 stdinf="" errf="${GHC_RUN_DIR}/gh.err"
-  shift
-  if ghc_reads_stdin "$@"; then
-    stdinf="${GHC_RUN_DIR}/stdin"; cat >"$stdinf" || exit 1
-  fi
-  if [ "$capture" = 1 ]; then
-    if [ -n "$stdinf" ]; then "$GHC_REAL" "$@" <"$stdinf" 2>"$errf" & else "$GHC_REAL" "$@" <&0 2>"$errf" & fi
-  else
-    if [ -n "$stdinf" ]; then "$GHC_REAL" "$@" <"$stdinf" & else "$GHC_REAL" "$@" <&0 & fi
-  fi
+# ghc_run_uncertain ARGS... — the probe could not tell whether GraphQL works:
+# run the real gh with the caller's stdin and stdout and with its stderr held.
+# SIGINT/SIGQUIT are restored to default in the child (an async child starts
+# with them ignored), and a signal the shim receives is passed on as the same
+# signal, after which the shim dies by it too. If gh fails with the GraphQL
+# block, the block is recorded; a read then returns here to be replayed over
+# REST, a write prints gh's error and a hint and fails.
+ghc_run_uncertain() {
+  local rc=0 errf="${GHC_RUN_DIR}/gh.err" sig
+  ( trap - INT QUIT; exec "$GHC_REAL" "$@" ) <&0 2>"$errf" &
   GHC_CHILD=$!
-  trap 'kill -TERM "$GHC_CHILD" 2>/dev/null' TERM INT HUP
-  # wait returns early when a trapped signal arrives; keep waiting for gh.
+  for sig in INT TERM HUP QUIT; do
+    # shellcheck disable=SC2064  # $sig is meant to be fixed per trap here.
+    trap "GHC_SIG=$sig; kill -s $sig \"\$GHC_CHILD\" 2>/dev/null" "$sig"
+  done
+  GHC_SIG=""
   while :; do
     rc=0; wait "$GHC_CHILD" || rc=$?
     kill -0 "$GHC_CHILD" 2>/dev/null || break
   done
-  trap - TERM INT HUP
-  if [ "$capture" = 1 ]; then
-    if [ "$rc" -ne 0 ] && grep -Eiq "$GHC_BLOCK_RE" "$errf"; then
-      ghc_mark_blocked; [ -z "$stdinf" ] || exec <"$stdinf"; return 0
-    fi
+  trap - INT TERM HUP QUIT
+  if [ "$rc" -ne 0 ] && grep -Eiq "$GHC_BLOCK_RE" "$errf"; then
+    ghc_mark_blocked
+    if [ -z "$GHC_SIG" ] && ghc_is_read "${1:-}" "${2:-}"; then return 0; fi
     cat "$errf" >&2
-    exit "$rc"
+    printf 'gh-compat: GitHub GraphQL is blocked on this host (now recorded); run the command again to use the REST fallback\n' >&2
+  else
+    cat "$errf" >&2
   fi
-  [ "$rc" -ne 0 ] || exit 0
-  ghc_fresh "${GHC_STATE}.ok" "$GHC_UNKNOWN_TTL_MIN" && exit "$rc"
-  if ghc_graphql_blocked; then
-    ghc_mark_blocked; [ -z "$stdinf" ] || exec <"$stdinf"; return 0
-  fi
-  if [ "$GHC_PROBE_RC" -eq 0 ]; then ghc_mark_ok; else ghc_mark_unknown; fi
+  if [ -n "$GHC_SIG" ]; then rm -rf "$GHC_RUN_DIR"; trap - EXIT; kill -s "$GHC_SIG" $$; fi
   exit "$rc"
 }
 
@@ -1448,8 +1440,11 @@ ghc_main() {
     [ "$GHC_HOST" = github.com ] || { rm -rf "$GHC_RUN_DIR"; exec "$GHC_REAL" auth status "$@"; }
     ghc_auth_status "$@"; exit $?
   fi
-  # One bounded probe per answer: "blocked" and "works" are trusted for the
-  # TTL, "could not tell" (5xx, timeout, rate limit) for GHC_UNKNOWN_TTL_MIN.
+  # One bounded probe decides. "Blocked" is trusted for the TTL; "works" and
+  # "could not tell" (5xx, timeout, rate limit) only for GHC_RECHECK_MIN, after
+  # which the next call probes again before running. Where GraphQL works the
+  # real gh replaces this process (exec): stdin/tty, signals, exit codes and
+  # output are its own, and nothing on that path is ever replayed.
   local answer
   if ghc_rest_mode; then answer=blocked
   elif ghc_graphql_ok; then answer=ok
@@ -1459,8 +1454,8 @@ ghc_main() {
   else answer=unknown; ghc_mark_unknown
   fi
   case "$answer" in
-    ok) ghc_run_real 0 "$@" ;;        # returns only if gh hit the block after all
-    unknown) ghc_run_real 1 "$@" ;;
+    ok) rm -rf "$GHC_RUN_DIR"; exec "$GHC_REAL" "$@" ;;
+    unknown) ghc_run_uncertain "$@" ;;   # returns only to replay a read
   esac
   [ "$GHC_HOST" = github.com ] \
     || ghc_die "gh-compat: GitHub GraphQL is blocked for ${GHC_HOST}, and the REST fallback serves github.com only"

@@ -6,14 +6,13 @@
 #
 #   1. Each call aimed at a GraphQL client first learns whether GraphQL works
 #      on its host: one bounded `gh api graphql '{viewer{login}}'` probe, whose
-#      answer is remembered per host (works/blocked for the TTL, "could not
-#      tell" briefly). Where it works, the real gh runs with the caller's own
-#      descriptors (output, interleaving, exit status and signals are gh's) and
-#      no REST call is made.
+#      answer is remembered per host (blocked for the TTL, works / could not
+#      tell for a few minutes). Where it works, the real gh is exec'd: output,
+#      exit status and signals are gh's and no REST call is made.
 #   2. Where the probe gets the Claude Code GraphQL block (HTTP 403), the call
 #      is served over REST (`gh api repos/...`) in the shape callers parse, and
-#      later calls go straight to REST. A block that gh itself meets after an
-#      inconclusive probe or a stale "works" answer is recorded and replayed.
+#      later calls go straight to REST. After an inconclusive probe, a read
+#      that gh finds blocked is replayed; a write is never replayed.
 #   3. pr view/list/create/checks/ready, issue view/list/create, label list,
 #      `api graphql` (viewer permission) and `auth status` each issue the
 #      expected REST request.
@@ -26,8 +25,8 @@
 #   7. --json fields are validated as gh does and never read as a silent null;
 #      sub-lists read every page; results over 128 KiB come back whole;
 #      closedByPullRequestsReferences is derived; unsupported flags fail.
-#   8. Another host (HOST/OWNER/REPO, GHE remote, GH_HOST) is never answered
-#      from github.com.
+#   8. Another host (a URL anywhere in argv, HOST/OWNER/REPO, --hostname, GHE
+#      remote, GH_HOST) is never answered from github.com.
 #
 # Never touches the network: the "real" gh is a stub that records its argv.
 # Usage: bash amplifier-bundle/recipes/tests/test-gh-compat-graphql-blocked.sh
@@ -200,6 +199,7 @@ if [ "${STUB_NOISY:-}" != "" ]; then
   echo "noisy-done"; exit 0
 fi
 for a in "$@"; do case "$a" in -h|--help) echo "help for $1 $2"; exit 0 ;; esac; done
+[ "${STUB_GH_502:-0}" = 1 ] && { echo "HTTP 502: Bad Gateway (comment may have been posted)" >&2; exit 1; }
 [ "${STUB_ENV:-0}" = 1 ] && { echo "GHC_REPO=${GHC_REPO-unset}"; exit 0; }
 [ "${STUB_GHE_OK:-0}" = 1 ] && [ "${GH_HOST:-}" = ghe.example.com ] && { echo "ghe-output: $*"; exit 0; }
 if [ "${STUB_INTERLEAVE:-0}" = 1 ]; then
@@ -791,6 +791,69 @@ fresh; : > "${AMPLIHACK_GH_COMPAT_STATE}.ok"
 [ "$(STUB_GRAPHQL_OK=1 STUB_ENV=1 gh pr view 42)" = "GHC_REPO=unset" ] || fail env "GHC_REPO leaked into the real gh's environment"
 ok "no gh-compat variables leak into the real gh"
 fresh; : > "$AMPLIHACK_GH_COMPAT_STATE"
+
+# ---------------------------------------------------------------------------
+# Independent crusty review round 3, of 46d14022 (PR comment 5841382203).
+# ---------------------------------------------------------------------------
+
+# 52. url-target-after-boolean-flag-served-from-github-com: a GHE URL anywhere
+#     in argv is never answered from github.com.
+fresh; : > "$AMPLIHACK_GH_COMPAT_STATE"
+rc=0; gh pr merge --squash https://ghe.example.com/o/r/pull/5 >/dev/null 2>&1 || rc=$?
+[ "$rc" != 0 ] || fail ghe-url "pr merge of a GHE URL succeeded"
+logged_prefix "api -X PUT" && fail ghe-url "a GHE PR URL was merged on github.com: $(grep PUT "$STUB_LOG")"
+reset_log; gh issue view --comments https://ghe.example.com/o/r/issues/5 >/dev/null 2>&1 || true
+logged_prefix "api -X GET repos/o/r" && fail ghe-url "a GHE issue URL was read from github.com"
+ok "a GHE URL after a boolean flag is refused, not served from github.com"
+
+# 53. api-graphql-hostname-answered-from-github-com.
+fresh; : > "$AMPLIHACK_GH_COMPAT_STATE"
+rc=0; out="$(gh api graphql --hostname ghe.example.com -f query='{viewer{login}}' 2>/dev/null)" || rc=$?
+[ "$rc" != 0 ] || fail api-host "api graphql --hostname ghe.example.com answered: $out"
+logged_prefix "api -X GET user" && fail api-host "github.com's /user answered for ghe.example.com"
+ok "api graphql --hostname HOST is not answered with github.com's identity"
+
+# 54. stale-ok-recheck-replays-non-block-failure: an old "works" answer is
+#     re-checked BEFORE gh runs, and after an inconclusive probe a write that
+#     meets the block is not replayed.
+fresh; : > "${AMPLIHACK_GH_COMPAT_STATE}.ok"; touch -t "$ago" "${AMPLIHACK_GH_COMPAT_STATE}.ok"
+out="$(STUB_GH_502=1 gh issue comment 42 --body hello 2>&1)" || fail no-replay "stale .ok, blocked host: exit $?: $out"
+logged "issue comment 42 --body hello" && fail no-replay "gh ran on a stale .ok before GraphQL was re-checked"
+[ "$(grep -c '^api -X POST repos/o/r/issues/42/comments' "$STUB_LOG")" = 1 ] || fail no-replay "comment not posted exactly once"
+fresh; : > "${AMPLIHACK_GH_COMPAT_STATE}.unknown"
+rc=0; err="$(gh issue comment 42 --body hello 2>&1)" || rc=$?
+[ "$rc" != 0 ] || fail no-replay "a blocked write after an inconclusive probe was replayed"
+logged_prefix "api -X POST" && fail no-replay "a write was replayed over REST"
+case "$err" in *"run the command again"*) ;; *) fail no-replay "no hint: '$err'" ;; esac
+[ -e "$AMPLIHACK_GH_COMPAT_STATE" ] || fail no-replay "the block gh met was not recorded"
+fresh; : > "${AMPLIHACK_GH_COMPAT_STATE}.unknown"
+[ "$(gh issue view 7 --json url --jq .url 2>/dev/null)" = "https://github.com/o/r/issues/7" ] || fail no-replay "a read after an inconclusive probe was not replayed"
+ok "no write is replayed; a stale 'works' is re-checked before gh runs"
+
+# 55. child-gh-ignores-sigint-and-wrong-signal-exit: where GraphQL works the
+#     real gh IS the process (exec); after an inconclusive probe a signal is
+#     passed on as itself and the shim dies by it.
+fresh; : > "${AMPLIHACK_GH_COMPAT_STATE}.ok"
+go="${WORK}/sig.go"; pidf="${WORK}/sig.pid"; rm -f "$go" "$pidf"
+STUB_GRAPHQL_OK=1 STUB_STREAM="$go" STUB_PIDFILE="$pidf" gh pr checks 42 --watch >/dev/null 2>&1 &
+bg=$!
+i=0; while [ ! -s "$pidf" ] && [ "$i" -lt 40 ]; do sleep 0.1; i=$((i + 1)); done
+[ "$(cat "$pidf" 2>/dev/null)" = "$bg" ] || { kill "$bg" 2>/dev/null; fail signals "the real gh is not the shim's own process (no exec)"; }
+kill "$bg" 2>/dev/null; wait "$bg" 2>/dev/null || true
+fresh; : > "${AMPLIHACK_GH_COMPAT_STATE}.unknown"; rm -f "$go" "$pidf"
+STUB_GRAPHQL_OK=1 STUB_STREAM="$go" STUB_PIDFILE="$pidf" gh pr checks 42 --watch >/dev/null 2>&1 &
+bg=$!
+i=0; while [ ! -s "$pidf" ] && [ "$i" -lt 40 ]; do sleep 0.1; i=$((i + 1)); done
+kill -HUP "$bg"; rc=0; { wait "$bg"; } 2>/dev/null || rc=$?
+[ "$rc" = 129 ] || fail signals "SIGHUP to the shim gave exit $rc, want 129 (death by SIGHUP)"
+sleep 0.3; kill -0 "$(cat "$pidf")" 2>/dev/null && { kill "$(cat "$pidf")"; fail signals "real gh survived SIGHUP to the shim"; }
+ok "exec where GraphQL works; the received signal is passed on and re-raised otherwise"
+
+# 56. probe-watcher-orphans-sleep: no stray sleep outlives a probe.
+fresh; AMPLIHACK_GH_COMPAT_PROBE_TIMEOUT=37 STUB_GRAPHQL_OK=1 gh pr view 42 >/dev/null 2>&1 || true
+sleep 0.2
+[ "$(ps -eo args= | grep -c '^sleep 37$' || true)" = 0 ] || fail watcher "a probe left its watcher's sleep running"
+ok "the probe's timeout watcher leaves no process behind"
 
 # 51. stale-test-contract-header: the contract above describes the probe, not
 #     the removed stderr follower or a first real-gh attempt.
