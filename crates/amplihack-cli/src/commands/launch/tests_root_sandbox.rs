@@ -136,45 +136,156 @@ fn launch_environment_puts_is_sandbox_on_the_child_last() {
     assert!(error.to_string().contains("IS_SANDBOX=1"), "{error}");
 }
 
+/// A sealed launch environment for `run_launch_with("claude", ..)`: `PATH`
+/// holds only a fake `claude` (plus the system shell tools it needs), which
+/// records the `IS_SANDBOX` it inherited in `$HOME/child-env` and exits 0;
+/// auto-install is off, `HOME` and the cwd are a temp dir, and the variables
+/// that would change the decision or hand the launch off are unset. So even a
+/// regression can never reach the real Claude Code CLI.
+#[cfg(unix)]
+struct FakeClaudeLaunch {
+    home: tempfile::TempDir,
+    _env: crate::test_support::EnvGuard,
+    _home: crate::test_support::HomeGuard,
+    _cwd: crate::test_support::CwdGuard,
+}
+
+#[cfg(unix)]
+impl FakeClaudeLaunch {
+    fn new() -> Self {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = tempfile::tempdir().unwrap();
+        let bin = home.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let claude = bin.join("claude");
+        std::fs::write(
+            &claude,
+            "#!/bin/sh\n\
+             if [ \"$1\" = --version ]; then printf '2.1.282\\n'; exit 0; fi\n\
+             printf '%s' \"${IS_SANDBOX-unset}\" > \"$HOME/child-env\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = format!("{}:/usr/bin:/bin", bin.display());
+        let claude_text = claude.to_string_lossy().into_owned();
+        let env = crate::test_support::EnvGuard::set([
+            ("PATH", path.as_str()),
+            ("AMPLIHACK_CLAUDE_BINARY_PATH", claude_text.as_str()),
+            ("AMPLIHACK_SKIP_AUTO_INSTALL", "1"),
+            ("AMPLIHACK_NONINTERACTIVE", "1"),
+            (IS_SANDBOX_ENV, ""),
+            ("CLAUDE_CODE_BUBBLEWRAP", ""),
+            ("AMPLIHACK_USE_DOCKER", ""),
+            ("AMPLIHACK_PROMPT_DELIVERY", ""),
+            (amplihack_utils::litellm_proxy::ENDPOINT_ENV, ""),
+            (amplihack_utils::litellm_proxy::API_KEY_ENV, ""),
+            (amplihack_utils::litellm_proxy::MODEL_ENV, ""),
+        ]);
+        // Unset rather than empty; the guard restores the previous values.
+        for name in [
+            IS_SANDBOX_ENV,
+            "CLAUDE_CODE_BUBBLEWRAP",
+            "AMPLIHACK_USE_DOCKER",
+            "AMPLIHACK_PROMPT_DELIVERY",
+            amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+            amplihack_utils::litellm_proxy::API_KEY_ENV,
+            amplihack_utils::litellm_proxy::MODEL_ENV,
+        ] {
+            unsafe { std::env::remove_var(name) };
+        }
+        let home_guard = crate::test_support::HomeGuard::set(home.path());
+        let cwd = crate::test_support::CwdGuard::set(home.path()).unwrap();
+        Self {
+            home,
+            _env: env,
+            _home: home_guard,
+            _cwd: cwd,
+        }
+    }
+
+    fn launch(&self, decision: fn() -> SkipPermissionsEnv) -> Result<()> {
+        run_launch_with(
+            "claude",
+            "claude",
+            false,
+            false,
+            false,
+            true,
+            true,
+            false,
+            true,
+            None,
+            Vec::new(),
+            amplihack_utils::launch_target::OverrideOrigin::User,
+            None,
+            decision,
+        )
+    }
+
+    /// What the fake `claude` saw, or `None` when it never ran.
+    fn child_is_sandbox(&self) -> Option<String> {
+        std::fs::read_to_string(self.home.path().join("child-env")).ok()
+    }
+}
+
+/// The launched `claude` gets `IS_SANDBOX=1` when amplihack enables it, and
+/// nothing when it does not: the decision reaches the spawned child.
+#[cfg(unix)]
+#[test]
+fn claude_launch_passes_the_decision_to_the_spawned_child() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    for (decision, expected) in [
+        (
+            (|| SkipPermissionsEnv::SetSandbox {
+                signal: "/.dockerenv",
+            }) as fn() -> SkipPermissionsEnv,
+            "1",
+        ),
+        (
+            || SkipPermissionsEnv::NormalizeExplicit {
+                value: "yes".to_string(),
+            },
+            "1",
+        ),
+        (|| SkipPermissionsEnv::NotRoot, "unset"),
+        (|| SkipPermissionsEnv::AlreadySandboxed, "unset"),
+    ] {
+        let launch = FakeClaudeLaunch::new();
+        launch
+            .launch(decision)
+            .expect("the fake claude launches and exits 0");
+        assert_eq!(
+            launch.child_is_sandbox().as_deref(),
+            Some(expected),
+            "{:?}",
+            decision()
+        );
+    }
+}
+
 /// The decision in `run_launch_with` stops `amplihack claude` before anything
-/// else runs (update check, bootstrap, binary lookup, spawn).
+/// else runs (update check, bootstrap, binary lookup, spawn). Under the fake
+/// launch, a regression reaches only the fake `claude`, which then records it.
+#[cfg(unix)]
 #[test]
 fn claude_launch_stops_up_front_when_claude_code_would_refuse() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if std::env::var_os("AMPLIHACK_USE_DOCKER").is_some()
-        || amplihack_utils::litellm_proxy::ProxyConfig::from_env()
-            .ok()
-            .flatten()
-            .is_some()
-    {
-        // Those launches hand off before the root-sandbox decision.
-        return;
-    }
     for decision in [
         (|| SkipPermissionsEnv::RootOutsideSandbox) as fn() -> SkipPermissionsEnv,
         || SkipPermissionsEnv::ExplicitlyNotSandboxed {
             value: "0".to_string(),
         },
     ] {
-        let error = run_launch_with(
-            "claude",
-            "claude",
-            false,
-            false,
-            false,
-            true,
-            true,
-            false,
-            true,
-            None,
-            vec!["-p".to_string(), "hello".to_string()],
-            amplihack_utils::launch_target::OverrideOrigin::User,
-            None,
-            decision,
-        )
-        .expect_err("the launch must stop before spawning");
+        let launch = FakeClaudeLaunch::new();
+        let error = launch
+            .launch(decision)
+            .expect_err("the launch must stop before spawning");
         assert!(format!("{error:#}").contains("IS_SANDBOX=1"), "{error:#}");
+        assert_eq!(launch.child_is_sandbox(), None, "claude must not start");
     }
 }
