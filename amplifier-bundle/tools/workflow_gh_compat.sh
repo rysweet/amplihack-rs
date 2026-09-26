@@ -17,10 +17,11 @@
 #   * Anything other than issue/pr/label/`api graphql`/`auth status` is handed
 #     to the real gh untouched (`exec`), and so are -h/--help (offline in gh)
 #     and `label create` (REST in gh itself).
-#   * For the rest, the target host is found (any URL anywhere in argv,
-#     -R/--repo HOST/OWNER/REPO, --hostname, GH_REPO, GH_HOST, then the origin
-#     remote) and asked the smallest GraphQL query (`{viewer{login}}`), bounded
-#     by a timeout. The answer is remembered per host: "blocked" for the TTL,
+#   * For the rest, the target host is found from repository-bearing inputs
+#     only (-R/--repo, --hostname, GH_REPO, a positional repository/issue/PR
+#     URL, then GH_HOST and the origin remote; a body, title or search that
+#     begins with a URL is data) and asked the smallest GraphQL query
+#     (`{viewer{login}}`), bounded by a timeout. The answer is remembered per host: "blocked" for the TTL,
 #     "works" and "could not tell" (5xx, timeout, rate limit) for a few
 #     minutes, after which the next call asks again before it runs.
 #   * Works: the real gh replaces this process (exec). stdin/tty, signals, exit
@@ -352,6 +353,33 @@ ghc_check_json() {
 }
 
 GHC_COMMON_V="-R:repo --repo:repo --json:json -q:jq --jq:jq -t:template --template:template"
+
+# ghc_vspec GROUP VERB — the value-taking flags of one command ("flag:name"
+# pairs): the parser of that command and ghc_target_host read the same table,
+# so a flag's value (a body, a title, a search) is never mistaken for a target.
+ghc_vspec() {
+  case "$1 $2" in
+    "pr view") printf '%s\n' "$GHC_COMMON_V" ;;
+    "pr list") printf '%s\n' "$GHC_COMMON_V -s:state --state:state -L:limit --limit:limit -H:head --head:head -B:base --base:base -S:search --search:search -A:author --author:author -l:label --label:label -a:assignee --assignee:assignee" ;;
+    "pr create") printf '%s\n' "-R:repo --repo:repo -t:title --title:title -b:body --body:body -F:body_file --body-file:body_file -B:base --base:base -H:head --head:head -l:label --label:label -a:assignee --assignee:assignee -r:reviewer --reviewer:reviewer -m:milestone --milestone:milestone" ;;
+    "pr edit") printf '%s\n' "-R:repo --repo:repo -t:title --title:title -b:body --body:body -F:body_file --body-file:body_file -B:base --base:base --add-label:add_label --remove-label:remove_label --add-assignee:assignee --add-reviewer:reviewer" ;;
+    "pr comment"|"issue comment") printf '%s\n' "-R:repo --repo:repo -b:body --body:body -F:body_file --body-file:body_file" ;;
+    "pr ready") printf '%s\n' "-R:repo --repo:repo" ;;
+    "pr merge") printf '%s\n' "-R:repo --repo:repo -t:subject --subject:subject -b:body --body:body --match-head-commit:sha" ;;
+    "pr close") printf '%s\n' "-R:repo --repo:repo -c:comment --comment:comment" ;;
+    "pr diff") printf '%s\n' "-R:repo --repo:repo --color:color" ;;
+    "pr checks") printf '%s\n' "-R:repo --repo:repo --json:json -q:jq --jq:jq -t:template --template:template -i:interval --interval:interval" ;;
+    "issue view") printf '%s\n' "$GHC_COMMON_V" ;;
+    "issue list") printf '%s\n' "$GHC_COMMON_V -s:state --state:state -L:limit --limit:limit -S:search --search:search -l:label --label:label -a:assignee --assignee:assignee -A:author --author:author" ;;
+    "issue create") printf '%s\n' "-R:repo --repo:repo -t:title --title:title -b:body --body:body -F:body_file --body-file:body_file -l:label --label:label -a:assignee --assignee:assignee -m:milestone --milestone:milestone" ;;
+    "issue close"|"issue reopen") printf '%s\n' "-R:repo --repo:repo -c:comment --comment:comment -r:reason --reason:reason" ;;
+    "issue edit") printf '%s\n' "-R:repo --repo:repo -t:title --title:title -b:body --body:body -F:body_file --body-file:body_file --add-label:add_label --remove-label:remove_label --add-assignee:assignee" ;;
+    "label list") printf '%s\n' "$GHC_COMMON_V -L:limit --limit:limit -S:search --search:search --sort:sort --order:order" ;;
+    "api graphql") printf '%s\n' "-f:field -F:field --field:field --raw-field:field -q:jq --jq:jq --hostname:hostname -H:header --header:header" ;;
+    "auth status") printf '%s\n' "-h:hostname --hostname:hostname" ;;
+    *) printf '%s\n' "$GHC_COMMON_V" ;;
+  esac
+}
 
 # Body text from --body, or --body-file (path, or - for stdin).
 ghc_body() {
@@ -694,7 +722,7 @@ EOF_LABELS
 # ---------------------------------------------------------------------------
 ghc_pr_view() {
   local n obj
-  ghc_parse "$GHC_COMMON_V" "-c:comments --comments:comments" "$@"
+  ghc_parse "$(ghc_vspec pr view)" "-c:comments --comments:comments" "$@"
   ghc_resolve_repo
   ghc_pr_target "${GHC_POS[0]:-}"; n="$GHC_N"
   if [ -z "${GHC_O_json:-}" ] && [ "${GHC_B_comments:-}" = 1 ]; then
@@ -719,7 +747,7 @@ ghc_pr_full_all() {
 
 ghc_pr_list() {
   local state limit q raw owner nums out="[]"
-  ghc_parse "$GHC_COMMON_V -s:state --state:state -L:limit --limit:limit -H:head --head:head -B:base --base:base -S:search --search:search -A:author --author:author -l:label --label:label -a:assignee --assignee:assignee" "-d:draft --draft:draft" "$@"
+  ghc_parse "$(ghc_vspec pr list)" "-d:draft --draft:draft" "$@"
   ghc_resolve_repo
   state="${GHC_O_state:-open}"; limit="${GHC_O_limit:-30}"; owner="${GHC_REPO%%/*}"
   case "$limit" in ''|*[!0-9]*|0) ghc_die "invalid value for --limit: ${limit}" ;; esac
@@ -754,7 +782,7 @@ ghc_pr_list() {
 
 ghc_pr_create() {
   local head base body payload resp url n q ms bf
-  ghc_parse "-R:repo --repo:repo -t:title --title:title -b:body --body:body -F:body_file --body-file:body_file -B:base --base:base -H:head --head:head -l:label --label:label -a:assignee --assignee:assignee -r:reviewer --reviewer:reviewer -m:milestone --milestone:milestone" "-d:draft --draft:draft -f:fill --fill:fill --fill-first:fill_first" "$@"
+  ghc_parse "$(ghc_vspec pr create)" "-d:draft --draft:draft -f:fill --fill:fill --fill-first:fill_first" "$@"
   ghc_resolve_repo
   head="${GHC_O_head:-$(ghc_current_branch)}"
   [ -n "$head" ] || ghc_die "gh: could not determine the head branch"
@@ -845,7 +873,7 @@ ghc_add_labels() {
 
 ghc_pr_edit() {
   local n patch rc=0 bf
-  ghc_parse "-R:repo --repo:repo -t:title --title:title -b:body --body:body -F:body_file --body-file:body_file -B:base --base:base --add-label:add_label --remove-label:remove_label --add-assignee:assignee --add-reviewer:reviewer" "" "$@"
+  ghc_parse "$(ghc_vspec pr edit)" "" "$@"
   ghc_resolve_repo
   ghc_pr_target "${GHC_POS[0]:-}"; n="$GHC_N"
   patch="$(jq -n --arg t "${GHC_O_title:-}" --arg B "${GHC_O_base:-}" '{} + (if $t != "" then {title: $t} else {} end) + (if $B != "" then {base: $B} else {} end)')" || ghc_jq_fail
@@ -883,7 +911,7 @@ EOF_LABELS
 ghc_comment() { # ghc_comment KIND(pr|issue) ARGS...
   local kind="$1" n resp me id payload
   shift
-  ghc_parse "-R:repo --repo:repo -b:body --body:body -F:body_file --body-file:body_file" "--edit-last:edit_last" "$@"
+  ghc_parse "$(ghc_vspec "$kind" comment)" "--edit-last:edit_last" "$@"
   ghc_resolve_repo
   if [ "$kind" = pr ]; then ghc_pr_target "${GHC_POS[0]:-}"; n="$GHC_N"; else ghc_issue_target "${GHC_POS[0]:-}"; n="$GHC_N"; fi
   if [ "${GHC_B_edit_last:-}" = 1 ]; then
@@ -902,7 +930,7 @@ ghc_comment() { # ghc_comment KIND(pr|issue) ARGS...
 
 ghc_pr_ready() {
   local n route=ready_for_review
-  ghc_parse "-R:repo --repo:repo" "--undo:undo" "$@"
+  ghc_parse "$(ghc_vspec pr ready)" "--undo:undo" "$@"
   ghc_resolve_repo
   ghc_pr_target "${GHC_POS[0]:-}"; n="$GHC_N"
   [ "${GHC_B_undo:-}" = 1 ] && route=convert_to_draft
@@ -920,7 +948,7 @@ ghc_pr_ready() {
 
 ghc_pr_merge() {
   local n method=merge obj pr=""
-  ghc_parse "-R:repo --repo:repo -t:subject --subject:subject -b:body --body:body --match-head-commit:sha" "-m:merge --merge:merge -s:squash --squash:squash -r:rebase --rebase:rebase --auto:auto -d:delete --delete-branch:delete --admin:admin --disable-auto:disable_auto" "$@"
+  ghc_parse "$(ghc_vspec pr merge)" "-m:merge --merge:merge -s:squash --squash:squash -r:rebase --rebase:rebase --auto:auto -d:delete --delete-branch:delete --admin:admin --disable-auto:disable_auto" "$@"
   ghc_resolve_repo
   ghc_pr_target "${GHC_POS[0]:-}"; n="$GHC_N"
   [ "${GHC_B_squash:-}" = 1 ] && method=squash
@@ -973,7 +1001,7 @@ ghc_delete_head_branch() {
 
 ghc_pr_close() {
   local n
-  ghc_parse "-R:repo --repo:repo -c:comment --comment:comment" "-d:delete --delete-branch:delete" "$@"
+  ghc_parse "$(ghc_vspec pr close)" "-d:delete --delete-branch:delete" "$@"
   ghc_resolve_repo
   ghc_pr_target "${GHC_POS[0]:-}"; n="$GHC_N"
   if [ -n "${GHC_O_comment:-}" ]; then
@@ -985,7 +1013,7 @@ ghc_pr_close() {
 
 ghc_pr_diff() {
   local n
-  ghc_parse "-R:repo --repo:repo --color:color" "--name-only:name_only --patch:patch" "$@"
+  ghc_parse "$(ghc_vspec pr diff)" "--name-only:name_only --patch:patch" "$@"
   ghc_resolve_repo
   ghc_pr_target "${GHC_POS[0]:-}"; n="$GHC_N"
   if [ "${GHC_B_name_only:-}" = 1 ]; then
@@ -1010,7 +1038,7 @@ ghc_required_checks() {
 
 ghc_pr_checks() {
   local n pr sha base interval checks required fails pend names=skip
-  ghc_parse "-R:repo --repo:repo --json:json -q:jq --jq:jq -t:template --template:template -i:interval --interval:interval" "--required:required --watch:watch --fail-fast:fail_fast" "$@"
+  ghc_parse "$(ghc_vspec pr checks)" "--required:required --watch:watch --fail-fast:fail_fast" "$@"
   ghc_resolve_repo
   ghc_pr_target "${GHC_POS[0]:-}"; n="$GHC_N"
   pr="$(ghc_api_or_die GET "repos/${GHC_REPO}/pulls/${n}")" || exit 1
@@ -1088,7 +1116,7 @@ ghc_issue_enrich() {
 
 ghc_issue_view() {
   local n obj
-  ghc_parse "$GHC_COMMON_V" "-c:comments --comments:comments" "$@"
+  ghc_parse "$(ghc_vspec issue view)" "-c:comments --comments:comments" "$@"
   ghc_resolve_repo
   ghc_issue_target "${GHC_POS[0]:-}"; n="$GHC_N"
   obj="$(ghc_api_or_die GET "repos/${GHC_REPO}/issues/${n}" | jq "${GHC_JQ_DEFS} issue")" || exit 1
@@ -1105,7 +1133,7 @@ ghc_issue_view() {
 
 ghc_issue_list() {
   local state limit q raw out
-  ghc_parse "$GHC_COMMON_V -s:state --state:state -L:limit --limit:limit -S:search --search:search -l:label --label:label -a:assignee --assignee:assignee -A:author --author:author" "" "$@"
+  ghc_parse "$(ghc_vspec issue list)" "" "$@"
   ghc_resolve_repo
   state="${GHC_O_state:-open}"; limit="${GHC_O_limit:-30}"
   case "$limit" in ''|*[!0-9]*|0) ghc_die "invalid value for --limit: ${limit}" ;; esac
@@ -1135,7 +1163,7 @@ ghc_issue_list() {
 
 ghc_issue_create() {
   local payload resp labels ms bf
-  ghc_parse "-R:repo --repo:repo -t:title --title:title -b:body --body:body -F:body_file --body-file:body_file -l:label --label:label -a:assignee --assignee:assignee -m:milestone --milestone:milestone" "" "$@"
+  ghc_parse "$(ghc_vspec issue create)" "" "$@"
   ghc_resolve_repo
   [ -n "${GHC_O_title:-}" ] || ghc_die "gh: --title is required when GraphQL is unavailable"
   labels="${GHC_O_label:-}"
@@ -1157,7 +1185,7 @@ ghc_issue_create() {
 ghc_issue_state() { # ghc_issue_state close|reopen ARGS...
   local verb="$1" n state=closed reason
   shift
-  ghc_parse "-R:repo --repo:repo -c:comment --comment:comment -r:reason --reason:reason" "" "$@"
+  ghc_parse "$(ghc_vspec issue close)" "" "$@"
   ghc_resolve_repo
   ghc_issue_target "${GHC_POS[0]:-}"; n="$GHC_N"
   [ "$verb" = reopen ] && state=open
@@ -1170,7 +1198,7 @@ ghc_issue_state() { # ghc_issue_state close|reopen ARGS...
 
 ghc_issue_edit() {
   local n patch bf
-  ghc_parse "-R:repo --repo:repo -t:title --title:title -b:body --body:body -F:body_file --body-file:body_file --add-label:add_label --remove-label:remove_label --add-assignee:assignee" "" "$@"
+  ghc_parse "$(ghc_vspec issue edit)" "" "$@"
   ghc_resolve_repo
   ghc_issue_target "${GHC_POS[0]:-}"; n="$GHC_N"
   patch="$(jq -n --arg t "${GHC_O_title:-}" '{} + (if $t != "" then {title: $t} else {} end)')" || ghc_jq_fail
@@ -1186,7 +1214,7 @@ ghc_issue_edit() {
 
 ghc_label_list() {
   local limit out
-  ghc_parse "$GHC_COMMON_V -L:limit --limit:limit -S:search --search:search --sort:sort --order:order" "" "$@"
+  ghc_parse "$(ghc_vspec label list)" "" "$@"
   ghc_resolve_repo
   limit="${GHC_O_limit:-30}"
   case "$limit" in ''|*[!0-9]*|0) ghc_die "invalid value for --limit: ${limit}" ;; esac
@@ -1334,33 +1362,54 @@ ghc_url_host() {
   esac
 }
 
-# ghc_target_host ARGS... — the host this call is aimed at. Every argument is
-# looked at, with no guessing about which are flag values: any URL, a
-# -R/--repo HOST/OWNER/REPO, --hostname, GH_REPO or GH_HOST naming a host other
-# than github.com makes that the host (and REST mode then refuses it). With
-# none of those, the origin remote decides.
+# ghc_target_host GROUP VERB ARGS... — the host this call is aimed at. Only
+# repository-bearing inputs count: -R/--repo (HOST/OWNER/REPO or a URL),
+# --hostname, GH_REPO, and positional arguments shaped like a repository, issue
+# or pull request URL. Flag values are skipped using the command's own table
+# (ghc_vspec), so a body, title, search term or --jq that begins with a URL is
+# data and never selects a host. Any of these naming a host other than
+# github.com makes that the host (REST mode then refuses it); otherwise
+# GH_HOST, then the origin remote, decides.
 ghc_target_host() {
-  local prev="" a h="" v
-  for a in "$@" "--repo=${GH_REPO:-}"; do
-    v=""
-    case "$prev" in -R|--repo|--hostname) v="$a" ;; esac
+  local vspec a v h
+  vspec=" $(ghc_vspec "${1:-}" "${2:-}") "
+  shift 2
+  set -- "$@" "--repo=${GH_REPO:-}"
+  while [ $# -gt 0 ]; do
+    a="$1"; shift; v=""
     case "$a" in
-      --repo=*|--hostname=*) v="${a#*=}" ;;
+      --) while [ $# -gt 0 ]; do ghc_positional_host "$1" && return 0; shift; done; break ;;
+      --repo=*) v="${a#*=}" ;;
+      --hostname=*) v="https://${a#*=}/" ;;
       -R?*) v="${a#-R}"; v="${v#=}" ;;
-      http://*|https://*) v="$a" ;;
+      -*=*) ;;
+      -*)
+        case "$vspec" in
+          *" $a:"*)
+            case "$a" in -R|--repo) v="${1-}" ;; --hostname|-h) v="https://${1-}/" ;; esac
+            [ $# -eq 0 ] || shift ;;
+        esac ;;
+      *) ghc_positional_host "$a" && return 0; continue ;;
     esac
-    case "$prev" in --hostname) v="https://${v}/" ;; esac
-    case "$a" in --hostname=*) v="https://${v}/" ;; esac
     case "$v" in
       *://*) h="$(ghc_url_host "$v")" ;;
       */*/*) h="$(ghc_url_host "https://${v%%/*}/")" ;;
       *) h="" ;;
     esac
     if [ -n "$h" ] && [ "$h" != github.com ]; then printf '%s\n' "$h"; return 0; fi
-    prev="$a"
   done
   if [ -n "${GH_HOST:-}" ]; then ghc_url_host "https://${GH_HOST}/"; return 0; fi
   ghc_url_host "$(git remote get-url origin 2>/dev/null)"
+}
+
+# ghc_positional_host ARG — prints the host and succeeds when ARG is a
+# repository, issue or pull request URL on a host other than github.com.
+ghc_positional_host() {
+  local h
+  [[ "$1" =~ ^https?://[^/]+/[^/]+/[^/]+(/(pull|pulls|issues)/[0-9]+([/#?].*)?)?/?$ ]] || return 1
+  h="$(ghc_url_host "$1")"
+  [ "$h" != github.com ] || return 1
+  printf '%s\n' "$h"
 }
 
 # ghc_wants_help ARGS... — -h/--help anywhere before "--": gh answers offline.
@@ -1429,7 +1478,7 @@ ghc_main() {
     *) if ghc_wants_help "$@"; then exec "$GHC_REAL" "$@"; fi ;;
   esac
   command -v jq >/dev/null 2>&1 || exec "$GHC_REAL" "$@"
-  GHC_HOST="$(ghc_target_host "$@")"
+  GHC_HOST="$(ghc_target_host "${1:-}" "${2:-}" "${@:3}")"
   ghc_init_state; ghc_key_state
   # Private per-invocation scratch (REST error/status hand-off, request bodies,
   # JSON hand-offs); never a predictable name in a shared TMPDIR.

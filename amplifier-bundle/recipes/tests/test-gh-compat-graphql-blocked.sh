@@ -25,8 +25,9 @@
 #   7. --json fields are validated as gh does and never read as a silent null;
 #      sub-lists read every page; results over 128 KiB come back whole;
 #      closedByPullRequestsReferences is derived; unsupported flags fail.
-#   8. Another host (a URL anywhere in argv, HOST/OWNER/REPO, --hostname, GHE
-#      remote, GH_HOST) is never answered from github.com.
+#   8. Another host (a positional repo/issue/PR URL, HOST/OWNER/REPO,
+#      --hostname, GHE remote, GH_HOST) is never answered from github.com; a
+#      URL inside a body, title or search is data and selects no host.
 #
 # Never touches the network: the "real" gh is a stub that records its argv.
 # Usage: bash amplifier-bundle/recipes/tests/test-gh-compat-graphql-blocked.sh
@@ -854,6 +855,36 @@ fresh; AMPLIHACK_GH_COMPAT_PROBE_TIMEOUT=37 STUB_GRAPHQL_OK=1 gh pr view 42 >/de
 sleep 0.2
 [ "$(ps -eo args= | grep -c '^sleep 37$' || true)" = 0 ] || fail watcher "a probe left its watcher's sleep running"
 ok "the probe's timeout watcher leaves no process behind"
+
+# ---------------------------------------------------------------------------
+# Independent crusty review round 4, of 76587c19 (PR comment 5841827808).
+# ---------------------------------------------------------------------------
+
+# 57. free-text-url-argument-selects-target-host: a body, title or search term
+#     that begins with a URL is data. It selects no host, triggers no probe of
+#     that host, and the call proceeds (the round-3 GHE URL targets in 52 stay
+#     refused).
+u="https://ghe.example.invalid/x"
+fresh; : > "$AMPLIHACK_GH_COMPAT_STATE"
+for args in "--body $u" "-b $u" "--title $u" "--body=$u"; do
+  reset_log
+  # shellcheck disable=SC2086  # word-split on purpose: flag and value.
+  gh issue create -t T $args >/dev/null 2>&1 || true
+  [ "$(grep -c '^api -X POST repos/o/r/issues ' "$STUB_LOG")" = 1 ] || fail free-text "'issue create $args' did not POST: $(cat "$STUB_LOG")"
+  logged_prefix "api graphql --hostname" && fail free-text "'$args' probed a foreign host"
+done
+reset_log
+gh issue list --search "$u" --json number >/dev/null 2>&1 || fail free-text "issue list --search '$u' failed"
+logged_prefix "api graphql --hostname" && fail free-text "a search term probed a foreign host"
+logged_prefix "api -X GET repos/o/r/issues" || fail free-text "issue list --search '$u' made no REST call"
+# step-03's own call shape, with a task description that begins with a URL.
+TASK_DESC="$u is broken"
+ISSUE_BODY="$(printf '## Task Description\n%s\n' "$TASK_DESC")"
+reset_log
+out="$(gh issue create --title "$TASK_DESC" --body "$ISSUE_BODY" --label workflow:default 2>&1)" || fail free-text "step-03 create with a URL-leading task failed: $out"
+[ "$out" = "https://github.com/o/r/issues/8" ] || fail free-text "step-03 create printed '$out'"
+logged_prefix "api -X POST repos/o/r/issues" || fail free-text "step-03 create made no REST POST"
+ok "a URL at the start of a body, title or search is data, not a target host"
 
 # 51. stale-test-contract-header: the contract above describes the probe, not
 #     the removed stderr follower or a first real-gh attempt.
