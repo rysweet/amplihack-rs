@@ -51,9 +51,11 @@ fn native_reasoner_backend_propagates_shared_env_context() {
         env::set_var("AMPLIHACK_MAX_SESSIONS", "12");
     }
 
-    let output = NativeReasonerBackend::Claude(reasoner)
-        .complete("inspect")
-        .unwrap();
+    let output = NativeReasonerBackend::Claude(reasoner, || {
+        amplihack_utils::root_sandbox::SkipPermissionsEnv::NotRoot
+    })
+    .complete("inspect")
+    .unwrap();
 
     restore_cwd(&previous_cwd).unwrap();
     restore_var("AMPLIHACK_HOME", prev_home);
@@ -5282,4 +5284,34 @@ fn tui_reasoner_panel_shows_the_root_sandbox_notice() {
     let panel = tui_actions::reasoner_status_notice("vm-1", "s-1", Some("diag"), None).unwrap();
     assert_eq!(panel.message, "diag");
     assert!(tui_actions::reasoner_status_notice("vm-1", "s-1", None, None).is_none());
+}
+
+/// The calls in `NativeReasonerBackend::complete` and `root_sandbox_notice`
+/// use the backend's decision: a refusal stops `complete` before anything is
+/// spawned, and an automatic enable produces the notice.
+#[test]
+fn claude_backend_uses_its_root_sandbox_decision() {
+    use amplihack_utils::root_sandbox::SkipPermissionsEnv;
+
+    let missing = PathBuf::from("/nonexistent/amplihack-1482/claude");
+    let refused =
+        NativeReasonerBackend::Claude(missing.clone(), || SkipPermissionsEnv::RootOutsideSandbox);
+    let error = refused
+        .complete("inspect")
+        .expect_err("refused before spawning");
+    assert!(error.to_string().contains("IS_SANDBOX=1"), "{error:#}");
+    assert_eq!(refused.root_sandbox_notice(), None);
+
+    let enabled =
+        NativeReasonerBackend::Claude(missing.clone(), || SkipPermissionsEnv::SetSandbox {
+            signal: "/.dockerenv",
+        });
+    let notice = enabled
+        .root_sandbox_notice()
+        .expect("an automatic enable is announced");
+    assert!(notice.contains("/.dockerenv") && notice.contains("IS_SANDBOX=0"));
+
+    let quiet = NativeReasonerBackend::Claude(missing, || SkipPermissionsEnv::NotRoot);
+    assert_eq!(quiet.root_sandbox_notice(), None);
+    assert_eq!(NativeReasonerBackend::None.root_sandbox_notice(), None);
 }

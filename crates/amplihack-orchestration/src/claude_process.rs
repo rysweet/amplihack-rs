@@ -230,12 +230,31 @@ pub trait ProcessRunner: Send + Sync + 'static {
 }
 
 /// Production runner that spawns the agent CLI via `tokio::process`.
-#[derive(Default, Debug, Clone)]
-pub struct TokioProcessRunner;
+#[derive(Debug, Clone)]
+pub struct TokioProcessRunner {
+    /// Issue #1482: the root-sandbox decision for a bare `claude` child;
+    /// [`amplihack_utils::root_sandbox::detect`] outside tests.
+    root_sandbox: fn() -> amplihack_utils::root_sandbox::SkipPermissionsEnv,
+}
+
+impl Default for TokioProcessRunner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl TokioProcessRunner {
     pub fn new() -> Self {
-        Self
+        Self {
+            root_sandbox: amplihack_utils::root_sandbox::detect,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_root_sandbox(
+        root_sandbox: fn() -> amplihack_utils::root_sandbox::SkipPermissionsEnv,
+    ) -> Self {
+        Self { root_sandbox }
     }
 
     pub async fn run_with_prompt_delivery_for_test<I, S>(
@@ -317,11 +336,7 @@ impl ProcessRunner for TokioProcessRunner {
         if let Some(dir) = &opts.working_dir {
             delivered.command.current_dir(dir);
         }
-        if let Err(e) = apply_root_sandbox(
-            program,
-            &mut delivered.command,
-            amplihack_utils::root_sandbox::detect,
-        ) {
+        if let Err(e) = apply_root_sandbox(program, &mut delivered.command, self.root_sandbox) {
             return ProcessResult::err(e.to_string(), opts.process_id, start.elapsed());
         }
 
@@ -613,6 +628,27 @@ mod tests {
             assert!(error.to_string().contains("IS_SANDBOX=1"), "{error}");
             assert_eq!(command_is_sandbox(&command), None);
         }
+    }
+
+    /// The call in `TokioProcessRunner::run`: a bare `claude` child is refused
+    /// before it is spawned when Claude Code would refuse the flag.
+    #[tokio::test]
+    async fn runner_refuses_a_bare_claude_before_spawning() {
+        if std::env::var_os("AMPLIHACK_DELEGATE").is_some() {
+            // The delegate would not be a bare `claude`; nothing to check here.
+            return;
+        }
+        let runner = TokioProcessRunner::with_root_sandbox(|| {
+            amplihack_utils::root_sandbox::SkipPermissionsEnv::RootOutsideSandbox
+        });
+        let result = runner
+            .run(RunOptions::new("hello".to_string(), "p-1482".to_string()))
+            .await;
+        assert_ne!(result.exit_code, 0);
+        assert!(
+            result.stderr.contains("IS_SANDBOX=1"),
+            "refused before the spawn with the IS_SANDBOX=1 message: {result:?}"
+        );
     }
 
     #[test]

@@ -110,6 +110,50 @@ pub fn run_recipe(
     working_dir: Option<&str>,
     step_timeout: Option<u64>,
 ) -> Result<()> {
+    run_recipe_with(
+        recipe_path,
+        context_args,
+        dry_run,
+        verbose,
+        format,
+        working_dir,
+        step_timeout,
+        &RootSandboxPreflight::live(),
+        &mut io::stderr(),
+    )
+}
+
+/// Where the issue #1482 pre-flight gets the agent binary and the
+/// root-sandbox decision; injected so tests reach the call in
+/// [`run_recipe_with`] whatever uid and configuration they run under.
+pub(crate) struct RootSandboxPreflight {
+    pub(crate) agent_binary: fn() -> String,
+    pub(crate) decision: fn() -> amplihack_utils::root_sandbox::SkipPermissionsEnv,
+}
+
+impl RootSandboxPreflight {
+    fn live() -> Self {
+        Self {
+            agent_binary: crate::env_builder::active_agent_binary,
+            decision: amplihack_utils::root_sandbox::detect,
+        }
+    }
+}
+
+/// [`run_recipe`] with the root-sandbox pre-flight's inputs injected and its
+/// output (the notice, or the refusal) written to `preflight_out`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_recipe_with(
+    recipe_path: &str,
+    context_args: &[String],
+    dry_run: bool,
+    verbose: bool,
+    format: &str,
+    working_dir: Option<&str>,
+    step_timeout: Option<u64>,
+    preflight: &RootSandboxPreflight,
+    preflight_out: &mut dyn Write,
+) -> Result<()> {
     let format = OutputFormat::parse(format)?;
     let (context, errors) = parse_context_args(context_args);
     if !errors.is_empty() {
@@ -141,12 +185,12 @@ pub fn run_recipe(
     if !dry_run
         && let Err(error) = preflight_root_sandbox(
             &recipe,
-            &crate::env_builder::active_agent_binary(),
-            &amplihack_utils::root_sandbox::detect(),
-            &mut io::stderr(),
+            &(preflight.agent_binary)(),
+            &(preflight.decision)(),
+            preflight_out,
         )
     {
-        writeln!(io::stderr(), "Error: {error}")?;
+        writeln!(preflight_out, "Error: {error}")?;
         return Err(exit_error(1));
     }
     let search_dirs = build_search_dirs(&validated_path, &abs_working_dir)?;

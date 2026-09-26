@@ -139,3 +139,50 @@ fn nothing_is_announced_unless_amplihack_enables_it_for_agent_steps() {
         assert!(notices.is_empty(), "{binary} {decision:?}");
     }
 }
+
+// --- the call in run_recipe_with ------------------------------------------
+
+fn agent_recipe_file(dir: &std::path::Path) -> String {
+    let path = dir.join("probe.yaml");
+    std::fs::write(&path, format!("name: probe\nsteps:\n{AGENT_STEP}")).unwrap();
+    path.display().to_string()
+}
+
+fn claude() -> String {
+    "claude".to_string()
+}
+
+#[test]
+fn recipe_run_stops_before_the_runner_when_claude_would_refuse() {
+    let dir = tempfile::tempdir().unwrap();
+    let recipe_path = agent_recipe_file(dir.path());
+    for decision in [
+        (|| SkipPermissionsEnv::RootOutsideSandbox) as fn() -> SkipPermissionsEnv,
+        || SkipPermissionsEnv::ExplicitlyNotSandboxed {
+            value: "0".to_string(),
+        },
+    ] {
+        let mut out = Vec::new();
+        let result = run_recipe_with(
+            &recipe_path,
+            &[],
+            false,
+            false,
+            "table",
+            Some(&dir.path().display().to_string()),
+            None,
+            &RootSandboxPreflight {
+                agent_binary: claude,
+                decision,
+            },
+            &mut out,
+        );
+        assert!(result.is_err(), "the run must stop");
+        let out = String::from_utf8(out).unwrap();
+        assert!(
+            out.contains("Error: recipe pre-flight failed for 'probe'"),
+            "{out}"
+        );
+        assert!(out.contains("IS_SANDBOX=1"), "{out}");
+    }
+}
