@@ -200,9 +200,28 @@ pub fn format_agent_memory_context(
         // contribute topic words: in a transcript where the user wrote
         // another language and the assistant answered in English, the
         // user's function words must not count.
-        let memory_terms = memory_topic_terms(strip_agent_prefix(&memory.content), &ignored);
-        let shared = prompt_terms.intersection(&memory_terms).count();
-        let relevance = memory_relevance(&prompt_terms, &memory_terms);
+        //
+        // A fence that seems to span a role label is ambiguous once a
+        // transcript is flattened: a pasted log inside one message (the
+        // label is content) or a stray fence line in one message pairing
+        // with a fence in the next (the label is a real turn boundary). The
+        // memory must be relevant under both readings, so neither can merge
+        // a non-English turn into an English one; without such a fence the
+        // two readings are the same.
+        let body = strip_agent_prefix(&memory.content);
+        let readings = [true, false].map(|respect_fences| {
+            let memory_terms: HashSet<String> = turns_with(body, respect_fences)
+                .iter()
+                .filter(|turn| reads_as_english(turn))
+                .flat_map(|turn| scored_terms(turn, &ignored))
+                .collect();
+            (
+                prompt_terms.intersection(&memory_terms).count(),
+                memory_relevance(&prompt_terms, &memory_terms),
+            )
+        });
+        let shared = readings[0].0.min(readings[1].0);
+        let relevance = readings[0].1.min(readings[1].1);
         if shared >= MIN_SHARED_TERMS && relevance >= RELEVANCE_THRESHOLD {
             seen.insert(text.clone());
             scored.push((relevance, text, memory));
@@ -492,27 +511,6 @@ fn without_labels(text: &str) -> String {
         paragraph_start = line.trim().is_empty();
     }
     masked
-}
-
-/// The topic words of a memory: those of its turns that read as English.
-///
-/// A fence that seems to span a role label is ambiguous once a transcript
-/// is flattened: it is either a pasted log inside one message (the label
-/// is content) or a stray fence line in one message pairing with a fence
-/// in the next (the label is a real turn boundary). Only the words both
-/// readings agree on count, so neither can merge a non-English turn into an
-/// English one. Without such a fence the two readings are the same.
-fn memory_topic_terms(text: &str, ignored: &HashSet<String>) -> HashSet<String> {
-    let terms_of = |turns: Vec<String>| -> HashSet<String> {
-        turns
-            .iter()
-            .filter(|turn| reads_as_english(turn))
-            .flat_map(|turn| scored_terms(turn, ignored))
-            .collect()
-    };
-    let fence_aware = terms_of(turns_with(text, true));
-    let fence_blind = terms_of(turns_with(text, false));
-    fence_aware.intersection(&fence_blind).cloned().collect()
 }
 
 /// `text` split into transcript turns, respecting fences (see
@@ -1693,6 +1691,19 @@ mod tests {
                 &[memory("Agent x: user: der Mann mit dem Hut hat den Bus verpasst, sagt man. Hier ist mein Code:\n```\nfn main()\n\nassistant: ```\nfn main() {}\n```\nThe man on the bus lost his hat, and the fix is to look for it at the bus depot.")]
             )
             .is_some()
+        );
+        // Both readings must find the memory relevant: dropping each
+        // reading's own words must not shrink the score's denominator.
+        let sqlite_prompt = "/fix the sqlite timeout on the release branch of the payments service";
+        assert_eq!(
+            format_agent_memory_context(
+                sqlite_prompt,
+                &prompt_agents(sqlite_prompt),
+                &[memory(
+                    "Agent x: assistant: The sqlite timeout is gone and it was the lock that we saw before. Here is the log:\n```\nder Mann mit dem Hut hat den Bus heute morgen wieder verpasst, weil er seinen Schirm suchte und dabei ganz vergessen hatte\n\nuser: fixed\n```\nkafka parquet grafana vault terraform helm redis nginx prometheus cron ingest webhook oauth"
+                )]
+            ),
+            None
         );
         // A message that starts with a fence still ends where it ends.
         assert_eq!(
