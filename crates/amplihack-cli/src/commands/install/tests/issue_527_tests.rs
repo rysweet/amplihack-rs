@@ -98,6 +98,7 @@ fn with_install_env<R>(f: impl FnOnce(&Path, &Path) -> R) -> R {
     let prev_path = std::env::var_os("PATH");
     let prev_skip = std::env::var_os("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL");
     let prev_rr_path = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+    let prev_cargo_home = std::env::var_os("CARGO_HOME");
     // Locate /usr/bin/sh + /usr/bin (cargo-install needs basic tools); we
     // include them but deliberately exclude any directory that may already
     // contain a real recipe-runner-rs (~/.cargo/bin, ~/.local/bin) so the
@@ -117,6 +118,8 @@ fn with_install_env<R>(f: impl FnOnce(&Path, &Path) -> R) -> R {
         // Make sure no leaked RECIPE_RUNNER_RS_PATH from a prior test
         // accidentally satisfies the present-check.
         std::env::remove_var("RECIPE_RUNNER_RS_PATH");
+        // $CARGO_HOME/bin is probed too; CI sets CARGO_HOME to a real one.
+        std::env::remove_var("CARGO_HOME");
     }
 
     let result = f(temp.path(), &bin_dir);
@@ -137,6 +140,9 @@ fn with_install_env<R>(f: impl FnOnce(&Path, &Path) -> R) -> R {
         }
         if let Some(v) = prev_rr_path {
             std::env::set_var("RECIPE_RUNNER_RS_PATH", v);
+        }
+        if let Some(v) = prev_cargo_home {
+            std::env::set_var("CARGO_HOME", v);
         }
     }
     crate::test_support::restore_home(previous_home);
