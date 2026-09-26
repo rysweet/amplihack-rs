@@ -732,38 +732,85 @@ fn report_inferred_agent_binary(
     binary: &str,
     source: amplihack_utils::agent_binary::ResolutionSource,
 ) {
-    let inherited_guess = amplihack_utils::agent_binary::inherited_binary_is_default_guess();
-    if let Some(notice) = inferred_agent_binary_notice(binary, source, inherited_guess) {
+    use amplihack_utils::agent_binary::{
+        BINARY_ENV, inherited_binary_is_default_guess, validate_binary_name,
+    };
+    let env_value = if inherited_binary_is_default_guess() {
+        EnvBinaryValue::InheritedGuess
+    } else {
+        match std::env::var_os(BINARY_ENV) {
+            None => EnvBinaryValue::Unset,
+            Some(raw) => match raw.to_str().and_then(validate_binary_name) {
+                Some(_) => EnvBinaryValue::Usable,
+                None => EnvBinaryValue::Rejected,
+            },
+        }
+    };
+    if let Some(notice) = inferred_agent_binary_notice(binary, source, env_value) {
         eprintln!("{notice}");
     }
+}
+
+/// What `AMPLIHACK_AGENT_BINARY` held when recipe run resolved, as far as the
+/// stderr notice needs to know.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum EnvBinaryValue {
+    /// Not set.
+    Unset,
+    /// Set to an allowlisted name the resolver would use.
+    Usable,
+    /// Set, but tagged as a parent's default guess for the same binary.
+    InheritedGuess,
+    /// Set, but not an allowlisted name (empty, a typo, a path...).
+    Rejected,
 }
 
 /// The notice [`report_inferred_agent_binary`] prints, or `None` when the
 /// binary was observed rather than inferred.
 ///
-/// `inherited_guess` is true when `AMPLIHACK_AGENT_BINARY` was present but
-/// tagged as a parent's default guess. The resolver skips such a value, so
-/// saying none was found would be wrong, and setting the same value again does
-/// not help while the tag still names it.
+/// The reason must match what the user did. A tagged inherited guess is
+/// skipped by the resolver, and setting the same value again does not help
+/// while the tag still names it. A rejected value was set, just not to
+/// anything usable; the resolver's own warning about it is hidden at the
+/// default tracing filter. The rejected value itself is never echoed.
 pub(super) fn inferred_agent_binary_notice(
     binary: &str,
     source: amplihack_utils::agent_binary::ResolutionSource,
-    inherited_guess: bool,
+    env_value: EnvBinaryValue,
 ) -> Option<String> {
     use amplihack_utils::agent_binary::{ResolutionSource, SOURCE_ENV};
-    let why = match source {
-        ResolutionSource::Env | ResolutionSource::SessionMarker => return None,
-        ResolutionSource::LauncherContext => "read from .claude/runtime/launcher_context.json",
-        ResolutionSource::Default if inherited_guess => {
+    const REJECTED: &str = "AMPLIHACK_AGENT_BINARY is set but is not one of amplifier, \
+                            claude, codex or copilot";
+    let why = match (source, env_value) {
+        (ResolutionSource::Env | ResolutionSource::SessionMarker, _) => return None,
+        (ResolutionSource::LauncherContext, EnvBinaryValue::Rejected) => {
+            format!("{REJECTED}; read from .claude/runtime/launcher_context.json")
+        }
+        (ResolutionSource::LauncherContext, _) => {
+            "read from .claude/runtime/launcher_context.json".to_string()
+        }
+        (ResolutionSource::Default, EnvBinaryValue::InheritedGuess) => {
             "AMPLIHACK_AGENT_BINARY was inherited as a parent's default guess and no \
              agent session marker was found"
+                .to_string()
         }
-        ResolutionSource::Default => "no AMPLIHACK_AGENT_BINARY or agent session marker was found",
+        (ResolutionSource::Default, EnvBinaryValue::Rejected) => {
+            format!("{REJECTED}, and no agent session marker was found")
+        }
+        (ResolutionSource::Default, _) => {
+            "no AMPLIHACK_AGENT_BINARY or agent session marker was found".to_string()
+        }
     };
-    let how = if inherited_guess {
-        format!("Set AMPLIHACK_AGENT_BINARY and unset {SOURCE_ENV} to choose an agent CLI.")
-    } else {
-        "Set AMPLIHACK_AGENT_BINARY to choose a different agent CLI.".to_string()
+    let how = match env_value {
+        EnvBinaryValue::InheritedGuess => {
+            format!("Set AMPLIHACK_AGENT_BINARY and unset {SOURCE_ENV} to choose an agent CLI.")
+        }
+        EnvBinaryValue::Rejected => "Set AMPLIHACK_AGENT_BINARY to one of amplifier, claude, \
+                                     codex or copilot to choose an agent CLI."
+            .to_string(),
+        EnvBinaryValue::Unset | EnvBinaryValue::Usable => {
+            "Set AMPLIHACK_AGENT_BINARY to choose a different agent CLI.".to_string()
+        }
     };
     Some(format!(
         "amplihack: agent steps will run under '{binary}' ({why}). {how}"
@@ -1667,15 +1714,22 @@ fn git_run(dir: &Path, args: &[&str]) -> bool {
 
 #[cfg(test)]
 mod inferred_agent_binary_notice_tests {
-    use super::inferred_agent_binary_notice;
+    use super::{EnvBinaryValue, inferred_agent_binary_notice};
     use amplihack_utils::agent_binary::ResolutionSource;
+
+    const ALL: [EnvBinaryValue; 4] = [
+        EnvBinaryValue::Unset,
+        EnvBinaryValue::Usable,
+        EnvBinaryValue::InheritedGuess,
+        EnvBinaryValue::Rejected,
+    ];
 
     #[test]
     fn an_observed_binary_needs_no_notice() {
         for source in [ResolutionSource::Env, ResolutionSource::SessionMarker] {
-            for inherited_guess in [false, true] {
+            for env_value in ALL {
                 assert_eq!(
-                    inferred_agent_binary_notice("claude", source, inherited_guess),
+                    inferred_agent_binary_notice("claude", source, env_value),
                     None
                 );
             }
@@ -1684,8 +1738,12 @@ mod inferred_agent_binary_notice_tests {
 
     #[test]
     fn a_default_with_nothing_inherited_says_nothing_was_found() {
-        let notice =
-            inferred_agent_binary_notice("copilot", ResolutionSource::Default, false).unwrap();
+        let notice = inferred_agent_binary_notice(
+            "copilot",
+            ResolutionSource::Default,
+            EnvBinaryValue::Unset,
+        )
+        .unwrap();
         assert!(notice.contains("'copilot'"), "{notice}");
         assert!(
             notice.contains("no AMPLIHACK_AGENT_BINARY or agent session marker was found"),
@@ -1701,8 +1759,12 @@ mod inferred_agent_binary_notice_tests {
     /// found sends the user to set a value that the tag would still veto.
     #[test]
     fn a_default_over_an_inherited_guess_names_the_tag() {
-        let notice =
-            inferred_agent_binary_notice("copilot", ResolutionSource::Default, true).unwrap();
+        let notice = inferred_agent_binary_notice(
+            "copilot",
+            ResolutionSource::Default,
+            EnvBinaryValue::InheritedGuess,
+        )
+        .unwrap();
         assert!(
             !notice.contains("no AMPLIHACK_AGENT_BINARY"),
             "the variable was present: {notice}"
@@ -1714,11 +1776,29 @@ mod inferred_agent_binary_notice_tests {
         );
     }
 
+    /// Quality-audit cycle 6 S1: a value outside the allowlist was set, so
+    /// "none was found" is wrong; say it was rejected and list what is valid.
+    #[test]
+    fn a_rejected_value_is_named_as_rejected() {
+        for source in [ResolutionSource::Default, ResolutionSource::LauncherContext] {
+            let notice =
+                inferred_agent_binary_notice("copilot", source, EnvBinaryValue::Rejected).unwrap();
+            assert!(!notice.contains("no AMPLIHACK_AGENT_BINARY"), "{notice}");
+            assert!(
+                notice.contains("is set but is not one of amplifier, claude, codex or copilot"),
+                "{notice}"
+            );
+        }
+    }
+
     #[test]
     fn a_launcher_context_answer_names_the_file() {
-        let notice =
-            inferred_agent_binary_notice("codex", ResolutionSource::LauncherContext, false)
-                .unwrap();
+        let notice = inferred_agent_binary_notice(
+            "codex",
+            ResolutionSource::LauncherContext,
+            EnvBinaryValue::Unset,
+        )
+        .unwrap();
         assert!(notice.contains("launcher_context.json"), "{notice}");
     }
 }

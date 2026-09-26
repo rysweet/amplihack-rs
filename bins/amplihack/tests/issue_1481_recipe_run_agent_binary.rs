@@ -209,6 +209,24 @@ fn a_stale_tag_does_not_veto_a_binary_set_after_it() {
     assert_eq!(handed(&probe), ("codex", "<unset>"));
 }
 
+/// A value outside the allowlist is rejected, and the run falls back to the
+/// default. The notice must say the value was rejected, not that none was
+/// found, and must not echo it.
+#[test]
+fn a_rejected_value_is_reported_as_rejected() {
+    let fx = Fixture::new();
+    let (output, probe) = fx.run(&[("AMPLIHACK_AGENT_BINARY", "claude-code")]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(handed(&probe), ("copilot", "default:copilot"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("is set but is not one of amplifier, claude, codex or copilot")
+            && !stderr.contains("no AMPLIHACK_AGENT_BINARY")
+            && !stderr.contains("claude-code"),
+        "{stderr}"
+    );
+}
+
 /// An explicit choice still beats everything, and is not tagged.
 #[test]
 fn an_explicit_binary_wins_and_is_not_tagged() {

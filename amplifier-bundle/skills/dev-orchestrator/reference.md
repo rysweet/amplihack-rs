@@ -18,7 +18,7 @@ LOG_FILE=$(mktemp /tmp/recipe-runner-output.XXXXXX.log)
 chmod 600 "$LOG_FILE"
 tmux new-session -d -s recipe-runner \
   "cd /path/to/repo && AMPLIHACK_HOME=/path/to/amplihack \
-   AMPLIHACK_AGENT_BINARY=<your agent CLI: claude, copilot, codex or amplifier> \
+   AMPLIHACK_AGENT_BINARY=claude \
    amplihack recipe run amplifier-bundle/recipes/smart-orchestrator.yaml \
      -c task_description='TASK_DESCRIPTION_HERE' \
      -c repo_path='.' \
@@ -27,7 +27,8 @@ echo "Recipe runner log: $LOG_FILE"
 ```
 
 - `chmod 600 "$LOG_FILE"` — keeps the log file private
-- `AMPLIHACK_AGENT_BINARY=...` — required here: once a tmux server is running,
+- `AMPLIHACK_AGENT_BINARY=claude` — use the agent CLI you are in (`claude`,
+  `copilot`, `codex` or `amplifier`). Required here: once a tmux server is running,
   `tmux new-session` gives the command that server's environment, not yours.
   The markers that tell `amplihack recipe run` which agent CLI you are in then
   do not reach it. The first run, which starts the server, still sees them, so
