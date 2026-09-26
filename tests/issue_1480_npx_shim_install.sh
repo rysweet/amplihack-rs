@@ -19,6 +19,8 @@
 #   4. The sh shim `pnpm dlx` writes for our wrapper: transient too (#1496).
 #   5. The persistent `npm install -g` launcher for our wrapper: install
 #      completes and the advisory says the npm launcher wins (#1496).
+#   6. Case 5 in the PATH shape `amplihack update` uses to re-run install:
+#      the ambiguity advisory explains the launcher too, never "stale".
 #
 # Usage: AMPLIHACK_BIN=/path/to/amplihack bash tests/issue_1480_npx_shim_install.sh
 # (defaults to the `amplihack` on PATH). CI runs it in the Install Smoke Test
@@ -90,9 +92,10 @@ make_npm_global_layout() {
   printf '%s\n' "$prefix/bin"
 }
 
-# run_install HOME PATH OUTFILE -> install's exit status.
+# run_install HOME PATH OUTFILE [ENV=VALUE...] -> install's exit status.
 run_install() {
   local home="$1" path="$2" out="$3" status=0
+  shift 3
   mkdir -p "$home/work"
   (
     cd "$home/work"
@@ -103,6 +106,7 @@ run_install() {
       AMPLIHACK_SKIP_MMDC=1 \
       AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH="$STUBS/amplihack-hooks" \
       RECIPE_RUNNER_RS_PATH="$STUBS/recipe-runner-rs" \
+      "$@" \
       "$BIN" install --local "$ROOT"
   ) > "$out" 2>&1 || status=$?
   return "$status"
@@ -225,6 +229,23 @@ if [[ -L "$global_bin/amplihack" ]]; then
   pass "npm -g launcher left in place"
 else
   fail "npm -g launcher was moved or deleted"
+fi
+
+# --- 6. same launcher, but in the shape `amplihack update` re-runs install:
+#        ~/.local/bin moved first, original PATH in AMPLIHACK_REPAIR_ORIGINAL_PATH.
+home="$TMP/case6"
+mkdir -p "$home/.local/bin"
+global_bin="$(make_npm_global_layout "$TMP/case6-prefix" "$ROOT/npm/bin/amplihack.js")"
+out="$TMP/case6.log"
+status=0
+run_install "$home" "$home/.local/bin:$global_bin:$SYSTEM_PATH" "$out" \
+  AMPLIHACK_REPAIR_ORIGINAL_PATH="$global_bin:$home/.local/bin:$SYSTEM_PATH" || status=$?
+if [[ "$status" -eq 0 ]] && grep -qF "npm uninstall -g @rysweet/amplihack-rs" "$out" \
+  && ! grep -qF "Remove stale candidates" "$out"; then
+  pass "update-shaped install explains the npm launcher, never calls it stale"
+else
+  fail "update-shaped install mis-describes the npm launcher (exit $status)"
+  cat "$out" >&2
 fi
 
 if [[ "$failures" -ne 0 ]]; then

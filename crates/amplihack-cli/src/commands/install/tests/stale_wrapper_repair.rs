@@ -859,3 +859,35 @@ fn issue_1496_sh_shim_with_missing_target_is_unknown() {
         StaleWrapperRepairError::UnknownShadowingExecutable { .. }
     ));
 }
+
+/// `amplihack update` re-runs install with `~/.local/bin` moved first, so a
+/// persistent launcher shows up as an ambiguity rather than a shadow. That
+/// branch must give the same explanation, never "remove stale candidates".
+#[cfg(unix)]
+#[test]
+fn issue_1496_ambiguity_advisory_explains_the_persistent_npm_launcher() {
+    use crate::path_conflicts::{PathAnalysisInput, analyze_path_conflicts};
+
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let preferred_bin = home.join(".local/bin");
+    let preferred_rust = create_exe_stub(&preferred_bin, "amplihack");
+    let (bin, _shim) = create_npm_global_shim(&temp.path().join("usr/local"), WRAPPER_JS);
+
+    let report = analyze_path_conflicts(&PathAnalysisInput {
+        home_dir: home.clone(),
+        current_exe: preferred_rust,
+        path_dirs: vec![preferred_bin, bin],
+        binary_names: vec!["amplihack".into()],
+    })
+    .unwrap();
+
+    let warning = super::super::binary::path_conflict_warning_after_install(&report)
+        .expect("two distinct amplihack binaries are still an ambiguity");
+    assert!(warning.contains("npm launcher"), "{warning}");
+    assert!(
+        warning.contains("npm uninstall -g @rysweet/amplihack-rs"),
+        "{warning}"
+    );
+    assert!(!warning.contains("Remove stale candidates"), "{warning}");
+}

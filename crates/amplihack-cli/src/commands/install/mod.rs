@@ -410,8 +410,12 @@ fn local_install(
         }
         for launcher in &repair.persistent_npm_launchers {
             println!(
-                "  ℹ️  Leaving this package's npm launcher {} in place; it stays ahead of {} on PATH (see the PATH notice above).",
+                "  ℹ️  Leaving this package's npm launcher {} in place. It comes before {} on PATH, so `amplihack` runs through the npm wrapper (its own cached release binary).",
                 launcher.display(),
+                preferred_amplihack.display()
+            );
+            println!(
+                "     To use {} instead: npm uninstall -g @rysweet/amplihack-rs, or export PATH=\"$HOME/.local/bin:$PATH\"",
                 preferred_amplihack.display()
             );
         }
