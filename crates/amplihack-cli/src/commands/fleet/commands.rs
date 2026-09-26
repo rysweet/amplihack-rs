@@ -236,8 +236,11 @@ pub(super) fn run_dry_run(vm_names: &[String], priorities: &str, backend: &str) 
         return Ok(());
     }
 
-    let backend = NativeReasonerBackend::detect(backend)?;
-    let mut reasoner = FleetSessionReasoner::new(azlin, backend);
+    let mut reasoner = cli_reasoner(
+        azlin,
+        NativeReasonerBackend::detect(backend)?,
+        &mut std::io::stderr(),
+    )?;
     println!();
     println!("Fleet Admiral Dry Run -- {} sessions", sessions.len());
     println!("Backend: {}", reasoner.backend_label());
