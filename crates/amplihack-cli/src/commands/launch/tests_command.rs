@@ -185,7 +185,9 @@ fn gateway_projection_is_the_final_environment_mutation() {
             &proxy_config,
             amplihack_utils::litellm_proxy::CliTarget::Claude,
         )),
-    );
+        None,
+    )
+    .unwrap();
 
     let command_env = |name: &str| {
         command

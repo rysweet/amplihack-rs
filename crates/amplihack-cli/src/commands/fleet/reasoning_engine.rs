@@ -7,6 +7,21 @@ pub(super) struct FleetSessionReasoner {
     pub(super) decisions: Vec<SessionDecision>,
 }
 
+/// Issue #1482: the reasoner for a fleet CLI command (dry-run, scout,
+/// advance). An automatic `IS_SANDBOX=1` for the reasoner's `claude` is
+/// announced on `out` (stderr) once, before any reasoning; the TUI shows it in
+/// its panel instead (`run_tui_dry_run_with`).
+pub(super) fn cli_reasoner(
+    azlin_path: PathBuf,
+    backend: NativeReasonerBackend,
+    out: &mut dyn std::io::Write,
+) -> Result<FleetSessionReasoner> {
+    if let Some(notice) = backend.root_sandbox_notice() {
+        writeln!(out, "{notice}")?;
+    }
+    Ok(FleetSessionReasoner::new(azlin_path, backend))
+}
+
 impl FleetSessionReasoner {
     pub(super) fn new(azlin_path: PathBuf, backend: NativeReasonerBackend) -> Self {
         Self {
