@@ -170,6 +170,10 @@ out="$(ask "@.claude/agents/amplihack/core/builder.md why does the auth middlewa
 if [ "$(count "${out}" "css grid")" -eq 0 ]; then pass "unrelated memory with the same reference left out"; else fail "css memory injected by its reference path: ${out}"; fi
 out="$(ask "@.claude/agents/amplihack/core/builder.md why do the css grid columns break on the landing page")"
 if [ "$(count "${out}" "tidied the css grid")" -eq 1 ]; then pass "on-topic prompt with the reference gets the memory"; else fail "relevant css memory missing: ${out}"; fi
+# Short and without English function words: it is judged too short to
+# tell, and so allowed, only while the reference's path words aren't counted.
+out="$(ask "@.claude/agents/amplihack/core/builder.md tidy css grid")"
+if [ "$(count "${out}" "tidied the css grid")" -eq 1 ]; then pass "short on-topic prompt with the reference gets the memory"; else fail "relevant css memory missing for a short prompt: ${out}"; fi
 
 echo
 echo "passed: ${PASS_COUNT}, failed: ${FAIL_COUNT}"

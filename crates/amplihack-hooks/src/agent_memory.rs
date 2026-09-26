@@ -5,15 +5,17 @@ use std::sync::OnceLock;
 
 /// An agent definition reference: `@` and a path to a `.md` file under a
 /// `.claude/agents/` directory, at any depth below it, optionally with a
-/// path before it (`@~/.amplihack/.claude/agents/…`). The `Include @…` form
+/// relative, `~` or absolute path before it (`@~/.amplihack/.claude/agents/…`,
+/// `@/home/me/proj/.claude/agents/…`). The `Include @…` form
 /// is covered too. The name is the file's own stem, one path component.
 const DEFINITION_REFERENCE_PATTERN: &str =
-    r"@(?:[~A-Za-z0-9_.-]+/)*\.claude/agents/(?:[A-Za-z0-9_-]+/)*([A-Za-z0-9_-]+)\.md";
+    r"@/?(?:[~A-Za-z0-9_.-]+/)*\.claude/agents/(?:[A-Za-z0-9_-]+/)*([A-Za-z0-9_-]+)\.md";
 
 const AGENT_REFERENCE_PATTERNS: &[&str] = &[
     DEFINITION_REFERENCE_PATTERN,
-    // `Use <name>.md agent`, with a capital `U`.
-    r"Use\s+([a-z-]+)\.md\s+agent",
+    // `Use <name>.md agent`, with a capital `U`; the name is a file stem,
+    // as in a definition reference.
+    r"Use\s+([A-Za-z0-9_-]+)\.md\s+agent",
 ];
 
 fn definition_reference_regex() -> &'static Regex {

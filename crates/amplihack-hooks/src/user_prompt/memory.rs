@@ -2052,6 +2052,26 @@ mod tests {
             prompt_agents("@~/.claude/agents/my-reviewer.md review the auth flow"),
             ["my-reviewer"]
         );
+        assert_eq!(
+            prompt_agents(
+                "@/home/me/proj/.claude/agents/amplihack/core/builder.md why does the auth middleware reject expired tokens"
+            ),
+            ["builder"]
+        );
+        assert_eq!(
+            prompt_agents("@/Users/me/.claude/agents/my-reviewer.md review the auth flow"),
+            ["my-reviewer"]
+        );
+        assert_eq!(
+            prompt_agents("/analyze @/home/me x.md and @//.claude/agents/x.md"),
+            ["analyzer"]
+        );
+        // `Use <name>.md agent` takes the same file stems as a reference.
+        assert_eq!(prompt_agents("Use agent2.md agent to review"), ["agent2"]);
+        assert_eq!(
+            prompt_agents("Use security_reviewer.md agent to review"),
+            ["security-reviewer"]
+        );
         // `Use <name>.md agent` needs its capital `U`.
         assert!(prompt_agents("use my-reviewer.md agent to review").is_empty());
     }
@@ -2072,16 +2092,45 @@ mod tests {
             None,
             "{unrelated:?} matched the memory by its reference path"
         );
-        let related = format!("{reference} why do the css grid columns break on the landing page");
-        let result = format_agent_memory_context(&related, &agents(&["builder"]), &[memory(&css)])
-            .expect("an on-topic prompt with the same reference still gets the memory");
-        assert!(result.contains("tidied the css grid"));
+        for related in [
+            format!("{reference} why do the css grid columns break on the landing page"),
+            // Too short to judge only once the reference is blanked: its
+            // path words would otherwise make it long enough to be judged,
+            // and it has no English function words.
+            format!("{reference} tidy css grid"),
+        ] {
+            let result =
+                format_agent_memory_context(&related, &agents(&["builder"]), &[memory(&css)])
+                    .unwrap_or_else(|| panic!("{related:?} still gets the on-topic memory"));
+            assert!(result.contains("tidied the css grid"));
+        }
+
+        // Each side is blanked on its own account. The prompt's reference
+        // must not match the same words written as prose in a memory ...
+        let prose =
+            memory("Claude loads the amplihack core bundle from the staged directory at startup.");
+        assert_eq!(
+            format_agent_memory_context(&unrelated, &agents(&["builder"]), &[prose]),
+            None,
+            "the prompt's reference path matched prose in the memory"
+        );
+        // ... and a memory's reference must not match them in the prompt.
+        let prose_prompt = "/build why does claude skip the amplihack core hooks";
+        assert_eq!(
+            format_agent_memory_context(prose_prompt, &agents(&["builder"]), &[memory(&css)]),
+            None,
+            "the memory's reference path matched prose in the prompt"
+        );
 
         assert_eq!(
             without_definition_references(
                 "use @~/.amplihack/.claude/agents/amplihack/core/builder.md to tidy, then read README.md"
             ),
             "use   to tidy, then read README.md"
+        );
+        assert_eq!(
+            without_definition_references("see @/home/me/proj/.claude/agents/x/builder.md now"),
+            "see   now"
         );
     }
 
