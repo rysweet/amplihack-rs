@@ -64,9 +64,13 @@ stderr. The tag keeps a guess a guess on the way down:
 - a launcher (`amplihack copilot`, ...) started with a tagged value naming
   itself does not write `launcher_context.json`, and hands the value on to its
   own children still tagged (`EnvBuilder::with_launched_agent_binary`, used by
-  both the interactive launcher and `--auto`). A default-layer guess therefore
-  never becomes persisted state that pins later runs in the checkout, however
-  deep the nesting.
+  both the interactive launcher and `--auto`). The guess itself therefore never
+  becomes persisted state that pins later runs in the checkout, however deep
+  the nesting. What can be persisted further down is an *observation*: if the
+  CLI that the guess launched exports its own session marker (Copilot CLI sets
+  `COPILOT_CLI`), a nested `recipe run` inside it resolves from that marker,
+  exports the value untagged, and a launcher below that records it, because
+  that session really did run.
 
 Setting the *same* value again does not lift the tag, because the two cannot
 be told apart. To make that value an instruction, unset
