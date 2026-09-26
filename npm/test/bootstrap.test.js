@@ -27,6 +27,7 @@ const {
   releaseTargetFor,
   releaseUrls,
   resolveLatestReleaseTag,
+  resolveLatestTagFromRedirect,
   validateDownloadUrl,
   verifyArchiveChecksum,
   writeLatestTagCache,
@@ -425,4 +426,82 @@ test('resolveLatestReleaseTag returns cached tag without network call', withIsol
   writeLatestTagCache('5.6.7', Date.now());
   const tag = await resolveLatestReleaseTag('1.2.3');
   assert.equal(tag, '5.6.7');
+}));
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Rate-limited API: the github.com releases/latest redirect is the fallback,
+// never package.json's (always stale) version while the redirect works.
+
+test('resolveLatestTagFromRedirect reads the tag from the Location header', async () => {
+  await withMockHttpsGet((url, _options, callback) => {
+    assert.equal(url, 'https://github.com/rysweet/amplihack-rs/releases/latest');
+    const response = responseFor(302, '', {
+      location: 'https://github.com/rysweet/amplihack-rs/releases/tag/v0.18.37',
+    });
+    callback(response);
+    response.send();
+  }, async () => {
+    assert.equal(await resolveLatestTagFromRedirect(), '0.18.37');
+  });
+});
+
+test('resolveLatestTagFromRedirect rejects a non-redirect or non-tag answer', async () => {
+  await withMockHttpsGet((_url, _options, callback) => {
+    const response = responseFor(200, '<html>');
+    callback(response);
+    response.send();
+  }, async () => {
+    await assert.rejects(resolveLatestTagFromRedirect(), /unexpected response/u);
+  });
+  await withMockHttpsGet((_url, _options, callback) => {
+    const response = responseFor(302, '', { location: 'https://github.com/rysweet/amplihack-rs/releases' });
+    callback(response);
+    response.send();
+  }, async () => {
+    await assert.rejects(resolveLatestTagFromRedirect(), /unexpected response/u);
+  });
+});
+
+test('resolveLatestReleaseTag uses the redirect when the API is rate-limited', withIsolatedCache(async () => {
+  const urls = [];
+  await withMockHttpsGet((url, _options, callback) => {
+    urls.push(url);
+    let response;
+    if (url.startsWith('https://api.github.com/')) {
+      response = responseFor(403, '{"message":"API rate limit exceeded"}');
+    } else {
+      response = responseFor(302, '', {
+        location: 'https://github.com/rysweet/amplihack-rs/releases/tag/v0.18.37',
+      });
+    }
+    callback(response);
+    response.send();
+  }, async () => {
+    const tag = await resolveLatestReleaseTag('0.18.0');
+    assert.equal(tag, '0.18.37', 'must not fall back to the stale package.json version');
+    assert.equal(readLatestTagCache(), '0.18.37', 'a redirect-resolved tag is cached like an API one');
+  });
+  assert.deepEqual(urls, [
+    'https://api.github.com/repos/rysweet/amplihack-rs/releases/latest',
+    'https://github.com/rysweet/amplihack-rs/releases/latest',
+  ]);
+}));
+
+test('resolveLatestReleaseTag falls back to package.json only when both fail', withIsolatedCache(async () => {
+  const originalWrite = process.stderr.write;
+  let warned = '';
+  process.stderr.write = (chunk) => { warned += String(chunk); return true; };
+  try {
+    await withMockHttpsGet((_url, _options, callback) => {
+      const response = responseFor(403, '');
+      callback(response);
+      response.send();
+    }, async () => {
+      assert.equal(await resolveLatestReleaseTag('0.18.0'), '0.18.0');
+    });
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+  assert.match(warned, /AMPLIHACK_NPM_VERSION/u, 'the warning names the pin escape hatch');
+  assert.equal(readLatestTagCache(), null, 'a failed resolution is never cached');
 }));

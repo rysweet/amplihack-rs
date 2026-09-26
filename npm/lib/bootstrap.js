@@ -481,6 +481,41 @@ async function downloadFile(url, destination, {
  * Honors AMPLIHACK_NPM_VERSION as an explicit override (set by users or CI
  * who want a specific pinned version).
  */
+/**
+ * Resolve the latest release tag from the `releases/latest` redirect on
+ * github.com, which needs no API call and so is not subject to the 60/hour
+ * unauthenticated API rate limit (fresh cloud VMs often share an IP that has
+ * already spent it). GitHub answers 302 with
+ * `Location: .../releases/tag/vX.Y.Z`; only that header is read.
+ */
+function resolveLatestTagFromRedirect({ timeoutMs = DOWNLOAD_TIMEOUT_MS } = {}) {
+  const url = `https://github.com/${GITHUB_REPO}/releases/latest`;
+  return new Promise((resolve, reject) => {
+    validateDownloadUrl(url);
+    const request = https
+      .get(url, { headers: { 'User-Agent': 'amplihack-npm-wrapper' } }, (response) => {
+        response.resume();
+        const statusCode = response.statusCode || 0;
+        const location = String(response.headers.location || '');
+        const match = /\/releases\/tag\/v?([^/?#]+)$/u.exec(location);
+        if (![301, 302, 303, 307, 308].includes(statusCode) || !match) {
+          reject(new Error(`unexpected response (HTTP ${statusCode}) from ${url}`));
+          return;
+        }
+        const tag = decodeURIComponent(match[1]);
+        if (!TAG_REGEX.test(tag)) {
+          reject(new Error(`unparseable release tag in redirect from ${url}: ${tag}`));
+          return;
+        }
+        resolve(tag);
+      })
+      .on('error', reject);
+    request.setTimeout(timeoutMs, () => {
+      request.destroy(new Error(`Timed out after ${timeoutMs}ms while resolving ${url}`));
+    });
+  });
+}
+
 async function resolveLatestReleaseTag(fallbackVersion) {
   const explicit = process.env.AMPLIHACK_NPM_VERSION;
   if (explicit) {
@@ -507,11 +542,26 @@ async function resolveLatestReleaseTag(fallbackVersion) {
     writeLatestTagCache(tag);
     return tag;
   } catch (error) {
-    // Network failure: fall back to pkg.version. Do NOT write to cache so the
-    // next call retries. Warn once so the user knows the version may be stale.
     const reason = error && error.message ? error.message : 'unknown error';
-    process.stderr.write(`amplihack: failed to resolve latest release (${reason}); using fallback v${fallbackVersion}\n`);
-    return fallbackVersion;
+    // The API is rate-limited per IP for unauthenticated callers; the
+    // releases/latest redirect is not. Try it before giving up, because the
+    // fallback below is package.json's version, which the release workflow
+    // never bumps, so it is always stale (issue #333).
+    try {
+      const tag = await resolveLatestTagFromRedirect();
+      writeLatestTagCache(tag);
+      return tag;
+    } catch (redirectError) {
+      const redirectReason = redirectError && redirectError.message ? redirectError.message : 'unknown error';
+      // Do NOT write to cache so the next call retries. Warn once so the user
+      // knows the version may be stale.
+      process.stderr.write(
+        `amplihack: failed to resolve latest release (${reason}; redirect probe: ${redirectReason}); `
+        + `using fallback v${fallbackVersion}, which may be far behind the latest release. `
+        + `Set AMPLIHACK_NPM_VERSION=<version> to pin one.\n`,
+      );
+      return fallbackVersion;
+    }
   }
 }
 
@@ -674,6 +724,7 @@ module.exports = {
   releaseTargetFor,
   releaseUrls,
   resolveLatestReleaseTag,
+  resolveLatestTagFromRedirect,
   runAmplihack,
   validateDownloadUrl,
   verifyArchiveChecksum,
