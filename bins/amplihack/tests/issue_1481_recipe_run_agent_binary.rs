@@ -52,7 +52,10 @@ impl Fixture {
         )
         .expect("write recipe");
         fs::create_dir_all(dir.path().join("home")).expect("create home");
-        fs::create_dir_all(dir.path().join("work")).expect("create work dir");
+        // A `.git` boundary stops the launcher-context walk-up at the work
+        // dir, so a context file above the temp dir (for example with TMPDIR
+        // under $HOME) cannot answer for these tests.
+        fs::create_dir_all(dir.path().join("work").join(".git")).expect("create work dir");
         Self { dir }
     }
 
@@ -297,7 +300,6 @@ fn auto_mode_hands_an_inherited_guess_on_tagged_and_persists_nothing() {
     let tmp = fx.path().join("tmp");
     fs::create_dir_all(&bin).expect("create bin");
     fs::create_dir_all(&tmp).expect("create tmp");
-    fs::create_dir_all(fx.work().join(".git")).expect("mark work as a repo");
     let probe = fx.path().join("claude-probe.log");
     // A stand-in `claude` that records what each invocation was handed.
     fs::write(
