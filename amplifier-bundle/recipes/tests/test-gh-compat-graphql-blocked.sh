@@ -93,6 +93,7 @@ if [ "$1" = "api" ]; then
     [ "${STUB_PROBE_RATELIMIT:-0}" = 1 ] && { echo "GraphQL: API rate limit exceeded for user ID 1." >&2; exit 1; }
     [ -n "${STUB_PROBE_SLEEP:-}" ] && sleep "$STUB_PROBE_SLEEP"
     # Like Go's gh: SIGALRM ignored, and the process is the hang itself.
+    [ -n "${STUB_PROBE_PIDFILE:-}" ] && echo $$ > "$STUB_PROBE_PIDFILE"
     [ -n "${STUB_PROBE_HANG:-}" ] && { trap '' ALRM; exec sleep "$STUB_PROBE_HANG"; }
     [ "$host" != github.com ] && [ "${STUB_GHE_OK:-0}" = 1 ] && { echo '{"data":{"viewer":{"login":"ghe"}}}'; exit 0; }
     if [ "${STUB_GRAPHQL_OK:-0}" = 1 ]; then echo '{"data":{"viewer":{"login":"bot"}}}'; exit 0; fi
@@ -259,6 +260,17 @@ ok() { echo "  ok  $1"; PASS=$((PASS + 1)); }
 reset_log() { : > "$STUB_LOG"; }
 logged() { grep -Fqx -- "$1" "$STUB_LOG"; }
 logged_prefix() { grep -Fq -- "$1" "$STUB_LOG"; }
+# probe_gone PIDFILE — the probe stub recorded in PIDFILE (or the sleep it
+# exec'd into) is no longer running. Checked by PID and command, never by a
+# host-wide `ps | grep sleep`: other sessions on a shared machine run their own
+# sleeps. Returns 2 when no probe ran at all (the check's own setup is wrong).
+probe_gone() {
+  local pid args
+  pid="$(cat "$1" 2>/dev/null)"; [ -n "$pid" ] || return 2
+  args="$(ps -o args= -p "$pid" 2>/dev/null || true)"
+  case "$args" in "sleep "*|*"real/gh"*) return 1 ;; esac
+  return 0
+}
 
 echo "issue #1484: gh compatibility layer when GraphQL is blocked"
 
@@ -864,9 +876,10 @@ sleep 0.3; kill -0 "$(cat "$pidf")" 2>/dev/null && { kill "$(cat "$pidf")"; fail
 ok "exec where GraphQL works; the received signal is passed on and re-raised otherwise"
 
 # 56. probe-watcher-orphans-sleep: no stray sleep outlives a probe.
-fresh; AMPLIHACK_GH_COMPAT_PROBE_TIMEOUT=37 STUB_GRAPHQL_OK=1 gh pr view 42 >/dev/null 2>&1 || true
+fresh; ppf="${WORK}/probe.pid"; rm -f "$ppf"
+AMPLIHACK_GH_COMPAT_PROBE_TIMEOUT=37 STUB_GRAPHQL_OK=1 STUB_PROBE_PIDFILE="$ppf" gh pr view 42 >/dev/null 2>&1 || true
 sleep 0.2
-[ "$(ps -eo args= | grep -c '^sleep 37$' || true)" = 0 ] || fail watcher "a probe left its watcher's sleep running"
+probe_gone "$ppf" || fail watcher "the probe (or a helper of it) outlived the call (probe_gone=$?)"
 ok "the bounded probe leaves no process behind"
 
 # ---------------------------------------------------------------------------
@@ -928,15 +941,16 @@ ok "issue reopen rejects -r/--reason as gh does"
 # 70. probe-watcher-inherits-exit-trap-deletes-run-dir: many cold calls against
 #     an instantly-answering host never lose the run dir mid-call and leave no
 #     process behind (the probe is bounded by timeout/perl alarm, no watcher).
-fresh; bad=0; lost=0
+fresh; bad=0; lost=0; alive=0
 for i in $(seq 1 60); do
-  rm -f "$AMPLIHACK_GH_COMPAT_STATE"*
-  AMPLIHACK_GH_COMPAT_PROBE_TIMEOUT=43 gh issue view 7 --json url >/dev/null 2>"${WORK}/cold.err" || bad=$((bad + 1))
+  rm -f "$AMPLIHACK_GH_COMPAT_STATE"* "$ppf"
+  AMPLIHACK_GH_COMPAT_PROBE_TIMEOUT=43 STUB_PROBE_PIDFILE="$ppf" gh issue view 7 --json url >/dev/null 2>"${WORK}/cold.err" || bad=$((bad + 1))
   grep -q 'No such file' "${WORK}/cold.err" && lost=$((lost + 1))
+  probe_gone "$ppf" || alive=$((alive + 1))
 done
 sleep 0.3
 [ "$bad" = 0 ] && [ "$lost" = 0 ] || fail cold-calls "$bad of 60 cold calls failed, $lost lost their run dir"
-[ "$(ps -eo args= | grep -c '^sleep 43$' || true)" = 0 ] || fail cold-calls "a probe left a sleep behind"
+[ "$alive" = 0 ] || fail cold-calls "$alive of 60 probes (or a helper) outlived their call"
 leftover="$(find "$WORK" -maxdepth 1 -name 'ghc.*' -print -quit)"
 [ -z "$leftover" ] || fail cold-calls "a run dir was left behind: $leftover"
 ok "60 cold calls: no lost run dir, no stray process, no leftover scratch"
@@ -1021,11 +1035,11 @@ for b in /usr/bin/* /bin/*; do
   case "${b##*/}" in timeout|gtimeout) continue ;; esac
   [ -e "$notimeout/${b##*/}" ] || ln -s "$b" "$notimeout/${b##*/}" 2>/dev/null || true
 done
-fresh; start=$SECONDS
-PATH="${WORK}/launcher:${WORK}/real:$notimeout" STUB_GRAPHQL_OK=1 STUB_PROBE_HANG=20 AMPLIHACK_GH_COMPAT_PROBE_TIMEOUT=1 gh pr view 42 >/dev/null 2>&1 || true
+fresh; rm -f "$ppf"; start=$SECONDS
+PATH="${WORK}/launcher:${WORK}/real:$notimeout" STUB_GRAPHQL_OK=1 STUB_PROBE_HANG=20 STUB_PROBE_PIDFILE="$ppf" AMPLIHACK_GH_COMPAT_PROBE_TIMEOUT=1 gh pr view 42 >/dev/null 2>&1 || true
 [ $((SECONDS - start)) -lt 6 ] || fail perl-bound "a probe ignoring SIGALRM held the call $((SECONDS - start))s on the perl path"
 sleep 0.3
-[ "$(ps -eo args= | grep -c '^sleep 20$' || true)" = 0 ] || fail perl-bound "the hung probe survived its deadline"
+probe_gone "$ppf" || fail perl-bound "the hung probe survived its deadline (probe_gone=$?)"
 ok "the perl-path deadline ends a probe that ignores SIGALRM"
 
 # 80. timeout-probe-swallows-ctrl-c: SIGINT (and TERM) to the shim's process
@@ -1034,10 +1048,10 @@ ok "the perl-path deadline ends a probe that ignores SIGALRM"
 for variant in "timeout INT" "timeout TERM" "perl INT" "perl TERM"; do
   set -- $variant
   p="${WORK}/launcher:${WORK}/real:$PATH"; [ "$1" = perl ] && p="${WORK}/launcher:${WORK}/real:$notimeout"
-  fresh
+  fresh; rm -f "$ppf"
   # A new process group with SIGINT at its default (a background job starts
   # with it ignored), as an interactive Ctrl-C would find it.
-  PATH="$p" STUB_GRAPHQL_OK=1 STUB_PROBE_HANG=21 AMPLIHACK_GH_COMPAT_PROBE_TIMEOUT=30 \
+  PATH="$p" STUB_GRAPHQL_OK=1 STUB_PROBE_HANG=21 STUB_PROBE_PIDFILE="$ppf" AMPLIHACK_GH_COMPAT_PROBE_TIMEOUT=30 \
     perl -e '$SIG{INT} = $SIG{QUIT} = "DEFAULT"; setpgrp(0, 0); exec @ARGV' gh issue comment 42 --body hi >/dev/null 2>&1 &
   bg=$!
   sleep 1; start=$SECONDS
@@ -1048,7 +1062,7 @@ for variant in "timeout INT" "timeout TERM" "perl INT" "perl TERM"; do
   logged_prefix "issue comment 42" && fail interrupt "$variant: the requested command ran after the interrupt"
   logged_prefix "api -X POST" && fail interrupt "$variant: the comment was posted after the interrupt"
   sleep 0.3
-  [ "$(ps -eo args= | grep -c '^sleep 21$' || true)" = 0 ] || fail interrupt "$variant: the probe survived the interrupt"
+  probe_gone "$ppf" || fail interrupt "$variant: the probe survived the interrupt (probe_gone=$?)"
 done
 ok "Ctrl-C or a group TERM during the probe stops the call; nothing runs after it"
 
