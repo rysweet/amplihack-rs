@@ -200,11 +200,7 @@ pub fn format_agent_memory_context(
         // contribute topic words: in a transcript where the user wrote
         // another language and the assistant answered in English, the
         // user's function words must not count.
-        let memory_terms: HashSet<String> = turns(strip_agent_prefix(&memory.content))
-            .iter()
-            .filter(|turn| reads_as_english(turn))
-            .flat_map(|turn| scored_terms(turn, &ignored))
-            .collect();
+        let memory_terms = memory_topic_terms(strip_agent_prefix(&memory.content), &ignored);
         let shared = prompt_terms.intersection(&memory_terms).count();
         let relevance = memory_relevance(&prompt_terms, &memory_terms);
         if shared >= MIN_SHARED_TERMS && relevance >= RELEVANCE_THRESHOLD {
@@ -498,20 +494,54 @@ fn without_labels(text: &str) -> String {
     masked
 }
 
+/// The topic words of a memory: those of its turns that read as English.
+///
+/// A fence that seems to span a role label is ambiguous once a transcript
+/// is flattened: it is either a pasted log inside one message (the label
+/// is content) or a stray fence line in one message pairing with a fence
+/// in the next (the label is a real turn boundary). Only the words both
+/// readings agree on count, so neither can merge a non-English turn into an
+/// English one. Without such a fence the two readings are the same.
+fn memory_topic_terms(text: &str, ignored: &HashSet<String>) -> HashSet<String> {
+    let terms_of = |turns: Vec<String>| -> HashSet<String> {
+        turns
+            .iter()
+            .filter(|turn| reads_as_english(turn))
+            .flat_map(|turn| scored_terms(turn, ignored))
+            .collect()
+    };
+    let fence_aware = terms_of(turns_with(text, true));
+    let fence_blind = terms_of(turns_with(text, false));
+    fence_aware.intersection(&fence_blind).cloned().collect()
+}
+
+/// `text` split into transcript turns, respecting fences (see
+/// [`turns_with`]).
+#[cfg(test)]
+fn turns(text: &str) -> Vec<String> {
+    turns_with(text, true)
+}
+
 /// `text` split into transcript turns, without their role labels.
 ///
 /// Session-stop flattens a transcript as `<role>: <text>` paragraphs joined
 /// by blank lines, with whatever role the transcript carries. A paragraph
 /// that starts with one of the [`TRANSCRIPT_ROLES`] labels starts a turn;
 /// other paragraphs (a code block with blank lines in it, a pasted log line
-/// such as `user: …` inside a closed fenced block, or a note that opens
+/// such as `user: …` inside a closed fenced block, when `respect_fences`,
+/// or a note that opens
 /// with `sqlite: …`) continue the current one and keep their words.
-/// Text without labels is one turn.
-fn turns(text: &str) -> Vec<String> {
+/// Text without labels is one turn. With `respect_fences` false, every
+/// paragraph-opening label starts a turn, fence or not.
+fn turns_with(text: &str, respect_fences: bool) -> Vec<String> {
     // A label inside a closed fenced block is part of the block, not a turn.
     // Fences are found with the labels blanked out (same byte offsets), so
     // a message that starts with a fence (`user: ```) opens it.
-    let fences = fences_in(text, &without_labels(text));
+    let fences = if respect_fences {
+        fences_in(text, &without_labels(text))
+    } else {
+        Vec::new()
+    };
     let in_fence = |at: usize| fences.iter().any(|fence| fence.content.contains(&at));
     let mut turns = vec![String::new()];
     let mut paragraph_start = true;
@@ -1643,6 +1673,26 @@ mod tests {
         assert_eq!(
             format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(unrelated)]),
             None
+        );
+        // A stray fence line in one message doesn't pair with the next
+        // message's fence to merge a German turn into an English one.
+        for unrelated in [
+            "Agent x: user: der Mann mit dem Hut hat den Bus verpasst, sagt man. Hier ist mein Code:\n```\nfn main()\n\nassistant: ```\nfn main() {}\n```\nThe build is fixed now and all the tests are green again with the new config.",
+            "Agent x: user: der Mann mit dem Hut hat den Bus verpasst, sagt man\n```\n\nassistant: ```rust\nfn main() {}\n```\nThe build is fixed now and all the tests are green again with the new config.",
+        ] {
+            assert_eq!(
+                format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(unrelated)]),
+                None,
+                "{unrelated:?} is not relevant to {prompt:?}"
+            );
+        }
+        assert!(
+            format_agent_memory_context(
+                prompt,
+                &prompt_agents(prompt),
+                &[memory("Agent x: user: der Mann mit dem Hut hat den Bus verpasst, sagt man. Hier ist mein Code:\n```\nfn main()\n\nassistant: ```\nfn main() {}\n```\nThe man on the bus lost his hat, and the fix is to look for it at the bus depot.")]
+            )
+            .is_some()
         );
         // A message that starts with a fence still ends where it ends.
         assert_eq!(
