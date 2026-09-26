@@ -80,9 +80,10 @@ Walk-up rules for the persisted launcher context:
 - Stop at the first world-writable or foreign-owned directory (issue #1335).
 - Cap at 32 ancestors.
 
-The **anchor** for symlink-escape checks is the directory containing the
-discovered `launcher_context.json`. The discovered file is canonicalized; if the
-canonical path does not start with the canonical anchor, the file is rejected.
+The **anchor** for symlink-escape checks is the walked directory in which the
+file was found, the one that contains `.claude/`. The discovered file is
+canonicalized; if the canonical path does not start with the canonical anchor,
+the file is rejected.
 
 If every layer above fails, the resolver returns the built-in default with no
 anchor check because there is nothing to escape from.
@@ -109,8 +110,12 @@ from the launcher context or the default layer, recipe run prints a one-line
 notice on stderr; from the default layer it also exports the `default:<binary>`
 tag (issue #1481).
 
-Inside `amplihack-rs`, every read site calls `resolve(&cwd)` rather than reading
-the env var directly.
+Inside `amplihack-rs`, code that picks the binary calls `resolve(&cwd)` rather
+than reading the env var directly. One older helper,
+`amplihack_utils::llm_client::detect_launcher_from`, still reads
+`AMPLIHACK_AGENT_BINARY` itself and does not honour the default-guess tag.
+Code that only checks whether the variable is set (as a sign of running as a
+subprocess) does not choose a binary and is unaffected by the tag.
 
 ```mermaid
 sequenceDiagram
