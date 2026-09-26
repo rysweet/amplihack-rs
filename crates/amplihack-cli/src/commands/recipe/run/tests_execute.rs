@@ -1285,7 +1285,9 @@ fn which_recipe_runner_available() -> bool {
             return true;
         }
     }
-    false
+    // find_recipe_runner_binary also probes $CARGO_HOME/bin.
+    crate::rust_toolchain::cargo_home()
+        .is_some_and(|home| home.join("bin").join("recipe-runner-rs").is_file())
 }
 
 #[cfg(unix)]

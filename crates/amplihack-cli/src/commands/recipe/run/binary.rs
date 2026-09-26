@@ -16,6 +16,13 @@ pub(super) fn find_recipe_runner_binary() -> anyhow::Result<PathBuf> {
             return Ok(resolved);
         }
     }
+    // `cargo install` puts it in `$CARGO_HOME/bin`, which need not be on PATH.
+    if let Some(cargo_home) = crate::rust_toolchain::cargo_home() {
+        let candidate = cargo_home.join("bin").join("recipe-runner-rs");
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
 
     anyhow::bail!(
         "recipe-runner-rs binary not found. Install it: cargo install --git https://github.com/rysweet/amplihack-recipe-runner or set RECIPE_RUNNER_RS_PATH."
