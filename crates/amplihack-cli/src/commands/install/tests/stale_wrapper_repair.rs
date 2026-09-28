@@ -928,6 +928,12 @@ fn issue_1496_bunx_shapes_scoped_and_unscoped() {
         mk("src/bunx-0-@/amplihack-rs@latest"),
         Some(NpmLauncherKind::Persistent)
     );
+    // A project dir that merely looks like `bunx-<digits>-…` has no `@<ver>`.
+    assert_eq!(mk("src/bunx-2024-notes"), Some(NpmLauncherKind::Persistent));
+    assert_eq!(
+        mk("src/bunx-0-@acme/tools"),
+        Some(NpmLauncherKind::Persistent)
+    );
 }
 
 /// `sh` runs `"$basedir//abs/..."` under `$basedir`; the parser must not
