@@ -151,7 +151,7 @@ if [ "$1" = "api" ]; then
         # STUB_TRACKERS: one "NUMBER<TAB>TITLE" per line, newest first; bodies
         # are empty; served a page at a time like REST (per_page, page).
         pg="${path##*page=}"; pp="${path##*per_page=}"; pp="${pp%%&*}"
-        printf '%s' "$STUB_TRACKERS" | jq -Rn --argjson pg "$pg" --argjson pp "$pp" '[inputs | split("\t") | {number: (.[0] | tonumber), title: .[1], body: "", state: "open",
+        printf '%s' "$STUB_TRACKERS" | jq -Rn --argjson pg "$pg" --argjson pp "$pp" '[inputs | split("\t") | {number: (.[0] | tonumber), title: (.[1:] | join("\t")), body: "", state: "open",
           html_url: "https://github.com/o/r/issues/\(.[0])", user: {login: "bot"}, labels: []}] | .[($pg - 1) * $pp : $pg * $pp]'
         exit 0
       fi
@@ -971,23 +971,22 @@ fresh; : > "$AMPLIHACK_GH_COMPAT_STATE"
 # 74. The exact title is found among newer near-duplicates, whatever it holds.
 long150="Make the recipe runner report every step's progress, warnings and errors through one structured channel that agents, humans and CI can all read"
 n=100
+{
+  printf '%s\n' "Fix parse(x) crash" \
+    "merge queue is wired in ci.yml but not enabled, so N open PRs cost O(N²) CI runs" \
+    "Fix #12's regression in parser" "Handle #12/#13 and #1.5 before the #1st release" \
+    "Port https://github.com/o/r/issues/5 to the new runner" "修复 解析器 崩溃" "Ship it 🎉 now" \
+    '"Quoted" -v OR NOT: sort:created (label:bug)' "$long150"
+  printf 'Fix\tparser crash (tab)\n'      # a TAB, stored verbatim in the title
+  printf 'Fix\fparser crash (formfeed)\n' # a form feed, stored verbatim
+} > "${WORK}/lookup-titles.txt"
 while IFS= read -r t; do
   n=$((n + 2))
   STUB_TRACKERS="$(printf '%s\tFollow-up: %s\n%s\t%s (again)\n%s\t%s\n7\tUnrelated\n' "$((n + 1))" "$t" "$((n + 100))" "$t" "$n" "$t")"; export STUB_TRACKERS
   got="$(step03_lookup "$t")"
   [ "$got" = "https://github.com/o/r/issues/$n" ] || fail lookup "'$t' found '$got', want #$n"
-done <<LOOKUP_TITLES
-Fix parse(x) crash
-merge queue is wired in ci.yml but not enabled, so N open PRs cost O(N²) CI runs
-Fix #12's regression in parser
-Handle #12/#13 and #1.5 before the #1st release
-Port https://github.com/o/r/issues/5 to the new runner
-修复 解析器 崩溃
-Ship it 🎉 now
-"Quoted" -v OR NOT: sort:created (label:bug)
-$long150
-LOOKUP_TITLES
-ok "step-03 finds its exact title (parens, #N forms, URLs, CJK, emoji, 143 chars)"
+done < "${WORK}/lookup-titles.txt"
+ok "step-03 finds its exact title (parens, #N forms, URLs, CJK, emoji, a tab, a form feed, 143 chars)"
 
 # 75. Near matches are never adopted, and a title with no word matches nothing.
 STUB_TRACKERS="$(printf '31\tFix parser crash (follow-up)\n30\tFix parser\n29\tPort to the new runner\n28\t🎉 ✨\n')"; export STUB_TRACKERS
@@ -1065,6 +1064,67 @@ for variant in "timeout INT" "timeout TERM" "perl INT" "perl TERM"; do
   probe_gone "$ppf" || fail interrupt "$variant: the probe survived the interrupt (probe_gone=$?)"
 done
 ok "Ctrl-C or a group TERM during the probe stops the call; nothing runs after it"
+
+# ---------------------------------------------------------------------------
+# Independent crusty review round 10, of 2f21d6eb (PR comment 5877439344).
+# ---------------------------------------------------------------------------
+fresh; : > "$AMPLIHACK_GH_COMPAT_STATE"
+
+# 81. tab-in-title-exact-match-false-negative: a control character in the
+#     task is a word separator on both sides. step-03 turns every C0 control
+#     into a space before create AND lookup; the lookup passes the title to jq
+#     through the environment and strips nothing, so a stored title with the
+#     tab and one with a space are both found.
+grep -Fq "ISSUE_TITLE=\"\$(printf '%s' \"\$TASK_DESC\" | tr '\\000-\\037\\177' ' ' | tr -s ' ')\"" "${REPO_ROOT}/amplifier-bundle/recipes/workflow-prep.yaml" \
+  || fail tab-title "workflow-prep step-03 does not normalise control characters in the title"
+tabt="$(printf 'Fix\tparser crash')"
+STUB_TRACKERS="$(printf '92\tFollow-up: Fix parser crash\n91\tFix parser crash\n')"; export STUB_TRACKERS
+[ "$(step03_lookup "$tabt")" = "https://github.com/o/r/issues/91" ] || fail tab-title "tab in the task, space in the stored title: not found"
+STUB_TRACKERS="$(printf '92\tFollow-up: Fix parser crash\n91\tFix\tparser crash\n')"; export STUB_TRACKERS
+[ "$(step03_lookup "$tabt")" = "https://github.com/o/r/issues/91" ] || fail tab-title "tab in the task and in the stored title: not found"
+# An ESC sequence keeps its letters and digits ("[1m" is a word): step-03
+# creates the title with them, and the lookup finds that same title.
+esct="$(printf 'Fix \033[1mparser\033[0m crash')"
+stored="$(printf '%s' "$esct" | tr '\000-\037\177' ' ' | tr -s ' ')"   # step-03's create title
+STUB_TRACKERS="$(printf '94\tFix parser crash\n93\t%s\n' "$stored")"; export STUB_TRACKERS
+[ "$(step03_lookup "$esct")" = "https://github.com/o/r/issues/93" ] || fail tab-title "ESC sequences in the task: the created title was not found (got '$(step03_lookup "$esct")')"
+grep -q "tr -d" <(sed -n '/^issue_find_tracker() {/,/^}/p' "$TRACK") && fail tab-title "the lookup still strips characters from the title"
+ok "control characters in a title never hide its tracker"
+
+# 82. no-jq-lookup-swallows-shim-error: on a blocked host without jq the
+#     lookup must show gh-compat's "needs jq" text and must not read as
+#     "no tracker" (rc 0, silence); step-03 then stops.
+rc=0; err="$(PATH="${WORK}/launcher:${WORK}/real:$nojq" step03_lookup "Fix parser crash" 2>&1 >/dev/null)" || rc=$?
+[ "$rc" != 0 ] || fail no-jq-lookup "a blocked host without jq made the lookup succeed silently (rc 0)"
+case "$err" in *"needs jq"*) ;; *) fail no-jq-lookup "the 'needs jq' diagnostic was dropped: '$err'" ;; esac
+# shellcheck disable=SC1090
+( . "$TRACK"; issue_create_host_unsupported 1 "gh-compat: the REST fallback needs jq, which is not installed; install jq (GitHub GraphQL is refused on this host, so REST is the only route)" ) \
+  && fail no-jq-lookup "a missing jq is classified as an unsupported host"
+ok "a missing jq is reported by the lookup and stops the step"
+
+# 83. open-issue-cap-1000-silent: more than 1000 open issues → the scan is cut
+#     at the newest 1000 and a WARNING on stderr says so.
+STUB_TRACKERS="$(for i in $(seq 2001 -1 1001); do printf '%s\tIssue number %s\n' "$i" "$i"; done; printf '1000\tThe oldest tracker\n')"; export STUB_TRACKERS
+reset_log
+rc=0; out="$(step03_lookup "The oldest tracker" 2>"${WORK}/cap.err")" || rc=$?
+[ "$rc" = 0 ] || fail cap-1000 "lookup over 1001 issues exited $rc: $(cat "${WORK}/cap.err")"
+[ -z "$out" ] || fail cap-1000 "an issue beyond the newest 1000 was found: $out"
+grep -q "WARNING: the tracker scan read only the newest 1000 open issues" "${WORK}/cap.err" || fail cap-1000 "no truncation warning on stderr: $(cat "${WORK}/cap.err")"
+logged_prefix "per_page=100&page=10" || fail cap-1000 "the shim did not page to the cap"
+STUB_TRACKERS="$(printf '9\tOnly one\n')"; export STUB_TRACKERS
+step03_lookup "Only one" 2>"${WORK}/cap.err" >/dev/null
+grep -q "WARNING: the tracker scan" "${WORK}/cap.err" && fail cap-1000 "a truncation warning on a short list"
+ok "a scan cut at 1000 open issues warns on stderr"
+
+# 84. ascii-downcase-non-ascii-case: case is ignored for non-ASCII letters too
+#     (simple one-to-one folds; ß/SS is engine-dependent and not pinned).
+STUB_TRACKERS="$(printf '52\tRésumé parser crash\n51\tUnrelated\n')"; export STUB_TRACKERS
+for t in "RÉSUMÉ PARSER CRASH" "résumé parser crash" "Résumé Parser Crash"; do
+  [ "$(step03_lookup "$t")" = "https://github.com/o/r/issues/52" ] || fail unicode-case "'$t' did not match 'Résumé parser crash'"
+done
+[ "$(step03_lookup "Resume parser crash")" = "" ] || fail unicode-case "accents were ignored (Resume matched Résumé)"
+unset STUB_TRACKERS
+ok "non-ASCII letters compare case-insensitively (É = é), accents stay significant"
 
 # 51. stale-test-contract-header: the contract above describes the probe, not
 #     the removed stderr follower or a first real-gh attempt.

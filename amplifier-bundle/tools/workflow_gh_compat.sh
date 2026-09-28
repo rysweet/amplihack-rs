@@ -1596,7 +1596,7 @@ ghc_main() {
   # Everything past here shapes JSON with jq. Without it there is no fallback,
   # and saying so beats gh's bare GraphQL refusal (or a caller reading "none").
   command -v jq >/dev/null 2>&1 \
-    || ghc_die "gh-compat: GitHub GraphQL is blocked on this host and the REST fallback needs jq, which is not installed"
+    || ghc_die "gh-compat: the REST fallback needs jq, which is not installed; install jq (GitHub GraphQL is refused on this host, so REST is the only route)"
   ghc_log "REST fallback: gh $1 $2"
   ghc_rest_dispatch "$@"
 }
