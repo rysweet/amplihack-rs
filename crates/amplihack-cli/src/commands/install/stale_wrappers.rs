@@ -386,7 +386,14 @@ fn npm_launcher_target(path: &Path, canonical: &Path) -> Option<PathBuf> {
             let after = &rest[start + "\"$basedir/".len()..];
             let Some(end) = after.find('"') else { break };
             let relative = &after[..end];
-            if relative.ends_with(".js") {
+            // `sh` runs `$basedir/<relative>`: a leading `/` still lands under
+            // `$basedir`, but `Path::join` would jump to the absolute path and
+            // check a different file. Only a plain relative path is followed.
+            if relative.ends_with(".js")
+                && !relative.is_empty()
+                && Path::new(relative).is_relative()
+                && !relative.starts_with('/')
+            {
                 return fs::canonicalize(shim_dir.join(relative)).ok();
             }
             rest = &after[end + 1..];
@@ -402,7 +409,8 @@ fn npm_launcher_target(path: &Path, canonical: &Path) -> Option<PathBuf> {
 ///
 /// - `npx`:      `.../_npx/<hash>/node_modules/.bin/<name>`
 /// - `pnpm dlx`: `.../pnpm/dlx/<hash>/<id>/node_modules/.bin/<name>`
-/// - `bunx`:     `.../bunx-<uid>-<pkg>@<ver>/node_modules/.bin/<name>`
+/// - `bunx`:     `.../bunx-<uid>-<pkg>@<ver>/node_modules/.bin/<name>`, or for a
+///   scoped package `.../bunx-<uid>-@<scope>/<pkg>@<ver>/node_modules/.bin/<name>`
 ///
 /// `yarn dlx` is not recognized as transient: its layout was not reproduced
 /// here. A yarn launcher that resolves to the wrapper is treated as persistent
@@ -433,12 +441,21 @@ fn is_transient_launcher_location(path: &Path) -> bool {
     if bin_at >= 4 && ancestors[bin_at - 4] == "pnpm" && ancestors[bin_at - 3] == "dlx" {
         return true;
     }
-    // bunx: `bunx-<uid>-...` directly above node_modules.
-    if bin_at >= 1
-        && ancestors[bin_at - 1]
-            .strip_prefix("bunx-")
+    // bunx: `bunx-<uid>-<pkg>@<ver>` directly above node_modules; for a
+    // scoped package bun does not escape the `/`, so the scope is its own
+    // level: `bunx-<uid>-@<scope>/<pkg>@<ver>` (seen with bun 1.3.11).
+    let bunx_rest = |dir: &str| {
+        dir.strip_prefix("bunx-")
             .and_then(|rest| rest.split_once('-'))
-            .is_some_and(|(uid, _)| all_digits(uid))
+            .filter(|(uid, _)| all_digits(uid))
+            .map(|(_, rest)| rest.to_owned())
+    };
+    if bin_at >= 1 && bunx_rest(&ancestors[bin_at - 1]).is_some_and(|rest| !rest.starts_with('@')) {
+        return true;
+    }
+    if bin_at >= 2
+        && bunx_rest(&ancestors[bin_at - 2])
+            .is_some_and(|rest| rest.len() > 1 && rest.starts_with('@') && !rest.contains('/'))
     {
         return true;
     }

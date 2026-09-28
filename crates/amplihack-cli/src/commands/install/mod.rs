@@ -415,7 +415,7 @@ fn local_install(
                 preferred_amplihack.display()
             );
             println!(
-                "     To use {} instead: npm uninstall -g @rysweet/amplihack-rs, or export PATH=\"$HOME/.local/bin:$PATH\"",
+                "     To use {} instead: remove it with the package manager that installed it (e.g. npm uninstall -g @rysweet/amplihack-rs), or export PATH=\"$HOME/.local/bin:$PATH\"",
                 preferred_amplihack.display()
             );
         }

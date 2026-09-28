@@ -115,7 +115,8 @@ any persistent executable behind the shim.
 If you installed the package globally (`npm install -g @rysweet/amplihack-rs`),
 its launcher stays ahead of `~/.local/bin` for good. Install still completes;
 the advisory then says that `amplihack` runs through the npm wrapper (its own
-cached release binary) and offers `npm uninstall -g @rysweet/amplihack-rs` or a
+cached release binary) and offers removing it with the package manager that
+installed it (`npm uninstall -g @rysweet/amplihack-rs` for a global npm install) or a
 `PATH` reorder if you want the `~/.local/bin` copy instead.
 
 ## Review quarantined wrappers

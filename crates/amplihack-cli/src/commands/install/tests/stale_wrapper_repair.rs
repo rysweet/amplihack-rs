@@ -583,11 +583,12 @@ fn create_pnpm_dlx_shim(home: &Path, wrapper_source: &str) -> (PathBuf, PathBuf)
     (bin, shim)
 }
 
-/// What `bunx <amplihack-rs>` does: a symlink shim in a per-run temp project
-/// `$TMPDIR/bunx-<uid>-<pkg>@<ver>/node_modules/.bin/`.
+/// What `bunx @rysweet/amplihack-rs` does (bun 1.3.11): a symlink shim in a
+/// per-run temp project. The scope's `/` is not escaped, so the scope is its
+/// own directory level: `$TMPDIR/bunx-<uid>-@rysweet/amplihack-rs@<ver>/`.
 #[cfg(unix)]
 fn create_bunx_shim(tmp: &Path, wrapper_source: &str) -> (PathBuf, PathBuf) {
-    let run = tmp.join("bunx-1000-@rysweet+amplihack-rs@0.18.0/node_modules");
+    let run = tmp.join("bunx-1000-@rysweet/amplihack-rs@0.18.0/node_modules");
     write_executable(
         &run.join("@rysweet/amplihack-rs/npm/bin/amplihack.js"),
         wrapper_source,
@@ -890,4 +891,90 @@ fn issue_1496_ambiguity_advisory_explains_the_persistent_npm_launcher() {
         "{warning}"
     );
     assert!(!warning.contains("Remove stale candidates"), "{warning}");
+}
+
+/// Unscoped bunx shape (`$TMPDIR/bunx-<uid>-<pkg>@<ver>/`), and the scoped
+/// look-alikes that must stay persistent.
+#[cfg(unix)]
+#[test]
+fn issue_1496_bunx_shapes_scoped_and_unscoped() {
+    use super::super::stale_wrappers::npm_launcher_path;
+    let temp = tempfile::tempdir().unwrap();
+    let mk = |dir: &str| {
+        let modules = temp.path().join(dir).join("node_modules");
+        write_executable(
+            &modules.join("@rysweet/amplihack-rs/npm/bin/amplihack.js"),
+            WRAPPER_JS,
+        );
+        let bin = modules.join(".bin");
+        fs::create_dir_all(&bin).unwrap();
+        let shim = bin.join("amplihack");
+        std::os::unix::fs::symlink("../@rysweet/amplihack-rs/npm/bin/amplihack.js", &shim).unwrap();
+        npm_launcher_path(&shim)
+    };
+    assert_eq!(
+        mk("bunx-0-amplihack-rs@latest"),
+        Some(NpmLauncherKind::Transient)
+    );
+    assert_eq!(
+        mk("bunx-0-@rysweet/amplihack-rs@latest"),
+        Some(NpmLauncherKind::Transient)
+    );
+    assert_eq!(
+        mk("bunx-x-@rysweet/amplihack-rs@latest"),
+        Some(NpmLauncherKind::Persistent)
+    );
+    assert_eq!(
+        mk("src/bunx-0-@/amplihack-rs@latest"),
+        Some(NpmLauncherKind::Persistent)
+    );
+}
+
+/// `sh` runs `"$basedir//abs/..."` under `$basedir`; the parser must not
+/// follow it to `/abs/...` and validate a different file.
+#[cfg(unix)]
+#[test]
+fn issue_1496_sh_shim_with_absolute_relative_is_not_a_launcher() {
+    let temp = tempfile::tempdir().unwrap();
+    let elsewhere = temp.path().join("elsewhere/npm/bin/amplihack.js");
+    write_executable(&elsewhere, WRAPPER_JS);
+    let bin = temp
+        .path()
+        .join("home/.cache/pnpm/dlx/h/id/node_modules/.bin");
+    let shim = bin.join("amplihack");
+    write_executable(
+        &shim,
+        &format!(
+            "#!/bin/sh\nexec node \"$basedir/{}\" \"$@\"\n",
+            elsewhere.display()
+        ),
+    );
+    assert_eq!(super::super::stale_wrappers::npm_launcher_path(&shim), None);
+}
+
+/// A persistent launcher in the ambiguity branch must not swallow the
+/// "remove stale candidates" advice when another candidate is present.
+#[cfg(unix)]
+#[test]
+fn issue_1496_ambiguity_advisory_keeps_stale_advice_for_other_candidates() {
+    use crate::path_conflicts::{PathAnalysisInput, analyze_path_conflicts};
+
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let preferred_bin = home.join(".local/bin");
+    let preferred_rust = create_exe_stub(&preferred_bin, "amplihack");
+    let (launcher_bin, _shim) = create_npm_global_shim(&temp.path().join("usr/local"), WRAPPER_JS);
+    let stale_bin = temp.path().join("opt/old/bin");
+    create_exe_stub(&stale_bin, "amplihack");
+
+    let report = analyze_path_conflicts(&PathAnalysisInput {
+        home_dir: home.clone(),
+        current_exe: preferred_rust,
+        path_dirs: vec![preferred_bin, launcher_bin, stale_bin],
+        binary_names: vec!["amplihack".into()],
+    })
+    .unwrap();
+    let warning = super::super::binary::path_conflict_warning_after_install(&report).unwrap();
+    assert!(warning.contains("npm launcher"), "{warning}");
+    assert!(warning.contains("Remove stale candidates"), "{warning}");
 }

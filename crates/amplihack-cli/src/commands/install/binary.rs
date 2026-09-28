@@ -348,7 +348,9 @@ fn append_npm_launcher_guidance(warning: &mut String) {
         "     Through that launcher `amplihack` runs the npm wrapper and its own cached release binary, not the copy `amplihack update` maintains in ~/.local/bin.\n",
     );
     warning.push_str("     To use ~/.local/bin/amplihack directly, do one of the following:\n");
-    warning.push_str("       1. Remove the launcher:  npm uninstall -g @rysweet/amplihack-rs\n");
+    warning.push_str(
+        "       1. Remove the launcher with the package manager that installed it, e.g.  npm uninstall -g @rysweet/amplihack-rs  (a project's node_modules/.bin: remove the dependency there)\n",
+    );
     warning.push_str(
         "       2. Reorder PATH so ~/.local/bin comes first:  export PATH=\"$HOME/.local/bin:$PATH\"\n",
     );
@@ -363,6 +365,11 @@ fn append_ambiguity_warning(
         "  ⚠️  Multiple distinct `{binary_name}` binaries are on PATH:\n"
     ));
     let mut launcher = None;
+    let mut others = false;
+    let preferred = resolution
+        .preferred_user_candidate
+        .as_ref()
+        .map(|candidate| candidate.path.as_path());
     for candidate in &resolution.canonical_candidates {
         if binary_name == "amplihack" && is_persistent_npm_launcher(&candidate.path) {
             launcher = Some(candidate.path.as_path());
@@ -371,13 +378,17 @@ fn append_ambiguity_warning(
                 candidate.path.display()
             ));
         } else {
+            others |= Some(candidate.path.as_path()) != preferred;
             warning.push_str(&format!("     - {}\n", candidate.path.display()));
         }
     }
     if launcher.is_some() {
         warning.push_str("     Whichever comes first on PATH in your shell wins.\n");
         append_npm_launcher_guidance(warning);
-    } else {
+    }
+    // Any other candidate may really be stale; the launcher note must not
+    // swallow that advice.
+    if launcher.is_none() || others {
         warning.push_str(
             "     Remove stale candidates or reorder PATH so the intended user-level install resolves first.\n",
         );

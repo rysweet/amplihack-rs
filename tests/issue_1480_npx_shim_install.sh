@@ -88,6 +88,7 @@ make_npm_global_layout() {
   local prefix="$1" source="$2"
   mkdir -p "$prefix/lib/node_modules/@rysweet/amplihack-rs/npm/bin" "$prefix/bin"
   cp "$source" "$prefix/lib/node_modules/@rysweet/amplihack-rs/npm/bin/amplihack.js"
+  chmod +x "$prefix/lib/node_modules/@rysweet/amplihack-rs/npm/bin/amplihack.js"
   ln -s ../lib/node_modules/@rysweet/amplihack-rs/npm/bin/amplihack.js "$prefix/bin/amplihack"
   printf '%s\n' "$prefix/bin"
 }
