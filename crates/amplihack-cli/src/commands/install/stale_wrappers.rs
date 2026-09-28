@@ -450,12 +450,18 @@ fn is_transient_launcher_location(path: &Path) -> bool {
             .filter(|(uid, _)| all_digits(uid))
             .map(|(_, rest)| rest.to_owned())
     };
-    if bin_at >= 1 && bunx_rest(&ancestors[bin_at - 1]).is_some_and(|rest| !rest.starts_with('@')) {
+    // bun always writes an `@<version>` marker (`@latest` if none was
+    // given); requiring it keeps a project dir like `bunx-2024-notes` out.
+    if bin_at >= 1
+        && bunx_rest(&ancestors[bin_at - 1])
+            .is_some_and(|rest| !rest.starts_with('@') && rest.contains('@'))
+    {
         return true;
     }
     if bin_at >= 2
         && bunx_rest(&ancestors[bin_at - 2])
             .is_some_and(|rest| rest.len() > 1 && rest.starts_with('@') && !rest.contains('/'))
+        && ancestors[bin_at - 1].contains('@')
     {
         return true;
     }
