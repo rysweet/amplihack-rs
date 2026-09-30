@@ -613,10 +613,20 @@ fn local_install(
         }
     }
     let (files, post_dirs) = get_all_files_and_dirs(&claude_dir, &tracked_roots)?;
-    let new_dirs = post_dirs
+    let mut new_dirs = post_dirs
         .into_iter()
         .filter(|dir| !pre_dirs.contains(dir))
         .collect::<Vec<_>>();
+    // Issue #1507: `new_dirs` is "created by this run". On a reinstall every
+    // directory already exists, so it would be empty and uninstall would
+    // leave the earlier run's directories behind. Carry forward what previous
+    // manifests recorded, as long as it still exists.
+    let previous = manifest::read_manifest(&manifest_path).unwrap_or_default();
+    for dir in previous.dirs {
+        if !new_dirs.contains(&dir) && claude_dir.join(&dir).is_dir() {
+            new_dirs.push(dir);
+        }
+    }
 
     let mut manifest = InstallManifest {
         files,
