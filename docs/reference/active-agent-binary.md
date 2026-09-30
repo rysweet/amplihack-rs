@@ -53,6 +53,11 @@ The launcher-context walk-up for that decision starts at the run's working
 directory (`--working-dir`, default `.`), where the steps run. The top level
 then reads the same context file a nested `amplihack` in a step would.
 
+That one answer is also what the root-sandbox pre-flight checks (issue
+#1482): it refuses an agent recipe as root outside a sandbox only when the
+steps would actually run `claude`, because it looks at the same binary the
+runner is handed rather than resolving again from the caller's directory.
+
 When the answer was inferred rather than observed (layer 3 or 4), recipe run
 prints a one-line notice on stderr saying why. When it came from layer 4, it
 also exports `AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>`. The tag keeps a

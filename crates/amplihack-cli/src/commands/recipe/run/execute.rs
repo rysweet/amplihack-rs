@@ -5,7 +5,7 @@ use super::failure_class::{
 };
 use super::retry::{AttemptOutcome, RetrySummary, TransientRetryLimits, run_with_transient_retry};
 use super::*;
-use crate::env_builder::{EnvBuilder, active_agent_binary_with_source_in};
+use crate::env_builder::EnvBuilder;
 #[cfg(windows)]
 use crate::util::run_with_timeout;
 use crate::util::truncate_chars_with_notice;
@@ -471,6 +471,9 @@ pub(super) fn context_env_pairs(
     pairs
 }
 
+// The resolved agent binary is an extra argument on purpose: the caller
+// decided it once, for the pre-flight and the steps alike (issue #1481).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn execute_recipe_via_rust(
     recipe_path: &Path,
     context: &BTreeMap<String, String>,
@@ -479,6 +482,7 @@ pub(super) fn execute_recipe_via_rust(
     working_dir: &Path,
     search_dirs: &[PathBuf],
     step_timeout: Option<u64>,
+    (agent_binary, agent_binary_source): (String, amplihack_utils::agent_binary::ResolutionSource),
 ) -> Result<RecipeRunResult> {
     // Issue #964: fail-closed recursion-depth guard. Refuse to spawn a nested
     // recipe-runner once the session has reached the configured maximum depth,
@@ -490,15 +494,13 @@ pub(super) fn execute_recipe_via_rust(
     let binary = super::binary::find_recipe_runner_binary()?;
     let recipe_name = recipe_name_for_correlation(recipe_path);
 
-    // Issue #1481: decide the agent binary once, here, while this process can
-    // still see the session markers of the CLI that invoked it. Every step
-    // below runs under recipe-runner-rs's curated environment, and a nested
-    // `amplihack` resolving on its own there has lost the evidence -- it fell
-    // through to the vendor default and ran every agent step under Copilot from
-    // inside a Claude Code session. The launcher-context walk-up starts at
-    // `working_dir`, where the steps run, so a nested `amplihack` there cannot
-    // find a context file this level never looked at.
-    let (agent_binary, agent_binary_source) = active_agent_binary_with_source_in(working_dir);
+    // Issue #1481: the caller resolved the agent binary once, from
+    // `working_dir`, while this process could still see the session markers of
+    // the CLI that invoked it; the #1482 pre-flight checked that same answer.
+    // Every step below runs under recipe-runner-rs's curated environment, and a
+    // nested `amplihack` resolving on its own there has lost the evidence -- it
+    // fell through to the vendor default and ran every agent step under Copilot
+    // from inside a Claude Code session.
     report_inferred_agent_binary(&agent_binary, agent_binary_source);
 
     let runtime_dir = tempfile::Builder::new()

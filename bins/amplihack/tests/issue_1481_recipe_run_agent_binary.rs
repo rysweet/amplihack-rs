@@ -88,6 +88,10 @@ impl Fixture {
             .env("AMPLIHACK_HOME", self.path())
             .env("AMPLIHACK_NONINTERACTIVE", "1")
             .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
+            // The probe recipe is bash-only, so #1482's root pre-flight never
+            // applies; set anyway so no root host can make these tests depend
+            // on its sandbox detection.
+            .env("IS_SANDBOX", "1")
             .current_dir(self.work())
             .arg("recipe")
             .arg("run")
@@ -346,6 +350,10 @@ fn auto_mode_hands_an_inherited_guess_on_tagged_and_persists_nothing() {
         .env("AMPLIHACK_HOME", fx.path())
         .env("AMPLIHACK_NONINTERACTIVE", "1")
         .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
+        // Hermetic under root: without it, #1482's guard refuses to launch
+        // `claude --dangerously-skip-permissions` before the stub ever runs,
+        // and this test would fail whatever the tag handling did.
+        .env("IS_SANDBOX", "1")
         .env("AMPLIHACK_AGENT_BINARY", "claude")
         .env(SOURCE_ENV, "default:claude")
         .current_dir(fx.work())
