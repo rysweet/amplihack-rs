@@ -190,39 +190,7 @@ fn ensure_recipe_runner_up_to_date_inner() -> Result<()> {
 }
 
 pub(crate) fn recipe_runner_binary_present() -> bool {
-    // Mirrors `commands::recipe::run::binary::find_recipe_runner_binary`
-    // without pulling that private helper into this module.
-    if let Ok(path) = std::env::var("RECIPE_RUNNER_RS_PATH")
-        && !path.is_empty()
-        && Path::new(&path).is_file()
-    {
-        return true;
-    }
-    let bin_name = "recipe-runner-rs";
-    let home_candidates = home_dir().ok().into_iter().flat_map(|home| {
-        [
-            home.join(".cargo/bin").join(bin_name),
-            home.join(".local/bin").join(bin_name),
-        ]
-    });
-    // `cargo install` places it in `$CARGO_HOME/bin`, which may be neither of
-    // the above and not on PATH.
-    let cargo_home_candidate =
-        crate::rust_toolchain::cargo_home().map(|cargo_home| cargo_home.join("bin").join(bin_name));
-    for candidate in home_candidates.chain(cargo_home_candidate) {
-        if candidate.is_file() {
-            return true;
-        }
-    }
-    // Issue #1274 — one seam. A "choose a file to run" walk: a hit here means
-    // "recipe-runner-rs is installed", and an empty `$PATH` element used to
-    // make a file of that name in the current directory answer yes.
-    for dir in amplihack_utils::launch_target::env_path_dirs() {
-        if dir.join(bin_name).is_file() {
-            return true;
-        }
-    }
-    false
+    crate::rust_toolchain::find_recipe_runner().is_some()
 }
 
 /// `cargo install` recipe-runner-rs. With `bootstrap_toolchain`, a missing

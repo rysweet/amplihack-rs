@@ -89,7 +89,7 @@ pub(super) fn ensure_recipe_runner() -> Result<Outcome> {
         Ok(Outcome::InstalledFromGit)
     } else {
         // cargo install reported success but the binary is in none of the
-        // places probed (PATH, ~/.cargo/bin, ~/.local/bin, $CARGO_HOME/bin).
+        // places `rust_toolchain::find_recipe_runner` probes.
         let cargo_bin = crate::rust_toolchain::cargo_home()
             .map(|home| home.join("bin").display().to_string())
             .unwrap_or_else(|| "~/.cargo/bin".to_string());

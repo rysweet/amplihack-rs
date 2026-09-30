@@ -215,7 +215,7 @@ fn ensure_local_bin_on_shell_path_creates_export() {
     use crate::commands::install::paths::ensure_local_bin_on_shell_path;
     let tmp = tempfile::TempDir::new().unwrap();
     // Use home_env_lock so we serialize with HOME-reading tests like
-    // test_resolve_binary_path_expands_tilde_to_home_dir.
+    // find_recipe_runner_order_is_override_path_then_fixed_dirs.
     let _lock = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
