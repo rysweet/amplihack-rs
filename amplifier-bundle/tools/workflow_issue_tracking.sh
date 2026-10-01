@@ -62,7 +62,8 @@ sanitize_cli_output() { printf '%s\n' "$1" | head -c 4000 | sed -E 's#https?://[
 issue_find_tracker() {
   local out err rc=0 errf cnt url
   errf="$(mktemp "${TMPDIR:-/tmp}/tracker-lookup.XXXXXX")" || { echo "ERROR: tracking-issue lookup: mktemp failed" >&2; return 1; }
-  # Two output lines: how many issues were listed, then the URL (or nothing).
+  # Two output lines: how many issues were listed, then the URL (or nothing);
+  # no output at all reads as an empty list.
   out="$(ISSUE_TITLE_LOOKUP="$1" timeout 60 gh issue list --state open --limit 1000 --json number,title,url --jq '
     def norm: [scan("[\\p{L}\\p{N}]+")] | join(" ");
     (env.ISSUE_TITLE_LOOKUP | norm) as $want
@@ -80,7 +81,9 @@ issue_find_tracker() {
     sanitize_cli_output "$err" >&2
     return 1
   fi
-  case "$out" in *$'\n'*) cnt="${out%%$'\n'*}"; url="${out#*$'\n'}" ;; *) cnt="$out"; url="" ;; esac
+  # No output at all is an empty list (nothing to match); anything else must
+  # start with the count line.
+  case "$out" in '') cnt=0; url="" ;; *$'\n'*) cnt="${out%%$'\n'*}"; url="${out#*$'\n'}" ;; *) cnt="$out"; url="" ;; esac
   case "$cnt" in ''|*[!0-9]*) echo "ERROR: tracking-issue lookup returned unexpected output:" >&2; sanitize_cli_output "$out" >&2; return 1 ;; esac
   [ "$cnt" -ge 1000 ] && echo "WARNING: the tracker scan read only the newest 1000 open issues; an older tracker with this title would be missed and a duplicate filed." >&2
   case "$url" in

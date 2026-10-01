@@ -1126,6 +1126,20 @@ done
 unset STUB_TRACKERS
 ok "non-ASCII letters compare case-insensitively (É = é), accents stay significant"
 
+# 85. Output shapes the lookup accepts: no output is an empty list (no
+#     tracker, rc 0, as the recipe's Rust tests' fake gh produces); the count
+#     line then the URL is a hit; anything else is an error, never a URL.
+fakes="${WORK}/fakes"; mkdir -p "$fakes"
+printf '#!/bin/sh\nexit 0\n' > "$fakes/gh"; chmod +x "$fakes/gh"
+rc=0; out="$(PATH="$fakes:$PATH" step03_lookup "Anything" 2>"${WORK}/shape.err")" || rc=$?
+[ "$rc" = 0 ] && [ -z "$out" ] || fail shapes "a gh that prints nothing gave rc $rc, '$out': $(cat "${WORK}/shape.err")"
+printf '#!/bin/sh\nprintf "1\\nhttps://github.com/o/r/issues/718\\n"\n' > "$fakes/gh"
+[ "$(PATH="$fakes:$PATH" step03_lookup "Anything" 2>/dev/null)" = "https://github.com/o/r/issues/718" ] || fail shapes "count line + URL was not read as a hit"
+printf '#!/bin/sh\necho "https://github.com/o/r/issues/718"\n' > "$fakes/gh"
+rc=0; out="$(PATH="$fakes:$PATH" step03_lookup "Anything" 2>/dev/null)" || rc=$?
+[ "$rc" = 1 ] && [ -z "$out" ] || fail shapes "a bare URL without the count line was accepted (rc $rc, '$out')"
+ok "the lookup reads gh's output shapes strictly, and no output as an empty list"
+
 # 51. stale-test-contract-header: the contract above describes the probe, not
 #     the removed stderr follower or a first real-gh attempt.
 hdr="$(sed -n '2,/^set -euo pipefail/p' "${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")")"

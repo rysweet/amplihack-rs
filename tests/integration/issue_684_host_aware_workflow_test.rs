@@ -249,7 +249,8 @@ case "$1:$2" in
     exit "${GH_VIEW_STATUS:-1}"
     ;;
   issue:list)
-    [ -n "${GH_LIST_URL:-}" ] && printf '%s\n' "$GH_LIST_URL"
+    # step-03's lookup reads two --jq lines: the listed count, then the URL.
+    [ -n "${GH_LIST_URL:-}" ] && printf '1\n%s\n' "$GH_LIST_URL"
     exit "${GH_LIST_STATUS:-0}"
     ;;
   label:create) exit 0 ;;
