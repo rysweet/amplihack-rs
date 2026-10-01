@@ -305,6 +305,11 @@ fn terminate_timed_out_child(child: &mut Child) -> Result<()> {
     // orphans, so terminate the whole tree — politely first, so apt/dpkg can
     // unwind, then hard. Descendants are killed before the child: once the
     // child is reaped they are reparented to init and no longer findable.
+    // The tree walk reads `/proc`, so it is Linux-only (elsewhere only the
+    // direct child is killed), and a pid can in principle be reused between
+    // the scan and the signal. Under `sudo` the SIGTERM pass reaches the
+    // root-owned command only because sudo relays the signal it receives; a
+    // non-root caller cannot SIGKILL that command directly (EPERM).
     let survivors = terminate_tree_gracefully(child);
     kill_hard(&survivors);
     match child.kill() {

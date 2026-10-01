@@ -26,16 +26,15 @@
 //! `AMPLIHACK_NO_FRESHNESS_CHECK=1` (or the usual non-interactive guards).
 
 use crate::update::fetch_branch_head_sha;
-use crate::util::{is_noninteractive, run_with_timeout};
+use crate::util::is_noninteractive;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const COOLDOWN_SECS: u64 = 24 * 60 * 60;
-const CARGO_INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
 const NO_FRESHNESS_ENV: &str = "AMPLIHACK_NO_FRESHNESS_CHECK";
 
 // ---------------------------------------------------------------------------
@@ -212,7 +211,10 @@ pub(crate) fn install_recipe_runner_from_git(bootstrap_toolchain: bool) -> Resul
         .arg(RECIPE_RUNNER_BRANCH)
         .arg("--locked")
         .arg("--force");
-    let status = run_with_timeout(cmd, CARGO_INSTALL_TIMEOUT)
+    // No timeout: building recipe-runner-rs on a slow host takes as long as
+    // it takes; a false timeout would fail a healthy install.
+    let status = cmd
+        .status()
         .context("failed to run cargo install for recipe-runner-rs")?;
     if !status.success() {
         bail!("cargo install exited with status {status}");

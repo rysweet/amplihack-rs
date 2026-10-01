@@ -621,7 +621,9 @@ fn local_install(
     // directory already exists, so it would be empty and uninstall would
     // leave the earlier run's directories behind. Carry forward what previous
     // manifests recorded, as long as it still exists.
-    let previous = manifest::read_manifest(&manifest_path).unwrap_or_default();
+    let previous = manifest::read_manifest(&manifest_path)
+        .inspect_err(|error| tracing::warn!("ignoring previous install manifest: {error:#}"))
+        .unwrap_or_default();
     for dir in previous.dirs {
         if !new_dirs.contains(&dir) && claude_dir.join(&dir).is_dir() {
             new_dirs.push(dir);

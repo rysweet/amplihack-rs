@@ -19,7 +19,6 @@
 //!
 //! Set `AMPLIHACK_NO_RUST_BOOTSTRAP=1` to disable steps 2 and 3.
 
-use crate::util::{run_output_with_timeout, run_with_timeout};
 use anyhow::{Context, Result, bail};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -29,7 +28,9 @@ use std::time::{Duration, Instant};
 
 const NO_BOOTSTRAP_ENV: &str = "AMPLIHACK_NO_RUST_BOOTSTRAP";
 const RUSTUP_INIT_URL: &str = "https://static.rust-lang.org/rustup/rustup-init.sh";
-const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(900);
+// No timeouts on the bootstrap steps: a rustup download, an apt install or
+// a `cargo install` on a slow VM legitimately takes as long as it takes, and
+// a false timeout costs more than a slow install.
 const APT_UPDATE_DEADLINE: Duration = Duration::from_secs(300);
 const APT_UPDATE_RETRY_DELAY: Duration = Duration::from_secs(5);
 /// rustc's default linker on Linux/macOS is literally `cc`; a host with only
@@ -113,11 +114,15 @@ pub(crate) fn find_recipe_runner() -> Option<PathBuf> {
     if let Some(found) = find_in_dirs(&path_dirs, &[NAME]) {
         return Some(found);
     }
-    cargo_home()
+    let mut fixed_dirs: Vec<PathBuf> = cargo_home()
         .map(|cargo_home| cargo_home.join("bin"))
         .into_iter()
         .chain(home.iter().map(|home| home.join(".cargo").join("bin")))
         .chain(home.iter().map(|home| home.join(".local").join("bin")))
+        .collect();
+    fixed_dirs.dedup();
+    fixed_dirs
+        .into_iter()
         .map(|dir| dir.join(NAME))
         .find(|candidate| candidate.is_file())
 }
@@ -228,7 +233,7 @@ fn install_rustup() -> Result<()> {
     let temp = tempfile::tempdir().context("failed to create a temp dir for rustup-init")?;
     let script = temp.path().join("rustup-init.sh");
 
-    let fetch = if let Some(curl) = find_in_dirs(dirs, &["curl"]) {
+    let mut fetch = if let Some(curl) = find_in_dirs(dirs, &["curl"]) {
         let mut cmd = Command::new(curl);
         cmd.args(["--proto", "=https", "--tlsv1.2", "-sSfL", "-o"])
             .arg(&script)
@@ -247,7 +252,8 @@ fn install_rustup() -> Result<()> {
              https://rustup.rs/"
         );
     };
-    let status = run_with_timeout(fetch, BOOTSTRAP_TIMEOUT)
+    let status = fetch
+        .status()
         .context("failed to download the rustup installer")?;
     if !status.success() {
         bail!("downloading {RUSTUP_INIT_URL} failed with status {status}");
@@ -258,7 +264,7 @@ fn install_rustup() -> Result<()> {
     let mut sh = Command::new("/bin/sh");
     sh.arg(&script)
         .args(["-y", "--no-modify-path", "--profile", "minimal"]);
-    let status = run_with_timeout(sh, BOOTSTRAP_TIMEOUT).context("failed to run rustup-init")?;
+    let status = sh.status().context("failed to run rustup-init")?;
     if !status.success() {
         bail!("rustup-init exited with status {status}");
     }
@@ -296,7 +302,7 @@ fn ensure_c_linker_in(dirs: &[PathBuf], allow_bootstrap: bool) -> Result<()> {
     let deadline = Instant::now() + APT_UPDATE_DEADLINE;
     let mut announced_wait = false;
     loop {
-        let output = match run_output_with_timeout(apt(&["update", "-qq"]), BOOTSTRAP_TIMEOUT) {
+        let output = match apt(&["update", "-qq"]).output() {
             Ok(output) => output,
             Err(err) => {
                 println!("   ⚠️  apt-get update failed ({err:#}); trying the install anyway");
@@ -323,7 +329,8 @@ fn ensure_c_linker_in(dirs: &[PathBuf], allow_bootstrap: bool) -> Result<()> {
     }
 
     let install = ["install", "-y", "-qq", "build-essential"];
-    let status = run_with_timeout(apt(&install), BOOTSTRAP_TIMEOUT)
+    let status = apt(&install)
+        .status()
         .context("failed to run apt-get install build-essential")?;
     if !status.success() {
         bail!(
@@ -554,6 +561,13 @@ mod tests {
                 find_recipe_runner(),
                 Some(on_path.join("recipe-runner-rs")),
                 "an override that points nowhere is ignored"
+            );
+            touch(&on_path.join("runner-alias"));
+            unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", "runner-alias") };
+            assert_eq!(
+                find_recipe_runner(),
+                Some(on_path.join("runner-alias")),
+                "a bare name is looked up on PATH"
             );
         });
         unsafe {
