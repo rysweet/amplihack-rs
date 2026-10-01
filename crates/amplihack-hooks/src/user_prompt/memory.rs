@@ -53,11 +53,19 @@ const EXTRA_STOP_WORDS: &[&str] = &["agent", "agents", "general"];
 /// `the workers die if the bin directory is missing`). The prompt is not
 /// language-checked: that would drop terse English prompts too (`/fix flaky
 /// sqlite test timeout on linux ci`), which have no function words to judge.
-/// Kept out, as everyday developer vocabulary: `dir`, `due`, `sin`, `col`,
-/// `del`, `com`, `net`.
+///
+/// Every entry is pinned by a test
+/// (`foreign_function_words_are_stop_words` and the non-English prompt
+/// tests), and the cost is that a two-word prompt made of an entry and one
+/// other topic word never matches (`/fix the man page`, see
+/// [`MIN_SHARED_TERMS`]). Left out for that reason, as everyday developer
+/// vocabulary: `bin`, `dos`, `dir`, `due`, `sin`, `col`, `del`, `com`,
+/// `net`; `die` alone keeps the German `bin … die` prompts out. `man` is
+/// kept because German `hat man` in a pasted log otherwise matches an
+/// English memory about a man and his hat.
 const FOREIGN_FUNCTION_WORDS: &[&str] = &[
-    "bin", "car", "con", "den", "die", "doe", "dos", "era", "hat", "man", "met", "mit", "sea",
-    "son", "ton", "van", "war",
+    "car", "con", "den", "die", "doe", "era", "hat", "man", "met", "mit", "sea", "son", "ton",
+    "van", "war",
 ];
 
 /// SMART words kept as topic words. SMART was built for news retrieval;
@@ -191,7 +199,7 @@ pub fn format_agent_memory_context(
     // sides: a memory stored from a prompt that used the same reference
     // would otherwise share its directory names (`claude`, `amplihack`).
     let prompt = without_definition_references(prompt);
-    let prompt_terms = topic_terms(&prompt, &ignored);
+    let prompt_terms = scored_terms(&prompt, &ignored);
 
     let mut scored: Vec<(f64, String, &PromptContextMemory)> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -211,7 +219,7 @@ pub fn format_agent_memory_context(
         let memory_terms: HashSet<String> = turns(&body)
             .iter()
             .filter(|turn| reads_as_english(turn))
-            .flat_map(|turn| topic_terms(turn, &ignored))
+            .flat_map(|turn| scored_terms(turn, &ignored))
             .collect();
         let shared = prompt_terms.intersection(&memory_terms).count();
         let relevance = memory_relevance(&prompt_terms, &memory_terms);
@@ -466,6 +474,39 @@ fn prose_word(token: &str) -> Option<String> {
         .chars()
         .any(|c| !c.is_alphabetic() && !is_apostrophe(c));
     (!token.is_empty() && !looks_like_code).then(|| token.to_lowercase().replace('\u{2019}', "'"))
+}
+
+/// A code part with fewer prose-like words than this is too short to judge
+/// its language, and is scored as it is (see [`scored_terms`]).
+const MIN_WORDS_TO_JUDGE: usize = 4;
+
+/// The topic words of `text` that are scored: those of its prose, and of
+/// each code part unless that part is itself a sentence in another
+/// language. Code is left out of the language check, so a German log pasted
+/// in a fence by an English assistant turn would otherwise lend its words
+/// to a German prompt. A code part with at least [`MIN_WORDS_TO_JUDGE`]
+/// prose-like words is judged like prose; if it doesn't read as English,
+/// only its code-looking tokens (`needless_borrow`, `src/main.rs`) are
+/// scored, not its words.
+fn scored_terms(text: &str, ignored: &HashSet<String>) -> HashSet<String> {
+    let mut terms = HashSet::new();
+    for (is_code, part) in segments(text) {
+        let words = part
+            .split_whitespace()
+            .filter_map(prose_word)
+            .collect::<Vec<_>>();
+        if !is_code || words.len() < MIN_WORDS_TO_JUDGE || english_share_ok(&words) {
+            terms.extend(topic_terms(part, ignored));
+        } else {
+            for token in part
+                .split_whitespace()
+                .filter(|token| prose_word(token).is_none())
+            {
+                terms.extend(topic_terms(token, ignored));
+            }
+        }
+    }
+    terms
 }
 
 /// Punctuation that surrounds prose words rather than making up code:
@@ -1679,6 +1720,113 @@ mod tests {
                 format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(unrelated)]),
                 None,
                 "{unrelated:?} is not relevant to {prompt:?}"
+            );
+        }
+    }
+
+    /// Foreign text pasted into an English memory's code (a fenced log, a
+    /// backtick span) is not what the memory is about, so a prompt in that
+    /// language must not match it on those words. The German words here
+    /// (`wo`, `ist`, `der`, `nicht`, `grün`) are not in the stop list.
+    #[test]
+    fn foreign_prompts_do_not_match_foreign_text_pasted_in_english_memories() {
+        let fenced = "Agent general: user: why did the docs build fail\n\nassistant: The docs build failed, here is the log from the runner:\n```\nFehler: die Datei ist nicht gefunden, der Server ist weg, wo ist der Fehler\n```";
+        let spanned = "Agent general: assistant: The docs build failed with `Fehler: die Datei ist nicht gefunden, der Server ist weg, wo ist der Fehler` from the runner.";
+        for unrelated in [fenced, spanned] {
+            for prompt in [
+                "/fix wo ist der Test, der ist nicht grün",
+                "/fix ich bin nicht sicher warum der Test scheitert",
+                "/fix die Datei ist nicht gefunden",
+            ] {
+                assert_eq!(
+                    format_agent_memory_context(
+                        prompt,
+                        &prompt_agents(prompt),
+                        &[memory(unrelated)]
+                    ),
+                    None,
+                    "{unrelated:?} is not relevant to {prompt:?}"
+                );
+            }
+        }
+        // An English prompt about the memory's own topic still gets it, and
+        // the identifiers inside the paste still count.
+        for prompt in [
+            "/fix the docs build log from the runner",
+            "/fix the docs build that failed on the runner",
+        ] {
+            assert!(
+                format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(fenced)])
+                    .is_some(),
+                "{fenced:?} is relevant to {prompt:?}"
+            );
+        }
+    }
+
+    /// Each foreign function word in the stop list keeps a prompt in its
+    /// language from matching an English memory that uses the same word as
+    /// English. Each pair shares one real topic word and two stop-listed
+    /// ones, so it matches as soon as either of the two is a topic word.
+    #[test]
+    fn foreign_function_words_are_stop_words() {
+        for (prompt, unrelated) in [
+            // German: den, mit, war
+            (
+                "/fix der Token war mit den Dateien kaputt",
+                "Agent general: user: The MIT token for the server is in the den, and the old war logs are gone.",
+            ),
+            // Dutch: doe, met
+            (
+                "/fix de token doe het niet met de logs",
+                "Agent general: user: The token for the doe tag was met by the server.",
+            ),
+            // French: car, ton
+            (
+                "/fix ton token car le serveur refuse",
+                "Agent general: user: The token for the car is a ton of bytes, and the server rejects it.",
+            ),
+            // Spanish and Italian: con, era
+            (
+                "/fix el token con el servidor que era viejo",
+                "Agent general: user: The con of the token is that the server from that era rejects it.",
+            ),
+            // Spanish: sea, van
+            (
+                "/fix los logs del token van al archivo, sea cual sea el servidor",
+                "Agent general: user: The token is in the van by the sea, and the server rejects it.",
+            ),
+        ] {
+            assert_eq!(
+                format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(unrelated)]),
+                None,
+                "{unrelated:?} is not relevant to {prompt:?}"
+            );
+        }
+    }
+
+    /// Developer words that are also foreign function words (`bin`, `dos`)
+    /// are topic words: a two-word prompt about them still matches.
+    #[test]
+    fn developer_words_are_not_foreign_stop_words() {
+        for (prompt, relevant) in [
+            (
+                "/fix the hooks bin",
+                "Agent builder: The hooks bin target is missing from the workspace members, so cargo install skips it.",
+            ),
+            (
+                "/fix the bin directory",
+                "Agent general: user: The build copies files into the bin directory, and the workers die if it is missing",
+            ),
+            (
+                "/fix the dos endings",
+                "Agent builder: The dos line endings in the install script break the parser on linux.",
+            ),
+        ] {
+            let result =
+                format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(relevant)]);
+            assert!(
+                result.is_some_and(|text| text.contains(strip_agent_prefix(relevant))),
+                "{relevant:?} is relevant to {prompt:?}"
             );
         }
     }

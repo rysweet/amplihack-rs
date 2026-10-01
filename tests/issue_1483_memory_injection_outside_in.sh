@@ -99,6 +99,14 @@ cat >"${WORK}/sqlite.jsonl" <<'EOF'
 {"role":"user","content":"the sqlite test is flaky on linux ci"}
 {"role":"assistant","content":"The sqlite test times out on the linux runner because the lock is held too long; raising the busy timeout fixed it."}
 EOF
+cat >"${WORK}/docslog.jsonl" <<'EOF'
+{"role":"user","content":"why did the docs build fail"}
+{"role":"assistant","content":"The docs build failed, here is the log from the runner:\n```\nFehler: die Datei ist nicht gefunden, der Server ist weg, wo ist der Fehler\n```"}
+EOF
+cat >"${WORK}/hooksbin.jsonl" <<'EOF'
+{"role":"user","content":"why does cargo install skip the hooks"}
+{"role":"assistant","content":"The hooks bin target is missing from the workspace members, so cargo install skips it."}
+EOF
 cat >"${WORK}/bin.jsonl" <<'EOF'
 {"role":"user","content":"why do the workers crash on startup?"}
 {"role":"assistant","content":"The build copies files into the bin directory, and the workers die if it is missing."}
@@ -113,6 +121,8 @@ for agent in analyzer builder; do
 done
 store "${WORK}/bin.jsonl" builder
 store "${WORK}/sqlite.jsonl" tester
+store "${WORK}/docslog.jsonl" general
+store "${WORK}/hooksbin.jsonl" builder
 store "${WORK}/detected.jsonl" ""
 store "${WORK}/css.jsonl" ""
 
@@ -139,6 +149,12 @@ if [ "$(count "${out}" "Relevant Memory")" -eq 0 ]; then pass "no memory without
 echo "scenario 4: a German prompt's function words don't match an English memory"
 out="$(ask "/fix ich bin nicht sicher, warum die Tests scheitern")"
 if [ "$(count "${out}" "bin directory")" -eq 0 ]; then pass "no memory for a non-English prompt"; else fail "memory injected: ${out}"; fi
+# Nor does German text pasted into an English memory's fenced log lend it
+# its words: `wo`, `ist`, `der`, `nicht` are not in the stop list.
+out="$(ask "/fix wo ist der Test, der ist nicht grün")"
+if [ "$(count "${out}" "docs build failed")" -eq 0 ]; then pass "no memory on a pasted German log"; else fail "memory injected on its German paste: ${out}"; fi
+out="$(ask "/fix the docs build log from the runner")"
+if [ "$(count "${out}" "docs build failed")" -eq 1 ]; then pass "the English prompt about that memory gets it"; else fail "docs memory missing: ${out}"; fi
 
 echo "scenario 5: an English prompt about that memory still gets it"
 out="$(ask "/fix why the workers die when the bin directory is missing")"
@@ -187,6 +203,9 @@ for prompt in "/fix flaky sqlite test timeout on linux ci" "/fix sqlite flaky te
   out="$(ask "${prompt}")"
   if [ "$(count "${out}" "raising the busy timeout fixed it")" -eq 1 ]; then pass "'${prompt}' gets the sqlite memory"; else fail "sqlite memory missing for '${prompt}': ${out}"; fi
 done
+# `bin` is a developer word, not a stop word: a two-word prompt matches.
+out="$(ask "/fix the hooks bin")"
+if [ "$(count "${out}" "hooks bin target is missing")" -eq 1 ]; then pass "'/fix the hooks bin' gets the hooks bin memory"; else fail "hooks bin memory missing: ${out}"; fi
 
 echo
 echo "passed: ${PASS_COUNT}, failed: ${FAIL_COUNT}"

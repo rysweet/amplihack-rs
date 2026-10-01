@@ -20,7 +20,7 @@ Each stored memory is scored against the prompt, and only relevant memories are 
 
 - **Topic words.** Topic words are the prompt's and the memory's English words, minus:
   - the [SMART stop list](https://github.com/igorbrigadir/stopwords/blob/master/en/smart.txt) (a few developer words such as `value` and `name` are kept),
-  - function words of German, Spanish, French, Italian, Portuguese and Dutch that are also English words (`die`, `bin`, `hat`, `man`, `mit`, `son`, `con`, …; see `FOREIGN_FUNCTION_WORDS`), so a prompt in one of those languages can't match an English memory on them,
+  - 15 function words of German, Spanish, French, Italian, Portuguese and Dutch that are also English words (`die`, `hat`, `man`, `mit`, `son`, `con`, `era`, …; see `FOREIGN_FUNCTION_WORDS`), so a prompt in one of those languages can't match an English memory on them. Developer words such as `bin`, `dos`, `dir` and `net` are kept as topic words even though they are foreign function words too. The cost of each entry is that a two-word prompt made of it and one other topic word (`/fix the man page`) never matches,
   - contractions,
   - words shorter than 3 characters, and words that start with a digit, such as numbers with or without a suffix (`500`, `2026`, `2nd`, `10am`, `100ms`); `sha256`, `utf8` and `e2e` count, while `2fa` does not,
   - the agent names and slash command that triggered the hook, and every agent definition reference as a whole (its directory names, such as `claude`, `amplihack` or `core`, are how the agent was invoked, not what the prompt is about),
@@ -36,7 +36,7 @@ Each stored memory is scored against the prompt, and only relevant memories are 
 
   This fails closed. Turns in other languages are ignored, so a Spanish question answered in English is matched only on the English answer. Terse English notes with too few function words to tell (`user login uses oauth`) are not injected either, even when they are relevant. The check is a screened word list, not a language identifier: a turn in an unscreened language that happens to use a marker word, or one turn mixing English with another language, is treated as English.
 
-  The prompt is not language-checked: terse English prompts (`/fix flaky sqlite test timeout on linux ci`, `/fix clippy needless_borrow parser`) have no function words to judge by, and a check would drop them. A prompt in another language is kept from matching English memories by the foreign function words in the stop list above; its other words are topic words like any other.
+  The prompt is not language-checked: terse English prompts (`/fix flaky sqlite test timeout on linux ci`, `/fix clippy needless_borrow parser`) have no function words to judge by, and a check would drop them. A prompt in another language matches an English memory only on the words the two share: the 15 foreign function words above are stop words, and foreign text pasted into an English memory's code (a fenced log of 4 or more words that doesn't read as English) contributes only its code-looking tokens, not its words. Its other words are topic words like any other, so a foreign prompt that shares two real words with an English memory, such as a product name and a path, still matches it.
 
 ## Hook Signature
 
