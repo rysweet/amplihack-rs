@@ -19,9 +19,8 @@
 //!
 //! Set `AMPLIHACK_NO_RUST_BOOTSTRAP=1` to disable steps 2 and 3.
 
-use crate::util::{run_output_with_timeout, run_with_timeout};
 use anyhow::{Context, Result, bail};
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,7 +28,9 @@ use std::time::{Duration, Instant};
 
 const NO_BOOTSTRAP_ENV: &str = "AMPLIHACK_NO_RUST_BOOTSTRAP";
 const RUSTUP_INIT_URL: &str = "https://static.rust-lang.org/rustup/rustup-init.sh";
-const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(900);
+// No timeouts on the bootstrap steps: a rustup download, an apt install or
+// a `cargo install` on a slow VM legitimately takes as long as it takes, and
+// a false timeout costs more than a slow install.
 const APT_UPDATE_DEADLINE: Duration = Duration::from_secs(300);
 const APT_UPDATE_RETRY_DELAY: Duration = Duration::from_secs(5);
 /// rustc's default linker on Linux/macOS is literally `cc`; a host with only
@@ -79,6 +80,67 @@ fn bootstrap_disabled_by(value: Option<&std::ffi::OsStr>) -> bool {
 
 fn bootstrap_disabled() -> bool {
     bootstrap_disabled_by(std::env::var_os(NO_BOOTSTRAP_ENV).as_deref())
+}
+
+/// Where `recipe-runner-rs` may live, in lookup order (issue #1505: one list
+/// for install, the launch-time refresh and `amplihack recipe run`):
+/// `RECIPE_RUNNER_RS_PATH` (a `~/` prefix expands to `$HOME`; a bare name is
+/// looked up on PATH; an override that points nowhere is ignored), then PATH,
+/// then `$CARGO_HOME/bin` (where `cargo install` puts it), `~/.cargo/bin` and
+/// `~/.local/bin`.
+pub(crate) fn find_recipe_runner() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let explicit = std::env::var_os("RECIPE_RUNNER_RS_PATH").filter(|value| !value.is_empty());
+    find_recipe_runner_in(
+        explicit.as_deref(),
+        &path_dirs(),
+        home.as_deref(),
+        cargo_home().as_deref(),
+    )
+}
+
+/// The lookup behind [`find_recipe_runner`], with every input explicit so it
+/// can be tested without touching the process environment.
+fn find_recipe_runner_in(
+    explicit: Option<&OsStr>,
+    path_dirs: &[PathBuf],
+    home: Option<&Path>,
+    cargo_home: Option<&Path>,
+) -> Option<PathBuf> {
+    const NAME: &str = "recipe-runner-rs";
+
+    if let Some(explicit) = explicit {
+        let explicit = PathBuf::from(explicit);
+        let expanded = match (explicit.strip_prefix("~"), home) {
+            (Ok(rest), Some(home)) => home.join(rest),
+            _ => explicit,
+        };
+        let found = if expanded.components().count() > 1 {
+            expanded.is_file().then_some(expanded)
+        } else {
+            find_in_dirs(path_dirs, &[&expanded.to_string_lossy()])
+        };
+        if found.is_some() {
+            return found;
+        }
+    }
+
+    if let Some(found) = find_in_dirs(path_dirs, &[NAME]) {
+        return Some(found);
+    }
+    let mut fixed_dirs: Vec<PathBuf> = cargo_home
+        .map(|cargo_home| cargo_home.join("bin"))
+        .into_iter()
+        .chain(home.iter().map(|home| home.join(".cargo").join("bin")))
+        .chain(home.iter().map(|home| home.join(".local").join("bin")))
+        .collect();
+    fixed_dirs.dedup();
+    fixed_dirs
+        .into_iter()
+        .map(|dir| dir.join(NAME))
+        .find(|candidate| candidate.is_file())
 }
 
 /// `$CARGO_HOME`, defaulting to `~/.cargo`.
@@ -187,7 +249,7 @@ fn install_rustup() -> Result<()> {
     let temp = tempfile::tempdir().context("failed to create a temp dir for rustup-init")?;
     let script = temp.path().join("rustup-init.sh");
 
-    let fetch = if let Some(curl) = find_in_dirs(dirs, &["curl"]) {
+    let mut fetch = if let Some(curl) = find_in_dirs(dirs, &["curl"]) {
         let mut cmd = Command::new(curl);
         cmd.args(["--proto", "=https", "--tlsv1.2", "-sSfL", "-o"])
             .arg(&script)
@@ -206,7 +268,8 @@ fn install_rustup() -> Result<()> {
              https://rustup.rs/"
         );
     };
-    let status = run_with_timeout(fetch, BOOTSTRAP_TIMEOUT)
+    let status = fetch
+        .status()
         .context("failed to download the rustup installer")?;
     if !status.success() {
         bail!("downloading {RUSTUP_INIT_URL} failed with status {status}");
@@ -217,7 +280,7 @@ fn install_rustup() -> Result<()> {
     let mut sh = Command::new("/bin/sh");
     sh.arg(&script)
         .args(["-y", "--no-modify-path", "--profile", "minimal"]);
-    let status = run_with_timeout(sh, BOOTSTRAP_TIMEOUT).context("failed to run rustup-init")?;
+    let status = sh.status().context("failed to run rustup-init")?;
     if !status.success() {
         bail!("rustup-init exited with status {status}");
     }
@@ -255,7 +318,7 @@ fn ensure_c_linker_in(dirs: &[PathBuf], allow_bootstrap: bool) -> Result<()> {
     let deadline = Instant::now() + APT_UPDATE_DEADLINE;
     let mut announced_wait = false;
     loop {
-        let output = match run_output_with_timeout(apt(&["update", "-qq"]), BOOTSTRAP_TIMEOUT) {
+        let output = match apt(&["update", "-qq"]).output() {
             Ok(output) => output,
             Err(err) => {
                 println!("   ⚠️  apt-get update failed ({err:#}); trying the install anyway");
@@ -282,7 +345,8 @@ fn ensure_c_linker_in(dirs: &[PathBuf], allow_bootstrap: bool) -> Result<()> {
     }
 
     let install = ["install", "-y", "-qq", "build-essential"];
-    let status = run_with_timeout(apt(&install), BOOTSTRAP_TIMEOUT)
+    let status = apt(&install)
+        .status()
         .context("failed to run apt-get install build-essential")?;
     if !status.success() {
         bail!(
@@ -460,6 +524,79 @@ mod tests {
             joined,
             OsString::from("/h/.cargo/bin:/usr/bin:"),
             "only prepends; the user's own entries stay verbatim"
+        );
+    }
+
+    /// `RECIPE_RUNNER_RS_PATH`, then PATH, then the fixed cargo/home dirs.
+    /// Every input is explicit, so no process-global env var is touched.
+    #[test]
+    fn find_recipe_runner_order_is_override_path_then_fixed_dirs() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let on_path = temp.path().join("bin");
+        let path_dirs = vec![on_path.clone()];
+        let cargo_home = home.join(".cargo");
+        let find = |explicit: Option<&str>| {
+            find_recipe_runner_in(
+                explicit.map(OsStr::new),
+                &path_dirs,
+                Some(&home),
+                Some(&cargo_home),
+            )
+        };
+
+        assert_eq!(find(None), None);
+
+        touch(&home.join(".local/bin/recipe-runner-rs"));
+        assert_eq!(find(None), Some(home.join(".local/bin/recipe-runner-rs")));
+        touch(&home.join(".cargo/bin/recipe-runner-rs"));
+        assert_eq!(
+            find(None),
+            Some(home.join(".cargo/bin/recipe-runner-rs")),
+            "$CARGO_HOME/bin (default ~/.cargo/bin) beats ~/.local/bin"
+        );
+        touch(&on_path.join("recipe-runner-rs"));
+        assert_eq!(
+            find(None),
+            Some(on_path.join("recipe-runner-rs")),
+            "PATH beats the fixed dirs"
+        );
+
+        let explicit = home.join("elsewhere/recipe-runner-rs");
+        touch(&explicit);
+        assert_eq!(
+            find(Some("~/elsewhere/recipe-runner-rs")),
+            Some(explicit),
+            "~/ expands to $HOME"
+        );
+        assert_eq!(
+            find(Some("/nonexistent/recipe-runner-rs")),
+            Some(on_path.join("recipe-runner-rs")),
+            "an override that points nowhere is ignored"
+        );
+        touch(&on_path.join("runner-alias"));
+        assert_eq!(
+            find(Some("runner-alias")),
+            Some(on_path.join("runner-alias")),
+            "a bare name is looked up on PATH"
+        );
+
+        let other_cargo_home = temp.path().join("cargo-elsewhere");
+        touch(&other_cargo_home.join("bin/recipe-runner-rs"));
+        assert_eq!(
+            find_recipe_runner_in(None, &[], Some(&home), Some(&other_cargo_home)),
+            Some(other_cargo_home.join("bin/recipe-runner-rs")),
+            "a custom $CARGO_HOME/bin beats ~/.cargo/bin"
+        );
+        assert_eq!(
+            find_recipe_runner_in(
+                Some(OsStr::new("~/elsewhere/recipe-runner-rs")),
+                &[],
+                None,
+                None
+            ),
+            None,
+            "without HOME a ~/ override stays literal and the home dirs are skipped"
         );
     }
 
