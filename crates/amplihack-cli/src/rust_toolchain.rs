@@ -20,7 +20,7 @@
 //! Set `AMPLIHACK_NO_RUST_BOOTSTRAP=1` to disable steps 2 and 3.
 
 use anyhow::{Context, Result, bail};
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -89,32 +89,48 @@ fn bootstrap_disabled() -> bool {
 /// then `$CARGO_HOME/bin` (where `cargo install` puts it), `~/.cargo/bin` and
 /// `~/.local/bin`.
 pub(crate) fn find_recipe_runner() -> Option<PathBuf> {
-    const NAME: &str = "recipe-runner-rs";
     let home = std::env::var_os("HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from);
-    let path_dirs = path_dirs();
+    let explicit = std::env::var_os("RECIPE_RUNNER_RS_PATH").filter(|value| !value.is_empty());
+    find_recipe_runner_in(
+        explicit.as_deref(),
+        &path_dirs(),
+        home.as_deref(),
+        cargo_home().as_deref(),
+    )
+}
 
-    if let Some(explicit) = std::env::var_os("RECIPE_RUNNER_RS_PATH").filter(|v| !v.is_empty()) {
+/// The lookup behind [`find_recipe_runner`], with every input explicit so it
+/// can be tested without touching the process environment.
+fn find_recipe_runner_in(
+    explicit: Option<&OsStr>,
+    path_dirs: &[PathBuf],
+    home: Option<&Path>,
+    cargo_home: Option<&Path>,
+) -> Option<PathBuf> {
+    const NAME: &str = "recipe-runner-rs";
+
+    if let Some(explicit) = explicit {
         let explicit = PathBuf::from(explicit);
-        let expanded = match (explicit.strip_prefix("~"), &home) {
+        let expanded = match (explicit.strip_prefix("~"), home) {
             (Ok(rest), Some(home)) => home.join(rest),
             _ => explicit,
         };
         let found = if expanded.components().count() > 1 {
             expanded.is_file().then_some(expanded)
         } else {
-            find_in_dirs(&path_dirs, &[&expanded.to_string_lossy()])
+            find_in_dirs(path_dirs, &[&expanded.to_string_lossy()])
         };
         if found.is_some() {
             return found;
         }
     }
 
-    if let Some(found) = find_in_dirs(&path_dirs, &[NAME]) {
+    if let Some(found) = find_in_dirs(path_dirs, &[NAME]) {
         return Some(found);
     }
-    let mut fixed_dirs: Vec<PathBuf> = cargo_home()
+    let mut fixed_dirs: Vec<PathBuf> = cargo_home
         .map(|cargo_home| cargo_home.join("bin"))
         .into_iter()
         .chain(home.iter().map(|home| home.join(".cargo").join("bin")))
@@ -512,73 +528,76 @@ mod tests {
     }
 
     /// `RECIPE_RUNNER_RS_PATH`, then PATH, then the fixed cargo/home dirs.
+    /// Every input is explicit, so no process-global env var is touched.
     #[test]
     fn find_recipe_runner_order_is_override_path_then_fixed_dirs() {
-        let _guard = crate::test_support::home_env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path().join("home");
         let on_path = temp.path().join("bin");
-        let saved: Vec<(&str, Option<std::ffi::OsString>)> =
-            ["HOME", "PATH", "CARGO_HOME", "RECIPE_RUNNER_RS_PATH"]
-                .into_iter()
-                .map(|key| (key, std::env::var_os(key)))
-                .collect();
-        unsafe {
-            std::env::set_var("HOME", &home);
-            std::env::set_var("PATH", &on_path);
-            std::env::remove_var("CARGO_HOME");
-            std::env::remove_var("RECIPE_RUNNER_RS_PATH");
-        }
-        let result = std::panic::catch_unwind(|| {
-            assert_eq!(find_recipe_runner(), None);
+        let path_dirs = vec![on_path.clone()];
+        let cargo_home = home.join(".cargo");
+        let find = |explicit: Option<&str>| {
+            find_recipe_runner_in(
+                explicit.map(OsStr::new),
+                &path_dirs,
+                Some(&home),
+                Some(&cargo_home),
+            )
+        };
 
-            touch(&home.join(".local/bin/recipe-runner-rs"));
-            assert_eq!(
-                find_recipe_runner(),
-                Some(home.join(".local/bin/recipe-runner-rs"))
-            );
-            touch(&home.join(".cargo/bin/recipe-runner-rs"));
-            assert_eq!(
-                find_recipe_runner(),
-                Some(home.join(".cargo/bin/recipe-runner-rs")),
-                "$CARGO_HOME/bin (default ~/.cargo/bin) beats ~/.local/bin"
-            );
-            touch(&on_path.join("recipe-runner-rs"));
-            assert_eq!(
-                find_recipe_runner(),
-                Some(on_path.join("recipe-runner-rs")),
-                "PATH beats the fixed dirs"
-            );
+        assert_eq!(find(None), None);
 
-            let explicit = home.join("elsewhere/recipe-runner-rs");
-            touch(&explicit);
-            unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", "~/elsewhere/recipe-runner-rs") };
-            assert_eq!(find_recipe_runner(), Some(explicit), "~/ expands to $HOME");
-            unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", "/nonexistent/recipe-runner-rs") };
-            assert_eq!(
-                find_recipe_runner(),
-                Some(on_path.join("recipe-runner-rs")),
-                "an override that points nowhere is ignored"
-            );
-            touch(&on_path.join("runner-alias"));
-            unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", "runner-alias") };
-            assert_eq!(
-                find_recipe_runner(),
-                Some(on_path.join("runner-alias")),
-                "a bare name is looked up on PATH"
-            );
-        });
-        unsafe {
-            for (key, value) in saved {
-                match value {
-                    Some(value) => std::env::set_var(key, value),
-                    None => std::env::remove_var(key),
-                }
-            }
-        }
-        result.unwrap();
+        touch(&home.join(".local/bin/recipe-runner-rs"));
+        assert_eq!(find(None), Some(home.join(".local/bin/recipe-runner-rs")));
+        touch(&home.join(".cargo/bin/recipe-runner-rs"));
+        assert_eq!(
+            find(None),
+            Some(home.join(".cargo/bin/recipe-runner-rs")),
+            "$CARGO_HOME/bin (default ~/.cargo/bin) beats ~/.local/bin"
+        );
+        touch(&on_path.join("recipe-runner-rs"));
+        assert_eq!(
+            find(None),
+            Some(on_path.join("recipe-runner-rs")),
+            "PATH beats the fixed dirs"
+        );
+
+        let explicit = home.join("elsewhere/recipe-runner-rs");
+        touch(&explicit);
+        assert_eq!(
+            find(Some("~/elsewhere/recipe-runner-rs")),
+            Some(explicit),
+            "~/ expands to $HOME"
+        );
+        assert_eq!(
+            find(Some("/nonexistent/recipe-runner-rs")),
+            Some(on_path.join("recipe-runner-rs")),
+            "an override that points nowhere is ignored"
+        );
+        touch(&on_path.join("runner-alias"));
+        assert_eq!(
+            find(Some("runner-alias")),
+            Some(on_path.join("runner-alias")),
+            "a bare name is looked up on PATH"
+        );
+
+        let other_cargo_home = temp.path().join("cargo-elsewhere");
+        touch(&other_cargo_home.join("bin/recipe-runner-rs"));
+        assert_eq!(
+            find_recipe_runner_in(None, &[], Some(&home), Some(&other_cargo_home)),
+            Some(other_cargo_home.join("bin/recipe-runner-rs")),
+            "a custom $CARGO_HOME/bin beats ~/.cargo/bin"
+        );
+        assert_eq!(
+            find_recipe_runner_in(
+                Some(OsStr::new("~/elsewhere/recipe-runner-rs")),
+                &[],
+                None,
+                None
+            ),
+            None,
+            "without HOME a ~/ override stays literal and the home dirs are skipped"
+        );
     }
 
     #[test]

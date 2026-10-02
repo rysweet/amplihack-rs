@@ -296,6 +296,7 @@ fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> io::Result<Optio
 }
 
 /// How long a timed-out tree gets to unwind after SIGTERM before SIGKILL.
+#[cfg(target_os = "linux")]
 const TERMINATE_GRACE: Duration = Duration::from_secs(2);
 
 fn terminate_timed_out_child(child: &mut Child) -> Result<()> {
@@ -303,13 +304,19 @@ fn terminate_timed_out_child(child: &mut Child) -> Result<()> {
     // Issue #1506: `Child::kill` reaches only the direct child. A wrapper
     // (`sudo`, `sh`, `cargo`) would leave its own children running as
     // orphans, so terminate the whole tree — politely first, so the tree can
-    // unwind, then hard. Descendants are killed before the child is reaped:
-    // once it is reaped they are reparented to init and no longer findable.
-    // The tree walk reads `/proc`, so it is Linux-only (elsewhere only the
-    // direct child is killed), and a pid can in principle be reused between
-    // the scan and the signal. Under `sudo` the SIGTERM pass reaches the
-    // root-owned command only because sudo relays the signal it receives; a
-    // non-root caller cannot SIGKILL that command directly (EPERM).
+    // unwind, then hard. The walk reads `/proc`, so it is Linux-only
+    // (elsewhere only the direct child is killed). Coverage is best-effort:
+    // a process's children are reparented to init the moment it exits, so a
+    // descendant is only findable while its own parent is alive. The grace
+    // loop therefore re-walks from every node it already knows, which keeps
+    // tracking a reparented target and its later children; a target that
+    // forks and exits between two walks still leaks that child (only a
+    // process group or cgroup closes that window, and either would change
+    // terminal job control for every caller). A pid can in principle be
+    // reused between a walk and the signal. Under `sudo` the SIGTERM pass
+    // reaches the root-owned command only because sudo relays the signal it
+    // receives; a non-root caller cannot SIGKILL that command directly
+    // (EPERM).
     let survivors = terminate_tree_gracefully(child);
     kill_hard(&survivors);
     match child.kill() {
@@ -336,22 +343,28 @@ fn terminate_timed_out_child(child: &mut Child) -> Result<()> {
 
 /// SIGTERM the child and every live descendant, wait up to
 /// [`TERMINATE_GRACE`] for them to go, and return the descendants still alive
-/// (including any spawned after the SIGTERM pass) for the caller to SIGKILL.
+/// for the caller to SIGKILL. Each poll re-walks `/proc` from the child and
+/// from every descendant seen so far, so children spawned after the first
+/// pass by a still-live (possibly already reparented) node are picked up and
+/// SIGTERMed too. The child is left for the caller to reap.
 #[cfg(target_os = "linux")]
 fn terminate_tree_gracefully(child: &mut Child) -> Vec<u32> {
     let pid = child.id();
     let mut targets = descendant_pids(pid);
     for target in targets.iter().chain(std::iter::once(&pid)) {
-        // SAFETY: plain signal delivery to a pid we own; errors are ignored
-        // (the process may already be gone).
-        unsafe {
-            libc::kill(*target as libc::pid_t, libc::SIGTERM);
-        }
+        signal(*target, libc::SIGTERM);
     }
     let started = Instant::now();
     loop {
-        // Liveness via /proc, not `try_wait`: reaping the child here would
-        // reparent any surviving descendants before the re-scan below.
+        let late: Vec<u32> = std::iter::once(pid)
+            .chain(targets.iter().copied())
+            .flat_map(descendant_pids)
+            .filter(|found| !targets.contains(found))
+            .collect();
+        for found in late {
+            signal(found, libc::SIGTERM);
+            targets.push(found);
+        }
         let child_done = !pid_is_live(pid);
         let descendants_done = !targets.iter().any(|target| pid_is_live(*target));
         if (child_done && descendants_done) || started.elapsed() >= TERMINATE_GRACE {
@@ -359,14 +372,18 @@ fn terminate_tree_gracefully(child: &mut Child) -> Vec<u32> {
         }
         thread::sleep(Duration::from_millis(20));
     }
-    // Re-scan while the tree may still be intact so late children are seen.
-    for late in descendant_pids(pid) {
-        if !targets.contains(&late) {
-            targets.push(late);
-        }
-    }
     targets.retain(|target| pid_is_live(*target));
     targets
+}
+
+/// Plain signal delivery; errors are ignored (the process may already be
+/// gone, or be root-owned under `sudo`).
+#[cfg(target_os = "linux")]
+fn signal(pid: u32, signal: libc::c_int) {
+    // SAFETY: `kill` has no memory-safety preconditions.
+    unsafe {
+        libc::kill(pid as libc::pid_t, signal);
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -713,6 +730,18 @@ mod tests {
         assert_eq!(output.stdout.len(), 1024);
     }
 
+    /// The pid a test shell wrote with `echo $! > file`. The shell must have
+    /// forked its child before the timeout fired, which the timeouts below
+    /// leave ample room for.
+    #[cfg(target_os = "linux")]
+    fn read_pid_file(pid_file: &std::path::Path) -> i32 {
+        std::fs::read_to_string(pid_file)
+            .expect("the shell must have written the grandchild pid before the timeout fired")
+            .trim()
+            .parse()
+            .expect("the pid file holds a single pid")
+    }
+
     /// Issue #1506: a timed-out wrapper's own children are terminated too.
     #[cfg(target_os = "linux")]
     #[test]
@@ -725,15 +754,11 @@ mod tests {
             .arg("sh")
             .arg(&pid_file);
 
-        let error = run_with_timeout(cmd, Duration::from_millis(200))
+        let error = run_with_timeout(cmd, Duration::from_secs(1))
             .expect_err("the waiting shell must time out");
         assert!(error.to_string().contains("timed out after"), "{error:#}");
 
-        let grandchild: i32 = std::fs::read_to_string(&pid_file)
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
+        let grandchild = read_pid_file(&pid_file);
         let exited = wait_for_pid_to_exit(grandchild, Duration::from_secs(3));
         if !exited {
             unsafe {
@@ -758,13 +783,9 @@ mod tests {
             .arg("sh")
             .arg(&pid_file);
 
-        run_with_timeout(cmd, Duration::from_millis(200)).expect_err("must time out");
+        run_with_timeout(cmd, Duration::from_secs(1)).expect_err("must time out");
 
-        let grandchild: i32 = std::fs::read_to_string(&pid_file)
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
+        let grandchild = read_pid_file(&pid_file);
         let exited = wait_for_pid_to_exit(grandchild, Duration::from_secs(4));
         if !exited {
             unsafe {
@@ -774,6 +795,38 @@ mod tests {
         assert!(
             exited,
             "a SIGTERM-ignoring grandchild (pid {grandchild}) must be SIGKILLed"
+        );
+    }
+
+    /// A descendant that outlives its parent is reparented to init, so it is
+    /// no longer reachable by walking down from the direct child. It must
+    /// still be tracked, and so must a child it spawns afterwards.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn run_with_timeout_tracks_a_reparented_descendant_and_its_late_child() {
+        let temp = tempfile::tempdir().unwrap();
+        let pid_file = temp.path().join("pid");
+        let mut cmd = std::process::Command::new("/bin/sh");
+        // The outer shell dies on SIGTERM, orphaning the subshell. The
+        // subshell ignores SIGTERM, outlives the first walk's `sleep 0.5`,
+        // then spawns the `sleep 30` that must not leak.
+        cmd.arg("-c")
+            .arg("(trap '' TERM; /bin/sleep 0.5; /bin/sleep 30 & echo $! > \"$1\"; wait) & wait")
+            .arg("sh")
+            .arg(&pid_file);
+
+        run_with_timeout(cmd, Duration::from_millis(300)).expect_err("must time out");
+
+        let late_child = read_pid_file(&pid_file);
+        let exited = wait_for_pid_to_exit(late_child, Duration::from_secs(4));
+        if !exited {
+            unsafe {
+                libc::kill(late_child, libc::SIGKILL);
+            }
+        }
+        assert!(
+            exited,
+            "the late child (pid {late_child}) of a reparented subshell must be terminated"
         );
     }
 
