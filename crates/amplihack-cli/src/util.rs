@@ -9,6 +9,8 @@
 //!   before display to prevent terminal injection via crafted external output.
 
 use anyhow::{Context, Result, anyhow, bail};
+#[cfg(target_os = "linux")]
+use std::collections::{HashMap, HashSet};
 use std::io::IsTerminal;
 use std::io::{self, Read, Write};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
@@ -312,8 +314,9 @@ fn terminate_timed_out_child(child: &mut Child) -> Result<()> {
     // tracking a reparented target and its later children; a target that
     // forks and exits between two walks still leaks that child (only a
     // process group or cgroup closes that window, and either would change
-    // terminal job control for every caller). A pid can in principle be
-    // reused between a walk and the signal. Under `sudo` the SIGTERM pass
+    // terminal job control for every caller). A pid is tracked for the whole
+    // grace period, so one that exits and is reused by an unrelated process
+    // in that window could in principle be signalled. Under `sudo` the SIGTERM pass
     // reaches the root-owned command only because sudo relays the signal it
     // receives; a non-root caller cannot SIGKILL that command directly
     // (EPERM).
@@ -343,28 +346,33 @@ fn terminate_timed_out_child(child: &mut Child) -> Result<()> {
 
 /// SIGTERM the child and every live descendant, wait up to
 /// [`TERMINATE_GRACE`] for them to go, and return the descendants still alive
-/// for the caller to SIGKILL. Each poll re-walks `/proc` from the child and
-/// from every descendant seen so far, so children spawned after the first
-/// pass by a still-live (possibly already reparented) node are picked up and
-/// SIGTERMed too. The child is left for the caller to reap.
+/// for the caller to SIGKILL. Each poll takes one `/proc` snapshot and walks
+/// it from the child and from every descendant seen so far, so children
+/// spawned after the first pass by a still-live (possibly already reparented)
+/// node are picked up and SIGTERMed too. The child is left for the caller to
+/// reap.
 #[cfg(target_os = "linux")]
 fn terminate_tree_gracefully(child: &mut Child) -> Vec<u32> {
     let pid = child.id();
-    let mut targets = descendant_pids(pid);
-    for target in targets.iter().chain(std::iter::once(&pid)) {
-        signal(*target, libc::SIGTERM);
-    }
+    let mut targets: Vec<u32> = Vec::new();
+    let mut seen: HashSet<u32> = HashSet::new();
+    let mut walk_and_signal = |targets: &mut Vec<u32>| {
+        let snapshot = proc_children();
+        let roots = std::iter::once(pid).chain(targets.iter().copied());
+        for found in descendants_in(&snapshot, roots) {
+            if seen.insert(found) {
+                signal(found, libc::SIGTERM);
+                targets.push(found);
+            }
+        }
+    };
+    // Walk before signalling the child: a wrapper that dies on SIGTERM
+    // reparents its children at once, and then they are no longer below it.
+    walk_and_signal(&mut targets);
+    signal(pid, libc::SIGTERM);
     let started = Instant::now();
     loop {
-        let late: Vec<u32> = std::iter::once(pid)
-            .chain(targets.iter().copied())
-            .flat_map(descendant_pids)
-            .filter(|found| !targets.contains(found))
-            .collect();
-        for found in late {
-            signal(found, libc::SIGTERM);
-            targets.push(found);
-        }
+        walk_and_signal(&mut targets);
         let child_done = !pid_is_live(pid);
         let descendants_done = !targets.iter().any(|target| pid_is_live(*target));
         if (child_done && descendants_done) || started.elapsed() >= TERMINATE_GRACE {
@@ -378,7 +386,7 @@ fn terminate_tree_gracefully(child: &mut Child) -> Vec<u32> {
 
 /// Plain signal delivery; errors are ignored (the process may already be
 /// gone, or be root-owned under `sudo`).
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn signal(pid: u32, signal: libc::c_int) {
     // SAFETY: `kill` has no memory-safety preconditions.
     unsafe {
@@ -386,31 +394,23 @@ fn signal(pid: u32, signal: libc::c_int) {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
-fn terminate_tree_gracefully(_child: &mut Child) -> Vec<u32> {
-    Vec::new()
-}
-
 /// SIGKILL the given descendants.
 fn kill_hard(pids: &[u32]) {
     for target in pids {
         #[cfg(unix)]
-        // SAFETY: as above.
-        unsafe {
-            libc::kill(*target as libc::pid_t, libc::SIGKILL);
-        }
+        signal(*target, libc::SIGKILL);
         #[cfg(not(unix))]
         let _ = target;
     }
 }
 
-/// Every live process below `root` in the parent tree, read from `/proc`.
-/// Best effort: an unreadable entry is skipped.
+/// One snapshot of the live process tree from `/proc`: parent pid to child
+/// pids. Best effort: an unreadable entry is skipped.
 #[cfg(target_os = "linux")]
-fn descendant_pids(root: u32) -> Vec<u32> {
-    let mut children: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();
+fn proc_children() -> HashMap<u32, Vec<u32>> {
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
     let Ok(entries) = std::fs::read_dir("/proc") else {
-        return Vec::new();
+        return children;
     };
     for entry in entries.flatten() {
         let Some(pid) = entry
@@ -427,13 +427,26 @@ fn descendant_pids(root: u32) -> Vec<u32> {
             children.entry(ppid).or_default().push(pid);
         }
     }
+    children
+}
+
+/// Every process below any of `roots` in a [`proc_children`] snapshot, each
+/// reported once.
+#[cfg(target_os = "linux")]
+fn descendants_in(
+    children: &HashMap<u32, Vec<u32>>,
+    roots: impl IntoIterator<Item = u32>,
+) -> Vec<u32> {
     let mut found = Vec::new();
-    let mut queue = vec![root];
+    let mut visited = HashSet::new();
+    let mut queue: Vec<u32> = roots.into_iter().collect();
     while let Some(parent) = queue.pop() {
         if let Some(kids) = children.get(&parent) {
             for kid in kids {
-                found.push(*kid);
-                queue.push(*kid);
+                if visited.insert(*kid) {
+                    found.push(*kid);
+                    queue.push(*kid);
+                }
             }
         }
     }
@@ -808,14 +821,22 @@ mod tests {
         let pid_file = temp.path().join("pid");
         let mut cmd = std::process::Command::new("/bin/sh");
         // The outer shell dies on SIGTERM, orphaning the subshell. The
-        // subshell ignores SIGTERM, outlives the first walk's `sleep 0.5`,
-        // then spawns the `sleep 30` that must not leak.
+        // subshell ignores SIGTERM and waits until it has been reparented
+        // (its ppid, read from /proc/self/stat by the `read` builtin, no
+        // longer equals the outer shell's `$$`; `kill -0 $$` would not do,
+        // since the unreaped outer shell stays a zombie), then spawns the
+        // `sleep 30` that must not leak.
         cmd.arg("-c")
-            .arg("(trap '' TERM; /bin/sleep 0.5; /bin/sleep 30 & echo $! > \"$1\"; wait) & wait")
+            .arg(concat!(
+                "(trap '' TERM; ",
+                "while read -r _ _ _ ppid _ < /proc/self/stat && [ \"$ppid\" = \"$$\" ]; ",
+                "do /bin/sleep 0.02; done; ",
+                "/bin/sleep 30 & echo $! > \"$1\"; wait) & wait",
+            ))
             .arg("sh")
             .arg(&pid_file);
 
-        run_with_timeout(cmd, Duration::from_millis(300)).expect_err("must time out");
+        run_with_timeout(cmd, Duration::from_secs(1)).expect_err("must time out");
 
         let late_child = read_pid_file(&pid_file);
         let exited = wait_for_pid_to_exit(late_child, Duration::from_secs(4));
