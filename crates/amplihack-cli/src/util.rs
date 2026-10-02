@@ -384,6 +384,12 @@ fn terminate_tree_gracefully(child: &mut Child) -> Vec<u32> {
     targets
 }
 
+/// Elsewhere only the direct child is killed; see `terminate_timed_out_child`.
+#[cfg(not(target_os = "linux"))]
+fn terminate_tree_gracefully(_child: &mut Child) -> Vec<u32> {
+    Vec::new()
+}
+
 /// Plain signal delivery; errors are ignored (the process may already be
 /// gone, or be root-owned under `sudo`).
 #[cfg(unix)]
