@@ -302,9 +302,9 @@ fn terminate_timed_out_child(child: &mut Child) -> Result<()> {
     let pid = child.id();
     // Issue #1506: `Child::kill` reaches only the direct child. A wrapper
     // (`sudo`, `sh`, `cargo`) would leave its own children running as
-    // orphans, so terminate the whole tree — politely first, so apt/dpkg can
-    // unwind, then hard. Descendants are killed before the child: once the
-    // child is reaped they are reparented to init and no longer findable.
+    // orphans, so terminate the whole tree — politely first, so the tree can
+    // unwind, then hard. Descendants are killed before the child is reaped:
+    // once it is reaped they are reparented to init and no longer findable.
     // The tree walk reads `/proc`, so it is Linux-only (elsewhere only the
     // direct child is killed), and a pid can in principle be reused between
     // the scan and the signal. Under `sudo` the SIGTERM pass reaches the
@@ -350,7 +350,9 @@ fn terminate_tree_gracefully(child: &mut Child) -> Vec<u32> {
     }
     let started = Instant::now();
     loop {
-        let child_done = matches!(child.try_wait(), Ok(Some(_)));
+        // Liveness via /proc, not `try_wait`: reaping the child here would
+        // reparent any surviving descendants before the re-scan below.
+        let child_done = !pid_is_live(pid);
         let descendants_done = !targets.iter().any(|target| pid_is_live(*target));
         if (child_done && descendants_done) || started.elapsed() >= TERMINATE_GRACE {
             break;
@@ -719,7 +721,7 @@ mod tests {
         let pid_file = temp.path().join("pid");
         let mut cmd = std::process::Command::new("/bin/sh");
         cmd.arg("-c")
-            .arg("sleep 30 & echo $! > \"$1\"; wait")
+            .arg("/bin/sleep 30 & echo $! > \"$1\"; wait")
             .arg("sh")
             .arg(&pid_file);
 
@@ -752,7 +754,7 @@ mod tests {
         let pid_file = temp.path().join("pid");
         let mut cmd = std::process::Command::new("/bin/sh");
         cmd.arg("-c")
-            .arg("trap '' TERM; sleep 30 & echo $! > \"$1\"; wait")
+            .arg("trap '' TERM; /bin/sleep 30 & echo $! > \"$1\"; wait")
             .arg("sh")
             .arg(&pid_file);
 
