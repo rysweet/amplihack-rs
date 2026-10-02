@@ -338,3 +338,32 @@ fn install_bails_when_recipe_runner_missing_and_install_skipped() {
         );
     });
 }
+
+/// Issue #1507: a reinstall must not forget the directories the first install
+/// created, or `amplihack uninstall` leaves them behind.
+#[test]
+fn reinstall_keeps_the_first_installs_directories_in_the_manifest() {
+    with_install_env(|home, bin_dir| {
+        stage_recipe_runner_stub(bin_dir);
+        let repo = home.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        create_bundle_only_repo_with_bundle_claude_md(&repo);
+
+        local_install(&repo, None).unwrap();
+        let path = manifest::manifest_path().unwrap();
+        let first = manifest::read_manifest(&path).unwrap();
+        assert!(
+            !first.dirs.is_empty(),
+            "the first install must record the directories it created"
+        );
+
+        local_install(&repo, None).unwrap();
+        let second = manifest::read_manifest(&path).unwrap();
+        for dir in &first.dirs {
+            assert!(
+                second.dirs.contains(dir),
+                "issue #1507: reinstall dropped {dir} from the manifest dirs"
+            );
+        }
+    });
+}

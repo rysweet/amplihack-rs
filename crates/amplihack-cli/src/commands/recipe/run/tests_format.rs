@@ -360,21 +360,5 @@ fn test_meaningful_stderr_tail_includes_prior_buffer_drops() {
 
 /// Returns true if recipe-runner-rs appears to be available on this system.
 fn which_recipe_runner_available() -> bool {
-    if let Ok(p) = std::env::var("RECIPE_RUNNER_RS_PATH")
-        && std::path::Path::new(&p).is_file()
-    {
-        return true;
-    }
-    for candidate in [
-        "recipe-runner-rs",
-        "~/.cargo/bin/recipe-runner-rs",
-        "~/.local/bin/recipe-runner-rs",
-    ] {
-        if binary::resolve_binary_path(candidate).is_some() {
-            return true;
-        }
-    }
-    // find_recipe_runner_binary also probes $CARGO_HOME/bin.
-    crate::rust_toolchain::cargo_home()
-        .is_some_and(|home| home.join("bin").join("recipe-runner-rs").is_file())
+    crate::rust_toolchain::find_recipe_runner().is_some()
 }
