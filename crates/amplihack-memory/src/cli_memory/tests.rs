@@ -694,6 +694,31 @@ fn select_prompt_context_memories_respects_token_budget() {
     assert_eq!(selected[0].content, "fix ci quickly");
 }
 
+/// A higher-ranked memory that overflows the budget must not stop smaller,
+/// lower-ranked memories from being selected.
+#[test]
+fn select_prompt_context_memories_skips_oversized_memory_and_keeps_going() {
+    let record = |id: &str, content: String, importance: i64| MemoryRecord {
+        memory_id: id.to_string(),
+        memory_type: "learning".to_string(),
+        title: id.to_string(),
+        content,
+        metadata: serde_json::json!({"new_memory_type": "semantic"}),
+        importance: Some(importance),
+        accessed_at: Some("2099-01-02T03:04:05".to_string()),
+        expires_at: None,
+    };
+    let memories = vec![
+        record("m-large", format!("fix ci {}", "x".repeat(400)), 50),
+        record("m-small", "fix ci quickly".to_string(), 1),
+    ];
+
+    let selected = select_prompt_context_memories(memories, "fix ci", 10);
+
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].memory_id, "m-small");
+}
+
 #[test]
 fn build_learning_record_uses_semantic_metadata() {
     let record = build_learning_record(
