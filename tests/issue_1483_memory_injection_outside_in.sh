@@ -107,6 +107,10 @@ cat >"${WORK}/hooksbin.jsonl" <<'EOF'
 {"role":"user","content":"why does cargo install skip the hooks"}
 {"role":"assistant","content":"The hooks bin target is missing from the workspace members, so cargo install skips it."}
 EOF
+cat >"${WORK}/parquet.jsonl" <<'EOF'
+{"role":"user","content":"how do I reproduce it"}
+{"role":"assistant","content":"Reproduce it with this on the host:\n```\ncargo run ingest parquet crash repro\n```"}
+EOF
 cat >"${WORK}/bin.jsonl" <<'EOF'
 {"role":"user","content":"why do the workers crash on startup?"}
 {"role":"assistant","content":"The build copies files into the bin directory, and the workers die if it is missing."}
@@ -123,6 +127,7 @@ store "${WORK}/bin.jsonl" builder
 store "${WORK}/sqlite.jsonl" tester
 store "${WORK}/docslog.jsonl" general
 store "${WORK}/hooksbin.jsonl" builder
+store "${WORK}/parquet.jsonl" general
 store "${WORK}/detected.jsonl" ""
 store "${WORK}/css.jsonl" ""
 
@@ -206,6 +211,15 @@ done
 # `bin` is a developer word, not a stop word: a two-word prompt matches.
 out="$(ask "/fix the hooks bin")"
 if [ "$(count "${out}" "hooks bin target is missing")" -eq 1 ]; then pass "'/fix the hooks bin' gets the hooks bin memory"; else fail "hooks bin memory missing: ${out}"; fi
+
+echo "scenario 9: quoted commands keep their words"
+# A command has no English function words, which is not evidence of another
+# language: a prompt quoting one, and a memory whose words are only in a
+# fenced command, still match.
+out="$(ask "/fix \`cargo test sqlite timeout\` on ci")"
+if [ "$(count "${out}" "raising the busy timeout fixed it")" -eq 1 ]; then pass "a quoted command prompt gets the sqlite memory"; else fail "sqlite memory missing for a quoted command: ${out}"; fi
+out="$(ask "/fix the parquet ingest crash repro")"
+if [ "$(count "${out}" "cargo run ingest parquet crash repro")" -eq 1 ]; then pass "a command-only fenced memory is matched"; else fail "parquet memory missing: ${out}"; fi
 
 echo
 echo "passed: ${PASS_COUNT}, failed: ${FAIL_COUNT}"

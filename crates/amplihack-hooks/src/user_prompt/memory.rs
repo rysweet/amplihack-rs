@@ -68,6 +68,22 @@ const FOREIGN_FUNCTION_WORDS: &[&str] = &[
     "van", "war",
 ];
 
+/// Function words of the same six languages that are not English words:
+/// positive evidence that a code part of a memory (a pasted log) is in
+/// another language (see [`scored_terms`]). A command line has none of
+/// them. They are evidence only, never stop words.
+const FOREIGN_EVIDENCE: &[&str] = &[
+    // German
+    "auch", "das", "dem", "der", "eine", "ich", "ist", "keine", "nicht", "noch", "sind", "und",
+    "wie", "wird", "wo", "zum", "zur", // Spanish
+    "el", "está", "están", "las", "los", "para", "pero", "por", "una", // French
+    "aux", "avec", "cette", "dans", "des", "est", "le", "les", "pas", "pour", "sur", "une",
+    // Italian
+    "che", "della", "gli", "il", "nella", "sono", // Portuguese
+    "não", "são", "também", "uma", // Dutch
+    "een", "het", "naar", "niet", "ook", "zijn",
+];
+
 /// SMART words kept as topic words. SMART was built for news retrieval;
 /// these are everyday developer vocabulary (`value`, `name`, `self`), and
 /// dropping them left prompts such as `/fix the value name of the first
@@ -199,7 +215,10 @@ pub fn format_agent_memory_context(
     // sides: a memory stored from a prompt that used the same reference
     // would otherwise share its directory names (`claude`, `amplihack`).
     let prompt = without_definition_references(prompt);
-    let prompt_terms = scored_terms(&prompt, &ignored);
+    // The prompt is scored as written: a quoted command (`cargo test
+    // sqlite timeout`) is what it is about, and its own foreign text is
+    // kept from matching by the stop words.
+    let prompt_terms = topic_terms(&prompt, &ignored);
 
     let mut scored: Vec<(f64, String, &PromptContextMemory)> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -476,26 +495,26 @@ fn prose_word(token: &str) -> Option<String> {
     (!token.is_empty() && !looks_like_code).then(|| token.to_lowercase().replace('\u{2019}', "'"))
 }
 
-/// A code part with fewer prose-like words than this is too short to judge
-/// its language, and is scored as it is (see [`scored_terms`]).
-const MIN_WORDS_TO_JUDGE: usize = 4;
-
-/// The topic words of `text` that are scored: those of its prose, and of
-/// each code part unless that part is itself a sentence in another
-/// language. Code is left out of the language check, so a German log pasted
-/// in a fence by an English assistant turn would otherwise lend its words
-/// to a German prompt. A code part with at least [`MIN_WORDS_TO_JUDGE`]
-/// prose-like words is judged like prose; if it doesn't read as English,
-/// only its code-looking tokens (`needless_borrow`, `src/main.rs`) are
-/// scored, not its words.
+/// The topic words of a memory turn that are scored: those of its prose,
+/// and of each code part unless that part shows it is in another language.
+/// Code is left out of the language check, so a German log pasted in a
+/// fence or a backtick span by an English assistant turn would otherwise
+/// lend its words to a German prompt. A code part is judged foreign only on
+/// positive evidence: a prose-like word with a non-ASCII letter (`größer`,
+/// `não`) or one of [`FOREIGN_EVIDENCE`]. A command line has neither, so
+/// `cargo run ingest parquet crash repro` keeps its words, while a foreign
+/// part contributes only its code-looking tokens (`needless_borrow`,
+/// `src/main.rs`). Absence of English function words is not evidence: a
+/// command has none either.
 fn scored_terms(text: &str, ignored: &HashSet<String>) -> HashSet<String> {
     let mut terms = HashSet::new();
     for (is_code, part) in segments(text) {
-        let words = part
-            .split_whitespace()
-            .filter_map(prose_word)
-            .collect::<Vec<_>>();
-        if !is_code || words.len() < MIN_WORDS_TO_JUDGE || english_share_ok(&words) {
+        let foreign = is_code
+            && part
+                .split_whitespace()
+                .filter_map(prose_word)
+                .any(|word| !word.is_ascii() || FOREIGN_EVIDENCE.contains(&word.as_str()));
+        if !foreign {
             terms.extend(topic_terms(part, ignored));
         } else {
             for token in part
@@ -1720,6 +1739,61 @@ mod tests {
                 format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(unrelated)]),
                 None,
                 "{unrelated:?} is not relevant to {prompt:?}"
+            );
+        }
+    }
+
+    /// A command quoted in the prompt, or a memory whose topic words sit
+    /// only in a fenced or quoted command, is scored on those words: plain
+    /// words with no English function word are not evidence of another
+    /// language.
+    #[test]
+    fn quoted_commands_keep_their_words() {
+        let sqlite = "Agent tester: user: the sqlite test is flaky on linux ci\n\nassistant: The sqlite test times out on the linux runner because the lock is held too long; raising the busy timeout fixed it.";
+        for (prompt, relevant) in [
+            ("/fix `cargo test sqlite timeout` on ci", sqlite),
+            ("/fix `cargo test flaky sqlite timeout` on ci", sqlite),
+            ("/fix the `cargo test flaky sqlite timeout`", sqlite),
+            (
+                "/fix the parquet ingest crash repro",
+                "Agent general: user: how do I reproduce it\n\nassistant: Reproduce it with this on the host:\n```\ncargo run ingest parquet crash repro\n```",
+            ),
+            (
+                "/fix the kafka consumer stall repro",
+                "Agent general: assistant: Run `kafka consumer stall repro tool` on the host and watch.",
+            ),
+            (
+                "/fix terraform plan vault refresh",
+                "Agent general: assistant: Use this:\n```\nterraform plan vault refresh --auto-approve -var=env\n```",
+            ),
+        ] {
+            let result =
+                format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(relevant)]);
+            assert!(
+                result.is_some_and(|text| text.contains(&bounded_memory_text(&single_line(
+                    strip_agent_prefix(relevant)
+                )))),
+                "{relevant:?} is relevant to {prompt:?}"
+            );
+        }
+        // Positive evidence, and only that, marks a code part as foreign.
+        let none = HashSet::new();
+        let mut terms = scored_terms("see:\n```\ncargo run ingest parquet\n```", &none)
+            .into_iter()
+            .collect::<Vec<_>>();
+        terms.sort();
+        assert_eq!(terms, ["cargo", "ingest", "parquet", "run"]);
+        for foreign in [
+            "see:\n```\nFehler: Datei nicht gefunden, src/main.rs weg\n```",
+            "see:\n```\nFehler: größere Datei gefunden, src/main.rs weg\n```",
+            "see `erreur: le fichier src/main.rs manque` there",
+        ] {
+            let mut terms = scored_terms(foreign, &none).into_iter().collect::<Vec<_>>();
+            terms.sort();
+            assert_eq!(
+                terms,
+                ["main", "src"],
+                "{foreign:?} contributes only its code tokens"
             );
         }
     }
