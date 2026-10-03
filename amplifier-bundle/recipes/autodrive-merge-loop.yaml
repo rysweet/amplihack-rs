@@ -107,7 +107,8 @@ steps:
         --context "pr_number=${PR}" \
         --context "pr_url=${PR_URL:-}" \
         --context "task_description=${TASK_DESCRIPTION:-}" \
-        --context "autodrive_qa_evidence=${DIR}/qa-evidence.json"
+        --context "autodrive_qa_evidence=${DIR}/qa-evidence.json" \
+        --context "autodrive_state_dir=${DIR}"
       RC=$?
       if [ "$RC" -eq 79 ]; then
         echo "ERROR: exit 79 terminal policy refusal in the merge-ready loop (#1327/#1332). Final — surfaced and stopped, never retried into the guard." >&2

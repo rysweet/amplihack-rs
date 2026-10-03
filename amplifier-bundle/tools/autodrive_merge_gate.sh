@@ -39,6 +39,10 @@ case "$PR" in ''|*[!0-9]*) echo "ERROR: --pr must be a positive integer (got '${
 # gh resolves {owner}/{repo} from the working directory, so every read below
 # must run inside the repository the PR belongs to.
 cd "$REPO" 2>/dev/null || { echo "ERROR: --repo '${REPO}' is not a directory; refusing to read PR state from an unknown working directory." >&2; exit 2; }
+# Decide whether a state dir was given BEFORE the fallback below: an empty
+# --state-dir must not turn the world-writable TMPDIR into crusty evidence.
+if [ -n "$STATE_DIR" ]; then STATE_DIR_GIVEN="true"; else STATE_DIR_GIVEN="false"; fi
+# The evidence bundle (section 8) still needs somewhere to go.
 STATE_DIR="${STATE_DIR:-${TMPDIR:-/tmp}}"
 mkdir -p "$STATE_DIR" || exit 2
 AMPLIHACK_BIN="${AMPLIHACK_BIN:-amplihack}"
@@ -160,6 +164,60 @@ else
     block "the qa-team evidence records no head_sha; evidence that is not bound to a SHA never merges"
   elif [ -n "$HEAD_SHA" ] && [ "$QA_SHA" != "$HEAD_SHA" ]; then
     block "the qa-team evidence was captured against ${QA_SHA} but the head is now ${HEAD_SHA}; evidence must bind to the SHA being merged"
+  fi
+  # qa_status=PASS already requires gadugi; it is re-read here so evidence
+  # written before gadugi was measured (no gadugi fields) never merges.
+  GADUGI_STATUS="$(field "$QA_RAW" gadugi_status MISSING)"
+  GADUGI_COUNT="$(field "$QA_RAW" gadugi_scenario_count "")"
+  note "gadugi_status=${GADUGI_STATUS} gadugi_scenario_count=${GADUGI_COUNT:-<none>} gadugi_scenario_dir=$(field "$QA_RAW" gadugi_scenario_dir '')"
+  [ "$GADUGI_STATUS" = "PASS" ] || block "gadugi-test scenarios were not validated and run to a pass in this run (gadugi_status=${GADUGI_STATUS})"
+  case "$GADUGI_COUNT" in
+    ''|*[!0-9]*|0*) block "gadugi_scenario_count='${GADUGI_COUNT}' is not a positive integer; zero scenarios is not a qa-team pass" ;;
+  esac
+fi
+
+# --- 6b. Criterion 3: the crusty loop of this run ended DONE and CLEAN -------
+# Under auto-drive the quality-audit criterion is met by the crusty loop: the
+# `crusty-loop` marker in phases.tsv (written only after the loop reports DONE)
+# and a final CLEAN verdict in crusty-latest.json. These files are evidence, so
+# they are read only from a state dir that was given explicitly, is owned by
+# this user and writable by nobody else, and only when they are regular files
+# rather than symlinks. The state helper is sourced from beside this gate and
+# from nowhere a pull request could populate.
+GATE_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
+autodrive_private() { # autodrive_private <path>: owned here, not a symlink, no group/world write
+  local loose
+  [ -L "$1" ] && return 1
+  [ -O "$1" ] || return 1
+  loose="$(find "$1" -maxdepth 0 \( -perm -0020 -o -perm -0002 \) -print 2>/dev/null)" || return 1
+  [ -z "$loose" ]
+}
+if [ "$STATE_DIR_GIVEN" != "true" ]; then
+  block "no --state-dir was given, so the crusty loop's DONE/CLEAN state cannot be read; crusty evidence is never taken from the TMPDIR fallback"
+elif [ -z "$GATE_HOME" ] || [ ! -f "${GATE_HOME}/autodrive_state.sh" ]; then
+  block "autodrive_state.sh is missing beside the merge gate (${GATE_HOME:-<unknown>}); the crusty-loop marker cannot be read"
+elif ! autodrive_private "$STATE_DIR"; then
+  block "state dir ${STATE_DIR} is not private to this user (not owned by this user, a symlink, or group/world-writable); crusty state there is not evidence"
+else
+  CRUSTY_OK="true"
+  for f in phases.tsv crusty-latest.json; do
+    if [ -L "${STATE_DIR}/${f}" ] || { [ -e "${STATE_DIR}/${f}" ] && { [ ! -f "${STATE_DIR}/${f}" ] || ! autodrive_private "${STATE_DIR}/${f}"; }; }; then
+      block "${STATE_DIR}/${f} is not private to this user (a symlink, not a regular file, not owned by this user, or group/world-writable); crusty state there is not evidence"
+      CRUSTY_OK="false"
+    fi
+  done
+  if [ "$CRUSTY_OK" = "true" ]; then
+    # shellcheck source=/dev/null
+    if ! . "${GATE_HOME}/autodrive_state.sh"; then
+      block "autodrive_state.sh beside the merge gate could not be loaded; the crusty-loop marker cannot be read"
+    elif ! autodrive_phase_done "$STATE_DIR" "crusty-loop"; then
+      block "the crusty-loop phase is not recorded as done in ${STATE_DIR}; criterion 3 needs this run's crusty loop to have ended DONE"
+    else
+      CRUSTY_VERDICT="MISSING"
+      [ -f "${STATE_DIR}/crusty-latest.json" ] && CRUSTY_VERDICT="$(field "$(cat "${STATE_DIR}/crusty-latest.json")" crusty_verdict MISSING)"
+      note "crusty_phase_done=true crusty_verdict=$(printf '%s' "$CRUSTY_VERDICT" | tr -cd 'A-Za-z_')"
+      [ "$CRUSTY_VERDICT" = "CLEAN" ] || block "the crusty loop's final crusty_verdict is not CLEAN in ${STATE_DIR}/crusty-latest.json; criterion 3 is not met"
+    fi
   fi
 fi
 

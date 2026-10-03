@@ -238,6 +238,33 @@ Blockers:
 - <concrete missing item or `none`>
 ```
 
+## Running under auto-drive
+
+The `auto-drive-to-merge` workflow applies these criteria from an agent step in its merge round. It does not invoke this skill. `disable-model-invocation: true` stays set, so only a person starts `/merge-ready`.
+
+Instead, the merge round reads this file and [pr-description-template.md](pr-description-template.md) as plain files. It looks for `amplifier-bundle/skills/merge-ready/SKILL.md` under these roots, in order, and uses the first one found:
+
+1. `$AMPLIHACK_HOME`
+2. the repository path given to the round
+3. `git rev-parse --show-toplevel`
+4. `~/.copilot`
+5. `~/.amplihack`
+
+The round cites the path it read in its evidence. If no copy of this file is found, the verdict is `NOT_MERGE_READY` with blocker `merge-ready-skill-files-not-found`, listing every path checked. If only the template is missing, the blocker is `merge-ready-template-not-found`.
+
+Every criterion in [Required outcome](#required-outcome) applies as written, except that auto-drive measures criteria 1 and 3 as follows:
+
+| Criterion | What auto-drive requires |
+| --- | --- |
+| 1. QA-team scenarios | The evidence step runs the repository's own test command, then `gadugi-test validate -d <dir>` and `gadugi-test run -d <dir>` on the scenario directory. The directory is `$AUTODRIVE_QA_SCENARIO_DIR` if set, else `tests/agentic`, else `scenarios`. Only `*.yaml` and `*.yml` files directly in that directory count. Zero scenario files is a failure, as is a validate or run failure. When scenarios are missing or do not cover the changed behavior, the round's blocker-clearing step uses `qa-team` to write them, validates and runs them, and commits them. |
+| 3. Quality-audit | The `crusty-old-engineer` loop of the same auto-drive run must have ended DONE with a final `CLEAN` verdict. That loop is an iterative review-and-fix cycle that stops at its first clean round, so no minimum round count applies. A resumed run accepts the crusty completion recorded in the run's own state directory. |
+
+The merge round and the merge gate both re-check these two criteria from measured evidence. A `MERGE_READY` verdict is downgraded when either one fails, whatever the agent concluded.
+
+**Running `/merge-ready` by hand is unchanged.** Criterion 1 still needs `qa-team` scenarios validated with `gadugi-test validate` and run with `gadugi-test run`. Criterion 3 still needs a separate `quality-audit` of at least 3 SEEK -> VALIDATE -> FIX cycles ending on a clean cycle. The crusty-loop substitution applies only inside auto-drive.
+
+See [Auto Drive To Merge Reference](../../../docs/reference/auto-drive-to-merge.md#how-the-merge-round-applies-merge-ready) for the evidence fields and gate checks.
+
 ## When to stop and hand back a blocker
 
 Stop and report `NOT_MERGE_READY` when any of these are true:

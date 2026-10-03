@@ -985,6 +985,787 @@ fn the_forbidden_flag_scanner_catches_every_spelling() {
     }
 }
 
+// ── Skills that refuse model invocation (issue #1517) ───────────────────────
+//
+// A skill whose frontmatter sets `disable-model-invocation: true` is a command
+// a person runs; Claude Code refuses it when an agent calls it. A recipe
+// prompt that tells an agent to call one fails in every run. The merge round
+// did exactly that with `merge-ready`, the agent reported the criteria as
+// unverifiable, and no pull request could ever reach MERGE_READY.
+
+/// Key/value pairs of a SKILL.md's frontmatter: the top-level `key: value`
+/// lines between the first two `---` lines, with surrounding quotes removed.
+/// `None` when the file has no complete frontmatter block.
+fn skill_frontmatter(text: &str) -> Option<Vec<(String, String)>> {
+    let mut lines = text.lines().skip_while(|l| l.trim() != "---");
+    lines.next()?; // the opening `---`
+    let mut pairs = Vec::new();
+    for line in lines {
+        if line.trim() == "---" {
+            return Some(pairs);
+        }
+        if line.starts_with(char::is_whitespace) || line.trim_start().starts_with('#') {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once(':') {
+            let value = value.split(" #").next().unwrap_or("").trim();
+            let value = ['"', '\'']
+                .iter()
+                .find_map(|q| value.strip_prefix(*q).and_then(|v| v.strip_suffix(*q)))
+                .unwrap_or(value);
+            pairs.push((key.trim().to_string(), value.to_string()));
+        }
+    }
+    None
+}
+
+/// Every regular file under `root` that `keep` accepts. Symlinks are skipped,
+/// so a link loop terminates and nothing outside `root` is read. A directory
+/// or entry that cannot be read is an error, never a silent skip.
+fn walk_files(root: &Path, keep: &dyn Fn(&Path) -> bool) -> Result<Vec<PathBuf>, String> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries =
+            fs::read_dir(&dir).map_err(|e| format!("{}: cannot list: {e}", dir.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("{}: cannot read entry: {e}", dir.display()))?;
+            let path = entry.path();
+            let kind = entry
+                .file_type()
+                .map_err(|e| format!("{}: cannot stat: {e}", path.display()))?;
+            if kind.is_symlink() {
+                continue;
+            }
+            if kind.is_dir() {
+                stack.push(path);
+            } else if kind.is_file() && keep(&path) {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+fn read_utf8(path: &Path) -> Result<String, String> {
+    let bytes = fs::read(path).map_err(|e| format!("{}: unreadable: {e}", path.display()))?;
+    String::from_utf8(bytes).map_err(|_| format!("{}: not valid UTF-8", path.display()))
+}
+
+fn relative_display(path: &Path, base: &Path) -> String {
+    path.strip_prefix(base)
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
+/// A skill an agent must not invoke: its name and its SKILL.md, for messages.
+struct FlaggedSkill {
+    name: String,
+    skill_md: String,
+}
+
+/// Every skill under `skills_root` whose frontmatter sets
+/// `disable-model-invocation: true` (any case, quoted or not). The name is
+/// the frontmatter `name:`, falling back to the directory name.
+fn flagged_skills(skills_root: &Path, base: &Path) -> Result<Vec<FlaggedSkill>, String> {
+    let is_skill_md = |p: &Path| p.file_name().is_some_and(|n| n == "SKILL.md");
+    let mut flagged = Vec::new();
+    for path in walk_files(skills_root, &is_skill_md)? {
+        let text = read_utf8(&path)?;
+        let Some(front) = skill_frontmatter(&text) else {
+            continue;
+        };
+        let get = |k: &str| {
+            front
+                .iter()
+                .find(|(key, _)| key == k)
+                .map(|(_, v)| v.as_str())
+        };
+        if !get("disable-model-invocation").is_some_and(|v| v.eq_ignore_ascii_case("true")) {
+            continue;
+        }
+        let name = get("name")
+            .filter(|n| !n.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                path.parent()
+                    .and_then(Path::file_name)
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            });
+        flagged.push(FlaggedSkill {
+            name,
+            skill_md: relative_display(&path, base),
+        });
+    }
+    Ok(flagged)
+}
+
+/// One message per `Skill(skill="<name>")` in `text` that names a flagged
+/// skill. Matches either quote style and whitespace around `(`, `=` and `)`;
+/// the step id is the nearest earlier `- id:` line.
+fn flagged_invocations(recipe: &str, text: &str, flagged: &[FlaggedSkill]) -> Vec<String> {
+    let id_line = regex::Regex::new(r#"^\s*-\s*id:\s*["']?([^"'\s]+)"#).expect("id regex");
+    let mut hits = Vec::new();
+    for skill in flagged {
+        let pattern = format!(
+            r#"Skill\(\s*skill\s*=\s*["']{}["']\s*\)"#,
+            regex::escape(&skill.name)
+        );
+        let call = regex::Regex::new(&pattern).expect("invocation regex");
+        for m in call.find_iter(text) {
+            let id = text[..m.start()]
+                .lines()
+                .rev()
+                .find_map(|l| id_line.captures(l).map(|c| c[1].to_string()))
+                .unwrap_or_else(|| "<none>".to_string());
+            hits.push(format!(
+                "{recipe}: step {id}: {} but {} sets disable-model-invocation: true",
+                m.as_str(),
+                skill.skill_md
+            ));
+        }
+    }
+    hits
+}
+
+/// Runs the detector over every `*.yaml` / `*.yml` under `recipes_root`.
+fn scan_recipes_for_flagged_invocations(
+    recipes_root: &Path,
+    flagged: &[FlaggedSkill],
+    base: &Path,
+) -> Result<Vec<String>, String> {
+    let is_yaml = |p: &Path| p.extension().is_some_and(|e| e == "yaml" || e == "yml");
+    let mut hits = Vec::new();
+    for path in walk_files(recipes_root, &is_yaml)? {
+        let text = read_utf8(&path)?;
+        hits.extend(flagged_invocations(
+            &relative_display(&path, base),
+            &text,
+            flagged,
+        ));
+    }
+    Ok(hits)
+}
+
+#[test]
+fn no_recipe_invokes_a_skill_that_refuses_model_invocation() {
+    let root = workspace_root();
+    let flagged = flagged_skills(&root.join("amplifier-bundle/skills"), &root)
+        .unwrap_or_else(|e| panic!("skill scan failed: {e}"));
+    // The guard is vacuous if it finds nothing to guard. merge-ready keeps its
+    // flag (issue #1517): only a person starts `/merge-ready`.
+    assert!(
+        flagged.iter().any(|s| s.name == "merge-ready"),
+        "merge-ready must still set disable-model-invocation: true; found flagged: {:?}",
+        flagged.iter().map(|s| &s.name).collect::<Vec<_>>()
+    );
+    let hits = scan_recipes_for_flagged_invocations(
+        &root.join("amplifier-bundle/recipes"),
+        &flagged,
+        &root,
+    )
+    .unwrap_or_else(|e| panic!("recipe scan failed: {e}"));
+    assert!(
+        hits.is_empty(),
+        "a recipe tells an agent to invoke a skill that refuses agents; the call \
+         fails in every run. Read the skill's files instead:\n{}",
+        hits.join("\n")
+    );
+}
+
+#[test]
+fn the_invocation_guard_flags_the_old_merge_round_prompt() {
+    // The step-02 prompt as it stood on origin/main before the fix, and a
+    // fixture skill carrying the flag. The guard must catch the original
+    // defect, or it is not guarding anything.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let skill_dir = tmp.path().join("skills/merge-ready");
+    fs::create_dir_all(&skill_dir).unwrap();
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: merge-ready\ndescription: x\ndisable-model-invocation: true\n---\n\n# Merge Ready\n",
+    )
+    .unwrap();
+    let flagged = flagged_skills(&tmp.path().join("skills"), tmp.path()).unwrap();
+    assert_eq!(
+        flagged.len(),
+        1,
+        "the fixture skill must be read as flagged"
+    );
+
+    let old_round = r#"
+  - id: "step-01-platform-facts"
+    type: "bash"
+    command: |
+      echo facts
+
+  - id: "step-02-merge-ready-assessment"
+    agent: "amplihack:core:reviewer"
+    prompt: |
+      # merge-ready assessment — PR #{{platform_facts.pr}} ({{autodrive_round_label}})
+
+      **Invoke the skill:** activate `Skill(skill="merge-ready")` for PR
+      #{{platform_facts.pr}} and apply its criteria.
+"#;
+    let hits = flagged_invocations(
+        "amplifier-bundle/recipes/autodrive-merge-round.yaml",
+        old_round,
+        &flagged,
+    );
+    assert_eq!(hits.len(), 1, "expected exactly one hit, got {hits:?}");
+    assert_eq!(
+        hits[0],
+        "amplifier-bundle/recipes/autodrive-merge-round.yaml: step step-02-merge-ready-assessment: \
+         Skill(skill=\"merge-ready\") but skills/merge-ready/SKILL.md sets disable-model-invocation: true"
+    );
+}
+
+#[test]
+fn the_invocation_guard_matches_every_quoting_and_spacing() {
+    let flagged = [FlaggedSkill {
+        name: "refuser".to_string(),
+        skill_md: "skills/refuser/SKILL.md".to_string(),
+    }];
+    let text = r#"
+  - id: "single-quotes"
+    prompt: Skill(skill='refuser')
+  - id: spaced
+    prompt: Skill( skill = "refuser" )
+  - id: "other-skills"
+    prompt: |
+      Skill(skill="refuser-two") Skill(skill="other") Skill(skill=name)
+      Skill(skill="refuser.") Skill(skill="xrefuser")
+"#;
+    let hits = flagged_invocations("r.yaml", text, &flagged);
+    assert_eq!(
+        hits,
+        vec![
+            "r.yaml: step single-quotes: Skill(skill='refuser') but skills/refuser/SKILL.md sets disable-model-invocation: true".to_string(),
+            "r.yaml: step spaced: Skill( skill = \"refuser\" ) but skills/refuser/SKILL.md sets disable-model-invocation: true".to_string(),
+        ],
+        "the guard must match either quote style and inner whitespace, print the \
+         call as written, and never match a different skill name"
+    );
+    // A recipe with no `- id:` above the call still reports, with a placeholder.
+    let hits = flagged_invocations("r.yaml", "# Skill(skill=\"refuser\")\n", &flagged);
+    assert_eq!(hits.len(), 1, "a call in a comment still counts: {hits:?}");
+    assert!(hits[0].contains("step <none>:"), "{hits:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn the_invocation_guard_walk_skips_symlinks_and_reads_frontmatter_variants() {
+    use std::os::unix::fs::symlink;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let skills = tmp.path().join("skills");
+    let put = |rel: &str, body: &str| {
+        let p = skills.join(rel);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, body).unwrap();
+    };
+    put(
+        "a/SKILL.md",
+        "---\nname: alpha\ndisable-model-invocation: true\n---\n",
+    );
+    // Quoted, mixed case, no `name:` -> falls back to the directory name.
+    put(
+        "b/SKILL.md",
+        "---\ndescription: x\ndisable-model-invocation: \"True\"\n---\n",
+    );
+    // Nested a level deeper, single-quoted.
+    put(
+        "group/f/SKILL.md",
+        "---\nname: 'f-skill'\ndisable-model-invocation: 'TRUE'\n---\n",
+    );
+    // Not flagged.
+    put(
+        "d/SKILL.md",
+        "---\nname: delta\ndisable-model-invocation: false\n---\n",
+    );
+    put(
+        "e/SKILL.md",
+        "---\nname: echo\n---\n\ndisable-model-invocation: true\n",
+    );
+    put(
+        "g/SKILL.md",
+        "no frontmatter\ndisable-model-invocation: true\n",
+    );
+    // A directory symlink back to the root (a loop) and a symlinked SKILL.md.
+    symlink(&skills, skills.join("a/loop")).unwrap();
+    fs::create_dir_all(skills.join("c")).unwrap();
+    symlink(skills.join("a/SKILL.md"), skills.join("c/SKILL.md")).unwrap();
+
+    let flagged = flagged_skills(&skills, tmp.path()).expect("walk must succeed");
+    let mut names: Vec<&str> = flagged.iter().map(|s| s.name.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        vec!["alpha", "b", "f-skill"],
+        "the walk must terminate on a symlink loop, skip symlinked files, read \
+         quoted and mixed-case flags, and only read the frontmatter block"
+    );
+    let alpha = flagged.iter().find(|s| s.name == "alpha").unwrap();
+    assert_eq!(alpha.skill_md, "skills/a/SKILL.md");
+}
+
+#[test]
+fn the_invocation_guard_fails_on_a_non_utf8_file() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let bad_skill = tmp.path().join("skills/bad/SKILL.md");
+    fs::create_dir_all(bad_skill.parent().unwrap()).unwrap();
+    fs::write(&bad_skill, [0xff, 0xfe, b'-', b'-', b'-']).unwrap();
+    let err = match flagged_skills(&tmp.path().join("skills"), tmp.path()) {
+        Ok(_) => panic!("a non-UTF-8 SKILL.md must fail the scan, not be skipped"),
+        Err(e) => e,
+    };
+    assert!(
+        err.contains(&bad_skill.display().to_string()),
+        "the error must name the file: {err}"
+    );
+
+    let recipes = tmp.path().join("recipes/nested");
+    fs::create_dir_all(&recipes).unwrap();
+    fs::write(recipes.join("ok.yaml"), "name: ok\n").unwrap();
+    let bad_recipe = recipes.join("bad.yml");
+    fs::write(&bad_recipe, [b'a', 0xc3, 0x28]).unwrap();
+    let err =
+        match scan_recipes_for_flagged_invocations(&tmp.path().join("recipes"), &[], tmp.path()) {
+            Ok(_) => panic!("a non-UTF-8 recipe must fail the scan, not be skipped"),
+            Err(e) => e,
+        };
+    assert!(
+        err.contains(&bad_recipe.display().to_string()),
+        "the error must name the file: {err}"
+    );
+}
+
+// ── merge-ready under auto-drive (issue #1517) ──────────────────────────────
+
+fn step_index(recipe: &Value, id: &str) -> usize {
+    steps(recipe)
+        .iter()
+        .position(|s| s.get("id").and_then(Value::as_str) == Some(id))
+        .unwrap_or_else(|| panic!("missing step `{id}`"))
+}
+
+#[test]
+fn merge_ready_assessment_reads_the_skill_files_from_the_bundle_root() {
+    let recipe = recipe_yaml("autodrive-merge-round");
+    let prompt = field(step(&recipe, "step-02-merge-ready-assessment"), "prompt");
+
+    for needle in [
+        "amplifier-bundle/skills/merge-ready/SKILL.md",
+        "pr-description-template.md",
+        "merge-ready-skill-files-not-found",
+        "merge-ready-template-not-found",
+        "{{crusty_evidence}}",
+        "quality-audit-convergence-crusty-not-done-clean",
+        "gadugi_status",
+    ] {
+        assert!(
+            prompt.contains(needle),
+            "the step-02 prompt must mention `{needle}`"
+        );
+    }
+    // The five candidate roots, in the order the other autodrive steps use.
+    let order = [
+        "AMPLIHACK_HOME",
+        "REPO_PATH",
+        "git rev-parse --show-toplevel",
+        "/.copilot",
+        "/.amplihack",
+    ];
+    let mut last = 0usize;
+    for root in order {
+        let at = prompt
+            .find(root)
+            .unwrap_or_else(|| panic!("the step-02 prompt must list the root `{root}`"));
+        assert!(
+            at >= last,
+            "the step-02 prompt must list roots in the order {order:?}; `{root}` is out of order"
+        );
+        last = at;
+    }
+    // It must not tell the agent to call the skill, in any spelling.
+    let call = regex::Regex::new(r#"Skill\(\s*skill\s*=\s*["']merge-ready["']\s*\)"#).unwrap();
+    assert!(
+        !call.is_match(prompt),
+        "step-02 must read merge-ready's files, never invoke the skill"
+    );
+    // No minimum crusty round count may be asked for.
+    let lower = prompt.to_ascii_lowercase();
+    for cap in [
+        "at least 3 rounds",
+        "at least three rounds",
+        "minimum of 3",
+        "3 or more rounds",
+    ] {
+        assert!(
+            !lower.contains(cap),
+            "step-02 must not require a minimum crusty round count (`{cap}`)"
+        );
+    }
+}
+
+#[test]
+fn merge_round_reads_crusty_evidence_from_the_state_dir() {
+    let recipe = recipe_yaml("autodrive-merge-round");
+    let context = recipe
+        .get("context")
+        .and_then(Value::as_mapping)
+        .expect("merge round must declare context");
+    assert_eq!(
+        context
+            .get(Value::from("autodrive_state_dir"))
+            .and_then(Value::as_str),
+        Some(""),
+        "the merge round must declare `autodrive_state_dir: \"\"`"
+    );
+
+    let s = step(&recipe, "step-01b-crusty-evidence");
+    assert_eq!(s.get("type").and_then(Value::as_str), Some("bash"));
+    assert_eq!(
+        s.get("parse_json").and_then(Value::as_bool),
+        Some(true),
+        "step-01b must emit a parse_json object"
+    );
+    assert_eq!(
+        s.get("output").and_then(Value::as_str),
+        Some("crusty_evidence")
+    );
+    let cmd = field(s, "command");
+    for needle in [
+        "AUTODRIVE_STATE_DIR",
+        "autodrive_state.sh",
+        "autodrive_phase_done",
+        "crusty-loop",
+        "crusty-latest.json",
+        "DONE_CLEAN",
+        "ABSENT",
+        "NOT_CLEAN",
+        "OTHER",
+    ] {
+        assert!(cmd.contains(needle), "step-01b must reference `{needle}`");
+    }
+    assert!(
+        step_index(&recipe, "step-01b-crusty-evidence")
+            < step_index(&recipe, "step-02-merge-ready-assessment"),
+        "step-01b must run before the merge-ready assessment"
+    );
+
+    // The measured downgrade covers crusty too.
+    let verdict = field(
+        step(&recipe, "step-03-extract-merge-ready-verdict"),
+        "command",
+    );
+    for needle in ["CRUSTY_EVIDENCE", "crusty_status", "DONE_CLEAN"] {
+        assert!(
+            verdict.contains(needle),
+            "step-03 must downgrade on crusty evidence (`{needle}`)"
+        );
+    }
+}
+
+#[test]
+fn merge_round_agent_prompts_never_touch_crusty_state() {
+    // The gate reads phases.tsv and crusty-latest.json as criterion-3
+    // evidence. An agent that can find or rewrite them can forge it.
+    let recipe = recipe_yaml("autodrive-merge-round");
+    for s in steps(&recipe) {
+        let Some(prompt) = s.get("prompt").and_then(Value::as_str) else {
+            continue;
+        };
+        let id = s.get("id").and_then(Value::as_str).unwrap_or("<unnamed>");
+        for leak in ["autodrive_state_dir", "AUTODRIVE_STATE_DIR", "STATE_DIR"] {
+            assert!(
+                !prompt.contains(leak),
+                "agent step `{id}` must never be given the state dir (`{leak}`)"
+            );
+        }
+    }
+    let fix = field(step(&recipe, "step-04-address-blockers"), "prompt");
+    assert!(
+        fix.contains("phases.tsv") && fix.contains("-latest.json"),
+        "step-04 must forbid touching phases.tsv and *-latest.json by name"
+    );
+}
+
+#[test]
+fn merge_round_blocker_step_writes_missing_gadugi_scenarios() {
+    let recipe = recipe_yaml("autodrive-merge-round");
+    let fix = field(step(&recipe, "step-04-address-blockers"), "prompt");
+    for needle in [
+        "qa-team",
+        "gadugi_scenario_dir",
+        "NO_SCENARIOS",
+        "gadugi-test validate -d",
+        "gadugi-test run -d",
+        "gadugi-scenario-dir-outside-repo",
+        "quality-audit-convergence-crusty-not-done-clean",
+    ] {
+        assert!(fix.contains(needle), "step-04 must mention `{needle}`");
+    }
+    let validate = fix.find("gadugi-test validate -d").unwrap();
+    let run = fix.find("gadugi-test run -d").unwrap();
+    assert!(validate < run, "step-04 must validate before it runs");
+    assert!(
+        fix.to_ascii_lowercase().contains("failing scenario"),
+        "step-04 must say a failing scenario is fixed, never deleted"
+    );
+}
+
+#[test]
+fn qa_evidence_runs_gadugi_validate_and_run() {
+    let recipe = recipe_yaml("autodrive-merge-evidence");
+    let cmd = field(step(&recipe, "step-02-qa-team-scenarios"), "command");
+    for needle in [
+        "gadugi-test validate -d \"$",
+        "gadugi-test run -d \"$",
+        "AUTODRIVE_QA_SCENARIO_DIR",
+        "tests/agentic",
+        "-maxdepth 1",
+        "npm test",
+        "cargo test --workspace --locked --no-fail-fast",
+        "pytest",
+    ] {
+        assert!(
+            cmd.contains(needle),
+            "the qa evidence step must contain `{needle}`"
+        );
+    }
+    let validate = cmd.find("gadugi-test validate -d").unwrap();
+    let run = cmd.find("gadugi-test run -d").unwrap();
+    assert!(
+        validate < run,
+        "gadugi-test validate must run before gadugi-test run"
+    );
+    for field_name in [
+        "gadugi_status",
+        "gadugi_validate_exit_code",
+        "gadugi_run_exit_code",
+        "gadugi_scenario_count",
+        "gadugi_scenario_dir",
+    ] {
+        assert!(
+            cmd.contains(&format!("\"{field_name}\":\"%s\"")),
+            "the qa evidence JSON must record `{field_name}` as a string"
+        );
+    }
+    for status in [
+        "NOT_INSTALLED",
+        "NO_SCENARIOS",
+        "VALIDATE_FAILED",
+        "RUN_FAILED",
+    ] {
+        assert!(
+            cmd.contains(status),
+            "gadugi_status must include `{status}`"
+        );
+    }
+    assert!(
+        !cmd.contains("does NOT require the gadugi"),
+        "the comment exempting Rust repos from gadugi must be gone"
+    );
+    assert!(
+        !cmd.contains("tests/parity/scenarios"),
+        "the evidence step no longer reads tests/parity/scenarios"
+    );
+    assert!(
+        !cmd.contains("gadugi-test run\"") && !cmd.contains("CMD=\"gadugi-test"),
+        "gadugi-test is no longer a repository's own test command"
+    );
+    assert!(
+        !cmd.contains("--timeout"),
+        "no timeout is passed to gadugi-test (issue #439)"
+    );
+}
+
+#[test]
+fn merge_loop_passes_the_state_dir_to_rounds() {
+    let text = recipe_text("autodrive-merge-loop");
+    assert!(
+        text.contains(r#"--context "autodrive_state_dir=${DIR}""#),
+        "the merge loop must pass its state dir to every round"
+    );
+    // The composer must not hand rounds the crusty loop's stdout: on a resumed
+    // run the crusty loop is skipped and that result is empty.
+    assert!(
+        !recipe_text("autodrive-merge-round").contains("crusty_loop_result"),
+        "crusty evidence comes from the state dir, never from crusty_loop_result"
+    );
+}
+
+#[test]
+fn no_recipe_declares_the_scenario_dir_override_as_context() {
+    // The runner exports context keys as environment variables; an empty
+    // context default would hide the value the user exported.
+    let root = workspace_root();
+    let is_yaml = |p: &Path| p.extension().is_some_and(|e| e == "yaml" || e == "yml");
+    let decl = regex::Regex::new(r"(?i)^\s*autodrive_qa_scenario_dir\s*:").unwrap();
+    let pass = regex::Regex::new(r"(?i)(-c|--context)\s+.?autodrive_qa_scenario_dir=").unwrap();
+    for path in walk_files(&root.join("amplifier-bundle/recipes"), &is_yaml).unwrap() {
+        let text = read_utf8(&path).unwrap();
+        for (n, line) in text.lines().enumerate() {
+            assert!(
+                !decl.is_match(line) && !pass.is_match(line),
+                "{}:{} declares AUTODRIVE_QA_SCENARIO_DIR as a context key; it is read \
+                 from the environment only:\n  {line}",
+                path.display(),
+                n + 1
+            );
+        }
+    }
+}
+
+#[test]
+fn merge_gate_requires_gadugi_and_crusty_evidence() {
+    let gate = read(&tool_path("autodrive_merge_gate.sh"));
+    for needle in [
+        "gadugi_status",
+        "gadugi_scenario_count",
+        "STATE_DIR_GIVEN",
+        "autodrive_state.sh",
+        "autodrive_phase_done",
+        "crusty-loop",
+        "crusty-latest.json",
+        "crusty_verdict",
+        "not private to this user",
+    ] {
+        assert!(
+            gate.contains(needle),
+            "the merge gate must check `{needle}`"
+        );
+    }
+    // An empty --state-dir must not become the /tmp fallback before the gate
+    // decides whether a state dir was given (R-S1.1).
+    let given = gate
+        .find("STATE_DIR_GIVEN=")
+        .expect("STATE_DIR_GIVEN must be assigned");
+    let fallback = gate
+        .find(r#"STATE_DIR="${STATE_DIR:-${TMPDIR:-/tmp}}""#)
+        .expect("the evidence-bundle fallback must remain");
+    assert!(
+        given < fallback,
+        "STATE_DIR_GIVEN must be computed before the /tmp fallback is applied"
+    );
+    // The state helper comes from beside the gate, never from a search root
+    // that a pull request could populate.
+    assert!(
+        !gate.contains(".copilot") && !gate.contains(".amplihack/amplifier-bundle"),
+        "the gate must source autodrive_state.sh from its own directory only"
+    );
+}
+
+#[test]
+fn merge_gate_keeps_every_existing_block() {
+    // AC8: the gate only gets stricter. Every refusal present before #1517
+    // must still be there, word for word.
+    let gate = read(&tool_path("autodrive_merge_gate.sh"));
+    for existing in [
+        r#"block "pull request #${PR} metadata is unreadable; an unreadable platform state never merges""#,
+        r#"block "pull request #${PR} is in state '${PR_STATE}', not OPEN""#,
+        r#"block "head SHA for #${PR} is unreadable ('${HEAD_SHA}'); every criterion must bind to one SHA""#,
+        r##"block "#${PR} is a draft""##,
+        r#"block "mergeable='${MERGEABLE}' (CONFLICTING or UNKNOWN never merges)""#,
+        r#"block "branch is BEHIND base; this repository requires strict up-to-date branches before merge""#,
+        r#"block "mergeStateStatus='${MERGE_STATE}' is not a mergeable state""#,
+        r#"block "a review requests changes""#,
+        r#"block "review-thread state is unreadable; an unreadable criterion is a failure, not a pass""#,
+        r#"block "${THREADS} unresolved review thread(s)""#,
+        r#"block "jq is unavailable, so the CI rollup cannot be read; a criterion we cannot read is a failure""#,
+        r#"block "CI status for #${PR} is unreadable; an unreadable CI status is a failure, not a pass""#,
+        r#"block "no CI checks reported for #${PR}; zero checks is not a green build""#,
+        r#"block "${PENDING:-unreadable} CI check(s) still pending""#,
+        r#"block "${FAILING:-unreadable} CI check(s) failing or cancelled""#,
+        r#"block "no qa-team scenario evidence file was produced in this run""#,
+        r#"block "qa-team scenarios did not pass in this run (qa_status=${QA_STATUS})""#,
+        r#"block "the qa-team evidence records no head_sha; evidence that is not bound to a SHA never merges""#,
+        r#"block "the qa-team evidence was captured against ${QA_SHA} but the head is now ${HEAD_SHA}; evidence must bind to the SHA being merged""#,
+        r#"block "no merge-ready round record was produced in this run""#,
+        r#"block "merge-ready verdict is '${MR_VERDICT}', not MERGE_READY""#,
+        r#"block "the merge-ready evidence was captured against ${MR_SHA:-<none>} but the head is now ${HEAD_SHA}; evidence must bind to the SHA being merged""#,
+    ] {
+        assert!(
+            gate.contains(existing),
+            "an existing merge-gate refusal was changed or removed:\n  {existing}"
+        );
+    }
+}
+
+#[test]
+fn state_helper_documents_the_crusty_marker_as_gate_evidence() {
+    let state = read(&tool_path("autodrive_state.sh"));
+    assert!(
+        !state.contains("a resume optimisation, never evidence"),
+        "autodrive_state.sh still says the phase marker is never evidence; the \
+         gate now reads the crusty-loop marker as criterion-3 evidence"
+    );
+    for needle in [
+        "crusty-latest.json",
+        "autodrive-crusty-loop.yaml",
+        "autodrive_loop.sh",
+    ] {
+        assert!(
+            state.contains(needle),
+            "autodrive_state.sh must name `{needle}` where it explains the marker"
+        );
+    }
+}
+
+#[test]
+fn merge_ready_skill_documents_running_under_auto_drive() {
+    let path = workspace_root().join("amplifier-bundle/skills/merge-ready/SKILL.md");
+    let text = read(&path);
+    let front = skill_frontmatter(&text).expect("merge-ready must have frontmatter");
+    assert!(
+        front
+            .iter()
+            .any(|(k, v)| k == "disable-model-invocation" && v == "true"),
+        "merge-ready keeps disable-model-invocation: true (issue #1517, D1)"
+    );
+    let required = text.find("## Required outcome").expect("Required outcome");
+    let section = text
+        .find("## Running under auto-drive")
+        .expect("merge-ready must have a `## Running under auto-drive` section");
+    let stop = text.find("## When to stop").expect("When to stop section");
+    assert!(
+        required < section && section < stop,
+        "`## Running under auto-drive` goes after Required outcome and before When to stop"
+    );
+    let body = &text[section..stop];
+    for needle in [
+        "gadugi-test validate",
+        "gadugi-test run",
+        "AUTODRIVE_QA_SCENARIO_DIR",
+        "crusty-old-engineer",
+        "CLEAN",
+        "quality-audit",
+        "at least 3",
+        "merge-ready-skill-files-not-found",
+    ] {
+        assert!(
+            body.contains(needle),
+            "the auto-drive section must mention `{needle}`"
+        );
+    }
+    let reference = read(&workspace_root().join("docs/reference/auto-drive-to-merge.md"));
+    for needle in [
+        "AUTODRIVE_QA_SCENARIO_DIR",
+        "gadugi_status",
+        "crusty_status",
+        "DONE_CLEAN",
+        "no_recipe_invokes_a_skill_that_refuses_model_invocation",
+    ] {
+        assert!(
+            reference.contains(needle),
+            "docs/reference/auto-drive-to-merge.md must document `{needle}`"
+        );
+    }
+}
+
 #[test]
 fn every_criterion_is_read_completely_and_bound_to_the_merged_sha() {
     let gate = read(&tool_path("autodrive_merge_gate.sh"));

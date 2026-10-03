@@ -58,8 +58,14 @@ autodrive_state_dir() {
 # --- phase completion ------------------------------------------------------
 #
 # A phase is recorded as done only after its own gate passed in a real run.
-# `autodrive_phase_done` is therefore a resume optimisation, never evidence:
-# the merge gate re-verifies every criterion in the run that merges.
+# For most phases `autodrive_phase_done` only lets a resumed run skip work; the
+# merge gate re-verifies those criteria in the run that merges. The exception
+# is `crusty-loop`: the merge gate reads that marker, together with the final
+# verdict in crusty-latest.json, as evidence for merge-ready criterion 3 (issue
+# #1517), and only from a state dir private to this user. The only permitted
+# writers are autodrive-crusty-loop.yaml (the marker, after the loop reports
+# DONE) and autodrive_loop.sh (crusty-latest.json, a copy of the last round
+# record). No agent step may create, edit or delete these files.
 
 autodrive_mark_phase_done() {
   local dir="${1:?state dir}" phase="${2:?phase}"

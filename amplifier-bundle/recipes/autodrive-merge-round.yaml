@@ -2,9 +2,9 @@ name: "autodrive-merge-round"
 description: |
   One round of the auto-drive-to-merge merge-ready loop: collect measured
   evidence (base sync, `qa-team` scenarios actually RUN, CI to a terminal
-  state), apply the `merge-ready` skill's criteria to that evidence, read a
-  STRUCTURED verdict, fix whatever is blocking, and record a machine-checkable
-  round record.
+  state, the crusty loop's final state), apply the criteria in the
+  `merge-ready` skill's SKILL.md to that evidence, read a STRUCTURED verdict,
+  fix whatever is blocking, and record a machine-checkable round record.
 
   This brick performs exactly ONE round and contains no loop of its own. The
   loop and its agentic terminator live in autodrive-merge-loop.yaml.
@@ -34,6 +34,7 @@ context:
   autodrive_round_label: "round"
   autodrive_qa_evidence: ""
   autodrive_resolved_concerns_file: ""
+  autodrive_state_dir: ""
 
 steps:
   - id: "merge-evidence"
@@ -75,17 +76,70 @@ steps:
         "$(f mergeStateStatus UNKNOWN)" "$(f reviewDecision '')" "$(f headRefOid '')" "$THREADS"
     output: "platform_facts"
 
+  - id: "step-01b-crusty-evidence"
+    type: "bash"
+    parse_json: true
+    command: |
+      set -uo pipefail
+      cd "${REPO_PATH:-.}" 2>/dev/null || true
+      # Criterion 3 under auto-drive: the crusty loop ended DONE (`crusty-loop`
+      # in phases.tsv) with a final CLEAN verdict (crusty-latest.json). Every
+      # value emitted is from a fixed set, so an agent-written record cannot
+      # inject prompt text or break this JSON. No agent sees the state dir.
+      DIR="${AUTODRIVE_STATE_DIR:-}"
+      DONE="false"; VERDICT="MISSING"
+      if [ -z "$DIR" ]; then
+        echo "WARNING: no autodrive_state_dir was passed to this round; crusty evidence is ABSENT." >&2
+      else
+        STATE_HELPER=""
+        for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(git rev-parse --show-toplevel 2>/dev/null)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do
+          [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/autodrive_state.sh" ] && { STATE_HELPER="$c/amplifier-bundle/tools/autodrive_state.sh"; break; }
+        done
+        if [ -z "$STATE_HELPER" ]; then
+          echo "WARNING: autodrive_state.sh not found (searched AMPLIHACK_HOME, REPO_PATH, git toplevel, ~/.copilot, ~/.amplihack); the crusty-loop marker is reported ABSENT." >&2
+        else
+          . "$STATE_HELPER"
+          autodrive_phase_done "$DIR" "crusty-loop" && DONE="true"
+        fi
+        if [ -f "$DIR/crusty-latest.json" ]; then
+          VERDICT="$(amplihack orch helper extract-json --require-field crusty_verdict < "$DIR/crusty-latest.json" \
+            | amplihack orch helper extract-field --field crusty_verdict --default MISSING)"
+        fi
+      fi
+      case "$VERDICT" in CLEAN|CONCERNS|MISSING) ;; '') VERDICT="MISSING" ;; *) VERDICT="OTHER" ;; esac
+      if [ "$DONE" != "true" ]; then STATUS="ABSENT"
+      elif [ "$VERDICT" = "CLEAN" ]; then STATUS="DONE_CLEAN"
+      else STATUS="NOT_CLEAN"; fi
+      echo "INFO: crusty evidence: status=${STATUS} phase_done=${DONE} verdict=${VERDICT}" >&2
+      printf '{"crusty_status":"%s","crusty_phase_done":"%s","crusty_verdict":"%s"}\n' "$STATUS" "$DONE" "$VERDICT"
+    output: "crusty_evidence"
+
   - id: "step-02-merge-ready-assessment"
     agent: "amplihack:core:reviewer"
     working_dir: "{{repo_path}}"
     prompt: |
       # merge-ready assessment — PR #{{platform_facts.pr}} ({{autodrive_round_label}})
 
-      **Invoke the skill:** activate `Skill(skill="merge-ready")` for PR
-      #{{platform_facts.pr}} and apply its criteria. That skill defines the
-      required outcome and the guardrails; this step exists to bind its verdict
-      to the measured evidence below and to emit it in a machine-checkable
-      shape.
+      ## Read the merge-ready criteria as files
+
+      The `merge-ready` skill sets `disable-model-invocation: true`, so an
+      agent cannot invoke it. Read its files instead. Use the first root, in
+      this order, where `<root>/amplifier-bundle/skills/merge-ready/SKILL.md`
+      exists:
+
+      1. `$AMPLIHACK_HOME`
+      2. `$REPO_PATH`
+      3. the output of `git rev-parse --show-toplevel`
+      4. `~/.copilot`
+      5. `~/.amplihack`
+
+      Read `pr-description-template.md` from the same directory. Cite the
+      SKILL.md path you used in your evidence.
+
+      If SKILL.md is under none of the roots, the verdict is `NOT_MERGE_READY`
+      with the blocker `merge-ready-skill-files-not-found`, listing every path
+      checked; never apply criteria from memory. If only the template is
+      missing, the blocker is `merge-ready-template-not-found`.
 
       ## Measured evidence from THIS round — use it, do not re-imagine it
 
@@ -93,6 +147,7 @@ steps:
       - Base sync: `{{merge_sync}}`
       - qa-team scenarios: `{{qa_evidence}}`
       - CI: `{{ci_evidence}}`
+      - Crusty loop: `{{crusty_evidence}}`
 
       Read those literally. `qa_status` is `PASS` only when the scenarios were
       actually RUN and passed — a scenario file existing is not evidence, and
@@ -100,22 +155,31 @@ steps:
       rollup had zero failing and zero pending checks; `UNREADABLE` and
       `NO_CHECKS` are failures, not passes.
 
+      ## How auto-drive meets criteria 1 and 3
+
+      - **Criterion 1:** met only when `gadugi_status` is `PASS` (gadugi-test
+        validated and ran the `gadugi_scenario_count` scenarios in
+        `gadugi_scenario_dir`) and `qa_status` is `PASS`. If the scenarios do
+        not cover what this PR changes, report `qa-team-scenarios-do-not-cover-the-change`.
+      - **Criterion 3:** met when `crusty_status` is `DONE_CLEAN`: this run's
+        crusty-old-engineer loop ended DONE with a final CLEAN verdict. Run no
+        separate quality-audit and ask for no minimum number of crusty rounds.
+        Otherwise report `quality-audit-convergence-crusty-not-done-clean`.
+
+      Every other criterion applies exactly as SKILL.md states it.
+
       ## What to do
 
-      Work the merge-ready skill's criteria against this PR: qa-team scenarios
-      run, docs updated for every changed user-facing surface, quality-audit
-      converged on a clean final cycle, checks green, metadata complete,
-      reviews satisfied, no merge conflicts, protection rules satisfied, linked
-      issues present or explicitly not applicable, review threads resolved,
-      scope clean, and the PR description carrying concrete evidence for all of
-      it. Update the PR description with that evidence, as the skill requires.
+      Work every criterion in SKILL.md against this PR, and update the PR
+      description with concrete evidence for each one, following the
+      template, as SKILL.md requires.
 
       Report a criterion you could not verify as **failed**. An inaccessible
       criterion is a blocker, never an assumption.
 
       ## Output contract (REQUIRED)
 
-      Keep the skill's own verdict block. Then, as the **very last thing** you
+      Keep the verdict block SKILL.md describes. Then, as the **very last thing** you
       emit, output a single JSON object with no code fence and no trailing
       prose:
 
@@ -170,11 +234,16 @@ steps:
             | amplihack orch helper extract-field --field conflict --default unknown)"
       THREADS="$(printf '%s' "${PLATFORM_FACTS:-}" | amplihack orch helper extract-json --require-field unresolved_threads \
             | amplihack orch helper extract-field --field unresolved_threads --default unreadable)"
+      # Criterion 3 is measured too: missing crusty evidence fails closed.
+      CRUSTY="$(printf '%s' "${CRUSTY_EVIDENCE:-}" | amplihack orch helper extract-json --require-field crusty_status \
+            | amplihack orch helper extract-field --field crusty_status --default MISSING)"
+      case "$CRUSTY" in DONE_CLEAN|ABSENT|NOT_CLEAN|MISSING) ;; *) CRUSTY="OTHER" ;; esac
       DOWNGRADE=""
       [ "$QA" = "PASS" ] || DOWNGRADE="${DOWNGRADE}qa_status=${QA} "
       [ "$CI" = "GREEN" ] || DOWNGRADE="${DOWNGRADE}ci_status=${CI} "
       [ "$CONFLICT" = "false" ] || DOWNGRADE="${DOWNGRADE}conflict=${CONFLICT} "
       [ "$THREADS" = "0" ] || DOWNGRADE="${DOWNGRADE}unresolved_threads=${THREADS} "
+      [ "$CRUSTY" = "DONE_CLEAN" ] || DOWNGRADE="${DOWNGRADE}crusty_status=${CRUSTY} "
       if [ -n "$DOWNGRADE" ] && [ "$VERDICT" = "MERGE_READY" ]; then
         echo "WARNING: downgrading MERGE_READY to NOT_MERGE_READY — measured evidence disagrees: ${DOWNGRADE}" >&2
         VERDICT="NOT_MERGE_READY"; SOURCE="evidence_downgrade"
@@ -222,6 +291,7 @@ steps:
       - CI: `{{ci_evidence}}`
       - Platform: `{{platform_facts}}`
       - Base sync: `{{merge_sync}}`
+      - Crusty loop: `{{crusty_evidence}}`
 
       ## What to do
 
@@ -230,8 +300,19 @@ steps:
       - **Failing CI** — read the failing job's log and fix what it found. Do
         not rerun a red job hoping for green; rerun only a job you have
         positively identified as flaky, and say why.
-      - **Failing or blocked qa-team scenarios** — make the scenarios run and
-        pass. A scenario that cannot be run is a blocker, not a formality.
+      - **Failing, blocked or missing qa-team scenarios** — make them run and
+        pass. When `gadugi_status` is `NO_SCENARIOS` or the scenarios miss the
+        changed behaviour, use `Skill(skill="qa-team")` to write top-level
+        `*.yaml` scenarios in `gadugi_scenario_dir`, run `gadugi-test validate -d <dir>`
+        then `gadugi-test run -d <dir>`, and commit them. Fix the scenario or
+        the code; never delete or weaken a failing scenario to reach a pass. If
+        `gadugi_scenario_dir` is absolute or outside this repository, write
+        nothing there; report `gadugi-scenario-dir-outside-repo`.
+      - **`quality-audit-convergence-crusty-not-done-clean`** — the crusty loop
+        of this run did not end DONE and CLEAN. Do not run a quality-audit in
+        its place, and never create, edit or delete auto-drive state files
+        (`phases.tsv`, `*-latest.json`); only the crusty loop writes them. Fix
+        any crusty concern still open and keep this blocker in your report.
       - **Merge conflicts** — resolve them in the branch.
       - **Unresolved review threads** — answer them and resolve them.
       - **Missing docs or evidence** — write them.
