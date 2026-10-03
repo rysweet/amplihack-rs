@@ -215,7 +215,8 @@ steps:
           # own temporary directory outside the repository and run from there,
           # and the match cannot pick up a second scenario. There is no
           # fallback to running $SDIR itself.
-          STAGE_ROOT="$(mktemp -d 2>/dev/null)" || STAGE_ROOT=""
+          # An explicit template: macOS `mktemp -d` alone ignores TMPDIR.
+          STAGE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/autodrive-gadugi.XXXXXX" 2>/dev/null)" || STAGE_ROOT=""
           STAGE_OK="false"
           if [ -n "$STAGE_ROOT" ] && [ -d "$STAGE_ROOT" ]; then
             trap '[ -n "${STAGE_ROOT:-}" ] && [ -d "$STAGE_ROOT" ] && rm -rf -- "$STAGE_ROOT"' EXIT
