@@ -158,6 +158,11 @@ steps:
         G_STATUS="NO_SCENARIOS"; cause "no scenarios in ${SREL}"; RAN_FAIL="true"
       else
         GLOG="$(mktemp -t autodrive-gadugi-XXXXXX)"
+        # gadugi-test writes logs/ and outputs/ into its working directory. Only
+        # the ones this step creates are removed afterwards, so the artifact
+        # guard does not block the next commit on this run's leftovers.
+        NEW_DIRS=""
+        for d in logs outputs; do [ -e "$d" ] || [ -L "$d" ] || NEW_DIRS="${NEW_DIRS} ${d}"; done
         gadugi-test validate -d "$SDIR" >"$GLOG" 2>&1
         G_VRC=$?
         if [ "$G_VRC" -ne 0 ]; then
@@ -171,6 +176,7 @@ steps:
         echo "INFO: gadugi-test on ${SREL} (${COUNT} scenario(s)): ${G_STATUS}" >&2
         tail -n 60 "$GLOG" >&2 || true
         rm -f "$GLOG"
+        for d in $NEW_DIRS; do [ -d "$d" ] && [ ! -L "$d" ] && rm -rf -- "./${d}"; done
       fi
 
       if [ "$RC" = "0" ] && [ "$G_STATUS" = "PASS" ]; then STATUS="PASS"

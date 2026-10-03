@@ -915,6 +915,8 @@ sub="${1:-}"; flag="${2:-}"; dir="${3:-}"
 case "$dir" in /*) abs=y ;; *) abs=n ;; esac
 phys="$(cd "$dir" 2>/dev/null && pwd -P || printf 'BAD:%s' "$dir")"
 echo "gadugi-test ${sub} ${flag} ${phys} abs=${abs}" >> "${EV_CALLS:-/dev/null}"
+# Like the real tool, optionally leave logs/ and outputs/ in the working directory.
+[ -z "${STUB_GADUGI_WRITES:-}" ] || { mkdir -p logs outputs/sessions && : > logs/combined.log && : > outputs/sessions/s.json; }
 printf '%b\n' "${STUB_GADUGI_OUT:-ok}"
 case "$sub" in
   validate) exit "${STUB_GADUGI_VALIDATE_RC:-0}" ;;
@@ -1131,6 +1133,23 @@ else
   fail "QA-hostile-json" "invalid or unsanitised evidence: ${EV_OUT}"
 fi
 ev_expect "QA-hostile-fields" qa_status=FAIL gadugi_status=RUN_FAILED qa_exit_code=1
+
+# 15. gadugi-test's logs/ and outputs/ are removed when this step created them,
+# and left alone when they were already there.
+ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml
+ev_run "${EV_FULL}" STUB_GADUGI_WRITES=1
+if [ ! -e "${EV_REPO}/logs" ] && [ ! -e "${EV_REPO}/outputs" ] && [ "$(evf gadugi_status)" = "PASS" ]; then
+  pass "QA-gadugi-leftovers-removed" "logs/ and outputs/ written by gadugi-test do not stay in the worktree"
+else
+  fail "QA-gadugi-leftovers-removed" "gadugi-test leftovers remain: $(cd "${EV_REPO}" && ls -d logs outputs 2>/dev/null | tr '\n' ' ')"
+fi
+ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml; mkdir -p "${EV_REPO}/logs"; printf 'keep\n' > "${EV_REPO}/logs/mine.log"
+ev_run "${EV_FULL}" STUB_GADUGI_WRITES=1
+if [ -f "${EV_REPO}/logs/mine.log" ] && [ ! -e "${EV_REPO}/outputs" ]; then
+  pass "QA-gadugi-leftovers-preexisting" "a logs/ directory that existed before the step is left alone"
+else
+  fail "QA-gadugi-leftovers-preexisting" "the step removed a directory it did not create, or left outputs/ behind"
+fi
 
 # ---------------------------------------------------------------------------
 # 6c. Crusty evidence for criterion 3 (step-01b), on the REAL step body.
