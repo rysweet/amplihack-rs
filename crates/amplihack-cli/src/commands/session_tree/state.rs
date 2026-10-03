@@ -458,6 +458,7 @@ fn cgroup_available_mib() -> Option<u64> {
 /// nothing noticing. That is the container case, which is the one it exists for.
 ///
 /// `"max"` means unlimited, so the caller falls back to `MemAvailable`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // cgroups exist on Linux only
 pub(crate) fn cgroup_headroom_mib(max_raw: &str, current_raw: &str) -> Option<u64> {
     let max_raw = max_raw.trim();
     if max_raw == "max" {
