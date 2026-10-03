@@ -307,7 +307,7 @@ steps:
             *)
               VERDICT="STUCK"; SOURCE="unparseable_verdict"
               NOT_CONVERGING='["the evaluator gave conflicting prose verdict tokens"]'
-              echo "WARNING: conflicting prose verdict tokens ($(printf '%s' "$TOKENS" | tr '\n' ' '))— fail-safe to STUCK." >&2
+              echo "WARNING: conflicting prose verdict tokens ($(printf '%s' "$TOKENS" | tr '\n' ' ')) — fail-safe to STUCK." >&2
               ;;
           esac
         fi

@@ -210,9 +210,9 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} findings=$(prin
   # followed by `    Output: LOOP_HEALTH: <verdict>`. Only the line straight
   # after the LAST completed step-04 status line is trusted, and only if no
   # status line of any step follows it, so a block forged inside the agent's
-  # own output cannot decide. A log with no status lines at all must hold exactly one
-  # `[    Output: ]LOOP_HEALTH:` line. Anything we cannot read as CONTINUE or
-  # DONE is STUCK — a missing verdict never authorises another round.
+  # own output cannot decide. A log with no status lines at all must hold
+  # exactly one `[    Output: ]LOOP_HEALTH:` line. Anything we cannot read as
+  # CONTINUE or DONE is STUCK — a missing verdict never authorises another round.
   # Portable to BSD awk and mawk: byte matching, no gawk extensions.
   LOOP_VERDICT="STUCK"
   if [ "$HEALTH_RC" -eq 0 ]; then
@@ -236,7 +236,7 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} findings=$(prin
           if (v == "STUCK") v = verdict(marker, "    Output: LOOP_HEALTH: ")
         }
         print v
-      }' "$HEALTH_LOG" 2>/dev/null || echo STUCK)"
+      }' "$HEALTH_LOG" || echo STUCK)"
     case "$HEALTH_READ" in
       CONTINUE) LOOP_VERDICT="CONTINUE" ;;
       DONE) LOOP_VERDICT="DONE" ;;

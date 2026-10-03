@@ -196,9 +196,10 @@ because they are multibyte:
 ```
 
 With a `Verdict:` or `LOOP_HEALTH:` prefix the token group is matched case
-insensitively. The token is read from what is left after the matched prefix and bold markers
-are removed, never from anywhere else on the line. The scan is one `awk` pass
-over the whole output, so it runs the same under gawk, mawk and BSD awk.
+insensitively. The token is read from what is left after the matched prefix
+and bold markers are removed, never from anywhere else on the line. The scan
+is one `awk` pass over the whole output, so it runs the same under gawk, mawk
+and BSD awk.
 
 The evaluator's text is only ever data: it reaches `grep`, `awk` and the
 helpers through `printf '%s' "$RAW"` on stdin. It is never passed to `eval`,
