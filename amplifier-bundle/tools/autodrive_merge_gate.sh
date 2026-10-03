@@ -156,6 +156,9 @@ else
   QA_STATUS="$(field "$QA_RAW" qa_status MISSING)"
   QA_SHA="$(field "$QA_RAW" head_sha "")"
   note "qa_status=${QA_STATUS} qa_head_sha=${QA_SHA:-<none>} ($(field "$QA_RAW" qa_command ''))"
+  # qa_reason names the first failing check (issue #1517); only its token
+  # characters are kept, so evidence text cannot reach the bundle as prose.
+  note "qa_reason=$(field "$QA_RAW" qa_reason '' | tr -cd 'a-z-')"
   [ "$QA_STATUS" = "PASS" ] || block "qa-team scenarios did not pass in this run (qa_status=${QA_STATUS})"
   # Existence + PASS is not enough: an evidence file left behind by an earlier
   # round describes a tree that is no longer what would be merged. Every
@@ -184,6 +187,11 @@ fi
 # this user and writable by nobody else, and only when they are regular files
 # rather than symlinks. The state helper is sourced from beside this gate and
 # from nowhere a pull request could populate.
+#
+# Since #1517 the last loop-written round record must also check out against
+# crusty-records.tsv, the manifest autodrive_loop.sh writes before any agent
+# runs: autodrive_crusty_final rejects an injected, edited or archived record.
+# These checks only add to the ones above; none of them replaces one.
 GATE_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
 autodrive_private() { # autodrive_private <path>: owned here, not a symlink, no group/world write
   local loose
@@ -200,7 +208,7 @@ elif ! autodrive_private "$STATE_DIR"; then
   block "state dir ${STATE_DIR} is not private to this user (not owned by this user, a symlink, or group/world-writable); crusty state there is not evidence"
 else
   CRUSTY_OK="true"
-  for f in phases.tsv crusty-latest.json; do
+  for f in phases.tsv crusty-latest.json crusty-records.tsv; do
     if [ -L "${STATE_DIR}/${f}" ] || { [ -e "${STATE_DIR}/${f}" ] && { [ ! -f "${STATE_DIR}/${f}" ] || ! autodrive_private "${STATE_DIR}/${f}"; }; }; then
       block "${STATE_DIR}/${f} is not private to this user (a symlink, not a regular file, not owned by this user, or group/world-writable); crusty state there is not evidence"
       CRUSTY_OK="false"
@@ -217,6 +225,23 @@ else
       [ -f "${STATE_DIR}/crusty-latest.json" ] && CRUSTY_VERDICT="$(field "$(cat "${STATE_DIR}/crusty-latest.json")" crusty_verdict MISSING)"
       note "crusty_phase_done=true crusty_verdict=$(printf '%s' "$CRUSTY_VERDICT" | tr -cd 'A-Za-z_')"
       [ "$CRUSTY_VERDICT" = "CLEAN" ] || block "the crusty loop's final crusty_verdict is not CLEAN in ${STATE_DIR}/crusty-latest.json; criterion 3 is not met"
+      # The record the manifest's last row names must be private too. Its
+      # name is validated before any path is built from it.
+      CRUSTY_ROW="$(autodrive_crusty_manifest_row "$STATE_DIR")" || CRUSTY_ROW=""
+      CRUSTY_RECORD="${CRUSTY_ROW%% *}"
+      if [ -n "$CRUSTY_RECORD" ] && { [ -e "${STATE_DIR}/${CRUSTY_RECORD}" ] || [ -L "${STATE_DIR}/${CRUSTY_RECORD}" ]; } \
+         && ! autodrive_private "${STATE_DIR}/${CRUSTY_RECORD}"; then
+        block "${STATE_DIR}/${CRUSTY_RECORD} is not private to this user (a symlink, not owned by this user, or group/world-writable); crusty state there is not evidence"
+      fi
+      if CRUSTY_FINAL="$(autodrive_crusty_final "$STATE_DIR")"; then
+        note "crusty_reviewed_head_sha=$(printf '%s' "$CRUSTY_FINAL" | tr -cd '0-9a-f')"
+      else
+        case "$CRUSTY_FINAL" in
+          crusty-loop-not-done|crusty-manifest-missing|crusty-record-missing|crusty-record-modified|crusty-not-clean|crusty-head-sha-empty) ;;
+          *) CRUSTY_FINAL="crusty-other" ;;
+        esac
+        block "crusty records in ${STATE_DIR} are not loop-written evidence (${CRUSTY_FINAL}); criterion 3 is not met"
+      fi
     fi
   fi
 fi

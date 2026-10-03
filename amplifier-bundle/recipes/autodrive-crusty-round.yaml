@@ -87,6 +87,10 @@ steps:
 
       You are standing in for the maintainer. Review it as hard as they would.
 
+      Do not create, edit, move, rename, delete or archive any file in the
+      auto-drive state directory (the directory holding crusty-round-*.json,
+      merge-ready-round-*.json and phases.tsv).
+
       **Round label:** {{autodrive_round_label}}
       **PR:** {{pr_url}} (#{{crusty_round_context.pr}}) at `{{crusty_round_context.head_sha}}`
       **Original task:** {{task_description}}
@@ -214,6 +218,10 @@ steps:
       Do not paper over a concern. Do not narrow a test until it passes. Do not
       leave a TODO in place of a fix.
 
+      Do not create, edit, move, rename, delete or archive any file in the
+      auto-drive state directory (the directory holding crusty-round-*.json,
+      merge-ready-round-*.json and phases.tsv).
+
       ## Committing
 
       Commit normally so the repository's hooks run, and push:
@@ -279,22 +287,33 @@ steps:
       set -uo pipefail
       RECORD="${AUTODRIVE_ROUND_RECORD:-}"
       [ -n "$RECORD" ] || { echo "ERROR: autodrive_round_record is required; the loop driver reads the round record from a file, never from stdout." >&2; exit 1; }
+      g() { printf '%s' "${1:-}" | amplihack orch helper extract-json --require-field "$2" \
+              | amplihack orch helper extract-field --field "$2" --default "$3"; }
+      hex() { printf '%s' "$1" | grep -Eqx '[0-9a-f]{40}([0-9a-f]{24})?'; }
       VERDICT="$(printf '%s' "${CRUSTY_VERDICT:-}" \
         | amplihack orch helper extract-json --require-field crusty_verdict \
         | amplihack orch helper extract-field --field crusty_verdict --default CONCERNS)"
       case "$VERDICT" in CLEAN|CONCERNS) ;; *) VERDICT="CONCERNS" ;; esac
-      COUNT="$(printf '%s' "${CRUSTY_VERDICT:-}" \
-        | amplihack orch helper extract-json --require-field concern_count \
-        | amplihack orch helper extract-field --field concern_count --default 0)"
-      COMMITS="$(printf '%s' "${CRUSTY_FIX_EVIDENCE:-}" \
-        | amplihack orch helper extract-json --require-field commits \
-        | amplihack orch helper extract-field --field commits --default 0)"
-      SHA="$(printf '%s' "${CRUSTY_FIX_EVIDENCE:-}" \
-        | amplihack orch helper extract-json --require-field head_sha \
-        | amplihack orch helper extract-field --field head_sha --default '')"
+      COUNT="$(g "${CRUSTY_VERDICT:-}" concern_count 0)"
+      COMMITS="$(g "${CRUSTY_FIX_EVIDENCE:-}" commits 0)"
+      printf '%s' "$COUNT" | grep -Eqx '[0-9]+' || COUNT=0
+      printf '%s' "$COMMITS" | grep -Eqx '[0-9]+' || COMMITS=0
+      # The reviewed head comes from bash (git rev-parse HEAD in step-01),
+      # never from an agent. The record's head_sha is the post-fix head when
+      # step-05 ran, otherwise the reviewed head, so it is never empty (issue
+      # #1517). A missing SHA fails the step: forcing CONCERNS instead would
+      # make the loop review the same tree forever.
+      REVIEWED="$(g "${CRUSTY_ROUND_CONTEXT:-}" head_sha '')"
+      SHA="$(g "${CRUSTY_FIX_EVIDENCE:-}" head_sha '')"
+      [ -n "$SHA" ] || SHA="$REVIEWED"
+      if ! hex "$REVIEWED" || ! hex "$SHA"; then
+        echo "ERROR: crusty-head-sha-unavailable: reviewed_head_sha='$(printf '%s' "$REVIEWED" | tr -cd '0-9A-Za-z' | cut -c1-64)' head_sha='$(printf '%s' "$SHA" | tr -cd '0-9A-Za-z' | cut -c1-64)'; no round record is written, so this round cannot count as a CLEAN crusty round." >&2
+        exit 1
+      fi
+      LABEL="$(printf '%s' "${AUTODRIVE_ROUND_LABEL:-round}" | tr -c 'A-Za-z0-9._-' '_')"
       [ -f "${RECORD}.findings" ] || : > "${RECORD}.findings"
-      printf '{"crusty_verdict":"%s","concern_count":%s,"commits_this_round":%s,"head_sha":"%s","round_label":"%s","test_signal":"","ci_signal":""}\n' \
-        "$VERDICT" "${COUNT:-0}" "${COMMITS:-0}" "$SHA" "${AUTODRIVE_ROUND_LABEL:-round}" > "$RECORD"
+      printf '{"crusty_verdict":"%s","concern_count":%s,"commits_this_round":%s,"head_sha":"%s","reviewed_head_sha":"%s","round_label":"%s","test_signal":"","ci_signal":""}\n' \
+        "$VERDICT" "$COUNT" "$COMMITS" "$SHA" "$REVIEWED" "$LABEL" > "$RECORD"
       echo "INFO: round record written to ${RECORD}" >&2
       cat "$RECORD"
     output: "crusty_round_record_written"

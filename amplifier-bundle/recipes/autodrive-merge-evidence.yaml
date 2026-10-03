@@ -82,20 +82,16 @@ steps:
       ROOT="$(pwd -P)"
       EVIDENCE="${AUTODRIVE_QA_EVIDENCE:-}"
       # Criterion 1 is two measurements, and both always run so the evidence
-      # lists every cause at once: the repository's own test command, and the
-      # qa-team scenarios validated and run with gadugi-test.
-      TYPE="unknown"; CMD=""
-      if [ -f Cargo.toml ]; then
-        TYPE="rust-cli"; CMD="cargo test --workspace --locked --no-fail-fast"
-      elif [ -f package.json ]; then
-        TYPE="node"; CMD="npm test"
-      elif [ -f pyproject.toml ] || [ -f setup.py ]; then
-        TYPE="python"; CMD="pytest"
-      fi
+      # lists every cause at once: the repository's suite commands, and the
+      # qa-team scenarios validated and run with gadugi-test. qa_status is
+      # PASS only when both pass; qa_reason names the first failing check.
       # Free text is sanitised before it reaches the JSON below: no quotes,
       # backslashes or control bytes, so a hostile log line or directory name
       # can neither break the evidence nor carry terminal escapes.
       san() { tr '\n' ' ' | LC_ALL=C tr -d '\000-\037\177"\\'; }
+      num() { case "$1" in ''|*[!0-9]*) printf '0' ;; *) printf '%s' "$1" ;; esac; }
+      CAUSES=""
+      cause() { CAUSES="${CAUSES}${CAUSES:+; }$1"; }
       # The evidence binds to the tree it was measured on. The merge gate
       # refuses evidence whose head_sha is not the SHA being merged, so a
       # PASS left behind by an earlier round cannot stand in for this one.
@@ -105,10 +101,71 @@ steps:
       else
         echo "[skip] not a git repo; the qa evidence records no head sha, so the merge gate refuses it rather than merging unbound evidence" >&2
       fi
-      # Scenario directory: AUTODRIVE_QA_SCENARIO_DIR from the environment
-      # only (no recipe declares it as context; an empty context default would
-      # hide the exported value), then tests/agentic, then scenarios. An
-      # override naming a missing directory means no scenarios, not a fallback.
+
+      # --- suite commands --------------------------------------------------
+      # AUTODRIVE_QA_COMMAND, AUTODRIVE_QA_DIR and AUTODRIVE_QA_COMMANDS come
+      # from the environment only (no recipe declares them as context; an
+      # empty context default would hide the exported value). Set but empty
+      # means "no command", never "detect one".
+      #   AUTODRIVE_QA_COMMAND   one command, word-split with globbing off, run
+      #                          in AUTODRIVE_QA_DIR (the issue #1516 semantics)
+      #   AUTODRIVE_QA_COMMANDS  one command per line (blank and # lines skipped),
+      #                          each run alone with bash -c from the repo root
+      # With neither set, the command comes from the repository type.
+      QA_DIR="${AUTODRIVE_QA_DIR:-.}"
+      TYPE="unknown"; KINDS=(); TEXTS=()
+      if [ -n "${AUTODRIVE_QA_COMMAND+x}" ] || [ -n "${AUTODRIVE_QA_COMMANDS+x}" ]; then
+        TYPE="configured"
+        if [ -n "${AUTODRIVE_QA_COMMAND:-}" ]; then KINDS+=(word); TEXTS+=("$AUTODRIVE_QA_COMMAND"); fi
+        while IFS= read -r line || [ -n "$line" ]; do
+          case "$(printf '%s' "$line" | sed 's/^[[:space:]]*//')" in ''|'#'*) continue ;; esac
+          KINDS+=(entry); TEXTS+=("$line")
+        done <<< "${AUTODRIVE_QA_COMMANDS:-}"
+      elif [ -f Cargo.toml ]; then
+        TYPE="rust-cli"; KINDS+=(detected); TEXTS+=("cargo test --workspace --locked --no-fail-fast")
+      elif [ -f package.json ]; then
+        TYPE="node"; KINDS+=(detected); TEXTS+=("npm test")
+      elif [ -f pyproject.toml ] || [ -f setup.py ]; then
+        TYPE="python"; KINDS+=(detected); TEXTS+=("pytest")
+      fi
+      LOG="$(mktemp -t autodrive-qa-XXXXXX)"
+      CMDTEXT=""; RAN=0; FIRST_NZ=""; S_FAILED="false"; S_MISSING="false"; S_NOTINST="false"
+      [ "${#TEXTS[@]}" -gt 0 ] || { S_MISSING="true"; cause "no repository test command for repository type ${TYPE}"; }
+      i=0
+      while [ "$i" -lt "${#TEXTS[@]}" ]; do
+        kind="${KINDS[$i]}"; text="${TEXTS[$i]}"; i=$((i + 1))
+        CMDTEXT="${CMDTEXT}${CMDTEXT:+; }${text}"
+        if [ "$kind" = "entry" ]; then
+          # Its own process from the repository root: a `cd` in one entry
+          # never reaches the next, and entries are never joined or sourced.
+          ( cd -- "$ROOT" && bash -c "$text" ) >>"$LOG" 2>&1 </dev/null
+          rc=$?
+        else
+          dir="."; [ "$kind" = "word" ] && dir="$QA_DIR"
+          first="$(set -f; set -- $text; printf '%s' "${1:-}")"
+          if ! ( cd -- "$dir" 2>/dev/null && { command -v "$first" >/dev/null 2>&1 || [ -x "./${first}" ]; } ); then
+            S_NOTINST="true"; cause "$(printf '%s' "$first" | san | cut -c1-80) not installed"
+            continue
+          fi
+          # No timeout: a test suite is never cut off mid-run.
+          # shellcheck disable=SC2086
+          ( set -f; cd -- "$dir" && $text ) >>"$LOG" 2>&1 </dev/null
+          rc=$?
+        fi
+        RAN=$((RAN + 1))
+        echo "INFO: qa-team (${TYPE}) suite command exited ${rc}: $(printf '%s' "$text" | san | cut -c1-200)" >&2
+        if [ "$rc" -ne 0 ]; then S_FAILED="true"; [ -n "$FIRST_NZ" ] || FIRST_NZ="$rc"; fi
+      done
+      [ "$S_FAILED" = "true" ] && cause "repository test failure"
+      RC=""; [ "$RAN" -gt 0 ] && RC="${FIRST_NZ:-0}"
+      TAIL="$(tail -n 5 "$LOG" | san | cut -c1-300)"
+      tail -n 60 "$LOG" >&2 || true
+      rm -f "$LOG"
+
+      # --- the scenario directory ------------------------------------------
+      # AUTODRIVE_QA_SCENARIO_DIR from the environment only, then
+      # tests/agentic, then scenarios. An override naming a missing directory
+      # means no scenarios, not a fallback.
       SDIR_IN="${AUTODRIVE_QA_SCENARIO_DIR:-}"
       if [ -z "$SDIR_IN" ]; then
         SDIR_IN="tests/agentic"
@@ -119,43 +176,25 @@ steps:
       case "$SDIR" in "${ROOT}/"*) SREL="${SDIR#"${ROOT}/"}" ;; *) SREL="$SDIR" ;; esac
       # Top-level regular files only: gadugi-test validate -d does not read
       # subdirectories, and a symlinked scenario is not followed.
-      COUNT=0; SCEN=""
+      COUNT=0; SCEN=""; FILES=()
       if [ -d "$SDIR" ]; then
         while IFS= read -r f; do
           [ -n "$f" ] || continue
-          COUNT=$((COUNT + 1)); SCEN="${SCEN}${SCEN:+ }${SREL}/${f##*/}"
+          COUNT=$((COUNT + 1)); SCEN="${SCEN}${SCEN:+ }${SREL}/${f##*/}"; FILES+=("$f")
         done < <(find "$SDIR" -maxdepth 1 -type f \( -name '*.yaml' -o -name '*.yml' \) 2>/dev/null | LC_ALL=C sort)
       fi
-      SREL="$(printf '%s' "$SREL" | san)"; SCEN="$(printf '%s' "$SCEN" | san)"
 
-      CAUSES=""; RAN_FAIL="false"
-      cause() { CAUSES="${CAUSES}${CAUSES:+; }$1"; }
-      RC=""; TAIL=""
-      if [ -z "$CMD" ]; then
-        cause "no repository test command for repository type ${TYPE}"
-      elif ! command -v "${CMD%% *}" >/dev/null 2>&1; then
-        cause "${CMD%% *} not installed"
-      else
-        LOG="$(mktemp -t autodrive-qa-XXXXXX)"
-        # No timeout: a test suite is never cut off mid-run.
-        # shellcheck disable=SC2086
-        $CMD >"$LOG" 2>&1
-        RC=$?
-        TAIL="$(tail -n 5 "$LOG" | san | cut -c1-300)"
-        [ "$RC" -eq 0 ] || { cause "repository test failure"; RAN_FAIL="true"; }
-        echo "INFO: qa-team (${TYPE}) '${CMD}' exited ${RC}" >&2
-        tail -n 60 "$LOG" >&2 || true
-        rm -f "$LOG"
-      fi
-
-      # gadugi-test, stopping at the first failure. Its own per-command
-      # default limit applies; nothing here adds one.
-      G_STATUS=""; G_VRC=""; G_RRC=""
+      # --- gadugi-test -----------------------------------------------------
+      # A missing gadugi-test stops every gadugi check, and a failed validate
+      # stops every run; once validate passes, every scenario runs. Its own
+      # per-command default limit applies; nothing here adds one.
+      G_STATUS=""; G_VRC=""; G_RRC=""; RUN_NZ=""; VALIDATED=0; RUNS=0; PASSED=0; FAILED=0
+      UNNAMED=""; RUNFAIL=""; STAGEFAIL=""
       if ! command -v gadugi-test >/dev/null 2>&1; then
         G_STATUS="NOT_INSTALLED"; cause "gadugi-test not installed"
       elif [ "$COUNT" = "0" ]; then
         # gadugi-test run exits 0 on an empty directory, so zero is checked here.
-        G_STATUS="NO_SCENARIOS"; cause "no scenarios in ${SREL}"; RAN_FAIL="true"
+        G_STATUS="NO_SCENARIOS"; cause "no scenarios in $(printf '%s' "$SREL" | san)"
       else
         GLOG="$(mktemp -t autodrive-gadugi-XXXXXX)"
         # gadugi-test writes logs/ and outputs/ into its working directory. Only
@@ -163,29 +202,118 @@ steps:
         # guard does not block the next commit on this run's leftovers.
         NEW_DIRS=""
         for d in logs outputs; do [ -e "$d" ] || [ -L "$d" ] || NEW_DIRS="${NEW_DIRS} ${d}"; done
-        gadugi-test validate -d "$SDIR" >"$GLOG" 2>&1
+        gadugi-test validate -d "$SDIR" >"$GLOG" 2>&1 </dev/null
         G_VRC=$?
         if [ "$G_VRC" -ne 0 ]; then
-          G_STATUS="VALIDATE_FAILED"; cause "gadugi-test validation failure"; RAN_FAIL="true"
+          G_STATUS="VALIDATE_FAILED"; cause "gadugi-test validation failure"
         else
-          gadugi-test run -d "$SDIR" >>"$GLOG" 2>&1
-          G_RRC=$?
-          if [ "$G_RRC" -eq 0 ]; then G_STATUS="PASS"
-          else G_STATUS="RUN_FAILED"; cause "gadugi-test run failure"; RAN_FAIL="true"; fi
+          VALIDATED="$COUNT"
+          # One gadugi-test process per scenario file: a whole-directory run
+          # lets a scenario read state an earlier one left behind
+          # (gadugi-agentic-test #207). --scenario matches a substring of the
+          # scenario's name:, not a path, so each file is copied ALONE into its
+          # own temporary directory outside the repository and run from there,
+          # and the match cannot pick up a second scenario. There is no
+          # fallback to running $SDIR itself.
+          STAGE_ROOT="$(mktemp -d 2>/dev/null)" || STAGE_ROOT=""
+          STAGE_OK="false"
+          if [ -n "$STAGE_ROOT" ] && [ -d "$STAGE_ROOT" ]; then
+            trap '[ -n "${STAGE_ROOT:-}" ] && [ -d "$STAGE_ROOT" ] && rm -rf -- "$STAGE_ROOT"' EXIT
+            case "$(cd -- "$STAGE_ROOT" && pwd -P)/" in
+              "${ROOT}/"*) echo "WARNING: the temporary directory is inside the repository; no scenario is staged there." >&2 ;;
+              *) STAGE_OK="true" ;;
+            esac
+          fi
+          for f in ${FILES[@]+"${FILES[@]}"}; do
+            rel="${SREL}/${f##*/}"
+            # The scenario's name: a top-level `name:`, or `name:` directly
+            # under a top-level `scenario:`, with quotes and comments removed.
+            name="$(LC_ALL=C awk '
+              { sub(/\r$/, "") }
+              /^[^[:space:]#]/ {
+                top = $0; sub(/[[:space:]]*:.*$/, "", top); insc = (top == "scenario"); ind = -1
+                if ($0 ~ /^name[[:space:]]*:/) { v = $0; got = 1; exit }
+                next
+              }
+              insc && /^[[:space:]]+[^[:space:]#]/ {
+                match($0, /^[[:space:]]+/); if (ind < 0) ind = RLENGTH
+                if (RLENGTH == ind && $0 ~ /^[[:space:]]+name[[:space:]]*:/) { v = $0; got = 1; exit }
+              }
+              END {
+                if (!got) exit
+                sub(/^[[:space:]]*name[[:space:]]*:[[:space:]]*/, "", v)
+                q = substr(v, 1, 1)
+                if (q == "\"" || q == "\047") {
+                  v = substr(v, 2); n = index(v, q); v = (n > 0) ? substr(v, 1, n - 1) : ""
+                } else {
+                  sub(/[[:space:]]+#.*$/, "", v); sub(/[[:space:]]+$/, "", v)
+                  if (v ~ /^[|>\[{&*!]/) v = ""
+                }
+                print v
+              }' "$f" 2>/dev/null)"
+            # A name gadugi-test could read as an option, or one carrying a
+            # control byte, or one over 200 bytes, is no name: the file fails.
+            ok="true"
+            case "$name" in ''|-*) ok="false" ;; esac
+            printf '%s' "$name" | LC_ALL=C grep -q '[[:cntrl:]]' && ok="false"
+            [ "$(printf '%s' "$name" | LC_ALL=C wc -c | tr -d ' ')" -le 200 ] || ok="false"
+            if [ "$ok" != "true" ]; then
+              UNNAMED="${UNNAMED}${UNNAMED:+ }${rel}"; FAILED=$((FAILED + 1)); continue
+            fi
+            stage=""
+            [ "$STAGE_OK" = "true" ] && stage="$(mktemp -d "${STAGE_ROOT}/scenario.XXXXXX" 2>/dev/null)" \
+              && cp -P -- "$f" "${stage}/" 2>/dev/null || stage=""
+            if [ -z "$stage" ]; then
+              STAGEFAIL="${STAGEFAIL}${STAGEFAIL:+ }${rel}"; FAILED=$((FAILED + 1)); continue
+            fi
+            (cd -- "$ROOT" && gadugi-test run -d "$stage" --scenario "$name") >>"$GLOG" 2>&1 </dev/null
+            rrc=$?
+            RUNS=$((RUNS + 1))
+            if [ "$rrc" -eq 0 ]; then PASSED=$((PASSED + 1))
+            else FAILED=$((FAILED + 1)); RUNFAIL="${RUNFAIL}${RUNFAIL:+ }${rel}"; [ -n "$RUN_NZ" ] || RUN_NZ="$rrc"; fi
+          done
+          [ "$RUNS" -gt 0 ] && G_RRC="${RUN_NZ:-0}"
+          [ -n "$UNNAMED" ] && cause "gadugi scenario without a name: ${UNNAMED}"
+          [ -n "$STAGEFAIL" ] && cause "gadugi scenario could not be staged: ${STAGEFAIL}"
+          [ -n "$RUNFAIL" ] && cause "$(printf 'gadugi-test %s failure: %s' run "$RUNFAIL")"
+          if [ -n "${UNNAMED}${STAGEFAIL}${RUNFAIL}" ]; then G_STATUS="RUN_FAILED"; else G_STATUS="PASS"; fi
         fi
-        echo "INFO: gadugi-test on ${SREL} (${COUNT} scenario(s)): ${G_STATUS}" >&2
+        echo "INFO: gadugi-test on ${SREL} (${COUNT} scenario(s), ${RUNS} run, ${PASSED} passed): ${G_STATUS}" >&2
         tail -n 60 "$GLOG" >&2 || true
         rm -f "$GLOG"
         for d in $NEW_DIRS; do [ -d "$d" ] && [ ! -L "$d" ] && rm -rf -- "./${d}"; done
       fi
 
-      if [ "$RC" = "0" ] && [ "$G_STATUS" = "PASS" ]; then STATUS="PASS"
-      elif [ "$RAN_FAIL" = "true" ]; then STATUS="FAIL"
-      else STATUS="BLOCKED"; fi
-      SUMMARY="${CAUSES}${CAUSES:+${TAIL:+: }}${TAIL}"
-      OUT="$(printf '{"qa_status":"%s","qa_repo_type":"%s","qa_command":"%s","qa_scenarios":"%s","qa_exit_code":"%s","qa_summary":"%s","qa_round":"%s","head_sha":"%s","gadugi_status":"%s","gadugi_validate_exit_code":"%s","gadugi_run_exit_code":"%s","gadugi_scenario_count":"%s","gadugi_scenario_dir":"%s"}\n' \
-        "$STATUS" "$TYPE" "$CMD" "$SCEN" "$RC" "$SUMMARY" "$(printf '%s' "${AUTODRIVE_ROUND_LABEL:-round}" | san)" "$HEAD_SHA" \
-        "$G_STATUS" "$G_VRC" "$G_RRC" "$COUNT" "$SREL")"
+      # --- qa_status and qa_reason -----------------------------------------
+      # qa_reason is the first token that applies, in this fixed order; the
+      # FAIL tokens come first because the merge round can act on them.
+      REASON=""
+      pick() { [ -n "$REASON" ] || REASON="$1"; }
+      [ "$S_FAILED" = "true" ] && pick "qa-command-failed"
+      [ "$G_STATUS" = "NO_SCENARIOS" ] && pick "no-scenarios"
+      [ "$G_STATUS" = "VALIDATE_FAILED" ] && pick "gadugi-validate-failed"
+      [ -n "$UNNAMED" ] && pick "gadugi-scenario-unnamed"
+      [ -n "${RUNFAIL}${STAGEFAIL}" ] && pick "gadugi-run-failed"
+      [ "$S_MISSING" = "true" ] && pick "qa-command-missing"
+      [ "$S_NOTINST" = "true" ] && pick "qa-command-not-installed"
+      [ "$G_STATUS" = "NOT_INSTALLED" ] && pick "gadugi-test-missing"
+      if [ -z "$REASON" ] && { [ "$RAN" -eq 0 ] || [ "$G_STATUS" != "PASS" ] || [ "$PASSED" != "$COUNT" ]; }; then
+        echo "ERROR: no check failed by name, yet the evidence is incomplete (suite commands run=${RAN}, gadugi=${G_STATUS}); refusing to report PASS." >&2
+        REASON="qa-command-missing"
+      fi
+      case "$REASON" in
+        '') STATUS="PASS" ;;
+        qa-command-failed|no-scenarios|gadugi-validate-failed|gadugi-scenario-unnamed|gadugi-run-failed) STATUS="FAIL" ;;
+        qa-command-missing|qa-command-not-installed|gadugi-test-missing) STATUS="BLOCKED" ;;
+        *) echo "ERROR: unknown qa_reason '${REASON}'; reporting FAIL." >&2; STATUS="FAIL"; REASON="gadugi-run-failed" ;;
+      esac
+      SUMMARY="$(printf '%s' "${CAUSES}${CAUSES:+${TAIL:+: }}${TAIL}" | san)"
+      OUT="$(printf '{"qa_status":"%s","qa_reason":"%s","qa_repo_type":"%s","qa_command":"%s","qa_suite_commands_count":"%s","qa_scenarios":"%s","qa_exit_code":"%s","qa_summary":"%s","qa_round":"%s","head_sha":"%s","gadugi_status":"%s","gadugi_validate_exit_code":"%s","gadugi_run_exit_code":"%s","gadugi_scenario_count":"%s","gadugi_scenario_dir":"%s","gadugi_scenarios_validated":"%s","gadugi_scenarios_run":"%s","gadugi_scenarios_passed":"%s","gadugi_scenarios_failed":"%s","gadugi_failed_scenarios":"%s"}\n' \
+        "$STATUS" "$REASON" "$TYPE" "$(printf '%s' "$CMDTEXT" | san | cut -c1-500)" "$(num "$RAN")" \
+        "$(printf '%s' "$SCEN" | san)" "$RC" "$SUMMARY" "$(printf '%s' "${AUTODRIVE_ROUND_LABEL:-round}" | san)" "$HEAD_SHA" \
+        "$G_STATUS" "$G_VRC" "$G_RRC" "$(num "$COUNT")" "$(printf '%s' "$SREL" | san)" \
+        "$(num "$VALIDATED")" "$(num "$RUNS")" "$(num "$PASSED")" "$(num "$FAILED")" \
+        "$(printf '%s' "${UNNAMED} ${STAGEFAIL} ${RUNFAIL}" | san | tr -s ' ' | sed 's/^ //; s/ $//')")"
       [ -n "$EVIDENCE" ] && printf '%s' "$OUT" > "$EVIDENCE"
       printf '%s\n' "$OUT"
     output: "qa_evidence"

@@ -112,6 +112,10 @@ steps:
       A loop on round 12 that is converging should CONTINUE; a loop on round 2
       that produced nothing twice should be STUCK. Judge the evidence.
 
+      Do not create, edit, move, rename, delete or archive any file in the
+      auto-drive state directory (the directory holding crusty-round-*.json,
+      merge-ready-round-*.json and phases.tsv).
+
       ## Measured evidence (computed, not summarised)
 
       ```json

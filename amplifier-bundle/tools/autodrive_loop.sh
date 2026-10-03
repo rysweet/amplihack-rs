@@ -170,6 +170,40 @@ while :; do
   # evidence to the round that actually produced it without guessing a name.
   [ -f "$RECORD" ] && cp -f "$RECORD" "${STATE_DIR}/${LOOP_NAME}-latest.json"
   [ -f "${RECORD}.findings" ] && cp -f "${RECORD}.findings" "${STATE_DIR}/${LOOP_NAME}-latest.json.findings"
+  # Manifest of the round records THIS loop wrote (issue #1517): one row per
+  # round in <loop>-records.tsv with the label, the record file name and the
+  # record's git blob hash. It is written here, before the loop-health
+  # evaluator or any later agent runs, so an agent cannot get a row for a
+  # record it wrote itself; autodrive_crusty_final (autodrive_state.sh) trusts
+  # a crusty record only when the last row names it and the hash still
+  # matches. git runs from the state dir with GIT_DIR/GIT_WORK_TREE unset, as
+  # autodrive_blob_hash does, so both compute the same hash. A check that
+  # fails writes a WARNING and no row.
+  if [ -f "$RECORD" ]; then
+    MANIFEST_FILE="${RECORD##*/}"; MANIFEST_HASH=""
+    case "$MANIFEST_FILE" in
+      .*|*[!A-Za-z0-9._-]*|'')
+        echo "WARNING: round record name '${MANIFEST_FILE}' is not a plain file name; no manifest row for ${ROUND_LABEL}." >&2 ;;
+      *)
+        if ! cmp -s "$RECORD" "${STATE_DIR}/${LOOP_NAME}-latest.json"; then
+          echo "WARNING: ${RECORD} and its ${LOOP_NAME}-latest.json copy differ; no manifest row for ${ROUND_LABEL}." >&2
+        else
+          MANIFEST_HASH="$( (cd -- "$STATE_DIR" && env -u GIT_DIR -u GIT_WORK_TREE git hash-object --no-filters --stdin) < "$RECORD" 2>/dev/null)"
+          case "${#MANIFEST_HASH}:${MANIFEST_HASH}" in
+            40:*[!0-9a-f]*|64:*[!0-9a-f]*) MANIFEST_HASH="" ;;
+            40:*|64:*) ;;
+            *) MANIFEST_HASH="" ;;
+          esac
+          [ -n "$MANIFEST_HASH" ] || echo "WARNING: git could not hash ${RECORD}; no manifest row for ${ROUND_LABEL}, so this round cannot count as loop-written evidence." >&2
+        fi ;;
+    esac
+    if [ -n "$MANIFEST_HASH" ]; then
+      ( umask 077
+        printf '%s\t%s\t%s\n' "$(printf '%s' "$ROUND_LABEL" | tr -c 'A-Za-z0-9._-' '_')" "$MANIFEST_FILE" "$MANIFEST_HASH" \
+          >> "${STATE_DIR}/${LOOP_NAME}-records.tsv" ) \
+        || echo "WARNING: could not append the manifest row for ${ROUND_LABEL} to ${LOOP_NAME}-records.tsv." >&2
+    fi
+  fi
   TEST_SIGNAL="$(field "$RAW" test_signal "")"
   CI_SIGNAL="$(field "$RAW" ci_signal "")"
   HISTORY="${HISTORY}
