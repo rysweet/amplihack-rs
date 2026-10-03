@@ -110,9 +110,15 @@ steps:
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || true
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
-      g() { printf '%s' "${BUILD_PREFLIGHT:-}" | amplihack orch helper extract-json --require-field "$1" \
+      g() { printf '%s' "${BUILD_PREFLIGHT:-${RECIPE_VAR_build_preflight:-}}" | amplihack orch helper extract-json --require-field "$1" \
               | amplihack orch helper extract-field --field "$1" --default ''; }
       PR="$(g pr)"; DIR="$(g state_dir)"; BRANCH="$(g branch)"
+      # An empty state_dir means there is nothing to record; an unsafe one is
+      # refused before anything touches it.
+      case "$DIR" in
+        '') echo "INFO: no state_dir from the preflight; nothing to record." >&2 ;;
+        /|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [build/step-03]" >&2; exit 1 ;;
+      esac
       if [ -z "$PR" ]; then
         [ -n "$BRANCH" ] && [ "$BRANCH" != "HEAD" ] && \
           PR="$(gh pr list --head "$BRANCH" --state all --limit 1 --json number --jq '.[0].number // empty' 2>/dev/null || printf '')"

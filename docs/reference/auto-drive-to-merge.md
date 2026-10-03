@@ -210,6 +210,10 @@ inside double quotes:
 PREFLIGHT="${CRUSTY_LOOP_PREFLIGHT:-${RECIPE_VAR_crusty_loop_preflight:-}}"
 ```
 
+If a read ever needs a default, it goes in the inner expansion as a literal.
+There are no quotes inside the braces, so the integration test can match the
+`${<NAME>:-${RECIPE_VAR_<name>:-` text exactly.
+
 The bare name is tried first, the same idiom as `workflow-publish`,
 `workflow-finalize` and the [loop-health evaluator](loop-health-evaluator.md#reading-step-outputs-the-dual-name-idiom).
 `:-` treats an empty value as unset, so an empty context default such as
@@ -237,17 +241,40 @@ twice counts twice. There are 31 in all:
 
 ### `state_dir` is checked before use
 
-With the fallback in place, the preflight's `state_dir` reaches later steps.
-Every step that uses it refuses these values with the usual `no state_dir`
-error:
+With the fallback in place, the preflight's `state_dir` reaches later steps
+for the first time. Every step that uses it checks it before any `mkdir`,
+`rm` or write, and refuses:
 
 - an empty value;
 - `/`;
 - a value starting with `-`;
 - a value containing a newline.
 
-The path is always quoted, and `rm`, `mkdir` and `cp` get `--` before it. An
-absolute path is not required; the preflight decides where state lives.
+A refused value exits non-zero with this message on stderr:
+
+```
+ERROR: no state_dir (empty or unsafe: refusing to touch it) [autodrive-merge-loop/step-03]
+```
+
+The bracketed part names the recipe and step. The check runs in:
+
+| Recipe | Steps |
+| --- | --- |
+| `autodrive-crusty-loop.yaml` | step-02, step-03 |
+| `autodrive-merge-loop.yaml` | step-02, step-03, step-04 |
+| `autodrive-build.yaml` | step-03 |
+
+`autodrive-build.yaml` step-03 differs in one way: an **empty** `state_dir`
+means the build ran without a preflight, so it prints `nothing to record` and
+exits `0`. A non-empty unsafe value still exits non-zero, and nothing is
+marked.
+
+The path is always quoted, and `rm`, `mkdir` and `cp` get `--` before it
+(`mkdir -p -- "$DIR"`). An absolute path is not required; the preflight
+decides where state lives. No step deletes `state_dir` recursively. Any
+future step that does must also require an absolute path under the
+`autodrive_state_dir` root with no `..` component; a comment beside the check
+says so.
 
 ### The static check
 
@@ -300,10 +327,11 @@ The log also holds the evaluator agent's own output, which can contain any
 text, including a copy of the two lines above. The reader therefore trusts one
 line only:
 
-1. `step04_output_line` (an `LC_ALL=C awk` function) finds the **last** status
-   line for `step-04-enforce-loop-verdict`: two spaces, any status symbol, a
-   space, the step id, then ` (` or `:`.
-2. It keeps that block only if the whole line matches
+1. An `LC_ALL=C awk` pass finds the **last** step status line in the log, for
+   any step: two spaces, any status symbol, a space, a `step-` id, an
+   optional ` (<name>)`, then `: `. Step-04 always runs last, so a status
+   line of any step after a step-04 block cancels that block.
+2. It keeps the last status line only if the whole line matches
    `^  ✓ step-04-enforce-loop-verdict( \([^)]*\))?: completed( \[[^]]*\])?$`,
    which allows the optional parenthesised step name and the optional
    bracketed details suffix and nothing else. Under `LC_ALL=C` the `✓` is
@@ -322,9 +350,13 @@ never be the last one.
 
 If the log has **no** step status lines at all (lines starting
 `  <symbol> step-`), it did not come from the run formatter. Only then does the
-reader test every line with `^(    Output: )?LOOP_HEALTH: (CONTINUE|DONE)( |$)`.
-A log that has status lines but no usable step-04 pair never falls back to
-this scan.
+reader scan every line. It counts the lines that match
+`^(    Output: )?LOOP_HEALTH: [A-Z]+`. The verdict is accepted only when there
+is **exactly one** such line and it matches
+`^(    Output: )?LOOP_HEALTH: (CONTINUE|DONE)( |$)`. Two marker lines, even
+two that agree, give `STUCK`, because one of them must have come from
+somewhere other than step-04. A log that has status lines but no usable
+step-04 pair never falls back to this scan.
 
 Anything else is `STUCK`, with the warning
 `loop-health-evaluator exited 0 with no readable LOOP_HEALTH verdict; failing
@@ -338,9 +370,13 @@ safe to STUCK.`
 | `  ✓ step-04-enforce-loop-verdict (Enforce verdict): completed [phase: loop, elapsed: 2s]` then `    Output: LOOP_HEALTH: CONTINUE` | `CONTINUE` |
 | `  ✓ step-04-enforce-loop-verdict: completed extra` then `    Output: LOOP_HEALTH: DONE` | `STUCK` |
 | `LOOP_HEALTH: DONE` alone, no status lines anywhere | `DONE` |
+| `    Output: LOOP_HEALTH: CONTINUE` alone, no status lines anywhere | `CONTINUE` |
+| `LOOP_HEALTH: CONTINUE` and `LOOP_HEALTH: DONE`, no status lines anywhere | `STUCK` |
+| `LOOP_HEALTH: DONEISH`, no status lines anywhere | `STUCK` |
 | step-02 `    Output: LOOP_HEALTH: CONTINUE`, then the real step-04 block with `DONE` | `DONE` |
 | a fake step-04 block inside step-02's output, then the real step-04 block with `CONTINUE` | `CONTINUE` |
 | a fake step-04 block inside step-02's output, and no real step-04 block | `STUCK` |
+| a fake `✓` step-04 block with `DONE` inside step-02's output, then a real step-04 status line with no `Output:` line after it | `STUCK` |
 | `  ✗ step-04-enforce-loop-verdict: failed` then `    Output: LOOP_HEALTH: CONTINUE` | `STUCK` |
 | a different line between the step-04 status line and its `Output:` line | `STUCK` |
 | `note: Output: LOOP_HEALTH: CONTINUE` | `STUCK` |
@@ -355,6 +391,11 @@ The remaining risk is the column-0 scan of a log with no status lines. It can
 only pick between `CONTINUE` and `DONE` when the evaluator exited `0`, and
 amplihack's own runner always prints status lines, so it applies only to
 logs from other runners.
+
+The reader uses only `awk` features that gawk, mawk and BSD awk share: it
+runs under `LC_ALL=C`, matches `✓` as its literal three bytes, and uses
+two-argument `match()` with `RSTART`/`RLENGTH` and `sub()`, never `gensub` or
+`IGNORECASE`. It runs the same under bash 3.2 on macOS.
 
 ### These greps never decide on a non-zero exit
 

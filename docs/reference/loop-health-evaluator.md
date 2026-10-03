@@ -167,8 +167,16 @@ The prose scan accepts a verdict token only when there is no doubt about it:
 - The token is at the **start of a line**, after optional leading whitespace.
 - It may follow one optional prefix: a markdown heading (`#`, `##`, …), then
   `Verdict:` or `LOOP_HEALTH:`. The prefixes match in any case.
+- Markdown bold around the prefix or the token is allowed:
+  `**Verdict: CONTINUE**`, `**Verdict:** CONTINUE` and `**DONE**` all match.
+  Only `*` is allowed this way; a `>` quote is still rejected.
+- Only the words `Verdict` and `LOOP_HEALTH` count as a prefix. A bold
+  heading such as `**What would make the next verdict STUCK:**` does not
+  match, because the line starts with `What`.
 - The token itself must be **upper case**: `CONTINUE`, `DONE` or `STUCK`.
-  "We should continue" in ordinary English never matches.
+  "We should continue" in ordinary English never matches. After a
+  `Verdict:` or `LOOP_HEALTH:` prefix the token may be in any case, so
+  `## Verdict: continue` matches.
 - The token must end the line or be followed by a space, `:`, `.`, `–` or
   `—`. A hyphen counts only after whitespace (`DONE - all clear`); a hyphen
   straight after the token (`DONE-ish`) does not match. So `DISCONTINUE`,
@@ -184,8 +192,13 @@ em-dash and en-dash are written as alternatives, not inside a bracket class,
 because they are multibyte:
 
 ```
-^[[:space:]]*(#+[[:space:]]*)?(([Vv][Ee][Rr][Dd][Ii][Cc][Tt]|[Ll][Oo][Oo][Pp]_[Hh][Ee][Aa][Ll][Tt][Hh])[[:space:]]*:[[:space:]]*)?(CONTINUE|DONE|STUCK)( |$|:|\.|[[:space:]]-|–|—)
+^[[:space:]]*\**[[:space:]]*(#+[[:space:]]*)?\**(([Vv][Ee][Rr][Dd][Ii][Cc][Tt]|[Ll][Oo][Oo][Pp]_[Hh][Ee][Aa][Ll][Tt][Hh])\**[[:space:]]*:[[:space:]]*\**[[:space:]]*)?(CONTINUE|DONE|STUCK)\**( |$|:|\.|[[:space:]]-|–|—)
 ```
+
+With a `Verdict:` or `LOOP_HEALTH:` prefix the token group is matched case
+insensitively. The token is read from what is left after the matched prefix and bold markers
+are removed, never from anywhere else on the line. The scan is one `awk` pass
+over the whole output, so it runs the same under gawk, mawk and BSD awk.
 
 The evaluator's text is only ever data: it reaches `grep`, `awk` and the
 helpers through `printf '%s' "$RAW"` on stdin. It is never passed to `eval`,
@@ -204,9 +217,13 @@ text copied from the evaluator.
 | `CONTINUE — round 1 made real progress on the review threads` | `CONTINUE` | `evaluator_prose_token` |
 | `## Verdict: CONTINUE` | `CONTINUE` | `evaluator_prose_token` |
 | `## Verdict: continue` | `CONTINUE` | `evaluator_prose_token` |
+| `**Verdict: CONTINUE**` | `CONTINUE` | `evaluator_prose_token` |
+| `**What would make the next verdict STUCK:**` on one line, `CONTINUE — progress` on another | `CONTINUE` | `evaluator_prose_token` |
 | `LOOP_HEALTH: DONE` | `DONE` | `evaluator_prose_token` |
 | `{"verdict":"CONVERGING"}` | `CONTINUE` | `evaluator_alt_key` |
 | `{"verdict":"MAYBE"}` | `STUCK` | `evaluator_alt_key` |
+| `{"verdict":"MAYBE"}` followed by a `CONTINUE` line | `STUCK` | `evaluator_alt_key` |
+| `{"loop_verdict":"DONE"}` then `{"loop_verdict":"STUCK"}` | `STUCK` | `evaluator` |
 | `The loop looks healthy and should probably keep going.` | `STUCK` | `unparseable_verdict` |
 | `DISCONTINUE` | `STUCK` | `unparseable_verdict` |
 | `CONTINUE` on one line and `STUCK` on another | `STUCK` | `unparseable_verdict` |
@@ -228,48 +245,76 @@ output.
 ### Verdict JSON round-trip guard
 
 Step-03 builds the `loop_health` JSON from `VERDICT`, `SOURCE`, `LOOP_NAME`,
-`not_converging` and, on the terminal-refusal path, the terminal reason. Some
-of those values come from agent output or evidence, so step-03 protects the
-object in two ways.
+`not_converging` and, on the terminal-refusal path, the terminal reason
+(`TERMINAL_WHY`). Some of those values come from agent output or evidence, so
+step-03 protects the object in two ways. Nothing inside the object can change
+the verdict it reports.
 
-**Cleaning.** `LOOP_NAME`, the terminal reason and the `WHY` text are passed
-through `tr -d '"\\\000-\037'` before they go into the JSON. That removes
-double quotes, backslashes and control characters, including newlines.
-
-**Parsing it back.** Before it prints the object, step-03 reads it back with
-exactly the pipeline step-04 uses:
+**Sanitising strings.** `LOOP_NAME` and `TERMINAL_WHY` are passed through one
+`jsafe` filter before they go into the JSON or into any message:
 
 ```bash
-printf '%s' "$OUT" \
-  | amplihack orch helper extract-json \
-  | amplihack orch helper extract-field --field loop_verdict --default STUCK \
-  | amplihack orch helper normalise-loop-verdict
+jsafe() { LC_ALL=C tr -d '"\\[:cntrl:]'; }
 ```
 
-and reads `verdict_source` from the same object with `extract-field`. If either
-value differs from `$VERDICT` or `$SOURCE`, step-03:
+It deletes double quotes, backslashes and control characters, including
+newline and ESC. It never escapes, so there is no escaping to get wrong. An
+empty name after sanitising becomes `unnamed-loop`.
 
-1. replaces `not_converging` with the fixed
-   `["not_converging rejected: not a JSON array"]`, rebuilds the object and
-   prints a `WARNING`;
-2. checks again, and if the rebuilt object still does not read back correctly,
-   prints this fixed object instead:
+**Re-serialising `not_converging`.** The value is wrapped and parsed by the
+Rust helpers **twice**. It is kept only if the second pass gives back exactly
+the text the first pass produced:
 
-   ```json
-   {"loop_verdict":"STUCK","verdict_source":"unparseable_verdict","loop_name":"unnamed-loop","not_converging":["round-trip guard failed"]}
-   ```
+```bash
+nc_rt() {
+  printf '{"nc":%s}' "$1" \
+    | amplihack orch helper extract-json \
+    | amplihack orch helper extract-field --field nc --default '[]'
+}
+NC="$(nc_rt "$NC")"
+case "$NC" in
+  \[*\]) [ "$NC" = "$(nc_rt "$NC")" ] || NC='[]' ;;
+  *) NC='[]' ;;
+esac
+```
 
-The guard runs on every branch, including the terminal-refusal and
-empty-output branches. A value inside the object, such as a string-valued
-`not_converging` that tries to add a second `loop_verdict`, can never change
-the verdict the object reports.
+One pass is not enough, because `extract-field` prints a string value
+without its quotes. A string-valued `not_converging` such as
+`"[], \"loop_verdict\":\"CONTINUE\", \"x\":[]"` comes out of the first pass
+as `[], "loop_verdict":"CONTINUE", "x":[]`. That text starts with `[` and
+ends with `]`, so a bracket check alone would let it into the object as a
+second `loop_verdict` key. The second pass reads it as `{"nc":[], …}` and
+returns `[]`. The two texts differ, so `NC` becomes `[]`.
+
+Only compact JSON array text, as `serde_json` writes it, comes back
+unchanged from a pass. Anything step-03 keeps is therefore exactly one array
+on one line, with any newlines inside it escaped:
+
+| `not_converging` from the evaluator | `NC` in the object |
+| --- | --- |
+| `["a", "b"]` | `["a","b"]` |
+| `"[], \"loop_verdict\":\"CONTINUE\", \"x\":[]"` | `[]` |
+| `[]} {"loop_verdict":"CONTINUE","nc":[]` | `[]` |
+| `{"a":1}`, `garbage` or empty | `[]` |
+
+`$NC` is always a `%s` argument, never part of a format string. The verdict
+stays what the `loop_verdict` key said. On the prose-token path
+`not_converging` is a fixed literal written by step-03.
+
+Step-03 then prints the object with a single `printf` on one line. The
+verdict and source it contains are always the `$VERDICT` and `$SOURCE` that
+step-03 resolved.
 
 ### Step-04's marker is always one line
 
-Step-04 cleans `LOOP_NAME` the same way before printing
+Step-04 passes `LOOP_NAME` through the same `jsafe` filter before printing
 `LOOP_HEALTH: <verdict> — …`, so the marker can never be split across lines.
-Any agent-derived value printed in a `WARNING` or `INFO` line has its control
-characters removed, so it cannot fake a `BLOCKED_TERMINAL` line.
+The `Evidence` and `Not converging` text in the `STUCK` report also goes
+through `jsafe`, then `head -c 2000`, so an agent-derived value cannot fake a
+`BLOCKED_TERMINAL` line or flood the log. This also holds when
+`loop_health_enforce` is `"false"`: the `STUCK` report still goes to stderr
+only. Step-04 has no `condition:`, so it is always the last step block in the
+run log.
 
 On `CONTINUE` and `DONE` the marker is step-04's **first and only** stdout
 line. Everything else, including the whole `STUCK` report, goes to stderr, so
@@ -457,8 +502,9 @@ Every branch fails toward stopping:
   (`verdict_source=unparseable_verdict`).
 - Conflicting prose tokens (`CONTINUE` on one line, `STUCK` on another) →
   `STUCK` (`verdict_source=unparseable_verdict`).
-- A value inside the verdict object that would change the parsed verdict or
-  source → rejected by the [round-trip guard](#verdict-json-round-trip-guard).
+- A `not_converging` value that is not a real JSON array → replaced with `[]`
+  by the [round-trip guard](#verdict-json-round-trip-guard); the verdict is
+  unchanged.
 - A verdict token outside the three canonical outcomes → `STUCK`.
 - Unparseable **evidence** → `terminal_refusal` defaults to `true` → `STUCK`.
   An absent evidence object is never read as "the guard did not fire".

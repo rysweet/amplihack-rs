@@ -203,18 +203,47 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} findings=$(prin
     exit "$AUTODRIVE_EXIT_POLICY_REFUSAL"
   fi
 
-  # The evaluator's own enforcing step prints exactly one LOOP_HEALTH: marker
-  # and exits non-zero on STUCK. Anything we cannot read as CONTINUE or DONE
-  # is STUCK — a missing verdict never authorises another round.
+  # The evaluator's own enforcing step (step-04, always its last step) prints
+  # exactly one LOOP_HEALTH: marker and exits non-zero on STUCK. The runner's
+  # formatter (issue #1512) reports it as
+  #   `  ✓ step-04-enforce-loop-verdict[ (<name>)]: completed[ [<details>]]`
+  # followed by `    Output: LOOP_HEALTH: <verdict>`. Only the line straight
+  # after the LAST completed step-04 status line is trusted, and only if no
+  # status line of any step follows it, so a block forged inside the agent's
+  # own output cannot decide. A log with no status lines at all must hold exactly one
+  # `[    Output: ]LOOP_HEALTH:` line. Anything we cannot read as CONTINUE or
+  # DONE is STUCK — a missing verdict never authorises another round.
+  # Portable to BSD awk and mawk: byte matching, no gawk extensions.
   LOOP_VERDICT="STUCK"
   if [ "$HEALTH_RC" -eq 0 ]; then
-    if grep -qE '^LOOP_HEALTH: CONTINUE( |$)' "$HEALTH_LOG"; then
-      LOOP_VERDICT="CONTINUE"
-    elif grep -qE '^LOOP_HEALTH: DONE( |$)' "$HEALTH_LOG"; then
-      LOOP_VERDICT="DONE"
-    else
-      echo "WARNING: loop-health-evaluator exited 0 with no readable LOOP_HEALTH verdict; failing safe to STUCK." >&2
-    fi
+    HEALTH_READ="$(LC_ALL=C awk '
+      function verdict(s, p) {
+        if (s == p "CONTINUE" || index(s, p "CONTINUE ") == 1) return "CONTINUE"
+        if (s == p "DONE" || index(s, p "DONE ") == 1) return "DONE"
+        return "STUCK"
+      }
+      pend { rec = $0; pend = 0 }
+      /^  [^ ]+ step-[^ :(]+( \([^)]*\))?: / {
+        has_status = 1; rec = ""; pend = 0
+        if ($0 ~ /^  ✓ step-04-enforce-loop-verdict( \([^)]*\))?: completed( \[[^]]*\])?$/) pend = 1
+      }
+      /^(    Output: )?LOOP_HEALTH: [A-Z]+/ { markers++; marker = $0 }
+      END {
+        v = "STUCK"
+        if (has_status) v = verdict(rec, "    Output: LOOP_HEALTH: ")
+        else if (markers == 1) {
+          v = verdict(marker, "LOOP_HEALTH: ")
+          if (v == "STUCK") v = verdict(marker, "    Output: LOOP_HEALTH: ")
+        }
+        print v
+      }' "$HEALTH_LOG" 2>/dev/null || echo STUCK)"
+    case "$HEALTH_READ" in
+      CONTINUE) LOOP_VERDICT="CONTINUE" ;;
+      DONE) LOOP_VERDICT="DONE" ;;
+      *)
+        echo "WARNING: loop-health-evaluator exited 0 with no readable LOOP_HEALTH verdict; failing safe to STUCK." >&2
+        ;;
+    esac
   fi
 
   PREV_FINDINGS="$FINDINGS"; PREV_TEST="$TEST_SIGNAL"; PREV_CI="$CI_SIGNAL"

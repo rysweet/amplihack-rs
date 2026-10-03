@@ -215,7 +215,10 @@ fn both_loops_terminate_on_the_loop_health_evaluator_contract() {
         );
     }
     // The contract must be USED, never copied: the evaluator's own step ids
-    // must not appear anywhere in this workflow.
+    // must not appear anywhere in this workflow. The one exception is the
+    // #1512 log reader in autodrive_loop.sh, which must name step-04 to find
+    // the status line its verdict follows.
+    let reader = tool_path("autodrive_loop.sh");
     for path in control_path_files() {
         let text = read(&path);
         for copied in [
@@ -224,6 +227,9 @@ fn both_loops_terminate_on_the_loop_health_evaluator_contract() {
             "step-03-resolve-loop-verdict",
             "step-04-enforce-loop-verdict",
         ] {
+            if path == reader && copied == "step-04-enforce-loop-verdict" {
+                continue;
+            }
             assert!(
                 !text.contains(copied),
                 "{} copies the loop-health contract (`{copied}`) instead of \
@@ -403,9 +409,10 @@ fn verdict_gates_use_the_canonical_orch_helper_pipeline() {
              token `{blocking_default}` — never to the permissive one"
         );
         // Agent output is untrusted data: env var + stdin, never interpolated
-        // into a command position.
+        // into a command position. Read through RECIPE_VAR_ as well (#1511).
+        let runner_var = format!("RECIPE_VAR_{}", env_var.to_ascii_lowercase());
         assert!(
-            cmd.contains(&format!("${{{env_var}:-}}")),
+            cmd.contains(&format!("${{{env_var}:-${{{runner_var}:-}}}}")),
             "{step_id} must read the agent output from the environment"
         );
         assert!(
@@ -1188,10 +1195,6 @@ fn reference_doc_exists_and_declares_the_1347_dependency() {
 
 // ── The executable contract ──────────────────────────────────────────────────
 
-/// Runs the executable contract test — the STUCK path, the malformed-verdict
-/// path, and the forbidden-flag guard, exercised against the real extracted
-/// step bodies and the real tools.
-///
 /// Issue #1511. recipe-runner-rs exports every step output as
 /// `RECIPE_VAR_<output>` and adds the bare upper-case alias only for SCALAR
 /// outputs. Every output these recipes pass between steps is a JSON object, so
@@ -1267,6 +1270,10 @@ fn autodrive_step_outputs_are_read_with_the_recipe_var_fallback() {
     );
 }
 
+/// Runs the executable contract test — the STUCK path, the malformed-verdict
+/// path, and the forbidden-flag guard, exercised against the real extracted
+/// step bodies and the real tools.
+///
 /// Wired here because `.github/workflows/ci.yml` lists the bash recipe tests
 /// one by one; running it from `cargo test` gets the same coverage without
 /// touching that file.

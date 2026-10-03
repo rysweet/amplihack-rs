@@ -92,10 +92,14 @@ steps:
       [ -f "$LOOP_HELPER" ] || LOOP_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/autodrive_loop.sh"
       [ -f "$LOOP_HELPER" ] || LOOP_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/autodrive_loop.sh"
       [ -f "$LOOP_HELPER" ] || { echo "ERROR: autodrive loop helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): $LOOP_HELPER; cwd=$(pwd)" >&2; exit 1; }
-      g() { printf '%s' "${MERGE_LOOP_PREFLIGHT:-}" | amplihack orch helper extract-json --require-field "$1" \
+      g() { printf '%s' "${MERGE_LOOP_PREFLIGHT:-${RECIPE_VAR_merge_loop_preflight:-}}" | amplihack orch helper extract-json --require-field "$1" \
               | amplihack orch helper extract-field --field "$1" --default ''; }
       DIR="$(g state_dir)"; PR="$(g pr)"
-      [ -n "$DIR" ] || { echo "ERROR: preflight produced no state_dir; refusing to run an unrecorded loop." >&2; exit 1; }
+      # Refuse an empty or unsafe state_dir before anything touches it. A future
+      # recursive delete must also require an absolute path under the state root, no '..'.
+      case "$DIR" in
+        ''|/|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [merge-loop/step-02]" >&2; exit 1 ;;
+      esac
       bash "$LOOP_HELPER" \
         --loop-name "merge-ready" \
         --round-recipe "autodrive-merge-round" \
@@ -129,9 +133,14 @@ steps:
       [ -f "$GATE" ] || GATE="${HOME:-/root}/.copilot/amplifier-bundle/tools/autodrive_merge_gate.sh"
       [ -f "$GATE" ] || GATE="${HOME:-/root}/.amplihack/amplifier-bundle/tools/autodrive_merge_gate.sh"
       [ -f "$GATE" ] || { echo "ERROR: autodrive merge gate not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): $GATE; cwd=$(pwd)" >&2; exit 1; }
-      g() { printf '%s' "${MERGE_LOOP_PREFLIGHT:-}" | amplihack orch helper extract-json --require-field "$1" \
+      g() { printf '%s' "${MERGE_LOOP_PREFLIGHT:-${RECIPE_VAR_merge_loop_preflight:-}}" | amplihack orch helper extract-json --require-field "$1" \
               | amplihack orch helper extract-field --field "$1" --default ''; }
       DIR="$(g state_dir)"; PR="$(g pr)"
+      # Refuse an empty or unsafe state_dir before anything touches it. A future
+      # recursive delete must also require an absolute path under the state root, no '..'.
+      case "$DIR" in
+        ''|/|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [merge-loop/step-03]" >&2; exit 1 ;;
+      esac
       ARGS=(--pr "$PR" --repo "${REPO_PATH:-.}" --state-dir "$DIR" \
             --round-record "${DIR}/merge-ready-latest.json" \
             --qa-evidence "${DIR}/qa-evidence.json")
@@ -160,9 +169,13 @@ steps:
       . "$STATE_HELPER"
       g() { printf '%s' "${1:-}" | amplihack orch helper extract-json --require-field "$2" \
               | amplihack orch helper extract-field --field "$2" --default ''; }
-      DIR="$(g "${MERGE_LOOP_PREFLIGHT:-}" state_dir)"; PR="$(g "${MERGE_LOOP_PREFLIGHT:-}" pr)"
-      [ -n "$DIR" ] || exit 0
-      RESULT="$(g "${MERGE_GATE_RESULT:-}" merge_result)"
+      DIR="$(g "${MERGE_LOOP_PREFLIGHT:-${RECIPE_VAR_merge_loop_preflight:-}}" state_dir)"; PR="$(g "${MERGE_LOOP_PREFLIGHT:-${RECIPE_VAR_merge_loop_preflight:-}}" pr)"
+      # Refuse an empty or unsafe state_dir before anything touches it. A future
+      # recursive delete must also require an absolute path under the state root, no '..'.
+      case "$DIR" in
+        ''|/|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [merge-loop/step-04]" >&2; exit 1 ;;
+      esac
+      RESULT="$(g "${MERGE_GATE_RESULT:-${RECIPE_VAR_merge_gate_result:-}}" merge_result)"
       case "$RESULT" in
         MERGED|ALREADY_MERGED)
           autodrive_mark_phase_done "$DIR" "merge-ready-loop"

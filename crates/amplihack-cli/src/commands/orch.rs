@@ -396,6 +396,11 @@ pub fn normalise_loop_verdict(raw: &str) -> &'static str {
         "KEEP_GOING",
         "ANOTHER_ROUND",
         "ITERATE",
+        // Issue #1513: evaluators answer `converging` / `progressing` for a
+        // loop whose findings are still shrinking. Exact match only, so
+        // `NOT_CONVERGING` and `NOT PROGRESSING` still fall to STUCK.
+        "CONVERGING",
+        "PROGRESSING",
     ];
     const DONE: &[&str] = &[
         "DONE",
@@ -1212,7 +1217,13 @@ mod tests {
     fn normalise_loop_verdict_progress_synonyms_continue() {
         // Real evaluators answered `{"verdict":"converging"}` on a loop whose
         // findings went 3 -> 2 -> 1, and the loop was stopped as STUCK.
-        for s in ["CONVERGING", "PROGRESSING", "converging", " Progressing "] {
+        for s in [
+            "CONVERGING",
+            "PROGRESSING",
+            "converging",
+            " Progressing ",
+            "CONVERGING ",
+        ] {
             assert_eq!(normalise_loop_verdict(s), "CONTINUE", "{s:?}");
         }
         // The finished form is DONE, not CONTINUE.
@@ -1227,6 +1238,8 @@ mod tests {
             "NOT_CONVERGING",
             "NOT_CONVERGED",
             "NOT_PROGRESSING",
+            "not progressing",
+            "CONVERGING_SLOWLY",
             "UNCONVERGING",
             "PROGRESSING_NOT",
             "DISCONTINUE",
