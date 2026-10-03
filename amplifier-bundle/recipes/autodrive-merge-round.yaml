@@ -41,8 +41,9 @@ steps:
     command: |
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || true
-      R=""; SEARCHED=""
-      for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(git rev-parse --show-toplevel 2>/dev/null)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do
+      R=""; SEARCHED=""; TOP=""
+      if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then TOP="$(git rev-parse --show-toplevel 2>/dev/null)"; else echo "[skip] not a git repo; the git toplevel is not searched for the resolver" >&2; fi
+      for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$TOP" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do
         [ -n "$c" ] || continue
         SEARCHED="${SEARCHED}${SEARCHED:+, }${c}/amplifier-bundle/tools"
         [ -f "$c/amplifier-bundle/tools/autodrive_merge_ready_files.sh" ] && { R="$c/amplifier-bundle/tools/autodrive_merge_ready_files.sh"; break; }
@@ -106,8 +107,9 @@ steps:
       if [ -z "$DIR" ]; then
         echo "WARNING: no autodrive_state_dir was passed to this round; crusty evidence is ABSENT." >&2
       else
-        STATE_HELPER=""
-        for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(git rev-parse --show-toplevel 2>/dev/null)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do
+        STATE_HELPER=""; TOP=""
+        if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then TOP="$(git rev-parse --show-toplevel 2>/dev/null)"; else echo "[skip] not a git repo; the git toplevel is not searched for autodrive_state.sh" >&2; fi
+        for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$TOP" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do
           [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/autodrive_state.sh" ] && { STATE_HELPER="$c/amplifier-bundle/tools/autodrive_state.sh"; break; }
         done
         if [ -z "$STATE_HELPER" ]; then
