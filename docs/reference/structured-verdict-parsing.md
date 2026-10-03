@@ -1,6 +1,6 @@
 ---
 title: Structured Verdict & Intent Parsing Reference
-last_updated: 2026-07-26
+last_updated: 2026-10-03
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -190,8 +190,9 @@ amplihack orch helper normalise-loop-verdict
 
 | Input token (case-insensitive, exact match) | Canonical output |
 | ------------------------------------------- | ---------------- |
-| `CONTINUE`, `CONTINUING`, `PROCEED`, `KEEP_GOING`, `ANOTHER_ROUND`, `ITERATE` | `CONTINUE` |
+| `CONTINUE`, `CONTINUING`, `PROCEED`, `KEEP_GOING`, `ANOTHER_ROUND`, `ITERATE`, `CONVERGING`, `PROGRESSING` | `CONTINUE` |
 | `DONE`, `COMPLETE`, `COMPLETED`, `FINISHED`, `CONVERGED`, `ADVANCE` | `DONE` |
+| `STUCK`, `STOP`, `BLOCKED`, `NO_PROGRESS`, `ESCALATE`, `LOOPING`, `NOT_CONVERGING` | `STUCK` |
 | _(anything else, including empty input)_ | `STUCK` |
 
 > **The two normalisers fail in opposite directions, deliberately.** An
@@ -205,7 +206,9 @@ amplihack orch helper normalise-loop-verdict
 The R2 equality property matters even more here: `DISCONTINUE`,
 `CANNOT_CONTINUE`, `DO_NOT_CONTINUE` and `SHOULD_NOT_CONTINUE` all contain
 `CONTINUE`, and `NOT_DONE` contains `DONE`. Under `str::contains` every one of
-them would fail **open**. Unit tests live beside `normalise_verdict`'s in
+them would fail **open**. The same holds for the `CONVERGING` and `PROGRESSING`
+synonyms: `NOT_CONVERGING`, `NOT_CONVERGED`, `NOT_PROGRESSING`, `UNCONVERGING`
+and `PROGRESSING_NOT` are not in the list and give `STUCK`. Unit tests live beside `normalise_verdict`'s in
 `crates/amplihack-cli/src/commands/orch.rs`.
 
 Full contract: [Loop-Health Evaluator Reference](loop-health-evaluator.md).
@@ -261,7 +264,7 @@ emitted by an agent step as a `parse_json` field and read by an engine
 | C       | `smart-reflect-loop.yaml`                       | `goal_status`         | reviewer `parse_json` field, `reflection_N.goal_status == '…'`        |
 | D1      | `smart-execute-routing.yaml`                    | `status`              | `extract-json \| extract-field --field status --default unknown`      |
 | D2      | `smart-classify-route.yaml`                     | `tree_id`, `depth`    | `session-tree register --json` → `extract-field`                      |
-| E       | `loop-health-evaluator.yaml`                     | `loop_verdict`        | `extract-json --require-field loop_verdict \| extract-field --field loop_verdict --default STUCK \| normalise-loop-verdict` |
+| E       | `loop-health-evaluator.yaml`                     | `loop_verdict`        | `extract-json --require-field loop_verdict \| extract-field --field loop_verdict --default STUCK \| normalise-loop-verdict`; then the `verdict` key and a line-leading prose token as [fallbacks](loop-health-evaluator.md#how-step-03-resolves-the-verdict) |
 | F1      | `autodrive-crusty-round.yaml`                    | `crusty_verdict`      | `extract-json --require-field crusty_verdict \| extract-field --field crusty_verdict --default CONCERNS` |
 | F2      | `autodrive-merge-round.yaml`                     | `merge_ready_verdict` | `extract-json --require-field merge_ready_verdict \| extract-field --field merge_ready_verdict --default NOT_MERGE_READY` |
 

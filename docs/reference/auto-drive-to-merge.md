@@ -1,6 +1,6 @@
 ---
 title: Auto Drive To Merge Reference
-last_updated: 2026-08-27
+last_updated: 2026-10-03
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -23,6 +23,8 @@ skill](../../amplifier-bundle/skills/auto-drive-to-merge/SKILL.md).
 - [The three phases](#the-three-phases)
 - [Why there is no iteration cap](#why-there-is-no-iteration-cap)
 - [Structured verdicts](#structured-verdicts)
+- [Reading step outputs](#reading-step-outputs)
+- [Reading the loop-health line](#reading-the-loop-health-line)
 - [Two absolute prohibitions](#two-absolute-prohibitions)
 - [No silent merge](#no-silent-merge)
 - [Exit code 79 is terminal](#exit-code-79-is-terminal)
@@ -189,6 +191,179 @@ in its usual structure and emits no JSON. `id` must be stable across rounds and
 derived from the substance of the concern — that is what lets the loop tell a
 recurring concern from a new one.
 
+## Reading step outputs
+
+Each recipe in this workflow passes results between steps through step
+outputs: the preflight's `state_dir`, a round's verdict record, the build
+result. `recipe-runner-rs` exports every step output to later bash steps as
+`RECIPE_VAR_<output>`, where `<output>` is the step's `output:` value exactly
+as written. It adds the plain upper-case alias (`CRUSTY_LOOP_PREFLIGHT`) only
+for **scalar** outputs. These outputs are JSON objects, so the alias is never
+set, and a bare `${CRUSTY_LOOP_PREFLIGHT:-}` read is always empty. Before issue
+#1511 was fixed, every read missed, every loop lost its state directory, and
+every run stopped as `STUCK`.
+
+Every step-output read in the autodrive recipes uses both names, on one line,
+inside double quotes:
+
+```bash
+PREFLIGHT="${CRUSTY_LOOP_PREFLIGHT:-${RECIPE_VAR_crusty_loop_preflight:-}}"
+```
+
+The bare name is tried first, the same idiom as `workflow-publish`,
+`workflow-finalize` and the [loop-health evaluator](loop-health-evaluator.md#reading-step-outputs-the-dual-name-idiom).
+`:-` treats an empty value as unset, so an empty context default such as
+`build_result: ""` still falls through to `RECIPE_VAR_build_result`. The
+`RECIPE_VAR_` value is read only through `extract-json` / `extract-field`; it
+is never sourced, `eval`'d or exported.
+
+The rule covers **step outputs only**. Context variables (`REPO_PATH`, `PR_*`,
+`AUTODRIVE_*`) and shell locals (`COUNT`, `RC`, `PENDING`, …) are read as
+before. `autodrive-merge-evidence.yaml` and `loop-health-evaluator.yaml` need
+no change: the first declares step outputs but reads none, and the second
+already used the dual-name form.
+
+A read is one `${<NAME>:-` occurrence, so a line that reads the same output
+twice counts twice. There are 31 in all:
+
+| Recipe | Step-output reads |
+| --- | --- |
+| `auto-drive-to-merge.yaml` | 3 |
+| `autodrive-build.yaml` | 1 |
+| `autodrive-crusty-loop.yaml` | 5 |
+| `autodrive-crusty-round.yaml` | 6 |
+| `autodrive-merge-loop.yaml` | 5 |
+| `autodrive-merge-round.yaml` | 11 |
+
+### `state_dir` is checked before use
+
+With the fallback in place, the preflight's `state_dir` reaches later steps.
+Every step that uses it refuses these values with the usual `no state_dir`
+error:
+
+- an empty value;
+- `/`;
+- a value starting with `-`;
+- a value containing a newline.
+
+The path is always quoted, and `rm`, `mkdir` and `cp` get `--` before it. An
+absolute path is not required; the preflight decides where state lives.
+
+### The static check
+
+The test `autodrive_step_outputs_are_read_with_the_recipe_var_fallback`
+collects the `output:` names declared across **all** the autodrive recipes
+(`auto-drive-to-merge.yaml` and every `autodrive-*.yaml`) into one set, then
+checks every one of those files against the whole set. Per-file collection
+would miss reads of outputs declared in a sub-recipe:
+`autodrive-merge-round.yaml` reads `QA_EVIDENCE`, `CI_EVIDENCE` and
+`MERGE_SYNC`, which `autodrive-merge-evidence.yaml` declares. Any line that
+reads `${<NAME_UPPER>:-` for a name in the set must also contain
+`RECIPE_VAR_<name>`. A failure names the file, line and output. The shell
+contract test runs the same check.
+
+## Reading the loop-health line
+
+After each round, `autodrive_loop.sh` runs `loop-health-evaluator` and reads
+its verdict from the log. `step-04-enforce-loop-verdict` prints one marker
+line, `LOOP_HEALTH: <verdict> — …`. amplihack's run formatter
+(`crates/amplihack-cli/src/commands/recipe/run/format.rs`) prints a status
+line for each step, then the step's output behind a four-space `Output: `
+prefix. A finished evaluator run therefore ends like this:
+
+```
+  ✓ step-04-enforce-loop-verdict: completed [elapsed: 120ms]
+    Output: LOOP_HEALTH: DONE — 'crusty' has converged; advance.
+```
+
+The status line has the form
+`  <symbol> <id>[ (<step name>)]: <status>[ [<details>]]`. The step name, when
+the step has one, sits in parentheses **before** the colon. The details
+(`phase: …`, `elapsed: …`, `child: …`, comma-separated) sit in square brackets
+**after** the status. Most runs record an elapsed time, so the suffix is the
+normal case, not the exception.
+
+The formatter puts `    Output: ` in front of the **first** line of a step's
+output only; later lines are printed as they are. Step-04 therefore prints its
+`LOOP_HEALTH: <verdict> — …` marker as its **first and only** stdout line, and
+writes everything else (the `STUCK` explanation, `WARNING` and `INFO` lines) to
+stderr. The shell contract test pins this: it runs step-04 for `CONTINUE`,
+`DONE` and `STUCK` and checks that stdout is exactly zero or one line and,
+when present, starts with `LOOP_HEALTH: `.
+
+Before issue #1512 was fixed, the reader looked only for `LOOP_HEALTH:` at the
+start of a line, never found it, and treated every round as `STUCK`.
+
+### Which line is trusted
+
+The log also holds the evaluator agent's own output, which can contain any
+text, including a copy of the two lines above. The reader therefore trusts one
+line only:
+
+1. `step04_output_line` (an `LC_ALL=C awk` function) finds the **last** status
+   line for `step-04-enforce-loop-verdict`: two spaces, any status symbol, a
+   space, the step id, then ` (` or `:`.
+2. It keeps that block only if the whole line matches
+   `^  ✓ step-04-enforce-loop-verdict( \([^)]*\))?: completed( \[[^]]*\])?$`,
+   which allows the optional parenthesised step name and the optional
+   bracketed details suffix and nothing else. Under `LC_ALL=C` the `✓` is
+   matched as its three UTF-8 bytes.
+3. It takes the line **right after** the status line. Any other line in
+   between, or no line at all, means no verdict.
+4. That line must match
+   `^    Output: LOOP_HEALTH: (CONTINUE|DONE)( |$)`. `CONTINUE` is checked
+   before `DONE`.
+
+Taking the last block, not the first, matters. The agent's output is printed
+earlier in the log than the real step-04 block, so a fake block inside it can
+never be the last one.
+
+### When the whole log is read
+
+If the log has **no** step status lines at all (lines starting
+`  <symbol> step-`), it did not come from the run formatter. Only then does the
+reader test every line with `^(    Output: )?LOOP_HEALTH: (CONTINUE|DONE)( |$)`.
+A log that has status lines but no usable step-04 pair never falls back to
+this scan.
+
+Anything else is `STUCK`, with the warning
+`loop-health-evaluator exited 0 with no readable LOOP_HEALTH verdict; failing
+safe to STUCK.`
+
+| Log contents | Verdict |
+| --- | --- |
+| `  ✓ step-04-enforce-loop-verdict: completed` then `    Output: LOOP_HEALTH: DONE — converged` | `DONE` |
+| `  ✓ step-04-enforce-loop-verdict: completed` then `    Output: LOOP_HEALTH: CONTINUE` | `CONTINUE` |
+| `  ✓ step-04-enforce-loop-verdict: completed [elapsed: 120ms]` then `    Output: LOOP_HEALTH: DONE` | `DONE` |
+| `  ✓ step-04-enforce-loop-verdict (Enforce verdict): completed [phase: loop, elapsed: 2s]` then `    Output: LOOP_HEALTH: CONTINUE` | `CONTINUE` |
+| `  ✓ step-04-enforce-loop-verdict: completed extra` then `    Output: LOOP_HEALTH: DONE` | `STUCK` |
+| `LOOP_HEALTH: DONE` alone, no status lines anywhere | `DONE` |
+| step-02 `    Output: LOOP_HEALTH: CONTINUE`, then the real step-04 block with `DONE` | `DONE` |
+| a fake step-04 block inside step-02's output, then the real step-04 block with `CONTINUE` | `CONTINUE` |
+| a fake step-04 block inside step-02's output, and no real step-04 block | `STUCK` |
+| `  ✗ step-04-enforce-loop-verdict: failed` then `    Output: LOOP_HEALTH: CONTINUE` | `STUCK` |
+| a different line between the step-04 status line and its `Output:` line | `STUCK` |
+| `note: Output: LOOP_HEALTH: CONTINUE` | `STUCK` |
+| `      LOOP_HEALTH: CONTINUE` (six spaces) | `STUCK` |
+| garbled or missing | `STUCK` |
+
+The prefix is exact: exactly four spaces and `Output: `, or column 0 in a log
+with no status lines. It is not `[[:space:]]*`, because the formatter shows
+the agent's recent output indented by six spaces.
+
+The remaining risk is the column-0 scan of a log with no status lines. It can
+only pick between `CONTINUE` and `DONE` when the evaluator exited `0`, and
+amplihack's own runner always prints status lines, so it applies only to
+logs from other runners.
+
+### These greps never decide on a non-zero exit
+
+The reader runs only when the evaluator exited `0`. `LOOP_VERDICT` is set to
+`STUCK` first, and a non-zero `HEALTH_RC` leaves it there whatever the log
+says. Setting `loop_health_enforce: "false"` on the evaluator makes step-04
+exit `0` on `STUCK`; its marker then reads `LOOP_HEALTH: STUCK …`, which
+matches neither `CONTINUE` nor `DONE`, so the result is still `STUCK`.
+
 ## Two absolute prohibitions
 
 1. **Never skip hooks on a commit.** No `--no-verify` and no `-n` shorthand on
@@ -354,8 +529,8 @@ Every recipe file stays inside the 400-line brick budget.
 
 | Test | Location |
 | --- | --- |
-| Executable contract test — STUCK path, malformed-verdict path, forbidden-flag guard, merge-gate refusals | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
-| Structural + wiring | `tests/integration/auto_drive_to_merge_test.rs` |
+| Executable contract test — STUCK path, malformed-verdict path, forbidden-flag guard, merge-gate refusals, a step output read through `RECIPE_VAR_` only, the `state_dir` refusals, the static `RECIPE_VAR_` check, and every row of the [loop-health line table](#reading-the-loop-health-line) | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
+| Structural + wiring, including `autodrive_step_outputs_are_read_with_the_recipe_var_fallback` | `tests/integration/auto_drive_to_merge_test.rs` |
 
 ```bash
 cargo test -p amplihack --test auto_drive_to_merge

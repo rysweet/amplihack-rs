@@ -1192,6 +1192,81 @@ fn reference_doc_exists_and_declares_the_1347_dependency() {
 /// path, and the forbidden-flag guard, exercised against the real extracted
 /// step bodies and the real tools.
 ///
+/// Issue #1511. recipe-runner-rs exports every step output as
+/// `RECIPE_VAR_<output>` and adds the bare upper-case alias only for SCALAR
+/// outputs. Every output these recipes pass between steps is a JSON object, so
+/// a bare `${CRUSTY_LOOP_PREFLIGHT:-}` read is always empty — every loop lost
+/// its state_dir and every run stopped as STUCK.
+///
+/// Output names are collected across ALL autodrive recipes into one set: a
+/// recipe reads outputs its sub-recipes declare (`autodrive-merge-round` reads
+/// `QA_EVIDENCE`, declared in `autodrive-merge-evidence`).
+#[test]
+fn autodrive_step_outputs_are_read_with_the_recipe_var_fallback() {
+    let mut outputs: Vec<String> = AUTODRIVE_RECIPES
+        .iter()
+        .flat_map(|r| {
+            let recipe = recipe_yaml(r);
+            steps(&recipe)
+                .iter()
+                .filter_map(|s| s.get("output").and_then(Value::as_str).map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    outputs.sort();
+    outputs.dedup();
+    assert!(
+        outputs.len() >= 20,
+        "only {} step outputs collected; the check would be vacuous: {outputs:?}",
+        outputs.len()
+    );
+
+    const READERS: [&str; 6] = [
+        "auto-drive-to-merge",
+        "autodrive-build",
+        "autodrive-crusty-loop",
+        "autodrive-crusty-round",
+        "autodrive-merge-loop",
+        "autodrive-merge-round",
+    ];
+    let mut missing = Vec::new();
+    let mut total = 0usize;
+    for r in READERS {
+        let text = recipe_text(r);
+        let mut file_reads = 0usize;
+        for (idx, line) in text.lines().enumerate() {
+            for name in &outputs {
+                let upper = name.to_ascii_uppercase();
+                let bare = format!("${{{upper}:-");
+                let dual = format!("${{{upper}:-${{RECIPE_VAR_{name}:-");
+                let reads = line.matches(&bare).count();
+                if reads == 0 {
+                    continue;
+                }
+                file_reads += reads;
+                if line.matches(&dual).count() < reads {
+                    missing.push(format!(
+                        "{r}.yaml:{}: reads `{bare}` without the RECIPE_VAR_{name} fallback",
+                        idx + 1
+                    ));
+                }
+            }
+        }
+        assert!(
+            file_reads > 0,
+            "{r}.yaml: no step-output reads found; the check is not looking at the right names"
+        );
+        total += file_reads;
+    }
+    assert!(
+        missing.is_empty(),
+        "{} of {total} step-output reads have no RECIPE_VAR_ fallback \
+         (use \"${{UPPER:-${{RECIPE_VAR_<output>:-<default>}}}}\"):\n{}",
+        missing.len(),
+        missing.join("\n")
+    );
+}
+
 /// Wired here because `.github/workflows/ci.yml` lists the bash recipe tests
 /// one by one; running it from `cargo test` gets the same coverage without
 /// touching that file.
