@@ -189,11 +189,8 @@ while :; do
           echo "WARNING: ${RECORD} and its ${LOOP_NAME}-latest.json copy differ; no manifest row for ${ROUND_LABEL}." >&2
         else
           MANIFEST_HASH="$( (cd -- "$STATE_DIR" && env -u GIT_DIR -u GIT_WORK_TREE git hash-object --no-filters --stdin) < "$RECORD" 2>/dev/null)"
-          case "${#MANIFEST_HASH}:${MANIFEST_HASH}" in
-            40:*[!0-9a-f]*|64:*[!0-9a-f]*) MANIFEST_HASH="" ;;
-            40:*|64:*) ;;
-            *) MANIFEST_HASH="" ;;
-          esac
+          case "$MANIFEST_HASH" in *[!0-9a-f]*) MANIFEST_HASH="" ;; esac
+          case "${#MANIFEST_HASH}" in 40|64) ;; *) MANIFEST_HASH="" ;; esac
           [ -n "$MANIFEST_HASH" ] || echo "WARNING: git could not hash ${RECORD}; no manifest row for ${ROUND_LABEL}, so this round cannot count as loop-written evidence." >&2
         fi ;;
     esac

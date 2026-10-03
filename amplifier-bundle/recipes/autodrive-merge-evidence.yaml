@@ -89,7 +89,6 @@ steps:
       # backslashes or control bytes, so a hostile log line or directory name
       # can neither break the evidence nor carry terminal escapes.
       san() { tr '\n' ' ' | LC_ALL=C tr -d '\000-\037\177"\\'; }
-      num() { case "$1" in ''|*[!0-9]*) printf '0' ;; *) printf '%s' "$1" ;; esac; }
       CAUSES=""
       cause() { CAUSES="${CAUSES}${CAUSES:+; }$1"; }
       # The evidence binds to the tree it was measured on. The merge gate
@@ -310,10 +309,10 @@ steps:
       esac
       SUMMARY="$(printf '%s' "${CAUSES}${CAUSES:+${TAIL:+: }}${TAIL}" | san)"
       OUT="$(printf '{"qa_status":"%s","qa_reason":"%s","qa_repo_type":"%s","qa_command":"%s","qa_suite_commands_count":"%s","qa_scenarios":"%s","qa_exit_code":"%s","qa_summary":"%s","qa_round":"%s","head_sha":"%s","gadugi_status":"%s","gadugi_validate_exit_code":"%s","gadugi_run_exit_code":"%s","gadugi_scenario_count":"%s","gadugi_scenario_dir":"%s","gadugi_scenarios_validated":"%s","gadugi_scenarios_run":"%s","gadugi_scenarios_passed":"%s","gadugi_scenarios_failed":"%s","gadugi_failed_scenarios":"%s"}\n' \
-        "$STATUS" "$REASON" "$TYPE" "$(printf '%s' "$CMDTEXT" | san | cut -c1-500)" "$(num "$RAN")" \
+        "$STATUS" "$REASON" "$TYPE" "$(printf '%s' "$CMDTEXT" | san | cut -c1-500)" "$RAN" \
         "$(printf '%s' "$SCEN" | san)" "$RC" "$SUMMARY" "$(printf '%s' "${AUTODRIVE_ROUND_LABEL:-round}" | san)" "$HEAD_SHA" \
-        "$G_STATUS" "$G_VRC" "$G_RRC" "$(num "$COUNT")" "$(printf '%s' "$SREL" | san)" \
-        "$(num "$VALIDATED")" "$(num "$RUNS")" "$(num "$PASSED")" "$(num "$FAILED")" \
+        "$G_STATUS" "$G_VRC" "$G_RRC" "$COUNT" "$(printf '%s' "$SREL" | san)" \
+        "$VALIDATED" "$RUNS" "$PASSED" "$FAILED" \
         "$(printf '%s' "${UNNAMED} ${STAGEFAIL} ${RUNFAIL}" | san | tr -s ' ' | sed 's/^ //; s/ $//')")"
       [ -n "$EVIDENCE" ] && printf '%s' "$OUT" > "$EVIDENCE"
       printf '%s\n' "$OUT"
