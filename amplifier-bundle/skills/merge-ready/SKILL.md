@@ -242,28 +242,28 @@ Blockers:
 
 The `auto-drive-to-merge` workflow applies these criteria from an agent step in its merge round. It does not invoke this skill. `disable-model-invocation: true` stays set, so only a person starts `/merge-ready`.
 
-Instead, the merge round reads this file and [pr-description-template.md](pr-description-template.md) as plain files. It looks for `amplifier-bundle/skills/merge-ready/SKILL.md` under these roots, in order, and uses the first one found:
+A bash step, `step-00-merge-ready-files`, finds this file and [pr-description-template.md](pr-description-template.md) before the agent runs. It checks these directories in order and uses the first one that contains `SKILL.md`:
 
-1. `$AMPLIHACK_HOME`
-2. the repository path given to the round
-3. `git rev-parse --show-toplevel`
-4. `~/.copilot`
-5. `~/.amplihack`
+1. `$AMPLIHACK_HOME/amplifier-bundle/skills/merge-ready`
+2. `$REPO_PATH/amplifier-bundle/skills/merge-ready`
+3. `<git toplevel>/amplifier-bundle/skills/merge-ready`
+4. `~/.copilot/skills/merge-ready`
+5. `~/.amplihack/amplifier-bundle/skills/merge-ready`
 
-The round cites the path it read in its evidence. If no copy of this file is found, the verdict is `NOT_MERGE_READY` with blocker `merge-ready-skill-files-not-found`, listing every path checked. If only the template is missing, the blocker is `merge-ready-template-not-found`.
+The template must be in the same directory. If it is not, the step fails with `merge-ready-template-not-found`; it does not look in the next directory. If no directory has `SKILL.md`, the step fails with `merge-ready-skill-files-not-found` and lists every path it checked. Either failure stops the round. Neither one becomes a `NOT_MERGE_READY` blocker. The agent receives the two absolute paths, reads both files, and applies their criteria.
 
 Every criterion in [Required outcome](#required-outcome) applies as written, except that auto-drive measures criteria 1 and 3 as follows:
 
 | Criterion | What auto-drive requires |
 | --- | --- |
-| 1. QA-team scenarios | The evidence step runs the repository's own test command, then `gadugi-test validate -d <dir>` and `gadugi-test run -d <dir>` on the scenario directory. The directory is `$AUTODRIVE_QA_SCENARIO_DIR` if set, else `tests/agentic`, else `scenarios`. Only `*.yaml` and `*.yml` files directly in that directory count. Zero scenario files is a failure, as is a validate or run failure. When scenarios are missing or do not cover the changed behavior, the round's blocker-clearing step uses `qa-team` to write them, validates and runs them, and commits them. |
-| 3. Quality-audit | The `crusty-old-engineer` loop of the same auto-drive run must have ended DONE with a final `CLEAN` verdict. That loop is an iterative review-and-fix cycle that stops at its first clean round, so no minimum round count applies. A resumed run accepts the crusty completion recorded in the run's own state directory. |
+| 1. QA-team scenarios | The evidence step runs every repository suite command, then `gadugi-test validate -d <dir>`, then one `gadugi-test run --scenario "<name>"` per scenario file. The scenario directory is `$AUTODRIVE_QA_SCENARIO_DIR` if set, else `tests/agentic`, else `scenarios`. Suite commands come from `AUTODRIVE_QA_COMMAND` (with `AUTODRIVE_QA_DIR`) and `AUTODRIVE_QA_COMMANDS`, or are detected from the repository type when neither is set. No scenarios, a validate failure, an unnamed scenario, or any failed scenario run makes `qa_status` something other than `PASS`. The evidence records the scenario counts and the head SHA that was tested. When `gadugi_status` is `NO_SCENARIOS`, `VALIDATE_FAILED` or `RUN_FAILED`, whatever else failed, the round's blocker-clearing step uses `qa-team` to write or fix the scenarios, validates and runs each one, and commits them. This applies to every repository type, Rust CLI repositories included. |
+| 3. Quality-audit | The `crusty-old-engineer` loop of the same auto-drive run must have ended DONE, and its last round record, as listed in the loop's manifest `crusty-records.tsv`, must have verdict `CLEAN` and a `reviewed_head_sha`. The crusty loop stops at its first clean round, so no minimum round count applies. `reviewed_head_sha` is recorded; it is not required to equal the head being merged. |
 
 The merge round and the merge gate both re-check these two criteria from measured evidence. A `MERGE_READY` verdict is downgraded when either one fails, whatever the agent concluded.
 
 **Running `/merge-ready` by hand is unchanged.** Criterion 1 still needs `qa-team` scenarios validated with `gadugi-test validate` and run with `gadugi-test run`. Criterion 3 still needs a separate `quality-audit` of at least 3 SEEK -> VALIDATE -> FIX cycles ending on a clean cycle. The crusty-loop substitution applies only inside auto-drive.
 
-See [Auto Drive To Merge Reference](../../../docs/reference/auto-drive-to-merge.md#how-the-merge-round-applies-merge-ready) for the evidence fields and gate checks.
+See [Auto Drive To Merge Reference](../../../docs/reference/auto-drive-to-merge.md#how-the-merge-round-applies-merge-ready) for the evidence fields, environment variables and gate checks.
 
 ## When to stop and hand back a blocker
 

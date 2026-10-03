@@ -174,9 +174,9 @@ other than `DONE_CLEAN`. A missing `crusty_status` counts as not
 `measured-evidence-disagrees` finding so the loop evaluator sees a round that
 did not converge.
 
-`qa_status` is `PASS` only when the repository's own test command **and** the
-`gadugi-test` validate and run both passed, so a gadugi failure downgrades the
-verdict through `qa_status`. See [Criterion 1](#criterion-1-qa-team-scenarios-run-with-gadugi-test)
+`qa_status` is `PASS` only when every repository suite command **and**
+`gadugi-test validate` and every per-scenario `gadugi-test run` passed, so a
+gadugi failure downgrades the verdict through `qa_status`. See [Criterion 1](#criterion-1-qa-team-scenarios-run-with-gadugi-test)
 and [Criterion 3](#criterion-3-the-crusty-loop-ended-done-and-clean).
 
 ### The crusty verdict contract
@@ -203,54 +203,123 @@ recurring concern from a new one.
 
 The [`merge-ready`](../../amplifier-bundle/skills/merge-ready/SKILL.md) skill
 sets `disable-model-invocation: true` in its frontmatter: it is the
-`/merge-ready` command a person runs, and Claude Code refuses the skill when an
-agent calls it. The flag stays set. Step `step-02-merge-ready-assessment` of
-`autodrive-merge-round.yaml` therefore never calls the skill. Its prompt tells
-the agent to read `SKILL.md` and `pr-description-template.md` as files and
-apply the criteria they state.
+`/merge-ready` command a person runs, with an `argument-hint`, and Claude Code
+refuses the skill when an agent calls it. The flag stays set. No auto-drive
+recipe calls the skill. The merge round reads its files instead.
 
-The agent checks these roots in order and uses the first one that has
-`amplifier-bundle/skills/merge-ready/SKILL.md`:
+Step `step-00-merge-ready-files` of `autodrive-merge-round.yaml` is a bash step
+that runs before the merge evidence. It runs
+`amplifier-bundle/tools/autodrive_merge_ready_files.sh`, found through the same
+tool lookup the other auto-drive steps use. The script checks these
+directories in order, skips any whose variable is empty, and uses the first
+one in which `SKILL.md` is a regular file:
 
-| Order | Root |
+| Order | Directory |
 | --- | --- |
-| 1 | `$AMPLIHACK_HOME` |
-| 2 | `$REPO_PATH` |
-| 3 | `git rev-parse --show-toplevel` |
-| 4 | `~/.copilot` |
-| 5 | `~/.amplihack` |
+| 1 | `$AMPLIHACK_HOME/amplifier-bundle/skills/merge-ready` |
+| 2 | `$REPO_PATH/amplifier-bundle/skills/merge-ready` |
+| 3 | `<git toplevel of $REPO_PATH>/amplifier-bundle/skills/merge-ready` |
+| 4 | `~/.copilot/skills/merge-ready` |
+| 5 | `~/.amplihack/amplifier-bundle/skills/merge-ready` |
 
-`~/.copilot` comes before `~/.amplihack`, the same order the merge loop uses to
-find `autodrive_merge_gate.sh`. The template is read from the same directory. The agent cites the resolved
-`SKILL.md` path in its evidence, so a PR that edits its own criteria file
-shows up in the round record. When no root has the file, the verdict is
-`NOT_MERGE_READY` with blocker `merge-ready-skill-files-not-found`, which lists
-every path checked; the agent does not invent criteria. When only the template
-is missing, the blocker is `merge-ready-template-not-found`.
+The order is the one the other auto-drive steps use to find bundle files, so
+the criteria come from the same install as the recipes that read them.
+`~/.copilot` holds skills directly under `skills/`, which is where `amplihack
+install` stages them for Copilot CLI.
+
+The two files are resolved together. The template must be in the directory
+that supplied `SKILL.md`; the script never takes one file from one install and
+the other file from another.
+
+| Situation | Result |
+| --- | --- |
+| A directory has both files | stdout is one line of JSON; the step succeeds |
+| The first directory with `SKILL.md` has no `pr-description-template.md` | `ERROR: merge-ready-template-not-found: <path>` on stderr, exit 1. The next directory is not checked. |
+| No directory has `SKILL.md` | `ERROR: merge-ready-skill-files-not-found: searched <every path checked>` on stderr, exit 1 |
+| The resolver script itself is not found | `ERROR: merge-ready-skill-files-not-found: resolver autodrive_merge_ready_files.sh not found (searched ...)`, exit 1 |
+
+A failure fails the recipe step, so the round fails and its log carries the
+named error. It is not turned into a `NOT_MERGE_READY` blocker: a missing
+install is not something a blocker-clearing agent can fix, and treating it as
+one is what made every round of issue #1517 return the same verdict until the
+loop went `STUCK`, with nothing in the log saying why.
+
+A failed round writes no round record, so `autodrive_loop.sh` reads it as not
+clean and adds no manifest row. The loop-health evaluator then gets the
+round's log, with the named error, and its non-zero exit code. The same error
+in round after round is no progress, so the loop still ends `STUCK`. The
+change is that the log names the cause, and no blocker-fix round is spent on
+it. A failed crusty `step-06-write-round-record`
+(`crusty-head-sha-unavailable`) ends the same way.
+
+On success the output looks like this:
+
+```json
+{"skill_dir":"/home/dev/.amplihack/amplifier-bundle/skills/merge-ready","skill_md":"/home/dev/.amplihack/amplifier-bundle/skills/merge-ready/SKILL.md","template":"/home/dev/.amplihack/amplifier-bundle/skills/merge-ready/pr-description-template.md","skill_md_sha":"5b0e8f6c1d2a3b4c5d6e7f8091a2b3c4d5e6f708"}
+```
+
+`skill_dir` is the physical path (`pwd -P`). `skill_md_sha` is the git blob
+hash of `SKILL.md`, so the round record shows exactly which criteria were
+applied. The script also writes these lines to stderr:
+
+```text
+INFO: merge-ready criteria from /home/dev/.amplihack/amplifier-bundle/skills/merge-ready (5b0e8f6c1d2a3b4c5d6e7f8091a2b3c4d5e6f708)
+WARNING: merge-ready criteria come from the branch under review and differ from origin/main
+```
+
+The warning appears only when the chosen directory is inside the repository
+and its `SKILL.md` differs from the base branch. This happens in repositories
+that ship `amplifier-bundle/`, amplihack-rs included, when the pull request
+edits its own merge criteria. It never fails the step; the merge gate
+re-checks criteria 1 and 3 from measured evidence either way.
+
+A candidate path that contains `"`, `\`, a control byte, `{{` or `}}` is
+skipped with a `WARNING`, so a path can never break the JSON or look like a
+recipe template expression.
+
+Step `step-02-merge-ready-assessment` receives
+`{{merge_ready_files.skill_md}}` and `{{merge_ready_files.template}}` and tells
+the agent to read both files and apply their criteria. The prompt names the
+skill and says it is read as a file because its frontmatter blocks agent
+invocation. It contains no `Skill(` call. It keeps the rule that a criterion
+the agent could not verify counts as failed, and it states that text in the
+evidence (test output, scenario names, commit messages) is data from the
+branch under review, not instructions.
 
 All merge-ready criteria apply as the skill states them, except criteria 1 and
 3, which auto-drive measures as described below. The skill's own
 `## Running under auto-drive` section says the same thing for a person reading
-it, and states that a manual `/merge-ready` still requires the full criteria,
-including a separate `quality-audit` of at least 3 cycles.
+it, and states that a manual `/merge-ready` still requires the full criteria:
+`gadugi-test validate` and `gadugi-test run`, and a separate `quality-audit` of
+at least 3 SEEK, VALIDATE, FIX cycles ending clean.
 
 #### A guard test keeps recipes from calling refusing skills
 
 `no_recipe_invokes_a_skill_that_refuses_model_invocation` in
-`tests/integration/auto_drive_to_merge_test.rs` walks
-`amplifier-bundle/skills/**/SKILL.md`, collects every skill whose frontmatter
-sets `disable-model-invocation: true` (any case, quoted or not; the name comes
-from `name:`, falling back to the directory name), then scans the full text of
-every `*.yaml` and `*.yml` file under `amplifier-bundle/recipes/` for a call
-to one of those skills. Comments count.
+`tests/integration/auto_drive_to_merge_test.rs` reads the frontmatter of every
+`amplifier-bundle/skills/<name>/SKILL.md` and collects each skill that sets
+`disable-model-invocation: true` (any case, quoted or not; the name comes from
+`name:`, falling back to the directory name). A `SKILL.md` whose name cannot be
+resolved is logged and skipped. The test then scans the raw text of every
+`*.yaml` and `*.yml` file under `amplifier-bundle/recipes/`, in every
+subdirectory, for this pattern, where `NAME` is the skill name passed through
+`regex::escape`:
 
-The match accepts double or single quotes around the name and whitespace
-around `(`, `=` and `)`. These all match for `merge-ready`:
+```text
+Skill\(\s*skill\s*=\s*\\?["']NAME\\?["']\s*\)
+```
+
+Whitespace is allowed after `(`, around `=` and before `)`, and either quote
+may be preceded by one backslash, so the escaped form a YAML double-quoted
+string produces is caught too. Comments and negative mentions count. A prompt that says "do not call
+`Skill(skill="merge-ready")`" fails the test too, so prompts refer to such a
+skill by name only. These all match for `merge-ready`:
 
 ```text
 Skill(skill="merge-ready")
 Skill(skill='merge-ready')
 Skill( skill = "merge-ready" )
+Skill(skill=\"merge-ready\")
 ```
 
 A call that passes the name some other way, for example through a variable,
@@ -261,167 +330,317 @@ amplifier-bundle/recipes/autodrive-merge-round.yaml: step step-02-merge-ready-as
 ```
 
 The step id is the nearest earlier `- id:` line. The walk skips symlinks, and
-an unreadable or non-UTF-8 file fails the test and names the path rather than
-being skipped. The companion test
-`the_invocation_guard_flags_the_old_merge_round_prompt` runs the same detector
-over the prompt line this fix replaced, so the guard is known to catch the
-original defect.
+an unreadable or non-UTF-8 file fails the test and names the path.
+
+The test's fixtures cover each of the four forms above, including the
+escaped-quote form, and keep a `bad.yml` recipe so the `*.yml` scan stays
+covered.
+
+Two companion tests:
+
+- `the_invocation_guard_flags_the_old_merge_round_prompt` runs the same
+  detector over the prompt line this fix replaced, so the guard is known to
+  catch the original defect.
+- `qa_team_does_not_refuse_model_invocation` asserts that the `qa-team`
+  `SKILL.md` does not set `disable-model-invocation: true`. Step-04 of the
+  merge round calls `Skill(skill="qa-team")`, and this test fails with a
+  direct message if that call would start being refused.
 
 ### Criterion 1: qa-team scenarios run with gadugi-test
 
 Step `step-02-qa-team-scenarios` of `autodrive-merge-evidence.yaml` runs two
-checks and records both. Neither can stand in for the other.
+kinds of check and records both. Neither can stand in for the other. Every
+suite command runs, even after an earlier one failed, and the gadugi checks
+run whatever the suite commands did. Within the gadugi checks, a missing
+`gadugi-test` stops them all and a failed `gadugi-test validate` stops every
+scenario run; once validate passes, every scenario runs, even after an earlier
+one failed. The evidence lists every cause found.
 
-**The repository's own test command**, chosen by repository type:
+#### Repository suite commands
+
+The suite commands come from the environment, or are detected from the
+repository type when no command variable is set:
+
+| Set | `qa_repo_type` | Commands run |
+| --- | --- | --- |
+| `AUTODRIVE_QA_COMMAND` only | `configured` | that command, in `AUTODRIVE_QA_DIR` |
+| `AUTODRIVE_QA_COMMANDS` only | `configured` | each entry, from the repository root |
+| both | `configured` | `AUTODRIVE_QA_COMMAND` first, then each `AUTODRIVE_QA_COMMANDS` entry |
+| either one set but empty | `configured` | none; `qa_reason` is `qa-command-missing`, and nothing is auto-detected |
+| neither | detected | the command for the repository type, from the table below |
 
 | Repo type | Detected by | Test command |
 | --- | --- | --- |
 | `rust-cli` | `Cargo.toml` | `cargo test --workspace --locked --no-fail-fast` |
-| `python` | `pyproject.toml` or `setup.py` | `pytest` |
 | `node` | `package.json` | `npm test` |
-| `unknown` | none of the above | none; `qa_status` is `BLOCKED` |
+| `python` | `pyproject.toml` or `setup.py` | `pytest` |
+| `unknown` | none of the above | none; `qa_reason` is `qa-command-missing` |
+
+Every command runs, even after one fails. Each must exit 0. No timeout is
+added to any of them. See [Environment variables](#environment-variables) for
+how each variable is run.
 
 Every repository type, `rust-cli` included, must also pass the gadugi
-scenarios. The step no longer reads `tests/parity/scenarios`.
+scenarios. The `qa-team` skill tells Rust CLI repositories to use `cargo test`
+in place of `gadugi-test run`; auto-drive does not apply that substitution.
 
-**The gadugi scenarios**, which run even when the repository test failed, so
-the evidence lists every cause at once. Before any gadugi check, the step
-resolves the [scenario directory](#the-scenario-directory) and counts its
-scenario files. `gadugi_scenario_dir`, `gadugi_scenario_count` and
-`qa_scenarios` are therefore recorded on every run, including when
-`gadugi_status` is `NOT_INSTALLED`. Step-04 and the merge gate both depend on
-them.
+#### The gadugi scenarios
 
-The checks then run in this order and stop at the first failure:
+Before any gadugi check, the step resolves the
+[scenario directory](#the-scenario-directory) and counts its scenario files.
+`gadugi_scenario_dir`, `gadugi_scenario_count` and `qa_scenarios` are recorded
+on every run, including when `gadugi-test` is not installed. Step-04 and the
+merge gate both depend on them. The checks then run in this order:
 
-1. `gadugi-test` must be on `PATH`.
-2. The scenario count must be at least 1.
-3. `gadugi-test validate -d "$DIR"` must exit 0.
-4. `gadugi-test run -d "$DIR"` must exit 0.
+1. `gadugi-test` must be on `PATH`. If it is not, nothing else runs.
+2. The scenario count must be at least 1. `gadugi-test run` prints
+   `No scenarios found to execute` and exits 0 on an empty directory, so the
+   count is checked here.
+3. `gadugi-test validate -d "$DIR"` must exit 0. If it does not, no scenario
+   runs.
+4. Each scenario file runs in its own `gadugi-test` process, and each must
+   exit 0. All of them run, even after one fails.
 
-The count check comes before `run` because `gadugi-test run` prints
-`No scenarios found to execute` and exits 0 on an empty directory.
+**Why one process per scenario.** `gadugi-test run -d <dir>` runs every
+scenario in the directory in one process, and in gadugi-test 1.0.x a scenario
+can then read state left by an earlier one
+([gadugi-agentic-test #207](https://github.com/rysweet/gadugi-agentic-test/issues/207)).
+The step never runs a whole directory. A comment next to the loop cites #207.
 
-`$DIR` is always quoted and absolute. No timeout wrapper is added and no
-`--timeout` flag is passed, so `gadugi-test run` uses its own default of
-300000 ms (`gadugi-test run --help`, `@gadugi/agentic-test` 1.0.1). It applies
-that value as the default time limit for each command and execution, not as a
-cap on the whole run.
+`--scenario` in gadugi-test 1.0.x selects by a case-insensitive substring
+match on a scenario's `name:` field, not by file path. To make one run select
+exactly one scenario, the step does this for each scenario file:
+
+1. Copy the file alone, with `cp -P`, into a new `mktemp -d` directory outside
+   the repository.
+2. Read its name: the top-level `name:` key, or `name:` under a top-level
+   `scenario:` key, with quotes and trailing comments removed.
+3. Run it from the repository root:
+
+   ```bash
+   (cd "$ROOT" && gadugi-test run -d "$stage" --scenario "$name")
+   ```
+
+Because the staging directory holds one file, the substring match cannot pick
+up a second scenario. The staging directories are removed by an `EXIT` trap,
+set only after `mktemp` succeeded. If `mktemp` fails, the step records
+`gadugi-run-failed`; it never falls back to running the whole directory.
+
+A file counts as **unnamed**, and as a failed scenario, when its name is empty,
+starts with `-`, contains a control byte, or is longer than 200 bytes. The
+name reader does not handle YAML block scalars or flow mappings, so a name
+written that way also counts as unnamed. An unnamed file is not run.
+
+`gadugi-test` writes `logs/` and `outputs/` into its working directory. The
+step records which of the two existed before it ran, and afterwards removes
+only the ones it created. A `logs/` directory that belongs to the repository
+is left alone, and a symlink is never followed.
+
+No timeout wrapper is added and no `--timeout` flag is passed, so
+`gadugi-test run` uses its own default of 300000 ms as the limit for each
+command it runs.
 
 | `gadugi_status` | Meaning |
 | --- | --- |
-| `PASS` | validate and run both exited 0 |
+| `PASS` | validate exited 0, and every scenario file was named, run, and exited 0 |
 | `NOT_INSTALLED` | `gadugi-test` is not on `PATH` |
-| `NO_SCENARIOS` | the directory has no `*.yaml` or `*.yml` file at its top level |
-| `VALIDATE_FAILED` | `gadugi-test validate` exited non-zero |
-| `RUN_FAILED` | `gadugi-test run` exited non-zero |
+| `NO_SCENARIOS` | the directory is missing or has no scenario files |
+| `VALIDATE_FAILED` | `gadugi-test validate` exited non-zero; no scenario ran |
+| `RUN_FAILED` | at least one scenario file was unnamed, could not be staged, or its run exited non-zero |
 
-`qa_status` combines the two:
+#### `qa_status` and `qa_reason`
 
-| `qa_status` | When |
-| --- | --- |
-| `PASS` | the repository test exited 0 **and** `gadugi_status` is `PASS` |
-| `FAIL` | otherwise, when something ran and failed: the repository test, `NO_SCENARIOS`, `VALIDATE_FAILED`, or `RUN_FAILED` |
-| `BLOCKED` | otherwise: a binary is missing or the repository type is unknown |
+`qa_status` is `PASS` only when all of these hold:
 
-`NO_SCENARIOS` is `FAIL` rather than `BLOCKED` because the merge round can fix
-it by writing scenarios.
+- at least one suite command ran, and every suite command exited 0
+- `gadugi-test` is installed
+- the scenario count is at least 1
+- `gadugi-test validate` exited 0
+- every scenario file was named and its run exited 0, so
+  `gadugi_scenarios_passed` equals `gadugi_scenario_count`
 
-`qa_summary` starts with one fixed phrase per cause, joined by `; `, followed
-by the tail of the repository test log. Only the log tail is cut to the length
-limit; the cause phrases always survive.
+Otherwise `qa_reason` is the first of these tokens that applies, and
+`qa_status` is the class of that token:
+
+| Order | `qa_reason` | `qa_status` | When |
+| --- | --- | --- | --- |
+| 1 | `qa-command-failed` | `FAIL` | a suite command exited non-zero |
+| 2 | `no-scenarios` | `FAIL` | the scenario directory is missing or empty |
+| 3 | `gadugi-validate-failed` | `FAIL` | `gadugi-test validate` exited non-zero |
+| 4 | `gadugi-scenario-unnamed` | `FAIL` | a scenario file has no usable name |
+| 5 | `gadugi-run-failed` | `FAIL` | a scenario run exited non-zero, or staging failed |
+| 6 | `qa-command-missing` | `BLOCKED` | no suite command: unknown repository type, or a command variable set but empty |
+| 7 | `qa-command-not-installed` | `BLOCKED` | the program of the single or detected command is not installed |
+| 8 | `gadugi-test-missing` | `BLOCKED` | `gadugi-test` is not on `PATH` |
+
+`qa_reason` is `""` when `qa_status` is `PASS`. The step checks the value it
+emits against this list. `FAIL` tokens come first because the merge round can
+act on them: it can fix code or write scenarios. `gadugi-test-missing` never
+appears together with a later gadugi token, because no gadugi check runs
+without the binary.
+
+`qa_summary` still names every cause, not only the first, joined by `; `,
+followed by the tail of the suite log:
 
 | Cause | Phrase |
 | --- | --- |
-| repository test exited non-zero | `repository test failure` |
+| a suite command exited non-zero | `repository test failure` |
+| no suite command | `no repository test command for repository type <type>` |
+| a program is missing | `<program> not installed` |
 | no scenario files | `no scenarios in <dir>` |
-| `gadugi-test` missing | `gadugi-test not installed` |
 | validate exited non-zero | `gadugi-test validation failure` |
-| run exited non-zero | `gadugi-test run failure` |
+| a scenario file has no name | `gadugi scenario without a name: <path>` |
+| a scenario run exited non-zero | `gadugi-test run failure: <path>` |
 
 #### The scenario directory
 
 The evidence step uses the first match:
 
 1. `AUTODRIVE_QA_SCENARIO_DIR`, when set and not empty. A relative path is
-   resolved from the repository root. If it names a directory that does not
-   exist, the result is `NO_SCENARIOS`; there is no fallback to the defaults.
+   resolved from the repository root; an absolute path is used as given. If it
+   names a directory that does not exist, the result is `no-scenarios`; there
+   is no fallback to the defaults.
 2. `tests/agentic`, if it exists.
 3. `scenarios`, if it exists.
 4. Otherwise `tests/agentic` is recorded with a count of 0. This is the
    directory the merge round writes new scenarios into.
 
-Only files directly in the directory count, found with `find -maxdepth 1
--type f` and without following symlinks. `gadugi-test validate -d` does not
-look in subdirectories, so a scenario that exists only in a subdirectory
-counts as 0 and gives `NO_SCENARIOS`.
+Only `*.yaml` and `*.yml` regular files directly in the directory count,
+found with `find -maxdepth 1 -type f`. Symlinked scenario files are not
+counted and not run, although `gadugi-test validate -d` still reads them.
+`gadugi-test validate -d` does not look in subdirectories, so a scenario that
+exists only in a subdirectory counts as 0.
 
-`AUTODRIVE_QA_SCENARIO_DIR` is read from the environment only. No recipe
-declares it as a context key: the recipe runner exposes context keys as
-environment variables, so a context key with an empty default would hide the
-value the user exported. Set it before starting the run:
+amplihack-rs keeps its gadugi scenarios in `tests/gadugi/scenarios`, which is
+not in the default lookup. Its own auto-drive runs set
+`AUTODRIVE_QA_SCENARIO_DIR=tests/gadugi/scenarios`.
+
+#### Environment variables
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `AUTODRIVE_QA_COMMAND` | unset | One suite command. Split into words by the shell, with globbing turned off. |
+| `AUTODRIVE_QA_DIR` | `.` | Directory `AUTODRIVE_QA_COMMAND` runs in, relative to the repository root. |
+| `AUTODRIVE_QA_COMMANDS` | unset | Several suite commands, one per line. Blank lines and lines starting with `#` are ignored. |
+| `AUTODRIVE_QA_SCENARIO_DIR` | `tests/agentic`, then `scenarios` | The gadugi scenario directory. |
+
+`AUTODRIVE_QA_COMMAND` runs as `( set -f; cd -- "$QA_DIR" && $CMD )`. It
+counts as installed when its first word is on `PATH` or is an executable file
+at `$QA_DIR/<first word>`; otherwise `qa_reason` is
+`qa-command-not-installed`. Word splitting cannot express `cd ui && npm test`.
+Use `AUTODRIVE_QA_COMMANDS` for that.
+
+Each `AUTODRIVE_QA_COMMANDS` entry runs as its own
+`( cd -- "$ROOT" && bash -c "$entry" )`, so `cd` inside one entry does not
+affect the next. Entries are never concatenated into one script, sourced, or
+passed to `eval`. A missing program in an entry exits 127 and counts as
+`qa-command-failed`.
+
+A repository with a Cargo workspace and a TypeScript package under `ui/` that
+is outside the workspace:
 
 ```bash
-AUTODRIVE_QA_SCENARIO_DIR=tests/gadugi/scenarios \
-  amplihack recipe run auto-drive-to-merge -c pr_number=1234 -c repo_path=.
+export AUTODRIVE_QA_SCENARIO_DIR=tests/gadugi/scenarios
+export AUTODRIVE_QA_COMMANDS='cargo test --workspace --locked --no-fail-fast
+# the UI package is not part of the Cargo workspace
+cd ui && npm ci && npm test'
+amplihack recipe run auto-drive-to-merge -c pr_number=1234 -c repo_path=.
 ```
 
-If the recipe runner drops the variable (for example, when it trims an
-oversized environment), the step falls back to the default lookup. The
-`gadugi_scenario_dir` field in the evidence always shows the directory that was
-actually used.
+All four variables are read from the environment only. No recipe declares
+them as context keys: the recipe runner exposes context keys as environment
+variables, so a context key with an empty default would hide the value the
+user exported. If the recipe runner drops a variable (for example, when it
+trims an oversized environment), the step falls back to its default. The
+evidence always shows what was actually used: `qa_command` for the commands
+and `gadugi_scenario_dir` for the directory.
 
-amplihack-rs itself keeps its gadugi scenarios in `tests/gadugi/scenarios`,
-which is not in the default lookup. Its own auto-drive runs need the variable
-above, or they report `NO_SCENARIOS` until the merge round writes scenarios to
-`tests/agentic`.
+**Command text is recorded as written**, up to 500 characters, in
+`qa_command`, and from there it can reach the pull request description.
+Reference secrets as `$VAR` in the command text. The expanded value is never
+recorded.
 
 #### The qa evidence record
 
-The record keeps its 8 earlier fields and adds 5. Every value is a string. An
-exit code is `""` when its command did not run. `head_sha` is read before any
-check runs. Free text (`qa_summary`, `qa_scenarios`, `gadugi_scenario_dir`) has
-quotes, backslashes and control bytes stripped before it is cut, so hostile
-test output still yields valid JSON. `gadugi_scenario_dir` is relative to the
-repository root when it is inside it.
+Every value is a string. The step reads `head_sha` with `git rev-parse HEAD`
+before any check runs; it is the commit that was tested. Exit codes are `""`
+when the command did not run. Free text (`qa_command`, `qa_summary`,
+`qa_scenarios`, `gadugi_scenario_dir`, `gadugi_failed_scenarios`) has quotes,
+backslashes and control bytes removed before it is cut to length, so hostile
+test output still yields valid JSON. Every count is checked to be digits only.
 
-A rust-cli repository with no scenario files, in the default directory:
-
-```json
-{"qa_status":"FAIL","qa_repo_type":"rust-cli","qa_command":"cargo test --workspace --locked --no-fail-fast","qa_scenarios":"","qa_exit_code":"0","qa_summary":"no scenarios in tests/agentic; test result: ok. 41 passed; 0 failed","qa_round":"round-1","head_sha":"9f1c2e7a4b5d6c8e0f1a2b3c4d5e6f7a8b9c0d1e","gadugi_status":"NO_SCENARIOS","gadugi_validate_exit_code":"","gadugi_run_exit_code":"","gadugi_scenario_count":"0","gadugi_scenario_dir":"tests/agentic"}
-```
-
-amplihack-rs run with `AUTODRIVE_QA_SCENARIO_DIR=tests/gadugi/scenarios`, all
+amplihack-rs with `AUTODRIVE_QA_SCENARIO_DIR=tests/gadugi/scenarios`, all
 checks passing:
 
 ```json
-{"qa_status":"PASS","qa_repo_type":"rust-cli","qa_command":"cargo test --workspace --locked --no-fail-fast","qa_scenarios":"tests/gadugi/scenarios/issue-815-804-local-tracking-extract.yaml tests/gadugi/scenarios/issue-820-merge-validations-mixed-output.yaml tests/gadugi/scenarios/pr-ownership-lease.yaml","qa_exit_code":"0","qa_summary":"test result: ok. 41 passed; 0 failed","qa_round":"round-2","head_sha":"9f1c2e7a4b5d6c8e0f1a2b3c4d5e6f7a8b9c0d1e","gadugi_status":"PASS","gadugi_validate_exit_code":"0","gadugi_run_exit_code":"0","gadugi_scenario_count":"3","gadugi_scenario_dir":"tests/gadugi/scenarios"}
+{"qa_status":"PASS","qa_repo_type":"rust-cli","qa_command":"cargo test --workspace --locked --no-fail-fast","qa_scenarios":"tests/gadugi/scenarios/issue-815-804-local-tracking-extract.yaml tests/gadugi/scenarios/issue-820-merge-validations-mixed-output.yaml tests/gadugi/scenarios/pr-ownership-lease.yaml","qa_exit_code":"0","qa_summary":"test result: ok. 41 passed; 0 failed","qa_round":"round-2","head_sha":"9f1c2e7a4b5d6c8e0f1a2b3c4d5e6f7a8b9c0d1e","gadugi_status":"PASS","gadugi_validate_exit_code":"0","gadugi_run_exit_code":"0","gadugi_scenario_count":"3","gadugi_scenario_dir":"tests/gadugi/scenarios","gadugi_scenarios_validated":"3","gadugi_scenarios_run":"3","gadugi_scenarios_passed":"3","gadugi_scenarios_failed":"0","gadugi_failed_scenarios":"","qa_suite_commands_count":"1","qa_reason":""}
+```
+
+Two configured suite commands, one failing scenario out of two:
+
+```json
+{"qa_status":"FAIL","qa_repo_type":"configured","qa_command":"cargo test --workspace --locked --no-fail-fast; cd ui && npm ci && npm test","qa_scenarios":"tests/gadugi/scenarios/export-csv.yaml tests/gadugi/scenarios/import-csv.yaml","qa_exit_code":"0","qa_summary":"gadugi-test run failure: tests/gadugi/scenarios/import-csv.yaml; Tests: 12 passed, 12 total","qa_round":"round-1","head_sha":"4e2d9a7c0b1f3e5d7c9a1b3d5f7e9c0a2b4d6f8e","gadugi_status":"RUN_FAILED","gadugi_validate_exit_code":"0","gadugi_run_exit_code":"1","gadugi_scenario_count":"2","gadugi_scenario_dir":"tests/gadugi/scenarios","gadugi_scenarios_validated":"2","gadugi_scenarios_run":"2","gadugi_scenarios_passed":"1","gadugi_scenarios_failed":"1","gadugi_failed_scenarios":"tests/gadugi/scenarios/import-csv.yaml","qa_suite_commands_count":"2","qa_reason":"gadugi-run-failed"}
 ```
 
 | Field | Values |
 | --- | --- |
-| `qa_scenarios` | the scenario files counted in `gadugi_scenario_dir`, as paths relative to the repository root, sorted and separated by single spaces; `""` when the count is 0. Recorded even when `gadugi_status` is `NOT_INSTALLED`. |
+| `qa_status` | `PASS`, `FAIL`, `BLOCKED` |
+| `qa_reason` | `""` on `PASS`, otherwise one token from the [precedence table](#qa_status-and-qa_reason) |
+| `qa_repo_type` | `configured`, `rust-cli`, `node`, `python`, `unknown` |
+| `qa_command` | the suite commands that were run, joined by `; `, at most 500 characters |
+| `qa_suite_commands_count` | number of suite commands run |
+| `qa_exit_code` | the first non-zero suite exit code; `"0"` when all passed; `""` when none ran |
+| `qa_summary` | every cause phrase, then the tail of the suite log |
+| `qa_round` | the merge round label |
+| `head_sha` | the commit that was tested |
+| `qa_scenarios` | the counted scenario files, relative to the repository root, sorted, space separated; `""` when the count is 0 |
 | `gadugi_status` | `PASS`, `NOT_INSTALLED`, `NO_SCENARIOS`, `VALIDATE_FAILED`, `RUN_FAILED` |
+| `gadugi_scenario_dir` | the directory used, relative to the repository root when inside it |
+| `gadugi_scenario_count` | number of scenario files found; always recorded |
 | `gadugi_validate_exit_code` | exit code of `gadugi-test validate`, or `""` |
-| `gadugi_run_exit_code` | exit code of `gadugi-test run`, or `""` |
-| `gadugi_scenario_count` | number of top-level `*.yaml` and `*.yml` files; always recorded |
-| `gadugi_scenario_dir` | the directory used; always recorded |
+| `gadugi_scenarios_validated` | `gadugi_scenario_count` when validate exited 0, otherwise `"0"` |
+| `gadugi_scenarios_run` | number of `gadugi-test run` processes started; unnamed files are not run |
+| `gadugi_scenarios_passed` | runs that exited 0 |
+| `gadugi_scenarios_failed` | runs that exited non-zero, plus unnamed files, plus files that could not be staged |
+| `gadugi_failed_scenarios` | paths of the failed files, relative to the repository root, space separated |
+| `gadugi_run_exit_code` | the first non-zero run exit code; `"0"` when every run exited 0; `""` when no run started |
+
+Where each item of the evidence requirement is recorded:
+
+| Requirement | Field |
+| --- | --- |
+| gadugi result | `gadugi_status` |
+| scenarios found, validated, run, passed, failed | `gadugi_scenario_count`, `gadugi_scenarios_validated`, `gadugi_scenarios_run`, `gadugi_scenarios_passed`, `gadugi_scenarios_failed` |
+| failed scenarios | `gadugi_failed_scenarios` |
+| suite command count, first failing exit code | `qa_suite_commands_count`, `qa_exit_code` |
+| head SHA tested | `head_sha` |
+| status and reason | `qa_status`, `qa_reason` |
 
 #### When scenarios are missing
 
-Step `step-04-address-blockers` of the merge round handles qa evidence whose `gadugi_status` is
-`NO_SCENARIOS`, or whose scenarios do not cover the changed behaviour:
+Step `step-04-address-blockers` of the merge round handles qa evidence whose
+`gadugi_status` is `NO_SCENARIOS`, `VALIDATE_FAILED` or `RUN_FAILED`, and
+evidence whose scenarios do not cover the changed behaviour. The trigger is
+`gadugi_status`, not `qa_reason`. `qa_reason` holds only the first cause, so a
+failing suite command together with an empty scenario directory gives
+`qa_reason: qa-command-failed`, and a trigger on `qa_reason` would not start
+scenario writing that round. `RUN_FAILED` covers unnamed scenario files as
+well as failed runs. Its prompt tells the agent:
 
-1. It uses the `qa-team` skill to write top-level `*.yaml` scenarios in
-   `gadugi_scenario_dir`.
-2. It runs `gadugi-test validate -d` and then `gadugi-test run -d` on that
-   directory.
-3. It commits through the same identity helper and artifact guard as every
-   other round commit.
+1. Gadugi scenarios are required in every repository type, Rust CLI
+   repositories included. For this step this overrides the `qa-team` line that
+   substitutes `cargo test` for `gadugi-test`.
+2. Use `Skill(skill="qa-team")` to write the missing scenarios as top-level
+   `*.yaml` files in `gadugi_scenario_dir`, each with a top-level `name:`.
+3. Run `gadugi-test validate -d <dir>`, then run each scenario on its own with
+   `gadugi-test run -d <dir> --scenario "<name>"`. Never run a whole directory
+   in one command.
+4. Commit through the same identity helper and artifact guard as every other
+   round commit.
 
-`VALIDATE_FAILED` and `RUN_FAILED` are fixed in the scenarios or in the code. A
-failing scenario is never deleted to reach `PASS`. If `gadugi_scenario_dir` is
-absolute or outside the repository, the step writes nothing and reports blocker
+A failing scenario is fixed in the scenario or in the code. It is never
+weakened or deleted to reach `PASS`. If `gadugi_scenario_dir` is absolute or
+outside the repository, the step writes nothing and reports blocker
 `gadugi-scenario-dir-outside-repo`.
 
 ### Criterion 3: the crusty loop ended DONE and CLEAN
@@ -429,61 +648,209 @@ absolute or outside the repository, the step writes nothing and reports blocker
 Criterion 3 of merge-ready asks for a `quality-audit` of at least 3 SEEK,
 VALIDATE, FIX cycles ending clean. Under auto-drive it is met instead by phase
 2 of the same run: the `crusty-old-engineer` loop, an iterative review-and-fix
-loop, must have ended `DONE` with a final `CLEAN` verdict. **No minimum round
-count applies.** The crusty loop stops at its first `CLEAN` round, so a minimum
-would block forever any PR that was clean in round 1 or 2.
+loop, must have ended `DONE`, and its last round record, as written by the
+loop, must have verdict `CLEAN`. **No minimum round count applies**, in any
+recipe or tool. The crusty loop stops at its first `CLEAN` round, so a minimum
+would block forever any pull request that was clean in round 1 or 2. The
+three-cycle rule of the skill does not apply inside auto-drive; the step-02
+prompt says so.
 
-`autodrive-merge-loop.yaml` passes its state directory to every round with
-`--context "autodrive_state_dir=${DIR}"`. Step `step-01b-crusty-evidence` of
-the merge round reads two things from it:
+#### Every crusty round records the reviewed head SHA
 
-- the `crusty-loop` marker in `phases.tsv`, through `autodrive_phase_done`
-- `crusty_verdict` in `crusty-latest.json`
-
-It emits `crusty_evidence`, where every field comes from a fixed set:
+Step `step-06-write-round-record` of `autodrive-crusty-round.yaml` writes one
+line of JSON per round:
 
 ```json
-{"crusty_status":"DONE_CLEAN","crusty_phase_done":"true","crusty_verdict":"CLEAN"}
+{"crusty_verdict":"CLEAN","concern_count":0,"commits_this_round":0,"head_sha":"9f1c2e7a4b5d6c8e0f1a2b3c4d5e6f7a8b9c0d1e","reviewed_head_sha":"9f1c2e7a4b5d6c8e0f1a2b3c4d5e6f7a8b9c0d1e","round_label":"round-1","test_signal":"","ci_signal":""}
 ```
 
-| Field | Values |
+| Field | Source |
 | --- | --- |
-| `crusty_status` | `DONE_CLEAN` (marker present and verdict `CLEAN`), `ABSENT` (no marker), `NOT_CLEAN` (marker present, verdict not `CLEAN`) |
-| `crusty_phase_done` | `true`, `false` |
-| `crusty_verdict` | `CLEAN`, `CONCERNS`, `MISSING`, `OTHER` |
+| `reviewed_head_sha` | `git rev-parse HEAD`, run by bash in `step-01-round-context` before the review. Never taken from an agent. |
+| `head_sha` | the head after the fix step when it made commits; otherwise `reviewed_head_sha` |
 
-Any verdict text outside `CLEAN`, `CONCERNS` and `MISSING` becomes `OTHER`, so
-an agent-written crusty record cannot inject text into the next prompt or
-break the JSON.
+Neither field is ever empty. If either value is not a 40- or 64-character hex
+SHA, the step fails with `ERROR: crusty-head-sha-unavailable: ...` and writes
+no record. It does not force `CONCERNS`, which would make the loop review the
+same tree forever. The loop then handles the round as described under
+[The round reads the skill's files](#the-round-reads-the-skills-files): no
+record, no manifest row, and `STUCK` if the error repeats.
 
-The assessment prompt treats `crusty_evidence` as criterion 3. When
-`crusty_status` is not `DONE_CLEAN`, the blocker is
-`quality-audit-convergence-crusty-not-done-clean`, and
-`step-03-extract-merge-ready-verdict` downgrades any `MERGE_READY` verdict.
+#### The loop writes a manifest of the records it wrote
+
+After each round, `autodrive_loop.sh` copies the round record to
+`<loop>-latest.json` as before, then appends one row to
+`<loop>-records.tsv` in the state directory:
+
+```text
+round-1	crusty-round-1.json	3b18e512dba79e4c8300dd08aeb37f8e728b8dad
+```
+
+The three tab-separated fields are the round label, the record file name, and
+the git blob hash of the record (`git hash-object --no-filters --stdin`). The
+row is written before the loop-health evaluator or any later agent runs, and
+only after `cmp` confirms the record and its `-latest.json` copy are
+identical, and only when the record file name matches `^[A-Za-z0-9._-]+$` and
+does not start with `.`. The file is created with `umask 077`. If a check
+fails, the loop writes a `WARNING` and adds no row. Both loops write a manifest
+(`crusty-records.tsv` and `merge-ready-records.tsv`); only
+`crusty-records.tsv` is read.
+
+#### `autodrive_crusty_final` decides criterion 3
+
+`autodrive_crusty_final DIR` in `autodrive_state.sh` is the one check for
+criterion 3. Step `step-01b-crusty-evidence` of the merge round and section 6b
+of the merge gate both call it. It needs only bash, git and coreutils. It
+checks, in order:
+
+| Order | Check | Token on failure |
+| --- | --- | --- |
+| 1 | `phases.tsv` has the `crusty-loop` marker | `crusty-loop-not-done` |
+| 2 | `crusty-records.tsv` exists, is a regular file, not a symlink, and its last non-blank row has exactly three fields: a label, a file name matching `^crusty-[A-Za-z0-9._-]+\.json$`, and a 40- or 64-character hex hash | `crusty-manifest-missing` |
+| 3 | the named record is a regular file, not a symlink | `crusty-record-missing` |
+| 4 | the record's hash equals the manifest hash, and `crusty-latest.json` (not a symlink) has the same hash | `crusty-record-modified` |
+| 5 | the record is one line, starts with `{"crusty_verdict":"CLEAN",` or `{"crusty_verdict":"CONCERNS",`, and has one `reviewed_head_sha` key | `crusty-record-modified` |
+| 6 | the verdict is `CLEAN` | `crusty-not-clean` |
+| 7 | `reviewed_head_sha` is a 40- or 64-character hex SHA | `crusty-head-sha-empty` |
+
+On success it prints only the reviewed SHA and returns 0. On failure it prints
+only the token and returns 1. It copies the record once into a private
+temporary file and hashes and parses that copy, so the file cannot change
+between the two. It never prints file contents. Records that are not in the
+manifest are ignored, so a record an agent added to the directory has no
+effect, and archiving the loop-written record fails check 3.
+
+A state directory written before this change has no manifest. It reads as
+`crusty-manifest-missing`, and such a run needs a fresh crusty loop.
+
+#### What the merge round sees
+
+`autodrive-merge-loop.yaml` passes its state directory to every round with
+`--context "autodrive_state_dir=${DIR}"`. Step `step-01b-crusty-evidence` calls
+`autodrive_crusty_final` and emits `crusty_evidence`, where every value comes
+from a fixed set or is a hex SHA:
+
+```json
+{"crusty_status":"DONE_CLEAN","crusty_reason":"","crusty_reviewed_head_sha":"9f1c2e7a4b5d6c8e0f1a2b3c4d5e6f7a8b9c0d1e"}
+```
+
+| `crusty_status` | `crusty_reason` |
+| --- | --- |
+| `DONE_CLEAN` | `""` |
+| `ABSENT` | `crusty-loop-not-done` |
+| `NOT_CLEAN` | `crusty-not-clean` |
+| `UNTRUSTED` | `crusty-manifest-missing`, `crusty-record-missing`, `crusty-record-modified`, `crusty-head-sha-empty` |
+
+Any other token from the helper becomes `crusty-other` with status
+`UNTRUSTED`.
+
+The step-02 prompt treats `DONE_CLEAN` as criterion 3 met, with no round
+minimum, and records `crusty_reviewed_head_sha` in its evidence. That SHA is
+not compared with the current head, because merge-round fixes are expected to
+move the head. When `crusty_status` is not `DONE_CLEAN`, the blocker is
+`quality-audit-convergence-crusty-not-done-clean` with the `crusty_reason`,
+and `step-03-extract-merge-ready-verdict` downgrades any `MERGE_READY` verdict.
+`UNTRUSTED` is in the same downgrade list as `ABSENT` and `NOT_CLEAN`.
 
 The crusty evidence is read from the state directory rather than from the
 composer's `crusty_loop_result`. On a resumed run the crusty loop is skipped
-and that result is empty; the state directory persists. A resumed run therefore
-accepts the crusty marker recorded by the earlier run. The evidence is not
-bound to the head SHA, because merge-round fixes are expected to move the head.
-
-Agent steps never see the state directory path. The step-02 and step-04
-prompts do not contain it, and step-04 forbids creating, editing or deleting `phases.tsv`
-or any `*-latest.json`. The guard test
-`merge_round_agent_prompts_never_touch_crusty_state` enforces both.
+and that result is empty; the state directory persists, so a resumed run
+accepts the crusty records the earlier run wrote.
 
 A merge loop run on its own, with no earlier crusty loop in the same state
 directory, gets `crusty_status: ABSENT`. Its rounds never reach `MERGE_READY`
 and the loop ends `STUCK`. That is intended: criterion 3 has not been met.
 
-### Accepted residual risks
+#### What the merge gate checks
 
-- A trivial scenario that always passes satisfies `gadugi_status: PASS`.
-  Review the scenarios like any other test.
-- A process running as the same user can write the state files the gate reads.
-  The gate rejects state that other users could have written, not state the
-  user's own processes wrote.
-- The evidence step runs the PR's code, as `cargo test` already did.
+Section 6b of `autodrive_merge_gate.sh` keeps every earlier check unchanged
+and adds these, after the existing `crusty_verdict` check:
+
+- `crusty-records.tsv` must exist. If it is absent the gate blocks with
+  `crusty-manifest-missing`, as it does for a state directory written before
+  this change.
+- `crusty-records.tsv` must not be a symlink and must be private to this user.
+- The file name in its last row must match `^crusty-[A-Za-z0-9._-]+\.json$`
+  before any path is built from it. The named record, if present, must be
+  private to this user.
+- `autodrive_crusty_final` must succeed. On failure the gate blocks and quotes
+  the token, for example
+  `crusty records in <dir> are not loop-written evidence (crusty-record-modified)`.
+- On success the gate notes `crusty_reviewed_head_sha=<sha>`.
+
+Section 6 also notes `qa_reason`. The gate sources `autodrive_state.sh` from
+its own directory only.
+
+### Agents do not touch the state directory
+
+Every agent step in the auto-drive recipes includes this sentence, word for
+word:
+
+> Do not create, edit, move, rename, delete or archive any file in the
+> auto-drive state directory (the directory holding crusty-round-*.json,
+> merge-ready-round-*.json and phases.tsv).
+
+There are five agent steps:
+
+| Recipe | Step |
+| --- | --- |
+| `autodrive-crusty-round.yaml` | `step-02-crusty-review` |
+| `autodrive-crusty-round.yaml` | `step-04-address-concerns` |
+| `autodrive-merge-round.yaml` | `step-02-merge-ready-assessment` |
+| `autodrive-merge-round.yaml` | `step-04-address-blockers` |
+| `loop-health-evaluator.yaml` | `step-02-evaluate-loop-health`, used by both loops |
+
+The other auto-drive recipes, `auto-drive-to-merge.yaml` included, have only
+bash and recipe steps. No agent prompt contains the state directory path or
+the names `STATE_DIR`, `autodrive_state_dir` or `AUTODRIVE_STATE_DIR`.
+
+The sentence is an instruction, not a control. The manifest check above is
+what makes an agent-written record fail criterion 3.
+
+### Trust model
+
+| Party | Trust |
+| --- | --- |
+| The operator's environment, including the `AUTODRIVE_QA_*` variables | trusted |
+| Branch code and scenarios | untrusted, but run by design. Only run auto-drive on branches whose authors you would let run code on this host. |
+| Agent steps and their output | untrusted writers and untrusted data |
+| The state directory | integrity-checked through the manifest, not authenticated |
+| GitHub | authoritative for platform state |
+
+This change adds no network surface, no authentication and no token handling.
+
+### Known limits and accepted residual risks
+
+- **Full forgery.** An agent running as the same user can rewrite a crusty
+  record, `crusty-records.tsv` and `phases.tsv` together. The manifest catches
+  injected, replaced and archived records, not a consistent rewrite of all
+  three.
+- **Self-hosted criteria.** In a repository that ships `amplifier-bundle/`,
+  the resolver can pick a `SKILL.md` that the pull request under review
+  edited. The `skill_md_sha` record, the base-branch warning and the merge
+  gate limit the effect.
+- **Legacy multi-scenario files.** A file with a `scenarios:` list counts as
+  one file and still runs all its scenarios in one process (#207), or fails
+  with `SCENARIO_NOT_FOUND`.
+- **Paths relative to the scenario file.** A scenario is copied to a staging
+  directory before it runs, so a scenario that resolves paths relative to its
+  own file fails. It fails loudly; it never passes by accident.
+- **Names the reader cannot parse.** Block scalars and flow mappings make a
+  file unnamed, which fails as `gadugi-scenario-unnamed`.
+- **Symlinked scenario files** are validated by gadugi but neither counted nor
+  run.
+- **Trivial scenarios.** A scenario that always passes satisfies
+  `gadugi_status: PASS`. Review scenarios like any other test.
+- **Commits after the clean crusty round.** `reviewed_head_sha` is recorded
+  but not compared with the merge head, so commits made by the merge round's
+  blocker step after the crusty loop ended are not reviewed by crusty.
+- **The evidence step runs the pull request's code**, as `cargo test` already
+  did.
+- **`git` must be on `PATH`** for the loop and the merge gate. The manifest
+  row, `autodrive_crusty_final` and the gate all hash records with `git
+  hash-object`. Without `git` they fail closed: the loop adds no manifest row,
+  and the check and the gate report `crusty-manifest-missing` or
+  `crusty-record-modified`, never success.
 
 ## Two absolute prohibitions
 
@@ -525,8 +892,8 @@ merges, it re-verifies and records:
 | Review threads | GraphQL `reviewThreads`, **paginated** | any unresolved, not-outdated thread on any page — **or an unreadable answer** |
 | CI | `gh pr checks --json name,state,bucket` | any pending or failing check, zero checks, **or an unreadable rollup** |
 | qa-team scenarios | evidence file from this run | `qa_status` other than `PASS`, no evidence file, or evidence whose `head_sha` is missing or is not the SHA being merged |
-| gadugi scenarios | same evidence file | `gadugi_status` other than `PASS`, or `gadugi_scenario_count` missing or not a positive integer |
-| Crusty loop | `phases.tsv` and `crusty-latest.json` in `--state-dir` | no `--state-dir` or an empty one; the directory not owned by the current user; the directory or either file with the group-write bit or the world-write bit set (either bit alone blocks); either file a symlink or not a regular file; `autodrive_state.sh` missing beside the gate; no `crusty-loop` marker; `crusty_verdict` other than `CLEAN` |
+| gadugi scenarios | same evidence file | `gadugi_status` other than `PASS`, or `gadugi_scenario_count` missing or not a positive integer; `qa_reason` is noted |
+| Crusty loop | `phases.tsv`, `crusty-latest.json`, `crusty-records.tsv` and the record it names, in `--state-dir` | no `--state-dir` or an empty one; the directory not owned by the current user; the directory or any of these files with the group-write bit or the world-write bit set (either bit alone blocks); any of these files a symlink or not a regular file; `autodrive_state.sh` missing beside the gate; no `crusty-loop` marker; `crusty_verdict` other than `CLEAN`; `autodrive_crusty_final` failing with any token (see [What the merge gate checks](#what-the-merge-gate-checks)) |
 | merge-ready verdict | round record from this run | not `MERGE_READY`, or captured against a different head SHA |
 
 The review-thread query pages. `reviewThreads(first:100)` with no `pageInfo`
@@ -548,8 +915,8 @@ reads crusty state from that fallback, so it cannot be pointed at files someone
 else planted in a shared temporary directory.
 
 The privacy check fails when the directory is not owned by the current user,
-or when the directory, `phases.tsv` or `crusty-latest.json` has the
-group-write bit or the world-write bit set. Either bit alone blocks: `0770`,
+or when the directory, `phases.tsv`, `crusty-latest.json`,
+`crusty-records.tsv` or the record it names has the group-write bit or the world-write bit set. Either bit alone blocks: `0770`,
 `0702` and `0777` all fail. A failure is reported as
 `not private to this user`. The gate sources `autodrive_state.sh` from its own
 directory only, never from the merge-ready search roots.
@@ -609,11 +976,14 @@ resolved concern is reopened.
 Local state is a cache, never a claim, with one exception. The merge gate
 re-verifies every criterion regardless of what any state file says, and
 `UNKNOWN` platform state is treated as a failure rather than as "not merged".
-The exception is the `crusty-loop` marker plus `crusty-latest.json`: nothing on
-the platform records crusty's judgement, so the gate reads them as criterion-3
-evidence (see [Criterion 3](#criterion-3-the-crusty-loop-ended-done-and-clean)).
-Only `autodrive-crusty-loop.yaml` and `autodrive_loop.sh` write them, and the
-gate accepts them only from a directory private to the current user.
+The exception is the crusty state: the `crusty-loop` marker, `crusty-latest.json`,
+`crusty-records.tsv` and the round records it lists. Nothing on the platform
+records crusty's judgement, so the gate reads them as criterion-3 evidence (see
+[Criterion 3](#criterion-3-the-crusty-loop-ended-done-and-clean)). Only
+`autodrive-crusty-loop.yaml` (the marker), `autodrive-crusty-round.yaml` (the
+round records) and `autodrive_loop.sh` (`crusty-latest.json` and the manifest)
+write them. The gate accepts them only from a directory private to the current
+user, and only when the manifest hash matches the record.
 
 ### There is no pull-request-comment ledger
 
@@ -658,14 +1028,16 @@ or single-digit-minute bound is introduced.
 | --- | --- | --- |
 | `amplifier-bundle/recipes/auto-drive-to-merge.yaml` | composer | Three phases, then a summary. |
 | `amplifier-bundle/recipes/autodrive-build.yaml` | phase 1 | `default-workflow`, resume-aware. |
-| `amplifier-bundle/recipes/autodrive-crusty-round.yaml` | round | Crusty review, verdict, fixes, round record. |
+| `amplifier-bundle/recipes/autodrive-crusty-round.yaml` | round | Crusty review, verdict, fixes, round record with `reviewed_head_sha`. |
 | `amplifier-bundle/recipes/autodrive-crusty-loop.yaml` | phase 2 | Loop driver + phase bookkeeping. |
-| `amplifier-bundle/recipes/autodrive-merge-evidence.yaml` | evidence | Base sync, repository tests plus `gadugi-test` validate and run, CI wait. |
-| `amplifier-bundle/recipes/autodrive-merge-round.yaml` | round | Crusty evidence, merge-ready criteria read from the skill's files, verdict, blocker fixes. |
+| `amplifier-bundle/recipes/autodrive-merge-evidence.yaml` | evidence | Base sync, repository suite commands plus `gadugi-test validate` and one `gadugi-test run` per scenario, CI wait. |
+| `amplifier-bundle/recipes/autodrive-merge-round.yaml` | round | Merge-ready file resolution, crusty evidence, merge-ready criteria read from the skill's files, verdict, blocker fixes. |
 | `amplifier-bundle/recipes/autodrive-merge-loop.yaml` | phase 3 | Loop driver (passes the state dir to rounds) + merge gate + bookkeeping. |
-| `amplifier-bundle/tools/autodrive_loop.sh` | tool | The uncapped, agentically-terminated loop driver. |
+| `amplifier-bundle/recipes/loop-health-evaluator.yaml` | terminator | Agentic loop-health verdict; its prompt carries the state-directory sentence. |
+| `amplifier-bundle/tools/autodrive_loop.sh` | tool | The uncapped, agentically-terminated loop driver; writes `<loop>-records.tsv`. |
 | `amplifier-bundle/tools/autodrive_merge_gate.sh` | tool | Evidence gate, including the gadugi and crusty checks, and the fixed merge argv. |
-| `amplifier-bundle/tools/autodrive_state.sh` | tool | Resumable local state, the crusty-loop marker, platform truth for merged-ness. |
+| `amplifier-bundle/tools/autodrive_merge_ready_files.sh` | tool | Finds the merge-ready `SKILL.md` and template; read-only. |
+| `amplifier-bundle/tools/autodrive_state.sh` | tool | Resumable local state, the crusty-loop marker, `autodrive_crusty_final`, platform truth for merged-ness. |
 | `amplifier-bundle/skills/auto-drive-to-merge/SKILL.md` | skill | Invocable entry point. |
 | `amplifier-bundle/skills/merge-ready/SKILL.md` | skill | Criteria the merge round reads as a file; its `Running under auto-drive` section. |
 
@@ -675,23 +1047,28 @@ Every recipe file stays inside the 400-line brick budget.
 
 | Test | Location |
 | --- | --- |
-| Executable contract test: STUCK path, malformed-verdict path, forbidden-flag guard, merge-gate refusals including the gadugi and crusty blocks (with separate group-writable `0770` and world-writable `0777` state-directory cases), the qa evidence step against stub `cargo` and `gadugi-test`, the `step-01b-crusty-evidence` cases, the crusty downgrade, and the absence of `Skill(skill="merge-ready")` | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
-| Structural + wiring, including the guard against recipes calling skills that refuse agents | `tests/integration/auto_drive_to_merge_test.rs` |
+| Executable contract test: STUCK path, malformed-verdict path, forbidden-flag guard, merge-gate refusals including the gadugi and crusty blocks, the qa evidence step against stub `cargo` and `gadugi-test`, the merge-ready file resolver, `autodrive_crusty_final`, the loop manifest, crusty step-06, and `step-01b-crusty-evidence` | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
+| Structural and wiring guards, including recipes calling skills that refuse agents (escaped-quote and `*.yml` fixtures included), the state-directory sentence in the five agent steps, and the absence of a crusty round minimum (`no_round_minimum_in_any_recipe_or_tool`, which scans `*.yaml`, `*.yml` and the tools) | `tests/integration/auto_drive_to_merge_test.rs` |
 | The merge-ready skill stays platform-neutral | `tests/integration/merge_ready_platform_contract_test.rs` |
 
 ```bash
-cargo test -p amplihack --test auto_drive_to_merge
-cargo test -p amplihack --test merge_ready_platform_contract
+AMPLIHACK_SKIP_AUTO_INSTALL=1 cargo test -p amplihack --test auto_drive_to_merge
+AMPLIHACK_SKIP_AUTO_INSTALL=1 cargo test -p amplihack --test merge_ready_platform_contract
 bash amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh
 ```
 
-The qa evidence cases cover: everything passing, an empty scenario directory
-(`NO_SCENARIOS`), `gadugi-test validate` exiting 1 (`VALIDATE_FAILED`),
-`gadugi-test run` exiting 1 (`RUN_FAILED`), `gadugi-test` missing
-(`qa_status: BLOCKED`), `cargo test` exiting 1 (`FAIL`), the
-`AUTODRIVE_QA_SCENARIO_DIR` override, a scenario only in a subdirectory
-(counted as 0), and hostile output that must still parse as JSON. Each case
-asserts the new fields and `head_sha`.
+The shell tests run each recipe step with `HOME` set to a temporary directory.
+The `gadugi-test` stub logs its arguments, so the tests can assert exactly one
+`run` per scenario file, each with `--scenario`, and none with only `-d`.
+
+| Area | Cases |
+| --- | --- |
+| qa evidence | no scenarios; validate failing; one of two scenario runs failing; an unnamed scenario; all passing, with names in both supported formats; `gadugi-test` missing; `AUTODRIVE_QA_COMMAND` with `AUTODRIVE_QA_DIR`; several `AUTODRIVE_QA_COMMANDS` with one failing; both set; a repository `logs/` directory left in place; hostile output that must still parse as JSON |
+| qa evidence, hostile input | a scenario named `-d /` counted as unnamed; a `logs` symlink left in place; `echo *` recorded literally with a file named `--evil` present; `cd sub && false` followed by `pwd` running from the repository root |
+| merge-ready files | each of the five directories; `AMPLIHACK_HOME` winning over the others; `merge-ready-template-not-found`; `merge-ready-skill-files-not-found`; a candidate path containing `"` or `{{` skipped |
+| crusty evidence | DONE and CLEAN in round 1 gives `DONE_CLEAN`; an injected record and an archived record are both rejected; a manifest row naming `../phases.tsv`; a duplicate `reviewed_head_sha` key; a two-line record; a CLEAN round with no commits records a non-empty `head_sha`; a missing SHA fails step-06 |
+| merge gate | the new 6b refusals, including a group-writable record |
+| recipe text | step-02 reads both files and contains no `Skill(`; the state-directory sentence is in every agent prompt; `autodrive-merge-round.yaml` stays within 400 lines |
 
 ## Dependency on PR #1347
 
