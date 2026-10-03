@@ -20,6 +20,7 @@ fn run_probe(test_name: &str, env_override: Option<&str>) -> String {
     let mut cmd = Command::new(&exe);
     cmd.args(["--exact", test_name, "--nocapture"]);
     cmd.env_remove("AMPLIHACK_AGENT_BINARY");
+    cmd.env_remove(amplihack_utils::agent_binary::SOURCE_ENV);
     // These probes assert what the LOWER layers answer, so every layer above
     // the one under test has to be silent. Session markers are exported by
     // whichever CLI is running the suite, so a developer running `cargo test`

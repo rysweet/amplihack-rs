@@ -183,8 +183,7 @@ Your next tool call(s) must include the recipe runner launch (alongside
 Use the Rust `recipe-runner-rs` through the `amplihack recipe run` CLI:
 
 ```bash
-cd /path/to/repo && env -u CLAUDECODE \
-  AMPLIHACK_HOME=/path/to/amplihack \
+cd /path/to/repo && AMPLIHACK_HOME=/path/to/amplihack \
   amplihack recipe run amplifier-bundle/recipes/smart-orchestrator.yaml \
     -c task_description="TASK_DESCRIPTION_HERE" \
     -c repo_path="." \
@@ -196,6 +195,10 @@ cd /path/to/repo && env -u CLAUDECODE \
 - `amplihack recipe run` — invokes Rust `recipe-runner-rs`; no Python runner or wrapper needed
 - `-c key=value` — passes context variables (equivalent to `user_context` dict)
 - `--verbose` — streams recipe-runner stderr live so you see nested step activity
+- Do not `env -u CLAUDECODE` — `amplihack recipe run` reads it to decide which
+  agent CLI the steps use, then removes it from the runner's environment itself.
+  Stripping it first can make every step run under a different CLI (issue #1481).
+  Set `AMPLIHACK_AGENT_BINARY` only to choose a different CLI on purpose.
 - The recipe runner manages its own child processes (agent sessions, bash steps) as direct subprocesses
 
 This is the preferred execution mode for most scenarios. It is simpler, has

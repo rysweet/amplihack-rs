@@ -287,11 +287,12 @@ fn test_execute_recipe_via_rust_propagates_agent_binary_env() {
 
     let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
     let prev_home = std::env::var_os("AMPLIHACK_HOME");
-    let prev_agent = std::env::var_os("AMPLIHACK_AGENT_BINARY");
+    // No inherited `default:<binary>` tag (issue #1481): a recipe step running
+    // this suite can carry one, and it would make the resolver skip the value.
+    let agent_env = crate::test_support::AgentBinaryEnv::set(Some("copilot"), None);
     unsafe {
         std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
         std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
-        std::env::set_var("AMPLIHACK_AGENT_BINARY", "copilot");
     }
 
     let result = execute::execute_recipe_via_rust(
@@ -313,10 +314,7 @@ fn test_execute_recipe_via_rust_propagates_agent_binary_env() {
         Some(value) => unsafe { std::env::set_var("AMPLIHACK_HOME", value) },
         None => unsafe { std::env::remove_var("AMPLIHACK_HOME") },
     }
-    match prev_agent {
-        Some(value) => unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", value) },
-        None => unsafe { std::env::remove_var("AMPLIHACK_AGENT_BINARY") },
-    }
+    drop(agent_env);
 
     assert_eq!(
         result.context.get("agent_binary"),

@@ -10,7 +10,7 @@ and hive deployments in amplihack-rs.
 | Variable                    | Type     | Default             | Description                            |
 |-----------------------------|----------|---------------------|----------------------------------------|
 | `AMPLIHACK_AGENT_MODEL`     | `String` | `claude-sonnet-4-5` | Default LLM model for agents           |
-| `AMPLIHACK_AGENT_BINARY`    | `String` | `copilot`           | Active AI binary override; precedence: env var → `$AMPLIHACK_RUNTIME_ROOT/launcher_context.json` → legacy `<repo>/.claude/runtime/launcher_context.json` → `copilot`. Allowlist: `claude` \| `copilot` \| `codex` \| `amplifier`. See [Active Agent Binary](./active-agent-binary.md). |
+| `AMPLIHACK_AGENT_BINARY`    | `String` | `copilot`           | Active AI binary override; precedence: env var (unless tagged as a default guess) → session marker → `<repo>/.claude/runtime/launcher_context.json` → `copilot`. Allowlist: `claude` \| `copilot` \| `codex` \| `amplifier`. See [Active Agent Binary](./active-agent-binary.md). |
 | `AMPLIHACK_MEMORY_BACKEND`  | `String` | `cognitive`         | Memory backend: `cognitive`, `hierarchical`, `memory` |
 | `AMPLIHACK_MEMORY_TOPOLOGY` | `String` | `single`            | Memory topology: `single`, `distributed` |
 | `AMPLIHACK_MEMORY_STORAGE_PATH` | `String` | `~/.amplihack/memory.db` | Memory storage path          |
@@ -205,12 +205,12 @@ Configuration is resolved in this order (highest to lowest priority):
 
 The active agent binary (`claude` | `copilot` | `codex` | `amplifier`) follows its **own** precedence, distinct from the general config precedence above:
 
-1. `AMPLIHACK_AGENT_BINARY` env var (explicit override; CI / testing / back-compat)
-2. `$AMPLIHACK_RUNTIME_ROOT/launcher_context.json` `launcher` field (canonical workflow runtime state)
-3. `<repo>/.claude/runtime/launcher_context.json` `launcher` field (legacy fallback only)
+1. `AMPLIHACK_AGENT_BINARY` env var (explicit override; CI / testing / back-compat), skipped while tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary>`
+2. A live session marker exported by the hosting CLI (`CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `COPILOT_CLI`, ...)
+3. `<repo>/.claude/runtime/launcher_context.json` `launcher` field (persisted, possibly by a different session; used only while fresh)
 4. Built-in default: **`copilot`**
 
-This precedence is implemented once in `amplihack_utils::agent_binary::resolve(&cwd)` and consumed by every Rust read site. Python helpers in `amplifier-bundle/skills/` follow the same rules. Runtime-root state keeps generated launcher context out of task worktrees; the `.claude/runtime` file is retained only for migration compatibility.
+This precedence is implemented once in `amplihack_utils::agent_binary::resolve(&cwd)` and consumed by every Rust read site. The shell helper in `amplifier-bundle/skills/migrate/scripts/migrate.sh` approximates it; the Rust resolver is authoritative where they differ.
 
 See [Active Agent Binary](./active-agent-binary.md) for the full algorithm, allowlist, and security notes, and [Agent Binary Routing](../concepts/agent-binary-routing.md) for the architectural rationale.
 

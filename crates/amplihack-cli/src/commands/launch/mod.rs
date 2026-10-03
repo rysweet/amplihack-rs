@@ -55,7 +55,7 @@ use checkout::{parse_github_repo_uri, resolve_checkout_repo_in};
 #[cfg(test)]
 use command::{COPILOT_HOME_ENV, build_command};
 #[cfg(test)]
-use context::render_launcher_command;
+use context::{persist_launcher_context_with, render_launcher_command};
 #[cfg(test)]
 use power_steering::maybe_prompt_re_enable_power_steering_with;
 
@@ -342,7 +342,8 @@ pub(crate) fn run_launch_with(
             .with_amplihack_session_id() // AMPLIHACK_SESSION_ID, AMPLIHACK_DEPTH
             .with_session_tree_context() // preserve orchestration tree vars if present
             .with_amplihack_vars_with_node_options(Some(node_options.as_str())) // AMPLIHACK_RUST_RUNTIME, AMPLIHACK_VERSION, NODE_OPTIONS
-            .with_agent_binary(tool) // WS1: AMPLIHACK_AGENT_BINARY
+            // WS1: AMPLIHACK_AGENT_BINARY, still tagged if it was a guess (#1481)
+            .with_launched_agent_binary(tool)
             .with_amplihack_home() // WS3: AMPLIHACK_HOME
             .with_asset_resolver(); // Rust-native bundle asset resolver
         env_builder = env_builder.with_project_graph_db(&execution_dir)?;

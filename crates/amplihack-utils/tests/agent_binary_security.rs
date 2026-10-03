@@ -21,6 +21,7 @@ fn clear_env() {
     // SAFETY: tests serialized; env mutation unsafe in edition 2024.
     unsafe {
         std::env::remove_var("AMPLIHACK_AGENT_BINARY");
+        std::env::remove_var(amplihack_utils::agent_binary::SOURCE_ENV);
         // Layer 2 must be silent too. These tests exercise the persisted layer
         // and the built-in default, both of which sit BELOW the live session
         // marker -- and the marker is exported by whichever CLI is running the
@@ -41,6 +42,10 @@ fn set_env(value: &str) {
     // SAFETY: see clear_env.
     unsafe {
         std::env::set_var("AMPLIHACK_AGENT_BINARY", value);
+        // A value set here is a choice. Without this, a `default:<binary>` tag
+        // inherited from a recipe step running the suite would make the
+        // resolver skip it (issue #1481).
+        std::env::remove_var(amplihack_utils::agent_binary::SOURCE_ENV);
     }
 }
 

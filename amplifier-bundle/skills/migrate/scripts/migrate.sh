@@ -338,16 +338,26 @@ done
 #   3. newest session-state dir for the active CLI
 #   4. error
 detect_cli() {
-  # Resolution precedence (matches Rust resolver, issue #489):
-  #   1. AMPLIHACK_AGENT_BINARY env var (allowlist-validated)
+  # Resolution precedence (approximates the Rust resolver in
+  # amplihack_utils::agent_binary, which is authoritative; issue #489):
+  #   1. AMPLIHACK_AGENT_BINARY env var (allowlist-validated), skipped while
+  #      AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary> (issue #1481)
   #   2. .claude/runtime/launcher_context.json walked up from cwd
-  #   3. parent process chain for a known binary
+  #   3. parent process chain for a known binary (shell only; Rust checks
+  #      session-marker env vars here instead, ahead of layer 2)
   #   4. default: copilot
   local allowed_re='^(amplifier|claude|codex|copilot)$'
   if [[ -n "${AMPLIHACK_AGENT_BINARY:-}" ]]; then
     local override
     override="$(printf '%s' "${AMPLIHACK_AGENT_BINARY}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
-    if [[ "$override" =~ $allowed_re ]]; then
+    # Issue #1481: a parent that only had the built-in default exports it with
+    # AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>. While that tag still names
+    # this value it is a guess, not an instruction, so fall through.
+    # Trim surrounding whitespace only, as the Rust resolver does.
+    local source_tag="${AMPLIHACK_AGENT_BINARY_SOURCE:-}"
+    source_tag="${source_tag#"${source_tag%%[![:space:]]*}"}"
+    source_tag="${source_tag%"${source_tag##*[![:space:]]}"}"
+    if [[ "$override" =~ $allowed_re && "$source_tag" != "default:$override" ]]; then
       echo "$override"
       return
     fi

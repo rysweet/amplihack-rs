@@ -210,6 +210,11 @@ non-interactive `claude` it starts. Claude Code refuses that flag as uid 0
 unless `IS_SANDBOX=1` is set (the exact value `1`) or it runs in its own
 bubblewrap sandbox.
 
+The pre-flight applies when the recipe's agent steps will run `claude`. That
+is decided once, from `--working-dir` (see
+[Resolving once for a whole recipe run](../reference/active-agent-binary.md#resolving-once-for-a-whole-recipe-run)),
+and the runner is handed the same answer.
+
 **What amplihack does as root** (for `claude` only):
 
 | Situation | Result |

@@ -17,8 +17,8 @@ Use tmux **only** when:
 LOG_FILE=$(mktemp /tmp/recipe-runner-output.XXXXXX.log)
 chmod 600 "$LOG_FILE"
 tmux new-session -d -s recipe-runner \
-  "cd /path/to/repo && env -u CLAUDECODE \
-   AMPLIHACK_HOME=/path/to/amplihack \
+  "cd /path/to/repo && AMPLIHACK_HOME=/path/to/amplihack \
+   AMPLIHACK_AGENT_BINARY=claude \
    amplihack recipe run amplifier-bundle/recipes/smart-orchestrator.yaml \
      -c task_description='TASK_DESCRIPTION_HERE' \
      -c repo_path='.' \
@@ -27,6 +27,12 @@ echo "Recipe runner log: $LOG_FILE"
 ```
 
 - `chmod 600 "$LOG_FILE"` — keeps the log file private
+- `AMPLIHACK_AGENT_BINARY=claude` — use the agent CLI you are in (`claude`,
+  `copilot`, `codex` or `amplifier`). Required here: once a tmux server is running,
+  `tmux new-session` gives the command that server's environment, not yours.
+  The markers that tell `amplihack recipe run` which agent CLI you are in then
+  do not reach it. The first run, which starts the server, still sees them, so
+  this can work once and then silently stop (#1335)
 - `tmux new-session -d` — detached session, no timeout, survives disconnects
 - Monitor with: `tail -f "$LOG_FILE"` or `tmux attach -t recipe-runner`
 
@@ -67,7 +73,12 @@ The invariant is enforced in the native orchestration helper when workstream con
   containing `amplifier-bundle/`.
 - Preserve `AMPLIHACK_AGENT_BINARY` — nested workflow agents read this env var
   to stay on the caller's active binary (for example, Copilot in Copilot CLI).
-- Unset `CLAUDECODE` — required so nested Claude Code sessions can launch.
+- Leave `CLAUDECODE` alone — `amplihack recipe run` removes it from the recipe
+  runner's environment so nested Claude Code sessions can launch, but only
+  after reading it (with the other session markers) to pick the agent CLI and
+  export `AMPLIHACK_AGENT_BINARY` to every step. Unsetting it yourself can leave
+  nothing that says which CLI you are in, and the steps then fall back to the
+  `copilot` default (#1481). When that happens recipe run says so on stderr.
 
 **Fallback: Direct recipe invocation when smart-orchestrator fails.**
 

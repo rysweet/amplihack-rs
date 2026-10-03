@@ -148,8 +148,11 @@ fn agent_recipe_file(dir: &std::path::Path) -> String {
     path.display().to_string()
 }
 
-fn claude() -> String {
-    "claude".to_string()
+fn claude(_: &std::path::Path) -> (String, amplihack_utils::agent_binary::ResolutionSource) {
+    (
+        "claude".to_string(),
+        amplihack_utils::agent_binary::ResolutionSource::Env,
+    )
 }
 
 #[test]
@@ -185,4 +188,103 @@ fn recipe_run_stops_before_the_runner_when_claude_would_refuse() {
         );
         assert!(out.contains("IS_SANDBOX=1"), "{out}");
     }
+}
+
+// --- the pre-flight and the steps share one resolution (issue #1481) -------
+
+/// A directory that is a `.git` boundary, optionally holding a fresh launcher
+/// context naming `launcher`.
+fn project(launcher: Option<amplihack_utils::launcher_context::LauncherKind>) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+    if let Some(kind) = launcher {
+        amplihack_utils::launcher_context::write_launcher_context(
+            dir.path(),
+            kind,
+            "amplihack claude",
+            Default::default(),
+        )
+        .unwrap();
+    }
+    dir
+}
+
+/// Run `recipe run` on an agent recipe as root outside a sandbox, from `cwd`
+/// with `-w working_dir`, resolving the agent binary for real. The runner is
+/// a stub that records the binary it was handed. Returns the pre-flight
+/// output and what the runner got (`None` if it never ran).
+fn run_as_root_outside_a_sandbox(
+    cwd: &std::path::Path,
+    working_dir: &std::path::Path,
+) -> (String, Option<String>) {
+    let _guard = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _agent_env = crate::test_support::AgentBinaryEnv::set(None, None);
+    let stub_dir = tempfile::tempdir().unwrap();
+    let handed = stub_dir.path().join("handed");
+    let runner = stub_dir.path().join("recipe-runner-rs");
+    std::fs::write(
+        &runner,
+        format!(
+            "#!/bin/sh\nprintf '%s' \"$AMPLIHACK_AGENT_BINARY\" > '{}'\n\
+             printf '%s' '{{\"recipe_name\":\"probe\",\"success\":true,\"step_results\":[],\"context\":{{}}}}'\n",
+            handed.display()
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let _runner_env =
+        crate::test_support::EnvGuard::set([("RECIPE_RUNNER_RS_PATH", runner.to_str().unwrap())]);
+    let _cwd = crate::test_support::CwdGuard::set(cwd).unwrap();
+    let recipe_path = agent_recipe_file(stub_dir.path());
+
+    let mut out = Vec::new();
+    let _ = run_recipe_with(
+        &recipe_path,
+        &[],
+        false,
+        false,
+        "table",
+        Some(&working_dir.display().to_string()),
+        None,
+        &RootSandboxPreflight {
+            agent_binary: crate::env_builder::active_agent_binary_with_source_in,
+            decision: || SkipPermissionsEnv::RootOutsideSandbox,
+        },
+        &mut out,
+    );
+    (
+        String::from_utf8(out).unwrap(),
+        std::fs::read_to_string(&handed).ok(),
+    )
+}
+
+/// The steps run in `-w`, so a launcher context there decides their binary.
+/// The pre-flight must see the same `claude` and refuse, rather than wave
+/// through a run whose steps then launch `claude` as root.
+#[test]
+fn preflight_refuses_when_the_working_dir_resolves_to_claude() {
+    use amplihack_utils::launcher_context::LauncherKind;
+    let cwd = project(None);
+    let working_dir = project(Some(LauncherKind::Claude));
+    let (out, handed) = run_as_root_outside_a_sandbox(cwd.path(), working_dir.path());
+    assert!(out.contains("recipe pre-flight failed"), "{out}");
+    assert_eq!(handed, None, "the runner must not start");
+}
+
+/// ...and a launcher context in the caller's cwd, which the steps never see,
+/// must not make the pre-flight refuse a run that will not launch `claude`.
+#[test]
+fn preflight_ignores_a_launcher_context_only_the_cwd_can_see() {
+    use amplihack_utils::launcher_context::LauncherKind;
+    let cwd = project(Some(LauncherKind::Claude));
+    let working_dir = project(None);
+    let (out, handed) = run_as_root_outside_a_sandbox(cwd.path(), working_dir.path());
+    assert!(!out.contains("recipe pre-flight failed"), "{out}");
+    assert_eq!(handed.as_deref(), Some("copilot"));
 }
