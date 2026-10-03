@@ -51,6 +51,12 @@ classify_gh_error() {
     printf 'auth\n'; return 0
   fi
 
+  # A host that refuses GraphQL outright (Claude Code on the web, #1484) answers
+  # 403 on every attempt; waiting for a "reset" would wait forever.
+  if grep -Eiq 'GraphQL is not available' "$f"; then
+    printf 'other\n'; return 0
+  fi
+
   # Explicit rate-limit signals (primary + secondary + abuse detection).
   if grep -Eiq 'api rate limit exceeded|rate limit already exceeded|secondary rate limit|abuse detection|retry-after|x-ratelimit-reset|rate limit|HTTP 429|(^|[^0-9])429([^0-9]|$)' "$f"; then
     printf 'rate_limit\n'; return 0

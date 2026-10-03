@@ -570,6 +570,21 @@ pub(super) fn execute_recipe_via_rust(
             None => env_builder,
         };
 
+        // Issue #1484: every step, helper and agent of this run reaches `gh`
+        // through the bundle's compatibility layer (REST when GraphQL is blocked).
+        let effective_path = env_builder
+            .var("PATH")
+            .map(std::ffi::OsString::from)
+            .or_else(|| std::env::var_os("PATH"));
+        let env_builder = match super::gh_compat::install_gh_compat_launcher(
+            runtime_dir.path(),
+            env_builder.var("AMPLIHACK_HOME"),
+            effective_path.as_deref(),
+        ) {
+            Some(dir) => env_builder.prepend_path(dir),
+            None => env_builder,
+        };
+
         env_builder.apply_to_command(&mut command);
         // Issue #1326: pin the session-tree directory for every descendant. Without
         // this each level re-derives it, and the previous derivation was based on

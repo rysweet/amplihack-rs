@@ -103,7 +103,10 @@ context:
   refactored_code: ""
   pre_commit_review: ""
   review_feedback: ""
+  # Pre-set "github", "azdo" or "other" to skip step-02d's detection (#1484).
   remote_host_type: ""
+  # "local" skips remote tracking-issue creation in step-03; PRs still publish (#1484).
+  issue_tracking: ""
   pr_url: ""
   pr_review: ""
   pr_security_review: ""
