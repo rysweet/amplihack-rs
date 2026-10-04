@@ -85,7 +85,9 @@ fn try_lock_exclusive(file: &File) -> Result<bool, io::Error> {
 
     let fd = file.as_raw_fd();
     let mut flock = libc::flock {
-        l_type: libc::F_WRLCK as i16,
+        // `F_WRLCK` is `c_short` on macOS and `c_int` on Linux; `l_type` is
+        // `c_short` on both, so the cast is needed on Linux only.
+        l_type: libc::F_WRLCK as libc::c_short,
         l_whence: libc::SEEK_SET as i16,
         l_start: 0,
         l_len: 0,
