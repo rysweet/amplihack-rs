@@ -211,13 +211,13 @@ steps:
           G_STATUS="VALIDATE_FAILED"; cause "gadugi-test validation failure"
         else
           VALIDATED="$COUNT"
-          # One gadugi-test process per scenario file: a whole-directory run
-          # lets a scenario read state an earlier one left behind
-          # (gadugi-agentic-test #207). --scenario matches a substring of the
-          # scenario's name:, not a path, so each file is copied ALONE into its
-          # own temporary directory outside the repository and run from there,
-          # and the match cannot pick up a second scenario. There is no
-          # fallback to running $SDIR itself.
+          # One gadugi-test process per scenario file: concurrent scenarios in
+          # one directory share one CLI runner, and the first to finish kills
+          # the others' processes (gadugi-agentic-test #207). --scenario
+          # matches a substring of the scenario's name:, not a path, so each
+          # file is copied ALONE into its own temporary directory outside the
+          # repository and run from there, and the match cannot pick up a
+          # second scenario. There is no fallback to running $SDIR itself.
           # An explicit template: macOS `mktemp -d` alone ignores TMPDIR.
           STAGE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/autodrive-gadugi.XXXXXX" 2>/dev/null)" || STAGE_ROOT=""
           STAGE_OK="false"
@@ -279,7 +279,7 @@ steps:
           [ "$RUNS" -gt 0 ] && G_RRC="${RUN_NZ:-0}"
           [ -n "$UNNAMED" ] && cause "gadugi scenario without a name: ${UNNAMED}"
           [ -n "$STAGEFAIL" ] && cause "gadugi scenario could not be staged: ${STAGEFAIL}"
-          [ -n "$RUNFAIL" ] && cause "$(printf 'gadugi-test %s failure: %s' run "$RUNFAIL")"
+          [ -n "$RUNFAIL" ] && cause "gadugi scenario run failure: ${RUNFAIL}"
           if [ -n "${UNNAMED}${STAGEFAIL}${RUNFAIL}" ]; then G_STATUS="RUN_FAILED"; else G_STATUS="PASS"; fi
         fi
         echo "INFO: gadugi-test on ${SREL} (${COUNT} scenario(s), ${RUNS} run, ${PASSED} passed): ${G_STATUS}" >&2

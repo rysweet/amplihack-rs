@@ -1483,7 +1483,7 @@ ev_expect "QA-run-failed" qa_status=FAIL qa_reason=gadugi-run-failed gadugi_stat
   gadugi_scenarios_validated=2 gadugi_scenarios_run=2 gadugi_scenarios_passed=1 gadugi_scenarios_failed=1 \
   gadugi_failed_scenarios=tests/agentic/a.yaml
 ev_expect_runs "QA-run-failed-runs" a b
-if evf qa_summary | grep -qF 'gadugi-test run failure: tests/agentic/a.yaml'; then
+if evf qa_summary | grep -qF 'gadugi scenario run failure: tests/agentic/a.yaml'; then
   pass "QA-run-failed-summary" "a run failure is named in qa_summary with the scenario path"
 else
   fail "QA-run-failed-summary" "summary='$(evf qa_summary)'"
@@ -1521,7 +1521,7 @@ ev_run "${EV_FULL}" STUB_REPO_TEST_RC=101 EV_GADUGI_FAIL_NAME=a \
 ev_expect "QA-two-causes" qa_status=FAIL qa_reason=qa-command-failed gadugi_status=RUN_FAILED \
   qa_exit_code=101 gadugi_run_exit_code=1
 case "$(evf qa_summary)" in
-  "repository test failure; gadugi-test run failure"*) pass "QA-two-causes-summary" "every cause phrase is listed, in order, ahead of the cut log tail" ;;
+  "repository test failure; gadugi scenario run failure"*) pass "QA-two-causes-summary" "every cause phrase is listed, in order, ahead of the cut log tail" ;;
   *) fail "QA-two-causes-summary" "summary='$(evf qa_summary | cut -c1-120)'" ;;
 esac
 

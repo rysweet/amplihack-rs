@@ -402,8 +402,9 @@ merge gate both depend on them. The checks then run in this order:
    exit 0. All of them run, even after one fails.
 
 **Why one process per scenario.** `gadugi-test run -d <dir>` runs every
-scenario in the directory in one process, and in gadugi-test 1.0.x a scenario
-can then read state left by an earlier one
+scenario in the directory in one process. In gadugi-test 1.0.x concurrent
+scenarios in one directory share one CLI runner, and the first to finish kills
+the others' processes
 ([gadugi-agentic-test #207](https://github.com/rysweet/gadugi-agentic-test/issues/207)).
 The step never runs a whole directory. A comment next to the loop cites #207.
 
@@ -490,7 +491,7 @@ followed by the tail of the suite log:
 | no scenario files | `no scenarios in <dir>` |
 | validate exited non-zero | `gadugi-test validation failure` |
 | a scenario file has no name | `gadugi scenario without a name: <path>` |
-| a scenario run exited non-zero | `gadugi-test run failure: <path>` |
+| a scenario run exited non-zero | `gadugi scenario run failure: <path>` |
 
 #### The scenario directory
 
@@ -579,7 +580,7 @@ checks passing:
 Two configured suite commands, one failing scenario out of two:
 
 ```json
-{"qa_status":"FAIL","qa_repo_type":"configured","qa_command":"cargo test --workspace --locked --no-fail-fast; cd ui && npm ci && npm test","qa_scenarios":"tests/gadugi/scenarios/export-csv.yaml tests/gadugi/scenarios/import-csv.yaml","qa_exit_code":"0","qa_summary":"gadugi-test run failure: tests/gadugi/scenarios/import-csv.yaml; Tests: 12 passed, 12 total","qa_round":"round-1","head_sha":"4e2d9a7c0b1f3e5d7c9a1b3d5f7e9c0a2b4d6f8e","gadugi_status":"RUN_FAILED","gadugi_validate_exit_code":"0","gadugi_run_exit_code":"1","gadugi_scenario_count":"2","gadugi_scenario_dir":"tests/gadugi/scenarios","gadugi_scenarios_validated":"2","gadugi_scenarios_run":"2","gadugi_scenarios_passed":"1","gadugi_scenarios_failed":"1","gadugi_failed_scenarios":"tests/gadugi/scenarios/import-csv.yaml","qa_suite_commands_count":"2","qa_reason":"gadugi-run-failed"}
+{"qa_status":"FAIL","qa_repo_type":"configured","qa_command":"cargo test --workspace --locked --no-fail-fast; cd ui && npm ci && npm test","qa_scenarios":"tests/gadugi/scenarios/export-csv.yaml tests/gadugi/scenarios/import-csv.yaml","qa_exit_code":"0","qa_summary":"gadugi scenario run failure: tests/gadugi/scenarios/import-csv.yaml; Tests: 12 passed, 12 total","qa_round":"round-1","head_sha":"4e2d9a7c0b1f3e5d7c9a1b3d5f7e9c0a2b4d6f8e","gadugi_status":"RUN_FAILED","gadugi_validate_exit_code":"0","gadugi_run_exit_code":"1","gadugi_scenario_count":"2","gadugi_scenario_dir":"tests/gadugi/scenarios","gadugi_scenarios_validated":"2","gadugi_scenarios_run":"2","gadugi_scenarios_passed":"1","gadugi_scenarios_failed":"1","gadugi_failed_scenarios":"tests/gadugi/scenarios/import-csv.yaml","qa_suite_commands_count":"2","qa_reason":"gadugi-run-failed"}
 ```
 
 | Field | Values |
@@ -830,7 +831,8 @@ This change adds no network surface, no authentication and no token handling.
   edited. The `skill_md_sha` record, the base-branch warning and the merge
   gate limit the effect.
 - **Legacy multi-scenario files.** A file with a `scenarios:` list counts as
-  one file and still runs all its scenarios in one process (#207), or fails
+  one file and still runs all its scenarios in one process, where they share
+  one CLI runner and the first to finish can kill the others (#207), or fails
   with `SCENARIO_NOT_FOUND`.
 - **Paths relative to the scenario file.** A scenario is copied to a staging
   directory before it runs, so a scenario that resolves paths relative to its
