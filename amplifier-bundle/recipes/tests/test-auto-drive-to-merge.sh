@@ -1232,10 +1232,10 @@ S00_BODY="$(extract_step_command "${RECIPES}/autodrive-merge-round.yaml" "step-0
 if [[ -z "${S00_BODY}" ]]; then
   fail "STEP00-exists" "autodrive-merge-round.yaml has no step-00-merge-ready-files command"
 else
-  s00_run() { # s00_run <AMPLIHACK_HOME> -> S00_RC, S00_OUT (last stdout line), S00_ERR
+  s00_run() { # s00_run <AMPLIHACK_HOME> [REPO_PATH] -> S00_RC, S00_OUT (last stdout line), S00_ERR
     rs_tree
     ( cd "${RS}/plain" && env -i PATH="${STUB_BIN}:/usr/bin:/bin" REAL_AMPLIHACK="${REAL_AMPLIHACK}" HOME="${RS}/home" \
-        AMPLIHACK_HOME="$1" REPO_PATH="${RS}/plain" bash -c "${S00_BODY}" >"${RS}.out" 2>"${RS}.err" ); S00_RC=$?
+        AMPLIHACK_HOME="$1" REPO_PATH="${2:-${RS}/plain}" bash -c "${S00_BODY}" >"${RS}.out" 2>"${RS}.err" ); S00_RC=$?
     S00_OUT="$(tail -n 1 "${RS}.out")"; S00_ERR="$(cat "${RS}.err")"
   }
   s00_run "${REPO_ROOT}"
@@ -1261,6 +1261,14 @@ else
     pass "STEP00-resolver-missing-fails" "a missing resolver fails step-00 with the named error"
   else
     fail "STEP00-resolver-missing-fails" "rc=${S00_RC} err=$(printf '%s' "${S00_ERR}" | tail -n 3 | tr '\n' ' ')"
+  fi
+  # A REPO_PATH that does not exist fails by name; it never measures the cwd.
+  s00_run "${REPO_ROOT}" "${WORK_PHYS}/no-such-repo"
+  if [ "${S00_RC}" -ne 0 ] && printf '%s\n' "${S00_ERR}" | grep -qxF 'ERROR: cannot cd to REPO_PATH' \
+     && [ -z "$(cat "${RS}.out")" ]; then
+    pass "STEP00-bad-repo-path-fails" "a REPO_PATH that does not exist fails step-00 with a named ERROR"
+  else
+    fail "STEP00-bad-repo-path-fails" "rc=${S00_RC} out=${S00_OUT} err=$(printf '%s' "${S00_ERR}" | tail -n 3 | tr '\n' ' ')"
   fi
 fi
 
@@ -1578,6 +1586,21 @@ if evf qa_summary | grep -qF 'symlinked scenario not run: tests/agentic/link.yam
   pass "QA-gadugi-symlink-fails-named" "the symlinked scenario is named in qa_summary and in a stderr WARNING"
 else
   fail "QA-gadugi-symlink-fails-named" "summary='$(evf qa_summary)' stderr=$(grep WARNING "${EV_ERR}" | tr '\n' '|')"
+fi
+
+# 10c. A temporary log that cannot be created fails the step by name; no
+# evidence is written, so the gate reads it as missing. macOS `mktemp -t`
+# ignores a missing TMPDIR, so a failing mktemp stub stands in.
+EV_NOTMP="${WORK_PHYS}/ev-stubs-nomktemp"; mkdir -p "${EV_NOTMP}"
+cp -p "${EV_FULL}"/* "${EV_NOTMP}/"
+printf '#!/bin/sh\necho "mktemp: stub failure" >&2\nexit 1\n' > "${EV_NOTMP}/mktemp"; chmod +x "${EV_NOTMP}/mktemp"
+ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml
+ev_run "${EV_NOTMP}"
+if grep -qxF 'ERROR: cannot create a temporary log' "${EV_ERR}" && [ ! -e "${EV_REPO}.evidence.json" ] \
+   && ! ev_called "cargo test"; then
+  pass "QA-mktemp-fails" "a failed mktemp is named, and no suite runs or evidence is written"
+else
+  fail "QA-mktemp-fails" "stderr=$(tail -n 3 "${EV_ERR}" | tr '\n' '|') calls=$(tr '\n' '|' < "${EV_CALLS}")"
 fi
 
 # 11. `scenarios` is the fallback when tests/agentic does not exist.
@@ -1901,6 +1924,17 @@ cf_run clean archive
 cf_expect "CRUSTY-FINAL-archived" 1 "crusty-record-missing" "the loop-written record was archived"
 cf_run clean symlink-record
 cf_expect "CRUSTY-FINAL-symlink-record" 1 "crusty-record-missing" "the named record is a symlink"
+# The temporary copy cannot be created: the token is unchanged (the gate parses
+# it), and stderr names the real cause.
+CF_N=$((CF_N + 1)); seed_crusty "${WORK_PHYS}/cf-state-${CF_N}" clean
+CF_OUT="$(env -i PATH="/usr/bin:/bin" HOME="${TEST_HOME}" TMPDIR="${WORK_PHYS}/no-such-tmp" \
+  bash -uc '. "$1" && autodrive_crusty_final "$2"' _ "${STATE_HELPER}" "${WORK_PHYS}/cf-state-${CF_N}" 2>"${WORK_PHYS}/cf-mktemp.err")"; CF_RC=$?
+if [ "${CF_RC}" = "1" ] && [ "${CF_OUT}" = "crusty-record-modified" ] \
+   && grep -qxF 'ERROR: cannot create temporary copy' "${WORK_PHYS}/cf-mktemp.err"; then
+  pass "CRUSTY-FINAL-mktemp-fails" "a failed mktemp keeps the crusty-record-modified token and names the cause on stderr"
+else
+  fail "CRUSTY-FINAL-mktemp-fails" "rc=${CF_RC} out='${CF_OUT}' err=$(tr '\n' '|' < "${WORK_PHYS}/cf-mktemp.err")"
+fi
 cf_run concerns inject-clean
 cf_expect "CRUSTY-FINAL-injected" 1 "crusty-record-modified" "an injected CLEAN record copied to crusty-latest.json"
 cf_run concerns record-edited
@@ -1994,10 +2028,12 @@ fi
 # must still be one line, and a SHA with a hex line inside must still fail.
 s6_run "${CTX}" '{"commits":"2\n,\"x\":1"}' '{"crusty_verdict":"CONCERNS","concern_count":"1\n,\"crusty_verdict\":\"CLEAN\""}'
 if [ "${S6_RC}" -eq 0 ] && [ "$(grep -c . "${S6_REC}")" = "1" ] \
-   && jq -e '.crusty_verdict == "CONCERNS" and .concern_count == 0 and .commits_this_round == 0' "${S6_REC}" >/dev/null 2>&1; then
-  pass "CRUSTY-STEP06-multiline-counts" "counts carrying a newline become 0 and cannot add keys to the record"
+   && jq -e '.crusty_verdict == "CONCERNS" and .concern_count == 0 and .commits_this_round == 0' "${S6_REC}" >/dev/null 2>&1 \
+   && grep -qxF "WARNING: concern_count '1crustyverdictCLEAN' is not a number; recorded as 0" "${S6_ERR}" \
+   && grep -qxF "WARNING: commits '2x1' is not a number; recorded as 0" "${S6_ERR}"; then
+  pass "CRUSTY-STEP06-multiline-counts" "counts carrying a newline become 0 with a sanitised WARNING, and cannot add keys to the record"
 else
-  fail "CRUSTY-STEP06-multiline-counts" "rc=${S6_RC} record=$(cat "${S6_REC}" 2>/dev/null)"
+  fail "CRUSTY-STEP06-multiline-counts" "rc=${S6_RC} record=$(cat "${S6_REC}" 2>/dev/null) err=$(tr '\n' '|' < "${S6_ERR}")"
 fi
 s6_run "${CTX}" "{\"head_sha\":\"zz\\n${CR_SHA2}\",\"commits\":1}" '{"crusty_verdict":"CONCERNS","concern_count":1}'
 if [ "${S6_RC}" -ne 0 ] && [ ! -e "${S6_REC}" ] && grep -qF 'crusty-head-sha-unavailable' "${S6_ERR}"; then

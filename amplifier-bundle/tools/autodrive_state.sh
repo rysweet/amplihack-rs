@@ -140,7 +140,8 @@ autodrive_crusty_final() {
   if [ ! -f "$dir/$file" ] || [ -L "$dir/$file" ]; then
     printf 'crusty-record-missing\n'; return 1
   fi
-  copy="$(mktemp "${TMPDIR:-/tmp}/autodrive-crusty.XXXXXX" 2>/dev/null)" || { printf 'crusty-record-modified\n'; return 1; }
+  copy="$(mktemp "${TMPDIR:-/tmp}/autodrive-crusty.XXXXXX" 2>/dev/null)" \
+    || { echo "ERROR: cannot create temporary copy" >&2; printf 'crusty-record-modified\n'; return 1; }
   latest="$dir/crusty-latest.json"
   if ! cat -- "$dir/$file" > "$copy" 2>/dev/null \
      || [ "$(autodrive_blob_hash "$dir" < "$copy")" != "$want" ] \

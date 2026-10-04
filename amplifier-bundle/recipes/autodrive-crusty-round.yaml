@@ -299,8 +299,8 @@ steps:
       case "$VERDICT" in CLEAN|CONCERNS) ;; *) VERDICT="CONCERNS" ;; esac
       COUNT="$(g "${CRUSTY_VERDICT:-}" concern_count 0)"
       COMMITS="$(g "${CRUSTY_FIX_EVIDENCE:-}" commits 0)"
-      digits "$COUNT" || COUNT=0
-      digits "$COMMITS" || COMMITS=0
+      digits "$COUNT" || { echo "WARNING: concern_count '$(printf '%s' "$COUNT" | tr -cd '0-9A-Za-z' | cut -c1-32)' is not a number; recorded as 0" >&2; COUNT=0; }
+      digits "$COMMITS" || { echo "WARNING: commits '$(printf '%s' "$COMMITS" | tr -cd '0-9A-Za-z' | cut -c1-32)' is not a number; recorded as 0" >&2; COMMITS=0; }
       # The reviewed head comes from bash (git rev-parse HEAD in step-01),
       # never from an agent. The record's head_sha is the post-fix head when
       # step-05 ran, otherwise the reviewed head, so it is never empty (issue

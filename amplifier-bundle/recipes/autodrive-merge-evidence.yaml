@@ -78,7 +78,7 @@ steps:
     parse_json: true
     command: |
       set -uo pipefail
-      cd "${REPO_PATH:-.}" 2>/dev/null || true
+      cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }
       ROOT="$(pwd -P)"
       EVIDENCE="${AUTODRIVE_QA_EVIDENCE:-}"
       # Criterion 1 is two measurements, and both always run so the evidence
@@ -131,7 +131,7 @@ steps:
       elif [ -f pyproject.toml ] || [ -f setup.py ]; then
         TYPE="python"; KINDS+=(detected); TEXTS+=("pytest")
       fi
-      LOG="$(mktemp -t autodrive-qa-XXXXXX)"
+      LOG="$(mktemp -t autodrive-qa-XXXXXX)" || { echo "ERROR: cannot create a temporary log" >&2; exit 1; }
       CMDTEXT=""; RAN=0; FIRST_NZ=""; S_FAILED="false"; S_MISSING="false"; S_NOTINST="false"
       [ "${#TEXTS[@]}" -gt 0 ] || { S_MISSING="true"; cause "no repository test command for repository type ${TYPE}"; }
       i=0
@@ -205,7 +205,7 @@ steps:
         # gadugi-test run exits 0 on an empty directory, so zero is checked here.
         G_STATUS="NO_SCENARIOS"; cause "no scenarios in $(printf '%s' "$SREL" | san)"
       else
-        GLOG="$(mktemp -t autodrive-gadugi-XXXXXX)"
+        GLOG="$(mktemp -t autodrive-gadugi-XXXXXX)" || { echo "ERROR: cannot create a temporary log" >&2; exit 1; }
         # gadugi-test writes logs/ and outputs/ into its working directory. Only
         # the ones this step creates are removed afterwards, so the artifact
         # guard does not block the next commit on this run's leftovers.

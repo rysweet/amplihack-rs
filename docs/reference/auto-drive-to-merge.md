@@ -237,6 +237,7 @@ the other file from another.
 | The first directory with `SKILL.md` has no `pr-description-template.md` | `ERROR: merge-ready-template-not-found: <path>` on stderr, exit 1. The next directory is not checked. |
 | No directory has `SKILL.md` | `ERROR: merge-ready-skill-files-not-found: searched <every path checked>` on stderr, exit 1 |
 | The resolver script itself is not found | `ERROR: merge-ready-skill-files-not-found: resolver autodrive_merge_ready_files.sh not found (searched ...)`, exit 1 |
+| `REPO_PATH` names a directory the step cannot enter | `ERROR: cannot cd to REPO_PATH` on stderr, exit 1. The step never resolves from whatever directory the recipe happens to run in. Step `step-01b-crusty-evidence` and the qa evidence step fail the same way. |
 
 A failure fails the recipe step, so the round fails and its log carries the
 named error. It is not turned into a `NOT_MERGE_READY` blocker: a missing
@@ -577,6 +578,9 @@ when the command did not run. Free text (`qa_command`, `qa_summary`,
 `qa_scenarios`, `gadugi_scenario_dir`, `gadugi_failed_scenarios`) has quotes,
 backslashes and control bytes removed before it is cut to length, so hostile
 test output still yields valid JSON. Every count is checked to be digits only.
+If a temporary log cannot be created, the step prints
+`ERROR: cannot create a temporary log` and exits 1 without writing evidence,
+which the merge round and the gate read as missing evidence.
 
 amplihack-rs with `AUTODRIVE_QA_SCENARIO_DIR=tests/gadugi/scenarios`, all
 checks passing:
@@ -677,8 +681,9 @@ line of JSON per round:
 | --- | --- |
 | `reviewed_head_sha` | `git rev-parse HEAD`, run by bash in `step-01-round-context` before the review. Never taken from an agent. |
 | `head_sha` | the head after the fix step when it made commits; otherwise `reviewed_head_sha` |
+| `concern_count`, `commits_this_round` | the crusty verdict and the fix evidence. A value that is not digits only is recorded as `0`, with `WARNING: concern_count '<value>' is not a number; recorded as 0` (or `commits`) on stderr. The value in the warning keeps only letters and digits and is cut to 32 characters. |
 
-Neither field is ever empty. If either value is not a 40- or 64-character hex
+Neither SHA field is ever empty. If either value is not a 40- or 64-character hex
 SHA, the step fails with `ERROR: crusty-head-sha-unavailable: ...` and writes
 no record. It does not force `CONCERNS`, which would make the loop review the
 same tree forever. The loop then handles the round as described under
@@ -723,7 +728,9 @@ checks, in order:
 | 7 | `reviewed_head_sha` is a 40- or 64-character hex SHA | `crusty-head-sha-empty` |
 
 On success it prints only the reviewed SHA and returns 0. On failure it prints
-only the token and returns 1. It copies the record once into a private
+only the token and returns 1. If the private temporary copy cannot be created,
+the token is `crusty-record-modified` and stderr says
+`ERROR: cannot create temporary copy`. It copies the record once into a private
 temporary file and hashes and parses that copy, so the file cannot change
 between the two. It never prints file contents. Records that are not in the
 manifest are ignored, so a record an agent added to the directory has no
@@ -1075,10 +1082,10 @@ The `gadugi-test` stub logs its arguments, so the tests can assert exactly one
 
 | Area | Cases |
 | --- | --- |
-| qa evidence | no scenarios; validate failing; one of two scenario runs failing; an unnamed scenario; all passing, with names in both supported formats; `gadugi-test` missing; `AUTODRIVE_QA_COMMAND` with `AUTODRIVE_QA_DIR`; several `AUTODRIVE_QA_COMMANDS` with one failing; both set; a repository `logs/` directory left in place; hostile output that must still parse as JSON |
+| qa evidence | no scenarios; validate failing; one of two scenario runs failing; an unnamed scenario; all passing, with names in both supported formats; `gadugi-test` missing; `AUTODRIVE_QA_COMMAND` with `AUTODRIVE_QA_DIR`; several `AUTODRIVE_QA_COMMANDS` with one failing; both set; a repository `logs/` directory left in place; hostile output that must still parse as JSON; a symlinked scenario next to a passing one failing as `gadugi-run-failed`; a failed `mktemp` named on stderr with no evidence written |
 | qa evidence, hostile input | a scenario named `-d /` counted as unnamed; a `logs` symlink left in place; `echo *` recorded literally with a file named `--evil` present; `cd sub && false` followed by `pwd` running from the repository root |
-| merge-ready files | each of the five directories; `AMPLIHACK_HOME` winning over the others; `merge-ready-template-not-found`; `merge-ready-skill-files-not-found`; a candidate path containing `"` or `{{` skipped |
-| crusty evidence | DONE and CLEAN in round 1 gives `DONE_CLEAN`; an injected record and an archived record are both rejected; a manifest row naming `../phases.tsv`; a duplicate `reviewed_head_sha` key; a two-line record; a CLEAN round with no commits records a non-empty `head_sha`; a missing SHA fails step-06 |
+| merge-ready files | each of the five directories; `AMPLIHACK_HOME` winning over the others; `merge-ready-template-not-found`; `merge-ready-skill-files-not-found`; a candidate path containing `"` or `{{` skipped; a `REPO_PATH` that does not exist failing step-00 with `ERROR: cannot cd to REPO_PATH` |
+| crusty evidence | DONE and CLEAN in round 1 gives `DONE_CLEAN`; an injected record and an archived record are both rejected; a manifest row naming `../phases.tsv`; a duplicate `reviewed_head_sha` key; a two-line record; a CLEAN round with no commits records a non-empty `head_sha`; a missing SHA fails step-06; a non-numeric count recorded as 0 with a sanitised `WARNING`; a failed `mktemp` in `autodrive_crusty_final` keeping its token |
 | merge gate | the new 6b refusals, including a group-writable record |
 | recipe text | step-02 reads both files and contains no `Skill(`; the state-directory sentence is in every agent prompt; `autodrive-merge-round.yaml` stays within 400 lines |
 
