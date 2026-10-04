@@ -289,15 +289,18 @@ steps:
       [ -n "$RECORD" ] || { echo "ERROR: autodrive_round_record is required; the loop driver reads the round record from a file, never from stdout." >&2; exit 1; }
       g() { printf '%s' "${1:-}" | amplihack orch helper extract-json --require-field "$2" \
               | amplihack orch helper extract-field --field "$2" --default "$3"; }
-      hex() { printf '%s' "$1" | grep -Eqx '[0-9a-f]{40}([0-9a-f]{24})?'; }
+      # Whole-value checks: grep -x matches line by line, so a value with an
+      # embedded newline would pass and split the one-line record.
+      hex() { case "${#1}" in 40|64) ;; *) return 1 ;; esac; case "$1" in *[!0123456789abcdef]*) return 1 ;; esac; }
+      digits() { case "$1" in ''|*[!0123456789]*) return 1 ;; esac; }
       VERDICT="$(printf '%s' "${CRUSTY_VERDICT:-}" \
         | amplihack orch helper extract-json --require-field crusty_verdict \
         | amplihack orch helper extract-field --field crusty_verdict --default CONCERNS)"
       case "$VERDICT" in CLEAN|CONCERNS) ;; *) VERDICT="CONCERNS" ;; esac
       COUNT="$(g "${CRUSTY_VERDICT:-}" concern_count 0)"
       COMMITS="$(g "${CRUSTY_FIX_EVIDENCE:-}" commits 0)"
-      printf '%s' "$COUNT" | grep -Eqx '[0-9]+' || COUNT=0
-      printf '%s' "$COMMITS" | grep -Eqx '[0-9]+' || COMMITS=0
+      digits "$COUNT" || COUNT=0
+      digits "$COMMITS" || COMMITS=0
       # The reviewed head comes from bash (git rev-parse HEAD in step-01),
       # never from an agent. The record's head_sha is the post-fix head when
       # step-05 ran, otherwise the reviewed head, so it is never empty (issue

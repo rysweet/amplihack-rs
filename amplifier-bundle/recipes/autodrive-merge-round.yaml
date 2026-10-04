@@ -124,7 +124,10 @@ steps:
         crusty-manifest-missing|crusty-record-missing|crusty-record-modified|crusty-head-sha-empty) STATUS="UNTRUSTED" ;;
         *) STATUS="UNTRUSTED"; TOKEN="crusty-other" ;;
       esac
-      printf '%s' "$SHA" | grep -Eqx '[0-9a-f]{40}([0-9a-f]{24})?' || { SHA=""; [ "$STATUS" != "DONE_CLEAN" ] || { STATUS="UNTRUSTED"; TOKEN="crusty-other"; }; }
+      # A whole-value check: grep -x would accept a hex line inside a multi-line value.
+      case "${#SHA}" in 40|64) ;; *) SHA="" ;; esac
+      case "$SHA" in *[!0123456789abcdef]*) SHA="" ;; esac
+      [ -n "$SHA" ] || [ "$STATUS" != "DONE_CLEAN" ] || { STATUS="UNTRUSTED"; TOKEN="crusty-other"; }
       echo "INFO: crusty evidence: status=${STATUS} reason=${TOKEN:-none} reviewed_head_sha=${SHA:-none}" >&2
       printf '{"crusty_status":"%s","crusty_reason":"%s","crusty_reviewed_head_sha":"%s"}\n' "$STATUS" "$TOKEN" "$SHA"
     output: "crusty_evidence"

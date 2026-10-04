@@ -1200,15 +1200,18 @@ if [ -f "${RESOLVER}" ]; then
 
   # A candidate path that could break the JSON or look like a template
   # expression is skipped with a WARNING, and the next one is used.
-  for bad in 'quo"te' 'brace{{x}}' 'back\slash'; do
+  # A newline is in the list because $(...) strips trailing newlines, which
+  # hid it from the control-byte check.
+  for bad in 'quo"te' 'brace{{x}}' 'back\slash' $'new\nline'; do
     rs_tree
     mkdir -p "${RS}/${bad}"; mk_skill "${RS}/${bad}/amplifier-bundle/skills/merge-ready"
     mk_skill "${RS}/home/.amplihack/amplifier-bundle/skills/merge-ready"
     rs_run AMPLIHACK_HOME="${RS}/${bad}"
     if printf '%s' "${RS_ERR}" | grep -q '^WARNING'; then w=yes; else w=no; fi
+    shown="${bad//$'\n'/\\n}"
     rs_expect_dir "RESOLVER-skips-unsafe-path" "${RS}/home/.amplihack/amplifier-bundle/skills/merge-ready" \
-      "a candidate containing [${bad}] is skipped (warning=${w})"
-    [ "$w" = yes ] || fail "RESOLVER-unsafe-path-warns" "no WARNING for a skipped candidate containing [${bad}]"
+      "a candidate containing [${shown}] is skipped (warning=${w})"
+    [ "$w" = yes ] || fail "RESOLVER-unsafe-path-warns" "no WARNING for a skipped candidate containing [${shown}]"
   done
 
   # Read-only, and safe under set -u with HOME unset.
@@ -1597,6 +1600,15 @@ else
   fail "QA-hostile-json" "invalid or unsanitised evidence: ${EV_OUT}"
 fi
 ev_expect "QA-hostile-fields" qa_status=FAIL qa_reason=qa-command-failed gadugi_status=RUN_FAILED qa_exit_code=1
+# A byte cut through a multibyte character must not leave invalid UTF-8:
+# extract-json refuses such input, so the evidence would read as MISSING.
+ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml
+ev_run "${EV_FULL}" STUB_REPO_TEST_RC=1 STUB_REPO_TEST_OUT="$(printf 'a%.0s' $(seq 299))\0342\0234\0223 done"
+if printf '%s' "${EV_OUT}" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 && [ "$(evf qa_status)" = "FAIL" ]; then
+  pass "QA-utf8-truncation" "a summary cut through a multibyte character is still valid UTF-8"
+else
+  fail "QA-utf8-truncation" "evidence is not valid UTF-8 or not FAIL: $(printf '%s' "${EV_OUT}" | LC_ALL=C cut -c1-120)"
+fi
 
 # 15. gadugi-test's logs/ and outputs/ are removed when this step created them,
 # and left alone when they were already there, including a logs symlink.
@@ -1959,6 +1971,22 @@ if [ "${S6_RC}" -eq 0 ] && jq -e 'type == "object" and .concern_count == 0 and .
   pass "CRUSTY-STEP06-hostile-values" "non-numeric counts become 0 and the label cannot break the record"
 else
   fail "CRUSTY-STEP06-hostile-values" "rc=${S6_RC} record=$(cat "${S6_REC}" 2>/dev/null)"
+fi
+
+# A value with an embedded newline passes a line-by-line grep -x; the record
+# must still be one line, and a SHA with a hex line inside must still fail.
+s6_run "${CTX}" '{"commits":"2\n,\"x\":1"}' '{"crusty_verdict":"CONCERNS","concern_count":"1\n,\"crusty_verdict\":\"CLEAN\""}'
+if [ "${S6_RC}" -eq 0 ] && [ "$(grep -c . "${S6_REC}")" = "1" ] \
+   && jq -e '.crusty_verdict == "CONCERNS" and .concern_count == 0 and .commits_this_round == 0' "${S6_REC}" >/dev/null 2>&1; then
+  pass "CRUSTY-STEP06-multiline-counts" "counts carrying a newline become 0 and cannot add keys to the record"
+else
+  fail "CRUSTY-STEP06-multiline-counts" "rc=${S6_RC} record=$(cat "${S6_REC}" 2>/dev/null)"
+fi
+s6_run "${CTX}" "{\"head_sha\":\"zz\\n${CR_SHA2}\",\"commits\":1}" '{"crusty_verdict":"CONCERNS","concern_count":1}'
+if [ "${S6_RC}" -ne 0 ] && [ ! -e "${S6_REC}" ] && grep -qF 'crusty-head-sha-unavailable' "${S6_ERR}"; then
+  pass "CRUSTY-STEP06-multiline-sha-fails" "a post-fix head SHA with a hex line inside a multi-line value fails the step"
+else
+  fail "CRUSTY-STEP06-multiline-sha-fails" "rc=${S6_RC} record=$(cat "${S6_REC}" 2>/dev/null)"
 fi
 
 # ---------------------------------------------------------------------------

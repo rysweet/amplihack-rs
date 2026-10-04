@@ -89,6 +89,10 @@ steps:
       # backslashes or control bytes, so a hostile log line or directory name
       # can neither break the evidence nor carry terminal escapes.
       san() { tr '\n' ' ' | LC_ALL=C tr -d '\000-\037\177"\\'; }
+      # Text cut to a byte length is made ASCII first: a byte cut through a
+      # multibyte character leaves invalid UTF-8, which every JSON reader
+      # rejects, so branch test output could make the evidence unreadable.
+      ascii() { LC_ALL=C tr -d '\200-\377'; }
       CAUSES=""
       cause() { CAUSES="${CAUSES}${CAUSES:+; }$1"; }
       # The evidence binds to the tree it was measured on. The merge gate
@@ -157,7 +161,7 @@ steps:
       done
       [ "$S_FAILED" = "true" ] && cause "repository test failure"
       RC=""; [ "$RAN" -gt 0 ] && RC="${FIRST_NZ:-0}"
-      TAIL="$(tail -n 5 "$LOG" | san | cut -c1-300)"
+      TAIL="$(tail -n 5 "$LOG" | san | ascii | cut -c1-300)"
       tail -n 60 "$LOG" >&2 || true
       rm -f "$LOG"
 
@@ -309,7 +313,7 @@ steps:
       esac
       SUMMARY="$(printf '%s' "${CAUSES}${CAUSES:+${TAIL:+: }}${TAIL}" | san)"
       OUT="$(printf '{"qa_status":"%s","qa_reason":"%s","qa_repo_type":"%s","qa_command":"%s","qa_suite_commands_count":"%s","qa_scenarios":"%s","qa_exit_code":"%s","qa_summary":"%s","qa_round":"%s","head_sha":"%s","gadugi_status":"%s","gadugi_validate_exit_code":"%s","gadugi_run_exit_code":"%s","gadugi_scenario_count":"%s","gadugi_scenario_dir":"%s","gadugi_scenarios_validated":"%s","gadugi_scenarios_run":"%s","gadugi_scenarios_passed":"%s","gadugi_scenarios_failed":"%s","gadugi_failed_scenarios":"%s"}\n' \
-        "$STATUS" "$REASON" "$TYPE" "$(printf '%s' "$CMDTEXT" | san | cut -c1-500)" "$RAN" \
+        "$STATUS" "$REASON" "$TYPE" "$(printf '%s' "$CMDTEXT" | san | ascii | cut -c1-500)" "$RAN" \
         "$(printf '%s' "$SCEN" | san)" "$RC" "$SUMMARY" "$(printf '%s' "${AUTODRIVE_ROUND_LABEL:-round}" | san)" "$HEAD_SHA" \
         "$G_STATUS" "$G_VRC" "$G_RRC" "$COUNT" "$(printf '%s' "$SREL" | san)" \
         "$VALIDATED" "$RUNS" "$PASSED" "$FAILED" \

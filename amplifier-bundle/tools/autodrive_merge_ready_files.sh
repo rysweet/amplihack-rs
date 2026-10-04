@@ -33,7 +33,9 @@ unsafe_path() { # unsafe_path <path>: true when it could break JSON or look like
   case "$1" in
     *'"'* | *'\'* | *'{{'* | *'}}'*) return 0 ;;
   esac
-  [ -n "$(printf '%s' "$1" | LC_ALL=C tr -d '\040-\176\200-\377')" ]
+  # The trailing x stops $(...) from stripping a newline, the one control byte
+  # command substitution would otherwise hide.
+  [ "$(printf '%s' "$1" | LC_ALL=C tr -d '\040-\176\200-\377'; printf x)" != "x" ]
 }
 
 TOP="$(git -C "${REPO_PATH:-.}" rev-parse --show-toplevel 2>/dev/null || printf '')"
