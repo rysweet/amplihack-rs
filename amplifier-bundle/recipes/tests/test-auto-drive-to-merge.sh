@@ -1726,7 +1726,9 @@ ev_script() { # ev_script <relative-file>: an executable suite command that logs
 ev_run() { # ev_run <stub-dir> [VAR=value ...] -> runs the step; EV_OUT = last stdout line
   local stubs="$1"; shift
   EV_CALLS="${EV_REPO}.calls"; : > "${EV_CALLS}"
-  env -i HOME="${TEST_HOME}" TMPDIR="${WORK_PHYS}" PATH="${stubs}:/usr/bin:/bin" \
+  # AMPLIHACK_HOME is this tree, so gadugi_scenario_results comes from the
+  # autodrive_trust.sh under test, as in a real run.
+  env -i HOME="${TEST_HOME}" TMPDIR="${WORK_PHYS}" PATH="${stubs}:/usr/bin:/bin" AMPLIHACK_HOME="${REPO_ROOT}" \
     REPO_PATH="${EV_REPO}" AUTODRIVE_ROUND_LABEL="round-7" AUTODRIVE_QA_EVIDENCE="${EV_REPO}.evidence.json" \
     EV_CALLS="${EV_CALLS}" "$@" \
     "${BASH}" -c "${EV_BODY}" >"${EV_REPO}.out" 2>"${EV_REPO}.err"
