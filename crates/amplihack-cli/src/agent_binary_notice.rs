@@ -1,11 +1,18 @@
 //! The stderr notice for an agent binary that was inferred rather than
-//! observed (issues #1335, #1481, #1525).
+//! observed, or that overrides the session it runs in (issues #1335, #1481,
+//! #1525).
 //!
 //! The resolver's own warnings go through `tracing`, which is silent at the
 //! default filter, and issue #1335 was a run that executed every step under
 //! the wrong CLI for hours with nothing in its output saying why. Anything
 //! about to launch agents on an inferred answer, or to hand that answer to
 //! something that will, says so here instead.
+//!
+//! An explicit `AMPLIHACK_AGENT_BINARY` that names a different CLI than the
+//! live session marker is said aloud too. It still wins: it is layer 1 by
+//! design, and a deliberate cross-CLI run needs it to. But the docs tell users
+//! to export it to choose a CLI, so a profile line written for one CLI and
+//! still exported inside another's session is the same silent wrong-CLI run.
 
 use amplihack_utils::agent_binary::{
     BINARY_ENV, Resolution, ResolutionSource, SOURCE_ENV, inherited_binary_is_default_guess,
@@ -42,19 +49,22 @@ impl EnvBinaryValue {
     }
 }
 
-/// Print [`inferred_agent_binary_notice`] to stderr when there is one.
+/// Print [`agent_binary_notice`] to stderr when there is one.
+///
+/// A nested run under a deliberate override that can still see a session
+/// marker repeats the line. It is just as true there, and agent-step stderr
+/// is shown only when a step fails.
 ///
 /// `lead` says what the binary is about to be used for, e.g. "agent steps
 /// will run under".
-pub(crate) fn report_inferred_agent_binary(lead: &str, resolution: &Resolution) {
-    if let Some(notice) = inferred_agent_binary_notice(lead, resolution, EnvBinaryValue::current())
-    {
+pub(crate) fn report_agent_binary(lead: &str, resolution: &Resolution) {
+    if let Some(notice) = agent_binary_notice(lead, resolution, EnvBinaryValue::current()) {
         eprintln!("{notice}");
     }
 }
 
-/// The notice [`report_inferred_agent_binary`] prints, or `None` when the
-/// binary was observed rather than inferred.
+/// The notice [`report_agent_binary`] prints, or `None` when the binary was
+/// observed rather than inferred and no session marker contradicts it.
 ///
 /// The reason must match what the user did. A tagged inherited guess is
 /// skipped by the resolver, and setting the same value again does not help
@@ -67,7 +77,7 @@ pub(crate) fn report_inferred_agent_binary(lead: &str, resolution: &Resolution) 
 /// it passed over because it could not be used gets a line of its own, with
 /// the reason. Otherwise an empty or malformed file goes unmentioned, and the
 /// user is left to guess why the default answered.
-pub(crate) fn inferred_agent_binary_notice(
+pub(crate) fn agent_binary_notice(
     lead: &str,
     resolution: &Resolution,
     env_value: EnvBinaryValue,
@@ -83,7 +93,8 @@ pub(crate) fn inferred_agent_binary_notice(
         format!("read from {file}")
     };
     let why = match (resolution.source, env_value) {
-        (ResolutionSource::Env | ResolutionSource::SessionMarker, _) => return None,
+        (ResolutionSource::Env, _) => return session_override_notice(lead, resolution),
+        (ResolutionSource::SessionMarker, _) => return None,
         (ResolutionSource::LauncherContext, EnvBinaryValue::Rejected) => {
             format!("{REJECTED}; {}", read_from())
         }
@@ -122,9 +133,27 @@ pub(crate) fn inferred_agent_binary_notice(
     Some(notice)
 }
 
+/// The line for an explicit value that outranked a session marker naming a
+/// different CLI, or `None` when they agree or no marker was seen.
+///
+/// Both names come out of the allowlist, so echoing them is safe. The raw
+/// value is not quoted: the resolver trims and lowercases it. Launcher
+/// contexts the walk-up skipped are not listed; they did not decide this.
+fn session_override_notice(lead: &str, resolution: &Resolution) -> Option<String> {
+    let session = resolution
+        .session_marker
+        .as_deref()
+        .filter(|session| *session != resolution.binary)?;
+    Some(format!(
+        "amplihack: {lead} '{}' ({BINARY_ENV} is set and overrides the {session} \
+         session it was started from). Unset {BINARY_ENV} to run under {session}.",
+        resolution.binary
+    ))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{EnvBinaryValue, inferred_agent_binary_notice};
+    use super::{EnvBinaryValue, agent_binary_notice};
     use amplihack_utils::agent_binary::{Resolution, ResolutionSource, UnusableContext};
     use std::path::PathBuf;
 
@@ -143,6 +172,7 @@ mod tests {
             source,
             context_file: None,
             unusable_contexts: Vec::new(),
+            session_marker: None,
         }
     }
 
@@ -156,21 +186,40 @@ mod tests {
     #[test]
     fn an_observed_binary_needs_no_notice() {
         for source in [ResolutionSource::Env, ResolutionSource::SessionMarker] {
-            for env_value in ALL {
-                let mut resolution = resolved("claude", source);
-                // Not even for a bad file: it did not decide this answer.
-                resolution.unusable_contexts = vec![empty_context_at("/r/x.json")];
-                assert_eq!(
-                    inferred_agent_binary_notice(LEAD, &resolution, env_value),
-                    None
-                );
+            // No marker, or one that agrees with the answer.
+            for session_marker in [None, Some("claude")] {
+                for env_value in ALL {
+                    let mut resolution = resolved("claude", source);
+                    resolution.session_marker = session_marker.map(str::to_string);
+                    // Not even for a bad file: it did not decide this answer.
+                    resolution.unusable_contexts = vec![empty_context_at("/r/x.json")];
+                    assert_eq!(agent_binary_notice(LEAD, &resolution, env_value), None);
+                }
             }
         }
     }
 
+    /// Crusty round 3 asked what an export that conflicts with a Claude
+    /// session resolves to. It resolves to the export, as documented -- and
+    /// before this, nothing on stderr said a live session had been overruled.
+    #[test]
+    fn an_explicit_value_overriding_a_live_session_says_so() {
+        let mut resolution = resolved("copilot", ResolutionSource::Env);
+        resolution.session_marker = Some("claude".to_string());
+        // A skipped file did not decide this either, so it stays out.
+        resolution.unusable_contexts = vec![empty_context_at("/r/x.json")];
+        let notice = agent_binary_notice(LEAD, &resolution, EnvBinaryValue::Usable).unwrap();
+        assert_eq!(
+            notice,
+            "amplihack: agent steps will run under 'copilot' (AMPLIHACK_AGENT_BINARY is set \
+             and overrides the claude session it was started from). Unset \
+             AMPLIHACK_AGENT_BINARY to run under claude."
+        );
+    }
+
     #[test]
     fn a_default_with_nothing_inherited_says_nothing_was_found() {
-        let notice = inferred_agent_binary_notice(
+        let notice = agent_binary_notice(
             LEAD,
             &resolved("copilot", ResolutionSource::Default),
             EnvBinaryValue::Unset,
@@ -195,7 +244,7 @@ mod tests {
     /// found sends the user to set a value that the tag would still veto.
     #[test]
     fn a_default_over_an_inherited_guess_names_the_tag() {
-        let notice = inferred_agent_binary_notice(
+        let notice = agent_binary_notice(
             LEAD,
             &resolved("copilot", ResolutionSource::Default),
             EnvBinaryValue::InheritedGuess,
@@ -217,12 +266,9 @@ mod tests {
     #[test]
     fn a_rejected_value_is_named_as_rejected() {
         for source in [ResolutionSource::Default, ResolutionSource::LauncherContext] {
-            let notice = inferred_agent_binary_notice(
-                LEAD,
-                &resolved("copilot", source),
-                EnvBinaryValue::Rejected,
-            )
-            .unwrap();
+            let notice =
+                agent_binary_notice(LEAD, &resolved("copilot", source), EnvBinaryValue::Rejected)
+                    .unwrap();
             assert!(!notice.contains("no AMPLIHACK_AGENT_BINARY"), "{notice}");
             assert!(
                 notice.contains("is set but is not one of amplifier, claude, codex or copilot"),
@@ -240,7 +286,7 @@ mod tests {
             "/home/u/repo/.claude/runtime/launcher_context.json",
         ));
         for env_value in [EnvBinaryValue::Unset, EnvBinaryValue::Rejected] {
-            let notice = inferred_agent_binary_notice(LEAD, &resolution, env_value).unwrap();
+            let notice = agent_binary_notice(LEAD, &resolution, env_value).unwrap();
             assert!(
                 notice.contains("read from /home/u/repo/.claude/runtime/launcher_context.json"),
                 "{notice}"
@@ -261,8 +307,7 @@ mod tests {
                     reason: "is not valid JSON (line 1, column 2)".to_string(),
                 },
             ];
-            let notice =
-                inferred_agent_binary_notice(LEAD, &resolution, EnvBinaryValue::Unset).unwrap();
+            let notice = agent_binary_notice(LEAD, &resolution, EnvBinaryValue::Unset).unwrap();
             let lines: Vec<&str> = notice.lines().collect();
             assert_eq!(lines.len(), 3, "{notice}");
             assert_eq!(

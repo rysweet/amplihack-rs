@@ -41,7 +41,7 @@ The resolver evaluates sources in order and returns the first valid value. A val
 
 | # | Source | Notes |
 | - | --- | --- |
-| 1 | `AMPLIHACK_AGENT_BINARY` env var | Explicit override. Used by CI, tests, and external consumers that have not migrated yet. Ignored while tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary>` (see below). |
+| 1 | `AMPLIHACK_AGENT_BINARY` env var | Explicit override. Used by CI, tests, and external consumers that have not migrated yet. Ignored while tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary>` (see below). It outranks a live session marker naming a different CLI; `recipe run` and `agent-binary` then say so on stderr (see below). |
 | 2 | Live session marker | An environment variable the hosting CLI exports, such as `CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_ENTRYPOINT` or `COPILOT_CLI`. The full list is `agent_binary::SESSION_MARKERS`. |
 | 3 | `<repo>/.claude/runtime/launcher_context.json` `launcher` field | Persisted state, possibly written by a different session. Consulted only while fresh, and never above a world-writable or foreign-owned directory. |
 | 4 | Built-in default | `"copilot"` |
@@ -87,6 +87,26 @@ so it is listed. The walk-up still continues past an unusable file, so a
 parent directory's file can still answer, but the notice now says so. Rust
 callers get the same evidence from `agent_binary::resolve_detailed`
 (`Resolution::context_file` and `Resolution::unusable_contexts`).
+
+An answer from layer 1 is a choice, not an inference, and it still wins over a
+live session marker. But when the marker names a different CLI, recipe run says
+which session was overruled. These docs tell you to export the variable to
+choose a CLI, so a profile line written for one CLI and still exported inside
+another's session looks exactly like this. Without the line, every step would
+run under the wrong CLI with nothing in the output saying why (issue #1335):
+
+```text
+amplihack: agent steps will run under 'copilot' (AMPLIHACK_AGENT_BINARY is set and overrides the claude session it was started from). Unset AMPLIHACK_AGENT_BINARY to run under claude.
+```
+
+An explicit value that matches the marker, or that is set where no marker is
+visible, prints nothing. The notice does not quote the raw value; it shows the
+normalized name. On the way down, recipe run and recipe-runner-rs remove only
+`CLAUDECODE` (the runner drops other unprotected variables only under
+environment-size pressure), so a nested `recipe run` under a deliberate
+override usually still sees another Claude marker and repeats the line.
+Agent-step stderr is shown only when a step fails. Rust callers get the
+overruled marker from `Resolution::session_marker`.
 
 When the answer came from layer 4, recipe run also exports
 `AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>`. The tag keeps a guess a guess
@@ -154,7 +174,9 @@ tmux new-session -d -s recipe-runner \
   `default:<same binary>` already in the server's environment cannot veto it.
 - An inferred answer is explained on stderr, which stays on your terminal while
   `$(...)` captures stdout. The explanation includes any unusable launcher
-  context it skipped.
+  context it skipped. An exported `AMPLIHACK_AGENT_BINARY` that overrides the
+  session you run the hand-off from is handed over as your choice, and the
+  same stderr line names the session it overrode.
 - Log lines go to stderr as well, so a `RUST_LOG` set in your shell does not
   reach the command line. Stdout is only the assignment line, whatever the
   log filter.

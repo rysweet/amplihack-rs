@@ -154,6 +154,7 @@ fn claude(_: &std::path::Path) -> amplihack_utils::agent_binary::Resolution {
         source: amplihack_utils::agent_binary::ResolutionSource::Env,
         context_file: None,
         unusable_contexts: Vec::new(),
+        session_marker: None,
     }
 }
 

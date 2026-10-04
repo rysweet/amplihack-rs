@@ -501,10 +501,7 @@ pub(super) fn execute_recipe_via_rust(
     // nested `amplihack` resolving on its own there has lost the evidence -- it
     // fell through to the vendor default and ran every agent step under Copilot
     // from inside a Claude Code session.
-    crate::agent_binary_notice::report_inferred_agent_binary(
-        "agent steps will run under",
-        &agent_binary,
-    );
+    crate::agent_binary_notice::report_agent_binary("agent steps will run under", &agent_binary);
 
     let runtime_dir = tempfile::Builder::new()
         .prefix("amplihack-workflow-")

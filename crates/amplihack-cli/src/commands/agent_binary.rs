@@ -43,10 +43,7 @@ pub fn run_agent_binary(shell: bool, dir: Option<PathBuf>) -> Result<()> {
         None => std::env::current_dir().context("cannot read the current directory")?,
     };
     let resolution = crate::env_builder::resolve_agent_binary_in(&dir);
-    crate::agent_binary_notice::report_inferred_agent_binary(
-        "resolved the agent binary to",
-        &resolution,
-    );
+    crate::agent_binary_notice::report_agent_binary("resolved the agent binary to", &resolution);
     println!("{}", render(&resolution, shell));
     Ok(())
 }
@@ -81,6 +78,7 @@ mod tests {
             source,
             context_file: None,
             unusable_contexts: Vec::new(),
+            session_marker: None,
         }
     }
 

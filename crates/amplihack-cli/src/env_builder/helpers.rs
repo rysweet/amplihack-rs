@@ -46,6 +46,7 @@ pub fn resolve_agent_binary_in(dir: &Path) -> amplihack_utils::agent_binary::Res
                 source: amplihack_utils::agent_binary::ResolutionSource::Default,
                 context_file: None,
                 unusable_contexts: Vec::new(),
+                session_marker: None,
             }
         }
     }

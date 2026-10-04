@@ -371,6 +371,28 @@ fn launcher_context_with_a_non_rfc3339_timestamp_is_ignored_and_named() {
     assert_eq!(reasons, ["has a timestamp that is not RFC 3339"]);
 }
 
+/// Crusty round 3: an explicit value still outranks a live session marker,
+/// and the marker it overruled is kept, so a caller can say which session
+/// was overridden. With no marker visible there is nothing to keep.
+#[test]
+fn an_explicit_value_keeps_the_session_marker_it_overrode() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    clear_env();
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join(".git")).unwrap();
+    set_env("copilot");
+    let without_marker = agent_binary::resolve_detailed(tmp.path()).unwrap();
+    // SAFETY: serialized by env_lock; cleared again below.
+    unsafe { std::env::set_var("CLAUDE_CODE_ENTRYPOINT", "cli") };
+    let with_marker = agent_binary::resolve_detailed(tmp.path()).unwrap();
+    clear_env();
+
+    assert_eq!(without_marker.session_marker, None);
+    assert_eq!(with_marker.binary, "copilot");
+    assert_eq!(with_marker.source, agent_binary::ResolutionSource::Env);
+    assert_eq!(with_marker.session_marker.as_deref(), Some("claude"));
+}
+
 /// Issue #1481: a value tagged as a parent's default guess for the same binary
 /// is skipped, and the layers below it answer. A tag naming another binary
 /// does not veto the value.

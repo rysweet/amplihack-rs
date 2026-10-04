@@ -245,7 +245,11 @@ fn a_rejected_value_is_reported_as_rejected() {
     );
 }
 
-/// An explicit choice still beats everything, and is not tagged.
+/// An explicit choice still beats everything, and is not tagged. When it
+/// overrides the session the run was started from, stderr says so: the docs
+/// tell users to export it to choose a CLI, and a profile export written for
+/// one CLI, still set inside another's session, would otherwise run every
+/// step under the wrong CLI without a word (#1335).
 #[test]
 fn an_explicit_binary_wins_and_is_not_tagged() {
     let fx = Fixture::new();
@@ -255,10 +259,38 @@ fn an_explicit_binary_wins_and_is_not_tagged() {
     ]);
     assert!(output.status.success(), "{output:?}");
     assert_eq!(handed(&probe), ("codex", "<unset>"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        !String::from_utf8_lossy(&output.stderr).contains("agent steps will run under"),
-        "an explicit choice is not an inference and needs no notice"
+        stderr.contains(
+            "amplihack: agent steps will run under 'codex' (AMPLIHACK_AGENT_BINARY is set and \
+             overrides the claude session it was started from). Unset AMPLIHACK_AGENT_BINARY \
+             to run under claude."
+        ),
+        "an explicit value overruling a live session must be visible:\n{stderr}"
     );
+}
+
+/// An explicit value that agrees with the session, or with no session at
+/// all, is a plain choice and needs no notice.
+#[test]
+fn an_explicit_binary_that_overrides_nothing_is_not_announced() {
+    let fx = Fixture::new();
+    for extra in [
+        vec![
+            ("AMPLIHACK_AGENT_BINARY", "claude"),
+            ("CLAUDE_CODE_SESSION_ID", "session_0123"),
+        ],
+        vec![("AMPLIHACK_AGENT_BINARY", "codex")],
+    ] {
+        let (output, probe) = fx.run(&extra);
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(handed(&probe).1, "<unset>");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !stderr.contains("agent steps will run under"),
+            "{extra:?} overrides nothing:\n{stderr}"
+        );
+    }
 }
 
 /// `recipe run` itself never stamps the checkout; only a launcher does, and
@@ -742,4 +774,33 @@ fn an_inferred_value_survives_the_hand_off_under_a_warn_filter() {
     let (output, probe) = fx.hand_off_to_a_markerless_shell(&[("RUST_LOG", "warn")], &[]);
     assert!(output.status.success(), "{output:?}");
     assert_eq!(handed(&probe), ("copilot", "default:copilot"));
+}
+
+// ---------------------------------------------------------------------------
+// Crusty round 3: an `AMPLIHACK_AGENT_BINARY` export that conflicts with the
+// Claude session `amplihack agent-binary` runs in.
+// ---------------------------------------------------------------------------
+
+/// The export wins, as layer 1 says, and the hand-off carries it untagged.
+/// The notice goes to stderr, so `$(...)` still splices in only the
+/// assignments, and the caller's terminal shows which session was overruled.
+#[test]
+fn a_conflicting_export_wins_the_hand_off_and_is_announced() {
+    let fx = Fixture::new();
+    let mut env = claude_session();
+    env.push(("AMPLIHACK_AGENT_BINARY", "copilot"));
+    let output = agent_binary_shell(&fx, &env);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "AMPLIHACK_AGENT_BINARY=copilot AMPLIHACK_AGENT_BINARY_SOURCE=\n"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.lines().any(|line| line
+            == "amplihack: resolved the agent binary to 'copilot' (AMPLIHACK_AGENT_BINARY is \
+                set and overrides the claude session it was started from). Unset \
+                AMPLIHACK_AGENT_BINARY to run under claude."),
+        "{stderr}"
+    );
 }

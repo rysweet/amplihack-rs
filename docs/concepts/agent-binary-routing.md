@@ -118,6 +118,10 @@ curated environment, where those markers may be gone. When the answer came
 from the launcher context or the default layer, recipe run prints a notice on
 stderr naming the file it read, and any it skipped as unusable (#1525); from
 the default layer it also exports the `default:<binary>` tag (issue #1481).
+An explicit `AMPLIHACK_AGENT_BINARY` still outranks a session marker that
+names a different CLI. That is not an inference, but a stale profile export
+produces the same silent wrong-CLI run, so recipe run names the session it
+overrode on stderr as well.
 
 Inside `amplihack-rs`, code that picks the binary calls `resolve(&cwd)` rather
 than reading the env var directly. One older helper,

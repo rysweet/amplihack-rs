@@ -213,10 +213,19 @@ pub struct Resolution {
     /// skipped on the way. Stale files are not listed: sessions end, and an
     /// old file is expected, not broken.
     pub unusable_contexts: Vec<UnusableContext>,
+    /// The binary a live session marker named, recorded whether or not it
+    /// decided. When `source` is [`ResolutionSource::Env`] and this names a
+    /// different binary, an explicit `AMPLIHACK_AGENT_BINARY` is overriding
+    /// the session this process runs in. The override stands -- it is
+    /// documented as layer 1 -- but a profile export left over from choosing a
+    /// CLI weeks ago looks exactly like this, so callers about to launch
+    /// agents say so (issue #1335: wrong CLI for hours, nothing said why).
+    pub session_marker: Option<String>,
 }
 
-/// [`resolve_with_source`], plus the persisted-layer evidence a user needs
-/// when the answer was inferred: which file decided, and which were skipped.
+/// [`resolve_with_source`], plus the evidence a user needs to trust the
+/// answer: which file decided and which were skipped when it was inferred,
+/// and which session marker an explicit value overrode.
 ///
 /// A fallback is logged at WARN, not DEBUG. Issue #1335: a run whose
 /// environment did not survive a `tmux new-session` silently resolved to the
@@ -242,7 +251,7 @@ pub fn resolve_detailed(cwd: &Path) -> Result<Resolution, ResolveError> {
 
     let (name, source) = resolve_layers(
         from_env,
-        from_marker,
+        from_marker.clone(),
         persisted.found.as_ref().map(|(name, _)| name.clone()),
     );
     let context_file = match source {
@@ -283,6 +292,7 @@ pub fn resolve_detailed(cwd: &Path) -> Result<Resolution, ResolveError> {
         source,
         context_file,
         unusable_contexts: persisted.unusable,
+        session_marker: from_marker,
     })
 }
 
