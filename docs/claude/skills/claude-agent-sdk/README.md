@@ -1,5 +1,7 @@
 # Claude Agent SDK Skill
 
+Model IDs in these examples are configuration placeholders. Replace `<configured-model>` (and any primary/fallback variants) with models available to the selected provider and runtime; use the user’s configuration rather than a skill-defined default.
+
 ## Overview
 
 Comprehensive skill providing Claude with deep knowledge of the Claude Agent SDK for building production-ready autonomous agents.
@@ -336,7 +338,7 @@ from claude_agents import Agent
 
 def create_specialized_agent():
     return Agent(
-        model="claude-sonnet-4-5-20250929",
+        model="<configured-model>",
         system="<amplihack_agent_role>",
         tools=[...],
         hooks=[AmplihackLoggingHook()]
