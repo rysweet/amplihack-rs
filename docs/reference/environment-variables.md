@@ -915,39 +915,100 @@ Standard Unix home directory. Used to resolve `~/.amplihack`, `~/.npm-global`, a
 ### AMPLIHACK_DEFAULT_MODEL
 
 **Type:** string
-**Default:** unset — amplihack passes **no** `--model` at all
-**Used by:** `build_command()` in `launch.rs`
+**Default:** `claude-opus-5[1m]` (a concrete model id, not an alias; issue #1421). An empty or whitespace-only value passes no `--model`.
+**Used by:** `configured_default_model()` in `commands/launch/command.rs`
 
-Pins the `--model` flag passed to Claude-compatible tools. When it is unset (or
-set to an empty / whitespace-only value), amplihack puts no model on the command
-line and the tool applies its own current default — which also lets the `"model"`
-in your `~/.claude/settings.json` take effect.
+Sets the `--model` amplihack passes to Claude-compatible tools: `claude`,
+`rusty`, `rustyclawd` and `amplifier`. `amplihack copilot` and `amplihack codex`
+ignore it.
 
-There is deliberately no built-in default (issue #1421). A model alias hardcoded
-by amplihack is resolved by the tool, whose version amplihack does not control;
-one such alias resolved to a retired model id and every agent step failed with a
-404 naming a model the user had never chosen.
+| `AMPLIHACK_DEFAULT_MODEL` | What amplihack adds |
+|---|---|
+| unset, or not valid UTF-8 | `--model claude-opus-5[1m]` |
+| a model id | `--model` with that id, trimmed of surrounding whitespace |
+| empty or whitespace-only | nothing; the tool picks its own default |
 
-```sh
-AMPLIHACK_DEFAULT_MODEL=sonnet amplihack claude
-# Passes: claude --model sonnet --dangerously-skip-permissions
-```
+Because amplihack passes `--model` unless this variable is empty, the `"model"`
+in `~/.claude/settings.json` only takes effect when you set
+`AMPLIHACK_DEFAULT_MODEL=` (empty).
 
-When amplihack injects the flag it says so on stderr, naming the model and this
-variable as its source, so a later "model not found" is traceable:
+When any [External LiteLLM gateway variable](#external-litellm-gateway-variables)
+is set, this variable is not read: the model is the required
+`AMPLIHACK_LITELLM_MODEL`, passed unchanged.
 
-```
-amplihack: passing `--model sonnet` to `claude` (from AMPLIHACK_DEFAULT_MODEL).
-Unset AMPLIHACK_DEFAULT_MODEL to let claude choose its own default model.
-```
-
-If the user supplies `--model` explicitly on the command line, this variable is
-ignored entirely — the user-supplied value is used as-is.
+**Why the default is a concrete id:** an alias such as `opus[1m]` is resolved by
+the tool, and amplihack does not control the tool's version. On one install that
+alias resolved to the retired `claude-opus-4-1-20250805`, and every agent step
+failed with a 404 naming a model the user had never chosen. A concrete id either
+works or fails naming the exact string amplihack sent.
 
 ```sh
-# User-supplied --model takes priority; AMPLIHACK_DEFAULT_MODEL is ignored
-AMPLIHACK_DEFAULT_MODEL=sonnet amplihack claude --model haiku
-# Passes: claude --model haiku --dangerously-skip-permissions
+# Pin a model for every Claude launch
+AMPLIHACK_DEFAULT_MODEL=claude-sonnet-4-5 amplihack claude
+# amplihack adds: --model claude-sonnet-4-5
+
+# Let Claude Code (and ~/.claude/settings.json) choose
+AMPLIHACK_DEFAULT_MODEL= amplihack claude
+# amplihack adds no --model
+```
+
+Whenever amplihack adds `--model`, it prints one line to stderr naming the model
+and where it came from, so a later "model not found" error can be traced back to
+it:
+
+```text
+amplihack: passing `--model claude-sonnet-4-5` to `claude` (from AMPLIHACK_DEFAULT_MODEL). Set AMPLIHACK_DEFAULT_MODEL to override it, or to an empty value to let claude choose its own default model.
+```
+
+With the variable unset or not valid UTF-8, the source reads
+`amplihack's built-in default`.
+
+**Dotted Claude model ids (issue #1527):** GitHub Copilot CLI writes Claude model
+ids with a dot (`claude-opus-5.5`). Claude Code uses hyphens (`claude-opus-5-5`)
+and rejects the dotted form with "There's an issue with the selected model". So
+amplihack rewrites a dotted Claude id before passing it:
+
+```sh
+AMPLIHACK_DEFAULT_MODEL='claude-opus-5.5[1m]' amplihack claude
+# amplihack adds: --model claude-opus-5-5[1m]
+```
+
+The stderr line names both spellings:
+
+```text
+amplihack: passing `--model claude-opus-5-5[1m]` to `claude` (from AMPLIHACK_DEFAULT_MODEL, normalised from `claude-opus-5.5[1m]`: Claude model ids use hyphens, not dots). Set AMPLIHACK_DEFAULT_MODEL to override it, or to an empty value to let claude choose its own default model.
+```
+
+The rewrite applies only to a value of exactly the form
+`claude-<family>-<major>.<minor><suffix>`, where:
+
+- `<family>` is lowercase ASCII letters
+- `<major>` and `<minor>` are ASCII digits
+- `<suffix>` is empty or starts with `[` or `-`
+
+Only the dot between `<major>` and `<minor>` changes, to a hyphen. Every other
+value is passed as-is:
+
+| `AMPLIHACK_DEFAULT_MODEL` | What amplihack adds |
+|---|---|
+| `claude-opus-5.5` | `--model claude-opus-5-5` |
+| `claude-sonnet-4.5` | `--model claude-sonnet-4-5` |
+| `claude-opus-5.5[1m]` | `--model claude-opus-5-5[1m]` |
+| `claude-opus-4.1-20250805` | `--model claude-opus-4-1-20250805` |
+| `claude-opus-5-5[1m]` | `--model claude-opus-5-5[1m]` (already hyphenated) |
+| `gpt-5.1` | `--model gpt-5.1` (not a Claude id) |
+| `claude-3.5-sonnet` | `--model claude-3.5-sonnet` (version comes before the family) |
+| `claude-opus-5.5.1` | `--model claude-opus-5.5.1` (a dot right after the minor version is not a valid suffix) |
+| `Claude-Opus-5.5` | `--model Claude-Opus-5.5` (not lowercase) |
+
+**Explicit `--model`:** a `--model <id>` or `--model=<id>` you pass after `--`
+overrides this variable and is forwarded unchanged. It is never normalised,
+because you typed it and Claude Code's error message names it.
+
+```sh
+# The explicit --model wins and is not rewritten
+AMPLIHACK_DEFAULT_MODEL='claude-opus-5.5[1m]' amplihack claude -- --model claude-sonnet-4-5
+# amplihack adds no --model; claude receives --model claude-sonnet-4-5
 ```
 
 See [Launch Flag Injection](./launch-flag-injection.md) for the complete rules

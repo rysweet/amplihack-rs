@@ -134,10 +134,12 @@ pub(super) fn build_command_for_dir(
     //
     // Precedence, highest first:
     //   1. `--model` on the command line — the operator's, forwarded untouched
+    //      and not normalised either (#1527)
     //   2. the LiteLLM proxy's model, when a launch is routed through the proxy
     //      — the proxy routes on the model name and has no default of its own
     //   3. `AMPLIHACK_DEFAULT_MODEL` — pins every launch, and an empty value
-    //      means "pass nothing and let the CLI decide"
+    //      means "pass nothing and let the CLI decide". A dotted Claude id
+    //      (Copilot's spelling) is rewritten to the hyphenated id (#1527)
     //   4. `DEFAULT_MODEL`
     //
     // Note this still outranks a `"model"` set in `~/.claude/settings.json`,
@@ -145,40 +147,32 @@ pub(super) fn build_command_for_dir(
     // a deliberate, documented precedence rather than an accident, and the
     // stderr line below names both the value and where it came from, so the id
     // in any later error traces straight back to this decision.
+    //
+    // Issue #1527: an explicit `--model` is forwarded unchanged, even when
+    // dotted: the operator typed it, and Claude Code's error names it.
     let user_has_model = extra_args
         .iter()
         .any(|arg| arg == "--model" || arg.starts_with("--model="));
     if !user_has_model && is_claude_compatible {
         let selection = if amplihack_utils::litellm_proxy::proxy_requested() {
-            Some((
-                std::env::var(amplihack_utils::litellm_proxy::MODEL_ENV)
+            Some(ModelSelection {
+                model: std::env::var(amplihack_utils::litellm_proxy::MODEL_ENV)
                     .unwrap_or_else(|_| "amplihack-default".to_string()),
-                amplihack_utils::litellm_proxy::MODEL_ENV,
-            ))
-        } else {
-            configured_default_model().map(|model| {
-                let source = if std::env::var("AMPLIHACK_DEFAULT_MODEL").is_ok() {
-                    "AMPLIHACK_DEFAULT_MODEL"
-                } else {
-                    "amplihack's built-in default"
-                };
-                (model, source)
+                source: amplihack_utils::litellm_proxy::MODEL_ENV,
+                normalised_from: None,
             })
+        } else {
+            configured_default_model()
         };
-        if let Some((model, source)) = selection {
+        if let Some(selection) = selection {
             // Diagnosability (issue #1421): a 404 naming a model the user never
             // typed is not diagnosable. When amplihack puts a model on the
             // command line, it says so and says where the value came from, so
             // the id in any later error traces back to this decision instead of
             // looking like a hardcoded secret inside the binary.
-            eprintln!(
-                "amplihack: passing `--model {model}` to `{}` (from {source}). \
-                 Set AMPLIHACK_DEFAULT_MODEL to override it, or to an empty value to \
-                 let {} choose its own default model.",
-                binary.name, binary.name
-            );
+            eprintln!("{}", model_selection_notice(&selection, &binary.name));
             cmd.arg("--model");
-            cmd.arg(model);
+            cmd.arg(selection.model);
         }
     }
 
@@ -277,13 +271,6 @@ pub(super) fn build_command_for_dir(
     cmd
 }
 
-/// The model an operator explicitly asked amplihack to pass, if any.
-///
-/// Issue #1421: there is deliberately no fallback. When `AMPLIHACK_DEFAULT_MODEL`
-/// is unset — or set to whitespace, which is how a shell delivers an unset-ish
-/// value — amplihack passes no `--model` at all and the underlying CLI applies
-/// its own current default. Substituting a hardcoded alias here is what put a
-/// retired model id on the command line of a user who never chose one.
 /// The model amplihack requests when the operator has not chosen one.
 ///
 /// Issue #1421: this is a CONCRETE model id, deliberately not an alias.
@@ -306,24 +293,117 @@ pub(super) fn build_command_for_dir(
 /// alias is a 404 naming something the user cannot trace. Prefer the loud one.
 pub(crate) const DEFAULT_MODEL: &str = "claude-opus-5[1m]";
 
+/// A model amplihack is about to put on the command line, and where it came
+/// from, for the #1421 stderr line.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ModelSelection {
+    pub(crate) model: String,
+    pub(crate) source: &'static str,
+    /// The operator's spelling, when it was rewritten into `model` (#1527).
+    pub(crate) normalised_from: Option<String>,
+}
+
 /// The model to request, or `None` to let the CLI choose.
 ///
 /// `AMPLIHACK_DEFAULT_MODEL` overrides [`DEFAULT_MODEL`]. Setting it to an
 /// empty or whitespace-only value — which is how a shell delivers an unset-ish
 /// value — means "pass no `--model` at all", so an operator can hand the choice
 /// back to the CLI without editing amplihack.
-pub(crate) fn configured_default_model() -> Option<String> {
+///
+/// Issue #1527: the variable is shared with GitHub Copilot CLI, which spells
+/// Claude ids with a dot (`claude-opus-5.5`). Claude Code rejects that form, so
+/// a dotted Claude id is rewritten to the hyphenated one and the selection
+/// records the original. See [`normalize_dotted_claude_model_id`].
+///
+/// The variable is read once, and the source is decided in the same match arm,
+/// so the stderr line cannot name a source that disagrees with the value. A
+/// value that is not valid UTF-8 falls back to [`DEFAULT_MODEL`] rather than
+/// being forwarded lossily.
+pub(crate) fn configured_default_model() -> Option<ModelSelection> {
     match std::env::var("AMPLIHACK_DEFAULT_MODEL") {
         Ok(raw) => {
             let trimmed = raw.trim();
             if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
+                return None;
             }
+            let (model, normalised_from) = match normalize_dotted_claude_model_id(trimmed) {
+                Some(hyphenated) => (hyphenated, Some(trimmed.to_string())),
+                None => (trimmed.to_string(), None),
+            };
+            Some(ModelSelection {
+                model,
+                source: "AMPLIHACK_DEFAULT_MODEL",
+                normalised_from,
+            })
         }
-        Err(_) => Some(DEFAULT_MODEL.to_string()),
+        Err(_) => Some(ModelSelection {
+            model: DEFAULT_MODEL.to_string(),
+            source: "amplihack's built-in default",
+            normalised_from: None,
+        }),
     }
+}
+
+/// Issue #1527: the hyphenated spelling of a dotted Claude model id, or `None`
+/// when `id` is not one.
+///
+/// Rewrites exactly `claude-<family>-<major>.<minor><suffix>`, where `family`
+/// is one or more ASCII lowercase letters, `major` and `minor` are one or more
+/// ASCII digits, and `suffix` is empty or starts with `[` or `-`. The one `.`
+/// between `major` and `minor` becomes `-`; everything else, the suffix
+/// included, is copied as it is. So `claude-opus-5.5[1m]` becomes
+/// `claude-opus-5-5[1m]`.
+///
+/// Everything else is `None`: aliases, ids that are already hyphenated, non-
+/// Claude ids such as `gpt-5.1`, legacy version-first ids such as
+/// `claude-3.5-sonnet`, and anything not lowercase. There is no fuzzy matching,
+/// so the output can never name a different model than the input did.
+///
+/// `id` is expected to be trimmed already.
+pub(super) fn normalize_dotted_claude_model_id(id: &str) -> Option<String> {
+    let rest = id.strip_prefix("claude-")?;
+    let (family, rest) = split_leading(rest, u8::is_ascii_lowercase)?;
+    let rest = rest.strip_prefix('-')?;
+    let (major, rest) = split_leading(rest, u8::is_ascii_digit)?;
+    let rest = rest.strip_prefix('.')?;
+    let (minor, suffix) = split_leading(rest, u8::is_ascii_digit)?;
+    if !(suffix.is_empty() || suffix.starts_with('[') || suffix.starts_with('-')) {
+        return None;
+    }
+    Some(format!("claude-{family}-{major}-{minor}{suffix}"))
+}
+
+/// Split `s` after its leading run of bytes matching `pred`, or `None` when
+/// that run is empty. `pred` only ever matches ASCII, so the split always
+/// lands on a char boundary.
+fn split_leading(s: &str, pred: fn(&u8) -> bool) -> Option<(&str, &str)> {
+    let n = s.bytes().take_while(pred).count();
+    (n > 0).then(|| s.split_at(n))
+}
+
+/// The one stderr line naming the model amplihack passes and where it came
+/// from (issue #1421), plus the original spelling when it was rewritten
+/// (issue #1527).
+///
+/// Without a rewrite the line is exactly what it was before #1527, so anything
+/// that reads stderr sees no change.
+pub(super) fn model_selection_notice(selection: &ModelSelection, binary_name: &str) -> String {
+    let ModelSelection {
+        model,
+        source,
+        normalised_from,
+    } = selection;
+    let provenance = match normalised_from {
+        Some(original) => format!(
+            "{source}, normalised from `{original}`: Claude model ids use hyphens, not dots"
+        ),
+        None => (*source).to_string(),
+    };
+    format!(
+        "amplihack: passing `--model {model}` to `{binary_name}` (from {provenance}). \
+         Set AMPLIHACK_DEFAULT_MODEL to override it, or to an empty value to \
+         let {binary_name} choose its own default model."
+    )
 }
 
 /// Pure decision function (issue #621): is this Copilot invocation
