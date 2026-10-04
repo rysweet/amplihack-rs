@@ -133,8 +133,9 @@ pub(super) fn build_command_for_dir(
     // for that reason — see its doc comment.
     //
     // Precedence, highest first:
-    //   1. `--model` on the command line — the operator's, forwarded untouched
-    //      and not normalised either (#1527)
+    //   1. `--model` on the command line — the operator's, forwarded untouched,
+    //      even when dotted (#1527): they typed it, and Claude Code's error
+    //      names it
     //   2. the LiteLLM proxy's model, when a launch is routed through the proxy
     //      — the proxy routes on the model name and has no default of its own
     //   3. `AMPLIHACK_DEFAULT_MODEL` — pins every launch, and an empty value
@@ -147,9 +148,6 @@ pub(super) fn build_command_for_dir(
     // a deliberate, documented precedence rather than an accident, and the
     // stderr line below names both the value and where it came from, so the id
     // in any later error traces straight back to this decision.
-    //
-    // Issue #1527: an explicit `--model` is forwarded unchanged, even when
-    // dotted: the operator typed it, and Claude Code's error names it.
     let user_has_model = extra_args
         .iter()
         .any(|arg| arg == "--model" || arg.starts_with("--model="));
@@ -310,8 +308,9 @@ pub(crate) struct ModelSelection {
 /// value — means "pass no `--model` at all", so an operator can hand the choice
 /// back to the CLI without editing amplihack.
 ///
-/// Issue #1527: the variable is shared with GitHub Copilot CLI, which spells
-/// Claude ids with a dot (`claude-opus-5.5`). Claude Code rejects that form, so
+/// Issue #1527: operators set this to a Claude id in the dotted spelling GitHub
+/// Copilot CLI uses (`claude-opus-5.5`). Only amplihack reads the variable, and
+/// only for claude-compatible launches, where Claude Code rejects that form. So
 /// a dotted Claude id is rewritten to the hyphenated one and the selection
 /// records the original. See [`normalize_dotted_claude_model_id`].
 ///

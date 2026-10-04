@@ -925,7 +925,7 @@ ignore it.
 | `AMPLIHACK_DEFAULT_MODEL` | What amplihack adds |
 |---|---|
 | unset, or not valid UTF-8 | `--model claude-opus-5[1m]` |
-| a model id | `--model` with that id, trimmed of surrounding whitespace |
+| a model id | `--model` with that id, trimmed of surrounding whitespace; a dotted Claude id is [rewritten to hyphens](#dotted-claude-model-ids) |
 | empty or whitespace-only | nothing; the tool picks its own default |
 
 Because amplihack passes `--model` unless this variable is empty, the `"model"`
@@ -934,7 +934,8 @@ in `~/.claude/settings.json` only takes effect when you set
 
 When any [External LiteLLM gateway variable](#external-litellm-gateway-variables)
 is set, this variable is not read: the model is the required
-`AMPLIHACK_LITELLM_MODEL`, passed unchanged.
+`AMPLIHACK_LITELLM_MODEL`, passed unchanged. It is never normalised, because the
+gateway routes on the exact name.
 
 **Why the default is a concrete id:** an alias such as `opus[1m]` is resolved by
 the tool, and amplihack does not control the tool's version. On one install that
@@ -963,10 +964,14 @@ amplihack: passing `--model claude-sonnet-4-5` to `claude` (from AMPLIHACK_DEFAU
 With the variable unset or not valid UTF-8, the source reads
 `amplihack's built-in default`.
 
-**Dotted Claude model ids (issue #1527):** GitHub Copilot CLI writes Claude model
-ids with a dot (`claude-opus-5.5`). Claude Code uses hyphens (`claude-opus-5-5`)
-and rejects the dotted form with "There's an issue with the selected model". So
-amplihack rewrites a dotted Claude id before passing it:
+#### Dotted Claude model ids
+
+GitHub Copilot CLI writes Claude model ids with a dot (`claude-opus-5.5`).
+Claude Code uses hyphens (`claude-opus-5-5`) and does not accept the dotted
+form: `claude -p --model claude-opus-5.5` fails with "There's an issue with the
+selected model", and an interactive session starts but reports a different
+model (Opus 5). So amplihack rewrites a dotted Claude id before passing it
+(issue #1527):
 
 ```sh
 AMPLIHACK_DEFAULT_MODEL='claude-opus-5.5[1m]' amplihack claude
@@ -979,41 +984,67 @@ The stderr line names both spellings:
 amplihack: passing `--model claude-opus-5-5[1m]` to `claude` (from AMPLIHACK_DEFAULT_MODEL, normalised from `claude-opus-5.5[1m]`: Claude model ids use hyphens, not dots). Set AMPLIHACK_DEFAULT_MODEL to override it, or to an empty value to let claude choose its own default model.
 ```
 
-The rewrite applies only to a value of exactly the form
+The rewrite applies only to a value (after trimming) of exactly the form
 `claude-<family>-<major>.<minor><suffix>`, where:
 
-- `<family>` is lowercase ASCII letters
-- `<major>` and `<minor>` are ASCII digits
+- `<family>` is one or more lowercase ASCII letters
+- `<major>` and `<minor>` are one or more ASCII digits
 - `<suffix>` is empty or starts with `[` or `-`
 
-Only the dot between `<major>` and `<minor>` changes, to a hyphen. Every other
-value is passed as-is:
+Only the dot between `<major>` and `<minor>` changes, to a hyphen. The suffix is
+copied as typed. Matching is case-sensitive and exact, with no aliases and no
+fuzzy matching, so the result always names the same model you set.
 
-| `AMPLIHACK_DEFAULT_MODEL` | What amplihack adds |
+| Rewritten | What amplihack adds |
 |---|---|
 | `claude-opus-5.5` | `--model claude-opus-5-5` |
 | `claude-sonnet-4.5` | `--model claude-sonnet-4-5` |
 | `claude-opus-5.5[1m]` | `--model claude-opus-5-5[1m]` |
 | `claude-opus-4.1-20250805` | `--model claude-opus-4-1-20250805` |
-| `claude-opus-5-5[1m]` | `--model claude-opus-5-5[1m]` (already hyphenated) |
-| `gpt-5.1` | `--model gpt-5.1` (not a Claude id) |
-| `claude-3.5-sonnet` | `--model claude-3.5-sonnet` (version comes before the family) |
-| `claude-opus-5.5.1` | `--model claude-opus-5.5.1` (a dot right after the minor version is not a valid suffix) |
-| `Claude-Opus-5.5` | `--model Claude-Opus-5.5` (not lowercase) |
 
-**Explicit `--model`:** a `--model <id>` or `--model=<id>` you pass after `--`
-overrides this variable and is forwarded unchanged. It is never normalised,
-because you typed it and Claude Code's error message names it.
+Any other value is passed as-is:
+
+| Passed as-is | Why |
+|---|---|
+| `claude-opus-5-5`, `claude-opus-5-5[1m]` | already hyphenated |
+| `claude-opus-5[1m]` | no minor version (this is the built-in default) |
+| `opus[1m]`, `sonnet` | aliases, not full ids |
+| `gpt-5.1`, `gemini-2.5-pro` | not Claude ids |
+| `claude-3.5-sonnet` | the version comes before the family |
+| `claude-opus-5.5.1` | the suffix starts with `.`, not `[` or `-` |
+| `Claude-Opus-5.5` | not lowercase |
+
+Only the `--model` argument is rewritten. The launched tool inherits
+`AMPLIHACK_DEFAULT_MODEL` exactly as you set it. A nested amplihack launch reads
+it again and produces the same rewrite, unless that launch has an explicit
+`--model` or uses the LiteLLM gateway.
+
+#### Explicit `--model`
+
+A `--model <id>` or `--model=<id>` on the `amplihack` command line overrides
+this variable. It is forwarded exactly as typed, and amplihack prints no model
+line for it. It is never normalised, even when dotted: you typed it, and Claude
+Code's error names that exact string. Use the hyphenated spelling with
+`--model`:
 
 ```sh
-# The explicit --model wins and is not rewritten
-AMPLIHACK_DEFAULT_MODEL='claude-opus-5.5[1m]' amplihack claude -- --model claude-sonnet-4-5
-# amplihack adds no --model; claude receives --model claude-sonnet-4-5
+# The explicit --model wins over the variable and reaches claude unchanged
+AMPLIHACK_DEFAULT_MODEL='claude-opus-5.5[1m]' amplihack claude --model claude-sonnet-4-5
+# claude receives: --model claude-sonnet-4-5
+
+# Not rewritten, so Claude Code does not accept it (see above)
+amplihack claude --model claude-opus-5.5
+
+# Works
+amplihack claude --model 'claude-opus-5-5[1m]'
 ```
 
-See [Launch Flag Injection](./launch-flag-injection.md) for the complete rules
-governing how `--model` and other flags are injected into the subprocess
-command line.
+For the other flags amplihack adds to the launch command, such as
+`--dangerously-skip-permissions`, see
+[Launch Flag Injection](./launch-flag-injection.md). That page's `--model`
+section is out of date. It says amplihack passes no `--model` when this
+variable is unset, and it quotes an older stderr line. Where the two pages
+disagree about `--model`, this section is correct.
 
 ---
 

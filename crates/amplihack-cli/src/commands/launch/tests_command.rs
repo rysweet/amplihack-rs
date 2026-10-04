@@ -562,12 +562,13 @@ fn test_build_command_no_model_injection_for_equals_form() {
 // ---------------------------------------------------------------------------
 // Issue #1527: a dotted Claude model id in AMPLIHACK_DEFAULT_MODEL.
 //
-// GitHub Copilot CLI spells Claude ids with a dot (`claude-opus-5.5`). Claude
-// Code only accepts hyphens (`claude-opus-5-5`) and rejects the dotted form.
-// The variable is shared by both tools, so amplihack rewrites the one dot
-// between major and minor version before passing it on, and says so on the
-// stderr line added for #1421. An explicit `--model` is what the operator typed
-// and is forwarded unchanged.
+// Operators set the variable to a Claude id in the dotted spelling GitHub
+// Copilot CLI uses (`claude-opus-5.5`). Claude Code only accepts hyphens
+// (`claude-opus-5-5`) and rejects the dotted form. amplihack reads the variable
+// only for claude-compatible launches, so it rewrites the one dot between major
+// and minor version before passing it on, and says so on the stderr line added
+// for #1421. An explicit `--model` is what the operator typed and is forwarded
+// unchanged.
 // ---------------------------------------------------------------------------
 
 /// The line the docs promise for a rewritten id
@@ -618,11 +619,6 @@ fn model_after_flag(args: &[String]) -> Option<&str> {
         .map(String::as_str)
 }
 
-fn has_model_flag(args: &[String]) -> bool {
-    args.iter()
-        .any(|arg| arg == "--model" || arg.starts_with("--model="))
-}
-
 /// The rewrite's safety contract: the output is the input with its first `.`
 /// (the one between major and minor) turned into `-`. Same length, one byte
 /// changed, still `claude-` prefixed, so it cannot name some other model or
@@ -664,54 +660,32 @@ fn assert_is_one_dot_to_hyphen_rewrite(input: &str, output: &str) {
 }
 
 /// Issue #1527: each dotted spelling becomes the hyphenated id Claude Code
-/// accepts. These are the rows of the docs table that are rewritten.
+/// accepts. The docs table's rewritten rows are all here.
+///
+/// The version digits and the suffix are copied, never parsed.
+/// `claude-opus-4.1-2025.08` keeps the dot in its suffix, because only the dot
+/// between major and minor is rewritten and a suffix starting with `-` is
+/// copied as it is. Leading zeros, and a digit run longer than any integer
+/// type, survive unchanged; a scan that parsed the version into a number and
+/// printed it back would get those wrong, or panic.
 #[test]
 fn test_normalize_dotted_claude_model_id_rewrites_dotted_ids() {
+    let huge = "9".repeat(64);
+    let huge_dotted = format!("claude-opus-{huge}.{huge}[1m]");
+    let huge_hyphenated = format!("claude-opus-{huge}-{huge}[1m]");
     let cases = [
         ("claude-opus-5.5", "claude-opus-5-5"),
         ("claude-sonnet-4.5", "claude-sonnet-4-5"),
         ("claude-haiku-4.5", "claude-haiku-4-5"),
         ("claude-opus-5.5[1m]", "claude-opus-5-5[1m]"),
         ("claude-opus-4.1-20250805", "claude-opus-4-1-20250805"),
+        ("claude-opus-4.1-2025.08", "claude-opus-4-1-2025.08"),
+        ("claude-opus-05.05", "claude-opus-05-05"),
+        (huge_dotted.as_str(), huge_hyphenated.as_str()),
     ];
     for (dotted, hyphenated) in cases {
         let got = normalize_dotted_claude_model_id(dotted);
         assert_eq!(got.as_deref(), Some(hyphenated), "rewriting {dotted:?}");
-        assert_is_one_dot_to_hyphen_rewrite(dotted, hyphenated);
-    }
-}
-
-/// Issue #1527: the version digits and the suffix are copied, never parsed.
-///
-/// `claude-opus-4.1-2025.08` keeps the dot in its suffix, because only the dot
-/// between major and minor is rewritten and a suffix starting with `-` is
-/// copied as it is (the documented pattern). Leading zeros, and a digit run
-/// longer than any integer type, survive unchanged. A scan that parsed the
-/// version into a number and printed it back would get those wrong, or panic.
-#[test]
-fn test_normalize_dotted_claude_model_id_copies_digits_and_suffix_verbatim() {
-    let huge = "9".repeat(64);
-    let cases = [
-        (
-            "claude-opus-4.1-2025.08".to_string(),
-            "claude-opus-4-1-2025.08".to_string(),
-        ),
-        (
-            "claude-opus-05.05".to_string(),
-            "claude-opus-05-05".to_string(),
-        ),
-        (
-            format!("claude-opus-{huge}.{huge}[1m]"),
-            format!("claude-opus-{huge}-{huge}[1m]"),
-        ),
-    ];
-    for (dotted, hyphenated) in &cases {
-        let got = normalize_dotted_claude_model_id(dotted);
-        assert_eq!(
-            got.as_deref(),
-            Some(hyphenated.as_str()),
-            "rewriting {dotted:?}"
-        );
         assert_is_one_dot_to_hyphen_rewrite(dotted, hyphenated);
     }
 }
@@ -728,7 +702,7 @@ fn test_normalize_dotted_claude_model_id_leaves_everything_else() {
         "claude-opus-5[1m]",
         DEFAULT_MODEL,
         "claude-opus-4-1-20250805",
-        // Not Claude ids: Copilot's own spelling is correct for these.
+        // Not Claude ids: the dot is part of the real id.
         "gpt-5.1",
         "gemini-2.5-pro",
         // Aliases.
@@ -921,26 +895,17 @@ fn test_configured_default_model_non_utf8_falls_back_to_built_in_default() {
     );
 }
 
-/// Issue #1527: an empty value still hands the choice back to the tool. Only a
-/// non-empty value is normalised.
-#[test]
-fn test_build_command_empty_model_env_injects_nothing() {
-    let args = argv_with_default_model(Some(""), "claude", &[]);
-    assert!(
-        !has_model_flag(&args),
-        "an empty AMPLIHACK_DEFAULT_MODEL must inject no --model, got: {args:?}"
-    );
-}
-
 /// Issue #1527, the reported bug: a dotted id reaches the command line as the
-/// hyphenated id Claude Code accepts, for every Claude-compatible tool, and the
-/// dotted spelling it rejects is nowhere in argv.
+/// hyphenated id Claude Code accepts, trimmed and exactly once, for every
+/// Claude-compatible tool, and the dotted spelling it rejects is nowhere in
+/// argv.
 #[test]
 fn test_build_command_normalises_dotted_default_model() {
     let cases = [
         ("claude-opus-5.5[1m]", "claude-opus-5-5[1m]"),
         ("claude-opus-5.5", "claude-opus-5-5"),
         ("claude-sonnet-4.5", "claude-sonnet-4-5"),
+        (" \tclaude-opus-5.5[1m]\n ", "claude-opus-5-5[1m]"),
     ];
     for (dotted, hyphenated) in cases {
         let args = argv_with_default_model(Some(dotted), "claude", &[]);
@@ -955,7 +920,7 @@ fn test_build_command_normalises_dotted_default_model() {
             "exactly one --model, got: {args:?}"
         );
         assert!(
-            !args.iter().any(|arg| arg.contains(dotted)),
+            !args.iter().any(|arg| arg.contains(dotted.trim())),
             "the dotted spelling Claude Code rejects must not reach argv, got: {args:?}"
         );
     }
@@ -970,18 +935,71 @@ fn test_build_command_normalises_dotted_default_model() {
     }
 }
 
-/// Issue #1527: the rewrite is for Claude ids only. A dotted id that is not of
-/// the documented form reaches the tool exactly as set.
+/// Issue #1527: anything not of the documented dotted form reaches the tool
+/// exactly as set, and only once. That covers dotted ids the rewrite must not
+/// touch, and the hyphenated spellings the issue reports as working, `[1m]`
+/// suffix and all: a rewrite that also touched hyphens or brackets would break
+/// the ids that work today.
 #[test]
-fn test_build_command_passes_non_claude_dotted_model_unchanged() {
-    for id in ["gpt-5.1", "claude-3.5-sonnet", "claude-opus-5.5.1"] {
+fn test_build_command_passes_other_default_models_unchanged() {
+    for id in [
+        "gpt-5.1",
+        "claude-3.5-sonnet",
+        "claude-opus-5.5.1",
+        "claude-opus-5-5",
+        "claude-opus-5-5[1m]",
+        "claude-opus-5[1m]",
+        "claude-opus-4-1-20250805",
+    ] {
         let args = argv_with_default_model(Some(id), "claude", &[]);
         assert_eq!(
             model_after_flag(&args),
             Some(id),
             "AMPLIHACK_DEFAULT_MODEL={id:?} must be passed unchanged, got: {args:?}"
         );
+        assert_eq!(
+            args.iter().filter(|arg| arg.starts_with("--model")).count(),
+            1,
+            "exactly one --model, got: {args:?}"
+        );
     }
+}
+
+/// Issue #1527 (decision A2): only argv is rewritten. The child must inherit
+/// AMPLIHACK_DEFAULT_MODEL exactly as the operator set it: the command sets no
+/// override for it, removes nothing, and building the command leaves the
+/// parent's value alone. Rewriting the environment would silently change the
+/// operator's setting for every process below this one. Left alone, a nested
+/// amplihack launch re-reads the dotted value and makes the same rewrite, with
+/// the same stderr line naming the original spelling.
+#[test]
+fn test_build_command_leaves_the_childs_default_model_env_untouched() {
+    let dotted = "claude-opus-5.5[1m]";
+    let (overrides, parent_value_after_build) = with_default_model_env(Some(dotted), || {
+        let cmd = build_command(&make_named_binary("claude"), false, false, false, &[]);
+        let overrides: Vec<(String, Option<String>)> = cmd
+            .get_envs()
+            .filter(|(key, _)| *key == OsStr::new("AMPLIHACK_DEFAULT_MODEL"))
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        (overrides, std::env::var("AMPLIHACK_DEFAULT_MODEL").ok())
+    });
+    assert!(
+        overrides.is_empty(),
+        "the child must inherit AMPLIHACK_DEFAULT_MODEL unmodified, but the command \
+         overrides it: {overrides:?}"
+    );
+    assert_eq!(
+        parent_value_after_build.as_deref(),
+        Some(dotted),
+        "building the command must not rewrite the parent's AMPLIHACK_DEFAULT_MODEL, \
+         which every later child inherits"
+    );
 }
 
 /// Issue #1527: an explicit `--model` is forwarded unchanged, in both forms,
@@ -1027,15 +1045,15 @@ fn test_build_command_explicit_dotted_model_is_not_normalised() {
     );
 }
 
-/// Issue #1527: Copilot and Codex ignore AMPLIHACK_DEFAULT_MODEL. A dotted
-/// value, which is Copilot's own spelling, must not start reaching them in
-/// either form.
+/// Issue #1527: amplihack reads AMPLIHACK_DEFAULT_MODEL only for
+/// claude-compatible launches. A dotted value must not start reaching Copilot
+/// or Codex in either spelling.
 #[test]
 fn test_build_command_dotted_model_env_ignored_for_copilot_and_codex() {
     for tool in ["copilot", "codex"] {
         let args = argv_with_default_model(Some("claude-opus-5.5"), tool, &[]);
         assert!(
-            !has_model_flag(&args),
+            !args.iter().any(|arg| arg.starts_with("--model")),
             "`amplihack {tool}` must not get a --model, got: {args:?}"
         );
         assert!(
@@ -1054,23 +1072,6 @@ fn test_proxy_model_is_never_normalised() {
         model_arg_through_proxy(Some("claude-opus-5.5")).as_deref(),
         Some("claude-opus-5.5")
     );
-}
-
-/// Issue #1527: when the id was rewritten, the #1421 stderr line names both
-/// spellings and why, on one ASCII line, as documented.
-#[test]
-fn test_model_selection_notice_reports_normalisation() {
-    let line = model_selection_notice(
-        &selection(
-            "claude-opus-5-5[1m]",
-            "AMPLIHACK_DEFAULT_MODEL",
-            Some("claude-opus-5.5[1m]"),
-        ),
-        "claude",
-    );
-    assert_eq!(line, DOCUMENTED_REWRITE_NOTICE);
-    assert!(!line.contains('\n'), "one line, got: {line:?}");
-    assert!(line.is_ascii(), "ASCII only, got: {line:?}");
 }
 
 /// Issue #1527: without a rewrite, the #1421 line is byte-for-byte what it was,
@@ -1100,12 +1101,6 @@ fn test_model_selection_notice_is_unchanged_without_rewrite() {
              value to let rusty choose its own default model."
         )
     );
-    for line in [&documented, &built_in] {
-        assert!(
-            !line.contains("normalised"),
-            "no rewrite, no mention of one: {line:?}"
-        );
-    }
 }
 
 /// Issue #1527, wired together short of spawning a process: the selection a
