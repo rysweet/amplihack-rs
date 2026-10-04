@@ -69,6 +69,8 @@ Review and double-check examined loader discovery, error propagation, metadata s
 
 Pre-commit initially exited 1 for a Rust formatting mismatch (`precommit-final.log`); `cargo fmt -p amplihack-domain-agents` corrected it. `cargo fmt --all --check` then exited 0 (`format-final.log`), and Clippy passed. The staged-tree pre-commit recheck exited 0 and is logged at `/d0/ryan/sunfixamp-model-neutrality/precommit-recheck.log`.
 
+CI on commit `740b133b83ce3aa18e844fc227acb54f478d86a4` rejected the copied `.py` asset under the repository’s tracked-Python guard. The six regression cases were moved into `test-skill-model-neutrality-regressions.sh`, using the existing guard’s inline-Python shell convention. The shell regression command passed all six tests (exit 0, `/d0/ryan/sunfixamp-model-neutrality/regressions-shell.log`). `scripts/check-no-python-assets.sh`, ShellCheck on the regression shell, and staged pre-commit all exited 0 (`python-assets-final.log`, `shell-regressions-check.log`, `precommit-shell.log` in the same evidence directory). The guide now names that entry point; the earlier Python command above is historical evidence.
+
 ## Canonical inventory
 
 “Enumerated” records filesystem coverage, not a semantic neutrality pass.

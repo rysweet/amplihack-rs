@@ -95,7 +95,7 @@ cargo test -p amplihack-domain-agents skill_catalog
 cargo test -p amplihack --test skill_frontmatter_name --test skill_frontmatter_type
 cargo test -p amplihack --test issue_849_skill_mirror_citation
 cargo test -p amplihack-cli issue_1438_skill_publication
-PYTHONDONTWRITEBYTECODE=1 python3 amplifier-bundle/recipes/tests/test_skill_model_neutrality.py
+bash amplifier-bundle/recipes/tests/test-skill-model-neutrality-regressions.sh
 pre-commit run --all-files
 ```
 

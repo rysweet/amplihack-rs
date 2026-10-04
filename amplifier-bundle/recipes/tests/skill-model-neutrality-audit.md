@@ -72,7 +72,7 @@ cover absent, empty, whitespace-only, unresolved angle-bracket placeholders,
 and valid configured values without SDK imports or API calls. These are static
 checks of a restricted expression, not compiled C# execution.
 
-Added `test_skill_model_neutrality.py`: six offline integration tests exercise
+Originally added `test_skill_model_neutrality.py` (now supplied as `test-skill-model-neutrality-regressions.sh` to comply with the tracked-asset policy): six offline integration tests exercise
 an unrelated caller directory, supporting-file and mirror pin diagnostics,
 frontmatter overrides and inventory drift, and removed configuration validation.
 Follow-up review added failing regressions for generic provider recommendations,

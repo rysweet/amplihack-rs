@@ -1,3 +1,8 @@
+#!/usr/bin/env bash
+# Offline neutrality guard integration fixtures.
+set -euo pipefail
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+python3 - "$repo_root" <<'PY'
 """Offline guard regressions; fixtures respect the caller's TMPDIR."""
 from pathlib import Path
 import os
@@ -5,8 +10,9 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import sys
 
-REPO = Path(__file__).resolve().parents[3]
+REPO = Path(sys.argv.pop(1))
 BASE = Path(tempfile.gettempdir())
 
 
@@ -103,3 +109,5 @@ class NeutralityGuardTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+PY
