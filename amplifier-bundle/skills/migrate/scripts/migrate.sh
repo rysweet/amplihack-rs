@@ -352,13 +352,35 @@ _detect_cli_name() {
   fi
 }
 
+# _detect_cli_epoch <timestamp>: print the Unix time of an RFC 3339 timestamp,
+# or fail. It accepts what chrono's DateTime::parse_from_rfc3339, used by the
+# Rust resolver, accepts: `T`, `t` or a space between date and time; `Z`, `z`
+# or a +hh:mm / -hh:mm offset; any number of fractional digits; a leap second.
+# `date -d` alone is no check: it reads "2026-10-04 13:13:46", which has no
+# offset, as local time, and "yesterday" as a date, and it refuses a leap
+# second. The pattern checks the form and the field ranges; `date -d` then
+# rejects a day the month does not have, as chrono does.
+_detect_cli_epoch() {
+  local ts="$1"
+  local re='^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])[Tt ]([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\.[0-9]+)?([Zz]|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$'
+  [[ "$ts" =~ $re ]] || return 1
+  # chrono reads second 60 as 59 plus a second's worth of nanoseconds.
+  [[ "${ts:17:2}" == 60 ]] && ts="${ts:0:17}59${ts:19}"
+  # The pattern leaves `t` and `z` as the only letters; `date -d` wants them
+  # upper case. tr, because bash 3.2 (macOS) has no case-modifying expansion.
+  date -d "$(printf '%s' "$ts" | tr 'tz' 'TZ')" +%s 2>/dev/null
+}
+
 # _detect_cli_context <file> <dir>: read one launcher_context.json found in
 # <dir>. Prints the launcher when the file is usable, nothing when it is stale
-# (older than 24h, or no timestamp: sessions end, and an old file is expected),
-# and warns on stderr, naming the file and the reason, when it cannot be used.
-# Mirrors read_launcher_field in crates/amplihack-utils/src/agent_binary.rs.
+# (older than 24h: sessions end, and an old file is expected), and warns on
+# stderr, naming the file and the reason, when it cannot be used. A file with
+# no timestamp, or one that is not RFC 3339, cannot be used however recent it
+# is, so it is named, not passed over as old. Needs jq; detect_cli checks for
+# it first. Mirrors read_launcher_field in
+# crates/amplihack-utils/src/agent_binary.rs.
 _detect_cli_context() {
-  local ctx="$1" dir="$2" reason="" real size
+  local ctx="$1" dir="$2" reason="" real size timestamp written=""
   real="$(readlink -f "$ctx" 2>/dev/null || true)"
   if [[ -z "$real" ]]; then
     reason="could not be resolved"
@@ -376,17 +398,19 @@ _detect_cli_context() {
                and (.timestamp == null or (.timestamp | type) == "string")' \
                "$real" >/dev/null 2>&1; then
     reason='is JSON but not a launcher context, which needs a string "launcher" field'
+  elif ! jq -e '.timestamp != null' "$real" >/dev/null 2>&1; then
+    reason="has no timestamp, so its age is unknown"
+  else
+    # As for the launcher below: `jq -r` output loses a trailing newline in
+    # the shell, so a control character is replaced inside jq.
+    timestamp="$(jq -r '.timestamp | if test("[[:cntrl:]]") then "<control>" else . end' "$real")"
+    written="$(_detect_cli_epoch "$timestamp")" || reason="has a timestamp that is not RFC 3339"
   fi
   if [[ -n "$reason" ]]; then
     log_warn "ignored $ctx: it $reason. Fix or delete it."
     return 0
   fi
-  local timestamp written now
-  timestamp="$(jq -r '.timestamp // empty' "$real")"
-  [[ -n "$timestamp" ]] || return 0
-  written="$(date -d "$timestamp" +%s 2>/dev/null)" || return 0
-  now="$(date +%s)"
-  (( now - written > 86400 )) && return 0
+  (( $(date +%s) - written > 86400 )) && return 0
   local launcher name
   # Control characters are replaced inside jq: `jq -r` would print a trailing
   # newline in the value, and the shell would then strip it.
@@ -414,7 +438,8 @@ detect_cli() {
   #   4. .claude/runtime/launcher_context.json walked up from $PWD, fresh
   #      (24h) only; stops at a .git boundary and at a world-writable or
   #      foreign-owned directory; walks on past an unusable file, warning
-  #      with its path.
+  #      with its path. Read with jq; without jq the layer is skipped, with
+  #      a warning that says so.
   #   5. default: copilot
   if [[ -n "${AMPLIHACK_AGENT_BINARY:-}" ]]; then
     local override
@@ -474,6 +499,13 @@ detect_cli() {
     fi
     local ctx="$cur/.claude/runtime/launcher_context.json"
     if [[ -f "$ctx" ]]; then
+      # jq parses the file. Without it no file can be read, and reporting this
+      # one as broken would tell the user to delete a good file. Say what is
+      # missing, once, and fall through to the default.
+      if ! command -v jq >/dev/null 2>&1; then
+        log_warn "jq not found; launcher context $ctx not read."
+        break
+      fi
       local parsed
       parsed="$(_detect_cli_context "$ctx" "$cur")"
       if [[ -n "$parsed" ]]; then

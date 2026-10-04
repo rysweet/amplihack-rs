@@ -107,11 +107,23 @@ pub fn is_launcher_context_stale(context: &LauncherContext) -> bool {
 /// must not therefore get its own idea of how old is too old. It previously had
 /// none at all, and honoured a five-day-old file (issue #1335).
 pub fn is_timestamp_stale(timestamp: &str) -> bool {
-    let Ok(parsed) = DateTime::parse_from_rfc3339(timestamp) else {
-        return true;
-    };
-    Utc::now().signed_duration_since(parsed.with_timezone(&Utc))
-        > Duration::hours(DEFAULT_STALE_HOURS)
+    rfc3339_timestamp_is_stale(timestamp).unwrap_or(true)
+}
+
+/// [`is_timestamp_stale`] for a reader that must tell "old" from "not a
+/// timestamp": `None` when `timestamp` is not RFC 3339.
+///
+/// Both still mean "do not use the file", but they are different findings. An
+/// old file is expected, because sessions end. A file whose timestamp cannot be
+/// read was hand-written or written by something else, and it will never be
+/// used however recent it is. The agent-binary resolver names such a file
+/// rather than passing over it as old (issue #1525).
+pub fn rfc3339_timestamp_is_stale(timestamp: &str) -> Option<bool> {
+    let parsed = DateTime::parse_from_rfc3339(timestamp).ok()?;
+    Some(
+        Utc::now().signed_duration_since(parsed.with_timezone(&Utc))
+            > Duration::hours(DEFAULT_STALE_HOURS),
+    )
 }
 
 /// One rule, one place. `max_age_hours` had a single caller passing a single

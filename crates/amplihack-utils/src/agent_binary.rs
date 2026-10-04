@@ -335,8 +335,9 @@ pub fn resolve_layers(
 #[derive(Deserialize)]
 struct LauncherContextSnippet {
     launcher: String,
-    /// RFC3339, written by `write_launcher_context`. Absent in files written
-    /// before the field existed, which are by definition old -- treated stale.
+    /// RFC3339, written by `write_launcher_context`, which has always written
+    /// it. A file without one, or with one in another format, is unusable and
+    /// named (issue #1525); see `read_launcher_field`.
     #[serde(default)]
     timestamp: Option<String>,
 }
@@ -559,11 +560,19 @@ fn read_launcher_field(path: &Path, anchor: &Path) -> ContextRead {
     // reader has always applied a staleness bound; this one never did, so a
     // file written days earlier by an unrelated session kept deciding which
     // agent CLI ran (issue #1335).
-    let stale = parsed
-        .timestamp
-        .as_deref()
-        .map(crate::launcher_context::is_timestamp_stale)
-        .unwrap_or(true);
+    //
+    // A file whose age cannot be known still fails closed (#1342), but it is
+    // named, not passed over as old (#1525). `write_launcher_context` has
+    // always written an RFC 3339 timestamp, so a file without one, or with one
+    // in another format, was written by hand or by something else. However
+    // recent it is, it will never be used, and saying nothing left the user
+    // with no way to find out why.
+    let Some(timestamp) = parsed.timestamp.as_deref() else {
+        return ContextRead::Unusable("has no timestamp, so its age is unknown".to_string());
+    };
+    let Some(stale) = crate::launcher_context::rfc3339_timestamp_is_stale(timestamp) else {
+        return ContextRead::Unusable("has a timestamp that is not RFC 3339".to_string());
+    };
     if stale {
         debug!(
             path = %canonical.display(),
@@ -902,11 +911,71 @@ mod tests {
     /// Sessions end; an old file is expected, not broken, and is not reported.
     #[test]
     fn a_stale_context_is_stale_not_unusable() {
-        assert_eq!(read_raw(r#"{"launcher":"claude"}"#), ContextRead::Stale);
         assert_eq!(
             read_raw(r#"{"launcher":"claude","timestamp":"2001-01-01T00:00:00Z"}"#),
             ContextRead::Stale
         );
+    }
+
+    /// Issue #1525 review: a file whose age cannot be known is still not used,
+    /// but it is named. It used to be passed over as stale, with nothing to
+    /// say which file was skipped or why, while migrate.sh's `date -d` read
+    /// the same "2026-10-04 13:13:46" as fresh and answered `claude`.
+    #[test]
+    fn a_context_whose_age_cannot_be_known_is_unusable_not_stale() {
+        let no_timestamp = ContextRead::Unusable("has no timestamp, so its age is unknown".into());
+        assert_eq!(read_raw(r#"{"launcher":"claude"}"#), no_timestamp);
+        assert_eq!(
+            read_raw(r#"{"launcher":"claude","timestamp":null}"#),
+            no_timestamp
+        );
+
+        let not_rfc3339 = ContextRead::Unusable("has a timestamp that is not RFC 3339".into());
+        let now = chrono::Utc::now();
+        for timestamp in [
+            // No offset: the case from the review.
+            now.format("%Y-%m-%d %H:%M:%S").to_string(),
+            now.format("%Y-%m-%dT%H:%M:%S").to_string(),
+            // Offset without a colon.
+            now.format("%Y-%m-%dT%H:%M:%S+0000").to_string(),
+            now.format("%s").to_string(),
+            String::new(),
+            "yesterday".to_string(),
+            // Out of range.
+            "2026-02-30T00:00:00Z".to_string(),
+            "2026-10-04T24:00:00Z".to_string(),
+            "2026-10-04T13:13:46+24:00".to_string(),
+        ] {
+            assert_eq!(
+                read_raw(&format!(
+                    r#"{{"launcher":"claude","timestamp":"{timestamp}"}}"#
+                )),
+                not_rfc3339,
+                "{timestamp:?}"
+            );
+        }
+    }
+
+    /// The forms chrono's RFC 3339 parser accepts, which migrate.sh's
+    /// `_detect_cli_epoch` mirrors (tests/issue_1525_migrate_detect_cli_parity.sh).
+    #[test]
+    fn a_fresh_context_in_any_rfc3339_form_is_usable() {
+        let now = chrono::Utc::now();
+        for timestamp in [
+            now.to_rfc3339(),
+            now.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+            now.format("%Y-%m-%dt%H:%M:%Sz").to_string(),
+            now.format("%Y-%m-%d %H:%M:%S+00:00").to_string(),
+            now.format("%Y-%m-%dT%H:%M:%S.%f-00:00").to_string(),
+        ] {
+            assert_eq!(
+                read_raw(&format!(
+                    r#"{{"launcher":"claude","timestamp":"{timestamp}"}}"#
+                )),
+                ContextRead::Usable("claude".into()),
+                "{timestamp:?}"
+            );
+        }
     }
 
     #[test]
@@ -960,7 +1029,10 @@ mod tests {
     fn the_walk_up_does_not_list_a_stale_file() {
         let root = tempfile::tempdir().unwrap();
         fs::create_dir_all(root.path().join(".git")).unwrap();
-        write_raw_context(root.path(), r#"{"launcher":"claude"}"#);
+        write_raw_context(
+            root.path(),
+            r#"{"launcher":"claude","timestamp":"2001-01-01T00:00:00Z"}"#,
+        );
         let lookup = lookup_persisted_launcher(root.path());
         assert!(lookup.found.is_none());
         assert!(lookup.unusable.is_empty(), "{:?}", lookup.unusable);

@@ -77,8 +77,9 @@ flowchart TD
 Walk-up rules for the persisted launcher context:
 
 - Return the first usable `.claude/runtime/launcher_context.json`. A file that
-  is stale (older than 24h), oversized, malformed, not allowlisted or escapes
-  its directory through a symlink is skipped, and the walk continues upward.
+  is stale (older than 24h), oversized, malformed, has no RFC 3339 `timestamp`,
+  is not allowlisted or escapes its directory through a symlink is skipped, and
+  the walk continues upward.
   Every skipped file except a stale one is recorded with its path and reason
   (`agent_binary::resolve_detailed`), and `recipe run`'s stderr notice lists it
   when the answer was inferred (issue #1525). Before that, an empty or

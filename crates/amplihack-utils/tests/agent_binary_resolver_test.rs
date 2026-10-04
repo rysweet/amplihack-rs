@@ -316,13 +316,16 @@ fn fresh_launcher_context_is_honoured() {
     assert_eq!(resolve(tmp.path()).unwrap(), "claude");
 }
 
-/// A context with no timestamp at all predates the field, so it is old by
-/// definition. Fail closed rather than trusting it.
+/// A context with no timestamp has no knowable age. Fail closed rather than
+/// trusting it (#1342), and name the file, because however recent it is it will
+/// never be used (#1525). The writer has always emitted a timestamp, so such a
+/// file was written by hand or by something else.
 #[test]
-fn launcher_context_without_timestamp_is_ignored() {
+fn launcher_context_without_timestamp_is_ignored_and_named() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
     let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join(".git")).unwrap();
     let runtime = tmp.path().join(".claude").join("runtime");
     fs::create_dir_all(&runtime).unwrap();
     fs::write(
@@ -330,7 +333,42 @@ fn launcher_context_without_timestamp_is_ignored() {
         r#"{"launcher":"claude","pid":1234}"#,
     )
     .unwrap();
-    assert_eq!(resolve(tmp.path()).unwrap(), "copilot");
+    let resolution = agent_binary::resolve_detailed(tmp.path()).unwrap();
+    assert_eq!(resolution.binary, "copilot");
+    assert_eq!(resolution.context_file, None);
+    let reasons: Vec<&str> = resolution
+        .unusable_contexts
+        .iter()
+        .map(|skipped| skipped.reason.as_str())
+        .collect();
+    assert_eq!(reasons, ["has no timestamp, so its age is unknown"]);
+}
+
+/// Issue #1525 review: a timestamp that is present but not RFC 3339 used to
+/// be passed over as stale, unnamed, while migrate.sh's `date -d` read it as
+/// fresh. Rust and shell now both name it and fall through.
+#[test]
+fn launcher_context_with_a_non_rfc3339_timestamp_is_ignored_and_named() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    clear_env();
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join(".git")).unwrap();
+    let runtime = tmp.path().join(".claude").join("runtime");
+    fs::create_dir_all(&runtime).unwrap();
+    let local = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S");
+    fs::write(
+        runtime.join("launcher_context.json"),
+        format!(r#"{{"launcher":"claude","timestamp":"{local}"}}"#),
+    )
+    .unwrap();
+    let resolution = agent_binary::resolve_detailed(tmp.path()).unwrap();
+    assert_eq!(resolution.binary, "copilot");
+    let reasons: Vec<&str> = resolution
+        .unusable_contexts
+        .iter()
+        .map(|skipped| skipped.reason.as_str())
+        .collect();
+    assert_eq!(reasons, ["has a timestamp that is not RFC 3339"]);
 }
 
 /// Issue #1481: a value tagged as a parent's default guess for the same binary

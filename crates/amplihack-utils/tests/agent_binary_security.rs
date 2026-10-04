@@ -177,11 +177,14 @@ fn s5_symlink_escape_is_blocked() {
     let outer = TempDir::new().unwrap();
     let attacker = TempDir::new().unwrap();
     // Place valid (allowlisted) but unintended config outside the cwd tree.
+    // It must be fresh: a file with no timestamp is rejected whatever the
+    // symlink check does, which left this test unable to fail.
     let attacker_runtime = attacker.path().join(".claude").join("runtime");
     fs::create_dir_all(&attacker_runtime).unwrap();
+    let now = chrono::Utc::now().to_rfc3339();
     fs::write(
         attacker_runtime.join("launcher_context.json"),
-        r#"{"launcher":"claude"}"#,
+        format!(r#"{{"launcher":"claude","timestamp":"{now}"}}"#),
     )
     .unwrap();
     // Symlink the entire .claude inside outer to attacker's .claude.

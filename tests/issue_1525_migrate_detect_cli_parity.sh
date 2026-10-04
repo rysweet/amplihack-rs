@@ -4,13 +4,16 @@
 #
 #   * a session marker outranks any launcher_context.json, and the marker list
 #     is agent_binary::SESSION_MARKERS, in the same order;
-#   * a launcher context counts only while fresh (24h); one without a
-#     timestamp is stale;
+#   * a launcher context counts only while fresh (24h). A stale one is
+#     passed over silently. One with no timestamp, or with one that chrono's
+#     RFC 3339 parser would refuse, is unusable and named, even where
+#     `date -d` would read it;
 #   * the walk-up stops at a .git boundary and at a world-writable directory;
 #   * an unusable file (empty, not JSON, wrong shape, unknown launcher) is
 #     walked past, but named on stderr with the reason;
 #   * the value is trimmed, not stripped: inner whitespace and control
-#     characters reject it.
+#     characters reject it;
+#   * without jq no file can be read, and none is blamed for it.
 #
 # Before #1525, detect_cli read launcher_context.json ahead of any session
 # evidence and had no staleness bound. Inside Claude Code, a days-old
@@ -120,7 +123,34 @@ expect "a three-day-old file is ignored" copilot
 [ -z "$err" ] && pass "a stale file is not reported as broken" || fail "stale file warned: $err"
 fixture "$root/notime" '{"launcher":"claude"}'
 run "$root/notime"
-expect "a file without a timestamp is stale" copilot
+expect "a file without a timestamp is not used" copilot
+expect_warning "...and is named, because its age is unknown" \
+  "ignored $root/notime/.claude/runtime/launcher_context.json: it has no timestamp, so its age is unknown."
+
+# The Rust resolver parses with chrono's parse_from_rfc3339. `date -d` reads
+# far more, so detect_cli once answered `claude` here while Rust answered
+# `copilot` and named nothing. Both now refuse the file and name it.
+local_time="$(date -u +'%Y-%m-%d %H:%M:%S')"
+fixture "$root/nooffset" "{\"launcher\":\"claude\",\"timestamp\":\"$local_time\"}"
+run "$root/nooffset"
+expect "a timestamp with no offset is not used, as in Rust" copilot
+expect_warning "...and is named with its reason" \
+  "ignored $root/nooffset/.claude/runtime/launcher_context.json: it has a timestamp that is not RFC 3339."
+for ts in yesterday "$(date -u +%s)" "$(date -u +%Y-%m-%dT%H:%M:%S+0000)" "$(date -u +%Y-%m-%dT%H:%M:%S+24:00)"; do
+  fixture "$root/badts" "{\"launcher\":\"claude\",\"timestamp\":\"$ts\"}"
+  run "$root/badts"
+  expect "timestamp '$ts' is not RFC 3339" copilot
+done
+fixture "$root/ctlts" "{\"launcher\":\"claude\",\"timestamp\":\"$now\\n\"}"
+run "$root/ctlts"
+expect "a timestamp ending in a newline is not RFC 3339, as in Rust" copilot
+# ...and the forms chrono does accept are read, not refused.
+for ts in "$(date -u +'%Y-%m-%d %H:%M:%S+00:00')" "$(date -u +%Y-%m-%dt%H:%M:%S.%Nz)" \
+          "$(date -u +%Y-%m-%dT%H:%M:60Z)" "$(date +%Y-%m-%dT%H:%M:%S%:z)"; do
+  fixture "$root/okts" "{\"launcher\":\"claude\",\"timestamp\":\"$ts\"}"
+  run "$root/okts"
+  expect "RFC 3339 form '$ts' is read" claude
+done
 
 # --- unusable files are named, and walked past ----------------------------
 fixture "$root/empty" ""
@@ -167,6 +197,22 @@ run "$root/fresh" "AMPLIHACK_AGENT_BINARY=  Codex  "
 expect "surrounding spaces are trimmed" codex
 run "$root/fresh" "AMPLIHACK_AGENT_BINARY=co dex"
 expect "inner whitespace rejects the value, as in Rust" claude
+
+# --- without jq, nothing is blamed ---------------------------------------
+# PATH holds every external command detect_cli runs, except jq.
+nojq="$root/nojq-bin"
+mkdir -p "$nojq"
+for tool in date dirname id readlink stat tr; do
+  ln -s "$(command -v "$tool")" "$nojq/$tool"
+done
+run "$root/fresh" "PATH=$nojq"
+expect "without jq the launcher context is not read" copilot
+expect_warning "...and the warning says jq is missing" \
+  "jq not found; launcher context $root/fresh/.claude/runtime/launcher_context.json not read."
+case "$err" in
+  *"not valid JSON"*|*"Fix or delete it"*) fail "without jq, a valid file was blamed: $err" ;;
+  *) pass "...and the valid file is not called broken" ;;
+esac
 
 # --- the process chain still ranks above the file -------------------------
 out="$(

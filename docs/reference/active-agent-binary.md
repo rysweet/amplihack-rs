@@ -78,10 +78,12 @@ amplihack: ignored /home/u/repo/.claude/runtime/launcher_context.json: it is emp
 ```
 
 The reasons are: empty, not valid JSON (with line and column), JSON without a
-string `launcher` field, a launcher outside the allowlist, larger than 64 KiB,
-unreadable, or a symlink out of its directory. A reason never quotes the file.
-A stale file (older than 24h) is not listed, because sessions end and an old
-file is expected. The walk-up still continues past an unusable file, so a
+string `launcher` field, no `timestamp`, a `timestamp` that is not RFC 3339, a
+launcher outside the allowlist, larger than 64 KiB, unreadable, or a symlink out
+of its directory. A reason never quotes the file. A stale file (older than 24h)
+is not listed, because sessions end and an old file is expected. A file whose
+age cannot be known is different: however recent it is, it will never be used,
+so it is listed. The walk-up still continues past an unusable file, so a
 parent directory's file can still answer, but the notice now says so. Rust
 callers get the same evidence from `agent_binary::resolve_detailed`
 (`Resolution::context_file` and `Resolution::unusable_contexts`).
@@ -216,18 +218,26 @@ Path: `<repo>/.claude/runtime/launcher_context.json`
 Permissions: `0o600` (owner read/write only)
 Read cap: 64 KiB (oversized files are rejected with a warning)
 Staleness window: 24 hours (older files fall through as if unset)
+Timestamp: required, RFC 3339 as `chrono::DateTime::parse_from_rfc3339` reads it.
+A file without one, or with one in another form (`2026-10-04 13:13:46` has no
+offset), is unusable and named in the notice. `migrate.sh`'s `detect_cli`
+applies the same rule rather than `date -d`'s looser one.
 
 ```json
 {
   "launcher": "copilot",
-  "session_id": "01J9ZK7E5W6X9N3Q4VBHTC8MR2",
-  "cwd": "/home/alice/src/example-repo",
-  "started_at": "2026-04-29T04:12:55Z",
-  "amplihack_version": "0.7.4"
+  "command": "amplihack copilot",
+  "timestamp": "2026-10-04T13:13:46.123456789+00:00",
+  "environment": {
+    "AMPLIHACK_AGENT_BINARY": "copilot",
+    "AMPLIHACK_LAUNCHER": "copilot"
+  }
 }
 ```
 
-The resolver only reads the `launcher` field. Other fields are owned by `LauncherContext`.
+This is what `launcher_context::write_launcher_context` writes. The resolver
+reads `launcher` and `timestamp`; the other fields are owned by
+`LauncherContext`.
 
 ## Hook Registration
 
