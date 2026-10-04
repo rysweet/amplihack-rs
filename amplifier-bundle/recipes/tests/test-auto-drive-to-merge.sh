@@ -1557,10 +1557,27 @@ ln -s ../../elsewhere/real.yaml "${EV_REPO}/tests/agentic/link.yaml"
 ev_run "${EV_FULL}"
 ev_expect "QA-subdir-only" qa_status=FAIL qa_reason=no-scenarios gadugi_status=NO_SCENARIOS \
   gadugi_scenario_count=0 gadugi_scenario_dir=tests/agentic qa_scenarios=""
-if ! ev_called "gadugi-test run"; then
-  pass "QA-symlink-not-run" "a symlinked scenario file is never run"
+if ! ev_called "gadugi-test run" && evf qa_summary | grep -qF 'symlinked scenario not run: tests/agentic/link.yaml' \
+   && grep -qxF 'WARNING: symlinked scenario not run: tests/agentic/link.yaml' "${EV_ERR}"; then
+  pass "QA-symlink-not-run" "a symlinked scenario file is never run, and is named in qa_summary and on stderr"
 else
-  fail "QA-symlink-not-run" "calls=$(tr '\n' '|' < "${EV_CALLS}")"
+  fail "QA-symlink-not-run" "summary='$(evf qa_summary)' calls=$(tr '\n' '|' < "${EV_CALLS}")"
+fi
+
+# 10b. A real scenario plus a symlinked one: the real one still runs, and the
+# symlinked one fails the evidence instead of being skipped in silence.
+ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml elsewhere/real.yaml
+ln -s ../../elsewhere/real.yaml "${EV_REPO}/tests/agentic/link.yaml"
+ev_run "${EV_FULL}"
+ev_expect "QA-gadugi-symlink-fails" qa_status=FAIL qa_reason=gadugi-run-failed gadugi_status=RUN_FAILED \
+  gadugi_scenario_count=1 qa_scenarios=tests/agentic/a.yaml gadugi_scenarios_run=1 gadugi_scenarios_passed=1 \
+  gadugi_scenarios_failed=1 gadugi_failed_scenarios=tests/agentic/link.yaml gadugi_run_exit_code=0
+ev_expect_runs "QA-gadugi-symlink-fails-runs" a
+if evf qa_summary | grep -qF 'symlinked scenario not run: tests/agentic/link.yaml' \
+   && grep -qxF 'WARNING: symlinked scenario not run: tests/agentic/link.yaml' "${EV_ERR}"; then
+  pass "QA-gadugi-symlink-fails-named" "the symlinked scenario is named in qa_summary and in a stderr WARNING"
+else
+  fail "QA-gadugi-symlink-fails-named" "summary='$(evf qa_summary)' stderr=$(grep WARNING "${EV_ERR}" | tr '\n' '|')"
 fi
 
 # 11. `scenarios` is the fallback when tests/agentic does not exist.

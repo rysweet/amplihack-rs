@@ -178,13 +178,19 @@ steps:
       case "$SDIR_IN" in /*) SDIR="$SDIR_IN" ;; *) SDIR="${ROOT}/${SDIR_IN}" ;; esac
       case "$SDIR" in "${ROOT}/"*) SREL="${SDIR#"${ROOT}/"}" ;; *) SREL="$SDIR" ;; esac
       # Top-level regular files only: gadugi-test validate -d does not read
-      # subdirectories, and a symlinked scenario is not followed.
-      COUNT=0; SCEN=""; FILES=()
+      # subdirectories. A symlinked scenario is never followed or run, so it
+      # is named here and, once validate passes, fails like a failed run.
+      COUNT=0; SCEN=""; FILES=(); SYMLINKED=""; SYMCOUNT=0
       if [ -d "$SDIR" ]; then
         while IFS= read -r f; do
           [ -n "$f" ] || continue
           COUNT=$((COUNT + 1)); SCEN="${SCEN}${SCEN:+ }${SREL}/${f##*/}"; FILES+=("$f")
         done < <(find "$SDIR" -maxdepth 1 -type f \( -name '*.yaml' -o -name '*.yml' \) 2>/dev/null | LC_ALL=C sort)
+        while IFS= read -r f; do
+          [ -n "$f" ] || continue
+          SYMCOUNT=$((SYMCOUNT + 1)); SYMLINKED="${SYMLINKED}${SYMLINKED:+ }${SREL}/${f##*/}"
+          echo "WARNING: symlinked scenario not run: $(printf '%s' "${SREL}/${f##*/}" | san)" >&2
+        done < <(find "$SDIR" -maxdepth 1 -type l \( -name '*.yaml' -o -name '*.yml' \) 2>/dev/null | LC_ALL=C sort)
       fi
 
       # --- gadugi-test -----------------------------------------------------
@@ -192,7 +198,7 @@ steps:
       # stops every run; once validate passes, every scenario runs. Its own
       # per-command default limit applies; nothing here adds one.
       G_STATUS=""; G_VRC=""; G_RRC=""; RUN_NZ=""; VALIDATED=0; RUNS=0; PASSED=0; FAILED=0
-      UNNAMED=""; RUNFAIL=""; STAGEFAIL=""
+      UNNAMED=""; RUNFAIL=""; STAGEFAIL=""; SYMFAIL=""
       if ! command -v gadugi-test >/dev/null 2>&1; then
         G_STATUS="NOT_INSTALLED"; cause "gadugi-test not installed"
       elif [ "$COUNT" = "0" ]; then
@@ -277,16 +283,18 @@ steps:
             else FAILED=$((FAILED + 1)); RUNFAIL="${RUNFAIL}${RUNFAIL:+ }${rel}"; [ -n "$RUN_NZ" ] || RUN_NZ="$rrc"; fi
           done
           [ "$RUNS" -gt 0 ] && G_RRC="${RUN_NZ:-0}"
+          [ -n "$SYMLINKED" ] && { SYMFAIL="$SYMLINKED"; FAILED=$((FAILED + SYMCOUNT)); }
           [ -n "$UNNAMED" ] && cause "gadugi scenario without a name: ${UNNAMED}"
           [ -n "$STAGEFAIL" ] && cause "gadugi scenario could not be staged: ${STAGEFAIL}"
           [ -n "$RUNFAIL" ] && cause "gadugi scenario run failure: ${RUNFAIL}"
-          if [ -n "${UNNAMED}${STAGEFAIL}${RUNFAIL}" ]; then G_STATUS="RUN_FAILED"; else G_STATUS="PASS"; fi
+          if [ -n "${UNNAMED}${STAGEFAIL}${RUNFAIL}${SYMFAIL}" ]; then G_STATUS="RUN_FAILED"; else G_STATUS="PASS"; fi
         fi
         echo "INFO: gadugi-test on ${SREL} (${COUNT} scenario(s), ${RUNS} run, ${PASSED} passed): ${G_STATUS}" >&2
         tail -n 60 "$GLOG" >&2 || true
         rm -f "$GLOG"
         for d in $NEW_DIRS; do [ -d "$d" ] && [ ! -L "$d" ] && rm -rf -- "./${d}"; done
       fi
+      [ -n "$SYMLINKED" ] && cause "symlinked scenario not run: ${SYMLINKED}"
 
       # --- qa_status and qa_reason -----------------------------------------
       # qa_reason is the first token that applies, in this fixed order; the
@@ -297,7 +305,7 @@ steps:
       [ "$G_STATUS" = "NO_SCENARIOS" ] && pick "no-scenarios"
       [ "$G_STATUS" = "VALIDATE_FAILED" ] && pick "gadugi-validate-failed"
       [ -n "$UNNAMED" ] && pick "gadugi-scenario-unnamed"
-      [ -n "${RUNFAIL}${STAGEFAIL}" ] && pick "gadugi-run-failed"
+      [ -n "${RUNFAIL}${STAGEFAIL}${SYMFAIL}" ] && pick "gadugi-run-failed"
       [ "$S_MISSING" = "true" ] && pick "qa-command-missing"
       [ "$S_NOTINST" = "true" ] && pick "qa-command-not-installed"
       [ "$G_STATUS" = "NOT_INSTALLED" ] && pick "gadugi-test-missing"
@@ -317,7 +325,7 @@ steps:
         "$(printf '%s' "$SCEN" | san)" "$RC" "$SUMMARY" "$(printf '%s' "${AUTODRIVE_ROUND_LABEL:-round}" | san)" "$HEAD_SHA" \
         "$G_STATUS" "$G_VRC" "$G_RRC" "$COUNT" "$(printf '%s' "$SREL" | san)" \
         "$VALIDATED" "$RUNS" "$PASSED" "$FAILED" \
-        "$(printf '%s' "${UNNAMED} ${STAGEFAIL} ${RUNFAIL}" | san | tr -s ' ' | sed 's/^ //; s/ $//')")"
+        "$(printf '%s' "${UNNAMED} ${STAGEFAIL} ${RUNFAIL} ${SYMFAIL}" | san | tr -s ' ' | sed 's/^ //; s/ $//')")"
       [ -n "$EVIDENCE" ] && printf '%s' "$OUT" > "$EVIDENCE"
       printf '%s\n' "$OUT"
     output: "qa_evidence"

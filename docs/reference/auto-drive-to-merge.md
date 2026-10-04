@@ -400,6 +400,13 @@ merge gate both depend on them. The checks then run in this order:
    runs.
 4. Each scenario file runs in its own `gadugi-test` process, and each must
    exit 0. All of them run, even after one fails.
+5. There must be no symlinked scenario file. Symlinked `*.yaml` and `*.yml`
+   files in the directory are not counted and never run. Each one is named
+   in a `WARNING: symlinked scenario not run: <path>` line on stderr and in
+   `qa_summary`. Once validate passes, each one also fails the evidence as
+   `gadugi-run-failed` and is listed in `gadugi_failed_scenarios`. With no
+   regular scenario file the status stays `NO_SCENARIOS`, and `qa_summary`
+   still names the symlinks.
 
 **Why one process per scenario.** `gadugi-test run -d <dir>` runs every
 scenario in the directory in one process. In gadugi-test 1.0.x concurrent
@@ -447,7 +454,7 @@ command it runs.
 | `NOT_INSTALLED` | `gadugi-test` is not on `PATH` |
 | `NO_SCENARIOS` | the directory is missing or has no scenario files |
 | `VALIDATE_FAILED` | `gadugi-test validate` exited non-zero; no scenario ran |
-| `RUN_FAILED` | at least one scenario file was unnamed, could not be staged, or its run exited non-zero |
+| `RUN_FAILED` | at least one scenario file was unnamed, could not be staged, or its run exited non-zero, or the directory holds a symlinked scenario file |
 
 #### `qa_status` and `qa_reason`
 
@@ -469,7 +476,7 @@ Otherwise `qa_reason` is the first of these tokens that applies, and
 | 2 | `no-scenarios` | `FAIL` | the scenario directory is missing or empty |
 | 3 | `gadugi-validate-failed` | `FAIL` | `gadugi-test validate` exited non-zero |
 | 4 | `gadugi-scenario-unnamed` | `FAIL` | a scenario file has no usable name |
-| 5 | `gadugi-run-failed` | `FAIL` | a scenario run exited non-zero, or staging failed |
+| 5 | `gadugi-run-failed` | `FAIL` | a scenario run exited non-zero, staging failed, or a scenario file is a symlink |
 | 6 | `qa-command-missing` | `BLOCKED` | no suite command: unknown repository type, or a command variable set but empty |
 | 7 | `qa-command-not-installed` | `BLOCKED` | the program of the single or detected command is not installed |
 | 8 | `gadugi-test-missing` | `BLOCKED` | `gadugi-test` is not on `PATH` |
@@ -492,6 +499,7 @@ followed by the tail of the suite log:
 | validate exited non-zero | `gadugi-test validation failure` |
 | a scenario file has no name | `gadugi scenario without a name: <path>` |
 | a scenario run exited non-zero | `gadugi scenario run failure: <path>` |
+| a scenario file is a symlink | `symlinked scenario not run: <path>` |
 
 #### The scenario directory
 
@@ -597,12 +605,12 @@ Two configured suite commands, one failing scenario out of two:
 | `qa_scenarios` | the counted scenario files, relative to the repository root, sorted, space separated; `""` when the count is 0 |
 | `gadugi_status` | `PASS`, `NOT_INSTALLED`, `NO_SCENARIOS`, `VALIDATE_FAILED`, `RUN_FAILED` |
 | `gadugi_scenario_dir` | the directory used, relative to the repository root when inside it |
-| `gadugi_scenario_count` | number of scenario files found; always recorded |
+| `gadugi_scenario_count` | number of regular scenario files found, not counting symlinks; always recorded |
 | `gadugi_validate_exit_code` | exit code of `gadugi-test validate`, or `""` |
 | `gadugi_scenarios_validated` | `gadugi_scenario_count` when validate exited 0, otherwise `"0"` |
 | `gadugi_scenarios_run` | number of `gadugi-test run` processes started; unnamed files are not run |
 | `gadugi_scenarios_passed` | runs that exited 0 |
-| `gadugi_scenarios_failed` | runs that exited non-zero, plus unnamed files, plus files that could not be staged |
+| `gadugi_scenarios_failed` | runs that exited non-zero, plus unnamed files, plus files that could not be staged, plus symlinked scenario files once validate passed |
 | `gadugi_failed_scenarios` | paths of the failed files, relative to the repository root, space separated |
 | `gadugi_run_exit_code` | the first non-zero run exit code; `"0"` when every run exited 0; `""` when no run started |
 
@@ -840,7 +848,9 @@ This change adds no network surface, no authentication and no token handling.
 - **Names the reader cannot parse.** Block scalars and flow mappings make a
   file unnamed, which fails as `gadugi-scenario-unnamed`.
 - **Symlinked scenario files** are validated by gadugi but neither counted nor
-  run.
+  run. They fail the evidence as `gadugi-run-failed`, or are named in the
+  `NO_SCENARIOS` cause when there is no regular scenario file, so a failing
+  symlinked scenario can never pass by being skipped.
 - **Trivial scenarios.** A scenario that always passes satisfies
   `gadugi_status: PASS`. Review scenarios like any other test.
 - **Commits after the clean crusty round.** `reviewed_head_sha` is recorded
