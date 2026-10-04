@@ -110,7 +110,8 @@ for root in (repo / 'amplifier-bundle/skills', repo / 'docs/claude/skills'):
             continue
         try:
             content = path.read_text()
-        except UnicodeError:
+        except UnicodeError as error:
+            failures.append(f'{path.relative_to(repo).as_posix()}: cannot decode audit input: {error}')
             continue
         files += 1
         relative = path.relative_to(root).as_posix()

@@ -42,6 +42,9 @@ for line in 'Recommended model: Claude' 'default_model = "GPT"' \
     reject 'amplifier-bundle/skills/poet-analyst/regression.md:1:'
 done
 rm "$path"
+printf '\377model: sonnet\n' >"$path"
+reject 'cannot decode audit input'
+rm "$path"
 original="$fixture/amplifier-bundle/skills/poet-analyst/SKILL.md"
 mv "$original" "${original%/*}/RENAMED.md"
 mkdir "$fixture/amplifier-bundle/skills/unreviewed"
@@ -52,4 +55,4 @@ rm -r "$fixture/amplifier-bundle/skills/unreviewed"
 path="$fixture/docs/claude/skills/microsoft-agent-framework/examples/04-basic-agent.cs"
 sed -i 's/string.IsNullOrWhiteSpace(value)/value == null/g' "$path"
 reject 'missing blank configuration rejection'
-echo 'PASS: six neutrality integration scenarios, including seven provider recommendation fixtures.'
+echo 'PASS: seven neutrality integration scenarios, including seven provider recommendation fixtures and invalid encoding.'
