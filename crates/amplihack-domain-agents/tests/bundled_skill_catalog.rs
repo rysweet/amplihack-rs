@@ -33,6 +33,38 @@ fn independent_inventory_requires_complete_frontmatter_delimiters() {
     assert!(frontmatter("---\nname: example\n").is_err());
 }
 
+// Independent line-based oracle: retain every byte after the delimiter,
+// except CRLF normalization and the parser's leading LF separators.
+fn expected_body(source: &str) -> String {
+    let normalized = source.replace("\r\n", "\n");
+    let mut offset = 0;
+    for (index, line) in normalized.split_inclusive('\n').enumerate() {
+        offset += line.len();
+        if index > 0 && line.strip_suffix('\n').unwrap_or(line) == "---" {
+            return normalized[offset..].trim_start_matches('\n').to_owned();
+        }
+    }
+    panic!("missing closing delimiter");
+}
+
+#[test]
+fn body_oracle_preserves_whitespace_for_lf_and_crlf() {
+    for newline in ["\n", "\r\n"] {
+        let source = ["---", "name: example", "---", "", "  Body  ", "", ""].join(newline);
+        assert_eq!(expected_body(&source), "  Body  \n\n");
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("SKILL.md"), &source).unwrap();
+        assert_eq!(
+            SkillCatalog::load(root.path())
+                .unwrap()
+                .get("example")
+                .unwrap()
+                .prompt,
+            expected_body(&source)
+        );
+    }
+}
+
 fn skill_files(root: &Path, files: &mut Vec<PathBuf>) {
     for entry in std::fs::read_dir(root).expect("read bundled skill directory") {
         let entry = entry.expect("read skill entry");
@@ -60,12 +92,14 @@ fn real_catalog_loads_every_bundled_skill_and_body() {
         "all seven nested skills must be present"
     );
     let mut paths = std::collections::BTreeMap::new();
+    let mut bodies = std::collections::BTreeMap::new();
     for file in &files {
         let text = std::fs::read_to_string(file).expect("read skill");
         let yaml = frontmatter(&text).unwrap_or_else(|error| panic!("{}: {error}", file.display()));
         let meta: serde_yaml::Value = serde_yaml::from_str(&yaml)
             .unwrap_or_else(|error| panic!("{}: {error}", file.display()));
         let name = meta["name"].as_str().expect("string skill name");
+        bodies.insert(name.to_owned(), expected_body(&text));
         assert!(
             paths
                 .insert(
@@ -87,6 +121,11 @@ fn real_catalog_loads_every_bundled_skill_and_body() {
     for name in &expected {
         let skill = catalog.get(name).expect("indexed skill");
         assert_eq!(skill.path.canonicalize().unwrap(), paths[name]);
+        assert_eq!(
+            skill.prompt.as_bytes(),
+            bodies[name].as_bytes(),
+            "body: {name}"
+        );
         assert!(
             !skill.prompt.trim().is_empty(),
             "empty skill prompt: {name}"
