@@ -148,11 +148,13 @@ fn agent_recipe_file(dir: &std::path::Path) -> String {
     path.display().to_string()
 }
 
-fn claude(_: &std::path::Path) -> (String, amplihack_utils::agent_binary::ResolutionSource) {
-    (
-        "claude".to_string(),
-        amplihack_utils::agent_binary::ResolutionSource::Env,
-    )
+fn claude(_: &std::path::Path) -> amplihack_utils::agent_binary::Resolution {
+    amplihack_utils::agent_binary::Resolution {
+        binary: "claude".to_string(),
+        source: amplihack_utils::agent_binary::ResolutionSource::Env,
+        context_file: None,
+        unusable_contexts: Vec::new(),
+    }
 }
 
 #[test]
@@ -264,7 +266,7 @@ fn run_as_root_outside_a_sandbox(
         Some(&working_dir.display().to_string()),
         None,
         &RootSandboxPreflight {
-            agent_binary: crate::env_builder::active_agent_binary_with_source_in,
+            agent_binary: crate::env_builder::resolve_agent_binary_in,
             decision: || SkipPermissionsEnv::RootOutsideSandbox,
         },
         &mut out,

@@ -59,9 +59,29 @@ steps would actually run `claude`, because it looks at the same binary the
 runner is handed rather than resolving again from the caller's directory.
 
 When the answer was inferred rather than observed (layer 3 or 4), recipe run
-prints a one-line notice on stderr saying why. When it came from layer 4, it
-also exports `AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>`. The tag keeps a
-guess a guess on the way down:
+prints a notice on stderr saying why. From layer 3 it names the file it read,
+by its full path. The walk-up visits ancestors, so that file need not be in
+the working directory. The notice adds a line for every
+`launcher_context.json` the walk-up passed over because it could not be used
+(issue #1525):
+
+```text
+amplihack: agent steps will run under 'copilot' (no AMPLIHACK_AGENT_BINARY or agent session marker was found). Set AMPLIHACK_AGENT_BINARY to choose a different agent CLI.
+amplihack: ignored /home/u/repo/.claude/runtime/launcher_context.json: it is empty. Fix or delete it.
+```
+
+The reasons are: empty, not valid JSON (with line and column), JSON without a
+string `launcher` field, a launcher outside the allowlist, larger than 64 KiB,
+unreadable, or a symlink out of its directory. A reason never quotes the file.
+A stale file (older than 24h) is not listed, because sessions end and an old
+file is expected. The walk-up still continues past an unusable file, so a
+parent directory's file can still answer, but the notice now says so. Rust
+callers get the same evidence from `agent_binary::resolve_detailed`
+(`Resolution::context_file` and `Resolution::unusable_contexts`).
+
+When the answer came from layer 4, recipe run also exports
+`AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>`. The tag keeps a guess a guess
+on the way down:
 
 - the resolver ignores `AMPLIHACK_AGENT_BINARY` while the tag still names its
   value, so a session marker visible at a lower level still wins. A step that

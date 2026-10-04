@@ -25,27 +25,28 @@ pub fn active_agent_binary() -> String {
 pub fn active_agent_binary_with_source() -> (String, amplihack_utils::agent_binary::ResolutionSource)
 {
     let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    active_agent_binary_with_source_in(&cwd)
+    let resolution = resolve_agent_binary_in(&cwd);
+    (resolution.binary, resolution.source)
 }
 
-/// [`active_agent_binary_with_source`] with the launcher-context walk-up
-/// starting at `dir` instead of the process cwd.
+/// Resolve the agent binary with the launcher-context walk-up starting at
+/// `dir`, keeping the evidence a user needs when the answer was inferred.
 ///
 /// `amplihack recipe run -w <dir>` runs every step in `<dir>`, so that is where
 /// a nested `amplihack` would look for `launcher_context.json`. Resolving the
 /// run's binary from anywhere else can let one level guess `copilot` while the
 /// level below reads a context file the top never saw.
-pub fn active_agent_binary_with_source_in(
-    dir: &Path,
-) -> (String, amplihack_utils::agent_binary::ResolutionSource) {
-    match amplihack_utils::agent_binary::resolve_with_source(dir) {
-        Ok(resolved) => resolved,
+pub fn resolve_agent_binary_in(dir: &Path) -> amplihack_utils::agent_binary::Resolution {
+    match amplihack_utils::agent_binary::resolve_detailed(dir) {
+        Ok(resolution) => resolution,
         Err(err) => {
             tracing::warn!(error = %err, "agent binary resolver failed; using built-in default");
-            (
-                amplihack_utils::agent_binary::DEFAULT_BINARY.to_string(),
-                amplihack_utils::agent_binary::ResolutionSource::Default,
-            )
+            amplihack_utils::agent_binary::Resolution {
+                binary: amplihack_utils::agent_binary::DEFAULT_BINARY.to_string(),
+                source: amplihack_utils::agent_binary::ResolutionSource::Default,
+                context_file: None,
+                unusable_contexts: Vec::new(),
+            }
         }
     }
 }

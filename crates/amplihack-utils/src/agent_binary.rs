@@ -25,7 +25,9 @@
 //! * Env-var input is length-capped (32 bytes) and rejects path separators,
 //!   control characters, and any name not in the allowlist.
 //! * `launcher_context.json` is read with a 64 KiB size cap and parsed as a
-//!   typed struct (extra fields ignored) — malformed input falls back.
+//!   typed struct (extra fields ignored) — malformed input falls back, and
+//!   is reported with its path in [`Resolution::unusable_contexts`] (#1525).
+//!   A reason never echoes the file's contents.
 //! * Walk-up ancestor search is capped at 32 levels and stops at any `.git`
 //!   boundary. Symlink escape is rejected by canonicalizing the resolved path
 //!   and verifying it stays within the anchor tree.
@@ -176,13 +178,53 @@ pub fn resolve(cwd: &Path) -> Result<String, ResolveError> {
 ///
 /// Prefer this over [`resolve`] anywhere the answer is about to be shown to a
 /// user or used to launch agents: an inferred result is worth surfacing, and
-/// callers cannot tell the difference from the name alone.
+/// callers cannot tell the difference from the name alone. Use
+/// [`resolve_detailed`] when the user is about to be told *why*.
+pub fn resolve_with_source(cwd: &Path) -> Result<(String, ResolutionSource), ResolveError> {
+    resolve_detailed(cwd).map(|resolution| (resolution.binary, resolution.source))
+}
+
+/// A `launcher_context.json` the walk-up found but could not use.
+///
+/// Issue #1525: an empty or malformed file used to be dropped without a word,
+/// and the walk then carried on into ancestors, so a parent directory's file
+/// could answer instead. Nothing the user saw named either file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnusableContext {
+    /// The file, as the walk-up found it.
+    pub path: PathBuf,
+    /// Why it could not be used, e.g. "is empty". Never echoes its contents.
+    pub reason: String,
+}
+
+/// Everything [`resolve_detailed`] learned on the way to its answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resolution {
+    /// The allowlisted binary name.
+    pub binary: String,
+    /// The layer that supplied it.
+    pub source: ResolutionSource,
+    /// The `launcher_context.json` that supplied it. `Some` exactly when
+    /// `source` is [`ResolutionSource::LauncherContext`]. The walk-up visits
+    /// ancestors, so this need not be in the directory resolution started from.
+    pub context_file: Option<PathBuf>,
+    /// Launcher contexts the walk-up passed over because they could not be
+    /// used, nearest first. The fall-through is kept; these say what was
+    /// skipped on the way. Stale files are not listed: sessions end, and an
+    /// old file is expected, not broken.
+    pub unusable_contexts: Vec<UnusableContext>,
+}
+
+/// [`resolve_with_source`], plus the persisted-layer evidence a user needs
+/// when the answer was inferred: which file decided, and which were skipped.
 ///
 /// A fallback is logged at WARN, not DEBUG. Issue #1335: a run whose
 /// environment did not survive a `tmux new-session` silently resolved to the
 /// vendor default and executed every step under a different CLI, with a
 /// different tool-timeout policy, for hours. Nothing in the output said so.
-pub fn resolve_with_source(cwd: &Path) -> Result<(String, ResolutionSource), ResolveError> {
+/// WARN is still hidden at the default filter, so a caller about to launch
+/// agents on an inferred answer must say so itself (see `recipe run`).
+pub fn resolve_detailed(cwd: &Path) -> Result<Resolution, ResolveError> {
     // Both lookups run unconditionally so the precedence rule lives in exactly
     // one place, `resolve_layers`. Gating the second on the first being None
     // would encode the ordering twice -- once here and once there -- and the
@@ -196,10 +238,25 @@ pub fn resolve_with_source(cwd: &Path) -> Result<(String, ResolutionSource), Res
             .and_then(|raw| validate_binary_name(&raw))
     };
     let from_marker = session_marker();
-    let from_persisted = lookup_persisted_launcher(cwd);
+    let persisted = lookup_persisted_launcher(cwd);
 
-    let (name, source) = resolve_layers(from_env, from_marker, from_persisted);
+    let (name, source) = resolve_layers(
+        from_env,
+        from_marker,
+        persisted.found.as_ref().map(|(name, _)| name.clone()),
+    );
+    let context_file = match source {
+        ResolutionSource::LauncherContext => persisted.found.map(|(_, path)| path),
+        _ => None,
+    };
 
+    for unusable in &persisted.unusable {
+        warn!(
+            path = %unusable.path.display(),
+            reason = %unusable.reason,
+            "ignoring an unusable launcher_context.json"
+        );
+    }
     match source {
         ResolutionSource::Env | ResolutionSource::SessionMarker => {
             debug!(binary = %name, source = source.label(), "agent binary resolved");
@@ -221,7 +278,12 @@ pub fn resolve_with_source(cwd: &Path) -> Result<(String, ResolutionSource), Res
              are running"
         ),
     }
-    Ok((name, source))
+    Ok(Resolution {
+        binary: name,
+        source,
+        context_file,
+        unusable_contexts: persisted.unusable,
+    })
 }
 
 /// `true` when the inherited [`BINARY_ENV`] is tagged as a parent's fallback
@@ -366,65 +428,128 @@ fn is_untrusted_context_dir(_dir: &Path) -> bool {
 /// `/tmp/.claude/runtime/launcher_context.json` -- days old, written by an
 /// unrelated session -- then decided which agent CLI every step ran under, for
 /// any working directory beneath `/tmp`.
-fn lookup_persisted_launcher(start: &Path) -> Option<String> {
-    let anchor = start.canonicalize().ok()?;
-    let mut current: PathBuf = anchor.clone();
+fn lookup_persisted_launcher(start: &Path) -> PersistedLookup {
+    let mut lookup = PersistedLookup::default();
+    let Ok(anchor) = start.canonicalize() else {
+        return lookup;
+    };
+    let mut current: PathBuf = anchor;
     for _ in 0..ANCESTOR_WALK_LIMIT {
         if is_untrusted_context_dir(&current) {
             debug!(
                 dir = %current.display(),
                 "stopping launcher_context walk-up at an untrusted directory"
             );
-            return None;
+            return lookup;
         }
         // Stop at git boundary (but still inspect this dir on this iteration).
         let runtime_file = current
             .join(".claude")
             .join("runtime")
             .join("launcher_context.json");
-        if runtime_file.is_file()
-            && let Some(name) = read_launcher_field(&runtime_file, &current)
-        {
-            return Some(name);
+        if runtime_file.is_file() {
+            match read_launcher_field(&runtime_file, &current) {
+                ContextRead::Usable(name) => {
+                    lookup.found = Some((name, runtime_file));
+                    return lookup;
+                }
+                ContextRead::Stale => {}
+                // Keep walking, as before, but keep the evidence: this file
+                // was meant to answer, and something above it may now do so.
+                ContextRead::Unusable(reason) => lookup.unusable.push(UnusableContext {
+                    path: runtime_file,
+                    reason,
+                }),
+            }
         }
         // Don't walk past a .git boundary.
         if current.join(".git").exists() {
-            return None;
+            return lookup;
         }
         match current.parent() {
             Some(parent) if parent != current => current = parent.to_path_buf(),
-            _ => return None,
+            _ => return lookup,
         }
     }
-    None
+    lookup
+}
+
+/// What the walk-up found in the persisted layer.
+#[derive(Debug, Default)]
+struct PersistedLookup {
+    /// The first usable launcher, and the file it came from.
+    found: Option<(String, PathBuf)>,
+    /// Files passed over on the way, nearest first.
+    unusable: Vec<UnusableContext>,
+}
+
+/// The outcome of reading one `launcher_context.json`.
+#[derive(Debug, PartialEq, Eq)]
+enum ContextRead {
+    /// Fresh, well-formed, and naming an allowlisted CLI.
+    Usable(String),
+    /// Well-formed but older than the staleness bound. Expected, not broken.
+    Stale,
+    /// Cannot be used. The reason never echoes the file's contents.
+    Unusable(String),
 }
 
 /// Read and validate the `launcher` field. The file is size-capped, parsed as a
 /// typed struct (rejects unexpected JSON shapes), and the value is allowlisted.
 /// The path is canonicalized and verified to stay within `anchor` to defend
 /// against symlink escape.
-fn read_launcher_field(path: &Path, anchor: &Path) -> Option<String> {
-    let canonical = path.canonicalize().ok()?;
-    let canonical_anchor = anchor.canonicalize().ok()?;
+fn read_launcher_field(path: &Path, anchor: &Path) -> ContextRead {
+    let (canonical, canonical_anchor) = match (path.canonicalize(), anchor.canonicalize()) {
+        (Ok(canonical), Ok(anchor)) => (canonical, anchor),
+        (Err(error), _) | (_, Err(error)) => {
+            return ContextRead::Unusable(format!("could not be resolved ({error})"));
+        }
+    };
     if !canonical.starts_with(&canonical_anchor) {
         debug!(
             path = %canonical.display(),
             anchor = %canonical_anchor.display(),
             "launcher_context path escapes anchor; ignoring"
         );
-        return None;
+        return ContextRead::Unusable("is a link to a file outside its directory".to_string());
     }
-    let metadata = fs::metadata(&canonical).ok()?;
+    let metadata = match fs::metadata(&canonical) {
+        Ok(metadata) => metadata,
+        Err(error) => return ContextRead::Unusable(format!("could not be read ({error})")),
+    };
     if metadata.len() > LAUNCHER_CONTEXT_MAX_BYTES {
-        debug!(
-            size = metadata.len(),
-            cap = LAUNCHER_CONTEXT_MAX_BYTES,
-            "launcher_context exceeds size cap; ignoring"
-        );
-        return None;
+        return ContextRead::Unusable(format!(
+            "is larger than the {} KiB limit",
+            LAUNCHER_CONTEXT_MAX_BYTES / 1024
+        ));
     }
-    let body = fs::read_to_string(&canonical).ok()?;
-    let parsed: LauncherContextSnippet = serde_json::from_str(&body).ok()?;
+    let body = match fs::read_to_string(&canonical) {
+        Ok(body) => body,
+        Err(error) => return ContextRead::Unusable(format!("could not be read ({error})")),
+    };
+    if body.trim().is_empty() {
+        return ContextRead::Unusable("is empty".to_string());
+    }
+    // serde_json's own messages can quote a string from the input, so only the
+    // category and position are reported.
+    let parsed: LauncherContextSnippet = match serde_json::from_str(&body) {
+        Ok(parsed) => parsed,
+        Err(error) if error.is_data() => {
+            return ContextRead::Unusable(format!(
+                "is JSON but not a launcher context, which needs a string \
+                 \"launcher\" field (line {}, column {})",
+                error.line(),
+                error.column()
+            ));
+        }
+        Err(error) => {
+            return ContextRead::Unusable(format!(
+                "is not valid JSON (line {}, column {})",
+                error.line(),
+                error.column()
+            ));
+        }
+    };
     // A launcher context describes a session, and sessions end. The hooks
     // reader has always applied a staleness bound; this one never did, so a
     // file written days earlier by an unrelated session kept deciding which
@@ -440,9 +565,14 @@ fn read_launcher_field(path: &Path, anchor: &Path) -> Option<String> {
             timestamp = ?parsed.timestamp,
             "ignoring launcher context older than the staleness bound"
         );
-        return None;
+        return ContextRead::Stale;
     }
-    validate_binary_name(&parsed.launcher)
+    match validate_binary_name(&parsed.launcher) {
+        Some(name) => ContextRead::Usable(name),
+        None => ContextRead::Unusable(
+            "does not name amplifier, claude, codex or copilot as its launcher".to_string(),
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -579,6 +709,11 @@ mod tests {
         .unwrap();
     }
 
+    /// The launcher the persisted layer would answer with from `dir`.
+    fn found_launcher(dir: &Path) -> Option<String> {
+        lookup_persisted_launcher(dir).found.map(|(name, _)| name)
+    }
+
     /// Workflow worktrees live under the system temp directory, which has no
     /// `.git` above it, so the walk-up used to reach `/tmp` -- where a
     /// five-day-old file written by an unrelated session was deciding the
@@ -595,7 +730,7 @@ mod tests {
         fs::set_permissions(&work, fs::Permissions::from_mode(0o700)).unwrap();
 
         assert_eq!(
-            lookup_persisted_launcher(&work),
+            found_launcher(&work),
             None,
             "a context under a world-writable ancestor must not be consulted"
         );
@@ -613,7 +748,7 @@ mod tests {
         let work = root.path().join("repo");
         fs::create_dir_all(&work).unwrap();
 
-        assert_eq!(lookup_persisted_launcher(&work).as_deref(), Some("codex"));
+        assert_eq!(found_launcher(&work).as_deref(), Some("codex"));
     }
 
     /// Issue #1342 / crusty B1. Symmetric writes let the persisted layer say
@@ -687,5 +822,142 @@ mod tests {
         );
         assert_eq!(name, "codex");
         assert_eq!(source, ResolutionSource::Env);
+    }
+
+    // ---------------------------------------------------------------------
+    // Issue #1525 -- an unusable launcher context is reported, not dropped.
+    // ---------------------------------------------------------------------
+
+    /// Write `body` as the launcher context in `dir`, returning its path.
+    fn write_raw_context(dir: &Path, body: &str) -> PathBuf {
+        let runtime = dir.join(".claude").join("runtime");
+        fs::create_dir_all(&runtime).unwrap();
+        let path = runtime.join("launcher_context.json");
+        fs::write(&path, body).unwrap();
+        path
+    }
+
+    fn read_raw(body: &str) -> ContextRead {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_raw_context(dir.path(), body);
+        read_launcher_field(&path, dir.path())
+    }
+
+    #[test]
+    fn an_empty_context_is_unusable_and_says_so() {
+        assert_eq!(read_raw(""), ContextRead::Unusable("is empty".into()));
+        assert_eq!(read_raw(" \n\t"), ContextRead::Unusable("is empty".into()));
+    }
+
+    #[test]
+    fn a_context_that_is_not_json_is_unusable_with_a_position() {
+        let ContextRead::Unusable(reason) = read_raw("{\"launcher\": claude") else {
+            panic!("invalid JSON must be unusable");
+        };
+        assert!(
+            reason.starts_with("is not valid JSON (line 1, column"),
+            "{reason}"
+        );
+    }
+
+    /// serde_json would quote the input in its message; the reason must not,
+    /// because it ends up on a terminal.
+    #[test]
+    fn a_json_context_of_the_wrong_shape_is_unusable_and_not_echoed() {
+        for body in [
+            r#"{"timestamp":"2026-01-01T00:00:00Z"}"#,
+            r#"{"launcher":5}"#,
+            r#""\u001b[31mclaude""#,
+        ] {
+            let ContextRead::Unusable(reason) = read_raw(body) else {
+                panic!("{body:?} must be unusable");
+            };
+            assert!(
+                reason.starts_with("is JSON but not a launcher context"),
+                "{reason}"
+            );
+            assert!(
+                !reason.contains("claude") && !reason.contains('\u{1b}'),
+                "{reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_fresh_context_naming_no_known_cli_is_unusable() {
+        let now = chrono::Utc::now().to_rfc3339();
+        assert_eq!(
+            read_raw(&format!(r#"{{"launcher":"vim","timestamp":"{now}"}}"#)),
+            ContextRead::Unusable(
+                "does not name amplifier, claude, codex or copilot as its launcher".into()
+            )
+        );
+    }
+
+    /// Sessions end; an old file is expected, not broken, and is not reported.
+    #[test]
+    fn a_stale_context_is_stale_not_unusable() {
+        assert_eq!(read_raw(r#"{"launcher":"claude"}"#), ContextRead::Stale);
+        assert_eq!(
+            read_raw(r#"{"launcher":"claude","timestamp":"2001-01-01T00:00:00Z"}"#),
+            ContextRead::Stale
+        );
+    }
+
+    #[test]
+    fn an_oversized_context_is_unusable() {
+        let body = format!(
+            r#"{{"launcher":"claude","pad":"{}"}}"#,
+            "x".repeat(LAUNCHER_CONTEXT_MAX_BYTES as usize)
+        );
+        assert_eq!(
+            read_raw(&body),
+            ContextRead::Unusable("is larger than the 64 KiB limit".into())
+        );
+    }
+
+    /// The fall-through is kept: a bad file nearer the start does not stop the
+    /// walk-up. But the bad file is recorded, and the file that did answer is
+    /// the one reported -- not a fixed relative path that names neither.
+    #[test]
+    fn the_walk_up_records_a_bad_file_and_names_the_one_that_answered() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join(".git")).unwrap();
+        write_launcher_context(root.path(), "codex");
+        let sub = root.path().join("sub");
+        let bad = write_raw_context(&sub, "");
+
+        let lookup = lookup_persisted_launcher(&sub);
+        let (name, path) = lookup.found.expect("the ancestor still answers");
+        assert_eq!(name, "codex");
+        assert_eq!(
+            path,
+            root.path()
+                .canonicalize()
+                .unwrap()
+                .join(".claude/runtime/launcher_context.json")
+        );
+        assert_eq!(
+            lookup.unusable,
+            vec![UnusableContext {
+                path: sub
+                    .canonicalize()
+                    .unwrap()
+                    .join(".claude/runtime/launcher_context.json"),
+                reason: "is empty".into(),
+            }]
+        );
+        assert!(bad.exists());
+    }
+
+    /// A stale file is passed over without being listed.
+    #[test]
+    fn the_walk_up_does_not_list_a_stale_file() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join(".git")).unwrap();
+        write_raw_context(root.path(), r#"{"launcher":"claude"}"#);
+        let lookup = lookup_persisted_launcher(root.path());
+        assert!(lookup.found.is_none());
+        assert!(lookup.unusable.is_empty(), "{:?}", lookup.unusable);
     }
 }

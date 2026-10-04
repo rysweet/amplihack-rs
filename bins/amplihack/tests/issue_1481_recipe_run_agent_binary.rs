@@ -389,3 +389,94 @@ fn auto_mode_hands_an_inherited_guess_on_tagged_and_persists_nothing() {
         "a default-guess launch must persist nothing, found {persisted:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1525: an empty or malformed launcher_context.json used to be dropped
+// without a word, and the walk-up carried on past it. The run then took the
+// default (or a parent directory's file), and the only notice said that no
+// variable or marker was found -- naming no file at all.
+// ---------------------------------------------------------------------------
+
+/// Write `body` as the launcher context in `dir` and return its path as the
+/// resolver will report it.
+fn write_raw_launcher_context(dir: &Path, body: &str) -> PathBuf {
+    let runtime = dir.join(".claude").join("runtime");
+    fs::create_dir_all(&runtime).expect("create runtime dir");
+    fs::write(runtime.join("launcher_context.json"), body).expect("write launcher context");
+    dir.canonicalize()
+        .expect("canonicalize")
+        .join(".claude/runtime/launcher_context.json")
+}
+
+#[test]
+fn an_empty_launcher_context_is_named_with_its_reason() {
+    let fx = Fixture::new();
+    let path = write_raw_launcher_context(&fx.work(), "");
+    let (output, probe) = fx.run(&[]);
+    assert!(output.status.success(), "{output:?}");
+    // Still the default, still tagged -- but no longer silent about why.
+    assert_eq!(handed(&probe), ("copilot", "default:copilot"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "amplihack: ignored {}: it is empty.",
+            path.display()
+        )),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn a_malformed_launcher_context_is_named_with_its_reason() {
+    let fx = Fixture::new();
+    let path = write_raw_launcher_context(&fx.work(), r#"{"launcher": "claude""#);
+    let (output, probe) = fx.run(&[]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(handed(&probe), ("copilot", "default:copilot"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "amplihack: ignored {}: it is not valid JSON (line 1,",
+            path.display()
+        )),
+        "{stderr}"
+    );
+}
+
+/// The fall-through is kept, so a bad file in a subdirectory still lets the
+/// project's file answer. Both are named: the one that was read (not a fixed
+/// relative path) and the one that was skipped.
+#[test]
+fn a_bad_file_below_a_good_one_is_named_alongside_the_file_that_answered() {
+    let fx = Fixture::new();
+    let project = fx.path().join("project");
+    fs::create_dir_all(project.join(".git")).expect("create project");
+    amplihack_cli::launcher_context::write_launcher_context(
+        &project,
+        amplihack_cli::launcher_context::LauncherKind::Codex,
+        "amplihack codex",
+        Default::default(),
+    )
+    .expect("write launcher context");
+    let sub = project.join("sub");
+    let skipped = write_raw_launcher_context(&sub, "");
+    let (output, probe) = fx.run_with_args(&["--working-dir".as_ref(), sub.as_os_str()], &[]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(handed(&probe), ("codex", "<unset>"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let read = project
+        .canonicalize()
+        .expect("canonicalize")
+        .join(".claude/runtime/launcher_context.json");
+    assert!(
+        stderr.contains(&format!("read from {}", read.display())),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!(
+            "amplihack: ignored {}: it is empty.",
+            skipped.display()
+        )),
+        "{stderr}"
+    );
+}

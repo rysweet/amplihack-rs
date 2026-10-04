@@ -76,6 +76,11 @@ Walk-up rules for the persisted launcher context:
 - Return the first usable `.claude/runtime/launcher_context.json`. A file that
   is stale (older than 24h), oversized, malformed, not allowlisted or escapes
   its directory through a symlink is skipped, and the walk continues upward.
+  Every skipped file except a stale one is recorded with its path and reason
+  (`agent_binary::resolve_detailed`), and `recipe run`'s stderr notice lists it
+  when the answer was inferred (issue #1525). Before that, an empty or
+  malformed file was dropped without a word, and a parent directory's file
+  could answer in its place.
 - Stop at the first `.git` boundary; do not cross into a parent repo.
 - Stop at the first world-writable or foreign-owned directory (issue #1335).
 - Cap at 32 ancestors.
@@ -106,9 +111,9 @@ session's choice, and persisting it would pin later runs in the checkout.
 session markers of the CLI that invoked it, and exports the answer to
 `recipe-runner-rs` as `AMPLIHACK_AGENT_BINARY`. Steps run under the runner's
 curated environment, where those markers may be gone. When the answer came
-from the launcher context or the default layer, recipe run prints a one-line
-notice on stderr; from the default layer it also exports the `default:<binary>`
-tag (issue #1481).
+from the launcher context or the default layer, recipe run prints a notice on
+stderr naming the file it read, and any it skipped as unusable (#1525); from
+the default layer it also exports the `default:<binary>` tag (issue #1481).
 
 Inside `amplihack-rs`, code that picks the binary calls `resolve(&cwd)` rather
 than reading the env var directly. One older helper,

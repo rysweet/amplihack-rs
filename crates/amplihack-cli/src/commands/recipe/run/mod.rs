@@ -74,7 +74,7 @@ fn execute_recipe_via_rust_for_test(
         working_dir,
         search_dirs,
         step_timeout,
-        crate::env_builder::active_agent_binary_with_source_in(working_dir),
+        crate::env_builder::resolve_agent_binary_in(working_dir),
     )
 }
 
@@ -128,16 +128,17 @@ pub fn run_recipe(
 /// root-sandbox decision; injected so tests reach the call in
 /// [`run_recipe_with`] whatever uid and configuration they run under.
 pub(crate) struct RootSandboxPreflight {
-    /// Resolves the run's agent binary, with its source, from the working dir.
-    /// Called once; the pre-flight and every step use that one answer.
-    pub(crate) agent_binary: fn(&Path) -> (String, amplihack_utils::agent_binary::ResolutionSource),
+    /// Resolves the run's agent binary, with its source and the launcher
+    /// context evidence, from the working dir. Called once; the pre-flight,
+    /// the stderr notice and every step use that one answer.
+    pub(crate) agent_binary: fn(&Path) -> amplihack_utils::agent_binary::Resolution,
     pub(crate) decision: fn() -> amplihack_utils::root_sandbox::SkipPermissionsEnv,
 }
 
 impl RootSandboxPreflight {
     fn live() -> Self {
         Self {
-            agent_binary: crate::env_builder::active_agent_binary_with_source_in,
+            agent_binary: crate::env_builder::resolve_agent_binary_in,
             decision: amplihack_utils::root_sandbox::detect,
         }
     }
@@ -194,7 +195,7 @@ pub(crate) fn run_recipe_with(
     if !dry_run
         && let Err(error) = preflight_root_sandbox(
             &recipe,
-            &agent_binary.0,
+            &agent_binary.binary,
             &(preflight.decision)(),
             preflight_out,
         )
