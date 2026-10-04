@@ -2585,6 +2585,10 @@ else
   range_case "RANGE-allowlist-and-delete" "$CR_SHA" "$R_DEL" "$FX_M1" ok "all three allowlist entries, and deleting one, are allowed"
   range_case "RANGE-base-merge" "$CR_SHA" "$FX_MERGE" "$FX_M1" ok "a clean merge of the base is allowed; the base's own commits are not walked"
   range_case "RANGE-empty" "$CR_SHA2" "$CR_SHA2" "$FX_M1" ok "the reviewed head itself is an empty range"
+  range_case "RANGE-head-moved-back" "$CR_SHA2" "$CR_SHA" "$FX_M1" "crusty-unreviewed-commits:${CR_SHA}" \
+    "a head moved back behind the reviewed commit is not reviewed, even though the range is empty"
+  range_case "RANGE-unrelated-history" "$CR_SHA" "$R_ROOT" "$FX_M1" "crusty-unreviewed-commits:${R_ROOT}" \
+    "a head that does not contain the reviewed commit is not reviewed"
   range_case "RANGE-code" "$CR_SHA" "$FX_CODE" "$FX_M1" "crusty-unreviewed-commits:${FX_CODE}" \
     "a code commit after the clean round is named by SHA, and its subject is never printed"
   range_case "RANGE-case-sensitive" "$CR_SHA" "$R_LOWER" "$FX_M1" "crusty-unreviewed-commits:${R_LOWER}" "pr_description.md is not PR_DESCRIPTION.md"

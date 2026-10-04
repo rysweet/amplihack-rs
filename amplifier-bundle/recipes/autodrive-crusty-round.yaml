@@ -177,7 +177,7 @@ steps:
       # sees an empty finding set, which is reported rather than assumed clean.
       if [ -n "$RECORD" ]; then
         if command -v jq >/dev/null 2>&1; then
-          printf '%s' "$CONCERNS" | jq -r '.[]?.id // empty' 2>/dev/null > "${RECORD}.findings" || : > "${RECORD}.findings"
+          printf '%s' "$CONCERNS" | jq -r '.[]?.id // empty' 2>/dev/null > "${RECORD}.findings" || { echo "WARNING: concern ids could not be parsed; the recurring-findings signal is incomplete this round." >&2; : > "${RECORD}.findings"; }
         else
           echo "WARNING: jq unavailable; concern ids cannot be extracted for the recurring-findings signal." >&2
           : > "${RECORD}.findings"

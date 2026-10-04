@@ -884,6 +884,14 @@ walks the commits crusty has not seen:
 git rev-list --reverse --topo-order REVIEWED..HEAD ^BASE_SHA
 ```
 
+Before the walk, `REVIEWED` must be an ancestor of `HEAD`
+(`git merge-base --is-ancestor`). If the branch was moved back behind the
+reviewed commit, or its history was rewritten, the walk would be empty and
+would read as `ok`, so the function prints `crusty-unreviewed-commits:HEAD`
+instead and the change goes back to crusty. A git error in this check gives
+`crusty-range-unreadable`. A base merge keeps `REVIEWED` as an ancestor, so it
+still passes.
+
 `^BASE_SHA` leaves out every commit already on the base branch, so the
 commits a base merge brings in are not walked. When `BASE_SHA` is empty the
 `^BASE_SHA` argument is dropped. Each commit in the walk is passed to
@@ -895,7 +903,7 @@ of three values:
 | Output | Meaning |
 | --- | --- |
 | `ok` | every commit in the range is allowed, or the range is empty |
-| `crusty-unreviewed-commits:<sha>` | `<sha>` is the first commit, oldest first, that needs crusty review |
+| `crusty-unreviewed-commits:<sha>` | `<sha>` is the first commit, oldest first, that needs crusty review, or the head itself when the reviewed commit is not its ancestor |
 | `crusty-range-unreadable` | a SHA is not 40 or 64 hex characters, git failed, or the repository is shallow |
 
 `autodrive_range_allowed REPO COMMIT BASE_SHA` allows a commit in two cases.
@@ -1228,7 +1236,9 @@ the auto-drive recipes contains `STATE_DIR`, `autodrive_state_dir` or
 
 `step-04-address-blockers` of the merge round also tells its agent not to
 rewrite history, reset, force-push, or edit refs, and not to try to clear a
-`crusty-review-required` blocker.
+`crusty-review-required` blocker. The gate does not rely on that instruction:
+`autodrive_crusty_range` requires the reviewed commit to be an ancestor of the
+head, so a rewritten or moved-back branch goes back to crusty.
 
 ### Trust model
 
@@ -1545,7 +1555,7 @@ The `gadugi-test` stub logs its arguments, so the tests can assert exactly one
 | qa evidence, hostile input | a scenario named `-d /` counted as unnamed; a `logs` symlink left in place; `echo *` recorded literally with a file named `--evil` present; `cd sub && false` followed by `pwd` running from the repository root |
 | merge-ready files | each of the five directories; `AMPLIHACK_HOME` winning over the others; `merge-ready-template-not-found`; `merge-ready-skill-files-not-found`; a candidate path containing `"` or `{{` skipped; a `REPO_PATH` that does not exist failing step-00 with `ERROR: cannot cd to REPO_PATH` |
 | per-scenario results | `PASS`, `FAIL` and `INVALID` entries in sorted order; a symlink and a non-regular file both `INVALID` and both counted in `gadugi_scenarios_failed`; every entry `INVALID` after a validate failure; a hostile file name sanitised |
-| crusty range | a base merge only gives `ok`; a description or evidence change only gives `ok`; a code commit gives `crusty-unreviewed-commits:<sha>`; a hand-resolved merge, an empty commit, a symlink or submodule mode, a `..` path under the prefix, a shallow clone, a replace ref, and an empty base SHA |
+| crusty range | a base merge only gives `ok`; a description or evidence change only gives `ok`; a code commit gives `crusty-unreviewed-commits:<sha>`; a hand-resolved merge, an empty commit, a symlink or submodule mode, a `..` path under the prefix, a shallow clone, a replace ref, an empty base SHA, a head moved back behind the reviewed commit, and an unrelated history |
 | crusty re-review | step-00b clears the `crusty-loop` row and emits `rereview: "true"` for a code commit; step-00b leaves the row and emits `rereview: "false"` for `crusty-range-unreadable`; step-01b gives `UNREVIEWED_COMMITS`; step-03 downgrades it; a re-review ending `STUCK` leaves the marker absent and the next round's step-00b emits `rereview: "false"`; `autodrive_clear_phase` refuses a symlinked `phases.tsv` and an invalid phase name |
 | qa evidence hash | an edited `qa-evidence.json` gives `qa-evidence-modified`; a stale `head_sha` gives `qa-evidence-stale`; an edited `merge-ready-latest.json` gives `qa-record-modified`; a replayed older manifest row; a record replaced after the gate copied it does not change what section 7 reads; step-03 downgrades an empty or changed hash |
 | crusty evidence | DONE and CLEAN in round 1 gives `DONE_CLEAN`; an injected record and an archived record are both rejected; a manifest row naming `../phases.tsv`; a duplicate `reviewed_head_sha` key; a two-line record; a CLEAN round with no commits records a non-empty `head_sha`; a missing SHA fails step-06; a non-numeric count recorded as 0 with a sanitised `WARNING`; a failed `mktemp` in `autodrive_crusty_final` keeping its token |

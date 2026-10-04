@@ -154,7 +154,10 @@ EOF
 #
 # The walk is `git rev-list --reverse --topo-order <reviewed>..<head> ^<base_sha>`
 # (no ^<base_sha> when it is empty), so the commits a base merge brings in are
-# not walked. Returns 0 only for ok.
+# not walked. <reviewed> must be an ancestor of <head>: a head moved back
+# behind the reviewed commit, or a rewritten history, leaves the walk empty, so
+# it is reported as crusty-unreviewed-commits:<head> instead. Returns 0 only
+# for ok.
 autodrive_crusty_range() {
   local -x LC_ALL=C
   local repo="${1:-}" reviewed="${2:-}" head="${3:-}" base="${4:-}" list="" c="" rc=0
@@ -169,6 +172,13 @@ autodrive_crusty_range() {
   for c in "$reviewed" "$head" $base; do
     autodrive_trust_git "$repo" cat-file -e "${c}^{commit}" 2>/dev/null || { printf 'crusty-range-unreadable\n'; return 1; }
   done
+  autodrive_trust_git "$repo" merge-base --is-ancestor "$reviewed" "$head" 2>/dev/null; rc=$?
+  case "$rc" in
+    0) ;;
+    1) printf 'crusty-unreviewed-commits:%s\n' "$head"; return 1 ;;
+    *) printf 'crusty-range-unreadable\n'; return 1 ;;
+  esac
+  rc=0
   [ -z "$base" ] || excl=("^${base}")
   list="$(autodrive_trust_git "$repo" rev-list --reverse --topo-order "${reviewed}..${head}" ${excl[@]+"${excl[@]}"} 2>/dev/null)" \
     || { printf 'crusty-range-unreadable\n'; return 1; }

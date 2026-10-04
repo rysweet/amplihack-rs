@@ -80,5 +80,5 @@ for d in ${CANDIDATES[@]+"${CANDIDATES[@]}"}; do
   exit 0
 done
 
-echo "ERROR: merge-ready-skill-files-not-found: searched ${SEARCHED:-nothing (AMPLIHACK_HOME, REPO_PATH and HOME are all empty, and no git toplevel was found)}" >&2
+echo "ERROR: merge-ready-skill-files-not-found: searched $(printf '%s' "${SEARCHED:-nothing (AMPLIHACK_HOME, REPO_PATH and HOME are all empty, and no git toplevel was found)}" | LC_ALL=C tr -d '\000-\037\177')" >&2
 exit 1

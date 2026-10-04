@@ -95,7 +95,7 @@ steps:
     parse_json: true
     command: |
       set -uo pipefail
-      cd "${REPO_PATH:-.}" 2>/dev/null || true; H=""; TOP=""; Q=""
+      cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }; H=""; TOP=""; Q=""
       if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then TOP="$(git rev-parse --show-toplevel 2>/dev/null)"; else echo "[skip] not a git repo; the git toplevel is not searched for the auto-drive tools" >&2; fi
       for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$TOP" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/autodrive_state.sh" ] && [ -f "$c/amplifier-bundle/tools/autodrive_trust.sh" ] && { H="$c/amplifier-bundle/tools"; break; }; done
       if [ -z "$H" ]; then echo "WARNING: autodrive_trust.sh not found; qa_evidence_sha is empty, so this round cannot reach MERGE_READY." >&2
@@ -134,7 +134,7 @@ steps:
     parse_json: true
     command: |
       set -uo pipefail
-      cd "${REPO_PATH:-.}" 2>/dev/null || true
+      cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }
       # Criterion 3: autodrive_crusty_final (the merge gate runs it too), then the
       # range from the reviewed head to HEAD (#1517 D4); the base sync may have
       # added a merge. Every value emitted is from a fixed set or a hex SHA.
@@ -282,7 +282,7 @@ steps:
       fi
       if [ -n "$RECORD" ]; then
         : > "${RECORD}.findings"
-        if command -v jq >/dev/null 2>&1; then printf '%s' "$BLOCKERS" | jq -r '.[]?.id // empty' 2>/dev/null > "${RECORD}.findings" || : > "${RECORD}.findings"
+        if command -v jq >/dev/null 2>&1; then printf '%s' "$BLOCKERS" | jq -r '.[]?.id // empty' 2>/dev/null > "${RECORD}.findings" || { echo "WARNING: blocker ids could not be parsed; the recurring-findings signal is incomplete this round." >&2; : > "${RECORD}.findings"; }
         else echo "WARNING: jq unavailable; blocker ids cannot be extracted for the recurring-findings signal." >&2; fi
         [ -z "$DOWNGRADE" ] || printf 'measured-evidence-disagrees\n' >> "${RECORD}.findings"
       fi
