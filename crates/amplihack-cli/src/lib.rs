@@ -71,7 +71,7 @@ use clap::{
 ///
 /// Prefers the `AMPLIHACK_RELEASE_VERSION` env var *set at build time* (used by
 /// the release workflow to pin every binary to its tagged version) and falls
-/// back to `CARGO_PKG_VERSION` for local/dev builds.
+/// back to `<CARGO_PKG_VERSION>-dev` for local/dev builds.
 ///
 /// The root cause of the self-update prompt loop was that release binaries
 /// were shipped with `CARGO_PKG_VERSION` baked in from a stale `Cargo.toml`,
@@ -79,9 +79,15 @@ use clap::{
 /// check kept offering the "newer" version forever. Feeding the release tag
 /// through `AMPLIHACK_RELEASE_VERSION` at build time closes that gap without
 /// needing to sed both `Cargo.toml` and `Cargo.lock` on every release.
+///
+/// Issue #1526: release numbers are assigned after merge and never written
+/// back to `Cargo.toml`, so an unstamped source build cannot know which
+/// release it is. The `-dev` suffix makes it a pre-release of the
+/// `Cargo.toml` version, which semver orders below every release from that
+/// line, so it can never look newer than an installed release.
 pub const VERSION: &str = match option_env!("AMPLIHACK_RELEASE_VERSION") {
     Some(v) => v,
-    None => env!("CARGO_PKG_VERSION"),
+    None => concat!(env!("CARGO_PKG_VERSION"), "-dev"),
 };
 
 pub use cli_commands::Commands;

@@ -160,6 +160,31 @@ const PRE_COMPACT_INPUT: &str = r#"{
 // Tests
 // ---------------------------------------------------------------------------
 
+/// Issue #1526: same formula as `cli_golden::version_format_is_semver`, so the
+/// two binaries always report the same string. An unstamped source build is
+/// `<CARGO_PKG_VERSION>-dev`; a release build is exactly its tag.
+#[test]
+fn hooks_version_matches_release_or_dev_formula() {
+    let expected = match option_env!("AMPLIHACK_RELEASE_VERSION") {
+        Some(v) => v.to_string(),
+        None => format!("{}-dev", env!("CARGO_PKG_VERSION")),
+    };
+    let output = Command::new(hooks_bin())
+        .arg("--version")
+        .output()
+        .expect("failed to run amplihack-hooks --version");
+    assert!(
+        output.status.success(),
+        "amplihack-hooks --version must exit 0; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        format!("amplihack-hooks {expected}"),
+        "amplihack-hooks must report the release tag, or <CARGO_PKG_VERSION>-dev when unstamped"
+    );
+}
+
 #[test]
 fn pre_tool_use_dispatch_succeeds() {
     assert_hook_ok("pre-tool-use", PRE_TOOL_USE_INPUT);

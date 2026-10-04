@@ -320,12 +320,12 @@ fi
 ### AMPLIHACK_VERSION
 
 **Type:** semver string
-**Example:** `0.3.1`
+**Example:** `0.18.39` (release build), `0.18.0-dev` (source build)
 **Set by:** `EnvBuilder::with_amplihack_vars()`
 
 The version of the `amplihack-cli` binary that launched the session. Release
-builds use `AMPLIHACK_RELEASE_VERSION` when it was set at compile time; local
-developer builds fall back to `CARGO_PKG_VERSION`.
+builds use `AMPLIHACK_RELEASE_VERSION` when it was set at compile time; source
+builds report `<CARGO_PKG_VERSION>-dev`.
 
 ---
 
@@ -341,11 +341,24 @@ workflow sets this value while compiling so `amplihack --version`, doctor
 output, plugin manifests, hook context loading, and the runtime
 `AMPLIHACK_VERSION` child-process variable all report the release tag version.
 
-Local builds normally leave this unset and use `CARGO_PKG_VERSION`.
+Source builds (`cargo build`, `cargo install --git`, `cargo install --path`)
+leave it unset and report `<CARGO_PKG_VERSION>-dev`, for example `0.18.0-dev`.
+The same rule applies to `amplihack-hooks --version`, so two binaries built
+from the same tree with the same environment report the same string. Release
+patch numbers are assigned after merge and never written to `Cargo.toml`, so a
+source build cannot know which release it will become. The `-dev` pre-release
+suffix makes semver order it below the releases from that line, and
+[self-heal refuses](../features/self-heal-asset-restage.md#downgrade-refusal)
+to let it replace a newer install implicitly.
 
 ```sh
 AMPLIHACK_RELEASE_VERSION=0.9.78 cargo build --release --locked --bin amplihack
 ./target/release/amplihack --version
+# amplihack 0.9.78
+
+cargo build --release --locked --bin amplihack
+./target/release/amplihack --version
+# amplihack 0.18.0-dev
 ```
 
 ---
@@ -1153,20 +1166,32 @@ amplihack copilot --print 'run tests'
 is treated as **unset** and the check still runs.
 
 **Diagnostic on skip-with-mismatch:** when the bypass is active *and* the
-stamp does not match `crate::VERSION`, `amplihack` emits one line on stderr
-before dispatch:
+stamp does not match `crate::VERSION` (or the installed bundle is
+incompatible), `amplihack` emits one line on stderr before dispatch:
 
 ```
-amplihack: self-heal skipped (AMPLIHACK_SKIP_AUTO_INSTALL set); stamp=<old> current=<new>
+amplihack: AMPLIHACK_SKIP_AUTO_INSTALL set; skipping re-stage (stamp=<stamp> current=<current>; installed_bundle=<status>)
 ```
 
 This makes the "stale assets, intentionally" state visible in CI logs.
 Matching versions produce no output.
 
+**Interaction with the downgrade refusal:** only startup self-heal reads this
+variable. Inside self-heal it is checked before the
+[downgrade refusal](../features/self-heal-asset-restage.md#downgrade-refusal),
+so self-heal prints this line instead of the refusal line. The launch
+bootstrap (`amplihack launch`, `claude`, `copilot` in an interactive
+terminal) does not read it and still runs its own downgrade guard. An
+interactive launch over a newer stamp therefore prints this line **and** the
+refusal line. Neither installs anything.
+
 **What it does not do:**
 
 - Does not affect the existing `update::post_install` hook fired by
   `amplihack update`.
+- Does not skip the interactive launch bootstrap
+  (`install::ensure_framework_installed`), which can still stage missing
+  framework assets or refuse a downgrade.
 - Does not propagate into child tool processes (`claude`, `copilot`, etc.) —
   inherited only because it is a normal env var, not because `amplihack`
   re-exports it.

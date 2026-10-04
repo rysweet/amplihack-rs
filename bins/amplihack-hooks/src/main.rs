@@ -36,10 +36,11 @@ fn main() {
     // `AMPLIHACK_RELEASE_VERSION` env override here, the hooks binary would
     // self-report the stale Cargo.toml version while amplihack itself
     // reports the tagged release version, tripping the post-update
-    // `verify_installed_version` check.
+    // `verify_installed_version` check. Unstamped builds report
+    // `<CARGO_PKG_VERSION>-dev`, exactly as `amplihack` does (issue #1526).
     const VERSION: &str = match option_env!("AMPLIHACK_RELEASE_VERSION") {
         Some(v) => v,
-        None => env!("CARGO_PKG_VERSION"),
+        None => concat!(env!("CARGO_PKG_VERSION"), "-dev"),
     };
 
     match subcommand {

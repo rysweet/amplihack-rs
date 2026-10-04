@@ -235,7 +235,8 @@ fn sanitized_single_line(bytes: &[u8]) -> String {
 ///
 /// Returns the version baked in at compile time. Prefers the
 /// `AMPLIHACK_RELEASE_VERSION` env override set by the release workflow and
-/// falls back to `CARGO_PKG_VERSION` for dev builds. See `amplihack_cli::VERSION`.
+/// falls back to `<CARGO_PKG_VERSION>-dev` for dev builds. See
+/// `amplihack_cli::VERSION`.
 /// This check always passes on a valid install and cannot fail at runtime.
 pub fn check_amplihack_version() -> (bool, String) {
     let version = crate::VERSION;

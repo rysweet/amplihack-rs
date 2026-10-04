@@ -9,6 +9,7 @@ mod clone;
 mod command_staging;
 mod copilot_plugin;
 mod directories;
+pub(crate) mod downgrade_guard;
 pub(crate) mod filesystem;
 mod hooks;
 pub(crate) mod interactive;
@@ -246,6 +247,22 @@ fn report_preserved_entries(preserved: &[String], target: &Path) {
 }
 
 pub(crate) fn ensure_framework_installed() -> Result<()> {
+    ensure_framework_installed_with(&mut std::io::stderr())
+}
+
+/// Launch bootstrap, with the downgrade refusal written to `notice`.
+///
+/// Issue #1526: this is an implicit re-stage — it can run the full installer
+/// and rewrite `~/.claude/settings.json` without the user asking. So the
+/// downgrade guard comes first: an older binary meeting a newer install
+/// refuses with one line and returns before the staging probe, `run_install`,
+/// slash-command staging and the settings.json hook auto-repair.
+fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W) -> Result<()> {
+    let stamp = version_stamp::read_installed_version().context("reading install version stamp")?;
+    if downgrade_guard::warn_if_implicit_downgrade(stamp.as_deref(), crate::VERSION, notice)? {
+        return Ok(());
+    }
+
     let staging_dir = staging_claude_dir()?;
     let staging_exists = staging_dir.exists();
     let missing = if staging_exists {

@@ -16,6 +16,18 @@
 //! the install procedure is invoked automatically and the user sees a
 //! one-line notice on stderr.
 //!
+//! ## Never an implicit downgrade
+//!
+//! A re-stage replaces the binaries in `~/.local/bin` and rewrites
+//! `~/.claude/settings.json`, so it must only ever move an install forward.
+//! When the stamp is valid semver and newer than this binary, self-heal
+//! refuses with one stderr line and lets the command run (issue #1526: a
+//! source build reporting `0.18.0` re-staged over a v0.18.39 install during a
+//! `recipe run`). The decision lives in
+//! `crate::commands::install::downgrade_guard` and is applied twice: before
+//! the install lock, and again under it after the stamp is re-read, so a newer
+//! install that lands while this process waits for the lock still wins.
+//!
 //! ## Failure mode
 //!
 //! Per the project's Zero-BS philosophy, install failures **propagate**
@@ -32,6 +44,7 @@ use anyhow::{Context, Result};
 use fs4::fs_std::FileExt;
 
 use crate::commands::install::bundle_compat_cache;
+use crate::commands::install::downgrade_guard;
 use crate::commands::install::version_stamp;
 
 /// Env var that fully disables the auto-restage check.
@@ -195,6 +208,13 @@ where
         return Ok(());
     }
 
+    // Issue #1526: never re-stage an older build over a newer install. The
+    // newer install's bundle is authoritative, so `installed_bundle_issue` is
+    // deliberately not consulted here.
+    if downgrade_guard::warn_if_implicit_downgrade(stamp.as_deref(), expected, notice)? {
+        return Ok(());
+    }
+
     if let Some(issue) = &installed_bundle_issue {
         tracing::info!(
             "self_heal: installed framework bundle incompatible despite stamp={:?}; re-staging assets: {issue}",
@@ -218,37 +238,49 @@ where
     // waiter re-reads the stamp inside the critical section; if the first
     // winner already wrote the up-to-date stamp, the waiter exits without
     // re-running the installer.
-    with_install_lock(|| {
-        // Re-check after acquiring the lock — the previous holder may
-        // have already brought the stamp current.
-        let stamp_now = version_stamp::read_installed_version()
-            .context("re-reading install stamp under lock")?;
-        // Deliberately uncached: a concurrent installer may have rewritten
-        // the bundle moments ago, and this is the decision that guards
-        // against re-running the installer needlessly.
-        let installed_bundle_issue_now = installed_bundle_compatibility_issue_uncached()
-            .context("re-checking installed framework bundle compatibility under lock")?;
-        if stamp_now.as_deref() == Some(expected) && installed_bundle_issue_now.is_none() {
-            tracing::debug!(
-                "self_heal: stamp and installed bundle brought current by concurrent installer; nothing to do"
-            );
-            return Ok(());
-        }
-        install_fn().context("running install during startup self-heal")?;
-        version_stamp::write_installed_version(expected)
-            .context("writing install version stamp after self-heal")?;
-        // The bundle just changed under us; drop the memoised verdict so the
-        // next invocation revalidates once and re-primes the cache.
-        if let Ok(path) = bundle_compat_cache_path() {
-            bundle_compat_cache::invalidate(&path);
-        }
-        writeln!(
-            notice,
-            "amplihack: framework assets re-staged for v{expected}"
-        )
-        .context("emitting self-heal notice")?;
-        Ok(())
-    })
+    with_install_lock(|| restage_under_lock(expected, notice, install_fn))
+}
+
+/// The installer critical section. Callers must hold the install lock.
+///
+/// Re-checks after acquiring the lock — the previous holder may have already
+/// brought the stamp current, or (issue #1526) a newer install may have landed
+/// while this process waited, in which case the downgrade guard refuses again.
+fn restage_under_lock<W, F>(expected: &str, notice: &mut W, install_fn: F) -> Result<()>
+where
+    W: Write,
+    F: FnOnce() -> Result<()>,
+{
+    let stamp_now =
+        version_stamp::read_installed_version().context("re-reading install stamp under lock")?;
+    if downgrade_guard::warn_if_implicit_downgrade(stamp_now.as_deref(), expected, notice)? {
+        return Ok(());
+    }
+    // Deliberately uncached: a concurrent installer may have rewritten
+    // the bundle moments ago, and this is the decision that guards
+    // against re-running the installer needlessly.
+    let installed_bundle_issue_now = installed_bundle_compatibility_issue_uncached()
+        .context("re-checking installed framework bundle compatibility under lock")?;
+    if stamp_now.as_deref() == Some(expected) && installed_bundle_issue_now.is_none() {
+        tracing::debug!(
+            "self_heal: stamp and installed bundle brought current by concurrent installer; nothing to do"
+        );
+        return Ok(());
+    }
+    install_fn().context("running install during startup self-heal")?;
+    version_stamp::write_installed_version(expected)
+        .context("writing install version stamp after self-heal")?;
+    // The bundle just changed under us; drop the memoised verdict so the
+    // next invocation revalidates once and re-primes the cache.
+    if let Ok(path) = bundle_compat_cache_path() {
+        bundle_compat_cache::invalidate(&path);
+    }
+    writeln!(
+        notice,
+        "amplihack: framework assets re-staged for v{expected}"
+    )
+    .context("emitting self-heal notice")?;
+    Ok(())
 }
 
 /// Absolute path of the installed bundle staged under `~/.amplihack`.
@@ -1174,5 +1206,311 @@ steps:
             }
             n => panic!("unexpected installer run count: {n}"),
         }
+    }
+
+    // ----- Issue #1526: an implicit re-stage never downgrades -----
+    //
+    // A recipe run from a lower-versioned build re-staged over a newer
+    // install: binaries in ~/.local/bin replaced, settings.json rewritten.
+    // Self-heal must refuse with one stderr line and let the command run.
+
+    /// A stamp above every real release. Whatever `crate::VERSION` is in this
+    /// build — `<pkg>-dev` unstamped, or a release tag — it is lower.
+    const NEWER_STAMP: &str = "9999.0.0";
+
+    /// The installed `amplihack` the refusal line must name.
+    fn installed_amplihack(home: &Path) -> PathBuf {
+        home.join(".local")
+            .join("bin")
+            .join(crate::path_conflicts::binary_filename("amplihack"))
+    }
+
+    /// `buf` is exactly one #1526 refusal line naming both versions and both
+    /// paths, and nothing that claims a re-stage happened.
+    fn assert_single_refusal_line(buf: &[u8], home: &Path) {
+        let text = String::from_utf8(buf.to_vec()).unwrap();
+        assert!(
+            text.ends_with('\n'),
+            "refusal must be a terminated line: {text:?}"
+        );
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "expected exactly one refusal line; got {text:?}"
+        );
+        let line = lines[0];
+        assert!(
+            line.starts_with("amplihack: refusing implicit re-stage: "),
+            "unexpected refusal prefix: {line}"
+        );
+        assert!(
+            line.contains(&format!("v{}", crate::VERSION)),
+            "refusal must name the running version: {line}"
+        );
+        assert!(
+            line.contains(&format!("v{NEWER_STAMP}")),
+            "refusal must name the installed version: {line}"
+        );
+        let exe = std::env::current_exe().unwrap();
+        assert!(
+            line.contains(&format!("{exe:?}")),
+            "refusal must name the running binary ({exe:?}): {line}"
+        );
+        let installed = installed_amplihack(home);
+        assert!(
+            line.contains(&format!("{installed:?}")),
+            "refusal must name the installed binary ({installed:?}): {line}"
+        );
+        assert!(
+            line.contains("amplihack install"),
+            "refusal must name the explicit escape hatch: {line}"
+        );
+        assert!(!line.contains("re-staged"), "nothing was re-staged: {line}");
+    }
+
+    fn assert_refuses_implicit_downgrade(argv: &[&str]) {
+        let tmp = TempDir::new().unwrap();
+        let _g = EnvGuard::new(tmp.path(), None);
+        version_stamp::write_installed_version(NEWER_STAMP).unwrap();
+
+        let calls = Cell::new(0u32);
+        let mut buf = Vec::new();
+        ensure_assets_match_binary_version_with(
+            &args(argv),
+            &mut buf,
+            counting_installer(&calls, crate::VERSION),
+        )
+        .expect("a refusal must not fail the user's command");
+
+        assert_eq!(
+            calls.get(),
+            0,
+            "`{}` must not re-stage v{} over an installed v{NEWER_STAMP}",
+            argv.join(" "),
+            crate::VERSION
+        );
+        assert_eq!(
+            version_stamp::read_installed_version().unwrap().as_deref(),
+            Some(NEWER_STAMP),
+            "a refusal must not rewrite the stamp"
+        );
+        assert!(
+            !tmp.path()
+                .join(".amplihack")
+                .join(INSTALL_LOCK_FILE)
+                .exists(),
+            "the warm-path guard must refuse before taking the install lock (D3)"
+        );
+        assert_single_refusal_line(&buf, tmp.path());
+    }
+
+    /// The #1526 trigger: `amplihack recipe run` from an older build.
+    #[test]
+    fn refuses_implicit_downgrade_for_recipe_run() {
+        assert_refuses_implicit_downgrade(&["amplihack", "recipe", "run", "x"]);
+    }
+
+    #[test]
+    fn refuses_implicit_downgrade_for_launch() {
+        assert_refuses_implicit_downgrade(&["amplihack", "launch"]);
+    }
+
+    /// D3: the newer install's bundle is authoritative. A bundle that this
+    /// older binary considers incompatible is not a licence to downgrade it.
+    #[test]
+    fn refusal_ignores_stale_installed_bundle() {
+        let tmp = TempDir::new().unwrap();
+        let _g = EnvGuard::new(tmp.path(), None);
+        version_stamp::write_installed_version(NEWER_STAMP).unwrap();
+        write_stale_installed_smart_orchestrator(tmp.path());
+
+        let calls = Cell::new(0u32);
+        let mut buf = Vec::new();
+        ensure_assets_match_binary_version_with(
+            &args(&["amplihack", "launch"]),
+            &mut buf,
+            counting_installer(&calls, crate::VERSION),
+        )
+        .expect("a refusal must not fail the user's command");
+
+        assert_eq!(
+            calls.get(),
+            0,
+            "a stale bundle must not override the refusal"
+        );
+        assert_single_refusal_line(&buf, tmp.path());
+    }
+
+    /// D4: the stamp is re-read under the lock and guarded again, so a newer
+    /// install that lands while this process waits for the lock still wins.
+    /// Driven directly through `restage_under_lock`: deterministic, no threads.
+    #[test]
+    fn under_lock_refuses_when_higher_stamp_appears() {
+        let tmp = TempDir::new().unwrap();
+        let _g = EnvGuard::new(tmp.path(), None);
+        // What a concurrent, newer installer left behind while we waited.
+        version_stamp::write_installed_version(NEWER_STAMP).unwrap();
+
+        let calls = Cell::new(0u32);
+        let mut buf = Vec::new();
+        with_install_lock(|| {
+            restage_under_lock(
+                crate::VERSION,
+                &mut buf,
+                counting_installer(&calls, crate::VERSION),
+            )
+        })
+        .expect("a refusal under the lock is not an error");
+
+        assert_eq!(
+            calls.get(),
+            0,
+            "the under-lock re-check must refuse a downgrade the warm path could not see"
+        );
+        assert_eq!(
+            version_stamp::read_installed_version().unwrap().as_deref(),
+            Some(NEWER_STAMP),
+            "a refusal under the lock must not rewrite the stamp"
+        );
+        assert_single_refusal_line(&buf, tmp.path());
+    }
+
+    /// The extraction into `restage_under_lock` must keep the existing body:
+    /// a lower stamp still installs, re-stamps, and prints the notice.
+    #[test]
+    fn under_lock_still_restages_a_lower_stamp() {
+        let tmp = TempDir::new().unwrap();
+        let _g = EnvGuard::new(tmp.path(), None);
+        version_stamp::write_installed_version("0.0.1").unwrap();
+
+        let calls = Cell::new(0u32);
+        let mut buf = Vec::new();
+        with_install_lock(|| {
+            restage_under_lock(
+                crate::VERSION,
+                &mut buf,
+                counting_installer(&calls, crate::VERSION),
+            )
+        })
+        .expect("an upgrade under the lock must succeed");
+
+        assert_eq!(calls.get(), 1, "an upgrade must still run the installer");
+        assert_eq!(
+            version_stamp::read_installed_version().unwrap().as_deref(),
+            Some(crate::VERSION)
+        );
+        let notice = String::from_utf8(buf).unwrap();
+        assert_eq!(
+            notice,
+            format!(
+                "amplihack: framework assets re-staged for v{}\n",
+                crate::VERSION
+            )
+        );
+    }
+
+    /// The skip list runs before the guard: `orch helper` pipe primitives
+    /// (#1062) must not print a refusal onto a recipe pipeline either.
+    #[test]
+    fn orch_helper_with_higher_stamp_stays_silent() {
+        for sub in [
+            "normalise-verdict",
+            "normalise-loop-verdict",
+            "extract-json",
+            "extract-field",
+            "normalise-type",
+            "reclassify-task-type",
+            "workflow-log-inventory",
+        ] {
+            let tmp = TempDir::new().unwrap();
+            let _g = EnvGuard::new(tmp.path(), None);
+            version_stamp::write_installed_version(NEWER_STAMP).unwrap();
+
+            let calls = Cell::new(0u32);
+            let mut buf = Vec::new();
+            ensure_assets_match_binary_version_with(
+                &args(&["amplihack", "orch", "helper", sub]),
+                &mut buf,
+                counting_installer(&calls, crate::VERSION),
+            )
+            .expect("ok");
+
+            assert_eq!(calls.get(), 0, "`orch helper {sub}` must not self-heal");
+            assert!(
+                buf.is_empty(),
+                "`orch helper {sub}` must stay silent; wrote {:?}",
+                String::from_utf8_lossy(&buf)
+            );
+        }
+    }
+
+    /// D3: the bypass check runs before the guard and is unchanged. It never
+    /// installs, and its own diagnostic already names both versions.
+    #[test]
+    fn bypass_wins_over_downgrade_guard() {
+        let tmp = TempDir::new().unwrap();
+        let _g = EnvGuard::new(tmp.path(), Some("1"));
+        version_stamp::write_installed_version(NEWER_STAMP).unwrap();
+
+        let calls = Cell::new(0u32);
+        let mut buf = Vec::new();
+        ensure_assets_match_binary_version_with(
+            &args(&["amplihack", "launch"]),
+            &mut buf,
+            counting_installer(&calls, crate::VERSION),
+        )
+        .expect("ok");
+
+        assert_eq!(calls.get(), 0, "bypass must never install");
+        let text = String::from_utf8(buf).unwrap();
+        assert_eq!(
+            text.lines().count(),
+            1,
+            "bypass prints one line only: {text:?}"
+        );
+        assert!(
+            text.contains("AMPLIHACK_SKIP_AUTO_INSTALL")
+                && text.contains(&format!("stamp={NEWER_STAMP}"))
+                && text.contains(&format!("current={}", crate::VERSION)),
+            "expected the unchanged bypass diagnostic; got: {text}"
+        );
+        assert!(
+            !text.contains("refusing implicit re-stage"),
+            "the guard must not run when the bypass is set: {text}"
+        );
+    }
+
+    /// D2: a stamp that passes the regex but is not strict semver is treated
+    /// like a malformed one, so the #502 repair still happens.
+    #[test]
+    fn semver_invalid_stamp_still_repairs() {
+        let tmp = TempDir::new().unwrap();
+        let _g = EnvGuard::new(tmp.path(), None);
+        version_stamp::write_installed_version("01.2.3").unwrap();
+
+        let calls = Cell::new(0u32);
+        let mut buf = Vec::new();
+        ensure_assets_match_binary_version_with(
+            &args(&["amplihack", "launch"]),
+            &mut buf,
+            counting_installer(&calls, crate::VERSION),
+        )
+        .expect("ok");
+
+        assert_eq!(
+            calls.get(),
+            1,
+            "an unparseable stamp protects nothing; repair it"
+        );
+        let notice = String::from_utf8(buf).unwrap();
+        assert!(
+            !notice.contains("refusing implicit re-stage"),
+            "an unparseable stamp must not be refused: {notice}"
+        );
+        assert!(
+            notice.contains("re-staged"),
+            "repair notice missing: {notice}"
+        );
     }
 }
