@@ -89,14 +89,15 @@ pub(super) fn ensure_recipe_runner() -> Result<Outcome> {
         Ok(Outcome::InstalledFromGit)
     } else {
         // cargo install reported success but the binary is in none of the
-        // places probed (PATH, ~/.cargo/bin, ~/.local/bin, $CARGO_HOME/bin).
-        let cargo_bin = crate::rust_toolchain::cargo_home()
-            .map(|home| home.join("bin").display().to_string())
-            .unwrap_or_else(|| "~/.cargo/bin".to_string());
+        // places `rust_toolchain::find_recipe_runner` probes. `$CARGO_HOME/bin`
+        // is always probed, so cargo must have installed somewhere else
+        // (`CARGO_INSTALL_ROOT`, cargo's `install.root` setting, or `--root`).
         bail!(
             "cargo install for recipe-runner-rs reported success but the binary is still not \
-             discoverable. Add {cargo_bin} to PATH and re-run `amplihack install`, or set \
-             RECIPE_RUNNER_RS_PATH explicitly. {REMEDIATION}"
+             discoverable. cargo installed it outside $CARGO_HOME/bin (check CARGO_INSTALL_ROOT \
+             or cargo's `install.root` setting; `cargo install --list` shows the root). Set \
+             RECIPE_RUNNER_RS_PATH to the installed binary and re-run `amplihack install`. \
+             {REMEDIATION}"
         );
     }
 }
