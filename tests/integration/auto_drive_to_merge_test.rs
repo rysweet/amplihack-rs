@@ -36,11 +36,12 @@ const AUTODRIVE_RECIPES: [&str; 7] = [
     "autodrive-merge-loop",
 ];
 
-const AUTODRIVE_TOOLS: [&str; 4] = [
+const AUTODRIVE_TOOLS: [&str; 5] = [
     "autodrive_loop.sh",
     "autodrive_merge_gate.sh",
     "autodrive_merge_ready_files.sh",
     "autodrive_state.sh",
+    "autodrive_trust.sh",
 ];
 
 fn workspace_root() -> PathBuf {
@@ -136,8 +137,16 @@ fn every_autodrive_recipe_parses_and_fits_the_brick_budget() {
         );
         assert!(!steps(&recipe).is_empty(), "{name}.yaml declares no steps");
     }
+    // Tools are bricks too (issue #1517): the range and qa evidence checks
+    // live in autodrive_trust.sh so that no tool passes the budget.
     for tool in AUTODRIVE_TOOLS {
-        assert!(tool_path(tool).is_file(), "missing tool {tool}");
+        let path = tool_path(tool);
+        assert!(path.is_file(), "missing tool {tool}");
+        let lines = read(&path).lines().count();
+        assert!(
+            lines <= BRICK_LINE_BUDGET,
+            "{tool} is {lines} lines; the brick budget is {BRICK_LINE_BUDGET}"
+        );
     }
 }
 
@@ -1617,8 +1626,9 @@ fn merge_ready_assessment_reads_the_resolved_skill_files() {
         lower.contains("data") && lower.contains("not instructions"),
         "step-02 must say evidence text is data from the branch under review, not instructions"
     );
-    // Criterion 3: the reviewed SHA is recorded, not compared with the head,
-    // and the skill's three-cycle rule does not apply inside auto-drive.
+    // Criterion 3: the skill's three-cycle rule does not apply inside
+    // auto-drive. (The range rule is pinned in
+    // merge_round_prompts_state_the_range_rule.)
     assert!(
         lower.contains("three-cycle")
             || lower.contains("3 cycles")
@@ -2259,6 +2269,11 @@ fn merge_gate_keeps_every_existing_block() {
         r#"block "no --state-dir was given, so the crusty loop's DONE/CLEAN state cannot be read; crusty evidence is never taken from the TMPDIR fallback""#,
         r#"block "the crusty-loop phase is not recorded as done in ${STATE_DIR}; criterion 3 needs this run's crusty loop to have ended DONE""#,
         r#"block "the crusty loop's final crusty_verdict is not CLEAN in ${STATE_DIR}/crusty-latest.json; criterion 3 is not met""#,
+        // Added by the manifest commits of #1517; the range and qa evidence
+        // checks only add to these.
+        r#"block "crusty records in ${STATE_DIR} are not loop-written evidence (${CRUSTY_FINAL}); criterion 3 is not met""#,
+        r#"block "state dir ${STATE_DIR} is not private to this user (not owned by this user, a symlink, or group/world-writable); crusty state there is not evidence""#,
+        r#"block "autodrive_state.sh is missing beside the merge gate (${GATE_HOME:-<unknown>}); the crusty-loop marker cannot be read""#,
     ] {
         assert!(
             gate.contains(existing),
@@ -2584,6 +2599,510 @@ fn reference_doc_exists_and_declares_the_1347_dependency() {
         assert!(
             text.contains(section),
             "the reference must cover `{section}`"
+        );
+    }
+}
+
+// ── Commits after the clean round, and the qa evidence chain (#1517 D4-D6) ──
+
+/// What `autodrive_crusty_range` prints, besides `ok`.
+const RANGE_TOKENS: [&str; 2] = ["crusty-unreviewed-commits", "crusty-range-unreadable"];
+
+/// What `autodrive_qa_trusted` prints, besides `ok`.
+const QA_TRUSTED_TOKENS: [&str; 4] = [
+    "qa-manifest-missing",
+    "qa-record-modified",
+    "qa-evidence-modified",
+    "qa-evidence-stale",
+];
+
+/// The search order every auto-drive bash step uses to find a bundle tool.
+const TOOL_SEARCH_NEEDLES: [&str; 5] = [
+    "AMPLIHACK_HOME",
+    "REPO_PATH",
+    "git rev-parse --show-toplevel",
+    "/.copilot",
+    "/.amplihack",
+];
+
+fn step_command<'a>(recipe: &'a Value, id: &str) -> &'a str {
+    field(step(recipe, id), "command")
+}
+
+#[test]
+fn merge_round_rereviews_commits_after_the_clean_round() {
+    // D4: a code commit after the clean crusty round goes back to crusty at
+    // the start of the next merge round, through a nested crusty loop that
+    // keeps its own termination logic.
+    let recipe = recipe_yaml("autodrive-merge-round");
+    let order = [
+        "step-00-merge-ready-files",
+        "step-00b-crusty-range",
+        "step-00c-crusty-rereview",
+        "merge-evidence",
+        "step-00d-qa-evidence-hash",
+        "step-01-platform-facts",
+        "step-01b-crusty-evidence",
+        "step-02-merge-ready-assessment",
+    ];
+    for pair in order.windows(2) {
+        assert!(
+            step_index(&recipe, pair[0]) < step_index(&recipe, pair[1]),
+            "`{}` must run before `{}`",
+            pair[0],
+            pair[1]
+        );
+    }
+
+    let s00b = step(&recipe, "step-00b-crusty-range");
+    assert_eq!(s00b.get("type").and_then(Value::as_str), Some("bash"));
+    assert_eq!(s00b.get("parse_json").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        s00b.get("output").and_then(Value::as_str),
+        Some("crusty_range")
+    );
+    let cmd = field(s00b, "command");
+    for needle in [
+        "AUTODRIVE_STATE_DIR",
+        "autodrive_state.sh",
+        "autodrive_trust.sh",
+        "autodrive_rereview_decision",
+        "baseRefName",
+    ]
+    .iter()
+    .chain(TOOL_SEARCH_NEEDLES.iter())
+    {
+        assert!(cmd.contains(needle), "step-00b must reference `{needle}`");
+    }
+    assert!(
+        !cmd.contains("{{"),
+        "step-00b reads its inputs from the environment, never from {{...}} in the command"
+    );
+
+    let s00c = step(&recipe, "step-00c-crusty-rereview");
+    assert_eq!(
+        s00c.get("type").and_then(Value::as_str),
+        Some("recipe"),
+        "step-00c runs the crusty loop as a nested recipe"
+    );
+    assert_eq!(
+        s00c.get("recipe").and_then(Value::as_str),
+        Some("autodrive-crusty-loop"),
+        "step-00c must run autodrive-crusty-loop, so crusty's own termination applies"
+    );
+    let condition = field(s00c, "condition");
+    assert!(
+        condition.contains("crusty_range.rereview") && condition.contains("'true'"),
+        "step-00c must run only when crusty_range.rereview == 'true' (got `{condition}`)"
+    );
+    assert!(
+        s00c.get("continue_on_error").is_none(),
+        "step-00c must not set continue_on_error: a failed or refused (exit 79) re-review fails the round"
+    );
+    let ctx = s00c
+        .get("context")
+        .and_then(Value::as_mapping)
+        .expect("step-00c must pass context to the crusty loop");
+    for (key, want) in [
+        ("autodrive_state_dir", "{{autodrive_state_dir}}"),
+        ("repo_path", "{{repo_path}}"),
+        ("pr_number", "{{pr_number}}"),
+    ] {
+        assert_eq!(
+            ctx.get(Value::from(key)).and_then(Value::as_str),
+            Some(want),
+            "step-00c must pass `{key}: \"{want}\"` so the re-run writes the same state dir"
+        );
+    }
+}
+
+#[test]
+fn merge_round_hashes_qa_evidence_before_any_agent_step() {
+    // D5: the qa evidence is hashed by bash after the evidence step and before
+    // any agent runs; step-03 compares, step-05 records.
+    let recipe = recipe_yaml("autodrive-merge-round");
+    let s00d = step(&recipe, "step-00d-qa-evidence-hash");
+    assert_eq!(s00d.get("type").and_then(Value::as_str), Some("bash"));
+    assert_eq!(s00d.get("parse_json").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        s00d.get("output").and_then(Value::as_str),
+        Some("qa_evidence_hash")
+    );
+    let cmd = field(s00d, "command");
+    for needle in [
+        "AUTODRIVE_QA_EVIDENCE",
+        "autodrive_trust.sh",
+        "autodrive_qa_evidence_sha",
+        "qa_evidence_sha",
+    ]
+    .iter()
+    .chain(TOOL_SEARCH_NEEDLES.iter())
+    {
+        assert!(cmd.contains(needle), "step-00d must reference `{needle}`");
+    }
+    assert!(!cmd.contains("{{"), "step-00d must not interpolate {{...}}");
+    let first_agent = steps(&recipe)
+        .iter()
+        .position(|s| s.get("agent").is_some())
+        .expect("the merge round has agent steps");
+    assert!(
+        step_index(&recipe, "step-00d-qa-evidence-hash") < first_agent,
+        "step-00d must hash qa-evidence.json before the first agent step"
+    );
+
+    let verdict = step_command(&recipe, "step-03-extract-merge-ready-verdict");
+    for needle in [
+        "QA_EVIDENCE_HASH",
+        "AUTODRIVE_QA_EVIDENCE",
+        "autodrive_qa_evidence_sha",
+        "qa_evidence=modified",
+        "UNREVIEWED_COMMITS",
+    ] {
+        assert!(
+            verdict.contains(needle),
+            "step-03 must downgrade on `{needle}`"
+        );
+    }
+
+    let record = step_command(&recipe, "step-05-write-round-record");
+    for needle in [
+        "QA_EVIDENCE_HASH",
+        "\"qa_evidence_sha\":\"%s\"",
+        "umask 077",
+    ] {
+        assert!(record.contains(needle), "step-05 must reference `{needle}`");
+    }
+    // The record must keep merge_ready_verdict as its first key: the gate's
+    // trust check requires a record that starts with it.
+    assert!(
+        record.contains("'{\"merge_ready_verdict\":\"%s\""),
+        "step-05's record must start with merge_ready_verdict"
+    );
+}
+
+#[test]
+fn merge_round_crusty_evidence_checks_the_range() {
+    let recipe = recipe_yaml("autodrive-merge-round");
+    let cmd = step_command(&recipe, "step-01b-crusty-evidence");
+    for needle in [
+        "autodrive_trust.sh",
+        "autodrive_base_sha",
+        "autodrive_crusty_range",
+        "UNREVIEWED_COMMITS",
+        "\"crusty_first_unreviewed_sha\":\"%s\"",
+    ]
+    .iter()
+    .chain(RANGE_TOKENS.iter())
+    {
+        assert!(cmd.contains(needle), "step-01b must reference `{needle}`");
+    }
+}
+
+#[test]
+fn merge_round_prompts_state_the_range_rule() {
+    let recipe = recipe_yaml("autodrive-merge-round");
+    let assess = field(step(&recipe, "step-02-merge-ready-assessment"), "prompt");
+    let flat = squash(assess);
+    assert!(
+        !flat.contains("is not compared with the current head"),
+        "step-02 still says the reviewed SHA `is not compared with the current head`; \
+         the range rule replaced that line (#1517 D4)"
+    );
+    for needle in [
+        "UNREVIEWED_COMMITS",
+        "crusty-review-required",
+        "crusty_first_unreviewed_sha",
+        "crusty-range-unreadable",
+        "base merge",
+    ] {
+        assert!(
+            flat.contains(needle),
+            "the step-02 prompt must state the range rule (`{needle}`)"
+        );
+    }
+    let fix = field(step(&recipe, "step-04-address-blockers"), "prompt");
+    let flat = squash(fix);
+    let lower = flat.to_ascii_lowercase();
+    for needle in ["crusty-review-required", "crusty-range-unreadable"] {
+        assert!(
+            flat.contains(needle),
+            "step-04 must tell the agent not to try to clear `{needle}`"
+        );
+    }
+    for needle in ["rewrite history", "reset", "force-push", "refs"] {
+        assert!(
+            lower.contains(needle),
+            "step-04 must forbid the agent to {needle}"
+        );
+    }
+    for prompt in [assess, fix] {
+        for leak in ["{{crusty_range", "{{qa_evidence_hash"] {
+            assert!(
+                !prompt.contains(leak),
+                "agent prompts never see the raw range or hash step output (`{leak}`)"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_range_allowlist_is_defined_once_in_autodrive_trust() {
+    let root = workspace_root();
+    let define = regex::Regex::new(
+        r"(^|[\s;])(readonly|declare|typeset|local|export)?(\s+-[A-Za-z]+)*\s*AUTODRIVE_RANGE_ALLOWLIST(\[[^\]]*\])?\+?=",
+    )
+    .unwrap();
+    let keep = |p: &Path| {
+        !p.components().any(|c| c.as_os_str() == "tests")
+            && p.extension()
+                .is_some_and(|e| e == "yaml" || e == "yml" || e == "sh")
+    };
+    let mut files = walk_files(&root.join("amplifier-bundle/recipes"), &keep)
+        .unwrap_or_else(|e| panic!("recipe walk failed: {e}"));
+    files.extend(
+        walk_files(&root.join("amplifier-bundle/tools"), &|_| true)
+            .unwrap_or_else(|e| panic!("tool walk failed: {e}")),
+    );
+    let mut definers = Vec::new();
+    for path in files {
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        if text
+            .lines()
+            .any(|l| !l.trim_start().starts_with('#') && define.is_match(l))
+        {
+            definers.push(relative_display(&path, &root));
+        }
+    }
+    assert_eq!(
+        definers,
+        vec!["amplifier-bundle/tools/autodrive_trust.sh".to_string()],
+        "AUTODRIVE_RANGE_ALLOWLIST must be defined in autodrive_trust.sh and nowhere else"
+    );
+    let trust = read(&tool_path("autodrive_trust.sh"));
+    assert!(
+        trust
+            .lines()
+            .any(|l| l.contains("readonly") && l.contains("AUTODRIVE_RANGE_ALLOWLIST")),
+        "AUTODRIVE_RANGE_ALLOWLIST must be read-only"
+    );
+    for entry in [
+        "PR_DESCRIPTION.md",
+        ".github/pull_request_template.md",
+        ".autodrive/evidence/",
+    ] {
+        assert!(
+            trust.contains(entry),
+            "the allowlist must contain `{entry}`"
+        );
+    }
+}
+
+#[test]
+fn autodrive_trust_is_a_side_effect_free_library() {
+    let trust = read(&tool_path("autodrive_trust.sh"));
+    for func in [
+        "autodrive_base_sha",
+        "autodrive_range_allowed",
+        "autodrive_crusty_range",
+        "autodrive_rereview_decision",
+        "autodrive_qa_evidence_sha",
+        "autodrive_qa_trusted",
+        "autodrive_scenario_results",
+    ] {
+        assert!(
+            regex::Regex::new(&format!(r"(?m)^{func}\(\)\s*\{{"))
+                .unwrap()
+                .is_match(&trust),
+            "autodrive_trust.sh must define `{func}()`"
+        );
+    }
+    for token in RANGE_TOKENS.iter().chain(QA_TRUSTED_TOKENS.iter()) {
+        assert!(
+            trust.contains(token),
+            "autodrive_trust.sh must print the token `{token}`"
+        );
+    }
+    // History cannot be rewritten under the walk, and git cannot prompt.
+    for needle in [
+        "GIT_NO_REPLACE_OBJECTS=1",
+        "GIT_GRAFT_FILE=/dev/null",
+        "GIT_TERMINAL_PROMPT=0",
+        "shallow",
+        "merge-tree --write-tree",
+        "diff-tree",
+        "--no-renames",
+        "check-ref-format --branch",
+        "+refs/heads/",
+    ] {
+        assert!(
+            trust.contains(needle),
+            "autodrive_trust.sh must use `{needle}`"
+        );
+    }
+    for var in ["GIT_DIR", "GIT_WORK_TREE"] {
+        assert!(
+            trust.contains(&format!("-u {var}"))
+                || trust.contains(&format!("unset {var}"))
+                || regex::Regex::new(&format!(r"unset [A-Z_ ]*\b{var}\b"))
+                    .unwrap()
+                    .is_match(&trust),
+            "autodrive_trust.sh must run git with `{var}` unset"
+        );
+    }
+    // autodrive_clear_phase lives with the other phase helpers and rewrites
+    // phases.tsv privately.
+    let state = read(&tool_path("autodrive_state.sh"));
+    let clear = state
+        .find("autodrive_clear_phase()")
+        .expect("autodrive_state.sh must define autodrive_clear_phase()");
+    let body = &state[clear..];
+    let body = &body[..body.find("\n}").map_or(body.len(), |i| i + 2)];
+    for needle in ["umask 077", "mktemp", "mv -f", "^[a-z][a-z-]*$"] {
+        assert!(
+            body.contains(needle),
+            "autodrive_clear_phase must use `{needle}`"
+        );
+    }
+    // A library: sourcing it runs nothing, and it never evaluates text.
+    for line in trust.lines() {
+        let code = line.trim_start();
+        if code.starts_with('#') || code.is_empty() {
+            continue;
+        }
+        assert!(
+            !code.starts_with("eval ") && !code.contains(" eval ") && !code.contains("sh -c"),
+            "autodrive_trust.sh must not eval or run built strings: {line}"
+        );
+    }
+    let out = Command::new("bash")
+        .arg("-uc")
+        .arg(r#". "$1" && . "$2" && echo sourced"#)
+        .arg("_")
+        .arg(tool_path("autodrive_state.sh"))
+        .arg(tool_path("autodrive_trust.sh"))
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .output()
+        .expect("source autodrive_trust.sh");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "sourced\n",
+        "sourcing autodrive_trust.sh under set -u must print nothing and succeed; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn merge_gate_checks_the_range_and_the_qa_evidence_chain() {
+    let gate = read(&tool_path("autodrive_merge_gate.sh"));
+    let view = gate
+        .lines()
+        .find(|l| l.contains("gh pr view \"$PR\" --json state,mergedAt"))
+        .expect("section 0 reads the PR with gh pr view --json");
+    assert!(
+        view.contains("baseRefName"),
+        "section 0 must read baseRefName in the same gh pr view call: {view}"
+    );
+    for needle in [
+        "${GATE_HOME}/autodrive_trust.sh",
+        "autodrive_qa_trusted",
+        "autodrive_base_sha",
+        "autodrive_crusty_range",
+        "git cat-file -e",
+        "merge-ready-records.tsv",
+        "merge-ready-latest.json",
+        "qa-evidence.json",
+        "qa-other",
+        "crusty-range-other",
+        "after the clean crusty round is not a base merge or a description or evidence change; criterion 3 is not met",
+        "the commits after the clean crusty round cannot be read; criterion 3 is not met",
+        "mktemp",
+    ]
+    .iter()
+    .chain(QA_TRUSTED_TOKENS.iter())
+    .chain(RANGE_TOKENS.iter())
+    {
+        assert!(gate.contains(needle), "the merge gate must check `{needle}`");
+    }
+    // The record is read once, into a private copy; section 7 reads the copy.
+    let section7 = gate
+        .find("# --- 7.")
+        .expect("the gate keeps a section 7 for the merge-ready verdict");
+    assert!(
+        !gate[section7..].contains("cat \"$ROUND_RECORD\""),
+        "section 7 must read the verified private copy, never \"$ROUND_RECORD\" again"
+    );
+}
+
+#[test]
+fn qa_evidence_records_one_result_per_scenario_file() {
+    let recipe = recipe_yaml("autodrive-merge-evidence");
+    let cmd = step_command(&recipe, "step-02-qa-team-scenarios");
+    for needle in [
+        "\"gadugi_scenario_results\":\"%s\"",
+        "autodrive_scenario_results",
+        "autodrive_trust.sh",
+        "umask 077",
+        "INVALID",
+    ]
+    .iter()
+    .chain(TOOL_SEARCH_NEEDLES.iter())
+    {
+        assert!(
+            cmd.contains(needle),
+            "the qa evidence step must reference `{needle}`"
+        );
+    }
+}
+
+#[test]
+fn the_reference_documents_the_range_rule_and_the_qa_chain() {
+    let reference = read(&workspace_root().join("docs/reference/auto-drive-to-merge.md"));
+    for needle in [
+        "autodrive_trust.sh",
+        "AUTODRIVE_RANGE_ALLOWLIST",
+        "PR_DESCRIPTION.md",
+        ".github/pull_request_template.md",
+        ".autodrive/evidence/",
+        "step-00b-crusty-range",
+        "step-00c-crusty-rereview",
+        "step-00d-qa-evidence-hash",
+        "UNREVIEWED_COMMITS",
+        "crusty-review-required",
+        "crusty_first_unreviewed_sha",
+        "qa_evidence_sha",
+        "merge-ready-records.tsv",
+        "gadugi_scenario_results",
+        "autodrive_clear_phase",
+        "autodrive_qa_trusted",
+        "autodrive_crusty_range",
+        "autodrive_base_sha",
+        "same user",
+        "--match-head-commit",
+    ]
+    .iter()
+    .chain(RANGE_TOKENS.iter())
+    .chain(QA_TRUSTED_TOKENS.iter())
+    {
+        assert!(
+            reference.contains(needle),
+            "docs/reference/auto-drive-to-merge.md must document `{needle}`"
+        );
+    }
+    let skill = read(&workspace_root().join("amplifier-bundle/skills/merge-ready/SKILL.md"));
+    let section = skill
+        .find("## Running under auto-drive")
+        .expect("merge-ready keeps its auto-drive section");
+    for needle in [
+        "crusty-review-required",
+        "crusty-range-unreadable",
+        "at least 3",
+    ] {
+        assert!(
+            skill[section..].contains(needle),
+            "the merge-ready auto-drive section must mention `{needle}`"
         );
     }
 }
