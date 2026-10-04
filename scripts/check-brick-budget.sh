@@ -27,8 +27,7 @@ if [[ ! -f "$TEST_FILE" ]]; then
   exit 1
 fi
 
-# POSIX BRE only (no `\+`): BSD sed on macOS reads `\+` as a literal plus.
-limit="$(sed -n 's/^const BRICK_LIMIT: usize = \([0-9][0-9]*\);.*/\1/p' "$TEST_FILE" | head -1)"
+limit="$(sed -n 's/^const BRICK_LIMIT: usize = \([0-9]\+\);.*/\1/p' "$TEST_FILE" | head -1)"
 if [[ -z "$limit" ]]; then
   echo "ERROR: could not read BRICK_LIMIT from $TEST_FILE" >&2
   echo "  The test may have been restructured; this check would pass vacuously." >&2
@@ -39,7 +38,7 @@ fi
 # while-read, not mapfile: macOS /bin/bash is 3.2 (issue #1423).
 recipes=(); while IFS= read -r _ml; do recipes+=("$_ml"); done < <(
   awk '/^const PHASE_RECIPES: &\[&str\] = &\[/{f=1; next} f && /^\];/{exit} f' "$TEST_FILE" \
-    | sed -n 's/.*"\([^"][^"]*\)".*/\1/p'
+    | sed -n 's/.*"\([^"]\+\)".*/\1/p'
 )
 
 # `default-workflow` is checked too: the test chains it onto PHASE_RECIPES.

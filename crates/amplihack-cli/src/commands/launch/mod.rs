@@ -894,7 +894,6 @@ fn missing_binary_context(tool: &str) -> String {
 /// only claimed when its file name is actually the tool. Matching loosely here
 /// would put a confident, wrong sentence into an error message — worse than the
 /// bare "not found" it replaces.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // /proc/<pid>/exe is Linux only
 fn deleted_target_for_tool(raw: &str, tool: &str) -> Option<std::path::PathBuf> {
     let stripped = raw.strip_suffix(" (deleted)")?;
     let path = std::path::PathBuf::from(stripped);

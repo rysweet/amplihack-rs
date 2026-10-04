@@ -817,7 +817,6 @@ mod admit_tests {
 
 #[cfg(test)]
 mod resource_tests {
-    #[cfg_attr(not(target_os = "linux"), allow(unused_imports))] // some tests are Linux only
     use super::state::{DEFAULT_MIN_AVAILABLE_MIB, available_memory_mib, memory_shortfall_mib};
 
     /// Reading available memory must work on the platform we actually run on, or

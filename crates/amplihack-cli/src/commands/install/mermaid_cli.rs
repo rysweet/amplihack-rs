@@ -137,7 +137,6 @@ pub(super) fn ensure_mermaid_cli() -> Result<Outcome> {
 
 #[cfg(test)]
 mod tests {
-    #[cfg_attr(not(target_os = "linux"), allow(unused_imports))] // the tests are Linux only
     use super::*;
 
     #[cfg(target_os = "linux")]
