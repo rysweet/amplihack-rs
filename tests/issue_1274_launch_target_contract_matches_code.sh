@@ -46,8 +46,15 @@ for sig in "${sigs[@]}"; do
   # reading and leave `grep` writing into a closed pipe; under `pipefail` the
   # substitution then collapses to "" and the test reports the symbol as
   # missing when it is present (issue #1434).
+  #
+  # launch_target.rs is searched first. Other modules in scope have their own
+  # functions with the same name (agent_binary::resolve), and `grep -r` lists
+  # files in directory order, which differs between checkouts of the same
+  # tree, so taking the first hit from the directories alone made the result
+  # depend on the filesystem (seen while working on #1525).
   # shellcheck disable=SC2086
-  hit=$(grep -rhE "^pub fn ${name}\(" $SRC_DIRS 2>/dev/null | awk 'NR == 1')
+  hit=$({ grep -hE "^pub fn ${name}\(" "$SRC"; grep -rhE "^pub fn ${name}\(" $SRC_DIRS; } \
+          2>/dev/null | awk 'NR == 1')
   if [ -z "$hit" ]; then
     fail "doc declares '$name', which no longer exists in the documented scope"
     continue
