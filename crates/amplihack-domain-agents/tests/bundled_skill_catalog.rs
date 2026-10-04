@@ -3,6 +3,36 @@ use amplihack_domain_agents::SkillCatalog;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+fn frontmatter(source: &str) -> Result<String, &'static str> {
+    let mut lines = source.lines();
+    if lines.next() != Some("---") {
+        return Err("frontmatter must start with a complete delimiter line");
+    }
+    let mut metadata = Vec::new();
+    for line in lines {
+        if line == "---" {
+            return Ok(metadata.join("\n"));
+        }
+        metadata.push(line);
+    }
+    Err("frontmatter must end with a complete delimiter line")
+}
+
+#[test]
+fn independent_inventory_requires_complete_frontmatter_delimiters() {
+    assert_eq!(
+        frontmatter("---\nname: example\n---\nbody"),
+        Ok("name: example".into())
+    );
+    assert_eq!(
+        frontmatter("---\r\nname: example\r\n---\r\nbody"),
+        Ok("name: example".into())
+    );
+    assert!(frontmatter("---suffix\nname: example\n---\nbody").is_err());
+    assert!(frontmatter("---\nname: example\n---suffix\nbody").is_err());
+    assert!(frontmatter("---\nname: example\n").is_err());
+}
+
 fn skill_files(root: &Path, files: &mut Vec<PathBuf>) {
     for entry in std::fs::read_dir(root).expect("read bundled skill directory") {
         let entry = entry.expect("read skill entry");
@@ -33,13 +63,9 @@ fn real_catalog_loads_every_bundled_skill_and_body() {
     let mut paths = std::collections::BTreeMap::new();
     for file in &files {
         let text = std::fs::read_to_string(file).expect("read skill");
-        let yaml = text
-            .strip_prefix("---\n")
-            .expect("frontmatter at byte zero")
-            .split_once("\n---")
-            .expect("closed frontmatter")
-            .0;
-        let meta: serde_yaml::Value = serde_yaml::from_str(yaml).expect("valid YAML frontmatter");
+        let yaml = frontmatter(&text).unwrap_or_else(|error| panic!("{}: {error}", file.display()));
+        let meta: serde_yaml::Value = serde_yaml::from_str(&yaml)
+            .unwrap_or_else(|error| panic!("{}: {error}", file.display()));
         let name = meta["name"].as_str().expect("string skill name");
         paths.insert(
             name.to_owned(),
