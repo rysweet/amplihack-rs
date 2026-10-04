@@ -59,7 +59,6 @@ fn real_catalog_loads_every_bundled_skill_and_body() {
         7,
         "all seven nested skills must be present"
     );
-    let mut expected = BTreeSet::new();
     let mut paths = std::collections::BTreeMap::new();
     for file in &files {
         let text = std::fs::read_to_string(file).expect("read skill");
@@ -67,15 +66,17 @@ fn real_catalog_loads_every_bundled_skill_and_body() {
         let meta: serde_yaml::Value = serde_yaml::from_str(&yaml)
             .unwrap_or_else(|error| panic!("{}: {error}", file.display()));
         let name = meta["name"].as_str().expect("string skill name");
-        paths.insert(
-            name.to_owned(),
-            file.parent().unwrap().canonicalize().unwrap(),
-        );
         assert!(
-            expected.insert(name.to_owned()),
+            paths
+                .insert(
+                    name.to_owned(),
+                    file.parent().unwrap().canonicalize().unwrap()
+                )
+                .is_none(),
             "duplicate skill name: {name}"
         );
     }
+    let expected: BTreeSet<String> = paths.keys().cloned().collect();
     let catalog = SkillCatalog::load(&root).expect("load real skill catalog");
     let actual: BTreeSet<String> = catalog.names().into_iter().map(str::to_owned).collect();
     let missing: Vec<_> = expected.difference(&actual).collect();
