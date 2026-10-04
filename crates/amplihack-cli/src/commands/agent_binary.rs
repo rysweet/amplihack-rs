@@ -33,7 +33,10 @@ use anyhow::{Context, Result};
 /// Resolve from `dir` (default: the current directory) and print the answer.
 ///
 /// An inferred answer is explained on stderr, which stays on the caller's
-/// terminal when stdout is captured by `$(...)`.
+/// terminal when stdout is captured by `$(...)`. The resolver's log lines go
+/// there too: the binary's tracing subscriber writes to stderr
+/// (`bins/amplihack/src/main.rs`), so `RUST_LOG` cannot reach the stdout that
+/// `$(...)` splices into the command line.
 pub fn run_agent_binary(shell: bool, dir: Option<PathBuf>) -> Result<()> {
     let dir = match dir {
         Some(dir) => dir,

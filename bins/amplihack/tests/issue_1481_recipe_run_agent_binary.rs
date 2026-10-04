@@ -643,15 +643,23 @@ fn the_hand_off_works_through_a_real_tmux_server() {
         return;
     }
     let fx = Fixture::new();
-    let sockets = fx.path().join("tmux");
-    fs::create_dir_all(&sockets).expect("create tmux socket dir");
-    let sockets = sockets.to_str().expect("utf-8 path").to_string();
+    // The server socket lives under /tmp, not under the fixture. A Unix socket
+    // path is limited to about 108 bytes, and a deep TMPDIR (a nested workflow
+    // runner's is ~100 bytes on its own) pushes `<fixture>/tmux/tmux-<uid>/<name>`
+    // past it: tmux then fails with "File name too long" before the hand-off
+    // is ever exercised.
+    let sockets = tempfile::Builder::new()
+        .prefix("hoff")
+        .tempdir_in("/tmp")
+        .expect("create a short tmux socket dir under /tmp");
+    let socket = sockets.path().join("s");
+    let socket = socket.to_str().expect("utf-8 path").to_string();
     let script = format!(
-        "env {} tmux -L handoff -f /dev/null new-session -d -s handoff {HAND_OFF}",
+        "env {} tmux -S \"$TMUX_SOCKET\" -f /dev/null new-session -d -s handoff {HAND_OFF}",
         without_any_marker()
     );
     let mut caller_env = claude_session();
-    caller_env.push(("TMUX_TMPDIR", &sockets));
+    caller_env.push(("TMUX_SOCKET", &socket));
     let output = fx.caller_shell(&script, &caller_env);
     assert!(
         output.status.success(),
@@ -666,9 +674,72 @@ fn the_hand_off_works_through_a_real_tmux_server() {
     // Give the stub a moment to finish writing, then stop the server.
     std::thread::sleep(Duration::from_millis(200));
     let _ = Command::new("tmux")
-        .env("TMUX_TMPDIR", &sockets)
-        .args(["-L", "handoff", "kill-server"])
+        .args(["-S", &socket, "kill-server"])
         .output();
     let probe = fx.take_probe(&output);
     assert_eq!(handed(&probe), ("claude", "<unset>"));
+}
+
+// ---------------------------------------------------------------------------
+// `$(amplihack agent-binary --shell)` is spliced into a command line, so its
+// stdout must be the assignment line and nothing else, whatever the log
+// filter. The resolver logs every answer at DEBUG and every inferred answer at
+// WARN, and `tracing_subscriber::fmt()` writes to stdout unless told otherwise.
+// With `RUST_LOG` set in the caller's shell, those lines would land in front of
+// the assignments, and the far side would try to run a timestamp as a command.
+// ---------------------------------------------------------------------------
+
+/// `amplihack agent-binary --shell` run directly, stdout and stderr apart.
+fn agent_binary_shell(fx: &Fixture, env: &[(&str, &str)]) -> Output {
+    let mut command = fx.harness(Command::new(env!("CARGO_BIN_EXE_amplihack")));
+    command.args(["agent-binary", "--shell"]);
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    command
+        .output()
+        .expect("run amplihack agent-binary --shell")
+}
+
+/// With the most verbose filter, stdout is still exactly the assignment line.
+/// The WARN for the default guess must still be emitted, on stderr; that is
+/// what makes this a test of where the log goes rather than of whether one
+/// was written.
+#[test]
+fn a_log_filter_does_not_leak_into_the_shell_output() {
+    let fx = Fixture::new();
+    let output = agent_binary_shell(&fx, &[("RUST_LOG", "trace")]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "AMPLIHACK_AGENT_BINARY=copilot AMPLIHACK_AGENT_BINARY_SOURCE=default:copilot\n",
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("assuming the built-in default"),
+        "the resolver's WARN should be on stderr under RUST_LOG=trace:\n{stderr}"
+    );
+}
+
+/// The documented hand-off, end to end, with `RUST_LOG` exported in the
+/// caller's shell: an observed answer (DEBUG) still arrives as `claude`.
+#[test]
+fn the_hand_off_survives_a_verbose_log_filter() {
+    let fx = Fixture::new();
+    let mut caller_env = claude_session();
+    caller_env.push(("RUST_LOG", "debug"));
+    let (output, probe) = fx.hand_off_to_a_markerless_shell(&caller_env, &[]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(handed(&probe), ("claude", "<unset>"));
+}
+
+/// ...and an inferred one (WARN) still arrives as a tagged guess.
+#[test]
+fn an_inferred_value_survives_the_hand_off_under_a_warn_filter() {
+    let fx = Fixture::new();
+    let (output, probe) = fx.hand_off_to_a_markerless_shell(&[("RUST_LOG", "warn")], &[]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(handed(&probe), ("copilot", "default:copilot"));
 }

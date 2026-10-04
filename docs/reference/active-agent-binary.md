@@ -153,6 +153,9 @@ tmux new-session -d -s recipe-runner \
 - An inferred answer is explained on stderr, which stays on your terminal while
   `$(...)` captures stdout. The explanation includes any unusable launcher
   context it skipped.
+- Log lines go to stderr as well, so a `RUST_LOG` set in your shell does not
+  reach the command line. Stdout is only the assignment line, whatever the
+  log filter.
 - The inline `VAR=value command` form works on every tmux version.
   `tmux new-session -e` only exists from tmux 3.2.
 - The subcommand never self-installs, so it is safe inside `$(...)`.

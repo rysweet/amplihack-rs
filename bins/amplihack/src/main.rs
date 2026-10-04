@@ -9,8 +9,15 @@ use amplihack_cli::commands;
 use amplihack_cli::update;
 
 fn main() {
+    // Logs go to stderr; stdout is data. `tracing_subscriber::fmt()` writes to
+    // stdout unless told otherwise, so under `RUST_LOG` every log line used to
+    // land in front of a command's real output. For
+    // `$(amplihack agent-binary --shell)`, which is spliced into a command line,
+    // that turned the hand-off into `2026-...Z: not found` (#1525). The same
+    // applies to any caller that captures amplihack's stdout.
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_writer(std::io::stderr)
         .with_target(false)
         .init();
 
