@@ -21,6 +21,14 @@ fn real_catalog_loads_every_bundled_skill_and_body() {
     let mut files = Vec::new();
     skill_files(&root, &mut files);
     assert_eq!(files.len(), 130, "fixed recursive inventory");
+    assert_eq!(
+        files
+            .iter()
+            .filter(|file| file.strip_prefix(&root).unwrap().components().count() > 2)
+            .count(),
+        7,
+        "all seven nested skills must be present"
+    );
     let mut expected = BTreeSet::new();
     let mut paths = std::collections::BTreeMap::new();
     for file in &files {

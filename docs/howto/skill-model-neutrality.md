@@ -50,7 +50,7 @@ Record commands, outcomes, blockers, preserved contextual references, and final 
 
 ## Load and resolve a nested skill
 
-At the original review, recursive fail-explicit loading and metadata compatibility were pending implementation. This branch implements those changes; see the audit for actual loader evidence. Broader corpus structure and complete publication coverage remain planned.
+At the original review, recursive fail-explicit loading and metadata compatibility were pending implementation. This branch implements those changes; see the audit for actual loader evidence. Supporting YAML has corpus validation; isolated publication now covers all 130 skills. Broader referenced-asset validation remains planned.
 
 Pass the canonical skills root to the production catalog. Propagate loading
 failures so the caller sees the source path instead of an incomplete catalog:
@@ -87,7 +87,7 @@ export PRE_COMMIT_HOME=/d0/ryan/sunfixamp-model-neutrality/pre-commit
 export XDG_CACHE_HOME=/d0/ryan/sunfixamp-model-neutrality/cache
 ```
 
-Registered acceptance commands are shown below. Cargo target names come from `bins/amplihack/Cargo.toml`, rather than guessing from filenames: `skill_frontmatter_name_test.rs`, `skill_frontmatter_type_test.rs`, and `issue_849_skill_mirror_citation_test.rs` are registered without the `_test` suffix. `skill_corpus_validation` is planned and must be registered before it can be run.
+Registered acceptance commands are shown below. Cargo target names come from `bins/amplihack/Cargo.toml`, rather than guessing from filenames: `skill_frontmatter_name_test.rs`, `skill_frontmatter_type_test.rs`, and `issue_849_skill_mirror_citation_test.rs` are registered without the `_test` suffix. `skill_corpus_validation` is an automatically discovered integration test in `amplihack-domain-agents` for supporting YAML documents.
 
 ```bash
 cargo test -p amplihack-domain-agents --test bundled_skill_catalog
@@ -95,6 +95,8 @@ cargo test -p amplihack-domain-agents skill_catalog
 cargo test -p amplihack --test skill_frontmatter_name --test skill_frontmatter_type
 cargo test -p amplihack --test issue_849_skill_mirror_citation
 cargo test -p amplihack-cli issue_1438_skill_publication
+cargo test -p amplihack-cli real_corpus_publishes_all_130_skills_in_isolated_home
+cargo test -p amplihack-cli issue_1277_stages_top_level_and_nested_skills_with_all_support_files
 bash amplifier-bundle/recipes/tests/test-skill-model-neutrality-regressions.sh
 pre-commit run --all-files
 ```

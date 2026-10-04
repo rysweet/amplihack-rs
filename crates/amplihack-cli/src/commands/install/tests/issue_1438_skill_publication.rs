@@ -99,6 +99,10 @@ fn local_install_publishes_every_staged_skill_into_the_claude_skills_dir() {
     for name in NEW_BUNDLE_SKILLS {
         write_skill(&bundle_skills, name);
     }
+    write_skill(
+        &bundle_skills.join("container"),
+        "nested-publication-fixture",
+    );
 
     let result = local_install(temp.path(), None);
 
@@ -116,6 +120,12 @@ fn local_install_publishes_every_staged_skill_into_the_claude_skills_dir() {
 
     let staged = skill_names(&temp.path().join(".amplihack/.claude/skills"));
     let published = skill_names(&temp.path().join(".claude/skills"));
+    assert!(staged.contains("nested-publication-fixture"));
+    assert!(
+        temp.path()
+            .join(".claude/skills/nested-publication-fixture/SKILL.md")
+            .is_file()
+    );
 
     assert!(
         staged.is_superset(&NEW_BUNDLE_SKILLS.iter().map(|s| (*s).to_owned()).collect()),

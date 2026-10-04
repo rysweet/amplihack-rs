@@ -3,7 +3,7 @@
 ## Evidence status and acceptance specification
 
 The reference and usage guide describe the finished-state acceptance contract.
-Recursive fail-explicit loading and metadata support were pending at the original review and are now implemented in this branch. Complete corpus structure and publication checks remain implementation specifications; the evidence below identifies only checks actually run. Historical results below retain their original
+Recursive fail-explicit loading and metadata support were pending at the original review and are now implemented in this branch. Supporting-YAML and isolated full-corpus publication now have dedicated regressions; broader asset checks remain implementation specifications; the evidence below identifies only checks actually run. Historical results below retain their original
 scope and do not validate a subsequently reconciled revision.
 
 The parent `skill-load-tests.log` records 11 passing name tests and four passing
@@ -42,7 +42,7 @@ Earlier statements about whitespace, links, fences, mirror checks, and caller-di
 
 Current production-loader validation checks exactly 130 recursive files, exact name equality, resolved source-directory equality, and nonempty bodies. Unit tests cover optional description, extension round trips, typed metadata rejection, duplicate names, malformed delimiters, and empty bodies. Extension preservation does not add execution semantics.
 
-Complete supporting-YAML, corpus structure/assets, and complete isolated installation coverage remain planned. Existing issue #1438 installation tests have narrower scope. SDK compilation and provider execution remain unverified; C# configuration rejection is already implemented in all three examples and mirrors, so it is not pending implementation.
+At this historical revision, supporting-YAML, corpus structure/assets, and complete isolated installation coverage were still planned. The follow-up evidence below supersedes the YAML and installation limitations. SDK compilation and provider execution remain unverified; C# configuration rejection is already implemented in all three examples and mirrors, so it is not pending implementation.
 
 Builds use the authorized existing cache `/d0/ryan/amplihack-builds/target/amp`; temporary files use `/d0/ryan/sunfixamp-model-neutrality/tmp`. Evidence for this refinement is recorded below with exact commands and log paths. The PR remains open and unmerged.
 
@@ -69,7 +69,7 @@ Review and double-check examined loader discovery, error propagation, metadata s
 
 Pre-commit initially exited 1 for a Rust formatting mismatch (`precommit-final.log`); `cargo fmt -p amplihack-domain-agents` corrected it. `cargo fmt --all --check` then exited 0 (`format-final.log`), and Clippy passed. The staged-tree pre-commit recheck exited 0 and is logged at `/d0/ryan/sunfixamp-model-neutrality/precommit-recheck.log`.
 
-CI on commit `740b133b83ce3aa18e844fc227acb54f478d86a4` rejected the copied `.py` asset under the repository’s tracked-Python guard. The six regression cases were moved into `test-skill-model-neutrality-regressions.sh`, using the existing guard’s inline-Python shell convention. The shell regression command passed all six tests (exit 0, `/d0/ryan/sunfixamp-model-neutrality/regressions-shell.log`). `scripts/check-no-python-assets.sh`, ShellCheck on the regression shell, and staged pre-commit all exited 0 (`python-assets-final.log`, `shell-regressions-check.log`, `precommit-shell.log` in the same evidence directory). The guide now names that entry point; the earlier Python command above is historical evidence.
+CI on commit `740b133b83ce3aa18e844fc227acb54f478d86a4` rejected the copied `.py` asset under the repository’s tracked-Python guard. The six regression cases were moved into `test-skill-model-neutrality-regressions.sh`, initially using the existing guard’s inline-Python shell convention. The shell regression command passed all six tests (exit 0, `/d0/ryan/sunfixamp-model-neutrality/regressions-shell.log`). `scripts/check-no-python-assets.sh`, ShellCheck on the regression shell, and staged pre-commit all exited 0 (`python-assets-final.log`, `shell-regressions-check.log`, `precommit-shell.log` in the same evidence directory). The guide now names that entry point; the earlier Python command above is historical evidence.
 
 ## Canonical inventory
 
@@ -207,3 +207,21 @@ CI on commit `740b133b83ce3aa18e844fc227acb54f478d86a4` rejected the copied `.py
 | workiq-wsl | Enumerated | No |
 | workstream-coordinator | Enumerated | Yes |
 | xlsx | Enumerated | Yes |
+
+The follow-up replaces the regression heredoc with native Bash fixtures rather
+than embedding the former Python test asset. The same six integration scenarios
+remain, including seven provider recommendation inputs; fixtures are isolated
+under TMPDIR. The production audit still uses its existing inline Python detector.
+Both no-Python gates and ShellCheck pass. Supporting YAML now has a Rust corpus
+test which parses every YAML document without executing example commands.
+
+Follow-up local results: production catalog acceptance passes for 130 identities,
+canonical paths and nonempty bodies, including seven nested skills. Rust parses
+all 24 supporting YAML files and every document, with zero exclusions; a malformed
+second-document regression also passes. Isolated real-corpus publication verifies
+all 130 published SKILL.md files byte-for-byte. The issue #1438 local installation
+fixture and issue #1277 nested support-file fixture pass. Frontmatter name/type
+checks pass 15 tests, citation checks pass six, and issue #962 passes six checks.
+Logs use the `native-` prefix under `/d0/ryan/sunfixamp-model-neutrality`;
+`native-review.md` records review and double-check findings. Broad validation of
+all referenced assets and provider SDK execution remain unverified.

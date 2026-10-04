@@ -76,7 +76,7 @@ The audit records the full skill inventory, accessible paths, link handling, pre
 
 ## Catalog API
 
-The copied baseline loader visited direct children and skipped parse failures; recursive fail-explicit loading and structured metadata support were pending implementation at the original documentation review. This branch now implements them, with production-loader and unit evidence in the [audit](../audits/skill-model-neutrality-documentation.md). The broader structure, supporting-YAML, and installation corpus checks below remain planned unless explicitly recorded as passing.
+The copied baseline loader visited direct children and skipped parse failures; recursive fail-explicit loading and structured metadata support were pending implementation at the original documentation review. This branch now implements them, with production-loader and unit evidence in the [audit](../audits/skill-model-neutrality-documentation.md). Supporting-YAML and installation corpus checks now have dedicated regressions; broader referenced-asset validation remains planned. See the audit for measured coverage.
 
 `amplihack_domain_agents::skill_catalog::SkillCatalog` exposes the existing
 `load(skills_dir: &Path) -> Result<Self>` entry point. Loading succeeds only when
