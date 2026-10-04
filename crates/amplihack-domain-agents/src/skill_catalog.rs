@@ -5,6 +5,7 @@
 //! by Markdown prompt content. This module parses that structure into a
 //! queryable catalog.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -192,7 +193,12 @@ fn load_skill(path: &Path) -> Result<Skill> {
 ///
 /// Expects the file to start with `---\n`, followed by YAML, then `---\n`.
 fn parse_front_matter(content: &str, source_path: &Path) -> Result<(SkillMeta, String)> {
-    let content = content.replace("\r\n", "\n");
+    // Most bundled files use LF; only CRLF input needs a normalized copy.
+    let content = if content.contains("\r\n") {
+        Cow::Owned(content.replace("\r\n", "\n"))
+    } else {
+        Cow::Borrowed(content)
+    };
     if !content.starts_with("---\n") {
         return Err(DomainError::InvalidInput(format!(
             "no YAML front-matter delimiter in {}",
