@@ -119,7 +119,7 @@ AMPLIHACK_AGENT_BINARY="../bin/evil" amplihack copilot
 
 **Why it exists:** Recipe runner, hooks, and sub-agents are agent-agnostic and must call back into whatever tool the user actually launched. See [Active Agent Binary](./active-agent-binary.md) for the full algorithm and [Agent Binary Routing](../concepts/agent-binary-routing.md) for the architectural rationale.
 
-**Other implementations:** there is no Python implementation in this repository. The shell helper at `amplifier-bundle/skills/migrate/scripts/migrate.sh` re-implements the env and launcher-context layers with a regex allowlist and honours the default-guess tag. The Rust resolver is authoritative where they differ.
+**Other implementations:** there is no Python implementation in this repository. The shell helper at `amplifier-bundle/skills/migrate/scripts/migrate.sh` (`detect_cli`) mirrors this precedence, including the default-guess tag, the session-marker layer and the launcher context's staleness and walk-up rules, plus a parent-process-chain check ranked after the markers (#1525). The Rust resolver is authoritative where they differ.
 
 **Existing `claude` users:** a fresh `.claude/runtime/launcher_context.json` with `"launcher": "claude"` resolves to `claude` when no env override or session marker answers first.
 

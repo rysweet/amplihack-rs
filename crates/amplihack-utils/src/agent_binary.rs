@@ -357,6 +357,11 @@ struct LauncherContextSnippet {
 /// Exported so there is exactly one list. A test that needs to observe a lower
 /// layer must clear all of these, and a hand-copied list in a fixture is how
 /// that silently stops happening the next time a marker is added.
+///
+/// The one copy that cannot import it is `detect_cli` in the migrate skill's
+/// `migrate.sh` (issue #1525). `tests/issue_1525_migrate_detect_cli_parity.sh`
+/// fails in CI unless that copy has these entries in this order, so a marker
+/// added here must be added there too.
 pub const SESSION_MARKERS: &[(&str, &str)] = &[
     // Claude Code exports CLAUDECODE; the others are older spellings that
     // llm_client already recognised.

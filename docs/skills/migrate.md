@@ -117,8 +117,12 @@ Cascade (first hit wins):
 3. Newest-mtime directory under the CLI's session-state root
 4. Error with clear message if none found
 
-The CLI type is inferred from `$AMPLIHACK_AGENT_BINARY`, falling back to a
-parent-process-chain scan.
+The CLI type is resolved like the Rust agent-binary resolver:
+`$AMPLIHACK_AGENT_BINARY` (unless tagged as a default guess), then the session
+markers of the CLI you are running in, then the parent process chain, then a
+fresh `.claude/runtime/launcher_context.json`, then `copilot`. A launcher
+context that is empty or malformed is skipped with a warning naming it. See
+[Active Agent Binary](../reference/active-agent-binary.md).
 
 ### 2. Destination bootstrap (idempotent)
 

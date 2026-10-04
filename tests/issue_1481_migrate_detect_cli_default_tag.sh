@@ -3,12 +3,14 @@
 # that a parent tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>` as the
 # guess it is, and fall through to the next layer, as the Rust resolver
 # (`agent_binary::is_default_guess`) does. Any other value is an instruction.
-# detect_cli only approximates the resolver elsewhere (it strips all whitespace
-# from the value, and has a process-chain layer instead of session markers);
+# The other layers are covered by tests/issue_1525_migrate_detect_cli_parity.sh;
 # these checks pin the tag rule.
 #
-# The fall-through is made observable with a launcher_context.json naming
+# The fall-through is made observable with a fresh launcher_context.json naming
 # `codex`: a skipped env value answers `codex`, an honoured one answers itself.
+# Session markers and the parent process chain rank above that file, so both
+# are neutralised; otherwise, run inside Claude Code, every skipped value would
+# answer `claude`.
 
 set -uo pipefail
 
@@ -20,19 +22,28 @@ fails=0
 pass() { printf '  ok    %s\n' "$1"; }
 fail() { printf '  FAIL  %s\n' "$1"; fails=$((fails + 1)); }
 
-# detect_cli is defined after the script's library-mode short-circuit, so it
-# is lifted out on its own. It reads only the environment, the cwd and ps.
-detect_cli_src="$(awk '/^detect_cli\(\) \{/,/^\}/' "$SCRIPT")"
-eval "$detect_cli_src"
+# detect_cli and its helpers are defined after the script's library-mode
+# short-circuit, so they are lifted out on their own, with log_warn. They read
+# only the environment, the cwd, ps and the launcher context.
+eval "$(awk '/^log_warn\(\)/' "$SCRIPT")"
+eval "$(awk '/^_?detect_cli[a-z_]*\(\) \{/,/^\}/' "$SCRIPT")"
 if ! declare -F detect_cli >/dev/null; then
   echo "  FAIL  detect_cli not defined"
   exit 1
 fi
+# The parent process chain: report no agent CLI anywhere above this shell.
+ps() { :; }
+for marker in CLAUDECODE CLAUDE_CODE CLAUDE_CODE_SESSION_ID CLAUDE_PROJECT_DIR \
+              CLAUDE_CODE_ENTRYPOINT COPILOT_CLI GITHUB_COPILOT GITHUB_COPILOT_AGENT \
+              COPILOT_AGENT; do
+  unset "$marker"
+done
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/.git" "$work/.claude/runtime"
-printf '{"launcher":"codex"}' > "$work/.claude/runtime/launcher_context.json"
+printf '{"launcher":"codex","timestamp":"%s"}' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  > "$work/.claude/runtime/launcher_context.json"
 
 # check <description> <expected> <binary> <tag|-unset->
 check() {

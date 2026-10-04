@@ -21,10 +21,17 @@ let binary: String = agent_binary_resolver::resolve(&cwd);
 ```
 
 **Shell:** `amplifier-bundle/skills/migrate/scripts/migrate.sh` (`detect_cli`)
-approximates the precedence with a regex allowlist: it honours
-`AMPLIHACK_AGENT_BINARY` (and its default-guess tag), then the walked-up
-`launcher_context.json`, then the parent process chain, then the default. It
-has no session-marker layer. There is no Python implementation in this
+mirrors the precedence (issue #1525): `AMPLIHACK_AGENT_BINARY` (and its
+default-guess tag), then the session markers (the same list, in the same
+order, as `agent_binary::SESSION_MARKERS`), then the walked-up
+`launcher_context.json`, then the default. The file layer uses the same rules
+as the Rust one: fresh (24h) only, stopping at a `.git` boundary or a
+world-writable or foreign-owned directory, and walking past an unusable file
+while warning with its path. Values are trimmed and allowlisted the same way.
+Its one extra layer is the parent process chain, consulted after the markers
+and before the file, since it is evidence of the running session too.
+`tests/issue_1525_migrate_detect_cli_parity.sh` checks this, including that
+the two marker lists match. There is no Python implementation in this
 repository. The Rust resolver is authoritative wherever another
 implementation differs.
 
