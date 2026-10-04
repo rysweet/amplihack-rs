@@ -24,6 +24,8 @@ token_budget: 4500
 
 # Claude Agent SDK - Comprehensive Skill
 
+Model IDs in these examples are configuration placeholders. Replace `<configured-model>` (and any primary/fallback variants) with models available to the selected provider and runtime; use the user’s configuration rather than a skill-defined default.
+
 ## Overview
 
 The **Claude Agent SDK** is Anthropic's official framework for building production-ready AI agents with Claude. It provides a high-level abstraction over the Messages API, handling the agent loop, tool orchestration, context management, and extended-thinking patterns automatically.
@@ -92,7 +94,7 @@ from claude_agents import Agent
 
 # Create agent with default settings
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     system="You are a helpful assistant focused on accuracy."
 )
 
@@ -107,7 +109,7 @@ print(result.response)
 import { Agent } from "@anthropics/agent-sdk";
 
 const agent = new Agent({
-  model: "claude-sonnet-4-5-20250929",
+  model: "<configured-model>",
   system: "You are a helpful assistant focused on accuracy.",
 });
 
@@ -145,7 +147,7 @@ weather_tool = Tool(
 
 # Agent with custom tool
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     tools=[weather_tool]
 )
 
@@ -238,7 +240,7 @@ from claude_agents.mcp import MCPClient
 mcp_client = MCPClient("npx", ["-y", "@modelcontextprotocol/server-filesystem"])
 
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     mcp_clients=[mcp_client]
 )
 ```
@@ -251,7 +253,7 @@ Control which tools agents can access:
 
 ```python
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     tools=[tool1, tool2, tool3, tool4],
     allowed_tools=["tool1", "tool2"]  # Only these can be used
 )
@@ -261,7 +263,7 @@ agent = Agent(
 
 ```python
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     tools=[tool1, tool2, tool3],
     disallowed_tools=["tool3"]  # All except tool3
 )
@@ -295,7 +297,7 @@ class LoggingHook(PreToolUseHook):
         return context  # Allow execution
 
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     hooks=[LoggingHook()]
 )
 ```
@@ -318,7 +320,7 @@ class ValidationHook(PreToolUseHook):
 from claude_agents import Agent
 
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     allowed_tools=["read_file", "write_file", "glob"]
 )
 
@@ -331,7 +333,7 @@ result = agent.run(
 
 ```python
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     allowed_tools=["bash"]
 )
 
@@ -345,7 +347,7 @@ result = agent.run(
 ```python
 # Agent automatically gathers information iteratively
 search_agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     tools=[web_search_tool, read_url_tool]
 )
 
@@ -357,7 +359,7 @@ result = search_agent.run(
 ### Subagent Delegation
 
 ```python
-main_agent = Agent(model="claude-sonnet-4-5-20250929")
+main_agent = Agent(model="<configured-model>")
 
 # Delegate specialized task to subagent
 with main_agent.subagent(
@@ -375,7 +377,7 @@ main_agent.run(f"Based on this analysis: {analysis.response}, what actions shoul
 ```python
 from claude_agents import Agent, AgentError
 
-agent = Agent(model="claude-sonnet-4-5-20250929")
+agent = Agent(model="<configured-model>")
 
 try:
     result = agent.run("Your task here", max_turns=10)
@@ -390,7 +392,7 @@ except AgentError as e:
 ```python
 # Agent can self-verify results
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     tools=[calculator_tool, verify_tool]
 )
 
@@ -451,7 +453,7 @@ from claude_agents.tools import Tool
 
 def create_specialized_agent():
     return Agent(
-        model="claude-sonnet-4-5-20250929",
+        model="<configured-model>",
         system="<agent_role_from_md>",
         tools=[...],  # Custom tools for this agent
         hooks=[...]   # Logging, validation hooks
@@ -467,7 +469,7 @@ from claude_agents.mcp import MCPClient
 mcp_client = MCPClient("npx", ["-y", "@modelcontextprotocol/server-github"])
 
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     mcp_clients=[mcp_client]
 )
 
@@ -495,7 +497,7 @@ class AmplihackLoggingHook(PreToolUseHook):
 
 ```python
 # Basic agent
-agent = Agent(model="claude-sonnet-4-5-20250929")
+agent = Agent(model="<configured-model>")
 result = agent.run("task")
 
 # With tools

@@ -69,13 +69,27 @@ namespace AgentFrameworkExamples
 
     class ToolIntegrationExample
     {
+        // Use the model selected by the user for the configured provider.
+        private static string ConfiguredModel
+        {
+            get
+            {
+                var value = Environment.GetEnvironmentVariable("AGENT_MODEL");
+                if (string.IsNullOrWhiteSpace(value) || value.Contains("<") || value.Contains(">"))
+                {
+                    throw new InvalidOperationException("Set AGENT_MODEL to an available provider model; blank values and placeholders are invalid.");
+                }
+                return value.Trim();
+            }
+        }
+
         static async Task BasicToolUsage()
         {
             Console.WriteLine("=== Basic Tool Usage ===");
 
             var agent = new Agent(
                 name: "assistant",
-                model: new ModelClient(model: "gpt-4"),
+                model: new ModelClient(model: ConfiguredModel),
                 instructions: "You are a helpful assistant with access to tools.",
                 tools: new[]
                 {
@@ -107,7 +121,7 @@ namespace AgentFrameworkExamples
 
             var agent = new Agent(
                 name: "assistant",
-                model: new ModelClient(model: "gpt-4"),
+                model: new ModelClient(model: ConfiguredModel),
                 instructions: "You are a helpful assistant.",
                 tools: new[]
                 {
@@ -132,7 +146,7 @@ namespace AgentFrameworkExamples
 
             var agent = new Agent(
                 name: "assistant",
-                model: new ModelClient(model: "gpt-4"),
+                model: new ModelClient(model: ConfiguredModel),
                 tools: new[]
                 {
                     typeof(WeatherTools).GetMethod("Calculate"),
