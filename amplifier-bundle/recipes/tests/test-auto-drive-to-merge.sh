@@ -52,7 +52,7 @@ AUTODRIVE_RECIPES=(
   autodrive-crusty-loop autodrive-merge-evidence autodrive-merge-round
   autodrive-merge-loop
 )
-AUTODRIVE_TOOLS=(autodrive_loop.sh autodrive_merge_gate.sh autodrive_merge_ready_files.sh autodrive_state.sh autodrive_trust.sh)
+AUTODRIVE_TOOLS=(autodrive_loop.sh autodrive_merge_gate.sh autodrive_merge_ready_files.sh autodrive_platform_facts.sh autodrive_state.sh autodrive_trust.sh)
 # The resolver is new in #1517. Its absence is a test failure (section 6a),
 # not a harness error, so every other section still runs and reports.
 RESOLVER="${TOOLS}/autodrive_merge_ready_files.sh"
@@ -887,7 +887,7 @@ if grep -qF -- '--paginate' "${GATE_DIR}/gh-calls" 2>/dev/null; then
 else
   fail "GATE-threads-paginate-flag" "the review-thread query does not paginate"
 fi
-for f in "${GATE}" "${RECIPES}/autodrive-merge-round.yaml"; do
+for f in "${GATE}" "${TOOLS}/autodrive_platform_facts.sh"; do # the merge round reads threads through the tool (#1518)
   if grep -qF 'pageInfo' "$f" && grep -qF -- '--paginate' "$f"; then
     pass "PAGEINFO-$(basename "$f")" "$(basename "$f") pages the reviewThreads query"
   else
@@ -1205,6 +1205,17 @@ if [ "$v" = "CLEAN" ]; then
 else
   fail "CRUSTY-passthru" "an explicit CLEAN verdict became '${v}'"
 fi
+# A review that is only the JSON verdict parses as an object, so recipe-runner
+# 0.3.8 exports it as RECIPE_VAR_crusty_review alone, with no CRUSTY_REVIEW.
+v="$(env -u CRUSTY_REVIEW PATH="${STUB_BIN}:${PATH}" RECIPE_VAR_crusty_review='{"crusty_verdict":"CLEAN","concerns":[]}' \
+  AUTODRIVE_ROUND_RECORD="${WORK}/cr.json" AUTODRIVE_ROUND_LABEL="r" bash -c "$CRUSTY_BODY" 2>/dev/null \
+  | "$REAL_AMPLIHACK" orch helper extract-json \
+  | "$REAL_AMPLIHACK" orch helper extract-field --field crusty_verdict --default MISSING)"
+if [ "$v" = "CLEAN" ]; then
+  pass "CRUSTY-review-object" "a review that is only the JSON verdict reaches step-03 through RECIPE_VAR_crusty_review"
+else
+  fail "CRUSTY-review-object" "a JSON-only review, exported as RECIPE_VAR_crusty_review alone, became '${v}'"
+fi
 
 # THE fail-open path this gate had. `extract-json` without `--require-field`
 # returns the FIRST parseable object and PREFERS a ```json fence over raw
@@ -1309,15 +1320,26 @@ mr_qa_hash_json() {
   esac
   printf '{"qa_evidence_sha":"%s"}' "$h"
 }
+# Platform facts as step-01 reports them; MR_FACTS overrides (criterion 6, #1518).
+MR_FACTS_MET='{"unresolved_threads":"0","approval_status":"MET"}'
+# The step outputs reach the body the way recipe-runner 0.3.8 exports them
+# (context.rs shell_env_vars): an output that parsed as a JSON object is in
+# RECIPE_VAR_<name> only, with no upper-case alias. Setting QA_EVIDENCE and
+# the like here would pass on an environment the runner never provides.
+# The agent's prose (MERGE_READY_REVIEW) is a string, so the runner sets both;
+# an agent whose whole output is the JSON verdict is an object too, and
+# MR_REVIEW_IS_OBJECT=1 leaves MERGE_READY_REVIEW empty, as the runner does.
 mr_step() { # mr_step <raw> <qa_status> <ci_status> <crusty_status> -> the step's JSON line
   local qh; qh="$(mr_qa_hash_json)"
+  local upper="$1"; [ -z "${MR_REVIEW_IS_OBJECT:-}" ] || upper=""
   [ -z "${MR_QA_AFTER:-}" ] || "${MR_QA_AFTER}" # a function: what an agent changes after step-00d
-  PATH="${STUB_BIN}:${PATH}" HOME="${TEST_HOME}" AMPLIHACK_HOME="${REPO_ROOT}" REPO_PATH="${FX}" \
-    MERGE_READY_REVIEW="$1" AUTODRIVE_ROUND_RECORD="${WORK}/mrr.json" \
-    AUTODRIVE_ROUND_LABEL="r" AUTODRIVE_QA_EVIDENCE="${MR_QA_FILE}" QA_EVIDENCE_HASH="${qh}" \
-    QA_EVIDENCE="{\"qa_status\":\"${2:-PASS}\"}" CI_EVIDENCE="{\"ci_status\":\"${3:-GREEN}\"}" \
-    MERGE_SYNC='{"conflict":"false"}' PLATFORM_FACTS='{"unresolved_threads":"0"}' \
-    CRUSTY_EVIDENCE="$(mr_crusty_json "${4:-DONE_CLEAN}")" \
+  env -u QA_EVIDENCE_HASH -u QA_EVIDENCE -u CI_EVIDENCE -u MERGE_SYNC -u PLATFORM_FACTS -u CRUSTY_EVIDENCE \
+    PATH="${STUB_BIN}:${PATH}" HOME="${TEST_HOME}" AMPLIHACK_HOME="${REPO_ROOT}" REPO_PATH="${FX}" \
+    MERGE_READY_REVIEW="${upper}" RECIPE_VAR_merge_ready_review="$1" AUTODRIVE_ROUND_RECORD="${WORK}/mrr.json" \
+    AUTODRIVE_ROUND_LABEL="r" AUTODRIVE_QA_EVIDENCE="${MR_QA_FILE}" RECIPE_VAR_qa_evidence_hash="${qh}" \
+    RECIPE_VAR_qa_evidence="{\"qa_status\":\"${2:-PASS}\"}" RECIPE_VAR_ci_evidence="{\"ci_status\":\"${3:-GREEN}\"}" \
+    RECIPE_VAR_merge_sync='{"conflict":"false"}' RECIPE_VAR_platform_facts="${MR_FACTS-${MR_FACTS_MET}}" \
+    RECIPE_VAR_crusty_evidence="$(mr_crusty_json "${4:-DONE_CLEAN}")" \
     bash -c "$MR_BODY" 2>/dev/null
 }
 mr_verdict() { # mr_verdict <raw> <qa_status> <ci_status> [crusty_status]
@@ -1364,6 +1386,12 @@ if [ "$v" = "MERGE_READY" ]; then
 else
   fail "MERGEREADY-passthru" "an explicit MERGE_READY verdict became '${v}'"
 fi
+v="$(MR_REVIEW_IS_OBJECT=1 mr_verdict '{"merge_ready_verdict":"MERGE_READY","blockers":[]}')"
+if [ "$v" = "MERGE_READY" ]; then
+  pass "MERGEREADY-review-object" "a review that is only the JSON verdict reaches step-03 through RECIPE_VAR_merge_ready_review"
+else
+  fail "MERGEREADY-review-object" "a JSON-only review, exported by the runner as RECIPE_VAR_merge_ready_review alone, became '${v}'"
+fi
 for bad in "FAIL GREEN" "PASS RED" "PASS UNREADABLE" "BLOCKED GREEN"; do
   set -- $bad
   v="$(mr_verdict '{"merge_ready_verdict":"MERGE_READY","blockers":[]}' "$1" "$2")"
@@ -1389,6 +1417,25 @@ for cs in ABSENT NOT_CLEAN UNTRUSTED UNREVIEWED_COMMITS OTHER __EMPTY__; do
     pass "MERGEREADY-crusty-downgrade" "MERGE_READY is downgraded when crusty_status=${cs} (reason: ${reason})"
   else
     fail "MERGEREADY-crusty-downgrade" "crusty_status=${cs} did not downgrade MERGE_READY -> '${v}' (reason: '${reason}')"
+  fi
+done
+# Criterion 6 is measured in step-01 (#1518): MERGE_READY stands only when
+# approval_status is MET. A missing or unknown status fails closed.
+for as in NOT_MET UNREADABLE BOGUS __EMPTY__; do
+  case "$as" in
+    __EMPTY__) facts='{"unresolved_threads":"0"}'; want_reason="approval_status=MISSING" ;;
+    BOGUS) facts='{"unresolved_threads":"0","approval_status":"MET\" "}'; want_reason="approval_status=OTHER" ;;
+    *) facts="{\"unresolved_threads\":\"0\",\"approval_status\":\"${as}\"}"; want_reason="approval_status=${as}" ;;
+  esac
+  out="$(MR_FACTS="$facts" mr_step '{"merge_ready_verdict":"MERGE_READY","blockers":[]}' PASS GREEN DONE_CLEAN)"
+  v="$(printf '%s' "$out" | "$REAL_AMPLIHACK" orch helper extract-json \
+       | "$REAL_AMPLIHACK" orch helper extract-field --field merge_ready_verdict --default MISSING)"
+  reason="$(printf '%s' "$out" | "$REAL_AMPLIHACK" orch helper extract-json \
+       | "$REAL_AMPLIHACK" orch helper extract-field --field downgrade_reason --default '')"
+  if [ "$v" = "NOT_MERGE_READY" ] && printf '%s' "$reason" | grep -qF "${want_reason}"; then
+    pass "MERGEREADY-approval-downgrade" "MERGE_READY is downgraded when approval_status=${as} (reason: ${reason})"
+  else
+    fail "MERGEREADY-approval-downgrade" "approval_status=${as} did not downgrade MERGE_READY -> '${v}' (reason: '${reason}')"
   fi
 done
 if grep -qxF 'measured-evidence-disagrees' "${WORK}/mrr.json.findings" 2>/dev/null; then
@@ -1938,6 +1985,31 @@ ev_run "${EV_FULL}" AUTODRIVE_QA_SCENARIO_DIR=tests/does-not-exist
 ev_expect "QA-override-missing" qa_status=FAIL qa_reason=no-scenarios gadugi_status=NO_SCENARIOS \
   gadugi_scenario_count=0 gadugi_scenario_dir=tests/does-not-exist
 
+# 9b. Without an override, the default lookup is tests/agentic, then
+# tests/gadugi/scenarios (where amplihack-rs keeps its scenarios), then scenarios.
+ev_repo Cargo.toml; mkdir -p "${EV_REPO}/tests/gadugi/scenarios"
+cp "${REPO_ROOT}"/tests/gadugi/scenarios/*.yaml "${EV_REPO}/tests/gadugi/scenarios/" 2>/dev/null
+RS_SCEN_COUNT="$(find "${EV_REPO}/tests/gadugi/scenarios" -maxdepth 1 -type f -name '*.yaml' | grep -c .)"
+ev_run "${EV_FULL}"
+if [ "${RS_SCEN_COUNT}" -gt 0 ]; then
+  ev_expect "QA-default-this-repo-layout" qa_status=PASS gadugi_status=PASS gadugi_scenario_dir=tests/gadugi/scenarios \
+    gadugi_scenario_count="${RS_SCEN_COUNT}" gadugi_scenarios_run="${RS_SCEN_COUNT}"
+else
+  fail "QA-default-this-repo-layout" "this repository has no tests/gadugi/scenarios/*.yaml to find"
+fi
+ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml tests/gadugi/scenarios/x.yaml scenarios/s.yaml
+ev_run "${EV_FULL}"
+ev_expect "QA-default-agentic-first" qa_status=PASS gadugi_scenario_dir=tests/agentic gadugi_scenario_count=1 qa_scenarios=tests/agentic/a.yaml
+ev_repo Cargo.toml; ev_scen tests/gadugi/scenarios/x.yaml scenarios/s.yaml
+ev_run "${EV_FULL}"
+ev_expect "QA-default-gadugi-before-scenarios" qa_status=PASS gadugi_scenario_dir=tests/gadugi/scenarios gadugi_scenario_count=1
+ev_repo Cargo.toml; ev_scen scenarios/s.yaml
+ev_run "${EV_FULL}"
+ev_expect "QA-default-scenarios-last" qa_status=PASS gadugi_scenario_dir=scenarios gadugi_scenario_count=1
+ev_repo Cargo.toml
+ev_run "${EV_FULL}"
+ev_expect "QA-default-none" qa_status=FAIL qa_reason=no-scenarios gadugi_status=NO_SCENARIOS gadugi_scenario_dir=tests/agentic
+
 # 10. A scenario only in a subdirectory, or only as a symlink, counts as 0 and is never run.
 ev_repo Cargo.toml; ev_scen tests/agentic/sub/x.yaml elsewhere/real.yaml
 ln -s ../../elsewhere/real.yaml "${EV_REPO}/tests/agentic/link.yaml"
@@ -2425,7 +2497,10 @@ S6_N=0; S6_RC=0; S6_REC=""; S6_ERR=""
 s6_run() { # s6_run <round-context-json> <fix-evidence-json> <verdict-json> [label]
   S6_N=$((S6_N + 1)); local d="${WORK_PHYS}/s6-${S6_N}"; mkdir -p "$d"
   S6_REC="${d}/crusty-round-1.json"
-  PATH="${STUB_BIN}:${PATH}" HOME="${TEST_HOME}" CRUSTY_ROUND_CONTEXT="$1" CRUSTY_FIX_EVIDENCE="$2" CRUSTY_VERDICT="$3" \
+  # Object outputs reach bash as RECIPE_VAR_<name> only (recipe-runner 0.3.8), so
+  # that is all this sets; the upper-case names are removed from the environment.
+  env -u CRUSTY_ROUND_CONTEXT -u CRUSTY_FIX_EVIDENCE -u CRUSTY_VERDICT \
+    PATH="${STUB_BIN}:${PATH}" HOME="${TEST_HOME}" RECIPE_VAR_crusty_round_context="$1" RECIPE_VAR_crusty_fix_evidence="$2" RECIPE_VAR_crusty_verdict="$3" \
     AUTODRIVE_ROUND_RECORD="${S6_REC}" AUTODRIVE_ROUND_LABEL="${4:-round-1}" \
     bash -c "${S6_BODY}" >"${d}.out" 2>"${d}.err"; S6_RC=$?
   S6_ERR="${d}.err"
@@ -2502,6 +2577,28 @@ if [ "${S6_RC}" -ne 0 ] && [ ! -e "${S6_REC}" ] && grep -qF 'crusty-head-sha-una
   pass "CRUSTY-STEP06-multiline-sha-fails" "a post-fix head SHA with a hex line inside a multi-line value fails the step"
 else
   fail "CRUSTY-STEP06-multiline-sha-fails" "rc=${S6_RC} record=$(cat "${S6_REC}" 2>/dev/null)"
+fi
+# The record cannot be written from the upper-case name alone: an object output
+# has no upper-case alias under recipe-runner 0.3.8, so a body that read only
+# CRUSTY_ROUND_CONTEXT would see "" and fail every round.
+s6_run "" "" '{"crusty_verdict":"CLEAN","verdict_source":"crusty","concern_count":0}'
+if [ "${S6_RC}" -ne 0 ] && [ ! -e "${S6_REC}" ] && grep -qF 'crusty-head-sha-unavailable' "${S6_ERR}"; then
+  pass "CRUSTY-STEP06-no-context-fails" "with no round context in RECIPE_VAR_crusty_round_context the step fails; the passing cases above read it from there"
+else
+  fail "CRUSTY-STEP06-no-context-fails" "rc=${S6_RC} record=$(cat "${S6_REC}" 2>/dev/null)"
+fi
+
+# step-05 counts the fix commits from the reviewed head, read from
+# RECIPE_VAR_crusty_round_context as the runner exports it.
+S5C_BODY="$(extract_step_command "${RECIPES}/autodrive-crusty-round.yaml" "step-05-verify-concerns-addressed")"
+fx_head "${CR_SHA2}"
+S5C_OUT="$(env -u CRUSTY_ROUND_CONTEXT PATH="${STUB_BIN}:${PATH}" HOME="${TEST_HOME}" REPO_PATH="${FX}" \
+  RECIPE_VAR_crusty_round_context="{\"pr\":\"42\",\"head_sha\":\"${CR_SHA}\",\"resolved_concerns\":\"\",\"round_label\":\"round-1\"}" \
+  bash -c "${S5C_BODY}" 2>/dev/null)"
+if [ "$(printf '%s' "${S5C_OUT}" | jq -r '[.base_sha, .head_sha, (.commits | tostring)] | join(" ")' 2>/dev/null)" = "${CR_SHA} ${CR_SHA2} 1" ]; then
+  pass "CRUSTY-STEP05-runner-context" "step-05 reads the reviewed head from RECIPE_VAR_crusty_round_context and counts one fix commit"
+else
+  fail "CRUSTY-STEP05-runner-context" "out=${S5C_OUT}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -2894,9 +2991,11 @@ S5_N=0; S5_REC=""
 s5_run() { # s5_run <qa_evidence_hash json> -> S5_REC
   S5_N=$((S5_N + 1)); S5_REC="${WORK_PHYS}/s5-${S5_N}/merge-ready-round-1.json"; mkdir -p "${S5_REC%/*}"
   ( umask 022
-    PATH="${STUB_BIN}:${PATH}" HOME="${TEST_HOME}" REPO_PATH="${FX}" AUTODRIVE_ROUND_RECORD="${S5_REC}" AUTODRIVE_ROUND_LABEL=round-1 \
-      MERGE_READY_VERDICT='{"merge_ready_verdict":"MERGE_READY","verdict_source":"merge_ready","blocker_count":0}' \
-      QA_EVIDENCE='{"qa_status":"PASS"}' CI_EVIDENCE='{"ci_status":"GREEN","ci_signal":"green"}' QA_EVIDENCE_HASH="$1" \
+    # As the runner exports object outputs: RECIPE_VAR_<name> only.
+    env -u MERGE_READY_VERDICT -u QA_EVIDENCE -u CI_EVIDENCE -u QA_EVIDENCE_HASH \
+      PATH="${STUB_BIN}:${PATH}" HOME="${TEST_HOME}" REPO_PATH="${FX}" AUTODRIVE_ROUND_RECORD="${S5_REC}" AUTODRIVE_ROUND_LABEL=round-1 \
+      RECIPE_VAR_merge_ready_verdict='{"merge_ready_verdict":"MERGE_READY","verdict_source":"merge_ready","blocker_count":0}' \
+      RECIPE_VAR_qa_evidence='{"qa_status":"PASS"}' RECIPE_VAR_ci_evidence='{"ci_status":"GREEN","ci_signal":"green"}' RECIPE_VAR_qa_evidence_hash="$1" \
       bash -c "${S5_BODY}" >/dev/null 2>"${S5_REC}.err" )
 }
 S5_H="$(git hash-object --no-filters "${MR_QA_FILE}")"
@@ -3016,6 +3115,179 @@ if grep -qF 'autodrive_pr_state' "${TOOLS}/autodrive_state.sh"; then
 else
   fail "PLATFORM-TRUTH" "the platform is no longer consulted for merged-ness"
 fi
+
+# ---------------------------------------------------------------------------
+# 11. Platform facts and criterion 6, reviews/approvals (#1518).
+# ---------------------------------------------------------------------------
+# autodrive_platform_facts.sh against a gh that answers the way GitHub does:
+# an HTTP error prints its JSON body on stdout and a message on stderr, and
+# exits 1. PF_CLASSIC=404 is what a token without admin rights gets from the
+# protection endpoint (measured on rysweet/amplihack-rs: 404 "Not Found",
+# while branches/main reports "protected": true).
+PF_TOOL="${TOOLS}/autodrive_platform_facts.sh"
+PF_BIN="${WORK_PHYS}/pf-bin"; mkdir -p "${PF_BIN}"
+PF_HEAD_SHA="0123456789abcdef0123456789abcdef01234567"
+cat > "${PF_BIN}/gh" <<'GH'
+#!/usr/bin/env bash
+echo "$*" >> "${PF_CALLS:-/dev/null}"
+JQ=""; prev=""; for a in "$@"; do [ "$prev" = "--jq" ] && JQ="$a"; prev="$a"; done
+out() { if [ -n "$JQ" ]; then printf '%s' "$1" | jq -r "$JQ"; else printf '%s\n' "$1"; fi; }
+http404() { printf '{"message":"%s","documentation_url":"https://docs.github.com/rest","status":"404"}' "$1"; echo "gh: $1 (HTTP 404)" >&2; exit 1; }
+case "$1 ${2:-}" in
+  "pr view")
+    [ "${PF_VIEW:-ok}" = ok ] || exit 1
+    case " $* " in *" --json number "*) out '{"number":42}'; exit 0 ;; esac
+    out "$(jq -cn --arg m "${PF_MSTATE:-CLEAN}" --arg d "${PF_DECISION-}" --arg h "${PF_HEAD}" --arg b "${PF_BASE-main}" \
+      '{state:"OPEN",isDraft:false,mergeable:"MERGEABLE",mergeStateStatus:$m,reviewDecision:(if $d == "" then null else $d end),headRefOid:$h,baseRefName:$b}')"
+    exit 0 ;;
+  "api graphql") printf '%s\n' "${PF_THREADS:-0}"; exit 0 ;;
+esac
+if [ "${1:-}" = api ]; then
+  path=""; for a in "$@"; do case "$a" in repos/*) path="$a" ;; esac; done
+  case "$path" in
+    */protection/required_pull_request_reviews)
+      case "${PF_CLASSIC:-404}" in 404) http404 "Not Found" ;; esac
+      out "{\"url\":\"u\",\"required_approving_review_count\":${PF_CLASSIC}}"; exit 0 ;;
+    */rules/branches/*)
+      [ "${PF_RULES:-[]}" = fail ] && http404 "Not Found"
+      out "${PF_RULES:-[]}"; exit 0 ;;
+    */branches/*)
+      [ "${PF_PROTECTED:-true}" = fail ] && http404 "Branch not found"
+      out "{\"name\":\"b\",\"protected\":${PF_PROTECTED:-true}}"; exit 0 ;;
+  esac
+fi
+exit 1
+GH
+chmod +x "${PF_BIN}/gh"
+PF_KEYS='["approval_source","approval_status","base_ref","head_sha","is_draft","merge_state","mergeable","pr","required_approvals","review_decision","state","unresolved_threads"]'
+PF_OUT=""; PF_RC=0; PF_N=0; PF_CALLS=""
+pf_run() { # pf_run [PF_VAR=value ...]: runs the tool for PR 42 with nothing but the stub gh, jq and coreutils
+  PF_N=$((PF_N + 1)); PF_CALLS="${WORK_PHYS}/pf-${PF_N}.calls"; : > "${PF_CALLS}"
+  PF_OUT="$(env -i HOME="${TEST_HOME}" PATH="${PF_BIN}:/usr/bin:/bin" PF_HEAD="${PF_HEAD_SHA}" PF_CALLS="${PF_CALLS}" "$@" \
+    bash "${PF_TOOL}" 42 2>"${WORK_PHYS}/pf-${PF_N}.err")"; PF_RC=$?
+}
+pf_expect() { # pf_expect <label> <approval_status> <approval_source> <required_approvals> <why> [field=value ...]
+  local label="$1" status="$2" source="$3" req="$4" why="$5" got bad="" kv; shift 5
+  if [ "${PF_RC}" != 0 ] || [ "$(printf '%s\n' "${PF_OUT}" | grep -c .)" != 1 ] \
+     || [ "$(printf '%s' "${PF_OUT}" | jq -c '[keys[]]' 2>/dev/null)" != "${PF_KEYS}" ] \
+     || ! printf '%s' "${PF_OUT}" | jq -e '[.[] | type == "string"] | all' >/dev/null 2>&1; then
+    fail "$label" "not one JSON line of the 12 string fields (rc=${PF_RC}): ${PF_OUT} | $(tr '\n' ' ' < "${WORK_PHYS}/pf-${PF_N}.err")"
+    return
+  fi
+  got="$(printf '%s' "${PF_OUT}" | jq -r '[.approval_status, .approval_source, .required_approvals] | join(" ")')"
+  [ "$got" = "${status} ${source} ${req}" ] || bad="${bad} got=[${got}] want=[${status} ${source} ${req}]"
+  for kv in "$@"; do
+    [ "$(printf '%s' "${PF_OUT}" | jq -r --arg k "${kv%%=*}" '.[$k]')" = "${kv#*=}" ] || bad="${bad} ${kv%%=*}!=${kv#*=}"
+  done
+  if [ -z "$bad" ]; then pass "$label" "$why"; else fail "$label" "${why} --${bad} | ${PF_OUT} | $(tr '\n' ' ' < "${WORK_PHYS}/pf-${PF_N}.err")"; fi
+}
+RULE2='[{"type":"deletion"},{"type":"pull_request","parameters":{"required_approving_review_count":2}}]'
+if [ ! -f "${PF_TOOL}" ]; then
+  fail "PF-tool" "amplifier-bundle/tools/autodrive_platform_facts.sh is missing"
+else
+  pf_run PF_CLASSIC=0 PF_RULES='[]' PF_DECISION= PF_MSTATE=CLEAN
+  pf_expect "PF-count-0" MET required-count 0 "branch protection requires 0 approvals: an empty reviewDecision is met" \
+    pr=42 state=OPEN head_sha="${PF_HEAD_SHA}" base_ref=main review_decision= unresolved_threads=0
+  pf_run PF_CLASSIC=1 PF_RULES='[]' PF_DECISION=APPROVED PF_MSTATE=CLEAN
+  pf_expect "PF-count-1-approved" MET review-decision 1 "one approval required and the PR is APPROVED"
+  pf_run PF_CLASSIC=1 PF_RULES='[]' PF_DECISION=REVIEW_REQUIRED PF_MSTATE=BLOCKED
+  pf_expect "PF-count-1-no-review" NOT_MET review-decision 1 "one approval required and none given"
+  pf_run PF_CLASSIC=1 PF_RULES='[]' PF_DECISION= PF_MSTATE=CLEAN
+  pf_expect "PF-count-1-empty-decision" NOT_MET required-count 1 "a known count above 0 outranks the merge state; an empty decision is not an approval"
+  pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION= PF_MSTATE=CLEAN
+  pf_expect "PF-non-admin-404-clean" MET merge-state "" "#1518: a non-admin 404 with protected:true, a null decision and CLEAN is met through GitHub's merge state; the unread count stays empty, never 0"
+  pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED
+  pf_expect "PF-non-admin-404-blocked" UNREADABLE unreadable "" "a 404 is never read as zero: with BLOCKED the approval state is unreadable"
+  pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES="${RULE2}" PF_DECISION= PF_MSTATE=CLEAN
+  pf_expect "PF-ruleset-2" NOT_MET required-count 2 "a ruleset requiring 2 approvals is read with read access when protection is not"
+  pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES="${RULE2}" PF_DECISION=APPROVED PF_MSTATE=CLEAN
+  pf_expect "PF-ruleset-2-approved" MET review-decision 2 "GitHub's APPROVED already counts the ruleset's two approvals"
+  pf_run PF_CLASSIC=1 PF_RULES="${RULE2}" PF_DECISION=REVIEW_REQUIRED PF_MSTATE=BLOCKED
+  pf_expect "PF-highest-count" NOT_MET review-decision 2 "required_approvals is the higher of the protection and ruleset counts"
+  pf_run PF_CLASSIC=404 PF_PROTECTED=false PF_RULES='[]' PF_DECISION= PF_MSTATE=BEHIND
+  pf_expect "PF-unprotected" MET required-count 0 "protected:false means no classic rule, so the count is 0 without the merge state"
+  pf_run PF_CLASSIC=0 PF_RULES=fail PF_DECISION= PF_MSTATE=BLOCKED
+  pf_expect "PF-rulesets-unreadable" UNREADABLE unreadable "" "a classic 0 is not the whole count while the rulesets cannot be read"
+  pf_run PF_CLASSIC=0 PF_RULES='[]' PF_DECISION=CHANGES_REQUESTED PF_MSTATE=BLOCKED
+  pf_expect "PF-changes-requested" NOT_MET review-decision 0 "requested changes are outstanding even when no approval is required"
+  pf_run PF_VIEW=fail PF_CLASSIC=0 PF_RULES='[]'
+  pf_expect "PF-view-unreadable" UNREADABLE unreadable "" "an unreadable pull request is never an empty review decision" \
+    state=UNKNOWN head_sha= merge_state=UNKNOWN base_ref=
+  pf_run PF_BASE='main"},"x":"y' PF_CLASSIC=0 PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED
+  pf_expect "PF-hostile-base-ref" UNREADABLE unreadable "" "a base ref outside [A-Za-z0-9._/-] is dropped and never reaches a URL" base_ref=
+  if grep -q 'branches/' "${PF_CALLS}"; then fail "PF-hostile-base-no-call" "a hostile base ref reached gh api: $(grep 'branches/' "${PF_CALLS}" | head -n 1)"
+  else pass "PF-hostile-base-no-call" "no branch endpoint is called without a valid base ref"; fi
+  pf_run PF_THREADS="$(printf '0\n2')" PF_CLASSIC=0 PF_RULES='[]'
+  pf_expect "PF-threads-paged" MET required-count 0 "review threads are summed across pages" unresolved_threads=2
+  pf_run PF_THREADS='{"message":"x"}' PF_CLASSIC=0 PF_RULES='[]'
+  pf_expect "PF-threads-unreadable" MET required-count 0 "a page that is not a number makes the thread count unreadable" unresolved_threads=unreadable
+fi
+
+# merge-round step-01 runs the tool; without it, every fact is unreadable.
+S01_BODY="$(extract_step_command "${RECIPES}/autodrive-merge-round.yaml" "step-01-platform-facts")"
+PF_PLAIN="${WORK_PHYS}/pf-plain"; PF_EMPTY_HOME="${WORK_PHYS}/pf-home"; mkdir -p "${PF_PLAIN}" "${PF_EMPTY_HOME}"
+s01_run() { # s01_run <amplihack-home> -> PF_OUT, PF_RC (#1518 case: non-admin 404, null decision, CLEAN)
+  PF_N=$((PF_N + 1))
+  PF_OUT="$(cd "${PF_PLAIN}" && env -i HOME="${PF_EMPTY_HOME}" PATH="${PF_BIN}:/usr/bin:/bin" AMPLIHACK_HOME="$1" REPO_PATH="${PF_PLAIN}" \
+    PR_NUMBER=42 PF_HEAD="${PF_HEAD_SHA}" PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION= PF_MSTATE=CLEAN \
+    bash -c "${S01_BODY}" 2>"${WORK_PHYS}/pf-${PF_N}.err" | tail -n 1)"; PF_RC=$?
+}
+s01_run "${REPO_ROOT}"
+pf_expect "PF-step-01-uses-tool" MET merge-state "" "merge-round step-01 reports the tool's facts" pr=42 head_sha="${PF_HEAD_SHA}"
+s01_run "${WORK_PHYS}/no-such-home"
+pf_expect "PF-step-01-no-tool" UNREADABLE unreadable "" "without the tool every fact is unreadable, never assumed" \
+  pr=42 state=UNKNOWN head_sha= unresolved_threads=unreadable
+if grep -qF 'autodrive_platform_facts.sh not found' "${WORK_PHYS}/pf-${PF_N}.err"; then
+  pass "PF-step-01-no-tool-warns" "a missing tool is named in a WARNING"
+else
+  fail "PF-step-01-no-tool-warns" "stderr: $(tr '\n' ' ' < "${WORK_PHYS}/pf-${PF_N}.err")"
+fi
+
+# ---------------------------------------------------------------------------
+# 12. The crusty round reviews the PR's head, and only that (#1519, criterion 3).
+# ---------------------------------------------------------------------------
+# Crusty reads `gh pr diff`, the head on GitHub. step-01 records that commit
+# and fails by name when the local checkout is on any other commit.
+CTX_BODY="$(extract_step_command "${RECIPES}/autodrive-crusty-round.yaml" "step-01-round-context")"
+CTX_OUT=""; CTX_RC=0; CTX_ERR="${WORK_PHYS}/ctx.err"
+ctx_run() { # ctx_run <gh-mode> <gh-head> [VAR=value ...]: FX's HEAD is wherever fx_head left it
+  local mode="$1" head="$2"; shift 2
+  CTX_OUT="$(env -i HOME="${TEST_HOME}" PATH="${STUB_BIN}:/usr/bin:/bin" REPO_PATH="${FX}" PR_NUMBER=42 \
+    GH_MODE="$mode" GH_HEAD="$head" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 "$@" \
+    bash -c "${CTX_BODY}" 2>"${CTX_ERR}")"; CTX_RC=$?
+}
+ctx_expect_error() { # ctx_expect_error <label> <ERROR text> <reason text> <why>
+  if [ "${CTX_RC}" != 0 ] && [ -z "${CTX_OUT}" ] && grep -qF "$2" "${CTX_ERR}" && grep -qF "$3" "${CTX_ERR}"; then
+    pass "$1" "$4"
+  else
+    fail "$1" "$4 -- rc=${CTX_RC} stdout='${CTX_OUT}' stderr: $(tr '\n' ' ' < "${CTX_ERR}")"
+  fi
+}
+fx_head "${CR_SHA2}"
+ctx_run green "${CR_SHA2}"
+if [ "${CTX_RC}" = 0 ] && [ "$(printf '%s' "${CTX_OUT}" | jq -r '.head_sha + " " + .pr' 2>/dev/null)" = "${CR_SHA2} 42" ]; then
+  pass "CTX-pr-head" "the reviewed commit is the PR's headRefOid when the checkout matches it"
+else
+  fail "CTX-pr-head" "rc=${CTX_RC} out=${CTX_OUT} | $(tr '\n' ' ' < "${CTX_ERR}")"
+fi
+ctx_run green "${FX_M1}"
+ctx_expect_error "CTX-wrong-checkout" "ERROR: crusty-local-head-not-pr-head: local HEAD ${CR_SHA2} is not PR #42's head ${FX_M1}" \
+  "the checkout at REPO_PATH is on another commit" "a checkout on another commit fails the round by name, with no context"
+ctx_run green "${CR_SHA}"
+ctx_expect_error "CTX-push-lag" "ERROR: crusty-local-head-not-pr-head" "local commits have not reached GitHub" \
+  "a local head ahead of the PR head (#1519) fails instead of binding CLEAN to a commit crusty never read"
+ctx_run unreadable-meta "${CR_SHA2}"
+ctx_expect_error "CTX-head-unreadable" "ERROR: crusty-pr-head-unreadable" "PR #42" \
+  "an unreadable headRefOid fails the round; the local HEAD is not used in its place"
+ctx_run unreadable-meta "${CR_SHA2}" PR_NUMBER=
+if [ "${CTX_RC}" = 0 ] && [ "$(printf '%s' "${CTX_OUT}" | jq -r '.head_sha + " [" + .pr + "]"' 2>/dev/null)" = "${CR_SHA2} []" ]; then
+  pass "CTX-no-pr" "with no pull request crusty reviews the working tree, so the local HEAD is the reviewed commit"
+else
+  fail "CTX-no-pr" "rc=${CTX_RC} out=${CTX_OUT} | $(tr '\n' ' ' < "${CTX_ERR}")"
+fi
+ctx_run green "${CR_SHA2}" REPO_PATH="${WORK_PHYS}/no-such-repo"
+ctx_expect_error "CTX-bad-repo-path" "ERROR: cannot cd to REPO_PATH" "REPO_PATH" \
+  "a REPO_PATH that cannot be entered fails instead of reading HEAD from another directory"
 
 echo
 echo "═══════════════════════════════"

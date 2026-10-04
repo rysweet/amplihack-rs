@@ -166,13 +166,13 @@ steps:
       rm -f "$LOG"
 
       # --- the scenario directory ------------------------------------------
-      # AUTODRIVE_QA_SCENARIO_DIR from the environment only, then
-      # tests/agentic, then scenarios. An override naming a missing directory
-      # means no scenarios, not a fallback.
+      # AUTODRIVE_QA_SCENARIO_DIR from the environment only, else the first of
+      # tests/agentic, tests/gadugi/scenarios (amplihack-rs) and scenarios that
+      # exists, else tests/agentic. An override naming a missing directory means no scenarios.
       SDIR_IN="${AUTODRIVE_QA_SCENARIO_DIR:-}"
       if [ -z "$SDIR_IN" ]; then
         SDIR_IN="tests/agentic"
-        [ ! -d tests/agentic ] && [ -d scenarios ] && SDIR_IN="scenarios"
+        for d in tests/agentic tests/gadugi/scenarios scenarios; do [ -d "${ROOT}/${d}" ] && { SDIR_IN="$d"; break; }; done
       fi
       [ "$SDIR_IN" = "/" ] || SDIR_IN="${SDIR_IN%/}"
       case "$SDIR_IN" in /*) SDIR="$SDIR_IN" ;; *) SDIR="${ROOT}/${SDIR_IN}" ;; esac

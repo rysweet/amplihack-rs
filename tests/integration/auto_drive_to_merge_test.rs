@@ -36,10 +36,11 @@ const AUTODRIVE_RECIPES: [&str; 7] = [
     "autodrive-merge-loop",
 ];
 
-const AUTODRIVE_TOOLS: [&str; 5] = [
+const AUTODRIVE_TOOLS: [&str; 6] = [
     "autodrive_loop.sh",
     "autodrive_merge_gate.sh",
     "autodrive_merge_ready_files.sh",
+    "autodrive_platform_facts.sh",
     "autodrive_state.sh",
     "autodrive_trust.sh",
 ];
@@ -413,10 +414,14 @@ fn verdict_gates_use_the_canonical_orch_helper_pipeline() {
              token `{blocking_default}` — never to the permissive one"
         );
         // Agent output is untrusted data: env var + stdin, never interpolated
-        // into a command position.
+        // into a command position. A review that is only the JSON verdict is
+        // an object, which recipe-runner exports as RECIPE_VAR_<output> alone,
+        // so the read falls back to it, in the form the #1511 branch uses.
+        let runner_var = format!("RECIPE_VAR_{}", env_var.to_ascii_lowercase());
         assert!(
-            cmd.contains(&format!("${{{env_var}:-}}")),
-            "{step_id} must read the agent output from the environment"
+            cmd.contains(&format!("${{{env_var}:-${{{runner_var}:-}}}}")),
+            "{step_id} must read the agent output from the environment, \
+             falling back to {runner_var}"
         );
         assert!(
             cmd.contains("printf '%s' \""),
@@ -2346,6 +2351,11 @@ fn merge_ready_skill_documents_running_under_auto_drive() {
         "quality-audit",
         "at least 3",
         "merge-ready-skill-files-not-found",
+        // Criterion 6 (#1518) and this repository's scenario directory (#1517).
+        "autodrive_platform_facts.sh",
+        "required_approving_review_count",
+        "approval_status",
+        "tests/gadugi/scenarios",
     ] {
         assert!(
             body.contains(needle),
@@ -2372,6 +2382,13 @@ fn merge_ready_skill_documents_running_under_auto_drive() {
         "no_recipe_invokes_a_skill_that_refuses_model_invocation",
         "no_round_minimum_in_any_recipe_or_tool",
         "qa_team_does_not_refuse_model_invocation",
+        // Criterion 6 (#1518), the reviewed commit (#1519) and the scenario directory.
+        "autodrive_platform_facts.sh",
+        "required_approving_review_count",
+        "approval_source",
+        "crusty-local-head-not-pr-head",
+        "tests/gadugi/scenarios",
+        "RECIPE_VAR_",
     ] {
         assert!(
             reference.contains(needle),
@@ -2405,12 +2422,17 @@ fn merge_ready_skill_documents_running_under_auto_drive() {
 #[test]
 fn every_criterion_is_read_completely_and_bound_to_the_merged_sha() {
     let gate = read(&tool_path("autodrive_merge_gate.sh"));
-    let round = recipe_text("autodrive-merge-round");
+    // The merge round reads its platform facts through this tool (#1518).
+    let facts = read(&tool_path("autodrive_platform_facts.sh"));
+    assert!(
+        recipe_text("autodrive-merge-round").contains("autodrive_platform_facts.sh"),
+        "merge round step-01 must read its platform facts through autodrive_platform_facts.sh"
+    );
 
     // Review threads: `reviewThreads(first:100)` with no pageInfo follow-up
     // silently truncates. 101 threads with the last one unresolved reports 0
     // unresolved and passes the gate.
-    for (label, text) in [("merge gate", &gate), ("merge round", &round)] {
+    for (label, text) in [("merge gate", &gate), ("platform facts", &facts)] {
         assert!(
             text.contains("reviewThreads"),
             "{label} must read review threads"
@@ -3105,6 +3127,89 @@ fn the_reference_documents_the_range_rule_and_the_qa_chain() {
             "the merge-ready auto-drive section must mention `{needle}`"
         );
     }
+}
+
+/// recipe-runner 0.3.8 (`context.rs`, `shell_env_vars`) exports a step output
+/// that parsed as a JSON object as `RECIPE_VAR_<name>` only; the bare
+/// upper-case alias is added for scalars alone. A round body that reads
+/// `${QA_EVIDENCE:-}` therefore sees "" under the real runner. Every bash read
+/// of a step output in the two round recipes must fall back to
+/// `RECIPE_VAR_<name>`, in the form the #1511 branch uses. The loop recipes'
+/// reads predate this change and are #1511's.
+#[test]
+fn round_recipes_read_step_outputs_through_recipe_var() {
+    // The round recipes' outputs, plus merge-evidence's: the runner merges a
+    // sub-recipe's context back into the merge round.
+    let mut outputs: Vec<String> = Vec::new();
+    for r in [
+        "autodrive-crusty-round",
+        "autodrive-merge-round",
+        "autodrive-merge-evidence",
+    ] {
+        for line in recipe_text(r).lines() {
+            if let Some(name) = line
+                .trim_start()
+                .strip_prefix("output: \"")
+                .and_then(|s| s.strip_suffix('"'))
+            {
+                outputs.push(name.to_string());
+            }
+        }
+    }
+    for name in [
+        "crusty_round_context",
+        "crusty_evidence",
+        "qa_evidence_hash",
+        "platform_facts",
+        "qa_evidence",
+    ] {
+        assert!(
+            outputs.iter().any(|o| o == name),
+            "expected step output `{name}` in the round recipes"
+        );
+    }
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut reads = 0;
+    let mut bad = Vec::new();
+    for r in ["autodrive-crusty-round", "autodrive-merge-round"] {
+        let text = recipe_text(r);
+        for (n, line) in text.lines().enumerate() {
+            for name in &outputs {
+                let upper = name.to_ascii_uppercase();
+                let dual = format!("${{{upper}:-${{RECIPE_VAR_{name}:-");
+                let mut from = 0;
+                while let Some(p) = line[from..].find(&upper) {
+                    let at = from + p;
+                    from = at + upper.len();
+                    if line[from..].starts_with(ident) {
+                        continue; // QA_EVIDENCE inside QA_EVIDENCE_HASH
+                    }
+                    let before = &line[..at];
+                    let start = if before.ends_with("${") {
+                        at - 2
+                    } else if before.ends_with('$') || before.ends_with("${#") {
+                        at - 1
+                    } else {
+                        continue; // AUTODRIVE_QA_EVIDENCE, prose, a template
+                    };
+                    reads += 1;
+                    if !line[start..].starts_with(&dual) {
+                        bad.push(format!("{r}.yaml:{}: {}", n + 1, line.trim()));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        reads >= 18,
+        "found only {reads} step-output reads in the round recipes; the scan is broken"
+    );
+    assert!(
+        bad.is_empty(),
+        "step-output reads without the RECIPE_VAR_ fallback \
+         (write \"${{UPPER:-${{RECIPE_VAR_<output>:-}}}}\"):\n{}",
+        bad.join("\n")
+    );
 }
 
 // ── The executable contract ──────────────────────────────────────────────────
