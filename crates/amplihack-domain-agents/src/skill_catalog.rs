@@ -328,7 +328,12 @@ Do stuff."#;
     #[test]
     fn invalid_metadata_and_empty_bodies_fail() {
         for yaml in [
+            "token_budget: -1",
+            "token_budget: 4294967296",
+            "token_budget: 1.5",
             "token_budget: {total: -1}",
+            "token_budget: {total: 4294967296}",
+            "token_budget: {total: 1.5}",
             "token_budget: {total: bad}",
             "confirmation_required: maybe",
             "auto_activates: text",
@@ -346,6 +351,21 @@ Do stuff."#;
             "---\nname: test\n---\n  ",
         ] {
             assert!(parse_front_matter(text, Path::new("bad.md")).is_err());
+        }
+    }
+
+    #[test]
+    fn catalog_reports_traversal_failures_even_when_privileged() {
+        let dir = tempfile::tempdir().unwrap();
+        // Missing paths and ordinary files fail read_dir even when permission
+        // checks would be bypassed by a privileged test runner.
+        let missing = dir.path().join("missing");
+        let file = dir.path().join("ordinary-file");
+        std::fs::write(&file, "not a directory").unwrap();
+        for path in [missing, file] {
+            let error = SkillCatalog::load(&path).unwrap_err().to_string();
+            assert!(error.contains("cannot read"), "{error}");
+            assert!(error.contains(&path.display().to_string()), "{error}");
         }
     }
 
