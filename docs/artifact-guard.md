@@ -21,6 +21,7 @@ moves, unstages, or rewrites files.
 - [Provenance: this change vs the repository's history](#provenance-this-change-vs-the-repositorys-history)
 - [Command-line interface](#command-line-interface)
 - [Default prohibited rules](#default-prohibited-rules)
+- [Registered worktrees in the index](#registered-worktrees-in-the-index)
 - [Allowlist configuration](#allowlist-configuration)
 - [Workflow and pre-commit coverage](#workflow-and-pre-commit-coverage)
 - [Output isolation](#output-isolation)
@@ -28,6 +29,7 @@ moves, unstages, or rewrites files.
 - [Intended Rust API](#intended-rust-api)
 - [Fixing violations](#fixing-violations)
 - [Worked example: cache leftovers do not block a commit or publish](#worked-example-cache-leftovers-do-not-block-a-commit-or-publish)
+- [Worked example: a run worktree staged in the launch checkout](#worked-example-a-run-worktree-staged-in-the-launch-checkout)
 
 ## Behavior
 
@@ -37,17 +39,21 @@ Artifact Guard:
 2. Check staged paths before commit.
 3. Check tracked and untracked paths before broad staging and workflow
    publication.
-4. Check ignored-present artifact paths only in the `worktree` and `all` modes,
+4. Check the whole index for entries at the path of another registered Git
+   worktree of the same repository, whatever `.gitignore` says. See
+   [Registered worktrees in the index](#registered-worktrees-in-the-index).
+5. Check ignored-present artifact paths only in the `worktree` and `all` modes,
    which are local-hygiene scans. The commit- and publication-gate modes
    (`pre-commit`, `pre-publish`) never block on ignored-present artifacts.
-5. Separate artifacts the change under review introduced from artifacts the
+6. Separate artifacts the change under review introduced from artifacts the
    repository already carried, and block the gate modes only on the former. See
    [Provenance](#provenance-this-change-vs-the-repositorys-history).
-6. Fail closed on invalid configuration, invalid paths, Git failures, and unsafe
+7. Fail closed on invalid configuration, invalid paths, Git failures, and unsafe
    allowlist entries.
-7. Print actionable remediation before exiting, naming the offending paths and
-   the exact commands that clear them.
-8. Leave the repository unchanged.
+8. Print actionable remediation before exiting, naming the offending paths and
+   the exact commands that clear them. Never print a command that deletes a
+   live worktree.
+9. Leave the repository unchanged.
 
 ### Ignored-present scope
 
@@ -257,6 +263,7 @@ repository worktree:
 | Plugin bundles | `dist/plugin.js`, `*/dist/plugin.js` | Blocked in `worktree`/`all` only |
 | Claude runtime | `.claude/runtime/` | Exempt as untracked/ignored-present; blocked only when **staged or tracked** (except the launcher-owned files — see below) |
 | Nested worktrees | `worktrees/` | Blocked in `worktree`/`all` only |
+| Registered worktrees (`registered-worktree`) | Any index entry at a path listed by `git worktree list` inside the repository: `worktrees/feat/pr-1530`, `.worktrees/review`, `wt/review` | Never scanned as ignored-present; blocked when staged, and when tracked according to provenance. Cannot be allowlisted. |
 | Cache directories | `.cache/`, `.npm/`, `.pnpm-store/`, `.yarn/cache/`, `.turbo/`, `.parcel-cache/`, `.pytest_cache/` | Blocked in `worktree`/`all` only |
 | Build output | `dist/`, `build/`, `coverage/`, `.next/`, `out/`, `logs/`, `outputs/`, `index.scip` | Blocked in `worktree`/`all` only |
 | Rust build output | `target/` | Blocked only when staged, tracked, or untracked |
@@ -311,6 +318,131 @@ Before this exemption, files under
 later the metrics file that agents append to on every tool call) failed the
 end-of-run `pre-publish` guard, which left `recipe-runner-rs` and its child
 agents hung after the work was already committed and pushed (issue #807).
+
+## Registered worktrees in the index
+
+The `registered-worktree` rule refuses a commit whose index holds another Git
+worktree of the same repository. Git stages a worktree directory as a *gitlink*
+(an index entry with mode `160000`). A worktree staged that way publishes a
+pointer to a commit no clone can fetch, and the rest of the change rides along
+with it.
+
+This is how issue #1528 happened. An auto-drive run launched from a
+repository's main checkout ran its agents in that checkout, where the pull
+request's files were reachable only through the gitignored `worktrees/<branch>`
+directory. Git refused the plain `git add` and printed
+`hint: Use -f if you really want to add them.` The agent followed the hint, and
+`git add -f` staged the run worktree as a gitlink in the main checkout's index.
+`.gitignore` does not protect a path that is added with `-f`.
+
+### What counts as a registered worktree
+
+A registered worktree is any entry in `git worktree list --porcelain` whose
+path is strictly inside the scanned repository's top level. Each entry is
+matched by both its canonical path and the path Git recorded, so a *prunable*
+entry (its directory is gone) still counts. The location does not matter:
+`worktrees/feat/pr-1530`, `.worktrees/review` and `wt/review` all match.
+
+The scanned repository's own top level never matches. When the guard runs
+inside a linked worktree, the main checkout is an ancestor of the scan, not
+inside it, so it is not reported.
+
+### Which index entries match
+
+| Index entry | Source | Provenance | Gate modes |
+| --- | --- | --- | --- |
+| Gitlink (`160000`) at a registered worktree path, staged (differs from `HEAD`) | `staged` | `introduced` | **Block**, under every `--preexisting` policy |
+| Any other staged path at or under a registered worktree path | `staged` | `introduced` | **Block**, under every `--preexisting` policy |
+| Gitlink at a registered worktree path, unchanged since `HEAD` | `tracked` | From the baseline, as for any tracked path | Block if `introduced`; follow `--preexisting` if `pre-existing` |
+
+Paths match on a path boundary only: the entry equals the worktree path or
+starts with the worktree path followed by `/`. With `wt/x` registered,
+`wt/xy/notes.md` is not a `registered-worktree` entry.
+
+The rule runs in every mode that scans staged paths: `pre-commit`,
+`pre-publish`, `staged` and `all`. It runs before the other staged checks, so a
+path reported as `registered-worktree` is not reported again as
+`nested-worktree`. The scan reads `git worktree list --porcelain`,
+`git ls-files -s -z` and `git diff --cached --name-only -z`, and writes
+nothing.
+
+These are not matched:
+
+| Case | Why | Rule that applies instead |
+| --- | --- | --- |
+| A submodule declared in `.gitmodules` that is not a registered worktree | It is a real submodule, not a run worktree | None |
+| Loose files from an unregistered copy under `worktrees/` (a copy with no `.git`) | Nothing is registered at that path | `nested-worktree` |
+| Ignored files inside a registered worktree under `worktrees/` | They belong to another checkout, not to this repository's index (issue #857) | None |
+
+### It cannot be allowlisted
+
+An `.amplihack-artifact-allowlist` entry that matches a registered worktree
+path has no effect on this rule. The allowlist is repository content: an agent
+working in the pull request's worktree can edit it, so it cannot be the thing
+that authorizes committing that agent's own worktree.
+
+### Output and remediation
+
+```text
+Artifact Guard blocked 1 prohibited artifact path(s) introduced by this change in /home/dev/src/shop-api (mode: pre-commit).
+Baseline: origin/main (4ccd1977a1b2).
+
+source           provenance     path                                             rule
+staged           introduced     worktrees/feat/pr-1530                           registered-worktree
+
+Remediation:
+  - Remove local artifact leftovers from the parent worktree.
+  - Move generated, plugin, cache, and runtime output into an ignored isolated directory outside the parent worktree.
+  - If intentional source material, add a narrow reviewed entry to .amplihack-artifact-allowlist.
+  - A registered worktree is a live checkout: unstage it, never delete it, and commit from inside it. The allowlist does not apply to registered-worktree.
+
+Exact commands for the paths above:
+  git restore --staged -- 'worktrees/feat/pr-1530'   # unstage only; keep the directory
+  # keep 'worktrees' on disk: it holds the live worktree(s) worktrees/feat/pr-1530
+  amplihack hygiene artifact-guard --repo /home/dev/src/shop-api --mode pre-commit   # re-run to confirm
+
+First violation detail:
+  worktrees/feat/pr-1530: registered git worktree in this repository's index; unstage it and keep the directory (it is a live checkout), then commit from inside that worktree. Cannot be allowlisted.
+```
+
+When a grouped root is, contains, or sits inside a registered worktree, the
+guard prints one index-only command per path instead of the usual
+`git rm -r --cached` / `rm -rf` pair for the root. This applies to every
+violation under that root, whatever its rule, so an unregistered leftover at
+`worktrees/feat/old/` next to a live `worktrees/feat/pr-1530` never produces
+`rm -rf -- 'worktrees'`.
+
+| Source of the violation | Command printed |
+| --- | --- |
+| `staged` | `git restore --staged -- '<path>'   # unstage only; keep the directory` |
+| `tracked` | `git rm --cached -- '<path>'   # untrack only; keep the directory` |
+| `untracked`, `ignored-present` | No command. A comment names the path and says to remove it by hand only if it is not a live worktree. |
+
+Roots that hold no registered worktree keep their current output.
+
+The commands are chosen because the obvious alternatives fail or destroy work:
+
+- `rm -rf` on a live worktree deletes the run's uncommitted work.
+- `git rm` without `--cached` on a gitlink tries to remove the linked
+  worktree's files.
+- `git rm --cached` on a *newly staged* gitlink fails whenever the worktree has
+  any local change, which a run worktree mid-run nearly always has:
+  `error: the following file has staged content different from both the file
+  and the HEAD`. `git restore --staged` removes the new entry from the index in
+  every case. For a gitlink that is already committed, `git restore --staged`
+  would put it back, so `tracked` entries get `git rm --cached`, which works
+  even when the worktree is dirty.
+
+Every printed path, and the `--repo` value in the re-run line, is shell-quoted
+(a `'` becomes `'\''`), so a path containing a quote or a space can be pasted
+as is. Plain paths print exactly as before.
+
+The guard itself stays read-only. After a refusal the index is left as it was,
+so the staged state can be inspected before anything is unstaged.
+
+Matching is byte-wise and case-sensitive. On a case-insensitive filesystem, an
+entry staged under a different spelling of a worktree path is not matched by
+this rule.
 
 ## Allowlist configuration
 
@@ -373,24 +505,67 @@ Directory allowlists are accepted only for narrow fixture or example paths. They
 must not exempt a default prohibited directory directly at the repository root or
 across the whole repository.
 
+No entry applies to the `registered-worktree` rule. The guard does not reject
+such an entry, because it may still be needed for another rule, but it never
+suppresses a `registered-worktree` violation. See
+[It cannot be allowlisted](#it-cannot-be-allowlisted).
+
 ## Workflow and pre-commit coverage
 
-Artifact Guard will run before every broad staging operation in the bundled
-recipes, not just publish and finalize. The initial guarded recipe set is every
-recipe that currently invokes `git add -A`:
+Every bundled commit path runs Artifact Guard. Where it runs depends on who
+does the staging.
 
-| Recipe | Guard placement |
-| --- | --- |
-| `workflow-finalize.yaml` | Before final broad staging |
-| `workflow-publish.yaml` | Before publication staging and before any broad staging in remediation paths |
-| `workflow-refactor-review.yaml` | Before broad staging |
-| `workflow-tdd.yaml` | Before broad staging |
-| `workflow-pr-review.yaml` | Before broad staging |
-| `consensus-publish.yaml` | Before broad staging |
-| `consensus-pr-feedback.yaml` | Before broad staging |
+**Deterministic bash steps guard, then stage.** The next command is a literal
+`git add -A`, which stages exactly the paths a gate mode has just scanned:
+staged, tracked, and untracked-but-not-ignored. It never stages an ignored
+path. Guarding first therefore sees everything the add can bring in, and a
+refusal leaves the index untouched.
 
-Future recipe changes must preserve the rule: any new `git add -A` or equivalent
-broad-staging step needs an Artifact Guard gate immediately before it.
+| Recipe | Step | Mode | Order |
+| --- | --- | --- | --- |
+| `workflow-publish.yaml` | `step-14g-artifact-guard` | `pre-publish` | Standalone gate before publication |
+| `workflow-publish.yaml` | `step-15-commit-push` | `pre-publish` | Guard → `git add -A` → commit |
+| `workflow-finalize.yaml` | `step-20a-artifact-guard` | `pre-publish` | Standalone gate before finalization |
+| `workflow-finalize.yaml` | `step-20b-push-cleanup` | `pre-publish` | Guard → `git add -A` → commit |
+| `workflow-tdd.yaml` | `checkpoint-after-implementation` | `pre-publish` | Guard → `git add -A` |
+| `workflow-pr-review.yaml` | `step-18c-push-feedback-changes` | `pre-publish` | Guard → `git add -A` |
+| `workflow-refactor-review.yaml` | `checkpoint-after-review-feedback` | `pre-publish` | Guard → `git add -A` |
+| `consensus-publish.yaml` | `step9-commit` | `pre-publish` | Guard → `git add -A` |
+| `consensus-pr-feedback.yaml` | `step12-push-updates` | `pre-publish` | Guard → `git add -A` |
+
+**Agent commit paths stage, then guard, then commit.** An agent can run any
+`git add`, and Git itself suggests `-f` when a path is ignored. A forced add
+stages ignored paths (a `worktrees/` gitlink, `node_modules/.vite`,
+`.claude/runtime`) that a gate mode does not look for before staging, because
+an ignored path cannot normally reach a commit. Only a guard that reads the
+index after staging, immediately before `git commit`, sees them. In issue
+#1528 the guard ran first, then the agent staged with `-f`, then committed, and
+the guard never saw what was committed.
+
+| Recipe | Step | Mode | Order |
+| --- | --- | --- | --- |
+| `autodrive-crusty-round.yaml` | `step-04-address-concerns` (agent) | `pre-commit` | `autodrive_pr_worktree.sh commit`: `git add -A` → guard → `git commit` → push |
+| `autodrive-merge-round.yaml` | `step-04-address-blockers` (agent) | `pre-commit` | `autodrive_pr_worktree.sh commit`: `git add -A` → guard → `git commit` → push |
+| `workflow-publish.yaml` | `step-16b-outside-in-fix-loop` (agent prompt) | `pre-publish` | `git add -A && amplihack hygiene artifact-guard … && git commit` |
+
+The auto-drive helper also refuses to stage anywhere but the pull request's own
+worktree. See
+[Where phases 2 and 3 run](reference/auto-drive-to-merge.md#where-phases-2-and-3-run).
+When the guard refuses there, the helper exits `3` and leaves the index as it
+is, so the refusal can be inspected and the printed commands followed.
+
+A deterministic step's guard still catches anything an agent staged earlier in
+the same worktree: the gate modes always scan staged entries, and the
+`registered-worktree` rule scans the whole index.
+
+Future recipe changes must preserve both rules:
+
+- A deterministic `git add -A` or equivalent broad-staging step needs an
+  Artifact Guard gate immediately before it.
+- A commit that an agent makes goes through a path that runs the guard after
+  staging and immediately before `git commit`. Agent instructions never tell an
+  agent to run `git add -f` or `--force`, or to stage anything under
+  `worktrees/` or another worktree.
 
 Before those gates run, bundled workflows also run the narrow workflow runtime
 preflight documented in [Workflow Runtime Artifacts Reference](reference/workflow-runtime-artifacts.md).
@@ -403,7 +578,9 @@ Artifact Guard itself remains non-mutating and still fails on every unexpected
 artifact.
 
 The checked-in pre-commit hook scans the repository's committable state —
-staged, tracked, and untracked-but-not-ignored paths. It does not block on
+staged, tracked, and untracked-but-not-ignored paths. It runs at `git commit`
+time, after all staging, so it sees the final index, including anything staged
+with `-f`. It does not block on
 ignored-present leftovers (that is what `--mode worktree`/`all` are for). It is
 defined in `.pre-commit-config.yaml`, and that file is the source of truth for
 the hook contract:
@@ -506,7 +683,7 @@ gates. The preflight is intentionally narrower than Artifact Guard:
 | Path | Preflight behavior | Artifact Guard behavior if still present |
 | --- | --- | --- |
 | `.claude/runtime` | Remove when it is exactly under the active task worktree. | Exempt when untracked/ignored; blocked as `claude-runtime` only if staged or tracked. |
-| `worktrees/` | Remove when it is exactly under the active task worktree and not tracked source. | Block as `nested-worktrees`. |
+| `worktrees/` | Remove when it is exactly under the active task worktree and not tracked source. | Block as `nested-worktree`; an index entry at a registered worktree path blocks as `registered-worktree`. |
 | `.claude/settings.json` | Preserve. | Not blocked by the runtime rule. |
 | Unrelated untracked files | Preserve. | Block when they match prohibited artifact rules or dirty-worktree gates. |
 
@@ -583,6 +760,11 @@ pub struct ArtifactGuardReport {
     pub violations: Vec<ArtifactViolation>,
     pub baseline: Option<ArtifactBaseline>,
     pub preexisting_policy: PreExistingPolicy,
+    /// Repo-relative paths (no trailing `/`) of every registered Git worktree
+    /// strictly inside `repo_root`, from `git worktree list --porcelain`.
+    /// The CLI uses it to never print a deleting command for a root that holds
+    /// a live worktree.
+    pub registered_worktrees: Vec<String>,
 }
 
 impl ArtifactGuardReport {
@@ -622,6 +804,20 @@ git restore --staged dist/plugin.js
 
 Then move the build output to an isolated location or remove the local artifact
 if it is not needed.
+
+For a commit blocked by `registered-worktree`, unstage the entry and leave the
+directory alone. It is a live checkout, possibly holding a run's uncommitted
+work:
+
+```bash
+git restore --staged -- 'worktrees/feat/pr-1530'   # newly staged entry
+git rm --cached -- 'worktrees/feat/pr-1530'        # entry already committed
+```
+
+Never `rm -rf` the path or its `worktrees/` parent, and never run `git rm`
+without `--cached` on it. Make the change you meant to commit from inside that
+worktree (`cd worktrees/feat/pr-1530`), where its files are ordinary tracked
+files and no `-f` is needed.
 
 For ignored leftovers before publication:
 
@@ -756,6 +952,83 @@ amplihack hygiene artifact-guard --repo . --mode all                      # exit
 amplihack hygiene artifact-guard --repo . --mode pre-publish --preexisting block  # exit 1
 ```
 
+## Worked example: a run worktree staged in the launch checkout
+
+This example reproduces issue #1528 in a scratch repository. The main checkout
+is on `main`, ignores `worktrees/`, and has two linked worktrees: one in the
+usual place and one outside `worktrees/`.
+
+```bash
+git init -b main shop-api && cd shop-api
+printf 'worktrees/\n' > .gitignore
+git add -A && git commit -m init
+git worktree add worktrees/feat/pr-1530 -b feat/pr-1530
+git worktree add wt/review -b review
+```
+
+A plain `git add` of the ignored worktree is refused, with the hint the agent
+followed:
+
+```text
+$ git add worktrees/feat/pr-1530
+The following paths are ignored by one of your .gitignore files:
+worktrees
+hint: Use -f if you really want to add them.
+```
+
+Forcing it stages a gitlink. `wt/review` is not ignored, so a plain `git add`
+stages it the same way:
+
+```bash
+git add -f worktrees/feat/pr-1530
+git add wt/review
+git ls-files -s
+# 100644 48bafbcc… 0	.gitignore
+# 160000 ffad6555… 0	worktrees/feat/pr-1530
+# 160000 ffad6555… 0	wt/review
+```
+
+Both gate modes refuse, and name both paths with rule `registered-worktree`:
+
+```bash
+amplihack hygiene artifact-guard --repo . --mode pre-commit    # exit 1
+amplihack hygiene artifact-guard --repo . --mode pre-publish   # exit 1
+```
+
+An allowlist entry does not change that:
+
+```bash
+printf 'wt/review\n' > .amplihack-artifact-allowlist
+amplihack hygiene artifact-guard --repo . --mode pre-commit    # exit 1, still names wt/review
+rm .amplihack-artifact-allowlist
+```
+
+The printed commands unstage both entries and leave both worktrees in place:
+
+```bash
+git restore --staged -- 'worktrees/feat/pr-1530' 'wt/review'
+amplihack hygiene artifact-guard --repo . --mode pre-commit    # exit 0
+git worktree list                                               # all three still listed
+```
+
+Run from inside a linked worktree, the guard does not report the main
+checkout, which is registered too:
+
+```bash
+cd worktrees/feat/pr-1530
+amplihack hygiene artifact-guard --repo . --mode pre-commit    # exit 0
+```
+
+| Scenario | `pre-commit` / `pre-publish` |
+| --- | --- |
+| Staged gitlink to a registered worktree under `worktrees/` | Block (exit 1), `registered-worktree` |
+| Staged gitlink to a registered worktree outside `worktrees/` | Block (exit 1), `registered-worktree` |
+| Same, with an allowlist entry for the path | Block (exit 1) |
+| `.gitmodules` submodule that is not a registered worktree | Pass (exit 0) |
+| Staged loose files from an unregistered copy under `worktrees/` | Block (exit 1), `nested-worktree` |
+| Guard run inside the linked worktree; main checkout registered | Pass (exit 0) |
+| Committed gitlink on the baseline, untouched by this change | Report, pass (exit 0) under `--preexisting report` |
+
 ## Review expectations
 
 Review these changes carefully:
@@ -763,8 +1036,11 @@ Review these changes carefully:
 1. New or changed `.amplihack-artifact-allowlist` entries.
 2. Changes to prohibited rules.
 3. Recipe edits around `git add -A`, publication, finalization, or PR creation.
-4. Pre-commit changes that remove `pass_filenames: false`.
-5. Build, plugin, or runtime changes that redirect outputs into the parent
+4. Agent prompts that commit: they must stage before the guard, never mention
+   `git add -f` except to forbid it, and commit only in the worktree they were
+   given.
+5. Pre-commit changes that remove `pass_filenames: false`.
+6. Build, plugin, or runtime changes that redirect outputs into the parent
    worktree.
 
 Reviewers should verify that generated and runtime outputs are isolated, guard
@@ -774,5 +1050,6 @@ proper output placement.
 ## Related documentation
 
 - [Recipe CLI Reference](reference/recipe-cli-reference.md)
+- [Auto Drive To Merge: where phases 2 and 3 run](reference/auto-drive-to-merge.md#where-phases-2-and-3-run) — the PR worktree and the commit helper that runs this guard after staging
 - [Pre-Commit Diagnostics](claude/agents/amplihack/specialized/pre-commit-diagnostic.md)
 - [Developing amplihack](DEVELOPING_AMPLIHACK.md)
