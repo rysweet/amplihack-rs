@@ -274,9 +274,24 @@ that ship `amplifier-bundle/`, amplihack-rs included, when the pull request
 edits its own merge criteria. It never fails the step; the merge gate
 re-checks criteria 1 and 3 from measured evidence either way.
 
+**Criteria read from the branch under review are advisory.** A pull request
+that edits `SKILL.md` or `pr-description-template.md` can change what the
+assessment agent reads, and so what it concludes. It cannot change what the
+merge gate checks. `autodrive_merge_gate.sh` is the only step that can merge,
+and it measures criteria 1 and 3 itself from the qa evidence and the crusty
+manifest, whatever text the agent was given. A `MERGE_READY` verdict reached
+from edited criteria is downgraded by the gate when the measured evidence
+does not support it.
+
 A candidate path that contains `"`, `\`, a control byte, `{{` or `}}` is
 skipped with a `WARNING`, so a path can never break the JSON or look like a
-recipe template expression.
+recipe template expression. Skipping a candidate does not stop the search: the
+script moves on to the next directory in the table. An `AMPLIHACK_HOME` that
+contains such a character is therefore ignored, and the criteria come from
+`REPO_PATH`, the git toplevel, `~/.copilot` or `~/.amplihack`, in that order.
+If every candidate is skipped or lacks `SKILL.md`, the step fails with
+`merge-ready-skill-files-not-found`, and the `searched` list includes the
+skipped paths.
 
 Step `step-02-merge-ready-assessment` receives
 `{{merge_ready_files.skill_md}}` and `{{merge_ready_files.template}}` and tells
@@ -548,6 +563,16 @@ Each `AUTODRIVE_QA_COMMANDS` entry runs as its own
 affect the next. Entries are never concatenated into one script, sourced, or
 passed to `eval`. A missing program in an entry exits 127 and counts as
 `qa-command-failed`.
+
+**Set the `AUTODRIVE_QA_*` variables only from the operator's own
+environment.** Each `AUTODRIVE_QA_COMMANDS` entry is shell source passed to
+`bash -c`, so whoever sets the variable chooses what runs. Never fill these
+variables from repository content (a checked-in `.env` file, a config file in
+the branch), from agent output, or from pull request text such as the title,
+description or comments. Auto-drive itself never does: no recipe step, agent
+step or tool writes them, and no recipe declares them as context keys. A
+wrapper script that exports them from data the operator does not control
+turns the evidence step into a command injection point.
 
 A repository with a Cargo workspace and a TypeScript package under `ui/` that
 is outside the workspace:
@@ -1189,6 +1214,17 @@ The sentence is an instruction, not a control. The manifest checks are what
 make an agent-written crusty record fail criterion 3 and an edited
 `qa-evidence.json` fail criterion 1.
 
+The manifest hashes detect a change to a record; they do not authenticate the
+writer. A party that can write the records can also write matching manifest
+rows (see [Trust model](#trust-model)). For that reason the first line of
+defence is that agents are never told where the state directory is: no prompt
+contains its path or the variables that hold it, so an agent following
+instructions from branch text has no directory to write to. The test
+`every_autodrive_agent_prompt_forbids_touching_the_state_dir` in
+`tests/integration/auto_drive_to_merge_test.rs` fails if any agent prompt in
+the auto-drive recipes contains `STATE_DIR`, `autodrive_state_dir` or
+`AUTODRIVE_STATE_DIR`. The manifest checks catch what gets past that.
+
 `step-04-address-blockers` of the merge round also tells its agent not to
 rewrite history, reset, force-push, or edit refs, and not to try to clear a
 `crusty-review-required` blocker.
@@ -1264,7 +1300,10 @@ with `GIT_TERMINAL_PROMPT=0`.
   round files. Only the last manifest row is trusted, so this loses history
   in the state directory, not evidence.
 - **The evidence step runs the pull request's code**, as `cargo test` already
-  did.
+  did. Suite commands and gadugi scenarios run as the operator's OS user, with
+  the operator's environment, credentials and network access. There is no
+  sandbox, container or separate user. Run auto-drive only on branches whose
+  code you would run by hand on the same host.
 - **`git` must be on `PATH`** for the loop and the merge gate. The manifest
   row, `autodrive_crusty_final` and the gate all hash records with `git
   hash-object`. Without `git` they fail closed: the loop adds no manifest row,
