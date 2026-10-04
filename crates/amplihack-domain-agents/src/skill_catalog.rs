@@ -71,71 +71,40 @@ pub struct SkillCatalog {
 
 impl SkillCatalog {
     /// Recursively load ordinary skill files, rejecting incomplete catalogs.
-    /// The caller-selected root (including a root symlink) establishes the trust
-    /// boundary when opened. Descendants are opened relative to directory handles
-    /// without following links. This is not a snapshot of concurrent writes.
+    /// Reads a trusted, stable local tree. Static symlink checks are not atomic
+    /// confinement against an adversary concurrently replacing tree entries.
     pub fn load(skills_dir: &Path) -> Result<Self> {
-        Self::load_with_hook(skills_dir, &mut |_| {})
-    }
-
-    #[cfg(unix)]
-    fn load_with_hook(root: &Path, before_open: &mut impl FnMut(&Path)) -> Result<Self> {
-        use rustix::fs::{AtFlags, Dir, FileType, Mode, OFlags, open, openat, statat};
-        use std::os::unix::ffi::OsStrExt;
-        fn visit(
-            dir: &std::fs::File,
-            display: &Path,
-            skills: &mut HashMap<String, Skill>,
-            before_open: &mut impl FnMut(&Path),
-        ) -> Result<()> {
-            let entries = Dir::read_from(dir).map_err(|e| io_error(display, e))?;
-            let mut names = Vec::new();
+        fn visit(dir: &Path, skills: &mut HashMap<String, Skill>) -> Result<()> {
+            let entries = std::fs::read_dir(dir).map_err(|e| {
+                DomainError::InvalidInput(format!("cannot read {}: {e}", dir.display()))
+            })?;
+            let mut paths = Vec::new();
             for entry in entries {
-                let entry = entry.map_err(|e| io_error(display, e))?;
-                let name = entry.file_name().to_bytes();
-                if name != b"." && name != b".." {
-                    names.push(std::ffi::OsStr::from_bytes(name).to_owned());
-                }
+                let entry = entry.map_err(|e| {
+                    DomainError::InvalidInput(format!(
+                        "cannot read entry in {}: {e}",
+                        dir.display()
+                    ))
+                })?;
+                paths.push(entry.path());
             }
-            names.sort();
-            for name in names {
-                let path = display.join(&name);
-                let stat = statat(dir, &name, AtFlags::SYMLINK_NOFOLLOW)
-                    .map_err(|e| io_error(&path, e))?;
-                let kind = FileType::from_raw_mode(stat.st_mode);
-                if kind == FileType::Directory {
-                    before_open(&path);
-                    let child = openat(
-                        dir,
-                        &name,
-                        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                        Mode::empty(),
-                    )
-                    .map_err(|e| io_error(&path, e))?;
-                    visit(&std::fs::File::from(child), &path, skills, before_open)?;
-                } else if name == "SKILL.md" {
-                    if kind != FileType::RegularFile {
+            paths.sort();
+            for path in paths {
+                let kind = std::fs::symlink_metadata(&path)
+                    .map_err(|e| {
+                        DomainError::InvalidInput(format!("cannot inspect {}: {e}", path.display()))
+                    })?
+                    .file_type();
+                if kind.is_dir() {
+                    visit(&path, skills)?;
+                } else if path.file_name().is_some_and(|name| name == "SKILL.md") {
+                    if !kind.is_file() {
                         return Err(DomainError::InvalidInput(format!(
                             "skill must be an ordinary file: {}",
                             path.display()
                         )));
                     }
-                    before_open(&path);
-                    let fd = openat(
-                        dir,
-                        &name,
-                        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-                        Mode::empty(),
-                    )
-                    .map_err(|e| io_error(&path, e))?;
-                    let file = std::fs::File::from(fd);
-                    if !file.metadata().map_err(|e| io_error(&path, e))?.is_file() {
-                        return Err(DomainError::InvalidInput(format!(
-                            "skill must be an ordinary file: {}",
-                            path.display()
-                        )));
-                    }
-                    let skill = load_skill(&path, file)?;
+                    let skill = load_skill(&path)?;
                     if let Some(previous) = skills.get(&skill.meta.name) {
                         return Err(DomainError::InvalidInput(format!(
                             "duplicate skill {}: {} and {}",
@@ -149,23 +118,9 @@ impl SkillCatalog {
             }
             Ok(())
         }
-        let fd = open(
-            root,
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .map_err(|e| io_error(root, e))?;
         let mut skills = HashMap::new();
-        visit(&std::fs::File::from(fd), root, &mut skills, before_open)?;
+        visit(skills_dir, &mut skills)?;
         Ok(Self { skills })
-    }
-
-    #[cfg(not(unix))]
-    fn load_with_hook(root: &Path, _: &mut impl FnMut(&Path)) -> Result<Self> {
-        Err(DomainError::InvalidInput(format!(
-            "secure skill traversal is unsupported on this platform: {}",
-            root.display()
-        )))
     }
 
     /// Number of loaded skills.
@@ -217,16 +172,10 @@ impl SkillCatalog {
     }
 }
 
-fn io_error(path: &Path, error: impl std::fmt::Display) -> DomainError {
-    DomainError::InvalidInput(format!("cannot read {}: {error}", path.display()))
-}
-
-/// Parse a single SKILL.md from its validated, already opened handle.
-fn load_skill(path: &Path, mut file: std::fs::File) -> Result<Skill> {
-    use std::io::Read;
-    let mut content = String::new();
-    file.read_to_string(&mut content)
-        .map_err(|e| io_error(path, e))?;
+/// Parse a single SKILL.md file into a `Skill`.
+fn load_skill(path: &Path) -> Result<Skill> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| DomainError::InvalidInput(format!("cannot read {}: {e}", path.display())))?;
 
     let (meta, prompt) = parse_front_matter(&content, path)?;
 
@@ -455,69 +404,6 @@ Do stuff."#;
             parse_front_matter("---\r\nname: crlf\r\n---\r\nBody", Path::new("crlf.md")).unwrap();
         assert_eq!(meta.name, "crlf");
         assert_eq!(body, "Body");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn replacements_between_inspection_and_open_cannot_follow_links() {
-        for directory in [false, true] {
-            let root = tempfile::tempdir().unwrap();
-            let outside = tempfile::tempdir().unwrap();
-            std::fs::write(
-                outside.path().join("SKILL.md"),
-                "---\nname: outside\n---\nOutside sentinel",
-            )
-            .unwrap();
-            let target = if directory {
-                root.path().join("nested")
-            } else {
-                root.path().join("SKILL.md")
-            };
-            if directory {
-                std::fs::create_dir(&target).unwrap();
-            } else {
-                std::fs::write(&target, "---\nname: inside\n---\nInside").unwrap();
-            }
-            let error = SkillCatalog::load_with_hook(root.path(), &mut |path| {
-                if path == target {
-                    if directory {
-                        std::fs::remove_dir(path).unwrap();
-                    } else {
-                        std::fs::remove_file(path).unwrap();
-                    }
-                    let destination = if directory {
-                        outside.path().to_path_buf()
-                    } else {
-                        outside.path().join("SKILL.md")
-                    };
-                    std::os::unix::fs::symlink(destination, path).unwrap();
-                }
-            })
-            .unwrap_err();
-            assert!(error.to_string().contains(&target.display().to_string()));
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn root_link_is_allowed_and_replaced_special_file_is_rejected() {
-        let root = tempfile::tempdir().unwrap();
-        let link = root.path().join("root-link");
-        let source = root.path().join("source");
-        std::fs::create_dir(&source).unwrap();
-        std::os::unix::fs::symlink(&source, &link).unwrap();
-        assert!(SkillCatalog::load(&link).unwrap().is_empty());
-        let skill = source.join("SKILL.md");
-        std::fs::write(&skill, "---\nname: inside\n---\nInside").unwrap();
-        assert!(
-            SkillCatalog::load_with_hook(&source, &mut |path| {
-                std::fs::remove_file(path).unwrap();
-                std::fs::create_dir(path).unwrap();
-            })
-            .unwrap_err()
-            .to_string()
-            .contains("ordinary file")
-        );
     }
 
     #[test]
