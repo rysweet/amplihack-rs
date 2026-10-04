@@ -1,5 +1,6 @@
 //! Command dispatch for all CLI subcommands.
 
+pub mod agent_binary;
 pub mod append;
 pub mod auto_mode;
 pub mod builder;
@@ -393,6 +394,9 @@ pub fn dispatch(command: Commands) -> Result<()> {
         Commands::Version => {
             println!("amplihack-rs {}", crate::VERSION);
             Ok(())
+        }
+        Commands::AgentBinary { shell, working_dir } => {
+            agent_binary::run_agent_binary(shell, working_dir)
         }
         Commands::Update { skip_install } => crate::update::run_update(skip_install),
         Commands::Fleet { args } => fleet::run_fleet(args),

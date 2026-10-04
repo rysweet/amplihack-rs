@@ -17,8 +17,8 @@ Use tmux **only** when:
 LOG_FILE=$(mktemp /tmp/recipe-runner-output.XXXXXX.log)
 chmod 600 "$LOG_FILE"
 tmux new-session -d -s recipe-runner \
-  "cd /path/to/repo && AMPLIHACK_HOME=/path/to/amplihack \
-   AMPLIHACK_AGENT_BINARY=claude \
+  "cd /path/to/repo && $(amplihack agent-binary --shell -w /path/to/repo) \
+   AMPLIHACK_HOME=/path/to/amplihack \
    amplihack recipe run amplifier-bundle/recipes/smart-orchestrator.yaml \
      -c task_description='TASK_DESCRIPTION_HERE' \
      -c repo_path='.' \
@@ -27,12 +27,20 @@ echo "Recipe runner log: $LOG_FILE"
 ```
 
 - `chmod 600 "$LOG_FILE"` — keeps the log file private
-- `AMPLIHACK_AGENT_BINARY=claude` — use the agent CLI you are in (`claude`,
-  `copilot`, `codex` or `amplifier`). Required here: once a tmux server is running,
-  `tmux new-session` gives the command that server's environment, not yours.
-  The markers that tell `amplihack recipe run` which agent CLI you are in then
-  do not reach it. The first run, which starts the server, still sees them, so
-  this can work once and then silently stop (#1335)
+- `$(amplihack agent-binary --shell -w /path/to/repo)` — hands the agent CLI
+  you are in to the detached run. Copy it as is; do not replace it with a
+  name. It expands in *your* shell, before tmux starts anything, to
+  `AMPLIHACK_AGENT_BINARY=<cli> AMPLIHACK_AGENT_BINARY_SOURCE=<tag>`, and
+  those prefix assignments apply to `amplihack recipe run`. It is required:
+  once a tmux server is running, `tmux new-session` gives the command that
+  server's environment, not yours. The markers that tell `amplihack recipe run`
+  which agent CLI you are in then do not reach it. The first run, which starts
+  the server, still sees them, so this can work once and then silently stop
+  (#1335, #1525). When nothing identifies your CLI, the value is handed on
+  tagged as a guess (`AMPLIHACK_AGENT_BINARY_SOURCE=default:<cli>`), so nothing
+  downstream persists it, and a notice on your terminal says so. To choose a
+  CLI yourself, export `AMPLIHACK_AGENT_BINARY` before running this. The
+  inline form works on every tmux version; `tmux new-session -e` needs 3.2.
 - `tmux new-session -d` — detached session, no timeout, survives disconnects
 - Monitor with: `tail -f "$LOG_FILE"` or `tmux attach -t recipe-runner`
 
@@ -41,8 +49,10 @@ echo "Recipe runner log: $LOG_FILE"
 shell-policy-safe alternatives instead:
 
 ```bash
-# Option A (preferred): use a unique session name per run to avoid collisions
-tmux new-session -d -s "recipe-$(date +%s)" "..."
+# Option A (preferred): use a unique session name per run to avoid collisions.
+# The command is the one from the template above, hand-off included.
+tmux new-session -d -s "recipe-$(date +%s)" \
+  "cd /path/to/repo && $(amplihack agent-binary --shell -w /path/to/repo) amplihack recipe run ..."
 
 # Option B: locate the tmux server PID and terminate with numeric kill
 tmux list-sessions -F '#{pid}' 2>/dev/null | xargs -I{} kill {}

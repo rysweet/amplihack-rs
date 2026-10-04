@@ -302,6 +302,23 @@ MODEL SELECTION (issue #1421)
     LockStatus,
     /// Show version information
     Version,
+    /// Print the agent CLI that agent steps would run under, and why.
+    ///
+    /// With --shell, print it as `AMPLIHACK_AGENT_BINARY=<cli>
+    /// AMPLIHACK_AGENT_BINARY_SOURCE=<tag>` for handing to a detached launch
+    /// (tmux, setsid, nohup) that will not inherit this shell's session
+    /// markers. A default guess stays tagged as one. Example:
+    /// tmux new-session -d "$(amplihack agent-binary --shell) amplihack recipe run ..."
+    #[command(name = "agent-binary")]
+    AgentBinary {
+        /// Print shell assignments for an inline `VAR=value command` prefix.
+        #[arg(long)]
+        shell: bool,
+        /// Resolve as if from this directory, where the recipe will run
+        /// (default: the current directory).
+        #[arg(short = 'w', long = "working-dir")]
+        working_dir: Option<std::path::PathBuf>,
+    },
     /// Self-update the amplihack binary, then run `install` to refresh framework assets.
     ///
     /// Use --skip-install (alias --no-install) for a binary-only update (legacy behavior).

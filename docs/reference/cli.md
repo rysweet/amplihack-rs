@@ -52,6 +52,7 @@ The version string comes from the `__version__` attribute in `amplihack/__init__
 | Subcommand   | Description                                                                                 |
 | ------------ | ------------------------------------------------------------------------------------------- |
 | `version`    | Show amplihack version.                                                                     |
+| `agent-binary` | Print the agent CLI that agent steps would run under, and why. `--shell` prints `AMPLIHACK_AGENT_BINARY=… AMPLIHACK_AGENT_BINARY_SOURCE=…` for handing to a detached launch; see [Active Agent Binary](./active-agent-binary.md#handing-the-binary-to-a-detached-launch). |
 | `install`    | Install amplihack agents and tools to `~/.claude`.                                          |
 | `uninstall`  | Remove amplihack agents and tools from `~/.claude`.                                         |
 | `update`     | Self-update the amplihack binary, then automatically run `install` to refresh framework assets. Pass `--skip-install` (alias `--no-install`) for a binary-only update. |

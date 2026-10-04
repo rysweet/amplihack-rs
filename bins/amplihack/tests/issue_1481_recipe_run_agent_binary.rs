@@ -75,7 +75,23 @@ impl Fixture {
 
     /// [`Fixture::run`] with extra `recipe run` arguments.
     fn run_with_args(&self, args: &[&std::ffi::OsStr], extra: &[(&str, &str)]) -> (Output, Value) {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_amplihack"));
+        let mut command = self.harness(Command::new(env!("CARGO_BIN_EXE_amplihack")));
+        command
+            .arg("recipe")
+            .arg("run")
+            .arg(self.path().join("probe.yaml"))
+            .args(args);
+        for (key, value) in extra {
+            command.env(key, value);
+        }
+        let output = command.output().expect("run amplihack");
+        let probe = self.take_probe(&output);
+        (output, probe)
+    }
+
+    /// `command` under a cleared environment holding only what the test
+    /// harness needs, run from the work dir.
+    fn harness(&self, mut command: Command) -> Command {
         command
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
@@ -92,15 +108,13 @@ impl Fixture {
             // applies; set anyway so no root host can make these tests depend
             // on its sandbox detection.
             .env("IS_SANDBOX", "1")
-            .current_dir(self.work())
-            .arg("recipe")
-            .arg("run")
-            .arg(self.path().join("probe.yaml"))
-            .args(args);
-        for (key, value) in extra {
-            command.env(key, value);
-        }
-        let output = command.output().expect("run amplihack");
+            .current_dir(self.work());
+        command
+    }
+
+    /// What the recipe-runner stub recorded, consumed so the next run starts
+    /// clean.
+    fn take_probe(&self, output: &Output) -> Value {
         let probe_path = self.path().join("probe.json");
         let probe = fs::read_to_string(&probe_path).unwrap_or_else(|_| {
             panic!(
@@ -110,7 +124,7 @@ impl Fixture {
             )
         });
         fs::remove_file(&probe_path).ok();
-        (output, serde_json::from_str(&probe).expect("probe is JSON"))
+        serde_json::from_str(&probe).expect("probe is JSON")
     }
 }
 
@@ -479,4 +493,182 @@ fn a_bad_file_below_a_good_one_is_named_alongside_the_file_that_answered() {
         )),
         "{stderr}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1525: a detached launch loses the agent binary. Once a tmux server is
+// running, `tmux new-session` gives the command the server's environment, not
+// the caller's, so the session markers never reach `recipe run` (#1335). The
+// documented hand-off (dev-orchestrator reference.md) is
+//
+//   tmux new-session -d -s NAME \
+//     "cd REPO && $(amplihack agent-binary --shell -w REPO) amplihack recipe run ..."
+//
+// `$(...)` expands in the caller's shell, where the markers still are; the
+// command string then runs under whatever environment the far side has.
+// ---------------------------------------------------------------------------
+
+use amplihack_utils::agent_binary::SESSION_MARKERS;
+
+/// Every marker a Claude Code session can export.
+fn claude_session() -> Vec<(&'static str, &'static str)> {
+    SESSION_MARKERS
+        .iter()
+        .filter(|(_, binary)| *binary == "claude")
+        .map(|(key, _)| (*key, "1"))
+        .collect()
+}
+
+/// `env` arguments removing every session marker, from the canonical list.
+fn without_any_marker() -> String {
+    SESSION_MARKERS
+        .iter()
+        .map(|(key, _)| format!("-u {key}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The documented hand-off's command string. The caller's shell expands it.
+const HAND_OFF: &str =
+    r#""cd '$WORK' && $(amplihack agent-binary --shell -w "$WORK") amplihack recipe run '$PROBE'""#;
+
+impl Fixture {
+    /// Run `script` in the caller's shell: the harness environment plus
+    /// `caller_env`, with this build of amplihack on PATH as `amplihack`.
+    fn caller_shell(&self, script: &str, caller_env: &[(&str, &str)]) -> Output {
+        let bin_dir = Path::new(env!("CARGO_BIN_EXE_amplihack"))
+            .parent()
+            .expect("amplihack has a directory")
+            .to_path_buf();
+        let path = std::env::join_paths(std::iter::once(bin_dir).chain(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        )))
+        .expect("join PATH");
+        let mut command = self.harness(Command::new("sh"));
+        command
+            .env("PATH", path)
+            .env("WORK", self.work())
+            .env("PROBE", self.path().join("probe.yaml"))
+            .arg("-c")
+            .arg(script);
+        for (key, value) in caller_env {
+            command.env(key, value);
+        }
+        command.output().expect("run the caller's shell")
+    }
+
+    /// The hand-off into a far side whose environment has no session marker
+    /// at all -- a tmux server that never saw this session -- plus
+    /// `far_side_env`, which the caller's shell exports to it.
+    fn hand_off_to_a_markerless_shell(
+        &self,
+        caller_env: &[(&str, &str)],
+        far_side_env: &[(&str, &str)],
+    ) -> (Output, Value) {
+        let exports: String = far_side_env
+            .iter()
+            .map(|(key, value)| format!("{key}={value} "))
+            .collect();
+        let script = format!("env {} {exports}sh -c {HAND_OFF}", without_any_marker());
+        let output = self.caller_shell(&script, caller_env);
+        let probe = self.take_probe(&output);
+        (output, probe)
+    }
+}
+
+/// The issue: from a Claude Code session, every marker stripped on the far
+/// side, the documented hand-off alone must deliver `claude`, untagged.
+#[test]
+fn the_hand_off_carries_the_callers_binary_across_a_markerless_launch() {
+    let fx = Fixture::new();
+    let (output, probe) = fx.hand_off_to_a_markerless_shell(&claude_session(), &[]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(handed(&probe), ("claude", "<unset>"));
+}
+
+/// Without the hand-off the same far side falls back to the default. This is
+/// what makes the case above evidence rather than coincidence.
+#[test]
+fn without_the_hand_off_the_markerless_launch_takes_the_default() {
+    let fx = Fixture::new();
+    let script = format!(
+        "env {} sh -c \"cd '$WORK' && amplihack recipe run '$PROBE'\"",
+        without_any_marker()
+    );
+    let output = fx.caller_shell(&script, &claude_session());
+    let probe = fx.take_probe(&output);
+    assert_eq!(handed(&probe), ("copilot", "default:copilot"));
+}
+
+/// An inferred value must stay a guess across the hand-off. Handing over only
+/// AMPLIHACK_AGENT_BINARY would make it an untagged instruction, and the
+/// nested launcher would persist it (#1481).
+#[test]
+fn an_inferred_value_stays_tagged_across_the_hand_off() {
+    let fx = Fixture::new();
+    let (output, probe) = fx.hand_off_to_a_markerless_shell(&[], &[]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(handed(&probe), ("copilot", "default:copilot"));
+    // The caller is told, on its own terminal, that it handed on a guess.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("amplihack: resolved the agent binary to 'copilot' (no AMPLIHACK_AGENT_BINARY or agent session marker was found)"),
+        "{stderr}"
+    );
+}
+
+/// The far side may already hold a stale tag naming the same binary. The
+/// hand-off clears it, or the caller's observation would arrive as a guess
+/// and lose to the default again.
+#[test]
+fn the_hand_off_clears_a_stale_tag_on_the_far_side() {
+    let fx = Fixture::new();
+    let (output, probe) = fx.hand_off_to_a_markerless_shell(
+        &claude_session(),
+        &[("AMPLIHACK_AGENT_BINARY_SOURCE", "default:claude")],
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(handed(&probe), ("claude", "<unset>"));
+}
+
+/// The same hand-off through a real tmux server started without any marker,
+/// when tmux is installed. CI images need not have it; the cases above model
+/// the same mechanics with `env`.
+#[cfg(unix)]
+#[test]
+fn the_hand_off_works_through_a_real_tmux_server() {
+    use std::time::{Duration, Instant};
+    if Command::new("tmux").arg("-V").output().is_err() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let fx = Fixture::new();
+    let sockets = fx.path().join("tmux");
+    fs::create_dir_all(&sockets).expect("create tmux socket dir");
+    let sockets = sockets.to_str().expect("utf-8 path").to_string();
+    let script = format!(
+        "env {} tmux -L handoff -f /dev/null new-session -d -s handoff {HAND_OFF}",
+        without_any_marker()
+    );
+    let mut caller_env = claude_session();
+    caller_env.push(("TMUX_TMPDIR", &sockets));
+    let output = fx.caller_shell(&script, &caller_env);
+    assert!(
+        output.status.success(),
+        "tmux new-session failed: {output:?}"
+    );
+
+    let probe_path = fx.path().join("probe.json");
+    let started = Instant::now();
+    while !probe_path.exists() && started.elapsed() < Duration::from_secs(60) {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // Give the stub a moment to finish writing, then stop the server.
+    std::thread::sleep(Duration::from_millis(200));
+    let _ = Command::new("tmux")
+        .env("TMUX_TMPDIR", &sockets)
+        .args(["-L", "handoff", "kill-server"])
+        .output();
+    let probe = fx.take_probe(&output);
+    assert_eq!(handed(&probe), ("claude", "<unset>"));
 }

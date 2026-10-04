@@ -83,6 +83,10 @@ Identifies which CLI binary the current session should use when spawning new AI 
 recipe runner. A result from the built-in default is exported with
 `AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>`; see
 [Active Agent Binary](./active-agent-binary.md#resolving-once-for-a-whole-recipe-run).
+A detached launch (tmux, setsid) does not see the caller's session markers;
+`$(amplihack agent-binary --shell)` prints both variables for an inline hand-off
+(#1525), see
+[Handing the binary to a detached launch](./active-agent-binary.md#handing-the-binary-to-a-detached-launch).
 
 The launcher continues to write this variable to subprocess environments so that external consumers (notably `rysweet/amplihack-recipe-runner`) that have not yet migrated to the file-based resolver continue to work. New code inside `amplihack-rs` should call `amplihack_utils::agent_binary::resolve(&cwd)` instead of reading the env var directly.
 

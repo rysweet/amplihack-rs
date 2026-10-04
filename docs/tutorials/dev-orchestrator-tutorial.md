@@ -356,36 +356,39 @@ environments.
 
 For long-running recipes (typically >15 minutes) or environments that kill
 background processes on disconnection (SSH sessions without session managers),
-use the tmux-based durable execution mode.
+run the recipe in a detached tmux session:
 
 ```bash
-# Enable durable mode for the current session
-export AMPLIHACK_DURABLE_EXEC=1
-/dev your long-running task
+tmux new-session -d -s "recipe-$(date +%s)" \
+  "cd /path/to/repo && $(amplihack agent-binary --shell -w /path/to/repo) \
+   amplihack recipe run amplifier-bundle/recipes/smart-orchestrator.yaml \
+     -c task_description='TASK_DESCRIPTION_HERE' -c repo_path='.'"
 ```
 
-In durable mode, the Python payload is written to a temporary script file
-before launching tmux — this avoids nested quoting failures that occurred in
-older versions when task descriptions contained quotes:
-
-```bash
-tmux new-session -d -s recipe-runner "python3 $SCRIPT_FILE 2>&1 | tee $LOG_FILE"
-```
-
-If the tmux session appears to start but produces no output, ensure you are
-using amplihack v0.9.1 or later which includes the temp-script fix (PR #3216).
+Keep the `$(amplihack agent-binary --shell -w ...)` part. Once a tmux server
+is running, a new session gets the server's environment, not yours, so
+nothing in it says which agent CLI you are in. The hand-off expands in your
+shell first and carries that answer, and whether it was a guess, into the
+session (#1335, #1525). The full template, with logging, is in the
+dev-orchestrator skill's
+[`reference.md`](../../amplifier-bundle/skills/dev-orchestrator/reference.md#durable-execution-tmux--optional).
 
 ### Agent Binary Selection
 
-By default, amplihack uses `claude` as the agent binary. To use a different
-agent, set `AMPLIHACK_AGENT_BINARY`:
+amplihack picks the agent binary in this order: `AMPLIHACK_AGENT_BINARY`, then
+the session markers of the CLI you are running in, then a fresh
+`.claude/runtime/launcher_context.json`, then the built-in default, `copilot`.
+Inside Claude Code that resolves to `claude` without any configuration. To
+choose a binary explicitly:
 
 ```bash
-export AMPLIHACK_AGENT_BINARY=claude   # default
+export AMPLIHACK_AGENT_BINARY=claude   # or copilot, codex, amplifier
 ```
 
-This variable is preserved across nested agent launches — subagents spawned by
-the recipe runner use the same binary as the parent.
+`amplihack agent-binary` prints what amplihack would choose here, and why.
+`amplihack recipe run` resolves once and hands the answer to every agent step,
+so subagents spawned by the recipe runner use the same binary as the parent.
+See [Active Agent Binary](../reference/active-agent-binary.md).
 
 ---
 

@@ -106,11 +106,59 @@ sees an inherited guess.
 Any code that sets `AMPLIHACK_AGENT_BINARY` explicitly through
 `EnvBuilder::with_agent_binary` clears the tag.
 
+### Handing the binary to a detached launch
+
+Resolving once at the top only helps if the top can see the session. A
+detached launch cannot. Once a tmux server is running, `tmux new-session`
+gives the new command the server's environment, not the caller's, so the
+session markers do not arrive and the run falls back to the default (#1335).
+The first launch, which starts the server, does see them, so this can work
+once and then stop.
+
+`amplihack agent-binary` resolves in the caller's shell and prints the answer
+(issue #1525):
+
+```console
+$ amplihack agent-binary
+claude (session_marker)
+$ amplihack agent-binary --shell
+AMPLIHACK_AGENT_BINARY=claude AMPLIHACK_AGENT_BINARY_SOURCE=
+```
+
+Use the `--shell` form inline, inside the double-quoted command, so that it
+expands before tmux runs anything:
+
+```bash
+tmux new-session -d -s recipe-runner \
+  "cd /path/to/repo && $(amplihack agent-binary --shell -w /path/to/repo) amplihack recipe run ..."
+```
+
+- `-w` resolves from the directory the recipe will run in, so the
+  launcher-context walk-up matches the run's own.
+- The source travels with the value. A default guess is printed with
+  `AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>`, so it stays a guess on the
+  far side and nothing there persists it. Handing over
+  `AMPLIHACK_AGENT_BINARY` alone would turn it into an instruction, and the
+  nested `amplihack <cli>` would write it to `launcher_context.json`
+  (#1481 again).
+- Any other answer is printed with an empty tag, so a stale
+  `default:<same binary>` already in the server's environment cannot veto it.
+- An inferred answer is explained on stderr, which stays on your terminal while
+  `$(...)` captures stdout. The explanation includes any unusable launcher
+  context it skipped.
+- The inline `VAR=value command` form works on every tmux version.
+  `tmux new-session -e` only exists from tmux 3.2.
+- The subcommand never self-installs, so it is safe inside `$(...)`.
+
+Where a detached session runs an agent CLI directly, not `amplihack`, there
+is nothing to hand over. The migrate skill's remote `tmux new-session` runs
+`<cli> --resume <id>` with the CLI already named.
+
 ### Why file-based, not env-based
 
 Environment variables do not survive every subprocess boundary in the launcher's call graph:
 
-- `tmux new-session -d` strips most variables unless they are explicitly forwarded.
+- `tmux new-session -d` gives the command the tmux server's environment, not the caller's, once a server is running (see [Handing the binary to a detached launch](#handing-the-binary-to-a-detached-launch)).
 - Detached background processes started via `setsid` may inherit a stale or stripped env.
 - Sub-recipes spawned by `amplihack recipe run` invoke fresh `amplihack` binaries that may be reading env from the user's shell rather than the parent recipe runner.
 - Python hooks shell out to subcommands using `subprocess.run` which inherits the calling Python's env, not the Rust launcher's.
