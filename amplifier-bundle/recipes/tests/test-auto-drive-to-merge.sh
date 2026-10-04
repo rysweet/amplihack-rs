@@ -1019,6 +1019,15 @@ if [ "$rc" -eq 0 ] && grep -qF "crusty_reviewed_head_sha=${CR_SHA2}" "${GATE_DIR
 else
   fail "GATE-crusty-last-row-wins" "a loop that ended CLEAN in round 2 was refused (rc=${rc}): $(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
 fi
+# Criterion 3 has no minimum round count: a crusty loop that stopped at a
+# CLEAN round 1, with a one-row manifest, satisfies the gate on its own.
+gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; rc=$?
+rows="$(grep -c . "${GATE_DIR}/crusty-records.tsv" 2>/dev/null || echo 0)"
+if [ "${rows}" = "1" ] && [ "$rc" -eq 0 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"DRY_RUN"'; then
+  pass "GATE-crusty-clean-round-1" "a crusty loop that was CLEAN in round 1 (one manifest row) meets criterion 3"
+else
+  fail "GATE-crusty-clean-round-1" "rows=${rows} rc=${rc}: $(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
+fi
 
 # 5k. Commits after the clean crusty round, and the qa evidence hash chain
 # (issue #1517 points 3 and 4, D4 and D5). The crusty state is CLEAN for
