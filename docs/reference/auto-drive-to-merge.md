@@ -586,13 +586,13 @@ amplihack-rs with `AUTODRIVE_QA_SCENARIO_DIR=tests/gadugi/scenarios`, all
 checks passing:
 
 ```json
-{"qa_status":"PASS","qa_repo_type":"rust-cli","qa_command":"cargo test --workspace --locked --no-fail-fast","qa_scenarios":"tests/gadugi/scenarios/issue-815-804-local-tracking-extract.yaml tests/gadugi/scenarios/issue-820-merge-validations-mixed-output.yaml tests/gadugi/scenarios/pr-ownership-lease.yaml","qa_exit_code":"0","qa_summary":"test result: ok. 41 passed; 0 failed","qa_round":"round-2","head_sha":"9f1c2e7a4b5d6c8e0f1a2b3c4d5e6f7a8b9c0d1e","gadugi_status":"PASS","gadugi_validate_exit_code":"0","gadugi_run_exit_code":"0","gadugi_scenario_count":"3","gadugi_scenario_dir":"tests/gadugi/scenarios","gadugi_scenarios_validated":"3","gadugi_scenarios_run":"3","gadugi_scenarios_passed":"3","gadugi_scenarios_failed":"0","gadugi_failed_scenarios":"","qa_suite_commands_count":"1","qa_reason":""}
+{"qa_status":"PASS","qa_repo_type":"rust-cli","qa_command":"cargo test --workspace --locked --no-fail-fast","qa_scenarios":"tests/gadugi/scenarios/issue-815-804-local-tracking-extract.yaml tests/gadugi/scenarios/issue-820-merge-validations-mixed-output.yaml tests/gadugi/scenarios/pr-ownership-lease.yaml","qa_exit_code":"0","qa_summary":"test result: ok. 41 passed; 0 failed","qa_round":"round-2","head_sha":"9f1c2e7a4b5d6c8e0f1a2b3c4d5e6f7a8b9c0d1e","gadugi_status":"PASS","gadugi_validate_exit_code":"0","gadugi_run_exit_code":"0","gadugi_scenario_count":"3","gadugi_scenario_dir":"tests/gadugi/scenarios","gadugi_scenarios_validated":"3","gadugi_scenarios_run":"3","gadugi_scenarios_passed":"3","gadugi_scenarios_failed":"0","gadugi_failed_scenarios":"","gadugi_scenario_results":"issue-815-804-local-tracking-extract.yaml=PASS,issue-820-merge-validations-mixed-output.yaml=PASS,pr-ownership-lease.yaml=PASS","qa_suite_commands_count":"1","qa_reason":""}
 ```
 
 Two configured suite commands, one failing scenario out of two:
 
 ```json
-{"qa_status":"FAIL","qa_repo_type":"configured","qa_command":"cargo test --workspace --locked --no-fail-fast; cd ui && npm ci && npm test","qa_scenarios":"tests/gadugi/scenarios/export-csv.yaml tests/gadugi/scenarios/import-csv.yaml","qa_exit_code":"0","qa_summary":"gadugi scenario run failure: tests/gadugi/scenarios/import-csv.yaml; Tests: 12 passed, 12 total","qa_round":"round-1","head_sha":"4e2d9a7c0b1f3e5d7c9a1b3d5f7e9c0a2b4d6f8e","gadugi_status":"RUN_FAILED","gadugi_validate_exit_code":"0","gadugi_run_exit_code":"1","gadugi_scenario_count":"2","gadugi_scenario_dir":"tests/gadugi/scenarios","gadugi_scenarios_validated":"2","gadugi_scenarios_run":"2","gadugi_scenarios_passed":"1","gadugi_scenarios_failed":"1","gadugi_failed_scenarios":"tests/gadugi/scenarios/import-csv.yaml","qa_suite_commands_count":"2","qa_reason":"gadugi-run-failed"}
+{"qa_status":"FAIL","qa_repo_type":"configured","qa_command":"cargo test --workspace --locked --no-fail-fast; cd ui && npm ci && npm test","qa_scenarios":"tests/gadugi/scenarios/export-csv.yaml tests/gadugi/scenarios/import-csv.yaml","qa_exit_code":"0","qa_summary":"gadugi scenario run failure: tests/gadugi/scenarios/import-csv.yaml; Tests: 12 passed, 12 total","qa_round":"round-1","head_sha":"4e2d9a7c0b1f3e5d7c9a1b3d5f7e9c0a2b4d6f8e","gadugi_status":"RUN_FAILED","gadugi_validate_exit_code":"0","gadugi_run_exit_code":"1","gadugi_scenario_count":"2","gadugi_scenario_dir":"tests/gadugi/scenarios","gadugi_scenarios_validated":"2","gadugi_scenarios_run":"2","gadugi_scenarios_passed":"1","gadugi_scenarios_failed":"1","gadugi_failed_scenarios":"tests/gadugi/scenarios/import-csv.yaml","gadugi_scenario_results":"export-csv.yaml=PASS,import-csv.yaml=FAIL","qa_suite_commands_count":"2","qa_reason":"gadugi-run-failed"}
 ```
 
 | Field | Values |
@@ -617,6 +617,7 @@ Two configured suite commands, one failing scenario out of two:
 | `gadugi_scenarios_failed` | runs that exited non-zero, plus unnamed files, plus files that could not be staged, plus symlinked scenario files once validate passed |
 | `gadugi_failed_scenarios` | paths of the failed files, relative to the repository root, space separated |
 | `gadugi_run_exit_code` | the first non-zero run exit code; `"0"` when every run exited 0; `""` when no run started |
+| `gadugi_scenario_results` | one `<file>=<result>` entry per scenario file, comma separated; see [Per-scenario results](#per-scenario-results) |
 
 Where each item of the evidence requirement is recorded:
 
@@ -625,9 +626,103 @@ Where each item of the evidence requirement is recorded:
 | gadugi result | `gadugi_status` |
 | scenarios found, validated, run, passed, failed | `gadugi_scenario_count`, `gadugi_scenarios_validated`, `gadugi_scenarios_run`, `gadugi_scenarios_passed`, `gadugi_scenarios_failed` |
 | failed scenarios | `gadugi_failed_scenarios` |
+| result of each scenario file | `gadugi_scenario_results` |
 | suite command count, first failing exit code | `qa_suite_commands_count`, `qa_exit_code` |
 | head SHA tested | `head_sha` |
 | status and reason | `qa_status`, `qa_reason` |
+
+The step writes the evidence file under `umask 077`, so it is private to the
+user running auto-drive.
+
+#### Per-scenario results
+
+`gadugi_scenario_results` lists every top-level `*.yaml` and `*.yml` entry in
+the scenario directory, sorted with `LC_ALL=C`, as `<file>=<result>` joined by
+`,`. `<file>` is the name relative to the scenario directory, for example
+`import-csv.yaml`. `gadugi_failed_scenarios` uses paths relative to the
+repository root instead, for example `tests/gadugi/scenarios/import-csv.yaml`.
+
+| Result | When |
+| --- | --- |
+| `PASS` | the scenario ran in its own `gadugi-test run` and exited 0 |
+| `FAIL` | the run exited non-zero, or the file could not be staged |
+| `INVALID` | the file was not run: it is a symlink, it is not a regular file, it has no usable name, or `gadugi-test validate` failed for the directory |
+
+A symlink is detected with `[ -L ]` before the file is read. When validation
+fails, every entry is `INVALID`, because no scenario runs. The field is `""`
+when `gadugi-test` is not installed or the scenario count is 0.
+
+`INVALID` entries are still counted in `gadugi_scenarios_failed`, exactly as
+before this field existed: an unnamed or symlinked scenario file is a failed
+scenario, not a skipped one.
+
+While the scenarios run, the evidence step appends one `<file><TAB><result>`
+line per file to a private `mktemp` file. `autodrive_scenario_results LIST`
+in `autodrive_trust.sh` turns that file into the field. Each `<file>` passes
+through `tr -c 'A-Za-z0-9._/-' '_'` and is cut to 128 bytes, so it cannot
+break the JSON or carry text into a prompt. Two names can become the same key
+after this. That does not matter: the field is for people and agents reading
+the evidence, and nothing decides a pass from it. `gadugi_status`, the counts,
+`gadugi_failed_scenarios` and `qa_status` are computed exactly as described
+above, without reference to this field.
+
+#### The qa evidence is trusted only through its hash
+
+The evidence step writes `qa-evidence.json` into the state directory. Agent
+steps run after it in the same round, and an agent running as the same user
+could edit the file. The round and the gate therefore accept the qa evidence
+only through a chain of hashes that starts with the loop's manifest:
+
+```text
+merge-ready-records.tsv (written by autodrive_loop.sh)
+  -> merge-ready-round-N.json (blob hash in the last manifest row)
+       -> qa_evidence_sha (field in that record)
+            -> qa-evidence.json (its blob hash must equal qa_evidence_sha)
+                 -> head_sha (must equal the head being merged)
+```
+
+In the merge round:
+
+1. Step `step-00d-qa-evidence-hash` is a bash step that runs right after the
+   evidence step and before any agent step. It calls
+   `autodrive_qa_evidence_sha FILE`, which hashes `qa-evidence.json` with
+   `git hash-object --no-filters` and prints the hash, or `""` when the file
+   is missing, a symlink, or not a regular file. The step emits
+   `{"qa_evidence_sha":"<hash>"}`.
+2. Step `step-03-extract-merge-ready-verdict` hashes the file again with the
+   same function. When the step-00d hash is empty, is not 40 or 64 hex
+   characters, or differs from the new hash, it downgrades any `MERGE_READY`
+   verdict with `qa_evidence=modified`.
+3. Step `step-05-write-round-record` adds `qa_evidence_sha` to the round
+   record, taken from step-00d's output after the hex check, and writes the
+   record under `umask 077`.
+4. `autodrive_loop.sh` appends the record's hash to `merge-ready-records.tsv`,
+   as it does for crusty.
+
+The round record then looks like this:
+
+```json
+{"merge_ready_verdict":"MERGE_READY","blocker_count":0,"head_sha":"9f1c2e7a4b5d6c8e0f1a2b3c4d5e6f7a8b9c0d1e","round_label":"round-2","test_signal":"PASS","ci_signal":"green","qa_status":"PASS","ci_status":"GREEN","qa_evidence_sha":"7c41d0e95a2b38f6e1d4c7a9b0e3f6a2d5c8b1e4"}
+```
+
+The gate checks the chain with
+`autodrive_qa_trusted STATE_DIR RECORD_COPY QA_COPY HEAD_SHA` in
+`autodrive_trust.sh`. `RECORD_COPY` and `QA_COPY` are the gate's own private
+copies of the round record and `qa-evidence.json` (see
+[What the gate checks](#what-the-merge-gate-checks)). The function
+hashes and parses exactly those copies and never re-reads the originals, so
+the record that section 7 of the gate reads is the record whose hash was
+verified. It copies `merge-ready-records.tsv` privately once and reads only
+that copy. It prints `ok` or the token of the first check that failed:
+
+| Order | Check | Token on failure |
+| --- | --- | --- |
+| 1 | `merge-ready-records.tsv` is a regular file, not a symlink, and its last non-blank row has a label, a file name matching `^merge-ready-[A-Za-z0-9._-]+\.json$`, and a 40- or 64-character hex hash | `qa-manifest-missing` |
+| 2 | the hash of `RECORD_COPY` equals the manifest hash, it is one line starting with `{"merge_ready_verdict":"`, and its `qa_evidence_sha` is 40 or 64 hex characters | `qa-record-modified` |
+| 3 | the hash of `QA_COPY` equals `qa_evidence_sha` | `qa-evidence-modified` |
+| 4 | the `head_sha` in `QA_COPY` equals `HEAD_SHA` | `qa-evidence-stale` |
+
+It never prints file contents.
 
 #### When scenarios are missing
 
@@ -662,7 +757,11 @@ Criterion 3 of merge-ready asks for a `quality-audit` of at least 3 SEEK,
 VALIDATE, FIX cycles ending clean. Under auto-drive it is met instead by phase
 2 of the same run: the `crusty-old-engineer` loop, an iterative review-and-fix
 loop, must have ended `DONE`, and its last round record, as written by the
-loop, must have verdict `CLEAN`. **No minimum round count applies**, in any
+loop, must have verdict `CLEAN`. Every commit between the head that clean
+round reviewed and the head being merged must be a base merge or a
+description or evidence change; any other commit goes back to crusty first
+(see [Commits after the clean round](#commits-after-the-clean-round)).
+**No minimum round count applies**, in any
 recipe or tool. The crusty loop stops at its first `CLEAN` round, so a minimum
 would block forever any pull request that was clean in round 1 or 2. The
 three-cycle rule of the skill does not apply inside auto-drive; the step-02
@@ -739,6 +838,204 @@ effect, and archiving the loop-written record fails check 3.
 A state directory written before this change has no manifest. It reads as
 `crusty-manifest-missing`, and such a run needs a fresh crusty loop.
 
+#### Commits after the clean round
+
+The crusty loop stops at its first `CLEAN` round, and the merge loop runs
+after it. The merge round's blocker-clearing step can commit code, and so can
+a person. A clean verdict covers only the head crusty reviewed, so criterion 3
+also needs every later commit to be one that does not need review.
+
+`autodrive_crusty_range REPO REVIEWED HEAD BASE_SHA` in `autodrive_trust.sh`
+walks the commits crusty has not seen:
+
+```bash
+git rev-list --reverse REVIEWED..HEAD ^BASE_SHA
+```
+
+`^BASE_SHA` leaves out every commit already on the base branch, so the
+commits a base merge brings in are not walked. When `BASE_SHA` is empty the
+`^BASE_SHA` argument is dropped. Each commit in the walk is passed to
+`autodrive_range_allowed`, and the first one that is not allowed ends the
+walk. The function prints one of three values:
+
+| Output | Meaning |
+| --- | --- |
+| `ok` | every commit in the range is allowed, or the range is empty |
+| `crusty-unreviewed-commits:<sha>` | `<sha>` is the first commit, oldest first, that needs crusty review |
+| `crusty-range-unreadable` | a SHA is not 40 or 64 hex characters, git failed, or the repository is shallow |
+
+`autodrive_range_allowed REPO COMMIT BASE_SHA` allows a commit in two cases.
+
+**A base merge.** The commit has exactly two parents, the second parent is an
+ancestor of `BASE_SHA`, and the commit's tree equals the tree that
+`git merge-tree --write-tree <parent1> <parent2>` produces. A merge whose
+conflicts were resolved by hand, or that has extra edits, produces a
+different tree and counts as code. So do octopus merges and merges from any
+other branch. `git merge-tree --write-tree` needs git 2.38 or later; on older
+git the check fails and the merge counts as code.
+
+**A description or evidence change.** `git diff-tree -r -z --no-renames --raw`
+against the first parent lists at least one path, every path is on the
+allowlist, and every new file mode is `100644`, `100755` or `000000`
+(deleted). Symlinks (`120000`) and submodules (`160000`) count as code. A
+commit that changes no path, such as an empty commit, counts as code. So does
+a root commit.
+
+The allowlist is `AUTODRIVE_RANGE_ALLOWLIST`, a read-only variable defined
+only in `autodrive_trust.sh`:
+
+| Entry | Match | Why it is on the list |
+| --- | --- | --- |
+| `PR_DESCRIPTION.md` | exact path | Pull request description text that some repositories keep in the tree. The merge-ready criteria require evidence in the description. |
+| `.github/pull_request_template.md` | exact path | The description template. Changing it changes no behaviour of the code under review. |
+| `.autodrive/evidence/` | prefix | Reserved for evidence files committed to the branch. |
+
+Matching is byte-exact and case-sensitive. A path under the prefix that
+contains `..` does not match. Scenario files written by `qa-team` are not on
+the list: they are tests, and tests are code. The list is the same for every
+repository. A repository whose build, tests or scenarios read
+`PR_DESCRIPTION.md` or any file under `.autodrive/evidence/` would let
+changes to that file skip crusty; narrow the list in such a repository.
+
+All git calls in these functions run with `GIT_NO_REPLACE_OBJECTS=1`,
+`GIT_GRAFT_FILE=/dev/null` and `GIT_TERMINAL_PROMPT=0`, with `GIT_DIR` and
+`GIT_WORK_TREE` unset, so replace refs and grafts cannot change the history
+being walked. Every SHA is checked as a whole value before it reaches a git
+command. The functions print only the fixed tokens above and hex SHAs, never
+commit subjects, paths or file contents, so nothing from the branch reaches a
+log or a prompt through them.
+
+##### Where the base SHA comes from
+
+The base SHA is never read from an existing local ref, which could be stale or
+set by anyone with write access to the clone. The caller reads the pull
+request's `baseRefName` from `gh pr view` and passes it to
+`autodrive_base_sha REPO BASE_REF` in `autodrive_trust.sh`, which prints the
+SHA or `""`. Step `step-00b-crusty-range`, step `step-01b-crusty-evidence` and
+section 6b of the gate all use this one function. It does three things:
+
+1. `baseRefName` must pass `git check-ref-format --branch`, must not start
+   with `-`, and must contain only `A-Z`, `a-z`, `0-9`, `.`, `_`, `/` and `-`.
+2. `git fetch --force origin +refs/heads/<base>:refs/remotes/origin/<base>`
+3. `BASE_SHA` is `git rev-parse --verify refs/remotes/origin/<base>^{commit}`.
+
+If any of these fails, the function prints `""` and `BASE_SHA` is empty. The walk then includes the
+commits a base merge brought in, they count as code, and crusty reviews them.
+That is safe but costs a crusty run.
+
+##### What the merge round does
+
+In file order, `autodrive-merge-round.yaml` now starts with the seven steps
+below. Steps 00b, 00c and 01b apply the rule; steps 02, 03 and 04 act on its
+result, as described after the table.
+
+| Step | Type | Role |
+| --- | --- | --- |
+| `step-00-merge-ready-files` | bash | Finds the merge-ready files, as above. |
+| `step-00b-crusty-range` | bash | Checks the range at the start of the round. |
+| `step-00c-crusty-rereview` | recipe | Runs the crusty loop again when step-00b asks for it. |
+| `merge-evidence` | recipe | Base sync, suite commands, gadugi scenarios, CI. |
+| `step-00d-qa-evidence-hash` | bash | Hashes the qa evidence; see [The qa evidence is trusted only through its hash](#the-qa-evidence-is-trusted-only-through-its-hash). |
+| `step-01-platform-facts` | bash | Pull request state. |
+| `step-01b-crusty-evidence` | bash | Criterion 3, range check included. |
+
+**step-00b-crusty-range** sources `autodrive_state.sh` and
+`autodrive_trust.sh`, reads `baseRefName` with `gh pr view`, and calls
+`autodrive_rereview_decision STATE_DIR REPO BASE_REF`, which prints the step's
+whole output. The function:
+
+1. Calls `autodrive_crusty_final`. If that fails, crusty has not reached a
+   clean end and there is nothing to re-review: it prints
+   `rereview: "false"`, and step-01b reports the reason.
+2. Otherwise resolves the base SHA with `autodrive_base_sha` and runs
+   `autodrive_crusty_range` from the reviewed SHA to `HEAD`.
+3. Only for `crusty-unreviewed-commits:<sha>` removes the `crusty-loop` row
+   from `phases.tsv` with `autodrive_clear_phase` and prints
+   `rereview: "true"`.
+4. For `ok` and for `crusty-range-unreadable` prints `rereview: "false"`.
+
+A code commit gives:
+
+```json
+{"rereview":"true","range":"crusty-unreviewed-commits","first_unreviewed_sha":"c3a9e0f27b18d4e65a0c9f3b2d71e8a4f6b05d92","base_sha":"4ccd1977e2b0a5f8c3d6e9b1a4f7c0d3e6b9a2c5"}
+```
+
+A shallow clone gives:
+
+```json
+{"rereview":"false","range":"crusty-range-unreadable","first_unreviewed_sha":"","base_sha":"4ccd1977e2b0a5f8c3d6e9b1a4f7c0d3e6b9a2c5"}
+```
+
+An unreadable range does not trigger a re-review, because crusty cannot fix
+it: re-running crusty does not deepen a clone or repair git, and the next
+round would find the range unreadable again and re-run crusty every round.
+Instead step-01b reports `UNREVIEWED_COMMITS` with `crusty-range-unreadable`,
+step-03 downgrades the verdict, and the gate blocks. The round blocks until a
+person deepens the clone or fixes the git error, or until loop-health ends the
+merge loop.
+
+`autodrive_clear_phase DIR PHASE` accepts only a phase name matching
+`^[a-z][a-z-]*$`, refuses a `phases.tsv` that is a symlink or not a regular
+file, writes the filtered rows to a `mktemp` file under `umask 077`, and
+moves it into place with `mv -f`. It removes only rows whose first field is
+exactly `PHASE`.
+
+**step-00c-crusty-rereview** runs `autodrive-crusty-loop.yaml` with the
+condition `crusty_range.rereview == 'true'`, and passes
+`autodrive_state_dir` explicitly, so the new records, manifest rows and the
+`crusty-loop` marker are written to the same state directory. The crusty loop
+reviews the current head with its normal termination: it stops at its first
+`CLEAN` round, or ends `STUCK`. No minimum round count applies here either.
+A `CLEAN` end writes the `crusty-loop` marker again.
+
+Step-00c has no `continue_on_error`. If the nested crusty loop fails, for any
+reason including an exit 79 policy refusal, step-00c fails and the round
+fails with it; no later step runs, so the round fails closed. Whether the
+merge loop then sees code 79 or a generic failure depends on how the recipe
+runner reports a failed `type: recipe` step; neither lets the round continue.
+
+If the re-run ends `STUCK`, the crusty loop does not write the `crusty-loop`
+marker, so the marker stays absent. Step-01b of the same round, and of every
+later round, gets `crusty_status: ABSENT` from `autodrive_crusty_final`.
+Step-00b of every later round sees `autodrive_crusty_final` fail and prints
+`rereview: "false"`, so crusty is not run again. No round can reach
+`MERGE_READY`, and loop-health ends the merge loop. This is terminal and
+fails closed; a person has to resolve crusty's concerns and start a new
+run.
+
+The re-run starts its round labels at `round-1`, so it overwrites the earlier
+`crusty-round-1.json` and later files. Only the last manifest row is trusted,
+and an earlier row cannot be replayed: its hash no longer matches the file it
+names.
+
+**step-01b-crusty-evidence** calls `autodrive_crusty_final` as before. When it
+succeeds, the step resolves the base SHA again with `autodrive_base_sha` and
+runs `autodrive_crusty_range` against the current head, because the evidence
+step's base sync can add a merge commit. A base merge passes. Any result other
+than `ok` sets `crusty_status` to `UNREVIEWED_COMMITS`.
+
+**step-02-merge-ready-assessment** states the range rule in its prompt. When
+`crusty_status` is `UNREVIEWED_COMMITS`, the blocker is
+`crusty-review-required:<sha>`, or `crusty-range-unreadable` when there is no
+SHA. The prompt shows only the SHA, never the commit text.
+
+**step-03-extract-merge-ready-verdict** downgrades any `MERGE_READY` verdict
+when `crusty_status` is `UNREVIEWED_COMMITS`.
+
+**step-04-address-blockers** tells the agent not to try to clear
+`crusty-review-required`, because the next round's step-00b sends the commits
+to crusty, nor `crusty-range-unreadable`, which a person fixes. It also tells the agent not to rewrite history, reset, force-push,
+or edit refs.
+
+This means every code commit made after the clean round costs one crusty run
+in the next merge round. That is intended: a commit crusty has not seen is not
+covered by its verdict.
+
+The re-review happens at the start of the next merge round, not in the merge
+loop or the composer. The round already holds the state directory and the
+pull request, and a nested recipe step needs no change to the crusty loop's
+termination logic.
+
 #### What the merge round sees
 
 `autodrive-merge-loop.yaml` passes its state directory to every round with
@@ -747,7 +1044,7 @@ A state directory written before this change has no manifest. It reads as
 from a fixed set or is a hex SHA:
 
 ```json
-{"crusty_status":"DONE_CLEAN","crusty_reason":"","crusty_reviewed_head_sha":"9f1c2e7a4b5d6c8e0f1a2b3c4d5e6f7a8b9c0d1e"}
+{"crusty_status":"DONE_CLEAN","crusty_reason":"","crusty_reviewed_head_sha":"9f1c2e7a4b5d6c8e0f1a2b3c4d5e6f7a8b9c0d1e","crusty_first_unreviewed_sha":""}
 ```
 
 | `crusty_status` | `crusty_reason` |
@@ -756,17 +1053,23 @@ from a fixed set or is a hex SHA:
 | `ABSENT` | `crusty-loop-not-done` |
 | `NOT_CLEAN` | `crusty-not-clean` |
 | `UNTRUSTED` | `crusty-manifest-missing`, `crusty-record-missing`, `crusty-record-modified`, `crusty-head-sha-empty` |
+| `UNREVIEWED_COMMITS` | `crusty-unreviewed-commits` or `crusty-range-unreadable` |
 
-Any other token from the helper becomes `crusty-other` with status
-`UNTRUSTED`.
+Any other token from the helpers becomes `crusty-other` with status
+`UNTRUSTED`. `crusty_first_unreviewed_sha` is the SHA from
+`crusty-unreviewed-commits:<sha>`, and `""` otherwise.
 
 The step-02 prompt treats `DONE_CLEAN` as criterion 3 met, with no round
-minimum, and records `crusty_reviewed_head_sha` in its evidence. That SHA is
-not compared with the current head, because merge-round fixes are expected to
-move the head. When `crusty_status` is not `DONE_CLEAN`, the blocker is
-`quality-audit-convergence-crusty-not-done-clean` with the `crusty_reason`,
-and `step-03-extract-merge-ready-verdict` downgrades any `MERGE_READY` verdict.
-`UNTRUSTED` is in the same downgrade list as `ABSENT` and `NOT_CLEAN`.
+minimum, and records `crusty_reviewed_head_sha` in its evidence. The prompt
+states the range rule: the head being merged may differ from the reviewed
+head only by base merges and description or evidence changes, which step-01b
+has already checked. When `crusty_status` is `UNREVIEWED_COMMITS`, the blocker
+is `crusty-review-required:<crusty_first_unreviewed_sha>`, or
+`crusty-range-unreadable` when that SHA is `""`. For the other
+statuses that are not `DONE_CLEAN`, the blocker is
+`quality-audit-convergence-crusty-not-done-clean` with the `crusty_reason`.
+`step-03-extract-merge-ready-verdict` downgrades any `MERGE_READY` verdict
+for every status other than `DONE_CLEAN`.
 
 The crusty evidence is read from the state directory rather than from the
 composer's `crusty_loop_result`. On a resumed run the crusty loop is skipped
@@ -793,9 +1096,48 @@ and adds these, after the existing `crusty_verdict` check:
   the token, for example
   `crusty records in <dir> are not loop-written evidence (crusty-record-modified)`.
 - On success the gate notes `crusty_reviewed_head_sha=<sha>`.
+- `HEAD_SHA`, the head the gate binds the merge to, must exist in the local
+  clone (`git cat-file -e`). If it does not, the gate blocks; it never skips
+  the range check.
+- The gate reads `baseRefName` in the same `gh pr view --json` call as the
+  other pull request fields, resolves the base SHA with `autodrive_base_sha`
+  as described in [Where the base SHA comes from](#where-the-base-sha-comes-from),
+  and runs `autodrive_crusty_range` from `crusty_reviewed_head_sha` to
+  `HEAD_SHA`. Any result other than `ok` blocks:
 
-Section 6 also notes `qa_reason`. The gate sources `autodrive_state.sh` from
-its own directory only.
+  | Token | Block message |
+  | --- | --- |
+  | `crusty-unreviewed-commits:<sha>` | `commit <sha> after the clean crusty round is not a base merge or a description or evidence change; criterion 3 is not met` |
+  | `crusty-range-unreadable` | `the commits after the clean crusty round cannot be read; criterion 3 is not met` |
+  | anything else | the same message with `crusty-range-other` |
+
+Section 6 also notes `qa_reason`, and checks the qa evidence chain described
+in [The qa evidence is trusted only through its hash](#the-qa-evidence-is-trusted-only-through-its-hash):
+
+- `merge-ready-records.tsv`, the record its last row names,
+  `merge-ready-latest.json` and `qa-evidence.json` must each be private to
+  this user: a regular file, not a symlink, owned by this user, and not group-
+  or world-writable.
+- The gate copies the round record it was given with `--round-record`
+  (`merge-ready-latest.json`) and the file given with `--qa-evidence`
+  (`qa-evidence.json`) once each into private `mktemp` files.
+- It passes those copies as `RECORD_COPY` and `QA_COPY` to
+  `autodrive_qa_trusted STATE_DIR RECORD_COPY QA_COPY HEAD_SHA`, which hashes
+  and parses the copies themselves. The files the gate verifies are therefore
+  the files it reads afterwards.
+- `autodrive_qa_trusted` must print `ok`. Its tokens, `qa-manifest-missing`,
+  `qa-record-modified`, `qa-evidence-modified` and `qa-evidence-stale`, each
+  block with the token quoted. Any other output blocks as `qa-other`.
+
+Every later check in sections 6 and 7 reads the same two copies. Section 7
+reads `merge_ready_verdict` and `head_sha` from `RECORD_COPY`, whose hash
+`autodrive_qa_trusted` has already checked against the last manifest row, so
+nothing can change between the hash check and the read.
+
+All of these checks are added. No earlier block line in the gate is removed
+or loosened; the test `merge_gate_keeps_every_existing_block` checks this.
+The gate sources `autodrive_state.sh` and `autodrive_trust.sh` from its own
+directory only.
 
 ### Agents do not touch the state directory
 
@@ -820,8 +1162,13 @@ The other auto-drive recipes, `auto-drive-to-merge.yaml` included, have only
 bash and recipe steps. No agent prompt contains the state directory path or
 the names `STATE_DIR`, `autodrive_state_dir` or `AUTODRIVE_STATE_DIR`.
 
-The sentence is an instruction, not a control. The manifest check above is
-what makes an agent-written record fail criterion 3.
+The sentence is an instruction, not a control. The manifest checks are what
+make an agent-written crusty record fail criterion 3 and an edited
+`qa-evidence.json` fail criterion 1.
+
+`step-04-address-blockers` of the merge round also tells its agent not to
+rewrite history, reset, force-push, or edit refs, and not to try to clear a
+`crusty-review-required` blocker.
 
 ### Trust model
 
@@ -830,10 +1177,21 @@ what makes an agent-written record fail criterion 3.
 | The operator's environment, including the `AUTODRIVE_QA_*` variables | trusted |
 | Branch code and scenarios | untrusted, but run by design. Only run auto-drive on branches whose authors you would let run code on this host. |
 | Agent steps and their output | untrusted writers and untrusted data |
-| The state directory | integrity-checked through the manifest, not authenticated |
+| The state directory | integrity-checked through the manifests, not authenticated |
 | GitHub | authoritative for platform state |
 
-This change adds no network surface, no authentication and no token handling.
+Agents, the code under test and auto-drive itself all run as the same OS
+user. The manifest and hash checks catch an agent following an instruction
+in branch text, an accidental edit, and the replay of an older record. **They
+are not a boundary against a deliberate forger running as the same user**,
+who can rewrite every file in the state directory consistently. The checks
+that such a user cannot satisfy locally are on the platform: required CI,
+review state, and `gh pr merge --match-head-commit`, which binds the merge to
+the head the gate checked.
+
+The base-branch fetch in the range check is the only network call this
+change adds. It uses the clone's existing `origin` remote and credentials,
+with `GIT_TERMINAL_PROMPT=0`.
 
 ### Known limits and accepted residual risks
 
@@ -860,9 +1218,28 @@ This change adds no network surface, no authentication and no token handling.
   symlinked scenario can never pass by being skipped.
 - **Trivial scenarios.** A scenario that always passes satisfies
   `gadugi_status: PASS`. Review scenarios like any other test.
-- **Commits after the clean crusty round.** `reviewed_head_sha` is recorded
-  but not compared with the merge head, so commits made by the merge round's
-  blocker step after the crusty loop ended are not reviewed by crusty.
+- **Same-user forgery.** See [Trust model](#trust-model). The hash chains
+  catch partial edits, not a consistent rewrite of the state directory.
+- **Each code commit after the clean round costs a crusty run.** A
+  blocker-clearing commit in one merge round sends the range to crusty at the
+  start of the next.
+- **Cases that fail closed and cost a crusty run**: a failed base fetch
+  (offline, or no access), an empty commit, a root commit, an octopus merge,
+  a base merge with hand-resolved conflicts, and git older than 2.38.
+- **An unreadable range blocks without a re-review.** A shallow clone or a
+  git error gives `crusty-range-unreadable`. Crusty is not re-run for it;
+  every round blocks until a person deepens the clone or fixes git, or until
+  loop-health ends the merge loop.
+- **A re-review that ends `STUCK` is terminal.** The `crusty-loop` marker
+  stays absent, later rounds report `ABSENT` and do not re-run crusty, and
+  loop-health ends the merge loop. A person has to resolve crusty's concerns
+  and start a new run.
+- **One allowlist for every repository.** A repository whose build, tests or
+  scenarios read `PR_DESCRIPTION.md` or a file under `.autodrive/evidence/`
+  would let changes to that file skip crusty.
+- **Re-run labels restart at `round-1`** and overwrite the earlier crusty
+  round files. Only the last manifest row is trusted, so this loses history
+  in the state directory, not evidence.
 - **The evidence step runs the pull request's code**, as `cargo test` already
   did.
 - **`git` must be on `PATH`** for the loop and the merge gate. The manifest
@@ -910,9 +1287,9 @@ merges, it re-verifies and records:
 | Reviews | `reviewDecision` | `CHANGES_REQUESTED` |
 | Review threads | GraphQL `reviewThreads`, **paginated** | any unresolved, not-outdated thread on any page — **or an unreadable answer** |
 | CI | `gh pr checks --json name,state,bucket` | any pending or failing check, zero checks, **or an unreadable rollup** |
-| qa-team scenarios | evidence file from this run | `qa_status` other than `PASS`, no evidence file, or evidence whose `head_sha` is missing or is not the SHA being merged |
+| qa-team scenarios | evidence file from this run, trusted through `merge-ready-records.tsv` | `qa_status` other than `PASS`, no evidence file, or evidence whose `head_sha` is missing or is not the SHA being merged; `autodrive_qa_trusted` failing with any token (see [The qa evidence is trusted only through its hash](#the-qa-evidence-is-trusted-only-through-its-hash)) |
 | gadugi scenarios | same evidence file | `gadugi_status` other than `PASS`, or `gadugi_scenario_count` missing or not a positive integer; `qa_reason` is noted |
-| Crusty loop | `phases.tsv`, `crusty-latest.json`, `crusty-records.tsv` and the record it names, in `--state-dir` | no `--state-dir` or an empty one; the directory not owned by the current user; the directory or any of these files with the group-write bit or the world-write bit set (either bit alone blocks); any of these files a symlink or not a regular file; `autodrive_state.sh` missing beside the gate; no `crusty-loop` marker; `crusty_verdict` other than `CLEAN`; `autodrive_crusty_final` failing with any token (see [What the merge gate checks](#what-the-merge-gate-checks)) |
+| Crusty loop | `phases.tsv`, `crusty-latest.json`, `crusty-records.tsv` and the record it names, in `--state-dir` | no `--state-dir` or an empty one; the directory not owned by the current user; the directory or any of these files with the group-write bit or the world-write bit set (either bit alone blocks); any of these files a symlink or not a regular file; `autodrive_state.sh` or `autodrive_trust.sh` missing beside the gate; no `crusty-loop` marker; `crusty_verdict` other than `CLEAN`; `autodrive_crusty_final` failing with any token; `HEAD_SHA` missing from the clone; `autodrive_crusty_range` printing anything other than `ok` (see [What the merge gate checks](#what-the-merge-gate-checks)) |
 | merge-ready verdict | round record from this run | not `MERGE_READY`, or captured against a different head SHA |
 
 The review-thread query pages. `reviewThreads(first:100)` with no `pageInfo`
@@ -937,8 +1314,9 @@ The privacy check fails when the directory is not owned by the current user,
 or when the directory, `phases.tsv`, `crusty-latest.json`,
 `crusty-records.tsv` or the record it names has the group-write bit or the world-write bit set. Either bit alone blocks: `0770`,
 `0702` and `0777` all fail. A failure is reported as
-`not private to this user`. The gate sources `autodrive_state.sh` from its own
-directory only, never from the merge-ready search roots.
+`not private to this user`. The gate sources `autodrive_state.sh` and
+`autodrive_trust.sh` from its own directory only, never from the merge-ready
+search roots.
 
 The qa-team evidence binds to a SHA like everything else. Existence plus
 `qa_status: PASS` is not enough: a PASS left behind by an earlier round
@@ -1002,7 +1380,16 @@ records crusty's judgement, so the gate reads them as criterion-3 evidence (see
 `autodrive-crusty-loop.yaml` (the marker), `autodrive-crusty-round.yaml` (the
 round records) and `autodrive_loop.sh` (`crusty-latest.json` and the manifest)
 write them. The gate accepts them only from a directory private to the current
-user, and only when the manifest hash matches the record.
+user, and only when the manifest hash matches the record. The qa evidence is
+re-measured each merge round, and the gate accepts it only through
+`merge-ready-records.tsv` (see
+[The qa evidence is trusted only through its hash](#the-qa-evidence-is-trusted-only-through-its-hash)).
+
+The `crusty-loop` marker is the one phase row a later step removes. Step
+`step-00b-crusty-range` removes it when commits after the clean round need
+review, and the re-run crusty loop writes it again when it ends clean. A run
+that dies between the two resumes with the marker absent, so the crusty loop
+runs again; it is never skipped.
 
 ### There is no pull-request-comment ledger
 
@@ -1050,24 +1437,33 @@ or single-digit-minute bound is introduced.
 | `amplifier-bundle/recipes/autodrive-crusty-round.yaml` | round | Crusty review, verdict, fixes, round record with `reviewed_head_sha`. |
 | `amplifier-bundle/recipes/autodrive-crusty-loop.yaml` | phase 2 | Loop driver + phase bookkeeping. |
 | `amplifier-bundle/recipes/autodrive-merge-evidence.yaml` | evidence | Base sync, repository suite commands plus `gadugi-test validate` and one `gadugi-test run` per scenario, CI wait. |
-| `amplifier-bundle/recipes/autodrive-merge-round.yaml` | round | Merge-ready file resolution, crusty evidence, merge-ready criteria read from the skill's files, verdict, blocker fixes. |
+| `amplifier-bundle/recipes/autodrive-merge-round.yaml` | round | Merge-ready file resolution, the crusty range check and re-review, the qa evidence hash, crusty evidence, merge-ready criteria read from the skill's files, verdict, blocker fixes. |
 | `amplifier-bundle/recipes/autodrive-merge-loop.yaml` | phase 3 | Loop driver (passes the state dir to rounds) + merge gate + bookkeeping. |
 | `amplifier-bundle/recipes/loop-health-evaluator.yaml` | terminator | Agentic loop-health verdict; its prompt carries the state-directory sentence. |
 | `amplifier-bundle/tools/autodrive_loop.sh` | tool | The uncapped, agentically-terminated loop driver; writes `<loop>-records.tsv`. |
-| `amplifier-bundle/tools/autodrive_merge_gate.sh` | tool | Evidence gate, including the gadugi and crusty checks, and the fixed merge argv. |
+| `amplifier-bundle/tools/autodrive_merge_gate.sh` | tool | Evidence gate, including the gadugi, qa evidence hash, crusty and range checks, and the fixed merge argv. |
 | `amplifier-bundle/tools/autodrive_merge_ready_files.sh` | tool | Finds the merge-ready `SKILL.md` and template; read-only. |
-| `amplifier-bundle/tools/autodrive_state.sh` | tool | Resumable local state, the crusty-loop marker, `autodrive_crusty_final`, platform truth for merged-ness. |
+| `amplifier-bundle/tools/autodrive_state.sh` | tool | Resumable local state, the crusty-loop marker, `autodrive_clear_phase`, `autodrive_crusty_final`, platform truth for merged-ness. |
+| `amplifier-bundle/tools/autodrive_trust.sh` | tool | Checks on commits and evidence written after the clean round: `AUTODRIVE_RANGE_ALLOWLIST`, `autodrive_base_sha`, `autodrive_range_allowed`, `autodrive_crusty_range`, `autodrive_rereview_decision`, `autodrive_qa_evidence_sha`, `autodrive_qa_trusted`, `autodrive_scenario_results`. |
 | `amplifier-bundle/skills/auto-drive-to-merge/SKILL.md` | skill | Invocable entry point. |
 | `amplifier-bundle/skills/merge-ready/SKILL.md` | skill | Criteria the merge round reads as a file; its `Running under auto-drive` section. |
 
-Every recipe file stays inside the 400-line brick budget.
+Every recipe and tool in this table stays inside the 400-line brick budget.
+The budget test covers each recipe in `AUTODRIVE_RECIPES` and each tool in
+`AUTODRIVE_TOOLS`; `autodrive_trust.sh` is added to `AUTODRIVE_TOOLS`. The
+range and qa evidence functions are a tool of their own, not part of
+`autodrive_state.sh`, so that both files fit the budget. Each new recipe step
+calls one of these functions and stays a few lines long, which keeps
+`autodrive-merge-round.yaml` and `autodrive-merge-evidence.yaml` within the
+budget, and the gate's new checks in sections 6 and 6b are calls to the same
+functions.
 
 ## Tests
 
 | Test | Location |
 | --- | --- |
 | Executable contract test: STUCK path, malformed-verdict path, forbidden-flag guard, merge-gate refusals including the gadugi and crusty blocks, the qa evidence step against stub `cargo` and `gadugi-test`, the merge-ready file resolver, `autodrive_crusty_final`, the loop manifest, crusty step-06, and `step-01b-crusty-evidence` | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
-| Structural and wiring guards, including recipes calling skills that refuse agents (escaped-quote and `*.yml` fixtures included), the state-directory sentence in the five agent steps, and the absence of a crusty round minimum (`no_round_minimum_in_any_recipe_or_tool`, which scans `*.yaml`, `*.yml` and the tools) | `tests/integration/auto_drive_to_merge_test.rs` |
+| Structural and wiring guards, including the 400-line budget for every recipe and tool, recipes calling skills that refuse agents (escaped-quote and `*.yml` fixtures included), the state-directory sentence in the five agent steps, and the absence of a crusty round minimum (`no_round_minimum_in_any_recipe_or_tool`, which scans `*.yaml`, `*.yml` and the tools) | `tests/integration/auto_drive_to_merge_test.rs` |
 | The merge-ready skill stays platform-neutral | `tests/integration/merge_ready_platform_contract_test.rs` |
 
 ```bash
@@ -1085,9 +1481,13 @@ The `gadugi-test` stub logs its arguments, so the tests can assert exactly one
 | qa evidence | no scenarios; validate failing; one of two scenario runs failing; an unnamed scenario; all passing, with names in both supported formats; `gadugi-test` missing; `AUTODRIVE_QA_COMMAND` with `AUTODRIVE_QA_DIR`; several `AUTODRIVE_QA_COMMANDS` with one failing; both set; a repository `logs/` directory left in place; hostile output that must still parse as JSON; a symlinked scenario next to a passing one failing as `gadugi-run-failed`; a failed `mktemp` named on stderr with no evidence written |
 | qa evidence, hostile input | a scenario named `-d /` counted as unnamed; a `logs` symlink left in place; `echo *` recorded literally with a file named `--evil` present; `cd sub && false` followed by `pwd` running from the repository root |
 | merge-ready files | each of the five directories; `AMPLIHACK_HOME` winning over the others; `merge-ready-template-not-found`; `merge-ready-skill-files-not-found`; a candidate path containing `"` or `{{` skipped; a `REPO_PATH` that does not exist failing step-00 with `ERROR: cannot cd to REPO_PATH` |
+| per-scenario results | `PASS`, `FAIL` and `INVALID` entries in sorted order; a symlink and a non-regular file both `INVALID` and both counted in `gadugi_scenarios_failed`; every entry `INVALID` after a validate failure; a hostile file name sanitised |
+| crusty range | a base merge only gives `ok`; a description or evidence change only gives `ok`; a code commit gives `crusty-unreviewed-commits:<sha>`; a hand-resolved merge, an empty commit, a symlink or submodule mode, a `..` path under the prefix, a shallow clone, a replace ref, and an empty base SHA |
+| crusty re-review | step-00b clears the `crusty-loop` row and emits `rereview: "true"` for a code commit; step-00b leaves the row and emits `rereview: "false"` for `crusty-range-unreadable`; step-01b gives `UNREVIEWED_COMMITS`; step-03 downgrades it; a re-review ending `STUCK` leaves the marker absent and the next round's step-00b emits `rereview: "false"`; `autodrive_clear_phase` refuses a symlinked `phases.tsv` and an invalid phase name |
+| qa evidence hash | an edited `qa-evidence.json` gives `qa-evidence-modified`; a stale `head_sha` gives `qa-evidence-stale`; an edited `merge-ready-latest.json` gives `qa-record-modified`; a replayed older manifest row; a record replaced after the gate copied it does not change what section 7 reads; step-03 downgrades an empty or changed hash |
 | crusty evidence | DONE and CLEAN in round 1 gives `DONE_CLEAN`; an injected record and an archived record are both rejected; a manifest row naming `../phases.tsv`; a duplicate `reviewed_head_sha` key; a two-line record; a CLEAN round with no commits records a non-empty `head_sha`; a missing SHA fails step-06; a non-numeric count recorded as 0 with a sanitised `WARNING`; a failed `mktemp` in `autodrive_crusty_final` keeping its token |
-| merge gate | the new 6b refusals, including a group-writable record |
-| recipe text | step-02 reads both files and contains no `Skill(`; the state-directory sentence is in every agent prompt; `autodrive-merge-round.yaml` stays within 400 lines |
+| merge gate | the new 6b refusals, including a group-writable record, a code commit after the clean round, and a `HEAD_SHA` missing from the clone; the section 6 qa evidence hash refusals |
+| recipe text | step-02 reads both files and contains no `Skill(`; step-02 no longer says the reviewed SHA `is not compared with the current head`; step-00c is a `type: recipe` step naming `autodrive-crusty-loop` with the condition on `crusty_range.rereview`; `AUTODRIVE_RANGE_ALLOWLIST` is defined only in `autodrive_trust.sh`; the state-directory sentence is in every agent prompt |
 
 ## Dependency on PR #1347
 
