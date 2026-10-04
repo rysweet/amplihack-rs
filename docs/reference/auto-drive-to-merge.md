@@ -256,9 +256,7 @@ A refused value exits non-zero with this message on stderr:
 ERROR: no state_dir (empty or unsafe: refusing to touch it) [autodrive-merge-loop/step-03]
 ```
 
-The bracketed part is the full recipe name (the file name without `.yaml`)
-and the step, for example `[autodrive-crusty-loop/step-02]` or
-`[autodrive-build/step-03]`. The check runs in:
+The bracketed part names the recipe and step. The check runs in:
 
 | Recipe | Steps |
 | --- | --- |
@@ -673,47 +671,20 @@ bash amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh
 
 ### Which `amplihack` binary the shell test uses
 
-The shell test runs `amplihack` through a stub. The stub scripts
-`recipe run` per scenario and passes every `orch` call to a real binary, so
-the verdict pipeline under test is the real one. The real binary is chosen
+The shell test runs `amplihack` through a stub that scripts `recipe run` per
+scenario and passes every `orch` call to a real binary. It picks that binary
 from the same candidates, in the same order, as the
-[loop-health evaluator test](loop-health-evaluator.md#which-amplihack-binary-the-shell-test-uses):
-
-1. `target/release/amplihack` in this checkout
-2. `target/debug/amplihack` in this checkout
-3. `$CARGO_TARGET_DIR/release/amplihack`, only when `CARGO_TARGET_DIR` is set
-   and not empty
-4. `$CARGO_TARGET_DIR/debug/amplihack`, under the same condition
-5. `amplihack` on `PATH`
-
-The probe is different. This test uses the real binary only for
-`orch helper extract-json` and `extract-field`, so a candidate qualifies when
-it supports both, including `extract-json --require-field`. If none does, the
-test prints a `HARNESS-ERROR` and exits `2`.
-
-The test prints the chosen binary before its first check:
-
-```console
-$ export CARGO_TARGET_DIR="$HOME/.cache/cargo-target"
-$ cargo build -p amplihack --bin amplihack
-$ bash amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh
-amplihack binary: /home/dev/.cache/cargo-target/debug/amplihack
-=== auto-drive-to-merge contract ===
-...
-```
+[loop-health evaluator test](loop-health-evaluator.md#which-amplihack-binary-the-shell-test-uses),
+and prints it first as `amplihack binary: <path>`. Only the probe differs: a
+candidate qualifies when it supports `orch helper extract-field` and
+`extract-json --require-field`. If none does, the test prints a
+`HARNESS-ERROR` and exits `2`.
 
 The test runs whatever binary it picks, so point `CARGO_TARGET_DIR` only at a
-directory that no one but you can write.
-
-Under `cargo test`, the `auto_drive_contract_shell_test_passes` wrapper puts
-the binary cargo just built first on `PATH`. Candidates 1 to 4 are still
-tried before `PATH`, so an older binary in one of them that passes the probe
-is tested instead. The `amplihack binary:` line shows which one ran.
-
-CI runs this test through that wrapper as part of
-`cargo nextest run --workspace`. CI does not set `CARGO_TARGET_DIR` and does
-not restore `target/` from cache, so it skips candidates 3 and 4 and uses the
-`target/debug/amplihack` it built from the commit under test.
+directory that no one but you can write. Under `cargo test`, candidates in
+`target/` and `$CARGO_TARGET_DIR` are tried before the fresh build that the
+wrapper puts first on `PATH`. An older build there that passes the probe is
+tested instead, and the `amplihack binary:` line shows which one ran.
 
 ## Dependency on PR #1347
 

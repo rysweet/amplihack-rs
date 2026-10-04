@@ -247,13 +247,13 @@ steps:
         # agent output is DATA on stdin, never interpolated into a command.
         # Resolution order (issue #1513), first hit wins:
         #   1. the LAST object carrying `loop_verdict`       -> evaluator
-        #   2. the LAST object carrying `verdict` (final, an
-        #      unknown value is STUCK; prose is not scanned) -> evaluator_alt_key
+        #   2. a `verdict` object on the LAST non-blank line (final,
+        #      unknown value is STUCK; earlier ones are quotes) -> evaluator_alt_key
         #   3. exactly one distinct line-leading prose token  -> evaluator_prose_token
         #   4. anything else is STUCK                         -> unparseable_verdict
         VJSON=$(printf '%s' "$RAW" \
           | amplihack orch helper extract-json --require-field loop_verdict)
-        AJSON=$(printf '%s' "$RAW" \
+        AJSON=$(printf '%s\n' "$RAW" | awk 'NF{l=$0} END{print l}' \
           | amplihack orch helper extract-json --require-field verdict)
         if [ "$VJSON" != "{}" ]; then
           VERDICT=$(printf '%s' "$VJSON" \

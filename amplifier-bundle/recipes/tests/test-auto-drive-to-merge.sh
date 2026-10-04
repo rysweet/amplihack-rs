@@ -1067,8 +1067,11 @@ fi
 # 11c. A step output is DATA: it never becomes a printf format string, where a
 # `%` in a PR title or review comment would be interpreted.
 FMT_HITS="$(grep -nE 'printf "[^"]*\$' "${RECIPES}/auto-drive-to-merge.yaml" "${RECIPES}"/autodrive-*.yaml \
-  "${RECIPES}/loop-health-evaluator.yaml" 2>/dev/null || true)"
-if [ -z "${FMT_HITS}" ]; then
+  "${RECIPES}/loop-health-evaluator.yaml")"
+FMT_RC=$?
+if [ "${FMT_RC}" -gt 1 ]; then
+  fail "1511-printf-format" "grep could not read the autodrive recipes (exit ${FMT_RC})"
+elif [ -z "${FMT_HITS}" ]; then
   pass "1511-printf-format" "no autodrive recipe expands a variable inside a printf format string"
 else
   fail "1511-printf-format" "a variable is expanded inside a printf format string: ${FMT_HITS}"

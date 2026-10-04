@@ -170,7 +170,7 @@ Each source runs only if every source before it found nothing.
 | Order | Source | What it looks for | `verdict_source` |
 | ----- | ------ | ----------------- | ---------------- |
 | 1 | Primary key | `extract-json --require-field loop_verdict`: the last JSON object carrying `loop_verdict`. | `evaluator` |
-| 2 | Alternate key | `extract-json --require-field verdict`: the last JSON object carrying `verdict`. | `evaluator_alt_key` |
+| 2 | Alternate key | `extract-json --require-field verdict` on the **last non-blank line** only: a JSON object carrying `verdict` that ends the output. | `evaluator_alt_key` |
 | 3 | Prose token | One line-leading `CONTINUE`, `DONE` or `STUCK` (rules below). | `evaluator_prose_token` |
 | 4 | Nothing usable | No token, or conflicting tokens. | `unparseable_verdict` (verdict `STUCK`) |
 
@@ -180,14 +180,40 @@ the existing `case` guard. Structured data always beats prose: a
 `loop_verdict` object is used even when the text around it contains a
 different prose token.
 
+The prompt is stricter than the gate on purpose. It tells the evaluator a
+missing `loop_verdict` is `STUCK` to keep pressure on it to emit the object.
+The gate still accepts sources 2 and 3, because #1513 showed evaluators that
+answered clearly without it.
+
 ### The alternate key is final
 
-When an object with a `verdict` key exists, its normalised value is the answer,
-even if that value is unknown. `{"verdict":"MAYBE"}` gives `STUCK` with
+The rule applies only when the **last non-blank line** of the output is a JSON
+object carrying `verdict`. Then its normalised value is the answer, even if
+that value is unknown. `{"verdict":"MAYBE"}` gives `STUCK` with
 `verdict_source=evaluator_alt_key`; step-03 does not go on to scan the prose
 for a second answer. The evaluator did answer, so looking for a different
 answer elsewhere would only add ways to fail open. When the object has no
 `not_converging` array, it defaults to `[]`.
+
+A `verdict` object anywhere else in the output is quoted evidence and is
+ignored. That matches what the prompt tells the evaluator: quoting the
+evidence back is safe, and objects without a `loop_verdict` do not count. The
+round output the evaluator reads holds PR comments and CI logs. Reading the
+last `verdict` object from anywhere would let a quoted
+`{"verdict":"CONTINUE"}` from them beat the evaluator's own `STUCK` and keep
+the loop running.
+
+A pretty-printed or fenced `verdict` object is not one line, so it is not
+read. It falls through to the prose scan, and with no clear prose token the
+result is `STUCK`, which is what every `verdict` object gave before #1513.
+
+**Residual risk:** output that *ends* with a quoted object is still read as
+the answer. If the evaluator gives no answer of its own and its last line is a
+`verdict` object copied from the round output, that object is its verdict.
+This is the same risk as a `loop_verdict` object planted in the round output,
+and like the copied `CONTINUE` (see the known limitation under
+[Where the prompt states the contract](#where-the-prompt-states-the-contract)),
+nothing in the gate can tell the two apart.
 
 ### Prose token rules
 
@@ -256,7 +282,10 @@ text copied from the evaluator.
 | `LOOP_HEALTH: DONE` | `DONE` | `evaluator_prose_token` |
 | `{"verdict":"CONVERGING"}` | `CONTINUE` | `evaluator_alt_key` |
 | `{"verdict":"MAYBE"}` | `STUCK` | `evaluator_alt_key` |
-| `{"verdict":"MAYBE"}` followed by a `CONTINUE` line | `STUCK` | `evaluator_alt_key` |
+| `{"verdict":"MAYBE"}` followed by a `CONTINUE` line | `CONTINUE` | `evaluator_prose_token` |
+| A `CONTINUE` line followed by `{"verdict":"NOT_CONVERGING"}` | `STUCK` | `evaluator_alt_key` |
+| A quoted `{"verdict":"CONTINUE"}`, then `STUCK — nothing moved.` | `STUCK` | `evaluator_prose_token` |
+| `{"verdict":"CONTINUE"}` then the mistyped `{"loop_verdict ":"STUCK"}` | `STUCK` | `unparseable_verdict` |
 | `{"loop_verdict":"DONE"}` then `{"loop_verdict":"STUCK"}` | `STUCK` | `evaluator` |
 | `The loop looks healthy and should probably keep going.` | `STUCK` | `unparseable_verdict` |
 | `DISCONTINUE` | `STUCK` | `unparseable_verdict` |
@@ -458,7 +487,7 @@ every forced `STUCK`, is attributable:
 | `verdict_source` | Meaning |
 | ---------------- | ------- |
 | `evaluator` | The evaluator emitted a JSON object with `loop_verdict`. |
-| `evaluator_alt_key` | No `loop_verdict` object; the evaluator emitted an object with `verdict` instead. |
+| `evaluator_alt_key` | No `loop_verdict` object; the evaluator emitted a `verdict` object as its last non-blank line instead. |
 | `evaluator_prose_token` | No JSON verdict; one clear line-leading token was found in the prose. |
 | `terminal_policy_refusal` | The evidence showed exit `79` / `BLOCKED_TERMINAL`; the evaluator was skipped. |
 | `missing_verdict` | The evaluator produced no output. |
@@ -531,11 +560,13 @@ what this branch refuses to re-open.
 Every branch fails toward stopping:
 
 - Missing evaluator output → `STUCK` (`verdict_source=missing_verdict`).
-- Unparseable evaluator output → neither JSON key is found and the prose
-  scan finds no single clear token → `STUCK`
-  (`verdict_source=unparseable_verdict`).
+- Unparseable evaluator output → no `loop_verdict` object, no `verdict`
+  object on the last non-blank line, and no single clear prose token →
+  `STUCK` (`verdict_source=unparseable_verdict`).
 - Conflicting prose tokens (`CONTINUE` on one line, `STUCK` on another) →
   `STUCK` (`verdict_source=unparseable_verdict`).
+- A `verdict` object quoted before the evaluator's answer is ignored. Only
+  one on the last non-blank line is read.
 - A `not_converging` value that is not a real JSON array → replaced with `[]`
   by the [round-trip guard](#verdict-json-round-trip-guard); the verdict is
   unchanged.
@@ -694,13 +725,10 @@ with no `CARGO_TARGET_DIR` and no cached `target/`, so it uses the
 
 The step bodies call bare `amplihack`, so the test puts the chosen binary's
 directory first on `PATH` for the whole run, and every executable in that
-directory shadows system commands of the same name. A workspace build puts
-every workspace binary, such as `amplihack-hooks`, next to `amplihack`, so
-that directory is never empty. Point `CARGO_TARGET_DIR` only at a directory
-that no one but you can write, where every executable comes from this
-workspace. A
-predictable path in a shared directory such as `/tmp` or `/var/tmp` lets
-another user plant a binary that the test then runs.
+directory shadows system commands of the same name. Point `CARGO_TARGET_DIR`
+only at a directory that no one but you can write, where every executable
+comes from this workspace. A predictable path in a shared directory such as
+`/tmp` or `/var/tmp` lets another user plant a binary that the test then runs.
 
 ## Related references
 
