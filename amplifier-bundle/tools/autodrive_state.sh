@@ -64,7 +64,9 @@ autodrive_state_dir() {
 # verdict in crusty-latest.json, as evidence for merge-ready criterion 3 (issue
 # #1517), and only from a state dir private to this user. The only permitted
 # writers are autodrive-crusty-loop.yaml (the marker, after the loop reports
-# DONE) and autodrive_loop.sh (crusty-latest.json, a copy of the last round
+# DONE), merge round step-00b (which removes the marker with
+# autodrive_clear_phase to send unreviewed commits back to crusty), and
+# autodrive_loop.sh (crusty-latest.json, a copy of the last round
 # record, and crusty-records.tsv, the manifest of the round records the loop
 # wrote, one row per round with the record's git blob hash). No agent step may
 # create, edit or delete these files; autodrive_crusty_final below trusts a
@@ -81,6 +83,30 @@ autodrive_phase_done() {
   grep -qF "$(printf '%s\t' "$phase")" "$dir/phases.tsv"
 }
 
+# autodrive_clear_phase <dir> <phase> -> removes every phases.tsv row whose
+# first field is exactly <phase>. Merge round step-00b uses it to send commits
+# made after the clean crusty round back to crusty (issue #1517 D4): with the
+# `crusty-loop` row gone, the nested crusty loop runs again and writes the row
+# back only when it ends DONE. <phase> must match ^[a-z][a-z-]*$. A phases.tsv
+# that is a symlink or not a regular file is refused and left alone. The
+# filtered rows go to a mktemp file beside it, created under umask 077, which
+# then replaces it with mv -f. Returns 1, changing nothing, on any failure.
+autodrive_clear_phase() {
+  local -x LC_ALL=C
+  local dir="${1:-}" phase="${2:-}" re='^[a-z][a-z-]*$' f="" tmp=""
+  [ -n "$dir" ] && [[ "$phase" =~ $re ]] || return 1
+  f="${dir}/phases.tsv"
+  [ ! -L "$f" ] || return 1
+  [ -e "$f" ] || return 0
+  [ -f "$f" ] || return 1
+  tmp="$(umask 077 && mktemp "${dir}/.phases.tsv.XXXXXX" 2>/dev/null)" || return 1
+  if awk -F '\t' -v p="$phase" '$1 != p' "$f" > "$tmp" 2>/dev/null && mv -f -- "$tmp" "$f"; then
+    return 0
+  fi
+  rm -f -- "$tmp"
+  return 1
+}
+
 # --- criterion 3: the crusty loop's last loop-written record ---------------
 
 # autodrive_blob_hash <dir> < file -> the git blob hash of stdin. git runs with
@@ -91,24 +117,31 @@ autodrive_blob_hash() {
   ( cd -- "${1:-.}" && env -u GIT_DIR -u GIT_WORK_TREE git hash-object --no-filters --stdin ) 2>/dev/null
 }
 
-# autodrive_crusty_manifest_row <dir> -> "<file> <hash>" from the last
-# non-blank row of crusty-records.tsv (CRLF tolerated), printed only when that
+# autodrive_manifest_row <dir> <loop> -> "<file> <hash>" from the last
+# non-blank row of <loop>-records.tsv (CRLF tolerated), printed only when that
 # row has exactly three tab-separated fields: a label, a file name matching
-# ^crusty-[A-Za-z0-9._-]+\.json$, and a 40- or 64-character hex hash. Returns
-# 1 and prints nothing otherwise, including for an absent or symlinked file.
-autodrive_crusty_manifest_row() {
-  local m="${1:-}/crusty-records.tsv"
+# ^<loop>-[A-Za-z0-9._-]+\.json$, and a 40- or 64-character hex hash. Returns
+# 1 and prints nothing otherwise, including for an absent or symlinked file
+# and for a loop name that does not match ^[a-z][a-z-]*$. The file is read once.
+autodrive_manifest_row() {
+  local -x LC_ALL=C
+  local loop="${2:-}" re='^[a-z][a-z-]*$'
+  local m="${1:-}/${loop}-records.tsv"
+  [[ "$loop" =~ $re ]] || return 1
   { [ -n "${1:-}" ] && [ -f "$m" ] && [ ! -L "$m" ]; } || return 1
-  LC_ALL=C tr -d '\r' < "$m" | LC_ALL=C awk -F '\t' '
+  LC_ALL=C tr -d '\r' < "$m" | LC_ALL=C awk -F '\t' -v loop="$loop" '
     /[^[:space:]]/ { last = $0 }
     END {
       n = split(last, f, "\t")
-      ok = (n == 3 && f[1] ~ /^[A-Za-z0-9._-]+$/ && f[2] ~ /^crusty-[A-Za-z0-9._-]+\.json$/)
+      ok = (n == 3 && f[1] ~ /^[A-Za-z0-9._-]+$/ && f[2] ~ ("^" loop "-[A-Za-z0-9._-]+\\.json$"))
       ok = ok && f[3] ~ /^[0-9a-f]+$/ && (length(f[3]) == 40 || length(f[3]) == 64)
       if (!ok) exit 1
       print f[2], f[3]
     }'
 }
+
+# autodrive_crusty_manifest_row <dir> -> autodrive_manifest_row <dir> crusty.
+autodrive_crusty_manifest_row() { autodrive_manifest_row "${1:-}" crusty; }
 
 # autodrive_crusty_final <state dir> -> criterion 3 under auto-drive (#1517).
 #
