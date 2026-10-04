@@ -74,7 +74,7 @@ fn capability_matrix_covers_all_prompt_binaries_without_speculation() {
     let codex = prompt_delivery_caps_for(AgentBinary::Codex);
     assert!(
         !codex.supports_tempfile && !codex.supports_stdin,
-        "Codex stdin support is pending a named verified command contract and must not be enabled speculatively"
+        "Interactive Codex preserves terminal stdin; exec stdin is selected by the mode-aware builder"
     );
 
     let amplifier = prompt_delivery_caps_for(AgentBinary::Amplifier);

@@ -73,12 +73,12 @@ type JsonMap = serde_json::Map<String, Value>;
 const EVENT_FIELDS: &[&str] = &["hook_event_name", "hookEventName"];
 const TOOL_NAME_FIELDS: &[&str] = &["tool_name", "toolName"];
 const TOOL_INPUT_FIELDS: &[&str] = &["tool_input", "toolInput", "toolArgs"];
-const TOOL_RESULT_FIELDS: &[&str] = &["tool_result", "toolResult"];
+const TOOL_RESULT_FIELDS: &[&str] = &["tool_result", "toolResult", "tool_response"];
 const SESSION_ID_FIELDS: &[&str] = &["session_id", "sessionId"];
 const STOP_HOOK_ACTIVE_FIELDS: &[&str] = &["stop_hook_active", "stopHookActive"];
 const TRANSCRIPT_PATH_FIELDS: &[&str] = &["transcript_path", "transcriptPath"];
 const CWD_FIELDS: &[&str] = &["cwd"];
-const USER_PROMPT_FIELDS: &[&str] = &["user_prompt", "userPrompt"];
+const USER_PROMPT_FIELDS: &[&str] = &["user_prompt", "userPrompt", "prompt"];
 
 impl<'de> Deserialize<'de> for HookInput {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>

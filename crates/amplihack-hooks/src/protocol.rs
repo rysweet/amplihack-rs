@@ -73,13 +73,39 @@ pub fn run_hook<H: Hook>(hook: H) {
         let input: HookInput = deserialize_hook_input(&input_json, hook.hook_event_name())
             .context("failed to deserialize hook input JSON")?;
 
-        // Unknown events get versioned empty output (graceful forward-compat).
+        let codex = std::env::var("AMPLIHACK_AGENT_BINARY").as_deref() == Ok("codex");
+        let event = match &input {
+            HookInput::PreToolUse { .. } => "PreToolUse",
+            HookInput::PostToolUse { .. } => "PostToolUse",
+            HookInput::Stop { .. } => "Stop",
+            HookInput::SessionStart { .. } => "SessionStart",
+            HookInput::SessionStop { .. } => "SessionEnd",
+            HookInput::UserPromptSubmit { .. } => "UserPromptSubmit",
+            _ => "",
+        };
+        // Codex transcripts are not Claude transcripts. Do not feed them into
+        // transcript-driven Stop/power-steering checks or synthesize continuation.
+        if codex && matches!(event, "Stop") {
+            write_stdout(b"{}")?;
+            return Ok(());
+        }
+        let input = if codex {
+            normalize_codex_input(input)
+        } else {
+            input
+        };
+        // Unknown events are a native no-op.
         if matches!(input, HookInput::Unknown) {
-            write_stdout(br#"{"version":1}"#)?;
+            write_stdout(if codex { b"{}" } else { br#"{"version":1}"# })?;
             return Ok(());
         }
 
         let output = hook.process(input)?;
+        let output = if codex {
+            codex_output(event, output)
+        } else {
+            output
+        };
         let output_bytes = serde_json::to_vec(&output)?;
         write_stdout(&output_bytes)?;
         Ok(())
@@ -152,10 +178,104 @@ fn deserialize_hook_input(
     Ok(serde_json::from_str(input_json)?)
 }
 
+fn normalize_codex_input(input: HookInput) -> HookInput {
+    let shell = |name: String, mut args: serde_json::Value| {
+        if matches!(name.as_str(), "shell_command" | "exec_command" | "shell") {
+            if args.get("command").is_none()
+                && let Some(cmd) = args.get("cmd").cloned()
+            {
+                args["command"] = cmd;
+            }
+            ("Bash".to_string(), args)
+        } else {
+            (name, args)
+        }
+    };
+    match input {
+        HookInput::PreToolUse {
+            tool_name,
+            tool_input,
+            session_id,
+        } => {
+            let (tool_name, tool_input) = shell(tool_name, tool_input);
+            HookInput::PreToolUse {
+                tool_name,
+                tool_input,
+                session_id,
+            }
+        }
+        HookInput::PostToolUse {
+            tool_name,
+            tool_input,
+            tool_result,
+            session_id,
+        } => {
+            let (tool_name, tool_input) = shell(tool_name, tool_input);
+            HookInput::PostToolUse {
+                tool_name,
+                tool_input,
+                tool_result,
+                session_id,
+            }
+        }
+        HookInput::SessionStop {
+            session_id, extra, ..
+        } => HookInput::SessionStop {
+            session_id,
+            transcript_path: None,
+            extra,
+        },
+        other => other,
+    }
+}
+
+/// Emit only fields supported by the native event. An explicit denial always
+/// wins over advisory context or shared generic approval fields.
+fn codex_output(event: &str, output: serde_json::Value) -> serde_json::Value {
+    use serde_json::json;
+    if event == "SessionEnd" {
+        return json!({});
+    }
+    if event == "PreToolUse" {
+        if output
+            .pointer("/hookSpecificOutput/permissionDecision")
+            .and_then(serde_json::Value::as_str)
+            == Some("deny")
+        {
+            return json!({"hookSpecificOutput": output["hookSpecificOutput"]});
+        }
+        if output.get("block").and_then(serde_json::Value::as_bool) == Some(true)
+            || output.get("decision").and_then(serde_json::Value::as_str) == Some("block")
+        {
+            return json!({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                "permissionDecisionReason": output.get("message").or_else(|| output.get("reason"))
+                    .and_then(serde_json::Value::as_str).unwrap_or("Amplihack security check denied this tool")
+            }});
+        }
+    }
+    if matches!(
+        event,
+        "SessionStart" | "UserPromptSubmit" | "PreToolUse" | "PostToolUse"
+    ) && let Some(context) = output
+        .pointer("/hookSpecificOutput/additionalContext")
+        .and_then(serde_json::Value::as_str)
+    {
+        return json!({"hookSpecificOutput":{"hookEventName":event,"additionalContext":context}});
+    }
+    json!({})
+}
+
 /// Read all of stdin as a string.
 fn read_stdin() -> anyhow::Result<String> {
     let mut input = String::new();
-    io::stdin().read_to_string(&mut input)?;
+    io::stdin()
+        .take(4 * 1024 * 1024 + 1)
+        .read_to_string(&mut input)?;
+    anyhow::ensure!(
+        input.len() <= 4 * 1024 * 1024,
+        "hook input exceeds 4 MiB limit"
+    );
     Ok(input)
 }
 
@@ -261,5 +381,68 @@ mod tests {
         let payload = r#"{"sessionId":"abc-123","source":"new"}"#;
         let input = deserialize_hook_input(payload, None).unwrap();
         assert!(matches!(input, HookInput::Unknown));
+    }
+}
+
+#[cfg(test)]
+mod codex_payload_contract_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn codex_post_tool_response_reaches_shared_behavior() {
+        let input = deserialize_hook_input(
+            &json!({
+                "hook_event_name":"PostToolUse", "session_id":"codex-session",
+                "cwd":"/d0/work", "transcript_path":null,
+                "tool_name":"shell_command", "tool_use_id":"tool-1",
+                "tool_input":{"command":"pwd"}, "tool_response":{"exit_code":0,"output":"/d0/work"}
+            })
+            .to_string(),
+            Some("PostToolUse"),
+        )
+        .unwrap();
+        match input {
+            HookInput::PostToolUse {
+                tool_result,
+                session_id,
+                ..
+            } => {
+                assert_eq!(session_id.as_deref(), Some("codex-session"));
+                assert_eq!(
+                    tool_result,
+                    Some(json!({"exit_code":0,"output":"/d0/work"}))
+                );
+            }
+            other => panic!("wrong normalized event: {other:?}"),
+        }
+    }
+    #[test]
+    fn codex_null_transcript_stop_and_session_end_remain_distinct() {
+        let stop = deserialize_hook_input(
+            r#"{"hook_event_name":"Stop","stop_hook_active":true,"transcript_path":null}"#,
+            Some("Stop"),
+        )
+        .unwrap();
+        assert!(matches!(
+            stop,
+            HookInput::Stop {
+                stop_hook_active: Some(true),
+                transcript_path: None,
+                ..
+            }
+        ));
+        let end = deserialize_hook_input(
+            r#"{"hook_event_name":"SessionEnd","reason":"exit","transcript_path":null}"#,
+            Some("SessionEnd"),
+        )
+        .unwrap();
+        assert!(matches!(
+            end,
+            HookInput::SessionStop {
+                transcript_path: None,
+                ..
+            }
+        ));
     }
 }

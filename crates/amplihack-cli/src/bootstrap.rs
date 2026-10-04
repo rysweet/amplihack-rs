@@ -22,7 +22,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
-use toml_edit::DocumentMut;
 
 /// Timeout for tool installation commands (npm install, uv tool install).
 /// These involve network downloads and can be legitimately slow, so we allow
@@ -45,8 +44,8 @@ pub fn prepare_launcher(tool: &str) -> Result<()> {
     check_required_tools()?;
     install::ensure_framework_installed()?;
 
-    // Best-effort: bring the recipe runner up to date with upstream HEAD.
-    // Runs on a 24h cooldown and can be disabled via
+    // Best-effort: reconcile the managed recipe runner with the bundled pin.
+    // Can be disabled via
     // AMPLIHACK_NO_FRESHNESS_CHECK=1 or the standard non-interactive guards.
     // Network failures are logged and swallowed — launch must not depend on
     // reaching GitHub.
@@ -1062,19 +1061,6 @@ fn codex_home() -> Result<PathBuf> {
     Ok(home_dir()?.join(".codex"))
 }
 
-/// The one key Codex reads for approval behaviour. Issue #1453 — amplihack
-/// used to write `approval_mode`, which Codex treats exactly like a key that
-/// does not exist: accepted and ignored, with no error even for a nonsense
-/// value. `approval_policy` is validated.
-const CODEX_APPROVAL_POLICY_KEY: &str = "approval_policy";
-
-/// Codex accepts exactly `untrusted`, `on-failure`, `on-request`, `granular`,
-/// and `never` here, and rejects anything else by name. amplihack's intent for
-/// this file has always been autonomous operation with no approval prompts,
-/// and `never` is the only one of the five that means that. The old value,
-/// `"auto"`, is not one of them.
-const CODEX_APPROVAL_POLICY: &str = "never";
-
 /// Point Codex at autonomous operation by setting `approval_policy` in
 /// `$CODEX_HOME/config.toml`.
 ///
@@ -1085,47 +1071,11 @@ const CODEX_APPROVAL_POLICY: &str = "never";
 /// than a string. (TOML documents are tables at the root, so the "not a table"
 /// refusal this function used to make against JSON has no separate shape here:
 /// text that is not a table does not parse, and the parse arm refuses it.)
+#[cfg(test)]
+use toml_edit::DocumentMut;
+
 fn configure_codex() -> Result<()> {
-    let config_dir = codex_home()?;
-    fs::create_dir_all(&config_dir)
-        .with_context(|| format!("failed to create {}", config_dir.display()))?;
-    let config_path = config_dir.join("config.toml");
-
-    let mut document = if config_path.exists() {
-        let raw = fs::read_to_string(&config_path).with_context(|| {
-            format!(
-                "refusing to overwrite unreadable existing Codex config {}",
-                config_path.display()
-            )
-        })?;
-        raw.parse::<DocumentMut>().with_context(|| {
-            format!(
-                "refusing to overwrite malformed existing Codex config {}",
-                config_path.display()
-            )
-        })?
-    } else {
-        DocumentMut::new()
-    };
-
-    match document.get(CODEX_APPROVAL_POLICY_KEY) {
-        Some(item) if item.as_str() == Some(CODEX_APPROVAL_POLICY) => return Ok(()),
-        Some(item) if item.as_str().is_none() => {
-            bail!(
-                "refusing to overwrite existing Codex config {} because its `{}` is a {}, not a string",
-                config_path.display(),
-                CODEX_APPROVAL_POLICY_KEY,
-                item.type_name()
-            );
-        }
-        _ => {}
-    }
-
-    document[CODEX_APPROVAL_POLICY_KEY] = toml_edit::value(CODEX_APPROVAL_POLICY);
-    fs::write(&config_path, document.to_string())
-        .with_context(|| format!("failed to write {}", config_path.display()))?;
-
-    Ok(())
+    amplihack_launcher::codex_config::configure(&codex_home()?, true)
 }
 
 /// Retire the file amplihack wrote to `~/.openai/codex/config.json` before
@@ -1932,6 +1882,62 @@ mod tests {
         assert!(
             logged.contains("/usr/local/bin/claude"),
             "an ordinary path must survive verbatim: {logged:?}"
+        );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod codex_preservation_contract_tests {
+    use super::*;
+    use crate::test_support::{EnvGuard, home_env_lock};
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn codex_bootstrap_preserves_explicit_scalar_and_granular_approval_policies() {
+        let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("chosen-codex");
+        fs::create_dir(&target).unwrap();
+        let _env = EnvGuard::set([
+            ("HOME", dir.path().to_str().unwrap()),
+            ("CODEX_HOME", target.to_str().unwrap()),
+        ]);
+        let config = target.join("config.toml");
+        for policy in [
+            "\"on-request\"",
+            "{ reject = { sandbox_approval = true, rules = true, mcp_elicitations = true } }",
+        ] {
+            let bytes = format!(
+                "# keep my approvals\napproval_policy = {policy}\nsandbox_mode = \"read-only\"\n[profiles.mine]\nmodel = \"caller-choice\"\n[plugins.foreign]\nenabled = true\n"
+            );
+            fs::write(&config, &bytes).unwrap();
+            fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
+            configure_codex().unwrap();
+            assert_eq!(fs::read_to_string(&config).unwrap(), bytes);
+            assert_eq!(
+                fs::metadata(&config).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert!(!dir.path().join(".codex").exists());
+        }
+    }
+    #[test]
+    fn codex_bootstrap_refuses_symlink_even_when_default_is_absent() {
+        let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("config.toml");
+        let outside = dir.path().join("outside.toml");
+        fs::write(&outside, "# unrelated file\n").unwrap();
+        std::os::unix::fs::symlink(&outside, &target).unwrap();
+        let _env = EnvGuard::set([("CODEX_HOME", dir.path().to_str().unwrap())]);
+        let result = configure_codex();
+        assert_eq!(fs::read_to_string(outside).unwrap(), "# unrelated file\n");
+        assert!(result.is_err());
+        assert!(
+            fs::symlink_metadata(target)
+                .unwrap()
+                .file_type()
+                .is_symlink()
         );
     }
 }

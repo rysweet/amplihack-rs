@@ -9,6 +9,7 @@ and extra-args passthrough.
 - [Current implementation](#current-implementation)
 - [Capability matrix](#capability-matrix)
 - [Flag injection rules](#flag-injection-rules)
+- [Codex invocation modes](#codex-invocation-modes)
 - [Proposed design: type-safe refactoring](#proposed-design-type-safe-refactoring)
 - [Related](#related)
 
@@ -55,7 +56,7 @@ pub(crate) fn should_inject_copilot_allow_all(extra_args: &[String]) -> bool {
 
 ## Capability matrix
 
-Current behavior, derived from `command.rs`:
+Launcher flag injection behavior is derived from `command.rs`. The Codex resume entries describe the intended native integration contract for this feature, not current behavior established by that file. Native capabilities are distinct from launcher-injected flags; see [Codex invocation modes](#codex-invocation-modes).
 
 | Flag | claude | rusty | rustyclawd | amplifier | copilot | codex |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|
@@ -63,11 +64,13 @@ Current behavior, derived from `command.rs`:
 | `--model` (auto-inject) | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
 | `--allow-all` (auto-inject) | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ |
 | `--remote` (auto-inject) | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ |
-| `--resume` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `--continue` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `--plugin-dir` (UVX only) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| `--add-dir` (UVX only) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Extra args passthrough | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `--resume` | ✅ | ✅ | ✅ | ✅ | ✅ | Intended: native `resume` subcommand |
+| `--continue` | ✅ | ✅ | ✅ | ✅ | ✅ | Intended: native `resume --last` |
+| `--plugin-dir` (UVX auto-inject only) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `--add-dir` (UVX auto-inject only) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Extra args passthrough | ✅ | ✅ | ✅ | ✅ | ✅ | Mode/conflict checks; managed recipe restrictions below |
+
+The UVX rows describe automatic launcher injection only. Codex accepts explicit native `--add-dir` in the supported modes below; the launcher does not inject it for prompt staging.
 
 ### Override environment variables
 
@@ -96,11 +99,13 @@ Current behavior, derived from `command.rs`:
    `AMPLIHACK_COPILOT_NO_REMOTE=1` or the user already passed `--remote`
    or `--no-remote`.
 
-4. **UVX plugin args**: `--plugin-dir` and `--add-dir` are injected only
+5. **UVX plugin args**: `--plugin-dir` and `--add-dir` are injected only
    for `claude` when running in a UVX deployment.
 
-5. **Extra args**: All remaining arguments are passed through unchanged,
-   appended after injected flags.
+6. **Extra args**: Remaining arguments are passed through unchanged,
+   appended after injected flags, subject to Codex mode/conflict validation
+   and the managed recipe restrictions in [Codex invocation modes](#codex-invocation-modes).
+   Claude and Copilot retain their existing passthrough behavior.
 
 ## Proposed design: type-safe refactoring
 
@@ -166,3 +171,18 @@ its full flag capabilities.
 - [Launch Flag Injection](./launch-flag-injection.md) — Detailed reference for the existing injection logic
 - [Environment Variables](./environment-variables.md) — All env vars read by amplihack
 - [Agent Binary Routing](../concepts/agent-binary-routing.md) — How `AMPLIHACK_AGENT_BINARY` routes callbacks
+
+## Codex invocation modes
+
+The following table describes the mode-specific Codex integration. Native capabilities are selected by mode and fresh/resume operation. No model is injected by default. Caller model choices are forwarded using native `--model`; `-p` means profile.
+
+| Capability | Interactive fresh | Interactive resume | Exec fresh | Exec resume |
+| --- | --- | --- | --- | --- |
+| Prompt transport | Positional; terminal stdin retained | Positional; terminal stdin retained | Complete stdin with EOF | Complete stdin with EOF |
+| Model | Caller-selected | Caller-selected | Caller-selected | Caller-selected |
+| Profile / add-dir / sandbox | Native caller options | Native caller options | Native caller options | Unsupported local combinations rejected in v1 |
+| Final response file | Not used | Not used | `--output-last-message` | `--output-last-message` |
+
+Resume uses a session ID or `--last`; conflicting selections fail. Managed recipes reject competing positional prompts, `--prompt`, output-file overrides, `--json`, and mode-changing passthrough. These restrictions preserve complete instructions and the final-message contract. Raw native CLI support can be broader than the managed integration. No directory is made writable solely for prompt staging.
+
+See [Codex installation and usage](../howto/install-codex-plugin.md) for examples, configuration preservation, native hook trust, and runner delivery.

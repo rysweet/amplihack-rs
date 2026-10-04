@@ -1102,3 +1102,27 @@ fn copilot_skips_remote_when_user_passes_no_remote() {
         );
     });
 }
+
+#[test]
+fn codex_resume_uses_subcommand_and_continue_selects_last_without_model_pin() {
+    let (resume, continuation) = with_uvx_detection_disabled(|| {
+        let binary = BinaryInfo {
+            name: "codex".into(),
+            path: PathBuf::from("/usr/bin/codex"),
+            version: None,
+        };
+        let args = |command: Command| {
+            command
+                .get_args()
+                .map(|arg| arg.to_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        (
+            args(build_command(&binary, true, false, false, &[])),
+            args(build_command(&binary, false, true, false, &[])),
+        )
+    });
+    // Assert after the legacy fixture has restored cwd/env, even during red.
+    assert_eq!(resume, ["resume"]);
+    assert_eq!(continuation, ["resume", "--last"]);
+}

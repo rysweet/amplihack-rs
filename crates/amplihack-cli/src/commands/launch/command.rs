@@ -182,11 +182,20 @@ pub(super) fn build_command_for_dir(
         }
     }
 
-    if resume {
-        cmd.arg("--resume");
-    }
-    if continue_session {
-        cmd.arg("--continue");
+    if binary.name == "codex" {
+        if resume || continue_session {
+            cmd.arg("resume");
+            if continue_session {
+                cmd.arg("--last");
+            }
+        }
+    } else {
+        if resume {
+            cmd.arg("--resume");
+        }
+        if continue_session {
+            cmd.arg("--continue");
+        }
     }
 
     // Inject --allow-all for Copilot by default (issue #303). Copilot's

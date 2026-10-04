@@ -11,7 +11,7 @@ pub use check::{
     StartupUpdateOutcome, maybe_print_update_notice_from_args, run_update,
     should_skip_update_check_for_subcommand,
 };
-pub(crate) use network::{fetch_branch_head_sha, http_get_with_retry, validate_download_url};
+pub(crate) use network::{http_get_with_retry, validate_download_url};
 
 use anyhow::{Result, anyhow, bail};
 use semver::Version;

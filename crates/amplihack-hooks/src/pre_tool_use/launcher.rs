@@ -22,6 +22,7 @@ pub enum LauncherType {
     ClaudeCode,
     Copilot,
     Amplifier,
+    Codex,
     Unknown,
 }
 
@@ -42,7 +43,8 @@ pub(crate) fn detect_launcher_for_dirs(dirs: &ProjectDirs) -> LauncherType {
             LauncherKind::Copilot => LauncherType::Copilot,
             LauncherKind::Amplifier => LauncherType::Amplifier,
             LauncherKind::Claude => LauncherType::ClaudeCode,
-            LauncherKind::Codex | LauncherKind::Unknown => LauncherType::Unknown,
+            LauncherKind::Codex => LauncherType::Codex,
+            LauncherKind::Unknown => LauncherType::Unknown,
         };
     }
 
@@ -50,6 +52,13 @@ pub(crate) fn detect_launcher_for_dirs(dirs: &ProjectDirs) -> LauncherType {
 }
 
 fn detect_launcher_from_env() -> Option<LauncherType> {
+    match std::env::var("AMPLIHACK_AGENT_BINARY").as_deref() {
+        Ok("codex") => return Some(LauncherType::Codex),
+        Ok("claude") => return Some(LauncherType::ClaudeCode),
+        Ok("copilot") => return Some(LauncherType::Copilot),
+        Ok("amplifier") => return Some(LauncherType::Amplifier),
+        _ => {}
+    }
     if std::env::var("GITHUB_COPILOT_AGENT").is_ok() || std::env::var("COPILOT_AGENT").is_ok() {
         return Some(LauncherType::Copilot);
     }

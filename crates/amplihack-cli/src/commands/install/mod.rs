@@ -6,6 +6,7 @@ pub(crate) mod bundle_compat_cache;
 mod claude_commands;
 mod claude_publication;
 mod clone;
+mod codex_plugin;
 mod command_staging;
 mod copilot_plugin;
 mod directories;
@@ -597,6 +598,9 @@ fn local_install(
     verify_install_completeness(&source_root, layout, &claude_dir)?;
 
     println!();
+    codex_plugin::install(repo_root, &durable_hooks_bin)
+        .context("failed native Codex installation")?;
+
     println!("📝 Generating uninstall manifest:");
     let manifest_path = manifest_path()?;
     let mut tracked_roots = Vec::new();
