@@ -119,7 +119,7 @@ AMPLIHACK_AGENT_BINARY="../bin/evil" amplihack copilot
 
 **Existing `claude` users:** a fresh `.claude/runtime/launcher_context.json` with `"launcher": "claude"` resolves to `claude` when no env override or session marker answers first.
 
-**Effect on startup self-update prompt:** A non-empty `AMPLIHACK_AGENT_BINARY` is also recognised by the startup self-update prompt as a subprocess-safe signal — when the variable is set, the prompt is skipped and the skip-line `amplihack: skipping update check (subprocess-safe / no TTY)` is emitted to stderr. This means delegated agent invocations never block on the prompt, even at an interactive TTY. See [Startup Self-Update Prompt — Subprocess-Safe Skip](../features/startup-update-prompt-subprocess-safe.md).
+**No effect on interactivity ([#1525](https://github.com/rysweet/amplihack-rs/issues/1525)):** the variable names an agent CLI and nothing else. It does not turn on `amplihack copilot`'s subprocess-safe defaults (reflection off, no launcher staging, no power-steering prompt, `--allow-all-tools --allow-all-paths`), and it does not skip the startup self-update prompt. Both used to treat any non-empty value as "a delegated subprocess", so anyone who exported it to choose a CLI had every interactive launch degraded. A delegated caller marks itself with `AMPLIHACK_NONINTERACTIVE=1` or `--subprocess-safe`; `amplihack recipe run` sets the former for every step, and the steps' stdio is piped as well. See [`COPILOT_SUBPROCESS_SAFE.md`](../COPILOT_SUBPROCESS_SAFE.md) and [Startup Self-Update Prompt — Subprocess-Safe Skip](../features/startup-update-prompt-subprocess-safe.md).
 
 ---
 

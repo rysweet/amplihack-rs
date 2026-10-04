@@ -47,37 +47,25 @@ fn should_not_skip_update_check_when_ci_env_is_empty_string() {
     );
 }
 
+/// Issue #1525: `AMPLIHACK_AGENT_BINARY` names which agent CLI to run. A user
+/// who exports it to choose one is still at an interactive terminal, so it is
+/// not a subprocess-safe signal, here or in `resolve_subprocess_safe`.
+/// Delegated launches are still skipped: they carry
+/// `AMPLIHACK_NONINTERACTIVE=1` and non-TTY stdio.
 #[test]
-fn should_skip_update_check_when_agent_binary_env_is_set() {
-    // AMPLIHACK_AGENT_BINARY=copilot signals that an outer agent binary
-    // (e.g. Copilot CLI) is delegating into amplihack as a subprocess.
+fn agent_binary_env_is_not_a_skip_signal() {
     let _lock = crate::test_support::env_lock()
         .lock()
         .unwrap_or_else(|p| p.into_inner());
     let _env = SkipSignalEnvGuard::capture_and_clear();
-    unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "copilot") };
-    assert!(
-        should_skip_update_check(&[OsString::from("amplihack"), OsString::from("copilot")]),
-        "should_skip_update_check must return true when AMPLIHACK_AGENT_BINARY is non-empty \
-         (matches resolve_subprocess_safe semantics in commands/launch/command.rs)"
-    );
-}
-
-#[test]
-fn should_not_skip_update_check_when_agent_binary_env_is_empty_string() {
-    // Empty AMPLIHACK_AGENT_BINARY is the documented sentinel for "no
-    // delegation" (see resolve_subprocess_safe doc comment); it MUST NOT
-    // classify as SubprocessSafe.
-    let _lock = crate::test_support::env_lock()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let _env = SkipSignalEnvGuard::capture_and_clear();
-    unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "") };
-    assert!(
-        !should_skip_update_check(&[OsString::from("amplihack"), OsString::from("copilot")]),
-        "empty AMPLIHACK_AGENT_BINARY is the 'no delegation' sentinel and must NOT \
-         trigger subprocess-safe skip"
-    );
+    for value in ["copilot", "claude", ""] {
+        unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", value) };
+        assert_eq!(
+            classify_skip_reason(&[OsString::from("amplihack"), OsString::from("copilot")]),
+            None,
+            "AMPLIHACK_AGENT_BINARY={value:?} must not suppress the update check"
+        );
+    }
 }
 
 #[test]
@@ -182,7 +170,7 @@ fn classify_skip_reason_for_non_launch_subcommand_returns_not_launch_even_with_e
     // Regression test for issue #625 outside-in finding: when stdin is a
     // TTY and the subcommand is non-launch (e.g. `amplihack --version`),
     // BUT a SubprocessSafe env signal is set (as is common inside agent
-    // subprocesses where AMPLIHACK_AGENT_BINARY=copilot is exported), the
+    // subprocesses, where AMPLIHACK_NONINTERACTIVE=1 is exported), the
     // classification MUST resolve to NotLaunch, not SubprocessSafe.
     //
     // Per spec: "Do NOT emit for AMPLIHACK_NO_UPDATE_CHECK / AMPLIHACK_PARITY_TEST
@@ -199,7 +187,6 @@ fn classify_skip_reason_for_non_launch_subcommand_returns_not_launch_even_with_e
     // NotLaunch wins over all of them when the subcommand is non-launch.
     unsafe {
         std::env::set_var("AMPLIHACK_NONINTERACTIVE", "1");
-        std::env::set_var("AMPLIHACK_AGENT_BINARY", "copilot");
         std::env::set_var("CI", "true");
     }
 

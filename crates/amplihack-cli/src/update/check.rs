@@ -232,8 +232,7 @@ fn read_user_input_with_timeout(prompt: &str, timeout: Duration) -> Result<Optio
 /// followed by `subcommand`. This includes:
 ///
 /// - `AMPLIHACK_NO_UPDATE_CHECK=1` / `AMPLIHACK_PARITY_TEST=1` (ExplicitOptOut)
-/// - `AMPLIHACK_NONINTERACTIVE` / `AMPLIHACK_AGENT_BINARY` / `CI` non-empty
-///   (SubprocessSafe)
+/// - `AMPLIHACK_NONINTERACTIVE` / `CI` non-empty (SubprocessSafe)
 /// - `subcommand` is not in `{launch, claude, copilot, codex, amplifier}`
 ///   (NotLaunch)
 ///
@@ -270,8 +269,12 @@ pub(super) fn should_skip_update_check(args: &[OsString]) -> bool {
 ///      SubprocessSafe checks below: per spec, the skip-line is only emitted
 ///      when the invocation WOULD have triggered the check (recognized launch
 ///      subcommand) but a subprocess-safe signal suppressed it.
-///   3. SubprocessSafe (env): `AMPLIHACK_NONINTERACTIVE` non-empty,
-///      `AMPLIHACK_AGENT_BINARY` non-empty, or `CI` non-empty.
+///   3. SubprocessSafe (env): `AMPLIHACK_NONINTERACTIVE` non-empty, or `CI`
+///      non-empty. `AMPLIHACK_AGENT_BINARY` is not a signal (issue #1525): it
+///      names which agent CLI to run, and a user who exports it to choose one
+///      is still at an interactive terminal. Delegated launches keep a real
+///      signal: `recipe run` sets `AMPLIHACK_NONINTERACTIVE=1` and pipes every
+///      step's stdio, so the non-TTY check at the entry point fires too.
 ///   4. SubprocessSafe (argv): linear OsStr-equality scan of `args[1..]`
 ///      for the literal `--subprocess-safe` long flag.
 ///
@@ -291,7 +294,7 @@ pub(super) fn classify_skip_reason(args: &[OsString]) -> Option<SkipReason> {
     //
     // This MUST run before the SubprocessSafe checks — see precedence note in
     // the doc-comment above. For e.g. `amplihack --version` running inside an
-    // agent subprocess (AMPLIHACK_AGENT_BINARY=copilot), we want pure
+    // agent subprocess (AMPLIHACK_NONINTERACTIVE=1), we want pure
     // passthrough with no extra stderr noise, since the update check was
     // never going to fire for `--version` regardless.
     let first_arg = args.get(1).and_then(|arg| arg.to_str());
@@ -305,14 +308,13 @@ pub(super) fn classify_skip_reason(args: &[OsString]) -> Option<SkipReason> {
     // (3) SubprocessSafe via env — emit the skip-line.
     //
     // Each var is treated as an opaque presence signal: any non-empty value
-    // triggers skip. Empty string is the documented "no delegation" sentinel
-    // for AMPLIHACK_AGENT_BINARY (matches resolve_subprocess_safe semantics
-    // in commands/launch/command.rs) and we extend the same rule to CI for
-    // consistency.
+    // triggers skip, and an empty one does not.
+    //
+    // Issue #1525: AMPLIHACK_AGENT_BINARY used to be one of these signals. It
+    // names an agent CLI, and `resolve_subprocess_safe` in
+    // commands/launch/command.rs no longer treats it as a subprocess signal
+    // either, so the two places agree on what "subprocess-safe" means.
     if env_non_empty("AMPLIHACK_NONINTERACTIVE") {
-        return Some(SkipReason::SubprocessSafe);
-    }
-    if env_non_empty("AMPLIHACK_AGENT_BINARY") {
         return Some(SkipReason::SubprocessSafe);
     }
     if env_non_empty("CI") {
@@ -332,8 +334,7 @@ pub(super) fn classify_skip_reason(args: &[OsString]) -> Option<SkipReason> {
 }
 
 /// Returns `true` when the named env var is set to a non-empty value.
-/// Treats unset and empty-string identically (both → `false`), matching the
-/// `resolve_subprocess_safe` convention in `commands/launch/command.rs`.
+/// Treats unset and empty-string identically (both → `false`).
 fn env_non_empty(name: &str) -> bool {
     match std::env::var_os(name) {
         Some(v) => !v.is_empty(),
