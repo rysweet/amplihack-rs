@@ -123,8 +123,12 @@ markers of the CLI you are running in, then the parent process chain, then a
 fresh `.claude/runtime/launcher_context.json`, then `copilot`. A launcher
 context that is empty, malformed or has no RFC 3339 `timestamp` is skipped with
 a warning naming it. The launcher context is read with `jq`; without `jq` it is
-not read, and a warning says `jq not found` rather than blaming the file. See
-[Active Agent Binary](../reference/active-agent-binary.md).
+not read, and a warning says `jq not found` rather than blaming the file. The
+rest of that layer uses only what macOS and Linux both ship (bash 3.2, POSIX
+`find -perm`, `wc -c`, plain `readlink`, `date +%s`); the timestamp is checked
+and converted in bash arithmetic, not by `date`. If `find` or `date` fails, a
+warning names the tool and the directory or file, and the file is not blamed.
+See [Active Agent Binary](../reference/active-agent-binary.md).
 
 ### 2. Destination bootstrap (idempotent)
 

@@ -31,7 +31,11 @@ while warning with its path. Values are trimmed and allowlisted the same way.
 Its one extra layer is the parent process chain, consulted after the markers
 and before the file, since it is evidence of the running session too.
 `tests/issue_1525_migrate_detect_cli_parity.sh` checks this, including that
-the two marker lists match. There is no Python implementation in this
+the two marker lists match. The script also runs on macOS, so the file layer
+uses no GNU-only tool forms (`stat -c`, `date -d`, `readlink -f`): the test
+runs every file-reading check a second time with BSD-style stand-ins for
+those tools on `PATH`. A tool that fails outright is named on stderr; it never
+turns a valid file into a silent `copilot`. There is no Python implementation in this
 repository. The Rust resolver is authoritative wherever another
 implementation differs.
 
@@ -243,7 +247,9 @@ Staleness window: 24 hours (older files fall through as if unset)
 Timestamp: required, RFC 3339 as `chrono::DateTime::parse_from_rfc3339` reads it.
 A file without one, or with one in another form (`2026-10-04 13:13:46` has no
 offset), is unusable and named in the notice. `migrate.sh`'s `detect_cli`
-applies the same rule rather than `date -d`'s looser one.
+applies the same rule, including chrono's refusal of a day the month does not
+have, in bash arithmetic rather than with `date`, whose GNU and BSD forms each
+read more than RFC 3339 allows.
 
 ```json
 {

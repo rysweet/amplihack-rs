@@ -1074,8 +1074,8 @@ Permanently disables the update-check paths for every `amplihack` invocation:
 
 Unlike `AMPLIHACK_NONINTERACTIVE`, this variable suppresses only the update
 checks and has no effect on bootstrap prompts or interactive behaviour. Unlike
-the subprocess-safe skip signals (`CI`, `AMPLIHACK_AGENT_BINARY`,
-`AMPLIHACK_NONINTERACTIVE`, `--subprocess-safe`, non-TTY stdin), this variable
+the subprocess-safe skip signals (`CI`, `AMPLIHACK_NONINTERACTIVE`,
+`--subprocess-safe`, non-TTY stdin), this variable
 **does not** emit the `amplihack: skipping update check (subprocess-safe / no
 TTY)` skip-line on stderr — the suppression is silent. Use this when you want
 the pre-#625 silent-skip experience.
@@ -1427,5 +1427,5 @@ per-session default is in effect. Setting this alone does **not** enable sharing
 - [Signal Channel](../signal-channel.md) — Full reference for the Signal channel, including the per-session-default group strategy and the opt-in rolling-group variables
 - [Recipe Runner Logging](./recipe-runner-logging.md) — Progress, heartbeat, snippet, and JSONL configuration
 - [amplihack install](./install-command.md) — Variables read during installation
-- [Startup Self-Update Prompt — Subprocess-Safe Skip](../features/startup-update-prompt-subprocess-safe.md) — How `CI`, `AMPLIHACK_AGENT_BINARY`, `AMPLIHACK_NONINTERACTIVE`, `--subprocess-safe`, and non-TTY stdin each suppress the `Update now? [y/N] (5s timeout):` prompt
+- [Startup Self-Update Prompt — Subprocess-Safe Skip](../features/startup-update-prompt-subprocess-safe.md) — How `CI`, `AMPLIHACK_NONINTERACTIVE`, `--subprocess-safe`, and non-TTY stdin each suppress the `Update now? [y/N] (5s timeout):` prompt, and why `AMPLIHACK_AGENT_BINARY` does not (#1525)
 - [Manage Tool Update Notifications](../howto/manage-tool-update-checks.md) — npm pre-launch tool update notice (separate code path)

@@ -37,9 +37,10 @@ const SUBPROCESS_SAFE_ARG: &str = "--subprocess-safe";
 /// * [`SkipReason::NotLaunch`]      → silent passthrough (non-launch subcommand).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SkipReason {
-    /// Subprocess-safe skip: any of NONINTERACTIVE / AGENT_BINARY (non-empty)
-    /// / CI (non-empty) / `--subprocess-safe` argv token. Non-TTY stdin is
-    /// classified as SubprocessSafe at the entry point (not here, to keep
+    /// Subprocess-safe skip: `AMPLIHACK_NONINTERACTIVE` (non-empty) / `CI`
+    /// (non-empty) / `--subprocess-safe` argv token. `AMPLIHACK_AGENT_BINARY`
+    /// is not one (issue #1525). Non-TTY stdin is classified as
+    /// SubprocessSafe at the entry point (not here, to keep
     /// `classify_skip_reason` pure on env+args for unit testability).
     SubprocessSafe,
     /// Explicit opt-out: AMPLIHACK_NO_UPDATE_CHECK=1 or AMPLIHACK_PARITY_TEST=1.

@@ -352,41 +352,101 @@ _detect_cli_name() {
   fi
 }
 
+# The launcher-context layer below runs on macOS as well as Linux, so it uses
+# only what both userlands provide: bash 3.2, POSIX `find -perm`, `wc -c`, `tr`,
+# plain `readlink`, `date +%s`, and jq. GNU-only forms (`stat -c`, `date -d`,
+# `readlink -f`) fail on BSD, and a failure here once dropped a valid file
+# without a word. tests/issue_1525_migrate_detect_cli_parity.sh runs this layer
+# against BSD-style stand-ins for those tools.
+
 # _detect_cli_epoch <timestamp>: print the Unix time of an RFC 3339 timestamp,
 # or fail. It accepts what chrono's DateTime::parse_from_rfc3339, used by the
 # Rust resolver, accepts: `T`, `t` or a space between date and time; `Z`, `z`
 # or a +hh:mm / -hh:mm offset; any number of fractional digits; a leap second.
-# `date -d` alone is no check: it reads "2026-10-04 13:13:46", which has no
-# offset, as local time, and "yesterday" as a date, and it refuses a leap
-# second. The pattern checks the form and the field ranges; `date -d` then
-# rejects a day the month does not have, as chrono does.
+# Like chrono, it refuses a day the month does not have. The arithmetic is done
+# here, not by `date`: GNU `date -d` reads "yesterday" and an offset-less time
+# as local time, BSD `date -j -f` reads 31 February as 3 March, and the two take
+# different flags.
 _detect_cli_epoch() {
-  local ts="$1"
-  local re='^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])[Tt ]([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\.[0-9]+)?([Zz]|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$'
-  [[ "$ts" =~ $re ]] || return 1
+  local re='^([0-9]{4})-([0-9]{2})-([0-9]{2})[Tt ]([0-9]{2}):([0-9]{2}):([0-9]{2})(\.[0-9]+)?([Zz]|([+-])([0-9]{2}):([0-9]{2}))$'
+  [[ "$1" =~ $re ]] || return 1
+  # 10#: a leading zero would otherwise make "08" an invalid octal number.
+  local y=$((10#${BASH_REMATCH[1]})) mo=$((10#${BASH_REMATCH[2]}))
+  local d=$((10#${BASH_REMATCH[3]})) h=$((10#${BASH_REMATCH[4]}))
+  local mi=$((10#${BASH_REMATCH[5]})) s=$((10#${BASH_REMATCH[6]}))
+  local sign="${BASH_REMATCH[9]}" oh=$((10#${BASH_REMATCH[10]:-0}))
+  local om=$((10#${BASH_REMATCH[11]:-0}))
+  local month_days=31
+  case "$mo" in
+    4|6|9|11) month_days=30 ;;
+    2)
+      month_days=28
+      if (( (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 )); then
+        month_days=29
+      fi
+      ;;
+  esac
+  if (( mo < 1 || mo > 12 || d < 1 || d > month_days || h > 23 || mi > 59 \
+        || s > 60 || oh > 23 || om > 59 )); then
+    return 1
+  fi
   # chrono reads second 60 as 59 plus a second's worth of nanoseconds.
-  [[ "${ts:17:2}" == 60 ]] && ts="${ts:0:17}59${ts:19}"
-  # The pattern leaves `t` and `z` as the only letters; `date -d` wants them
-  # upper case. tr, because bash 3.2 (macOS) has no case-modifying expansion.
-  date -d "$(printf '%s' "$ts" | tr 'tz' 'TZ')" +%s 2>/dev/null
+  (( s == 60 )) && s=59
+  # Days since 1970-01-01 in the proleptic Gregorian calendar, counting years
+  # from March so that the leap day falls at the end (H. Hinnant's
+  # days_from_civil).
+  local yr=$y mp
+  if (( mo > 2 )); then
+    mp=$((mo - 3))
+  else
+    mp=$((mo + 9))
+    yr=$((y - 1))
+  fi
+  local era=$(( (yr >= 0 ? yr : yr - 399) / 400 ))
+  local yoe=$((yr - era * 400))
+  local doy=$(( (153 * mp + 2) / 5 + d - 1 ))
+  local doe=$((yoe * 365 + yoe / 4 - yoe / 100 + doy))
+  local days=$((era * 146097 + doe - 719468))
+  local offset=$((oh * 3600 + om * 60))
+  [[ "$sign" == "-" ]] && offset=$((-offset))
+  printf '%s\n' "$((days * 86400 + h * 3600 + mi * 60 + s - offset))"
 }
 
-# _detect_cli_context <file> <dir>: read one launcher_context.json found in
-# <dir>. Prints the launcher when the file is usable, nothing when it is stale
-# (older than 24h: sessions end, and an old file is expected), and warns on
-# stderr, naming the file and the reason, when it cannot be used. A file with
-# no timestamp, or one that is not RFC 3339, cannot be used however recent it
-# is, so it is named, not passed over as old. Needs jq; detect_cli checks for
-# it first. Mirrors read_launcher_field in
-# crates/amplihack-utils/src/agent_binary.rs.
+# _detect_cli_realpath <path>: print the absolute <path> with every symbolic
+# link in it resolved, or fail. `readlink -f` does this on Linux, but macOS
+# before 12.3 has only plain `readlink`, so links are followed one at a time
+# and the containing directory is resolved with `cd -P`.
+_detect_cli_realpath() {
+  local path="$1" target parent hops=0
+  while [[ -L "$path" ]]; do
+    (( hops < 40 )) || return 1
+    hops=$((hops + 1))
+    target="$(readlink "$path")" || return 1
+    [[ "$target" == /* ]] || target="${path%/*}/$target"
+    path="$target"
+  done
+  parent="$(cd -P "${path%/*}/" 2>/dev/null && pwd -P)" || return 1
+  printf '%s/%s\n' "${parent%/}" "${path##*/}"
+}
+
+# _detect_cli_context <file> <dir> <now>: read one launcher_context.json found
+# in <dir>, given the current Unix time. Prints the launcher when the file is
+# usable, nothing when it is stale (older than 24h: sessions end, and an old
+# file is expected), and warns on stderr, naming the file and the reason, when
+# it cannot be used. A file with no timestamp, or one that is not RFC 3339,
+# cannot be used however recent it is, so it is named, not passed over as old.
+# Needs jq and <now>; detect_cli checks for both first. Mirrors
+# read_launcher_field in crates/amplihack-utils/src/agent_binary.rs.
 _detect_cli_context() {
-  local ctx="$1" dir="$2" reason="" real size timestamp written=""
-  real="$(readlink -f "$ctx" 2>/dev/null || true)"
+  local ctx="$1" dir="$2" now="$3" reason="" real size timestamp written=""
+  real="$(_detect_cli_realpath "$ctx" || true)"
   if [[ -z "$real" ]]; then
     reason="could not be resolved"
   elif [[ "$real" != "$dir"/* ]]; then
     reason="is a link to a file outside its directory"
-  elif ! size="$(stat -c '%s' "$real" 2>/dev/null)" || [[ ! -r "$real" ]]; then
+  elif [[ ! -r "$real" ]] || ! size="$(wc -c 2>/dev/null < "$real")" \
+       || [[ ! "$size" =~ ^[[:space:]]*[0-9]+[[:space:]]*$ ]]; then
+    # BSD `wc` pads the count with spaces; GNU `wc` reading stdin does not.
     reason="could not be read"
   elif (( size > 65536 )); then
     reason="is larger than the 64 KiB limit"
@@ -410,7 +470,7 @@ _detect_cli_context() {
     log_warn "ignored $ctx: it $reason. Fix or delete it."
     return 0
   fi
-  (( $(date +%s) - written > 86400 )) && return 0
+  (( now - written > 86400 )) && return 0
   local launcher name
   # Control characters are replaced inside jq: `jq -r` would print a trailing
   # newline in the value, and the shell would then strip it.
@@ -439,7 +499,8 @@ detect_cli() {
   #      (24h) only; stops at a .git boundary and at a world-writable or
   #      foreign-owned directory; walks on past an unusable file, warning
   #      with its path. Read with jq; without jq the layer is skipped, with
-  #      a warning that says so.
+  #      a warning that says so, and the same holds when `find` cannot check
+  #      a directory or `date +%s` gives no time.
   #   5. default: copilot
   if [[ -n "${AMPLIHACK_AGENT_BINARY:-}" ]]; then
     local override
@@ -486,28 +547,37 @@ detect_cli() {
     esac
     pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
   done
-  local cur uid hops=0
+  local cur now world_writable hops=0
   cur="$(pwd -P)"
-  uid="$(id -u)"
+  now="$(date +%s 2>/dev/null || true)"
   while [[ -n "$cur" && $hops -lt 32 ]]; do
-    local mode owner
-    # Unreadable metadata is not a licence to trust the directory (#1335).
-    mode="$(stat -c '%a' "$cur" 2>/dev/null)" || break
-    owner="$(stat -c '%u' "$cur" 2>/dev/null)" || break
-    if [[ "$owner" != "$uid" ]] || (( 8#$mode & 2 )); then
+    # Stop at a directory another user owns, or one anyone may write to
+    # (#1335). Both tests are portable: `-O` is bash's own, and `find -perm`
+    # is POSIX. Permissions that cannot be checked are not a licence to trust
+    # the directory, but the failure is the tool's, so say so rather than
+    # stop without a word.
+    [[ -O "$cur" ]] || break
+    if ! world_writable="$(find "$cur" -prune -perm -0002 2>/dev/null)"; then
+      log_warn "could not check whether $cur is world-writable (find failed); no launcher context at or above it was read."
       break
     fi
+    [[ -z "$world_writable" ]] || break
     local ctx="$cur/.claude/runtime/launcher_context.json"
     if [[ -f "$ctx" ]]; then
-      # jq parses the file. Without it no file can be read, and reporting this
-      # one as broken would tell the user to delete a good file. Say what is
-      # missing, once, and fall through to the default.
+      # jq parses the file, and its age needs the current time. Without
+      # either no file can be read, and reporting this one as broken would
+      # tell the user to delete a good file. Say what is missing, once, and
+      # fall through to the default.
       if ! command -v jq >/dev/null 2>&1; then
         log_warn "jq not found; launcher context $ctx not read."
         break
       fi
+      if [[ ! "$now" =~ ^[0-9]+$ ]]; then
+        log_warn "date +%s did not give the current time; launcher context $ctx not read."
+        break
+      fi
       local parsed
-      parsed="$(_detect_cli_context "$ctx" "$cur")"
+      parsed="$(_detect_cli_context "$ctx" "$cur" "$now")"
       if [[ -n "$parsed" ]]; then
         echo "$parsed"
         return
