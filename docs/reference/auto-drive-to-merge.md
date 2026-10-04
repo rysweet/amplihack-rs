@@ -1,6 +1,6 @@
 ---
 title: Auto Drive To Merge Reference
-last_updated: 2026-10-03
+last_updated: 2026-10-04
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -278,16 +278,107 @@ says so.
 
 ### The static check
 
-The test `autodrive_step_outputs_are_read_with_the_recipe_var_fallback`
-collects the `output:` names declared across **all** the autodrive recipes
-(`auto-drive-to-merge.yaml` and every `autodrive-*.yaml`) into one set, then
-checks every one of those files against the whole set. Per-file collection
-would miss reads of outputs declared in a sub-recipe:
-`autodrive-merge-round.yaml` reads `QA_EVIDENCE`, `CI_EVIDENCE` and
-`MERGE_SYNC`, which `autodrive-merge-evidence.yaml` declares. Any line that
-reads `${<NAME_UPPER>:-` for a name in the set must also contain
-`RECIPE_VAR_<name>`. A failure names the file, line and output. The shell
-contract test runs the same check.
+The test `autodrive_step_outputs_are_read_with_the_recipe_var_fallback` in
+`tests/integration/auto_drive_to_merge_test.rs` enforces this section. It
+collects the `output:` names declared across all seven autodrive recipes
+(`auto-drive-to-merge.yaml` and the six `autodrive-*.yaml` files) into one
+set, then checks the files against the whole set. Per-file collection would
+miss reads of outputs declared in a sub-recipe: `autodrive-merge-round.yaml`
+reads `QA_EVIDENCE`, `CI_EVIDENCE` and `MERGE_SYNC`, which
+`autodrive-merge-evidence.yaml` declares.
+
+The checks cover two groups of files:
+
+- **The six reader recipes** are the rows of the read table under
+  [Reading step outputs](#reading-step-outputs): every autodrive recipe
+  except `autodrive-merge-evidence.yaml`.
+- **All seven recipes** adds `autodrive-merge-evidence.yaml`, which declares
+  step outputs but reads none.
+
+A name only matches at a name boundary: the next character must not be a
+letter, digit or `_`. `QA` never matches `QA_EVIDENCE`, and `qa` never
+matches `qa_evidence`.
+
+Two sanity checks come first, so the test cannot pass by looking at nothing:
+
+- fewer than 20 output names fails;
+- a reader recipe with no `${<NAME_UPPER>:-` read fails, and the failure
+  names the recipe. This runs while the reads are counted, before check 1.
+
+Then four checks run, in this order, so a failure reports its most specific
+cause:
+
+1. **Every read has the fallback.** In the six reader recipes, each
+   `${<NAME_UPPER>:-` must be immediately followed by
+   `${RECIPE_VAR_<name>:-`, the two names back to back:
+   `${QA_EVIDENCE:-${RECIPE_VAR_qa_evidence:-`. A `RECIPE_VAR_qa_evidence`
+   read elsewhere on the line does not count. The failure lists each read
+   that lacks its fallback by file, line and output.
+2. **No read skips the fallback.** On every line of the same six recipes,
+   `${<NAME_UPPER>` must be followed by `:-`, and `${#<NAME_UPPER>`,
+   `${!<NAME_UPPER>` and `$<NAME_UPPER>` must not appear. Each of these is
+   a violation, because it never reaches `RECIPE_VAR_qa_evidence`:
+
+   ```bash
+   ${QA_EVIDENCE}  ${QA_EVIDENCE-}  ${QA_EVIDENCE:=}  ${QA_EVIDENCE:+x}
+   ${QA_EVIDENCE:?}  ${QA_EVIDENCE#*}  ${QA_EVIDENCE%x}  ${QA_EVIDENCE/a/b}
+   ${#QA_EVIDENCE}  ${!QA_EVIDENCE}  $QA_EVIDENCE
+   ```
+
+   None of these counts as a read. The failure names the file, line and
+   output.
+3. **No step output is templated into a `command:`.** This check walks the
+   parsed YAML of all seven recipes, not their text lines. In each step
+   whose `command:` is a string, `{{` followed by optional spaces and an
+   output name fails. The name-boundary rule applies, so a `.`, `}` or space
+   after the name ends it: `{{qa_evidence}}`, `{{ qa_evidence }}` and
+   `{{platform_facts.pr}}` are all caught. The failure names the file, the
+   step `id` and the output. It has no line number, because the parsed YAML
+   has none.
+
+   The runner pastes a template value into the script text before bash
+   parses it, so an LLM-written output would run as shell code (see [direct
+   interpolation in
+   bash](quality-audit-cycle-recipe.md#unsafe-pattern-direct-interpolation-in-bash)).
+   A step output reaches a `command:` only as an environment variable. A
+   `prompt:`, a sub-recipe `context:` value and the recipe-level output
+   template are not `command:` text, so `{{build_result.pr}}` there is
+   allowed. The check does not follow a value through a sub-recipe's
+   `context:` into that sub-recipe's commands. The sub-recipes read such a
+   value from their environment (`PR="${PR_NUMBER:-}"`) and never template
+   it into a `command:`. Keep it that way: this check would not catch
+   `{{pr_number}}` there.
+4. **The counts match this page.** Only after checks 1–3 pass does the test
+   read the table under [Reading step outputs](#reading-step-outputs) from
+   this file: the total from the sentence just above the table, then each
+   row. Each reader recipe's counted reads must equal its row, and the
+   counted sum must equal the stated total. The rows must name exactly the
+   six reader recipes, so a missing row, or a row for any other recipe, is a
+   mismatch. The failure prints the counted and documented per-recipe maps
+   side by side, with both totals. The page is the only source of truth; the
+   test holds no count of its own.
+
+A change that adds or removes a read updates the table and the total in the
+same commit. Copy the new numbers from the counted map in the check 4
+failure.
+
+The table parse fails closed: the test fails, rather than skipping the count
+check, when
+
+- the total sentence is missing or appears on more than one line;
+- the total is not a number, or is `0`;
+- no table row follows the sentence;
+- a row's count is not a number;
+- a recipe appears in two rows;
+- the rows do not add up to the total.
+
+The table ends at the first line that does not start with `|`. Keep its shape
+when editing it: the file name in backticks, then the count. Reword the total
+sentence only together with the parser.
+
+The shell contract test `test-auto-drive-to-merge.sh` runs the two sanity
+checks (`1511-output-set`, `1511-reads-<recipe>`) and check 1
+(`1511-static-audit`). Checks 2–4 run only in the Rust test.
 
 ## Reading the loop-health line
 
@@ -571,7 +662,7 @@ Every recipe file stays inside the 400-line brick budget.
 | Test | Location |
 | --- | --- |
 | Executable contract test — STUCK path, malformed-verdict path, forbidden-flag guard, merge-gate refusals, a step output read through `RECIPE_VAR_` only, the `state_dir` refusals, the static `RECIPE_VAR_` check, and every row of the [loop-health line table](#reading-the-loop-health-line) | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
-| Structural + wiring, including `autodrive_step_outputs_are_read_with_the_recipe_var_fallback` | `tests/integration/auto_drive_to_merge_test.rs` |
+| Structural + wiring, including `autodrive_step_outputs_are_read_with_the_recipe_var_fallback` (the four [static checks](#the-static-check), with the read counts taken from this page) | `tests/integration/auto_drive_to_merge_test.rs` |
 
 ```bash
 cargo test -p amplihack --test auto_drive_to_merge
