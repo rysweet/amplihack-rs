@@ -221,6 +221,17 @@ fn run_as_root_outside_a_sandbox(
         .lock()
         .unwrap_or_else(|p| p.into_inner());
     let _agent_env = crate::test_support::AgentBinaryEnv::set(None, None);
+    // These runs reach the #964 recursion guard. Run from inside a recipe
+    // workflow, the test would inherit that workflow's depth, the guard would
+    // refuse, and the runner stub would never start, whatever the pre-flight
+    // had decided.
+    let _orchestration_env = crate::test_support::EnvGuard::unset([
+        "AMPLIHACK_SESSION_TREE_DIR",
+        "AMPLIHACK_TREE_ID",
+        "AMPLIHACK_SESSION_DEPTH",
+        "AMPLIHACK_MAX_DEPTH",
+        "AMPLIHACK_RECIPE_RUN_ID",
+    ]);
     let stub_dir = tempfile::tempdir().unwrap();
     let handed = stub_dir.path().join("handed");
     let runner = stub_dir.path().join("recipe-runner-rs");

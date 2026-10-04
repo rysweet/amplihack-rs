@@ -39,6 +39,18 @@ impl EnvGuard {
         }
         Self { previous }
     }
+
+    /// Remove `names` from the environment until the guard is dropped.
+    pub(crate) fn unset<const N: usize>(names: [&str; N]) -> Self {
+        let previous = names
+            .iter()
+            .map(|name| (OsString::from(name), std::env::var_os(name)))
+            .collect();
+        for name in names {
+            unsafe { std::env::remove_var(name) };
+        }
+        Self { previous }
+    }
 }
 
 impl Drop for EnvGuard {
