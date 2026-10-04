@@ -279,9 +279,10 @@ that edits `SKILL.md` or `pr-description-template.md` can change what the
 assessment agent reads, and so what it concludes. It cannot change what the
 merge gate checks. `autodrive_merge_gate.sh` is the only step that can merge,
 and it measures criteria 1 and 3 itself from the qa evidence and the crusty
-manifest, whatever text the agent was given. A `MERGE_READY` verdict reached
-from edited criteria is downgraded by the gate when the measured evidence
-does not support it.
+manifest, whatever text the agent was given. The gate does not rewrite a
+verdict: it requires `merge_ready_verdict=MERGE_READY`, and it still blocks
+the merge when the measured qa or crusty evidence does not support it, so a
+`MERGE_READY` reached from edited criteria cannot merge on its own.
 
 A candidate path that contains `"`, `\`, a control byte, `{{` or `}}` is
 skipped with a `WARNING`, so a path can never break the JSON or look like a
