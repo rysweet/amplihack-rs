@@ -116,7 +116,9 @@ steps:
       Your answer ends with ONE JSON object carrying `loop_verdict` and
       `not_converging`. The gate reads the LAST JSON object carrying
       `loop_verdict`; prose around it is ignored. `loop_verdict` is exactly one
-      of CONTINUE, DONE or STUCK. The contract is repeated at the end.
+      of CONTINUE, DONE or STUCK. The contract is repeated at the end. Example:
+
+      {"loop_verdict":"CONTINUE","not_converging":[]}
 
       ## Measured evidence (computed, not summarised)
 
@@ -182,7 +184,7 @@ steps:
       If you are not sure, answer `STUCK`. Stopping and escalating costs one
       round; looping on a dead loop costs the whole budget.
 
-      ## Output contract
+      ## OUTPUT CONTRACT (repeated)
 
       As the **very last thing** you emit, output a single JSON object — no
       code fence, no trailing prose:
@@ -197,8 +199,6 @@ steps:
       A missing, malformed, or unrecognised `loop_verdict` is treated as
       `STUCK` by the gate below — never as `CONTINUE`. Failing safe here means
       stopping, not looping.
-
-      ## OUTPUT CONTRACT (repeated)
 
       End with one JSON object on its own line, for example:
 

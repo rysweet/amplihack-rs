@@ -1,6 +1,6 @@
 ---
 title: Loop-Health Evaluator Reference
-last_updated: 2026-10-03
+last_updated: 2026-10-04
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -101,18 +101,49 @@ The evaluator agent emits, as the last thing on stdout:
 
 ### Where the prompt states the contract
 
-The step-02 prompt states the output contract **twice**:
+The step-02 prompt states the output contract **twice**, and shows the same
+example line both times:
+
+```
+{"loop_verdict":"CONTINUE","not_converging":[]}
+```
 
 1. **First**, before any evidence: an `OUTPUT CONTRACT` block saying the
-   answer is one final JSON object with `loop_verdict` and `not_converging`,
-   and that the gate reads the LAST JSON object carrying `loop_verdict`.
-2. **Last**, after all evidence: the contract again, with this example and the
-   legal tokens:
+   answer ends with one JSON object carrying `loop_verdict` and
+   `not_converging`, that the gate reads the LAST such object, and that
+   `loop_verdict` is exactly one of `CONTINUE`, `DONE` or `STUCK`. The
+   example line follows, ahead of `{{loop_evidence}}`.
+2. **Last**, after `{{loop_last_round_output}}`: one
+   `OUTPUT CONTRACT (repeated)` block with the full schema, the LAST-object
+   rule, the rule that an unrecognised `loop_verdict` is `STUCK` and never
+   `CONTINUE`, then the example line and the legal tokens:
 
    ```
    {"loop_verdict":"CONTINUE","not_converging":[]}
-   CONTINUE | DONE | STUCK are the only legal values. Any other word is STUCK.
+
+   CONTINUE, DONE and STUCK are the only legal `loop_verdict` values;
+   any other word is STUCK.
    ```
+
+The example shows the shape of the answer, not a default verdict. The prompt
+tells the evaluator to answer `STUCK` when it is not sure, but nothing in the
+gate checks that it did.
+
+**Known limitation:** the gate does not reject a `CONTINUE` copied from the
+example. It cannot tell a copied `CONTINUE` from one the evaluator chose, and
+the loops have no iteration cap, so an evaluator that keeps copying the
+example keeps the loop running. Every [fail-safe](#fail-safe-guarantees)
+covers a missing or malformed answer; a well-formed `CONTINUE` passes them
+all.
+
+The order is checked in two places. The shell check `PROMPT-contract-first`
+requires the first `OUTPUT CONTRACT` line, then the first example line, then
+`{{loop_evidence}}`. `PROMPT-contract-last` requires both the last example
+line and the last `any other word is STUCK` line to come after
+`{{loop_last_round_output}}`. The Rust test
+`evaluator_prompt_states_the_contract_first_and_last` checks the same order,
+so CI enforces it too. Because the repeated contract comes after the
+untrusted round output, that output is never the last thing in the prompt.
 
 A contract that appears only once, between pages of evidence, is easy for a
 model to lose. Real evaluators answered with prose such as
@@ -170,6 +201,8 @@ The prose scan accepts a verdict token only when there is no doubt about it:
 - Markdown bold around the prefix or the token is allowed:
   `**Verdict: CONTINUE**`, `**Verdict:** CONTINUE` and `**DONE**` all match.
   Only `*` is allowed this way; a `>` quote is still rejected.
+- A leading `*` is read the same as bold, so a `* CONTINUE` bullet matches
+  and a `- CONTINUE` bullet does not.
 - Only the words `Verdict` and `LOOP_HEALTH` count as a prefix. A bold
   heading such as `**What would make the next verdict STUCK:**` does not
   match, because the line starts with `What`.
@@ -514,6 +547,10 @@ Every branch fails toward stopping:
   too. `extract-field` treats a null exactly like an absent field, so the
   `--default true` fail-safe cannot be walked past with a null.
 
+None of these catches a well-formed `CONTINUE` copied from the prompt's
+example; see the known limitation under
+[Where the prompt states the contract](#where-the-prompt-states-the-contract).
+
 ### Reading step outputs: the dual-name idiom
 
 `recipe-runner-rs` exports every step output as `RECIPE_VAR_<name>`, but it
@@ -599,9 +636,9 @@ and reports what is not converging instead of consuming the remaining budget.
 | Test | Location |
 | ---- | -------- |
 | Helper unit tests (synonyms including `CONVERGING` / `PROGRESSING`, canonical pass-through, malformed → `STUCK`, negation-adjacent equality regression including `NOT_PROGRESSING`, opposite-default guard) | `crates/amplihack-cli/src/commands/orch.rs` |
-| Executable contract test (STUCK path, malformed-verdict path, exit-79 terminal path, the 2h47m worked example, no-cap and no-timeout guards, and `resolve_verdict_and_source` over every row of the [step-03 examples](#examples) plus the round-trip guard, `LOOP_NAME` cleaning and prompt-marker cases, and step-04's stdout being at most one `LOOP_HEALTH: ` line for `CONTINUE`, `DONE` and `STUCK`) | `amplifier-bundle/recipes/tests/test-issue-1337-loop-health-evaluator.sh` |
+| Executable contract test (STUCK path, malformed-verdict path, exit-79 terminal path, the 2h47m worked example, no-cap and no-timeout guards, and `resolve_verdict_and_source` over every row of the [step-03 examples](#examples) plus the round-trip guard, `LOOP_NAME` cleaning, prompt-marker and [contract-position](#where-the-prompt-states-the-contract) cases, and step-04's stdout being at most one `LOOP_HEALTH: ` line for `CONTINUE`, `DONE` and `STUCK`) | `amplifier-bundle/recipes/tests/test-issue-1337-loop-health-evaluator.sh` |
 | **End-to-end probe** — the real recipe files run through the real `recipe-runner-rs` with only step-02 stubbed as a bash step: `CONTINUE` → exit 0, `STUCK` → exit 1, verdict selection, exit-79 terminal, self-poisoning | same file, section 7 (skipped with a loud notice when `recipe-runner-rs` is not installed; set `RECIPE_RUNNER_RS_PATH` to force it) |
-| Structural + end-to-end wiring | `tests/integration/issue_1337_loop_health_evaluator_test.rs` |
+| Structural + end-to-end wiring, including `evaluator_prompt_states_the_contract_first_and_last` | `tests/integration/issue_1337_loop_health_evaluator_test.rs` |
 
 Run them with:
 
@@ -610,6 +647,60 @@ cargo test -p amplihack-cli normalise_loop_verdict
 cargo test -p amplihack --test issue_1337_loop_health_evaluator
 bash amplifier-bundle/recipes/tests/test-issue-1337-loop-health-evaluator.sh
 ```
+
+### Which `amplihack` binary the shell test uses
+
+The shell test runs the real step bodies, which call
+`amplihack orch helper`. The test tries these candidates in order:
+
+1. `target/release/amplihack` in this checkout
+2. `target/debug/amplihack` in this checkout
+3. `$CARGO_TARGET_DIR/release/amplihack`, only when `CARGO_TARGET_DIR` is set
+   and not empty
+4. `$CARGO_TARGET_DIR/debug/amplihack`, under the same condition
+5. `amplihack` on `PATH`
+
+It uses the first candidate that exists, is executable, and passes this
+probe, which must print exactly `CONTINUE`:
+
+```bash
+printf converging | "$candidate" orch helper normalise-loop-verdict
+```
+
+A binary built before the `CONVERGING` synonym existed (issue #1513) prints
+`STUCK`, so it is skipped even when it comes first on `PATH`. If no candidate
+passes, the test prints a `HARNESS-ERROR` saying that no candidate maps
+`converging` to `CONTINUE` (each one is missing or stale), and exits `2`.
+
+The test prints the chosen binary before its first check. With a target
+directory outside the checkout it looks like this:
+
+```console
+$ export CARGO_TARGET_DIR="$HOME/.cache/cargo-target"
+$ cargo build -p amplihack --bin amplihack
+$ bash amplifier-bundle/recipes/tests/test-issue-1337-loop-health-evaluator.sh
+amplihack binary: /home/dev/.cache/cargo-target/debug/amplihack
+=== Issue #1337: agentic loop-health evaluator contract ===
+...
+```
+
+Under `cargo test`, the `loop_health_contract_shell_test_passes` wrapper puts
+the binary cargo just built first on `PATH`. Candidates 1 to 4 are still
+tried before `PATH`, so an older binary in one of them that passes the probe
+is tested instead. The `amplihack binary:` line shows which one ran. CI runs
+this test through that wrapper as part of `cargo nextest run --workspace`,
+with no `CARGO_TARGET_DIR` and no cached `target/`, so it uses the
+`target/debug/amplihack` it built from the commit under test.
+
+The step bodies call bare `amplihack`, so the test puts the chosen binary's
+directory first on `PATH` for the whole run, and every executable in that
+directory shadows system commands of the same name. A workspace build puts
+every workspace binary, such as `amplihack-hooks`, next to `amplihack`, so
+that directory is never empty. Point `CARGO_TARGET_DIR` only at a directory
+that no one but you can write, where every executable comes from this
+workspace. A
+predictable path in a shared directory such as `/tmp` or `/var/tmp` lets
+another user plant a binary that the test then runs.
 
 ## Related references
 

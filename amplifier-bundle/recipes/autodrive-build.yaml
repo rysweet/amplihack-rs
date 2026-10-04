@@ -117,7 +117,7 @@ steps:
       # refused before anything touches it.
       case "$DIR" in
         '') echo "INFO: no state_dir from the preflight; nothing to record." >&2 ;;
-        /|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [build/step-03]" >&2; exit 1 ;;
+        /|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [autodrive-build/step-03]" >&2; exit 1 ;;
       esac
       if [ -z "$PR" ]; then
         [ -n "$BRANCH" ] && [ "$BRANCH" != "HEAD" ] && \

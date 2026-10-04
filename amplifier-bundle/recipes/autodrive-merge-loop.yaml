@@ -98,7 +98,7 @@ steps:
       # Refuse an empty or unsafe state_dir before anything touches it. A future
       # recursive delete must also require an absolute path under the state root, no '..'.
       case "$DIR" in
-        ''|/|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [merge-loop/step-02]" >&2; exit 1 ;;
+        ''|/|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [autodrive-merge-loop/step-02]" >&2; exit 1 ;;
       esac
       bash "$LOOP_HELPER" \
         --loop-name "merge-ready" \
@@ -139,7 +139,7 @@ steps:
       # Refuse an empty or unsafe state_dir before anything touches it. A future
       # recursive delete must also require an absolute path under the state root, no '..'.
       case "$DIR" in
-        ''|/|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [merge-loop/step-03]" >&2; exit 1 ;;
+        ''|/|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [autodrive-merge-loop/step-03]" >&2; exit 1 ;;
       esac
       ARGS=(--pr "$PR" --repo "${REPO_PATH:-.}" --state-dir "$DIR" \
             --round-record "${DIR}/merge-ready-latest.json" \
@@ -173,7 +173,7 @@ steps:
       # Refuse an empty or unsafe state_dir before anything touches it. A future
       # recursive delete must also require an absolute path under the state root, no '..'.
       case "$DIR" in
-        ''|/|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [merge-loop/step-04]" >&2; exit 1 ;;
+        ''|/|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [autodrive-merge-loop/step-04]" >&2; exit 1 ;;
       esac
       RESULT="$(g "${MERGE_GATE_RESULT:-${RECIPE_VAR_merge_gate_result:-}}" merge_result)"
       case "$RESULT" in

@@ -52,7 +52,8 @@ done
 [[ -f "${SKILL}" ]] || { echo "HARNESS-ERROR: missing ${SKILL}" >&2; exit 2; }
 
 # The verdict pipeline runs through `orch helper`. Prefer a binary built from
-# THIS tree over an older installed one that may be first on PATH.
+# THIS tree, in target/ or under CARGO_TARGET_DIR, over an older installed one
+# that may be first on PATH.
 # The gates read verdicts with `extract-json --require-field` (issue #1337,
 # PR #1347). A binary without that flag would silently exercise a different,
 # fail-open pipeline, so it is part of what "supports the helper" means.
@@ -62,6 +63,8 @@ supports_helper() {
 }
 REAL_AMPLIHACK=""
 for cand in "${REPO_ROOT}/target/release/amplihack" "${REPO_ROOT}/target/debug/amplihack" \
+            "${CARGO_TARGET_DIR:+${CARGO_TARGET_DIR}/release/amplihack}" \
+            "${CARGO_TARGET_DIR:+${CARGO_TARGET_DIR}/debug/amplihack}" \
             "$(command -v amplihack 2>/dev/null || true)"; do
   [[ -n "${cand}" && -x "${cand}" ]] || continue
   if supports_helper "${cand}"; then REAL_AMPLIHACK="${cand}"; break; fi
@@ -70,6 +73,7 @@ done
   echo "HARNESS-ERROR: no 'amplihack' providing 'orch helper extract-json --require-field'." >&2
   echo "  Build it with: cargo build -p amplihack --bin amplihack" >&2; exit 2; }
 export REAL_AMPLIHACK
+echo "amplihack binary: ${REAL_AMPLIHACK}"
 
 PASS_COUNT=0
 FAIL_COUNT=0

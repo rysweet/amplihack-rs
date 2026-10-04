@@ -106,7 +106,7 @@ steps:
       # Refuse an empty or unsafe state_dir before anything touches it. A future
       # recursive delete must also require an absolute path under the state root, no '..'.
       case "$DIR" in
-        ''|/|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [crusty-loop/step-02]" >&2; exit 1 ;;
+        ''|/|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [autodrive-crusty-loop/step-02]" >&2; exit 1 ;;
       esac
 
       bash "$LOOP_HELPER" \
@@ -150,7 +150,7 @@ steps:
       # Refuse an empty or unsafe state_dir before anything touches it. A future
       # recursive delete must also require an absolute path under the state root, no '..'.
       case "$DIR" in
-        ''|/|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [crusty-loop/step-03]" >&2; exit 1 ;;
+        ''|/|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [autodrive-crusty-loop/step-03]" >&2; exit 1 ;;
       esac
       RESULT="$(printf '%s' "${CRUSTY_LOOP_RESULT:-${RECIPE_VAR_crusty_loop_result:-}}" \
         | amplihack orch helper extract-json --require-field loop_result \

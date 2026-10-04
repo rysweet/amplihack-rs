@@ -1197,6 +1197,56 @@ fn reference_doc_exists_and_declares_the_1347_dependency() {
     }
 }
 
+/// Every state_dir guard names the recipe and step it runs in, using the
+/// recipe's full name: `[autodrive-merge-loop/step-03]`, as
+/// docs/reference/auto-drive-to-merge.md shows it. A short label such as
+/// `[merge-loop/step-03]` names no recipe a user can run or search for.
+///
+/// The case patterns are pinned with it, because the label is the only part
+/// of a guard that may change. autodrive-build's empty-is-INFO branch is the
+/// documented exception: a standalone build with no preflight has nothing to
+/// record.
+#[test]
+fn state_dir_guards_name_their_recipe_and_step() {
+    const GUARD: &str = "ERROR: no state_dir (empty or unsafe: refusing to touch it)";
+    for (recipe, want, pattern) in [
+        ("autodrive-crusty-loop", 2, r#"''|/|-*|*$'\n'*)"#),
+        ("autodrive-merge-loop", 3, r#"''|/|-*|*$'\n'*)"#),
+        ("autodrive-build", 1, r#"/|-*|*$'\n'*)"#),
+    ] {
+        let mut found = 0;
+        for (id, body) in command_bodies(recipe) {
+            let step_no = id.split('-').take(2).collect::<Vec<_>>().join("-");
+            for line in body.lines().filter(|l| l.contains(GUARD)) {
+                found += 1;
+                let label = format!("{GUARD} [{recipe}/{step_no}]");
+                assert!(
+                    line.contains(&label),
+                    "{recipe}/{id}: the guard must read `{label}`, got: {}",
+                    line.trim()
+                );
+                assert!(
+                    line.trim_start().starts_with(pattern),
+                    "{recipe}/{id}: the guard's case pattern must stay `{pattern}`, got: {}",
+                    line.trim()
+                );
+            }
+        }
+        assert_eq!(
+            found, want,
+            "{recipe} must carry {want} state_dir guards, found {found}"
+        );
+    }
+    let build = recipe_yaml("autodrive-build");
+    let build_resolve = field(step(&build, "step-03-resolve-pr"), "command");
+    assert!(
+        build_resolve.contains(
+            r#"'') echo "INFO: no state_dir from the preflight; nothing to record." >&2 ;;"#
+        ),
+        "autodrive-build step-03 must keep treating an empty state_dir as nothing to record"
+    );
+}
+
 // ── The executable contract ──────────────────────────────────────────────────
 
 /// True when `s[end..]` cannot continue a name: it is empty or starts with a
@@ -1632,4 +1682,135 @@ fn auto_drive_contract_shell_test_passes() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr),
     );
+}
+
+// ── Which `amplihack` the shell test runs ────────────────────────────────────
+
+/// Writes a fake `amplihack` for the shell test's probe, which needs
+/// `orch helper extract-field` and `orch helper extract-json --require-field`.
+/// A fake without `--require-field` stands in for a build from before #1347.
+#[cfg(unix)]
+fn write_fake_amplihack(path: &Path, has_require_field: bool) {
+    use std::os::unix::fs::PermissionsExt;
+    let require_field_rc = if has_require_field { 0 } else { 1 };
+    fs::create_dir_all(path.parent().expect("fake parent dir")).expect("create fake dir");
+    fs::write(
+        path,
+        format!(
+            "#!/usr/bin/env bash\n\
+             [ \"${{1:-}} ${{2:-}}\" = \"orch helper\" ] || exit 1\n\
+             case \"${{3:-}}\" in extract-json|extract-field) cat >/dev/null ;; esac\n\
+             case \" $* \" in *\" --require-field \"*) exit {require_field_rc} ;; esac\n\
+             exit 0\n"
+        ),
+    )
+    .expect("write fake amplihack");
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("chmod fake amplihack");
+}
+
+/// Runs a copy of the shell test from a scratch tree whose recipes, tools and
+/// skill are empty files. The copy picks its binary exactly as the shipped
+/// test does; the scratch tree has no `target/`, so only the
+/// `CARGO_TARGET_DIR` and `PATH` candidates exist. It stops with a
+/// HARNESS-ERROR at the first step body it cannot extract.
+#[cfg(unix)]
+fn run_shell_test_copy(
+    scratch: &Path,
+    cargo_target_dir: Option<&str>,
+    path_dir: &Path,
+) -> (Option<i32>, String, String) {
+    let bundle = scratch.join("amplifier-bundle");
+    fs::create_dir_all(bundle.join("recipes/tests")).expect("create scratch recipes");
+    fs::create_dir_all(bundle.join("tools")).expect("create scratch tools");
+    fs::create_dir_all(bundle.join("skills/auto-drive-to-merge")).expect("create scratch skill");
+    for recipe in AUTODRIVE_RECIPES {
+        fs::write(bundle.join(format!("recipes/{recipe}.yaml")), "").expect("write empty recipe");
+    }
+    for tool in AUTODRIVE_TOOLS {
+        fs::write(bundle.join(format!("tools/{tool}")), "").expect("write empty tool");
+    }
+    fs::write(bundle.join("skills/auto-drive-to-merge/SKILL.md"), "").expect("write empty skill");
+    let script = bundle.join("recipes/tests/test-auto-drive-to-merge.sh");
+    fs::copy(
+        workspace_root().join("amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh"),
+        &script,
+    )
+    .expect("copy the shell test");
+
+    let path = match std::env::var("PATH") {
+        Ok(p) => format!("{}:{p}", path_dir.display()),
+        Err(_) => path_dir.display().to_string(),
+    };
+    let mut cmd = Command::new("bash");
+    cmd.arg(&script)
+        .current_dir(scratch)
+        .env("PATH", path)
+        .env("TMPDIR", scratch)
+        .stdin(std::process::Stdio::null());
+    match cargo_target_dir {
+        Some(dir) => cmd.env("CARGO_TARGET_DIR", dir),
+        None => cmd.env_remove("CARGO_TARGET_DIR"),
+    };
+    let out = cmd
+        .output()
+        .expect("run a copy of the auto-drive shell test");
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// With `CARGO_TARGET_DIR` set, `cargo build` puts the branch build outside
+/// the checkout. The shell test must find it there ahead of `PATH`, skip a
+/// `release/` build that lacks `--require-field`, and print the binary it
+/// chose as its first line. The fakes do not implement
+/// `normalise-loop-verdict`, so this also pins that this test keeps its own
+/// probe rather than the loop-health one.
+#[cfg(unix)]
+#[test]
+fn shell_test_picks_and_prints_a_capable_build_under_cargo_target_dir() {
+    let scratch = tempfile::tempdir().expect("scratch dir");
+    let target = scratch.path().join("cargo-target");
+    let on_path = scratch.path().join("on-path");
+    write_fake_amplihack(&target.join("release/amplihack"), false);
+    write_fake_amplihack(&target.join("debug/amplihack"), true);
+    write_fake_amplihack(&on_path.join("amplihack"), true);
+
+    let (code, stdout, stderr) = run_shell_test_copy(
+        scratch.path(),
+        Some(&target.display().to_string()),
+        &on_path,
+    );
+
+    let want = format!("amplihack binary: {}/debug/amplihack", target.display());
+    assert_eq!(
+        stdout.lines().next(),
+        Some(want.as_str()),
+        "the first stdout line must name the chosen binary (exit {code:?})\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+}
+
+/// CI sets no `CARGO_TARGET_DIR`, and the shell test runs under `set -u`, so
+/// a bare `$CARGO_TARGET_DIR` would abort it before its first check. Unset and
+/// empty must both fall through to the binary on `PATH`.
+#[cfg(unix)]
+#[test]
+fn shell_test_without_cargo_target_dir_uses_the_binary_on_path() {
+    for cargo_target_dir in [None, Some("")] {
+        let scratch = tempfile::tempdir().expect("scratch dir");
+        let on_path = scratch.path().join("on-path");
+        write_fake_amplihack(&on_path.join("amplihack"), true);
+
+        let (code, stdout, stderr) =
+            run_shell_test_copy(scratch.path(), cargo_target_dir, &on_path);
+
+        let want = format!("amplihack binary: {}/amplihack", on_path.display());
+        assert_eq!(
+            stdout.lines().next(),
+            Some(want.as_str()),
+            "CARGO_TARGET_DIR={cargo_target_dir:?}: the first stdout line must name the binary on \
+             PATH (exit {code:?})\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+        );
+    }
 }

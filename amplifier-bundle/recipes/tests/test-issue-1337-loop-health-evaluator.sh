@@ -45,21 +45,30 @@ for f in "${RECIPE}" "${COLLECTOR}"; do
 done
 
 # `amplihack` must be resolvable — the whole verdict pipeline runs through
-# `orch helper`. Prefer a binary built from THIS tree over an older installed
-# one that may still be first on PATH.
-supports_helper() { "$1" orch helper normalise-loop-verdict </dev/null >/dev/null 2>&1; }
+# `orch helper`. Prefer a binary built from THIS tree, in target/ or under
+# CARGO_TARGET_DIR, over an older installed one that may still be first on PATH.
+# The probe checks behaviour, not presence: a binary built before #1513 has
+# the helper but maps `converging` to STUCK, and testing the shipped step
+# bodies against it would test the old verdict mapping.
+supports_helper() {
+    [[ "$(printf converging | "$1" orch helper normalise-loop-verdict 2>/dev/null)" == "CONTINUE" ]]
+}
 AMPLIHACK_BIN=""
 for cand in "${REPO_ROOT}/target/release/amplihack" "${REPO_ROOT}/target/debug/amplihack" \
+            "${CARGO_TARGET_DIR:+${CARGO_TARGET_DIR}/release/amplihack}" \
+            "${CARGO_TARGET_DIR:+${CARGO_TARGET_DIR}/debug/amplihack}" \
             "$(command -v amplihack 2>/dev/null || true)"; do
     [[ -n "${cand}" && -x "${cand}" ]] || continue
     if supports_helper "${cand}"; then AMPLIHACK_BIN="${cand}"; break; fi
 done
 if [[ -z "${AMPLIHACK_BIN}" ]]; then
-    echo "HARNESS-ERROR: no 'amplihack' providing 'orch helper normalise-loop-verdict'." >&2
-    echo "  The issue #1337 helper is not implemented, or the binary is stale." >&2
+    echo "HARNESS-ERROR: no 'amplihack' candidate maps 'converging' to CONTINUE via 'orch helper normalise-loop-verdict'." >&2
+    echo "  Each candidate is missing, or stale from before issue #1513." >&2
+    echo "  Tried: target/release, target/debug, \$CARGO_TARGET_DIR/release and /debug when set, then PATH." >&2
     echo "  Build it with: cargo build -p amplihack --bin amplihack" >&2
     exit 2
 fi
+echo "amplihack binary: ${AMPLIHACK_BIN}"
 # The extracted recipe step bodies call bare `amplihack`, so put the chosen
 # binary's directory first on PATH for the whole test.
 PATH="$(cd "$(dirname "${AMPLIHACK_BIN}")" && pwd):${PATH}"; export PATH
@@ -389,6 +398,9 @@ check_rs "1513-prose-bold" '**CONTINUE** — findings 3 -> 2 -> 1' CONTINUE eval
 # A bold heading that merely MENTIONS a token is not a verdict line.
 check_rs "1513-prose-bold-heading" \
     $'**What would make the next verdict STUCK:**\nCONTINUE — progress' CONTINUE evaluator_prose_token
+# A leading `*` reads as bold, so a `*` bullet matches; a `-` bullet does not.
+check_rs "1513-prose-bullet" '* CONTINUE' CONTINUE evaluator_prose_token
+check_rs "1513-prose-bullet" '- CONTINUE' STUCK unparseable_verdict
 # The synonym map is for the `verdict` key only; a prose synonym is not a token.
 check_rs "1513-prose-synonym" 'CONVERGING — findings dropping' STUCK unparseable_verdict
 
@@ -596,12 +608,14 @@ PROMPT_LN() { grep -nF -- "$1" "${RECIPE}" | head -n1 | cut -d: -f1; }
 LN_CONTRACT_FIRST="$(PROMPT_LN 'OUTPUT CONTRACT')"
 LN_EVIDENCE="$(PROMPT_LN '{{loop_evidence}}')"
 LN_LAST_ROUND="$(PROMPT_LN '{{loop_last_round_output}}')"
+LN_EXAMPLE_FIRST="$(grep -nF '{"loop_verdict":"CONTINUE","not_converging":[]}' "${RECIPE}" | head -n1 | cut -d: -f1)"
 LN_EXAMPLE="$(grep -nF '{"loop_verdict":"CONTINUE","not_converging":[]}' "${RECIPE}" | tail -n1 | cut -d: -f1)"
 LN_ANY_OTHER="$(grep -niF 'any other word is STUCK' "${RECIPE}" | tail -n1 | cut -d: -f1)"
-if [[ -n "${LN_CONTRACT_FIRST}" && -n "${LN_EVIDENCE}" && "${LN_CONTRACT_FIRST}" -lt "${LN_EVIDENCE}" ]]; then
-    pass "PROMPT-contract-first" "the OUTPUT CONTRACT is stated before any evidence"
+if [[ -n "${LN_CONTRACT_FIRST}" && -n "${LN_EXAMPLE_FIRST}" && -n "${LN_EVIDENCE}" \
+      && "${LN_CONTRACT_FIRST}" -lt "${LN_EXAMPLE_FIRST}" && "${LN_EXAMPLE_FIRST}" -lt "${LN_EVIDENCE}" ]]; then
+    pass "PROMPT-contract-first" "the OUTPUT CONTRACT and its example line are stated before any evidence"
 else
-    fail "PROMPT-contract-first" "no OUTPUT CONTRACT block ahead of the evidence (contract=${LN_CONTRACT_FIRST:-none}, evidence=${LN_EVIDENCE:-none})"
+    fail "PROMPT-contract-first" "no OUTPUT CONTRACT block with an example line ahead of the evidence (contract=${LN_CONTRACT_FIRST:-none}, example=${LN_EXAMPLE_FIRST:-none}, evidence=${LN_EVIDENCE:-none})"
 fi
 if [[ -n "${LN_EXAMPLE}" && -n "${LN_ANY_OTHER}" && -n "${LN_LAST_ROUND}" \
       && "${LN_EXAMPLE}" -gt "${LN_LAST_ROUND}" && "${LN_ANY_OTHER}" -gt "${LN_LAST_ROUND}" ]]; then
