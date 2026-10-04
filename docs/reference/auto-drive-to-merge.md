@@ -407,7 +407,9 @@ merge gate both depend on them. The checks then run in this order:
    `qa_summary`. Once validate passes, each one also fails the evidence as
    `gadugi-run-failed` and is listed in `gadugi_failed_scenarios`. With no
    regular scenario file the status stays `NO_SCENARIOS`, and `qa_summary`
-   still names the symlinks.
+   still names the symlinks. Any other `*.yaml` or `*.yml` entry that is not
+   a regular file, such as a directory, is handled the same way and named as
+   `non-regular scenario entry not run: <path>`.
 
 **Why one process per scenario.** `gadugi-test run -d <dir>` runs every
 scenario in the directory in one process. In gadugi-test 1.0.x concurrent
@@ -501,6 +503,7 @@ followed by the tail of the suite log:
 | a scenario file has no name | `gadugi scenario without a name: <path>` |
 | a scenario run exited non-zero | `gadugi scenario run failure: <path>` |
 | a scenario file is a symlink | `symlinked scenario not run: <path>` |
+| a `*.yaml` entry is not a regular file | `non-regular scenario entry not run: <path>` |
 
 #### The scenario directory
 
@@ -712,8 +715,9 @@ copies of the round record and `qa-evidence.json` (see
 [What the gate checks](#what-the-merge-gate-checks)). The function
 hashes and parses exactly those copies and never re-reads the originals, so
 the record that section 7 of the gate reads is the record whose hash was
-verified. It copies `merge-ready-records.tsv` privately once and reads only
-that copy. It prints `ok` or the token of the first check that failed:
+verified. It reads `merge-ready-records.tsv` once, through
+`autodrive_manifest_row DIR merge-ready` in `autodrive_state.sh`. It prints
+`ok` or the token of the first check that failed:
 
 | Order | Check | Token on failure |
 | --- | --- | --- |
@@ -806,8 +810,10 @@ only after `cmp` confirms the record and its `-latest.json` copy are
 identical, and only when the record file name matches `^[A-Za-z0-9._-]+$` and
 does not start with `.`. The file is created with `umask 077`. If a check
 fails, the loop writes a `WARNING` and adds no row. Both loops write a manifest
-(`crusty-records.tsv` and `merge-ready-records.tsv`); only
-`crusty-records.tsv` is read.
+(`crusty-records.tsv` and `merge-ready-records.tsv`). `autodrive_crusty_final`
+reads `crusty-records.tsv`; `autodrive_qa_trusted` reads
+`merge-ready-records.tsv` (see
+[The qa evidence is trusted only through its hash](#the-qa-evidence-is-trusted-only-through-its-hash)).
 
 #### `autodrive_crusty_final` decides criterion 3
 
@@ -849,14 +855,16 @@ also needs every later commit to be one that does not need review.
 walks the commits crusty has not seen:
 
 ```bash
-git rev-list --reverse REVIEWED..HEAD ^BASE_SHA
+git rev-list --reverse --topo-order REVIEWED..HEAD ^BASE_SHA
 ```
 
 `^BASE_SHA` leaves out every commit already on the base branch, so the
 commits a base merge brings in are not walked. When `BASE_SHA` is empty the
 `^BASE_SHA` argument is dropped. Each commit in the walk is passed to
 `autodrive_range_allowed`, and the first one that is not allowed ends the
-walk. The function prints one of three values:
+walk. `--topo-order` puts every parent before its children, so "oldest
+first" holds even when commit dates are out of order. The function prints one
+of three values:
 
 | Output | Meaning |
 | --- | --- |
@@ -912,7 +920,7 @@ set by anyone with write access to the clone. The caller reads the pull
 request's `baseRefName` from `gh pr view` and passes it to
 `autodrive_base_sha REPO BASE_REF` in `autodrive_trust.sh`, which prints the
 SHA or `""`. Step `step-00b-crusty-range`, step `step-01b-crusty-evidence` and
-section 6b of the gate all use this one function. It does three things:
+section 6d of the gate all use this one function. It does three things:
 
 1. `baseRefName` must pass `git check-ref-format --branch`, must not start
    with `-`, and must contain only `A-Z`, `a-z`, `0-9`, `.`, `_`, `/` and `-`.
@@ -946,12 +954,15 @@ whole output. The function:
 
 1. Calls `autodrive_crusty_final`. If that fails, crusty has not reached a
    clean end and there is nothing to re-review: it prints
-   `rereview: "false"`, and step-01b reports the reason.
+   `rereview: "false"` with `range: "not-checked"`, and step-01b reports the
+   reason.
 2. Otherwise resolves the base SHA with `autodrive_base_sha` and runs
    `autodrive_crusty_range` from the reviewed SHA to `HEAD`.
 3. Only for `crusty-unreviewed-commits:<sha>` removes the `crusty-loop` row
    from `phases.tsv` with `autodrive_clear_phase` and prints
-   `rereview: "true"`.
+   `rereview: "true"`. If the row cannot be removed, it writes an `ERROR` on
+   stderr and prints `rereview: "false"`; step-01b and the gate still block
+   on the unreviewed commit.
 4. For `ok` and for `crusty-range-unreadable` prints `rereview: "false"`.
 
 A code commit gives:
@@ -994,11 +1005,13 @@ fails with it; no later step runs, so the round fails closed. Whether the
 merge loop then sees code 79 or a generic failure depends on how the recipe
 runner reports a failed `type: recipe` step; neither lets the round continue.
 
-If the re-run ends `STUCK`, the crusty loop does not write the `crusty-loop`
-marker, so the marker stays absent. Step-01b of the same round, and of every
-later round, gets `crusty_status: ABSENT` from `autodrive_crusty_final`.
-Step-00b of every later round sees `autodrive_crusty_final` fail and prints
-`rereview: "false"`, so crusty is not run again. No round can reach
+If the re-run ends `STUCK`, `autodrive_loop.sh` exits 1, so the nested crusty
+loop fails, step-00c fails, and that round fails without a verdict. The crusty
+loop does not write the `crusty-loop` marker, so the marker stays absent.
+Step-01b of every later round gets `crusty_status: ABSENT` from
+`autodrive_crusty_final`. Step-00b of every later round sees
+`autodrive_crusty_final` fail and prints `rereview: "false"`, so crusty is not
+run again. No round can reach
 `MERGE_READY`, and loop-health ends the merge loop. This is terminal and
 fails closed; a person has to resolve crusty's concerns and start a new
 run.
@@ -1083,7 +1096,8 @@ and the loop ends `STUCK`. That is intended: criterion 3 has not been met.
 #### What the merge gate checks
 
 Section 6b of `autodrive_merge_gate.sh` keeps every earlier check unchanged
-and adds these, after the existing `crusty_verdict` check:
+and adds these, after the existing `crusty_verdict` check (the range checks
+are in section 6d, which runs only after `autodrive_crusty_final` succeeded):
 
 - `crusty-records.tsv` must exist. If it is absent the gate blocks with
   `crusty-manifest-missing`, as it does for a state directory written before
@@ -1097,8 +1111,9 @@ and adds these, after the existing `crusty_verdict` check:
   `crusty records in <dir> are not loop-written evidence (crusty-record-modified)`.
 - On success the gate notes `crusty_reviewed_head_sha=<sha>`.
 - `HEAD_SHA`, the head the gate binds the merge to, must exist in the local
-  clone (`git cat-file -e`). If it does not, the gate blocks; it never skips
-  the range check.
+  clone (`git cat-file -e`). If it does not, the gate blocks with
+  `head <sha> is not in the local clone, so the commits after the clean crusty round cannot be read; criterion 3 is not met`;
+  it never skips the range check.
 - The gate reads `baseRefName` in the same `gh pr view --json` call as the
   other pull request fields, resolves the base SHA with `autodrive_base_sha`
   as described in [Where the base SHA comes from](#where-the-base-sha-comes-from),
@@ -1111,25 +1126,33 @@ and adds these, after the existing `crusty_verdict` check:
   | `crusty-range-unreadable` | `the commits after the clean crusty round cannot be read; criterion 3 is not met` |
   | anything else | the same message with `crusty-range-other` |
 
-Section 6 also notes `qa_reason`, and checks the qa evidence chain described
-in [The qa evidence is trusted only through its hash](#the-qa-evidence-is-trusted-only-through-its-hash):
+Section 6 also notes `qa_reason`. Section 6c checks the qa evidence chain
+described in [The qa evidence is trusted only through its hash](#the-qa-evidence-is-trusted-only-through-its-hash),
+whenever `--state-dir` was given:
 
 - `merge-ready-records.tsv`, the record its last row names,
   `merge-ready-latest.json` and `qa-evidence.json` must each be private to
   this user: a regular file, not a symlink, owned by this user, and not group-
   or world-writable.
-- The gate copies the round record it was given with `--round-record`
-  (`merge-ready-latest.json`) and the file given with `--qa-evidence`
-  (`qa-evidence.json`) once each into private `mktemp` files.
+- At the start of section 6 the gate copies the round record it was given
+  with `--round-record` (`merge-ready-latest.json`) and the file given with
+  `--qa-evidence` (`qa-evidence.json`) once each into a private `mktemp -d`
+  directory, removed on exit. If that directory cannot be created, the gate
+  blocks.
 - It passes those copies as `RECORD_COPY` and `QA_COPY` to
   `autodrive_qa_trusted STATE_DIR RECORD_COPY QA_COPY HEAD_SHA`, which hashes
   and parses the copies themselves. The files the gate verifies are therefore
   the files it reads afterwards.
 - `autodrive_qa_trusted` must print `ok`. Its tokens, `qa-manifest-missing`,
   `qa-record-modified`, `qa-evidence-modified` and `qa-evidence-stale`, each
-  block with the token quoted. Any other output blocks as `qa-other`.
+  block with the token quoted, as
+  `the qa evidence is not bound to a loop-written round record for <sha> (<token>); criterion 1 is not met`.
+  Any other output blocks as `qa-other`.
+- If `autodrive_trust.sh` or `autodrive_state.sh` is missing beside the gate,
+  or cannot be loaded, the gate blocks and runs neither the chain nor the
+  range check.
 
-Every later check in sections 6 and 7 reads the same two copies. Section 7
+Every check in sections 6, 6c and 7 reads the same two copies. Section 7
 reads `merge_ready_verdict` and `head_sha` from `RECORD_COPY`, whose hash
 `autodrive_qa_trusted` has already checked against the last manifest row, so
 nothing can change between the hash check and the read.
@@ -1455,7 +1478,7 @@ range and qa evidence functions are a tool of their own, not part of
 `autodrive_state.sh`, so that both files fit the budget. Each new recipe step
 calls one of these functions and stays a few lines long, which keeps
 `autodrive-merge-round.yaml` and `autodrive-merge-evidence.yaml` within the
-budget, and the gate's new checks in sections 6 and 6b are calls to the same
+budget, and the gate's new checks in sections 6c and 6d are calls to the same
 functions.
 
 ## Tests
@@ -1486,7 +1509,7 @@ The `gadugi-test` stub logs its arguments, so the tests can assert exactly one
 | crusty re-review | step-00b clears the `crusty-loop` row and emits `rereview: "true"` for a code commit; step-00b leaves the row and emits `rereview: "false"` for `crusty-range-unreadable`; step-01b gives `UNREVIEWED_COMMITS`; step-03 downgrades it; a re-review ending `STUCK` leaves the marker absent and the next round's step-00b emits `rereview: "false"`; `autodrive_clear_phase` refuses a symlinked `phases.tsv` and an invalid phase name |
 | qa evidence hash | an edited `qa-evidence.json` gives `qa-evidence-modified`; a stale `head_sha` gives `qa-evidence-stale`; an edited `merge-ready-latest.json` gives `qa-record-modified`; a replayed older manifest row; a record replaced after the gate copied it does not change what section 7 reads; step-03 downgrades an empty or changed hash |
 | crusty evidence | DONE and CLEAN in round 1 gives `DONE_CLEAN`; an injected record and an archived record are both rejected; a manifest row naming `../phases.tsv`; a duplicate `reviewed_head_sha` key; a two-line record; a CLEAN round with no commits records a non-empty `head_sha`; a missing SHA fails step-06; a non-numeric count recorded as 0 with a sanitised `WARNING`; a failed `mktemp` in `autodrive_crusty_final` keeping its token |
-| merge gate | the new 6b refusals, including a group-writable record, a code commit after the clean round, and a `HEAD_SHA` missing from the clone; the section 6 qa evidence hash refusals |
+| merge gate | the new 6b and 6d refusals, including a group-writable record, a code commit after the clean round, and a `HEAD_SHA` missing from the clone; the section 6c qa evidence hash refusals |
 | recipe text | step-02 reads both files and contains no `Skill(`; step-02 no longer says the reviewed SHA `is not compared with the current head`; step-00c is a `type: recipe` step naming `autodrive-crusty-loop` with the condition on `crusty_range.rereview`; `AUTODRIVE_RANGE_ALLOWLIST` is defined only in `autodrive_trust.sh`; the state-directory sentence is in every agent prompt |
 
 ## Dependency on PR #1347

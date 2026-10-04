@@ -175,7 +175,8 @@ while :; do
   # record's git blob hash. It is written here, before the loop-health
   # evaluator or any later agent runs, so an agent cannot get a row for a
   # record it wrote itself; autodrive_crusty_final (autodrive_state.sh) trusts
-  # a crusty record only when the last row names it and the hash still
+  # a crusty record, and autodrive_qa_trusted (autodrive_trust.sh) a
+  # merge-ready record, only when the last row names it and the hash still
   # matches. git runs from the state dir with GIT_DIR/GIT_WORK_TREE unset, as
   # autodrive_blob_hash does, so both compute the same hash. A check that
   # fails writes a WARNING and no row.
