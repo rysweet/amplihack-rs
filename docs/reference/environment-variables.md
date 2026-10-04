@@ -964,6 +964,14 @@ amplihack: passing `--model claude-sonnet-4-5` to `claude` (from AMPLIHACK_DEFAU
 With the variable unset or not valid UTF-8, the source reads
 `amplihack's built-in default`.
 
+On the LiteLLM gateway path the line names `AMPLIHACK_LITELLM_MODEL`, both as
+the source and as the variable to change, because this variable is not read
+there:
+
+```text
+amplihack: passing `--model gateway-model` to `claude` (from AMPLIHACK_LITELLM_MODEL). Set AMPLIHACK_LITELLM_MODEL to change it. AMPLIHACK_DEFAULT_MODEL is not read while a LiteLLM gateway variable is set.
+```
+
 #### Dotted Claude model ids
 
 GitHub Copilot CLI writes Claude model ids with a dot (`claude-opus-5.5`).
@@ -1022,17 +1030,29 @@ it again and produces the same rewrite, unless that launch has an explicit
 #### Explicit `--model`
 
 A `--model <id>` or `--model=<id>` on the `amplihack` command line overrides
-this variable. It is forwarded exactly as typed, and amplihack prints no model
-line for it. It is never normalised, even when dotted: you typed it, and Claude
-Code's error names that exact string. Use the hyphenated spelling with
-`--model`:
+this variable. It is forwarded exactly as typed and is never rewritten, even
+when dotted.
+
+Claude Code does not reject a dotted id consistently. `claude -p` fails with an
+error, but an interactive session, which is what `amplihack claude` starts by
+default, opens with no error and reports a different model. So when an explicit
+value is a dotted Claude id of the form described above, amplihack forwards it
+unchanged and prints one warning to stderr naming the hyphenated spelling:
+
+```text
+amplihack: warning: passing `--model claude-opus-5.5` to `claude` as typed, but Claude model ids use hyphens, not dots. Claude Code does not accept this spelling: `claude -p` fails with "There's an issue with the selected model", and an interactive session starts with no error but reports a different model. Use `--model claude-opus-5-5`.
+```
+
+amplihack prints nothing for any other explicit value. On the LiteLLM gateway
+path there is no warning either, because the gateway routes on the exact name
+and a dot in it may be correct.
 
 ```sh
 # The explicit --model wins over the variable and reaches claude unchanged
 AMPLIHACK_DEFAULT_MODEL='claude-opus-5.5[1m]' amplihack claude --model claude-sonnet-4-5
 # claude receives: --model claude-sonnet-4-5
 
-# Not rewritten, so Claude Code does not accept it (see above)
+# Forwarded unchanged, with the warning above. Claude Code does not accept it.
 amplihack claude --model claude-opus-5.5
 
 # Works
@@ -1040,11 +1060,8 @@ amplihack claude --model 'claude-opus-5-5[1m]'
 ```
 
 For the other flags amplihack adds to the launch command, such as
-`--dangerously-skip-permissions`, see
-[Launch Flag Injection](./launch-flag-injection.md). That page's `--model`
-section is out of date. It says amplihack passes no `--model` when this
-variable is unset, and it quotes an older stderr line. Where the two pages
-disagree about `--model`, this section is correct.
+`--dangerously-skip-permissions`, and the order of the assembled command line,
+see [Launch Flag Injection](./launch-flag-injection.md).
 
 ---
 

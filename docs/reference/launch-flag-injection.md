@@ -24,7 +24,7 @@ can override the defaults.
 | Flag | Injected when? | Applicable tools | Override mechanism |
 |------|----------------|-------------------|-------------------|
 | `--dangerously-skip-permissions` | `--skip-permissions` passed AND tool is Claude-compatible | `claude`, `rusty`, `rustyclawd`, `amplifier` | omit `--skip-permissions` |
-| `--model <value>` | **only** when `AMPLIHACK_DEFAULT_MODEL` is set AND user did not pass `--model` AND tool is Claude-compatible | `claude`, `rusty`, `rustyclawd`, `amplifier` | unset `AMPLIHACK_DEFAULT_MODEL` to let the tool pick its own default |
+| `--model <value>` | tool is Claude-compatible AND user did not pass `--model`, unless `AMPLIHACK_DEFAULT_MODEL` is set to an empty value outside the LiteLLM gateway path. Unset, the value is `claude-opus-5[1m]`; see [--model](#-model) | `claude`, `rusty`, `rustyclawd`, `amplifier` | pass `--model`, or set `AMPLIHACK_DEFAULT_MODEL=` (empty) to pass none |
 | `--resume` | only when `amplihack launch --resume` | `launch` only (not `claude`) | pass `--resume` to the `launch` subcommand |
 | `--continue` | only when `amplihack launch --continue` | `launch` only (not `claude`) | pass `--continue` to the `launch` subcommand |
 
@@ -45,8 +45,8 @@ flag because they do not support it.
 # User explicitly opts in:
 amplihack launch --skip-permissions
 
-# amplihack spawns:
-claude --dangerously-skip-permissions
+# amplihack spawns (the --model is amplihack's default; see --model below):
+claude --dangerously-skip-permissions --model claude-opus-5[1m]
 ```
 
 ```sh
@@ -54,7 +54,7 @@ claude --dangerously-skip-permissions
 amplihack claude
 
 # amplihack spawns:
-claude
+claude --model claude-opus-5[1m]
 ```
 
 ```sh
@@ -77,103 +77,158 @@ may behave differently. Verify Python launcher behavior independently.
 
 ## --model
 
-`amplihack` does **not** choose a model. When you ask for one it is passed
-through to the subprocess; when you do not, nothing is passed and the tool
-applies its own current default. Injection, when it happens, is only for
-**Claude-compatible** tools (`claude`, `rusty`, `rustyclawd`, `amplifier`). Non-Claude
-tools (`copilot`, `codex`) use their own default model selection.
+`amplihack` passes a `--model` to **Claude-compatible** tools (`claude`, `rusty`,
+`rustyclawd`, `amplifier`) unless you pass one yourself or turn it off.
+Non-Claude tools (`copilot`, `codex`) never receive an injected `--model` and use
+their own default model selection.
 
-### Default: no model at all
+This section summarises the rules. The full reference for the value, the
+dotted-id rewrite and every stderr line amplihack prints about the model is
+[`AMPLIHACK_DEFAULT_MODEL`](./environment-variables.md#amplihack_default_model).
+
+### Which value is passed
+
+Highest precedence first:
+
+| Situation | What the tool receives |
+|---|---|
+| `--model <id>` or `--model=<id>` on the amplihack command line | that argument, exactly as typed; amplihack adds no `--model` of its own |
+| a [LiteLLM gateway variable](./environment-variables.md#external-litellm-gateway-variables) is set | `--model` with `AMPLIHACK_LITELLM_MODEL`, unchanged |
+| `AMPLIHACK_DEFAULT_MODEL` is empty or whitespace-only | no `--model`; the tool picks, and the `"model"` in `~/.claude/settings.json` takes effect |
+| `AMPLIHACK_DEFAULT_MODEL` is set to an id | `--model` with that id, trimmed; a dotted Claude id is rewritten to hyphens |
+| `AMPLIHACK_DEFAULT_MODEL` is unset | `--model claude-opus-5[1m]`, amplihack's built-in default |
+
+### Default: a concrete model id
 
 With neither `--model` on the command line nor `AMPLIHACK_DEFAULT_MODEL` in the
-environment, the command line carries no `--model`:
+environment, amplihack passes its built-in default:
 
 ```sh
 # User runs:
 amplihack claude
 
 # amplihack spawns:
-claude
+claude --model claude-opus-5[1m]
 ```
 
-The tool then resolves its own default, and any `"model"` you have set in
-`~/.claude/settings.json` takes effect.
-
-**Why there is no built-in default (issue #1421):** amplihack used to force
+**Why a concrete id and not an alias (issue #1421):** amplihack used to force
 `--model opus[1m]`. That string is an alias resolved by the tool, not by
 amplihack, and what it resolves to depends on the tool's version. On one
 install it resolved to the retired `claude-opus-4-1-20250805`, so every agent
-step failed with `API Error: 404 ... model: claude-opus-4-1-20250805` — an id
-the user had never chosen and could not find in any config file or binary.
-Forcing an alias also silently outranked that user's `~/.claude/settings.json`.
-amplihack does not own the model catalogue and cannot keep an alias current
-across tool versions, so it no longer tries.
+step failed with `API Error: 404 ... model: claude-opus-4-1-20250805`, an id
+the user had never chosen and could not find in any config file or binary. A
+concrete id cannot drift that way: a given Claude Code version either accepts
+`claude-opus-5[1m]` or fails naming that exact string.
+
+Because amplihack passes `--model` by default, its choice outranks the
+`"model"` in `~/.claude/settings.json`. To let the tool and that file decide,
+set the variable to an empty value:
+
+```sh
+AMPLIHACK_DEFAULT_MODEL= amplihack claude
+
+# amplihack spawns:
+claude
+```
 
 ### Pinning a model via environment variable
 
-Set `AMPLIHACK_DEFAULT_MODEL` to pin a model for all sessions without
-changing the command line. This is opt-in: unset, no model is passed.
+Set `AMPLIHACK_DEFAULT_MODEL` to pin a model for every session without changing
+the command line:
 
 ```sh
-export AMPLIHACK_DEFAULT_MODEL=sonnet
+export AMPLIHACK_DEFAULT_MODEL=claude-sonnet-4-5
 amplihack claude
 
 # amplihack spawns:
-claude --model sonnet
+claude --model claude-sonnet-4-5
 ```
 
-When amplihack puts a model on the command line it announces it on stderr:
+A dotted Claude id, the spelling GitHub Copilot CLI uses, is rewritten to the
+hyphenated id Claude Code accepts (issue #1527):
 
+```sh
+export AMPLIHACK_DEFAULT_MODEL='claude-opus-5.5[1m]'
+amplihack claude
+
+# amplihack spawns:
+claude --model claude-opus-5-5[1m]
 ```
-amplihack: passing `--model sonnet` to `claude` (from AMPLIHACK_DEFAULT_MODEL).
-Unset AMPLIHACK_DEFAULT_MODEL to let claude choose its own default model.
-```
 
-That line exists so a later "model not found" error names an id you can trace
-back to a decision you made, rather than to an invisible constant. A value that
-is empty or whitespace-only is treated as unset.
+The exact form that is rewritten, and the values left alone, are listed under
+[`AMPLIHACK_DEFAULT_MODEL`](./environment-variables.md#amplihack_default_model).
 
-This is the recommended approach for teams or CI environments that standardise
-on a particular model.
+For teams or CI environments that standardise on one model:
 
 ```yaml
 # .github/workflows/ai-tasks.yml
 env:
-  AMPLIHACK_DEFAULT_MODEL: "sonnet"
+  AMPLIHACK_DEFAULT_MODEL: "claude-sonnet-4-5"
   AMPLIHACK_NONINTERACTIVE: "1"
 
 steps:
   - run: amplihack claude --print 'Run the lint checks'
-    # spawns: claude --model sonnet --print 'Run the lint checks'
+    # spawns: claude --model claude-sonnet-4-5 --print 'Run the lint checks'
 ```
+
+### The stderr line
+
+Whenever amplihack adds `--model`, it prints one line to stderr naming the model
+and where it came from, so a later "model not found" error can be traced back to
+it:
+
+```text
+amplihack: passing `--model claude-sonnet-4-5` to `claude` (from AMPLIHACK_DEFAULT_MODEL). Set AMPLIHACK_DEFAULT_MODEL to override it, or to an empty value to let claude choose its own default model.
+```
+
+The source reads `amplihack's built-in default` when the variable is unset, and
+the line also names the original spelling when a dotted id was rewritten. On
+the LiteLLM gateway path it names `AMPLIHACK_LITELLM_MODEL` as both the source
+and the variable to change. The environment variable reference quotes each
+form.
 
 ### Override via command-line flag
 
-Pass `--model` directly to suppress injection entirely. The user-supplied value
-is forwarded unchanged and `AMPLIHACK_DEFAULT_MODEL` is ignored:
+Pass `--model` directly and amplihack adds none of its own;
+`AMPLIHACK_DEFAULT_MODEL` is ignored. The value is forwarded exactly as typed
+and is never rewritten:
 
 ```sh
-amplihack claude --model haiku
+amplihack claude --model claude-haiku-4-5
 
 # amplihack spawns:
-claude --model haiku
+claude --model claude-haiku-4-5
 ```
 
-Detection is substring-based: if any element of the extra args list equals
-`--model`, the injection step is skipped. Partial matches (e.g. `--model-config`)
-are not treated as model overrides.
+A dotted Claude id given to `--model` is also forwarded unchanged, and Claude
+Code does not accept it. `claude -p` fails with an error, but an interactive
+session starts with no error and reports a different model. So amplihack prints
+a warning to stderr naming the hyphenated spelling:
+
+```sh
+amplihack claude --model claude-opus-5.5
+
+# amplihack spawns:
+claude --model claude-opus-5.5
+# and warns: ... Use `--model claude-opus-5-5`.
+```
+
+There is no warning on the LiteLLM gateway path, where the model is a gateway
+route name and a dot in it may be correct.
+
+Detection is exact: an argument equal to `--model`, or one starting with
+`--model=`, counts as an explicit model. Arguments that only begin with
+`--model`, such as `--model-config`, do not.
 
 ### Supported model identifiers
 
-`amplihack` does not validate the model string — any value is forwarded as-is
-to the tool. Refer to the tool's own documentation for supported model names.
-Examples that work at time of writing:
-
-Aliases such as `opus[1m]`, `sonnet`, and `haiku` are resolved by the tool, and
-which concrete model each maps to changes with the tool's version. This document
-deliberately does not tabulate those mappings: a table of them here would go
-stale exactly the way the old hardcoded default did. Ask the tool
-(`claude --help`, or its release notes) for the current list.
+Apart from the dotted-id rewrite of `AMPLIHACK_DEFAULT_MODEL`, amplihack does
+not validate the model string; it forwards it to the tool. Aliases such as
+`opus[1m]`, `sonnet`, and `haiku` are resolved by the tool, and which concrete
+model each maps to changes with the tool's version. This document deliberately
+does not tabulate those mappings: a table here would go stale exactly the way
+the old hardcoded alias did. Ask the tool (`claude --help`, or its release
+notes) for the current list.
 
 ---
 
@@ -187,10 +242,10 @@ the `launch` subcommand. They are never injected automatically.
 
 ```sh
 amplihack launch --resume --skip-permissions
-# spawns: claude --dangerously-skip-permissions --resume
+# spawns: claude --dangerously-skip-permissions --model claude-opus-5[1m] --resume
 
 amplihack launch --continue --skip-permissions
-# spawns: claude --dangerously-skip-permissions --continue
+# spawns: claude --dangerously-skip-permissions --model claude-opus-5[1m] --continue
 ```
 
 The `claude`, `copilot`, `codex`, and `amplifier` subcommands do not support
@@ -211,7 +266,7 @@ verbatim to the tool subprocess after the injected flags. Order is:
 amplihack claude --print 'Fix the failing tests' --output-format json
 
 # amplihack spawns:
-claude --print 'Fix the failing tests' --output-format json
+claude --model claude-opus-5[1m] --print 'Fix the failing tests' --output-format json
 ```
 
 There is no processing or escaping of `extra_args`. What the user types is what
@@ -221,15 +276,17 @@ the subprocess receives.
 
 ## Complete command-line assembly
 
-`build_command()` in `crates/amplihack-cli/src/commands/launch.rs` assembles
-the final command line. The assembly order is:
+`build_command_for_dir()` in `crates/amplihack-cli/src/commands/launch/command.rs`
+assembles the final command line. The assembly order is:
 
 1. Binary path (resolved by `bootstrap::ensure_tool_available()`)
 2. `--dangerously-skip-permissions` — only if `skip_permissions == true` **and**
    the tool is Claude-compatible (`claude`, `rusty`, `rustyclawd`, `amplifier`)
-3. `--model <value>` — only if `AMPLIHACK_DEFAULT_MODEL` is set to a non-blank
-   value, `--model` is not already present in `extra_args`, **and** the tool is
-   Claude-compatible. There is no built-in default (issue #1421)
+3. `--model <value>`: only if the tool is Claude-compatible **and** `--model`
+   is not already present in `extra_args`. The value is `AMPLIHACK_LITELLM_MODEL`
+   on the LiteLLM gateway path, otherwise `AMPLIHACK_DEFAULT_MODEL` (a dotted
+   Claude id rewritten to hyphens), otherwise `claude-opus-5[1m]`. An empty
+   `AMPLIHACK_DEFAULT_MODEL` outside the gateway means no `--model`
 4. `--resume` (if requested — `launch` subcommand only)
 5. `--continue` (if requested — `launch` subcommand only)
 6. All `extra_args` in the order they were passed on the command line
@@ -239,10 +296,10 @@ subcommand with no extra args:
 
 ```sh
 amplihack claude
-# → claude
+# → claude --model claude-opus-5[1m]
 
 amplihack claude --skip-permissions
-# → claude --dangerously-skip-permissions
+# → claude --dangerously-skip-permissions --model claude-opus-5[1m]
 
 amplihack copilot
 # → copilot
@@ -251,13 +308,16 @@ amplihack codex
 # → codex
 
 amplihack amplifier
-# → amplifier
+# → amplifier --model claude-opus-5[1m]
 
 amplihack launch --skip-permissions
-# → claude --dangerously-skip-permissions
+# → claude --dangerously-skip-permissions --model claude-opus-5[1m]
 
-AMPLIHACK_DEFAULT_MODEL=sonnet amplihack claude
-# → claude --model sonnet
+AMPLIHACK_DEFAULT_MODEL=claude-sonnet-4-5 amplihack claude
+# → claude --model claude-sonnet-4-5
+
+AMPLIHACK_DEFAULT_MODEL= amplihack claude
+# → claude
 ```
 
 ---
@@ -271,7 +331,7 @@ contract:
 | Behaviour | Python launcher | Rust launcher |
 |-----------|----------------|---------------|
 | `--dangerously-skip-permissions` | always injected | conditional: Claude-compatible tool AND `--skip-permissions` |
-| `--model <default>` | `opus[1m]` unless `AMPLIHACK_DEFAULT_MODEL` set | **intentional divergence (#1421):** no built-in default; injected only when `AMPLIHACK_DEFAULT_MODEL` is set, Claude-compatible tools only |
+| `--model <default>` | `opus[1m]` unless `AMPLIHACK_DEFAULT_MODEL` set | **intentional divergence (#1421):** the concrete id `claude-opus-5[1m]` unless `AMPLIHACK_DEFAULT_MODEL` is set; an empty value passes none; a dotted Claude id is rewritten to hyphens (#1527); Claude-compatible tools only |
 | `--model` suppressed when user provides it | yes | yes |
 | `--resume` passthrough | yes | `launch` subcommand only |
 | `--continue` passthrough | yes | `launch` subcommand only |

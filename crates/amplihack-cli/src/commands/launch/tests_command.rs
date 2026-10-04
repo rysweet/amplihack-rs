@@ -1,6 +1,6 @@
 use super::command::{
-    DEFAULT_MODEL, ModelSelection, configured_default_model, model_selection_notice,
-    normalize_dotted_claude_model_id,
+    DEFAULT_MODEL, ModelSelection, ModelSource, configured_default_model,
+    explicit_dotted_model_warnings, model_selection_notice, normalize_dotted_claude_model_id,
 };
 use super::*;
 use crate::binary_finder::BinaryInfo;
@@ -564,11 +564,13 @@ fn test_build_command_no_model_injection_for_equals_form() {
 //
 // Operators set the variable to a Claude id in the dotted spelling GitHub
 // Copilot CLI uses (`claude-opus-5.5`). Claude Code only accepts hyphens
-// (`claude-opus-5-5`) and rejects the dotted form. amplihack reads the variable
-// only for claude-compatible launches, so it rewrites the one dot between major
-// and minor version before passing it on, and says so on the stderr line added
-// for #1421. An explicit `--model` is what the operator typed and is forwarded
-// unchanged.
+// (`claude-opus-5-5`): `claude -p` fails on the dotted form, and an interactive
+// session starts with no error but reports a different model. amplihack reads
+// the variable only for claude-compatible launches, so it rewrites the one dot
+// between major and minor version before passing it on, and says so on the
+// stderr line added for #1421. An explicit `--model` is what the operator typed
+// and is forwarded unchanged; when it is dotted, amplihack prints a warning
+// naming the hyphenated spelling, because the interactive session would not.
 // ---------------------------------------------------------------------------
 
 /// The line the docs promise for a rewritten id
@@ -578,7 +580,21 @@ const DOCUMENTED_REWRITE_NOTICE: &str = "amplihack: passing `--model claude-opus
      model ids use hyphens, not dots). Set AMPLIHACK_DEFAULT_MODEL to override it, or to an \
      empty value to let claude choose its own default model.";
 
-fn selection(model: &str, source: &'static str, normalised_from: Option<&str>) -> ModelSelection {
+/// The warning the docs promise for a dotted explicit `--model`
+/// (docs/reference/environment-variables.md, "Explicit `--model`").
+const DOCUMENTED_EXPLICIT_WARNING: &str = "amplihack: warning: passing `--model \
+     claude-opus-5.5` to `claude` as typed, but Claude model ids use hyphens, not dots. \
+     Claude Code does not accept this spelling: `claude -p` fails with \"There's an issue \
+     with the selected model\", and an interactive session starts with no error but \
+     reports a different model. Use `--model claude-opus-5-5`.";
+
+/// The line the docs promise on the LiteLLM gateway path
+/// (docs/reference/environment-variables.md, AMPLIHACK_DEFAULT_MODEL).
+const DOCUMENTED_GATEWAY_NOTICE: &str = "amplihack: passing `--model gateway-model` to \
+     `claude` (from AMPLIHACK_LITELLM_MODEL). Set AMPLIHACK_LITELLM_MODEL to change it. \
+     AMPLIHACK_DEFAULT_MODEL is not read while a LiteLLM gateway variable is set.";
+
+fn selection(model: &str, source: ModelSource, normalised_from: Option<&str>) -> ModelSelection {
     ModelSelection {
         model: model.to_string(),
         source,
@@ -822,7 +838,7 @@ fn test_configured_default_model_records_the_rewrite() {
         got,
         Some(selection(
             "claude-opus-5-5[1m]",
-            "AMPLIHACK_DEFAULT_MODEL",
+            ModelSource::DefaultModelEnv,
             Some("claude-opus-5.5[1m]"),
         ))
     );
@@ -841,25 +857,21 @@ fn test_configured_default_model_without_a_rewrite() {
 
     assert_eq!(
         unset,
-        Some(selection(
-            DEFAULT_MODEL,
-            "amplihack's built-in default",
-            None
-        )),
+        Some(selection(DEFAULT_MODEL, ModelSource::BuiltInDefault, None)),
         "unset means amplihack's built-in default"
     );
     assert_eq!(
         hyphenated,
         Some(selection(
             "claude-opus-5-5",
-            "AMPLIHACK_DEFAULT_MODEL",
+            ModelSource::DefaultModelEnv,
             None
         )),
         "an already-hyphenated id is passed as set and is not reported as rewritten"
     );
     assert_eq!(
         not_claude,
-        Some(selection("gpt-5.1", "AMPLIHACK_DEFAULT_MODEL", None)),
+        Some(selection("gpt-5.1", ModelSource::DefaultModelEnv, None)),
         "a dotted id that is not a Claude id is passed as set, trimmed"
     );
     assert_eq!(empty, None, "an empty value means no --model");
@@ -887,11 +899,7 @@ fn test_configured_default_model_non_utf8_falls_back_to_built_in_default() {
     });
     assert_eq!(
         got,
-        Some(selection(
-            DEFAULT_MODEL,
-            "amplihack's built-in default",
-            None
-        ))
+        Some(selection(DEFAULT_MODEL, ModelSource::BuiltInDefault, None))
     );
 }
 
@@ -1003,8 +1011,10 @@ fn test_build_command_leaves_the_childs_default_model_env_untouched() {
 }
 
 /// Issue #1527: an explicit `--model` is forwarded unchanged, in both forms,
-/// even when it is dotted and AMPLIHACK_DEFAULT_MODEL is dotted too. The
-/// operator typed it, and Claude Code's error names it.
+/// even when it is dotted and AMPLIHACK_DEFAULT_MODEL is dotted too. The issue
+/// asks that the operator's value be left alone. What amplihack adds for a
+/// dotted one is a stderr warning, pinned by the
+/// `test_explicit_dotted_model_warnings_*` tests, not a rewrite.
 #[test]
 fn test_build_command_explicit_dotted_model_is_not_normalised() {
     let env = Some("claude-opus-5.5[1m]");
@@ -1079,7 +1089,7 @@ fn test_proxy_model_is_never_normalised() {
 #[test]
 fn test_model_selection_notice_is_unchanged_without_rewrite() {
     let documented = model_selection_notice(
-        &selection("claude-sonnet-4-5", "AMPLIHACK_DEFAULT_MODEL", None),
+        &selection("claude-sonnet-4-5", ModelSource::DefaultModelEnv, None),
         "claude",
     );
     assert_eq!(
@@ -1090,7 +1100,7 @@ fn test_model_selection_notice_is_unchanged_without_rewrite() {
     );
 
     let built_in = model_selection_notice(
-        &selection(DEFAULT_MODEL, "amplihack's built-in default", None),
+        &selection(DEFAULT_MODEL, ModelSource::BuiltInDefault, None),
         "rusty",
     );
     assert_eq!(
@@ -1101,6 +1111,139 @@ fn test_model_selection_notice_is_unchanged_without_rewrite() {
              value to let rusty choose its own default model."
         )
     );
+}
+
+/// Issue #1527: on the LiteLLM gateway path the notice names
+/// AMPLIHACK_LITELLM_MODEL as the variable to change. AMPLIHACK_DEFAULT_MODEL
+/// is not read there, so advice to set it, or to empty it, would have no
+/// effect.
+#[test]
+fn test_model_selection_notice_on_the_gateway_names_the_gateway_variable() {
+    let got = model_selection_notice(
+        &selection("gateway-model", ModelSource::LiteLlmGateway, None),
+        "claude",
+    );
+    assert_eq!(got, DOCUMENTED_GATEWAY_NOTICE);
+    assert!(
+        !got.contains("Set AMPLIHACK_DEFAULT_MODEL"),
+        "the gateway notice must not advise setting a variable that is not read: {got}"
+    );
+}
+
+/// Issue #1527: a dotted Claude id given to `--model`, in either form, produces
+/// one warning naming the hyphenated spelling. The value in the warning is the
+/// one forwarded, and the suggestion keeps any suffix.
+#[test]
+fn test_explicit_dotted_model_warnings_name_the_hyphenated_spelling() {
+    let args = |list: &[&str]| -> Vec<String> { list.iter().map(|a| a.to_string()).collect() };
+
+    assert_eq!(
+        explicit_dotted_model_warnings(&args(&["--model", "claude-opus-5.5"]), "claude"),
+        vec![DOCUMENTED_EXPLICIT_WARNING.to_string()]
+    );
+    assert_eq!(
+        explicit_dotted_model_warnings(&args(&["--model=claude-opus-5.5"]), "claude"),
+        vec![DOCUMENTED_EXPLICIT_WARNING.to_string()],
+        "the --model= form must give the same warning"
+    );
+
+    let suffixed = explicit_dotted_model_warnings(
+        &args(&["-p", "hello", "--model", "claude-opus-5.5[1m]"]),
+        "rusty",
+    );
+    assert_eq!(suffixed.len(), 1, "got: {suffixed:?}");
+    assert!(
+        suffixed[0].contains("passing `--model claude-opus-5.5[1m]` to `rusty` as typed")
+            && suffixed[0].ends_with("Use `--model claude-opus-5-5[1m]`."),
+        "got: {suffixed:?}"
+    );
+}
+
+/// Issue #1527: no warning for anything that is not a dotted Claude id, for a
+/// `--model` with no value, or for arguments that only resemble `--model`.
+#[test]
+fn test_explicit_dotted_model_warnings_are_silent_otherwise() {
+    let quiet: [&[&str]; 9] = [
+        &[],
+        &["--model", "claude-opus-5-5"],
+        &["--model=claude-opus-5-5[1m]"],
+        &["--model", "opus[1m]"],
+        &["--model", "gpt-5.1"],
+        &["--model", "claude-3.5-sonnet"],
+        &["--model"],
+        &["--model-config", "claude-opus-5.5"],
+        &["-p", "claude-opus-5.5"],
+    ];
+    for list in quiet {
+        let args: Vec<String> = list.iter().map(|a| a.to_string()).collect();
+        assert_eq!(
+            explicit_dotted_model_warnings(&args, "claude"),
+            Vec::<String>::new(),
+            "{args:?} must not produce a warning"
+        );
+    }
+}
+
+/// Issue #1527 review: the help text and reference pages an operator reads
+/// about `--model` must name the default amplihack passes. Before this test
+/// they still said amplihack passes no `--model` when AMPLIHACK_DEFAULT_MODEL
+/// is unset, which stopped being true when [`DEFAULT_MODEL`] was introduced.
+#[test]
+fn test_model_help_and_docs_name_the_built_in_default() {
+    use clap::CommandFactory;
+
+    let mut cli = crate::Cli::command();
+    let claude = cli
+        .find_subcommand_mut("claude")
+        .expect("`amplihack claude` should exist");
+    let mut help = Vec::new();
+    claude.write_long_help(&mut help).unwrap();
+    let help = String::from_utf8(help).unwrap();
+
+    let pages = [
+        ("`amplihack claude --help`", help.as_str()),
+        (
+            "docs/reference/launch-flag-injection.md",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../docs/reference/launch-flag-injection.md"
+            )),
+        ),
+        (
+            "docs/reference/environment-variables.md",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../docs/reference/environment-variables.md"
+            )),
+        ),
+        (
+            "docs/reference/flag-matrix.md",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../docs/reference/flag-matrix.md"
+            )),
+        ),
+        (
+            "docs/reference/LAUNCHER_MODEL_CONFIGURATION.md",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../docs/reference/LAUNCHER_MODEL_CONFIGURATION.md"
+            )),
+        ),
+    ];
+    let default_flag = format!("--model {DEFAULT_MODEL}");
+    for (name, text) in pages {
+        assert!(
+            text.contains(&default_flag),
+            "{name} must name the built-in default `{default_flag}`"
+        );
+        for stale in ["does not choose a model", "no built-in default"] {
+            assert!(
+                !text.contains(stale),
+                "{name} still says {stale:?}, which has not been true since DEFAULT_MODEL"
+            );
+        }
+    }
 }
 
 /// Issue #1527, wired together short of spawning a process: the selection a

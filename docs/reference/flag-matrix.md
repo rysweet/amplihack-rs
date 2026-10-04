@@ -73,7 +73,7 @@ Current behavior, derived from `command.rs`:
 
 | Variable | Effect |
 |---|---|
-| `AMPLIHACK_DEFAULT_MODEL` | Pin the model passed to Claude-compatible tools. Unset (the default) means amplihack passes no `--model` at all |
+| `AMPLIHACK_DEFAULT_MODEL` | Sets the model passed to Claude-compatible tools. Unset means `claude-opus-5[1m]`; empty or whitespace-only passes no `--model`; a dotted Claude id is rewritten to hyphens. See [`AMPLIHACK_DEFAULT_MODEL`](./environment-variables.md#amplihack_default_model) |
 | `AMPLIHACK_COPILOT_NO_ALLOW_ALL` | Set to `1` to suppress `--allow-all` injection for Copilot |
 | `AMPLIHACK_COPILOT_NO_REMOTE` | Set to `1` to suppress `--remote` injection for Copilot |
 
@@ -83,11 +83,14 @@ Current behavior, derived from `command.rs`:
    `--skip-permissions` AND the tool is Claude-compatible. Never injected
    by default (SEC-2).
 
-2. **`--model`**: Injected for Claude-compatible tools **only** when
-   `AMPLIHACK_DEFAULT_MODEL` is set to a non-blank value and the user did not
-   already supply `--model` in extra args. There is no built-in default: an
-   alias amplihack hardcodes here is resolved by the tool and goes stale with
-   the tool's version (issue #1421).
+2. **`--model`**: Injected for Claude-compatible tools when the user did not
+   already supply `--model` in extra args, unless `AMPLIHACK_DEFAULT_MODEL` is
+   set to an empty value outside the LiteLLM gateway path. The value is `AMPLIHACK_LITELLM_MODEL` on the LiteLLM
+   gateway path, otherwise `AMPLIHACK_DEFAULT_MODEL` (a dotted Claude id
+   rewritten to hyphens, issue #1527), otherwise the concrete id
+   `claude-opus-5[1m]`. The default is a concrete id rather than an alias
+   because an alias is resolved by the tool and goes stale with the tool's
+   version (issue #1421).
 
 3. **`--allow-all`**: Injected only for `copilot` unless suppressed by env
    var or the user already provided any `--allow-all*` flag.
@@ -152,8 +155,8 @@ its full flag capabilities.
 
 | Test case | Input | Expected flags |
 |---|---|---|
-| Claude default | `claude`, no extra args | (no flags) |
-| Claude skip-perms | `claude`, `--skip-permissions` | `--dangerously-skip-permissions` |
+| Claude default | `claude`, no extra args | `--model claude-opus-5[1m]` |
+| Claude skip-perms | `claude`, `--skip-permissions` | `--dangerously-skip-permissions --model claude-opus-5[1m]` |
 | Claude pinned model | `claude`, `AMPLIHACK_DEFAULT_MODEL=sonnet` | `--model sonnet` |
 | Copilot default | `copilot`, no extra args | `--allow-all --remote` |
 | Copilot suppressed | `copilot`, `AMPLIHACK_COPILOT_NO_ALLOW_ALL=1` + `AMPLIHACK_COPILOT_NO_REMOTE=1` | (no flags) |
