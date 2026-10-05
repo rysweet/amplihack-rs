@@ -1,0 +1,77 @@
+name: issue-1527-dotted-model-ids
+description: >
+  Outside-in QA for issue #1527 (PR #1537). GitHub Copilot CLI spells Claude
+  model ids with a dot (claude-opus-5.5), and Claude model ids use hyphens. The
+  scenario runs the real amplihack binary (via
+  tests/gadugi/run-issue-1527-model-scenario.sh) under env -i with a fresh HOME,
+  against stub claude, copilot and codex executables that record their argv and
+  environment. It checks the --model each tool receives and the stderr lines
+  amplihack prints. A dotted Claude id in AMPLIHACK_DEFAULT_MODEL is rewritten
+  to hyphens. An explicit dotted --model is forwarded as typed, with a warning
+  for Claude-compatible tools. copilot, codex and the LiteLLM gateway are left
+  alone. While the operator's own non-blank ANTHROPIC_BASE_URL is set outside
+  the gateway, there is neither a rewrite nor a warning, and the stderr line
+  says why. The auto-drive QA step runs this against the head commit, so the
+  evidence always describes the commit being merged.
+version: "1.0"
+config:
+  timeout: 900000
+environment:
+  requires: []
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, qa-team, launch, model-selection, regression]
+  priority: high
+  issues: ["1527"]
+  pr: "1537"
+steps:
+  - name: run-issue-1527-model-cases
+    agent: cli-agent
+    action: execute
+    params:
+      command: tests/gadugi/run-issue-1527-model-scenario.sh
+    timeout: 880000
+  - name: all-model-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+  - name: contract-green
+    agent: cli-agent
+    action: validate_output
+    params:
+      expected: "issue 1527 dotted model id contract green"
+assertions:
+  - name: all-cases-passed
+    type: output_contains
+    params:
+      target: stdout
+      expected: ALL_CASES_PASSED
+  - name: default-model-rewritten
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: env-dotted "
+  - name: explicit-dotted-model-warned
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: explicit-dotted "
+  - name: base-url-keeps-dotted-default-model
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: base-url-env-dotted "
+  - name: base-url-silences-explicit-warning
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: base-url-explicit-dotted "
+  - name: blank-base-url-counts-as-unset
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: base-url-blank-env-dotted "
