@@ -102,7 +102,11 @@ MODEL SELECTION (issues #1421, #1527)
   AMPLIHACK_LITELLM_MODEL is set (the LiteLLM gateway), the model is
   AMPLIHACK_LITELLM_MODEL and AMPLIHACK_DEFAULT_MODEL is not read. Other
   AMPLIHACK_LITELLM_* variables, such as AMPLIHACK_LITELLM_TELEMETRY_FILE, do
-  not affect the model.")]
+  not affect the model.
+
+  While ANTHROPIC_BASE_URL is set outside the gateway, the endpoint it names
+  decides which model ids are valid, so a dotted Claude id is neither
+  rewritten nor warned about.")]
     Claude {
         /// Disable post-session reflection analysis.
         #[arg(long = "no-reflection")]

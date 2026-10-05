@@ -250,8 +250,11 @@ pub(super) struct ModelArgs {
 /// this returns and decides nothing about the model itself, so the tests on
 /// this function cover what an operator sees.
 ///
-/// Reads the LiteLLM gateway variables, `AMPLIHACK_LITELLM_MODEL` and
-/// `AMPLIHACK_DEFAULT_MODEL` from the environment.
+/// Reads the LiteLLM gateway variables, `ANTHROPIC_BASE_URL`,
+/// `AMPLIHACK_LITELLM_MODEL` and `AMPLIHACK_DEFAULT_MODEL` from the
+/// environment. Which endpoint the model id goes to ([`model_endpoint`]) is
+/// decided once, here, and both the dotted-id rewrite and the dotted
+/// `--model` warning follow from it.
 ///
 /// Issue #1421: amplihack requests a CONCRETE model id, never an alias. It used
 /// to force `--model opus[1m]`. An alias is resolved by the CLI, so its meaning
@@ -276,7 +279,9 @@ pub(super) struct ModelArgs {
 ///    default of its own.
 /// 3. `AMPLIHACK_DEFAULT_MODEL`, which pins every launch; an empty value means
 ///    "pass nothing and let the CLI decide". A dotted Claude id (Copilot's
-///    spelling) is rewritten to the hyphenated id (#1527).
+///    spelling) is rewritten to the hyphenated id (#1527), except while the
+///    operator's own `ANTHROPIC_BASE_URL` is set
+///    ([`ModelEndpoint::OperatorBaseUrl`]).
 /// 4. [`DEFAULT_MODEL`].
 ///
 /// This still outranks a `"model"` set in `~/.claude/settings.json`, which is
@@ -285,31 +290,30 @@ pub(super) struct ModelArgs {
 /// and where it came from, so the id in any later error traces straight back
 /// to this decision instead of looking like a secret inside the binary.
 pub(super) fn model_args(binary_name: &str, extra_args: &[String]) -> ModelArgs {
-    let is_claude_compatible = is_claude_compatible_tool(binary_name);
-    let through_gateway = is_claude_compatible && amplihack_utils::litellm_proxy::proxy_requested();
+    let endpoint = model_endpoint();
     let mut out = ModelArgs {
         argv: Vec::new(),
-        stderr: explicit_model_warnings(binary_name, extra_args, through_gateway),
+        stderr: explicit_model_warnings(binary_name, extra_args, endpoint),
     };
 
     let user_has_model = extra_args
         .iter()
         .any(|arg| arg == "--model" || arg.starts_with("--model="));
-    if user_has_model || !is_claude_compatible {
+    if user_has_model || !is_claude_compatible_tool(binary_name) {
         return out;
     }
-    let selection = if through_gateway {
+    let selection = match endpoint {
         // `ProxyConfig::from_env()` refuses a gateway launch without
         // `AMPLIHACK_LITELLM_MODEL` before the command is built, so the
         // fallback is never reached by a real launch.
-        Some(ModelSelection {
+        ModelEndpoint::LiteLlmGateway => Some(ModelSelection {
             model: std::env::var(amplihack_utils::litellm_proxy::MODEL_ENV)
                 .unwrap_or_else(|_| "amplihack-default".to_string()),
             source: ModelSource::LiteLlmGateway,
-            normalised_from: None,
-        })
-    } else {
-        configured_default_model()
+            spelling: Spelling::AsConfigured,
+        }),
+        ModelEndpoint::ToolDefault => configured_default_model(DottedIds::Rewrite),
+        ModelEndpoint::OperatorBaseUrl => configured_default_model(DottedIds::KeepForBaseUrl),
     };
     if let Some(selection) = selection {
         out.stderr
@@ -317,6 +321,49 @@ pub(super) fn model_args(binary_name: &str, extra_args: &[String]) -> ModelArgs 
         out.argv = vec!["--model".to_string(), selection.model];
     }
     out
+}
+
+/// The variable Claude Code reads for the API endpoint it sends requests, and
+/// so the model id, to.
+pub(super) const ANTHROPIC_BASE_URL_ENV: &str = "ANTHROPIC_BASE_URL";
+
+/// Where the model id of a Claude-compatible launch is sent, as far as the
+/// dotted-id handling of issue #1527 is concerned. Only
+/// [`ToolDefault`](Self::ToolDefault) gets the rewrite and the warning: the
+/// other two name an endpoint amplihack does not know the model ids of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ModelEndpoint {
+    /// Neither a LiteLLM gateway variable nor `ANTHROPIC_BASE_URL` is set, so
+    /// the tool uses its own default endpoint and Anthropic's model ids, which
+    /// use hyphens.
+    ToolDefault,
+    /// amplihack's LiteLLM gateway, selected by
+    /// [`proxy_requested`](amplihack_utils::litellm_proxy::proxy_requested).
+    /// It routes on the exact model name, and a dot in a route name may be
+    /// correct. On this path amplihack sets `ANTHROPIC_BASE_URL` for the child
+    /// itself, so this variant outranks
+    /// [`OperatorBaseUrl`](Self::OperatorBaseUrl).
+    LiteLlmGateway,
+    /// The operator's own `ANTHROPIC_BASE_URL` is set to a non-blank value and
+    /// the gateway is not in use. The launched tool inherits it and sends the
+    /// model id to that endpoint, which decides which ids are valid. A proxy
+    /// in front of GitHub Copilot, for example, may serve Copilot's dotted
+    /// spelling. amplihack does not inspect the URL, so this applies even when
+    /// it names Anthropic's own API.
+    OperatorBaseUrl,
+}
+
+/// The [`ModelEndpoint`] of a launch, from the environment. A blank
+/// `ANTHROPIC_BASE_URL` counts as unset, the way a shell delivers an unset-ish
+/// value. `model_args` calls this once per launch.
+pub(super) fn model_endpoint() -> ModelEndpoint {
+    if amplihack_utils::litellm_proxy::proxy_requested() {
+        return ModelEndpoint::LiteLlmGateway;
+    }
+    match std::env::var_os(ANTHROPIC_BASE_URL_ENV) {
+        Some(url) if !url.to_string_lossy().trim().is_empty() => ModelEndpoint::OperatorBaseUrl,
+        _ => ModelEndpoint::ToolDefault,
+    }
 }
 
 /// The model amplihack requests when the operator has not chosen one.
@@ -347,8 +394,34 @@ pub(crate) const DEFAULT_MODEL: &str = "claude-opus-5[1m]";
 pub(crate) struct ModelSelection {
     pub(crate) model: String,
     pub(crate) source: ModelSource,
-    /// The operator's spelling, when it was rewritten into `model` (#1527).
-    pub(crate) normalised_from: Option<String>,
+    /// How `model` relates to the operator's spelling (#1527).
+    pub(crate) spelling: Spelling,
+}
+
+/// How the model in a [`ModelSelection`] relates to the operator's spelling
+/// (#1527), for the stderr line.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Spelling {
+    /// Passed as configured, and not a dotted Claude id, or not read from
+    /// `AMPLIHACK_DEFAULT_MODEL`. The stderr line is the #1421 one, unchanged.
+    AsConfigured,
+    /// Rewritten from `from`, a dotted Claude id.
+    Normalised { from: String },
+    /// A dotted Claude id passed as configured because the operator's
+    /// `ANTHROPIC_BASE_URL` is set ([`ModelEndpoint::OperatorBaseUrl`]).
+    /// `hyphenated` is Anthropic's spelling, which the stderr line names.
+    KeptForBaseUrl { hyphenated: String },
+}
+
+/// What [`configured_default_model`] does with a dotted Claude id.
+/// [`model_args`] chooses from the launch's [`ModelEndpoint`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DottedIds {
+    /// Rewrite it to the hyphenated id.
+    Rewrite,
+    /// Pass it as configured, because the operator's `ANTHROPIC_BASE_URL`
+    /// names the endpoint.
+    KeepForBaseUrl,
 }
 
 /// Where a [`ModelSelection`] came from. It decides both the source named in
@@ -386,35 +459,46 @@ impl ModelSource {
 ///
 /// Issue #1527: operators set this to a Claude id in the dotted spelling GitHub
 /// Copilot CLI uses (`claude-opus-5.5`). Only amplihack reads the variable, and
-/// only for claude-compatible launches, and Claude model ids use hyphens. So a
-/// dotted Claude id is rewritten to the hyphenated one and the selection
-/// records the original. See [`normalize_dotted_claude_model_id`].
+/// only for claude-compatible launches, and Claude model ids use hyphens. So
+/// with [`DottedIds::Rewrite`] a dotted Claude id is rewritten to the
+/// hyphenated one and the selection records the original. See
+/// [`normalize_dotted_claude_model_id`]. With [`DottedIds::KeepForBaseUrl`] it
+/// is passed as configured and the selection records the hyphenated spelling,
+/// so the stderr line can say why it was not rewritten.
 ///
 /// The variable is read once, and the source is decided in the same match arm,
 /// so the stderr line cannot name a source that disagrees with the value. A
 /// value that is not valid UTF-8 falls back to [`DEFAULT_MODEL`] rather than
 /// being forwarded lossily.
-pub(crate) fn configured_default_model() -> Option<ModelSelection> {
+pub(crate) fn configured_default_model(dotted: DottedIds) -> Option<ModelSelection> {
     match std::env::var("AMPLIHACK_DEFAULT_MODEL") {
         Ok(raw) => {
             let trimmed = raw.trim();
             if trimmed.is_empty() {
                 return None;
             }
-            let (model, normalised_from) = match normalize_dotted_claude_model_id(trimmed) {
-                Some(hyphenated) => (hyphenated, Some(trimmed.to_string())),
-                None => (trimmed.to_string(), None),
+            let (model, spelling) = match (normalize_dotted_claude_model_id(trimmed), dotted) {
+                (None, _) => (trimmed.to_string(), Spelling::AsConfigured),
+                (Some(hyphenated), DottedIds::Rewrite) => (
+                    hyphenated,
+                    Spelling::Normalised {
+                        from: trimmed.to_string(),
+                    },
+                ),
+                (Some(hyphenated), DottedIds::KeepForBaseUrl) => {
+                    (trimmed.to_string(), Spelling::KeptForBaseUrl { hyphenated })
+                }
             };
             Some(ModelSelection {
                 model,
                 source: ModelSource::DefaultModelEnv,
-                normalised_from,
+                spelling,
             })
         }
         Err(_) => Some(ModelSelection {
             model: DEFAULT_MODEL.to_string(),
             source: ModelSource::BuiltInDefault,
-            normalised_from: None,
+            spelling: Spelling::AsConfigured,
         }),
     }
 }
@@ -458,7 +542,8 @@ fn split_leading(s: &str, pred: fn(&u8) -> bool) -> Option<(&str, &str)> {
 
 /// The one stderr line naming the model amplihack passes and where it came
 /// from (issue #1421), plus the original spelling when it was rewritten
-/// (issue #1527).
+/// (issue #1527), or the hyphenated spelling and the reason when a dotted id
+/// was kept because `ANTHROPIC_BASE_URL` is set.
 ///
 /// The advice at the end names the variable that controls this source. On the
 /// LiteLLM gateway path that is `AMPLIHACK_LITELLM_MODEL`: telling the operator
@@ -466,20 +551,25 @@ fn split_leading(s: &str, pred: fn(&u8) -> bool) -> Option<(&str, &str)> {
 /// not read, and an empty gateway model is refused rather than meaning "let the
 /// tool choose".
 ///
-/// For the other two sources, and without a rewrite, the line is exactly what
-/// it was before #1527, so anything that reads stderr sees no change.
+/// For the other two sources, and with [`Spelling::AsConfigured`], the line is
+/// exactly what it was before #1527, so anything that reads stderr sees no
+/// change.
 pub(super) fn model_selection_notice(selection: &ModelSelection, binary_name: &str) -> String {
     let ModelSelection {
         model,
         source,
-        normalised_from,
+        spelling,
     } = selection;
     let label = source.label();
-    let provenance = match normalised_from {
-        Some(original) => {
-            format!("{label}, normalised from `{original}`: Claude model ids use hyphens, not dots")
+    let provenance = match spelling {
+        Spelling::AsConfigured => label.to_string(),
+        Spelling::Normalised { from } => {
+            format!("{label}, normalised from `{from}`: Claude model ids use hyphens, not dots")
         }
-        None => label.to_string(),
+        Spelling::KeptForBaseUrl { hyphenated } => format!(
+            "{label}, not normalised to `{hyphenated}` because {ANTHROPIC_BASE_URL_ENV} is set \
+             and the endpoint it names decides which model ids are valid"
+        ),
     };
     let advice = match source {
         ModelSource::LiteLlmGateway => format!(
@@ -503,8 +593,11 @@ pub(super) fn model_selection_notice(selection: &ModelSelection, binary_name: &s
 /// - Only for a Claude-compatible tool ([`is_claude_compatible_tool`]). The
 ///   dotted spelling is GitHub Copilot CLI's own, so telling an
 ///   `amplihack copilot` user to change `claude-opus-4.5` would be wrong.
-/// - Not when `through_gateway` is true. The LiteLLM gateway routes on the
-///   exact model name, and a dot in a route name may be correct.
+/// - Only when `endpoint` is [`ModelEndpoint::ToolDefault`]. The LiteLLM
+///   gateway routes on the exact model name, and a dot in a route name may be
+///   correct. An endpoint the operator named in `ANTHROPIC_BASE_URL` decides
+///   its own model ids, and one in front of GitHub Copilot may serve the
+///   dotted spelling, so advice to change it would be wrong there.
 ///
 /// The value is still forwarded as typed: the issue asks that an explicit
 /// `--model` not be rewritten. The warning exists because the launched tool may
@@ -519,9 +612,9 @@ pub(super) fn model_selection_notice(selection: &ModelSelection, binary_name: &s
 pub(super) fn explicit_model_warnings(
     binary_name: &str,
     extra_args: &[String],
-    through_gateway: bool,
+    endpoint: ModelEndpoint,
 ) -> Vec<String> {
-    if !is_claude_compatible_tool(binary_name) || through_gateway {
+    if !is_claude_compatible_tool(binary_name) || endpoint != ModelEndpoint::ToolDefault {
         return Vec::new();
     }
     let mut warnings = Vec::new();

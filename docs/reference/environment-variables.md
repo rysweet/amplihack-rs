@@ -925,7 +925,7 @@ ignore it.
 | `AMPLIHACK_DEFAULT_MODEL` | What amplihack adds |
 |---|---|
 | unset, or not valid UTF-8 | `--model claude-opus-5[1m]` |
-| a model id | `--model` with that id, trimmed of surrounding whitespace; a dotted Claude id is [rewritten to hyphens](#dotted-claude-model-ids) |
+| a model id | `--model` with that id, trimmed of surrounding whitespace; a dotted Claude id is [rewritten to hyphens](#dotted-claude-model-ids) unless [`ANTHROPIC_BASE_URL` is set](#behind-your-own-anthropic_base_url) |
 | empty or whitespace-only | nothing; the tool picks its own default |
 
 Because amplihack passes `--model` unless this variable is empty, the `"model"`
@@ -1022,11 +1022,44 @@ Any other value is passed as-is:
 | `claude-3.5-sonnet` | the version comes before the family |
 | `claude-opus-5.5.1` | the suffix starts with `.`, not `[` or `-` |
 | `Claude-Opus-5.5` | not lowercase |
+| any dotted Claude id, while `ANTHROPIC_BASE_URL` is set | the endpoint it names decides which ids are valid; see [Behind your own `ANTHROPIC_BASE_URL`](#behind-your-own-anthropic_base_url) |
 
 Only the `--model` argument is rewritten. The launched tool inherits
 `AMPLIHACK_DEFAULT_MODEL` exactly as you set it. A nested amplihack launch reads
 it again and produces the same rewrite, unless that launch has an explicit
-`--model` or uses the LiteLLM gateway.
+`--model`, uses the LiteLLM gateway or has `ANTHROPIC_BASE_URL` set.
+
+#### Behind your own `ANTHROPIC_BASE_URL`
+
+When `ANTHROPIC_BASE_URL` is set to a non-blank value and no
+[LiteLLM gateway variable](#external-litellm-gateway-variables) is set, the
+launched tool inherits the variable and sends the model id to the endpoint it
+names. That endpoint decides which model ids are valid, as the gateway does on
+its own path. A proxy in front of GitHub Copilot, for example, may serve
+Copilot's dotted spelling. So amplihack corrects nothing:
+
+- A dotted Claude id in `AMPLIHACK_DEFAULT_MODEL` is passed as set, trimmed.
+- A dotted explicit `--model` gets no warning.
+
+The stderr line for the first case says why the id was not rewritten and names
+Anthropic's spelling, in case the endpoint expects it:
+
+```sh
+ANTHROPIC_BASE_URL=https://copilot-proxy.example.com \
+  AMPLIHACK_DEFAULT_MODEL=claude-sonnet-4.5 amplihack claude
+# amplihack adds: --model claude-sonnet-4.5
+```
+
+```text
+amplihack: passing `--model claude-sonnet-4.5` to `claude` (from AMPLIHACK_DEFAULT_MODEL, not normalised to `claude-sonnet-4-5` because ANTHROPIC_BASE_URL is set and the endpoint it names decides which model ids are valid). Set AMPLIHACK_DEFAULT_MODEL to override it, or to an empty value to let claude choose its own default model.
+```
+
+amplihack does not inspect the URL, so this applies whatever the variable
+points at, Anthropic's own API included. If your endpoint expects Anthropic's
+hyphenated ids, set the hyphenated id yourself. A blank `ANTHROPIC_BASE_URL`
+counts as unset. On the LiteLLM gateway path amplihack sets
+`ANTHROPIC_BASE_URL` for the launched tool itself, and the gateway rules above
+apply instead.
 
 #### Explicit `--model`
 
@@ -1054,6 +1087,9 @@ There is no warning for any other explicit value, and none in these cases:
   as typed.
 - The LiteLLM gateway path, because the gateway routes on the exact name and a
   dot in it may be correct.
+- While your own `ANTHROPIC_BASE_URL` is set, because the endpoint it names
+  decides which ids are valid; see
+  [Behind your own `ANTHROPIC_BASE_URL`](#behind-your-own-anthropic_base_url).
 
 ```sh
 # The explicit --model wins over the variable and reaches claude unchanged
