@@ -1592,22 +1592,41 @@ fn model_help_and_pages() -> Vec<(&'static str, String)> {
 /// about `--model` must name the default amplihack passes. Before this test
 /// they still said amplihack passes no `--model` when AMPLIHACK_DEFAULT_MODEL
 /// is unset, which stopped being true when [`DEFAULT_MODEL`] was introduced.
+///
+/// Both checks are positive, and each is about this variable alone. Every text
+/// must show `--model <DEFAULT_MODEL>`. The variable's own entry in
+/// environment-variables.md must give it on its `**Default:**` line. On main
+/// that line read "unset — amplihack passes **no** `--model` at all", and no
+/// page showed the flag. Both checks fail on that.
+///
+/// There is deliberately no ban on phrases such as "no built-in default".
+/// environment-variables.md documents dozens of variables, and that phrase is
+/// true of some of them, such as the required AMPLIHACK_LITELLM_MODEL. A
+/// page-wide ban fails on a correct sentence about another variable and blames
+/// DEFAULT_MODEL for it.
 #[test]
 fn test_model_help_and_docs_name_the_built_in_default() {
-    let pages = model_help_and_pages();
     let default_flag = format!("--model {DEFAULT_MODEL}");
-    for (name, text) in &pages {
+    for (name, text) in model_help_and_pages() {
         assert!(
             text.contains(&default_flag),
             "{name} must name the built-in default `{default_flag}`"
         );
-        for stale in ["does not choose a model", "no built-in default"] {
-            assert!(
-                !text.contains(stale),
-                "{name} still says {stale:?}, which has not been true since DEFAULT_MODEL"
-            );
-        }
     }
+
+    let heading = "### AMPLIHACK_DEFAULT_MODEL";
+    let default_line = ENVIRONMENT_VARIABLES_MD
+        .lines()
+        .skip_while(|line| *line != heading)
+        .skip(1)
+        .take_while(|line| !line.starts_with("## ") && !line.starts_with("### "))
+        .find(|line| line.starts_with("**Default:**"));
+    assert!(
+        default_line.is_some_and(|line| line.contains(&format!("`{DEFAULT_MODEL}`"))),
+        "docs/reference/environment-variables.md, section `{heading}`: the \
+         **Default:** line must give the built-in default `{DEFAULT_MODEL}`, \
+         found {default_line:?}"
+    );
 }
 
 /// Issue #1527 review: the stderr lines the docs show for `--model` are the ones
@@ -1683,20 +1702,20 @@ fn test_documented_model_stderr_lines_are_the_ones_amplihack_prints() {
 
 /// Issue #1527 review: only the three variables `proxy_requested()` checks
 /// select the LiteLLM gateway (see
-/// `test_only_the_three_gateway_variables_select_the_gateway`). The help text
-/// and LAUNCHER_MODEL_CONFIGURATION.md said any `AMPLIHACK_LITELLM_*` variable
-/// did, which told an operator with only telemetry variables set that their
-/// AMPLIHACK_DEFAULT_MODEL was ignored when it was in use.
+/// `test_only_the_three_gateway_variables_select_the_gateway`). An earlier
+/// draft of the help text and LAUNCHER_MODEL_CONFIGURATION.md said any
+/// `AMPLIHACK_LITELLM_*` variable did. That told an operator with only
+/// telemetry variables set that their AMPLIHACK_DEFAULT_MODEL was ignored when
+/// it was in use.
+///
+/// The check is positive: both texts must name each of the three. The draft
+/// named neither AMPLIHACK_LITELLM_ENDPOINT nor AMPLIHACK_LITELLM_API_KEY in
+/// either text, so this fails on it. There is no ban on the phrase "any
+/// `AMPLIHACK_LITELLM_*`". It is true in other contexts:
+/// docs/reference/security-recommendations.md uses it for the variables launch
+/// setup subprocesses never receive.
 #[test]
-fn test_help_and_docs_name_only_the_gateway_variables() {
-    for (name, text) in model_help_and_pages() {
-        for stale in ["any AMPLIHACK_LITELLM_*", "any `AMPLIHACK_LITELLM_*`"] {
-            assert!(
-                !text.contains(stale),
-                "{name} says {stale:?} selects the gateway, but only {PROXY_ENV_VARS:?} do"
-            );
-        }
-    }
+fn test_help_and_docs_name_each_gateway_variable() {
     for (name, text) in [
         ("`amplihack claude --help`", claude_long_help()),
         (
