@@ -68,21 +68,31 @@ const FOREIGN_FUNCTION_WORDS: &[&str] = &[
     "van", "war",
 ];
 
-/// Function words of the same six languages that are not English words:
-/// positive evidence that a code part of a memory (a pasted log) is in
-/// another language (see [`scored_terms`]). A command line has none of
-/// them. They are evidence only, never stop words.
+/// Function words of the same six languages (stopwords-iso) that are not
+/// English words, shell words or names: positive evidence that a code part
+/// of a memory (a pasted log) is in another language (see
+/// [`scored_terms`]). A command line has none of them. They are evidence
+/// only, never stop words, so a wrong entry costs recall on every fence
+/// that happens to contain it. Screened out for that reason: `aux` (`ps
+/// aux`), `pour` (English verb), `el` (`const el`, El Paso), `est` (EST,
+/// estimate), `des` (DES), `il` (Illinois), `las`, `los` (Las Vegas, Los
+/// Angeles), `para` (paragraph, `para-`), `pas` (pas de deux), `uma` (a
+/// name), `que` (SMART), `non` (English prefix), `com` (domains).
 const FOREIGN_EVIDENCE: &[&str] = &[
     // German
     "auch", "das", "dem", "der", "eine", "ich", "ist", "keine", "nicht", "noch", "sind", "und",
     "wie", "wird", "wo", "zum", "zur", // Spanish
-    "el", "está", "están", "las", "los", "para", "pero", "por", "una", // French
-    "aux", "avec", "cette", "dans", "des", "est", "le", "les", "pas", "pour", "sur", "une",
-    // Italian
-    "che", "della", "gli", "il", "nella", "sono", // Portuguese
-    "não", "são", "também", "uma", // Dutch
+    "está", "están", "pero", "por", "una", // French
+    "avec", "cette", "dans", "le", "les", "sur", "une", // Italian
+    "che", "della", "gli", "nella", "sono", // Portuguese
+    "não", "são", "também", // Dutch
     "een", "het", "naar", "niet", "ook", "zijn",
 ];
+
+/// A code part is foreign on at least this much evidence: two listed
+/// words, or one listed word and a word with a non-ASCII letter. One
+/// accented word alone (`Jürgen Müller` in a git log) is not evidence.
+const MIN_FOREIGN_EVIDENCE: usize = 2;
 
 /// SMART words kept as topic words. SMART was built for news retrieval;
 /// these are everyday developer vocabulary (`value`, `name`, `self`), and
@@ -500,20 +510,27 @@ fn prose_word(token: &str) -> Option<String> {
 /// Code is left out of the language check, so a German log pasted in a
 /// fence or a backtick span by an English assistant turn would otherwise
 /// lend its words to a German prompt. A code part is judged foreign only on
-/// positive evidence: a prose-like word with a non-ASCII letter (`größer`,
-/// `não`) or one of [`FOREIGN_EVIDENCE`]. A command line has neither, so
-/// `cargo run ingest parquet crash repro` keeps its words, while a foreign
-/// part contributes only its code-looking tokens (`needless_borrow`,
-/// `src/main.rs`). Absence of English function words is not evidence: a
-/// command has none either.
+/// positive evidence, [`MIN_FOREIGN_EVIDENCE`] hits among its prose-like
+/// words: words from [`FOREIGN_EVIDENCE`], of which at least one is needed,
+/// and words with a non-ASCII letter (`größer`, `não`). A command line has
+/// neither, so `cargo run ingest parquet crash repro` and `ps aux | grep
+/// ingest worker` keep their words, while a foreign part contributes only
+/// its code-looking tokens (`needless_borrow`, `src/main.rs`). Absence of
+/// English function words is not evidence: a command has none either.
 fn scored_terms(text: &str, ignored: &HashSet<String>) -> HashSet<String> {
     let mut terms = HashSet::new();
     for (is_code, part) in segments(text) {
-        let foreign = is_code
-            && part
-                .split_whitespace()
-                .filter_map(prose_word)
-                .any(|word| !word.is_ascii() || FOREIGN_EVIDENCE.contains(&word.as_str()));
+        let (mut listed, mut non_ascii) = (0, 0);
+        if is_code {
+            for word in part.split_whitespace().filter_map(prose_word) {
+                if FOREIGN_EVIDENCE.contains(&word.as_str()) {
+                    listed += 1;
+                } else if !word.is_ascii() {
+                    non_ascii += 1;
+                }
+            }
+        }
+        let foreign = listed >= 1 && listed + non_ascii >= MIN_FOREIGN_EVIDENCE;
         if !foreign {
             terms.extend(topic_terms(part, ignored));
         } else {
@@ -1766,6 +1783,15 @@ mod tests {
                 "/fix terraform plan vault refresh",
                 "Agent general: assistant: Use this:\n```\nterraform plan vault refresh --auto-approve -var=env\n```",
             ),
+            // `aux` and `pour` are shell and English words, not evidence.
+            (
+                "/fix grep ingest worker in ps aux",
+                "Agent general: user: how do I find the stuck worker\n\nassistant: Check the stuck worker with:\n```\nps aux | grep ingest worker\n```",
+            ),
+            (
+                "/fix loader rows shard queue flush",
+                "Agent general: assistant: The loader runs:\n```\nloader pour rows shard queue flush\n```",
+            ),
         ] {
             let result =
                 format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(relevant)]);
@@ -1776,17 +1802,57 @@ mod tests {
                 "{relevant:?} is relevant to {prompt:?}"
             );
         }
-        // Positive evidence, and only that, marks a code part as foreign.
+        // The evidence list holds no English, shell or name words: with
+        // `pour` listed, this English fence would reach two hits (`pour` and
+        // the accented loanword `café`) and lose its words.
+        for word in [
+            "aux", "pour", "el", "est", "des", "il", "las", "los", "para", "pas", "uma", "que",
+            "non", "com",
+        ] {
+            assert!(
+                !FOREIGN_EVIDENCE.contains(&word),
+                "{word:?} is an English or shell word"
+            );
+        }
+        let cafe = "Agent general: assistant: The loader runs:\n```\nloader pour rows into the café shard queue\n```";
+        let prompt = "/fix the loader rows for the shard queue";
+        assert!(
+            format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(cafe)]).is_some(),
+            "{cafe:?} is relevant to {prompt:?}"
+        );
+        // An accented name in an English fence is not evidence: the memory
+        // scores the same as with no name at all (non-ASCII words are never
+        // topic words, so the two have the same terms unless one is demoted).
+        let prompt = "/fix the parser cleanup rebase from the git log";
+        let [umlaut, ascii] = ["Jürgen Müller", ""].map(|author| {
+            format_agent_memory_context(
+                prompt,
+                &prompt_agents(prompt),
+                &[memory(&format!(
+                    "Agent general: assistant: The git log shows:\n```\ncommit 3f2a Author: {author} rebase parser cleanup\n```"
+                ))],
+            )
+            .map(|text| text.split("relevance: ").nth(1).unwrap().to_string())
+        });
+        assert!(umlaut.is_some(), "the git log memory is relevant");
+        assert_eq!(umlaut, ascii, "an accented author name is not demoted");
+        // Positive evidence, two hits with a listed word among them, marks
+        // a code part as foreign; one hit does not.
         let none = HashSet::new();
-        let mut terms = scored_terms("see:\n```\ncargo run ingest parquet\n```", &none)
-            .into_iter()
-            .collect::<Vec<_>>();
-        terms.sort();
-        assert_eq!(terms, ["cargo", "ingest", "parquet", "run"]);
+        for kept in [
+            "see:\n```\ncargo run ingest parquet\n```",
+            "see:\n```\nFehler: größere Datei gefunden, cargo run ingest parquet\n```",
+            "see `le cargo run ingest parquet` there",
+        ] {
+            let terms = scored_terms(kept, &none);
+            for word in ["cargo", "run", "ingest", "parquet"] {
+                assert!(terms.contains(word), "{kept:?} keeps {word:?}: {terms:?}");
+            }
+        }
         for foreign in [
-            "see:\n```\nFehler: Datei nicht gefunden, src/main.rs weg\n```",
-            "see:\n```\nFehler: größere Datei gefunden, src/main.rs weg\n```",
-            "see `erreur: le fichier src/main.rs manque` there",
+            "see:\n```\nFehler: die Datei ist nicht gefunden, src/main.rs weg\n```",
+            "see:\n```\nFehler: größere Datei nicht gefunden, src/main.rs weg\n```",
+            "see `erreur: le fichier src/main.rs manque dans les logs` there",
         ] {
             let mut terms = scored_terms(foreign, &none).into_iter().collect::<Vec<_>>();
             terms.sort();

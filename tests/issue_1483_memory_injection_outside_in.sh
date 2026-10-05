@@ -111,6 +111,10 @@ cat >"${WORK}/parquet.jsonl" <<'EOF'
 {"role":"user","content":"how do I reproduce it"}
 {"role":"assistant","content":"Reproduce it with this on the host:\n```\ncargo run ingest parquet crash repro\n```"}
 EOF
+cat >"${WORK}/psaux.jsonl" <<'EOF'
+{"role":"user","content":"how do I find the stuck worker"}
+{"role":"assistant","content":"Check the stuck worker with:\n```\nps aux | grep ingest worker\n```"}
+EOF
 cat >"${WORK}/bin.jsonl" <<'EOF'
 {"role":"user","content":"why do the workers crash on startup?"}
 {"role":"assistant","content":"The build copies files into the bin directory, and the workers die if it is missing."}
@@ -128,6 +132,7 @@ store "${WORK}/sqlite.jsonl" tester
 store "${WORK}/docslog.jsonl" general
 store "${WORK}/hooksbin.jsonl" builder
 store "${WORK}/parquet.jsonl" general
+store "${WORK}/psaux.jsonl" general
 store "${WORK}/detected.jsonl" ""
 store "${WORK}/css.jsonl" ""
 
@@ -220,6 +225,9 @@ out="$(ask "/fix \`cargo test sqlite timeout\` on ci")"
 if [ "$(count "${out}" "raising the busy timeout fixed it")" -eq 1 ]; then pass "a quoted command prompt gets the sqlite memory"; else fail "sqlite memory missing for a quoted command: ${out}"; fi
 out="$(ask "/fix the parquet ingest crash repro")"
 if [ "$(count "${out}" "cargo run ingest parquet crash repro")" -eq 1 ]; then pass "a command-only fenced memory is matched"; else fail "parquet memory missing: ${out}"; fi
+# `aux` is a shell word, not evidence of another language.
+out="$(ask "/fix grep ingest worker in ps aux")"
+if [ "$(count "${out}" "ps aux | grep ingest worker")" -eq 1 ]; then pass "a ps aux fence keeps its words"; else fail "ps aux memory missing: ${out}"; fi
 
 echo
 echo "passed: ${PASS_COUNT}, failed: ${FAIL_COUNT}"
