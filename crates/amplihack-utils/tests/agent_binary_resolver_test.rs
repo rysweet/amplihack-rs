@@ -390,7 +390,13 @@ fn an_explicit_value_keeps_the_session_marker_it_overrode() {
     assert_eq!(without_marker.session_marker, None);
     assert_eq!(with_marker.binary, "copilot");
     assert_eq!(with_marker.source, agent_binary::ResolutionSource::Env);
-    assert_eq!(with_marker.session_marker.as_deref(), Some("claude"));
+    assert_eq!(
+        with_marker.session_marker,
+        Some(agent_binary::SessionMarker {
+            variable: "CLAUDE_CODE_ENTRYPOINT",
+            binary: "claude",
+        })
+    );
 }
 
 /// Issue #1481: a value tagged as a parent's default guess for the same binary

@@ -352,156 +352,29 @@ _detect_cli_name() {
   fi
 }
 
-# The launcher-context layer below runs on macOS as well as Linux, so it uses
-# only what both userlands provide: bash 3.2, POSIX `find -perm`, `wc -c`, `tr`,
-# plain `readlink`, `date +%s`, and jq. GNU-only forms (`stat -c`, `date -d`,
-# `readlink -f`) fail on BSD, and a failure here once dropped a valid file
-# without a word. tests/issue_1525_migrate_detect_cli_parity.sh runs this layer
-# against BSD-style stand-ins for those tools.
-
-# _detect_cli_epoch <timestamp>: print the Unix time of an RFC 3339 timestamp,
-# or fail. It accepts what chrono's DateTime::parse_from_rfc3339, used by the
-# Rust resolver, accepts: `T`, `t` or a space between date and time; `Z`, `z`
-# or a +hh:mm / -hh:mm offset; any number of fractional digits; a leap second.
-# Like chrono, it refuses a day the month does not have. The arithmetic is done
-# here, not by `date`: GNU `date -d` reads "yesterday" and an offset-less time
-# as local time, BSD `date -j -f` reads 31 February as 3 March, and the two take
-# different flags.
-_detect_cli_epoch() {
-  local re='^([0-9]{4})-([0-9]{2})-([0-9]{2})[Tt ]([0-9]{2}):([0-9]{2}):([0-9]{2})(\.[0-9]+)?([Zz]|([+-])([0-9]{2}):([0-9]{2}))$'
-  [[ "$1" =~ $re ]] || return 1
-  # 10#: a leading zero would otherwise make "08" an invalid octal number.
-  local y=$((10#${BASH_REMATCH[1]})) mo=$((10#${BASH_REMATCH[2]}))
-  local d=$((10#${BASH_REMATCH[3]})) h=$((10#${BASH_REMATCH[4]}))
-  local mi=$((10#${BASH_REMATCH[5]})) s=$((10#${BASH_REMATCH[6]}))
-  local sign="${BASH_REMATCH[9]}" oh=$((10#${BASH_REMATCH[10]:-0}))
-  local om=$((10#${BASH_REMATCH[11]:-0}))
-  local month_days=31
-  case "$mo" in
-    4|6|9|11) month_days=30 ;;
-    2)
-      month_days=28
-      if (( (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 )); then
-        month_days=29
-      fi
-      ;;
-  esac
-  if (( mo < 1 || mo > 12 || d < 1 || d > month_days || h > 23 || mi > 59 \
-        || s > 60 || oh > 23 || om > 59 )); then
-    return 1
-  fi
-  # chrono reads second 60 as 59 plus a second's worth of nanoseconds.
-  (( s == 60 )) && s=59
-  # Days since 1970-01-01 in the proleptic Gregorian calendar, counting years
-  # from March so that the leap day falls at the end (H. Hinnant's
-  # days_from_civil).
-  local yr=$y mp
-  if (( mo > 2 )); then
-    mp=$((mo - 3))
-  else
-    mp=$((mo + 9))
-    yr=$((y - 1))
-  fi
-  local era=$(( (yr >= 0 ? yr : yr - 399) / 400 ))
-  local yoe=$((yr - era * 400))
-  local doy=$(( (153 * mp + 2) / 5 + d - 1 ))
-  local doe=$((yoe * 365 + yoe / 4 - yoe / 100 + doy))
-  local days=$((era * 146097 + doe - 719468))
-  local offset=$((oh * 3600 + om * 60))
-  [[ "$sign" == "-" ]] && offset=$((-offset))
-  printf '%s\n' "$((days * 86400 + h * 3600 + mi * 60 + s - offset))"
-}
-
-# _detect_cli_realpath <path>: print the absolute <path> with every symbolic
-# link in it resolved, or fail. `readlink -f` does this on Linux, but macOS
-# before 12.3 has only plain `readlink`, so links are followed one at a time
-# and the containing directory is resolved with `cd -P`.
-_detect_cli_realpath() {
-  local path="$1" target parent hops=0
-  while [[ -L "$path" ]]; do
-    (( hops < 40 )) || return 1
-    hops=$((hops + 1))
-    target="$(readlink "$path")" || return 1
-    [[ "$target" == /* ]] || target="${path%/*}/$target"
-    path="$target"
-  done
-  parent="$(cd -P "${path%/*}/" 2>/dev/null && pwd -P)" || return 1
-  printf '%s/%s\n' "${parent%/}" "${path##*/}"
-}
-
-# _detect_cli_context <file> <dir> <now>: read one launcher_context.json found
-# in <dir>, given the current Unix time. Prints the launcher when the file is
-# usable, nothing when it is stale (older than 24h: sessions end, and an old
-# file is expected), and warns on stderr, naming the file and the reason, when
-# it cannot be used. A file with no timestamp, or one that is not RFC 3339,
-# cannot be used however recent it is, so it is named, not passed over as old.
-# Needs jq and <now>; detect_cli checks for both first. Mirrors
-# read_launcher_field in crates/amplihack-utils/src/agent_binary.rs.
-_detect_cli_context() {
-  local ctx="$1" dir="$2" now="$3" reason="" real size timestamp written=""
-  real="$(_detect_cli_realpath "$ctx" || true)"
-  if [[ -z "$real" ]]; then
-    reason="could not be resolved"
-  elif [[ "$real" != "$dir"/* ]]; then
-    reason="is a link to a file outside its directory"
-  elif [[ ! -r "$real" ]] || ! size="$(wc -c 2>/dev/null < "$real")" \
-       || [[ ! "$size" =~ ^[[:space:]]*[0-9]+[[:space:]]*$ ]]; then
-    # BSD `wc` pads the count with spaces; GNU `wc` reading stdin does not.
-    reason="could not be read"
-  elif (( size > 65536 )); then
-    reason="is larger than the 64 KiB limit"
-  elif [[ -z "$(tr -d '[:space:]' < "$real")" ]]; then
-    reason="is empty"
-  elif ! jq empty "$real" >/dev/null 2>&1; then
-    reason="is not valid JSON"
-  elif ! jq -e 'type == "object" and (.launcher | type) == "string"
-               and (.timestamp == null or (.timestamp | type) == "string")' \
-               "$real" >/dev/null 2>&1; then
-    reason='is JSON but not a launcher context, which needs a string "launcher" field'
-  elif ! jq -e '.timestamp != null' "$real" >/dev/null 2>&1; then
-    reason="has no timestamp, so its age is unknown"
-  else
-    # As for the launcher below: `jq -r` output loses a trailing newline in
-    # the shell, so a control character is replaced inside jq.
-    timestamp="$(jq -r '.timestamp | if test("[[:cntrl:]]") then "<control>" else . end' "$real")"
-    written="$(_detect_cli_epoch "$timestamp")" || reason="has a timestamp that is not RFC 3339"
-  fi
-  if [[ -n "$reason" ]]; then
-    log_warn "ignored $ctx: it $reason. Fix or delete it."
-    return 0
-  fi
-  (( now - written > 86400 )) && return 0
-  local launcher name
-  # Control characters are replaced inside jq: `jq -r` would print a trailing
-  # newline in the value, and the shell would then strip it.
-  launcher="$(jq -r '.launcher | if test("[[:cntrl:]]") then "<control>" else . end' "$real")"
-  name="$(_detect_cli_name "$launcher")"
-  if [[ -n "$name" ]]; then
-    printf '%s\n' "$name"
-  else
-    log_warn "ignored $ctx: it does not name amplifier, claude, codex or copilot as its launcher. Fix or delete it."
-  fi
-}
-
 detect_cli() {
-  # Resolution precedence. The Rust resolver in amplihack_utils::agent_binary
-  # is authoritative, and this mirrors it (issues #489, #1481, #1525):
+  # Resolution precedence (issues #489, #1481, #1525). The Rust resolver in
+  # amplihack_utils::agent_binary is authoritative; this script keeps only the
+  # layers that are cheap to state in shell, plus one the resolver lacks:
   #   1. AMPLIHACK_AGENT_BINARY (allowlist-validated), skipped while
   #      AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary> (#1481)
   #   2. a session marker: the CLI actually hosting this process, which
   #      outranks any file. The list is agent_binary::SESSION_MARKERS, in
-  #      order; tests/issue_1481_migrate_detect_cli_default_tag.sh fails if
-  #      they drift apart.
+  #      order; tests/issue_1525_migrate_detect_cli_parity.sh fails if they
+  #      drift apart.
   #   3. the parent process chain. Shell only; the Rust resolver has no such
   #      layer. Like a marker it is evidence of the running session, so it too
   #      ranks above the file.
-  #   4. .claude/runtime/launcher_context.json walked up from $PWD, fresh
-  #      (24h) only; stops at a .git boundary and at a world-writable or
-  #      foreign-owned directory; walks on past an unusable file, warning
-  #      with its path. Read with jq; without jq the layer is skipped, with
-  #      a warning that says so, and the same holds when `find` cannot check
-  #      a directory or `date +%s` gives no time.
-  #   5. default: copilot
+  #   4. everything else is `amplihack agent-binary`, the resolver itself: a
+  #      fresh (24h) .claude/runtime/launcher_context.json walked up from
+  #      $PWD, with its trust, size and symlink checks, then the copilot
+  #      default. It names on stderr every context file it could not use and
+  #      why. Layers 1 and 2 have already declined, and the resolver applies
+  #      the same rules to them, so they do not answer there either.
+  #      This skill ships with amplihack, so amplihack is on PATH wherever it
+  #      runs. Without it, or with a build too old to have the subcommand, a
+  #      warning says the launcher context was not read, and the answer is
+  #      copilot.
   if [[ -n "${AMPLIHACK_AGENT_BINARY:-}" ]]; then
     local override
     override="$(_detect_cli_name "${AMPLIHACK_AGENT_BINARY}")"
@@ -547,47 +420,24 @@ detect_cli() {
     esac
     pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
   done
-  local cur now world_writable hops=0
-  cur="$(pwd -P)"
-  now="$(date +%s 2>/dev/null || true)"
-  while [[ -n "$cur" && $hops -lt 32 ]]; do
-    # Stop at a directory another user owns, or one anyone may write to
-    # (#1335). Both tests are portable: `-O` is bash's own, and `find -perm`
-    # is POSIX. Permissions that cannot be checked are not a licence to trust
-    # the directory, but the failure is the tool's, so say so rather than
-    # stop without a word.
-    [[ -O "$cur" ]] || break
-    if ! world_writable="$(find "$cur" -prune -perm -0002 2>/dev/null)"; then
-      log_warn "could not check whether $cur is world-writable (find failed); no launcher context at or above it was read."
-      break
-    fi
-    [[ -z "$world_writable" ]] || break
-    local ctx="$cur/.claude/runtime/launcher_context.json"
-    if [[ -f "$ctx" ]]; then
-      # jq parses the file, and its age needs the current time. Without
-      # either no file can be read, and reporting this one as broken would
-      # tell the user to delete a good file. Say what is missing, once, and
-      # fall through to the default.
-      if ! command -v jq >/dev/null 2>&1; then
-        log_warn "jq not found; launcher context $ctx not read."
-        break
-      fi
-      if [[ ! "$now" =~ ^[0-9]+$ ]]; then
-        log_warn "date +%s did not give the current time; launcher context $ctx not read."
-        break
-      fi
-      local parsed
-      parsed="$(_detect_cli_context "$ctx" "$cur" "$now")"
-      if [[ -n "$parsed" ]]; then
-        echo "$parsed"
-        return
-      fi
-    fi
-    [[ -e "$cur/.git" || "$cur" == "/" ]] && break
-    cur="$(dirname "$cur")"
-    hops=$((hops + 1))
-  done
-  echo copilot
+  if ! command -v amplihack >/dev/null 2>&1; then
+    log_warn "amplihack not found; no launcher context was read. Assuming copilot."
+    echo copilot
+    return
+  fi
+  # `amplihack agent-binary` prints `<binary> (<source>)` on stdout. Its
+  # notices -- an inferred answer, a context file it skipped -- go to stderr,
+  # which is left on the user's terminal.
+  local resolved="" name=""
+  if resolved="$(amplihack agent-binary)"; then
+    name="$(_detect_cli_name "${resolved%% *}")"
+  fi
+  if [[ -z "$name" ]]; then
+    log_warn "amplihack agent-binary did not name an agent CLI; no launcher context was read. Assuming copilot."
+    echo copilot
+    return
+  fi
+  echo "$name"
 }
 
 detect_session_id() {

@@ -74,8 +74,8 @@ These variables are injected into every child process launched by `amplihack`. T
 
 Identifies which CLI binary the current session should use when spawning new AI sessions. As of the workflow runtime-isolation contract, this variable is an explicit override and read-through cache, not the only routing source. The shared resolver consults:
 
-1. `AMPLIHACK_AGENT_BINARY` env var (explicit override; CI/testing/back-compat), unless tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary>`. It wins over a session marker naming a different CLI, and `amplihack recipe run` / `amplihack agent-binary` print one stderr line naming the session it overrode.
-2. A live session marker exported by the hosting CLI (`CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_ENTRYPOINT`, `COPILOT_CLI`, ...)
+1. `AMPLIHACK_AGENT_BINARY` env var (explicit override; CI/testing/back-compat), unless tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary>`. It wins over a session marker naming a different CLI, and `amplihack recipe run` / `amplihack agent-binary` print one stderr line naming the marker it overrode.
+2. A session marker exported by the hosting CLI (`CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_ENTRYPOINT`, `COPILOT_CLI`, ...). Inside tmux it may be the server's copy of whatever started the server; `recipe run` says so when the server holds it.
 3. `<repo>/.claude/runtime/launcher_context.json` `launcher` field (persisted, possibly by another session)
 4. Built-in default: **`copilot`**
 
@@ -83,9 +83,10 @@ Identifies which CLI binary the current session should use when spawning new AI 
 recipe runner. A result from the built-in default is exported with
 `AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>`; see
 [Active Agent Binary](./active-agent-binary.md#resolving-once-for-a-whole-recipe-run).
-A detached launch (tmux, setsid) does not see the caller's session markers;
-`$(amplihack agent-binary --shell)` prints both variables for an inline hand-off
-(#1525), see
+A detached launch (tmux, setsid) does not see the caller's session markers,
+and under tmux it sees the server starter's instead;
+`$(amplihack agent-binary --shell)` prints an inline `env` prefix that removes
+every session marker and sets both variables (#1525), see
 [Handing the binary to a detached launch](./active-agent-binary.md#handing-the-binary-to-a-detached-launch).
 
 The launcher continues to write this variable to subprocess environments so that external consumers (notably `rysweet/amplihack-recipe-runner`) that have not yet migrated to the file-based resolver continue to work. New code inside `amplihack-rs` should call `amplihack_utils::agent_binary::resolve(&cwd)` instead of reading the env var directly.
@@ -119,7 +120,7 @@ AMPLIHACK_AGENT_BINARY="../bin/evil" amplihack copilot
 
 **Why it exists:** Recipe runner, hooks, and sub-agents are agent-agnostic and must call back into whatever tool the user actually launched. See [Active Agent Binary](./active-agent-binary.md) for the full algorithm and [Agent Binary Routing](../concepts/agent-binary-routing.md) for the architectural rationale.
 
-**Other implementations:** there is no Python implementation in this repository. The shell helper at `amplifier-bundle/skills/migrate/scripts/migrate.sh` (`detect_cli`) mirrors this precedence, including the default-guess tag, the session-marker layer and the launcher context's staleness and walk-up rules, plus a parent-process-chain check ranked after the markers (#1525). The Rust resolver is authoritative where they differ.
+**Other implementations:** there is no Python implementation in this repository. The shell helper at `amplifier-bundle/skills/migrate/scripts/migrate.sh` (`detect_cli`) checks the env var (with its default-guess tag) and the session markers itself, then a parent-process-chain check, and asks `amplihack agent-binary` for the launcher context and the default (#1525). The Rust resolver is authoritative where they differ.
 
 **Existing `claude` users:** a fresh `.claude/runtime/launcher_context.json` with `"launcher": "claude"` resolves to `claude` when no env override or session marker answers first.
 

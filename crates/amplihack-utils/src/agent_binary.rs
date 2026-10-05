@@ -213,14 +213,30 @@ pub struct Resolution {
     /// skipped on the way. Stale files are not listed: sessions end, and an
     /// old file is expected, not broken.
     pub unusable_contexts: Vec<UnusableContext>,
-    /// The binary a live session marker named, recorded whether or not it
-    /// decided. When `source` is [`ResolutionSource::Env`] and this names a
-    /// different binary, an explicit `AMPLIHACK_AGENT_BINARY` is overriding
-    /// the session this process runs in. The override stands -- it is
-    /// documented as layer 1 -- but a profile export left over from choosing a
-    /// CLI weeks ago looks exactly like this, so callers about to launch
-    /// agents say so (issue #1335: wrong CLI for hours, nothing said why).
-    pub session_marker: Option<String>,
+    /// The session marker this process's environment holds, recorded whether
+    /// or not it decided. When `source` is [`ResolutionSource::Env`] and it
+    /// names a different binary, an explicit `AMPLIHACK_AGENT_BINARY` is
+    /// overriding it. The override stands -- it is documented as layer 1 --
+    /// but a profile export left over from choosing a CLI weeks ago looks
+    /// exactly like this, so callers about to launch agents say so (issue
+    /// #1335: wrong CLI for hours, nothing said why).
+    ///
+    /// A marker is evidence about the environment, not proof of the session.
+    /// tmux copies the environment of whatever started its server into the
+    /// server's global environment, and every later `new-session` starts from
+    /// that copy, so a marker inside tmux can name the CLI that started the
+    /// server rather than the one running now. The variable is kept so a
+    /// caller can check that (`agent_binary_notice` in amplihack-cli).
+    pub session_marker: Option<SessionMarker>,
+}
+
+/// A [`SESSION_MARKERS`] entry found set in this process's environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionMarker {
+    /// The environment variable, e.g. `COPILOT_CLI`.
+    pub variable: &'static str,
+    /// The binary it implies, e.g. `copilot`.
+    pub binary: &'static str,
 }
 
 /// [`resolve_with_source`], plus the evidence a user needs to trust the
@@ -251,7 +267,7 @@ pub fn resolve_detailed(cwd: &Path) -> Result<Resolution, ResolveError> {
 
     let (name, source) = resolve_layers(
         from_env,
-        from_marker.clone(),
+        from_marker.map(|marker| marker.binary.to_string()),
         persisted.found.as_ref().map(|(name, _)| name.clone()),
     );
     let context_file = match source {
@@ -352,16 +368,6 @@ struct LauncherContextSnippet {
     timestamp: Option<String>,
 }
 
-/// Identify the agent CLI hosting this process from its own environment.
-///
-/// Each vendor's CLI exports markers that every child inherits, so this
-/// answers "which session am I actually inside" without reading any file.
-/// It outranks the persisted layer deliberately: a launcher context is
-/// per-directory and last-writer-wins, so on a host running both CLIs it can
-/// name a different vendor than the session reading it (issue #1342).
-///
-/// Unlike a process-ancestry walk this needs no `/proc`, so it behaves the
-/// same on every platform.
 /// Environment variables that identify the CLI hosting this process, paired
 /// with the binary each implies.
 ///
@@ -373,6 +379,10 @@ struct LauncherContextSnippet {
 /// `migrate.sh` (issue #1525). `tests/issue_1525_migrate_detect_cli_parity.sh`
 /// fails in CI unless that copy has these entries in this order, so a marker
 /// added here must be added there too.
+///
+/// `amplihack agent-binary --shell` unsets every entry on the far side of a
+/// detached launch, so that a tmux server's copy of whatever environment
+/// started it cannot outrank the caller's answer (issue #1525).
 pub const SESSION_MARKERS: &[(&str, &str)] = &[
     // Claude Code exports CLAUDECODE; the others are older spellings that
     // llm_client already recognised.
@@ -391,11 +401,24 @@ pub const SESSION_MARKERS: &[(&str, &str)] = &[
     ("COPILOT_AGENT", "copilot"),
 ];
 
-fn session_marker() -> Option<String> {
-    SESSION_MARKERS.iter().find_map(|(key, binary)| {
-        std::env::var_os(key)
+/// Identify the agent CLI hosting this process from its own environment.
+///
+/// Each vendor's CLI exports markers that every child inherits, so this
+/// answers "which session am I actually inside" without reading any file.
+/// It outranks the persisted layer deliberately: a launcher context is
+/// per-directory and last-writer-wins, so on a host running both CLIs it can
+/// name a different vendor than the session reading it (issue #1342).
+///
+/// Inside tmux the environment may be the server's copy of whatever started
+/// it, not the caller's; see [`Resolution::session_marker`].
+///
+/// Unlike a process-ancestry walk this needs no `/proc`, so it behaves the
+/// same on every platform.
+fn session_marker() -> Option<SessionMarker> {
+    SESSION_MARKERS.iter().find_map(|&(variable, binary)| {
+        std::env::var_os(variable)
             .is_some_and(|v| !v.is_empty())
-            .then(|| (*binary).to_string())
+            .then_some(SessionMarker { variable, binary })
     })
 }
 
@@ -966,8 +989,8 @@ mod tests {
         }
     }
 
-    /// The forms chrono's RFC 3339 parser accepts, which migrate.sh's
-    /// `_detect_cli_epoch` mirrors (tests/issue_1525_migrate_detect_cli_parity.sh).
+    /// The forms chrono's RFC 3339 parser accepts. migrate.sh's `detect_cli`
+    /// gets this rule by asking `amplihack agent-binary`, not from a copy.
     #[test]
     fn a_fresh_context_in_any_rfc3339_form_is_usable() {
         let now = chrono::Utc::now();

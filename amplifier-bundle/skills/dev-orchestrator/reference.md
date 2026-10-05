@@ -30,17 +30,23 @@ echo "Recipe runner log: $LOG_FILE"
 - `$(amplihack agent-binary --shell -w /path/to/repo)` — hands the agent CLI
   you are in to the detached run. Copy it as is; do not replace it with a
   name. It expands in *your* shell, before tmux starts anything, to
-  `AMPLIHACK_AGENT_BINARY=<cli> AMPLIHACK_AGENT_BINARY_SOURCE=<tag>`, and
-  those prefix assignments apply to `amplihack recipe run`. It is required:
-  once a tmux server is running, `tmux new-session` gives the command that
-  server's environment, not yours. The markers that tell `amplihack recipe run`
-  which agent CLI you are in then do not reach it. The first run, which starts
-  the server, still sees them, so this can work once and then silently stop
-  (#1335, #1525). When nothing identifies your CLI, the value is handed on
-  tagged as a guess (`AMPLIHACK_AGENT_BINARY_SOURCE=default:<cli>`), so nothing
-  downstream persists it, and a notice on your terminal says so. To choose a
-  CLI yourself, export `AMPLIHACK_AGENT_BINARY` before running this. The
-  inline form works on every tmux version; `tmux new-session -e` needs 3.2.
+  `env -u <each session marker> AMPLIHACK_AGENT_BINARY=<cli>
+  AMPLIHACK_AGENT_BINARY_SOURCE=<tag>`, which runs `amplihack recipe run`
+  with your answer and without any session marker. It is required:
+  `tmux new-session` gives the command the tmux server's environment, not
+  yours, and tmux copied that from whatever process started the server. Your
+  markers are missing there, and the starter's are present. If another
+  agent's Copilot session started the server, the run sees `COPILOT_CLI=1`
+  and runs every step under copilot, though you launched it from Claude Code;
+  if a plain shell started it, the run takes the default. It works whenever
+  your own CLI happened to start the server, so it can work for weeks and
+  then stop (#1335, #1525). The `env -u` part removes the server's markers;
+  the assignments carry yours. When nothing identifies your CLI, the value is
+  handed on tagged as a guess (`AMPLIHACK_AGENT_BINARY_SOURCE=default:<cli>`),
+  so nothing downstream persists it, and a notice on your terminal says so.
+  To choose a CLI yourself, export `AMPLIHACK_AGENT_BINARY` before running
+  this. The inline form works on every tmux version; `tmux new-session -e`
+  needs 3.2 and cannot remove a variable.
 - `tmux new-session -d` — detached session, no timeout, survives disconnects
 - Monitor with: `tail -f "$LOG_FILE"` or `tmux attach -t recipe-runner`
 

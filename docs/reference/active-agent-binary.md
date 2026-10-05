@@ -21,22 +21,21 @@ let binary: String = agent_binary_resolver::resolve(&cwd);
 ```
 
 **Shell:** `amplifier-bundle/skills/migrate/scripts/migrate.sh` (`detect_cli`)
-mirrors the precedence (issue #1525): `AMPLIHACK_AGENT_BINARY` (and its
-default-guess tag), then the session markers (the same list, in the same
-order, as `agent_binary::SESSION_MARKERS`), then the walked-up
-`launcher_context.json`, then the default. The file layer uses the same rules
-as the Rust one: fresh (24h) only, stopping at a `.git` boundary or a
-world-writable or foreign-owned directory, and walking past an unusable file
-while warning with its path. Values are trimmed and allowlisted the same way.
-Its one extra layer is the parent process chain, consulted after the markers
-and before the file, since it is evidence of the running session too.
-`tests/issue_1525_migrate_detect_cli_parity.sh` checks this, including that
-the two marker lists match. The script also runs on macOS, so the file layer
-uses no GNU-only tool forms (`stat -c`, `date -d`, `readlink -f`): the test
-runs every file-reading check a second time with BSD-style stand-ins for
-those tools on `PATH`. A tool that fails outright is named on stderr; it never
-turns a valid file into a silent `copilot`. There is no Python implementation in this
-repository. The Rust resolver is authoritative wherever another
+keeps the layers that are cheap to state in shell: `AMPLIHACK_AGENT_BINARY`
+(and its default-guess tag), then the session markers (the same list, in the
+same order, as `agent_binary::SESSION_MARKERS`). Its one extra layer, the
+parent process chain, comes next, because it is evidence of the running
+session too. Everything below that, the launcher context and the default, it
+asks `amplihack agent-binary`, the Rust resolver itself, so there is one copy
+of the walk-up, the 24-hour bound, the RFC 3339 check and the trust checks. The
+resolver's notice, which names every unusable context file, reaches the
+user's terminal unchanged. Without `amplihack` on `PATH`, or with a build too
+old to have the subcommand, `detect_cli` warns that no launcher context was
+read and answers `copilot`. `tests/issue_1525_migrate_detect_cli_parity.sh`
+checks the shell side, including that the two marker lists match, and
+`bins/amplihack/tests/issue_1525_migrate_detect_cli_uses_the_resolver.rs` runs
+`detect_cli` against the real binary. There is no Python implementation in
+this repository. The Rust resolver is authoritative wherever another
 implementation differs.
 
 ## Resolution Precedence
@@ -45,8 +44,8 @@ The resolver evaluates sources in order and returns the first valid value. A val
 
 | # | Source | Notes |
 | - | --- | --- |
-| 1 | `AMPLIHACK_AGENT_BINARY` env var | Explicit override. Used by CI, tests, and external consumers that have not migrated yet. Ignored while tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary>` (see below). It outranks a live session marker naming a different CLI; `recipe run` and `agent-binary` then say so on stderr (see below). |
-| 2 | Live session marker | An environment variable the hosting CLI exports, such as `CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_ENTRYPOINT` or `COPILOT_CLI`. The full list is `agent_binary::SESSION_MARKERS`. |
+| 1 | `AMPLIHACK_AGENT_BINARY` env var | Explicit override. Used by CI, tests, and external consumers that have not migrated yet. Ignored while tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary>` (see below). It outranks a session marker naming a different CLI; `recipe run` and `agent-binary` then say so on stderr (see below). |
+| 2 | Live session marker | An environment variable the hosting CLI exports, such as `CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_ENTRYPOINT` or `COPILOT_CLI`. The full list is `agent_binary::SESSION_MARKERS`. Inside tmux it may come from the server's copy of whatever started the server; see [Handing the binary to a detached launch](#handing-the-binary-to-a-detached-launch). |
 | 3 | `<repo>/.claude/runtime/launcher_context.json` `launcher` field | Persisted state, possibly written by a different session. Consulted only while fresh, and never above a world-writable or foreign-owned directory. |
 | 4 | Built-in default | `"copilot"` |
 
@@ -93,15 +92,46 @@ callers get the same evidence from `agent_binary::resolve_detailed`
 (`Resolution::context_file` and `Resolution::unusable_contexts`).
 
 An answer from layer 1 is a choice, not an inference, and it still wins over a
-live session marker. But when the marker names a different CLI, recipe run says
-which session was overruled. These docs tell you to export the variable to
-choose a CLI, so a profile line written for one CLI and still exported inside
-another's session looks exactly like this. Without the line, every step would
-run under the wrong CLI with nothing in the output saying why (issue #1335):
+session marker. But when the marker names a different CLI, recipe run names
+the marker it overruled. These docs tell you to export the variable to choose a
+CLI, so a profile line written for one CLI and still exported inside another's
+session looks exactly like this. Without the line, every step would run under
+the wrong CLI with nothing in the output saying why (issue #1335):
 
 ```text
-amplihack: agent steps will run under 'copilot' (AMPLIHACK_AGENT_BINARY is set and overrides the claude session it was started from). Unset AMPLIHACK_AGENT_BINARY to run under claude.
+amplihack: agent steps will run under 'copilot' (AMPLIHACK_AGENT_BINARY is set and overrides CLAUDECODE, the claude session marker in this environment). If this is a claude session, unset AMPLIHACK_AGENT_BINARY to run under claude.
 ```
+
+The line names a variable, not a session, because a variable is all the
+process can see. Inside tmux it may not even be the caller's: tmux copies the
+environment of whatever process started its server into the server's global
+environment, and every later `new-session` starts from that copy (tmux(1),
+GLOBAL AND SESSION ENVIRONMENT). On a host where agents of both CLIs start
+tmux sessions, a server started from a Copilot session holds `COPILOT_CLI=1`
+for every run launched into it, from Claude Code included. So when `TMUX` is
+set, the notice asks the server (`tmux show-environment -g <marker>`, with a
+two-second limit). If the server's global environment holds the same marker
+with the same value, the marker may be the server's starter's. An explicit
+value is then not told to step aside for it:
+
+```text
+amplihack: agent steps will run under 'claude' (AMPLIHACK_AGENT_BINARY is set). COPILOT_CLI, a copilot session marker, is set too, but this tmux server's global environment holds the same value, so it may come from whatever started the server rather than from a copilot session.
+```
+
+A marker that *answered* (layer 2) is normally an observation and announced
+by nothing. One the tmux server holds is announced, because without the
+hand-off below it is how a run launched from Claude Code runs every step under
+copilot:
+
+```text
+amplihack: agent steps will run under 'copilot' (COPILOT_CLI is set, but this tmux server's global environment holds the same value, so it may come from whatever started the server rather than from a copilot session). To hand a detached run the CLI you launch it from, prefix its command with $(amplihack agent-binary --shell -w <dir>); to choose one, set AMPLIHACK_AGENT_BINARY.
+```
+
+A marker set by a CLI running inside the pane, which the server does not hold
+with that value, stays an observation and prints nothing. A Claude Code
+session inside a server that a Claude Code session also started holds the
+same `CLAUDECODE=1` as the server, so it gets the line too; the line says
+"may", and setting `AMPLIHACK_AGENT_BINARY` silences it.
 
 An explicit value that matches the marker, or that is set where no marker is
 visible, prints nothing. The notice does not quote the raw value; it shows the
@@ -110,7 +140,7 @@ normalized name. On the way down, recipe run and recipe-runner-rs remove only
 environment-size pressure), so a nested `recipe run` under a deliberate
 override usually still sees another Claude marker and repeats the line.
 Agent-step stderr is shown only when a step fails. Rust callers get the
-overruled marker from `Resolution::session_marker`.
+marker, variable and binary, from `Resolution::session_marker`.
 
 When the answer came from layer 4, recipe run also exports
 `AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>`. The tag keeps a guess a guess
@@ -142,11 +172,21 @@ Any code that sets `AMPLIHACK_AGENT_BINARY` explicitly through
 ### Handing the binary to a detached launch
 
 Resolving once at the top only helps if the top can see the session. A
-detached launch cannot. Once a tmux server is running, `tmux new-session`
-gives the new command the server's environment, not the caller's, so the
-session markers do not arrive and the run falls back to the default (#1335).
-The first launch, which starts the server, does see them, so this can work
-once and then stop.
+detached launch cannot. `tmux new-session` gives the new command the tmux
+server's global environment, not the caller's, and tmux copied that from
+whatever process started the server (tmux(1), GLOBAL AND SESSION ENVIRONMENT).
+On the far side the caller's markers are missing, and the starter's are
+present:
+
+- A server started from a plain shell has no marker, so the run takes the
+  `copilot` default, announced as a guess (#1335).
+- A server started from a Copilot session holds `COPILOT_CLI=1`. A run
+  launched into it from Claude Code resolves to copilot from that marker. To
+  the far side that is an observation, not a guess; only the tmux check above
+  now announces it.
+- A server started from the caller's own CLI happens to give the right
+  answer. That is why this can work for weeks and then stop when another
+  agent restarts the server.
 
 `amplihack agent-binary` resolves in the caller's shell and prints the answer
 (issue #1525):
@@ -155,7 +195,7 @@ once and then stop.
 $ amplihack agent-binary
 claude (session_marker)
 $ amplihack agent-binary --shell
-AMPLIHACK_AGENT_BINARY=claude AMPLIHACK_AGENT_BINARY_SOURCE=
+env -u CLAUDECODE -u CLAUDE_CODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_PROJECT_DIR -u CLAUDE_CODE_ENTRYPOINT -u COPILOT_CLI -u GITHUB_COPILOT -u GITHUB_COPILOT_AGENT -u COPILOT_AGENT AMPLIHACK_AGENT_BINARY=claude AMPLIHACK_AGENT_BINARY_SOURCE=
 ```
 
 Use the `--shell` form inline, inside the double-quoted command, so that it
@@ -166,6 +206,13 @@ tmux new-session -d -s recipe-runner \
   "cd /path/to/repo && $(amplihack agent-binary --shell -w /path/to/repo) amplihack recipe run ..."
 ```
 
+- `env -u` removes every `agent_binary::SESSION_MARKERS` variable from the
+  far side, so no marker of the server's starter can contradict the caller's
+  answer, set off the override notice, or answer for a step further down. The
+  far side then sees the caller's view: the answer, its source, and no
+  marker. GNU, BSD (macOS) and BusyBox `env` all take `-u`. Further
+  `NAME=value` words after the hand-off, such as the templates'
+  `AMPLIHACK_HOME=...`, are read by `env` the same way.
 - `-w` resolves from the directory the recipe will run in, so the
   launcher-context walk-up matches the run's own.
 - The source travels with the value. A default guess is printed with
@@ -178,15 +225,21 @@ tmux new-session -d -s recipe-runner \
   `default:<same binary>` already in the server's environment cannot veto it.
 - An inferred answer is explained on stderr, which stays on your terminal while
   `$(...)` captures stdout. The explanation includes any unusable launcher
-  context it skipped. An exported `AMPLIHACK_AGENT_BINARY` that overrides the
-  session you run the hand-off from is handed over as your choice, and the
-  same stderr line names the session it overrode.
+  context it skipped. An exported `AMPLIHACK_AGENT_BINARY` that overrides a
+  marker in the shell you run the hand-off from is handed over as your choice,
+  and the same stderr line names the marker it overrode.
 - Log lines go to stderr as well, so a `RUST_LOG` set in your shell does not
-  reach the command line. Stdout is only the assignment line, whatever the
-  log filter.
-- The inline `VAR=value command` form works on every tmux version.
-  `tmux new-session -e` only exists from tmux 3.2.
+  reach the command line. Stdout is only the hand-off line, whatever the log
+  filter.
+- The inline form works on every tmux version. `tmux new-session -e` only
+  exists from tmux 3.2, and it can set a variable but not remove one.
 - The subcommand never self-installs, so it is safe inside `$(...)`.
+
+If `amplihack agent-binary` itself fails, `$(...)` expands to nothing and the
+far side resolves from the server's environment, as with no hand-off: the
+default, or the starter's marker. Either way the run's own stderr says so: the
+default is announced as a guess, and a marker the server holds is announced by
+the tmux check. It is announced late, in the run's log, not on your terminal.
 
 Where a detached session runs an agent CLI directly, not `amplihack`, there
 is nothing to hand over. The migrate skill's remote `tmux new-session` runs
@@ -196,7 +249,7 @@ is nothing to hand over. The migrate skill's remote `tmux new-session` runs
 
 Environment variables do not survive every subprocess boundary in the launcher's call graph:
 
-- `tmux new-session -d` gives the command the tmux server's environment, not the caller's, once a server is running (see [Handing the binary to a detached launch](#handing-the-binary-to-a-detached-launch)).
+- `tmux new-session -d` gives the command the tmux server's global environment, copied from whatever started the server, not the caller's (see [Handing the binary to a detached launch](#handing-the-binary-to-a-detached-launch)).
 - Detached background processes started via `setsid` may inherit a stale or stripped env.
 - Sub-recipes spawned by `amplihack recipe run` invoke fresh `amplihack` binaries that may be reading env from the user's shell rather than the parent recipe runner.
 - Python hooks shell out to subcommands using `subprocess.run` which inherits the calling Python's env, not the Rust launcher's.
@@ -242,14 +295,15 @@ To force `"claude"` for a single command, set `AMPLIHACK_AGENT_BINARY=claude`.
 
 Path: `<repo>/.claude/runtime/launcher_context.json`
 Permissions: `0o600` (owner read/write only)
+Written: to a temporary file in the same directory, then renamed over the old
+one, so a write cut short (a full disk, a killed process) leaves the previous
+file, never an empty or partial one
 Read cap: 64 KiB (oversized files are rejected with a warning)
 Staleness window: 24 hours (older files fall through as if unset)
 Timestamp: required, RFC 3339 as `chrono::DateTime::parse_from_rfc3339` reads it.
 A file without one, or with one in another form (`2026-10-04 13:13:46` has no
 offset), is unusable and named in the notice. `migrate.sh`'s `detect_cli`
-applies the same rule, including chrono's refusal of a day the month does not
-have, in bash arithmetic rather than with `date`, whose GNU and BSD forms each
-read more than RFC 3339 allows.
+gets the same rule by asking `amplihack agent-binary`.
 
 ```json
 {

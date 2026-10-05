@@ -113,9 +113,11 @@ infer the answer. `amplihack agent-binary` prints the current answer and why.
 export AMPLIHACK_AGENT_BINARY=copilot
 ```
 
-A detached launch (`tmux new-session -d`) does not see your session markers;
-hand the answer over with `$(amplihack agent-binary --shell)`, as in the
-dev-orchestrator skill's `reference.md` (#1525).
+A detached launch (`tmux new-session -d`) does not see your session markers.
+It sees the tmux server's, copied from whatever started the server, which may
+be another CLI's. Hand the answer over with `$(amplihack agent-binary --shell)`,
+which also removes those markers, as in the dev-orchestrator skill's
+`reference.md` (#1525).
 
 This makes amplihack agent-agnostic: `amplihack <command>` will use the configured binary for all agent subprocess calls (skills, recipes, orchestrator). Added in PR #3174.
 

@@ -119,16 +119,14 @@ Cascade (first hit wins):
 
 The CLI type is resolved like the Rust agent-binary resolver:
 `$AMPLIHACK_AGENT_BINARY` (unless tagged as a default guess), then the session
-markers of the CLI you are running in, then the parent process chain, then a
-fresh `.claude/runtime/launcher_context.json`, then `copilot`. A launcher
-context that is empty, malformed or has no RFC 3339 `timestamp` is skipped with
-a warning naming it. The launcher context is read with `jq`; without `jq` it is
-not read, and a warning says `jq not found` rather than blaming the file. The
-rest of that layer uses only what macOS and Linux both ship (bash 3.2, POSIX
-`find -perm`, `wc -c`, plain `readlink`, `date +%s`); the timestamp is checked
-and converted in bash arithmetic, not by `date`. If `find` or `date` fails, a
-warning names the tool and the directory or file, and the file is not blamed.
-See [Active Agent Binary](../reference/active-agent-binary.md).
+markers of the CLI you are running in, then the parent process chain. Below
+those, the script asks `amplihack agent-binary`, the resolver itself, which
+reads a fresh `.claude/runtime/launcher_context.json` and otherwise answers
+`copilot`. A launcher context that is empty, malformed or has no RFC 3339
+`timestamp` is named, with the reason, in the resolver's notice on your
+terminal. Without `amplihack` on `PATH`, or with a build too old to have the
+subcommand, a warning says no launcher context was read, and the answer is
+`copilot`. See [Active Agent Binary](../reference/active-agent-binary.md).
 
 ### 2. Destination bootstrap (idempotent)
 

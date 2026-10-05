@@ -6,17 +6,17 @@
 # The other layers are covered by tests/issue_1525_migrate_detect_cli_parity.sh;
 # these checks pin the tag rule.
 #
-# The fall-through is made observable with a fresh launcher_context.json naming
-# `codex`: a skipped env value answers `codex`, an honoured one answers itself.
-# Session markers and the parent process chain rank above that file, so both
-# are neutralised; otherwise, run inside Claude Code, every skipped value would
-# answer `claude`.
+# The fall-through is made observable with a stand-in `amplihack` whose
+# `agent-binary` answers `codex`, as the resolver does from a fresh launcher
+# context naming it: a skipped env value answers `codex`, an honoured one
+# answers itself. Session markers and the parent process chain rank above it,
+# so both are neutralised; otherwise, run inside Claude Code, every skipped
+# value would answer `claude`.
 
 set -uo pipefail
 
 SCRIPT="amplifier-bundle/skills/migrate/scripts/migrate.sh"
 [ -f "$SCRIPT" ] || { echo "missing $SCRIPT (run from repo root)"; exit 1; }
-command -v jq >/dev/null || { echo "  FAIL  jq is required by detect_cli's launcher-context layer"; exit 1; }
 
 fails=0
 pass() { printf '  ok    %s\n' "$1"; }
@@ -24,7 +24,7 @@ fail() { printf '  FAIL  %s\n' "$1"; fails=$((fails + 1)); }
 
 # detect_cli and its helpers are defined after the script's library-mode
 # short-circuit, so they are lifted out on their own, with log_warn. They read
-# only the environment, the cwd, ps and the launcher context.
+# only the environment, ps, and what `amplihack agent-binary` prints.
 eval "$(awk '/^log_warn\(\)/' "$SCRIPT")"
 eval "$(awk '/^_?detect_cli[a-z_]*\(\) \{/,/^\}/' "$SCRIPT")"
 if ! declare -F detect_cli >/dev/null; then
@@ -41,9 +41,10 @@ done
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-mkdir -p "$work/.git" "$work/.claude/runtime"
-printf '{"launcher":"codex","timestamp":"%s"}' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  > "$work/.claude/runtime/launcher_context.json"
+mkdir -p "$work/.git" "$work/bin"
+printf '#!/bin/sh\necho "codex (launcher_context)"\n' > "$work/bin/amplihack"
+chmod +x "$work/bin/amplihack"
+PATH="$work/bin:$PATH"
 
 # check <description> <expected> <binary> <tag|-unset->
 check() {

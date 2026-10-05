@@ -365,11 +365,14 @@ tmux new-session -d -s "recipe-$(date +%s)" \
      -c task_description='TASK_DESCRIPTION_HERE' -c repo_path='.'"
 ```
 
-Keep the `$(amplihack agent-binary --shell -w ...)` part. Once a tmux server
-is running, a new session gets the server's environment, not yours, so
-nothing in it says which agent CLI you are in. The hand-off expands in your
-shell first and carries that answer, and whether it was a guess, into the
-session (#1335, #1525). The full template, with logging, is in the
+Keep the `$(amplihack agent-binary --shell -w ...)` part. A new tmux session
+gets the tmux server's environment, not yours, and tmux copied that from
+whatever process started the server. Your session markers are missing there,
+and the starter's are present: a server another agent started from Copilot
+tells the run it is in Copilot, though you launched it from Claude Code. The
+hand-off expands in your shell first, removes every session marker from the
+session's environment, and carries your answer, and whether it was a guess,
+into it (#1335, #1525). The full template, with logging, is in the
 dev-orchestrator skill's
 [`reference.md`](../../amplifier-bundle/skills/dev-orchestrator/reference.md#durable-execution-tmux--optional).
 

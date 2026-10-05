@@ -304,14 +304,18 @@ MODEL SELECTION (issue #1421)
     Version,
     /// Print the agent CLI that agent steps would run under, and why.
     ///
-    /// With --shell, print it as `AMPLIHACK_AGENT_BINARY=<cli>
-    /// AMPLIHACK_AGENT_BINARY_SOURCE=<tag>` for handing to a detached launch
-    /// (tmux, setsid, nohup) that will not inherit this shell's session
-    /// markers. A default guess stays tagged as one. Example:
+    /// With --shell, print it as `env -u <each session marker>
+    /// AMPLIHACK_AGENT_BINARY=<cli> AMPLIHACK_AGENT_BINARY_SOURCE=<tag>`, a
+    /// prefix for a detached launch (tmux, setsid, nohup) that will not
+    /// inherit this shell's environment. A tmux server's environment holds the
+    /// session markers of whatever started it; the prefix removes them, so
+    /// only this shell's answer arrives. A default guess stays tagged as one.
+    /// Example:
     /// tmux new-session -d "$(amplihack agent-binary --shell) amplihack recipe run ..."
     #[command(name = "agent-binary")]
     AgentBinary {
-        /// Print shell assignments for an inline `VAR=value command` prefix.
+        /// Print an inline `env -u ... VAR=value` prefix for the command
+        /// that follows it.
         #[arg(long)]
         shell: bool,
         /// Resolve as if from this directory, where the recipe will run

@@ -2,11 +2,14 @@
 # Issue #1525 — every shipped instruction that starts a detached
 # `amplihack recipe run` must hand it the agent binary.
 #
-# Once a tmux server is running, `tmux new-session` gives the new command the
-# server's environment, not the caller's, so the session markers that tell
-# `recipe run` which agent CLI the caller is in do not arrive, and the run
-# falls back to `copilot` (#1335). The hand-off is
-# `$(amplihack agent-binary --shell -w <repo>)`, expanded in the caller's shell.
+# `tmux new-session` gives the new command the tmux server's global
+# environment, not the caller's, and tmux copied that from whatever started the
+# server. The session markers that tell `recipe run` which agent CLI the caller
+# is in do not arrive, and the starter's do: the run takes `copilot` from the
+# default, or from a server a Copilot session started (#1335, crusty review of
+# #1490). The hand-off is `$(amplihack agent-binary --shell -w <repo>)`,
+# expanded in the caller's shell; it unsets the far side's markers and sets the
+# caller's answer.
 # An instruction that leaves it out reproduces the bug in whoever follows it.
 #
 #   1. Every `tmux new-session` command in shipped text (amplifier-bundle/ and

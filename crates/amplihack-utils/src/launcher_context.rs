@@ -6,6 +6,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 const DEFAULT_STALE_HOURS: i64 = 24;
@@ -41,6 +42,15 @@ pub struct LauncherContext {
     pub environment: BTreeMap<String, String>,
 }
 
+/// Record which launcher started a session in `project_root`.
+///
+/// The file is replaced, never rewritten in place: the body goes to a
+/// temporary file beside it, which is then renamed over it. `fs::write`
+/// truncates first and writes second, so a write cut short -- a full disk
+/// (`/tmp` on a RAM-backed host), a killed process -- left a 0-byte file. The
+/// agent-binary resolver then reported that file as empty and told the user to
+/// fix or delete it (crusty review of #1490). A reader now sees the previous
+/// file or the new one.
 pub fn write_launcher_context(
     project_root: &Path,
     launcher: LauncherKind,
@@ -59,10 +69,38 @@ pub fn write_launcher_context(
     };
     let body =
         serde_json::to_string_pretty(&context).context("failed to encode launcher context")?;
-    fs::write(&context_path, body)
+    replace_file(&context_path, |file| file.write_all(body.as_bytes()))
         .with_context(|| format!("failed to write {}", context_path.display()))?;
-    restrict_permissions(&context_path);
     Ok(context_path)
+}
+
+/// Replace `path` with what `write` puts in a new file, so that `path` holds
+/// either its old contents or the complete new ones, never a part.
+///
+/// The temporary file is created in `path`'s own directory, because
+/// `rename(2)` is atomic only within one file system, and is readable by the
+/// owner alone from the moment it exists, as the file it replaces was. If
+/// `write`, the flush or the rename fails, the temporary file is removed and
+/// `path` is untouched.
+fn replace_file(
+    path: &Path,
+    write: impl FnOnce(&mut fs::File) -> io::Result<()>,
+) -> io::Result<()> {
+    let dir = path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} has no parent directory", path.display()),
+        )
+    })?;
+    let mut temp = tempfile::Builder::new()
+        .prefix(".launcher_context.")
+        .suffix(".tmp")
+        .tempfile_in(dir)?;
+    restrict_permissions(temp.as_file())?;
+    write(temp.as_file_mut())?;
+    temp.as_file().sync_all()?;
+    temp.persist(path).map_err(|error| error.error)?;
+    Ok(())
 }
 
 pub fn read_launcher_context(project_root: &Path) -> Option<LauncherContext> {
@@ -133,21 +171,18 @@ fn is_launcher_context_stale_with(context: &LauncherContext, _max_age_hours: i64
     is_timestamp_stale(&context.timestamp)
 }
 
+/// Owner read and write only: a launcher context records the command line and
+/// environment a session was started with.
 #[cfg(unix)]
-fn restrict_permissions(path: &Path) {
+fn restrict_permissions(file: &fs::File) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
-
-    if let Ok(metadata) = fs::metadata(path) {
-        let mut permissions = metadata.permissions();
-        permissions.set_mode(0o600);
-        if let Err(e) = fs::set_permissions(path, permissions) {
-            tracing::warn!(path = %path.display(), error = %e, "failed to restrict file permissions");
-        }
-    }
+    file.set_permissions(fs::Permissions::from_mode(0o600))
 }
 
 #[cfg(not(unix))]
-fn restrict_permissions(_path: &Path) {}
+fn restrict_permissions(_file: &fs::File) -> io::Result<()> {
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
@@ -173,6 +208,57 @@ mod tests {
         assert_eq!(restored.command, "amplihack copilot --model opus");
         assert_eq!(restored.environment, environment);
         assert!(!is_launcher_context_stale(&restored));
+    }
+
+    /// Crusty review of #1490: `fs::write` truncated the file before writing,
+    /// so a write cut short left it empty. A failed replacement must leave the
+    /// previous file whole and no temporary file behind.
+    #[test]
+    fn a_failed_write_leaves_the_previous_context_intact() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_launcher_context(
+            dir.path(),
+            LauncherKind::Claude,
+            "amplihack claude",
+            BTreeMap::new(),
+        )
+        .unwrap();
+        let before = fs::read(&path).unwrap();
+
+        // Half a body, then the failure a full disk gives.
+        let error = replace_file(&path, |file| {
+            file.write_all(b"{\"launcher\":")?;
+            Err(io::Error::new(io::ErrorKind::StorageFull, "no space left"))
+        })
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::StorageFull);
+        assert_eq!(fs::read(&path).unwrap(), before, "the old file was touched");
+        let restored = read_launcher_context(dir.path()).unwrap();
+        assert_eq!(restored.launcher, LauncherKind::Claude);
+        let left: Vec<_> = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(left, [std::ffi::OsString::from("launcher_context.json")]);
+    }
+
+    /// The replacement is owner-only from creation, as the old file was after
+    /// its chmod.
+    #[cfg(unix)]
+    #[test]
+    fn a_written_context_is_readable_by_its_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_launcher_context(
+            dir.path(),
+            LauncherKind::Copilot,
+            "amplihack copilot",
+            BTreeMap::new(),
+        )
+        .unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "{mode:o}");
     }
 
     #[test]

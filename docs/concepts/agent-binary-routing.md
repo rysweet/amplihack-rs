@@ -23,9 +23,11 @@ The recipe runner, hooks, and various Python skill helpers must spawn new AI ses
 
 Earlier iterations of `amplihack-rs` solved this by writing `AMPLIHACK_AGENT_BINARY` into the subprocess environment. This worked for direct child processes but degraded badly through:
 
-- `tmux new-session -d` (which gives the command the tmux server's environment,
-  not the caller's; a detached launch now hands the binary over with
-  `$(amplihack agent-binary --shell)`, see
+- `tmux new-session -d` (which gives the command the tmux server's global
+  environment, copied from whatever started the server, not the caller's; it
+  can hold another CLI's session markers. A detached launch now hands the
+  binary over with `$(amplihack agent-binary --shell)`, which also removes
+  them, see
   [Active Agent Binary](../reference/active-agent-binary.md#handing-the-binary-to-a-detached-launch))
 - detached background processes (`setsid`, daemonized hooks)
 - sub-recipes that re-exec a fresh `amplihack` binary
