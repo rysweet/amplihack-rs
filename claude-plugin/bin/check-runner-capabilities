@@ -9,8 +9,8 @@ if [ -z "$validator" ] || ! "$validator" internal validate-recipe-runner --help 
   # An older user-owned CLI must remain untouched. Build a private validator
   # from this plugin checkout under its existing Cargo-only contract.
   command -v cargo >/dev/null 2>&1 || { echo 'cargo required to build current runner validator' >&2; exit 1; }
-  target="$data/validator-target"
-  (cd "$root" && CARGO_TARGET_DIR="$target" cargo build --release --locked --bin amplihack) || exit 1
+  target="${data:?plugin data directory required}/validator-target"
+  (cd "${root:?plugin source root required}" && CARGO_TARGET_DIR="$target" cargo build --release --locked --bin amplihack) || exit 1
   validator="$target/release/amplihack"
 fi
 exec "$validator" internal validate-recipe-runner --provider claude --binary "$runner" "$@"
