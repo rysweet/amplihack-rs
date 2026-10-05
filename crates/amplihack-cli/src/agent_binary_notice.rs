@@ -23,8 +23,14 @@
 //! to a run launched from Claude Code. The notice checks for that, names the
 //! variable, and never claims the run was started from a session it cannot see
 //! (crusty review of #1490).
+//!
+//! The check compares a per-session ID where the CLI exports one. Claude Code
+//! sets `CLAUDECODE=1` in every session, so a Claude Code session in a pane of
+//! a server another Claude Code session started holds the same `CLAUDECODE`
+//! as the server, and comparing that value cannot tell the two apart.
+//! `CLAUDE_CODE_SESSION_ID` can (crusty round 2 of #1490).
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -63,18 +69,37 @@ impl EnvBinaryValue {
     }
 }
 
+/// Which command is reporting. It decides the notice's lead-in and which
+/// advice fits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reporter {
+    /// `amplihack recipe run`, about to launch agent steps under the answer.
+    RecipeRun,
+    /// `amplihack agent-binary`, printing the answer, usually to build a
+    /// hand-off with `--shell`. It is never told to use that hand-off: it is
+    /// the hand-off (crusty round 2 of #1490).
+    AgentBinary,
+}
+
+impl Reporter {
+    /// What the binary is about to be used for.
+    fn lead(self) -> &'static str {
+        match self {
+            Reporter::RecipeRun => "agent steps will run under",
+            Reporter::AgentBinary => "resolved the agent binary to",
+        }
+    }
+}
+
 /// Print [`agent_binary_notice`] to stderr when there is one.
 ///
 /// A nested run under a deliberate override that can still see a session
 /// marker repeats the line. It is just as true there, and agent-step stderr
 /// is shown only when a step fails.
-///
-/// `lead` says what the binary is about to be used for, e.g. "agent steps
-/// will run under".
-pub(crate) fn report_agent_binary(lead: &str, resolution: &Resolution) {
+pub(crate) fn report_agent_binary(reporter: Reporter, resolution: &Resolution) {
     let from_tmux_server = marker_may_be_the_tmux_servers(resolution);
     if let Some(notice) = agent_binary_notice(
-        lead,
+        reporter,
         resolution,
         EnvBinaryValue::current(),
         from_tmux_server,
@@ -83,9 +108,9 @@ pub(crate) fn report_agent_binary(lead: &str, resolution: &Resolution) {
     }
 }
 
-/// `true` when the session marker the notice would rest on is one this tmux
-/// server's global environment holds with the same value, so it may have been
-/// copied from whatever started the server rather than set by a CLI session.
+/// `true` when the session marker the notice would rest on may be this tmux
+/// server's copy of whatever started the server, rather than set by a CLI
+/// session; see [`tmux_server_holds_marker`].
 ///
 /// Asked only when the marker matters to the notice: it answered, or an
 /// explicit value overrode it. Outside tmux, or when tmux cannot be asked, the
@@ -101,9 +126,53 @@ fn marker_may_be_the_tmux_servers(resolution: &Resolution) -> bool {
     };
     matters
         && std::env::var_os("TMUX").is_some_and(|tmux| !tmux.is_empty())
-        && std::env::var_os(marker.variable).is_some_and(|value| {
-            tmux_global_environment_holds(OsStr::new("tmux"), marker.variable, &value)
+        && tmux_server_holds_marker(OsStr::new("tmux"), marker, |variable| {
+            std::env::var_os(variable)
         })
+}
+
+/// Variables a CLI sets to a value unique to each session, keyed by the
+/// binary its session markers imply.
+///
+/// Claude Code's markers carry the same value in every session
+/// (`CLAUDECODE=1`), so a server started from one Claude Code session holds
+/// the same marker as every other Claude Code session in its panes. Copilot
+/// exports no per-session variable this list can use, so its markers are
+/// still compared by value.
+const PER_SESSION_IDS: &[(&str, &str)] = &[("claude", "CLAUDE_CODE_SESSION_ID")];
+
+/// Whether the tmux server's global environment holds what `marker` rests on
+/// in this process (`env`), so the marker may be the server's copy of its
+/// starter's rather than this session's own.
+///
+/// When this process holds its CLI's per-session ID ([`PER_SESSION_IDS`]),
+/// the ID is compared instead of the marker:
+///
+/// - the server holds the same ID: this environment is the server's copy, as
+///   on the far side of a detached launch without the hand-off;
+/// - the server holds a different ID, or none: a session other than the
+///   server's starter set it, and the marker is that session's own. That is a
+///   Claude Code session running in a pane of a server some other Claude Code
+///   session started, which `USER_PREFERENCES.md` has agents do.
+///
+/// Without an ID, the marker's own value is compared.
+fn tmux_server_holds_marker(
+    tmux: &OsStr,
+    marker: SessionMarker,
+    env: impl Fn(&str) -> Option<OsString>,
+) -> bool {
+    let set = |variable: &'static str| {
+        env(variable)
+            .filter(|value| !value.is_empty())
+            .map(|value| (variable, value))
+    };
+    let session_id = PER_SESSION_IDS
+        .iter()
+        .find(|(binary, _)| *binary == marker.binary)
+        .and_then(|&(_, id)| set(id));
+    session_id
+        .or_else(|| set(marker.variable))
+        .is_some_and(|(variable, value)| tmux_global_environment_holds(tmux, variable, &value))
 }
 
 /// How long `tmux show-environment` may take. It answers from the server's
@@ -158,11 +227,12 @@ fn tmux_global_environment_holds(tmux: &OsStr, variable: &str, value: &OsStr) ->
 /// the reason. Otherwise an empty or malformed file goes unmentioned, and the
 /// user is left to guess why the default answered.
 pub(crate) fn agent_binary_notice(
-    lead: &str,
+    reporter: Reporter,
     resolution: &Resolution,
     env_value: EnvBinaryValue,
     from_tmux_server: bool,
 ) -> Option<String> {
+    let lead = reporter.lead();
     const REJECTED: &str = "AMPLIHACK_AGENT_BINARY is set but is not one of amplifier, \
                             claude, codex or copilot";
     let read_from = || {
@@ -181,7 +251,7 @@ pub(crate) fn agent_binary_notice(
             return resolution
                 .session_marker
                 .filter(|_| from_tmux_server)
-                .map(|marker| tmux_marker_notice(lead, marker));
+                .map(|marker| tmux_marker_notice(reporter, marker));
         }
         (ResolutionSource::LauncherContext, EnvBinaryValue::Rejected) => {
             format!("{REJECTED}; {}", read_from())
@@ -270,20 +340,34 @@ fn session_override_notice(
 /// it was launched. Before this line, that was a silent copilot run from a
 /// Claude Code session: a marker counts as observed, and observed answers are
 /// not announced.
-fn tmux_marker_notice(lead: &str, marker: SessionMarker) -> String {
+///
+/// `recipe run` is told about the hand-off, which is how the next launch
+/// avoids this. `agent-binary` is not: it is the hand-off, and in the same
+/// environment it would carry across this same answer (crusty round 2 of
+/// #1490). It is told only how to choose.
+fn tmux_marker_notice(reporter: Reporter, marker: SessionMarker) -> String {
     let SessionMarker { variable, binary } = marker;
+    let lead = reporter.lead();
+    let how = match reporter {
+        Reporter::RecipeRun => format!(
+            "To hand a detached run the CLI you launch it from, prefix its command with \
+             $(amplihack agent-binary --shell -w <dir>); to choose one, set {BINARY_ENV}."
+        ),
+        Reporter::AgentBinary => format!("Set {BINARY_ENV} to choose an agent CLI."),
+    };
     format!(
         "amplihack: {lead} '{binary}' ({variable} is set, but this tmux server's global \
          environment holds the same value, so it may come from whatever started the server \
-         rather than from a {binary} session). To hand a detached run the CLI you launch it \
-         from, prefix its command with $(amplihack agent-binary --shell -w <dir>); to choose \
-         one, set {BINARY_ENV}."
+         rather than from a {binary} session). {how}"
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{EnvBinaryValue, agent_binary_notice, tmux_global_environment_holds};
+    use super::{
+        EnvBinaryValue, Reporter, agent_binary_notice, tmux_global_environment_holds,
+        tmux_server_holds_marker,
+    };
     use amplihack_utils::agent_binary::{
         Resolution, ResolutionSource, SessionMarker, UnusableContext,
     };
@@ -299,7 +383,7 @@ mod tests {
         binary: "copilot",
     };
 
-    const LEAD: &str = "agent steps will run under";
+    const LEAD: Reporter = Reporter::RecipeRun;
 
     const ALL: [EnvBinaryValue; 4] = [
         EnvBinaryValue::Unset,
@@ -472,6 +556,108 @@ mod tests {
             "COPILOT_CLI",
             value
         ));
+    }
+
+    /// Crusty round 2 of #1490: Claude Code sets `CLAUDECODE=1` in every
+    /// session, so a Claude Code session in a pane of a server another one
+    /// started was told its marker "may come from whatever started the
+    /// server". The session IDs differ, and that decides it.
+    #[cfg(unix)]
+    #[test]
+    fn a_claude_session_is_told_from_the_servers_starter_by_its_session_id() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let server = |name: &str, global_env: &str| {
+            let path = dir.path().join(name);
+            let body = format!(
+                "#!/bin/sh\n[ \"$1 $2\" = \"show-environment -g\" ] || exit 2\n\
+                 case \"$3\" in\n{global_env}\
+                 *) echo \"unknown variable: $3\" >&2; exit 1 ;;\nesac\n"
+            );
+            std::fs::write(&path, body).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        };
+        // Started from a Claude Code session, as crusty's reproduction was.
+        let from_claude = server(
+            "from-claude",
+            "CLAUDECODE) echo CLAUDECODE=1 ;;\n\
+             CLAUDE_CODE_SESSION_ID) echo CLAUDE_CODE_SESSION_ID=starter-aaaa ;;\n",
+        );
+        // Started from a Claude Code that exported no session ID.
+        let from_claude_without_id = server(
+            "from-claude-without-id",
+            "CLAUDECODE) echo CLAUDECODE=1 ;;\n",
+        );
+        let from_copilot = server("from-copilot", "COPILOT_CLI) echo COPILOT_CLI=1 ;;\n");
+
+        let holds = |tmux: &std::path::Path, marker, env: &[(&str, &str)]| {
+            tmux_server_holds_marker(tmux.as_os_str(), marker, |name| {
+                env.iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| value.into())
+            })
+        };
+        let caller = [
+            ("CLAUDECODE", "1"),
+            ("CLAUDE_CODE_SESSION_ID", "caller-bbbb"),
+        ];
+        let starters_copy = [
+            ("CLAUDECODE", "1"),
+            ("CLAUDE_CODE_SESSION_ID", "starter-aaaa"),
+        ];
+
+        // Crusty's reproduction: a different session ID is this session's own.
+        assert!(!holds(&from_claude, CLAUDECODE, &caller));
+        assert!(!holds(&from_claude_without_id, CLAUDECODE, &caller));
+        // The same session ID is the server's copy of its starter.
+        assert!(holds(&from_claude, CLAUDECODE, &starters_copy));
+        // No ID to compare, or an empty one: the marker's value is all there is.
+        assert!(holds(&from_claude, CLAUDECODE, &[("CLAUDECODE", "1")]));
+        assert!(holds(
+            &from_claude,
+            CLAUDECODE,
+            &[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "")]
+        ));
+        assert!(holds(
+            &from_claude_without_id,
+            CLAUDECODE,
+            &[("CLAUDECODE", "1")]
+        ));
+        // Copilot has no session ID here, so its marker is still compared by
+        // value, and Claude's ID never speaks for it.
+        assert!(holds(&from_copilot, COPILOT_CLI, &[("COPILOT_CLI", "1")]));
+        assert!(holds(
+            &from_copilot,
+            COPILOT_CLI,
+            &[
+                ("COPILOT_CLI", "1"),
+                ("CLAUDE_CODE_SESSION_ID", "caller-bbbb")
+            ]
+        ));
+        assert!(!holds(&from_claude, COPILOT_CLI, &[("COPILOT_CLI", "1")]));
+    }
+
+    /// Crusty round 2 of #1490: `agent-binary` was told to prefix a command
+    /// with `$(amplihack agent-binary --shell ...)`, i.e. to run itself. In the
+    /// same environment that hand-off carries this same answer. It is told only
+    /// how to choose.
+    #[test]
+    fn agent_binary_is_not_told_to_hand_off_through_itself() {
+        let mut resolution = resolved("claude", ResolutionSource::SessionMarker);
+        resolution.session_marker = Some(CLAUDECODE);
+        for env_value in ALL {
+            let notice =
+                agent_binary_notice(Reporter::AgentBinary, &resolution, env_value, true).unwrap();
+            assert_eq!(
+                notice,
+                "amplihack: resolved the agent binary to 'claude' (CLAUDECODE is set, but this \
+                 tmux server's global environment holds the same value, so it may come from \
+                 whatever started the server rather than from a claude session). Set \
+                 AMPLIHACK_AGENT_BINARY to choose an agent CLI."
+            );
+            assert!(!notice.contains("agent-binary --shell"), "{notice}");
+        }
     }
 
     #[test]

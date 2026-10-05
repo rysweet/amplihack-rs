@@ -109,10 +109,19 @@ environment, and every later `new-session` starts from that copy (tmux(1),
 GLOBAL AND SESSION ENVIRONMENT). On a host where agents of both CLIs start
 tmux sessions, a server started from a Copilot session holds `COPILOT_CLI=1`
 for every run launched into it, from Claude Code included. So when `TMUX` is
-set, the notice asks the server (`tmux show-environment -g <marker>`, with a
-two-second limit). If the server's global environment holds the same marker
-with the same value, the marker may be the server's starter's. An explicit
-value is then not told to step aside for it:
+set, the notice asks the server (`tmux show-environment -g <variable>`, with
+a two-second limit) about the marker. If the server's global environment holds
+the same value, the marker may be the server's starter's.
+
+Claude Code sets `CLAUDECODE=1` in every session, so for its markers that
+comparison cannot tell the server's starter from any other Claude Code
+session. When the process holds `CLAUDE_CODE_SESSION_ID`, the notice asks
+about that instead. If the server holds the same ID, the environment is the
+server's copy. If it holds a different ID, or none, the marker belongs to a
+Claude Code session running in a pane, and it counts as an observation.
+Without a session ID, and for Copilot's markers, which have no such
+companion, the marker's own value is compared. An explicit value over a
+marker the server holds is not told to step aside for it:
 
 ```text
 amplihack: agent steps will run under 'claude' (AMPLIHACK_AGENT_BINARY is set). COPILOT_CLI, a copilot session marker, is set too, but this tmux server's global environment holds the same value, so it may come from whatever started the server rather than from a copilot session.
@@ -127,11 +136,18 @@ copilot:
 amplihack: agent steps will run under 'copilot' (COPILOT_CLI is set, but this tmux server's global environment holds the same value, so it may come from whatever started the server rather than from a copilot session). To hand a detached run the CLI you launch it from, prefix its command with $(amplihack agent-binary --shell -w <dir>); to choose one, set AMPLIHACK_AGENT_BINARY.
 ```
 
-A marker set by a CLI running inside the pane, which the server does not hold
-with that value, stays an observation and prints nothing. A Claude Code
-session inside a server that a Claude Code session also started holds the
-same `CLAUDECODE=1` as the server, so it gets the line too; the line says
-"may", and setting `AMPLIHACK_AGENT_BINARY` silences it.
+`amplihack agent-binary` prints the same line without the hand-off advice. It
+*is* the hand-off, and in the same environment it would carry this same answer
+across:
+
+```text
+amplihack: resolved the agent binary to 'copilot' (COPILOT_CLI is set, but this tmux server's global environment holds the same value, so it may come from whatever started the server rather than from a copilot session). Set AMPLIHACK_AGENT_BINARY to choose an agent CLI.
+```
+
+A marker set by a CLI running inside the pane stays an observation and prints
+nothing. The server does not hold that marker with that value, or, for Claude
+Code, does not hold that session ID. This covers a Claude Code session in a
+pane of a server that another Claude Code session started.
 
 An explicit value that matches the marker, or that is set where no marker is
 visible, prints nothing. The notice does not quote the raw value; it shows the

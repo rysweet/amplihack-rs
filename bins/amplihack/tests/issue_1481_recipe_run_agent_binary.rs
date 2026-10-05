@@ -979,6 +979,82 @@ fn without_the_hand_off_a_tmux_server_started_from_copilot_is_named() {
     );
 }
 
+/// The server crusty's round-2 reproduction started: from a Claude Code
+/// session, so its global environment holds that session's `CLAUDECODE=1` and
+/// its session ID.
+#[cfg(unix)]
+const STARTED_FROM_CLAUDE: &str = "CLAUDECODE=1 CLAUDE_CODE_SESSION_ID=starter-aaaa";
+
+/// A pane of that server running both reporters with no hand-off, their
+/// stderr in `$FAR_ERR`. `pane_exports` runs first, in the pane.
+#[cfg(unix)]
+fn both_reporters_in_a_pane(pane_exports: &str) -> String {
+    format!(
+        r#""cd '$WORK' && {pane_exports}amplihack agent-binary >/dev/null 2>'$FAR_ERR' && amplihack recipe run '$PROBE' 2>>'$FAR_ERR'""#
+    )
+}
+
+/// Crusty round 2 of #1490, on a real server: a Claude Code session in a pane
+/// of a server another Claude Code session started holds the same
+/// `CLAUDECODE=1` as the server, but a session ID of its own. Its marker is
+/// its own, and neither `agent-binary` nor `recipe run` says it may be the
+/// server's. Before, both did, on every run.
+#[cfg(unix)]
+#[test]
+fn a_claude_session_in_a_server_another_claude_session_started_is_not_announced() {
+    let fx = Fixture::new();
+    let command = both_reporters_in_a_pane("export CLAUDE_CODE_SESSION_ID=caller-bbbb && ");
+    let Some((probe, far_err)) = through_a_real_tmux_server(&fx, STARTED_FROM_CLAUDE, &command)
+    else {
+        return;
+    };
+    assert_eq!(handed(&probe), ("claude", "<unset>"), "far side: {far_err}");
+    assert!(
+        !far_err.contains("whatever started the server"),
+        "{far_err}"
+    );
+    assert!(!far_err.contains("agent-binary --shell"), "{far_err}");
+}
+
+/// ...while the server's own copy of its starter's environment -- the far
+/// side of a detached launch without the hand-off, holding the starter's
+/// session ID -- is still named by both. `agent-binary` is told how to choose,
+/// not to prefix a command with itself.
+#[cfg(unix)]
+#[test]
+fn the_servers_copy_of_a_claude_starter_is_named_and_agent_binary_is_not_told_to_run_itself() {
+    let fx = Fixture::new();
+    let command = both_reporters_in_a_pane("");
+    let Some((probe, far_err)) = through_a_real_tmux_server(&fx, STARTED_FROM_CLAUDE, &command)
+    else {
+        return;
+    };
+    assert_eq!(handed(&probe), ("claude", "<unset>"), "far side: {far_err}");
+    let because = "(CLAUDECODE is set, but this tmux server's global environment holds the \
+                   same value, so it may come from whatever started the server rather than \
+                   from a claude session).";
+    assert!(
+        far_err.contains(&format!(
+            "amplihack: resolved the agent binary to 'claude' {because} Set \
+             AMPLIHACK_AGENT_BINARY to choose an agent CLI.\n"
+        )),
+        "{far_err}"
+    );
+    assert!(
+        far_err.contains(&format!(
+            "amplihack: agent steps will run under 'claude' {because} To hand a detached run \
+             the CLI you launch it from, prefix its command with $(amplihack agent-binary \
+             --shell -w <dir>)"
+        )),
+        "{far_err}"
+    );
+    assert_eq!(
+        far_err.matches("agent-binary --shell").count(),
+        1,
+        "only recipe run is pointed at the hand-off: {far_err}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // `$(amplihack agent-binary --shell)` is spliced into a command line, so its
 // stdout must be the assignment line and nothing else, whatever the log
