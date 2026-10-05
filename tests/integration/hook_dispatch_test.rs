@@ -51,7 +51,7 @@ fn hooks_bin() -> PathBuf {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn codex_security_denial_write_failure_exits_nonzero() {
+fn codex_security_denial_write_failure_blocks_tool() {
     let project = tempfile::tempdir().unwrap();
     let mut child = Command::new(hooks_bin())
         .arg("pre-tool-use")
@@ -77,9 +77,13 @@ fn codex_security_denial_write_failure_exits_nonzero() {
     let output = child.wait_with_output().unwrap();
     assert_eq!(
         output.status.code(),
-        Some(3),
+        Some(2),
         "{}",
         String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("Amplihack security response delivery failed; tool execution blocked")
     );
 }
 

@@ -6,6 +6,9 @@
 //! - SIGPIPE handling (graceful pipe closure)
 //! - Telemetry (stderr JSON line per invocation)
 
+mod codex;
+use codex::{codex_output, normalize_codex_input};
+
 use amplihack_types::HookInput;
 use anyhow::Context;
 use serde::Serialize;
@@ -119,7 +122,11 @@ pub fn run_hook<H: Hook>(hook: H) {
             output
         };
         let output_bytes = serde_json::to_vec(&output)?;
-        write_stdout(&output_bytes)?;
+        if security {
+            codex::write_security_response(&output_bytes)?;
+        } else {
+            write_stdout(&output_bytes)?;
+        }
         Ok(())
     }));
 
@@ -130,13 +137,14 @@ pub fn run_hook<H: Hook>(hook: H) {
             emit_telemetry(hook_name, duration, "ok", None);
         }
         Ok(Err(e)) => {
-            emit_telemetry(hook_name, duration, "error", Some(&e.to_string()));
+            let message = if security {
+                "security hook failed".to_string()
+            } else {
+                e.to_string()
+            };
+            emit_telemetry(hook_name, duration, "error", Some(&message));
             if security {
-                if write_stdout(&serde_json::to_vec(&security_denial()).expect("static denial"))
-                    .is_err()
-                {
-                    std::process::exit(3);
-                }
+                codex::deny_on_failure();
                 return;
             }
             match policy {
@@ -161,11 +169,7 @@ pub fn run_hook<H: Hook>(hook: H) {
         Err(_panic) => {
             emit_telemetry(hook_name, duration, "panic", Some("hook panicked"));
             if security {
-                if write_stdout(&serde_json::to_vec(&security_denial()).expect("static denial"))
-                    .is_err()
-                {
-                    std::process::exit(3);
-                }
+                codex::deny_on_failure();
                 return;
             }
             // Intentional: on panic, write best-effort empty JSON response.
@@ -206,99 +210,6 @@ fn deserialize_hook_input(
     Ok(serde_json::from_str(input_json)?)
 }
 
-fn normalize_codex_input(input: HookInput) -> HookInput {
-    let shell = |name: String, mut args: serde_json::Value| {
-        if matches!(name.as_str(), "shell_command" | "exec_command" | "shell") {
-            if args.get("command").is_none()
-                && let Some(cmd) = args.get("cmd").cloned()
-            {
-                args["command"] = cmd;
-            }
-            ("Bash".to_string(), args)
-        } else {
-            (name, args)
-        }
-    };
-    match input {
-        HookInput::PreToolUse {
-            tool_name,
-            tool_input,
-            session_id,
-        } => {
-            let (tool_name, tool_input) = shell(tool_name, tool_input);
-            HookInput::PreToolUse {
-                tool_name,
-                tool_input,
-                session_id,
-            }
-        }
-        HookInput::PostToolUse {
-            tool_name,
-            tool_input,
-            tool_result,
-            session_id,
-        } => {
-            let (tool_name, tool_input) = shell(tool_name, tool_input);
-            HookInput::PostToolUse {
-                tool_name,
-                tool_input,
-                tool_result,
-                session_id,
-            }
-        }
-        HookInput::SessionStop {
-            session_id, extra, ..
-        } => HookInput::SessionStop {
-            session_id,
-            transcript_path: None,
-            extra,
-        },
-        other => other,
-    }
-}
-
-/// Emit only fields supported by the native event. An explicit denial always
-/// wins over advisory context or shared generic approval fields.
-fn codex_output(event: &str, output: serde_json::Value) -> serde_json::Value {
-    use serde_json::json;
-    if event == "SessionEnd" {
-        return json!({});
-    }
-    if event == "PreToolUse" {
-        if output
-            .pointer("/hookSpecificOutput/permissionDecision")
-            .and_then(serde_json::Value::as_str)
-            == Some("deny")
-        {
-            return json!({"hookSpecificOutput": output["hookSpecificOutput"]});
-        }
-        if output.get("block").and_then(serde_json::Value::as_bool) == Some(true)
-            || output.get("decision").and_then(serde_json::Value::as_str) == Some("block")
-        {
-            return json!({"hookSpecificOutput": {
-                "hookEventName": "PreToolUse", "permissionDecision": "deny",
-                "permissionDecisionReason": output.get("message").or_else(|| output.get("reason"))
-                    .and_then(serde_json::Value::as_str).unwrap_or("Amplihack security check denied this tool")
-            }});
-        }
-    }
-    if matches!(
-        event,
-        "SessionStart" | "UserPromptSubmit" | "PreToolUse" | "PostToolUse"
-    ) && let Some(context) = output
-        .pointer("/hookSpecificOutput/additionalContext")
-        .and_then(serde_json::Value::as_str)
-    {
-        return json!({"hookSpecificOutput":{"hookEventName":event,"additionalContext":context}});
-    }
-    json!({})
-}
-
-/// Read all of stdin as a string.
-fn security_denial() -> serde_json::Value {
-    serde_json::json!({"hookSpecificOutput":{"hookEventName":"PreToolUse",
-        "permissionDecision":"deny", "permissionDecisionReason":"Amplihack security check could not process tool input"}})
-}
 fn read_stdin(codex: bool) -> anyhow::Result<String> {
     let mut input = String::new();
     if codex {
@@ -434,7 +345,12 @@ mod codex_payload_contract_tests {
                 "pre_tool_use"
             }
             fn process(&self, _: HookInput) -> anyhow::Result<serde_json::Value> {
-                panic!("controlled security hook panic");
+                match std::env::var("AMPLIHACK_TEST_SECURITY_MODE").as_deref() {
+                    Ok("allow") => Ok(serde_json::json!({})),
+                    Ok("deny") => Ok(serde_json::json!({"block":true})),
+                    Ok("error") => anyhow::bail!("controlled security error"),
+                    _ => panic!("controlled security hook panic"),
+                }
             }
             fn hook_event_name(&self) -> Option<&'static str> {
                 Some("PreToolUse")
@@ -444,10 +360,21 @@ mod codex_payload_contract_tests {
             // Redirect only after libtest's startup output. Redirecting the
             // whole harness makes libtest panic before the hook is reached.
             use std::os::fd::AsRawFd;
-            let full = std::fs::OpenOptions::new()
-                .write(true)
-                .open("/dev/full")
-                .unwrap();
+            let full =
+                if std::env::var("AMPLIHACK_TEST_SECURITY_TRANSPORT").as_deref() == Ok("pipe") {
+                    let mut fds = [0; 2];
+                    assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+                    unsafe {
+                        libc::close(fds[0]);
+                    }
+                    use std::os::fd::FromRawFd;
+                    unsafe { std::fs::File::from_raw_fd(fds[1]) }
+                } else {
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .open("/dev/full")
+                        .unwrap()
+                };
             assert!(unsafe { libc::dup2(full.as_raw_fd(), libc::STDOUT_FILENO) } >= 0);
             run_hook(PanickingSecurityHook);
         }
@@ -457,28 +384,38 @@ mod codex_payload_contract_tests {
     #[test]
     fn security_panic_denial_write_failure_is_visible() {
         use std::process::{Command, Stdio};
-        let mut child = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "protocol::codex_payload_contract_tests::security_denial_subprocess_worker",
-                "--nocapture",
-            ])
-            .env("AMPLIHACK_TEST_DENIAL_PANIC", "1")
-            .env("AMPLIHACK_AGENT_BINARY", "codex")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(br#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{}}"#)
-            .unwrap();
-        let output = child.wait_with_output().unwrap();
-        assert_eq!(output.status.code(), Some(3));
-        assert!(String::from_utf8_lossy(&output.stderr).contains("hook panicked"));
+        for transport in ["full", "pipe"] {
+            for mode in ["allow", "deny", "error", "panic"] {
+                let mut child = Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "protocol::codex_payload_contract_tests::security_denial_subprocess_worker",
+                        "--nocapture",
+                    ])
+                    .env("AMPLIHACK_TEST_DENIAL_PANIC", "1")
+                    .env("AMPLIHACK_TEST_SECURITY_MODE", mode)
+                    .env("AMPLIHACK_TEST_SECURITY_TRANSPORT", transport)
+                    .env("AMPLIHACK_AGENT_BINARY", "codex")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                child
+                    .stdin
+                    .take()
+                    .unwrap()
+                    .write_all(
+                        br#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{}}"#,
+                    )
+                    .unwrap();
+                let output = child.wait_with_output().unwrap();
+                assert_eq!(output.status.code(), Some(2));
+                assert!(String::from_utf8_lossy(&output.stderr).contains(
+                    "Amplihack security response delivery failed; tool execution blocked"
+                ));
+            }
+        }
     }
 
     #[test]
