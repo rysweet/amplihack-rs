@@ -96,7 +96,7 @@ export GH_TOKEN="ghp_xxxxxxxxxxxx"
 | Command     | Description                                      |
 | ----------- | ------------------------------------------------ |
 | `/help`     | Show all commands and shortcuts                  |
-| `/model`    | Select AI model (claude-sonnet-4-5, gpt-5, etc.) |
+| `/model`    | Select from models available in the current runtime |
 | `/mcp`      | Manage MCP server configuration                  |
 | `/agent`    | Browse and select custom agents                  |
 | `/delegate` | Hand off task to Copilot coding agent on GitHub  |

@@ -23,6 +23,8 @@ evaluation_criteria:
 
 # Document to Markdown Conversion
 
+Model IDs in these examples are configuration placeholders. Replace `<configured-model>` (and any primary/fallback variants) with models available to the selected provider and runtime; use the user’s configuration rather than a skill-defined default. For image input, select a model that supports vision.
+
 ## Overview
 
 Convert various document formats to clean Markdown using Microsoft's MarkItDown tool. Optimized for LLM processing, content extraction, and document analysis workflows.
@@ -117,7 +119,7 @@ if not api_key:
     raise RuntimeError("OPENAI_API_KEY not set")
 
 client = OpenAI(api_key=api_key)
-md = MarkItDown(llm_client=client, llm_model="gpt-4o")
+md = MarkItDown(llm_client=client, llm_model="<configured-model>")
 result = md.convert("diagram.jpg")  # Gets AI-generated description
 ```
 

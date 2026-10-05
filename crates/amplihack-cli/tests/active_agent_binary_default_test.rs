@@ -18,6 +18,9 @@ use std::process::Command;
 fn run_probe(test_name: &str, env_override: Option<&str>) -> String {
     let exe = std::env::current_exe().expect("could not resolve current test exe");
     let mut cmd = Command::new(&exe);
+    // The fallback probes also need a cwd without persisted launcher context.
+    let probe_dir = tempfile::tempdir().expect("could not create isolated probe directory");
+    cmd.current_dir(probe_dir.path());
     cmd.args(["--exact", test_name, "--nocapture"]);
     cmd.env_remove("AMPLIHACK_AGENT_BINARY");
     // These probes assert what the LOWER layers answer, so every layer above

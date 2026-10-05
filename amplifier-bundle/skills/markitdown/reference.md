@@ -1,5 +1,7 @@
 # MarkItDown Reference Documentation
 
+Model IDs in these examples are configuration placeholders. Replace `<configured-model>` (and any primary/fallback variants) with models available to the selected provider and runtime; use the user’s configuration rather than a skill-defined default. For image input, select a model that supports vision.
+
 **Source**: https://github.com/microsoft/markitdown
 **Version**: Based on microsoft/markitdown main branch
 **Last Updated**: 2026-02-14
@@ -36,7 +38,7 @@ class MarkItDown:
 
         Args:
             llm_client: OpenAI-compatible client for image descriptions
-            llm_model: Model name (e.g., "gpt-4o", "gpt-4-vision-preview")
+            llm_model: Configured vision-capable model name for the selected client
             docintel_endpoint: Azure Document Intelligence endpoint URL
             enable_plugins: Whether to enable plugin system (default: True)
         """
@@ -147,7 +149,7 @@ from openai import OpenAI
 client = OpenAI(api_key="your-key")
 md = MarkItDown(
     llm_client=client,
-    llm_model="gpt-4o"  # or "gpt-4-vision-preview"
+    llm_model="<configured-model>"  # Must support image input
 )
 ```
 
@@ -232,7 +234,7 @@ from openai import OpenAI
 from markitdown import MarkItDown
 
 client = OpenAI()
-md = MarkItDown(llm_client=client, llm_model="gpt-4o")
+md = MarkItDown(llm_client=client, llm_model="<configured-model>")
 
 # Image with AI-generated description
 result = md.convert("diagram.png")
@@ -242,6 +244,7 @@ print(result.text_content)  # Includes AI description
 ### Azure OpenAI Integration
 
 ```python
+import os
 from openai import AzureOpenAI
 from markitdown import MarkItDown
 
@@ -251,7 +254,7 @@ client = AzureOpenAI(
     azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT")
 )
 
-md = MarkItDown(llm_client=client, llm_model="gpt-4o")
+md = MarkItDown(llm_client=client, llm_model="<configured-deployment-name>")  # Azure deployment with vision support
 result = md.convert("image.jpg")
 ```
 
@@ -260,7 +263,9 @@ result = md.convert("image.jpg")
 Any OpenAI-compatible API works:
 
 ```python
+import os
 from openai import OpenAI
+from markitdown import MarkItDown
 
 # Example: Anthropic via OpenAI compatibility
 client = OpenAI(
@@ -268,7 +273,7 @@ client = OpenAI(
     base_url="https://api.anthropic.com/v1"
 )
 
-md = MarkItDown(llm_client=client, llm_model="claude-3-opus-20240229")
+md = MarkItDown(llm_client=client, llm_model="<configured-model>")
 ```
 
 ### Image Description Behavior
@@ -490,7 +495,7 @@ md = MarkItDown(docintel_endpoint="<endpoint>")
 # Verify LLM client configured
 from openai import OpenAI
 client = OpenAI()  # Requires OPENAI_API_KEY
-md = MarkItDown(llm_client=client, llm_model="gpt-4o")
+md = MarkItDown(llm_client=client, llm_model="<configured-model>")
 ```
 
 ### Import Errors

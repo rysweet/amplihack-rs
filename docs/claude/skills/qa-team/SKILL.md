@@ -788,7 +788,7 @@ scenario:
 
   # Define custom comprehension logic
   comprehension_agent:
-    model: "gpt-4"
+    # Inherit the runtime model configuration.
     system_prompt: |
       You are a financial data validator. When verifying dashboard content:
       1. All monetary values must use proper formatting ($1,234.56)

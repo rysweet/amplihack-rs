@@ -5,6 +5,7 @@
 //! by Markdown prompt content. This module parses that structure into a
 //! queryable catalog.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -29,7 +30,27 @@ pub struct SkillMeta {
     #[serde(default)]
     pub skip_confirmation_if_explicit: bool,
     #[serde(default)]
-    pub token_budget: Option<u32>,
+    pub token_budget: Option<TokenBudget>,
+    #[serde(flatten)]
+    pub extensions: std::collections::BTreeMap<String, serde_yaml::Value>,
+}
+
+/// Resource budget metadata retained without reducing mappings to a total.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TokenBudget {
+    Scalar(u32),
+    Resources(ResourceBudget),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceBudget {
+    pub skill_md: Option<u32>,
+    pub reference_md: Option<u32>,
+    pub examples_md: Option<u32>,
+    pub patterns_md: Option<u32>,
+    pub total: Option<u32>,
 }
 
 /// A fully loaded skill: metadata + prompt content.
@@ -49,46 +70,56 @@ pub struct SkillCatalog {
 }
 
 impl SkillCatalog {
-    /// Load every skill directory under `skills_dir`.
-    ///
-    /// Each subdirectory must contain a `SKILL.md` file. Directories without
-    /// one are silently skipped.
+    /// Recursively load ordinary skill files, rejecting incomplete catalogs.
+    /// Reads a trusted, stable local tree. Static symlink checks are not atomic
+    /// confinement against an adversary concurrently replacing tree entries.
     pub fn load(skills_dir: &Path) -> Result<Self> {
-        let mut skills = HashMap::new();
-
-        let entries = std::fs::read_dir(skills_dir).map_err(|e| {
-            DomainError::InvalidInput(format!(
-                "cannot read skills directory {}: {e}",
-                skills_dir.display()
-            ))
-        })?;
-
-        for entry in entries {
-            let entry = entry.map_err(|e| {
-                DomainError::InvalidInput(format!("error reading directory entry: {e}"))
+        fn visit(dir: &Path, skills: &mut HashMap<String, Skill>) -> Result<()> {
+            let entries = std::fs::read_dir(dir).map_err(|e| {
+                DomainError::InvalidInput(format!("cannot read {}: {e}", dir.display()))
             })?;
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
+            let mut paths = Vec::new();
+            for entry in entries {
+                let entry = entry.map_err(|e| {
+                    DomainError::InvalidInput(format!(
+                        "cannot read entry in {}: {e}",
+                        dir.display()
+                    ))
+                })?;
+                paths.push(entry.path());
             }
-            let skill_md = path.join("SKILL.md");
-            if !skill_md.exists() {
-                continue;
-            }
-            match load_skill(&skill_md) {
-                Ok(skill) => {
+            paths.sort();
+            for path in paths {
+                let kind = std::fs::symlink_metadata(&path)
+                    .map_err(|e| {
+                        DomainError::InvalidInput(format!("cannot inspect {}: {e}", path.display()))
+                    })?
+                    .file_type();
+                if kind.is_dir() {
+                    visit(&path, skills)?;
+                } else if path.file_name().is_some_and(|name| name == "SKILL.md") {
+                    if !kind.is_file() {
+                        return Err(DomainError::InvalidInput(format!(
+                            "skill must be an ordinary file: {}",
+                            path.display()
+                        )));
+                    }
+                    let skill = load_skill(&path)?;
+                    if let Some(previous) = skills.get(&skill.meta.name) {
+                        return Err(DomainError::InvalidInput(format!(
+                            "duplicate skill {}: {} and {}",
+                            skill.meta.name,
+                            previous.path.display(),
+                            path.display()
+                        )));
+                    }
                     skills.insert(skill.meta.name.clone(), skill);
                 }
-                Err(e) => {
-                    tracing::warn!(
-                        path = %skill_md.display(),
-                        error = %e,
-                        "skipping skill with parse error"
-                    );
-                }
             }
+            Ok(())
         }
-
+        let mut skills = HashMap::new();
+        visit(skills_dir, &mut skills)?;
         Ok(Self { skills })
     }
 
@@ -164,20 +195,32 @@ fn load_skill(path: &Path) -> Result<Skill> {
 ///
 /// Expects the file to start with `---\n`, followed by YAML, then `---\n`.
 fn parse_front_matter(content: &str, source_path: &Path) -> Result<(SkillMeta, String)> {
-    let content = content.trim_start();
-    if !content.starts_with("---") {
+    // Most bundled files use LF; only CRLF input needs a normalized copy.
+    let content = if content.contains("\r\n") {
+        Cow::Owned(content.replace("\r\n", "\n"))
+    } else {
+        Cow::Borrowed(content)
+    };
+    if !content.starts_with("---\n") {
         return Err(DomainError::InvalidInput(format!(
             "no YAML front-matter delimiter in {}",
             source_path.display()
         )));
     }
     let after_first = &content[3..];
-    let end = after_first.find("\n---").ok_or_else(|| {
-        DomainError::InvalidInput(format!(
-            "unclosed YAML front-matter in {}",
-            source_path.display()
-        ))
-    })?;
+    let end = after_first
+        .match_indices("\n---")
+        .find(|(i, _)| {
+            let tail = &after_first[i + 4..];
+            tail.is_empty() || tail.starts_with('\n')
+        })
+        .map(|(i, _)| i)
+        .ok_or_else(|| {
+            DomainError::InvalidInput(format!(
+                "unclosed YAML front-matter in {}",
+                source_path.display()
+            ))
+        })?;
     let yaml_str = &after_first[..end];
     let body_start = end + 4; // skip "\n---"
     let body = if body_start < after_first.len() {
@@ -191,6 +234,25 @@ fn parse_front_matter(content: &str, source_path: &Path) -> Result<(SkillMeta, S
     let meta: SkillMeta = serde_yaml::from_str(yaml_str).map_err(|e| {
         DomainError::InvalidInput(format!("invalid YAML in {}: {e}", source_path.display()))
     })?;
+    if meta.name.is_empty()
+        || meta.name.split('-').any(|part| {
+            part.is_empty()
+                || !part
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        })
+    {
+        return Err(DomainError::InvalidInput(format!(
+            "invalid skill name in {}",
+            source_path.display()
+        )));
+    }
+    if body.trim().is_empty() {
+        return Err(DomainError::InvalidInput(format!(
+            "empty skill body in {}",
+            source_path.display()
+        )));
+    }
     Ok((meta, body))
 }
 
@@ -226,7 +288,7 @@ Do stuff."#;
         assert_eq!(meta.auto_activates.len(), 2);
         assert_eq!(meta.explicit_triggers, vec!["/amplihack:my-skill"]);
         assert!(meta.confirmation_required);
-        assert_eq!(meta.token_budget, Some(3000));
+        assert_eq!(meta.token_budget, Some(TokenBudget::Scalar(3000)));
         assert!(body.contains("Do stuff."));
     }
 
@@ -251,6 +313,97 @@ Do stuff."#;
             msg.contains("broken.md"),
             "error should include filename: {msg}"
         );
+    }
+
+    #[test]
+    fn metadata_extensions_and_optional_description_round_trip() {
+        let text = "---\nname: extended\nargument-hint: '[path]'\nallowed-tools: [Read, Bash]\nmetadata: {category: review}\ntoken_budget: {skill_md: 800}\n---\nBody";
+        let (meta, _) = parse_front_matter(text, Path::new("extended.md")).unwrap();
+        assert!(meta.description.is_none());
+        assert_eq!(meta.extensions["argument-hint"].as_str(), Some("[path]"));
+        let serialized = serde_yaml::to_string(&meta).unwrap();
+        let reloaded: SkillMeta = serde_yaml::from_str(&serialized).unwrap();
+        assert_eq!(meta.extensions, reloaded.extensions);
+        assert_eq!(meta.token_budget, reloaded.token_budget);
+    }
+
+    #[test]
+    fn invalid_metadata_and_empty_bodies_fail() {
+        for yaml in [
+            "token_budget: -1",
+            "token_budget: 4294967296",
+            "token_budget: 1.5",
+            "token_budget: {total: -1}",
+            "token_budget: {total: 4294967296}",
+            "token_budget: {total: 1.5}",
+            "token_budget: {total: bad}",
+            "confirmation_required: maybe",
+            "auto_activates: text",
+            "description: []",
+        ] {
+            let text = format!("---\nname: test\n{yaml}\n---\nBody");
+            assert!(
+                parse_front_matter(&text, Path::new("bad.md")).is_err(),
+                "{yaml}"
+            );
+        }
+        for text in [
+            "---invalid\nname: test\n---\nBody",
+            "---\nname: test\n---invalid\nBody",
+            "---\nname: test\n---\n  ",
+        ] {
+            assert!(parse_front_matter(text, Path::new("bad.md")).is_err());
+        }
+    }
+
+    #[test]
+    fn catalog_reports_traversal_failures_even_when_privileged() {
+        let dir = tempfile::tempdir().unwrap();
+        // Missing paths and ordinary files fail read_dir even when permission
+        // checks would be bypassed by a privileged test runner.
+        let missing = dir.path().join("missing");
+        let file = dir.path().join("ordinary-file");
+        std::fs::write(&file, "not a directory").unwrap();
+        for path in [missing, file] {
+            let error = SkillCatalog::load(&path).unwrap_err().to_string();
+            assert!(error.contains("cannot read"), "{error}");
+            assert!(error.contains(&path.display().to_string()), "{error}");
+        }
+    }
+
+    #[test]
+    fn catalog_rejects_duplicates_and_parse_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("nested")).unwrap();
+        std::fs::write(dir.path().join("SKILL.md"), "---\nname: same\n---\nBody").unwrap();
+        let nested = dir.path().join("nested/SKILL.md");
+        std::fs::write(&nested, "---\nname: same\n---\nBody").unwrap();
+        let error = SkillCatalog::load(dir.path()).unwrap_err().to_string();
+        assert!(error.contains("duplicate") && error.contains("nested"));
+        std::fs::write(&nested, "invalid").unwrap();
+        let error = SkillCatalog::load(dir.path()).unwrap_err().to_string();
+        assert!(error.contains("nested/SKILL.md"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn catalog_skips_directory_links_and_rejects_linked_skills() {
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(dir.path(), dir.path().join("cycle")).unwrap();
+        assert!(SkillCatalog::load(dir.path()).unwrap().is_empty());
+        let source = dir.path().join("source.md");
+        std::fs::write(&source, "---\nname: linked\n---\nBody").unwrap();
+        std::os::unix::fs::symlink(source, dir.path().join("SKILL.md")).unwrap();
+        assert!(
+            SkillCatalog::load(dir.path())
+                .unwrap_err()
+                .to_string()
+                .contains("ordinary file")
+        );
+        let (meta, body) =
+            parse_front_matter("---\r\nname: crlf\r\n---\r\nBody", Path::new("crlf.md")).unwrap();
+        assert_eq!(meta.name, "crlf");
+        assert_eq!(body, "Body");
     }
 
     #[test]
