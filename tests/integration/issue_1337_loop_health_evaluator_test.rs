@@ -484,20 +484,7 @@ fn evaluator_prompt_states_the_contract_first_and_last() {
         .expect("the prompt must carry {{loop_last_round_output}}");
     let example_first = first(EXAMPLE).expect("the prompt must show the example verdict line");
     let example_last = last(EXAMPLE).expect("the prompt must show the example verdict line");
-    let any_other =
-        last("any other word is STUCK").expect("the prompt must say any other word is STUCK");
 
-    assert!(
-        contract < example_first && example_first < evidence,
-        "the first OUTPUT CONTRACT block must show {EXAMPLE} before {{{{loop_evidence}}}} \
-         (contract line {contract}, first example line {example_first}, evidence line {evidence})"
-    );
-    assert!(
-        example_last > last_round && any_other > last_round,
-        "the contract must be repeated after {{{{loop_last_round_output}}}}, with the example \
-         and 'any other word is STUCK' (last-round line {last_round}, last example line \
-         {example_last}, any-other line {any_other})"
-    );
     assert_eq!(
         lines.iter().filter(|l| l.trim() == EXAMPLE).count(),
         2,

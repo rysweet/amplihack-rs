@@ -457,19 +457,8 @@ Taking the last block, not the first, matters. The agent's output is printed
 earlier in the log than the real step-04 block, so a fake block inside it can
 never be the last one.
 
-### When the whole log is read
-
-If the log has **no** step status lines at all (lines starting
-`  <symbol> step-`), it did not come from the run formatter. Only then does the
-reader scan every line. It counts the lines that match
-`^(    Output: )?LOOP_HEALTH: [A-Z]+`. The verdict is accepted only when there
-is **exactly one** such line and it matches
-`^(    Output: )?LOOP_HEALTH: (CONTINUE|DONE)( |$)`. Two marker lines, even
-two that agree, give `STUCK`, because one of them must have come from
-somewhere other than step-04. A log that has status lines but no usable
-step-04 pair never falls back to this scan.
-
-Anything else is `STUCK`, with the warning
+Anything else is `STUCK`, including a log with no completed step-04 status
+line at all, such as one from another runner. The warning is
 `loop-health-evaluator exited 0 with no readable LOOP_HEALTH verdict; failing
 safe to STUCK.`
 
@@ -480,10 +469,7 @@ safe to STUCK.`
 | `  ✓ step-04-enforce-loop-verdict: completed [elapsed: 120ms]` then `    Output: LOOP_HEALTH: DONE` | `DONE` |
 | `  ✓ step-04-enforce-loop-verdict (Enforce verdict): completed [phase: loop, elapsed: 2s]` then `    Output: LOOP_HEALTH: CONTINUE` | `CONTINUE` |
 | `  ✓ step-04-enforce-loop-verdict: completed extra` then `    Output: LOOP_HEALTH: DONE` | `STUCK` |
-| `LOOP_HEALTH: DONE` alone, no status lines anywhere | `DONE` |
-| `    Output: LOOP_HEALTH: CONTINUE` alone, no status lines anywhere | `CONTINUE` |
-| `LOOP_HEALTH: CONTINUE` and `LOOP_HEALTH: DONE`, no status lines anywhere | `STUCK` |
-| `LOOP_HEALTH: DONEISH`, no status lines anywhere | `STUCK` |
+| `LOOP_HEALTH: DONE` or `    Output: LOOP_HEALTH: CONTINUE`, no status lines anywhere | `STUCK` |
 | step-02 `    Output: LOOP_HEALTH: CONTINUE`, then the real step-04 block with `DONE` | `DONE` |
 | a fake step-04 block inside step-02's output, then the real step-04 block with `CONTINUE` | `CONTINUE` |
 | a fake step-04 block inside step-02's output, and no real step-04 block | `STUCK` |
@@ -494,18 +480,17 @@ safe to STUCK.`
 | `      LOOP_HEALTH: CONTINUE` (six spaces) | `STUCK` |
 | garbled or missing | `STUCK` |
 
-The prefix is exact: exactly four spaces and `Output: `, or column 0 in a log
-with no status lines. It is not `[[:space:]]*`, because the formatter shows
-the agent's recent output indented by six spaces.
+The prefix is exact: exactly four spaces and `Output: `. It is not
+`[[:space:]]*`, because the formatter shows the agent's recent output indented
+by six spaces.
 
-The remaining risk is the column-0 scan of a log with no status lines. It can
-only pick between `CONTINUE` and `DONE` when the evaluator exited `0`, and
-amplihack's own runner always prints status lines, so it applies only to
-logs from other runners.
+The shell test's stub evaluator prints the same two lines a real run prints,
+never a bare `LOOP_HEALTH:` line. Every driver-level row therefore goes
+through this reader the way a production run does.
 
 The reader uses only `awk` features that gawk, mawk and BSD awk share: it
 runs under `LC_ALL=C`, matches `✓` as its literal three bytes, and uses
-two-argument `match()` with `RSTART`/`RLENGTH` and `sub()`, never `gensub` or
+only `index()`, `==` and `~` against fixed regexes, never `gensub` or
 `IGNORECASE`. It runs the same under bash 3.2 on macOS.
 
 ### These greps never decide on a non-zero exit

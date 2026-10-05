@@ -375,7 +375,7 @@ check_rs "1513-json-beats-later-alt" \
     $'{"loop_verdict":"CONTINUE","not_converging":[]}\n{"verdict":"DONE"}' CONTINUE evaluator
 check_rs "1513-json-beats-later-prose" \
     $'{"loop_verdict":"CONTINUE","not_converging":[]}\nDONE' CONTINUE evaluator
-check_rs "1513-json-beats-later-prose" \
+check_rs "1513-json-beats-later-prose-stuck" \
     $'{"loop_verdict":"STUCK","not_converging":[]}\nCONTINUE' STUCK evaluator
 
 # --- the wrong key (`verdict`) — deliberate reversal of the old MALFORMED row.

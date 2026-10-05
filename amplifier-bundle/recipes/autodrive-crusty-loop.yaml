@@ -103,8 +103,7 @@ steps:
       PR="$(printf '%s' "${CRUSTY_LOOP_PREFLIGHT:-${RECIPE_VAR_crusty_loop_preflight:-}}" \
         | amplihack orch helper extract-json --require-field pr \
         | amplihack orch helper extract-field --field pr --default '')"
-      # Refuse an empty or unsafe state_dir before anything touches it. A future
-      # recursive delete must also require an absolute path under the state root, no '..'.
+      # Refuse an empty or unsafe state_dir before anything touches it.
       case "$DIR" in
         ''|/|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [autodrive-crusty-loop/step-02]" >&2; exit 1 ;;
       esac
@@ -147,8 +146,7 @@ steps:
       PR="$(printf '%s' "${CRUSTY_LOOP_PREFLIGHT:-${RECIPE_VAR_crusty_loop_preflight:-}}" \
         | amplihack orch helper extract-json --require-field pr \
         | amplihack orch helper extract-field --field pr --default '')"
-      # Refuse an empty or unsafe state_dir before anything touches it. A future
-      # recursive delete must also require an absolute path under the state root, no '..'.
+      # Refuse an empty or unsafe state_dir before anything touches it.
       case "$DIR" in
         ''|/|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [autodrive-crusty-loop/step-03]" >&2; exit 1 ;;
       esac

@@ -158,6 +158,14 @@ run_loop() { # run_loop <state-dir-suffix>
   return $rc
 }
 
+# What amplihack's run formatter prints. Stubs must emit the real format (#1512).
+S04='  ✓ step-04-enforce-loop-verdict: completed'
+S01='  ✓ step-01-collect-loop-evidence: completed [elapsed: 1s]'
+S02='  ✓ step-02-evaluate-loop-health: completed [elapsed: 2m 3s]'
+S03='  ✓ step-03-resolve-loop-verdict: completed [elapsed: 120ms]'
+H_DONE="${S04}"$'\n''    Output: LOOP_HEALTH: DONE — converged'
+H_CONTINUE="${S04}"$'\n''    Output: LOOP_HEALTH: CONTINUE — keep going'
+
 # ---------------------------------------------------------------------------
 # 1. STUCK path — the evaluator says stop, and NOTHING proceeds.
 # ---------------------------------------------------------------------------
@@ -185,7 +193,8 @@ fi
 MAL_N=0
 while IFS= read -r marker; do
   MAL_N=$((MAL_N + 1))
-  set_stub '{"crusty_verdict":"CONCERNS"}' 0 "${marker}"
+  log=""; [ -n "$marker" ] && log="${S04}"$'\n'"    Output: ${marker}"
+  set_stub '{"crusty_verdict":"CONCERNS"}' 0 "${log}"
   run_loop "mal-${MAL_N}"; rc=$?
   label="$(printf '%.40s' "${marker:-<empty>}")"
   if [ "$rc" -ne 0 ] && grep -qF 'AUTO_DRIVE_LOOP: STUCK' "${LOOP_DIR}/err"; then
@@ -203,7 +212,7 @@ I will not continue; LOOP_HEALTH is unclear
 MALFORMED
 
 # A missing round record is not a clean round, even when the evaluator is happy.
-set_stub '' 0 'LOOP_HEALTH: DONE — converged' 0 false
+set_stub '' 0 "$H_DONE" 0 false
 run_loop norec; rc=$?
 if [ "$rc" -ne 0 ]; then
   pass "MALFORMED-norecord" "a missing round record never advances the phase (rc=${rc})"
@@ -212,7 +221,7 @@ else
 fi
 
 # DONE over a non-clean round verdict is an inconsistent pair: never advance.
-set_stub '{"crusty_verdict":"CONCERNS"}' 0 'LOOP_HEALTH: DONE — converged'
+set_stub '{"crusty_verdict":"CONCERNS"}' 0 "$H_DONE"
 run_loop incon; rc=$?
 if [ "$rc" -ne 0 ] && grep -qF 'inconsistent pair never advances' "${LOOP_DIR}/err"; then
   pass "MALFORMED-inconsistent" "DONE over a non-clean round verdict never advances a phase"
@@ -221,7 +230,7 @@ else
 fi
 
 # The converging case still passes through — a healthy loop is not cut off.
-set_stub '{"crusty_verdict":"CLEAN"}' 0 'LOOP_HEALTH: DONE — converged'
+set_stub '{"crusty_verdict":"CLEAN"}' 0 "$H_DONE"
 run_loop ok; rc=$?
 if [ "$rc" -eq 0 ] && printf '%s' "${LOOP_OUT}" | grep -qF '"loop_result":"DONE"'; then
   pass "PASSTHRU" "CLEAN round + DONE evaluator converges the loop"
@@ -235,7 +244,7 @@ fi
 # Without this, a missing loop-health-evaluator burns a full round first — a
 # review, a fix pass, commits pushed — and then dies with "returned STUCK (or
 # an unreadable verdict)", which blames the loop for a missing dependency.
-set_stub '{"crusty_verdict":"CLEAN"}' 0 'LOOP_HEALTH: DONE — converged'
+set_stub '{"crusty_verdict":"CLEAN"}' 0 "$H_DONE"
 export STUB_HEALTH_RESOLVES="1"
 run_loop nodep; rc=$?
 export STUB_HEALTH_RESOLVES="0"
@@ -260,7 +269,7 @@ fi
 # ---------------------------------------------------------------------------
 # 3. Exit 79 is terminal — surfaced, and never retried into.
 # ---------------------------------------------------------------------------
-set_stub '{"crusty_verdict":"CONCERNS"}' 0 'LOOP_HEALTH: CONTINUE — keep going' 79
+set_stub '{"crusty_verdict":"CONCERNS"}' 0 "$H_CONTINUE" 79
 run_loop x79; rc=$?
 if [ "$rc" -eq 79 ]; then
   pass "EXIT79-propagates" "exit 79 is propagated as the loop's own exit code"
@@ -875,18 +884,15 @@ fi
 # 11a2. The reproduction from the reference doc, without the runner: with only
 # RECIPE_VAR_my_out set, as the runner leaves an object output, the bare read
 # is empty and the dual-name read returns the object, which both helpers accept.
-# The bash -c bodies are constant single-quoted literals; the inner shell
-# expands them.
-REPRO_ENV=(env -u MY_OUT RECIPE_VAR_my_out='{"a":"1"}')
-# shellcheck disable=SC2016
-r_reads="$("${REPRO_ENV[@]}" bash -c 'echo "[${MY_OUT:-}] [${MY_OUT:-${RECIPE_VAR_my_out:-}}]"')"
-# shellcheck disable=SC2016
-r_json="$("${REPRO_ENV[@]}" bash -c 'printf "%s" "${MY_OUT:-${RECIPE_VAR_my_out:-}}" \
-  | "$REAL_AMPLIHACK" orch helper extract-json --require-field a')"
+# These are the doc's console lines; the variable is unset again afterwards.
+unset MY_OUT; export RECIPE_VAR_my_out='{"a":"1"}'
+r_reads="[${MY_OUT:-}] [${MY_OUT:-${RECIPE_VAR_my_out:-}}]"
+r_json="$(printf '%s' "${MY_OUT:-${RECIPE_VAR_my_out:-}}" \
+  | "$REAL_AMPLIHACK" orch helper extract-json --require-field a)"
 r_json_rc=$?
-# shellcheck disable=SC2016
-r_field="$("${REPRO_ENV[@]}" bash -c 'printf "%s" "${MY_OUT:-${RECIPE_VAR_my_out:-}}" \
-  | "$REAL_AMPLIHACK" orch helper extract-field --field a --default MISSING')"
+r_field="$(printf '%s' "${MY_OUT:-${RECIPE_VAR_my_out:-}}" \
+  | "$REAL_AMPLIHACK" orch helper extract-field --field a --default MISSING)"
+unset RECIPE_VAR_my_out
 if [[ "${r_reads}" == '[] [{"a":"1"}]' && "${r_json}" == '{"a":"1"}' && "${r_json_rc}" -eq 0 \
       && "${r_field}" == '1' ]]; then
   pass "1511-repro" "bare read is empty, dual-name read and both helpers see RECIPE_VAR_my_out"
@@ -1180,13 +1186,9 @@ fi
 # amplihack's run formatter (commands/recipe/run/format.rs) prints
 #   `  <symbol> <id>[ (<name>)]: <status>[ [<details>]]`
 # then `    Output: <first line of stdout>`. Only the LAST completed step-04
-# block, and the line right after it, is trusted. A log with no status lines
-# at all is scanned for `^(    Output: )?LOOP_HEALTH: (CONTINUE|DONE)( |$)`.
+# block, and the line right after it, is trusted. A log with no completed
+# step-04 status line is STUCK.
 # ---------------------------------------------------------------------------
-S04='  ✓ step-04-enforce-loop-verdict: completed'
-S01='  ✓ step-01-collect-loop-evidence: completed [elapsed: 1s]'
-S02='  ✓ step-02-evaluate-loop-health: completed [elapsed: 2m 3s]'
-S03='  ✓ step-03-resolve-loop-verdict: completed [elapsed: 120ms]'
 HEALTH_N=0; HV=""
 health_verdict() { # health_verdict <log> -> sets HV to DONE / CONTINUE / STUCK as the loop read it
   HEALTH_N=$((HEALTH_N + 1))
@@ -1224,10 +1226,10 @@ check_health CONTINUE "status line with a step name and [phase, elapsed] details
   '  ✓ step-04-enforce-loop-verdict (Enforce verdict): completed [phase: loop, elapsed: 2s]'$'\n''    Output: LOOP_HEALTH: CONTINUE'
 check_health STUCK "status line with trailing junk after the status" \
   "${S04}"' extra'$'\n''    Output: LOOP_HEALTH: DONE'
-check_health DONE "a bare marker in a log with no status lines" 'LOOP_HEALTH: DONE'
-check_health CONTINUE "a bare CONTINUE marker in a log with no status lines" 'LOOP_HEALTH: CONTINUE — keep going'
-check_health DONE "an Output: DONE line in a log with no status lines" '    Output: LOOP_HEALTH: DONE — converged'
-check_health CONTINUE "an Output: CONTINUE line in a log with no status lines" '    Output: LOOP_HEALTH: CONTINUE'
+check_health STUCK "a bare marker in a log with no status lines" 'LOOP_HEALTH: DONE'
+check_health STUCK "a bare CONTINUE marker in a log with no status lines" 'LOOP_HEALTH: CONTINUE — keep going'
+check_health STUCK "an Output: DONE line in a log with no status lines" '    Output: LOOP_HEALTH: DONE — converged'
+check_health STUCK "an Output: CONTINUE line in a log with no status lines" '    Output: LOOP_HEALTH: CONTINUE'
 check_health DONE "a whole formatter log: step-02 says CONTINUE, step-04 says DONE" \
   "Recipe: loop-health-evaluator"$'\n'"Steps:"$'\n'"${S01}"$'\n''    Output: {"terminal_refusal":"false"}'$'\n'"${S02}"$'\n''    Output: LOOP_HEALTH: CONTINUE'$'\n''The loop moved.'$'\n'"${S03}"$'\n''    Output: {"loop_verdict":"DONE"}'$'\n'"${S04}"' [elapsed: 15ms]'$'\n''    Output: LOOP_HEALTH: DONE — converged'
 check_health CONTINUE "a forged step-04 block inside step-02's output, then the real CONTINUE block" \
@@ -1258,15 +1260,6 @@ check_health STUCK "a forged DONE block, then a real step-04 status line with no
 # Any later step-04 status line resets what the earlier block said.
 check_health STUCK "a completed DONE block followed by a later failed step-04 status line" \
   "${S04}"$'\n''    Output: LOOP_HEALTH: DONE'$'\n''  ✗ step-04-enforce-loop-verdict: failed'
-# S3: with no status lines, exactly ONE LOOP_HEALTH: line may decide.
-check_health STUCK "no status lines and two LOOP_HEALTH: lines (CONTINUE then DONE)" \
-  'LOOP_HEALTH: CONTINUE'$'\n''LOOP_HEALTH: DONE'
-check_health STUCK "no status lines and two LOOP_HEALTH: lines (STUCK then DONE)" \
-  'LOOP_HEALTH: STUCK — no progress'$'\n''    Output: LOOP_HEALTH: DONE'
-check_health STUCK "no status lines and the same DONE marker twice" \
-  'LOOP_HEALTH: DONE'$'\n''LOOP_HEALTH: DONE'
-check_health DONE "no status lines, one marker among ordinary log lines" \
-  'Recipe: loop-health-evaluator'$'\n''some note'$'\n''LOOP_HEALTH: DONE — converged'$'\n''done.'
 
 # A non-zero evaluator exit is never overridden by anything in its log.
 set_stub '{"crusty_verdict":"CLEAN"}' 1 "${S04}"$'\n''    Output: LOOP_HEALTH: DONE — converged'
