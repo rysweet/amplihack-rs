@@ -788,7 +788,7 @@ fn copilot_skips_allow_all_when_env_opt_out() {
 
 /// Copilot is NOT Claude-compatible, so even when skip_permissions=true the
 /// `--dangerously-skip-permissions` flag MUST NOT appear.  This locks the
-/// `is_claude_compatible` whitelist against accidental expansion.
+/// `is_claude_compatible_tool` whitelist against accidental expansion.
 #[test]
 fn copilot_does_not_get_skip_permissions_even_when_requested() {
     with_uvx_detection_disabled(|| {

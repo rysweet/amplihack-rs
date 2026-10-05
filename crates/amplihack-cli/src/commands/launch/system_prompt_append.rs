@@ -145,12 +145,13 @@ pub(crate) fn should_inject_system_prompt_append(
     let Some(binary) = agent_binary_for_name(binary_name) else {
         return false;
     };
-    // The flag matrix is the source of truth, deliberately. `build_command_for_dir`'s
-    // local `is_claude_compatible` also matches "amplifier" and governs
-    // `--dangerously-skip-permissions` and `--model`; the matrix says
-    // `supports_append_prompt == false` for Amplifier. The two disagree, the
-    // matrix wins here, and `is_claude_compatible` is left alone — retargeting
-    // those other two flags is a separate question. Do not "harmonize" them.
+    // The flag matrix is the source of truth, deliberately. `is_claude_compatible_tool`
+    // in command.rs also matches "amplifier" and governs
+    // `--dangerously-skip-permissions` (in `build_command_for_dir`) and `--model`
+    // (in `model_args`); the matrix says `supports_append_prompt == false` for
+    // Amplifier. The two disagree, the matrix wins here, and
+    // `is_claude_compatible_tool` is left alone: retargeting those other two
+    // flags is a separate question. Do not "harmonize" them.
     if !amplihack_launcher::flag_matrix::flags_for(binary).supports_append_prompt {
         return false;
     }
