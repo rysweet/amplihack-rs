@@ -26,16 +26,15 @@
 //! `AMPLIHACK_NO_FRESHNESS_CHECK=1` (or the usual non-interactive guards).
 
 use crate::update::fetch_branch_head_sha;
-use crate::util::{is_noninteractive, run_with_timeout};
+use crate::util::is_noninteractive;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const COOLDOWN_SECS: u64 = 24 * 60 * 60;
-const CARGO_INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
 const NO_FRESHNESS_ENV: &str = "AMPLIHACK_NO_FRESHNESS_CHECK";
 
 // ---------------------------------------------------------------------------
@@ -190,39 +189,7 @@ fn ensure_recipe_runner_up_to_date_inner() -> Result<()> {
 }
 
 pub(crate) fn recipe_runner_binary_present() -> bool {
-    // Mirrors `commands::recipe::run::binary::find_recipe_runner_binary`
-    // without pulling that private helper into this module.
-    if let Ok(path) = std::env::var("RECIPE_RUNNER_RS_PATH")
-        && !path.is_empty()
-        && Path::new(&path).is_file()
-    {
-        return true;
-    }
-    let bin_name = "recipe-runner-rs";
-    let home_candidates = home_dir().ok().into_iter().flat_map(|home| {
-        [
-            home.join(".cargo/bin").join(bin_name),
-            home.join(".local/bin").join(bin_name),
-        ]
-    });
-    // `cargo install` places it in `$CARGO_HOME/bin`, which may be neither of
-    // the above and not on PATH.
-    let cargo_home_candidate =
-        crate::rust_toolchain::cargo_home().map(|cargo_home| cargo_home.join("bin").join(bin_name));
-    for candidate in home_candidates.chain(cargo_home_candidate) {
-        if candidate.is_file() {
-            return true;
-        }
-    }
-    // Issue #1274 — one seam. A "choose a file to run" walk: a hit here means
-    // "recipe-runner-rs is installed", and an empty `$PATH` element used to
-    // make a file of that name in the current directory answer yes.
-    for dir in amplihack_utils::launch_target::env_path_dirs() {
-        if dir.join(bin_name).is_file() {
-            return true;
-        }
-    }
-    false
+    crate::rust_toolchain::find_recipe_runner().is_some()
 }
 
 /// `cargo install` recipe-runner-rs. With `bootstrap_toolchain`, a missing
@@ -244,7 +211,10 @@ pub(crate) fn install_recipe_runner_from_git(bootstrap_toolchain: bool) -> Resul
         .arg(RECIPE_RUNNER_BRANCH)
         .arg("--locked")
         .arg("--force");
-    let status = run_with_timeout(cmd, CARGO_INSTALL_TIMEOUT)
+    // No timeout: building recipe-runner-rs on a slow host takes as long as
+    // it takes; a false timeout would fail a healthy install.
+    let status = cmd
+        .status()
         .context("failed to run cargo install for recipe-runner-rs")?;
     if !status.success() {
         bail!("cargo install exited with status {status}");

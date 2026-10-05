@@ -1,5 +1,7 @@
 # Microsoft Agent Framework - Overview
 
+Model IDs in these examples are configuration placeholders. Replace `<configured-model>` (and any primary/fallback variants) with models available to the selected provider and runtime; use the user’s configuration rather than a skill-defined default.
+
 ## What is Microsoft Agent Framework?
 
 Microsoft Agent Framework is an open-source platform for building production-ready AI agents and multi-agent workflows. It unifies the simplicity of AutoGen with the enterprise features of Semantic Kernel into a single, cohesive framework.
@@ -193,7 +195,7 @@ export OPENAI_API_KEY=sk-...
 # Azure OpenAI
 export AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
 export AZURE_OPENAI_API_KEY=...
-export AZURE_OPENAI_DEPLOYMENT=gpt-4
+export AZURE_OPENAI_DEPLOYMENT="<configured-deployment-name>"  # Your Azure deployment name
 
 # Telemetry (optional)
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
@@ -211,7 +213,7 @@ async def main():
     # Create agent
     agent = Agent(
         name="assistant",
-        model=ModelClient(model="gpt-4"),
+        model=ModelClient(model="<configured-model>"),
         instructions="You are a helpful assistant"
     )
 
@@ -230,7 +232,7 @@ using Microsoft.Agents.AI;
 
 var agent = new Agent(
     name: "assistant",
-    model: new ModelClient(model: "gpt-4"),
+    model: new ModelClient(model: "<configured-model>"),
     instructions: "You are a helpful assistant"
 );
 

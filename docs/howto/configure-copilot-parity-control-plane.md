@@ -37,11 +37,12 @@ export AMPLIHACK_HOOK_ENGINE=python
 
 ## 2. Pin the Rust recipe runner if auto-discovery is not enough
 
-The runner lookup checks `RECIPE_RUNNER_RS_PATH` first, then known install locations, then `PATH`.
+The runner lookup checks `RECIPE_RUNNER_RS_PATH` first, then `PATH`, then
+`$CARGO_HOME/bin`, `~/.cargo/bin` and `~/.local/bin` (see
+[Recipe runner binary](../reference/recipe-command.md#recipe-runner-binary)).
 
 ```bash
 export RECIPE_RUNNER_RS_PATH="$HOME/.cargo/bin/recipe-runner-rs"
-export RECIPE_RUNNER_INSTALL_TIMEOUT=300
 recipe-runner-rs --version
 ```
 
