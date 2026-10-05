@@ -52,8 +52,15 @@ and `entries`. Each entry contains `path` and `kind`; `kind.type` is `Directory`
 `File` (with `sha256`) or `Symlink` (with `target`). The empty path denotes the
 backup root. An installation without a previous package records no entries.
 
-Cleanup revalidates the committed ledger, live package and shared resources at
-mutation boundaries. It removes checked entries without following symlinks,
+Cleanup validates complete contents at authorization and completion. On Unix it
+captures inode, type, length, modification-time and change-time stamps for every
+live package entry and shared resource, including the journal, then repeats a
+full preflight before accepting those stamps. Before each backup unlink it checks
+all captured stamps and the backup entry's exact type, file hash or symlink
+target, including directory ancestors. Full content hashing therefore has a
+fixed number of passes; per-unlink metadata checks still scale with the live
+entry count. Other platforms retain full preflights at every unlink.
+It removes checked entries without following symlinks,
 removes directories from children to parents and synchronizes each removal.
 Retries tolerate missing recorded entries, but reject changed or unrecorded
 survivors. Backup removal is synchronized before journal removal; journal removal

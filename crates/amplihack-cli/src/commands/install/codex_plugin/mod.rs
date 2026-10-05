@@ -46,6 +46,7 @@ use native::*;
 mod storage;
 use storage::*;
 mod backup_cleanup;
+mod cleanup_guard;
 mod config;
 mod recovery;
 use recovery::*;
@@ -63,6 +64,10 @@ pub(super) fn uninstall() -> Result<()> {
 }
 #[cfg(test)]
 mod backup_cleanup_tests;
+#[cfg(test)]
+mod cleanup_performance_tests;
+#[cfg(test)]
+mod durability_tests;
 #[cfg(test)]
 mod recovery_tests;
 #[cfg(test)]

@@ -55,6 +55,8 @@ pub(super) fn copy_tree(
     Ok(())
 }
 pub(super) fn digest(root: &Path) -> Result<String> {
+    #[cfg(test)]
+    super::cleanup_performance_tests::DIGESTS.with(|n| n.set(n.get() + 1));
     fn walk(path: &Path, base: &Path, hash: &mut Sha256) -> Result<()> {
         let mut entries = fs::read_dir(path)?.collect::<std::io::Result<Vec<_>>>()?;
         entries.sort_by_key(|e| e.file_name());
@@ -69,7 +71,11 @@ pub(super) fn digest(root: &Path) -> Result<String> {
                 walk(&e.path(), base, hash)?;
             } else {
                 hash.update(b"file");
-                hash.update(fs::read(e.path())?);
+                let bytes = fs::read(e.path())?;
+                #[cfg(test)]
+                super::cleanup_performance_tests::HASHED_BYTES
+                    .with(|n| n.set(n.get() + bytes.len() as u64));
+                hash.update(bytes);
             }
         }
         Ok(())

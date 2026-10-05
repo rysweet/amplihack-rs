@@ -25,7 +25,44 @@ struct Inventory {
     entries: Vec<Entry>,
 }
 
+fn entry_kind(path: &Path, meta: &fs::Metadata) -> Result<Kind> {
+    let kind = if meta.file_type().is_symlink() {
+        Kind::Symlink {
+            target: fs::read_link(path)?,
+        }
+    } else if meta.is_file() {
+        // Open without following a substituted final symlink.
+        let mut options = fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW);
+        }
+        let mut file = options.open(path)?;
+        ensure!(
+            file.metadata()?.is_file(),
+            "nonregular backup entry; record retained"
+        );
+        let mut hash = Sha256::new();
+        let bytes = std::io::copy(&mut file, &mut hash)?;
+        #[cfg(test)]
+        super::cleanup_performance_tests::HASHED_BYTES.with(|n| n.set(n.get() + bytes));
+        #[cfg(not(test))]
+        let _ = bytes;
+        Kind::File {
+            sha256: format!("{:x}", hash.finalize()),
+        }
+    } else {
+        ensure!(meta.is_dir(), "unsupported backup entry; record retained");
+        Kind::Directory
+    };
+    Ok(kind)
+}
+
 fn scan(base: &Path) -> Result<Vec<Entry>> {
+    #[cfg(test)]
+    super::cleanup_performance_tests::SCANS.with(|n| n.set(n.get() + 1));
     fn walk(base: &Path, relative: &Path, entries: &mut Vec<Entry>) -> Result<()> {
         let path = base.join(relative);
         let meta = match fs::symlink_metadata(&path) {
@@ -37,33 +74,7 @@ fn scan(base: &Path) -> Result<Vec<Entry>> {
             }
             Err(e) => return Err(e.into()),
         };
-        let kind = if meta.file_type().is_symlink() {
-            Kind::Symlink {
-                target: fs::read_link(&path)?,
-            }
-        } else if meta.is_file() {
-            // Open without following a substituted final symlink.
-            let mut options = fs::OpenOptions::new();
-            options.read(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.custom_flags(libc::O_NOFOLLOW);
-            }
-            let mut file = options.open(&path)?;
-            ensure!(
-                file.metadata()?.is_file(),
-                "nonregular backup entry; record retained"
-            );
-            let mut hash = Sha256::new();
-            std::io::copy(&mut file, &mut hash)?;
-            Kind::File {
-                sha256: format!("{:x}", hash.finalize()),
-            }
-        } else {
-            ensure!(meta.is_dir(), "unsupported backup entry; record retained");
-            Kind::Directory
-        };
+        let kind = entry_kind(&path, &meta)?;
         let directory = kind == Kind::Directory;
         entries.push(Entry {
             path: relative.to_path_buf(),
@@ -196,15 +207,34 @@ pub(super) fn finish(pending: &mut Value, root: &Path, home: &Path) -> Result<()
     storage::sync_path(&root.join("pending.json"))?;
     storage::sync_path(root)?;
     validate(pending, root, home)?;
+    let guard = cleanup_guard::Guard::capture(pending, root, home)?;
     let mut entries = inventory(pending, home)?.entries;
     entries.sort_by_key(|e| std::cmp::Reverse(e.path.components().count()));
     for entry in entries {
-        recovery::preflight(pending, root, home)?;
+        guard.check(pending, root, home)?;
+        // Check every ancestor before opening an entry: a directory replaced
+        // by a symlink must never redirect a hash or unlink outside the backup.
+        for ancestor in entry.path.ancestors().skip(1) {
+            let meta = match fs::symlink_metadata(backup.join(ancestor)) {
+                Ok(meta) => meta,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+                Err(e) => return Err(e.into()),
+            };
+            ensure!(
+                meta.is_dir() && !meta.file_type().is_symlink(),
+                "foreign backup ancestor changed; cleanup record retained"
+            );
+        }
         let path = backup.join(&entry.path);
         match fs::symlink_metadata(&path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => return Err(e.into()),
-            Ok(_) => {}
+            Ok(meta) => {
+                ensure!(
+                    entry_kind(&path, &meta)? == entry.kind,
+                    "foreign backup survivor changed; cleanup record retained"
+                );
+            }
         }
         if entry.kind == Kind::Directory {
             fs::remove_dir(&path)?;

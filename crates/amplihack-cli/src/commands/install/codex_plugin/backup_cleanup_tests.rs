@@ -1,7 +1,7 @@
 use super::recovery_tests::interrupted;
 use super::*;
 
-fn committed_fixture(dir: &Path) -> (PathBuf, PathBuf) {
+pub(super) fn committed_fixture(dir: &Path) -> (PathBuf, PathBuf) {
     let (root, home, mut pending) = interrupted(dir, true);
     fs::create_dir(root.join("previous-package/nested")).unwrap();
     fs::write(root.join("previous-package/nested/second"), b"second").unwrap();
