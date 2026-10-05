@@ -1423,11 +1423,18 @@ fn test_only_the_three_gateway_variables_select_the_gateway() {
 const STDERR_PROBE_BINARY_ENV: &str = "AMPLIHACK_TEST_1527_PROBE_BINARY";
 const STDERR_PROBE_ARGS_ENV: &str = "AMPLIHACK_TEST_1527_PROBE_ARGS";
 
-/// The child half of [`test_build_command_prints_exactly_the_model_args_stderr`].
-/// In a normal test run neither probe variable is set and this does nothing.
-/// When that test spawns it, it builds the command for the tool and arguments
-/// the variables name, so the parent can read what really reached stderr.
+/// The child half of [`test_build_command_prints_exactly_the_model_args_stderr`],
+/// not a test of its own. It is `#[ignore]`d, so `cargo test` and
+/// `cargo nextest run` skip it and report it as ignored, not as a pass, and
+/// nextest spawns no process for it. That test runs it in a child process with
+/// `--ignored` and the probe variables set. The child builds the command for
+/// the tool and arguments the variables name, so the parent can read what
+/// really reached stderr. Without the variables there is nothing to build, so
+/// it returns at once. That only happens when someone runs ignored tests by
+/// hand (the same convention as `probe_spawn_claude` in amplihack-launcher's
+/// root_sandbox_spawn.rs).
 #[test]
+#[ignore = "child half of test_build_command_prints_exactly_the_model_args_stderr"]
 fn probe_build_command_stderr_for_issue_1527() {
     let Some(binary_name) = std::env::var_os(STDERR_PROBE_BINARY_ENV) else {
         return;
@@ -1444,9 +1451,11 @@ fn probe_build_command_stderr_for_issue_1527() {
 
 /// The `amplihack: ` lines `build_command` writes to the real stderr for
 /// `binary_name` and `extra`, with exactly the variables in `env` set. Runs
-/// [`probe_build_command_stderr_for_issue_1527`] in a child copy of this test
-/// binary with a cleared environment, so neither the developer's shell nor
-/// another test can change the answer.
+/// the ignored [`probe_build_command_stderr_for_issue_1527`] with `--ignored`
+/// in a child copy of this test binary, with a cleared environment, so neither
+/// the developer's shell nor another test can change the answer. The
+/// `1 passed` check fails if the probe is not run, for example because
+/// `--ignored` was dropped.
 fn real_build_command_stderr(
     env: &[(&str, &str)],
     binary_name: &str,
@@ -1459,7 +1468,13 @@ fn real_build_command_stderr(
     let home = tempfile::tempdir().unwrap();
     let mut child = Command::new(std::env::current_exe().unwrap());
     child
-        .args(["--exact", probe.as_str(), "--nocapture", "--test-threads=1"])
+        .args([
+            "--exact",
+            probe.as_str(),
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ])
         .env_clear()
         .current_dir(home.path())
         .env("HOME", home.path())
