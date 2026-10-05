@@ -52,7 +52,7 @@ AUTODRIVE_RECIPES=(
   autodrive-crusty-loop autodrive-merge-evidence autodrive-merge-round
   autodrive-merge-loop
 )
-AUTODRIVE_TOOLS=(autodrive_loop.sh autodrive_merge_gate.sh autodrive_merge_ready_files.sh autodrive_platform_facts.sh autodrive_state.sh autodrive_trust.sh)
+AUTODRIVE_TOOLS=(autodrive_loop.sh autodrive_merge_gate.sh autodrive_merge_ready_files.sh autodrive_platform_facts.sh autodrive_qa_evidence.sh autodrive_state.sh autodrive_trust.sh)
 # The resolver is new in #1517. Its absence is a test failure (section 6a),
 # not a harness error, so every other section still runs and reports.
 RESOLVER="${TOOLS}/autodrive_merge_ready_files.sh"
@@ -1921,6 +1921,29 @@ if [ "$(cat "${EV_REPO}.evidence.json" 2>/dev/null)" = "${EV_OUT}" ]; then
   pass "QA-evidence-file" "the evidence file holds exactly the JSON the step printed"
 else
   fail "QA-evidence-file" "the evidence file differs from stdout"
+fi
+
+# 1b. The step runs autodrive_qa_evidence.sh. A relative REPO_PATH is applied
+# once, not again inside the tool; a tool that cannot be found fails the step
+# by name and prints no evidence.
+EV_REL="${EV_REPO##*/}"
+EV_REL_OUT="$(cd "${WORK_PHYS}" && env -i HOME="${TEST_HOME}" TMPDIR="${WORK_PHYS}" PATH="${EV_FULL}:/usr/bin:/bin" \
+  AMPLIHACK_HOME="${REPO_ROOT}" REPO_PATH="${EV_REL}" AUTODRIVE_ROUND_LABEL="round-7" EV_CALLS=/dev/null \
+  "${BASH}" -c "${EV_BODY}" 2>/dev/null | tail -n 1)"
+if [ "$(printf '%s' "${EV_REL_OUT}" | jq -r '.qa_status' 2>/dev/null)" = "PASS" ]; then
+  pass "QA-relative-repo-path" "a relative REPO_PATH reaches the tool as the same repository"
+else
+  fail "QA-relative-repo-path" "got: ${EV_REL_OUT}"
+fi
+EV_NO_TOOLS="${WORK_PHYS}/ev-no-tools"; mkdir -p "${EV_NO_TOOLS}/home" "${EV_NO_TOOLS}/ah"
+EV_MISS_OUT="$(env -i HOME="${EV_NO_TOOLS}/home" TMPDIR="${WORK_PHYS}" PATH="${EV_FULL}:/usr/bin:/bin" \
+  AMPLIHACK_HOME="${EV_NO_TOOLS}/ah" REPO_PATH="${EV_REPO}" EV_CALLS=/dev/null \
+  "${BASH}" -c "${EV_BODY}" 2>"${EV_NO_TOOLS}.err")"; EV_MISS_RC=$?
+if [ "${EV_MISS_RC}" = "1" ] && [ -z "${EV_MISS_OUT}" ] \
+   && grep -qF 'ERROR: autodrive-qa-evidence-tool-not-found: autodrive_qa_evidence.sh not found (searched ' "${EV_NO_TOOLS}.err"; then
+  pass "QA-tool-missing" "no autodrive_qa_evidence.sh fails the step by name with no evidence"
+else
+  fail "QA-tool-missing" "rc=${EV_MISS_RC} out='${EV_MISS_OUT}' err=$(tr '\n' ' ' < "${EV_NO_TOOLS}.err")"
 fi
 
 # 2. An existing but empty scenario directory: no-scenarios, and gadugi never runs.

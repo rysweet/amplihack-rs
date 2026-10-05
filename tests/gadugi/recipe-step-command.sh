@@ -23,8 +23,14 @@
 # are kept, trailing blank lines are dropped and one final newline is kept.
 # Any other form (`|-`, `|+`, `>`, an indentation indicator, a quoted or plain
 # scalar, a missing step or command) is refused with a named ERROR and exit 2,
-# never guessed at. tests/integration/auto_drive_to_merge_test.rs checks this
-# output against serde_yaml for every step the harnesses read.
+# never guessed at.
+#
+# tests/integration/auto_drive_to_merge_test.rs compares this output with
+# serde_yaml: recipe_step_command_matches_serde_yaml_for_every_harness_step
+# for each step a harness reads (a new harness call fails it until listed),
+# recipe_step_command_matches_serde_yaml_or_refuses_for_every_bundled_step for
+# every step of every bundled recipe, and
+# recipe_step_command_refuses_what_it_does_not_read for the refusals.
 set -uo pipefail
 
 RECIPE="${1:-}"

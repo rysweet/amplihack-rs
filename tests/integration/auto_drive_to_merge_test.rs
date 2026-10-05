@@ -36,11 +36,12 @@ const AUTODRIVE_RECIPES: [&str; 7] = [
     "autodrive-merge-loop",
 ];
 
-const AUTODRIVE_TOOLS: [&str; 6] = [
+const AUTODRIVE_TOOLS: [&str; 7] = [
     "autodrive_loop.sh",
     "autodrive_merge_gate.sh",
     "autodrive_merge_ready_files.sh",
     "autodrive_platform_facts.sh",
+    "autodrive_qa_evidence.sh",
     "autodrive_state.sh",
     "autodrive_trust.sh",
 ];
@@ -1849,10 +1850,43 @@ fn merge_round_blocker_step_writes_missing_gadugi_scenarios() {
     assert!(validate < run, "step-04 must validate before it runs");
 }
 
+/// step-02-qa-team-scenarios runs autodrive_qa_evidence.sh, the file that
+/// measures criterion 1. It is executed, never sourced, and a missing tool
+/// fails the step by name instead of producing evidence nobody measured.
+#[test]
+fn qa_evidence_step_runs_the_qa_evidence_tool() {
+    let recipe = recipe_yaml("autodrive-merge-evidence");
+    let s = step(&recipe, "step-02-qa-team-scenarios");
+    assert_eq!(s.get("type").and_then(Value::as_str), Some("bash"));
+    assert_eq!(s.get("parse_json").and_then(Value::as_bool), Some(true));
+    assert_eq!(s.get("output").and_then(Value::as_str), Some("qa_evidence"));
+    let cmd = field(s, "command");
+    for needle in [
+        "autodrive_qa_evidence.sh",
+        "ERROR: autodrive-qa-evidence-tool-not-found",
+        "REPO_PATH=\"$PWD\" bash \"$T\"",
+    ]
+    .iter()
+    .chain(TOOL_SEARCH_NEEDLES.iter())
+    {
+        assert!(cmd.contains(needle), "step-02 must reference `{needle}`");
+    }
+    let sourced = regex::Regex::new(r#"(^|[;&|\s])(\.|source)\s+"?\$\{?T\b"#).unwrap();
+    assert!(
+        !sourced.is_match(cmd) && !cmd.contains("eval "),
+        "step-02 must never source or eval the qa evidence tool"
+    );
+    // The measurement lives in the tool, not in a second copy in the recipe.
+    assert!(
+        !cmd.contains("gadugi-test"),
+        "step-02 must leave gadugi-test to autodrive_qa_evidence.sh"
+    );
+}
+
 #[test]
 fn qa_evidence_runs_one_gadugi_process_per_scenario() {
-    let recipe = recipe_yaml("autodrive-merge-evidence");
-    let cmd = field(step(&recipe, "step-02-qa-team-scenarios"), "command");
+    let tool = read(&tool_path("autodrive_qa_evidence.sh"));
+    let cmd = tool.as_str();
     for needle in [
         "gadugi-test validate -d \"$",
         "--scenario \"$",
@@ -1874,7 +1908,7 @@ fn qa_evidence_runs_one_gadugi_process_per_scenario() {
     ] {
         assert!(
             cmd.contains(needle),
-            "the qa evidence step must contain `{needle}`"
+            "autodrive_qa_evidence.sh must contain `{needle}`"
         );
     }
     // Every gadugi-test run line selects one scenario; the whole-directory
@@ -1885,12 +1919,12 @@ fn qa_evidence_runs_one_gadugi_process_per_scenario() {
         }
         assert!(
             line.contains("--scenario"),
-            "the qa evidence step runs a whole directory in one process (#207):\n  {line}"
+            "autodrive_qa_evidence.sh runs a whole directory in one process (#207):\n  {line}"
         );
     }
     assert!(
         !cmd.contains("gadugi-test run -d \"$SDIR\""),
-        "the qa evidence step must never run the scenario directory itself"
+        "autodrive_qa_evidence.sh must never run the scenario directory itself"
     );
     let validate = cmd.find("gadugi-test validate -d").unwrap();
     let run = cmd
@@ -1934,7 +1968,7 @@ fn qa_evidence_runs_one_gadugi_process_per_scenario() {
     for token in QA_REASON_TOKENS {
         assert!(
             cmd.contains(token),
-            "the qa evidence step must be able to emit qa_reason `{token}`"
+            "autodrive_qa_evidence.sh must be able to emit qa_reason `{token}`"
         );
     }
     for status in [
@@ -1957,7 +1991,7 @@ fn qa_evidence_runs_one_gadugi_process_per_scenario() {
         }
         assert!(
             !eval.is_match(line),
-            "the qa evidence step must never eval a command:\n  {line}"
+            "autodrive_qa_evidence.sh must never eval a command:\n  {line}"
         );
     }
     assert!(
@@ -2494,7 +2528,7 @@ fn every_criterion_is_read_completely_and_bound_to_the_merged_sha() {
     // qa evidence: existence + qa_status=PASS is not enough. The gate binds
     // the round record to HEAD_SHA; the qa evidence must bind too, or a PASS
     // from an earlier round stands in for a tree that is no longer merged.
-    let evidence = recipe_text("autodrive-merge-evidence");
+    let evidence = read(&tool_path("autodrive_qa_evidence.sh"));
     assert!(
         evidence.contains(r#""head_sha":"%s""#),
         "the qa evidence must record the head SHA it was measured on"
@@ -3107,23 +3141,25 @@ fn merge_gate_checks_the_range_and_the_qa_evidence_chain() {
 
 #[test]
 fn qa_evidence_records_one_result_per_scenario_file() {
-    let recipe = recipe_yaml("autodrive-merge-evidence");
-    let cmd = step_command(&recipe, "step-02-qa-team-scenarios");
+    let tool = read(&tool_path("autodrive_qa_evidence.sh"));
     for needle in [
         "\"gadugi_scenario_results\":\"%s\"",
         "autodrive_scenario_results",
         "autodrive_trust.sh",
         "umask 077",
         "INVALID",
-    ]
-    .iter()
-    .chain(TOOL_SEARCH_NEEDLES.iter())
-    {
+    ] {
         assert!(
-            cmd.contains(needle),
-            "the qa evidence step must reference `{needle}`"
+            tool.contains(needle),
+            "autodrive_qa_evidence.sh must reference `{needle}`"
         );
     }
+    // The trust helpers come from beside the tool, never from a search a
+    // pull request could populate.
+    assert!(
+        tool.contains("dirname \"${BASH_SOURCE[0]}\"") && !tool.contains("for c in"),
+        "autodrive_qa_evidence.sh must source autodrive_trust.sh from its own directory only"
+    );
 }
 
 #[test]
@@ -3257,6 +3293,187 @@ fn round_recipes_read_step_outputs_through_recipe_var() {
          (write \"${{UPPER:-${{RECIPE_VAR_<output>:-}}}}\"):\n{}",
         bad.join("\n")
     );
+}
+
+// ── The gadugi harnesses' step reader ────────────────────────────────────────
+
+/// The gadugi harnesses and the recipe step each one runs. Criterion 1 runs
+/// these scenarios with the real gadugi-test, so the harnesses read the
+/// shipped step body with `tests/gadugi/recipe-step-command.sh` (awk) rather
+/// than python3 and PyYAML.
+const HARNESS_STEPS: [(&str, &str, &str); 2] = [
+    (
+        "run-step-03b.sh",
+        "workflow-prep",
+        "step-03b-extract-issue-number",
+    ),
+    (
+        "run-merge-validations.sh",
+        "quality-audit-cycle",
+        "merge-validations",
+    ),
+];
+
+fn step_command_script() -> PathBuf {
+    workspace_root().join("tests/gadugi/recipe-step-command.sh")
+}
+
+/// Runs recipe-step-command.sh; returns (exit code, stdout, stderr).
+fn run_step_command(recipe: &Path, step_id: &str) -> (Option<i32>, String, String) {
+    let out = Command::new("bash")
+        .arg(step_command_script())
+        .arg(recipe)
+        .arg(step_id)
+        .output()
+        .expect("run recipe-step-command.sh");
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn recipe_step_command_matches_serde_yaml_for_every_harness_step() {
+    let gadugi = workspace_root().join("tests/gadugi");
+    // Every read of the extractor in a harness must be listed above, so a new
+    // harness cannot use it without this comparison.
+    let mut calls = 0;
+    for entry in fs::read_dir(&gadugi).expect("read tests/gadugi") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("sh")
+            || path.file_name().and_then(|n| n.to_str()) == Some("recipe-step-command.sh")
+        {
+            continue;
+        }
+        calls += read(&path)
+            .lines()
+            .filter(|l| !l.trim_start().starts_with('#'))
+            .filter(|l| l.contains("recipe-step-command.sh"))
+            .count();
+    }
+    assert_eq!(
+        calls,
+        HARNESS_STEPS.len(),
+        "tests/gadugi has {calls} call(s) to recipe-step-command.sh but HARNESS_STEPS \
+         lists {}; add the new step so its output is compared with serde_yaml",
+        HARNESS_STEPS.len()
+    );
+    for (harness, recipe, step_id) in HARNESS_STEPS {
+        let text = read(&gadugi.join(harness));
+        assert!(
+            text.contains(&format!("amplifier-bundle/recipes/{recipe}.yaml")),
+            "{harness} no longer reads {recipe}.yaml; update HARNESS_STEPS"
+        );
+        assert!(
+            text.contains(&format!("recipe-step-command.sh\" \"$RECIPE\" {step_id})")),
+            "{harness} no longer reads step `{step_id}`; update HARNESS_STEPS"
+        );
+        let parsed = recipe_yaml(recipe);
+        let expected = field(step(&parsed, step_id), "command");
+        let (code, stdout, stderr) = run_step_command(&recipe_path(recipe), step_id);
+        assert_eq!(
+            code,
+            Some(0),
+            "recipe-step-command.sh refused {recipe}.yaml step `{step_id}`: {stderr}"
+        );
+        assert_eq!(
+            stdout, expected,
+            "recipe-step-command.sh and serde_yaml disagree on {recipe}.yaml step `{step_id}`"
+        );
+    }
+}
+
+/// The extractor reads a subset of YAML by hand. Over every step of every
+/// bundled recipe it must print exactly what serde_yaml reads, or refuse with
+/// exit 2 and a named ERROR. It must never print a different body.
+#[test]
+fn recipe_step_command_matches_serde_yaml_or_refuses_for_every_bundled_step() {
+    let dir = workspace_root().join("amplifier-bundle/recipes");
+    let mut recipes: Vec<PathBuf> = fs::read_dir(&dir)
+        .expect("read amplifier-bundle/recipes")
+        .map(|e| e.expect("dir entry").path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("yaml"))
+        .collect();
+    recipes.sort();
+    let (mut matched, mut refused) = (0usize, 0usize);
+    let mut wrong = Vec::new();
+    for path in &recipes {
+        let recipe: Value = serde_yaml::from_str(&read(path))
+            .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+        let Some(all) = recipe.get("steps").and_then(Value::as_sequence) else {
+            continue;
+        };
+        for s in all {
+            let (Some(id), Some(cmd)) = (
+                s.get("id").and_then(Value::as_str),
+                s.get("command").and_then(Value::as_str),
+            ) else {
+                continue;
+            };
+            let name = path.file_name().unwrap().to_string_lossy();
+            match run_step_command(path, id) {
+                (Some(0), stdout, _) if stdout == cmd => matched += 1,
+                (Some(2), _, stderr) if stderr.starts_with("ERROR: ") => refused += 1,
+                (code, stdout, stderr) => wrong.push(format!(
+                    "{name} step `{id}`: exit {code:?}, {} bytes printed, {} expected; {}",
+                    stdout.len(),
+                    cmd.len(),
+                    stderr.trim()
+                )),
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "recipe-step-command.sh printed a body serde_yaml does not read:\n{}",
+        wrong.join("\n")
+    );
+    assert!(
+        matched >= 150,
+        "only {matched} bundled steps matched serde_yaml ({refused} refused); \
+         the extractor or this scan is broken"
+    );
+}
+
+#[test]
+fn recipe_step_command_refuses_what_it_does_not_read() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let recipe = tmp.path().join("r.yaml");
+    fs::write(
+        &recipe,
+        "name: r\nsteps:\n  - id: \"strip\"\n    command: |-\n      echo a\n  \
+         - id: \"folded\"\n    command: >\n      echo a\n  \
+         - id: \"quoted\"\n    command: \"echo a\"\n  \
+         - id: \"agent\"\n    prompt: |\n      command: |\n        echo a\n  \
+         - id: \"empty\"\n    command: |\n  \
+         - id: \"ok\"\n    command: |\n      echo a\n\n      echo b\n\n\n",
+    )
+    .expect("write recipe");
+    for (id, error) in [
+        ("strip", "command-is-not-a-literal-block"),
+        ("folded", "command-is-not-a-literal-block"),
+        ("quoted", "command-is-not-a-literal-block"),
+        ("agent", "step-has-no-command"),
+        ("empty", "command-block-is-empty"),
+        ("missing", "step-not-found"),
+    ] {
+        let (code, stdout, stderr) = run_step_command(&recipe, id);
+        assert_eq!(code, Some(2), "step `{id}` must be refused, got: {stdout}");
+        assert!(stdout.is_empty(), "a refused step `{id}` printed: {stdout}");
+        assert!(
+            stderr.starts_with(&format!("ERROR: {error}: {id}")),
+            "step `{id}` must be refused with `{error}`, got: {stderr}"
+        );
+    }
+    let (code, stdout, _) = run_step_command(&recipe, "ok");
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        stdout, "echo a\n\necho b\n",
+        "clip chomping keeps one newline"
+    );
+    let parsed: Value = serde_yaml::from_str(&read(&recipe)).expect("parse fixture");
+    assert_eq!(field(step(&parsed, "ok"), "command"), stdout);
 }
 
 // ── The executable contract ──────────────────────────────────────────────────
