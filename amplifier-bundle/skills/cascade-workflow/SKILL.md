@@ -104,8 +104,8 @@ Implement graceful degradation through cascading fallback strategies. When optim
 
 **Code Analysis with AI:**
 
-- PRIMARY: GPT-4 comprehensive analysis (timeout: 30s)
-- SECONDARY: GPT-3.5 standard analysis (timeout: 10s)
+- PRIMARY: Comprehensive analysis with the configured primary model (timeout: 30s)
+- SECONDARY: Standard analysis with the configured fallback model (timeout: 10s)
 - TERTIARY: Static analysis with regex (timeout: 5s)
 
 **External API Data Fetch:**
@@ -219,11 +219,11 @@ Current real-time data unavailable.
 ```
 ℹ️  Analysis Quality Notice
 
-We attempted to provide comprehensive code analysis using GPT-4,
+We attempted to provide comprehensive code analysis using the configured primary model,
 but encountered slow response times (>30s timeout).
 
 Fallback Applied:
-- Used: GPT-3.5 standard analysis (completed in 6s)
+- Used: Standard analysis with the configured fallback model (completed in 6s)
 - Quality: Standard (vs. Comprehensive)
 - Impact: Advanced semantic insights not included
 
@@ -322,8 +322,8 @@ async def get_weather(location: str) -> WeatherData:
 
 **Cascade Path:**
 
-1. PRIMARY: GPT-4 comprehensive review - TIMEOUT after 120s
-2. SECONDARY: GPT-3.5 standard review - SUCCESS in 18s
+1. PRIMARY: Comprehensive review with the configured primary model - TIMEOUT after 120s
+2. SECONDARY: Standard review with the configured fallback model - SUCCESS in 18s
 3. TERTIARY: Not attempted
 
 ### Example 3: Search Results Ranking

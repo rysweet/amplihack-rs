@@ -916,6 +916,8 @@ amplihack excels at:
 
 ## Need Help?
 
+- **Skill model selection**: [Configure and validate neutral skills](howto/skill-model-neutrality.md) and [model-neutrality reference](reference/skill-model-neutrality.md)
+- **Model-neutrality documentation evidence**: [Review scope and validation](audits/skill-model-neutrality-documentation.md)
 - **Start here**: [Prerequisites](PREREQUISITES.md) → [Interactive Installation](INTERACTIVE_INSTALLATION.md) → [Quick Start](../README.md)
 - **Common issues**: Check [Discoveries](discoveries.md) first
 - **Questions**: See [DDD FAQ](document_driven_development/reference/faq.md)

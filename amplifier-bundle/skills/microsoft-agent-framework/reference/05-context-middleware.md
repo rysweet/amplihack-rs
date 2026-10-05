@@ -1,5 +1,7 @@
 # Context Providers & Middleware
 
+Model IDs in these examples are configuration placeholders. Replace `<configured-model>` (and any primary/fallback variants) with models available to the selected provider and runtime; use the user’s configuration rather than a skill-defined default.
+
 ## Context Providers
 
 Context providers inject additional information into agent conversations. They enable agents to access:
@@ -18,7 +20,7 @@ from agents_framework import Thread, Agent, ModelClient
 # Thread automatically provides conversation history
 thread = Thread()
 
-agent = Agent(model=ModelClient(model="gpt-4"))
+agent = Agent(model=ModelClient(model="<configured-model>"))
 
 await agent.run(thread=thread, message="My name is Alice")
 await agent.run(thread=thread, message="What's my name?")

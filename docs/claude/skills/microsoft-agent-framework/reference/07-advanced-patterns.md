@@ -1,5 +1,7 @@
 # Advanced Patterns & Techniques
 
+Model IDs in these examples are configuration placeholders. Replace `<configured-model>` (and any primary/fallback variants) with models available to the selected provider and runtime; use the user’s configuration rather than a skill-defined default.
+
 ## Multi-Agent Collaboration Patterns
 
 ### Debate Pattern
@@ -356,9 +358,9 @@ class LoadBalancedAgents:
 
 # Usage
 agents = [
-    Agent(model=ModelClient(model="gpt-4")),
-    Agent(model=ModelClient(model="gpt-4")),
-    Agent(model=ModelClient(model="gpt-4"))
+    Agent(model=ModelClient(model="<configured-model>")),
+    Agent(model=ModelClient(model="<configured-model>")),
+    Agent(model=ModelClient(model="<configured-model>"))
 ]
 load_balancer = LoadBalancedAgents(agents)
 ```
@@ -390,9 +392,9 @@ async def retry_with_backoff(agent: Agent, message: str, max_retries: int = 3):
 async def fallback_pattern(message: str):
     """Try multiple approaches until one succeeds."""
     strategies = [
-        ("gpt-4", "primary"),
-        ("gpt-3.5-turbo", "fallback"),
-        ("local-model", "local")
+        ("<configured-primary-model>", "primary"),
+        ("<configured-fallback-model>", "fallback"),
+        ("<configured-local-model>", "local")
     ]
 
     for model_name, strategy in strategies:
@@ -472,7 +474,7 @@ async def test_workflow():
 ```rust
 # Use temperature=0 for deterministic outputs
 test_agent = Agent(
-    model=ModelClient(model="gpt-4", temperature=0),
+    model=ModelClient(model="<configured-model>", temperature=0),
     instructions="Be concise"
 )
 

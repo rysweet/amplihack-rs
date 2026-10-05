@@ -1,6 +1,10 @@
 # Microsoft Agent Framework Skill
 
+Model IDs in these examples are configuration placeholders. Replace `<configured-model>` (and any primary/fallback variants) with models available to the selected provider and runtime; use the user’s configuration rather than a skill-defined default.
+
 **Version**: 1.0.0 | **Status**: Production Ready | **Last Updated**: 2025-11-15
+
+The standalone C# examples read `AGENT_MODEL` from the environment. Set it to a model available to your configured provider before running them; they fail with a clear configuration error if it is missing.
 
 ## Overview
 
@@ -232,7 +236,7 @@ from agents_framework import Agent, ModelClient
 
 agent = Agent(
     name="assistant",
-    model=ModelClient(model="gpt-4"),
+    model=ModelClient(model="<configured-model>"),
     instructions="You are a helpful assistant"
 )
 

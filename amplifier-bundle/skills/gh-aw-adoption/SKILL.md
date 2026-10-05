@@ -223,7 +223,7 @@ Agent 5 → weekly-summary.md
 ---
 on: [trigger events]
 permissions: [required permissions]
-engine: copilot | claude-code | claude-sonnet-4-5 | codex
+engine: copilot | claude-code | codex
 tools: [tool configuration]
 safe-outputs: [GitHub API output limits]
 network: [firewall configuration]
