@@ -306,10 +306,12 @@ MODEL SELECTION (issue #1421)
     ///
     /// With --shell, print it as `env -u <each session marker>
     /// AMPLIHACK_AGENT_BINARY=<cli> AMPLIHACK_AGENT_BINARY_SOURCE=<tag>`, a
-    /// prefix for a detached launch (tmux, setsid, nohup) that will not
-    /// inherit this shell's environment. A tmux server's environment holds the
-    /// session markers of whatever started it; the prefix removes them, so
-    /// only this shell's answer arrives. A default guess stays tagged as one.
+    /// prefix for a command started with `tmux new-session`. tmux gives a new
+    /// session the server's global environment, not this shell's, and that
+    /// holds the session markers of whatever started the server; the prefix
+    /// removes them, so only this shell's answer arrives. `setsid` and `nohup`
+    /// keep this shell's environment and need no prefix. A default guess stays
+    /// tagged as one.
     /// Example:
     /// tmux new-session -d "$(amplihack agent-binary --shell) amplihack recipe run ..."
     #[command(name = "agent-binary")]

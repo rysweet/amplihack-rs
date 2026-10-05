@@ -83,8 +83,10 @@ Identifies which CLI binary the current session should use when spawning new AI 
 recipe runner. A result from the built-in default is exported with
 `AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>`; see
 [Active Agent Binary](./active-agent-binary.md#resolving-once-for-a-whole-recipe-run).
-A detached launch (tmux, setsid) does not see the caller's session markers,
-and under tmux it sees the server starter's instead;
+A command started with `tmux new-session` does not see the caller's session
+markers: tmux gives it the server's global environment, which holds the
+markers of whatever started the server. `setsid` and `nohup` keep the
+caller's environment, so they need no hand-off.
 `$(amplihack agent-binary --shell)` prints an inline `env` prefix that removes
 every session marker and sets both variables (#1525), see
 [Handing the binary to a detached launch](./active-agent-binary.md#handing-the-binary-to-a-detached-launch).

@@ -827,6 +827,44 @@ fn the_hand_off_clears_a_stale_tag_on_the_far_side() {
     assert_eq!(handed(&probe), ("claude", "<unset>"));
 }
 
+/// The real-tmux tests' server socket, `<fixture>/tmux.sock`, named relative to
+/// the work dir that every tmux client in them runs from.
+///
+/// It stays inside the fixture, under `TMPDIR`, and never under `/tmp`. An
+/// absolute path would not fit there: `sun_path` holds 108 bytes (unix(7)),
+/// and a nested workflow runner's TMPDIR is ~100 bytes before the fixture's
+/// own name is added, so tmux would fail with "File name too long" before the
+/// hand-off was exercised. tmux passes a relative `-S` path to bind(2) and
+/// connect(2) as given, and its server keeps the starting client's working
+/// directory, so the relative name resolves to the same file for every
+/// client:
+///
+/// - the caller's shell, which the harness starts in the work dir;
+/// - the server, forked from the first client;
+/// - the `amplihack recipe run` in the pane, which `cd`s to the work dir and
+///   asks the server through `$TMUX`, which carries this same relative path.
+#[cfg(unix)]
+const TMUX_SOCKET: &str = "../tmux.sock";
+
+/// The real-tmux tests' server, stopped when this is dropped, including when
+/// an assertion unwinds after the server started. Without this, a panic would
+/// leave the server running for as long as the starter session's `sleep`.
+#[cfg(unix)]
+struct TmuxServer {
+    work: PathBuf,
+}
+
+#[cfg(unix)]
+impl Drop for TmuxServer {
+    fn drop(&mut self) {
+        let _ = Command::new("tmux")
+            .args(["-S", TMUX_SOCKET, "kill-server"])
+            .current_dir(&self.work)
+            .stdin(std::process::Stdio::null())
+            .output();
+    }
+}
+
 /// Run `command` (a double-quoted command string, expanded by the caller's
 /// shell) in a new session on a real tmux server, from a Claude Code caller.
 /// The server is started first, by a session whose environment is the harness
@@ -845,32 +883,32 @@ fn through_a_real_tmux_server(
         eprintln!("skipping: tmux is not installed");
         return None;
     }
-    // The server socket lives under /tmp, not under the fixture. A Unix socket
-    // path is limited to about 108 bytes, and a deep TMPDIR (a nested workflow
-    // runner's is ~100 bytes on its own) pushes `<fixture>/tmux/tmux-<uid>/<name>`
-    // past it: tmux then fails with "File name too long" before the hand-off
-    // is ever exercised.
-    let sockets = tempfile::Builder::new()
-        .prefix("hoff")
-        .tempdir_in("/tmp")
-        .expect("create a short tmux socket dir under /tmp");
-    let socket = sockets.path().join("s");
-    let socket = socket.to_str().expect("utf-8 path").to_string();
+    // Armed before the server starts, so a failed start is cleaned up too.
+    let server = TmuxServer { work: fx.work() };
     let far_err = fx.path().join("far.err");
+    // The starter only has to outlive the second `new-session`: once the run's
+    // session exists, the server lives as long as either does. The `sleep`
+    // bounds how long an orphaned server lasts if this process is killed
+    // outright and `TmuxServer::drop` never runs.
     let script = format!(
         "env {} {starter_env} tmux -S \"$TMUX_SOCKET\" -f /dev/null \
-           new-session -d -s starter 'sleep 600' && \
+           new-session -d -s starter 'sleep 120' && \
          tmux -S \"$TMUX_SOCKET\" new-session -d -s run {command}",
         without_any_marker()
     );
     let mut caller_env = claude_session();
-    caller_env.push(("TMUX_SOCKET", &socket));
+    caller_env.push(("TMUX_SOCKET", TMUX_SOCKET));
     let far_err_str = far_err.to_str().expect("utf-8 path").to_string();
     caller_env.push(("FAR_ERR", &far_err_str));
     let output = fx.caller_shell(&script, &caller_env);
     assert!(
         output.status.success(),
         "tmux new-session failed: {output:?}"
+    );
+    assert!(
+        fx.path().join("tmux.sock").exists(),
+        "the tmux socket is not at <fixture>/tmux.sock, so a client did not \
+         resolve {TMUX_SOCKET} from the work dir: {output:?}"
     );
 
     let probe_path = fx.path().join("probe.json");
@@ -880,9 +918,7 @@ fn through_a_real_tmux_server(
     }
     // Give the run a moment to finish writing, then stop the server.
     std::thread::sleep(Duration::from_millis(500));
-    let _ = Command::new("tmux")
-        .args(["-S", &socket, "kill-server"])
-        .output();
+    drop(server);
     let probe = fx.take_probe(&output);
     Some((probe, fs::read_to_string(&far_err).unwrap_or_default()))
 }

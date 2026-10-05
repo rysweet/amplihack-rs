@@ -265,7 +265,7 @@ fails CI.
 Environment variables do not survive every subprocess boundary in the launcher's call graph:
 
 - `tmux new-session -d` gives the command the tmux server's global environment, copied from whatever started the server, not the caller's (see [Handing the binary to a detached launch](#handing-the-binary-to-a-detached-launch)).
-- Detached background processes started via `setsid` may inherit a stale or stripped env.
+- `setsid` and `nohup` pass the caller's environment on unchanged (setsid(1), nohup(1)), so a process they start sees only what its caller had; one started from a cron job or a service manager has no session marker to inherit.
 - Sub-recipes spawned by `amplihack recipe run` invoke fresh `amplihack` binaries that may be reading env from the user's shell rather than the parent recipe runner.
 - Python hooks shell out to subcommands using `subprocess.run` which inherits the calling Python's env, not the Rust launcher's.
 

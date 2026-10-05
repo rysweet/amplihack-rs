@@ -1,6 +1,7 @@
 //! `amplihack agent-binary`: print the resolved agent binary and where it came
-//! from, so it can be handed to a process that will not inherit this shell's
-//! environment (issue #1525).
+//! from, so it can be handed to a command started in a new tmux session, which
+//! does not inherit this shell's environment (issue #1525). `setsid` and
+//! `nohup` do inherit it and need no hand-off.
 //!
 //! `tmux new-session` does not give the new command the caller's environment.
 //! It gives it the server's global environment, which tmux copied from

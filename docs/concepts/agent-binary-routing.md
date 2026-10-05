@@ -29,7 +29,10 @@ Earlier iterations of `amplihack-rs` solved this by writing `AMPLIHACK_AGENT_BIN
   binary over with `$(amplihack agent-binary --shell)`, which also removes
   them, see
   [Active Agent Binary](../reference/active-agent-binary.md#handing-the-binary-to-a-detached-launch))
-- detached background processes (`setsid`, daemonized hooks)
+- background processes started outside the caller's process tree, such as a
+  daemonized hook, a cron job or a service manager unit, which never had the
+  caller's environment (`setsid` and `nohup` themselves pass the environment
+  on unchanged and lose nothing)
 - sub-recipes that re-exec a fresh `amplihack` binary
 - Python `subprocess.run` calls that inherit a partially stripped env
 
