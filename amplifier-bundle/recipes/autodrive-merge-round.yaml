@@ -30,6 +30,10 @@ context:
 steps:
   # merge-ready refuses agents, so bash finds its files for step-02. A missing
   # install fails here by name, never as a blocker repeated every round (#1517).
+  # gadugi-test is part of that install: criterion 1 runs the qa-team
+  # scenarios with it in every repository type, `amplihack install` does not
+  # install it, and no agent in step-04 can. Without it every round would
+  # report qa_reason gadugi-test-missing until the loop ends STUCK.
   - id: "step-00-merge-ready-files"
     type: "bash"
     parse_json: true
@@ -47,6 +51,8 @@ steps:
         exit 1; }
       # Executed, never sourced: it prints one JSON line or a named ERROR.
       OUT="$(bash "$R")" || exit 1
+      command -v gadugi-test >/dev/null 2>&1 || { echo "ERROR: gadugi-test-not-installed: gadugi-test is not on PATH. Criterion 1 runs the qa-team scenarios with it in every repository type, and no agent can install it. Install it (npm install -g github:rysweet/gadugi-agentic-test) and run auto-drive again." >&2
+        exit 1; }
       printf '%s\n' "$OUT"
     output: "merge_ready_files"
   # Commits after the clean crusty round (#1517 D4): a code commit removes the
@@ -279,6 +285,7 @@ steps:
         VERDICT="NOT_MERGE_READY"; SOURCE="evidence_downgrade"
       fi
       if [ -n "$RECORD" ]; then
+        umask 077 # the state dir must stay private
         : > "${RECORD}.findings"
         if command -v jq >/dev/null 2>&1; then printf '%s' "$BLOCKERS" | jq -r '.[]?.id // empty' 2>/dev/null > "${RECORD}.findings" || { echo "WARNING: blocker ids could not be parsed; the recurring-findings signal is incomplete this round." >&2; : > "${RECORD}.findings"; }
         else echo "WARNING: jq unavailable; blocker ids cannot be extracted for the recurring-findings signal." >&2; fi
@@ -329,6 +336,10 @@ steps:
         delete or weaken a failing scenario to reach a pass. If
         `gadugi_scenario_dir` is absolute or outside this repository, write
         nothing there; report `gadugi-scenario-dir-outside-repo`.
+      - **`gadugi-test-missing`**: step-00 stops the round when `gadugi-test`
+        is not on `PATH`, so seeing it here means the tool disappeared during
+        the round. Do not install it, stub it or work around it; keep the
+        blocker in your report. A person has to install it.
       - **`quality-audit-convergence-crusty-not-done-clean`**: do not run a
         quality-audit in its place. Fix any crusty concern still open and keep
         this blocker in your report.
@@ -383,6 +394,7 @@ steps:
       # evidence only when its hash equals this field (#1517 D5).
       QH="$(g "${QA_EVIDENCE_HASH:-${RECIPE_VAR_qa_evidence_hash:-}}" qa_evidence_sha '')"
       case "${#QH}:${QH}" in 40:*[!0123456789abcdef]*|64:*[!0123456789abcdef]*) QH="" ;; 40:*|64:*) ;; *) QH="" ;; esac
+      umask 077 # the state dir must stay private (autodrive_state.sh, PRIVATE STATE)
       [ -f "${RECORD}.findings" ] || : > "${RECORD}.findings"
       ( umask 077; rm -f -- "$RECORD"
         printf '{"merge_ready_verdict":"%s","blocker_count":%s,"head_sha":"%s","round_label":"%s","test_signal":"%s","ci_signal":"%s","qa_status":"%s","ci_status":"%s","qa_evidence_sha":"%s"}\n' \

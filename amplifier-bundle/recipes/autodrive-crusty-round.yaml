@@ -193,7 +193,9 @@ steps:
       # Stable concern ids, one per line, for the loop's recurring/resolved set
       # difference. jq is optional here: without it the loop still runs, it just
       # sees an empty finding set, which is reported rather than assumed clean.
+      # umask 077: the file sits in the state dir, which must stay private.
       if [ -n "$RECORD" ]; then
+        umask 077
         if command -v jq >/dev/null 2>&1; then
           printf '%s' "$CONCERNS" | jq -r '.[]?.id // empty' 2>/dev/null > "${RECORD}.findings" || { echo "WARNING: concern ids could not be parsed; the recurring-findings signal is incomplete this round." >&2; : > "${RECORD}.findings"; }
         else
@@ -332,7 +334,12 @@ steps:
         exit 1
       fi
       LABEL="$(printf '%s' "${AUTODRIVE_ROUND_LABEL:-round}" | tr -c 'A-Za-z0-9._-' '_')"
+      # The merge gate reads this record as criterion-3 evidence only when no
+      # one else could have written it, so it is created new under umask 077,
+      # whatever the caller's umask (autodrive_state.sh, PRIVATE STATE).
+      umask 077
       [ -f "${RECORD}.findings" ] || : > "${RECORD}.findings"
+      rm -f -- "$RECORD"
       printf '{"crusty_verdict":"%s","concern_count":%s,"commits_this_round":%s,"head_sha":"%s","reviewed_head_sha":"%s","round_label":"%s","test_signal":"","ci_signal":""}\n' \
         "$VERDICT" "$COUNT" "$COMMITS" "$SHA" "$REVIEWED" "$LABEL" > "$RECORD"
       echo "INFO: round record written to ${RECORD}" >&2

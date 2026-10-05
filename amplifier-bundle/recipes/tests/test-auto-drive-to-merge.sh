@@ -126,6 +126,8 @@ fi
 if [ "${1:-}" = "recipe" ] && [ "${2:-}" = "run" ]; then
   RECIPE="${3:-}"
   echo "$RECIPE" >> "${STUB_CALLS:-/dev/null}"
+  # The umask each child recipe was started with, when a test asks for it.
+  [ -z "${STUB_UMASK_LOG:-}" ] || printf '%s %s\n' "$RECIPE" "$(umask)" >> "$STUB_UMASK_LOG"
   RECORD=""; for a in "$@"; do case "$a" in autodrive_round_record=*) RECORD="${a#*=}" ;; esac; done
   case "$RECIPE" in
     loop-health-evaluator)
@@ -146,6 +148,13 @@ if [ "${1:-}" = "recipe" ] && [ "${2:-}" = "run" ]; then
       exit "${STUB_HEALTH_RC:-0}"
       ;;
     *)
+      # STUB_ROUND_BODY: a real step body that writes the round record, run
+      # with the record path and label the loop passed (section 13).
+      if [ -n "$RECORD" ] && [ -n "${STUB_ROUND_BODY:-}" ]; then
+        LABEL=""; for a in "$@"; do case "$a" in autodrive_round_label=*) LABEL="${a#*=}" ;; esac; done
+        AUTODRIVE_ROUND_RECORD="$RECORD" AUTODRIVE_ROUND_LABEL="$LABEL" bash -c "$STUB_ROUND_BODY"
+        exit $?
+      fi
       if [ -n "$RECORD" ] && [ "${STUB_ROUND_WRITE_RECORD:-true}" = "true" ]; then
         printf '%s' "${STUB_ROUND_RECORD:-{\"crusty_verdict\":\"CONCERNS\"}}" > "$RECORD"
         printf '%s' "${STUB_ROUND_FINDINGS:-}" > "${RECORD}.findings"
@@ -172,17 +181,24 @@ set_stub() { # set_stub <round-record-json> <health-rc> <health-stdout> [round-r
   export STUB_HEALTH_RESOLVES="0"
 }
 
-LOOP_DIR=""; LOOP_OUT=""
+# The harness's own files (the loop's stdout and stderr, and the stub's call
+# logs) live in LOOP_LOGS, beside the state dir and never in it. They are not
+# auto-drive state: autodrive_loop.sh makes the state dir private and sets
+# aside, as untrusted, any entry it finds there that others could write
+# (autodrive_private_dir, section 13), and a log the harness opened under the
+# caller's umask is exactly such an entry.
+LOOP_DIR=""; LOOP_LOGS=""; LOOP_OUT=""
 run_loop() { # run_loop <state-dir-suffix>
-  LOOP_DIR="${WORK}/loop-$1"; mkdir -p "${LOOP_DIR}"
-  export STUB_CALLS="${LOOP_DIR}/calls" STUB_SHOW_CALLS="${LOOP_DIR}/shows"
+  LOOP_DIR="${WORK}/loop-$1"; LOOP_LOGS="${WORK}/loop-$1.logs"
+  mkdir -p "${LOOP_DIR}" "${LOOP_LOGS}"
+  export STUB_CALLS="${LOOP_LOGS}/calls" STUB_SHOW_CALLS="${LOOP_LOGS}/shows"
   PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
     bash "${LOOP}" --loop-name "crusty" --round-recipe "autodrive-crusty-round" \
       --clean-token "CLEAN" --verdict-field "crusty_verdict" \
       --repo "${WORK}" --state-dir "${LOOP_DIR}" \
-      >"${LOOP_DIR}/out" 2>"${LOOP_DIR}/err"
+      >"${LOOP_LOGS}/out" 2>"${LOOP_LOGS}/err"
   local rc=$?
-  LOOP_OUT="$(cat "${LOOP_DIR}/out")"
+  LOOP_OUT="$(cat "${LOOP_LOGS}/out")"
   return $rc
 }
 
@@ -196,12 +212,12 @@ if [ "$rc" -ne 0 ]; then
 else
   fail "STUCK-exit" "the loop continued past STUCK (rc=0): ${LOOP_OUT}"
 fi
-if grep -qF 'AUTO_DRIVE_LOOP: STUCK' "${LOOP_DIR}/err"; then
+if grep -qF 'AUTO_DRIVE_LOOP: STUCK' "${LOOP_LOGS}/err"; then
   pass "STUCK-escalates" "STUCK is escalated by name with the round label"
 else
   fail "STUCK-escalates" "no STUCK escalation on stderr"
 fi
-if [ "$(grep -c 'autodrive-crusty-round' "${LOOP_DIR}/calls" 2>/dev/null || echo 0)" = "1" ]; then
+if [ "$(grep -c 'autodrive-crusty-round' "${LOOP_LOGS}/calls" 2>/dev/null || echo 0)" = "1" ]; then
   pass "STUCK-no-more-rounds" "no further round is started after STUCK"
 else
   fail "STUCK-no-more-rounds" "extra rounds ran after STUCK"
@@ -216,7 +232,7 @@ while IFS= read -r marker; do
   set_stub '{"crusty_verdict":"CONCERNS"}' 0 "${marker}"
   run_loop "mal-${MAL_N}"; rc=$?
   label="$(printf '%.40s' "${marker:-<empty>}")"
-  if [ "$rc" -ne 0 ] && grep -qF 'AUTO_DRIVE_LOOP: STUCK' "${LOOP_DIR}/err"; then
+  if [ "$rc" -ne 0 ] && grep -qF 'AUTO_DRIVE_LOOP: STUCK' "${LOOP_LOGS}/err"; then
     pass "MALFORMED" "unreadable loop verdict [${label}] -> STUCK"
   else
     fail "MALFORMED" "unreadable loop verdict [${label}] did not stop the loop (rc=${rc})"
@@ -242,7 +258,7 @@ fi
 # DONE over a non-clean round verdict is an inconsistent pair: never advance.
 set_stub '{"crusty_verdict":"CONCERNS"}' 0 'LOOP_HEALTH: DONE — converged'
 run_loop incon; rc=$?
-if [ "$rc" -ne 0 ] && grep -qF 'inconsistent pair never advances' "${LOOP_DIR}/err"; then
+if [ "$rc" -ne 0 ] && grep -qF 'inconsistent pair never advances' "${LOOP_LOGS}/err"; then
   pass "MALFORMED-inconsistent" "DONE over a non-clean round verdict never advances a phase"
 else
   fail "MALFORMED-inconsistent" "an inconsistent DONE advanced the phase (rc=${rc})"
@@ -272,13 +288,13 @@ if [ "$rc" -ne 0 ]; then
 else
   fail "PREFLIGHT-refuses" "the loop ran without its terminator (rc=${rc}): ${LOOP_OUT}"
 fi
-if ! grep -qF 'autodrive-crusty-round' "${LOOP_DIR}/calls" 2>/dev/null; then
+if ! grep -qF 'autodrive-crusty-round' "${LOOP_LOGS}/calls" 2>/dev/null; then
   pass "PREFLIGHT-no-round" "not a single round is spent before the missing dependency is reported"
 else
   fail "PREFLIGHT-no-round" "a round ran before the missing dependency was detected"
 fi
-if grep -qF 'loop-health-evaluator' "${LOOP_DIR}/err" \
-   && grep -qF 'loop-health-evaluator' "${LOOP_DIR}/shows" 2>/dev/null \
+if grep -qF 'loop-health-evaluator' "${LOOP_LOGS}/err" \
+   && grep -qF 'loop-health-evaluator' "${LOOP_LOGS}/shows" 2>/dev/null \
    && printf '%s' "${LOOP_OUT}" | grep -qF '"loop_result":"MISSING_DEPENDENCY"'; then
   pass "PREFLIGHT-names-dependency" "the refusal names the missing dependency instead of misattributing it to the loop"
 else
@@ -353,12 +369,12 @@ if [ "$rc" -eq 79 ]; then
 else
   fail "EXIT79-propagates" "exit 79 became rc=${rc}"
 fi
-if ! grep -q 'loop-health-evaluator' "${LOOP_DIR}/calls" 2>/dev/null; then
+if ! grep -q 'loop-health-evaluator' "${LOOP_LOGS}/calls" 2>/dev/null; then
   pass "EXIT79-no-evaluator" "no model call is spent deciding whether to re-enter a sealed guard"
 else
   fail "EXIT79-no-evaluator" "the evaluator was invoked after a terminal policy refusal"
 fi
-if [ "$(grep -c 'autodrive-crusty-round' "${LOOP_DIR}/calls" 2>/dev/null || echo 0)" = "1" ]; then
+if [ "$(grep -c 'autodrive-crusty-round' "${LOOP_LOGS}/calls" 2>/dev/null || echo 0)" = "1" ]; then
   pass "EXIT79-terminal" "the guard is never retried into"
 else
   fail "EXIT79-terminal" "a round was retried after exit 79"
@@ -477,9 +493,10 @@ make_gh_stub
 # after #1517: each round record (crusty-round-N.json, one line, carrying
 # reviewed_head_sha), its copy crusty-latest.json, one manifest row per round
 # in crusty-records.tsv with the record's git blob hash, and the `crusty-loop`
-# marker in phases.tsv once the loop reported DONE. Permissions are set
-# explicitly so a permissive umask on the host cannot make the
-# private-directory check fire by accident.
+# marker in phases.tsv once the loop reported DONE. Permissions are set by
+# hand here, to the modes the writers produce, so that each case below tests
+# one gate check. Section 13 runs the real writers under umask 0002 instead
+# and gives the gate what they wrote.
 #
 # CR_SHA and CR_SHA2 are real commits in the fixture repository FX below, so
 # the range check (#1517 point 3) can walk from the reviewed head to the head
@@ -1651,9 +1668,19 @@ S00_BODY="$(extract_step_command "${RECIPES}/autodrive-merge-round.yaml" "step-0
 if [[ -z "${S00_BODY}" ]]; then
   fail "STEP00-exists" "autodrive-merge-round.yaml has no step-00-merge-ready-files command"
 else
-  s00_run() { # s00_run <AMPLIHACK_HOME> [REPO_PATH] -> S00_RC, S00_OUT (last stdout line), S00_ERR
+  # step-00 also needs gadugi-test on PATH. S00_GADUGI_BIN holds a stub that
+  # is never run, only found; an empty directory there is the missing case.
+  S00_GADUGI_BIN="${WORK_PHYS}/s00-gadugi-bin"; S00_NO_GADUGI_BIN="${WORK_PHYS}/s00-no-gadugi-bin"
+  mkdir -p "${S00_GADUGI_BIN}" "${S00_NO_GADUGI_BIN}"
+  printf '#!/bin/sh\necho "gadugi-test must not run in step-00" >&2\nexit 99\n' > "${S00_GADUGI_BIN}/gadugi-test"
+  chmod +x "${S00_GADUGI_BIN}/gadugi-test"
+  if PATH="/usr/bin:/bin" command -v gadugi-test >/dev/null 2>&1; then
+    echo "HARNESS-ERROR: gadugi-test is installed in /usr/bin or /bin; step-00's not-installed case cannot be exercised" >&2
+    exit 2
+  fi
+  s00_run() { # s00_run <AMPLIHACK_HOME> [REPO_PATH] [gadugi bin dir] -> S00_RC, S00_OUT (last stdout line), S00_ERR
     rs_tree
-    ( cd "${RS}/plain" && env -i PATH="${STUB_BIN}:/usr/bin:/bin" REAL_AMPLIHACK="${REAL_AMPLIHACK}" HOME="${RS}/home" \
+    ( cd "${RS}/plain" && env -i PATH="${STUB_BIN}:${3:-${S00_GADUGI_BIN}}:/usr/bin:/bin" REAL_AMPLIHACK="${REAL_AMPLIHACK}" HOME="${RS}/home" \
         AMPLIHACK_HOME="$1" REPO_PATH="${2:-${RS}/plain}" bash -c "${S00_BODY}" >"${RS}.out" 2>"${RS}.err" ); S00_RC=$?
     S00_OUT="$(tail -n 1 "${RS}.out")"; S00_ERR="$(cat "${RS}.err")"
   }
@@ -1680,6 +1707,20 @@ else
     pass "STEP00-resolver-missing-fails" "a missing resolver fails step-00 with the named error"
   else
     fail "STEP00-resolver-missing-fails" "rc=${S00_RC} err=$(printf '%s' "${S00_ERR}" | tail -n 3 | tr '\n' ' ')"
+  fi
+  # gadugi-test is not on PATH: the round stops here by name, before any
+  # test run, instead of reporting gadugi-test-missing every round to STUCK.
+  s00_run "${REPO_ROOT}" "" "${S00_NO_GADUGI_BIN}"
+  if [ "${S00_RC}" -ne 0 ] && [ -z "$(cat "${RS}.out")" ] \
+     && printf '%s\n' "${S00_ERR}" | grep -q '^ERROR: gadugi-test-not-installed: gadugi-test is not on PATH'; then
+    pass "STEP00-gadugi-missing-fails" "a missing gadugi-test fails step-00 with ERROR: gadugi-test-not-installed and no merge-ready output"
+  else
+    fail "STEP00-gadugi-missing-fails" "rc=${S00_RC} out=$(cat "${RS}.out") err=$(printf '%s' "${S00_ERR}" | tail -n 3 | tr '\n' ' ')"
+  fi
+  if printf '%s' "${S00_ERR}" | grep -qF 'npm install -g github:rysweet/gadugi-agentic-test'; then
+    pass "STEP00-gadugi-missing-says-how" "the error says how to install gadugi-test"
+  else
+    fail "STEP00-gadugi-missing-says-how" "err=$(printf '%s' "${S00_ERR}" | tail -n 3 | tr '\n' ' ')"
   fi
   # A REPO_PATH that does not exist fails by name; it never measures the cwd.
   s00_run "${REPO_ROOT}" "${WORK_PHYS}/no-such-repo"
@@ -3123,7 +3164,9 @@ fi
 # an HTTP error prints its JSON body on stdout and a message on stderr, and
 # exits 1. PF_CLASSIC=404 is what a token without admin rights gets from the
 # protection endpoint (measured on rysweet/amplihack-rs: 404 "Not Found",
-# while branches/main reports "protected": true).
+# while branches/main reports "protected": true). PF_CLASSIC_FLAGS adds
+# fields to a readable protection answer, such as
+# "require_code_owner_reviews":true.
 PF_TOOL="${TOOLS}/autodrive_platform_facts.sh"
 PF_BIN="${WORK_PHYS}/pf-bin"; mkdir -p "${PF_BIN}"
 PF_HEAD_SHA="0123456789abcdef0123456789abcdef01234567"
@@ -3147,7 +3190,7 @@ if [ "${1:-}" = api ]; then
   case "$path" in
     */protection/required_pull_request_reviews)
       case "${PF_CLASSIC:-404}" in 404) http404 "Not Found" ;; esac
-      out "{\"url\":\"u\",\"required_approving_review_count\":${PF_CLASSIC}}"; exit 0 ;;
+      out "{\"url\":\"u\",${PF_CLASSIC_FLAGS:+${PF_CLASSIC_FLAGS},}\"required_approving_review_count\":${PF_CLASSIC}}"; exit 0 ;;
     */rules/branches/*)
       [ "${PF_RULES:-[]}" = fail ] && http404 "Not Found"
       out "${PF_RULES:-[]}"; exit 0 ;;
@@ -3217,6 +3260,43 @@ else
   pf_expect "PF-hostile-base-ref" UNREADABLE unreadable "" "a base ref outside [A-Za-z0-9._/-] is dropped and never reaches a URL" base_ref=
   if grep -q 'branches/' "${PF_CALLS}"; then fail "PF-hostile-base-no-call" "a hostile base ref reached gh api: $(grep 'branches/' "${PF_CALLS}" | head -n 1)"
   else pass "PF-hostile-base-no-call" "no branch endpoint is called without a valid base ref"; fi
+  # A required count of 0 is not "no review required": GitHub leaves
+  # reviewDecision null at a count of 0 even while a code-owner, last-push or
+  # required-reviewer rule blocks the merge. Such a count is unknown, so the
+  # merge state decides, and BLOCKED is never MET.
+  pf_run PF_CLASSIC=0 PF_CLASSIC_FLAGS='"require_code_owner_reviews":true' PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED
+  pf_expect "PF-count-0-code-owner-blocked" UNREADABLE unreadable "" "protection requires code-owner review at a count of 0: a null decision with BLOCKED is not met"
+  if grep -qF 'classic=unknown(code-owner-or-last-push)' "${WORK_PHYS}/pf-${PF_N}.err"; then
+    pass "PF-count-0-code-owner-named" "the INFO line names the review rule that made the count unknown"
+  else
+    fail "PF-count-0-code-owner-named" "stderr: $(tr '\n' ' ' < "${WORK_PHYS}/pf-${PF_N}.err")"
+  fi
+  pf_run PF_CLASSIC=0 PF_CLASSIC_FLAGS='"require_code_owner_reviews":true' PF_RULES='[]' PF_DECISION= PF_MSTATE=CLEAN
+  pf_expect "PF-count-0-code-owner-clean" MET merge-state "" "with code-owner review required at a count of 0, CLEAN is met through the merge state, never through a count of 0"
+  pf_run PF_CLASSIC=0 PF_CLASSIC_FLAGS='"require_last_push_approval":true' PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED
+  pf_expect "PF-count-0-last-push-blocked" UNREADABLE unreadable "" "protection requires last-push approval at a count of 0: BLOCKED is not met"
+  pf_run PF_CLASSIC=0 PF_CLASSIC_FLAGS='"require_code_owner_reviews":false,"require_last_push_approval":false' PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED
+  pf_expect "PF-count-0-flags-false" MET required-count 0 "flags that are present but false leave a count of 0 known"
+  pf_run PF_CLASSIC=1 PF_CLASSIC_FLAGS='"require_code_owner_reviews":true' PF_RULES='[]' PF_DECISION= PF_MSTATE=CLEAN
+  pf_expect "PF-count-1-code-owner" NOT_MET required-count 1 "a count above 0 is kept beside a code-owner rule"
+  pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_DECISION= PF_MSTATE=BLOCKED \
+    PF_RULES='[{"type":"pull_request","parameters":{"required_approving_review_count":0,"require_code_owner_review":true}}]'
+  pf_expect "PF-ruleset-0-code-owner-blocked" UNREADABLE unreadable "" "a ruleset requiring code-owner review at a count of 0: BLOCKED is not met"
+  pf_run PF_CLASSIC=0 PF_DECISION= PF_MSTATE=BLOCKED \
+    PF_RULES='[{"type":"pull_request","parameters":{"required_approving_review_count":0,"require_last_push_approval":true}}]'
+  pf_expect "PF-ruleset-0-last-push-blocked" UNREADABLE unreadable "" "a classic 0 beside a ruleset requiring last-push approval at a count of 0 is not the whole count"
+  pf_run PF_CLASSIC=0 PF_DECISION= PF_MSTATE=BLOCKED \
+    PF_RULES='[{"type":"pull_request","parameters":{"required_approving_review_count":0,"required_reviewers":[{"minimum_approvals":1,"file_patterns":["*"],"reviewer":{"id":1,"type":"Team"}}]}}]'
+  pf_expect "PF-ruleset-0-required-reviewers-blocked" UNREADABLE unreadable "" "a ruleset listing required reviewers at a count of 0: BLOCKED is not met"
+  pf_run PF_CLASSIC=0 PF_DECISION= PF_MSTATE=CLEAN \
+    PF_RULES='[{"type":"pull_request","parameters":{"required_approving_review_count":0,"require_code_owner_review":true}}]'
+  pf_expect "PF-ruleset-0-code-owner-clean" MET merge-state "" "with a ruleset code-owner rule at a count of 0, CLEAN is met through the merge state"
+  pf_run PF_CLASSIC=0 PF_DECISION= PF_MSTATE=BLOCKED \
+    PF_RULES='[{"type":"pull_request","parameters":{"required_approving_review_count":0,"require_code_owner_review":false,"require_last_push_approval":false,"required_reviewers":[]}}]'
+  pf_expect "PF-ruleset-0-no-review-rule" MET required-count 0 "a ruleset whose review flags are false and whose reviewer list is empty requires no review"
+  pf_run PF_CLASSIC=0 PF_DECISION= PF_MSTATE=CLEAN \
+    PF_RULES='[{"type":"pull_request","parameters":{"required_approving_review_count":2,"require_code_owner_review":true}}]'
+  pf_expect "PF-ruleset-2-code-owner" NOT_MET required-count 2 "a ruleset count above 0 is kept beside its code-owner rule"
   pf_run PF_THREADS="$(printf '0\n2')" PF_CLASSIC=0 PF_RULES='[]'
   pf_expect "PF-threads-paged" MET required-count 0 "review threads are summed across pages" unresolved_threads=2
   pf_run PF_THREADS='{"message":"x"}' PF_CLASSIC=0 PF_RULES='[]'
@@ -3288,6 +3368,189 @@ fi
 ctx_run green "${CR_SHA2}" REPO_PATH="${WORK_PHYS}/no-such-repo"
 ctx_expect_error "CTX-bad-repo-path" "ERROR: cannot cd to REPO_PATH" "REPO_PATH" \
   "a REPO_PATH that cannot be entered fails instead of reading HEAD from another directory"
+
+# ---------------------------------------------------------------------------
+# 13. State written under a group-writable umask is private (PR #1520 review).
+# ---------------------------------------------------------------------------
+# The gate refuses a state dir or state file with a group or world write bit.
+# Hosts with user private groups run with umask 0002, so a writer that took
+# the caller's umask made the gate refuse every merge there. Section 5 sets
+# modes by hand and cannot see that. Here every writer is the real one, run
+# under umask 0002, and in 13d the gate reads what they wrote.
+SAVED_UMASK="$(umask)"
+umask 0002
+: > "${WORK_PHYS}/umask-probe"
+if [ -z "$(find "${WORK_PHYS}/umask-probe" -perm -0020 -print 2>/dev/null)" ]; then
+  echo "HARNESS-ERROR: umask 0002 does not give a group-writable file here, so section 13 would prove nothing" >&2
+  exit 2
+fi
+writable_by_others() { [ -n "$(find "$1" -maxdepth 0 \( -perm -0020 -o -perm -0002 \) -print 2>/dev/null)" ]; }
+# untrusted_in <dir>: the dir itself and everything under it that the gate's
+# test refuses (a symlink, or a group or world write bit), one per line.
+untrusted_in() { find "$1" \( -type l -o -perm -0020 -o -perm -0002 \) -print 2>/dev/null; }
+
+# 13a. autodrive_private_dir, called directly.
+PD="${WORK_PHYS}/umask-pd"; PD_RC=0; PD_ERR="${WORK_PHYS}/umask-pd.err"
+pd_run() { # pd_run <dir>: autodrive_private_dir in a clean shell under umask 0002
+  env -i PATH="/usr/bin:/bin" bash -c 'umask 0002; . "$1" && autodrive_private_dir "$2"' _ "${STATE_HELPER}" "$1" \
+    >/dev/null 2>"${PD_ERR}"; PD_RC=$?
+}
+pd_run "${PD}/new/a"
+if [ "${PD_RC}" -eq 0 ] && [ -d "${PD}/new/a" ] && ! writable_by_others "${PD}" && ! writable_by_others "${PD}/new" \
+   && ! writable_by_others "${PD}/new/a"; then
+  pass "PRIVATE-DIR-new" "a new state dir and its missing parents are created with no group or world write bit under umask 0002"
+else
+  fail "PRIVATE-DIR-new" "rc=${PD_RC} $(ls -ld "${PD}" "${PD}/new" "${PD}/new/a" 2>&1 | tr '\n' ' ') $(tr '\n' ' ' < "${PD_ERR}")"
+fi
+# A state dir an earlier version wrote under umask 0002: the dir and its files
+# are group-writable. The private file and the dir itself are kept; the
+# group-writable marker and a symlink are set aside, unchanged.
+OLD="${PD}/old"; mkdir -p "${OLD}"; chmod 0775 "${OLD}"
+printf 'crusty-loop\t2026-10-03T00:00:00Z\n' > "${OLD}/phases.tsv"
+( umask 077; printf 'kept-concern\n' > "${OLD}/resolved-concerns.txt" )
+ln -s "${OLD}/phases.tsv" "${OLD}/crusty-latest.json"
+pd_run "${OLD}"
+SET_ASIDE="$(find "${OLD}" -mindepth 1 -maxdepth 1 -type d -name 'untrusted-*' -print 2>/dev/null)"
+if [ "${PD_RC}" -eq 0 ] && ! writable_by_others "${OLD}" && [ "$(printf '%s\n' "${SET_ASIDE}" | grep -c .)" = "1" ] \
+   && [ ! -e "${OLD}/phases.tsv" ] && [ ! -L "${OLD}/crusty-latest.json" ] \
+   && [ "$(cat "${SET_ASIDE}/phases.tsv" 2>/dev/null)" = "$(printf 'crusty-loop\t2026-10-03T00:00:00Z')" ] \
+   && [ -L "${SET_ASIDE}/crusty-latest.json" ] && ! writable_by_others "${SET_ASIDE}" \
+   && [ "$(cat "${OLD}/resolved-concerns.txt" 2>/dev/null)" = "kept-concern" ] \
+   && grep -qF "WARNING: state-dir-untrusted-entries-set-aside: 2 entries in ${OLD}" "${PD_ERR}"; then
+  pass "PRIVATE-DIR-set-aside" "a group-writable dir loses its write bits; group-writable entries and symlinks are moved, unchanged, into one private untrusted-* dir, by name"
+else
+  fail "PRIVATE-DIR-set-aside" "rc=${PD_RC} set-aside='${SET_ASIDE}' $(ls -la "${OLD}" 2>&1 | tr '\n' ' ') err=$(tr '\n' ' ' < "${PD_ERR}")"
+fi
+if ! env -i PATH="/usr/bin:/bin" bash -c '. "$1" && autodrive_phase_done "$2" crusty-loop' _ "${STATE_HELPER}" "${OLD}"; then
+  pass "PRIVATE-DIR-marker-not-trusted" "a crusty-loop marker that others could have written is not read once it is set aside, so the crusty loop runs again"
+else
+  fail "PRIVATE-DIR-marker-not-trusted" "the set-aside marker still counts as done"
+fi
+pd_run "${OLD}"
+if [ "${PD_RC}" -eq 0 ] && [ ! -s "${PD_ERR}" ] \
+   && [ "$(find "${OLD}" -mindepth 1 -maxdepth 1 -type d -name 'untrusted-*' -print | grep -c .)" = "1" ]; then
+  pass "PRIVATE-DIR-idempotent" "a private dir is left as it is: no warning and no second untrusted-* dir"
+else
+  fail "PRIVATE-DIR-idempotent" "rc=${PD_RC} err=$(tr '\n' ' ' < "${PD_ERR}")"
+fi
+ln -s "${OLD}" "${PD}/link"; : > "${PD}/a-file"
+for bad in "${PD}/link" "${PD}/a-file" ""; do
+  pd_run "${bad}"
+  if [ "${PD_RC}" -ne 0 ] && grep -qF 'ERROR: state-dir-not-private:' "${PD_ERR}"; then
+    pass "PRIVATE-DIR-refuses" "[${bad:-<empty>}] is refused with ERROR: state-dir-not-private"
+  else
+    fail "PRIVATE-DIR-refuses" "[${bad:-<empty>}] rc=${PD_RC} err=$(tr '\n' ' ' < "${PD_ERR}")"
+  fi
+done
+if [ ! -O / ]; then
+  pd_run /
+  if [ "${PD_RC}" -ne 0 ] && grep -qF 'ERROR: state-dir-not-private: / is not owned by this user' "${PD_ERR}"; then
+    pass "PRIVATE-DIR-not-owned" "a directory owned by another user is refused and left unchanged"
+  else
+    fail "PRIVATE-DIR-not-owned" "rc=${PD_RC} err=$(tr '\n' ' ' < "${PD_ERR}")"
+  fi
+fi
+
+# 13b. The two state writers that append.
+SW="${WORK_PHYS}/umask-sw"; mkdir -p "${SW}"; chmod 0700 "${SW}"
+env -i PATH="/usr/bin:/bin" bash -c 'umask 0002; . "$1" && autodrive_mark_phase_done "$2" crusty-loop && autodrive_record_resolved "$2" b a b' \
+  _ "${STATE_HELPER}" "${SW}" 2>/dev/null
+for f in phases.tsv resolved-concerns.txt; do
+  if [ -s "${SW}/${f}" ] && ! writable_by_others "${SW}/${f}"; then
+    pass "PRIVATE-WRITER-${f}" "${f} is created with no group or world write bit under umask 0002"
+  else
+    fail "PRIVATE-WRITER-${f}" "$(ls -l "${SW}/${f}" 2>&1)"
+  fi
+done
+
+# 13c. Each phase's preflight creates the state dir private, and refuses a
+# symlinked AUTODRIVE_STATE_DIR by name.
+PF_ENV=(HOME="${TEST_HOME}" PATH="${STUB_BIN}:/usr/bin:/bin" AMPLIHACK_HOME="${REPO_ROOT}" REPO_PATH="${FX}" PR_NUMBER=42
+  GH_MODE=green GH_HEAD="${CR_SHA2}" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 REAL_AMPLIHACK="${REAL_AMPLIHACK}")
+for spec in autodrive-build:step-01-build-preflight autodrive-crusty-loop:step-01-crusty-loop-preflight \
+            autodrive-merge-loop:step-01-merge-loop-preflight; do
+  r="${spec%%:*}"; body="$(extract_step_command "${RECIPES}/${r}.yaml" "${spec#*:}")"
+  root="${WORK_PHYS}/umask-pf-${r}"
+  out="$(env -i "${PF_ENV[@]}" AMPLIHACK_STATE_DIR="${root}" bash -c "umask 0002; ${body}" 2>"${root}.err")"; rc=$?
+  dir="$(printf '%s' "${out}" | jq -r '.state_dir // empty' 2>/dev/null)"
+  if [ "${rc}" -eq 0 ] && [ -n "${dir}" ] && [ -d "${dir}" ] && [ "${dir#"${root}"/}" != "${dir}" ] \
+     && [ -z "$(untrusted_in "${root}")" ]; then
+    pass "PRIVATE-PREFLIGHT-${r}" "${r} creates its state dir, and every parent it creates, private under umask 0002"
+  else
+    fail "PRIVATE-PREFLIGHT-${r}" "rc=${rc} dir='${dir}' untrusted: $(untrusted_in "${root}" | tr '\n' ' ') err=$(tr '\n' ' ' < "${root}.err")"
+  fi
+  out="$(env -i "${PF_ENV[@]}" AUTODRIVE_STATE_DIR="${PD}/link" bash -c "umask 0002; ${body}" 2>"${root}.link.err")"; rc=$?
+  if [ "${rc}" -ne 0 ] && [ -z "${out}" ] && grep -qF 'ERROR: state-dir-not-private:' "${root}.link.err"; then
+    pass "PRIVATE-PREFLIGHT-${r}-symlink" "${r} stops by name on a symlinked AUTODRIVE_STATE_DIR"
+  else
+    fail "PRIVATE-PREFLIGHT-${r}-symlink" "rc=${rc} out='${out}' err=$(tr '\n' ' ' < "${root}.link.err")"
+  fi
+done
+
+# 13d. End to end, every writer real, under umask 0002: the crusty preflight
+# makes the state dir; autodrive_loop.sh runs a crusty round whose record is
+# written by the real step-06 body; step-03 of the crusty loop records the
+# phase; the loop runs a merge-ready round whose record is written by the real
+# step-05 body; and the merge gate, given that state dir, reaches the merge.
+# The qa evidence is written the way autodrive-merge-evidence.yaml writes it,
+# under umask 077 (that step's own umask is section 6b, case 29).
+fx_head "${CR_SHA2}"
+E2E="${WORK_PHYS}/umask-e2e"; mkdir -p "${E2E}.tmp"; chmod 0700 "${E2E}.tmp"
+E2E_ENV=("${PF_ENV[@]}" AMPLIHACK_STATE_DIR="${E2E}" STUB_UMASK_LOG="${E2E}.umask" STUB_CALLS=/dev/null STUB_SHOW_CALLS=/dev/null
+  STUB_HEALTH_STDOUT='LOOP_HEALTH: DONE — converged' STUB_HEALTH_RC=0 STUB_HEALTH_RESOLVES=0 AMPLIHACK_BIN="${STUB_BIN}/amplihack")
+e2e_loop() { # e2e_loop <loop-name> <round-recipe> <clean-token> <verdict-field> <step body> [VAR=value ...]
+  local name="$1" recipe="$2" token="$3" vfield="$4" body="$5"; shift 5
+  env -i "${E2E_ENV[@]}" STUB_ROUND_BODY="${body}" "$@" \
+    bash -c 'umask 0002; exec bash "$1" --loop-name "$2" --round-recipe "$3" --clean-token "$4" --verdict-field "$5" --repo "$6" --state-dir "$7"' \
+    _ "${LOOP}" "${name}" "${recipe}" "${token}" "${vfield}" "${FX}" "${E2E_DIR}" >"${E2E}.${name}.out" 2>"${E2E}.${name}.err"
+}
+E2E_PRE="$(env -i "${E2E_ENV[@]}" bash -c "umask 0002; $(extract_step_command "${RECIPES}/autodrive-crusty-loop.yaml" step-01-crusty-loop-preflight)" 2>"${E2E}.pre.err")"
+E2E_DIR="$(printf '%s' "${E2E_PRE}" | jq -r '.state_dir // empty' 2>/dev/null)"
+[ -n "${E2E_DIR}" ] && [ -d "${E2E_DIR}" ] || { echo "HARNESS-ERROR: the crusty preflight made no state dir: $(tr '\n' ' ' < "${E2E}.pre.err")" >&2; exit 2; }
+e2e_loop crusty autodrive-crusty-round CLEAN crusty_verdict "${S6_BODY}" \
+  RECIPE_VAR_crusty_round_context="{\"pr\":\"42\",\"head_sha\":\"${CR_SHA2}\",\"resolved_concerns\":\"\",\"round_label\":\"round-1\"}" \
+  RECIPE_VAR_crusty_verdict='{"crusty_verdict":"CLEAN","verdict_source":"crusty","concern_count":0}'
+E2E_CRUSTY_RC=$?
+env -i "${E2E_ENV[@]}" CRUSTY_LOOP_PREFLIGHT="${E2E_PRE}" CRUSTY_LOOP_RESULT="$(cat "${E2E}.crusty.out")" \
+  bash -c "umask 0002; $(extract_step_command "${RECIPES}/autodrive-crusty-loop.yaml" step-03-record-crusty-phase)" 2>"${E2E}.rec.err"
+( umask 077; rm -f -- "${E2E_DIR}/qa-evidence.json"; qa_fixture "${CR_SHA2}" PASS 3 > "${E2E_DIR}/qa-evidence.json" )
+E2E_QH="$(git hash-object --no-filters "${E2E_DIR}/qa-evidence.json")"
+e2e_loop merge-ready autodrive-merge-round MERGE_READY merge_ready_verdict \
+  "$(extract_step_command "${RECIPES}/autodrive-merge-round.yaml" step-05-write-round-record)" \
+  RECIPE_VAR_merge_ready_verdict='{"merge_ready_verdict":"MERGE_READY","verdict_source":"assessment","blocker_count":0}' \
+  RECIPE_VAR_qa_evidence_hash="{\"qa_evidence_sha\":\"${E2E_QH}\"}" RECIPE_VAR_qa_evidence="$(cat "${E2E_DIR}/qa-evidence.json")" \
+  RECIPE_VAR_ci_evidence='{"ci_status":"GREEN","ci_signal":"green"}'
+E2E_MR_RC=$?
+if [ "${E2E_CRUSTY_RC}" -eq 0 ] && [ "${E2E_MR_RC}" -eq 0 ] \
+   && grep -qF '"loop_result":"DONE"' "${E2E}.crusty.out" && grep -qF '"loop_result":"DONE"' "${E2E}.merge-ready.out"; then
+  pass "PRIVATE-E2E-loops" "both loops ran to DONE under umask 0002, with records written by the real step bodies"
+else
+  fail "PRIVATE-E2E-loops" "crusty rc=${E2E_CRUSTY_RC} merge-ready rc=${E2E_MR_RC} | $(tail -n 5 "${E2E}.crusty.err" "${E2E}.merge-ready.err" 2>&1 | tr '\n' ' ')"
+fi
+if [ -s "${E2E}.umask" ] && [ -z "$(grep -v ' 0002$' "${E2E}.umask")" ]; then
+  pass "PRIVATE-E2E-child-umask" "the round recipes and the evaluator run with the caller's umask; only the state writes are private"
+else
+  fail "PRIVATE-E2E-child-umask" "children saw: $(tr '\n' ' ' < "${E2E}.umask" 2>/dev/null)"
+fi
+E2E_UNTRUSTED="$(untrusted_in "${E2E_DIR}")"
+if [ -z "${E2E_UNTRUSTED}" ] && [ -f "${E2E_DIR}/phases.tsv" ] && [ -f "${E2E_DIR}/crusty-round-1.json" ] \
+   && [ -f "${E2E_DIR}/crusty-latest.json" ] && [ -f "${E2E_DIR}/crusty-records.tsv" ] && [ -f "${E2E_DIR}/merge-ready-latest.json" ]; then
+  pass "PRIVATE-E2E-state" "nothing the workflow wrote in the state dir under umask 0002 is group- or world-writable or a symlink"
+else
+  fail "PRIVATE-E2E-state" "untrusted: $(printf '%s' "${E2E_UNTRUSTED}" | tr '\n' ' ') | $(ls -la "${E2E_DIR}" 2>&1 | tr '\n' ' ')"
+fi
+env -i "${PF_ENV[@]}" AMPLIHACK_BIN="${REAL_AMPLIHACK}" TMPDIR="${E2E}.tmp" GH_CALLS=/dev/null \
+  bash -c 'umask 0002; exec bash "$1" --pr 42 --repo "$2" --state-dir "$3" --round-record "$3/merge-ready-latest.json" --qa-evidence "$3/qa-evidence.json" --dry-run' \
+  _ "${GATE}" "${FX}" "${E2E_DIR}" >"${E2E}.gate.out" 2>"${E2E}.gate.err"
+E2E_GATE_RC=$?
+if [ "${E2E_GATE_RC}" -eq 0 ] && grep -qF '"merge_result":"DRY_RUN"' "${E2E}.gate.out" \
+   && grep -qF 'crusty_phase_done=true crusty_verdict=CLEAN' "${E2E}.gate.err" && grep -qF 'qa_evidence_chain=ok' "${E2E}.gate.err" \
+   && ! grep -qF 'not private' "${E2E}.gate.err"; then
+  pass "PRIVATE-E2E-gate" "the merge gate accepts the state the real writers produced under umask 0002 and reaches the merge"
+else
+  fail "PRIVATE-E2E-gate" "rc=${E2E_GATE_RC} $(cat "${E2E}.gate.out") | $(grep -F 'BLOCKER' "${E2E}.gate.err" | tr '\n' ' ')"
+fi
+umask "${SAVED_UMASK}"
 
 echo
 echo "═══════════════════════════════"

@@ -42,9 +42,11 @@ cd "$REPO" 2>/dev/null || { echo "ERROR: --repo '${REPO}' is not a directory; re
 # Decide whether a state dir was given BEFORE the fallback below: an empty
 # --state-dir must not turn the world-writable TMPDIR into crusty evidence.
 if [ -n "$STATE_DIR" ]; then STATE_DIR_GIVEN="true"; else STATE_DIR_GIVEN="false"; fi
-# The evidence bundle (section 8) still needs somewhere to go.
+# The evidence bundle (section 8) still needs somewhere to go. The gate only
+# creates a missing directory, under umask 077; it never changes the mode of
+# an existing one, since sections 6b and 6c judge exactly that.
 STATE_DIR="${STATE_DIR:-${TMPDIR:-/tmp}}"
-mkdir -p "$STATE_DIR" || exit 2
+( umask 077 && mkdir -p -- "$STATE_DIR" ) || exit 2
 AMPLIHACK_BIN="${AMPLIHACK_BIN:-amplihack}"
 export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
 
@@ -204,7 +206,10 @@ fi
 # they are read only from a state dir that was given explicitly, is owned by
 # this user and writable by nobody else, and only when they are regular files
 # rather than symlinks. The state helper is sourced from beside this gate and
-# from nowhere a pull request could populate.
+# from nowhere a pull request could populate. The writers make the directory
+# and every file private whatever the caller's umask (autodrive_state.sh,
+# PRIVATE STATE), so on a host whose umask is 0002 this check still passes for
+# state the workflow wrote itself.
 #
 # Since #1517 the last loop-written round record must also check out against
 # crusty-records.tsv, the manifest autodrive_loop.sh writes before any agent
@@ -339,12 +344,13 @@ fi
 
 # --- 8. Record the evidence bundle BEFORE any merge ------------------------
 BUNDLE="${STATE_DIR}/merge-evidence-${PR}-${HEAD_SHA:0:12}.txt"
-{ printf 'auto-drive-to-merge merge gate — PR #%s @ %s\n' "$PR" "$HEAD_SHA"
-  printf 'captured: %s\n\nEVIDENCE\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  printf '  - %s\n' "${EVIDENCE[@]}"
-  printf '\nBLOCKERS\n'
-  if [ "${#BLOCKERS[@]}" -eq 0 ]; then printf '  (none)\n'; else printf '  - %s\n' "${BLOCKERS[@]}"; fi
-} > "$BUNDLE"
+( umask 077; rm -f -- "$BUNDLE"
+  { printf 'auto-drive-to-merge merge gate — PR #%s @ %s\n' "$PR" "$HEAD_SHA"
+    printf 'captured: %s\n\nEVIDENCE\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf '  - %s\n' "${EVIDENCE[@]}"
+    printf '\nBLOCKERS\n'
+    if [ "${#BLOCKERS[@]}" -eq 0 ]; then printf '  (none)\n'; else printf '  - %s\n' "${BLOCKERS[@]}"; fi
+  } > "$BUNDLE" )
 echo "INFO: merge evidence written to ${BUNDLE}" >&2
 
 if [ "${#BLOCKERS[@]}" -ne 0 ]; then

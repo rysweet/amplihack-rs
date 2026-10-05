@@ -229,7 +229,7 @@ manual `/merge-ready` still needs `gadugi-test validate` and `gadugi-test run`
 
 | Step of `autodrive-merge-round.yaml` | Type | Output | Role |
 | --- | --- | --- | --- |
-| `step-00-merge-ready-files` | bash | `merge_ready_files` | Finds `SKILL.md` and its template. |
+| `step-00-merge-ready-files` | bash | `merge_ready_files` | Finds `SKILL.md` and its template; stops the round when `gadugi-test` is not on `PATH`. |
 | `step-00b-crusty-range` | bash | `crusty_range` | Checks commits after the clean crusty round. |
 | `step-00c-crusty-rereview` | recipe | none | Runs `autodrive-crusty-loop` when `crusty_range.rereview == 'true'`. |
 | `merge-evidence` | recipe | `merge_sync`, `qa_evidence`, `ci_evidence` | `autodrive-merge-evidence`: base sync, suite commands, gadugi scenarios, CI wait. |
@@ -261,6 +261,15 @@ or no resolver is found. Paths holding `"`, `\`, a control byte, `{{` or `}}`
 are skipped. A `SKILL.md` from the branch that differs from `origin/HEAD`
 gives `WARNING: merge-ready criteria come from the branch under review`; such
 criteria are advisory, since the gate measures criteria 1 and 3 itself.
+
+`gadugi-test` belongs to the same install. Criterion 1 runs the qa-team
+scenarios with it in every repository type, `amplihack install` does not
+install it, and no agent can. So step-00 also checks `command -v gadugi-test`
+and, when it is missing, fails the round with
+`ERROR: gadugi-test-not-installed: gadugi-test is not on PATH`, which names
+the install command (`npm install -g github:rysweet/gadugi-agentic-test`).
+Reported instead as the blocker `gadugi-test-missing`, it would repeat every
+round until the loop ended `STUCK`.
 
 `step-02-merge-ready-assessment` reads `{{merge_ready_files.skill_md}}` and
 `{{merge_ready_files.template}}`, fails any criterion it could not verify, and
@@ -314,7 +323,7 @@ token that applies, and `qa_summary` names every cause:
 | 5 | `gadugi-run-failed` | `FAIL` | A run or staging failed, or a symlinked or non-regular entry exists; such entries never run (`RUN_FAILED`). |
 | 6 | `qa-command-missing` | `BLOCKED` | No suite command, or incomplete evidence with no other token. |
 | 7 | `qa-command-not-installed` | `BLOCKED` | The single or detected command's program is missing. |
-| 8 | `gadugi-test-missing` | `BLOCKED` | `gadugi-test` is not on `PATH`; no gadugi check ran (`NOT_INSTALLED`). |
+| 8 | `gadugi-test-missing` | `BLOCKED` | `gadugi-test` is not on `PATH`; no gadugi check ran (`NOT_INSTALLED`). Step-00 stops the round before this when the tool is missing, so in a merge round it means the tool went away during the round; step-04 leaves it to a person. |
 
 The evidence is one JSON line of sanitised strings in `qa-evidence.json`,
 written under `umask 077`. A failed temporary file gives
@@ -421,13 +430,26 @@ value is reported as unreadable.
 | --- | --- | --- | --- |
 | `APPROVED` | none | `MET` | `review-decision` |
 | `CHANGES_REQUESTED`, `REVIEW_REQUIRED` | none | `NOT_MET` | `review-decision` |
-| empty | `required_approvals` is `0` | `MET` | `required-count` |
+| empty | `required_approvals` is `0`, and no review rule makes it unknown | `MET` | `required-count` |
 | empty | `required_approvals` is above `0` | `NOT_MET` | `required-count` |
-| empty | count unknown; `merge_state` is `CLEAN`, `HAS_HOOKS` or `UNSTABLE` | `MET`; `required_approvals` stays empty, never `0` | `merge-state` |
+| empty | count unreadable or unknown; `merge_state` is `CLEAN`, `HAS_HOOKS` or `UNSTABLE` | `MET`; `required_approvals` stays empty, never `0` | `merge-state` |
 | anything else, or no PR read | none | `UNREADABLE` | `unreadable` |
 
-An empty `reviewDecision` is not a missing approval. `required_approvals` is
-the higher of `required_approving_review_count` from
+An empty `reviewDecision` does not mean that no review is required. GitHub
+publishes a decision only when a rule on the base branch requires at least one
+approving review; at a required count of `0` the field stays empty even while
+a code-owner, last-push or required-reviewer rule keeps the merge blocked
+([Mergify, GitHub Rulesets Compatibility](https://docs.mergify.com/merge-queue/github-rulesets/)).
+A count of `0` that comes with such a rule is therefore unknown, not `0`:
+`require_code_owner_reviews` or `require_last_push_approval` in classic
+protection, and `require_code_owner_review`, `require_last_push_approval` or a
+non-empty `required_reviewers` in a ruleset `pull_request` rule. The INFO line
+shows it as `unknown(<rule>)`, `required_approvals` stays empty, and the
+`merge-state` row decides, so `BLOCKED` gives `UNREADABLE`, a blocker step-04
+routes to a person, never `MET`. A count above `0` is kept whatever else the
+rule requires, because GitHub publishes a decision for it.
+
+`required_approvals` is the higher of `required_approving_review_count` from
 `branches/<base>/protection/required_pull_request_reviews` (`0` when
 `branches/<base>` says `"protected": false`) and the highest among
 `pull_request` rules in `rules/branches/<base>`; a lone readable count decides
@@ -482,6 +504,43 @@ No agent prompt names the state directory, `STATE_DIR`, `autodrive_state_dir`
 or `AUTODRIVE_STATE_DIR`
 (`every_autodrive_agent_prompt_forbids_touching_the_state_dir`). The sentence
 is an instruction; the manifest checks are the control.
+
+### The state directory is private
+
+The merge gate reads crusty and qa evidence only from a state directory owned
+by the current user, with no group-write or world-write bit on the directory
+or on the files it reads, and never through a symlink (see
+[No silent merge](#no-silent-merge)). The caller's umask must not decide
+that. Under the umask `0002` that hosts with user private groups use, a plain
+`mkdir` or `>` makes every file group-writable, and the gate would refuse
+every merge. So every writer makes its state private itself:
+
+| Writer | What it does |
+| --- | --- |
+| `autodrive_private_dir DIR` (`autodrive_state.sh`) | Creates `DIR` and missing parents under `umask 077` and removes the group and world write bits from `DIR` (`chmod go-w`). Existing parents are left as they are. |
+| The preflight of `autodrive-build`, `autodrive-crusty-loop` and `autodrive-merge-loop`, and `autodrive_state_dir` | Call `autodrive_private_dir` and stop on its error. |
+| `autodrive_loop.sh` | Calls `autodrive_private_dir`, then writes its round copies, manifests and logs under `umask 077`. It runs the round recipe and the loop-health evaluator with the caller's umask, so files agents create in the repository are unaffected. |
+| `autodrive_mark_phase_done`, `autodrive_record_resolved` | Append to `phases.tsv` and `resolved-concerns.txt` under `umask 077`. |
+| Round steps that write records (`step-05-write-round-record` in both rounds, the findings files) | Write under `umask 077`, removing the old file first. |
+| `autodrive_merge_gate.sh` | Creates a missing state directory under `umask 077`, but never changes the mode of an existing one, since that is what it judges. |
+
+`autodrive_private_dir` fails with `ERROR: state-dir-not-private: <reason>`,
+touching nothing, when the directory is empty, a symlink, not a directory, not
+owned by this user, or cannot be created or changed.
+
+An entry directly in the directory that the gate would refuse (a symlink, an
+entry another user owns, or one with a group or world write bit) was written
+by a version of auto-drive that did not make its state private, or by someone
+else. It is not evidence, and making it private now would not make it
+evidence. `autodrive_private_dir` moves each such entry, unchanged, into a new
+private subdirectory `untrusted-<UTC time>.XXXXXX` and prints
+`WARNING: state-dir-untrusted-entries-set-aside` naming it. No reader looks in
+that subdirectory, so the run redoes what those entries recorded: with
+`phases.tsv` set aside, for example, the crusty loop runs again. An entry that
+cannot be moved gives `ERROR: state-dir-not-private`.
+
+Section 13 of `test-auto-drive-to-merge.sh` runs these writers under
+`umask 0002` and checks that the gate accepts what they wrote.
 
 ### Trust model
 
@@ -557,7 +616,9 @@ The gate copies `--round-record` and `--qa-evidence` once into a private
 `mktemp -d` directory, and every later check reads only the copies. It reads
 local state only from an explicit `--state-dir` owned by the current user,
 with no group-write or world-write bit on the directory or its files; either
-bit alone blocks as `not private to this user`. Without `--state-dir` it
+bit alone blocks as `not private to this user`. The workflow's own writers
+keep it private whatever the umask
+([The state directory is private](#the-state-directory-is-private)). Without `--state-dir` it
 writes its evidence bundle to `${TMPDIR:-/tmp}` but reads no state there. It
 sources `autodrive_state.sh` and `autodrive_trust.sh` from its own directory
 only. The qa-chain, gadugi and crusty rows only add checks;

@@ -1565,6 +1565,10 @@ fn merge_ready_files_are_resolved_by_a_bash_step_before_the_round() {
         "/.amplihack",
         "merge-ready-skill-files-not-found",
         "resolver autodrive_merge_ready_files.sh not found",
+        // gadugi-test is part of the install criterion 1 needs; a missing
+        // one stops the round by name instead of repeating a blocker.
+        "command -v gadugi-test",
+        "ERROR: gadugi-test-not-installed",
     ] {
         assert!(cmd.contains(needle), "step-00 must reference `{needle}`");
     }
@@ -1804,6 +1808,9 @@ fn merge_round_blocker_step_writes_missing_gadugi_scenarios() {
         "#207",
         "gadugi-scenario-dir-outside-repo",
         "quality-audit-convergence-crusty-not-done-clean",
+        // Every BLOCKED gadugi token has an instruction: an agent cannot
+        // install gadugi-test, so step-04 leaves it to a person.
+        "gadugi-test-missing",
     ] {
         assert!(fix.contains(needle), "step-04 must mention `{needle}`");
     }
@@ -2389,6 +2396,12 @@ fn merge_ready_skill_documents_running_under_auto_drive() {
         "crusty-local-head-not-pr-head",
         "tests/gadugi/scenarios",
         "RECIPE_VAR_",
+        // A count of 0 beside a review rule is unknown, and a missing
+        // gadugi-test stops step-00 by name.
+        "require_code_owner_reviews",
+        "require_last_push_approval",
+        "required_reviewers",
+        "gadugi-test-not-installed",
     ] {
         assert!(
             reference.contains(needle),
@@ -2417,6 +2430,40 @@ fn merge_ready_skill_documents_running_under_auto_drive() {
             "the reference must list the agent step `{recipe}` / `{id}`"
         );
     }
+}
+
+#[test]
+fn a_required_count_of_zero_beside_a_review_rule_is_not_read_as_zero() {
+    // GitHub publishes reviewDecision only when a rule requires at least one
+    // approval. At a count of 0 it stays null even while a code-owner,
+    // last-push or required-reviewer rule blocks the merge, so reading that 0
+    // as "no review required" reports criterion 6 met while a review is
+    // missing. The PF-*-code-owner, -last-push and -required-reviewers cases
+    // in test-auto-drive-to-merge.sh exercise the behaviour; this keeps the
+    // tool reading every field those cases depend on.
+    let facts = read(&tool_path("autodrive_platform_facts.sh"));
+    for needle in [
+        // Classic protection spells it in the plural, rulesets in the singular.
+        ".require_code_owner_reviews == true",
+        ".require_code_owner_review == true",
+        ".require_last_push_approval == true",
+        ".required_reviewers",
+        "REVIEW_RULE",
+    ] {
+        assert!(
+            facts.contains(needle),
+            "autodrive_platform_facts.sh must read `{needle}`"
+        );
+    }
+    assert!(
+        !facts.contains("requires no review."),
+        "the tool header still says an empty reviewDecision means the branch requires no review"
+    );
+    let skill = read(&workspace_root().join("amplifier-bundle/skills/merge-ready/SKILL.md"));
+    assert!(
+        !skill.contains("leaves it empty when the base branch requires no review"),
+        "merge-ready SKILL.md still says an empty reviewDecision means no review is required"
+    );
 }
 
 #[test]

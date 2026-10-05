@@ -53,7 +53,24 @@ for req in LOOP_NAME ROUND_RECIPE CLEAN_TOKEN VERDICT_FIELD STATE_DIR; do
   flag="$(printf '%s' "$req" | tr '[:upper:]' '[:lower:]')"
   [ -n "${!req}" ] || { echo "ERROR: autodrive_loop.sh: --$flag is required" >&2; exit 2; }
 done
-mkdir -p "$STATE_DIR" || exit 2
+
+# --- private state, whatever the caller's umask ----------------------------
+# The merge gate reads the records, copies and manifest written below only
+# when no one else could have written them (autodrive_state.sh, PRIVATE
+# STATE). Under umask 0002 a plain mkdir, `>` or cp would make every one of
+# them group-writable and the gate would refuse every merge, so the state dir
+# is made private here and this script writes under umask 077. The round
+# recipe and the evaluator run with the caller's umask, so the files agents
+# create in the repository are unaffected; the round steps that write into
+# the state dir set umask 077 themselves. The state helper is sourced from
+# beside this script only.
+LOOP_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
+# shellcheck source=/dev/null
+. "${LOOP_HOME}/autodrive_state.sh" 2>/dev/null \
+  || { echo "ERROR: autodrive_loop.sh: autodrive_state.sh is missing beside it (${LOOP_HOME:-<unknown>}); the state dir cannot be made private" >&2; exit 2; }
+autodrive_private_dir "$STATE_DIR" || exit 2
+CALLER_UMASK="$(umask)"
+umask 077
 
 AMPLIHACK_BIN="${AMPLIHACK_BIN:-amplihack}"
 export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
@@ -87,6 +104,14 @@ field() { # field <json> <name> <default>
   printf '%s' "${1:-}" \
     | "$AMPLIHACK_BIN" orch helper extract-json --require-field "$2" \
     | "$AMPLIHACK_BIN" orch helper extract-field --field "$2" --default "$3"
+}
+
+# copy_private <from> <to>: copies a regular file under this script's umask
+# 077. The old copy is removed first, because cp onto an existing file keeps
+# that file's mode and writes through it when it is a symlink.
+copy_private() {
+  [ -f "$1" ] || return 0
+  { rm -f -- "$2" && cp -- "$1" "$2"; } || echo "WARNING: could not copy $1 to $2." >&2
 }
 
 terminal_refusal() { # terminal_refusal <exit_code> <log_file>
@@ -137,12 +162,14 @@ while :; do
   BASELINE="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || printf '')"
 
   echo "=== auto-drive loop '${LOOP_NAME}': ${ROUND_LABEL} ===" >&2
-  "$AMPLIHACK_BIN" recipe run "$ROUND_RECIPE" \
+  # The log is created by this shell under umask 077; the round runs with the
+  # caller's umask.
+  ( umask "$CALLER_UMASK" && exec "$AMPLIHACK_BIN" recipe run "$ROUND_RECIPE" \
       --working-dir "$REPO" \
       -c "autodrive_round_record=${RECORD}" \
       -c "autodrive_round_label=${ROUND_LABEL}" \
       -c "autodrive_resolved_concerns_file=${STATE_DIR}/resolved-concerns.txt" \
-      "${ROUND_CTX[@]}" >"$LOG" 2>&1
+      "${ROUND_CTX[@]}" ) >"$LOG" 2>&1
   ROUND_RC=$?
   tail -n 200 "$LOG" >&2 || true
 
@@ -168,8 +195,8 @@ while :; do
   [ -f "${RECORD}.findings" ] && FINDINGS="$(cat "${RECORD}.findings")"
   # Stable path to the most recent round record, so a later gate can bind its
   # evidence to the round that actually produced it without guessing a name.
-  [ -f "$RECORD" ] && cp -f "$RECORD" "${STATE_DIR}/${LOOP_NAME}-latest.json"
-  [ -f "${RECORD}.findings" ] && cp -f "${RECORD}.findings" "${STATE_DIR}/${LOOP_NAME}-latest.json.findings"
+  copy_private "$RECORD" "${STATE_DIR}/${LOOP_NAME}-latest.json"
+  copy_private "${RECORD}.findings" "${STATE_DIR}/${LOOP_NAME}-latest.json.findings"
   # Manifest of the round records THIS loop wrote (issue #1517): one row per
   # round in <loop>-records.tsv with the label, the record file name and the
   # record's git blob hash. It is written here, before the loop-health
@@ -210,7 +237,7 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} findings=$(prin
   # --- the agentic terminator ----------------------------------------------
   assert_ceiling_untouched
   HEALTH_LOG="${STATE_DIR}/${LOOP_NAME}-${ROUND_LABEL}-health.log"
-  "$AMPLIHACK_BIN" recipe run loop-health-evaluator \
+  ( umask "$CALLER_UMASK" && exec "$AMPLIHACK_BIN" recipe run loop-health-evaluator \
       --working-dir "$REPO" \
       -c "loop_name=auto-drive:${LOOP_NAME}" \
       -c "loop_round_label=${ROUND_LABEL}" \
@@ -224,7 +251,7 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} findings=$(prin
       -c "loop_test_signal=${TEST_SIGNAL}" \
       -c "loop_test_signal_previous=${PREV_TEST}" \
       -c "loop_ci_signal=${CI_SIGNAL}" \
-      -c "loop_ci_signal_previous=${PREV_CI}" \
+      -c "loop_ci_signal_previous=${PREV_CI}" ) \
       >"$HEALTH_LOG" 2>&1
   HEALTH_RC=$?
   tail -n 120 "$HEALTH_LOG" >&2 || true

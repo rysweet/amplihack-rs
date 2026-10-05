@@ -26,6 +26,16 @@
 #
 # This file only DEFINES functions; sourcing it has no side effects.
 #
+# PRIVATE STATE. The merge gate reads the crusty and qa evidence in this store
+# only when the directory and each file are owned by this user, are not
+# symlinks, and have no group or world write bit (autodrive_merge_gate.sh,
+# sections 6b and 6c). The caller's umask must not decide that: under the
+# umask 0002 that hosts with user private groups use, a plain mkdir or `>`
+# makes every file group-writable and the gate refuses every merge. So the
+# directory is made private by autodrive_private_dir, and every writer in the
+# workflow creates its files under umask 077: the functions below,
+# autodrive_loop.sh, and the round steps that write round records.
+#
 # Policy note: nothing in this file, or anywhere in the auto-drive-to-merge
 # workflow, may pass a hook-skipping commit flag or a branch-protection bypass
 # to git or gh. Those two are NEVER used; see
@@ -47,12 +57,78 @@ autodrive_state_key() {
   printf '%s\n' "$slug"
 }
 
-# autodrive_state_dir <repo_path> <branch_or_pr> -> the state dir, created.
+# autodrive_state_dir <repo_path> <branch_or_pr> -> the state dir, created
+# private by autodrive_private_dir. Returns 1 and prints nothing on stdout when
+# it cannot be made private.
 autodrive_state_dir() {
   local dir
   dir="$(autodrive_state_root)/$(autodrive_state_key "${1:-.}" "${2:-}")"
-  mkdir -p "$dir" || return 1
+  autodrive_private_dir "$dir" || return 1
   printf '%s\n' "$dir"
+}
+
+# autodrive_private_dir <dir> -> makes <dir> a state dir the merge gate accepts,
+# whatever the caller's umask, or prints a named ERROR and returns 1.
+#
+#   ERROR: state-dir-not-private: <dir> is empty, a symlink, not a directory,
+#     not owned by this user, or cannot be created or changed. Nothing in it is
+#     touched.
+#
+# <dir> and any missing parent are created under umask 077, and <dir> loses its
+# group and world write bits (chmod go-w). Existing parents are left as they
+# are.
+#
+# An entry directly in <dir> that the gate would refuse (a symlink, an entry
+# not owned by this user, or one with a group or world write bit) was written
+# by a version of auto-drive that did not make its state private, or by
+# someone else. Anyone in the group could have changed it, so it is not
+# evidence, and making it private now would not make it evidence. It is moved,
+# unchanged, into a new private subdirectory untrusted-<UTC time>.XXXXXX, with
+# `WARNING: state-dir-untrusted-entries-set-aside` naming that directory. The
+# run then redoes what those files recorded; with phases.tsv set aside, for
+# example, the crusty loop runs again. No reader looks inside the
+# subdirectory. When an entry cannot be moved, ERROR: state-dir-not-private.
+autodrive_private_dir() {
+  local -x LC_ALL=C
+  local dir="${1:-}" me="" q="" list="" n=""
+  if [ -z "$dir" ]; then
+    echo "ERROR: state-dir-not-private: no state directory was given" >&2; return 1
+  fi
+  if [ -L "$dir" ]; then
+    echo "ERROR: state-dir-not-private: ${dir} is a symlink; the merge gate never reads evidence through one" >&2; return 1
+  fi
+  if ! ( umask 077 && mkdir -p -- "$dir" ) 2>/dev/null || [ ! -d "$dir" ]; then
+    echo "ERROR: state-dir-not-private: ${dir} could not be created as a directory" >&2; return 1
+  fi
+  if [ ! -O "$dir" ]; then
+    echo "ERROR: state-dir-not-private: ${dir} is not owned by this user, so others may write in it; choose another AUTODRIVE_STATE_DIR" >&2; return 1
+  fi
+  if ! chmod go-w -- "$dir" 2>/dev/null; then
+    echo "ERROR: state-dir-not-private: could not remove the group and world write bits from ${dir}" >&2; return 1
+  fi
+  me="$(id -u)" || { echo "ERROR: state-dir-not-private: the current user id cannot be read" >&2; return 1; }
+  list="$(autodrive_untrusted_entries "$dir" "$me" -print)" \
+    || { echo "ERROR: state-dir-not-private: the entries of ${dir} cannot be listed" >&2; return 1; }
+  [ -z "$list" ] && return 0
+  n="$(printf '%s\n' "$list" | awk 'END { print NR }')"
+  q="$(umask 077 && mktemp -d "${dir}/untrusted-$(date -u +%Y%m%dT%H%M%SZ).XXXXXX" 2>/dev/null)" \
+    || { echo "ERROR: state-dir-not-private: ${dir} holds entries others could write, and no private directory could be made to set them aside" >&2; return 1; }
+  autodrive_untrusted_entries "$dir" "$me" -exec mv -- {} "$q/" \;
+  if [ -n "$(autodrive_untrusted_entries "$dir" "$me" -print)" ]; then
+    echo "ERROR: state-dir-not-private: ${dir} still holds entries others could write after moving them aside into ${q}" >&2; return 1
+  fi
+  echo "WARNING: state-dir-untrusted-entries-set-aside: ${n} entries in ${dir} were symlinks, not owned by this user, or group- or world-writable, so they are not evidence. They were moved, unchanged, to ${q}, and this run redoes what they recorded." >&2
+  return 0
+}
+
+# autodrive_untrusted_entries <dir> <uid> <find action...> -> runs the action
+# on each entry directly in <dir> that the merge gate would refuse: a symlink,
+# an entry not owned by <uid>, or one with a group or world write bit. These
+# are the gate's own tests (autodrive_private in autodrive_merge_gate.sh).
+autodrive_untrusted_entries() {
+  local dir="${1:?dir}" me="${2:?uid}"
+  shift 2
+  find "$dir" -mindepth 1 -maxdepth 1 \( -type l -o ! -user "$me" -o -perm -0020 -o -perm -0002 \) "$@" 2>/dev/null
 }
 
 # --- phase completion ------------------------------------------------------
@@ -74,7 +150,7 @@ autodrive_state_dir() {
 
 autodrive_mark_phase_done() {
   local dir="${1:?state dir}" phase="${2:?phase}"
-  printf '%s\t%s\n' "$phase" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$dir/phases.tsv"
+  ( umask 077 && printf '%s\t%s\n' "$phase" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$dir/phases.tsv" )
 }
 
 autodrive_phase_done() {
@@ -206,14 +282,14 @@ autodrive_crusty_final() {
 autodrive_record_resolved() {
   local dir="${1:?state dir}"
   shift
-  local id
-  for id in "$@"; do
-    [ -n "$id" ] || continue
-    printf '%s\n' "$id" >> "$dir/resolved-concerns.txt"
-  done
-  if [ -f "$dir/resolved-concerns.txt" ]; then
-    sort -u "$dir/resolved-concerns.txt" -o "$dir/resolved-concerns.txt"
-  fi
+  ( umask 077
+    for id in "$@"; do
+      [ -n "$id" ] || continue
+      printf '%s\n' "$id" >> "$dir/resolved-concerns.txt"
+    done
+    if [ -f "$dir/resolved-concerns.txt" ]; then
+      sort -u "$dir/resolved-concerns.txt" -o "$dir/resolved-concerns.txt"
+    fi )
 }
 
 autodrive_resolved_concerns() {
