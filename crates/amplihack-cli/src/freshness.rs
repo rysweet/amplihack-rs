@@ -353,122 +353,155 @@ mod tests {
 #[cfg(all(test, unix))]
 mod codex_delivery_contract_tests {
     use super::*;
-    use crate::test_support::{EnvGuard, home_env_lock};
     use std::os::unix::fs::PermissionsExt;
 
-    #[test]
-    fn managed_receipt_and_selected_executable_must_agree() {
-        let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
-        let dir = tempfile::tempdir().unwrap();
-        let bin = dir.path().join("bin");
-        fs::create_dir(&bin).unwrap();
-        let runner = bin.join("recipe-runner-rs");
-        fs::write(&runner, "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[]}'\n").unwrap();
-        fs::set_permissions(&runner, fs::Permissions::from_mode(0o700)).unwrap();
-        let _env = EnvGuard::set([
-            ("PATH", bin.to_str().unwrap()),
-            ("CARGO_HOME", dir.path().to_str().unwrap()),
-            ("RECIPE_RUNNER_RS_PATH", ""),
-        ]);
-        assert!(verify_managed_runner().is_err());
-        let key = format!(
-            "recipe-runner-rs 0.4.0 (git+{}#{})",
-            RECIPE_RUNNER_GIT_URL,
-            RECIPE_RUNNER_REV.trim()
-        );
-        fs::write(
-            dir.path().join(".crates2.json"),
-            serde_json::to_vec(
-                &serde_json::json!({"installs":{key:{"bins":["recipe-runner-rs"]}}}),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        with_provider("claude", verify_managed_runner).unwrap();
-        with_provider("codex", || {
-            assert!(
-                probe_recipe_runner().is_err(),
-                "receipt alone cannot establish Codex capability"
-            )
-        });
+    fn worker(test: &str) -> bool {
+        if std::env::var("AMPLIHACK_DELIVERY_WORKER").as_deref() != Ok(test) {
+            return false;
+        }
+        match test {
+            "managed_receipt_and_selected_executable_must_agree" => {
+                assert!(verify_managed_runner().is_err());
+                let key = format!(
+                    "recipe-runner-rs 0.4.0 (git+{}#{})",
+                    RECIPE_RUNNER_GIT_URL,
+                    RECIPE_RUNNER_REV.trim()
+                );
+                fs::write(
+                    PathBuf::from(std::env::var_os("CARGO_HOME").unwrap()).join(".crates2.json"),
+                    serde_json::to_vec(
+                        &serde_json::json!({"installs":{key:{"bins":["recipe-runner-rs"]}}}),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+                with_provider("claude", verify_managed_runner).unwrap();
+                with_provider("codex", || {
+                    assert!(
+                        probe_recipe_runner().is_err(),
+                        "receipt cannot establish capability"
+                    )
+                });
+            }
+            "codex_runner_provisioning_uses_authoritative_immutable_revision" => {
+                assert!(
+                    install_recipe_runner_from_git(false).is_err(),
+                    "cargo success without managed executable is insufficient"
+                );
+                assert_pin(&fs::read_to_string(std::env::var_os("DELIVERY_LOG").unwrap()).unwrap());
+            }
+            "codex_managed_runner_reconciles_pin_even_inside_cooldown_when_capability_passes" => {
+                FreshnessState {
+                    installed_sha: "0".repeat(40),
+                    checked_at: now_secs(),
+                }
+                .write(&recipe_runner_state_path().unwrap())
+                .unwrap();
+                assert!(
+                    ensure_recipe_runner_up_to_date_inner().is_err(),
+                    "PATH shadow cannot establish managed provenance"
+                );
+                assert_pin(&fs::read_to_string(std::env::var_os("DELIVERY_LOG").unwrap()).unwrap());
+                assert_eq!(
+                    FreshnessState::read(&recipe_runner_state_path().unwrap()).installed_sha,
+                    "0".repeat(40)
+                );
+            }
+            _ => panic!("unknown worker"),
+        }
+        true
     }
-
-    #[test]
-    fn codex_runner_provisioning_uses_authoritative_immutable_revision() {
-        let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
-        let dir = tempfile::tempdir().unwrap();
-        let log = dir.path().join("cargo-args");
-        let cargo = dir.path().join("cargo");
-        std::fs::write(
-            &cargo,
-            format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n", log.display()),
-        )
-        .unwrap();
-        std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let cc = dir.path().join("cc");
-        std::fs::write(&cc, "#!/bin/sh\nexit 0\n").unwrap();
-        std::fs::set_permissions(&cc, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let _env = EnvGuard::set([
-            ("PATH", dir.path().to_str().unwrap()),
-            ("CARGO_HOME", dir.path().to_str().unwrap()),
-        ]);
-        assert!(
-            install_recipe_runner_from_git(false).is_err(),
-            "cargo success without an installed managed binary is insufficient"
-        );
-        let args = std::fs::read_to_string(log).unwrap();
+    fn assert_pin(args: &str) {
         let args: Vec<_> = args.lines().collect();
-        let pin = include_str!("../../../claude-plugin/recipe-runner.rev").trim();
+        let pin = RECIPE_RUNNER_REV.trim();
         assert_eq!(pin.len(), 40);
-        assert!(
-            args.windows(2).any(|pair| pair == ["--rev", pin]),
-            "must consume authoritative revision: {args:?}"
-        );
+        assert!(args.windows(2).any(|p| p == ["--rev", pin]), "{args:?}");
         assert!(args.contains(&"--locked"));
         assert!(!args.contains(&"--branch"));
     }
+    fn run_worker(test: &str, home: &Path, bin: &Path) {
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                &format!("freshness::codex_delivery_contract_tests::{test}"),
+                "--nocapture",
+            ])
+            .env("AMPLIHACK_DELIVERY_WORKER", test)
+            .env("PATH", bin)
+            .env("HOME", home)
+            .env("CARGO_HOME", home)
+            .env("DELIVERY_LOG", home.join("cargo-args"))
+            .env("AMPLIHACK_AGENT_BINARY", "codex")
+            .env_remove("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL")
+            .env_remove("AMPLIHACK_SKIP_AUTO_INSTALL")
+            .env_remove("RECIPE_RUNNER_RS_PATH")
+            .env_remove("AMPLIHACK_NO_FRESHNESS_CHECK")
+            .env_remove("CI")
+            .status()
+            .unwrap();
+        assert!(result.success(), "isolated worker failed: {test}");
+    }
+    fn executable(path: &Path, script: &str) {
+        fs::write(path, script).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    fn cargo_fixture(home: &Path, bin: &Path) {
+        executable(
+            &bin.join("cargo"),
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
+                home.join("cargo-args").display()
+            ),
+        );
+        executable(&bin.join("cc"), "#!/bin/sh\nexit 0\n");
+    }
+    #[test]
+    fn managed_receipt_and_selected_executable_must_agree() {
+        let test = "managed_receipt_and_selected_executable_must_agree";
+        if worker(test) {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        executable(
+            &bin.join("recipe-runner-rs"),
+            "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[]}'\n",
+        );
+        run_worker(test, dir.path(), &bin);
+    }
+    #[test]
+    fn codex_runner_provisioning_uses_authoritative_immutable_revision() {
+        let test = "codex_runner_provisioning_uses_authoritative_immutable_revision";
+        if worker(test) {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        cargo_fixture(dir.path(), dir.path());
+        run_worker(test, dir.path(), dir.path());
+    }
     #[test]
     fn codex_managed_runner_reconciles_pin_even_inside_cooldown_when_capability_passes() {
-        let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let test =
+            "codex_managed_runner_reconciles_pin_even_inside_cooldown_when_capability_passes";
+        if worker(test) {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
-        let log = dir.path().join("install-args");
-        for (name, script) in [
-            ("cargo", format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n", log.display())),
-            ("cc", "#!/bin/sh\nexit 0\n".to_string()),
-            ("recipe-runner-rs", "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"custom\",\"capabilities\":[\"codex_exec\"]}'\n".to_string()),
-        ] {
-            let path = dir.path().join(name);
-            fs::write(&path, script).unwrap();
-            fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
-        }
-        let _env = EnvGuard::set([
-            ("PATH", dir.path().to_str().unwrap()),
-            ("HOME", dir.path().to_str().unwrap()),
-            ("CARGO_HOME", dir.path().to_str().unwrap()),
-            ("RECIPE_RUNNER_RS_PATH", ""),
-        ]);
-        FreshnessState {
-            installed_sha: "0".repeat(40),
-            checked_at: now_secs(),
-        }
-        .write(&recipe_runner_state_path().unwrap())
-        .unwrap();
-        assert!(
-            ensure_recipe_runner_up_to_date_inner().is_err(),
-            "compatible PATH shadow cannot establish managed provenance"
+        cargo_fixture(dir.path(), dir.path());
+        executable(
+            &dir.path().join("recipe-runner-rs"),
+            "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"custom\",\"capabilities\":[\"codex_exec\"]}'\n",
         );
-        let args = fs::read_to_string(log)
-            .expect("managed source drift cannot hide behind cooldown or capability");
-        let pin = include_str!("../../../claude-plugin/recipe-runner.rev").trim();
-        assert!(
-            args.lines()
-                .collect::<Vec<_>>()
-                .windows(2)
-                .any(|pair| pair == ["--rev", pin])
-        );
-        assert_eq!(
-            FreshnessState::read(&recipe_runner_state_path().unwrap()).installed_sha,
-            "0".repeat(40)
-        );
+        run_worker(test, dir.path(), dir.path());
+    }
+
+    /// Run only in an isolated caller-provided HOME/CARGO_HOME with real Cargo.
+    #[test]
+    #[ignore = "builds the published runner; caller must isolate HOME and CARGO_HOME"]
+    fn real_managed_delivery() {
+        install_recipe_runner_from_git(false).unwrap();
+        with_provider("codex", verify_managed_runner).unwrap();
+        with_provider("codex", probe_recipe_runner).unwrap();
     }
 }

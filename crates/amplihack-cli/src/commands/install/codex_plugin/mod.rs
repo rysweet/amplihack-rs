@@ -60,6 +60,8 @@ pub(super) fn uninstall() -> Result<()> {
     uninstall::uninstall()
 }
 #[cfg(test)]
+mod recovery_tests;
+#[cfg(test)]
 mod tests;
 
 pub(super) fn with_binary<T>(binary: &Path, action: impl FnOnce() -> T) -> T {

@@ -38,10 +38,7 @@ pub(super) fn install(source: &Path, hooks_binary: &Path) -> Result<bool> {
         }
         return Err(error);
     }
-    fs::remove_file(root.join("pending.json"))?;
-    if root.join("previous-package").exists() {
-        fs::remove_dir_all(root.join("previous-package"))?;
-    }
+    recover_install(&root, &binary, &home)?;
     println!(
         "  ✅ Native Codex plugin installed; review exact hooks in Codex /hooks before trusting them"
     );

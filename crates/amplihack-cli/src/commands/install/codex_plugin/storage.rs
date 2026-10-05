@@ -51,10 +51,19 @@ pub(super) fn snapshot(path: &Path) -> Result<Option<Vec<u8>>> {
         Err(error) => Err(error.into()),
     }
 }
-pub(super) fn restore_bytes(path: &Path, value: &Value) -> Result<()> {
+pub(super) fn restore_bytes(path: &Path, value: &Value, expected: &Value) -> Result<()> {
     let current = snapshot(path)?;
+    let state = serde_json::to_value(&current)?;
+    ensure!(
+        &state == value || &state == expected,
+        "foreign Codex snapshot changed; reconcile manually; recovery record retained"
+    );
     if value.is_null() {
         if current.is_some() {
+            ensure!(
+                snapshot(path)? == current,
+                "Codex snapshot changed concurrently"
+            );
             fs::remove_file(path)?;
         }
         return Ok(());
@@ -85,4 +94,11 @@ pub(super) fn restore_bytes(path: &Path, value: &Value) -> Result<()> {
     );
     staged.persist(path).context("snapshot recovery failed")?;
     Ok(())
+}
+
+/// The exact serialization used by atomic_json and recorded before live writes.
+pub(super) fn json_bytes(value: &Value) -> Result<Vec<u8>> {
+    let mut bytes = serde_json::to_vec_pretty(value)?;
+    bytes.push(b'\n');
+    Ok(bytes)
 }

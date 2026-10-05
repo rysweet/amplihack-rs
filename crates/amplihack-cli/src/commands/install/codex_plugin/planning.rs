@@ -19,6 +19,11 @@ pub(super) fn prepare(
     source: &Path,
     hooks_binary: &Path,
 ) -> Result<Prepared> {
+    match fs::symlink_metadata(root.join("previous-package")) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+        Ok(_) => bail!("unowned Codex package backup exists; preserve it and reconcile manually"),
+    }
     let ledger = root.join("ownership.json");
     let previous = regular_json(&ledger)?
         .map(serde_json::from_value::<Ownership>)
@@ -81,7 +86,7 @@ pub(super) fn prepare(
         .map(|p| p.hooks.clone())
         .unwrap_or_else(|| json!({}));
     let original_hooks = regular_json(&home.join("hooks.json"))?;
-    merged_hooks(original_hooks.clone(), &old_hooks, &hooks)?;
+    let expected_hooks = merged_hooks(original_hooks.clone(), &old_hooks, &hooks)?;
     let original_ledger = regular_json(&ledger)?;
     let config = home.join("config.toml");
     let original_config = match fs::symlink_metadata(&config) {
@@ -102,9 +107,22 @@ pub(super) fn prepare(
         .to_string_lossy()
         .into_owned();
     let snapshots = json!({"hooks":snapshot(&home.join("hooks.json"))?, "marketplace":snapshot(&marketplace_path)?, "ledger":snapshot(&ledger)?});
-    let pending = json!({"snapshots":snapshots,"schema_version":1,"codex_home":home,"transaction":transaction,"config":original_config,"marketplace":original_marketplace, "hooks":original_hooks,
-        "ledger":original_ledger, "installed":installed(&inventory), "had_package":package.exists(), "target_digest":digest(staged.path())?, "target_hooks":hooks});
+    let target_digest = digest(staged.path())?;
+    let record = Ownership {
+        schema_version: 1,
+        transaction: Some(transaction.clone()),
+        codex_home: home.to_path_buf(),
+        package_digest: target_digest.clone(),
+        hooks: hooks.clone(),
+    };
+    let expected = json!({"config":original_config,"hooks":json_bytes(&expected_hooks)?,
+        "marketplace":json_bytes(&marketplace)?,"ledger":json_bytes(&serde_json::to_value(record)?)?});
+    let pending = json!({"expected":expected,"snapshots":snapshots,"schema_version":2,"codex_home":home,"transaction":transaction,"config":original_config,"marketplace":original_marketplace, "hooks":original_hooks,
+        "ledger":original_ledger, "installed":installed(&inventory), "had_package":package.exists(), "target_digest":target_digest, "target_hooks":hooks});
     atomic_json(&root.join("pending.json"), &pending, None)?;
+    // Persist the journal directory entry before the first live mutation.
+    #[cfg(unix)]
+    fs::File::open(root)?.sync_all()?;
     Ok(Prepared {
         ledger,
         package,

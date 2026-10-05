@@ -75,11 +75,16 @@ fn failed_upgrade_restores_package_ledger_and_hooks() {
     .unwrap();
     fs::remove_dir_all(source.join("amplifier-bundle/skills")).unwrap();
     assert!(codex_plugin::install(&source, &hooks).is_err());
+    // Legacy journals cannot prove ownership of the interrupted replacement.
     assert_eq!(
         fs::read(package.join("plugin.json")).unwrap(),
+        b"interrupted replacement"
+    );
+    assert_eq!(
+        fs::read(root.join("previous-package/plugin.json")).unwrap(),
         before_package
     );
-    assert!(!root.join("pending.json").exists());
+    assert!(root.join("pending.json").exists());
 }
 
 #[test]
@@ -223,4 +228,52 @@ fn existing_framework_reconciles_native_resources_when_codex_arrives() {
     let hooks: serde_json::Value =
         serde_json::from_slice(&fs::read(home.join(".codex/hooks.json")).unwrap()).unwrap();
     assert!(hooks["hooks"]["PreToolUse"].is_array());
+}
+
+#[test]
+fn interrupted_native_install_preserves_foreign_edits_and_all_recovery_evidence() {
+    let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    for relative in [
+        ".codex/config.toml",
+        ".codex/hooks.json",
+        ".amplihack/codex/market/plugin/plugin.json",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let source = home.join("source");
+        create_source_repo(&source);
+        let bin = home.join("bin");
+        let binary = create_exe_stub(&bin, "codex");
+        let hooks = create_exe_stub(&bin, "amplihack-hooks");
+        let path = format!("{}:/usr/bin:/bin", bin.display());
+        let _env = EnvGuard::set([
+            ("HOME", home.to_str().unwrap()),
+            ("CODEX_HOME", home.join(".codex").to_str().unwrap()),
+            ("PATH", &path),
+            ("AMPLIHACK_CODEX_BINARY_PATH", binary.to_str().unwrap()),
+            ("AMPLIHACK_AGENT_BINARY", "codex"),
+        ]);
+        codex_plugin::install(&source, &hooks).unwrap();
+        let script = fs::read_to_string(&binary).unwrap();
+        let fault = format!(
+            "'plugin marketplace add') printf 'foreign exact bytes' > \"$HOME/{relative}\"; exit 17;;\n 'never')"
+        );
+        fs::write(&binary, script.replace("'plugin marketplace add')", &fault)).unwrap();
+        let error = codex_plugin::install(&source, &hooks).unwrap_err();
+        assert!(format!("{error:#}").contains("retained"), "{error:#}");
+        let root = home.join(".amplihack/codex");
+        let journal = fs::read(root.join("pending.json")).unwrap();
+        assert_eq!(
+            fs::read(home.join(relative)).unwrap(),
+            b"foreign exact bytes"
+        );
+        assert!(root.join("previous-package").exists());
+        assert!(codex_plugin::install(&source, &hooks).is_err());
+        assert_eq!(
+            fs::read(home.join(relative)).unwrap(),
+            b"foreign exact bytes"
+        );
+        assert_eq!(fs::read(root.join("pending.json")).unwrap(), journal);
+        assert!(root.join("previous-package").exists());
+    }
 }

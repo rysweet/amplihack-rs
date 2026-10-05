@@ -139,3 +139,13 @@ on the next install or uninstall. Preserve this journal and the
 to remain.
 
 See [native installer ownership](../concepts/codex-installation-ownership.md) for packaging, transaction and recovery boundaries.
+
+Interrupted installation recovery uses a versioned journal containing exact
+original and planned file bytes and package digests. Before rollback or cleanup,
+the installer checks every affected config, hook, marketplace, ownership record,
+package and backup against those states. Foreign edits, symlinks, modified
+backups, and older journals without ownership proof stop recovery and retain
+`~/.amplihack/codex/pending.json` and any `previous-package` directory. Preserve
+those files and reconcile the reported conflict manually before retrying; do not
+delete the journal to force replacement. Native-client configuration changes
+that cannot be proven transaction-owned also require manual reconciliation.

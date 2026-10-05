@@ -1,29 +1,20 @@
 //! Durable pre-ledger recovery and post-ledger cleanup.
 use super::*;
-pub(super) fn restore_json(path: &Path, value: &Value) -> Result<()> {
-    let current = regular_json(path)?;
-    if value.is_null() {
-        if current.is_some() {
-            fs::remove_file(path)?;
-        }
-    } else {
-        atomic_json(path, value, current)?;
-    }
-    Ok(())
-}
 pub(super) fn recover_install(root: &Path, binary: &Path, home: &Path) -> Result<()> {
     let Some(pending) = regular_json(&root.join("pending.json"))? else {
         return Ok(());
     };
     ensure!(
-        pending["schema_version"] == 1 && pending["codex_home"] == serde_json::to_value(home)?,
-        "pending Codex recovery scope changed; restore the original CODEX_HOME before retrying"
+        pending["schema_version"] == 2 && pending["codex_home"] == serde_json::to_value(home)?,
+        "unsupported or out-of-scope Codex recovery journal; reconcile manually; record retained"
     );
     validate_journal(&pending, home)?;
+    preflight(&pending, root, home)?;
     let package = root.join("market/plugin");
     if regular_json(&root.join("ownership.json"))?
         .is_some_and(|ledger| ledger["transaction"] == pending["transaction"])
     {
+        preflight(&pending, root, home)?;
         if root.join("previous-package").exists() {
             fs::remove_dir_all(root.join("previous-package"))?;
         }
@@ -33,61 +24,41 @@ pub(super) fn recover_install(root: &Path, binary: &Path, home: &Path) -> Result
     let inventory = native(binary, &["plugin", "list", "--json"], home)?;
     verify_identity(&inventory, &package)?;
     if pending["installed"] == false && installed(&inventory) {
+        preflight(&pending, root, home)?;
         native(binary, &["plugin", "remove", ID], home)?;
+        preflight(&pending, root, home)?;
     }
     let backup = root.join("previous-package");
+    preflight(&pending, root, home)?;
     if backup.exists() {
         ensure!(
             pending["ledger"]["package_digest"].as_str() == Some(digest(&backup)?.as_str()),
             "previous Codex package changed; recovery retained for manual repair"
         );
         if package.exists() {
+            preflight(&pending, root, home)?;
             fs::remove_dir_all(&package)?;
         }
+        preflight(&pending, root, home)?;
         fs::rename(&backup, &package)?;
     } else if pending["had_package"] == false && package.exists() {
         fs::remove_dir_all(&package)?;
     }
-    let config = home.join("config.toml");
-    if let Some(bytes) = pending["config"].as_array() {
-        let bytes: Vec<u8> = bytes
-            .iter()
-            .map(|v| {
-                v.as_u64()
-                    .context("invalid recovery config byte")
-                    .and_then(|v| u8::try_from(v).context("invalid config byte"))
-            })
-            .collect::<Result<_>>()?;
-        let mut staged = tempfile::NamedTempFile::new_in(home)?;
-        if config.exists() {
-            staged
-                .as_file()
-                .set_permissions(fs::metadata(&config)?.permissions())?;
-        }
-        staged.write_all(&bytes)?;
-        staged.as_file().sync_all()?;
-        staged.persist(&config).context("config recovery failed")?;
-    } else if config.exists() {
-        fs::remove_file(&config)?;
-    }
-    if let Some(snapshots) = pending.get("snapshots") {
-        restore_bytes(&home.join("hooks.json"), &snapshots["hooks"])?;
-        restore_bytes(
-            &root.join("market/.agents/plugins/marketplace.json"),
-            &snapshots["marketplace"],
-        )?;
-        restore_bytes(&root.join("ownership.json"), &snapshots["ledger"])?;
-    } else {
-        restore_json(&home.join("hooks.json"), &pending["hooks"])?;
-        restore_json(
-            &root.join("market/.agents/plugins/marketplace.json"),
-            &pending["marketplace"],
-        )?;
-        restore_json(&root.join("ownership.json"), &pending["ledger"])?;
+    for (key, path) in recovery_paths(root, home) {
+        preflight(&pending, root, home)?;
+        let original = if key == "config" {
+            &pending["config"]
+        } else {
+            &pending["snapshots"][key]
+        };
+        restore_bytes(&path, original, &pending["expected"][key])?;
     }
     if pending["installed"] == true {
+        preflight(&pending, root, home)?;
         native(binary, &["plugin", "add", ID], home)?;
+        preflight(&pending, root, home)?;
     }
+    preflight(&pending, root, home)?;
     fs::remove_file(root.join("pending.json"))?;
     Ok(())
 }
@@ -120,11 +91,80 @@ fn validate_journal(pending: &Value, home: &Path) -> Result<()> {
             "invalid recovery byte snapshots; record retained"
         );
     }
+    ensure!(
+        pending["target_digest"]
+            .as_str()
+            .is_some_and(|s| s.len() == 64)
+            && pending.get("snapshots").is_some()
+            && ["config", "hooks", "marketplace", "ledger"]
+                .iter()
+                .all(|key| pending["expected"].get(*key).is_some_and(bytes)),
+        "recovery lacks transaction ownership proof; reconcile manually; record retained"
+    );
     if !pending["ledger"].is_null() {
         let previous: Ownership = serde_json::from_value(pending["ledger"].clone())?;
         ensure!(
             previous.schema_version == 1 && previous.codex_home == home,
             "invalid recovery ownership scope; record retained"
+        );
+    }
+    Ok(())
+}
+
+fn recovery_paths(root: &Path, home: &Path) -> [(&'static str, PathBuf); 4] {
+    [
+        ("config", home.join("config.toml")),
+        ("hooks", home.join("hooks.json")),
+        (
+            "marketplace",
+            root.join("market/.agents/plugins/marketplace.json"),
+        ),
+        ("ledger", root.join("ownership.json")),
+    ]
+}
+
+/// Check all resources before any destructive operation, then repeat at mutation boundaries.
+fn preflight(pending: &Value, root: &Path, home: &Path) -> Result<()> {
+    for (key, path) in recovery_paths(root, home) {
+        let current = serde_json::to_value(snapshot(&path)?)?;
+        let original = if key == "config" {
+            &pending["config"]
+        } else {
+            &pending["snapshots"][key]
+        };
+        ensure!(
+            &current == original || current == pending["expected"][key],
+            "foreign Codex {key} changed; reconcile manually; recovery record retained"
+        );
+    }
+    let original_digest = pending["ledger"]["package_digest"].as_str();
+    for (name, backup) in [("market/plugin", false), ("previous-package", true)] {
+        let path = root.join(name);
+        match fs::symlink_metadata(&path) {
+            Ok(meta) => {
+                ensure!(
+                    meta.is_dir() && !meta.file_type().is_symlink(),
+                    "nonregular Codex package; recovery record retained"
+                );
+                let actual = digest(&path)?;
+                ensure!(
+                    Some(actual.as_str()) == original_digest
+                        || (!backup && Some(actual.as_str()) == pending["target_digest"].as_str()),
+                    "foreign Codex package or backup changed; reconcile manually; recovery record retained"
+                );
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    let committed = regular_json(&root.join("ownership.json"))?
+        .is_some_and(|ledger| ledger["transaction"] == pending["transaction"]);
+    if pending["had_package"] == true && !committed {
+        let package = root.join("market/plugin");
+        ensure!(
+            root.join("previous-package").exists()
+                || (package.exists() && Some(digest(&package)?.as_str()) == original_digest),
+            "original Codex package backup missing; recovery record retained"
         );
     }
     Ok(())

@@ -79,7 +79,7 @@ and `cargo_home`; user-owned provenance contains `kind: "explicit"`.
 Operational failures exit 1 with empty stdout and one JSON error on stderr:
 
 ```json
-{"error":{"code":"RUNNER_CAPABILITY_MISSING","message":"recipe-runner-rs must advertise codex_exec for Codex; fix or unset the override","details":{"provider":"codex","stage":"capability"}}}
+{"error":{"code":"RUNNER_CAPABILITY_MISSING","message":"recipe-runner-rs must advertise codex_exec for Codex; fix or unset the override","details":{"provider":"codex"}}}
 ```
 
 Argument parsing retains the CLI parser's nonzero convention. Diagnostics exclude
