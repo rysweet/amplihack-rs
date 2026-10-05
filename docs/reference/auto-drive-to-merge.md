@@ -221,6 +221,23 @@ The bare name is tried first, the same idiom as `workflow-publish`,
 `RECIPE_VAR_` value is read only through `extract-json` / `extract-field`; it
 is never sourced, `eval`'d or exported.
 
+The difference shows without the runner. With only the `RECIPE_VAR_` name
+set, as the runner leaves an object output, the bare read is empty and the
+dual-name read returns the object, which the helpers accept:
+
+```console
+$ unset MY_OUT; export RECIPE_VAR_my_out='{"a":"1"}'
+$ echo "[${MY_OUT:-}] [${MY_OUT:-${RECIPE_VAR_my_out:-}}]"
+[] [{"a":"1"}]
+$ printf '%s' "${MY_OUT:-${RECIPE_VAR_my_out:-}}" | amplihack orch helper extract-json --require-field a
+{"a":"1"}
+$ printf '%s' "${MY_OUT:-${RECIPE_VAR_my_out:-}}" | amplihack orch helper extract-field --field a --default MISSING
+1
+```
+
+The shell test `1511-repro` runs these reads and both helpers, and passes only
+when all of this output matches and `extract-json` exits `0`.
+
 The rule covers **step outputs only**. Context variables (`REPO_PATH`, `PR_*`,
 `AUTODRIVE_*`) and shell locals (`COUNT`, `RC`, `PENDING`, …) are read as
 before. `autodrive-merge-evidence.yaml` and `loop-health-evaluator.yaml` need
@@ -256,7 +273,10 @@ A refused value exits non-zero with this message on stderr:
 ERROR: no state_dir (empty or unsafe: refusing to touch it) [autodrive-merge-loop/step-03]
 ```
 
-The bracketed part names the recipe and step. The check runs in:
+The bracketed part names the recipe and step. A safe, non-empty value passes
+without any `no state_dir` text on stderr; the shell test
+`1511-crusty-loop-02` asserts this for `autodrive-crusty-loop.yaml` step-02.
+The check runs in:
 
 | Recipe | Steps |
 | --- | --- |
@@ -661,7 +681,7 @@ Every recipe file stays inside the 400-line brick budget.
 
 | Test | Location |
 | --- | --- |
-| Executable contract test — STUCK path, malformed-verdict path, forbidden-flag guard, merge-gate refusals, a step output read through `RECIPE_VAR_` only, the `state_dir` refusals, the static `RECIPE_VAR_` check, and every row of the [loop-health line table](#reading-the-loop-health-line) | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
+| Executable contract test — STUCK path, malformed-verdict path, forbidden-flag guard, merge-gate refusals, a step output read through `RECIPE_VAR_` only, the [#1511 repro](#reading-step-outputs) (`1511-repro`), the `state_dir` refusals and their silence on a safe value, the static `RECIPE_VAR_` check, and every row of the [loop-health line table](#reading-the-loop-health-line) | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
 | Structural + wiring, including `autodrive_step_outputs_are_read_with_the_recipe_var_fallback` (the four [static checks](#the-static-check), with the read counts taken from this page) | `tests/integration/auto_drive_to_merge_test.rs` |
 
 ```bash

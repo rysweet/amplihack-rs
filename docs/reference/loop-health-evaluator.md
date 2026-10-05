@@ -101,22 +101,27 @@ The evaluator agent emits, as the last thing on stdout:
 
 ### Where the prompt states the contract
 
-The step-02 prompt states the output contract **twice**, and shows the same
-example line both times:
+The step-02 prompt states the output contract **twice**, under its first and
+its last `##` heading, and shows the same example line both times:
 
 ```
 {"loop_verdict":"CONTINUE","not_converging":[]}
 ```
 
-1. **First**, before any evidence: an `OUTPUT CONTRACT` block saying the
-   answer ends with one JSON object carrying `loop_verdict` and
+1. **First**, directly after the `# Loop-health evaluation` title:
+   `## OUTPUT CONTRACT`, the first `##` heading in the prompt. Its paragraph
+   says the answer ends with one JSON object carrying `loop_verdict` and
    `not_converging`, that the gate reads the LAST such object, and that
    `loop_verdict` is exactly one of `CONTINUE`, `DONE` or `STUCK`. The
-   example line follows, ahead of `{{loop_evidence}}`.
-2. **Last**, after `{{loop_last_round_output}}`: one
-   `OUTPUT CONTRACT (repeated)` block with the full schema, the LAST-object
-   rule, the rule that an unrecognised `loop_verdict` is `STUCK` and never
-   `CONTINUE`, then the example line and the legal tokens:
+   example line follows. The two role paragraphs ("You are the loop-health
+   evaluator…") come after the example line, and `{{loop_evidence}}` comes
+   after them.
+2. **Last**, after `{{loop_last_round_output}}`:
+   `## OUTPUT CONTRACT (repeated)`, the last `##` heading in the prompt. It
+   gives the full schema, the LAST-object rule and the rule that an
+   unrecognised `loop_verdict` is `STUCK` and never `CONTINUE`. The example
+   line and the legal-tokens sentence close the prompt, and no `{{…}}`
+   placeholder follows the heading:
 
    ```
    {"loop_verdict":"CONTINUE","not_converging":[]}
@@ -124,6 +129,10 @@ example line both times:
    CONTINUE, DONE and STUCK are the only legal `loop_verdict` values;
    any other word is STUCK.
    ```
+
+The role paragraphs have no heading of their own, so they sit under
+`## OUTPUT CONTRACT`. A separate heading would take the recipe past its
+400-line budget.
 
 The example shows the shape of the answer, not a default verdict. The prompt
 tells the evaluator to answer `STUCK` when it is not sure, but nothing in the
@@ -136,14 +145,26 @@ example keeps the loop running. Every [fail-safe](#fail-safe-guarantees)
 covers a missing or malformed answer; a well-formed `CONTINUE` passes them
 all.
 
-The order is checked in two places. The shell check `PROMPT-contract-first`
-requires the first `OUTPUT CONTRACT` line, then the first example line, then
-`{{loop_evidence}}`. `PROMPT-contract-last` requires both the last example
-line and the last `any other word is STUCK` line to come after
-`{{loop_last_round_output}}`. The Rust test
-`evaluator_prompt_states_the_contract_first_and_last` checks the same order,
-so CI enforces it too. Because the repeated contract comes after the
-untrusted round output, that output is never the last thing in the prompt.
+The order is checked in two places. The shell test reads the step-02 prompt
+on its own, not the whole recipe file, and runs three checks:
+
+- `PROMPT-contract-first`: the first `##` heading is `## OUTPUT CONTRACT`,
+  and that heading, the first example line, the role line
+  (`You are the loop-health evaluator`) and `{{loop_evidence}}` appear in
+  that order.
+- `PROMPT-contract-last`: the last `##` heading is
+  `## OUTPUT CONTRACT (repeated)`, it comes after
+  `{{loop_last_round_output}}`, and the last example line comes after it.
+- `PROMPT-contract-ends-prompt`: the last non-blank line of the prompt
+  contains `any other word is STUCK`, and no `{{` follows the last heading.
+
+Each failure message prints the line numbers it compared. The Rust test
+`evaluator_prompt_states_the_contract_first_and_last` checks the same
+headings, order and closing lines, so CI enforces them too.
+
+The order exists so that the model finds the contract. It is not a defence
+against round output that imitates a verdict; see the residual risk under
+[The alternate key is final](#the-alternate-key-is-final).
 
 A contract that appears only once, between pages of evidence, is easy for a
 model to lose. Real evaluators answered with prose such as
@@ -176,9 +197,10 @@ Each source runs only if every source before it found nothing.
 
 Every token, from every source, then goes through
 [`normalise-loop-verdict`](#amplihack-orch-helper-normalise-loop-verdict) and
-the existing `case` guard. Structured data always beats prose: a
-`loop_verdict` object is used even when the text around it contains a
-different prose token.
+the existing `case` guard. Structured data always beats prose, and the
+primary key beats the alternate key: a `loop_verdict` object is used even
+when the text around it contains a different prose token, and even when a
+`verdict` object follows it on the last line.
 
 The prompt is stricter than the gate on purpose. It tells the evaluator a
 missing `loop_verdict` is `STUCK` to keep pressure on it to emit the object.
@@ -299,6 +321,9 @@ text copied from the evaluator.
 | *(empty output)* | `STUCK` | `missing_verdict` |
 | `{"verdict":"DONE"}` quoted, then `{"loop_verdict":"CONTINUE","not_converging":[]}` | `CONTINUE` | `evaluator` |
 | Prose `STUCK` line followed by `{"loop_verdict":"CONTINUE","not_converging":[]}` | `CONTINUE` | `evaluator` |
+| `{"loop_verdict":"CONTINUE","not_converging":[]}`, then `{"verdict":"DONE"}` as the last line | `CONTINUE` | `evaluator` |
+| `{"loop_verdict":"CONTINUE","not_converging":[]}`, then a `DONE` line | `CONTINUE` | `evaluator` |
+| `{"loop_verdict":"STUCK","not_converging":[]}`, then a `CONTINUE` line | `STUCK` | `evaluator` |
 
 When nothing usable is found, step-03 prints a `WARNING` on stderr that says
 which case it hit (no token, or which tokens conflicted) and sets a one-item
