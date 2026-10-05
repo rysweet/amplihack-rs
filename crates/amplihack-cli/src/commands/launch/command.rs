@@ -113,76 +113,22 @@ pub(super) fn build_command_for_dir(
     // explicitly opted in via `--skip-permissions`.  This flag bypasses
     // Claude's interactive confirmation prompts and must not be on by default.
     // Only inject for Claude-compatible tools — Copilot and Codex don't support it.
-    let is_claude_compatible = matches!(
-        binary.name.as_str(),
-        "claude" | "rusty" | "rustyclawd" | "amplifier"
-    );
+    let is_claude_compatible = is_claude_compatible_tool(&binary.name);
     if skip_permissions && is_claude_compatible {
         cmd.arg("--dangerously-skip-permissions");
     }
 
     inject_uvx_plugin_args(&mut cmd, &binary.name, extra_args, add_dir_override);
 
-    // Issue #1421: amplihack requests a CONCRETE model id, never an alias.
-    //
-    // It used to force `--model opus[1m]`. An alias is resolved by the CLI, so
-    // its meaning depends on the CLI version: on a reporter's install it
-    // resolved to the retired `claude-opus-4-1-20250805` and every agent step
-    // 404'd naming an id the user had never chosen and could not find anywhere,
-    // because it existed only at resolution time. `DEFAULT_MODEL` is concrete
-    // for that reason — see its doc comment.
-    //
-    // Precedence, highest first:
-    //   1. `--model` on the command line — the operator's, forwarded untouched,
-    //      even when dotted (#1527 asks that an explicit value be left alone).
-    //      Claude Code does not always reject a dotted id: `claude -p` fails,
-    //      but an interactive session starts with no error and reports a
-    //      different model. So a dotted Claude id here is still forwarded as
-    //      typed, and amplihack prints one stderr line naming the hyphenated
-    //      spelling. Not through the gateway, which routes on the exact name.
-    //   2. the LiteLLM proxy's model, when a launch is routed through the proxy
-    //      — the proxy routes on the model name and has no default of its own
-    //   3. `AMPLIHACK_DEFAULT_MODEL` — pins every launch, and an empty value
-    //      means "pass nothing and let the CLI decide". A dotted Claude id
-    //      (Copilot's spelling) is rewritten to the hyphenated id (#1527)
-    //   4. `DEFAULT_MODEL`
-    //
-    // Note this still outranks a `"model"` set in `~/.claude/settings.json`,
-    // which is why that lever appeared to do nothing in the report. That is now
-    // a deliberate, documented precedence rather than an accident, and the
-    // stderr line below names both the value and where it came from, so the id
-    // in any later error traces straight back to this decision.
-    let user_has_model = extra_args
-        .iter()
-        .any(|arg| arg == "--model" || arg.starts_with("--model="));
-    let through_gateway = is_claude_compatible && amplihack_utils::litellm_proxy::proxy_requested();
-    if user_has_model && is_claude_compatible && !through_gateway {
-        for warning in explicit_dotted_model_warnings(extra_args, &binary.name) {
-            eprintln!("{warning}");
-        }
+    // Issues #1421, #1527: every decision about `--model`, and every stderr
+    // line about it, is made in `model_args`, which the tests call directly
+    // with the environment set. Nothing here may add a condition of its own:
+    // print what it returns, add what it returns, and nothing else.
+    let model = model_args(&binary.name, extra_args);
+    for line in &model.stderr {
+        eprintln!("{line}");
     }
-    if !user_has_model && is_claude_compatible {
-        let selection = if through_gateway {
-            Some(ModelSelection {
-                model: std::env::var(amplihack_utils::litellm_proxy::MODEL_ENV)
-                    .unwrap_or_else(|_| "amplihack-default".to_string()),
-                source: ModelSource::LiteLlmGateway,
-                normalised_from: None,
-            })
-        } else {
-            configured_default_model()
-        };
-        if let Some(selection) = selection {
-            // Diagnosability (issue #1421): a 404 naming a model the user never
-            // typed is not diagnosable. When amplihack puts a model on the
-            // command line, it says so and says where the value came from, so
-            // the id in any later error traces back to this decision instead of
-            // looking like a hardcoded secret inside the binary.
-            eprintln!("{}", model_selection_notice(&selection, &binary.name));
-            cmd.arg("--model");
-            cmd.arg(selection.model);
-        }
-    }
+    cmd.args(&model.argv);
 
     if resume {
         cmd.arg("--resume");
@@ -279,6 +225,100 @@ pub(super) fn build_command_for_dir(
     cmd
 }
 
+/// The tools amplihack treats as Claude Code: they get
+/// `--dangerously-skip-permissions`, a `--model` of amplihack's choosing, and
+/// the dotted `--model` warning. `amplihack copilot` and `amplihack codex` get
+/// none of those.
+pub(super) fn is_claude_compatible_tool(binary_name: &str) -> bool {
+    matches!(binary_name, "claude" | "rusty" | "rustyclawd" | "amplifier")
+}
+
+/// What amplihack adds to one launch for `--model`, and what it prints about
+/// it. See [`model_args`].
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(super) struct ModelArgs {
+    /// `["--model", <id>]`, or empty when amplihack adds no model.
+    pub(super) argv: Vec<String>,
+    /// Lines for stderr, in order: the dotted explicit `--model` warning
+    /// (#1527) and the line naming a model amplihack chose (#1421).
+    pub(super) stderr: Vec<String>,
+}
+
+/// Every decision amplihack makes about `--model` for one launch of
+/// `binary_name` with the operator's `extra_args`: the arguments to add and the
+/// stderr lines to print. `build_command_for_dir` adds and prints exactly what
+/// this returns and decides nothing about the model itself, so the tests on
+/// this function cover what an operator sees.
+///
+/// Reads the LiteLLM gateway variables, `AMPLIHACK_LITELLM_MODEL` and
+/// `AMPLIHACK_DEFAULT_MODEL` from the environment.
+///
+/// Issue #1421: amplihack requests a CONCRETE model id, never an alias. It used
+/// to force `--model opus[1m]`. An alias is resolved by the CLI, so its meaning
+/// depends on the CLI version: on a reporter's install it resolved to the
+/// retired `claude-opus-4-1-20250805` and every agent step 404'd naming an id
+/// the user had never chosen and could not find anywhere, because it existed
+/// only at resolution time. [`DEFAULT_MODEL`] is concrete for that reason.
+///
+/// Only a Claude-compatible tool ([`is_claude_compatible_tool`]) gets a model
+/// from amplihack. Precedence, highest first:
+///
+/// 1. `--model` on the command line: the operator's, forwarded untouched, even
+///    when dotted (#1527 asks that an explicit value be left alone). A dotted
+///    Claude id gets one stderr warning naming the hyphenated spelling; see
+///    [`explicit_model_warnings`] for when.
+/// 2. `AMPLIHACK_LITELLM_MODEL`, when the launch goes through the LiteLLM
+///    gateway, which is when
+///    [`proxy_requested`](amplihack_utils::litellm_proxy::proxy_requested) is
+///    true: `AMPLIHACK_LITELLM_ENDPOINT`, `AMPLIHACK_LITELLM_API_KEY` or
+///    `AMPLIHACK_LITELLM_MODEL` is set. No other `AMPLIHACK_LITELLM_*` variable
+///    selects this path. The gateway routes on the model name and has no
+///    default of its own.
+/// 3. `AMPLIHACK_DEFAULT_MODEL`, which pins every launch; an empty value means
+///    "pass nothing and let the CLI decide". A dotted Claude id (Copilot's
+///    spelling) is rewritten to the hyphenated id (#1527).
+/// 4. [`DEFAULT_MODEL`].
+///
+/// This still outranks a `"model"` set in `~/.claude/settings.json`, which is
+/// why that lever appeared to do nothing in the #1421 report. That is a
+/// deliberate, documented precedence, and the stderr line names both the value
+/// and where it came from, so the id in any later error traces straight back
+/// to this decision instead of looking like a secret inside the binary.
+pub(super) fn model_args(binary_name: &str, extra_args: &[String]) -> ModelArgs {
+    let is_claude_compatible = is_claude_compatible_tool(binary_name);
+    let through_gateway = is_claude_compatible && amplihack_utils::litellm_proxy::proxy_requested();
+    let mut out = ModelArgs {
+        argv: Vec::new(),
+        stderr: explicit_model_warnings(binary_name, extra_args, through_gateway),
+    };
+
+    let user_has_model = extra_args
+        .iter()
+        .any(|arg| arg == "--model" || arg.starts_with("--model="));
+    if user_has_model || !is_claude_compatible {
+        return out;
+    }
+    let selection = if through_gateway {
+        // `ProxyConfig::from_env()` refuses a gateway launch without
+        // `AMPLIHACK_LITELLM_MODEL` before the command is built, so the
+        // fallback is never reached by a real launch.
+        Some(ModelSelection {
+            model: std::env::var(amplihack_utils::litellm_proxy::MODEL_ENV)
+                .unwrap_or_else(|_| "amplihack-default".to_string()),
+            source: ModelSource::LiteLlmGateway,
+            normalised_from: None,
+        })
+    } else {
+        configured_default_model()
+    };
+    if let Some(selection) = selection {
+        out.stderr
+            .push(model_selection_notice(&selection, binary_name));
+        out.argv = vec!["--model".to_string(), selection.model];
+    }
+    out
+}
+
 /// The model amplihack requests when the operator has not chosen one.
 ///
 /// Issue #1421: this is a CONCRETE model id, deliberately not an alias.
@@ -346,9 +386,9 @@ impl ModelSource {
 ///
 /// Issue #1527: operators set this to a Claude id in the dotted spelling GitHub
 /// Copilot CLI uses (`claude-opus-5.5`). Only amplihack reads the variable, and
-/// only for claude-compatible launches, where Claude Code does not accept that
-/// form. So a dotted Claude id is rewritten to the hyphenated one and the
-/// selection records the original. See [`normalize_dotted_claude_model_id`].
+/// only for claude-compatible launches, and Claude model ids use hyphens. So a
+/// dotted Claude id is rewritten to the hyphenated one and the selection
+/// records the original. See [`normalize_dotted_claude_model_id`].
 ///
 /// The variable is read once, and the source is decided in the same match arm,
 /// so the stderr line cannot name a source that disagrees with the value. A
@@ -455,26 +495,35 @@ pub(super) fn model_selection_notice(selection: &ModelSelection, binary_name: &s
     format!("amplihack: passing `--model {model}` to `{binary_name}` (from {provenance}). {advice}")
 }
 
-/// Issue #1527: one stderr line for each `--model` value on the command line
-/// that is a dotted Claude id, naming the hyphenated spelling. Empty when there
-/// is none.
+/// Issue #1527: the stderr warnings for an explicit `--model` on the command
+/// line. One line for each value that is a dotted Claude id, naming the
+/// hyphenated spelling; empty when there is none. [`model_args`] passes these
+/// through unfiltered, so every condition on the warning is here:
+///
+/// - Only for a Claude-compatible tool ([`is_claude_compatible_tool`]). The
+///   dotted spelling is GitHub Copilot CLI's own, so telling an
+///   `amplihack copilot` user to change `claude-opus-4.5` would be wrong.
+/// - Not when `through_gateway` is true. The LiteLLM gateway routes on the
+///   exact model name, and a dot in a route name may be correct.
 ///
 /// The value is still forwarded as typed: the issue asks that an explicit
-/// `--model` not be rewritten. The line exists because Claude Code does not
-/// always fail on the dotted form. `claude -p` reports "There's an issue with
-/// the selected model", but an interactive session, which is what
-/// `amplihack claude` starts by default, opens with no error and reports a
-/// different model. Without this line that launch would give no sign of the
-/// problem at all.
+/// `--model` not be rewritten. The warning exists because the launched tool may
+/// not report the problem itself; issue #1527 records what one Claude Code
+/// version did. The line says only what amplihack can vouch for, that Claude
+/// model ids use hyphens, and names no other tool's behaviour or error text:
+/// those change with the tool's version, and the line would then be wrong on
+/// every launch.
 ///
-/// Values are found the way `build_command_for_dir` detects an explicit model:
-/// a `--model` argument followed by its value, or `--model=<value>`. The caller
-/// does not use this on the LiteLLM gateway path, where the model is a gateway
-/// route name and a dot in it may be correct.
-pub(super) fn explicit_dotted_model_warnings(
-    extra_args: &[String],
+/// Values are found the way [`model_args`] detects an explicit model: a
+/// `--model` argument followed by its value, or `--model=<value>`.
+pub(super) fn explicit_model_warnings(
     binary_name: &str,
+    extra_args: &[String],
+    through_gateway: bool,
 ) -> Vec<String> {
+    if !is_claude_compatible_tool(binary_name) || through_gateway {
+        return Vec::new();
+    }
     let mut warnings = Vec::new();
     let mut args = extra_args.iter().map(String::as_str);
     while let Some(arg) = args.next() {
@@ -487,10 +536,7 @@ pub(super) fn explicit_dotted_model_warnings(
         if let Some(hyphenated) = normalize_dotted_claude_model_id(value.trim()) {
             warnings.push(format!(
                 "amplihack: warning: passing `--model {value}` to `{binary_name}` as typed, \
-                 but Claude model ids use hyphens, not dots. Claude Code does not accept \
-                 this spelling: `claude -p` fails with \"There's an issue with the selected \
-                 model\", and an interactive session starts with no error but reports a \
-                 different model. Use `--model {hyphenated}`."
+                 but Claude model ids use hyphens, not dots. Use `--model {hyphenated}`."
             ));
         }
     }

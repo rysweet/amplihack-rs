@@ -200,10 +200,10 @@ amplihack claude --model claude-haiku-4-5
 claude --model claude-haiku-4-5
 ```
 
-A dotted Claude id given to `--model` is also forwarded unchanged, and Claude
-Code does not accept it. `claude -p` fails with an error, but an interactive
-session starts with no error and reports a different model. So amplihack prints
-a warning to stderr naming the hyphenated spelling:
+A dotted Claude id given to `--model` is also forwarded unchanged. Claude model
+ids use hyphens, and the launched tool may not report the problem itself
+(issue #1527), so amplihack prints a warning to stderr naming the hyphenated
+spelling:
 
 ```sh
 amplihack claude --model claude-opus-5.5
@@ -213,8 +213,9 @@ claude --model claude-opus-5.5
 # and warns: ... Use `--model claude-opus-5-5`.
 ```
 
-There is no warning on the LiteLLM gateway path, where the model is a gateway
-route name and a dot in it may be correct.
+There is no warning for `amplihack copilot` or `amplihack codex`, since the
+dotted spelling is GitHub Copilot CLI's own, and none on the LiteLLM gateway
+path, where the model is a gateway route name and a dot in it may be correct.
 
 Detection is exact: an argument equal to `--model`, or one starting with
 `--model=`, counts as an explicit model. Arguments that only begin with

@@ -25,11 +25,10 @@ rather than a unified type system.
 Claude-compatible tools are identified by a `matches!` expression:
 
 ```rust
-// command.rs, line 43
-let is_claude_compatible = matches!(
-    binary.name.as_str(),
-    "claude" | "rusty" | "rustyclawd" | "amplifier"
-);
+// command.rs
+pub(super) fn is_claude_compatible_tool(binary_name: &str) -> bool {
+    matches!(binary_name, "claude" | "rusty" | "rustyclawd" | "amplifier")
+}
 ```
 
 ### Copilot `--allow-all` injection

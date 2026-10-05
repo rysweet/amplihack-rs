@@ -46,10 +46,10 @@ fn codex_never_gets_the_flag() {
 
 #[test]
 fn amplifier_never_gets_the_flag_even_though_it_is_claude_compatible_elsewhere() {
-    // `build_command_for_dir`'s local `is_claude_compatible` includes
-    // "amplifier" and governs --dangerously-skip-permissions and --model. The
-    // flag matrix says supports_append_prompt == false. The two disagree and
-    // the FLAG MATRIX WINS. `is_claude_compatible` is deliberately left alone.
+    // `is_claude_compatible_tool` in command.rs includes "amplifier" and
+    // governs --dangerously-skip-permissions and --model. The flag matrix says
+    // supports_append_prompt == false. The two disagree and the FLAG MATRIX
+    // WINS. `is_claude_compatible_tool` is deliberately left alone.
     //
     // This test exists so that a future maintainer who "harmonizes" the two
     // does not silently start emitting a flag amplifier may not accept.

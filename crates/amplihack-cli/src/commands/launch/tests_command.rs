@@ -1,6 +1,7 @@
 use super::command::{
-    DEFAULT_MODEL, ModelSelection, ModelSource, configured_default_model,
-    explicit_dotted_model_warnings, model_selection_notice, normalize_dotted_claude_model_id,
+    DEFAULT_MODEL, ModelArgs, ModelSelection, ModelSource, configured_default_model,
+    explicit_model_warnings, is_claude_compatible_tool, model_args, model_selection_notice,
+    normalize_dotted_claude_model_id,
 };
 use super::*;
 use crate::binary_finder::BinaryInfo;
@@ -563,14 +564,14 @@ fn test_build_command_no_model_injection_for_equals_form() {
 // Issue #1527: a dotted Claude model id in AMPLIHACK_DEFAULT_MODEL.
 //
 // Operators set the variable to a Claude id in the dotted spelling GitHub
-// Copilot CLI uses (`claude-opus-5.5`). Claude Code only accepts hyphens
-// (`claude-opus-5-5`): `claude -p` fails on the dotted form, and an interactive
-// session starts with no error but reports a different model. amplihack reads
-// the variable only for claude-compatible launches, so it rewrites the one dot
-// between major and minor version before passing it on, and says so on the
-// stderr line added for #1421. An explicit `--model` is what the operator typed
-// and is forwarded unchanged; when it is dotted, amplihack prints a warning
-// naming the hyphenated spelling, because the interactive session would not.
+// Copilot CLI uses (`claude-opus-5.5`). Claude model ids use hyphens
+// (`claude-opus-5-5`); the issue records what Claude Code did with the dotted
+// form. amplihack reads the variable only for claude-compatible launches, so it
+// rewrites the one dot between major and minor version before passing it on,
+// and says so on the stderr line added for #1421. An explicit `--model` is what
+// the operator typed and is forwarded unchanged; when it is dotted, amplihack
+// prints a warning naming the hyphenated spelling, because the launched tool
+// may not report the problem itself.
 // ---------------------------------------------------------------------------
 
 /// The line the docs promise for a rewritten id
@@ -582,11 +583,13 @@ const DOCUMENTED_REWRITE_NOTICE: &str = "amplihack: passing `--model claude-opus
 
 /// The warning the docs promise for a dotted explicit `--model`
 /// (docs/reference/environment-variables.md, "Explicit `--model`").
+///
+/// It states only what amplihack can vouch for, the spelling. What another
+/// tool does with the dotted id changes with that tool's version, so it is not
+/// in the line, the docs or this constant; issue #1527 has the report.
 const DOCUMENTED_EXPLICIT_WARNING: &str = "amplihack: warning: passing `--model \
      claude-opus-5.5` to `claude` as typed, but Claude model ids use hyphens, not dots. \
-     Claude Code does not accept this spelling: `claude -p` fails with \"There's an issue \
-     with the selected model\", and an interactive session starts with no error but \
-     reports a different model. Use `--model claude-opus-5-5`.";
+     Use `--model claude-opus-5-5`.";
 
 /// The line the docs promise on the LiteLLM gateway path
 /// (docs/reference/environment-variables.md, AMPLIHACK_DEFAULT_MODEL).
@@ -1014,7 +1017,7 @@ fn test_build_command_leaves_the_childs_default_model_env_untouched() {
 /// even when it is dotted and AMPLIHACK_DEFAULT_MODEL is dotted too. The issue
 /// asks that the operator's value be left alone. What amplihack adds for a
 /// dotted one is a stderr warning, pinned by the
-/// `test_explicit_dotted_model_warnings_*` tests, not a rewrite.
+/// `test_explicit_model_warnings_*` and `test_model_args_*` tests, not a rewrite.
 #[test]
 fn test_build_command_explicit_dotted_model_is_not_normalised() {
     let env = Some("claude-opus-5.5[1m]");
@@ -1134,22 +1137,23 @@ fn test_model_selection_notice_on_the_gateway_names_the_gateway_variable() {
 /// one warning naming the hyphenated spelling. The value in the warning is the
 /// one forwarded, and the suggestion keeps any suffix.
 #[test]
-fn test_explicit_dotted_model_warnings_name_the_hyphenated_spelling() {
+fn test_explicit_model_warnings_name_the_hyphenated_spelling() {
     let args = |list: &[&str]| -> Vec<String> { list.iter().map(|a| a.to_string()).collect() };
 
     assert_eq!(
-        explicit_dotted_model_warnings(&args(&["--model", "claude-opus-5.5"]), "claude"),
+        explicit_model_warnings("claude", &args(&["--model", "claude-opus-5.5"]), false),
         vec![DOCUMENTED_EXPLICIT_WARNING.to_string()]
     );
     assert_eq!(
-        explicit_dotted_model_warnings(&args(&["--model=claude-opus-5.5"]), "claude"),
+        explicit_model_warnings("claude", &args(&["--model=claude-opus-5.5"]), false),
         vec![DOCUMENTED_EXPLICIT_WARNING.to_string()],
         "the --model= form must give the same warning"
     );
 
-    let suffixed = explicit_dotted_model_warnings(
-        &args(&["-p", "hello", "--model", "claude-opus-5.5[1m]"]),
+    let suffixed = explicit_model_warnings(
         "rusty",
+        &args(&["-p", "hello", "--model", "claude-opus-5.5[1m]"]),
+        false,
     );
     assert_eq!(suffixed.len(), 1, "got: {suffixed:?}");
     assert!(
@@ -1157,12 +1161,16 @@ fn test_explicit_dotted_model_warnings_name_the_hyphenated_spelling() {
             && suffixed[0].ends_with("Use `--model claude-opus-5-5[1m]`."),
         "got: {suffixed:?}"
     );
+    assert!(
+        !suffixed[0].contains("Claude Code"),
+        "the warning must not name a tool other than the one launched: {suffixed:?}"
+    );
 }
 
 /// Issue #1527: no warning for anything that is not a dotted Claude id, for a
 /// `--model` with no value, or for arguments that only resemble `--model`.
 #[test]
-fn test_explicit_dotted_model_warnings_are_silent_otherwise() {
+fn test_explicit_model_warnings_are_silent_otherwise() {
     let quiet: [&[&str]; 9] = [
         &[],
         &["--model", "claude-opus-5-5"],
@@ -1177,19 +1185,370 @@ fn test_explicit_dotted_model_warnings_are_silent_otherwise() {
     for list in quiet {
         let args: Vec<String> = list.iter().map(|a| a.to_string()).collect();
         assert_eq!(
-            explicit_dotted_model_warnings(&args, "claude"),
+            explicit_model_warnings("claude", &args, false),
             Vec::<String>::new(),
             "{args:?} must not produce a warning"
         );
     }
 }
 
-/// Issue #1527 review: the help text and reference pages an operator reads
-/// about `--model` must name the default amplihack passes. Before this test
-/// they still said amplihack passes no `--model` when AMPLIHACK_DEFAULT_MODEL
-/// is unset, which stopped being true when [`DEFAULT_MODEL`] was introduced.
+/// The tools amplihack treats as Claude Code, and so the only ones that get a
+/// `--model` from it or the dotted `--model` warning.
+const CLAUDE_COMPATIBLE_TOOLS: [&str; 4] = ["claude", "rusty", "rustyclawd", "amplifier"];
+
+/// Every `AMPLIHACK_LITELLM_*` variable amplihack reads that is not one of the
+/// three gateway variables in [`PROXY_ENV_VARS`]. `amplihack litellm`
+/// verification reads these (commands/litellm/preflight.rs, and
+/// `AMPLIHACK_LITELLM_TARGET` in amplihack-utils' litellm_proxy.rs). None of
+/// them routes a launch through the gateway.
+const NON_GATEWAY_LITELLM_VARS: [&str; 6] = [
+    "AMPLIHACK_LITELLM_TELEMETRY_FILE",
+    "AMPLIHACK_LITELLM_TELEMETRY_HMAC_KEY",
+    "AMPLIHACK_LITELLM_EXPECTED_PROVIDER",
+    "AMPLIHACK_LITELLM_EXPECTED_MODEL",
+    "AMPLIHACK_LITELLM_EXPECTED_GATEWAY_IDENTITY",
+    "AMPLIHACK_LITELLM_TARGET",
+];
+
+/// Puts back every variable [`model_args_with`] cleared, even when the call
+/// under test panics, so a failure cannot leak a gateway variable into the
+/// next test.
+struct RestoreEnv(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+impl Drop for RestoreEnv {
+    fn drop(&mut self) {
+        for (name, value) in self.0.drain(..) {
+            match value {
+                Some(value) => unsafe { std::env::set_var(name, value) },
+                None => unsafe { std::env::remove_var(name) },
+            }
+        }
+    }
+}
+
+/// [`model_args`] for `binary_name` and `extra` on a host where, of
+/// `AMPLIHACK_DEFAULT_MODEL` and every `AMPLIHACK_LITELLM_*` variable amplihack
+/// reads, exactly the ones in `env` are set.
+fn model_args_with(env: &[(&str, &str)], binary_name: &str, extra: &[&str]) -> ModelArgs {
+    let _guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let names = PROXY_ENV_VARS
+        .into_iter()
+        .chain(NON_GATEWAY_LITELLM_VARS)
+        .chain(["AMPLIHACK_DEFAULT_MODEL"]);
+    let restore = RestoreEnv(names.map(|name| (name, std::env::var_os(name))).collect());
+    for (name, _) in &restore.0 {
+        unsafe { std::env::remove_var(name) };
+    }
+    for (name, value) in env {
+        unsafe { std::env::set_var(name, value) };
+    }
+    let extra: Vec<String> = extra.iter().map(|arg| arg.to_string()).collect();
+    let got = model_args(binary_name, &extra);
+    drop(restore);
+    got
+}
+
+/// The warning [`explicit_model_warnings`] gives `tool` for an explicit
+/// `--model claude-opus-5.5`, built from the documented one.
+fn explicit_warning_for(tool: &str) -> String {
+    DOCUMENTED_EXPLICIT_WARNING.replace("to `claude`", &format!("to `{tool}`"))
+}
+
+/// Issue #1527 review: the warning's gate, as a pure function. Only a
+/// Claude-compatible tool gets it, and not on the LiteLLM gateway path.
+/// `amplihack copilot -- --model claude-opus-4.5` is Copilot's own spelling and
+/// correct as typed; a dotted gateway route name may be correct too.
 #[test]
-fn test_model_help_and_docs_name_the_built_in_default() {
+fn test_explicit_model_warnings_only_for_claude_compatible_tools_off_the_gateway() {
+    let dotted = ["--model".to_string(), "claude-opus-5.5".to_string()];
+    for tool in CLAUDE_COMPATIBLE_TOOLS {
+        assert!(is_claude_compatible_tool(tool), "{tool}");
+        assert_eq!(
+            explicit_model_warnings(tool, &dotted, false),
+            vec![explicit_warning_for(tool)],
+            "`amplihack {tool}` with a dotted --model must be warned"
+        );
+        assert_eq!(
+            explicit_model_warnings(tool, &dotted, true),
+            Vec::<String>::new(),
+            "`amplihack {tool}` through the LiteLLM gateway must not be warned"
+        );
+    }
+    for tool in ["copilot", "codex", "Claude", ""] {
+        assert!(!is_claude_compatible_tool(tool), "{tool:?}");
+        for through_gateway in [false, true] {
+            assert_eq!(
+                explicit_model_warnings(tool, &dotted, through_gateway),
+                Vec::<String>::new(),
+                "{tool:?} is not Claude-compatible and must never be warned \
+                 (through_gateway = {through_gateway})"
+            );
+        }
+    }
+}
+
+/// Issue #1527 review, wired to the environment: a dotted explicit `--model`
+/// on a Claude-compatible tool, with no gateway variable set, gives exactly one
+/// stderr line, the documented warning, and amplihack adds no `--model` of its
+/// own. A dotted AMPLIHACK_DEFAULT_MODEL does not change that.
+#[test]
+fn test_model_args_warns_on_a_dotted_explicit_model() {
+    for tool in CLAUDE_COMPATIBLE_TOOLS {
+        for extra in [
+            &["--model", "claude-opus-5.5"][..],
+            &["--model=claude-opus-5.5"],
+        ] {
+            for env in [
+                &[][..],
+                &[("AMPLIHACK_DEFAULT_MODEL", "claude-opus-5.5[1m]")],
+            ] {
+                let got = model_args_with(env, tool, extra);
+                assert_eq!(
+                    got,
+                    ModelArgs {
+                        argv: Vec::new(),
+                        stderr: vec![explicit_warning_for(tool)],
+                    },
+                    "`amplihack {tool}` with {extra:?} and {env:?}"
+                );
+                assert!(
+                    !got.stderr[0].contains("Claude Code"),
+                    "the warning must not name a tool other than `{tool}`: {:?}",
+                    got.stderr
+                );
+            }
+        }
+    }
+    assert_eq!(
+        model_args_with(&[], "claude", &["--model", "claude-opus-5.5"]).stderr,
+        vec![DOCUMENTED_EXPLICIT_WARNING.to_string()]
+    );
+}
+
+/// Issue #1527 review: `amplihack copilot` and `amplihack codex` get neither a
+/// `--model` nor any stderr line about one, whatever the operator passes and
+/// whatever AMPLIHACK_DEFAULT_MODEL says. Telling a Copilot user to change
+/// `claude-opus-4.5`, Copilot's own spelling, would be wrong.
+#[test]
+fn test_model_args_never_warns_copilot_or_codex() {
+    for tool in ["copilot", "codex"] {
+        for extra in [
+            &["--model", "claude-opus-4.5"][..],
+            &["--model=claude-opus-4.5"],
+            &[],
+        ] {
+            for env in [&[][..], &[("AMPLIHACK_DEFAULT_MODEL", "claude-opus-5.5")]] {
+                assert_eq!(
+                    model_args_with(env, tool, extra),
+                    ModelArgs::default(),
+                    "`amplihack {tool}` with {extra:?} and {env:?}"
+                );
+            }
+        }
+    }
+}
+
+/// Issue #1527 review: on the LiteLLM gateway path, which any one of the three
+/// gateway variables selects, a dotted explicit `--model` is a route name. It
+/// is forwarded with no warning, and amplihack adds nothing.
+#[test]
+fn test_model_args_never_warns_on_the_gateway() {
+    for gateway_var in PROXY_ENV_VARS {
+        for tool in CLAUDE_COMPATIBLE_TOOLS {
+            for extra in [
+                &["--model", "claude-opus-5.5"][..],
+                &["--model=claude-opus-5.5"],
+            ] {
+                assert_eq!(
+                    model_args_with(&[(gateway_var, "claude-opus-5.5")], tool, extra),
+                    ModelArgs::default(),
+                    "`amplihack {tool}` with {extra:?} and only {gateway_var} set"
+                );
+            }
+        }
+    }
+}
+
+/// Issue #1527 review: only AMPLIHACK_LITELLM_ENDPOINT, _API_KEY and _MODEL
+/// select the gateway, which is what the help text and docs say. Any one of
+/// them alone does, and AMPLIHACK_DEFAULT_MODEL is then not read. Every other
+/// `AMPLIHACK_LITELLM_*` variable leaves AMPLIHACK_DEFAULT_MODEL in force and
+/// the dotted `--model` warning on.
+#[test]
+fn test_only_the_three_gateway_variables_select_the_gateway() {
+    let pinned = [("AMPLIHACK_DEFAULT_MODEL", "claude-sonnet-4-5")];
+    let pinned_notice = model_selection_notice(
+        &selection("claude-sonnet-4-5", ModelSource::DefaultModelEnv, None),
+        "claude",
+    );
+    for var in NON_GATEWAY_LITELLM_VARS {
+        let env = [pinned[0], (var, "set")];
+        assert_eq!(
+            model_args_with(&env, "claude", &[]),
+            ModelArgs {
+                argv: vec!["--model".to_string(), "claude-sonnet-4-5".to_string()],
+                stderr: vec![pinned_notice.clone()],
+            },
+            "{var} must not select the gateway: AMPLIHACK_DEFAULT_MODEL must still be read"
+        );
+        assert_eq!(
+            model_args_with(&env, "claude", &["--model", "claude-opus-5.5"]).stderr,
+            vec![DOCUMENTED_EXPLICIT_WARNING.to_string()],
+            "{var} must not select the gateway: the dotted --model warning must stay on"
+        );
+    }
+    for var in PROXY_ENV_VARS {
+        let got = model_args_with(&[pinned[0], (var, "gateway-model")], "claude", &[]);
+        let gateway_model = if var == amplihack_utils::litellm_proxy::MODEL_ENV {
+            "gateway-model"
+        } else {
+            "amplihack-default"
+        };
+        assert_eq!(
+            got,
+            ModelArgs {
+                argv: vec!["--model".to_string(), gateway_model.to_string()],
+                stderr: vec![model_selection_notice(
+                    &selection(gateway_model, ModelSource::LiteLlmGateway, None),
+                    "claude",
+                )],
+            },
+            "{var} alone must select the gateway, so AMPLIHACK_DEFAULT_MODEL is not read"
+        );
+    }
+}
+
+const STDERR_PROBE_BINARY_ENV: &str = "AMPLIHACK_TEST_1527_PROBE_BINARY";
+const STDERR_PROBE_ARGS_ENV: &str = "AMPLIHACK_TEST_1527_PROBE_ARGS";
+
+/// The child half of [`test_build_command_prints_exactly_the_model_args_stderr`].
+/// In a normal test run neither probe variable is set and this does nothing.
+/// When that test spawns it, it builds the command for the tool and arguments
+/// the variables name, so the parent can read what really reached stderr.
+#[test]
+fn probe_build_command_stderr_for_issue_1527() {
+    let Some(binary_name) = std::env::var_os(STDERR_PROBE_BINARY_ENV) else {
+        return;
+    };
+    let extra: Vec<String> = std::env::var(STDERR_PROBE_ARGS_ENV)
+        .unwrap_or_default()
+        .split('\n')
+        .filter(|arg| !arg.is_empty())
+        .map(str::to_string)
+        .collect();
+    let binary = make_named_binary(&binary_name.to_string_lossy());
+    build_command(&binary, false, false, false, &extra);
+}
+
+/// The `amplihack: ` lines `build_command` writes to the real stderr for
+/// `binary_name` and `extra`, with exactly the variables in `env` set. Runs
+/// [`probe_build_command_stderr_for_issue_1527`] in a child copy of this test
+/// binary with a cleared environment, so neither the developer's shell nor
+/// another test can change the answer.
+fn real_build_command_stderr(
+    env: &[(&str, &str)],
+    binary_name: &str,
+    extra: &[&str],
+) -> Vec<String> {
+    let module = module_path!()
+        .split_once("::")
+        .map_or(module_path!(), |(_, rest)| rest);
+    let probe = format!("{module}::probe_build_command_stderr_for_issue_1527");
+    let home = tempfile::tempdir().unwrap();
+    let mut child = Command::new(std::env::current_exe().unwrap());
+    child
+        .args(["--exact", probe.as_str(), "--nocapture", "--test-threads=1"])
+        .env_clear()
+        .current_dir(home.path())
+        .env("HOME", home.path())
+        .env("AMPLIHACK_NO_SYSTEM_PROMPT_APPEND", "1")
+        .env(STDERR_PROBE_BINARY_ENV, binary_name)
+        .env(STDERR_PROBE_ARGS_ENV, extra.join("\n"))
+        .envs(env.iter().copied());
+    let output = child.output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success() && stdout.contains("1 passed"),
+        "the probe {probe} did not run exactly once and pass\n\
+         stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    stderr
+        .lines()
+        .filter(|line| line.starts_with("amplihack: "))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Issue #1527 review: what `build_command_for_dir` actually writes to stderr
+/// for `--model` is what `model_args` returns, line for line, in a real
+/// process. Without this, dropping the line that prints them, or printing a
+/// warning `model_args` withheld, would pass every other test.
+#[test]
+fn test_build_command_prints_exactly_the_model_args_stderr() {
+    assert_eq!(
+        real_build_command_stderr(&[], "claude", &["--model", "claude-opus-5.5"]),
+        vec![DOCUMENTED_EXPLICIT_WARNING.to_string()],
+        "a dotted explicit --model on claude must print the documented warning, once"
+    );
+    assert_eq!(
+        real_build_command_stderr(
+            &[("AMPLIHACK_DEFAULT_MODEL", "claude-opus-5.5[1m]")],
+            "claude",
+            &[]
+        ),
+        vec![DOCUMENTED_REWRITE_NOTICE.to_string()],
+        "a dotted AMPLIHACK_DEFAULT_MODEL must print the documented rewrite notice, once"
+    );
+    for tool in ["copilot", "codex"] {
+        assert_eq!(
+            real_build_command_stderr(
+                &[("AMPLIHACK_DEFAULT_MODEL", "claude-opus-5.5")],
+                tool,
+                &["--model", "claude-opus-4.5"]
+            ),
+            Vec::<String>::new(),
+            "`amplihack {tool}` must print nothing about --model"
+        );
+    }
+    assert_eq!(
+        real_build_command_stderr(
+            &[
+                (
+                    amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+                    "https://gateway.example.com"
+                ),
+                (
+                    amplihack_utils::litellm_proxy::API_KEY_ENV,
+                    "gateway-secret"
+                ),
+                (amplihack_utils::litellm_proxy::MODEL_ENV, "claude-opus-5.5"),
+            ],
+            "claude",
+            &["--model", "claude-opus-5.5"]
+        ),
+        Vec::<String>::new(),
+        "a gateway launch with an explicit --model must print nothing about --model"
+    );
+}
+
+const ENVIRONMENT_VARIABLES_MD: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../docs/reference/environment-variables.md"
+));
+const LAUNCH_FLAG_INJECTION_MD: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../docs/reference/launch-flag-injection.md"
+));
+const LAUNCHER_MODEL_CONFIGURATION_MD: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../docs/reference/LAUNCHER_MODEL_CONFIGURATION.md"
+));
+
+/// `amplihack claude --help`, as an operator sees it.
+fn claude_long_help() -> String {
     use clap::CommandFactory;
 
     let mut cli = crate::Cli::command();
@@ -1198,41 +1557,46 @@ fn test_model_help_and_docs_name_the_built_in_default() {
         .expect("`amplihack claude` should exist");
     let mut help = Vec::new();
     claude.write_long_help(&mut help).unwrap();
-    let help = String::from_utf8(help).unwrap();
+    String::from_utf8(help).unwrap()
+}
 
-    let pages = [
-        ("`amplihack claude --help`", help.as_str()),
+/// The help text and every reference page that describes how amplihack picks
+/// the model, by name.
+fn model_help_and_pages() -> Vec<(&'static str, String)> {
+    vec![
+        ("`amplihack claude --help`", claude_long_help()),
         (
             "docs/reference/launch-flag-injection.md",
-            include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../docs/reference/launch-flag-injection.md"
-            )),
+            LAUNCH_FLAG_INJECTION_MD.to_string(),
         ),
         (
             "docs/reference/environment-variables.md",
-            include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../docs/reference/environment-variables.md"
-            )),
+            ENVIRONMENT_VARIABLES_MD.to_string(),
         ),
         (
             "docs/reference/flag-matrix.md",
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../../docs/reference/flag-matrix.md"
-            )),
+            ))
+            .to_string(),
         ),
         (
             "docs/reference/LAUNCHER_MODEL_CONFIGURATION.md",
-            include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../docs/reference/LAUNCHER_MODEL_CONFIGURATION.md"
-            )),
+            LAUNCHER_MODEL_CONFIGURATION_MD.to_string(),
         ),
-    ];
+    ]
+}
+
+/// Issue #1527 review: the help text and reference pages an operator reads
+/// about `--model` must name the default amplihack passes. Before this test
+/// they still said amplihack passes no `--model` when AMPLIHACK_DEFAULT_MODEL
+/// is unset, which stopped being true when [`DEFAULT_MODEL`] was introduced.
+#[test]
+fn test_model_help_and_docs_name_the_built_in_default() {
+    let pages = model_help_and_pages();
     let default_flag = format!("--model {DEFAULT_MODEL}");
-    for (name, text) in pages {
+    for (name, text) in &pages {
         assert!(
             text.contains(&default_flag),
             "{name} must name the built-in default `{default_flag}`"
@@ -1241,6 +1605,109 @@ fn test_model_help_and_docs_name_the_built_in_default() {
             assert!(
                 !text.contains(stale),
                 "{name} still says {stale:?}, which has not been true since DEFAULT_MODEL"
+            );
+        }
+    }
+}
+
+/// Issue #1527 review: the stderr lines the docs show for `--model` are the ones
+/// amplihack prints, in both directions.
+///
+/// Each line is rendered here by the code, not copied, and the `DOCUMENTED_*`
+/// constants the other tests compare the code against must equal those
+/// renderings. Then environment-variables.md must show every one of them, each
+/// on a line of its own, and no page may show a full `--model` stderr line that
+/// is not one of them. A change to the wording in the code fails here until the
+/// docs say the same.
+#[test]
+fn test_documented_model_stderr_lines_are_the_ones_amplihack_prints() {
+    let dotted = ["--model".to_string(), "claude-opus-5.5".to_string()];
+    let rendered = [
+        model_selection_notice(
+            &selection("claude-sonnet-4-5", ModelSource::DefaultModelEnv, None),
+            "claude",
+        ),
+        model_selection_notice(
+            &selection(
+                "claude-opus-5-5[1m]",
+                ModelSource::DefaultModelEnv,
+                Some("claude-opus-5.5[1m]"),
+            ),
+            "claude",
+        ),
+        model_selection_notice(
+            &selection("gateway-model", ModelSource::LiteLlmGateway, None),
+            "claude",
+        ),
+        explicit_model_warnings("claude", &dotted, false).concat(),
+    ];
+    assert_eq!(rendered[1], DOCUMENTED_REWRITE_NOTICE);
+    assert_eq!(rendered[2], DOCUMENTED_GATEWAY_NOTICE);
+    assert_eq!(rendered[3], DOCUMENTED_EXPLICIT_WARNING);
+
+    for line in &rendered {
+        assert!(
+            ENVIRONMENT_VARIABLES_MD.lines().any(|doc| doc == line),
+            "docs/reference/environment-variables.md must show, on a line of its \
+             own, the stderr line amplihack prints:\n{line}"
+        );
+    }
+
+    for (page, text) in [
+        (
+            "docs/reference/environment-variables.md",
+            ENVIRONMENT_VARIABLES_MD,
+        ),
+        (
+            "docs/reference/launch-flag-injection.md",
+            LAUNCH_FLAG_INJECTION_MD,
+        ),
+        (
+            "docs/reference/LAUNCHER_MODEL_CONFIGURATION.md",
+            LAUNCHER_MODEL_CONFIGURATION_MD,
+        ),
+    ] {
+        for doc in text.lines().map(str::trim).filter(|doc| {
+            doc.starts_with("amplihack: passing `--model")
+                || doc.starts_with("amplihack: warning: passing `--model")
+        }) {
+            assert!(
+                rendered.iter().any(|line| line == doc),
+                "{page} shows a stderr line amplihack does not print:\n{doc}\n\
+                 amplihack prints:\n{}",
+                rendered.join("\n")
+            );
+        }
+    }
+}
+
+/// Issue #1527 review: only the three variables `proxy_requested()` checks
+/// select the LiteLLM gateway (see
+/// `test_only_the_three_gateway_variables_select_the_gateway`). The help text
+/// and LAUNCHER_MODEL_CONFIGURATION.md said any `AMPLIHACK_LITELLM_*` variable
+/// did, which told an operator with only telemetry variables set that their
+/// AMPLIHACK_DEFAULT_MODEL was ignored when it was in use.
+#[test]
+fn test_help_and_docs_name_only_the_gateway_variables() {
+    for (name, text) in model_help_and_pages() {
+        for stale in ["any AMPLIHACK_LITELLM_*", "any `AMPLIHACK_LITELLM_*`"] {
+            assert!(
+                !text.contains(stale),
+                "{name} says {stale:?} selects the gateway, but only {PROXY_ENV_VARS:?} do"
+            );
+        }
+    }
+    for (name, text) in [
+        ("`amplihack claude --help`", claude_long_help()),
+        (
+            "docs/reference/LAUNCHER_MODEL_CONFIGURATION.md",
+            LAUNCHER_MODEL_CONFIGURATION_MD.to_string(),
+        ),
+    ] {
+        for var in PROXY_ENV_VARS {
+            assert!(
+                text.contains(var),
+                "{name} must name {var}, one of the variables that select the gateway"
             );
         }
     }

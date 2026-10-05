@@ -975,11 +975,12 @@ amplihack: passing `--model gateway-model` to `claude` (from AMPLIHACK_LITELLM_M
 #### Dotted Claude model ids
 
 GitHub Copilot CLI writes Claude model ids with a dot (`claude-opus-5.5`).
-Claude Code uses hyphens (`claude-opus-5-5`) and does not accept the dotted
-form: `claude -p --model claude-opus-5.5` fails with "There's an issue with the
-selected model", and an interactive session starts but reports a different
-model (Opus 5). So amplihack rewrites a dotted Claude id before passing it
-(issue #1527):
+Claude model ids use hyphens (`claude-opus-5-5`; see Anthropic's
+[models overview](https://docs.anthropic.com/en/docs/about-claude/models/overview)),
+and the variable is only read for Claude-compatible launches. So amplihack
+rewrites a dotted Claude id before passing it. Issue #1527 records what Claude
+Code did with the dotted form when it was reported; this page does not repeat
+it, because it depends on the Claude Code version.
 
 ```sh
 AMPLIHACK_DEFAULT_MODEL='claude-opus-5.5[1m]' amplihack claude
@@ -1033,26 +1034,33 @@ A `--model <id>` or `--model=<id>` on the `amplihack` command line overrides
 this variable. It is forwarded exactly as typed and is never rewritten, even
 when dotted.
 
-Claude Code does not reject a dotted id consistently. `claude -p` fails with an
-error, but an interactive session, which is what `amplihack claude` starts by
-default, opens with no error and reports a different model. So when an explicit
-value is a dotted Claude id of the form described above, amplihack forwards it
-unchanged and prints one warning to stderr naming the hyphenated spelling:
+When an explicit value is a dotted Claude id of the form described above,
+amplihack forwards it unchanged and prints one warning to stderr naming the
+hyphenated spelling. The launched tool may not report the problem itself
+(issue #1527), so without this line the launch could give no sign of it:
 
 ```text
-amplihack: warning: passing `--model claude-opus-5.5` to `claude` as typed, but Claude model ids use hyphens, not dots. Claude Code does not accept this spelling: `claude -p` fails with "There's an issue with the selected model", and an interactive session starts with no error but reports a different model. Use `--model claude-opus-5-5`.
+amplihack: warning: passing `--model claude-opus-5.5` to `claude` as typed, but Claude model ids use hyphens, not dots. Use `--model claude-opus-5-5`.
 ```
 
-amplihack prints nothing for any other explicit value. On the LiteLLM gateway
-path there is no warning either, because the gateway routes on the exact name
-and a dot in it may be correct.
+The warning gives only the spelling, which amplihack can vouch for. It does not
+describe what the launched tool does with the dotted id, because that depends on
+the tool and its version.
+
+There is no warning for any other explicit value, and none in these cases:
+
+- `amplihack copilot` and `amplihack codex`. The dotted spelling is GitHub
+  Copilot CLI's own, so `amplihack copilot --model claude-opus-4.5` is correct
+  as typed.
+- The LiteLLM gateway path, because the gateway routes on the exact name and a
+  dot in it may be correct.
 
 ```sh
 # The explicit --model wins over the variable and reaches claude unchanged
 AMPLIHACK_DEFAULT_MODEL='claude-opus-5.5[1m]' amplihack claude --model claude-sonnet-4-5
 # claude receives: --model claude-sonnet-4-5
 
-# Forwarded unchanged, with the warning above. Claude Code does not accept it.
+# Forwarded unchanged, with the warning above
 amplihack claude --model claude-opus-5.5
 
 # Works

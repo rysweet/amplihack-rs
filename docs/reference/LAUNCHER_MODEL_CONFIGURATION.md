@@ -27,13 +27,19 @@ order:
    - Overrides the environment variable
    - Forwarded exactly as typed. A dotted Claude id such as `claude-opus-5.5`
      is not rewritten, but amplihack prints a warning naming the hyphenated
-     spelling, because an interactive Claude Code session would start without
-     reporting the problem
+     spelling; see
+     [`AMPLIHACK_DEFAULT_MODEL`](./environment-variables.md#amplihack_default_model)
+     for when
 
 2. **LiteLLM gateway**
-   - When any `AMPLIHACK_LITELLM_*` variable is set, the model is
-     `AMPLIHACK_LITELLM_MODEL`, passed unchanged
+   - When `AMPLIHACK_LITELLM_ENDPOINT`, `AMPLIHACK_LITELLM_API_KEY` or
+     `AMPLIHACK_LITELLM_MODEL` is set (the
+     [gateway variables](./environment-variables.md#external-litellm-gateway-variables)),
+     the model is `AMPLIHACK_LITELLM_MODEL`, passed unchanged
    - `AMPLIHACK_DEFAULT_MODEL` is not read on this path
+   - Other `AMPLIHACK_LITELLM_*` variables, such as
+     `AMPLIHACK_LITELLM_TELEMETRY_FILE` (used by `amplihack litellm`
+     verification), do not select this path
 
 3. **AMPLIHACK_DEFAULT_MODEL Environment Variable**
    - Set in your shell environment
@@ -148,17 +154,19 @@ For more information about the statusline, see [STATUSLINE.md](./STATUSLINE.md).
 1. Verify the variable is exported: `echo $AMPLIHACK_DEFAULT_MODEL`
 2. Verify it is not empty or whitespace-only, which passes no `--model` at all
 3. Check for command-line flags that override it
-4. Check for `AMPLIHACK_LITELLM_*` variables: while any is set,
-   `AMPLIHACK_DEFAULT_MODEL` is not read
+4. Check whether `AMPLIHACK_LITELLM_ENDPOINT`, `AMPLIHACK_LITELLM_API_KEY` or
+   `AMPLIHACK_LITELLM_MODEL` is set: while any of those three is set,
+   `AMPLIHACK_DEFAULT_MODEL` is not read. Other `AMPLIHACK_LITELLM_*`
+   variables make no difference here
 5. Ensure you've reloaded your shell after setting it
 6. Look for amplihack's own stderr line naming the model it passed:
    `amplihack: passing \`--model ...\` to \`claude\` (from AMPLIHACK_DEFAULT_MODEL)`
 
-### Session reports a different model than the one you named
+### A dotted model id such as `claude-opus-5.5` does not work
 
-**Problem**: You passed `--model claude-opus-5.5` and the session reports a
-different model, or `claude -p` fails with "There's an issue with the selected
-model".
+**Problem**: You passed a dotted Claude id such as `--model claude-opus-5.5`,
+and the launch failed or the session is not running the model you named.
+Issue #1527 records what one Claude Code version did with it.
 
 **Solution**: Use the hyphenated id, `claude-opus-5-5`. amplihack forwards an
 explicit `--model` unchanged and prints a warning naming the hyphenated

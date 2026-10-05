@@ -98,8 +98,11 @@ MODEL SELECTION (issues #1421, #1527)
                                  not rewritten, but amplihack prints a warning
                                  naming the hyphenated spelling.
 
-  While any AMPLIHACK_LITELLM_* variable is set, the model is
-  AMPLIHACK_LITELLM_MODEL and AMPLIHACK_DEFAULT_MODEL is not read.")]
+  While AMPLIHACK_LITELLM_ENDPOINT, AMPLIHACK_LITELLM_API_KEY or
+  AMPLIHACK_LITELLM_MODEL is set (the LiteLLM gateway), the model is
+  AMPLIHACK_LITELLM_MODEL and AMPLIHACK_DEFAULT_MODEL is not read. Other
+  AMPLIHACK_LITELLM_* variables, such as AMPLIHACK_LITELLM_TELEMETRY_FILE, do
+  not affect the model.")]
     Claude {
         /// Disable post-session reflection analysis.
         #[arg(long = "no-reflection")]
