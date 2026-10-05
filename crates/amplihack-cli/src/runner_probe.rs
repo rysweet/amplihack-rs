@@ -86,78 +86,15 @@ impl Drop for Probe {
         }
     }
 }
-#[cfg(not(unix))]
-fn reader(mut stream: impl Read + Send + 'static) -> std::thread::JoinHandle<io::Result<Vec<u8>>> {
-    thread::spawn(move || {
-        let mut output = Vec::new();
-        let mut chunk = [0; 8192];
-        loop {
-            let count = stream.read(&mut chunk)?;
-            if count == 0 {
-                return Ok(output);
-            }
-            let retained = count.min((LIMIT + 1).saturating_sub(output.len()));
-            output.extend_from_slice(&chunk[..retained]);
-        }
-    })
-}
-#[cfg(not(unix))]
-fn finish(reader: std::thread::JoinHandle<io::Result<Vec<u8>>>) -> Result<Vec<u8>> {
-    reader
-        .join()
-        .map_err(|_| anyhow::anyhow!("capability reader panicked"))?
-        .context("capability pipe read failed")
-}
 #[cfg(unix)]
-struct Pipe<T> {
-    stream: T,
-    bytes: Vec<u8>,
-    eof: bool,
-}
-#[cfg(unix)]
-impl<T: Read + std::os::fd::AsRawFd> Pipe<T> {
-    fn new(stream: T) -> Result<Self> {
-        let fd = stream.as_raw_fd();
-        #[cfg(test)]
-        let fd = if testing::fault(testing::Fault::Setup) {
-            -1
-        } else {
-            fd
-        };
-        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-        ensure!(
-            flags >= 0 && unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } >= 0,
-            "capability pipe nonblocking setup failed"
-        );
-        Ok(Self {
-            stream,
-            bytes: Vec::new(),
-            eof: false,
-        })
-    }
-    fn drain(&mut self) -> Result<()> {
-        // A fixed quantum keeps continuous writers from starving the deadline or other pipe.
-        for _ in 0..8 {
-            let mut chunk = [0; 8192];
-            #[cfg(test)]
-            testing::read()?;
-            match self.stream.read(&mut chunk) {
-                Ok(0) => {
-                    self.eof = true;
-                    break;
-                }
-                Ok(n) => {
-                    let retained = n.min((LIMIT + 1).saturating_sub(self.bytes.len()));
-                    self.bytes.extend_from_slice(&chunk[..retained]);
-                }
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                Err(_) => anyhow::bail!("capability pipe read failed"),
-            }
-        }
-        Ok(())
-    }
-}
+#[path = "runner_probe/unix_pipe.rs"]
+mod pipe;
+#[cfg(windows)]
+#[path = "runner_probe/windows_pipe.rs"]
+mod pipe;
+#[cfg(any(unix, windows))]
+use pipe::Pipe;
+#[cfg(any(unix, windows))]
 pub(crate) fn capture(binary: &Path) -> Result<Output> {
     let mut command = Command::new(binary);
     command
@@ -176,7 +113,8 @@ pub(crate) fn capture(binary: &Path) -> Result<Output> {
     };
     #[cfg(all(test, unix))]
     testing::record_child(probe.child.id());
-    #[cfg(unix)]
+    #[cfg(all(test, windows))]
+    testing::record_windows_handles(&probe.child);
     let result = (|| {
         let mut stdout = Pipe::new(probe.child.stdout.take().context("probe stdout missing")?)?;
         let mut stderr = Pipe::new(probe.child.stderr.take().context("probe stderr missing")?)?;
@@ -208,46 +146,21 @@ pub(crate) fn capture(binary: &Path) -> Result<Output> {
             thread::sleep(Duration::from_millis(10));
         }
     })();
-    #[cfg(unix)]
-    return match (result, probe.stop()) {
+    match (result, probe.stop()) {
         (Ok(output), Ok(())) => Ok(output),
         (Err(error), Ok(())) => Err(error),
         (Ok(_), Err(cleanup)) => Err(cleanup),
         (Err(error), Err(cleanup)) => Err(anyhow::anyhow!(
             "{error:#}; capability cleanup failed: {cleanup:#}"
         )),
-    };
-    #[cfg(not(unix))]
-    {
-        let stdout = reader(probe.child.stdout.take().context("probe stdout missing")?);
-        let stderr = reader(probe.child.stderr.take().context("probe stderr missing")?);
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            if let Some(status) = probe.child.try_wait()?
-                && stdout.is_finished()
-                && stderr.is_finished()
-            {
-                probe.stop()?;
-                let stdout = finish(stdout)?;
-                let stderr = finish(stderr)?;
-                ensure!(
-                    stdout.len() <= LIMIT && stderr.len() <= LIMIT,
-                    "capability output exceeds bound"
-                );
-                return Ok(Output {
-                    status,
-                    stdout,
-                    stderr,
-                });
-            }
-            if Instant::now() >= deadline {
-                probe.stop()?;
-                anyhow::bail!("capability probe exceeded deadline");
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
     }
 }
+/// Reject platforms without a bounded pipe mechanism before starting a child.
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn capture(_binary: &Path) -> Result<Output> {
+    anyhow::bail!("bounded capability capture is unsupported on this platform")
+}
+
 #[cfg(test)]
 #[path = "runner_probe/testing.rs"]
 pub(crate) mod testing;

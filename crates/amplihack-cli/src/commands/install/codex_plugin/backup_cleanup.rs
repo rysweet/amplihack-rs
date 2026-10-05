@@ -94,7 +94,7 @@ fn scan(base: &Path) -> Result<Vec<Entry>> {
     Ok(entries)
 }
 
-/// Reject unsupported entry types before the legacy digest reader opens them.
+/// Reject unsupported entry types before the framed digest reader opens them.
 pub(super) fn original_digest(path: &Path) -> Result<String> {
     scan(path)?;
     digest(path)
@@ -114,7 +114,7 @@ fn inventory(pending: &Value, home: &Path) -> Result<Inventory> {
         record
             .original_digest
             .as_ref()
-            .is_none_or(|hash| hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit())),
+            .is_none_or(|hash| resources::current_digest(hash)),
         "invalid backup cleanup original digest; record retained"
     );
     let mut paths = BTreeMap::new();

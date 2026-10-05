@@ -104,7 +104,7 @@ fn validate_journal(pending: &Value, home: &Path) -> Result<()> {
     ensure!(
         pending["target_digest"]
             .as_str()
-            .is_some_and(|s| s.len() == 64)
+            .is_some_and(resources::current_digest)
             && pending.get("snapshots").is_some()
             && ["config", "hooks", "marketplace", "ledger"]
                 .iter()
@@ -114,8 +114,10 @@ fn validate_journal(pending: &Value, home: &Path) -> Result<()> {
     if !pending["ledger"].is_null() {
         let previous: Ownership = serde_json::from_value(pending["ledger"].clone())?;
         ensure!(
-            previous.schema_version == 1 && previous.codex_home == home,
-            "invalid recovery ownership scope; record retained"
+            previous.schema_version == 1
+                && previous.codex_home == home
+                && resources::current_digest(&previous.package_digest),
+            "legacy or invalid recovery ownership proof; reconcile manually; record retained"
         );
     }
     Ok(())

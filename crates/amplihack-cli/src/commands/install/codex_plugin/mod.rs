@@ -67,6 +67,8 @@ mod backup_cleanup_tests;
 #[cfg(test)]
 mod cleanup_performance_tests;
 #[cfg(test)]
+mod digest_tests;
+#[cfg(test)]
 mod durability_tests;
 #[cfg(test)]
 mod recovery_tests;

@@ -6,6 +6,9 @@ pub(super) struct Mode {
     pub resume: bool,
     pub last: bool,
     pub session: bool,
+    pub delimiter: bool,
+    pub stdin_marker: bool,
+    pub trailing_images: bool,
     pub add_dir: bool,
     pub prompt_option: bool,
 }
@@ -16,26 +19,52 @@ pub(super) fn classify(args: &[String]) -> io::Result<Mode> {
         resume: false,
         last: false,
         session: false,
+        delimiter: false,
+        stdin_marker: false,
+        trailing_images: false,
         add_dir: false,
         prompt_option: false,
     };
     let mut command_seen = false;
     let mut positional = false;
     let mut exec_command_pending = false;
+    let mut positionals = Vec::new();
     let mut index = 0;
     while index < args.len() {
         let arg = &args[index];
-        if positional {
-            if mode.resume {
-                mode.session = true;
-            }
+        mode.trailing_images = false;
+        if positional || arg == "-" {
+            positionals.push(arg.as_str());
+            exec_command_pending = false;
         } else if arg == "--" {
             positional = true;
+            mode.delimiter = true;
         } else if arg.starts_with('-') {
             let name = arg.split('=').next().unwrap();
             mode.last |= name == "--last";
             mode.add_dir |= name == "--add-dir";
             mode.prompt_option |= name == "--prompt";
+            // Shared root/exec and interactive-resume images are variadic.
+            // Exec resume has its own unary image option. Inline/attached
+            // values close the occurrence, as clap's native parser does.
+            let image = name == "--image" || arg.starts_with("-i");
+            if image && !arg.contains('=') && (name == "--image" || arg == "-i") {
+                index += 1;
+                if index == args.len() || args[index].starts_with('-') {
+                    return Err(io::Error::new(
+                        ErrorKind::InvalidInput,
+                        "Codex image requires a value",
+                    ));
+                }
+                if !(mode.exec && mode.resume) {
+                    while index + 1 < args.len() && !args[index + 1].starts_with('-') {
+                        index += 1;
+                    }
+                    mode.trailing_images = index + 1 == args.len();
+                }
+                index += 1;
+                continue;
+            }
             let long_value = [
                 "--ask-for-approval",
                 "--model",
@@ -108,18 +137,32 @@ pub(super) fn classify(args: &[String]) -> io::Result<Mode> {
             mode.resume = arg == "resume";
             exec_command_pending = mode.exec;
             if !mode.exec && !mode.resume {
+                positionals.push(arg.as_str());
                 positional = true;
             }
         } else if exec_command_pending && arg == "resume" {
             mode.resume = true;
             exec_command_pending = false;
         } else {
-            if mode.resume {
-                mode.session = true;
-            }
+            positionals.push(arg.as_str());
             exec_command_pending = false;
         }
         index += 1;
+    }
+    // A supplied envelope owns the prompt slot. Preserve one explicit exec
+    // stdin marker, but never append a second prompt to competing caller text.
+    let prompt_positions = if mode.resume && !mode.last && !positionals.is_empty() {
+        mode.session = true;
+        &positionals[1..]
+    } else {
+        &positionals[..]
+    };
+    mode.stdin_marker = mode.exec && prompt_positions == ["-"];
+    if !prompt_positions.is_empty() && !mode.stdin_marker {
+        return Err(io::Error::new(
+            ErrorKind::InvalidInput,
+            "Codex caller positional prompt conflicts with supplied prompt",
+        ));
     }
     Ok(mode)
 }
@@ -132,11 +175,7 @@ mod tests {
     }
     #[test]
     fn values_and_delimiters_cannot_select_commands_or_flags() {
-        for args in [
-            vec!["--model", "exec"],
-            vec!["--", "exec"],
-            vec!["-mresume"],
-        ] {
+        for args in [vec!["--model", "exec"], vec!["-mresume"]] {
             let parsed = mode(&args);
             assert!(!parsed.exec && !parsed.resume);
         }
@@ -144,13 +183,13 @@ mod tests {
         assert!(parsed.resume && parsed.session && !parsed.last);
         let parsed = mode(&["exec", "resume", "--", "--last"]);
         assert!(parsed.resume && parsed.session && !parsed.last);
+        assert!(classify(&["--".into(), "exec".into()]).is_err());
         let parsed = mode(&["--ask-for-approval", "exec", "-mresume", "e"]);
         assert!(parsed.exec && !parsed.resume);
     }
     #[test]
     fn resume_options_can_follow_session_and_missing_values_fail() {
-        let parsed = mode(&["resume", "session", "--last"]);
-        assert!(parsed.resume && parsed.last && parsed.session);
+        assert!(classify(&["resume".into(), "session".into(), "--last".into()]).is_err());
         assert!(classify(&["--model".into()]).is_err());
         assert!(classify(&["--unknown".into(), "exec".into()]).is_err());
     }

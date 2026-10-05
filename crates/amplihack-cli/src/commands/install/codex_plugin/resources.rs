@@ -57,32 +57,55 @@ pub(super) fn copy_tree(
 pub(super) fn digest(root: &Path) -> Result<String> {
     #[cfg(test)]
     super::cleanup_performance_tests::DIGESTS.with(|n| n.set(n.get() + 1));
+    fn field(hash: &mut Sha256, bytes: &[u8]) {
+        hash.update((bytes.len() as u64).to_le_bytes());
+        hash.update(bytes);
+    }
     fn walk(path: &Path, base: &Path, hash: &mut Sha256) -> Result<()> {
         let mut entries = fs::read_dir(path)?.collect::<std::io::Result<Vec<_>>>()?;
         entries.sort_by_key(|e| e.file_name());
         for e in entries {
-            hash.update(e.path().strip_prefix(base)?.as_os_str().as_encoded_bytes());
+            field(
+                hash,
+                e.path().strip_prefix(base)?.as_os_str().as_encoded_bytes(),
+            );
             let kind = e.file_type()?;
             if kind.is_symlink() {
-                hash.update(b"link");
-                hash.update(fs::read_link(e.path())?.as_os_str().as_encoded_bytes());
+                hash.update(b"L");
+                field(
+                    hash,
+                    fs::read_link(e.path())?.as_os_str().as_encoded_bytes(),
+                );
             } else if kind.is_dir() {
-                hash.update(b"dir");
+                hash.update(b"D");
                 walk(&e.path(), base, hash)?;
             } else {
-                hash.update(b"file");
+                ensure!(kind.is_file(), "unsupported Codex digest entry type");
+                hash.update(b"F");
                 let bytes = fs::read(e.path())?;
                 #[cfg(test)]
                 super::cleanup_performance_tests::HASHED_BYTES
                     .with(|n| n.set(n.get() + bytes.len() as u64));
-                hash.update(bytes);
+                field(hash, &bytes);
             }
         }
         Ok(())
     }
+    ensure!(
+        fs::symlink_metadata(root)?.is_dir()
+            && !fs::symlink_metadata(root)?.file_type().is_symlink(),
+        "nonregular Codex digest root"
+    );
     let mut hash = Sha256::new();
+    hash.update(b"amplihack-codex-tree-v2\0");
     walk(root, root, &mut hash)?;
-    Ok(format!("{:x}", hash.finalize()))
+    Ok(format!("v2:{:x}", hash.finalize()))
+}
+/// Legacy unframed identities cannot authorize adoption, replacement or cleanup.
+pub(super) fn current_digest(value: &str) -> bool {
+    value
+        .strip_prefix("v2:")
+        .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 pub(super) fn validate_skill_names(
     directory: &Path,

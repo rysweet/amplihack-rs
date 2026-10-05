@@ -137,3 +137,23 @@ pub fn with_fault<R>(injected: Fault, run: impl FnOnce() -> R) -> R {
 pub fn child_pid() -> u32 {
     CHILD.with(|p| p.get().expect("probe child recorded"))
 }
+
+#[cfg(windows)]
+thread_local! {
+    static WINDOWS_HANDLES: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+#[cfg(windows)]
+pub(super) fn record_windows_handles(child: &Child) {
+    use std::os::windows::io::AsRawHandle;
+    WINDOWS_HANDLES.with(|handles| {
+        *handles.borrow_mut() = vec![
+            child.as_raw_handle() as usize,
+            child.stdout.as_ref().unwrap().as_raw_handle() as usize,
+            child.stderr.as_ref().unwrap().as_raw_handle() as usize,
+        ]
+    });
+}
+#[cfg(windows)]
+pub fn windows_handles() -> Vec<usize> {
+    WINDOWS_HANDLES.with(|handles| handles.borrow().clone())
+}

@@ -169,7 +169,12 @@ fn finish_codex_delivery(
     }
     command.args(args);
     if exec {
-        command.arg("-");
+        if !mode.stdin_marker {
+            if mode.trailing_images && !mode.delimiter {
+                command.arg("--");
+            }
+            command.arg("-");
+        }
         // The full effective envelope is stdin for every size, with EOF sent
         // by the subprocess owner. Delivery preference cannot change modes.
         finish_prompt_delivery(
@@ -198,7 +203,9 @@ fn finish_codex_delivery(
                 "Codex interactive mode requires terminal stdin and positional prompt delivery; use exec",
             ));
         }
-        command.arg("--");
+        if !mode.delimiter {
+            command.arg("--");
+        }
         finish_prompt_delivery(
             command,
             prompt,

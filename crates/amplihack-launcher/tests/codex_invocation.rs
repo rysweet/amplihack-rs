@@ -89,6 +89,11 @@ fn invalid_prompt_and_conflicting_mode_options_fail_before_spawn() {
         (vec!["--prompt", "other"], "task"),
         (vec!["exec", "resume", "--add-dir", "/d0", "--last"], "task"),
         (vec!["resume", "--last", "session-123"], "task"),
+        (vec!["--", "exec"], "task"),
+        (
+            vec!["--remote-auth-token-env", "exec", "--", "resume"],
+            "task",
+        ),
     ] {
         let error = build(&args, prompt).expect_err("invalid Codex request must be rejected");
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
@@ -145,8 +150,6 @@ fn supported_resume_and_command_like_values_retain_terminal_transport() {
         vec!["resume", "session-123", "--include-non-interactive"],
         vec!["--remote", "exec"],
         vec!["--remote-auth-token-env=resume", "--no-daemon"],
-        vec!["--remote-auth-token-env", "exec", "--", "resume"],
-        vec!["--", "exec"],
     ] {
         let d = build(&args, "continue λ").unwrap();
         let mut expected: Vec<String> = args.iter().map(|s| (*s).into()).collect();

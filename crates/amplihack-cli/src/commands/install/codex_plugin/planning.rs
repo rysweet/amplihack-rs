@@ -30,8 +30,10 @@ pub(super) fn prepare(
         .transpose()?;
     if let Some(old) = &previous {
         ensure!(
-            old.schema_version == 1 && old.codex_home == home,
-            "Codex ownership scope changed; uninstall previous scope first"
+            old.schema_version == 1
+                && old.codex_home == home
+                && resources::current_digest(&old.package_digest),
+            "legacy or changed Codex ownership proof; preserve package and reconcile manually"
         );
     }
     let package = root.join("market/plugin");

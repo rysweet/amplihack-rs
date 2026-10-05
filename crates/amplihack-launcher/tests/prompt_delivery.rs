@@ -332,21 +332,16 @@ fn codex_exec_prompt_tokens_do_not_reopen_resume_option_parsing() {
     ] {
         let mut args = vec!["--model".to_owned(), "exec".to_owned(), "exec".to_owned()];
         args.extend(tail.into_iter().map(String::from));
-        let delivered = build_tool_command_with_prompt_delivery(
+        let error = build_tool_command_with_prompt_delivery(
             AgentBinary::Codex,
             Path::new("."),
             &args,
             "full envelope",
             PromptDelivery::Stdin,
         )
-        .expect("prompt tokens cannot select a resume command");
-        let mut expected = args;
-        expected.push("-".into());
-        assert_eq!(argv(&delivered.command), expected);
-        assert_eq!(
-            delivered.stdin_payload.as_deref(),
-            Some(b"full envelope".as_slice())
-        );
+        .expect_err("competing positional prompts must fail before spawning");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("positional prompt conflicts"));
     }
 }
 
@@ -434,8 +429,7 @@ fn codex_command_like_values_and_delimited_tokens_preserve_interactive_limits() 
     for args in [
         vec!["--model", "exec"],
         vec!["--profile", "resume"],
-        vec!["--", "exec"],
-        vec!["--", "resume"],
+        vec!["--"],
     ] {
         let args: Vec<String> = args.into_iter().map(String::from).collect();
         let delivered = build_tool_command_with_prompt_delivery(

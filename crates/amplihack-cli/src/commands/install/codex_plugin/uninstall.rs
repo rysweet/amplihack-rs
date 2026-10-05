@@ -21,8 +21,8 @@ pub(super) fn uninstall() -> Result<()> {
     };
     let record: Ownership = serde_json::from_value(record)?;
     ensure!(
-        record.schema_version == 1,
-        "unknown Codex ownership version; refusing removal"
+        record.schema_version == 1 && resources::current_digest(&record.package_digest),
+        "legacy or unknown Codex ownership proof; preserve package and reconcile manually"
     );
     let binary =
         selected_binary()?.context("Codex required to unregister owned plugin before deletion")?;

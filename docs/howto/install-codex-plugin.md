@@ -155,3 +155,10 @@ An interrupted cleanup can resume when every remaining entry matches that
 inventory. Changed or extra entries stop cleanup and retain the journal. A
 partially deleted historical backup without an inventory requires manual
 reconciliation; preserve the available backup and journal.
+
+Package identities use `v2:` SHA-256 digests over a versioned tree encoding.
+Each sorted entry includes a length-prefixed relative path, an entry type, and
+length-prefixed file bytes or symlink target. Legacy unframed digest records
+cannot prove original ownership: install, uninstall and recovery retain the
+package, backup and journal for manual reconciliation instead of adopting
+current contents. Do not remove these records to force cleanup.
