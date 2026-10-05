@@ -36,14 +36,19 @@ while [ $# -gt 0 ]; do
   esac
 done
 case "$PR" in ''|*[!0-9]*) echo "ERROR: --pr must be a positive integer (got '${PR}')" >&2; exit 2 ;; esac
+# This gate's own directory, found before the cd below because BASH_SOURCE may
+# be relative. Every helper the gate sources or runs comes from here, and from
+# nowhere a pull request could populate.
+GATE_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
 # gh resolves {owner}/{repo} from the working directory, so every read below
 # must run inside the repository the PR belongs to.
 cd "$REPO" 2>/dev/null || { echo "ERROR: --repo '${REPO}' is not a directory; refusing to read PR state from an unknown working directory." >&2; exit 2; }
 # Decide whether a state dir was given BEFORE the fallback below: an empty
 # --state-dir must not turn the world-writable TMPDIR into crusty evidence.
 if [ -n "$STATE_DIR" ]; then STATE_DIR_GIVEN="true"; else STATE_DIR_GIVEN="false"; fi
-# The evidence bundle (section 8) still needs somewhere to go: created private
-# if missing, but an existing dir keeps its mode, which sections 6b and 6c judge.
+# The evidence bundle (section 8) still needs somewhere to go. The gate only
+# creates a missing directory, under umask 077; it never changes the mode of
+# an existing one, since sections 6b and 6c judge exactly that.
 STATE_DIR="${STATE_DIR:-${TMPDIR:-/tmp}}"
 ( umask 077 && mkdir -p -- "$STATE_DIR" ) || exit 2
 AMPLIHACK_BIN="${AMPLIHACK_BIN:-amplihack}"
@@ -106,27 +111,20 @@ note "reviewDecision=${REVIEW_DECISION:-<none>}"
 [ "$REVIEW_DECISION" = "CHANGES_REQUESTED" ] && block "a review requests changes"
 
 # --- 4. Review threads resolved --------------------------------------------
-# PAGINATED. `reviewThreads(first:100)` without a `pageInfo` follow-up silently
-# truncates: a PR with 101 threads whose only unresolved one is the last would
-# report 0 unresolved and pass this gate. `--paginate` walks every page (gh
-# supplies $endCursor), emits one count per page, and the counts are summed. A
-# page that does not come back as a number makes the whole criterion
-# unreadable, which is a blocker.
-THREAD_PAGES="$(gh api graphql --paginate -F pr="$PR" -F owner='{owner}' -F name='{repo}' -f query='
-  query($owner:String!,$name:String!,$pr:Int!,$endCursor:String){repository(owner:$owner,name:$name){
-    pullRequest(number:$pr){reviewThreads(first:100,after:$endCursor){
-      pageInfo{hasNextPage endCursor}
-      nodes{isResolved isOutdated}}}}}' \
-  --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved==false and .isOutdated==false)] | length' 2>/dev/null)"
-THREADS="$(printf '%s\n' "$THREAD_PAGES" \
-  | awk 'NF==0{next} /^[0-9]+$/{s+=$1;n++;next} {bad=1} END{if(bad||!n) exit 1; print s}')" || THREADS=""
-if [ -z "$THREADS" ]; then
-  block "review-thread state is unreadable; an unreadable criterion is a failure, not a pass"
-elif [ "$THREADS" != "0" ]; then
-  block "${THREADS} unresolved review thread(s)"
-else
-  note "review_threads_unresolved=0"
-fi
+# Counted by autodrive_platform_facts.sh beside this gate, the same reader the
+# merge round uses, so the count is written once. It is PAGINATED:
+# `reviewThreads(first:100)` without a `pageInfo` follow-up silently truncates,
+# and a PR with 101 threads whose only unresolved one is the last would report
+# 0 and pass this gate. Its per-page counts are summed, and a page that is not
+# a number gives `unreadable`. Unreadable, or no reader, is a blocker.
+THREADS=""
+[ -n "$GATE_HOME" ] && [ -f "${GATE_HOME}/autodrive_platform_facts.sh" ] \
+  && THREADS="$(field "$(bash "${GATE_HOME}/autodrive_platform_facts.sh" "$PR" 2>/dev/null)" unresolved_threads "")"
+case "$THREADS" in
+  '' | *[!0-9]*) block "review-thread state is unreadable; an unreadable criterion is a failure, not a pass" ;;
+  0) note "review_threads_unresolved=0" ;;
+  *) block "${THREADS} unresolved review thread(s)" ;;
+esac
 
 # --- 5. CI on THIS head SHA -------------------------------------------------
 # `gh pr checks` exits non-zero when checks are failing or pending, and also
@@ -205,64 +203,65 @@ fi
 # they are read only from a state dir that was given explicitly, is owned by
 # this user and writable by nobody else, and only when they are regular files
 # rather than symlinks. The state helper is sourced from beside this gate and
-# from nowhere a pull request could populate. The workflow's writers keep it
-# private under any umask, 0002 included (autodrive_state.sh, PRIVATE STATE).
+# from nowhere a pull request could populate. The writers make the directory
+# and every file private whatever the caller's umask (autodrive_state.sh,
+# PRIVATE STATE), so on a host whose umask is 0002 this check still passes for
+# state the workflow wrote itself.
 #
 # Since #1517 the last loop-written round record must also check out against
 # crusty-records.tsv, the manifest autodrive_loop.sh writes before any agent
 # runs: autodrive_crusty_final rejects an injected, edited or archived record.
 # These checks only add to the ones above; none of them replaces one.
-GATE_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
-autodrive_private() { # autodrive_private <path>: owned here, not a symlink, no group/world write
-  local loose
-  [ -L "$1" ] && return 1
-  [ -O "$1" ] || return 1
-  loose="$(find "$1" -maxdepth 0 \( -perm -0020 -o -perm -0002 \) -print 2>/dev/null)" || return 1
-  [ -z "$loose" ]
+# autodrive_private <path> comes from autodrive_state.sh: owned by this user,
+# not a symlink, no group or world write bit.
+#
+# block_unless_private <what> <name>...: blocks each named file in STATE_DIR
+# that is a symlink, or that exists and is not a private regular file, as not
+# evidence of <what>. An empty name, or a file that does not exist, passes
+# here; the checks that read the file decide what absence means. Returns 1
+# when any file blocked.
+block_unless_private() {
+  local what="$1" f p rc=0
+  shift
+  for f in "$@"; do
+    [ -n "$f" ] || continue
+    p="${STATE_DIR}/${f}"
+    if [ -L "$p" ] || { [ -e "$p" ] && { [ ! -f "$p" ] || ! autodrive_private "$p"; }; }; then
+      block "${p} is not private to this user (a symlink, not a regular file, not owned by this user, or group/world-writable); ${what} there is not evidence"
+      rc=1
+    fi
+  done
+  return "$rc"
 }
 if [ "$STATE_DIR_GIVEN" != "true" ]; then
   block "no --state-dir was given, so the crusty loop's DONE/CLEAN state cannot be read; crusty evidence is never taken from the TMPDIR fallback"
 elif [ -z "$GATE_HOME" ] || [ ! -f "${GATE_HOME}/autodrive_state.sh" ]; then
   block "autodrive_state.sh is missing beside the merge gate (${GATE_HOME:-<unknown>}); the crusty-loop marker cannot be read"
+elif ! . "${GATE_HOME}/autodrive_state.sh"; then
+  block "autodrive_state.sh beside the merge gate could not be loaded; the crusty-loop marker cannot be read"
 elif ! autodrive_private "$STATE_DIR"; then
   block "state dir ${STATE_DIR} is not private to this user (not owned by this user, a symlink, or group/world-writable); crusty state there is not evidence"
-else
-  CRUSTY_OK="true"
-  for f in phases.tsv crusty-latest.json crusty-records.tsv; do
-    if [ -L "${STATE_DIR}/${f}" ] || { [ -e "${STATE_DIR}/${f}" ] && { [ ! -f "${STATE_DIR}/${f}" ] || ! autodrive_private "${STATE_DIR}/${f}"; }; }; then
-      block "${STATE_DIR}/${f} is not private to this user (a symlink, not a regular file, not owned by this user, or group/world-writable); crusty state there is not evidence"
-      CRUSTY_OK="false"
-    fi
-  done
-  if [ "$CRUSTY_OK" = "true" ]; then
-    # shellcheck source=/dev/null
-    if ! . "${GATE_HOME}/autodrive_state.sh"; then
-      block "autodrive_state.sh beside the merge gate could not be loaded; the crusty-loop marker cannot be read"
-    elif ! autodrive_phase_done "$STATE_DIR" "crusty-loop"; then
-      block "the crusty-loop phase is not recorded as done in ${STATE_DIR}; criterion 3 needs this run's crusty loop to have ended DONE"
+elif block_unless_private "crusty state" phases.tsv crusty-latest.json crusty-records.tsv; then
+  if ! autodrive_phase_done "$STATE_DIR" "crusty-loop"; then
+    block "the crusty-loop phase is not recorded as done in ${STATE_DIR}; criterion 3 needs this run's crusty loop to have ended DONE"
+  else
+    CRUSTY_VERDICT="MISSING"
+    [ -f "${STATE_DIR}/crusty-latest.json" ] && CRUSTY_VERDICT="$(field "$(cat "${STATE_DIR}/crusty-latest.json")" crusty_verdict MISSING)"
+    note "crusty_phase_done=true crusty_verdict=$(printf '%s' "$CRUSTY_VERDICT" | tr -cd 'A-Za-z_')"
+    [ "$CRUSTY_VERDICT" = "CLEAN" ] || block "the crusty loop's final crusty_verdict is not CLEAN in ${STATE_DIR}/crusty-latest.json; criterion 3 is not met"
+    # The record the manifest's last row names must be private too. Its
+    # name is validated before any path is built from it.
+    CRUSTY_ROW="$(autodrive_crusty_manifest_row "$STATE_DIR")" || CRUSTY_ROW=""
+    block_unless_private "crusty state" "${CRUSTY_ROW%% *}" || true
+    if CRUSTY_FINAL="$(autodrive_crusty_final "$STATE_DIR")"; then
+      note "crusty_reviewed_head_sha=$(printf '%s' "$CRUSTY_FINAL" | tr -cd '0-9a-f')"
+      CRUSTY_REVIEWED="$CRUSTY_FINAL"
     else
-      CRUSTY_VERDICT="MISSING"
-      [ -f "${STATE_DIR}/crusty-latest.json" ] && CRUSTY_VERDICT="$(field "$(cat "${STATE_DIR}/crusty-latest.json")" crusty_verdict MISSING)"
-      note "crusty_phase_done=true crusty_verdict=$(printf '%s' "$CRUSTY_VERDICT" | tr -cd 'A-Za-z_')"
-      [ "$CRUSTY_VERDICT" = "CLEAN" ] || block "the crusty loop's final crusty_verdict is not CLEAN in ${STATE_DIR}/crusty-latest.json; criterion 3 is not met"
-      # The record the manifest's last row names must be private too. Its
-      # name is validated before any path is built from it.
-      CRUSTY_ROW="$(autodrive_crusty_manifest_row "$STATE_DIR")" || CRUSTY_ROW=""
-      CRUSTY_RECORD="${CRUSTY_ROW%% *}"
-      if [ -n "$CRUSTY_RECORD" ] && { [ -e "${STATE_DIR}/${CRUSTY_RECORD}" ] || [ -L "${STATE_DIR}/${CRUSTY_RECORD}" ]; } \
-         && ! autodrive_private "${STATE_DIR}/${CRUSTY_RECORD}"; then
-        block "${STATE_DIR}/${CRUSTY_RECORD} is not private to this user (a symlink, not owned by this user, or group/world-writable); crusty state there is not evidence"
-      fi
-      if CRUSTY_FINAL="$(autodrive_crusty_final "$STATE_DIR")"; then
-        note "crusty_reviewed_head_sha=$(printf '%s' "$CRUSTY_FINAL" | tr -cd '0-9a-f')"
-        CRUSTY_REVIEWED="$CRUSTY_FINAL"
-      else
-        case "$CRUSTY_FINAL" in
-          crusty-loop-not-done|crusty-manifest-missing|crusty-record-missing|crusty-record-modified|crusty-not-clean|crusty-head-sha-empty) ;;
-          *) CRUSTY_FINAL="crusty-other" ;;
-        esac
-        block "crusty records in ${STATE_DIR} are not loop-written evidence (${CRUSTY_FINAL}); criterion 3 is not met"
-      fi
+      case "$CRUSTY_FINAL" in
+        crusty-loop-not-done|crusty-manifest-missing|crusty-record-missing|crusty-record-modified|crusty-not-clean|crusty-head-sha-empty) ;;
+        *) CRUSTY_FINAL="crusty-other" ;;
+      esac
+      block "crusty records in ${STATE_DIR} are not loop-written evidence (${CRUSTY_FINAL}); criterion 3 is not met"
     fi
   fi
 fi
@@ -280,12 +279,7 @@ if [ "$STATE_DIR_GIVEN" = "true" ]; then
   else
     TRUST_OK="true"
     MR_ROW="$(autodrive_manifest_row "$STATE_DIR" merge-ready)" || MR_ROW=""
-    for f in merge-ready-records.tsv "${MR_ROW%% *}" merge-ready-latest.json qa-evidence.json; do
-      [ -n "$f" ] || continue
-      if [ -L "${STATE_DIR}/${f}" ] || { [ -e "${STATE_DIR}/${f}" ] && { [ ! -f "${STATE_DIR}/${f}" ] || ! autodrive_private "${STATE_DIR}/${f}"; }; }; then
-        block "${STATE_DIR}/${f} is not private to this user (a symlink, not a regular file, not owned by this user, or group/world-writable); the qa evidence chain there is not evidence"
-      fi
-    done
+    block_unless_private "the qa evidence chain" merge-ready-records.tsv "${MR_ROW%% *}" merge-ready-latest.json qa-evidence.json || true
     QA_TRUST="$(autodrive_qa_trusted "$STATE_DIR" "$REC_COPY" "$QA_COPY" "$HEAD_SHA")" || true
     case "$QA_TRUST" in
       ok) note "qa_evidence_chain=ok" ;;
@@ -341,7 +335,8 @@ fi
 
 # --- 8. Record the evidence bundle BEFORE any merge ------------------------
 BUNDLE="${STATE_DIR}/merge-evidence-${PR}-${HEAD_SHA:0:12}.txt"
-( umask 077; rm -f -- "$BUNDLE"; { printf 'auto-drive-to-merge merge gate — PR #%s @ %s\n' "$PR" "$HEAD_SHA"
+( umask 077; rm -f -- "$BUNDLE"
+  { printf 'auto-drive-to-merge merge gate — PR #%s @ %s\n' "$PR" "$HEAD_SHA"
     printf 'captured: %s\n\nEVIDENCE\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf '  - %s\n' "${EVIDENCE[@]}"
     printf '\nBLOCKERS\n'

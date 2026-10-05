@@ -121,10 +121,21 @@ autodrive_private_dir() {
   return 0
 }
 
+# autodrive_private <path>: <path> is owned by this user, is not a symlink, and
+# has no group or world write bit. The merge gate's test for every state file
+# it reads as evidence (autodrive_merge_gate.sh sections 6b and 6c).
+autodrive_private() {
+  local loose
+  [ -L "$1" ] && return 1
+  [ -O "$1" ] || return 1
+  loose="$(find "$1" -maxdepth 0 \( -perm -0020 -o -perm -0002 \) -print 2>/dev/null)" || return 1
+  [ -z "$loose" ]
+}
+
 # autodrive_untrusted_entries <dir> <uid> <find action...> -> runs the action
 # on each entry directly in <dir> that the merge gate would refuse: a symlink,
 # an entry not owned by <uid>, or one with a group or world write bit. These
-# are the gate's own tests (autodrive_private in autodrive_merge_gate.sh).
+# are the tests of autodrive_private above, applied to a whole directory.
 autodrive_untrusted_entries() {
   local dir="${1:?dir}" me="${2:?uid}"
   shift 2

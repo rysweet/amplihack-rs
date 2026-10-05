@@ -15,8 +15,8 @@
 #
 # Criterion 6, reviews and approvals (#1518)
 # ------------------------------------------
-# approval_status is MET, NOT_MET or UNREADABLE, and approval_source says
-# what decided it:
+# approval_status is MET, NOT_MET, PENDING or UNREADABLE, and approval_source
+# says what decided it:
 #   review-decision  GitHub's reviewDecision: APPROVED is MET;
 #                    CHANGES_REQUESTED and REVIEW_REQUIRED are NOT_MET.
 #   required-count   reviewDecision is empty and the required approval count
@@ -27,7 +27,22 @@
 #                    UNSTABLE, so no required review blocks the merge: MET.
 #                    required_approvals stays empty: the count was not read,
 #                    and approval_source says what decided the status instead.
-#   unreadable       none of the above: UNREADABLE.
+#   other-blockers   reviewDecision is empty, the count cannot be read, and
+#                    mergeStateStatus is BLOCKED, DIRTY or BEHIND while another
+#                    blocker an agent can clear is present: a check in the
+#                    rollup that has not passed (or no checks at all), a
+#                    conflict (mergeable CONFLICTING, or DIRTY), or a branch
+#                    BEHIND its base. GitHub folds every rule into that one
+#                    state, so whether a review is also missing cannot be read
+#                    until those clear: PENDING. The merge round clears the
+#                    other blockers first and reads the approval again; it
+#                    does not route PENDING to a person.
+#   unreadable       none of the above: UNREADABLE. BLOCKED with every check
+#                    passed, no conflict and the branch up to date leaves only
+#                    the rules a person satisfies, a required review among them.
+# A check has passed when its conclusion (a check run) or state (a status
+# context) is SUCCESS, NEUTRAL or SKIPPED; anything else, an unfinished run
+# included, has not.
 # An empty reviewDecision does not mean that no review is required. GitHub
 # publishes a decision only when a rule on the base branch requires at least
 # one approving review. At a required count of 0 the field stays empty even
@@ -82,13 +97,20 @@ digits "$PR" || PR=""
 # other JSON reader is needed. `|` is not whitespace, so an empty field (an
 # empty reviewDecision) stays in place instead of collapsing; the base ref
 # is last, so a `|` inside it lands in BASE and fails the check below.
+# CHECKS sums up the rollup as pass, not-passed or none (see the header).
 VIEW_OK="false"
-STATE=""; DRAFT=""; MERGEABLE=""; MSTATE=""; DECISION=""; HEAD=""; BASE=""
-if [ -n "$PR" ] && LINE="$(gh pr view "$PR" --json state,isDraft,mergeable,mergeStateStatus,reviewDecision,headRefOid,baseRefName \
-  --jq '[.state, (.isDraft | tostring), .mergeable, .mergeStateStatus, (.reviewDecision // ""), .headRefOid, .baseRefName] | map(. // "" | tostring) | join("|")' 2>/dev/null)"; then
-  IFS='|' read -r STATE DRAFT MERGEABLE MSTATE DECISION HEAD BASE <<<"$LINE"
+STATE=""; DRAFT=""; MERGEABLE=""; MSTATE=""; DECISION=""; HEAD=""; CHECKS=""; BASE=""
+VIEW_FIELDS="state,isDraft,mergeable,mergeStateStatus,reviewDecision,headRefOid,statusCheckRollup,baseRefName"
+VIEW_JQ='[.state, (.isDraft | tostring), .mergeable, .mergeStateStatus, (.reviewDecision // ""), .headRefOid,
+  ((.statusCheckRollup // []) as $c | [$c[] | ((.conclusion // .state // "") | tostring | ascii_upcase)
+    | select(. != "SUCCESS" and . != "NEUTRAL" and . != "SKIPPED")] as $open
+    | if ($c | length) == 0 then "none" elif ($open | length) == 0 then "pass" else "not-passed" end),
+  .baseRefName] | map(. // "" | tostring) | join("|")'
+if [ -n "$PR" ] && LINE="$(gh pr view "$PR" --json "$VIEW_FIELDS" --jq "$VIEW_JQ" 2>/dev/null)"; then
+  IFS='|' read -r STATE DRAFT MERGEABLE MSTATE DECISION HEAD CHECKS BASE <<<"$LINE"
   [ -n "$STATE" ] && [ -n "$HEAD" ] && VIEW_OK="true"
 fi
+CHECKS="$(oneof "$CHECKS" unreadable pass not-passed none)"
 STATE="$(oneof "$STATE" UNKNOWN OPEN CLOSED MERGED)"
 DRAFT="$(oneof "$DRAFT" unknown true false)"
 MERGEABLE="$(oneof "$MERGEABLE" UNKNOWN MERGEABLE CONFLICTING)"
@@ -158,14 +180,23 @@ if [ "$VIEW_OK" = "true" ]; then
         SOURCE="required-count"
         if [ "$REQ" = "0" ]; then APPROVAL="MET"; else APPROVAL="NOT_MET"; fi
       else
-        case "$MSTATE" in CLEAN | HAS_HOOKS | UNSTABLE) APPROVAL="MET"; SOURCE="merge-state" ;; esac
+        # Another blocker an agent can clear (see other-blockers above).
+        OTHER="false"
+        [ "$CHECKS" = "pass" ] || OTHER="true"
+        [ "$MERGEABLE" = "CONFLICTING" ] && OTHER="true"
+        case "$MSTATE" in
+          CLEAN | HAS_HOOKS | UNSTABLE) APPROVAL="MET"; SOURCE="merge-state" ;;
+          DIRTY | BEHIND) APPROVAL="PENDING"; SOURCE="other-blockers" ;;
+          BLOCKED) [ "$OTHER" = "false" ] || { APPROVAL="PENDING"; SOURCE="other-blockers"; } ;;
+        esac
       fi
       ;;
   esac
 fi
 SHOWN_C="${CLASSIC:-unreadable}"; [ -z "$CLASSIC_RULE" ] || SHOWN_C="unknown(${CLASSIC_RULE})"
 SHOWN_R="${RULES:-unreadable}"; [ -z "$RULES_RULE" ] || SHOWN_R="unknown(${RULES_RULE})"
-echo "INFO: approval: status=${APPROVAL} source=${SOURCE} required=${REQ:-unknown} classic=${SHOWN_C} rulesets=${SHOWN_R} review_decision=${DECISION:-<empty>} merge_state=${MSTATE}" >&2
+echo "INFO: approval: status=${APPROVAL} source=${SOURCE} required=${REQ:-unknown} classic=${SHOWN_C}" \
+  "rulesets=${SHOWN_R} review_decision=${DECISION:-<empty>} merge_state=${MSTATE} mergeable=${MERGEABLE} checks=${CHECKS}" >&2
 
 printf '{"pr":"%s","state":"%s","is_draft":"%s","mergeable":"%s","merge_state":"%s","review_decision":"%s","head_sha":"%s","base_ref":"%s","unresolved_threads":"%s","required_approvals":"%s","approval_status":"%s","approval_source":"%s"}\n' \
   "$PR" "$STATE" "$DRAFT" "$MERGEABLE" "$MSTATE" "$DECISION" "$HEAD" "$BASE" "$THREADS" "$REQ" "$APPROVAL" "$SOURCE"

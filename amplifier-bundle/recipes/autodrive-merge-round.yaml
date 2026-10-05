@@ -9,8 +9,8 @@ author: "Amplihack Team"
 tags: ["auto-drive", "merge-ready", "qa-team", "verdict", "loop"]
 
 # NO-TIMEOUT POLICY (issue #439): no step declares `timeout` or `timeout_seconds`.
-# PROHIBITIONS: a hook-skipping commit flag and a branch-protection bypass are NEVER
-# used; see docs/reference/auto-drive-to-merge.md#two-absolute-prohibitions.
+# PROHIBITIONS: a hook-skipping commit flag and a branch-protection bypass are
+# NEVER used; see docs/reference/auto-drive-to-merge.md#two-absolute-prohibitions.
 
 recursion:
   max_depth: 6
@@ -28,47 +28,76 @@ context:
   autodrive_state_dir: ""
 
 steps:
+  # The tools this round runs, found ONCE: the first amplifier-bundle/tools
+  # under AMPLIHACK_HOME, REPO_PATH, the git toplevel, ~/.copilot or
+  # ~/.amplihack that holds every one of them. Later bash steps read the
+  # directory from autodrive_tools_dir, and step-04's prompt sources
+  # git-identity.sh from it. A missing install fails here by name, never as a
+  # blocker repeated every round (#1517).
+  - id: "step-00-tools-dir"
+    type: "bash"
+    command: |
+      set -uo pipefail
+      cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }
+      TOP=""; SEARCHED=""
+      if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        TOP="$(git rev-parse --show-toplevel 2>/dev/null)"
+      else
+        echo "[skip] not a git repo; the git toplevel is not searched for the auto-drive tools" >&2
+      fi
+      NEED="autodrive_merge_ready_files.sh autodrive_platform_facts.sh autodrive_round_evidence.sh"
+      NEED="${NEED} autodrive_state.sh autodrive_trust.sh git-identity.sh"
+      for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$TOP" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do
+        [ -n "$c" ] || continue
+        D="$c/amplifier-bundle/tools"; SEARCHED="${SEARCHED}${SEARCHED:+, }${D}"; OK="true"
+        for t in $NEED; do [ -f "$D/$t" ] || OK="false"; done
+        [ "$OK" = "true" ] && D="$(cd -- "$D" 2>/dev/null && pwd -P)" && [ -n "$D" ] || continue
+        # The path reaches step-04's prompt inside a double-quoted shell word: no
+        # quote, backslash, $, backtick, template brace or control byte. The
+        # trailing x keeps $(...) from hiding a newline.
+        case "$D" in *[\"\\\$\`]* | *'{{'* | *'}}'*) echo "WARNING: skipping an auto-drive tools path with a quote, backslash, \$, backtick or template brace" >&2; continue ;; esac
+        [ "$(printf '%s' "$D" | LC_ALL=C tr -d '\040-\176\200-\377'; printf x)" = "x" ] \
+          || { echo "WARNING: skipping an auto-drive tools path that holds a control byte" >&2; continue; }
+        echo "INFO: auto-drive tools from ${D}" >&2
+        printf '%s\n' "$D"
+        exit 0
+      done
+      echo "ERROR: autodrive-tools-not-found: no amplifier-bundle/tools holds all of ${NEED} (searched ${SEARCHED:-no root})" >&2
+      exit 1
+    output: "autodrive_tools_dir"
   # merge-ready refuses agents, so bash finds its files for step-02. A missing
-  # install, gadugi-test included, fails here by name, never as a blocker repeated every round (#1517).
+  # install, gadugi-test included, fails here by name, never as a blocker
+  # repeated every round (#1517).
   - id: "step-00-merge-ready-files"
     type: "bash"
     parse_json: true
     command: |
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }
-      R=""; SEARCHED=""; TOP=""
-      if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then TOP="$(git rev-parse --show-toplevel 2>/dev/null)"; else echo "[skip] not a git repo; the git toplevel is not searched for the resolver" >&2; fi
-      for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$TOP" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do
-        [ -n "$c" ] || continue
-        SEARCHED="${SEARCHED}${SEARCHED:+, }${c}/amplifier-bundle/tools"
-        [ -f "$c/amplifier-bundle/tools/autodrive_merge_ready_files.sh" ] && { R="$c/amplifier-bundle/tools/autodrive_merge_ready_files.sh"; break; }
-      done
-      [ -n "$R" ] || { echo "ERROR: merge-ready-skill-files-not-found: resolver autodrive_merge_ready_files.sh not found (searched ${SEARCHED:-no root})" >&2
-        exit 1; }
+      R="${AUTODRIVE_TOOLS_DIR:-${RECIPE_VAR_autodrive_tools_dir:-}}/autodrive_merge_ready_files.sh"
+      [ -f "$R" ] || { echo "ERROR: merge-ready-skill-files-not-found: resolver autodrive_merge_ready_files.sh not found (${R})" >&2; exit 1; }
       # Executed, never sourced: it prints one JSON line or a named ERROR.
       OUT="$(bash "$R")" || exit 1
-      command -v gadugi-test >/dev/null 2>&1 || { echo "ERROR: gadugi-test-not-installed: gadugi-test is not on PATH. Criterion 1 runs the qa-team scenarios with it in every repository type, and no agent can install it. Install it (npm install -g github:rysweet/gadugi-agentic-test) and run auto-drive again." >&2; exit 1; }
+      if ! command -v gadugi-test >/dev/null 2>&1; then
+        echo "ERROR: gadugi-test-not-installed: gadugi-test is not on PATH. Criterion 1 runs the qa-team scenarios" \
+          "with it in every repository type, and no agent can install it. Install it" \
+          "(npm install -g github:rysweet/gadugi-agentic-test) and run auto-drive again." >&2
+        exit 1
+      fi
       printf '%s\n' "$OUT"
     output: "merge_ready_files"
   # Commits after the clean crusty round (#1517 D4): a code commit removes the
   # crusty-loop marker, so step-00c runs crusty again on the current head.
+  # The measurement is `autodrive_round_evidence.sh crusty-range`.
   - id: "step-00b-crusty-range"
     type: "bash"
     parse_json: true
     command: |
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }
-      NO='{"rereview":"false","range":"not-checked","first_unreviewed_sha":"","base_sha":""}'; DIR="${AUTODRIVE_STATE_DIR:-}"; H=""; TOP=""
-      [ -n "$DIR" ] || { echo "WARNING: no autodrive_state_dir was passed to this round; the range is not checked here." >&2; printf '%s\n' "$NO"; exit 0; }
-      if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then TOP="$(git rev-parse --show-toplevel 2>/dev/null)"; else echo "[skip] not a git repo; the git toplevel is not searched for the auto-drive tools" >&2; fi
-      for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$TOP" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/autodrive_state.sh" ] && [ -f "$c/amplifier-bundle/tools/autodrive_trust.sh" ] && { H="$c/amplifier-bundle/tools"; break; }; done
-      [ -n "$H" ] || { echo "WARNING: autodrive_state.sh and autodrive_trust.sh not found together; the range is not checked here and step-01b reports it." >&2; printf '%s\n' "$NO"; exit 0; }
-      PR="${PR_NUMBER:-}"; case "$PR" in *[!0-9]*) PR="" ;; esac
-      BASE_REF="$(gh pr view ${PR:+"$PR"} --json baseRefName --jq .baseRefName 2>/dev/null || printf '')"
-      OUT="$(. "$H/autodrive_state.sh" && . "$H/autodrive_trust.sh" && autodrive_rereview_decision "$DIR" "$PWD" "$BASE_REF")" || OUT=""
-      case "$OUT" in '{"rereview":"'*) ;; *) echo "WARNING: autodrive_rereview_decision gave no decision; crusty is not re-run here." >&2; OUT="$NO" ;; esac
-      echo "INFO: crusty range at round start: $(printf '%s' "$OUT" | tr -cd 'A-Za-z0-9_:,{}"-')" >&2
-      printf '%s\n' "$OUT"
+      T="${AUTODRIVE_TOOLS_DIR:-${RECIPE_VAR_autodrive_tools_dir:-}}/autodrive_round_evidence.sh"
+      [ -f "$T" ] || { echo "ERROR: autodrive-tools-not-found: ${T}" >&2; exit 1; }
+      bash "$T" crusty-range
     output: "crusty_range"
   # The crusty loop, with its own termination. No continue_on_error: a failed,
   # STUCK or refused (exit 79) re-review fails the round.
@@ -96,70 +125,43 @@ steps:
     parse_json: true
     command: |
       set -uo pipefail
-      cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }; H=""; TOP=""; Q=""
-      if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then TOP="$(git rev-parse --show-toplevel 2>/dev/null)"; else echo "[skip] not a git repo; the git toplevel is not searched for the auto-drive tools" >&2; fi
-      for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$TOP" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/autodrive_state.sh" ] && [ -f "$c/amplifier-bundle/tools/autodrive_trust.sh" ] && { H="$c/amplifier-bundle/tools"; break; }; done
-      if [ -z "$H" ]; then echo "WARNING: autodrive_trust.sh not found; qa_evidence_sha is empty, so this round cannot reach MERGE_READY." >&2
-      else Q="$(. "$H/autodrive_state.sh" && . "$H/autodrive_trust.sh" && autodrive_qa_evidence_sha "${AUTODRIVE_QA_EVIDENCE:-}")" || Q=""; fi
+      cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }
+      T="${AUTODRIVE_TOOLS_DIR:-${RECIPE_VAR_autodrive_tools_dir:-}}/autodrive_round_evidence.sh"
+      [ -f "$T" ] || { echo "ERROR: autodrive-tools-not-found: ${T}" >&2; exit 1; }
+      Q="$(bash "$T" qa-evidence-sha "${AUTODRIVE_QA_EVIDENCE:-}")" || Q=""
+      case "${#Q}:${Q}" in 40:*[!0123456789abcdef]* | 64:*[!0123456789abcdef]*) Q="" ;; 40:* | 64:*) ;; *) Q="" ;; esac
       [ -n "$Q" ] || echo "WARNING: the qa evidence is not a regular file; qa_evidence_sha is empty, so this round cannot reach MERGE_READY." >&2
       printf '{"qa_evidence_sha":"%s"}\n' "$Q"
     output: "qa_evidence_hash"
-  # Platform facts, criterion 6 included (#1518): autodrive_platform_facts.sh.
+  # Platform facts, criterion 6 included (#1518): autodrive_platform_facts.sh,
+  # which prints one JSON line whatever it can read. No line is a broken tool.
   - id: "step-01-platform-facts"
     type: "bash"
     parse_json: true
     command: |
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }
-      export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX; T=""; TOP=""; OUT=""; PR="${PR_NUMBER:-}"; case "$PR" in *[!0-9]*) PR="" ;; esac
-      if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then TOP="$(git rev-parse --show-toplevel 2>/dev/null)"; else echo "[skip] not a git repo; the git toplevel is not searched for the auto-drive tools" >&2; fi
-      for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$TOP" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/autodrive_platform_facts.sh" ] && { T="$c/amplifier-bundle/tools/autodrive_platform_facts.sh"; break; }; done
-      [ -z "$T" ] || OUT="$(bash "$T" "$PR")" || OUT=""
-      case "$OUT" in '{"pr":"'*) ;; *) echo "WARNING: autodrive_platform_facts.sh not found or gave no facts; every platform fact is unreadable, so this round cannot reach MERGE_READY." >&2
-        OUT="$(printf '{"pr":"%s","state":"UNKNOWN","is_draft":"unknown","mergeable":"UNKNOWN","merge_state":"UNKNOWN","review_decision":"","head_sha":"","base_ref":"","unresolved_threads":"unreadable","required_approvals":"","approval_status":"UNREADABLE","approval_source":"unreadable"}' "$PR")" ;; esac
-      printf '%s\n' "$OUT"
+      export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
+      PR="${PR_NUMBER:-}"; case "$PR" in *[!0-9]*) PR="" ;; esac
+      T="${AUTODRIVE_TOOLS_DIR:-${RECIPE_VAR_autodrive_tools_dir:-}}/autodrive_platform_facts.sh"
+      [ -f "$T" ] || { echo "ERROR: autodrive-tools-not-found: ${T}" >&2; exit 1; }
+      OUT="$(bash "$T" "$PR")" || OUT=""
+      case "$OUT" in
+        '{"pr":"'*) printf '%s\n' "$OUT" ;;
+        *) echo "ERROR: autodrive-platform-facts-failed: autodrive_platform_facts.sh printed no facts" >&2; exit 1 ;;
+      esac
     output: "platform_facts"
+  # Criterion 3: `autodrive_round_evidence.sh crusty-evidence`, the loop's
+  # final crusty record and the commits after it (#1517 D4).
   - id: "step-01b-crusty-evidence"
     type: "bash"
     parse_json: true
     command: |
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }
-      # Criterion 3: autodrive_crusty_final (the merge gate runs it too), then the
-      # range from the reviewed head to HEAD (#1517 D4); the base sync may have
-      # added a merge. Every value emitted is from a fixed set or a hex SHA.
-      DIR="${AUTODRIVE_STATE_DIR:-}"; TOKEN="crusty-loop-not-done"; SHA=""; FIRST=""
-      if [ -z "$DIR" ]; then
-        echo "WARNING: no autodrive_state_dir was passed to this round; crusty evidence is ABSENT." >&2
-      else
-        H=""; TOP=""; if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then TOP="$(git rev-parse --show-toplevel 2>/dev/null)"; else echo "[skip] not a git repo; the git toplevel is not searched for autodrive_state.sh" >&2; fi
-        for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$TOP" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/autodrive_state.sh" ] && [ -f "$c/amplifier-bundle/tools/autodrive_trust.sh" ] && { H="$c/amplifier-bundle/tools"; break; }; done
-        if [ -z "$H" ]; then
-          echo "WARNING: autodrive_state.sh and autodrive_trust.sh not found (searched AMPLIHACK_HOME, REPO_PATH, git toplevel, ~/.copilot, ~/.amplihack); criterion 3 cannot be checked." >&2; TOKEN="crusty-other"
-        elif OUT="$(. "$H/autodrive_state.sh" && autodrive_crusty_final "$DIR")"; then
-          SHA="$OUT"; TOKEN=""; PR="${PR_NUMBER:-}"; case "$PR" in *[!0-9]*) PR="" ;; esac
-          BASE_REF="$(gh pr view ${PR:+"$PR"} --json baseRefName --jq .baseRefName 2>/dev/null || printf '')"
-          HEAD_NOW="$(git rev-parse --verify --quiet HEAD 2>/dev/null || printf '')"
-          RANGE="$(. "$H/autodrive_state.sh" && . "$H/autodrive_trust.sh" \
-            && autodrive_crusty_range "$PWD" "$SHA" "$HEAD_NOW" "$(autodrive_base_sha "$PWD" "$BASE_REF")")"
-          case "$RANGE" in ok) ;; crusty-range-unreadable) TOKEN="crusty-range-unreadable" ;;
-            crusty-unreviewed-commits:*) TOKEN="crusty-unreviewed-commits"; FIRST="${RANGE#*:}" ;; *) TOKEN="crusty-other" ;; esac
-        else TOKEN="${OUT:-crusty-other}"; fi
-      fi
-      case "$TOKEN" in
-        '') STATUS="DONE_CLEAN" ;;
-        crusty-loop-not-done) STATUS="ABSENT" ;;
-        crusty-not-clean) STATUS="NOT_CLEAN" ;;
-        crusty-manifest-missing|crusty-record-missing|crusty-record-modified|crusty-head-sha-empty) STATUS="UNTRUSTED" ;;
-        crusty-unreviewed-commits|crusty-range-unreadable) STATUS="UNREVIEWED_COMMITS" ;;
-        *) STATUS="UNTRUSTED"; TOKEN="crusty-other" ;;
-      esac
-      case "${#SHA}:${SHA}" in 40:*[!0123456789abcdef]*|64:*[!0123456789abcdef]*) SHA="" ;; 40:*|64:*) ;; *) SHA="" ;; esac
-      case "${#FIRST}:${FIRST}" in 40:*[!0123456789abcdef]*|64:*[!0123456789abcdef]*) FIRST="" ;; 40:*|64:*) ;; *) FIRST="" ;; esac
-      [ -n "$SHA" ] || [ "$STATUS" != "DONE_CLEAN" ] || { STATUS="UNTRUSTED"; TOKEN="crusty-other"; }
-      [ -n "$FIRST" ] || [ "$TOKEN" != "crusty-unreviewed-commits" ] || TOKEN="crusty-range-unreadable"
-      echo "INFO: crusty evidence: status=${STATUS} reason=${TOKEN:-none} reviewed_head_sha=${SHA:-none} first_unreviewed_sha=${FIRST:-none}" >&2
-      printf '{"crusty_status":"%s","crusty_reason":"%s","crusty_reviewed_head_sha":"%s","crusty_first_unreviewed_sha":"%s"}\n' "$STATUS" "$TOKEN" "$SHA" "$FIRST"
+      T="${AUTODRIVE_TOOLS_DIR:-${RECIPE_VAR_autodrive_tools_dir:-}}/autodrive_round_evidence.sh"
+      [ -f "$T" ] || { echo "ERROR: autodrive-tools-not-found: ${T}" >&2; exit 1; }
+      bash "$T" crusty-evidence
     output: "crusty_evidence"
   - id: "step-02-merge-ready-assessment"
     agent: "amplihack:core:reviewer"
@@ -206,8 +208,11 @@ steps:
         `quality-audit-convergence-crusty-not-done-clean` with `crusty_reason`.
       - **Criterion 6:** met when `approval_status` is `MET`, whatever
         `review_decision` and `required_approvals` say (either may be empty).
-        For `NOT_MET` report `changes-requested` or `required-approval-missing`,
-        for `UNREADABLE` report `approval-state-unreadable`, citing `approval_source`.
+        For `NOT_MET` report `changes-requested` or `required-approval-missing`.
+        For `PENDING` report `approval-pending-other-blockers`: the required
+        count is unknown and failing or pending checks, a conflict or a BEHIND
+        branch keep `merge_state` from saying whether a review is missing.
+        For `UNREADABLE` report `approval-state-unreadable`. Cite `approval_source`.
       - **Criterion 8:** GitHub applies protection and rulesets to `merge_state`;
         `CLEAN`, `HAS_HOOKS` or `UNSTABLE` means none blocks the merge. A 404
         from the protection API is a token without admin rights, not a blocker.
@@ -254,38 +259,24 @@ steps:
         esac
       fi
       case "$BLOCKERS" in \[*\]) ;; *) BLOCKERS='[]' ;; esac
-      # Measured evidence outranks the model: it downgrades MERGE_READY. Missing evidence fails closed.
-      QA="$(x "${QA_EVIDENCE:-${RECIPE_VAR_qa_evidence:-}}" qa_status MISSING)"; CI="$(x "${CI_EVIDENCE:-${RECIPE_VAR_ci_evidence:-}}" ci_status MISSING)"
-      CONFLICT="$(x "${MERGE_SYNC:-${RECIPE_VAR_merge_sync:-}}" conflict unknown)"; THREADS="$(x "${PLATFORM_FACTS:-${RECIPE_VAR_platform_facts:-}}" unresolved_threads unreadable)"
-      CRUSTY="$(x "${CRUSTY_EVIDENCE:-${RECIPE_VAR_crusty_evidence:-}}" crusty_status MISSING)"; APPROVAL="$(x "${PLATFORM_FACTS:-${RECIPE_VAR_platform_facts:-}}" approval_status MISSING)"
-      case "$CRUSTY" in DONE_CLEAN|ABSENT|NOT_CLEAN|UNTRUSTED|UNREVIEWED_COMMITS|MISSING) ;; *) CRUSTY="OTHER" ;; esac
-      case "$APPROVAL" in MET|NOT_MET|UNREADABLE|MISSING) ;; *) APPROVAL="OTHER" ;; esac
-      # D5: the qa evidence must still be the file step-00d hashed before any agent ran.
-      QH="$(x "${QA_EVIDENCE_HASH:-${RECIPE_VAR_qa_evidence_hash:-}}" qa_evidence_sha '')"; H=""; TOP=""; QNOW=""
-      case "${#QH}:${QH}" in 40:*[!0123456789abcdef]*|64:*[!0123456789abcdef]*) QH="" ;; 40:*|64:*) ;; *) QH="" ;; esac
-      if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then TOP="$(git rev-parse --show-toplevel 2>/dev/null)"; else echo "[skip] not a git repo; the git toplevel is not searched for the auto-drive tools" >&2; fi
-      for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$TOP" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/autodrive_state.sh" ] && [ -f "$c/amplifier-bundle/tools/autodrive_trust.sh" ] && { H="$c/amplifier-bundle/tools"; break; }; done
-      [ -z "$H" ] || QNOW="$(. "$H/autodrive_state.sh" && . "$H/autodrive_trust.sh" && autodrive_qa_evidence_sha "${AUTODRIVE_QA_EVIDENCE:-}")" || QNOW=""
-      DOWNGRADE=""
-      [ "$QA" = "PASS" ] || DOWNGRADE="${DOWNGRADE}qa_status=${QA} "
-      [ "$CI" = "GREEN" ] || DOWNGRADE="${DOWNGRADE}ci_status=${CI} "
-      [ "$CONFLICT" = "false" ] || DOWNGRADE="${DOWNGRADE}conflict=${CONFLICT} "
-      [ "$THREADS" = "0" ] || DOWNGRADE="${DOWNGRADE}unresolved_threads=${THREADS} "
-      [ "$CRUSTY" = "DONE_CLEAN" ] || DOWNGRADE="${DOWNGRADE}crusty_status=${CRUSTY} "
-      [ "$APPROVAL" = "MET" ] || DOWNGRADE="${DOWNGRADE}approval_status=${APPROVAL} "
-      { [ -n "$QH" ] && [ "$QH" = "$QNOW" ]; } || DOWNGRADE="${DOWNGRADE}qa_evidence=modified "
+      # Measured evidence outranks the model: `autodrive_round_evidence.sh
+      # measured-downgrade` names every measurement that disagrees (qa, CI,
+      # conflict, threads, crusty, approval, and the qa evidence hash step-00d
+      # took), or prints `none`. Missing evidence, or no answer, disagrees.
+      T="${AUTODRIVE_TOOLS_DIR:-${RECIPE_VAR_autodrive_tools_dir:-}}/autodrive_round_evidence.sh"
+      D=""; [ -f "$T" ] && D="$(bash "$T" measured-downgrade)" || D=""
+      case "$D" in
+        none) DOWNGRADE="" ;;
+        '') echo "WARNING: no measured evidence could be compared (${T}); it disagrees." >&2; DOWNGRADE="measured_evidence=unreadable " ;;
+        *) DOWNGRADE="$D" ;;
+      esac
       if [ -n "$DOWNGRADE" ] && [ "$VERDICT" = "MERGE_READY" ]; then
         echo "WARNING: downgrading MERGE_READY to NOT_MERGE_READY — measured evidence disagrees: ${DOWNGRADE}" >&2
         VERDICT="NOT_MERGE_READY"; SOURCE="evidence_downgrade"
       fi
-      if [ -n "$RECORD" ]; then umask 077 # the state dir must stay private
-        : > "${RECORD}.findings"
-        if command -v jq >/dev/null 2>&1; then printf '%s' "$BLOCKERS" | jq -r '.[]?.id // empty' 2>/dev/null > "${RECORD}.findings" || { echo "WARNING: blocker ids could not be parsed; the recurring-findings signal is incomplete this round." >&2; : > "${RECORD}.findings"; }
-        else echo "WARNING: jq unavailable; blocker ids cannot be extracted for the recurring-findings signal." >&2; fi
-        [ -z "$DOWNGRADE" ] || printf 'measured-evidence-disagrees\n' >> "${RECORD}.findings"
-      fi
-      COUNT=0
-      [ -n "$RECORD" ] && [ -f "${RECORD}.findings" ] && COUNT="$(grep -c . "${RECORD}.findings" 2>/dev/null || true)"
+      # The recurring-findings signal for the loop evaluator: blocker ids, and
+      # measured-evidence-disagrees on a downgrade, in the record's .findings.
+      COUNT=0; [ -f "$T" ] && COUNT="$(printf '%s' "$BLOCKERS" | bash "$T" findings "$DOWNGRADE")"
       case "$COUNT" in ''|*[!0-9]*) COUNT=0 ;; esac
       echo "INFO: merge-ready ${AUTODRIVE_ROUND_LABEL:-round}: verdict=${VERDICT} (source=${SOURCE}) blockers=${COUNT}" >&2
       printf '{"merge_ready_verdict":"%s","verdict_source":"%s","blocker_count":%s,"downgrade_reason":"%s"}\n' \
@@ -319,12 +310,12 @@ steps:
         positively identified as flaky, and say why.
       - **qa-team scenarios** with `gadugi_status` `NO_SCENARIOS`,
         `VALIDATE_FAILED` or `RUN_FAILED`, or that miss the changed behaviour:
-        use `Skill(skill="qa-team")` to write top-level `*.yaml` scenarios, each
-        with a top-level `name:`, in `gadugi_scenario_dir`. Gadugi scenarios
-        are required in every repository type, Rust CLI repositories
-        included: here that overrides the qa-team line that substitutes
-        `cargo test`. Run `gadugi-test validate -d <dir>`, then each scenario
-        on its own (gadugi-agentic-test #207), never a whole directory:
+        use `Skill(skill="qa-team")` and follow its auto-drive-to-merge
+        exception, which applies in every repository type, Rust CLI
+        repositories included. Write top-level `*.yaml` scenarios, each with a
+        top-level `name:`, in `gadugi_scenario_dir`. Run
+        `gadugi-test validate -d <dir>`, then each scenario on its own
+        (gadugi-agentic-test #207), never a whole directory:
         `gadugi-test run -d <dir> --scenario "<name>"`. Commit them. Never
         delete or weaken a failing scenario to reach a pass. If
         `gadugi_scenario_dir` is absolute or outside this repository, write
@@ -338,6 +329,10 @@ steps:
         try to clear them. The next round sends unreviewed commits to crusty,
         so every code commit you make costs one crusty run; an unreadable
         range (a shallow clone, a git error) needs a person.
+      - **`approval-pending-other-blockers`**: not a request for a person yet.
+        Clear the other blockers first: failing or pending CI, a conflict, a
+        branch behind its base. The next round reads the approval again, and
+        only then can it say whether a review is missing.
       - **`changes-requested`**, **`required-approval-missing`** and
         **`approval-state-unreadable`**: an agent cannot approve. Fix and
         answer any requested changes; the approval itself needs a person.
@@ -352,9 +347,8 @@ steps:
       Commit normally so the repository's hooks run, then push:
       ```bash
       # Commit as the workflow's identity (issue #1394); source it in THIS block.
-      for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(git rev-parse --show-toplevel)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do
-        [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/git-identity.sh" ] && { . "$c/amplifier-bundle/tools/git-identity.sh"; break; }
-      done
+      # step-00-tools-dir found git-identity.sh with this round's other tools.
+      . "{{autodrive_tools_dir}}/git-identity.sh" || { echo "ERROR: git identity helper not found; stop rather than commit under a guessed identity" >&2; exit 2; }
       amplihack_prepare_git_commit_identity || { echo "ERROR: git identity helper not found; stop rather than commit under a guessed identity" >&2; exit 2; }
 
       amplihack hygiene artifact-guard --repo . --mode pre-commit
@@ -368,33 +362,21 @@ steps:
       hooks, and never reach for a branch-protection bypass at merge time.
       Both are prohibited here without exception.
     output: "merge_ready_fixes"
+  # The round record the loop driver and the merge gate read, written private
+  # by `autodrive_round_evidence.sh round-record`: the verdict, head_sha, the
+  # qa and CI signals, and step-00d's qa_evidence_sha (#1517 D5).
   - id: "step-05-write-round-record"
     type: "bash"
     command: |
       set -uo pipefail
-      RECORD="${AUTODRIVE_ROUND_RECORD:-}"
-      [ -n "$RECORD" ] || { echo "ERROR: autodrive_round_record is required; the loop driver reads the round record from a file, never from stdout." >&2; exit 1; }
-      g() { printf '%s' "${1:-}" | amplihack orch helper extract-json --require-field "$2" \
-              | amplihack orch helper extract-field --field "$2" --default "$3"; }
-      HEAD_SHA=""
-      if (cd "${REPO_PATH:-.}" 2>/dev/null && git rev-parse --is-inside-work-tree >/dev/null 2>&1); then HEAD_SHA="$(cd "${REPO_PATH:-.}" && git rev-parse HEAD 2>/dev/null || printf '')"
-      else echo "[skip] not a git repo; the head sha is left empty so the merge gate refuses rather than merging unbound evidence" >&2; fi
-      VERDICT="$(g "${MERGE_READY_VERDICT:-${RECIPE_VAR_merge_ready_verdict:-}}" merge_ready_verdict NOT_MERGE_READY)"
-      case "$VERDICT" in MERGE_READY|NOT_MERGE_READY) ;; *) VERDICT="NOT_MERGE_READY" ;; esac
-      # step-00d's hash, whole hex or "": the gate trusts the qa evidence only at this hash (#1517 D5).
-      QH="$(g "${QA_EVIDENCE_HASH:-${RECIPE_VAR_qa_evidence_hash:-}}" qa_evidence_sha '')"
-      case "${#QH}:${QH}" in 40:*[!0123456789abcdef]*|64:*[!0123456789abcdef]*) QH="" ;; 40:*|64:*) ;; *) QH="" ;; esac
-      ( umask 077; [ -f "${RECORD}.findings" ] || : > "${RECORD}.findings"; rm -f -- "$RECORD"
-        printf '{"merge_ready_verdict":"%s","blocker_count":%s,"head_sha":"%s","round_label":"%s","test_signal":"%s","ci_signal":"%s","qa_status":"%s","ci_status":"%s","qa_evidence_sha":"%s"}\n' \
-        "$VERDICT" "$(g "${MERGE_READY_VERDICT:-${RECIPE_VAR_merge_ready_verdict:-}}" blocker_count 0)" "$HEAD_SHA" "${AUTODRIVE_ROUND_LABEL:-round}" \
-        "$(g "${QA_EVIDENCE:-${RECIPE_VAR_qa_evidence:-}}" qa_status MISSING)" "$(g "${CI_EVIDENCE:-${RECIPE_VAR_ci_evidence:-}}" ci_signal unreadable)" \
-        "$(g "${QA_EVIDENCE:-${RECIPE_VAR_qa_evidence:-}}" qa_status MISSING)" "$(g "${CI_EVIDENCE:-${RECIPE_VAR_ci_evidence:-}}" ci_status MISSING)" "$QH" > "$RECORD" )
-      echo "INFO: round record written to ${RECORD}" >&2
-      cat "$RECORD"
+      T="${AUTODRIVE_TOOLS_DIR:-${RECIPE_VAR_autodrive_tools_dir:-}}/autodrive_round_evidence.sh"
+      [ -f "$T" ] || { echo "ERROR: autodrive-tools-not-found: ${T}" >&2; exit 1; }
+      bash "$T" round-record
     output: "merge_round_record_written"
 
 output:
   format: "markdown"
   template: |
     # Merge-ready round {{autodrive_round_label}}
-    **Verdict:** {{merge_ready_verdict.merge_ready_verdict}} ({{merge_ready_verdict.blocker_count}} blocker(s)). **Record:** {{autodrive_round_record}}
+    **Verdict:** {{merge_ready_verdict.merge_ready_verdict}} ({{merge_ready_verdict.blocker_count}} blocker(s)).
+    **Record:** {{autodrive_round_record}}

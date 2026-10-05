@@ -25,6 +25,8 @@ Before running test commands, detect the repository type and use the appropriate
 
 **For Rust CLI repos** (e.g. amplihack-rs): substitute `cargo test` for all `gadugi-test run` invocations below, and use `tests/parity/scenarios/*.yaml` for cross-cutting CLI parity validation. Do **not** require the gadugi-agentic-test framework to be installed.
 
+**Exception: auto-drive-to-merge.** The Rust CLI substitution above does not apply when the auto-drive merge round (`autodrive-merge-round.yaml`, step-04) loads this skill to clear a `NO_SCENARIOS`, `VALIDATE_FAILED` or `RUN_FAILED` gadugi blocker, or `qa-team-scenarios-do-not-cover-the-change`. This paragraph is the one place that decision is written; step-04 points here. Auto-drive's criterion 1 is met only by gadugi scenarios that `gadugi-test validate` accepts and `gadugi-test run` passes, in every repository type, Rust CLI repositories included. There, write top-level `*.yaml` gadugi scenarios, each with a top-level `name:`, in the `gadugi_scenario_dir` the qa evidence names. `cargo test` cases and `tests/parity/scenarios` fixtures do not clear the blocker, and the next round reports it again. Auto-drive stops before this point when gadugi-test is not installed (`gadugi-test-not-installed`). See [Criterion 1 in the auto-drive reference](../../../docs/reference/auto-drive-to-merge.md#criterion-1-qa-team-scenarios-run-with-gadugi-test).
+
 ## Purpose [LEVEL 1]
 
 This skill helps you create **agentic outside-in tests** that verify application behavior from an external user's perspective without any knowledge of internal implementation. Using the gadugi-agentic-test framework (or `cargo test` for Rust CLI repos), you write declarative YAML scenarios that AI agents execute, observe, and validate.

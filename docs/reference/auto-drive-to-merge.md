@@ -173,7 +173,9 @@ each disagreement in `downgrade_reason`: `qa_status=<value>` unless `PASS`,
 `unresolved_threads=<value>` unless `0`, `crusty_status=<value>` unless
 `DONE_CLEAN`, `approval_status=<value>` unless `MET`, and
 `qa_evidence=modified` unless `qa-evidence.json` still has the hash step-00d
-took. A missing value never passes. A downgrade adds a
+took. A missing value never passes. The comparison is
+`autodrive_round_evidence.sh measured-downgrade`; a step that cannot run it
+downgrades with `measured_evidence=unreadable`. A downgrade adds a
 `measured-evidence-disagrees` finding so the loop evaluator sees a round that
 did not converge.
 
@@ -186,7 +188,8 @@ exports it to later bash steps as `RECIPE_VAR_<output>` only
 `${QA_EVIDENCE:-}` would see an empty string and fail closed every round:
 `MERGE_READY` downgraded, an empty `qa_evidence_sha` in the record, and no
 crusty round record at all. Every step-output read in
-`autodrive-crusty-round.yaml` and `autodrive-merge-round.yaml` is therefore
+`autodrive-crusty-round.yaml`, `autodrive-merge-round.yaml` and
+`autodrive_round_evidence.sh` (which holds merge-round step bodies) is therefore
 written `"${QA_EVIDENCE:-${RECIPE_VAR_qa_evidence:-}}"`, the form the work on issue
 #1511 uses, and `round_recipes_read_step_outputs_through_recipe_var` fails
 the build on a read without the fallback. The shell tests pass these values as
@@ -229,24 +232,41 @@ manual `/merge-ready` still needs `gadugi-test validate` and `gadugi-test run`
 
 | Step of `autodrive-merge-round.yaml` | Type | Output | Role |
 | --- | --- | --- | --- |
+| `step-00-tools-dir` | bash | `autodrive_tools_dir` | Finds the round's tools once (see below). |
 | `step-00-merge-ready-files` | bash | `merge_ready_files` | Finds `SKILL.md` and its template; stops the round when `gadugi-test` is not on `PATH`. |
-| `step-00b-crusty-range` | bash | `crusty_range` | Checks commits after the clean crusty round. |
+| `step-00b-crusty-range` | bash | `crusty_range` | `autodrive_round_evidence.sh crusty-range`: commits after the clean crusty round. |
 | `step-00c-crusty-rereview` | recipe | none | Runs `autodrive-crusty-loop` when `crusty_range.rereview == 'true'`. |
 | `merge-evidence` | recipe | `merge_sync`, `qa_evidence`, `ci_evidence` | `autodrive-merge-evidence`: base sync, suite commands, gadugi scenarios, CI wait. |
-| `step-00d-qa-evidence-hash` | bash | `qa_evidence_hash` | Hashes `qa-evidence.json` before any agent runs. |
+| `step-00d-qa-evidence-hash` | bash | `qa_evidence_hash` | `autodrive_round_evidence.sh qa-evidence-sha`: hashes `qa-evidence.json` before any agent runs. |
 | `step-01-platform-facts` | bash | `platform_facts` | Runs `autodrive_platform_facts.sh`. |
-| `step-01b-crusty-evidence` | bash | `crusty_evidence` | Criterion 3. |
+| `step-01b-crusty-evidence` | bash | `crusty_evidence` | `autodrive_round_evidence.sh crusty-evidence`: criterion 3. |
 | `step-02-merge-ready-assessment` | agent | `merge_ready_review` | Applies the criteria; emits `merge_ready_verdict`. |
-| `step-03-extract-merge-ready-verdict` | bash | `merge_ready_verdict` | Parses the verdict; applies the [measured downgrade](#measurement-outranks-the-model). |
+| `step-03-extract-merge-ready-verdict` | bash | `merge_ready_verdict` | Parses the verdict; applies the [measured downgrade](#measurement-outranks-the-model) (`measured-downgrade`) and writes the findings (`findings`). |
 | `step-04-address-blockers` | agent | `merge_ready_fixes` | On `NOT_MERGE_READY`: clears blockers, commits, pushes. |
-| `step-05-write-round-record` | bash | `merge_round_record_written` | Writes the round record under `umask 077`: `merge_ready_verdict`, `blocker_count`, `head_sha`, `round_label`, `test_signal`, `ci_signal`, `qa_status`, `ci_status`, `qa_evidence_sha`. |
+| `step-05-write-round-record` | bash | `merge_round_record_written` | `autodrive_round_evidence.sh round-record` writes the round record under `umask 077`: `merge_ready_verdict`, `blocker_count`, `head_sha`, `round_label`, `test_signal`, `ci_signal`, `qa_status`, `ci_status`, `qa_evidence_sha`. |
 
-Bash steps find tools under `amplifier-bundle/tools/` of
-`$AMPLIHACK_HOME`, `$REPO_PATH`, the git toplevel, `~/.copilot`, then
-`~/.amplihack`, and fail closed without them. A step that cannot enter
-`REPO_PATH` fails with `ERROR: cannot cd to REPO_PATH`. A failed step fails
-the round with no record and no manifest row; repeated, it ends the loop
-`STUCK`. An install error is never reported as a blocker.
+`step-00-tools-dir` finds the round's tools once: the first
+`amplifier-bundle/tools/` under `$AMPLIHACK_HOME`, `$REPO_PATH`, the git
+toplevel, `~/.copilot`, then `~/.amplihack` that holds every one of
+`autodrive_merge_ready_files.sh`, `autodrive_platform_facts.sh`,
+`autodrive_round_evidence.sh`, `autodrive_state.sh`, `autodrive_trust.sh` and
+`git-identity.sh`, so the tools never come from two installs. It prints the
+physical path, which later bash steps read as
+`"${AUTODRIVE_TOOLS_DIR:-${RECIPE_VAR_autodrive_tools_dir:-}}"` and step-04's
+prompt uses to source `git-identity.sh`. A path holding a quote, backslash,
+`$`, backtick, control byte or template brace is skipped, because it reaches
+that prompt. No complete root fails the step with
+`ERROR: autodrive-tools-not-found: ... (searched <paths>)`, and a later step
+whose tool is missing fails with `ERROR: autodrive-tools-not-found: <path>`.
+`step-01` also fails, with `ERROR: autodrive-platform-facts-failed`, when the
+tool prints no facts. The deterministic step bodies live in
+`autodrive_round_evidence.sh` (subcommands `crusty-range`, `qa-evidence-sha`,
+`crusty-evidence`, `measured-downgrade`, `findings` and `round-record`), which
+sources `autodrive_state.sh` and `autodrive_trust.sh` from its own directory
+only. A step that cannot enter `REPO_PATH` fails with
+`ERROR: cannot cd to REPO_PATH`. A failed step fails the round with no record
+and no manifest row; repeated, it ends the loop `STUCK`. An install error is
+never reported as a blocker.
 
 ### The merge-ready files
 
@@ -281,9 +301,14 @@ callable for step-04.
 
 ### Criterion 1: qa-team scenarios run with gadugi-test
 
-`step-02-qa-team-scenarios` of `autodrive-merge-evidence.yaml` runs the suite
-commands and the gadugi scenarios. Every repository type, `rust-cli` included,
-needs both, as the `qa-team` skill also says.
+`step-02-qa-team-scenarios` of `autodrive-merge-evidence.yaml` runs
+`amplifier-bundle/tools/autodrive_qa_evidence.sh`, found under the same roots,
+which runs the suite commands and the gadugi scenarios; a missing tool fails
+the step with `ERROR: autodrive-qa-evidence-tool-not-found`. Every repository
+type, `rust-cli` included, needs both. The `qa-team` skill says so in one
+place, its "Exception: auto-drive-to-merge" paragraph, which sets aside its
+`cargo test` substitution for Rust CLI repositories when step-04 loads it to
+clear a gadugi blocker.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -341,7 +366,8 @@ written under `umask 077`. A failed temporary file gives
 | `gadugi_scenario_results` | `<file>=<result>` per entry (`PASS`, `FAIL`, or `INVALID` for not run), sorted, from `autodrive_scenario_results`. Informational only. |
 
 For `NO_SCENARIOS`, `VALIDATE_FAILED`, `RUN_FAILED`, or step-02's
-`qa-team-scenarios-do-not-cover-the-change`, step-04 uses `qa-team` to write
+`qa-team-scenarios-do-not-cover-the-change`, step-04 uses `qa-team`, following
+that exception, to write
 top-level `*.yaml` scenarios with a `name:` in `gadugi_scenario_dir`, runs
 each, and commits. A failing scenario is fixed, never weakened or deleted. A
 directory outside the repository gives `gadugi-scenario-dir-outside-repo`.
@@ -433,7 +459,20 @@ value is reported as unreadable.
 | empty | `required_approvals` is `0`, and no review rule makes it unknown | `MET` | `required-count` |
 | empty | `required_approvals` is above `0` | `NOT_MET` | `required-count` |
 | empty | count unreadable or unknown; `merge_state` is `CLEAN`, `HAS_HOOKS` or `UNSTABLE` | `MET`; `required_approvals` stays empty, never `0` | `merge-state` |
+| empty | count unreadable or unknown; `merge_state` is `DIRTY` or `BEHIND`, or `BLOCKED` with a check in the rollup that has not passed (or no checks), or `mergeable` `CONFLICTING` | `PENDING` | `other-blockers` |
 | anything else, or no PR read | none | `UNREADABLE` | `unreadable` |
+
+A check has passed when its `conclusion` (a check run) or `state` (a status
+context) is `SUCCESS`, `NEUTRAL` or `SKIPPED`; a run that has not finished has
+not passed. GitHub folds every rule into the one `BLOCKED`, so while a
+failing check, a conflict or a stale branch is present, whether a review is
+also missing cannot be read. That is `PENDING`, which step-02 reports as
+`approval-pending-other-blockers` and step-04 treats as a reason to clear the
+other blockers first, not as a request for a person; the next round reads the
+approval again. `BLOCKED` with every check passed, no conflict and the branch
+up to date leaves only rules a person satisfies, a required review among
+them, and stays `UNREADABLE`. The INFO line shows `mergeable` and
+`checks=pass|not-passed|none`.
 
 An empty `reviewDecision` does not mean that no review is required. GitHub
 publishes a decision only when a rule on the base branch requires at least one
@@ -445,8 +484,8 @@ A count of `0` that comes with such a rule is therefore unknown, not `0`:
 protection, and `require_code_owner_review`, `require_last_push_approval` or a
 non-empty `required_reviewers` in a ruleset `pull_request` rule. The INFO line
 shows it as `unknown(<rule>)`, `required_approvals` stays empty, and the
-`merge-state` row decides, so `BLOCKED` gives `UNREADABLE`, a blocker step-04
-routes to a person, never `MET`. A count above `0` is kept whatever else the
+`merge-state` and `other-blockers` rows decide, so `BLOCKED` gives `PENDING`
+or `UNREADABLE`, never `MET`. A count above `0` is kept whatever else the
 rule requires, because GitHub publishes a decision for it.
 
 `required_approvals` is the higher of `required_approving_review_count` from
@@ -460,13 +499,14 @@ rysweet/amplihack-rs (404 `Not Found` while `branches/main` says
 `BLOCKED` while a required review is missing.
 
 Step-02 counts criterion 6 met only for `MET`, otherwise reporting
-`changes-requested`, `required-approval-missing` or
-`approval-state-unreadable`. It reads criterion 8 from `merge_state`: `CLEAN`,
+`changes-requested`, `required-approval-missing`,
+`approval-pending-other-blockers` or `approval-state-unreadable`. It reads criterion 8 from `merge_state`: `CLEAN`,
 `HAS_HOOKS` or `UNSTABLE` means no protection rule blocks, and a protection-API
 404 is not a blocker. Step-03 downgrades with `approval_status=<value>`.
 Step-04 cannot approve; it answers requested changes and a person approves.
-Without the tool every fact is unreadable. The gate is unchanged: it refuses
-`CHANGES_REQUESTED`, and GitHub refuses a merge missing a required review.
+Without the tool, or with a tool that prints no facts, step-01 fails by name.
+The gate's criterion 6 check is unchanged: it refuses `CHANGES_REQUESTED`,
+and GitHub refuses a merge missing a required review.
 
 ### The qa evidence hash chain
 
@@ -606,11 +646,13 @@ merges, it re-verifies and records:
 
 The review-thread query pages. `reviewThreads(first:100)` with no `pageInfo`
 follow-up silently truncates: a PR with 101 threads whose only unresolved one
-is the last would report zero unresolved and pass the gate. Both readers —
-`autodrive_merge_gate.sh` and `autodrive_platform_facts.sh` — use
-`gh api graphql --paginate` with `pageInfo { hasNextPage endCursor }` and sum
-the per-page counts; a page that does not come back as a number makes the whole
-criterion unreadable, which is a blocker.
+is the last would report zero unresolved and pass the gate. The count is
+written once, in `autodrive_platform_facts.sh`: `gh api graphql --paginate`
+with `pageInfo { hasNextPage endCursor }`, the per-page counts summed, and a
+page that does not come back as a number makes the whole criterion
+unreadable. The merge round reads it in step-01, and the gate runs the copy
+beside itself and reads `unresolved_threads`; unreadable, or no tool beside
+the gate, is a blocker.
 
 The gate copies `--round-record` and `--qa-evidence` once into a private
 `mktemp -d` directory, and every later check reads only the copies. It reads
@@ -737,8 +779,10 @@ or single-digit-minute bound is introduced.
 | `amplifier-bundle/tools/autodrive_loop.sh` | tool | The uncapped, agentically-terminated loop driver; writes `<loop>-records.tsv`. |
 | `amplifier-bundle/tools/autodrive_merge_gate.sh` | tool | Evidence gate and the fixed merge argv. |
 | `amplifier-bundle/tools/autodrive_merge_ready_files.sh` | tool | Finds the merge-ready `SKILL.md` and template. |
-| `amplifier-bundle/tools/autodrive_platform_facts.sh` | tool | Platform facts for the merge round, criterion 6 included. |
-| `amplifier-bundle/tools/autodrive_state.sh` | tool | Resumable local state, `autodrive_crusty_final`; platform truth for merged-ness. |
+| `amplifier-bundle/tools/autodrive_platform_facts.sh` | tool | Platform facts for the merge round, criterion 6 included; the review-thread count for the merge gate too. |
+| `amplifier-bundle/tools/autodrive_qa_evidence.sh` | tool | Criterion 1: the suite commands and the gadugi scenarios, for `autodrive-merge-evidence.yaml` step-02. |
+| `amplifier-bundle/tools/autodrive_round_evidence.sh` | tool | The merge round's deterministic step bodies: crusty range and evidence, the qa evidence hash, the measured downgrade, the findings and the round record. |
+| `amplifier-bundle/tools/autodrive_state.sh` | tool | Resumable local state, `autodrive_crusty_final`, `autodrive_private`; platform truth for merged-ness. |
 | `amplifier-bundle/tools/autodrive_trust.sh` | tool | Range check and qa evidence chain. |
 | `amplifier-bundle/skills/auto-drive-to-merge/SKILL.md` | skill | Invocable entry point. |
 | `amplifier-bundle/skills/merge-ready/SKILL.md` | skill | The criteria the merge round reads. |
@@ -750,7 +794,7 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | Test | Location |
 | --- | --- |
 | Executable contract test: loop, verdicts, forbidden-flag scan, merge-gate refusals, qa evidence against stub `cargo` and `gadugi-test`, crusty records and range | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
-| Structural and wiring guards, brick budget, skill-invocation guard, state-directory sentence | `tests/integration/auto_drive_to_merge_test.rs` |
+| Structural and wiring guards, brick budget, skill-invocation guard, state-directory sentence, and `tests/gadugi/recipe-step-command.sh` compared with serde_yaml over every bundled recipe step | `tests/integration/auto_drive_to_merge_test.rs` |
 | The merge-ready skill stays platform-neutral | `tests/integration/merge_ready_platform_contract_test.rs` |
 
 ```bash

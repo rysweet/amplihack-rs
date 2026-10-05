@@ -52,7 +52,14 @@ AUTODRIVE_RECIPES=(
   autodrive-crusty-loop autodrive-merge-evidence autodrive-merge-round
   autodrive-merge-loop
 )
-AUTODRIVE_TOOLS=(autodrive_loop.sh autodrive_merge_gate.sh autodrive_merge_ready_files.sh autodrive_platform_facts.sh autodrive_qa_evidence.sh autodrive_state.sh autodrive_trust.sh)
+AUTODRIVE_TOOLS=(autodrive_loop.sh autodrive_merge_gate.sh autodrive_merge_ready_files.sh autodrive_platform_facts.sh
+  autodrive_qa_evidence.sh autodrive_round_evidence.sh autodrive_state.sh autodrive_trust.sh)
+# merge-round step-00-tools-dir finds the tools once and every later step of
+# the round reads the directory from its output. A scalar output reaches bash
+# as RECIPE_VAR_<output> and as the upper-case name (recipe-runner 0.3.8,
+# context.rs shell_env_vars); the step bodies run here get the first form. A
+# case that needs another directory, or none, sets it on its own command.
+export RECIPE_VAR_autodrive_tools_dir="${TOOLS}"
 # The resolver is new in #1517. Its absence is a test failure (section 6a),
 # not a harness error, so every other section still runs and reports.
 RESOLVER="${TOOLS}/autodrive_merge_ready_files.sh"
@@ -904,13 +911,29 @@ if grep -qF -- '--paginate' "${GATE_DIR}/gh-calls" 2>/dev/null; then
 else
   fail "GATE-threads-paginate-flag" "the review-thread query does not paginate"
 fi
-for f in "${GATE}" "${TOOLS}/autodrive_platform_facts.sh"; do # the merge round reads threads through the tool (#1518)
-  if grep -qF 'pageInfo' "$f" && grep -qF -- '--paginate' "$f"; then
-    pass "PAGEINFO-$(basename "$f")" "$(basename "$f") pages the reviewThreads query"
-  else
-    fail "PAGEINFO-$(basename "$f")" "$(basename "$f") reads reviewThreads first:100 with no pageInfo"
-  fi
-done
+# The thread count is written once, in autodrive_platform_facts.sh (#1518); the
+# merge round runs it in step-01 and the gate runs the copy beside itself.
+PF_SRC="${TOOLS}/autodrive_platform_facts.sh"
+if grep -qF 'pageInfo' "${PF_SRC}" && grep -qF -- '--paginate' "${PF_SRC}"; then
+  pass "PAGEINFO-autodrive_platform_facts.sh" "autodrive_platform_facts.sh pages the reviewThreads query"
+else
+  fail "PAGEINFO-autodrive_platform_facts.sh" "autodrive_platform_facts.sh reads reviewThreads first:100 with no pageInfo"
+fi
+if grep -qF 'bash "${GATE_HOME}/autodrive_platform_facts.sh" "$PR"' "${GATE}" && ! grep -qF 'gh api graphql' "${GATE}"; then
+  pass "PAGEINFO-gate-one-reader" "the gate counts review threads through autodrive_platform_facts.sh, with no query of its own"
+else
+  fail "PAGEINFO-gate-one-reader" "the gate has its own review-thread query, or does not run autodrive_platform_facts.sh"
+fi
+# The gate copied alone, with no platform facts tool beside it, cannot count
+# the threads, and an uncounted criterion blocks.
+LONELY_PF="${WORK_PHYS}/lonely-pf"; mkdir -p "${LONELY_PF}"
+cp "${GATE}" "${TOOLS}/autodrive_state.sh" "${TOOLS}/autodrive_trust.sh" "${LONELY_PF}/"
+GATE_SCRIPT="${LONELY_PF}/autodrive_merge_gate.sh" gate_run green --round-record "$REC" --qa-evidence "$QA"; rc=$?
+if [ "$rc" -ne 0 ] && grep -qF 'review-thread state is unreadable' "${GATE_DIR}/err"; then
+  pass "GATE-threads-no-reader" "without autodrive_platform_facts.sh beside the gate, the review threads block the merge"
+else
+  fail "GATE-threads-no-reader" "rc=${rc}: $(grep BLOCKER "${GATE_DIR}/err" | tr '\n' ' ')"
+fi
 
 # 5i. When `gh pr merge` fails, the gate reports the REAL exit code. `$?` read
 # inside the `then` of an `if ! gh ...` is the negation's status — always 0 —
@@ -1438,7 +1461,7 @@ for cs in ABSENT NOT_CLEAN UNTRUSTED UNREVIEWED_COMMITS OTHER __EMPTY__; do
 done
 # Criterion 6 is measured in step-01 (#1518): MERGE_READY stands only when
 # approval_status is MET. A missing or unknown status fails closed.
-for as in NOT_MET UNREADABLE BOGUS __EMPTY__; do
+for as in NOT_MET PENDING UNREADABLE BOGUS __EMPTY__; do
   case "$as" in
     __EMPTY__) facts='{"unresolved_threads":"0"}'; want_reason="approval_status=MISSING" ;;
     BOGUS) facts='{"unresolved_threads":"0","approval_status":"MET\" "}'; want_reason="approval_status=OTHER" ;;
@@ -1459,6 +1482,17 @@ if grep -qxF 'measured-evidence-disagrees' "${WORK}/mrr.json.findings" 2>/dev/nu
   pass "MERGEREADY-crusty-finding" "a crusty downgrade records the measured-evidence-disagrees finding"
 else
   fail "MERGEREADY-crusty-finding" "a crusty downgrade left no measured-evidence-disagrees finding"
+fi
+# The measurement is autodrive_round_evidence.sh measured-downgrade. A step-03
+# that cannot run it has compared nothing, and nothing compared never passes.
+mkdir -p "${WORK_PHYS}/mr-no-tools"
+out="$(RECIPE_VAR_autodrive_tools_dir="${WORK_PHYS}/mr-no-tools" \
+  mr_step '{"merge_ready_verdict":"MERGE_READY","blockers":[]}' PASS GREEN DONE_CLEAN)"
+if [ "$(printf '%s' "$out" | jq -r .merge_ready_verdict 2>/dev/null)" = "NOT_MERGE_READY" ] \
+   && [ "$(printf '%s' "$out" | jq -r .downgrade_reason 2>/dev/null)" = "measured_evidence=unreadable " ]; then
+  pass "MERGEREADY-no-round-tool" "without autodrive_round_evidence.sh, MERGE_READY is downgraded: measured_evidence=unreadable"
+else
+  fail "MERGEREADY-no-round-tool" "got: ${out}"
 fi
 
 # The qa evidence step-03 is about to trust must be the file step-00d hashed,
@@ -1664,6 +1698,56 @@ if [ -f "${RESOLVER}" ]; then
   fi
 fi
 
+# step-00-tools-dir finds the round's tools ONCE, so no other step of the
+# round carries its own search (PR #1520 review). Its output is a path.
+TD_BODY="$(extract_step_command "${RECIPES}/autodrive-merge-round.yaml" "step-00-tools-dir")"
+if [[ -z "${TD_BODY}" ]]; then
+  fail "TOOLSDIR-exists" "autodrive-merge-round.yaml has no step-00-tools-dir command"
+else
+  TD_OUT=""; TD_RC=0; TD_ERR=""
+  td_run() { # td_run <AMPLIHACK_HOME> [REPO_PATH]: from RS/plain of the last rs_tree, HOME=RS/home
+    ( cd "${RS}/plain" && env -i PATH="/usr/bin:/bin" HOME="${RS}/home" AMPLIHACK_HOME="$1" REPO_PATH="${2:-${RS}/plain}" \
+        bash -c "${TD_BODY}" >"${RS}.out" 2>"${RS}.err" ); TD_RC=$?
+    TD_OUT="$(cat "${RS}.out")"; TD_ERR="$(cat "${RS}.err")"
+  }
+  td_root() { # td_root <dir> [tool to leave out]: a root whose amplifier-bundle/tools copies the round's tools
+    mkdir -p "$1/amplifier-bundle/tools"
+    for t in autodrive_merge_ready_files.sh autodrive_platform_facts.sh autodrive_round_evidence.sh \
+             autodrive_state.sh autodrive_trust.sh git-identity.sh; do
+      [ "$t" = "${2:-}" ] || cp "${TOOLS}/$t" "$1/amplifier-bundle/tools/"
+    done
+  }
+  rs_tree; td_run "${REPO_ROOT}"
+  if [ "${TD_RC}" = 0 ] && [ "${TD_OUT}" = "$(cd "${TOOLS}" && pwd -P)" ]; then
+    pass "TOOLSDIR-resolves" "step-00-tools-dir prints the one tools directory, physical, and nothing else"
+  else
+    fail "TOOLSDIR-resolves" "rc=${TD_RC} out=${TD_OUT} err=$(printf '%s' "${TD_ERR}" | tail -n 3 | tr '\n' ' ')"
+  fi
+  # A root missing one tool is skipped whole: the tools never come from two installs.
+  TD_PART="${WORK_PHYS}/td-part"; td_root "${TD_PART}" autodrive_round_evidence.sh
+  rs_tree; td_root "${RS}/home/.amplihack"; td_run "${TD_PART}"
+  if [ "${TD_RC}" = 0 ] && [ "${TD_OUT}" = "${RS}/home/.amplihack/amplifier-bundle/tools" ]; then
+    pass "TOOLSDIR-whole-root" "a root without autodrive_round_evidence.sh is skipped for the next complete one"
+  else
+    fail "TOOLSDIR-whole-root" "rc=${TD_RC} out=${TD_OUT} err=$(printf '%s' "${TD_ERR}" | tail -n 3 | tr '\n' ' ')"
+  fi
+  rs_tree; td_run "${TD_PART}"
+  if [ "${TD_RC}" = 1 ] && [ -z "${TD_OUT}" ] \
+     && printf '%s\n' "${TD_ERR}" | grep -q '^ERROR: autodrive-tools-not-found: no amplifier-bundle/tools holds all of .*autodrive_round_evidence.sh.* (searched '; then
+    pass "TOOLSDIR-not-found" "no complete root fails step-00-tools-dir by name, with the roots searched"
+  else
+    fail "TOOLSDIR-not-found" "rc=${TD_RC} out=${TD_OUT} err=$(printf '%s' "${TD_ERR}" | tail -n 3 | tr '\n' ' ')"
+  fi
+  # The path reaches step-04's prompt inside a double-quoted shell word.
+  TD_ODD="${WORK_PHYS}/td-\$odd"; td_root "${TD_ODD}"
+  rs_tree; td_run "${TD_ODD}"
+  if [ "${TD_RC}" = 1 ] && printf '%s' "${TD_ERR}" | grep -qF 'skipping an auto-drive tools path with a quote, backslash, $, backtick'; then
+    pass "TOOLSDIR-unusable-path" "a tools path holding \$ is refused, never put into the prompt"
+  else
+    fail "TOOLSDIR-unusable-path" "rc=${TD_RC} out=${TD_OUT} err=$(printf '%s' "${TD_ERR}" | tail -n 3 | tr '\n' ' ')"
+  fi
+fi
+
 S00_BODY="$(extract_step_command "${RECIPES}/autodrive-merge-round.yaml" "step-00-merge-ready-files")"
 if [[ -z "${S00_BODY}" ]]; then
   fail "STEP00-exists" "autodrive-merge-round.yaml has no step-00-merge-ready-files command"
@@ -1678,10 +1762,13 @@ else
     echo "HARNESS-ERROR: gadugi-test is installed in /usr/bin or /bin; step-00's not-installed case cannot be exercised" >&2
     exit 2
   fi
+  # The tools directory is <AMPLIHACK_HOME>/amplifier-bundle/tools, as
+  # step-00-tools-dir would have found it.
   s00_run() { # s00_run <AMPLIHACK_HOME> [REPO_PATH] [gadugi bin dir] -> S00_RC, S00_OUT (last stdout line), S00_ERR
     rs_tree
     ( cd "${RS}/plain" && env -i PATH="${STUB_BIN}:${3:-${S00_GADUGI_BIN}}:/usr/bin:/bin" REAL_AMPLIHACK="${REAL_AMPLIHACK}" HOME="${RS}/home" \
-        AMPLIHACK_HOME="$1" REPO_PATH="${2:-${RS}/plain}" bash -c "${S00_BODY}" >"${RS}.out" 2>"${RS}.err" ); S00_RC=$?
+        AMPLIHACK_HOME="$1" RECIPE_VAR_autodrive_tools_dir="$1/amplifier-bundle/tools" REPO_PATH="${2:-${RS}/plain}" \
+        bash -c "${S00_BODY}" >"${RS}.out" 2>"${RS}.err" ); S00_RC=$?
     S00_OUT="$(tail -n 1 "${RS}.out")"; S00_ERR="$(cat "${RS}.err")"
   }
   s00_run "${REPO_ROOT}"
@@ -3203,8 +3290,13 @@ case "$1 ${2:-}" in
   "pr view")
     [ "${PF_VIEW:-ok}" = ok ] || exit 1
     case " $* " in *" --json number "*) out '{"number":42}'; exit 0 ;; esac
+    # statusCheckRollup as gh returns it: check runs carry status and
+    # conclusion, status contexts carry state. One passed check run by default.
+    PASSED='[{"__typename":"CheckRun","name":"Test","status":"COMPLETED","conclusion":"SUCCESS"}]'
     out "$(jq -cn --arg m "${PF_MSTATE:-CLEAN}" --arg d "${PF_DECISION-}" --arg h "${PF_HEAD}" --arg b "${PF_BASE-main}" \
-      '{state:"OPEN",isDraft:false,mergeable:"MERGEABLE",mergeStateStatus:$m,reviewDecision:(if $d == "" then null else $d end),headRefOid:$h,baseRefName:$b}')"
+      --arg mg "${PF_MERGEABLE:-MERGEABLE}" --argjson c "${PF_CHECKS:-${PASSED}}" \
+      '{state:"OPEN",isDraft:false,mergeable:$mg,mergeStateStatus:$m,reviewDecision:(if $d == "" then null else $d end),
+        headRefOid:$h,statusCheckRollup:$c,baseRefName:$b}')"
     exit 0 ;;
   "api graphql") printf '%s\n' "${PF_THREADS:-0}"; exit 0 ;;
 esac
@@ -3263,7 +3355,40 @@ else
   pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION= PF_MSTATE=CLEAN
   pf_expect "PF-non-admin-404-clean" MET merge-state "" "#1518: a non-admin 404 with protected:true, a null decision and CLEAN is met through GitHub's merge state; the unread count stays empty, never 0"
   pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED
-  pf_expect "PF-non-admin-404-blocked" UNREADABLE unreadable "" "a 404 is never read as zero: with BLOCKED the approval state is unreadable"
+  pf_expect "PF-non-admin-404-blocked" UNREADABLE unreadable "" \
+    "a 404 is never read as zero: BLOCKED with every check passed and no conflict is unreadable, and needs a person"
+  # crusty round-1 on PR #1520: with the count unknown, BLOCKED is also what a
+  # failing required check gives. While a blocker an agent can clear is
+  # present, the approval is PENDING, not a request for a person.
+  PF_FAIL_RUN='[{"__typename":"CheckRun","name":"Test","status":"COMPLETED","conclusion":"FAILURE"}]'
+  pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED PF_CHECKS="${PF_FAIL_RUN}"
+  pf_expect "PF-pending-failing-check" PENDING other-blockers "" "a failing check keeps BLOCKED from saying whether a review is missing"
+  if grep -qF 'checks=not-passed' "${WORK_PHYS}/pf-${PF_N}.err"; then
+    pass "PF-pending-named" "the INFO line names the checks that kept the approval pending"
+  else
+    fail "PF-pending-named" "stderr: $(tr '\n' ' ' < "${WORK_PHYS}/pf-${PF_N}.err")"
+  fi
+  pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED \
+    PF_CHECKS='[{"__typename":"CheckRun","name":"Test","status":"IN_PROGRESS","conclusion":""}]'
+  pf_expect "PF-pending-running-check" PENDING other-blockers "" "a check still running has not passed"
+  pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED \
+    PF_CHECKS='[{"__typename":"CheckRun","name":"Test","status":"COMPLETED","conclusion":"SUCCESS"},{"__typename":"StatusContext","context":"ci/legacy","state":"ERROR"}]'
+  pf_expect "PF-pending-status-context" PENDING other-blockers "" "a status context in ERROR is read from its state, and has not passed"
+  pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED PF_CHECKS='[]'
+  pf_expect "PF-pending-no-checks" PENDING other-blockers "" "no checks at all is not a passed rollup"
+  pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION= PF_MSTATE=DIRTY PF_MERGEABLE=CONFLICTING
+  pf_expect "PF-pending-conflict" PENDING other-blockers "" "a conflict hides the approval state until it is resolved" mergeable=CONFLICTING
+  pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION= PF_MSTATE=BEHIND
+  pf_expect "PF-pending-behind" PENDING other-blockers "" "a branch behind its base hides the approval state until it is synced"
+  pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED \
+    PF_CHECKS='[{"__typename":"CheckRun","name":"a","status":"COMPLETED","conclusion":"NEUTRAL"},{"__typename":"CheckRun","name":"b","status":"COMPLETED","conclusion":"SKIPPED"},{"__typename":"StatusContext","context":"c","state":"SUCCESS"}]'
+  pf_expect "PF-blocked-checks-passed" UNREADABLE unreadable "" "NEUTRAL, SKIPPED and a SUCCESS status context have passed: BLOCKED needs a person"
+  pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION= PF_MSTATE=UNKNOWN PF_CHECKS="${PF_FAIL_RUN}"
+  pf_expect "PF-unknown-state-not-pending" UNREADABLE unreadable "" "a merge state GitHub has not computed is never read as pending"
+  pf_run PF_CLASSIC=1 PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED PF_CHECKS="${PF_FAIL_RUN}"
+  pf_expect "PF-known-count-not-pending" NOT_MET required-count 1 "a known count decides whatever else blocks; PENDING is only for an unknown count"
+  pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION=APPROVED PF_MSTATE=BLOCKED PF_CHECKS="${PF_FAIL_RUN}"
+  pf_expect "PF-approved-not-pending" MET review-decision "" "an APPROVED decision is MET whatever else blocks"
   pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES="${RULE2}" PF_DECISION= PF_MSTATE=CLEAN
   pf_expect "PF-ruleset-2" NOT_MET required-count 2 "a ruleset requiring 2 approvals is read with read access when protection is not"
   pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES="${RULE2}" PF_DECISION=APPROVED PF_MSTATE=CLEAN
@@ -3326,24 +3451,33 @@ else
   pf_expect "PF-threads-unreadable" MET required-count 0 "a page that is not a number makes the thread count unreadable" unresolved_threads=unreadable
 fi
 
-# merge-round step-01 runs the tool; without it, every fact is unreadable.
+# merge-round step-01 runs the tool from the round's tools directory. A tool
+# that is missing, or that prints no facts, is an installation fault: the step
+# fails by name, so it is never reported as a blocker every round (#1517).
 S01_BODY="$(extract_step_command "${RECIPES}/autodrive-merge-round.yaml" "step-01-platform-facts")"
 PF_PLAIN="${WORK_PHYS}/pf-plain"; PF_EMPTY_HOME="${WORK_PHYS}/pf-home"; mkdir -p "${PF_PLAIN}" "${PF_EMPTY_HOME}"
-s01_run() { # s01_run <amplihack-home> -> PF_OUT, PF_RC (#1518 case: non-admin 404, null decision, CLEAN)
+s01_run() { # s01_run <tools dir> -> PF_OUT, PF_RC (#1518 case: non-admin 404, null decision, CLEAN)
   PF_N=$((PF_N + 1))
-  PF_OUT="$(cd "${PF_PLAIN}" && env -i HOME="${PF_EMPTY_HOME}" PATH="${PF_BIN}:/usr/bin:/bin" AMPLIHACK_HOME="$1" REPO_PATH="${PF_PLAIN}" \
-    PR_NUMBER=42 PF_HEAD="${PF_HEAD_SHA}" PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION= PF_MSTATE=CLEAN \
+  PF_OUT="$(cd "${PF_PLAIN}" && env -i HOME="${PF_EMPTY_HOME}" PATH="${PF_BIN}:/usr/bin:/bin" RECIPE_VAR_autodrive_tools_dir="$1" \
+    REPO_PATH="${PF_PLAIN}" PR_NUMBER=42 PF_HEAD="${PF_HEAD_SHA}" PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION= PF_MSTATE=CLEAN \
     bash -c "${S01_BODY}" 2>"${WORK_PHYS}/pf-${PF_N}.err" | tail -n 1)"; PF_RC=$?
 }
-s01_run "${REPO_ROOT}"
+s01_run "${TOOLS}"
 pf_expect "PF-step-01-uses-tool" MET merge-state "" "merge-round step-01 reports the tool's facts" pr=42 head_sha="${PF_HEAD_SHA}"
-s01_run "${WORK_PHYS}/no-such-home"
-pf_expect "PF-step-01-no-tool" UNREADABLE unreadable "" "without the tool every fact is unreadable, never assumed" \
-  pr=42 state=UNKNOWN head_sha= unresolved_threads=unreadable
-if grep -qF 'autodrive_platform_facts.sh not found' "${WORK_PHYS}/pf-${PF_N}.err"; then
-  pass "PF-step-01-no-tool-warns" "a missing tool is named in a WARNING"
+s01_run "${WORK_PHYS}/no-such-tools"
+if [ "${PF_RC}" = 1 ] && [ -z "${PF_OUT}" ] \
+   && grep -q '^ERROR: autodrive-tools-not-found: .*/no-such-tools/autodrive_platform_facts.sh$' "${WORK_PHYS}/pf-${PF_N}.err"; then
+  pass "PF-step-01-no-tool" "without the tool step-01 fails by name and reports no facts"
 else
-  fail "PF-step-01-no-tool-warns" "stderr: $(tr '\n' ' ' < "${WORK_PHYS}/pf-${PF_N}.err")"
+  fail "PF-step-01-no-tool" "rc=${PF_RC} out=${PF_OUT} err=$(tr '\n' ' ' < "${WORK_PHYS}/pf-${PF_N}.err")"
+fi
+PF_MUTE="${WORK_PHYS}/pf-mute-tools"; mkdir -p "${PF_MUTE}"; printf '#!/bin/sh\nexit 0\n' > "${PF_MUTE}/autodrive_platform_facts.sh"
+s01_run "${PF_MUTE}"
+if [ "${PF_RC}" = 1 ] && [ -z "${PF_OUT}" ] \
+   && grep -qF 'ERROR: autodrive-platform-facts-failed: autodrive_platform_facts.sh printed no facts' "${WORK_PHYS}/pf-${PF_N}.err"; then
+  pass "PF-step-01-no-facts" "a tool that prints no facts fails step-01 by name; no fact is assumed"
+else
+  fail "PF-step-01-no-facts" "rc=${PF_RC} out=${PF_OUT} err=$(tr '\n' ' ' < "${WORK_PHYS}/pf-${PF_N}.err")"
 fi
 
 # ---------------------------------------------------------------------------
@@ -3542,7 +3676,7 @@ e2e_loop merge-ready autodrive-merge-round MERGE_READY merge_ready_verdict \
   "$(extract_step_command "${RECIPES}/autodrive-merge-round.yaml" step-05-write-round-record)" \
   RECIPE_VAR_merge_ready_verdict='{"merge_ready_verdict":"MERGE_READY","verdict_source":"assessment","blocker_count":0}' \
   RECIPE_VAR_qa_evidence_hash="{\"qa_evidence_sha\":\"${E2E_QH}\"}" RECIPE_VAR_qa_evidence="$(cat "${E2E_DIR}/qa-evidence.json")" \
-  RECIPE_VAR_ci_evidence='{"ci_status":"GREEN","ci_signal":"green"}'
+  RECIPE_VAR_ci_evidence='{"ci_status":"GREEN","ci_signal":"green"}' RECIPE_VAR_autodrive_tools_dir="${TOOLS}"
 E2E_MR_RC=$?
 if [ "${E2E_CRUSTY_RC}" -eq 0 ] && [ "${E2E_MR_RC}" -eq 0 ] \
    && grep -qF '"loop_result":"DONE"' "${E2E}.crusty.out" && grep -qF '"loop_result":"DONE"' "${E2E}.merge-ready.out"; then

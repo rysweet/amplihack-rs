@@ -36,12 +36,13 @@ const AUTODRIVE_RECIPES: [&str; 7] = [
     "autodrive-merge-loop",
 ];
 
-const AUTODRIVE_TOOLS: [&str; 7] = [
+const AUTODRIVE_TOOLS: [&str; 8] = [
     "autodrive_loop.sh",
     "autodrive_merge_gate.sh",
     "autodrive_merge_ready_files.sh",
     "autodrive_platform_facts.sh",
     "autodrive_qa_evidence.sh",
+    "autodrive_round_evidence.sh",
     "autodrive_state.sh",
     "autodrive_trust.sh",
 ];
@@ -458,7 +459,8 @@ fn advancing_a_phase_requires_both_the_round_verdict_and_the_loop_verdict() {
         "a missing or unparseable round record must never be read as clean"
     );
     // Measurement outranks the model in the merge round.
-    let merge = recipe_text("autodrive-merge-round");
+    let round = recipe_yaml("autodrive-merge-round");
+    let merge = round_step_bash(&round, "step-03-extract-merge-ready-verdict");
     assert!(
         merge.contains("downgrading MERGE_READY to NOT_MERGE_READY"),
         "a MERGE_READY verdict must be downgraded when measured evidence disagrees"
@@ -1365,6 +1367,50 @@ fn qa_team_does_not_refuse_model_invocation() {
     );
 }
 
+#[test]
+fn qa_team_states_the_auto_drive_gadugi_rule_in_one_place() {
+    // crusty round-1 on PR #1520: step-04 loads qa-team, whose Rust CLI line
+    // says to substitute `cargo test` and not require gadugi, while step-04's
+    // prompt said it overrode that line. The decision is now written once, in
+    // qa-team's own "Exception: auto-drive-to-merge" paragraph, and step-04
+    // points to it instead of contradicting the skill it loads.
+    let skill = read(&workspace_root().join("amplifier-bundle/skills/qa-team/SKILL.md"));
+    let rust_line = skill
+        .find("**For Rust CLI repos**")
+        .expect("qa-team must keep its Rust CLI line");
+    let exception = skill
+        .find("**Exception: auto-drive-to-merge.**")
+        .expect("qa-team must state the auto-drive exception to its Rust CLI line");
+    assert!(
+        rust_line < exception,
+        "the auto-drive exception must follow the Rust CLI line it sets aside"
+    );
+    let paragraph = &skill[exception
+        ..skill[exception..]
+            .find("\n\n")
+            .map_or(skill.len(), |e| exception + e)];
+    for needle in [
+        "Rust CLI repositories included",
+        "gadugi-test validate",
+        "gadugi_scenario_dir",
+    ] {
+        assert!(
+            paragraph.contains(needle),
+            "qa-team's auto-drive exception must say `{needle}`"
+        );
+    }
+    let recipe = recipe_yaml("autodrive-merge-round");
+    let fix = squash(field(step(&recipe, "step-04-address-blockers"), "prompt"));
+    assert!(
+        fix.contains("follow its auto-drive-to-merge exception"),
+        "step-04 must point to qa-team's auto-drive exception"
+    );
+    assert!(
+        !fix.to_ascii_lowercase().contains("overrides the qa-team"),
+        "step-04 must not override the skill it loads; the decision lives in qa-team"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn the_invocation_guard_walk_skips_symlinks_and_reads_frontmatter_variants() {
@@ -1559,11 +1605,8 @@ fn merge_ready_files_are_resolved_by_a_bash_step_before_the_round() {
     let cmd = field(s, "command");
     for needle in [
         "autodrive_merge_ready_files.sh",
-        "AMPLIHACK_HOME",
-        "REPO_PATH",
-        "git rev-parse --show-toplevel",
-        "/.copilot",
-        "/.amplihack",
+        // From the directory step-00-tools-dir found (merge_round_finds_its_tools_once).
+        "${AUTODRIVE_TOOLS_DIR:-${RECIPE_VAR_autodrive_tools_dir:-}}",
         "merge-ready-skill-files-not-found",
         "resolver autodrive_merge_ready_files.sh not found",
         // gadugi-test is part of the install criterion 1 needs; a missing
@@ -1681,7 +1724,8 @@ fn merge_round_reads_crusty_evidence_through_autodrive_crusty_final() {
         s.get("output").and_then(Value::as_str),
         Some("crusty_evidence")
     );
-    let cmd = field(s, "command");
+    let cmd = round_step_bash(&recipe, "step-01b-crusty-evidence");
+    let cmd = cmd.as_str();
     for needle in [
         "AUTODRIVE_STATE_DIR",
         "autodrive_state.sh",
@@ -1717,10 +1761,7 @@ fn merge_round_reads_crusty_evidence_through_autodrive_crusty_final() {
     );
 
     // The measured downgrade covers crusty, UNTRUSTED included.
-    let verdict = field(
-        step(&recipe, "step-03-extract-merge-ready-verdict"),
-        "command",
-    );
+    let verdict = round_step_bash(&recipe, "step-03-extract-merge-ready-verdict");
     for needle in [
         "CRUSTY_EVIDENCE",
         "crusty_status",
@@ -1819,11 +1860,11 @@ fn merge_round_blocker_step_writes_missing_gadugi_scenarios() {
     assert!(
         lower.contains("every repository type"),
         "step-04 must say gadugi scenarios are required in every repository type, \
-         overriding qa-team's cargo test substitution for Rust CLI repositories"
+         as qa-team's auto-drive exception sets aside its cargo test substitution"
     );
     assert!(
         lower.contains("rust"),
-        "step-04's override must name Rust CLI repositories explicitly"
+        "step-04 must name Rust CLI repositories explicitly"
     );
     assert!(
         lower.contains("failing scenario"),
@@ -2101,7 +2142,7 @@ fn crusty_records_are_trusted_only_through_the_loop_manifest() {
         );
     }
     let round_recipe = recipe_yaml("autodrive-merge-round");
-    let round = field(step(&round_recipe, "step-01b-crusty-evidence"), "command");
+    let round = round_step_bash(&round_recipe, "step-01b-crusty-evidence");
     assert!(
         round.contains("autodrive_crusty_final"),
         "step-01b and the gate must share one criterion-3 check"
@@ -2501,6 +2542,37 @@ fn a_required_count_of_zero_beside_a_review_rule_is_not_read_as_zero() {
 }
 
 #[test]
+fn a_pending_approval_is_cleared_by_the_round_not_sent_to_a_person() {
+    // crusty round-1 on PR #1520: with the count unknown, BLOCKED is also what
+    // a failing required check gives, and an agent can fix that. The tool
+    // reports PENDING then (the PF-pending-* cases in
+    // test-auto-drive-to-merge.sh exercise it, and MERGEREADY-approval-downgrade
+    // shows step-03 still downgrades it). The routing itself is prompt text, so
+    // only the two sentences that carry it are pinned here.
+    let recipe = recipe_yaml("autodrive-merge-round");
+    let assess = squash(field(
+        step(&recipe, "step-02-merge-ready-assessment"),
+        "prompt",
+    ));
+    assert!(
+        assess.contains("For `PENDING` report `approval-pending-other-blockers`"),
+        "step-02 must name a PENDING approval apart from approval-state-unreadable"
+    );
+    let fix = squash(field(step(&recipe, "step-04-address-blockers"), "prompt"));
+    let at = fix
+        .find("**`approval-pending-other-blockers`**")
+        .expect("step-04 must say what to do with approval-pending-other-blockers");
+    let end = fix[at..]
+        .find("- **`changes-requested`**")
+        .map_or(fix.len(), |e| at + e);
+    let bullet = &fix[at..end];
+    assert!(
+        bullet.contains("Clear the other blockers first") && !bullet.contains("needs a person"),
+        "step-04 must clear the other blockers for a PENDING approval, not route it to a person:\n  {bullet}"
+    );
+}
+
+#[test]
 fn every_criterion_is_read_completely_and_bound_to_the_merged_sha() {
     let gate = read(&tool_path("autodrive_merge_gate.sh"));
     // The merge round reads its platform facts through this tool (#1518).
@@ -2512,18 +2584,25 @@ fn every_criterion_is_read_completely_and_bound_to_the_merged_sha() {
 
     // Review threads: `reviewThreads(first:100)` with no pageInfo follow-up
     // silently truncates. 101 threads with the last one unresolved reports 0
-    // unresolved and passes the gate.
-    for (label, text) in [("merge gate", &gate), ("platform facts", &facts)] {
-        assert!(
-            text.contains("reviewThreads"),
-            "{label} must read review threads"
-        );
-        assert!(
-            text.contains("--paginate") && text.contains("pageInfo"),
-            "{label} reads reviewThreads without paging; a PR past the first \
-             page would report 0 unresolved threads and pass the gate"
-        );
-    }
+    // unresolved and passes the gate. The count is written once, in the
+    // platform facts tool; the gate runs the copy beside itself (PR #1520
+    // review), so there is no second query to drift.
+    assert!(
+        facts.contains("reviewThreads"),
+        "platform facts must read review threads"
+    );
+    assert!(
+        facts.contains("--paginate") && facts.contains("pageInfo"),
+        "platform facts reads reviewThreads without paging; a PR past the first \
+         page would report 0 unresolved threads and pass the gate"
+    );
+    assert!(
+        gate.contains("bash \"${GATE_HOME}/autodrive_platform_facts.sh\" \"$PR\"")
+            && gate.contains("unresolved_threads")
+            && !gate.contains("gh api graphql"),
+        "the merge gate must count review threads through autodrive_platform_facts.sh \
+         beside it, not with a query of its own"
+    );
 
     // qa evidence: existence + qa_status=PASS is not enough. The gate binds
     // the round record to HEAD_SHA; the qa evidence must bind too, or a PASS
@@ -2732,6 +2811,122 @@ fn step_command<'a>(recipe: &'a Value, id: &str) -> &'a str {
     field(step(recipe, id), "command")
 }
 
+/// The subcommands of autodrive_round_evidence.sh and the function each runs.
+const ROUND_SUBCOMMANDS: [(&str, &str); 6] = [
+    ("crusty-range", "crusty_range"),
+    ("qa-evidence-sha", "qa_evidence_sha"),
+    ("crusty-evidence", "crusty_evidence"),
+    ("measured-downgrade", "measured_downgrade"),
+    ("findings", "round_findings"),
+    ("round-record", "round_record"),
+];
+
+/// The bash a merge-round step runs: its own command and, for each
+/// `bash "$T" <subcommand>` of autodrive_round_evidence.sh it calls, the body
+/// of the function that subcommand dispatches to. The step bodies moved into
+/// that tool when the recipe reached its brick budget (PR #1520 review), so a
+/// check on what a step does reads both.
+fn round_step_bash(recipe: &Value, id: &str) -> String {
+    let cmd = step_command(recipe, id);
+    let tool = read(&tool_path("autodrive_round_evidence.sh"));
+    let mut out = cmd.to_string();
+    for (sub, func) in ROUND_SUBCOMMANDS {
+        let call = format!("bash \"$T\" {sub}");
+        if !cmd.contains(&call) {
+            continue;
+        }
+        assert!(
+            cmd.contains("autodrive_round_evidence.sh"),
+            "{id} runs `{sub}` from a file that is not autodrive_round_evidence.sh"
+        );
+        assert!(
+            tool.contains(&format!("  {sub}) {func}")),
+            "autodrive_round_evidence.sh must dispatch `{sub}` to {func}"
+        );
+        let start = tool
+            .find(&format!("\n{func}() {{\n"))
+            .unwrap_or_else(|| panic!("autodrive_round_evidence.sh has no {func}()"));
+        let len = tool[start + 1..]
+            .find("\n}\n")
+            .unwrap_or_else(|| panic!("{func}() has no closing brace"));
+        out.push('\n');
+        out.push_str(&tool[start + 1..start + 1 + len + 2]);
+    }
+    out
+}
+
+#[test]
+fn merge_round_finds_its_tools_once() {
+    // crusty round-1 on PR #1520: the five-root search was pasted into seven
+    // places in this recipe. step-00-tools-dir now runs it once, and every
+    // other step reads the directory it found.
+    let recipe = recipe_yaml("autodrive-merge-round");
+    let all = steps(&recipe);
+    assert_eq!(
+        all.first()
+            .and_then(|s| s.get("id"))
+            .and_then(Value::as_str),
+        Some("step-00-tools-dir"),
+        "step-00-tools-dir must be the round's first step"
+    );
+    let s = step(&recipe, "step-00-tools-dir");
+    assert_eq!(s.get("type").and_then(Value::as_str), Some("bash"));
+    assert!(
+        s.get("parse_json").is_none(),
+        "step-00-tools-dir prints a path, which reaches later steps as a scalar"
+    );
+    assert_eq!(
+        s.get("output").and_then(Value::as_str),
+        Some("autodrive_tools_dir")
+    );
+    let cmd = field(s, "command");
+    for needle in TOOL_SEARCH_NEEDLES.iter().chain(
+        [
+            "autodrive_merge_ready_files.sh",
+            "autodrive_platform_facts.sh",
+            "autodrive_round_evidence.sh",
+            "autodrive_state.sh",
+            "autodrive_trust.sh",
+            "git-identity.sh",
+            "ERROR: autodrive-tools-not-found",
+            "pwd -P",
+        ]
+        .iter(),
+    ) {
+        assert!(
+            cmd.contains(needle),
+            "step-00-tools-dir must reference `{needle}`"
+        );
+    }
+    let text = recipe_text("autodrive-merge-round");
+    assert_eq!(
+        text.matches("for c in \"${AMPLIHACK_HOME:-}\"").count(),
+        1,
+        "autodrive-merge-round.yaml must search the tool roots in one place only"
+    );
+    let read = "\"${AUTODRIVE_TOOLS_DIR:-${RECIPE_VAR_autodrive_tools_dir:-}}/";
+    for id in [
+        "step-00-merge-ready-files",
+        "step-00b-crusty-range",
+        "step-00d-qa-evidence-hash",
+        "step-01-platform-facts",
+        "step-01b-crusty-evidence",
+        "step-03-extract-merge-ready-verdict",
+        "step-05-write-round-record",
+    ] {
+        assert!(
+            step_command(&recipe, id).contains(read),
+            "{id} must run its tool from step-00-tools-dir's directory"
+        );
+    }
+    let fix = field(step(&recipe, "step-04-address-blockers"), "prompt");
+    assert!(
+        fix.contains(". \"{{autodrive_tools_dir}}/git-identity.sh\"")
+            && fix.contains("amplihack_prepare_git_commit_identity"),
+        "step-04 must source git-identity.sh from step-00-tools-dir's directory"
+    );
+}
+
 #[test]
 fn merge_round_rereviews_commits_after_the_clean_round() {
     // D4: a code commit after the clean crusty round goes back to crusty at
@@ -2764,22 +2959,24 @@ fn merge_round_rereviews_commits_after_the_clean_round() {
         s00b.get("output").and_then(Value::as_str),
         Some("crusty_range")
     );
-    let cmd = field(s00b, "command");
+    assert!(
+        !field(s00b, "command").contains("{{"),
+        "step-00b reads its inputs from the environment, never from {{...}} in the command"
+    );
+    let cmd = round_step_bash(&recipe, "step-00b-crusty-range");
     for needle in [
         "AUTODRIVE_STATE_DIR",
         "autodrive_state.sh",
         "autodrive_trust.sh",
         "autodrive_rereview_decision",
-        "baseRefName",
-    ]
-    .iter()
-    .chain(TOOL_SEARCH_NEEDLES.iter())
-    {
+        "pr_base_ref",
+    ] {
         assert!(cmd.contains(needle), "step-00b must reference `{needle}`");
     }
     assert!(
-        !cmd.contains("{{"),
-        "step-00b reads its inputs from the environment, never from {{...}} in the command"
+        read(&tool_path("autodrive_round_evidence.sh"))
+            .contains("--json baseRefName --jq .baseRefName"),
+        "pr_base_ref must read the PR's baseRefName"
     );
 
     let s00c = step(&recipe, "step-00c-crusty-rereview");
@@ -2831,19 +3028,19 @@ fn merge_round_hashes_qa_evidence_before_any_agent_step() {
         s00d.get("output").and_then(Value::as_str),
         Some("qa_evidence_hash")
     );
-    let cmd = field(s00d, "command");
+    assert!(
+        !field(s00d, "command").contains("{{"),
+        "step-00d must not interpolate {{...}}"
+    );
+    let cmd = round_step_bash(&recipe, "step-00d-qa-evidence-hash");
     for needle in [
         "AUTODRIVE_QA_EVIDENCE",
         "autodrive_trust.sh",
         "autodrive_qa_evidence_sha",
         "qa_evidence_sha",
-    ]
-    .iter()
-    .chain(TOOL_SEARCH_NEEDLES.iter())
-    {
+    ] {
         assert!(cmd.contains(needle), "step-00d must reference `{needle}`");
     }
-    assert!(!cmd.contains("{{"), "step-00d must not interpolate {{...}}");
     let first_agent = steps(&recipe)
         .iter()
         .position(|s| s.get("agent").is_some())
@@ -2853,11 +3050,11 @@ fn merge_round_hashes_qa_evidence_before_any_agent_step() {
         "step-00d must hash qa-evidence.json before the first agent step"
     );
 
-    let verdict = step_command(&recipe, "step-03-extract-merge-ready-verdict");
+    let verdict = round_step_bash(&recipe, "step-03-extract-merge-ready-verdict");
     for needle in [
         "QA_EVIDENCE_HASH",
         "AUTODRIVE_QA_EVIDENCE",
-        "autodrive_qa_evidence_sha",
+        "qa_evidence_sha \"${AUTODRIVE_QA_EVIDENCE:-}\"",
         "qa_evidence=modified",
         "UNREVIEWED_COMMITS",
     ] {
@@ -2867,7 +3064,7 @@ fn merge_round_hashes_qa_evidence_before_any_agent_step() {
         );
     }
 
-    let record = step_command(&recipe, "step-05-write-round-record");
+    let record = round_step_bash(&recipe, "step-05-write-round-record");
     for needle in [
         "QA_EVIDENCE_HASH",
         "\"qa_evidence_sha\":\"%s\"",
@@ -2886,7 +3083,7 @@ fn merge_round_hashes_qa_evidence_before_any_agent_step() {
 #[test]
 fn merge_round_crusty_evidence_checks_the_range() {
     let recipe = recipe_yaml("autodrive-merge-round");
-    let cmd = step_command(&recipe, "step-01b-crusty-evidence");
+    let cmd = round_step_bash(&recipe, "step-01b-crusty-evidence");
     for needle in [
         "autodrive_trust.sh",
         "autodrive_base_sha",
@@ -3254,8 +3451,23 @@ fn round_recipes_read_step_outputs_through_recipe_var() {
     let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
     let mut reads = 0;
     let mut bad = Vec::new();
-    for r in ["autodrive-crusty-round", "autodrive-merge-round"] {
-        let text = recipe_text(r);
+    // autodrive_round_evidence.sh holds merge-round step bodies (PR #1520
+    // review), and reads the same outputs from the same environment.
+    let sources = [
+        (
+            "autodrive-crusty-round.yaml",
+            recipe_text("autodrive-crusty-round"),
+        ),
+        (
+            "autodrive-merge-round.yaml",
+            recipe_text("autodrive-merge-round"),
+        ),
+        (
+            "autodrive_round_evidence.sh",
+            read(&tool_path("autodrive_round_evidence.sh")),
+        ),
+    ];
+    for (r, text) in &sources {
         for (n, line) in text.lines().enumerate() {
             for name in &outputs {
                 let upper = name.to_ascii_uppercase();
@@ -3277,7 +3489,7 @@ fn round_recipes_read_step_outputs_through_recipe_var() {
                     };
                     reads += 1;
                     if !line[start..].starts_with(&dual) {
-                        bad.push(format!("{r}.yaml:{}: {}", n + 1, line.trim()));
+                        bad.push(format!("{r}:{}: {}", n + 1, line.trim()));
                     }
                 }
             }
