@@ -233,6 +233,14 @@ esac
             );
             assert!(!tools.join("codex").exists());
         }
+        // Isolate the unrelated first-launch memory-consent dialog from task stdin.
+        // No framework stamp or client exists in the fresh case; self-heal stays active.
+        fs::create_dir_all(home.path().join(".amplihack")).unwrap();
+        fs::write(
+            home.path().join(".amplihack/config"),
+            r#"{"node_options_consent":true}"#,
+        )
+        .unwrap();
         // Bootstrap requires a terminal. Only stdin uses a PTY; output remains captured.
         use std::os::fd::FromRawFd;
         let (mut master, mut slave) = (-1, -1);
@@ -273,6 +281,7 @@ esac
             .env_remove("AMPLIHACK_SKIP_AUTO_INSTALL")
             .env_remove("AMPLIHACK_CODEX_BINARY_PATH")
             .env_remove("CODEX_BINARY_PATH")
+            .env_remove("NODE_OPTIONS")
             .env_remove("AMPLIHACK_NONINTERACTIVE")
             .env_remove("CI")
             .env_remove("CODEX_THREAD_ID")
@@ -306,7 +315,10 @@ esac
         );
         assert_eq!(
             fs::read(home.path().join("launch-stdin")).unwrap(),
-            b"cold stdin\nUnicode: \xc3\xa9\n"
+            b"cold stdin\nUnicode: \xc3\xa9\n",
+            "staged={staged}: stdout={} stderr={}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
         );
         let argv = fs::read_to_string(home.path().join("launch-argv")).unwrap();
         assert!(argv.contains("exec\n--model\nfixture-model\n-\n"), "{argv}");
