@@ -16,6 +16,20 @@ namespace AgentFrameworkExamples
 {
     class BasicAgentExample
     {
+        // Use the model selected by the user for the configured provider.
+        private static string ConfiguredModel
+        {
+            get
+            {
+                var value = Environment.GetEnvironmentVariable("AGENT_MODEL");
+                if (string.IsNullOrWhiteSpace(value) || value.Contains("<") || value.Contains(">"))
+                {
+                    throw new InvalidOperationException("Set AGENT_MODEL to an available provider model; blank values and placeholders are invalid.");
+                }
+                return value.Trim();
+            }
+        }
+
         static async Task SingleTurnExample()
         {
             Console.WriteLine("=== Single-Turn Conversation ===");
@@ -24,7 +38,7 @@ namespace AgentFrameworkExamples
             var agent = new Agent(
                 name: "assistant",
                 model: new ModelClient(
-                    model: "gpt-4",
+                    model: ConfiguredModel,
                     temperature: 0.7
                 ),
                 instructions: "You are a helpful assistant. Be concise and friendly."
@@ -46,7 +60,7 @@ namespace AgentFrameworkExamples
             // Create agent
             var agent = new Agent(
                 name: "assistant",
-                model: new ModelClient(model: "gpt-4"),
+                model: new ModelClient(model: ConfiguredModel),
                 instructions: "You are a helpful assistant with good memory."
             );
 
@@ -87,7 +101,7 @@ namespace AgentFrameworkExamples
 
             var agent = new Agent(
                 name: "assistant",
-                model: new ModelClient(model: "gpt-4")
+                model: new ModelClient(model: ConfiguredModel)
             );
 
             var response = await agent.RunAsync(

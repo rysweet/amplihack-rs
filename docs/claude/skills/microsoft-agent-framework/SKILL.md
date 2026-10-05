@@ -1,5 +1,7 @@
 # Microsoft Agent Framework Skill
 
+Model IDs in these examples are configuration placeholders. Replace `<configured-model>` (and any primary/fallback variants) with models available to the selected provider and runtime; use the user’s configuration rather than a skill-defined default.
+
 **Version**: 0.1.0-preview | **Last Updated**: 2025-11-15 | **Framework Version**: 0.1.0-preview
 **Languages**: Python 3.10+, C# (.NET 8.0+) | **License**: MIT
 
@@ -46,7 +48,7 @@ from agents_framework import Agent, ModelClient
 # Create agent with model
 agent = Agent(
     name="assistant",
-    model=ModelClient(model="gpt-4"),
+    model=ModelClient(model="<configured-model>"),
     instructions="You are a helpful assistant"
 )
 
@@ -68,7 +70,7 @@ using Microsoft.Agents.AI;
 
 var agent = new Agent(
     name: "assistant",
-    model: new ModelClient(model: "gpt-4"),
+    model: new ModelClient(model: "<configured-model>"),
     instructions: "You are a helpful assistant"
 );
 
@@ -92,7 +94,7 @@ def get_weather(location: str) -> str:
 
 agent = Agent(
     name="assistant",
-    model=ModelClient(model="gpt-4"),
+    model=ModelClient(model="<configured-model>"),
     tools=[get_weather]
 )
 
@@ -111,7 +113,7 @@ public static string GetWeather(string location)
 
 var agent = new Agent(
     name: "assistant",
-    model: new ModelClient(model: "gpt-4"),
+    model: new ModelClient(model: "<configured-model>"),
     tools: new[] { typeof(Tools).GetMethod("GetWeather") }
 );
 ```
@@ -345,7 +347,7 @@ orchestrator = ClaudeAgent("orchestrator.md")
 from agents_framework import Agent, Thread
 
 conversational_agent = Agent(
-    model=ModelClient(model="gpt-4"),
+    model=ModelClient(model="<configured-model>"),
     instructions="Maintain conversation context"
 )
 
@@ -372,7 +374,7 @@ See `@integration/amplihack-integration.md` for complete patterns.
 
    agent = Agent(
        name="assistant",
-       model=ModelClient(model="gpt-4"),
+       model=ModelClient(model="<configured-model>"),
        instructions="You are a helpful assistant"
    )
 

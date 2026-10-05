@@ -1,5 +1,7 @@
 # Migration Guide
 
+Model IDs in these examples are configuration placeholders. Replace `<configured-model>` (and any primary/fallback variants) with models available to the selected provider and runtime; use the user’s configuration rather than a skill-defined default.
+
 ## Overview
 
 This guide covers migration scenarios between amplihack and Microsoft Agent Framework in both directions.
@@ -80,7 +82,7 @@ class CodeReview(BaseModel):
 
 reviewer_agent = Agent(
     name="code_reviewer",
-    model=ModelClient(model="gpt-4"),
+    model=ModelClient(model="<configured-model>"),
     instructions="""You are a code reviewer. Analyze code for:
     - Bugs and correctness
     - Performance issues
