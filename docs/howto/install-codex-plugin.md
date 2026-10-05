@@ -1,3 +1,9 @@
+---
+title: Use Amplihack with Codex
+type: howto
+updated: 2026-10-05
+---
+
 # Use Amplihack with Codex
 
 Amplihack supports interactive Codex sessions and unattended Codex recipe steps alongside Claude and Copilot. The integration uses native Codex plugins, command hooks, and provider-neutral skills. The CLI contract targets codex-cli 0.160.0; no model is pinned.
@@ -13,7 +19,7 @@ codex plugin list --json
 amplihack codex -- "Explain the structure of this repository"
 ```
 
-Installation stages the Amplihack package from canonical assets and registers `amplihack@amplihack-local` through Codex's native local marketplace commands. Registration uses the same `CODEX_HOME` as launch. Optional registration is skipped when Codex is absent; an explicitly requested Codex operation reports missing dependencies. Re-run `amplihack install` to reconcile an installation or update owned assets. It preserves unrelated plugins and records ownership for uninstall.
+Installation stages the Amplihack package from canonical assets and registers `amplihack@amplihack-local` through Codex's native local marketplace commands. Registration uses the same `CODEX_HOME` as launch. Optional registration is skipped when Codex is absent. On `amplihack codex`, the launcher resolves Codex through the existing tool-availability policy before preparing the framework, then reconciles the native package and hooks even when framework staging already exists. Missing-client auto-install respects the existing opt-out and noninteractive/subprocess restrictions; if installation is disallowed or fails, launch stops with remediation. The resolved executable is reused for registration and launch. Re-run `amplihack install` to reconcile an installation or update owned assets. It preserves unrelated plugins and records ownership for uninstall.
 
 Open `/hooks` in Codex, inspect the Amplihack command definitions, and trust the definitions you want to execute. Plugin enablement does not grant hook trust. Updated definitions may require review again. Managed policy can prevent these hooks from loading. See [official hook trust documentation](https://learn.chatgpt.com/docs/hooks).
 
@@ -39,7 +45,7 @@ AMPLIHACK_AGENT_BINARY=codex amplihack recipe run default-workflow \
 
 Recipe steps use the production `amplihack codex` route with `codex exec`. The runner sends the complete effective instructions, persona, task, and recipe provenance through stdin and closes the pipe. Large prompts use the same transport. Provenance suppresses recursive orchestration in leaf steps; it does not authorize tool access. Interactive prompts that cannot be delivered completely fail visibly instead of being truncated or silently converted into unattended tasks.
 
-The runner captures the final assistant message with `--output-last-message` in a private per-task file. Progress is diagnostic output. Success requires completed input delivery, a successful child exit, and a readable UTF-8 final-message file (an existing empty file is valid). Timeout, cancellation, missing or invalid output, and child failure are reported as failures even when partial output exists. Concurrent steps use separate files. Existing explicitly configured rate-limit retries remain bounded; failed attempts may already have side effects.
+The runner captures the final assistant message with `--output-last-message` in a private per-task file. Progress is diagnostic output. Success requires completed input delivery, a successful child exit, and a readable UTF-8 final-message file (an existing empty file is valid). Timeout, cancellation, missing or invalid output, and child failure are reported as failures even when partial output exists. Successful final text is preserved within the 10,000,000-byte output limit; larger output fails instead of being truncated. SIGINT and SIGTERM remain terminal through nonfatal policies, nested recipes, parallel dispatch, JSON repair, and recovery; no subsequent step or recovery starts after cancellation. Owned child processes and input/output resources receive bounded cleanup. Concurrent steps use separate files. Existing explicitly configured rate-limit retries remain bounded; failed attempts may already have side effects.
 
 For native CLI troubleshooting, the equivalent fresh-task transport is:
 
@@ -97,19 +103,13 @@ Managed installation, freshness checks, and the Claude plugin bootstrap consume 
 recipe-runner-rs --capabilities
 ```
 
-Its stdout contract is one JSON object:
+The probe returns one schema-1 JSON object. Property order does not matter; a nonblank version and an array of strings are required. Compatible additional fields and capabilities are accepted. Codex requires `codex_exec`; Claude/Copilot managed delivery accepts an empty capability array, including on platforms without Codex execution support. Python and Node are optional for runner validation under the existing Cargo-only install contract.
 
-```json
-{"schema_version":1,"version":"<package version>","capabilities":["codex_exec"]}
-```
+Set `RECIPE_RUNNER_RS_PATH` to use your own runner. Codex requires a valid executable with compatible capabilities and fails with remediation for missing or incompatible overrides. Claude/Copilot retain historical discovery fallback when an explicit path does not exist, and retain support for legacy custom runners. User-owned binaries are never overwritten.
 
-Schema 1 and membership of `codex_exec` establish the Codex transport/result capability. Unknown extra fields or capabilities are accepted. The probe does not invoke a model, access the network, or update software. Managed revision provenance comes from installation records, not this capability claim.
+Managed delivery requires both semantic validation and exact Cargo provenance: package, repository, full immutable revision and binary belong to the same receipt entry, and the selected executable is that managed binary. Missing or mismatched receipts and shadowed executable selection fail visibly. A different managed revision triggers installation of the bundled revision and revalidation; failed upgrades never stamp success. See the [runner validation reference](../reference/recipe-runner-validation.md) for configuration, schema and diagnostics.
 
-An explicit `RECIPE_RUNNER_RS_PATH` is preserved. Compatible custom or newer builds are accepted by capability, regardless of package version or source SHA. Incompatible explicit binaries fail with remediation; they are never overwritten. Managed binaries must both pass the capability probe and match `claude-plugin/recipe-runner.rev` according to trusted installation records. A different or unknown managed revision triggers reinstallation at that immutable revision and a new capability probe, even when the existing binary advertises `codex_exec`. Capability-only acceptance applies to explicit/custom runners, not managed installations. Offline installation failures are visible. A reviewed committed upstream revision can be used before release; the consuming change must identify any pending upstream merge or release dependency rather than claim it resolved.
-
-`amplihack uninstall` unregisters the owned Codex identity before removing owned package files. It retains user configuration, authentication, unrelated plugins, and shared marketplaces with other consumers. Unknown ownership-ledger versions or identity conflicts prevent destructive cleanup. Partial registration failures retain the staged package and ownership record and can be reconciled by reinstalling. Modified owned package files are preserved and require manual reconciliation.
-
-The implementation handoff still requires a corrected immutable runner revision from [companion issue 153](https://github.com/rysweet/amplihack-recipe-runner/issues/153). The current checked-in pin is the legacy baseline and lacks `codex_exec`; the capability gate rejects it. Local verification uses an explicit compatible companion build. Managed delivery and publication must not be declared complete until that tested revision is published and consumed here.
+`amplihack uninstall` unregisters the owned Codex identity before removing owned package files. It retains user configuration, authentication, unrelated plugins, and shared marketplaces with other consumers. Unknown ownership-ledger versions or identity conflicts prevent destructive cleanup. Partial registration does not publish a new ownership ledger. Before ledger commit, the installer attempts rollback; failed recovery retains the pending journal and recoverable prior state for another install or uninstall attempt. Modified owned package files are preserved and require manual reconciliation.
 
 ## Migration and troubleshooting
 
@@ -125,14 +125,17 @@ their existing input handling. UserPromptSubmit context is advisory;
 PreToolUse emits explicit tool denials.
 
 Installation checks hook and marketplace ownership before replacing the package.
-The previous package and committed ownership remain recoverable until native
-registration, hook reconciliation, and the new ledger commit succeed. Failed
-updates restore prior configuration and package state. If recovery itself fails,
-the installer reports the failure and retains `~/.amplihack/codex/pending.json`
-for recovery on the next install or uninstall; preserve this record and the
-`previous-package` directory until recovery succeeds.
+Before the new ownership ledger commits, failures trigger an attempt to restore
+prior configuration and package state. Native registration and hook reconciliation
+must be verified before that commit. After commit, journal removal or previous
+package cleanup can still fail; recovery respects the committed ledger rather
+than restoring obsolete ownership. Errors report the primary failure and any
+recovery or cleanup failure.
 
-Runner capability checks apply to Codex execution. Legacy custom Claude/Copilot
-runners remain supported. Explicit runner overrides are preserved. Managed
-runner installation records require the selected Cargo binary and its source
-receipt to agree with the bundled revision; failed upgrades do not stamp success.
+If rollback or recovery fails, the installer retains
+`~/.amplihack/codex/pending.json` and recoverable prior state for another attempt
+on the next install or uninstall. Preserve this journal and the
+`previous-package` directory until recovery succeeds; staging is not guaranteed
+to remain.
+
+See [native installer ownership](../concepts/codex-installation-ownership.md) for packaging, transaction and recovery boundaries.

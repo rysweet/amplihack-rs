@@ -279,6 +279,12 @@ pub(crate) fn ensure_framework_installed() -> Result<()> {
         "amplihack-hooks binary not found. Run `amplihack install` to set up hooks, \
          or set AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH to the binary location.",
     )?;
+    if crate::freshness::codex_selected() {
+        let source = find_bundled_framework_root()
+            .context("bundled source required to reconcile native Codex resources")?;
+        codex_plugin::install(&source.root, &hooks_bin)
+            .context("failed native Codex reconciliation")?;
+    }
     let settings_path = global_settings_path()?;
     if !hooks_registered_in_settings(&settings_path)? {
         tracing::warn!("hooks not registered in settings.json — auto-repairing");
@@ -770,4 +776,8 @@ fn local_install(
     }
 
     Ok(())
+}
+
+pub(crate) fn with_codex_binary<T>(binary: &Path, action: impl FnOnce() -> T) -> T {
+    codex_plugin::with_binary(binary, action)
 }

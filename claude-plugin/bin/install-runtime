@@ -35,7 +35,8 @@ dest="$HOME/.local/bin"
 owned="$data/owned-binaries"
 runner_url=https://github.com/rysweet/amplihack-recipe-runner
 
-PATH="$dest:$HOME/.cargo/bin:$PATH"
+runner_home=${CARGO_HOME:-$HOME/.cargo}
+PATH="$dest:$runner_home/bin:$HOME/.cargo/bin:$PATH"
 export PATH
 
 log() {
@@ -160,7 +161,7 @@ fi
 
 runner_status=0
 rev=$(sed -n 1p "$root/claude-plugin/recipe-runner.rev" 2>/dev/null)
-if [ -n "${RECIPE_RUNNER_RS_PATH:-}" ]; then
+if [ -n "${RECIPE_RUNNER_RS_PATH:-}" ] && [ -e "$RECIPE_RUNNER_RS_PATH" ]; then
   if [ -x "$RECIPE_RUNNER_RS_PATH" ]; then
     log "explicit recipe runner preserved"
   else
@@ -174,20 +175,15 @@ elif have cargo && [ -n "$rev" ]; then
     log "recipe-runner-rs build failed"
     runner_status=1
   fi
-  probe=$(recipe-runner-rs --capabilities 2>/dev/null) || runner_status=1
-  if ! printf '%s' "$probe" | tr -d ' \n\r\t' | grep -Eq '^\{"schema_version":1,"version":"[0-9]+\.[0-9]+\.[0-9]+[a-zA-Z0-9.+-]*","capabilities":\["codex_exec"\]\}$'; then
-    log "managed runner lacks the required capability contract"
-    runner_status=1
+  if [ "$runner_status" = 0 ]; then
+    selected_runner=$(command -v recipe-runner-rs)
+    if ! root="$root" data="$data" sh "$bin_dir/check-runner-capabilities" "$selected_runner" \
+        --cargo-home "$runner_home" --repository "$runner_url" --revision "$rev"; then
+      log "managed runner validation failed; cannot stamp success"
+      runner_status=1
+    fi
   fi
-  runner_home=${CARGO_HOME:-$HOME/.cargo}
-  if ! grep -Eq '"recipe-runner-rs [^"]+ \(git\+https://github.com/rysweet/amplihack-recipe-runner[^"]*#'"$rev"'\)"[[:space:]]*:' "$runner_home/.crates2.json" 2>/dev/null; then
-    log "managed runner receipt does not establish requested revision"
-    runner_status=1
-  fi
-  if [ "$(command -v recipe-runner-rs)" != "$runner_home/bin/recipe-runner-rs" ]; then
-    log "managed recipe runner is shadowed; cannot stamp success"
-    runner_status=1
-  fi
+
 elif have recipe-runner-rs; then
   log "recipe-runner-rs already installed (cannot pin: cargo or recipe-runner.rev missing)"
 else

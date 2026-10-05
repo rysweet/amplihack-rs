@@ -184,6 +184,11 @@ pub(crate) fn recipe_runner_binary_present() -> bool {
 
 /// Compatibility is a side-effect-free producer contract, not version equality.
 pub(crate) fn probe_recipe_runner() -> Result<()> {
+    if !codex_selected() {
+        return crate::rust_toolchain::find_recipe_runner()
+            .context("recipe-runner-rs not found")
+            .map(|_| ());
+    }
     if let Some(explicit) = std::env::var_os("RECIPE_RUNNER_RS_PATH").filter(|v| !v.is_empty()) {
         let explicit = PathBuf::from(explicit);
         let expanded = if let Ok(rest) = explicit.strip_prefix("~") {
@@ -196,36 +201,13 @@ pub(crate) fn probe_recipe_runner() -> Result<()> {
         };
         if expanded.components().count() > 1 && !expanded.is_file() {
             bail!(
-                "RECIPE_RUNNER_RS_PATH does not select a regular executable; fix or unset the override"
+                "RECIPE_RUNNER_RS_PATH does not select a regular recipe-runner-rs executable; fix or unset the override"
             );
         }
     }
     let path = crate::rust_toolchain::find_recipe_runner().context("recipe-runner-rs not found")?;
-    if !codex_selected() {
-        return Ok(());
-    }
-    let mut cmd = Command::new(path);
-    cmd.arg("--capabilities");
-    let output = crate::util::run_output_with_timeout_limited(
-        cmd,
-        std::time::Duration::from_secs(10),
-        64 * 1024,
-    )?;
-    if !output.status.success() {
-        bail!("recipe-runner-rs --capabilities failed");
-    }
-    let probe: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .context("recipe-runner-rs must support JSON --capabilities")?;
-    if probe["schema_version"].as_u64() != Some(1)
-        || probe["version"].as_str().is_none_or(str::is_empty)
-        || !probe["capabilities"]
-            .as_array()
-            .is_some_and(|a| a.iter().any(|v| v.as_str() == Some("codex_exec")))
-    {
-        bail!(
-            "recipe-runner-rs requires capability schema 1 and codex_exec; install the pinned runner"
-        );
-    }
+    crate::runner_validation::probe(&path, "codex")
+        .context("recipe-runner-rs requires a valid capability report with codex_exec; fix the override or install the pinned runner")?;
     Ok(())
 }
 
@@ -235,26 +217,17 @@ fn verify_managed_runner() -> Result<()> {
     );
     let selected =
         crate::rust_toolchain::find_recipe_runner().context("installed runner missing")?;
-    anyhow::ensure!(
-        selected.canonicalize()? == cargo_home.join("bin/recipe-runner-rs").canonicalize()?,
-        "managed runner is shadowed; cannot record managed installation"
-    );
-    let receipt = std::fs::read_to_string(cargo_home.join(".crates2.json"))
-        .context("managed runner cargo receipt missing")?;
-    let receipt: serde_json::Value =
-        serde_json::from_str(&receipt).context("invalid cargo receipt")?;
-    anyhow::ensure!(
-        receipt["installs"]
-            .as_object()
-            .is_some_and(|entries| entries.iter().any(|(source, record)| source
-                .starts_with("recipe-runner-rs ")
-                && source.contains(RECIPE_RUNNER_GIT_URL)
-                && source.ends_with(&format!("#{})", RECIPE_RUNNER_REV.trim()))
-                && record["bins"]
-                    .as_array()
-                    .is_some_and(|bins| bins.iter().any(|b| b == "recipe-runner-rs")))),
-        "managed runner receipt does not establish requested revision"
-    );
+    crate::runner_validation::provenance(
+        &selected,
+        &cargo_home,
+        RECIPE_RUNNER_GIT_URL,
+        RECIPE_RUNNER_REV.trim(),
+    )
+    .context(
+        "managed runner receipt or selected executable does not establish requested revision",
+    )?;
+    crate::runner_validation::probe(&selected, if codex_selected() { "codex" } else { "claude" })
+        .context("managed runner capability contract invalid")?;
     Ok(())
 }
 
@@ -390,7 +363,7 @@ mod codex_delivery_contract_tests {
         let bin = dir.path().join("bin");
         fs::create_dir(&bin).unwrap();
         let runner = bin.join("recipe-runner-rs");
-        fs::write(&runner, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::write(&runner, "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[]}'\n").unwrap();
         fs::set_permissions(&runner, fs::Permissions::from_mode(0o700)).unwrap();
         let _env = EnvGuard::set([
             ("PATH", bin.to_str().unwrap()),
@@ -411,7 +384,7 @@ mod codex_delivery_contract_tests {
             .unwrap(),
         )
         .unwrap();
-        verify_managed_runner().unwrap();
+        with_provider("claude", verify_managed_runner).unwrap();
         with_provider("codex", || {
             assert!(
                 probe_recipe_runner().is_err(),

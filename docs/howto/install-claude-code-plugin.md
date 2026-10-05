@@ -282,3 +282,17 @@ would freeze installs. Without one, the cache follows the commit, and
 - it does not follow the `skills` symlink (a session does);
 - it scans `agents/eval-recipes/README.md`, which the explicit `agents` list
   keeps from loading.
+
+## Managed runner compatibility
+
+Runtime installation validates the selected managed runner using the same native
+validation boundary as Rust installation and freshness checks. It accepts JSON
+properties in any order and empty capability arrays for Claude. Runner validation
+does not require Python or Node; the existing Cargo-only source-build path remains
+supported. If an older user-owned runtime lacks the validator, bootstrap builds a
+private validator with Cargo without replacing that runtime.
+
+The effective `CARGO_HOME` determines both the installed runner and its receipt.
+Missing or mismatched receipts, shadowed executables and failed installations
+stop bootstrap without a success stamp. See the
+[runner validation reference](../reference/recipe-runner-validation.md).

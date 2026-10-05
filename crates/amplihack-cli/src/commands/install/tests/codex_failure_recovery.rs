@@ -25,7 +25,17 @@ fn failed_upgrade_restores_package_ledger_and_hooks() {
     codex_plugin::install(&source, &hooks).unwrap();
     let ledger = home.join(".amplihack/codex/ownership.json");
     let before = fs::read(&ledger).unwrap();
-    let before_hooks = fs::read(home.join(".codex/hooks.json")).unwrap();
+    // Recovery must preserve source bytes, including user formatting, rather
+    // than merely reconstructing an equivalent JSON value.
+    let hooks_path = home.join(".codex/hooks.json");
+    let hooks_value: serde_json::Value =
+        serde_json::from_slice(&fs::read(&hooks_path).unwrap()).unwrap();
+    let formatted = format!(
+        "\n{}\n\n",
+        serde_json::to_string_pretty(&hooks_value).unwrap()
+    );
+    fs::write(&hooks_path, formatted).unwrap();
+    let before_hooks = fs::read(&hooks_path).unwrap();
     let package = home.join(".amplihack/codex/market/plugin");
     let before_package = fs::read(package.join("plugin.json")).unwrap();
     let script = fs::read_to_string(&binary).unwrap();
@@ -152,6 +162,8 @@ fn hook_and_ledger_write_failures_retain_recovery_until_retry() {
             ("HOME", home.to_str().unwrap()),
             ("CODEX_HOME", home.join(".codex").to_str().unwrap()),
             ("PATH", &path),
+            ("AMPLIHACK_CODEX_BINARY_PATH", binary.to_str().unwrap()),
+            ("CODEX_BINARY_PATH", ""),
             ("AMPLIHACK_AGENT_BINARY", "codex"),
         ]);
         codex_plugin::install(&source, &hooks).unwrap();
@@ -173,4 +185,42 @@ fn hook_and_ledger_write_failures_retain_recovery_until_retry() {
         codex_plugin::install(&source, &hooks).unwrap();
         assert!(!home.join(".amplihack/codex/pending.json").exists());
     }
+}
+
+#[test]
+fn existing_framework_reconciles_native_resources_when_codex_arrives() {
+    let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    let source = home.join("source");
+    create_source_repo(&source);
+    let bin = home.join("bin");
+    create_exe_stub(&bin, "amplihack-hooks");
+    create_exe_stub(&bin, "recipe-runner-rs");
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+    let _env = EnvGuard::set([
+        ("HOME", home.to_str().unwrap()),
+        ("CODEX_HOME", home.join(".codex").to_str().unwrap()),
+        ("PATH", &path),
+        ("AMPLIHACK_AGENT_BINARY", "claude"),
+        ("AMPLIHACK_CODEX_BINARY_PATH", ""),
+        ("CODEX_BINARY_PATH", ""),
+    ]);
+    super::super::local_install(&source, None).unwrap();
+    assert!(!home.join(".amplihack/codex/ownership.json").exists());
+    let codex = create_exe_stub(&bin, "codex");
+    // Explicit executable outside PATH must own native registration too.
+    let explicit = home.join("selected-codex");
+    fs::rename(codex, &explicit).unwrap();
+    unsafe {
+        std::env::set_var("AMPLIHACK_CODEX_BINARY_PATH", &explicit);
+    }
+    crate::freshness::with_provider("codex", super::super::ensure_framework_installed).unwrap();
+    assert!(home.join(".amplihack/codex/ownership.json").is_file());
+    assert!(explicit.with_extension("installed").exists());
+    let skills = home.join(".amplihack/codex/market/plugin/skills");
+    assert!(fs::read_dir(skills).unwrap().count() >= 196);
+    let hooks: serde_json::Value =
+        serde_json::from_slice(&fs::read(home.join(".codex/hooks.json")).unwrap()).unwrap();
+    assert!(hooks["hooks"]["PreToolUse"].is_array());
 }

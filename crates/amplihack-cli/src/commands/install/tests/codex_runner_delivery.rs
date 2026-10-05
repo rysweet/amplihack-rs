@@ -108,3 +108,29 @@ fn legacy_custom_runner_is_accepted_only_for_non_codex_provider() {
     }
     assert!(crate::freshness::with_provider("codex", ensure_recipe_runner).is_err());
 }
+
+#[test]
+fn missing_explicit_runner_falls_back_only_for_legacy_providers() {
+    let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let binary = dir.path().join("recipe-runner-rs");
+    fs::write(&binary, "#!/bin/sh\nexit 19\n").unwrap();
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+    let missing = dir.path().join("missing-runner");
+    let _env = EnvGuard::set([
+        ("RECIPE_RUNNER_RS_PATH", missing.to_str().unwrap()),
+        ("PATH", dir.path().to_str().unwrap()),
+    ]);
+    for provider in ["claude", "copilot"] {
+        crate::freshness::with_provider(provider, || {
+            crate::freshness::probe_recipe_runner().unwrap()
+        });
+    }
+    let error = crate::freshness::with_provider("codex", crate::freshness::probe_recipe_runner)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("RECIPE_RUNNER_RS_PATH") && error.contains("recipe-runner-rs"),
+        "{error}"
+    );
+}

@@ -1,0 +1,16 @@
+#!/bin/sh
+# Native semantic validation; Python and Node are optional installation tools.
+# Arguments: exact runner executable, then optional managed receipt arguments.
+[ "$#" -ge 1 ] || { echo 'runner executable required' >&2; exit 1; }
+runner=$1
+shift
+validator=$(command -v amplihack 2>/dev/null)
+if [ -z "$validator" ] || ! "$validator" internal validate-recipe-runner --help >/dev/null 2>&1; then
+  # An older user-owned CLI must remain untouched. Build a private validator
+  # from this plugin checkout under its existing Cargo-only contract.
+  command -v cargo >/dev/null 2>&1 || { echo 'cargo required to build current runner validator' >&2; exit 1; }
+  target="$data/validator-target"
+  (cd "$root" && CARGO_TARGET_DIR="$target" cargo build --release --locked --bin amplihack) || exit 1
+  validator="$target/release/amplihack"
+fi
+exec "$validator" internal validate-recipe-runner --provider claude --binary "$runner" "$@"

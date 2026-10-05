@@ -132,8 +132,11 @@ pub fn run_hook<H: Hook>(hook: H) {
         Ok(Err(e)) => {
             emit_telemetry(hook_name, duration, "error", Some(&e.to_string()));
             if security {
-                let _ =
-                    write_stdout(&serde_json::to_vec(&security_denial()).expect("static denial"));
+                if write_stdout(&serde_json::to_vec(&security_denial()).expect("static denial"))
+                    .is_err()
+                {
+                    std::process::exit(3);
+                }
                 return;
             }
             match policy {
@@ -158,8 +161,11 @@ pub fn run_hook<H: Hook>(hook: H) {
         Err(_panic) => {
             emit_telemetry(hook_name, duration, "panic", Some("hook panicked"));
             if security {
-                let _ =
-                    write_stdout(&serde_json::to_vec(&security_denial()).expect("static denial"));
+                if write_stdout(&serde_json::to_vec(&security_denial()).expect("static denial"))
+                    .is_err()
+                {
+                    std::process::exit(3);
+                }
                 return;
             }
             // Intentional: on panic, write best-effort empty JSON response.
@@ -418,6 +424,62 @@ mod tests {
 mod codex_payload_contract_tests {
     use super::*;
     use serde_json::json;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn security_denial_subprocess_worker() {
+        struct PanickingSecurityHook;
+        impl Hook for PanickingSecurityHook {
+            fn name(&self) -> &'static str {
+                "pre_tool_use"
+            }
+            fn process(&self, _: HookInput) -> anyhow::Result<serde_json::Value> {
+                panic!("controlled security hook panic");
+            }
+            fn hook_event_name(&self) -> Option<&'static str> {
+                Some("PreToolUse")
+            }
+        }
+        if std::env::var_os("AMPLIHACK_TEST_DENIAL_PANIC").is_some() {
+            // Redirect only after libtest's startup output. Redirecting the
+            // whole harness makes libtest panic before the hook is reached.
+            use std::os::fd::AsRawFd;
+            let full = std::fs::OpenOptions::new()
+                .write(true)
+                .open("/dev/full")
+                .unwrap();
+            assert!(unsafe { libc::dup2(full.as_raw_fd(), libc::STDOUT_FILENO) } >= 0);
+            run_hook(PanickingSecurityHook);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn security_panic_denial_write_failure_is_visible() {
+        use std::process::{Command, Stdio};
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "protocol::codex_payload_contract_tests::security_denial_subprocess_worker",
+                "--nocapture",
+            ])
+            .env("AMPLIHACK_TEST_DENIAL_PANIC", "1")
+            .env("AMPLIHACK_AGENT_BINARY", "codex")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(br#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{}}"#)
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert_eq!(output.status.code(), Some(3));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("hook panicked"));
+    }
 
     #[test]
     fn codex_post_tool_response_reaches_shared_behavior() {

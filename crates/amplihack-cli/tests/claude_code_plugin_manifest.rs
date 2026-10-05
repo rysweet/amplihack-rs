@@ -957,7 +957,17 @@ mod shell {
         fs::create_dir_all(&dest).unwrap();
         let mut bins = vec![(
             "amplihack",
-            format!("#!/bin/sh\necho 'amplihack {installed}'\n"),
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = internal ]; then exec '{}' \"$@\"; fi\necho 'amplihack {installed}'\n",
+                std::env::current_exe()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .join("amplihack")
+                    .display()
+            ),
         )];
         if with_hooks {
             bins.push(("amplihack-hooks", "#!/bin/sh\n".to_owned()));
@@ -991,7 +1001,7 @@ mkdir -p "$HOME/.cargo/bin"
 printf '{"installs":{"recipe-runner-rs 0.4.0 (git+https://github.com/rysweet/amplihack-recipe-runner#%s)":{"bins":["recipe-runner-rs"]}}}' "$5" > "$HOME/.cargo/.crates2.json"
 cat > "$HOME/.cargo/bin/recipe-runner-rs" <<'RUNNER'
 #!/bin/sh
-printf '%s\n' '{"schema_version":1,"version":"0.4.0","capabilities":["codex_exec"]}'
+printf '%s\n' '{"capabilities":["codex_exec","future"],"schema_version":1,"version":"0.4.0"}'
 RUNNER
 chmod +x "$HOME/.cargo/bin/recipe-runner-rs"
 "#
@@ -1018,12 +1028,182 @@ chmod +x "$HOME/.cargo/bin/recipe-runner-rs"
         InstallRun { out, home, data }
     }
 
+    #[test]
+    fn cargo_only_claude_install_needs_no_json_runtime() {
+        for (report, accepted) in [
+            (
+                r#"{"capabilities":[],"version":"0.4.0","schema_version":1}"#,
+                true,
+            ),
+            (
+                r#"{"capabilities":[1],"version":"0.4.0","schema_version":1}"#,
+                false,
+            ),
+        ] {
+            for old_runtime in [false, true] {
+                let home = tempfile::tempdir().unwrap();
+                let data = tempfile::tempdir().unwrap();
+                let tools = tempfile::tempdir().unwrap();
+                // A controlled PATH contains only POSIX utilities and Cargo. In particular
+                // neither Python nor Node can be discovered through a host PATH suffix.
+                for tool in [
+                    "sh",
+                    "dirname",
+                    "basename",
+                    "date",
+                    "mkdir",
+                    "cat",
+                    "rm",
+                    "sed",
+                    "grep",
+                    "sha256sum",
+                    "cut",
+                    "cp",
+                    "chmod",
+                    "mv",
+                ] {
+                    let lookup = Command::new("/bin/sh")
+                        .args(["-c", &format!("command -v {tool}")])
+                        .output()
+                        .unwrap();
+                    assert!(lookup.status.success());
+                    std::os::unix::fs::symlink(
+                        String::from_utf8(lookup.stdout).unwrap().trim(),
+                        tools.path().join(tool),
+                    )
+                    .unwrap();
+                }
+                write_exe(
+                    &tools.path().join("cargo"),
+                    r#"#!/bin/sh
+if [ "$1" = build ]; then
+  mkdir -p "$CARGO_TARGET_DIR/release"
+  # A fake build must deliver the actual validator, not a shell stub that
+  # returns success for arbitrary validation requests.
+  cp "$VALIDATION_TEST_CLI" "$CARGO_TARGET_DIR/release/amplihack"
+  printf '#!/bin/sh\nexit 0\n' > "$CARGO_TARGET_DIR/release/amplihack-hooks"
+else
+  runner_home=${CARGO_HOME:-$HOME/.cargo}
+  mkdir -p "$runner_home/bin"
+  printf '{"installs":{"recipe-runner-rs 0.4.0 (git+https://github.com/rysweet/amplihack-recipe-runner#%s)":{"bins":["recipe-runner-rs"]}}}' "$5" > "$runner_home/.crates2.json"
+  cat > "$runner_home/bin/recipe-runner-rs" <<'RUNNER'
+#!/bin/sh
+printf '%s\n' "$CAPABILITY_TEST_REPORT"
+RUNNER
+  chmod +x "$runner_home/bin/recipe-runner-rs"
+fi
+"#,
+                );
+                let owned_runtime = tools.path().join("amplihack");
+                if old_runtime {
+                    write_exe(
+                        &owned_runtime,
+                        "#!/bin/sh\nif [ \"$1\" = --version ]; then echo amplihack-old; else exit 2; fi\n",
+                    );
+                }
+                if old_runtime {
+                    write_exe(&tools.path().join("amplihack-hooks"), "#!/bin/sh\nexit 0\n");
+                }
+                let before = fs::read(&owned_runtime).ok();
+                let out = Command::new("/bin/sh")
+                    .arg(repo_root().join("claude-plugin/bin/install-runtime"))
+                    .env("HOME", home.path())
+                    .env("CAPABILITY_TEST_REPORT", report)
+                    .env("PATH", tools.path())
+                    .env(
+                        "VALIDATION_TEST_CLI",
+                        std::env::current_exe()
+                            .unwrap()
+                            .parent()
+                            .unwrap()
+                            .parent()
+                            .unwrap()
+                            .join("amplihack"),
+                    )
+                    .env("CLAUDE_PLUGIN_ROOT", repo_root())
+                    .env("CLAUDE_PLUGIN_DATA", data.path())
+                    .env("AMPLIHACK_NPM_VERSION", env!("CARGO_PKG_VERSION"))
+                    .env_remove("RECIPE_RUNNER_RS_PATH")
+                    .env("CARGO_HOME", home.path().join("custom-cargo"))
+                    .env_remove("AMPLIHACK_PLUGIN_INSTALL_LOCK")
+                    .output()
+                    .unwrap();
+                assert_eq!(
+                    out.status.success(),
+                    accepted,
+                    "report={report} stdout={} stderr={}",
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                assert_eq!(data.path().join("runtime.stamp").is_file(), accepted);
+                assert_eq!(data.path().join("install.failed").exists(), !accepted);
+                if old_runtime {
+                    assert_eq!(fs::read(&owned_runtime).ok(), before);
+                    assert!(
+                        data.path()
+                            .join("validator-target/release/amplihack")
+                            .is_file()
+                    );
+                }
+            }
+        }
+    }
+
     fn plugin_id() -> String {
         repo_root()
             .file_name()
             .unwrap()
             .to_string_lossy()
             .into_owned()
+    }
+
+    #[test]
+    fn claude_capability_validation_uses_native_schema_without_json_runtimes() {
+        let tools = tempfile::tempdir().unwrap();
+        let cli = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("amplihack");
+        std::os::unix::fs::symlink(cli, tools.path().join("amplihack")).unwrap();
+        let runner = tools.path().join("runner");
+        for (report, accepted) in [
+            (
+                r#"{"capabilities":[],"schema_version":1,"version":"custom","extra":true}"#,
+                true,
+            ),
+            (
+                r#"{"capabilities":["future","codex_exec"],"version":"v","schema_version":1}"#,
+                true,
+            ),
+            (
+                r#"{"capabilities":[1],"schema_version":1,"version":"v"}"#,
+                false,
+            ),
+            (
+                r#"{"capabilities":[],"schema_version":true,"version":"v"}"#,
+                false,
+            ),
+            (
+                r#"{"capabilities":[],"schema_version":1,"version":" "}"#,
+                false,
+            ),
+            (
+                r#"{"capabilities":[],"schema_version":1,"version":"v"} {}"#,
+                false,
+            ),
+        ] {
+            write_exe(&runner, &format!("#!/bin/sh\nprintf '%s\\n' '{report}'\n"));
+            let output = Command::new("/bin/sh")
+                .arg(repo_root().join("claude-plugin/bin/check-runner-capabilities"))
+                .arg(&runner)
+                .env("PATH", tools.path())
+                .output()
+                .unwrap();
+            assert_eq!(output.status.success(), accepted, "{report}: {:?}", output);
+        }
     }
 
     #[test]

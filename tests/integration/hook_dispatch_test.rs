@@ -49,6 +49,40 @@ fn hooks_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_amplihack-hooks"))
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn codex_security_denial_write_failure_exits_nonzero() {
+    let project = tempfile::tempdir().unwrap();
+    let mut child = Command::new(hooks_bin())
+        .arg("pre-tool-use")
+        .env("AMPLIHACK_AGENT_BINARY", "codex")
+        .env("HOME", project.path())
+        .current_dir(project.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(
+            fs::OpenOptions::new()
+                .write(true)
+                .open("/dev/full")
+                .unwrap(),
+        ))
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"invalid JSON")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 /// Invoke the hooks binary with a given subcommand and JSON stdin.
 /// Returns (stdout_str, stderr_str, exit_success).
 fn run_hook(subcommand: &str, input_json: &str) -> (String, String, bool) {
