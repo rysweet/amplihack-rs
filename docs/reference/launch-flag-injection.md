@@ -95,7 +95,7 @@ Highest precedence first:
 | `--model <id>` or `--model=<id>` on the amplihack command line | that argument, exactly as typed; amplihack adds no `--model` of its own |
 | a [LiteLLM gateway variable](./environment-variables.md#external-litellm-gateway-variables) is set | `--model` with `AMPLIHACK_LITELLM_MODEL`, unchanged |
 | `AMPLIHACK_DEFAULT_MODEL` is empty or whitespace-only | no `--model`; the tool picks, and the `"model"` in `~/.claude/settings.json` takes effect |
-| `AMPLIHACK_DEFAULT_MODEL` is set to an id | `--model` with that id, trimmed; a dotted Claude id is rewritten to hyphens unless `ANTHROPIC_BASE_URL` is set |
+| `AMPLIHACK_DEFAULT_MODEL` is set to an id | `--model` with that id, trimmed; a dotted Claude id is rewritten to hyphens |
 | `AMPLIHACK_DEFAULT_MODEL` is unset | `--model claude-opus-5[1m]`, amplihack's built-in default |
 
 ### Default: a concrete model id
@@ -157,9 +157,6 @@ claude --model claude-opus-5-5[1m]
 
 The exact form that is rewritten, and the values left alone, are listed under
 [`AMPLIHACK_DEFAULT_MODEL`](./environment-variables.md#amplihack_default_model).
-Nothing is rewritten while `ANTHROPIC_BASE_URL` is set, because the endpoint it
-names decides which ids are valid; see
-[Behind your own `ANTHROPIC_BASE_URL`](./environment-variables.md#behind-your-own-anthropic_base_url).
 
 For teams or CI environments that standardise on one model:
 
@@ -185,9 +182,8 @@ amplihack: passing `--model claude-sonnet-4-5` to `claude` (from AMPLIHACK_DEFAU
 ```
 
 The source reads `amplihack's built-in default` when the variable is unset, and
-the line also names the original spelling when a dotted id was rewritten, or
-Anthropic's spelling when a dotted id was kept because `ANTHROPIC_BASE_URL` is
-set. On the LiteLLM gateway path it names `AMPLIHACK_LITELLM_MODEL` as both the source
+the line also names the original spelling when a dotted id was rewritten. On
+the LiteLLM gateway path it names `AMPLIHACK_LITELLM_MODEL` as both the source
 and the variable to change. The environment variable reference quotes each
 form.
 
@@ -220,8 +216,6 @@ claude --model claude-opus-5.5
 There is no warning for `amplihack copilot` or `amplihack codex`, since the
 dotted spelling is GitHub Copilot CLI's own, and none on the LiteLLM gateway
 path, where the model is a gateway route name and a dot in it may be correct.
-There is none while `ANTHROPIC_BASE_URL` is set either, because the endpoint it
-names decides which ids are valid.
 
 Detection is exact: an argument equal to `--model`, or one starting with
 `--model=`, counts as an explicit model. Arguments that only begin with
@@ -292,8 +286,7 @@ assembles the final command line. The assembly order is:
 3. `--model <value>`: only if the tool is Claude-compatible **and** `--model`
    is not already present in `extra_args`. The value is `AMPLIHACK_LITELLM_MODEL`
    on the LiteLLM gateway path, otherwise `AMPLIHACK_DEFAULT_MODEL` (a dotted
-   Claude id rewritten to hyphens unless `ANTHROPIC_BASE_URL` is set), otherwise
-   `claude-opus-5[1m]`. An empty
+   Claude id rewritten to hyphens), otherwise `claude-opus-5[1m]`. An empty
    `AMPLIHACK_DEFAULT_MODEL` outside the gateway means no `--model`
 4. `--resume` (if requested — `launch` subcommand only)
 5. `--continue` (if requested — `launch` subcommand only)
@@ -339,7 +332,7 @@ contract:
 | Behaviour | Python launcher | Rust launcher |
 |-----------|----------------|---------------|
 | `--dangerously-skip-permissions` | always injected | conditional: Claude-compatible tool AND `--skip-permissions` |
-| `--model <default>` | `opus[1m]` unless `AMPLIHACK_DEFAULT_MODEL` set | **intentional divergence (#1421):** the concrete id `claude-opus-5[1m]` unless `AMPLIHACK_DEFAULT_MODEL` is set; an empty value passes none; a dotted Claude id is rewritten to hyphens (#1527) unless `ANTHROPIC_BASE_URL` is set; Claude-compatible tools only |
+| `--model <default>` | `opus[1m]` unless `AMPLIHACK_DEFAULT_MODEL` set | **intentional divergence (#1421):** the concrete id `claude-opus-5[1m]` unless `AMPLIHACK_DEFAULT_MODEL` is set; an empty value passes none; a dotted Claude id is rewritten to hyphens (#1527); Claude-compatible tools only |
 | `--model` suppressed when user provides it | yes | yes |
 | `--resume` passthrough | yes | `launch` subcommand only |
 | `--continue` passthrough | yes | `launch` subcommand only |

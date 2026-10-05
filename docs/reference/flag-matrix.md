@@ -72,7 +72,7 @@ Current behavior, derived from `command.rs`:
 
 | Variable | Effect |
 |---|---|
-| `AMPLIHACK_DEFAULT_MODEL` | Sets the model passed to Claude-compatible tools. Unset means `claude-opus-5[1m]`; empty or whitespace-only passes no `--model`; a dotted Claude id is rewritten to hyphens unless `ANTHROPIC_BASE_URL` is set. See [`AMPLIHACK_DEFAULT_MODEL`](./environment-variables.md#amplihack_default_model) |
+| `AMPLIHACK_DEFAULT_MODEL` | Sets the model passed to Claude-compatible tools. Unset means `claude-opus-5[1m]`; empty or whitespace-only passes no `--model`; a dotted Claude id is rewritten to hyphens. See [`AMPLIHACK_DEFAULT_MODEL`](./environment-variables.md#amplihack_default_model) |
 | `AMPLIHACK_COPILOT_NO_ALLOW_ALL` | Set to `1` to suppress `--allow-all` injection for Copilot |
 | `AMPLIHACK_COPILOT_NO_REMOTE` | Set to `1` to suppress `--remote` injection for Copilot |
 
@@ -86,8 +86,7 @@ Current behavior, derived from `command.rs`:
    already supply `--model` in extra args, unless `AMPLIHACK_DEFAULT_MODEL` is
    set to an empty value outside the LiteLLM gateway path. The value is `AMPLIHACK_LITELLM_MODEL` on the LiteLLM
    gateway path, otherwise `AMPLIHACK_DEFAULT_MODEL` (a dotted Claude id
-   rewritten to hyphens unless `ANTHROPIC_BASE_URL` is set, issue #1527),
-   otherwise the concrete id
+   rewritten to hyphens, issue #1527), otherwise the concrete id
    `claude-opus-5[1m]`. The default is a concrete id rather than an alias
    because an alias is resolved by the tool and goes stale with the tool's
    version (issue #1421).

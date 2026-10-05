@@ -1,18 +1,18 @@
 name: issue-1527-dotted-model-ids
 description: >
-  Outside-in QA for issue #1527 (PR #1537). GitHub Copilot CLI spells Claude
-  model ids with a dot (claude-opus-5.5), and Claude model ids use hyphens. The
-  scenario runs the real amplihack binary (via
+  Outside-in QA for issue #1527. GitHub Copilot CLI spells Claude model ids
+  with a dot (claude-opus-5.5), and Claude model ids use hyphens. The scenario
+  runs the real amplihack binary (via
   tests/gadugi/run-issue-1527-model-scenario.sh) under env -i with a fresh HOME,
   against stub claude, copilot and codex executables that record their argv and
   environment. It checks the --model each tool receives and the stderr lines
   amplihack prints. A dotted Claude id in AMPLIHACK_DEFAULT_MODEL is rewritten
-  to hyphens. An explicit dotted --model is forwarded as typed, with a warning
-  for Claude-compatible tools. copilot, codex and the LiteLLM gateway are left
-  alone. While the operator's own non-blank ANTHROPIC_BASE_URL is set outside
-  the gateway, there is neither a rewrite nor a warning, and the stderr line
-  says why. The auto-drive QA step runs this against the head commit, so the
-  evidence always describes the commit being merged.
+  to hyphens, whatever ANTHROPIC_BASE_URL says. An explicit dotted --model is
+  forwarded as typed, with a warning for Claude-compatible tools. copilot, codex
+  and the LiteLLM gateway are left alone. CI's Install Smoke Test job runs the
+  runner script directly against the binary it installs; CI does not run
+  gadugi-test, so this file is for running the same cases through gadugi-test
+  by hand.
 version: "1.0"
 config:
   timeout: 900000
@@ -26,7 +26,6 @@ metadata:
   tags: [cli, qa-team, launch, model-selection, regression]
   priority: high
   issues: ["1527"]
-  pr: "1537"
 steps:
   - name: run-issue-1527-model-cases
     agent: cli-agent
@@ -60,18 +59,13 @@ assertions:
     params:
       target: stdout
       expected: "PASS: explicit-dotted "
-  - name: base-url-keeps-dotted-default-model
+  - name: base-url-does-not-stop-the-rewrite
     type: output_contains
     params:
       target: stdout
-      expected: "PASS: base-url-env-dotted "
-  - name: base-url-silences-explicit-warning
+      expected: "PASS: base-url-anthropic-env-dotted "
+  - name: explicit-model-is-the-escape-hatch
     type: output_contains
     params:
       target: stdout
-      expected: "PASS: base-url-explicit-dotted "
-  - name: blank-base-url-counts-as-unset
-    type: output_contains
-    params:
-      target: stdout
-      expected: "PASS: base-url-blank-env-dotted "
+      expected: "PASS: base-url-proxy-explicit-dotted "

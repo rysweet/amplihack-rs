@@ -1,17 +1,15 @@
 //! `--model` tests for issue #1527: the dotted-id rewrite of
 //! AMPLIHACK_DEFAULT_MODEL, the warning for a dotted explicit `--model`, the
-//! LiteLLM gateway's precedence, the exemption behind an operator's own
-//! `ANTHROPIC_BASE_URL`, the stderr lines amplihack prints, and the help text
-//! and reference pages that show them.
+//! LiteLLM gateway's precedence, the stderr lines amplihack prints, and the
+//! help text and reference pages that show them.
 //!
 //! They are kept apart from tests_command.rs, which covers the rest of
 //! `build_command`. The environment helpers they share with the #1421 model
 //! tests there are imported from it.
 
 use super::command::{
-    ANTHROPIC_BASE_URL_ENV, DEFAULT_MODEL, DottedIds, ModelArgs, ModelEndpoint, ModelSelection,
-    ModelSource, Spelling, configured_default_model, explicit_model_warnings,
-    is_claude_compatible_tool, model_args, model_selection_notice,
+    DEFAULT_MODEL, ModelArgs, ModelSelection, ModelSource, configured_default_model,
+    explicit_model_warnings, is_claude_compatible_tool, model_args, model_selection_notice,
     normalize_dotted_claude_model_id,
 };
 use super::tests_command::{PROXY_ENV_VARS, model_arg_through_proxy, with_default_model_env};
@@ -33,8 +31,7 @@ use std::process::Command;
 // and says so on the stderr line added for #1421. An explicit `--model` is what
 // the operator typed and is forwarded unchanged; when it is dotted, amplihack
 // prints a warning naming the hyphenated spelling, because the launched tool
-// may not report the problem itself. Neither happens behind the operator's own
-// `ANTHROPIC_BASE_URL`, whose endpoint decides which model ids are valid.
+// may not report the problem itself.
 // ---------------------------------------------------------------------------
 
 /// The line the docs promise for a rewritten id
@@ -54,40 +51,18 @@ const DOCUMENTED_EXPLICIT_WARNING: &str = "amplihack: warning: passing `--model 
      claude-opus-5.5` to `claude` as typed, but Claude model ids use hyphens, not dots. \
      Use `--model claude-opus-5-5`.";
 
-/// The line the docs promise for a dotted id kept because the operator's own
-/// `ANTHROPIC_BASE_URL` is set (docs/reference/environment-variables.md,
-/// "Behind your own `ANTHROPIC_BASE_URL`").
-const DOCUMENTED_BASE_URL_NOTICE: &str = "amplihack: passing `--model claude-sonnet-4.5` to \
-     `claude` (from AMPLIHACK_DEFAULT_MODEL, not normalised to `claude-sonnet-4-5` because \
-     ANTHROPIC_BASE_URL is set and the endpoint it names decides which model ids are valid). \
-     Set AMPLIHACK_DEFAULT_MODEL to override it, or to an empty value to let claude choose its \
-     own default model.";
-
 /// The line the docs promise on the LiteLLM gateway path
 /// (docs/reference/environment-variables.md, AMPLIHACK_DEFAULT_MODEL).
 const DOCUMENTED_GATEWAY_NOTICE: &str = "amplihack: passing `--model gateway-model` to \
      `claude` (from AMPLIHACK_LITELLM_MODEL). Set AMPLIHACK_LITELLM_MODEL to change it. \
      AMPLIHACK_DEFAULT_MODEL is not read while a LiteLLM gateway variable is set.";
 
-/// A selection of `model` from `source`, rewritten from `normalised_from` when
-/// that is given and passed as configured otherwise.
 fn selection(model: &str, source: ModelSource, normalised_from: Option<&str>) -> ModelSelection {
     ModelSelection {
         model: model.to_string(),
         source,
-        spelling: match normalised_from {
-            Some(from) => Spelling::Normalised {
-                from: from.to_string(),
-            },
-            None => Spelling::AsConfigured,
-        },
+        normalised_from: normalised_from.map(str::to_string),
     }
-}
-
-/// `configured_default_model` as `model_args` calls it when neither the
-/// LiteLLM gateway nor `ANTHROPIC_BASE_URL` is in use.
-fn configured_default_model_rewriting() -> Option<ModelSelection> {
-    configured_default_model(DottedIds::Rewrite)
 }
 
 /// A `BinaryInfo` for any tool name; `make_binary` is always `claude`.
@@ -321,10 +296,7 @@ fn test_normalize_dotted_claude_model_id_is_total_and_idempotent() {
 /// recognise it, not with the shell's surrounding whitespace.
 #[test]
 fn test_configured_default_model_records_the_rewrite() {
-    let got = with_default_model_env(
-        Some("  claude-opus-5.5[1m]  "),
-        configured_default_model_rewriting,
-    );
+    let got = with_default_model_env(Some("  claude-opus-5.5[1m]  "), configured_default_model);
     assert_eq!(
         got,
         Some(selection(
@@ -340,12 +312,11 @@ fn test_configured_default_model_records_the_rewrite() {
 /// it cannot disagree with the value.
 #[test]
 fn test_configured_default_model_without_a_rewrite() {
-    let unset = with_default_model_env(None, configured_default_model_rewriting);
-    let hyphenated =
-        with_default_model_env(Some("claude-opus-5-5"), configured_default_model_rewriting);
-    let not_claude = with_default_model_env(Some(" gpt-5.1 "), configured_default_model_rewriting);
-    let empty = with_default_model_env(Some(""), configured_default_model_rewriting);
-    let blank = with_default_model_env(Some(" \t "), configured_default_model_rewriting);
+    let unset = with_default_model_env(None, configured_default_model);
+    let hyphenated = with_default_model_env(Some("claude-opus-5-5"), configured_default_model);
+    let not_claude = with_default_model_env(Some(" gpt-5.1 "), configured_default_model);
+    let empty = with_default_model_env(Some(""), configured_default_model);
+    let blank = with_default_model_env(Some(" \t "), configured_default_model);
 
     assert_eq!(
         unset,
@@ -370,39 +341,6 @@ fn test_configured_default_model_without_a_rewrite() {
     assert_eq!(blank, None, "a whitespace-only value means no --model");
 }
 
-/// Issue #1527 review: with [`DottedIds::KeepForBaseUrl`] a dotted Claude id
-/// is passed as configured, trimmed, and the selection records the hyphenated
-/// spelling for the stderr line. Anything that is not a dotted Claude id, and
-/// the built-in default, come out exactly as with [`DottedIds::Rewrite`].
-#[test]
-fn test_configured_default_model_keeps_a_dotted_id_for_the_base_url() {
-    let keep = || configured_default_model(DottedIds::KeepForBaseUrl);
-    assert_eq!(
-        with_default_model_env(Some(" claude-opus-5.5[1m] "), keep),
-        Some(ModelSelection {
-            model: "claude-opus-5.5[1m]".to_string(),
-            source: ModelSource::DefaultModelEnv,
-            spelling: Spelling::KeptForBaseUrl {
-                hyphenated: "claude-opus-5-5[1m]".to_string(),
-            },
-        })
-    );
-    for value in [
-        None,
-        Some("claude-opus-5-5"),
-        Some("gpt-5.1"),
-        Some(""),
-        Some(" "),
-    ] {
-        assert_eq!(
-            with_default_model_env(value, keep),
-            with_default_model_env(value, configured_default_model_rewriting),
-            "AMPLIHACK_DEFAULT_MODEL={value:?} is not a dotted Claude id, so \
-             ANTHROPIC_BASE_URL must make no difference"
-        );
-    }
-}
-
 /// Issue #1527: a value that is not valid UTF-8 falls back to the built-in
 /// default, labelled as such, even when its bytes look like a dotted Claude
 /// id. It is never forwarded lossily or "repaired" into an id.
@@ -420,7 +358,7 @@ fn test_configured_default_model_non_utf8_falls_back_to_built_in_default() {
                 OsStr::from_bytes(b"claude-opus-5.5\xff"),
             )
         };
-        configured_default_model(DottedIds::Rewrite)
+        configured_default_model()
     });
     assert_eq!(
         got,
@@ -663,19 +601,11 @@ fn test_explicit_model_warnings_name_the_hyphenated_spelling() {
     let args = |list: &[&str]| -> Vec<String> { list.iter().map(|a| a.to_string()).collect() };
 
     assert_eq!(
-        explicit_model_warnings(
-            "claude",
-            &args(&["--model", "claude-opus-5.5"]),
-            ModelEndpoint::ToolDefault
-        ),
+        explicit_model_warnings("claude", &args(&["--model", "claude-opus-5.5"]), false),
         vec![DOCUMENTED_EXPLICIT_WARNING.to_string()]
     );
     assert_eq!(
-        explicit_model_warnings(
-            "claude",
-            &args(&["--model=claude-opus-5.5"]),
-            ModelEndpoint::ToolDefault
-        ),
+        explicit_model_warnings("claude", &args(&["--model=claude-opus-5.5"]), false),
         vec![DOCUMENTED_EXPLICIT_WARNING.to_string()],
         "the --model= form must give the same warning"
     );
@@ -683,7 +613,7 @@ fn test_explicit_model_warnings_name_the_hyphenated_spelling() {
     let suffixed = explicit_model_warnings(
         "rusty",
         &args(&["-p", "hello", "--model", "claude-opus-5.5[1m]"]),
-        ModelEndpoint::ToolDefault,
+        false,
     );
     assert_eq!(suffixed.len(), 1, "got: {suffixed:?}");
     assert!(
@@ -715,7 +645,7 @@ fn test_explicit_model_warnings_are_silent_otherwise() {
     for list in quiet {
         let args: Vec<String> = list.iter().map(|a| a.to_string()).collect();
         assert_eq!(
-            explicit_model_warnings("claude", &args, ModelEndpoint::ToolDefault),
+            explicit_model_warnings("claude", &args, false),
             Vec::<String>::new(),
             "{args:?} must not produce a warning"
         );
@@ -767,7 +697,7 @@ fn model_args_with(env: &[(&str, &str)], binary_name: &str, extra: &[&str]) -> M
     let names = PROXY_ENV_VARS
         .into_iter()
         .chain(NON_GATEWAY_LITELLM_VARS)
-        .chain(["AMPLIHACK_DEFAULT_MODEL", ANTHROPIC_BASE_URL_ENV]);
+        .chain(["AMPLIHACK_DEFAULT_MODEL", "ANTHROPIC_BASE_URL"]);
     let restore = RestoreEnv(names.map(|name| (name, std::env::var_os(name))).collect());
     for (name, _) in &restore.0 {
         unsafe { std::env::remove_var(name) };
@@ -787,48 +717,34 @@ fn explicit_warning_for(tool: &str) -> String {
     DOCUMENTED_EXPLICIT_WARNING.replace("to `claude`", &format!("to `{tool}`"))
 }
 
-/// Every [`ModelEndpoint`], for tests that must hold whichever one a launch
-/// has.
-const ALL_ENDPOINTS: [ModelEndpoint; 3] = [
-    ModelEndpoint::ToolDefault,
-    ModelEndpoint::LiteLlmGateway,
-    ModelEndpoint::OperatorBaseUrl,
-];
-
 /// Issue #1527 review: the warning's gate, as a pure function. Only a
-/// Claude-compatible tool gets it, and only on the tool's default endpoint.
+/// Claude-compatible tool gets it, and not on the LiteLLM gateway path.
 /// `amplihack copilot -- --model claude-opus-4.5` is Copilot's own spelling and
-/// correct as typed. A dotted gateway route name may be correct too, and so may
-/// a dotted id behind the operator's own `ANTHROPIC_BASE_URL`.
+/// correct as typed; a dotted gateway route name may be correct too.
 #[test]
-fn test_explicit_model_warnings_only_for_claude_compatible_tools_on_the_default_endpoint() {
+fn test_explicit_model_warnings_only_for_claude_compatible_tools_off_the_gateway() {
     let dotted = ["--model".to_string(), "claude-opus-5.5".to_string()];
     for tool in CLAUDE_COMPATIBLE_TOOLS {
         assert!(is_claude_compatible_tool(tool), "{tool}");
         assert_eq!(
-            explicit_model_warnings(tool, &dotted, ModelEndpoint::ToolDefault),
+            explicit_model_warnings(tool, &dotted, false),
             vec![explicit_warning_for(tool)],
             "`amplihack {tool}` with a dotted --model must be warned"
         );
-        for endpoint in [
-            ModelEndpoint::LiteLlmGateway,
-            ModelEndpoint::OperatorBaseUrl,
-        ] {
-            assert_eq!(
-                explicit_model_warnings(tool, &dotted, endpoint),
-                Vec::<String>::new(),
-                "`amplihack {tool}` with endpoint {endpoint:?} must not be warned"
-            );
-        }
+        assert_eq!(
+            explicit_model_warnings(tool, &dotted, true),
+            Vec::<String>::new(),
+            "`amplihack {tool}` through the LiteLLM gateway must not be warned"
+        );
     }
     for tool in ["copilot", "codex", "Claude", ""] {
         assert!(!is_claude_compatible_tool(tool), "{tool:?}");
-        for endpoint in ALL_ENDPOINTS {
+        for through_gateway in [false, true] {
             assert_eq!(
-                explicit_model_warnings(tool, &dotted, endpoint),
+                explicit_model_warnings(tool, &dotted, through_gateway),
                 Vec::<String>::new(),
                 "{tool:?} is not Claude-compatible and must never be warned \
-                 (endpoint {endpoint:?})"
+                 (through_gateway = {through_gateway})"
             );
         }
     }
@@ -916,6 +832,80 @@ fn test_model_args_never_warns_on_the_gateway() {
     }
 }
 
+/// Issue #1527 review: `ANTHROPIC_BASE_URL` changes nothing. The rewrite and
+/// the warning apply whatever endpoint it names, Anthropic's own API and a
+/// corporate gateway in front of it included, because those want Anthropic's
+/// hyphenated ids. amplihack could not honour the variable reliably anyway:
+/// Claude Code also takes it from the `env` block of `~/.claude/settings.json`.
+/// An operator whose endpoint serves the dotted spelling passes an explicit
+/// `--model`, which is forwarded as typed.
+#[test]
+fn test_model_args_ignores_anthropic_base_url() {
+    let envs: [&[(&str, &str)]; 4] = [
+        &[],
+        &[("AMPLIHACK_DEFAULT_MODEL", "claude-opus-5.5[1m]")],
+        &[("AMPLIHACK_DEFAULT_MODEL", "claude-sonnet-4-5")],
+        &[("AMPLIHACK_DEFAULT_MODEL", "")],
+    ];
+    let extras: [&[&str]; 3] = [
+        &[],
+        &["--model", "claude-opus-5.5"],
+        &["--model=claude-opus-5.5"],
+    ];
+    for url in [
+        "https://api.anthropic.com",
+        "https://llm-gateway.example.com",
+    ] {
+        for tool in CLAUDE_COMPATIBLE_TOOLS {
+            for env in envs {
+                for extra in extras {
+                    let with_url: Vec<_> = env
+                        .iter()
+                        .copied()
+                        .chain([("ANTHROPIC_BASE_URL", url)])
+                        .collect();
+                    assert_eq!(
+                        model_args_with(&with_url, tool, extra),
+                        model_args_with(env, tool, extra),
+                        "`amplihack {tool}` with {extra:?} and {env:?}: \
+                         ANTHROPIC_BASE_URL={url} must make no difference"
+                    );
+                }
+            }
+        }
+    }
+
+    // The issue's own case, behind Anthropic's URL: rewritten.
+    let anthropic = ("ANTHROPIC_BASE_URL", "https://api.anthropic.com");
+    assert_eq!(
+        model_args_with(
+            &[
+                anthropic,
+                ("AMPLIHACK_DEFAULT_MODEL", "claude-opus-5.5[1m]")
+            ],
+            "claude",
+            &[],
+        ),
+        ModelArgs {
+            argv: vec!["--model".to_string(), "claude-opus-5-5[1m]".to_string()],
+            stderr: vec![DOCUMENTED_REWRITE_NOTICE.to_string()],
+        }
+    );
+    // The escape hatch for a proxy that serves the dotted spelling: amplihack
+    // adds no --model of its own, so the operator's reaches the tool as typed.
+    assert_eq!(
+        model_args_with(
+            &[("ANTHROPIC_BASE_URL", "https://llm-gateway.example.com")],
+            "claude",
+            &["--model", "claude-opus-5.5"],
+        ),
+        ModelArgs {
+            argv: Vec::new(),
+            stderr: vec![DOCUMENTED_EXPLICIT_WARNING.to_string()],
+        }
+    );
+}
+
 /// Issue #1527 review: only AMPLIHACK_LITELLM_ENDPOINT, _API_KEY and _MODEL
 /// select the gateway, which is what the help text and docs say. Any one of
 /// them alone does, and AMPLIHACK_DEFAULT_MODEL is then not read. Every other
@@ -961,120 +951,6 @@ fn test_only_the_three_gateway_variables_select_the_gateway() {
                 )],
             },
             "{var} alone must select the gateway, so AMPLIHACK_DEFAULT_MODEL is not read"
-        );
-    }
-}
-
-/// Issue #1527 review: behind the operator's own `ANTHROPIC_BASE_URL`, the
-/// launched tool sends the model id to that endpoint, and the endpoint decides
-/// which ids are valid. A proxy in front of GitHub Copilot may serve Copilot's
-/// dotted spelling. So a dotted AMPLIHACK_DEFAULT_MODEL is passed as set, with
-/// the documented notice saying why and naming Anthropic's spelling, and a
-/// dotted explicit `--model` gets no warning. This is the reason the LiteLLM
-/// gateway is exempt, applied to an endpoint amplihack did not configure.
-#[test]
-fn test_model_args_leaves_dotted_ids_alone_behind_an_operator_base_url() {
-    let base_url = (ANTHROPIC_BASE_URL_ENV, "https://copilot-proxy.example.com");
-    let dotted_env = ("AMPLIHACK_DEFAULT_MODEL", "claude-sonnet-4.5");
-
-    assert_eq!(
-        model_args_with(&[base_url, dotted_env], "claude", &[]),
-        ModelArgs {
-            argv: vec!["--model".to_string(), "claude-sonnet-4.5".to_string()],
-            stderr: vec![DOCUMENTED_BASE_URL_NOTICE.to_string()],
-        },
-        "a dotted AMPLIHACK_DEFAULT_MODEL must reach the operator's endpoint as set"
-    );
-    for tool in CLAUDE_COMPATIBLE_TOOLS {
-        assert_eq!(
-            model_args_with(&[base_url, dotted_env], tool, &[]).argv,
-            vec!["--model".to_string(), "claude-sonnet-4.5".to_string()],
-            "`amplihack {tool}` behind ANTHROPIC_BASE_URL"
-        );
-        for extra in [
-            &["--model", "claude-sonnet-4.5"][..],
-            &["--model=claude-sonnet-4.5"],
-        ] {
-            assert_eq!(
-                model_args_with(&[base_url, dotted_env], tool, extra),
-                ModelArgs::default(),
-                "`amplihack {tool}` with {extra:?} behind ANTHROPIC_BASE_URL: no \
-                 warning, and nothing added"
-            );
-        }
-    }
-
-    // Not a dotted Claude id: the #1421 line, byte for byte.
-    assert_eq!(
-        model_args_with(
-            &[base_url, ("AMPLIHACK_DEFAULT_MODEL", "claude-sonnet-4-5")],
-            "claude",
-            &[]
-        )
-        .stderr,
-        vec![model_selection_notice(
-            &selection("claude-sonnet-4-5", ModelSource::DefaultModelEnv, None),
-            "claude",
-        )]
-    );
-
-    // A blank ANTHROPIC_BASE_URL is unset, so the rewrite applies.
-    for blank in ["", " \t "] {
-        assert_eq!(
-            model_args_with(
-                &[
-                    (ANTHROPIC_BASE_URL_ENV, blank),
-                    ("AMPLIHACK_DEFAULT_MODEL", "claude-opus-5.5[1m]")
-                ],
-                "claude",
-                &[]
-            ),
-            ModelArgs {
-                argv: vec!["--model".to_string(), "claude-opus-5-5[1m]".to_string()],
-                stderr: vec![DOCUMENTED_REWRITE_NOTICE.to_string()],
-            },
-            "ANTHROPIC_BASE_URL={blank:?} must count as unset"
-        );
-        assert_eq!(
-            model_args_with(
-                &[(ANTHROPIC_BASE_URL_ENV, blank)],
-                "claude",
-                &["--model", "claude-opus-5.5"]
-            )
-            .stderr,
-            vec![DOCUMENTED_EXPLICIT_WARNING.to_string()],
-            "ANTHROPIC_BASE_URL={blank:?} must count as unset"
-        );
-    }
-
-    // The gateway outranks ANTHROPIC_BASE_URL: amplihack sets that variable
-    // for the child itself on the gateway path.
-    assert_eq!(
-        model_args_with(
-            &[
-                base_url,
-                dotted_env,
-                (amplihack_utils::litellm_proxy::MODEL_ENV, "gateway-model")
-            ],
-            "claude",
-            &[]
-        ),
-        ModelArgs {
-            argv: vec!["--model".to_string(), "gateway-model".to_string()],
-            stderr: vec![DOCUMENTED_GATEWAY_NOTICE.to_string()],
-        }
-    );
-
-    // `amplihack copilot` and `amplihack codex` are unaffected.
-    for tool in ["copilot", "codex"] {
-        assert_eq!(
-            model_args_with(
-                &[base_url, dotted_env],
-                tool,
-                &["--model", "claude-opus-4.5"]
-            ),
-            ModelArgs::default(),
-            "`amplihack {tool}` behind ANTHROPIC_BASE_URL"
         );
     }
 }
@@ -1175,19 +1051,6 @@ fn test_build_command_prints_exactly_the_model_args_stderr() {
         ),
         vec![DOCUMENTED_REWRITE_NOTICE.to_string()],
         "a dotted AMPLIHACK_DEFAULT_MODEL must print the documented rewrite notice, once"
-    );
-    assert_eq!(
-        real_build_command_stderr(
-            &[
-                (ANTHROPIC_BASE_URL_ENV, "https://copilot-proxy.example.com"),
-                ("AMPLIHACK_DEFAULT_MODEL", "claude-sonnet-4.5")
-            ],
-            "claude",
-            &[]
-        ),
-        vec![DOCUMENTED_BASE_URL_NOTICE.to_string()],
-        "a dotted AMPLIHACK_DEFAULT_MODEL behind ANTHROPIC_BASE_URL must print the \
-         documented notice, once"
     );
     for tool in ["copilot", "codex"] {
         assert_eq!(
@@ -1345,22 +1208,11 @@ fn test_documented_model_stderr_lines_are_the_ones_amplihack_prints() {
             &selection("gateway-model", ModelSource::LiteLlmGateway, None),
             "claude",
         ),
-        explicit_model_warnings("claude", &dotted, ModelEndpoint::ToolDefault).concat(),
-        model_selection_notice(
-            &ModelSelection {
-                model: "claude-sonnet-4.5".to_string(),
-                source: ModelSource::DefaultModelEnv,
-                spelling: Spelling::KeptForBaseUrl {
-                    hyphenated: "claude-sonnet-4-5".to_string(),
-                },
-            },
-            "claude",
-        ),
+        explicit_model_warnings("claude", &dotted, false).concat(),
     ];
     assert_eq!(rendered[1], DOCUMENTED_REWRITE_NOTICE);
     assert_eq!(rendered[2], DOCUMENTED_GATEWAY_NOTICE);
     assert_eq!(rendered[3], DOCUMENTED_EXPLICIT_WARNING);
-    assert_eq!(rendered[4], DOCUMENTED_BASE_URL_NOTICE);
 
     for line in &rendered {
         assert!(
@@ -1430,31 +1282,12 @@ fn test_help_and_docs_name_each_gateway_variable() {
     }
 }
 
-/// Issue #1527 review: the help text and every reference page that describes
-/// the dotted-id rewrite must say that it is off while `ANTHROPIC_BASE_URL` is
-/// set (see `test_model_args_leaves_dotted_ids_alone_behind_an_operator_base_url`).
-/// Without it, those pages tell an operator behind their own endpoint that
-/// amplihack rewrites their dotted id when it does not.
-#[test]
-fn test_help_and_docs_name_the_base_url_exemption() {
-    for (name, text) in model_help_and_pages() {
-        assert!(
-            text.contains(ANTHROPIC_BASE_URL_ENV),
-            "{name} describes the dotted-id rewrite and must say it is off while \
-             {ANTHROPIC_BASE_URL_ENV} is set"
-        );
-    }
-}
-
 /// Issue #1527, wired together short of spawning a process: the selection a
 /// dotted environment value produces renders as the line the docs promise.
 #[test]
 fn test_dotted_default_model_env_renders_the_documented_notice() {
-    let got = with_default_model_env(
-        Some("claude-opus-5.5[1m]"),
-        configured_default_model_rewriting,
-    )
-    .expect("a dotted id is still a model to pass");
+    let got = with_default_model_env(Some("claude-opus-5.5[1m]"), configured_default_model)
+        .expect("a dotted id is still a model to pass");
     assert_eq!(
         model_selection_notice(&got, "claude"),
         DOCUMENTED_REWRITE_NOTICE

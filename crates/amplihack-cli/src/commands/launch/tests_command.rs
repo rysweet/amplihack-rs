@@ -65,24 +65,16 @@ pub(super) const PROXY_ENV_VARS: [&str; 3] = [
     amplihack_utils::litellm_proxy::MODEL_ENV,
 ];
 
-/// Runs `f` with `AMPLIHACK_DEFAULT_MODEL` set to `value`, or unset for
-/// `None`, on a host where neither a LiteLLM gateway variable nor
-/// `ANTHROPIC_BASE_URL` is set. Issue #1527: an operator's
-/// `ANTHROPIC_BASE_URL` turns the dotted-id rewrite off, so leaving it in
-/// place would make these tests depend on the developer's shell.
 pub(super) fn with_default_model_env<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
     let _guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let previous = std::env::var_os("AMPLIHACK_DEFAULT_MODEL");
-    let cleared = PROXY_ENV_VARS
-        .into_iter()
-        .chain([super::command::ANTHROPIC_BASE_URL_ENV]);
-    let previous_proxy: Vec<_> = cleared
-        .clone()
-        .map(|name| (name, std::env::var_os(name)))
+    let previous_proxy: Vec<_> = PROXY_ENV_VARS
+        .iter()
+        .map(|name| (*name, std::env::var_os(name)))
         .collect();
-    for name in cleared {
+    for name in PROXY_ENV_VARS {
         unsafe { std::env::remove_var(name) };
     }
     match value {

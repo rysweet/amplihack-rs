@@ -48,9 +48,7 @@ order:
      `~/.claude/settings.json` decide
    - A dotted Claude id (`claude-opus-5.5`, the spelling GitHub Copilot CLI
      uses) is rewritten to the hyphenated id Claude Code accepts
-     (`claude-opus-5-5`), issue #1527. Not while `ANTHROPIC_BASE_URL` is set:
-     the endpoint it names decides which ids are valid; see
-     [Behind your own `ANTHROPIC_BASE_URL`](./environment-variables.md#behind-your-own-anthropic_base_url)
+     (`claude-opus-5-5`), issue #1527
 
 4. **Built-in default** (`claude-opus-5[1m]`)
    - Used when `AMPLIHACK_DEFAULT_MODEL` is unset
@@ -108,8 +106,7 @@ the models your install supports.
 
 Claude Code's full model ids use hyphens (`claude-opus-5-5`), not dots.
 amplihack rewrites a dotted id in `AMPLIHACK_DEFAULT_MODEL`, but not one given to
-`--model`, where it warns instead. It does neither while `ANTHROPIC_BASE_URL` is
-set, because the endpoint that variable names decides which ids are valid.
+`--model`, where it warns instead.
 
 The `[1m]` suffix requests the 1M-token context window where the model offers
 one. If your workflow depends on it, pin it explicitly:
@@ -174,8 +171,6 @@ Issue #1527 records what one Claude Code version did with it.
 **Solution**: Use the hyphenated id, `claude-opus-5-5`. amplihack forwards an
 explicit `--model` unchanged and prints a warning naming the hyphenated
 spelling; look for a stderr line beginning `amplihack: warning: passing`.
-While `ANTHROPIC_BASE_URL` is set there is no warning, because the endpoint it
-names decides which ids are valid; use whichever spelling that endpoint serves.
 
 ### Model not found (404)
 

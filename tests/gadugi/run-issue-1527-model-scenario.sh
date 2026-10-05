@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Self-asserting gadugi-test scenario body for issue #1527 (PR #1537): Claude
-# model ids in the dotted spelling GitHub Copilot CLI uses (`claude-opus-5.5`).
+# Self-asserting gadugi-test scenario body for issue #1527: Claude model ids in
+# the dotted spelling GitHub Copilot CLI uses (`claude-opus-5.5`).
 #
 # This runs the real `amplihack` binary from the outside. Each case runs
 # `amplihack <tool> [args]` under `env -i` with a fresh HOME. Stub `claude`,
@@ -15,19 +15,24 @@
 #     one warning naming the hyphenated spelling.
 #   - copilot and codex: no rewrite, no warning. The LiteLLM gateway: the
 #     gateway model, unchanged and without a warning.
-#   - A non-blank ANTHROPIC_BASE_URL outside the gateway: no rewrite and no
-#     warning, because the endpoint it names decides which ids are valid.
-#     The stderr line says so and names Anthropic's spelling. A blank value
-#     counts as unset.
+#   - ANTHROPIC_BASE_URL: makes no difference. A dotted default model is
+#     rewritten behind Anthropic's own URL and behind any other. An operator
+#     whose endpoint serves the dotted spelling passes an explicit --model,
+#     which is forwarded as typed.
 #
-# The auto-drive QA step runs every scenario in tests/gadugi/scenarios against
-# the head commit and records that commit in its evidence. The merge gate
-# refuses evidence recorded on any other commit. So these cases are re-run on
-# whatever is about to merge, not quoted from an earlier commit.
+# Where it runs: CI's "Install Smoke Test" job (.github/workflows/ci.yml) runs
+# this script directly against the amplihack binary that job installs, on
+# every pull request to main, merge-queue run and push to main. That job is a
+# required status check on main, so these cases are re-run on whatever merges
+# and a failure blocks the merge. CI does not run gadugi-test itself; the YAML
+# in tests/gadugi/scenarios wraps this script for anyone running it through
+# gadugi-test by hand. The auto-drive QA step does not run it: for a Rust repo
+# that step runs `cargo test`.
 #
-# gadugi `execute` runs this with no arguments. The scenario then checks the
-# exit code and looks for ALL_CASES_PASSED. Set AMPLIHACK_1527_QA_BIN to an
-# amplihack binary to skip the cargo build.
+# Run by hand: bash tests/gadugi/run-issue-1527-model-scenario.sh
+# It builds amplihack with cargo first. Set AMPLIHACK_1527_QA_BIN to an
+# amplihack binary to skip the build. On success it prints ALL_CASES_PASSED and
+# exits 0.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -99,7 +104,7 @@ model_of() {
 fail=0
 passed=0
 GATEWAY=(AMPLIHACK_LITELLM_ENDPOINT=http://127.0.0.1:9 AMPLIHACK_LITELLM_API_KEY=sk-qa AMPLIHACK_LITELLM_MODEL=claude-opus-5.5)
-PROXY_URL=https://copilot-proxy.example.com
+PROXY_URL=https://llm-gateway.example.com
 
 # check <id> <tool> <want --model> <want warning: yes|no> <want stderr substring, or -> \
 #       [VAR=value ...] -- [amplihack args ...]
@@ -165,27 +170,14 @@ check telemetry-only-env claude claude-sonnet-4-5 no '(from AMPLIHACK_DEFAULT_MO
 check telemetry-only-explicit claude claude-opus-5.5 yes - \
   "AMPLIHACK_LITELLM_TELEMETRY_FILE=$WORK/telemetry.jsonl" -- --model claude-opus-5.5
 
-# The operator's own ANTHROPIC_BASE_URL: no rewrite and no warning.
-check base-url-env-dotted claude claude-sonnet-4.5 no \
-  'not normalised to `claude-sonnet-4-5` because ANTHROPIC_BASE_URL is set and the endpoint it names decides which model ids are valid' \
-  "ANTHROPIC_BASE_URL=$PROXY_URL" AMPLIHACK_DEFAULT_MODEL=claude-sonnet-4.5 --
-check base-url-explicit-dotted claude claude-opus-5.5 no - "ANTHROPIC_BASE_URL=$PROXY_URL" -- --model claude-opus-5.5
-check base-url-explicit-dotted-equals claude =claude-opus-5.5 no - "ANTHROPIC_BASE_URL=$PROXY_URL" -- --model=claude-opus-5.5
-# amplihack does not inspect the URL, so Anthropic's own API is treated the same.
-check base-url-anthropic-env-dotted claude claude-sonnet-4.5 no 'not normalised to `claude-sonnet-4-5`' \
+# ANTHROPIC_BASE_URL makes no difference: amplihack does not read it.
+check base-url-anthropic-env-dotted claude claude-sonnet-4-5 no 'normalised from `claude-sonnet-4.5`' \
   ANTHROPIC_BASE_URL=https://api.anthropic.com AMPLIHACK_DEFAULT_MODEL=claude-sonnet-4.5 --
-check base-url-env-hyphenated claude claude-sonnet-4-5 no '(from AMPLIHACK_DEFAULT_MODEL). Set AMPLIHACK_DEFAULT_MODEL' \
-  "ANTHROPIC_BASE_URL=$PROXY_URL" AMPLIHACK_DEFAULT_MODEL=claude-sonnet-4-5 --
-# A blank ANTHROPIC_BASE_URL counts as unset.
-check base-url-blank-env-dotted claude 'claude-opus-5-5[1m]' no 'normalised from `claude-opus-5.5[1m]`' \
-  $'ANTHROPIC_BASE_URL= \t ' 'AMPLIHACK_DEFAULT_MODEL=claude-opus-5.5[1m]' --
-check base-url-empty-explicit-dotted claude claude-opus-5.5 yes 'Use `--model claude-opus-5-5`.' \
-  ANTHROPIC_BASE_URL= -- --model claude-opus-5.5
-# The gateway outranks ANTHROPIC_BASE_URL.
-check base-url-and-gateway claude claude-opus-5.5 no '(from AMPLIHACK_LITELLM_MODEL)' \
-  "ANTHROPIC_BASE_URL=$PROXY_URL" AMPLIHACK_DEFAULT_MODEL=claude-sonnet-4.5 "${GATEWAY[@]}" --
-check base-url-copilot-env copilot NONE no - "ANTHROPIC_BASE_URL=$PROXY_URL" AMPLIHACK_DEFAULT_MODEL=claude-sonnet-4.5 --
-check base-url-copilot-explicit copilot claude-opus-4.5 no - "ANTHROPIC_BASE_URL=$PROXY_URL" -- --model claude-opus-4.5
+check base-url-proxy-env-dotted claude claude-sonnet-4-5 no 'normalised from `claude-sonnet-4.5`' \
+  "ANTHROPIC_BASE_URL=$PROXY_URL" AMPLIHACK_DEFAULT_MODEL=claude-sonnet-4.5 --
+# The escape hatch for a proxy that serves the dotted spelling.
+check base-url-proxy-explicit-dotted claude claude-opus-5.5 yes 'Use `--model claude-opus-5-5`.' \
+  "ANTHROPIC_BASE_URL=$PROXY_URL" AMPLIHACK_DEFAULT_MODEL=claude-sonnet-4.5 -- --model claude-opus-5.5
 
 # The launched tool inherits AMPLIHACK_DEFAULT_MODEL and ANTHROPIC_BASE_URL as
 # set; only the --model argument changes.
@@ -197,7 +189,7 @@ else
   echo "FAIL: child-env: claude inherited AMPLIHACK_DEFAULT_MODEL='$child_default', want 'claude-opus-5.5[1m]'"
   fail=1
 fi
-child_base="$(cat "$WORK/case-base-url-env-dotted/record/claude/base_url.0" 2>/dev/null)"
+child_base="$(cat "$WORK/case-base-url-proxy-env-dotted/record/claude/base_url.0" 2>/dev/null)"
 if [ "$child_base" = "$PROXY_URL" ]; then
   echo "PASS: child-base-url (claude inherited ANTHROPIC_BASE_URL=$child_base unchanged)"
   passed=$((passed + 1))
