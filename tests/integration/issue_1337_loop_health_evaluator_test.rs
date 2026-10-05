@@ -522,6 +522,60 @@ fn evaluator_prompt_states_the_contract_first_and_last() {
          last-round {last_round})"
     );
 
+    // The contract is the first and the last `## ` section, and the role
+    // paragraphs come after the first one: nothing but the title is read
+    // before the contract, and nothing but the contract after the evidence.
+    let section_headings: Vec<(usize, &str)> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.starts_with("## "))
+        .map(|(i, l)| (i, *l))
+        .collect();
+    let (h_first, first_heading) = *section_headings
+        .first()
+        .expect("the prompt must have `## ` sections");
+    let (h_last, last_heading) = *section_headings
+        .last()
+        .expect("the prompt must have `## ` sections");
+    assert_eq!(
+        first_heading, "## OUTPUT CONTRACT",
+        "the first `## ` heading (prompt line {h_first}) must be the OUTPUT CONTRACT"
+    );
+    assert_eq!(
+        last_heading, "## OUTPUT CONTRACT (repeated)",
+        "the last `## ` heading (prompt line {h_last}) must be the repeated OUTPUT CONTRACT"
+    );
+    let role = first("You are the loop-health evaluator")
+        .expect("the prompt must carry the role line 'You are the loop-health evaluator'");
+    assert!(
+        h_first < example_first && example_first < role && role < evidence,
+        "expected heading < first example < role line < {{{{loop_evidence}}}}; got prompt \
+         lines heading {h_first}, first example {example_first}, role {role}, evidence {evidence}"
+    );
+    assert!(
+        h_last > last_round && example_last > h_last,
+        "expected {{{{loop_last_round_output}}}} < last heading < last example; got prompt \
+         lines last-round {last_round}, last heading {h_last}, last example {example_last}"
+    );
+    let last_non_blank = lines
+        .iter()
+        .rposition(|l| !l.trim().is_empty())
+        .expect("the prompt must not be blank");
+    assert!(
+        lines[last_non_blank].contains("any other word is STUCK"),
+        "the last non-blank prompt line ({last_non_blank}) must say 'any other word is STUCK'; \
+         it is {:?}",
+        lines[last_non_blank]
+    );
+    if let Some(at) = lines[h_last..].iter().position(|l| l.contains("{{")) {
+        panic!(
+            "no placeholder may follow the last heading (prompt line {h_last}); prompt line {} \
+             has one: {:?}",
+            h_last + at,
+            lines[h_last + at]
+        );
+    }
+
     // Merging the closing blocks must not drop a rule or reorder them.
     let normalise = |block: &[&str]| {
         block

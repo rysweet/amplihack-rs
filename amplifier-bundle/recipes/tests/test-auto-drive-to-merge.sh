@@ -872,6 +872,28 @@ else
   fail "1511-static-audit" "${audit_bad} of ${audit_reads} step-output read(s) have no RECIPE_VAR_ fallback"
 fi
 
+# 11a2. The reproduction from the reference doc, without the runner: with only
+# RECIPE_VAR_my_out set, as the runner leaves an object output, the bare read
+# is empty and the dual-name read returns the object, which both helpers accept.
+# The bash -c bodies are constant single-quoted literals; the inner shell
+# expands them.
+REPRO_ENV=(env -u MY_OUT RECIPE_VAR_my_out='{"a":"1"}')
+# shellcheck disable=SC2016
+r_reads="$("${REPRO_ENV[@]}" bash -c 'echo "[${MY_OUT:-}] [${MY_OUT:-${RECIPE_VAR_my_out:-}}]"')"
+# shellcheck disable=SC2016
+r_json="$("${REPRO_ENV[@]}" bash -c 'printf "%s" "${MY_OUT:-${RECIPE_VAR_my_out:-}}" \
+  | "$REAL_AMPLIHACK" orch helper extract-json --require-field a')"
+r_json_rc=$?
+# shellcheck disable=SC2016
+r_field="$("${REPRO_ENV[@]}" bash -c 'printf "%s" "${MY_OUT:-${RECIPE_VAR_my_out:-}}" \
+  | "$REAL_AMPLIHACK" orch helper extract-field --field a --default MISSING')"
+if [[ "${r_reads}" == '[] [{"a":"1"}]' && "${r_json}" == '{"a":"1"}' && "${r_json_rc}" -eq 0 \
+      && "${r_field}" == '1' ]]; then
+  pass "1511-repro" "bare read is empty, dual-name read and both helpers see RECIPE_VAR_my_out"
+else
+  fail "1511-repro" "reads=${r_reads}; extract-json=${r_json} (rc=${r_json_rc}); extract-field=${r_field}; expected [] [{\"a\":\"1\"}]; {\"a\":\"1\"} (rc=0); 1"
+fi
+
 # 11b. Runtime: run the REAL step bodies with ONLY RECIPE_VAR_ set — the
 # environment the runner actually provides for object outputs. The bundle
 # tools they call are replaced by recorders under a fake AMPLIHACK_HOME.
@@ -945,10 +967,11 @@ done
 # crusty-loop step-02: the preflight's state_dir reaches the loop driver.
 run_body "$CL2" RECIPE_VAR_crusty_loop_preflight="$PRE"
 if [ "$BODY_RC" -eq 0 ] && [ "$(arg_after --state-dir "${CALLS}/loop-args")" = "${SD}" ] \
-   && grep -qxF 'pr_number=42' "${CALLS}/loop-args" 2>/dev/null; then
+   && grep -qxF 'pr_number=42' "${CALLS}/loop-args" 2>/dev/null \
+   && [[ "${BODY_ERR}" != *'no state_dir'* ]]; then
   pass "1511-crusty-loop-02" "crusty-loop step-02 reads state_dir and pr through RECIPE_VAR_crusty_loop_preflight"
 else
-  fail "1511-crusty-loop-02" "crusty-loop step-02 did not get past the state_dir guard (rc=${BODY_RC}): ${BODY_ERR}"
+  fail "1511-crusty-loop-02" "crusty-loop step-02 did not get past the state_dir guard, or its stderr says 'no state_dir' (rc=${BODY_RC}); stderr: ${BODY_ERR}"
 fi
 
 # crusty-loop step-03: the phase is recorded complete from RECIPE_VAR_ alone.

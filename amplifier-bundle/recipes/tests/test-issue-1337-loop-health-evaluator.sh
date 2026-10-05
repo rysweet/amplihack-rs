@@ -80,26 +80,31 @@ fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); echo "  FAIL[$1]: $2" >&2; }
 
 echo "=== Issue #1337: agentic loop-health evaluator contract ==="
 
-# Extract one step's `command: |` body out of the recipe.
-extract_step_command() {
-    local recipe="$1" step="$2"
-    awk -v step="$step" '
-        index($0, "id: \"" step "\"") { instep=1 }
-        instep && $0 ~ /^    command: \|/ { incmd=1; next }
-        incmd {
-            if ($0 ~ /^    [a-zA-Z_]+:/ || $0 ~ /^  - id:/) { exit }
+# Extract one step's `<key>: |` block out of the recipe, unindented. Every
+# `  - id:` line resets the step match, so a step without that key yields
+# nothing rather than the next step's block. `step` and `key` are fixed test
+# identifiers, never outside input.
+extract_step_field() {
+    local recipe="$1" step="$2" key="$3"
+    LC_ALL=C awk -v step="$step" -v key="$key" '
+        /^  - id:/ { if (inkey) { exit } instep = index($0, "id: \"" step "\"") > 0 }
+        instep && index($0, "    " key ": |") == 1 { inkey=1; next }
+        inkey {
+            if ($0 ~ /^    [a-zA-Z_]+:/) { exit }
             sub(/^      /, "")
             print
         }
     ' "${recipe}"
 }
+extract_step_command() { extract_step_field "$1" "$2" command; }
 
 COLLECT="$(extract_step_command "${COLLECTOR}" "step-01-collect-loop-evidence")"
+PROMPT="$(extract_step_field "${RECIPE}" "step-02-evaluate-loop-health" prompt)"
 RESOLVE="$(extract_step_command "${RECIPE}" "step-03-resolve-loop-verdict")"
 ENFORCE="$(extract_step_command "${RECIPE}" "step-04-enforce-loop-verdict")"
-for pair in "step-01:${COLLECT}" "step-03:${RESOLVE}" "step-04:${ENFORCE}"; do
+for pair in "step-01:${COLLECT}" "step-02-prompt:${PROMPT}" "step-03:${RESOLVE}" "step-04:${ENFORCE}"; do
     name="${pair%%:*}"; body="${pair#*:}"
-    [[ -n "${body}" ]] || { echo "HARNESS-ERROR: could not extract ${name} command body" >&2; exit 2; }
+    [[ -n "${body}" ]] || { echo "HARNESS-ERROR: could not extract ${name} block" >&2; exit 2; }
 done
 
 # run_step <body> — run an extracted step body; env comes from the caller.
@@ -363,6 +368,15 @@ check_rs "1513-json-beats-quoted-alt" \
     CONTINUE evaluator
 check_rs "1513-json-beats-prose" \
     $'STUCK\n{"loop_verdict":"CONTINUE","not_converging":[]}' CONTINUE evaluator
+# A valid `loop_verdict` object is final: nothing written AFTER it — a
+# `verdict` object or a bare token — is read as a second answer, and prose
+# cannot lift a STUCK object to CONTINUE.
+check_rs "1513-json-beats-later-alt" \
+    $'{"loop_verdict":"CONTINUE","not_converging":[]}\n{"verdict":"DONE"}' CONTINUE evaluator
+check_rs "1513-json-beats-later-prose" \
+    $'{"loop_verdict":"CONTINUE","not_converging":[]}\nDONE' CONTINUE evaluator
+check_rs "1513-json-beats-later-prose" \
+    $'{"loop_verdict":"STUCK","not_converging":[]}\nCONTINUE' STUCK evaluator
 
 # --- the wrong key (`verdict`) — deliberate reversal of the old MALFORMED row.
 # `{"verdict":"CONTINUE"}` used to be asserted STUCK. Issue #1513 is a
@@ -412,9 +426,17 @@ check_rs "1513-prose-repeat" $'DONE.\nThe loop converged.\nDONE.' DONE evaluator
 check_rs "1513-prose-bold" '**Verdict: CONTINUE**' CONTINUE evaluator_prose_token
 check_rs "1513-prose-bold" '**Verdict:** DONE' DONE evaluator_prose_token
 check_rs "1513-prose-bold" '**CONTINUE** — findings 3 -> 2 -> 1' CONTINUE evaluator_prose_token
-# A bold heading that merely MENTIONS a token is not a verdict line.
+# A bold heading that merely MENTIONS a token is not a verdict line, whether
+# it comes before the verdict or after it.
 check_rs "1513-prose-bold-heading" \
     $'**What would make the next verdict STUCK:**\nCONTINUE — progress' CONTINUE evaluator_prose_token
+check_rs "1513-prose-bold-heading" \
+    $'**Verdict: CONTINUE**\n**What would make the next verdict STUCK:**' CONTINUE evaluator_prose_token
+# The evaluator output quoted in issue #1513, byte for byte (copied once from
+# the issue; never fetched at test time).
+check_rs "1513-issue-verbatim" \
+    'CONTINUE — round 1 made real, concrete progress (new findings=1, 0 recurring, 0 resolved is expected on first round), produced actual diffs ... worth another round to verify the fix lands and crusty re-reviews clean.' \
+    CONTINUE evaluator_prose_token
 # A leading `*` reads as bold, so a `*` bullet matches; a `-` bullet does not.
 check_rs "1513-prose-bullet" '* CONTINUE' CONTINUE evaluator_prose_token
 check_rs "1513-prose-bullet" '- CONTINUE' STUCK unparseable_verdict
@@ -619,26 +641,44 @@ fi
 
 # ---------------------------------------------------------------------------
 # 6e. The prompt states the contract FIRST and LAST, and never contains a line
-#     the loop driver could read as a health marker.
+#     the loop driver could read as a health marker. Line numbers are counted
+#     in the step-02 prompt alone: the recipe's header comments also mention
+#     the contract, and must not stand in for it.
 # ---------------------------------------------------------------------------
-PROMPT_LN() { grep -nF -- "$1" "${RECIPE}" | head -n1 | cut -d: -f1; }
-LN_CONTRACT_FIRST="$(PROMPT_LN 'OUTPUT CONTRACT')"
-LN_EVIDENCE="$(PROMPT_LN '{{loop_evidence}}')"
-LN_LAST_ROUND="$(PROMPT_LN '{{loop_last_round_output}}')"
-LN_EXAMPLE_FIRST="$(grep -nF '{"loop_verdict":"CONTINUE","not_converging":[]}' "${RECIPE}" | head -n1 | cut -d: -f1)"
-LN_EXAMPLE="$(grep -nF '{"loop_verdict":"CONTINUE","not_converging":[]}' "${RECIPE}" | tail -n1 | cut -d: -f1)"
-LN_ANY_OTHER="$(grep -niF 'any other word is STUCK' "${RECIPE}" | tail -n1 | cut -d: -f1)"
-if [[ -n "${LN_CONTRACT_FIRST}" && -n "${LN_EXAMPLE_FIRST}" && -n "${LN_EVIDENCE}" \
-      && "${LN_CONTRACT_FIRST}" -lt "${LN_EXAMPLE_FIRST}" && "${LN_EXAMPLE_FIRST}" -lt "${LN_EVIDENCE}" ]]; then
-    pass "PROMPT-contract-first" "the OUTPUT CONTRACT and its example line are stated before any evidence"
+EXAMPLE_LINE='{"loop_verdict":"CONTINUE","not_converging":[]}'
+p_lines() { printf '%s\n' "${PROMPT}" | LC_ALL=C grep -n "$@"; }  # p_lines <grep args> -> N:text
+p_first() { p_lines "$@" | head -n1 | cut -d: -f1; }
+p_last() { p_lines "$@" | tail -n1 | cut -d: -f1; }
+p_text() { [[ -n "$1" ]] && printf '%s\n' "${PROMPT}" | sed -n "$1p"; }   # p_text <N>
+
+H1="$(p_first '^## ')"; H1_TXT="$(p_text "${H1}")"
+HN="$(p_last '^## ')"; HN_TXT="$(p_text "${HN}")"
+EX1="$(p_first -xF -- "${EXAMPLE_LINE}")"
+EXN="$(p_last -xF -- "${EXAMPLE_LINE}")"
+ROLE="$(p_first -F -- 'You are the loop-health evaluator')"
+EVID="$(p_first -F -- '{{loop_evidence}}')"
+ROUND="$(p_first -F -- '{{loop_last_round_output}}')"
+LAST_NB="$(p_last '[^[:space:]]')"; LAST_NB_TXT="$(p_text "${LAST_NB}")"
+BRACE_AFTER=""
+[[ -n "${HN}" ]] && BRACE_AFTER="$(printf '%s\n' "${PROMPT}" \
+    | LC_ALL=C awk -v from="${HN}" 'NR >= from && index($0, "{{") { print NR; exit }')"
+
+if [[ "${H1_TXT}" == '## OUTPUT CONTRACT' && -n "${EX1}" && -n "${ROLE}" && -n "${EVID}" \
+      && "${H1}" -lt "${EX1}" && "${EX1}" -lt "${ROLE}" && "${ROLE}" -lt "${EVID}" ]]; then
+    pass "PROMPT-contract-first" "the prompt opens with '## OUTPUT CONTRACT' and its example, before the role line and the evidence (prompt lines ${H1} < ${EX1} < ${ROLE} < ${EVID})"
 else
-    fail "PROMPT-contract-first" "no OUTPUT CONTRACT block with an example line ahead of the evidence (contract=${LN_CONTRACT_FIRST:-none}, example=${LN_EXAMPLE_FIRST:-none}, evidence=${LN_EVIDENCE:-none})"
+    fail "PROMPT-contract-first" "expected the first '## ' heading to be '## OUTPUT CONTRACT' and heading < first example < role line < {{loop_evidence}}; got first heading '${H1_TXT}' at prompt line ${H1:-none}, first example ${EX1:-none}, role ${ROLE:-none}, evidence ${EVID:-none}"
 fi
-if [[ -n "${LN_EXAMPLE}" && -n "${LN_ANY_OTHER}" && -n "${LN_LAST_ROUND}" \
-      && "${LN_EXAMPLE}" -gt "${LN_LAST_ROUND}" && "${LN_ANY_OTHER}" -gt "${LN_LAST_ROUND}" ]]; then
-    pass "PROMPT-contract-last" "the contract is repeated after all evidence, with an example and 'any other word is STUCK'"
+if [[ "${HN_TXT}" == '## OUTPUT CONTRACT (repeated)' && -n "${ROUND}" && -n "${EXN}" \
+      && "${HN}" -gt "${ROUND}" && "${EXN}" -gt "${HN}" ]]; then
+    pass "PROMPT-contract-last" "the last heading is '## OUTPUT CONTRACT (repeated)', after the round output, with the example after it (prompt lines ${ROUND} < ${HN} < ${EXN})"
 else
-    fail "PROMPT-contract-last" "the contract is not repeated last (example=${LN_EXAMPLE:-none}, any-other=${LN_ANY_OTHER:-none}, last-round=${LN_LAST_ROUND:-none})"
+    fail "PROMPT-contract-last" "expected the last '## ' heading to be '## OUTPUT CONTRACT (repeated)' and {{loop_last_round_output}} < heading < last example; got last heading '${HN_TXT}' at prompt line ${HN:-none}, round output ${ROUND:-none}, last example ${EXN:-none}"
+fi
+if [[ -n "${HN}" && "${LAST_NB_TXT}" == *'any other word is STUCK'* && -z "${BRACE_AFTER}" ]]; then
+    pass "PROMPT-contract-ends-prompt" "the last non-blank prompt line (${LAST_NB}) says 'any other word is STUCK', and no {{ follows the last heading (${HN})"
+else
+    fail "PROMPT-contract-ends-prompt" "expected the last non-blank line to contain 'any other word is STUCK' and no {{ at or after the last heading; got last non-blank prompt line ${LAST_NB:-none} '${LAST_NB_TXT}', last heading ${HN:-none} '${HN_TXT}', first {{ after it ${BRACE_AFTER:-none}"
 fi
 if grep -nE '^[[:space:]]*(LOOP_HEALTH: (CONTINUE|DONE)|Output: LOOP_HEALTH:)' "${RECIPE}" | grep -q .; then
     fail "PROMPT-no-marker" "a recipe line starts with a health marker the loop driver would read: $(grep -nE '^[[:space:]]*(LOOP_HEALTH: (CONTINUE|DONE)|Output: LOOP_HEALTH:)' "${RECIPE}" | head -n3)"

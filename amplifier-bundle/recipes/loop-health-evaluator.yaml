@@ -103,14 +103,6 @@ steps:
     prompt: |
       # Loop-health evaluation — is this loop still doing useful work?
 
-      You are the loop-health evaluator for the iterative loop
-      **{{loop_name}}** (round just finished: `{{loop_round_label}}`).
-
-      Your only job is to stop and look at the data and the output, and decide
-      whether another round is worth spending. You are NOT counting attempts.
-      A loop on round 12 that is converging should CONTINUE; a loop on round 2
-      that produced nothing twice should be STUCK. Judge the evidence.
-
       ## OUTPUT CONTRACT
 
       Your answer ends with ONE JSON object carrying `loop_verdict` and
@@ -119,6 +111,14 @@ steps:
       of CONTINUE, DONE or STUCK. The contract is repeated at the end. Example:
 
       {"loop_verdict":"CONTINUE","not_converging":[]}
+
+      You are the loop-health evaluator for the iterative loop
+      **{{loop_name}}** (round just finished: `{{loop_round_label}}`).
+
+      Your only job is to stop and look at the data and the output, and decide
+      whether another round is worth spending. You are NOT counting attempts.
+      A loop on round 12 that is converging should CONTINUE; a loop on round 2
+      that produced nothing twice should be STUCK. Judge the evidence.
 
       ## Measured evidence (computed, not summarised)
 
