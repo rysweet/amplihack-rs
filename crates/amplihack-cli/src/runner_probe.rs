@@ -25,27 +25,30 @@ impl Probe {
         let mut failures = Vec::new();
         #[cfg(unix)]
         {
-            let result = unsafe { libc::kill(-(self.child.id() as i32), libc::SIGKILL) };
+            let signal = libc::SIGKILL;
+            #[cfg(test)]
+            let signal = testing::termination_signal(signal);
+            let result = unsafe { libc::kill(-(self.child.id() as i32), signal) };
             if result != 0 && io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
                 failures.push("probe group cleanup failed");
             }
         }
-        match self.child.try_wait() {
+        match self.cleanup_wait() {
             Ok(Some(_)) => {}
             Ok(None) => {
-                if self.child.kill().is_err() {
+                if self.cleanup_kill().is_err() {
                     failures.push("probe termination failed");
                 }
             }
             Err(_) => {
                 failures.push("probe status cleanup failed");
-                if self.child.kill().is_err() {
+                if self.cleanup_kill().is_err() {
                     failures.push("probe termination failed");
                 }
             }
         }
         loop {
-            match self.child.try_wait() {
+            match self.cleanup_wait() {
                 Ok(Some(_)) => break,
                 Err(_) => {
                     failures.push("probe reap failed");
@@ -62,6 +65,18 @@ impl Probe {
         #[cfg(test)]
         testing::check()?;
         Ok(())
+    }
+    fn cleanup_wait(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
+        #[cfg(all(test, unix))]
+        testing::reap(self.child.id())?;
+        self.child.try_wait()
+    }
+    fn cleanup_kill(&mut self) -> io::Result<()> {
+        #[cfg(all(test, unix))]
+        if testing::fault(testing::Fault::Termination) {
+            return testing::failed_signal(self.child.id());
+        }
+        self.child.kill()
     }
 }
 impl Drop for Probe {
@@ -103,6 +118,12 @@ struct Pipe<T> {
 impl<T: Read + std::os::fd::AsRawFd> Pipe<T> {
     fn new(stream: T) -> Result<Self> {
         let fd = stream.as_raw_fd();
+        #[cfg(test)]
+        let fd = if testing::fault(testing::Fault::Setup) {
+            -1
+        } else {
+            fd
+        };
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
         ensure!(
             flags >= 0 && unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } >= 0,
@@ -118,6 +139,8 @@ impl<T: Read + std::os::fd::AsRawFd> Pipe<T> {
         // A fixed quantum keeps continuous writers from starving the deadline or other pipe.
         for _ in 0..8 {
             let mut chunk = [0; 8192];
+            #[cfg(test)]
+            testing::read()?;
             match self.stream.read(&mut chunk) {
                 Ok(0) => {
                     self.eof = true;
@@ -151,6 +174,8 @@ pub(crate) fn capture(binary: &Path) -> Result<Output> {
         child: command.spawn().context("capability probe spawn failed")?,
         stopped: false,
     };
+    #[cfg(all(test, unix))]
+    testing::record_child(probe.child.id());
     #[cfg(unix)]
     let result = (|| {
         let mut stdout = Pipe::new(probe.child.stdout.take().context("probe stdout missing")?)?;
@@ -224,32 +249,5 @@ pub(crate) fn capture(binary: &Path) -> Result<Output> {
     }
 }
 #[cfg(test)]
-pub(crate) mod testing {
-    use super::*;
-    type CleanupHook = Box<dyn FnMut() -> Result<()>>;
-    thread_local! { static HOOK: std::cell::RefCell<Option<CleanupHook>> = std::cell::RefCell::new(None); }
-    #[allow(dead_code)] // The source is also included by lifecycle-only integration tests.
-    pub fn with_cleanup_result_hook<R>(
-        hook: impl FnMut() -> Result<()> + 'static,
-        run: impl FnOnce() -> R,
-    ) -> R {
-        struct Reset;
-        impl Drop for Reset {
-            fn drop(&mut self) {
-                HOOK.with(|h| *h.borrow_mut() = None);
-            }
-        }
-        HOOK.with(|h| {
-            assert!(h.borrow().is_none());
-            *h.borrow_mut() = Some(Box::new(hook));
-        });
-        let _reset = Reset;
-        run()
-    }
-    pub(super) fn check() -> Result<()> {
-        HOOK.with(|h| match h.borrow_mut().as_mut() {
-            Some(h) => h(),
-            None => Ok(()),
-        })
-    }
-}
+#[path = "runner_probe/testing.rs"]
+pub(crate) mod testing;

@@ -112,3 +112,187 @@ fn copilot_retains_prompt_flag_and_raw_bytes() {
     assert_eq!(argv(&d), ["-p", "hi\nλ"]);
     assert!(d.stdin_payload.is_none());
 }
+
+#[test]
+fn supported_root_options_preserve_exact_exec_arguments_and_complete_stdin() {
+    let prompt = format!("SYSTEM\nPERSONA\n{}\nTASK-END", "λ\n".repeat(40_000));
+    for args in [
+        vec!["--no-daemon", "--remote", "exec", "e"],
+        vec!["--remote=resume", "--remote-auth-token-env", "exec", "exec"],
+        vec!["--remote", "resume", "--remote-auth-token-env=exec", "exec"],
+        vec![
+            "--model",
+            "resume",
+            "--profile=exec",
+            "--config",
+            "key=value",
+            "exec",
+        ],
+    ] {
+        let d = build(&args, &prompt).unwrap();
+        let mut expected: Vec<String> = args.iter().map(|s| (*s).into()).collect();
+        expected.push("-".into());
+        assert_eq!(argv(&d), expected);
+        assert_eq!(d.selected_mode, DeliveryMode::Stdin);
+        assert_eq!(d.stdin_payload.as_deref(), Some(prompt.as_bytes()));
+    }
+}
+
+#[test]
+fn supported_resume_and_command_like_values_retain_terminal_transport() {
+    for args in [
+        vec!["resume", "--last", "--include-non-interactive"],
+        vec!["resume", "session-123", "--include-non-interactive"],
+        vec!["--remote", "exec"],
+        vec!["--remote-auth-token-env=resume", "--no-daemon"],
+        vec!["--remote-auth-token-env", "exec", "--", "resume"],
+        vec!["--", "exec"],
+    ] {
+        let d = build(&args, "continue λ").unwrap();
+        let mut expected: Vec<String> = args.iter().map(|s| (*s).into()).collect();
+        expected.extend(["--".into(), "continue λ".into()]);
+        assert_eq!(argv(&d), expected);
+        assert_eq!(d.selected_mode, DeliveryMode::Argv);
+        assert!(
+            d.stdin_payload.is_none(),
+            "terminal stdin must remain inherited"
+        );
+    }
+}
+
+#[test]
+fn supported_exec_resume_preserves_stdin_and_delimiter() {
+    let args = ["exec", "resume", "--last", "--all", "--"];
+    let d = build(&args, "continue").unwrap();
+    assert_eq!(argv(&d), ["exec", "resume", "--last", "--all", "--", "-"]);
+    assert_eq!(d.stdin_payload.as_deref(), Some(b"continue".as_slice()));
+    for args in [
+        vec!["--remote"],
+        vec!["--remote-auth-token-env"],
+        vec!["--unknown", "exec"],
+    ] {
+        let error = build(&args, "private task").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(!error.to_string().contains("private task"));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn remote_exec_subprocess_receives_complete_stdin() {
+    use std::{fs, io::Write, os::unix::fs::PermissionsExt, process::Stdio};
+    let dir = tempfile::tempdir().unwrap();
+    let binary = dir.path().join("codex");
+    let captured = dir.path().join("input");
+    fs::write(
+        &binary,
+        "#!/bin/sh\n/bin/cat > \"$CAPTURE\"\nprintf '%s\\n' \"$@\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+    let prompt = format!("SYSTEM\nPERSONA\n{}\nTASK-END", "日本語\n".repeat(30_000));
+    let mut delivered = build(
+        &[
+            "--no-daemon",
+            "--remote=resume",
+            "--remote-auth-token-env",
+            "exec",
+            "e",
+        ],
+        &prompt,
+    )
+    .unwrap();
+    delivered
+        .command
+        .env("PATH", dir.path())
+        .env("CAPTURE", &captured)
+        .stdout(Stdio::piped());
+    let mut child = delivered.command.spawn().unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(delivered.stdin_payload.as_ref().unwrap())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    assert_eq!(fs::read(captured).unwrap(), prompt.as_bytes());
+    assert_eq!(
+        output.stdout,
+        b"--no-daemon\n--remote=resume\n--remote-auth-token-env\nexec\ne\n-\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn interactive_resume_subprocess_inherits_real_terminal_stdin() {
+    use std::{
+        fs,
+        os::{fd::FromRawFd, unix::fs::PermissionsExt},
+        process::{Command, Stdio},
+    };
+    const FIXTURE: &str = "AMPLIHACK_CODEX_TERMINAL_TEST_FIXTURE";
+    if let Some(dir) = std::env::var_os(FIXTURE) {
+        for args in [
+            vec!["resume", "--last", "--include-non-interactive"],
+            vec!["--remote", "exec", "--no-daemon"],
+        ] {
+            let mut d = build(&args, "continue λ").unwrap();
+            assert!(d.stdin_payload.is_none());
+            let output = d
+                .command
+                .env("PATH", &dir)
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap()
+                .wait_with_output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "terminal stdin was replaced: {output:?}"
+            );
+            let mut expected = args.join("\n");
+            expected.push_str("\n--\ncontinue λ\n");
+            assert_eq!(output.stdout, expected.as_bytes());
+        }
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let binary = dir.path().join("codex");
+    fs::write(
+        &binary,
+        "#!/bin/sh\n[ -t 0 ] || exit 73\nprintf '%s\\n' \"$@\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+    let (mut master, mut slave) = (-1, -1);
+    assert_eq!(
+        unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        },
+        0
+    );
+    let _master = unsafe { fs::File::from_raw_fd(master) };
+    let slave = unsafe { fs::File::from_raw_fd(slave) };
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "interactive_resume_subprocess_inherits_real_terminal_stdin",
+            "--nocapture",
+        ])
+        .env(FIXTURE, dir.path())
+        .stdin(Stdio::from(slave))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}

@@ -52,6 +52,8 @@ pub(super) fn classify(args: &[String]) -> io::Result<Mode> {
                 "--output-schema",
                 "--color",
                 "--thread-source",
+                "--remote",
+                "--remote-auth-token-env",
             ]
             .contains(&name);
             let short_value = ["-a", "-m", "-p", "-c", "-s", "-C", "-i", "-o"]
@@ -82,6 +84,8 @@ pub(super) fn classify(args: &[String]) -> io::Result<Mode> {
                     "--oss",
                     "--search",
                     "--no-alt-screen",
+                    "--no-daemon",
+                    "--include-non-interactive",
                     "--skip-git-repo-check",
                     "--ephemeral",
                     "--json",

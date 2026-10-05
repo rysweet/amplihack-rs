@@ -45,6 +45,7 @@ mod native;
 use native::*;
 mod storage;
 use storage::*;
+mod backup_cleanup;
 mod config;
 mod recovery;
 use recovery::*;
@@ -60,6 +61,8 @@ pub(super) fn install(source: &Path, hooks_binary: &Path) -> Result<bool> {
 pub(super) fn uninstall() -> Result<()> {
     uninstall::uninstall()
 }
+#[cfg(test)]
+mod backup_cleanup_tests;
 #[cfg(test)]
 mod recovery_tests;
 #[cfg(test)]

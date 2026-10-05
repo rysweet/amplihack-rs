@@ -1,7 +1,7 @@
 //! Durable pre-ledger recovery and post-ledger cleanup.
 use super::*;
 pub(super) fn recover_install(root: &Path, binary: &Path, home: &Path) -> Result<()> {
-    let Some(pending) = regular_json(&root.join("pending.json"))? else {
+    let Some(mut pending) = regular_json(&root.join("pending.json"))? else {
         return Ok(());
     };
     ensure!(
@@ -19,14 +19,7 @@ pub(super) fn recover_install(root: &Path, binary: &Path, home: &Path) -> Result
         storage::sync_path(&root.join("ownership.json"))?;
         storage::sync_path(root)?;
         preflight(&pending, root, home)?;
-        if root.join("previous-package").exists() {
-            fs::remove_dir_all(root.join("previous-package"))?;
-        }
-        fs::remove_file(root.join("pending.json"))?;
-        storage::sync_path(root).context(
-            "Codex committed cleanup synchronization failed; backup may already be removed",
-        )?;
-        return Ok(());
+        return backup_cleanup::finish(&mut pending, root, home);
     }
     let inventory = native(binary, &["plugin", "list", "--json"], home)?;
     verify_identity(&inventory, &package)?;
@@ -141,7 +134,7 @@ fn recovery_paths(root: &Path, home: &Path) -> [(&'static str, PathBuf); 4] {
 }
 
 /// Check all resources before any destructive operation, then repeat at mutation boundaries.
-fn preflight(pending: &Value, root: &Path, home: &Path) -> Result<()> {
+pub(super) fn preflight(pending: &Value, root: &Path, home: &Path) -> Result<()> {
     for (key, path) in recovery_paths(root, home) {
         let current = serde_json::to_value(snapshot(&path)?)?;
         let original = if key == "config" {
@@ -156,8 +149,50 @@ fn preflight(pending: &Value, root: &Path, home: &Path) -> Result<()> {
             "foreign Codex {key} changed; reconcile manually; recovery record retained"
         );
     }
+    let committed = regular_json(&root.join("ownership.json"))?
+        .is_some_and(|ledger| ledger["transaction"] == pending["transaction"]);
+    if pending.get("backup_cleanup").is_some() {
+        ensure!(
+            committed,
+            "cleanup proof requires committed ledger; record retained"
+        );
+        ensure!(
+            regular_json(&root.join("pending.json"))?.as_ref() == Some(pending),
+            "backup cleanup journal changed concurrently; record retained"
+        );
+        backup_cleanup::validate(pending, root, home)?;
+    }
+    if committed {
+        let ledger: Ownership = serde_json::from_value(
+            regular_json(&root.join("ownership.json"))?.context("committed ledger missing")?,
+        )?;
+        ensure!(
+            ledger.schema_version == 1
+                && ledger.codex_home == home
+                && Some(ledger.package_digest.as_str()) == pending["target_digest"].as_str(),
+            "committed ledger scope changed; record retained"
+        );
+        for (key, path) in recovery_paths(root, home)
+            .into_iter()
+            .filter(|(key, _)| *key != "config")
+        {
+            ensure!(
+                serde_json::to_value(snapshot(&path)?)? == pending["expected"][key],
+                "committed Codex {key} changed; record retained"
+            );
+        }
+        ensure!(
+            root.join("market/plugin").is_dir()
+                && Some(digest(&root.join("market/plugin"))?.as_str())
+                    == pending["target_digest"].as_str(),
+            "committed Codex package changed or missing; record retained"
+        );
+    }
     let original_digest = pending["ledger"]["package_digest"].as_str();
     for (name, backup) in [("market/plugin", false), ("previous-package", true)] {
+        if backup && pending.get("backup_cleanup").is_some() {
+            continue;
+        }
         let path = root.join(name);
         match fs::symlink_metadata(&path) {
             Ok(meta) => {
@@ -165,7 +200,11 @@ fn preflight(pending: &Value, root: &Path, home: &Path) -> Result<()> {
                     meta.is_dir() && !meta.file_type().is_symlink(),
                     "nonregular Codex package; recovery record retained"
                 );
-                let actual = digest(&path)?;
+                let actual = if backup {
+                    backup_cleanup::original_digest(&path)?
+                } else {
+                    digest(&path)?
+                };
                 ensure!(
                     Some(actual.as_str()) == original_digest
                         || (!backup && Some(actual.as_str()) == pending["target_digest"].as_str()),
@@ -176,8 +215,6 @@ fn preflight(pending: &Value, root: &Path, home: &Path) -> Result<()> {
             Err(e) => return Err(e.into()),
         }
     }
-    let committed = regular_json(&root.join("ownership.json"))?
-        .is_some_and(|ledger| ledger["transaction"] == pending["transaction"]);
     if pending["had_package"] == true && !committed {
         let package = root.join("market/plugin");
         ensure!(

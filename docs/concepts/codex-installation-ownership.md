@@ -41,8 +41,24 @@ into place and synchronizes its parent directory. A visible ledger alone does
 not authorize deletion of rollback evidence.
 
 Committed recovery repeats the validated synchronization barriers before removing
-the previous package and pending journal, then synchronizes cleanup directory
-changes. A failed barrier before cleanup retains the journal and backup. A failure
+the previous package and pending journal. Before the first backup unlink it
+atomically publishes and synchronizes a complete `backup_cleanup` inventory in
+the schema 2 journal. The inventory has its own schema version 1 and binds the
+transaction, selected home and original package digest to every relative path,
+entry type, file SHA-256 and symlink target, including directories. Paths must be
+unique and stay within the backup; unsupported entry types are rejected. The
+record contains `schema_version`, `transaction`, `codex_home`, `original_digest`
+and `entries`. Each entry contains `path` and `kind`; `kind.type` is `Directory`,
+`File` (with `sha256`) or `Symlink` (with `target`). The empty path denotes the
+backup root. An installation without a previous package records no entries.
+
+Cleanup revalidates the committed ledger, live package and shared resources at
+mutation boundaries. It removes checked entries without following symlinks,
+removes directories from children to parents and synchronizes each removal.
+Retries tolerate missing recorded entries, but reject changed or unrecorded
+survivors. Backup removal is synchronized before journal removal; journal removal
+has a separate checked directory barrier. A failed barrier before cleanup retains
+the journal and backup. A failure
 after cleanup is reported with the cleanup state; it does not imply the deleted
 backup is still available. Recovery does not blindly restore obsolete ownership
 after commit. Errors preserve both the primary failure and any recovery or cleanup
@@ -63,7 +79,9 @@ Unsupported journal schemas, including older journals, are rejected before
 recovery mutates live state. There is no automatic historical JSON restoration.
 The pending record and available previous package remain as evidence for manual
 reconciliation. Current schema 2 snapshots preserve exact configuration bytes and
-original file absence.
+original file absence. An intact schema 2 backup can acquire a cleanup inventory.
+A historical partially deleted backup without that durable inventory requires
+manual reconciliation; recovery cannot safely infer which removals were authorized.
 
 Failed recovery never reports success. It retains available evidence for diagnosis
 and another recovery attempt: `~/.amplihack/codex/pending.json` if not yet removed,

@@ -149,3 +149,9 @@ backups, and older journals without ownership proof stop recovery and retain
 those files and reconcile the reported conflict manually before retrying; do not
 delete the journal to force replacement. Native-client configuration changes
 that cannot be proven transaction-owned also require manual reconciliation.
+
+Committed backup cleanup records a durable inventory before deleting entries.
+An interrupted cleanup can resume when every remaining entry matches that
+inventory. Changed or extra entries stop cleanup and retain the journal. A
+partially deleted historical backup without an inventory requires manual
+reconciliation; preserve the available backup and journal.

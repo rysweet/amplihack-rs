@@ -1,6 +1,6 @@
 use super::*;
 
-fn interrupted(dir: &Path, had_package: bool) -> (PathBuf, PathBuf, Value) {
+pub(super) fn interrupted(dir: &Path, had_package: bool) -> (PathBuf, PathBuf, Value) {
     let root = dir.join("root");
     let home = dir.join("home");
     fs::create_dir_all(root.join("market/plugin")).unwrap();
