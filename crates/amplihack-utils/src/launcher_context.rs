@@ -78,10 +78,19 @@ pub fn write_launcher_context(
 /// either its old contents or the complete new ones, never a part.
 ///
 /// The temporary file is created in `path`'s own directory, because
-/// `rename(2)` is atomic only within one file system, and is readable by the
-/// owner alone from the moment it exists, as the file it replaces was. If
-/// `write`, the flush or the rename fails, the temporary file is removed and
-/// `path` is untouched.
+/// `rename(2)` is atomic only within one file system. If `write`, the flush or
+/// the rename fails, the temporary file is removed and `path` is untouched.
+///
+/// The file is owner read and write only, because it records the command line
+/// and environment a session was started with. On Unix `tempfile` asks for
+/// that when it creates the file: it passes mode 0600 to `open(2)`, so the
+/// file is never readable by anyone else, and `rename(2)` keeps the mode.
+/// There is deliberately no `chmod` after that. It would repeat what `open`
+/// already did, and on a file system that refuses `chmod` (vfat mounted
+/// without `quiet`, some FUSE mounts) it fails, which would stop
+/// `amplihack claude` and `amplihack copilot` from starting. Before the
+/// atomic replacement such a failure was only a warning (crusty review of
+/// #1490).
 fn replace_file(
     path: &Path,
     write: impl FnOnce(&mut fs::File) -> io::Result<()>,
@@ -96,7 +105,6 @@ fn replace_file(
         .prefix(".launcher_context.")
         .suffix(".tmp")
         .tempfile_in(dir)?;
-    restrict_permissions(temp.as_file())?;
     write(temp.as_file_mut())?;
     temp.as_file().sync_all()?;
     temp.persist(path).map_err(|error| error.error)?;
@@ -171,19 +179,6 @@ fn is_launcher_context_stale_with(context: &LauncherContext, _max_age_hours: i64
     is_timestamp_stale(&context.timestamp)
 }
 
-/// Owner read and write only: a launcher context records the command line and
-/// environment a session was started with.
-#[cfg(unix)]
-fn restrict_permissions(file: &fs::File) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    file.set_permissions(fs::Permissions::from_mode(0o600))
-}
-
-#[cfg(not(unix))]
-fn restrict_permissions(_file: &fs::File) -> io::Result<()> {
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,8 +238,9 @@ mod tests {
         assert_eq!(left, [std::ffi::OsString::from("launcher_context.json")]);
     }
 
-    /// The replacement is owner-only from creation, as the old file was after
-    /// its chmod.
+    /// The replacement is owner-only from creation. The mode comes from the
+    /// `open(2)` that creates the temporary file, not from a `chmod` that can
+    /// fail on its own; see [`replace_file`].
     #[cfg(unix)]
     #[test]
     fn a_written_context_is_readable_by_its_owner_only() {

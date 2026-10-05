@@ -245,6 +245,21 @@ Where a detached session runs an agent CLI directly, not `amplihack`, there
 is nothing to hand over. The migrate skill's remote `tmux new-session` runs
 `<cli> --resume <id>` with the CLI already named.
 
+The auto-drive-to-merge skill has nothing to hand over either, because it
+starts no detached session. Its `SKILL.md` runs
+`amplihack recipe run auto-drive-to-merge` in the foreground, where the run
+sees the caller's own session markers. The nested runs that
+`amplifier-bundle/tools/autodrive_loop.sh` starts, the round recipe and
+`loop-health-evaluator`, also run in the foreground, inside a step of the
+outer run, with no `tmux`, `nohup` or `setsid`. They inherit the
+`AMPLIHACK_AGENT_BINARY` and `AMPLIHACK_AGENT_BINARY_SOURCE` that the outer
+`recipe run` exported, so every nested step runs under the outer run's
+answer. An agent that chooses to put the skill's command in tmux is acting
+on the `USER_PREFERENCES.md` line on detached recipe runs, which carries the
+hand-off. `tests/issue_1525_detached_launch_docs_carry_hand_off.sh` scans
+both files, so a detached `recipe run` added to either without the hand-off
+fails CI.
+
 ### Why file-based, not env-based
 
 Environment variables do not survive every subprocess boundary in the launcher's call graph:
