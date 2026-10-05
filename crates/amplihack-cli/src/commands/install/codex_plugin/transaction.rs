@@ -33,7 +33,7 @@ pub(super) fn install(source: &Path, hooks_binary: &Path) -> Result<bool> {
     if let Err(error) = result {
         if let Err(recovery) = recover_install(&root, &binary, &home) {
             return Err(anyhow::anyhow!(
-                "{error:#}; Codex install rollback failed; recovery record retained: {recovery:#}"
+                "{error:#}; Codex install recovery failed: {recovery:#}"
             ));
         }
         return Err(error);
@@ -91,6 +91,7 @@ fn commit(root: &Path, home: &Path, binary: &Path, prepared: &Prepared) -> Resul
         "native Codex registration missing installed identity"
     );
     reconcile_hooks(home, old_hooks, hooks)?;
+    storage::sync_dependencies(root, home)?;
     let original = regular_json(ledger)?;
     atomic_json(ledger, &serde_json::to_value(&record)?, original)?;
     Ok(())

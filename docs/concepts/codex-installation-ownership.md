@@ -33,10 +33,21 @@ file absence, and writes a durable journal before changing live state. Applicati
 registers the package and reconciles hooks. Verification checks native inventory
 and actual hooks before publishing the ownership ledger last.
 
-After commit, the installer removes the journal and cleans the previous package.
-Recovery retains the existing interpretation of a committed ledger; a failure
-following commit does not blindly restore obsolete ownership. Errors preserve
-both the primary failure and any recovery or cleanup failure.
+## Durability barriers
+
+Before publishing ownership, the installer synchronizes managed package resources
+and affected directories. Publication synchronizes the ledger file, renames it
+into place and synchronizes its parent directory. A visible ledger alone does
+not authorize deletion of rollback evidence.
+
+Committed recovery repeats the validated synchronization barriers before removing
+the previous package and pending journal, then synchronizes cleanup directory
+changes. A failed barrier before cleanup retains the journal and backup. A failure
+after cleanup is reported with the cleanup state; it does not imply the deleted
+backup is still available. Recovery does not blindly restore obsolete ownership
+after commit. Errors preserve both the primary failure and any recovery or cleanup
+failure. These checked storage operations depend on filesystem synchronization
+support; they do not guarantee survival of every storage or hardware failure.
 
 ## Recovery and foreign state
 
@@ -44,14 +55,27 @@ Before replacement, installation rejects foreign identity collisions, unsafe pat
 and conflicting hook ownership. Recovery validates journal version, transaction
 identity and home/root scope before acting. Raw optional-byte snapshots preserve
 comments, formatting and original file absence during rollback. Interrupted
-updates can be replayed under the same lock on the next install or uninstall.
-Older journals remain readable through the historical JSON restoration path;
-exact JSON file formatting is preserved by journals written by the current installer.
+updates with valid pending-journal schema **2** can be replayed under the same lock
+on the next install or uninstall. The ownership ledger uses schema **1**; it is a
+separate record, not a recovery-journal version.
 
-Failed recovery retains `~/.amplihack/codex/pending.json` and the previous package
-for diagnosis and another recovery attempt; it never reports success. Modified
+Unsupported journal schemas, including older journals, are rejected before
+recovery mutates live state. There is no automatic historical JSON restoration.
+The pending record and available previous package remain as evidence for manual
+reconciliation. Current schema 2 snapshots preserve exact configuration bytes and
+original file absence.
+
+Failed recovery never reports success. It retains available evidence for diagnosis
+and another recovery attempt: `~/.amplihack/codex/pending.json` if not yet removed,
+and the previous package if not yet deleted or restored. Failures after committed
+cleanup starts may leave no backup. Modified
 owned files and unknown ownership versions require reconciliation rather than
-unsafe deletion. Uninstall removes only the owned identity and package, preserving
+unsafe deletion. Manual reconciliation requires comparing the retained journal,
+available previous package, ledger, native registration and current configuration in the
+selected `CODEX_HOME`. Preserve those records before making changes; a historical
+snapshot must not overwrite later foreign edits. Do not delete the journal merely
+to bypass validation or change its schema number to force replay.
+Uninstall removes only the owned identity and package, preserving
 foreign plugins, shared marketplaces, authentication and user configuration.
 
 ## Launch reconciliation

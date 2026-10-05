@@ -206,11 +206,11 @@ mod tests {
         let cmd = build_codex_command(
             "hello",
             Path::new("/tmp"),
-            &["--verbose".into(), "--dry-run".into()],
+            &["--search".into(), "--no-alt-screen".into()],
         );
         let args: Vec<_> = cmd.get_args().collect();
-        assert!(args.contains(&std::ffi::OsStr::new("--verbose")));
-        assert!(args.contains(&std::ffi::OsStr::new("--dry-run")));
+        assert!(args.contains(&std::ffi::OsStr::new("--search")));
+        assert!(args.contains(&std::ffi::OsStr::new("--no-alt-screen")));
     }
 
     #[test]

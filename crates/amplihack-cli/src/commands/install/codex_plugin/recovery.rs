@@ -15,10 +15,17 @@ pub(super) fn recover_install(root: &Path, binary: &Path, home: &Path) -> Result
         .is_some_and(|ledger| ledger["transaction"] == pending["transaction"])
     {
         preflight(&pending, root, home)?;
+        storage::sync_dependencies(root, home)?;
+        storage::sync_path(&root.join("ownership.json"))?;
+        storage::sync_path(root)?;
+        preflight(&pending, root, home)?;
         if root.join("previous-package").exists() {
             fs::remove_dir_all(root.join("previous-package"))?;
         }
         fs::remove_file(root.join("pending.json"))?;
+        storage::sync_path(root).context(
+            "Codex committed cleanup synchronization failed; backup may already be removed",
+        )?;
         return Ok(());
     }
     let inventory = native(binary, &["plugin", "list", "--json"], home)?;

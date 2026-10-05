@@ -1,3 +1,9 @@
+---
+title: Launch flag matrix
+type: reference
+updated: 2026-10-05
+---
+
 # Launch Flag Matrix — Reference
 
 How `amplihack` builds the subprocess command line for each supported AI
@@ -56,7 +62,7 @@ pub(crate) fn should_inject_copilot_allow_all(extra_args: &[String]) -> bool {
 
 ## Capability matrix
 
-Launcher flag injection behavior is derived from `command.rs`. The Codex resume entries describe the intended native integration contract for this feature, not current behavior established by that file. Native capabilities are distinct from launcher-injected flags; see [Codex invocation modes](#codex-invocation-modes).
+Launcher flag injection behavior is derived from `command.rs`. Codex resume uses native subcommands. Native capabilities are distinct from launcher-injected flags; see [Codex invocation modes](#codex-invocation-modes).
 
 | Flag | claude | rusty | rustyclawd | amplifier | copilot | codex |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|
@@ -64,8 +70,8 @@ Launcher flag injection behavior is derived from `command.rs`. The Codex resume 
 | `--model` (auto-inject) | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
 | `--allow-all` (auto-inject) | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ |
 | `--remote` (auto-inject) | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ |
-| `--resume` | ✅ | ✅ | ✅ | ✅ | ✅ | Intended: native `resume` subcommand |
-| `--continue` | ✅ | ✅ | ✅ | ✅ | ✅ | Intended: native `resume --last` |
+| `--resume` | ✅ | ✅ | ✅ | ✅ | ✅ | Native `resume` subcommand |
+| `--continue` | ✅ | ✅ | ✅ | ✅ | ✅ | Native `resume --last` |
 | `--plugin-dir` (UVX auto-inject only) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | `--add-dir` (UVX auto-inject only) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Extra args passthrough | ✅ | ✅ | ✅ | ✅ | ✅ | Mode/conflict checks; managed recipe restrictions below |
@@ -175,6 +181,24 @@ its full flag capabilities.
 ## Codex invocation modes
 
 The following table describes the mode-specific Codex integration. Native capabilities are selected by mode and fresh/resume operation. No model is injected by default. Caller model choices are forwarded using native `--model`; `-p` means profile.
+
+### Semantic argument parsing
+
+Mode detection consumes supported root options and their values before identifying
+the actual `exec` (alias `e`) or `resume` command. Separate, inline and supported
+attached option values retain their native meaning. A model or profile value
+literally named `exec` or `resume` does not select that mode. A root `--` ends
+command detection: subsequent command-like tokens are positional input. Argument
+bytes and explicit model choices are preserved; ambiguous or unsupported syntax
+is rejected before spawning.
+
+Root options before `exec` select the same complete stdin transport as exec-first
+arguments, including explicit stdin delivery and prompts above the interactive
+96 KiB limit. Interactive delivery retains terminal stdin and its existing input
+limits. Resume validation uses the parsed command position, including root options
+before `resume` and `exec resume`.
+
+### Mode capabilities
 
 | Capability | Interactive fresh | Interactive resume | Exec fresh | Exec resume |
 | --- | --- | --- | --- | --- |

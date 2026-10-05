@@ -122,9 +122,7 @@ pub(super) fn prepare(
     let pending = json!({"config_states":config_states,"expected":expected,"snapshots":snapshots,"schema_version":2,"codex_home":home,"transaction":transaction,"config":original_config,"marketplace":original_marketplace, "hooks":original_hooks,
         "ledger":original_ledger, "installed":installed(&inventory), "had_package":package.exists(), "target_digest":target_digest, "target_hooks":hooks});
     atomic_json(&root.join("pending.json"), &pending, None)?;
-    // Persist the journal directory entry before the first live mutation.
-    #[cfg(unix)]
-    fs::File::open(root)?.sync_all()?;
+    // atomic_json checks the journal file and directory durability before mutation.
     Ok(Prepared {
         ledger,
         package,

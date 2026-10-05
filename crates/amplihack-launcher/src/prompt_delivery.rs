@@ -1,5 +1,7 @@
 //! Delivery-aware command builders for launcher subprocesses.
 
+mod codex_args;
+
 use std::ffi::OsStr;
 use std::io::{self, ErrorKind};
 use std::path::Path;
@@ -137,6 +139,7 @@ pub fn build_tool_command_from_env(
 
 /// Codex has separate interactive and unattended prompt contracts. Never pipe
 /// interactive stdin: it belongs to the terminal, including during resume.
+/// Root option values are consumed before classifying the native command.
 fn finish_codex_delivery(
     mut command: Command,
     args: &[String],
@@ -149,58 +152,20 @@ fn finish_codex_delivery(
             "Codex requires a nonempty prompt and NUL-free arguments",
         ));
     }
-    let exec = args.first().is_some_and(|a| a == "exec" || a == "e");
-    let resume = args.first().is_some_and(|a| a == "resume")
-        || (exec && args.get(1).is_some_and(|a| a == "resume"));
-    if args
-        .iter()
-        .any(|a| a == "--prompt" || a.starts_with("--prompt="))
-    {
+    let mode = codex_args::classify(args)?;
+    let exec = mode.exec;
+    if mode.prompt_option {
         return Err(invalid(
             "Codex uses a positional prompt; --prompt is unsupported",
         ));
     }
-    if exec
-        && resume
-        && args
-            .iter()
-            .any(|a| a == "--add-dir" || a.starts_with("--add-dir="))
-    {
+    if exec && mode.resume && mode.add_dir {
         return Err(invalid("Codex exec resume does not support --add-dir"));
     }
-    if resume && args.iter().any(|a| a == "--last") {
-        // Values belonging to options are not session identifiers.
-        let mut value = false;
-        for a in args.iter().skip(if exec { 2 } else { 1 }) {
-            if value {
-                value = false;
-                continue;
-            }
-            if [
-                "--model",
-                "-m",
-                "--profile",
-                "-p",
-                "--config",
-                "-c",
-                "--output-last-message",
-                "-o",
-                "--sandbox",
-                "-s",
-                "--cd",
-                "-C",
-                "--image",
-                "-i",
-            ]
-            .contains(&a.as_str())
-            {
-                value = true;
-            } else if !a.starts_with('-') {
-                return Err(invalid(
-                    "Codex resume accepts either --last or a session ID",
-                ));
-            }
-        }
+    if mode.resume && mode.last && mode.session {
+        return Err(invalid(
+            "Codex resume accepts either --last or a session ID",
+        ));
     }
     command.args(args);
     if exec {
