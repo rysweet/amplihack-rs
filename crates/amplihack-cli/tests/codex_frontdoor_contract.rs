@@ -61,6 +61,7 @@ esac
                 .parent()
                 .unwrap(),
         )
+        .env_remove("AMPLIHACK_SKIP_AUTO_INSTALL")
         .env_remove("AMPLIHACK_CODEX_BINARY_PATH")
         .env_remove("CODEX_BINARY_PATH")
         .env_remove("AMPLIHACK_NONINTERACTIVE")
@@ -186,8 +187,19 @@ case "$*" in
   if [ -f "$HOME/registered" ]; then
    printf '{"installed":[{"pluginId":"amplihack@amplihack-local","installed":true,"source":{"path":"%s/.amplihack/codex/market/plugin"}}]}\n' "$HOME"
   else printf '{"installed":[]}\n'; fi;;
- 'plugin marketplace add '*) echo '{"ok":true}';;
- 'plugin add '*) echo yes > "$HOME/registered"; echo '{"ok":true}';;
+  'plugin marketplace add '*)
+  if [ ! -f "$HOME/marketplace-written" ]; then
+  mkdir -p "$CODEX_HOME"
+  [ ! -s "$CODEX_HOME/config.toml" ] || printf '\n' >> "$CODEX_HOME/config.toml"
+  printf '[marketplaces.amplihack-local]\nsource_type = "local"\nsource = "%s"\n' "$HOME/.amplihack/codex/market" >> "$CODEX_HOME/config.toml"
+  echo yes > "$HOME/marketplace-written"
+  fi
+  echo '{"ok":true}';;
+  'plugin add '*)
+  if [ ! -f "$HOME/registered" ]; then
+  printf '\n[plugins."amplihack@amplihack-local"]\nenabled = true\n' >> "$CODEX_HOME/config.toml"
+  fi
+  echo yes > "$HOME/registered"; echo '{"ok":true}';;
  'plugin remove '*) rm -f "$HOME/registered"; echo '{"ok":true}';;
  *) printf '%s\n' "$@" > "$HOME/launch-argv"; cat > "$HOME/launch-stdin"; echo COLD_LAUNCH_OK;;
 esac
@@ -206,6 +218,7 @@ esac
                     "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
                     tools.join("amplihack-hooks"),
                 )
+                .env_remove("AMPLIHACK_SKIP_AUTO_INSTALL")
                 .env_remove("AMPLIHACK_CODEX_BINARY_PATH")
                 .env_remove("CODEX_BINARY_PATH")
                 .env_remove("CODEX_HOME")
@@ -257,6 +270,7 @@ esac
                 "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
                 tools.join("amplihack-hooks"),
             )
+            .env_remove("AMPLIHACK_SKIP_AUTO_INSTALL")
             .env_remove("AMPLIHACK_CODEX_BINARY_PATH")
             .env_remove("CODEX_BINARY_PATH")
             .env_remove("AMPLIHACK_NONINTERACTIVE")

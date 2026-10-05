@@ -45,6 +45,7 @@ mod native;
 use native::*;
 mod storage;
 use storage::*;
+mod config;
 mod recovery;
 use recovery::*;
 mod packaging;

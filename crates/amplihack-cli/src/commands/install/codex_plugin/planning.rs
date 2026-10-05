@@ -100,6 +100,8 @@ pub(super) fn prepare(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(e.into()),
     };
+    let config_states =
+        config::config_states(original_config.as_deref(), &market, previous.is_some())?;
     let transaction = staged
         .path()
         .file_name()
@@ -117,7 +119,7 @@ pub(super) fn prepare(
     };
     let expected = json!({"config":original_config,"hooks":json_bytes(&expected_hooks)?,
         "marketplace":json_bytes(&marketplace)?,"ledger":json_bytes(&serde_json::to_value(record)?)?});
-    let pending = json!({"expected":expected,"snapshots":snapshots,"schema_version":2,"codex_home":home,"transaction":transaction,"config":original_config,"marketplace":original_marketplace, "hooks":original_hooks,
+    let pending = json!({"config_states":config_states,"expected":expected,"snapshots":snapshots,"schema_version":2,"codex_home":home,"transaction":transaction,"config":original_config,"marketplace":original_marketplace, "hooks":original_hooks,
         "ledger":original_ledger, "installed":installed(&inventory), "had_package":package.exists(), "target_digest":target_digest, "target_hooks":hooks});
     atomic_json(&root.join("pending.json"), &pending, None)?;
     // Persist the journal directory entry before the first live mutation.

@@ -51,7 +51,17 @@ pub(super) fn recover_install(root: &Path, binary: &Path, home: &Path) -> Result
         } else {
             &pending["snapshots"][key]
         };
-        restore_bytes(&path, original, &pending["expected"][key])?;
+        let expected = if key == "config" {
+            let current = serde_json::to_value(snapshot(&path)?)?;
+            ensure!(
+                config::config_matches(&pending, &current),
+                "foreign Codex config changed; recovery record retained"
+            );
+            current
+        } else {
+            pending["expected"][key].clone()
+        };
+        restore_bytes(&path, original, &expected)?;
     }
     if pending["installed"] == true {
         preflight(&pending, root, home)?;
@@ -133,7 +143,9 @@ fn preflight(pending: &Value, root: &Path, home: &Path) -> Result<()> {
             &pending["snapshots"][key]
         };
         ensure!(
-            &current == original || current == pending["expected"][key],
+            (key == "config" && config::config_matches(pending, &current))
+                || &current == original
+                || current == pending["expected"][key],
             "foreign Codex {key} changed; reconcile manually; recovery record retained"
         );
     }

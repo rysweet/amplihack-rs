@@ -56,7 +56,9 @@ fn main() {
     // by self_heal's own skip-list to prevent recursion.
     let cli = Cli::parse_from(&args);
 
-    if let Err(e) = amplihack_cli::self_heal::ensure_assets_match_binary_version(&args) {
+    if let Err(e) = amplihack_cli::self_heal::resolve_startup_client(&cli.command)
+        .and_then(|()| amplihack_cli::self_heal::ensure_assets_match_binary_version(&args))
+    {
         eprintln!("amplihack: self-heal failed: {e:#}");
         std::process::exit(1);
     }

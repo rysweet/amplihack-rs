@@ -172,3 +172,59 @@ fn partially_restored_recovery_preserves_exact_original_file_bytes() {
     assert_eq!(fs::read(home.join("hooks.json")).unwrap(), hooks);
     assert!(!root.join("pending.json").exists());
 }
+
+#[cfg(unix)]
+#[test]
+fn native_config_transition_rolls_back_exact_bytes_and_rejects_foreign_edits() {
+    use std::os::unix::fs::PermissionsExt;
+    for foreign in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, home, mut pending) = interrupted(dir.path(), false);
+        let original =
+            b"# preserve comment\napproval_policy = 'on-request'\nsandbox_mode = 'read-only'\n";
+        let market = root.join("market");
+        let registered = format!(
+            "{}\n[marketplaces.amplihack-local]\nsource_type = \"local\"\nsource = \"{}\"\n\n[plugins.\"amplihack@amplihack-local\"]\nenabled = true\n",
+            std::str::from_utf8(original).unwrap(),
+            market.display()
+        );
+        pending["config"] = json!(original.to_vec());
+        pending["expected"]["config"] = pending["config"].clone();
+        pending["config_states"] =
+            json!(config::config_states(Some(original), &market, false).unwrap());
+        assert!(config::config_matches(
+            &pending,
+            &json!(registered.as_bytes())
+        ));
+        let current = if foreign {
+            registered.replace("read-only", "danger-full-access")
+        } else {
+            registered
+        };
+        fs::write(home.join("config.toml"), &current).unwrap();
+        atomic_json(
+            &root.join("pending.json"),
+            &pending,
+            regular_json(&root.join("pending.json")).unwrap(),
+        )
+        .unwrap();
+        let binary = dir.path().join("native");
+        fs::write(&binary, "#!/bin/sh\nprintf '{\"installed\":[]}'\n").unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+        let result = recover_install(&root, &binary, &home);
+        if foreign {
+            assert!(result.is_err());
+            assert_eq!(
+                fs::read_to_string(home.join("config.toml")).unwrap(),
+                current
+            );
+            assert!(root.join("pending.json").exists());
+            assert!(root.join("market/plugin").exists());
+        } else {
+            result.unwrap();
+            assert_eq!(fs::read(home.join("config.toml")).unwrap(), original);
+            assert!(!root.join("pending.json").exists());
+            assert!(!root.join("market/plugin").exists());
+        }
+    }
+}
