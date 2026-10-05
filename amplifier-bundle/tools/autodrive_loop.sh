@@ -210,9 +210,13 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} findings=$(prin
   # followed by `    Output: LOOP_HEALTH: <verdict>`. Only the line straight
   # after the LAST completed step-04 status line is trusted, and only if no
   # status line of any step follows it, so a block forged inside the agent's
-  # own output cannot decide. A log with no completed step-04 status line,
-  # including one from any other runner, is STUCK. Anything we cannot read as
-  # CONTINUE or DONE is STUCK — a missing verdict never authorises another round.
+  # own output cannot decide. The marker's prefix in that slot is exact or
+  # absent: exactly four spaces and `Output: `, or a bare `LOOP_HEALTH: ` at the
+  # start of the line for a runner that prints step-04's stdout unchanged. Any
+  # other whitespace is STUCK, so a recent-output snippet cannot pass. A log
+  # with no completed step-04 status line, including one from any other runner,
+  # is STUCK. Anything we cannot read as CONTINUE or DONE is STUCK — a missing
+  # verdict never authorises another round.
   # Portable to BSD awk and mawk: byte matching, no gawk extensions.
   LOOP_VERDICT="STUCK"
   if [ "$HEALTH_RC" -eq 0 ]; then
@@ -227,7 +231,7 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} findings=$(prin
         rec = ""; pend = 0
         if ($0 ~ /^  ✓ step-04-enforce-loop-verdict( \([^)]*\))?: completed( \[[^]]*\])?$/) pend = 1
       }
-      END { print verdict(rec, "    Output: LOOP_HEALTH: ") }' "$HEALTH_LOG" || echo STUCK)"
+      END { v = verdict(rec, "    Output: LOOP_HEALTH: "); if (v == "STUCK") v = verdict(rec, "LOOP_HEALTH: "); print v }' "$HEALTH_LOG" || echo STUCK)"
     case "$HEALTH_READ" in
       CONTINUE) LOOP_VERDICT="CONTINUE" ;;
       DONE) LOOP_VERDICT="DONE" ;;

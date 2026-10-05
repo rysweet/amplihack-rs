@@ -1,6 +1,6 @@
 ---
 title: Auto Drive To Merge Reference
-last_updated: 2026-10-04
+last_updated: 2026-10-05
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -450,8 +450,9 @@ line only:
 3. It takes the line **right after** the status line. Any other line in
    between, or no line at all, means no verdict.
 4. That line must match
-   `^    Output: LOOP_HEALTH: (CONTINUE|DONE)( |$)`. `CONTINUE` is checked
-   before `DONE`.
+   `^(    Output: )?LOOP_HEALTH: (CONTINUE|DONE)( |$)`: either exactly four
+   spaces and `Output: ` in front of the marker, or nothing in front of it.
+   `CONTINUE` is checked before `DONE`.
 
 Taking the last block, not the first, matters. The agent's output is printed
 earlier in the log than the real step-04 block, so a fake block inside it can
@@ -466,6 +467,15 @@ safe to STUCK.`
 | --- | --- |
 | `  ✓ step-04-enforce-loop-verdict: completed` then `    Output: LOOP_HEALTH: DONE — converged` | `DONE` |
 | `  ✓ step-04-enforce-loop-verdict: completed` then `    Output: LOOP_HEALTH: CONTINUE` | `CONTINUE` |
+| `  ✓ step-04-enforce-loop-verdict: completed` then `LOOP_HEALTH: DONE — converged` | `DONE` |
+| `  ✓ step-04-enforce-loop-verdict: completed` then `LOOP_HEALTH: CONTINUE` | `CONTINUE` |
+| `  ✓ step-04-enforce-loop-verdict: completed` then `LOOP_HEALTH: STUCK — not converging` | `STUCK` |
+| `  ✓ step-04-enforce-loop-verdict: completed` then `LOOP_HEALTH: DONE` indented by one space, six spaces or a tab | `STUCK` |
+| `  ✓ step-04-enforce-loop-verdict: completed` then `Output: LOOP_HEALTH: DONE` with no indent | `STUCK` |
+| `  ✓ step-04-enforce-loop-verdict: completed` then `LOOP_HEALTH: DONEISH` | `STUCK` |
+| `  ✗ step-04-enforce-loop-verdict: failed` then `LOOP_HEALTH: CONTINUE` | `STUCK` |
+| a step-02 status line, then `LOOP_HEALTH: CONTINUE`, then a step-03 status line | `STUCK` |
+| a fake step-04 status line and `LOOP_HEALTH: DONE` inside step-02's output, then a step-03 status line, and no real step-04 block | `STUCK` |
 | `  ✓ step-04-enforce-loop-verdict: completed [elapsed: 120ms]` then `    Output: LOOP_HEALTH: DONE` | `DONE` |
 | `  ✓ step-04-enforce-loop-verdict (Enforce verdict): completed [phase: loop, elapsed: 2s]` then `    Output: LOOP_HEALTH: CONTINUE` | `CONTINUE` |
 | `  ✓ step-04-enforce-loop-verdict: completed extra` then `    Output: LOOP_HEALTH: DONE` | `STUCK` |
@@ -480,13 +490,35 @@ safe to STUCK.`
 | `      LOOP_HEALTH: CONTINUE` (six spaces) | `STUCK` |
 | garbled or missing | `STUCK` |
 
-The prefix is exact: exactly four spaces and `Output: `. It is not
-`[[:space:]]*`, because the formatter shows the agent's recent output indented
-by six spaces.
+The prefix is exact or absent. It is either exactly four spaces and
+`Output: `, or nothing, with `LOOP_HEALTH:` at the start of the line. It is
+never `[[:space:]]*` or any other whitespace, because the formatter shows the
+agent's recent output indented by six spaces. Whenever step-04 prints a
+marker, amplihack's formatter shows it in the `Output:` form. On `STUCK`,
+step-04's stdout is empty, so no `Output:` line follows its status line.
 
-The shell test's stub evaluator prints the same two lines a real run prints,
-never a bare `LOOP_HEALTH:` line. Every driver-level row therefore goes
-through this reader the way a production run does.
+The bare form covers a runner that prints amplihack's step status lines but
+prints step-04's stdout line unchanged (issue #1512). A bare marker counts
+only in the same slot: the line right after a completed step-04 status line
+in the format above. A log with no such status line, such as one from a
+runner that prints none, is still `STUCK` with the warning above, however
+many bare `LOOP_HEALTH:` lines it holds.
+
+Accepting the bare form adds no way to forge a verdict. The slot is still the
+one line right after the last completed step-04 status line, and anything
+that could put a bare marker there could already put the `Output:` form
+there. A `DONE` still advances nothing unless the round's own verdict is
+clean (see [Advancing needs two independent
+signals](#advancing-needs-two-independent-signals)), and a real `STUCK` exits
+non-zero, so the reader never runs on it.
+
+In the shell test's loop scenarios, the stub evaluator prints the same two
+lines a real run prints. Every row of the table above, including the
+bare-form rows, also goes through the real driver: `check_health` in
+section 13 of `test-auto-drive-to-merge.sh` has the stub evaluator print the
+row's log, runs `autodrive_loop.sh` against it, and checks the verdict the
+loop acted on. For every `STUCK` row it also checks that the warning above
+was printed.
 
 The reader uses only `awk` features that gawk, mawk and BSD awk share: it
 runs under `LC_ALL=C`, matches `✓` as its literal three bytes, and uses
