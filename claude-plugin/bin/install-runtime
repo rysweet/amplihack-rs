@@ -158,12 +158,36 @@ else
   log "neither node nor cargo is available; cannot install amplihack binaries"
 fi
 
+runner_status=0
 rev=$(sed -n 1p "$root/claude-plugin/recipe-runner.rev" 2>/dev/null)
-if have cargo && [ -n "$rev" ]; then
+if [ -n "${RECIPE_RUNNER_RS_PATH:-}" ]; then
+  if [ -x "$RECIPE_RUNNER_RS_PATH" ]; then
+    log "explicit recipe runner preserved"
+  else
+    log "explicit recipe runner is not executable"
+    runner_status=1
+  fi
+elif have cargo && [ -n "$rev" ]; then
   # cargo skips the build when this exact revision is already installed.
   log "ensuring recipe-runner-rs at $rev"
-  cargo install --git "$runner_url" --rev "$rev" --locked ||
+  if ! cargo install --git "$runner_url" --rev "$rev" --locked; then
     log "recipe-runner-rs build failed"
+    runner_status=1
+  fi
+  probe=$(recipe-runner-rs --capabilities 2>/dev/null) || runner_status=1
+  if ! printf '%s' "$probe" | tr -d ' \n\r\t' | grep -Eq '^\{"schema_version":1,"version":"[0-9]+\.[0-9]+\.[0-9]+[a-zA-Z0-9.+-]*","capabilities":\["codex_exec"\]\}$'; then
+    log "managed runner lacks the required capability contract"
+    runner_status=1
+  fi
+  runner_home=${CARGO_HOME:-$HOME/.cargo}
+  if ! grep -Eq '"recipe-runner-rs [^"]+ \(git\+https://github.com/rysweet/amplihack-recipe-runner[^"]*#'"$rev"'\)"[[:space:]]*:' "$runner_home/.crates2.json" 2>/dev/null; then
+    log "managed runner receipt does not establish requested revision"
+    runner_status=1
+  fi
+  if [ "$(command -v recipe-runner-rs)" != "$runner_home/bin/recipe-runner-rs" ]; then
+    log "managed recipe runner is shadowed; cannot stamp success"
+    runner_status=1
+  fi
 elif have recipe-runner-rs; then
   log "recipe-runner-rs already installed (cannot pin: cargo or recipe-runner.rev missing)"
 else
@@ -172,15 +196,15 @@ fi
 
 # Success means the runtime is usable AND, where the plugin manages it, at the
 # release it asked for; binaries that merely exist do not count as reconciled.
-status=0
+status=$runner_status
 for tool in amplihack amplihack-hooks recipe-runner-rs; do
-  if have "$tool"; then log "ok: $tool -> $(command -v "$tool")"; else log "MISSING: $tool"; status=1; fi
+  if [ "$tool" = recipe-runner-rs ] && [ -n "${RECIPE_RUNNER_RS_PATH:-}" ] && [ -x "$RECIPE_RUNNER_RS_PATH" ]; then log "ok: explicit recipe runner"; elif have "$tool"; then log "ok: $tool -> $(command -v "$tool")"; else log "MISSING: $tool"; status=1; fi
 done
 if [ "$status" = 0 ] && [ "$managed" = 1 ] && [ -n "$want" ] && [ "$(version_of)" != "$want" ]; then
   log "amplihack is $(version_of), not the wanted $want"
   status=1
 fi
-if [ "$status" != 0 ] && [ "$managed" = 0 ] && have recipe-runner-rs; then
+if [ "$status" != 0 ] && [ "$runner_status" = 0 ] && [ "$managed" = 0 ] && have recipe-runner-rs; then
   # The user owns part of the amplihack pair and the plugin will not install
   # the rest beside it. That is a settled state, not a failure to retry.
   printf '%s\n' "$plugin_id" >"$data/user-managed"
@@ -190,6 +214,7 @@ if [ "$status" != 0 ] && [ "$managed" = 0 ] && have recipe-runner-rs; then
 fi
 rm -f "$data/user-managed"
 if [ "$status" != 0 ]; then
+  rm -f "$data/runtime.stamp"
   printf '%s\n' "$plugin_id" >"$data/install.failed"
 elif [ -z "$want" ] && [ "$managed" = 1 ]; then
   # Usable, but whether it is current is unknown; leave the stamp unwritten so

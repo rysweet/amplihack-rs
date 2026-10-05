@@ -23,6 +23,7 @@ fn probe_fixture(stdout: &str, exit: i32, compatible: bool) {
     .unwrap();
     fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
     let _env = EnvGuard::set([
+        ("AMPLIHACK_AGENT_BINARY", "codex"),
         ("HOME", dir.path().to_str().unwrap()),
         ("CARGO_HOME", dir.path().to_str().unwrap()),
         ("RECIPE_RUNNER_RS_PATH", binary.to_str().unwrap()),
@@ -92,4 +93,18 @@ fn codex_runner_rejects_failed_probe_even_with_valid_json() {
         2,
         false,
     );
+}
+
+#[test]
+fn legacy_custom_runner_is_accepted_only_for_non_codex_provider() {
+    let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let binary = dir.path().join("recipe-runner-rs");
+    fs::write(&binary, "#!/bin/sh\nexit 19\n").unwrap();
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+    let _env = EnvGuard::set([("RECIPE_RUNNER_RS_PATH", binary.to_str().unwrap())]);
+    for provider in ["claude", "copilot"] {
+        crate::freshness::with_provider(provider, || ensure_recipe_runner().unwrap());
+    }
+    assert!(crate::freshness::with_provider("codex", ensure_recipe_runner).is_err());
 }

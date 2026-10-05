@@ -66,14 +66,26 @@ pub fn run_hook<H: Hook>(hook: H) {
     let start = Instant::now();
     let hook_name = hook.name();
     let policy = hook.failure_policy();
+    let codex = std::env::var("AMPLIHACK_AGENT_BINARY").as_deref() == Ok("codex");
+    let security = codex && hook_name == "pre_tool_use";
 
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| -> anyhow::Result<()> {
-        let input_json = read_stdin()?;
+        let input_json = read_stdin(codex)?;
 
-        let input: HookInput = deserialize_hook_input(&input_json, hook.hook_event_name())
-            .context("failed to deserialize hook input JSON")?;
+        let input: HookInput = deserialize_hook_input(
+            &input_json,
+            if security {
+                Some("PreToolUse")
+            } else {
+                hook.hook_event_name()
+            },
+        )
+        .context("failed to deserialize hook input JSON")?;
 
-        let codex = std::env::var("AMPLIHACK_AGENT_BINARY").as_deref() == Ok("codex");
+        anyhow::ensure!(
+            !security || matches!(&input, HookInput::PreToolUse { .. }),
+            "invalid Codex tool security event"
+        );
         let event = match &input {
             HookInput::PreToolUse { .. } => "PreToolUse",
             HookInput::PostToolUse { .. } => "PostToolUse",
@@ -119,6 +131,11 @@ pub fn run_hook<H: Hook>(hook: H) {
         }
         Ok(Err(e)) => {
             emit_telemetry(hook_name, duration, "error", Some(&e.to_string()));
+            if security {
+                let _ =
+                    write_stdout(&serde_json::to_vec(&security_denial()).expect("static denial"));
+                return;
+            }
             match policy {
                 FailurePolicy::Open => {
                     if write_stdout(b"{}").is_err() {
@@ -140,6 +157,11 @@ pub fn run_hook<H: Hook>(hook: H) {
         }
         Err(_panic) => {
             emit_telemetry(hook_name, duration, "panic", Some("hook panicked"));
+            if security {
+                let _ =
+                    write_stdout(&serde_json::to_vec(&security_denial()).expect("static denial"));
+                return;
+            }
             // Intentional: on panic, write best-effort empty JSON response.
             // If stdout is broken too, there's nothing more we can do.
             let _ = io::stdout().write_all(b"{}\n");
@@ -267,15 +289,23 @@ fn codex_output(event: &str, output: serde_json::Value) -> serde_json::Value {
 }
 
 /// Read all of stdin as a string.
-fn read_stdin() -> anyhow::Result<String> {
+fn security_denial() -> serde_json::Value {
+    serde_json::json!({"hookSpecificOutput":{"hookEventName":"PreToolUse",
+        "permissionDecision":"deny", "permissionDecisionReason":"Amplihack security check could not process tool input"}})
+}
+fn read_stdin(codex: bool) -> anyhow::Result<String> {
     let mut input = String::new();
-    io::stdin()
-        .take(4 * 1024 * 1024 + 1)
-        .read_to_string(&mut input)?;
-    anyhow::ensure!(
-        input.len() <= 4 * 1024 * 1024,
-        "hook input exceeds 4 MiB limit"
-    );
+    if codex {
+        io::stdin()
+            .take(4 * 1024 * 1024 + 1)
+            .read_to_string(&mut input)?;
+        anyhow::ensure!(
+            input.len() <= 4 * 1024 * 1024,
+            "hook input exceeds 4 MiB limit"
+        );
+    } else {
+        io::stdin().read_to_string(&mut input)?;
+    }
     Ok(input)
 }
 

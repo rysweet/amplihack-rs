@@ -30,6 +30,10 @@ const INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub fn prepare_launcher(tool: &str) -> Result<()> {
+    freshness::with_provider(tool, || prepare_selected_launcher(tool))
+}
+
+fn prepare_selected_launcher(tool: &str) -> Result<()> {
     // SEC-WS2-02: Non-interactive mode (CI, pipes, AMPLIHACK_NONINTERACTIVE=1)
     // skips all interactive setup. The environment is assumed pre-provisioned.
     // This matches Python launcher behavior and prevents hangs in sandboxes.

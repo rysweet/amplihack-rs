@@ -985,7 +985,16 @@ mod shell {
             "#!/bin/sh\necho 'node stub: no network' >&2\nexit 1\n",
         );
         let cargo = if cargo_ok {
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/cargo-args\"\nmkdir -p \"$HOME/.cargo/bin\"\nprintf '#!/bin/sh\\n' > \"$HOME/.cargo/bin/recipe-runner-rs\"\nchmod +x \"$HOME/.cargo/bin/recipe-runner-rs\"\n"
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "$HOME/cargo-args"
+mkdir -p "$HOME/.cargo/bin"
+printf '{"installs":{"recipe-runner-rs 0.4.0 (git+https://github.com/rysweet/amplihack-recipe-runner#%s)":{"bins":["recipe-runner-rs"]}}}' "$5" > "$HOME/.cargo/.crates2.json"
+cat > "$HOME/.cargo/bin/recipe-runner-rs" <<'RUNNER'
+#!/bin/sh
+printf '%s\n' '{"schema_version":1,"version":"0.4.0","capabilities":["codex_exec"]}'
+RUNNER
+chmod +x "$HOME/.cargo/bin/recipe-runner-rs"
+"#
         } else {
             "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/cargo-args\"\nexit 101\n"
         };
@@ -1015,6 +1024,21 @@ mod shell {
             .unwrap()
             .to_string_lossy()
             .into_owned()
+    }
+
+    #[test]
+    fn failed_runner_update_with_old_executable_cannot_stamp_success() {
+        let run = install_runtime_with(
+            "1.2.3",
+            true,
+            true,
+            false,
+            "1.2.3",
+            &[("recipe-runner-rs", "#!/bin/sh\nexit 0\n")],
+        );
+        assert!(!run.out.status.success(), "{}", run.log());
+        assert!(!run.data.path().join("runtime.stamp").exists());
+        assert!(run.data.path().join("install.failed").exists());
     }
 
     #[test]

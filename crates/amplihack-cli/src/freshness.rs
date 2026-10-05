@@ -107,6 +107,25 @@ fn recipe_runner_state_path() -> Result<PathBuf> {
     Ok(state_dir()?.join("recipe_runner.json"))
 }
 
+thread_local! { static SELECTED_PROVIDER: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) }; }
+
+pub(crate) fn with_provider<T>(provider: &str, action: impl FnOnce() -> T) -> T {
+    struct Restore(Option<String>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            SELECTED_PROVIDER.with(|p| *p.borrow_mut() = self.0.take());
+        }
+    }
+    let _restore = Restore(SELECTED_PROVIDER.with(|p| p.replace(Some(provider.to_string()))));
+    action()
+}
+pub(crate) fn codex_selected() -> bool {
+    SELECTED_PROVIDER
+        .with(|p| p.borrow().clone())
+        .unwrap_or_else(crate::env_builder::active_agent_binary)
+        == "codex"
+}
+
 /// Install or upgrade `recipe-runner-rs` if the currently installed commit
 /// differs from upstream HEAD.
 ///
@@ -134,7 +153,10 @@ fn ensure_recipe_runner_up_to_date_inner() -> Result<()> {
     }
     let compatible = probe_recipe_runner().is_ok();
     let managed = state_path.exists();
-    if compatible && (!managed || state.installed_sha == RECIPE_RUNNER_REV.trim()) {
+    if compatible
+        && (!managed
+            || (state.installed_sha == RECIPE_RUNNER_REV.trim() && verify_managed_runner().is_ok()))
+    {
         return Ok(());
     }
     install_recipe_runner_from_git(false)?;
@@ -152,7 +174,8 @@ pub(crate) fn managed_runner_needs_reconcile() -> bool {
         return false;
     };
     let state = FreshnessState::read(&path);
-    path.exists() && state.installed_sha != RECIPE_RUNNER_REV.trim()
+    path.exists()
+        && (state.installed_sha != RECIPE_RUNNER_REV.trim() || verify_managed_runner().is_err())
 }
 
 pub(crate) fn recipe_runner_binary_present() -> bool {
@@ -178,6 +201,9 @@ pub(crate) fn probe_recipe_runner() -> Result<()> {
         }
     }
     let path = crate::rust_toolchain::find_recipe_runner().context("recipe-runner-rs not found")?;
+    if !codex_selected() {
+        return Ok(());
+    }
     let mut cmd = Command::new(path);
     cmd.arg("--capabilities");
     let output = crate::util::run_output_with_timeout_limited(
@@ -200,6 +226,35 @@ pub(crate) fn probe_recipe_runner() -> Result<()> {
             "recipe-runner-rs requires capability schema 1 and codex_exec; install the pinned runner"
         );
     }
+    Ok(())
+}
+
+fn verify_managed_runner() -> Result<()> {
+    let cargo_home = std::env::var_os("CARGO_HOME").map(PathBuf::from).unwrap_or(
+        PathBuf::from(std::env::var_os("HOME").context("HOME required")?).join(".cargo"),
+    );
+    let selected =
+        crate::rust_toolchain::find_recipe_runner().context("installed runner missing")?;
+    anyhow::ensure!(
+        selected.canonicalize()? == cargo_home.join("bin/recipe-runner-rs").canonicalize()?,
+        "managed runner is shadowed; cannot record managed installation"
+    );
+    let receipt = std::fs::read_to_string(cargo_home.join(".crates2.json"))
+        .context("managed runner cargo receipt missing")?;
+    let receipt: serde_json::Value =
+        serde_json::from_str(&receipt).context("invalid cargo receipt")?;
+    anyhow::ensure!(
+        receipt["installs"]
+            .as_object()
+            .is_some_and(|entries| entries.iter().any(|(source, record)| source
+                .starts_with("recipe-runner-rs ")
+                && source.contains(RECIPE_RUNNER_GIT_URL)
+                && source.ends_with(&format!("#{})", RECIPE_RUNNER_REV.trim()))
+                && record["bins"]
+                    .as_array()
+                    .is_some_and(|bins| bins.iter().any(|b| b == "recipe-runner-rs")))),
+        "managed runner receipt does not establish requested revision"
+    );
     Ok(())
 }
 
@@ -230,6 +285,8 @@ pub(crate) fn install_recipe_runner_from_git(bootstrap_toolchain: bool) -> Resul
     if !status.success() {
         bail!("cargo install exited with status {status}");
     }
+    verify_managed_runner()?;
+    probe_recipe_runner()?;
     FreshnessState {
         installed_sha: RECIPE_RUNNER_REV.trim().to_string(),
         checked_at: now_secs(),
@@ -327,6 +384,43 @@ mod codex_delivery_contract_tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
+    fn managed_receipt_and_selected_executable_must_agree() {
+        let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let runner = bin.join("recipe-runner-rs");
+        fs::write(&runner, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&runner, fs::Permissions::from_mode(0o700)).unwrap();
+        let _env = EnvGuard::set([
+            ("PATH", bin.to_str().unwrap()),
+            ("CARGO_HOME", dir.path().to_str().unwrap()),
+            ("RECIPE_RUNNER_RS_PATH", ""),
+        ]);
+        assert!(verify_managed_runner().is_err());
+        let key = format!(
+            "recipe-runner-rs 0.4.0 (git+{}#{})",
+            RECIPE_RUNNER_GIT_URL,
+            RECIPE_RUNNER_REV.trim()
+        );
+        fs::write(
+            dir.path().join(".crates2.json"),
+            serde_json::to_vec(
+                &serde_json::json!({"installs":{key:{"bins":["recipe-runner-rs"]}}}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        verify_managed_runner().unwrap();
+        with_provider("codex", || {
+            assert!(
+                probe_recipe_runner().is_err(),
+                "receipt alone cannot establish Codex capability"
+            )
+        });
+    }
+
+    #[test]
     fn codex_runner_provisioning_uses_authoritative_immutable_revision() {
         let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
         let dir = tempfile::tempdir().unwrap();
@@ -345,7 +439,10 @@ mod codex_delivery_contract_tests {
             ("PATH", dir.path().to_str().unwrap()),
             ("CARGO_HOME", dir.path().to_str().unwrap()),
         ]);
-        install_recipe_runner_from_git(false).unwrap();
+        assert!(
+            install_recipe_runner_from_git(false).is_err(),
+            "cargo success without an installed managed binary is insufficient"
+        );
         let args = std::fs::read_to_string(log).unwrap();
         let args: Vec<_> = args.lines().collect();
         let pin = include_str!("../../../claude-plugin/recipe-runner.rev").trim();
@@ -383,7 +480,10 @@ mod codex_delivery_contract_tests {
         }
         .write(&recipe_runner_state_path().unwrap())
         .unwrap();
-        ensure_recipe_runner_up_to_date_inner().unwrap();
+        assert!(
+            ensure_recipe_runner_up_to_date_inner().is_err(),
+            "compatible PATH shadow cannot establish managed provenance"
+        );
         let args = fs::read_to_string(log)
             .expect("managed source drift cannot hide behind cooldown or capability");
         let pin = include_str!("../../../claude-plugin/recipe-runner.rev").trim();
@@ -395,7 +495,7 @@ mod codex_delivery_contract_tests {
         );
         assert_eq!(
             FreshnessState::read(&recipe_runner_state_path().unwrap()).installed_sha,
-            pin
+            "0".repeat(40)
         );
     }
 }

@@ -79,7 +79,7 @@ Canonical skill trees retain their directory layout. Generated instruction name 
 | Native event | Amplihack behavior |
 | --- | --- |
 | SessionStart | Supplies initialization context |
-| UserPromptSubmit | Supplies workflow context or an explicit blocking reason |
+| UserPromptSubmit | Supplies advisory workflow context |
 | PreToolUse | Supplies advisory context or a native permission denial |
 | PostToolUse | Supplies tool-result context |
 | Stop | Native no-op; Claude transcript-driven continuation is unavailable |
@@ -118,3 +118,21 @@ Legacy `config.yaml` with `approval_mode: auto` and legacy JSON are not current 
 If hooks do not run, inspect plugin enablement, `/hooks` trust, and managed hook policy. If a recipe fails compatibility checks, inspect `RECIPE_RUNNER_RS_PATH` and the capability probe before reinstalling the managed runner. If configuration cannot be edited, repair its syntax or explicitly edit the resolved symlink target; Amplihack preserves the original. Unsupported fresh/resume option combinations fail rather than silently discarding requested settings. See the [mode-specific flag matrix](../reference/flag-matrix.md).
 
 Claude and Copilot retain their existing launch, environment, install, and hook contracts. Installing Codex support does not change their permission flags or reinterpret Copilot session teardown as a per-turn Stop event.
+
+Codex tool security hooks deny the tool explicitly if input cannot be read,
+parsed, or checked, including payloads above 4 MiB. Claude and Copilot retain
+their existing input handling. UserPromptSubmit context is advisory;
+PreToolUse emits explicit tool denials.
+
+Installation checks hook and marketplace ownership before replacing the package.
+The previous package and committed ownership remain recoverable until native
+registration, hook reconciliation, and the new ledger commit succeed. Failed
+updates restore prior configuration and package state. If recovery itself fails,
+the installer reports the failure and retains `~/.amplihack/codex/pending.json`
+for recovery on the next install or uninstall; preserve this record and the
+`previous-package` directory until recovery succeeds.
+
+Runner capability checks apply to Codex execution. Legacy custom Claude/Copilot
+runners remain supported. Explicit runner overrides are preserved. Managed
+runner installation records require the selected Cargo binary and its source
+receipt to agree with the bundled revision; failed upgrades do not stamp success.

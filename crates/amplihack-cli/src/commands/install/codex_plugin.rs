@@ -19,6 +19,8 @@ const ID: &str = "amplihack@amplihack-local";
 #[derive(Serialize, Deserialize)]
 struct Ownership {
     schema_version: u32,
+    #[serde(default)]
+    transaction: Option<String>,
     codex_home: PathBuf,
     package_digest: String,
     hooks: Value,
@@ -78,12 +80,12 @@ fn native(binary: &Path, args: &[&str], home: &Path) -> Result<Value> {
         crate::util::run_output_with_timeout_limited(cmd, Duration::from_secs(30), 1024 * 1024)?;
     ensure!(
         output.status.success(),
-        "Codex native plugin command {:?} failed ({}): {}",
-        args,
-        output.status,
-        crate::util::format_output_diagnostics(&output, 2048)
+        "Codex native plugin command failed ({}); check native plugin support and authentication",
+        output.status
     );
-    serde_json::from_slice(&output.stdout).context("invalid native Codex plugin response")
+    serde_json::from_slice(&output.stdout).map_err(|_| {
+        anyhow::anyhow!("invalid native Codex plugin response; expected JSON inventory")
+    })
 }
 fn installed(value: &Value) -> bool {
     value["installed"].as_array().is_some_and(|entries| {
@@ -258,6 +260,19 @@ fn expose_nested_skills(directory: &Path, root: &Path, depth: usize) -> Result<(
     Ok(())
 }
 
+fn portable_instruction(source: &str) -> String {
+    let body = if let Some(rest) = source.strip_prefix("---\n") {
+        rest.split_once("\n---\n")
+            .map(|(_, body)| body)
+            .unwrap_or(source)
+    } else {
+        source
+    };
+    body.replace(
+        "Use GPT-4 to analyze code + comments",
+        "Analyze code + comments",
+    )
+}
 fn instruction_skills(source: &Path, output: &Path, prefix: &str) -> Result<()> {
     instruction_skills_under(source, source, output, prefix)
 }
@@ -290,7 +305,8 @@ fn instruction_skills_under(source: &Path, base: &Path, output: &Path, prefix: &
         let dir = output.join(&name);
         ensure!(!dir.exists(), "generated Codex skill collision: {name}");
         fs::create_dir(&dir)?;
-        let body = fs::read_to_string(e.path())?;
+        let source_body = fs::read_to_string(e.path())?;
+        let body = portable_instruction(&source_body);
         fs::write(
             dir.join("SKILL.md"),
             format!(
@@ -310,7 +326,11 @@ fn reconcile_hooks(home: &Path, previous: &Value, desired: &Value) -> Result<()>
     lock.lock_exclusive()?;
     let path = home.join("hooks.json");
     let original = regular_json(&path)?;
-    let mut value = original.clone().unwrap_or_else(|| json!({"hooks":{}}));
+    let value = merged_hooks(original.clone(), previous, desired)?;
+    atomic_json(&path, &value, original)
+}
+fn merged_hooks(original: Option<Value>, previous: &Value, desired: &Value) -> Result<Value> {
+    let mut value = original.unwrap_or_else(|| json!({"hooks":{}}));
     ensure!(value.is_object(), "Codex hooks.json must be an object");
     if value.get("hooks").is_none() {
         value["hooks"] = json!({});
@@ -340,13 +360,108 @@ fn reconcile_hooks(home: &Path, previous: &Value, desired: &Value) -> Result<()>
             entries.push(handler.clone());
         }
     }
-    atomic_json(&path, &value, original)
+    Ok(value)
+}
+
+fn restore_json(path: &Path, value: &Value) -> Result<()> {
+    let current = regular_json(path)?;
+    if value.is_null() {
+        if current.is_some() {
+            fs::remove_file(path)?;
+        }
+    } else {
+        atomic_json(path, value, current)?;
+    }
+    Ok(())
+}
+fn recover_install(root: &Path, binary: &Path, home: &Path) -> Result<()> {
+    let Some(pending) = regular_json(&root.join("pending.json"))? else {
+        return Ok(());
+    };
+    ensure!(
+        pending["schema_version"] == 1 && pending["codex_home"] == serde_json::to_value(home)?,
+        "pending Codex recovery scope changed; restore the original CODEX_HOME before retrying"
+    );
+    let package = root.join("market/plugin");
+    if regular_json(&root.join("ownership.json"))?
+        .is_some_and(|ledger| ledger["transaction"] == pending["transaction"])
+    {
+        if root.join("previous-package").exists() {
+            fs::remove_dir_all(root.join("previous-package"))?;
+        }
+        fs::remove_file(root.join("pending.json"))?;
+        return Ok(());
+    }
+    let inventory = native(binary, &["plugin", "list", "--json"], home)?;
+    verify_identity(&inventory, &package)?;
+    if pending["installed"] == false && installed(&inventory) {
+        native(binary, &["plugin", "remove", ID], home)?;
+    }
+    let backup = root.join("previous-package");
+    if backup.exists() {
+        ensure!(
+            pending["ledger"]["package_digest"].as_str() == Some(digest(&backup)?.as_str()),
+            "previous Codex package changed; recovery retained for manual repair"
+        );
+        if package.exists() {
+            fs::remove_dir_all(&package)?;
+        }
+        fs::rename(&backup, &package)?;
+    } else if pending["had_package"] == false && package.exists() {
+        fs::remove_dir_all(&package)?;
+    }
+    let config = home.join("config.toml");
+    if let Some(bytes) = pending["config"].as_array() {
+        let bytes: Vec<u8> = bytes
+            .iter()
+            .map(|v| {
+                v.as_u64()
+                    .context("invalid recovery config byte")
+                    .and_then(|v| u8::try_from(v).context("invalid config byte"))
+            })
+            .collect::<Result<_>>()?;
+        let mut staged = tempfile::NamedTempFile::new_in(home)?;
+        if config.exists() {
+            staged
+                .as_file()
+                .set_permissions(fs::metadata(&config)?.permissions())?;
+        }
+        staged.write_all(&bytes)?;
+        staged.as_file().sync_all()?;
+        staged.persist(&config).context("config recovery failed")?;
+    } else if config.exists() {
+        fs::remove_file(&config)?;
+    }
+    restore_json(&home.join("hooks.json"), &pending["hooks"])?;
+    restore_json(
+        &root.join("market/.agents/plugins/marketplace.json"),
+        &pending["marketplace"],
+    )?;
+    restore_json(&root.join("ownership.json"), &pending["ledger"])?;
+    if pending["installed"] == true {
+        native(binary, &["plugin", "add", ID], home)?;
+    }
+    fs::remove_file(root.join("pending.json"))?;
+    Ok(())
 }
 
 pub(super) fn install(source: &Path, hooks_binary: &Path) -> Result<bool> {
     let Some(binary) = find_binary("codex") else {
+        ensure!(
+            !crate::freshness::codex_selected(),
+            "selected Codex executable is missing; install Codex and retry"
+        );
         return Ok(false);
     };
+    // Probe before any optional-provider mutations.
+    let home = codex_home()?;
+    if native(&binary, &["plugin", "list", "--json"], &home).is_err() {
+        if crate::freshness::codex_selected() {
+            bail!("selected Codex requires native plugin support; update Codex and retry");
+        }
+        println!("  ⚠️ Optional Codex plugin skipped: native plugin support unavailable");
+        return Ok(false);
+    }
     let root = root()?;
     fs::create_dir_all(&root)?;
     ensure!(
@@ -357,7 +472,7 @@ pub(super) fn install(source: &Path, hooks_binary: &Path) -> Result<bool> {
     lock.lock_exclusive()?;
     let home = codex_home()?;
     fs::create_dir_all(&home)?;
-    amplihack_launcher::codex_config::configure(&home, false)?;
+    recover_install(&root, &binary, &home)?;
     let ledger = root.join("ownership.json");
     let previous = regular_json(&ledger)?
         .map(serde_json::from_value::<Ownership>)
@@ -458,73 +573,91 @@ pub(super) fn install(source: &Path, hooks_binary: &Path) -> Result<bool> {
     let entries = marketplace["plugins"]
         .as_array_mut()
         .context("marketplace plugins must be an array")?;
+    let expected_entry = json!({"name":"amplihack", "source":{"source":"local","path":"./plugin"},
+        "policy":{"installation":"AVAILABLE","authentication":"ON_INSTALL"}, "category":"Productivity"});
+    ensure!(
+        entries.iter().all(|entry| entry["name"] != "amplihack"
+            || (previous.is_some() && entry == &expected_entry)),
+        "foreign local marketplace entry; refusing replacement"
+    );
     entries.retain(|entry| entry["name"] != "amplihack");
     entries.push(json!({"name":"amplihack", "source":{"source":"local","path":"./plugin"},
         "policy":{"installation":"AVAILABLE","authentication":"ON_INSTALL"}, "category":"Productivity"}));
-    atomic_json(&marketplace_path, &marketplace, original_marketplace)?;
-
-    if package.exists() {
-        fs::remove_dir_all(&package)?;
-    }
-    fs::rename(staged.path(), &package)?;
-    // Write ownership before external registration so partial installs remain removable.
-    let mut recoverable_hooks = hooks.clone();
-    if let Some(old) = &previous {
-        for (event, entries) in old
-            .hooks
-            .as_object()
-            .context("invalid previous hook ownership")?
-        {
-            let owned = recoverable_hooks
-                .as_object_mut()
-                .context("invalid desired hooks")?
-                .entry(event)
-                .or_insert_with(|| json!([]))
-                .as_array_mut()
-                .context("owned hooks must be arrays")?;
-            for entry in entries
-                .as_array()
-                .context("previous owned hooks must be arrays")?
-            {
-                if !owned.contains(entry) {
-                    owned.push(entry.clone());
-                }
-            }
+    let old_hooks = previous
+        .as_ref()
+        .map(|p| p.hooks.clone())
+        .unwrap_or_else(|| json!({}));
+    let original_hooks = regular_json(&home.join("hooks.json"))?;
+    merged_hooks(original_hooks.clone(), &old_hooks, &hooks)?;
+    let original_ledger = regular_json(&ledger)?;
+    let config = home.join("config.toml");
+    let original_config = match fs::symlink_metadata(&config) {
+        Ok(m) => {
+            ensure!(
+                m.is_file() && !m.file_type().is_symlink(),
+                "refusing nonregular Codex config"
+            );
+            Some(fs::read(&config)?)
         }
-    }
-    let mut record = Ownership {
-        schema_version: 1,
-        codex_home: home.clone(),
-        package_digest: digest(&package)?,
-        hooks: recoverable_hooks,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e.into()),
     };
-    let original = regular_json(&ledger)?;
-    atomic_json(&ledger, &serde_json::to_value(&record)?, original)?;
-    native(
-        &binary,
-        &[
-            "plugin",
-            "marketplace",
-            "add",
-            market
-                .to_str()
-                .context("Codex marketplace path must be UTF-8")?,
-        ],
-        &home,
-    )?;
-    native(&binary, &["plugin", "add", ID], &home)?;
-    ensure!(
-        installed(&native(&binary, &["plugin", "list", "--json"], &home)?),
-        "native Codex registration missing installed identity"
-    );
-    reconcile_hooks(
-        &home,
-        &previous.map(|p| p.hooks).unwrap_or_else(|| json!({})),
-        &hooks,
-    )?;
-    record.hooks = hooks;
-    let original = regular_json(&ledger)?;
-    atomic_json(&ledger, &serde_json::to_value(&record)?, original)?;
+    let transaction = staged
+        .path()
+        .file_name()
+        .context("staging name missing")?
+        .to_string_lossy()
+        .into_owned();
+    let pending = json!({"schema_version":1,"codex_home":home,"transaction":transaction,"config":original_config,"marketplace":original_marketplace, "hooks":original_hooks,
+        "ledger":original_ledger, "installed":installed(&inventory), "had_package":package.exists(), "target_digest":digest(staged.path())?, "target_hooks":hooks});
+    atomic_json(&root.join("pending.json"), &pending, None)?;
+    let result = (|| -> Result<()> {
+        amplihack_launcher::codex_config::configure(&home, false)?;
+        atomic_json(&marketplace_path, &marketplace, original_marketplace)?;
+        if package.exists() {
+            fs::rename(&package, root.join("previous-package"))?;
+        }
+        fs::rename(staged.path(), &package)?;
+        let record = Ownership {
+            schema_version: 1,
+            transaction: Some(transaction),
+            codex_home: home.clone(),
+            package_digest: digest(&package)?,
+            hooks: hooks.clone(),
+        };
+        native(
+            &binary,
+            &[
+                "plugin",
+                "marketplace",
+                "add",
+                market
+                    .to_str()
+                    .context("Codex marketplace path must be UTF-8")?,
+            ],
+            &home,
+        )?;
+        native(&binary, &["plugin", "add", ID], &home)?;
+        let registered = native(&binary, &["plugin", "list", "--json"], &home)?;
+        verify_identity(&registered, &package)?;
+        ensure!(
+            installed(&registered),
+            "native Codex registration missing installed identity"
+        );
+        reconcile_hooks(&home, &old_hooks, &hooks)?;
+        let original = regular_json(&ledger)?;
+        atomic_json(&ledger, &serde_json::to_value(&record)?, original)?;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        recover_install(&root, &binary, &home)
+            .context("Codex install rollback failed; recovery record retained")?;
+        return Err(error);
+    }
+    fs::remove_file(root.join("pending.json"))?;
+    if root.join("previous-package").exists() {
+        fs::remove_dir_all(root.join("previous-package"))?;
+    }
     println!(
         "  ✅ Native Codex plugin installed; review exact hooks in Codex /hooks before trusting them"
     );
@@ -542,6 +675,11 @@ pub(super) fn uninstall() -> Result<()> {
     );
     let lock = fs::File::open(&root)?;
     lock.lock_exclusive()?;
+    if root.join("pending.json").exists() {
+        let binary =
+            find_binary("codex").context("Codex required for pending installation recovery")?;
+        recover_install(&root, &binary, &codex_home()?)?;
+    }
     let Some(record) = regular_json(&root.join("ownership.json"))? else {
         return Ok(());
     };
@@ -552,6 +690,7 @@ pub(super) fn uninstall() -> Result<()> {
     );
     let binary = find_binary("codex")
         .context("Codex required to unregister owned plugin before deletion")?;
+    recover_install(&root, &binary, &record.codex_home)?;
     let inventory = native(&binary, &["plugin", "list", "--json"], &record.codex_home)?;
     verify_identity(&inventory, &root.join("market/plugin"))?;
     if installed(&inventory) {
@@ -580,6 +719,52 @@ pub(super) fn uninstall() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn native_failure_diagnostics_do_not_expose_child_output() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("native");
+        fs::write(&binary, "#!/bin/sh\nprintf '\\033[31mAuthorization: Bearer secret-canary' >&2\nprintf 'prompt-canary'\nexit 7\n").unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+        let error = native(&binary, &["plugin", "list", "--json"], dir.path())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("native plugin command failed"));
+        assert!(!error.contains("canary"));
+        assert!(!error.contains('\u{1b}'));
+    }
+
+    #[test]
+    fn derived_production_instructions_are_portable() {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let output = tempfile::tempdir().unwrap();
+        instruction_skills(
+            &source.join("amplifier-bundle/agents"),
+            output.path(),
+            "persona",
+        )
+        .unwrap();
+        instruction_skills(
+            &source.join("docs/claude/commands/amplihack"),
+            output.path(),
+            "command",
+        )
+        .unwrap();
+        let mut count = 0;
+        for entry in fs::read_dir(output.path()).unwrap() {
+            let content = fs::read_to_string(entry.unwrap().path().join("SKILL.md")).unwrap();
+            let body = content.split_once("\n---\n").unwrap().1;
+            assert!(
+                !body.trim_start().starts_with("---"),
+                "embedded runtime frontmatter"
+            );
+            assert!(!body.contains("Use GPT-4 to analyze code + comments"));
+            count += 1;
+        }
+        assert_eq!(count, 66);
+    }
 
     #[test]
     fn codex_hooks_reconcile_preserves_foreign_definitions_across_update_and_removal() {
