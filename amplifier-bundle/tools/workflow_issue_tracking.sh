@@ -16,6 +16,8 @@
 #                               no reachable issue provider
 #   emit_local_metadata       — the tracking_* key/value block step-03b parses
 #   sanitize_cli_output       — redact provider CLI output before it is logged
+#   issue_create_host_unsupported — true when a failed `gh issue create` means
+#                               this host cannot reach GitHub issues at all
 
 derive_local_tracking_id() {
   if [[ "$EXISTING_ISSUE_NUMBER" =~ ^#?([0-9]+)$ ]]; then
@@ -36,6 +38,86 @@ derive_local_tracking_id() {
 emit_local_metadata() { LOCAL_REF="$(derive_local_tracking_id)"; LOCAL_NUM=""; [[ "$LOCAL_REF" =~ local-(issue|ab)-([0-9]+)$ ]] && LOCAL_NUM="${BASH_REMATCH[2]}"; printf 'tracking_system=local\ntracking_reference=%s\ntracking_issue=%s\nissue_creation=local-tracking\n' "$LOCAL_REF" "$LOCAL_REF"; [ -n "$LOCAL_NUM" ] && printf 'issue_number=%s\n' "$LOCAL_NUM"; return 0; }
 
 sanitize_cli_output() { printf '%s\n' "$1" | head -c 4000 | sed -E 's#https?://[^[:space:]]*@#https://<redacted>@#g; s#gh[pousr]_[A-Za-z0-9_]{8,}#<redacted-token>#g; s#github_pat_[A-Za-z0-9_]+#<redacted-token>#g; s#[Bb]earer[[:space:]]+[A-Za-z0-9._~+/=-]{20,}#Bearer <redacted-token>#g; s#[A-Za-z0-9]{52}#<redacted-token>#g'; }
+
+# issue_find_tracker TITLE — step-03's existing-tracker lookup. No --search:
+# it lists the open issues (the newest 1000; on GraphQL-blocked hosts gh-compat
+# pages them over REST) and prints the URL of the first one whose title is
+# TITLE — the same words (runs of Unicode letters and digits) in the same
+# order, compared case-insensitively (simple one-to-one Unicode case, É = é;
+# multi-character folds such as ß/SS depend on the jq engine and are not
+# promised), with spacing, punctuation and control characters aside. TITLE
+# reaches jq through the environment (env.ISSUE_TITLE_LOOKUP), so no
+# character needs escaping or stripping and the lookup sees exactly what
+# `gh issue create --title` was given. The comparison runs in gh's own --jq,
+# so no system jq is needed. A title with no word matches nothing.
+# When the list holds exactly 1000 issues the scan was cut at the newest
+# 1000 (real gh and gh-compat both cap there): a WARNING says so, because a
+# tracker older than that would be missed and a duplicate filed.
+# A lookup that fails does not read as "no tracker" (that would file a
+# duplicate): it is reported on stderr and returns 1, except where the create
+# path itself would degrade to local tracking — a host that cannot reach
+# GitHub issues at all (GraphQL blocked with no fallback, gh missing), or a
+# repository gh cannot resolve or access (issue_repo_unresolvable) — where it
+# says so on stderr and returns 0 so the create path decides. A missing jq is a local defect,
+# not such a host: it is reported and stops the step.
+issue_find_tracker() {
+  local out err rc=0 errf cnt url
+  errf="$(mktemp "${TMPDIR:-/tmp}/tracker-lookup.XXXXXX")" || { echo "ERROR: tracking-issue lookup: mktemp failed" >&2; return 1; }
+  # Two output lines: how many issues were listed, then the URL (or nothing).
+  out="$(ISSUE_TITLE_LOOKUP="$1" timeout 60 gh issue list --state open --limit 1000 --json number,title,url --jq '
+    def norm: [scan("[\\p{L}\\p{N}]+")] | join(" ");
+    (env.ISSUE_TITLE_LOOKUP | norm) as $want
+    | (length | tostring),
+      (if $want == "" then "" else
+         ([.[] | select((.title // "") | norm | test("^" + $want + "$"; "i"))][0].url // "") end)' 2>"$errf")" || rc=$?
+  err="$(cat "$errf")"; rm -f "$errf"
+  if [ "$rc" -ne 0 ]; then
+    if issue_create_host_unsupported "$rc" "$err"; then
+      echo "WARNING: the tracking-issue lookup cannot reach GitHub issues on this host; the create step decides what follows. gh reported:" >&2
+      sanitize_cli_output "$err" >&2
+      return 0
+    fi
+    if issue_repo_unresolvable "$err"; then
+      echo "WARNING: the tracking-issue lookup could not resolve or access the repository; the create step decides what follows. gh reported:" >&2
+      sanitize_cli_output "$err" >&2
+      return 0
+    fi
+    echo "ERROR: looking up an existing tracking issue failed (rc $rc); not creating one, which could duplicate it. gh reported:" >&2
+    sanitize_cli_output "$err" >&2
+    return 1
+  fi
+  # The output must start with the count line (gh prints "0" then an empty
+  # line for an empty list; nothing at all is not a shape any gh produces).
+  case "$out" in *$'\n'*) cnt="${out%%$'\n'*}"; url="${out#*$'\n'}" ;; *) cnt="$out"; url="" ;; esac
+  case "$cnt" in ''|*[!0-9]*) echo "ERROR: tracking-issue lookup returned unexpected output:" >&2; sanitize_cli_output "$out" >&2; return 1 ;; esac
+  [ "$cnt" -ge 1000 ] && echo "WARNING: the tracker scan read only the newest 1000 open issues; an older tracker with this title would be missed and a duplicate filed." >&2
+  case "$url" in
+    https://*|http://*|'') printf '%s\n' "$url" ;;
+    *) echo "ERROR: tracking-issue lookup returned unexpected output:" >&2; sanitize_cli_output "$out" >&2; return 1 ;;
+  esac
+}
+
+# issue_repo_unresolvable OUTPUT — gh could not resolve or reach the
+# repository (wrong remote, no access, deleted): the one predicate both the
+# tracker lookup and the create path use, so they cannot drift. Step-03 then
+# degrades to local tracking with a WARNING rather than aborting.
+issue_repo_unresolvable() {
+  printf '%s' "${1:-}" | grep -Eiq 'Could not resolve to a Repository|Repository not found|Repository.*inaccessible|HTTP 404'
+}
+
+# issue_create_host_unsupported RC OUTPUT — true only for the failures issue
+# #1484 is about: gh is missing (rc 127 / "command not found"), or the host
+# blocks GitHub GraphQL (the Claude Code on the web refusal, or amplihack's gh
+# compatibility layer reporting a subcommand it cannot replay over REST). Any
+# other failure (permission denied, issues disabled, a bad payload) is a real
+# error on a host where gh works, and step-03 must keep failing loudly on it.
+issue_create_host_unsupported() {
+  # A missing jq is a fixable local defect (gh-compat says "needs jq"), not a
+  # host that cannot reach GitHub: it must stay loud, never degrade quietly.
+  printf '%s' "${2:-}" | grep -Eiq 'needs jq' && return 1
+  [ "${1:-}" = 127 ] && return 0
+  printf '%s' "${2:-}" | grep -Ei 'GraphQL is not available|GraphQL (API )?(is )?(disabled|blocked)|GraphQL, which this host blocks|gh: command not found|command not found: gh|failed to run command .gh.' >/dev/null
+}
 
 # Percent-decode one path segment of an Azure DevOps remote URL. Returns 1 (and
 # an empty result) on a malformed or NUL-bearing encoding so the caller falls

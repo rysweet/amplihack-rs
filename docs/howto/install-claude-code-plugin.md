@@ -223,10 +223,14 @@ unprefixed (`dev-orchestrator`), and the plugin's copies appear as
   install`, so in a plugin-only install those references do not resolve.
   Philosophy and pattern files live in the plugin at
   `amplifier-bundle/context/`.
-- **Tracking issues in cloud sessions.** The default workflow creates GitHub
-  issues and pull requests through `gh`. Cloud sessions block the GraphQL API
-  that `gh issue` and `gh pr` use
-  ([#1484](https://github.com/rysweet/amplihack-rs/issues/1484)).
+- **GitHub in cloud sessions.** Cloud sessions block the GraphQL API that
+  `gh issue`, `gh pr` and `gh label` use. A recipe run puts a compatibility
+  `gh` first on `PATH` that replays those calls over the REST API when it sees
+  the block ([#1484](https://github.com/rysweet/amplihack-rs/issues/1484)).
+  What only GraphQL can answer (Projects, pinned issues, filters such as
+  `--milestone`, arbitrary `gh api graphql` queries), and `--search` where the
+  host also refuses GitHub search, fails with a message that names it. `gh` run outside a recipe is not wrapped; set
+  `AMPLIHACK_GH_COMPAT=0` to turn the layer off.
 - **Skill-to-agent redirect.** The `pre-tool-use` hook's redirect from a skill
   name to the matching agent compares bare names. Plugin skills are namespaced
   (`amplihack:…`), so under the plugin that redirect does not trigger.

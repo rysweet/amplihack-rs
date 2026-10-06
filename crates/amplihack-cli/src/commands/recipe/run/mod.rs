@@ -6,6 +6,8 @@ pub(crate) mod execute;
 /// Issue #1267 — transient vs terminal classification of a failed run.
 mod failure_class;
 mod format;
+/// Issue #1484 — `gh` compatibility layer for hosts that block GraphQL.
+mod gh_compat;
 /// Issue #1267 — bounded mechanical retry for transient transport faults.
 mod retry;
 
