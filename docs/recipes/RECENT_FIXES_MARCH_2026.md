@@ -7,7 +7,8 @@ This document tracks recent bug fixes and improvements to the Recipe Runner and 
 > after session markers and the launcher context; see
 > [Active Agent Binary](../reference/active-agent-binary.md). A detached tmux
 > launch must hand over the agent binary with
-> `$(amplihack agent-binary --shell)`; for the current template, see the
+> `$(amplihack agent-binary --shell)` inside the double-quoted command; for the
+> current template, see the
 > dev-orchestrator skill's
 > [`reference.md`](../../amplifier-bundle/skills/dev-orchestrator/reference.md#durable-execution-tmux--optional)
 > (#1525).

@@ -26,8 +26,8 @@ Earlier iterations of `amplihack-rs` solved this by writing `AMPLIHACK_AGENT_BIN
 - `tmux new-session -d` (which gives the command the tmux server's global
   environment, copied from whatever started the server, not the caller's; it
   can hold another CLI's session markers. A detached launch now hands the
-  binary over with `$(amplihack agent-binary --shell)`, which also removes
-  them, see
+  binary over with `$(amplihack agent-binary --shell)` inside the
+  double-quoted command, which also removes them, see
   [Active Agent Binary](../reference/active-agent-binary.md#handing-the-binary-to-a-detached-launch))
 - background processes started outside the caller's process tree, such as a
   daemonized hook, a cron job or a service manager unit, which never had the

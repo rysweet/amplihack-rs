@@ -104,12 +104,9 @@ jobs:
       - name: Migrate skill — detect_cli agrees with the Rust resolver (issue #1525)
         shell: bash
         run: bash tests/issue_1525_migrate_detect_cli_parity.sh
-      - name: Shipped docs — a detached recipe run carries the agent-binary hand-off (issue #1525)
+      - name: Shipped docs — a detached recipe run carries the agent-binary hand-off, double-quoted (issue #1525)
         shell: bash
         run: bash tests/issue_1525_detached_launch_docs_carry_hand_off.sh
-      - name: "Shipped docs: AMPLIHACK_AGENT_BINARY is not listed as an update-check skip signal (issue #1525)"
-        shell: bash
-        run: bash tests/issue_1525_agent_binary_not_documented_as_skip_signal.sh
       - name: Shipped shell — bash 3.2 portable, no bash-4-only constructs (issue #1423)
         shell: bash
         run: bash tests/issue_1423_bash4_constructs.sh

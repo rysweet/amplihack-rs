@@ -311,7 +311,8 @@ MODEL SELECTION (issue #1421)
     /// holds the session markers of whatever started the server; the prefix
     /// removes them, so only this shell's answer arrives. `setsid` and `nohup`
     /// keep this shell's environment and need no prefix. A default guess stays
-    /// tagged as one.
+    /// tagged as one. Keep the tmux command in double quotes: in single quotes
+    /// this runs in the new session and reads the server's markers.
     /// Example:
     /// tmux new-session -d "$(amplihack agent-binary --shell) amplihack recipe run ..."
     #[command(name = "agent-binary")]

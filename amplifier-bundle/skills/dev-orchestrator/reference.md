@@ -29,7 +29,12 @@ echo "Recipe runner log: $LOG_FILE"
 - `chmod 600 "$LOG_FILE"` — keeps the log file private
 - `$(amplihack agent-binary --shell -w /path/to/repo)` — hands the agent CLI
   you are in to the detached run. Copy it as is; do not replace it with a
-  name. It expands in *your* shell, before tmux starts anything, to
+  name, and keep the command around it in double quotes. In single quotes it
+  expands in the new session instead of your shell, reads the tmux server's
+  markers, and hands over the server's CLI; the run then names that marker in
+  its log (`AMPLIHACK_AGENT_BINARY_SOURCE=tmux_server:<marker>`) but still runs
+  under it. In double quotes it expands in *your* shell, before tmux starts
+  anything, to
   `env -u <each session marker> AMPLIHACK_AGENT_BINARY=<cli>
   AMPLIHACK_AGENT_BINARY_SOURCE=<tag>`, which runs `amplihack recipe run`
   with your answer and without any session marker. It is required:

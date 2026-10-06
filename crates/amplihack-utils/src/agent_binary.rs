@@ -64,11 +64,62 @@ pub const BINARY_ENV: &str = "AMPLIHACK_AGENT_BINARY";
 /// sets `AMPLIHACK_AGENT_BINARY=codex` without clearing the tag has still
 /// chosen codex, and must not be overruled by a tag describing an earlier
 /// guess.
+///
+/// `amplihack agent-binary --shell` writes one other value,
+/// `tmux_server:<marker variable>` -- see [`tmux_server_marker_tag`]. It is not
+/// a guess, and layer 1 honours the value it sits beside; it only lets the
+/// receiving run say where that value came from.
 pub const SOURCE_ENV: &str = "AMPLIHACK_AGENT_BINARY_SOURCE";
 
 /// The [`SOURCE_ENV`] value marking `binary` as a default-layer guess.
 pub fn default_guess_tag(binary: &str) -> String {
     format!("{}:{binary}", ResolutionSource::Default.label())
+}
+
+/// Prefix of a [`tmux_server_marker_tag`].
+const TMUX_SERVER_TAG: &str = "tmux_server";
+
+/// The [`SOURCE_ENV`] value `amplihack agent-binary --shell` hands on with a
+/// binary it read from `marker`, a session marker that the tmux server's global
+/// environment held with the same value.
+///
+/// Such a marker may be the server's copy of whatever started the server, not
+/// the caller's own. The likeliest way to get one is a hand-off in a
+/// single-quoted tmux command: `$(...)` then runs in the new session, not in
+/// the caller's shell, and reads the server's markers. Handed on with an empty
+/// tag, the value would reach `recipe run` as an explicit choice, and the
+/// notice that names the marker would be printed only in the tmux pane, while
+/// the run's log said nothing (crusty review of #1490 at ef441d81). With this
+/// tag the run prints it in its own log. See [`tmux_server_marker`].
+pub fn tmux_server_marker_tag(marker: SessionMarker) -> String {
+    format!("{TMUX_SERVER_TAG}:{}", marker.variable)
+}
+
+/// The session marker a [`tmux_server_marker_tag`] names, when `tag` is one
+/// and the marker implies `binary`.
+///
+/// Like [`is_default_guess`], the tag describes only the value it was handed
+/// on with. A tag naming a marker of another CLI, or a variable that is not in
+/// [`SESSION_MARKERS`], says nothing about the binary now set.
+pub fn tmux_server_marker(binary: Option<&str>, tag: Option<&str>) -> Option<SessionMarker> {
+    let binary = binary.and_then(validate_binary_name)?;
+    let variable = tag?
+        .trim()
+        .strip_prefix(TMUX_SERVER_TAG)?
+        .strip_prefix(':')?;
+    SESSION_MARKERS
+        .iter()
+        .find(|&&(name, implied)| name == variable && implied == binary)
+        .map(|&(variable, binary)| SessionMarker { variable, binary })
+}
+
+/// [`tmux_server_marker`] for this process's own [`BINARY_ENV`] and
+/// [`SOURCE_ENV`].
+pub fn inherited_tmux_server_marker() -> Option<SessionMarker> {
+    tmux_server_marker(
+        std::env::var(BINARY_ENV).ok().as_deref(),
+        std::env::var(SOURCE_ENV).ok().as_deref(),
+    )
 }
 
 /// Maximum bytes accepted from the `AMPLIHACK_AGENT_BINARY` env var.
@@ -857,6 +908,61 @@ mod tests {
         assert!(!is_default_guess(Some("copilot"), Some("session_marker")));
         assert!(!is_default_guess(Some("copilot"), None));
         assert!(!is_default_guess(None, Some("default:copilot")));
+    }
+
+    const COPILOT_CLI: SessionMarker = SessionMarker {
+        variable: "COPILOT_CLI",
+        binary: "copilot",
+    };
+
+    /// The tag `agent-binary --shell` writes reads back as the marker it
+    /// names, and is never taken for a guess: layer 1 still honours the value.
+    #[test]
+    fn a_tmux_server_tag_names_its_marker_and_is_not_a_guess() {
+        let tag = tmux_server_marker_tag(COPILOT_CLI);
+        assert_eq!(tag, "tmux_server:COPILOT_CLI");
+        assert_eq!(
+            tmux_server_marker(Some("copilot"), Some(&tag)),
+            Some(COPILOT_CLI)
+        );
+        assert_eq!(
+            tmux_server_marker(Some(" Copilot "), Some(" tmux_server:COPILOT_CLI ")),
+            Some(COPILOT_CLI)
+        );
+        assert!(!is_default_guess(Some("copilot"), Some(&tag)));
+        for &(variable, binary) in SESSION_MARKERS {
+            let marker = SessionMarker { variable, binary };
+            assert_eq!(
+                tmux_server_marker(Some(binary), Some(&tmux_server_marker_tag(marker))),
+                Some(marker),
+                "{variable}"
+            );
+        }
+    }
+
+    /// A tag describes only the value it was handed on with. A binary set
+    /// later, a variable that is no marker, or another tag says nothing.
+    #[test]
+    fn a_tmux_server_tag_for_anything_else_names_no_marker() {
+        let tag = tmux_server_marker_tag(COPILOT_CLI);
+        assert_eq!(tmux_server_marker(Some("claude"), Some(&tag)), None);
+        assert_eq!(tmux_server_marker(None, Some(&tag)), None);
+        assert_eq!(tmux_server_marker(Some("copilot"), None), None);
+        for other in [
+            "tmux_server:PATH",
+            "tmux_server:",
+            "tmux_server",
+            "tmux_serverCOPILOT_CLI",
+            "tmux_server: COPILOT_CLI",
+            "default:copilot",
+            "",
+        ] {
+            assert_eq!(
+                tmux_server_marker(Some("copilot"), Some(other)),
+                None,
+                "{other:?}"
+            );
+        }
     }
 
     /// An explicit override still wins over everything, including the marker.

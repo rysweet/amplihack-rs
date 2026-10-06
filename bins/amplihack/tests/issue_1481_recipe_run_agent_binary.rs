@@ -690,6 +690,22 @@ const HAND_OFF_KEEPING_STDERR: &str = r#""cd '$WORK' && $(amplihack agent-binary
 const NO_HAND_OFF_KEEPING_STDERR: &str =
     r#""cd '$WORK' && amplihack recipe run '$PROBE' 2>'$FAR_ERR'""#;
 
+/// [`HAND_OFF_KEEPING_STDERR`] in single quotes, as crusty ran it against
+/// ef441d81. Nothing in it expands in the caller's shell: `$(...)` and the
+/// variables expand on the far side, from whatever environment it has. The
+/// run's stderr, its log, is kept in `$FAR_ERR`; the hand-off's own stderr
+/// goes wherever the far side's does (a tmux pane).
+const SINGLE_QUOTED_HAND_OFF_KEEPING_STDERR: &str = r#"'cd "$WORK" && $(amplihack agent-binary --shell -w "$WORK") amplihack recipe run "$PROBE" 2>"$FAR_ERR"'"#;
+
+/// The line a run prints in its own log when the hand-off it received was read
+/// from a `COPILOT_CLI` the tmux server holds.
+const HANDED_ON_FROM_THE_SERVERS_COPILOT_CLI: &str = "amplihack: agent steps will run under \
+     'copilot' (AMPLIHACK_AGENT_BINARY was handed on by amplihack agent-binary --shell, which \
+     read it from COPILOT_CLI while the tmux server's global environment held the same value, \
+     so it may come from whatever started that server rather than from a copilot session). \
+     If that hand-off was in a single-quoted tmux command, it ran in the new session instead \
+     of in your shell: put the command in double quotes.";
+
 impl Fixture {
     /// Run `script` in the caller's shell: the harness environment plus
     /// `caller_env`, with this build of amplihack on PATH as `amplihack`.
@@ -856,6 +872,73 @@ fn inside_tmux_a_marker_the_server_does_not_hold_is_not_announced() {
     assert!(!stderr.contains("amplihack: agent steps"), "{stderr}");
 }
 
+/// Crusty review of #1490 at ef441d81: the hand-off in single quotes runs on
+/// the far side, inside tmux, where the server's `COPILOT_CLI` is the only
+/// marker. It resolves copilot from it and used to hand that on as an explicit
+/// choice: the run got copilot, and its log said nothing, while the line
+/// naming the marker went to the pane. Now the value carries the marker's name
+/// and the run says so in its log. Which CLI runs does not change: it is what
+/// the far side would resolve on its own.
+#[test]
+fn a_single_quoted_hand_off_into_a_server_held_marker_is_named_in_the_runs_log() {
+    let fx = Fixture::new();
+    let stub = fx.tmux_server_started_from_copilot();
+    let far_err = fx.path().join("far.err");
+    let script = format!(
+        "env {} COPILOT_CLI=1 TMUX=/tmp/tmux-stub/default,1,0 PATH=\"$STUB:$PATH\" \
+         sh -c {SINGLE_QUOTED_HAND_OFF_KEEPING_STDERR}",
+        without_any_marker()
+    );
+    let mut caller_env = claude_session();
+    let stub_str = stub.to_str().expect("utf-8 path").to_string();
+    let far_err_str = far_err.to_str().expect("utf-8 path").to_string();
+    caller_env.push(("STUB", &stub_str));
+    caller_env.push(("FAR_ERR", &far_err_str));
+    let output = fx.caller_shell(&script, &caller_env);
+    assert!(output.status.success(), "{output:?}");
+    let probe = fx.take_probe(&output);
+    let far_err = fs::read_to_string(&far_err).unwrap_or_default();
+    assert_eq!(handed(&probe), ("copilot", "<unset>"), "run log: {far_err}");
+    assert!(
+        far_err.contains(HANDED_ON_FROM_THE_SERVERS_COPILOT_CLI),
+        "the run's log does not name the server's marker: {far_err}"
+    );
+}
+
+/// The same tag in an environment that is not inside tmux at all: the
+/// evidence travelled with the value, so the run does not need to ask a
+/// server.
+#[test]
+fn a_tagged_value_is_named_without_asking_tmux() {
+    let fx = Fixture::new();
+    let (output, probe) = fx.run(&[
+        ("AMPLIHACK_AGENT_BINARY", "copilot"),
+        (SOURCE_ENV, "tmux_server:COPILOT_CLI"),
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(handed(&probe), ("copilot", "<unset>"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(HANDED_ON_FROM_THE_SERVERS_COPILOT_CLI),
+        "{stderr}"
+    );
+}
+
+/// A tag naming another CLI's marker does not describe the value set beside
+/// it: the value is an explicit choice, and nothing is announced.
+#[test]
+fn a_tag_naming_another_clis_marker_is_ignored() {
+    let fx = Fixture::new();
+    let (output, probe) = fx.run(&[
+        ("AMPLIHACK_AGENT_BINARY", "claude"),
+        (SOURCE_ENV, "tmux_server:COPILOT_CLI"),
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(handed(&probe), ("claude", "<unset>"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("amplihack: agent steps"), "{stderr}");
+}
+
 /// An explicit value over a marker the server holds is not told to yield to
 /// it: the old line said "overrides the copilot session it was started from"
 /// and "Unset AMPLIHACK_AGENT_BINARY to run under copilot", which would have
@@ -976,8 +1059,9 @@ impl Drop for TmuxServer {
     }
 }
 
-/// Run `command` (a double-quoted command string, expanded by the caller's
-/// shell) in a new session on a real tmux server, from a Claude Code caller.
+/// Run `command` (a quoted command string; the caller's shell expands it only
+/// when it is double-quoted) in a new session on a real tmux server, from a
+/// Claude Code caller.
 /// The server is started first, by a session whose environment is the harness
 /// with every marker removed plus `starter_env`, the way an agent of another
 /// CLI starts a server on a shared host. Returns what the recipe-runner stub
@@ -1090,6 +1174,31 @@ fn without_the_hand_off_a_tmux_server_started_from_copilot_is_named() {
     );
 }
 
+/// Crusty review of #1490 at ef441d81, on a real tmux server started from a
+/// Copilot session, from a Claude Code caller: the hand-off in single quotes
+/// expands in the new session. The run gets copilot -- the server's marker,
+/// what it would get with no hand-off -- and its own log now names that marker
+/// and says to use double quotes. Before, the log was empty.
+#[cfg(unix)]
+#[test]
+fn a_single_quoted_hand_off_through_a_tmux_server_started_from_copilot_is_named() {
+    let fx = Fixture::new();
+    let Some((probe, far_err)) =
+        through_a_real_tmux_server(&fx, "COPILOT_CLI=1", SINGLE_QUOTED_HAND_OFF_KEEPING_STDERR)
+    else {
+        return;
+    };
+    assert_eq!(
+        handed(&probe),
+        ("copilot", "<unset>"),
+        "far side: {far_err}"
+    );
+    assert!(
+        far_err.contains(HANDED_ON_FROM_THE_SERVERS_COPILOT_CLI),
+        "the run's log does not name the server's marker: {far_err}"
+    );
+}
+
 /// The server crusty's round-2 reproduction started: from a Claude Code
 /// session, so its global environment holds that session's `CLAUDECODE=1` and
 /// its session ID.
@@ -1155,7 +1264,7 @@ fn the_servers_copy_of_a_claude_starter_is_named_and_agent_binary_is_not_told_to
         far_err.contains(&format!(
             "amplihack: agent steps will run under 'claude' {because} To hand a detached run \
              the CLI you launch it from, prefix its command with $(amplihack agent-binary \
-             --shell -w <dir>)"
+             --shell -w <dir>), inside double quotes;"
         )),
         "{far_err}"
     );

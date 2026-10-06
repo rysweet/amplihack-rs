@@ -19,7 +19,9 @@
 //! ```
 //!
 //! `$(...)` inside the double-quoted command expands in the caller's shell,
-//! where the caller's markers are, to
+//! where the caller's markers are. In single quotes it would expand in the new
+//! session instead, from the server's markers; see the tag below. It expands
+//! to
 //!
 //! ```text
 //! env -u CLAUDECODE ... -u COPILOT_AGENT AMPLIHACK_AGENT_BINARY=claude AMPLIHACK_AGENT_BINARY_SOURCE=
@@ -37,11 +39,21 @@
 //! alone would turn a default guess into an untagged instruction, and the
 //! nested `amplihack <cli>` would persist it to `launcher_context.json` --
 //! issue #1481 again. So `--shell` always prints both variables: a guess gets
-//! `AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>`, and anything else gets an
-//! empty tag, so that a stale tag in the receiving environment cannot turn it
-//! back into a guess. This mirrors `EnvBuilder::with_resolved_agent_binary`.
+//! `AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>`, and anything else gets a
+//! tag that is not a guess -- empty, or the one below -- so that a stale tag in
+//! the receiving environment cannot turn it back into a guess. This mirrors `EnvBuilder::with_resolved_agent_binary`.
 //! With the markers gone and the tag kept, the far side resolves a guess the
 //! way the caller did: to the same default, still announced as one.
+//!
+//! An answer read from a session marker that the tmux server's global
+//! environment also holds gets `AMPLIHACK_AGENT_BINARY_SOURCE=tmux_server:<marker
+//! variable>`. The marker may be the server starter's, not the caller's, and
+//! the likeliest way here is this line in a single-quoted tmux command, run in
+//! the new session. With an empty tag the far side would see an explicit
+//! choice, and the only line naming the marker would be this command's stderr
+//! in the tmux pane. With the tag, the run names it in its own log (crusty
+//! review of #1490 at ef441d81). The value is still honoured; the tag is not a
+//! guess and nothing treats it as one.
 //!
 //! The plain form, `<binary> (<source>)`, is read by the migrate skill's
 //! `detect_cli`, which takes the first word.
@@ -49,7 +61,8 @@
 use std::path::PathBuf;
 
 use amplihack_utils::agent_binary::{
-    BINARY_ENV, Resolution, ResolutionSource, SESSION_MARKERS, SOURCE_ENV, default_guess_tag,
+    BINARY_ENV, Resolution, ResolutionSource, SESSION_MARKERS, SOURCE_ENV, SessionMarker,
+    default_guess_tag, tmux_server_marker_tag,
 };
 use anyhow::{Context, Result};
 
@@ -66,11 +79,11 @@ pub fn run_agent_binary(shell: bool, dir: Option<PathBuf>) -> Result<()> {
         None => std::env::current_dir().context("cannot read the current directory")?,
     };
     let resolution = crate::env_builder::resolve_agent_binary_in(&dir);
-    crate::agent_binary_notice::report_agent_binary(
+    let from_tmux_server = crate::agent_binary_notice::report_agent_binary(
         crate::agent_binary_notice::Reporter::AgentBinary,
         &resolution,
     );
-    println!("{}", render(&resolution, shell));
+    println!("{}", render(&resolution, shell, from_tmux_server));
     Ok(())
 }
 
@@ -81,15 +94,28 @@ pub fn run_agent_binary(shell: bool, dir: Option<PathBuf>) -> Result<()> {
 /// are constants, and both values are allowlisted or built from allowlisted
 /// names, so nothing needs quoting. Without it, the binary and the layer that
 /// supplied it, for a person (or `detect_cli`) to read.
-pub(crate) fn render(resolution: &Resolution, shell: bool) -> String {
+///
+/// `from_tmux_server` is the session marker the answer rests on when the tmux
+/// server's global environment holds it too
+/// (`agent_binary_notice::answer_from_tmux_server_marker`); it becomes the
+/// tag.
+pub(crate) fn render(
+    resolution: &Resolution,
+    shell: bool,
+    from_tmux_server: Option<SessionMarker>,
+) -> String {
     if !shell {
         return format!("{} ({})", resolution.binary, resolution.source.label());
     }
-    let tag = match resolution.source {
-        ResolutionSource::Default => default_guess_tag(&resolution.binary),
-        ResolutionSource::Env
-        | ResolutionSource::SessionMarker
-        | ResolutionSource::LauncherContext => String::new(),
+    let tag = match (resolution.source, from_tmux_server) {
+        (ResolutionSource::Default, _) => default_guess_tag(&resolution.binary),
+        (_, Some(marker)) => tmux_server_marker_tag(marker),
+        (
+            ResolutionSource::Env
+            | ResolutionSource::SessionMarker
+            | ResolutionSource::LauncherContext,
+            None,
+        ) => String::new(),
     };
     let unset: String = SESSION_MARKERS
         .iter()
@@ -104,7 +130,9 @@ pub(crate) fn render(resolution: &Resolution, shell: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::render;
-    use amplihack_utils::agent_binary::{Resolution, ResolutionSource, SESSION_MARKERS};
+    use amplihack_utils::agent_binary::{
+        Resolution, ResolutionSource, SESSION_MARKERS, SessionMarker,
+    };
 
     /// `env -u` for every marker, from the canonical list.
     fn unset_every_marker() -> String {
@@ -130,7 +158,7 @@ mod tests {
     #[test]
     fn a_default_guess_is_handed_on_tagged() {
         assert_eq!(
-            render(&resolved("copilot", ResolutionSource::Default), true),
+            render(&resolved("copilot", ResolutionSource::Default), true, None),
             format!(
                 "{} AMPLIHACK_AGENT_BINARY=copilot \
                  AMPLIHACK_AGENT_BINARY_SOURCE=default:copilot",
@@ -144,7 +172,11 @@ mod tests {
     /// sees only what the caller resolved.
     #[test]
     fn the_hand_off_unsets_every_session_marker_first() {
-        let line = render(&resolved("claude", ResolutionSource::SessionMarker), true);
+        let line = render(
+            &resolved("claude", ResolutionSource::SessionMarker),
+            true,
+            None,
+        );
         let words: Vec<&str> = line.split(' ').collect();
         assert_eq!(words[0], "env");
         for (variable, _) in SESSION_MARKERS {
@@ -177,7 +209,7 @@ mod tests {
             ResolutionSource::LauncherContext,
         ] {
             assert_eq!(
-                render(&resolved("claude", source), true),
+                render(&resolved("claude", source), true, None),
                 format!(
                     "{} AMPLIHACK_AGENT_BINARY=claude AMPLIHACK_AGENT_BINARY_SOURCE=",
                     unset_every_marker()
@@ -187,10 +219,46 @@ mod tests {
         }
     }
 
+    /// Crusty review of #1490 at ef441d81: an answer read from a marker the
+    /// tmux server holds -- in a single-quoted tmux command, the server's own
+    /// -- is handed on naming that marker, so the far side's run can say so.
+    /// The markers are still all unset and the value is still set.
+    #[test]
+    fn an_answer_from_a_marker_the_tmux_server_holds_is_handed_on_naming_it() {
+        let copilot_cli = SessionMarker {
+            variable: "COPILOT_CLI",
+            binary: "copilot",
+        };
+        for source in [ResolutionSource::SessionMarker, ResolutionSource::Env] {
+            assert_eq!(
+                render(&resolved("copilot", source), true, Some(copilot_cli)),
+                format!(
+                    "{} AMPLIHACK_AGENT_BINARY=copilot \
+                     AMPLIHACK_AGENT_BINARY_SOURCE=tmux_server:COPILOT_CLI",
+                    unset_every_marker()
+                ),
+                "{source:?}"
+            );
+        }
+        // The plain form `detect_cli` reads is unchanged.
+        assert_eq!(
+            render(
+                &resolved("copilot", ResolutionSource::SessionMarker),
+                false,
+                Some(copilot_cli)
+            ),
+            "copilot (session_marker)"
+        );
+    }
+
     #[test]
     fn the_plain_form_names_the_source() {
         assert_eq!(
-            render(&resolved("claude", ResolutionSource::SessionMarker), false),
+            render(
+                &resolved("claude", ResolutionSource::SessionMarker),
+                false,
+                None
+            ),
             "claude (session_marker)"
         );
     }

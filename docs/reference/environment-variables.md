@@ -88,7 +88,12 @@ markers: tmux gives it the server's global environment, which holds the
 markers of whatever started the server. `setsid` and `nohup` keep the
 caller's environment, so they need no hand-off.
 `$(amplihack agent-binary --shell)` prints an inline `env` prefix that removes
-every session marker and sets both variables (#1525), see
+every session marker and sets both variables (#1525). It belongs inside the
+double-quoted tmux command; in single quotes it expands in the new session and
+reads the server's markers. An answer read from a marker the tmux server holds
+is tagged `AMPLIHACK_AGENT_BINARY_SOURCE=tmux_server:<marker variable>`. That
+tag is not a guess: the value is honoured, and the run receiving it names the
+marker on stderr. See
 [Handing the binary to a detached launch](./active-agent-binary.md#handing-the-binary-to-a-detached-launch).
 
 The launcher continues to write this variable to subprocess environments so that external consumers (notably `rysweet/amplihack-recipe-runner`) that have not yet migrated to the file-based resolver continue to work. New code inside `amplihack-rs` should call `amplihack_utils::agent_binary::resolve(&cwd)` instead of reading the env var directly.

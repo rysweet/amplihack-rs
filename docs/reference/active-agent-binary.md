@@ -153,7 +153,7 @@ hand-off below it is how a run launched from Claude Code runs every step under
 copilot:
 
 ```text
-amplihack: agent steps will run under 'copilot' (COPILOT_CLI is set, but this tmux server's global environment holds the same value, so it may come from whatever started the server rather than from a copilot session). To hand a detached run the CLI you launch it from, prefix its command with $(amplihack agent-binary --shell -w <dir>); to choose one, set AMPLIHACK_AGENT_BINARY.
+amplihack: agent steps will run under 'copilot' (COPILOT_CLI is set, but this tmux server's global environment holds the same value, so it may come from whatever started the server rather than from a copilot session). To hand a detached run the CLI you launch it from, prefix its command with $(amplihack agent-binary --shell -w <dir>), inside double quotes; to choose one, set AMPLIHACK_AGENT_BINARY.
 ```
 
 `amplihack agent-binary` prints the same line without the hand-off advice. It
@@ -242,6 +242,22 @@ tmux new-session -d -s recipe-runner \
   "cd /path/to/repo && $(amplihack agent-binary --shell -w /path/to/repo) amplihack recipe run ..."
 ```
 
+The double quotes are what make it work (POSIX shell, §2.2.2–2.2.3). In
+single quotes nothing expands in your shell: tmux runs the text as given, and
+`$(amplihack agent-binary --shell)` runs in the new session. Its markers there
+are the server's, so it resolves the server starter's CLI and hands that on,
+with every marker removed. Its own stderr notice lands in the tmux pane.
+
+That case is not silent in the run's log. When the answer `--shell` resolves
+rests on a marker the tmux server holds, it hands it on tagged
+`AMPLIHACK_AGENT_BINARY_SOURCE=tmux_server:<marker variable>`. The run that
+receives it still runs under that CLI, which is what it would resolve with no
+hand-off at all, and prints:
+
+```text
+amplihack: agent steps will run under 'copilot' (AMPLIHACK_AGENT_BINARY was handed on by amplihack agent-binary --shell, which read it from COPILOT_CLI while the tmux server's global environment held the same value, so it may come from whatever started that server rather than from a copilot session). If that hand-off was in a single-quoted tmux command, it ran in the new session instead of in your shell: put the command in double quotes. To choose an agent CLI, set AMPLIHACK_AGENT_BINARY.
+```
+
 - `env -u` removes every `agent_binary::SESSION_MARKERS` variable from the
   far side, so no marker of the server's starter can contradict the caller's
   answer, set off the override notice, or answer for a step further down. The
@@ -259,6 +275,12 @@ tmux new-session -d -s recipe-runner \
   (#1481 again).
 - Any other answer is printed with an empty tag, so a stale
   `default:<same binary>` already in the server's environment cannot veto it.
+  The exception is an answer read from a marker the tmux server holds, which
+  gets `tmux_server:<marker variable>` (above). That tag is not a guess either:
+  the resolver honours the value beside it, `migrate.sh` treats it as a
+  choice, and `recipe run` exports its steps the value untagged, as it does
+  any explicit value. A tag naming a marker of a different CLI than the value
+  describes nothing and is ignored.
 - An inferred answer is explained on stderr, which stays on your terminal while
   `$(...)` captures stdout. The explanation includes any unusable launcher
   context it skipped. An exported `AMPLIHACK_AGENT_BINARY` that overrides a
@@ -295,8 +317,8 @@ outer run, with no `tmux`, `nohup` or `setsid`. They inherit the
 answer. An agent that chooses to put the skill's command in tmux is acting
 on the `USER_PREFERENCES.md` line on detached recipe runs, which carries the
 hand-off. `tests/issue_1525_detached_launch_docs_carry_hand_off.sh` scans
-both files, so a detached `recipe run` added to either without the hand-off
-fails CI.
+both files, so a detached `recipe run` added to either without the hand-off,
+or with it outside double quotes, fails CI.
 
 ### Why file-based, not env-based
 

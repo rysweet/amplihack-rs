@@ -365,7 +365,9 @@ tmux new-session -d -s "recipe-$(date +%s)" \
      -c task_description='TASK_DESCRIPTION_HERE' -c repo_path='.'"
 ```
 
-Keep the `$(amplihack agent-binary --shell -w ...)` part. A new tmux session
+Keep the `$(amplihack agent-binary --shell -w ...)` part, and keep the command
+in double quotes: in single quotes that part expands in the new session rather
+than in your shell, and hands the run the server's CLI. A new tmux session
 gets the tmux server's environment, not yours, and tmux copied that from
 whatever process started the server. Your session markers are missing there,
 and the starter's are present: a server another agent started from Copilot

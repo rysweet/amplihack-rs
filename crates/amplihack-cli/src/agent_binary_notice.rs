@@ -35,6 +35,14 @@
 //! which is #1335 whether the default or a marker supplied the other one
 //! (crusty review of #1490 at 7053698c). Only the variable is named, never the
 //! value.
+//!
+//! The hand-off does not erase that evidence. When `amplihack agent-binary
+//! --shell` resolves from a marker the tmux server holds, it hands the answer
+//! on tagged with the marker's name, and the run that receives it prints the
+//! line in its own log. Otherwise a hand-off in a single-quoted tmux command,
+//! which runs in the new session and reads the server's markers, would be
+//! worse than none: the run would see an explicit value and say nothing
+//! (crusty review of #1490 at ef441d81).
 
 use std::ffi::{OsStr, OsString};
 use std::process::{Command, Stdio};
@@ -42,7 +50,7 @@ use std::time::Duration;
 
 use amplihack_utils::agent_binary::{
     BINARY_ENV, Resolution, ResolutionSource, SOURCE_ENV, SessionMarker,
-    inherited_binary_is_default_guess, validate_binary_name,
+    inherited_binary_is_default_guess, inherited_tmux_server_marker, validate_binary_name,
 };
 
 /// What `AMPLIHACK_AGENT_BINARY` held when the binary was resolved, as far as
@@ -55,6 +63,10 @@ pub(crate) enum EnvBinaryValue {
     Usable,
     /// Set, but tagged as a parent's default guess for the same binary.
     InheritedGuess,
+    /// Set and used, and tagged by `amplihack agent-binary --shell` as read
+    /// from this session marker while the tmux server's global environment
+    /// held it too (`amplihack_utils::agent_binary::tmux_server_marker_tag`).
+    FromTmuxServerMarker(SessionMarker),
     /// Set, but not an allowlisted name (empty, a typo, a path...).
     Rejected,
 }
@@ -64,6 +76,9 @@ impl EnvBinaryValue {
     pub(crate) fn current() -> Self {
         if inherited_binary_is_default_guess() {
             return EnvBinaryValue::InheritedGuess;
+        }
+        if let Some(marker) = inherited_tmux_server_marker() {
+            return EnvBinaryValue::FromTmuxServerMarker(marker);
         }
         match std::env::var_os(BINARY_ENV) {
             None => EnvBinaryValue::Unset,
@@ -106,20 +121,43 @@ const REJECTED: &str = "AMPLIHACK_AGENT_BINARY is set but is not one of amplifie
 const SET_TO_AN_ALLOWED_NAME: &str =
     "AMPLIHACK_AGENT_BINARY to one of amplifier, claude, codex or copilot";
 
-/// Print [`agent_binary_notice`] to stderr when there is one.
+/// Print [`agent_binary_notice`] to stderr when there is one, and return
+/// [`answer_from_tmux_server_marker`] for the same resolution.
 ///
 /// A nested run under a deliberate override that can still see a session
 /// marker repeats the line. It is just as true there, and agent-step stderr
 /// is shown only when a step fails.
-pub(crate) fn report_agent_binary(reporter: Reporter, resolution: &Resolution) {
+pub(crate) fn report_agent_binary(
+    reporter: Reporter,
+    resolution: &Resolution,
+) -> Option<SessionMarker> {
     let from_tmux_server = marker_may_be_the_tmux_servers(resolution);
-    if let Some(notice) = agent_binary_notice(
-        reporter,
-        resolution,
-        EnvBinaryValue::current(),
-        from_tmux_server,
-    ) {
+    let env_value = EnvBinaryValue::current();
+    if let Some(notice) = agent_binary_notice(reporter, resolution, env_value, from_tmux_server) {
         eprintln!("{notice}");
+    }
+    answer_from_tmux_server_marker(resolution, env_value, from_tmux_server)
+}
+
+/// The session marker the answer rests on, when the tmux server's global
+/// environment holds it too: the marker answered and the server holds it, or
+/// the answer arrived tagged as such by an earlier hand-off. `None` otherwise,
+/// including for an explicit value that overrode such a marker, which rests on
+/// the explicit value.
+///
+/// `amplihack agent-binary --shell` hands this on as
+/// `AMPLIHACK_AGENT_BINARY_SOURCE=tmux_server:<variable>`, so the run on the
+/// far side names the marker in its own log (crusty review of #1490 at
+/// ef441d81).
+pub(crate) fn answer_from_tmux_server_marker(
+    resolution: &Resolution,
+    env_value: EnvBinaryValue,
+    from_tmux_server: bool,
+) -> Option<SessionMarker> {
+    match (resolution.source, env_value) {
+        (ResolutionSource::SessionMarker, _) if from_tmux_server => resolution.session_marker,
+        (ResolutionSource::Env, EnvBinaryValue::FromTmuxServerMarker(marker)) => Some(marker),
+        _ => None,
     }
 }
 
@@ -229,7 +267,9 @@ fn tmux_global_environment_holds(tmux: &OsStr, variable: &str, value: &OsStr) ->
 /// that answered is then announced, because it may be the server's starter
 /// rather than the caller -- a silent copilot run from a Claude Code session
 /// without the hand-off. An explicit value that overrode it is not told to
-/// step aside for it.
+/// step aside for it. A value the hand-off tagged as read from such a marker
+/// ([`EnvBinaryValue::FromTmuxServerMarker`]) is announced the same way, since
+/// the hand-off removed the marker this run would otherwise have seen.
 ///
 /// The reason must match what the user did. A tagged inherited guess is
 /// skipped by the resolver, and setting the same value again does not help
@@ -260,6 +300,9 @@ pub(crate) fn agent_binary_notice(
         format!("read from {file}")
     };
     let why = match (resolution.source, env_value) {
+        (ResolutionSource::Env, EnvBinaryValue::FromTmuxServerMarker(marker)) => {
+            return Some(handed_on_tmux_server_marker_notice(lead, marker));
+        }
         (ResolutionSource::Env, _) => {
             return session_override_notice(lead, resolution, from_tmux_server);
         }
@@ -294,7 +337,9 @@ pub(crate) fn agent_binary_notice(
             format!("Set AMPLIHACK_AGENT_BINARY and unset {SOURCE_ENV} to choose an agent CLI.")
         }
         EnvBinaryValue::Rejected => format!("Set {SET_TO_AN_ALLOWED_NAME} to choose an agent CLI."),
-        EnvBinaryValue::Unset | EnvBinaryValue::Usable => {
+        EnvBinaryValue::Unset
+        | EnvBinaryValue::Usable
+        | EnvBinaryValue::FromTmuxServerMarker(_) => {
             "Set AMPLIHACK_AGENT_BINARY to choose a different agent CLI.".to_string()
         }
     };
@@ -404,7 +449,8 @@ fn tmux_marker_notice(
     let how = match reporter {
         Reporter::RecipeRun => format!(
             "To hand a detached run the CLI you launch it from, prefix its command with \
-             $(amplihack agent-binary --shell -w <dir>); to choose one, set {choose}."
+             $(amplihack agent-binary --shell -w <dir>), inside double quotes; to choose one, \
+             set {choose}."
         ),
         Reporter::AgentBinary => format!("Set {choose} to choose an agent CLI."),
     };
@@ -415,11 +461,37 @@ fn tmux_marker_notice(
     )
 }
 
+/// The line for a value `amplihack agent-binary --shell` handed on tagged as
+/// read from `marker` while the tmux server's global environment held it too.
+///
+/// The hand-off removes every marker on the far side, so without the tag this
+/// run would see only an explicit choice and print nothing. The usual way to
+/// get here is the hand-off in a single-quoted tmux command: `$(...)` then
+/// runs in the new session, reads the server's markers, and the only line
+/// naming one lands in the tmux pane, not in this run's log (crusty review of
+/// #1490 at ef441d81). This line puts it back in the log, with the fix.
+///
+/// The value is still honoured: it is the answer the hand-off resolved, and
+/// what this run would have resolved itself with no hand-off at all. The
+/// variable comes from `SESSION_MARKERS` and the binary from the allowlist,
+/// so echoing them is safe.
+fn handed_on_tmux_server_marker_notice(lead: &str, marker: SessionMarker) -> String {
+    let SessionMarker { variable, binary } = marker;
+    format!(
+        "amplihack: {lead} '{binary}' ({BINARY_ENV} was handed on by amplihack agent-binary \
+         --shell, which read it from {variable} while the tmux server's global environment \
+         held the same value, so it may come from whatever started that server rather than \
+         from a {binary} session). If that hand-off was in a single-quoted tmux command, it \
+         ran in the new session instead of in your shell: put the command in double quotes. \
+         To choose an agent CLI, set {BINARY_ENV}."
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        EnvBinaryValue, Reporter, agent_binary_notice, tmux_global_environment_holds,
-        tmux_server_holds_marker,
+        EnvBinaryValue, Reporter, agent_binary_notice, answer_from_tmux_server_marker,
+        tmux_global_environment_holds, tmux_server_holds_marker,
     };
     use amplihack_utils::agent_binary::{
         Resolution, ResolutionSource, SessionMarker, UnusableContext,
@@ -438,6 +510,8 @@ mod tests {
 
     const LEAD: Reporter = Reporter::RecipeRun;
 
+    /// Every value but `FromTmuxServerMarker`, which carries a marker and has
+    /// tests of its own below.
     const ALL: [EnvBinaryValue; 4] = [
         EnvBinaryValue::Unset,
         EnvBinaryValue::Usable,
@@ -598,8 +672,9 @@ mod tests {
                      set, but this tmux server's global environment holds the same value, so it \
                      may come from whatever started the server rather than from a copilot \
                      session). To hand a detached run the CLI you launch it from, prefix its \
-                     command with $(amplihack agent-binary --shell -w <dir>); to choose one, \
-                     set AMPLIHACK_AGENT_BINARY to one of amplifier, claude, codex or copilot."
+                     command with $(amplihack agent-binary --shell -w <dir>), inside double \
+                     quotes; to choose one, set AMPLIHACK_AGENT_BINARY to one of amplifier, \
+                     claude, codex or copilot."
                 );
             } else {
                 assert_eq!(
@@ -608,10 +683,82 @@ mod tests {
                      this tmux server's global environment holds the same value, so it may come \
                      from whatever started the server rather than from a copilot session). To \
                      hand a detached run the CLI you launch it from, prefix its command with \
-                     $(amplihack agent-binary --shell -w <dir>); to choose one, set \
-                     AMPLIHACK_AGENT_BINARY."
+                     $(amplihack agent-binary --shell -w <dir>), inside double quotes; to choose \
+                     one, set AMPLIHACK_AGENT_BINARY."
                 );
             }
+        }
+    }
+
+    /// Crusty review of #1490 at ef441d81: a hand-off in single quotes runs in
+    /// the new session, reads the server's `COPILOT_CLI`, and hands it on with
+    /// every marker removed. The run receiving it sees no marker at all, only
+    /// the value and the tag, and still names the marker -- in its own log.
+    #[test]
+    fn a_value_handed_on_from_a_marker_the_tmux_server_holds_is_announced() {
+        let resolution = resolved("copilot", ResolutionSource::Env);
+        let env_value = EnvBinaryValue::FromTmuxServerMarker(COPILOT_CLI);
+        let because = "(AMPLIHACK_AGENT_BINARY was handed on by amplihack agent-binary --shell, \
+                       which read it from COPILOT_CLI while the tmux server's global environment \
+                       held the same value, so it may come from whatever started that server \
+                       rather than from a copilot session). If that hand-off was in a \
+                       single-quoted tmux command, it ran in the new session instead of in your \
+                       shell: put the command in double quotes. To choose an agent CLI, set \
+                       AMPLIHACK_AGENT_BINARY.";
+        for (reporter, lead) in [
+            (Reporter::RecipeRun, "agent steps will run under"),
+            (Reporter::AgentBinary, "resolved the agent binary to"),
+        ] {
+            // Whether this run's own tmux server holds anything does not
+            // matter: the evidence came with the tag.
+            for from_tmux_server in [false, true] {
+                assert_eq!(
+                    agent_binary_notice(reporter, &resolution, env_value, from_tmux_server),
+                    Some(format!("amplihack: {lead} 'copilot' {because}")),
+                    "{reporter:?} {from_tmux_server}"
+                );
+            }
+        }
+    }
+
+    /// What `agent-binary --shell` tags: only an answer that rests on a marker
+    /// the tmux server holds, read here or received tagged. An explicit value
+    /// that overrode such a marker rests on the explicit value.
+    #[test]
+    fn only_an_answer_resting_on_a_server_held_marker_is_tagged_as_one() {
+        let mut from_marker = resolved("copilot", ResolutionSource::SessionMarker);
+        from_marker.session_marker = Some(COPILOT_CLI);
+        let unset = EnvBinaryValue::Unset;
+        assert_eq!(
+            answer_from_tmux_server_marker(&from_marker, unset, true),
+            Some(COPILOT_CLI)
+        );
+        assert_eq!(
+            answer_from_tmux_server_marker(&from_marker, unset, false),
+            None
+        );
+
+        let received = EnvBinaryValue::FromTmuxServerMarker(COPILOT_CLI);
+        let explicit = resolved("copilot", ResolutionSource::Env);
+        assert_eq!(
+            answer_from_tmux_server_marker(&explicit, received, false),
+            Some(COPILOT_CLI)
+        );
+
+        let mut overriding = resolved("claude", ResolutionSource::Env);
+        overriding.session_marker = Some(COPILOT_CLI);
+        assert_eq!(
+            answer_from_tmux_server_marker(&overriding, EnvBinaryValue::Usable, true),
+            None
+        );
+        for source in [ResolutionSource::LauncherContext, ResolutionSource::Default] {
+            let mut other = resolved("copilot", source);
+            other.session_marker = Some(COPILOT_CLI);
+            assert_eq!(
+                answer_from_tmux_server_marker(&other, unset, true),
+                None,
+                "{source:?}"
+            );
         }
     }
 

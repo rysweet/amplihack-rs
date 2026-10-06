@@ -117,7 +117,8 @@ A detached launch (`tmux new-session -d`) does not see your session markers.
 It sees the tmux server's, copied from whatever started the server, which may
 be another CLI's. Hand the answer over with `$(amplihack agent-binary --shell)`,
 which also removes those markers, as in the dev-orchestrator skill's
-`reference.md` (#1525).
+`reference.md` (#1525). Put it inside the double-quoted tmux command: in single
+quotes it expands in the new session and reads the server's markers.
 
 This makes amplihack agent-agnostic: `amplihack <command>` will use the configured binary for all agent subprocess calls (skills, recipes, orchestrator). Added in PR #3174.
 
