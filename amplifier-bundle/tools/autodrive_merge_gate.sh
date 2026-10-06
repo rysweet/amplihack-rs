@@ -116,7 +116,8 @@ note "reviewDecision=${REVIEW_DECISION:-<none>}"
 # `reviewThreads(first:100)` without a `pageInfo` follow-up silently truncates,
 # and a PR with 101 threads whose only unresolved one is the last would report
 # 0 and pass this gate. Its per-page counts are summed, and a page that is not
-# a number gives `unreadable`. Unreadable, or no reader, is a blocker.
+# a number gives `unreadable`. Unreadable, or no reader, is a blocker. An
+# outdated thread counts: GitHub's conversation rule requires it resolved too.
 THREADS=""
 [ -n "$GATE_HOME" ] && [ -f "${GATE_HOME}/autodrive_platform_facts.sh" ] \
   && THREADS="$(field "$(bash "${GATE_HOME}/autodrive_platform_facts.sh" "$PR" 2>/dev/null)" unresolved_threads "")"

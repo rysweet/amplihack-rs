@@ -191,8 +191,8 @@ steps:
         For `NOT_MET` report `changes-requested` or `required-approval-missing`.
         For `PENDING` report `approval-pending-other-blockers`: the required
         count is unknown and failing or pending checks, a conflict, a BEHIND
-        branch or unresolved review threads keep `merge_state` from saying
-        whether a review is missing.
+        branch or unresolved review threads (outdated ones included) keep
+        `merge_state` from saying whether a review is missing.
         For `UNREADABLE` report `approval-state-unreadable`. Cite `approval_source`.
       - **Criterion 8:** GitHub applies protection and rulesets to `merge_state`;
         `CLEAN`, `HAS_HOOKS` or `UNSTABLE` means none blocks the merge. A 404
@@ -313,14 +313,15 @@ steps:
         person.
       - **`approval-pending-other-blockers`**: not a request for a person yet.
         Clear the other blockers first: failing or pending CI, a conflict, a
-        branch behind its base, unresolved review threads. The next round
+        branch behind its base, unresolved review threads (outdated ones
+        included: `unresolved_threads` counts them). The next round
         reads the approval again, and only then can it say whether a review
         is missing.
       - **`changes-requested`**, **`required-approval-missing`** and
         **`approval-state-unreadable`**: an agent cannot approve. Fix and
         answer any requested changes; the approval itself needs a person.
-      - **Merge conflicts, unresolved review threads, missing docs or
-        evidence**: resolve, answer and resolve, or write them.
+      - **Merge conflicts, unresolved review threads (outdated ones too),
+        missing docs or evidence**: resolve, answer and resolve, or write them.
 
       Do not create, edit, move, rename, delete or archive any file in the
       auto-drive state directory (the directory holding crusty-round-*.json,

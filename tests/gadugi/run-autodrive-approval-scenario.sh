@@ -41,7 +41,10 @@ case "$1 ${2:-}" in
       '{state:"OPEN",isDraft:false,mergeable:"MERGEABLE",mergeStateStatus:$m,
         reviewDecision:(if $d == "" then null else $d end),headRefOid:$h,statusCheckRollup:$c,baseRefName:"main"}')"
     exit 0 ;;
-  "api graphql") printf '0\n'; exit 0 ;;
+  "api graphql") # one page of review threads, through the tool's own --jq
+    out "$(jq -cn --argjson n "${PF_THREAD_NODES:-[]}" \
+      '{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false,endCursor:null},nodes:$n}}}}}')"
+    exit 0 ;;
 esac
 if [ "${1:-}" = api ]; then
   path=""; for a in "$@"; do case "$a" in repos/*) path="$a" ;; esac; done
@@ -96,6 +99,10 @@ check approval_404_blocked_is_unreadable UNREADABLE unreadable "" \
 check approval_404_blocked_failing_check_is_pending PENDING other-blockers "" \
   "a failing check hides whether a review is missing; clear it first" \
   PF_CLASSIC=404 PF_PROTECTED=true PF_DECISION= PF_MSTATE=BLOCKED PF_CHECKS="$FAILING"
+check approval_404_blocked_outdated_thread_is_pending PENDING other-blockers "" \
+  "an unresolved thread that went outdated is still unresolved; an agent resolves it before a person is asked" \
+  PF_CLASSIC=404 PF_PROTECTED=true PF_DECISION= PF_MSTATE=BLOCKED \
+  PF_THREAD_NODES='[{"isResolved":true,"isOutdated":false},{"isResolved":false,"isOutdated":true}]'
 check approval_count_0_with_code_owner_rule_is_not_zero UNREADABLE unreadable "" \
   "a count of 0 beside a code-owner rule is unknown, never 0" \
   PF_CLASSIC=0 PF_CLASSIC_FLAGS='"require_code_owner_reviews":true' PF_DECISION= PF_MSTATE=BLOCKED

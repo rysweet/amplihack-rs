@@ -525,7 +525,7 @@ value is reported as unreadable.
 | empty | `required_approvals` is `0`, and no review rule makes it unknown | `MET` | `required-count` |
 | empty | `required_approvals` is above `0` | `NOT_MET` | `required-count` |
 | empty | count unreadable or unknown; `merge_state` is `CLEAN`, `HAS_HOOKS` or `UNSTABLE` | `MET`; `required_approvals` stays empty, never `0` | `merge-state` |
-| empty | count unreadable or unknown; `merge_state` is `DIRTY` or `BEHIND`, or `BLOCKED` with a check in the rollup that has not passed (or no checks), `mergeable` `CONFLICTING`, or an unresolved review thread | `PENDING` | `other-blockers` |
+| empty | count unreadable or unknown; `merge_state` is `DIRTY` or `BEHIND`, or `BLOCKED` with a check in the rollup that has not passed (or no checks), `mergeable` `CONFLICTING`, or an unresolved review thread, outdated or not | `PENDING` | `other-blockers` |
 | anything else, or no PR read | none | `UNREADABLE` | `unreadable` |
 
 A check has passed when its `conclusion` (a check run) or `state` (a status
@@ -534,7 +534,13 @@ not passed. GitHub folds every rule into the one `BLOCKED`, so while a
 failing check, a conflict, a stale branch or an unresolved review thread is
 present, whether a review is also missing cannot be read. A thread counts
 because a rule can require conversations to be resolved, and an agent answers
-and resolves threads; an unreadable thread count is not a thread. That is
+and resolves threads; an unreadable thread count is not a thread. An outdated
+thread counts too: it went outdated because the lines it was left on changed,
+which does not answer it, and GitHub's conversation-resolution rule requires
+every conversation resolved, outdated ones included
+([About protected branches](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches#require-conversation-resolution-before-merging)).
+`unresolved_threads` is that one count, for the merge round and the gate
+alike. That is
 `PENDING`, which step-02 reports as `approval-pending-other-blockers` and
 step-04 treats as a reason to clear the other blockers first, not as a request
 for a person; the next round reads the approval again. `BLOCKED` with every
@@ -705,7 +711,7 @@ merges, it re-verifies and records:
 | PR open, not draft | `gh pr view` | any other state; `isDraft: true` |
 | Merge conflicts | `mergeable`, `mergeStateStatus` | not `MERGEABLE`; a `mergeStateStatus` other than `CLEAN`, `HAS_HOOKS` or `UNSTABLE` (`BEHIND`, `BLOCKED`, `DIRTY`, `UNKNOWN` all block) |
 | Reviews | `reviewDecision` | `CHANGES_REQUESTED` (a missing required review shows as `BLOCKED` above) |
-| Review threads | GraphQL `reviewThreads`, **paginated** | any unresolved, not-outdated thread on any page — **or an unreadable answer** |
+| Review threads | GraphQL `reviewThreads`, **paginated** | any unresolved thread on any page, outdated or not — **or an unreadable answer** |
 | CI | `gh pr checks --json name,state,bucket` | any pending or failing check, zero checks, **or an unreadable rollup** |
 | qa-team scenarios | evidence file from this run | `qa_status` other than `PASS`, no evidence file, or evidence whose `head_sha` is missing or is not the SHA being merged |
 | qa evidence chain | `merge-ready-records.tsv`, `merge-ready-latest.json`, `qa-evidence.json` | any of them not private; `autodrive_qa_trusted` not `ok` (its token, or `qa-other`; see [The qa evidence hash chain](#the-qa-evidence-hash-chain)) |

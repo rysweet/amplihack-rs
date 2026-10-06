@@ -32,13 +32,14 @@
 #                    blocker an agent can clear is present: a check in the
 #                    rollup that has not passed (or no checks at all), a
 #                    conflict (mergeable CONFLICTING, or DIRTY), a branch
-#                    BEHIND its base, or an unresolved review thread (a rule
-#                    can require conversations to be resolved, and an agent
-#                    answers and resolves threads). GitHub folds every rule
-#                    into that one state, so whether a review is also missing
-#                    cannot be read until those clear: PENDING. The merge
-#                    round clears the other blockers first and reads the
-#                    approval again; it does not route PENDING to a person.
+#                    BEHIND its base, or an unresolved review thread, outdated
+#                    or not (a rule can require conversations to be resolved,
+#                    and an agent answers and resolves threads). GitHub folds
+#                    every rule into that one state, so whether a review is
+#                    also missing cannot be read until those clear: PENDING.
+#                    The merge round clears the other blockers first and
+#                    reads the approval again; it does not route PENDING to a
+#                    person.
 #                    An unreadable thread count is not a thread, so it alone
 #                    never makes PENDING.
 #   unreadable       none of the above: UNREADABLE. BLOCKED with every check
@@ -127,12 +128,18 @@ case "$BASE" in '' | -* | /* | *..* | *//* | */ | *[!A-Za-z0-9._/-]*) BASE="" ;;
 # Review threads. PAGINATED: `first:100` alone truncates, so a PR whose only
 # unresolved thread is on page two would report 0. Per-page counts are summed;
 # a page that is not a number makes the whole count unreadable.
+# OUTDATED THREADS COUNT. A thread goes outdated when the lines it was left on
+# change; that does not answer it. GitHub's conversation-resolution rule
+# requires every conversation resolved, outdated ones included, so a count
+# that skipped them would call BLOCKED with only an outdated thread left
+# UNREADABLE (a person's job) when an agent can resolve it, and would let the
+# merge gate pass a merge GitHub then refuses.
 PAGES="$(gh api graphql --paginate -F pr="${PR:-0}" -F owner='{owner}' -F name='{repo}' -f query='
   query($owner:String!,$name:String!,$pr:Int!,$endCursor:String){repository(owner:$owner,name:$name){
     pullRequest(number:$pr){reviewThreads(first:100,after:$endCursor){
       pageInfo{hasNextPage endCursor}
-      nodes{isResolved isOutdated}}}}}' \
-  --jq '[.data.repository.pullRequest.reviewThreads.nodes[]|select(.isResolved==false and .isOutdated==false)]|length' 2>/dev/null)"
+      nodes{isResolved}}}}}' \
+  --jq '[.data.repository.pullRequest.reviewThreads.nodes[]|select(.isResolved==false)]|length' 2>/dev/null)"
 THREADS="$(printf '%s\n' "$PAGES" | awk 'NF==0{next} /^[0-9]+$/{s+=$1;n++;next} {bad=1} END{if(bad||!n) exit 1; print s}')" || THREADS=""
 [ -n "$THREADS" ] || THREADS="unreadable"
 

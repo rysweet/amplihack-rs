@@ -692,6 +692,16 @@ case "${GH_MODE:-}" in
     [ "${1:-}" = "api" ] && { printf '0\n1\n'; exit 0; }
     [ "${1:-}" = "pr" ] && [ "${2:-}" = "merge" ] && exit 0
     ;;
+  # One page of review threads as GitHub returns it, through the reader's own
+  # --jq: one resolved thread, and one unresolved thread that went outdated.
+  # A count that skips outdated threads reports 0 and passes the gate.
+  threads-outdated)
+    [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ] && { pv; exit 0; }
+    [ "${1:-}" = "pr" ] && [ "${2:-}" = "checks" ] && { echo '[{"name":"Test","state":"SUCCESS","bucket":"pass"}]'; exit 0; }
+    [ "${1:-} ${2:-}" = "api graphql" ] && { printf '%s' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":true,"isOutdated":false},{"isResolved":false,"isOutdated":true}]}}}}}' | jq -r "$JQ"; exit 0; }
+    [ "${1:-}" = "api" ] && { echo 0; exit 0; }
+    [ "${1:-}" = "pr" ] && [ "${2:-}" = "merge" ] && exit 0
+    ;;
   # Everything verifies, then `gh pr merge` itself fails with a real exit code.
   merge-fails)
     [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ] && { pv; exit 0; }
@@ -1120,6 +1130,14 @@ if grep -qF -- '--paginate' "${GATE_DIR}/gh-calls" 2>/dev/null; then
   pass "GATE-threads-paginate-flag" "the review-thread query is paginated"
 else
   fail "GATE-threads-paginate-flag" "the review-thread query does not paginate"
+fi
+# An outdated thread is still unresolved, and GitHub's conversation-resolution
+# rule requires it resolved (crusty round 2 on PR #1520, third review).
+gate_run threads-outdated --round-record "$REC" --qa-evidence "$QA"; rc=$?
+if [ "$rc" -ne 0 ] && grep -qF '1 unresolved review thread(s)' "${GATE_DIR}/err"; then
+  pass "GATE-threads-outdated" "an unresolved thread that went outdated still blocks the merge"
+else
+  fail "GATE-threads-outdated" "an outdated unresolved thread was not counted (rc=${rc}): ${GATE_OUT}"
 fi
 # The thread count is written once, in autodrive_platform_facts.sh (#1518); the
 # merge round runs it in step-01 and the gate runs the copy beside itself.
@@ -3600,7 +3618,16 @@ case "$1 ${2:-}" in
       '{state:"OPEN",isDraft:false,mergeable:$mg,mergeStateStatus:$m,reviewDecision:(if $d == "" then null else $d end),
         headRefOid:$h,statusCheckRollup:$c,baseRefName:$b}')"
     exit 0 ;;
-  "api graphql") printf '%s\n' "${PF_THREADS:-0}"; exit 0 ;;
+  "api graphql")
+    # PF_THREAD_NODES: one page of reviewThreads nodes as GitHub returns them,
+    # read through the tool's own --jq. Otherwise PF_THREADS stands for what
+    # that --jq printed, one line per page.
+    if [ -n "${PF_THREAD_NODES:-}" ]; then
+      out "$(jq -cn --argjson n "${PF_THREAD_NODES}" \
+        '{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false,endCursor:null},nodes:$n}}}}}')"
+      exit 0
+    fi
+    printf '%s\n' "${PF_THREADS:-0}"; exit 0 ;;
 esac
 if [ "${1:-}" = api ]; then
   path=""; for a in "$@"; do case "$a" in repos/*) path="$a" ;; esac; done
@@ -3691,6 +3718,15 @@ else
   # thread and leaves BLOCKED with every check passed UNREADABLE.
   pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED PF_THREADS=1
   pf_expect "PF-pending-unresolved-threads" PENDING other-blockers "" "an unresolved review thread is a blocker an agent clears; BLOCKED cannot say whether a review is also missing" unresolved_threads=1
+  # crusty round-2 on PR #1520, third review: GitHub's conversation rule
+  # requires every conversation resolved, outdated ones included, so the count
+  # keeps a thread that went outdated. These pages go through the tool's --jq.
+  pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED \
+    PF_THREAD_NODES='[{"isResolved":true,"isOutdated":false},{"isResolved":false,"isOutdated":true}]'
+  pf_expect "PF-pending-outdated-thread" PENDING other-blockers "" "an unresolved thread that went outdated is still a blocker an agent clears, not a person's job" unresolved_threads=1
+  pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED \
+    PF_THREAD_NODES='[{"isResolved":true,"isOutdated":true},{"isResolved":true,"isOutdated":false}]'
+  pf_expect "PF-resolved-threads-not-pending" UNREADABLE unreadable "" "resolved threads, outdated or not, are not counted: BLOCKED with every check passed needs a person" unresolved_threads=0
   pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED PF_THREADS='{"message":"x"}'
   pf_expect "PF-threads-unreadable-not-pending" UNREADABLE unreadable "" "an unreadable thread count is not a thread: BLOCKED with every check passed still needs a person" unresolved_threads=unreadable
   pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION= PF_MSTATE=UNKNOWN PF_CHECKS="${PF_FAIL_RUN}"

@@ -7,8 +7,10 @@ description: >
   (via tests/gadugi/run-autodrive-approval-scenario.sh) against a stand-in gh
   that answers the way GitHub does, and asserts that a required count of 0 is
   MET, a count of 1 with an empty decision is NOT_MET, a non-admin 404 from the
-  protection endpoint is never read as 0, a count of 0 beside a code-owner rule
-  is unknown rather than 0, and a ruleset count is read when protection is not.
+  protection endpoint is never read as 0, an unresolved review thread that went
+  outdated keeps BLOCKED PENDING rather than sending it to a person, a count of
+  0 beside a code-owner rule is unknown rather than 0, and a ruleset count is
+  read when protection is not.
 version: "1.0"
 config:
   timeout: 60000
@@ -61,3 +63,8 @@ assertions:
     params:
       target: stdout
       expected: "PASS: approval_404_blocked_is_unreadable"
+  - name: outdated-thread-is-pending
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: approval_404_blocked_outdated_thread_is_pending"
