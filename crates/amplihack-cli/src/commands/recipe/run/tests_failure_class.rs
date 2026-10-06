@@ -669,6 +669,139 @@ fn work_failures_still_beat_a_usage_limit_mention() {
     );
 }
 
+// Issue #1546 — Claude Code's weekly-limit and org spend-limit messages fell
+// through to `indeterminate`: no marker said "weekly limit", and "monthly
+// limit" does not match "monthly spend limit".
+
+/// The literal line that stopped eight concurrent runs on 2026-10-05.
+const OBSERVED_WEEKLY_LIMIT: &str =
+    "You've hit your weekly limit · resets Oct 8, 12am (America/Los_Angeles)";
+
+// The trailing "..." is the reporter's own elision in #1546, kept verbatim on purpose.
+const OBSERVED_SPEND_LIMIT: &str = "You've hit your org's monthly spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage · your weekly limit resets Oct 10, ...";
+
+#[test]
+fn the_observed_weekly_limit_message_classifies_as_a_usage_limit() {
+    let (class, signal) = classify_failure_text(OBSERVED_WEEKLY_LIMIT);
+    assert_eq!(
+        (class, signal),
+        (FailureClass::UsageLimit, Some("weekly limit")),
+        "the weekly-limit message must classify as a usage limit, not as \
+         `indeterminate`; issue #1546"
+    );
+    assert_eq!(
+        usage_limit_reset_hint(OBSERVED_WEEKLY_LIMIT),
+        Some("Oct 8, 12am (America/Los_Angeles)".to_string()),
+        "the reset time stated in the message must be quoted back verbatim"
+    );
+}
+
+#[test]
+fn the_observed_spend_limit_message_classifies_as_a_usage_limit() {
+    let (class, signal) = classify_failure_text(OBSERVED_SPEND_LIMIT);
+    // The line also says "weekly limit"; the earliest match in the text wins,
+    // and "spend limit" comes first.
+    assert_eq!(
+        (class, signal),
+        (FailureClass::UsageLimit, Some("spend limit")),
+        "an org spend cap must classify as a usage limit, not as \
+         `indeterminate`; issue #1546"
+    );
+    assert_eq!(
+        usage_limit_reset_hint(OBSERVED_SPEND_LIMIT),
+        Some("Oct 10, ...".to_string()),
+        "the reset time stated in the message must be quoted back verbatim"
+    );
+}
+
+#[test]
+fn the_weekly_limit_verdict_tells_the_operator_when_to_come_back() {
+    let verdict = classify_error(&anyhow::anyhow!("{OBSERVED_WEEKLY_LIMIT}"));
+    let reasoning = verdict.reasoning();
+    assert!(
+        reasoning.contains("usage_limit"),
+        "the verdict must name the class. Got: {reasoning}"
+    );
+    assert!(
+        reasoning.contains("Oct 8, 12am (America/Los_Angeles)"),
+        "the reset time is stated in the message and must survive into the \
+         verdict. Got: {reasoning}"
+    );
+}
+
+#[test]
+fn rate_limit_exceeded_keeps_its_transient_meaning() {
+    // Guard against the new markers over-reaching: a short-lived rate-limit
+    // envelope must stay retryable.
+    let (class, signal) = classify_failure_text("rate limit exceeded");
+    assert_eq!(
+        class,
+        FailureClass::TransientTransport,
+        "a rate-limit envelope is still a short-lived transport fault. signal={signal:?}"
+    );
+}
+
+#[test]
+fn work_failures_still_beat_a_weekly_or_spend_limit() {
+    for line in [OBSERVED_WEEKLY_LIMIT, OBSERVED_SPEND_LIMIT] {
+        let (class, signal) =
+            classify_failure_text(&format!("test result: FAILED. 1 failed\n{line}"));
+        assert_eq!(
+            class,
+            FailureClass::Work,
+            "work failures keep top precedence over {line:?}. signal={signal:?}"
+        );
+    }
+}
+
+#[test]
+fn a_weekly_or_spend_limit_wrapped_in_a_429_is_still_a_usage_limit() {
+    for line in [OBSERVED_WEEKLY_LIMIT, OBSERVED_SPEND_LIMIT] {
+        let (class, signal) =
+            classify_failure_text(&format!("API Error: 429 too many requests — {line}"));
+        assert_eq!(
+            class,
+            FailureClass::UsageLimit,
+            "a usage limit wrapped in a 429 envelope must not be read as a \
+             short-lived transport fault: {line:?}. signal={signal:?}"
+        );
+    }
+}
+
+#[test]
+fn the_observed_weekly_limit_run_record_says_usage_limit() {
+    // The shape #1546 reported: an agent step exits 1 and its stdout repeats
+    // the weekly-limit line, 34 times in one run's log. The defect was the
+    // record the runner wrote, so assert on that record.
+    let stdout = vec![OBSERVED_WEEKLY_LIMIT; 34];
+    let result = RecipeRunResult {
+        success: false,
+        step_results: vec![
+            step("workflow-prep", "success"),
+            failed_step_with_stdout(
+                "step-08-implement",
+                "agent step failed: amplihack claude failed (exit 1)",
+                &stdout,
+            ),
+        ],
+        ..RecipeRunResult::default()
+    };
+    let payload = classify_run_failure(&result, "").to_json(1, "terminal");
+    assert_eq!(
+        payload["class"], "usage_limit",
+        "issue #1546 recorded this run as `indeterminate`: {payload}"
+    );
+    assert_eq!(payload["signal"], "weekly limit");
+    assert_eq!(payload["retryable"], false);
+    let reasoning = payload["reasoning"]
+        .as_str()
+        .expect("reasoning is a string");
+    assert!(
+        reasoning.contains("Oct 8, 12am (America/Los_Angeles)"),
+        "the operator message must quote the reset time. Got: {reasoning}"
+    );
+}
+
 // -------------------------------------------------------------------------
 // Issue #1435 — a repository-selection precondition failure is self-describing.
 // `workflow-worktree`'s #1323 precondition refuses a repository with no

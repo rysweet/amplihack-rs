@@ -34,6 +34,7 @@ unit-tested in isolation
 | Class                 | Examples                                                                                  | Retried by code? |
 | --------------------- | ----------------------------------------------------------------------------------------- | ---------------- |
 | `transient_transport` | `API Error: 529`, 503, 502, 500, 429, `overloaded_error`, `rate_limit_error`, `ECONNRESET`, `socket hang up`, `request timed out` | **Yes**, bounded |
+| `usage_limit`         | `session limit`, `usage limit`, `usage_limit_reached`, `quota exceeded`, `monthly limit`, `weekly limit`, `spend limit`. Checked before the transient markers, so one of these inside a 429 envelope is still `usage_limit`; `rate limit exceeded`, `rate_limit_error` and a plain `API Error: 429` or `429 Too Many Requests` stay `transient_transport`. `credit balance is too low` is also on the list, but the environmental check runs first, so that message classifies `environmental` | No               |
 | `environmental`       | 401/403, `invalid x-api-key`, `command not found`, `no space left on device`                | No               |
 | `work`                | `test result: FAILED`, `assertion failed`, `panicked at`, `error[E0308]`, `merge conflict`, a `BLOCKED_TERMINAL` policy refusal | No               |
 | `indeterminate`       | nothing in the evidence identifies the failure                                              | No               |

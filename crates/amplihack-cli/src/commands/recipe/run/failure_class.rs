@@ -323,6 +323,8 @@ const USAGE_LIMIT_MARKERS: &[&str] = &[
     "usage_limit_reached",
     "quota exceeded",
     "monthly limit",
+    "weekly limit",
+    "spend limit",
     "credit balance is too low",
 ];
 
