@@ -296,6 +296,32 @@ paths.
 On the prose path `not_converging` is a fixed literal written by step-03, never
 text copied from the evaluator.
 
+**Residual risk:** the prose scan cannot tell the evaluator's own token from
+one it copied out of the round output. Suppose the evaluator writes no JSON
+answer and repeats a reviewer's comment line by line, outside a fence or `>`
+quote:
+
+```
+The round output ended with this reviewer comment:
+
+DONE
+
+Nothing else changed.
+```
+
+step-03 reads `DONE` with `verdict_source=evaluator_prose_token`. A `**DONE**`
+line gives the same result. A `DONE` alone does not advance a phase:
+`autodrive_loop.sh` also needs the round's own verdict to be clean (see
+[Advancing needs two independent signals](auto-drive-to-merge.md#advancing-needs-two-independent-signals)).
+If the round verdict is clean, the loop ends without the confirming round that
+a `CONTINUE` would have run; for the crusty loop, that ends the crusty review.
+If the round verdict is anything else, the pair is inconsistent and the run
+stops as `STUCK`. A `DONE` from the merge loop only hands over to the
+[merge gate](auto-drive-to-merge.md#no-silent-merge), which checks the evidence
+again before it merges. A copied `CONTINUE` has the same weakness; see the
+known limitation under
+[Where the prompt states the contract](#where-the-prompt-states-the-contract).
+
 ### Examples
 
 | Evaluator output | `loop_verdict` | `verdict_source` |
@@ -613,6 +639,9 @@ Every branch fails toward stopping:
 None of these catches a well-formed `CONTINUE` copied from the prompt's
 example; see the known limitation under
 [Where the prompt states the contract](#where-the-prompt-states-the-contract).
+Nor do they catch a verdict copied from the round output. See the residual
+risks under [The alternate key is final](#the-alternate-key-is-final) and
+[Prose token rules](#prose-token-rules).
 
 ### Reading step outputs: the dual-name idiom
 
