@@ -1,6 +1,6 @@
 ---
 title: Structured Verdict & Intent Parsing Reference
-last_updated: 2026-10-03
+last_updated: 2026-10-06
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -207,8 +207,9 @@ The R2 equality property matters even more here: `DISCONTINUE`,
 `CANNOT_CONTINUE`, `DO_NOT_CONTINUE` and `SHOULD_NOT_CONTINUE` all contain
 `CONTINUE`, and `NOT_DONE` contains `DONE`. Under `str::contains` every one of
 them would fail **open**. The same holds for the `CONVERGING` and `PROGRESSING`
-synonyms: `NOT_CONVERGING`, `NOT_CONVERGED`, `NOT_PROGRESSING`, `UNCONVERGING`
-and `PROGRESSING_NOT` are not in the list and give `STUCK`. Unit tests live beside `normalise_verdict`'s in
+synonyms: `NOT_CONVERGING`, `NOT_CONVERGED`, `NOT_PROGRESSING`,
+`CONVERGING_SLOWLY`, `UNCONVERGING` and `PROGRESSING_NOT` are not in the list
+and give `STUCK`. Unit tests live beside `normalise_verdict`'s in
 `crates/amplihack-cli/src/commands/orch.rs`.
 
 Full contract: [Loop-Health Evaluator Reference](loop-health-evaluator.md).

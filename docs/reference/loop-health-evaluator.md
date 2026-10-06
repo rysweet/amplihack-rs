@@ -449,7 +449,8 @@ the `STUCK` default, not in the permissive one. `CONVERGING` and `PROGRESSING`
 are in it because evaluators use them to mean "the loop is moving" (issue
 #1513); `CONVERGED` is the finished form and maps to `DONE`. Their negations and
 variants are not synonyms: `NOT_CONVERGING`, `NOT_CONVERGED`,
-`NOT_PROGRESSING`, `UNCONVERGING` and `PROGRESSING_NOT` all give `STUCK`.
+`NOT_PROGRESSING`, `CONVERGING_SLOWLY`, `UNCONVERGING` and `PROGRESSING_NOT`
+all give `STUCK`.
 
 ```bash
 echo "CONTINUE"       | amplihack orch helper normalise-loop-verdict   # CONTINUE
