@@ -178,13 +178,20 @@ async fn async_idle_child_is_killed_after_window() {
 
 /// A child that produces output and THEN goes silent is allowed to run while it
 /// streams, and is killed only once it has been idle for the window.
+///
+/// Timing (issue #1535): the gap between ticks must sit well inside the idle
+/// window, or a loaded host stretches a gap past the window and the watchdog
+/// correctly kills the child mid-stream. Ticks come every 0.25 s against a 3 s
+/// window (a 2.75 s margin per gap). Streaming lasts ≈4 s, longer than the
+/// window, so surviving it proves output resets the timer. The 30 s silent
+/// tail outlasts the window by a similar wide margin.
 #[tokio::test]
 async fn async_child_killed_only_after_it_stops_producing() {
-    // Three ticks (≈3 s of activity), then silent for 20 s.
+    // Sixteen ticks 0.25 s apart (≈4 s of activity), then silent for 30 s.
     let mut child = tokio::process::Command::new("bash")
         .args([
             "-c",
-            "for i in 1 2 3; do echo tick $i; sleep 1; done; sleep 20",
+            "for i in $(seq 1 16); do echo tick $i; sleep 0.25; done; sleep 30",
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -197,7 +204,7 @@ async fn async_child_killed_only_after_it_stops_producing() {
         &mut child,
         out,
         err,
-        cfg(Duration::from_secs(1), Duration::from_millis(100)),
+        cfg(Duration::from_secs(3), Duration::from_millis(100)),
     )
     .await;
 
@@ -206,7 +213,7 @@ async fn async_child_killed_only_after_it_stops_producing() {
         "child must be killed after it goes idle"
     );
     assert!(
-        outcome.stdout.contains("tick 3"),
+        outcome.stdout.contains("tick 16"),
         "output produced before going idle must be captured, got: {:?}",
         outcome.stdout
     );
