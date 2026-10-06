@@ -16,10 +16,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ── Determine next version and create tag ─────────────────────────────
-  # Tag-based versioning: reads base version from Cargo.toml, increments
-  # patch from the latest release tag, and creates a lightweight tag.
-  # No commit to main required — works with branch protection.
+  # ── Determine next version ────────────────────────────────────────────
+  # Tag-based versioning: reads base version from Cargo.toml and increments
+  # patch from the latest release tag. This job pushes nothing: the `release`
+  # job creates an annotated tag on a stamped child commit of the released
+  # `main` SHA (#1526); nothing is ever pushed to `main`, so this works with
+  # branch protection.
   version-bump:
     name: Auto-bump version
     runs-on: ubuntu-latest
@@ -74,8 +76,26 @@ jobs:
 
           HEAD_SHA=$(git rev-parse HEAD)
 
-          # Check if this exact commit already has a release tag
+          # Check if this exact commit has already been released. Two shapes
+          # count, so a re-run rebuilds the same version instead of a new one:
+          #   - a series tag on HEAD itself: tags made before #1526, and the
+          #     first release of a series, whose manifests already say X;
+          #   - a series tag on a stamp commit (#1526): first parent HEAD,
+          #     subject `chore(release): stamp vX`. The subject check keeps an
+          #     old-style tag on HEAD's child commit from matching.
           EXISTING=$(git tag --points-at HEAD | grep -E "^v${MAJOR}\.${MINOR}\." || true)
+          if [ -z "${EXISTING}" ]; then
+            SERIES_TAGS=$(git tag --list "v${MAJOR}.${MINOR}.*")
+            while IFS= read -r t; do
+              [ -n "${t}" ] || continue
+              PARENT=$(git rev-parse -q --verify "${t}^{commit}^1" || true)
+              [ "${PARENT}" = "${HEAD_SHA}" ] || continue
+              if [ "$(git log -1 --format=%s "${t}^{commit}")" = "chore(release): stamp ${t}" ]; then
+                EXISTING="${t}"
+                break
+              fi
+            done <<< "${SERIES_TAGS}"
+          fi
           if [ -n "${EXISTING}" ]; then
             echo "Commit already tagged: ${EXISTING} — skipping"
             echo "version=${EXISTING#v}" >> "$GITHUB_OUTPUT"
@@ -90,7 +110,7 @@ jobs:
           done
           NEW_VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}"
 
-          echo "Tagging: v${NEW_VERSION} at ${HEAD_SHA}"
+          echo "Releasing: v${NEW_VERSION} from ${HEAD_SHA}"
 
           # The tag is NOT pushed here. The `release` job creates it once the
           # artifacts exist (issue #1356).
@@ -235,15 +255,96 @@ jobs:
           find artifacts -name '*.sha256' -exec cp {} release-assets/ \;
           ls -la release-assets/
 
-      - name: Create tag and release
+      - name: Stamp version and create tag
+        # Issue #1526: tag a one-commit child of the released `main` SHA whose
+        # manifests say X, so a source build of the tag reports X. Only the
+        # tag is pushed; `main` is never written. No git failure is ignored:
+        # a failed push stops the job before the release is published, so
+        # no tag or release exists and the version number is not burned
+        # (#1356).
+        env:
+          VERSION: ${{ needs.version-bump.outputs.version }}
+          SHA: ${{ needs.version-bump.outputs.sha }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="v${{ needs.version-bump.outputs.version }}"
+          set -euo pipefail
+          TAG="v${VERSION}"
+          SUBJECT="chore(release): stamp ${TAG}"
+
+          # A re-run finds the tag the last attempt pushed. Accept it only if
+          # it is ours: on SHA itself (a series' first release, or a tag made
+          # before #1526), or on a stamp commit whose first parent is SHA.
+          # Any other vX must not have these artifacts attached to it.
+          status=0
+          git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null || status=$?
+          case "${status}" in
+            0)
+              git fetch --no-tags --depth=1 origin "refs/tags/${TAG}:refs/tags/${TAG}"
+              TAGGED=$(git rev-parse --verify "refs/tags/${TAG}^{commit}")
+              if [ "${TAGGED}" = "${SHA}" ]; then
+                echo "${TAG} already exists on ${SHA}; publishing"
+                exit 0
+              fi
+              # The fetched commit is a shallow boundary, so `^1` cannot see
+              # its parent; the raw object's first `parent` header can.
+              COMMIT_OBJECT=$(git cat-file -p "${TAGGED}")
+              PARENT=""
+              while IFS= read -r header; do
+                case "${header}" in
+                  "parent "*) PARENT="${header#parent }"; break ;;
+                  "") break ;;
+                esac
+              done <<< "${COMMIT_OBJECT}"
+              TAGGED_SUBJECT=$(git log -1 --format=%s "${TAGGED}")
+              if [ "${PARENT}" = "${SHA}" ] && [ "${TAGGED_SUBJECT}" = "${SUBJECT}" ]; then
+                echo "${TAG} already exists on stamp commit ${TAGGED} (parent ${SHA}); publishing"
+                exit 0
+              fi
+              echo "::error::${TAG} already exists on ${TAGGED}, which is neither ${SHA} nor its stamp commit; refusing to publish these artifacts under it"
+              exit 1
+              ;;
+            2)
+              ;;
+            *)
+              echo "::error::checking origin for ${TAG} failed (git ls-remote exit ${status})"
+              exit 1
+              ;;
+          esac
+
+          HEAD_NOW=$(git rev-parse HEAD)
+          if [ "${HEAD_NOW}" != "${SHA}" ]; then
+            echo "::error::checkout is at ${HEAD_NOW}, expected the released main SHA ${SHA}"
+            exit 1
+          fi
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "${TAG}" -m "Release ${TAG}" "${{ needs.version-bump.outputs.sha }}" || true
-          git push origin "${TAG}" || true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+          bash scripts/stamp-release-version.sh "${VERSION}"
+
+          # Stage by name: the downloaded artifacts/ and the collected
+          # release-assets/ are in the working tree too.
+          git add Cargo.toml Cargo.lock package.json
+          STAGED=$(git diff --cached --name-only)
+          while IFS= read -r path; do
+            case "${path}" in
+              "" | Cargo.toml | Cargo.lock | package.json) ;;
+              *)
+                echo "::error::unexpected staged file ${path}; only the three manifests may be committed"
+                exit 1
+                ;;
+            esac
+          done <<< "${STAGED}"
+
+          if git diff --cached --quiet; then
+            # First release of a MAJOR.MINOR series: the manifests already say
+            # X, so the tag goes on SHA itself.
+            echo "Manifests already at ${VERSION}; tagging ${SHA}"
+          else
+            git commit -m "${SUBJECT}"
+          fi
+          git tag -a "${TAG}" -m "Release ${TAG}"
+          git push origin "refs/tags/${TAG}"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
