@@ -29,8 +29,11 @@
 //!   is reported with its path in [`Resolution::unusable_contexts`] (#1525).
 //!   A reason never echoes the file's contents.
 //! * Walk-up ancestor search is capped at 32 levels and stops at any `.git`
-//!   boundary. Symlink escape is rejected by canonicalizing the resolved path
-//!   and verifying it stays within the anchor tree.
+//!   boundary, and at the first world-writable or foreign-owned directory. A
+//!   context file in that directory is not read, only named in
+//!   [`Resolution::unusable_contexts`]. Symlink escape is rejected by
+//!   canonicalizing the resolved path and verifying it stays within the
+//!   anchor tree.
 //! * No shell invocation, no subprocess execution.
 
 use std::fs;
@@ -262,7 +265,9 @@ pub struct Resolution {
     /// Launcher contexts the walk-up passed over because they could not be
     /// used, nearest first. The fall-through is kept; these say what was
     /// skipped on the way. Stale files are not listed: sessions end, and an
-    /// old file is expected, not broken.
+    /// old file is expected, not broken. The last entry may be a file in the
+    /// untrusted directory where the walk stopped; that one is listed without
+    /// being read, so its age is not known.
     pub unusable_contexts: Vec<UnusableContext>,
     /// The session marker this process's environment holds, recorded whether
     /// or not it decided. When `source` is [`ResolutionSource::Env`] and it
@@ -473,25 +478,38 @@ fn session_marker() -> Option<SessionMarker> {
     })
 }
 
-/// Returns `true` when a launcher context found in `dir` cannot be trusted.
+/// Why a launcher context found in `dir` cannot be trusted, or `None` when it
+/// can. The reason finishes the notice's "it ..." for a context file in `dir`.
 ///
-/// Two conditions disqualify a directory:
+/// Three conditions disqualify a directory:
 ///
 /// * **World-writable** (`o+w`, e.g. `/tmp` at `1777`) -- any local user can
 ///   drop a `.claude/runtime/launcher_context.json` there, and the walk-up
 ///   would then pick the agent binary for every working directory beneath it.
 /// * **Owned by another user** -- the context reflects someone else's session.
+///   A container running as root over a checkout the host user owns is the
+///   likeliest way to get here with a context the user does expect to answer.
+/// * **Unreadable metadata** -- not a licence to trust the directory.
 ///
 /// Group-writable is deliberately *not* disqualifying: a `umask 002` setup
 /// makes a user's own directories `0775`, and treating those as hostile would
 /// break ordinary installs.
 #[cfg(unix)]
-fn is_untrusted_context_dir(dir: &Path) -> bool {
+fn untrusted_context_dir(dir: &Path) -> Option<String> {
     use std::os::unix::fs::MetadataExt;
+    let dir_display = dir.display();
     match fs::metadata(dir) {
-        Ok(meta) => meta.mode() & 0o002 != 0 || meta.uid() != nix_getuid(),
-        // Unreadable metadata is not a licence to trust the directory.
-        Err(_) => true,
+        Ok(meta) if meta.mode() & 0o002 != 0 => Some(format!(
+            "is under {dir_display}, which any user can write to, so it was not read"
+        )),
+        Ok(meta) if meta.uid() != nix_getuid() => Some(format!(
+            "is under {dir_display}, which another user owns, so it was not read"
+        )),
+        Ok(_) => None,
+        Err(error) => Some(format!(
+            "is under {dir_display}, whose owner and permissions could not be read \
+             ({error}), so it was not read"
+        )),
     }
 }
 
@@ -503,14 +521,22 @@ fn nix_getuid() -> u32 {
 }
 
 #[cfg(not(unix))]
-fn is_untrusted_context_dir(_dir: &Path) -> bool {
-    false
+fn untrusted_context_dir(_dir: &Path) -> Option<String> {
+    None
 }
 
 /// Walk up from `start` looking for `.claude/runtime/launcher_context.json`.
 ///
 /// Stops at any `.git` directory boundary, at the first world-writable or
 /// foreign-owned directory, or after [`ANCESTOR_WALK_LIMIT`] hops.
+///
+/// A context file in the untrusted directory where the walk stops is never
+/// read, but it is recorded as unusable with the reason. It may be the very
+/// file the user expects to answer -- a checkout made world-writable, or
+/// mounted into a container that runs as another user -- and dropping it
+/// with only a `debug!` left the default answering with a notice that named
+/// no file (crusty review of #1490 at 9b207c7e). Naming it is a `stat`, not
+/// a read, so nothing anyone could have written there is echoed.
 ///
 /// The shared-directory boundary matters (issue #1335). Workflow worktrees are
 /// created under the system temp directory, which has no `.git` anywhere above
@@ -525,18 +551,24 @@ fn lookup_persisted_launcher(start: &Path) -> PersistedLookup {
     };
     let mut current: PathBuf = anchor;
     for _ in 0..ANCESTOR_WALK_LIMIT {
-        if is_untrusted_context_dir(&current) {
-            debug!(
-                dir = %current.display(),
-                "stopping launcher_context walk-up at an untrusted directory"
-            );
-            return lookup;
-        }
-        // Stop at git boundary (but still inspect this dir on this iteration).
         let runtime_file = current
             .join(".claude")
             .join("runtime")
             .join("launcher_context.json");
+        if let Some(reason) = untrusted_context_dir(&current) {
+            debug!(
+                dir = %current.display(),
+                "stopping launcher_context walk-up at an untrusted directory"
+            );
+            if runtime_file.is_file() {
+                lookup.unusable.push(UnusableContext {
+                    path: runtime_file,
+                    reason,
+                });
+            }
+            return lookup;
+        }
+        // Stop at git boundary (but still inspect this dir on this iteration).
         if runtime_file.is_file() {
             match read_launcher_field(&runtime_file, &current) {
                 ContextRead::Usable(name) => {
@@ -827,11 +859,68 @@ mod tests {
         fs::create_dir_all(&work).unwrap();
         fs::set_permissions(&work, fs::Permissions::from_mode(0o700)).unwrap();
 
+        let lookup = lookup_persisted_launcher(&work);
         assert_eq!(
-            found_launcher(&work),
-            None,
+            lookup.found, None,
             "a context under a world-writable ancestor must not be consulted"
         );
+        // It is still named, so the default's notice can say why it lost.
+        let shared = shared.path().canonicalize().unwrap();
+        assert_eq!(
+            lookup.unusable,
+            vec![UnusableContext {
+                path: shared.join(".claude/runtime/launcher_context.json"),
+                reason: format!(
+                    "is under {}, which any user can write to, so it was not read",
+                    shared.display()
+                ),
+            }]
+        );
+    }
+
+    /// Crusty review of #1490 at 9b207c7e: a fresh, valid context in the very
+    /// directory the walk starts from used to be dropped with only a `debug!`
+    /// once that directory was world-writable. It is still not read, but it
+    /// is named.
+    #[test]
+    #[cfg(unix)]
+    fn a_context_in_a_world_writable_start_dir_is_named_not_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let repo = tempfile::tempdir().unwrap();
+        fs::create_dir_all(repo.path().join(".git")).unwrap();
+        write_launcher_context(repo.path(), "claude");
+        fs::set_permissions(repo.path(), fs::Permissions::from_mode(0o777)).unwrap();
+
+        let lookup = lookup_persisted_launcher(repo.path());
+        assert_eq!(lookup.found, None);
+        let repo = repo.path().canonicalize().unwrap();
+        assert_eq!(
+            lookup.unusable,
+            vec![UnusableContext {
+                path: repo.join(".claude/runtime/launcher_context.json"),
+                reason: format!(
+                    "is under {}, which any user can write to, so it was not read",
+                    repo.display()
+                ),
+            }]
+        );
+    }
+
+    /// An untrusted directory with no context file in it stops the walk and
+    /// names nothing: there is nothing the user could have expected to answer.
+    #[test]
+    #[cfg(unix)]
+    fn an_untrusted_dir_without_a_context_names_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let shared = tempfile::tempdir().unwrap();
+        fs::set_permissions(shared.path(), fs::Permissions::from_mode(0o1777)).unwrap();
+        let work = shared.path().join("work");
+        fs::create_dir_all(&work).unwrap();
+        fs::set_permissions(&work, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let lookup = lookup_persisted_launcher(&work);
+        assert_eq!(lookup.found, None);
+        assert!(lookup.unusable.is_empty(), "{:?}", lookup.unusable);
     }
 
     /// The boundary must not be so strict that ordinary installs break:

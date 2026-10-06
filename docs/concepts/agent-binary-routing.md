@@ -71,7 +71,7 @@ flowchart TD
     M -- yes --> R2[Return the marker's binary]
     M -- no --> L1[Start the walk-up at cwd]
     L1 --> U{Directory world-writable<br/>or foreign-owned?}
-    U -- yes --> D
+    U -- yes --> N[Name any launcher_context.json here<br/>as unusable, without reading it] --> D
     U -- no --> F{.claude/runtime/launcher_context.json<br/>fresh, ≤64 KiB, allowlisted?}
     F -- yes --> R3[Return file value]
     F -- absent or unusable --> G{.git here, or 32 ancestors checked?}
@@ -91,7 +91,11 @@ Walk-up rules for the persisted launcher context:
   malformed file was dropped without a word, and a parent directory's file
   could answer in its place.
 - Stop at the first `.git` boundary; do not cross into a parent repo.
-- Stop at the first world-writable or foreign-owned directory (issue #1335).
+- Stop at the first world-writable or foreign-owned directory (issue #1335),
+  without reading a `.claude/runtime/launcher_context.json` in it. Such a file
+  is still recorded, with the directory and why it is not trusted, so the
+  notice names it rather than reporting only that no variable or marker was
+  found.
 - Cap at 32 ancestors.
 
 The **anchor** for symlink-escape checks is the walked directory in which the

@@ -45,6 +45,17 @@
 //! With the markers gone and the tag kept, the far side resolves a guess the
 //! way the caller did: to the same default, still announced as one.
 //!
+//! An answer read from a launcher context is *not* tagged. It crosses with the
+//! empty tag, as an explicit value, so the far side's run log does not say it
+//! was inferred; the `read from <file>` line this command prints on the
+//! caller's terminal is the only record (crusty review of #1490 at 9b207c7e).
+//! A tag could not name the file anyway: `$(...)` splits its output on
+//! whitespace and does not remove quotes (POSIX Shell Command Language
+//! §2.6.5, §2.6.7), so only words without spaces -- a binary, a marker
+//! variable -- cross intact, and a path may hold anything. It arises only for
+//! a caller with no session marker (cron, a plain shell), since a marker
+//! outranks the file.
+//!
 //! An answer read from a session marker that the tmux server's global
 //! environment also holds gets `AMPLIHACK_AGENT_BINARY_SOURCE=tmux_server:<marker
 //! variable>`. The marker may be the server starter's, not the caller's, and
@@ -201,6 +212,9 @@ mod tests {
 
     /// Anything observed or read is handed on with an empty tag, so a stale
     /// `default:<same binary>` in the receiving environment cannot veto it.
+    /// That includes a launcher-context answer: it crosses as an explicit
+    /// value, and only the caller's terminal names the file (see the module
+    /// doc for why no tag carries it).
     #[test]
     fn every_other_answer_is_handed_on_with_the_tag_cleared() {
         for source in [

@@ -585,6 +585,50 @@ fn an_empty_launcher_context_is_named_with_its_reason() {
     );
 }
 
+/// Crusty review of #1490 at 9b207c7e: a fresh, valid context in a
+/// world-writable work dir is not trusted, so the default answers. That used
+/// to be said as "no AMPLIHACK_AGENT_BINARY or agent session marker was
+/// found", naming no file, for a context the user expected to answer. Both
+/// reporters now name it and say why it was not read.
+#[test]
+#[cfg(unix)]
+fn a_launcher_context_in_a_world_writable_dir_is_named_and_not_read() {
+    use std::os::unix::fs::PermissionsExt;
+    let fx = Fixture::new();
+    amplihack_cli::launcher_context::write_launcher_context(
+        &fx.work(),
+        amplihack_cli::launcher_context::LauncherKind::Claude,
+        "amplihack claude",
+        Default::default(),
+    )
+    .expect("write launcher context");
+    let work = fx.work().canonicalize().expect("canonicalize");
+    let path = work.join(".claude/runtime/launcher_context.json");
+    let ignored = format!(
+        "amplihack: ignored {}: it is under {}, which any user can write to, so it was \
+         not read.",
+        path.display(),
+        work.display()
+    );
+
+    // Trusted, the same file answers: the case below differs only in mode.
+    let (output, probe) = fx.run(&[]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(handed(&probe), ("claude", "<unset>"));
+
+    fs::set_permissions(fx.work(), fs::Permissions::from_mode(0o777)).expect("chmod work dir");
+    let (output, probe) = fx.run(&[]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(handed(&probe), ("copilot", "default:copilot"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(&ignored), "{stderr}");
+
+    let output = agent_binary_shell(&fx, &[]);
+    assert!(output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(&ignored), "{stderr}");
+}
+
 #[test]
 fn a_malformed_launcher_context_is_named_with_its_reason() {
     let fx = Fixture::new();
@@ -1004,6 +1048,52 @@ fn an_inferred_value_stays_tagged_across_the_hand_off() {
     assert!(
         stderr.contains("amplihack: resolved the agent binary to 'copilot' (no AMPLIHACK_AGENT_BINARY or agent session marker was found)"),
         "{stderr}"
+    );
+}
+
+/// Crusty review of #1490 at 9b207c7e: a launcher-context answer crosses as an
+/// explicit value. The caller's terminal names the file it was read from; the
+/// run on the far side sees only the value, and its log says nothing. This
+/// pins what `active-agent-binary.md` says about it, so the docs and the
+/// behaviour cannot drift apart unnoticed.
+#[test]
+fn a_launcher_context_answer_crosses_untagged_and_is_named_only_on_the_callers_terminal() {
+    let fx = Fixture::new();
+    amplihack_cli::launcher_context::write_launcher_context(
+        &fx.work(),
+        amplihack_cli::launcher_context::LauncherKind::Codex,
+        "amplihack codex",
+        Default::default(),
+    )
+    .expect("write launcher context");
+    let read = fx
+        .work()
+        .canonicalize()
+        .expect("canonicalize")
+        .join(".claude/runtime/launcher_context.json");
+    let far_err = fx.path().join("far.err");
+    let far_err_str = far_err.to_str().expect("utf-8 path").to_string();
+    let script = format!(
+        "env {} sh -c {HAND_OFF_KEEPING_STDERR}",
+        without_any_marker()
+    );
+    let output = fx.caller_shell(&script, &[("FAR_ERR", &far_err_str)]);
+    assert!(output.status.success(), "{output:?}");
+    let probe = fx.take_probe(&output);
+    let far_err = fs::read_to_string(&far_err).unwrap_or_default();
+    assert_eq!(handed(&probe), ("codex", "<unset>"), "run log: {far_err}");
+    let caller_err = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        caller_err.contains(&format!(
+            "amplihack: resolved the agent binary to 'codex' (read from {}).",
+            read.display()
+        )),
+        "the caller's terminal must name the file: {caller_err}"
+    );
+    assert!(
+        !far_err.contains("amplihack: agent steps"),
+        "the run sees an explicit value; if it now names the file, update \
+         active-agent-binary.md: {far_err}"
     );
 }
 

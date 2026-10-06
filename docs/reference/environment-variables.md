@@ -93,7 +93,9 @@ double-quoted tmux command; in single quotes it expands in the new session and
 reads the server's markers. An answer read from a marker the tmux server holds
 is tagged `AMPLIHACK_AGENT_BINARY_SOURCE=tmux_server:<marker variable>`. That
 tag is not a guess: the value is honoured, and the run receiving it names the
-marker on stderr. See
+marker on stderr. An answer read from a launcher context crosses with an empty
+tag, as an explicit value: only `agent-binary`'s own stderr, on the caller's
+terminal, names the file, and the receiving run's log does not. See
 [Handing the binary to a detached launch](./active-agent-binary.md#handing-the-binary-to-a-detached-launch).
 
 The launcher continues to write this variable to subprocess environments so that external consumers (notably `rysweet/amplihack-recipe-runner`) that have not yet migrated to the file-based resolver continue to work. New code inside `amplihack-rs` should call `amplihack_utils::agent_binary::resolve(&cwd)` instead of reading the env var directly.
@@ -138,7 +140,7 @@ COPILOT_CLI=1 AMPLIHACK_AGENT_BINARY="../bin/evil" amplihack agent-binary
 
 - **Env var first** preserves the established escape hatch for CI/testing and lets external recipe-runner builds keep working unchanged. A value tagged as a default-layer guess (`AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>`) is not an instruction and is skipped while the tag still describes it.
 - **Session marker second** names the CLI actually hosting the process, so it outranks any file on disk (#1342).
-- **`.claude/runtime/launcher_context.json` third** is persisted, per-directory, last-writer-wins state that may describe a different session. It is consulted only while fresh and never above a world-writable or foreign-owned directory (#1335).
+- **`.claude/runtime/launcher_context.json` third** is persisted, per-directory, last-writer-wins state that may describe a different session. It is consulted only while fresh and never in or above a world-writable or foreign-owned directory (#1335). A file in such a directory is not read, but `recipe run` and `agent-binary` name it when the answer was inferred.
 - **`copilot` default last** matches the project's current preferred runtime and removes the prior implicit `claude` assumption.
 
 **Why it exists:** Recipe runner, hooks, and sub-agents are agent-agnostic and must call back into whatever tool the user actually launched. See [Active Agent Binary](./active-agent-binary.md) for the full algorithm and [Agent Binary Routing](../concepts/agent-binary-routing.md) for the architectural rationale.

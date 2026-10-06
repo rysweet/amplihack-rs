@@ -46,7 +46,7 @@ The resolver evaluates sources in order and returns the first valid value. A val
 | - | --- | --- |
 | 1 | `AMPLIHACK_AGENT_BINARY` env var | Explicit override. Used by CI, tests, and external consumers that have not migrated yet. Ignored while tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary>` (see below). It outranks a session marker naming a different CLI; `recipe run` and `agent-binary` then say so on stderr (see below). |
 | 2 | Live session marker | An environment variable the hosting CLI exports, such as `CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_ENTRYPOINT` or `COPILOT_CLI`. The full list is `agent_binary::SESSION_MARKERS`. Inside tmux it may come from the server's copy of whatever started the server; see [Handing the binary to a detached launch](#handing-the-binary-to-a-detached-launch). |
-| 3 | `<repo>/.claude/runtime/launcher_context.json` `launcher` field | Persisted state, possibly written by a different session. Consulted only while fresh, and never above a world-writable or foreign-owned directory. |
+| 3 | `<repo>/.claude/runtime/launcher_context.json` `launcher` field | Persisted state, possibly written by a different session. Consulted only while fresh, and never in or above a world-writable or foreign-owned directory. A file in such a directory is not read, but it is named when the answer was inferred (see below). |
 | 4 | Built-in default | `"copilot"` |
 
 If a source produces a value that fails validation (allowlist, length, character class), the resolver ignores it and falls through to the next source. **No source ever coerces an invalid value into a different name.** What is said about it depends on the source:
@@ -90,8 +90,18 @@ amplihack: ignored /home/u/repo/.claude/runtime/launcher_context.json: it is emp
 
 The reasons are: empty, not valid JSON (with line and column), JSON without a
 string `launcher` field, no `timestamp`, a `timestamp` that is not RFC 3339, a
-launcher outside the allowlist, larger than 64 KiB, unreadable, or a symlink out
-of its directory. A reason never quotes the file. A stale file (older than 24h)
+launcher outside the allowlist, larger than 64 KiB, unreadable, a symlink out
+of its directory, or a file in the world-writable or foreign-owned directory
+where the walk-up stopped. That last one is not read at all, so even a fresh,
+valid file there is listed, with the directory and why it is not trusted:
+
+```text
+amplihack: ignored /home/u/repo/.claude/runtime/launcher_context.json: it is under /home/u/repo, which any user can write to, so it was not read. Fix or delete it.
+```
+
+The usual causes are a checkout made world-writable (`chmod o-w` the directory
+to trust it again) or a container running as root over a checkout the host
+user owns (`which another user owns`). A reason never quotes the file. A stale file (older than 24h)
 is not listed, because sessions end and an old file is expected. A file whose
 age cannot be known is different: however recent it is, it will never be used,
 so it is listed. The walk-up still continues past an unusable file, so a
@@ -281,9 +291,19 @@ amplihack: agent steps will run under 'copilot' (AMPLIHACK_AGENT_BINARY was hand
   choice, and `recipe run` exports its steps the value untagged, as it does
   any explicit value. A tag naming a marker of a different CLI than the value
   describes nothing and is ignored.
+- An answer read from a launcher context crosses with that empty tag, as an
+  explicit value, so the far side's run log does not say it was inferred.
+  Only `agent-binary` names the file, in its `read from <file>` line on your
+  terminal. The tag cannot carry the path: `$(...)` splits its output on
+  whitespace and does not remove quotes (POSIX Shell Command Language §2.6.5, §2.6.7),
+  so only words without spaces, such as a binary or a marker variable, cross
+  intact. This only happens without a session marker (a cron job, a plain
+  shell); inside Claude Code or Copilot the marker outranks the file.
 - An inferred answer is explained on stderr, which stays on your terminal while
   `$(...)` captures stdout. The explanation includes any unusable launcher
-  context it skipped. An exported `AMPLIHACK_AGENT_BINARY` that overrides a
+  context it skipped. For a default guess the far side's run says so again,
+  from the tag; for a launcher-context answer this line is the only record.
+  An exported `AMPLIHACK_AGENT_BINARY` that overrides a
   marker in the shell you run the hand-off from is handed over as your choice,
   and the same stderr line names the marker it overrode. That line is the only
   record: the hand-off removes the marker, so the far side sees an explicit
