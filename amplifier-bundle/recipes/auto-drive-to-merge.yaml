@@ -91,18 +91,37 @@ context:
   merge_gate_result: ""
 
 steps:
-  # Fail fast (PR #1520 review). Criterion 1 runs the qa-team scenarios with
-  # gadugi-test in every repository type, and neither `amplihack install` nor
-  # any agent installs it. Checked here, before the build and the crusty loop
-  # spend hours, not first at merge round step-00, which checks it again in
-  # case it goes away during the run.
+  # Fail fast (PR #1520 review). Criterion 1 runs qa-team scenarios with
+  # gadugi-test only where qa-team's repo-type table needs gadugi: a Node
+  # repository, or an operator-set AUTODRIVE_QA_SCENARIO_DIR. The decision is
+  # autodrive_gadugi_required in autodrive_trust.sh, the one the merge round
+  # and the gate use. A Rust CLI or Python repository runs `cargo test` or
+  # `pytest` and does not need gadugi-test. Where it is needed, neither
+  # `amplihack install` nor any agent installs it, so it is checked here,
+  # before the build and the crusty loop spend hours. Merge round step-00
+  # checks it again in case it goes away during the run.
   - id: "autodrive-prerequisites"
     type: "bash"
     command: |
       set -uo pipefail
+      cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }
+      TOP="$(git rev-parse --show-toplevel 2>/dev/null || printf '')"
+      T=""; SEARCHED=""
+      for c in "${AMPLIHACK_HOME:-}" "$PWD" "$TOP" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do
+        [ -n "$c" ] || continue
+        SEARCHED="${SEARCHED}${SEARCHED:+, }${c}/amplifier-bundle/tools"
+        [ -f "$c/amplifier-bundle/tools/autodrive_trust.sh" ] && { T="$c/amplifier-bundle/tools/autodrive_trust.sh"; break; }
+      done
+      [ -n "$T" ] || { echo "ERROR: autodrive-tools-not-found: autodrive_trust.sh not found (searched ${SEARCHED:-no root})" >&2; exit 1; }
+      REQ="$(. "$T" && autodrive_gadugi_required .)" || REQ=""
+      if [ "$REQ" = "false" ]; then
+        echo "INFO: auto-drive prerequisites: criterion 1 does not use gadugi-test in this repository (qa-team's repo-type table)" >&2
+        printf '{"gadugi_test":"not-required"}\n'
+        exit 0
+      fi
       if ! command -v gadugi-test >/dev/null 2>&1; then
-        echo "ERROR: gadugi-test-not-installed: gadugi-test is not on PATH. Criterion 1 runs the qa-team scenarios" \
-          "with it in every repository type, and no agent can install it. Install it" \
+        echo "ERROR: gadugi-test-not-installed: gadugi-test is not on PATH. Criterion 1 runs this repository's qa-team scenarios" \
+          "with it (a Node repository, or AUTODRIVE_QA_SCENARIO_DIR set), and no agent can install it. Install it" \
           "(npm install -g github:rysweet/gadugi-agentic-test#6c120657798995b1b53399a5acf3693d418a2d8b) and run auto-drive again." >&2
         exit 1
       fi

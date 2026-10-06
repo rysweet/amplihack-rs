@@ -2,8 +2,9 @@ name: "autodrive-merge-evidence"
 description: |
   Deterministic evidence collection for one round of the auto-drive-to-merge
   merge-ready loop: bring the branch up to date with its base, run the
-  repository's own tests and validate and run the `qa-team` scenarios with
-  gadugi-test, and wait for CI on the current head to reach a terminal state.
+  repository's own tests and, where qa-team's repo-type table requires
+  gadugi, validate and run the `qa-team` scenarios with gadugi-test, and wait
+  for CI on the current head to reach a terminal state.
 
   Everything here is MEASURED. No step in this brick forms an opinion, and
   nothing it reports is a model's impression. Unreadable is never reported as
@@ -71,11 +72,14 @@ steps:
     output: "merge_sync"
 
   # Criterion 1 is measured by amplifier-bundle/tools/autodrive_qa_evidence.sh:
-  # the repository's suite commands, then the qa-team scenarios validated and
-  # run with gadugi-test, one process per scenario file. It prints one JSON
-  # line and writes the same line, private, to autodrive_qa_evidence. A missing
-  # tool is an installation fault, so the step fails by name rather than
-  # reporting evidence it did not measure.
+  # the repository's suite commands, then, only where autodrive_gadugi_required
+  # says true (a Node repository, or AUTODRIVE_QA_SCENARIO_DIR set), the qa-team
+  # scenarios validated and run with gadugi-test, one process per scenario
+  # file. A Rust CLI or Python repository gets gadugi_status NOT_REQUIRED, as
+  # qa-team's repo-type table says. It prints one JSON line and writes the
+  # same line, private, to autodrive_qa_evidence. A missing tool is an
+  # installation fault, so the step fails by name rather than reporting
+  # evidence it did not measure.
   - id: "step-02-qa-team-scenarios"
     type: "bash"
     parse_json: true

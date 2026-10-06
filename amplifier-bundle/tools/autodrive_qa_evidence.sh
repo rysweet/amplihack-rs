@@ -6,14 +6,20 @@
 # The logic was that step's body until it outgrew the recipe's brick budget
 # (PR #1520 review); it moved here unchanged.
 #
-# Criterion 1 is two measurements, and both always run so the evidence lists
+# Criterion 1 follows qa-team's repo-type table. It is one or two
+# measurements. When there are two, both always run, so the evidence lists
 # every cause at once:
 #   1. the repository's suite commands: AUTODRIVE_QA_COMMAND (run in
 #      AUTODRIVE_QA_DIR), AUTODRIVE_QA_COMMANDS, or a command detected from the
-#      repository type;
-#   2. the qa-team scenarios in the scenario directory (AUTODRIVE_QA_SCENARIO_DIR
-#      or a detected default), validated with `gadugi-test validate` and run
-#      with one `gadugi-test run --scenario` per scenario file.
+#      repository type (`cargo test`, `npm test`, `pytest`);
+#   2. only where autodrive_gadugi_required (autodrive_trust.sh) says true,
+#      meaning a Node repository or an operator-set AUTODRIVE_QA_SCENARIO_DIR:
+#      the qa-team scenarios in the scenario directory, validated with
+#      `gadugi-test validate` and run with one `gadugi-test run --scenario`
+#      per scenario file. Elsewhere gadugi_status is NOT_REQUIRED and
+#      gadugi-test is never called. qa-team's Rust CLI rule substitutes
+#      `cargo test` and does not require gadugi, and a Python repository
+#      runs `pytest`.
 #
 # Input comes from the environment only:
 #   REPO_PATH              the repository to measure (default: the working directory)
@@ -23,9 +29,10 @@
 #   AUTODRIVE_QA_SCENARIO_DIR, described where they are read below.
 #
 # Output: one JSON line on stdout, and the same line in AUTODRIVE_QA_EVIDENCE.
-# qa_status is PASS only when both measurements pass. Exit 0 whenever evidence
-# was produced, PASS or not; exit 1 when REPO_PATH or a temporary file is
-# unavailable, so that no evidence exists.
+# qa_status is PASS only when every measurement that applies passes. Exit 0
+# whenever evidence was produced, PASS or not. Exit 1 when REPO_PATH, a
+# temporary file or the helpers beside this file are unavailable, so that no
+# evidence exists.
 #
 # Executed, never sourced. autodrive_state.sh and autodrive_trust.sh are sourced
 # from beside this file and from nowhere else.
@@ -33,17 +40,24 @@
 # NO-TIMEOUT POLICY (issue #439): a test suite is never cut off mid-run.
 set -uo pipefail
 # This file's own directory, found before the cd below because BASH_SOURCE
-# may be relative. gadugi_scenario_results (#1517 D6) comes from
-# autodrive_trust.sh there, and is informational only.
+# may be relative. The repository type, whether gadugi is required, and
+# gadugi_scenario_results (#1517 D6, informational only) all come from
+# autodrive_trust.sh there. The helpers are required: without them the
+# tool cannot tell which measurements apply, so it produces no evidence.
 H="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
-{ [ -n "$H" ] && [ -f "$H/autodrive_state.sh" ] && [ -f "$H/autodrive_trust.sh" ]; } || H=""
+{ [ -n "$H" ] && [ -f "$H/autodrive_state.sh" ] && [ -f "$H/autodrive_trust.sh" ]; } || {
+  echo "ERROR: autodrive-qa-helpers-not-found: autodrive_state.sh and autodrive_trust.sh are not beside autodrive_qa_evidence.sh" >&2; exit 1; }
 cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }
 ROOT="$(pwd -P)"
 EVIDENCE="${AUTODRIVE_QA_EVIDENCE:-}"
-# Criterion 1 is two measurements, and both always run so the evidence
-# lists every cause at once: the repository's suite commands, and the
-# qa-team scenarios validated and run with gadugi-test. qa_status is
-# PASS only when both pass; qa_reason names the first failing check.
+KIND="$(. "$H/autodrive_trust.sh" && autodrive_repo_type "$ROOT")" || KIND=""
+GREQ="$(. "$H/autodrive_trust.sh" && autodrive_gadugi_required "$ROOT")" || GREQ=""
+case "${KIND}:${GREQ}" in
+  rust-cli:true|rust-cli:false|node:true|python:true|python:false|unknown:true|unknown:false) ;;
+  *) echo "ERROR: autodrive-qa-helpers-not-found: autodrive_trust.sh beside autodrive_qa_evidence.sh gave no repository type (${KIND:-none}:${GREQ:-none})" >&2; exit 1 ;;
+esac
+# qa_status is PASS only when every measurement that applies passes;
+# qa_reason names the first failing check.
 # Free text is sanitised before it reaches the JSON below: no quotes,
 # backslashes or control bytes, so a hostile log line or directory name
 # can neither break the evidence nor carry terminal escapes.
@@ -84,12 +98,13 @@ if [ -n "${AUTODRIVE_QA_COMMAND+x}" ] || [ -n "${AUTODRIVE_QA_COMMANDS+x}" ]; th
     case "$(printf '%s' "$line" | sed 's/^[[:space:]]*//')" in ''|'#'*) continue ;; esac
     KINDS+=(entry); TEXTS+=("$line")
   done <<< "${AUTODRIVE_QA_COMMANDS:-}"
-elif [ -f Cargo.toml ]; then
-  TYPE="rust-cli"; KINDS+=(detected); TEXTS+=("cargo test --workspace --locked --no-fail-fast")
-elif [ -f package.json ]; then
-  TYPE="node"; KINDS+=(detected); TEXTS+=("npm test")
-elif [ -f pyproject.toml ] || [ -f setup.py ]; then
-  TYPE="python"; KINDS+=(detected); TEXTS+=("pytest")
+else
+  TYPE="$KIND"
+  case "$KIND" in
+    rust-cli) KINDS+=(detected); TEXTS+=("cargo test --workspace --locked --no-fail-fast") ;;
+    node) KINDS+=(detected); TEXTS+=("npm test") ;;
+    python) KINDS+=(detected); TEXTS+=("pytest") ;;
+  esac
 fi
 LOG="$(mktemp -t autodrive-qa-XXXXXX)" || { echo "ERROR: cannot create a temporary log" >&2; exit 1; }
 CMDTEXT=""; RAN=0; FIRST_NZ=""; S_FAILED="false"; S_MISSING="false"; S_NOTINST="false"
@@ -126,22 +141,31 @@ tail -n 60 "$LOG" >&2 || true
 rm -f "$LOG"
 
 # --- the scenario directory ------------------------------------------
-# AUTODRIVE_QA_SCENARIO_DIR from the environment only, else the first of
-# tests/agentic, tests/gadugi/scenarios (amplihack-rs) and scenarios that
-# exists, else tests/agentic. An override naming a missing directory means no scenarios.
-SDIR_IN="${AUTODRIVE_QA_SCENARIO_DIR:-}"
-if [ -z "$SDIR_IN" ]; then
-  SDIR_IN="tests/agentic"
-  for d in tests/agentic tests/gadugi/scenarios scenarios; do [ -d "${ROOT}/${d}" ] && { SDIR_IN="$d"; break; }; done
+# Searched only where gadugi is required. AUTODRIVE_QA_SCENARIO_DIR comes
+# from the environment only. Without it the directory is the first of
+# tests/agentic, tests/gadugi/scenarios and scenarios that exists, else
+# tests/agentic. An override naming a missing directory means no scenarios.
+COUNT=0; SCEN=""; FILES=(); SYMLINKED=""; NONREG=""; SYMCOUNT=0; ODD=(); SDIR=""; SREL=""
+if [ "$GREQ" = "true" ]; then
+  SDIR_IN="${AUTODRIVE_QA_SCENARIO_DIR:-}"
+  if [ -z "$SDIR_IN" ]; then
+    SDIR_IN="tests/agentic"
+    for d in tests/agentic tests/gadugi/scenarios scenarios; do [ -d "${ROOT}/${d}" ] && { SDIR_IN="$d"; break; }; done
+  fi
+  [ "$SDIR_IN" = "/" ] || SDIR_IN="${SDIR_IN%/}"
+  case "$SDIR_IN" in /*) SDIR="$SDIR_IN" ;; *) SDIR="${ROOT}/${SDIR_IN}" ;; esac
+  case "$SDIR" in "${ROOT}/"*) SREL="${SDIR#"${ROOT}/"}" ;; *) SREL="$SDIR" ;; esac
+elif [ "$KIND" = "rust-cli" ] && [ -d "${ROOT}/tests/parity/scenarios" ]; then
+  # qa-team's Rust CLI parity fixtures, listed as main listed them; cargo
+  # test runs them. Informational: nothing decides a pass from the list.
+  while IFS= read -r f; do
+    [ -n "$f" ] && SCEN="${SCEN}${SCEN:+ }tests/parity/scenarios/${f##*/}"
+  done < <(find "${ROOT}/tests/parity/scenarios" -maxdepth 1 -type f \( -name '*.yaml' -o -name '*.yml' \) 2>/dev/null | LC_ALL=C sort)
 fi
-[ "$SDIR_IN" = "/" ] || SDIR_IN="${SDIR_IN%/}"
-case "$SDIR_IN" in /*) SDIR="$SDIR_IN" ;; *) SDIR="${ROOT}/${SDIR_IN}" ;; esac
-case "$SDIR" in "${ROOT}/"*) SREL="${SDIR#"${ROOT}/"}" ;; *) SREL="$SDIR" ;; esac
 # Top-level regular files only: gadugi-test validate -d does not read
 # subdirectories. A symlinked or non-regular *.yaml entry is never run, so
 # it is named here and, once validate passes, fails like a failed run.
-COUNT=0; SCEN=""; FILES=(); SYMLINKED=""; NONREG=""; SYMCOUNT=0; ODD=()
-if [ -d "$SDIR" ]; then
+if [ -n "$SDIR" ] && [ -d "$SDIR" ]; then
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     COUNT=$((COUNT + 1)); SCEN="${SCEN}${SCEN:+ }${SREL}/${f##*/}"; FILES+=("$f")
@@ -156,12 +180,17 @@ fi
 
 # --- gadugi-test -----------------------------------------------------
 RES="$(mktemp "${TMPDIR:-/tmp}/autodrive-results.XXXXXX" 2>/dev/null)" || { echo "ERROR: cannot create a temporary log" >&2; exit 1; }
-# A missing gadugi-test stops every gadugi check, and a failed validate
-# stops every run; once validate passes, every scenario runs. Its own
-# per-command default limit applies; nothing here adds one.
+# Where gadugi is not required, gadugi-test is never called, installed or
+# not, and gadugi_status is NOT_REQUIRED. Elsewhere a missing gadugi-test
+# stops every gadugi check, and a failed validate stops every run; once
+# validate passes, every scenario runs. Its own per-command default limit
+# applies; nothing here adds one.
 G_STATUS=""; G_VRC=""; G_RRC=""; RUN_NZ=""; VALIDATED=0; RUNS=0; PASSED=0; FAILED=0
 UNNAMED=""; RUNFAIL=""; STAGEFAIL=""; SYMFAIL=""
-if ! command -v gadugi-test >/dev/null 2>&1; then
+if [ "$GREQ" = "false" ]; then
+  G_STATUS="NOT_REQUIRED"
+  echo "INFO: gadugi-test is not part of criterion 1 in a ${KIND} repository (qa-team's repo-type table); AUTODRIVE_QA_SCENARIO_DIR asks for it" >&2
+elif ! command -v gadugi-test >/dev/null 2>&1; then
   G_STATUS="NOT_INSTALLED"; cause "gadugi-test not installed"
 elif [ "$COUNT" = "0" ]; then
   # gadugi-test run exits 0 on an empty directory, so zero is checked here.
@@ -260,9 +289,7 @@ else
 fi
 [ -n "$SYMLINKED" ] && cause "symlinked scenario not run: ${SYMLINKED}"
 [ -n "$NONREG" ] && cause "non-regular scenario entry not run: ${NONREG}"
-RESULTS=""
-if [ -n "$H" ]; then RESULTS="$(. "$H/autodrive_state.sh" && . "$H/autodrive_trust.sh" && autodrive_scenario_results "$RES")" || RESULTS=""
-else echo "WARNING: autodrive_trust.sh not found; gadugi_scenario_results is empty." >&2; fi
+RESULTS="$(. "$H/autodrive_state.sh" && . "$H/autodrive_trust.sh" && autodrive_scenario_results "$RES")" || RESULTS=""
 rm -f -- "$RES"
 
 # --- qa_status and qa_reason -----------------------------------------
@@ -278,7 +305,11 @@ pick() { [ -n "$REASON" ] || REASON="$1"; }
 [ "$S_MISSING" = "true" ] && pick "qa-command-missing"
 [ "$S_NOTINST" = "true" ] && pick "qa-command-not-installed"
 [ "$G_STATUS" = "NOT_INSTALLED" ] && pick "gadugi-test-missing"
-if [ -z "$REASON" ] && { [ "$RAN" -eq 0 ] || [ "$G_STATUS" != "PASS" ] || [ "$PASSED" != "$COUNT" ]; }; then
+# The gadugi half is complete when it is not required (set only where GREQ
+# is false), or when every scenario found ran and passed.
+G_DONE="false"
+{ [ "$G_STATUS" = "NOT_REQUIRED" ] || { [ "$G_STATUS" = "PASS" ] && [ "$PASSED" = "$COUNT" ]; }; } && G_DONE="true"
+if [ -z "$REASON" ] && { [ "$RAN" -eq 0 ] || [ "$G_DONE" != "true" ]; }; then
   echo "ERROR: no check failed by name, yet the evidence is incomplete (suite commands run=${RAN}, gadugi=${G_STATUS}); refusing to report PASS." >&2
   REASON="qa-command-missing"
 fi
@@ -292,7 +323,7 @@ SUMMARY="$(printf '%s' "${CAUSES}${CAUSES:+${TAIL:+: }}${TAIL}" | san)"
 # The evidence format: every field a string, so a reader never has to guess a type.
 F='{"qa_status":"%s","qa_reason":"%s","qa_repo_type":"%s","qa_command":"%s",'
 F="${F}"'"qa_suite_commands_count":"%s","qa_scenarios":"%s","qa_exit_code":"%s",'
-F="${F}"'"qa_summary":"%s","qa_round":"%s","head_sha":"%s","gadugi_status":"%s",'
+F="${F}"'"qa_summary":"%s","qa_round":"%s","head_sha":"%s","gadugi_required":"%s","gadugi_status":"%s",'
 F="${F}"'"gadugi_validate_exit_code":"%s","gadugi_run_exit_code":"%s",'
 F="${F}"'"gadugi_scenario_count":"%s","gadugi_scenario_dir":"%s",'
 F="${F}"'"gadugi_scenarios_validated":"%s","gadugi_scenarios_run":"%s",'
@@ -302,7 +333,7 @@ F="${F}"'"gadugi_failed_scenarios":"%s","gadugi_scenario_results":"%s"}\n'
 OUT="$(printf "$F" \
   "$STATUS" "$REASON" "$TYPE" "$(printf '%s' "$CMDTEXT" | san | ascii | cut -c1-500)" "$RAN" \
   "$(printf '%s' "$SCEN" | san)" "$RC" "$SUMMARY" "$(printf '%s' "${AUTODRIVE_ROUND_LABEL:-round}" | san)" "$HEAD_SHA" \
-  "$G_STATUS" "$G_VRC" "$G_RRC" "$COUNT" "$(printf '%s' "$SREL" | san)" \
+  "$GREQ" "$G_STATUS" "$G_VRC" "$G_RRC" "$COUNT" "$(printf '%s' "$SREL" | san)" \
   "$VALIDATED" "$RUNS" "$PASSED" "$FAILED" \
   "$(printf '%s' "${UNNAMED} ${STAGEFAIL} ${RUNFAIL} ${SYMFAIL}" | san | tr -s ' ' | sed 's/^ //; s/ $//')" \
   "$(printf '%s' "$RESULTS" | san)")"

@@ -66,8 +66,10 @@ steps:
       exit 1
     output: "autodrive_tools_dir"
   # merge-ready refuses agents, so bash finds its files for step-02. A missing
-  # install, gadugi-test included, fails here by name, never as a blocker
-  # repeated every round (#1517).
+  # install fails here by name, never as a blocker repeated every round
+  # (#1517). That includes gadugi-test, but only where criterion 1 needs it:
+  # autodrive_gadugi_required says true for a Node repository or an
+  # operator-set AUTODRIVE_QA_SCENARIO_DIR (qa-team's repo-type table).
   - id: "step-00-merge-ready-files"
     type: "bash"
     parse_json: true
@@ -78,9 +80,11 @@ steps:
       [ -f "$R" ] || { echo "ERROR: merge-ready-skill-files-not-found: resolver autodrive_merge_ready_files.sh not found (${R})" >&2; exit 1; }
       # Executed, never sourced: it prints one JSON line or a named ERROR.
       OUT="$(bash "$R")" || exit 1
-      if ! command -v gadugi-test >/dev/null 2>&1; then
-        echo "ERROR: gadugi-test-not-installed: gadugi-test is not on PATH. Criterion 1 runs the qa-team scenarios" \
-          "with it in every repository type, and no agent can install it. Install it" \
+      # Anything but "false", an unreadable answer included, requires gadugi-test.
+      G="$(. "${AUTODRIVE_TOOLS_DIR:-${RECIPE_VAR_autodrive_tools_dir:-}}/autodrive_trust.sh" && autodrive_gadugi_required .)" || G=""
+      if [ "$G" != "false" ] && ! command -v gadugi-test >/dev/null 2>&1; then
+        echo "ERROR: gadugi-test-not-installed: gadugi-test is not on PATH. Criterion 1 runs this repository's qa-team scenarios" \
+          "with it (a Node repository, or AUTODRIVE_QA_SCENARIO_DIR set), and no agent can install it. Install it" \
           "(npm install -g github:rysweet/gadugi-agentic-test#6c120657798995b1b53399a5acf3693d418a2d8b) and run auto-drive again." >&2
         exit 1
       fi
@@ -173,10 +177,12 @@ steps:
 
       ## How auto-drive meets criteria 1, 3, 6 and 8
       - **Criterion 1:** met only when `qa_status` is `PASS`: every suite
-        command passed, and gadugi-test validated the scenarios in
-        `gadugi_scenario_dir` and ran each one in its own process. Otherwise
-        report it with `qa_reason` and `gadugi_status`. If the scenarios do not
-        cover this PR's change, report `qa-team-scenarios-do-not-cover-the-change`.
+        command passed and, where `gadugi_required` is `true`, gadugi-test
+        validated the scenarios in `gadugi_scenario_dir` and ran each one in
+        its own process. `gadugi_status` `NOT_REQUIRED` is qa-team's own rule
+        for Rust CLI and Python repositories, not a gap. Otherwise report it
+        with `qa_reason` and `gadugi_status`. If the tests do not cover this
+        PR's change, report `qa-team-scenarios-do-not-cover-the-change`.
       - **Criterion 3:** met when `crusty_status` is `DONE_CLEAN`: this run's
         crusty-old-engineer loop ended DONE with a CLEAN loop-written record,
         and bash checked that every commit after `crusty_reviewed_head_sha`
@@ -290,11 +296,14 @@ steps:
         the failing log and fix what it found. Rerun only a job you have
         positively identified as flaky, and say why.
       - **qa-team scenarios** with `gadugi_status` `NO_SCENARIOS`,
-        `VALIDATE_FAILED` or `RUN_FAILED`, or that miss the changed behaviour:
-        use `Skill(skill="qa-team")` and follow its auto-drive-to-merge
-        exception, which applies in every repository type, Rust CLI
-        repositories included. Write top-level `*.yaml` scenarios, each with a
-        top-level `name:`, in `gadugi_scenario_dir`. Run
+        `VALIDATE_FAILED` or `RUN_FAILED`, or tests that miss the changed
+        behaviour (`qa-team-scenarios-do-not-cover-the-change`): use
+        `Skill(skill="qa-team")` and follow its repo-type table. Where
+        `gadugi_required` is `false` (a Rust CLI or Python repository), add
+        the coverage to the suite command's tests, `cargo test` or `pytest`;
+        auto-drive runs no gadugi scenario there, so one clears nothing.
+        Where `gadugi_required` is `true`, write top-level `*.yaml`
+        scenarios, each with a top-level `name:`, in `gadugi_scenario_dir`. Run
         `gadugi-test validate -d <dir>`, then each scenario on its own
         (gadugi-agentic-test #207), never a whole directory:
         `gadugi-test run -d <dir> --scenario "<name>"`. Commit them. Never

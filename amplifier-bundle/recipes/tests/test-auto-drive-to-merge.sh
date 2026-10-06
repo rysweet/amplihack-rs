@@ -1030,11 +1030,15 @@ REC="${WORK}/mr.json"
 mr_rec MERGE_READY "${GATE_HEAD}" > "$REC"
 QA="${WORK}/qa.json"
 # Full qa evidence as autodrive-merge-evidence writes it after #1517: the 8
-# earlier fields plus the gadugi result. The gate requires gadugi_status=PASS
-# and a positive gadugi_scenario_count.
+# earlier fields plus the gadugi result. Where the gate's own
+# autodrive_gadugi_required says gadugi is required, it requires
+# gadugi_status=PASS and a positive gadugi_scenario_count. FX has no
+# Cargo.toml, package.json or pyproject.toml, so there it says false unless
+# AUTODRIVE_QA_SCENARIO_DIR is set, and PASS evidence with scenarios still merges.
 qa_fixture() { # qa_fixture <head_sha> <gadugi_status> <gadugi_scenario_count>
-  printf '{"qa_status":"PASS","qa_repo_type":"rust-cli","qa_command":"cargo test","qa_scenarios":"tests/agentic/a.yaml","qa_exit_code":"0","qa_summary":"ok","qa_round":"r","head_sha":"%s","gadugi_status":"%s","gadugi_validate_exit_code":"0","gadugi_run_exit_code":"0","gadugi_scenario_count":"%s","gadugi_scenario_dir":"tests/agentic"}' \
-    "$1" "$2" "$3"
+  local req="true"; [ "$2" = "NOT_REQUIRED" ] && req="false"
+  printf '{"qa_status":"PASS","qa_repo_type":"rust-cli","qa_command":"cargo test","qa_scenarios":"tests/agentic/a.yaml","qa_exit_code":"0","qa_summary":"ok","qa_round":"r","head_sha":"%s","gadugi_required":"%s","gadugi_status":"%s","gadugi_validate_exit_code":"0","gadugi_run_exit_code":"0","gadugi_scenario_count":"%s","gadugi_scenario_dir":"tests/agentic"}' \
+    "$1" "$req" "$2" "$3"
 }
 qa_fixture "${GATE_HEAD}" PASS 3 > "$QA"
 gate_run unreadable-ci --round-record "$REC" --qa-evidence "$QA"; rc=$?
@@ -1216,6 +1220,27 @@ QA_OLD="${WORK}/qa-8-fields.json"
 printf '{"qa_status":"PASS","qa_repo_type":"rust-cli","qa_command":"cargo test","qa_scenarios":"","qa_exit_code":"0","qa_summary":"ok","qa_round":"r","head_sha":"%s"}' "${GATE_HEAD}" > "$QA_OLD"
 gate_blocks "GATE-gadugi-missing-fields" "gadugi" \
   "8-field qa evidence written before gadugi was measured never merges" --qa-evidence "$QA_OLD"
+
+# Criterion 1 by repository type (#1517): NOT_REQUIRED evidence merges only
+# when the gate's own autodrive_gadugi_required, run on the checkout's files,
+# says false. The gate never takes that answer from the evidence.
+QA_NR="${WORK}/qa-gadugi-not-required.json"; qa_fixture "${GATE_HEAD}" NOT_REQUIRED 0 > "$QA_NR"
+gate_run green --round-record "$REC" --qa-evidence "$QA_NR" --dry-run; rc=$?
+if [ "$rc" -eq 0 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"DRY_RUN"' \
+   && grep -qF 'gadugi_required=false gadugi_status=NOT_REQUIRED' "${GATE_DIR}/err"; then
+  pass "GATE-gadugi-not-required" "where qa-team's repo-type table does not require gadugi, NOT_REQUIRED evidence reaches the merge step"
+else
+  fail "GATE-gadugi-not-required" "rc=${rc}: ${GATE_OUT} | $(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
+fi
+AUTODRIVE_QA_SCENARIO_DIR=tests/agentic gate_blocks "GATE-gadugi-not-required-but-opted-in" "gadugi-test scenarios were not validated" \
+  "NOT_REQUIRED evidence never merges when AUTODRIVE_QA_SCENARIO_DIR asks for gadugi" --qa-evidence "$QA_NR"
+: > "${FX}/package.json"
+gate_blocks "GATE-gadugi-not-required-node" "gadugi-test scenarios were not validated" \
+  "NOT_REQUIRED evidence never merges a Node repository, whatever the evidence says" --qa-evidence "$QA_NR"
+rm -f "${FX}/package.json"
+GATE_LONE_G="${WORK}/gate-lonely-gadugi"; mkdir -p "${GATE_LONE_G}"; cp "${GATE}" "${GATE_LONE_G}/"
+GATE_SCRIPT="${GATE_LONE_G}/autodrive_merge_gate.sh" gate_blocks "GATE-gadugi-rule-unreadable" "gadugi-test scenarios were not validated" \
+  "without autodrive_trust.sh beside the gate, gadugi counts as required and NOT_REQUIRED never merges" --qa-evidence "$QA_NR"
 
 GATE_CRUSTY=none gate_blocks "GATE-crusty-absent" "crusty" \
   "no crusty-loop marker in the state dir never merges" --qa-evidence "$QA"
@@ -1980,10 +2005,16 @@ S00_BODY="$(extract_step_command "${RECIPES}/autodrive-merge-round.yaml" "step-0
 if [[ -z "${S00_BODY}" ]]; then
   fail "STEP00-exists" "autodrive-merge-round.yaml has no step-00-merge-ready-files command"
 else
-  # step-00 also needs gadugi-test on PATH. S00_GADUGI_BIN holds a stub that
-  # is never run, only found; an empty directory there is the missing case.
+  # step-00 also needs gadugi-test on PATH where criterion 1 needs it
+  # (autodrive_gadugi_required). S00_GADUGI_BIN holds a stub that is never
+  # run, only found; an empty directory there is the missing case. The
+  # S00_RT_* directories are repositories of each type.
   S00_GADUGI_BIN="${WORK_PHYS}/s00-gadugi-bin"; S00_NO_GADUGI_BIN="${WORK_PHYS}/s00-no-gadugi-bin"
   mkdir -p "${S00_GADUGI_BIN}" "${S00_NO_GADUGI_BIN}"
+  S00_RT="${WORK_PHYS}/s00-rt"
+  for t in node:package.json rust:Cargo.toml python:pyproject.toml; do
+    mkdir -p "${S00_RT}/${t%%:*}"; : > "${S00_RT}/${t%%:*}/${t#*:}"
+  done
   printf '#!/bin/sh\necho "gadugi-test must not run in step-00" >&2\nexit 99\n' > "${S00_GADUGI_BIN}/gadugi-test"
   chmod +x "${S00_GADUGI_BIN}/gadugi-test"
   if PATH="/usr/bin:/bin" command -v gadugi-test >/dev/null 2>&1; then
@@ -1992,10 +2023,10 @@ else
   fi
   # The tools directory is <AMPLIHACK_HOME>/amplifier-bundle/tools, as
   # step-00-tools-dir would have found it.
-  s00_run() { # s00_run <AMPLIHACK_HOME> [REPO_PATH] [gadugi bin dir] -> S00_RC, S00_OUT (last stdout line), S00_ERR
+  s00_run() { # s00_run <AMPLIHACK_HOME> [REPO_PATH] [gadugi bin dir] [VAR=value] -> S00_RC, S00_OUT (last stdout line), S00_ERR
     rs_tree
     ( cd "${RS}/plain" && env -i PATH="${STUB_BIN}:${3:-${S00_GADUGI_BIN}}:/usr/bin:/bin" REAL_AMPLIHACK="${REAL_AMPLIHACK}" HOME="${RS}/home" \
-        AMPLIHACK_HOME="$1" RECIPE_VAR_autodrive_tools_dir="$1/amplifier-bundle/tools" REPO_PATH="${2:-${RS}/plain}" \
+        AMPLIHACK_HOME="$1" RECIPE_VAR_autodrive_tools_dir="$1/amplifier-bundle/tools" REPO_PATH="${2:-${RS}/plain}" ${4:+"$4"} \
         bash -c "${S00_BODY}" >"${RS}.out" 2>"${RS}.err" ); S00_RC=$?
     S00_OUT="$(tail -n 1 "${RS}.out")"; S00_ERR="$(cat "${RS}.err")"
   }
@@ -2023,12 +2054,13 @@ else
   else
     fail "STEP00-resolver-missing-fails" "rc=${S00_RC} err=$(printf '%s' "${S00_ERR}" | tail -n 3 | tr '\n' ' ')"
   fi
-  # gadugi-test is not on PATH: the round stops here by name, before any
-  # test run, instead of reporting gadugi-test-missing every round to STUCK.
-  s00_run "${REPO_ROOT}" "" "${S00_NO_GADUGI_BIN}"
+  # gadugi-test is not on PATH in a Node repository, where criterion 1 needs
+  # it: the round stops here by name, before any test run, instead of
+  # reporting gadugi-test-missing every round to STUCK.
+  s00_run "${REPO_ROOT}" "${S00_RT}/node" "${S00_NO_GADUGI_BIN}"
   if [ "${S00_RC}" -ne 0 ] && [ -z "$(cat "${RS}.out")" ] \
      && printf '%s\n' "${S00_ERR}" | grep -q '^ERROR: gadugi-test-not-installed: gadugi-test is not on PATH'; then
-    pass "STEP00-gadugi-missing-fails" "a missing gadugi-test fails step-00 with ERROR: gadugi-test-not-installed and no merge-ready output"
+    pass "STEP00-gadugi-missing-fails" "a missing gadugi-test fails step-00 in a Node repository with ERROR: gadugi-test-not-installed and no merge-ready output"
   else
     fail "STEP00-gadugi-missing-fails" "rc=${S00_RC} out=$(cat "${RS}.out") err=$(printf '%s' "${S00_ERR}" | tail -n 3 | tr '\n' ' ')"
   fi
@@ -2036,6 +2068,24 @@ else
     pass "STEP00-gadugi-missing-says-how" "the error says how to install gadugi-test"
   else
     fail "STEP00-gadugi-missing-says-how" "err=$(printf '%s' "${S00_ERR}" | tail -n 3 | tr '\n' ' ')"
+  fi
+  # qa-team's repo-type table: a Rust CLI or Python repository, or one with
+  # no marker file, runs without gadugi-test; AUTODRIVE_QA_SCENARIO_DIR asks for it.
+  for rt in rust python plain; do
+    repo="${S00_RT}/${rt}"; [ "$rt" = plain ] && repo=""
+    s00_run "${REPO_ROOT}" "${repo}" "${S00_NO_GADUGI_BIN}"
+    if [ "${S00_RC}" -eq 0 ] && [ "$(printf '%s' "${S00_OUT}" | jq -r .skill_md 2>/dev/null)" != "" ] \
+       && ! printf '%s' "${S00_ERR}" | grep -q 'gadugi-test-not-installed'; then
+      pass "STEP00-gadugi-not-required-${rt}" "step-00 needs no gadugi-test where qa-team does not require gadugi (${rt})"
+    else
+      fail "STEP00-gadugi-not-required-${rt}" "rc=${S00_RC} out=${S00_OUT} err=$(printf '%s' "${S00_ERR}" | tail -n 3 | tr '\n' ' ')"
+    fi
+  done
+  s00_run "${REPO_ROOT}" "${S00_RT}/rust" "${S00_NO_GADUGI_BIN}" AUTODRIVE_QA_SCENARIO_DIR=tests/gadugi/scenarios
+  if [ "${S00_RC}" -ne 0 ] && printf '%s\n' "${S00_ERR}" | grep -q '^ERROR: gadugi-test-not-installed:'; then
+    pass "STEP00-gadugi-scenario-dir-opt-in" "AUTODRIVE_QA_SCENARIO_DIR makes step-00 require gadugi-test in a Rust CLI repository"
+  else
+    fail "STEP00-gadugi-scenario-dir-opt-in" "rc=${S00_RC} out=${S00_OUT} err=$(printf '%s' "${S00_ERR}" | tail -n 3 | tr '\n' ' ')"
   fi
   # A REPO_PATH that does not exist fails by name; it never measures the cwd.
   s00_run "${REPO_ROOT}" "${WORK_PHYS}/no-such-repo"
@@ -2049,40 +2099,71 @@ fi
 
 # The same check runs first in auto-drive-to-merge.yaml, before the build and
 # the crusty loop (PR #1520 review): a missing gadugi-test costs seconds there,
-# not hours.
+# not hours. It follows the same rule as step-00: only where criterion 1
+# needs gadugi (autodrive_gadugi_required).
 PRQ_BODY="$(extract_step_command "${RECIPES}/auto-drive-to-merge.yaml" autodrive-prerequisites)"
 if [[ -z "${PRQ_BODY}" ]]; then
   fail "PREREQ-exists" "auto-drive-to-merge.yaml has no autodrive-prerequisites command"
 else
-  PRQ_OUT="$(env -i HOME="${TEST_HOME}" PATH="${S00_NO_GADUGI_BIN:-${WORK_PHYS}/none}:/usr/bin:/bin" bash -c "${PRQ_BODY}" 2>"${WORK_PHYS}/prq.err")"; rc=$?
+  prq_run() { # prq_run <REPO_PATH> <bin dir> [VAR=value ...] -> rc, PRQ_OUT, prq.err
+    local repo="$1" bin="$2"; shift 2
+    PRQ_OUT="$(env -i HOME="${TEST_HOME}" PATH="${bin}:/usr/bin:/bin" AMPLIHACK_HOME="${REPO_ROOT}" REPO_PATH="${repo}" "$@" \
+      bash -c "${PRQ_BODY}" 2>"${WORK_PHYS}/prq.err")"
+  }
+  prq_run "${S00_RT:-${WORK_PHYS}/none}/node" "${S00_NO_GADUGI_BIN:-${WORK_PHYS}/none}"; rc=$?
   if [ "$rc" -ne 0 ] && [ -z "${PRQ_OUT}" ] \
      && grep -q '^ERROR: gadugi-test-not-installed: gadugi-test is not on PATH' "${WORK_PHYS}/prq.err" \
      && grep -qF 'npm install -g github:rysweet/gadugi-agentic-test#6c120657798995b1b53399a5acf3693d418a2d8b' "${WORK_PHYS}/prq.err"; then
-    pass "PREREQ-gadugi-missing-fails" "a missing gadugi-test stops auto-drive before the build, by name, with the install command"
+    pass "PREREQ-gadugi-missing-fails" "a missing gadugi-test stops auto-drive on a Node repository before the build, by name, with the install command"
   else
     fail "PREREQ-gadugi-missing-fails" "rc=${rc} out=${PRQ_OUT} err=$(tr '\n' ' ' < "${WORK_PHYS}/prq.err")"
   fi
-  PRQ_OUT="$(env -i HOME="${TEST_HOME}" PATH="${S00_GADUGI_BIN:-${WORK_PHYS}/none}:/usr/bin:/bin" bash -c "${PRQ_BODY}" 2>"${WORK_PHYS}/prq.err")"; rc=$?
+  prq_run "${S00_RT:-${WORK_PHYS}/none}/node" "${S00_GADUGI_BIN:-${WORK_PHYS}/none}"; rc=$?
   if [ "$rc" -eq 0 ] && [ "${PRQ_OUT}" = '{"gadugi_test":"found"}' ]; then
     pass "PREREQ-gadugi-found" "with gadugi-test on PATH the run goes on, and the tool is not run"
   else
     fail "PREREQ-gadugi-found" "rc=${rc} out=${PRQ_OUT} err=$(tr '\n' ' ' < "${WORK_PHYS}/prq.err")"
+  fi
+  for rt in rust python; do
+    prq_run "${S00_RT:-${WORK_PHYS}/none}/${rt}" "${S00_NO_GADUGI_BIN:-${WORK_PHYS}/none}"; rc=$?
+    if [ "$rc" -eq 0 ] && [ "${PRQ_OUT}" = '{"gadugi_test":"not-required"}' ] \
+       && ! grep -q 'gadugi-test-not-installed' "${WORK_PHYS}/prq.err"; then
+      pass "PREREQ-gadugi-not-required-${rt}" "a ${rt} repository starts without gadugi-test, as qa-team's repo-type table says"
+    else
+      fail "PREREQ-gadugi-not-required-${rt}" "rc=${rc} out=${PRQ_OUT} err=$(tr '\n' ' ' < "${WORK_PHYS}/prq.err")"
+    fi
+  done
+  prq_run "${S00_RT:-${WORK_PHYS}/none}/rust" "${S00_NO_GADUGI_BIN:-${WORK_PHYS}/none}" AUTODRIVE_QA_SCENARIO_DIR=tests/gadugi/scenarios; rc=$?
+  if [ "$rc" -ne 0 ] && grep -q '^ERROR: gadugi-test-not-installed:' "${WORK_PHYS}/prq.err"; then
+    pass "PREREQ-gadugi-scenario-dir-opt-in" "AUTODRIVE_QA_SCENARIO_DIR makes auto-drive require gadugi-test before the build in a Rust CLI repository"
+  else
+    fail "PREREQ-gadugi-scenario-dir-opt-in" "rc=${rc} out=${PRQ_OUT} err=$(tr '\n' ' ' < "${WORK_PHYS}/prq.err")"
+  fi
+  # Without autodrive_trust.sh under any root it cannot tell, so it stops by name.
+  PRQ_EMPTY_HOME="${WORK_PHYS}/prq-empty-home"; mkdir -p "${PRQ_EMPTY_HOME}"
+  PRQ_OUT="$(env -i HOME="${PRQ_EMPTY_HOME}" PATH="${S00_GADUGI_BIN:-${WORK_PHYS}/none}:/usr/bin:/bin" REPO_PATH="${S00_RT:-${WORK_PHYS}/none}/rust" \
+    bash -c "${PRQ_BODY}" 2>"${WORK_PHYS}/prq.err")"; rc=$?
+  if [ "$rc" -ne 0 ] && [ -z "${PRQ_OUT}" ] && grep -q '^ERROR: autodrive-tools-not-found: autodrive_trust.sh not found (searched ' "${WORK_PHYS}/prq.err"; then
+    pass "PREREQ-tools-not-found" "with no autodrive_trust.sh to ask, auto-drive stops before the build by name"
+  else
+    fail "PREREQ-tools-not-found" "rc=${rc} out=${PRQ_OUT} err=$(tr '\n' ' ' < "${WORK_PHYS}/prq.err")"
   fi
 fi
 
 # ---------------------------------------------------------------------------
 # 6b. qa evidence: the repository test plus gadugi-test, on the REAL step body.
 # ---------------------------------------------------------------------------
-# The step runs inside a scratch git repository with stub `cargo`, `npm` and
-# `gadugi-test` on a PATH restricted to the stubs plus /usr/bin:/bin, so an
-# installed gadugi-test can never hide the "not installed" case.
+# The step runs inside a scratch git repository with stub `cargo`, `npm`,
+# `pytest` and `gadugi-test` on a PATH restricted to the stubs plus
+# /usr/bin:/bin, so an installed gadugi-test can never hide the "not
+# installed" case.
 command -v jq >/dev/null 2>&1 || { echo "HARNESS-ERROR: jq is required to check the qa evidence JSON" >&2; exit 2; }
 EV_BODY="$(extract_step_command "${RECIPES}/autodrive-merge-evidence.yaml" "step-02-qa-team-scenarios")"
 [[ -n "${EV_BODY}" ]] || { echo "HARNESS-ERROR: could not extract the qa evidence step body" >&2; exit 2; }
 
 EV_FULL="${WORK_PHYS}/ev-stubs-full"; EV_NOG="${WORK_PHYS}/ev-stubs-nogadugi"
 mkdir -p "${EV_FULL}" "${EV_NOG}"
-for tool in cargo npm; do
+for tool in cargo npm pytest; do
   cat > "${EV_FULL}/${tool}" <<STUB
 #!/bin/sh
 echo "${tool} \$*" >> "\${EV_CALLS:-/dev/null}"
@@ -2172,7 +2253,7 @@ ev_run() { # ev_run <stub-dir> [VAR=value ...] -> runs the step; EV_OUT = last s
 }
 evf() { printf '%s' "${EV_OUT}" | jq -r --arg k "$1" '.[$k] // "<absent>"' 2>/dev/null; }
 EV_KEYS="qa_status qa_reason qa_repo_type qa_command qa_suite_commands_count qa_scenarios qa_exit_code qa_summary qa_round head_sha
-gadugi_status gadugi_validate_exit_code gadugi_run_exit_code gadugi_scenario_count gadugi_scenario_dir
+gadugi_required gadugi_status gadugi_validate_exit_code gadugi_run_exit_code gadugi_scenario_count gadugi_scenario_dir
 gadugi_scenarios_validated gadugi_scenarios_run gadugi_scenarios_passed gadugi_scenarios_failed gadugi_failed_scenarios
 gadugi_scenario_results"
 ev_expect() { # ev_expect <label> <field>=<value> ...
@@ -2189,6 +2270,10 @@ ev_expect() { # ev_expect <label> <field>=<value> ...
            gadugi_scenarios_failed qa_suite_commands_count; do
     printf '%s' "$(evf "$k")" | grep -qE '^[0-9]+$' || bad="${bad} ${k}='$(evf "$k")'(not digits)"
   done
+  case "$(evf gadugi_required):$(evf gadugi_status)" in
+    false:NOT_REQUIRED|true:PASS|true:NOT_INSTALLED|true:NO_SCENARIOS|true:VALIDATE_FAILED|true:RUN_FAILED) ;;
+    *) bad="${bad} gadugi_required/gadugi_status='$(evf gadugi_required)/$(evf gadugi_status)'(not a valid pair)" ;;
+  esac
   case "$(evf qa_status):$(evf qa_reason)" in
     PASS:) ;;
     FAIL:qa-command-failed|FAIL:no-scenarios|FAIL:gadugi-validate-failed|FAIL:gadugi-scenario-unnamed|FAIL:gadugi-run-failed) ;;
@@ -2235,12 +2320,16 @@ ev_expect_runs() {
   else fail "$label" "${bad} | calls: $(tr '\n' '|' < "${EV_CALLS}")"; fi
 }
 
+# Cases 1 to 29 measure the gadugi half, so they run in a Node repository,
+# where qa-team's repo-type table requires gadugi (autodrive_gadugi_required).
+# Case 30 covers the repository types that do not require it.
+#
 # 1. Everything passes. Non-scenario files do not count; validate runs once on
 # the whole directory, then one run per scenario file.
-ev_repo Cargo.toml; ev_scen tests/agentic/b.yml tests/agentic/a.yaml tests/agentic/README.md
+ev_repo package.json; ev_scen tests/agentic/b.yml tests/agentic/a.yaml tests/agentic/README.md
 ev_run "${EV_FULL}"
-ev_expect "QA-pass" qa_status=PASS qa_reason="" gadugi_status=PASS qa_repo_type=rust-cli \
-  qa_command="cargo test --workspace --locked --no-fail-fast" qa_exit_code=0 qa_round=round-7 \
+ev_expect "QA-pass" qa_status=PASS qa_reason="" gadugi_required=true gadugi_status=PASS qa_repo_type=node \
+  qa_command="npm test" qa_exit_code=0 qa_round=round-7 \
   qa_suite_commands_count=1 gadugi_validate_exit_code=0 gadugi_run_exit_code=0 gadugi_scenario_count=2 \
   gadugi_scenarios_validated=2 gadugi_scenarios_run=2 gadugi_scenarios_passed=2 gadugi_scenarios_failed=0 \
   gadugi_failed_scenarios="" gadugi_scenario_dir=tests/agentic qa_scenarios="tests/agentic/a.yaml tests/agentic/b.yml" \
@@ -2248,7 +2337,7 @@ ev_expect "QA-pass" qa_status=PASS qa_reason="" gadugi_status=PASS qa_repo_type=
 ev_expect_runs "QA-pass-runs" a b
 V_AT="$(grep -n '^gadugi-test validate ' "${EV_CALLS}" | cut -d: -f1 | tr '\n' ' ')"
 R_FIRST="$(grep -n '^gadugi-test run ' "${EV_CALLS}" | head -n 1 | cut -d: -f1)"
-if [ "$(grep -cxF 'cargo test --workspace --locked --no-fail-fast' "${EV_CALLS}")" = "1" ] \
+if [ "$(grep -cxF 'npm test' "${EV_CALLS}")" = "1" ] \
    && [ "$(printf '%s' "$V_AT" | wc -w | tr -d ' ')" = "1" ] && [ -n "${R_FIRST}" ] && [ "${V_AT% }" -lt "${R_FIRST}" ] \
    && ev_called "gadugi-test validate -d ${EV_REPO}/tests/agentic abs=y scenario=[<none>] files=2 cwd=${EV_REPO}"; then
   pass "QA-pass-order" "repo test, then gadugi-test validate -d <abs dir> once, then the per-scenario runs"
@@ -2285,7 +2374,7 @@ else
 fi
 
 # 2. An existing but empty scenario directory: no-scenarios, and gadugi never runs.
-ev_repo Cargo.toml; mkdir -p "${EV_REPO}/tests/agentic"
+ev_repo package.json; mkdir -p "${EV_REPO}/tests/agentic"
 ev_run "${EV_FULL}"
 ev_expect "QA-empty-dir" qa_status=FAIL qa_reason=no-scenarios gadugi_status=NO_SCENARIOS gadugi_scenario_count=0 \
   gadugi_scenario_dir=tests/agentic qa_scenarios="" gadugi_validate_exit_code="" gadugi_run_exit_code="" \
@@ -2298,7 +2387,7 @@ else
 fi
 
 # 3. gadugi-test validate fails: no scenario runs.
-ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml tests/agentic/b.yaml
+ev_repo package.json; ev_scen tests/agentic/a.yaml tests/agentic/b.yaml
 ev_run "${EV_FULL}" EV_GADUGI_VALIDATE_RC=1
 ev_expect "QA-validate-failed" qa_status=FAIL qa_reason=gadugi-validate-failed gadugi_status=VALIDATE_FAILED \
   gadugi_validate_exit_code=1 gadugi_run_exit_code="" qa_exit_code=0 gadugi_scenario_count=2 \
@@ -2311,7 +2400,7 @@ else
 fi
 
 # 4. One of two scenario runs fails: both still run, and the failed one is named.
-ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml tests/agentic/b.yaml
+ev_repo package.json; ev_scen tests/agentic/a.yaml tests/agentic/b.yaml
 ev_run "${EV_FULL}" EV_GADUGI_FAIL_NAME=a
 ev_expect "QA-run-failed" qa_status=FAIL qa_reason=gadugi-run-failed gadugi_status=RUN_FAILED \
   gadugi_validate_exit_code=0 gadugi_run_exit_code=1 qa_exit_code=0 gadugi_scenario_count=2 \
@@ -2325,7 +2414,7 @@ else
 fi
 
 # 5. gadugi-test is not installed: BLOCKED, and the directory facts are still recorded.
-ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml tests/agentic/b.yaml
+ev_repo package.json; ev_scen tests/agentic/a.yaml tests/agentic/b.yaml
 ev_run "${EV_NOG}"
 ev_expect "QA-gadugi-missing" qa_status=BLOCKED qa_reason=gadugi-test-missing gadugi_status=NOT_INSTALLED qa_exit_code=0 \
   gadugi_scenario_count=2 gadugi_scenario_dir=tests/agentic \
@@ -2339,7 +2428,7 @@ else
 fi
 
 # 6. The repository test fails; gadugi still runs so every cause is listed at once.
-ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml
+ev_repo package.json; ev_scen tests/agentic/a.yaml
 ev_run "${EV_FULL}" STUB_REPO_TEST_RC=1 STUB_REPO_TEST_OUT='test result: FAILED. 1 failed'
 ev_expect "QA-repo-test-failed" qa_status=FAIL qa_reason=qa-command-failed gadugi_status=PASS qa_exit_code=1 \
   gadugi_validate_exit_code=0 gadugi_run_exit_code=0 gadugi_scenarios_passed=1
@@ -2351,7 +2440,7 @@ esac
 # 7. Two causes, with a long log: qa_reason is the first by precedence, and
 # both cause phrases come first and survive the cut.
 LONG_LINE="$(printf 'x%.0s' $(seq 1 250))"
-ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml
+ev_repo package.json; ev_scen tests/agentic/a.yaml
 ev_run "${EV_FULL}" STUB_REPO_TEST_RC=101 EV_GADUGI_FAIL_NAME=a \
   STUB_REPO_TEST_OUT="${LONG_LINE}\n${LONG_LINE}\n${LONG_LINE}\n${LONG_LINE}\n${LONG_LINE}"
 ev_expect "QA-two-causes" qa_status=FAIL qa_reason=qa-command-failed gadugi_status=RUN_FAILED \
@@ -2362,7 +2451,7 @@ case "$(evf qa_summary)" in
 esac
 
 # 8. The override directory wins over tests/agentic.
-ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml tests/gadugi/scenarios/x.yaml tests/gadugi/scenarios/y.yaml
+ev_repo package.json; ev_scen tests/agentic/a.yaml tests/gadugi/scenarios/x.yaml tests/gadugi/scenarios/y.yaml
 ev_run "${EV_FULL}" AUTODRIVE_QA_SCENARIO_DIR=tests/gadugi/scenarios
 ev_expect "QA-override-dir" qa_status=PASS qa_reason="" gadugi_status=PASS gadugi_scenario_count=2 \
   gadugi_scenario_dir=tests/gadugi/scenarios \
@@ -2375,21 +2464,23 @@ fi
 ev_expect_runs "QA-override-dir-runs" x y
 
 # 8b. An absolute override is used as given.
-ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml
+ev_repo package.json; ev_scen tests/agentic/a.yaml
 ABS_SCEN="${WORK_PHYS}/abs-scenarios"; mkdir -p "${ABS_SCEN}"; printf 'name: outside\n' > "${ABS_SCEN}/o.yaml"
 ev_run "${EV_FULL}" AUTODRIVE_QA_SCENARIO_DIR="${ABS_SCEN}"
 ev_expect "QA-override-absolute" qa_status=PASS gadugi_scenario_dir="${ABS_SCEN}" gadugi_scenario_count=1
 ev_expect_runs "QA-override-absolute-runs" outside
 
 # 9. An override that names a missing directory has no fallback.
-ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml
+ev_repo package.json; ev_scen tests/agentic/a.yaml
 ev_run "${EV_FULL}" AUTODRIVE_QA_SCENARIO_DIR=tests/does-not-exist
 ev_expect "QA-override-missing" qa_status=FAIL qa_reason=no-scenarios gadugi_status=NO_SCENARIOS \
   gadugi_scenario_count=0 gadugi_scenario_dir=tests/does-not-exist
 
 # 9b. Without an override, the default lookup is tests/agentic, then
-# tests/gadugi/scenarios (where amplihack-rs keeps its scenarios), then scenarios.
-ev_repo Cargo.toml; mkdir -p "${EV_REPO}/tests/gadugi/scenarios"
+# tests/gadugi/scenarios (where amplihack-rs keeps its scenarios), then
+# scenarios. The first case uses this repository's real scenario files; in a
+# Rust CLI repository like this one they run only on request (case 30).
+ev_repo package.json; mkdir -p "${EV_REPO}/tests/gadugi/scenarios"
 cp "${REPO_ROOT}"/tests/gadugi/scenarios/*.yaml "${EV_REPO}/tests/gadugi/scenarios/" 2>/dev/null
 RS_SCEN_COUNT="$(find "${EV_REPO}/tests/gadugi/scenarios" -maxdepth 1 -type f -name '*.yaml' | grep -c .)"
 ev_run "${EV_FULL}"
@@ -2399,21 +2490,21 @@ if [ "${RS_SCEN_COUNT}" -gt 0 ]; then
 else
   fail "QA-default-this-repo-layout" "this repository has no tests/gadugi/scenarios/*.yaml to find"
 fi
-ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml tests/gadugi/scenarios/x.yaml scenarios/s.yaml
+ev_repo package.json; ev_scen tests/agentic/a.yaml tests/gadugi/scenarios/x.yaml scenarios/s.yaml
 ev_run "${EV_FULL}"
 ev_expect "QA-default-agentic-first" qa_status=PASS gadugi_scenario_dir=tests/agentic gadugi_scenario_count=1 qa_scenarios=tests/agentic/a.yaml
-ev_repo Cargo.toml; ev_scen tests/gadugi/scenarios/x.yaml scenarios/s.yaml
+ev_repo package.json; ev_scen tests/gadugi/scenarios/x.yaml scenarios/s.yaml
 ev_run "${EV_FULL}"
 ev_expect "QA-default-gadugi-before-scenarios" qa_status=PASS gadugi_scenario_dir=tests/gadugi/scenarios gadugi_scenario_count=1
-ev_repo Cargo.toml; ev_scen scenarios/s.yaml
+ev_repo package.json; ev_scen scenarios/s.yaml
 ev_run "${EV_FULL}"
 ev_expect "QA-default-scenarios-last" qa_status=PASS gadugi_scenario_dir=scenarios gadugi_scenario_count=1
-ev_repo Cargo.toml
+ev_repo package.json
 ev_run "${EV_FULL}"
 ev_expect "QA-default-none" qa_status=FAIL qa_reason=no-scenarios gadugi_status=NO_SCENARIOS gadugi_scenario_dir=tests/agentic
 
 # 10. A scenario only in a subdirectory, or only as a symlink, counts as 0 and is never run.
-ev_repo Cargo.toml; ev_scen tests/agentic/sub/x.yaml elsewhere/real.yaml
+ev_repo package.json; ev_scen tests/agentic/sub/x.yaml elsewhere/real.yaml
 ln -s ../../elsewhere/real.yaml "${EV_REPO}/tests/agentic/link.yaml"
 ev_run "${EV_FULL}"
 ev_expect "QA-subdir-only" qa_status=FAIL qa_reason=no-scenarios gadugi_status=NO_SCENARIOS \
@@ -2427,7 +2518,7 @@ fi
 
 # 10b. A real scenario plus a symlinked one: the real one still runs, and the
 # symlinked one fails the evidence instead of being skipped in silence.
-ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml elsewhere/real.yaml
+ev_repo package.json; ev_scen tests/agentic/a.yaml elsewhere/real.yaml
 ln -s ../../elsewhere/real.yaml "${EV_REPO}/tests/agentic/link.yaml"
 ev_run "${EV_FULL}"
 ev_expect "QA-gadugi-symlink-fails" qa_status=FAIL qa_reason=gadugi-run-failed gadugi_status=RUN_FAILED \
@@ -2448,23 +2539,23 @@ fi
 EV_NOTMP="${WORK_PHYS}/ev-stubs-nomktemp"; mkdir -p "${EV_NOTMP}"
 cp -p "${EV_FULL}"/* "${EV_NOTMP}/"
 printf '#!/bin/sh\necho "mktemp: stub failure" >&2\nexit 1\n' > "${EV_NOTMP}/mktemp"; chmod +x "${EV_NOTMP}/mktemp"
-ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml
+ev_repo package.json; ev_scen tests/agentic/a.yaml
 ev_run "${EV_NOTMP}"
 if grep -qxF 'ERROR: cannot create a temporary log' "${EV_ERR}" && [ ! -e "${EV_REPO}.evidence.json" ] \
-   && ! ev_called "cargo test"; then
+   && ! ev_called "npm test"; then
   pass "QA-mktemp-fails" "a failed mktemp is named, and no suite runs or evidence is written"
 else
   fail "QA-mktemp-fails" "stderr=$(tail -n 3 "${EV_ERR}" | tr '\n' '|') calls=$(tr '\n' '|' < "${EV_CALLS}")"
 fi
 
 # 11. `scenarios` is the fallback when tests/agentic does not exist.
-ev_repo Cargo.toml; ev_scen scenarios/s.yaml
+ev_repo package.json; ev_scen scenarios/s.yaml
 ev_run "${EV_FULL}"
 ev_expect "QA-scenarios-fallback" qa_status=PASS qa_reason="" gadugi_scenario_dir=scenarios gadugi_scenario_count=1 \
   qa_scenarios="scenarios/s.yaml"
 
 # 12. No scenario directory at all: tests/agentic is recorded with a count of 0.
-ev_repo Cargo.toml
+ev_repo package.json
 ev_run "${EV_FULL}"
 ev_expect "QA-no-dir" qa_status=FAIL qa_reason=no-scenarios gadugi_status=NO_SCENARIOS \
   gadugi_scenario_dir=tests/agentic gadugi_scenario_count=0
@@ -2482,7 +2573,7 @@ fi
 # 14. Hostile values: quotes, backslashes and ANSI escapes in the test output and
 # a backslash in the directory name must still produce valid JSON with no
 # control bytes in any value.
-ev_repo Cargo.toml; ev_scen 'tests/we\ird/a.yaml'
+ev_repo package.json; ev_scen 'tests/we\ird/a.yaml'
 ev_run "${EV_FULL}" 'AUTODRIVE_QA_SCENARIO_DIR=tests/we\ird' STUB_REPO_TEST_RC=1 STUB_GADUGI_RUN_RC=1 \
   STUB_REPO_TEST_OUT='he said "boom" \\ C:\\path \033[31mred\033[0m\ttab' \
   STUB_GADUGI_OUT='\033[1m"scenario" failed\033[0m \\'
@@ -2496,7 +2587,7 @@ fi
 ev_expect "QA-hostile-fields" qa_status=FAIL qa_reason=qa-command-failed gadugi_status=RUN_FAILED qa_exit_code=1
 # A byte cut through a multibyte character must not leave invalid UTF-8:
 # extract-json refuses such input, so the evidence would read as MISSING.
-ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml
+ev_repo package.json; ev_scen tests/agentic/a.yaml
 ev_run "${EV_FULL}" STUB_REPO_TEST_RC=1 STUB_REPO_TEST_OUT="$(printf 'a%.0s' $(seq 299))\0342\0234\0223 done"
 if printf '%s' "${EV_OUT}" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 && [ "$(evf qa_status)" = "FAIL" ]; then
   pass "QA-utf8-truncation" "a summary cut through a multibyte character is still valid UTF-8"
@@ -2506,21 +2597,21 @@ fi
 
 # 15. gadugi-test's logs/ and outputs/ are removed when this step created them,
 # and left alone when they were already there, including a logs symlink.
-ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml tests/agentic/b.yaml
+ev_repo package.json; ev_scen tests/agentic/a.yaml tests/agentic/b.yaml
 ev_run "${EV_FULL}" STUB_GADUGI_WRITES=1
 if [ ! -e "${EV_REPO}/logs" ] && [ ! -e "${EV_REPO}/outputs" ] && [ "$(evf gadugi_status)" = "PASS" ]; then
   pass "QA-gadugi-leftovers-removed" "logs/ and outputs/ written by gadugi-test do not stay in the worktree"
 else
   fail "QA-gadugi-leftovers-removed" "gadugi-test leftovers remain: $(cd "${EV_REPO}" && ls -d logs outputs 2>/dev/null | tr '\n' ' ')"
 fi
-ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml; mkdir -p "${EV_REPO}/logs"; printf 'keep\n' > "${EV_REPO}/logs/mine.log"
+ev_repo package.json; ev_scen tests/agentic/a.yaml; mkdir -p "${EV_REPO}/logs"; printf 'keep\n' > "${EV_REPO}/logs/mine.log"
 ev_run "${EV_FULL}" STUB_GADUGI_WRITES=1
 if [ -f "${EV_REPO}/logs/mine.log" ] && [ ! -e "${EV_REPO}/outputs" ]; then
   pass "QA-gadugi-leftovers-preexisting" "a logs/ directory that existed before the step is left alone"
 else
   fail "QA-gadugi-leftovers-preexisting" "the step removed a directory it did not create, or left outputs/ behind"
 fi
-ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml
+ev_repo package.json; ev_scen tests/agentic/a.yaml
 SENTINEL="${WORK_PHYS}/logs-sentinel-${EV_N}"; mkdir -p "${SENTINEL}"; printf 'keep\n' > "${SENTINEL}/keep.log"
 ln -s "${SENTINEL}" "${EV_REPO}/logs"
 ev_run "${EV_FULL}"
@@ -2532,7 +2623,7 @@ fi
 
 # 16. Scenario files without a usable name are failures and are never run.
 # A nested `- name:` under steps is not the scenario's name.
-ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml
+ev_repo package.json; ev_scen tests/agentic/a.yaml
 ev_scen_raw tests/agentic/nameless.yaml 'type: cli\nsteps: []\n'
 ev_scen_raw tests/agentic/nested-only.yaml 'type: cli\nsteps:\n  - name: a step, not the scenario\n'
 ev_run "${EV_FULL}"
@@ -2553,7 +2644,7 @@ ev_expect "QA-unnamed-before-run-failed" qa_status=FAIL qa_reason=gadugi-scenari
 
 # 17. Both supported name formats: a top-level `name:`, and `name:` under a
 # top-level `scenario:` key, with quotes and trailing comments removed.
-ev_repo Cargo.toml
+ev_repo package.json
 ev_scen_raw tests/agentic/f1.yaml '# leading comment\nname: "Quoted name"  # trailing comment\ntype: cli\nsteps:\n  - name: not-this\n'
 ev_scen_raw tests/agentic/f2.yaml "name: 'single quoted'\n"
 ev_scen_raw tests/agentic/f3.yaml 'scenario:\n  name: Format three # c\n  type: cli\n'
@@ -2564,7 +2655,7 @@ ev_expect_runs "QA-name-formats-runs" "Quoted name" "single quoted" "Format thre
 
 # 18. Names that could be read as options, or carry control bytes, or are too
 # long, are unnamed: never passed to gadugi-test.
-ev_repo Cargo.toml; ev_scen tests/agentic/good.yaml
+ev_repo package.json; ev_scen tests/agentic/good.yaml
 ev_scen_raw tests/agentic/dash.yaml 'name: "-d /"\n'
 ev_scen_raw tests/agentic/ctrl.yaml 'name: "tab\there"\n'
 ev_scen_raw tests/agentic/long.yaml "name: $(printf 'n%.0s' $(seq 1 201))\n"
@@ -2577,17 +2668,17 @@ ev_expect_runs "QA-hostile-names-runs" good
 # 19. AUTODRIVE_QA_COMMAND on its own keeps the #1516 semantics: configured,
 # run in AUTODRIVE_QA_DIR, word-split with globbing off, and installed when the
 # first word is an executable file in that directory.
-ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml; ev_script sub/runtests.sh
+ev_repo package.json; ev_scen tests/agentic/a.yaml; ev_script sub/runtests.sh
 : > "${EV_REPO}/sub/--evil"
 ev_run "${EV_FULL}" AUTODRIVE_QA_COMMAND='./runtests.sh one *' AUTODRIVE_QA_DIR=sub
 ev_expect "QA-single-command" qa_status=PASS qa_reason="" qa_repo_type=configured qa_command='./runtests.sh one *' \
   qa_suite_commands_count=1 qa_exit_code=0 gadugi_status=PASS
-if ev_called "suite runtests.sh cwd=${EV_REPO}/sub args=[one *]" && ! grep -q '^cargo ' "${EV_CALLS}"; then
+if ev_called "suite runtests.sh cwd=${EV_REPO}/sub args=[one *]" && ! grep -q '^npm ' "${EV_CALLS}"; then
   pass "QA-single-command-run" "AUTODRIVE_QA_COMMAND runs in AUTODRIVE_QA_DIR with globbing off, and detection is skipped"
 else
   fail "QA-single-command-run" "calls=$(tr '\n' '|' < "${EV_CALLS}")"
 fi
-ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml; ev_script runtests.sh
+ev_repo package.json; ev_scen tests/agentic/a.yaml; ev_script runtests.sh
 ev_run "${EV_FULL}" AUTODRIVE_QA_COMMAND='./runtests.sh root'
 if [ "$(evf qa_status)" = "PASS" ] && ev_called "suite runtests.sh cwd=${EV_REPO} args=[root]"; then
   pass "QA-single-command-default-dir" "AUTODRIVE_QA_DIR defaults to the repository root"
@@ -2598,7 +2689,7 @@ ev_run "${EV_FULL}" AUTODRIVE_QA_COMMAND='./runtests.sh root' STUB_SUITE_RC=4
 ev_expect "QA-single-command-fails" qa_status=FAIL qa_reason=qa-command-failed qa_exit_code=4 gadugi_status=PASS
 
 # 20. A configured program that is not installed, and a variable set but empty.
-ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml
+ev_repo package.json; ev_scen tests/agentic/a.yaml
 ev_run "${EV_FULL}" AUTODRIVE_QA_COMMAND='no-such-program --flag'
 ev_expect "QA-single-not-installed" qa_status=BLOCKED qa_reason=qa-command-not-installed qa_repo_type=configured \
   qa_exit_code="" gadugi_status=PASS
@@ -2610,7 +2701,7 @@ fi
 ev_run "${EV_FULL}" AUTODRIVE_QA_COMMAND=
 ev_expect "QA-single-empty" qa_status=BLOCKED qa_reason=qa-command-missing qa_repo_type=configured \
   qa_suite_commands_count=0 qa_exit_code=""
-if ! grep -q '^cargo ' "${EV_CALLS}"; then
+if ! grep -q '^npm ' "${EV_CALLS}"; then
   pass "QA-single-empty-no-detect" "AUTODRIVE_QA_COMMAND set but empty never falls back to detection"
 else
   fail "QA-single-empty-no-detect" "calls=$(tr '\n' '|' < "${EV_CALLS}")"
@@ -2624,7 +2715,7 @@ ev_expect "QA-list-only-comments" qa_status=BLOCKED qa_reason=qa-command-missing
 
 # 21. AUTODRIVE_QA_COMMANDS: one command per line, blank and # lines ignored,
 # each run with bash -c from the repository root.
-ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml; ev_script sub/runtests.sh
+ev_repo package.json; ev_scen tests/agentic/a.yaml; ev_script sub/runtests.sh
 ev_run "${EV_FULL}" AUTODRIVE_QA_COMMANDS='cargo test --workspace
 # the sub package is outside the workspace
 
@@ -2640,7 +2731,7 @@ fi
 
 # 22. Every entry runs after one fails; each starts at the repository root; the
 # first non-zero exit code is recorded.
-ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml; mkdir -p "${EV_REPO}/sub"
+ev_repo package.json; ev_scen tests/agentic/a.yaml; mkdir -p "${EV_REPO}/sub"
 ev_run "${EV_FULL}" AUTODRIVE_QA_COMMANDS='cd sub && false
 printf "pwd=%s\n" "$(pwd -P)" >> "$EV_CALLS"
 exit 3'
@@ -2655,7 +2746,7 @@ ev_run "${EV_FULL}" AUTODRIVE_QA_COMMANDS='no-such-program-xyz --version'
 ev_expect "QA-list-missing-program" qa_status=FAIL qa_reason=qa-command-failed qa_exit_code=127
 
 # 23. Both set: the single command first, then each list entry; all must pass.
-ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml; ev_script sub/runtests.sh
+ev_repo package.json; ev_scen tests/agentic/a.yaml; ev_script sub/runtests.sh
 ev_run "${EV_FULL}" AUTODRIVE_QA_COMMAND='./runtests.sh single' AUTODRIVE_QA_DIR=sub \
   AUTODRIVE_QA_COMMANDS='cd sub && ./runtests.sh listed'
 ev_expect "QA-both-set" qa_status=PASS qa_repo_type=configured qa_suite_commands_count=2 \
@@ -2669,7 +2760,7 @@ fi
 
 # 24. Command text is recorded as written, sanitised, and cut to 500 characters;
 # the expanded value of a variable is never recorded.
-ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml
+ev_repo package.json; ev_scen tests/agentic/a.yaml
 ev_run "${EV_FULL}" QA_SECRET=hunter2 AUTODRIVE_QA_COMMANDS="test -n \"\$QA_SECRET\" && echo \"quoted \\\\ back\"
 true $(printf 'y%.0s' $(seq 1 600))"
 cmdlen="$(evf qa_command | wc -c | tr -d ' ')"
@@ -2684,7 +2775,7 @@ fi
 # 25. Per-scenario results (#1517 D6): sorted with LC_ALL=C (upper case before
 # lower case), PASS, FAIL and INVALID side by side. The field is informational:
 # the counts, gadugi_failed_scenarios and qa_status are exactly what they were.
-ev_repo Cargo.toml; ev_scen tests/agentic/b.yaml tests/agentic/a.yml tests/agentic/C.yaml
+ev_repo package.json; ev_scen tests/agentic/b.yaml tests/agentic/a.yml tests/agentic/C.yaml
 ev_scen_raw tests/agentic/nameless.yaml 'type: cli\nsteps: []\n'
 ev_run "${EV_FULL}" EV_GADUGI_FAIL_NAME=b
 ev_expect "QA-results-mixed" qa_status=FAIL qa_reason=gadugi-scenario-unnamed gadugi_status=RUN_FAILED \
@@ -2693,7 +2784,7 @@ ev_expect "QA-results-mixed" qa_status=FAIL qa_reason=gadugi-scenario-unnamed ga
 
 # 26. A directory named like a scenario is not a regular file: INVALID, and
 # counted in gadugi_scenarios_failed like a symlinked scenario, never skipped.
-ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml; mkdir -p "${EV_REPO}/tests/agentic/dir.yaml"
+ev_repo package.json; ev_scen tests/agentic/a.yaml; mkdir -p "${EV_REPO}/tests/agentic/dir.yaml"
 ev_run "${EV_FULL}"
 ev_expect "QA-results-not-regular" qa_status=FAIL qa_reason=gadugi-run-failed gadugi_status=RUN_FAILED \
   gadugi_scenario_count=1 gadugi_scenarios_run=1 gadugi_scenarios_passed=1 gadugi_scenarios_failed=1 \
@@ -2702,7 +2793,7 @@ ev_expect_runs "QA-results-not-regular-runs" a
 
 # 27. A hostile file name is sanitised in the key ([A-Za-z0-9._/-] kept, all
 # else `_`) and the evidence is still one JSON object of strings.
-ev_repo Cargo.toml
+ev_repo package.json
 ev_scen_raw 'tests/agentic/we"ird $(x) name.yaml' 'name: weird\n'
 ev_run "${EV_FULL}"
 ev_expect "QA-results-hostile-name" qa_status=PASS gadugi_status=PASS gadugi_scenario_count=1 \
@@ -2710,7 +2801,7 @@ ev_expect "QA-results-hostile-name" qa_status=PASS gadugi_status=PASS gadugi_sce
 
 # 28. A key is cut to 128 bytes.
 LONG_SCEN="$(printf 'n%.0s' $(seq 1 150)).yaml"
-ev_repo Cargo.toml; ev_scen "tests/agentic/${LONG_SCEN}"
+ev_repo package.json; ev_scen "tests/agentic/${LONG_SCEN}"
 ev_run "${EV_FULL}"
 key="$(evf gadugi_scenario_results)"; key="${key%=*}"
 if [ "$(evf qa_status)" = "PASS" ] && [ "${#key}" -eq 128 ] && [ "${key}" = "$(printf '%s' "${LONG_SCEN}" | cut -c1-128)" ]; then
@@ -2720,7 +2811,7 @@ else
 fi
 
 # 29. The evidence file is written under umask 077, whatever the caller's umask.
-ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml
+ev_repo package.json; ev_scen tests/agentic/a.yaml
 ( umask 022; ev_run "${EV_FULL}" )
 EV_OUT="$(tail -n 1 "${EV_REPO}.out")"
 mode="$(ls -l "${EV_REPO}.evidence.json" 2>/dev/null | cut -c1-10)"
@@ -2728,6 +2819,94 @@ if [ "${mode}" = "-rw-------" ]; then
   pass "QA-evidence-private" "qa-evidence.json is created 0600 even when the caller's umask is 022"
 else
   fail "QA-evidence-private" "qa-evidence.json mode is '${mode:-<missing>}'"
+fi
+
+# 30. Criterion 1 by repository type (qa-team's repo-type table, #1517).
+# A Rust CLI repository runs `cargo test` and a Python repository runs
+# `pytest`. Neither needs gadugi: gadugi-test is never called, installed or
+# not, and the suite command alone decides qa_status. Setting
+# AUTODRIVE_QA_SCENARIO_DIR asks for gadugi in any repository type.
+ev_rt_expect_no_gadugi() { # ev_rt_expect_no_gadugi <label> <why>
+  if ! ev_called "gadugi-test" && ! [ -e "${EV_REPO}/logs" ] \
+     && grep -qF 'INFO: gadugi-test is not part of criterion 1' "${EV_ERR}"; then
+    pass "$1" "$2"
+  else
+    fail "$1" "${2} -- calls=$(tr '\n' '|' < "${EV_CALLS}") stderr=$(tail -n 3 "${EV_ERR}" | tr '\n' '|')"
+  fi
+}
+ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml tests/gadugi/scenarios/x.yaml tests/parity/scenarios/tier1.yaml
+ev_run "${EV_FULL}"
+ev_expect "QA-rust-no-gadugi" qa_status=PASS qa_reason="" qa_repo_type=rust-cli \
+  qa_command="cargo test --workspace --locked --no-fail-fast" qa_exit_code=0 qa_suite_commands_count=1 \
+  gadugi_required=false gadugi_status=NOT_REQUIRED gadugi_scenario_dir="" gadugi_scenario_count=0 \
+  gadugi_scenarios_validated=0 gadugi_scenarios_run=0 gadugi_scenarios_passed=0 gadugi_scenarios_failed=0 \
+  gadugi_validate_exit_code="" gadugi_run_exit_code="" gadugi_failed_scenarios="" gadugi_scenario_results="" \
+  qa_scenarios=tests/parity/scenarios/tier1.yaml
+ev_rt_expect_no_gadugi "QA-rust-no-gadugi-calls" "a Rust CLI repository runs cargo test and never calls gadugi-test, as qa-team's Rust CLI line says"
+ev_run "${EV_NOG}"
+ev_expect "QA-rust-gadugi-not-installed" qa_status=PASS qa_reason="" gadugi_required=false gadugi_status=NOT_REQUIRED
+ev_run "${EV_FULL}" STUB_REPO_TEST_RC=101
+ev_expect "QA-rust-cargo-fails" qa_status=FAIL qa_reason=qa-command-failed qa_exit_code=101 \
+  gadugi_required=false gadugi_status=NOT_REQUIRED
+ev_rt_expect_no_gadugi "QA-rust-cargo-fails-no-gadugi" "a failing cargo test fails criterion 1 on its own; gadugi is still not called"
+ev_repo pyproject.toml; ev_scen tests/agentic/a.yaml
+ev_run "${EV_NOG}"
+ev_expect "QA-python-no-gadugi" qa_status=PASS qa_reason="" qa_repo_type=python qa_command=pytest \
+  gadugi_required=false gadugi_status=NOT_REQUIRED gadugi_scenario_count=0 qa_scenarios=""
+ev_rt_expect_no_gadugi "QA-python-no-gadugi-calls" "a Python repository runs pytest and never calls gadugi-test"
+ev_repo setup.py
+ev_run "${EV_FULL}" STUB_REPO_TEST_RC=1
+ev_expect "QA-python-setup-py-fails" qa_status=FAIL qa_reason=qa-command-failed qa_repo_type=python \
+  gadugi_required=false gadugi_status=NOT_REQUIRED
+ev_repo README.md
+ev_run "${EV_NOG}" AUTODRIVE_QA_COMMANDS='true'
+ev_expect "QA-unknown-configured" qa_status=PASS qa_repo_type=configured gadugi_required=false gadugi_status=NOT_REQUIRED
+ev_run "${EV_NOG}"
+ev_expect "QA-unknown-no-command" qa_status=BLOCKED qa_reason=qa-command-missing qa_repo_type=unknown \
+  gadugi_required=false gadugi_status=NOT_REQUIRED
+# A configured command does not change the repository type gadugi follows.
+ev_repo package.json; ev_scen tests/agentic/a.yaml
+ev_run "${EV_NOG}" AUTODRIVE_QA_COMMANDS='true'
+ev_expect "QA-node-configured-still-needs-gadugi" qa_status=BLOCKED qa_reason=gadugi-test-missing qa_repo_type=configured \
+  gadugi_required=true gadugi_status=NOT_INSTALLED
+# Cargo.toml decides before package.json, as in qa-team's table.
+ev_repo Cargo.toml; : > "${EV_REPO}/package.json"; ev_scen tests/agentic/a.yaml
+ev_run "${EV_NOG}"
+ev_expect "QA-rust-with-package-json" qa_status=PASS qa_repo_type=rust-cli gadugi_required=false gadugi_status=NOT_REQUIRED
+# The operator opts in: AUTODRIVE_QA_SCENARIO_DIR requires gadugi in a Rust CLI repository.
+ev_repo Cargo.toml; ev_scen tests/agentic/a.yaml tests/gadugi/scenarios/x.yaml tests/gadugi/scenarios/y.yaml
+ev_run "${EV_FULL}" AUTODRIVE_QA_SCENARIO_DIR=tests/gadugi/scenarios
+ev_expect "QA-rust-scenario-dir-opt-in" qa_status=PASS qa_repo_type=rust-cli gadugi_required=true gadugi_status=PASS \
+  gadugi_scenario_dir=tests/gadugi/scenarios gadugi_scenario_count=2 gadugi_scenarios_run=2
+ev_expect_runs "QA-rust-scenario-dir-opt-in-runs" x y
+ev_run "${EV_NOG}" AUTODRIVE_QA_SCENARIO_DIR=tests/gadugi/scenarios
+ev_expect "QA-rust-scenario-dir-opt-in-not-installed" qa_status=BLOCKED qa_reason=gadugi-test-missing \
+  gadugi_required=true gadugi_status=NOT_INSTALLED
+# This repository's own layout: a Rust CLI repository with gadugi scenarios.
+# By default cargo test alone decides; on request every scenario runs.
+ev_repo Cargo.toml; mkdir -p "${EV_REPO}/tests/gadugi/scenarios"
+cp "${REPO_ROOT}"/tests/gadugi/scenarios/*.yaml "${EV_REPO}/tests/gadugi/scenarios/" 2>/dev/null
+ev_run "${EV_FULL}"
+ev_expect "QA-this-repo-default-cargo-only" qa_status=PASS gadugi_required=false gadugi_status=NOT_REQUIRED gadugi_scenario_count=0
+ev_run "${EV_FULL}" AUTODRIVE_QA_SCENARIO_DIR=tests/gadugi/scenarios
+if [ "${RS_SCEN_COUNT}" -gt 0 ]; then
+  ev_expect "QA-this-repo-on-request" qa_status=PASS gadugi_required=true gadugi_status=PASS \
+    gadugi_scenario_count="${RS_SCEN_COUNT}" gadugi_scenarios_run="${RS_SCEN_COUNT}"
+else
+  fail "QA-this-repo-on-request" "this repository has no tests/gadugi/scenarios/*.yaml to find"
+fi
+# The tool needs autodrive_trust.sh beside it to know which measurements
+# apply; alone, it fails by name and writes no evidence.
+EV_ALONE="${WORK_PHYS}/ev-alone/amplifier-bundle/tools"; mkdir -p "${EV_ALONE}"
+cp "${REPO_ROOT}/amplifier-bundle/tools/autodrive_qa_evidence.sh" "${EV_ALONE}/"
+ev_repo Cargo.toml
+rm -f "${EV_REPO}.evidence.json"
+ev_run "${EV_FULL}" AMPLIHACK_HOME="${WORK_PHYS}/ev-alone"
+if grep -q '^ERROR: autodrive-qa-helpers-not-found:' "${EV_ERR}" && [ ! -e "${EV_REPO}.evidence.json" ] \
+   && ! ev_called "cargo test"; then
+  pass "QA-helpers-missing" "without autodrive_trust.sh beside it the tool fails by name, runs nothing and writes no evidence"
+else
+  fail "QA-helpers-missing" "stderr=$(tail -n 3 "${EV_ERR}" | tr '\n' '|') calls=$(tr '\n' '|' < "${EV_CALLS}")"
 fi
 
 # ---------------------------------------------------------------------------

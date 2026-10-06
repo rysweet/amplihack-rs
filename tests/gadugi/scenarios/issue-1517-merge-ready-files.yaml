@@ -9,7 +9,8 @@ description: >
   lookup takes both files from one install, fails by name when they are
   missing, that the merge round has no Skill(merge-ready) call, and that a
   missing gadugi-test stops auto-drive at its first step, before the build,
-  with the shipped step bodies.
+  in a Node repository, while a Rust CLI repository starts without it, as
+  qa-team's repo-type table says, with the shipped step bodies.
 version: "1.0"
 config:
   timeout: 60000
@@ -40,7 +41,7 @@ steps:
     agent: cli-agent
     action: validate_output
     params:
-      expected: "contains:merge-ready read from its files; gadugi-test checked before the build"
+      expected: "contains:merge-ready read from its files; gadugi-test checked before the build where criterion 1 needs it"
 assertions:
   - name: all-cases-passed
     type: output_contains
@@ -62,3 +63,8 @@ assertions:
     params:
       target: stdout
       expected: "PASS: gadugi_missing_stops_before_build"
+  - name: rust-starts-without-gadugi
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: rust_repo_starts_without_gadugi"

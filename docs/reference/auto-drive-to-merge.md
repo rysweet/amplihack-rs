@@ -39,10 +39,10 @@ skill](../../amplifier-bundle/skills/auto-drive-to-merge/SKILL.md).
 
 | Phase | Brick | What it does |
 | --- | --- | --- |
-| 0. Prerequisites | `auto-drive-to-merge.yaml` step `autodrive-prerequisites` | Stops the run with `ERROR: gadugi-test-not-installed` when `gadugi-test` is not on `PATH`, before the build and the crusty loop spend hours. |
+| 0. Prerequisites | `auto-drive-to-merge.yaml` step `autodrive-prerequisites` | Where criterion 1 needs `gadugi-test` (a Node repository, or `AUTODRIVE_QA_SCENARIO_DIR` set), stops the run with `ERROR: gadugi-test-not-installed` when it is not on `PATH`, before the build and the crusty loop spend hours. A Rust CLI or Python repository does not need it. |
 | 1. Build | `autodrive-build.yaml` | Runs `default-workflow` with `no_merge: "true"` to produce a PR. Never merges. |
 | 2. Crusty loop | `autodrive-crusty-loop.yaml` over `autodrive-crusty-round.yaml` | Runs `crusty-old-engineer` as the maintainer's proxy, addresses every concern, re-reviews, repeats until `crusty_verdict` is `CLEAN`. |
-| 3. Merge-ready loop | `autodrive-merge-loop.yaml` over `autodrive-merge-round.yaml` | Before each round, sends code commits made after the clean crusty round back to the crusty loop (`autodrive_crusty_rereview.sh`). Syncs the base, runs the repository tests and the `gadugi-test` scenarios, waits for CI, applies the `merge-ready` criteria read from the skill's files, clears blockers, repeats, then merges behind the gate. |
+| 3. Merge-ready loop | `autodrive-merge-loop.yaml` over `autodrive-merge-round.yaml` | Before each round, sends code commits made after the clean crusty round back to the crusty loop (`autodrive_crusty_rereview.sh`). Syncs the base, runs the repository tests and, where criterion 1 needs them, the `gadugi-test` scenarios, waits for CI, applies the `merge-ready` criteria read from the skill's files, clears blockers, repeats, then merges behind the gate. |
 
 Phase 1 is a no-op when an open PR already exists for the branch, and the whole
 workflow short-circuits when the PR is already merged.
@@ -239,8 +239,10 @@ The [`merge-ready`](../../amplifier-bundle/skills/merge-ready/SKILL.md) skill
 sets `disable-model-invocation: true`, so no auto-drive recipe invokes it; the
 merge round reads its two files. Every criterion applies as written, except
 that auto-drive measures criteria 1, 3 and 6 and reads criterion 8 from
-`merge_state`, as the skill's `## Running under auto-drive` section says. A
-manual `/merge-ready` still needs `gadugi-test validate` and `gadugi-test run`
+`merge_state`, as the skill's `## Running under auto-drive` section says.
+Inside auto-drive, criterion 1 follows qa-team's repo-type table (see
+[Criterion 1](#criterion-1-qa-team-scenarios-by-repository-type)). A manual
+`/merge-ready` still needs `gadugi-test validate` and `gadugi-test run`
 (criterion 1) and a `quality-audit` of at least 3 SEEK, VALIDATE, FIX cycles
 (criterion 3).
 
@@ -249,8 +251,8 @@ manual `/merge-ready` still needs `gadugi-test validate` and `gadugi-test run`
 | Step of `autodrive-merge-round.yaml` | Type | Output | Role |
 | --- | --- | --- | --- |
 | `step-00-tools-dir` | bash | `autodrive_tools_dir` | Finds the round's tools once (see below). |
-| `step-00-merge-ready-files` | bash | `merge_ready_files` | Finds `SKILL.md` and its template; stops the round when `gadugi-test` is not on `PATH`. |
-| `merge-evidence` | recipe | `merge_sync`, `qa_evidence`, `ci_evidence` | `autodrive-merge-evidence`: base sync, suite commands, gadugi scenarios, CI wait. |
+| `step-00-merge-ready-files` | bash | `merge_ready_files` | Finds `SKILL.md` and its template; where criterion 1 needs `gadugi-test`, stops the round when it is not on `PATH`. |
+| `merge-evidence` | recipe | `merge_sync`, `qa_evidence`, `ci_evidence` | `autodrive-merge-evidence`: base sync, suite commands, gadugi scenarios where required, CI wait. |
 | `step-00d-qa-evidence-hash` | bash | `qa_evidence_hash` | `autodrive_round_evidence.sh qa-evidence-sha`: hashes `qa-evidence.json` before any agent runs. |
 | `step-01-platform-facts` | bash | `platform_facts` | Runs `autodrive_platform_facts.sh`. |
 | `step-01b-crusty-evidence` | bash | `crusty_evidence` | `autodrive_round_evidence.sh crusty-evidence`: criterion 3. |
@@ -296,13 +298,18 @@ are skipped. A `SKILL.md` from the branch that differs from `origin/HEAD`
 gives `WARNING: merge-ready criteria come from the branch under review`; such
 criteria are advisory, since the gate measures criteria 1 and 3 itself.
 
-`gadugi-test` belongs to the same install. Criterion 1 runs the qa-team
-scenarios with it in every repository type, `amplihack install` does not
-install it, and no agent can. The first step of `auto-drive-to-merge.yaml`,
-`autodrive-prerequisites`, checks `command -v gadugi-test` before the build,
-so a missing tool stops the run in seconds, and the auto-drive skill lists it
-under Prerequisites. Step-00 checks it again, in case it goes away during the
-run, and, when it is missing, fails the round with
+`gadugi-test` belongs to the same install wherever criterion 1 needs it:
+a Node repository, or any repository where the operator sets
+`AUTODRIVE_QA_SCENARIO_DIR` (see
+[Criterion 1](#criterion-1-qa-team-scenarios-by-repository-type)). There,
+`amplihack install` does not install it, and no agent can. The first step of
+`auto-drive-to-merge.yaml`, `autodrive-prerequisites`, asks
+`autodrive_gadugi_required` and, when it says `true`, checks
+`command -v gadugi-test` before the build. A missing tool therefore stops the
+run in seconds, and the auto-drive skill lists it under Prerequisites. In a
+Rust CLI or Python repository the step prints `{"gadugi_test":"not-required"}`
+and the run goes on without it. Step-00 checks again by the same rule, in case
+the tool goes away during the run. When it is missing, step-00 fails the round with
 `ERROR: gadugi-test-not-installed: gadugi-test is not on PATH`, which names
 the install command (`npm install -g github:rysweet/gadugi-agentic-test#6c120657798995b1b53399a5acf3693d418a2d8b`).
 Reported instead as the blocker `gadugi-test-missing`, it would repeat every
@@ -320,22 +327,46 @@ treats evidence text as data. It has no `Skill(` call. The guard test
 model invocation; `qa_team_does_not_refuse_model_invocation` keeps `qa-team`
 callable for step-04.
 
-### Criterion 1: qa-team scenarios run with gadugi-test
+### Criterion 1: qa-team scenarios by repository type
 
 `step-02-qa-team-scenarios` of `autodrive-merge-evidence.yaml` runs
-`amplifier-bundle/tools/autodrive_qa_evidence.sh`, found under the same roots,
-which runs the suite commands and the gadugi scenarios; a missing tool fails
-the step with `ERROR: autodrive-qa-evidence-tool-not-found`. Every repository
-type, `rust-cli` included, needs both. The `qa-team` skill says so in one
-place, its "Exception: auto-drive-to-merge" paragraph, which sets aside its
-`cargo test` substitution for Rust CLI repositories when step-04 loads it to
-clear a gadugi blocker.
+`amplifier-bundle/tools/autodrive_qa_evidence.sh`, found under the same roots.
+The tool runs the suite commands and, where they are required, the gadugi
+scenarios. A missing tool fails the step with
+`ERROR: autodrive-qa-evidence-tool-not-found`. The tool needs
+`autodrive_state.sh` and `autodrive_trust.sh` beside it, and without them
+fails with `ERROR: autodrive-qa-helpers-not-found` and writes no evidence.
+
+Criterion 1 follows the
+[`qa-team`](../../amplifier-bundle/skills/qa-team/SKILL.md) skill's
+repo-type table. That is the per-repository-type rule
+[#1517](https://github.com/rysweet/amplihack-rs/issues/1517) proposed. One
+function, `autodrive_gadugi_required <dir>` in `autodrive_trust.sh`, decides
+whether `gadugi-test` is part of criterion 1. `autodrive-prerequisites`,
+step-00, the evidence tool and the merge gate all ask it:
+
+| Repository (`autodrive_repo_type`) | Suite command when none is configured | gadugi scenarios |
+| --- | --- | --- |
+| `rust-cli` (`Cargo.toml`) | `cargo test --workspace --locked --no-fail-fast` | Not required: qa-team's Rust CLI line substitutes `cargo test` and says not to require gadugi. `qa_scenarios` lists `tests/parity/scenarios/*.yaml`, which `cargo test` runs. |
+| `node` (`package.json`, no `Cargo.toml`) | `npm test` | Required. |
+| `python` (`pyproject.toml` or `setup.py`) | `pytest` | Not required: qa-team lists `pytest` for Python. |
+| `unknown` | none (`qa-command-missing` unless one is configured) | Not required. |
+| any, with `AUTODRIVE_QA_SCENARIO_DIR` set | as above | Required: the operator asked for gadugi scenarios. |
+
+Where gadugi is not required, `gadugi_required` is `false`,
+`gadugi_status` is `NOT_REQUIRED`, `gadugi-test` is never called (installed
+or not), no scenario directory is searched, and `qa_status` depends on the
+suite commands alone. Requiring gadugi in every repository type would stop
+a run without `gadugi-test` before the build. In a Rust CLI or Python
+repository it would also report `NO_SCENARIOS` until the round committed
+gadugi scenario files, and each of those commits would cost a crusty
+re-review.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `AUTODRIVE_QA_COMMAND` | unset | One command, run in `AUTODRIVE_QA_DIR` (default `.`), split into words with globbing off. |
 | `AUTODRIVE_QA_COMMANDS` | unset | One command per line, each run as `( cd -- "$ROOT" && bash -c "$entry" )` after `AUTODRIVE_QA_COMMAND`; blank and `#` lines skipped. |
-| `AUTODRIVE_QA_SCENARIO_DIR` | the first existing of `tests/agentic`, `tests/gadugi/scenarios`, `scenarios`; else `tests/agentic` | The scenario directory. An override naming a missing directory means no scenarios. |
+| `AUTODRIVE_QA_SCENARIO_DIR` | the first existing of `tests/agentic`, `tests/gadugi/scenarios`, `scenarios`; else `tests/agentic` | The scenario directory, searched only where gadugi is required. Setting it requires gadugi scenarios in any repository type. An override naming a missing directory means no scenarios. |
 
 With a command variable set, `qa_repo_type` is `configured`. Otherwise
 `Cargo.toml` gives `rust-cli` with
@@ -346,7 +377,7 @@ timeout. The variables come from the environment only, never recipe context
 (`no_recipe_declares_the_qa_overrides_as_context`), and only the operator sets
 them: an entry is shell source.
 
-After `gadugi-test validate -d "$DIR"` passes, each top-level regular `*.yaml`
+Where gadugi is required, after `gadugi-test validate -d "$DIR"` passes, each top-level regular `*.yaml`
 or `*.yml` file is copied alone to a `mktemp -d` directory outside the
 repository and run as
 `(cd "$ROOT" && gadugi-test run -d "$stage" --scenario "$name")`, never as a
@@ -370,19 +401,20 @@ with the whole trimmed output (`CLIOutputParser.validateOutput`). So the
 scenarios still hold if gadugi starts checking them.
 
 `qa_status` is `PASS`, with `qa_reason` `""`, only when a suite command ran,
-all passed, and `gadugi_status` is `PASS`. Otherwise `qa_reason` is the first
-token that applies, and `qa_summary` names every cause:
+all passed, and `gadugi_status` is `PASS` or, where gadugi is not required,
+`NOT_REQUIRED`. Otherwise `qa_reason` is the first token that applies, and
+`qa_summary` names every cause:
 
 | Order | `qa_reason` | `qa_status` | Cause (`gadugi_status`) |
 | --- | --- | --- | --- |
 | 1 | `qa-command-failed` | `FAIL` | A suite command exited non-zero. |
-| 2 | `no-scenarios` | `FAIL` | No scenario file (`NO_SCENARIOS`). |
+| 2 | `no-scenarios` | `FAIL` | Gadugi is required and there is no scenario file (`NO_SCENARIOS`). |
 | 3 | `gadugi-validate-failed` | `FAIL` | Validate failed; no scenario ran (`VALIDATE_FAILED`). |
 | 4 | `gadugi-scenario-unnamed` | `FAIL` | A name is empty, starts with `-`, holds a control byte, exceeds 200 bytes, or is a block scalar or flow mapping (`RUN_FAILED`). |
 | 5 | `gadugi-run-failed` | `FAIL` | A run or staging failed, or a symlinked or non-regular entry exists; such entries never run (`RUN_FAILED`). |
 | 6 | `qa-command-missing` | `BLOCKED` | No suite command, or incomplete evidence with no other token. |
 | 7 | `qa-command-not-installed` | `BLOCKED` | The single or detected command's program is missing. |
-| 8 | `gadugi-test-missing` | `BLOCKED` | `gadugi-test` is not on `PATH`; no gadugi check ran (`NOT_INSTALLED`). Step-00 stops the round before this when the tool is missing, so in a merge round it means the tool went away during the round; step-04 leaves it to a person. |
+| 8 | `gadugi-test-missing` | `BLOCKED` | Gadugi is required and `gadugi-test` is not on `PATH`; no gadugi check ran (`NOT_INSTALLED`). Step-00 stops the round before this when the tool is missing, so in a merge round it means the tool went away during the round; step-04 leaves it to a person. |
 
 The evidence is one JSON line of sanitised strings in `qa-evidence.json`,
 written under `umask 077`. A failed temporary file gives
@@ -390,21 +422,24 @@ written under `umask 077`. A failed temporary file gives
 
 | Field | Value |
 | --- | --- |
-| `qa_status`, `qa_reason`, `gadugi_status`, `qa_summary` | As above. |
+| `qa_status`, `qa_reason`, `gadugi_status`, `qa_summary` | As above. `gadugi_status` is `NOT_REQUIRED` where gadugi is not required. |
+| `gadugi_required` | `true` or `false`, from `autodrive_gadugi_required`. The gate decides it again from the checkout's files and does not read this field. |
 | `qa_repo_type`, `qa_round` | `configured`, `rust-cli`, `node`, `python` or `unknown`; the round label. |
 | `qa_command`, `qa_suite_commands_count` | The commands run, joined by `; ` (at most 500 characters, so reference secrets as `$VAR`), and their number. |
 | `qa_exit_code`, `gadugi_run_exit_code`, `gadugi_validate_exit_code` | The first non-zero exit code, `"0"` when all passed, `""` when none ran. |
 | `head_sha` | `git rev-parse HEAD` before any check: the commit tested. |
-| `gadugi_scenario_dir`, `qa_scenarios`, `gadugi_failed_scenarios` | The directory, the counted files, the failed files; relative to the repository root. |
+| `gadugi_scenario_dir`, `qa_scenarios`, `gadugi_failed_scenarios` | The directory, the counted files, the failed files; relative to the repository root. Where gadugi is not required, the directory is `""`, and in a `rust-cli` repository `qa_scenarios` lists `tests/parity/scenarios/*.yaml`. |
 | `gadugi_scenario_count`, `gadugi_scenarios_validated`, `gadugi_scenarios_run`, `gadugi_scenarios_passed`, `gadugi_scenarios_failed` | Files found; that count if validate passed, else `"0"`; runs; passes; failures, counting unnamed, unstaged and (after validate) symlinked or non-regular entries. |
 | `gadugi_scenario_results` | `<file>=<result>` per entry (`PASS`, `FAIL`, or `INVALID` for not run), sorted, from `autodrive_scenario_results`. Informational only. |
 
 For `NO_SCENARIOS`, `VALIDATE_FAILED`, `RUN_FAILED`, or step-02's
-`qa-team-scenarios-do-not-cover-the-change`, step-04 uses `qa-team`, following
-that exception, to write
-top-level `*.yaml` scenarios with a `name:` in `gadugi_scenario_dir`, runs
-each, and commits. A failing scenario is fixed, never weakened or deleted. A
-directory outside the repository gives `gadugi-scenario-dir-outside-repo`.
+`qa-team-scenarios-do-not-cover-the-change`, step-04 uses `qa-team` and
+follows its repo-type table. Where gadugi is required, it writes top-level
+`*.yaml` scenarios with a `name:` in `gadugi_scenario_dir`, runs each, and
+commits. In a Rust CLI or Python repository it adds the missing coverage to
+`cargo test` or `pytest`, because auto-drive runs no gadugi scenario there. A
+failing scenario or test is fixed, never weakened or deleted. A directory
+outside the repository gives `gadugi-scenario-dir-outside-repo`.
 
 ### Criterion 3: the crusty loop ended DONE and CLEAN
 
@@ -715,7 +750,7 @@ merges, it re-verifies and records:
 | CI | `gh pr checks --json name,state,bucket` | any pending or failing check, zero checks, **or an unreadable rollup** |
 | qa-team scenarios | evidence file from this run | `qa_status` other than `PASS`, no evidence file, or evidence whose `head_sha` is missing or is not the SHA being merged |
 | qa evidence chain | `merge-ready-records.tsv`, `merge-ready-latest.json`, `qa-evidence.json` | any of them not private; `autodrive_qa_trusted` not `ok` (its token, or `qa-other`; see [The qa evidence hash chain](#the-qa-evidence-hash-chain)) |
-| gadugi scenarios | same evidence file | `gadugi_status` other than `PASS`, or `gadugi_scenario_count` not a positive integer |
+| gadugi scenarios | same evidence file, and `autodrive_gadugi_required .` on the checkout's own files, the same files the evidence step measured | Unless the gate's own `autodrive_gadugi_required` says `false` and `gadugi_status` is `NOT_REQUIRED`: `gadugi_status` other than `PASS`, or `gadugi_scenario_count` not a positive integer. An unreadable answer counts as required. |
 | Crusty loop | `phases.tsv`, `crusty-latest.json`, `crusty-records.tsv` and its record, in `--state-dir` | no `--state-dir`; the directory or a file not private; no `crusty-loop` marker; `crusty_verdict` not `CLEAN`; `autodrive_crusty_final` failing (its token, or `crusty-other`); `HEAD_SHA` not in the clone; `autodrive_crusty_range` not `ok` (its token, or `crusty-range-other`) |
 | merge-ready verdict | round record from this run | not `MERGE_READY`, or captured against a different head SHA |
 
@@ -880,7 +915,7 @@ or single-digit-minute bound is introduced.
 | `amplifier-bundle/recipes/autodrive-build.yaml` | phase 1 | `default-workflow`, resume-aware. |
 | `amplifier-bundle/recipes/autodrive-crusty-round.yaml` | round | Crusty review of the PR head, verdict, fixes, round record. |
 | `amplifier-bundle/recipes/autodrive-crusty-loop.yaml` | phase 2 | Loop driver + phase bookkeeping. |
-| `amplifier-bundle/recipes/autodrive-merge-evidence.yaml` | evidence | Base sync, suite commands, gadugi scenarios, CI wait. |
+| `amplifier-bundle/recipes/autodrive-merge-evidence.yaml` | evidence | Base sync, suite commands, gadugi scenarios where required, CI wait. |
 | `amplifier-bundle/recipes/autodrive-merge-round.yaml` | round | Merge-ready criteria from the skill's files, verdict, blocker fixes. |
 | `amplifier-bundle/recipes/autodrive-merge-loop.yaml` | phase 3 | Loop driver + merge gate + bookkeeping. |
 | `amplifier-bundle/recipes/loop-health-evaluator.yaml` | terminator | Agentic loop-health verdict. |
@@ -889,7 +924,7 @@ or single-digit-minute bound is introduced.
 | `amplifier-bundle/tools/autodrive_merge_gate.sh` | tool | Evidence gate and the fixed merge argv. |
 | `amplifier-bundle/tools/autodrive_merge_ready_files.sh` | tool | Finds the merge-ready `SKILL.md` and template. |
 | `amplifier-bundle/tools/autodrive_platform_facts.sh` | tool | Platform facts for the merge round, criterion 6 included; the review-thread count for the merge gate too. |
-| `amplifier-bundle/tools/autodrive_qa_evidence.sh` | tool | Criterion 1: the suite commands and the gadugi scenarios, for `autodrive-merge-evidence.yaml` step-02. |
+| `amplifier-bundle/tools/autodrive_qa_evidence.sh` | tool | Criterion 1: the suite commands and, where `autodrive_gadugi_required` says so, the gadugi scenarios, for `autodrive-merge-evidence.yaml` step-02. |
 | `amplifier-bundle/tools/autodrive_round_evidence.sh` | tool | The merge round's deterministic step bodies, and the crusty range the re-review reads: crusty range and evidence, the qa evidence hash, the measured downgrade, the findings and the round record. |
 | `amplifier-bundle/tools/autodrive_state.sh` | tool | Resumable local state, `autodrive_crusty_final`, `autodrive_private`; platform truth for merged-ness. |
 | `amplifier-bundle/tools/autodrive_trust.sh` | tool | Range check and qa evidence chain. |
@@ -905,7 +940,7 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | Executable contract test: loop, verdicts, forbidden-flag scan, merge-gate refusals, qa evidence against stub `cargo` and `gadugi-test`, crusty records and range | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
 | Structural and wiring guards, brick budget, skill-invocation guard, state-directory sentence, and `tests/gadugi/recipe-step-command.sh` compared with serde_yaml over every bundled recipe step | `tests/integration/auto_drive_to_merge_test.rs` |
 | The merge-ready skill stays platform-neutral | `tests/integration/merge_ready_platform_contract_test.rs` |
-| gadugi-test scenarios for this change: criterion 6 approval measurement (#1518), the merge-ready file lookup (#1517), and the crusty range and re-review at the loop's depth, with the real recursion guard, leaving phase 2's crusty records and manifest rows unchanged | `tests/gadugi/scenarios/issue-1518-*.yaml`, `tests/gadugi/scenarios/issue-1517-*.yaml` |
+| gadugi-test scenarios for this change: criterion 6 approval measurement (#1518), the merge-ready file lookup and the repo-type gadugi rule (#1517), and the crusty range and re-review at the loop's depth, with the real recursion guard, leaving phase 2's crusty records and manifest rows unchanged. This repository is a Rust CLI repository, so auto-drive runs them only with `AUTODRIVE_QA_SCENARIO_DIR=tests/gadugi/scenarios`. | `tests/gadugi/scenarios/issue-1518-*.yaml`, `tests/gadugi/scenarios/issue-1517-*.yaml` |
 
 ```bash
 AMPLIHACK_SKIP_AUTO_INSTALL=1 cargo test -p amplihack --test auto_drive_to_merge

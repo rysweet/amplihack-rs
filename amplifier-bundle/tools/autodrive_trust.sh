@@ -9,6 +9,8 @@
 # evidence, which an agent step running as the same user could edit after it
 # was measured; autodrive_qa_trusted accepts it only through the hash chain
 # that starts at the loop's merge-ready-records.tsv manifest.
+# autodrive_gadugi_required says whether criterion 1 needs gadugi-test in a
+# repository at all; it follows qa-team's repo-type table.
 #
 # Every function prints only a fixed token, a hex SHA, or a JSON line built
 # from those. Commit subjects, paths and file contents are never printed, so
@@ -308,4 +310,38 @@ autodrive_scenario_results() {
     key="$(printf '%s' "$key" | tr -c 'A-Za-z0-9._/-' '_' | cut -c1-128)"
     [ -n "$key" ] && printf '%s=%s\n' "$key" "$res"
   done < "$list" | sort -t '=' -k1,1 | paste -s -d ',' -
+}
+
+# --- criterion 1: where gadugi-test is required ----------------------------
+#
+# Criterion 1 follows qa-team's repo-type table
+# (amplifier-bundle/skills/qa-team/SKILL.md, "Repo-Type Detection"). Only a
+# Node repository runs its scenarios with gadugi-agentic-test. A Rust CLI
+# repository substitutes `cargo test` and does not require gadugi, and a
+# Python repository runs `pytest`. #1517 asked for this rule. Every auto-drive
+# step that decides whether gadugi-test is needed asks the two functions
+# below and nothing else: auto-drive's first step, merge round step-00, the
+# qa evidence tool and the merge gate. Neither needs autodrive_state.sh.
+
+# autodrive_repo_type <dir> -> rust-cli, node, python or unknown, from the
+# files at the top of <dir>. Cargo.toml is read first, then package.json,
+# then pyproject.toml or setup.py.
+autodrive_repo_type() {
+  local d="${1:-.}"
+  if [ -f "$d/Cargo.toml" ]; then printf 'rust-cli\n'
+  elif [ -f "$d/package.json" ]; then printf 'node\n'
+  elif [ -f "$d/pyproject.toml" ] || [ -f "$d/setup.py" ]; then printf 'python\n'
+  else printf 'unknown\n'; fi
+}
+
+# autodrive_gadugi_required <dir> -> true or false. The result is true for a
+# Node repository, and when the operator sets AUTODRIVE_QA_SCENARIO_DIR in
+# the environment, which asks for gadugi scenarios in any repository type.
+# Otherwise it is false.
+autodrive_gadugi_required() {
+  if [ -n "${AUTODRIVE_QA_SCENARIO_DIR:-}" ] || [ "$(autodrive_repo_type "${1:-.}")" = "node" ]; then
+    printf 'true\n'
+  else
+    printf 'false\n'
+  fi
 }

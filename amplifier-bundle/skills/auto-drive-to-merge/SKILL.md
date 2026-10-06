@@ -33,9 +33,11 @@ criterion, then merge. Three phases, two loops, one gate.
 
 ```mermaid
 flowchart TD
-    A[task] --> P{gadugi-test on PATH?}
+    A[task] --> P0{criterion 1 needs gadugi?<br/>Node repo, or AUTODRIVE_QA_SCENARIO_DIR}
+    P0 -->|no: Rust CLI, Python| B[Phase 1: BUILD<br/>default-workflow, no_merge=true]
+    P0 -->|yes| P{gadugi-test on PATH?}
     P -->|no| STOP0[stop: gadugi-test-not-installed]
-    P -->|yes| B[Phase 1: BUILD<br/>default-workflow, no_merge=true]
+    P -->|yes| B
     B --> C{PR exists?}
     C -->|no| STOP1[stop: nothing to review]
     C -->|yes| D[Phase 2: CRUSTY LOOP]
@@ -50,7 +52,7 @@ flowchart TD
     D4 -->|DONE + verdict CLEAN| E[Phase 3: MERGE-READY LOOP]
 
     E --> E0[code commits since the clean crusty round?<br/>re-run the crusty loop at phase 2's depth]
-    E0 --> E1[sync base, run qa-team scenarios,<br/>wait for CI to a terminal state]
+    E0 --> E1[sync base, run the repository's tests<br/>and, where required, gadugi scenarios,<br/>wait for CI to a terminal state]
     E1 --> E2[merge-ready skill criteria]
     E2 --> E3[structured verdict:<br/>MERGE_READY / NOT_MERGE_READY]
     E3 -->|NOT_MERGE_READY| E4[clear blockers, commit, push]
@@ -72,7 +74,7 @@ flowchart TD
 
 | Tool | Why | Install |
 | --- | --- | --- |
-| `gadugi-test` | Merge-ready criterion 1 runs the qa-team scenarios with it in every repository type. `amplihack install` does not install it, and no agent can. The recipe's first step, `autodrive-prerequisites`, stops the run with `ERROR: gadugi-test-not-installed` before the build when it is missing, so the missing tool costs seconds rather than a build and a crusty loop. The install is pinned to the gadugi-agentic-test commit auto-drive was tested with, because auto-drive depends on how gadugi-test 1.0.x behaves: one `--scenario` per run (gadugi-agentic-test #207) and a scenario decided by its commands' exit codes alone. | `npm install -g github:rysweet/gadugi-agentic-test#6c120657798995b1b53399a5acf3693d418a2d8b` |
+| `gadugi-test`, only where criterion 1 needs it | Merge-ready criterion 1 follows qa-team's repo-type table. A Node repository runs its qa-team scenarios with `gadugi-test`. So does any repository where the operator sets `AUTODRIVE_QA_SCENARIO_DIR`. A Rust CLI repository runs `cargo test`, a Python repository runs `pytest`, and neither needs `gadugi-test`. `autodrive_gadugi_required` in `autodrive_trust.sh` makes this decision for every step. Where `gadugi-test` is needed, `amplihack install` does not install it, and no agent can. The recipe's first step, `autodrive-prerequisites`, stops the run with `ERROR: gadugi-test-not-installed` before the build when it is missing, so the missing tool costs seconds rather than a build and a crusty loop. The install is pinned to the gadugi-agentic-test commit auto-drive was tested with, because auto-drive depends on how gadugi-test 1.0.x behaves: one `--scenario` per run (gadugi-agentic-test #207) and a scenario decided by its commands' exit codes alone. | `npm install -g github:rysweet/gadugi-agentic-test#6c120657798995b1b53399a5acf3693d418a2d8b` |
 | `gh`, authenticated | Platform facts, CI, review threads and the merge itself. | [GitHub CLI](https://cli.github.com/) |
 
 ## Invoking it

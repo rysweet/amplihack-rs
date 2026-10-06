@@ -2,14 +2,17 @@
 # Self-asserting gadugi-test scenario body for issue #1517: the auto-drive merge
 # round reads the merge-ready skill's files instead of invoking a skill that
 # refuses agents (`disable-model-invocation: true`), and a missing gadugi-test
-# stops auto-drive by name before the build (PR #1520 review).
+# stops auto-drive by name before the build (PR #1520 review), but only where
+# criterion 1 needs it: qa-team's repo-type table requires gadugi in a Node
+# repository, and a Rust CLI repository runs `cargo test` without it.
 #
 # Runs, as black boxes:
 #   - the SHIPPED amplifier-bundle/tools/autodrive_merge_ready_files.sh against
 #     installs laid out in a temporary directory;
 #   - the SHIPPED bash of merge round step-00-merge-ready-files and of
 #     auto-drive-to-merge's autodrive-prerequisites, read from the recipes with
-#     the extractor beside this file, with and without gadugi-test on PATH.
+#     the extractor beside this file, with and without gadugi-test on PATH,
+#     in a Node and a Rust CLI repository.
 #
 # Launched by the gadugi `execute` action with no arguments; prints one PASS or
 # FAIL line per case and ALL_CASES_PASSED when every case holds.
@@ -29,7 +32,8 @@ SYS_PATH="$(dirname "$(command -v jq)"):$(dirname "$(command -v git)"):/usr/bin:
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 WORK="$(cd "$WORK" && pwd -P)"
-mkdir -p "$WORK/home" "$WORK/plain" "$WORK/gadugi-bin" "$WORK/no-gadugi-bin"
+mkdir -p "$WORK/home" "$WORK/plain" "$WORK/node" "$WORK/rust" "$WORK/gadugi-bin" "$WORK/no-gadugi-bin"
+: > "$WORK/node/package.json"; : > "$WORK/rust/Cargo.toml"
 printf '#!/bin/sh\necho "gadugi-test must not run here" >&2\nexit 99\n' > "$WORK/gadugi-bin/gadugi-test"
 chmod +x "$WORK/gadugi-bin/gadugi-test"
 
@@ -87,13 +91,14 @@ else
   fl merge_round_reads_skill_files "autodrive-merge-round.yaml invokes merge-ready or does not cite its files"
 fi
 
-# 5. The real step-00 body: JSON with gadugi-test on PATH, a named stop without.
+# 5. The real step-00 body: JSON with gadugi-test on PATH; without it, a named
+#    stop in a Node repository and JSON in a Rust CLI repository.
 # The step bodies are read with recipe-step-command.sh, which the Rust suite
 # compares with serde_yaml for every step a harness reads (HARNESS_STEPS).
 RECIPE="$ROUND_RECIPE"
 S00="$(bash "$SCRIPT_DIR/recipe-step-command.sh" "$RECIPE" step-00-merge-ready-files)" || S00=""
-run_s00() { # run_s00 <gadugi-bin-dir>
-  env -i HOME="$WORK/home" PATH="$1:$SYS_PATH" AMPLIHACK_HOME="$WORK/ah" REPO_PATH="$WORK/plain" \
+run_s00() { # run_s00 <gadugi-bin-dir> [repo]
+  env -i HOME="$WORK/home" PATH="$1:$SYS_PATH" AMPLIHACK_HOME="$WORK/ah" REPO_PATH="${2:-$WORK/plain}" \
     AUTODRIVE_TOOLS_DIR="$REPO_ROOT/amplifier-bundle/tools" bash -c "$S00"
 }
 OUT="$(run_s00 "$WORK/gadugi-bin" 2>"$WORK/err5")"; RC=$?
@@ -102,34 +107,50 @@ if [ -n "$S00" ] && [ "$RC" -eq 0 ] && [ "$(printf '%s' "$OUT" | jq -r .skill_md
 else
   fl merge_round_step00_resolves "rc=$RC out=$OUT err=$(tr '\n' ' ' < "$WORK/err5")"
 fi
-OUT="$(run_s00 "$WORK/no-gadugi-bin" 2>"$WORK/err6")"; RC=$?
+OUT="$(run_s00 "$WORK/no-gadugi-bin" "$WORK/node" 2>"$WORK/err6")"; RC=$?
 if [ "$RC" -ne 0 ] && [ -z "$OUT" ] && grep -q '^ERROR: gadugi-test-not-installed:' "$WORK/err6"; then
-  pass merge_round_step00_stops_without_gadugi "step-00 still stops by name if gadugi-test goes away during a run"
+  pass merge_round_step00_stops_without_gadugi "step-00 still stops by name in a Node repository if gadugi-test goes away during a run"
 else
   fl merge_round_step00_stops_without_gadugi "rc=$RC out=$OUT err=$(tr '\n' ' ' < "$WORK/err6")"
 fi
+OUT="$(run_s00 "$WORK/no-gadugi-bin" "$WORK/rust" 2>"$WORK/err6b")"; RC=$?
+if [ "$RC" -eq 0 ] && [ "$(printf '%s' "$OUT" | jq -r .skill_md 2>/dev/null)" = "$WANT/SKILL.md" ]; then
+  pass merge_round_step00_rust_needs_no_gadugi "step-00 needs no gadugi-test in a Rust CLI repository, as qa-team's Rust CLI line says"
+else
+  fl merge_round_step00_rust_needs_no_gadugi "rc=$RC out=$OUT err=$(tr '\n' ' ' < "$WORK/err6b")"
+fi
 
-# 6. auto-drive-to-merge checks gadugi-test FIRST, before the build.
+# 6. auto-drive-to-merge checks gadugi-test FIRST, before the build, where
+#    criterion 1 needs it.
 FIRST="$(grep -m1 -E '^  - id: ' "$TOP_RECIPE" | sed -E 's/^  - id: "?([^"]*)"?.*/\1/')"
 RECIPE="$TOP_RECIPE"
 PRQ="$(bash "$SCRIPT_DIR/recipe-step-command.sh" "$RECIPE" autodrive-prerequisites)" || PRQ=""
-OUT="$(env -i HOME="$WORK/home" PATH="$WORK/no-gadugi-bin:$SYS_PATH" bash -c "$PRQ" 2>"$WORK/err7")"; RC=$?
+run_prq() { # run_prq <gadugi-bin-dir> <repo>
+  env -i HOME="$WORK/home" PATH="$1:$SYS_PATH" AMPLIHACK_HOME="$REPO_ROOT" REPO_PATH="$2" bash -c "$PRQ"
+}
+OUT="$(run_prq "$WORK/no-gadugi-bin" "$WORK/node" 2>"$WORK/err7")"; RC=$?
 if [ "$FIRST" = "autodrive-prerequisites" ] && [ -n "$PRQ" ] && [ "$RC" -ne 0 ] && [ -z "$OUT" ] \
    && grep -q '^ERROR: gadugi-test-not-installed:' "$WORK/err7" \
    && grep -qF 'npm install -g github:rysweet/gadugi-agentic-test#6c120657798995b1b53399a5acf3693d418a2d8b' "$WORK/err7"; then
-  pass gadugi_missing_stops_before_build "a missing gadugi-test stops auto-drive at its first step, before the build, with the install command"
+  pass gadugi_missing_stops_before_build "a missing gadugi-test stops auto-drive on a Node repository at its first step, before the build, with the install command"
 else
   fl gadugi_missing_stops_before_build "first=$FIRST rc=$RC out=$OUT err=$(tr '\n' ' ' < "$WORK/err7")"
 fi
-OUT="$(env -i HOME="$WORK/home" PATH="$WORK/gadugi-bin:$SYS_PATH" bash -c "$PRQ" 2>"$WORK/err8")"; RC=$?
+OUT="$(run_prq "$WORK/gadugi-bin" "$WORK/node" 2>"$WORK/err8")"; RC=$?
 if [ "$RC" -eq 0 ] && [ "$OUT" = '{"gadugi_test":"found"}' ]; then
   pass gadugi_present_goes_on "with gadugi-test on PATH auto-drive goes on to the build"
 else
   fl gadugi_present_goes_on "rc=$RC out=$OUT err=$(tr '\n' ' ' < "$WORK/err8")"
 fi
+OUT="$(run_prq "$WORK/no-gadugi-bin" "$WORK/rust" 2>"$WORK/err9")"; RC=$?
+if [ "$RC" -eq 0 ] && [ "$OUT" = '{"gadugi_test":"not-required"}' ]; then
+  pass rust_repo_starts_without_gadugi "a Rust CLI repository starts auto-drive without gadugi-test (qa-team's repo-type table, #1517)"
+else
+  fl rust_repo_starts_without_gadugi "rc=$RC out=$OUT err=$(tr '\n' ' ' < "$WORK/err9")"
+fi
 
 if [ "$fail" -eq 0 ]; then
-  echo "merge-ready read from its files; gadugi-test checked before the build"
+  echo "merge-ready read from its files; gadugi-test checked before the build where criterion 1 needs it"
   echo "ALL_CASES_PASSED"
   exit 0
 fi

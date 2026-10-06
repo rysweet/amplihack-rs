@@ -186,15 +186,19 @@ else
   elif [ -n "$HEAD_SHA" ] && [ "$QA_SHA" != "$HEAD_SHA" ]; then
     block "the qa-team evidence was captured against ${QA_SHA} but the head is now ${HEAD_SHA}; evidence must bind to the SHA being merged"
   fi
-  # qa_status=PASS already requires gadugi; it is re-read here so evidence
-  # written before gadugi was measured (no gadugi fields) never merges.
+  # Whether gadugi is required is decided here, from the checkout's own files,
+  # by autodrive_gadugi_required beside this gate, never by the evidence; if it
+  # cannot be read, gadugi is required. Evidence with no gadugi fields never merges.
   GADUGI_STATUS="$(field "$QA_RAW" gadugi_status MISSING)"
   GADUGI_COUNT="$(field "$QA_RAW" gadugi_scenario_count "")"
-  note "gadugi_status=${GADUGI_STATUS} gadugi_scenario_count=${GADUGI_COUNT:-<none>} gadugi_scenario_dir=$(field "$QA_RAW" gadugi_scenario_dir '')"
-  [ "$GADUGI_STATUS" = "PASS" ] || block "gadugi-test scenarios were not validated and run to a pass in this run (gadugi_status=${GADUGI_STATUS})"
-  case "$GADUGI_COUNT" in
-    ''|*[!0-9]*|0*) block "gadugi_scenario_count='${GADUGI_COUNT}' is not a positive integer; zero scenarios is not a qa-team pass" ;;
-  esac
+  GADUGI_REQ="$(. "${GATE_HOME:-/nonexistent}/autodrive_trust.sh" 2>/dev/null && autodrive_gadugi_required .)" || GADUGI_REQ="true"
+  note "gadugi_required=${GADUGI_REQ} gadugi_status=${GADUGI_STATUS} gadugi_scenario_count=${GADUGI_COUNT:-<none>} gadugi_scenario_dir=$(field "$QA_RAW" gadugi_scenario_dir '')"
+  if [ "${GADUGI_REQ}:${GADUGI_STATUS}" != "false:NOT_REQUIRED" ]; then
+    [ "$GADUGI_STATUS" = "PASS" ] || block "gadugi-test scenarios were not validated and run to a pass in this run (gadugi_status=${GADUGI_STATUS})"
+    case "$GADUGI_COUNT" in
+      ''|*[!0-9]*|0*) block "gadugi_scenario_count='${GADUGI_COUNT}' is not a positive integer; zero scenarios is not a qa-team pass" ;;
+    esac
+  fi
 fi
 
 # --- 6b. Criterion 3: the crusty loop of this run ended DONE and CLEAN -------
