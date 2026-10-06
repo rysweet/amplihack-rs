@@ -182,16 +182,17 @@ async fn async_idle_child_is_killed_after_window() {
 /// Timing (issue #1535): the gap between ticks must sit well inside the idle
 /// window, or a loaded host stretches a gap past the window and the watchdog
 /// correctly kills the child mid-stream. Ticks come every 0.25 s against a 3 s
-/// window (a 2.75 s margin per gap). Streaming lasts ≈4 s, longer than the
-/// window, so surviving it proves output resets the timer. The 30 s silent
-/// tail outlasts the window by a similar wide margin.
+/// window, so a gap has to stall by more than 2.75 s to trip it. Streaming
+/// lasts ≈4 s, longer than the window, so surviving to "tick 16" proves output
+/// resets the timer. The 20 s silent tail leaves the watchdog 17 s to act
+/// before the child would exit on its own.
 #[tokio::test]
 async fn async_child_killed_only_after_it_stops_producing() {
-    // Sixteen ticks 0.25 s apart (≈4 s of activity), then silent for 30 s.
+    // Sixteen ticks 0.25 s apart (≈4 s of activity), then silent for 20 s.
     let mut child = tokio::process::Command::new("bash")
         .args([
             "-c",
-            "for i in $(seq 1 16); do echo tick $i; sleep 0.25; done; sleep 30",
+            "for i in $(seq 1 16); do echo tick $i; sleep 0.25; done; sleep 20",
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -200,6 +201,7 @@ async fn async_child_killed_only_after_it_stops_producing() {
         .expect("spawn produce-then-idle child");
     let (out, err) = (child.stdout.take(), child.stderr.take());
 
+    let start = std::time::Instant::now();
     let outcome = wait_with_idle_watchdog(
         &mut child,
         out,
@@ -211,6 +213,14 @@ async fn async_child_killed_only_after_it_stops_producing() {
     assert!(
         outcome.killed_for_idle,
         "child must be killed after it goes idle"
+    );
+    // ≈4 s of streaming plus the 3 s window is ≈7 s. A watchdog that waited
+    // much longer than its window (but still under the 20 s tail) would pass
+    // the assertion above, so bound the kill time too.
+    assert!(
+        start.elapsed() < Duration::from_secs(15),
+        "kill must follow the idle window, not lag it (elapsed {:?})",
+        start.elapsed()
     );
     assert!(
         outcome.stdout.contains("tick 16"),
