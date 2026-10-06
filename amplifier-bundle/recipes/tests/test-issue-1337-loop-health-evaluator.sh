@@ -377,6 +377,11 @@ check_rs "1513-json-beats-later-prose" \
     $'{"loop_verdict":"CONTINUE","not_converging":[]}\nDONE' CONTINUE evaluator
 check_rs "1513-json-beats-later-prose-stuck" \
     $'{"loop_verdict":"STUCK","not_converging":[]}\nCONTINUE' STUCK evaluator
+# A synonym under the PRIMARY key is normalised by orch (#1513): the
+# acceptance case is a converging loop answering in the right key.
+check_rs "1513-json-synonym" '{"loop_verdict":"CONVERGING","not_converging":[]}' CONTINUE evaluator
+# A negation under the primary key stays STUCK: exact match, not prefix.
+check_rs "1513-json-negation" '{"loop_verdict":"CONVERGING_SLOWLY","not_converging":[]}' STUCK evaluator
 
 # --- the wrong key (`verdict`) — deliberate reversal of the old MALFORMED row.
 # `{"verdict":"CONTINUE"}` used to be asserted STUCK. Issue #1513 is a

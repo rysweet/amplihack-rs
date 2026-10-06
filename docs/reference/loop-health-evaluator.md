@@ -301,6 +301,7 @@ text copied from the evaluator.
 | Evaluator output | `loop_verdict` | `verdict_source` |
 | ---------------- | -------------- | ---------------- |
 | `{"loop_verdict":"DONE","not_converging":[]}` | `DONE` | `evaluator` |
+| `{"loop_verdict":"CONVERGING","not_converging":[]}` | `CONTINUE` | `evaluator` |
 | `CONTINUE — round 1 made real progress on the review threads` | `CONTINUE` | `evaluator_prose_token` |
 | `## Verdict: CONTINUE` | `CONTINUE` | `evaluator_prose_token` |
 | `## Verdict: continue` | `CONTINUE` | `evaluator_prose_token` |
@@ -698,7 +699,7 @@ and reports what is not converging instead of consuming the remaining budget.
 | Test | Location |
 | ---- | -------- |
 | Helper unit tests (synonyms including `CONVERGING` / `PROGRESSING`, canonical pass-through, malformed → `STUCK`, negation-adjacent equality regression including `NOT_PROGRESSING`, opposite-default guard) | `crates/amplihack-cli/src/commands/orch.rs` |
-| Executable contract test (STUCK path, malformed-verdict path, exit-79 terminal path, the 2h47m worked example, no-cap and no-timeout guards, and `resolve_verdict_and_source` over every row of the [step-03 examples](#examples) plus the round-trip guard, `LOOP_NAME` cleaning, prompt-marker and [contract-position](#where-the-prompt-states-the-contract) cases, and step-04's stdout being at most one `LOOP_HEALTH: ` line for `CONTINUE`, `DONE` and `STUCK`) | `amplifier-bundle/recipes/tests/test-issue-1337-loop-health-evaluator.sh` |
+| Executable contract test (STUCK path, malformed-verdict path, exit-79 terminal path, the 2h47m worked example, no-cap and no-timeout guards, and a hand-written `check_rs` line, run through `resolve_verdict_and_source`, for every row of the [step-03 examples](#examples) — the test does not read the table, so a new row needs its own `check_rs` line — plus the round-trip guard, `LOOP_NAME` cleaning, prompt-marker and [contract-position](#where-the-prompt-states-the-contract) cases, and step-04's stdout being at most one `LOOP_HEALTH: ` line for `CONTINUE`, `DONE` and `STUCK`) | `amplifier-bundle/recipes/tests/test-issue-1337-loop-health-evaluator.sh` |
 | **End-to-end probe** — the real recipe files run through the real `recipe-runner-rs` with only step-02 stubbed as a bash step: `CONTINUE` → exit 0, `STUCK` → exit 1, verdict selection, exit-79 terminal, self-poisoning | same file, section 7 (skipped with a loud notice when `recipe-runner-rs` is not installed; set `RECIPE_RUNNER_RS_PATH` to force it) |
 | Structural + end-to-end wiring, including `evaluator_prompt_states_the_contract_first_and_last` | `tests/integration/issue_1337_loop_health_evaluator_test.rs` |
 
