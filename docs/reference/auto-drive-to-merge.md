@@ -1,6 +1,6 @@
 ---
 title: Auto Drive To Merge Reference
-last_updated: 2026-10-05
+last_updated: 2026-10-06
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -285,16 +285,18 @@ The check runs in:
 | `autodrive-build.yaml` | step-03 |
 
 `autodrive-build.yaml` step-03 differs in one way: an **empty** `state_dir`
-means the build ran without a preflight, so it prints `nothing to record` and
-exits `0`. A non-empty unsafe value still exits non-zero, and nothing is
-marked.
+means the preflight supplied none. The step prints
+`INFO: no state_dir from the preflight; nothing to record.` on stderr, marks
+no phase, and carries on. It still resolves and reports the PR: it exits `0`
+when it finds one, and otherwise exits `1` with the usual
+`ERROR: phase 1 finished without a pull request.` A non-empty unsafe value
+still exits non-zero, and nothing is marked.
 
-The path is always quoted, and `rm`, `mkdir` and `cp` get `--` before it
-(`mkdir -p -- "$DIR"`). An absolute path is not required; the preflight
-decides where state lives. No step deletes `state_dir` recursively. Any
-future step that does must also require an absolute path under the
-`autodrive_state_dir` root with no `..` component; a comment beside the check
-says so.
+The path is always quoted, and because the check refuses a leading `-`, it
+can never be read as an option. An absolute path is not required; the
+preflight decides where state lives. No step deletes `state_dir` recursively.
+Any future step that does must also require an absolute path under the
+`autodrive_state_dir` root with no `..` component.
 
 ### The static check
 
@@ -526,8 +528,9 @@ only `index()`, `==` and `~` against fixed regexes, never `gensub` or
 The reader runs only when the evaluator exited `0`. `LOOP_VERDICT` is set to
 `STUCK` first, and a non-zero `HEALTH_RC` leaves it there whatever the log
 says. Setting `loop_health_enforce: "false"` on the evaluator makes step-04
-exit `0` on `STUCK`; its marker then reads `LOOP_HEALTH: STUCK …`, which
-matches neither `CONTINUE` nor `DONE`, so the result is still `STUCK`.
+exit `0` on `STUCK`. Its `LOOP_HEALTH: STUCK …` marker goes to stderr, not
+stdout, so no `Output:` line follows the step-04 status line and the reader
+still gives `STUCK`.
 
 ## Two absolute prohibitions
 
