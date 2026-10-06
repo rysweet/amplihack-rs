@@ -2094,8 +2094,25 @@ fn crusty_records_are_trusted_only_through_the_loop_manifest() {
     let latest = driver
         .find("-latest.json\"")
         .expect("the driver must still copy the round record to <loop>-latest.json");
+    // The ordering is about the WRITE. The driver also READS the manifest
+    // before its first round, to label its rounds after the ones a previous
+    // loop on the same state dir wrote (PR #1520 review), so the first
+    // mention of the file is not the row being written.
+    let append = ">> \"${STATE_DIR}/${LOOP_NAME}-records.tsv\"";
+    assert_eq!(
+        driver.matches(append).count(),
+        1,
+        "autodrive_loop.sh must append its manifest row in exactly one place: `{append}`"
+    );
+    assert!(
+        !driver
+            .replace(append, "")
+            .contains("> \"${STATE_DIR}/${LOOP_NAME}-records.tsv\""),
+        "nothing else in autodrive_loop.sh may write or truncate <loop>-records.tsv; \
+         the manifest is append-only"
+    );
     let manifest = driver
-        .find("-records.tsv")
+        .find(append)
         .expect("the driver must append to <loop>-records.tsv");
     let health = driver
         .find("recipe run loop-health-evaluator")
