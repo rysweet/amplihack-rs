@@ -312,6 +312,30 @@ MODEL SELECTION (issues #1421, #1527)
     LockStatus,
     /// Show version information
     Version,
+    /// Print the agent CLI that agent steps would run under, and why.
+    ///
+    /// With --shell, print it as `env -u <each session marker>
+    /// AMPLIHACK_AGENT_BINARY=<cli> AMPLIHACK_AGENT_BINARY_SOURCE=<tag>`, a
+    /// prefix for a command started with `tmux new-session`. tmux gives a new
+    /// session the server's global environment, not this shell's, and that
+    /// holds the session markers of whatever started the server; the prefix
+    /// removes them, so only this shell's answer arrives. `setsid` and `nohup`
+    /// keep this shell's environment and need no prefix. A default guess stays
+    /// tagged as one. Keep the tmux command in double quotes: in single quotes
+    /// this runs in the new session and reads the server's markers.
+    /// Example:
+    /// tmux new-session -d "$(amplihack agent-binary --shell) amplihack recipe run ..."
+    #[command(name = "agent-binary")]
+    AgentBinary {
+        /// Print an inline `env -u ... VAR=value` prefix for the command
+        /// that follows it.
+        #[arg(long)]
+        shell: bool,
+        /// Resolve as if from this directory, where the recipe will run
+        /// (default: the current directory).
+        #[arg(short = 'w', long = "working-dir")]
+        working_dir: Option<std::path::PathBuf>,
+    },
     /// Self-update the amplihack binary, then run `install` to refresh framework assets.
     ///
     /// Use --skip-install (alias --no-install) for a binary-only update (legacy behavior).

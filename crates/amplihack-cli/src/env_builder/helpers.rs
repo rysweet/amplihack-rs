@@ -1,26 +1,103 @@
 use std::collections::HashSet;
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Resolves which agent binary identifier the current process is operating
-/// under. Delegates to [`amplihack_utils::agent_binary::resolve`], which
+/// under, by [`resolve_agent_binary_in`] from the current directory, which
 /// applies the precedence:
 ///
 /// 1. `AMPLIHACK_AGENT_BINARY` env var (explicit override).
-/// 2. `<cwd-or-ancestor>/.claude/runtime/launcher_context.json`.
-/// 3. Built-in default `"copilot"`.
+/// 2. A live session marker (`CLAUDE_CODE_SESSION_ID`, `COPILOT_CLI`, ...).
+/// 3. `<cwd-or-ancestor>/.claude/runtime/launcher_context.json`.
+/// 4. Built-in default `"copilot"`.
 ///
 /// Always returns an allowlisted name (`claude`, `copilot`, `codex`, or
 /// `amplifier`). Unknown / dangerous overrides silently fall through to the
 /// next layer — they never reach `Command::new`.
+///
+/// Only the name comes back. A caller that exports the answer to children or
+/// tells a user about it needs the layer that supplied it, so that a guess
+/// from the built-in default can be tagged or announced as one (issue #1481);
+/// it calls [`resolve_agent_binary_in`] itself, as `recipe run` and
+/// `agent-binary` do.
 pub fn active_agent_binary() -> String {
     let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    match amplihack_utils::agent_binary::resolve(&cwd) {
-        Ok(name) => name,
+    resolve_agent_binary_in(&cwd).binary
+}
+
+/// Resolve the agent binary with the launcher-context walk-up starting at
+/// `dir`, keeping the evidence a user needs when the answer was inferred.
+///
+/// `amplihack recipe run -w <dir>` runs every step in `<dir>`, so that is where
+/// a nested `amplihack` would look for `launcher_context.json`. Resolving the
+/// run's binary from anywhere else can let one level guess `copilot` while the
+/// level below reads a context file the top never saw.
+pub fn resolve_agent_binary_in(dir: &Path) -> amplihack_utils::agent_binary::Resolution {
+    match amplihack_utils::agent_binary::resolve_detailed(dir) {
+        Ok(resolution) => resolution,
         Err(err) => {
             tracing::warn!(error = %err, "agent binary resolver failed; using built-in default");
-            amplihack_utils::agent_binary::DEFAULT_BINARY.to_string()
+            amplihack_utils::agent_binary::Resolution {
+                binary: amplihack_utils::agent_binary::DEFAULT_BINARY.to_string(),
+                source: amplihack_utils::agent_binary::ResolutionSource::Default,
+                context_file: None,
+                unusable_contexts: Vec::new(),
+                session_marker: None,
+            }
         }
+    }
+}
+
+/// `true` when this launcher was picked for us by a parent that only had the
+/// built-in default to go on.
+///
+/// Issue #1481: `amplihack recipe run` inside a Claude Code session whose
+/// markers had been stripped exported the vendor default, and every agent step
+/// then ran `amplihack copilot`. That launch is not a session anyone chose, so
+/// recording it would turn one guess into persisted state that decides later
+/// runs in the checkout. The tag is bound to the inherited value, and that
+/// value must also name this tool: the tag describes what was handed down, not
+/// whatever launcher a user typed.
+pub fn launched_on_a_default_guess(tool: &str, var: &dyn Fn(&str) -> Option<String>) -> bool {
+    use amplihack_utils::agent_binary::{
+        BINARY_ENV, SOURCE_ENV, is_default_guess, validate_binary_name,
+    };
+    let binary = var(BINARY_ENV);
+    is_default_guess(binary.as_deref(), var(SOURCE_ENV).as_deref())
+        && binary
+            .as_deref()
+            .and_then(validate_binary_name)
+            .is_some_and(|inherited| inherited == tool)
+}
+
+/// Where the binary a launcher exports to its child came from.
+///
+/// Quality-audit S3: a launcher started on an inherited default guess naming
+/// itself persists nothing, but it used to re-export its own name untagged. A
+/// launcher nested below it then saw an explicit value and persisted it, so
+/// the guess became durable one level further down. Such a launch hands the
+/// guess on as a guess.
+///
+/// Any other launch describes the session it starts, and is exported as
+/// [`ResolutionSource::SessionMarker`] evidence, tagged `session:<tool>`
+/// (crusty review of #1490 at baaafb18). It used to be exported untagged, as
+/// an instruction that outranked every session marker. A tmux server that an
+/// agent of the session started then gave that instruction to every later
+/// session on it, including a Claude Code session in a pane, whose recipe
+/// steps all ran under copilot. Every path that starts a launcher's child
+/// (`run_launch`, auto mode) goes through
+/// [`EnvBuilder::with_launched_agent_binary`](super::EnvBuilder::with_launched_agent_binary).
+///
+/// [`ResolutionSource::SessionMarker`]: amplihack_utils::agent_binary::ResolutionSource::SessionMarker
+pub fn launch_binary_source(
+    tool: &str,
+    var: &dyn Fn(&str) -> Option<String>,
+) -> amplihack_utils::agent_binary::ResolutionSource {
+    use amplihack_utils::agent_binary::ResolutionSource;
+    if launched_on_a_default_guess(tool, var) {
+        ResolutionSource::Default
+    } else {
+        ResolutionSource::SessionMarker
     }
 }
 

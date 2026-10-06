@@ -74,6 +74,7 @@ fn execute_recipe_via_rust_for_test(
         working_dir,
         search_dirs,
         step_timeout,
+        crate::env_builder::resolve_agent_binary_in(working_dir),
     )
 }
 
@@ -127,14 +128,17 @@ pub fn run_recipe(
 /// root-sandbox decision; injected so tests reach the call in
 /// [`run_recipe_with`] whatever uid and configuration they run under.
 pub(crate) struct RootSandboxPreflight {
-    pub(crate) agent_binary: fn() -> String,
+    /// Resolves the run's agent binary, with its source and the launcher
+    /// context evidence, from the working dir. Called once; the pre-flight,
+    /// the stderr notice and every step use that one answer.
+    pub(crate) agent_binary: fn(&Path) -> amplihack_utils::agent_binary::Resolution,
     pub(crate) decision: fn() -> amplihack_utils::root_sandbox::SkipPermissionsEnv,
 }
 
 impl RootSandboxPreflight {
     fn live() -> Self {
         Self {
-            agent_binary: crate::env_builder::active_agent_binary,
+            agent_binary: crate::env_builder::resolve_agent_binary_in,
             decision: amplihack_utils::root_sandbox::detect,
         }
     }
@@ -182,10 +186,16 @@ pub(crate) fn run_recipe_with(
             )?;
         }
     }
+    // Issue #1481: resolve the agent binary once, from the directory the steps
+    // run in, and hand that one answer to both the #1482 pre-flight and the
+    // runner. Resolving the pre-flight's copy from the process cwd let the two
+    // disagree: it could wave through a run whose steps then launched claude
+    // as root, or refuse a run that would never have launched claude.
+    let agent_binary = (preflight.agent_binary)(&abs_working_dir);
     if !dry_run
         && let Err(error) = preflight_root_sandbox(
             &recipe,
-            &(preflight.agent_binary)(),
+            &agent_binary.binary,
             &(preflight.decision)(),
             preflight_out,
         )
@@ -202,6 +212,7 @@ pub(crate) fn run_recipe_with(
         &abs_working_dir,
         &search_dirs,
         step_timeout,
+        agent_binary,
     ) {
         Ok(result) => result,
         Err(error) => {

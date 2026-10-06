@@ -3,10 +3,29 @@
 //! Resolution precedence:
 //! 1. `AMPLIHACK_AGENT_BINARY` env var (explicit override; CI/testing).
 //! 2. A live session marker in this process's environment -- the CLI actually
-//!    hosting this process, which outranks any file on disk.
+//!    hosting this process, which outranks any file on disk. An
+//!    `AMPLIHACK_AGENT_BINARY` that amplihack itself exported to describe a
+//!    session ranks here too, among the markers of the CLI it names.
 //! 3. `<cwd-or-ancestor>/.claude/runtime/launcher_context.json` `launcher` field
 //!    (persisted state, possibly written by a different session).
 //! 4. Built-in default: `"copilot"`.
+//!
+//! Only an `AMPLIHACK_AGENT_BINARY` with no [`SOURCE_ENV`] tag beside it is an
+//! instruction. amplihack tags every value it exports itself, because that
+//! value only reports what amplihack saw:
+//!
+//! * `default:<binary>`: a parent fell back to layer 4. While the tag still
+//!   names the value, it is a guess handed down, so layer 1 ignores it and the
+//!   lower layers answer again (issue #1481).
+//! * `session:<binary>`: a launcher (`amplihack copilot`, ...) named the
+//!   session it started, or `recipe run` passed its answer to its steps. That
+//!   is evidence of the same kind as `COPILOT_CLI`, so it ranks among the
+//!   session markers instead of above them (crusty review of #1490 at
+//!   baaafb18; see [`session_tag`]).
+//!
+//! Either tag describes only the value it was exported with. Anyone who later
+//! sets a different binary has made a choice, and the stale tag no longer
+//! applies.
 //!
 //! All inputs are validated against a strict allowlist to prevent the resolved
 //! value from being used as an arbitrary `Command::new` target by downstream
@@ -19,10 +38,15 @@
 //! * Env-var input is length-capped (32 bytes) and rejects path separators,
 //!   control characters, and any name not in the allowlist.
 //! * `launcher_context.json` is read with a 64 KiB size cap and parsed as a
-//!   typed struct (extra fields ignored) — malformed input falls back.
+//!   typed struct (extra fields ignored) — malformed input falls back, and
+//!   is reported with its path in [`Resolution::unusable_contexts`] (#1525).
+//!   A reason never echoes the file's contents.
 //! * Walk-up ancestor search is capped at 32 levels and stops at any `.git`
-//!   boundary. Symlink escape is rejected by canonicalizing the resolved path
-//!   and verifying it stays within the anchor tree.
+//!   boundary, and at the first world-writable or foreign-owned directory. A
+//!   context file in that directory is not read, only named in
+//!   [`Resolution::unusable_contexts`]. Symlink escape is rejected by
+//!   canonicalizing the resolved path and verifying it stays within the
+//!   anchor tree.
 //! * No shell invocation, no subprocess execution.
 
 use std::fs;
@@ -37,6 +61,227 @@ pub const ALLOWED_BINARIES: &[&str] = &["amplifier", "claude", "codex", "copilot
 
 /// Built-in default when no override is present and no launcher_context exists.
 pub const DEFAULT_BINARY: &str = "copilot";
+
+/// Environment variable naming the agent binary.
+pub const BINARY_ENV: &str = "AMPLIHACK_AGENT_BINARY";
+
+/// Companion to [`BINARY_ENV`], exported beside it when the value came from the
+/// built-in default rather than from anything that observed a session.
+///
+/// Issue #1481: `amplihack recipe run` exports the binary to recipe-runner-rs
+/// so every agent step agrees. When all it had was the vendor default, that
+/// export used to be indistinguishable from an instruction: each step then
+/// launched `amplihack copilot`, which persisted a launcher context saying
+/// copilot, which pinned every later run in the checkout. The tag keeps the
+/// guess a guess all the way down.
+///
+/// The value is `default:<binary>` -- see [`default_guess_tag`]. It names the
+/// binary it describes because every descendant inherits it: a bash step that
+/// sets `AMPLIHACK_AGENT_BINARY=codex` without clearing the tag has still
+/// chosen codex, and must not be overruled by a tag describing an earlier
+/// guess.
+///
+/// A launcher, and `recipe run` for an answer it did not get from layer 1,
+/// export `session:<binary>` instead -- see [`session_tag`]. That value is not
+/// a guess either, but it is not an instruction: it ranks with the session
+/// markers.
+///
+/// `amplihack agent-binary --shell` writes one other value,
+/// `tmux_server:<marker variable>` -- see [`tmux_server_marker_tag`]. It is not
+/// a guess, and layer 1 honours the value it sits beside; it only lets the
+/// receiving run say where that value came from.
+pub const SOURCE_ENV: &str = "AMPLIHACK_AGENT_BINARY_SOURCE";
+
+/// The [`SOURCE_ENV`] value marking `binary` as a default-layer guess.
+pub fn default_guess_tag(binary: &str) -> String {
+    format!("{}:{binary}", ResolutionSource::Default.label())
+}
+
+/// Prefix of a [`session_tag`].
+const SESSION_TAG: &str = "session";
+
+/// The [`SOURCE_ENV`] value marking `binary` as a description of a session
+/// amplihack launched or observed, not an instruction.
+///
+/// Crusty review of #1490 at baaafb18: `amplihack copilot` used to export
+/// `AMPLIHACK_AGENT_BINARY=copilot` untagged, which outranks every session
+/// marker. tmux copies the environment of whatever starts its server into the
+/// server's global environment, and every later session starts from that copy
+/// (tmux(1), GLOBAL AND SESSION ENVIRONMENT). An agent of that Copilot session
+/// that started a server therefore handed `copilot` to every session on it,
+/// and a Claude Code session in one of its panes ran every recipe step under
+/// copilot, through the documented hand-off as well, since the caller itself
+/// resolved the explicit value. A launcher's export only says which session
+/// it started, which is the same kind of evidence as `COPILOT_CLI`. With this
+/// tag it ranks among the session markers (see [`rank_session_markers`]), so
+/// the CLI actually running in that pane answers.
+///
+/// `recipe run` exports its answer to its steps the same way unless that
+/// answer came from layer 1. A step that starts a tmux server would otherwise
+/// leak the run's answer into the server as an instruction.
+pub fn session_tag(binary: &str) -> String {
+    format!("{SESSION_TAG}:{binary}")
+}
+
+/// The [`SOURCE_ENV`] value to export beside `binary`, which the resolver
+/// answered from `source`, or `None` when the value is exported as an
+/// instruction, untagged.
+///
+/// Only layer 1 hands on an instruction, because only there did someone
+/// choose. A guess is tagged as one ([`default_guess_tag`]). A marker or a
+/// launcher context only describes a session ([`session_tag`]).
+pub fn export_tag(binary: &str, source: ResolutionSource) -> Option<String> {
+    match source {
+        ResolutionSource::Env => None,
+        ResolutionSource::SessionMarker | ResolutionSource::LauncherContext => {
+            Some(session_tag(binary))
+        }
+        ResolutionSource::Default => Some(default_guess_tag(binary)),
+    }
+}
+
+/// The session marker that `binary`, exported with `tag`, amounts to: the
+/// [`SOURCE_ENV`] variable, implying the binary its [`session_tag`] names.
+///
+/// `None` unless `tag` is `session:<binary>` for this same binary. Like the
+/// guess tag, the tag describes only the value it was exported with: a
+/// different value set later is an instruction.
+pub fn session_described(binary: Option<&str>, tag: Option<&str>) -> Option<SessionMarker> {
+    let binary = binary.and_then(validate_binary_name)?;
+    if tag?.trim() == session_tag(&binary) {
+        tag_marker(&binary)
+    } else {
+        None
+    }
+}
+
+/// [`session_described`] for this process's own [`BINARY_ENV`] and
+/// [`SOURCE_ENV`].
+pub fn inherited_session_described() -> Option<SessionMarker> {
+    session_described(
+        std::env::var(BINARY_ENV).ok().as_deref(),
+        std::env::var(SOURCE_ENV).ok().as_deref(),
+    )
+}
+
+/// The marker a tag on [`BINARY_ENV`] makes of `binary`, which must already be
+/// a validated name. Its variable is [`SOURCE_ENV`], whose value is what the
+/// tmux check compares and what makes `binary` session evidence at all.
+fn tag_marker(binary: &str) -> Option<SessionMarker> {
+    ALLOWED_BINARIES
+        .iter()
+        .find(|&&allowed| allowed == binary)
+        .map(|&binary| SessionMarker {
+            variable: SOURCE_ENV,
+            binary,
+        })
+}
+
+/// Which of the first live marker in [`SESSION_MARKERS`] order and a
+/// [`session_described`] value answers layer 2.
+///
+/// The described value ranks among the markers of the CLI it names, after
+/// them: `session:claude` with Claude's markers, ahead of Copilot's;
+/// `session:copilot` after Copilot's; codex and amplifier, which export no
+/// marker, after every marker. So it loses to a marker of its own CLI or of a
+/// CLI listed earlier, and beats a marker of a CLI listed later, exactly as two
+/// markers would.
+///
+/// It must not simply rank last. `recipe run` unsets `CLAUDECODE` for its
+/// steps, so that a `claude` step can start, and hands them `session:claude`
+/// instead. In a pane of a tmux server started from a Copilot session, each of
+/// those steps also holds the server's `COPILOT_CLI`. Ranked last, that marker
+/// would take over a run its top level had resolved to claude.
+pub fn rank_session_markers(
+    live: Option<SessionMarker>,
+    described: Option<SessionMarker>,
+) -> Option<SessionMarker> {
+    match (live, described) {
+        (Some(live), Some(described))
+            if marker_rank(described.binary) < marker_rank(live.binary) =>
+        {
+            Some(described)
+        }
+        (Some(live), _) => Some(live),
+        (None, described) => described,
+    }
+}
+
+/// Where the first [`SESSION_MARKERS`] entry implying `binary` sits, or after
+/// all of them for a binary no marker implies.
+fn marker_rank(binary: &str) -> usize {
+    SESSION_MARKERS
+        .iter()
+        .position(|&(_, implied)| implied == binary)
+        .unwrap_or(SESSION_MARKERS.len())
+}
+
+/// Every [`SESSION_MARKERS`] variable that implies a CLI other than `tool`.
+///
+/// A launcher removes these from the CLI it starts. A Copilot session started
+/// from a Claude Code shell would otherwise inherit `CLAUDECODE`, which ranks
+/// above the launcher's own `session:copilot`, and resolve to claude: the
+/// mirror image of crusty's review of #1490 at baaafb18. The launched CLI
+/// sets its own markers again; another CLI's are stale by definition.
+pub fn other_clis_markers(tool: &str) -> impl Iterator<Item = &'static str> + '_ {
+    SESSION_MARKERS
+        .iter()
+        .filter(move |&&(_, binary)| binary != tool)
+        .map(|&(variable, _)| variable)
+}
+
+/// Prefix of a [`tmux_server_marker_tag`].
+const TMUX_SERVER_TAG: &str = "tmux_server";
+
+/// The [`SOURCE_ENV`] value `amplihack agent-binary --shell` hands on with a
+/// binary it read from `marker`, a session marker that the tmux server's global
+/// environment held with the same value.
+///
+/// Such a marker may be the server's copy of whatever started the server, not
+/// the caller's own. The likeliest way to get one is a hand-off in a
+/// single-quoted tmux command: `$(...)` then runs in the new session, not in
+/// the caller's shell, and reads the server's markers. Handed on with an empty
+/// tag, the value would reach `recipe run` as an explicit choice, and the
+/// notice that names the marker would be printed only in the tmux pane, while
+/// the run's log said nothing (crusty review of #1490 at ef441d81). With this
+/// tag the run prints it in its own log. See [`tmux_server_marker`].
+pub fn tmux_server_marker_tag(marker: SessionMarker) -> String {
+    format!("{TMUX_SERVER_TAG}:{}", marker.variable)
+}
+
+/// The session marker a [`tmux_server_marker_tag`] names, when `tag` is one
+/// and the marker implies `binary`.
+///
+/// Like [`is_default_guess`], the tag describes only the value it was handed
+/// on with. A tag naming a marker of another CLI, or a variable that is not in
+/// [`SESSION_MARKERS`], says nothing about the binary now set.
+///
+/// The one variable outside that list it accepts is [`SOURCE_ENV`] itself: the
+/// marker a [`session_tag`] makes, which implies whatever binary it was
+/// exported with.
+pub fn tmux_server_marker(binary: Option<&str>, tag: Option<&str>) -> Option<SessionMarker> {
+    let binary = binary.and_then(validate_binary_name)?;
+    let variable = tag?
+        .trim()
+        .strip_prefix(TMUX_SERVER_TAG)?
+        .strip_prefix(':')?;
+    if variable == SOURCE_ENV {
+        return tag_marker(&binary);
+    }
+    SESSION_MARKERS
+        .iter()
+        .find(|&&(name, implied)| name == variable && implied == binary)
+        .map(|&(variable, binary)| SessionMarker { variable, binary })
+}
+
+/// [`tmux_server_marker`] for this process's own [`BINARY_ENV`] and
+/// [`SOURCE_ENV`].
+pub fn inherited_tmux_server_marker() -> Option<SessionMarker> {
+    tmux_server_marker(
+        std::env::var(BINARY_ENV).ok().as_deref(),
+        std::env::var(SOURCE_ENV).ok().as_deref(),
+    )
+}
 
 /// Maximum bytes accepted from the `AMPLIHACK_AGENT_BINARY` env var.
 const ENV_VALUE_MAX_LEN: usize = 32;
@@ -55,10 +300,15 @@ const ANCESTOR_WALK_LIMIT: usize = 32;
 /// timeout policy than the session the user is actually sitting in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResolutionSource {
-    /// `AMPLIHACK_AGENT_BINARY` was set and valid.
+    /// `AMPLIHACK_AGENT_BINARY` was set and valid, and not tagged as a guess
+    /// or as a session description.
     Env,
     /// Determined from a live session marker in this process's environment.
     /// The session that is actually running, and it outranks any file.
+    ///
+    /// Also an `AMPLIHACK_AGENT_BINARY` tagged [`session_tag`], which amplihack
+    /// exported to describe a session; [`Resolution::session_marker`] then has
+    /// [`SOURCE_ENV`] as its variable.
     SessionMarker,
     /// Read from a persisted `launcher_context.json`, possibly written by an
     /// unrelated earlier session in the same repo.
@@ -145,25 +395,122 @@ pub fn resolve(cwd: &Path) -> Result<String, ResolveError> {
 ///
 /// Prefer this over [`resolve`] anywhere the answer is about to be shown to a
 /// user or used to launch agents: an inferred result is worth surfacing, and
-/// callers cannot tell the difference from the name alone.
+/// callers cannot tell the difference from the name alone. Use
+/// [`resolve_detailed`] when the user is about to be told *why*.
+pub fn resolve_with_source(cwd: &Path) -> Result<(String, ResolutionSource), ResolveError> {
+    resolve_detailed(cwd).map(|resolution| (resolution.binary, resolution.source))
+}
+
+/// A `launcher_context.json` the walk-up found but could not use.
+///
+/// Issue #1525: an empty or malformed file used to be dropped without a word,
+/// and the walk then carried on into ancestors, so a parent directory's file
+/// could answer instead. Nothing the user saw named either file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnusableContext {
+    /// The file, as the walk-up found it.
+    pub path: PathBuf,
+    /// Why it could not be used, e.g. "is empty". Never echoes its contents.
+    pub reason: String,
+}
+
+/// Everything [`resolve_detailed`] learned on the way to its answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resolution {
+    /// The allowlisted binary name.
+    pub binary: String,
+    /// The layer that supplied it.
+    pub source: ResolutionSource,
+    /// The `launcher_context.json` that supplied it. `Some` exactly when
+    /// `source` is [`ResolutionSource::LauncherContext`]. The walk-up visits
+    /// ancestors, so this need not be in the directory resolution started from.
+    pub context_file: Option<PathBuf>,
+    /// Launcher contexts the walk-up passed over because they could not be
+    /// used, nearest first. The fall-through is kept; these say what was
+    /// skipped on the way. Stale files are not listed: sessions end, and an
+    /// old file is expected, not broken. The last entry may be a file in the
+    /// untrusted directory where the walk stopped; that one is listed without
+    /// being read, so its age is not known.
+    pub unusable_contexts: Vec<UnusableContext>,
+    /// The session marker this process's environment holds, recorded whether
+    /// or not it decided. When `source` is [`ResolutionSource::Env`] and it
+    /// names a different binary, an explicit `AMPLIHACK_AGENT_BINARY` is
+    /// overriding it. The override stands -- it is documented as layer 1 --
+    /// but a profile export left over from choosing a CLI weeks ago looks
+    /// exactly like this, so callers about to launch agents say so (issue
+    /// #1335: wrong CLI for hours, nothing said why).
+    ///
+    /// A marker is evidence about the environment, not proof of the session.
+    /// tmux copies the environment of whatever started its server into the
+    /// server's global environment, and every later `new-session` starts from
+    /// that copy, so a marker inside tmux can name the CLI that started the
+    /// server rather than the one running now. The variable is kept so a
+    /// caller can check that (`agent_binary_notice` in amplihack-cli).
+    ///
+    /// When an `AMPLIHACK_AGENT_BINARY` tagged [`session_tag`] answered, the
+    /// variable is [`SOURCE_ENV`]: it is the tag, not the value, that makes the
+    /// value session evidence, and it is what the tmux check compares.
+    pub session_marker: Option<SessionMarker>,
+}
+
+/// A [`SESSION_MARKERS`] entry found set in this process's environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionMarker {
+    /// The environment variable, e.g. `COPILOT_CLI`.
+    pub variable: &'static str,
+    /// The binary it implies, e.g. `copilot`.
+    pub binary: &'static str,
+}
+
+/// [`resolve_with_source`], plus the evidence a user needs to trust the
+/// answer: which file decided and which were skipped when it was inferred,
+/// and which session marker an explicit value overrode.
 ///
 /// A fallback is logged at WARN, not DEBUG. Issue #1335: a run whose
 /// environment did not survive a `tmux new-session` silently resolved to the
 /// vendor default and executed every step under a different CLI, with a
 /// different tool-timeout policy, for hours. Nothing in the output said so.
-pub fn resolve_with_source(cwd: &Path) -> Result<(String, ResolutionSource), ResolveError> {
+/// WARN is still hidden at the default filter, so a caller about to launch
+/// agents on an inferred answer must say so itself (see `recipe run`).
+pub fn resolve_detailed(cwd: &Path) -> Result<Resolution, ResolveError> {
     // Both lookups run unconditionally so the precedence rule lives in exactly
     // one place, `resolve_layers`. Gating the second on the first being None
     // would encode the ordering twice -- once here and once there -- and the
     // two could then drift without any test noticing.
-    let from_env = std::env::var("AMPLIHACK_AGENT_BINARY")
-        .ok()
-        .and_then(|raw| validate_binary_name(&raw));
+    let from_env = if inherited_binary_is_default_guess() {
+        debug!("ignoring an inherited AMPLIHACK_AGENT_BINARY that a parent guessed");
+        None
+    } else if inherited_session_described().is_some() {
+        debug!(
+            "an inherited AMPLIHACK_AGENT_BINARY describes a session; ranking it with the \
+             session markers"
+        );
+        None
+    } else {
+        std::env::var(BINARY_ENV)
+            .ok()
+            .and_then(|raw| validate_binary_name(&raw))
+    };
     let from_marker = session_marker();
-    let from_persisted = lookup_persisted_launcher(cwd);
+    let persisted = lookup_persisted_launcher(cwd);
 
-    let (name, source) = resolve_layers(from_env, from_marker, from_persisted);
+    let (name, source) = resolve_layers(
+        from_env,
+        from_marker.map(|marker| marker.binary.to_string()),
+        persisted.found.as_ref().map(|(name, _)| name.clone()),
+    );
+    let context_file = match source {
+        ResolutionSource::LauncherContext => persisted.found.map(|(_, path)| path),
+        _ => None,
+    };
 
+    for unusable in &persisted.unusable {
+        warn!(
+            path = %unusable.path.display(),
+            reason = %unusable.reason,
+            "ignoring an unusable launcher_context.json"
+        );
+    }
     match source {
         ResolutionSource::Env | ResolutionSource::SessionMarker => {
             debug!(binary = %name, source = source.label(), "agent binary resolved");
@@ -171,19 +518,51 @@ pub fn resolve_with_source(cwd: &Path) -> Result<(String, ResolutionSource), Res
         ResolutionSource::LauncherContext => warn!(
             binary = %name,
             source = source.label(),
-            "AMPLIHACK_AGENT_BINARY is unset; using the value recorded in \
+            "no usable AMPLIHACK_AGENT_BINARY (unset, rejected, or a parent's \
+             default guess) and no session marker; using the value recorded in \
              launcher_context.json, which may have been written by a different \
              session"
         ),
         ResolutionSource::Default => warn!(
             binary = %name,
             source = source.label(),
-            "AMPLIHACK_AGENT_BINARY is unset and no launcher_context.json was \
-             found; assuming the built-in default, which may not be the CLI you \
+            "no usable AMPLIHACK_AGENT_BINARY (unset, rejected, or a parent's \
+             default guess), no session marker and no usable launcher_context.json \
+             was found; assuming the built-in default, which may not be the CLI you \
              are running"
         ),
     }
-    Ok((name, source))
+    Ok(Resolution {
+        binary: name,
+        source,
+        context_file,
+        unusable_contexts: persisted.unusable,
+        session_marker: from_marker,
+    })
+}
+
+/// `true` when the inherited [`BINARY_ENV`] is tagged as a parent's fallback
+/// to the built-in default (see [`SOURCE_ENV`]).
+///
+/// Such a value must neither outrank a session marker this process can see nor
+/// be persisted as though a session had chosen it.
+pub fn inherited_binary_is_default_guess() -> bool {
+    is_default_guess(
+        std::env::var(BINARY_ENV).ok().as_deref(),
+        std::env::var(SOURCE_ENV).ok().as_deref(),
+    )
+}
+
+/// Pure form of [`inherited_binary_is_default_guess`].
+///
+/// The tag counts only while it describes the binary actually set: a tag with
+/// no value, a tag naming a different binary, or an unrecognised tag all mean
+/// the current value was chosen by someone, so it is honoured.
+pub fn is_default_guess(binary: Option<&str>, tag: Option<&str>) -> bool {
+    match (binary.and_then(validate_binary_name), tag) {
+        (Some(binary), Some(tag)) => tag.trim() == default_guess_tag(&binary),
+        _ => false,
+    }
 }
 
 /// Pure precedence rule, separated from the three lookups that feed it.
@@ -211,11 +590,45 @@ pub fn resolve_layers(
 #[derive(Deserialize)]
 struct LauncherContextSnippet {
     launcher: String,
-    /// RFC3339, written by `write_launcher_context`. Absent in files written
-    /// before the field existed, which are by definition old -- treated stale.
+    /// RFC3339, written by `write_launcher_context`, which has always written
+    /// it. A file without one, or with one in another format, is unusable and
+    /// named (issue #1525); see `read_launcher_field`.
     #[serde(default)]
     timestamp: Option<String>,
 }
+
+/// Environment variables that identify the CLI hosting this process, paired
+/// with the binary each implies.
+///
+/// Exported so there is exactly one list. A test that needs to observe a lower
+/// layer must clear all of these, and a hand-copied list in a fixture is how
+/// that silently stops happening the next time a marker is added.
+///
+/// The one copy that cannot import it is `detect_cli` in the migrate skill's
+/// `migrate.sh` (issue #1525). `tests/issue_1525_migrate_detect_cli_parity.sh`
+/// fails in CI unless that copy has these entries in this order, so a marker
+/// added here must be added there too.
+///
+/// `amplihack agent-binary --shell` unsets every entry on the far side of a
+/// detached launch, so that a tmux server's copy of whatever environment
+/// started it cannot outrank the caller's answer (issue #1525).
+pub const SESSION_MARKERS: &[(&str, &str)] = &[
+    // Claude Code exports CLAUDECODE; the others are older spellings that
+    // llm_client already recognised.
+    ("CLAUDECODE", "claude"),
+    ("CLAUDE_CODE", "claude"),
+    ("CLAUDE_CODE_SESSION_ID", "claude"),
+    ("CLAUDE_PROJECT_DIR", "claude"),
+    // Issue #1481: exported by Claude Code in every mode (cli, sdk, remote).
+    // The dev-orchestrator skill used to tell callers to `env -u CLAUDECODE`,
+    // and on a host where CLAUDECODE was the only marker in this list that
+    // left nothing to say which CLI was running.
+    ("CLAUDE_CODE_ENTRYPOINT", "claude"),
+    ("COPILOT_CLI", "copilot"),
+    ("GITHUB_COPILOT", "copilot"),
+    ("GITHUB_COPILOT_AGENT", "copilot"),
+    ("COPILOT_AGENT", "copilot"),
+];
 
 /// Identify the agent CLI hosting this process from its own environment.
 ///
@@ -225,54 +638,55 @@ struct LauncherContextSnippet {
 /// per-directory and last-writer-wins, so on a host running both CLIs it can
 /// name a different vendor than the session reading it (issue #1342).
 ///
+/// Inside tmux the environment may be the server's copy of whatever started
+/// it, not the caller's; see [`Resolution::session_marker`].
+///
+/// An `AMPLIHACK_AGENT_BINARY` tagged [`session_tag`] is one more marker, of
+/// the CLI it names; [`rank_session_markers`] says where it ranks.
+///
 /// Unlike a process-ancestry walk this needs no `/proc`, so it behaves the
 /// same on every platform.
-/// Environment variables that identify the CLI hosting this process, paired
-/// with the binary each implies.
-///
-/// Exported so there is exactly one list. A test that needs to observe a lower
-/// layer must clear all of these, and a hand-copied list in a fixture is how
-/// that silently stops happening the next time a marker is added.
-pub const SESSION_MARKERS: &[(&str, &str)] = &[
-    // Claude Code exports CLAUDECODE; the others are older spellings that
-    // llm_client already recognised.
-    ("CLAUDECODE", "claude"),
-    ("CLAUDE_CODE", "claude"),
-    ("CLAUDE_CODE_SESSION_ID", "claude"),
-    ("CLAUDE_PROJECT_DIR", "claude"),
-    ("COPILOT_CLI", "copilot"),
-    ("GITHUB_COPILOT", "copilot"),
-    ("GITHUB_COPILOT_AGENT", "copilot"),
-    ("COPILOT_AGENT", "copilot"),
-];
-
-fn session_marker() -> Option<String> {
-    SESSION_MARKERS.iter().find_map(|(key, binary)| {
-        std::env::var_os(key)
+fn session_marker() -> Option<SessionMarker> {
+    let live = SESSION_MARKERS.iter().find_map(|&(variable, binary)| {
+        std::env::var_os(variable)
             .is_some_and(|v| !v.is_empty())
-            .then(|| (*binary).to_string())
-    })
+            .then_some(SessionMarker { variable, binary })
+    });
+    rank_session_markers(live, inherited_session_described())
 }
 
-/// Returns `true` when a launcher context found in `dir` cannot be trusted.
+/// Why a launcher context found in `dir` cannot be trusted, or `None` when it
+/// can. The reason finishes the notice's "it ..." for a context file in `dir`.
 ///
-/// Two conditions disqualify a directory:
+/// Three conditions disqualify a directory:
 ///
 /// * **World-writable** (`o+w`, e.g. `/tmp` at `1777`) -- any local user can
 ///   drop a `.claude/runtime/launcher_context.json` there, and the walk-up
 ///   would then pick the agent binary for every working directory beneath it.
 /// * **Owned by another user** -- the context reflects someone else's session.
+///   A container running as root over a checkout the host user owns is the
+///   likeliest way to get here with a context the user does expect to answer.
+/// * **Unreadable metadata** -- not a licence to trust the directory.
 ///
 /// Group-writable is deliberately *not* disqualifying: a `umask 002` setup
 /// makes a user's own directories `0775`, and treating those as hostile would
 /// break ordinary installs.
 #[cfg(unix)]
-fn is_untrusted_context_dir(dir: &Path) -> bool {
+fn untrusted_context_dir(dir: &Path) -> Option<String> {
     use std::os::unix::fs::MetadataExt;
+    let dir_display = dir.display();
     match fs::metadata(dir) {
-        Ok(meta) => meta.mode() & 0o002 != 0 || meta.uid() != nix_getuid(),
-        // Unreadable metadata is not a licence to trust the directory.
-        Err(_) => true,
+        Ok(meta) if meta.mode() & 0o002 != 0 => Some(format!(
+            "is under {dir_display}, which any user can write to, so it was not read"
+        )),
+        Ok(meta) if meta.uid() != nix_getuid() => Some(format!(
+            "is under {dir_display}, which another user owns, so it was not read"
+        )),
+        Ok(_) => None,
+        Err(error) => Some(format!(
+            "is under {dir_display}, whose owner and permissions could not be read \
+             ({error}), so it was not read"
+        )),
     }
 }
 
@@ -284,8 +698,8 @@ fn nix_getuid() -> u32 {
 }
 
 #[cfg(not(unix))]
-fn is_untrusted_context_dir(_dir: &Path) -> bool {
-    false
+fn untrusted_context_dir(_dir: &Path) -> Option<String> {
+    None
 }
 
 /// Walk up from `start` looking for `.claude/runtime/launcher_context.json`.
@@ -293,89 +707,179 @@ fn is_untrusted_context_dir(_dir: &Path) -> bool {
 /// Stops at any `.git` directory boundary, at the first world-writable or
 /// foreign-owned directory, or after [`ANCESTOR_WALK_LIMIT`] hops.
 ///
+/// A context file in the untrusted directory where the walk stops is never
+/// read, but it is recorded as unusable with the reason. It may be the very
+/// file the user expects to answer -- a checkout made world-writable, or
+/// mounted into a container that runs as another user -- and dropping it
+/// with only a `debug!` left the default answering with a notice that named
+/// no file (crusty review of #1490 at 9b207c7e). Naming it is a `stat`, not
+/// a read, so nothing anyone could have written there is echoed.
+///
 /// The shared-directory boundary matters (issue #1335). Workflow worktrees are
 /// created under the system temp directory, which has no `.git` anywhere above
 /// it, so the walk used to continue into `/tmp` and `/`. A stale
 /// `/tmp/.claude/runtime/launcher_context.json` -- days old, written by an
 /// unrelated session -- then decided which agent CLI every step ran under, for
 /// any working directory beneath `/tmp`.
-fn lookup_persisted_launcher(start: &Path) -> Option<String> {
-    let anchor = start.canonicalize().ok()?;
-    let mut current: PathBuf = anchor.clone();
+fn lookup_persisted_launcher(start: &Path) -> PersistedLookup {
+    let mut lookup = PersistedLookup::default();
+    let Ok(anchor) = start.canonicalize() else {
+        return lookup;
+    };
+    let mut current: PathBuf = anchor;
     for _ in 0..ANCESTOR_WALK_LIMIT {
-        if is_untrusted_context_dir(&current) {
-            debug!(
-                dir = %current.display(),
-                "stopping launcher_context walk-up at an untrusted directory"
-            );
-            return None;
-        }
-        // Stop at git boundary (but still inspect this dir on this iteration).
         let runtime_file = current
             .join(".claude")
             .join("runtime")
             .join("launcher_context.json");
-        if runtime_file.is_file()
-            && let Some(name) = read_launcher_field(&runtime_file, &current)
-        {
-            return Some(name);
+        if let Some(reason) = untrusted_context_dir(&current) {
+            debug!(
+                dir = %current.display(),
+                "stopping launcher_context walk-up at an untrusted directory"
+            );
+            if runtime_file.is_file() {
+                lookup.unusable.push(UnusableContext {
+                    path: runtime_file,
+                    reason,
+                });
+            }
+            return lookup;
+        }
+        // Stop at git boundary (but still inspect this dir on this iteration).
+        if runtime_file.is_file() {
+            match read_launcher_field(&runtime_file, &current) {
+                ContextRead::Usable(name) => {
+                    lookup.found = Some((name, runtime_file));
+                    return lookup;
+                }
+                ContextRead::Stale => {}
+                // Keep walking, as before, but keep the evidence: this file
+                // was meant to answer, and something above it may now do so.
+                ContextRead::Unusable(reason) => lookup.unusable.push(UnusableContext {
+                    path: runtime_file,
+                    reason,
+                }),
+            }
         }
         // Don't walk past a .git boundary.
         if current.join(".git").exists() {
-            return None;
+            return lookup;
         }
         match current.parent() {
             Some(parent) if parent != current => current = parent.to_path_buf(),
-            _ => return None,
+            _ => return lookup,
         }
     }
-    None
+    lookup
+}
+
+/// What the walk-up found in the persisted layer.
+#[derive(Debug, Default)]
+struct PersistedLookup {
+    /// The first usable launcher, and the file it came from.
+    found: Option<(String, PathBuf)>,
+    /// Files passed over on the way, nearest first.
+    unusable: Vec<UnusableContext>,
+}
+
+/// The outcome of reading one `launcher_context.json`.
+#[derive(Debug, PartialEq, Eq)]
+enum ContextRead {
+    /// Fresh, well-formed, and naming an allowlisted CLI.
+    Usable(String),
+    /// Well-formed but older than the staleness bound. Expected, not broken.
+    Stale,
+    /// Cannot be used. The reason never echoes the file's contents.
+    Unusable(String),
 }
 
 /// Read and validate the `launcher` field. The file is size-capped, parsed as a
 /// typed struct (rejects unexpected JSON shapes), and the value is allowlisted.
 /// The path is canonicalized and verified to stay within `anchor` to defend
 /// against symlink escape.
-fn read_launcher_field(path: &Path, anchor: &Path) -> Option<String> {
-    let canonical = path.canonicalize().ok()?;
-    let canonical_anchor = anchor.canonicalize().ok()?;
+fn read_launcher_field(path: &Path, anchor: &Path) -> ContextRead {
+    let (canonical, canonical_anchor) = match (path.canonicalize(), anchor.canonicalize()) {
+        (Ok(canonical), Ok(anchor)) => (canonical, anchor),
+        (Err(error), _) | (_, Err(error)) => {
+            return ContextRead::Unusable(format!("could not be resolved ({error})"));
+        }
+    };
     if !canonical.starts_with(&canonical_anchor) {
         debug!(
             path = %canonical.display(),
             anchor = %canonical_anchor.display(),
             "launcher_context path escapes anchor; ignoring"
         );
-        return None;
+        return ContextRead::Unusable("is a link to a file outside its directory".to_string());
     }
-    let metadata = fs::metadata(&canonical).ok()?;
+    let metadata = match fs::metadata(&canonical) {
+        Ok(metadata) => metadata,
+        Err(error) => return ContextRead::Unusable(format!("could not be read ({error})")),
+    };
     if metadata.len() > LAUNCHER_CONTEXT_MAX_BYTES {
-        debug!(
-            size = metadata.len(),
-            cap = LAUNCHER_CONTEXT_MAX_BYTES,
-            "launcher_context exceeds size cap; ignoring"
-        );
-        return None;
+        return ContextRead::Unusable(format!(
+            "is larger than the {} KiB limit",
+            LAUNCHER_CONTEXT_MAX_BYTES / 1024
+        ));
     }
-    let body = fs::read_to_string(&canonical).ok()?;
-    let parsed: LauncherContextSnippet = serde_json::from_str(&body).ok()?;
+    let body = match fs::read_to_string(&canonical) {
+        Ok(body) => body,
+        Err(error) => return ContextRead::Unusable(format!("could not be read ({error})")),
+    };
+    if body.trim().is_empty() {
+        return ContextRead::Unusable("is empty".to_string());
+    }
+    // serde_json's own messages can quote a string from the input, so only the
+    // category and position are reported.
+    let parsed: LauncherContextSnippet = match serde_json::from_str(&body) {
+        Ok(parsed) => parsed,
+        Err(error) if error.is_data() => {
+            return ContextRead::Unusable(format!(
+                "is JSON but not a launcher context, which needs a string \
+                 \"launcher\" field (line {}, column {})",
+                error.line(),
+                error.column()
+            ));
+        }
+        Err(error) => {
+            return ContextRead::Unusable(format!(
+                "is not valid JSON (line {}, column {})",
+                error.line(),
+                error.column()
+            ));
+        }
+    };
     // A launcher context describes a session, and sessions end. The hooks
     // reader has always applied a staleness bound; this one never did, so a
     // file written days earlier by an unrelated session kept deciding which
     // agent CLI ran (issue #1335).
-    let stale = parsed
-        .timestamp
-        .as_deref()
-        .map(crate::launcher_context::is_timestamp_stale)
-        .unwrap_or(true);
+    //
+    // A file whose age cannot be known still fails closed (#1342), but it is
+    // named, not passed over as old (#1525). `write_launcher_context` has
+    // always written an RFC 3339 timestamp, so a file without one, or with one
+    // in another format, was written by hand or by something else. However
+    // recent it is, it will never be used, and saying nothing left the user
+    // with no way to find out why.
+    let Some(timestamp) = parsed.timestamp.as_deref() else {
+        return ContextRead::Unusable("has no timestamp, so its age is unknown".to_string());
+    };
+    let Some(stale) = crate::launcher_context::rfc3339_timestamp_is_stale(timestamp) else {
+        return ContextRead::Unusable("has a timestamp that is not RFC 3339".to_string());
+    };
     if stale {
         debug!(
             path = %canonical.display(),
             timestamp = ?parsed.timestamp,
             "ignoring launcher context older than the staleness bound"
         );
-        return None;
+        return ContextRead::Stale;
     }
-    validate_binary_name(&parsed.launcher)
+    match validate_binary_name(&parsed.launcher) {
+        Some(name) => ContextRead::Usable(name),
+        None => ContextRead::Unusable(
+            "does not name amplifier, claude, codex or copilot as its launcher".to_string(),
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -512,6 +1016,11 @@ mod tests {
         .unwrap();
     }
 
+    /// The launcher the persisted layer would answer with from `dir`.
+    fn found_launcher(dir: &Path) -> Option<String> {
+        lookup_persisted_launcher(dir).found.map(|(name, _)| name)
+    }
+
     /// Workflow worktrees live under the system temp directory, which has no
     /// `.git` above it, so the walk-up used to reach `/tmp` -- where a
     /// five-day-old file written by an unrelated session was deciding the
@@ -527,11 +1036,68 @@ mod tests {
         fs::create_dir_all(&work).unwrap();
         fs::set_permissions(&work, fs::Permissions::from_mode(0o700)).unwrap();
 
+        let lookup = lookup_persisted_launcher(&work);
         assert_eq!(
-            lookup_persisted_launcher(&work),
-            None,
+            lookup.found, None,
             "a context under a world-writable ancestor must not be consulted"
         );
+        // It is still named, so the default's notice can say why it lost.
+        let shared = shared.path().canonicalize().unwrap();
+        assert_eq!(
+            lookup.unusable,
+            vec![UnusableContext {
+                path: shared.join(".claude/runtime/launcher_context.json"),
+                reason: format!(
+                    "is under {}, which any user can write to, so it was not read",
+                    shared.display()
+                ),
+            }]
+        );
+    }
+
+    /// Crusty review of #1490 at 9b207c7e: a fresh, valid context in the very
+    /// directory the walk starts from used to be dropped with only a `debug!`
+    /// once that directory was world-writable. It is still not read, but it
+    /// is named.
+    #[test]
+    #[cfg(unix)]
+    fn a_context_in_a_world_writable_start_dir_is_named_not_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let repo = tempfile::tempdir().unwrap();
+        fs::create_dir_all(repo.path().join(".git")).unwrap();
+        write_launcher_context(repo.path(), "claude");
+        fs::set_permissions(repo.path(), fs::Permissions::from_mode(0o777)).unwrap();
+
+        let lookup = lookup_persisted_launcher(repo.path());
+        assert_eq!(lookup.found, None);
+        let repo = repo.path().canonicalize().unwrap();
+        assert_eq!(
+            lookup.unusable,
+            vec![UnusableContext {
+                path: repo.join(".claude/runtime/launcher_context.json"),
+                reason: format!(
+                    "is under {}, which any user can write to, so it was not read",
+                    repo.display()
+                ),
+            }]
+        );
+    }
+
+    /// An untrusted directory with no context file in it stops the walk and
+    /// names nothing: there is nothing the user could have expected to answer.
+    #[test]
+    #[cfg(unix)]
+    fn an_untrusted_dir_without_a_context_names_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let shared = tempfile::tempdir().unwrap();
+        fs::set_permissions(shared.path(), fs::Permissions::from_mode(0o1777)).unwrap();
+        let work = shared.path().join("work");
+        fs::create_dir_all(&work).unwrap();
+        fs::set_permissions(&work, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let lookup = lookup_persisted_launcher(&work);
+        assert_eq!(lookup.found, None);
+        assert!(lookup.unusable.is_empty(), "{:?}", lookup.unusable);
     }
 
     /// The boundary must not be so strict that ordinary installs break:
@@ -546,7 +1112,7 @@ mod tests {
         let work = root.path().join("repo");
         fs::create_dir_all(&work).unwrap();
 
-        assert_eq!(lookup_persisted_launcher(&work).as_deref(), Some("codex"));
+        assert_eq!(found_launcher(&work).as_deref(), Some("codex"));
     }
 
     /// Issue #1342 / crusty B1. Symmetric writes let the persisted layer say
@@ -579,6 +1145,92 @@ mod tests {
         assert!(!source.is_inferred(), "a live marker is not an inference");
     }
 
+    // ---------------------------------------------------------------------
+    // Issue #1481 -- the default-guess tag is bound to the value it describes.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn a_tag_matching_the_value_marks_it_as_a_guess() {
+        assert!(is_default_guess(Some("copilot"), Some("default:copilot")));
+        assert!(is_default_guess(Some(" Copilot "), Some("default:copilot")));
+        // The tag's surrounding whitespace is trimmed too, as migrate.sh's
+        // detect_cli does (tests/issue_1481_migrate_detect_cli_default_tag.sh).
+        assert!(is_default_guess(Some("copilot"), Some(" default:copilot ")));
+        // ...but not its inside, and not its case.
+        assert!(!is_default_guess(Some("copilot"), Some("default: copilot")));
+        assert!(!is_default_guess(Some("copilot"), Some("DEFAULT:copilot")));
+    }
+
+    /// Every step of a default-guess run inherits the tag. A step that then
+    /// names a binary on purpose has made a choice the stale tag must not veto.
+    #[test]
+    fn a_tag_describing_a_different_binary_does_not_veto_an_explicit_choice() {
+        assert!(!is_default_guess(Some("codex"), Some("default:copilot")));
+    }
+
+    #[test]
+    fn a_bare_or_unknown_tag_is_not_a_guess() {
+        assert!(!is_default_guess(Some("copilot"), Some("default")));
+        assert!(!is_default_guess(Some("copilot"), Some("session_marker")));
+        assert!(!is_default_guess(Some("copilot"), None));
+        assert!(!is_default_guess(None, Some("default:copilot")));
+    }
+
+    const COPILOT_CLI: SessionMarker = SessionMarker {
+        variable: "COPILOT_CLI",
+        binary: "copilot",
+    };
+
+    /// The tag `agent-binary --shell` writes reads back as the marker it
+    /// names, and is never taken for a guess: layer 1 still honours the value.
+    #[test]
+    fn a_tmux_server_tag_names_its_marker_and_is_not_a_guess() {
+        let tag = tmux_server_marker_tag(COPILOT_CLI);
+        assert_eq!(tag, "tmux_server:COPILOT_CLI");
+        assert_eq!(
+            tmux_server_marker(Some("copilot"), Some(&tag)),
+            Some(COPILOT_CLI)
+        );
+        assert_eq!(
+            tmux_server_marker(Some(" Copilot "), Some(" tmux_server:COPILOT_CLI ")),
+            Some(COPILOT_CLI)
+        );
+        assert!(!is_default_guess(Some("copilot"), Some(&tag)));
+        for &(variable, binary) in SESSION_MARKERS {
+            let marker = SessionMarker { variable, binary };
+            assert_eq!(
+                tmux_server_marker(Some(binary), Some(&tmux_server_marker_tag(marker))),
+                Some(marker),
+                "{variable}"
+            );
+        }
+    }
+
+    /// A tag describes only the value it was handed on with. A binary set
+    /// later, a variable that is no marker, or another tag says nothing.
+    #[test]
+    fn a_tmux_server_tag_for_anything_else_names_no_marker() {
+        let tag = tmux_server_marker_tag(COPILOT_CLI);
+        assert_eq!(tmux_server_marker(Some("claude"), Some(&tag)), None);
+        assert_eq!(tmux_server_marker(None, Some(&tag)), None);
+        assert_eq!(tmux_server_marker(Some("copilot"), None), None);
+        for other in [
+            "tmux_server:PATH",
+            "tmux_server:",
+            "tmux_server",
+            "tmux_serverCOPILOT_CLI",
+            "tmux_server: COPILOT_CLI",
+            "default:copilot",
+            "",
+        ] {
+            assert_eq!(
+                tmux_server_marker(Some("copilot"), Some(other)),
+                None,
+                "{other:?}"
+            );
+        }
+    }
+
     /// An explicit override still wins over everything, including the marker.
     #[test]
     fn env_still_beats_the_session_marker() {
@@ -589,5 +1241,375 @@ mod tests {
         );
         assert_eq!(name, "codex");
         assert_eq!(source, ResolutionSource::Env);
+    }
+
+    // ---------------------------------------------------------------------
+    // Issue #1525 -- an unusable launcher context is reported, not dropped.
+    // ---------------------------------------------------------------------
+
+    /// Write `body` as the launcher context in `dir`, returning its path.
+    fn write_raw_context(dir: &Path, body: &str) -> PathBuf {
+        let runtime = dir.join(".claude").join("runtime");
+        fs::create_dir_all(&runtime).unwrap();
+        let path = runtime.join("launcher_context.json");
+        fs::write(&path, body).unwrap();
+        path
+    }
+
+    fn read_raw(body: &str) -> ContextRead {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_raw_context(dir.path(), body);
+        read_launcher_field(&path, dir.path())
+    }
+
+    #[test]
+    fn an_empty_context_is_unusable_and_says_so() {
+        assert_eq!(read_raw(""), ContextRead::Unusable("is empty".into()));
+        assert_eq!(read_raw(" \n\t"), ContextRead::Unusable("is empty".into()));
+    }
+
+    #[test]
+    fn a_context_that_is_not_json_is_unusable_with_a_position() {
+        let ContextRead::Unusable(reason) = read_raw("{\"launcher\": claude") else {
+            panic!("invalid JSON must be unusable");
+        };
+        assert!(
+            reason.starts_with("is not valid JSON (line 1, column"),
+            "{reason}"
+        );
+    }
+
+    /// serde_json would quote the input in its message; the reason must not,
+    /// because it ends up on a terminal.
+    #[test]
+    fn a_json_context_of_the_wrong_shape_is_unusable_and_not_echoed() {
+        for body in [
+            r#"{"timestamp":"2026-01-01T00:00:00Z"}"#,
+            r#"{"launcher":5}"#,
+            r#""\u001b[31mclaude""#,
+        ] {
+            let ContextRead::Unusable(reason) = read_raw(body) else {
+                panic!("{body:?} must be unusable");
+            };
+            assert!(
+                reason.starts_with("is JSON but not a launcher context"),
+                "{reason}"
+            );
+            assert!(
+                !reason.contains("claude") && !reason.contains('\u{1b}'),
+                "{reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_fresh_context_naming_no_known_cli_is_unusable() {
+        let now = chrono::Utc::now().to_rfc3339();
+        assert_eq!(
+            read_raw(&format!(r#"{{"launcher":"vim","timestamp":"{now}"}}"#)),
+            ContextRead::Unusable(
+                "does not name amplifier, claude, codex or copilot as its launcher".into()
+            )
+        );
+    }
+
+    /// Sessions end; an old file is expected, not broken, and is not reported.
+    #[test]
+    fn a_stale_context_is_stale_not_unusable() {
+        assert_eq!(
+            read_raw(r#"{"launcher":"claude","timestamp":"2001-01-01T00:00:00Z"}"#),
+            ContextRead::Stale
+        );
+    }
+
+    /// Issue #1525 review: a file whose age cannot be known is still not used,
+    /// but it is named. It used to be passed over as stale, with nothing to
+    /// say which file was skipped or why, while migrate.sh's `date -d` read
+    /// the same "2026-10-04 13:13:46" as fresh and answered `claude`.
+    #[test]
+    fn a_context_whose_age_cannot_be_known_is_unusable_not_stale() {
+        let no_timestamp = ContextRead::Unusable("has no timestamp, so its age is unknown".into());
+        assert_eq!(read_raw(r#"{"launcher":"claude"}"#), no_timestamp);
+        assert_eq!(
+            read_raw(r#"{"launcher":"claude","timestamp":null}"#),
+            no_timestamp
+        );
+
+        let not_rfc3339 = ContextRead::Unusable("has a timestamp that is not RFC 3339".into());
+        let now = chrono::Utc::now();
+        for timestamp in [
+            // No offset: the case from the review.
+            now.format("%Y-%m-%d %H:%M:%S").to_string(),
+            now.format("%Y-%m-%dT%H:%M:%S").to_string(),
+            // Offset without a colon.
+            now.format("%Y-%m-%dT%H:%M:%S+0000").to_string(),
+            now.format("%s").to_string(),
+            String::new(),
+            "yesterday".to_string(),
+            // Out of range.
+            "2026-02-30T00:00:00Z".to_string(),
+            "2026-10-04T24:00:00Z".to_string(),
+            "2026-10-04T13:13:46+24:00".to_string(),
+        ] {
+            assert_eq!(
+                read_raw(&format!(
+                    r#"{{"launcher":"claude","timestamp":"{timestamp}"}}"#
+                )),
+                not_rfc3339,
+                "{timestamp:?}"
+            );
+        }
+    }
+
+    /// The forms chrono's RFC 3339 parser accepts. migrate.sh's `detect_cli`
+    /// gets this rule by asking `amplihack agent-binary`, not from a copy.
+    #[test]
+    fn a_fresh_context_in_any_rfc3339_form_is_usable() {
+        let now = chrono::Utc::now();
+        for timestamp in [
+            now.to_rfc3339(),
+            now.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+            now.format("%Y-%m-%dt%H:%M:%Sz").to_string(),
+            now.format("%Y-%m-%d %H:%M:%S+00:00").to_string(),
+            now.format("%Y-%m-%dT%H:%M:%S.%f-00:00").to_string(),
+        ] {
+            assert_eq!(
+                read_raw(&format!(
+                    r#"{{"launcher":"claude","timestamp":"{timestamp}"}}"#
+                )),
+                ContextRead::Usable("claude".into()),
+                "{timestamp:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_oversized_context_is_unusable() {
+        let body = format!(
+            r#"{{"launcher":"claude","pad":"{}"}}"#,
+            "x".repeat(LAUNCHER_CONTEXT_MAX_BYTES as usize)
+        );
+        assert_eq!(
+            read_raw(&body),
+            ContextRead::Unusable("is larger than the 64 KiB limit".into())
+        );
+    }
+
+    /// The fall-through is kept: a bad file nearer the start does not stop the
+    /// walk-up. But the bad file is recorded, and the file that did answer is
+    /// the one reported -- not a fixed relative path that names neither.
+    #[test]
+    fn the_walk_up_records_a_bad_file_and_names_the_one_that_answered() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join(".git")).unwrap();
+        write_launcher_context(root.path(), "codex");
+        let sub = root.path().join("sub");
+        let bad = write_raw_context(&sub, "");
+
+        let lookup = lookup_persisted_launcher(&sub);
+        let (name, path) = lookup.found.expect("the ancestor still answers");
+        assert_eq!(name, "codex");
+        assert_eq!(
+            path,
+            root.path()
+                .canonicalize()
+                .unwrap()
+                .join(".claude/runtime/launcher_context.json")
+        );
+        assert_eq!(
+            lookup.unusable,
+            vec![UnusableContext {
+                path: sub
+                    .canonicalize()
+                    .unwrap()
+                    .join(".claude/runtime/launcher_context.json"),
+                reason: "is empty".into(),
+            }]
+        );
+        assert!(bad.exists());
+    }
+
+    // ---------------------------------------------------------------------
+    // Crusty review of #1490 at baaafb18 -- a value amplihack exported to
+    // describe a session ranks with the session markers, not above them.
+    // ---------------------------------------------------------------------
+
+    const CLAUDECODE: SessionMarker = SessionMarker {
+        variable: "CLAUDECODE",
+        binary: "claude",
+    };
+
+    fn described(binary: &'static str) -> SessionMarker {
+        SessionMarker {
+            variable: SOURCE_ENV,
+            binary,
+        }
+    }
+
+    /// The tag is bound to the value it was exported with, like the guess tag.
+    #[test]
+    fn a_session_tag_describes_only_its_own_value() {
+        assert_eq!(session_tag("copilot"), "session:copilot");
+        assert_eq!(
+            session_described(Some("copilot"), Some("session:copilot")),
+            Some(described("copilot"))
+        );
+        assert_eq!(
+            session_described(Some(" Copilot "), Some(" session:copilot ")),
+            Some(described("copilot"))
+        );
+        // A value set after the tag is an instruction.
+        assert_eq!(
+            session_described(Some("claude"), Some("session:copilot")),
+            None
+        );
+        for tag in [
+            "session",
+            "session:",
+            "session: copilot",
+            "SESSION:copilot",
+            "default:copilot",
+            "tmux_server:COPILOT_CLI",
+            "",
+        ] {
+            assert_eq!(
+                session_described(Some("copilot"), Some(tag)),
+                None,
+                "{tag:?}"
+            );
+        }
+        assert_eq!(session_described(None, Some("session:copilot")), None);
+        assert_eq!(session_described(Some("copilot"), None), None);
+        assert_eq!(session_described(Some("vim"), Some("session:vim")), None);
+        // Not a guess either: nothing skips it as one.
+        assert!(!is_default_guess(Some("copilot"), Some("session:copilot")));
+    }
+
+    /// Crusty's reproduction: a Claude Code session in a pane of a server an
+    /// `amplihack copilot` agent started holds `CLAUDECODE` and the server's
+    /// `session:copilot`. The live Claude marker answers.
+    #[test]
+    fn a_live_marker_outranks_a_description_of_a_cli_listed_after_it() {
+        assert_eq!(
+            rank_session_markers(Some(CLAUDECODE), Some(described("copilot"))),
+            Some(CLAUDECODE)
+        );
+        let copilot_cli = SessionMarker {
+            variable: "COPILOT_CLI",
+            binary: "copilot",
+        };
+        for binary in ["copilot", "codex", "amplifier"] {
+            assert_eq!(
+                rank_session_markers(Some(copilot_cli), Some(described(binary))),
+                Some(copilot_cli),
+                "{binary}"
+            );
+        }
+        assert_eq!(
+            rank_session_markers(Some(CLAUDECODE), Some(described("claude"))),
+            Some(CLAUDECODE)
+        );
+    }
+
+    /// `recipe run` unsets `CLAUDECODE` for its steps and hands them
+    /// `session:claude`. A Copilot marker the tmux server put in the pane must
+    /// not take the steps over.
+    #[test]
+    fn a_description_outranks_a_marker_of_a_cli_listed_after_it() {
+        let copilot_cli = SessionMarker {
+            variable: "COPILOT_CLI",
+            binary: "copilot",
+        };
+        assert_eq!(
+            rank_session_markers(Some(copilot_cli), Some(described("claude"))),
+            Some(described("claude"))
+        );
+    }
+
+    /// With no live marker, the description answers for any CLI, including
+    /// the ones that export no marker of their own.
+    #[test]
+    fn a_description_alone_answers() {
+        for &binary in ALLOWED_BINARIES {
+            assert_eq!(
+                rank_session_markers(None, Some(described(binary))),
+                Some(described(binary))
+            );
+        }
+        assert_eq!(rank_session_markers(None, None), None);
+        assert_eq!(
+            rank_session_markers(Some(CLAUDECODE), None),
+            Some(CLAUDECODE)
+        );
+    }
+
+    /// Only an instruction is exported untagged.
+    #[test]
+    fn only_an_explicit_answer_is_exported_untagged() {
+        assert_eq!(export_tag("claude", ResolutionSource::Env), None);
+        assert_eq!(
+            export_tag("claude", ResolutionSource::SessionMarker).as_deref(),
+            Some("session:claude")
+        );
+        assert_eq!(
+            export_tag("codex", ResolutionSource::LauncherContext).as_deref(),
+            Some("session:codex")
+        );
+        assert_eq!(
+            export_tag("copilot", ResolutionSource::Default).as_deref(),
+            Some("default:copilot")
+        );
+    }
+
+    /// The hand-off names the tag's variable when a server-held description
+    /// answered, and the far side reads it back for whatever binary it names.
+    #[test]
+    fn a_tmux_server_tag_can_name_the_session_tag() {
+        let tag = tmux_server_marker_tag(described("codex"));
+        assert_eq!(tag, "tmux_server:AMPLIHACK_AGENT_BINARY_SOURCE");
+        for &binary in ALLOWED_BINARIES {
+            assert_eq!(
+                tmux_server_marker(Some(binary), Some(&tag)),
+                Some(described(binary))
+            );
+        }
+        assert_eq!(tmux_server_marker(Some("vim"), Some(&tag)), None);
+        assert_eq!(
+            tmux_server_marker(Some("codex"), Some("tmux_server:AMPLIHACK_AGENT_BINARY")),
+            None
+        );
+    }
+
+    /// A launcher strips every marker of every other CLI, and none of its own.
+    #[test]
+    fn other_clis_markers_are_every_marker_but_the_launched_clis() {
+        let claude: Vec<_> = other_clis_markers("claude").collect();
+        assert!(claude.contains(&"COPILOT_CLI"), "{claude:?}");
+        assert!(!claude.contains(&"CLAUDECODE"), "{claude:?}");
+        let copilot: Vec<_> = other_clis_markers("copilot").collect();
+        assert!(copilot.contains(&"CLAUDECODE"), "{copilot:?}");
+        assert!(copilot.contains(&"CLAUDE_CODE_ENTRYPOINT"), "{copilot:?}");
+        assert!(!copilot.contains(&"COPILOT_CLI"), "{copilot:?}");
+        for tool in ["codex", "amplifier"] {
+            assert_eq!(
+                other_clis_markers(tool).count(),
+                SESSION_MARKERS.len(),
+                "{tool}"
+            );
+        }
+    }
+
+    /// A stale file is passed over without being listed.
+    #[test]
+    fn the_walk_up_does_not_list_a_stale_file() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join(".git")).unwrap();
+        write_raw_context(
+            root.path(),
+            r#"{"launcher":"claude","timestamp":"2001-01-01T00:00:00Z"}"#,
+        );
+        let lookup = lookup_persisted_launcher(root.path());
+        assert!(lookup.found.is_none());
+        assert!(lookup.unusable.is_empty(), "{:?}", lookup.unusable);
     }
 }

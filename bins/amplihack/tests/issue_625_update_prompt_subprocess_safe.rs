@@ -9,7 +9,8 @@
 //!   1. `should_skip_update_check(args)` (back-compat wrapper) MUST return
 //!      true when ANY of these signals is set:
 //!        - env `AMPLIHACK_NONINTERACTIVE` non-empty (existing — must remain)
-//!        - env `AMPLIHACK_AGENT_BINARY`   non-empty   (NEW)
+//!        - env `AMPLIHACK_AGENT_BINARY`   non-empty   (NEW; removed again
+//!          by issue #1525 -- it names an agent CLI, not a subprocess)
 //!        - env `CI`                       non-empty   (NEW)
 //!        - argv contains literal `--subprocess-safe` (NEW)
 //!        - args[1] is not a recognized launch subcommand (existing)
@@ -217,28 +218,13 @@ fn subprocess_safe_argv_flag_emits_skip_line_and_suppresses_prompt() {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Test 3 — AMPLIHACK_AGENT_BINARY=copilot (NEW signal).
+// Test 3 — removed by issue #1525. #625 made AMPLIHACK_AGENT_BINARY a skip
+// signal; it names an agent CLI, not a non-interactive caller, and a user who
+// exports it to choose one is still at a terminal. The replacement, which has
+// to run at a pseudo-terminal to mean anything, is
+// `agent_binary_does_not_skip_the_startup_update_check` in
+// issue_1525_agent_binary_is_not_subprocess_safe.rs.
 // ────────────────────────────────────────────────────────────────────────────
-
-#[test]
-fn agent_binary_env_emits_skip_line_and_suppresses_prompt() {
-    let home = tempfile::tempdir().expect("tempdir");
-    let mut cmd = cmd_with_clean_env(home.path());
-    cmd.env("AMPLIHACK_AGENT_BINARY", "copilot");
-    cmd.arg("copilot").arg("--help");
-
-    let (stdout, stderr) = run_with_timeout(cmd, Duration::from_secs(15));
-
-    assert!(
-        stderr.contains(SKIP_LINE),
-        "expected skip-line on stderr when AMPLIHACK_AGENT_BINARY is non-empty; \
-         stderr:\n{stderr}\nstdout:\n{stdout}"
-    );
-    assert!(
-        !stderr.contains(PROMPT_FRAGMENT) && !stdout.contains(PROMPT_FRAGMENT),
-        "prompt must NOT print when AMPLIHACK_AGENT_BINARY is set; stderr:\n{stderr}\nstdout:\n{stdout}"
-    );
-}
 
 // ────────────────────────────────────────────────────────────────────────────
 // Test 4 — CI=true (NEW signal; any non-empty value must trigger skip).
@@ -315,7 +301,7 @@ fn non_launch_subcommand_does_not_emit_skip_line() {
 // over SubprocessSafe env vars in `classify_skip_reason`. Per spec: "Do NOT emit
 // for AMPLIHACK_NO_UPDATE_CHECK / AMPLIHACK_PARITY_TEST or for non-launch
 // subcommands." Real-world impact: `amplihack --version` running inside an
-// agent subprocess (where AMPLIHACK_AGENT_BINARY=copilot is exported) must
+// agent subprocess (where AMPLIHACK_NONINTERACTIVE=1 is exported) must
 // remain pure passthrough with no skip-line noise on stderr.
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -326,7 +312,6 @@ fn non_launch_subcommand_stays_silent_under_subprocess_safe_env() {
     // Set every SubprocessSafe env signal simultaneously to prove that
     // NotLaunch wins for `--version` regardless.
     cmd.env("AMPLIHACK_NONINTERACTIVE", "1");
-    cmd.env("AMPLIHACK_AGENT_BINARY", "copilot");
     cmd.env("CI", "true");
     cmd.arg("--version");
 
@@ -422,7 +407,7 @@ fn empty_ci_value_alone_does_not_classify_as_subprocess_safe() {
     let src = include_str!("../../../crates/amplihack-cli/src/update/check.rs");
     assert!(
         src.contains("is_empty"),
-        "classify_skip_reason MUST guard CI / AMPLIHACK_AGENT_BINARY with !is_empty() \
+        "classify_skip_reason MUST guard CI / AMPLIHACK_NONINTERACTIVE with !is_empty() \
          to reject empty-string env values per the design spec. check.rs source:\n…"
     );
 }

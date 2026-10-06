@@ -15,6 +15,25 @@ use crate::flag_matrix::{
     AgentBinary, delivery_mode_name, prompt_delivery_caps_for, prompt_delivery_name,
 };
 
+/// Name `tool` as the CLI this command starts, the way amplihack-cli's
+/// `EnvBuilder::with_launched_agent_binary` does for `amplihack <cli>`.
+///
+/// `AMPLIHACK_AGENT_BINARY` is tagged `session:<tool>`: it says which session
+/// this launch starts, so it ranks with the session markers rather than above
+/// them, and a tmux server started from inside that session does not hand it
+/// to every later session on it as an instruction. Every other CLI's session
+/// markers are removed, so none inherited from the caller outranks it (crusty
+/// review of #1490 at baaafb18).
+fn describe_launched_session(command: &mut Command, tool: &str) {
+    use amplihack_utils::agent_binary::{BINARY_ENV, SOURCE_ENV, other_clis_markers, session_tag};
+    for marker in other_clis_markers(tool) {
+        command.env_remove(marker);
+    }
+    command
+        .env(BINARY_ENV, tool)
+        .env(SOURCE_ENV, session_tag(tool));
+}
+
 #[derive(Debug)]
 pub struct DeliveredCommand {
     pub command: Command,
@@ -111,7 +130,7 @@ fn build_tool_command_with_root_sandbox(
 
     let mut command = Command::new(binary.env_value());
     command.current_dir(project_path);
-    command.env("AMPLIHACK_AGENT_BINARY", binary.env_value());
+    describe_launched_session(&mut command, binary.env_value());
 
     add_prompt_prefix_args(&mut command, binary, extra_args);
     if binary == AgentBinary::Claude {
@@ -278,6 +297,50 @@ mod root_sandbox_tests {
             )
             .unwrap();
             assert_eq!(is_sandbox(&delivered), None);
+        }
+    }
+}
+
+#[cfg(test)]
+mod launched_session_tests {
+    //! Crusty review of #1490 at baaafb18: a launch names the CLI it starts as
+    //! a session description, not as an instruction, and removes every other
+    //! CLI's session markers.
+
+    use super::*;
+    use amplihack_utils::agent_binary::{BINARY_ENV, SESSION_MARKERS, SOURCE_ENV};
+    use std::ffi::OsStr;
+
+    #[test]
+    fn a_launch_describes_its_session_and_strips_other_clis_markers() {
+        for (binary, tool) in [
+            (AgentBinary::Claude, "claude"),
+            (AgentBinary::Copilot, "copilot"),
+            (AgentBinary::Codex, "codex"),
+        ] {
+            let delivered = build_tool_command_with_root_sandbox(
+                binary,
+                Path::new("."),
+                &[],
+                "hello",
+                PromptDelivery::Argv,
+                || root_sandbox::SkipPermissionsEnv::NotRoot,
+            )
+            .unwrap();
+            let env = |key: &str| {
+                delivered
+                    .command
+                    .get_envs()
+                    .filter(|(name, _)| *name == OsStr::new(key))
+                    .map(|(_, value)| value.map(|v| v.to_string_lossy().into_owned()))
+                    .last()
+            };
+            assert_eq!(env(BINARY_ENV), Some(Some(tool.to_string())));
+            assert_eq!(env(SOURCE_ENV), Some(Some(format!("session:{tool}"))));
+            for &(marker, implies) in SESSION_MARKERS {
+                let removed = env(marker) == Some(None);
+                assert_eq!(removed, implies != tool, "{tool}: {marker}");
+            }
         }
     }
 }

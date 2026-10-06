@@ -296,10 +296,10 @@ fn windows_host_resolves_msvc_target() {
 //
 // `should_skip_update_check(args) -> bool` (the back-compat wrapper that
 // delegates to the new `classify_skip_reason`) MUST treat ANY non-empty value
-// of CI / AMPLIHACK_AGENT_BINARY, OR the literal `--subprocess-safe` token in
+// of CI / AMPLIHACK_NONINTERACTIVE, OR the literal `--subprocess-safe` token in
 // argv, as a reason to skip the update check for an otherwise-recognized
-// launch subcommand. These tests are FAILING by design until check.rs is
-// refactored per the issue #625 design spec.
+// launch subcommand. (#625 also listed AMPLIHACK_AGENT_BINARY; issue #1525
+// removed it, because it names an agent CLI, not a non-interactive caller.)
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]

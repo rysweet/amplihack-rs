@@ -37,7 +37,7 @@ way to answer the prompt.
 ## How it works
 
 Before the prompt is printed, `amplihack` classifies the invocation. If
-**any** of five subprocess-safe paths is present (four classified by
+**any** of four subprocess-safe paths is present (three classified by
 `classify_skip_reason`, plus the stdin-TTY check applied separately), the
 entire update check is skipped and a single notice is written to stderr:
 
@@ -60,11 +60,17 @@ have the same outcome):
 | `AMPLIHACK_NO_UPDATE_CHECK` | Env var set to `1`                                  |        ❌ silent   |
 | `AMPLIHACK_PARITY_TEST`     | Env var set to `1`                                  |        ❌ silent   |
 | `AMPLIHACK_NONINTERACTIVE`  | Env var set to non-empty value                      |        ✅          |
-| `AMPLIHACK_AGENT_BINARY`    | Env var set to non-empty value                      |        ✅          |
 | `CI`                        | Env var set to non-empty value (`1`, `true`, etc.)  |        ✅          |
 | `--subprocess-safe` in argv | Literal long-form match in pre-clap argument scan   |        ✅          |
 | Non-launch subcommand       | `args[1]` not in `{launch, claude, copilot, codex, amplifier}` | ❌ silent   |
 | stdin is not a TTY          | `io::stdin().is_terminal() == false` (checked after `classify_skip_reason`) | ✅          |
+
+`AMPLIHACK_AGENT_BINARY` is **not** a signal. #625 made it one; [#1525](https://github.com/rysweet/amplihack-rs/issues/1525)
+removed it again. It names which agent CLI to run, and a user who exports it to
+choose one is still at a terminal and should still be offered the update. It is
+also no longer a signal for `amplihack copilot`'s subprocess-safe defaults, so
+the two places agree. Delegated launches are still skipped: `amplihack recipe
+run` sets `AMPLIHACK_NONINTERACTIVE=1` and pipes every step's stdio.
 
 The skip-line is intentionally **not** emitted for the three "silent" cases so
 that:
@@ -77,8 +83,8 @@ that:
   recipe`, `amplihack install`, `amplihack doctor`, …) never produced an
   update check before #625 and continue to produce no extra stderr.
 
-The skip-line **is** emitted for the four `SubprocessSafe` arms and the
-non-TTY stdin check (the five emitting paths above) so that operators can
+The skip-line **is** emitted for the three `SubprocessSafe` arms and the
+non-TTY stdin check (the four emitting paths above) so that operators can
 verify in logs that the check was correctly bypassed and is not silently
 failing.
 
@@ -93,7 +99,6 @@ maybe_print_update_notice_from_args(args)
    │     ├── AMPLIHACK_NO_UPDATE_CHECK=1       → ExplicitOptOut  → Continue (silent)
    │     ├── AMPLIHACK_PARITY_TEST=1           → ExplicitOptOut  → Continue (silent)
    │     ├── AMPLIHACK_NONINTERACTIVE non-empty→ SubprocessSafe  → emit skip-line, Continue
-   │     ├── AMPLIHACK_AGENT_BINARY non-empty  → SubprocessSafe  → emit skip-line, Continue
    │     ├── CI non-empty                       → SubprocessSafe  → emit skip-line, Continue
    │     ├── argv contains "--subprocess-safe"  → SubprocessSafe  → emit skip-line, Continue
    │     ├── args[1] not in launch allowlist    → NotLaunch       → Continue (silent)
@@ -153,15 +158,16 @@ amplihack: skipping update check (subprocess-safe / no TTY)
 ### Delegated agent invocation
 
 When a parent agent process spawns `amplihack copilot` as a subprocess, set
-`AMPLIHACK_AGENT_BINARY` to mark the child as a delegate:
+`AMPLIHACK_NONINTERACTIVE=1` to mark the child as a delegate:
 
 ```bash
-AMPLIHACK_AGENT_BINARY=copilot amplihack copilot -p "Implement the design spec"
+AMPLIHACK_NONINTERACTIVE=1 amplihack copilot -p "Implement the design spec"
 ```
 
-This is also what the recipe runner does internally when launching agent
-sessions, so recipe steps that invoke `amplihack copilot` already trigger the
-skip without further configuration.
+This is also what `amplihack recipe run` does for every step, and the steps'
+stdio is piped as well, so recipe steps that invoke `amplihack copilot` already
+trigger the skip without further configuration. `AMPLIHACK_AGENT_BINARY` does
+not mark a delegate (#1525).
 
 ### Explicit per-invocation opt-out
 
@@ -203,15 +209,13 @@ inherited closed/redirected stdin no longer hang on the prompt.
 | Variable                    | Effect                                                                                          | Skip-line? |
 | --------------------------- | ----------------------------------------------------------------------------------------------- | :--------: |
 | `AMPLIHACK_NONINTERACTIVE`  | Set to any non-empty value → skip update check.                                                  |    ✅      |
-| `AMPLIHACK_AGENT_BINARY`    | Set to any non-empty value → skip update check. (Set automatically by parent agent runtimes.)    |    ✅      |
+| `AMPLIHACK_AGENT_BINARY`    | **No effect** on the update check (#1525). It selects the agent CLI only.                        |    —       |
 | `CI`                        | Set to any non-empty value (`1`, `true`, anything) → skip update check.                          |    ✅      |
 | `AMPLIHACK_NO_UPDATE_CHECK` | Set to `1` → silently skip update check; no skip-line.                                           |    ❌      |
 | `AMPLIHACK_PARITY_TEST`     | Set to `1` → silently skip update check; no skip-line; preserves byte-identical stderr.          |    ❌      |
 
-> **Empty string semantics:** `AMPLIHACK_NONINTERACTIVE`,
-> `AMPLIHACK_AGENT_BINARY`, and `CI` skip on **non-empty** values only.
-> Setting `CI=""` does **not** trigger skip — this matches the convention
-> used by `commands::launch::command::resolve_subprocess_safe`.
+> **Empty string semantics:** `AMPLIHACK_NONINTERACTIVE` and `CI` skip on
+> **non-empty** values only. Setting `CI=""` does **not** trigger skip.
 
 ### Flags
 
@@ -283,27 +287,27 @@ which signal triggered the skip in a debugging session, inspect the
 environment directly:
 
 ```bash
-$ env | grep -E '^(CI|AMPLIHACK_AGENT_BINARY|AMPLIHACK_NONINTERACTIVE)='
+$ env | grep -E '^(CI|AMPLIHACK_NONINTERACTIVE)='
 CI=true
 ```
 
 If you need per-signal accounting in CI logs, wrap the invocation:
 
 ```bash
-echo "[debug] CI=${CI:-} AGENT_BINARY=${AMPLIHACK_AGENT_BINARY:-} NONINT=${AMPLIHACK_NONINTERACTIVE:-}"
+echo "[debug] CI=${CI:-} NONINT=${AMPLIHACK_NONINTERACTIVE:-}"
 amplihack copilot -p "..."
 ```
 
 ### Engineer subprocess (delegated agent)
 
 A parent agent that delegates to `amplihack copilot` should set
-`AMPLIHACK_AGENT_BINARY=copilot` before spawning the child:
+`AMPLIHACK_NONINTERACTIVE=1` before spawning the child:
 
 ```rust
 let mut cmd = std::process::Command::new("amplihack");
 cmd.arg("copilot")
    .arg("-p").arg(task)
-   .env("AMPLIHACK_AGENT_BINARY", "copilot");
+   .env("AMPLIHACK_NONINTERACTIVE", "1");
 let status = cmd.status()?;
 ```
 
@@ -346,7 +350,6 @@ timeout 10 amplihack copilot </dev/null -p "Headless task" || true
 
 # After (any of these works without timeout/redirection):
 CI=true                           amplihack copilot -p "Headless task"
-AMPLIHACK_AGENT_BINARY=copilot    amplihack copilot -p "Headless task"
 AMPLIHACK_NONINTERACTIVE=1        amplihack copilot -p "Headless task"
                                   amplihack copilot --subprocess-safe -p "Headless task"
 ```
@@ -381,7 +384,7 @@ This feature does **not**:
 
 * **No new attack surface.** `classify_skip_reason` is a pure function over
   env vars and argv — it never shells out, never opens files, and never
-  constructs paths from env values. The five subprocess-safe signals are
+  constructs paths from env values. The `SubprocessSafe` env signals are
   presence checks (`!is_empty()`) only; the values themselves are never
   logged, interpolated, or otherwise reflected back into output.
 * **No log injection.** The skip-line is a hard-coded ASCII literal
@@ -413,7 +416,7 @@ This feature does **not**:
   [#621](https://github.com/rysweet/amplihack-rs/issues/621)).
 * [Environment Variables](../reference/environment-variables.md) — Full
   reference for `AMPLIHACK_NONINTERACTIVE`, `AMPLIHACK_NO_UPDATE_CHECK`,
-  `AMPLIHACK_PARITY_TEST`, `AMPLIHACK_AGENT_BINARY`, and `CI`.
+  `AMPLIHACK_PARITY_TEST`, and `CI`.
 * [`cli.md` — `amplihack update` reference](../reference/cli.md) —
   `amplihack update` subcommand and the startup-prompt flow.
 * [Issue #625](https://github.com/rysweet/amplihack-rs/issues/625) — Source

@@ -7,6 +7,9 @@ mod subcommand_routing;
 
 /// RAII guard that captures and clears env vars that influence skip-check
 /// decisions, restoring them on drop. Shared across test sub-modules.
+///
+/// `AMPLIHACK_AGENT_BINARY` no longer influences the decision (issue #1525),
+/// but tests set it to prove that, so it is captured and restored too.
 pub(super) struct SkipSignalEnvGuard {
     prev: Vec<(&'static str, Option<std::ffi::OsString>)>,
 }

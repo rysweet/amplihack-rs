@@ -32,6 +32,7 @@ dependencies = [
  "amplihack-hooks",
  "amplihack-state",
  "amplihack-types",
+ "amplihack-utils",
  "anyhow",
  "assert_cmd",
  "base64",

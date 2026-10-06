@@ -259,11 +259,17 @@ impl NativeReasonerBackend {
             }
             NativeReasonerBackend::Claude(path, decision) => {
                 let mut cmd = reasoner_command(path, prompt, &decision())?;
+                // This starts a Claude Code session, so the child is told so
+                // the way every launcher tells its child: tagged
+                // `session:claude`, with every other CLI's markers removed. A
+                // reasoner run from a Copilot session used to hand `claude`
+                // an untagged instruction beside the inherited `COPILOT_CLI`
+                // (crusty review of #1490 at 960eaacb).
                 let mut env_builder = EnvBuilder::new()
                     .with_amplihack_session_id()
                     .with_session_tree_context()
                     .with_amplihack_vars()
-                    .with_agent_binary("claude")
+                    .with_launched_agent_binary("claude")
                     .with_amplihack_home()
                     .with_asset_resolver()
                     .set("AMPLIHACK_NONINTERACTIVE", "1");

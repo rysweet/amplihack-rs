@@ -1,5 +1,6 @@
 //! Command dispatch for all CLI subcommands.
 
+pub mod agent_binary;
 pub mod append;
 pub mod auto_mode;
 pub mod builder;
@@ -220,16 +221,17 @@ pub fn dispatch(command: Commands) -> Result<()> {
             // Issue #621: resolve subprocess-safe context once at dispatch
             // time, then propagate the resolved decision to all downstream
             // code (launch, docker launcher, env builder). Auto-detection
-            // signals: explicit --subprocess-safe flag, AMPLIHACK_AGENT_BINARY
-            // set non-empty, AMPLIHACK_NONINTERACTIVE=1, or any of stdio
-            // not being a TTY.
-            let env_agent_binary = std::env::var("AMPLIHACK_AGENT_BINARY").ok();
+            // signals: explicit --subprocess-safe flag,
+            // AMPLIHACK_NONINTERACTIVE=1, or any of stdio not being a TTY.
+            // Issue #1525: AMPLIHACK_AGENT_BINARY is not one of them; it
+            // names a CLI, not a non-interactive caller. See
+            // `resolve_subprocess_safe` and
+            // bins/amplihack/tests/issue_1525_agent_binary_is_not_subprocess_safe.rs.
             let env_amplihack_noninteractive =
                 std::env::var("AMPLIHACK_NONINTERACTIVE").as_deref() == Ok("1");
             let any_stream_non_tty = crate::util::any_stream_is_non_tty();
             let subprocess_safe_resolved = launch::resolve_subprocess_safe(
                 subprocess_safe,
-                env_agent_binary.as_deref(),
                 env_amplihack_noninteractive,
                 any_stream_non_tty,
             );
@@ -238,7 +240,6 @@ pub fn dispatch(command: Commands) -> Result<()> {
             tracing::debug!(
                 target: "amplihack_cli::commands::copilot",
                 explicit_subprocess_safe = subprocess_safe,
-                env_agent_binary = env_agent_binary.as_deref().unwrap_or(""),
                 env_amplihack_noninteractive = env_amplihack_noninteractive,
                 any_stream_non_tty = any_stream_non_tty,
                 subprocess_safe_resolved = subprocess_safe_resolved,
@@ -393,6 +394,9 @@ pub fn dispatch(command: Commands) -> Result<()> {
         Commands::Version => {
             println!("amplihack-rs {}", crate::VERSION);
             Ok(())
+        }
+        Commands::AgentBinary { shell, working_dir } => {
+            agent_binary::run_agent_binary(shell, working_dir)
         }
         Commands::Update { skip_install } => crate::update::run_update(skip_install),
         Commands::Fleet { args } => fleet::run_fleet(args),

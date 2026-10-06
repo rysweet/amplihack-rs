@@ -69,52 +69,90 @@ These variables are injected into every child process launched by `amplihack`. T
 **Type:** string
 **Allowed values:** `claude` | `copilot` | `codex` | `amplifier` (case-insensitive, exact match after trim)
 **Default:** `copilot`
-**Set by:** `EnvBuilder::with_agent_binary()` (as a back-compat read-through cache)
+**Set by:** `EnvBuilder::with_launched_agent_binary()` (a launcher, tagged `session:<cli>`) and `EnvBuilder::with_resolved_agent_binary()` (`recipe run`, tagged by where its answer came from); `EnvBuilder` has no method that exports a bare name
 **Read by:** `amplihack_utils::agent_binary::resolve()` (precedence step 1)
 
 Identifies which CLI binary the current session should use when spawning new AI sessions. As of the workflow runtime-isolation contract, this variable is an explicit override and read-through cache, not the only routing source. The shared resolver consults:
 
-1. `AMPLIHACK_AGENT_BINARY` env var (explicit override; CI/testing/back-compat)
-2. `$AMPLIHACK_RUNTIME_ROOT/launcher_context.json` `launcher` field (canonical workflow runtime state)
-3. `<repo>/.claude/runtime/launcher_context.json` `launcher` field (legacy fallback only)
+1. `AMPLIHACK_AGENT_BINARY` env var (explicit override; CI/testing/back-compat), unless tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary>` or `session:<same binary>`. It wins over a session marker naming a different CLI, and `amplihack recipe run` / `amplihack agent-binary` print one stderr line naming the marker it overrode.
+2. A session marker exported by the hosting CLI (`CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_ENTRYPOINT`, `COPILOT_CLI`, ...). A value tagged `session:<binary>` is one more marker, of the CLI it names, ranked after that CLI's own markers. Inside tmux a marker may be the server's copy of whatever started the server; `recipe run` says so when the server holds it.
+3. `<repo>/.claude/runtime/launcher_context.json` `launcher` field (persisted, possibly by another session)
 4. Built-in default: **`copilot`**
+
+`amplihack recipe run` resolves once at entry and exports the result to the
+recipe runner. Only a result from layer 1 is exported untagged, as an
+instruction. A result from the built-in default is exported with
+`AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>`, and one from a session
+marker or a launcher context with `AMPLIHACK_AGENT_BINARY_SOURCE=session:<binary>`;
+see
+[Active Agent Binary](./active-agent-binary.md#resolving-once-for-a-whole-recipe-run).
+A command started with `tmux new-session` does not see the caller's session
+markers: tmux gives it the server's global environment, which holds the
+markers of whatever started the server. `setsid` and `nohup` keep the
+caller's environment, so they need no hand-off.
+`$(amplihack agent-binary --shell)` prints an inline `env` prefix that removes
+every session marker and sets both variables (#1525). It belongs inside the
+double-quoted tmux command; in single quotes it expands in the new session and
+reads the server's markers. An answer read from a marker the tmux server holds
+is tagged `AMPLIHACK_AGENT_BINARY_SOURCE=tmux_server:<marker variable>`. That
+tag is not a guess: the value is honoured, and the run receiving it names the
+marker on stderr. An answer read from a launcher context crosses with an empty
+tag, as an explicit value: only `agent-binary`'s own stderr, on the caller's
+terminal, names the file, and the receiving run's log does not. See
+[Handing the binary to a detached launch](./active-agent-binary.md#handing-the-binary-to-a-detached-launch).
 
 The launcher continues to write this variable to subprocess environments so that external consumers (notably `rysweet/amplihack-recipe-runner`) that have not yet migrated to the file-based resolver continue to work. New code inside `amplihack-rs` should call `amplihack_utils::agent_binary::resolve(&cwd)` instead of reading the env var directly.
 
 #### Validation
 
-Values are normalized (trim, lowercase) and matched against the allowlist `{claude, copilot, codex, amplifier}`. Values that contain `/`, `\`, `..`, null bytes, whitespace, control characters, or exceed 32 bytes are **rejected**. On rejection the resolver emits a structured `tracing::warn!` and falls through to the next precedence source.
+Values are normalized (trim, lowercase) and matched against the allowlist `{claude, copilot, codex, amplifier}`. Values that contain `/`, `\`, `.`, `;`, null bytes, internal whitespace, control characters, or exceed 32 bytes are **rejected**. A rejected value is ignored, never coerced, and the next precedence source answers. The resolver logs no line of its own for it:
+
+- If the launcher context or the default then answers, the resolver's generic fallback WARN covers it (`no usable AMPLIHACK_AGENT_BINARY (unset, rejected, or a parent's default guess) …`), hidden at the default tracing filter (`RUST_LOG=warn` shows it).
+- If a session marker answers, the resolver logs only its DEBUG `agent binary resolved` line, which does not mention the variable.
+
+Whichever layer answers, `amplihack agent-binary` and `amplihack recipe run` print a notice on stderr. It names the variable and what answered in its place, and lists the allowed names. You set a CLI and got a different one, and the notice says why, as in the examples below. Neither a log line nor the notice ever contains the rejected value.
+
+Commands that launch one CLI by name, such as `amplihack copilot`, do not ask the resolver. They set the variable to the CLI they launch, for their children, tagged `AMPLIHACK_AGENT_BINARY_SOURCE=session:<cli>`, and remove every other CLI's session markers from the child. The tag matters because a tmux server copies the environment of whatever starts it: untagged, the launcher's value outranked every session marker, so a Claude Code session in a pane of a server started from a Copilot session ran its recipe steps under copilot. See [Active Agent Binary](./active-agent-binary.md#what-amplihack-exports-is-tagged).
 
 ```sh
 # Start a Copilot session (the new default)
 amplihack copilot
 
 # Inside hooks, recipe steps, sub-agents:
-echo $AMPLIHACK_AGENT_BINARY
-# copilot
+echo $AMPLIHACK_AGENT_BINARY $AMPLIHACK_AGENT_BINARY_SOURCE
+# copilot session:copilot
 
 # Explicit override (CI, testing, manual selection)
 AMPLIHACK_AGENT_BINARY=claude amplihack recipe run smart-orchestrator -c task_description="..."
 
-# Invalid values are rejected and the resolver falls through
-AMPLIHACK_AGENT_BINARY="../bin/evil" amplihack copilot
-# warn: rejected AMPLIHACK_AGENT_BINARY (failed allowlist); falling back to runtime launcher context
+# An invalid value is ignored and the next layer answers. Here, with no
+# session marker and no launcher context, that is the default, and the
+# notice on stderr says why:
+AMPLIHACK_AGENT_BINARY="../bin/evil" amplihack agent-binary
+# amplihack: resolved the agent binary to 'copilot' (AMPLIHACK_AGENT_BINARY is set but is not one of amplifier, claude, codex or copilot, and no agent session marker was found). Set AMPLIHACK_AGENT_BINARY to one of amplifier, claude, codex or copilot to choose an agent CLI.
+# copilot (default)
+
+# The same value inside a Copilot CLI session: its session marker answers,
+# and the notice names the marker:
+COPILOT_CLI=1 AMPLIHACK_AGENT_BINARY="../bin/evil" amplihack agent-binary
+# amplihack: resolved the agent binary to 'copilot' (AMPLIHACK_AGENT_BINARY is set but is not one of amplifier, claude, codex or copilot; COPILOT_CLI, the copilot session marker in this environment, answered). Set AMPLIHACK_AGENT_BINARY to one of amplifier, claude, codex or copilot to choose an agent CLI.
+# copilot (session_marker)
 ```
 
 #### Why the precedence order
 
-- **Env var first** preserves the established escape hatch for CI/testing and lets external recipe-runner builds keep working unchanged.
-- **Runtime-root launcher context second** keeps durable workflow state outside the task worktree while preserving routing for descendants that inherit `AMPLIHACK_RUNTIME_ROOT`.
-- **Legacy `.claude/runtime` fallback third** preserves older repositories long enough to migrate without treating task-worktree runtime state as canonical.
+- **Env var first** preserves the established escape hatch for CI/testing and lets external recipe-runner builds keep working unchanged. A value amplihack exported itself is not an instruction, and is skipped while its tag still describes it: a default-layer guess (`AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>`), or a description of a session (`session:<binary>`), which ranks with the session markers instead.
+- **Session marker second** names the CLI actually hosting the process, so it outranks any file on disk (#1342).
+- **`.claude/runtime/launcher_context.json` third** is persisted, per-directory, last-writer-wins state that may describe a different session. It is consulted only while fresh and never in or above a world-writable or foreign-owned directory (#1335). A file in such a directory is not read, but `recipe run` and `agent-binary` name it when the answer was inferred.
 - **`copilot` default last** matches the project's current preferred runtime and removes the prior implicit `claude` assumption.
 
 **Why it exists:** Recipe runner, hooks, and sub-agents are agent-agnostic and must call back into whatever tool the user actually launched. See [Active Agent Binary](./active-agent-binary.md) for the full algorithm and [Agent Binary Routing](../concepts/agent-binary-routing.md) for the architectural rationale.
 
-**Python parity:** Python skill scripts (`amplifier-bundle/skills/pm-architect/scripts/agent_query.py`, `delegate_response.py`) implement the **same** precedence and **same** allowlist; `agent_query.py::detect_runtime()` is the canonical Python entry point and is reused by `delegate_response.py`. The shell helper at `amplifier-bundle/skills/migrate/scripts/migrate.sh` re-implements the same algorithm with a `case` statement allowlist. The active binary is therefore consistent across Rust, Python, and shell code paths.
+**Other implementations:** there is no Python implementation in this repository. The shell helper at `amplifier-bundle/skills/migrate/scripts/migrate.sh` (`detect_cli`) checks the env var (with its default-guess tag) and the session markers itself, then a parent-process-chain check, and asks `amplihack agent-binary` for the launcher context and the default (#1525). The Rust resolver is authoritative where they differ.
 
-**Existing `claude` users:** repos that already have `.claude/runtime/launcher_context.json` with `"launcher": "claude"` continue to resolve to `claude` during migration — the legacy fallback wins over the new `copilot` default when runtime-root state and the env override are absent. New workflow code must write launcher context under `AMPLIHACK_RUNTIME_ROOT`, not under the task worktree.
+**Existing `claude` users:** a fresh `.claude/runtime/launcher_context.json` with `"launcher": "claude"` resolves to `claude` when no env override or session marker answers first.
 
-**Effect on startup self-update prompt:** A non-empty `AMPLIHACK_AGENT_BINARY` is also recognised by the startup self-update prompt as a subprocess-safe signal — when the variable is set, the prompt is skipped and the skip-line `amplihack: skipping update check (subprocess-safe / no TTY)` is emitted to stderr. This means delegated agent invocations never block on the prompt, even at an interactive TTY. See [Startup Self-Update Prompt — Subprocess-Safe Skip](../features/startup-update-prompt-subprocess-safe.md).
+**No effect on interactivity ([#1525](https://github.com/rysweet/amplihack-rs/issues/1525)):** the variable names an agent CLI and nothing else. It does not turn on `amplihack copilot`'s subprocess-safe defaults (reflection off, no launcher staging, no power-steering prompt, `--allow-all-tools --allow-all-paths`), and it does not skip the startup self-update prompt. Both used to treat any non-empty value as "a delegated subprocess", so anyone who exported it to choose a CLI had every interactive launch degraded. A delegated caller marks itself with `AMPLIHACK_NONINTERACTIVE=1` or `--subprocess-safe`; `amplihack recipe run` sets the former for every step, and the steps' stdio is piped as well. See [`COPILOT_SUBPROCESS_SAFE.md`](../COPILOT_SUBPROCESS_SAFE.md) and [Startup Self-Update Prompt — Subprocess-Safe Skip](../features/startup-update-prompt-subprocess-safe.md).
 
 ---
 
@@ -561,6 +599,12 @@ Amplifier.
 
 Use `AMPLIHACK_AGENT_BINARY` for runtime routing. It is validated, propagated,
 and documented as the active agent selector.
+
+Do not unset `CLAUDECODE` before calling `amplihack recipe run`. Recipe run
+reads it, with the other session markers, to decide which agent CLI every step
+uses, and only then removes it from the runner's environment. Stripping it
+first could leave no marker at all, and the steps then ran under the `copilot`
+default from inside a Claude Code session (issue #1481).
 
 ```sh
 # The parent value is ignored for the recipe-runner child.
@@ -1181,8 +1225,8 @@ Permanently disables the update-check paths for every `amplihack` invocation:
 
 Unlike `AMPLIHACK_NONINTERACTIVE`, this variable suppresses only the update
 checks and has no effect on bootstrap prompts or interactive behaviour. Unlike
-the subprocess-safe skip signals (`CI`, `AMPLIHACK_AGENT_BINARY`,
-`AMPLIHACK_NONINTERACTIVE`, `--subprocess-safe`, non-TTY stdin), this variable
+the subprocess-safe skip signals (`CI`, `AMPLIHACK_NONINTERACTIVE`,
+`--subprocess-safe`, non-TTY stdin), this variable
 **does not** emit the `amplihack: skipping update check (subprocess-safe / no
 TTY)` skip-line on stderr — the suppression is silent. Use this when you want
 the pre-#625 silent-skip experience.
@@ -1534,5 +1578,5 @@ per-session default is in effect. Setting this alone does **not** enable sharing
 - [Signal Channel](../signal-channel.md) — Full reference for the Signal channel, including the per-session-default group strategy and the opt-in rolling-group variables
 - [Recipe Runner Logging](./recipe-runner-logging.md) — Progress, heartbeat, snippet, and JSONL configuration
 - [amplihack install](./install-command.md) — Variables read during installation
-- [Startup Self-Update Prompt — Subprocess-Safe Skip](../features/startup-update-prompt-subprocess-safe.md) — How `CI`, `AMPLIHACK_AGENT_BINARY`, `AMPLIHACK_NONINTERACTIVE`, `--subprocess-safe`, and non-TTY stdin each suppress the `Update now? [y/N] (5s timeout):` prompt
+- [Startup Self-Update Prompt — Subprocess-Safe Skip](../features/startup-update-prompt-subprocess-safe.md) — How `CI`, `AMPLIHACK_NONINTERACTIVE`, `--subprocess-safe`, and non-TTY stdin each suppress the `Update now? [y/N] (5s timeout):` prompt, and why `AMPLIHACK_AGENT_BINARY` does not (#1525)
 - [Manage Tool Update Notifications](../howto/manage-tool-update-checks.md) — npm pre-launch tool update notice (separate code path)

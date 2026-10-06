@@ -55,68 +55,41 @@ fn arg_strings(cmd: &std::process::Command) -> Vec<String> {
 //
 // Signature: resolve_subprocess_safe(
 //     explicit_flag: bool,
-//     env_agent_binary: Option<&str>,
 //     env_amplihack_noninteractive: bool,
 //     any_stream_non_tty: bool,
 // ) -> bool
+//
+// Issue #1525: `AMPLIHACK_AGENT_BINARY` used to be a fourth input. It names
+// the agent CLI, not a non-interactive caller, so it was removed. With no
+// parameter left to pass, "the variable has no effect" cannot be stated here;
+// bins/amplihack/tests/issue_1525_agent_binary_is_not_subprocess_safe.rs
+// checks it through the real copilot dispatcher at a TTY.
 
 /// #1: explicit_flag=true MUST always return true regardless of other inputs.
 #[test]
 fn resolve_subprocess_safe_explicit_flag_true_always_returns_true() {
-    assert!(resolve_subprocess_safe(true, None, false, false));
-    assert!(resolve_subprocess_safe(true, Some("copilot"), false, false));
-    assert!(resolve_subprocess_safe(true, None, true, true));
-    assert!(resolve_subprocess_safe(true, Some(""), false, false));
+    assert!(resolve_subprocess_safe(true, false, false));
+    assert!(resolve_subprocess_safe(true, true, true));
 }
 
-/// #2: AMPLIHACK_AGENT_BINARY set non-empty MUST trigger subprocess-safe even at TTY.
-#[test]
-fn resolve_subprocess_safe_agent_binary_set_returns_true_even_with_tty() {
-    assert!(resolve_subprocess_safe(
-        false,
-        Some("copilot"),
-        false,
-        false
-    ));
-    assert!(resolve_subprocess_safe(false, Some("claude"), false, false));
-    assert!(resolve_subprocess_safe(
-        false,
-        Some("anything"),
-        false,
-        false
-    ));
-}
-
-/// #2b: AMPLIHACK_NONINTERACTIVE=1 MUST trigger subprocess-safe even at TTY
+/// #2: AMPLIHACK_NONINTERACTIVE=1 MUST trigger subprocess-safe even at TTY
 /// with no other signals.
 #[test]
 fn resolve_subprocess_safe_amplihack_noninteractive_returns_true_even_with_tty() {
-    assert!(resolve_subprocess_safe(false, None, true, false));
+    assert!(resolve_subprocess_safe(false, true, false));
 }
 
 /// #3: Any stream non-TTY MUST trigger subprocess-safe even with no env signals.
 #[test]
 fn resolve_subprocess_safe_non_tty_returns_true() {
-    assert!(resolve_subprocess_safe(false, None, false, true));
+    assert!(resolve_subprocess_safe(false, false, true));
 }
 
 /// #4: Interactive context with no signals MUST return false.
 /// (Security-critical invariant: must not silently expand permissions on a TTY.)
 #[test]
 fn resolve_subprocess_safe_interactive_no_signals_returns_false() {
-    assert_eq!(resolve_subprocess_safe(false, None, false, false), false);
-}
-
-/// #5: AMPLIHACK_AGENT_BINARY set to empty string MUST be treated as unset.
-/// (Empty string is the sentinel "no delegation" marker — a process that
-/// inherits an empty agent-binary env var must not be auto-classified as a
-/// subprocess delegate.)
-#[test]
-fn resolve_subprocess_safe_empty_agent_binary_treated_as_unset() {
-    assert_eq!(
-        resolve_subprocess_safe(false, Some(""), false, false),
-        false
-    );
+    assert_eq!(resolve_subprocess_safe(false, false, false), false);
 }
 
 // ── R6 / #2-#6 + #7-#10: should_inject_subprocess_safe_flags ───────────────

@@ -39,6 +39,18 @@ impl EnvGuard {
         }
         Self { previous }
     }
+
+    /// Remove `names` from the environment until the guard is dropped.
+    pub(crate) fn unset<const N: usize>(names: [&str; N]) -> Self {
+        let previous = names
+            .iter()
+            .map(|name| (OsString::from(name), std::env::var_os(name)))
+            .collect();
+        for name in names {
+            unsafe { std::env::remove_var(name) };
+        }
+        Self { previous }
+    }
 }
 
 impl Drop for EnvGuard {
@@ -48,6 +60,54 @@ impl Drop for EnvGuard {
                 match value {
                     Some(value) => std::env::set_var(name, value),
                     None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
+}
+
+/// RAII guard giving a test a known agent-binary environment: every
+/// `agent_binary::SESSION_MARKERS` variable removed, and `AMPLIHACK_AGENT_BINARY`
+/// / `AMPLIHACK_AGENT_BINARY_SOURCE` set to `binary` / `tag` (or removed when
+/// `None`). Everything is restored on drop.
+///
+/// Tests must acquire `env_lock()` before constructing this guard.
+pub(crate) struct AgentBinaryEnv {
+    previous: Vec<(&'static str, Option<OsString>)>,
+}
+
+impl AgentBinaryEnv {
+    pub(crate) fn set(binary: Option<&str>, tag: Option<&str>) -> Self {
+        use amplihack_utils::agent_binary::{BINARY_ENV, SESSION_MARKERS, SOURCE_ENV};
+        let keys = SESSION_MARKERS
+            .iter()
+            .map(|(key, _)| *key)
+            .chain([BINARY_ENV, SOURCE_ENV]);
+        let previous = keys.map(|key| (key, std::env::var_os(key))).collect();
+        // SAFETY: edition 2024 requires unsafe; tests serialise via env_lock().
+        unsafe {
+            for (key, _) in SESSION_MARKERS {
+                std::env::remove_var(key);
+            }
+            for (key, value) in [(BINARY_ENV, binary), (SOURCE_ENV, tag)] {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+        Self { previous }
+    }
+}
+
+impl Drop for AgentBinaryEnv {
+    fn drop(&mut self) {
+        for (key, value) in self.previous.drain(..) {
+            // SAFETY: as in `set`.
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
                 }
             }
         }

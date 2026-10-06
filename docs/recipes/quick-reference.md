@@ -96,20 +96,29 @@ Quoting auto-normalisation was added in PR #3140.
 
 ```bash
 export AMPLIHACK_RECIPE_PATH="/custom/recipes:/team/recipes"
-export AMPLIHACK_AGENT_BINARY=copilot   # Agent CLI for subprocess orchestration (default: claude)
+export AMPLIHACK_AGENT_BINARY=copilot   # Agent CLI for agent steps (see below for the default)
 ```
 
 ### `AMPLIHACK_AGENT_BINARY`
 
-Sets the agent binary used for all subprocess orchestration. Defaults to `claude` with a warning if unset.
+Sets the agent binary used for agent steps. It must be one of `claude`,
+`copilot`, `codex` or `amplifier`; anything else, including a path, is
+rejected. When it is unset, amplihack uses the session markers of the CLI you
+are running in, then a fresh `.claude/runtime/launcher_context.json`, then the
+default, `copilot`, and `amplihack recipe run` prints a notice when it had to
+infer the answer. `amplihack agent-binary` prints the current answer and why.
 
 ```bash
 # Use GitHub Copilot as the orchestration agent
 export AMPLIHACK_AGENT_BINARY=copilot
-
-# Use a fully-qualified path
-export AMPLIHACK_AGENT_BINARY=/usr/local/bin/my-agent
 ```
+
+A detached launch (`tmux new-session -d`) does not see your session markers.
+It sees the tmux server's, copied from whatever started the server, which may
+be another CLI's. Hand the answer over with `$(amplihack agent-binary --shell)`,
+which also removes those markers, as in the dev-orchestrator skill's
+`reference.md` (#1525). Put it inside the double-quoted tmux command: in single
+quotes it expands in the new session and reads the server's markers.
 
 This makes amplihack agent-agnostic: `amplihack <command>` will use the configured binary for all agent subprocess calls (skills, recipes, orchestrator). Added in PR #3174.
 

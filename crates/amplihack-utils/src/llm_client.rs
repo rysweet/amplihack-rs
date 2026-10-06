@@ -70,6 +70,11 @@ impl fmt::Display for LauncherType {
 /// 3. `COPILOT_CLI` / `GITHUB_COPILOT` — Copilot CLI session markers
 ///
 /// Returns [`LauncherType::Unknown`] if no markers are found.
+///
+/// This is not the agent-binary resolver, and nothing in amplihack calls it.
+/// It honours neither `AMPLIHACK_AGENT_BINARY_SOURCE` tag (`default:` or
+/// `session:`), and it does not check `CLAUDECODE`, the marker Claude Code
+/// exports. Code that picks a binary calls [`crate::agent_binary::resolve`].
 pub fn detect_launcher() -> LauncherType {
     detect_launcher_from(EnvReader::Real)
 }

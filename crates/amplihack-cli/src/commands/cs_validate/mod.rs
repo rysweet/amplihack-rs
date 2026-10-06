@@ -579,15 +579,25 @@ class Foo {
 
     // ── Helper: temporarily change cwd for config tests ──────────────────
 
+    /// Holds the crate's one environment lock (#1380) for as long as the cwd
+    /// is changed. Without it, restoring `prev` could move a concurrently
+    /// running test that holds the lock out of its temp dir and back into the
+    /// crate directory, where a launch test then wrote `.claude/runtime/`.
+    /// That stray directory makes `uvx_help::staged_home_is_used_as_fallback`
+    /// fail on every later run.
     struct SetCwd {
         prev: PathBuf,
+        _lock: std::sync::MutexGuard<'static, ()>,
     }
 
     impl SetCwd {
         fn new(dir: &Path) -> Self {
+            let lock = crate::test_support::cwd_env_lock()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let prev = std::env::current_dir().unwrap();
             std::env::set_current_dir(dir).unwrap();
-            Self { prev }
+            Self { prev, _lock: lock }
         }
     }
 

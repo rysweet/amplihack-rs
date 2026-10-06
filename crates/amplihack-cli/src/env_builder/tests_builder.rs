@@ -5,35 +5,42 @@ use std::collections::HashMap;
 use std::env;
 use std::process::Command;
 
-// ── WS1: with_agent_binary ────────────────────────────────────────────────
+// ── WS1: with_resolved_agent_binary ───────────────────────────────────────
 
-/// WS1-1: with_agent_binary must insert AMPLIHACK_AGENT_BINARY for each
-/// supported tool name.
+/// WS1-1: an explicit answer inserts AMPLIHACK_AGENT_BINARY, untagged, for
+/// each supported tool name. `with_resolved_agent_binary` with
+/// `ResolutionSource::Env` is the only way to export an instruction; the
+/// public untagged `with_agent_binary` was removed (crusty review of #1490 at
+/// 960eaacb).
 #[test]
-fn with_agent_binary_sets_env_var_for_all_tools() {
+fn an_explicit_agent_binary_is_exported_untagged_for_all_tools() {
+    use amplihack_utils::agent_binary::{ResolutionSource, SOURCE_ENV};
     for tool in &["claude", "copilot", "codex", "amplifier"] {
-        let env = EnvBuilder::new().with_agent_binary(*tool).build();
+        let env = EnvBuilder::new()
+            .with_resolved_agent_binary(*tool, ResolutionSource::Env)
+            .build();
         assert_eq!(
             env.get("AMPLIHACK_AGENT_BINARY").map(String::as_str),
             Some(*tool),
             "AMPLIHACK_AGENT_BINARY should be '{tool}'"
+        );
+        assert!(
+            !env.contains_key(SOURCE_ENV),
+            "{tool}: an instruction is untagged"
         );
     }
 }
 
 #[test]
 fn active_agent_binary_reads_env_override() {
-    let previous = env::var_os("AMPLIHACK_AGENT_BINARY");
-    unsafe { env::set_var("AMPLIHACK_AGENT_BINARY", "copilot") };
+    let _guard = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    // No inherited `default:<binary>` tag (issue #1481): a recipe step running
+    // this suite can carry one, and it would make the resolver skip the value.
+    let _env = crate::test_support::AgentBinaryEnv::set(Some("copilot"), None);
 
-    let binary = active_agent_binary();
-
-    match previous {
-        Some(value) => unsafe { env::set_var("AMPLIHACK_AGENT_BINARY", value) },
-        None => unsafe { env::remove_var("AMPLIHACK_AGENT_BINARY") },
-    }
-
-    assert_eq!(binary, "copilot");
+    assert_eq!(active_agent_binary(), "copilot");
 }
 
 #[test]
@@ -400,6 +407,7 @@ fn with_amplihack_home_rejects_traversal_path() {
 
 const TRACKED_EXACT: &[&str] = &[
     "AMPLIHACK_AGENT_BINARY",
+    "AMPLIHACK_AGENT_BINARY_SOURCE",
     "COPILOT_AGENT_SESSION_ID",
     "CLAUDECODE",
     "CODEX_HOME",

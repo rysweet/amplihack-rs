@@ -92,7 +92,7 @@ reproduction when possible.
 | `AMPLIHACK_PROMPT_DELIVERY=argv` | Force structured argv delivery for compatibility diagnostics. |
 | `AMPLIHACK_PROMPT_DELIVERY=tempfile` | Request prompt-file delivery; rejected for binaries without a verified prompt-file contract. |
 | `AMPLIHACK_PROMPT_DELIVERY=stdin` | Request stdin delivery; rejected or degraded according to the binary capability matrix. |
-| `AMPLIHACK_AGENT_BINARY` | Marks delegated subprocess context for agent launchers. |
+| `AMPLIHACK_AGENT_BINARY` | Names the agent CLI that nested launchers call back into. It does not mark a delegated subprocess; `AMPLIHACK_NONINTERACTIVE=1` does (#1525). |
 | `NODE_OPTIONS=--max-old-space-size=32768` | Optional inherited Node memory setting for Node-based downstream workflows. |
 
 See [amplihack-rs Parity Reference](../amplihack-rs-parity.md) for the binary

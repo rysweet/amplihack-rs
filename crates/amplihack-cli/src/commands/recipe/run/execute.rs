@@ -5,7 +5,7 @@ use super::failure_class::{
 };
 use super::retry::{AttemptOutcome, RetrySummary, TransientRetryLimits, run_with_transient_retry};
 use super::*;
-use crate::env_builder::{EnvBuilder, active_agent_binary};
+use crate::env_builder::EnvBuilder;
 #[cfg(windows)]
 use crate::util::run_with_timeout;
 use crate::util::truncate_chars_with_notice;
@@ -471,6 +471,9 @@ pub(super) fn context_env_pairs(
     pairs
 }
 
+// The resolved agent binary is an extra argument on purpose: the caller
+// decided it once, for the pre-flight and the steps alike (issue #1481).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn execute_recipe_via_rust(
     recipe_path: &Path,
     context: &BTreeMap<String, String>,
@@ -479,6 +482,7 @@ pub(super) fn execute_recipe_via_rust(
     working_dir: &Path,
     search_dirs: &[PathBuf],
     step_timeout: Option<u64>,
+    agent_binary: amplihack_utils::agent_binary::Resolution,
 ) -> Result<RecipeRunResult> {
     // Issue #964: fail-closed recursion-depth guard. Refuse to spawn a nested
     // recipe-runner once the session has reached the configured maximum depth,
@@ -489,6 +493,18 @@ pub(super) fn execute_recipe_via_rust(
 
     let binary = super::binary::find_recipe_runner_binary()?;
     let recipe_name = recipe_name_for_correlation(recipe_path);
+
+    // Issue #1481: the caller resolved the agent binary once, from
+    // `working_dir`, while this process could still see the session markers of
+    // the CLI that invoked it; the #1482 pre-flight checked that same answer.
+    // Every step below runs under recipe-runner-rs's curated environment, and a
+    // nested `amplihack` resolving on its own there has lost the evidence -- it
+    // fell through to the vendor default and ran every agent step under Copilot
+    // from inside a Claude Code session.
+    crate::agent_binary_notice::report_agent_binary(
+        crate::agent_binary_notice::Reporter::RecipeRun,
+        &agent_binary,
+    );
 
     let runtime_dir = tempfile::Builder::new()
         .prefix("amplihack-workflow-")
@@ -552,7 +568,7 @@ pub(super) fn execute_recipe_via_rust(
         command.envs(context_env_pairs(context, resolve_context_env_budget()));
 
         let env_builder = EnvBuilder::new()
-            .with_agent_binary(active_agent_binary())
+            .with_resolved_agent_binary(agent_binary.binary.as_str(), agent_binary.source)
             .with_session_tree_context()
             .with_amplihack_home_from(working_dir)
             .with_asset_resolver()

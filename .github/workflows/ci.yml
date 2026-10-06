@@ -98,6 +98,15 @@ jobs:
       - name: Migrate skill — refuses the host it is running on (issue #1167)
         shell: bash
         run: bash tests/issue_1167_migrate_same_host_guard.sh
+      - name: Migrate skill — a default-guess agent binary is not an instruction (issue #1481)
+        shell: bash
+        run: bash tests/issue_1481_migrate_detect_cli_default_tag.sh
+      - name: Migrate skill — detect_cli agrees with the Rust resolver (issue #1525)
+        shell: bash
+        run: bash tests/issue_1525_migrate_detect_cli_parity.sh
+      - name: Shipped docs — a detached recipe run carries the agent-binary hand-off, double-quoted (issue #1525)
+        shell: bash
+        run: bash tests/issue_1525_detached_launch_docs_carry_hand_off.sh
       - name: Shipped shell — bash 3.2 portable, no bash-4-only constructs (issue #1423)
         shell: bash
         run: bash tests/issue_1423_bash4_constructs.sh

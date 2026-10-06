@@ -9,7 +9,9 @@ mod builder;
 pub mod helpers;
 
 pub use builder::EnvBuilder;
-pub use helpers::active_agent_binary;
+pub use helpers::{
+    active_agent_binary, launch_binary_source, launched_on_a_default_guess, resolve_agent_binary_in,
+};
 
 #[cfg(test)]
 mod tests_builder;

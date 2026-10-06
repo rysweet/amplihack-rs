@@ -557,29 +557,29 @@ pub(super) fn explicit_model_warnings(
 ///
 /// Subprocess-safe is true when ANY of:
 ///   * the user explicitly passed `--subprocess-safe` (`explicit_flag`)
-///   * `AMPLIHACK_AGENT_BINARY` is set to a non-empty value
-///     (`env_agent_binary = Some(non_empty)`)
 ///   * `AMPLIHACK_NONINTERACTIVE=1` is set (`env_amplihack_noninteractive`)
 ///   * any of stdin/stdout/stderr is not a TTY (`any_stream_non_tty`)
 ///
-/// Empty-string `env_agent_binary` is treated as "no delegation" (the
-/// documented sentinel value) and does NOT trigger subprocess-safe by itself.
+/// `AMPLIHACK_AGENT_BINARY` is deliberately not an input (issue #1525). It
+/// names which agent CLI to run and says nothing about whether anyone is at
+/// the terminal. While it counted, anyone who exported it to choose a CLI had
+/// every interactive `amplihack copilot` launched with reflection, launcher
+/// staging and the power-steering prompt turned off. Delegated runs do not need
+/// it: `amplihack recipe run` sets `AMPLIHACK_NONINTERACTIVE=1` for the runner,
+/// and every step runs with piped stdio. The parameter was removed rather than
+/// ignored so that the caller cannot quietly start passing it in again.
 ///
 /// All inputs are passed as parameters (rather than read from env / stdio
 /// inside) so this function is unit-testable deterministically without
 /// depending on the test harness's actual env or stdio state. The
-/// production caller in `commands/mod.rs` reads the four signals once and
+/// production caller in `commands/mod.rs` reads the three signals once and
 /// hands them to this resolver — see also [`crate::util::any_stream_is_non_tty`].
 pub(crate) fn resolve_subprocess_safe(
     explicit_flag: bool,
-    env_agent_binary: Option<&str>,
     env_amplihack_noninteractive: bool,
     any_stream_non_tty: bool,
 ) -> bool {
     if explicit_flag {
-        return true;
-    }
-    if env_agent_binary.is_some_and(|s| !s.is_empty()) {
         return true;
     }
     if env_amplihack_noninteractive {
