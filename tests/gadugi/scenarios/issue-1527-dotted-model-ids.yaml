@@ -3,8 +3,10 @@ description: >
   Outside-in QA for issue #1527. GitHub Copilot CLI spells Claude model ids
   with a dot (claude-opus-5.5), and Claude model ids use hyphens. The scenario
   runs the real amplihack binary (via
-  tests/gadugi/run-issue-1527-model-scenario.sh) under env -i with a fresh HOME,
-  against stub claude, copilot and codex executables that record their argv and
+  tests/gadugi/run-issue-1527-model-scenario.sh) under env -i with a fresh HOME
+  and from a fresh project directory per case, so the launcher context and
+  session log each launch writes never land in the checkout. The tools are
+  stub claude, copilot and codex executables that record their argv and
   environment. It checks the --model each tool receives and the stderr lines
   amplihack prints. A dotted Claude id in AMPLIHACK_DEFAULT_MODEL is rewritten
   to hyphens, whatever ANTHROPIC_BASE_URL says. An explicit dotted --model is

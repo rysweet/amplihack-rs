@@ -3,10 +3,21 @@
 # the dotted spelling GitHub Copilot CLI uses (`claude-opus-5.5`).
 #
 # This runs the real `amplihack` binary from the outside. Each case runs
-# `amplihack <tool> [args]` under `env -i` with a fresh HOME. Stub `claude`,
-# `copilot` and `codex` executables record the argv and environment they were
-# launched with. The case then checks the `--model` the tool received and what
-# amplihack printed to stderr. Nothing inside amplihack is replaced.
+# `amplihack <tool> [args]` under `env -i` with a fresh HOME, from a fresh
+# project directory of its own. Stub `claude`, `copilot` and `codex`
+# executables record the argv and environment they were launched with. The
+# case then checks the `--model` the tool received and what amplihack printed
+# to stderr. Nothing inside amplihack is replaced.
+#
+# Why a project directory per case: every launch writes per-project state
+# under its current directory -- `.claude/runtime/launcher_context.json`, which
+# agent-binary resolution reads (crates/amplihack-utils/src/agent_binary.rs),
+# and `.claude/runtime/sessions.jsonl`, which nesting detection reads. Run from
+# the checkout, the cases would rewrite the checkout's launcher context with
+# whichever tool launched last and log themselves as nested sessions of the
+# developer's live one, so the outcome would depend on the checkout's state.
+# Each case asserts its state landed in its own directory, and the EXIT trap
+# removes all of them. Only the cargo build below runs in the checkout.
 #
 # The cases cover every path a dotted id can take:
 #   - AMPLIHACK_DEFAULT_MODEL holding a dotted Claude id: rewritten to hyphens,
@@ -37,7 +48,6 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-cd "$REPO_ROOT" || { echo "FAIL: cannot cd to $REPO_ROOT"; echo "SCENARIO_FAILED"; exit 1; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/issue-1527-qa.XXXXXX")" || {
   echo "FAIL: cannot create a temporary directory"; echo "SCENARIO_FAILED"; exit 1
@@ -52,7 +62,8 @@ if [ -z "$BIN" ]; then
   # single awk reads every record and prints the last path, so cargo never
   # writes into a closed pipe (issue #1434) and pipefail reports cargo's status.
   # 14 is the length of `"executable":"`; 15 adds the closing quote.
-  if ! BIN="$(cargo build -p amplihack --bin amplihack --locked \
+  # The build is the one step that runs in the checkout.
+  if ! BIN="$(cd "$REPO_ROOT" && cargo build -p amplihack --bin amplihack --locked \
       --message-format=json-render-diagnostics 2>"$WORK/build.log" \
       | awk 'match($0, /"executable":"[^"]*\/amplihack"/) { bin = substr($0, RSTART + 14, RLENGTH - 15) } END { print bin }')"; then
     echo "FAIL: cargo build -p amplihack --bin amplihack failed"
@@ -64,6 +75,12 @@ if [ -z "$BIN" ] || [ ! -x "$BIN" ]; then
   echo "FAIL: no executable amplihack binary (got '${BIN}')"
   echo "SCENARIO_FAILED"; exit 1
 fi
+# Each case runs from its own directory, so a relative path given in
+# AMPLIHACK_1527_QA_BIN is anchored to the directory the script was run from.
+case "$BIN" in
+  /*) ;;
+  *) BIN="$PWD/$BIN" ;;
+esac
 echo "binary under test: $BIN"
 
 # --- stub tools -------------------------------------------------------------
@@ -120,13 +137,15 @@ check() {
   args=("$@")
 
   local case_dir="$WORK/case-$id"
-  mkdir -p "$case_dir/home" "$case_dir/record"
-  # Most cases have no variables or no arguments. Bash before 4.4 (macOS ships
-  # 3.2) treats an empty "${a[@]}" as unbound under `set -u` and aborts, so
-  # each array is expanded as ${a[@]+"${a[@]}"}: nothing when it is empty.
-  env -i HOME="$case_dir/home" PATH="$WORK/bin:/usr/bin:/bin" TERM=dumb \
-    AMPLIHACK_SKIP_AUTO_INSTALL=1 QA_1527_RECORD="$case_dir/record" \
-    ${envs[@]+"${envs[@]}"} "$BIN" "$tool" ${args[@]+"${args[@]}"} \
+  mkdir -p "$case_dir/home" "$case_dir/project" "$case_dir/record"
+  # The launch runs from $case_dir/project, so the per-project state it writes
+  # stays out of the checkout (see the header). Most cases have no variables or
+  # no arguments. Bash before 4.4 (macOS ships 3.2) treats an empty "${a[@]}"
+  # as unbound under `set -u` and aborts, so each array is expanded as
+  # ${a[@]+"${a[@]}"}: nothing when it is empty.
+  ( cd "$case_dir/project" && exec env -i HOME="$case_dir/home" PATH="$WORK/bin:/usr/bin:/bin" TERM=dumb \
+      AMPLIHACK_SKIP_AUTO_INSTALL=1 QA_1527_RECORD="$case_dir/record" \
+      ${envs[@]+"${envs[@]}"} "$BIN" "$tool" ${args[@]+"${args[@]}"} ) \
     </dev/null >"$case_dir/stdout" 2>"$case_dir/stderr"
   local rc=$?
 
@@ -134,6 +153,11 @@ check() {
   got_model="$(model_of "$case_dir/record/$tool/argv.0")"
   grep -q '^amplihack: warning: passing `--model' "$case_dir/stderr" && got_warning=yes
   [ "$rc" -eq 0 ] || problems+=("exit code $rc")
+  # The launch's per-project state must be in the case's own directory. If
+  # amplihack ever writes it somewhere else, this fails and the isolation
+  # described in the header has to be revisited.
+  [ -f "$case_dir/project/.claude/runtime/launcher_context.json" ] \
+    || problems+=("no .claude/runtime/launcher_context.json under the case's project directory")
   [ "$got_model" = "$want_model" ] || problems+=("--model '$got_model', want '$want_model'")
   [ "$got_warning" = "$want_warning" ] || problems+=("warning $got_warning, want $want_warning")
   if [ "$want_stderr" != "-" ] && ! grep -qF -- "$want_stderr" "$case_dir/stderr"; then
