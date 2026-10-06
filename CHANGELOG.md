@@ -9,6 +9,25 @@ Unreleased changes appear at the top under `[Unreleased]`.
 
 ### Fixed
 
+- **An older amplihack re-staged over a newer install (#1526)** — startup
+  self-heal and the launch bootstrap now refuse an automatic re-stage when the
+  running binary is older than `~/.amplihack/.installed-version` by semver
+  precedence. A refusal changes no file: binaries, `~/.claude/settings.json`,
+  the stamp and the bundle-compat memo stay byte-identical (a refusal that
+  loses the install-lock race may already have created `.install.lock` and
+  the memo). One best-effort stderr warning naming both binaries and versions
+  is printed per process, by self-heal or, when self-heal was skipped, by the
+  bootstrap; the command's exit status is unchanged, and the bootstrap's own
+  log line is at `debug`. With `AMPLIHACK_SKIP_AUTO_INSTALL` set, the bypass
+  line is printed instead of the warning. Explicit `amplihack install` still
+  downgrades.
+  Release tags now point at a `chore(release): stamp vX` child of the released
+  commit, or at that commit itself for the first release of a `MAJOR.MINOR`
+  series, whose manifests already say X. Either way a build of the tag reports
+  X. Tags cut before this change are not re-tagged, and a `--rev` build of a
+  `main` commit still reports the base version; the guard covers both. See
+  [Self-Heal Asset Re-Stage](docs/features/self-heal-asset-restage.md#never-an-implicit-downgrade-1526).
+
 - **Artifact Guard blocked verified work over a pre-existing repository
   condition (#1422)** — the guard now distinguishes artifacts the change under
   review *introduced* from artifacts the repository already carried, and the

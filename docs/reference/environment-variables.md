@@ -1153,15 +1153,18 @@ amplihack copilot --print 'run tests'
 is treated as **unset** and the check still runs.
 
 **Diagnostic on skip-with-mismatch:** when the bypass is active *and* the
-stamp does not match `crate::VERSION`, `amplihack` emits one line on stderr
-before dispatch:
+stamp does not match `crate::VERSION` (missing, older or newer), or the
+installed framework bundle is incompatible (#1271), `amplihack` emits one line
+on stderr before dispatch:
 
 ```
-amplihack: self-heal skipped (AMPLIHACK_SKIP_AUTO_INSTALL set); stamp=<old> current=<new>
+amplihack: AMPLIHACK_SKIP_AUTO_INSTALL set; skipping re-stage (stamp=0.8.55 current=0.8.111; installed_bundle="compatible")
 ```
 
-This makes the "stale assets, intentionally" state visible in CI logs.
-Matching versions produce no output.
+This makes the "stale assets, intentionally" state visible in CI logs. A
+matching stamp with a compatible bundle produces no output. With a stamp newer
+than the binary, this line replaces the #1526 downgrade warning; see
+[Bypass diagnostic](../features/self-heal-asset-restage.md#bypass-diagnostic).
 
 **What it does not do:**
 

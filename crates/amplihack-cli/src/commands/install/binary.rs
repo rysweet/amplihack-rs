@@ -188,7 +188,7 @@ pub(super) fn deploy_binaries() -> Result<Vec<PathBuf>> {
 /// return that path. Otherwise return `current_exe` unchanged so the caller's
 /// deleted-source handling in [`super::filesystem::deploy_binary`] still applies
 /// (it treats a missing source with an already-present destination as a no-op).
-pub(super) fn resolve_running_binary_source(current_exe: &Path) -> PathBuf {
+pub(crate) fn resolve_running_binary_source(current_exe: &Path) -> PathBuf {
     const DELETED_MARKER: &str = " (deleted)";
     let raw = current_exe.to_string_lossy();
     if let Some(stripped) = raw.strip_suffix(DELETED_MARKER) {

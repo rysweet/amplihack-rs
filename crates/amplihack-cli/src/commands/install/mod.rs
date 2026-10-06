@@ -26,6 +26,7 @@ pub(crate) mod version_stamp;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use binary::resolve_running_binary_source;
 use binary::{deploy_binaries, find_hooks_binary, stable_hooks_binary};
 use bundle_compat::validate_framework_bundle_compatibility;
 use clone::{download_and_extract_framework_repo, find_bundled_framework_root};
@@ -245,7 +246,44 @@ fn report_preserved_entries(preserved: &[String], target: &Path) {
     );
 }
 
+/// The install stamp's trimmed contents, or `None` when there is no stamp.
+///
+/// Unlike [`version_stamp::read_installed_version`] this prints nothing for a
+/// malformed stamp: startup self-heal has already reported (and re-staged
+/// over) one in this process. The caller only acts on contents that parse as
+/// semver, so nothing here is trusted beyond that.
+fn installed_stamp_quiet() -> Result<Option<String>> {
+    let path = version_stamp::installed_version_path()?;
+    match fs::read_to_string(&path) {
+        Ok(raw) => Ok(Some(raw.trim().to_string())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("failed to read {}", path.display())),
+    }
+}
+
 pub(crate) fn ensure_framework_installed() -> Result<()> {
+    ensure_framework_installed_with(&mut std::io::stderr())
+}
+
+/// [`ensure_framework_installed`], writing the #1526 refusal warning to
+/// `notice` (stderr in the binary).
+pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W) -> Result<()> {
+    // Issue #1526: this bootstrap is an implicit installer too. A binary older
+    // than the installed stamp must not stage, top up commands or repair
+    // settings.json over the newer install.
+    if let Some(installed) = installed_stamp_quiet().context("reading install version stamp")?
+        && crate::self_heal::is_implicit_downgrade(crate::VERSION, &installed)
+    {
+        // debug: tracing writes to stdout. The user-facing warning goes to
+        // `notice`, once per process: startup self-heal has usually printed it.
+        tracing::debug!(
+            "binary {} is older than install stamp {installed}; skipping launch bootstrap",
+            crate::VERSION
+        );
+        crate::self_heal::warn_implicit_downgrade_once(notice, &installed);
+        return Ok(());
+    }
+
     let staging_dir = staging_claude_dir()?;
     let staging_exists = staging_dir.exists();
     let missing = if staging_exists {
