@@ -1229,6 +1229,8 @@ check_health CONTINUE "status line with a step name and [phase, elapsed] details
 check_health STUCK "status line with trailing junk after the status" \
   "${S04}"' extra'$'\n''    Output: LOOP_HEALTH: DONE'
 check_health STUCK "a bare marker in a log with no status lines" 'LOOP_HEALTH: DONE'
+check_health STUCK "several bare DONE markers in a log with no status lines" \
+  'LOOP_HEALTH: DONE'$'\n''LOOP_HEALTH: DONE — converged'$'\n''LOOP_HEALTH: DONE'
 check_health STUCK "a bare CONTINUE marker in a log with no status lines" 'LOOP_HEALTH: CONTINUE — keep going'
 check_health STUCK "an Output: DONE line in a log with no status lines" '    Output: LOOP_HEALTH: DONE — converged'
 check_health STUCK "an Output: CONTINUE line in a log with no status lines" '    Output: LOOP_HEALTH: CONTINUE'

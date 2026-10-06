@@ -498,16 +498,12 @@ marker, amplihack's formatter shows it in the `Output:` form. On `STUCK`,
 step-04's stdout is empty, so no `Output:` line follows its status line.
 
 The bare form covers a runner that prints amplihack's step status lines but
-prints step-04's stdout line unchanged (issue #1512). A bare marker counts
-only in the same slot: the line right after a completed step-04 status line
-in the format above. A log with no such status line, such as one from a
-runner that prints none, is still `STUCK` with the warning above, however
-many bare `LOOP_HEALTH:` lines it holds.
-
-Accepting the bare form adds no way to forge a verdict. The slot is still the
-one line right after the last completed step-04 status line, and anything
-that could put a bare marker there could already put the `Output:` form
-there. A `DONE` still advances nothing unless the round's own verdict is
+prints step-04's stdout line unchanged (issue #1512). It adds no way to forge
+a verdict. The slot is still the one line right after the last completed
+step-04 status line, and anything that could put a bare marker there could
+already put the `Output:` form there. A log with no such status line is still
+`STUCK` with the warning above, however many bare `LOOP_HEALTH:` lines it
+holds. A `DONE` still advances nothing unless the round's own verdict is
 clean (see [Advancing needs two independent
 signals](#advancing-needs-two-independent-signals)), and a real `STUCK` exits
 non-zero, so the reader never runs on it.
