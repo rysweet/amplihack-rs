@@ -10,8 +10,7 @@ pub mod helpers;
 
 pub use builder::EnvBuilder;
 pub use helpers::{
-    active_agent_binary, active_agent_binary_with_source, launch_binary_source,
-    launched_on_a_default_guess, resolve_agent_binary_in,
+    active_agent_binary, launch_binary_source, launched_on_a_default_guess, resolve_agent_binary_in,
 };
 
 #[cfg(test)]

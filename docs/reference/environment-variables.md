@@ -95,7 +95,12 @@ The launcher continues to write this variable to subprocess environments so that
 
 #### Validation
 
-Values are normalized (trim, lowercase) and matched against the allowlist `{claude, copilot, codex, amplifier}`. Values that contain `/`, `\`, `..`, null bytes, whitespace, control characters, or exceed 32 bytes are **rejected**. On rejection the resolver emits a structured `tracing::warn!` and falls through to the next precedence source.
+Values are normalized (trim, lowercase) and matched against the allowlist `{claude, copilot, codex, amplifier}`. Values that contain `/`, `\`, `.`, `;`, null bytes, internal whitespace, control characters, or exceed 32 bytes are **rejected**. A rejected value is ignored, never coerced, and the next precedence source answers. The resolver logs no line of its own for it:
+
+- If the launcher context or the default then answers, the resolver's generic fallback WARN covers it (`no usable AMPLIHACK_AGENT_BINARY (unset, rejected, or a parent's default guess) …`), hidden at the default tracing filter (`RUST_LOG=warn` shows it). `amplihack agent-binary` and `amplihack recipe run` also print a notice on stderr that names the variable, as below.
+- If a session marker answers, nothing mentions the rejected value at any log level. The marker names the CLI running the process, and that is the answer.
+
+Commands that launch one CLI by name, such as `amplihack copilot`, do not ask the resolver. They set the variable to the CLI they launch, for their children.
 
 ```sh
 # Start a Copilot session (the new default)
@@ -108,9 +113,12 @@ echo $AMPLIHACK_AGENT_BINARY
 # Explicit override (CI, testing, manual selection)
 AMPLIHACK_AGENT_BINARY=claude amplihack recipe run smart-orchestrator -c task_description="..."
 
-# Invalid values are rejected and the resolver falls through
-AMPLIHACK_AGENT_BINARY="../bin/evil" amplihack copilot
-# warn: rejected AMPLIHACK_AGENT_BINARY (failed allowlist); falling through to the next layer
+# An invalid value is ignored and the next layer answers. Here, with no
+# session marker and no launcher context, that is the default, and the
+# notice on stderr says why:
+AMPLIHACK_AGENT_BINARY="../bin/evil" amplihack agent-binary
+# amplihack: resolved the agent binary to 'copilot' (AMPLIHACK_AGENT_BINARY is set but is not one of amplifier, claude, codex or copilot, and no agent session marker was found). Set AMPLIHACK_AGENT_BINARY to one of amplifier, claude, codex or copilot to choose an agent CLI.
+# copilot (default)
 ```
 
 #### Why the precedence order

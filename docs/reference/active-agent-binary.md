@@ -49,7 +49,12 @@ The resolver evaluates sources in order and returns the first valid value. A val
 | 3 | `<repo>/.claude/runtime/launcher_context.json` `launcher` field | Persisted state, possibly written by a different session. Consulted only while fresh, and never above a world-writable or foreign-owned directory. |
 | 4 | Built-in default | `"copilot"` |
 
-If a source produces a value that fails validation (allowlist, length, character class), the resolver emits `tracing::warn!` with structured fields and falls through to the next source. **No source ever silently coerces an invalid value.**
+If a source produces a value that fails validation (allowlist, length, character class), the resolver ignores it and falls through to the next source. **No source ever coerces an invalid value into a different name.** What is said about it depends on the source:
+
+- A `launcher_context.json` whose `launcher` field fails is logged at WARN (`ignoring an unusable launcher_context.json`, with its path and the reason).
+- An `AMPLIHACK_AGENT_BINARY` that fails gets no log line of its own. If the launcher context or the default then answers, the resolver's generic fallback WARN (`no usable AMPLIHACK_AGENT_BINARY (unset, rejected, or a parent's default guess) …`) covers it.
+
+Both WARNs are hidden at the default tracing filter. When the answer was inferred, `amplihack agent-binary` and `amplihack recipe run` say it on stderr: `AMPLIHACK_AGENT_BINARY is set but is not one of amplifier, claude, codex or copilot`, and `ignored <file>: it does not name amplifier, claude, codex or copilot as its launcher. Fix or delete it.` When a session marker or a valid `AMPLIHACK_AGENT_BINARY` answers, no notice mentions either; only the launcher-context WARN is still logged.
 
 ### Resolving once for a whole recipe run
 

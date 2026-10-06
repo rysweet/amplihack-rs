@@ -3,7 +3,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 /// Resolves which agent binary identifier the current process is operating
-/// under. Delegates to [`amplihack_utils::agent_binary::resolve`], which
+/// under, by [`resolve_agent_binary_in`] from the current directory, which
 /// applies the precedence:
 ///
 /// 1. `AMPLIHACK_AGENT_BINARY` env var (explicit override).
@@ -14,19 +14,15 @@ use std::path::{Path, PathBuf};
 /// Always returns an allowlisted name (`claude`, `copilot`, `codex`, or
 /// `amplifier`). Unknown / dangerous overrides silently fall through to the
 /// next layer — they never reach `Command::new`.
-pub fn active_agent_binary() -> String {
-    active_agent_binary_with_source().0
-}
-
-/// [`active_agent_binary`] plus the layer that supplied the answer.
 ///
-/// Callers that export the result to children use this so a guess from the
-/// built-in default can be tagged as one (issue #1481).
-pub fn active_agent_binary_with_source() -> (String, amplihack_utils::agent_binary::ResolutionSource)
-{
+/// Only the name comes back. A caller that exports the answer to children or
+/// tells a user about it needs the layer that supplied it, so that a guess
+/// from the built-in default can be tagged or announced as one (issue #1481);
+/// it calls [`resolve_agent_binary_in`] itself, as `recipe run` and
+/// `agent-binary` do.
+pub fn active_agent_binary() -> String {
     let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let resolution = resolve_agent_binary_in(&cwd);
-    (resolution.binary, resolution.source)
+    resolve_agent_binary_in(&cwd).binary
 }
 
 /// Resolve the agent binary with the launcher-context walk-up starting at
