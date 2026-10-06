@@ -245,6 +245,84 @@ fn a_rejected_value_is_reported_as_rejected() {
     );
 }
 
+/// `docs/reference/active-agent-binary.md` says a rejected value is never
+/// written into a log line, under any filter: a rejected
+/// `AMPLIHACK_AGENT_BINARY` gets no line of its own, and a rejected `launcher`
+/// field is named only by its file's path and a fixed reason. Until the crusty
+/// review of #1490 at f9a3c572, that page's Validation section still said such
+/// values were "logged at `warn` level (with the rejected value redacted into
+/// a structured field ...)". No such line or field has existed. This test holds
+/// the page to what the binary does, at the most verbose filter, for each
+/// source a rejected value can come from.
+#[test]
+fn a_rejected_value_is_never_logged_at_any_filter() {
+    const REJECTED: &str = "claude-code";
+    let fx = Fixture::new();
+    let agent_binary = |extra: &[(&str, &str)]| {
+        let mut command = fx.harness(Command::new(env!("CARGO_BIN_EXE_amplihack")));
+        command.arg("agent-binary").env("RUST_LOG", "trace");
+        for (key, value) in extra {
+            command.env(key, value);
+        }
+        let output = command.output().expect("run amplihack agent-binary");
+        assert!(output.status.success(), "{output:?}");
+        (
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+
+    // A session marker answers: nothing mentions the variable at all. The
+    // resolver's DEBUG line shows the filter reached the resolver.
+    let (stdout, stderr) =
+        agent_binary(&[("AMPLIHACK_AGENT_BINARY", REJECTED), ("COPILOT_CLI", "1")]);
+    assert_eq!(
+        stdout.trim(),
+        "copilot (session_marker)",
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("agent binary resolved"), "{stderr}");
+    assert!(
+        !stderr.contains(REJECTED) && !stderr.contains("AMPLIHACK_AGENT_BINARY"),
+        "a rejected value overruled by a marker must leave no trace:\n{stderr}"
+    );
+
+    // Nothing else answers: the generic fallback WARN and the notice name the
+    // variable, never the value.
+    let (stdout, stderr) = agent_binary(&[("AMPLIHACK_AGENT_BINARY", REJECTED)]);
+    assert_eq!(stdout.trim(), "copilot (default)", "stderr: {stderr}");
+    assert!(
+        stderr.contains("assuming the built-in default")
+            && stderr.contains("is set but is not one of amplifier, claude, codex or copilot"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains(REJECTED), "{stderr}");
+
+    // A fresh launcher context whose `launcher` field is rejected: the WARN
+    // and the notice name the file and a fixed reason, never the value.
+    amplihack_cli::launcher_context::write_launcher_context(
+        &fx.work(),
+        amplihack_cli::launcher_context::LauncherKind::Claude,
+        "amplihack claude",
+        Default::default(),
+    )
+    .expect("write launcher context");
+    let file = fx.work().join(".claude/runtime/launcher_context.json");
+    let mut context: Value =
+        serde_json::from_str(&fs::read_to_string(&file).expect("read launcher context"))
+            .expect("parse launcher context");
+    context["launcher"] = Value::from(REJECTED);
+    fs::write(&file, context.to_string()).expect("rewrite launcher context");
+    let (stdout, stderr) = agent_binary(&[]);
+    assert_eq!(stdout.trim(), "copilot (default)", "stderr: {stderr}");
+    assert!(
+        stderr.contains("ignoring an unusable launcher_context.json")
+            && stderr.contains("does not name amplifier, claude, codex or copilot"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains(REJECTED), "{stderr}");
+}
+
 /// An explicit choice still beats everything, and is not tagged. When it
 /// overrides a session marker naming another CLI, stderr says so, naming the
 /// variable: the docs tell users to export it to choose a CLI, and a profile

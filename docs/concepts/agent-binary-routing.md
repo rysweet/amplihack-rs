@@ -208,10 +208,10 @@ The resolver and hook paths are derived from values that may originate in user-c
 | Symlink escape        | Reject canonicalized paths that escape the discovered repo or `amplihack-home`                      |
 | Oversized config      | Cap `launcher_context.json` reads at 64 KiB                                                         |
 | JSON depth bombs      | Parse with `serde_json::from_str` into a typed struct; reject depth > 8 (current schema is depth 2; the cap is defense-in-depth against future additions) |
-| Env injection         | Trim, lowercase, length ≤ 32; reject `/`, `\`, `..`, null, whitespace, control chars                |
+| Env injection         | Reject any `/`, `\`, `.`, `;`, NUL or control char; trim; reject internal whitespace or > 32 bytes; lowercase; exact allowlist match |
 | Shell-quoted values   | The resolved value is never passed through `sh -c`; only used as `Command::new(binary)` or path key |
 | Stale state           | Files older than 24h are treated as unset                                                           |
-| Diagnostic leakage    | Error messages use `Path::display()` and structured tracing fields; rejected values are never inlined into format strings |
+| Diagnostic leakage    | A rejected value is never logged: a rejected env value gets no line of its own, a rejected launcher context is named by `Path::display()` and a fixed reason |
 
 ## Related
 

@@ -248,7 +248,9 @@ tmux new-session -d -s recipe-runner \
   `$(...)` captures stdout. The explanation includes any unusable launcher
   context it skipped. An exported `AMPLIHACK_AGENT_BINARY` that overrides a
   marker in the shell you run the hand-off from is handed over as your choice,
-  and the same stderr line names the marker it overrode.
+  and the same stderr line names the marker it overrode. That line is the only
+  record: the hand-off removes the marker, so the far side sees an explicit
+  choice and its run log says nothing about the override.
 - Log lines go to stderr as well, so a `RUST_LOG` set in your shell does not
   reach the command line. Stdout is only the hand-off line, whatever the log
   filter.
@@ -306,14 +308,14 @@ The allowlist is **fixed** and identical in Rust and the shell helper:
 { "claude", "copilot", "codex", "amplifier" }
 ```
 
-Validation rules applied to every candidate value before it can win precedence:
+Validation rules applied to every candidate value, from `AMPLIHACK_AGENT_BINARY` or a launcher context's `launcher` field, before it can win precedence. They are `agent_binary::validate_binary_name`, in this order:
 
-- Length ≤ 32 bytes
-- No `/`, `\`, `..`, null bytes, whitespace, or ASCII control characters
-- Trim then lowercase, then exact match against the allowlist
+- Reject the value if any byte of it, as given, is `/`, `\`, `.`, `;`, NUL or any other ASCII control character (tab and newline included)
+- Trim surrounding whitespace, then reject an empty value, one over 32 bytes, or one with a space or tab still inside it
+- Lowercase, then exact match against the allowlist
 - No prefix matching, no substring matching, no shell expansion
 
-Values that fail validation are logged at `warn` level (with the rejected value redacted into a structured field, never inlined into a format string) and treated as if the source was unset.
+A value that fails is treated as if its source were unset. It is never coerced into another name, and the resolver never writes it into a log line, under any filter. A rejected `AMPLIHACK_AGENT_BINARY` gets no log line of its own, and a rejected `launcher` field is named only by its file's path and a fixed reason. What each source gets instead is under [Resolution Precedence](#resolution-precedence).
 
 ## Default Change: claude → copilot
 
