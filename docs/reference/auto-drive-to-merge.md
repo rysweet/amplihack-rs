@@ -304,9 +304,13 @@ so a missing tool stops the run in seconds, and the auto-drive skill lists it
 under Prerequisites. Step-00 checks it again, in case it goes away during the
 run, and, when it is missing, fails the round with
 `ERROR: gadugi-test-not-installed: gadugi-test is not on PATH`, which names
-the install command (`npm install -g github:rysweet/gadugi-agentic-test`).
+the install command (`npm install -g github:rysweet/gadugi-agentic-test#6c120657798995b1b53399a5acf3693d418a2d8b`).
 Reported instead as the blocker `gadugi-test-missing`, it would repeat every
-round until the loop ended `STUCK`.
+round until the loop ended `STUCK`. The command is pinned to the
+gadugi-agentic-test commit auto-drive was tested with, which has no release
+tag: auto-drive depends on gadugi-test 1.0.x running one `--scenario` per
+call and deciding a scenario by exit code (see Criterion 1), and the default
+branch can change either.
 
 `step-02-merge-ready-assessment` reads `{{merge_ready_files.skill_md}}` and
 `{{merge_ready_files.template}}`, fails any criterion it could not verify, and
@@ -351,6 +355,19 @@ CLI runner and the first to finish kills the others
 ([gadugi-agentic-test #207](https://github.com/rysweet/gadugi-agentic-test/issues/207)),
 and `--scenario` matches a substring of `name:` (top-level, or under
 `scenario:`). Every file runs, even after one fails.
+
+gadugi-test 1.0.x passes or fails a scenario on the exit codes of its
+commands alone. Its CLI agent records a `validate_output` or
+`validate_exit_code` step as passed whatever the check returned, and does not
+apply the scenario's `assertions:` block (`src/agents/CLIAgent.ts`,
+`executeStep`); a command that exits non-zero fails the scenario. So
+`gadugi_status` `PASS` means every scenario's commands exited 0, and a
+scenario harness must exit non-zero when any case fails. The harnesses in
+this repository's `tests/gadugi/` also print each line their scenario's
+`validate_output` step and assertions expect, and each `validate_output` step
+uses gadugi's `contains:` form, because a plain `expected` string is compared
+with the whole trimmed output (`CLIOutputParser.validateOutput`). So the
+scenarios still hold if gadugi starts checking them.
 
 `qa_status` is `PASS`, with `qa_reason` `""`, only when a suite command ran,
 all passed, and `gadugi_status` is `PASS`. Otherwise `qa_reason` is the first
@@ -508,20 +525,23 @@ value is reported as unreadable.
 | empty | `required_approvals` is `0`, and no review rule makes it unknown | `MET` | `required-count` |
 | empty | `required_approvals` is above `0` | `NOT_MET` | `required-count` |
 | empty | count unreadable or unknown; `merge_state` is `CLEAN`, `HAS_HOOKS` or `UNSTABLE` | `MET`; `required_approvals` stays empty, never `0` | `merge-state` |
-| empty | count unreadable or unknown; `merge_state` is `DIRTY` or `BEHIND`, or `BLOCKED` with a check in the rollup that has not passed (or no checks), or `mergeable` `CONFLICTING` | `PENDING` | `other-blockers` |
+| empty | count unreadable or unknown; `merge_state` is `DIRTY` or `BEHIND`, or `BLOCKED` with a check in the rollup that has not passed (or no checks), `mergeable` `CONFLICTING`, or an unresolved review thread | `PENDING` | `other-blockers` |
 | anything else, or no PR read | none | `UNREADABLE` | `unreadable` |
 
 A check has passed when its `conclusion` (a check run) or `state` (a status
 context) is `SUCCESS`, `NEUTRAL` or `SKIPPED`; a run that has not finished has
 not passed. GitHub folds every rule into the one `BLOCKED`, so while a
-failing check, a conflict or a stale branch is present, whether a review is
-also missing cannot be read. That is `PENDING`, which step-02 reports as
-`approval-pending-other-blockers` and step-04 treats as a reason to clear the
-other blockers first, not as a request for a person; the next round reads the
-approval again. `BLOCKED` with every check passed, no conflict and the branch
-up to date leaves only rules a person satisfies, a required review among
-them, and stays `UNREADABLE`. The INFO line shows `mergeable` and
-`checks=pass|not-passed|none`.
+failing check, a conflict, a stale branch or an unresolved review thread is
+present, whether a review is also missing cannot be read. A thread counts
+because a rule can require conversations to be resolved, and an agent answers
+and resolves threads; an unreadable thread count is not a thread. That is
+`PENDING`, which step-02 reports as `approval-pending-other-blockers` and
+step-04 treats as a reason to clear the other blockers first, not as a request
+for a person; the next round reads the approval again. `BLOCKED` with every
+check passed, no conflict, the branch up to date and no unresolved thread
+leaves only rules a person satisfies, a required review among them, and stays
+`UNREADABLE`. The INFO line shows `mergeable`, `checks=pass|not-passed|none`
+and `threads=<count>|unreadable`.
 
 An empty `reviewDecision` does not mean that no review is required. GitHub
 publishes a decision only when a rule on the base branch requires at least one

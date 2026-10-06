@@ -81,7 +81,7 @@ steps:
       if ! command -v gadugi-test >/dev/null 2>&1; then
         echo "ERROR: gadugi-test-not-installed: gadugi-test is not on PATH. Criterion 1 runs the qa-team scenarios" \
           "with it in every repository type, and no agent can install it. Install it" \
-          "(npm install -g github:rysweet/gadugi-agentic-test) and run auto-drive again." >&2
+          "(npm install -g github:rysweet/gadugi-agentic-test#6c120657798995b1b53399a5acf3693d418a2d8b) and run auto-drive again." >&2
         exit 1
       fi
       printf '%s\n' "$OUT"
@@ -190,8 +190,9 @@ steps:
         `review_decision` and `required_approvals` say (either may be empty).
         For `NOT_MET` report `changes-requested` or `required-approval-missing`.
         For `PENDING` report `approval-pending-other-blockers`: the required
-        count is unknown and failing or pending checks, a conflict or a BEHIND
-        branch keep `merge_state` from saying whether a review is missing.
+        count is unknown and failing or pending checks, a conflict, a BEHIND
+        branch or unresolved review threads keep `merge_state` from saying
+        whether a review is missing.
         For `UNREADABLE` report `approval-state-unreadable`. Cite `approval_source`.
       - **Criterion 8:** GitHub applies protection and rulesets to `merge_state`;
         `CLEAN`, `HAS_HOOKS` or `UNSTABLE` means none blocks the merge. A 404
@@ -312,8 +313,9 @@ steps:
         person.
       - **`approval-pending-other-blockers`**: not a request for a person yet.
         Clear the other blockers first: failing or pending CI, a conflict, a
-        branch behind its base. The next round reads the approval again, and
-        only then can it say whether a review is missing.
+        branch behind its base, unresolved review threads. The next round
+        reads the approval again, and only then can it say whether a review
+        is missing.
       - **`changes-requested`**, **`required-approval-missing`** and
         **`approval-state-unreadable`**: an agent cannot approve. Fix and
         answer any requested changes; the approval itself needs a person.

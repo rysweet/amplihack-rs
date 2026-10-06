@@ -40,7 +40,7 @@ steps:
     agent: cli-agent
     action: validate_output
     params:
-      expected: "merge-ready read from its files; gadugi-test checked before the build"
+      expected: "contains:merge-ready read from its files; gadugi-test checked before the build"
 assertions:
   - name: all-cases-passed
     type: output_contains

@@ -103,7 +103,7 @@ steps:
       if ! command -v gadugi-test >/dev/null 2>&1; then
         echo "ERROR: gadugi-test-not-installed: gadugi-test is not on PATH. Criterion 1 runs the qa-team scenarios" \
           "with it in every repository type, and no agent can install it. Install it" \
-          "(npm install -g github:rysweet/gadugi-agentic-test) and run auto-drive again." >&2
+          "(npm install -g github:rysweet/gadugi-agentic-test#6c120657798995b1b53399a5acf3693d418a2d8b) and run auto-drive again." >&2
         exit 1
       fi
       echo "INFO: auto-drive prerequisites: gadugi-test at $(command -v gadugi-test)" >&2

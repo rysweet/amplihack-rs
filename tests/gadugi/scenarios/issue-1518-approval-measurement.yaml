@@ -39,7 +39,7 @@ steps:
     agent: cli-agent
     action: validate_output
     params:
-      expected: "criterion 6 measured from GitHub's own answers"
+      expected: "contains:criterion 6 measured from GitHub's own answers"
 assertions:
   - name: all-cases-passed
     type: output_contains

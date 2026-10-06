@@ -3281,6 +3281,10 @@ fn a_recipe_run_from_a_round_step_is_refused_by_the_real_guard() {
 fn gadugi_test_is_checked_before_the_build() {
     // PR #1520 review: a missing gadugi-test was found only at merge round
     // step-00, after the build and the whole crusty loop.
+    // The install is pinned to the gadugi commit auto-drive was tested with
+    // (crusty round 2): it depends on gadugi-test 1.0.x running one
+    // --scenario per call and deciding a scenario by exit code alone.
+    const GADUGI_INSTALL: &str = "npm install -g github:rysweet/gadugi-agentic-test#6c120657798995b1b53399a5acf3693d418a2d8b";
     let recipe = recipe_yaml("auto-drive-to-merge");
     let first = steps(&recipe)
         .first()
@@ -3299,7 +3303,7 @@ fn gadugi_test_is_checked_before_the_build() {
     for needle in [
         "command -v gadugi-test",
         "ERROR: gadugi-test-not-installed",
-        "npm install -g github:rysweet/gadugi-agentic-test",
+        GADUGI_INSTALL,
         "exit 1",
     ] {
         assert!(
@@ -3313,8 +3317,7 @@ fn gadugi_test_is_checked_before_the_build() {
         .find("## Prerequisites")
         .expect("the auto-drive skill must have a Prerequisites section");
     assert!(
-        skill[section..].contains("gadugi-test")
-            && skill[section..].contains("npm install -g github:rysweet/gadugi-agentic-test"),
+        skill[section..].contains("gadugi-test") && skill[section..].contains(GADUGI_INSTALL),
         "the auto-drive skill must list gadugi-test and how to install it"
     );
 }

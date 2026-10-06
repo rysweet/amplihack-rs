@@ -75,6 +75,7 @@ for t in \
 done
 
 if [ "$fail" -eq 0 ]; then
+  echo "shipped lease + merge-gate contract green"
   echo "ALL_CASES_PASSED"
   exit 0
 fi

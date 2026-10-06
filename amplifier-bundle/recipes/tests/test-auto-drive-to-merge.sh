@@ -2014,7 +2014,7 @@ else
   else
     fail "STEP00-gadugi-missing-fails" "rc=${S00_RC} out=$(cat "${RS}.out") err=$(printf '%s' "${S00_ERR}" | tail -n 3 | tr '\n' ' ')"
   fi
-  if printf '%s' "${S00_ERR}" | grep -qF 'npm install -g github:rysweet/gadugi-agentic-test'; then
+  if printf '%s' "${S00_ERR}" | grep -qF 'npm install -g github:rysweet/gadugi-agentic-test#6c120657798995b1b53399a5acf3693d418a2d8b'; then
     pass "STEP00-gadugi-missing-says-how" "the error says how to install gadugi-test"
   else
     fail "STEP00-gadugi-missing-says-how" "err=$(printf '%s' "${S00_ERR}" | tail -n 3 | tr '\n' ' ')"
@@ -2039,7 +2039,7 @@ else
   PRQ_OUT="$(env -i HOME="${TEST_HOME}" PATH="${S00_NO_GADUGI_BIN:-${WORK_PHYS}/none}:/usr/bin:/bin" bash -c "${PRQ_BODY}" 2>"${WORK_PHYS}/prq.err")"; rc=$?
   if [ "$rc" -ne 0 ] && [ -z "${PRQ_OUT}" ] \
      && grep -q '^ERROR: gadugi-test-not-installed: gadugi-test is not on PATH' "${WORK_PHYS}/prq.err" \
-     && grep -qF 'npm install -g github:rysweet/gadugi-agentic-test' "${WORK_PHYS}/prq.err"; then
+     && grep -qF 'npm install -g github:rysweet/gadugi-agentic-test#6c120657798995b1b53399a5acf3693d418a2d8b' "${WORK_PHYS}/prq.err"; then
     pass "PREREQ-gadugi-missing-fails" "a missing gadugi-test stops auto-drive before the build, by name, with the install command"
   else
     fail "PREREQ-gadugi-missing-fails" "rc=${rc} out=${PRQ_OUT} err=$(tr '\n' ' ' < "${WORK_PHYS}/prq.err")"
@@ -3685,6 +3685,14 @@ else
   pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED \
     PF_CHECKS='[{"__typename":"CheckRun","name":"a","status":"COMPLETED","conclusion":"NEUTRAL"},{"__typename":"CheckRun","name":"b","status":"COMPLETED","conclusion":"SKIPPED"},{"__typename":"StatusContext","context":"c","state":"SUCCESS"}]'
   pf_expect "PF-blocked-checks-passed" UNREADABLE unreadable "" "NEUTRAL, SKIPPED and a SUCCESS status context have passed: BLOCKED needs a person"
+  # crusty round-2 on PR #1520: a rule can require conversations to be
+  # resolved, and an agent answers and resolves threads, so an unresolved
+  # thread is another blocker the round clears. An unreadable count is not a
+  # thread and leaves BLOCKED with every check passed UNREADABLE.
+  pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED PF_THREADS=1
+  pf_expect "PF-pending-unresolved-threads" PENDING other-blockers "" "an unresolved review thread is a blocker an agent clears; BLOCKED cannot say whether a review is also missing" unresolved_threads=1
+  pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED PF_THREADS='{"message":"x"}'
+  pf_expect "PF-threads-unreadable-not-pending" UNREADABLE unreadable "" "an unreadable thread count is not a thread: BLOCKED with every check passed still needs a person" unresolved_threads=unreadable
   pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION= PF_MSTATE=UNKNOWN PF_CHECKS="${PF_FAIL_RUN}"
   pf_expect "PF-unknown-state-not-pending" UNREADABLE unreadable "" "a merge state GitHub has not computed is never read as pending"
   pf_run PF_CLASSIC=1 PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED PF_CHECKS="${PF_FAIL_RUN}"

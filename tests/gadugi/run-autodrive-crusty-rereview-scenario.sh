@@ -252,6 +252,7 @@ else
 fi
 
 if [ "$fail" -eq 0 ]; then
+  echo "crusty re-review runs before the merge round at the loop's depth"
   echo "ALL_CASES_PASSED"
   exit 0
 fi

@@ -44,7 +44,7 @@ steps:
     agent: cli-agent
     action: validate_output
     params:
-      expected: "crusty re-review runs before the merge round at the loop's depth"
+      expected: "contains:crusty re-review runs before the merge round at the loop's depth"
 assertions:
   - name: all-cases-passed
     type: output_contains

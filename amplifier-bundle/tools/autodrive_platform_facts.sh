@@ -31,15 +31,20 @@
 #                    mergeStateStatus is BLOCKED, DIRTY or BEHIND while another
 #                    blocker an agent can clear is present: a check in the
 #                    rollup that has not passed (or no checks at all), a
-#                    conflict (mergeable CONFLICTING, or DIRTY), or a branch
-#                    BEHIND its base. GitHub folds every rule into that one
-#                    state, so whether a review is also missing cannot be read
-#                    until those clear: PENDING. The merge round clears the
-#                    other blockers first and reads the approval again; it
-#                    does not route PENDING to a person.
+#                    conflict (mergeable CONFLICTING, or DIRTY), a branch
+#                    BEHIND its base, or an unresolved review thread (a rule
+#                    can require conversations to be resolved, and an agent
+#                    answers and resolves threads). GitHub folds every rule
+#                    into that one state, so whether a review is also missing
+#                    cannot be read until those clear: PENDING. The merge
+#                    round clears the other blockers first and reads the
+#                    approval again; it does not route PENDING to a person.
+#                    An unreadable thread count is not a thread, so it alone
+#                    never makes PENDING.
 #   unreadable       none of the above: UNREADABLE. BLOCKED with every check
-#                    passed, no conflict and the branch up to date leaves only
-#                    the rules a person satisfies, a required review among them.
+#                    passed, no conflict, the branch up to date and no
+#                    unresolved review thread leaves only the rules a person
+#                    satisfies, a required review among them.
 # A check has passed when its conclusion (a check run) or state (a status
 # context) is SUCCESS, NEUTRAL or SKIPPED; anything else, an unfinished run
 # included, has not.
@@ -184,6 +189,7 @@ if [ "$VIEW_OK" = "true" ]; then
         OTHER="false"
         [ "$CHECKS" = "pass" ] || OTHER="true"
         [ "$MERGEABLE" = "CONFLICTING" ] && OTHER="true"
+        case "$THREADS" in 0 | unreadable) ;; *) OTHER="true" ;; esac
         case "$MSTATE" in
           CLEAN | HAS_HOOKS | UNSTABLE) APPROVAL="MET"; SOURCE="merge-state" ;;
           DIRTY | BEHIND) APPROVAL="PENDING"; SOURCE="other-blockers" ;;
@@ -196,7 +202,7 @@ fi
 SHOWN_C="${CLASSIC:-unreadable}"; [ -z "$CLASSIC_RULE" ] || SHOWN_C="unknown(${CLASSIC_RULE})"
 SHOWN_R="${RULES:-unreadable}"; [ -z "$RULES_RULE" ] || SHOWN_R="unknown(${RULES_RULE})"
 echo "INFO: approval: status=${APPROVAL} source=${SOURCE} required=${REQ:-unknown} classic=${SHOWN_C}" \
-  "rulesets=${SHOWN_R} review_decision=${DECISION:-<empty>} merge_state=${MSTATE} mergeable=${MERGEABLE} checks=${CHECKS}" >&2
+  "rulesets=${SHOWN_R} review_decision=${DECISION:-<empty>} merge_state=${MSTATE} mergeable=${MERGEABLE} checks=${CHECKS} threads=${THREADS}" >&2
 
 printf '{"pr":"%s","state":"%s","is_draft":"%s","mergeable":"%s","merge_state":"%s","review_decision":"%s","head_sha":"%s","base_ref":"%s","unresolved_threads":"%s","required_approvals":"%s","approval_status":"%s","approval_source":"%s"}\n' \
   "$PR" "$STATE" "$DRAFT" "$MERGEABLE" "$MSTATE" "$DECISION" "$HEAD" "$BASE" "$THREADS" "$REQ" "$APPROVAL" "$SOURCE"

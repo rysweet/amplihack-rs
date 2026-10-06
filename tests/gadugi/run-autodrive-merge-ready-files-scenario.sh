@@ -116,7 +116,7 @@ PRQ="$(bash "$SCRIPT_DIR/recipe-step-command.sh" "$RECIPE" autodrive-prerequisit
 OUT="$(env -i HOME="$WORK/home" PATH="$WORK/no-gadugi-bin:$SYS_PATH" bash -c "$PRQ" 2>"$WORK/err7")"; RC=$?
 if [ "$FIRST" = "autodrive-prerequisites" ] && [ -n "$PRQ" ] && [ "$RC" -ne 0 ] && [ -z "$OUT" ] \
    && grep -q '^ERROR: gadugi-test-not-installed:' "$WORK/err7" \
-   && grep -qF 'npm install -g github:rysweet/gadugi-agentic-test' "$WORK/err7"; then
+   && grep -qF 'npm install -g github:rysweet/gadugi-agentic-test#6c120657798995b1b53399a5acf3693d418a2d8b' "$WORK/err7"; then
   pass gadugi_missing_stops_before_build "a missing gadugi-test stops auto-drive at its first step, before the build, with the install command"
 else
   fl gadugi_missing_stops_before_build "first=$FIRST rc=$RC out=$OUT err=$(tr '\n' ' ' < "$WORK/err7")"
@@ -129,6 +129,7 @@ else
 fi
 
 if [ "$fail" -eq 0 ]; then
+  echo "merge-ready read from its files; gadugi-test checked before the build"
   echo "ALL_CASES_PASSED"
   exit 0
 fi

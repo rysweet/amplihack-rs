@@ -72,7 +72,7 @@ flowchart TD
 
 | Tool | Why | Install |
 | --- | --- | --- |
-| `gadugi-test` | Merge-ready criterion 1 runs the qa-team scenarios with it in every repository type. `amplihack install` does not install it, and no agent can. The recipe's first step, `autodrive-prerequisites`, stops the run with `ERROR: gadugi-test-not-installed` before the build when it is missing, so the missing tool costs seconds rather than a build and a crusty loop. | `npm install -g github:rysweet/gadugi-agentic-test` |
+| `gadugi-test` | Merge-ready criterion 1 runs the qa-team scenarios with it in every repository type. `amplihack install` does not install it, and no agent can. The recipe's first step, `autodrive-prerequisites`, stops the run with `ERROR: gadugi-test-not-installed` before the build when it is missing, so the missing tool costs seconds rather than a build and a crusty loop. The install is pinned to the gadugi-agentic-test commit auto-drive was tested with, because auto-drive depends on how gadugi-test 1.0.x behaves: one `--scenario` per run (gadugi-agentic-test #207) and a scenario decided by its commands' exit codes alone. | `npm install -g github:rysweet/gadugi-agentic-test#6c120657798995b1b53399a5acf3693d418a2d8b` |
 | `gh`, authenticated | Platform facts, CI, review threads and the merge itself. | [GitHub CLI](https://cli.github.com/) |
 
 ## Invoking it
