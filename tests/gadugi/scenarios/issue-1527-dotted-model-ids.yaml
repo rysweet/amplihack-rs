@@ -1,0 +1,73 @@
+name: issue-1527-dotted-model-ids
+description: >
+  Outside-in QA for issue #1527. GitHub Copilot CLI spells Claude model ids
+  with a dot (claude-opus-5.5), and Claude model ids use hyphens. The scenario
+  runs the real amplihack binary (via
+  tests/gadugi/run-issue-1527-model-scenario.sh) under env -i with a fresh HOME
+  and from a fresh project directory per case, so the launcher context and
+  session log each launch writes never land in the checkout. The tools are
+  stub claude, copilot and codex executables that record their argv and
+  environment. It checks the --model each tool receives and the stderr lines
+  amplihack prints. A dotted Claude id in AMPLIHACK_DEFAULT_MODEL is rewritten
+  to hyphens, whatever ANTHROPIC_BASE_URL says. An explicit dotted --model is
+  forwarded as typed, with a warning for Claude-compatible tools. copilot, codex
+  and the LiteLLM gateway are left alone. CI's Install Smoke Test job runs the
+  runner script directly against the binary it installs; CI does not run
+  gadugi-test, so this file is for running the same cases through gadugi-test
+  by hand.
+version: "1.0"
+config:
+  timeout: 900000
+environment:
+  requires: []
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, qa-team, launch, model-selection, regression]
+  priority: high
+  issues: ["1527"]
+steps:
+  - name: run-issue-1527-model-cases
+    agent: cli-agent
+    action: execute
+    params:
+      command: tests/gadugi/run-issue-1527-model-scenario.sh
+    timeout: 880000
+  - name: all-model-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+  - name: contract-green
+    agent: cli-agent
+    action: validate_output
+    params:
+      expected: "issue 1527 dotted model id contract green"
+assertions:
+  - name: all-cases-passed
+    type: output_contains
+    params:
+      target: stdout
+      expected: ALL_CASES_PASSED
+  - name: default-model-rewritten
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: env-dotted "
+  - name: explicit-dotted-model-warned
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: explicit-dotted "
+  - name: base-url-does-not-stop-the-rewrite
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: base-url-anthropic-env-dotted "
+  - name: explicit-model-is-the-escape-hatch
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: base-url-proxy-explicit-dotted "

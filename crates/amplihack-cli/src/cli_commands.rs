@@ -80,19 +80,29 @@ pub enum Commands {
     /// Launch Claude Code (alias)
     #[command(long_about = "Launch Claude Code (alias).
 
-MODEL SELECTION (issue #1421)
-  amplihack does not choose a model. With no `--model` on the command line and
-  no AMPLIHACK_DEFAULT_MODEL in the environment, no `--model` is passed and
-  Claude Code applies its own default -- which is also what lets the \"model\"
-  in ~/.claude/settings.json take effect.
+MODEL SELECTION (issues #1421, #1527)
+  With no `--model` on the command line, amplihack passes
+  `--model claude-opus-5[1m]`, a concrete id rather than an alias, and names
+  the model and where it came from on stderr. That outranks the \"model\" in
+  ~/.claude/settings.json.
 
-  AMPLIHACK_DEFAULT_MODEL=<alias>   pin a model for every launch (e.g. `opus[1m]`).
-                                    Empty / whitespace-only is treated as unset.
-                                    When amplihack uses it, it says so on stderr,
-                                    so a later 404 names an id you can trace.
-  --model <alias>                   pin a model for this launch; takes priority
-                                    over AMPLIHACK_DEFAULT_MODEL and is forwarded
-                                    to Claude Code unchanged.")]
+  AMPLIHACK_DEFAULT_MODEL=<id>   pin a model for every launch
+                                 (e.g. `claude-sonnet-4-5`). A dotted Claude id
+                                 such as `claude-opus-5.5` is rewritten to
+                                 `claude-opus-5-5`. Empty or whitespace-only
+                                 passes no `--model`, so Claude Code and
+                                 ~/.claude/settings.json decide.
+  --model <id>                   pin a model for this launch; takes priority
+                                 over AMPLIHACK_DEFAULT_MODEL and is forwarded
+                                 to Claude Code unchanged. A dotted Claude id is
+                                 not rewritten, but amplihack prints a warning
+                                 naming the hyphenated spelling.
+
+  While AMPLIHACK_LITELLM_ENDPOINT, AMPLIHACK_LITELLM_API_KEY or
+  AMPLIHACK_LITELLM_MODEL is set (the LiteLLM gateway), the model is
+  AMPLIHACK_LITELLM_MODEL and AMPLIHACK_DEFAULT_MODEL is not read. Other
+  AMPLIHACK_LITELLM_* variables, such as AMPLIHACK_LITELLM_TELEMETRY_FILE, do
+  not affect the model.")]
     Claude {
         /// Disable post-session reflection analysis.
         #[arg(long = "no-reflection")]

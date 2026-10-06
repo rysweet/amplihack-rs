@@ -155,14 +155,13 @@ receive a flag it may not accept.
 
 ### Amplifier is excluded on purpose
 
-`build_command_for_dir` has a local `is_claude_compatible` check that includes
-`"amplifier"`, and that check governs `--dangerously-skip-permissions` and
-`--model`. The flag matrix says `flags_for(AgentBinary::Amplifier)
-.supports_append_prompt == false`.
+`is_claude_compatible_tool` in `command.rs` includes `"amplifier"`, and that
+check governs `--dangerously-skip-permissions` and `--model`. The flag matrix
+says `flags_for(AgentBinary::Amplifier).supports_append_prompt == false`.
 
 The two disagree, and **the flag matrix wins** — it is the single source of truth
-for per-binary flag support. `is_claude_compatible` is deliberately left alone;
-retargeting the flags it governs is a separate question. A code comment and an
+for per-binary flag support. `is_claude_compatible_tool` is deliberately left
+alone; retargeting the flags it governs is a separate question. A code comment and an
 `amplifier ✗` unit test exist so that a future maintainer does not "harmonize"
 the two and silently start emitting the flag for a binary that does not accept
 it.
