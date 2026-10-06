@@ -286,7 +286,7 @@ steps:
         try_gh_create; RL_WINDOWS=0
         while [ "$GH_ISSUE_RC" -ne 0 ] && _issue_is_rate_limit "$GH_ISSUE_OUTPUT" && ! _issue_is_auth "$GH_ISSUE_OUTPUT"; do RL_WINDOWS=$((RL_WINDOWS + 1)); echo "WARNING: gh issue create hit a GitHub rate limit (reset window ${RL_WINDOWS}, no arbitrary cap); waiting for reset before retrying." >&2; _issue_wait_for_reset; try_gh_create; done
         [ "$GH_ISSUE_RC" -eq 0 ] && { printf '%s\n' "$GH_ISSUE_OUTPUT"; exit 0; }
-        if [[ "$GH_ISSUE_OUTPUT" =~ Could\ not\ resolve\ to\ a\ Repository|[Rr]epository\ not\ found|[Rr]epository.*inaccessible|HTTP\ 404 ]]; then
+        if issue_repo_unresolvable "$GH_ISSUE_OUTPUT"; then
           echo "WARNING: GitHub issue creation failed because the repository could not be resolved or accessed; using local tracking metadata instead." >&2
           emit_local_metadata; exit 0
         fi

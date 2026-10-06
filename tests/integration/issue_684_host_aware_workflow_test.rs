@@ -249,8 +249,12 @@ case "$1:$2" in
     exit "${GH_VIEW_STATUS:-1}"
     ;;
   issue:list)
-    # step-03's lookup reads two --jq lines: the listed count, then the URL.
-    [ -n "${GH_LIST_URL:-}" ] && printf '1\n%s\n' "$GH_LIST_URL"
+    # A failing list (GH_LIST_OUTPUT set) reports like gh: text on stderr,
+    # non-zero. Otherwise step-03's lookup reads two --jq lines: the listed
+    # count, then the URL; an empty list is "0" and an empty line, as gh
+    # itself prints them.
+    if [ -n "${GH_LIST_OUTPUT:-}" ]; then printf '%s\n' "$GH_LIST_OUTPUT" >&2; exit "${GH_LIST_STATUS:-1}"; fi
+    if [ -n "${GH_LIST_URL:-}" ]; then printf '1\n%s\n' "$GH_LIST_URL"; else printf '0\n\n'; fi
     exit "${GH_LIST_STATUS:-0}"
     ;;
   label:create) exit 0 ;;
@@ -1080,6 +1084,14 @@ fn step_03_github_repo_resolution_failure_falls_back_to_local_tracking() {
         "Please see issue #763; create tracking for the workflow",
         &[
             ("GIT_REMOTE_URL", secret_remote),
+            // The tracker lookup runs first and fails the same way gh does on
+            // an unresolvable repository (issue #1497 round 11): it must hand
+            // over to the create path, whose fallback this test covers.
+            (
+                "GH_LIST_OUTPUT",
+                "GraphQL: Could not resolve to a Repository with the name 'cloud-ecosystem-security/hyenas'.",
+            ),
+            ("GH_LIST_STATUS", "1"),
             (
                 "GH_CREATE_OUTPUT",
                 "GraphQL: Could not resolve to a Repository with the name 'cloud-ecosystem-security/hyenas'.",
@@ -1094,6 +1106,11 @@ fn step_03_github_repo_resolution_failure_falls_back_to_local_tracking() {
     assert!(
         run.output.status.success(),
         "repo-resolution failure must fall back locally instead of aborting; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        run.gh_log.contains("issue create"),
+        "the lookup's resolve failure must reach the create path, not abort step-03; gh log:\n{}",
+        run.gh_log
     );
     assert!(
         combined.contains("WARNING: GitHub issue creation failed because the repository could not be resolved or accessed; using local tracking metadata instead."),

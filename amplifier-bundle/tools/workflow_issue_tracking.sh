@@ -54,16 +54,16 @@ sanitize_cli_output() { printf '%s\n' "$1" | head -c 4000 | sed -E 's#https?://[
 # 1000 (real gh and gh-compat both cap there): a WARNING says so, because a
 # tracker older than that would be missed and a duplicate filed.
 # A lookup that fails does not read as "no tracker" (that would file a
-# duplicate): it is reported on stderr and returns 1, except on a host that
-# cannot reach GitHub issues at all (GraphQL blocked with no fallback, gh
-# missing), where it says so on stderr and returns 0 so step-03's create path
-# takes over and falls back to local tracking. A missing jq is a local defect,
+# duplicate): it is reported on stderr and returns 1, except where the create
+# path itself would degrade to local tracking — a host that cannot reach
+# GitHub issues at all (GraphQL blocked with no fallback, gh missing), or a
+# repository gh cannot resolve or access (issue_repo_unresolvable) — where it
+# says so on stderr and returns 0 so the create path decides. A missing jq is a local defect,
 # not such a host: it is reported and stops the step.
 issue_find_tracker() {
   local out err rc=0 errf cnt url
   errf="$(mktemp "${TMPDIR:-/tmp}/tracker-lookup.XXXXXX")" || { echo "ERROR: tracking-issue lookup: mktemp failed" >&2; return 1; }
-  # Two output lines: how many issues were listed, then the URL (or nothing);
-  # no output at all reads as an empty list.
+  # Two output lines: how many issues were listed, then the URL (or nothing).
   out="$(ISSUE_TITLE_LOOKUP="$1" timeout 60 gh issue list --state open --limit 1000 --json number,title,url --jq '
     def norm: [scan("[\\p{L}\\p{N}]+")] | join(" ");
     (env.ISSUE_TITLE_LOOKUP | norm) as $want
@@ -77,19 +77,32 @@ issue_find_tracker() {
       sanitize_cli_output "$err" >&2
       return 0
     fi
+    if issue_repo_unresolvable "$err"; then
+      echo "WARNING: the tracking-issue lookup could not resolve or access the repository; the create step decides what follows. gh reported:" >&2
+      sanitize_cli_output "$err" >&2
+      return 0
+    fi
     echo "ERROR: looking up an existing tracking issue failed (rc $rc); not creating one, which could duplicate it. gh reported:" >&2
     sanitize_cli_output "$err" >&2
     return 1
   fi
-  # No output at all is an empty list (nothing to match); anything else must
-  # start with the count line.
-  case "$out" in '') cnt=0; url="" ;; *$'\n'*) cnt="${out%%$'\n'*}"; url="${out#*$'\n'}" ;; *) cnt="$out"; url="" ;; esac
+  # The output must start with the count line (gh prints "0" then an empty
+  # line for an empty list; nothing at all is not a shape any gh produces).
+  case "$out" in *$'\n'*) cnt="${out%%$'\n'*}"; url="${out#*$'\n'}" ;; *) cnt="$out"; url="" ;; esac
   case "$cnt" in ''|*[!0-9]*) echo "ERROR: tracking-issue lookup returned unexpected output:" >&2; sanitize_cli_output "$out" >&2; return 1 ;; esac
   [ "$cnt" -ge 1000 ] && echo "WARNING: the tracker scan read only the newest 1000 open issues; an older tracker with this title would be missed and a duplicate filed." >&2
   case "$url" in
     https://*|http://*|'') printf '%s\n' "$url" ;;
     *) echo "ERROR: tracking-issue lookup returned unexpected output:" >&2; sanitize_cli_output "$out" >&2; return 1 ;;
   esac
+}
+
+# issue_repo_unresolvable OUTPUT — gh could not resolve or reach the
+# repository (wrong remote, no access, deleted): the one predicate both the
+# tracker lookup and the create path use, so they cannot drift. Step-03 then
+# degrades to local tracking with a WARNING rather than aborting.
+issue_repo_unresolvable() {
+  printf '%s' "${1:-}" | grep -Eiq 'Could not resolve to a Repository|Repository not found|Repository.*inaccessible|HTTP 404'
 }
 
 # issue_create_host_unsupported RC OUTPUT — true only for the failures issue

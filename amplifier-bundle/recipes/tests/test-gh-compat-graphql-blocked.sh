@@ -1126,19 +1126,46 @@ done
 unset STUB_TRACKERS
 ok "non-ASCII letters compare case-insensitively (É = é), accents stay significant"
 
-# 85. Output shapes the lookup accepts: no output is an empty list (no
-#     tracker, rc 0, as the recipe's Rust tests' fake gh produces); the count
-#     line then the URL is a hit; anything else is an error, never a URL.
+# 85. Output shapes the lookup accepts, as gh itself produces them: "0" and
+#     an empty line is an empty list (no tracker, rc 0); the count line then
+#     the URL is a hit; nothing at all, or a bare URL, is an error, never a
+#     URL and never "no tracker" (no real gh or the shim emits those).
 fakes="${WORK}/fakes"; mkdir -p "$fakes"
-printf '#!/bin/sh\nexit 0\n' > "$fakes/gh"; chmod +x "$fakes/gh"
+printf '#!/bin/sh\nprintf "0\\n\\n"\n' > "$fakes/gh"; chmod +x "$fakes/gh"
 rc=0; out="$(PATH="$fakes:$PATH" step03_lookup "Anything" 2>"${WORK}/shape.err")" || rc=$?
-[ "$rc" = 0 ] && [ -z "$out" ] || fail shapes "a gh that prints nothing gave rc $rc, '$out': $(cat "${WORK}/shape.err")"
+[ "$rc" = 0 ] && [ -z "$out" ] || fail shapes "an empty list (0 + empty line) gave rc $rc, '$out': $(cat "${WORK}/shape.err")"
 printf '#!/bin/sh\nprintf "1\\nhttps://github.com/o/r/issues/718\\n"\n' > "$fakes/gh"
 [ "$(PATH="$fakes:$PATH" step03_lookup "Anything" 2>/dev/null)" = "https://github.com/o/r/issues/718" ] || fail shapes "count line + URL was not read as a hit"
+printf '#!/bin/sh\nexit 0\n' > "$fakes/gh"
+rc=0; out="$(PATH="$fakes:$PATH" step03_lookup "Anything" 2>/dev/null)" || rc=$?
+[ "$rc" = 1 ] && [ -z "$out" ] || fail shapes "no output at all was accepted as an empty list (rc $rc, '$out')"
 printf '#!/bin/sh\necho "https://github.com/o/r/issues/718"\n' > "$fakes/gh"
 rc=0; out="$(PATH="$fakes:$PATH" step03_lookup "Anything" 2>/dev/null)" || rc=$?
 [ "$rc" = 1 ] && [ -z "$out" ] || fail shapes "a bare URL without the count line was accepted (rc $rc, '$out')"
-ok "the lookup reads gh's output shapes strictly, and no output as an empty list"
+ok "the lookup reads gh's output shapes strictly; empty output is an error"
+
+# ---------------------------------------------------------------------------
+# Independent crusty review round 11, of f1ed8ecc (PR comment 5962886170).
+# ---------------------------------------------------------------------------
+
+# 86. repo-unresolvable-lookup-exits-instead-of-local-tracking: the lookup
+#     fails on exactly the conditions the create path degrades on. It must
+#     hand over (rc 0, no URL, gh's text on stderr), not abort step-03 - on
+#     a fake gh saying so, and on the shim's REST 404 for a blocked host.
+#     Lookup and create share one predicate, so they cannot drift.
+printf '#!/bin/sh\necho "GraphQL: Could not resolve to a Repository with the name '"'"'o/r'"'"'." >&2; exit 1\n' > "$fakes/gh"
+rc=0; out="$(PATH="$fakes:$PATH" step03_lookup "Anything" 2>"${WORK}/resolve.err")" || rc=$?
+[ "$rc" = 0 ] && [ -z "$out" ] || fail resolve "an unresolvable repository aborted the lookup (rc $rc, '$out')"
+grep -q "Could not resolve to a Repository" "${WORK}/resolve.err" || fail resolve "gh's text was dropped: $(cat "${WORK}/resolve.err")"
+grep -q "WARNING: the tracking-issue lookup could not resolve or access the repository" "${WORK}/resolve.err" || fail resolve "no hand-over warning"
+fresh; : > "$AMPLIHACK_GH_COMPAT_STATE"
+rc=0; out="$(GH_REPO=o/gone step03_lookup "Anything" 2>"${WORK}/resolve404.err")" || rc=$?
+[ "$rc" = 0 ] && [ -z "$out" ] || fail resolve "the shim's REST 404 aborted the lookup (rc $rc, '$out'): $(cat "${WORK}/resolve404.err")"
+grep -q "HTTP 404" "${WORK}/resolve404.err" || fail resolve "the 404 text was dropped: $(cat "${WORK}/resolve404.err")"
+grep -Fq 'if issue_repo_unresolvable "$GH_ISSUE_OUTPUT"; then' "${REPO_ROOT}/amplifier-bundle/recipes/workflow-prep.yaml" \
+  || fail resolve "step-03's create path does not use the shared predicate"
+grep -q "issue_repo_unresolvable" <(sed -n '/^issue_find_tracker() {/,/^}/p' "$TRACK") || fail resolve "the lookup does not use the shared predicate"
+ok "an unresolvable repository hands the lookup over to the create path (shared predicate)"
 
 # 51. stale-test-contract-header: the contract above describes the probe, not
 #     the removed stderr follower or a first real-gh attempt.
