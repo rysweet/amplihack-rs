@@ -4,7 +4,10 @@
 # Runs one round recipe over and over until an AGENTIC evaluator says to stop.
 # There is no iteration cap in this file — not a `max_rounds`, not a backstop
 # integer, not a wall-clock budget. `ROUND` below is a LABEL that appears in
-# reports; it is never compared against a limit and no branch reads it.
+# reports and names the round's files; it is never compared against a limit
+# and no branch reads it. It starts after the rounds this loop already has in
+# the state dir, so a second loop on the same dir (the crusty re-review) or a
+# resumed run never overwrites an earlier round's record, findings or logs.
 #
 # The terminator is `loop-health-evaluator` (issue #1337): after every round it
 # looks at measured evidence — what the round actually produced, whether the
@@ -167,7 +170,40 @@ if ! "$AMPLIHACK_BIN" recipe show loop-health-evaluator >/dev/null 2>&1; then
   exit 1
 fi
 
-ROUND=0
+# --- round labels continue after this loop's earlier rounds ----------------
+# The state dir may already hold rounds of this loop: phase 2's crusty loop,
+# when autodrive_crusty_rereview.sh starts the crusty loop again before a
+# merge round, or the rounds of a run that died and is resumed. A loop that
+# labelled its rounds from round-1 again would rewrite <loop>-round-1.json,
+# its .findings and its logs, and the manifest row the earlier loop wrote
+# for that record would name a file that no longer holds it (PR #1520
+# review). So the first label is one past the highest N found in an entry
+# named <loop>-round-N... directly in the state dir, or in a round-N label
+# in <loop>-records.tsv, and every record and row the earlier rounds wrote
+# stays as it was. It runs after autodrive_private_dir, so entries that were
+# set aside as untrusted are not counted. This only picks the first label.
+last_round_number() { # -> the highest N this loop has used in STATE_DIR, or 0
+  local -x LC_ALL=C
+  local top=0 f n label re='^[1-9][0-9]{0,8}$'
+  for f in "${STATE_DIR}/${LOOP_NAME}-round-"*; do
+    [ -e "$f" ] || [ -L "$f" ] || continue
+    n="${f#"${STATE_DIR}/${LOOP_NAME}-round-"}"; n="${n%%[!0-9]*}"
+    [[ "$n" =~ $re ]] && [ "$n" -gt "$top" ] && top="$n"
+  done
+  if [ -f "${STATE_DIR}/${LOOP_NAME}-records.tsv" ] && [ ! -L "${STATE_DIR}/${LOOP_NAME}-records.tsv" ]; then
+    while IFS=$'\t' read -r label _; do
+      n="${label#round-}"
+      [ "$n" != "$label" ] && [[ "$n" =~ $re ]] && [ "$n" -gt "$top" ] && top="$n"
+    done < <(tr -d '\r' < "${STATE_DIR}/${LOOP_NAME}-records.tsv")
+  fi
+  printf '%s\n' "$top"
+}
+
+EARLIER_ROUNDS="$(last_round_number)"
+if [ "$EARLIER_ROUNDS" != "0" ]; then
+  echo "INFO: loop '${LOOP_NAME}': ${STATE_DIR} already holds this loop's rounds up to round-${EARLIER_ROUNDS}; this run labels its rounds from round-$((EARLIER_ROUNDS + 1)) and overwrites none of them." >&2
+fi
+ROUND="$EARLIER_ROUNDS"
 ROUND_LABEL=""
 HISTORY=""
 PREV_FINDINGS=""

@@ -64,8 +64,16 @@ evidence — what the round actually produced, which findings are new /
 recurring / resolved, whether test and CI signals moved, whether the same text
 keeps reappearing — and answers `CONTINUE`, `DONE`, or `STUCK`.
 
-`autodrive_loop.sh` carries a round **label** (`round-3`) for reports. Nothing
-compares it to a limit and no branch reads it. The guard test
+`autodrive_loop.sh` carries a round **label** (`round-3`) for reports and the
+round's file names. Nothing compares it to a limit and no branch reads it. A
+loop's first label is one past the highest `round-N` the same loop already has
+in the state directory, counting both files named `<loop>-round-N…` and the
+labels in `<loop>-records.tsv`. So when the crusty re-review starts the crusty
+loop again on phase 2's directory, or a resumed run starts a loop on the
+directory a dead run left, no earlier round's record, findings or logs are
+rewritten, and every manifest row still names the record it hashed. Starting
+again at `round-1` rewrote phase 2's `crusty-round-1.json` and left its row
+pointing at a different file (PR #1520 review). The guard test
 `no_numeric_iteration_cap_anywhere` fails the build if a cap is ever
 reintroduced — it rejects `$ROUND` and `${ROUND}` next to any of `-ge`, `-gt`,
 `-le`, `-lt`, `-eq`, `-ne`, and the arithmetic comparisons, so a cap cannot
@@ -198,10 +206,14 @@ written `"${QA_EVIDENCE:-${RECIPE_VAR_qa_evidence:-}}"`, the form the work on is
 #1511 uses, and `round_recipes_read_step_outputs_through_recipe_var` fails
 the build on a read without the fallback. The shell tests pass these values as
 `RECIPE_VAR_<output>` with the upper-case names removed, as the runner does.
-The reads in the loop recipes (`autodrive-build.yaml`,
-`autodrive-crusty-loop.yaml`, `autodrive-merge-loop.yaml`) are older, are not
-changed here, and stay open under #1511; until that lands, a full auto-drive
-run on recipe-runner 0.3.8 still loses the loops' own step outputs.
+The step-output reads in the loop recipes (`autodrive-build.yaml`,
+`autodrive-crusty-loop.yaml`, `autodrive-merge-loop.yaml`, for example
+`${MERGE_LOOP_PREFLIGHT:-}`) are older and are not converted to that form
+here, although other lines of those recipes are changed: the private state
+directory, `autodrive_record_crusty_loop_done`, and the merge-ready loop's
+`--before-round` re-review. Those reads stay open under #1511; until that
+lands, a full auto-drive run on recipe-runner 0.3.8 still loses the loops' own
+step outputs.
 
 ### The crusty verdict contract
 
@@ -398,7 +410,10 @@ else reviewed), `reviewed_head_sha`, `round_label`, `test_signal` and
 `ci_signal`, or fails with `ERROR: crusty-head-sha-unavailable`. `autodrive_loop.sh` then copies the
 record to `<loop>-latest.json` and, before any later agent runs and only when
 the copy matches, appends `label<TAB>file<TAB>git-blob-hash` to
-`crusty-records.tsv` or `merge-ready-records.tsv` under `umask 077`.
+`crusty-records.tsv` or `merge-ready-records.tsv` under `umask 077`. The
+manifest is append-only: one row per round, across every loop run on the
+directory, and no round reuses an earlier round's label (see
+[Why there is no iteration cap](#why-there-is-no-iteration-cap)).
 
 `autodrive_crusty_final DIR` in `autodrive_state.sh` decides criterion 3 for
 the crusty re-review, step-01b and the gate. It checks one private copy of the
@@ -434,7 +449,10 @@ Before every merge round, round 1 included, the merge-ready loop runs
 `autodrive_clear_phase` removes the `crusty-loop` row; an unclean loop gives
 `range` `not-checked`, and an unreadable range is never re-reviewed. On
 `true` the tool runs the crusty loop (`autodrive_loop.sh --loop-name crusty`)
-on the same state directory, and when that loop ends `DONE`,
+on the same state directory. That loop labels its rounds after phase 2's: if
+phase 2 ended at `round-2`, the re-review's first round is `round-3`. Phase 2's
+records, findings, logs and manifest rows stay as they were, and the
+manifest's last row is the re-review's last round. When that loop ends `DONE`,
 `autodrive_record_crusty_loop_done` writes the resolved concern ids and the
 marker back, exactly as phase 2's step-03 does. The tool prints one JSON line
 whose `before_round_result` is one of:
@@ -787,7 +805,9 @@ crusty state (`crusty-loop` marker, `crusty-latest.json`, `crusty-records.tsv`
 and its records): nothing on the platform records crusty's judgement, so the
 gate reads it as criterion-3 evidence through the manifest hash. A run that
 dies after the crusty re-review removed the marker resumes with the crusty
-loop.
+loop. A loop started on a directory that already holds its rounds labels its
+own after them, so a resumed run adds records and manifest rows and rewrites
+none.
 
 ### There is no pull-request-comment ledger
 
@@ -859,7 +879,7 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | Executable contract test: loop, verdicts, forbidden-flag scan, merge-gate refusals, qa evidence against stub `cargo` and `gadugi-test`, crusty records and range | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
 | Structural and wiring guards, brick budget, skill-invocation guard, state-directory sentence, and `tests/gadugi/recipe-step-command.sh` compared with serde_yaml over every bundled recipe step | `tests/integration/auto_drive_to_merge_test.rs` |
 | The merge-ready skill stays platform-neutral | `tests/integration/merge_ready_platform_contract_test.rs` |
-| gadugi-test scenarios for this change: criterion 6 approval measurement (#1518), the merge-ready file lookup (#1517), and the crusty range and re-review at the loop's depth, with the real recursion guard | `tests/gadugi/scenarios/issue-1518-*.yaml`, `tests/gadugi/scenarios/issue-1517-*.yaml` |
+| gadugi-test scenarios for this change: criterion 6 approval measurement (#1518), the merge-ready file lookup (#1517), and the crusty range and re-review at the loop's depth, with the real recursion guard, leaving phase 2's crusty records and manifest rows unchanged | `tests/gadugi/scenarios/issue-1518-*.yaml`, `tests/gadugi/scenarios/issue-1517-*.yaml` |
 
 ```bash
 AMPLIHACK_SKIP_AUTO_INSTALL=1 cargo test -p amplihack --test auto_drive_to_merge

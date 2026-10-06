@@ -172,7 +172,10 @@ if [ "${1:-}" = "recipe" ] && [ "${2:-}" = "run" ]; then
         exit $?
       fi
       if [ -n "$RECORD" ] && [ "${STUB_ROUND_WRITE_RECORD:-true}" = "true" ]; then
-        REC_TEXT="${STUB_ROUND_RECORD:-{\"crusty_verdict\":\"CONCERNS\"}}"
+        # Not "${STUB_ROUND_RECORD:-{...}}": bash ends that expansion at the
+        # first `}`, so a set record came out with a stray `}` appended.
+        REC_TEXT="${STUB_ROUND_RECORD:-}"
+        [ -n "$REC_TEXT" ] || REC_TEXT='{"crusty_verdict":"CONCERNS"}'
         # A crusty round can be given its own record when one loop runs both.
         [ "$RECIPE" = "autodrive-crusty-round" ] && [ -n "${STUB_CRUSTY_RECORD:-}" ] && REC_TEXT="$STUB_CRUSTY_RECORD"
         printf '%s' "$REC_TEXT" > "$RECORD"
@@ -377,6 +380,94 @@ if [ ! -s "${WORK}/loop-norec/crusty-records.tsv" ]; then
 else
   fail "LOOP-manifest-no-record-no-row" "a round with no record left a row: $(cat "${WORK}/loop-norec/crusty-records.tsv")"
 fi
+
+# ---------------------------------------------------------------------------
+# 2d. A second loop on the same state dir labels its rounds after the first.
+# ---------------------------------------------------------------------------
+# The crusty re-review (autodrive_crusty_rereview.sh) starts the crusty loop
+# again on phase 2's state dir, and a resumed run starts a loop on the dir a
+# dead run left. Labelling from round-1 again rewrote crusty-round-1.json, its
+# .findings and its .log, and left phase 2's manifest row naming a record that
+# no longer existed (PR #1520 review, round 2). Labels now continue after the
+# highest round-N this loop has in the dir, as a file or as a manifest label.
+state_hashes() { # state_hashes <dir> <file>... -> "<file> <blob hash>" per file
+  local d="$1" f; shift
+  for f in "$@"; do printf '%s %s\n' "$f" "$(git hash-object --no-filters "$d/$f" 2>/dev/null || echo missing)"; done
+}
+rows_resolve() { # rows_resolve <dir> <loop>: every manifest row names a file that hashes to it, no label twice
+  local label file hash seen=" "
+  while IFS=$'\t' read -r label file hash; do
+    [ -n "$label" ] || continue
+    case "$seen" in *" $label "*) return 1 ;; esac
+    seen="$seen$label "
+    [ -f "$1/$file" ] && [ "$(git hash-object --no-filters "$1/$file")" = "$hash" ] || return 1
+  done < "$1/$2-records.tsv"
+}
+# The stub writes round records under the caller's umask, while the real
+# step-06 writes them under umask 077. Under a umask such as 0002 the second
+# loop's autodrive_private_dir would set the first loop's group-writable
+# record aside as untrusted, which is section 13's subject, not this one's.
+# So these loops run under umask 077, as the real round steps write.
+LABEL_CALLER_UMASK="$(umask)"
+umask 077
+FIRST_REC='{"crusty_verdict":"CLEAN","concern_count":0,"commits_this_round":1,"head_sha":"1111111111111111111111111111111111111111","reviewed_head_sha":"1111111111111111111111111111111111111111","round_label":"round-1","test_signal":"","ci_signal":""}'
+SECOND_REC='{"crusty_verdict":"CLEAN","concern_count":0,"commits_this_round":0,"head_sha":"2222222222222222222222222222222222222222","reviewed_head_sha":"2222222222222222222222222222222222222222","round_label":"round-2","test_signal":"","ci_signal":""}'
+set_stub "${FIRST_REC}" 0 'LOOP_HEALTH: DONE — converged'
+export STUB_ROUND_FINDINGS="phase-2-concern"
+run_loop relabel; rc1=$?
+FIRST_FILES="crusty-round-1.json crusty-round-1.json.findings crusty-round-1.log crusty-round-1-health.log"
+# shellcheck disable=SC2086
+FIRST_HASHES="$(state_hashes "${LOOP_DIR}" ${FIRST_FILES})"
+FIRST_ROWS="$(cat "${LOOP_DIR}/crusty-records.tsv" 2>/dev/null)"
+set_stub "${SECOND_REC}" 0 'LOOP_HEALTH: DONE — converged'
+run_loop relabel; rc2=$?
+# shellcheck disable=SC2086
+if [ "$rc1" -eq 0 ] && [ "$rc2" -eq 0 ] && [ "$(state_hashes "${LOOP_DIR}" ${FIRST_FILES})" = "${FIRST_HASHES}" ] \
+   && [ "$(cat "${LOOP_DIR}/crusty-round-1.json.findings")" = "phase-2-concern" ]; then
+  pass "LOOP-labels-keep-earlier-round" "a second loop on the same state dir leaves the first loop's round-1 record, findings and logs unchanged"
+else
+  fail "LOOP-labels-keep-earlier-round" "rc=${rc1}/${rc2} before: $(printf '%s' "${FIRST_HASHES}" | tr '\n' '|') after: $(state_hashes "${LOOP_DIR}" ${FIRST_FILES} | tr '\n' '|')"
+fi
+WANT_ROWS="${FIRST_ROWS}
+round-2	crusty-round-2.json	$(git hash-object --no-filters "${LOOP_DIR}/crusty-round-2.json" 2>/dev/null)"
+if [ "$(cat "${LOOP_DIR}/crusty-round-2.json" 2>/dev/null)" = "${SECOND_REC}" ] \
+   && [ "$(cat "${LOOP_DIR}/crusty-records.tsv")" = "${WANT_ROWS}" ] && rows_resolve "${LOOP_DIR}" crusty \
+   && printf '%s' "${LOOP_OUT}" | grep -qF '"round_label":"round-2"' \
+   && grep -qF 'labels its rounds from round-2' "${LOOP_LOGS}/err"; then
+  pass "LOOP-labels-continue" "the second loop's round is round-2, the manifest gains one row, and every row still names a record that hashes to it"
+else
+  fail "LOOP-labels-continue" "out=${LOOP_OUT} rows: $(tr '\t\n' ' |' < "${LOOP_DIR}/crusty-records.tsv") files: $(ls "${LOOP_DIR}" | tr '\n' ' ')"
+fi
+# A round that wrote no record still owns its label: its log is not reused.
+mkdir -p "${WORK}/loop-relabel-log"
+( umask 077; printf 'a round that wrote no record\n' > "${WORK}/loop-relabel-log/crusty-round-3.log" )
+run_loop relabel-log; rc=$?
+if [ "$rc" -eq 0 ] && [ -f "${LOOP_DIR}/crusty-round-4.json" ] && [ ! -e "${LOOP_DIR}/crusty-round-1.json" ] \
+   && [ "$(cat "${LOOP_DIR}/crusty-round-3.log")" = "a round that wrote no record" ]; then
+  pass "LOOP-labels-after-log-only-round" "a round that left only a log keeps its label; the next loop starts at round-4"
+else
+  fail "LOOP-labels-after-log-only-round" "rc=${rc} files: $(ls "${LOOP_DIR}" | tr '\n' ' ')"
+fi
+# A manifest label whose record is gone still counts, and another loop's
+# rounds in the same dir do not: crusty goes to round-6, not round-10.
+mkdir -p "${WORK}/loop-relabel-row"
+( umask 077
+  printf 'round-5\tcrusty-round-5.json\t%s\n' "$(printf 'gone' | git hash-object --no-filters --stdin)" > "${WORK}/loop-relabel-row/crusty-records.tsv"
+  printf '{"merge_ready_verdict":"MERGE_READY"}\n' > "${WORK}/loop-relabel-row/merge-ready-round-9.json" )
+run_loop relabel-row; rc=$?
+if [ "$rc" -eq 0 ] && [ -f "${LOOP_DIR}/crusty-round-6.json" ] && [ ! -e "${LOOP_DIR}/crusty-round-10.json" ] \
+   && [ "$(tail -n 1 "${LOOP_DIR}/crusty-records.tsv" | cut -f1-2)" = "round-6	crusty-round-6.json" ]; then
+  pass "LOOP-labels-after-manifest-row" "a manifest label whose record is gone still counts, and the merge-ready loop's rounds do not"
+else
+  fail "LOOP-labels-after-manifest-row" "rc=${rc} files: $(ls "${LOOP_DIR}" | tr '\n' ' ') rows: $(tr '\t\n' ' |' < "${LOOP_DIR}/crusty-records.tsv")"
+fi
+umask "${LABEL_CALLER_UMASK}"
+if [ -z "$(find "${WORK}/loop-relabel" "${WORK}/loop-relabel-log" "${WORK}/loop-relabel-row" -mindepth 1 -maxdepth 1 -name 'untrusted-*' -print 2>/dev/null)" ]; then
+  pass "LOOP-labels-nothing-set-aside" "with records written private, as the round steps write them, nothing was set aside: the earlier rounds were kept in place"
+else
+  fail "LOOP-labels-nothing-set-aside" "entries were set aside as untrusted: $(find "${WORK}"/loop-relabel* -name 'untrusted-*' | tr '\n' ' ')"
+fi
+export STUB_ROUND_FINDINGS=""
 
 # ---------------------------------------------------------------------------
 # 3. Exit 79 is terminal — surfaced, and never retried into.
