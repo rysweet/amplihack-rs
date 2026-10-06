@@ -386,8 +386,9 @@ fn rejected_under_marker_notice(lead: &str, marker: SessionMarker) -> String {
 ///
 /// A rejected `AMPLIHACK_AGENT_BINARY` is named first, as in
 /// [`rejected_under_marker_notice`], and the advice lists the names it
-/// accepts. The rest of the wording is this line's own: the marker may not be
-/// the caller's session, and that line says it is.
+/// accepts. The rest of the wording stays this line's own, because only this
+/// line has to say the marker may be the server's starter's rather than set
+/// by a session at all.
 fn tmux_marker_notice(
     reporter: Reporter,
     marker: SessionMarker,
