@@ -214,8 +214,9 @@ be told apart. To make that value an instruction, unset
 `AMPLIHACK_AGENT_BINARY_SOURCE` as well. The stderr notice says so when it
 sees an inherited guess.
 
-Any code that sets `AMPLIHACK_AGENT_BINARY` explicitly through
-`EnvBuilder::with_agent_binary` clears the tag.
+Rust code that passes on an explicit answer
+(`EnvBuilder::with_resolved_agent_binary` with `ResolutionSource::Env`) clears
+the tag. No `EnvBuilder` method exports a bare name (see below).
 
 ### What amplihack exports is tagged
 
@@ -238,15 +239,34 @@ itself resolved layer 1. A detached run launched into the server without the
 hand-off answered from layer 1 and printed nothing at all, because only a
 marker that answers is checked against the server (crusty review of #1490).
 
-Only an untagged value is an instruction now. amplihack tags everything it
-exports itself:
+Only an untagged value is an instruction now. amplihack exports one only where
+someone chose the binary. Your own `AMPLIHACK_AGENT_BINARY` is passed on as it
+was. The hand-off is the caller deciding what the far side runs. Everything
+else amplihack exports is tagged:
 
 | Exported by | Value | `AMPLIHACK_AGENT_BINARY_SOURCE` |
 | --- | --- | --- |
-| A launcher (`amplihack claude`, `amplihack copilot`, `--auto`, ...) | the CLI it starts | `session:<cli>`, or `default:<cli>` when it was itself started on an inherited guess naming it |
+| A launcher (`amplihack claude`, `amplihack copilot`, `--auto`, the fleet reasoner's `claude -p`, ...) | the CLI it starts | `session:<cli>`, or `default:<cli>` when it was itself started on an inherited guess naming it |
 | `recipe run`, to its steps | its answer | none when the answer came from layer 1; `session:<binary>` from layer 2 or 3; `default:<binary>` from layer 4 |
 | `amplihack agent-binary --shell` (the hand-off) | the caller's answer | see [Handing the binary to a detached launch](#handing-the-binary-to-a-detached-launch) |
 | The Claude Code plugin's `bootstrap` | `claude`, unless you set a value | `session:claude` |
+
+In Rust this is enforced by the API, not left to convention. `EnvBuilder` has
+no method that exports a bare name:
+
+- A child CLI gets `with_launched_agent_binary(<cli>)`, which also removes
+  every other CLI's session markers.
+- A resolver answer gets `with_resolved_agent_binary(<binary>, <source>)`,
+  which exports it untagged only for `ResolutionSource::Env`.
+- `EnvBuilder::set` refuses the variable and its tag in debug and test builds.
+
+The public `EnvBuilder::with_agent_binary` exported an untagged name while its
+doc described a launch. The fleet reasoner used it for its `claude` child, so
+a reasoner run from a Copilot session handed `claude` an instruction beside
+the inherited `COPILOT_CLI` (crusty review of #1490 at 960eaacb). It was
+removed. Two exports do not go through `EnvBuilder`: `amplihack-launcher`'s
+prompt delivery and the `rust_trial` environment. Both tag their value through
+`agent_binary::session_tag` and `agent_binary::export_tag`.
 
 The resolver ranks a `session:<binary>` value with the session markers of the
 CLI it names, after them (`agent_binary::rank_session_markers`). `session:claude`

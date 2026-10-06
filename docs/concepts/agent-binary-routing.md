@@ -164,11 +164,11 @@ marker included.
 
 Inside `amplihack-rs`, code that picks the binary calls `resolve(&cwd)` rather
 than reading the env var directly. One older helper,
-`amplihack_utils::llm_client::detect_launcher_from`, still reads
-`AMPLIHACK_AGENT_BINARY` itself. It ranks a `session:<binary>` value with the
-markers, as the resolver does, but does not honour the default-guess tag. It
-only decides whether any launcher is present; the binary itself comes from
-`resolve(&cwd)`.
+`amplihack_utils::llm_client::detect_launcher`, still reads
+`AMPLIHACK_AGENT_BINARY` itself. It honours neither tag, and it does not check
+`CLAUDECODE`, the marker Claude Code exports. Nothing in amplihack calls it,
+so it decides nothing, and it was left as it was rather than taught a ranking
+that no caller exercises.
 Code that only checks whether the variable is set (as a sign of running as a
 subprocess) does not choose a binary and is unaffected by the tag.
 

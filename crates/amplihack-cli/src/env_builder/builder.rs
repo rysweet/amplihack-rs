@@ -10,6 +10,13 @@ use super::helpers::{
     session_tree_context_present,
 };
 
+/// `AMPLIHACK_AGENT_BINARY` and its tag, which only the agent-binary methods
+/// export, so that every export says what its value is.
+fn is_agent_binary_variable(key: &str) -> bool {
+    use amplihack_utils::agent_binary::{BINARY_ENV, SOURCE_ENV};
+    key == BINARY_ENV || key == SOURCE_ENV
+}
+
 /// Builder for constructing the environment passed to child processes.
 #[derive(Debug)]
 pub struct EnvBuilder {
@@ -28,8 +35,20 @@ impl EnvBuilder {
     }
 
     /// Set a specific environment variable.
+    ///
+    /// Not for `AMPLIHACK_AGENT_BINARY` or its `AMPLIHACK_AGENT_BINARY_SOURCE`
+    /// tag. Export those through [`EnvBuilder::with_launched_agent_binary`] or
+    /// [`EnvBuilder::with_resolved_agent_binary`], which make the caller say
+    /// what the value is. A debug assertion enforces this in debug and test
+    /// builds.
     pub fn set(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.vars.insert(key.into(), value.into());
+        let key = key.into();
+        debug_assert!(
+            !is_agent_binary_variable(&key),
+            "export {key} through with_launched_agent_binary or with_resolved_agent_binary, \
+             which tag it with what it is"
+        );
+        self.vars.insert(key, value.into());
         self
     }
 
@@ -106,29 +125,6 @@ impl EnvBuilder {
         }
     }
 
-    /// Set `AMPLIHACK_AGENT_BINARY` to the name of the CLI binary being launched.
-    ///
-    /// Downstream consumers (recipe runner, hooks) use this to determine which
-    /// agent binary to invoke. The value must be one of the four known tool names:
-    /// `claude`, `copilot`, `codex`, or `amplifier`.
-    ///
-    /// # Security (SEC-WS1-01)
-    ///
-    /// A `debug_assert!` validates the value in debug and test builds. The check
-    /// is compiled out in release builds — callers are responsible for passing a
-    /// valid tool name (controlled by `Commands` dispatch in `launch.rs`).
-    pub fn with_agent_binary(self, tool: impl Into<String>) -> Self {
-        let tool = tool.into();
-        debug_assert!(
-            matches!(tool.as_str(), "claude" | "copilot" | "codex" | "amplifier"),
-            "AMPLIHACK_AGENT_BINARY must be one of: claude, copilot, codex, amplifier; got: {tool}"
-        );
-        // A caller naming the binary is an instruction, so any inherited
-        // "this was only the default" tag no longer describes the value.
-        self.set("AMPLIHACK_AGENT_BINARY", tool)
-            .unset(amplihack_utils::agent_binary::SOURCE_ENV)
-    }
-
     /// Export `tool` as the binary of the launcher that is starting this child,
     /// tagged as describing that session, and remove every other CLI's session
     /// markers from the child.
@@ -160,27 +156,54 @@ impl EnvBuilder {
 
     /// Export a binary the resolver chose, together with where it came from.
     ///
-    /// Only an answer from `AMPLIHACK_AGENT_BINARY` itself is exported as an
-    /// instruction, untagged. Issue #1481: a value from the built-in default
-    /// is tagged `default:<tool>`, so that no descendant treats it as an
-    /// instruction or persists it as a session's choice. A value from a
+    /// With [`EnvBuilder::with_launched_agent_binary`], this is the only way
+    /// to export `AMPLIHACK_AGENT_BINARY`; [`EnvBuilder::set`] refuses it. No
+    /// method exports a bare name, so every caller says what its value is.
+    /// The public `with_agent_binary` exported one untagged while its doc
+    /// described a launch, and the fleet reasoner used it to start `claude`
+    /// (crusty review of #1490 at 960eaacb). A caller starting a CLI wants
+    /// [`EnvBuilder::with_launched_agent_binary`].
+    ///
+    /// Only [`ResolutionSource::Env`], the user's own `AMPLIHACK_AGENT_BINARY`,
+    /// is exported as an instruction, untagged, and it removes any tag the
+    /// child would otherwise inherit. Issue #1481: a value from the built-in
+    /// default is tagged `default:<tool>`, so that no descendant treats it as
+    /// an instruction or persists it as a session's choice. A value from a
     /// session marker or a launcher context is tagged `session:<tool>`, so a
     /// descendant ranks it with its own session markers: a step that starts a
     /// tmux server must not hand this run's answer to every later session on
     /// it as an instruction (crusty review of #1490 at baaafb18). Either way a
     /// descendant that later sets a different binary is still obeyed. See
     /// [`amplihack_utils::agent_binary::export_tag`].
+    ///
+    /// # Security (SEC-WS1-01)
+    ///
+    /// `tool` must be one of `claude`, `copilot`, `codex` or `amplifier`. A
+    /// `debug_assert!` checks this in debug and test builds. It is compiled out
+    /// in release builds, so callers pass a resolver answer or a launcher's
+    /// own name, never free text.
+    ///
+    /// [`ResolutionSource::Env`]: amplihack_utils::agent_binary::ResolutionSource::Env
     pub fn with_resolved_agent_binary(
-        self,
+        mut self,
         tool: impl Into<String>,
         source: amplihack_utils::agent_binary::ResolutionSource,
     ) -> Self {
+        use amplihack_utils::agent_binary::{BINARY_ENV, SOURCE_ENV, export_tag};
         let tool = tool.into();
-        let tag = amplihack_utils::agent_binary::export_tag(&tool, source);
-        let this = self.with_agent_binary(tool);
+        debug_assert!(
+            matches!(tool.as_str(), "claude" | "copilot" | "codex" | "amplifier"),
+            "AMPLIHACK_AGENT_BINARY must be one of: claude, copilot, codex, amplifier; got: {tool}"
+        );
+        let tag = export_tag(&tool, source);
+        self.vars.insert(BINARY_ENV.to_string(), tool);
         match tag {
-            Some(tag) => this.set(amplihack_utils::agent_binary::SOURCE_ENV, tag),
-            None => this,
+            Some(tag) => {
+                self.vars.insert(SOURCE_ENV.to_string(), tag);
+                self
+            }
+            // An instruction: an inherited tag no longer describes the value.
+            None => self.unset(SOURCE_ENV),
         }
     }
 
@@ -532,10 +555,17 @@ mod tests {
         assert!(path.contains("/second"));
     }
 
+    /// Crusty review of #1490 at 960eaacb: the generic setter cannot export
+    /// the agent binary or its tag, so no caller can hand a bare name on as an
+    /// instruction without saying that is what it is.
     #[test]
-    fn with_agent_binary_sets_var() {
-        let env = EnvBuilder::new().with_agent_binary("copilot").build();
-        assert_eq!(env.get("AMPLIHACK_AGENT_BINARY").unwrap(), "copilot");
+    #[cfg(debug_assertions)]
+    fn set_refuses_the_agent_binary_and_its_tag() {
+        use amplihack_utils::agent_binary::{BINARY_ENV, SOURCE_ENV};
+        for key in [BINARY_ENV, SOURCE_ENV] {
+            let refused = std::panic::catch_unwind(|| EnvBuilder::new().set(key, "claude"));
+            assert!(refused.is_err(), "set({key}) must be refused");
+        }
     }
 
     /// Issue #1481 and crusty review of #1490 at baaafb18: only an explicit

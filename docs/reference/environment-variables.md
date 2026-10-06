@@ -69,7 +69,7 @@ These variables are injected into every child process launched by `amplihack`. T
 **Type:** string
 **Allowed values:** `claude` | `copilot` | `codex` | `amplifier` (case-insensitive, exact match after trim)
 **Default:** `copilot`
-**Set by:** `EnvBuilder::with_agent_binary()` (as a back-compat read-through cache)
+**Set by:** `EnvBuilder::with_launched_agent_binary()` (a launcher, tagged `session:<cli>`) and `EnvBuilder::with_resolved_agent_binary()` (`recipe run`, tagged by where its answer came from); `EnvBuilder` has no method that exports a bare name
 **Read by:** `amplihack_utils::agent_binary::resolve()` (precedence step 1)
 
 Identifies which CLI binary the current session should use when spawning new AI sessions. As of the workflow runtime-isolation contract, this variable is an explicit override and read-through cache, not the only routing source. The shared resolver consults:

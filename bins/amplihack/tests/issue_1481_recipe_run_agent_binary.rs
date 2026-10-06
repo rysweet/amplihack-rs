@@ -473,10 +473,10 @@ fn launcher_contexts_under(root: &Path) -> Vec<PathBuf> {
 }
 
 /// Crusty round 4: `amplihack <tool> --auto` built its child with
-/// `with_agent_binary`, which clears the tag. The inner launcher then saw an
-/// untagged value, handed it on untagged and persisted it. A launcher started
-/// on an inherited guess naming itself must hand the guess on as a guess on
-/// every path, and persist it nowhere.
+/// `with_agent_binary` (since removed), which clears the tag. The inner
+/// launcher then saw an untagged value, handed it on untagged and persisted
+/// it. A launcher started on an inherited guess naming itself must hand the
+/// guess on as a guess on every path, and persist it nowhere.
 #[cfg(unix)]
 #[test]
 fn auto_mode_hands_an_inherited_guess_on_tagged_and_persists_nothing() {

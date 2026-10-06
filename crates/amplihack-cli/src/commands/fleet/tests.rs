@@ -74,6 +74,61 @@ fn native_reasoner_backend_propagates_shared_env_context() {
     );
 }
 
+/// Crusty review of #1490 at 960eaacb: the reasoner starts a Claude Code
+/// session, so its `claude` child is told so the way every launcher tells its
+/// child. Run from a Copilot session, it used to get an untagged
+/// `AMPLIHACK_AGENT_BINARY=claude` (an instruction, above every session
+/// marker) beside the inherited `COPILOT_CLI`, through the public
+/// `with_agent_binary` whose doc described a launch.
+#[test]
+fn native_reasoner_child_describes_a_claude_session_without_copilot_markers() {
+    use amplihack_utils::agent_binary::{BINARY_ENV, SESSION_MARKERS, SOURCE_ENV};
+
+    let _home_guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _graph_guard = ClearedGraphDbEnv::new();
+    // The reasoner runs inside an `amplihack copilot` session: every Copilot
+    // marker is set, and so is that launcher's own description of it.
+    let _agent_env =
+        crate::test_support::AgentBinaryEnv::set(Some("copilot"), Some("session:copilot"));
+    let copilot_markers: Vec<&str> = SESSION_MARKERS
+        .iter()
+        .filter(|(_, binary)| *binary == "copilot")
+        .map(|(marker, _)| *marker)
+        .collect();
+    assert!(!copilot_markers.is_empty());
+    for marker in &copilot_markers {
+        // SAFETY: serialised by the env lock; `_agent_env` restores every
+        // session marker on drop.
+        unsafe { env::set_var(marker, "1") };
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let reasoner = temp.path().join("claude");
+    write_executable(&reasoner, "#!/bin/sh\nenv\n");
+    let previous_cwd = set_cwd(temp.path()).unwrap();
+    let output = NativeReasonerBackend::Claude(reasoner, || {
+        amplihack_utils::root_sandbox::SkipPermissionsEnv::NotRoot
+    })
+    .complete("inspect");
+    restore_cwd(&previous_cwd).unwrap();
+
+    let output = output.unwrap();
+    let child: std::collections::HashMap<&str, &str> = output
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .collect();
+    assert_eq!(child.get(BINARY_ENV), Some(&"claude"), "{output}");
+    assert_eq!(child.get(SOURCE_ENV), Some(&"session:claude"), "{output}");
+    for marker in &copilot_markers {
+        assert!(
+            !child.contains_key(marker),
+            "the reasoner's claude must not inherit {marker}: {output}"
+        );
+    }
+}
+
 #[test]
 fn parses_native_setup_command() {
     match parse_native_fleet_command(&[String::from("setup")]) {

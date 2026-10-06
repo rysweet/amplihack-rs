@@ -15,8 +15,8 @@
 # These tests are written BEFORE the implementation and will FAIL (show
 # divergence) until the Rust launcher's EnvBuilder correctly sets both
 # variables via:
-#   .with_agent_binary(tool)   → AMPLIHACK_AGENT_BINARY
-#   .with_amplihack_home()     → AMPLIHACK_HOME
+#   .with_launched_agent_binary(tool) → AMPLIHACK_AGENT_BINARY
+#   .with_amplihack_home()            → AMPLIHACK_HOME
 #
 # ## Known divergence
 #
@@ -79,7 +79,7 @@ cases:
     # Python produces:   agent_binary.txt contains "<not-set>\n"
     #
     # This divergence is EXPECTED and intentional.
-    # The test fails against Rust until with_agent_binary(tool) is wired up.
+    # The test fails against Rust until with_launched_agent_binary(tool) is wired up.
 
   # ==========================================================================
   # CASE 2: AMPLIHACK_AGENT_BINARY is set to the tool name when launching
@@ -107,7 +107,7 @@ cases:
       - exit_code
       - fs:agent_binary.txt
     # Rust MUST produce: agent_binary.txt contains "copilot\n"
-    # This verifies that with_agent_binary(tool) uses the runtime tool name,
+    # This verifies that with_launched_agent_binary(tool) uses the runtime tool name,
     # not a compile-time constant.
 
   # ==========================================================================
