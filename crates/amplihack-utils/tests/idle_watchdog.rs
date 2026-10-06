@@ -178,13 +178,27 @@ async fn async_idle_child_is_killed_after_window() {
 
 /// A child that produces output and THEN goes silent is allowed to run while it
 /// streams, and is killed only once it has been idle for the window.
+///
+/// Timing (issue #1535): the gap between ticks must sit well inside the idle
+/// window, or a loaded host stretches a gap past the window and the watchdog
+/// correctly kills the child mid-stream. Ticks come every 0.25 s against a 3 s
+/// window, so a gap has to stall by more than 2.75 s to trip it. Streaming
+/// lasts ≈4 s, longer than the window, so surviving to "tick 16" proves output
+/// resets the timer. The 20 s silent tail leaves the watchdog 17 s to act
+/// before the child would exit on its own.
+///
+/// The tail is `exec sleep 20`, so the process the watchdog kills is the one
+/// holding the pipes. Bash 5.1 and later exec a trailing command of `bash -c`
+/// on their own, but older bash (macOS's /bin/bash 3.2) forks it. The kill then
+/// reaches only bash, the orphaned `sleep` keeps both pipes open, and each
+/// drainer join waits out its 5 s grace, ≈17 s in all.
 #[tokio::test]
 async fn async_child_killed_only_after_it_stops_producing() {
-    // Three ticks (≈3 s of activity), then silent for 20 s.
+    // Sixteen ticks 0.25 s apart (≈4 s of activity), then silent for 20 s.
     let mut child = tokio::process::Command::new("bash")
         .args([
             "-c",
-            "for i in 1 2 3; do echo tick $i; sleep 1; done; sleep 20",
+            "for i in $(seq 1 16); do echo tick $i; sleep 0.25; done; exec sleep 20",
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -193,11 +207,12 @@ async fn async_child_killed_only_after_it_stops_producing() {
         .expect("spawn produce-then-idle child");
     let (out, err) = (child.stdout.take(), child.stderr.take());
 
+    let start = std::time::Instant::now();
     let outcome = wait_with_idle_watchdog(
         &mut child,
         out,
         err,
-        cfg(Duration::from_secs(1), Duration::from_millis(100)),
+        cfg(Duration::from_secs(3), Duration::from_millis(100)),
     )
     .await;
 
@@ -205,8 +220,16 @@ async fn async_child_killed_only_after_it_stops_producing() {
         outcome.killed_for_idle,
         "child must be killed after it goes idle"
     );
+    // ≈4 s of streaming plus the 3 s window is ≈7 s. A watchdog that waited
+    // much longer than its window (but still under the 20 s tail) would pass
+    // the assertion above, so bound the kill time too.
     assert!(
-        outcome.stdout.contains("tick 3"),
+        start.elapsed() < Duration::from_secs(15),
+        "kill must follow the idle window, not lag it (elapsed {:?})",
+        start.elapsed()
+    );
+    assert!(
+        outcome.stdout.contains("tick 16"),
         "output produced before going idle must be captured, got: {:?}",
         outcome.stdout
     );
