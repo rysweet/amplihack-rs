@@ -74,14 +74,17 @@ These variables are injected into every child process launched by `amplihack`. T
 
 Identifies which CLI binary the current session should use when spawning new AI sessions. As of the workflow runtime-isolation contract, this variable is an explicit override and read-through cache, not the only routing source. The shared resolver consults:
 
-1. `AMPLIHACK_AGENT_BINARY` env var (explicit override; CI/testing/back-compat), unless tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary>`. It wins over a session marker naming a different CLI, and `amplihack recipe run` / `amplihack agent-binary` print one stderr line naming the marker it overrode.
-2. A session marker exported by the hosting CLI (`CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_ENTRYPOINT`, `COPILOT_CLI`, ...). Inside tmux it may be the server's copy of whatever started the server; `recipe run` says so when the server holds it.
+1. `AMPLIHACK_AGENT_BINARY` env var (explicit override; CI/testing/back-compat), unless tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary>` or `session:<same binary>`. It wins over a session marker naming a different CLI, and `amplihack recipe run` / `amplihack agent-binary` print one stderr line naming the marker it overrode.
+2. A session marker exported by the hosting CLI (`CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_ENTRYPOINT`, `COPILOT_CLI`, ...). A value tagged `session:<binary>` is one more marker, of the CLI it names, ranked after that CLI's own markers. Inside tmux a marker may be the server's copy of whatever started the server; `recipe run` says so when the server holds it.
 3. `<repo>/.claude/runtime/launcher_context.json` `launcher` field (persisted, possibly by another session)
 4. Built-in default: **`copilot`**
 
 `amplihack recipe run` resolves once at entry and exports the result to the
-recipe runner. A result from the built-in default is exported with
-`AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>`; see
+recipe runner. Only a result from layer 1 is exported untagged, as an
+instruction. A result from the built-in default is exported with
+`AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>`, and one from a session
+marker or a launcher context with `AMPLIHACK_AGENT_BINARY_SOURCE=session:<binary>`;
+see
 [Active Agent Binary](./active-agent-binary.md#resolving-once-for-a-whole-recipe-run).
 A command started with `tmux new-session` does not see the caller's session
 markers: tmux gives it the server's global environment, which holds the
@@ -109,15 +112,15 @@ Values are normalized (trim, lowercase) and matched against the allowlist `{clau
 
 Whichever layer answers, `amplihack agent-binary` and `amplihack recipe run` print a notice on stderr. It names the variable and what answered in its place, and lists the allowed names. You set a CLI and got a different one, and the notice says why, as in the examples below. Neither a log line nor the notice ever contains the rejected value.
 
-Commands that launch one CLI by name, such as `amplihack copilot`, do not ask the resolver. They set the variable to the CLI they launch, for their children.
+Commands that launch one CLI by name, such as `amplihack copilot`, do not ask the resolver. They set the variable to the CLI they launch, for their children, tagged `AMPLIHACK_AGENT_BINARY_SOURCE=session:<cli>`, and remove every other CLI's session markers from the child. The tag matters because a tmux server copies the environment of whatever starts it: untagged, the launcher's value outranked every session marker, so a Claude Code session in a pane of a server started from a Copilot session ran its recipe steps under copilot. See [Active Agent Binary](./active-agent-binary.md#what-amplihack-exports-is-tagged).
 
 ```sh
 # Start a Copilot session (the new default)
 amplihack copilot
 
 # Inside hooks, recipe steps, sub-agents:
-echo $AMPLIHACK_AGENT_BINARY
-# copilot
+echo $AMPLIHACK_AGENT_BINARY $AMPLIHACK_AGENT_BINARY_SOURCE
+# copilot session:copilot
 
 # Explicit override (CI, testing, manual selection)
 AMPLIHACK_AGENT_BINARY=claude amplihack recipe run smart-orchestrator -c task_description="..."
@@ -138,7 +141,7 @@ COPILOT_CLI=1 AMPLIHACK_AGENT_BINARY="../bin/evil" amplihack agent-binary
 
 #### Why the precedence order
 
-- **Env var first** preserves the established escape hatch for CI/testing and lets external recipe-runner builds keep working unchanged. A value tagged as a default-layer guess (`AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>`) is not an instruction and is skipped while the tag still describes it.
+- **Env var first** preserves the established escape hatch for CI/testing and lets external recipe-runner builds keep working unchanged. A value amplihack exported itself is not an instruction, and is skipped while its tag still describes it: a default-layer guess (`AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>`), or a description of a session (`session:<binary>`), which ranks with the session markers instead.
 - **Session marker second** names the CLI actually hosting the process, so it outranks any file on disk (#1342).
 - **`.claude/runtime/launcher_context.json` third** is persisted, per-directory, last-writer-wins state that may describe a different session. It is consulted only while fresh and never in or above a world-writable or foreign-owned directory (#1335). A file in such a directory is not read, but `recipe run` and `agent-binary` name it when the answer was inferred.
 - **`copilot` default last** matches the project's current preferred runtime and removes the prior implicit `claude` assumption.

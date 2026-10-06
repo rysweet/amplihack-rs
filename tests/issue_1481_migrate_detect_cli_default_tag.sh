@@ -6,6 +6,12 @@
 # The other layers are covered by tests/issue_1525_migrate_detect_cli_parity.sh;
 # these checks pin the tag rule.
 #
+# Crusty review of #1490 at baaafb18 added the other tag amplihack exports,
+# `session:<binary>`, for a value that describes a session a launcher started
+# or a recipe run observed. It is not an instruction either: it ranks with the
+# session markers, among those of the CLI it names, as `rank_session_markers`
+# does in Rust. The checks after the default-tag ones set a marker to show it.
+#
 # The fall-through is made observable with a stand-in `amplihack` whose
 # `agent-binary` answers `codex`, as the resolver does from a fresh launcher
 # context naming it: a skipped env value answers `codex`, an honoured one
@@ -46,9 +52,10 @@ printf '#!/bin/sh\necho "codex (launcher_context)"\n' > "$work/bin/amplihack"
 chmod +x "$work/bin/amplihack"
 PATH="$work/bin:$PATH"
 
-# check <description> <expected> <binary> <tag|-unset->
+# check <description> <expected> <binary> <tag|-unset-> [MARKER=value ...]
 check() {
   local desc="$1" expected="$2" binary="$3" tag="$4" got
+  shift 4
   got="$(
     cd "$work" || exit 1
     export AMPLIHACK_AGENT_BINARY="$binary"
@@ -57,6 +64,7 @@ check() {
     else
       export AMPLIHACK_AGENT_BINARY_SOURCE="$tag"
     fi
+    for assignment in "$@"; do export "${assignment?}"; done
     detect_cli
   )"
   if [ "$got" = "$expected" ]; then
@@ -75,6 +83,18 @@ check "bare 'default' is not a guess"               copilot copilot   "default"
 check "internal whitespace is not trimmed"          copilot copilot   "default: copilot"
 check "tag comparison is case-sensitive"            copilot copilot   "DEFAULT:copilot"
 check "empty tag is not a guess"                    copilot copilot   ""
+
+# session:<binary> -- a description, ranked with the markers of its CLI.
+check "a description alone answers, before amplihack" claude claude  "session:claude"
+check "an amplifier description alone answers"     amplifier amplifier "session:amplifier"
+check "a live Claude marker outranks session:copilot" claude copilot "session:copilot" CLAUDECODE=1
+check "an untagged copilot still outranks it"       copilot copilot   -unset-           CLAUDECODE=1
+check "session:claude outranks a Copilot marker"    claude  claude    "session:claude"  COPILOT_CLI=1
+check "session:copilot yields to a Claude marker"   claude  copilot   "session:copilot" CLAUDE_CODE_ENTRYPOINT=cli
+check "session:codex yields to any marker"          copilot codex     "session:codex"   COPILOT_CLI=1
+check "a description is normalised like the value"  claude  " Claude " "session:claude" COPILOT_CLI=1
+check "session tag naming another binary describes nothing" claude claude "session:copilot" COPILOT_CLI=1
+check "session tag comparison is case-sensitive"    copilot copilot   "SESSION:copilot" CLAUDECODE=1
 
 if [ "$fails" -ne 0 ]; then
   echo "issue #1481 detect_cli default-tag: $fails failure(s)"

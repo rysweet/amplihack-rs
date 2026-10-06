@@ -129,11 +129,19 @@ impl EnvBuilder {
             .unset(amplihack_utils::agent_binary::SOURCE_ENV)
     }
 
-    /// Export `tool` as the binary of the launcher that is starting this child.
+    /// Export `tool` as the binary of the launcher that is starting this child,
+    /// tagged as describing that session, and remove every other CLI's session
+    /// markers from the child.
     ///
     /// Issue #1481: a launcher started on an inherited default guess naming
     /// itself hands the guess on still tagged, so no launcher nested below it
-    /// persists the guess. See [`super::launch_binary_source`].
+    /// persists the guess. Any other launch is tagged `session:<tool>`, which
+    /// ranks with the session markers instead of above them (crusty review of
+    /// #1490 at baaafb18). See [`super::launch_binary_source`].
+    ///
+    /// The other CLIs' markers have to go for that ranking to hold. A Copilot
+    /// session launched from a Claude Code shell would otherwise inherit
+    /// `CLAUDECODE`, which outranks `session:copilot`, and resolve to claude.
     pub fn with_launched_agent_binary(self, tool: &str) -> Self {
         self.with_launched_agent_binary_from(tool, &|key| std::env::var(key).ok())
     }
@@ -145,28 +153,34 @@ impl EnvBuilder {
         tool: &str,
         var: &dyn Fn(&str) -> Option<String>,
     ) -> Self {
-        self.with_resolved_agent_binary(tool, super::launch_binary_source(tool, var))
+        let this = self.with_resolved_agent_binary(tool, super::launch_binary_source(tool, var));
+        amplihack_utils::agent_binary::other_clis_markers(tool)
+            .fold(this, |builder, marker| builder.unset(marker))
     }
 
     /// Export a binary the resolver chose, together with where it came from.
     ///
-    /// Issue #1481: a value from the built-in default is tagged with
-    /// [`amplihack_utils::agent_binary::SOURCE_ENV`]`=default:<tool>` so that no
-    /// descendant treats it as an instruction or persists it as a session's
-    /// choice, while one that later sets a different binary is still obeyed.
+    /// Only an answer from `AMPLIHACK_AGENT_BINARY` itself is exported as an
+    /// instruction, untagged. Issue #1481: a value from the built-in default
+    /// is tagged `default:<tool>`, so that no descendant treats it as an
+    /// instruction or persists it as a session's choice. A value from a
+    /// session marker or a launcher context is tagged `session:<tool>`, so a
+    /// descendant ranks it with its own session markers: a step that starts a
+    /// tmux server must not hand this run's answer to every later session on
+    /// it as an instruction (crusty review of #1490 at baaafb18). Either way a
+    /// descendant that later sets a different binary is still obeyed. See
+    /// [`amplihack_utils::agent_binary::export_tag`].
     pub fn with_resolved_agent_binary(
         self,
         tool: impl Into<String>,
         source: amplihack_utils::agent_binary::ResolutionSource,
     ) -> Self {
         let tool = tool.into();
-        let tag = amplihack_utils::agent_binary::default_guess_tag(&tool);
+        let tag = amplihack_utils::agent_binary::export_tag(&tool, source);
         let this = self.with_agent_binary(tool);
-        match source {
-            amplihack_utils::agent_binary::ResolutionSource::Default => {
-                this.set(amplihack_utils::agent_binary::SOURCE_ENV, tag)
-            }
-            _ => this,
+        match tag {
+            Some(tag) => this.set(amplihack_utils::agent_binary::SOURCE_ENV, tag),
+            None => this,
         }
     }
 
@@ -524,36 +538,63 @@ mod tests {
         assert_eq!(env.get("AMPLIHACK_AGENT_BINARY").unwrap(), "copilot");
     }
 
-    /// Issue #1481: only a value from the built-in default is tagged, and an
-    /// explicit binary clears a tag that would otherwise be inherited.
+    /// Issue #1481 and crusty review of #1490 at baaafb18: only an explicit
+    /// answer is exported untagged, as an instruction, and it clears a tag
+    /// that would otherwise be inherited. A guess is tagged as one, and an
+    /// answer from a session marker or a launcher context as a description of
+    /// a session.
     #[test]
-    fn resolved_agent_binary_tags_only_the_default_layer() {
+    fn resolved_agent_binary_is_untagged_only_for_an_explicit_answer() {
         use amplihack_utils::agent_binary::{ResolutionSource, SOURCE_ENV};
 
-        let env = EnvBuilder::new()
-            .with_resolved_agent_binary("copilot", ResolutionSource::Default)
-            .build();
-        assert_eq!(env.get("AMPLIHACK_AGENT_BINARY").unwrap(), "copilot");
-        assert_eq!(
-            env.get(SOURCE_ENV).map(String::as_str),
-            Some("default:copilot")
-        );
-
-        for source in [
-            ResolutionSource::Env,
-            ResolutionSource::SessionMarker,
-            ResolutionSource::LauncherContext,
+        for (source, tag) in [
+            (ResolutionSource::Default, "default:claude"),
+            (ResolutionSource::SessionMarker, "session:claude"),
+            (ResolutionSource::LauncherContext, "session:claude"),
         ] {
-            let builder = EnvBuilder::new().with_resolved_agent_binary("claude", source);
-            assert!(
-                builder.removed_vars.contains(SOURCE_ENV),
-                "{source:?}: an inherited tag must be removed from the child"
-            );
-            let env = builder.build();
+            let env = EnvBuilder::new()
+                .with_resolved_agent_binary("claude", source)
+                .build();
             assert_eq!(env.get("AMPLIHACK_AGENT_BINARY").unwrap(), "claude");
-            assert!(
-                !env.contains_key(SOURCE_ENV),
-                "{source:?} must not be tagged"
+            assert_eq!(env.get(SOURCE_ENV).map(String::as_str), Some(tag));
+        }
+
+        let builder = EnvBuilder::new().with_resolved_agent_binary("claude", ResolutionSource::Env);
+        assert!(
+            builder.removed_vars.contains(SOURCE_ENV),
+            "an inherited tag must be removed from the child"
+        );
+        let env = builder.build();
+        assert_eq!(env.get("AMPLIHACK_AGENT_BINARY").unwrap(), "claude");
+        assert!(!env.contains_key(SOURCE_ENV), "an instruction is untagged");
+    }
+
+    /// A launcher tags its own name as a session description and removes
+    /// every other CLI's markers from its child, so that a Copilot session
+    /// started from a Claude Code shell is not taken for a Claude one.
+    #[test]
+    fn a_launcher_describes_its_session_and_strips_other_clis_markers() {
+        use amplihack_utils::agent_binary::{SESSION_MARKERS, SOURCE_ENV};
+
+        let nothing_inherited = |_: &str| None;
+        for tool in ["claude", "copilot", "codex", "amplifier"] {
+            let builder =
+                EnvBuilder::new().with_launched_agent_binary_from(tool, &nothing_inherited);
+            for &(marker, implies) in SESSION_MARKERS {
+                assert_eq!(
+                    builder.removed_vars.contains(marker),
+                    implies != tool,
+                    "{tool}: {marker}"
+                );
+            }
+            let env = builder.build();
+            assert_eq!(
+                env.get("AMPLIHACK_AGENT_BINARY").map(String::as_str),
+                Some(tool)
+            );
+            assert_eq!(
+                env.get(SOURCE_ENV).cloned(),
+                Some(format!("session:{tool}"))
             );
         }
     }

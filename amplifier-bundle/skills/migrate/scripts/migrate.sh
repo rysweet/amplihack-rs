@@ -357,11 +357,14 @@ detect_cli() {
   # amplihack_utils::agent_binary is authoritative; this script keeps only the
   # layers that are cheap to state in shell, plus one the resolver lacks:
   #   1. AMPLIHACK_AGENT_BINARY (allowlist-validated), skipped while
-  #      AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary> (#1481)
+  #      AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary> (#1481) or
+  #      session:<same binary>
   #   2. a session marker: the CLI actually hosting this process, which
   #      outranks any file. The list is agent_binary::SESSION_MARKERS, in
   #      order; tests/issue_1525_migrate_detect_cli_parity.sh fails if they
-  #      drift apart.
+  #      drift apart. A value tagged session:<binary> is a marker of that CLI,
+  #      ranked after its last entry: amplihack exported it to describe a
+  #      session, not to choose one (crusty review of #1490 at baaafb18).
   #   3. the parent process chain. Shell only; the Rust resolver has no such
   #      layer. Like a marker it is evidence of the running session, so it too
   #      ranks above the file.
@@ -375,17 +378,22 @@ detect_cli() {
   #      runs. Without it, or with a build too old to have the subcommand, a
   #      warning says the launcher context was not read, and the answer is
   #      copilot.
+  local described=""
   if [[ -n "${AMPLIHACK_AGENT_BINARY:-}" ]]; then
     local override
     override="$(_detect_cli_name "${AMPLIHACK_AGENT_BINARY}")"
     # Issue #1481: a parent that only had the built-in default exports it with
     # AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>. While that tag still names
-    # this value it is a guess, not an instruction, so fall through.
+    # this value it is a guess, not an instruction, so fall through. A launcher
+    # or recipe run exports session:<binary>, which describes a session and
+    # ranks with the markers below.
     # Trim surrounding whitespace only, as the Rust resolver does.
     local source_tag="${AMPLIHACK_AGENT_BINARY_SOURCE:-}"
     source_tag="${source_tag#"${source_tag%%[![:space:]]*}"}"
     source_tag="${source_tag%"${source_tag##*[![:space:]]}"}"
-    if [[ -n "$override" && "$source_tag" != "default:$override" ]]; then
+    if [[ -n "$override" && "$source_tag" == "session:$override" ]]; then
+      described="$override"
+    elif [[ -n "$override" && "$source_tag" != "default:$override" ]]; then
       echo "$override"
       return
     fi
@@ -401,14 +409,27 @@ detect_cli() {
     GITHUB_COPILOT_AGENT:copilot
     COPILOT_AGENT:copilot
   )
-  local entry marker
+  # A described binary answers once the walk has passed its CLI's markers
+  # without finding one set, and after every marker for a CLI with none
+  # (agent_binary::rank_session_markers).
+  local entry marker cli previous=""
   for entry in "${session_markers[@]}"; do
+    cli="${entry##*:}"
+    if [[ -n "$described" && "$previous" == "$described" && "$cli" != "$described" ]]; then
+      echo "$described"
+      return
+    fi
+    previous="$cli"
     marker="${entry%%:*}"
     if [[ -n "${!marker:-}" ]]; then
-      echo "${entry##*:}"
+      echo "$cli"
       return
     fi
   done
+  if [[ -n "$described" ]]; then
+    echo "$described"
+    return
+  fi
   local pid="$PPID"
   while [[ -n "$pid" && "$pid" != "1" ]]; do
     local cmd

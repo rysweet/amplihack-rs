@@ -44,10 +44,12 @@ A single shared resolver (`amplihack_utils::agent_binary::resolve`) is now the o
 
 1. `AMPLIHACK_AGENT_BINARY` environment variable (explicit override), unless it
    is tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary>` as a parent's
-   guess (issue #1481)
+   guess (issue #1481), or `session:<same binary>` as a description of a
+   session amplihack launched or observed
 2. A live session marker: an environment variable the hosting CLI exports,
    such as `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT` or `COPILOT_CLI`
-   (`agent_binary::SESSION_MARKERS`)
+   (`agent_binary::SESSION_MARKERS`). A `session:<binary>`-tagged value is one
+   more marker of the CLI it names, ranked after that CLI's own markers
 3. `<repo>/.claude/runtime/launcher_context.json` `launcher` field, found by
    walking up from the working directory
 4. Built-in default `"copilot"`
@@ -62,12 +64,12 @@ is the reference for this order; this page explains why it looks the way it does
 ```mermaid
 flowchart TD
     A[Caller invokes resolve&#40;cwd&#41;] --> B{AMPLIHACK_AGENT_BINARY set?}
-    B -- yes --> T{Tagged default:&lt;same binary&gt;?}
+    B -- yes --> T{Tagged default: or session:<br/>&lt;same binary&gt;?}
     T -- yes --> M
     T -- no --> V1[Validate against allowlist]
     V1 -- ok --> R1[Return env value]
     V1 -- reject --> M
-    B -- no --> M{Session marker set?}
+    B -- no --> M{Session marker set?<br/>a session:&lt;cli&gt; value counts,<br/>after that CLI's own markers}
     M -- yes --> R2[Return the marker's binary]
     M -- no --> L1[Start the walk-up at cwd]
     L1 --> U{Directory world-writable<br/>or foreign-owned?}
@@ -113,8 +115,28 @@ in two places at start time:
 
 1. `<repo>/.claude/runtime/launcher_context.json`, which later processes in
    the same checkout can read back (layer 3)
-2. `AMPLIHACK_AGENT_BINARY` in the subprocess `Command` env, which direct
-   children read first (layer 1)
+2. `AMPLIHACK_AGENT_BINARY` in the subprocess `Command` env, tagged
+   `AMPLIHACK_AGENT_BINARY_SOURCE=session:<cli>`, which children read as a
+   session marker of that CLI (layer 2)
+
+The launcher also removes every other CLI's session markers from the child.
+
+The export used to be untagged, which made it layer 1, an instruction above
+every marker. That was wrong for the one thing an environment variable cannot
+control: where it ends up. tmux copies the environment of whatever starts its
+server into the server's global environment, and every later session starts
+from that copy. An agent of an `amplihack copilot` session that started a
+server for a build gave `AMPLIHACK_AGENT_BINARY=copilot` to every later
+session on it. A Claude Code session in one of its panes then ran every recipe
+step under copilot, and so did the documented hand-off from that pane, because
+the pane's own resolution was layer 1 (crusty review of #1490). The launcher's
+export only says which session it started, the same kind of evidence as
+`COPILOT_CLI`, so it now ranks with the markers. In that pane, Claude Code's
+own marker answers.
+
+The marker stripping is what keeps the ranking honest in the other direction.
+A Copilot session launched from a Claude Code shell would otherwise inherit
+`CLAUDECODE`, which outranks `session:copilot`.
 
 A launcher started on an inherited `default:<binary>`-tagged value naming
 itself does not write `launcher_context.json`: that launch was a guess, not a
@@ -125,8 +147,14 @@ session markers of the CLI that invoked it, and exports the answer to
 `recipe-runner-rs` as `AMPLIHACK_AGENT_BINARY`. Steps run under the runner's
 curated environment, where those markers may be gone. When the answer came
 from the launcher context or the default layer, recipe run prints a notice on
-stderr naming the file it read, and any it skipped as unusable (#1525); from
-the default layer it also exports the `default:<binary>` tag (issue #1481).
+stderr naming the file it read, and any it skipped as unusable (#1525). Only an
+answer from layer 1 is exported untagged. One from the default layer is tagged
+`default:<binary>` (issue #1481), and one from a session marker or a launcher
+context `session:<binary>`, so that a step which starts a tmux server does not
+hand the run's answer to every later session on it as an instruction.
+`session:claude` ranks ahead of every Copilot marker, so a Claude-hosted run's
+steps, which lose `CLAUDECODE` on the way down, are not taken over by a
+`COPILOT_CLI` that their tmux pane inherited.
 An explicit `AMPLIHACK_AGENT_BINARY` still outranks a session marker that
 names a different CLI. That is not an inference, but a stale profile export
 produces the same silent wrong-CLI run, so recipe run names the session it
@@ -137,7 +165,10 @@ marker included.
 Inside `amplihack-rs`, code that picks the binary calls `resolve(&cwd)` rather
 than reading the env var directly. One older helper,
 `amplihack_utils::llm_client::detect_launcher_from`, still reads
-`AMPLIHACK_AGENT_BINARY` itself and does not honour the default-guess tag.
+`AMPLIHACK_AGENT_BINARY` itself. It ranks a `session:<binary>` value with the
+markers, as the resolver does, but does not honour the default-guess tag. It
+only decides whether any launcher is present; the binary itself comes from
+`resolve(&cwd)`.
 Code that only checks whether the variable is set (as a sign of running as a
 subprocess) does not choose a binary and is unaffected by the tag.
 
@@ -151,10 +182,10 @@ sequenceDiagram
 
     U->>L: amplihack copilot
     L->>F: write {"launcher":"copilot",...}
-    L->>R: spawn with AMPLIHACK_AGENT_BINARY=copilot
-    R->>R: resolve(--working-dir) → "copilot" (layer 1)
-    R->>S: run step with AMPLIHACK_AGENT_BINARY=copilot
-    S->>S: resolve(step cwd) → "copilot" (layer 1)
+    L->>R: spawn with AMPLIHACK_AGENT_BINARY=copilot<br/>AMPLIHACK_AGENT_BINARY_SOURCE=session:copilot
+    R->>R: resolve(--working-dir) → "copilot" (layer 2)
+    R->>S: run step with AMPLIHACK_AGENT_BINARY=copilot<br/>AMPLIHACK_AGENT_BINARY_SOURCE=session:copilot
+    S->>S: resolve(step cwd) → "copilot" (layer 2)
 ```
 
 ## Default: copilot
@@ -166,7 +197,8 @@ The implicit default changed from `"claude"` to `"copilot"`. This affects only s
 - No fresh, trusted `launcher_context.json` is found within the walk-up window
 
 For typical use the default never matters: the launcher exports
-`AMPLIHACK_AGENT_BINARY`, and a CLI session exports its own marker. The default
+`AMPLIHACK_AGENT_BINARY` tagged as its session, and a CLI session exports its
+own marker. The default
 only governs cold-start cases where none of those exist, and `amplihack recipe
 run` says so on stderr when it happens.
 

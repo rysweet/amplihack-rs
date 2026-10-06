@@ -137,6 +137,11 @@ fn handed(probe: &Value) -> (&str, &str) {
 
 /// The field failure, exactly: the caller followed the skill and removed
 /// CLAUDECODE, but the rest of the Claude Code session's markers are present.
+///
+/// The runner is handed `claude` tagged `session:claude`: an answer read from
+/// a marker describes the session, so a step that starts a tmux server does
+/// not hand it to every later session there as an instruction (crusty review
+/// of #1490 at baaafb18). It still outranks any Copilot marker a step sees.
 #[test]
 fn a_claude_session_without_claudecode_hands_claude_to_the_runner() {
     let fx = Fixture::new();
@@ -147,7 +152,7 @@ fn a_claude_session_without_claudecode_hands_claude_to_the_runner() {
     assert!(output.status.success(), "{output:?}");
     assert_eq!(
         handed(&probe),
-        ("claude", "<unset>"),
+        ("claude", "session:claude"),
         "every agent step inherits this value; resolving it anywhere below \
          recipe run is resolving it without the session's markers"
     );
@@ -160,7 +165,7 @@ fn claude_code_entrypoint_alone_identifies_a_claude_session() {
     let fx = Fixture::new();
     let (output, probe) = fx.run(&[("CLAUDE_CODE_ENTRYPOINT", "cli")]);
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(handed(&probe), ("claude", "<unset>"));
+    assert_eq!(handed(&probe), ("claude", "session:claude"));
 }
 
 /// With nothing to go on, the vendor default is still what runs -- but it is
@@ -190,7 +195,7 @@ fn an_inherited_guess_yields_to_a_visible_session_marker() {
         ("CLAUDE_CODE_SESSION_ID", "session_0123"),
     ]);
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(handed(&probe), ("claude", "<unset>"));
+    assert_eq!(handed(&probe), ("claude", "session:claude"));
 }
 
 /// ...and with nothing better visible, it stays a guess on the way down.
@@ -247,8 +252,10 @@ fn a_rejected_value_is_reported_as_rejected() {
 
 /// Crusty review of #1490 at 7053698c: inside a Copilot CLI session, the same
 /// rejected value lost to `COPILOT_CLI` without a word. `recipe run` now says
-/// so once, at the top. The steps are handed the marker's answer as a valid,
-/// untagged value, so a nested `amplihack` has nothing rejected to repeat.
+/// so once, at the top. The steps are handed the marker's answer as a valid
+/// value, tagged `session:copilot` as a description of the session (crusty
+/// review of #1490 at baaafb18), so a nested `amplihack` has nothing rejected
+/// to repeat.
 #[test]
 fn a_rejected_value_a_session_marker_answered_for_is_named_once() {
     let fx = Fixture::new();
@@ -257,7 +264,7 @@ fn a_rejected_value_a_session_marker_answered_for_is_named_once() {
         ("COPILOT_CLI", "1"),
     ]);
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(handed(&probe), ("copilot", "<unset>"));
+    assert_eq!(handed(&probe), ("copilot", "session:copilot"));
     let stderr = String::from_utf8_lossy(&output.stderr);
     let line = "amplihack: agent steps will run under 'copilot' (AMPLIHACK_AGENT_BINARY is set \
                 but is not one of amplifier, claude, codex or copilot; COPILOT_CLI, the copilot \
@@ -439,7 +446,7 @@ fn the_launcher_context_is_read_from_the_working_dir() {
     .expect("write launcher context");
     let (output, probe) = fx.run_with_args(&["--working-dir".as_ref(), project.as_os_str()], &[]);
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(handed(&probe), ("codex", "<unset>"));
+    assert_eq!(handed(&probe), ("codex", "session:codex"));
 }
 
 /// Every `launcher_context.json` under `root`.
@@ -614,7 +621,7 @@ fn a_launcher_context_in_a_world_writable_dir_is_named_and_not_read() {
     // Trusted, the same file answers: the case below differs only in mode.
     let (output, probe) = fx.run(&[]);
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(handed(&probe), ("claude", "<unset>"));
+    assert_eq!(handed(&probe), ("claude", "session:claude"));
 
     fs::set_permissions(fx.work(), fs::Permissions::from_mode(0o777)).expect("chmod work dir");
     let (output, probe) = fx.run(&[]);
@@ -665,7 +672,7 @@ fn a_bad_file_below_a_good_one_is_named_alongside_the_file_that_answered() {
     let skipped = write_raw_launcher_context(&sub, "");
     let (output, probe) = fx.run_with_args(&["--working-dir".as_ref(), sub.as_os_str()], &[]);
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(handed(&probe), ("codex", "<unset>"));
+    assert_eq!(handed(&probe), ("codex", "session:codex"));
     let stderr = String::from_utf8_lossy(&output.stderr);
     let read = project
         .canonicalize()
@@ -814,7 +821,64 @@ impl Fixture {
         }
         bin
     }
+
+    /// A directory holding a stand-in Copilot CLI for the real `amplihack
+    /// copilot` launcher to start. It answers the launcher's version probe.
+    /// Started for a session, it records its environment in `$CHILD_ENV`
+    /// when that is set, exports `COPILOT_CLI=1` as Copilot CLI does for the
+    /// commands its agent runs, and then runs `$COPILOT_AGENT_DOES`: what the
+    /// agent of that session does.
+    ///
+    /// Crusty review of #1490 at baaafb18: the tests modelled a server started
+    /// from a Copilot session as holding only `COPILOT_CLI=1`, and missed the
+    /// launcher's own `AMPLIHACK_AGENT_BINARY`. With the real launcher in front
+    /// of the stand-in, whatever it hands its child is what the tests see.
+    fn copilot_whose_agent_runs(&self) -> PathBuf {
+        let bin = self.path().join("copilot-bin");
+        fs::create_dir_all(&bin).expect("create stub dir");
+        let copilot = bin.join("copilot");
+        fs::write(
+            &copilot,
+            "#!/bin/sh\n\
+             case \"$1\" in --version|-v|version) echo 0.0.400; exit 0 ;; esac\n\
+             [ -n \"${CHILD_ENV:-}\" ] && env > \"$CHILD_ENV\"\n\
+             [ \"$(basename \"$0\")\" = copilot ] && export COPILOT_CLI=1\n\
+             eval \"$COPILOT_AGENT_DOES\"\n",
+        )
+        .expect("write copilot stub");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&copilot, fs::Permissions::from_mode(0o755)).expect("chmod");
+            // The same stand-in plays codex, which exports no marker.
+            let codex = bin.join("codex");
+            if !codex.exists() {
+                std::os::unix::fs::symlink(&copilot, &codex).expect("link codex stub");
+            }
+        }
+        bin
+    }
+
+    /// Where [`AGENT_STARTS_A_TMUX_SERVER`] records the new server's global
+    /// environment.
+    fn server_env(&self) -> PathBuf {
+        self.path().join("server.env")
+    }
 }
+
+/// `amplihack copilot`, the real launcher, started in front of
+/// [`Fixture::copilot_whose_agent_runs`]. `--subprocess-safe` keeps it from
+/// staging or prompting, and the stand-in's agent runs `$COPILOT_AGENT_DOES`.
+const AMPLIHACK_COPILOT: &str = "PATH=\"$COPILOT_BIN:$PATH\" AMPLIHACK_NO_UPDATE_CHECK=1 \
+     amplihack copilot --subprocess-safe -p 'build it' >/dev/null";
+
+/// What an agent of a Copilot session does with no tmux server running, on a
+/// host whose `USER_PREFERENCES.md` says to use detached tmux for any build:
+/// it starts one. It also records the server's global environment in
+/// `$SERVER_ENV`, so a test can show what the server now hands every session.
+const AGENT_STARTS_A_TMUX_SERVER: &str = "tmux -S \"$TMUX_SOCKET\" -f /dev/null \
+     new-session -d -s starter 'sleep 120' && \
+     tmux -S \"$TMUX_SOCKET\" show-environment -g > \"$SERVER_ENV\"";
 
 /// `$PATH` with `dir` in front.
 fn path_with(dir: &Path) -> std::ffi::OsString {
@@ -866,7 +930,7 @@ fn without_the_hand_off_a_stale_marker_answers() {
     );
     let output = fx.caller_shell(&script, &claude_session());
     let probe = fx.take_probe(&output);
-    assert_eq!(handed(&probe), ("copilot", "<unset>"));
+    assert_eq!(handed(&probe), ("copilot", "session:copilot"));
 }
 
 /// ...and inside tmux, where the server's global environment can be asked,
@@ -882,7 +946,7 @@ fn inside_tmux_a_marker_the_server_holds_is_announced() {
         ("COPILOT_CLI", "1"),
     ]);
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(handed(&probe), ("copilot", "<unset>"));
+    assert_eq!(handed(&probe), ("copilot", "session:copilot"));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains(
@@ -911,7 +975,7 @@ fn inside_tmux_a_marker_the_server_does_not_hold_is_not_announced() {
         ("CLAUDECODE", "1"),
     ]);
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(handed(&probe), ("claude", "<unset>"));
+    assert_eq!(handed(&probe), ("claude", "session:claude"));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.contains("amplihack: agent steps"), "{stderr}");
 }
@@ -1163,6 +1227,28 @@ fn through_a_real_tmux_server(
     starter_env: &str,
     command: &str,
 ) -> Option<(Value, String)> {
+    // The starter only has to outlive the second `new-session`: once the run's
+    // session exists, the server lives as long as either does. The `sleep`
+    // bounds how long an orphaned server lasts if this process is killed
+    // outright and `TmuxServer::drop` never runs.
+    let start = format!(
+        "env {} {starter_env} tmux -S \"$TMUX_SOCKET\" -f /dev/null \
+           new-session -d -s starter 'sleep 120'",
+        without_any_marker()
+    );
+    through_a_real_tmux_server_started_by(fx, &start, command)
+}
+
+/// [`through_a_real_tmux_server`] with the server started by `start`, a shell
+/// command run in the Claude Code caller's shell. It must leave a server on
+/// `$TMUX_SOCKET`. `$COPILOT_BIN`, `$COPILOT_AGENT_DOES` and `$SERVER_ENV`
+/// are set for [`Fixture::copilot_whose_agent_runs`].
+#[cfg(unix)]
+fn through_a_real_tmux_server_started_by(
+    fx: &Fixture,
+    start: &str,
+    command: &str,
+) -> Option<(Value, String)> {
     use std::time::{Duration, Instant};
     if Command::new("tmux").arg("-V").output().is_err() {
         eprintln!("skipping: tmux is not installed");
@@ -1171,20 +1257,20 @@ fn through_a_real_tmux_server(
     // Armed before the server starts, so a failed start is cleaned up too.
     let server = TmuxServer { work: fx.work() };
     let far_err = fx.path().join("far.err");
-    // The starter only has to outlive the second `new-session`: once the run's
-    // session exists, the server lives as long as either does. The `sleep`
-    // bounds how long an orphaned server lasts if this process is killed
-    // outright and `TmuxServer::drop` never runs.
     let script = format!(
-        "env {} {starter_env} tmux -S \"$TMUX_SOCKET\" -f /dev/null \
-           new-session -d -s starter 'sleep 120' && \
-         tmux -S \"$TMUX_SOCKET\" new-session -d -s run {command}",
-        without_any_marker()
+        "{start} && \
+         tmux -S \"$TMUX_SOCKET\" new-session -d -s run {command}"
     );
     let mut caller_env = claude_session();
     caller_env.push(("TMUX_SOCKET", TMUX_SOCKET));
     let far_err_str = far_err.to_str().expect("utf-8 path").to_string();
     caller_env.push(("FAR_ERR", &far_err_str));
+    let copilot_bin = fx.copilot_whose_agent_runs();
+    let copilot_bin_str = copilot_bin.to_str().expect("utf-8 path").to_string();
+    caller_env.push(("COPILOT_BIN", &copilot_bin_str));
+    caller_env.push(("COPILOT_AGENT_DOES", AGENT_STARTS_A_TMUX_SERVER));
+    let server_env_str = fx.server_env().to_str().expect("utf-8 path").to_string();
+    caller_env.push(("SERVER_ENV", &server_env_str));
     let output = fx.caller_shell(&script, &caller_env);
     assert!(
         output.status.success(),
@@ -1251,7 +1337,7 @@ fn without_the_hand_off_a_tmux_server_started_from_copilot_is_named() {
     };
     assert_eq!(
         handed(&probe),
-        ("copilot", "<unset>"),
+        ("copilot", "session:copilot"),
         "far side: {far_err}"
     );
     assert!(
@@ -1318,7 +1404,11 @@ fn a_claude_session_in_a_server_another_claude_session_started_is_not_announced(
     else {
         return;
     };
-    assert_eq!(handed(&probe), ("claude", "<unset>"), "far side: {far_err}");
+    assert_eq!(
+        handed(&probe),
+        ("claude", "session:claude"),
+        "far side: {far_err}"
+    );
     assert!(
         !far_err.contains("whatever started the server"),
         "{far_err}"
@@ -1339,7 +1429,11 @@ fn the_servers_copy_of_a_claude_starter_is_named_and_agent_binary_is_not_told_to
     else {
         return;
     };
-    assert_eq!(handed(&probe), ("claude", "<unset>"), "far side: {far_err}");
+    assert_eq!(
+        handed(&probe),
+        ("claude", "session:claude"),
+        "far side: {far_err}"
+    );
     let because = "(CLAUDECODE is set, but this tmux server's global environment holds the \
                    same value, so it may come from whatever started the server rather than \
                    from a claude session).";
@@ -1362,6 +1456,294 @@ fn the_servers_copy_of_a_claude_starter_is_named_and_agent_binary_is_not_told_to
         far_err.matches("agent-binary --shell").count(),
         1,
         "only recipe run is pointed at the hand-off: {far_err}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Crusty review of #1490 at baaafb18: `amplihack copilot` exported
+// `AMPLIHACK_AGENT_BINARY=copilot` untagged, and an untagged value is layer 1,
+// above every session marker. A tmux server started by an agent of that
+// session holds it beside `COPILOT_CLI=1`, and hands both to every later
+// session: a Claude Code session in one of its panes ran every recipe step
+// under copilot, through the documented hand-off too, and a detached run
+// launched into it without the hand-off answered from layer 1 and said
+// nothing. The launcher now tags the value `session:copilot`, which ranks
+// with the session markers, and removes every other CLI's markers from the
+// session it starts.
+//
+// These tests put the real launcher in front of a stand-in Copilot CLI, so
+// the environment they exercise is the one the launcher really hands over.
+// ---------------------------------------------------------------------------
+
+impl Fixture {
+    /// Run the real `amplihack copilot` from a caller holding `caller_env`,
+    /// its stand-in agent doing `agent_does`. Returns the launcher's output,
+    /// the child's environment as the launcher handed it over (an `env` dump),
+    /// and what the agent wrote to `$FAR_ERR`.
+    fn amplihack_copilot_session(
+        &self,
+        caller_env: &[(&str, &str)],
+        agent_does: &str,
+    ) -> (Output, String, String) {
+        let bin = self.copilot_whose_agent_runs();
+        let child_env = self.path().join("child.env");
+        let far_err = self.path().join("far.err");
+        let bin = bin.to_str().expect("utf-8 path").to_string();
+        let child_env_str = child_env.to_str().expect("utf-8 path").to_string();
+        let far_err_str = far_err.to_str().expect("utf-8 path").to_string();
+        let mut env = caller_env.to_vec();
+        env.push(("COPILOT_BIN", &bin));
+        env.push(("COPILOT_AGENT_DOES", agent_does));
+        env.push(("CHILD_ENV", &child_env_str));
+        env.push(("FAR_ERR", &far_err_str));
+        let output = self.caller_shell(AMPLIHACK_COPILOT, &env);
+        (
+            output,
+            fs::read_to_string(&child_env).unwrap_or_default(),
+            fs::read_to_string(&far_err).unwrap_or_default(),
+        )
+    }
+}
+
+/// The value of `name` in an `env` dump, if it is set there.
+fn env_value<'a>(dump: &'a str, name: &str) -> Option<&'a str> {
+    dump.lines()
+        .find_map(|line| line.strip_prefix(name)?.strip_prefix('='))
+}
+
+/// A Claude Code session's markers, as crusty set them in a pane.
+const CLAUDE_CODE_IN_A_PANE: &str =
+    "CLAUDECODE=1 CLAUDE_CODE_ENTRYPOINT=cli CLAUDE_CODE_SESSION_ID=pane-2";
+
+/// The launcher hands its child a description of the session, not an
+/// instruction, and none of another CLI's markers. Started from a Claude Code
+/// shell, the Copilot session is still a Copilot session: its agent's recipe
+/// steps run copilot. With the tag alone, the inherited `CLAUDECODE` would
+/// outrank it and run them under claude, the mirror image of the bug.
+#[test]
+fn an_amplihack_copilot_session_describes_itself_and_drops_claudes_markers() {
+    let fx = Fixture::new();
+    let (output, child, far_err) = fx.amplihack_copilot_session(
+        &claude_session(),
+        r#"amplihack recipe run "$PROBE" 2>"$FAR_ERR""#,
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        env_value(&child, "AMPLIHACK_AGENT_BINARY"),
+        Some("copilot"),
+        "{child}"
+    );
+    assert_eq!(
+        env_value(&child, SOURCE_ENV),
+        Some("session:copilot"),
+        "{child}"
+    );
+    for (marker, _) in claude_session() {
+        assert_eq!(
+            env_value(&child, marker),
+            None,
+            "{marker} reached the Copilot session"
+        );
+    }
+    let probe = fx.take_probe(&output);
+    assert_eq!(
+        handed(&probe),
+        ("copilot", "session:copilot"),
+        "run log: {far_err}"
+    );
+    assert!(!far_err.contains("amplihack: agent steps"), "{far_err}");
+}
+
+/// Crusty's reproduction, step 3, without tmux: a Claude Code session started
+/// inside an `amplihack copilot` session's environment holds the launcher's
+/// `AMPLIHACK_AGENT_BINARY=copilot` and `COPILOT_CLI=1` beside its own markers.
+/// Its recipe steps run claude, nothing claims otherwise, and the hand-off it
+/// would give a detached run carries claude. Before, all three said copilot.
+#[test]
+fn a_claude_session_inside_an_amplihack_copilot_session_runs_claude() {
+    let fx = Fixture::new();
+    let handoff = fx.path().join("handoff");
+    let handoff_str = handoff.to_str().expect("utf-8 path").to_string();
+    let agent_does = format!(
+        r#"export {CLAUDE_CODE_IN_A_PANE} && amplihack agent-binary --shell >"$HANDOFF" 2>"$FAR_ERR" && amplihack recipe run "$PROBE" 2>>"$FAR_ERR""#
+    );
+    let (output, _, far_err) =
+        fx.amplihack_copilot_session(&[("HANDOFF", &handoff_str)], &agent_does);
+    assert!(output.status.success(), "{output:?}");
+    let probe = fx.take_probe(&output);
+    assert_eq!(
+        handed(&probe),
+        ("claude", "session:claude"),
+        "run log: {far_err}"
+    );
+    assert!(!far_err.contains("amplihack: agent steps"), "{far_err}");
+    assert!(!far_err.contains("amplihack: resolved"), "{far_err}");
+    let handoff = fs::read_to_string(&handoff).unwrap_or_default();
+    assert!(
+        handoff.ends_with(" AMPLIHACK_AGENT_BINARY=claude AMPLIHACK_AGENT_BINARY_SOURCE=\n"),
+        "{handoff}"
+    );
+}
+
+/// The server an agent of an `amplihack copilot` session starts from a plain
+/// terminal: what crusty reproduced with `env -i COPILOT_CLI=1
+/// AMPLIHACK_AGENT_BINARY=copilot`, here from the real launcher.
+#[cfg(unix)]
+fn started_by_an_amplihack_copilot_agent() -> String {
+    format!("env {} {AMPLIHACK_COPILOT}", without_any_marker())
+}
+
+/// The server's global environment holds what the launcher handed its child:
+/// `COPILOT_CLI=1` from Copilot CLI, and the launcher's export, tagged.
+#[cfg(unix)]
+fn assert_the_server_holds_the_launchers_description(fx: &Fixture) {
+    let server = fs::read_to_string(fx.server_env()).unwrap_or_default();
+    for line in [
+        "COPILOT_CLI=1",
+        "AMPLIHACK_AGENT_BINARY=copilot",
+        "AMPLIHACK_AGENT_BINARY_SOURCE=session:copilot",
+    ] {
+        assert!(
+            server.lines().any(|l| l == line),
+            "{line} not in:\n{server}"
+        );
+    }
+    for (marker, _) in claude_session() {
+        assert!(
+            !server.lines().any(|l| l.starts_with(&format!("{marker}="))),
+            "{marker} in the server's environment:\n{server}"
+        );
+    }
+}
+
+/// Crusty review of #1490 at baaafb18, step 3, on a real server: a Claude Code
+/// session in a pane of a server an `amplihack copilot` agent started runs its
+/// recipe steps under claude, says nothing about it, and the documented
+/// hand-off it would give a detached run carries claude. Before, the steps
+/// ran copilot with only the generic "overrides CLAUDECODE" line, and the
+/// hand-off carried copilot.
+#[cfg(unix)]
+#[test]
+fn a_claude_session_in_a_server_an_amplihack_copilot_agent_started_runs_claude() {
+    let fx = Fixture::new();
+    let handoff = fx.path().join("handoff");
+    let command = format!(
+        r#""cd '$WORK' && export {CLAUDE_CODE_IN_A_PANE} && amplihack agent-binary --shell -w '$WORK' >'{}' 2>'$FAR_ERR' && amplihack recipe run '$PROBE' 2>>'$FAR_ERR'""#,
+        handoff.display()
+    );
+    let Some((probe, far_err)) = through_a_real_tmux_server_started_by(
+        &fx,
+        &started_by_an_amplihack_copilot_agent(),
+        &command,
+    ) else {
+        return;
+    };
+    assert_the_server_holds_the_launchers_description(&fx);
+    assert_eq!(
+        handed(&probe),
+        ("claude", "session:claude"),
+        "pane: {far_err}"
+    );
+    assert!(!far_err.contains("amplihack: agent steps"), "{far_err}");
+    assert!(!far_err.contains("amplihack: resolved"), "{far_err}");
+    let handoff = fs::read_to_string(&handoff).unwrap_or_default();
+    assert!(
+        handoff.ends_with(" AMPLIHACK_AGENT_BINARY=claude AMPLIHACK_AGENT_BINARY_SOURCE=\n"),
+        "{handoff}"
+    );
+}
+
+/// The documented hand-off from a Claude Code caller outside tmux, into that
+/// same server, delivers claude.
+#[cfg(unix)]
+#[test]
+fn the_hand_off_works_through_a_server_an_amplihack_copilot_agent_started() {
+    let fx = Fixture::new();
+    let Some((probe, far_err)) = through_a_real_tmux_server_started_by(
+        &fx,
+        &started_by_an_amplihack_copilot_agent(),
+        HAND_OFF_KEEPING_STDERR,
+    ) else {
+        return;
+    };
+    assert_the_server_holds_the_launchers_description(&fx);
+    assert_eq!(handed(&probe), ("claude", "<unset>"), "far side: {far_err}");
+    assert!(!far_err.contains("amplihack: agent steps"), "{far_err}");
+}
+
+/// Crusty review of #1490 at baaafb18, step 2: a detached run launched into
+/// that server from Claude Code without the hand-off has only the server's
+/// environment, so the caller's CLI cannot be known there. It answers from the
+/// server's `COPILOT_CLI` and names it in its own log. Before, the launcher's
+/// untagged export answered from layer 1, the tmux check was never asked, and
+/// the log was empty.
+///
+/// Here `amplihack copilot` is launched from the Claude Code caller's own
+/// shell, so this also shows the launcher removing Claude's markers: had the
+/// server held them, the far side would have answered claude from a session
+/// that never ran there.
+#[cfg(unix)]
+#[test]
+fn without_the_hand_off_a_server_an_amplihack_copilot_agent_started_is_named() {
+    let fx = Fixture::new();
+    let Some((probe, far_err)) =
+        through_a_real_tmux_server_started_by(&fx, AMPLIHACK_COPILOT, NO_HAND_OFF_KEEPING_STDERR)
+    else {
+        return;
+    };
+    assert_the_server_holds_the_launchers_description(&fx);
+    assert_eq!(
+        handed(&probe),
+        ("copilot", "session:copilot"),
+        "far side: {far_err}"
+    );
+    assert!(
+        far_err.contains(
+            "amplihack: agent steps will run under 'copilot' (COPILOT_CLI is set, but this \
+             tmux server's global environment holds the same value, so it may come from \
+             whatever started the server rather than from a copilot session)."
+        ),
+        "{far_err}"
+    );
+}
+
+/// Codex exports no session marker of its own, so on the far side of a server
+/// an `amplihack codex` agent started, the launcher's `session:codex` is the
+/// marker that answers. The tmux check asks the server about the tag, and the
+/// run names it in its own log.
+#[cfg(unix)]
+#[test]
+fn without_the_hand_off_a_server_an_amplihack_codex_agent_started_is_named() {
+    let fx = Fixture::new();
+    let start = format!(
+        "env {} {}",
+        without_any_marker(),
+        AMPLIHACK_COPILOT.replace("amplihack copilot", "amplihack codex")
+    );
+    let Some((probe, far_err)) =
+        through_a_real_tmux_server_started_by(&fx, &start, NO_HAND_OFF_KEEPING_STDERR)
+    else {
+        return;
+    };
+    let server = fs::read_to_string(fx.server_env()).unwrap_or_default();
+    assert!(
+        server
+            .lines()
+            .any(|l| l == "AMPLIHACK_AGENT_BINARY_SOURCE=session:codex"),
+        "{server}"
+    );
+    assert_eq!(
+        handed(&probe),
+        ("codex", "session:codex"),
+        "far side: {far_err}"
+    );
+    assert!(
+        far_err.contains(
+            "amplihack: agent steps will run under 'codex' (AMPLIHACK_AGENT_BINARY_SOURCE is \
+             set, but this tmux server's global environment holds the same value, so it may \
+             come from whatever started the server rather than from a codex session)."
+        ),
+        "{far_err}"
     );
 }
 

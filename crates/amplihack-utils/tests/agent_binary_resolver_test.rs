@@ -431,3 +431,107 @@ fn a_tagged_default_guess_is_skipped_by_the_resolver() {
         ("copilot".to_string(), agent_binary::ResolutionSource::Env)
     );
 }
+
+// ---------------------------------------------------------------------------
+// Crusty review of #1490 at baaafb18: a value amplihack exported to describe a
+// session, tagged `session:<binary>`, is not an instruction. It ranks with the
+// session markers of the CLI it names, through the real environment and the
+// real `resolve_detailed`.
+// ---------------------------------------------------------------------------
+
+/// Set `AMPLIHACK_AGENT_BINARY` with the tag a launcher exports beside it, and
+/// each of `markers` to `1`, after clearing everything else.
+fn set_described(binary: &str, markers: &[&str]) {
+    clear_env();
+    // SAFETY: see clear_env.
+    unsafe {
+        std::env::set_var("AMPLIHACK_AGENT_BINARY", binary);
+        std::env::set_var(agent_binary::SOURCE_ENV, agent_binary::session_tag(binary));
+        for marker in markers {
+            std::env::set_var(marker, "1");
+        }
+    }
+}
+
+/// Crusty's reproduction: a Claude Code session in a pane of a tmux server an
+/// `amplihack copilot` agent started holds `CLAUDECODE` and the server's
+/// `COPILOT_CLI=1` and `AMPLIHACK_AGENT_BINARY=copilot`. It resolves claude,
+/// from its own marker. Untagged, the copilot value answered from layer 1.
+#[test]
+fn a_launchers_description_does_not_outrank_a_live_claude_marker() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let tmp = TempDir::new().unwrap();
+    write_launcher_context(tmp.path(), "copilot");
+    set_described("copilot", &["CLAUDECODE", "COPILOT_CLI"]);
+    let resolution = agent_binary::resolve_detailed(tmp.path()).unwrap();
+    clear_env();
+    assert_eq!(resolution.binary, "claude");
+    assert_eq!(
+        resolution.source,
+        agent_binary::ResolutionSource::SessionMarker
+    );
+    assert_eq!(
+        resolution.session_marker.map(|m| m.variable),
+        Some("CLAUDECODE")
+    );
+}
+
+/// With no live marker, the description answers, from layer 2, above any
+/// launcher context, and the marker it reports is the tag's variable.
+#[test]
+fn a_launchers_description_alone_answers_from_layer_two() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let tmp = TempDir::new().unwrap();
+    write_launcher_context(tmp.path(), "claude");
+    set_described("codex", &[]);
+    let resolution = agent_binary::resolve_detailed(tmp.path()).unwrap();
+    clear_env();
+    assert_eq!(resolution.binary, "codex");
+    assert_eq!(
+        resolution.source,
+        agent_binary::ResolutionSource::SessionMarker
+    );
+    assert_eq!(
+        resolution.session_marker.map(|m| (m.variable, m.binary)),
+        Some((agent_binary::SOURCE_ENV, "codex"))
+    );
+}
+
+/// `recipe run` hands its steps `session:claude` and unsets `CLAUDECODE`. A
+/// Copilot marker those steps inherited from a tmux pane does not take them
+/// over.
+#[test]
+fn a_claude_description_outranks_a_copilot_marker() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let tmp = TempDir::new().unwrap();
+    set_described("claude", &["COPILOT_CLI"]);
+    let resolved = resolve(tmp.path()).unwrap();
+    clear_env();
+    assert_eq!(resolved, "claude");
+}
+
+/// An untagged value is still an instruction, above every marker; so is one
+/// set after a tag that named another binary.
+#[test]
+fn an_untagged_or_retagged_value_is_still_an_instruction() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let tmp = TempDir::new().unwrap();
+    clear_env();
+    // SAFETY: see clear_env.
+    unsafe {
+        std::env::set_var("CLAUDECODE", "1");
+        std::env::set_var("AMPLIHACK_AGENT_BINARY", "copilot");
+    }
+    let untagged = agent_binary::resolve_with_source(tmp.path()).unwrap();
+    unsafe {
+        std::env::set_var(agent_binary::SOURCE_ENV, "session:claude");
+    }
+    let retagged = agent_binary::resolve_with_source(tmp.path()).unwrap();
+    clear_env();
+    for resolved in [untagged, retagged] {
+        assert_eq!(
+            resolved,
+            ("copilot".to_string(), agent_binary::ResolutionSource::Env)
+        );
+    }
+}

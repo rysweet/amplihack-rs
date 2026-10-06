@@ -56,6 +56,16 @@
 //! a caller with no session marker (cron, a plain shell), since a marker
 //! outranks the file.
 //!
+//! An answer from a session marker crosses with the empty tag too, including
+//! one from an `AMPLIHACK_AGENT_BINARY` that a launcher tagged
+//! `session:<cli>` (crusty review of #1490 at baaafb18). Elsewhere amplihack
+//! exports such an answer tagged as a session description, so that it ranks
+//! with the markers of whatever runs below. The hand-off is different: it is
+//! the caller deciding what the far side runs, with every marker there
+//! removed. Tagged, the far side's run would take its own server's identical
+//! `session:<cli>` for the server's copy and name the server for an answer
+//! the caller gave.
+//!
 //! An answer read from a session marker that the tmux server's global
 //! environment also holds gets `AMPLIHACK_AGENT_BINARY_SOURCE=tmux_server:<marker
 //! variable>`. The marker may be the server starter's, not the caller's, and
@@ -254,6 +264,25 @@ mod tests {
                 "{source:?}"
             );
         }
+        // A launcher's `session:<cli>` export the server holds is named the
+        // same way, by the tag's variable (crusty review of #1490 at
+        // baaafb18).
+        let described = SessionMarker {
+            variable: amplihack_utils::agent_binary::SOURCE_ENV,
+            binary: "codex",
+        };
+        assert_eq!(
+            render(
+                &resolved("codex", ResolutionSource::SessionMarker),
+                true,
+                Some(described)
+            ),
+            format!(
+                "{} AMPLIHACK_AGENT_BINARY=codex \
+                 AMPLIHACK_AGENT_BINARY_SOURCE=tmux_server:AMPLIHACK_AGENT_BINARY_SOURCE",
+                unset_every_marker()
+            )
+        );
         // The plain form `detect_cli` reads is unchanged.
         assert_eq!(
             render(

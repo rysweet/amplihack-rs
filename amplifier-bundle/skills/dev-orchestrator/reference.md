@@ -41,9 +41,11 @@ echo "Recipe runner log: $LOG_FILE"
   `tmux new-session` gives the command the tmux server's environment, not
   yours, and tmux copied that from whatever process started the server. Your
   markers are missing there, and the starter's are present. If another
-  agent's Copilot session started the server, the run sees `COPILOT_CLI=1`
-  and runs every step under copilot, though you launched it from Claude Code;
-  if a plain shell started it, the run takes the default. It works whenever
+  agent's Copilot session started the server, the run sees `COPILOT_CLI=1`,
+  and from an `amplihack copilot` session also
+  `AMPLIHACK_AGENT_BINARY=copilot` tagged `session:copilot`, and runs every
+  step under copilot, though you launched it from Claude Code; if a plain
+  shell started it, the run takes the default. It works whenever
   your own CLI happened to start the server, so it can work for weeks and
   then stop (#1335, #1525). The `env -u` part removes the server's markers;
   the assignments carry yours. When nothing identifies your CLI, the value is

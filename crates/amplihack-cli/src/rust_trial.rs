@@ -153,12 +153,11 @@ fn build_trial_env_with(
     }
 
     // Issue #1481: a default-layer answer is tagged so descendants treat it as
-    // the guess it is.
-    if source == amplihack_utils::agent_binary::ResolutionSource::Default {
-        env.insert(
-            amplihack_utils::agent_binary::SOURCE_ENV.to_string(),
-            amplihack_utils::agent_binary::default_guess_tag(&resolved),
-        );
+    // the guess it is, and a marker's or a launcher context's as a description
+    // of a session, which ranks with their own markers (crusty review of #1490
+    // at baaafb18). Only an explicit answer is handed on as an instruction.
+    if let Some(tag) = amplihack_utils::agent_binary::export_tag(&resolved, source) {
+        env.insert(amplihack_utils::agent_binary::SOURCE_ENV.to_string(), tag);
     }
     env.insert("AMPLIHACK_AGENT_BINARY".to_string(), resolved);
 
@@ -357,31 +356,32 @@ mod tests {
         assert!(env.contains_key("PATH"));
     }
 
-    /// Issue #1481 / quality-audit S1: only a default-layer answer is tagged.
+    /// Issue #1481 / quality-audit S1: a default-layer answer is tagged as a
+    /// guess, a marker's or a launcher context's as a session description
+    /// (crusty review of #1490 at baaafb18), and only an explicit answer is
+    /// handed on untagged.
     #[test]
-    fn build_trial_env_tags_only_a_default_layer_answer() {
+    fn build_trial_env_tags_every_answer_but_an_explicit_one() {
         use amplihack_utils::agent_binary::{ResolutionSource, SOURCE_ENV};
         let home = PathBuf::from("/test/trial");
 
-        let env = build_trial_env_with(&home, ("copilot".to_string(), ResolutionSource::Default));
-        assert_eq!(env["AMPLIHACK_AGENT_BINARY"], "copilot");
-        assert_eq!(
-            env.get(SOURCE_ENV).map(String::as_str),
-            Some("default:copilot")
-        );
-
-        for source in [
-            ResolutionSource::Env,
-            ResolutionSource::SessionMarker,
-            ResolutionSource::LauncherContext,
+        for (source, tag) in [
+            (ResolutionSource::Default, "default:copilot"),
+            (ResolutionSource::SessionMarker, "session:copilot"),
+            (ResolutionSource::LauncherContext, "session:copilot"),
         ] {
-            let env = build_trial_env_with(&home, ("claude".to_string(), source));
-            assert_eq!(env["AMPLIHACK_AGENT_BINARY"], "claude");
-            assert!(
-                !env.contains_key(SOURCE_ENV),
-                "{source:?} must not be tagged"
+            let env = build_trial_env_with(&home, ("copilot".to_string(), source));
+            assert_eq!(env["AMPLIHACK_AGENT_BINARY"], "copilot");
+            assert_eq!(
+                env.get(SOURCE_ENV).map(String::as_str),
+                Some(tag),
+                "{source:?}"
             );
         }
+
+        let env = build_trial_env_with(&home, ("claude".to_string(), ResolutionSource::Env));
+        assert_eq!(env["AMPLIHACK_AGENT_BINARY"], "claude");
+        assert!(!env.contains_key(SOURCE_ENV), "an instruction is untagged");
     }
 
     /// Quality-audit C3-3(c): the production wrapper passes the resolver's real

@@ -65,9 +65,12 @@ impl fmt::Display for LauncherType {
 /// Detect which launcher environment is hosting this process.
 ///
 /// Checks environment variables in priority order:
-/// 1. `AMPLIHACK_AGENT_BINARY` — explicit override (value contains "claude" or "copilot")
-/// 2. `CLAUDE_CODE` / `CLAUDE_PROJECT_DIR` — Claude Code session markers
-/// 3. `COPILOT_CLI` / `GITHUB_COPILOT` — Copilot CLI session markers
+/// 1. `AMPLIHACK_AGENT_BINARY` — explicit override (value contains "claude" or
+///    "copilot"), unless tagged `AMPLIHACK_AGENT_BINARY_SOURCE=session:<binary>`
+/// 2. `CLAUDE_CODE` / `CLAUDE_PROJECT_DIR` — Claude Code session markers, then
+///    a `session:claude` value
+/// 3. `COPILOT_CLI` / `GITHUB_COPILOT` — Copilot CLI session markers, then a
+///    `session:copilot` value
 ///
 /// Returns [`LauncherType::Unknown`] if no markers are found.
 pub fn detect_launcher() -> LauncherType {
@@ -168,8 +171,19 @@ impl EnvReader {
 }
 
 fn detect_launcher_from(env: EnvReader) -> LauncherType {
+    use crate::agent_binary::{BINARY_ENV, SOURCE_ENV, session_described};
+    let agent_binary = env.var(BINARY_ENV);
+    // A value amplihack exported to describe a session, tagged
+    // `session:<binary>`, is not an instruction. It ranks with the markers of
+    // the CLI it names, as in the resolver (crusty review of #1490 at
+    // baaafb18): a Claude Code session in a pane of a tmux server that an
+    // `amplihack copilot` session started holds the server's
+    // `AMPLIHACK_AGENT_BINARY=copilot`, and is still a Claude Code session.
+    let described = session_described(agent_binary.as_deref(), env.var(SOURCE_ENV).as_deref())
+        .map(|marker| marker.binary);
+
     // 1. Explicit agent binary override.
-    if let Some(binary) = env.var("AMPLIHACK_AGENT_BINARY") {
+    if let Some(binary) = agent_binary.filter(|_| described.is_none()) {
         let lower = binary.to_lowercase();
         if lower.contains("claude") {
             return LauncherType::ClaudeCode;
@@ -179,13 +193,19 @@ fn detect_launcher_from(env: EnvReader) -> LauncherType {
         }
     }
 
-    // 2. Claude Code session markers.
-    if env.var("CLAUDE_CODE").is_some() || env.var("CLAUDE_PROJECT_DIR").is_some() {
+    // 2. Claude Code session markers, then a description of a Claude session.
+    if env.var("CLAUDE_CODE").is_some()
+        || env.var("CLAUDE_PROJECT_DIR").is_some()
+        || described == Some("claude")
+    {
         return LauncherType::ClaudeCode;
     }
 
-    // 3. Copilot CLI session markers.
-    if env.var("COPILOT_CLI").is_some() || env.var("GITHUB_COPILOT").is_some() {
+    // 3. Copilot CLI session markers, then a description of a Copilot session.
+    if env.var("COPILOT_CLI").is_some()
+        || env.var("GITHUB_COPILOT").is_some()
+        || described == Some("copilot")
+    {
         return LauncherType::CopilotCli;
     }
 
@@ -243,6 +263,36 @@ mod tests {
     #[test]
     fn agent_binary_takes_priority_over_session_markers() {
         let env = EnvReader::Test(&[("AMPLIHACK_AGENT_BINARY", "copilot"), ("CLAUDE_CODE", "1")]);
+        assert_eq!(detect_launcher_from(env), LauncherType::CopilotCli);
+    }
+
+    /// Crusty review of #1490 at baaafb18: a launcher's own export describes
+    /// its session. In a Claude Code session it does not decide.
+    #[test]
+    fn a_session_description_ranks_with_the_markers_of_its_cli() {
+        let env = EnvReader::Test(&[
+            ("AMPLIHACK_AGENT_BINARY", "copilot"),
+            ("AMPLIHACK_AGENT_BINARY_SOURCE", "session:copilot"),
+            ("CLAUDE_CODE", "1"),
+        ]);
+        assert_eq!(detect_launcher_from(env), LauncherType::ClaudeCode);
+        let env = EnvReader::Test(&[
+            ("AMPLIHACK_AGENT_BINARY", "claude"),
+            ("AMPLIHACK_AGENT_BINARY_SOURCE", "session:claude"),
+            ("COPILOT_CLI", "1"),
+        ]);
+        assert_eq!(detect_launcher_from(env), LauncherType::ClaudeCode);
+        let env = EnvReader::Test(&[
+            ("AMPLIHACK_AGENT_BINARY", "copilot"),
+            ("AMPLIHACK_AGENT_BINARY_SOURCE", "session:copilot"),
+        ]);
+        assert_eq!(detect_launcher_from(env), LauncherType::CopilotCli);
+        // A value set after the tag is an instruction again.
+        let env = EnvReader::Test(&[
+            ("AMPLIHACK_AGENT_BINARY", "copilot"),
+            ("AMPLIHACK_AGENT_BINARY_SOURCE", "session:claude"),
+            ("CLAUDE_CODE", "1"),
+        ]);
         assert_eq!(detect_launcher_from(env), LauncherType::CopilotCli);
     }
 

@@ -124,8 +124,8 @@ following resolution precedence and is the subject under test:
 
 | Priority | Source | Notes |
 |----------|--------|-------|
-| 1 | `AMPLIHACK_AGENT_BINARY` env var | Allowlist-validated; invalid values fall through. Skipped while tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary>` |
-| 2 | Live session marker (`agent_binary::SESSION_MARKERS`) | e.g. `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `COPILOT_CLI` |
+| 1 | `AMPLIHACK_AGENT_BINARY` env var | Allowlist-validated; invalid values fall through. Skipped while tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary>` or `session:<same binary>` |
+| 2 | Live session marker (`agent_binary::SESSION_MARKERS`) | e.g. `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `COPILOT_CLI`. A `session:<binary>`-tagged value ranks after the markers of the CLI it names (`agent_binary::rank_session_markers`) |
 | 3 | `<repo>/.claude/runtime/launcher_context.json` `launcher` field | Used only while fresh and trusted |
 | 4 | Built-in default | Always `"copilot"` |
 

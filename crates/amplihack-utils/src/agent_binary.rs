@@ -3,16 +3,29 @@
 //! Resolution precedence:
 //! 1. `AMPLIHACK_AGENT_BINARY` env var (explicit override; CI/testing).
 //! 2. A live session marker in this process's environment -- the CLI actually
-//!    hosting this process, which outranks any file on disk.
+//!    hosting this process, which outranks any file on disk. An
+//!    `AMPLIHACK_AGENT_BINARY` that amplihack itself exported to describe a
+//!    session ranks here too, among the markers of the CLI it names.
 //! 3. `<cwd-or-ancestor>/.claude/runtime/launcher_context.json` `launcher` field
 //!    (persisted state, possibly written by a different session).
 //! 4. Built-in default: `"copilot"`.
 //!
-//! An `AMPLIHACK_AGENT_BINARY` that a parent exported from layer 4 carries
-//! [`SOURCE_ENV`]`=default:<binary>` beside it. While the two still agree, the
-//! value is a guess handed down, not an instruction, so layer 1 ignores it and
-//! the lower layers answer again (issue #1481). Anyone who later sets a
-//! different binary has made a choice, and the stale tag no longer applies.
+//! Only an `AMPLIHACK_AGENT_BINARY` with no [`SOURCE_ENV`] tag beside it is an
+//! instruction. amplihack tags every value it exports itself, because that
+//! value only reports what amplihack saw:
+//!
+//! * `default:<binary>`: a parent fell back to layer 4. While the tag still
+//!   names the value, it is a guess handed down, so layer 1 ignores it and the
+//!   lower layers answer again (issue #1481).
+//! * `session:<binary>`: a launcher (`amplihack copilot`, ...) named the
+//!   session it started, or `recipe run` passed its answer to its steps. That
+//!   is evidence of the same kind as `COPILOT_CLI`, so it ranks among the
+//!   session markers instead of above them (crusty review of #1490 at
+//!   baaafb18; see [`session_tag`]).
+//!
+//! Either tag describes only the value it was exported with. Anyone who later
+//! sets a different binary has made a choice, and the stale tag no longer
+//! applies.
 //!
 //! All inputs are validated against a strict allowlist to prevent the resolved
 //! value from being used as an arbitrary `Command::new` target by downstream
@@ -68,6 +81,11 @@ pub const BINARY_ENV: &str = "AMPLIHACK_AGENT_BINARY";
 /// chosen codex, and must not be overruled by a tag describing an earlier
 /// guess.
 ///
+/// A launcher, and `recipe run` for an answer it did not get from layer 1,
+/// export `session:<binary>` instead -- see [`session_tag`]. That value is not
+/// a guess either, but it is not an instruction: it ranks with the session
+/// markers.
+///
 /// `amplihack agent-binary --shell` writes one other value,
 /// `tmux_server:<marker variable>` -- see [`tmux_server_marker_tag`]. It is not
 /// a guess, and layer 1 honours the value it sits beside; it only lets the
@@ -77,6 +95,139 @@ pub const SOURCE_ENV: &str = "AMPLIHACK_AGENT_BINARY_SOURCE";
 /// The [`SOURCE_ENV`] value marking `binary` as a default-layer guess.
 pub fn default_guess_tag(binary: &str) -> String {
     format!("{}:{binary}", ResolutionSource::Default.label())
+}
+
+/// Prefix of a [`session_tag`].
+const SESSION_TAG: &str = "session";
+
+/// The [`SOURCE_ENV`] value marking `binary` as a description of a session
+/// amplihack launched or observed, not an instruction.
+///
+/// Crusty review of #1490 at baaafb18: `amplihack copilot` used to export
+/// `AMPLIHACK_AGENT_BINARY=copilot` untagged, which outranks every session
+/// marker. tmux copies the environment of whatever starts its server into the
+/// server's global environment, and every later session starts from that copy
+/// (tmux(1), GLOBAL AND SESSION ENVIRONMENT). An agent of that Copilot session
+/// that started a server therefore handed `copilot` to every session on it,
+/// and a Claude Code session in one of its panes ran every recipe step under
+/// copilot, through the documented hand-off as well, since the caller itself
+/// resolved the explicit value. A launcher's export only says which session
+/// it started, which is the same kind of evidence as `COPILOT_CLI`. With this
+/// tag it ranks among the session markers (see [`rank_session_markers`]), so
+/// the CLI actually running in that pane answers.
+///
+/// `recipe run` exports its answer to its steps the same way unless that
+/// answer came from layer 1. A step that starts a tmux server would otherwise
+/// leak the run's answer into the server as an instruction.
+pub fn session_tag(binary: &str) -> String {
+    format!("{SESSION_TAG}:{binary}")
+}
+
+/// The [`SOURCE_ENV`] value to export beside `binary`, which the resolver
+/// answered from `source`, or `None` when the value is exported as an
+/// instruction, untagged.
+///
+/// Only layer 1 hands on an instruction, because only there did someone
+/// choose. A guess is tagged as one ([`default_guess_tag`]). A marker or a
+/// launcher context only describes a session ([`session_tag`]).
+pub fn export_tag(binary: &str, source: ResolutionSource) -> Option<String> {
+    match source {
+        ResolutionSource::Env => None,
+        ResolutionSource::SessionMarker | ResolutionSource::LauncherContext => {
+            Some(session_tag(binary))
+        }
+        ResolutionSource::Default => Some(default_guess_tag(binary)),
+    }
+}
+
+/// The session marker that `binary`, exported with `tag`, amounts to: the
+/// [`SOURCE_ENV`] variable, implying the binary its [`session_tag`] names.
+///
+/// `None` unless `tag` is `session:<binary>` for this same binary. Like the
+/// guess tag, the tag describes only the value it was exported with: a
+/// different value set later is an instruction.
+pub fn session_described(binary: Option<&str>, tag: Option<&str>) -> Option<SessionMarker> {
+    let binary = binary.and_then(validate_binary_name)?;
+    if tag?.trim() == session_tag(&binary) {
+        tag_marker(&binary)
+    } else {
+        None
+    }
+}
+
+/// [`session_described`] for this process's own [`BINARY_ENV`] and
+/// [`SOURCE_ENV`].
+pub fn inherited_session_described() -> Option<SessionMarker> {
+    session_described(
+        std::env::var(BINARY_ENV).ok().as_deref(),
+        std::env::var(SOURCE_ENV).ok().as_deref(),
+    )
+}
+
+/// The marker a tag on [`BINARY_ENV`] makes of `binary`, which must already be
+/// a validated name. Its variable is [`SOURCE_ENV`], whose value is what the
+/// tmux check compares and what makes `binary` session evidence at all.
+fn tag_marker(binary: &str) -> Option<SessionMarker> {
+    ALLOWED_BINARIES
+        .iter()
+        .find(|&&allowed| allowed == binary)
+        .map(|&binary| SessionMarker {
+            variable: SOURCE_ENV,
+            binary,
+        })
+}
+
+/// Which of the first live marker in [`SESSION_MARKERS`] order and a
+/// [`session_described`] value answers layer 2.
+///
+/// The described value ranks among the markers of the CLI it names, after
+/// them: `session:claude` with Claude's markers, ahead of Copilot's;
+/// `session:copilot` after Copilot's; codex and amplifier, which export no
+/// marker, after every marker. So it loses to a marker of its own CLI or of a
+/// CLI listed earlier, and beats a marker of a CLI listed later, exactly as two
+/// markers would.
+///
+/// It must not simply rank last. `recipe run` unsets `CLAUDECODE` for its
+/// steps, so that a `claude` step can start, and hands them `session:claude`
+/// instead. In a pane of a tmux server started from a Copilot session, each of
+/// those steps also holds the server's `COPILOT_CLI`. Ranked last, that marker
+/// would take over a run its top level had resolved to claude.
+pub fn rank_session_markers(
+    live: Option<SessionMarker>,
+    described: Option<SessionMarker>,
+) -> Option<SessionMarker> {
+    match (live, described) {
+        (Some(live), Some(described))
+            if marker_rank(described.binary) < marker_rank(live.binary) =>
+        {
+            Some(described)
+        }
+        (Some(live), _) => Some(live),
+        (None, described) => described,
+    }
+}
+
+/// Where the first [`SESSION_MARKERS`] entry implying `binary` sits, or after
+/// all of them for a binary no marker implies.
+fn marker_rank(binary: &str) -> usize {
+    SESSION_MARKERS
+        .iter()
+        .position(|&(_, implied)| implied == binary)
+        .unwrap_or(SESSION_MARKERS.len())
+}
+
+/// Every [`SESSION_MARKERS`] variable that implies a CLI other than `tool`.
+///
+/// A launcher removes these from the CLI it starts. A Copilot session started
+/// from a Claude Code shell would otherwise inherit `CLAUDECODE`, which ranks
+/// above the launcher's own `session:copilot`, and resolve to claude: the
+/// mirror image of crusty's review of #1490 at baaafb18. The launched CLI
+/// sets its own markers again; another CLI's are stale by definition.
+pub fn other_clis_markers(tool: &str) -> impl Iterator<Item = &'static str> + '_ {
+    SESSION_MARKERS
+        .iter()
+        .filter(move |&&(_, binary)| binary != tool)
+        .map(|&(variable, _)| variable)
 }
 
 /// Prefix of a [`tmux_server_marker_tag`].
@@ -104,12 +255,19 @@ pub fn tmux_server_marker_tag(marker: SessionMarker) -> String {
 /// Like [`is_default_guess`], the tag describes only the value it was handed
 /// on with. A tag naming a marker of another CLI, or a variable that is not in
 /// [`SESSION_MARKERS`], says nothing about the binary now set.
+///
+/// The one variable outside that list it accepts is [`SOURCE_ENV`] itself: the
+/// marker a [`session_tag`] makes, which implies whatever binary it was
+/// exported with.
 pub fn tmux_server_marker(binary: Option<&str>, tag: Option<&str>) -> Option<SessionMarker> {
     let binary = binary.and_then(validate_binary_name)?;
     let variable = tag?
         .trim()
         .strip_prefix(TMUX_SERVER_TAG)?
         .strip_prefix(':')?;
+    if variable == SOURCE_ENV {
+        return tag_marker(&binary);
+    }
     SESSION_MARKERS
         .iter()
         .find(|&&(name, implied)| name == variable && implied == binary)
@@ -142,10 +300,15 @@ const ANCESTOR_WALK_LIMIT: usize = 32;
 /// timeout policy than the session the user is actually sitting in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResolutionSource {
-    /// `AMPLIHACK_AGENT_BINARY` was set and valid.
+    /// `AMPLIHACK_AGENT_BINARY` was set and valid, and not tagged as a guess
+    /// or as a session description.
     Env,
     /// Determined from a live session marker in this process's environment.
     /// The session that is actually running, and it outranks any file.
+    ///
+    /// Also an `AMPLIHACK_AGENT_BINARY` tagged [`session_tag`], which amplihack
+    /// exported to describe a session; [`Resolution::session_marker`] then has
+    /// [`SOURCE_ENV`] as its variable.
     SessionMarker,
     /// Read from a persisted `launcher_context.json`, possibly written by an
     /// unrelated earlier session in the same repo.
@@ -283,6 +446,10 @@ pub struct Resolution {
     /// that copy, so a marker inside tmux can name the CLI that started the
     /// server rather than the one running now. The variable is kept so a
     /// caller can check that (`agent_binary_notice` in amplihack-cli).
+    ///
+    /// When an `AMPLIHACK_AGENT_BINARY` tagged [`session_tag`] answered, the
+    /// variable is [`SOURCE_ENV`]: it is the tag, not the value, that makes the
+    /// value session evidence, and it is what the tmux check compares.
     pub session_marker: Option<SessionMarker>,
 }
 
@@ -312,6 +479,12 @@ pub fn resolve_detailed(cwd: &Path) -> Result<Resolution, ResolveError> {
     // two could then drift without any test noticing.
     let from_env = if inherited_binary_is_default_guess() {
         debug!("ignoring an inherited AMPLIHACK_AGENT_BINARY that a parent guessed");
+        None
+    } else if inherited_session_described().is_some() {
+        debug!(
+            "an inherited AMPLIHACK_AGENT_BINARY describes a session; ranking it with the \
+             session markers"
+        );
         None
     } else {
         std::env::var(BINARY_ENV)
@@ -468,14 +641,18 @@ pub const SESSION_MARKERS: &[(&str, &str)] = &[
 /// Inside tmux the environment may be the server's copy of whatever started
 /// it, not the caller's; see [`Resolution::session_marker`].
 ///
+/// An `AMPLIHACK_AGENT_BINARY` tagged [`session_tag`] is one more marker, of
+/// the CLI it names; [`rank_session_markers`] says where it ranks.
+///
 /// Unlike a process-ancestry walk this needs no `/proc`, so it behaves the
 /// same on every platform.
 fn session_marker() -> Option<SessionMarker> {
-    SESSION_MARKERS.iter().find_map(|&(variable, binary)| {
+    let live = SESSION_MARKERS.iter().find_map(|&(variable, binary)| {
         std::env::var_os(variable)
             .is_some_and(|v| !v.is_empty())
             .then_some(SessionMarker { variable, binary })
-    })
+    });
+    rank_session_markers(live, inherited_session_described())
 }
 
 /// Why a launcher context found in `dir` cannot be trusted, or `None` when it
@@ -1250,6 +1427,176 @@ mod tests {
             }]
         );
         assert!(bad.exists());
+    }
+
+    // ---------------------------------------------------------------------
+    // Crusty review of #1490 at baaafb18 -- a value amplihack exported to
+    // describe a session ranks with the session markers, not above them.
+    // ---------------------------------------------------------------------
+
+    const CLAUDECODE: SessionMarker = SessionMarker {
+        variable: "CLAUDECODE",
+        binary: "claude",
+    };
+
+    fn described(binary: &'static str) -> SessionMarker {
+        SessionMarker {
+            variable: SOURCE_ENV,
+            binary,
+        }
+    }
+
+    /// The tag is bound to the value it was exported with, like the guess tag.
+    #[test]
+    fn a_session_tag_describes_only_its_own_value() {
+        assert_eq!(session_tag("copilot"), "session:copilot");
+        assert_eq!(
+            session_described(Some("copilot"), Some("session:copilot")),
+            Some(described("copilot"))
+        );
+        assert_eq!(
+            session_described(Some(" Copilot "), Some(" session:copilot ")),
+            Some(described("copilot"))
+        );
+        // A value set after the tag is an instruction.
+        assert_eq!(
+            session_described(Some("claude"), Some("session:copilot")),
+            None
+        );
+        for tag in [
+            "session",
+            "session:",
+            "session: copilot",
+            "SESSION:copilot",
+            "default:copilot",
+            "tmux_server:COPILOT_CLI",
+            "",
+        ] {
+            assert_eq!(
+                session_described(Some("copilot"), Some(tag)),
+                None,
+                "{tag:?}"
+            );
+        }
+        assert_eq!(session_described(None, Some("session:copilot")), None);
+        assert_eq!(session_described(Some("copilot"), None), None);
+        assert_eq!(session_described(Some("vim"), Some("session:vim")), None);
+        // Not a guess either: nothing skips it as one.
+        assert!(!is_default_guess(Some("copilot"), Some("session:copilot")));
+    }
+
+    /// Crusty's reproduction: a Claude Code session in a pane of a server an
+    /// `amplihack copilot` agent started holds `CLAUDECODE` and the server's
+    /// `session:copilot`. The live Claude marker answers.
+    #[test]
+    fn a_live_marker_outranks_a_description_of_a_cli_listed_after_it() {
+        assert_eq!(
+            rank_session_markers(Some(CLAUDECODE), Some(described("copilot"))),
+            Some(CLAUDECODE)
+        );
+        let copilot_cli = SessionMarker {
+            variable: "COPILOT_CLI",
+            binary: "copilot",
+        };
+        for binary in ["copilot", "codex", "amplifier"] {
+            assert_eq!(
+                rank_session_markers(Some(copilot_cli), Some(described(binary))),
+                Some(copilot_cli),
+                "{binary}"
+            );
+        }
+        assert_eq!(
+            rank_session_markers(Some(CLAUDECODE), Some(described("claude"))),
+            Some(CLAUDECODE)
+        );
+    }
+
+    /// `recipe run` unsets `CLAUDECODE` for its steps and hands them
+    /// `session:claude`. A Copilot marker the tmux server put in the pane must
+    /// not take the steps over.
+    #[test]
+    fn a_description_outranks_a_marker_of_a_cli_listed_after_it() {
+        let copilot_cli = SessionMarker {
+            variable: "COPILOT_CLI",
+            binary: "copilot",
+        };
+        assert_eq!(
+            rank_session_markers(Some(copilot_cli), Some(described("claude"))),
+            Some(described("claude"))
+        );
+    }
+
+    /// With no live marker, the description answers for any CLI, including
+    /// the ones that export no marker of their own.
+    #[test]
+    fn a_description_alone_answers() {
+        for &binary in ALLOWED_BINARIES {
+            assert_eq!(
+                rank_session_markers(None, Some(described(binary))),
+                Some(described(binary))
+            );
+        }
+        assert_eq!(rank_session_markers(None, None), None);
+        assert_eq!(
+            rank_session_markers(Some(CLAUDECODE), None),
+            Some(CLAUDECODE)
+        );
+    }
+
+    /// Only an instruction is exported untagged.
+    #[test]
+    fn only_an_explicit_answer_is_exported_untagged() {
+        assert_eq!(export_tag("claude", ResolutionSource::Env), None);
+        assert_eq!(
+            export_tag("claude", ResolutionSource::SessionMarker).as_deref(),
+            Some("session:claude")
+        );
+        assert_eq!(
+            export_tag("codex", ResolutionSource::LauncherContext).as_deref(),
+            Some("session:codex")
+        );
+        assert_eq!(
+            export_tag("copilot", ResolutionSource::Default).as_deref(),
+            Some("default:copilot")
+        );
+    }
+
+    /// The hand-off names the tag's variable when a server-held description
+    /// answered, and the far side reads it back for whatever binary it names.
+    #[test]
+    fn a_tmux_server_tag_can_name_the_session_tag() {
+        let tag = tmux_server_marker_tag(described("codex"));
+        assert_eq!(tag, "tmux_server:AMPLIHACK_AGENT_BINARY_SOURCE");
+        for &binary in ALLOWED_BINARIES {
+            assert_eq!(
+                tmux_server_marker(Some(binary), Some(&tag)),
+                Some(described(binary))
+            );
+        }
+        assert_eq!(tmux_server_marker(Some("vim"), Some(&tag)), None);
+        assert_eq!(
+            tmux_server_marker(Some("codex"), Some("tmux_server:AMPLIHACK_AGENT_BINARY")),
+            None
+        );
+    }
+
+    /// A launcher strips every marker of every other CLI, and none of its own.
+    #[test]
+    fn other_clis_markers_are_every_marker_but_the_launched_clis() {
+        let claude: Vec<_> = other_clis_markers("claude").collect();
+        assert!(claude.contains(&"COPILOT_CLI"), "{claude:?}");
+        assert!(!claude.contains(&"CLAUDECODE"), "{claude:?}");
+        let copilot: Vec<_> = other_clis_markers("copilot").collect();
+        assert!(copilot.contains(&"CLAUDECODE"), "{copilot:?}");
+        assert!(copilot.contains(&"CLAUDE_CODE_ENTRYPOINT"), "{copilot:?}");
+        assert!(!copilot.contains(&"COPILOT_CLI"), "{copilot:?}");
+        for tool in ["codex", "amplifier"] {
+            assert_eq!(
+                other_clis_markers(tool).count(),
+                SESSION_MARKERS.len(),
+                "{tool}"
+            );
+        }
     }
 
     /// A stale file is passed over without being listed.

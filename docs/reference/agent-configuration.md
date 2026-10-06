@@ -205,8 +205,8 @@ Configuration is resolved in this order (highest to lowest priority):
 
 The active agent binary (`claude` | `copilot` | `codex` | `amplifier`) follows its **own** precedence, distinct from the general config precedence above:
 
-1. `AMPLIHACK_AGENT_BINARY` env var (explicit override; CI / testing / back-compat), skipped while tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary>`
-2. A live session marker exported by the hosting CLI (`CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `COPILOT_CLI`, ...)
+1. `AMPLIHACK_AGENT_BINARY` env var (explicit override; CI / testing / back-compat), skipped while tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary>` or `session:<same binary>`
+2. A live session marker exported by the hosting CLI (`CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `COPILOT_CLI`, ...). An `AMPLIHACK_AGENT_BINARY` tagged `session:<binary>`, which a launcher or `recipe run` exported to describe a session, ranks here, after the markers of the CLI it names
 3. `<repo>/.claude/runtime/launcher_context.json` `launcher` field (persisted, possibly by a different session; used only while fresh)
 4. Built-in default: **`copilot`**
 

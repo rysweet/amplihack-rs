@@ -898,7 +898,9 @@ fn a_launch_not_picked_by_the_default_layer_still_persists() {
 
 /// Quality-audit S3: a launcher that ran on an inherited guess naming itself
 /// hands the guess on still tagged, so a launcher nested below it does not
-/// persist it either. Any other launch exports an untagged, chosen value.
+/// persist it either. Any other launch describes the session it starts: it is
+/// tagged `session:<tool>`, not handed on as an instruction (crusty review of
+/// #1490 at baaafb18), and a nested launcher still persists it.
 #[test]
 fn a_launch_on_a_default_guess_hands_the_guess_on_tagged() {
     use crate::env_builder::launch_binary_source;
@@ -929,13 +931,32 @@ fn a_launch_on_a_default_guess_hands_the_guess_on_tagged() {
         ("copilot", None, None),
         ("copilot", None, Some("default:copilot")),
         ("copilot", Some("claude"), Some("default:copilot")),
+        ("copilot", Some("copilot"), Some("session:copilot")),
     ] {
         assert_eq!(
             launch_binary_source(tool, &inherited(binary, tag)),
-            ResolutionSource::Env,
+            ResolutionSource::SessionMarker,
             "{tool} with {binary:?}/{tag:?} was chosen"
         );
     }
+
+    // A launch on a session description is not a guess: it hands on a
+    // description of its own, and a nested launcher records it.
+    let described = inherited(Some("copilot"), Some("session:copilot"));
+    let env = EnvBuilder::new()
+        .with_launched_agent_binary_from("copilot", &described)
+        .build();
+    assert_eq!(
+        env.get(SOURCE_ENV).map(String::as_str),
+        Some("session:copilot")
+    );
+    let child = |key: &str| env.get(key).cloned();
+    let dir = tempfile::tempdir().unwrap();
+    persist_launcher_context_with("copilot", Some(dir.path()), &[], &child).unwrap();
+    assert_eq!(
+        read_launcher_context(dir.path()).map(|c| c.launcher),
+        Some(LauncherKind::Copilot)
+    );
 }
 
 /// A non-launcher subcommand must not stamp the repository at all.

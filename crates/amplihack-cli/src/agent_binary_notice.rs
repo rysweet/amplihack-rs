@@ -24,6 +24,21 @@
 //! variable, and never claims the run was started from a session it cannot see
 //! (crusty review of #1490).
 //!
+//! The same server also holds whatever `AMPLIHACK_AGENT_BINARY` its starter
+//! had. A server started by an agent of an `amplihack copilot` session holds
+//! the launcher's `AMPLIHACK_AGENT_BINARY=copilot` beside `COPILOT_CLI=1`, and
+//! while that export was untagged it outranked every marker: a Claude Code
+//! session in a pane of the server ran its steps under copilot, and a far side
+//! launched without the hand-off answered from layer 1, so this check was never
+//! asked (crusty review of #1490 at baaafb18). The launcher now tags it
+//! `session:copilot`, and the resolver ranks it with the markers of the CLI it
+//! names. A pane's own Claude marker then answers. A far side with nothing of
+//! the caller's answers from the server's markers, and this check names them.
+//! When the tag itself answers, which happens for codex and amplifier, since
+//! they export no marker of their own, the variable named is
+//! `AMPLIHACK_AGENT_BINARY_SOURCE`, and its value is what the server is asked
+//! about.
+//!
 //! The check compares a per-session ID where the CLI exports one. Claude Code
 //! sets `CLAUDECODE=1` in every session, so a Claude Code session in a pane of
 //! a server another Claude Code session started holds the same `CLAUDECODE`
@@ -59,7 +74,12 @@ use amplihack_utils::agent_binary::{
 pub(crate) enum EnvBinaryValue {
     /// Not set.
     Unset,
-    /// Set to an allowlisted name the resolver would use.
+    /// Set to an allowlisted name the resolver would use: as an instruction,
+    /// or, when tagged `session:<binary>`, as a session marker
+    /// (`amplihack_utils::agent_binary::session_tag`). In the second case it
+    /// can only be what answered or what a live marker outranked, and neither
+    /// needs words of its own: the first is announced like any marker the tmux
+    /// server holds, and the second is the right answer.
     Usable,
     /// Set, but tagged as a parent's default guess for the same binary.
     InheritedGuess,
@@ -891,6 +911,58 @@ mod tests {
             ]
         ));
         assert!(!holds(&from_claude, COPILOT_CLI, &[("COPILOT_CLI", "1")]));
+    }
+
+    /// Crusty review of #1490 at baaafb18: a launcher's `session:<cli>` export
+    /// is a marker of that CLI. When it is what answered, the tmux server is
+    /// asked about the tag's own value, and a server started from that session
+    /// holds the same one.
+    #[cfg(unix)]
+    #[test]
+    fn a_session_tag_the_tmux_server_holds_is_named_like_a_marker() {
+        use amplihack_utils::agent_binary::SOURCE_ENV;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let tmux = dir.path().join("tmux");
+        std::fs::write(
+            &tmux,
+            "#!/bin/sh\n[ \"$1 $2 $3\" = \"show-environment -g AMPLIHACK_AGENT_BINARY_SOURCE\" ] \
+             && echo AMPLIHACK_AGENT_BINARY_SOURCE=session:codex && exit 0\n\
+             echo \"unknown variable: $3\" >&2\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&tmux, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let described = SessionMarker {
+            variable: SOURCE_ENV,
+            binary: "codex",
+        };
+        let holds = |tag: &'static str| {
+            tmux_server_holds_marker(tmux.as_os_str(), described, |name| {
+                (name == SOURCE_ENV).then(|| tag.into())
+            })
+        };
+        assert!(holds("session:codex"));
+        assert!(!holds("session:claude"));
+
+        let mut resolution = resolved("codex", ResolutionSource::SessionMarker);
+        resolution.session_marker = Some(described);
+        assert_eq!(
+            agent_binary_notice(LEAD, &resolution, EnvBinaryValue::Usable, true).as_deref(),
+            Some(
+                "amplihack: agent steps will run under 'codex' (AMPLIHACK_AGENT_BINARY_SOURCE is \
+                 set, but this tmux server's global environment holds the same value, so it may \
+                 come from whatever started the server rather than from a codex session). To \
+                 hand a detached run the CLI you launch it from, prefix its command with \
+                 $(amplihack agent-binary --shell -w <dir>), inside double quotes; to choose \
+                 one, set AMPLIHACK_AGENT_BINARY."
+            )
+        );
+        // Outside a server that holds it, a description that answered is an
+        // observation like any marker, and says nothing.
+        assert_eq!(
+            agent_binary_notice(LEAD, &resolution, EnvBinaryValue::Usable, false),
+            None
+        );
     }
 
     /// Crusty round 2 of #1490: `agent-binary` was told to prefix a command

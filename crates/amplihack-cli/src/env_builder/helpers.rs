@@ -76,9 +76,19 @@ pub fn launched_on_a_default_guess(tool: &str, var: &dyn Fn(&str) -> Option<Stri
 /// itself persists nothing, but it used to re-export its own name untagged. A
 /// launcher nested below it then saw an explicit value and persisted it, so
 /// the guess became durable one level further down. Such a launch hands the
-/// guess on as a guess; any other launch is a choice. Every path that starts a
-/// launcher's child (`run_launch`, auto mode) goes through
+/// guess on as a guess.
+///
+/// Any other launch describes the session it starts, and is exported as
+/// [`ResolutionSource::SessionMarker`] evidence, tagged `session:<tool>`
+/// (crusty review of #1490 at baaafb18). It used to be exported untagged, as
+/// an instruction that outranked every session marker. A tmux server that an
+/// agent of the session started then gave that instruction to every later
+/// session on it, including a Claude Code session in a pane, whose recipe
+/// steps all ran under copilot. Every path that starts a launcher's child
+/// (`run_launch`, auto mode) goes through
 /// [`EnvBuilder::with_launched_agent_binary`](super::EnvBuilder::with_launched_agent_binary).
+///
+/// [`ResolutionSource::SessionMarker`]: amplihack_utils::agent_binary::ResolutionSource::SessionMarker
 pub fn launch_binary_source(
     tool: &str,
     var: &dyn Fn(&str) -> Option<String>,
@@ -87,7 +97,7 @@ pub fn launch_binary_source(
     if launched_on_a_default_guess(tool, var) {
         ResolutionSource::Default
     } else {
-        ResolutionSource::Env
+        ResolutionSource::SessionMarker
     }
 }
 
