@@ -115,6 +115,10 @@ cat >"${WORK}/psaux.jsonl" <<'EOF'
 {"role":"user","content":"how do I find the stuck worker"}
 {"role":"assistant","content":"Check the stuck worker with:\n```\nps aux | grep ingest worker\n```"}
 EOF
+cat >"${WORK}/export.jsonl" <<'EOF'
+{"role":"user","content":"when does the export run"}
+{"role":"assistant","content":"The nightly job is:\n```\n02:00 IST export of the DAS array to the ingest bucket\n```"}
+EOF
 cat >"${WORK}/bin.jsonl" <<'EOF'
 {"role":"user","content":"why do the workers crash on startup?"}
 {"role":"assistant","content":"The build copies files into the bin directory, and the workers die if it is missing."}
@@ -133,6 +137,7 @@ store "${WORK}/docslog.jsonl" general
 store "${WORK}/hooksbin.jsonl" builder
 store "${WORK}/parquet.jsonl" general
 store "${WORK}/psaux.jsonl" general
+store "${WORK}/export.jsonl" general
 store "${WORK}/detected.jsonl" ""
 store "${WORK}/css.jsonl" ""
 
@@ -228,6 +233,9 @@ if [ "$(count "${out}" "cargo run ingest parquet crash repro")" -eq 1 ]; then pa
 # `aux` is a shell word, not evidence of another language.
 out="$(ask "/fix grep ingest worker in ps aux")"
 if [ "$(count "${out}" "ps aux | grep ingest worker")" -eq 1 ]; then pass "a ps aux fence keeps its words"; else fail "ps aux memory missing: ${out}"; fi
+# Acronyms that are also German words (IST, DAS) are not evidence.
+out="$(ask "/fix the export of the array to the ingest bucket")"
+if [ "$(count "${out}" "export of the DAS array")" -eq 1 ]; then pass "an IST/DAS fence keeps its words"; else fail "export memory missing: ${out}"; fi
 
 echo
 echo "passed: ${PASS_COUNT}, failed: ${FAIL_COUNT}"

@@ -69,29 +69,35 @@ const FOREIGN_FUNCTION_WORDS: &[&str] = &[
 ];
 
 /// Function words of the same six languages (stopwords-iso) that are not
-/// English words, shell words or names: positive evidence that a code part
-/// of a memory (a pasted log) is in another language (see
+/// English words, shell words, acronyms or names: positive evidence that a
+/// code part of a memory (a pasted log) is in another language (see
 /// [`scored_terms`]). A command line has none of them. They are evidence
 /// only, never stop words, so a wrong entry costs recall on every fence
-/// that happens to contain it. Screened out for that reason: `aux` (`ps
-/// aux`), `pour` (English verb), `el` (`const el`, El Paso), `est` (EST,
+/// that happens to contain it; [`prose_word`] lower-cases, so an acronym or
+/// a name is a hit too. Screened out for that reason: `aux` (`ps aux`),
+/// `pour` (English verb), `el` (`const el`, El Paso), `est` (EST,
 /// estimate), `des` (DES), `il` (Illinois), `las`, `los` (Las Vegas, Los
-/// Angeles), `para` (paragraph, `para-`), `pas` (pas de deux), `uma` (a
-/// name), `que` (SMART), `non` (English prefix), `com` (domains).
+/// Angeles), `para` (paragraph, `para-`), `pas` (pas de deux), `ist` (IST,
+/// a time zone), `das` (DAS, storage), `dem` (DEM, elevation data), `les`,
+/// `una`, `che`, `della`, `nella`, `uma` (names), `que` (SMART), `non`
+/// (English prefix), `com` (domains). German, Dutch and French keep enough
+/// entries to carry a paste on their own; Italian keeps two.
 const FOREIGN_EVIDENCE: &[&str] = &[
     // German
-    "auch", "das", "dem", "der", "eine", "ich", "ist", "keine", "nicht", "noch", "sind", "und",
-    "wie", "wird", "wo", "zum", "zur", // Spanish
-    "está", "están", "pero", "por", "una", // French
-    "avec", "cette", "dans", "le", "les", "sur", "une", // Italian
-    "che", "della", "gli", "nella", "sono", // Portuguese
+    "auch", "der", "eine", "ich", "keine", "nicht", "noch", "sind", "und", "wie", "wird", "wo",
+    "zum", "zur", // Spanish
+    "está", "están", "pero", "por", // French
+    "avec", "cette", "dans", "le", "sur", "une", // Italian
+    "gli", "sono", // Portuguese
     "não", "são", "também", // Dutch
     "een", "het", "naar", "niet", "ook", "zijn",
 ];
 
-/// A code part is foreign on at least this much evidence: two listed
-/// words, or one listed word and a word with a non-ASCII letter. One
-/// accented word alone (`Jürgen Müller` in a git log) is not evidence.
+/// A code part is foreign on at least this much evidence, counted per code
+/// part (a paste is one fence): two listed words, or one listed word and a
+/// word with a non-ASCII letter. Accented words alone (`Jürgen Müller` in
+/// a git log) are not evidence, so a paste in a diacritic language outside
+/// the six (Polish, Czech, Turkish) is never demoted either.
 const MIN_FOREIGN_EVIDENCE: usize = 2;
 
 /// SMART words kept as topic words. SMART was built for news retrieval;
@@ -1807,7 +1813,7 @@ mod tests {
         // the accented loanword `café`) and lose its words.
         for word in [
             "aux", "pour", "el", "est", "des", "il", "las", "los", "para", "pas", "uma", "que",
-            "non", "com",
+            "non", "com", "ist", "das", "dem", "les", "una", "che", "della", "nella",
         ] {
             assert!(
                 !FOREIGN_EVIDENCE.contains(&word),
@@ -1819,6 +1825,43 @@ mod tests {
         assert!(
             format_agent_memory_context(prompt, &prompt_agents(prompt), &[memory(cafe)]).is_some(),
             "{cafe:?} is relevant to {prompt:?}"
+        );
+        // Two acronyms that are also German words are not evidence either:
+        // the fence scores the same as with acronyms that are not.
+        let prompt = "/fix the export of the array to the ingest bucket";
+        let [acronyms, control] = [("IST", "DAS"), ("UTC", "SAN")].map(|(zone, array)| {
+            format_agent_memory_context(
+                prompt,
+                &prompt_agents(prompt),
+                &[memory(&format!(
+                    "Agent general: assistant: The nightly job is:\n```\n02:00 {zone} export of the {array} array to the ingest bucket\n```"
+                ))],
+            )
+            .map(|text| text.split("relevance: ").nth(1).unwrap().to_string())
+        });
+        assert!(acronyms.is_some(), "the export memory is relevant");
+        assert_eq!(acronyms, control, "IST and DAS are not demoted");
+        // Evidence is counted per code part: two fences with one hit each
+        // both keep their words, where one fence holding both lines would
+        // be demoted.
+        let none = HashSet::new();
+        let two_fences = scored_terms(
+            "see:\n```\nFehler: der Spiegel weg\n```\nand\n```\nFehler: Spiegel nicht erreichbar\n```",
+            &none,
+        );
+        for word in ["spiegel", "weg", "erreichbar", "fehler"] {
+            assert!(
+                two_fences.contains(word),
+                "one hit per fence keeps {word:?}: {two_fences:?}"
+            );
+        }
+        let one_fence = scored_terms(
+            "see:\n```\nFehler: der Spiegel weg\nFehler: Spiegel nicht erreichbar\n```",
+            &none,
+        );
+        assert!(
+            one_fence.is_empty(),
+            "both hits in one fence demote it: {one_fence:?}"
         );
         // An accented name in an English fence is not evidence: the memory
         // scores the same as with no name at all (non-ASCII words are never
@@ -1850,7 +1893,7 @@ mod tests {
             }
         }
         for foreign in [
-            "see:\n```\nFehler: die Datei ist nicht gefunden, src/main.rs weg\n```",
+            "see:\n```\nFehler: die Datei wird nicht gefunden, src/main.rs weg\n```",
             "see:\n```\nFehler: größere Datei nicht gefunden, src/main.rs weg\n```",
             "see `erreur: le fichier src/main.rs manque dans les logs` there",
         ] {
