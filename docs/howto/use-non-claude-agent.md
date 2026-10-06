@@ -53,7 +53,8 @@ If `AMPLIHACK_AGENT_BINARY` is not set, or is rejected, amplihack uses the
 session markers of the CLI it is running in (for example `CLAUDECODE` or
 `COPILOT_CLI`), then a fresh `.claude/runtime/launcher_context.json`, then the
 default, `copilot`. `amplihack recipe run` and `amplihack agent-binary` print a
-notice on stderr whenever the answer was inferred rather than chosen. The full
+notice on stderr whenever the answer was inferred rather than chosen, and
+whenever the value you set was rejected, naming what answered instead. The full
 precedence is in
 [Active Agent Binary](../reference/active-agent-binary.md#resolution-precedence).
 

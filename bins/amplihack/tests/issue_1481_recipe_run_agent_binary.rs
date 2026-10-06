@@ -245,6 +245,28 @@ fn a_rejected_value_is_reported_as_rejected() {
     );
 }
 
+/// Crusty review of #1490 at 7053698c: inside a Copilot CLI session, the same
+/// rejected value lost to `COPILOT_CLI` without a word. `recipe run` now says
+/// so once, at the top. The steps are handed the marker's answer as a valid,
+/// untagged value, so a nested `amplihack` has nothing rejected to repeat.
+#[test]
+fn a_rejected_value_a_session_marker_answered_for_is_named_once() {
+    let fx = Fixture::new();
+    let (output, probe) = fx.run(&[
+        ("AMPLIHACK_AGENT_BINARY", "claude-code"),
+        ("COPILOT_CLI", "1"),
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(handed(&probe), ("copilot", "<unset>"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let line = "amplihack: agent steps will run under 'copilot' (AMPLIHACK_AGENT_BINARY is set \
+                but is not one of amplifier, claude, codex or copilot; COPILOT_CLI, the copilot \
+                session marker in this environment, answered). Set AMPLIHACK_AGENT_BINARY to \
+                one of amplifier, claude, codex or copilot to choose an agent CLI.";
+    assert_eq!(stderr.matches(line).count(), 1, "{stderr}");
+    assert!(!stderr.contains("claude-code"), "{stderr}");
+}
+
 /// `docs/reference/active-agent-binary.md` says a rejected value is never
 /// written into a log line, under any filter: a rejected
 /// `AMPLIHACK_AGENT_BINARY` gets no line of its own, and a rejected `launcher`
@@ -254,6 +276,11 @@ fn a_rejected_value_is_reported_as_rejected() {
 /// a structured field ...)". No such line or field has existed. This test holds
 /// the page to what the binary does, at the most verbose filter, for each
 /// source a rejected value can come from.
+///
+/// It checks that the value never appears, which is the security property.
+/// It does not check that the variable goes unmentioned: the crusty review at
+/// 7053698c showed that silence was the #1335 failure for a rejected value a
+/// session marker answered in place of, and the notice now names it.
 #[test]
 fn a_rejected_value_is_never_logged_at_any_filter() {
     const REJECTED: &str = "claude-code";
@@ -272,8 +299,9 @@ fn a_rejected_value_is_never_logged_at_any_filter() {
         )
     };
 
-    // A session marker answers: nothing mentions the variable at all. The
-    // resolver's DEBUG line shows the filter reached the resolver.
+    // A session marker answers: the notice names the variable and the
+    // marker, never the value. The resolver's DEBUG line shows the filter
+    // reached the resolver.
     let (stdout, stderr) =
         agent_binary(&[("AMPLIHACK_AGENT_BINARY", REJECTED), ("COPILOT_CLI", "1")]);
     assert_eq!(
@@ -283,9 +311,14 @@ fn a_rejected_value_is_never_logged_at_any_filter() {
     );
     assert!(stderr.contains("agent binary resolved"), "{stderr}");
     assert!(
-        !stderr.contains(REJECTED) && !stderr.contains("AMPLIHACK_AGENT_BINARY"),
-        "a rejected value overruled by a marker must leave no trace:\n{stderr}"
+        stderr.contains(
+            "amplihack: resolved the agent binary to 'copilot' (AMPLIHACK_AGENT_BINARY is set \
+             but is not one of amplifier, claude, codex or copilot; COPILOT_CLI, the copilot \
+             session marker in this environment, answered)."
+        ),
+        "a rejected value a marker answered for must be named:\n{stderr}"
     );
+    assert!(!stderr.contains(REJECTED), "{stderr}");
 
     // Nothing else answers: the generic fallback WARN and the notice name the
     // variable, never the value.

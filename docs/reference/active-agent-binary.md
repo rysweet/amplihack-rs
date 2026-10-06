@@ -54,7 +54,10 @@ If a source produces a value that fails validation (allowlist, length, character
 - A `launcher_context.json` whose `launcher` field fails is logged at WARN (`ignoring an unusable launcher_context.json`, with its path and the reason).
 - An `AMPLIHACK_AGENT_BINARY` that fails gets no log line of its own. If the launcher context or the default then answers, the resolver's generic fallback WARN (`no usable AMPLIHACK_AGENT_BINARY (unset, rejected, or a parent's default guess) …`) covers it.
 
-Both WARNs are hidden at the default tracing filter. When the answer was inferred, `amplihack agent-binary` and `amplihack recipe run` say it on stderr: `AMPLIHACK_AGENT_BINARY is set but is not one of amplifier, claude, codex or copilot`, and `ignored <file>: it does not name amplifier, claude, codex or copilot as its launcher. Fix or delete it.` When a session marker or a valid `AMPLIHACK_AGENT_BINARY` answers, no notice mentions either; only the launcher-context WARN is still logged.
+Both WARNs are hidden at the default tracing filter, so `amplihack agent-binary` and `amplihack recipe run` say it on stderr:
+
+- A rejected `AMPLIHACK_AGENT_BINARY` is named whichever layer answered in its place, a session marker included: `AMPLIHACK_AGENT_BINARY is set but is not one of amplifier, claude, codex or copilot`, then what answered, e.g. `; COPILOT_CLI, the copilot session marker in this environment, answered`. The user named a CLI and got a different one, so the line is needed even when a marker is the answer.
+- A launcher context that failed is named when the answer was inferred: `ignored <file>: it does not name amplifier, claude, codex or copilot as its launcher. Fix or delete it.` When a session marker or a valid `AMPLIHACK_AGENT_BINARY` answers, the file decided nothing and no notice names it; only its WARN is still logged.
 
 ### Resolving once for a whole recipe run
 
@@ -95,6 +98,18 @@ so it is listed. The walk-up still continues past an unusable file, so a
 parent directory's file can still answer, but the notice now says so. Rust
 callers get the same evidence from `agent_binary::resolve_detailed`
 (`Resolution::context_file` and `Resolution::unusable_contexts`).
+
+A rejected `AMPLIHACK_AGENT_BINARY` gets a notice whatever answered in its
+place. When a session marker (layer 2) answers, that answer counts as
+observed, but the user still asked for a CLI and got another one, so the line
+names the marker:
+
+```text
+amplihack: agent steps will run under 'copilot' (AMPLIHACK_AGENT_BINARY is set but is not one of amplifier, claude, codex or copilot; COPILOT_CLI, the copilot session marker in this environment, answered). Set AMPLIHACK_AGENT_BINARY to one of amplifier, claude, codex or copilot to choose an agent CLI.
+```
+
+The steps are handed the marker's answer as a valid value, so a nested run
+does not repeat the line.
 
 An answer from layer 1 is a choice, not an inference, and it still wins over a
 session marker. But when the marker names a different CLI, recipe run names
@@ -315,7 +330,7 @@ Validation rules applied to every candidate value, from `AMPLIHACK_AGENT_BINARY`
 - Lowercase, then exact match against the allowlist
 - No prefix matching, no substring matching, no shell expansion
 
-A value that fails is treated as if its source were unset. It is never coerced into another name, and the resolver never writes it into a log line, under any filter. A rejected `AMPLIHACK_AGENT_BINARY` gets no log line of its own, and a rejected `launcher` field is named only by its file's path and a fixed reason. What each source gets instead is under [Resolution Precedence](#resolution-precedence).
+A value that fails is treated as if its source were unset. It is never coerced into another name, and the resolver never writes it into a log line, under any filter. A rejected `AMPLIHACK_AGENT_BINARY` gets no log line of its own, and a rejected `launcher` field is named only by its file's path and a fixed reason. The stderr notice names the variable, never its value. What each source gets instead is under [Resolution Precedence](#resolution-precedence).
 
 ## Default Change: claude → copilot
 

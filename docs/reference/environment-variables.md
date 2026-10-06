@@ -97,8 +97,10 @@ The launcher continues to write this variable to subprocess environments so that
 
 Values are normalized (trim, lowercase) and matched against the allowlist `{claude, copilot, codex, amplifier}`. Values that contain `/`, `\`, `.`, `;`, null bytes, internal whitespace, control characters, or exceed 32 bytes are **rejected**. A rejected value is ignored, never coerced, and the next precedence source answers. The resolver logs no line of its own for it:
 
-- If the launcher context or the default then answers, the resolver's generic fallback WARN covers it (`no usable AMPLIHACK_AGENT_BINARY (unset, rejected, or a parent's default guess) …`), hidden at the default tracing filter (`RUST_LOG=warn` shows it). `amplihack agent-binary` and `amplihack recipe run` also print a notice on stderr that names the variable, as below.
-- If a session marker answers, nothing mentions the rejected value at any log level. The marker names the CLI running the process, and that is the answer.
+- If the launcher context or the default then answers, the resolver's generic fallback WARN covers it (`no usable AMPLIHACK_AGENT_BINARY (unset, rejected, or a parent's default guess) …`), hidden at the default tracing filter (`RUST_LOG=warn` shows it).
+- If a session marker answers, the resolver logs only its DEBUG `agent binary resolved` line, which does not mention the variable.
+
+Whichever layer answers, `amplihack agent-binary` and `amplihack recipe run` print a notice on stderr. It names the variable and what answered in its place, and lists the allowed names. You set a CLI and got a different one, and the notice says why, as in the examples below. Neither a log line nor the notice ever contains the rejected value.
 
 Commands that launch one CLI by name, such as `amplihack copilot`, do not ask the resolver. They set the variable to the CLI they launch, for their children.
 
@@ -119,6 +121,12 @@ AMPLIHACK_AGENT_BINARY=claude amplihack recipe run smart-orchestrator -c task_de
 AMPLIHACK_AGENT_BINARY="../bin/evil" amplihack agent-binary
 # amplihack: resolved the agent binary to 'copilot' (AMPLIHACK_AGENT_BINARY is set but is not one of amplifier, claude, codex or copilot, and no agent session marker was found). Set AMPLIHACK_AGENT_BINARY to one of amplifier, claude, codex or copilot to choose an agent CLI.
 # copilot (default)
+
+# The same value inside a Copilot CLI session: its session marker answers,
+# and the notice names the marker:
+COPILOT_CLI=1 AMPLIHACK_AGENT_BINARY="../bin/evil" amplihack agent-binary
+# amplihack: resolved the agent binary to 'copilot' (AMPLIHACK_AGENT_BINARY is set but is not one of amplifier, claude, codex or copilot; COPILOT_CLI, the copilot session marker in this environment, answered). Set AMPLIHACK_AGENT_BINARY to one of amplifier, claude, codex or copilot to choose an agent CLI.
+# copilot (session_marker)
 ```
 
 #### Why the precedence order

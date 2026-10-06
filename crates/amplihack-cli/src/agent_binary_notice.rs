@@ -29,6 +29,12 @@
 //! a server another Claude Code session started holds the same `CLAUDECODE`
 //! as the server, and comparing that value cannot tell the two apart.
 //! `CLAUDE_CODE_SESSION_ID` can (crusty round 2 of #1490).
+//!
+//! A rejected `AMPLIHACK_AGENT_BINARY` is named whatever answered in its
+//! place, a session marker included. The user named a CLI and got another one,
+//! which is #1335 whether the default or a marker supplied the other one
+//! (crusty review of #1490 at 7053698c). Only the variable is named, never the
+//! value.
 
 use std::ffi::{OsStr, OsString};
 use std::process::{Command, Stdio};
@@ -90,6 +96,15 @@ impl Reporter {
         }
     }
 }
+
+/// Why a set `AMPLIHACK_AGENT_BINARY` was not used. It never quotes the value.
+const REJECTED: &str = "AMPLIHACK_AGENT_BINARY is set but is not one of amplifier, claude, \
+                        codex or copilot";
+
+/// What to set to choose a CLI after a rejected value: the variable and the
+/// names it accepts.
+const SET_TO_AN_ALLOWED_NAME: &str =
+    "AMPLIHACK_AGENT_BINARY to one of amplifier, claude, codex or copilot";
 
 /// Print [`agent_binary_notice`] to stderr when there is one.
 ///
@@ -206,7 +221,8 @@ fn tmux_global_environment_holds(tmux: &OsStr, variable: &str, value: &OsStr) ->
 }
 
 /// The notice [`report_agent_binary`] prints, or `None` when the binary was
-/// observed rather than inferred and no session marker contradicts it.
+/// observed rather than inferred, no session marker contradicts it, and no
+/// rejected `AMPLIHACK_AGENT_BINARY` lost to it.
 ///
 /// `from_tmux_server` is [`marker_may_be_the_tmux_servers`]: the session
 /// marker is one the tmux server's global environment also holds. A marker
@@ -219,7 +235,9 @@ fn tmux_global_environment_holds(tmux: &OsStr, variable: &str, value: &OsStr) ->
 /// skipped by the resolver, and setting the same value again does not help
 /// while the tag still names it. A rejected value was set, just not to
 /// anything usable; the resolver's own warning about it is hidden at the
-/// default tracing filter. The rejected value itself is never echoed.
+/// default tracing filter. It is named whichever layer answered instead: a
+/// session marker that answered in its place is still a CLI the user did not
+/// ask for. The rejected value itself is never echoed.
 ///
 /// Issue #1525: a launcher context is named by the path the resolver actually
 /// read, which the walk-up may have found in an ancestor. Every context file
@@ -233,8 +251,6 @@ pub(crate) fn agent_binary_notice(
     from_tmux_server: bool,
 ) -> Option<String> {
     let lead = reporter.lead();
-    const REJECTED: &str = "AMPLIHACK_AGENT_BINARY is set but is not one of amplifier, \
-                            claude, codex or copilot";
     let read_from = || {
         let file = resolution
             .context_file
@@ -247,11 +263,15 @@ pub(crate) fn agent_binary_notice(
         (ResolutionSource::Env, _) => {
             return session_override_notice(lead, resolution, from_tmux_server);
         }
-        (ResolutionSource::SessionMarker, _) => {
-            return resolution
-                .session_marker
-                .filter(|_| from_tmux_server)
-                .map(|marker| tmux_marker_notice(reporter, marker));
+        (ResolutionSource::SessionMarker, env_value) => {
+            let marker = resolution.session_marker?;
+            return if from_tmux_server {
+                Some(tmux_marker_notice(reporter, marker, env_value))
+            } else if env_value == EnvBinaryValue::Rejected {
+                Some(rejected_under_marker_notice(lead, marker))
+            } else {
+                None
+            };
         }
         (ResolutionSource::LauncherContext, EnvBinaryValue::Rejected) => {
             format!("{REJECTED}; {}", read_from())
@@ -273,9 +293,7 @@ pub(crate) fn agent_binary_notice(
         EnvBinaryValue::InheritedGuess => {
             format!("Set AMPLIHACK_AGENT_BINARY and unset {SOURCE_ENV} to choose an agent CLI.")
         }
-        EnvBinaryValue::Rejected => "Set AMPLIHACK_AGENT_BINARY to one of amplifier, claude, \
-                                     codex or copilot to choose an agent CLI."
-            .to_string(),
+        EnvBinaryValue::Rejected => format!("Set {SET_TO_AN_ALLOWED_NAME} to choose an agent CLI."),
         EnvBinaryValue::Unset | EnvBinaryValue::Usable => {
             "Set AMPLIHACK_AGENT_BINARY to choose a different agent CLI.".to_string()
         }
@@ -332,6 +350,26 @@ fn session_override_notice(
     })
 }
 
+/// The line for a rejected `AMPLIHACK_AGENT_BINARY` that a session marker
+/// answered in place of, when the marker is not one the tmux server holds.
+///
+/// A valid value that overrides a marker gets a line, and so does a rejected
+/// one that falls to the default. Before this, a rejected one that lost to a
+/// marker got nothing: the user named a CLI, got the marker's, and nothing
+/// said why (#1335; crusty review of #1490 at 7053698c).
+///
+/// It names the variable and the marker, never the value. Launcher contexts
+/// the walk-up skipped are not listed; they did not decide this. A nested run
+/// does not repeat it: `recipe run` hands its steps the marker's answer as a
+/// valid value.
+fn rejected_under_marker_notice(lead: &str, marker: SessionMarker) -> String {
+    let SessionMarker { variable, binary } = marker;
+    format!(
+        "amplihack: {lead} '{binary}' ({REJECTED}; {variable}, the {binary} session marker \
+         in this environment, answered). Set {SET_TO_AN_ALLOWED_NAME} to choose an agent CLI."
+    )
+}
+
 /// The line for a session marker that answered but that the tmux server's
 /// global environment holds as well.
 ///
@@ -345,20 +383,34 @@ fn session_override_notice(
 /// avoids this. `agent-binary` is not: it is the hand-off, and in the same
 /// environment it would carry across this same answer (crusty round 2 of
 /// #1490). It is told only how to choose.
-fn tmux_marker_notice(reporter: Reporter, marker: SessionMarker) -> String {
+///
+/// A rejected `AMPLIHACK_AGENT_BINARY` is named first, as in
+/// [`rejected_under_marker_notice`], and the advice lists the names it
+/// accepts. The rest of the wording is this line's own: the marker may not be
+/// the caller's session, and that line says it is.
+fn tmux_marker_notice(
+    reporter: Reporter,
+    marker: SessionMarker,
+    env_value: EnvBinaryValue,
+) -> String {
     let SessionMarker { variable, binary } = marker;
     let lead = reporter.lead();
+    let (rejected, choose) = if env_value == EnvBinaryValue::Rejected {
+        (format!("{REJECTED}; "), SET_TO_AN_ALLOWED_NAME)
+    } else {
+        (String::new(), BINARY_ENV)
+    };
     let how = match reporter {
         Reporter::RecipeRun => format!(
             "To hand a detached run the CLI you launch it from, prefix its command with \
-             $(amplihack agent-binary --shell -w <dir>); to choose one, set {BINARY_ENV}."
+             $(amplihack agent-binary --shell -w <dir>); to choose one, set {choose}."
         ),
-        Reporter::AgentBinary => format!("Set {BINARY_ENV} to choose an agent CLI."),
+        Reporter::AgentBinary => format!("Set {choose} to choose an agent CLI."),
     };
     format!(
-        "amplihack: {lead} '{binary}' ({variable} is set, but this tmux server's global \
-         environment holds the same value, so it may come from whatever started the server \
-         rather than from a {binary} session). {how}"
+        "amplihack: {lead} '{binary}' ({rejected}{variable} is set, but this tmux server's \
+         global environment holds the same value, so it may come from whatever started the \
+         server rather than from a {binary} session). {how}"
     )
 }
 
@@ -409,6 +461,8 @@ mod tests {
         }
     }
 
+    /// Silent unless a rejected value lost to the marker, which has a test of
+    /// its own below; this one only checks that it is the sole exception.
     #[test]
     fn an_observed_binary_needs_no_notice() {
         for source in [ResolutionSource::Env, ResolutionSource::SessionMarker] {
@@ -419,12 +473,50 @@ mod tests {
                     resolution.session_marker = session_marker;
                     // Not even for a bad file: it did not decide this answer.
                     resolution.unusable_contexts = vec![empty_context_at("/r/x.json")];
+                    let notice = agent_binary_notice(LEAD, &resolution, env_value, false);
+                    let rejected_value_lost_to_the_marker = source
+                        == ResolutionSource::SessionMarker
+                        && session_marker.is_some()
+                        && env_value == EnvBinaryValue::Rejected;
                     assert_eq!(
-                        agent_binary_notice(LEAD, &resolution, env_value, false),
-                        None
+                        notice.is_some(),
+                        rejected_value_lost_to_the_marker,
+                        "{source:?} {session_marker:?} {env_value:?}: {notice:?}"
                     );
                 }
             }
+        }
+    }
+
+    /// Crusty review of #1490 at 7053698c: `COPILOT_CLI=1
+    /// AMPLIHACK_AGENT_BINARY=claude-code` resolved to copilot from the
+    /// marker and printed nothing, while a valid value over a marker and a
+    /// rejected value that fell to the default each got a line. The user named
+    /// a CLI and got another one (#1335). The line names the variable and the
+    /// marker, lists the allowed names, and never the skipped file.
+    #[test]
+    fn a_rejected_value_a_session_marker_answered_for_is_named() {
+        let mut resolution = resolved("copilot", ResolutionSource::SessionMarker);
+        resolution.session_marker = Some(COPILOT_CLI);
+        resolution.unusable_contexts = vec![empty_context_at("/r/x.json")];
+        for (reporter, lead) in [
+            (Reporter::RecipeRun, "agent steps will run under"),
+            (Reporter::AgentBinary, "resolved the agent binary to"),
+        ] {
+            let notice =
+                agent_binary_notice(reporter, &resolution, EnvBinaryValue::Rejected, false)
+                    .unwrap();
+            assert_eq!(
+                notice,
+                format!(
+                    "amplihack: {lead} 'copilot' (AMPLIHACK_AGENT_BINARY is set but is not one \
+                     of amplifier, claude, codex or copilot; COPILOT_CLI, the copilot session \
+                     marker in this environment, answered). Set AMPLIHACK_AGENT_BINARY to one \
+                     of amplifier, claude, codex or copilot to choose an agent CLI."
+                )
+            );
+            // Not the tmux line: nothing says this marker is the server's.
+            assert!(!notice.contains("tmux"), "{notice}");
         }
     }
 
@@ -495,15 +587,30 @@ mod tests {
         resolution.session_marker = Some(COPILOT_CLI);
         for env_value in ALL {
             let notice = agent_binary_notice(LEAD, &resolution, env_value, true).unwrap();
-            assert_eq!(
-                notice,
-                "amplihack: agent steps will run under 'copilot' (COPILOT_CLI is set, but this \
-                 tmux server's global environment holds the same value, so it may come from \
-                 whatever started the server rather than from a copilot session). To hand a \
-                 detached run the CLI you launch it from, prefix its command with \
-                 $(amplihack agent-binary --shell -w <dir>); to choose one, set \
-                 AMPLIHACK_AGENT_BINARY."
-            );
+            if env_value == EnvBinaryValue::Rejected {
+                // The same line, with the rejected variable named first and
+                // the allowed names in the advice.
+                assert_eq!(
+                    notice,
+                    "amplihack: agent steps will run under 'copilot' (AMPLIHACK_AGENT_BINARY is \
+                     set but is not one of amplifier, claude, codex or copilot; COPILOT_CLI is \
+                     set, but this tmux server's global environment holds the same value, so it \
+                     may come from whatever started the server rather than from a copilot \
+                     session). To hand a detached run the CLI you launch it from, prefix its \
+                     command with $(amplihack agent-binary --shell -w <dir>); to choose one, \
+                     set AMPLIHACK_AGENT_BINARY to one of amplifier, claude, codex or copilot."
+                );
+            } else {
+                assert_eq!(
+                    notice,
+                    "amplihack: agent steps will run under 'copilot' (COPILOT_CLI is set, but \
+                     this tmux server's global environment holds the same value, so it may come \
+                     from whatever started the server rather than from a copilot session). To \
+                     hand a detached run the CLI you launch it from, prefix its command with \
+                     $(amplihack agent-binary --shell -w <dir>); to choose one, set \
+                     AMPLIHACK_AGENT_BINARY."
+                );
+            }
         }
     }
 
@@ -649,13 +756,25 @@ mod tests {
         for env_value in ALL {
             let notice =
                 agent_binary_notice(Reporter::AgentBinary, &resolution, env_value, true).unwrap();
-            assert_eq!(
-                notice,
-                "amplihack: resolved the agent binary to 'claude' (CLAUDECODE is set, but this \
-                 tmux server's global environment holds the same value, so it may come from \
-                 whatever started the server rather than from a claude session). Set \
-                 AMPLIHACK_AGENT_BINARY to choose an agent CLI."
-            );
+            if env_value == EnvBinaryValue::Rejected {
+                assert_eq!(
+                    notice,
+                    "amplihack: resolved the agent binary to 'claude' (AMPLIHACK_AGENT_BINARY \
+                     is set but is not one of amplifier, claude, codex or copilot; CLAUDECODE is \
+                     set, but this tmux server's global environment holds the same value, so it \
+                     may come from whatever started the server rather than from a claude \
+                     session). Set AMPLIHACK_AGENT_BINARY to one of amplifier, claude, codex or \
+                     copilot to choose an agent CLI."
+                );
+            } else {
+                assert_eq!(
+                    notice,
+                    "amplihack: resolved the agent binary to 'claude' (CLAUDECODE is set, but \
+                     this tmux server's global environment holds the same value, so it may come \
+                     from whatever started the server rather than from a claude session). Set \
+                     AMPLIHACK_AGENT_BINARY to choose an agent CLI."
+                );
+            }
             assert!(!notice.contains("agent-binary --shell"), "{notice}");
         }
     }

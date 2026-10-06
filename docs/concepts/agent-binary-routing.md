@@ -126,7 +126,9 @@ the default layer it also exports the `default:<binary>` tag (issue #1481).
 An explicit `AMPLIHACK_AGENT_BINARY` still outranks a session marker that
 names a different CLI. That is not an inference, but a stale profile export
 produces the same silent wrong-CLI run, so recipe run names the session it
-overrode on stderr as well.
+overrode on stderr as well. For the same reason, an `AMPLIHACK_AGENT_BINARY`
+that fails validation is named whatever answered in its place, a session
+marker included.
 
 Inside `amplihack-rs`, code that picks the binary calls `resolve(&cwd)` rather
 than reading the env var directly. One older helper,
@@ -211,7 +213,7 @@ The resolver and hook paths are derived from values that may originate in user-c
 | Env injection         | Reject any `/`, `\`, `.`, `;`, NUL or control char; trim; reject internal whitespace or > 32 bytes; lowercase; exact allowlist match |
 | Shell-quoted values   | The resolved value is never passed through `sh -c`; only used as `Command::new(binary)` or path key |
 | Stale state           | Files older than 24h are treated as unset                                                           |
-| Diagnostic leakage    | A rejected value is never logged: a rejected env value gets no line of its own, a rejected launcher context is named by `Path::display()` and a fixed reason |
+| Diagnostic leakage    | A rejected value is never logged: a rejected env value gets no log line of its own and the stderr notice names only the variable; a rejected launcher context is named by `Path::display()` and a fixed reason |
 
 ## Related
 
