@@ -1,6 +1,6 @@
 ---
 title: Loop-Health Evaluator Reference
-last_updated: 2026-10-04
+last_updated: 2026-10-06
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -184,9 +184,14 @@ A shell assertion in the contract test enforces this.
 ## How step-03 resolves the verdict
 
 `step-03-resolve-loop-verdict` turns the evaluator's raw output into the
-`loop_health` object. It starts from `STUCK` with
-`verdict_source=unparseable_verdict` and tries four sources in a fixed order.
-Each source runs only if every source before it found nothing.
+`loop_health` object. Two cases are settled before any source is tried. First,
+a [terminal refusal](#exit-code-79-is-terminal) gives `STUCK` with
+`verdict_source=terminal_policy_refusal`. That covers evidence showing exit
+`79` / `BLOCKED_TERMINAL`, and also evidence that is missing, unparseable or
+`null`, because `terminal_refusal` defaults to `true`. Second, empty output
+gives `STUCK` with `verdict_source=missing_verdict`. Otherwise step-03 tries
+four sources in a fixed order. Each source runs only if every source before it
+found nothing.
 
 | Order | Source | What it looks for | `verdict_source` |
 | ----- | ------ | ----------------- | ---------------- |
@@ -514,7 +519,7 @@ every forced `STUCK`, is attributable:
 | `evaluator` | The evaluator emitted a JSON object with `loop_verdict`. |
 | `evaluator_alt_key` | No `loop_verdict` object; the evaluator emitted a `verdict` object as its last non-blank line instead. |
 | `evaluator_prose_token` | No JSON verdict; one clear line-leading token was found in the prose. |
-| `terminal_policy_refusal` | The evidence showed exit `79` / `BLOCKED_TERMINAL`; the evaluator was skipped. |
+| `terminal_policy_refusal` | The evidence showed exit `79` / `BLOCKED_TERMINAL`, or was missing or unparseable (`terminal_refusal` defaults to `true`); the evaluator was skipped. |
 | `missing_verdict` | The evaluator produced no output. |
 | `unparseable_verdict` | Output existed but held no usable verdict, or held conflicting tokens. |
 

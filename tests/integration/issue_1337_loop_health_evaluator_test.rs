@@ -345,6 +345,150 @@ fn exit_79_is_terminal_and_never_retried_into() {
     );
 }
 
+fn reference_doc() -> String {
+    read(&workspace_root().join("docs/reference/loop-health-evaluator.md"))
+}
+
+/// Every `SOURCE="<literal>"` assignment in step-03, in source order.
+fn step03_sources(resolve: &str) -> Vec<String> {
+    let needle = "SOURCE=\"";
+    resolve
+        .match_indices(needle)
+        .filter(|(at, _)| {
+            // `SOURCE=` only, not e.g. `VERDICT_SOURCE=`.
+            *at == 0 || !resolve.as_bytes()[at - 1].is_ascii_alphanumeric()
+        })
+        .filter_map(|(at, _)| {
+            let rest = &resolve[at + needle.len()..];
+            let end = rest.find('"')?;
+            Some(rest[..end].to_string())
+        })
+        .collect()
+}
+
+/// The first-column values of the `verdict_source` table in the reference
+/// doc (the table introduced by "`verdict_source` is always one of these").
+fn documented_verdict_sources(doc: &str) -> Vec<(String, String)> {
+    let start = doc
+        .find("`verdict_source` is always one of these")
+        .expect("the reference doc must introduce the verdict_source table");
+    let mut rows = Vec::new();
+    let mut in_table = false;
+    for line in doc[start..].lines().skip(1) {
+        let line = line.trim();
+        if !line.starts_with('|') {
+            if in_table {
+                break;
+            }
+            continue;
+        }
+        in_table = true;
+        let first = line.trim_start_matches('|').split('|').next().unwrap_or("");
+        let value = first.trim().trim_matches('`');
+        if value == "verdict_source" || value.starts_with('-') {
+            continue;
+        }
+        rows.push((value.to_string(), line.to_string()));
+    }
+    rows
+}
+
+/// Issue #1513 — the `verdict_source` table in the reference doc and the
+/// sources step-03 can actually emit are the same six values. A source added
+/// to the code without a doc row (or a doc row for a source the code never
+/// writes) breaks attribution of a forced STUCK.
+#[test]
+fn verdict_source_table_in_the_docs_matches_what_step_03_emits() {
+    let recipe = recipe_yaml();
+    let resolve = field(step(&recipe, "step-03-resolve-loop-verdict"), "command");
+    let code: std::collections::BTreeSet<String> = step03_sources(resolve).into_iter().collect();
+    let doc = reference_doc();
+    let documented: Vec<String> = documented_verdict_sources(&doc)
+        .into_iter()
+        .map(|(s, _)| s)
+        .collect();
+    let documented_set: std::collections::BTreeSet<String> = documented.iter().cloned().collect();
+
+    assert_eq!(
+        documented.len(),
+        documented_set.len(),
+        "the verdict_source table lists a value twice: {documented:?}"
+    );
+    assert_eq!(
+        code, documented_set,
+        "step-03's SOURCE= assignments and the docs' verdict_source table disagree"
+    );
+    assert_eq!(
+        code.len(),
+        6,
+        "the docs promise exactly six verdict_source values; step-03 emits {code:?}"
+    );
+}
+
+/// Issue #1513 / #1337 fail-safe, as documented under "How step-03 resolves
+/// the verdict": evidence that is missing, unparseable or `null` is a
+/// terminal refusal, because `terminal_refusal` defaults to `true`. The
+/// refusal is settled first, then empty output, then the four sources in
+/// their documented order. Behaviour is exercised by section 6f of the bundle
+/// shell test; this pins the wiring and the doc row to the same contract.
+#[test]
+fn missing_or_unparseable_evidence_is_a_terminal_refusal() {
+    let recipe = recipe_yaml();
+    let resolve = field(step(&recipe, "step-03-resolve-loop-verdict"), "command");
+    assert!(
+        resolve.contains("extract-field --field terminal_refusal --default true"),
+        "step-03 must read terminal_refusal with `--default true`: absent evidence \
+         must never read as \"the guard did not fire\""
+    );
+    assert!(
+        resolve
+            .contains("extract-field --field terminal_reason --default \"evidence unavailable\""),
+        "a refusal caused by missing evidence must be logged as \"evidence unavailable\""
+    );
+
+    // First appearance of each source, in source order.
+    let mut order: Vec<String> = Vec::new();
+    for s in step03_sources(resolve) {
+        if !order.contains(&s) {
+            order.push(s);
+        }
+    }
+    let expected_prefix = [
+        "terminal_policy_refusal",
+        "missing_verdict",
+        "evaluator",
+        "evaluator_alt_key",
+        "evaluator_prose_token",
+    ];
+    assert!(
+        order.len() >= expected_prefix.len()
+            && order[..expected_prefix.len()]
+                .iter()
+                .zip(expected_prefix)
+                .all(|(got, want)| got == want),
+        "step-03 must settle a terminal refusal first, then empty output, then try \
+         evaluator -> evaluator_alt_key -> evaluator_prose_token in that order; \
+         first appearances are {order:?}"
+    );
+    assert_eq!(
+        order.last().map(String::as_str),
+        Some("unparseable_verdict"),
+        "unparseable_verdict must be the last resort; first appearances are {order:?}"
+    );
+
+    let doc = reference_doc();
+    let row = documented_verdict_sources(&doc)
+        .into_iter()
+        .find(|(s, _)| s == "terminal_policy_refusal")
+        .map(|(_, row)| row)
+        .expect("the verdict_source table must have a terminal_policy_refusal row");
+    assert!(
+        row.contains("missing"),
+        "the terminal_policy_refusal row must say missing evidence lands here too \
+         (terminal_refusal defaults to true), not only exit 79: {row}"
+    );
+}
+
 #[test]
 fn verdict_resolution_uses_the_canonical_orch_helper_pipeline() {
     // The verdict contract must fit docs/reference/structured-verdict-parsing.md,

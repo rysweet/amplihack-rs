@@ -692,6 +692,81 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 6f. Evidence that is missing, unparseable or null is a TERMINAL REFUSAL.
+#     step-03 reads `terminal_refusal` with `--default true`, so no usable
+#     evidence object gives verdict_source=terminal_policy_refusal and the
+#     reason "evidence unavailable" — and it is settled BEFORE the empty-output
+#     check and before any of the four verdict sources
+#     (docs/reference/loop-health-evaluator.md#how-step-03-resolves-the-verdict).
+# ---------------------------------------------------------------------------
+NO_EVIDENCE_CASES=(
+    ""                                   # the collector produced nothing
+    "not json at all"                    # unparseable text
+    "null"                               # a bare JSON null
+    "[]"                                 # JSON, but not an object
+    '{"terminal_refusal": null}'         # explicit null takes the default
+    '{"commits_since_baseline":3}'       # an object with the field absent
+    '{"terminal_refusal":'               # a truncated object
+)
+for ev in "${NO_EVIDENCE_CASES[@]}"; do
+    ev_label="$(printf '%s' "${ev:-<empty>}" | cut -c1-32)"
+    for raw in '{"loop_verdict":"CONTINUE","not_converging":[]}' '{"loop_verdict":"DONE"}' \
+               '{"verdict":"CONVERGING"}' 'CONTINUE — keep going'; do
+        resolve_verdict_and_source "${ev}" "${raw}"
+        if [[ "${RS_VERDICT}" == "STUCK" && "${RS_SOURCE}" == "terminal_policy_refusal" ]]; then
+            pass "NOEV-terminal" "evidence [${ev_label}] + [${raw:0:24}] -> STUCK (terminal_policy_refusal)"
+        else
+            fail "NOEV-terminal" "evidence [${ev_label}] + [${raw:0:24}] -> ${RS_VERDICT} (${RS_SOURCE}); expected STUCK (terminal_policy_refusal). Output: ${RS_OUT}"
+        fi
+    done
+done
+
+# The refusal is settled before the empty-output check: no evidence AND no
+# evaluator output (step-02 is skipped on a refusal) is still a refusal.
+for ev in "" "not json at all" '{"terminal_refusal": null}'; do
+    resolve_verdict_and_source "${ev}" ""
+    if [[ "${RS_VERDICT}" == "STUCK" && "${RS_SOURCE}" == "terminal_policy_refusal" ]]; then
+        pass "NOEV-before-missing" "evidence [${ev:-<empty>}] with no evaluator output -> terminal_policy_refusal, not missing_verdict"
+    else
+        fail "NOEV-before-missing" "evidence [${ev:-<empty>}] with no evaluator output -> ${RS_VERDICT} (${RS_SOURCE}); expected terminal_policy_refusal"
+    fi
+done
+# ...and explicit "the guard did not fire" evidence still reaches missing_verdict.
+resolve_verdict_and_source '{"terminal_refusal":"false"}' ""
+if [[ "${RS_VERDICT}" == "STUCK" && "${RS_SOURCE}" == "missing_verdict" ]]; then
+    pass "NOEV-explicit-false" "terminal_refusal=\"false\" with no evaluator output -> missing_verdict"
+else
+    fail "NOEV-explicit-false" "terminal_refusal=\"false\" with no evaluator output -> ${RS_VERDICT} (${RS_SOURCE}); expected missing_verdict"
+fi
+
+# The logged reason is "evidence unavailable", in not_converging and on stderr.
+resolve_verdict_and_source "" '{"loop_verdict":"CONTINUE","not_converging":[]}'
+NC="$(nc_of)"
+if [[ "${NC}" == *'evidence unavailable'* && "${RS_ERR}" == *'terminal policy refusal'*'evidence unavailable'* ]]; then
+    pass "NOEV-reason" "missing evidence is reported as 'evidence unavailable' in not_converging and on stderr"
+else
+    fail "NOEV-reason" "missing evidence reason not reported (not_converging=${NC}): ${RS_ERR}"
+fi
+# A real reason from the evidence is kept, not replaced by the default.
+resolve_verdict_and_source '{"terminal_refusal":"true","terminal_reason":"child process exited 79"}' ""
+NC="$(nc_of)"
+if [[ "${RS_SOURCE}" == "terminal_policy_refusal" && "${NC}" == *'child process exited 79'* \
+      && "${NC}" != *'evidence unavailable'* ]]; then
+    pass "NOEV-real-reason" "an exit-79 refusal keeps its own terminal_reason"
+else
+    fail "NOEV-real-reason" "exit-79 refusal reason lost (source=${RS_SOURCE}, not_converging=${NC})"
+fi
+
+# Step-04 stops the loop on the refusal and names the source.
+resolve_verdict_and_source "" '{"loop_verdict":"DONE"}'
+err="$(LOOP_HEALTH="${RS_OUT}" LOOP_NAME="t" LOOP_EVIDENCE="" run_step "${ENFORCE}" 2>&1 >/dev/null)"; rc=$?
+if [[ ${rc} -ne 0 && "${err}" == *'source=terminal_policy_refusal'* ]]; then
+    pass "NOEV-enforce" "step-04 exits non-zero on a missing-evidence refusal and names terminal_policy_refusal"
+else
+    fail "NOEV-enforce" "step-04 on a missing-evidence refusal: rc=${rc}: ${err}"
+fi
+
+# ---------------------------------------------------------------------------
 # 7. END-TO-END through the real recipe-runner-rs.
 #
 # Everything above extracts the step bodies faithfully and then supplies the
