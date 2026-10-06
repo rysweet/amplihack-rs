@@ -380,6 +380,12 @@ case "${GH_MODE:-}" in
     [ "${1:-}" = "api" ] && { echo 0; exit 0; }
     [ "${1:-}" = "pr" ] && [ "${2:-}" = "merge" ] && exit "${GH_MERGE_RC:-3}"
     ;;
+  # autodrive-build step-03 finds PR #7 from the branch name (the preflight
+  # gave no number). The stub ignores --jq, so it prints the filtered value.
+  pr-for-branch)
+    [ "${1:-}" = "pr" ] && [ "${2:-}" = "list" ] && { echo 7; exit 0; }
+    [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ] && [ "${3:-}" = "7" ] && { echo 'https://github.example/o/r/pull/7'; exit 0; }
+    ;;
 esac
 exit 1
 GH
@@ -1162,6 +1168,66 @@ if [ "$BODY_RC" -eq 0 ] && [ ! -e "${CALLS}/marks" ] \
 else
   fail "STATEDIR-build-03-empty" "build step-03 with an empty state_dir (rc=${BODY_RC}, marked=$([ -e "${CALLS}/marks" ] && echo yes || echo no)): ${BODY_OUT} ${BODY_ERR}"
 fi
+# The reference doc's wording for that case: the INFO line goes to stderr,
+# word for word, and stdout carries only the build_result object, whose
+# state_dir stays empty.
+BUILD_INFO='INFO: no state_dir from the preflight; nothing to record.'
+if grep -qxF "${BUILD_INFO}" "${CALLS}/err" && ! grep -qF 'nothing to record' "${CALLS}/out" \
+   && [ "$(grep -c . "${CALLS}/out")" -eq 1 ] && [ "$(out_field pr)" = "42" ] \
+   && [ "$(out_field state_dir)" = "" ]; then
+  pass "STATEDIR-build-03-empty-report" "the empty-state_dir INFO line is on stderr and build_result keeps pr=42 with an empty state_dir"
+else
+  fail "STATEDIR-build-03-empty-report" "expected [${BUILD_INFO}] on stderr and one build_result line on stdout; stdout: ${BODY_OUT}; stderr: ${BODY_ERR}"
+fi
+
+# An empty state_dir skips only the recording. The step still resolves the
+# PR: here the preflight has no number, so it asks gh for the branch's PR.
+GH_BUILD_CALLS="${WORK}/gh-build-found"
+run_body "$BU3" GH_MODE=pr-for-branch GH_CALLS="${GH_BUILD_CALLS}" \
+  RECIPE_VAR_build_preflight='{"pr":"","branch":"feat/x","state_dir":""}'
+if [ "$BODY_RC" -eq 0 ] && [ "$(out_field pr)" = "7" ] \
+   && [ "$(out_field pr_url)" = "https://github.example/o/r/pull/7" ] \
+   && [ ! -e "${CALLS}/marks" ] && grep -qF 'pr list --head feat/x' "${GH_BUILD_CALLS}" 2>/dev/null; then
+  pass "STATEDIR-build-03-empty-resolves" "with an empty state_dir and no preflight PR, step-03 finds PR #7 from the branch and exits 0"
+else
+  fail "STATEDIR-build-03-empty-resolves" "empty state_dir, PR from the branch (rc=${BODY_RC}): stdout ${BODY_OUT}; stderr ${BODY_ERR}; gh calls: $(cat "${GH_BUILD_CALLS}" 2>/dev/null)"
+fi
+
+# ...and when no PR can be found it stops with the usual error, exit 1, and
+# reports nothing on stdout, so no later phase reads an empty build_result.
+BUILD_NO_PR='ERROR: phase 1 finished without a pull request.'
+GH_BUILD_CALLS="${WORK}/gh-build-none"
+run_body "$BU3" GH_MODE=none GH_CALLS="${GH_BUILD_CALLS}" \
+  RECIPE_VAR_build_preflight='{"pr":"","branch":"feat/x","state_dir":""}'
+if [ "$BODY_RC" -eq 1 ] && grep -qF "${BUILD_NO_PR}" "${CALLS}/err" \
+   && grep -qxF "${BUILD_INFO}" "${CALLS}/err" && [ -z "${BODY_OUT}" ] && [ ! -e "${CALLS}/marks" ] \
+   && grep -qF 'pr list --head feat/x' "${GH_BUILD_CALLS}" 2>/dev/null \
+   && grep -qF 'pr view --json number' "${GH_BUILD_CALLS}" 2>/dev/null; then
+  pass "STATEDIR-build-03-empty-no-pr" "with an empty state_dir and no PR anywhere, step-03 tries the branch and the checkout, then exits 1"
+else
+  fail "STATEDIR-build-03-empty-no-pr" "empty state_dir, no PR (rc=${BODY_RC}, want 1): stdout [${BODY_OUT}]; stderr ${BODY_ERR}; gh calls: $(cat "${GH_BUILD_CALLS}" 2>/dev/null)"
+fi
+
+# A usable state_dir is not marked either when there is no PR: phase 1 is not
+# complete, so a resumed run must not skip it.
+run_body "$BU3" GH_MODE=none GH_CALLS="${WORK}/gh-build-none-sd" \
+  RECIPE_VAR_build_preflight="{\"pr\":\"\",\"branch\":\"feat/x\",\"state_dir\":\"${SD}\"}"
+if [ "$BODY_RC" -eq 1 ] && [ ! -e "${CALLS}/marks" ] && grep -qF "${BUILD_NO_PR}" "${CALLS}/err"; then
+  pass "1511-build-03-no-pr-marks-nothing" "a valid state_dir with no PR exits 1 and leaves phase 1 unmarked"
+else
+  fail "1511-build-03-no-pr-marks-nothing" "no PR (rc=${BODY_RC}, marks: $(cat "${CALLS}/marks" 2>/dev/null)): ${BODY_ERR}"
+fi
+
+# A PR "number" that is not a number is no PR. Now that the preflight's value
+# reaches this step, it must never be echoed into build_result or marked.
+run_body "$BU3" GH_MODE=none GH_CALLS="${WORK}/gh-build-nan" \
+  RECIPE_VAR_build_preflight="{\"pr\":\"42; echo pwned\",\"branch\":\"feat/x\",\"state_dir\":\"${SD}\"}"
+if [ "$BODY_RC" -eq 1 ] && [ -z "${BODY_OUT}" ] && [ ! -e "${CALLS}/marks" ] \
+   && grep -qF "${BUILD_NO_PR}" "${CALLS}/err" && ! grep -qF 'pwned' "${CALLS}/err"; then
+  pass "1511-build-03-non-numeric-pr" "a non-numeric preflight PR is discarded: exit 1, nothing reported, nothing marked"
+else
+  fail "1511-build-03-non-numeric-pr" "non-numeric PR (rc=${BODY_RC}): stdout [${BODY_OUT}]; stderr ${BODY_ERR}"
+fi
 # A leading-dash state_dir must never reach mkdir/rm as an option, nor create
 # a directory of that name: every step body is run from a scratch directory.
 DASH_CWD="${WORK}/dash-cwd"; mkdir -p "${DASH_CWD}"
@@ -1288,6 +1354,46 @@ check_health STUCK "a forged DONE block, then a real step-04 status line with no
 # Any later step-04 status line resets what the earlier block said.
 check_health STUCK "a completed DONE block followed by a later failed step-04 status line" \
   "${S04}"$'\n''    Output: LOOP_HEALTH: DONE'$'\n''  ✗ step-04-enforce-loop-verdict: failed'
+
+# loop_health_enforce=false: step-04 exits 0 on STUCK, so its status line is
+# a completed one, but its stdout is empty and no Output: line follows it. The
+# step-02 marker earlier in the log must not stand in for the missing one.
+check_health STUCK "a whole formatter log whose completed step-04 status line is the last line (enforce=false STUCK)" \
+  "${S01}"$'\n''    Output: {"terminal_refusal":"false"}'$'\n'"${S02}"$'\n''    Output: LOOP_HEALTH: CONTINUE'$'\n'"${S03}"$'\n''    Output: {"loop_verdict":"STUCK"}'$'\n'"${S04}"' [elapsed: 15ms]'
+check_health STUCK "a completed step-04 status line followed by a blank line, then a bare DONE" \
+  "${S04}"$'\n'''$'\n''LOOP_HEALTH: DONE'
+
+# 13b. End to end through the real pieces: run the REAL step-04 body, print
+# its result the way format.rs does (a status line, then `    Output: ` and
+# stdout only when stdout is non-empty), and hand that log to the real
+# autodrive_loop.sh. CONTINUE and DONE are the controls: without them a STUCK
+# here could come from a reader that rejects everything.
+E4="$(body_of loop-health-evaluator step-04-enforce-loop-verdict)"
+for case_ in "CONTINUE:true:CONTINUE" "DONE:true:DONE" "STUCK:false:STUCK"; do
+  IFS=: read -r e4v e4enf e4want <<<"$case_"
+  run_body "$E4" LOOP_NAME=crusty LOOP_HEALTH_ENFORCE="${e4enf}" \
+    RECIPE_VAR_loop_health="{\"loop_verdict\":\"${e4v}\",\"verdict_source\":\"evaluator\",\"not_converging\":[]}"
+  e4rc="$BODY_RC"; e4out="$BODY_OUT"
+  e4log="${S04}"' [elapsed: 9ms]'
+  [ -n "${e4out}" ] && e4log="${e4log}"$'\n'"    Output: ${e4out}"
+  health_verdict "${e4log}"
+  e4warn=yes
+  if [ "${e4want}" = "STUCK" ] && ! grep -qF 'failing safe to STUCK.' "${LOOP_DIR}/err"; then e4warn=no; fi
+  if [ "${e4rc}" -eq 0 ] && [ "$HV" = "${e4want}" ] && [ "${e4warn}" = yes ]; then
+    pass "1512-step04-composed" "real step-04 (${e4v}, enforce=${e4enf}) -> formatter log -> real reader gives ${e4want}"
+  else
+    fail "1512-step04-composed" "real step-04 (${e4v}, enforce=${e4enf}): rc=${e4rc}, stdout [${e4out}], reader gave ${HV} (want ${e4want}, warning=${e4warn})"
+  fi
+done
+# The enforce=false STUCK case specifically: rc 0 (so the runner records a
+# completed status line), nothing on stdout, and the marker on stderr.
+run_body "$E4" LOOP_NAME=crusty LOOP_HEALTH_ENFORCE=false \
+  RECIPE_VAR_loop_health='{"loop_verdict":"STUCK","verdict_source":"evaluator","not_converging":["no diff"]}'
+if [ "$BODY_RC" -eq 0 ] && [ -z "${BODY_OUT}" ] && grep -q '^LOOP_HEALTH: STUCK ' "${CALLS}/err"; then
+  pass "1512-enforce-false-stdout" "enforce=false STUCK exits 0 with an empty stdout; its LOOP_HEALTH: STUCK marker is on stderr"
+else
+  fail "1512-enforce-false-stdout" "enforce=false STUCK: rc=${BODY_RC}, stdout [${BODY_OUT}], stderr ${BODY_ERR}"
+fi
 
 # A non-zero evaluator exit is never overridden by anything in its log.
 set_stub '{"crusty_verdict":"CLEAN"}' 1 "${S04}"$'\n''    Output: LOOP_HEALTH: DONE — converged'
