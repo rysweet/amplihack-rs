@@ -48,10 +48,13 @@ trap 'rm -rf -- "$WORK"' EXIT
 BIN="${AMPLIHACK_1527_QA_BIN:-}"
 if [ -z "$BIN" ]; then
   # json-render-diagnostics keeps compiler errors readable on stderr while
-  # stdout carries the artifact records that name the executable's path.
+  # stdout carries the artifact records that name the executable's path. A
+  # single awk reads every record and prints the last path, so cargo never
+  # writes into a closed pipe (issue #1434) and pipefail reports cargo's status.
+  # 14 is the length of `"executable":"`; 15 adds the closing quote.
   if ! BIN="$(cargo build -p amplihack --bin amplihack --locked \
       --message-format=json-render-diagnostics 2>"$WORK/build.log" \
-      | sed -n 's/.*"executable":"\([^"]*\/amplihack\)".*/\1/p' | tail -n 1)"; then
+      | awk 'match($0, /"executable":"[^"]*\/amplihack"/) { bin = substr($0, RSTART + 14, RLENGTH - 15) } END { print bin }')"; then
     echo "FAIL: cargo build -p amplihack --bin amplihack failed"
     tail -40 "$WORK/build.log"
     echo "SCENARIO_FAILED"; exit 1
@@ -118,9 +121,12 @@ check() {
 
   local case_dir="$WORK/case-$id"
   mkdir -p "$case_dir/home" "$case_dir/record"
+  # Most cases have no variables or no arguments. Bash before 4.4 (macOS ships
+  # 3.2) treats an empty "${a[@]}" as unbound under `set -u` and aborts, so
+  # each array is expanded as ${a[@]+"${a[@]}"}: nothing when it is empty.
   env -i HOME="$case_dir/home" PATH="$WORK/bin:/usr/bin:/bin" TERM=dumb \
     AMPLIHACK_SKIP_AUTO_INSTALL=1 QA_1527_RECORD="$case_dir/record" \
-    "${envs[@]}" "$BIN" "$tool" "${args[@]}" \
+    ${envs[@]+"${envs[@]}"} "$BIN" "$tool" ${args[@]+"${args[@]}"} \
     </dev/null >"$case_dir/stdout" 2>"$case_dir/stderr"
   local rc=$?
 
@@ -140,7 +146,9 @@ check() {
     passed=$((passed + 1))
   else
     echo "FAIL: $id ($label): ${problems[*]}"
-    sed 's/^/    stderr: /' "$case_dir/stderr" | grep -i 'model\|error' | head -10
+    # The first ten stderr lines about the model or an error, in one awk that
+    # reads the whole file (issue #1434).
+    awk 'tolower($0) ~ /model|error/ && n < 10 { print "    stderr: " $0; n++ }' "$case_dir/stderr"
     fail=1
   fi
 }
