@@ -155,14 +155,9 @@ steps:
       fi
       # Every concern crusty raised during this loop is now settled: the loop
       # only reports DONE on a round whose own verdict was CLEAN. Record the
-      # ids so a resumed run does not reopen them.
-      for f in "$DIR"/crusty-round-*.json.findings; do
-        [ -f "$f" ] || continue
-        while IFS= read -r id; do
-          [ -n "$id" ] && autodrive_record_resolved "$DIR" "$id"
-        done < "$f"
-      done
-      autodrive_mark_phase_done "$DIR" "crusty-loop"
+      # ids so a resumed run does not reopen them, then the marker. The
+      # re-review between merge rounds records its loop the same way.
+      autodrive_record_crusty_loop_done "$DIR"
       echo "INFO: crusty loop recorded complete for PR #${PR:-<none>}." >&2
     output: "crusty_phase_record"
 

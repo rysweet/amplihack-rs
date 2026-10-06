@@ -1,6 +1,6 @@
 ---
 title: Auto Drive To Merge Reference
-last_updated: 2026-10-04
+last_updated: 2026-10-06
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -39,9 +39,10 @@ skill](../../amplifier-bundle/skills/auto-drive-to-merge/SKILL.md).
 
 | Phase | Brick | What it does |
 | --- | --- | --- |
+| 0. Prerequisites | `auto-drive-to-merge.yaml` step `autodrive-prerequisites` | Stops the run with `ERROR: gadugi-test-not-installed` when `gadugi-test` is not on `PATH`, before the build and the crusty loop spend hours. |
 | 1. Build | `autodrive-build.yaml` | Runs `default-workflow` with `no_merge: "true"` to produce a PR. Never merges. |
 | 2. Crusty loop | `autodrive-crusty-loop.yaml` over `autodrive-crusty-round.yaml` | Runs `crusty-old-engineer` as the maintainer's proxy, addresses every concern, re-reviews, repeats until `crusty_verdict` is `CLEAN`. |
-| 3. Merge-ready loop | `autodrive-merge-loop.yaml` over `autodrive-merge-round.yaml` | Syncs the base, runs the repository tests and the `gadugi-test` scenarios, waits for CI, applies the `merge-ready` criteria read from the skill's files, clears blockers, repeats, then merges behind the gate. |
+| 3. Merge-ready loop | `autodrive-merge-loop.yaml` over `autodrive-merge-round.yaml` | Before each round, sends code commits made after the clean crusty round back to the crusty loop (`autodrive_crusty_rereview.sh`). Syncs the base, runs the repository tests and the `gadugi-test` scenarios, waits for CI, applies the `merge-ready` criteria read from the skill's files, clears blockers, repeats, then merges behind the gate. |
 
 Phase 1 is a no-op when an open PR already exists for the branch, and the whole
 workflow short-circuits when the PR is already merged.
@@ -90,7 +91,10 @@ job:
 | #1332 width cap + free-memory floor | fan-out, memory | exit `79` |
 
 Rounds run **sequentially at constant session depth**, so a long loop never
-walks toward that ceiling.
+walks toward that ceiling. No round recipe starts a loop; see
+[Recursion context propagation](#recursion-context-propagation) for the
+depths, and for why the crusty re-review runs between merge rounds rather than
+inside one.
 
 ## Structured verdicts
 
@@ -234,8 +238,6 @@ manual `/merge-ready` still needs `gadugi-test validate` and `gadugi-test run`
 | --- | --- | --- | --- |
 | `step-00-tools-dir` | bash | `autodrive_tools_dir` | Finds the round's tools once (see below). |
 | `step-00-merge-ready-files` | bash | `merge_ready_files` | Finds `SKILL.md` and its template; stops the round when `gadugi-test` is not on `PATH`. |
-| `step-00b-crusty-range` | bash | `crusty_range` | `autodrive_round_evidence.sh crusty-range`: commits after the clean crusty round. |
-| `step-00c-crusty-rereview` | recipe | none | Runs `autodrive-crusty-loop` when `crusty_range.rereview == 'true'`. |
 | `merge-evidence` | recipe | `merge_sync`, `qa_evidence`, `ci_evidence` | `autodrive-merge-evidence`: base sync, suite commands, gadugi scenarios, CI wait. |
 | `step-00d-qa-evidence-hash` | bash | `qa_evidence_hash` | `autodrive_round_evidence.sh qa-evidence-sha`: hashes `qa-evidence.json` before any agent runs. |
 | `step-01-platform-facts` | bash | `platform_facts` | Runs `autodrive_platform_facts.sh`. |
@@ -284,8 +286,11 @@ criteria are advisory, since the gate measures criteria 1 and 3 itself.
 
 `gadugi-test` belongs to the same install. Criterion 1 runs the qa-team
 scenarios with it in every repository type, `amplihack install` does not
-install it, and no agent can. So step-00 also checks `command -v gadugi-test`
-and, when it is missing, fails the round with
+install it, and no agent can. The first step of `auto-drive-to-merge.yaml`,
+`autodrive-prerequisites`, checks `command -v gadugi-test` before the build,
+so a missing tool stops the run in seconds, and the auto-drive skill lists it
+under Prerequisites. Step-00 checks it again, in case it goes away during the
+run, and, when it is missing, fails the round with
 `ERROR: gadugi-test-not-installed: gadugi-test is not on PATH`, which names
 the install command (`npm install -g github:rysweet/gadugi-agentic-test`).
 Reported instead as the blocker `gadugi-test-missing`, it would repeat every
@@ -396,8 +401,8 @@ the copy matches, appends `label<TAB>file<TAB>git-blob-hash` to
 `crusty-records.tsv` or `merge-ready-records.tsv` under `umask 077`.
 
 `autodrive_crusty_final DIR` in `autodrive_state.sh` decides criterion 3 for
-step-00b, step-01b and the gate. It checks one private copy of the record and
-prints the reviewed SHA or the first failing token:
+the crusty re-review, step-01b and the gate. It checks one private copy of the
+record and prints the reviewed SHA or the first failing token:
 
 | Order | Check | Token |
 | --- | --- | --- |
@@ -421,15 +426,41 @@ Everything else is code, scenario files included. `autodrive_base_sha`
 validates the PR's `baseRefName` and force-fetches it, never trusting a local
 ref; if that fails, base-merge commits count as code.
 
-`step-00b-crusty-range` prints `autodrive_rereview_decision` (`rereview`,
-`range`, `first_unreviewed_sha`, `base_sha`). Only `crusty-unreviewed-commits`
-sets `rereview` to `true`, after `autodrive_clear_phase` removes the
-`crusty-loop` row; an unclean loop gives `range` `not-checked`, and an
-unreadable range is never re-reviewed. `step-00c-crusty-rereview` then runs
-the crusty loop on the same state directory, which writes the marker again at
-its first `CLEAN` round. A failed, `STUCK` or exit-79 re-review fails the
-round, and after `STUCK` the marker stays absent. `step-01b-crusty-evidence`
-runs `autodrive_crusty_final` and the range against the current `HEAD`:
+Before every merge round, round 1 included, the merge-ready loop runs
+`autodrive_crusty_rereview.sh` as its `--before-round` step. It runs
+`autodrive_round_evidence.sh crusty-range` in the repository, which prints
+`autodrive_rereview_decision` (`rereview`, `range`, `first_unreviewed_sha`,
+`base_sha`). Only `crusty-unreviewed-commits` sets `rereview` to `true`, after
+`autodrive_clear_phase` removes the `crusty-loop` row; an unclean loop gives
+`range` `not-checked`, and an unreadable range is never re-reviewed. On
+`true` the tool runs the crusty loop (`autodrive_loop.sh --loop-name crusty`)
+on the same state directory, and when that loop ends `DONE`,
+`autodrive_record_crusty_loop_done` writes the resolved concern ids and the
+marker back, exactly as phase 2's step-03 does. The tool prints one JSON line
+whose `before_round_result` is one of:
+
+| `before_round_result` | Exit | Merge-ready loop |
+| --- | --- | --- |
+| `crusty-rereview-not-needed` | `0` | Runs the round. |
+| `crusty-rereview-done` | `0` | Runs the round; crusty reviewed the current head. |
+| `crusty-rereview-not-done` | `1` | Stops with `loop_result` `BEFORE_ROUND_FAILED`; the marker stays absent, so a resumed run starts with the crusty loop. |
+| `crusty-rereview-unavailable` | `1` | The same: the range gave no decision or a tool is missing. |
+| `crusty-rereview-refused` | `79` | Stops with `TERMINAL_POLICY_REFUSAL`, exit `79`, never retried. |
+
+The result joins the round's line in the history the loop-health evaluator
+reads (`before=crusty-rereview-done`), and the baseline is taken before the
+step, so crusty's fixes count as that round's work.
+
+This used to be merge round steps `step-00b-crusty-range` and
+`step-00c-crusty-rereview`, a crusty loop nested in the round. The recursion
+guard refused it: the round's steps run one recipe runner deeper than the loop
+drivers, so the nested crusty round's `recipe run` was issued at depth 4
+against the default ceiling of 3 and returned exit `79` on the first code
+commit after the clean crusty round (PR #1520 review). See
+[Recursion context propagation](#recursion-context-propagation).
+
+`step-01b-crusty-evidence` runs `autodrive_crusty_final` and the range against
+the current `HEAD`:
 
 | `crusty_status` | `crusty_reason` | step-02 blocker |
 | --- | --- | --- |
@@ -439,9 +470,9 @@ runs `autodrive_crusty_final` and the range against the current `HEAD`:
 | `UNTRUSTED` | `crusty-manifest-missing`, `crusty-record-missing`, `crusty-record-modified`, `crusty-head-sha-empty`, `crusty-other` | the same |
 | `UNREVIEWED_COMMITS` | `crusty-unreviewed-commits`, `crusty-range-unreadable` | `crusty-review-required:<crusty_first_unreviewed_sha>`, or `crusty-range-unreadable` without a SHA |
 
-Step-04 leaves `crusty-review-required` to the next re-review (each code
-commit costs a crusty run) and `crusty-range-unreadable` to a person, and
-never rewrites history. Empty, root and octopus commits, hand-resolved merges,
+Step-04 leaves `crusty-review-required` to the re-review before the next
+round (each code commit costs a crusty run) and `crusty-range-unreadable` to a
+person, and never rewrites history. Empty, root and octopus commits, hand-resolved merges,
 git older than 2.38 and a failed base fetch all fail closed into a re-review.
 
 ### Criterion 6: reviews and approvals
@@ -698,6 +729,14 @@ itself so a parent sees a policy refusal rather than a generic failure. It is
 **never** retried into — not at a deeper level, and never with a raised
 ceiling.
 
+A log line that only quotes the refusal is not one. Agent output reaches a
+round log as `[HH:MM:SS] [amplihack:...]` lines, and crusty's review of PR #1520
+quoted `BLOCKED_TERMINAL orchestration_unavailable: depth 4 of max 3` in its
+verdict. `terminal_refusal` in `autodrive_loop.sh` drops those lines, then
+looks for the guard's own `BLOCKED_TERMINAL orchestration_unavailable` text;
+reading any `BLOCKED_TERMINAL` as a refusal ended the loop on a review that
+merely discussed one.
+
 ## Recursion context propagation
 
 `autodrive_loop.sh` exports `AMPLIHACK_TREE_ID` and `AMPLIHACK_SESSION_DEPTH`
@@ -708,6 +747,28 @@ than continuing under a ceiling it did not inherit.
 
 Because rounds are sequential rather than nested, depth does not grow with the
 number of rounds.
+
+Every `amplihack recipe run` starts a runner one session level deeper, and the
+runner hands every step, bash or agent, one level more (`build_child_env` in
+recipe-runner-rs). A `type: recipe` step runs its sub-recipe inside the same
+runner and adds nothing. The guard in `amplihack recipe run` refuses at
+`depth >= max_depth`, 3 by default, and the environment can only lower that.
+Started from a shell at depth 0:
+
+| Process | `AMPLIHACK_SESSION_DEPTH` | May it issue `recipe run`? |
+| --- | --- | --- |
+| `amplihack recipe run auto-drive-to-merge` | 0 | yes |
+| its runner | 1 | |
+| the loop drivers' bash steps, `autodrive_loop.sh`, its `--before-round` step and the crusty loop that step starts | 2 | yes, this is where every round and every evaluator is started |
+| a round's runner (`autodrive-crusty-round`, `autodrive-merge-round`) | 3 | |
+| that round's steps, bash and agent | 4 | **no**: refused with exit `79` |
+
+So no round recipe, and no recipe a round reaches through `type: recipe`
+steps, may start a loop or any other `recipe run`. The guard test
+`no_round_recipe_starts_a_loop_or_a_recipe_run` checks that, and
+`a_recipe_run_from_a_round_step_is_refused_by_the_real_guard` runs the real
+`amplihack recipe run` against a sealed ceiling of 3: refused with exit `79`
+at depth 4, admitted at depth 2 with its runner handed depth 3.
 
 ## Resumability
 
@@ -725,7 +786,8 @@ is treated as a failure rather than as "not merged". The exception is the
 crusty state (`crusty-loop` marker, `crusty-latest.json`, `crusty-records.tsv`
 and its records): nothing on the platform records crusty's judgement, so the
 gate reads it as criterion-3 evidence through the manifest hash. A run that
-dies after step-00b removed the marker resumes with the crusty loop.
+dies after the crusty re-review removed the marker resumes with the crusty
+loop.
 
 ### There is no pull-request-comment ledger
 
@@ -776,12 +838,13 @@ or single-digit-minute bound is introduced.
 | `amplifier-bundle/recipes/autodrive-merge-round.yaml` | round | Merge-ready criteria from the skill's files, verdict, blocker fixes. |
 | `amplifier-bundle/recipes/autodrive-merge-loop.yaml` | phase 3 | Loop driver + merge gate + bookkeeping. |
 | `amplifier-bundle/recipes/loop-health-evaluator.yaml` | terminator | Agentic loop-health verdict. |
-| `amplifier-bundle/tools/autodrive_loop.sh` | tool | The uncapped, agentically-terminated loop driver; writes `<loop>-records.tsv`. |
+| `amplifier-bundle/tools/autodrive_loop.sh` | tool | The uncapped, agentically-terminated loop driver; writes `<loop>-records.tsv`; runs a `--before-round` step at its own depth. |
+| `amplifier-bundle/tools/autodrive_crusty_rereview.sh` | tool | The merge-ready loop's `--before-round` step: sends code commits made after the clean crusty round back to the crusty loop. |
 | `amplifier-bundle/tools/autodrive_merge_gate.sh` | tool | Evidence gate and the fixed merge argv. |
 | `amplifier-bundle/tools/autodrive_merge_ready_files.sh` | tool | Finds the merge-ready `SKILL.md` and template. |
 | `amplifier-bundle/tools/autodrive_platform_facts.sh` | tool | Platform facts for the merge round, criterion 6 included; the review-thread count for the merge gate too. |
 | `amplifier-bundle/tools/autodrive_qa_evidence.sh` | tool | Criterion 1: the suite commands and the gadugi scenarios, for `autodrive-merge-evidence.yaml` step-02. |
-| `amplifier-bundle/tools/autodrive_round_evidence.sh` | tool | The merge round's deterministic step bodies: crusty range and evidence, the qa evidence hash, the measured downgrade, the findings and the round record. |
+| `amplifier-bundle/tools/autodrive_round_evidence.sh` | tool | The merge round's deterministic step bodies, and the crusty range the re-review reads: crusty range and evidence, the qa evidence hash, the measured downgrade, the findings and the round record. |
 | `amplifier-bundle/tools/autodrive_state.sh` | tool | Resumable local state, `autodrive_crusty_final`, `autodrive_private`; platform truth for merged-ness. |
 | `amplifier-bundle/tools/autodrive_trust.sh` | tool | Range check and qa evidence chain. |
 | `amplifier-bundle/skills/auto-drive-to-merge/SKILL.md` | skill | Invocable entry point. |
@@ -796,11 +859,14 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | Executable contract test: loop, verdicts, forbidden-flag scan, merge-gate refusals, qa evidence against stub `cargo` and `gadugi-test`, crusty records and range | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
 | Structural and wiring guards, brick budget, skill-invocation guard, state-directory sentence, and `tests/gadugi/recipe-step-command.sh` compared with serde_yaml over every bundled recipe step | `tests/integration/auto_drive_to_merge_test.rs` |
 | The merge-ready skill stays platform-neutral | `tests/integration/merge_ready_platform_contract_test.rs` |
+| gadugi-test scenarios for this change: criterion 6 approval measurement (#1518), the merge-ready file lookup (#1517), and the crusty range and re-review at the loop's depth, with the real recursion guard | `tests/gadugi/scenarios/issue-1518-*.yaml`, `tests/gadugi/scenarios/issue-1517-*.yaml` |
 
 ```bash
 AMPLIHACK_SKIP_AUTO_INSTALL=1 cargo test -p amplihack --test auto_drive_to_merge
 AMPLIHACK_SKIP_AUTO_INSTALL=1 cargo test -p amplihack --test merge_ready_platform_contract
 bash amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh
+gadugi-test validate -d tests/gadugi/scenarios
+bash tests/gadugi/run-autodrive-crusty-rereview-scenario.sh   # and the other run-autodrive-*-scenario.sh
 ```
 
 ## Dependency on PR #1347

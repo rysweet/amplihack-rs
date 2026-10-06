@@ -198,7 +198,9 @@ EOF
 }
 
 # autodrive_rereview_decision <state_dir> <repo> <baseRefName> -> the whole
-# output of merge round step-00b, one JSON line with four keys:
+# output of `autodrive_round_evidence.sh crusty-range`, which
+# autodrive_crusty_rereview.sh runs before each merge round. One JSON line
+# with four keys:
 #
 #   {"rereview":"true|false","range":"<token>","first_unreviewed_sha":"<sha>","base_sha":"<sha>"}
 #

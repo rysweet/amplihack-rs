@@ -25,6 +25,19 @@
 #   Exit 79 — a child returned the terminal policy refusal. Surfaced, final,
 #             and NEVER retried into.
 #
+# --before-round <script> (optional) runs `bash <script> --repo <repo>
+# --state-dir <dir> -c <key=value>...`, with the context the round gets,
+# before EVERY round, round 1 included. It runs in this shell's process tree,
+# so a loop it starts runs at the depth of THIS loop, never one recipe runner
+# deeper. The merge-ready loop uses it for autodrive_crusty_rereview.sh, which
+# sends commits made after the clean crusty round back to the crusty loop: a
+# crusty loop started from inside a merge round would be one runner deeper,
+# and the recursion guard refuses it there with exit 79 (PR #1520 review).
+# Exit 0 runs the round; exit 79, or the guard's refusal line in its stderr,
+# is the terminal refusal; any other exit stops the loop with loop_result
+# BEFORE_ROUND_FAILED. The script's stdout may carry `before_round_result`,
+# which joins the round's line in the history the evaluator reads.
+#
 # Policy: this workflow NEVER passes a hook-skipping commit flag or any
 # branch-protection bypass. See
 # docs/reference/auto-drive-to-merge.md#two-absolute-prohibitions.
@@ -34,7 +47,7 @@ set -uo pipefail
 AUTODRIVE_EXIT_POLICY_REFUSAL=79
 
 LOOP_NAME=""; ROUND_RECIPE=""; CLEAN_TOKEN=""; VERDICT_FIELD=""
-REPO="."; STATE_DIR=""; ROUND_CTX=()
+REPO="."; STATE_DIR=""; ROUND_CTX=(); BEFORE_ROUND=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -45,6 +58,7 @@ while [ $# -gt 0 ]; do
     --repo)          REPO="${2:-}"; shift 2 ;;
     --state-dir)     STATE_DIR="${2:-}"; shift 2 ;;
     --context)       ROUND_CTX+=("-c" "${2:-}"); shift 2 ;;
+    --before-round)  BEFORE_ROUND="${2:-}"; shift 2 ;;
     *) echo "ERROR: autodrive_loop.sh: unknown argument '$1'" >&2; exit 2 ;;
   esac
 done
@@ -53,6 +67,9 @@ for req in LOOP_NAME ROUND_RECIPE CLEAN_TOKEN VERDICT_FIELD STATE_DIR; do
   flag="$(printf '%s' "$req" | tr '[:upper:]' '[:lower:]')"
   [ -n "${!req}" ] || { echo "ERROR: autodrive_loop.sh: --$flag is required" >&2; exit 2; }
 done
+if [ -n "$BEFORE_ROUND" ] && [ ! -f "$BEFORE_ROUND" ]; then
+  echo "ERROR: autodrive_loop.sh: --before-round '${BEFORE_ROUND}' is not a file" >&2; exit 2
+fi
 
 # --- private state, whatever the caller's umask ----------------------------
 # The merge gate reads the records, copies and manifest written below only
@@ -114,9 +131,14 @@ copy_private() {
   { rm -f -- "$2" && cp -- "$1" "$2"; } || echo "WARNING: could not copy $1 to $2." >&2
 }
 
-terminal_refusal() { # terminal_refusal <exit_code> <log_file>
+# terminal_refusal <exit_code> <log_file>: exit 79, or the guard's own
+# refusal line in the log. Agent output lines (`[HH:MM:SS] [amplihack:...]`)
+# are skipped first: a review that QUOTES the refusal, as crusty's review of
+# PR #1520 did, is not one, and reading it as one stopped the loop.
+terminal_refusal() {
   [ "${1:-0}" = "$AUTODRIVE_EXIT_POLICY_REFUSAL" ] && return 0
-  [ -f "${2:-}" ] && grep -qF 'BLOCKED_TERMINAL' "$2" 2>/dev/null && return 0
+  [ -f "${2:-}" ] && grep -vE '^[[:space:]]*\[[0-9]{2}:[0-9]{2}:[0-9]{2}\] \[amplihack:' "$2" 2>/dev/null \
+    | grep -qF 'BLOCKED_TERMINAL orchestration_unavailable' && return 0
   return 1
 }
 
@@ -160,6 +182,30 @@ while :; do
   RECORD="${STATE_DIR}/${LOOP_NAME}-${ROUND_LABEL}.json"
   LOG="${STATE_DIR}/${LOOP_NAME}-${ROUND_LABEL}.log"
   BASELINE="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || printf '')"
+
+  # --- the before-round step, at this loop's depth --------------------------
+  # The baseline above is taken first, so the evaluator counts commits the
+  # step made (crusty's fixes) as this round's work.
+  BEFORE_RESULT=""
+  if [ -n "$BEFORE_ROUND" ]; then
+    BEFORE_LOG="${STATE_DIR}/${LOOP_NAME}-${ROUND_LABEL}-before.log"
+    echo "=== auto-drive loop '${LOOP_NAME}': before ${ROUND_LABEL} ===" >&2
+    ( umask "$CALLER_UMASK" && exec bash "$BEFORE_ROUND" --repo "$REPO" --state-dir "$STATE_DIR" \
+        ${ROUND_CTX[@]+"${ROUND_CTX[@]}"} ) >"${BEFORE_LOG}.out" 2>"$BEFORE_LOG"
+    BEFORE_RC=$?
+    tail -n 200 "$BEFORE_LOG" >&2 || true
+    BEFORE_RESULT="$(field "$(cat -- "${BEFORE_LOG}.out" 2>/dev/null)" before_round_result "" | LC_ALL=C tr -cd 'A-Za-z0-9_.:-')"
+    assert_ceiling_untouched
+    if terminal_refusal "$BEFORE_RC" "$BEFORE_LOG"; then
+      echo "ERROR: exit ${AUTODRIVE_EXIT_POLICY_REFUSAL} terminal policy refusal from the before-round step (#1327/#1332). Final: the guard is never retried into." >&2
+      escalate "TERMINAL_POLICY_REFUSAL" "the before-round step returned the exit-${AUTODRIVE_EXIT_POLICY_REFUSAL} policy refusal"
+      exit "$AUTODRIVE_EXIT_POLICY_REFUSAL"
+    fi
+    if [ "$BEFORE_RC" -ne 0 ]; then
+      escalate "BEFORE_ROUND_FAILED" "the before-round step ${BEFORE_ROUND##*/} exited ${BEFORE_RC} (${BEFORE_RESULT:-no before_round_result}); ${ROUND_LABEL} did not run"
+      exit 1
+    fi
+  fi
 
   echo "=== auto-drive loop '${LOOP_NAME}': ${ROUND_LABEL} ===" >&2
   # The log is created by this shell under umask 077; the round runs with the
@@ -232,7 +278,7 @@ while :; do
   TEST_SIGNAL="$(field "$RAW" test_signal "")"
   CI_SIGNAL="$(field "$RAW" ci_signal "")"
   HISTORY="${HISTORY}
-${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} findings=$(printf '%s' "$FINDINGS" | grep -c . || true)"
+${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} findings=$(printf '%s' "$FINDINGS" | grep -c . || true)${BEFORE_RESULT:+ before=${BEFORE_RESULT}}"
 
   # --- the agentic terminator ----------------------------------------------
   assert_ceiling_untouched

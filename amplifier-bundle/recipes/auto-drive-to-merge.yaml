@@ -91,6 +91,25 @@ context:
   merge_gate_result: ""
 
 steps:
+  # Fail fast (PR #1520 review). Criterion 1 runs the qa-team scenarios with
+  # gadugi-test in every repository type, and neither `amplihack install` nor
+  # any agent installs it. Checked here, before the build and the crusty loop
+  # spend hours, not first at merge round step-00, which checks it again in
+  # case it goes away during the run.
+  - id: "autodrive-prerequisites"
+    type: "bash"
+    command: |
+      set -uo pipefail
+      if ! command -v gadugi-test >/dev/null 2>&1; then
+        echo "ERROR: gadugi-test-not-installed: gadugi-test is not on PATH. Criterion 1 runs the qa-team scenarios" \
+          "with it in every repository type, and no agent can install it. Install it" \
+          "(npm install -g github:rysweet/gadugi-agentic-test) and run auto-drive again." >&2
+        exit 1
+      fi
+      echo "INFO: auto-drive prerequisites: gadugi-test at $(command -v gadugi-test)" >&2
+      printf '{"gadugi_test":"found"}\n'
+    output: "autodrive_prerequisites"
+
   - id: "autodrive-build"
     type: "recipe"
     recipe: "autodrive-build"

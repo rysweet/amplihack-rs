@@ -86,31 +86,11 @@ steps:
       fi
       printf '%s\n' "$OUT"
     output: "merge_ready_files"
-  # Commits after the clean crusty round (#1517 D4): a code commit removes the
-  # crusty-loop marker, so step-00c runs crusty again on the current head.
-  # The measurement is `autodrive_round_evidence.sh crusty-range`.
-  - id: "step-00b-crusty-range"
-    type: "bash"
-    parse_json: true
-    command: |
-      set -uo pipefail
-      cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }
-      T="${AUTODRIVE_TOOLS_DIR:-${RECIPE_VAR_autodrive_tools_dir:-}}/autodrive_round_evidence.sh"
-      [ -f "$T" ] || { echo "ERROR: autodrive-tools-not-found: ${T}" >&2; exit 1; }
-      bash "$T" crusty-range
-    output: "crusty_range"
-  # The crusty loop, with its own termination. No continue_on_error: a failed,
-  # STUCK or refused (exit 79) re-review fails the round.
-  - id: "step-00c-crusty-rereview"
-    type: "recipe"
-    recipe: "autodrive-crusty-loop"
-    condition: "crusty_range.rereview == 'true'"
-    context:
-      repo_path: "{{repo_path}}"
-      pr_number: "{{pr_number}}"
-      pr_url: "{{pr_url}}"
-      task_description: "{{task_description}}"
-      autodrive_state_dir: "{{autodrive_state_dir}}"
+  # Commits after the clean crusty round (#1517 D4) are NOT re-reviewed here.
+  # A loop started from a round step runs one recipe runner deeper than the
+  # loop drivers, and the recursion guard refuses its rounds with exit 79
+  # (PR #1520 review). autodrive_crusty_rereview.sh does it before each round,
+  # from the merge-ready loop's shell; step-01b only measures the result.
   - id: "merge-evidence"
     type: "recipe"
     recipe: "autodrive-merge-evidence"
@@ -326,9 +306,10 @@ steps:
         quality-audit in its place. Fix any crusty concern still open and keep
         this blocker in your report.
       - **`crusty-review-required`** and **`crusty-range-unreadable`**: do not
-        try to clear them. The next round sends unreviewed commits to crusty,
-        so every code commit you make costs one crusty run; an unreadable
-        range (a shallow clone, a git error) needs a person.
+        try to clear them. Before the next round the merge-ready loop sends
+        unreviewed commits to crusty, so every code commit you make costs one
+        crusty run; an unreadable range (a shallow clone, a git error) needs a
+        person.
       - **`approval-pending-other-blockers`**: not a request for a person yet.
         Clear the other blockers first: failing or pending CI, a conflict, a
         branch behind its base. The next round reads the approval again, and

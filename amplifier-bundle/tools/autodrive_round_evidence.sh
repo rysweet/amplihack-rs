@@ -5,10 +5,13 @@
 # These were step bodies of autodrive-merge-round.yaml until that recipe reached
 # its brick budget (PR #1520 review); they moved here unchanged. The recipe's
 # step-00-tools-dir finds this file once per round, with the tools beside it.
+# crusty-range left the round in the next review: its caller now runs a crusty
+# loop when it answers "true", and that loop must not start inside a round.
 #
 #   autodrive_round_evidence.sh crusty-range
-#       step-00b-crusty-range. Does crusty re-review the current head before
-#       this round assesses anything? One JSON line:
+#       Run by autodrive_crusty_rereview.sh before each merge round, from the
+#       merge-ready loop's shell, never by a round step: does crusty re-review
+#       the current head before the next round assesses anything? One JSON line:
 #       {"rereview":"true|false","range":"...","first_unreviewed_sha":"...","base_sha":"..."}
 #
 #   autodrive_round_evidence.sh qa-evidence-sha <file>

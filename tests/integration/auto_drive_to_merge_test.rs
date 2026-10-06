@@ -36,7 +36,8 @@ const AUTODRIVE_RECIPES: [&str; 7] = [
     "autodrive-merge-loop",
 ];
 
-const AUTODRIVE_TOOLS: [&str; 8] = [
+const AUTODRIVE_TOOLS: [&str; 9] = [
+    "autodrive_crusty_rereview.sh",
     "autodrive_loop.sh",
     "autodrive_merge_gate.sh",
     "autodrive_merge_ready_files.sh",
@@ -2907,7 +2908,6 @@ fn merge_round_finds_its_tools_once() {
     let read = "\"${AUTODRIVE_TOOLS_DIR:-${RECIPE_VAR_autodrive_tools_dir:-}}/";
     for id in [
         "step-00-merge-ready-files",
-        "step-00b-crusty-range",
         "step-00d-qa-evidence-hash",
         "step-01-platform-facts",
         "step-01b-crusty-evidence",
@@ -2928,15 +2928,23 @@ fn merge_round_finds_its_tools_once() {
 }
 
 #[test]
-fn merge_round_rereviews_commits_after_the_clean_round() {
-    // D4: a code commit after the clean crusty round goes back to crusty at
-    // the start of the next merge round, through a nested crusty loop that
-    // keeps its own termination logic.
-    let recipe = recipe_yaml("autodrive-merge-round");
+fn crusty_rereview_runs_between_merge_rounds_at_the_loop_depth() {
+    // D4, moved by the crusty review of PR #1520: a code commit after the
+    // clean crusty round goes back to crusty BEFORE the next merge round,
+    // from the merge-ready loop's own shell. Nested in a merge round as
+    // step-00c, the crusty loop ran one recipe runner deeper and the
+    // recursion guard refused its rounds with exit 79.
+    let round = recipe_yaml("autodrive-merge-round");
+    for gone in ["step-00b-crusty-range", "step-00c-crusty-rereview"] {
+        assert!(
+            !steps(&round)
+                .iter()
+                .any(|s| s.get("id").and_then(Value::as_str) == Some(gone)),
+            "{gone} must not come back: the crusty re-review runs between merge rounds"
+        );
+    }
     let order = [
         "step-00-merge-ready-files",
-        "step-00b-crusty-range",
-        "step-00c-crusty-rereview",
         "merge-evidence",
         "step-00d-qa-evidence-hash",
         "step-01-platform-facts",
@@ -2945,75 +2953,375 @@ fn merge_round_rereviews_commits_after_the_clean_round() {
     ];
     for pair in order.windows(2) {
         assert!(
-            step_index(&recipe, pair[0]) < step_index(&recipe, pair[1]),
+            step_index(&round, pair[0]) < step_index(&round, pair[1]),
             "`{}` must run before `{}`",
             pair[0],
             pair[1]
         );
     }
 
-    let s00b = step(&recipe, "step-00b-crusty-range");
-    assert_eq!(s00b.get("type").and_then(Value::as_str), Some("bash"));
-    assert_eq!(s00b.get("parse_json").and_then(Value::as_bool), Some(true));
-    assert_eq!(
-        s00b.get("output").and_then(Value::as_str),
-        Some("crusty_range")
-    );
-    assert!(
-        !field(s00b, "command").contains("{{"),
-        "step-00b reads its inputs from the environment, never from {{...}} in the command"
-    );
-    let cmd = round_step_bash(&recipe, "step-00b-crusty-range");
+    // The merge-ready loop passes the re-review, from the loop driver's own
+    // install, as its before-round step.
+    let mloop = recipe_yaml("autodrive-merge-loop");
+    let cmd = step_command(&mloop, "step-02-merge-ready-loop");
     for needle in [
-        "AUTODRIVE_STATE_DIR",
-        "autodrive_state.sh",
-        "autodrive_trust.sh",
-        "autodrive_rereview_decision",
-        "pr_base_ref",
+        "REREVIEW=\"$(dirname \"$LOOP_HELPER\")/autodrive_crusty_rereview.sh\"",
+        "--before-round \"$REREVIEW\"",
+        "ERROR: autodrive-tools-not-found: ${REREVIEW}",
     ] {
-        assert!(cmd.contains(needle), "step-00b must reference `{needle}`");
-    }
-    assert!(
-        read(&tool_path("autodrive_round_evidence.sh"))
-            .contains("--json baseRefName --jq .baseRefName"),
-        "pr_base_ref must read the PR's baseRefName"
-    );
-
-    let s00c = step(&recipe, "step-00c-crusty-rereview");
-    assert_eq!(
-        s00c.get("type").and_then(Value::as_str),
-        Some("recipe"),
-        "step-00c runs the crusty loop as a nested recipe"
-    );
-    assert_eq!(
-        s00c.get("recipe").and_then(Value::as_str),
-        Some("autodrive-crusty-loop"),
-        "step-00c must run autodrive-crusty-loop, so crusty's own termination applies"
-    );
-    let condition = field(s00c, "condition");
-    assert!(
-        condition.contains("crusty_range.rereview") && condition.contains("'true'"),
-        "step-00c must run only when crusty_range.rereview == 'true' (got `{condition}`)"
-    );
-    assert!(
-        s00c.get("continue_on_error").is_none(),
-        "step-00c must not set continue_on_error: a failed or refused (exit 79) re-review fails the round"
-    );
-    let ctx = s00c
-        .get("context")
-        .and_then(Value::as_mapping)
-        .expect("step-00c must pass context to the crusty loop");
-    for (key, want) in [
-        ("autodrive_state_dir", "{{autodrive_state_dir}}"),
-        ("repo_path", "{{repo_path}}"),
-        ("pr_number", "{{pr_number}}"),
-    ] {
-        assert_eq!(
-            ctx.get(Value::from(key)).and_then(Value::as_str),
-            Some(want),
-            "step-00c must pass `{key}: \"{want}\"` so the re-run writes the same state dir"
+        assert!(
+            cmd.contains(needle),
+            "autodrive-merge-loop step-02 must contain `{needle}`"
         );
     }
+
+    // The re-review measures the range, runs the crusty loop in its own
+    // shell, and records a DONE loop as phase 2 does.
+    let tool = read(&tool_path("autodrive_crusty_rereview.sh"));
+    for needle in [
+        "bash \"$HERE/autodrive_round_evidence.sh\" crusty-range",
+        "bash \"$HERE/autodrive_loop.sh\"",
+        "--loop-name \"crusty\"",
+        "--round-recipe \"autodrive-crusty-round\"",
+        "--clean-token \"CLEAN\"",
+        "--verdict-field \"crusty_verdict\"",
+        "--state-dir \"$DIR\"",
+        "autodrive_record_crusty_loop_done \"$DIR\"",
+        "crusty-rereview-not-needed",
+        "crusty-rereview-done",
+        "crusty-rereview-not-done",
+        "crusty-rereview-refused",
+        "crusty-rereview-unavailable",
+    ] {
+        assert!(
+            tool.contains(needle),
+            "autodrive_crusty_rereview.sh must contain `{needle}`"
+        );
+    }
+    assert!(
+        executable_lines(&tool).all(|l| !runs_a_recipe(l)),
+        "autodrive_crusty_rereview.sh must never start a recipe runner itself; its loop does, at its depth"
+    );
+    let crusty_loop = recipe_yaml("autodrive-crusty-loop");
+    assert!(
+        step_command(&crusty_loop, "step-03-record-crusty-phase")
+            .contains("autodrive_record_crusty_loop_done \"$DIR\""),
+        "phase 2 and the re-review must record a DONE crusty loop through one function"
+    );
+    assert!(
+        regex::Regex::new(r"(?m)^autodrive_record_crusty_loop_done\(\)\s*\{")
+            .unwrap()
+            .is_match(&read(&tool_path("autodrive_state.sh"))),
+        "autodrive_state.sh must define autodrive_record_crusty_loop_done()"
+    );
+
+    // The driver runs the step before every round, in its own shell.
+    let driver = read(&tool_path("autodrive_loop.sh"));
+    for needle in [
+        "--before-round)",
+        "exec bash \"$BEFORE_ROUND\" --repo \"$REPO\" --state-dir \"$STATE_DIR\"",
+        "BEFORE_ROUND_FAILED",
+        "before_round_result",
+        "if terminal_refusal \"$BEFORE_RC\" \"$BEFORE_LOG\"",
+    ] {
+        assert!(
+            driver.contains(needle),
+            "autodrive_loop.sh must contain `{needle}`"
+        );
+    }
+    let before_at = driver
+        .find("exec bash \"$BEFORE_ROUND\"")
+        .expect("before-round call");
+    let round_at = driver
+        .find("recipe run \"$ROUND_RECIPE\"")
+        .expect("round call");
+    assert!(
+        before_at < round_at,
+        "the before-round step must run before the round in each iteration"
+    );
+}
+
+/// Lines of shell that are not comments.
+fn executable_lines(text: &str) -> impl Iterator<Item = &str> {
+    text.lines().filter(|l| !l.trim_start().starts_with('#'))
+}
+
+/// Does this line run `recipe run`? (`recipe runner` in prose does not.)
+fn runs_a_recipe(line: &str) -> bool {
+    regex::Regex::new(r#"recipe\s+run([\s"']|$)"#)
+        .unwrap()
+        .is_match(line)
+}
+
+/// The recipes a recipe reaches through `type: recipe` steps, itself included.
+fn recipes_reached_from(root: &str) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::new();
+    let mut todo = vec![root.to_string()];
+    while let Some(name) = todo.pop() {
+        if seen.contains(&name) {
+            continue;
+        }
+        for s in steps(&recipe_yaml(&name)) {
+            if let Some(sub) = s.get("recipe").and_then(Value::as_str) {
+                todo.push(sub.to_string());
+            }
+        }
+        seen.push(name);
+    }
+    seen
+}
+
+/// The auto-drive tools a shell text runs, through its executable lines only.
+fn tools_run_by(text: &str) -> Vec<String> {
+    let re = regex::Regex::new(r"autodrive_[a-z_]+\.sh").unwrap();
+    let mut out: Vec<String> = Vec::new();
+    for line in executable_lines(text) {
+        for m in re.find_iter(line) {
+            if !out.iter().any(|t| t == m.as_str()) {
+                out.push(m.as_str().to_string());
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn no_round_recipe_starts_a_loop_or_a_recipe_run() {
+    // PR #1520 review. A round's steps run two session levels below the loop
+    // driver that started the round: one for the round's runner, one for its
+    // steps. With the default ceiling of 3 a `recipe run` from a round step is
+    // refused with exit 79. So nothing a round reaches, through sub-recipes or
+    // the tools its bash steps run, may start a loop or a recipe runner.
+    let loop_recipes = [
+        "auto-drive-to-merge",
+        "autodrive-crusty-loop",
+        "autodrive-merge-loop",
+    ];
+    let loop_starters = ["autodrive_loop.sh", "autodrive_crusty_rereview.sh"];
+    for round in ["autodrive-crusty-round", "autodrive-merge-round"] {
+        for reached in recipes_reached_from(round) {
+            assert!(
+                !loop_recipes.contains(&reached.as_str()),
+                "{round} reaches the loop recipe {reached} through `type: recipe` steps"
+            );
+            for s in steps(&recipe_yaml(&reached)) {
+                let id = s.get("id").and_then(Value::as_str).unwrap_or("?");
+                if let Some(prompt) = s.get("prompt").and_then(Value::as_str) {
+                    assert!(
+                        !runs_a_recipe(prompt) && !loop_starters.iter().any(|t| prompt.contains(t)),
+                        "{reached} step {id} (reached from {round}) tells its agent to start a recipe or a loop"
+                    );
+                }
+                let Some(cmd) = s.get("command").and_then(Value::as_str) else {
+                    continue;
+                };
+                for line in executable_lines(cmd) {
+                    assert!(
+                        !runs_a_recipe(line),
+                        "{reached} step {id} (reached from {round}) runs `recipe run`: {line}"
+                    );
+                }
+                let mut todo = tools_run_by(cmd);
+                let mut seen: Vec<String> = Vec::new();
+                while let Some(t) = todo.pop() {
+                    if seen.contains(&t) {
+                        continue;
+                    }
+                    assert!(
+                        !loop_starters.contains(&t.as_str()),
+                        "{reached} step {id} (reached from {round}) runs {t}, which starts a loop"
+                    );
+                    let path = tool_path(&t);
+                    if path.is_file() {
+                        let text = read(&path);
+                        for line in executable_lines(&text) {
+                            assert!(
+                                !runs_a_recipe(line),
+                                "{t}, run by {reached} step {id} (reached from {round}), runs `recipe run`: {line}"
+                            );
+                        }
+                        todo.extend(tools_run_by(&text));
+                    }
+                    seen.push(t);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_recipe_run_from_a_round_step_is_refused_by_the_real_guard() {
+    // The depths, from the recipe structure (docs/reference/auto-drive-to-merge.md,
+    // "Recursion context propagation"): `amplihack recipe run` at depth d gives
+    // its runner d + 1 (execute.rs, child_depth), the runner gives every step,
+    // bash or agent, one more (recipe-runner-rs build_child_env), and a
+    // `type: recipe` step runs inside the same runner. Both loop drivers are
+    // `type: recipe` steps of the composer, so their bash runs as a step of
+    // the composer's runner.
+    let composer = recipe_yaml("auto-drive-to-merge");
+    for (phase, loop_step) in [
+        ("autodrive-crusty-loop", "step-02-crusty-loop"),
+        ("autodrive-merge-loop", "step-02-merge-ready-loop"),
+    ] {
+        let s = steps(&composer)
+            .iter()
+            .find(|s| s.get("recipe").and_then(Value::as_str) == Some(phase))
+            .unwrap_or_else(|| panic!("the composer must run {phase}"));
+        assert_eq!(
+            s.get("type").and_then(Value::as_str),
+            Some("recipe"),
+            "{phase} must run inside the composer's runner"
+        );
+        assert!(
+            step_command(&recipe_yaml(phase), loop_step).contains("bash \"$LOOP_HELPER\""),
+            "{phase} {loop_step} must run the loop driver in its own shell"
+        );
+    }
+    const SHELL: u32 = 0; // a person starts auto-drive from a shell
+    let composer_runner = SHELL + 1;
+    let loop_step = composer_runner + 1; // autodrive_loop.sh, its --before-round step and the crusty re-review
+    let round_runner = loop_step + 1;
+    let round_step = round_runner + 1; // where step-00c's nested crusty loop ran
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let trees = tmp.path().join("trees");
+    let home = tmp.path().join("home");
+    let tmpdir = tmp.path().join("tmp");
+    for d in [&trees, &home, &tmpdir] {
+        fs::create_dir_all(d).expect("mkdir");
+    }
+    const TREE: &str = "autodrivedepthtest";
+    // The ceiling a root run seals: the default, 3.
+    fs::write(
+        trees.join(format!("{TREE}.json")),
+        r#"{"sessions":{},"ceiling":3}"#,
+    )
+    .expect("seal the tree");
+    // A stand-in recipe-runner-rs: it records the depth the guard handed it.
+    let runner = tmp.path().join("recipe-runner-rs");
+    let log = tmp.path().join("runner.log");
+    fs::write(
+        &runner,
+        "#!/bin/sh\nprintf 'depth=%s\\n' \"${AMPLIHACK_SESSION_DEPTH:-}\" >> \"$RUNNER_LOG\"\nprintf '{}\\n'\n",
+    )
+    .expect("write the runner stub");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&runner, fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+    let run = |depth: u32| {
+        Command::new(env!("CARGO_BIN_EXE_amplihack"))
+            .args(["recipe", "run"])
+            .arg(recipe_path("autodrive-crusty-round"))
+            .arg("--dry-run")
+            .current_dir(tmp.path())
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", &home)
+            .env("TMPDIR", &tmpdir)
+            .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
+            .env("AMPLIHACK_SESSION_TREE_DIR", &trees)
+            .env("AMPLIHACK_TREE_ID", TREE)
+            .env("AMPLIHACK_SESSION_DEPTH", depth.to_string())
+            .env("AMPLIHACK_MAX_DEPTH", "3")
+            .env("AMPLIHACK_MIN_AVAILABLE_MIB", "0")
+            .env("RECIPE_RUNNER_RS_PATH", &runner)
+            .env("RUNNER_LOG", &log)
+            .output()
+            .expect("run amplihack recipe run")
+    };
+
+    let refused = run(round_step);
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert_eq!(
+        refused.status.code(),
+        Some(79),
+        "a crusty round started from a round step (depth {round_step}) must be refused with exit 79:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!(
+            "BLOCKED_TERMINAL orchestration_unavailable: depth {round_step} of max 3"
+        )),
+        "the refusal must name the depth:\n{stderr}"
+    );
+    assert!(!log.exists(), "no runner may start past the ceiling");
+
+    let admitted = run(loop_step);
+    let stderr = String::from_utf8_lossy(&admitted.stderr);
+    assert!(
+        !stderr.contains("BLOCKED_TERMINAL"),
+        "a crusty round started from the loop driver's depth ({loop_step}) must be admitted:\n{stderr}"
+    );
+    assert_eq!(
+        fs::read_to_string(&log).unwrap_or_default().trim(),
+        format!("depth={round_runner}"),
+        "the guard must start the crusty round's runner at depth {round_runner}:\n{stderr}"
+    );
+}
+
+#[test]
+fn gadugi_test_is_checked_before_the_build() {
+    // PR #1520 review: a missing gadugi-test was found only at merge round
+    // step-00, after the build and the whole crusty loop.
+    let recipe = recipe_yaml("auto-drive-to-merge");
+    let first = steps(&recipe)
+        .first()
+        .and_then(|s| s.get("id"))
+        .and_then(Value::as_str);
+    assert_eq!(
+        first,
+        Some("autodrive-prerequisites"),
+        "auto-drive-to-merge must check its prerequisites first"
+    );
+    assert!(
+        step_index(&recipe, "autodrive-prerequisites") < step_index(&recipe, "autodrive-build"),
+        "the prerequisites are checked before the build"
+    );
+    let cmd = step_command(&recipe, "autodrive-prerequisites");
+    for needle in [
+        "command -v gadugi-test",
+        "ERROR: gadugi-test-not-installed",
+        "npm install -g github:rysweet/gadugi-agentic-test",
+        "exit 1",
+    ] {
+        assert!(
+            cmd.contains(needle),
+            "autodrive-prerequisites must contain `{needle}`"
+        );
+    }
+    let skill =
+        read(&workspace_root().join("amplifier-bundle/skills/auto-drive-to-merge/SKILL.md"));
+    let section = skill
+        .find("## Prerequisites")
+        .expect("the auto-drive skill must have a Prerequisites section");
+    assert!(
+        skill[section..].contains("gadugi-test")
+            && skill[section..].contains("npm install -g github:rysweet/gadugi-agentic-test"),
+        "the auto-drive skill must list gadugi-test and how to install it"
+    );
+}
+
+#[test]
+fn a_round_log_that_quotes_the_refusal_is_not_a_refusal() {
+    // crusty's review of PR #1520 quoted the guard's refusal in its verdict.
+    // Agent output reaches the round log as `[HH:MM:SS] [amplihack:...]`
+    // lines, and reading any BLOCKED_TERMINAL there as a refusal ended the
+    // run with exit 79.
+    let driver = read(&tool_path("autodrive_loop.sh"));
+    let body = driver
+        .split("terminal_refusal() {")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}").next())
+        .expect("terminal_refusal() must be defined");
+    assert!(
+        body.contains(r"\[amplihack:") && body.contains("grep -vE"),
+        "terminal_refusal must drop agent output lines before it looks for the refusal"
+    );
+    assert!(
+        body.contains("'BLOCKED_TERMINAL orchestration_unavailable'"),
+        "terminal_refusal must match the guard's own refusal text, not any BLOCKED_TERMINAL"
+    );
 }
 
 #[test]
@@ -3368,8 +3676,11 @@ fn the_reference_documents_the_range_rule_and_the_qa_chain() {
         "PR_DESCRIPTION.md",
         ".github/pull_request_template.md",
         ".autodrive/evidence/",
-        "step-00b-crusty-range",
-        "step-00c-crusty-rereview",
+        "autodrive_crusty_rereview.sh",
+        "--before-round",
+        "BEFORE_ROUND_FAILED",
+        "crusty-rereview-not-done",
+        "autodrive_record_crusty_loop_done",
         "step-00d-qa-evidence-hash",
         "UNREVIEWED_COMMITS",
         "crusty-review-required",
@@ -3513,7 +3824,7 @@ fn round_recipes_read_step_outputs_through_recipe_var() {
 /// these scenarios with the real gadugi-test, so the harnesses read the
 /// shipped step body with `tests/gadugi/recipe-step-command.sh` (awk) rather
 /// than python3 and PyYAML.
-const HARNESS_STEPS: [(&str, &str, &str); 2] = [
+const HARNESS_STEPS: [(&str, &str, &str); 4] = [
     (
         "run-step-03b.sh",
         "workflow-prep",
@@ -3523,6 +3834,16 @@ const HARNESS_STEPS: [(&str, &str, &str); 2] = [
         "run-merge-validations.sh",
         "quality-audit-cycle",
         "merge-validations",
+    ),
+    (
+        "run-autodrive-merge-ready-files-scenario.sh",
+        "autodrive-merge-round",
+        "step-00-merge-ready-files",
+    ),
+    (
+        "run-autodrive-merge-ready-files-scenario.sh",
+        "auto-drive-to-merge",
+        "autodrive-prerequisites",
     ),
 ];
 

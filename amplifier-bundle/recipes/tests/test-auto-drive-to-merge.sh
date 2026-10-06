@@ -30,11 +30,17 @@
 #
 # Issue #1517, points 3 to 5 and D4 to D6: commits made after the clean crusty
 # round must be base merges or description and evidence changes, or crusty
-# reviews them again (autodrive_trust.sh, steps 00b and 01b, gate section 6b;
+# reviews them again (autodrive_trust.sh, autodrive_crusty_rereview.sh and
+# step 01b, gate section 6b;
 # sections 5k, 6f, 6g); the qa evidence is trusted only through the hash chain
 # that starts at merge-ready-records.tsv (step-00d, step-03, step-05, gate
 # section 6; sections 5k, 6f, 6h); and the evidence records one result per
 # scenario file (gadugi_scenario_results; section 6b).
+#
+# PR #1520 review: no round recipe starts a loop. The crusty re-review runs as
+# the merge-ready loop's --before-round step, at the loop's own session depth
+# (sections 3b and 6g), and a round log that merely QUOTES the guard's refusal
+# is not a refusal (section 3c).
 #
 # Usage: bash amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh
 # Exit codes: 0 = pass, 1 = fail, 2 = test harness error.
@@ -52,8 +58,8 @@ AUTODRIVE_RECIPES=(
   autodrive-crusty-loop autodrive-merge-evidence autodrive-merge-round
   autodrive-merge-loop
 )
-AUTODRIVE_TOOLS=(autodrive_loop.sh autodrive_merge_gate.sh autodrive_merge_ready_files.sh autodrive_platform_facts.sh
-  autodrive_qa_evidence.sh autodrive_round_evidence.sh autodrive_state.sh autodrive_trust.sh)
+AUTODRIVE_TOOLS=(autodrive_crusty_rereview.sh autodrive_loop.sh autodrive_merge_gate.sh autodrive_merge_ready_files.sh
+  autodrive_platform_facts.sh autodrive_qa_evidence.sh autodrive_round_evidence.sh autodrive_state.sh autodrive_trust.sh)
 # merge-round step-00-tools-dir finds the tools once and every later step of
 # the round reads the directory from its output. A scalar output reaches bash
 # as RECIPE_VAR_<output> and as the upper-case name (recipe-runner 0.3.8,
@@ -133,11 +139,14 @@ fi
 if [ "${1:-}" = "recipe" ] && [ "${2:-}" = "run" ]; then
   RECIPE="${3:-}"
   echo "$RECIPE" >> "${STUB_CALLS:-/dev/null}"
+  # The session depth each child recipe was started at, when a test asks.
+  printf '%s %s\n' "$RECIPE" "${AMPLIHACK_SESSION_DEPTH:-unset}" >> "${STUB_DEPTH_LOG:-/dev/null}"
   # The umask each child recipe was started with, when a test asks for it.
   [ -z "${STUB_UMASK_LOG:-}" ] || printf '%s %s\n' "$RECIPE" "$(umask)" >> "$STUB_UMASK_LOG"
   RECORD=""; for a in "$@"; do case "$a" in autodrive_round_record=*) RECORD="${a#*=}" ;; esac; done
   case "$RECIPE" in
     loop-health-evaluator)
+      for a in "$@"; do case "$a" in loop_history=*) printf '%s\n---\n' "${a#*=}" >> "${STUB_HISTORY_LOG:-/dev/null}" ;; esac; done
       # Snapshot a state file at the moment the evaluator (an agent) starts,
       # so a test can show what the loop had already written by then.
       if [ -n "${STUB_SNAPSHOT_FROM:-}" ]; then
@@ -163,7 +172,10 @@ if [ "${1:-}" = "recipe" ] && [ "${2:-}" = "run" ]; then
         exit $?
       fi
       if [ -n "$RECORD" ] && [ "${STUB_ROUND_WRITE_RECORD:-true}" = "true" ]; then
-        printf '%s' "${STUB_ROUND_RECORD:-{\"crusty_verdict\":\"CONCERNS\"}}" > "$RECORD"
+        REC_TEXT="${STUB_ROUND_RECORD:-{\"crusty_verdict\":\"CONCERNS\"}}"
+        # A crusty round can be given its own record when one loop runs both.
+        [ "$RECIPE" = "autodrive-crusty-round" ] && [ -n "${STUB_CRUSTY_RECORD:-}" ] && REC_TEXT="$STUB_CRUSTY_RECORD"
+        printf '%s' "$REC_TEXT" > "$RECORD"
         printf '%s' "${STUB_ROUND_FINDINGS:-}" > "${RECORD}.findings"
       fi
       printf '%s\n' "${STUB_ROUND_STDOUT:-round ran}"
@@ -386,6 +398,113 @@ if [ "$(grep -c 'autodrive-crusty-round' "${LOOP_LOGS}/calls" 2>/dev/null || ech
 else
   fail "EXIT79-terminal" "a round was retried after exit 79"
 fi
+
+# ---------------------------------------------------------------------------
+# 3b. --before-round: a step run before EVERY round, at the loop's own depth.
+# ---------------------------------------------------------------------------
+# The merge-ready loop runs the crusty re-review this way (PR #1520 review):
+# from the loop's shell, so whatever loop the step starts issues its
+# `recipe run` at the depth this loop does, never one runner deeper. The step
+# is given --repo, --state-dir and the round's context, and nothing else.
+BR_HOOK="${WORK}/before-hook.sh"
+cat > "${BR_HOOK}" <<'HOOK'
+#!/usr/bin/env bash
+echo "before $* depth=${AMPLIHACK_SESSION_DEPTH:-unset}" >> "${STUB_CALLS:-/dev/null}"
+echo "the before-round step's own stderr" >&2
+printf '{"before_round_result":"%s"}\n' "${BR_RESULT:-hook-ran}"
+exit "${BR_RC:-0}"
+HOOK
+run_loop_before() { # run_loop_before <state-dir-suffix> [before-round path]: run_loop, with --before-round
+  LOOP_DIR="${WORK}/loop-$1"; LOOP_LOGS="${WORK}/loop-$1.logs"
+  mkdir -p "${LOOP_DIR}" "${LOOP_LOGS}"
+  export STUB_CALLS="${LOOP_LOGS}/calls" STUB_SHOW_CALLS="${LOOP_LOGS}/shows" STUB_HISTORY_LOG="${LOOP_LOGS}/history"
+  PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" AMPLIHACK_SESSION_DEPTH=2 \
+    bash "${LOOP}" --loop-name "crusty" --round-recipe "autodrive-crusty-round" \
+      --clean-token "CLEAN" --verdict-field "crusty_verdict" \
+      --repo "${WORK}" --state-dir "${LOOP_DIR}" --context "pr_number=42" \
+      --before-round "${2:-${BR_HOOK}}" >"${LOOP_LOGS}/out" 2>"${LOOP_LOGS}/err"
+  local rc=$?
+  LOOP_OUT="$(cat "${LOOP_LOGS}/out")"
+  unset STUB_HISTORY_LOG
+  return $rc
+}
+set_stub '{"crusty_verdict":"CLEAN"}' 0 ''
+printf 'LOOP_HEALTH: CONTINUE — confirm once more\nLOOP_HEALTH: DONE — converged\n' > "${WORK}/health-seq-before"
+export STUB_HEALTH_SEQ="${WORK}/health-seq-before"
+run_loop_before before-ok; rc=$?
+unset STUB_HEALTH_SEQ
+BR_WANT="before --repo ${WORK} --state-dir ${LOOP_DIR} -c pr_number=42 depth=2
+autodrive-crusty-round
+loop-health-evaluator
+before --repo ${WORK} --state-dir ${LOOP_DIR} -c pr_number=42 depth=2
+autodrive-crusty-round
+loop-health-evaluator"
+if [ "$rc" -eq 0 ] && [ "$(cat "${LOOP_LOGS}/calls" 2>/dev/null)" = "${BR_WANT}" ]; then
+  pass "BEFORE-every-round" "the step runs before round 1 and before every later round, with the round's context, at the loop's own depth"
+else
+  fail "BEFORE-every-round" "rc=${rc} calls: $(tr '\n' '|' < "${LOOP_LOGS}/calls" 2>/dev/null)"
+fi
+if [ "$(grep -c 'before=hook-ran' "${LOOP_LOGS}/history" 2>/dev/null || echo 0)" = "3" ]; then
+  pass "BEFORE-history" "each round's history line carries the step's before_round_result for the evaluator"
+else
+  fail "BEFORE-history" "history: $(tr '\n' '|' < "${LOOP_LOGS}/history" 2>/dev/null)"
+fi
+if grep -qF "the before-round step's own stderr" "${LOOP_LOGS}/err" \
+   && [ -f "${LOOP_DIR}/crusty-round-1-before.log" ] && private_file "${LOOP_DIR}/crusty-round-1-before.log"; then
+  pass "BEFORE-log" "the step's stderr is kept private in <loop>-<round>-before.log and shown"
+else
+  fail "BEFORE-log" "$(ls -l "${LOOP_DIR}" 2>&1 | tr '\n' ' ')"
+fi
+set_stub '{"crusty_verdict":"CLEAN"}' 0 'LOOP_HEALTH: DONE — converged'
+export BR_RC=1 BR_RESULT=crusty-rereview-not-done
+run_loop_before before-fail; rc=$?
+if [ "$rc" -eq 1 ] && printf '%s' "${LOOP_OUT}" | grep -qF '"loop_result":"BEFORE_ROUND_FAILED"' \
+   && printf '%s' "${LOOP_OUT}" | grep -qF 'crusty-rereview-not-done' \
+   && ! grep -q 'autodrive-crusty-round' "${LOOP_LOGS}/calls" 2>/dev/null; then
+  pass "BEFORE-fails-stops" "a failed step stops the loop as BEFORE_ROUND_FAILED, names its result, and the round never runs"
+else
+  fail "BEFORE-fails-stops" "rc=${rc} out=${LOOP_OUT} calls: $(tr '\n' '|' < "${LOOP_LOGS}/calls" 2>/dev/null)"
+fi
+export BR_RC=79 BR_RESULT=crusty-rereview-refused
+run_loop_before before-79; rc=$?
+unset BR_RC BR_RESULT
+if [ "$rc" -eq 79 ] && printf '%s' "${LOOP_OUT}" | grep -qF '"loop_result":"TERMINAL_POLICY_REFUSAL"' \
+   && ! grep -q 'autodrive-crusty-round\|loop-health-evaluator' "${LOOP_LOGS}/calls" 2>/dev/null; then
+  pass "BEFORE-79-terminal" "exit 79 from the step is terminal: no round, no evaluator, exit 79"
+else
+  fail "BEFORE-79-terminal" "rc=${rc} out=${LOOP_OUT}"
+fi
+run_loop_before before-missing "${WORK}/no-such-hook.sh"; rc=$?
+if [ "$rc" -eq 2 ] && grep -qF -- "--before-round '${WORK}/no-such-hook.sh' is not a file" "${LOOP_LOGS}/err"; then
+  pass "BEFORE-not-a-file" "a --before-round path that is not a file is a usage error, before any round"
+else
+  fail "BEFORE-not-a-file" "rc=${rc} err=$(tr '\n' ' ' < "${LOOP_LOGS}/err")"
+fi
+
+# ---------------------------------------------------------------------------
+# 3c. A round log that QUOTES the guard's refusal is not a refusal.
+# ---------------------------------------------------------------------------
+# Crusty's review of PR #1520 quoted the guard's message in its verdict, and
+# agent output reaches the round log as `[HH:MM:SS] [amplihack:...]` lines.
+# Matching any BLOCKED_TERMINAL there read that review as an exit-79 refusal
+# and ended the run. The guard's own line still is one.
+set_stub '{"crusty_verdict":"CONCERNS"}' 0 'LOOP_HEALTH: STUCK — stop here' 0
+export STUB_ROUND_STDOUT='  [06:56:22] [amplihack:claude:2742505] {"crusty_verdict": "CONCERNS", "evidence": "-> '"'"'BLOCKED_TERMINAL orchestration_unavailable: depth 4 of max 3'"'"', rc=79"}'
+run_loop quoted-refusal; rc=$?
+if [ "$rc" -ne 79 ] && grep -q 'loop-health-evaluator' "${LOOP_LOGS}/calls" 2>/dev/null; then
+  pass "EXIT79-quoted-is-not-refusal" "an agent line quoting the refusal is a review, not a refusal; the evaluator decides (rc=${rc})"
+else
+  fail "EXIT79-quoted-is-not-refusal" "rc=${rc}: a quoted refusal stopped the loop as exit 79"
+fi
+set_stub '{"crusty_verdict":"CONCERNS"}' 0 'LOOP_HEALTH: CONTINUE — keep going' 1
+export STUB_ROUND_STDOUT='BLOCKED_TERMINAL orchestration_unavailable: depth 4 of max 3 (issue #964/#1326).'
+run_loop guard-line; rc=$?
+if [ "$rc" -eq 79 ] && ! grep -q 'loop-health-evaluator' "${LOOP_LOGS}/calls" 2>/dev/null; then
+  pass "EXIT79-guard-line" "the guard's own refusal line in a round log is terminal even when the exit code was lost"
+else
+  fail "EXIT79-guard-line" "rc=${rc} out=${LOOP_OUT}"
+fi
+export STUB_ROUND_STDOUT="round ran"
 
 # ---------------------------------------------------------------------------
 # 4. Forbidden flags — never in an executable position.
@@ -1819,6 +1938,29 @@ else
   fi
 fi
 
+# The same check runs first in auto-drive-to-merge.yaml, before the build and
+# the crusty loop (PR #1520 review): a missing gadugi-test costs seconds there,
+# not hours.
+PRQ_BODY="$(extract_step_command "${RECIPES}/auto-drive-to-merge.yaml" autodrive-prerequisites)"
+if [[ -z "${PRQ_BODY}" ]]; then
+  fail "PREREQ-exists" "auto-drive-to-merge.yaml has no autodrive-prerequisites command"
+else
+  PRQ_OUT="$(env -i HOME="${TEST_HOME}" PATH="${S00_NO_GADUGI_BIN:-${WORK_PHYS}/none}:/usr/bin:/bin" bash -c "${PRQ_BODY}" 2>"${WORK_PHYS}/prq.err")"; rc=$?
+  if [ "$rc" -ne 0 ] && [ -z "${PRQ_OUT}" ] \
+     && grep -q '^ERROR: gadugi-test-not-installed: gadugi-test is not on PATH' "${WORK_PHYS}/prq.err" \
+     && grep -qF 'npm install -g github:rysweet/gadugi-agentic-test' "${WORK_PHYS}/prq.err"; then
+    pass "PREREQ-gadugi-missing-fails" "a missing gadugi-test stops auto-drive before the build, by name, with the install command"
+  else
+    fail "PREREQ-gadugi-missing-fails" "rc=${rc} out=${PRQ_OUT} err=$(tr '\n' ' ' < "${WORK_PHYS}/prq.err")"
+  fi
+  PRQ_OUT="$(env -i HOME="${TEST_HOME}" PATH="${S00_GADUGI_BIN:-${WORK_PHYS}/none}:/usr/bin:/bin" bash -c "${PRQ_BODY}" 2>"${WORK_PHYS}/prq.err")"; rc=$?
+  if [ "$rc" -eq 0 ] && [ "${PRQ_OUT}" = '{"gadugi_test":"found"}' ]; then
+    pass "PREREQ-gadugi-found" "with gadugi-test on PATH the run goes on, and the tool is not run"
+  else
+    fail "PREREQ-gadugi-found" "rc=${rc} out=${PRQ_OUT} err=$(tr '\n' ' ' < "${WORK_PHYS}/prq.err")"
+  fi
+fi
+
 # ---------------------------------------------------------------------------
 # 6b. qa evidence: the repository test plus gadugi-test, on the REAL step body.
 # ---------------------------------------------------------------------------
@@ -3049,65 +3191,134 @@ build"; do
 fi
 
 # ---------------------------------------------------------------------------
-# 6g. step-00b-crusty-range, on the REAL step body (issue #1517 D4).
+# 6g. autodrive_crusty_rereview.sh, the merge-ready loop's before-round step
+#     (issue #1517 D4; PR #1520 review).
 # ---------------------------------------------------------------------------
-S0B_BODY="$(extract_step_command "${RECIPES}/autodrive-merge-round.yaml" "step-00b-crusty-range")"
-if [[ -z "${S0B_BODY}" ]]; then
-  fail "STEP00B-exists" "autodrive-merge-round.yaml has no step-00b-crusty-range command"
+# It replaced merge round steps 00b and 00c. The crusty loop it starts runs in
+# its caller's shell, so every crusty round is started at the session depth
+# the tool was started at; the stub records that depth. Each run below starts
+# the tool at depth 2, where autodrive-merge-loop.yaml's loop step runs.
+RR_TOOL="${TOOLS}/autodrive_crusty_rereview.sh"
+if [[ ! -f "${RR_TOOL}" ]]; then
+  fail "RRTOOL-tool-exists" "amplifier-bundle/tools/autodrive_crusty_rereview.sh is missing"
 else
-  S0B_N=0; S0B_OUT=""; S0B_RC=0; S0B_DIR=""
-  s0b_run() { # s0b_run <seed|-> [repo] -> runs step-00b against a seeded state dir ("-" = no state dir)
-    S0B_N=$((S0B_N + 1)); S0B_DIR="${WORK_PHYS}/s0b-${S0B_N}"
-    local sd="${S0B_DIR}"
-    if [ "$1" = "-" ]; then sd=""; else seed_crusty "${S0B_DIR}" "$1"; fi
-    PATH="${STUB_BIN}:${PATH}" HOME="${TEST_HOME}" AMPLIHACK_HOME="${REPO_ROOT}" REPO_PATH="${2:-${FX}}" \
-      GH_MODE=green GH_HEAD="${CR_SHA2}" GH_BASE=main PR_NUMBER=42 AUTODRIVE_STATE_DIR="$sd" \
-      bash -c "${S0B_BODY}" >"${S0B_DIR}.out" 2>"${S0B_DIR}.err"; S0B_RC=$?
-    S0B_OUT="$(tail -n 1 "${S0B_DIR}.out")"
+  RRT_N=0; RRT_OUT=""; RRT_RC=0; RRT_DIR=""; RRT_LOGS=""
+  rrt_run() { # rrt_run <seed> <repo> [VAR=value ...]: the tool at depth 2 against a seeded state dir
+    local seed="$1" repo="$2"; shift 2
+    RRT_N=$((RRT_N + 1)); RRT_DIR="${WORK_PHYS}/rrt-${RRT_N}"; RRT_LOGS="${WORK_PHYS}/rrt-${RRT_N}.logs"
+    mkdir -p "${RRT_LOGS}"; seed_crusty "${RRT_DIR}" "${seed}"; mkdir -p "${RRT_DIR}"
+    env PATH="${STUB_BIN}:${PATH}" HOME="${TEST_HOME}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
+      GH_MODE=green GH_HEAD="${CR_SHA2}" GH_BASE=main AMPLIHACK_SESSION_DEPTH=2 \
+      STUB_CALLS="${RRT_LOGS}/calls" STUB_SHOW_CALLS="${RRT_LOGS}/shows" STUB_DEPTH_LOG="${RRT_LOGS}/depths" \
+      STUB_HEALTH_RESOLVES=0 STUB_ROUND_WRITE_RECORD=true STUB_ROUND_STDOUT="round ran" STUB_ROUND_RC=0 \
+      STUB_HEALTH_RC=0 STUB_HEALTH_STDOUT= STUB_HEALTH_SEQ= STUB_ROUND_BODY= STUB_ROUND_FINDINGS= STUB_CRUSTY_RECORD= "$@" \
+      bash "${RR_TOOL}" --repo "${repo}" --state-dir "${RRT_DIR}" \
+        -c "repo_path=${repo}" -c "pr_number=42" -c "pr_url=u" -c "task_description=t" -c "autodrive_qa_evidence=x" \
+      >"${RRT_LOGS}/out" 2>"${RRT_LOGS}/err"; RRT_RC=$?
+    RRT_OUT="$(tail -n 1 "${RRT_LOGS}/out")"
   }
-  s0b_expect() { # s0b_expect <label> <rereview> <range> <first> <marker kept|cleared|none> <why>
-    local got marker="none"
-    got="$(printf '%s' "${S0B_OUT}" | jq -c '[.rereview, .range, .first_unreviewed_sha]' 2>/dev/null)"
-    if [ -f "${S0B_DIR}/phases.tsv" ]; then
-      if grep -q '^crusty-loop	' "${S0B_DIR}/phases.tsv"; then marker="kept"; else marker="cleared"; fi
-    fi
-    if [ "${S0B_RC}" = "0" ] && [ "$got" = "[\"$2\",\"$3\",\"$4\"]" ] && [ "$marker" = "$5" ] \
-       && ! grep -qF 'IGNORE PREVIOUS' "${S0B_DIR}.err"; then
-      pass "$1" "$6"
+  rrt_marker() { # rrt_marker -> kept|absent
+    if grep -q '^crusty-loop	' "${RRT_DIR}/phases.tsv" 2>/dev/null; then echo kept; else echo absent; fi
+  }
+  rrt_expect() { # rrt_expect <label> <rc> <result> <range> <crusty-rounds-run> <marker> <why>
+    local got runs
+    got="$(printf '%s' "${RRT_OUT}" | jq -c '[.before_round_result, .range]' 2>/dev/null)"
+    runs="$(grep -c '^autodrive-crusty-round$' "${RRT_LOGS}/calls" 2>/dev/null || true)"
+    if [ "${RRT_RC}" = "$2" ] && [ "$got" = "[\"$3\",\"$4\"]" ] && [ "${runs:-0}" = "$5" ] && [ "$(rrt_marker)" = "$6" ] \
+       && ! grep -qF 'IGNORE PREVIOUS' "${RRT_LOGS}/out" "${RRT_LOGS}/err"; then
+      pass "$1" "$7"
     else
-      fail "$1" "${6} -- rc=${S0B_RC} got ${got:-<invalid JSON>} marker=${marker} out=${S0B_OUT} err=$(tail -n 3 "${S0B_DIR}.err" | tr '\n' ' ')"
+      fail "$1" "${7} -- rc=${RRT_RC} got=${got:-<invalid JSON>} crusty_rounds=${runs:-0} marker=$(rrt_marker) out=${RRT_OUT} err=$(tail -n 4 "${RRT_LOGS}/err" | tr '\n' ' ')"
     fi
   }
-  fx_head "${FX_CODE}"; s0b_run clean
-  s0b_expect "STEP00B-code-commit" true crusty-unreviewed-commits "${FX_CODE}" cleared \
-    "a code commit after the clean round clears the crusty-loop row and emits rereview true"
-  # The nested crusty loop ends STUCK and never writes the marker back.
-  S0B_OUT="$(PATH="${STUB_BIN}:${PATH}" HOME="${TEST_HOME}" AMPLIHACK_HOME="${REPO_ROOT}" REPO_PATH="${FX}" \
-    GH_MODE=green GH_HEAD="${CR_SHA2}" GH_BASE=main PR_NUMBER=42 AUTODRIVE_STATE_DIR="${S0B_DIR}" \
-    bash -c "${S0B_BODY}" 2>/dev/null | tail -n 1)"
-  if [ "$(printf '%s' "${S0B_OUT}" | jq -r .rereview 2>/dev/null)" = "false" ]; then
-    pass "STEP00B-after-stuck" "after a STUCK re-review the next round's step-00b emits rereview false"
+  RR_CLEAN_CODE="$(crusty_record CLEAN "${FX_CODE}")"
+
+  fx_head "${FX_CODE}"
+  rrt_run clean "${FX}" STUB_ROUND_RECORD="${RR_CLEAN_CODE}" STUB_HEALTH_STDOUT='LOOP_HEALTH: DONE — converged' STUB_HEALTH_RC=0
+  rrt_expect "RRTOOL-code-commit" 0 crusty-rereview-done crusty-unreviewed-commits 1 kept \
+    "a code commit after the clean round runs the crusty loop, and its DONE writes the marker back"
+  if [ "$(cat "${RRT_LOGS}/depths" 2>/dev/null)" = "autodrive-crusty-round 2
+loop-health-evaluator 2" ]; then
+    pass "RRTOOL-same-depth" "the crusty round and its evaluator are started at depth 2, the tool's own: no recipe runner sits in between"
   else
-    fail "STEP00B-after-stuck" "got ${S0B_OUT}"
+    fail "RRTOOL-same-depth" "depths: $(tr '\n' '|' < "${RRT_LOGS}/depths" 2>/dev/null)"
   fi
-  fx_head "${FX_MERGE}"; s0b_run clean
-  s0b_expect "STEP00B-base-merge" false ok "" kept "a clean base merge emits rereview false and keeps the marker"
-  fx_head "${CR_SHA2}"; s0b_run clean
-  s0b_expect "STEP00B-description" false ok "" kept "a description change emits rereview false"
-  s0b_run clean "${TR_SHALLOW:-${WORK_PHYS}/no-shallow}"
-  s0b_expect "STEP00B-shallow" false crusty-range-unreadable "" kept \
-    "an unreadable range emits rereview false and keeps the marker; step-01b, step-03 and the gate block instead"
-  s0b_run none
-  if [ "${S0B_RC}" = "0" ] && [ "$(printf '%s' "${S0B_OUT}" | jq -r .rereview 2>/dev/null)" = "false" ]; then
-    pass "STEP00B-no-crusty" "with no crusty-loop marker step-00b succeeds and emits rereview false"
+  if [ "$(env -i PATH="/usr/bin:/bin" bash -c '. "$1"; . "$2"; autodrive_crusty_final "$3"' _ "${STATE_HELPER}" "${TRUST_HELPER}" "${RRT_DIR}" 2>/dev/null)" = "${FX_CODE}" ]; then
+    pass "RRTOOL-reviewed-head" "after the re-review, criterion 3 reads the head crusty just reviewed"
   else
-    fail "STEP00B-no-crusty" "rc=${S0B_RC} out=${S0B_OUT}"
+    fail "RRTOOL-reviewed-head" "autodrive_crusty_final did not return the re-reviewed head ${FX_CODE}"
   fi
-  s0b_run -
-  if [ "${S0B_RC}" = "0" ] && [ "$(printf '%s' "${S0B_OUT}" | jq -r .rereview 2>/dev/null)" = "false" ]; then
-    pass "STEP00B-no-state-dir" "with no state dir step-00b succeeds and emits rereview false"
+
+  rrt_run clean "${FX}" STUB_ROUND_RECORD="$(crusty_record CONCERNS "${FX_CODE}")" STUB_HEALTH_STDOUT='' STUB_HEALTH_RC=1
+  rrt_expect "RRTOOL-stuck" 1 crusty-rereview-not-done crusty-unreviewed-commits 1 absent \
+    "a STUCK re-review exits 1 and leaves the marker absent, so criterion 3 stays unmet and a resumed run starts with the crusty loop"
+  if [ "$(printf '%s' "${RRT_OUT}" | jq -r .crusty_loop_result 2>/dev/null)" = "STUCK" ]; then
+    pass "RRTOOL-stuck-named" "the crusty loop's own result is named"
   else
-    fail "STEP00B-no-state-dir" "rc=${S0B_RC} out=${S0B_OUT}"
+    fail "RRTOOL-stuck-named" "out=${RRT_OUT}"
+  fi
+
+  rrt_run clean "${FX}" STUB_ROUND_RECORD="${RR_CLEAN_CODE}" STUB_ROUND_RC=79 STUB_HEALTH_STDOUT='LOOP_HEALTH: DONE — converged'
+  rrt_expect "RRTOOL-refused" 79 crusty-rereview-refused crusty-unreviewed-commits 1 absent \
+    "a refused crusty round is terminal: exit 79, never retried"
+  if ! grep -q 'loop-health-evaluator' "${RRT_LOGS}/calls" 2>/dev/null; then
+    pass "RRTOOL-refused-no-evaluator" "no evaluator runs after the refusal"
+  else
+    fail "RRTOOL-refused-no-evaluator" "calls: $(tr '\n' '|' < "${RRT_LOGS}/calls")"
+  fi
+
+  fx_head "${FX_MERGE}"; rrt_run clean "${FX}" STUB_HEALTH_STDOUT='LOOP_HEALTH: DONE — converged'
+  rrt_expect "RRTOOL-base-merge" 0 crusty-rereview-not-needed ok 0 kept "a clean base merge needs no re-review"
+  fx_head "${CR_SHA2}"; rrt_run clean "${FX}" STUB_HEALTH_STDOUT='LOOP_HEALTH: DONE — converged'
+  rrt_expect "RRTOOL-description" 0 crusty-rereview-not-needed ok 0 kept "a description change needs no re-review"
+  rrt_run clean "${TR_SHALLOW:-${WORK_PHYS}/no-shallow}" STUB_HEALTH_STDOUT='LOOP_HEALTH: DONE — converged'
+  rrt_expect "RRTOOL-shallow" 0 crusty-rereview-not-needed crusty-range-unreadable 0 kept \
+    "an unreadable range is not re-reviewed (crusty cannot deepen a clone); step-01b and the gate block on it"
+  rrt_run none "${FX}" STUB_HEALTH_STDOUT='LOOP_HEALTH: DONE — converged'
+  rrt_expect "RRTOOL-no-crusty" 0 crusty-rereview-not-needed not-checked 0 absent \
+    "with no clean crusty loop the range is not checked; step-01b reports criterion 3"
+
+  env PATH="${STUB_BIN}:${PATH}" bash "${RR_TOOL}" --repo "${FX}" >"${WORK_PHYS}/rrt-usage.out" 2>"${WORK_PHYS}/rrt-usage.err"; rc=$?
+  if [ "$rc" -eq 2 ] && [ ! -s "${WORK_PHYS}/rrt-usage.out" ]; then
+    pass "RRTOOL-usage" "--repo and --state-dir are required"
+  else
+    fail "RRTOOL-usage" "rc=${rc}"
+  fi
+  RR_ALONE="${WORK_PHYS}/rrt-alone"; mkdir -p "${RR_ALONE}"; cp "${RR_TOOL}" "${RR_ALONE}/"
+  env PATH="${STUB_BIN}:${PATH}" bash "${RR_ALONE}/autodrive_crusty_rereview.sh" --repo "${FX}" --state-dir "${WORK_PHYS}/rrt-alone-state" \
+    >"${RR_ALONE}.out" 2>"${RR_ALONE}.err"; rc=$?
+  if [ "$rc" -eq 1 ] && grep -qF '"before_round_result":"crusty-rereview-unavailable"' "${RR_ALONE}.out" \
+     && grep -qF 'ERROR: autodrive-tools-not-found:' "${RR_ALONE}.err"; then
+    pass "RRTOOL-tools-beside" "the tools come from beside the script only; a lone copy refuses by name"
+  else
+    fail "RRTOOL-tools-beside" "rc=${rc} out=$(cat "${RR_ALONE}.out") err=$(tr '\n' ' ' < "${RR_ALONE}.err")"
+  fi
+
+  # End to end: the merge-ready loop with the real tool as its --before-round
+  # step, after a code commit. The crusty round runs BEFORE the merge round,
+  # both are started at the loop's own depth, and the loop converges.
+  fx_head "${FX_CODE}"
+  RRE_DIR="${WORK_PHYS}/rre-state"; RRE_LOGS="${WORK_PHYS}/rre.logs"; mkdir -p "${RRE_LOGS}"
+  seed_crusty "${RRE_DIR}" clean
+  env PATH="${STUB_BIN}:${PATH}" HOME="${TEST_HOME}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
+    GH_MODE=green GH_HEAD="${CR_SHA2}" GH_BASE=main AMPLIHACK_SESSION_DEPTH=2 \
+    STUB_CALLS="${RRE_LOGS}/calls" STUB_SHOW_CALLS=/dev/null STUB_DEPTH_LOG="${RRE_LOGS}/depths" STUB_HEALTH_RESOLVES=0 \
+    STUB_CRUSTY_RECORD="${RR_CLEAN_CODE}" STUB_ROUND_RECORD='{"merge_ready_verdict":"MERGE_READY","blocker_count":0}' \
+    STUB_ROUND_WRITE_RECORD=true STUB_ROUND_STDOUT="round ran" STUB_HEALTH_STDOUT='LOOP_HEALTH: DONE — converged' STUB_HEALTH_RC=0 \
+    STUB_ROUND_RC=0 STUB_HEALTH_SEQ= STUB_ROUND_BODY= STUB_ROUND_FINDINGS= \
+    bash "${LOOP}" --loop-name merge-ready --round-recipe autodrive-merge-round --clean-token MERGE_READY \
+      --verdict-field merge_ready_verdict --repo "${FX}" --state-dir "${RRE_DIR}" \
+      --context "repo_path=${FX}" --context "pr_number=42" --before-round "${RR_TOOL}" \
+    >"${RRE_LOGS}/out" 2>"${RRE_LOGS}/err"; rc=$?
+  RRE_WANT="autodrive-crusty-round 2
+loop-health-evaluator 2
+autodrive-merge-round 2
+loop-health-evaluator 2"
+  if [ "$rc" -eq 0 ] && grep -qF '"loop_result":"DONE"' "${RRE_LOGS}/out" && [ "$(cat "${RRE_LOGS}/depths" 2>/dev/null)" = "${RRE_WANT}" ] \
+     && grep -q '^crusty-loop	' "${RRE_DIR}/phases.tsv"; then
+    pass "RRTOOL-E2E-merge-loop" "a code commit is re-reviewed by crusty before the merge round, both rounds at the loop's depth, and the loop converges"
+  else
+    fail "RRTOOL-E2E-merge-loop" "rc=${rc} depths: $(tr '\n' '|' < "${RRE_LOGS}/depths" 2>/dev/null) out=$(cat "${RRE_LOGS}/out") err=$(tail -n 5 "${RRE_LOGS}/err" | tr '\n' ' ')"
   fi
 fi
 

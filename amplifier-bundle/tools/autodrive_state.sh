@@ -9,6 +9,7 @@
 #   Local — ${AMPLIHACK_STATE_DIR:-$HOME/.amplihack/state}/auto-drive/<key>/
 #   Fast, always available, survives a crashed run on the same host.
 #
+#
 # The authoritative answer to "is this already merged?" is not that store: it
 # is the platform (`gh pr view --json state`). State files record what THIS
 # workflow did; they never assert a merge that GitHub does not confirm.
@@ -150,14 +151,16 @@ autodrive_untrusted_entries() {
 # is `crusty-loop`: the merge gate reads that marker, together with the final
 # verdict in crusty-latest.json, as evidence for merge-ready criterion 3 (issue
 # #1517), and only from a state dir private to this user. The only permitted
-# writers are autodrive-crusty-loop.yaml (the marker, after the loop reports
-# DONE), merge round step-00b (which removes the marker with
-# autodrive_clear_phase to send unreviewed commits back to crusty), and
-# autodrive_loop.sh (crusty-latest.json, a copy of the last round
-# record, and crusty-records.tsv, the manifest of the round records the loop
-# wrote, one row per round with the record's git blob hash). No agent step may
-# create, edit or delete these files; autodrive_crusty_final below trusts a
-# record only when the manifest names it and its hash still matches.
+# writers are autodrive_record_crusty_loop_done below, which writes the marker
+# after a crusty loop reports DONE and is called by autodrive-crusty-loop.yaml
+# and autodrive_crusty_rereview.sh; autodrive_crusty_rereview.sh, which runs
+# between merge rounds and removes the marker with autodrive_clear_phase to
+# send unreviewed commits back to crusty; and autodrive_loop.sh
+# (crusty-latest.json, a copy of the last round record, and crusty-records.tsv,
+# the manifest of the round records the loop wrote, one row per round with the
+# record's git blob hash). No agent step may create, edit or delete these
+# files; autodrive_crusty_final below trusts a record only when the manifest
+# names it and its hash still matches.
 
 autodrive_mark_phase_done() {
   local dir="${1:?state dir}" phase="${2:?phase}"
@@ -170,12 +173,30 @@ autodrive_phase_done() {
   grep -qF "$(printf '%s\t' "$phase")" "$dir/phases.tsv"
 }
 
+# autodrive_record_crusty_loop_done <dir> -> records a crusty loop that ended
+# DONE: every concern id in crusty-round-*.json.findings goes to
+# resolved-concerns.txt, so a resumed run does not reopen it, and the
+# `crusty-loop` marker is written. The loop reports DONE only on a round whose
+# own verdict was CLEAN, so every concern it raised is settled. Callers check
+# for DONE first; this function does not.
+autodrive_record_crusty_loop_done() {
+  local dir="${1:?state dir}" f id
+  for f in "$dir"/crusty-round-*.json.findings; do
+    [ -f "$f" ] || continue
+    while IFS= read -r id; do
+      [ -n "$id" ] && autodrive_record_resolved "$dir" "$id"
+    done < "$f"
+  done
+  autodrive_mark_phase_done "$dir" "crusty-loop"
+}
+
 # autodrive_clear_phase <dir> <phase> -> removes every phases.tsv row whose
-# first field is exactly <phase>. Merge round step-00b uses it to send commits
-# made after the clean crusty round back to crusty (issue #1517 D4): with the
-# `crusty-loop` row gone, the nested crusty loop runs again and writes the row
-# back only when it ends DONE. <phase> must match ^[a-z][a-z-]*$. A phases.tsv
-# that is a symlink or not a regular file is refused and left alone. The
+# first field is exactly <phase>. autodrive_crusty_rereview.sh uses it, through
+# autodrive_rereview_decision, to send commits made after the clean crusty round
+# back to crusty (issue #1517 D4): with the `crusty-loop` row gone, the crusty
+# loop runs again and the row comes back only when it ends DONE. <phase> must
+# match ^[a-z][a-z-]*$. A phases.tsv that is a symlink or not a regular file is
+# refused and left alone. The
 # filtered rows go to a mktemp file beside it, created under umask 077, which
 # then replaces it with mv -f. Returns 1, changing nothing, on any failure.
 autodrive_clear_phase() {
