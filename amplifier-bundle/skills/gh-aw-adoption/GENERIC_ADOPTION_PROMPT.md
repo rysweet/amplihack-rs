@@ -271,7 +271,7 @@ Implements automated ${workflow_name}.
 - Comprehensive error resilience added
 - Safe-outputs and permissions configured
 
-Co-Authored-By: Claude Sonnet 4.5 (1M context) <noreply@anthropic.com>"
+Co-Authored-By: <actual-contributor-name> <actual-contributor-email>"
 
 git push origin feat/${workflow_name}-workflow
 ```
@@ -484,7 +484,7 @@ All workflows have been:
 3. **Customize thresholds**: Adjust safe-output limits as needed
 4. **Team training**: Brief team on new automation capabilities
 
-Co-Authored-By: Claude Sonnet 4.5 (1M context) <noreply@anthropic.com>
+Co-Authored-By: <actual-contributor-name> <actual-contributor-email>
 EOF
 )"
 
