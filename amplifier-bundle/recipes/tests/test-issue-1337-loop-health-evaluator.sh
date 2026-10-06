@@ -466,6 +466,23 @@ check_rs "1513-fenced" $'Example of the format:\n```\nDONE\n```\nNo verdict yet.
     STUCK unparseable_verdict
 check_rs "1513-empty" '' STUCK missing_verdict
 
+# --- residual risk: a DONE copied out of the round output -------------------
+# The prose scan cannot tell the evaluator's own token from one it copied
+# (loop-health-evaluator.md, "Prose token rules"). The first two rows pin that
+# documented behaviour: hardening the prose path must flip them and rewrite
+# the "Residual risk" paragraph in the same change. The guard rows are the
+# other ways a copied DONE could arrive, and every one of them must stay STUCK
+# or lose to the JSON answer.
+check_rs "1513-residual-copied-done" \
+    $'The round output ended with this reviewer comment:\n\nDONE\n\nNothing else changed.' \
+    DONE evaluator_prose_token
+check_rs "1513-residual-copied-done" '**DONE**' DONE evaluator_prose_token
+check_rs "1513-residual-guard" '> DONE' STUCK unparseable_verdict
+check_rs "1513-residual-guard" 'done' STUCK unparseable_verdict
+check_rs "1513-residual-guard" $'DONE\nCONTINUE' STUCK unparseable_verdict
+check_rs "1513-residual-guard" \
+    $'DONE\n{"loop_verdict":"CONTINUE","not_converging":[]}' CONTINUE evaluator
+
 # The fail-safe WARNING names the case but never echoes the evaluator's text.
 resolve_verdict_and_source "${CLEAN_EV}" 'SENTINEL-7f3a no verdict here'
 if [[ "${RS_VERDICT}" == "STUCK" ]] && printf '%s' "${RS_ERR}" | grep -q 'WARNING' \
