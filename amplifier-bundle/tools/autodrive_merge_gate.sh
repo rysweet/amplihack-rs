@@ -36,11 +36,21 @@ while [ $# -gt 0 ]; do
   esac
 done
 case "$PR" in ''|*[!0-9]*) echo "ERROR: --pr must be a positive integer (got '${PR}')" >&2; exit 2 ;; esac
+# This gate's own directory, found before the cd below because BASH_SOURCE may
+# be relative. Every helper the gate sources or runs comes from here, and from
+# nowhere a pull request could populate.
+GATE_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
 # gh resolves {owner}/{repo} from the working directory, so every read below
 # must run inside the repository the PR belongs to.
 cd "$REPO" 2>/dev/null || { echo "ERROR: --repo '${REPO}' is not a directory; refusing to read PR state from an unknown working directory." >&2; exit 2; }
+# Decide whether a state dir was given BEFORE the fallback below: an empty
+# --state-dir must not turn the world-writable TMPDIR into crusty evidence.
+if [ -n "$STATE_DIR" ]; then STATE_DIR_GIVEN="true"; else STATE_DIR_GIVEN="false"; fi
+# The evidence bundle (section 8) still needs somewhere to go. The gate only
+# creates a missing directory, under umask 077; it never changes the mode of
+# an existing one, since sections 6b and 6c judge exactly that.
 STATE_DIR="${STATE_DIR:-${TMPDIR:-/tmp}}"
-mkdir -p "$STATE_DIR" || exit 2
+( umask 077 && mkdir -p -- "$STATE_DIR" ) || exit 2
 AMPLIHACK_BIN="${AMPLIHACK_BIN:-amplihack}"
 export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
 
@@ -57,7 +67,7 @@ field() { printf '%s' "${1:-}" | "$AMPLIHACK_BIN" orch helper extract-json --req
           | "$AMPLIHACK_BIN" orch helper extract-field --field "$2" --default "$3"; }
 
 # --- 0. Already merged? A resumed run must never redo merged work. ----------
-STATE_JSON="$(gh pr view "$PR" --json state,mergedAt,isDraft,mergeable,mergeStateStatus,reviewDecision,headRefOid,url 2>/dev/null)"
+STATE_JSON="$(gh pr view "$PR" --json state,mergedAt,isDraft,mergeable,mergeStateStatus,reviewDecision,headRefOid,url,baseRefName 2>/dev/null)"
 if [ -z "$STATE_JSON" ]; then
   block "pull request #${PR} metadata is unreadable; an unreadable platform state never merges"
   printf '{"merge_result":"NOT_MERGED","pr":"%s","blockers":["pr metadata unreadable"]}\n' "$PR"
@@ -101,27 +111,21 @@ note "reviewDecision=${REVIEW_DECISION:-<none>}"
 [ "$REVIEW_DECISION" = "CHANGES_REQUESTED" ] && block "a review requests changes"
 
 # --- 4. Review threads resolved --------------------------------------------
-# PAGINATED. `reviewThreads(first:100)` without a `pageInfo` follow-up silently
-# truncates: a PR with 101 threads whose only unresolved one is the last would
-# report 0 unresolved and pass this gate. `--paginate` walks every page (gh
-# supplies $endCursor), emits one count per page, and the counts are summed. A
-# page that does not come back as a number makes the whole criterion
-# unreadable, which is a blocker.
-THREAD_PAGES="$(gh api graphql --paginate -F pr="$PR" -F owner='{owner}' -F name='{repo}' -f query='
-  query($owner:String!,$name:String!,$pr:Int!,$endCursor:String){repository(owner:$owner,name:$name){
-    pullRequest(number:$pr){reviewThreads(first:100,after:$endCursor){
-      pageInfo{hasNextPage endCursor}
-      nodes{isResolved isOutdated}}}}}' \
-  --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved==false and .isOutdated==false)] | length' 2>/dev/null)"
-THREADS="$(printf '%s\n' "$THREAD_PAGES" \
-  | awk 'NF==0{next} /^[0-9]+$/{s+=$1;n++;next} {bad=1} END{if(bad||!n) exit 1; print s}')" || THREADS=""
-if [ -z "$THREADS" ]; then
-  block "review-thread state is unreadable; an unreadable criterion is a failure, not a pass"
-elif [ "$THREADS" != "0" ]; then
-  block "${THREADS} unresolved review thread(s)"
-else
-  note "review_threads_unresolved=0"
-fi
+# Counted by autodrive_platform_facts.sh beside this gate, the same reader the
+# merge round uses, so the count is written once. It is PAGINATED:
+# `reviewThreads(first:100)` without a `pageInfo` follow-up silently truncates,
+# and a PR with 101 threads whose only unresolved one is the last would report
+# 0 and pass this gate. Its per-page counts are summed, and a page that is not
+# a number gives `unreadable`. Unreadable, or no reader, is a blocker. An
+# outdated thread counts: GitHub's conversation rule requires it resolved too.
+THREADS=""
+[ -n "$GATE_HOME" ] && [ -f "${GATE_HOME}/autodrive_platform_facts.sh" ] \
+  && THREADS="$(field "$(bash "${GATE_HOME}/autodrive_platform_facts.sh" "$PR" 2>/dev/null)" unresolved_threads "")"
+case "$THREADS" in
+  '' | *[!0-9]*) block "review-thread state is unreadable; an unreadable criterion is a failure, not a pass" ;;
+  0) note "review_threads_unresolved=0" ;;
+  *) block "${THREADS} unresolved review thread(s)" ;;
+esac
 
 # --- 5. CI on THIS head SHA -------------------------------------------------
 # `gh pr checks` exits non-zero when checks are failing or pending, and also
@@ -145,13 +149,34 @@ else
 fi
 
 # --- 6. qa-team scenario evidence ------------------------------------------
+# The qa evidence and the round record are copied ONCE into a private
+# temporary directory (#1517 D5). Section 6c checks the copies against the
+# loop's manifest, and sections 6 and 7 read only the copies, so the files
+# that were verified are the files that decide the merge.
+GATE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/autodrive-gate.XXXXXX" 2>/dev/null)" || GATE_TMP=""
+REC_COPY=""; QA_COPY=""
+if [ -z "$GATE_TMP" ] || [ ! -d "$GATE_TMP" ]; then
+  GATE_TMP=""
+  block "a private temporary directory could not be created, so the qa evidence and the round record cannot be copied and checked"
+else
+  trap 'rm -rf -- "$GATE_TMP"' EXIT
+  if [ -n "$ROUND_RECORD" ] && [ -f "$ROUND_RECORD" ] && cat -- "$ROUND_RECORD" > "${GATE_TMP}/record.json" 2>/dev/null; then
+    REC_COPY="${GATE_TMP}/record.json"
+  fi
+  if [ -n "$QA_EVIDENCE" ] && [ -f "$QA_EVIDENCE" ] && cat -- "$QA_EVIDENCE" > "${GATE_TMP}/qa-evidence.json" 2>/dev/null; then
+    QA_COPY="${GATE_TMP}/qa-evidence.json"
+  fi
+fi
 if [ -z "$QA_EVIDENCE" ] || [ ! -f "$QA_EVIDENCE" ]; then
   block "no qa-team scenario evidence file was produced in this run"
 else
-  QA_RAW="$(cat "$QA_EVIDENCE")"
+  QA_RAW="$(cat "${QA_COPY:-/dev/null}")"
   QA_STATUS="$(field "$QA_RAW" qa_status MISSING)"
   QA_SHA="$(field "$QA_RAW" head_sha "")"
   note "qa_status=${QA_STATUS} qa_head_sha=${QA_SHA:-<none>} ($(field "$QA_RAW" qa_command ''))"
+  # qa_reason names the first failing check (issue #1517); only its token
+  # characters are kept, so evidence text cannot reach the bundle as prose.
+  note "qa_reason=$(field "$QA_RAW" qa_reason '' | tr -cd 'a-z-')"
   [ "$QA_STATUS" = "PASS" ] || block "qa-team scenarios did not pass in this run (qa_status=${QA_STATUS})"
   # Existence + PASS is not enough: an evidence file left behind by an earlier
   # round describes a tree that is no longer what would be merged. Every
@@ -161,13 +186,149 @@ else
   elif [ -n "$HEAD_SHA" ] && [ "$QA_SHA" != "$HEAD_SHA" ]; then
     block "the qa-team evidence was captured against ${QA_SHA} but the head is now ${HEAD_SHA}; evidence must bind to the SHA being merged"
   fi
+  # Whether gadugi is required is decided here, from the checkout's own files,
+  # by autodrive_gadugi_required beside this gate, never by the evidence; if it
+  # cannot be read, gadugi is required. Evidence with no gadugi fields never merges.
+  GADUGI_STATUS="$(field "$QA_RAW" gadugi_status MISSING)"
+  GADUGI_COUNT="$(field "$QA_RAW" gadugi_scenario_count "")"
+  GADUGI_REQ="$(. "${GATE_HOME:-/nonexistent}/autodrive_trust.sh" 2>/dev/null && autodrive_gadugi_required .)" || GADUGI_REQ="true"
+  note "gadugi_required=${GADUGI_REQ} gadugi_status=${GADUGI_STATUS} gadugi_scenario_count=${GADUGI_COUNT:-<none>} gadugi_scenario_dir=$(field "$QA_RAW" gadugi_scenario_dir '')"
+  if [ "${GADUGI_REQ}:${GADUGI_STATUS}" != "false:NOT_REQUIRED" ]; then
+    [ "$GADUGI_STATUS" = "PASS" ] || block "gadugi-test scenarios were not validated and run to a pass in this run (gadugi_status=${GADUGI_STATUS})"
+    case "$GADUGI_COUNT" in
+      ''|*[!0-9]*|0*) block "gadugi_scenario_count='${GADUGI_COUNT}' is not a positive integer; zero scenarios is not a qa-team pass" ;;
+    esac
+  fi
+fi
+
+# --- 6b. Criterion 3: the crusty loop of this run ended DONE and CLEAN -------
+# Under auto-drive the quality-audit criterion is met by the crusty loop: the
+# `crusty-loop` marker in phases.tsv (written only after the loop reports DONE)
+# and a final CLEAN verdict in crusty-latest.json. These files are evidence, so
+# they are read only from a state dir that was given explicitly, is owned by
+# this user and writable by nobody else, and only when they are regular files
+# rather than symlinks. The state helper is sourced from beside this gate and
+# from nowhere a pull request could populate. The writers make the directory
+# and every file private whatever the caller's umask (autodrive_state.sh,
+# PRIVATE STATE), so on a host whose umask is 0002 this check still passes for
+# state the workflow wrote itself.
+#
+# Since #1517 the last loop-written round record must also check out against
+# crusty-records.tsv, the manifest autodrive_loop.sh writes before any agent
+# runs: autodrive_crusty_final rejects an injected, edited or archived record.
+# These checks only add to the ones above; none of them replaces one.
+# autodrive_private <path> comes from autodrive_state.sh: owned by this user,
+# not a symlink, no group or world write bit.
+#
+# block_unless_private <what> <name>...: blocks each named file in STATE_DIR
+# that is a symlink, or that exists and is not a private regular file, as not
+# evidence of <what>. An empty name, or a file that does not exist, passes
+# here; the checks that read the file decide what absence means. Returns 1
+# when any file blocked.
+block_unless_private() {
+  local what="$1" f p rc=0
+  shift
+  for f in "$@"; do
+    [ -n "$f" ] || continue
+    p="${STATE_DIR}/${f}"
+    if [ -L "$p" ] || { [ -e "$p" ] && { [ ! -f "$p" ] || ! autodrive_private "$p"; }; }; then
+      block "${p} is not private to this user (a symlink, not a regular file, not owned by this user, or group/world-writable); ${what} there is not evidence"
+      rc=1
+    fi
+  done
+  return "$rc"
+}
+if [ "$STATE_DIR_GIVEN" != "true" ]; then
+  block "no --state-dir was given, so the crusty loop's DONE/CLEAN state cannot be read; crusty evidence is never taken from the TMPDIR fallback"
+elif [ -z "$GATE_HOME" ] || [ ! -f "${GATE_HOME}/autodrive_state.sh" ]; then
+  block "autodrive_state.sh is missing beside the merge gate (${GATE_HOME:-<unknown>}); the crusty-loop marker cannot be read"
+elif ! . "${GATE_HOME}/autodrive_state.sh"; then
+  block "autodrive_state.sh beside the merge gate could not be loaded; the crusty-loop marker cannot be read"
+elif ! autodrive_private "$STATE_DIR"; then
+  block "state dir ${STATE_DIR} is not private to this user (not owned by this user, a symlink, or group/world-writable); crusty state there is not evidence"
+elif block_unless_private "crusty state" phases.tsv crusty-latest.json crusty-records.tsv; then
+  if ! autodrive_phase_done "$STATE_DIR" "crusty-loop"; then
+    block "the crusty-loop phase is not recorded as done in ${STATE_DIR}; criterion 3 needs this run's crusty loop to have ended DONE"
+  else
+    CRUSTY_VERDICT="MISSING"
+    [ -f "${STATE_DIR}/crusty-latest.json" ] && CRUSTY_VERDICT="$(field "$(cat "${STATE_DIR}/crusty-latest.json")" crusty_verdict MISSING)"
+    note "crusty_phase_done=true crusty_verdict=$(printf '%s' "$CRUSTY_VERDICT" | tr -cd 'A-Za-z_')"
+    [ "$CRUSTY_VERDICT" = "CLEAN" ] || block "the crusty loop's final crusty_verdict is not CLEAN in ${STATE_DIR}/crusty-latest.json; criterion 3 is not met"
+    # The record the manifest's last row names must be private too. Its
+    # name is validated before any path is built from it.
+    CRUSTY_ROW="$(autodrive_crusty_manifest_row "$STATE_DIR")" || CRUSTY_ROW=""
+    block_unless_private "crusty state" "${CRUSTY_ROW%% *}" || true
+    if CRUSTY_FINAL="$(autodrive_crusty_final "$STATE_DIR")"; then
+      note "crusty_reviewed_head_sha=$(printf '%s' "$CRUSTY_FINAL" | tr -cd '0-9a-f')"
+      CRUSTY_REVIEWED="$CRUSTY_FINAL"
+    else
+      case "$CRUSTY_FINAL" in
+        crusty-loop-not-done|crusty-manifest-missing|crusty-record-missing|crusty-record-modified|crusty-not-clean|crusty-head-sha-empty) ;;
+        *) CRUSTY_FINAL="crusty-other" ;;
+      esac
+      block "crusty records in ${STATE_DIR} are not loop-written evidence (${CRUSTY_FINAL}); criterion 3 is not met"
+    fi
+  fi
+fi
+
+# --- 6c. The qa evidence chain (#1517 D5) ----------------------------------
+# Agents run after the evidence step as the same user, so the qa evidence is
+# trusted only through merge-ready-records.tsv -> round record -> qa_evidence_sha
+# -> qa-evidence.json -> head_sha, checked on the section 6 copies. The helpers
+# come from beside this gate only. Without --state-dir, 6b has already blocked.
+TRUST_OK="false"; CRUSTY_REVIEWED="${CRUSTY_REVIEWED:-}"
+if [ "$STATE_DIR_GIVEN" = "true" ]; then
+  if [ -z "$GATE_HOME" ] || [ ! -f "${GATE_HOME}/autodrive_trust.sh" ] || [ ! -f "${GATE_HOME}/autodrive_state.sh" ] \
+     || ! . "${GATE_HOME}/autodrive_state.sh" || ! . "${GATE_HOME}/autodrive_trust.sh"; then
+    block "autodrive_trust.sh or autodrive_state.sh is missing beside the merge gate (${GATE_HOME:-<unknown>}) or could not be loaded; the qa evidence chain and the commits after the clean crusty round cannot be checked"
+  else
+    TRUST_OK="true"
+    MR_ROW="$(autodrive_manifest_row "$STATE_DIR" merge-ready)" || MR_ROW=""
+    block_unless_private "the qa evidence chain" merge-ready-records.tsv "${MR_ROW%% *}" merge-ready-latest.json qa-evidence.json || true
+    QA_TRUST="$(autodrive_qa_trusted "$STATE_DIR" "$REC_COPY" "$QA_COPY" "$HEAD_SHA")" || true
+    case "$QA_TRUST" in
+      ok) note "qa_evidence_chain=ok" ;;
+      qa-manifest-missing|qa-record-modified|qa-evidence-modified|qa-evidence-stale)
+        block "the qa evidence is not bound to a loop-written round record for ${HEAD_SHA} (${QA_TRUST}); criterion 1 is not met" ;;
+      *) block "the qa evidence is not bound to a loop-written round record for ${HEAD_SHA} (qa-other); criterion 1 is not met" ;;
+    esac
+  fi
+fi
+
+# --- 6d. Commits after the clean crusty round (#1517 D4) --------------------
+# Every commit from the reviewed head to HEAD_SHA must be a base merge or a
+# description or evidence change. The base SHA is fetched now, never read from
+# a local ref, and a range that cannot be read blocks; it is never skipped.
+if [ -n "$CRUSTY_REVIEWED" ] && [ "$TRUST_OK" = "true" ]; then
+  if ! autodrive_is_sha "$HEAD_SHA" \
+     || ! env -u GIT_DIR -u GIT_WORK_TREE GIT_NO_REPLACE_OBJECTS=1 git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
+    block "head ${HEAD_SHA:-<none>} is not in the local clone, so the commits after the clean crusty round cannot be read; criterion 3 is not met"
+  else
+    BASE_REF="$(field "$STATE_JSON" baseRefName "")"
+    BASE_SHA="$(autodrive_base_sha "$PWD" "$BASE_REF")" || BASE_SHA=""
+    note "base_ref=$(printf '%s' "$BASE_REF" | tr -cd 'A-Za-z0-9._/-') base_sha=${BASE_SHA:-<none>}"
+    RANGE="$(autodrive_crusty_range "$PWD" "$CRUSTY_REVIEWED" "$HEAD_SHA" "$BASE_SHA")" || true
+    FIRST="${RANGE#crusty-unreviewed-commits:}"
+    case "$RANGE" in
+      ok) note "crusty_range=ok" ;;
+      crusty-unreviewed-commits:*)
+        if autodrive_is_sha "$FIRST"; then
+          block "commit ${FIRST} after the clean crusty round is not a base merge or a description or evidence change; criterion 3 is not met"
+        else
+          block "the commits after the clean crusty round cannot be read (crusty-range-other); criterion 3 is not met"
+        fi ;;
+      crusty-range-unreadable) block "the commits after the clean crusty round cannot be read; criterion 3 is not met" ;;
+      *) block "the commits after the clean crusty round cannot be read (crusty-range-other); criterion 3 is not met" ;;
+    esac
+  fi
 fi
 
 # --- 7. The merge-ready round's own structured verdict ---------------------
+# Read from the private copy that section 6c checked against the manifest.
 if [ -z "$ROUND_RECORD" ] || [ ! -f "$ROUND_RECORD" ]; then
   block "no merge-ready round record was produced in this run"
 else
-  MR_RAW="$(cat "$ROUND_RECORD")"
+  MR_RAW="$(cat "${REC_COPY:-/dev/null}")"
   MR_VERDICT="$(field "$MR_RAW" merge_ready_verdict MISSING)"
   MR_SHA="$(field "$MR_RAW" head_sha "")"
   note "merge_ready_verdict=${MR_VERDICT} recorded_head_sha=${MR_SHA}"
@@ -179,12 +340,13 @@ fi
 
 # --- 8. Record the evidence bundle BEFORE any merge ------------------------
 BUNDLE="${STATE_DIR}/merge-evidence-${PR}-${HEAD_SHA:0:12}.txt"
-{ printf 'auto-drive-to-merge merge gate — PR #%s @ %s\n' "$PR" "$HEAD_SHA"
-  printf 'captured: %s\n\nEVIDENCE\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  printf '  - %s\n' "${EVIDENCE[@]}"
-  printf '\nBLOCKERS\n'
-  if [ "${#BLOCKERS[@]}" -eq 0 ]; then printf '  (none)\n'; else printf '  - %s\n' "${BLOCKERS[@]}"; fi
-} > "$BUNDLE"
+( umask 077; rm -f -- "$BUNDLE"
+  { printf 'auto-drive-to-merge merge gate — PR #%s @ %s\n' "$PR" "$HEAD_SHA"
+    printf 'captured: %s\n\nEVIDENCE\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf '  - %s\n' "${EVIDENCE[@]}"
+    printf '\nBLOCKERS\n'
+    if [ "${#BLOCKERS[@]}" -eq 0 ]; then printf '  (none)\n'; else printf '  - %s\n' "${BLOCKERS[@]}"; fi
+  } > "$BUNDLE" )
 echo "INFO: merge evidence written to ${BUNDLE}" >&2
 
 if [ "${#BLOCKERS[@]}" -ne 0 ]; then

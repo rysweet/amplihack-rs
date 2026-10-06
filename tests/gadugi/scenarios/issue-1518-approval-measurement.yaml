@@ -1,0 +1,70 @@
+name: issue-1518-approval-measurement
+description: >
+  Regression scenario for amplihack issue #1518. Auto-drive's merge round read
+  an empty GitHub reviewDecision as "no approval", so a repository that
+  requires 0 approvals could never reach merge-ready criterion 6. This
+  scenario drives the SHIPPED amplifier-bundle/tools/autodrive_platform_facts.sh
+  (via tests/gadugi/run-autodrive-approval-scenario.sh) against a stand-in gh
+  that answers the way GitHub does, and asserts that a required count of 0 is
+  MET, a count of 1 with an empty decision is NOT_MET, a non-admin 404 from the
+  protection endpoint is never read as 0, an unresolved review thread that went
+  outdated keeps BLOCKED PENDING rather than sending it to a person, a count of
+  0 beside a code-owner rule is unknown rather than 0, and a ruleset count is
+  read when protection is not.
+version: "1.0"
+config:
+  timeout: 60000
+environment:
+  requires: []
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, regression, qa-team, auto-drive, merge-ready]
+  priority: high
+  issues: ["1518"]
+  pr: "1520"
+steps:
+  - name: run-approval-measurement-cases
+    agent: cli-agent
+    action: execute
+    params:
+      command: tests/gadugi/run-autodrive-approval-scenario.sh
+    timeout: 50000
+  - name: all-approval-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+  - name: approval-read-from-github
+    agent: cli-agent
+    action: validate_output
+    params:
+      expected: "contains:criterion 6 measured from GitHub's own answers"
+assertions:
+  - name: all-cases-passed
+    type: output_contains
+    params:
+      target: stdout
+      expected: ALL_CASES_PASSED
+  - name: count-0-is-met
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: approval_count_0_is_met"
+  - name: count-1-empty-decision-is-not-met
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: approval_count_1_empty_decision_is_not_met"
+  - name: non-admin-404-is-not-zero
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: approval_404_blocked_is_unreadable"
+  - name: outdated-thread-is-pending
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: approval_404_blocked_outdated_thread_is_pending"

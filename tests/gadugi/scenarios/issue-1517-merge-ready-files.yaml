@@ -1,0 +1,70 @@
+name: issue-1517-merge-ready-files
+description: >
+  Regression scenario for amplihack issue #1517 and the PR #1520 review. The
+  merge round used to invoke the merge-ready skill, which refuses agents
+  (disable-model-invocation: true), so every round failed the same way. It now
+  reads the skill's SKILL.md and template, found by the SHIPPED
+  amplifier-bundle/tools/autodrive_merge_ready_files.sh. This scenario (via
+  tests/gadugi/run-autodrive-merge-ready-files-scenario.sh) asserts that the
+  lookup takes both files from one install, fails by name when they are
+  missing, that the merge round has no Skill(merge-ready) call, and that a
+  missing gadugi-test stops auto-drive at its first step, before the build,
+  in a Node repository, while a Rust CLI repository starts without it, as
+  qa-team's repo-type table says, with the shipped step bodies.
+version: "1.0"
+config:
+  timeout: 60000
+environment:
+  requires: []
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, regression, qa-team, auto-drive, merge-ready]
+  priority: high
+  issues: ["1517"]
+  pr: "1520"
+steps:
+  - name: run-merge-ready-files-cases
+    agent: cli-agent
+    action: execute
+    params:
+      command: tests/gadugi/run-autodrive-merge-ready-files-scenario.sh
+    timeout: 50000
+  - name: all-merge-ready-files-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+  - name: skill-files-read-not-invoked
+    agent: cli-agent
+    action: validate_output
+    params:
+      expected: "contains:merge-ready read from its files; gadugi-test checked before the build where criterion 1 needs it"
+assertions:
+  - name: all-cases-passed
+    type: output_contains
+    params:
+      target: stdout
+      expected: ALL_CASES_PASSED
+  - name: files-resolved
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: merge_ready_files_resolved"
+  - name: no-skill-invocation
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: merge_round_reads_skill_files"
+  - name: gadugi-checked-before-build
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: gadugi_missing_stops_before_build"
+  - name: rust-starts-without-gadugi
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: rust_repo_starts_without_gadugi"
