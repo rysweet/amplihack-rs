@@ -11,21 +11,12 @@
 //! #254).  The former upstream freshness check against `rysweet/amplihack`
 //! has been removed.
 //!
-//! For the recipe-runner check, this module adds optional, cooldown-gated
-//! freshness checks:
-//!
-//! 1. Reads the installed SHA from a small JSON state file.
-//! 2. If the 24h cooldown has not expired, does nothing.
-//! 3. Otherwise fetches the upstream HEAD SHA via the GitHub commits API.
-//! 4. If the SHAs differ, runs the upgrade (`cargo install`).
-//! 5. Records the new SHA + timestamp on success.
-//!
-//! Every step is best-effort — a network failure, rate-limit, or even a
-//! completely malformed state file results in a `tracing::warn!` and an
-//! early return, not a launch failure. The whole flow can be disabled with
-//! `AMPLIHACK_NO_FRESHNESS_CHECK=1` (or the usual non-interactive guards).
+//! Managed runner delivery uses the immutable revision bundled in
+//! `claude-plugin/recipe-runner.rev`. Capability negotiation permits compatible
+//! custom binaries; an installation record separately reconciles managed source
+//! drift, independent of the former cooldown. Explicit overrides are preserved.
+//! Launcher freshness remains best-effort; install failures are actionable.
 
-use crate::update::fetch_branch_head_sha;
 use crate::util::is_noninteractive;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -34,6 +25,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(test)]
 const COOLDOWN_SECS: u64 = 24 * 60 * 60;
 const NO_FRESHNESS_ENV: &str = "AMPLIHACK_NO_FRESHNESS_CHECK";
 
@@ -70,6 +62,7 @@ impl FreshnessState {
         Ok(())
     }
 
+    #[cfg(test)]
     fn is_in_cooldown(&self) -> bool {
         let age = now_secs().saturating_sub(self.checked_at);
         age < COOLDOWN_SECS
@@ -107,12 +100,30 @@ fn skip_freshness_checks() -> bool {
 // Recipe runner (rysweet/amplihack-recipe-runner)
 // ---------------------------------------------------------------------------
 
-const RECIPE_RUNNER_REPO: &str = "rysweet/amplihack-recipe-runner";
 const RECIPE_RUNNER_GIT_URL: &str = "https://github.com/rysweet/amplihack-recipe-runner";
-const RECIPE_RUNNER_BRANCH: &str = "main";
+pub(crate) const RECIPE_RUNNER_REV: &str = include_str!("../../../claude-plugin/recipe-runner.rev");
 
 fn recipe_runner_state_path() -> Result<PathBuf> {
     Ok(state_dir()?.join("recipe_runner.json"))
+}
+
+thread_local! { static SELECTED_PROVIDER: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) }; }
+
+pub(crate) fn with_provider<T>(provider: &str, action: impl FnOnce() -> T) -> T {
+    struct Restore(Option<String>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            SELECTED_PROVIDER.with(|p| *p.borrow_mut() = self.0.take());
+        }
+    }
+    let _restore = Restore(SELECTED_PROVIDER.with(|p| p.replace(Some(provider.to_string()))));
+    action()
+}
+pub(crate) fn codex_selected() -> bool {
+    SELECTED_PROVIDER
+        .with(|p| p.borrow().clone())
+        .unwrap_or_else(crate::env_builder::active_agent_binary)
+        == "codex"
 }
 
 /// Install or upgrade `recipe-runner-rs` if the currently installed commit
@@ -135,52 +146,22 @@ fn ensure_recipe_runner_up_to_date_inner() -> Result<()> {
     let state_path = recipe_runner_state_path()?;
     let mut state = FreshnessState::read(&state_path);
 
-    let binary_present = recipe_runner_binary_present();
-
-    // Fast path: binary present and cooldown hasn't expired. Nothing to do.
-    if binary_present && state.is_in_cooldown() {
+    // Explicit/custom compatible runners are never replaced. A trusted managed
+    // install record, independently of capability/cooldown, owns pin reconciliation.
+    if std::env::var_os("RECIPE_RUNNER_RS_PATH").is_some_and(|v| !v.is_empty()) {
+        return probe_recipe_runner();
+    }
+    let compatible = probe_recipe_runner().is_ok();
+    let managed = state_path.exists();
+    if compatible
+        && (!managed
+            || (state.installed_sha == RECIPE_RUNNER_REV.trim() && verify_managed_runner().is_ok()))
+    {
         return Ok(());
     }
-
-    // Slow path: consult upstream. Network failures here are survivable —
-    // we'd rather launch with a stale recipe runner than block the user.
-    let remote_sha = match fetch_branch_head_sha(RECIPE_RUNNER_REPO, RECIPE_RUNNER_BRANCH) {
-        Ok(sha) => sha,
-        Err(err) => {
-            tracing::warn!(%err, "could not fetch upstream HEAD for {RECIPE_RUNNER_REPO}");
-            // Record the attempt so the cooldown suppresses repeated tries.
-            state.checked_at = now_secs();
-            let _ = state.write(&state_path);
-            return Ok(());
-        }
-    };
-
-    let needs_install = !binary_present || state.installed_sha != remote_sha;
-    if !needs_install {
-        state.checked_at = now_secs();
-        let _ = state.write(&state_path);
-        return Ok(());
-    }
-
-    if !binary_present {
-        eprintln!("📦 Installing recipe-runner-rs from {RECIPE_RUNNER_GIT_URL} ...");
-    } else {
-        eprintln!(
-            "📦 Upgrading recipe-runner-rs: {} → {}",
-            short_sha(&state.installed_sha),
-            short_sha(&remote_sha)
-        );
-    }
-
-    // Launch-time refresh: use an existing toolchain, never bootstrap one.
-    if let Err(err) = install_recipe_runner_from_git(false) {
-        eprintln!("⚠️  recipe-runner-rs install failed: {err}");
-        // Still record checked_at so we don't re-try on every launch when
-        // the user is offline or cargo is misconfigured.
-        state.checked_at = now_secs();
-        let _ = state.write(&state_path);
-        return Ok(());
-    }
+    install_recipe_runner_from_git(false)?;
+    probe_recipe_runner()?;
+    let remote_sha = RECIPE_RUNNER_REV.trim().to_string();
 
     state.installed_sha = remote_sha;
     state.checked_at = now_secs();
@@ -188,8 +169,66 @@ fn ensure_recipe_runner_up_to_date_inner() -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn managed_runner_needs_reconcile() -> bool {
+    let Ok(path) = recipe_runner_state_path() else {
+        return false;
+    };
+    let state = FreshnessState::read(&path);
+    path.exists()
+        && (state.installed_sha != RECIPE_RUNNER_REV.trim() || verify_managed_runner().is_err())
+}
+
 pub(crate) fn recipe_runner_binary_present() -> bool {
-    crate::rust_toolchain::find_recipe_runner().is_some()
+    probe_recipe_runner().is_ok()
+}
+
+/// Compatibility is a side-effect-free producer contract, not version equality.
+pub(crate) fn probe_recipe_runner() -> Result<()> {
+    if !codex_selected() {
+        return crate::rust_toolchain::find_recipe_runner()
+            .context("recipe-runner-rs not found")
+            .map(|_| ());
+    }
+    if let Some(explicit) = std::env::var_os("RECIPE_RUNNER_RS_PATH").filter(|v| !v.is_empty()) {
+        let explicit = PathBuf::from(explicit);
+        let expanded = if let Ok(rest) = explicit.strip_prefix("~") {
+            PathBuf::from(
+                std::env::var_os("HOME").context("HOME required for explicit runner ~ path")?,
+            )
+            .join(rest)
+        } else {
+            explicit
+        };
+        if expanded.components().count() > 1 && !expanded.is_file() {
+            bail!(
+                "RECIPE_RUNNER_RS_PATH does not select a regular recipe-runner-rs executable; fix or unset the override"
+            );
+        }
+    }
+    let path = crate::rust_toolchain::find_recipe_runner().context("recipe-runner-rs not found")?;
+    crate::runner_validation::probe(&path, "codex")
+        .context("recipe-runner-rs requires a valid capability report with codex_exec; fix the override or install the pinned runner")?;
+    Ok(())
+}
+
+fn verify_managed_runner() -> Result<()> {
+    let cargo_home = std::env::var_os("CARGO_HOME").map(PathBuf::from).unwrap_or(
+        PathBuf::from(std::env::var_os("HOME").context("HOME required")?).join(".cargo"),
+    );
+    let selected =
+        crate::rust_toolchain::find_recipe_runner().context("installed runner missing")?;
+    crate::runner_validation::provenance(
+        &selected,
+        &cargo_home,
+        RECIPE_RUNNER_GIT_URL,
+        RECIPE_RUNNER_REV.trim(),
+    )
+    .context(
+        "managed runner receipt or selected executable does not establish requested revision",
+    )?;
+    crate::runner_validation::probe(&selected, if codex_selected() { "codex" } else { "claude" })
+        .context("managed runner capability contract invalid")?;
+    Ok(())
 }
 
 /// `cargo install` recipe-runner-rs. With `bootstrap_toolchain`, a missing
@@ -207,8 +246,8 @@ pub(crate) fn install_recipe_runner_from_git(bootstrap_toolchain: bool) -> Resul
     cmd.arg("install")
         .arg("--git")
         .arg(RECIPE_RUNNER_GIT_URL)
-        .arg("--branch")
-        .arg(RECIPE_RUNNER_BRANCH)
+        .arg("--rev")
+        .arg(RECIPE_RUNNER_REV.trim())
         .arg("--locked")
         .arg("--force");
     // No timeout: building recipe-runner-rs on a slow host takes as long as
@@ -219,6 +258,13 @@ pub(crate) fn install_recipe_runner_from_git(bootstrap_toolchain: bool) -> Resul
     if !status.success() {
         bail!("cargo install exited with status {status}");
     }
+    verify_managed_runner()?;
+    probe_recipe_runner()?;
+    FreshnessState {
+        installed_sha: RECIPE_RUNNER_REV.trim().to_string(),
+        checked_at: now_secs(),
+    }
+    .write(&recipe_runner_state_path()?)?;
     Ok(())
 }
 
@@ -250,6 +296,7 @@ pub fn framework_needs_refresh() -> bool {
 // Small helpers
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
 fn short_sha(sha: &str) -> String {
     if sha.is_empty() {
         "(none)".to_string()
@@ -300,5 +347,161 @@ mod tests {
     fn short_sha_handles_edge_cases() {
         assert_eq!(short_sha(""), "(none)");
         assert_eq!(short_sha("abcdef0123456789"), "abcdef0");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod codex_delivery_contract_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn worker(test: &str) -> bool {
+        if std::env::var("AMPLIHACK_DELIVERY_WORKER").as_deref() != Ok(test) {
+            return false;
+        }
+        match test {
+            "managed_receipt_and_selected_executable_must_agree" => {
+                assert!(verify_managed_runner().is_err());
+                let key = format!(
+                    "recipe-runner-rs 0.4.0 (git+{}#{})",
+                    RECIPE_RUNNER_GIT_URL,
+                    RECIPE_RUNNER_REV.trim()
+                );
+                fs::write(
+                    PathBuf::from(std::env::var_os("CARGO_HOME").unwrap()).join(".crates2.json"),
+                    serde_json::to_vec(
+                        &serde_json::json!({"installs":{key:{"bins":["recipe-runner-rs"]}}}),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+                with_provider("claude", verify_managed_runner).unwrap();
+                with_provider("codex", || {
+                    assert!(
+                        probe_recipe_runner().is_err(),
+                        "receipt cannot establish capability"
+                    )
+                });
+            }
+            "codex_runner_provisioning_uses_authoritative_immutable_revision" => {
+                assert!(
+                    install_recipe_runner_from_git(false).is_err(),
+                    "cargo success without managed executable is insufficient"
+                );
+                assert_pin(&fs::read_to_string(std::env::var_os("DELIVERY_LOG").unwrap()).unwrap());
+            }
+            "codex_managed_runner_reconciles_pin_even_inside_cooldown_when_capability_passes" => {
+                FreshnessState {
+                    installed_sha: "0".repeat(40),
+                    checked_at: now_secs(),
+                }
+                .write(&recipe_runner_state_path().unwrap())
+                .unwrap();
+                assert!(
+                    ensure_recipe_runner_up_to_date_inner().is_err(),
+                    "PATH shadow cannot establish managed provenance"
+                );
+                assert_pin(&fs::read_to_string(std::env::var_os("DELIVERY_LOG").unwrap()).unwrap());
+                assert_eq!(
+                    FreshnessState::read(&recipe_runner_state_path().unwrap()).installed_sha,
+                    "0".repeat(40)
+                );
+            }
+            _ => panic!("unknown worker"),
+        }
+        true
+    }
+    fn assert_pin(args: &str) {
+        let args: Vec<_> = args.lines().collect();
+        let pin = RECIPE_RUNNER_REV.trim();
+        assert_eq!(pin.len(), 40);
+        assert!(args.windows(2).any(|p| p == ["--rev", pin]), "{args:?}");
+        assert!(args.contains(&"--locked"));
+        assert!(!args.contains(&"--branch"));
+    }
+    fn run_worker(test: &str, home: &Path, bin: &Path) {
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                &format!("freshness::codex_delivery_contract_tests::{test}"),
+                "--nocapture",
+            ])
+            .env("AMPLIHACK_DELIVERY_WORKER", test)
+            .env("PATH", bin)
+            .env("HOME", home)
+            .env("CARGO_HOME", home)
+            .env("DELIVERY_LOG", home.join("cargo-args"))
+            .env("AMPLIHACK_AGENT_BINARY", "codex")
+            .env_remove("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL")
+            .env_remove("AMPLIHACK_SKIP_AUTO_INSTALL")
+            .env_remove("RECIPE_RUNNER_RS_PATH")
+            .env_remove("AMPLIHACK_NO_FRESHNESS_CHECK")
+            .env_remove("CI")
+            .status()
+            .unwrap();
+        assert!(result.success(), "isolated worker failed: {test}");
+    }
+    fn executable(path: &Path, script: &str) {
+        fs::write(path, script).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    fn cargo_fixture(home: &Path, bin: &Path) {
+        executable(
+            &bin.join("cargo"),
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
+                home.join("cargo-args").display()
+            ),
+        );
+        executable(&bin.join("cc"), "#!/bin/sh\nexit 0\n");
+    }
+    #[test]
+    fn managed_receipt_and_selected_executable_must_agree() {
+        let test = "managed_receipt_and_selected_executable_must_agree";
+        if worker(test) {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        executable(
+            &bin.join("recipe-runner-rs"),
+            "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[]}'\n",
+        );
+        run_worker(test, dir.path(), &bin);
+    }
+    #[test]
+    fn codex_runner_provisioning_uses_authoritative_immutable_revision() {
+        let test = "codex_runner_provisioning_uses_authoritative_immutable_revision";
+        if worker(test) {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        cargo_fixture(dir.path(), dir.path());
+        run_worker(test, dir.path(), dir.path());
+    }
+    #[test]
+    fn codex_managed_runner_reconciles_pin_even_inside_cooldown_when_capability_passes() {
+        let test =
+            "codex_managed_runner_reconciles_pin_even_inside_cooldown_when_capability_passes";
+        if worker(test) {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        cargo_fixture(dir.path(), dir.path());
+        executable(
+            &dir.path().join("recipe-runner-rs"),
+            "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"custom\",\"capabilities\":[\"codex_exec\"]}'\n",
+        );
+        run_worker(test, dir.path(), dir.path());
+    }
+
+    /// Run only in an isolated caller-provided HOME/CARGO_HOME with real Cargo.
+    #[test]
+    #[ignore = "builds the published runner; caller must isolate HOME and CARGO_HOME"]
+    fn real_managed_delivery() {
+        install_recipe_runner_from_git(false).unwrap();
+        with_provider("codex", verify_managed_runner).unwrap();
+        with_provider("codex", probe_recipe_runner).unwrap();
     }
 }

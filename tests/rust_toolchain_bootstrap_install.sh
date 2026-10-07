@@ -73,7 +73,21 @@ cat > "$bin/cargo" <<'CARGO'
 printf '%s\n' "$*" > "$HOME/cargo.args"
 [ "$1" = install ] || exit 1
 dir="$(dirname "$0")"
-printf '#!/bin/sh\nexit 0\n' > "$dir/recipe-runner-rs"
+rev=""
+repo=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --rev) rev="$2"; shift ;;
+    --git) repo="$2"; shift ;;
+  esac
+  shift
+done
+[ -n "$rev" ] && [ -n "$repo" ] || exit 1
+printf '{"installs":{"recipe-runner-rs 0.4.0 (git+%s#%s)":{"bins":["recipe-runner-rs"]}}}' "$repo" "$rev" > "$dir/../.crates2.json"
+cat > "$dir/recipe-runner-rs" <<'RUNNER'
+#!/bin/sh
+printf '%s\n' '{"capabilities":["codex_exec"],"schema_version":1,"version":"0.4.0"}'
+RUNNER
 chmod +x "$dir/recipe-runner-rs"
 CARGO
 chmod +x "$bin/cargo"

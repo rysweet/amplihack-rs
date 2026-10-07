@@ -49,6 +49,44 @@ fn hooks_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_amplihack-hooks"))
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn codex_security_denial_write_failure_blocks_tool() {
+    let project = tempfile::tempdir().unwrap();
+    let mut child = Command::new(hooks_bin())
+        .arg("pre-tool-use")
+        .env("AMPLIHACK_AGENT_BINARY", "codex")
+        .env("HOME", project.path())
+        .current_dir(project.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(
+            fs::OpenOptions::new()
+                .write(true)
+                .open("/dev/full")
+                .unwrap(),
+        ))
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"invalid JSON")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("Amplihack security response delivery failed; tool execution blocked")
+    );
+}
+
 /// Invoke the hooks binary with a given subcommand and JSON stdin.
 /// Returns (stdout_str, stderr_str, exit_success).
 fn run_hook(subcommand: &str, input_json: &str) -> (String, String, bool) {
@@ -63,6 +101,7 @@ fn run_hook(subcommand: &str, input_json: &str) -> (String, String, bool) {
     let project_root = TempProjectRoot::new();
 
     let mut child = Command::new(&bin)
+        .env("AMPLIHACK_AGENT_BINARY", "claude")
         .arg(subcommand)
         .current_dir(&project_root.path)
         .stdin(Stdio::piped())
@@ -220,6 +259,7 @@ fn unknown_hook_exits_nonzero() {
         return;
     }
     let status = Command::new(&bin)
+        .env("AMPLIHACK_AGENT_BINARY", "claude")
         .arg("not-a-real-hook")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -296,6 +336,7 @@ fn session_start_dispatches_background_blarify_indexing() {
     fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).expect("chmod");
 
     let mut child = Command::new(&bin)
+        .env("AMPLIHACK_AGENT_BINARY", "claude")
         .arg("session-start")
         .current_dir(&project_root)
         .env("AMPLIHACK_AMPLIHACK_BINARY_PATH", &stub)
@@ -390,6 +431,7 @@ fn session_start_outside_in_no_python_emits_indexing_status() {
     fs::create_dir_all(&tmp_dir).expect("create tmp dir");
 
     let mut child = Command::new(&bin)
+        .env("AMPLIHACK_AGENT_BINARY", "claude")
         .arg("session-start")
         // (b) Python-free PATH.
         .env("PATH", &clean_path)

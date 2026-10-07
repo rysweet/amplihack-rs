@@ -23,3 +23,10 @@ mod uninstall_tests;
 mod wrapper_tests;
 
 mod interactive_tests;
+
+#[cfg(unix)]
+mod codex_failure_recovery;
+#[cfg(unix)]
+mod codex_plugin_tests;
+#[cfg(unix)]
+mod codex_runner_delivery;

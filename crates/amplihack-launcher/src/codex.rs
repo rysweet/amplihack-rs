@@ -4,7 +4,7 @@
 //! - Version detection via `codex --version`
 //! - Auto-install via npm
 //! - Auto-update to latest version
-//! - Configuration (approval_mode: auto)
+//! - Preserving TOML configuration
 //! - Launch with managed environment
 
 use anyhow::{Context, Result};
@@ -83,24 +83,20 @@ pub fn ensure_latest_codex() -> Result<()> {
     Ok(())
 }
 
-/// Configure Codex for autonomous mode (approval_mode: auto).
+/// Validate project TOML without adding approval overrides.
 pub fn configure_codex(project_path: &Path) -> Result<()> {
-    let config_dir = project_path.join(".codex");
-    std::fs::create_dir_all(&config_dir).context("failed to create .codex directory")?;
-    let config_file = config_dir.join("config.yaml");
-    if !config_file.exists() {
-        std::fs::write(&config_file, "approval_mode: auto\n")
-            .context("failed to write codex config")?;
-        info!("Created Codex config with approval_mode: auto");
-    }
-    Ok(())
+    crate::codex_config::configure(&project_path.join(".codex"), false)
 }
 
 /// Build the command to launch Codex with the given prompt.
 pub fn build_codex_command(prompt: &str, project_path: &Path, extra_args: &[String]) -> Command {
-    build_codex_command_with_prompt_delivery(prompt, project_path, extra_args)
-        .expect("argv-only codex prompt delivery should not fail")
-        .command
+    let delivered = build_codex_command_with_prompt_delivery(prompt, project_path, extra_args)
+        .expect("invalid Codex invocation; use the fallible delivery-aware builder");
+    assert!(
+        delivered.stdin_payload.is_none(),
+        "Codex exec requires the delivery-aware builder and its complete stdin payload"
+    );
+    delivered.command
 }
 
 pub fn build_codex_command_with_prompt_delivery(
@@ -126,7 +122,12 @@ pub fn ensure_and_build(
             anyhow::bail!("Codex is not installed. Run `npm install -g @openai/codex` to install.");
         }
     }
-    Ok(build_codex_command(prompt, project_path, extra_args))
+    let delivered = build_codex_command_with_prompt_delivery(prompt, project_path, extra_args)?;
+    anyhow::ensure!(
+        delivered.stdin_payload.is_none(),
+        "Codex exec requires build_codex_command_with_prompt_delivery and explicit stdin ownership"
+    );
+    Ok(delivered.command)
 }
 
 fn which_binary(name: &str) -> Option<PathBuf> {
@@ -205,21 +206,18 @@ mod tests {
         let cmd = build_codex_command(
             "hello",
             Path::new("/tmp"),
-            &["--verbose".into(), "--dry-run".into()],
+            &["--search".into(), "--no-alt-screen".into()],
         );
         let args: Vec<_> = cmd.get_args().collect();
-        assert!(args.contains(&std::ffi::OsStr::new("--verbose")));
-        assert!(args.contains(&std::ffi::OsStr::new("--dry-run")));
+        assert!(args.contains(&std::ffi::OsStr::new("--search")));
+        assert!(args.contains(&std::ffi::OsStr::new("--no-alt-screen")));
     }
 
     #[test]
-    fn configure_codex_creates_config() {
+    fn configure_codex_does_not_create_legacy_config() {
         let dir = tempfile::tempdir().unwrap();
         configure_codex(dir.path()).unwrap();
-        let config = dir.path().join(".codex/config.yaml");
-        assert!(config.exists());
-        let content = std::fs::read_to_string(config).unwrap();
-        assert!(content.contains("approval_mode: auto"));
+        assert!(!dir.path().join(".codex/config.yaml").exists());
     }
 
     #[test]

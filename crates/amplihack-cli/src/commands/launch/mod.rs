@@ -267,8 +267,25 @@ pub(crate) fn run_launch_with(
     // or the tool has no npm package mapping.
     maybe_print_npm_update_notice(tool, skip_update_check, override_origin);
 
+    let codex_binary = if tool == "codex" && prevalidated_binary.is_none() {
+        Some(
+            bootstrap::ensure_tool_available(tool, override_origin)
+                .with_context(|| missing_binary_context(tool))?,
+        )
+    } else {
+        None
+    };
     if !subprocess_safe {
-        bootstrap::prepare_launcher(tool)?;
+        if tool == "codex" {
+            let selected = prevalidated_binary
+                .as_ref()
+                .map(|p| &p.binary)
+                .or(codex_binary.as_ref())
+                .context("resolved Codex executable missing")?;
+            bootstrap::prepare_codex_launcher(&selected.path)?;
+        } else {
+            bootstrap::prepare_launcher(tool)?;
+        }
     }
 
     // Check nesting
@@ -293,8 +310,11 @@ pub(crate) fn run_launch_with(
     let (binary, preflight_identity) = match prevalidated_binary {
         Some(preflight) => (preflight.binary, Some(preflight.identity)),
         None => (
-            bootstrap::ensure_tool_available(tool, override_origin)
-                .with_context(|| missing_binary_context(tool))?,
+            match codex_binary {
+                Some(binary) => Ok(binary),
+                None => bootstrap::ensure_tool_available(tool, override_origin),
+            }
+            .with_context(|| missing_binary_context(tool))?,
             None,
         ),
     };

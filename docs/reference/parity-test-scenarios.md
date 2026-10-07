@@ -272,3 +272,20 @@ scripts/probe-no-python.sh
 - [Environment Variables](./environment-variables.md) — Reference for all variables injected during launch
 - [Agent Binary Routing](../concepts/agent-binary-routing.md) — Why `AMPLIHACK_AGENT_BINARY` exists
 - [Bootstrap Parity](../concepts/bootstrap-parity.md) — Design principles behind Python↔Rust parity
+
+## Codex acceptance scenarios
+
+Codex acceptance covers the actual production launcher and corrected recipe runner against codex-cli 0.160.0. Deterministic stub tests, parser checks, and live task execution are recorded separately; a temporary bootstrap adapter is excluded from product evidence. These scenarios define required coverage, not a record of completed QA.
+
+| Area | Required observation |
+| --- | --- |
+| Invocation | Interactive terminal input, fresh/resume grammar, leading-dash prompts, caller model/add-dir choices, no model pins |
+| Prompt fidelity | Complete small/large Unicode instructions, persona/task and leaf provenance; no truncation or automatic writable scope |
+| Completion | Final assistant result rather than progress; isolated concurrent files; nonzero, missing/empty/invalid output, timeout and cancellation failures |
+| Configuration | Existing comments, profiles, granular approvals, sandbox and plugins preserved; absent-key bootstrap; malformed/symlink/conflict refusal; owned versus ambiguous migration |
+| Native lifecycle | Isolated CODEX_HOME registration/list/update/removal; complete all130 skills and nested resources; per-skill collisions; unrelated registrations retained |
+| Hooks | Trusted/untrusted definitions, native event outputs and explicit denials; Stop distinct from SessionEnd; leaf recursion guards; nullable transcript limitations |
+| Runner delivery | One immutable managed revision across install/freshness/Claude bootstrap; schema-1 codex_exec probe; stale managed upgrade; compatible explicit runner preserved; incompatible override remediation |
+| Compatibility | Claude/Copilot argv, environment, installation and event mappings; provider-neutral assets and existing install regressions |
+
+Validation records commands, tested revisions, CLI versions, results, and sanitized artifact paths. Live Codex evidence uses the real executable without a PATH bootstrap adapter. Later QA runs gadugi-test validate and run; final-head checks and reviews belong to subsequent workflow phases.

@@ -6,6 +6,9 @@
 //! - SIGPIPE handling (graceful pipe closure)
 //! - Telemetry (stderr JSON line per invocation)
 
+mod codex;
+use codex::{codex_output, normalize_codex_input};
+
 use amplihack_types::HookInput;
 use anyhow::Context;
 use serde::Serialize;
@@ -66,22 +69,64 @@ pub fn run_hook<H: Hook>(hook: H) {
     let start = Instant::now();
     let hook_name = hook.name();
     let policy = hook.failure_policy();
+    let codex = std::env::var("AMPLIHACK_AGENT_BINARY").as_deref() == Ok("codex");
+    let security = codex && hook_name == "pre_tool_use";
 
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| -> anyhow::Result<()> {
-        let input_json = read_stdin()?;
+        let input_json = read_stdin(codex)?;
 
-        let input: HookInput = deserialize_hook_input(&input_json, hook.hook_event_name())
-            .context("failed to deserialize hook input JSON")?;
+        let input: HookInput = deserialize_hook_input(
+            &input_json,
+            if security {
+                Some("PreToolUse")
+            } else {
+                hook.hook_event_name()
+            },
+        )
+        .context("failed to deserialize hook input JSON")?;
 
-        // Unknown events get versioned empty output (graceful forward-compat).
+        anyhow::ensure!(
+            !security || matches!(&input, HookInput::PreToolUse { .. }),
+            "invalid Codex tool security event"
+        );
+        let event = match &input {
+            HookInput::PreToolUse { .. } => "PreToolUse",
+            HookInput::PostToolUse { .. } => "PostToolUse",
+            HookInput::Stop { .. } => "Stop",
+            HookInput::SessionStart { .. } => "SessionStart",
+            HookInput::SessionStop { .. } => "SessionEnd",
+            HookInput::UserPromptSubmit { .. } => "UserPromptSubmit",
+            _ => "",
+        };
+        // Codex transcripts are not Claude transcripts. Do not feed them into
+        // transcript-driven Stop/power-steering checks or synthesize continuation.
+        if codex && matches!(event, "Stop") {
+            write_stdout(b"{}")?;
+            return Ok(());
+        }
+        let input = if codex {
+            normalize_codex_input(input)
+        } else {
+            input
+        };
+        // Unknown events are a native no-op.
         if matches!(input, HookInput::Unknown) {
-            write_stdout(br#"{"version":1}"#)?;
+            write_stdout(if codex { b"{}" } else { br#"{"version":1}"# })?;
             return Ok(());
         }
 
         let output = hook.process(input)?;
+        let output = if codex {
+            codex_output(event, output)
+        } else {
+            output
+        };
         let output_bytes = serde_json::to_vec(&output)?;
-        write_stdout(&output_bytes)?;
+        if security {
+            codex::write_security_response(&output_bytes)?;
+        } else {
+            write_stdout(&output_bytes)?;
+        }
         Ok(())
     }));
 
@@ -92,7 +137,16 @@ pub fn run_hook<H: Hook>(hook: H) {
             emit_telemetry(hook_name, duration, "ok", None);
         }
         Ok(Err(e)) => {
-            emit_telemetry(hook_name, duration, "error", Some(&e.to_string()));
+            let message = if security {
+                "security hook failed".to_string()
+            } else {
+                e.to_string()
+            };
+            emit_telemetry(hook_name, duration, "error", Some(&message));
+            if security {
+                codex::deny_on_failure();
+                return;
+            }
             match policy {
                 FailurePolicy::Open => {
                     if write_stdout(b"{}").is_err() {
@@ -114,6 +168,10 @@ pub fn run_hook<H: Hook>(hook: H) {
         }
         Err(_panic) => {
             emit_telemetry(hook_name, duration, "panic", Some("hook panicked"));
+            if security {
+                codex::deny_on_failure();
+                return;
+            }
             // Intentional: on panic, write best-effort empty JSON response.
             // If stdout is broken too, there's nothing more we can do.
             let _ = io::stdout().write_all(b"{}\n");
@@ -152,10 +210,19 @@ fn deserialize_hook_input(
     Ok(serde_json::from_str(input_json)?)
 }
 
-/// Read all of stdin as a string.
-fn read_stdin() -> anyhow::Result<String> {
+fn read_stdin(codex: bool) -> anyhow::Result<String> {
     let mut input = String::new();
-    io::stdin().read_to_string(&mut input)?;
+    if codex {
+        io::stdin()
+            .take(4 * 1024 * 1024 + 1)
+            .read_to_string(&mut input)?;
+        anyhow::ensure!(
+            input.len() <= 4 * 1024 * 1024,
+            "hook input exceeds 4 MiB limit"
+        );
+    } else {
+        io::stdin().read_to_string(&mut input)?;
+    }
     Ok(input)
 }
 
@@ -261,5 +328,150 @@ mod tests {
         let payload = r#"{"sessionId":"abc-123","source":"new"}"#;
         let input = deserialize_hook_input(payload, None).unwrap();
         assert!(matches!(input, HookInput::Unknown));
+    }
+}
+
+#[cfg(test)]
+mod codex_payload_contract_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn security_denial_subprocess_worker() {
+        struct PanickingSecurityHook;
+        impl Hook for PanickingSecurityHook {
+            fn name(&self) -> &'static str {
+                "pre_tool_use"
+            }
+            fn process(&self, _: HookInput) -> anyhow::Result<serde_json::Value> {
+                match std::env::var("AMPLIHACK_TEST_SECURITY_MODE").as_deref() {
+                    Ok("allow") => Ok(serde_json::json!({})),
+                    Ok("deny") => Ok(serde_json::json!({"block":true})),
+                    Ok("error") => anyhow::bail!("controlled security error"),
+                    _ => panic!("controlled security hook panic"),
+                }
+            }
+            fn hook_event_name(&self) -> Option<&'static str> {
+                Some("PreToolUse")
+            }
+        }
+        if std::env::var_os("AMPLIHACK_TEST_DENIAL_PANIC").is_some() {
+            // Redirect only after libtest's startup output. Redirecting the
+            // whole harness makes libtest panic before the hook is reached.
+            use std::os::fd::AsRawFd;
+            let full =
+                if std::env::var("AMPLIHACK_TEST_SECURITY_TRANSPORT").as_deref() == Ok("pipe") {
+                    let mut fds = [0; 2];
+                    assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+                    unsafe {
+                        libc::close(fds[0]);
+                    }
+                    use std::os::fd::FromRawFd;
+                    unsafe { std::fs::File::from_raw_fd(fds[1]) }
+                } else {
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .open("/dev/full")
+                        .unwrap()
+                };
+            assert!(unsafe { libc::dup2(full.as_raw_fd(), libc::STDOUT_FILENO) } >= 0);
+            run_hook(PanickingSecurityHook);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn security_panic_denial_write_failure_is_visible() {
+        use std::process::{Command, Stdio};
+        for transport in ["full", "pipe"] {
+            for mode in ["allow", "deny", "error", "panic"] {
+                let mut child = Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "protocol::codex_payload_contract_tests::security_denial_subprocess_worker",
+                        "--nocapture",
+                    ])
+                    .env("AMPLIHACK_TEST_DENIAL_PANIC", "1")
+                    .env("AMPLIHACK_TEST_SECURITY_MODE", mode)
+                    .env("AMPLIHACK_TEST_SECURITY_TRANSPORT", transport)
+                    .env("AMPLIHACK_AGENT_BINARY", "codex")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                child
+                    .stdin
+                    .take()
+                    .unwrap()
+                    .write_all(
+                        br#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{}}"#,
+                    )
+                    .unwrap();
+                let output = child.wait_with_output().unwrap();
+                assert_eq!(output.status.code(), Some(2));
+                assert!(String::from_utf8_lossy(&output.stderr).contains(
+                    "Amplihack security response delivery failed; tool execution blocked"
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn codex_post_tool_response_reaches_shared_behavior() {
+        let input = deserialize_hook_input(
+            &json!({
+                "hook_event_name":"PostToolUse", "session_id":"codex-session",
+                "cwd":"/d0/work", "transcript_path":null,
+                "tool_name":"shell_command", "tool_use_id":"tool-1",
+                "tool_input":{"command":"pwd"}, "tool_response":{"exit_code":0,"output":"/d0/work"}
+            })
+            .to_string(),
+            Some("PostToolUse"),
+        )
+        .unwrap();
+        match input {
+            HookInput::PostToolUse {
+                tool_result,
+                session_id,
+                ..
+            } => {
+                assert_eq!(session_id.as_deref(), Some("codex-session"));
+                assert_eq!(
+                    tool_result,
+                    Some(json!({"exit_code":0,"output":"/d0/work"}))
+                );
+            }
+            other => panic!("wrong normalized event: {other:?}"),
+        }
+    }
+    #[test]
+    fn codex_null_transcript_stop_and_session_end_remain_distinct() {
+        let stop = deserialize_hook_input(
+            r#"{"hook_event_name":"Stop","stop_hook_active":true,"transcript_path":null}"#,
+            Some("Stop"),
+        )
+        .unwrap();
+        assert!(matches!(
+            stop,
+            HookInput::Stop {
+                stop_hook_active: Some(true),
+                transcript_path: None,
+                ..
+            }
+        ));
+        let end = deserialize_hook_input(
+            r#"{"hook_event_name":"SessionEnd","reason":"exit","transcript_path":null}"#,
+            Some("SessionEnd"),
+        )
+        .unwrap();
+        assert!(matches!(
+            end,
+            HookInput::SessionStop {
+                transcript_path: None,
+                ..
+            }
+        ));
     }
 }

@@ -6,6 +6,7 @@ pub(crate) mod bundle_compat_cache;
 mod claude_commands;
 mod claude_publication;
 mod clone;
+mod codex_plugin;
 mod command_staging;
 mod copilot_plugin;
 mod directories;
@@ -278,6 +279,12 @@ pub(crate) fn ensure_framework_installed() -> Result<()> {
         "amplihack-hooks binary not found. Run `amplihack install` to set up hooks, \
          or set AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH to the binary location.",
     )?;
+    if crate::freshness::codex_selected() {
+        let source = find_bundled_framework_root()
+            .context("bundled source required to reconcile native Codex resources")?;
+        codex_plugin::install(&source.root, &hooks_bin)
+            .context("failed native Codex reconciliation")?;
+    }
     let settings_path = global_settings_path()?;
     if !hooks_registered_in_settings(&settings_path)? {
         tracing::warn!("hooks not registered in settings.json — auto-repairing");
@@ -597,6 +604,9 @@ fn local_install(
     verify_install_completeness(&source_root, layout, &claude_dir)?;
 
     println!();
+    codex_plugin::install(repo_root, &durable_hooks_bin)
+        .context("failed native Codex installation")?;
+
     println!("📝 Generating uninstall manifest:");
     let manifest_path = manifest_path()?;
     let mut tracked_roots = Vec::new();
@@ -766,4 +776,8 @@ fn local_install(
     }
 
     Ok(())
+}
+
+pub(crate) fn with_codex_binary<T>(binary: &Path, action: impl FnOnce() -> T) -> T {
+    codex_plugin::with_binary(binary, action)
 }

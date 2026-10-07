@@ -83,7 +83,7 @@ Centralized plugin system that works across all your projects:
 - [Migration Guide](plugin/MIGRATION.md) - Migrate from per-project to plugin mode
 - [CLI Reference](plugin/CLI_REFERENCE.md) - Complete command-line reference
 
-**Note**: Plugin architecture is **Claude Code only**. Microsoft Amplifier, GitHub Copilot CLI, and Codex use per-project `~/.amplihack/.claude/` staging instead.
+**Note**: The plugin guides above describe Claude Code. Codex uses its native local marketplace package and command hooks; Microsoft Amplifier and GitHub Copilot CLI use framework staging.
 
 ### Installation
 
@@ -131,9 +131,9 @@ amplihack copilot
 
 **Codex**
 
-- Limited support via per-project `~/.amplihack/.claude/` staging
-- Most features work but may require adaptation
-- Tested primarily with Claude models
+- [Use Amplihack with Codex](howto/install-codex-plugin.md) - Install native skills and hooks, launch sessions, and run recipes
+- [Runner validation reference](reference/recipe-runner-validation.md) - Capability schema, provider compatibility, managed provenance, and diagnostics
+- [Native installer ownership](concepts/codex-installation-ownership.md) - Packaging, hook ownership, locking, and recovery
 
 #### General Configuration
 

@@ -98,7 +98,43 @@ pub(super) fn create_bundle_only_source_repo(root: &Path) {
 pub(super) fn create_exe_stub(dir: &Path, name: &str) -> std::path::PathBuf {
     fs::create_dir_all(dir).unwrap();
     let path = dir.join(name);
-    let content = format!("#!/usr/bin/env bash\nexit 0\n{}\n", "x".repeat(1100));
+    let response = if name == "recipe-runner-rs" {
+        "printf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\"]}'\n"
+    } else if name == "codex" {
+        r#"case "$1 $2 $3" in
+  '--version  ') printf '%s\n' 'codex-cli 0.160.0';;
+  'plugin marketplace add')
+    mkdir -p "$CODEX_HOME"
+    if ! grep -Fq '[marketplaces.amplihack-local]' "$CODEX_HOME/config.toml" 2>/dev/null; then
+      [ ! -s "$CODEX_HOME/config.toml" ] || printf '\n' >> "$CODEX_HOME/config.toml"
+      printf '[marketplaces.amplihack-local]\nsource_type = "local"\nsource = "%s"\n' "$4" >> "$CODEX_HOME/config.toml"
+    fi
+    printf '%s\n' '{"marketplaceName":"amplihack-local"}';;
+  'plugin add amplihack@amplihack-local')
+    if ! grep -Fq '[plugins."amplihack@amplihack-local"]' "$CODEX_HOME/config.toml" 2>/dev/null; then
+      printf '\n[plugins."amplihack@amplihack-local"]\nenabled = true\n' >> "$CODEX_HOME/config.toml"
+    fi
+    touch "$0.installed"; printf '%s\n' '{"pluginId":"amplihack@amplihack-local"}';;
+  'plugin remove amplihack@amplihack-local')
+    sed '/^\[plugins\."amplihack@amplihack-local"\]/,$d' "$CODEX_HOME/config.toml" > "$CODEX_HOME/config.new"
+    # Native removal also retires the separator before the final owned table.
+    sed '${/^$/d;}' "$CODEX_HOME/config.new" > "$CODEX_HOME/config.toml"
+    rm -f "$CODEX_HOME/config.new"
+    rm -f "$0.installed"; printf '%s\n' '{}';;
+  'plugin list --json')
+    if [ -f "$0.installed" ]; then
+      printf '{"installed":[{"pluginId":"amplihack@amplihack-local","installed":true,"enabled":true,"source":{"source":"local","path":"%s/.amplihack/codex/market/plugin"}}]}\n' "$HOME"
+    else printf '%s\n' '{"installed":[]}'; fi;;
+  *) exit 2;;
+esac
+"#
+    } else {
+        ""
+    };
+    let content = format!(
+        "#!/usr/bin/env bash\n{response}exit 0\n{}\n",
+        "x".repeat(1100)
+    );
     fs::write(&path, content).unwrap();
     #[cfg(unix)]
     {

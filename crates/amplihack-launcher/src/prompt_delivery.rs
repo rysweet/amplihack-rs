@@ -1,5 +1,7 @@
 //! Delivery-aware command builders for launcher subprocesses.
 
+mod codex_args;
+
 use std::ffi::OsStr;
 use std::io::{self, ErrorKind};
 use std::path::Path;
@@ -113,6 +115,9 @@ fn build_tool_command_with_root_sandbox(
     command.current_dir(project_path);
     command.env("AMPLIHACK_AGENT_BINARY", binary.env_value());
 
+    if binary == AgentBinary::Codex {
+        return finish_codex_delivery(command, extra_args, prompt, requested);
+    }
     add_prompt_prefix_args(&mut command, binary, extra_args);
     if binary == AgentBinary::Claude {
         // Issue #1482: `--dangerously-skip-permissions` as root needs
@@ -130,6 +135,88 @@ pub fn build_tool_command_from_env(
     prompt: &str,
 ) -> io::Result<DeliveredCommand> {
     build_tool_command_with_prompt_delivery(binary, project_path, extra_args, prompt, from_env())
+}
+
+/// Codex has separate interactive and unattended prompt contracts. Never pipe
+/// interactive stdin: it belongs to the terminal, including during resume.
+/// Root option values are consumed before classifying the native command.
+fn finish_codex_delivery(
+    mut command: Command,
+    args: &[String],
+    prompt: &str,
+    requested: PromptDelivery,
+) -> io::Result<DeliveredCommand> {
+    let invalid = |message| io::Error::new(ErrorKind::InvalidInput, message);
+    if prompt.is_empty() || prompt.contains('\0') || args.iter().any(|a| a.contains('\0')) {
+        return Err(invalid(
+            "Codex requires a nonempty prompt and NUL-free arguments",
+        ));
+    }
+    let mode = codex_args::classify(args)?;
+    let exec = mode.exec;
+    if mode.prompt_option {
+        return Err(invalid(
+            "Codex uses a positional prompt; --prompt is unsupported",
+        ));
+    }
+    if exec && mode.resume && mode.add_dir {
+        return Err(invalid("Codex exec resume does not support --add-dir"));
+    }
+    if mode.resume && mode.last && mode.session {
+        return Err(invalid(
+            "Codex resume accepts either --last or a session ID",
+        ));
+    }
+    command.args(args);
+    if exec {
+        if !mode.stdin_marker {
+            if mode.trailing_images && !mode.delimiter {
+                command.arg("--");
+            }
+            command.arg("-");
+        }
+        // The full effective envelope is stdin for every size, with EOF sent
+        // by the subprocess owner. Delivery preference cannot change modes.
+        finish_prompt_delivery(
+            command,
+            prompt,
+            PromptDelivery::Stdin,
+            DeliveryCaps {
+                supports_argv: false,
+                supports_tempfile: false,
+                supports_stdin: true,
+                tempfile_flag: None,
+            },
+        )
+        .map(|mut d| {
+            d.requested_mode = requested;
+            d
+        })
+    } else {
+        if prompt.len() > 96 * 1024 {
+            return Err(invalid(
+                "Codex interactive prompt exceeds safe argv size; use exec for full stdin delivery",
+            ));
+        }
+        if matches!(requested, PromptDelivery::Stdin | PromptDelivery::Tempfile) {
+            return Err(invalid(
+                "Codex interactive mode requires terminal stdin and positional prompt delivery; use exec",
+            ));
+        }
+        if !mode.delimiter {
+            command.arg("--");
+        }
+        finish_prompt_delivery(
+            command,
+            prompt,
+            PromptDelivery::Argv,
+            DeliveryCaps::argv_only(),
+        )
+        .map(|mut d| {
+            d.requested_mode = requested;
+            d
+        })
+    }
 }
 
 fn finish_prompt_delivery(
@@ -191,7 +278,6 @@ fn add_prompt_prefix_args(command: &mut Command, binary: AgentBinary, extra_args
         }
         AgentBinary::Codex => {
             command.args(extra_args);
-            command.arg("--prompt");
         }
         AgentBinary::Amplifier => {
             command.arg("run");

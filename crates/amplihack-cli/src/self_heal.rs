@@ -87,6 +87,26 @@ pub fn ensure_assets_match_binary_version(args: &[OsString]) -> Result<()> {
     })
 }
 
+/// Resolve ordinary Codex launches before asset repair registers native resources.
+/// Other providers retain their existing startup order.
+pub fn resolve_startup_client(command: &crate::Commands) -> Result<()> {
+    if matches!(
+        command,
+        crate::Commands::Codex {
+            docker: false,
+            append: None,
+            auto: false,
+            ..
+        }
+    ) {
+        crate::bootstrap::ensure_tool_available(
+            "codex",
+            amplihack_utils::launch_target::OverrideOrigin::User,
+        )?;
+    }
+    Ok(())
+}
+
 /// Resolve the path to the install advisory lock file. Mirrors
 /// `version_stamp::installed_version_path` so both files live side-by-side.
 fn install_lock_path() -> Result<PathBuf> {

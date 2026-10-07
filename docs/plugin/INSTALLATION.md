@@ -273,10 +273,16 @@ After installation:
 
 - [Plugin Architecture](./ARCHITECTURE.md) - How the plugin system works
 - [CLI Reference](./CLI_REFERENCE.md) - Complete command documentation
-- **Note**: GitHub Copilot and OpenAI Codex use per-project `~/.amplihack/.claude/` staging (not plugin architecture)
+- [Codex native plugin installation](../howto/install-codex-plugin.md) — configuration, skills, hooks, and recipe execution
 - [Migration Guide](./MIGRATION.md) - Move from per-project to plugin mode
 
 ---
 
 **Last updated:** 2026-01-19
 **Plugin version:** 1.0.0
+
+## Codex installation
+
+The Claude instructions above retain their existing behavior. Codex has a separate native package registered by amplihack install; its hooks require user review and trust. Reinstallation reconciles owned assets, and uninstall preserves user configuration and unrelated registrations.
+
+See [Use Amplihack with Codex](../howto/install-codex-plugin.md) for the complete procedure and limitations.

@@ -9,12 +9,20 @@ use amplihack_cli::commands;
 use amplihack_cli::update;
 
 fn main() {
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if args.get(1).is_some_and(|arg| arg == "internal") {
+        let cli = Cli::parse_from(&args);
+        if let Err(error) = commands::dispatch(cli.command) {
+            eprintln!("error: {error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_target(false)
         .init();
 
-    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     let startup_intent = amplihack_cli::commands::litellm::startup_guard::classify_startup(&args);
     if startup_intent == amplihack_cli::commands::litellm::startup_guard::StartupIntent::VerifyLive
         && amplihack_cli::commands::litellm::startup_guard::ci_environment_present()
@@ -48,7 +56,9 @@ fn main() {
     // by self_heal's own skip-list to prevent recursion.
     let cli = Cli::parse_from(&args);
 
-    if let Err(e) = amplihack_cli::self_heal::ensure_assets_match_binary_version(&args) {
+    if let Err(e) = amplihack_cli::self_heal::resolve_startup_client(&cli.command)
+        .and_then(|()| amplihack_cli::self_heal::ensure_assets_match_binary_version(&args))
+    {
         eprintln!("amplihack: self-heal failed: {e:#}");
         std::process::exit(1);
     }

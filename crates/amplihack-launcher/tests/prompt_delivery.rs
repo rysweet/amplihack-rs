@@ -74,7 +74,7 @@ fn capability_matrix_covers_all_prompt_binaries_without_speculation() {
     let codex = prompt_delivery_caps_for(AgentBinary::Codex);
     assert!(
         !codex.supports_tempfile && !codex.supports_stdin,
-        "Codex stdin support is pending a named verified command contract and must not be enabled speculatively"
+        "Interactive Codex preserves terminal stdin; exec stdin is selected by the mode-aware builder"
     );
 
     let amplifier = prompt_delivery_caps_for(AgentBinary::Amplifier);
@@ -321,4 +321,181 @@ fn claude_command_follows_the_root_sandbox_decision() {
             );
         }
     }
+}
+
+// Finding 9: command positions must be parsed after consuming root option values.
+#[test]
+fn codex_exec_prompt_tokens_do_not_reopen_resume_option_parsing() {
+    for tail in [
+        vec!["task", "resume", "--last"],
+        vec!["--", "resume", "--last"],
+    ] {
+        let mut args = vec!["--model".to_owned(), "exec".to_owned(), "exec".to_owned()];
+        args.extend(tail.into_iter().map(String::from));
+        let error = build_tool_command_with_prompt_delivery(
+            AgentBinary::Codex,
+            Path::new("."),
+            &args,
+            "full envelope",
+            PromptDelivery::Stdin,
+        )
+        .expect_err("competing positional prompts must fail before spawning");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("positional prompt conflicts"));
+    }
+}
+
+#[test]
+fn codex_interactive_byte_limit_is_inclusive_after_command_like_option_value() {
+    let args = ["--model".into(), "exec".into()];
+    let prompt = "é".repeat(48 * 1024);
+    let delivered = build_tool_command_with_prompt_delivery(
+        AgentBinary::Codex,
+        Path::new("."),
+        &args,
+        &prompt,
+        PromptDelivery::Auto,
+    )
+    .expect("exactly 96 KiB remains valid interactive input");
+    assert_eq!(delivered.selected_mode, DeliveryMode::Argv);
+    let error = build_tool_command_with_prompt_delivery(
+        AgentBinary::Codex,
+        Path::new("."),
+        &args,
+        &(prompt + "x"),
+        PromptDelivery::Auto,
+    )
+    .expect_err("one byte above the interactive limit must fail");
+    assert_eq!(error.kind(), ErrorKind::InvalidInput);
+}
+
+#[test]
+fn codex_root_options_before_exec_preserve_full_stdin_and_argument_bytes() {
+    let prompt = "é\n".repeat(40_000);
+    for args in [
+        vec!["--model", "resume", "exec"],
+        vec!["--config", "exec", "--profile", "resume", "e"],
+        vec!["--model=resume", "--cd=exec", "exec"],
+        vec!["-mresume", "-Cexec", "exec"],
+    ] {
+        let args: Vec<String> = args.into_iter().map(String::from).collect();
+        for mode in [PromptDelivery::Auto, PromptDelivery::Stdin] {
+            let delivered = build_tool_command_with_prompt_delivery(
+                AgentBinary::Codex,
+                Path::new("."),
+                &args,
+                &prompt,
+                mode,
+            )
+            .expect("root options do not turn exec into interactive mode");
+            let mut expected = args.clone();
+            expected.push("-".into());
+            assert_eq!(argv(&delivered.command), expected);
+            assert_eq!(delivered.stdin_payload.as_deref(), Some(prompt.as_bytes()));
+            assert_eq!(delivered.selected_mode, DeliveryMode::Stdin);
+        }
+    }
+}
+
+#[test]
+fn codex_root_options_before_resume_still_validate_conflicting_session_selection() {
+    for args in [
+        vec!["--model", "exec", "resume", "--last", "session-id"],
+        vec!["--profile=resume", "exec", "resume", "--last", "session-id"],
+        vec![
+            "--model",
+            "resume",
+            "exec",
+            "resume",
+            "--add-dir",
+            "workspace",
+        ],
+    ] {
+        let args: Vec<String> = args.into_iter().map(String::from).collect();
+        let error = build_tool_command_with_prompt_delivery(
+            AgentBinary::Codex,
+            Path::new("."),
+            &args,
+            "task",
+            PromptDelivery::Auto,
+        )
+        .expect_err("resume constraints apply after root options");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+    }
+}
+
+#[test]
+fn codex_command_like_values_and_delimited_tokens_preserve_interactive_limits() {
+    for args in [
+        vec!["--model", "exec"],
+        vec!["--profile", "resume"],
+        vec!["--"],
+    ] {
+        let args: Vec<String> = args.into_iter().map(String::from).collect();
+        let delivered = build_tool_command_with_prompt_delivery(
+            AgentBinary::Codex,
+            Path::new("."),
+            &args,
+            "task",
+            PromptDelivery::Auto,
+        )
+        .unwrap();
+        assert_eq!(delivered.selected_mode, DeliveryMode::Argv);
+        assert!(delivered.stdin_payload.is_none());
+        for (prompt, mode) in [
+            ("x".repeat(96 * 1024 + 1), PromptDelivery::Auto),
+            ("task".into(), PromptDelivery::Stdin),
+        ] {
+            assert!(
+                build_tool_command_with_prompt_delivery(
+                    AgentBinary::Codex,
+                    Path::new("."),
+                    &args,
+                    &prompt,
+                    mode,
+                )
+                .is_err()
+            );
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn codex_root_option_exec_subprocess_receives_complete_large_stdin() {
+    use std::{fs, io::Write, os::unix::fs::PermissionsExt, process::Stdio};
+    let dir = tempfile::tempdir().unwrap();
+    let binary = dir.path().join("codex");
+    let captured = dir.path().join("stdin");
+    fs::write(
+        &binary,
+        "#!/bin/sh\n/bin/cat > \"$CAPTURE\"\nprintf '%s\\n' \"$@\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+    let prompt = format!("SYSTEM\nPERSONA\n{}\nTASK-END", "日本語\n".repeat(30_000));
+    let args = ["--model", "resume", "--config=exec", "exec"].map(str::to_owned);
+    let mut delivered = build_tool_command_with_prompt_delivery(
+        AgentBinary::Codex,
+        dir.path(),
+        &args,
+        &prompt,
+        PromptDelivery::Stdin,
+    )
+    .unwrap();
+    delivered
+        .command
+        .env("PATH", dir.path())
+        .env("CAPTURE", &captured)
+        .stdout(Stdio::piped());
+    let mut child = delivered.command.spawn().unwrap();
+    let mut input = child.stdin.take().unwrap();
+    input
+        .write_all(delivered.stdin_payload.as_ref().unwrap())
+        .unwrap();
+    drop(input);
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    assert_eq!(fs::read(captured).unwrap(), prompt.as_bytes());
+    assert_eq!(output.stdout, b"--model\nresume\n--config=exec\nexec\n-\n");
 }
