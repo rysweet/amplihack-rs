@@ -83,8 +83,24 @@ pub fn ensure_assets_match_binary_version(args: &[OsString]) -> Result<()> {
     }
 
     ensure_assets_match_binary_version_with(args, &mut std::io::stderr(), || {
-        crate::commands::install::run_install(None, false, false)
+        crate::commands::install::repair_framework_assets()
     })
+}
+
+/// Use parsed CLI provider intent for startup repair, ahead of inherited hints.
+/// The scoped selection restores the caller's provider after the check.
+pub fn ensure_assets_for_command(args: &[OsString], command: &crate::Commands) -> Result<()> {
+    let provider = match command {
+        crate::Commands::Launch { .. } | crate::Commands::Claude { .. } => "claude",
+        crate::Commands::Copilot { .. } => "copilot",
+        crate::Commands::Codex { .. } => "codex",
+        crate::Commands::Amplifier { .. } => "amplifier",
+        crate::Commands::RustyClawd { .. } => "rustyclawd",
+        // Generic commands repair generic assets; direct install retains its
+        // separate all-provider semantics and is in the startup skip list.
+        _ => "",
+    };
+    crate::freshness::with_provider(provider, || ensure_assets_match_binary_version(args))
 }
 
 /// Resolve ordinary Codex launches before asset repair registers native resources.

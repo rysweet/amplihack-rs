@@ -184,13 +184,18 @@ steps:
           '{verification_completed:$verification_completed,terminal_no_op:$terminal_no_op,terminal_state:$terminal_state,terminal_reason:$terminal_reason}'
       }
 
-      allow_no_op="$(normalize_bool "${ALLOW_NO_OP:-${RECIPE_VAR_allow_no_op:-false}}")"
+      . '{{worktree_setup.worktree_path}}/amplifier-bundle/tools/workflow_context.sh'
+      WORKFLOW_CONTEXT_COHORT=verification
+      workflow_context_capture allow_no_op allow_no_op
+      allow_no_op="$(normalize_bool "$allow_no_op")"
+      workflow_context_capture precommit precommit_results
+      workflow_context_capture testing local_testing_gate
       if [ "$allow_no_op" = "true" ]; then
         emit_evidence "false" "true" "ALLOW_NO_OP" "allow_no_op was explicitly selected for a non-code-change path"
         exit 0
       fi
 
-      if [ -n "${PRECOMMIT_RESULTS:-}" ] && [ -n "${LOCAL_TESTING_GATE:-}" ]; then
+      if [ -n "$precommit" ] && [ -n "$testing" ]; then
         emit_evidence "true" "false" "VERIFICATION_COMPLETED" "pre-commit and outside-in local testing phases produced validation output"
       else
         emit_evidence "false" "false" "VERIFICATION_UNPROVEN" "pre-commit and outside-in local testing evidence is missing"

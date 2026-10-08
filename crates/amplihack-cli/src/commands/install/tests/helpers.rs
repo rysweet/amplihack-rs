@@ -113,6 +113,13 @@ pub(super) fn create_exe_stub(dir: &Path, name: &str) -> std::path::PathBuf {
   'plugin add amplihack@amplihack-local')
     if ! grep -Fq '[plugins."amplihack@amplihack-local"]' "$CODEX_HOME/config.toml" 2>/dev/null; then
       printf '\n[plugins."amplihack@amplihack-local"]\nenabled = true\n' >> "$CODEX_HOME/config.toml"
+    else
+      awk '
+        /^\[/ { owned = ($0 == "[plugins.\"amplihack@amplihack-local\"]") }
+        owned { sub(/^enabled = false$/, "enabled = true") }
+        { print }
+      ' "$CODEX_HOME/config.toml" > "$CODEX_HOME/config.new"
+      mv "$CODEX_HOME/config.new" "$CODEX_HOME/config.toml"
     fi
     touch "$0.installed"; printf '%s\n' '{"pluginId":"amplihack@amplihack-local"}';;
   'plugin remove amplihack@amplihack-local')
@@ -123,7 +130,11 @@ pub(super) fn create_exe_stub(dir: &Path, name: &str) -> std::path::PathBuf {
     rm -f "$0.installed"; printf '%s\n' '{}';;
   'plugin list --json')
     if [ -f "$0.installed" ]; then
-      printf '{"installed":[{"pluginId":"amplihack@amplihack-local","installed":true,"enabled":true,"source":{"source":"local","path":"%s/.amplihack/codex/market/plugin"}}]}\n' "$HOME"
+      enabled=$(awk '
+        /^\[/ { owned = ($0 == "[plugins.\"amplihack@amplihack-local\"]") }
+        owned && /^enabled = / { print $3 }
+      ' "$CODEX_HOME/config.toml")
+      printf '{"installed":[{"pluginId":"amplihack@amplihack-local","installed":true,"enabled":%s,"source":{"source":"local","path":"%s/.amplihack/codex/market/plugin"}}]}\n' "${enabled:-false}" "$HOME"
     else printf '%s\n' '{"installed":[]}'; fi;;
   *) exit 2;;
 esac

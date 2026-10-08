@@ -219,8 +219,12 @@ steps:
     # step itself fails or is skipped.
     command: |
       set -euo pipefail
-      IMPL="${IMPLEMENTATION:-}"
-      VERDICT_RAW="${VERDICT_JSON:-}"
+      # The reader retains VERDICT_JSON for legacy-only Claude/Copilot callers.
+      . '{{worktree_setup.worktree_path}}/amplifier-bundle/tools/workflow_context.sh'
+      WORKFLOW_CONTEXT_COHORT=implementation
+      IMPL="$(workflow_context_read implementation || :)"
+      VERDICT_RAW="$(workflow_context_read verdict_json || :)"
+      workflow_context_capture SELECTED_ALLOW_NO_OP allow_no_op
 
       # Fast-path opt-outs (issue #425 parity).
       _ORCH_SENTINEL='No files modified — orchestration task'
@@ -229,7 +233,7 @@ steps:
         echo "  Skipping work-verifier verdict for orchestration / docs-only task." >&2
         exit 0
       fi
-      if [ "${ALLOW_NO_OP:-false}" = "true" ]; then
+      if [ "$SELECTED_ALLOW_NO_OP" = "true" ]; then
         echo "INFO: step-08c-enforce-verdict orchestration opt-out — ALLOW_NO_OP=true (issue #425)." >&2
         echo "  Skipping work-verifier verdict; classification permits no working-tree edits." >&2
         exit 0
@@ -348,18 +352,7 @@ steps:
       STAGED=$(git diff --cached --name-only)
       if [ -n "$STAGED" ]; then
         GIT_IDENTITY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(git rev-parse --show-toplevel)}}/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(git rev-parse --show-toplevel)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(pwd)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || { echo "ERROR: git identity helper not found: $GIT_IDENTITY_HELPER" >&2; exit 2; }; . "$GIT_IDENTITY_HELPER"
-        commit_with_pre_commit_guard() {
-          local pre_commit_hook
-          amplihack_prepare_git_commit_identity
-          pre_commit_hook="$(git rev-parse --git-path hooks/pre-commit)"
-          if [ -f "$pre_commit_hook" ] && [ ! -f .pre-commit-config.yaml ]; then
-            PRE_COMMIT_ALLOW_NO_CONFIG=1 git commit "$@"
-          elif git commit "$@"; then
-            return 0
-          else
-            return "$?"
-          fi
-        }
+        . "$WORKTREE_SETUP_WORKTREE_PATH/amplifier-bundle/tools/workflow_checkpoint_commit.sh"
         commit_output_file=$(mktemp -t checkpoint-implementation-commit-XXXXXX)
         if commit_with_pre_commit_guard -m "wip: checkpoint after implementation (steps 7-8)
 

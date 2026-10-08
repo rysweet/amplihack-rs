@@ -16,8 +16,10 @@ pub(super) fn regular_json(path: &Path) -> Result<Option<Value>> {
     }
 }
 pub(super) fn atomic_json(path: &Path, value: &Value, original: Option<Value>) -> Result<()> {
+    path_scope::check()?;
     let parent = path.parent().context("JSON destination has no parent")?;
     fs::create_dir_all(parent)?;
+    path_scope::check()?;
     let mut staged = tempfile::NamedTempFile::new_in(parent)?;
     if original.is_some() {
         staged
@@ -31,6 +33,7 @@ pub(super) fn atomic_json(path: &Path, value: &Value, original: Option<Value>) -
         regular_json(path)? == original,
         "Codex JSON changed concurrently; retry"
     );
+    path_scope::check()?;
     staged
         .persist(path)
         .context("failed atomic Codex JSON write")?;
@@ -53,6 +56,7 @@ pub(super) fn snapshot(path: &Path) -> Result<Option<Vec<u8>>> {
     }
 }
 pub(super) fn restore_bytes(path: &Path, value: &Value, expected: &Value) -> Result<()> {
+    path_scope::check()?;
     let current = snapshot(path)?;
     let state = serde_json::to_value(&current)?;
     ensure!(
@@ -65,6 +69,7 @@ pub(super) fn restore_bytes(path: &Path, value: &Value, expected: &Value) -> Res
                 snapshot(path)? == current,
                 "Codex snapshot changed concurrently"
             );
+            path_scope::check()?;
             fs::remove_file(path)?;
         }
         return Ok(());
@@ -81,6 +86,7 @@ pub(super) fn restore_bytes(path: &Path, value: &Value, expected: &Value) -> Res
         .collect::<Result<_>>()?;
     let parent = path.parent().context("snapshot parent missing")?;
     fs::create_dir_all(parent)?;
+    path_scope::check()?;
     let mut staged = tempfile::NamedTempFile::new_in(parent)?;
     if current.is_some() {
         staged
@@ -93,6 +99,7 @@ pub(super) fn restore_bytes(path: &Path, value: &Value, expected: &Value) -> Res
         snapshot(path)? == current,
         "Codex snapshot changed concurrently"
     );
+    path_scope::check()?;
     staged.persist(path).context("snapshot recovery failed")?;
     Ok(())
 }
@@ -106,6 +113,8 @@ pub(super) fn json_bytes(value: &Value) -> Result<Vec<u8>> {
 
 /// Sync a validated resource without following symlinks.
 pub(super) fn sync_path(path: &Path) -> Result<()> {
+    let canonical = path_scope::canonical(path)?;
+    let path = canonical.as_path();
     let meta = fs::symlink_metadata(path)?;
     ensure!(
         !meta.file_type().is_symlink(),
@@ -113,6 +122,7 @@ pub(super) fn sync_path(path: &Path) -> Result<()> {
     );
     #[cfg(test)]
     testing::check(path)?;
+    path_scope::check()?;
     let mut options = fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -123,7 +133,8 @@ pub(super) fn sync_path(path: &Path) -> Result<()> {
     options
         .open(path)?
         .sync_all()
-        .context("Codex resource synchronization failed")
+        .context("Codex resource synchronization failed")?;
+    path_scope::check()
 }
 
 pub(super) fn sync_tree(path: &Path) -> Result<()> {

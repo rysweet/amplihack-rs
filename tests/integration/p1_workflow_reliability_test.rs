@@ -83,6 +83,16 @@ struct GateRun {
 
 fn run_gate(verdict_json: &str, implementation: &str, allow_no_op: &str) -> GateRun {
     let cmd = enforce_verdict_command();
+    let cmd = cmd.replace(
+        "{{worktree_setup.worktree_path}}",
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .replace('\'', "'\\''"),
+    );
     let mut f = tempfile::NamedTempFile::new().unwrap();
     f.as_file_mut().write_all(cmd.as_bytes()).unwrap();
 
@@ -120,6 +130,16 @@ mod ws1_synonym_mapping {
     #[test]
     fn enforce_verdict_command_routes_through_orch_helper_toolchain() {
         let cmd = enforce_verdict_command();
+        let cmd = cmd.replace(
+            "{{worktree_setup.worktree_path}}",
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .canonicalize()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .replace('\'', "'\\''"),
+        );
         assert!(
             cmd.contains("orch helper extract-json"),
             "enforce-verdict must extract the JSON verdict via `orch helper extract-json`"

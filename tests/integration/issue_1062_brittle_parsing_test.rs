@@ -157,6 +157,16 @@ fn run_cli(args: &[&str], stdin: &str, extra_env: &[(&str, &str)]) -> Run {
 /// Execute a recipe bash body with `amplihack` on PATH and the supplied env.
 fn run_bash_body(body: &str, envs: &[(&str, &str)]) -> Run {
     let mut script = tempfile::NamedTempFile::new().expect("tempfile");
+    let owning_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .replace('\'', "'\\''");
+    let body = body
+        .replace("{{worktree_setup.worktree_path}}", &owning_path)
+        .replace("{{repo_path}}", &owning_path);
     script.write_all(body.as_bytes()).expect("write body");
     let path = script.path().to_path_buf();
 

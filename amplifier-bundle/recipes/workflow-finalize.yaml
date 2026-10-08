@@ -337,7 +337,9 @@ steps:
       # parsing the agent narrative. The narrative artifact's presence is the
       # deterministic signal: an empty narrative means the reporting step failed
       # to produce its human-readable output.
-      narrative="${AGENTIC_FINALIZER_NARRATIVE:-${RECIPE_VAR_agentic_finalizer_narrative:-}}"
+      command -v jq >/dev/null 2>&1 || { echo "ERROR: finalizer-step-status requires jq" >&2; exit 2; }
+      . '{{worktree_setup.worktree_path}}/amplifier-bundle/tools/workflow_context.sh'
+      narrative="$(workflow_context_read agentic_finalizer_narrative || :)"
       status="ok"
       reporting_failure="false"
       trimmed="$(printf '%s' "$narrative" | tr -d '[:space:]')"

@@ -7,9 +7,9 @@
 #     back to a cargo build from this checkout. Copied into ~/.local/bin.
 #   * recipe-runner-rs: cargo install from rysweet/amplihack-recipe-runner at
 #     the exact commit pinned in claude-plugin/recipe-runner.rev, so what a
-#     plugin commit runs is reviewable in that commit. (amplihack's own
-#     launcher tracks the runner's main branch; the plugin pins instead
-#     because it installs without asking.)
+#     plugin commit runs is reviewable in that commit. Rust installation and
+#     launcher freshness use this same immutable revision with --locked.
+#     Compatible user-owned overrides are validated separately and preserved.
 #
 # It only ever replaces binaries it placed itself. Their sha256 sums are kept
 # in owned-binaries; an amplihack the user installed (`amplihack install`, a

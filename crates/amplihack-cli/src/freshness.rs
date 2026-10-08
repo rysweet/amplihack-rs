@@ -126,8 +126,9 @@ pub(crate) fn codex_selected() -> bool {
         == "codex"
 }
 
-/// Install or upgrade `recipe-runner-rs` if the currently installed commit
-/// differs from upstream HEAD.
+/// Reconcile managed `recipe-runner-rs` delivery with the shared immutable
+/// `claude-plugin/recipe-runner.rev` used by Rust and shell installation.
+/// Compatible user-owned overrides are validated separately and preserved.
 ///
 /// Called best-effort from the launcher bootstrap. Any failure is logged
 /// and swallowed — a missing or stale recipe runner doesn't block launching
@@ -409,6 +410,7 @@ mod codex_delivery_contract_tests {
             }
             _ => panic!("unknown worker"),
         }
+        println!("MANAGED_DELIVERY_WORKER_COMPLETE:{test}");
         true
     }
     fn assert_pin(args: &str) {
@@ -437,9 +439,19 @@ mod codex_delivery_contract_tests {
             .env_remove("RECIPE_RUNNER_RS_PATH")
             .env_remove("AMPLIHACK_NO_FRESHNESS_CHECK")
             .env_remove("CI")
-            .status()
+            .output()
             .unwrap();
-        assert!(result.success(), "isolated worker failed: {test}");
+        let transcript = String::from_utf8_lossy(&result.stdout);
+        assert!(
+            result.status.success(),
+            "isolated worker failed: {test}: {transcript}"
+        );
+        assert!(transcript.contains("running 1 test"), "{transcript}");
+        assert!(
+            transcript.contains(&format!("MANAGED_DELIVERY_WORKER_COMPLETE:{test}")),
+            "{transcript}"
+        );
+        assert!(transcript.contains("1 passed; 0 failed"), "{transcript}");
     }
     fn executable(path: &Path, script: &str) {
         fs::write(path, script).unwrap();

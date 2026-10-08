@@ -56,11 +56,14 @@ pub(super) fn prepare(
             "Codex package changed outside installer; preserve it and reconcile manually"
         );
     }
+    path_scope::check()?;
     let staged = tempfile::tempdir_in(root)?;
     build(source, hooks_binary, staged.path())?;
     let hooks = declarations(&package)?;
     let market = root.join("market");
+    path_scope::check()?;
     fs::create_dir_all(market.join(".agents/plugins"))?;
+    path_scope::check()?;
     let marketplace_path = market.join(".agents/plugins/marketplace.json");
     let original_marketplace = regular_json(&marketplace_path)?;
     let mut marketplace = original_marketplace

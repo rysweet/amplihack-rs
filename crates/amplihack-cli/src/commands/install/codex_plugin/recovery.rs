@@ -1,6 +1,10 @@
 //! Durable pre-ledger recovery and post-ledger cleanup.
 use super::*;
 pub(super) fn recover_install(root: &Path, binary: &Path, home: &Path) -> Result<()> {
+    path_scope::with_scope(root, home, || recover_scoped(root, binary, home))
+}
+
+fn recover_scoped(root: &Path, binary: &Path, home: &Path) -> Result<()> {
     let Some(mut pending) = regular_json(&root.join("pending.json"))? else {
         return Ok(());
     };
@@ -9,8 +13,8 @@ pub(super) fn recover_install(root: &Path, binary: &Path, home: &Path) -> Result
         "unsupported or out-of-scope Codex recovery journal; reconcile manually; record retained"
     );
     validate_journal(&pending, home)?;
+    rollback_durability::validate_paths(root, home)?;
     preflight(&pending, root, home)?;
-    let package = root.join("market/plugin");
     if regular_json(&root.join("ownership.json"))?
         .is_some_and(|ledger| ledger["transaction"] == pending["transaction"])
     {
@@ -21,56 +25,7 @@ pub(super) fn recover_install(root: &Path, binary: &Path, home: &Path) -> Result
         preflight(&pending, root, home)?;
         return backup_cleanup::finish(&mut pending, root, home);
     }
-    let inventory = native(binary, &["plugin", "list", "--json"], home)?;
-    verify_identity(&inventory, &package)?;
-    if pending["installed"] == false && installed(&inventory) {
-        preflight(&pending, root, home)?;
-        native(binary, &["plugin", "remove", ID], home)?;
-        preflight(&pending, root, home)?;
-    }
-    let backup = root.join("previous-package");
-    preflight(&pending, root, home)?;
-    if backup.exists() {
-        ensure!(
-            pending["ledger"]["package_digest"].as_str() == Some(digest(&backup)?.as_str()),
-            "previous Codex package changed; recovery retained for manual repair"
-        );
-        if package.exists() {
-            preflight(&pending, root, home)?;
-            fs::remove_dir_all(&package)?;
-        }
-        preflight(&pending, root, home)?;
-        fs::rename(&backup, &package)?;
-    } else if pending["had_package"] == false && package.exists() {
-        fs::remove_dir_all(&package)?;
-    }
-    for (key, path) in recovery_paths(root, home) {
-        preflight(&pending, root, home)?;
-        let original = if key == "config" {
-            &pending["config"]
-        } else {
-            &pending["snapshots"][key]
-        };
-        let expected = if key == "config" {
-            let current = serde_json::to_value(snapshot(&path)?)?;
-            ensure!(
-                config::config_matches(&pending, &current),
-                "foreign Codex config changed; recovery record retained"
-            );
-            current
-        } else {
-            pending["expected"][key].clone()
-        };
-        restore_bytes(&path, original, &expected)?;
-    }
-    if pending["installed"] == true {
-        preflight(&pending, root, home)?;
-        native(binary, &["plugin", "add", ID], home)?;
-        preflight(&pending, root, home)?;
-    }
-    preflight(&pending, root, home)?;
-    fs::remove_file(root.join("pending.json"))?;
-    Ok(())
+    rollback::restore(&pending, root, binary, home)
 }
 
 fn validate_journal(pending: &Value, home: &Path) -> Result<()> {
@@ -123,7 +78,7 @@ fn validate_journal(pending: &Value, home: &Path) -> Result<()> {
     Ok(())
 }
 
-fn recovery_paths(root: &Path, home: &Path) -> [(&'static str, PathBuf); 4] {
+pub(super) fn recovery_paths(root: &Path, home: &Path) -> [(&'static str, PathBuf); 4] {
     [
         ("config", home.join("config.toml")),
         ("hooks", home.join("hooks.json")),
@@ -137,6 +92,7 @@ fn recovery_paths(root: &Path, home: &Path) -> [(&'static str, PathBuf); 4] {
 
 /// Check all resources before any destructive operation, then repeat at mutation boundaries.
 pub(super) fn preflight(pending: &Value, root: &Path, home: &Path) -> Result<()> {
+    path_scope::check()?;
     for (key, path) in recovery_paths(root, home) {
         let current = serde_json::to_value(snapshot(&path)?)?;
         let original = if key == "config" {

@@ -264,9 +264,10 @@ steps:
     command: |
       set -uo pipefail
 
-      # Untrusted documentation-review feedback, flattened to an env var by the
-      # runner (same convention as ISSUE_NUMBER in step-06d). Consumed as data.
-      DOC_FEEDBACK="${DOC_REVIEW_FEEDBACK:-}"
+      # Select authoritative structured feedback; legacy-only callers retain
+      # their raw scalar extraction. Feedback remains data.
+      . '{{repo_path}}/amplifier-bundle/tools/workflow_context.sh'
+      DOC_FEEDBACK="$(workflow_context_read doc_review_feedback || :)"
 
       # Durable artifact references — each guarded so an absent ref is omitted
       # rather than raising an unbound-variable error. Allow-list only; these are

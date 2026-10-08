@@ -60,26 +60,7 @@ fn committed_cleanup_resumes_after_actual_authorized_unlink() {
 #[test]
 fn full_backup_control_and_proof_free_partial_backup() {
     for partial in [false, true] {
-        let dir = tempfile::tempdir().unwrap();
-        let (root, home) = committed_fixture(dir.path());
-        if partial {
-            fs::remove_file(root.join("previous-package/resource")).unwrap();
-        }
-        let result = recover_install(&root, Path::new("must-not-spawn"), &home);
-        if partial {
-            assert!(
-                result.is_err(),
-                "historical partial backups require reconciliation"
-            );
-            assert!(root.join("pending.json").exists());
-            assert_eq!(
-                fs::read(root.join("previous-package/nested/second")).unwrap(),
-                b"second"
-            );
-        } else {
-            result.unwrap();
-            assert!(!root.join("pending.json").exists());
-        }
+        cases::partial_backup_case(partial);
     }
 }
 
@@ -127,90 +108,73 @@ fn cleanup_rejects_changed_survivors_and_invalid_inventory_with_evidence_intact(
         "live",
         "hooks",
     ] {
-        let dir = tempfile::tempdir().unwrap();
-        let (root, home) = committed_fixture(dir.path());
-        interrupt_authorized_unlink(&root, &home);
-        // The shallow resource survives the first unlink of nested/second.
-        let resource = root.join("previous-package/resource");
-        assert!(resource.is_file());
-        let journal = root.join("pending.json");
-        let mut pending = regular_json(&journal).unwrap().unwrap();
-        match change {
-            "file" => fs::write(&resource, b"foreign").unwrap(),
-            "injected" => fs::write(root.join("previous-package/new"), b"foreign").unwrap(),
-            "type" => {
-                fs::remove_file(&resource).unwrap();
-                fs::create_dir(&resource).unwrap();
-            }
-            "path" => pending["backup_cleanup"]["entries"][0]["path"] = json!("../outside"),
-            "duplicate" => {
-                let entry = pending["backup_cleanup"]["entries"][0].clone();
-                pending["backup_cleanup"]["entries"]
-                    .as_array_mut()
-                    .unwrap()
-                    .push(entry);
-            }
-            "transaction" => pending["backup_cleanup"]["transaction"] = json!("another"),
-            "home" => pending["backup_cleanup"]["codex_home"] = json!(dir.path()),
-            "digest" => pending["backup_cleanup"]["original_digest"] = json!("0".repeat(64)),
-            "shape" => pending["backup_cleanup"]["extra"] = json!(true),
-            "schema" => pending["backup_cleanup"]["schema_version"] = json!(2),
-            "null" => pending["backup_cleanup"] = Value::Null,
-            "absolute" => pending["backup_cleanup"]["entries"][0]["path"] = json!("/outside"),
-            "hash" => {
-                let entries = pending["backup_cleanup"]["entries"].as_array_mut().unwrap();
-                let file = entries
-                    .iter_mut()
-                    .find(|e| e["kind"]["type"] == "File")
-                    .unwrap();
-                file["kind"]["sha256"] = json!("g".repeat(64));
-            }
-            "parent" => pending["backup_cleanup"]["entries"]
+        cleanup_rejects_changed_survivors_and_invalid_inventory_with_evidence_intact_case(change);
+    }
+}
+
+fn cleanup_rejects_changed_survivors_and_invalid_inventory_with_evidence_intact_case(change: &str) {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, home) = committed_fixture(dir.path());
+    interrupt_authorized_unlink(&root, &home);
+    // The shallow resource survives the first unlink of nested/second.
+    let resource = root.join("previous-package/resource");
+    assert!(resource.is_file());
+    let journal = root.join("pending.json");
+    let mut pending = regular_json(&journal).unwrap().unwrap();
+    match change {
+        "file" => fs::write(&resource, b"foreign").unwrap(),
+        "injected" => fs::write(root.join("previous-package/new"), b"foreign").unwrap(),
+        "type" => {
+            fs::remove_file(&resource).unwrap();
+            fs::create_dir(&resource).unwrap();
+        }
+        "path" => pending["backup_cleanup"]["entries"][0]["path"] = json!("../outside"),
+        "duplicate" => {
+            let entry = pending["backup_cleanup"]["entries"][0].clone();
+            pending["backup_cleanup"]["entries"]
                 .as_array_mut()
                 .unwrap()
-                .retain(|e| e["path"] != "nested"),
-            "ledger" => fs::write(root.join("ownership.json"), b"{}").unwrap(),
-            "live" => fs::write(root.join("market/plugin/resource"), b"foreign").unwrap(),
-            "hooks" => fs::write(home.join("hooks.json"), b"foreign").unwrap(),
-            _ => unreachable!(),
+                .push(entry);
         }
-        fs::write(&journal, json_bytes(&pending).unwrap()).unwrap();
-        let before = fs::read(&journal).unwrap();
-        assert!(
-            recover_install(&root, Path::new("must-not-spawn"), &home).is_err(),
-            "{change}"
-        );
-        assert_eq!(fs::read(&journal).unwrap(), before, "{change}");
-        assert!(fs::symlink_metadata(&resource).is_ok(), "{change}");
+        "transaction" => pending["backup_cleanup"]["transaction"] = json!("another"),
+        "home" => pending["backup_cleanup"]["codex_home"] = json!(dir.path()),
+        "digest" => pending["backup_cleanup"]["original_digest"] = json!("0".repeat(64)),
+        "shape" => pending["backup_cleanup"]["extra"] = json!(true),
+        "schema" => pending["backup_cleanup"]["schema_version"] = json!(2),
+        "null" => pending["backup_cleanup"] = Value::Null,
+        "absolute" => pending["backup_cleanup"]["entries"][0]["path"] = json!("/outside"),
+        "hash" => {
+            let entries = pending["backup_cleanup"]["entries"].as_array_mut().unwrap();
+            let file = entries
+                .iter_mut()
+                .find(|e| e["kind"]["type"] == "File")
+                .unwrap();
+            file["kind"]["sha256"] = json!("g".repeat(64));
+        }
+        "parent" => pending["backup_cleanup"]["entries"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|e| e["path"] != "nested"),
+        "ledger" => fs::write(root.join("ownership.json"), b"{}").unwrap(),
+        "live" => fs::write(root.join("market/plugin/resource"), b"foreign").unwrap(),
+        "hooks" => fs::write(home.join("hooks.json"), b"foreign").unwrap(),
+        _ => unreachable!(),
     }
+    fs::write(&journal, json_bytes(&pending).unwrap()).unwrap();
+    let before = fs::read(&journal).unwrap();
+    assert!(
+        recover_install(&root, Path::new("must-not-spawn"), &home).is_err(),
+        "{change}"
+    );
+    assert_eq!(fs::read(&journal).unwrap(), before, "{change}");
+    assert!(fs::symlink_metadata(&resource).is_ok(), "{change}");
 }
 
 #[cfg(unix)]
 #[test]
 fn cleanup_checks_symlink_targets_and_never_follows_them() {
     for substitute in [false, true] {
-        let dir = tempfile::tempdir().unwrap();
-        let (root, home) = committed_fixture(dir.path());
-        let outside = dir.path().join("outside");
-        fs::write(&outside, b"outside untouched").unwrap();
-        let link = root.join("previous-package/link");
-        std::os::unix::fs::symlink(&outside, &link).unwrap();
-        let journal = root.join("pending.json");
-        let mut pending = regular_json(&journal).unwrap().unwrap();
-        pending["ledger"]["package_digest"] =
-            json!(digest(&root.join("previous-package")).unwrap());
-        fs::write(&journal, json_bytes(&pending).unwrap()).unwrap();
-        interrupt_authorized_unlink(&root, &home);
-        if substitute {
-            fs::remove_file(&link).unwrap();
-            std::os::unix::fs::symlink("changed-target", &link).unwrap();
-        }
-        let result = recover_install(&root, Path::new("must-not-spawn"), &home);
-        assert_eq!(result.is_err(), substitute);
-        assert_eq!(fs::read(&outside).unwrap(), b"outside untouched");
-        if substitute {
-            assert!(journal.exists());
-        }
+        cases::backup_link_case(substitute);
     }
 }
 
@@ -289,3 +253,7 @@ fn unsupported_backup_fifo_is_rejected_without_opening_it() {
     assert!(root.join("pending.json").exists());
     assert!(path.exists());
 }
+
+mod independent;
+
+mod cases;

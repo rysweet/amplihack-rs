@@ -24,6 +24,9 @@ mod uninstall;
 mod verification;
 pub(crate) mod version_stamp;
 
+#[cfg(all(test, unix))]
+#[path = "tests/codex_alias_fixture.rs"]
+mod codex_alias_fixture;
 #[cfg(test)]
 mod tests;
 
@@ -62,6 +65,20 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub fn run_install(local: Option<PathBuf>, interactive: bool, force_refresh: bool) -> Result<()> {
+    run_install_scoped(local, interactive, force_refresh, true)
+}
+
+/// Repair generic assets without reconciling an unrelated optional provider.
+pub(crate) fn repair_framework_assets() -> Result<()> {
+    run_install_scoped(None, false, false, crate::freshness::codex_selected())
+}
+
+fn run_install_scoped(
+    local: Option<PathBuf>,
+    interactive: bool,
+    force_refresh: bool,
+    reconcile_codex: bool,
+) -> Result<()> {
     // Run the interactive wizard if --interactive was passed.
     // The wizard produces an optional config; if None, we proceed with defaults.
     let wizard_config = interactive::maybe_run_wizard(interactive)?;
@@ -77,7 +94,7 @@ pub fn run_install(local: Option<PathBuf>, interactive: bool, force_refresh: boo
         if !canonical.is_dir() {
             bail!("--local path is not a directory: {}", canonical.display());
         }
-        return local_install(&canonical, wizard_config.as_ref());
+        return local_install_scoped(&canonical, wizard_config.as_ref(), reconcile_codex);
     }
 
     // Issue #675: when triggered by `amplihack update`, force_refresh=true
@@ -98,7 +115,7 @@ pub fn run_install(local: Option<PathBuf>, interactive: bool, force_refresh: boo
                 bundled.root.display(),
                 bundled.origin.describe()
             );
-            return local_install(&bundled.root, wizard_config.as_ref());
+            return local_install_scoped(&bundled.root, wizard_config.as_ref(), reconcile_codex);
         }
     } else {
         println!("📦 Forcing fresh framework download from upstream...");
@@ -107,7 +124,7 @@ pub fn run_install(local: Option<PathBuf>, interactive: bool, force_refresh: boo
     println!("⚠️  Bundled framework source not found, falling back to network download...");
     let temp_dir = tempfile::tempdir().context("failed to create temp dir for install")?;
     let extracted_root = download_and_extract_framework_repo(temp_dir.path())?;
-    local_install(&extracted_root, wizard_config.as_ref())?;
+    local_install_scoped(&extracted_root, wizard_config.as_ref(), reconcile_codex)?;
 
     // Network-fallback hard-error: every entry in the active layout's
     // destination set must have been staged. Read the .layout marker the
@@ -259,7 +276,7 @@ pub(crate) fn ensure_framework_installed() -> Result<()> {
     // framework updates are delivered via amplihack-rs binary updates instead.
     if framework_restage_needed(staging_exists, &missing) {
         println!("🔧 Bootstrapping amplihack framework assets...");
-        run_install(None, false, false)?;
+        repair_framework_assets()?;
     }
 
     // Issue #1344: `~/.claude/commands/amplihack/` lives outside `claude_dir`,
@@ -370,9 +387,18 @@ fn hooks_registered_in_settings(settings_path: &Path) -> Result<bool> {
     Ok(has_hooks)
 }
 
+#[cfg(test)]
 fn local_install(
     repo_root: &Path,
     wizard_config: Option<&interactive::InteractiveConfig>,
+) -> Result<()> {
+    local_install_scoped(repo_root, wizard_config, true)
+}
+
+fn local_install_scoped(
+    repo_root: &Path,
+    wizard_config: Option<&interactive::InteractiveConfig>,
+    reconcile_codex: bool,
 ) -> Result<()> {
     let claude_dir = staging_claude_dir()?;
     let timestamp = unix_timestamp();
@@ -603,9 +629,11 @@ fn local_install(
     verify_framework_assets(&claude_dir)?;
     verify_install_completeness(&source_root, layout, &claude_dir)?;
 
-    println!();
-    codex_plugin::install(repo_root, &durable_hooks_bin)
-        .context("failed native Codex installation")?;
+    if reconcile_codex {
+        println!();
+        codex_plugin::install(repo_root, &durable_hooks_bin)
+            .context("failed native Codex installation")?;
+    }
 
     println!("📝 Generating uninstall manifest:");
     let manifest_path = manifest_path()?;

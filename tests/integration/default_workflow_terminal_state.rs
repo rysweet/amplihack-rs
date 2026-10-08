@@ -13,6 +13,9 @@ use serde_json::Value as JsonValue;
 use serde_yaml::Value;
 use tempfile::TempDir;
 
+#[path = "default_workflow_terminal_state/startup.rs"]
+mod startup;
+
 fn workspace_root() -> PathBuf {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.pop();
@@ -1077,6 +1080,10 @@ steps:
         write_file(&recipe_path, &recipe);
 
         let mut command = Command::new(env!("CARGO_BIN_EXE_amplihack"));
+        startup::isolate(
+            &mut command,
+            &tmp.path().join(format!("child-{terminal_state}")),
+        );
         command
             .args(["recipe", "run"])
             .arg(&recipe_path)

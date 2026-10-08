@@ -25,8 +25,14 @@ mod wrapper_tests;
 mod interactive_tests;
 
 #[cfg(unix)]
+mod codex_alias_paths;
+#[cfg(unix)]
+mod codex_disabled_rollback;
+#[cfg(unix)]
 mod codex_failure_recovery;
 #[cfg(unix)]
 mod codex_plugin_tests;
 #[cfg(unix)]
 mod codex_runner_delivery;
+#[cfg(unix)]
+mod native_registration_fixture;

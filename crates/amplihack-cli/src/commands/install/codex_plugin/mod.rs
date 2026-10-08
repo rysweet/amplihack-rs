@@ -49,11 +49,16 @@ mod backup_cleanup;
 mod cleanup_guard;
 mod config;
 mod recovery;
+mod rollback;
+mod rollback_durability;
 use recovery::*;
 mod packaging;
 use packaging::*;
 mod planning;
 use planning::*;
+mod path_scope;
+#[cfg(all(test, unix))]
+mod path_scope_tests;
 mod transaction;
 mod uninstall;
 pub(super) fn install(source: &Path, hooks_binary: &Path) -> Result<bool> {
@@ -70,8 +75,12 @@ mod cleanup_performance_tests;
 mod digest_tests;
 #[cfg(test)]
 mod durability_tests;
+#[cfg(all(test, unix))]
+mod recovery_alias_tests;
 #[cfg(test)]
 mod recovery_tests;
+#[cfg(all(test, unix))]
+mod rollback_durability_tests;
 #[cfg(test)]
 mod tests;
 

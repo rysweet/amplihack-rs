@@ -6,70 +6,12 @@ use crate::test_support::{EnvGuard, home_env_lock};
 use std::fs;
 use std::process::Command;
 
-// Query the installed CLI's discovery protocol, independently of Rust loaders.
-fn native_inventory(binary: &str, cwd: &Path) -> serde_json::Value {
-    use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::process::CommandExt;
-    use std::process::Stdio;
-    let mut child = Command::new(binary)
-        .process_group(0)
-        .args(["app-server", "--stdio"])
-        .current_dir(cwd)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let mut stdin = child.stdin.take().unwrap();
-    let stdout = child.stdout.take().unwrap();
-    let (tx, rx) = std::sync::mpsc::channel();
-    let reader = std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines() {
-            if tx.send(line).is_err() {
-                break;
-            }
-        }
-    });
-    let result = (|| -> anyhow::Result<serde_json::Value> {
-        let requests = [
-            serde_json::json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"amplihack-acceptance","version":"1"},"capabilities":{"experimentalApi":true}}}),
-            serde_json::json!({"id":2,"method":"skills/list","params":{"cwds":[cwd],"forceReload":true}}),
-            serde_json::json!({"id":3,"method":"hooks/list","params":{"cwds":[cwd]}}),
-        ];
-        let mut inventory = serde_json::json!({});
-        for request in requests {
-            writeln!(stdin, "{request}")?;
-            stdin.flush()?;
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-            loop {
-                let line = rx.recv_timeout(
-                    deadline.saturating_duration_since(std::time::Instant::now()),
-                )??;
-                let response: serde_json::Value = serde_json::from_str(&line)?;
-                if response["id"] == request["id"] {
-                    anyhow::ensure!(
-                        response.get("error").is_none(),
-                        "native inventory error: {response}"
-                    );
-                    inventory[request["method"].as_str().unwrap()] = response["result"].clone();
-                    break;
-                }
-            }
-            if request["id"] == 1 {
-                writeln!(stdin, "{{\"method\":\"initialized\",\"params\":{{}}}}")?;
-                stdin.flush()?;
-            }
-        }
-        Ok(inventory)
-    })();
-    unsafe {
-        libc::kill(-(child.id() as i32), libc::SIGKILL);
-    }
-    child.wait().unwrap();
-    drop(rx);
-    reader.join().unwrap();
-    result.unwrap()
-}
+#[path = "codex_plugin_tests/native_inventory.rs"]
+mod native_inventory;
+#[path = "codex_plugin_tests/resources.rs"]
+mod resources;
+use native_inventory::native_inventory;
+use resources::*;
 
 #[test]
 #[ignore = "requires real installed Codex; set CODEX_TEST_BINARY and run --ignored"]
@@ -83,20 +25,6 @@ fn codex_plugin_install_update_uninstall_preserves_user_configuration_and_resour
     create_source_repo(&source);
     // Feed the production installer the complete canonical skill tree, not a
     // second provider-specific copy. Assert package bytes below.
-    fn copy_tree(from: &Path, to: &Path) {
-        fs::create_dir_all(to).unwrap();
-        for entry in fs::read_dir(from).unwrap().flatten() {
-            let destination = to.join(entry.file_name());
-            if entry.file_type().unwrap().is_symlink() {
-                std::os::unix::fs::symlink(fs::read_link(entry.path()).unwrap(), destination)
-                    .unwrap();
-            } else if entry.path().is_dir() {
-                copy_tree(&entry.path(), &destination);
-            } else {
-                fs::copy(entry.path(), destination).unwrap();
-            }
-        }
-    }
     let canonical = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../amplifier-bundle/skills");
     copy_tree(&canonical, &source.join("amplifier-bundle/skills"));
 
@@ -141,6 +69,7 @@ fn codex_plugin_install_update_uninstall_preserves_user_configuration_and_resour
         ("CODEX_HOME", codex_home.to_str().unwrap()),
         ("AMPLIHACK_HOME", home.join(".amplihack").to_str().unwrap()),
         ("PATH", &path),
+        ("AMPLIHACK_CODEX_BINARY_PATH", &codex),
         ("RECIPE_RUNNER_RS_PATH", runner.to_str().unwrap()),
         (
             "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
@@ -196,61 +125,8 @@ fn codex_plugin_install_update_uninstall_preserves_user_configuration_and_resour
             .all(|h| h["trustStatus"] == "untrusted" && h["source"] == "user")
     );
     // Discover package by its manifest rather than guessing native cache paths.
-    fn find_package(root: &Path) -> Option<std::path::PathBuf> {
-        for entry in fs::read_dir(root).ok()?.flatten() {
-            let path = entry.path();
-            if entry.file_type().ok()?.is_dir() {
-                if path.join("plugin.json").is_file() && path.join("skills").is_dir() {
-                    return Some(path);
-                }
-                if let Some(found) = find_package(&path) {
-                    return Some(found);
-                }
-            }
-        }
-        None
-    }
     let package = find_package(&home.join(".amplihack")).expect("owned portable package");
-    fn find_resource(root: &Path) -> bool {
-        fs::read_dir(root).unwrap().flatten().any(|entry| {
-            if entry.path().is_dir() {
-                find_resource(&entry.path())
-            } else {
-                entry.file_name() == "guide.md"
-                    && fs::read_to_string(entry.path()).unwrap()
-                        == "provider-neutral nested resource\n"
-            }
-        })
-    }
     assert!(find_resource(&package.join("skills")));
-    fn skill_roots(root: &Path, found: &mut Vec<std::path::PathBuf>) {
-        if root.join("SKILL.md").is_file() {
-            found.push(root.to_path_buf());
-        }
-        for entry in fs::read_dir(root).unwrap().flatten() {
-            if entry.path().is_dir() {
-                skill_roots(&entry.path(), found);
-            }
-        }
-    }
-    fn assert_resource_tree(source: &Path, staged: &Path) {
-        for entry in fs::read_dir(source).unwrap().flatten() {
-            let destination = staged.join(entry.file_name());
-            if entry.file_type().unwrap().is_symlink() && !entry.path().exists() {
-                assert_eq!(
-                    fs::read_link(entry.path()).unwrap(),
-                    fs::read_link(destination).unwrap()
-                );
-            } else if entry.path().is_dir() {
-                assert_resource_tree(&entry.path(), &destination);
-            } else {
-                assert_eq!(
-                    fs::read(entry.path()).unwrap(),
-                    fs::read(destination).unwrap()
-                );
-            }
-        }
-    }
     let mut canonical_roots = Vec::new();
     let mut packaged_roots = Vec::new();
     skill_roots(&canonical, &mut canonical_roots);

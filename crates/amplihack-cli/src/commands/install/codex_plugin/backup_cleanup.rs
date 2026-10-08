@@ -246,6 +246,7 @@ pub(super) fn finish(pending: &mut Value, root: &Path, home: &Path) -> Result<()
     storage::sync_path(root)
         .context("Codex backup cleanup synchronization failed; record retained")?;
     recovery::preflight(pending, root, home)?;
+    path_scope::check()?;
     fs::remove_file(root.join("pending.json"))?;
     storage::sync_path(root)
         .context("Codex committed cleanup synchronization failed; backup may already be removed")

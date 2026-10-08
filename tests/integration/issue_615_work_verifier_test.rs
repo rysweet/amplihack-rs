@@ -383,6 +383,16 @@ fn run_gate(verdict_json: &str, implementation: &str, allow_no_op: &str) -> Gate
     let recipe = load_workflow_tdd();
     let step = step_by_id(&recipe, ENFORCE_STEP_ID);
     let command = step.command.expect("enforce-verdict has command");
+    let command = command.replace(
+        "{{worktree_setup.worktree_path}}",
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .replace('\'', "'\\''"),
+    );
 
     let mut script_file = tempfile::NamedTempFile::new().expect("tempfile");
     script_file

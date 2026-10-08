@@ -1,3 +1,10 @@
+---
+title: Evidence and bookkeeping gate hardening
+description: Helper resolution, failure policies and implementation evidence contracts.
+type: reference
+updated: 2026-10-08
+---
+
 # Evidence & Bookkeeping Gate Hardening Reference
 
 > [Home](../index.md) > Reference > Evidence & Bookkeeping Gate Hardening
@@ -267,9 +274,13 @@ completed (or was a legitimate no-op). It is **bookkeeping**, so it degrades.
 > object** on stdout (not a bare `DEGRADED:` line). The uniform, machine-greppable
 > degrade signal is the `WARNING:` on **stderr**.
 
-The helper's own logic is unchanged (fixed-string parsing via `grep -F` /
-`jq -r`, the `ALLOW_NO_OP` and orchestration-sentinel no-op paths). Only its
-resolution and the terminal action changed.
+The helper uses [shared workflow context transport](workflow-context-transport.md)
+for file-first and canonical namespaced input, with legacy-only fallback.
+Canonical malformed, empty or negative input cannot revive stale positive or
+no-op scalars. Its four response fields, String-valued booleans, exact positive
+verdict tokens and no-op/sentinel policies remain unchanged. The enforcer retains
+its separate synonym and literal-`true` policies; strict finalization still
+rejects insufficient implementation evidence.
 
 ---
 

@@ -1,9 +1,27 @@
+---
+title: Install amplihack as a Claude Code plugin
+description: Install the Claude Code plugin and its managed native runtime.
+type: howto
+updated: 2026-10-08
+---
+
 # Install amplihack as a Claude Code plugin
 
 The amplihack-rs repository is a Claude Code plugin and a one-plugin
 marketplace. You can install it from git into Claude Code in the terminal, the
 desktop app, or on the web (cloud sessions) without running `amplihack
 install` first.
+
+## Contents
+
+- [Install](#install)
+- [What you get](#what-you-get)
+- [The native runtime](#the-native-runtime)
+- [Relationship to `amplihack install`](#relationship-to-amplihack-install)
+- [Known limitations](#known-limitations)
+- [Update and uninstall](#update-and-uninstall)
+- [Validate changes](#validate-changes)
+- [Managed runner compatibility](#managed-runner-compatibility)
 
 ## Install
 
@@ -155,10 +173,11 @@ not enough. Two guards keep a broken install from looping:
    https://github.com/rysweet/amplihack-recipe-runner --rev <sha> --locked`.
    The commit comes from `claude-plugin/recipe-runner.rev`, so the code a
    plugin commit builds is fixed and reviewable in that commit. cargo skips
-   the build when that exact commit is already installed. amplihack's own
-   launcher tracks the runner's `main` branch instead; the plugin pins because
-   it installs without asking. Bump the file to move the plugin to a newer
-   runner.
+   the build when that exact commit is already installed. Rust installation
+   and launcher freshness checks use the same immutable revision and locked
+   dependencies. Bump this shared file to move both managed delivery paths
+   to a newer runner, then rebuild Rust consumers that embed it. Compatible
+   user-owned overrides are validated separately and preserved.
 
 It is idempotent and safe to run by hand:
 
@@ -292,7 +311,20 @@ does not require Python or Node; the existing Cargo-only source-build path remai
 supported. If an older user-owned runtime lacks the validator, bootstrap builds a
 private validator with Cargo without replacing that runtime.
 
+Compatible user-owned runners remain separate from managed revision checks.
+`RECIPE_RUNNER_RS_PATH` selects a user-owned override; its compatibility does not
+require the bundled revision, an exact version string or a particular JSON
+property order. Codex requires schema 1, a nonblank version and `codex_exec`;
+Claude/Copilot retain support for legacy custom runners and discovery fallback
+when an explicit path does not exist. User-owned runners are never overwritten.
+
 The effective `CARGO_HOME` determines both the installed runner and its receipt.
 Missing or mismatched receipts, shadowed executables and failed installations
-stop bootstrap without a success stamp. See the
+stop bootstrap without a success stamp. A failed managed build or link preserves
+the previous usable runner and receipts for retry.
+
+Claude and Copilot legacy workflow scalars remain supported. Structured context
+uses the same file-first authority as Codex, without changing their launch or
+permission behavior. See [workflow context transport](../reference/workflow-context-transport.md)
+and the
 [runner validation reference](../reference/recipe-runner-validation.md).

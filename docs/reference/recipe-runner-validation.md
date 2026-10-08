@@ -1,7 +1,8 @@
 ---
 title: Recipe runner validation
+description: Runner capability schema, provider rules and managed source provenance.
 type: reference
-updated: 2026-10-05
+updated: 2026-10-08
 ---
 
 # Recipe runner validation
@@ -45,6 +46,18 @@ Python and Node are optional; semantic parsing uses existing native JSON support
 
 ## Managed provenance
 
+Rust installation, launcher freshness checks and Claude shell bootstrap use
+the same immutable `claude-plugin/recipe-runner.rev`, with Cargo `--rev` and
+`--locked`. Updating that file changes both managed paths; Rust consumers must
+be rebuilt because they embed the revision at compile time. User-owned override
+compatibility remains independent of this managed source identity.
+
+| Consumer | Revision source |
+| --- | --- |
+| Rust installer and launcher freshness | Shared file embedded at compile time; changing the pin requires rebuilding the consumer. |
+| Claude plugin `install-runtime` | Shared file read from the plugin checkout at runtime. |
+| Compatible user-owned override | No bundled-SHA requirement; provider-specific compatibility policy applies. |
+
 A single Cargo receipt entry must identify the `recipe-runner-rs` package, expected
 git repository, full bundled revision and `recipe-runner-rs` binary. Matching a
 revision from one entry and a binary from another is invalid. The selected
@@ -54,7 +67,10 @@ a compatible binary shadowing it elsewhere fails validation.
 Missing, malformed or mismatched receipts and unsuccessful Cargo installation
 fail visibly. Freshness reinstalls a different managed revision and validates the
 result before recording success. Shell bootstrap propagates failures before
-writing success stamps. If an older user-owned runtime lacks native validation,
+writing success stamps. Failed builds or links preserve the prior usable managed
+binary and its Cargo receipts; retry must complete delivery and validation before
+stamping success. The managed revision is never selected from upstream `main`
+or inferred from a capability report. If an older user-owned runtime lacks native validation,
 bootstrap builds a private Cargo validator without replacing the user's runtime.
 Receipts describe local installation provenance, not cryptographic attestation.
 

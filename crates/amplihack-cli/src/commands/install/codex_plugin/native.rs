@@ -1,6 +1,7 @@
 //! Native command and inventory boundary.
 use super::*;
 pub(super) fn native(binary: &Path, args: &[&str], home: &Path) -> Result<Value> {
+    path_scope::check()?;
     let mut cmd = Command::new(binary);
     cmd.args(args).env("CODEX_HOME", home);
     if !args.contains(&"--json") {
@@ -8,6 +9,7 @@ pub(super) fn native(binary: &Path, args: &[&str], home: &Path) -> Result<Value>
     }
     let output =
         crate::util::run_output_with_timeout_limited(cmd, Duration::from_secs(30), 1024 * 1024)?;
+    path_scope::check()?;
     ensure!(
         output.status.success(),
         "Codex native plugin command failed ({}); check native plugin support and authentication",

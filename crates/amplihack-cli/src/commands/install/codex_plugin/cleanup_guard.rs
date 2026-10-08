@@ -82,6 +82,7 @@ impl Guard {
     }
 
     pub(super) fn check(&self, pending: &Value, root: &Path, home: &Path) -> Result<()> {
+        path_scope::check()?;
         #[cfg(unix)]
         {
             let _ = (pending, root, home);
