@@ -285,6 +285,14 @@ Only both completion fields true authorize `IMPLEMENTED_VERIFIED`; explicit
 `allow_no_op` plus implementation `terminal_no_op` authorize `ALLOW_NO_OP`.
 These paths remain subject to every existing hard blocker.
 
+Validation emits one complete JSON object with all 19 fields as Strings,
+including Boolean-like values and PR numbers. It streams scalar metadata and
+diagnostics through `jq --rawfile` and validates the assembled object, so large
+file-backed PR values or tooling diagnostics never re-enter process arguments.
+Values are preserved without truncation or a new size cap. Success exits `0`;
+validation failures exit `1`. Missing jq retains the fixed failure response;
+collection/completion tooling failures and invalid modes retain exit `2`.
+
 Completion preserves `terminal_success`, `terminal_state`, `terminal_reason`,
 `required_next_action`, `hollow_success_detected`, `evidence_used`,
 `finalizer_schema_version`, `finalizer_confidence`, `finalizer_output_valid`,

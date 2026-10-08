@@ -58,47 +58,23 @@ validate_finalization() {
   terminal_failure="true"
 
   emit_result() {
-    jq -nc \
-      --arg terminal_success "$terminal_success" \
-      --arg terminal_state "$terminal_state" \
-      --arg terminal_reason "$terminal_reason" \
-      --arg required_next_action "$required_next_action" \
-      --arg hollow_success_detected "$hollow_success_detected" \
-      --arg evidence_used "$evidence_used" \
-      --arg finalizer_schema_version "$finalizer_schema_version" \
-      --arg finalizer_confidence "$finalizer_confidence" \
-      --arg finalizer_output_valid "$finalizer_output_valid" \
-      --arg reporting_failure "$reporting_failure" \
-      --arg implementation_completed "$implementation_completed" \
-      --arg verification_completed "$verification_completed" \
-      --arg publish_state_reached "$(resolve_publish_state_reached)" \
-      --arg terminal_no_op "$terminal_no_op" \
-      --arg terminal_failure "$terminal_failure" \
-      --arg pr_url "$pr_url" \
-      --arg pr_number "$pr_number" \
-      --arg observed_phases "workflow-prep,workflow-worktree,workflow-design,workflow-tdd,workflow-refactor-review,workflow-precommit-test,workflow-publish,workflow-pr-review,workflow-finalize" \
-      --arg missing_evidence "" \
-      '{
-        terminal_success: $terminal_success,
-        terminal_state: $terminal_state,
-        terminal_reason: $terminal_reason,
-        required_next_action: $required_next_action,
-        hollow_success_detected: $hollow_success_detected,
-        evidence_used: $evidence_used,
-        finalizer_schema_version: $finalizer_schema_version,
-        finalizer_confidence: $finalizer_confidence,
-        finalizer_output_valid: $finalizer_output_valid,
-        reporting_failure: $reporting_failure,
-        implementation_completed: $implementation_completed,
-        verification_completed: $verification_completed,
-        publish_state_reached: $publish_state_reached,
-        terminal_no_op: $terminal_no_op,
-        terminal_failure: $terminal_failure,
-        pr_url: $pr_url,
-        pr_number: $pr_number,
-        observed_phases: $observed_phases,
-        missing_evidence: $missing_evidence
-      }'
+    local field separator publish_state_reached observed_phases missing_evidence
+    publish_state_reached="$(resolve_publish_state_reached)"
+    observed_phases="workflow-prep,workflow-worktree,workflow-design,workflow-tdd,workflow-refactor-review,workflow-precommit-test,workflow-publish,workflow-pr-review,workflow-finalize"
+    missing_evidence=""
+    # File-backed metadata and diagnostics can exceed argv's per-value limit.
+    # Stream every fixed field, retaining the existing all-String schema, then
+    # validate the assembled object before emitting one complete JSON result.
+    {
+      printf '{'
+      separator=''
+      for field in terminal_success terminal_state terminal_reason required_next_action hollow_success_detected evidence_used finalizer_schema_version finalizer_confidence finalizer_output_valid reporting_failure implementation_completed verification_completed publish_state_reached terminal_no_op terminal_failure pr_url pr_number observed_phases missing_evidence; do
+        printf '%s"%s":' "$separator" "$field"
+        printf '%s' "${!field}" | jq -n --rawfile value /dev/stdin '$value'
+        separator=','
+      done
+      printf '}'
+    } | jq -c .
   }
 
   fail_result() {

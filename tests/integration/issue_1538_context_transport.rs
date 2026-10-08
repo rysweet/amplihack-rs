@@ -6,6 +6,8 @@ mod authority;
 mod completion;
 #[path = "issue_1538_context_transport/documentation.rs"]
 mod documentation;
+#[path = "issue_1538_context_transport/emitter.rs"]
+mod emitter;
 #[path = "issue_1538_context_transport/finalization.rs"]
 mod finalization;
 #[path = "issue_1538_context_transport/fixtures.rs"]
