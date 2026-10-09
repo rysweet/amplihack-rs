@@ -21,13 +21,25 @@ validate_finalization() {
 
   evidence_status=0
   finalization_evidence="$(workflow_context_read finalization_evidence)" || evidence_status=$?
-  # Invalid authoritative objects must reach the existing strict validator.
-  if [ "$evidence_status" = 3 ]; then finalization_evidence='{invalid'; fi
-  evidence_dirty_worktree="$(workflow_finalization_field finalization_evidence git.dirty_worktree FINALIZATION_EVIDENCE_GIT_DIRTY_WORKTREE || :)"
-  evidence_tooling_missing="$(workflow_finalization_field finalization_evidence tooling.missing FINALIZATION_EVIDENCE_TOOLING_MISSING || :)"
-  evidence_gh_required="$(workflow_finalization_field finalization_evidence tooling.gh_required FINALIZATION_EVIDENCE_TOOLING_GH_REQUIRED || :)"
-  evidence_prior_terminal_state="$(workflow_finalization_field finalization_evidence prior_terminal_state.terminal_state FINALIZATION_EVIDENCE_PRIOR_TERMINAL_STATE_TERMINAL_STATE || :)"
-  evidence_hollow_success="$(workflow_finalization_field finalization_evidence agent_outputs.hollow_success_signals FINALIZATION_EVIDENCE_AGENT_OUTPUTS_HOLLOW_SUCCESS_SIGNALS || :)"
+  evidence_invalid="false"
+  case "$evidence_status" in 0|2) ;; *) evidence_invalid="true" ;; esac
+  # Retain invalid-field status instead of turning a failed read into absence.
+  # Missing selected fields stay conservative and never trigger alias fallback.
+  while read -r evidence_name evidence_path evidence_alias; do
+    if evidence_value="$(workflow_finalization_field finalization_evidence "$evidence_path" "$evidence_alias")"; then
+      printf -v "$evidence_name" '%s' "$evidence_value"
+    else
+      field_status=$?
+      [ "$field_status" = 2 ] || evidence_invalid="true"
+      printf -v "$evidence_name" '%s' ''
+    fi
+  done <<'FIELDS'
+evidence_dirty_worktree git.dirty_worktree FINALIZATION_EVIDENCE_GIT_DIRTY_WORKTREE
+evidence_tooling_missing tooling.missing FINALIZATION_EVIDENCE_TOOLING_MISSING
+evidence_gh_required tooling.gh_required FINALIZATION_EVIDENCE_TOOLING_GH_REQUIRED
+evidence_prior_terminal_state prior_terminal_state.terminal_state FINALIZATION_EVIDENCE_PRIOR_TERMINAL_STATE_TERMINAL_STATE
+evidence_hollow_success agent_outputs.hollow_success_signals FINALIZATION_EVIDENCE_AGENT_OUTPUTS_HOLLOW_SUCCESS_SIGNALS
+FIELDS
 
   implementation_completed="$(resolve_implementation_completed)"
   verification_completed="$(resolve_verification_completed)"
@@ -104,57 +116,35 @@ validate_finalization() {
     exit 0
   }
 
-  # 1. Deterministic evidence must be a structurally valid JSON object when
-  #    provided. Malformed *evidence* (never agent prose) fails closed as
-  #    FAILED_INVALID_EVIDENCE.
+  # 1. Reject invalid selected transport/fields before completion or no-op.
+  if [ "$evidence_invalid" = "true" ]; then
+    fail_result "FAILED_INVALID_EVIDENCE" "deterministic finalization evidence contained an invalid object or field" "Rerun collect-finalization-evidence and inspect its structured output." "finalization_evidence=malformed"
+  fi
   if [ -n "$finalization_evidence" ]; then
-    # Perf (issue #969): avoid re-parsing the same JSON document once per field
-    # (the pre-#969 code spawned a printf+jq per field). A single jq pass both
-    # validates structure and emits every evidence field.
-    #
-    # Security (issue #969, fail-CLOSED invariant): a terminal success here
-    # authorizes a merge, so evidence parsing MUST fail CLOSED on anything it
-    # cannot fully and unambiguously read — it must never silently blank a
-    # blocker field (dirty_worktree / tooling.missing / hollow_success) and let
-    # the gate reach IMPLEMENTED_VERIFIED. Two distinct fail-OPEN traps are
-    # closed here:
-    #   1. Truncation: an embedded newline/control byte in an *earlier* value
-    #      must not truncate the record and blank a *later* field. Fields are
-    #      emitted NUL-delimited and consumed with per-field `read -rd ''`. NUL
-    #      is the one byte that cannot appear in the evidence, so no value can
-    #      truncate the record or bleed across fields; empty fields stay
-    #      positional. Process substitution (not command substitution) is
-    #      required so NUL bytes survive to `read`.
-    #   2. Nested non-object: a top-level `type == "object"` check passes for a
-    #      document whose *nested* value is the wrong type (e.g. `.git` is a
-    #      string), yet `.git.dirty_worktree` then makes jq error mid-stream and
-    #      emit nothing. Previously the unguarded read block relied on
-    #      `set -e` to abort on the first empty read — an ungraceful crash that
-    #      leaked a raw jq error, emitted no structured terminal_state, and would
-    #      silently turn into a fail-OPEN the moment any future edit relaxed
-    #      `set -e` around this block. The `&&`-chained reads inside `if !`
-    #      instead require ALL five NUL-terminated fields to be present: any jq
-    #      error, short read, or missing delimiter makes a `read` return
-    #      non-zero, so the guard fails CLOSED with a clean FAILED_INVALID_EVIDENCE
-    #      classification instead of proceeding with silently blanked evidence.
+    # Validate the complete array before emitting any delimiters. jq failures in
+    # process substitution do not propagate through set -e, and partial output
+    # could hide an invalid later field. Strings cannot contain the NUL separator;
+    # absent/null and Boolean fields retain their supported semantics.
+    if ! evidence_values="$(printf '%s' "$finalization_evidence" | jq -cs '
+        if length == 1 and (.[0] | type) == "object" then
+          .[0] | [ .git.dirty_worktree, .tooling.missing, .tooling.gh_required,
+                   .prior_terminal_state.terminal_state,
+                   .agent_outputs.hollow_success_signals ]
+          | if all(.[]; if type == "string" then index("\u0000") == null
+                        else type == "boolean" or type == "null" end) then
+              map(if . == null then "" else tostring end)
+            else error("invalid finalization evidence field") end
+        else error("finalization evidence is not one JSON object") end' 2>/dev/null)"; then
+      fail_result "FAILED_INVALID_EVIDENCE" "deterministic finalization evidence contained an invalid object or field" "Rerun collect-finalization-evidence and inspect its structured output." "finalization_evidence=malformed"
+    fi
     if ! {
       IFS= read -rd '' ev_dirty &&
         IFS= read -rd '' ev_missing &&
         IFS= read -rd '' ev_gh &&
         IFS= read -rd '' ev_prior &&
         IFS= read -rd '' ev_hollow
-    } < <(printf '%s' "$finalization_evidence" | jq -j '
-        if type == "object" then
-          [ (.git.dirty_worktree // ""),
-            (.tooling.missing // ""),
-            (.tooling.gh_required // ""),
-            (.prior_terminal_state.terminal_state // ""),
-            (.agent_outputs.hollow_success_signals // "") ]
-          | map(tostring + "\u0000") | join("")
-        else
-          error("finalization evidence is not a JSON object")
-        end' 2>/dev/null); then
-      fail_result "FAILED_INVALID_EVIDENCE" "deterministic finalization evidence was not a structurally valid JSON object" "Rerun collect-finalization-evidence and inspect its structured output." "finalization_evidence=malformed"
+    } < <(printf '%s' "$evidence_values" | jq -j '.[] + "\u0000"' 2>/dev/null); then
+      fail_result "FAILED_INVALID_EVIDENCE" "deterministic finalization evidence could not be completely extracted" "Rerun collect-finalization-evidence and inspect its structured output." "finalization_evidence=malformed"
     fi
     [ -n "$evidence_dirty_worktree" ] || evidence_dirty_worktree="$ev_dirty"
     [ -n "$evidence_tooling_missing" ] || evidence_tooling_missing="$ev_missing"

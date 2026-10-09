@@ -10,6 +10,8 @@ mod documentation;
 mod emitter;
 #[path = "issue_1538_context_transport/finalization.rs"]
 mod finalization;
+#[path = "issue_1538_context_transport/finalization_integrity.rs"]
+mod finalization_integrity;
 #[path = "issue_1538_context_transport/fixtures.rs"]
 mod fixtures;
 #[path = "issue_1538_context_transport/native.rs"]

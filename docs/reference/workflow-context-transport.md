@@ -2,7 +2,7 @@
 title: Workflow context transport
 description: Source authority for verifier, completion, documentation and finalization consumers.
 type: reference
-updated: 2026-10-08
+updated: 2026-10-09
 ---
 
 # Workflow context transport
@@ -74,28 +74,35 @@ Each consumer selects its own private cohort. An inherited
 authority. Scalar capture retains trailing newlines and newline-only data.
 The enforcer and finalization resolver keep exact token comparisons; the
 implementation and verification producers retain their existing case-folding
-no-op normalization. Verification inputs retain the existing nonempty test.
+no-op normalization. Verification requires the strict structured receipts
+described below.
 
 ## Fields and private reader
 
 The private `workflow_context_read KEY` interface is implemented in
-`amplifier-bundle/tools/workflow_context.sh`. Its initial scalar/object keys are:
+`amplifier-bundle/tools/workflow_context.sh`. Its implemented fixed inventory is:
 
 | Key | Canonical value | Legacy scalar |
 | --- | --- | --- |
-| `verdict_json` | Complete JSON object, with at most one compatibility String decode | `VERDICT_JSON` |
+| `verdict_json` | Complete Object; one serialized String compatibility decode | `VERDICT_JSON` |
 | `implementation` | String | `IMPLEMENTATION` |
 | `allow_no_op` | Boolean or String | `ALLOW_NO_OP` |
-| `doc_review_feedback` | Complete JSON object, with at most one compatibility String decode | `DOC_REVIEW_FEEDBACK` |
+| `doc_review_feedback` | Complete Object; one serialized String compatibility decode | `DOC_REVIEW_FEEDBACK` |
+| `precommit_results`, `local_testing_gate` | Native Object receipts; serialized String compatibility | `PRECOMMIT_RESULTS`, `LOCAL_TESTING_GATE` |
+| `agentic_finalizer_narrative` | String | `AGENTIC_FINALIZER_NARRATIVE` |
+| `implementation_terminal_evidence`, `verification_terminal_evidence`, `finalizer_step_status`, `finalization_evidence`, `workflow_result` | Complete Objects; one serialized String compatibility decode | Corresponding uppercase names |
+| `worktree_setup`, `terminal_state`, `pr_publish_result`, `publish_terminal_evidence` | Complete Objects; one serialized String compatibility decode | Corresponding uppercase names |
+| `repo_path`, `branch_name`, `base_ref`, `remote_host_type`, `pr_url`, `task_description` | String | Corresponding uppercase names |
+| `pr_number`, `issue_number` | Number or String | `PR_NUMBER`, `ISSUE_NUMBER` |
+| `publish_state_reached` | Boolean or String | `PUBLISH_STATE_REACHED` |
 
-The implementation must extend the fixed allowlist to the verification inputs
-and deterministic records in this reference. Four keys are insufficient for
-the finalization boundary. Record field access stays limited to the existing
-consumer schema; arbitrary paths and environment names are not an API.
-Deterministic records require complete objects or supported fixed nested fields,
-with Boolean/String completion values. Preserve existing String-valued helper
-outputs and validate field types before applying the consumer's token policy.
-`precommit_results` and `local_testing_gate` retain their existing String type.
+Record field access stays limited to the existing consumer schema; arbitrary
+paths and environment names are not an API. Deterministic records require
+complete objects or supported fixed nested fields, with Boolean/String
+completion values. Preserve String-valued helper outputs and validate field
+types before applying the consumer's token policy. Current step-12 and step-13
+receipt producers use `parse_json: true` and return native Objects. A serialized
+String containing one JSON Object is compatibility input, not their native type.
 
 | Exit | Stdout | Meaning |
 | --- | --- | --- |
@@ -139,8 +146,8 @@ each task. Its producer verdicts are `WORK_VERIFIED`, `HOLLOW_SUCCESS` or
 `INSUFFICIENT_EVIDENCE`. Consumers preserve historical minimal-object and
 synonym handling without adding an evidence-validation policy.
 
-Canonical verdict/feedback parsing requires one complete object. One
-JSON-encoded compatibility String may decode to that object; recursive String
+Canonical object parsing requires exactly one complete JSON document whose
+value is an Object. One JSON-encoded compatibility String may decode to that object; recursive String
 decoding, prose extraction and fenced JSON salvage are rejected. Compact output
 must reparse equal to the input object, retaining arrays, nested values and
 Unicode. Environment serialization lacks original scalar type tags; validation
@@ -210,29 +217,55 @@ producer. It must read selected `precommit_results`, `local_testing_gate` and
 `allow_no_op`, including file-only inputs. Reading uppercase output aliases
 alone cannot prove that canonical verification inputs reached this producer.
 
-Preserve its existing policy: case-insensitive `true`, `1`, `yes` and `y` select
-no-op first; otherwise both validation outputs must be nonempty. It emits a
-native `parse_json` object with four String fields:
+The native `step-12-run-precommit` and `step-13-local-testing` producers use
+`parse_json: true` and return structured Object receipts. Selected serialized
+String receipts remain supported for compatibility, including uppercase legacy
+inputs. Both transports require exactly one complete JSON Object; malformed
+input, embedded NUL, multiple documents (including failure followed by PASS),
+non-object values and recursively encoded Strings cannot establish verification.
+
+`precommit_results` requires `status: "PASS"`, numeric zero `exit_code`,
+`precommit_exit_code` and `workspace_exit_code`,
+`workspace_command: "cargo test --workspace --locked"`,
+`validation_scope: "FULL_WORKSPACE"`, `test_threads: "DEFAULT"`, and a nonempty
+`evidence` array referencing retained raw logs and actual exits. This means real
+precommit execution and full locked workspace validation with default parallel
+threads; subset tests or declared commands alone cannot supply that evidence.
+
+`local_testing_gate` requires `status: "PASS"`, numeric zero `exit_code`, a
+nonempty `evidence` array, and at least two actual outside-in `scenarios`, each
+with `status: "PASS"` and numeric zero `exit_code`. Receipt evidence must bind the
+executed validation to its current source and tools. Prose, nonempty reports,
+failed runs and earlier source epochs cannot establish verification.
+
+The separate explicit no-op path remains first: case-insensitive `true`, `1`,
+`yes` and `y`. Normalization removes trailing LF through Bash command
+substitution; other surrounding whitespace remains significant. The verification
+producer emits a native
+`parse_json` Object with four String fields:
 
 | Path | Completed | No-op | State |
 | --- | --- | --- | --- |
 | Selected explicit no-op | `"false"` | `"true"` | `ALLOW_NO_OP` |
-| Both selected validation outputs nonempty | `"true"` | `"false"` | `VERIFICATION_COMPLETED` |
-| Either selected output absent or invalid | `"false"` | `"false"` | `VERIFICATION_UNPROVEN` |
+| Both selected receipts satisfy their strict schemas | `"true"` | `"false"` | `VERIFICATION_COMPLETED` |
+| Either receipt absent, invalid or failing | `"false"` | `"false"` | `VERIFICATION_UNPROVEN` |
 
 Here “Completed” means `verification_completed`, “No-op” means `terminal_no_op`;
-the remaining fields are `terminal_state` and `terminal_reason`. Preserve the
-existing reasons and exit behavior. Output presence is this producer's existing
-policy, not proof that the outputs report passing tests. Test its actual inputs,
-produced object and finalization consumers together; transport normalization
-must not invent verification or weaken existing failure gates.
+the remaining fields are `terminal_state` and `terminal_reason`. The successful
+reason is `current full workspace, pre-commit and outside-in structured receipts
+report successful validation`; the unproven reason is `successful full workspace,
+pre-commit or outside-in structured evidence is missing or invalid`. These
+classification branches exit zero; output-tool failures remain process errors.
+Controlled positive fixtures test the classifier and do not establish actual
+workstream validation. Test the selected inputs, produced object and finalization
+consumers together without inventing completion flags.
 
 ## Finalization consumers
 
-**[PLANNED - Implementation Pending]** The shared authority rule must reach all
-three modes of `workflow_agentic_finalization.sh`, including inline producers in
-`workflow-finalize.yaml`. Supporting the verdict reader alone does not prove
-these consumers are safe.
+The shared authority rule is implemented in all three modes of
+`workflow_agentic_finalization.sh` and the inline producers in
+`workflow-finalize.yaml`. Collection, validation and completion use the existing
+context, metadata and mode-specific helper modules.
 
 ### Completion and no-op inputs
 
@@ -277,6 +310,17 @@ roots and supported nested fields follow the selected source, so stale aliases
 cannot overwrite dirty-worktree, tooling, HOLLOW, prior-terminal, PR or reporting
 signals. Preserve Git/tool probes and publish/PR ownership boundaries.
 
+Before delimiter extraction, validation checks all five selected evidence fields:
+`git.dirty_worktree`, `tooling.missing`, `tooling.gh_required`,
+`prior_terminal_state.terminal_state` and `agent_outputs.hollow_success_signals`.
+Strings and Booleans are supported; absent/null fields remain conservative.
+Wrong field/container types, malformed selected transport and embedded NUL in any
+extracted String produce `FAILED_INVALID_EVIDENCE`, `terminal_success="false"`,
+`terminal_failure="true"`, `finalizer_output_valid="false"` and exit `1`. Invalid
+field-reader results cannot be discarded or repaired from stale aliases;
+positive completion and explicit no-op cannot override them. Newlines and other
+non-NUL control characters remain data and cannot hide later blocker fields.
+
 Validation preserves `FAILED_INVALID_EVIDENCE`, `FAILED_DIRTY_WORKTREE`,
 `FAILED_MISSING_TOOLING`, blocked terminal states and `HOLLOW_SUCCESS` before
 completion checks. Reporting failure remains `FAILED_REPORTING` when durable
@@ -285,9 +329,14 @@ Only both completion fields true authorize `IMPLEMENTED_VERIFIED`; explicit
 `allow_no_op` plus implementation `terminal_no_op` authorize `ALLOW_NO_OP`.
 These paths remain subject to every existing hard blocker.
 
-Validation emits one complete JSON object with all 19 fields as Strings,
-including Boolean-like values and PR numbers. It streams scalar metadata and
-diagnostics through `jq --rawfile` and validates the assembled object, so large
+Validation emits one complete JSON Object with exactly these 19 String fields:
+`terminal_success`, `terminal_state`, `terminal_reason`, `required_next_action`,
+`hollow_success_detected`, `evidence_used`, `finalizer_schema_version`,
+`finalizer_confidence`, `finalizer_output_valid`, `reporting_failure`,
+`implementation_completed`, `verification_completed`, `publish_state_reached`,
+`terminal_no_op`, `terminal_failure`, `pr_url`, `pr_number`, `observed_phases` and
+`missing_evidence`. Boolean-like values and PR numbers remain Strings. It streams
+scalar metadata and diagnostics through `jq --rawfile` and validates the assembled object, so large
 file-backed PR values or tooling diagnostics never re-enter process arguments.
 Values are preserved without truncation or a new size cap. Success exits `0`;
 validation failures exit `1`. Missing jq retains the fixed failure response;
@@ -340,14 +389,17 @@ These are the implementation boundaries:
 | `amplifier-bundle/tools/workflow_implementation_evidence.sh` | Selected verdict/no-op/sentinel to native implementation evidence. |
 | `amplifier-bundle/recipes/workflow-tdd.yaml` | Actual enforcer and implementation evidence producer; preserve metadata and policies. |
 | `amplifier-bundle/recipes/workflow-precommit-test.yaml` | Inline verification producer, its validation inputs and native output. |
-| `amplifier-bundle/tools/workflow_agentic_finalization.sh` | Shared collect/validate resolvers, deterministic assessment and complete result transport. |
+| `amplifier-bundle/tools/workflow_agentic_finalization.sh` | Mode dispatch, dependency loading and strict command preconditions. |
+| `amplifier-bundle/tools/workflow_finalization_context.sh`, `workflow_finalization_metadata.sh` | Shared fixed-field completion and metadata resolvers with selected source authority. |
+| `amplifier-bundle/tools/workflow_finalization_collect.sh`, `workflow_finalization_validate.sh`, `workflow_finalization_complete.sh` | Deterministic collection, strict classification and complete result transport. |
 | `amplifier-bundle/recipes/workflow-finalize.yaml` | Collect/validate/complete call sites and inline reporting-status producer. |
 | `amplifier-bundle/recipes/default-workflow.yaml` | Completion record defaults and propagation across recipe boundaries. |
 | `amplifier-bundle/recipes/workflow-design.yaml` | Separate nonfatal documentation feedback cohort. |
 
-Register transport tests in the owning `bins/amplihack/Cargo.toml` and retain
-existing verifier, reliability and strict-finalization targets. Test the actual
-shell helper and rendered YAML commands, with separate verification and
+Consumer implementation is owned by `crates/amplihack-cli/Cargo.toml`. The
+`issue_1538_context_transport` executable integration target is registered in
+`bins/amplihack/Cargo.toml`; retain it and the existing verifier, reliability and
+strict-finalization targets. Test the actual shell helper and rendered YAML commands, with separate verification and
 finalization scenarios; parser-only tests cannot establish this contract.
 
 ## Transport acceptance requirements
@@ -401,23 +453,3 @@ then the target `REPO_PATH`, cwd and private provider assets. An explicit
 repositories need not contain `amplifier-bundle`; paths remain quoted shell
 values, including spaces, quotes and metacharacters. Documentation checkpoints
 remain nonfatal and report `NEEDS_ATTENTION` when helpers are unavailable.
-
-Verification requires structured current validation receipts, not the presence
-of a report. `precommit_results` must have `status: "PASS"`, numeric zero
-`exit_code`, `precommit_exit_code` and `workspace_exit_code`,
-`workspace_command: "cargo test --workspace --locked"`,
-`validation_scope: "FULL_WORKSPACE"`, `test_threads: "DEFAULT"`, and a nonempty
-`evidence` array referencing retained raw logs and exits. `local_testing_gate`
-must have `status: "PASS"`, numeric zero `exit_code`, a nonempty `evidence`
-array, and at least two `scenarios`, each with `status: "PASS"` and numeric zero
-`exit_code`. These are typed recipe objects; legacy-only consumers may supply
-serialized objects in the corresponding uppercase variables. Prose, failed
-reports, subset runs and missing members produce `VERIFICATION_UNPROVEN`.
-The explicit boolish no-op path retains its separate policy. Receipts describe
-executed validation and must not reuse a failed or earlier source epoch.
-
-Receipt Strings must contain exactly one complete JSON Object; malformed input,
-NUL, multiple documents (including failure followed by PASS) and non-object
-values remain unproven. Native OBJECT and serialized String transport obey the
-same schema. Controlled positive fixtures test this classifier; their receipts
-do not establish validation of the actual workstream.
